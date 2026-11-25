@@ -1,0 +1,273 @@
+# Host sockets track: status
+
+Each fact is marked MEASURED (a command was run, both rented machines unless one is named), READ (in a file or a
+crate's source) or INFERRED (not checked by running anything). Commits: main = f70acb496 (holds the owner's
+c8759035f, every crate on the workspace lints), agents = origin/agents 198bb11d6. Crate versions in the lock files
+(READ, both commits): rustix 1.1.6, socket2 0.6.5, nix 0.31.4 (the manifests ask for 0.31.3), libc 0.2.191.
+
+## HS0: inventory and survey (done; independent check pending)
+
+Jobs (MEASURED, ARM64 and x86-64, rustc 1.99.0 on both): `cargo check -p <crate> --all-targets` per crate, the same
+with `--cap-lints warn` added to the target rustflags (so each unsafe use shows as a warning and the other errors
+show), the same pairs with `--keep-going` at main, `cargo test -p <crate> --all-targets [--no-fail-fast] -- --list`
+at agents, and one `cargo reviewable check --message-format json` per commit (linter built from its `install` source,
+59ad72ce; no key on the machines, so no model question was sent). ARM64 and x86-64 gave the same compile results, the
+same unsafe use counts, the same test counts and the same linter findings per crate (MEASURED: `diff` of the parsed
+outputs is empty). Unsafe lines are counted with the root manifest's command (`git grep -nw unsafe ...`).
+
+### Per crate at main (f70acb496)
+
+"Own errors" are the errors in the crate's own files, with lints capped; "not reached" means cargo never compiled the
+crate because a crate it needs fails first.
+
+| Crate | Compiles | Own errors, by class | Unsafe lines | Unsafe uses the compiler reports |
+|---|---|---|---|---|
+| internet-protocol linux-socket-options | no | none besides unsafe | 40 | 40 |
+| tcp-sockets host | no | E0049 x2 (a method lacks the type parameter its trait now has) | 23 | 18 |
+| udp-sockets host | no | E0049 x1; its tests not reached (udp suite fails) | 11 (2 lib, 9 tests) | 2 (lib) |
+| icmp-sockets host | no | E0049 x2, E0053 x2 (incompatible method type) | 0 | 0 |
+| raw-sockets host | no | E0053 x2, E0049 x1 | 0 | 0 |
+| route-resolver host | lib yes with lints capped; no as is (needs linux-socket-options) | none; tests not reached (icmp suite fails) | 2 (tests) | not reached |
+| tcp-sockets suite | no | E0277 x41 (`Vec<u8>`, `[u8]`, `[u8; N]` are not `VolatileBytes`) | 4 | 4 |
+| udp-sockets suite | no | E0277 x9 (same) | 0 | 0 |
+| icmp-sockets suite | no | E0277 x42, E0599 x2, E0308 x1 (`ByteCount`, `BufferSizes` no longer `Result`) | 15 | 8 |
+| raw-sockets suite | no | not reached (needs the icmp suite) | 0 | not reached |
+| route-resolver suite | no | not reached (needs the icmp suite) | 4 | not reached |
+| configurable suite | yes | none | 0 | 0 |
+| readiness suite | yes | none | 0 | 0 |
+| negative-route-advisable suite | yes | none | 0 | 0 |
+
+All MEASURED except the unsafe lines (READ, `git grep`). Total unsafe lines at main: 99. The type errors come from the
+owner's `VolatileBytes` interface change, which main's older copies predate (INFERRED from the messages).
+
+### Per crate at agents (198bb11d6)
+
+| Crate | Compiles (check --all-targets) | Unsafe lines | Lint table | Tests listed |
+|---|---|---|---|---|
+| internet-protocol linux-socket-options | yes | 2 | own `[lints.rust]`, denies | 1 (tests/readiness.rs) |
+| tcp-sockets host | yes | 1 | own `[lints.rust]`, denies | 146: suite run 143, unit 2, speed 1, allocations (self-running, needs root) |
+| udp-sockets host | yes | 0 | workspace | 84: suite 80, readiness 3, speed 1, allocations (self-running) |
+| icmp-sockets host | yes | 0 | workspace | 75: suite run 69, counters 5, waiting 1 |
+| raw-sockets host | yes | 0 | workspace | 57: suite run 54, counters 2, waiting 1 |
+| route-resolver host | yes | 0 | workspace | 39: suite run 38, counters 1 |
+| tcp-sockets suite | yes | 0 | workspace | (library; run by the host) |
+| udp-sockets suite | yes | 0 | workspace | (library) |
+| icmp-sockets suite | yes | 1 | own `[lints.rust]`, denies | (library) |
+| raw-sockets suite | yes | 0 | workspace | (library) |
+| route-resolver suite | yes | 2 | own `[lints.rust]`, denies | (library) |
+| configurable suite | yes | 0 | workspace | 2 |
+| readiness suite | yes | 0 | workspace | 13 |
+| negative-route-advisable suite | yes | 0 | workspace | 7 |
+
+MEASURED. The suite counts meet HS1's bar exactly (TCP 143, UDP 80, ICMP 69, raw 54, route resolver 38). The four
+crates with their own table compile at agents only because the table lowers `forbid` to `deny`; under main's rule
+their 6 lines are refused.
+
+### Linter findings by rule (`cargo reviewable check`, same on both machines)
+
+At agents (main in brackets where it differs in total):
+
+- linux-socket-options 322 [93]: public_outside_interface 203, function_summary_not_third_person 39,
+  summary_not_one_line 18, summary_too_long 13, magic_literal 12, grammar_unclear 12, number_constant_without_link 10,
+  summary_unclear 4, summary_starts_with_name 3, comment_too_long 2, summary_not_one_sentence 2, conformance_not_run 1,
+  verb_not_first 1, type_summary_not_noun_phrase 1, summary_restates_declaration 1.
+- tcp host 90 [39]: public_outside_interface 36, grammar_unclear 11, magic_literal 7, summary_unclear 6,
+  summary_not_one_line 6, summary_too_long 5, number_constant_without_link 5, implementation_folder 5,
+  function_summary_not_third_person 3, summary_restates_declaration 3, type_summary_not_noun_phrase 1,
+  verb_not_first 1, summary_starts_with_name 1.
+- udp host 74 [49]: function_summary_not_third_person 25, public_outside_interface 11, summary_not_one_line 9,
+  constant_defined_twice 7, implementation_folder 6, summary_too_long 5, number_constant_without_link 3,
+  conformance_not_run 2, grammar_unclear 2, magic_literal 1, summary_not_one_sentence 1, summary_starts_with_name 1,
+  trait_not_implemented 1.
+- icmp host 24 [6]: conformance_not_run 9, public_outside_interface 8, grammar_unclear 2,
+  function_summary_not_third_person 2, implementation_folder 2, summary_restates_declaration 1.
+- raw host 24 [6]: public_outside_interface 10, conformance_not_run 7, grammar_unclear 2,
+  function_summary_not_third_person 2, implementation_folder 2, summary_restates_declaration 1.
+- route-resolver host 14 [12]: verb_not_first 4, summary_unclear 3, grammar_unclear 3, public_outside_interface 3,
+  conformance_not_run 1.
+- tcp suite 158 [151]: verb_not_first 79, grammar_unclear 37, summary_restates_declaration 9, magic_literal 8,
+  conformance_not_run 8, comment_too_long 4, summary_unclear 4, function_summary_not_third_person 3,
+  summary_not_one_line 2, type_summary_not_noun_phrase 1, constant_defined_twice 1, number_constant_without_link 1,
+  summary_too_long 1.
+- udp suite 272 [263]: function_summary_not_third_person 88, verb_not_first 56, summary_not_one_line 30,
+  number_constant_without_link 27, summary_too_long 16, magic_literal 15, grammar_unclear 14, conformance_not_run 6,
+  summary_restates_declaration 5, public_outside_interface 5, summary_not_one_sentence 4, comment_too_long 2,
+  summary_unclear 2, hook_name 1, summary_starts_with_name 1.
+- icmp suite 238 [86]: public_outside_interface 146, verb_not_first 59, grammar_unclear 13, conformance_not_run 6,
+  summary_unclear 3, comment_too_long 2, number_constant_without_link 2, summary_restates_declaration 2,
+  function_summary_not_third_person 2, literal_restates_constant 1, trait_outside_interface 1, implementation_folder 1.
+- raw suite 66 [52]: verb_not_first 39, public_outside_interface 10, grammar_unclear 6, conformance_not_run 6,
+  summary_restates_declaration 3, summary_not_one_line 1, trait_outside_interface 1.
+- route-resolver suite 55 [55]: verb_not_first 37, summary_restates_declaration 9, grammar_unclear 5,
+  public_outside_interface 3, comment_too_long 1.
+- configurable suite 4 [6], readiness suite 43 [43], negative-route-advisable suite 6 [9].
+
+At main every crate that does not compile also has one `compiler_view_missing`, and the suites `conformance_missing`
+(they are still named conformance.rs). Model questions left unanswered for want of a key are left out of the counts
+(agents: 135 in these crates; main: 0).
+
+### The 20 refused uses in the suites at main (added on 2026-11-25)
+
+The owner's c8759035f put every crate on the workspace lints. MEASURED: the compiler refuses 8 uses in the ICMP suite
+and 4 in the TCP suite. The route-resolver suite holds 4 more lines (READ) that the compiler never reaches, because
+the route-resolver suite needs the ICMP suite, which fails first: the 8 errors shown when building the route-resolver
+suite are the ICMP suite's own 8 (MEASURED: every one names `crates/icmp-sockets/conformance/conformance.rs`). So the
+20 named in the task are 16 distinct uses (8 + 4 + 4) with the ICMP 8 counted twice. The ICMP suite also holds 7
+more `unsafe` lines inside its exported `counting_allocator!` macro (a `GlobalAlloc` that counts), which the compiler
+checks only where a test expands it (READ). Agents already removed all of these except the three socket options.
+
+| Site at main | What it does | Safe typed call that replaces it |
+|---|---|---|
+| icmp suite :52, tcp suite :5679, route-resolver suite :37 | leave the test thread's network namespace (`rustix::thread::unshare_unsafe(NEWNET)`) | nix 0.31.4 `nix::sched::unshare(CloneFlags::CLONE_NEWNET)`, src/sched.rs:142 (agents uses it) |
+| icmp suite :658 | direct libc call `socket(AF_PACKET, SOCK_DGRAM, ETH_P_ALL)` giving a raw descriptor | nix `nix::sys::socket::socket(AddressFamily::Packet, SockType::Datagram, flags, SockProtocol::EthAll)` returning `OwnedFd`, src/sys/socket/mod.rs:2224 (agents) |
+| icmp suite :667 | `OwnedFd::from_raw_fd` on that raw descriptor | gone with the line above |
+| icmp suite :669 | zeroed C structure `sockaddr_ll` for bind | none needed: agents drops the bind (next line) |
+| icmp suite :674 | direct libc call `bind` of the packet socket to one link | none (nix's `LinkAddr` has no safe constructor, READ addr.rs:1846-1925). Agents instead keeps every link's packets and drops those whose `LinkAddr::ifindex()` is another link's: the same packets reach the test, not the same call. A bind would belong to the outside API **Linux packet sockets, `bind(2)` with `struct sockaddr_ll` (packet(7))** |
+| icmp suite :691 | zeroed C structure `sockaddr_ll` for the sender | nix `recvfrom::<LinkAddr>` gives the address, mod.rs:2405 (agents) |
+| icmp suite :694 | direct libc call `recvfrom` into raw pointers | nix `nix::sys::socket::recvfrom::<LinkAddr>(fd, &mut buffer)`, mod.rs:2405 (agents) |
+| icmp suite :2281 | direct libc call `setsockopt(IPPROTO_IPV6, IPV6_ADDR_PREFERENCES)` on a probe socket | none. Outside API: **Linux `setsockopt(2)`, level IPPROTO_IPV6, ipv6(7)** (still at agents suite.rs:2364) |
+| tcp suite :5650 | zeroed C structure `ifreq` | none needed: agents brings the loopback up by netlink instead (next rows) |
+| tcp suite :5652 | reads the union field `ifr_ifrn.ifrn_name` of that `ifreq` | gone with the line above |
+| tcp suite :5658 | `rustix::ioctl::ioctl(SIOCSIFFLAGS)` to set IFF_UP on `lo` | agents: an RTM_SETLINK message through netlink-packet-route 0.34.0 and netlink-sys 0.9.0 (MIT, outside the vetted four), index by nix `if_nametoindex` (src/net/if_.rs:18). Within the vetted crates: a rustix NETLINK_ROUTE socket (`rustix::net::socket`, AddressFamily::NETLINK) with the message bytes built by zerocopy (INFERRED, not tried) |
+| route-resolver suite :138 | direct libc call `if_nametoindex` with a C string | nix `nix::net::if_::if_nametoindex`, src/net/if_.rs:18 (agents); or rustix `netdevice::name_to_index`, src/net/netdevice.rs:36 |
+| route-resolver suite :1536 | direct libc call `setsockopt(IPPROTO_IP, IP_OPTIONS)` on a probe socket | none. Outside API: **Linux `setsockopt(2)`, level IPPROTO_IP, ip(7)** (agents suite.rs:1534) |
+| route-resolver suite :1695 | direct libc call `setsockopt` of IP_UNICAST_IF, IPV6_UNICAST_IF or SO_BINDTOIFINDEX | SO_BINDTOIFINDEX: socket2 0.6.5 `bind_device_by_index_v4`/`_v6`, src/sys/unix.rs:2023 and 2074 (it sets SO_BINDTOIFINDEX on Linux, READ :2039-2046). IP_UNICAST_IF and IPV6_UNICAST_IF: none. Outside API: **Linux `setsockopt(2)`, IPPROTO_IP ip(7) and IPPROTO_IPV6 ipv6(7)** (agents suite.rs:1693) |
+
+The same sites in the hosts at main (tcp host 23, udp host 11, route-resolver host 2, linux-socket-options 40 lines)
+are the older form of the calls surveyed next; agents already moved them (for example udp's `TIOCOUTQ` ioctl and
+`from_raw_parts`, and `recvmsg` to nix).
+
+### Every raw option, ioctl and libc call at agents, with its safe route
+
+At agents the raw calls are 6 (READ grep of `libc::<function>(`): `setsockopt` and `getsockopt` in
+linux-socket-options linux.rs:89 and :115 (under `set_raw` and `get_bytes`), the tcp host's `ioctl` (state.rs:565),
+and the three suite `setsockopt` calls above. Behind the first two sit 131 call sites of `set_option`, `set_bytes`,
+`set_int`, `set_flag`, `get_bytes`, `get_option` and `get_int` in these crates (READ grep; the brief's "about 42" was a
+narrower grep). They and the suite calls reach 125 distinct options and the ioctl 3 requests, listed here by option, each with every call site and
+its route. A route is listed only where the crate's call reaches the same level, option and value; "none" means no
+safe call in rustix 1.1.6, socket2 0.6.5, nix 0.31.4 or std does (READ: each option name searched in the three crates'
+sources; std wraps only owned sockets and a few of these). Paths: lso = linux-socket-options, t/u/i/r/rr = the tcp,
+udp, icmp, raw and route-resolver hosts.
+
+Safe routes (43 options, plus 2 in part):
+
+| Option | Sites | Route (crate, function, source file:line) |
+|---|---|---|
+| SO_MARK set | lso linux.rs:435; sticky Mark (send.rs:203, 227) | socket2 `set_mark`, sys/unix.rs:1765 |
+| SO_MARK get | t linux.rs:1466 | socket2 `mark`, sys/unix.rs:1747 |
+| SO_PRIORITY set | lso linux.rs:437; sticky Priority (send.rs:357) | socket2 `set_priority`, socket.rs:1054 |
+| SO_PRIORITY get | t linux.rs:1471 | socket2 `priority`, socket.rs:1039 |
+| SO_DONTROUTE set | lso linux.rs:439; sticky (send.rs:204) | nix `sockopt::DontRoute`, sockopt.rs:622 |
+| SO_BROADCAST set | sticky (send.rs:207) | socket2 `set_broadcast`, socket.rs:889 |
+| SO_RXQ_OVFL set | r linux.rs:375, u linux.rs:438 | nix `sockopt::RxqOvfl`, sockopt.rs:1163 |
+| SO_ATTACH_FILTER, SO_DETACH_FILTER set | lso linux.rs:215, 217 (from t linux.rs:1192) | socket2 `attach_filter` sys/unix.rs:2600, `detach_filter` :2623 (feature "all", on) |
+| SO_INCOMING_CPU set (-1) | lso linux.rs:313 | rustix `set_socket_incoming_cpu(u32::MAX)`, net/sockopt.rs:726 (same 32 bits, INFERRED) |
+| SO_INCOMING_CPU get | t state.rs:1276 | rustix `socket_incoming_cpu`, net/sockopt.rs:714 |
+| SO_SNDBUF, SO_RCVBUF get | t state.rs:872 | socket2 `send_buffer_size` socket.rs:1141, `recv_buffer_size` :1070 |
+| SO_TXTIME set | sticky TransmitTime (send.rs:373) | nix `sockopt::TxTime` with `libc::sock_txtime`, sockopt.rs:1152 |
+| SO_TIMESTAMPING set, no hardware clock | lso linux.rs:181; sticky (send.rs:164) | nix `sockopt::Timestamping`, sockopt.rs:904, flags by `TimestampingFlag::from_bits_retain` (4-byte int; the kernel reads the 8-byte struct only with SOF_TIMESTAMPING_BIND_PHC, INFERRED) |
+| SO_BINDTOIFINDEX set | rr suite :1693 | socket2 `bind_device_by_index_v4`/`_v6`, sys/unix.rs:2023, 2074 |
+| IP_TTL set (-1 default) | lso linux.rs:361 | nix `sockopt::Ipv4Ttl` (`c_int`), sockopt.rs:1210 |
+| IP_TOS set | lso linux.rs:374; sticky (send.rs:200) | socket2 `set_tos_v4`, socket.rs:1648 |
+| IP_MTU_DISCOVER set | lso linux.rs:381; sticky (send.rs:289) | rustix `set_ip_mtu_discover`, net/sockopt.rs:806 |
+| IP_TRANSPARENT set | sticky (send.rs:213; u linux.rs:840) | socket2 `set_ip_transparent_v4`, socket.rs:1294 |
+| IP_FREEBIND set | sticky (same) | socket2 `set_freebind_v4`, sys/unix.rs:2314 |
+| IP_BIND_ADDRESS_NO_PORT set | lso linux.rs:816 | nix `sockopt::IpBindAddressNoPort`, sockopt.rs:573 |
+| IP_PKTINFO set | i :348, r :371, u :427 (lists); t :538, :1221, :1712 | nix `sockopt::Ipv4PacketInfo`, sockopt.rs:1057 |
+| IP_RECVTTL set | i, r, u lists; t :1221 | nix `sockopt::Ipv4RecvTtl`, sockopt.rs:1221 |
+| IP_RECVTOS set | t :1221 (IPV4_RECORDS) | socket2 `set_recv_tos_v4`, socket.rs:1697 |
+| IP_RECVERR set and get | i, r, u lists; t :1233, :536 | nix `sockopt::Ipv4RecvErr`, sockopt.rs:1182 |
+| IP_RECVORIGDSTADDR set | u list | nix `sockopt::Ipv4OrigDstAddr` (IP_ORIGDSTADDR, the same number 20, READ linux-raw-sys 0.12.1 net.rs), sockopt.rs:1118 |
+| IPV6_UNICAST_HOPS set (-1 default) | lso linux.rs:365 | nix `sockopt::Ipv6Ttl` (`c_int`), sockopt.rs:1230 |
+| IPV6_TCLASS set | lso linux.rs:375; sticky (send.rs:223) | socket2 `set_tclass_v6`, sys/unix.rs:2684 |
+| IPV6_MTU_DISCOVER set | lso linux.rs:390; sticky (send.rs:316) | rustix `set_ipv6_mtu_discover`, net/sockopt.rs:830 |
+| IPV6_DONTFRAG set | sticky (send.rs:321) | nix `sockopt::Ipv6DontFrag`, sockopt.rs:1277 |
+| IPV6_TRANSPARENT, IPV6_FREEBIND set | sticky | socket2 `set_ip_transparent_v6` socket.rs:1855, `set_freebind_v6` sys/unix.rs:2371 |
+| IPV6_RECVPKTINFO set | i, r, u lists; t :545, :1714 | nix `sockopt::Ipv6RecvPacketInfo`, sockopt.rs:1069 |
+| IPV6_RECVERR set and get | lists; t :1234, :536 | nix `sockopt::Ipv6RecvErr`, sockopt.rs:1191 |
+| IPV6_RECVORIGDSTADDR set | u list | nix `sockopt::Ipv6OrigDstAddr`, sockopt.rs:1256 |
+| IPV6_RECVHOPLIMIT, IPV6_RECVTCLASS set | t :1225 (IPV6_RECORDS) | socket2 `set_recv_hoplimit_v6` socket.rs:2207, `set_recv_tclass_v6` :2140 |
+| TCP_KEEPIDLE set and get | t :1241, :2304, :2305 | rustix `set_tcp_keepidle` net/sockopt.rs:1499, `tcp_keepidle` :1513 |
+| TCP_KEEPINTVL set | t :1243 | rustix `set_tcp_keepintvl`, net/sockopt.rs:1530 |
+| TCP_KEEPCNT set | t :1245 | rustix `set_tcp_keepcnt`, net/sockopt.rs:1468 |
+| TCP_USER_TIMEOUT set | t :1272 | rustix `set_tcp_user_timeout`, net/sockopt.rs:1559 |
+| TCP_FASTOPEN_CONNECT set | t :1825 | nix `sockopt::TcpFastOpenConnect`, sockopt.rs:807 |
+| TCP_MAXSEG get | t state.rs:872 | socket2 `tcp_mss`, sys/unix.rs:1657 |
+| TCP_REPAIR set (1, 0, -1) and get | t :1341, :2325, :2326 | nix `sockopt::TcpRepair` (`u32`; -1 as `u32::MAX`, same bits, INFERRED), sockopt.rs:759 |
+| TCP_CONGESTION get | t state.rs:785 | socket2 `tcp_congestion`, sys/unix.rs:2701 |
+| UDP_GRO set | u :850 | nix `sockopt::UdpGroSegment`, sockopt.rs:1142 |
+| TCP_QUICKACK get (in part) | t state.rs:872 | socket2 `tcp_quickack`, sys/unix.rs:1827; the set at t :2282 writes 2, which socket2's and rustix's `bool` cannot: none |
+
+No safe route ("none"), 80 options, 3 ioctl requests and the 2 partial cases. Every one belongs to one outside API,
+**the Linux socket system calls `setsockopt(2)`/`getsockopt(2)`** at the level named (socket(7) for SOL_SOCKET, ip(7)
+for IPPROTO_IP, ipv6(7) for IPPROTO_IPV6, tcp(7) for IPPROTO_TCP, udp(7) for IPPROTO_UDP, udplite(7) for
+IPPROTO_UDPLITE, the MPTCP uapi for SOL_MPTCP), except the last row, which is **Linux `ioctl(2)` on a socket**:
+
+| Level | Options (call sites) |
+|---|---|
+| SOL_SOCKET (13) | SO_RCVMARK, SO_RCVPRIORITY (r :375, u :438); SO_ATTACH_REUSEPORT_CBPF, SO_DETACH_REUSEPORT_BPF (lso :215, :217 from :301); SO_MAX_PACING_RATE (lso :236); SO_RCVLOWAT set and get (t :1190, state :872); SO_BUF_LOCK (t :1187); SO_TXREHASH (t :1207); SO_CNX_ADVICE (t :1735); SO_WIFI_STATUS (t :2051); SO_PEEK_OFF (t :2099, :2118); SO_MEMINFO get (exchange.rs:357, u :580); SO_NO_CHECK (sticky, u :668) |
+| IPPROTO_IP (12) | IP_OPTIONS (lso :397, sticky send.rs:210, rr suite :1534); IP_UNICAST_IF (sticky send.rs:202, rr :1080, rr suite :1693); IP_LOCAL_PORT_RANGE (lso :771); IP_ROUTER_ALERT (r :283, :304); IP_NODEFRAG (r :476); IP_RECVOPTS, IP_RECVFRAGSIZE (i, r, u lists); IP_MINTTL (t :1212); IP_PKTOPTIONS get (t :1400, state :1225); MCAST_JOIN_GROUP, MCAST_LEAVE_GROUP (memberships.rs:60, 65, 88, 100; also at IPPROTO_IPV6); MCAST_MSFILTER (memberships.rs:128) |
+| IPPROTO_IPV6 (22) | IPV6_HOPOPTS, IPV6_RTHDRDSTOPTS, IPV6_RTHDR, IPV6_DSTOPTS (lso :399-417, sticky send.rs:231, 328-338); IPV6_FLOWINFO_SEND (lso :427, send.rs:142, t :586); IPV6_AUTOFLOWLABEL (lso :428, send.rs:143); IPV6_FLOWLABEL_MGR (send.rs:458, t :585, :1695); IPV6_ADDR_PREFERENCES (lso :455, sticky send.rs:228, icmp suite :2364); IPV6_JOIN_ANYCAST, IPV6_LEAVE_ANYCAST (memberships.rs:35, 39); IPV6_MTU set (sticky send.rs:325; rustix has only the getter); IPV6_UNICAST_IF (sticky send.rs:226, rr :1080, rr suite :1693); IPV6_ROUTER_ALERT (r :291, :305); IPV6_ROUTER_ALERT_ISOLATE (r :285); IPV6_CHECKSUM (r :839); IPV6_RECVHOPOPTS, IPV6_RECVDSTOPTS, IPV6_RECVRTHDR, IPV6_FLOWINFO, IPV6_RECVFRAGSIZE (i, r, u lists; t :1225); IPV6_MINHOPCOUNT (t :1214); IPV6_2292PKTOPTIONS get (t :1407, state :1232) |
+| IPPROTO_TCP (27) | TCP_MD5SIG_EXT (t :639); TCP_AO_ADD_KEY (t :782); TCP_AO_GET_KEYS (t :808, state :1069); TCP_AO_DEL_KEY (t :854); TCP_AO_INFO set and get (t :897, state :289); TCP_AO_REPAIR set and get (state :1030, :934); TCP_WINDOW_CLAMP set and get (t :1262, state :872); TCP_SYNCNT (t :1269); TCP_DEFER_ACCEPT (t :1279); TCP_LINGER2 (t :1286); TCP_RTO_MIN_US, TCP_RTO_MAX_MS, TCP_DELACK_MAX_US (t :1294-1300); TCP_TX_DELAY (t :1302); TCP_FASTOPEN_NO_COOKIE (t :1316); TCP_INQ (t :1318); TCP_QUEUE_SEQ set and get (t :1357, state :928); TCP_SAVED_SYN get (t :1371, :1377); TCP_FASTOPEN (t :1641); TCP_FASTOPEN_KEY (t :1652); TCP_SAVE_SYN (t :1666, :2405); TCP_REPAIR_QUEUE set and get (t :1349, :2328, :2336, state :925-932); TCP_TIMESTAMP set and get (t :2379-2384, state :908); TCP_INFO get (state :329, :597); TCP_CC_INFO get (state :791); TCP_REPAIR_WINDOW set and get (state :1016, :924); TCP_REPAIR_OPTIONS (state :1000) |
+| SOL_MPTCP (2) | MPTCP_INFO, MPTCP_FULL_INFO get (state :1120, :1148) |
+| IPPROTO_UDP, IPPROTO_UDPLITE (4) | UDP_NO_CHECK6_RX (u :856); UDP_NO_CHECK6_TX (sticky, u :672); UDPLITE_RECV_CSCOV (u :862); UDPLITE_SEND_CSCOV (sticky, u :677) |
+| partial (2) | SO_TIMESTAMPING with a bound hardware clock (the 8-byte `so_timestamping`, lso :181); TCP_QUICKACK set to 2 (t :2282) |
+| ioctl (3) | SIOCOUTQ, SIOCOUTQNSD, SIOCATMARK (t state.rs:565 from :843, :850); rustix has only FIONREAD (io/ioctl.rs:92), nix's ioctl macros and libc's `sockatmark` are unsafe |
+
+Two "safe-looking" routes are counted as none on purpose (READ): nix's `AttachReusePortCbpf` (sockopt.rs:1312) takes
+`libc::sock_fprog`, whose `filter` field is a raw pointer the kernel reads and nix does not check, so a safe caller can
+make the kernel read any memory (the hole the d4aee0ae5 check found); and nix's exported `sockopt_impl!` macros
+(sockopt.rs:46, 100, 180) expand to `unsafe` in the calling crate, which `forbid` refuses (INFERRED).
+SO_MEMINFO's 2 sites and SO_RCVMARK/SO_RCVPRIORITY are reads and receive flags a guest's datagrams depend on, so
+dropping any of these is a change a guest can observe (rule 6, INFERRED).
+
+### What 785d3fa79 brings
+
+Its typed arms in options.rs (31 in `set_int`, 10 in `get_int`, READ) are all routes above and apply to agents as
+they are; its sticky change to set marks and priorities through `ensure_int` is needed for SO_MARK and SO_PRIORITY to
+reach socket2. One defect to fix when bringing it (READ, INFERRED effect): `set_int` passes SO_MARK and SO_PRIORITY
+through `unsigned(value)?`, while sticky gives it `mark.0.cast_signed()`, so a mark or priority of 2^31 or more becomes
+negative and is refused with EINVAL instead of set; the bit cast `cast_unsigned` keeps the value. Not in it, new here:
+IP_TTL, IPV6_UNICAST_HOPS, SO_MARK and SO_PRIORITY reads, SO_INCOMING_CPU set, TCP_REPAIR set, TCP_CONGESTION,
+SO_TXTIME, SO_TIMESTAMPING without a clock, SO_ATTACH_FILTER/SO_DETACH_FILTER, SO_BINDTOIFINDEX. Not brought: every
+call it sends to `crates/socket-options`, its `count_queued` and multipath reads, and its suite changes (all go to that
+crate); its requests.rs mirrors are only useful to an API crate for the "none" options.
+
+### The three scripts in crates (READ at agents and main)
+
+| Script | What it does | Replacement |
+|---|---|---|
+| tcp host `run-conformance.sh` | builds the TCP tests, loads `tcp_dctcp tcp_vegas tcp_bbr vrf`, and runs each binary as root in a new network namespace after `ip link set lo up`, a local route for 127.0.0.7 with `features tcp_usec_ts`, an `fq` qdisc on lo, five sysctls and a VRF device | a Rust test setup in the TCP suite: per-test-thread `nix::sched::unshare` (as `own_network_namespace` already does), netlink messages for the link, route, qdisc and VRF (as `bring_loopback_up` already does), sysctls by `std::fs::write` to /proc/sys; root comes from the job's cargo runner, and the `modprobe` line moves to the machine's job in scratch (INFERRED: netlink-packet-route 0.34 can express the route feature, qdisc and VRF) |
+| tcp host `mutants.sh` | a mutation driver: copies the checkout, applies 143 text patches one at a time, runs the suite on each, prints the checks that fail | not a test: moves to scratch (SCRATCH/host-sockets/tools/) and runs from a job there |
+| udp host `conformance.sh` | builds the conformance, readiness and allocations tests and runs each binary with sudo | nothing in the crate: the tests already unshare per test (tests/conformance.rs:89), so one `cargo test -p wcontainers-udp-sockets-host` as root, with the runner set by the job |
+
+### What HS1 can and cannot reach (INFERRED from the survey)
+
+Every one of the 6 lines left at agents has no safe route: linux-socket-options' `set_raw` and `get_bytes` stay as
+long as any "none" option does, the tcp host's ioctl serves three "none" requests, and the three suite calls set
+"none" options. HS1 can route the 43 options above through socket2, rustix and nix, but under `forbid`
+linux-socket-options still does not compile, and with it the tcp, udp, icmp, raw and route-resolver hosts. The
+runtime's RT1 needs those hosts, so RT1 holds on owner question 1 even after HS1.
+
+## Owner questions this track waits on
+
+1. Where do the 80 options, 3 ioctl requests and 2 partial cases listed above as "none" go: an API crate for the Linux
+   socket calls `setsockopt(2)`/`getsockopt(2)`/`ioctl(2)` (named for that API, its `implementation/direct` holding
+   the marked calls behind a safe trait), or are the settings dropped (each a change a guest can observe)?
+2. Which socket options may a hostile guest make the host kernel act on at all?
+3. The agents-made `SocketOptions` primitive (d4aee0ae5): taken as that API crate, or left as a study?
+4. nix as a vetted crate (its `recvmsg` treats the whole address buffer as written).
+
+## SECURITY
+
+- Unsafe lines (root manifest's count), before and after HS0, per crate. HS0 changed no product code, so before =
+  after. At main: linux-socket-options 40, tcp host 23, udp host 11, route-resolver host 2, tcp suite 4, icmp suite 15,
+  route-resolver suite 4, all others 0 (99). At agents: linux-socket-options 2, tcp host 1, icmp suite 1,
+  route-resolver suite 2, all others 0 (6). MEASURED by `git grep`.
+- Marked exceptions: none in these crates; the 6 lines at agents sit under per-crate `[lints.rust]` tables that deny
+  instead of forbid, which main's rule removes.
+- New dependencies: none added by HS0. Already in the agents suites and hosts and outside the vetted four: stats_alloc
+  0.1.10 (MIT, icmp and raw host tests; holds its own `GlobalAlloc` unsafe), netlink-packet-core 0.9.0,
+  netlink-packet-route 0.34.0, netlink-sys 0.9.0 (MIT, TCP suite). To vet before HS1 keeps them.
+- Options a guest can make the host kernel act on today: every option in both tables above (question 2).
+- Hostile-guest suite: not run and not built (the thread-test design review is owed to the owner first).
