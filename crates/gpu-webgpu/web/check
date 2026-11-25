@@ -15,7 +15,7 @@ build+=" && cargo test --locked -j 3 -p wcontainers-gpu-webgpu --test suite --no
 build+=" && cargo build --locked -j 3 -p wcontainers-graphics-test --bin gt-compare"
 build+=" && powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\browser\\install.ps1"
 set +e
-"$rig/gpu-job" --build "$build" -- "crates\\wcontainers-gpu-webgpu\\web\\check.cmd $name"
+"$rig/gpu-job" --build "$build" -- "crates\\gpu-webgpu\\web\\check.cmd $name"
 code=$?
 set -e
 if [ $# -gt 0 ]; then

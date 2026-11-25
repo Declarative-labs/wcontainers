@@ -22,7 +22,7 @@ done
 set +e
 # The job's build stamp is written into the build directory, which nothing else here makes.
 "$rig/gpu-job" --build "(mkdir %CARGO_TARGET_DIR% 2>nul & ver >nul) && powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\browser\\install.ps1" \
-    -- "node crates\\wcontainers-shaders\\web\\compile.mjs ${dirs[*]}"
+    -- "node crates\\shaders\\web\\compile.mjs ${dirs[*]}"
 code=$?
 set -e
 for d in "$1"/*/; do

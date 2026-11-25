@@ -25,7 +25,7 @@ L="$T\\release"
 O='C:\wc\out\webgl\frames'
 "$rig/remote" "set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j $cargo_jobs -p wcontainers-directx --features webgl --target-dir $T && cargo build --locked --release -j $cargo_jobs -p wcontainers-gpu-webgpu --example frames && (if not exist $O mkdir $O)"
 run() {
-    "$rig/gpu-job" --desktop -- "powershell -NoProfile -ExecutionPolicy Bypass -File crates\\wcontainers-gpu-webgl\\frames\\direct.ps1 -Exe $exe -Cwd $cwd -Arguments \"$arguments\" -Environment \"$environment\" -Seconds $1 -Library $L -Out $O\\$program-$1"
+    "$rig/gpu-job" --desktop -- "powershell -NoProfile -ExecutionPolicy Bypass -File crates\\gpu-webgl\\frames\\direct.ps1 -Exe $exe -Cwd $cwd -Arguments \"$arguments\" -Environment \"$environment\" -Seconds $1 -Library $L -Out $O\\$program-$1"
 }
 # A first run unrecorded, so both recorded runs start with the caches it filled.
 run "$short"
