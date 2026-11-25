@@ -1,0 +1,25 @@
+[package]
+name = "wcontainers-privilege-level-arm64-user"
+description = "EL0 of ARM64, where ordinary programs run."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-privilege-level = { path = "../.." }
+
+[dev-dependencies]
+wcontainers-privilege-level-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "wcontainers-privilege-level-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "suite.rs"
+
+[dependencies]
+wcontainers-privilege-level = { path = ".." }
+
+[lints]
+workspace = true
