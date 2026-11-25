@@ -3,10 +3,11 @@ extern crate std;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::convert::Infallible;
+use core::iter::Rev;
 use std::path::Path;
 
 use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
-use wcontainers_behavior_source_recording::Recording;
+use wcontainers_behavior_source_recording::{NotRecorded, Recording};
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{
     ExecutionState, MemoryDelta, MemorySink, ProcessorArchitecture,
@@ -161,16 +162,18 @@ struct ThreadIdChanged(Recording);
 
 impl BehaviorSource for ThreadIdChanged {
     type Architecture = Arm64<User>;
+    type Error = NotRecorded;
 
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
         memory: &[MemoryDelta<'_, Arm64<User>>],
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
-    ) {
+    ) -> Result<(), NotRecorded> {
         self.0
-            .execute_single_instruction_in_place(processor, memory, mutation_hook);
+            .execute_single_instruction_in_place(processor, memory, mutation_hook)?;
         processor.software_thread_id ^= 1;
+        Ok(())
     }
 }
 
@@ -203,6 +206,53 @@ fn behavior_no_known_one_agrees_with_is_named_with_its_state() {
     assert_eq!(named, listed);
 }
 
+/// The states of each instruction another generator gives, last first.
+struct LastFirst<Generator>(Generator);
+
+impl<Generator: DistinguishingStateGenerator<Arm64<User>>> DistinguishingStateGenerator<Arm64<User>>
+    for LastFirst<Generator>
+{
+    type States<'generator>
+        = Rev<alloc::vec::IntoIter<ExecutionState<'static, Arm64<User>>>>
+    where
+        Self: 'generator;
+
+    fn generate_states(&self, instruction: Instruction<Infallible>) -> Self::States<'_> {
+        let states: Vec<_> = self.0.generate_states(instruction).collect();
+        states.into_iter().rev()
+    }
+}
+
+/// Returns the behaviors a measurement leaves: the one measured, or those its states cannot tell apart.
+fn to_survivors<Error>(
+    instruction: Instruction<Infallible>,
+    measured: Result<PreciseInstruction<Infallible>, MeasureInstructionError<Arm64<User>, Error>>,
+) -> Vec<PreciseInstruction<Infallible>> {
+    match measured {
+        Ok(precise) => [precise].to_vec(),
+        Err(MeasureInstructionError::IndistinguishableBehaviors { behaviors, .. }) => behaviors,
+        Err(_) => panic!("{instruction:?}: no known behavior agrees"),
+    }
+}
+
+/// Checks that the recorded states in either order measure each instruction of one recording the same.
+#[test]
+fn either_generator_measures_the_recording_the_same() {
+    let mut recording = read_recording("neoverse-v2");
+    let states = RecordedStates::new(&recording);
+    let last_first = LastFirst(RecordedStates::new(&recording));
+    let instructions: Vec<_> = recording.instructions().collect();
+    for instruction in instructions {
+        let first = recording.measure_instruction(instruction, &states);
+        let second = recording.measure_instruction(instruction, &last_first);
+        assert_eq!(
+            to_survivors(instruction, first),
+            to_survivors(instruction, second),
+            "{instruction:?}"
+        );
+    }
+}
+
 /// The live chip measures as its recording on the recorded states; it runs only where the host is a Neoverse V2 under
 /// KVM.
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
@@ -221,12 +271,11 @@ fn this_chip_measures_as_the_neoverse_v2_recording() {
     for instruction in instructions {
         let measured = chip.measure_instruction(instruction, &states);
         let recorded = recording.measure_instruction(instruction, &states);
-        let survivors = |result: Result<_, MeasureInstructionError<Arm64<User>>>| match result {
-            Ok(precise) => [precise].to_vec(),
-            Err(MeasureInstructionError::IndistinguishableBehaviors { behaviors, .. }) => behaviors,
-            Err(_) => panic!("{instruction:?}: no known behavior agrees"),
-        };
-        assert_eq!(survivors(measured), survivors(recorded), "{instruction:?}");
+        assert_eq!(
+            to_survivors(instruction, measured),
+            to_survivors(instruction, recorded),
+            "{instruction:?}"
+        );
     }
 }
 
@@ -398,7 +447,9 @@ fn this_chip_faults_past_the_last_addressable_byte_as_its_recording_simulates() 
     for (instruction, before) in to_states_past_the_last_addressable_byte() {
         let precise = to_neoverse_v2_behavior(instruction);
         let Ok(simulated) = precise.simulate(before.clone());
-        let observed = chip.execute_single_instruction(before);
+        let Ok(observed) = chip.execute_single_instruction(before) else {
+            panic!("{instruction:?}: the chip refused a state it runs");
+        };
         assert!(
             observed == simulated,
             "{instruction:?}: the chip gives {:?}, {precise:?} simulates {:?}",

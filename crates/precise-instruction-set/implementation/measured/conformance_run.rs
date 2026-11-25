@@ -1,11 +1,12 @@
 use std::convert::Infallible;
 use std::path::Path;
 
+use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_behavior_source_recording::Recording;
 use wcontainers_distinguishing_state_generator_arm64::CriticalValueCut;
 use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
 use wcontainers_processor_architecture::ExecutionState;
-use wcontainers_processor_architecture_arm64::{Arm64, Instruction, User};
+use wcontainers_processor_architecture_arm64::{Arm64, Instruction, PreciseInstruction, User};
 
 /// What a Neoverse V2 under KVM did, written by the record tool.
 const RECORDINGS: &str = concat!(
@@ -13,12 +14,20 @@ const RECORDINGS: &str = concat!(
     "/../../../behavior-source/implementation/recording/recordings/neoverse-v2"
 );
 
-type Measured = MeasuredInstructionSet<Recording, CriticalValueCut>;
+type Measured = MeasuredInstructionSet<Arm64<User>>;
 
 fn recording() -> Recording {
     match Recording::read(Path::new(RECORDINGS)) {
         Ok(recording) => recording,
         Err(error) => panic!("reading {RECORDINGS}: {error}"),
+    }
+}
+
+/// Measures every instruction on the recording with the ARM64 state generator.
+fn measure_recording() -> Vec<(Instruction<Infallible>, PreciseInstruction<Infallible>)> {
+    match recording().measure_instructions(&CriticalValueCut::default()) {
+        Ok(measurements) => measurements,
+        Err(_) => panic!("the recording shows one known behavior of every instruction"),
     }
 }
 
@@ -36,4 +45,8 @@ fn recorded_cases() -> Vec<RecordedCase> {
         .collect()
 }
 
-wcontainers_precise_instruction_set_conformance::tests!(Measured, recording(), recorded_cases());
+wcontainers_precise_instruction_set_conformance::tests!(
+    Measured,
+    measure_recording(),
+    recorded_cases()
+);

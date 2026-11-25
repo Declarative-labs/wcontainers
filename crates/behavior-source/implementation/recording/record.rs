@@ -28,7 +28,7 @@ fn main() {
         Err(error) => panic!("this host makes no single step machine: {error:?}"),
     };
     let started = Instant::now();
-    let recording = if named.is_empty() {
+    let recorded = if named.is_empty() {
         match Recording::read(Path::new(COMMITTED)) {
             Ok(committed) => committed.record_again(&mut chip),
             Err(error) => panic!("reading {COMMITTED}: {error}"),
@@ -37,6 +37,10 @@ fn main() {
         let instructions = Arm64::<User>::list_instructions()
             .filter(|instruction| named.contains(&format!("{instruction:?}")));
         Recording::record(&mut chip, &CriticalValueCut::default(), instructions)
+    };
+    let recording = match recorded {
+        Ok(recording) => recording,
+        Err(refusal) => panic!("the chip did not run a recorded or generated state: {refusal:?}"),
     };
     if let Err(error) = recording.write(&folder) {
         panic!("writing into {}: {error}", folder.display());

@@ -4875,7 +4875,6 @@ dependencies = [
 name = "wcontainers-precise-instruction-set"
 version = "0.1.0"
 dependencies = [
- "wcontainers-behavior-source",
  "wcontainers-processor-architecture",
 ]
 
@@ -4952,6 +4951,8 @@ name = "wcontainers-processor-architecture-arm64"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
+ "wcontainers-behavior-source",
+ "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-distinguishing-state-generator",
  "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-privilege-level",
@@ -4965,6 +4966,7 @@ name = "wcontainers-processor-architecture-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
 ]
 
 [[package]]
