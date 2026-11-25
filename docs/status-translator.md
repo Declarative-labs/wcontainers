@@ -67,6 +67,50 @@ baseline hangs and its browser build fails):
   summaries without a model answer (no key on the machine), 1 more `stray_source` (state_memory.rs), 3 fewer
   others.
 
+TR1 under the orchestrator's two rulings (2026-11-25, 1b3b7578 to d714af58; 9 jobs; results in scratch
+`translator-port/` `exp-entry/`, `tr1c/`, `tr1d/`, `tr1e/`, `l1/`):
+- Ruling 1, the entry symbol: done with no unsafe attribute. The Rust program is built as a library whose public
+  `entry` keeps a global symbol, found in the rlib (object's archive reader), and a root of two lines links it
+  with `-C link-arg=--defsym=main=<that symbol>`. Tried on the ARM64 machine (exp1-arm.log): one binary crate
+  with a `#[used]` static and `--defsym` fails (rustc makes `entry` a local symbol: "symbol not found"); the
+  library and `--defsym` runs (exit 7 as asked); an assembly stub branching to the library's symbol runs too;
+  `global_asm!` with `sym` is flagged by `-F unsafe_code` ("using this macro is unsafe even though it does not
+  need an `unsafe` block"), as is edition 2021's plain `#[no_mangle]`; std's own start makes ppoll,
+  rt_sigaction, sigaltstack, mmap and mprotect before `main`, which the stand-in does not answer. panics.rs is the
+  only Rust program in programs/.
+- Ruling 1, the allocator: not done; its four lines stay. Without them the program's own values are all on the
+  stack, but the standard library allocates every panic's message and exception and stdout's buffer through
+  the system allocator, musl's malloc, which takes pages by mmap: natively the heap-free program makes 34 mmap
+  and 32 munmap calls and prints the same output ("caught 32, dropped 380"); on the stand-in (no mmap, a break
+  that never moves) it ends at once with "memory allocation of 8 bytes failed" and status 139 (ARM64,
+  unwinding_matches_linux_arm64, exp3-arm.log). Removing them needs either an anonymous mmap and a moving break
+  in both stand-ins (runner.rs and browser/runner.js, with the pages' permissions), or no Rust unwinding test.
+- The cases, before and after (the same program text below the entry): 32 rounds, round i diving i mod 9 frames
+  (0 to 8) and panicking with "bottom 0" at the bottom; each caught by `catch_unwind`, its message read from the
+  payload, every frame's guard dropped on the way; the output 32 lines "bottom 0 at i" and "caught 32, dropped
+  380"; at -O0 and -O2, position independent builds left out as before (rustc's aarch64 musl target makes them
+  fixed). unwinding_matches_linux passes on both machines at d714af58.
+- Ruling 2, layer 1's failing forms, tip against the baseline, form by form (scratch `layer1_lists.py`,
+  lists in `l1/`): ARM64 machine, 1,215 forms, 64 cases a form, seed 1: `["MSR_SR_systemmove"]` at both, equal;
+  in Chrome 1 a form: `["MSR_SR_systemmove"]` at both, equal. x86-64 machine: 1,126 of 2,008 forms at both,
+  equal (none only before, none only after); the unoffered forms 1,820 of 2,986 at both, equal; in Chrome 41 of
+  2,008 at both, equal. "Baseline" is 62abb61d with the two fixes; the bare 62abb61d gives the same two
+  non-Chrome lists on each machine (its browser build fails, so it has no Chrome list).
+- The whole suite at 1b3b7578 against the baseline, test by test: ARM64 machine every outcome the same (51
+  failed, all the other guest's reference and the Graviton's FPSR), 3 tests added (295 to 298); x86-64 machine
+  the same but for layer 3's three x86-64 Csmith tests, which failed on a race of this harness: the three run the
+  same cases at once and Csmith wrote each case's source to one shared path, so one compiled a file another was
+  writing ("undefined symbol: main"). 9a184968 writes each to a file of its own and moves it into place; the
+  layer 3 test binary then gives the baseline's outcomes (x86-64 3 passed, ARM64's 3 failing for want of a
+  reference, as before).
+- check and clippy with warnings denied over all targets and features, the browser crate's clippy for both
+  guests and the reference's clippy: exit 0 on both machines; fmt exit 0 at d714af58.
+- ARM64's ten output lists (965 modules): the same sha256 for every list as the baseline's.
+- `cargo reviewable check` (59ad72ce): 12,070 in the five crates (12,072 at 2e027019, baseline 12,049).
+- `unsafe` outside comments: arm64 0, x86 0, guest-cpu 0, translator 0, translator-test 4 (programs/panics.rs,
+  the allocator; 5 before, with the attribute); reference/ 86.
+- So TR1's bar does not hold by this measurement: the four allocator lines remain. TR2 is not started.
+
 ## For the orchestrator
 
 - C1 touched two places outside this track's crates, to keep the workspace building: wcontainers-wasmtime's
