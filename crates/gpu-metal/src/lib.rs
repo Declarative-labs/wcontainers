@@ -191,7 +191,6 @@ impl<M: Metal> MetalGpu<M> {
                 | Features::FORMAT_REINTERPRET
                 | Features::MIRROR_ONCE
                 | Features::STENCIL_PER_FACE
-                | Features::FRACTIONAL_DEPTH_BIAS
                 | Features::OCCLUSION_COUNT,
             limits: LIMITS,
             formats: convert::format_caps(),
@@ -928,6 +927,11 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             (desc.depth_minus_one, Features::CLIP_DEPTH_MINUS_ONE),
             (f32::from_bits(desc.line_width) != 1.0, Features::WIDE_LINES),
             (desc.sample_mask != !0, Features::SAMPLE_MASK),
+            // Metal drops a constant bias's fraction (MEASURED on an Apple M5: 2.75 moves depth by 2 units).
+            (
+                f32::from_bits(desc.depth_bias).fract() != 0.0,
+                Features::FRACTIONAL_DEPTH_BIAS,
+            ),
         ];
         if let Some((_, feature)) = absent.iter().find(|(missing, _)| *missing) {
             return Err(GpuError::Absent(*feature));

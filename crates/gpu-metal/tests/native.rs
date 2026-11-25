@@ -54,6 +54,11 @@ struct Constant { color: vec4<f32> }
     var p = array(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
     return vec4<f32>(p[i], 0.5, 1.0);
 }
+@vertex fn sloped(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    // Depth one eighth along the bottom edge, rising to one half along the top edge of the target.
+    var p = array(vec3(-1.0, -1.0, 0.125), vec3(3.0, -1.0, 0.125), vec3(-1.0, 3.0, 0.875));
+    return vec4<f32>(p[i], 1.0);
+}
 @vertex fn halves(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     // The left half wound counter-clockwise, then the right half wound clockwise.
     var p = array(
@@ -382,9 +387,10 @@ fn declares_the_metal_features_tested_here() {
         | Features::MIRROR_ONCE
         | Features::BLEND_CONSTANT_ALPHA
         | Features::STENCIL_PER_FACE
-        | Features::FRACTIONAL_DEPTH_BIAS
         | Features::OCCLUSION_COUNT;
     assert!(device().caps().features.contains(wanted));
+    // Metal drops a constant bias's fraction, so a front adds the bias in the program.
+    assert!(!device().caps().features.contains(Features::FRACTIONAL_DEPTH_BIAS));
 }
 
 /// Writes bytes, copies them on the GPU, and reads the copy back at once.
@@ -671,8 +677,9 @@ fn stencil_references_per_face_as_the_reference_does() {
     assert_eq!(right, [0, 0, 0, u8::MAX]);
 }
 
-/// Draws at depth one half with a constant depth bias of a half step into 32-bit float depth, and returns the depth.
-fn fractional_bias_scene<B: Gpu>(b: &mut B, bias: f32) -> Vec<u8> {
+/// Draws a triangle whose depth runs from one eighth to one half with a constant depth bias into 32-bit float depth,
+/// and returns the depth of each texel.
+fn depth_bias_scene<B: Gpu>(b: &mut B, bias: f32) -> Vec<f32> {
     let (_, drawn_view) = target(b, Format::Rgba8Unorm, DRAWN_SIDE);
     let depth = texture(
         b,
@@ -682,7 +689,7 @@ fn fractional_bias_scene<B: Gpu>(b: &mut B, bias: f32) -> Vec<u8> {
         false,
     );
     let depth_view = view(b, &depth, Format::Depth32Float, false);
-    let red = program(b, "covering", "red");
+    let red = program(b, "sloped", "red");
     let states = states(
         b,
         writes_all(None),
@@ -707,25 +714,41 @@ fn fractional_bias_scene<B: Gpu>(b: &mut B, bias: f32) -> Vec<u8> {
     draw(b, &red, &states, None, DRAWN_SIDE, 3, [0; 2], [0.0; 4]);
     b.end_pass();
     read_texture(b, &depth, DRAWN_SIDE, 4)
+        .chunks_exact(4)
+        .map(|word| f32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect()
+}
+
+/// The unit of a constant depth bias of a primitive whose greatest 32-bit float depth lies in `[1/2, 1)`: `2^-24`.
+///
+/// https://learn.microsoft.com/en-us/windows/win32/direct3d11/d3d10-graphics-programming-guide-output-merger-stage-depth-bias
+const BIAS_UNIT: f64 = f32::EPSILON as f64 / 2.0;
+
+/// Returns how far a bias moved each texel, in units of the bias.
+fn bias_moves<B: Gpu>(b: &mut B, bias: f32) -> Vec<f64> {
+    let unbiased = depth_bias_scene(b, 0.0);
+    let biased = depth_bias_scene(b, bias);
+    unbiased
+        .iter()
+        .zip(&biased)
+        .map(|(depth, moved)| (f64::from(*moved) - f64::from(*depth)) / BIAS_UNIT)
+        .collect()
 }
 
 #[test]
-fn a_fractional_depth_bias_moves_depth_as_the_reference_does() {
-    // At depth one half the bias's unit is one step of 32-bit float depth, so a bias lands on the nearest whole step:
-    // 2.25 on 2 and 2.75 on 3. Truncating the bias, or rounding it up, moves one of the two off the reference's.
-    let mut held = Vec::new();
-    for bias in [2.25, 2.75] {
-        let reference_depth =
-            fractional_bias_scene(&mut reference(Features::FRACTIONAL_DEPTH_BIAS), bias);
-        assert_eq!(
-            fractional_bias_scene(&mut device(), bias),
-            reference_depth,
-            "a bias of {bias}"
-        );
-        held.push(reference_depth);
+fn a_whole_depth_bias_moves_depth_as_the_reference_does_and_a_fraction_is_absent() {
+    // Every texel's depth lies in `[1/8, 1/2)`, where a step of 32-bit float depth is at most the bias's unit, so a
+    // whole bias lands exactly: dropping the bias, or scaling its unit, moves every texel off.
+    for bias in [1.0f32, 2.0, 3.0] {
+        let reference_moves = bias_moves(&mut reference(Features::empty()), bias);
+        let moves = bias_moves(&mut device(), bias);
+        assert_eq!(moves.len(), product(&[DRAWN_SIDE as usize, DRAWN_SIDE as usize]));
+        assert!(reference_moves.iter().all(|m| *m == f64::from(bias)), "the reference's moves {reference_moves:?}");
+        assert_eq!(moves, reference_moves, "a bias of {bias}");
     }
-    assert_ne!(held[0], held[1], "the two biases land on the same step");
-    assert_ne!(fractional_bias_scene(&mut device(), 0.0), held[0]);
+    // MEASURED on an Apple M5: a bias of 2.25, 2.5 or 2.75 moves depth by 2 units and 0.5 by none.
+    let fraction = device().create_raster(&plain_raster(2.25));
+    assert!(matches!(fraction, Err(GpuError::Absent(Features::FRACTIONAL_DEPTH_BIAS))));
 }
 
 /// Writes `rgba8Unorm` texels, loads them through a view in `rgba8Uint`, and returns what the loads wrote.
@@ -1228,3 +1251,4 @@ fn a_clear_of_a_huge_size_or_an_empty_pattern_is_refused_not_fatal() {
     assert_eq!(status, wcontainers_gpu::DeviceStatus::Ok);
     assert_eq!(read, [1, 2].repeat(32));
 }
+
