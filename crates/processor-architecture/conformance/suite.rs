@@ -1,10 +1,12 @@
 //! The tests every implementation of wcontainers-processor-architecture runs, written against its traits alone.
 //!
-//! Each function takes the cases to simulate: a simulator and a state before. `Clone + Eq` on the architecture is
-//! what the derives of `ExecutionState` require of it.
+//! Each function of an architecture takes the cases to simulate: a simulator and a state before. `Clone + Eq` on the
+//! architecture is what the derives of `ExecutionState` require of it. The function of a memory sink takes the sink.
+
+use std::borrow::Cow;
 
 use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
+    ExecutionState, MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
 };
 
 /// Lists each instruction once, and each behavior known for an instruction once.
@@ -72,29 +74,44 @@ pub fn simulation_is_deterministic<Architecture, S>(
     }
 }
 
-/// A simulation that fails leaves the processor as it was.
-pub fn failed_simulation_leaves_the_processor_unchanged<Architecture, S>(
-    cases: impl IntoIterator<Item = (S, ExecutionState<'static, Architecture>)>,
-) where
-    Architecture: ProcessorArchitecture + Clone + Eq,
-    S: Simulator<Architecture>,
+/// Checks that the sink takes every kind of mutation.
+///
+/// Value assignments empty, borrowed, and owned running past the last address; permission assignments empty and over
+/// every address a program can use.
+pub fn accepts_every_kind_of_mutation<Architecture, Sink>(mut sink: Sink)
+where
+    Architecture: ProcessorArchitecture,
+    Sink: MemorySink<Architecture>,
 {
-    for (simulator, before) in cases {
-        let mut processor = before.processor.clone();
-        if simulator
-            .simulate_in_place(
-                &mut processor,
-                &before.memory_mutations,
-                &mut |_: MemoryDelta<'_, Architecture>| {},
-            )
-            .is_err()
-        {
-            assert!(processor == before.processor);
-        }
+    let bytes = [u8::MAX; size_of::<u64>()];
+    let mutations = [
+        MemoryDelta::ValueAssignment {
+            start: u64::MIN,
+            bytes: Cow::Borrowed(&[]),
+        },
+        MemoryDelta::ValueAssignment {
+            start: u64::MIN,
+            bytes: Cow::Borrowed(&bytes),
+        },
+        MemoryDelta::ValueAssignment {
+            start: u64::MAX,
+            bytes: Cow::Owned(bytes.to_vec()),
+        },
+        MemoryDelta::PermissionAssignment {
+            addresses: u64::MIN..u64::MIN,
+            permission: Architecture::DEFAULT_PERMISSION,
+        },
+        MemoryDelta::PermissionAssignment {
+            addresses: Architecture::ADDRESSABLE,
+            permission: Architecture::DEFAULT_PERMISSION,
+        },
+    ];
+    for mutation in mutations {
+        sink.on_memory_mutated(mutation);
     }
 }
 
-/// Runs each suite function above as its own test on the architecture and on the cases made anew for every test.
+/// Runs each suite function above as its own test on an architecture's cases or on a memory sink, each made anew.
 #[macro_export]
 macro_rules! tests {
     ($architecture:ty, $cases:expr) => {
@@ -112,10 +129,11 @@ macro_rules! tests {
         fn simulation_is_deterministic() {
             $crate::simulation_is_deterministic($cases);
         }
-
+    };
+    ($sink:expr) => {
         #[test]
-        fn failed_simulation_leaves_the_processor_unchanged() {
-            $crate::failed_simulation_leaves_the_processor_unchanged($cases);
+        fn accepts_every_kind_of_mutation() {
+            $crate::accepts_every_kind_of_mutation($sink);
         }
     };
 }

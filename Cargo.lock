@@ -4891,7 +4891,6 @@ dependencies = [
 name = "wcontainers-precise-instruction-set"
 version = "0.1.0"
 dependencies = [
- "wcontainers-behavior-source",
  "wcontainers-processor-architecture",
 ]
 
@@ -4981,6 +4980,7 @@ name = "wcontainers-processor-architecture-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
 ]
 
 [[package]]

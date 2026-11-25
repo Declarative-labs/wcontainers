@@ -1,67 +1,45 @@
-//! The precise instruction set of a chip, found by running every generated state on a source of its behavior and
-//! keeping the one known behavior that agrees with it.
+//! A chip's precise instruction set as measurements give it, measured just now or read from a cache.
 
 #![no_std]
 
 extern crate alloc;
 
 use alloc::vec::Vec;
-use core::convert::Infallible;
-use core::marker::PhantomData;
 
-use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
-use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
-use wcontainers_processor_architecture::{ProcessorArchitecture, Simulator};
+use wcontainers_processor_architecture::ProcessorArchitecture;
 
 #[cfg(test)]
 mod tests;
 
-type InstructionOf<Source> =
-    <<Source as BehaviorSource>::Architecture as ProcessorArchitecture>::Instruction;
-type PreciseInstructionOf<Source> =
-    <<Source as BehaviorSource>::Architecture as ProcessorArchitecture>::PreciseInstruction;
-
-/// Each listed instruction with the behavior a source showed on every state `Generator` makes for it.
-pub struct MeasuredInstructionSet<Source: BehaviorSource, Generator> {
-    behaviors: Vec<(InstructionOf<Source>, PreciseInstructionOf<Source>)>,
-    measured_with: PhantomData<(Source, Generator)>,
+/// Each measured instruction with the behavior measured for it.
+pub struct MeasuredInstructionSet<Architecture: ProcessorArchitecture> {
+    behaviors: Vec<(Architecture::Instruction, Architecture::PreciseInstruction)>,
 }
 
-impl<Source, Generator> PreciseInstructionSet<Source::Architecture>
-    for MeasuredInstructionSet<Source, Generator>
-where
-    Source: BehaviorSource,
-    Source::Architecture: Clone,
-    PreciseInstructionOf<Source>: Simulator<Source::Architecture, Error = Infallible>,
-    Generator: DistinguishingStateGenerator<Source::Architecture> + Default,
+impl<Architecture: ProcessorArchitecture> PreciseInstructionSet<Architecture>
+    for MeasuredInstructionSet<Architecture>
 {
-    type Source = Source;
-    type MeasureError = MeasureInstructionError<Source::Architecture>;
-
-    fn measure(mut source: Source) -> Result<Self, Self::MeasureError> {
-        let generator = Generator::default();
-        let behaviors = Source::Architecture::list_instructions()
-            .map(|instruction| {
-                let precise = source.measure_instruction(instruction, &generator)?;
-                Ok((instruction, precise))
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(Self {
-            behaviors,
-            measured_with: PhantomData,
-        })
+    fn from_measurements(
+        measurements: &[(Architecture::Instruction, Architecture::PreciseInstruction)],
+    ) -> Self {
+        Self {
+            behaviors: measurements.to_vec(),
+        }
     }
 
-    /// Panics for an instruction that `list_instructions` does not list.
-    fn to_precise(&self, instruction: InstructionOf<Source>) -> PreciseInstructionOf<Source> {
+    /// Panics for an instruction the measurements do not hold.
+    fn to_precise(
+        &self,
+        instruction: Architecture::Instruction,
+    ) -> Architecture::PreciseInstruction {
         let measured = self
             .behaviors
             .iter()
             .find(|(measured, _)| *measured == instruction);
         match measured {
             Some((_, precise)) => *precise,
-            None => panic!("only listed instructions are measured"),
+            None => panic!("only measured instructions have a behavior"),
         }
     }
 }
