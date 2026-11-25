@@ -10,3 +10,6 @@ path = "suite.rs"
 [dependencies]
 wcontainers-precise-instruction-set = { path = ".." }
 wcontainers-processor-architecture = { path = "../../processor-architecture" }
+
+[lints]
+workspace = true

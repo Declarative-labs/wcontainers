@@ -9,3 +9,6 @@ path = "interface.rs"
 [dependencies]
 wcontainers-processor-architecture = { path = "../processor-architecture" }
 itertools.workspace = true
+
+[lints]
+workspace = true

@@ -10,3 +10,6 @@ path = "suite.rs"
 [dependencies]
 wcontainers-distinguishing-state-generator = { path = ".." }
 wcontainers-processor-architecture = { path = "../../processor-architecture" }
+
+[lints]
+workspace = true

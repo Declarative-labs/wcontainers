@@ -9,3 +9,6 @@ path = "suite.rs"
 
 [dependencies]
 wcontainers-privilege-level = { path = ".." }
+
+[lints]
+workspace = true

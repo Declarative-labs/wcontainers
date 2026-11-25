@@ -9,3 +9,6 @@ path = "suite.rs"
 
 [dependencies]
 wcontainers-processor-architecture = { path = ".." }
+
+[lints]
+workspace = true

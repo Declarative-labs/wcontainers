@@ -9,3 +9,6 @@ path = "interface.rs"
 [dependencies]
 # A map from ranges to values that merges neighbors holding the same value, which the memory diff renders permissions into.
 rangemap = { version = "1.8.0", default-features = false }
+
+[lints]
+workspace = true
