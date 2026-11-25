@@ -562,6 +562,12 @@ impl System for TestHost<Box<dyn Hooks>> {
         self.hook()
             .on_shared_memory_unmapped(process, source, offset, range);
     }
+    fn on_inspection_starting(&self, process: Process<'_>) {
+        self.hook().on_inspection_starting(process);
+    }
+    fn on_inspection_ended(&self, process: Process<'_>) {
+        self.hook().on_inspection_ended(process);
+    }
 }
 
 impl<H> TestHost<H> {
