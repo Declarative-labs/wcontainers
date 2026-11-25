@@ -392,7 +392,8 @@ fn declares_the_metal_features_tested_here() {
         | Features::MIRROR_ONCE
         | Features::BLEND_CONSTANT_ALPHA
         | Features::STENCIL_PER_FACE
-        | Features::OCCLUSION_COUNT;
+        | Features::OCCLUSION_COUNT
+        | Features::POINT_SIZE;
     assert!(device().caps().features.contains(wanted));
     // Metal drops a constant bias's fraction, so a front adds the bias in the program.
     assert!(
@@ -401,6 +402,98 @@ fn declares_the_metal_features_tested_here() {
             .features
             .contains(Features::FRACTIONAL_DEPTH_BIAS)
     );
+}
+
+/// Draws one point at the target's center, of the size its vertex program writes, and returns the target's texels.
+fn point_scene(size: f32) -> Vec<u8> {
+    let mut b = device();
+    let source = format!(
+        "struct Point {{ @builtin(position) at: vec4<f32>, @location(0) size: f32 }}
+         @vertex fn sized() -> Point {{ return Point(vec4<f32>(0.0, 0.0, 0.5, 1.0), {size:?}); }}
+         @fragment fn red() -> @location(0) vec4<f32> {{ return vec4<f32>(1.0, 0.0, 0.0, 1.0); }}"
+    );
+    let mut sized = ShaderModule::from_wgsl(&source, "sized", ShaderStage::Vertex).expect("parses");
+    // WGSL writes no point size: the second member becomes it, as the fronts write `gl_PointSize`.
+    let module = &mut sized.module;
+    let point = module.entry_points[0]
+        .function
+        .result
+        .as_ref()
+        .expect("a result")
+        .ty;
+    let naga::TypeInner::Struct { mut members, span } = module.types[point].inner.clone() else {
+        panic!("a struct result");
+    };
+    members[1].binding = Some(naga::Binding::BuiltIn(naga::BuiltIn::PointSize));
+    let sized_point = module.types.insert(
+        naga::Type {
+            name: Some("SizedPoint".into()),
+            inner: naga::TypeInner::Struct { members, span },
+        },
+        naga::Span::UNDEFINED,
+    );
+    let function = &mut module.entry_points[0].function;
+    if let Some(result) = &mut function.result {
+        result.ty = sized_point;
+    }
+    for (_, expression) in function.expressions.iter_mut() {
+        if let naga::Expression::Compose { ty, .. } = expression
+            && *ty == point
+        {
+            *ty = sized_point;
+        }
+    }
+    sized.info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
+        .validate(&sized.module)
+        .expect("a point size validates");
+    sized.key[0] ^= 1;
+    let vertex = b.create_shader(&sized).expect("create_shader");
+    let red = ShaderModule::from_wgsl(&source, "red", ShaderStage::Fragment).expect("parses");
+    let fragment = b.create_shader(&red).expect("create_shader");
+    let program = b
+        .create_program(&Program::Render {
+            vertex: &vertex,
+            fragment: Some(&fragment),
+        })
+        .expect("create_program");
+    let states = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+    let (drawn, drawn_view) = target(&mut b, Format::Rgba8Unorm, DRAWN_SIDE);
+    b.begin_pass(&color_pass(&drawn_view, [0; 4]));
+    b.draw(&DrawCall {
+        program: &program,
+        blend: &states.blend,
+        depth_stencil: &states.depth_stencil,
+        raster: &states.raster,
+        vertex_layout: &states.layout,
+        bindings: [None, None, None, None],
+        vertex_buffers: &[],
+        index: None,
+        topology: Topology::PointList,
+        restart: false,
+        viewports: &viewport(DRAWN_SIDE),
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Vertices {
+            first: 0,
+            count: 1,
+            first_instance: 0,
+            instances: 1,
+        },
+    });
+    b.end_pass();
+    read_texture(&mut b, &drawn, DRAWN_SIDE, RGBA8_BYTES)
+}
+
+#[test]
+fn a_point_is_as_large_as_its_program_writes() {
+    assert!(device().caps().features.contains(Features::POINT_SIZE));
+    let red = |texels: Vec<u8>| -> Vec<bool> { texels.chunks(RGBA8_BYTES).map(|t| t[0] == u8::MAX).collect() };
+    let (o, x) = (false, true);
+    // Two texels wide about the center covers the middle four of sixteen; four wide, all of them.
+    assert_eq!(red(point_scene(2.0)), [o, o, o, o, o, x, x, o, o, x, x, o, o, o, o, o]);
+    assert_eq!(red(point_scene(4.0)), [x; 16]);
 }
 
 /// Writes bytes, copies them on the GPU, and reads the copy back at once.
@@ -771,11 +864,13 @@ fn a_whole_depth_bias_moves_depth_as_the_reference_does_and_a_fraction_is_absent
     ));
 }
 
-/// Writes `rgba8Unorm` texels, loads them through a view in `rgba8Uint`, and returns what the loads wrote.
+/// Writes `r32Float` texels, loads them through a view in `rgba8Uint`, and returns what the loads wrote.
+///
+/// The format has no sRGB twin, so only the texture's `reinterpret` lets Metal make the view.
 fn reinterpret_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
     let source = texture(
         b,
-        Format::Rgba8Unorm,
+        Format::R32Float,
         DRAWN_SIDE,
         TextureUsage::SAMPLE | TextureUsage::COPY_DST,
         true,
@@ -825,6 +920,53 @@ fn reinterpret_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
 fn a_view_reinterprets_its_texture_as_the_reference_does() {
     let got = reinterpret_scene(&mut device());
     assert_eq!(got, reinterpret_scene(&mut reference(Features::empty())));
+    // Without `reinterpret` the texture is not seen in another format of its size.
+    let mut b = device();
+    let plain = texture(
+        &mut b,
+        Format::R32Float,
+        DRAWN_SIDE,
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+        false,
+    );
+    let refused = b.create_view(
+        &plain,
+        &TextureViewDesc {
+            format: Format::Rgba8Uint,
+            dimension: ViewDimension::D2,
+            base_mip: 0,
+            mip_count: 1,
+            base_layer: 0,
+            layer_count: 1,
+            stencil: false,
+        },
+    );
+    assert!(refused.is_err(), "a view in another format of a texture not made to be reinterpreted");
+}
+
+#[test]
+fn mipmaps_of_an_integer_format_are_refused_and_the_device_stays() {
+    let mut b = device();
+    for format in [Format::Rgba8Uint, Format::R32Sint] {
+        let desc = TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width: DRAWN_SIDE,
+            height: DRAWN_SIDE,
+            depth_or_layers: 1,
+            mip_levels: 3,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::RENDER | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        };
+        let made = b.create_texture(&desc).expect("create_texture");
+        let generated = b.generate_mips(&made, &desc, format, 1..3, 0..1);
+        assert!(matches!(generated, Err(GpuError::Invalid(_))), "{format:?}: {generated:?}");
+    }
+    let fence = b.submit();
+    b.wait_fence(&fence);
+    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
 }
 
 /// Counts the left half's samples once in query 0 and twice in query 1, around a write that splits the pass.

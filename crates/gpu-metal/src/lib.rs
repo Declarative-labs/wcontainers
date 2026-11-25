@@ -191,7 +191,8 @@ impl<M: Metal> MetalGpu<M> {
                 | Features::FORMAT_REINTERPRET
                 | Features::MIRROR_ONCE
                 | Features::STENCIL_PER_FACE
-                | Features::OCCLUSION_COUNT,
+                | Features::OCCLUSION_COUNT
+                | Features::POINT_SIZE,
             limits: LIMITS,
             formats: convert::format_caps(),
         };
@@ -1587,6 +1588,13 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         mips: std::ops::Range<u32>,
         layers: std::ops::Range<u32>,
     ) -> Result<(), GpuError> {
+        // The default draws each level as floats, which a target of integers, depth or stencil refuses, so that such a
+        // draw loses the device: it is refused here instead (a note for the review of the default, in STATUS.md).
+        if wcontainers_gpu::FORMAT_FACTS[values as usize].kind != wcontainers_gpu::FormatKind::Float {
+            return Err(GpuError::Invalid(
+                "mipmaps of an integer, depth or stencil format, which the default draws as floats",
+            ));
+        }
         // Metal fills every level of every layer at once, in the texture's own format.
         let whole = mips == (1..desc.mip_levels) && layers == (0..desc.depth_or_layers);
         let filtered = self.caps.formats.uses[values as usize]
