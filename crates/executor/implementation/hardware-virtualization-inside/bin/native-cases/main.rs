@@ -65,6 +65,10 @@ mod cases {
         first
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "exports floor_main under its own name for the entry assembly to call, a name nothing else defines; test program only, a sym operand would remove it"
+    )]
     #[unsafe(no_mangle)]
     extern "C" fn floor_main(start: &Start) -> ! {
         let floor = Floor::boot(start);
@@ -87,7 +91,12 @@ mod cases {
         make_code_visible(gate.va, gate.bytes);
         VBAR_EL1.set(gate.va);
         barrier::isb(SY);
-        // SAFETY: the host wrote the gate, which comes back as a call does: it restores every register.
+        // SAFETY: trusted, not checked: the host wrote the gate, which comes back as a call does and restores
+        // every register.
+        #[expect(
+            unsafe_code,
+            reason = "UNEXPLAINED: turns the address of the gate the host wrote into a function pointer, trusting the host's code to come back as a call does and restore every register this program relies on, which nothing here checks; test program only, stays a one-off"
+        )]
         let call: extern "C" fn() = unsafe { core::mem::transmute(gate.va + GATE_OFFSET) };
         loop {
             let code: Code = floor::ask(&Next {}, &[]);

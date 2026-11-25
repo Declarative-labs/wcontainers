@@ -16,11 +16,14 @@ use wcontainers_executor_hardware_virtualization_inside::boot::{
 use wcontainers_executor_hardware_virtualization_inside::layout::{IMAGE, MEMORY_BASE, linear};
 use wcontainers_executor_hardware_virtualization_inside::link::{Link, Start};
 use wcontainers_guest_cpu::Guest;
+use zerocopy::IntoBytes;
 
 #[cfg(target_os = "macos")]
 pub mod hvf;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub mod kvm;
+#[cfg(all(host_hypervisor, target_arch = "aarch64"))]
+pub mod memory_space;
 pub mod routines;
 #[cfg(all(host_hypervisor, target_arch = "aarch64"))]
 pub mod single_step;
@@ -163,9 +166,17 @@ pub struct Memory {
 }
 
 // SAFETY: the reservation is plain memory shared with the virtual machine; who writes where is the inside's
-// and the monitor's protocol.
+// and the monitor's protocol, and only field drop order keeps it mapped while virtual CPUs reach it.
+#[expect(
+    unsafe_code,
+    reason = "promises Memory may move to another thread, through a raw pointer that is not Send by itself; the reservation is not its alone, since the virtual machine maps it and virtual CPUs on other threads reach it wherever Memory goes, and only field drop order keeps it mapped while they do (the UNSOUND drop below); Lend's mapping replaces it"
+)]
 unsafe impl Send for Memory {}
 // SAFETY: as above.
+#[expect(
+    unsafe_code,
+    reason = "UNEXPLAINED: promises Memory may be shared between threads on a who-writes-where protocol of the inside and the monitor that no type or check enforces; Lend and Words replace it"
+)]
 unsafe impl Sync for Memory {}
 
 impl Memory {
@@ -187,14 +198,58 @@ impl Memory {
             at >= MEMORY_BASE && at < MEMORY_BASE + self.length,
             "outside guest memory"
         );
-        // SAFETY: inside the reservation.
-        unsafe { self.host.as_ptr().add((at - MEMORY_BASE) as usize) }
+        self.host.as_ptr().wrapping_add((at - MEMORY_BASE) as usize)
+    }
+
+    /// Whether the `length` bytes from guest-physical `at` all lie in guest memory.
+    pub fn contains(&self, at: u64, length: u64) -> bool {
+        at >= MEMORY_BASE
+            && at
+                .checked_add(length)
+                .is_some_and(|end| end <= MEMORY_BASE + self.length)
+    }
+
+    /// The host address of the `length` bytes from guest-physical `at`, which must all lie in guest memory.
+    pub fn host_bytes(&self, at: u64, length: u64) -> *mut u8 {
+        assert!(self.contains(at, length), "outside guest memory");
+        self.host.as_ptr().wrapping_add((at - MEMORY_BASE) as usize)
+    }
+
+    /// Returns the bytes from guest-physical `at`, for one copy while no virtual CPU writes them.
+    #[cfg(all(host_hypervisor, target_arch = "aarch64"))]
+    #[expect(
+        unsafe_code,
+        reason = "UNSOUND: a shared slice of guest memory that a virtual CPU on another thread may write while it lives; Words replaces it"
+    )]
+    fn bytes(&self, at: u64, length: u64) -> &[u8] {
+        let host = self.host_bytes(at, length);
+        // SAFETY: not shown: inside the reservation, but a virtual CPU on another thread may write these bytes
+        // while the slice lives (see the reason).
+        unsafe { std::slice::from_raw_parts(host, length as usize) }
+    }
+
+    /// Returns the bytes from guest-physical `at` to write, for one copy while no virtual CPU touches them.
+    #[cfg(all(host_hypervisor, target_arch = "aarch64"))]
+    #[expect(
+        unsafe_code,
+        reason = "UNSOUND: a mutable slice of guest memory that a virtual CPU on another thread may reach while it lives; Words replaces it"
+    )]
+    fn bytes_mut(&mut self, at: u64, length: u64) -> &mut [u8] {
+        let host = self.host_bytes(at, length);
+        // SAFETY: not shown, as above: a virtual CPU on another thread may reach these bytes while the slice
+        // lives; the borrow of `self` only keeps this program from lending them twice.
+        unsafe { std::slice::from_raw_parts_mut(host, length as usize) }
     }
 }
 
 impl Drop for Memory {
     fn drop(&mut self) {
-        // SAFETY: the reservation is ours and nothing maps it any more.
+        // SAFETY: not shown: a virtual machine that still maps the reservation is kept from reaching it after
+        // this only by field drop order (see the reason).
+        #[expect(
+            unsafe_code,
+            reason = "UNSOUND: unmaps the reservation, which a virtual machine that still maps it is kept from reaching only by field drop order; Lend replaces it"
+        )]
         unsafe { libc::munmap(self.host.as_ptr().cast(), self.length as usize) };
     }
 }
@@ -206,7 +261,12 @@ fn fresh(at: Option<NonNull<u8>>, length: u64) -> Result<NonNull<u8>> {
         None => (ptr::null_mut(), 0),
     };
     let flags = libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE | fixed;
-    // SAFETY: an anonymous mapping, at an address of our own reservation when fixed.
+    // SAFETY: not shown: when fixed, this maps over whatever address it is given; its one fixed caller checks
+    // first that the range is guest memory.
+    #[expect(
+        unsafe_code,
+        reason = "UNSOUND: a safe fn that maps over any fixed address it is given with no check of its own; its one fixed caller, HVF give_back, checks the range first; Lend's mapping and Words' zero fill replace it"
+    )]
     let host = unsafe {
         libc::mmap(
             address,
@@ -245,35 +305,46 @@ pub const STACK_PAGES: u64 = 16;
 pub fn load(memory: &Memory, image: &[u8], cpus: u64) -> Result<Loaded> {
     // The ELF reader needs its headers aligned, which embedded bytes are not.
     let mut aligned = vec![0u64; image.len().div_ceil(size_of::<u64>())];
-    // SAFETY: the vector holds at least the image's bytes.
-    unsafe {
-        ptr::copy_nonoverlapping(
-            image.as_ptr(),
-            aligned.as_mut_ptr().cast::<u8>(),
-            image.len(),
-        )
-    };
-    // SAFETY: the vector's bytes, the image's length.
-    let image = unsafe { std::slice::from_raw_parts(aligned.as_ptr().cast::<u8>(), image.len()) };
+    aligned.as_mut_bytes()[..image.len()].copy_from_slice(image);
+    let image = &aligned.as_bytes()[..image.len()];
     let file = object::File::parse(image).map_err(|e| Error::Image(e.to_string()))?;
     let mut end = MEMORY_BASE;
     for segment in file.segments() {
         let data = segment.data().map_err(|e| Error::Image(e.to_string()))?;
-        let at = segment.address() - linear(0);
         if segment.address() < IMAGE {
             return Err(Error::Image(format!(
                 "segment at {:#x} is below the image's address",
                 segment.address()
             )));
         }
-        // SAFETY: the segment lies in guest memory, which is ours.
-        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), memory.host(at), data.len()) };
+        let at = segment.address() - linear(0);
+        if !memory.contains(at, segment.size().max(data.len() as u64)) {
+            return Err(Error::Image(format!(
+                "segment at {:#x} does not fit guest memory",
+                segment.address()
+            )));
+        }
+        let host = memory.host_bytes(at, data.len() as u64);
+        // SAFETY: the segment lies in guest memory (checked); that no virtual CPU or other thread reaches it
+        // during the copy rests on the one caller loading before it makes any, not on a check.
+        #[expect(
+            unsafe_code,
+            reason = "UNEXPLAINED: copies an ELF segment into guest memory from a safe pub fn that takes a shared &Memory, so nothing keeps virtual CPUs or other threads off those bytes during the copy; its one caller loads before it makes any virtual CPU; host_bytes checked the whole range; Words replaces it"
+        )]
+        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), host, data.len()) };
         end = end.max(at + segment.size());
     }
     let boot_root = end.next_multiple_of(PAGE_SIZE);
     write_boot_map(boot_root, memory.length(), |at, entry| {
-        // SAFETY: the boot map lies in guest memory, after the image.
-        unsafe { ptr::write(memory.host(at).cast::<u64>(), entry) }
+        let host = memory.host_bytes(at, size_of::<u64>() as u64).cast::<u64>();
+        assert!(host.is_aligned(), "a boot map entry is a whole word");
+        // SAFETY: the boot map lies in guest memory, after the image, and the entry is aligned; that no virtual
+        // CPU reaches it meanwhile rests on the one caller loading before it makes any, not on a check.
+        #[expect(
+            unsafe_code,
+            reason = "UNEXPLAINED: writes a boot page-table entry into guest memory from the same safe pub fn as the copy above, which nothing keeps from running while virtual CPUs do; its one caller loads before it makes any; host_bytes checked the range and the assert its alignment; Words replaces it"
+        )]
+        unsafe { ptr::write(host, entry) };
     });
     let links = boot_root + BOOT_MAP_BYTES;
     let stacks = links + cpus * PAGE_SIZE;
@@ -303,8 +374,15 @@ pub fn boot<C: VirtualCpu>(
         free: loaded.free,
         ..start
     };
-    // SAFETY: the start record's page lies in guest memory and is this CPU's.
-    unsafe { ptr::write(memory.host(page).cast::<Start>(), start) };
+    let host = memory.host_bytes(page, size_of::<Start>() as u64).cast::<Start>();
+    assert!(host.is_aligned(), "a start record starts its page");
+    // SAFETY: the start record lies in guest memory, aligned; that other virtual CPUs, which may already run,
+    // keep off its page rests only on the inside's layout, not on a check.
+    #[expect(
+        unsafe_code,
+        reason = "UNEXPLAINED: writes virtual CPU index's start record into the page set aside for it, from a safe pub fn that takes any index; other virtual CPUs may already run (the floor test boots each on its own thread), and only the inside's layout keeps them off that page; host_bytes checked the range and the assert its alignment; Words replaces it"
+    )]
+    unsafe { ptr::write(host, start) };
     let features = cpu.get(Register::MemoryModelFeatures)?;
     let BootRegisters {
         mair,
@@ -335,8 +413,12 @@ pub fn boot<C: VirtualCpu>(
 }
 
 /// The link page of virtual CPU `index`.
+#[expect(
+    unsafe_code,
+    reason = "UNSOUND: a safe fn returning &'static mut Link into guest memory, which outlives the reservation, aliases on a second call and races the inside; Words replaces it"
+)]
 pub fn link(memory: &Memory, loaded: &Loaded, index: u64) -> &'static mut Link {
-    // SAFETY: the link page lies in guest memory, which lives as long as the monitor; the inside writes it
-    // only before the doorbell, while the monitor reads it only after.
+    // SAFETY: not shown: the reference outlives the reservation, a second call aliases it, and the inside
+    // writes the page while it lives (see the reason).
     unsafe { &mut *memory.host(loaded.links + index * PAGE_SIZE).cast::<Link>() }
 }

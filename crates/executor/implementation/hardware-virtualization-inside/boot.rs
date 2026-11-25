@@ -83,6 +83,12 @@ pub fn boot_registers(
     sp_alignment_checked: bool,
 ) -> BootRegisters {
     let physical_range = ID_AA64MMFR0_EL1::PARange.read(memory_model_features);
+    // Sixteen-bit identifiers only where the chip has them: with eight, TCR_EL1.AS is RES0, and an identifier
+    // above 255 would tag the same entries as its low byte. The inside reads AS back for its highest identifier.
+    let identifiers = match ID_AA64MMFR0_EL1::ASIDBits.read_as_enum(memory_model_features) {
+        Some(ID_AA64MMFR0_EL1::ASIDBits::Value::Bits_16) => TCR_EL1::AS::ASID16Bits,
+        Some(ID_AA64MMFR0_EL1::ASIDBits::Value::Bits_8) | None => TCR_EL1::AS::ASID8Bits,
+    };
     let size = u64::from(u64::BITS - VA_BITS);
     let tcr = TCR_EL1::T0SZ.val(size)
         + TCR_EL1::T1SZ.val(size)
@@ -95,7 +101,7 @@ pub fn boot_registers(
         + TCR_EL1::IRGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
         + TCR_EL1::ORGN1::WriteBack_ReadAlloc_WriteAlloc_Cacheable
         + TCR_EL1::IPS.val(physical_range)
-        + TCR_EL1::AS::ASID16Bits
+        + identifiers
         + TCR_EL1::A1::TTBR0
         + TCR_EL1::TBI0::Ignored
         + TCR_EL1::TBI1::Used;

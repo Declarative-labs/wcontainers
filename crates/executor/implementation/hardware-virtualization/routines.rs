@@ -1,5 +1,6 @@
 //! The inside's float state routines and its whole TLB invalidation, made by the encoder and written into the frame the inside names.
 
+use wcontainers_abi::PAGE_SIZE;
 use wcontainers_arm64::carry::LINK;
 use wcontainers_arm64::encode::{self, FloatStatusMoves, Register, form};
 use wcontainers_executor_hardware_virtualization_inside::link::Link;
@@ -54,11 +55,15 @@ pub fn answer(link: &mut Link, memory: &Memory) {
     let request: Routines = link.get();
     let (words, starts) = routines();
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
-    // SAFETY: the inside named a frame of its own for them; the end is checked by `host`.
-    unsafe {
-        memory.host(request.at + bytes.len() as u64 - 1);
-        std::ptr::copy_nonoverlapping(bytes.as_ptr(), memory.host(request.at), bytes.len());
-    }
+    assert!(bytes.len() as u64 <= PAGE_SIZE, "the routines fit one frame");
+    let host = memory.host_bytes(request.at, bytes.len() as u64);
+    // SAFETY: the bytes lie in guest memory, in the frame the inside named for them; nothing shows the other
+    // virtual CPUs cannot reach that frame during the copy.
+    #[expect(
+        unsafe_code,
+        reason = "UNEXPLAINED: a plain copy into whatever frame the inside named, from a safe pub fn; only the asking virtual CPU waits at the doorbell, and nothing shows the others cannot reach that frame; host_bytes checked the range; Words replaces it"
+    )]
+    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), host, bytes.len()) };
     let [
         read_float_control,
         write_float_control,

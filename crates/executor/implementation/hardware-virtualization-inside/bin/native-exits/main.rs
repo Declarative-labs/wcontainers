@@ -14,20 +14,28 @@ mod protocol;
 mod exits {
     use alloc::vec::Vec;
 
-    use wcontainers_abi::{Cpu, Permissions, RegisterBlock};
-    use wcontainers_executor_hardware_virtualization_inside::floor::{self, Floor, counter};
+    use wcontainers_abi::{Cpu, PAGE_SIZE, Permissions, RegisterBlock, SharedId};
+    use wcontainers_executor_hardware_virtualization_inside::floor::{
+        self, Floor, counter, with_frames,
+    };
     use wcontainers_executor_hardware_virtualization_inside::link::{LINK_BYTES, Start};
     use wcontainers_executor_hardware_virtualization_inside::native::NativeCpu;
     use zerocopy::{FromBytes, IntoBytes};
 
     use crate::protocol::{ExitWords, Next, Order, OrderKind, ResumeWords, Warned};
 
+    #[expect(
+        unsafe_code,
+        reason = "exports floor_main under its own name for the entry assembly to call, a name nothing else defines; test program only, a sym operand would remove it"
+    )]
     #[unsafe(no_mangle)]
     extern "C" fn floor_main(start: &Start) -> ! {
         let floor = Floor::boot(start);
         let mut cpu: Option<NativeCpu> = None;
         let mut process = None;
         let mut result: Vec<u8> = Vec::new();
+        // The frames `TakeEveryFrame` took, until `GiveFramesBack`.
+        let mut held: Vec<u64> = Vec::new();
         loop {
             let (order, bytes): (Order, Vec<u8>) =
                 floor::ask_link(&Next {}, &result, |link| (link.get(), link.data().to_vec()));
@@ -86,6 +94,49 @@ mod exits {
                     result.extend_from_slice(ExitWords::of(exit).as_bytes());
                     result.extend_from_slice(block.as_bytes());
                 }
+                OrderKind::TryProtect => {
+                    let done = cpu.set_permissions(
+                        memory,
+                        order.address,
+                        order.length,
+                        Permissions::from_bits_truncate(order.value as u8),
+                    );
+                    result.extend_from_slice(u64::from(done.is_err()).as_bytes());
+                }
+                OrderKind::TakeEveryFrame => {
+                    // Room for every frame first, once: the heap takes frames, so it may not grow under their
+                    // lock, nor once they are all taken.
+                    held.reserve_exact(((start.memory / PAGE_SIZE) as usize).saturating_sub(held.len()));
+                    let before = held.len();
+                    with_frames(|frames| {
+                        while held.len() < held.capacity()
+                            && let Ok(frame) = frames.take()
+                        {
+                            held.push(frame);
+                        }
+                    });
+                    result.extend_from_slice(((held.len() - before) as u64).as_bytes());
+                }
+                OrderKind::GiveFramesBack => {
+                    with_frames(|frames| held.drain(..).for_each(|frame| frames.give(frame)));
+                }
+                OrderKind::SharedNew => {
+                    let SharedId(shared) = cpu.shared_new(order.length).expect("a shared block");
+                    result.extend_from_slice(u64::from(shared).as_bytes());
+                }
+                OrderKind::SharedMap => cpu
+                    .shared_map(
+                        SharedId(order.value as u32),
+                        0,
+                        memory,
+                        order.address,
+                        order.length,
+                    )
+                    .expect("shown"),
+                OrderKind::SharedWrite => cpu
+                    .shared_write(SharedId(order.value as u32), order.address, &bytes)
+                    .expect("written to the block"),
+                OrderKind::SharedDrop => cpu.shared_drop(SharedId(order.value as u32)),
                 OrderKind::Begin | OrderKind::Finish => {}
             }
         }

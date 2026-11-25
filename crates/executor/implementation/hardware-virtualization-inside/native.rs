@@ -9,9 +9,12 @@ use alloc::vec::Vec;
 use core::hash::Hasher as _;
 use core::ops::Range;
 use core::ptr;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use aarch64_cpu::asm::barrier::{self, ISH, ISHST, SY};
-use aarch64_cpu::registers::{ESR_EL1, FAR_EL1, MDSCR_EL1, Read, SPSR_EL1, TPIDR_EL0, Write as _};
+use aarch64_cpu::registers::{
+    ESR_EL1, FAR_EL1, MDSCR_EL1, Read, SPSR_EL1, TCR_EL1, TPIDR_EL0, Write as _,
+};
 use aarch64_paging::descriptor::El1Attributes;
 use arm_sysregs::el0::registers::CtrEl0;
 use rangemap::RangeMap;
@@ -39,7 +42,7 @@ use crate::link::LINK_BYTES;
 use crate::reason::{
     ASKED_THE_HOST, CODE_AREA_EMPTIED, CODE_CHANGED_AFTER_IT_RAN, EXACT_FLOATING_POINT_REQUESTED,
     GUEST_PHYSICAL_SPACE_FULL, IDENTIFIERS_RAN_OUT, LARGE_ENTRY_SPLIT, MEMORY_COPIED_AT_FORK,
-    MEMORY_FAULT, NOT_YET_TRANSLATED, RESERVATION_BROKEN, TURN_LIMIT_STEPPED,
+    MEMORY_FAULT, NOT_YET_TRANSLATED, RESERVATION_BROKEN, SHOWN_BLOCK_KEPT, TURN_LIMIT_STEPPED,
 };
 use crate::routines::{FloatControl, Placed, Routines, Vectors};
 use crate::stop::{
@@ -51,6 +54,9 @@ const _: () = assert!(
     MIRROR >> mirror::SLOT_MOVED_BITS == Region::Code.base() >> mirror::SLOT_MOVED_BITS,
     "a slot's moves leave the bits a piece's address shares with the slot's"
 );
+
+/// Whether this machine's one CPU side was made.
+static CPU_SIDE_MADE: AtomicBool = AtomicBool::new(false);
 
 /// The bytes one announcement of changed code covers: the instruction cache line of the CTR_EL0 we present.
 const CODE_LINE: u64 = (size_of::<u32>() as u64) << CtrEl0::from_bits_retain(CACHE_TYPE).iminline();
@@ -293,7 +299,12 @@ impl Memory {
 
 /// Writes host words at `at` in the code area or the running process's entry mirror, and makes them visible.
 fn write_code(at: u64, words: &[u32]) {
-    // SAFETY: both are mapped writable at this level, and no virtual CPU runs these words while they change.
+    // SAFETY: trusted, not checked: the address is mapped writable at this level, and no virtual CPU runs these
+    // words while they change.
+    #[expect(
+        unsafe_code,
+        reason = "UNEXPLAINED: copies words to whatever address this private safe fn is given, on the comment's word that it is mapped writable and nothing runs it; Words replaces it"
+    )]
     unsafe { ptr::copy_nonoverlapping(words.as_ptr(), at as *mut u32, words.len()) };
     make_code_visible(at, size_of_val(words) as u64);
 }
@@ -324,11 +335,15 @@ pub struct NativeCpu {
     global: Table,
     memories: BTreeMap<MemoryId, Memory>,
     shared: BTreeMap<SharedId, Block>,
+    /// Blocks the kernel dropped while a memory still showed them, kept until none does.
+    dropped: Vec<SharedId>,
     /// Boxed, so that a run takes its thread out and puts it back without copying it.
     threads: BTreeMap<ThreadId, Box<Thread>>,
     next_id: u32,
     /// The next address-space identifier, none when they ran out.
     next_asid: Option<u16>,
+    /// The highest address-space identifier TCR_EL1.AS lets the tables tag: 255 or 65535.
+    last_asid: u16,
     /// The address space switched to while none of a process may be: the global tables and no guest page.
     idle: AddressSpace,
     /// The floor's counts last reported: link exits, frames refused, blocks split.
@@ -372,9 +387,20 @@ fn page_of(address: u64) -> u64 {
     address & !(PAGE_SIZE - 1)
 }
 
+/// Copies frame `from`'s bytes to frame `to`, which is another frame.
+fn copy_frame(to: u64, from: u64) {
+    assert!(to.abs_diff(from) >= PAGE_SIZE, "a frame is copied to another");
+    frame_bytes(to).copy_from_slice(frame_bytes(from));
+}
+
 /// A frame's bytes through the linear map.
+#[expect(
+    unsafe_code,
+    reason = "UNSOUND: a safe fn returning &'static mut [u8] over any frame number, which may alias another view or a frame a guest on another virtual CPU writes; Words replaces it"
+)]
 fn frame_bytes(frame: u64) -> &'static mut [u8] {
-    // SAFETY: the frame is the CPU side's, and only reached through the linear map.
+    // SAFETY: not shown: any frame number is taken, and the slice may alias another view of it or a frame a
+    // guest on another virtual CPU writes (see the reason).
     unsafe { core::slice::from_raw_parts_mut(linear(frame) as *mut u8, PAGE_SIZE as usize) }
 }
 
@@ -413,7 +439,20 @@ fn read_pages(frame: impl Fn(u64) -> Option<u64>, mut address: u64, into: &mut [
 
 impl NativeCpu {
     /// The CPU side over the global tables `global`; pieces carry the progress count when `exact_replay`.
+    ///
+    /// One per machine: each numbers its address-space identifiers from the first, so two would tag different
+    /// memories' entries alike, which a TLB shared between virtual CPUs could mix.
     pub fn new(global: Table, exact_replay: bool) -> Result<NativeCpu, Full> {
+        assert!(
+            !CPU_SIDE_MADE.swap(true, Ordering::SeqCst),
+            "one CPU side per machine: address-space identifiers are numbered per CPU side"
+        );
+        // The width the monitor set from ID_AA64MMFR0_EL1.ASIDBits (boot.rs); identifiers above it would alias.
+        let last_asid = if TCR_EL1.matches_all(TCR_EL1::AS::ASID16Bits) {
+            u16::MAX
+        } else {
+            u8::MAX.into()
+        };
         let frame = with_frames(|frames| frames.take())?;
         let placed: Placed = floor::ask(&Routines { at: frame }, &[]);
         let at = Region::Code.base();
@@ -425,8 +464,27 @@ impl NativeCpu {
             inside: global,
             asid: IDLE_IDENTIFIER,
         };
-        // SAFETY: the monitor wrote each routine at its place, with the C calling convention's signature
-        // `Placed` names, and the frame is mapped for this level to run.
+        for start in [
+            placed.read_float_control,
+            placed.write_float_control,
+            placed.save_vectors,
+            placed.load_vectors,
+            placed.invalidate_whole_tlb,
+        ] {
+            assert!(
+                start < PAGE_SIZE && start.is_multiple_of(size_of::<u32>() as u64),
+                "a routine starts at an instruction of its page"
+            );
+        }
+        // SAFETY: trusted, not checked: the host wrote each routine at its place with a plain copy, and its code is
+        // trusted to keep the C calling convention's signature `Placed` names, and for everything it writes
+        // through its pointer argument, which no signature limits; `load_vectors` overwrites v8 to v15, which a
+        // call must keep: the Rust code here uses no vector register, since implementation.rs refuses to build
+        // this crate for a target with them (see the reason).
+        #[expect(
+            unsafe_code,
+            reason = "UNEXPLAINED: turns five addresses of the page the monitor placed its routines in, each checked only to be an instruction of the page, into function pointers that safe calls jump through into code the host wrote with a plain copy (routines.rs answer, marked UNEXPLAINED), trusted, not checked, to keep the C calling convention; save_vectors and load_vectors are also trusted for everything they write through their pointer argument, which no signature limits: save_vectors may write past the Vectors it is given, or load_vectors write through a pointer meant for reading; load_vectors overwrites all 32 vector registers, v8 to v15 among them, which a call must keep, which holds because the Rust code of this crate and of every crate it uses is built with no vector register: implementation.rs refuses to compile for aarch64 with target_os none when target_feature neon is on (so only aarch64-unknown-none-softfloat builds); the vendored memcpy's general registers only and the floor's own assembly are not covered by that check; stays a one-off"
+        )]
         let (
             read_float_control,
             write_float_control,
@@ -452,9 +510,11 @@ impl NativeCpu {
             global,
             memories: BTreeMap::new(),
             shared: BTreeMap::new(),
+            dropped: Vec::new(),
             threads: BTreeMap::new(),
             next_id: 0,
             next_asid: Some(FIRST_PROCESS_IDENTIFIER),
+            last_asid,
             idle,
             asked_reported: 0,
             full_reported: 0,
@@ -648,6 +708,18 @@ impl NativeCpu {
         }
     }
 
+    /// Breaks the block holding the page at `page`, if one does, into pages with the block's attributes,
+    /// breaking reservations for the table it needs. Nothing a page allows changes.
+    fn split_for_change(&mut self, table: Table, page: u64) -> Result<(), CpuError> {
+        loop {
+            match with_frames(|frames| table.split_block(frames, page)) {
+                Ok(()) => return Ok(()),
+                Err(full) if !self.reclaim() => return Err(out_of_memory(full)),
+                Err(_) => {}
+            }
+        }
+    }
+
     /// Gives the page at `page`, which has no frame, its frame: the block's when it shows one, else a private
     /// one, mapped with what the page allows.
     fn back(&mut self, memory: MemoryId, page: u64) -> Result<u64, CpuError> {
@@ -768,7 +840,7 @@ impl NativeCpu {
                 None => {
                     copied += 1;
                     let frame = self.private_frame(copy, at)?;
-                    frame_bytes(frame).copy_from_slice(frame_bytes(page.frame));
+                    copy_frame(frame, page.frame);
                     frame
                 }
             };
@@ -809,7 +881,7 @@ impl NativeCpu {
                 match held {
                     Some(frame) if !zeroed(at) => {
                         let copy = self.private_frame(memory, at)?;
-                        frame_bytes(copy).copy_from_slice(frame_bytes(frame));
+                        copy_frame(copy, frame);
                         let private = Page {
                             frame: copy,
                             shared: None,
@@ -826,7 +898,37 @@ impl NativeCpu {
             }
         }
         self.memory(memory)?.shown.remove(range);
+        self.give_dropped_blocks_back();
         Ok(())
+    }
+
+    /// Whether a memory shows the shared block or a page of one holds a frame of it.
+    fn shows(&self, shared: SharedId) -> bool {
+        self.memories.values().any(|m| {
+            m.shown.iter().any(|(_, s)| s.block == shared)
+                || m.pages.values().any(|p| p.shared == Some(shared))
+        })
+    }
+
+    /// Gives back the frames of every dropped block no memory shows any more.
+    fn give_dropped_blocks_back(&mut self) {
+        let unshown: Vec<SharedId> = self
+            .dropped
+            .iter()
+            .copied()
+            .filter(|&shared| !self.shows(shared))
+            .collect();
+        for shared in unshown {
+            self.dropped.retain(|&d| d != shared);
+            if let Some(block) = self.shared.remove(&shared) {
+                with_frames(|frames| {
+                    block
+                        .into_iter()
+                        .flatten()
+                        .for_each(|frame| frames.give(frame))
+                });
+            }
+        }
     }
 
     /// Drops the pieces translated from a range.
@@ -917,17 +1019,24 @@ impl NativeCpu {
     /// Gives every live memory a new identifier after one invalidation of every identifier, and the next free
     /// one, or none when there are more memories than identifiers.
     fn new_generation(&mut self) -> Option<u16> {
+        self.forget_every_translation();
+        let last = self.last_asid;
+        let mut next = IDLE_IDENTIFIER;
+        for m in self.memories.values_mut() {
+            next = next.checked_add(1).filter(|&n| n <= last)?;
+            m.space.asid = next;
+        }
+        self.slow(IDENTIFIERS_RAN_OUT, 1, self.memories.len() as u64);
+        next.checked_add(1).filter(|&n| n <= last)
+    }
+
+    /// Invalidates every cached translation of every identifier on every virtual CPU, and returns once that is
+    /// done.
+    fn forget_every_translation(&self) {
         barrier::dsb(ISHST);
         (self.invalidate_whole_tlb)();
         barrier::dsb(ISH);
         barrier::isb(SY);
-        let mut next = IDLE_IDENTIFIER;
-        for m in self.memories.values_mut() {
-            next = next.checked_add(1)?;
-            m.space.asid = next;
-        }
-        self.slow(IDENTIFIERS_RAN_OUT, 1, self.memories.len() as u64);
-        next.checked_add(1)
     }
 
     fn save_vectors(&mut self, thread: ThreadId) {
@@ -963,7 +1072,12 @@ impl NativeCpu {
             })?;
             self.code_mapped += PAGE_SIZE;
         }
-        // SAFETY: the code area is mapped writable at this level, and nothing runs this range yet.
+        // SAFETY: not shown: the range from `code_next` on holds no code placed yet, but the frames under it come
+        // from take, which does not check that nothing else uses them (see the reason).
+        #[expect(
+            unsafe_code,
+            reason = "UNSOUND: copies host code bytes into the code area from code_next on, mapped writable at this level, where this CPU side placed no code yet; but the frames under it are frames from take, which hands out frames give takes back without checking that nothing uses them, so another view of such a frame (a copy of Table, frame_bytes, write_frame, the linear map) may still reach it while it is written; sound once take hands out owned frames that give cannot take back while anything uses them; Words replaces it"
+        )]
         unsafe {
             ptr::copy_nonoverlapping(code_bytes.as_ptr(), start as *mut u8, code_bytes.len())
         };
@@ -1533,13 +1647,22 @@ fn drop_piece(m: &mut Memory, at: u64, empty: u32) {
     }
 }
 
+#[expect(
+    unsafe_code,
+    reason = "UNSOUND: a private safe fn that writes a register page into whatever frame number it is given, through the linear map, the same shape as frame_bytes; its callers pass the frame taken for the thread from Frames, which only convention ties to it; Words replaces it"
+)]
 fn write_page(frame: u64, page: &RegisterPage) {
-    // SAFETY: the register page's frame is the thread's; `RegisterPage` is `#[repr(C)]` words.
+    // SAFETY: not shown: any frame number is taken, and only convention ties it to the thread's register page;
+    // `RegisterPage` is `#[repr(C)]` words.
     unsafe { ptr::write_volatile(linear(frame) as *mut RegisterPage, page.clone()) };
 }
 
+#[expect(
+    unsafe_code,
+    reason = "UNSOUND: a private safe fn that reads a register page from whatever frame number it is given, through the linear map, with a plain read that races any other virtual CPU writing that frame, the same shape as frame_bytes; its callers pass the frame taken for the thread from Frames, which only convention ties to it; Words replaces it"
+)]
 fn read_page(frame: u64) -> RegisterPage {
-    // SAFETY: as in `write_page`.
+    // SAFETY: not shown, as in `write_page`; and the plain read races any other virtual CPU writing the frame.
     unsafe { ptr::read_volatile(linear(frame) as *const RegisterPage) }
 }
 
@@ -1555,7 +1678,7 @@ impl Cpu for NativeCpu {
             Some(asid) => asid,
             None => self.new_generation().ok_or(CpuError::OutOfMemory)?,
         };
-        self.next_asid = asid.checked_add(1);
+        self.next_asid = asid.checked_add(1).filter(|&n| n <= self.last_asid);
         let global = self.global;
         let space = with_frames(|frames| AddressSpace::new(frames, &global, asid))
             .map_err(out_of_memory)?;
@@ -1583,8 +1706,10 @@ impl Cpu for NativeCpu {
         let Some(m) = self.memories.remove(&memory) else {
             return;
         };
-        // Its tables may be the ones switched to; its identifier is not used again before a new generation.
+        // Its tables may be the ones switched to. Every CPU forgets its translations before its tables and frames
+        // are given back, so none rests on the identifier staying unused until a new generation.
         self.idle.switch();
+        self.forget_every_translation();
         let global = self.global;
         self.runs.extend(m.reserved.values().map(|r| r.run));
         with_frames(|frames| {
@@ -1607,6 +1732,7 @@ impl Cpu for NativeCpu {
                 global.top_entry(top) != m.space.inside.top_entry(top)
             });
         });
+        self.give_dropped_blocks_back();
     }
 
     fn read(&mut self, memory: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {
@@ -1676,12 +1802,20 @@ impl Cpu for NativeCpu {
         let blocks: Vec<u64> = whole_blocks(&range)
             .filter(|&base| table.is_block(base))
             .collect();
-        let was: Vec<(u64, El1Attributes)> = m
+        let changed: Vec<u64> = m
             .pages
             .range(range.clone())
             .filter(|&(&at, _)| blocks.binary_search(&block_of(at)).is_err())
-            .map(|(&at, _)| (at, attributes(m.allows(at))))
+            .filter(|&(&at, _)| attributes(m.allows(at)) != now)
+            .map(|(&at, _)| at)
             .collect();
+        // Every block a changed page lies in is split before the record changes: a split needs a frame, and a
+        // refusal leaves the record and the machine as they were. After it no step below can fail, so the
+        // record and the machine change together while no guest of this CPU side runs.
+        for &at in &changed {
+            self.split_for_change(table, at)?;
+        }
+        let m = self.memory(memory)?;
         let reserved: Vec<u64> = m
             .reserved
             .range(block_of(range.start)..range.end)
@@ -1695,10 +1829,9 @@ impl Cpu for NativeCpu {
         for base in blocks {
             table.protect_block(base, now);
         }
-        for (at, before) in was {
-            if before != now {
-                with_frames(|frames| table.protect(frames, at, now)).map_err(out_of_memory)?;
-            }
+        for at in changed {
+            with_frames(|frames| table.protect(frames, at, now))
+                .expect("its block was split above, so protecting it takes no frame");
         }
         for base in reserved {
             self.promote(memory, base)?;
@@ -1766,6 +1899,7 @@ impl Cpu for NativeCpu {
             },
         );
         self.forget_changed_code(memory, address, length);
+        self.give_dropped_blocks_back();
         Ok(())
     }
 
@@ -1827,15 +1961,18 @@ impl Cpu for NativeCpu {
         Ok(())
     }
 
+    /// The block's frames are given back, unless a memory still shows it: that memory's pages would map
+    /// frames given to another. The drop is then refused (counted as [`SHOWN_BLOCK_KEPT`]) and the block kept
+    /// until no memory shows it.
     fn shared_drop(&mut self, shared: SharedId) {
-        if let Some(block) = self.shared.remove(&shared) {
-            with_frames(|frames| {
-                block
-                    .into_iter()
-                    .flatten()
-                    .for_each(|frame| frames.give(frame))
-            });
+        if !self.shared.contains_key(&shared) || self.dropped.contains(&shared) {
+            return;
         }
+        self.dropped.push(shared);
+        if self.shows(shared) {
+            self.slow(SHOWN_BLOCK_KEPT, 1, shared.0.into());
+        }
+        self.give_dropped_blocks_back();
     }
 
     fn thread_new(&mut self, memory: MemoryId) -> Result<ThreadId, CpuError> {

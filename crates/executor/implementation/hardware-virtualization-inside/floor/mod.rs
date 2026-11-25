@@ -5,6 +5,7 @@ pub mod entry;
 pub mod heap;
 pub mod tables;
 
+use alloc::vec::Vec;
 use core::arch::asm;
 use core::fmt::{self, Write};
 use core::ptr::{self, NonNull};
@@ -49,9 +50,14 @@ pub fn cpu() -> u64 {
 }
 
 /// The running virtual CPU's link page.
+#[expect(
+    unsafe_code,
+    reason = "UNSOUND: a safe fn returning a fresh &'static mut Link on each call, so two can live at once, over a page the host rewrites while one lives; Words replaces it"
+)]
 fn link_page() -> &'static mut Link {
     let page = FIRST_LINK.load(Ordering::Relaxed) + cpu() * PAGE_SIZE;
-    // SAFETY: each virtual CPU has its own link page, reached through the linear map.
+    // SAFETY: not shown: each virtual CPU has its own link page, but every call makes a new `&'static mut`, so
+    // two can live at once, and the host rewrites the page while one lives (see the reason).
     unsafe { &mut *(linear(page) as *mut Link) }
 }
 
@@ -59,7 +65,7 @@ fn link_page() -> &'static mut Link {
 pub fn ask<M: Message>(message: &M, bytes: &[u8]) -> M::Answer {
     let link = link_page();
     link.ask(message, bytes);
-    doorbell();
+    doorbell(link);
     link.get()
 }
 
@@ -67,7 +73,7 @@ pub fn ask<M: Message>(message: &M, bytes: &[u8]) -> M::Answer {
 pub fn ask_link<M: Message, T>(message: &M, bytes: &[u8], read: impl FnOnce(&Link) -> T) -> T {
     let link = link_page();
     link.ask(message, bytes);
-    doorbell();
+    doorbell(link);
     read(link)
 }
 
@@ -80,7 +86,7 @@ impl crate::link::Ring for Doorbell {
     }
 
     fn ring(&mut self) {
-        doorbell();
+        doorbell(link_page());
     }
 }
 
@@ -98,10 +104,11 @@ pub fn asked() -> (u64, u64) {
     )
 }
 
-/// Rings the doorbell: the virtual CPU leaves to the monitor and comes back answered.
-fn doorbell() {
+/// Rings the doorbell with the request in `link`, the running virtual CPU's link page: the virtual CPU leaves to
+/// the monitor and comes back answered.
+fn doorbell(link: &Link) {
     ASKED.fetch_add(1, Ordering::Relaxed);
-    LAST_REQUEST.store(link_page().head.request, Ordering::Relaxed);
+    LAST_REQUEST.store(link.head.request, Ordering::Relaxed);
     barrier::dsb(SY);
     // The monitor answers in the link page and resumes at the next instruction.
     smccc::hvc32(DOORBELL_FUNCTION, Default::default());
@@ -129,7 +136,7 @@ pub fn send<M: Message>(message: &M, text: fmt::Arguments) {
     let link = link_page();
     link.ask(message, &[]);
     link.head.length = out.length as u64;
-    doorbell();
+    doorbell(link);
 }
 
 /// Prints a line in the host's log.
@@ -139,6 +146,10 @@ macro_rules! print {
 }
 
 /// Reports a fault in the inside itself and stops.
+#[expect(
+    unsafe_code,
+    reason = "exports floor_fatal under its own name for the vector assembly to call, a name nothing else defines; a sym operand of global_asm! would remove it"
+)]
 #[unsafe(no_mangle)]
 extern "C" fn floor_fatal(esr: u64, elr: u64, far: u64) -> ! {
     loop {
@@ -174,11 +185,12 @@ impl Floor {
         VBAR_EL1.set(entry::vectors());
         barrier::isb(SY);
         FIRST_LINK.store(start.link - start.cpu * PAGE_SIZE, Ordering::Relaxed);
-        let global = Table {
-            root: start.boot_root,
-        };
+        let global = Table::boot_map(start.boot_root);
         if start.cpu == 0 {
             *FRAMES.lock() = Some(Frames::new(start.free, MEMORY_BASE + start.memory));
+            // The free list's room, made by the heap outside the frames' lock.
+            let list = Vec::with_capacity(with_frames(|frames| frames.most()));
+            with_frames(|frames| frames.keep_free_list_in(list));
             with_frames(|frames| global.reserve_top(frames, Region::Code.base()))
                 .expect("the boot frames fit guest-physical memory");
         }
@@ -197,8 +209,12 @@ impl Floor {
             NonNull::new(linear(GIC_REDISTRIBUTORS) as *mut GicrSgi).expect("redistributors");
         // Only the redistributors of virtual CPUs up to this one are known to exist yet.
         let known = self.start.cpu as usize + 1;
-        // SAFETY: the interrupt controller's registers are mapped as device memory through the linear map, and
-        // nothing else uses them.
+        // SAFETY: the interrupt controller's registers are mapped as device memory through the linear map; that
+        // nothing else uses them rests on this safe pub method's one caller calling it once, not on a check.
+        #[expect(
+            unsafe_code,
+            reason = "UNEXPLAINED: builds the GICv3 driver over its registers, mapped as device memory through the linear map, from a safe pub method that nothing but its one caller keeps to one call; stays a one-off"
+        )]
         let mut gic =
             unsafe { GicV3::new(UniqueMmioPointer::new(distributor), redistributors, known) }
                 .expect("interrupt controller");
@@ -298,10 +314,10 @@ impl AddressSpace {
     pub fn switch(&self) {
         let asid = u64::from(self.asid);
         let user = (TTBR0_EL1::ASID.val(asid)
-            + TTBR0_EL1::BADDR.val(self.user.root >> TTBR0_EL1::BADDR.shift))
+            + TTBR0_EL1::BADDR.val(self.user.root() >> TTBR0_EL1::BADDR.shift))
         .value;
         let inside = (TTBR1_EL1::ASID.val(asid)
-            + TTBR1_EL1::BADDR.val(self.inside.root >> TTBR1_EL1::BADDR.shift))
+            + TTBR1_EL1::BADDR.val(self.inside.root() >> TTBR1_EL1::BADDR.shift))
         .value;
         if TTBR0_EL1.get() == user && TTBR1_EL1.get() == inside {
             return;
@@ -373,6 +389,10 @@ pub fn make_code_visible(va: u64, length: u64) {
     let mut at = va & !(data_line - 1);
     while at < va + length {
         // SAFETY: cache maintenance only.
+        #[expect(
+            unsafe_code,
+            reason = "cleans one data cache line by address, which has no memory effect and at worst faults to floor_unexpected; CodeCache replaces it"
+        )]
         unsafe { asm!("dc cvau, {0}", in(reg) at, options(nostack, preserves_flags)) };
         at += data_line;
     }
@@ -380,6 +400,10 @@ pub fn make_code_visible(va: u64, length: u64) {
     let mut at = va & !(instruction_line - 1);
     while at < va + length {
         // SAFETY: cache maintenance only.
+        #[expect(
+            unsafe_code,
+            reason = "invalidates one instruction cache line by address, which has no memory effect and at worst faults to floor_unexpected; CodeCache replaces it"
+        )]
         unsafe { asm!("ic ivau, {0}", in(reg) at, options(nostack, preserves_flags)) };
         at += instruction_line;
     }
@@ -387,9 +411,21 @@ pub fn make_code_visible(va: u64, length: u64) {
     barrier::isb(SY);
 }
 
-/// Copies `bytes` to guest-physical `frame` through the linear map.
+/// Copies `bytes` to guest-physical `frame` through the linear map, from `offset`; they must fit the frame.
 pub fn write_frame(frame: u64, offset: u64, bytes: &[u8]) {
-    // SAFETY: the frame is ours.
+    assert!(frame.is_multiple_of(PAGE_SIZE), "a frame starts a page");
+    assert!(
+        offset
+            .checked_add(bytes.len() as u64)
+            .is_some_and(|end| end <= PAGE_SIZE),
+        "the bytes fit the frame"
+    );
+    // SAFETY: not shown: the bytes lie in the frame, but the frame may be any, the floor's own or one a guest on
+    // another virtual CPU writes (see the reason).
+    #[expect(
+        unsafe_code,
+        reason = "UNSOUND: a plain copy into any frame a caller of this safe pub fn names, which may be the floor's own or one a guest on another virtual CPU is writing; the asserts keep it inside one frame; Words replaces it"
+    )]
     unsafe {
         ptr::copy_nonoverlapping(
             bytes.as_ptr(),
