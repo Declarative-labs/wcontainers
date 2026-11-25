@@ -33,6 +33,9 @@ pub const INPUT_DENORMAL: u64 = 1 << 7;
 
 /// The bits of the fraction of a half-precision value, which Rust's stable types do not name.
 const HALF_FRACTION_BITS: u32 = 10;
+const BFLOAT16_FRACTION_BITS: u32 = 7;
+/// The range FJCVTZS's result must lie in to be exact: a 32-bit signed integer's.
+const JAVASCRIPT_INTEGER_BITS: u32 = u32::BITS;
 /// The bits a shift of a value from a fixed-point register leaves for its fraction: FBITS is 64 less the scale.
 const FIXED_POINT_SCALE_LIMIT: u32 = u64::BITS;
 /// The field of the scale of a fixed-point conversion.
@@ -46,12 +49,14 @@ pub enum Precision {
     Half,
     Single,
     Double,
+    /// [BFloat16](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-float#:~:text=FPRoundBF): single precision's exponent with seven fraction bits.
+    BFloat16,
 }
 
 impl Precision {
     pub const fn to_bits(self) -> u32 {
         match self {
-            Self::Half => u16::BITS,
+            Self::Half | Self::BFloat16 => u16::BITS,
             Self::Single => u32::BITS,
             Self::Double => u64::BITS,
         }
@@ -62,6 +67,7 @@ impl Precision {
             Self::Half => HALF_FRACTION_BITS,
             Self::Single => f32::MANTISSA_DIGITS - 1,
             Self::Double => f64::MANTISSA_DIGITS - 1,
+            Self::BFloat16 => BFLOAT16_FRACTION_BITS,
         }
     }
 
@@ -190,7 +196,10 @@ impl Context {
             Precision::Half => {
                 (!self.conversion || crate::planted::is(73)) && self.fpcr & FLUSH_HALF_TO_ZERO != 0
             }
-            Precision::Single | Precision::Double => self.fpcr & FLUSH_TO_ZERO != 0,
+            // FPRoundBF rounds at N = 32, so FZ governs BFloat16.
+            Precision::Single | Precision::Double | Precision::BFloat16 => {
+                self.fpcr & FLUSH_TO_ZERO != 0
+            }
         }
     }
 
@@ -618,6 +627,16 @@ pub enum FloatingPointOperation {
         unsigned: bool,
         fixed_point: bool,
     },
+    /// [FMOV](https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FMOV--general---Floating-point-move-to-or-from-general-purpose-register-without-conversion-)
+    /// of a vector register's upper doubleword, to a general-purpose register or from one, which keeps the lower.
+    MoveUpperDoubleword {
+        to_vector: bool,
+    },
+    /// [FJCVTZS](https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/FJCVTZS--Floating-point-JavaScript-convert-to-signed-fixed-point--rounding-toward-zero-):
+    /// toward zero, modulo two to the 32, with Z set where the result is exact.
+    ConvertToJavaScriptInteger,
+    /// [BFCVT](https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/BFCVT--Floating-point-convert-from-single-precision-to-BFloat16-format--scalar--)
+    ConvertToBFloat16,
 }
 
 impl FloatingPointOperation {
@@ -626,6 +645,7 @@ impl FloatingPointOperation {
         !matches!(
             self,
             Self::Move
+                | Self::MoveUpperDoubleword { .. }
                 | Self::MoveImmediate
                 | Self::Absolute
                 | Self::Negate
@@ -670,6 +690,10 @@ pub const fn to_floating_point_operation(
         | I::Fmov64ToDouble
         | I::FmovHalfTo64
         | I::Fmov64ToHalf => O::Move,
+        I::FmovDXHighr => O::MoveUpperDoubleword { to_vector: false },
+        I::FmovXDHighr => O::MoveUpperDoubleword { to_vector: true },
+        I::Fjcvtzs => O::ConvertToJavaScriptInteger,
+        I::BfcvtSingleToHalf => O::ConvertToBFloat16,
         I::FmovImmediateSingle | I::FmovImmediateDouble | I::FmovImmediateHalf => O::MoveImmediate,
         I::FabsSingle | I::FabsDouble | I::FabsHalf => O::Absolute,
         I::FnegSingle | I::FnegDouble | I::FnegHalf => O::Negate,
@@ -896,6 +920,10 @@ pub fn simulate_floating_point<LevelSpecific>(
     operands: &[Operand],
     operation: FloatingPointOperation,
 ) -> Result<(), Exception> {
+    if let FloatingPointOperation::MoveUpperDoubleword { to_vector } = operation {
+        move_upper_doubleword(processor, word, to_vector);
+        return Ok(());
+    }
     let mut sources = [Source::Immediate(0); MAXIMUM_SOURCES];
     let mut count = 0;
     let mut destination = None;
@@ -990,6 +1018,18 @@ pub fn simulate_floating_point<LevelSpecific>(
             );
         }
         (Outcome::Flags(flags), _) => processor.condition_flags = flags,
+        (Outcome::ValueAndFlags(value, flags), Some(Destination::General { number, width })) => {
+            write_register(
+                processor,
+                number,
+                value & width.to_mask(),
+                RegisterThirtyOne::ZeroRegister,
+            );
+            processor.condition_flags = flags;
+        }
+        (Outcome::ValueAndFlags(..), _) => {
+            panic!("{operation:?} writes a general-purpose register and the flags")
+        }
         (Outcome::Value(_), None) => panic!("{operation:?} writes no register"),
     }
     if crate::planted::is(80) {
@@ -1004,6 +1044,8 @@ pub fn simulate_floating_point<LevelSpecific>(
 enum Outcome {
     Value(u64),
     Flags(ConditionFlags),
+    /// A register's value and the condition flags, as FJCVTZS writes both.
+    ValueAndFlags(u64, ConditionFlags),
 }
 
 /// The precision of the first floating-point source, or of the destination.
@@ -1312,7 +1354,152 @@ fn apply(
             };
             from_fixed(value, width, fbits, unsigned, precision, rounding, context)
         }
+        O::ConvertToJavaScriptInteger => {
+            let operand = unpack(bits_of(0), precision, context);
+            let (result, exact) = to_javascript_integer(operand, context);
+            return Outcome::ValueAndFlags(
+                result,
+                if exact {
+                    ConditionFlags::ZERO
+                } else {
+                    ConditionFlags::empty()
+                },
+            );
+        }
+        O::ConvertToBFloat16 => {
+            to_bfloat16(unpack(bits_of(0), precision, context), rounding, context)
+        }
+        O::MoveUpperDoubleword { .. } => {
+            unreachable!("`simulate_floating_point` moves the upper doubleword itself")
+        }
     })
+}
+
+/// FMOV Xd, Vn.D[1] and FMOV Vd.D[1], Xn, on the registers RD and RN name.
+fn move_upper_doubleword<LevelSpecific>(
+    processor: &mut Processor<LevelSpecific>,
+    word: u32,
+    to_vector: bool,
+) {
+    let (destination, source) = (
+        crate::encoding::RD.read(word),
+        crate::encoding::RN.read(word),
+    );
+    if to_vector {
+        let value = read_register(processor, source, RegisterThirtyOne::ZeroRegister);
+        let register = &mut processor.vector_registers[destination as usize];
+        let kept = if crate::planted::is(708) {
+            0
+        } else {
+            *register & u128::from(u64::MAX)
+        };
+        *register = kept | (u128::from(value) << u64::BITS);
+    } else {
+        let value = (processor.vector_registers[source as usize] >> u64::BITS) as u64;
+        write_register(
+            processor,
+            destination,
+            value,
+            RegisterThirtyOne::ZeroRegister,
+        );
+    }
+}
+
+/// [FPToFixedJS](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-float#:~:text=FPToFixedJS): the low 32 bits of the
+/// integer toward zero, and whether it is exact: in range, with nothing discarded, and not a negative zero or a
+/// flushed subnormal.
+fn to_javascript_integer(operand: Unpacked, context: &mut Context) -> (u64, bool) {
+    let mut exact = true;
+    let (magnitude_low, discarded, in_range) = match operand.kind {
+        Kind::QuietNaN | Kind::SignalingNaN => {
+            context.raise(INVALID_OPERATION);
+            return (0, false);
+        }
+        Kind::Infinity => {
+            context.raise(INVALID_OPERATION);
+            return (0, false);
+        }
+        Kind::Zero => {
+            // A negative zero, or a subnormal FZ flushed, is not exact.
+            let flushed = operand.bits & low_ones(f64::MANTISSA_DIGITS - 1) != 0;
+            return (0, !operand.sign && !flushed);
+        }
+        Kind::Number if operand.exponent >= 0 => {
+            let shift = operand.exponent as u32;
+            let low = if shift >= u64::BITS {
+                0
+            } else {
+                (operand.mantissa << shift) & low_ones(JAVASCRIPT_INTEGER_BITS)
+            };
+            // The magnitude is the mantissa shifted up, so it reaches two to the 31 when its top bit does.
+            let top = u64::BITS - operand.mantissa.leading_zeros() - 1 + shift;
+            let limit = JAVASCRIPT_INTEGER_BITS - 1;
+            let fits =
+                top < limit || (top == limit && operand.sign && operand.mantissa.is_power_of_two());
+            (low, false, fits)
+        }
+        Kind::Number => {
+            let shift = operand.exponent.unsigned_abs();
+            let (integer, discarded) = if shift >= u64::BITS {
+                (0, operand.mantissa != 0)
+            } else {
+                (
+                    operand.mantissa >> shift,
+                    operand.mantissa & low_ones(shift) != 0,
+                )
+            };
+            let limit = 1_u64 << (JAVASCRIPT_INTEGER_BITS - 1);
+            let fits = integer < limit || (operand.sign && integer == limit);
+            (integer & low_ones(JAVASCRIPT_INTEGER_BITS), discarded, fits)
+        }
+    };
+    let result = if operand.sign {
+        magnitude_low.wrapping_neg() & low_ones(JAVASCRIPT_INTEGER_BITS)
+    } else {
+        magnitude_low
+    };
+    if !in_range && !crate::planted::is(709) {
+        context.raise(INVALID_OPERATION);
+        exact = false;
+    } else if discarded {
+        context.raise(INEXACT);
+        exact = false;
+    }
+    (result, exact)
+}
+
+/// [FPConvertBF](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-float#:~:text=FPConvertBF): a single-precision value rounded to BFloat16, a NaN made quiet
+/// and cut to its top half or the default NaN; without FEAT_AFP, FPCR.AH is never set.
+fn to_bfloat16(operand: Unpacked, rounding: Rounding, context: &mut Context) -> u64 {
+    const HALF_SHIFT: u32 = u16::BITS;
+    match operand.kind {
+        Kind::QuietNaN | Kind::SignalingNaN => {
+            if operand.kind == Kind::SignalingNaN {
+                context.raise(INVALID_OPERATION);
+            }
+            let single = if context.default_nan() {
+                Precision::Single.to_default_nan()
+            } else {
+                operand.bits | Precision::Single.to_quiet_bit()
+            };
+            single >> HALF_SHIFT
+        }
+        Kind::Infinity => Precision::BFloat16.to_infinity(operand.sign),
+        Kind::Zero => Precision::BFloat16.to_zero(operand.sign),
+        Kind::Number => {
+            let rounding = if crate::planted::is(710) {
+                Rounding::TowardZero
+            } else {
+                rounding
+            };
+            round(
+                Real::from_number(operand),
+                Precision::BFloat16,
+                rounding,
+                context,
+            )
+        }
+    }
 }
 
 /// Whether the bits of the precision are a NaN, for the planted bugs.

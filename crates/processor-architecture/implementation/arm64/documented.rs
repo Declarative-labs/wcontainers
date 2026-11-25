@@ -163,7 +163,7 @@ pub const fn writes_condition_flags(instruction: Instruction<Infallible>) -> boo
                 | I::ConvertFlagsToExternalFormat
                 | I::ConvertFlagsFromExternalFormat
         )) | Some(DocumentedOperation::FloatingPoint(
-            F::Compare { .. } | F::ConditionalCompare { .. }
+            F::Compare { .. } | F::ConditionalCompare { .. } | F::ConvertToJavaScriptInteger
         ))
     )
 }

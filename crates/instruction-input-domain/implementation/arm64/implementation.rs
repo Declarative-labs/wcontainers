@@ -1037,7 +1037,10 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
         );
     let (from_integer, to_integer) = match to_floating_point_operation(instruction) {
         Some(FloatingPointOperation::ConvertFromInteger { .. }) => (converted_precision, None),
-        Some(FloatingPointOperation::ConvertToInteger { .. }) => (None, converted_width),
+        Some(
+            FloatingPointOperation::ConvertToInteger { .. }
+            | FloatingPointOperation::ConvertToJavaScriptInteger,
+        ) => (None, converted_width),
         _ => (None, None),
     };
     for operand in record.operands {

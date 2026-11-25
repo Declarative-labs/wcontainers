@@ -60,7 +60,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 388] = [
+pub const PLANTED_BUGS: [PlantedBug; 391] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2388,5 +2388,23 @@ pub const PLANTED_BUGS: [PlantedBug; 388] = [
         instruction: Instruction::XarVector,
         planted_by: PlantedBy::RestOfTheSet,
         what: "rotates left",
+    },
+    PlantedBug {
+        number: 708,
+        instruction: Instruction::FmovXDHighr,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the lower doubleword is cleared",
+    },
+    PlantedBug {
+        number: 709,
+        instruction: Instruction::Fjcvtzs,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "an integer out of range is exact",
+    },
+    PlantedBug {
+        number: 710,
+        instruction: Instruction::BfcvtSingleToHalf,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "rounds toward zero whatever FPCR",
     },
 ];
