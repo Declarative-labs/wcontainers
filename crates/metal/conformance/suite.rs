@@ -723,6 +723,11 @@ const MISALIGNED_UNIFORM: u64 = 4;
 /// https://www.w3.org/TR/WGSL/#alignment-and-size
 const MISALIGNED_WORDS: u64 = 2;
 
+/// The bytes of one occlusion count.
+///
+/// https://developer.apple.com/documentation/metal/mtlvisibilityresultmode/counting
+const VISIBILITY_RESULT_BYTES: u64 = 8;
+
 /// A sample count every Apple GPU takes.
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
@@ -1293,6 +1298,64 @@ pub fn refuses_a_copy_between_texture_formats_that_differ<M: Metal>(mut subject:
     );
 }
 
+/// Checks that counting twice at one offset in a pass is refused, which Metal's validation stops.
+pub fn refuses_counting_twice_at_one_offset<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, "flat");
+    let texture = target(&mut subject);
+    let results = subject
+        .make_buffer(VISIBILITY_RESULT_BYTES)
+        .expect("make_buffer");
+    let mut descriptor = pass(&texture);
+    descriptor.visibility_result_buffer = Some(&results);
+    let count = |mode| RenderCommand::SetVisibilityResultMode { mode, offset: 0 };
+    let commands = vec![
+        count(VisibilityResultMode::Counting),
+        count(VisibilityResultMode::Disabled),
+        count(VisibilityResultMode::Counting),
+    ];
+    refuses_draw(&mut subject, &descriptor, &state, commands);
+}
+
+/// Checks that occlusion counts add up across passes: one sample for each covered pixel in each.
+pub fn adds_occlusion_counts_across_passes<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, "flat");
+    let depth_stencil = no_depth(&mut subject);
+    let vertices = covering(&mut subject);
+    let color = filled(&mut subject, &[0; COLOR_BYTES as usize]);
+    let texture = target(&mut subject);
+    let results = filled(&mut subject, &[0; VISIBILITY_RESULT_BYTES as usize]);
+    let mut descriptor = pass(&texture);
+    descriptor.visibility_result_buffer = Some(&results);
+    let bindings = vec![
+        RenderCommand::SetFragmentBuffer {
+            buffer: color,
+            offset: 0,
+            length: COLOR_BYTES,
+            index: 0,
+        },
+        RenderCommand::SetVisibilityResultMode {
+            mode: VisibilityResultMode::Counting,
+            offset: 0,
+        },
+    ];
+    let commands = covering_draw(&state, &vertices, &depth_stencil, bindings);
+    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    for _ in 0..2 {
+        subject
+            .encode_render_commands(&command_buffer, &descriptor, &commands)
+            .expect("encode_render_commands");
+    }
+    finish(&mut subject, &command_buffer);
+    let mut read = [0; VISIBILITY_RESULT_BYTES as usize];
+    subject
+        .read_contents(&results, 0, &mut read)
+        .expect("read_contents");
+    assert_eq!(
+        u64::from_le_bytes(read),
+        u64::from(2 * TARGET_SIDE * TARGET_SIDE)
+    );
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -1370,6 +1433,16 @@ macro_rules! tests {
         #[test]
         fn dispatches_with_workgroup_memory() {
             $crate::dispatches_with_workgroup_memory($value);
+        }
+
+        #[test]
+        fn refuses_counting_twice_at_one_offset() {
+            $crate::refuses_counting_twice_at_one_offset($value);
+        }
+
+        #[test]
+        fn adds_occlusion_counts_across_passes() {
+            $crate::adds_occlusion_counts_across_passes($value);
         }
 
         #[test]

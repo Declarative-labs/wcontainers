@@ -28,7 +28,8 @@ use objc2_metal::{
     MTLSamplerBorderColor, MTLSamplerDescriptor, MTLSamplerMinMagFilter, MTLSamplerMipFilter,
     MTLSamplerState, MTLScissorRect, MTLSize, MTLStencilDescriptor, MTLStencilOperation,
     MTLStorageMode, MTLStoreAction, MTLTexture, MTLTextureDescriptor, MTLTextureType,
-    MTLTextureUsage, MTLTriangleFillMode, MTLViewport, MTLVisibilityResultMode, MTLWinding,
+    MTLTextureUsage, MTLTriangleFillMode, MTLViewport, MTLVisibilityResultMode,
+    MTLVisibilityResultType, MTLWinding,
 };
 use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -1517,6 +1518,8 @@ fn check_render_commands(
         .map(|a| a.texture.0.pixel_format);
     let mut bound = RenderBindings::default();
     let mut depth_stencil: Option<&DirectDepthStencilState> = None;
+    // Metal counts into one offset at most once in a pass.
+    let mut counted: Vec<u64> = Vec::new();
     let check_slot = |index: u32, most: u32| {
         if index < most {
             Ok(())
@@ -1639,6 +1642,12 @@ fn check_render_commands(
                     || offset + VISIBILITY_RESULT_BYTES > VISIBILITY_RESULT_SPAN
                 {
                     return Err(out("a visibility result offset"));
+                }
+                if *mode != VisibilityResultMode::Disabled {
+                    if counted.contains(offset) {
+                        return Err(invalid("counting twice at one offset in a pass"));
+                    }
+                    counted.push(*offset);
                 }
             }
             RenderCommand::DrawPrimitives {
@@ -2544,6 +2553,7 @@ fn pass_descriptor(
     }
     if let Some(buffer) = pass.visibility_result_buffer {
         raw.setVisibilityResultBuffer(Some(&buffer.0.raw));
+        raw.setVisibilityResultType(MTLVisibilityResultType::Accumulate);
     }
     let empty = pass.color_attachments.iter().all(Option::is_none)
         && pass.depth_attachment.is_none()

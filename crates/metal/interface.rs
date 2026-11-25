@@ -637,7 +637,7 @@ pub struct RenderPassDescriptor<'a, M: Metal + ?Sized> {
     pub color_attachments: [Option<RenderPassColorAttachment<'a, M>>; MAX_COLOR_ATTACHMENTS],
     pub depth_attachment: Option<RenderPassDepthStencilAttachment<'a, M>>,
     pub stencil_attachment: Option<RenderPassDepthStencilAttachment<'a, M>>,
-    /// The buffer occlusion counts land in, eight bytes each.
+    /// The buffer occlusion counts are added into, eight bytes each, so a count spread over passes adds up.
     pub visibility_result_buffer: Option<&'a M::Buffer>,
     pub render_target_width: u32,
     pub render_target_height: u32,
@@ -753,7 +753,7 @@ pub enum RenderCommand<M: Metal + ?Sized> {
         front: u32,
         back: u32,
     },
-    /// Counts into the pass's visibility result buffer at `offset`, a multiple of eight.
+    /// Counts into the pass's visibility result buffer at `offset`, a multiple of eight counted into once a pass.
     SetVisibilityResultMode {
         mode: VisibilityResultMode,
         offset: u64,
