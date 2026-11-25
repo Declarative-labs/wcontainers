@@ -4215,8 +4215,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-behavior-source",
  "wcontainers-behavior-source-conformance",
- "wcontainers-distinguishing-state-generator-input-domain",
- "wcontainers-instruction-input-domain-arm64",
+ "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-kvm",
  "wcontainers-kvm-direct",
  "wcontainers-processor-architecture",
@@ -4233,8 +4232,7 @@ dependencies = [
  "wcontainers-behavior-source-conformance",
  "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-input-domain",
- "wcontainers-instruction-input-domain-arm64",
+ "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
 ]
@@ -4375,6 +4373,18 @@ version = "0.1.0"
 dependencies = [
  "vstd",
  "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-distinguishing-state-generator-arm64"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-conformance",
+ "wcontainers-instruction-input-domain",
+ "wcontainers-instruction-input-domain-arm64",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
 ]
 
 [[package]]
@@ -4970,7 +4980,8 @@ dependencies = [
  "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-behavior-source-recording",
  "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-distinguishing-state-generator-arm64",
+ "wcontainers-instruction-input-domain",
  "wcontainers-instruction-input-domain-arm64",
  "wcontainers-precise-instruction-set",
  "wcontainers-precise-instruction-set-conformance",
@@ -5027,9 +5038,10 @@ name = "wcontainers-processor-architecture-arm64"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
+ "wcontainers-behavior-source",
+ "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-input-domain",
- "wcontainers-instruction-input-domain-arm64",
+ "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-privilege-level",
  "wcontainers-privilege-level-arm64-user",
  "wcontainers-processor-architecture",

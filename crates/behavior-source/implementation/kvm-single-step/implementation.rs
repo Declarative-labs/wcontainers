@@ -23,7 +23,8 @@ use wcontainers_processor_architecture::{
 };
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
 use wcontainers_processor_architecture_arm64::{
-    Arm64, ConditionFlags, DataAccess, InstructionFetch, PagePermission, Processor, User,
+    Arm64, ConditionFlags, DataAccess, ExclusiveMonitor, InstructionFetch, PagePermission,
+    Processor, User,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 use zerocopy::{FromZeros, IntoBytes};
@@ -194,9 +195,11 @@ struct Resolved {
 
 /// Why this source did not run a state, found before the processor or the hook is written.
 ///
-/// The first two are found before the guest is written; after any other, the next state runs on a new machine.
+/// The first three are found before the guest is written; after any other, the next state runs on a new machine.
 #[derive(Debug)]
 pub enum Refusal {
+    /// The exclusive monitor holds an address, which no state single-stepping reaches can give: stepping opens it.
+    ExclusiveMonitorHeld(ExclusiveMonitor),
     /// A permission starts or ends inside a page a program can use, which no chip can give.
     PermissionWithinAPage(Range<u64>),
     /// The pages the state maps, with the tables that lead to them and its slot, are more than the guest has.
@@ -977,12 +980,15 @@ impl BehaviorSource for KvmSingleStepMachine {
         memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), Refusal> {
+        if processor.exclusive_monitor != ExclusiveMonitor::Open {
+            return Err(Refusal::ExclusiveMonitorHeld(processor.exclusive_monitor));
+        }
+        let memory = memory.mutations;
         if self.renew_machine {
             self.renew()?;
         }
         let mut resolved = mem::take(&mut self.resolved);
-        let executed =
-            self.execute_resolved(processor, memory.mutations, &mut resolved, mutation_hook);
+        let executed = self.execute_resolved(processor, memory, &mut resolved, mutation_hook);
         release_excess_room(&mut resolved);
         self.resolved = resolved;
         executed
@@ -1404,6 +1410,8 @@ fn to_processor(registers: &Registers) -> Processor<()> {
         floating_point_control: registers.floating_point_control,
         floating_point_status: registers.floating_point_status,
         software_thread_id: registers.software_thread_id,
+        // The step's exception opens it (MEASURED: `hidden-state-loading/arm64/RESULT.md`, question 4).
+        exclusive_monitor: ExclusiveMonitor::Open,
         exception: syndrome::to_exception(registers.syndrome, registers.fault_address),
         level_specific: (),
     }

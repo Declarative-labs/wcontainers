@@ -36,24 +36,18 @@ pub struct Recording {
 }
 
 impl Recording {
-    /// Runs every listed instruction on the source from every state the generator gives for it, up to the first error.
+    /// Runs each of the instructions on the source from every state the generator gives for it, up to the first error.
     pub fn record<Source: BehaviorSource<Architecture = Arm64<User>>>(
         source: &mut Source,
         generator: &impl DistinguishingStateGenerator<Arm64<User>>,
+        instructions: impl IntoIterator<Item = Instruction<Infallible>>,
     ) -> Result<Recording, Source::Error> {
-        let instructions = Arm64::<User>::list_instructions()
+        let instructions = instructions
+            .into_iter()
             .map(|instruction| {
                 let cases = generator
                     .generate_states(instruction)
-                    .map(|before| {
-                        let mut after = before.clone();
-                        source.execute_single_instruction_in_place(
-                            &mut after.processor,
-                            before.memory(),
-                            &mut after.memory_mutations,
-                        )?;
-                        Ok((before, after))
-                    })
+                    .map(|before| run_case(source, before))
                     .collect::<Result<_, _>>()?;
                 Ok((instruction, cases))
             })
@@ -65,30 +59,66 @@ impl Recording {
         })
     }
 
-    /// Reads the recording of every listed instruction from the folder `write` wrote.
-    pub fn read(folder: &Path) -> io::Result<Recording> {
-        let instructions = Arm64::<User>::list_instructions()
-            .map(|instruction| {
-                let path = folder.join(text::to_file_name(instruction));
-                let malformed = |what: &dyn Debug| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("{}: {what:?}", path.display()),
-                    )
-                };
-                let (named, cases) = text::from_text(&std::fs::read_to_string(&path)?)
-                    .map_err(|error| malformed(&error))?;
-                if named != instruction {
-                    return Err(malformed(&named));
-                }
-                Ok((instruction, cases))
+    /// Runs every state this recording was made from on the source again, in the same order, up to the first error.
+    pub fn record_again<Source: BehaviorSource<Architecture = Arm64<User>>>(
+        &self,
+        source: &mut Source,
+    ) -> Result<Recording, Source::Error> {
+        let instructions = self
+            .instructions
+            .iter()
+            .map(|(instruction, cases)| {
+                let cases = cases
+                    .iter()
+                    .map(|(before, _)| run_case(source, before.clone()))
+                    .collect::<Result<_, _>>()?;
+                Ok((*instruction, cases))
             })
-            .collect::<io::Result<_>>()?;
+            .collect::<Result<_, _>>()?;
         Ok(Recording {
             instructions,
             next: (0, 0),
             played: None,
         })
+    }
+
+    /// Reads the recording of each listed instruction that has a file in the folder `write` wrote.
+    ///
+    /// A listed instruction with no file is not in the recording, which gives `NotRecorded` on any state of it, as on
+    /// any other state it holds no case for.
+    pub fn read(folder: &Path) -> io::Result<Recording> {
+        let mut instructions = Vec::new();
+        for instruction in Arm64::<User>::list_instructions() {
+            let path = folder.join(text::to_file_name(instruction));
+            let malformed = |what: &dyn Debug| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{}: {what:?}", path.display()),
+                )
+            };
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            let (named, cases) = text::from_text(&text).map_err(|error| malformed(&error))?;
+            if named != instruction {
+                return Err(malformed(&named));
+            }
+            instructions.push((instruction, cases));
+        }
+        Ok(Recording {
+            instructions,
+            next: (0, 0),
+            played: None,
+        })
+    }
+
+    /// Returns each instruction the recording holds, in its order.
+    pub fn instructions(&self) -> impl Iterator<Item = Instruction<Infallible>> {
+        self.instructions
+            .iter()
+            .map(|(instruction, _)| *instruction)
     }
 
     /// Writes each instruction's recording into the file named after it in the folder.
@@ -147,6 +177,20 @@ impl Recording {
                 Some((instruction, case))
             })
     }
+}
+
+/// Runs one state on the source, giving the state before and the state after.
+fn run_case<Source: BehaviorSource<Architecture = Arm64<User>>>(
+    source: &mut Source,
+    before: ExecutionState<'static, Arm64<User>>,
+) -> Result<RecordedCase, Source::Error> {
+    let mut after = before.clone();
+    source.execute_single_instruction_in_place(
+        &mut after.processor,
+        before.memory(),
+        &mut after.memory_mutations,
+    )?;
+    Ok((before, after))
 }
 
 impl BehaviorSource for Recording {

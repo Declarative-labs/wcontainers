@@ -21,7 +21,6 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
     generator: Generator,
 ) where
     Chip: Executor,
-    Chip::Architecture: Clone,
     <Chip::Architecture as ProcessorArchitecture>::PreciseInstruction:
         Simulator<Chip::Architecture, Error = Infallible>,
     <Chip::Architecture as ProcessorArchitecture>::ProcessorState: Debug,

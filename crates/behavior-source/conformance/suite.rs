@@ -7,13 +7,14 @@ use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture, Simulator};
 
 /// The provided `execute_single_instruction` gives what `execute_single_instruction_in_place` does: its processor,
-/// and its memory mutations appended.
+/// and its memory mutations appended, but in what a known behavior leaves undecided.
 pub fn execute_agrees_with_execute_in_place<Source, Generator>(
     mut source: Source,
     generator: Generator,
 ) where
     Source: BehaviorSource,
-    Source::Architecture: Clone,
+    <Source::Architecture as ProcessorArchitecture>::PreciseInstruction:
+        Simulator<Source::Architecture, Error = Infallible>,
     Generator: DistinguishingStateGenerator<Source::Architecture>,
 {
     for instruction in Source::Architecture::list_instructions() {
@@ -28,14 +29,19 @@ pub fn execute_agrees_with_execute_in_place<Source, Generator>(
             let executed = source.execute_single_instruction(before.clone());
             match (in_place, executed) {
                 (Ok(()), Ok(executed)) => {
-                    let mut memory_mutations = before.memory_mutations;
+                    let mut memory_mutations = before.memory_mutations.clone();
                     memory_mutations.append(&mut mutated);
+                    let in_place = ExecutionState {
+                        processor,
+                        memory_mutations,
+                    };
                     assert!(
-                        executed
-                            == ExecutionState {
-                                processor,
-                                memory_mutations
-                            },
+                        is_same_outcome::<_, Infallible>(
+                            instruction,
+                            &before,
+                            Ok(executed),
+                            Ok(in_place)
+                        ),
                         "execute and execute in place disagree"
                     );
                 }
@@ -48,19 +54,20 @@ pub fn execute_agrees_with_execute_in_place<Source, Generator>(
     }
 }
 
-/// Executing one state twice gives the same state after.
+/// Executing one state twice gives the same state after, but in what a known behavior leaves undecided.
 pub fn execution_is_deterministic<Source, Generator>(mut source: Source, generator: Generator)
 where
     Source: BehaviorSource,
-    Source::Architecture: Clone,
+    <Source::Architecture as ProcessorArchitecture>::PreciseInstruction:
+        Simulator<Source::Architecture, Error = Infallible>,
     Generator: DistinguishingStateGenerator<Source::Architecture>,
 {
     for instruction in Source::Architecture::list_instructions() {
         for before in generator.generate_states(instruction) {
             let first = source.execute_single_instruction(before.clone());
-            let second = source.execute_single_instruction(before);
+            let second = source.execute_single_instruction(before.clone());
             assert!(
-                is_same_result(first, second),
+                is_same_outcome(instruction, &before, first, second),
                 "one state gave two states after"
             );
         }
@@ -75,7 +82,6 @@ pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
     generator: Generator,
 ) where
     Source: BehaviorSource,
-    Source::Architecture: Clone,
     <Source::Architecture as ProcessorArchitecture>::PreciseInstruction:
         Simulator<Source::Architecture, Error = Infallible>,
     Generator: DistinguishingStateGenerator<Source::Architecture>,
@@ -120,7 +126,8 @@ pub fn next_state_after_an_error_executes_as_on_a_fresh_source<Source, Generator
     unexecutable: impl IntoIterator<Item = ExecutionState<'static, Source::Architecture>>,
 ) where
     Source: BehaviorSource,
-    Source::Architecture: Clone,
+    <Source::Architecture as ProcessorArchitecture>::PreciseInstruction:
+        Simulator<Source::Architecture, Error = Infallible>,
     Generator: DistinguishingStateGenerator<Source::Architecture>,
 {
     for (index, state) in unexecutable.into_iter().enumerate() {
@@ -130,9 +137,9 @@ pub fn next_state_after_an_error_executes_as_on_a_fresh_source<Source, Generator
         for instruction in Source::Architecture::list_instructions() {
             if let Some(before) = generator.generate_states(instruction).next() {
                 let after = source.execute_single_instruction(before.clone());
-                let expected = unbroken.execute_single_instruction(before);
+                let expected = unbroken.execute_single_instruction(before.clone());
                 assert!(
-                    is_same_result(after, expected),
+                    is_same_outcome(instruction, &before, after, expected),
                     "a state after the error of state {index} executes otherwise than on a source that met no error"
                 );
             }
@@ -140,13 +147,26 @@ pub fn next_state_after_an_error_executes_as_on_a_fresh_source<Source, Generator
     }
 }
 
-/// Returns whether two executions both give the same state after or both give an error.
-fn is_same_result<'memory, Architecture: ProcessorArchitecture, Error>(
-    first: Result<ExecutionState<'memory, Architecture>, Error>,
-    second: Result<ExecutionState<'memory, Architecture>, Error>,
-) -> bool {
+/// Returns whether two executions of the state both give an error, or states after that are the same or both meet
+/// what one known behavior of the instruction expects, which may leave some values undecided.
+fn is_same_outcome<Architecture, Error>(
+    instruction: Architecture::Instruction,
+    before: &ExecutionState<'static, Architecture>,
+    first: Result<ExecutionState<'static, Architecture>, Error>,
+    second: Result<ExecutionState<'static, Architecture>, Error>,
+) -> bool
+where
+    Architecture: ProcessorArchitecture,
+    Architecture::PreciseInstruction: Simulator<Architecture, Error = Infallible>,
+{
     match (first, second) {
-        (Ok(first), Ok(second)) => first == second,
+        (Ok(first), Ok(second)) => {
+            first == second
+                || Architecture::list_known_behaviors(instruction).any(|precise| {
+                    let Ok(expected) = precise.simulate_state(before.clone());
+                    first.meets_expectations(&expected) && second.meets_expectations(&expected)
+                })
+        }
         (Err(_), Err(_)) => true,
         (Ok(_), Err(_)) | (Err(_), Ok(_)) => false,
     }

@@ -5,10 +5,10 @@ use std::convert::Infallible;
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture, Simulator};
 
-/// For every two distinct known behaviors of one instruction, some generated state gives different states after.
+/// For every two distinct known behaviors of one instruction, some generated state gives different expectations after.
 pub fn distinguishes_every_two_known_behaviors<Architecture, Generator>(generator: Generator)
 where
-    Architecture: ProcessorArchitecture + Clone,
+    Architecture: ProcessorArchitecture,
     Architecture::PreciseInstruction: Simulator<Architecture, Error = Infallible>,
     Generator: DistinguishingStateGenerator<Architecture>,
 {

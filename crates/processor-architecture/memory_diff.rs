@@ -248,15 +248,15 @@ impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
                 proof {
                     assert(*mutation == mutations@[index]);
                 }
-                // VERUS: no `let` in a condition joined by `&&`, so the empty check is an `if` of its own.
-                if let MemoryDelta::PermissionAssignment {
-                    addresses,
-                    permission,
-                } = mutation
-                {
-                    if !addresses.is_empty() {
+                // VERUS: no `let` in a condition joined by `&&`, so the empty check is a guard.
+                match mutation {
+                    MemoryDelta::PermissionAssignment {
+                        addresses,
+                        permission,
+                    } if !addresses.is_empty() => {
                         insert_range(&mut rendered, addresses, *permission);
-                    }
+                    },
+                    _ => {},
                 }
                 proof {
                     lemma_memory_of_take(mutations@, index);

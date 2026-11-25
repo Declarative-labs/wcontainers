@@ -53,7 +53,7 @@ pub fn agrees_with_recordings<Architecture, Set>(
         ),
     >,
 ) where
-    Architecture: ProcessorArchitecture + Clone,
+    Architecture: ProcessorArchitecture,
     Architecture::PreciseInstruction: Simulator<Architecture, Error = Infallible>,
     Set: PreciseInstructionSet<Architecture>,
 {

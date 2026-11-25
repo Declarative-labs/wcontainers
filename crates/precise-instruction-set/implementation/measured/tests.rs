@@ -1,5 +1,6 @@
 extern crate std;
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::convert::Infallible;
 use core::iter::Rev;
@@ -8,31 +9,15 @@ use std::path::Path;
 use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
 use wcontainers_behavior_source_recording::{NotRecorded, Recording};
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
-use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
-use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
-use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
-    ExecutionState, MemorySink, MemorySnapshot, ProcessorArchitecture,
+    ExecutionState, MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
 };
 use wcontainers_processor_architecture_arm64::{
-    Arm64, Instruction, LoadIntoBaseWithWriteback, MisalignedStackPointer, PreciseInstruction,
-    Processor, SmeTrapCode, StoreAcrossFault, User, VectorLength, VectorLengthReading,
+    Arm64, FailedStoreExclusive, FaultAddressTag, Instruction, LoadIntoBaseWithWriteback,
+    LoadPairIntoOneRegister, LoadStoreChoices, LoadStoreInstruction, MisalignedExclusive,
+    MisalignedStackPointer, PreciseInstruction, Processor, SmeTrapCode, StoreAcrossFault,
+    StoreExclusiveOverlap, StoreOfBaseWithWriteback, User, VectorLength, VectorLengthReading,
 };
-
-use crate::MeasuredInstructionSet;
-
-type Generator = CriticalValueProduct<Arm64InputDomain>;
-
-/// Measures every instruction on the source with the generator and builds the set from what it shows.
-fn measure_set(
-    mut source: impl BehaviorSource<Architecture = Arm64<User>>,
-    generator: &impl DistinguishingStateGenerator<Arm64<User>>,
-) -> MeasuredInstructionSet<Arm64<User>> {
-    match source.measure_instructions(generator) {
-        Ok(measurements) => MeasuredInstructionSet::from_measurements(&measurements),
-        Err(_) => panic!("the source shows one known behavior of every instruction"),
-    }
-}
 
 /// The folder of a chip's committed recordings.
 fn read_recording(chip: &str) -> Recording {
@@ -45,50 +30,106 @@ fn read_recording(chip: &str) -> Recording {
     }
 }
 
+/// An instruction with every state it was recorded on, in order.
+type InstructionStates = (
+    Instruction<Infallible>,
+    Vec<ExecutionState<'static, Arm64<User>>>,
+);
+
+/// The states a recording was made from, for each instruction it holds and none for any other.
+struct RecordedStates(Vec<InstructionStates>);
+
+impl RecordedStates {
+    fn new(recording: &Recording) -> Self {
+        let mut states: Vec<(Instruction<Infallible>, Vec<_>)> = recording
+            .instructions()
+            .map(|instruction| (instruction, Vec::new()))
+            .collect();
+        for (instruction, before, _) in recording.cases() {
+            if let Some((_, of_instruction)) = states
+                .iter_mut()
+                .find(|(recorded, _)| *recorded == instruction)
+            {
+                of_instruction.push(before.clone());
+            }
+        }
+        Self(states)
+    }
+}
+
+impl DistinguishingStateGenerator<Arm64<User>> for RecordedStates {
+    type States<'generator>
+        = Box<dyn Iterator<Item = ExecutionState<'static, Arm64<User>>> + 'generator>
+    where
+        Self: 'generator;
+
+    fn generate_states(&self, instruction: Instruction<Infallible>) -> Self::States<'_> {
+        Box::new(
+            self.0
+                .iter()
+                .filter(move |(recorded, _)| *recorded == instruction)
+                .flat_map(|(_, states)| states.iter().cloned()),
+        )
+    }
+}
+
 /// The behaviors a chip showed where the manual leaves a choice, every other instruction having one behavior.
 fn expect_chip(
     into_base: LoadIntoBaseWithWriteback,
     vector_length: VectorLengthReading,
     cache_type: u64,
 ) -> impl Fn(Instruction<Infallible>) -> PreciseInstruction<Infallible> {
-    let misaligned_stack_pointer = MisalignedStackPointer::Faults;
-    let across_fault = StoreAcrossFault::WritesNothing;
-    move |instruction| match instruction {
-        Instruction::AddShiftedRegister64 => PreciseInstruction::AddShiftedRegister64,
-        Instruction::AddsShiftedRegister64 => PreciseInstruction::AddsShiftedRegister64,
-        Instruction::Csel64 => PreciseInstruction::Csel64,
-        Instruction::LdrImmediateUnsignedOffset64 => {
-            PreciseInstruction::LdrImmediateUnsignedOffset64 {
-                misaligned_stack_pointer,
-            }
+    let choices = LoadStoreChoices {
+        misaligned_stack_pointer: Some(MisalignedStackPointer::Faults),
+        across_fault: Some(StoreAcrossFault::WritesNothing),
+        load_into_base: Some(into_base),
+        store_of_base: Some(StoreOfBaseWithWriteback::StoresOriginalValue),
+        load_pair_into_one_register: Some(LoadPairIntoOneRegister::Undefined),
+        failed_store_exclusive: Some(FailedStoreExclusive::ChecksAccess),
+        store_exclusive_overlap: Some(StoreExclusiveOverlap::Runs),
+        misaligned_exclusive: Some(MisalignedExclusive::WithinSixteenBytes),
+        fault_address_tag: Some(FaultAddressTag::KeepsTopByte),
+    };
+    move |instruction| {
+        let behaviors: Vec<_> = Arm64::<User>::list_known_behaviors(instruction).collect();
+        if let Some(load_store) = LoadStoreInstruction::new(instruction) {
+            return PreciseInstruction::LoadStore {
+                instruction: load_store,
+                choices: choices.restrict_to(load_store),
+            };
         }
-        Instruction::StrImmediateUnsignedOffset64 => {
-            PreciseInstruction::StrImmediateUnsignedOffset64 {
-                misaligned_stack_pointer,
-                across_fault,
-            }
+        match instruction {
+            Instruction::Rdvl => PreciseInstruction::Rdvl(vector_length),
+            Instruction::MrsCtrEl0 => PreciseInstruction::MrsCtrEl0 { cache_type },
+            _ => match behaviors.as_slice() {
+                [only] => *only,
+                _ => panic!("{instruction:?} has one behavior"),
+            },
         }
-        Instruction::StpSignedOffset64 => PreciseInstruction::StpSignedOffset64 {
-            misaligned_stack_pointer,
-            across_fault,
-        },
-        Instruction::LdrImmediatePostIndex64 => PreciseInstruction::LdrImmediatePostIndex64 {
-            misaligned_stack_pointer,
-            into_base,
-        },
-        Instruction::Brk => PreciseInstruction::Brk,
-        Instruction::Rdvl => PreciseInstruction::Rdvl(vector_length),
-        Instruction::MrsCtrEl0 => PreciseInstruction::MrsCtrEl0 { cache_type },
     }
 }
 
+/// Each instruction the recording holds measures as the chip's behavior, from the states it was recorded on; where
+/// those states cannot tell the chip's behavior from another, it is among those left.
 fn assert_measures_as(
     recording: Recording,
     expected: impl Fn(Instruction<Infallible>) -> PreciseInstruction<Infallible>,
 ) {
-    let measured = measure_set(recording, &Generator::new(Arm64InputDomain));
-    for instruction in Arm64::<User>::list_instructions() {
-        assert_eq!(measured.to_precise(instruction), expected(instruction));
+    let states = RecordedStates::new(&recording);
+    let instructions: Vec<_> = recording.instructions().collect();
+    let mut source = recording;
+    for instruction in instructions {
+        let expected = expected(instruction);
+        match source.measure_instruction(instruction, &states) {
+            Ok(measured) => assert_eq!(measured, expected),
+            Err(MeasureInstructionError::IndistinguishableBehaviors { behaviors, .. }) => {
+                assert!(
+                    behaviors.contains(&expected),
+                    "{instruction:?}: {behaviors:?}"
+                );
+            }
+            Err(_) => panic!("{instruction:?}: no known behavior agrees with the recording"),
+        }
     }
 }
 
@@ -138,20 +179,24 @@ impl BehaviorSource for ThreadIdChanged {
 
 #[test]
 fn behavior_no_known_one_agrees_with_is_named_with_its_state() {
-    let mut source = ThreadIdChanged(read_recording("neoverse-v2"));
-    let Err(failure) = source.measure_instructions(&Generator::new(Arm64InputDomain)) else {
+    let recording = read_recording("neoverse-v2");
+    let states = RecordedStates::new(&recording);
+    let Some(instruction) = recording.instructions().next() else {
+        panic!("the recording holds an instruction");
+    };
+    let mut source = ThreadIdChanged(recording);
+    let Err(failure) = source.measure_instruction(instruction, &states) else {
         panic!("no known behavior changes TPIDR_EL0");
     };
     let MeasureInstructionError::NoBehaviorAgrees {
-        instruction,
         before,
         behaviors,
         observed,
+        ..
     } = failure
     else {
         panic!("the failure is that no behavior agrees");
     };
-    assert_eq!(Some(instruction), Arm64::<User>::list_instructions().next());
     assert_ne!(
         observed.processor.software_thread_id,
         before.processor.software_thread_id
@@ -161,10 +206,12 @@ fn behavior_no_known_one_agrees_with_is_named_with_its_state() {
     assert_eq!(named, listed);
 }
 
-/// The critical value product's states of each instruction, last first, all of which the recording holds.
-struct LastFirst(Generator);
+/// The states of each instruction another generator gives, last first.
+struct LastFirst<Generator>(Generator);
 
-impl DistinguishingStateGenerator<Arm64<User>> for LastFirst {
+impl<Generator: DistinguishingStateGenerator<Arm64<User>>> DistinguishingStateGenerator<Arm64<User>>
+    for LastFirst<Generator>
+{
     type States<'generator>
         = Rev<alloc::vec::IntoIter<ExecutionState<'static, Arm64<User>>>>
     where
@@ -176,47 +223,70 @@ impl DistinguishingStateGenerator<Arm64<User>> for LastFirst {
     }
 }
 
-/// Checks that two generators that each tell the behaviors apart measure one recording as the same set.
+/// Returns the behaviors a measurement leaves: the one measured, or those its states cannot tell apart.
+fn to_survivors<Error>(
+    instruction: Instruction<Infallible>,
+    measured: Result<PreciseInstruction<Infallible>, MeasureInstructionError<Arm64<User>, Error>>,
+) -> Vec<PreciseInstruction<Infallible>> {
+    match measured {
+        Ok(precise) => [precise].to_vec(),
+        Err(MeasureInstructionError::IndistinguishableBehaviors { behaviors, .. }) => behaviors,
+        Err(_) => panic!("{instruction:?}: no known behavior agrees"),
+    }
+}
+
+/// Checks that the recorded states in either order measure each instruction of one recording the same.
 #[test]
-fn either_generator_measures_the_recording_as_the_same_set() {
-    let first = measure_set(
-        read_recording("neoverse-v2"),
-        &Generator::new(Arm64InputDomain),
-    );
-    let second = measure_set(
-        read_recording("neoverse-v2"),
-        &LastFirst(Generator::new(Arm64InputDomain)),
-    );
-    for instruction in Arm64::<User>::list_instructions() {
+fn either_generator_measures_the_recording_the_same() {
+    let mut recording = read_recording("neoverse-v2");
+    let states = RecordedStates::new(&recording);
+    let last_first = LastFirst(RecordedStates::new(&recording));
+    let instructions: Vec<_> = recording.instructions().collect();
+    for instruction in instructions {
+        let first = recording.measure_instruction(instruction, &states);
+        let second = recording.measure_instruction(instruction, &last_first);
         assert_eq!(
-            first.to_precise(instruction),
-            second.to_precise(instruction)
+            to_survivors(instruction, first),
+            to_survivors(instruction, second),
+            "{instruction:?}"
         );
     }
 }
 
-/// The live chip measures as its recording; it runs only where the host is a Neoverse V2 under KVM.
+/// The live chip measures as its recording on the recorded states; it runs only where the host is a Neoverse V2 under
+/// KVM.
 #[cfg(all(target_arch = "aarch64", target_os = "linux"))]
 #[test]
 #[ignore = "needs KVM on a Neoverse V2"]
 fn this_chip_measures_as_the_neoverse_v2_recording() {
     use wcontainers_behavior_source_kvm_single_step::KvmSingleStepMachine;
 
-    let chip = match KvmSingleStepMachine::new() {
+    let mut chip = match KvmSingleStepMachine::new() {
         Ok(chip) => chip,
         Err(error) => panic!("this host makes no single step machine: {error:?}"),
     };
-    let measured = measure_set(chip, &Generator::new(Arm64InputDomain));
-    let recorded = measure_set(
-        read_recording("neoverse-v2"),
-        &Generator::new(Arm64InputDomain),
-    );
-    for instruction in Arm64::<User>::list_instructions() {
+    let mut recording = read_recording("neoverse-v2");
+    let states = RecordedStates::new(&recording);
+    let instructions: Vec<_> = recording.instructions().collect();
+    for instruction in instructions {
+        let measured = chip.measure_instruction(instruction, &states);
+        let recorded = recording.measure_instruction(instruction, &states);
         assert_eq!(
-            measured.to_precise(instruction),
-            recorded.to_precise(instruction)
+            to_survivors(instruction, measured),
+            to_survivors(instruction, recorded),
+            "{instruction:?}"
         );
     }
+}
+
+/// The Neoverse V2's behavior of a load or store or of BRK, as its recording measures it.
+#[cfg(all(target_arch = "aarch64", target_os = "linux"))]
+fn to_neoverse_v2_behavior(instruction: Instruction<Infallible>) -> PreciseInstruction<Infallible> {
+    expect_chip(
+        LoadIntoBaseWithWriteback::WritebackSuppressed,
+        VectorLengthReading::Reads(VectorLength::Bits128),
+        0xB444_C004,
+    )(instruction)
 }
 
 /// States whose access or fetch reaches past the last address a program can use, each with a page above it that the
@@ -228,7 +298,7 @@ fn to_states_past_the_last_addressable_byte() -> Vec<(
 )> {
     use alloc::borrow::Cow;
     use alloc::vec;
-    use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
+    use wcontainers_processor_architecture::ExecutionState;
     use wcontainers_processor_architecture_arm64::encoding::{Field, IMM7, IMM9, RN, RT, RT2};
     use wcontainers_processor_architecture_arm64::{
         DataAccess, INSTRUCTION_SIZE, InstructionFetch, PagePermission, ZERO_PROCESSOR,
@@ -373,13 +443,9 @@ fn this_chip_faults_past_the_last_addressable_byte_as_its_recording_simulates() 
         Ok(chip) => chip,
         Err(error) => panic!("this host makes no single step machine: {error:?}"),
     };
-    let recorded = measure_set(
-        read_recording("neoverse-v2"),
-        &Generator::new(Arm64InputDomain),
-    );
     let mut level_0_faults = 0;
     for (instruction, before) in to_states_past_the_last_addressable_byte() {
-        let precise = recorded.to_precise(instruction);
+        let precise = to_neoverse_v2_behavior(instruction);
         let Ok(simulated) = precise.simulate_state(before.clone());
         let Ok(observed) = chip.execute_single_instruction(before) else {
             panic!("{instruction:?}: the chip refused a state it runs");
@@ -406,32 +472,4 @@ fn this_chip_faults_past_the_last_addressable_byte_as_its_recording_simulates() 
     }
     // Each state faults at level 0 but the two whose instruction runs, at the last addressable word and at the code page.
     assert_eq!(level_0_faults, 14);
-}
-
-/// The set gives an instruction the behavior of the first pair that names it, as `from_measurements` promises.
-#[test]
-fn each_instruction_has_the_behavior_of_its_first_pair() {
-    let first = PreciseInstruction::Rdvl(VectorLengthReading::Reads(VectorLength::Bits128));
-    let later = PreciseInstruction::Rdvl(VectorLengthReading::Reads(VectorLength::Bits256));
-    let measured = MeasuredInstructionSet::<Arm64<User>>::from_measurements(&[
-        (Instruction::Brk, PreciseInstruction::Brk),
-        (Instruction::Rdvl, first),
-        (Instruction::Rdvl, later),
-    ]);
-    assert_eq!(measured.to_precise(Instruction::Rdvl), first);
-    assert_eq!(
-        measured.to_precise(Instruction::Brk),
-        PreciseInstruction::Brk
-    );
-}
-
-/// The trusted `unmeasured`, which promises never to return: an instruction the measurements do not hold panics.
-#[test]
-#[should_panic(expected = "only measured instructions have a behavior")]
-fn an_instruction_the_measurements_do_not_hold_panics() {
-    let measured = MeasuredInstructionSet::<Arm64<User>>::from_measurements(&[(
-        Instruction::Brk,
-        PreciseInstruction::Brk,
-    )]);
-    measured.to_precise(Instruction::Csel64);
 }
