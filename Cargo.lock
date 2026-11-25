@@ -4807,6 +4807,7 @@ name = "wcontainers-precise-instruction-set"
 version = "0.1.0"
 dependencies = [
  "wcontainers-behavior-source",
+ "wcontainers-distinguishing-state-generator",
  "wcontainers-processor-architecture",
 ]
 
@@ -4888,7 +4889,6 @@ version = "0.1.0"
 name = "wcontainers-processor-architecture"
 version = "0.1.0"
 dependencies = [
- "litemap",
  "rangemap",
 ]
 

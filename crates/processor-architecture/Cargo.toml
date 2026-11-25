@@ -7,7 +7,5 @@ edition = "2024"
 path = "interface.rs"
 
 [dependencies]
-# A map kept as one sorted array, which the equality of two execution states renders memory into.
-litemap = { version = "0.8.3", default-features = false, features = ["alloc"] }
-# A map from ranges to values that merges neighbors holding the same value, which the equality renders permissions into.
+# A map from ranges to values that merges neighbors holding the same value, which the memory diff renders permissions into.
 rangemap = { version = "1.8.0", default-features = false }
