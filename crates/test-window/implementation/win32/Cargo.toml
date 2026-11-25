@@ -1,0 +1,20 @@
+[package]
+name = "wcontainers-test-window-win32"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-test-window = { path = "../.." }
+
+[dev-dependencies]
+wcontainers-test-window-conformance = { path = "../../conformance" }
+
+[lints]
+workspace = true

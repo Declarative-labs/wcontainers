@@ -1,0 +1,1 @@
+wcontainers_test_window_conformance::tests!(wcontainers_test_window_win32::Win32TestWindow);
