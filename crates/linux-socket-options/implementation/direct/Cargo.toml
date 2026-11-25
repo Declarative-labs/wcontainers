@@ -1,0 +1,37 @@
+[package]
+name = "wcontainers-linux-socket-options-direct"
+description = "Linux's socket option and socket ioctl calls made on the kernel the program runs on."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-linux-socket-options = { path = "../.." }
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioctl", "net", "no_std"] }
+# setsockopt, getsockopt and ioctl, and the BPF program header.
+libc = "0.2.191"
+# The numbers and headers read from and written as bytes.
+zerocopy.workspace = true
+
+[dev-dependencies]
+wcontainers-linux-socket-options-conformance = { path = "../../conformance" }
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+# The one crate of the host sockets that holds `unsafe`: it denies it, so that each use carries its own
+# `#[expect(unsafe_code, reason = "..")]`; the rest of the workspace's lints as they are there.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+type_complexity = "allow"
