@@ -59,6 +59,11 @@ struct Constant { color: vec4<f32> }
     var p = array(vec3(-1.0, -1.0, 0.125), vec3(3.0, -1.0, 0.125), vec3(-1.0, 3.0, 0.875));
     return vec4<f32>(p[i], 1.0);
 }
+@vertex fn packed(@builtin(vertex_index) i: u32, @location(0) value: vec4<f32>) -> @builtin(position) vec4<f32> {
+    // A covering triangle that the stream's values cannot move: each is a finite float times zero.
+    var p = array(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    return vec4<f32>(p[i % 3u] + min(abs(value.xy), vec2(1.0)) * 0.0, 0.5, 1.0);
+}
 @vertex fn halves(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     // The left half wound counter-clockwise, then the right half wound clockwise.
     var p = array(
@@ -1252,3 +1257,101 @@ fn a_clear_of_a_huge_size_or_an_empty_pattern_is_refused_not_fatal() {
     assert_eq!(read, [1, 2].repeat(32));
 }
 
+
+/// The bytes of a stream of `Float11_11_10` values whose widened copy, 16 bytes an element, passes 64 MiB.
+const LONG_STREAM_BYTES: u64 = 17 << 20;
+
+/// Draws three vertices from a long stream of a format naga lacks, as a list or through three indices from
+/// `first_index`, and returns the device's status.
+fn long_stream_scene(indexed: bool, first: u32) -> String {
+    let mut b = device();
+    let (_, drawn_view) = target(&mut b, Format::Rgba8Unorm, DRAWN_SIDE);
+    let packed = program(&mut b, "packed", "red");
+    let mut states = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+    states.layout = b
+        .create_vertex_layout(&VertexLayoutDesc {
+            streams: std::array::from_fn(|i| {
+                (i == 0).then_some(wcontainers_gpu::VertexStream {
+                    stride: 4,
+                    step: wcontainers_gpu::StepMode::Vertex,
+                })
+            }),
+            attributes: std::array::from_fn(|i| {
+                (i == 0).then_some(wcontainers_gpu::VertexAttribute {
+                    location: 0,
+                    stream: 0,
+                    offset: 0,
+                    format: wcontainers_gpu::VertexFormat::Float11_11_10,
+                })
+            }),
+        })
+        .expect("create_vertex_layout");
+    let stream = b
+        .create_buffer(&BufferDesc {
+            size: LONG_STREAM_BYTES,
+            usage: BufferUsage::VERTEX | BufferUsage::INDEX | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .expect("create_buffer");
+    // The stream's first words are the indices 0, 1 and 2, which are also small floats.
+    let indices: Vec<u8> = [0u32, 1, 2].iter().flat_map(|i| i.to_le_bytes()).collect();
+    b.write_buffer(&stream, 0, &indices, WriteMode::Ordered);
+    b.begin_pass(&color_pass(&drawn_view, [0; 4]));
+    let streams = [Some(wcontainers_gpu::VertexBinding {
+        buffer: &stream,
+        offset: 0,
+    })];
+    b.draw(&DrawCall {
+        program: &packed,
+        blend: &states.blend,
+        depth_stencil: &states.depth_stencil,
+        raster: &states.raster,
+        vertex_layout: &states.layout,
+        bindings: [None; 4],
+        vertex_buffers: &streams,
+        index: indexed.then_some(wcontainers_gpu::IndexBinding {
+            buffer: &stream,
+            offset: 0,
+            format: wcontainers_gpu::IndexFormat::U32,
+        }),
+        topology: Topology::TriangleList,
+        restart: false,
+        viewports: &viewport(DRAWN_SIDE),
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: if indexed {
+            DrawRange::Indexed {
+                first: 0,
+                count: 3,
+                base_vertex: 0,
+                first_instance: 0,
+                instances: 1,
+            }
+        } else {
+            DrawRange::Vertices {
+                first,
+                count: 3,
+                first_instance: 0,
+                instances: 1,
+            }
+        },
+    });
+    b.end_pass();
+    let fence = b.submit();
+    b.wait_fence(&fence);
+    format!("{:?}", b.status())
+}
+
+#[test]
+fn a_widened_stream_is_converted_as_far_as_the_draw_reads_and_refused_past_its_bound() {
+    let healthy = format!("{:?}", device().status());
+    // A list of three from the start, or from past the stream's end, converts at most three elements.
+    assert_eq!(long_stream_scene(false, 0), healthy);
+    assert_eq!(long_stream_scene(false, u32::MAX - 3), healthy);
+    // An indexed draw may read every element, whose widened copy would pass the bound, so it is refused.
+    assert_ne!(long_stream_scene(true, 0), healthy);
+    // So is a list whose elements before its first, which the copy also holds, pass the bound.
+    assert_ne!(long_stream_scene(false, 1 << 22), healthy);
+}

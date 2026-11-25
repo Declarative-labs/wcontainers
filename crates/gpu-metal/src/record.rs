@@ -1,7 +1,7 @@
 //! A pass as it is recorded: its attachments, its draws as Metal's render commands, and what those draws build.
 
 use wcontainers_gpu::{
-    AspectOps, DrawCall, DrawRange, EmptyPass, FORMAT_FACTS, Format, FormatKind, Gpu, IndexFormat,
+    AspectOps, DrawCall, DrawRange, EmptyPass, FORMAT_FACTS, Format, FormatKind, Gpu, GpuError, IndexFormat,
     LoadOp, MAX_COLOR_TARGETS, PassDesc, PrepareDesc, ScissorRect, ShaderStage, StepMode, StoreOp,
     TargetLayout, TextureRegion, TextureViewDesc, Topology, ViewDimension,
 };
@@ -615,7 +615,10 @@ impl<M: Metal> MetalGpu<M> {
         }
         let widened = self
             .widen_streams(call)
-            .map_err(|_| "a stream whose formats were not widened")?;
+            .map_err(|error| match error {
+                GpuError::Invalid(why) => why,
+                _ => "a stream whose formats were not widened",
+            })?;
         let layout = widened
             .as_ref()
             .map_or_else(|| call.vertex_layout.clone(), |w| w.layout.clone());

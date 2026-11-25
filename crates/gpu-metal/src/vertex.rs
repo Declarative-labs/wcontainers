@@ -5,8 +5,8 @@
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    DrawCall, Gpu, GpuError, SlowPath, VertexAttribute, VertexFormat, VertexLayoutDesc,
-    VertexStream,
+    DrawCall, DrawRange, Gpu, GpuError, SlowPath, StepMode, VertexAttribute, VertexFormat,
+    VertexLayoutDesc, VertexStream,
 };
 use wcontainers_metal::Metal;
 
@@ -17,6 +17,46 @@ use crate::{MetalGpu, convert};
 ///
 /// https://docs.rs/naga/30.0.2/naga/back/msl/struct.AttributeMapping.html
 const ATTRIBUTE_ALIGNMENT: u32 = 4;
+
+/// The most bytes a widened copy of one stream holds, from the stream's offset to the last element a draw reads; a
+/// draw that needs more is refused rather than sizing the copy by a buffer or a count the caller chose.
+///
+/// 64 MiB holds four million elements of 16 bytes, the widest widened element of one attribute.
+const MAX_WIDENED_BYTES: u64 = 64 << 20;
+
+/// Returns the first element a draw reads of a stream and the one past its last, before the stream's buffer cuts them.
+///
+/// An indexed draw may read any element its indices name, so it reads them all.
+fn reachable<B: Gpu>(range: &DrawRange<'_, B>, step: StepMode, stride: u32) -> (u64, u64) {
+    let all = (u64::MIN, u64::MAX);
+    if stride == 0 {
+        return (u64::MIN, 1);
+    }
+    let span = |first: u32, count: u32| (u64::from(first), u64::from(first).saturating_add(u64::from(count)));
+    match (range, step) {
+        (DrawRange::Vertices { first, count, .. }, StepMode::Vertex) => span(*first, *count),
+        (
+            DrawRange::Vertices {
+                first_instance,
+                instances,
+                ..
+            }
+            | DrawRange::Indexed {
+                first_instance,
+                instances,
+                ..
+            },
+            StepMode::Instance(rate),
+        ) => {
+            // The instance of index `i` reads element `first_instance + (i - first_instance) / rate`.
+            let elements = instances.checked_div(rate).map_or(1, |whole| {
+                whole.saturating_add(u32::from(!instances.is_multiple_of(rate)))
+            });
+            span(*first_instance, elements.min(*instances))
+        }
+        _ => all,
+    }
+}
 
 /// A draw's vertex layout and streams after widening: the layout, and each stream's buffer, offset and length.
 pub(crate) struct Widened<M: Metal> {
@@ -175,17 +215,46 @@ impl<M: Metal> MetalGpu<M> {
                     .ok_or(overflow)?;
             }
             let source_stride = u64::from(s.stride);
-            let elements = length.checked_div(source_stride).unwrap_or(1);
+            let in_buffer = length.checked_div(source_stride).unwrap_or(1);
+            let (first, end) = reachable(&call.range, s.step, s.stride);
+            // The elements the draw can read that the buffer holds: past them the copy's bounds checks read zeros, so a
+            // draw that reads none of them needs an empty copy.
+            let end = end.min(in_buffer);
+            let (first, end) = if first < end {
+                (first, end)
+            } else {
+                (u64::MIN, u64::MIN)
+            };
+            let copy_bytes = end.checked_mul(u64::from(stride)).ok_or(overflow)?;
+            if copy_bytes > MAX_WIDENED_BYTES {
+                return Err(GpuError::Invalid(
+                    "a widened vertex stream of more bytes than MAX_WIDENED_BYTES",
+                ));
+            }
+            // From the first element read to the end of the last element's last attribute, within the buffer.
+            let last_attribute = places
+                .iter()
+                .map(|(_, a)| u64::from(a.offset).saturating_add(u64::from(convert::vertex_bytes(a.format))))
+                .max()
+                .unwrap_or(u64::MIN);
+            let skipped = first.checked_mul(source_stride).ok_or(overflow)?;
+            let read = end
+                .saturating_sub(first)
+                .saturating_sub(1)
+                .checked_mul(source_stride)
+                .and_then(|bytes| bytes.checked_add(last_attribute))
+                .ok_or(overflow)?
+                .min(length.saturating_sub(skipped));
+            let read = if end == u64::MIN { u64::MIN } else { read };
             let resumed = self.end_open_pass();
-            let bytes = self.read_buffer_now(&raw, binding.offset, length);
+            let read_offset = binding.offset.checked_add(skipped).ok_or(overflow)?;
+            let bytes = self.read_buffer_now(&raw, read_offset, read);
             self.pass = resumed;
-            // The bytes read back bound the elements, so the widened copy is bounded by the stream's buffer.
-            let capacity = usize::try_from(elements)
-                .ok()
-                .and_then(|elements| elements.checked_mul(stride as usize))
-                .ok_or(overflow)?;
-            let mut out = Vec::with_capacity(capacity.min(bytes.len().saturating_mul(4)));
-            for element in 0..usize::try_from(elements).map_err(|_| overflow)? {
+            let size = |n: u64| usize::try_from(n).map_err(|_| overflow);
+            // The elements before the first the draw reads stay zero.
+            let mut out = vec![0; size(first.checked_mul(u64::from(stride)).ok_or(overflow)?)?];
+            out.reserve(size(copy_bytes)?.saturating_sub(out.len()));
+            for element in 0..size(end.saturating_sub(first))? {
                 let at = element.checked_mul(s.stride as usize).ok_or(overflow)?;
                 for (_, a) in &places {
                     let start = at.checked_add(a.offset as usize).ok_or(overflow)?;
