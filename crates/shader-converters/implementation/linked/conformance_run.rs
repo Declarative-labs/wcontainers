@@ -1,4 +1,1 @@
-use wcontainers_shader_converters::StandaloneShaderConverters;
-use wcontainers_shader_converters_linked::LinkedShaderConverters;
-
-wcontainers_shader_converters_conformance::tests!(LinkedShaderConverters::new(()));
+wcontainers_shader_converters_conformance::tests!(<wcontainers_shader_converters_linked::LinkedShaderConverters as wcontainers_shader_converters::StandaloneShaderConverters>::new(()); StandaloneShaderConverters: yes);

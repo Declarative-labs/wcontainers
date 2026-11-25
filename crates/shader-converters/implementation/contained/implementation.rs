@@ -195,23 +195,23 @@ fn system_call(
 /// [first preview](https://github.com/WebAssembly/WASI/blob/main/legacy/preview1/docs.md#-wasi_snapshot_preview1)
 /// the host answers by name, and the parameters it reads.
 mod wasi {
-    pub const WRITE: &str = "fd_write";
-    pub const ENVIRONMENT_SIZES: &str = "environ_sizes_get";
-    pub const ARGUMENT_SIZES: &str = "args_sizes_get";
-    pub const ENVIRONMENT: &str = "environ_get";
-    pub const ARGUMENTS: &str = "args_get";
-    pub const EXIT: &str = "proc_exit";
+    pub(crate) const WRITE: &str = "fd_write";
+    pub(crate) const ENVIRONMENT_SIZES: &str = "environ_sizes_get";
+    pub(crate) const ARGUMENT_SIZES: &str = "args_sizes_get";
+    pub(crate) const ENVIRONMENT: &str = "environ_get";
+    pub(crate) const ARGUMENTS: &str = "args_get";
+    pub(crate) const EXIT: &str = "proc_exit";
     /// The two counts' addresses a size call writes.
-    pub const SIZES: [usize; 2] = [0, 1];
+    pub(crate) const SIZES: [usize; 2] = [0, 1];
 
     /// `fd_write(fd, iovs, iovs_len, nwritten)`.
-    pub mod write {
-        pub const DESCRIPTOR: usize = 0;
-        pub const VECTORS: usize = 1;
-        pub const VECTOR_COUNT: usize = 2;
-        pub const WRITTEN: usize = 3;
+    pub(crate) mod write {
+        pub(crate) const DESCRIPTOR: usize = 0;
+        pub(crate) const VECTORS: usize = 1;
+        pub(crate) const VECTOR_COUNT: usize = 2;
+        pub(crate) const WRITTEN: usize = 3;
         /// An `iovec`: its base and its length, a word each.
-        pub const VECTOR_BYTES: usize = 2 * size_of::<u32>();
+        pub(crate) const VECTOR_BYTES: usize = 2 * size_of::<u32>();
     }
 }
 

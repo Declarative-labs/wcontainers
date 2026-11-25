@@ -1,19 +1,21 @@
-//! The tests every implementation of wcontainers-shader-converters runs, one conversion of each function on shaders of
-//! the shaders crate's own tests (`crates/shaders/tests/own`), written against its traits alone.
+//! The tests every implementation of wcontainers-shader-converters runs, written against its traits alone.
+//!
+//! Each converts once with each function, on shaders of the shaders crate's own tests (`crates/shaders/tests/own`).
 
 use wcontainers_shader_converters::{BYTE, Failure, Function, NO_FLAGS, ShaderConverters, WORD};
 
-/// fxc's DXBC of `compute.hlsl`'s `cs_images`.
+/// The DXBC fxc makes of `compute.hlsl`'s `cs_images`.
 const DXBC_IMAGES: &[u8] = include_bytes!("shaders/cs_images.dxbc");
 
-/// dxc's DXIL of `texels.hlsl`'s `cs_texels`: `Buffer<float4>` t0 to t3, `RWBuffer<float4>` u0, `RWBuffer<uint>` u1
-/// and a structured buffer at u2.
+/// The DXIL dxc makes of `texels.hlsl`'s `cs_texels`.
+///
+/// It declares `Buffer<float4>` t0 to t3, `RWBuffer<float4>` u0, `RWBuffer<uint>` u1 and a structured buffer at u2.
 const DXIL_TEXELS: &[u8] = include_bytes!("shaders/cs_texels.dxil");
 
 /// The resources `DXIL_TEXELS` declares.
 const TEXELS_RESOURCES: usize = 7;
 
-/// dxc's DXIL of `shadow.hlsl`'s `ps_shadow_compared_green`, which gathers the green channel compared.
+/// The DXIL dxc makes of `shadow.hlsl`'s `ps_shadow_compared_green`, which gathers the green channel compared.
 const DXIL_COMPARED_GREEN: &[u8] = include_bytes!("shaders/ps_shadow_compared_green.dxil");
 
 /// The channel `DXIL_COMPARED_GREEN` gathers: green, the second.
@@ -104,10 +106,41 @@ pub fn refuses_what_is_no_shader<T: ShaderConverters>(subject: T) {
     assert!(matches!(refusal, Err(Failure::Refused(reason)) if !reason.is_empty()));
 }
 
-/// Runs each suite function above as its own test on a value made anew for every test.
+/// Runs each suite function above as its own test on a value made anew for every test, and each group's where the value
+/// has it.
 #[macro_export]
 macro_rules! tests {
-    ($value:expr) => {
+    (@StandaloneShaderConverters yes ($value:expr)) => {
+        $crate::tests!(@StandaloneShaderConverters yes ($value) ($value));
+    };
+    (@StandaloneShaderConverters yes ($base:expr) ($value:expr)) => {
+        mod standalone_shader_converters {}
+    };
+    (@StandaloneShaderConverters no ($value:expr)) => {
+        mod standalone_shader_converters {
+            #[test]
+            fn lacks_standalone_shader_converters() {
+                struct Probe<T>(::core::marker::PhantomData<T>);
+                impl<T> ::core::clone::Clone for Probe<T> {
+                    fn clone(&self) -> Self {
+                        Probe(::core::marker::PhantomData)
+                    }
+                }
+                struct Implemented;
+                #[allow(dead_code)]
+                impl<T: ::wcontainers_shader_converters::StandaloneShaderConverters> Probe<T> {
+                    fn clone(&self) -> Implemented {
+                        Implemented
+                    }
+                }
+                fn probe_of<T>(_value: &T) -> Probe<T> {
+                    Probe(::core::marker::PhantomData)
+                }
+                let _: Probe<_> = probe_of(&$value).clone();
+            }
+        }
+    };
+    ($value:expr; StandaloneShaderConverters: $standalone_shader_converters:ident $(($standalone_shader_converters_value:expr))?) => {
         #[test]
         fn converts_dxbc_to_ir() {
             $crate::converts_dxbc_to_ir($value);
@@ -142,5 +175,6 @@ macro_rules! tests {
         fn refuses_what_is_no_shader() {
             $crate::refuses_what_is_no_shader($value);
         }
+        $crate::tests!(@StandaloneShaderConverters $standalone_shader_converters ($value) $(($standalone_shader_converters_value))?);
     };
 }
