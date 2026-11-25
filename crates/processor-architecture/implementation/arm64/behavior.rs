@@ -370,6 +370,14 @@ fn list_load_store_behaviors(
         |choices, choice| choices.fault_address_tag = Some(choice),
     )
     .into_iter()
+    // A store exclusive of a byte that leaves its access unchecked never faults, so the fault address it would give is
+    // no choice of its own: both tags are one behavior.
+    .filter(|choices| {
+        !(open.failed_store_exclusive
+            && !open.misaligned_exclusive
+            && choices.failed_store_exclusive == Some(FailedStoreExclusive::LeavesAccessUnchecked)
+            && choices.fault_address_tag == Some(FaultAddressTag::ClearsTopNibble))
+    })
     .map(|choices| PreciseInstruction::LoadStore {
         instruction,
         choices,
