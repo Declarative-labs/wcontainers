@@ -8,6 +8,7 @@
 mod convert;
 mod objects;
 mod record;
+mod vertex;
 
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
@@ -102,6 +103,8 @@ pub struct MetalGpu<M: Metal> {
     depth_stencil_states: HashMap<u64, M::DepthStencilState>,
     /// The layers of the windows the host added, by the number its graphics hook names each by.
     windows: HashMap<u32, M::Layer>,
+    /// The widened layout of each vertex layout that holds a format naga lacks.
+    widened_layouts: HashMap<u64, Shared<VertexLayoutBlock>>,
     /// What draws a frame into a drawable, made at the first present.
     present: Option<record::PresentDraw<M>>,
 }
@@ -187,6 +190,7 @@ impl<M: Metal> MetalGpu<M> {
             compute_pipelines: HashMap::new(),
             depth_stencil_states: HashMap::new(),
             windows: HashMap::new(),
+            widened_layouts: HashMap::new(),
             present: None,
         }
     }

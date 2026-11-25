@@ -376,6 +376,7 @@ impl<M: Metal> MetalGpu<M> {
     fn pipeline(
         &mut self,
         call: &DrawCall<'_, Self>,
+        layout: &Shared<crate::VertexLayoutBlock>,
         targets: TargetLayout,
         class: PrimitiveTopologyClass,
     ) -> Result<M::RenderPipelineState, &'static str> {
@@ -389,7 +390,7 @@ impl<M: Metal> MetalGpu<M> {
         };
         let key = PipelineKey {
             program: *id,
-            vertex_layout: call.vertex_layout.id,
+            vertex_layout: layout.id,
             blend: call.blend.id,
             targets,
             class: class as u8,
@@ -399,11 +400,11 @@ impl<M: Metal> MetalGpu<M> {
         }
         self.record_slow_path(wcontainers_gpu::SlowPath::PipelineMiss);
         let points = class == PrimitiveTopologyClass::Point;
-        let vertex_key = (vertex.id, call.vertex_layout.id, points);
+        let vertex_key = (vertex.id, layout.id, points);
         let vertex_function = match self.vertex_functions.get(&vertex_key) {
             Some(function) => function.clone(),
             None => {
-                let buffers = vertex_buffers(&call.vertex_layout.desc)?;
+                let buffers = vertex_buffers(&layout.desc)?;
                 let function = self.make_function(vertex, &buffers, points)?;
                 self.vertex_functions.insert(vertex_key, function.clone());
                 function
@@ -538,7 +539,13 @@ impl<M: Metal> MetalGpu<M> {
         if instances == 0 || empty {
             return Ok(());
         }
-        let pipeline = self.pipeline(call, targets, class)?;
+        let widened = self
+            .widen_streams(call)
+            .map_err(|_| "a stream whose formats were not widened")?;
+        let layout = widened
+            .as_ref()
+            .map_or_else(|| call.vertex_layout.clone(), |w| w.layout.clone());
+        let pipeline = self.pipeline(call, &layout, targets, class)?;
         let depth_stencil = self
             .depth_stencil_states
             .get(&call.depth_stencil.id)
@@ -664,26 +671,34 @@ impl<M: Metal> MetalGpu<M> {
                 }
             }
         }
-        for (stream, binding) in call.vertex_buffers.iter().enumerate() {
-            let Some(binding) = binding else {
+        let streams: Vec<Option<(M::Buffer, u64, u64)>> = match widened {
+            Some(widened) => widened.streams,
+            None => call
+                .vertex_buffers
+                .iter()
+                .map(|binding| {
+                    binding.as_ref().map(|binding| {
+                        self.used(binding.buffer);
+                        (
+                            binding.buffer.raw.borrow().clone(),
+                            binding.offset.min(binding.buffer.size),
+                            binding.buffer.size.saturating_sub(binding.offset),
+                        )
+                    })
+                })
+                .collect(),
+        };
+        for (stream, binding) in streams.into_iter().enumerate() {
+            let Some((buffer, offset, length)) = binding else {
                 continue;
             };
-            if call
-                .vertex_layout
-                .desc
-                .streams
-                .get(stream)
-                .copied()
-                .flatten()
-                .is_none()
-            {
+            if layout.desc.streams.get(stream).copied().flatten().is_none() {
                 continue;
             }
-            self.used(binding.buffer);
             commands.push(RenderCommand::SetVertexBuffer {
-                buffer: binding.buffer.raw.borrow().clone(),
-                offset: binding.offset.min(binding.buffer.size),
-                length: binding.buffer.size.saturating_sub(binding.offset),
+                buffer,
+                offset,
+                length,
                 index: FIRST_STREAM_SLOT + stream as u32,
             });
         }
