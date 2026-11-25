@@ -27,36 +27,44 @@ pub enum SlotKind {
     Counter,
 }
 
-impl SlotKind {
+/// The range of binding numbers one [`SlotKind`] owns in every binding set: [`SLOT_KINDS`] holds one
+/// per kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotRange {
     /// The first binding number of the kind's range.
-    pub const fn first_binding(self) -> u32 {
-        match self {
-            SlotKind::Uniform => 0,
-            SlotKind::Sampler => 16,
-            SlotKind::Texture => 32,
-            SlotKind::Storage => 160,
-            SlotKind::Counter => 224,
-        }
-    }
-
-    /// How many slots the range holds.
-    pub const fn slots(self) -> u32 {
-        match self {
-            SlotKind::Uniform | SlotKind::Sampler => 16,
-            SlotKind::Texture => 128,
-            SlotKind::Storage | SlotKind::Counter => 64,
-        }
-    }
-
-    /// The binding number of slot `slot`, if the range holds it.
-    pub const fn binding(self, slot: u32) -> Option<u32> {
-        if slot < self.slots() {
-            Some(self.first_binding() + slot)
-        } else {
-            None
-        }
-    }
+    pub first_binding: u32,
+    /// How many slots the range holds; slot `n` of the kind binds at `first_binding + n`.
+    pub slots: u32,
 }
+
+/// The range of every slot kind, indexed by `SlotKind as usize`.
+pub const SLOT_KINDS: [SlotRange; 5] = [
+    // Uniform
+    SlotRange {
+        first_binding: 0,
+        slots: 16,
+    },
+    // Sampler
+    SlotRange {
+        first_binding: 16,
+        slots: 16,
+    },
+    // Texture
+    SlotRange {
+        first_binding: 32,
+        slots: 128,
+    },
+    // Storage
+    SlotRange {
+        first_binding: 160,
+        slots: 64,
+    },
+    // Counter
+    SlotRange {
+        first_binding: 224,
+        slots: 64,
+    },
+];
 
 /// The binding set that holds a converted program's helper constants (one uniform buffer per stage, at
 /// [`helper_binding`]) and the other bindings a variant adds.
@@ -128,6 +136,9 @@ pub struct ReflectedBinding {
     pub count: u32,
     /// Where the converted program binds it: set and binding number.
     pub set: u32,
+    /// Its place in its kind's range, `binding` less the range's first binding in [`SLOT_KINDS`], is
+    /// the slot per-slot fields of [`VariantKey`] and [`Reflection::sampled_pairs`] name: the register
+    /// under Direct3D 10 and 11's numbering.
     pub binding: u32,
     /// For a binding the variant adds rather than one of the API's slots, what it holds; `space`,
     /// `register` and `count` then say nothing.
@@ -135,14 +146,6 @@ pub struct ReflectedBinding {
     /// For a storage buffer, the size in bytes of the program's element of it, the step a
     /// [`HelperValue::StorageOffset`] comes in; zero otherwise.
     pub stride: u32,
-}
-
-impl ReflectedBinding {
-    /// The binding's place in its kind's range, which per-slot fields of [`VariantKey`] and
-    /// [`Reflection::sampled_pairs`] name: the register under Direct3D 10 and 11's numbering.
-    pub const fn slot(&self) -> u32 {
-        self.binding - self.kind.first_binding()
-    }
 }
 
 /// A binding a variant adds to a program. It lives in the set of the one stage that reads it (set 0 for
@@ -483,6 +486,17 @@ bitflags! {
         /// texture and writes the one vertex its slot keeps, which is captured in turn and drawn by the
         /// geometry stage's pass-through ([`crate::SlowPath::GeometryAsReplay`]).
         const GEOMETRY_REPLAY = 1 << 16;
+        /// The pixel shader keeps only the pixels Direct3D's aliased line rule (the diamond exit)
+        /// picks for the line whose window-space ends the stage helper's rectangle passes in after
+        /// the [`VariantKey::linked`] values, and discards the others; the rectangle covers every
+        /// sample of each pixel it keeps. For aliased lines into a multisampled target
+        /// ([`crate::SlowPath::AliasedLinesAsQuads`]).
+        const LINE_DIAMOND = 1 << 17;
+        /// The vertex or domain program also passes its cull distances, still culled by
+        /// ([`crate::SlowPath::CullDistanceAsGeometry`]), as perspective-correct values after
+        /// [`VariantKey::linked`]'s others, and the pixel shader reads its cull distances from them,
+        /// not from the built-in. The front sets it in both programs' keys.
+        const CULL_DISTANCE_LINKED = 1 << 18;
     }
 }
 
@@ -606,8 +620,10 @@ pub struct TargetInShader {
 /// [`VariantFlags::CLIP_DISTANCE`], zero without), then its unclamped clip z (with
 /// [`VariantFlags::DEPTH_CLAMP`]), then the layer a geometry stage names (one flat u32, with
 /// [`VariantFlags::LAYER_FROM_STAGE`]), then the line coverage values (four f32 interpolated without
-/// perspective, with [`VariantFlags::LINE_COVERAGE`]), then the primitive's number (one flat u32,
-/// with [`VariantFlags::PRIMITIVE_ID_FROM_STAGE`]). `location` is one past every location either
+/// perspective, with [`VariantFlags::LINE_COVERAGE`]) or the line's ends (four flat f32, with
+/// [`VariantFlags::LINE_DIAMOND`]), then the primitive's number (one flat u32,
+/// with [`VariantFlags::PRIMITIVE_ID_FROM_STAGE`]), then the cull distances (four-component f32
+/// values, with [`VariantFlags::CULL_DISTANCE_LINKED`]). `location` is one past every location either
 /// program's reflection lists.
 #[derive(
     Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
@@ -727,14 +743,31 @@ mod tests {
         ];
         for pair in kinds.windows(2) {
             assert_eq!(
-                pair[0].first_binding() + pair[0].slots(),
-                pair[1].first_binding()
+                crate::SLOT_KINDS[pair[0] as usize].first_binding
+                    + crate::SLOT_KINDS[pair[0] as usize].slots,
+                crate::SLOT_KINDS[pair[1] as usize].first_binding
             );
         }
-        assert_eq!(SlotKind::Texture.binding(127), Some(159));
-        assert_eq!(SlotKind::Texture.binding(128), None);
-        assert_eq!(SlotKind::Storage.binding(63), Some(223));
-        assert_eq!(SlotKind::Counter.binding(0), Some(224));
+        assert_eq!(
+            (127 < crate::SLOT_KINDS[SlotKind::Texture as usize].slots)
+                .then(|| crate::SLOT_KINDS[SlotKind::Texture as usize].first_binding + 127),
+            Some(159)
+        );
+        assert_eq!(
+            (128 < crate::SLOT_KINDS[SlotKind::Texture as usize].slots)
+                .then(|| crate::SLOT_KINDS[SlotKind::Texture as usize].first_binding + 128),
+            None
+        );
+        assert_eq!(
+            (63 < crate::SLOT_KINDS[SlotKind::Storage as usize].slots)
+                .then(|| crate::SLOT_KINDS[SlotKind::Storage as usize].first_binding + 63),
+            Some(223)
+        );
+        assert_eq!(
+            (0 < crate::SLOT_KINDS[SlotKind::Counter as usize].slots)
+                .then(|| crate::SLOT_KINDS[SlotKind::Counter as usize].first_binding),
+            Some(224)
+        );
     }
 
     #[test]
@@ -773,30 +806,46 @@ mod tests {
             SlotKind::Counter,
         ];
         for kind in kinds {
-            for slot in 0..kind.slots() {
+            for slot in 0..crate::SLOT_KINDS[kind as usize].slots {
                 let b = ReflectedBinding {
                     kind,
                     space: 0,
                     register: 0,
                     count: 1,
                     set: 1,
-                    binding: kind.binding(slot).unwrap(),
+                    binding: (slot < crate::SLOT_KINDS[kind as usize].slots)
+                        .then(|| crate::SLOT_KINDS[kind as usize].first_binding + slot)
+                        .unwrap(),
                     added: None,
                     stride: 0,
                 };
-                assert_eq!(b.slot(), slot, "{kind:?}");
+                assert_eq!(
+                    b.binding - crate::SLOT_KINDS[b.kind as usize].first_binding,
+                    slot,
+                    "{kind:?}"
+                );
             }
-            assert_eq!(kind.binding(kind.slots()), None, "{kind:?}");
+            assert_eq!(
+                ((crate::SLOT_KINDS[kind as usize].slots) < crate::SLOT_KINDS[kind as usize].slots)
+                    .then(|| crate::SLOT_KINDS[kind as usize].first_binding
+                        + (crate::SLOT_KINDS[kind as usize].slots)),
+                None,
+                "{kind:?}"
+            );
         }
         // The ranges follow one another, and a counter has the number of its storage slot.
         for pair in kinds.windows(2) {
             assert_eq!(
-                pair[0].first_binding() + pair[0].slots(),
-                pair[1].first_binding(),
+                crate::SLOT_KINDS[pair[0] as usize].first_binding
+                    + crate::SLOT_KINDS[pair[0] as usize].slots,
+                crate::SLOT_KINDS[pair[1] as usize].first_binding,
                 "{pair:?}"
             );
         }
-        assert_eq!(SlotKind::Counter.slots(), SlotKind::Storage.slots());
+        assert_eq!(
+            crate::SLOT_KINDS[SlotKind::Counter as usize].slots,
+            crate::SLOT_KINDS[SlotKind::Storage as usize].slots
+        );
     }
 
     /// A target's combine value is laid out in the helper block as its type is.

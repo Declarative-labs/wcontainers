@@ -12,7 +12,7 @@ use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::{Interface, s};
 
-use super::{Gpu, area, buffer_desc, bytecode, element, tex2d_desc, transition};
+use super::{Gpu, area, buffer_desc, bytecode, element, held, release, tex2d_desc, transition};
 use crate::d3d11::scenes::{Colored, hue, quad};
 use crate::d3d11::{checker, hex};
 use crate::dxil;
@@ -73,7 +73,7 @@ pub(super) fn pipeline(
     let mut blend = D3D12_BLEND_DESC::default();
     blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8;
     let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-        pRootSignature: unsafe { transmute_copy(root) },
+        pRootSignature: held(root),
         VS: bytecode(vs),
         PS: bytecode(ps),
         BlendState: blend,
@@ -97,7 +97,9 @@ pub(super) fn pipeline(
         ..Default::default()
     };
     desc.RTVFormats[0] = RGBA;
-    Ok(unsafe { gpu.device.CreateGraphicsPipelineState(&desc)? })
+    let made = unsafe { gpu.device.CreateGraphicsPipelineState(&desc) };
+    release(&mut desc.pRootSignature);
+    Ok(made?)
 }
 
 /// Records a draw of coloured vertices from an upload buffer.
@@ -583,14 +585,14 @@ fn compute(gpu: &Gpu) -> Result<Vec<Output>> {
         &[],
     )?;
     let pso = |cs: &[u8]| -> Result<ID3D12PipelineState> {
-        Ok(unsafe {
-            gpu.device
-                .CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
-                    pRootSignature: transmute_copy(&root),
-                    CS: bytecode(cs),
-                    ..Default::default()
-                })?
-        })
+        let mut desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
+            pRootSignature: held(&root),
+            CS: bytecode(cs),
+            ..Default::default()
+        };
+        let made = unsafe { gpu.device.CreateComputePipelineState(&desc) };
+        release(&mut desc.pRootSignature);
+        Ok(made?)
     };
     let (image_pso, add_pso) = (pso(dxil!("d3d12.cs_image"))?, pso(dxil!("d3d12.cs_add"))?);
     let image = gpu.committed(
@@ -931,14 +933,14 @@ fn queues(gpu: &Gpu) -> Result<Vec<Output>> {
         None,
     )?;
     let (compute_queue, _compute_allocator, compute_list) = queue(D3D12_COMMAND_LIST_TYPE_COMPUTE)?;
-    let add: ID3D12PipelineState = unsafe {
-        gpu.device
-            .CreateComputePipelineState(&D3D12_COMPUTE_PIPELINE_STATE_DESC {
-                pRootSignature: transmute_copy(&root),
-                CS: bytecode(dxil!("d3d12.cs_add")),
-                ..Default::default()
-            })?
+    let mut add_desc = D3D12_COMPUTE_PIPELINE_STATE_DESC {
+        pRootSignature: held(&root),
+        CS: bytecode(dxil!("d3d12.cs_add")),
+        ..Default::default()
     };
+    let made = unsafe { gpu.device.CreateComputePipelineState(&add_desc) };
+    release(&mut add_desc.pRootSignature);
+    let add: ID3D12PipelineState = made?;
     unsafe {
         compute_list.SetPipelineState(&add);
         compute_list.SetComputeRootSignature(&root);
@@ -1087,7 +1089,7 @@ fn copies(gpu: &Gpu) -> Result<Vec<Output>> {
     blend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL.0 as u8;
     let layout = colored_layout();
     let mut pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-        pRootSignature: unsafe { transmute_copy(&root) },
+        pRootSignature: held(&root),
         VS: bytecode(dxil!("common.vs_color")),
         PS: bytecode(dxil!("common.ps_color")),
         BlendState: blend,
@@ -1109,7 +1111,9 @@ fn copies(gpu: &Gpu) -> Result<Vec<Output>> {
         ..Default::default()
     };
     pso_desc.RTVFormats[0] = RGBA;
-    let pso: ID3D12PipelineState = unsafe { gpu.device.CreateGraphicsPipelineState(&pso_desc)? };
+    let made = unsafe { gpu.device.CreateGraphicsPipelineState(&pso_desc) };
+    release(&mut pso_desc.pRootSignature);
+    let pso: ID3D12PipelineState = made?;
     let resolved = gpu.committed(
         D3D12_HEAP_TYPE_DEFAULT,
         &tex2d_desc(64, 64, RGBA, D3D12_RESOURCE_FLAG_NONE),

@@ -12,7 +12,7 @@ use naga::{
     GlobalVariable, Handle, ImageClass, ImageDimension, ImageQuery, Literal, Module, Range,
     ResourceBinding, Scalar, ScalarKind, Span, Statement, TypeInner, VectorSize,
 };
-use wcontainers_gpu::{Reflection, ShaderStage, SlotKind, VariantKey};
+use wcontainers_gpu::{Reflection, SLOT_KINDS, ShaderStage, SlotKind, VariantKey};
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
@@ -50,13 +50,13 @@ pub(crate) fn split_arrays(module: &mut Module) -> Result<bool> {
             };
             let end = binding
                 .binding
-                .checked_sub(kind.first_binding())
+                .checked_sub(SLOT_KINDS[kind as usize].first_binding)
                 .and_then(|slot| slot.checked_add(n.get()))
-                .filter(|&end| end <= kind.slots())
+                .filter(|&end| end <= SLOT_KINDS[kind as usize].slots)
                 .ok_or(ConvertError::Unsupported(
                     crate::refusal::BINDINGS_BEYOND_LIMIT,
                 ))?
-                + kind.first_binding();
+                + SLOT_KINDS[kind as usize].first_binding;
             Ok((binding.binding..end)
                 .map(|b| ResourceBinding {
                     group: binding.group,
@@ -75,7 +75,7 @@ pub(crate) fn sampled_pairs(module: &Module) -> Result<Vec<(u32, u32)>> {
     let slot = |f: &Function, e: Handle<Expression>, kind: SlotKind| match f.expressions[e] {
         Expression::GlobalVariable(g) => module.global_variables[g]
             .binding
-            .map(|b| b.binding - kind.first_binding()),
+            .map(|b| b.binding - SLOT_KINDS[kind as usize].first_binding),
         _ => None,
     };
     let functions = module.functions.iter().map(|(_, f)| f);
@@ -285,7 +285,7 @@ pub(crate) fn storage_textures(
             );
             let slot = binding
                 .binding
-                .checked_sub(SlotKind::Storage.first_binding())?;
+                .checked_sub(SLOT_KINDS[SlotKind::Storage as usize].first_binding)?;
             (storage && named(slot)).then(|| (h, Declared::storage_image(binding)))
         })
         .collect();

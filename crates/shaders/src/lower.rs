@@ -26,8 +26,8 @@ use naga::{
 use naga::{FastHashMap as HashMap, FastHashSet as HashSet};
 use wcontainers_gpu::{
     DrawBaseSource, HelperSlot, HelperValue, Interpolation, ReflectedBinding, Reflection,
-    ScalarKind as ValueKind, ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras, StageValue,
-    SystemValue, TexelBufferRoute, VariantFlags, VariantKey, helper_binding,
+    SLOT_KINDS, ScalarKind as ValueKind, ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras,
+    StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey, helper_binding,
 };
 
 use crate::variant::texel::{TexelBuffer, TexelPlace};
@@ -1088,8 +1088,10 @@ impl<'a> Lowering<'a> {
             ));
         };
         let register = register + self.element;
-        let binding = slot
-            .binding(self.slot(slot, space_index, register)?)
+        let number = self.slot(slot, space_index, register)?;
+        let range = SLOT_KINDS[slot as usize];
+        let binding = (number < range.slots)
+            .then(|| range.first_binding + number)
             .ok_or(unsupported(crate::refusal::BINDINGS_BEYOND_LIMIT))?;
         let prefix = match slot {
             SlotKind::Uniform => register_prefix::UNIFORM,
@@ -1179,6 +1181,89 @@ impl<'a> Lowering<'a> {
         Ok(())
     }
 
+    /// A pixel program's clip or cull distance inputs (built-in `b`, input `i` among them): one array
+    /// argument of every declaration's distances in order, as the vertex program writes them, each
+    /// declaration given its part. Only the first declaration makes it.
+    fn distance_input(
+        &mut self,
+        f: &mut Function,
+        body: &mut Block,
+        e: &mut Emit,
+        i: usize,
+        b: u64,
+    ) -> Result<()> {
+        let input = |c: u16| matches!(c, code::DCL_INPUT | code::DCL_INPUT_BUILT_IN);
+        let clips: Vec<usize> = (0..self.io.len())
+            .filter(|&j| {
+                let (other, ref io) = self.io[j];
+                io.builtin == Some(b) && self.ir.op(other).is_ok_and(|o| input(o.code))
+            })
+            .collect();
+        if clips[0] != i {
+            return Ok(());
+        }
+        let mut parts = Vec::new();
+        let mut total = 0;
+        for &j in &clips {
+            let io = &self.io[j].1;
+            let element = io.ty.members[..]
+                == [Basic {
+                    scalar: scalar::F32,
+                    size: 1,
+                }];
+            if !element || io.ty.dims.len() > 1 {
+                return Err(unsupported(CLIP_DISTANCE_TYPE));
+            }
+            let count: u32 = io.ty.dims.iter().product();
+            parts.push((j, total, count));
+            total += count;
+        }
+        if total > CLIP_OR_CULL_DISTANCES {
+            return Err(unsupported(CLIP_DISTANCE_TYPE));
+        }
+        let f32_ty = self.scalar_ty(Scalar::F32);
+        let array = self.ty(TypeInner::Array {
+            base: f32_ty,
+            size: ArraySize::Constant(NonZeroU32::new(total).unwrap()),
+            stride: core::mem::size_of::<f32>() as u32,
+        });
+        let distances = match b {
+            builtin::CLIP_DISTANCE => naga::BuiltIn::ClipDistances,
+            _ => naga::BuiltIn::CullDistance,
+        };
+        f.arguments.push(FunctionArgument {
+            name: Some(format!("b{b}")),
+            ty: array,
+            binding: Some(naga::Binding::BuiltIn(distances)),
+        });
+        let argument = (f.arguments.len() - 1) as u32;
+        let a = e.add(f, body, Expression::FunctionArgument(argument));
+        for (j, start, count) in parts {
+            let (id, ref io) = self.io[j];
+            let (var, ty, modes) = (io.var, io.ty.clone(), io.interpolation);
+            let value = if ty.dims.is_empty() {
+                e.add(
+                    f,
+                    body,
+                    Expression::AccessIndex {
+                        base: a,
+                        index: start,
+                    },
+                )
+            } else {
+                let components = (start..start + count)
+                    .map(|index| e.add(f, body, Expression::AccessIndex { base: a, index }))
+                    .collect();
+                let ty = self.module.global_variables[var].ty;
+                e.add(f, body, Expression::Compose { ty, components })
+            };
+            let p = e.add(f, body, Expression::GlobalVariable(var));
+            e.stmt(f, body, Statement::Store { pointer: p, value });
+            self.reflect_value(id, true, None, 0, ty.members[0], modes, system_value(b));
+        }
+        Ok(())
+    }
+
     fn check_builtin(&self, b: u64, input: bool) -> Result<()> {
         let ok = match (self.stage, input, b) {
             (_, false, builtin::POSITION) => matches!(
@@ -1213,7 +1298,11 @@ impl<'a> Lowering<'a> {
                 builtin::POSITION
                 | builtin::PRIMITIVE_ID
                 | builtin::GS_INSTANCE_ID
-                | builtin::GS_VERTEX_COUNT_IN,
+                | builtin::GS_VERTEX_COUNT_IN
+                // Read from the vertex records, which the stage before fills
+                // ([`crate::stage::Stages::new`]).
+                | builtin::CLIP_DISTANCE
+                | builtin::CULL_DISTANCE,
             ) => true,
             (
                 SourceStage::Vertex | SourceStage::Domain | SourceStage::Geometry,
@@ -1225,9 +1314,25 @@ impl<'a> Lowering<'a> {
                 false,
                 builtin::LAYER_INDEX | builtin::VIEWPORT_INDEX | builtin::PRIMITIVE_ID,
             ) => true,
-            // Drawn through the stage helper ([`crate::stage::Stages::culled`], and its geometry
-            // stage's cull program).
-            (SourceStage::Vertex | SourceStage::Geometry, false, builtin::CULL_DISTANCE) => true,
+            // Drawn through the stage helper ([`crate::stage::Stages::culled`], its geometry stage's
+            // cull program, and its domain stage's).
+            (
+                SourceStage::Vertex | SourceStage::Domain | SourceStage::Geometry,
+                false,
+                builtin::CULL_DISTANCE,
+            ) => true,
+            // Read from the linked values the vertex program passes them in.
+            (SourceStage::Pixel, true, builtin::CLIP_DISTANCE) => {
+                self.variant
+                    .flags
+                    .contains(wcontainers_gpu::VariantFlags::CLIP_DISTANCE)
+                    && self.variant.linked.clip_distances > 0
+            }
+            // Read from the values the vertex program passes them in.
+            (SourceStage::Pixel, true, builtin::CULL_DISTANCE) => self
+                .variant
+                .flags
+                .contains(wcontainers_gpu::VariantFlags::CULL_DISTANCE_LINKED),
             (SourceStage::Vertex, true, builtin::VERTEX_ID | builtin::INSTANCE_ID) => true,
             (_, true, builtin::SAMPLE_COUNT) => self.variant.samples != 0,
             (SourceStage::Pixel, true, builtin::POSITION | builtin::IS_FRONT_FACE)
@@ -1409,6 +1514,10 @@ impl<'a> Lowering<'a> {
                 self.reflect_value(id, true, Some(loc), comp, member, modes, None);
             } else {
                 let b = builtin.unwrap();
+                if matches!(b, builtin::CLIP_DISTANCE | builtin::CULL_DISTANCE) {
+                    self.distance_input(&mut f, &mut body, &mut e, i, b)?;
+                    continue;
+                }
                 let member = member.ok_or(unsupported(crate::refusal::BUILT_IN_ARRAY))?;
                 let v = self.builtin_input(&mut f, &mut body, &mut e, b, member)?;
                 let p = e.add(&mut f, &mut body, Expression::GlobalVariable(var));
@@ -2270,6 +2379,8 @@ struct FunctionLowering<'l, 'a> {
     switch_exits: Vec<Handle<LocalVariable>>,
     /// The element each descriptor picking one at run time names in the switch case being lowered.
     picked: HashMap<u32, u32>,
+    /// The regions enclosing the one being lowered.
+    nesting: usize,
 }
 
 /// Where branches go inside a construct.
@@ -2322,6 +2433,7 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             cur: 0,
             switch_exits: Vec::new(),
             picked: HashMap::default(),
+            nesting: 0,
         };
         let entry = fl.scan(id)?;
         let mut body = Block::new();
@@ -2643,8 +2755,20 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
 
     // Control flow.
 
-    /// Emits blocks from `label` on until reaching `stop`.
-    fn region(
+    /// Emits blocks from `label` on until reaching `stop`. Lowering recurses once per nested region,
+    /// and every pass over the module after it once per nested block, so nesting deeper than the
+    /// SPIR-V reader takes is refused.
+    fn region(&mut self, label: u32, stop: Option<u32>, t: Targets, out: &mut Block) -> Result<()> {
+        if self.nesting == naga::front::spv::NESTING_LIMIT {
+            return Err(unsupported(crate::refusal::NESTING_BEYOND_LIMIT));
+        }
+        self.nesting += 1;
+        let lowered = self.region_within(label, stop, t, out);
+        self.nesting -= 1;
+        lowered
+    }
+
+    fn region_within(
         &mut self,
         mut label: u32,
         stop: Option<u32>,
@@ -4983,6 +5107,47 @@ impl<'l, 'a> FunctionLowering<'l, 'a> {
             c::F_ADD | c::I_ADD => bin(self, b, B::Add, rs)?,
             c::F_SUB | c::I_SUB => bin(self, b, B::Subtract, rs)?,
             c::F_MUL | c::I_MUL => bin(self, b, B::Multiply, rs)?,
+            c::F_DIV if rs == Scalar::F32 => {
+                // Direct3D's `div` as WARP gives it: the device's quotient refined once by its
+                // fused remainder, kept where it or the refined one is zero, infinite or NaN.
+                // Correctly rounded except where the remainder is below the normal range and
+                // flushed (quotients just above the range's bottom), which keeps the device's.
+                let a = self.get_as(b, r[0], rs)?;
+                let d = self.get_as(b, r[1], rs)?;
+                let q = self.bin(b, B::Divide, a, d);
+                let negated = self.add(
+                    b,
+                    Expression::Unary {
+                        op: UnaryOperator::Negate,
+                        expr: d,
+                    },
+                );
+                let remainder = self.math(b, M::Fma, &[negated, q, a]);
+                let one = self.splat_lit(b, Literal::F32(1.0), res.size)?;
+                let reciprocal = self.bin(b, B::Divide, one, d);
+                let refined = self.math(b, M::Fma, &[remainder, reciprocal, q]);
+                let size = self.math(b, M::Abs, &[refined]);
+                let largest = self.splat_lit(b, Literal::F32(f32::MAX), res.size)?;
+                let finite = self.bin(b, B::LessEqual, size, largest);
+                let zero = self.splat_lit(b, Literal::F32(0.0), res.size)?;
+                let nonzero = self.bin(b, B::NotEqual, q, zero);
+                let kept = self.add(
+                    b,
+                    Expression::Select {
+                        condition: finite,
+                        accept: refined,
+                        reject: q,
+                    },
+                );
+                self.add(
+                    b,
+                    Expression::Select {
+                        condition: nonzero,
+                        accept: kept,
+                        reject: q,
+                    },
+                )
+            }
             c::F_DIV | c::U_DIV => bin(self, b, B::Divide, rs)?,
             c::U_MOD => bin(self, b, B::Modulo, rs)?,
             // Direct3D's `mad` may be fused; `fma` leaves the device the same choice it has for it.
@@ -5362,7 +5527,7 @@ fn declared_length(variant: &VariantKey, kind: SlotKind, op: &Op) -> Result<u32>
             .map(|(_, _, range)| range.end - register)
             .ok_or(unsupported(crate::refusal::UNBOUNDED_RESOURCE_ARRAY))?
     };
-    if length > kind.slots() {
+    if length > SLOT_KINDS[kind as usize].slots {
         return Err(unsupported(crate::refusal::BINDINGS_BEYOND_LIMIT));
     }
     Ok(length)

@@ -178,12 +178,12 @@ fn module(source: &str, entry: &str, stage: ShaderStage) -> Result<ShaderModule,
     })
 }
 
-fn program<B: Backend>(b: &mut B, source: &str) -> Result<B::Program, String> {
+fn program<B: Gpu>(b: &mut B, source: &str) -> Result<B::Program, String> {
     let rewritten;
-    let source = if b.caps().has(Features::CLIP_DEPTH_ZERO_ONE) {
+    let source = if b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE) {
         source
     } else {
-        b.slow_paths().hit(SlowPath::ClipDepthRewrite);
+        b.record_slow_path(SlowPath::ClipDepthRewrite);
         rewritten = clip_depth_rewrite(source);
         &rewritten
     };
@@ -284,7 +284,7 @@ fn no_depth() -> DepthStencilDesc {
     }
 }
 
-fn buffer<B: Backend>(b: &mut B, usage: BufferUsage, bytes: &[u8]) -> Result<B::Buffer, String> {
+fn buffer<B: Gpu>(b: &mut B, usage: BufferUsage, bytes: &[u8]) -> Result<B::Buffer, String> {
     let buffer = b
         .create_buffer(&BufferDesc {
             size: bytes.len() as u64,
@@ -296,7 +296,7 @@ fn buffer<B: Backend>(b: &mut B, usage: BufferUsage, bytes: &[u8]) -> Result<B::
     Ok(buffer)
 }
 
-fn texture<B: Backend>(
+fn texture<B: Gpu>(
     b: &mut B,
     format: Format,
     size: u32,
@@ -317,11 +317,7 @@ fn texture<B: Backend>(
     .map_err(|e| format!("{e:?}"))
 }
 
-fn whole_view<B: Backend>(
-    b: &mut B,
-    t: &B::Texture,
-    format: Format,
-) -> Result<B::TextureView, String> {
+fn whole_view<B: Gpu>(b: &mut B, t: &B::Texture, format: Format) -> Result<B::TextureView, String> {
     b.create_view(
         t,
         &TextureViewDesc {
@@ -337,13 +333,42 @@ fn whole_view<B: Backend>(
     .map_err(|e| format!("{e:?}"))
 }
 
-fn as_bytes(v: &[impl Copy]) -> &[u8] {
-    // SAFETY: the scene data are plain f32 and u16 arrays, with no padding.
-    unsafe { core::slice::from_raw_parts(v.as_ptr().cast(), core::mem::size_of_val(v)) }
+/// Plain numbers as they lie in memory: each in this machine's byte order, one after another.
+trait Plain {
+    fn put(&self, out: &mut Vec<u8>);
+}
+
+impl Plain for f32 {
+    fn put(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_ne_bytes());
+    }
+}
+
+impl Plain for u16 {
+    fn put(&self, out: &mut Vec<u8>) {
+        out.extend_from_slice(&self.to_ne_bytes());
+    }
+}
+
+impl<T: Plain, const N: usize> Plain for [T; N] {
+    fn put(&self, out: &mut Vec<u8>) {
+        for x in self {
+            x.put(out);
+        }
+    }
+}
+
+/// The scene data's bytes, as they lie in memory (plain f32 and u16 arrays, with no padding).
+fn as_bytes(v: &[impl Plain]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(core::mem::size_of_val(v));
+    for x in v {
+        x.put(&mut out);
+    }
+    out
 }
 
 /// Draws `scene` with `change` applied and reads the target back.
-pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u8>, String> {
+pub fn draw<B: Gpu>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u8>, String> {
     let target = texture(
         b,
         Format::Rgba8Unorm,
@@ -351,8 +376,8 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
         TextureUsage::RENDER | TextureUsage::COPY_SRC,
     )?;
     let target_view = whole_view(b, &target, Format::Rgba8Unorm)?;
-    let minus_one = !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE);
-    let first_provokes = b.caps().has(Features::PROVOKING_VERTEX_FIRST);
+    let minus_one = !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE);
+    let first_provokes = b.caps().features.contains(Features::PROVOKING_VERTEX_FIRST);
     let mut raster_desc = solid(minus_one);
     if change == Change::FlatRed && first_provokes {
         raster_desc.provoking = ProvokingVertex::First;
@@ -370,7 +395,7 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
     }];
     let quads_wgsl = include_str!("quads.wgsl");
     let instanced_wgsl = include_str!("instanced.wgsl");
-    let (source, vertices, stride, attributes): (_, &[u8], _, &[(u32, VertexFormat)]) = match which
+    let (source, vertices, stride, attributes): (_, Vec<_>, _, &[(u32, VertexFormat)]) = match which
     {
         Scene::Triangle => (
             scene::TRIANGLE_WGSL,
@@ -395,6 +420,7 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
             &[(0, VertexFormat::Float32x2)],
         ),
     };
+    let vertices = &vertices[..];
     let flat;
     let source = if change == Change::FlatRed {
         flat = source.replacen(
@@ -426,7 +452,7 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
         attributes
     };
     let vertex_buffer = buffer(b, BufferUsage::VERTEX, vertices)?;
-    let red = buffer(b, BufferUsage::VERTEX, as_bytes(&[1.0f32, 0.0, 0.0]))?;
+    let red = buffer(b, BufferUsage::VERTEX, &as_bytes(&[1.0f32, 0.0, 0.0]))?;
     let vertex_layout = b
         .create_vertex_layout(&layout(stride, attributes, change))
         .map_err(|e| format!("{e:?}"))?;
@@ -459,7 +485,8 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
             _ => CompareFn::Less,
         });
         depth_desc.depth_write = true;
-        let indices = as_bytes(&scene::QUAD_INDICES);
+        let index_bytes = as_bytes(&scene::QUAD_INDICES);
+        let indices = &index_bytes[..];
         index = Some(if change == Change::TwinCopy {
             let twin = buffer(
                 b,
@@ -529,7 +556,7 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
         keep.push((checker, view, sampler));
     }
     if change == Change::LineStrip {
-        index = Some(buffer(b, BufferUsage::INDEX, as_bytes(&[0u16, 1, 2, 0]))?);
+        index = Some(buffer(b, BufferUsage::INDEX, &as_bytes(&[0u16, 1, 2, 0]))?);
     }
     let mut depth_clear = 1.0f32;
     if which == Scene::Quads || change == Change::ClearNear {
@@ -545,7 +572,7 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
         constants = buffer(
             b,
             BufferUsage::UNIFORM,
-            as_bytes(&scene::instance_constants()),
+            &as_bytes(&scene::instance_constants()),
         )?;
         let size = (scene::instance_constants().len() * 16) as u64;
         let set = b
@@ -699,7 +726,7 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
     }
     let converted = |b: &mut B| {
         let s = b.slow_paths();
-        s.count(SlowPath::FanConverted) + s.count(SlowPath::LoopConverted)
+        s.counts[SlowPath::FanConverted as usize] + s.counts[SlowPath::LoopConverted as usize]
     };
     let before = converted(b);
     let fan = |first, count| IndexSource::Sequential { first, count };
@@ -707,9 +734,9 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
     b.begin_pass(&pass(&target_view));
     match change {
         Change::Fan => {
-            let indices: [u16; 9] = [0, 1, 2, 3, 0xffff, 4, 5, 6, 7];
+            let indices = as_bytes(&[0u16, 1, 2, 3, 0xffff, 4, 5, 6, 7]);
             let source = IndexSource::Guest {
-                indices: as_bytes(&indices),
+                indices: &indices,
                 format: IndexFormat::U16,
                 base_vertex: 0,
             };
@@ -732,7 +759,7 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
         _ => b.draw(&call),
     }
     b.end_pass();
-    if b.caps().has(Features::FAN_AND_LOOP) && converted(b) != before {
+    if b.caps().features.contains(Features::FAN_AND_LOOP) && converted(b) != before {
         return Err("a fan or loop was converted although FAN_AND_LOOP is present".into());
     }
     if change == Change::ClearRects {
@@ -790,15 +817,18 @@ pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u
 
 /// The capability list as text, for the record and for checking against the specification.
 pub fn caps_report(caps: &Caps) -> String {
+    use serde::Deserialize;
+    use serde::de::value::U32Deserializer;
     let mut out = format!(
         "features: {:?}\nlimits: {:#?}\nformats:\n",
         caps.features, caps.limits
     );
-    for i in 0..Format::COUNT {
+    for i in 0..FORMAT_COUNT {
         let uses = caps.formats.uses[i];
         if !uses.is_empty() {
-            // SAFETY: every index below COUNT is a Format, which is repr(u16) and fieldless.
-            let format: Format = unsafe { core::mem::transmute(i as u16) };
+            // The format numbered `i`, which serde's derive reads as the variant's position.
+            let number = U32Deserializer::<serde::de::value::Error>::new(i as u32);
+            let format = Format::deserialize(number).expect("every index below COUNT is a format");
             out += &format!(
                 "  {format:?}: {uses:?} samples {:#b}\n",
                 caps.formats.samples[i]

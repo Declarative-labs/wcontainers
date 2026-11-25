@@ -56,5 +56,6 @@ rand_chacha = "0.9.0"
 [build-dependencies]
 cc = "1"
 
+# TODO: remove this crate's 1091 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints]
 workspace = true

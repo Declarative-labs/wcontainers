@@ -6,7 +6,7 @@
 //! end cannot reinterpret). Typed buffer views and stream output are the front's to add; tiling,
 //! video and the formats the back end lacks are absent.
 
-use wcontainers_gpu::{Caps, Features, Format, FormatUse};
+use wcontainers_gpu::{Caps, FORMAT_FACTS, Features, Format, FormatUse};
 
 use crate::format::{BACK_BUFFER_FORMATS, dxgi, dxgi_format, dxgi_vertex_format, typeless_group};
 
@@ -36,6 +36,9 @@ pub mod support1 {
     pub const BACK_BUFFER_CAST: u32 = 0x1000000;
     pub const TYPED_UNORDERED_ACCESS_VIEW: u32 = 0x2000000;
     pub const SHADER_GATHER_COMPARISON: u32 = 0x4000000;
+    /// Direct3D 11's alone: `D3D11_FORMAT_SUPPORT_MIP_AUTOGEN` and `_CPU_LOCKABLE`.
+    pub const MIP_AUTOGEN: u32 = 0x2000;
+    pub const CPU_LOCKABLE: u32 = 0x20000;
 }
 
 /// `D3D11_FORMAT_SUPPORT2` and `D3D12_FORMAT_SUPPORT2` bits.
@@ -49,6 +52,8 @@ pub mod support2 {
     pub const UAV_TYPED_LOAD: u32 = 0x40;
     pub const UAV_TYPED_STORE: u32 = 0x80;
     pub const OUTPUT_MERGER_LOGIC_OP: u32 = 0x100;
+    /// Direct3D 11's alone: `D3D11_FORMAT_SUPPORT2_SHAREABLE`.
+    pub const SHAREABLE: u32 = 0x400;
 }
 
 /// Both words of a format's support; both zero for a format the API then refuses (`E_FAIL`).
@@ -111,8 +116,8 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     let Some((format, typeless)) = dxgi_format(value) else {
         return FormatSupport::default();
     };
-    let uses = caps.formats.get(format);
-    let depth = format.is_depth_stencil();
+    let uses = caps.formats.uses[format as usize];
+    let depth = FORMAT_FACTS[format as usize].depth_stencil;
     let texture = uses.intersects(
         FormatUse::SAMPLE
             | FormatUse::RENDER
@@ -122,7 +127,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     );
     // The texture shapes a format may have (`FormatCaps`): 1D only with blocks one texel high, and
     // no 3D for depth.
-    let one_texel_high = format.block().1 == 1;
+    let one_texel_high = FORMAT_FACTS[format as usize].block.1 == 1;
     let shapes = match texture {
         false => 0,
         true => {
@@ -153,12 +158,14 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     // Formats the back end cannot filter are filtered in the program (`FilterInShader`), but for
     // those whose sampling Direct3D leaves optional; integer formats are not sampled.
     let filter = sample
-        && format.kind() == wcontainers_gpu::FormatKind::Float
+        && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::FormatKind::Float
         && (has(FormatUse::FILTER) || !OPTIONAL_SAMPLE.contains(&value));
     // A multisampled texture exists only as a target, so only formats that are targets load samples.
     let target = has(FormatUse::RENDER) || has(FormatUse::DEPTH_STENCIL);
-    let multisample_load =
-        sample && target && caps.has(Features::MULTISAMPLE_READ) && multisampled(caps, format);
+    let multisample_load = sample
+        && target
+        && caps.features.contains(Features::MULTISAMPLE_READ)
+        && multisampled(caps, format);
     let mut bit = |on: bool, b: u32| {
         if on {
             s.support1 |= b;
@@ -213,7 +220,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         _ => None,
     };
     bit(
-        depth_twin.is_some_and(|d| caps.formats.get(d).contains(FormatUse::SAMPLE)),
+        depth_twin.is_some_and(|d| caps.formats.uses[d as usize].contains(FormatUse::SAMPLE)),
         SHADER_SAMPLE_COMPARISON | SHADER_GATHER_COMPARISON,
     );
     bit(render, RENDER_TARGET);
@@ -227,16 +234,18 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         has(FormatUse::RESOLVE)
             && render
             && multisampled(caps, format)
-            && format.kind() == wcontainers_gpu::FormatKind::Float,
+            && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::FormatKind::Float,
         MULTISAMPLE_RESOLVE,
     );
     bit(multisample_load, MULTISAMPLE_LOAD);
     bit(BACK_BUFFER_FORMATS.contains(&value), DISPLAY);
-    // The swap chain's buffers take views as their sRGB twins.
+    // The swap chain's buffers take views in the other formats of their group (their sRGB twins,
+    // `R10G10B10A2_UINT`).
     bit(
         matches!(
             value,
-            dxgi::R8G8B8A8_UNORM
+            dxgi::R10G10B10A2_UNORM
+                | dxgi::R8G8B8A8_UNORM
                 | dxgi::R8G8B8A8_UNORM_SRGB
                 | dxgi::B8G8R8A8_UNORM
                 | dxgi::B8G8R8A8_UNORM_SRGB
@@ -253,11 +262,36 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     if has(FormatUse::STORAGE_ATOMIC) {
         s.support2 |= atomic_operations(value);
     }
-    if render && caps.has(Features::LOGIC_OP) && format.kind() == wcontainers_gpu::FormatKind::Uint
+    if render
+        && caps.features.contains(Features::LOGIC_OP)
+        && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::FormatKind::Uint
     {
         s.support2 |= OUTPUT_MERGER_LOGIC_OP;
     }
     s
+}
+
+/// Whether Direct3D takes typed unordered access views of DXGI format `value`: the typed colour
+/// formats of one texel a block but the sRGB ones, the three-component 32-bit ones, the 16-bit
+/// packed ones and `B8G8R8X8_UNORM` (Microsoft's 11_0 table gives these no Typed UAV).
+pub fn storage_viewed(value: u32) -> bool {
+    !matches!(
+        value,
+        dxgi::R32G32B32_FLOAT
+            ..=dxgi::R32G32B32_SINT
+                | dxgi::B5G6R5_UNORM
+                | dxgi::B5G5R5A1_UNORM
+                | dxgi::B4G4R4A4_UNORM
+                | dxgi::B8G8R8X8_UNORM
+                | dxgi::R9G9B9E5_SHAREDEXP
+                | dxgi::R8G8_B8G8_UNORM
+                | dxgi::G8R8_G8B8_UNORM
+    ) && dxgi_format(value).is_some_and(|(f, typeless)| {
+        !typeless
+            && !FORMAT_FACTS[f as usize].depth_stencil
+            && FORMAT_FACTS[f as usize].linear == f
+            && FORMAT_FACTS[f as usize].block.0 == 1
+    })
 }
 
 /// The atomic operations Direct3D defines on typed unordered access views of DXGI format `value`:
@@ -288,10 +322,8 @@ pub fn takes_samples(caps: &Caps, value: u32, samples: u32) -> bool {
     let Some((format, typeless)) = dxgi_format(value) else {
         return false;
     };
-    let target = caps
-        .formats
-        .get(format)
-        .intersects(FormatUse::RENDER | FormatUse::DEPTH_STENCIL);
+    let target =
+        caps.formats.uses[format as usize].intersects(FormatUse::RENDER | FormatUse::DEPTH_STENCIL);
     (typeless || role(value) == Role::Whole)
         && target
         && caps.formats.takes_samples(format, samples)

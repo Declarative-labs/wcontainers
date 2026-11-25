@@ -321,8 +321,8 @@ pub struct TargetLayout {
     pub samples: u32,
 }
 
-/// Primitive topology. Fans and loops go through [`crate::Backend::draw_fan_or_loop`], never
-/// [`crate::Backend::draw`]. Adjacency topologies (Direct3D 10 and 11, OpenGL) are not here: with a
+/// Primitive topology. Fans and loops go through [`crate::Gpu::draw_fan_or_loop`], never
+/// [`crate::Gpu::draw`]. Adjacency topologies (Direct3D 10 and 11, OpenGL) are not here: with a
 /// geometry shader the stage helper reads them; without one, as OpenGL allows, the front draws the list
 /// or strip from indices that leave out the adjacent vertices (slow path
 /// [`crate::SlowPath::AdjacencyDropped`]).
@@ -347,22 +347,30 @@ pub enum IndexFormat {
     U32,
 }
 
-impl IndexFormat {
+/// What each [`IndexFormat`] is, in the enum's order: [`INDEX_FORMATS`] holds one per format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexFormatFacts {
     /// Bytes per index.
-    pub fn size(self) -> u32 {
-        match self {
-            IndexFormat::U8 => 1,
-            IndexFormat::U16 => 2,
-            IndexFormat::U32 => 4,
-        }
-    }
-
+    pub size: u32,
     /// The largest value, which restarts strips when restart is on.
-    pub fn restart_value(self) -> u32 {
-        match self {
-            IndexFormat::U8 => 0xff,
-            IndexFormat::U16 => 0xffff,
-            IndexFormat::U32 => 0xffff_ffff,
-        }
-    }
+    pub restart_value: u32,
 }
+
+/// The facts of every index format, indexed by `IndexFormat as usize`.
+pub const INDEX_FORMATS: [IndexFormatFacts; 3] = [
+    // U8
+    IndexFormatFacts {
+        size: 1,
+        restart_value: 0xff,
+    },
+    // U16
+    IndexFormatFacts {
+        size: 2,
+        restart_value: 0xffff,
+    },
+    // U32
+    IndexFormatFacts {
+        size: 4,
+        restart_value: 0xffff_ffff,
+    },
+];

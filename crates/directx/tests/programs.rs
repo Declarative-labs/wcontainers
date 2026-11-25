@@ -7,6 +7,7 @@
 
 mod common;
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -184,6 +185,10 @@ fn yuy2_compared(args: &[&str]) {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn nv12_planes_view_write_copy_and_map_as_direct3d_does() {
     // The WebGL 2 build's device is 10_0's, so both are made at 10_0 there.
     let args: &[&str] = if cfg!(feature = "webgl") {
@@ -266,21 +271,37 @@ fn level10(name: &str) {
 }
 
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn targets_blended_and_masked_each_their_own_way_at_10_0_as_direct3d_does() {
     level10("targets");
 }
 
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn view_sizes_and_level_counts_at_10_0_as_direct3d_does() {
     level10("resinfo");
 }
 
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn an_empty_slots_size_and_level_count_at_10_0_as_direct3d_does() {
     level10("resinfo_empty");
 }
 
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn stream_output_of_a_vertex_shader_alone_at_10_0_as_direct3d_does() {
     level10("stream");
 }
@@ -291,6 +312,38 @@ fn stream_output_of_a_vertex_shader_alone_at_10_0_as_direct3d_does() {
 #[test]
 fn b8g8r8x8_elements_and_typed_buffers_read_as_direct3d_reads_them() {
     case("bgrx");
+}
+
+/// A pixel shader reads a stage's last shader resource view (t127) and last sampler (s15) beside
+/// 24 more views on a device of 10_0, as every 10_0 device reads them.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn a_stages_last_view_and_sampler_read_at_10_0_as_direct3d_reads_them() {
+    case_args(&["slots", "10_0"], "ours", &[]);
+}
+
+/// The WebGL 2 build's stages read 16 texture units, fewer than 10_0's 128 shader resource views,
+/// so a device of 10_0 is refused, with a warning naming them, and one of 9_3 is made.
+#[cfg(feature = "webgl")]
+#[test]
+fn no_device_of_10_0_where_a_stage_reads_fewer_than_128_views() {
+    let (code, got, errors) = run_logged(
+        "own_cases",
+        &place("slots-10_0-ours", true),
+        &["slots", "10_0"],
+        &[],
+    );
+    assert_ne!(code, 0, "{got}");
+    assert!(
+        errors.contains("feature level 0xa000 not reported: a stage of the back end reads fewer than its 128 shader resource views"),
+        "{errors}"
+    );
+    let (code, got) = run_with(
+        "own_cases",
+        &place("format_support-9_3-ours-webgl", true),
+        &["format_support", "9_3"],
+    );
+    assert_eq!(code, 0, "{got}");
 }
 
 /// `R10G10B10_XR_BIAS_A2_UNORM` textures take the shapes, bindings, CPU access and copies
@@ -315,18 +368,146 @@ fn typed_storage_stores_as_direct3d_does() {
     case("typed");
 }
 
-/// Stores into an `A8_UNORM` storage view keep the fourth component alone, and a texture of it
-/// sampled afterwards reads (0, 0, 0, a), as on the RTX 3080.
+/// Stores into an `A8_UNORM` storage view keep the fourth component alone, a texture of it
+/// sampled afterwards reads (0, 0, 0, a), and typed loads of the view read (0, 0, 0, a), as on the
+/// RTX 3080.
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn a8_storage_views_store_as_direct3d_does() {
     case("a8_storage");
 }
 
+/// Whether each 32-bit word of `got`'s hex value equals the word of `one` or of `other` in its
+/// place, the three lines' prefixes being equal.
+#[cfg(not(feature = "webgl"))]
+fn words_of_either(got: &str, one: &str, other: &str) -> bool {
+    let split = |l: &str| {
+        l.rsplit_once(' ')
+            .map(|(p, v)| (p.to_string(), v.to_string()))
+    };
+    let (Some((gp, gv)), Some((op, ov)), Some((tp, tv))) = (split(got), split(one), split(other))
+    else {
+        return false;
+    };
+    const DIGITS_A_WORD: usize = 8;
+    gp == op
+        && gp == tp
+        && gv.len() == ov.len()
+        && gv.len() == tv.len()
+        && gv.len() % DIGITS_A_WORD == 0
+        && (0..gv.len() / DIGITS_A_WORD).all(|i| {
+            let w = |v: &str| v[i * DIGITS_A_WORD..(i + 1) * DIGITS_A_WORD].to_string();
+            w(&gv) == w(&ov) || w(&gv) == w(&tv)
+        })
+}
+
+/// Runs one case of `own_cases` on the RTX 3080, on WARP and through ours, and holds each 32-bit
+/// word ours printed to what one of the two real implementations printed in its place: where the
+/// two differ within the specification's tolerance (a division's last bit), either answer passes.
+#[cfg(not(feature = "webgl"))]
+fn case_either_real(name: &str) {
+    let args = [name];
+    let (code, hardware) = run_with("own_cases", &place(&format!("{name}-system"), false), &args);
+    assert_eq!(code, 0, "{hardware}");
+    let (code, warp) = run_env(
+        "own_cases",
+        &place(&format!("{name}-warp"), false),
+        &args,
+        &[("OWN_CASES_DRIVER", "warp")],
+    );
+    assert_eq!(code, 0, "{warp}");
+    let (code, got) = run_with("own_cases", &place(&format!("{name}-ours"), true), &args);
+    assert_eq!(code, 0, "{got}");
+    for ((h, w), g) in hardware.lines().zip(warp.lines()).zip(got.lines()) {
+        assert!(
+            g == h || g == w || words_of_either(g, h, w),
+            "the first line that is neither real answer\nRTX 3080 {h}\nWARP     {w}\nours     {g}"
+        );
+    }
+    assert_eq!(hardware.lines().count(), got.lines().count());
+    assert_eq!(warp.lines().count(), got.lines().count());
+}
+
+/// A colour map sampled bilinearly and clamped at a coordinate just below 1 worked out by the
+/// program as atg-simplecomputepc does, and at fixed coordinates around its edges; and that
+/// program's own compute shader run as it runs it, inside the Mandelbrot set; as the RTX 3080 or
+/// WARP gives them (they differ by the last bit of 1200 / 300, Gap list).
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn colour_map_sampled_at_its_edges_as_direct3d_samples_it() {
+    case_either_real("colour_map_edge");
+}
+
+/// Quotients of values read at run time, ordinary ones and zeros, infinities, NaNs, overflows and
+/// results below the normal range: each as the RTX 3080 or WARP gives it (the RTX 3080's
+/// division is 1 ULP short on some, WARP's correctly rounded; the specification allows 2.5 ULP).
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn divisions_give_a_real_devices_quotient() {
+    case_either_real("divisions");
+}
+
+/// The time of a compute program's chains of divisions through ours and through the RTX 3080's
+/// Direct3D 11, printed; a measurement, run alone (`gpu-job --alone`) with `--ignored --nocapture`.
+#[cfg(not(feature = "webgl"))]
+#[test]
+#[ignore = "a timing, not a check: run alone on the GPU with --ignored --nocapture"]
+fn division_cost_through_ours_and_direct3d() {
+    for (label, ours) in [
+        ("division_cost-system", false),
+        ("division_cost-ours", true),
+    ] {
+        let (code, got) = run_with("own_cases", &place(label, ours), &["division_cost"]);
+        assert_eq!(code, 0, "{got}");
+        let line = got.lines().find(|l| l.contains(" us")).unwrap_or_default();
+        println!("{label}: {line}");
+    }
+}
+
+/// atg-simplecomputepc's dispatch over 30 frames, each also drawing the result and 100 quads from
+/// another texture as the program does: the colour inside the set is the map's first texel, the
+/// correctly rounded quotient 1200 / 300 = 4, as WARP gives it in every frame. Compared with WARP
+/// alone: the draws change nothing on WARP, and the RTX 3080 gives its own quotient here, 1 ULP
+/// short (red 1), and WARP's only inside the program, after its driver changes its division (Gap
+/// list).
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it() {
+    let args = ["colour_map_frames"];
+    let warp = [("OWN_CASES_DRIVER", "warp")];
+    let (code, want, _) = run_logged(
+        "own_cases",
+        &place("colour_map_frames-warp", false),
+        &args,
+        &warp,
+    );
+    assert_eq!(code, 0, "{want}");
+    let (code, got, _) = run_logged(
+        "own_cases",
+        &place("colour_map_frames-ours", true),
+        &args,
+        &[],
+    );
+    assert_eq!(code, 0, "{got}");
+    assert_eq!(want, got);
+}
+
+/// Programs load from and store into storage views of every format of Microsoft's set of typed
+/// storage loads, which both devices claim, and get what the RTX 3080 gives.
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn typed_storage_loads_as_direct3d_does() {
+    case("typed_loads");
+}
+
 /// `A8_UNORM`, `R8G8_B8G8_UNORM`, `G8R8_G8B8_UNORM`, `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM`
 /// textures of each dimension written, read back, loaded and sampled, and the two targets among
 /// them drawn, blended and their mips generated, on 10_0 devices, as on the RTX 3080.
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn small_formats_read_and_drawn_at_10_0_as_direct3d_does() {
     case_args(&["small_formats", "10_0"], "ours", &[]);
 }
@@ -336,6 +517,30 @@ fn small_formats_read_and_drawn_at_10_0_as_direct3d_does() {
 #[test]
 fn packed_targets_drawn_blended_and_resolved_as_direct3d_does() {
     case("packed_targets");
+}
+
+/// Blends in one pass read what earlier draws and earlier primitives of the same draw left in
+/// `B5G5R5A1_UNORM` and `B5G6R5_UNORM` targets as the format holds it: the 1-bit alpha as a blend
+/// factor, and small increments rounded at each draw and each primitive (lists, instances, strips
+/// with culled odd triangles and a restart), as on the RTX 3080.
+#[test]
+fn packed_targets_read_by_blends_as_direct3d_reads_them() {
+    case("packed_blend_reads");
+}
+
+/// Sample masks leaving out sample 0 of 4- and 8-sample targets write the samples they keep, and
+/// a mask without bit 0 drops a draw into a target of one sample, as on the RTX 3080.
+#[test]
+fn sample_masks_without_sample_0_as_direct3d_applies_them() {
+    case("sample_masks");
+}
+
+/// 32 input slots of one element each, 15, 30 and 31 values passed from the vertex to the pixel
+/// shader beside the position, and a draw reading inputs with no input layout (dropped), as the
+/// RTX 3080 draws them.
+#[test]
+fn every_input_slot_and_stage_register_as_direct3d_draws_them() {
+    case("stage_registers");
 }
 
 /// Format support bits of abilities this device reports absent through their own queries, which
@@ -392,13 +597,12 @@ fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)
     } else {
         0
     };
-    let differences = vec![(
+    vec![(
         DXGI_FORMAT_R32G32B32_FLOAT,
         D3D11_FORMAT_SUPPORT_SHADER_SAMPLE.0 | gather,
         0,
         "sampling, optional: served, where the back end filters the format",
-    )];
-    differences
+    )]
 }
 
 /// Every ability Microsoft's format tables require at 10_0, 10_1 and 11_0 that real Direct3D
@@ -408,7 +612,7 @@ fn support_differences(level: &str) -> Vec<(DXGI_FORMAT, i32, i32, &'static str)
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn every_format_requirement_of_levels_10_0_to_11_0_met_where_direct3d_meets_it() {
-    use wcontainers_direct3d_11::required::{self, Required, SAMPLES_4, SAMPLES_8};
+    use wcontainers_direct3d_11::required::{self, Required, SAMPLES_4, SAMPLES_8, SAMPLES_OTHER};
     let mut unmet = Vec::new();
     for (name, level) in ["10_0", "10_1", "11_0"].into_iter().zip(required::LEVELS) {
         let answers = |side: &str| -> Vec<(u32, Required)> {
@@ -429,6 +633,7 @@ fn every_format_requirement_of_levels_10_0_to_11_0_met_where_direct3d_meets_it()
                     "format" => (by_format[f].0, by_format[f].1) = (hex(w[3]), hex(w[4])),
                     "msq" if w[3] != "0" => by_format[f].2 |= SAMPLES_4,
                     "msq8" if w[3] != "0" => by_format[f].2 |= SAMPLES_8,
+                    "msqo" if w[2] != "-" => by_format[f].2 |= SAMPLES_OTHER,
                     _ => {}
                 }
             }
@@ -479,6 +684,10 @@ fn every_format_requirement_of_levels_10_0_to_11_0_met_where_direct3d_meets_it()
 /// `support_differences` names. Direct3D fails the second query where a format has none of its
 /// bits, so it fails on ours where real Direct3D's word holds only bits ours lacks.
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn format_support_as_direct3d_reports_it_but_the_named_shortfalls() {
     format_support_compared("11_0", "ours", &[], &[]);
 }
@@ -501,14 +710,58 @@ fn format_support_at_level_10_0_as_direct3d_reports_it_but_the_named_shortfalls(
 }
 
 /// The same on devices of feature levels 9_1, 9_2 and 9_3, which report only what the 10Level9
-/// tables give; and what such devices make and refuse, line by line.
-#[cfg(not(feature = "webgl"))]
+/// tables give; and what such devices make and refuse, line by line. Also on the WebGL 2 build,
+/// whose device is 9_3.
 #[test]
 fn format_support_and_creations_below_10_0_as_direct3d_reports_them() {
     for level in ["9_1", "9_2", "9_3"] {
         format_support_compared(level, "ours", &[], &[]);
-        case_args(&["level9_make", level], "ours", &[]);
+        if cfg!(feature = "webgl") {
+            creations_without_multisampling(level);
+        } else {
+            case_args(&["level9_make", level], "ours", &[]);
+        }
     }
+}
+
+/// What a device of `level` makes and refuses, line by line, on a back end that reports no
+/// multisampling (the WebGL 2 build without a sample mask route, Gap list): a multisampled
+/// texture real Direct3D makes is refused with `E_INVALIDARG`, as on a device without it, and
+/// only where ours reports no quality level at 4 samples of `R8G8B8A8_UNORM`.
+fn creations_without_multisampling(level: &str) {
+    let args = ["level9_make", level];
+    let (code, want) = run_with(
+        "own_cases",
+        &place(&format!("level9_make-{level}-system"), false),
+        &args,
+    );
+    assert_eq!(code, 0, "{want}");
+    let (code, got) = run_with(
+        "own_cases",
+        &place(&format!("level9_make-{level}-ours"), true),
+        &args,
+    );
+    assert_eq!(code, 0, "{got}");
+    let (code, support) = run_with(
+        "own_cases",
+        &place(&format!("level9_support-{level}-ours"), true),
+        &["format_support", level],
+    );
+    assert_eq!(code, 0, "{support}");
+    let rgba8 = windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM.0;
+    let unsampled = support
+        .lines()
+        .filter_map(|l| l.strip_prefix("msq "))
+        .any(|l| l.split(' ').next() == Some(&rgba8.to_string()) && l.ends_with(" 0"));
+    for (w, g) in want.lines().zip(got.lines()) {
+        let refused_unsampled = unsampled
+            && w.starts_with("rgba8 four samples:")
+            && g == "rgba8 four samples: 0x80070057";
+        if !refused_unsampled {
+            assert_eq!(w, g, "the first line that differs");
+        }
+    }
+    assert_eq!(want.lines().count(), got.lines().count());
 }
 
 /// Without 16-bit norm (a browser without `texture-formats-tier1`), the 16-bit normalised formats
@@ -520,14 +773,29 @@ fn format_support_without_16_bit_norm_as_direct3d_reports_it_but_the_named_short
     let off = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM.as_str().unwrap();
     let env = [(FEATURES_OFF, off)];
     no_device_above(UNTIERED_LEVEL, "ours-no16", &env);
-    format_support_compared(UNTIERED_LEVEL, "ours-no16", &env, &[]);
+    format_support_compared(UNTIERED_LEVEL, "ours-no16", &env, &TWINS_UNBLENDED);
 }
 
 /// The highest level a back end without `texture-formats-tier1`, 16-bit norm or float32-filterable
-/// meets: 10_0 requires resolves of multisampled 32-bit float and normalised targets that it cannot
-/// draw (Gap list).
+/// meets: 10_1 requires 4-sample loads of normalised targets it holds as integer twins, which are not
+/// multisampled, and 8-sample targets, which WebGPU never draws (Gap list).
 #[cfg(not(feature = "webgl"))]
-const UNTIERED_LEVEL: &str = "9_3";
+const UNTIERED_LEVEL: &str = "10_0";
+
+/// The 16-bit unsigned normalised formats are blended by the RTX 3080 at `UNTIERED_LEVEL`, where
+/// the tables do not require it; held as their integer twins they are not (`BlendInShader` is not
+/// built for them).
+#[cfg(not(feature = "webgl"))]
+const TWINS_UNBLENDED: [(DXGI_FORMAT, i32, i32, &str); 3] = {
+    use windows::Win32::Graphics::Dxgi::Common::*;
+    let blend = D3D11_FORMAT_SUPPORT_BLENDABLE.0;
+    let why = "blending, optional at 10_0: not served for integer twins";
+    [
+        (DXGI_FORMAT_R16G16B16A16_UNORM, blend, 0, why),
+        (DXGI_FORMAT_R16G16_UNORM, blend, 0, why),
+        (DXGI_FORMAT_R16_UNORM, blend, 0, why),
+    ]
+};
 
 /// Ours makes no device of a level above `highest` with the features of `env` off, as it does not
 /// meet the level's requirements (`required::LEVEL_REQUIRED`).
@@ -559,14 +827,15 @@ fn untiered(more: &[wgpu::Features]) -> String {
 }
 
 /// The same without `texture-formats-tier1`: no level above `UNTIERED_LEVEL` is met, and there
-/// the formats are reported as real Direct3D reports them.
+/// the formats are reported as real Direct3D reports them, `R32_FLOAT`'s multisampled targets
+/// resolved by a draw (`ResolveByDraw`).
 #[cfg(not(feature = "webgl"))]
 #[test]
 fn format_support_without_texture_formats_tier1_as_direct3d_reports_it_but_the_named_shortfalls() {
     let off = untiered(&[]);
     let env = [(FEATURES_OFF, off.as_str())];
     no_device_above(UNTIERED_LEVEL, "ours-untiered", &env);
-    format_support_compared(UNTIERED_LEVEL, "ours-untiered", &env, &[]);
+    format_support_compared(UNTIERED_LEVEL, "ours-untiered", &env, &TWINS_UNBLENDED);
 }
 
 /// The same where the back end cannot filter the 32-bit float formats either (a browser without
@@ -577,7 +846,7 @@ fn format_support_without_float32_filterable_as_direct3d_reports_it_but_the_name
     let off = untiered(&[wgpu::Features::FLOAT32_FILTERABLE]);
     let env = [(FEATURES_OFF, off.as_str())];
     no_device_above(UNTIERED_LEVEL, "ours-unfiltered", &env);
-    format_support_compared(UNTIERED_LEVEL, "ours-unfiltered", &env, &[]);
+    format_support_compared(UNTIERED_LEVEL, "ours-unfiltered", &env, &TWINS_UNBLENDED);
 }
 
 /// Gathers through point and linear samplers, samples and generated mips of the 32-bit float
@@ -595,7 +864,8 @@ fn float32_textures_gathered_sampled_and_their_mips_generated_as_direct3d_does()
 fn float32_textures_filtered_in_the_program_as_direct3d_reads_them() {
     let off = untiered(&[wgpu::Features::FLOAT32_FILTERABLE]);
     let errors = case_env("float32_reads", "unfiltered", &[(FEATURES_OFF, &off)]);
-    let route = wcontainers_gpu::SlowPath::FilterInShader.reason();
+    let route =
+        wcontainers_gpu::SLOW_PATH_REASONS[wcontainers_gpu::SlowPath::FilterInShader as usize];
     assert!(errors.contains(route), "{errors}");
 }
 
@@ -613,7 +883,8 @@ fn normalised_targets_drawn_read_and_their_mips_generated_as_direct3d_does() {
 #[test]
 #[ignore = "no 11_0 device without texture-formats-tier1 or 16-bit norm: the level's format requirements are not met (Gap list)"]
 fn normalised_targets_through_integer_twins_as_direct3d_draws_them() {
-    let route = wcontainers_gpu::SlowPath::NormAsInteger.reason();
+    let route =
+        wcontainers_gpu::SLOW_PATH_REASONS[wcontainers_gpu::SlowPath::NormAsInteger as usize];
     let no16 = wgpu::Features::TEXTURE_FORMAT_16BIT_NORM.as_str().unwrap();
     for (label, off) in [("untiered", untiered(&[])), ("no16", no16.to_string())] {
         let errors = case_env("norm_targets", label, &[(FEATURES_OFF, &off)]);
@@ -627,6 +898,10 @@ fn normalised_targets_through_integer_twins_as_direct3d_draws_them() {
 /// and are reported as Direct3D's drivers report them for formats they do not multisample.
 #[cfg(feature = "webgl")]
 #[test]
+#[cfg_attr(
+    feature = "webgl",
+    ignore = "the WebGL 2 build is 9_3: its stages read 16 texture units, where 10_0 reads 128 shader resource views (Gap list)"
+)]
 fn no_multisampling_without_a_sample_mask_route_at_10_0() {
     let (code, got) = run_with(
         "own_cases",
@@ -829,13 +1104,14 @@ fn a_compute_shader_samples_under_minimum_level_clamps_as_direct3d_does() {
 /// WebGPU cannot store into are stored through a buffer of their texels.
 #[cfg(not(feature = "webgl"))]
 #[test]
-#[ignore = "no 11_0 device without texture-formats-tier1: the level's format requirements are not met (Gap list)"]
+#[ignore = "typed storage views absent by the feature level rule: without texture-formats-tier1 the device is truthfully 10_0, which has none (Gap list)"]
 fn typed_storage_stores_without_texture_formats_tier1_as_direct3d_does() {
     let tier1 = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
         .as_str()
         .unwrap();
     let errors = case_env("typed", "untiered", &[(FEATURES_OFF, tier1)]);
-    let route = wcontainers_gpu::SlowPath::StorageFormatThroughBuffer.reason();
+    let route = wcontainers_gpu::SLOW_PATH_REASONS
+        [wcontainers_gpu::SlowPath::StorageFormatThroughBuffer as usize];
     assert!(errors.contains(route), "{errors}");
 }
 
@@ -844,7 +1120,7 @@ fn typed_storage_stores_without_texture_formats_tier1_as_direct3d_does() {
 /// (`NormAsInteger`) and stored through a buffer.
 #[cfg(not(feature = "webgl"))]
 #[test]
-#[ignore = "no 11_0 device without texture-formats-tier1 or 16-bit norm: the level's format requirements are not met (Gap list)"]
+#[ignore = "typed storage views absent by the feature level rule: without texture-formats-tier1 or 16-bit norm the device is truthfully 10_0, which has none (Gap list)"]
 fn typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d_does() {
     let off = [
         wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES,
@@ -853,7 +1129,8 @@ fn typed_storage_stores_without_texture_formats_tier1_or_16_bit_norm_as_direct3d
     .map(|f| f.as_str().unwrap())
     .join(" ");
     let errors = case_env("typed", "untiered16", &[(FEATURES_OFF, &off)]);
-    let route = wcontainers_gpu::SlowPath::NormAsInteger.reason();
+    let route =
+        wcontainers_gpu::SLOW_PATH_REASONS[wcontainers_gpu::SlowPath::NormAsInteger as usize];
     assert!(errors.contains(route), "{errors}");
 }
 
@@ -875,6 +1152,20 @@ fn a_depth_buffer_larger_than_its_target_as_direct3d_does() {
 #[test]
 fn copies_between_multisampled_textures_as_direct3d_does() {
     case("msaa_copy");
+}
+
+/// The same on a 10_0 device without `texture-formats-tier1`, where WebGPU resolves no 32-bit
+/// float target, so `R32_FLOAT`'s resolve is a draw averaging the samples (`ResolveByDraw`).
+#[cfg(not(feature = "webgl"))]
+#[test]
+fn copies_and_float_resolves_of_multisampled_textures_without_texture_formats_tier1_as_direct3d_does()
+ {
+    let off = untiered(&[]);
+    let env = [(FEATURES_OFF, off.as_str())];
+    let errors = case_args(&["msaa_copy", UNTIERED_LEVEL], "ours-untiered", &env);
+    let route =
+        wcontainers_gpu::SLOW_PATH_REASONS[wcontainers_gpu::SlowPath::ResolveByDraw as usize];
+    assert!(errors.contains(route), "{errors}");
 }
 
 #[test]
@@ -909,7 +1200,8 @@ fn depth_only_draws_clamped_and_clipped_as_direct3d_does() {
 fn depth_only_draws_clamped_in_the_program_as_direct3d_does() {
     let clamp = wgpu::Features::DEPTH_CLIP_CONTROL.as_str().unwrap();
     let errors = case_env("unshaded", "unclamped", &[(FEATURES_OFF, clamp)]);
-    let route = wcontainers_gpu::SlowPath::DepthClampInShader.reason();
+    let route =
+        wcontainers_gpu::SLOW_PATH_REASONS[wcontainers_gpu::SlowPath::DepthClampInShader as usize];
     assert!(errors.contains(route), "{errors}");
 }
 
@@ -1171,7 +1463,7 @@ fn interfaces_answer_as_direct3d_does() {
 #[test]
 #[cfg_attr(
     feature = "webgl",
-    ignore = "it makes an 11_0 device and a 10_1 state, and the WebGL 2 build reports 10_0 alone"
+    ignore = "it makes an 11_0 device and a 10_1 state, and the WebGL 2 build reports 9_3 alone"
 )]
 fn direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does() {
     let (code, want) = run("own_d3d10", &place("d3d10-system", false));
@@ -1245,7 +1537,7 @@ fn extended_range_swap_chains_show_as_direct3d_shows_them() {
                 c / TEN_BITS
             };
             assert!(
-                (value * EIGHT_BITS - s).abs() <= 1.5,
+                (value * EIGHT_BITS - s).abs() <= 1.0,
                 "{l} (extended {extended})"
             );
         }
@@ -1294,7 +1586,9 @@ fn object_lifetimes_count_as_direct3d_counts_them() {
         }
         assert_eq!(want.lines().count(), got.lines().count(), "seed {seed}");
     }
-    eprintln!(
+    // Written past the test harness's capture, so that a passing run's log records the cases run.
+    let _ = writeln!(
+        std::io::stderr(),
         "lifetimes: seeds {first}..{} of {steps} steps each",
         first + seeds
     );

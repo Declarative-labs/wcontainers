@@ -4,8 +4,8 @@
 //! real Direct3D 11's timestamps around the same work) and the browser page.
 
 use wcontainers_gpu::{
-    Backend, BufferUsage, ColorAttachment, DeviceStatus, DrawCall, DrawRange, Features, Format,
-    LoadOp, PassDesc, QueryKind, ReadSource, StoreOp, TextureUsage, Topology, Viewport,
+    BufferUsage, ColorAttachment, DeviceStatus, DrawCall, DrawRange, Features, Format, Gpu, LoadOp,
+    PassDesc, QueryKind, ReadSource, StoreOp, TextureUsage, Topology, Viewport,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -113,7 +113,7 @@ impl Stamps {
 
 /// Measures on `b`; `now` is the CPU clock in milliseconds.
 pub fn measure(b: &mut WebGpu, now: fn() -> f64) -> Result<Stamps, String> {
-    if !b.caps().has(Features::TIMESTAMPS) {
+    if !b.caps().features.contains(Features::TIMESTAMPS) {
         return Err("TIMESTAMPS is not declared".into());
     }
     let (_target, view) = draw::texture_2d(b, Format::Rgba8Unorm, SIZE, SIZE, TextureUsage::RENDER)

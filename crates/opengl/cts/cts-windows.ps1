@@ -37,12 +37,22 @@ function Get-Lists {
 }
 
 # The CTS's own arguments for a list: its first configuration in its folder's mustpass.xml, with
-# the folder glcts reads its data from.
+# the folder glcts reads its data from. The driver reports a context one of whose calls it refused,
+# or whose device was lost, as reset by its own fault; glcts as patched (patches/) asks after each
+# iteration of every case, ends that case as a resource error and ends the process, and
+# deqp-runner runs the rest of the batch in a new one. The desktop lists turn off the desktop
+# package's own check: it calls glGetGraphicsResetStatus after every case, an entry point it
+# loads only from GL_KHR_robustness or OpenGL 4.5, so a 3.3 context without it calls a null
+# pointer (glcts gl3cTestPackages.cpp, TestCaseWrapper::iterate).
+$KeepRunningOnDeviceLost = '--deqp-terminate-on-device-lost=disable'
+$DesktopLists = 'gl/'
 function Get-ListArguments([string]$List) {
     $caselist = Join-Path $Mustpass $List
     [xml]$described = Get-Content (Join-Path (Split-Path $caselist) 'mustpass.xml')
     $configuration = $described.SelectNodes('//Configuration') |
         Where-Object { $_.caseListFile -eq (Split-Path -Leaf $List) } | Select-Object -First 1
     if (-not $configuration) { throw "cts: mustpass.xml has no configuration for $List" }
-    @($configuration.commandLine -split ' ' | Where-Object { $_ }) + "--deqp-archive-dir=$GlctsDir"
+    $arguments = @($configuration.commandLine -split ' ' | Where-Object { $_ }) + "--deqp-archive-dir=$GlctsDir"
+    if ($List.StartsWith($DesktopLists)) { $arguments += $KeepRunningOnDeviceLost }
+    $arguments
 }

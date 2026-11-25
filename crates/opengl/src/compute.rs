@@ -1,27 +1,26 @@
 //! Dispatches: the compute program converted by the NIR route, its resources bound as a draw's.
 
-use wcontainers_gpu::{Backend, DispatchCall, DispatchGroups, Object, Program, SlowPath, StageSet};
+use wcontainers_gpu::{DispatchCall, DispatchGroups, Gpu, Object, Program, SlowPath, StageSet};
 
 use crate::context::{Context, end_if_lost};
-use crate::draw::{self, ShaderId, Variant};
+use crate::draw::{self, Variant};
 use crate::gallium::*;
 use crate::resource::Resource;
 use crate::state::{Stage, refuse, refused};
 use crate::view::Images;
 
 /// `pipe_context::launch_grid`.
-pub unsafe extern "C" fn launch_grid<B: Backend>(
-    pipe: *mut pipe_context,
-    info: *const pipe_grid_info,
-) {
-    // SAFETY: Mesa passes this driver's context and the grid.
-    let (context, info) = unsafe { (Context::<B>::of(pipe), &*info) };
-    if let Err(reason) = dispatch(context, info) {
-        refuse(&reason);
-    }
+pub unsafe extern "C" fn launch_grid<B: Gpu>(pipe: *mut pipe_context, info: *const pipe_grid_info) {
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and the grid.
+        let (context, info) = unsafe { (Context::<B>::of(pipe), &*info) };
+        if let Err(reason) = dispatch(context, info) {
+            refuse(&reason);
+        }
+    })
 }
 
-fn dispatch<B: Backend>(context: &mut Context<B>, info: &pipe_grid_info) -> Result<(), String> {
+fn dispatch<B: Gpu>(context: &mut Context<B>, info: &pipe_grid_info) -> Result<(), String> {
     let shader = context.stages.get(Stage::Compute).shader;
     if shader.is_null() {
         return refused(format_args!("a dispatch without a compute program"));
@@ -37,17 +36,21 @@ fn dispatch<B: Backend>(context: &mut Context<B>, info: &pipe_grid_info) -> Resu
     let bound = context.stages.get(Stage::Compute);
     let (variant, swizzled) = Variant::sampling(bound);
     if swizzled {
-        backend.slow_paths().hit(SlowPath::SwizzleInShader);
+        backend.record_slow_path(SlowPath::SwizzleInShader);
     }
     let programs = &mut context.programs;
     // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
     let shader = unsafe { &*shader };
-    let key = (std::ptr::from_ref(shader) as ShaderId, variant.clone());
+    let key = (shader.id, variant.clone());
     let missing = !programs.compute.contains_key(&key);
     let built = programs.built_for(backend, shader, &variant)?;
     if missing {
+        let shader = built
+            .shader
+            .as_ref()
+            .ok_or("a compute program without its shader")?;
         let program = backend
-            .create_program(&Program::Compute(&built.shader))
+            .create_program(&Program::Compute(shader))
             .map_err(|e| format!("a compute program: {e:?}"))?;
         programs.compute.insert(key.clone(), program);
     }

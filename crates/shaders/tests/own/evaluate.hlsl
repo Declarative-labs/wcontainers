@@ -58,3 +58,17 @@ float4 ps_eval_exact(ExactIo i, uint s : SV_SampleIndex) : SV_Target0 {
     float2 apart = EvaluateAttributeAtSample(i.attr, s) - i.at_sample;
     return float4(0.5 + apart * 4294967296.0, 0.5, 1.0);
 }
+
+// The position declared at the centroid, in a program run once a pixel (Direct3D's centroid of the
+// pixel's coverage) and in one run per sample (refused by name: such a program sees its own sample's
+// coverage only). Each component through a steep wave, as above.
+float4 ps_position_centroid(centroid float4 position : SV_Position, float4 colour : COLOR0)
+    : SV_Target0 {
+    return float4(wave(position.x / 4.0), wave(position.y / 4.0), wave(position.z * 64.0),
+                  colour.w * 0.25);
+}
+
+float4 ps_position_centroid_sampled(centroid float4 position : SV_Position,
+                                    uint s : SV_SampleIndex) : SV_Target0 {
+    return float4(wave(position.x / 4.0), wave(position.y / 4.0), s * 0.25, 1.0);
+}

@@ -1,4 +1,4 @@
-@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, geometry_rows.hlsl, compute.hlsl, readonly.hlsl, targets.hlsl, texels.hlsl, tessellation.hlsl, tessellation_values.hlsl, domain_rows.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0), divide.hlsl, narrow.hlsl, components.hlsl, one_d.hlsl, lines.hlsl, vertex_storage.hlsl, geometry_typed.hlsl, geometry_patch.hlsl, compare.hlsl (IEEE-strict in both), hull_none.hlsl (fxc only) and waves.hlsl (dxc only) with
+@rem Compiles the entry points of own.hlsl, more.hlsl, spaces.hlsl, twospaces.hlsl, signed.hlsl, route.hlsl, values.hlsl, evaluate.hlsl, negate.hlsl, variants.hlsl, pull.hlsl, filter.hlsl, geometry.hlsl, geometry_rows.hlsl, compute.hlsl, readonly.hlsl, targets.hlsl, texels.hlsl, tessellation.hlsl, tessellation_values.hlsl, domain_rows.hlsl, layers.hlsl, uav.hlsl, arrays.hlsl, msarray.hlsl, early.hlsl, shadow.hlsl, msloop.hlsl (shader model 4.0), divide.hlsl, narrow.hlsl, components.hlsl, one_d.hlsl, lines.hlsl, vertex_storage.hlsl, geometry_typed.hlsl, geometry_patch.hlsl, compare.hlsl (IEEE-strict in both), precision.hlsl, frexp.hlsl, hull_none.hlsl (fxc only) and waves.hlsl (dxc only) with
 @rem the Windows SDK's fxc (ps_spaces, vs_transform, ps_textured, signed.hlsl's, route.hlsl's, values.hlsl's, negate.hlsl's, variants.hlsl's, pull.hlsl's, filter.hlsl's, the geometry, the compute and the typed buffer shaders also
 @rem with its dxc, IEEE-strict so NaN tests stay), beside this file.
 @echo off
@@ -57,7 +57,7 @@ for %%e in (ps_ftoi ps_table ps_deriv ps_coarse) do (
 "%DXC%" -nologo -T vs_6_0 -E vs_carry -Gis -Fo vs_carry.dxil values.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_negate /Fo ps_negate.dxbc negate.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_negate -Gis -Fo ps_negate.dxil negate.hlsl || exit /b 1
-for %%e in (ps_dual ps_levels ps_levels_past ps_samples ps_ids ps_minlod ps_mingather ps_mirror) do (
+for %%e in (ps_dual ps_levels ps_levels_past ps_samples ps_ids ps_minlod ps_mingather ps_mirror ps_clip_read) do (
   "%FXC%" /nologo /T ps_5_0 /E %%e /Fo %%e.dxbc variants.hlsl || exit /b 1
   "%DXC%" -nologo -T ps_6_0 -E %%e -Gis -Fo %%e.dxil variants.hlsl || exit /b 1
 )
@@ -89,16 +89,24 @@ for %%e in (ps_dual ps_levels ps_levels_past ps_samples ps_ids ps_minlod ps_ming
 "%DXC%" -nologo -T ps_6_0 -E ps_numbered -Fo ps_numbered.dxil geometry.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_cull /Fo vs_cull.dxbc geometry.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_cull -Fo vs_cull.dxil geometry.hlsl || exit /b 1
-for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_unplaced gs_adjacent gs_line_adjacent gs_clip gs_cull gs_cull_lines gs_cull_points gs_streams gs_numbered gs_numbered_layer) do (
+"%FXC%" /nologo /T vs_5_0 /E vs_cull_read /Fo vs_cull_read.dxbc geometry.hlsl || exit /b 1
+"%DXC%" -nologo -T vs_6_0 -E vs_cull_read -Fo vs_cull_read.dxil geometry.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_cull_read /Fo ps_cull_read.dxbc geometry.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_cull_read -Fo ps_cull_read.dxil geometry.hlsl || exit /b 1
+for %%e in (gs_quads gs_cut gs_instances gs_lines gs_points gs_unplaced gs_adjacent gs_line_adjacent gs_clip gs_cull gs_cull_lines gs_cull_points gs_streams gs_numbered gs_numbered_layer gs_provoking gs_distances) do (
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Fo %%e.dxil geometry.hlsl || exit /b 1
 )
+"%FXC%" /nologo /T gs_5_0 /E gs_provoking /D PROVOKING_SHIFT=2 /Fo gs_provoking_last.dxbc geometry.hlsl || exit /b 1
+"%DXC%" -nologo -T gs_6_0 -E gs_provoking -D PROVOKING_SHIFT=2 -Fo gs_provoking_last.dxil geometry.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_rows /Fo vs_rows.dxbc geometry_rows.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_rows -Fo vs_rows.dxil geometry_rows.hlsl || exit /b 1
 for %%e in (gs_rows_lines gs_rows_streams gs_rows_out) do (
   "%FXC%" /nologo /T gs_5_0 /E %%e /Fo %%e.dxbc geometry_rows.hlsl || exit /b 1
   "%DXC%" -nologo -T gs_6_0 -E %%e -Fo %%e.dxil geometry_rows.hlsl || exit /b 1
 )
+"%FXC%" /nologo /T hs_5_0 /E hs_rows_gap /Fo hs_rows_gap.dxbc domain_rows.hlsl || exit /b 1
+"%DXC%" -nologo -T hs_6_0 -E hs_rows_gap -Fo hs_rows_gap.dxil domain_rows.hlsl || exit /b 1
 "%FXC%" /nologo /T ds_5_0 /E ds_rows_gap /Fo ds_rows_gap.dxbc domain_rows.hlsl || exit /b 1
 "%DXC%" -nologo -T ds_6_0 -E ds_rows_gap -Fo ds_rows_gap.dxil domain_rows.hlsl || exit /b 1
 for %%e in (cs_atomics cs_decrement cs_images cs_shared) do (
@@ -119,6 +127,8 @@ for %%e in (cs_atomics cs_decrement cs_images cs_shared) do (
 "%DXC%" -nologo -T ps_6_0 -E ps_texels -Gis -Fo ps_texels.dxil texels.hlsl || exit /b 1
 "%FXC%" /nologo /T cs_5_0 /E cs_through /Fo cs_through.dxbc texels.hlsl || exit /b 1
 "%DXC%" -nologo -T cs_6_0 -E cs_through -Gis -Fo cs_through.dxil texels.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E cs_alpha /Fo cs_alpha.dxbc texels.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_alpha -Gis -Fo cs_alpha.dxil texels.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_texels /Fo vs_texels.dxbc texels.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_texels -Gis -Fo vs_texels.dxil texels.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_early /Fo vs_early.dxbc early.hlsl || exit /b 1
@@ -140,7 +150,9 @@ for %%m in (integer pow2 odd even) do for %%o in (point line) do (
   "%DXC%" -nologo -T hs_6_0 -E hs_line_%%m_%%o -Gis -Fo hs_line_%%m_%%o.dxil tessellation.hlsl || exit /b 1
 )
 "%FXC%" /nologo /T hs_5_0 /E hs_tri_none /Fo hs_tri_none.dxbc hull_none.hlsl || exit /b 1
-for %%e in (ds_tri ds_quad ds_line ds_tri_none) do (
+"%FXC%" /nologo /T ps_5_0 /E ps_cull /Fo ps_cull.dxbc tessellation.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_cull -Gis -Fo ps_cull.dxil tessellation.hlsl || exit /b 1
+for %%e in (ds_tri ds_quad ds_line ds_tri_none ds_tri_cull ds_quad_cull ds_line_cull) do (
   "%FXC%" /nologo /T ds_5_0 /E %%e /Fo %%e.dxbc tessellation.hlsl || exit /b 1
   "%DXC%" -nologo -T ds_6_0 -E %%e -Gis -Fo %%e.dxil tessellation.hlsl || exit /b 1
 )
@@ -207,6 +219,10 @@ for %%e in (ps_msloop ps_msswap) do (
 "%DXC%" -nologo -T vs_6_0 -E vs_eval_exact -Gis -Fo vs_eval_exact.dxil evaluate.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_eval_exact /Fo ps_eval_exact.dxbc evaluate.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_eval_exact -Gis -Fo ps_eval_exact.dxil evaluate.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_position_centroid /Fo ps_position_centroid.dxbc evaluate.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_position_centroid -Gis -Fo ps_position_centroid.dxil evaluate.hlsl || exit /b 1
+"%FXC%" /nologo /T ps_5_0 /E ps_position_centroid_sampled /Fo ps_position_centroid_sampled.dxbc evaluate.hlsl || exit /b 1
+"%DXC%" -nologo -T ps_6_0 -E ps_position_centroid_sampled -Gis -Fo ps_position_centroid_sampled.dxil evaluate.hlsl || exit /b 1
 "%FXC%" /nologo /T vs_5_0 /E vs_line /Fo vs_line.dxbc lines.hlsl || exit /b 1
 "%DXC%" -nologo -T vs_6_0 -E vs_line -Gis -Fo vs_line.dxil lines.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_line /Fo ps_line.dxbc lines.hlsl || exit /b 1
@@ -227,4 +243,8 @@ for %%e in (vs_store_texture vs_store_typed vs_store_raw) do (
 "%DXC%" -nologo -T cs_6_0 -E cs_compare -Gis -Fo cs_compare.dxil compare.hlsl || exit /b 1
 "%FXC%" /nologo /T ps_5_0 /E ps_compare /Gis /Fo ps_compare.dxbc compare.hlsl || exit /b 1
 "%DXC%" -nologo -T ps_6_0 -E ps_compare -Gis -Fo ps_compare.dxil compare.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E cs_min16 /Fo cs_min16.dxbc precision.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_min16 -Fo cs_min16.dxil precision.hlsl || exit /b 1
+"%FXC%" /nologo /T cs_5_0 /E cs_frexp /Fo cs_frexp.dxbc frexp.hlsl || exit /b 1
+"%DXC%" -nologo -T cs_6_0 -E cs_frexp -Fo cs_frexp.dxil frexp.hlsl || exit /b 1
 echo %FXC% %DXC%

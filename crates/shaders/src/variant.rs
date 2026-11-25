@@ -5,14 +5,15 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use naga::{
-    AddressSpace, Binding, Block, BuiltIn, Expression, Function, FunctionArgument, FunctionResult,
-    GlobalVariable, Handle, ImageClass, ImageQuery, Literal, MathFunction, Module, Range,
-    SampleLevel, Scalar, Span, Statement, StorageAccess, StructMember, Type, TypeInner, VectorSize,
+    AddressSpace, ArraySize, Binding, Block, BuiltIn, Expression, Function, FunctionArgument,
+    FunctionResult, GlobalVariable, Handle, ImageClass, ImageQuery, Literal, MathFunction, Module,
+    Range, SampleLevel, Scalar, Span, Statement, StorageAccess, StructMember, Type, TypeInner,
+    VectorSize,
 };
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource, Format,
-    HELPER_SET, HelperSlot, HelperValue, LinkedValues, Reflection, ShaderStage, SlotKind,
-    StageExtras, VariantFlags, VariantKey, helper_binding,
+    HELPER_SET, HelperSlot, HelperValue, LinkedValues, Reflection, SLOT_KINDS, ShaderStage,
+    SlotKind, StageExtras, VariantFlags, VariantKey, helper_binding,
 };
 
 use crate::ConvertError;
@@ -20,6 +21,7 @@ use crate::ConvertError;
 mod alpha;
 mod constants;
 mod decoded;
+mod diamond;
 mod early;
 mod filter;
 mod layers;
@@ -119,15 +121,16 @@ pub(crate) fn apply(
             let distances = flags.contains(VariantFlags::CLIP_DISTANCE);
             let clamp = flags.contains(VariantFlags::DEPTH_CLAMP);
             let pulls = !variant.pulled.is_empty();
-            if adjust || flip || clip || distances || clamp || pulls {
+            let culls = flags.contains(VariantFlags::CULL_DISTANCE_LINKED);
+            if adjust || flip || clip || distances || clamp || pulls || culls {
                 let viewport = adjust.then(|| {
                     let vec4 = vector(module, 4, Scalar::F32);
                     helper(module, reflection, stage, HelperValue::ViewportAdjust, vec4)
                 });
-                let mut w = Wrapped::new(module);
+                let mut w = Wrapped::new(module)?;
                 pull::pulled(module, &mut w, &variant.pulled, reflection)?;
                 let z = position(&mut w, viewport, flip, clip, clamp);
-                if distances || clamp {
+                if distances || clamp || culls {
                     linked_out(module, &mut w, variant, distances, z)?;
                 }
                 w.finish(module);
@@ -143,10 +146,16 @@ pub(crate) fn apply(
             let clamp = flags.contains(VariantFlags::DEPTH_CLAMP);
             let early = flags.contains(VariantFlags::EARLY_TESTS);
             let line = flags.contains(VariantFlags::LINE_COVERAGE);
+            let diamond = flags.contains(VariantFlags::LINE_DIAMOND);
+            if line && diamond {
+                return Err(ConvertError::Malformed(TWO_LINE_RULES.into()));
+            }
             let primitive = flags.contains(VariantFlags::PRIMITIVE_ID_FROM_STAGE);
+            let culls = flags.contains(VariantFlags::CULL_DISTANCE_LINKED);
             let targets = targets::needed(module, &variant.targets_in_shader)?;
             let wraps = [
-                counting, mask, dual, bias, distances, clamp, early, line, primitive,
+                counting, mask, dual, bias, distances, clamp, early, line, diamond, primitive,
+                culls,
             ];
             if wraps.into_iter().any(|on| on) || targets {
                 let bias = bias.then(|| {
@@ -168,7 +177,7 @@ pub(crate) fn apply(
                     let u32_ty = scalar(module, Scalar::U32);
                     helper(module, reflection, stage, HelperValue::SampleMask, u32_ty)
                 });
-                let mut w = Wrapped::new(module);
+                let mut w = Wrapped::new(module)?;
                 let linked = if distances || clamp {
                     linked_in(module, &mut w, variant.linked, clamp)
                 } else {
@@ -176,6 +185,7 @@ pub(crate) fn apply(
                 };
                 let count = variant.linked.clip_distances as usize;
                 if distances {
+                    clip_distance_reads(module, &mut w, &linked[..count])?;
                     clipped(
                         module,
                         &mut w,
@@ -187,6 +197,10 @@ pub(crate) fn apply(
                         *discards = true;
                     }
                 }
+                if culls {
+                    let at = crate::stage::cull_distance_location(variant);
+                    cull_distance_reads(module, &mut w, at)?;
+                }
                 if early {
                     early::early_tests(
                         module,
@@ -196,6 +210,16 @@ pub(crate) fn apply(
                         per_sample,
                         bias,
                     )?;
+                }
+                if diamond {
+                    diamond::line_diamond(
+                        module,
+                        &mut w,
+                        crate::stage::line_coverage_location(variant),
+                    )?;
+                    if let StageExtras::Pixel { discards, .. } = &mut reflection.extras {
+                        *discards = true;
+                    }
                 }
                 if primitive {
                     let at = crate::stage::primitive_id_location(variant);
@@ -479,7 +503,14 @@ pub(crate) struct Wrapped {
 }
 
 impl Wrapped {
-    pub(crate) fn new(module: &mut Module) -> Wrapped {
+    pub(crate) fn new(module: &mut Module) -> Result<Wrapped> {
+        if let Some(r) = &module.entry_points[0].function.result
+            && r.binding.is_none()
+            && let TypeInner::Struct { members, .. } = &module.types[r.ty].inner
+            && members.iter().any(|m| m.binding.is_none())
+        {
+            return Err(ConvertError::Malformed(UNBOUND_RESULT.into()));
+        }
         let mut inner = core::mem::take(&mut module.entry_points[0].function);
         let arguments = core::mem::take(&mut inner.arguments);
         inner.arguments = arguments
@@ -537,7 +568,7 @@ impl Wrapped {
                         outputs.push(Output {
                             name: m.name,
                             ty: m.ty,
-                            binding: m.binding.expect("entry point results are bound"),
+                            binding: m.binding.expect("every member is bound, checked above"),
                             value: v,
                         });
                     }
@@ -545,7 +576,7 @@ impl Wrapped {
                 _ => {}
             }
         }
-        Wrapped {
+        Ok(Wrapped {
             f,
             body,
             prologue: Block::new(),
@@ -554,7 +585,7 @@ impl Wrapped {
             original,
             changed: false,
             replaced: Vec::new(),
-        }
+        })
     }
 
     /// The entry point's argument bound at `location` and its type. An input inside a struct is
@@ -862,7 +893,46 @@ fn linked_out(
         ));
     }
     values.extend(z);
-    let vec4 = vector(module, 4, Scalar::F32);
+    slots_out(module, w, &values, linked.location, LINKED_OUTPUTS);
+    // Cull distances keep their built-in, by which the stage helper culls, and are passed on too.
+    let culls = variant.flags.contains(VariantFlags::CULL_DISTANCE_LINKED);
+    if culls && let Some(at) = w.output(|b| *b == Binding::BuiltIn(BuiltIn::CullDistance)) {
+        let (ty, value) = (w.outputs[at].ty, w.outputs[at].value);
+        let n = distance_count(module, ty)?;
+        let culled: Vec<_> = (0..n)
+            .map(|i| index(&mut w.f, &mut w.body, value, i as u32))
+            .collect();
+        let at = crate::stage::cull_distance_location(variant);
+        slots_out(module, w, &culled, at, CULLED_OUTPUTS);
+    }
+    Ok(())
+}
+
+/// The names of a vertex program's added outputs: its linked values, and its cull distances passed on.
+const LINKED_OUTPUTS: &str = "linked";
+const CULLED_OUTPUTS: &str = "culled";
+
+/// The count of a sized array of distances of type `ty`.
+fn distance_count(module: &Module, ty: Handle<Type>) -> Result<usize> {
+    match module.types[ty].inner {
+        TypeInner::Array {
+            size: ArraySize::Constant(n),
+            ..
+        } => Ok(n.get() as usize),
+        _ => Err(ConvertError::Malformed(CLIP_DISTANCES_UNSIZED.into())),
+    }
+}
+
+/// Outputs of `values` four a location from `location`, padded with zeros, named `name` and their
+/// place.
+fn slots_out(
+    module: &mut Module,
+    w: &mut Wrapped,
+    values: &[Handle<Expression>],
+    location: u32,
+    name: &str,
+) {
+    let vec4 = vector(module, crate::build::VEC4 as u8, Scalar::F32);
     let zero = f32_lit(&mut w.f, 0.0);
     let per_slot = crate::build::VEC4 as usize;
     for (k, chunk) in values.chunks(per_slot).enumerate() {
@@ -877,14 +947,13 @@ fn linked_out(
             },
         );
         w.outputs.push(Output {
-            name: Some(format!("linked{k}")),
+            name: Some(format!("{name}{k}")),
             ty: vec4,
-            binding: linked_binding(linked.location + k as u32),
+            binding: linked_binding(location + k as u32),
             value,
         });
         w.changed = true;
     }
-    Ok(())
 }
 
 /// The pixel program's added values, read as the vertex program writes them: its clip distances
@@ -913,6 +982,75 @@ fn linked_in(
         }
     }
     values
+}
+
+/// Clip distances read by a pixel program whose type is no sized array, which is malformed.
+const CLIP_DISTANCES_UNSIZED: &str = "clip distances that are no sized array";
+
+/// A pixel program reading its clip distances takes them from the linked values `d` (the first as
+/// many as it reads), as Direct3D interpolates them.
+fn clip_distance_reads(module: &Module, w: &mut Wrapped, d: &[Handle<Expression>]) -> Result<()> {
+    let read = w.f.arguments.iter().enumerate().find_map(|(i, a)| {
+        (a.binding == Some(Binding::BuiltIn(BuiltIn::ClipDistances))).then_some((i as u32, a.ty))
+    });
+    let Some((argument, ty)) = read else {
+        return Ok(());
+    };
+    let TypeInner::Array {
+        size: ArraySize::Constant(n),
+        ..
+    } = module.types[ty].inner
+    else {
+        return Err(ConvertError::Malformed(CLIP_DISTANCES_UNSIZED.into()));
+    };
+    let n = n.get() as usize;
+    if n > d.len() {
+        return Err(ConvertError::Unsupported(
+            crate::refusal::LINKED_CLIP_DISTANCE_COUNT,
+        ));
+    }
+    let components = d[..n].to_vec();
+    let value = push(
+        &mut w.f,
+        &mut w.prologue,
+        Expression::Compose { ty, components },
+    );
+    w.replace(argument, value);
+    Ok(())
+}
+
+/// A pixel program reading its cull distances takes them from the values the vertex program passes
+/// them in from `location`, four a location, as Direct3D interpolates them.
+fn cull_distance_reads(module: &mut Module, w: &mut Wrapped, location: u32) -> Result<()> {
+    let read = w.f.arguments.iter().enumerate().find_map(|(i, a)| {
+        (a.binding == Some(Binding::BuiltIn(BuiltIn::CullDistance))).then_some((i as u32, a.ty))
+    });
+    let Some((argument, ty)) = read else {
+        return Ok(());
+    };
+    let n = distance_count(module, ty)?;
+    let vec4 = vector(module, crate::build::VEC4 as u8, Scalar::F32);
+    let per_slot = crate::build::VEC4 as usize;
+    let mut components = Vec::with_capacity(n);
+    for k in 0..n.div_ceil(per_slot) as u32 {
+        let at = location + k;
+        let v = w.input(
+            module,
+            |b| matches!(b, Binding::Location { location: l, .. } if *l == at),
+            linked_binding(at),
+            vec4,
+        );
+        for i in 0..per_slot.min(n - components.len()) {
+            components.push(index(&mut w.f, &mut w.prologue, v, i as u32));
+        }
+    }
+    let value = push(
+        &mut w.f,
+        &mut w.prologue,
+        Expression::Compose { ty, components },
+    );
+    w.replace(argument, value);
+    Ok(())
 }
 
 /// Direct3D's standard positions of four samples, in steps of [`SAMPLE_POSITION_STEPS`] from the
@@ -1094,6 +1232,17 @@ fn primitive_from_stage(module: &mut Module, w: &mut Wrapped, location: u32) -> 
     w.changed = true;
     Ok(())
 }
+
+/// A pixel program keyed for both line routes (`LINE_COVERAGE` and `LINE_DIAMOND`).
+const TWO_LINE_RULES: &str = "a pixel program keyed for both line routes";
+/// Why a program is malformed: its entry point gives a struct with a member bound to no stage value.
+pub(crate) const UNBOUND_RESULT: &str = "an entry point result with a member bound to nothing";
+
+/// How far past a line along its minor axis, and past each of its ends, the stage helper's
+/// parallelogram reaches for the aliased line rule (`LINE_DIAMOND`), in pixels: the centre of every
+/// pixel the rule picks lies within half a pixel of the line along the minor axis and of its ends
+/// along the major one, and its samples within one pixel more.
+pub(crate) const DIAMOND_REACH: f32 = 1.5;
 
 /// How far past a line's axis and past each of its ends the coverage filter reaches, in pixels: the
 /// stage helper's rectangle around the line reaches as far.
@@ -1532,12 +1681,18 @@ fn constants_as_storage(
         .filter(|b| b.kind == SlotKind::Storage)
         .map(|b| b.binding + b.count)
         .max()
-        .unwrap_or(SlotKind::Storage.first_binding());
+        .unwrap_or(SLOT_KINDS[SlotKind::Storage as usize].first_binding);
     for b in &mut reflection.bindings {
-        if b.kind != SlotKind::Uniform || b.added.is_some() || slots & (1 << b.slot()) == 0 {
+        if b.kind != SlotKind::Uniform
+            || b.added.is_some()
+            || slots & (1 << (b.binding - SLOT_KINDS[b.kind as usize].first_binding)) == 0
+        {
             continue;
         }
-        if next >= SlotKind::Storage.first_binding() + SlotKind::Storage.slots() {
+        if next
+            >= SLOT_KINDS[SlotKind::Storage as usize].first_binding
+                + SLOT_KINDS[SlotKind::Storage as usize].slots
+        {
             return Err(ConvertError::Unsupported(
                 crate::refusal::BINDINGS_BEYOND_LIMIT,
             ));
@@ -1563,7 +1718,9 @@ fn constants_as_storage(
             group: b.set,
             binding: next,
         });
-        b.added = Some(AddedBinding::ConstantsAsStorage(b.slot()));
+        b.added = Some(AddedBinding::ConstantsAsStorage(
+            b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+        ));
         b.kind = SlotKind::Storage;
         b.binding = next;
         next += 1;
@@ -1979,7 +2136,7 @@ fn slot_of(
         .find(|b| {
             b.kind == kind && b.added.is_none() && b.set == rb.group && b.binding == rb.binding
         })
-        .map(|b| b.slot())
+        .map(|b| b.binding - SLOT_KINDS[b.kind as usize].first_binding)
 }
 
 /// Samplings the variant changes, each replaced by one callee that applies every change it asks for.

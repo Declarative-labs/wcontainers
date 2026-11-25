@@ -34,7 +34,7 @@ fn angle() -> PathBuf {
 }
 
 /// Draws the scene into a 32 by 32 texture and reads it back.
-fn scene<B: Backend>(b: &mut B) -> Vec<u8> {
+fn scene<B: Gpu>(b: &mut B) -> Vec<u8> {
     let kit = kit::Kit::new(b);
     let program = kit::program(b, SCENE, "vs", "fs");
     let f = Format::Rgba8Unorm;
@@ -80,7 +80,7 @@ fn scene<B: Backend>(b: &mut B) -> Vec<u8> {
 }
 
 /// Replays the whole stream on `b`; every call must succeed. Answers the last read back.
-fn replay<B: Backend>(mut b: B, stream: Vec<u8>) -> Vec<u8> {
+fn replay<B: Gpu>(mut b: B, stream: Vec<u8>) -> Vec<u8> {
     let mut r = Replay::new(stream);
     while let Some(frame) = r.frame(&mut b, None, &mut |_, _| {}) {
         let frame = frame.expect("the stream decodes");
@@ -108,10 +108,9 @@ fn webgpu() -> WebGpu {
 #[test]
 fn a_recorded_stream_replays_to_the_same_texels_on_both_back_ends() {
     let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("webgl-trace-test.bin");
-    // SAFETY: this test binary's only test, so no other thread reads the environment.
-    unsafe { std::env::set_var("WEBGL_TRACE", &path) };
     let recorded = {
-        let mut b = WebGl::on_angle(&angle(), &[]).expect("ANGLE's OpenGL ES 3.0 context");
+        let gl = Gl::on_angle(&angle(), &[]).expect("ANGLE's OpenGL ES 3.0 context");
+        let mut b = WebGl::into_file(gl, &path).expect("the stream file");
         let texels = scene(&mut b);
         assert_eq!(b.status(), DeviceStatus::Ok);
         texels

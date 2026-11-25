@@ -32,7 +32,7 @@ const SETS: u32 = 1024;
 const SIZE: u32 = 256;
 
 /// What a frame draws with, made once.
-struct Scene<B: Backend> {
+struct Scene<B: Gpu> {
     kit: Kit<B>,
     program: B::Program,
     target: B::TextureView,
@@ -42,7 +42,7 @@ struct Scene<B: Backend> {
     viewport: [Viewport; 1],
 }
 
-impl<B: Backend> Scene<B> {
+impl<B: Gpu> Scene<B> {
     fn new(b: &mut B) -> Scene<B> {
         let kit = Kit::new(b);
         let program = kit::program(b, QUAD, "vs", "fs");

@@ -15,7 +15,7 @@ mod allowance;
 
 use draw::Twist;
 use scene::Scene;
-use wcontainers_gpu::{Backend, DeviceStatus};
+use wcontainers_gpu::{DeviceStatus, FORMAT_FACTS, Gpu};
 use wcontainers_gpu_webgpu::WebGpu;
 
 fn device() -> WebGpu {
@@ -100,12 +100,7 @@ fn quads_match_direct3d_on_every_depth_format() {
         Format::Depth32Float,
         Format::Depth32FloatStencil8,
     ] {
-        if !b
-            .caps()
-            .formats
-            .get(format)
-            .contains(FormatUse::DEPTH_STENCIL)
-        {
+        if !b.caps().formats.uses[format as usize].contains(FormatUse::DEPTH_STENCIL) {
             eprintln!("{format:?}: not held by this device");
             continue;
         }
@@ -181,8 +176,7 @@ fn pipelines_and_bind_groups_are_cached() {
         "setPipeline only when it changes"
     );
     assert_eq!(
-        b.slow_paths()
-            .count(wcontainers_gpu::SlowPath::PipelineMiss),
+        b.slow_paths().counts[wcontainers_gpu::SlowPath::PipelineMiss as usize],
         2
     );
 }
@@ -356,14 +350,14 @@ fn integer_formats_are_not_resolvable() {
     ];
     let resolvable: Vec<Format> = integer
         .into_iter()
-        .inspect(|f| assert!(matches!(f.kind(), FormatKind::Uint | FormatKind::Sint)))
-        .filter(|&f| b.caps().formats.get(f).contains(FormatUse::RESOLVE))
+        .inspect(|f| {
+            assert!(matches!(
+                FORMAT_FACTS[*f as usize].kind,
+                FormatKind::Uint | FormatKind::Sint
+            ))
+        })
+        .filter(|&f| b.caps().formats.uses[f as usize].contains(FormatUse::RESOLVE))
         .collect();
     assert!(resolvable.is_empty(), "declared resolvable: {resolvable:?}");
-    assert!(
-        b.caps()
-            .formats
-            .get(Rgba8Unorm)
-            .contains(FormatUse::RESOLVE)
-    );
+    assert!(b.caps().formats.uses[Rgba8Unorm as usize].contains(FormatUse::RESOLVE));
 }

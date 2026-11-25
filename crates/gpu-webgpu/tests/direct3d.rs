@@ -37,12 +37,14 @@ mod vertices;
 mod renames;
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment,
-    DeviceStatus, DrawCall, DrawRange, Extent, Features, Format, FormatUse, LoadOp, Origin,
+    BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment, DeviceStatus,
+    DrawCall, DrawRange, Extent, FORMAT_FACTS, Features, Format, FormatUse, LoadOp, Origin,
     PassDesc, ReadSource, SlowPath, StageSet, StepMode, StoreOp, TextureDesc, TextureDimension,
     TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexBinding, VertexFormat,
     ViewDimension, WriteMode,
 };
+// The trait's methods, by a path: graphics-test's Direct3D 11 device is named `Gpu` here.
+use wcontainers_gpu::Gpu as _;
 use wcontainers_gpu_webgpu::WebGpu;
 use wcontainers_graphics_test::Driver;
 use wcontainers_graphics_test::d3d11::scenes::{Colored, colored_program, draw_colored, hue};
@@ -148,7 +150,12 @@ fn d3d_mips(format: DXGI_FORMAT, texel: usize, level0: &[u8]) -> Vec<Vec<u8>> {
 }
 
 /// Reads one level of a texture back through the back end.
-fn read(b: &mut B, texture: &<B as Backend>::Texture, mip: u32, len: usize) -> Vec<u8> {
+fn read(
+    b: &mut B,
+    texture: &<B as wcontainers_gpu::Gpu>::Texture,
+    mip: u32,
+    len: usize,
+) -> Vec<u8> {
     let size = |n: u32| (n >> mip).max(1);
     let rb = b
         .read_back(&ReadSource::Texture {
@@ -252,7 +259,7 @@ fn mips_against_direct3d(
         ("by the sampler", wgpu::Features::empty()),
     ] {
         let mut b = device_without(features);
-        let filtered = b.caps().formats.get(values).contains(FormatUse::FILTER);
+        let filtered = b.caps().formats.uses[values as usize].contains(FormatUse::FILTER);
         // With the feature, in the format itself, as Direct3D holds it.
         let held = if filtered { values } else { format };
         let ours = our_mips(&mut b, held, values, texel, reference);
@@ -267,7 +274,7 @@ fn mips_against_direct3d(
         assert_eq!(b.status(), DeviceStatus::Ok);
         if worst.is_empty() {
             assert!(!filtered);
-            assert!(b.slow_paths().count(SlowPath::FilterInShader) > 0);
+            assert!(b.slow_paths().counts[SlowPath::FilterInShader as usize] > 0);
             worst = levels;
         }
     }
@@ -530,7 +537,7 @@ fn our_resolve(b: &mut B, format: Format) -> Vec<u8> {
 #[test]
 fn srgb_resolve_of_a_reinterpreted_texture_matches_direct3d() {
     let mut b = device_without(wgpu::Features::empty());
-    assert!(b.caps().has(Features::TEXTURE_VIEWS));
+    assert!(b.caps().features.contains(Features::TEXTURE_VIEWS));
     let reference = d3d_srgb_resolve();
     let differ = |ours: &[u8]| {
         let off = reference.iter().zip(ours).filter(|(a, b)| a != b).count();
@@ -691,7 +698,7 @@ fn our_bc_texels(b: &mut B, format: Format, blocks: &[u8]) -> Vec<f32> {
         &region(&texture),
         whole,
         blocks,
-        BC_SIZE / 4 * format.block().2,
+        BC_SIZE / 4 * FORMAT_FACTS[format as usize].block.2,
         BC_SIZE / 4,
         WriteMode::Ordered,
     );
@@ -816,8 +823,13 @@ fn bc_textures_decoded_are_as_close_to_direct3d_as_warp() {
     eprintln!("seed {seed}, {cases} textures per format");
     let mut native = device_without(wgpu::Features::empty());
     let mut decoded = device_without(wgpu::Features::TEXTURE_COMPRESSION_BC);
-    assert!(native.caps().has(Features::BLOCK_COMPRESSION));
-    assert!(!decoded.caps().has(Features::BLOCK_COMPRESSION));
+    assert!(native.caps().features.contains(Features::BLOCK_COMPRESSION));
+    assert!(
+        !decoded
+            .caps()
+            .features
+            .contains(Features::BLOCK_COMPRESSION)
+    );
     let hardware = direct3d();
     let warp = d3d11::create(Driver::Warp, false, &[D3D_FEATURE_LEVEL_11_0]).expect("WARP");
     let (vs, ps) = (
@@ -827,7 +839,7 @@ fn bc_textures_decoded_are_as_close_to_direct3d_as_warp() {
     let mut rng = fastrand::Rng::with_seed(seed);
     let mut beyond = Vec::new();
     for (format, dxgi) in BC_FORMATS {
-        let block = format.block().2;
+        let block = FORMAT_FACTS[format as usize].block.2;
         for case in 0..cases {
             let blocks: Vec<u8> = (0..(BC_SIZE / 4).pow(2) * block)
                 .map(|_| rng.u8(..))
@@ -868,7 +880,7 @@ fn bc_textures_decoded_are_as_close_to_direct3d_as_warp() {
     }
     assert_eq!(native.status(), DeviceStatus::Ok);
     assert_eq!(decoded.status(), DeviceStatus::Ok);
-    assert!(decoded.slow_paths().count(SlowPath::BlockDecoded) > 0);
+    assert!(decoded.slow_paths().counts[SlowPath::BlockDecoded as usize] > 0);
     assert!(beyond.is_empty(), "{beyond:#?}");
 }
 
@@ -1267,7 +1279,7 @@ fn converted_formats_load_filter_and_draw_as_direct3d_does() {
         texels.len() / 4
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
-    assert!(b.slow_paths().count(SlowPath::FormatConverted) > 0);
+    assert!(b.slow_paths().counts[SlowPath::FormatConverted as usize] > 0);
     assert!(beyond.is_empty(), "{beyond:#?}");
 }
 

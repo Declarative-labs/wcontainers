@@ -2,6 +2,7 @@
 //! buffers in whole 4-byte words, so the words a range only partly covers are merged by a small
 //! compute program (slow path `UnalignedBufferEdge`).
 
+use wcontainers_gpu::Gpu;
 use wcontainers_gpu::SlowPath;
 
 use crate::{GROUP, Stream, WebGpu, with_group};
@@ -71,7 +72,7 @@ impl WebGpu {
                 .copy_buffer_to_buffer(src, src_at, dst, dst_at, size);
             return;
         }
-        self.slow.hit(SlowPath::UnalignedBufferEdge);
+        self.record_slow_path(SlowPath::UnalignedBufferEdge);
         if src_at % ALIGN != dst_at % ALIGN {
             self.merge(stream, src, src_at, dst, dst_at, size);
             return;

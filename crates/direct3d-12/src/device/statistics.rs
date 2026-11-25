@@ -12,7 +12,8 @@
 
 use wcontainers_gpu::{
     BindingEntry, BindingResource, BlendDesc, BufferRange, COUNTER_BINDING, ColorWrites,
-    DepthStencilDesc, HELPER_SET, Reflection, RenderTargetBlend, StageExtras, SystemValue,
+    DepthStencilDesc, HELPER_SET, INDEX_FORMATS, Reflection, RenderTargetBlend, StageExtras,
+    SystemValue,
 };
 
 use super::*;
@@ -23,7 +24,7 @@ use wcontainers_shaders::ENTRY_POINT;
 const COUNTER_BYTES: u64 = size_of::<u64>() as u64;
 
 /// The helper set's entry binding the pixel counter `counter` for the counting draws.
-pub(super) fn counter_entry<B: Backend>(counter: &B::Buffer) -> BindingEntry<'_, B> {
+pub(super) fn counter_entry<B: Gpu>(counter: &B::Buffer) -> BindingEntry<'_, B> {
     BindingEntry {
         binding: COUNTER_BINDING,
         stages: StageSet::FRAGMENT,
@@ -58,17 +59,17 @@ var<storage, read_write> count: array<atomic<u32>, 2>;
 /// The counting draw's program, depth-stencil block (both tests off) and blend block (no
 /// colour written).
 pub(super) type PixelCounting<B> = (
-    <B as Backend>::Program,
-    <B as Backend>::DepthStencil,
-    <B as Backend>::Blend,
+    <B as Gpu>::Program,
+    <B as Gpu>::DepthStencil,
+    <B as Gpu>::Blend,
 );
 
 /// What every counting draw shares: the depth-stencil block with both tests off, the blend
 /// block writing no colour, and the counter buffer.
 pub(super) type Counting<B> = (
-    <B as Backend>::DepthStencil,
-    <B as Backend>::Blend,
-    <B as Backend>::Buffer,
+    <B as Gpu>::DepthStencil,
+    <B as Gpu>::Blend,
+    <B as Gpu>::Buffer,
 );
 
 /// A running pipeline statistics query: heap, index and the counts so far.
@@ -108,7 +109,7 @@ fn primitives(t: Topology, n: u64) -> u64 {
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// The program the pixel counter draws pipeline `pid`'s draws with, made once.
     fn pixel_counting(&mut self, pid: PipelineId) -> Result<B::Program, Error> {
         let r = self.pipelines[pid.0 as usize]
@@ -178,7 +179,7 @@ impl<B: Backend> Device<B> {
     }
 }
 
-impl<B: Backend> Replay<B> {
+impl<B: Gpu> Replay<B> {
     /// `BeginQuery` of pipeline statistics: the counts and the counter start at zero.
     pub(super) fn begin_statistics(
         &mut self,
@@ -338,8 +339,7 @@ impl<B: Backend> Replay<B> {
         let program = d.pixel_counting(pid)?;
         let (off, none, _) = d.counting_blocks()?;
         d.backend
-            .slow_paths()
-            .hit(SlowPath::PixelInvocationsCounted);
+            .record_slow_path(SlowPath::PixelInvocationsCounted);
         Ok(Some((program, off, none)))
     }
 
@@ -355,7 +355,7 @@ impl<B: Backend> Replay<B> {
             return Err(Error::Invalid("an indexed draw with no index buffer"));
         };
         let format = super::index_format(view.format).ok_or(Error::Invalid("index format"))?;
-        let size = u64::from(format.size());
+        let size = u64::from(INDEX_FORMATS[format as usize].size);
         let (id, offset) = d
             .addresses
             .find(view.address)
@@ -366,7 +366,7 @@ impl<B: Backend> Replay<B> {
             return Ok((0, 0));
         }
         self.settle(d)?;
-        d.backend.slow_paths().hit(SlowPath::ReadBackWait);
+        d.backend.record_slow_path(SlowPath::ReadBackWait);
         let data = d.read_now(id, offset + start, bytes)?;
         let line = self.topology == Topology::LineStrip;
         let (mut vertices, mut prims) = (0, 0);
@@ -374,7 +374,7 @@ impl<B: Backend> Replay<B> {
             .chunks(size as usize)
             .map(|i| i.iter().rev().fold(0, |v, &b| v << u8::BITS | u32::from(b)))
             .collect();
-        for run in indices.split(|&i| i == format.restart_value()) {
+        for run in indices.split(|&i| i == INDEX_FORMATS[format as usize].restart_value) {
             let n = run.len() as u64;
             vertices += n;
             prims += n.saturating_sub(if line { 1 } else { 2 });

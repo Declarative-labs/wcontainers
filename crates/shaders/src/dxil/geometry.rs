@@ -14,13 +14,14 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use naga::{Module, Statement};
+use rspirv::dr::{self, Instruction};
 use spirv::{BuiltIn, ExecutionMode, ExecutionModel, Op, StorageClass};
 use wcontainers_gpu::{StageExtras, StageValue, VariantKey};
 
 /// The prefix of the names given to the stage values' variables.
 const VALUE_NAME: &str = "gs_value";
 /// `OpEmitStreamVertex`'s and `OpEndStreamPrimitive`'s stream.
-const STREAM_OPERAND: usize = 1;
+const STREAM_OPERAND: usize = 0;
 
 /// Why a DXIL geometry shader is malformed.
 const STREAM_NOT_CONSTANT: &str = "a geometry stream that is no constant";
@@ -58,8 +59,12 @@ fn output_primitive(mode: ExecutionMode) -> Option<u64> {
 }
 
 /// Makes a Geometry entry point's SPIR-V a compute program naga's reader takes, and returns what it
-/// declared; `None` for any other execution model.
-pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Option<Declared>, ConvertError> {
+/// declared; `None` for any other execution model. A patch input, which no execution mode names, is
+/// the container's `dxil`.
+pub(crate) fn prepare(
+    spirv: &mut dr::Module,
+    dxil: &[u8],
+) -> Result<Option<Declared>, ConvertError> {
     let Some(entry) = staged::entry(spirv, ExecutionModel::Geometry) else {
         return Ok(None);
     };
@@ -74,15 +79,17 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Option<Declared>, ConvertE
         entry,
     };
     for &(mode, _) in &declared.entry.modes {
-        let Some(mode) = ExecutionMode::from_u32(mode) else {
-            continue;
-        };
         if let Some(p) = input_primitive(mode) {
             declared.input = p;
         }
         if let Some(p) = output_primitive(mode) {
             declared.output = p;
         }
+    }
+    if let Some(p) = crate::container::geometry_input_primitive(dxil)
+        .and_then(|p| p.checked_sub(crate::container::FIRST_PATCH_PRIMITIVE))
+    {
+        declared.input = primitive::PATCH + 1 + u64::from(p);
     }
     let within = |stream: u32| match (stream as usize) < stage::STREAMS {
         true => Ok(stream),
@@ -94,22 +101,19 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Option<Declared>, ConvertE
         }
     }
     // Streams emitted into, which the declarations may leave undecorated.
-    let stream = |i: &[u32]| {
-        declared
-            .entry
-            .constant(i[STREAM_OPERAND])
+    let stream = |i: &Instruction| {
+        staged::id(i, STREAM_OPERAND)
+            .and_then(|s| declared.entry.constant(s))
             .ok_or_else(|| ConvertError::Malformed(STREAM_NOT_CONSTANT.into()))
             .and_then(within)
     };
-    let mut at = super::words::HEADER;
-    while let Some(i) = staged::instruction(spirv, at) {
+    for i in spirv.all_inst_iter() {
         if matches!(
-            Op::from_u32(staged::opcode(i)),
-            Some(Op::EmitStreamVertex | Op::EndStreamPrimitive)
+            i.class.opcode,
+            Op::EmitStreamVertex | Op::EndStreamPrimitive
         ) {
             declared.stream_mask |= 1 << stream(i)?;
         }
-        at += i.len();
     }
     declared.stream_mask = declared.stream_mask.max(1);
     let streams = u64::BITS - declared.stream_mask.leading_zeros();
@@ -122,18 +126,18 @@ pub(crate) fn prepare(spirv: &mut Vec<u32>) -> Result<Option<Declared>, ConvertE
         .map(|(s, &e)| (e, emit_name(s)))
         .chain([(cut, CUT.into())])
         .collect();
-    let calls = |i: &[u32]| -> Result<Option<u32>, ConvertError> {
-        Ok(match Op::from_u32(staged::opcode(i)) {
-            Some(Op::EmitVertex) => Some(emits[0]),
-            Some(Op::EmitStreamVertex) => Some(emits[stream(i)? as usize]),
-            Some(Op::EndPrimitive | Op::EndStreamPrimitive) => Some(cut),
+    let calls = |i: &Instruction| -> Result<Option<u32>, ConvertError> {
+        Ok(match i.class.opcode {
+            Op::EmitVertex => Some(emits[0]),
+            Op::EmitStreamVertex => Some(emits[stream(i)? as usize]),
+            Op::EndPrimitive | Op::EndStreamPrimitive => Some(cut),
             _ => None,
         })
     };
     let values: Vec<&Interface> = declared.entry.values.iter().collect();
     staged::privatise(
         spirv,
-        &mut ids,
+        ids,
         &Privatise {
             entry: &declared.entry,
             values: &values,
@@ -180,10 +184,8 @@ fn builtin_of(b: u32, side: Side) -> Result<u64, ConvertError> {
         (Some(BuiltIn::InvocationId), Side::Input) => Ok(builtin::GS_INSTANCE_ID),
         (Some(BuiltIn::Layer), Side::Output) => Ok(builtin::LAYER_INDEX),
         (Some(BuiltIn::ViewportIndex), Side::Output) => Ok(builtin::VIEWPORT_INDEX),
-        (Some(BuiltIn::ClipDistance), Side::Output) => Ok(builtin::CLIP_DISTANCE),
-        (Some(BuiltIn::ClipDistance), Side::Input) => unsupported(crate::refusal::CLIP_DISTANCE),
-        (Some(BuiltIn::CullDistance), Side::Output) => Ok(builtin::CULL_DISTANCE),
-        (Some(BuiltIn::CullDistance), Side::Input) => unsupported(crate::refusal::CULL_DISTANCE),
+        (Some(BuiltIn::ClipDistance), _) => Ok(builtin::CLIP_DISTANCE),
+        (Some(BuiltIn::CullDistance), _) => Ok(builtin::CULL_DISTANCE),
         (_, Side::Input) => unsupported(crate::refusal::GEOMETRY_INPUT),
         (_, Side::Output) => unsupported(crate::refusal::GEOMETRY_OUTPUT),
     }
@@ -268,7 +270,7 @@ pub(crate) fn finish(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dxil::words::{self, decorate};
+    use rspirv::dr::Operand;
     use spirv::Decoration;
 
     /// A stream number past Direct3D's, emitted into or declared, is refused by name before any
@@ -281,38 +283,31 @@ mod tests {
             env!("CARGO_MANIFEST_DIR"),
             "/tests/own/gs_rows_streams.dxil"
         ));
-        let (spirv, _) = super::super::to_spirv(dxil, 0).unwrap();
-        let mut emitted = Vec::new();
-        let mut decorated = Vec::new();
-        let mut at = words::HEADER;
-        while let Some(i) = staged::instruction(&spirv, at) {
-            match Op::from_u32(staged::opcode(i)) {
-                Some(Op::EmitStreamVertex) => emitted.push(i[STREAM_OPERAND]),
-                Some(Op::Decorate) if i[decorate::DECORATION] == Decoration::Stream as u32 => {
-                    decorated.push(at + decorate::LITERAL)
-                }
-                _ => {}
-            }
-            at += i.len();
-        }
-        assert!(!emitted.is_empty() && !decorated.is_empty());
+        let (words, _) = super::super::to_spirv(dxil, 0).unwrap();
+        let spirv = staged::load(&words).unwrap();
+        let emitted: Vec<u32> = spirv
+            .all_inst_iter()
+            .filter(|i| i.class.opcode == Op::EmitStreamVertex)
+            .filter_map(|i| staged::id(i, STREAM_OPERAND))
+            .collect();
+        let stream = |i: &Instruction| staged::decorates(i, Decoration::Stream);
+        assert!(!emitted.is_empty() && spirv.annotations.iter().any(stream));
         for past in [stage::STREAMS as u32, u64::BITS] {
             // The constants of the emitted streams.
             let mut emits = spirv.clone();
-            let mut at = words::HEADER;
-            while let Some(i) = staged::instruction(&spirv, at) {
-                let constant = Op::from_u32(staged::opcode(i)) == Some(Op::Constant);
-                if constant && emitted.contains(&i[words::RESULT_AFTER_TYPE]) {
-                    emits[at + staged::CONSTANT_VALUE] = past;
+            for i in &mut emits.types_global_values {
+                if i.class.opcode == Op::Constant
+                    && i.result_id.is_some_and(|r| emitted.contains(&r))
+                {
+                    i.operands[0] = Operand::LiteralBit32(past);
                 }
-                at += i.len();
             }
             let mut declares = spirv.clone();
-            for &literal in &decorated {
-                declares[literal] = past;
+            for i in declares.annotations.iter_mut().filter(|i| stream(i)) {
+                i.operands[staged::DECORATION_LITERAL] = Operand::LiteralBit32(past);
             }
-            for mut words in [emits, declares] {
-                match prepare(&mut words) {
+            for mut module in [emits, declares] {
+                match prepare(&mut module, dxil) {
                     Err(ConvertError::Malformed(why)) => assert_eq!(why, STREAM_PAST_DIRECT3D),
                     other => panic!("{past}: {:?}", other.map(|d| d.map(|d| d.stream_mask))),
                 }

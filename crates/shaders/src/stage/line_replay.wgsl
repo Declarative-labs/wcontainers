@@ -1,4 +1,4 @@
-// Alpha-antialiased lines on a back end without compute: one invocation per corner of the two
+// Lines drawn as rectangles on a back end without compute: one invocation per corner of the two
 // triangles of the rectangle around each API line, as `lines.wgsl` writes them, for capture. The lines'
 // vertex records are read from the records texture, two a line in list order (the capture writes
 // strips as lists, instance after instance). `SLOTS` (four-word slots of a corner record: the vertex
@@ -12,13 +12,18 @@ struct Values {
     // 1 where the records' clip depth is rewritten as `2z - w` (`CLIP_DEPTH_REWRITE`), whose near
     // plane is then z = -w; 0 otherwise.
     near_w: f32,
-    pad: u32,
+    // Not 0 where the slot holds the line's ends.
+    ends: u32,
     // Half the viewport's width and height, in pixels.
     half_width: f32,
     half_height: f32,
     // How far the rectangle reaches past the line's axis and past each end, in pixels.
     reach_across: f32,
     reach_along: f32,
+    // The viewport's top left corner, in pixels.
+    origin_x: f32,
+    origin_y: f32,
+    pad: vec2<u32>,
 }
 
 @group(1) @binding(0) var<uniform> values: Values;
@@ -28,6 +33,16 @@ const VERTICES: u32 = 2u;
 // The corners' order in the two triangles.
 const TRIANGLES: array<u32, 6> = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
 const TRIANGLE_INDICES: u32 = 6u;
+
+// Direct3D's grid of window positions: steps a pixel.
+const SUBPIXEL_STEPS: f32 = 256.0;
+
+// The window position, on Direct3D's grid, of `p`: pixels from the viewport's centre, y up.
+fn window(p: vec2<f32>) -> vec2<f32> {
+    let half_size = vec2<f32>(values.half_width, values.half_height);
+    let w = vec2<f32>(values.origin_x, values.origin_y) + half_size + vec2<f32>(p.x, -p.y);
+    return round(w * SUBPIXEL_STEPS) / SUBPIXEL_STEPS;
+}
 
 // Slot `s` of vertex record `record`, of `SLOTS - 1` slots each.
 fn slot(record: u32, s: u32) -> vec4<u32> {
@@ -71,7 +86,12 @@ fn line_corner(vertex: u32) -> array<vec4<u32>, SLOTS> {
     if !dropped {
         along = (b - a) / extent;
     }
-    let across = vec2<f32>(-along.y, along.x);
+    var across = vec2<f32>(-along.y, along.x);
+    if values.ends != 0u {
+        // Across the minor axis instead, so that values are taken along the major one, as Direct3D's
+        // devices take them on aliased lines.
+        across = select(vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0), abs(along.x) >= abs(along.y));
+    }
 
     let end = k / 2u;
     let side = f32(k % 2u) * 2.0 - 1.0;
@@ -107,6 +127,10 @@ fn line_corner(vertex: u32) -> array<vec4<u32>, SLOTS> {
         }
         out[i] = words;
     }
-    out[SLOTS - 1u] = bitcast<vec4<u32>>(vec4<f32>(side * values.reach_across, pixels, extent, 0.0));
+    var coverage = vec4<f32>(side * values.reach_across, pixels, extent, 0.0);
+    if values.ends != 0u {
+        coverage = vec4<f32>(window(a), window(b));
+    }
+    out[SLOTS - 1u] = bitcast<vec4<u32>>(coverage);
     return out;
 }

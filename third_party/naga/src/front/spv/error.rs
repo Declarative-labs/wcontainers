@@ -50,6 +50,8 @@ pub enum Error {
     UnsupportedBuiltIn(spirv::Word),
     #[error("unsupported control flow %{0}")]
     UnsupportedControlFlow(spirv::Word),
+    #[error("control flow nested deeper than {0} constructs")]
+    ControlFlowTooDeep(usize),
     #[error("unsupported binary operator %{0}")]
     UnsupportedBinaryOperator(spirv::Word),
     #[error("Naga supports OpTypeRuntimeArray in the StorageBuffer storage class only")]

@@ -96,8 +96,8 @@ pub enum Rewrite {
 
 /// The rewrite `bytes`, indices of `format`, need to draw without restarting.
 pub fn rewrite(bytes: &[u8], format: IndexFormat) -> Rewrite {
-    let width = format.size() as usize;
-    let largest = format.restart_value();
+    let width = wcontainers_gpu::INDEX_FORMATS[format as usize].size as usize;
+    let largest = wcontainers_gpu::INDEX_FORMATS[format as usize].restart_value;
     let values = || {
         bytes.chunks_exact(width).map(|c| {
             let mut word = [0; 4];

@@ -1,0 +1,65 @@
+--- a/opcodes/dxil/dxil_resources.cpp
++++ b/opcodes/dxil/dxil_resources.cpp
+@@ -2987,8 +2987,61 @@
+ 		load_op->add_id(access_chain_op->id);
+ 		impl.add(load_op);
+ 
+-		if (scalar_alignment == 2)
++		// Minimum precision without 16-bit types: Direct3D 12 devices (WARP, NVIDIA) read
++		// component c of the row as the 16 bits at byte 2c, a half or a 16-bit integer.
++		bool min_precision = type_is_16bit(result_component_type) &&
++		                     !impl.execution_mode_meta.native_16bit_operations;
++
++		if (min_precision)
+ 		{
++			bool is_half = result_component_type->getTypeID() == llvm::Type::TypeID::HalfTyID;
++			spv::Id uint_type_id = builder.makeUintType(32);
++			spv::Id float_type_id = builder.makeFloatType(32);
++
++			Operation *words_op = impl.allocate(spv::OpBitcast, builder.makeVectorType(uint_type_id, 4));
++			words_op->add_id(load_op->id);
++			impl.add(words_op);
++
++			if (is_half && !impl.glsl_std450_ext)
++				impl.glsl_std450_ext = builder.import("GLSL.std.450");
++
++			spv::Id components[4];
++			for (unsigned c = 0; c < 4; c++)
++			{
++				Operation *word_op = impl.allocate(spv::OpCompositeExtract, uint_type_id);
++				word_op->add_id(words_op->id);
++				word_op->add_literal(c / 2);
++				impl.add(word_op);
++
++				if (is_half)
++				{
++					Operation *pair_op = impl.allocate(spv::OpExtInst, builder.makeVectorType(float_type_id, 2));
++					pair_op->add_id(impl.glsl_std450_ext);
++					pair_op->add_literal(GLSLstd450UnpackHalf2x16);
++					pair_op->add_id(word_op->id);
++					impl.add(pair_op);
++
++					Operation *half_op = impl.allocate(spv::OpCompositeExtract, float_type_id);
++					half_op->add_id(pair_op->id);
++					half_op->add_literal(c % 2);
++					impl.add(half_op);
++					components[c] = half_op->id;
++				}
++				else
++				{
++					Operation *shift_op = impl.allocate(spv::OpShiftRightLogical, uint_type_id);
++					shift_op->add_id(word_op->id);
++					shift_op->add_id(builder.makeUintConstant(16 * (c % 2)));
++					impl.add(shift_op);
++					components[c] = shift_op->id;
++				}
++			}
++
++			impl.rewrite_value(instruction,
++			                   impl.build_vector(is_half ? float_type_id : uint_type_id, components, 4));
++		}
++		else if (scalar_alignment == 2)
++		{
+ 			// Special case, need to bitcast and build a struct with 8 elements instead.
+ 			if (!build_bitcast_32x4_to_16x8_composite(impl, instruction, load_op->id, builder.makeFloatType(32)))
+ 				return false;

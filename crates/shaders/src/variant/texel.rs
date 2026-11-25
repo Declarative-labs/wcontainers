@@ -10,7 +10,7 @@
 
 use alloc::vec;
 use naga::{AtomicFunction, BinaryOperator as B, ScalarKind};
-use wcontainers_gpu::{Format, TEXEL_BUFFER_TEXTURE_WIDTH, VertexFormat};
+use wcontainers_gpu::{FORMAT_FACTS, Format, TEXEL_BUFFER_TEXTURE_WIDTH, VertexFormat};
 
 use super::pull::{Component, Kind, decode, layout, select};
 use super::*;
@@ -81,8 +81,9 @@ pub(crate) enum TexelPlace {
     Image(u32),
 }
 
-/// A format's kind, components and element size.
-pub(crate) type Layout = (Kind, Vec<Component>, u32);
+/// A format's kind, components, element size, and the channel of its first component (alpha for
+/// `A8Unorm`, whose other channels read zero; red for the rest).
+pub(crate) type Layout = (Kind, Vec<Component>, u32, u32);
 
 /// One typed buffer: its words, the bound view's format, and the functions made for it so far.
 pub(crate) struct TexelBuffer {
@@ -93,6 +94,8 @@ pub(crate) struct TexelBuffer {
     declared: ScalarKind,
     components: Vec<Component>,
     size: u32,
+    /// The channel of the first component.
+    first: u32,
     /// The scalar of atomic words, where the words are atomic.
     atomic: Option<Scalar>,
     place: TexelPlace,
@@ -105,15 +108,27 @@ pub(crate) struct TexelBuffer {
     at: Option<Handle<Function>>,
     size_of: Option<Handle<Function>>,
     atomics: Vec<(u64, Handle<Function>)>,
+    /// A function of the module the next function made is written into, in place of appending it.
+    into: Option<Handle<Function>>,
 }
 
 impl TexelBuffer {
     /// The bound view's format.
     pub(crate) fn layout(format: Format) -> Result<Layout> {
+        if format == Format::A8Unorm {
+            let alpha = (0, 0, u8::BITS);
+            return Ok((
+                Kind::Unorm,
+                vec![alpha],
+                FORMAT_FACTS[format as usize].block.2,
+                ALPHA,
+            ));
+        }
         let v = vertex_format(format).ok_or(ConvertError::Unsupported(
             crate::refusal::TYPED_BUFFER_FORMAT_ABSENT,
         ))?;
-        Ok(layout(v))
+        let (kind, components, size) = layout(v);
+        Ok((kind, components, size, 0))
     }
 
     /// The scalar kind the view's format reads as, which a texture holding it is sampled as.
@@ -140,7 +155,7 @@ impl TexelBuffer {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn declared(
         var: Handle<GlobalVariable>,
-        (kind, components, size): Layout,
+        (kind, components, size, first): Layout,
         declared: ScalarKind,
         atomic: Option<Scalar>,
         place: TexelPlace,
@@ -155,6 +170,7 @@ impl TexelBuffer {
             declared,
             components,
             size,
+            first,
             atomic,
             place,
             stage,
@@ -166,6 +182,24 @@ impl TexelBuffer {
             at: None,
             size_of: None,
             atomics: Vec::new(),
+            into: None,
+        }
+    }
+
+    /// Writes the next function made into `f`, a function of the module whose calls already name it
+    /// (a route that brought its program into the common form with stand-ins for these functions).
+    pub(crate) fn fill(&mut self, f: Handle<Function>) {
+        self.into = Some(f);
+    }
+
+    /// Puts a function made into the module.
+    fn put(&mut self, module: &mut Module, f: Function) -> Handle<Function> {
+        match self.into.take() {
+            Some(h) => {
+                module.functions[h] = f;
+                h
+            }
+            None => module.functions.append(f, Span::UNDEFINED),
         }
     }
 
@@ -300,7 +334,7 @@ impl TexelBuffer {
         let none = b.u32(u32::MAX);
         let index = b.select(inside, at, none);
         b.ret(Some(index));
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.at = Some(f);
         f
     }
@@ -324,7 +358,7 @@ impl TexelBuffer {
         let [_, _, width, height, layers] = self.texel_layout(module, reflection, &mut b);
         let v = b.compose(vec3u, vec![width, height, layers]);
         b.ret(Some(v));
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.size_of = Some(f);
         f
     }
@@ -387,14 +421,16 @@ impl TexelBuffer {
             let value = b.select(inside, read, zero);
             let value = self.as_declared(&mut b, value);
             b.ret(Some(value));
-            let f = module.functions.append(b.finish(), Span::UNDEFINED);
+            let f = self.put(module, b.finish());
             self.load = Some(f);
             return f;
         }
         let moved = b.mul(index, size);
         let address = b.add(offset, moved);
         let words = b.global(self.var);
-        let mut values = Vec::new();
+        let mut values: Vec<Expr> = (0..self.first)
+            .map(|_| b.expr(Expression::Literal(literal(natural, 0))))
+            .collect();
         for &(byte, shift, bits) in &self.components {
             let at = b.u32(byte);
             let a = b.add(address, at);
@@ -424,7 +460,7 @@ impl TexelBuffer {
         let value = b.select(inside, read, zero);
         let value = self.as_declared(&mut b, value);
         b.ret(Some(value));
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.load = Some(f);
         f
     }
@@ -434,7 +470,7 @@ impl TexelBuffer {
     fn past_length(&self, b: &mut Builder, ty: Handle<Type>, natural: Scalar) -> Expr {
         let zeros = (0..VEC4)
             .map(|i| {
-                let missing = i as usize >= self.components.len();
+                let missing = i >= self.first + self.components.len() as u32;
                 b.expr(Expression::Literal(literal(
                     natural,
                     (missing && i == ALPHA) as u32,
@@ -461,7 +497,7 @@ impl TexelBuffer {
         });
         let (_, length) = self.view(module, reflection, &mut b);
         b.ret(Some(length));
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.length = Some(f);
         f
     }
@@ -504,7 +540,7 @@ impl TexelBuffer {
         let count = self.size.div_ceil(WORD);
         let mut parts: Vec<Option<Expr>> = vec![None; count as usize];
         for (c, &(byte, shift, bits)) in self.components.iter().enumerate() {
-            let v = b.field(value, c as u32);
+            let v = b.field(value, self.first + c as u32);
             let kind = self.kind;
             let mut raw = b.raw(|f, body| encode(f, body, kind, v, bits));
             let at = ((byte % WORD) << BYTE_SHIFT) + shift;
@@ -590,7 +626,7 @@ impl TexelBuffer {
             accept,
             reject: Block::new(),
         });
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.store = Some(f);
         f
     }
@@ -696,7 +732,7 @@ impl TexelBuffer {
         });
         let r = b.load(out);
         b.ret(Some(r));
-        let f = module.functions.append(b.finish(), Span::UNDEFINED);
+        let f = self.put(module, b.finish());
         self.atomics.push((code, f));
         Ok(f)
     }
@@ -795,12 +831,16 @@ pub(super) fn encode(f: &mut Function, body: &mut Block, kind: Kind, v: Expr, bi
             let zero = lit(f, Literal::F32(0.0));
             let one = lit(f, Literal::F32(1.0));
             let low = lit(f, Literal::F32(if signed { -1.0 } else { 0.0 }));
-            // NaN fails both comparisons and becomes zero.
+            // NaN becomes zero, found by its bits, which no compiler folds as it may fold `v == v`.
             let above = binary(f, body, B::GreaterEqual, v, low);
             let c = select(f, body, above, v, low);
             let below = binary(f, body, B::LessEqual, c, one);
             let c = select(f, body, below, c, one);
-            let number = binary(f, body, B::Equal, v, v);
+            let word = to_u32(f, body, v, None);
+            let magnitude_mask = lit(f, Literal::U32(!crate::build::F32_SIGN_MASK));
+            let magnitude = binary(f, body, B::And, word, magnitude_mask);
+            let infinity = lit(f, Literal::U32(crate::build::F32_EXPONENT_MASK));
+            let number = binary(f, body, B::LessEqual, magnitude, infinity);
             let c = select(f, body, number, c, zero);
             let n = if signed { bits - 1 } else { bits };
             let scale = lit(f, Literal::F32(((1u64 << n) - 1) as f32));

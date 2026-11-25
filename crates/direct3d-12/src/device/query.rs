@@ -5,7 +5,8 @@
 //! counts a small compute program zeroes when the predicate skips them, so nothing waits.
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, QueryKind, RingKind, ShaderModule, SlotKind,
+    BindingEntry, BindingResource, BufferRange, INDEX_FORMATS, MAX_BINDING_SETS, QueryKind,
+    RingKind, SLOT_KINDS, ShaderModule, SlotKind,
 };
 
 use super::bind::CONSTANT_REGISTER;
@@ -61,11 +62,11 @@ const RECORD: u64 = size_of::<DrawIndexedArguments>() as u64;
 const RECORD_WORDS: u64 = RECORD / STORAGE_WORD;
 
 /// The binding of the buffer the front's own programs read: the first texture slot.
-pub(super) const OWN_SOURCE: u32 = SlotKind::Texture.first_binding();
+pub(super) const OWN_SOURCE: u32 = SLOT_KINDS[SlotKind::Texture as usize].first_binding;
 /// The binding of the buffer they write: the first storage slot.
-pub(super) const OWN_RESULT: u32 = SlotKind::Storage.first_binding();
+pub(super) const OWN_RESULT: u32 = SLOT_KINDS[SlotKind::Storage as usize].first_binding;
 /// The binding of their uniform block of parameters.
-pub(super) const OWN_PARAMETERS: u32 = SlotKind::Uniform.first_binding();
+pub(super) const OWN_PARAMETERS: u32 = SLOT_KINDS[SlotKind::Uniform as usize].first_binding;
 /// The threads of each of their workgroups.
 pub(super) const OWN_GROUP: u32 = 64;
 /// Their entry point.
@@ -110,7 +111,7 @@ fn {OWN_ENTRY}(@builtin(global_invocation_id) id: vec3u) {{
 
 /// A query heap: its `D3D12_QUERY_HEAP_TYPE`, the interface query set of binary occlusion and
 /// timestamps, and the values the front writes as each query ends.
-pub(super) struct QueryHeap<B: Backend> {
+pub(super) struct QueryHeap<B: Gpu> {
     set: Option<B::QuerySet>,
     kind: u32,
     count: u32,
@@ -118,7 +119,7 @@ pub(super) struct QueryHeap<B: Backend> {
 }
 
 /// The predicate set by `SetPredication` while a list replays.
-pub(super) struct Predicate<B: Backend> {
+pub(super) struct Predicate<B: Gpu> {
     resource: ResourceId,
     offset: u64,
     /// `D3D12_PREDICATION_OP`: 0 skips when the value is zero, 1 when it is not.
@@ -130,7 +131,7 @@ pub(super) struct Predicate<B: Backend> {
     value: Option<u64>,
 }
 
-impl<B: Backend> Predicate<B> {
+impl<B: Gpu> Predicate<B> {
     /// Whether its value is still to be read back.
     pub(super) fn value_unknown(&self) -> bool {
         self.value.is_none()
@@ -192,14 +193,17 @@ impl Own {
 }
 
 /// The front's own compute programs, made at first use.
-pub(super) struct Programs<B: Backend>([Option<B::Program>; Own::ALL.len()]);
+pub(super) struct Programs<B: Gpu>([Option<B::Program>; Own::ALL.len()]);
 
 /// 32-bit indices of a strip from 16-bit (`wide` 0) or 32-bit ones, `cut` becoming the 32-bit
 /// restart value.
 fn restart_source() -> String {
     let short = IndexFormat::U16;
-    let (bits, short_max) = (short.size() * u8::BITS, short.restart_value());
-    let restart = IndexFormat::U32.restart_value();
+    let (bits, short_max) = (
+        INDEX_FORMATS[short as usize].size * u8::BITS,
+        INDEX_FORMATS[short as usize].restart_value,
+    );
+    let restart = INDEX_FORMATS[IndexFormat::U32 as usize].restart_value;
     format!(
         "
 @group(0) @binding({OWN_SOURCE}) var<storage, read> src: array<u32>;
@@ -223,13 +227,13 @@ fn {OWN_ENTRY}(@builtin(global_invocation_id) id: vec3u) {{
     )
 }
 
-impl<B: Backend> Default for Programs<B> {
+impl<B: Gpu> Default for Programs<B> {
     fn default() -> Self {
         Programs(std::array::from_fn(|_| None))
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// `CreateQueryHeap`.
     pub fn create_query_heap(&mut self, kind: u32, count: u32) -> Result<QueryHeapId, Error> {
         self.live()?;
@@ -241,7 +245,7 @@ impl<B: Backend> Device<B> {
             // Every queue's work runs in one submission order, so copy queues write timestamps
             // as direct ones do.
             HEAP_TIMESTAMP | HEAP_COPY_QUEUE_TIMESTAMP
-                if self.backend.caps().has(Features::TIMESTAMPS) =>
+                if self.backend.caps().features.contains(Features::TIMESTAMPS) =>
             {
                 Some(self.backend.create_query_set(QueryKind::Timestamp, count)?)
             }
@@ -355,8 +359,7 @@ impl<B: Backend> Device<B> {
             });
         }
         let set = self.backend.create_binding_set(&entries)?;
-        let mut bindings: [Option<&B::BindingSet>; wcontainers_gpu::MAX_BINDING_SETS] =
-            Default::default();
+        let mut bindings: [Option<&B::BindingSet>; MAX_BINDING_SETS] = Default::default();
         bindings[0] = Some(&set);
         self.backend.dispatch(&DispatchCall {
             program: &program,
@@ -552,7 +555,7 @@ impl<B: Backend> Device<B> {
         let cpu = now();
         self.backend.submit();
         if self.backend.read_state(&read) == ReadState::Pending {
-            self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+            self.backend.record_slow_path(SlowPath::ReadBackWait);
             self.backend.wait_read(&read);
         }
         let mut bytes = [0u8; size_of::<u64>()];
@@ -594,10 +597,13 @@ impl<B: Backend> Device<B> {
             return Ok(predicate);
         }
         let caps = self.backend.caps();
-        if !caps.has(Features::COMPUTE | Features::INDIRECT) {
+        if !caps
+            .features
+            .contains(Features::COMPUTE | Features::INDIRECT)
+        {
             return Ok(predicate);
         }
-        self.backend.slow_paths().hit(SlowPath::PredicationIndirect);
+        self.backend.record_slow_path(SlowPath::PredicationIndirect);
         self.upload(resource)?;
         let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let records = self.scratch(
@@ -631,7 +637,7 @@ impl<B: Backend> Device<B> {
         let value = match p.value {
             Some(v) => v,
             None => {
-                self.backend.slow_paths().hit(SlowPath::PredicationWait);
+                self.backend.record_slow_path(SlowPath::PredicationWait);
                 self.upload(p.resource)?;
                 let (buffer, _) = self.buffer(p.resource)?;
                 let buffer = buffer.clone();

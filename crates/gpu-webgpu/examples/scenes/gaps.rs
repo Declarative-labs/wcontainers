@@ -3,8 +3,9 @@
 //! tests/copies.rs and the browser page.
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, CopyBufferTexture, DeviceStatus, Extent, Format, MapIntent,
-    Origin, ReadSource, TextureDesc, TextureDimension, TextureRegion, TextureUsage, WriteMode,
+    BufferDesc, BufferUsage, CopyBufferTexture, DeviceStatus, Extent, FORMAT_FACTS, Format, Gpu,
+    MapIntent, Origin, ReadSource, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
+    WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -35,7 +36,7 @@ pub fn reads_keep_the_bytes_between_rows(b: &mut WebGpu, seed: u64) -> Result<St
     let mut rng = fastrand::Rng::with_seed(seed);
     let mut checked = Vec::new();
     for format in FORMATS {
-        let (bw, _, block_bytes) = format.block();
+        let (bw, _, block_bytes) = FORMAT_FACTS[format as usize].block;
         let (w, h, layers) = SIZE;
         let texture = b
             .create_texture(&TextureDesc {
@@ -166,7 +167,7 @@ pub fn writes_take_each_layer_from_its_rows(b: &mut WebGpu, seed: u64) -> Result
     let mut checked = Vec::new();
     for dimension in [TextureDimension::D2, TextureDimension::D3] {
         for format in FORMATS {
-            let (bw, _, block_bytes) = format.block();
+            let (bw, _, block_bytes) = FORMAT_FACTS[format as usize].block;
             let (w, h, layers) = SIZE;
             let texture = b
                 .create_texture(&TextureDesc {

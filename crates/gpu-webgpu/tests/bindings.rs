@@ -21,10 +21,10 @@ mod views;
 use renames::{Kit, LOAD_WGSL, begin, draw_at, finish, kit};
 
 use wcontainers_gpu::{
-    AddressMode, AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendFactor,
-    BlendOp, BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment, CompareFn,
-    DepthAttachment, DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, Features, Filter,
-    Format, FormatUse, GpuError, LoadOp, MAX_VERTEX_STREAMS, MapIntent, Origin, PassDesc, Program,
+    AddressMode, AspectOps, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp,
+    BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment, CompareFn, DepthAttachment,
+    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, Features, Filter, Format,
+    FormatUse, Gpu, GpuError, LoadOp, MAX_VERTEX_STREAMS, MapIntent, Origin, PassDesc, Program,
     ReadSource, SamplerDesc, ShaderModule, ShaderStage, StageSet, StepMode, StoreOp, TextureRegion,
     TextureUsage, TextureViewDesc, Topology, VertexAttribute, VertexFormat, VertexLayoutDesc,
     VertexStream, ViewDimension, Viewport, WriteMode,
@@ -43,7 +43,7 @@ fn device() -> WebGpu {
         .0
 }
 
-fn constants(b: &mut WebGpu, size: u64, intent: MapIntent) -> <WebGpu as Backend>::Buffer {
+fn constants(b: &mut WebGpu, size: u64, intent: MapIntent) -> <WebGpu as Gpu>::Buffer {
     b.create_buffer(&BufferDesc {
         size,
         usage: BufferUsage::UNIFORM,
@@ -54,9 +54,9 @@ fn constants(b: &mut WebGpu, size: u64, intent: MapIntent) -> <WebGpu as Backend
 
 fn set(
     b: &mut WebGpu,
-    buffer: &<WebGpu as Backend>::Buffer,
+    buffer: &<WebGpu as Gpu>::Buffer,
     offset: u64,
-) -> <WebGpu as Backend>::BindingSet {
+) -> <WebGpu as Gpu>::BindingSet {
     b.create_binding_set(&[BindingEntry {
         binding: 0,
         stages: StageSet::FRAGMENT,
@@ -147,11 +147,7 @@ fn float_targets_blend_or_fail_loudly() {
             op: BlendOp::Add,
         },
     ));
-    let blendable = b
-        .caps()
-        .formats
-        .get(Format::Rgba32Float)
-        .contains(FormatUse::BLEND);
+    let blendable = b.caps().formats.uses[Format::Rgba32Float as usize].contains(FormatUse::BLEND);
     eprintln!("rgba32float blendable on this device: {blendable}");
     let k = kit(&mut b, Format::Rgba32Float, 1, &blend);
     let ub = constants(&mut b, 16, MapIntent::Rarely);
@@ -276,10 +272,7 @@ fn combined_depth_stencil_views_draw_and_read_each_aspect() {
     let mut b = device();
     let mut ran = 0;
     for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
-        if !b
-            .caps()
-            .formats
-            .get(format)
+        if !b.caps().formats.uses[format as usize]
             .contains(FormatUse::DEPTH_STENCIL | FormatUse::SAMPLE)
         {
             eprintln!("{format:?}: not held by this device");
@@ -415,10 +408,7 @@ fn stencil_views_bound_alone_read_each_stencil_clear() {
     let mut b = device();
     let mut ran = 0;
     for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
-        if !b
-            .caps()
-            .formats
-            .get(format)
+        if !b.caps().formats.uses[format as usize]
             .contains(FormatUse::DEPTH_STENCIL | FormatUse::SAMPLE)
         {
             eprintln!("{format:?}: not held by this device");
@@ -517,7 +507,7 @@ struct F { color: vec4f }
 
 fn draw_call<'a>(
     k: &'a Kit,
-    bindings: [Option<&'a <WebGpu as Backend>::BindingSet>; 4],
+    bindings: [Option<&'a <WebGpu as Gpu>::BindingSet>; 4],
     viewport: &'a [Viewport],
 ) -> DrawCall<'a, WebGpu> {
     DrawCall {
@@ -694,7 +684,7 @@ const SAMPLE_MIDDLE_WGSL: &str = r#"
 }
 "#;
 
-fn sampler(b: &mut WebGpu, filter: Filter) -> <WebGpu as Backend>::Sampler {
+fn sampler(b: &mut WebGpu, filter: Filter) -> <WebGpu as Gpu>::Sampler {
     b.create_sampler(&SamplerDesc {
         min: filter,
         mag: filter,
@@ -709,7 +699,7 @@ fn sampler(b: &mut WebGpu, filter: Filter) -> <WebGpu as Backend>::Sampler {
 }
 
 /// A 2 by 1 texture of `format` holding 0 and 1 (`depth32float` written through the depth draw).
-fn zero_one(b: &mut WebGpu, format: Format) -> <WebGpu as Backend>::TextureView {
+fn zero_one(b: &mut WebGpu, format: Format) -> <WebGpu as Gpu>::TextureView {
     let (texture, view) = draw::texture_2d(
         b,
         format,
@@ -747,8 +737,8 @@ fn zero_one(b: &mut WebGpu, format: Format) -> <WebGpu as Backend>::TextureView 
 fn sample_middle(
     b: &mut WebGpu,
     k: &Kit,
-    view: &<WebGpu as Backend>::TextureView,
-    sampler: &<WebGpu as Backend>::Sampler,
+    view: &<WebGpu as Gpu>::TextureView,
+    sampler: &<WebGpu as Gpu>::Sampler,
 ) -> f32 {
     let set = b
         .create_binding_set(&[
@@ -799,11 +789,7 @@ fn layouts_follow_each_views_filterability() {
         let mut b = pollster::block_on(draw::device_without(&draw::instance(backends), without))
             .unwrap()
             .0;
-        let filters = b
-            .caps()
-            .formats
-            .get(Format::R32Float)
-            .contains(FormatUse::FILTER);
+        let filters = b.caps().formats.uses[Format::R32Float as usize].contains(FormatUse::FILTER);
         if float32_filterable && !filters {
             eprintln!("this adapter has no float32-filterable");
             continue;
@@ -877,12 +863,15 @@ fn tier1_formats_are_declared_only_with_it() {
     .unwrap()
     .0;
     for f in sixteen {
-        assert!(b.caps().formats.get(f).is_empty(), "{f:?} without tier 1");
+        assert!(
+            b.caps().formats.uses[f as usize].is_empty(),
+            "{f:?} without tier 1"
+        );
         let made = draw::texture_2d(&mut b, f, 1, 1, TextureUsage::SAMPLE);
         assert!(made.is_err(), "{f:?} made without tier 1");
     }
     for f in snorm8 {
-        let uses = b.caps().formats.get(f);
+        let uses = b.caps().formats.uses[f as usize];
         assert!(
             uses.contains(FormatUse::SAMPLE | FormatUse::FILTER),
             "{f:?}: {uses:?}"
@@ -891,13 +880,13 @@ fn tier1_formats_are_declared_only_with_it() {
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
     let b = pollster::block_on(draw::device_on(&instance)).unwrap().0;
-    let adapter_has = |f: Format| !b.caps().formats.get(f).is_empty();
+    let adapter_has = |f: Format| !b.caps().formats.uses[f as usize].is_empty();
     if !sixteen.into_iter().all(adapter_has) {
         eprintln!("this adapter has no 16-bit normalised formats");
         return;
     }
     for f in sixteen.into_iter().chain(snorm8) {
-        let uses = b.caps().formats.get(f);
+        let uses = b.caps().formats.uses[f as usize];
         assert!(uses.contains(FormatUse::SAMPLE), "{f:?}: {uses:?}");
         if f != Format::R16Snorm && f != Format::Rg16Snorm && f != Format::Rgba16Snorm {
             assert!(
@@ -948,8 +937,8 @@ fn programs_are_validated_with_webgpus_core_language() {
 #[test]
 fn step_rates_and_texel_buffers_are_reported_absent() {
     let mut b = device();
-    assert!(!b.caps().has(Features::INSTANCE_STEP_RATE));
-    assert!(!b.caps().has(Features::TEXEL_BUFFERS));
+    assert!(!b.caps().features.contains(Features::INSTANCE_STEP_RATE));
+    assert!(!b.caps().features.contains(Features::TEXEL_BUFFERS));
     let layout = |step| {
         let mut desc = VertexLayoutDesc {
             streams: [None; MAX_VERTEX_STREAMS],

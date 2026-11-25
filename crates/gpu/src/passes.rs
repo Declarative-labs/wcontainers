@@ -6,7 +6,7 @@
 //! different sizes ([`SlowPath::AttachmentsFitted`]), splits a pass where a draw would break its usage
 //! scope ([`SlowPath::UsageScopeSplit`]), and carries a running occlusion query across every split.
 
-use crate::backend::{Backend, Object, aspects, builtin_draw, full_viewport};
+use crate::backend::{Gpu, Object, aspects, builtin_draw, full_viewport};
 use crate::draw::{
     AspectOps, ColorAttachment, DepthAttachment, DrawCall, EmptyPass, LoadOp, PassDesc,
     ScissorRect, StoreOp,
@@ -29,7 +29,7 @@ use core::ops::Range;
 /// temporary, so its texture needs `COPY_SRC` and `COPY_DST`; a multisampled one is copied by a draw
 /// reading it, so it needs `SAMPLE` too.
 #[derive(Debug)]
-pub struct Target<B: Backend> {
+pub struct Target<B: Gpu> {
     pub view: B::TextureView,
     pub texture: B::Texture,
     /// The view's format.
@@ -45,7 +45,7 @@ pub struct Target<B: Backend> {
     pub samples: u32,
 }
 
-impl<B: Backend> Clone for Target<B> {
+impl<B: Gpu> Clone for Target<B> {
     fn clone(&self) -> Self {
         Target {
             view: self.view.clone(),
@@ -61,7 +61,7 @@ impl<B: Backend> Clone for Target<B> {
     }
 }
 
-impl<B: Backend> Clone for ColorTarget<B> {
+impl<B: Gpu> Clone for ColorTarget<B> {
     fn clone(&self) -> Self {
         ColorTarget {
             target: self.target.clone(),
@@ -70,7 +70,7 @@ impl<B: Backend> Clone for ColorTarget<B> {
     }
 }
 
-impl<B: Backend> Clone for PassTargets<B> {
+impl<B: Gpu> Clone for PassTargets<B> {
     fn clone(&self) -> Self {
         PassTargets {
             colors: self.colors.clone(),
@@ -80,7 +80,7 @@ impl<B: Backend> Clone for PassTargets<B> {
     }
 }
 
-impl<B: Backend> Target<B> {
+impl<B: Gpu> Target<B> {
     fn region(&self) -> TextureRegion<'_, B> {
         TextureRegion {
             texture: &self.texture,
@@ -98,7 +98,7 @@ impl<B: Backend> Target<B> {
 
 /// A colour target and the single-sampled target it resolves into, if any.
 #[derive(Debug)]
-pub struct ColorTarget<B: Backend> {
+pub struct ColorTarget<B: Gpu> {
     pub target: Target<B>,
     pub resolve: Option<Target<B>>,
 }
@@ -106,7 +106,7 @@ pub struct ColorTarget<B: Backend> {
 /// The targets drawn into: up to eight colour targets and one depth-stencil target, or for a pass
 /// with no attachment its size and sample count.
 #[derive(Debug)]
-pub struct PassTargets<B: Backend> {
+pub struct PassTargets<B: Gpu> {
     pub colors: [Option<ColorTarget<B>>; MAX_COLOR_TARGETS],
     pub depth: Option<Target<B>>,
     pub empty: Option<EmptyPass>,
@@ -148,7 +148,7 @@ pub struct ScopeUse {
 
 /// A temporary attachment of a fitted pass, pooled by size, format and sample count.
 #[derive(Debug)]
-struct Temporary<B: Backend> {
+struct Temporary<B: Gpu> {
     key: (u32, u32, Format, u32),
     texture: B::Texture,
     view: B::TextureView,
@@ -174,7 +174,7 @@ struct Open {
 
 /// The occlusion query set the tracker begins queries in.
 #[derive(Debug)]
-struct Queries<B: Backend> {
+struct Queries<B: Gpu> {
     set: B::QuerySet,
     count: u32,
     next: u32,
@@ -185,7 +185,7 @@ struct Queries<B: Backend> {
 /// The pass tracker. A front holds one per device and calls the back end's pass, query and copy
 /// methods only through it while it holds targets.
 #[derive(Debug)]
-pub struct PassTracker<B: Backend> {
+pub struct PassTracker<B: Gpu> {
     targets: Option<PassTargets<B>>,
     ops: PassOps,
     open: Option<Open>,
@@ -194,7 +194,7 @@ pub struct PassTracker<B: Backend> {
     generation: u64,
 }
 
-impl<B: Backend> Default for PassTracker<B> {
+impl<B: Gpu> Default for PassTracker<B> {
     fn default() -> Self {
         PassTracker {
             targets: None,
@@ -207,7 +207,7 @@ impl<B: Backend> Default for PassTracker<B> {
     }
 }
 
-impl<B: Backend> PassTracker<B> {
+impl<B: Gpu> PassTracker<B> {
     /// The targets set, if any.
     pub fn targets(&self) -> Option<&PassTargets<B>> {
         self.targets.as_ref()
@@ -321,7 +321,7 @@ impl<B: Backend> PassTracker<B> {
                         "a pass split at a storage write discards an attachment",
                     ));
                 }
-                b.slow_paths().hit(SlowPath::UsageScopeSplit);
+                b.record_slow_path(SlowPath::UsageScopeSplit);
                 let mut ops = self.ops;
                 for (load, _) in &mut ops.colors {
                     *load = LoadOp::Load;
@@ -555,7 +555,7 @@ impl<B: Backend> PassTracker<B> {
         dst: &Target<B>,
         extent: Extent,
     ) -> Result<(), GpuError> {
-        let kind = match src.format.kind() {
+        let kind = match crate::FORMAT_FACTS[src.format as usize].kind {
             k @ (FormatKind::Uint | FormatKind::Sint) => k,
             _ => FormatKind::Float,
         };
@@ -569,7 +569,7 @@ impl<B: Backend> PassTracker<B> {
             // Integer samples cannot be averaged by a resolve.
             return Err(GpuError::Absent(Features::MULTISAMPLE_READ));
         } else {
-            b.slow_paths().hit(SlowPath::MultisampleCopyResolved);
+            b.record_slow_path(SlowPath::MultisampleCopyResolved);
             let k = self.temporary(b, (src.width, src.height, src.format, 1))?;
             b.resolve(&src.region(), &self.pool[k].region(), src.format);
             (self.pool[k].view.clone(), Builtin::SampleCopy(kind, false))
@@ -646,7 +646,7 @@ impl<B: Backend> PassTracker<B> {
                 .flat_map(|c| core::iter::once(&c.target).chain(&c.resolve))
                 .any(|t| (t.width, t.height) != (width, height));
             if fitted {
-                b.slow_paths().hit(SlowPath::AttachmentsFitted);
+                b.record_slow_path(SlowPath::AttachmentsFitted);
                 let extent = Extent {
                     width: common.0,
                     height: common.1,
@@ -726,7 +726,7 @@ impl<B: Backend> PassTracker<B> {
     }
 }
 
-impl<B: Backend> Temporary<B> {
+impl<B: Gpu> Temporary<B> {
     /// The temporary as an attachment seen through `format`, its own.
     fn target(&self, format: Format) -> Target<B> {
         Target {
@@ -750,30 +750,5 @@ impl<B: Backend> Temporary<B> {
             origin: Origin { x: 0, y: 0, z: 0 },
             stencil: false,
         }
-    }
-}
-
-/// Cuts `scissors` to `area` (from [`PassTracker::before_draw`]), or gives `area` itself for a draw
-/// without scissors.
-pub fn cut_scissors(scissors: &[ScissorRect], area: ScissorRect, out: &mut Vec<ScissorRect>) {
-    out.clear();
-    if scissors.is_empty() {
-        out.push(area);
-        return;
-    }
-    for s in scissors {
-        let x = s.x.max(area.x);
-        let y = s.y.max(area.y);
-        let right = s.x.saturating_add(s.width).min(area.x + area.width).max(x);
-        let bottom =
-            s.y.saturating_add(s.height)
-                .min(area.y + area.height)
-                .max(y);
-        out.push(ScissorRect {
-            x,
-            y,
-            width: right - x,
-            height: bottom - y,
-        });
     }
 }

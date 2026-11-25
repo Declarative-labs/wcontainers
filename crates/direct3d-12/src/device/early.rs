@@ -28,7 +28,7 @@ pub(super) fn stencil_stand_in(samples: u32) -> null::Shape {
 
 /// The views a draw testing early in the program binds: the depth and the stencil aspect of the
 /// bound depth-stencil view.
-pub(super) type EarlyViews<B> = (<B as Backend>::TextureView, <B as Backend>::TextureView);
+pub(super) type EarlyViews<B> = (<B as Gpu>::TextureView, <B as Gpu>::TextureView);
 
 /// How a draw runs its pixel shader's forced early tests.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,7 +65,7 @@ impl EarlyRun {
 
 /// What a pipeline whose forced early tests matter while it writes depth or stencil draws each
 /// primitive with (`EarlyRun`).
-pub(super) struct PerPrimitive<B: Backend> {
+pub(super) struct PerPrimitive<B: Gpu> {
     /// The pipeline's depth-stencil block with its writes off.
     pub tested: B::DepthStencil,
     /// The raster block with the other front face.
@@ -74,7 +74,7 @@ pub(super) struct PerPrimitive<B: Backend> {
     pub written: B::Program,
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// The blocks and program of `PerPrimitive` for a pipeline of these blocks' descriptions and
     /// vertex program `vertex`.
     pub(super) fn per_primitive(
@@ -109,7 +109,7 @@ impl<B: Backend> Device<B> {
     }
 }
 
-impl<B: Backend> Replay<B> {
+impl<B: Gpu> Replay<B> {
     /// How a draw with pipeline `pid` runs its pixel shader's forced early tests: in the program
     /// where the shader forces them and changes what it does through them and a depth-stencil
     /// view is bound, each primitive alone where the draw also writes depth or stencil.
@@ -219,7 +219,7 @@ impl<B: Backend> Replay<B> {
                 "early depth-stencil tests per primitive of an instanced draw",
             ));
         }
-        d.backend.slow_paths().hit(SlowPath::EarlyTestsPerPrimitive);
+        d.backend.record_slow_path(SlowPath::EarlyTestsPerPrimitive);
         let primitives = match count.checked_sub(per) {
             Some(rest) => rest / step + 1,
             None => 0,
@@ -300,7 +300,7 @@ impl<B: Backend> Replay<B> {
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// The depth and stencil aspects of depth-stencil view `v`, as a program testing early reads
     /// them; for a format without stencil, the stand-in.
     pub(super) fn early_views(&mut self, v: &TargetView) -> Result<EarlyViews<B>, Error> {
@@ -335,7 +335,7 @@ impl<B: Backend> Device<B> {
 }
 
 /// The helper set's entries binding `views` for a program testing early.
-pub(super) fn entries<B: Backend>(views: &EarlyViews<B>) -> [BindingEntry<'_, B>; 2] {
+pub(super) fn entries<B: Gpu>(views: &EarlyViews<B>) -> [BindingEntry<'_, B>; 2] {
     [
         (EARLY_DEPTH_BINDING, &views.0),
         (EARLY_STENCIL_BINDING, &views.1),

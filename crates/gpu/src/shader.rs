@@ -71,7 +71,7 @@ impl ShaderModule {
 
 /// The program block: the shaders one draw or dispatch runs.
 #[derive(Debug)]
-pub enum Program<'a, B: crate::Backend> {
+pub enum Program<'a, B: crate::Gpu> {
     /// A vertex shader and an optional fragment shader (depth-only passes have none). Every location
     /// the fragment shader reads, the vertex shader writes, with the same type, interpolation and
     /// sampling (WebGPU's and GLSL ES's linking rule; unstated ones are WGSL's defaults: a float

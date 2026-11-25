@@ -25,13 +25,14 @@
 mod common;
 
 use common::*;
+// The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange,
-    BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange,
-    Extent, FillMode, Filter, Format, FrontFace, HelperValue, Origin, PassDesc, Program,
-    ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc, SlotKind, StageSet,
-    StoreOp, TextureRegion, TextureUsage, Topology, VariantKey, VertexLayoutDesc, Viewport,
-    WriteMode,
+    AddressMode, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange, BufferUsage,
+    ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange, Extent,
+    FORMAT_FACTS, FillMode, Filter, Format, FrontFace, Gpu as Backend, HelperValue, Origin,
+    PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc,
+    SlotKind, StageSet, StoreOp, TextureRegion, TextureUsage, Topology, VariantKey,
+    VertexLayoutDesc, Viewport, WriteMode,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};
@@ -195,7 +196,7 @@ impl Case {
             HelperValue::BorderColor { .. } => self.border.map(f32::to_bits).to_vec(),
             HelperValue::LodBias { .. } => vec![self.bias.to_bits()],
             HelperValue::TextureLevels { .. } => vec![LEVELS],
-            HelperValue::TextureComponents { .. } => vec![format.components()],
+            HelperValue::TextureComponents { .. } => vec![FORMAT_FACTS[format as usize].components],
             other => panic!("no value for {other:?}"),
         }
     }
@@ -209,7 +210,9 @@ fn levels(format: Format, seed: u64) -> Vec<Vec<u8>> {
             let texels = (TEX >> n) * (TEX >> n);
             match format {
                 Format::R32Float => (0..texels).flat_map(|_| rng.f32().to_le_bytes()).collect(),
-                _ => (0..texels * format.block().2).map(|_| rng.u8(..)).collect(),
+                _ => (0..texels * FORMAT_FACTS[format as usize].block.2)
+                    .map(|_| rng.u8(..))
+                    .collect(),
             }
         })
         .collect()
@@ -235,7 +238,7 @@ fn direct3d_11(
         .unwrap();
     let mut desc = d3d11::tex2d(TEX, TEX, dxgi(format), D3D11_BIND_SHADER_RESOURCE);
     desc.MipLevels = LEVELS;
-    let size = format.block().2;
+    let size = FORMAT_FACTS[format as usize].block.2;
     let data: Vec<_> = texels
         .iter()
         .enumerate()
@@ -308,7 +311,7 @@ fn ours<B: Backend>(
         1,
         TextureUsage::SAMPLE | TextureUsage::COPY_DST,
     );
-    let size = format.block().2;
+    let size = FORMAT_FACTS[format as usize].block.2;
     for (level, data) in texels.iter().enumerate() {
         let side = TEX >> level;
         b.write_texture(
@@ -609,6 +612,28 @@ fn samples_match_direct3d(pixel: &str, modes: &[&str], formats: &[Format]) {
                 let software = direct3d_11(&warp, pixel, format, &texels, &case, mode);
                 let between = differences(&reference, &software);
                 let (apart, largest) = count(&between, FILTER_ALLOWANCE);
+                // Where an anisotropic footprint matters: texels whose anisotropic sample on the GPU
+                // or warp lies past the allowance from the same device's isotropic one.
+                let footprint: Vec<bool> = if case.anisotropic_footprint(name) {
+                    let isotropic = Case {
+                        anisotropy: 1,
+                        ..case.clone()
+                    };
+                    let gpu = differences(
+                        &reference,
+                        &direct3d_11(&d3d, pixel, format, &texels, &isotropic, mode),
+                    );
+                    let soft = differences(
+                        &software,
+                        &direct3d_11(&warp, pixel, format, &texels, &isotropic, mode),
+                    );
+                    gpu.iter()
+                        .zip(&soft)
+                        .map(|(g, w)| *g > FILTER_ALLOWANCE || *w > FILTER_ALLOWANCE)
+                        .collect()
+                } else {
+                    vec![false; between.len()]
+                };
                 println!(
                     "  {format:?} {name} direct3d on the gpu against warp: {apart} of {} texels past {FILTER_ALLOWANCE}, largest {largest}",
                     SIZE * SIZE
@@ -671,12 +696,16 @@ fn samples_match_direct3d(pixel: &str, modes: &[&str], formats: &[Format]) {
                         }
                         // Where the GPU and warp give different answers the specification leaves the
                         // texel to the implementation (a point sample on a texel's edge, a level
-                        // blended otherwise): a third answer there is counted, not failed.
+                        // blended otherwise): a third answer there passes when it lies no further
+                        // from one of them than they lie from each other.
                         let before = neither.len();
-                        neither.retain(|&n| between[n] <= FILTER_ALLOWANCE);
+                        neither.retain(|&n| {
+                            between[n] <= FILTER_ALLOWANCE
+                                || gpu_apart[n].min(soft_apart[n]) > between[n]
+                        });
                         let third = before - neither.len();
                         println!(
-                            "  {format:?} {name} {route} {back_end}: {} of {} texels past {FILTER_ALLOWANCE} from both ({first} before moving the level of detail, {third} more where they differ); from the gpu {gpu_count} (largest {gpu_largest}), from warp {soft_count} (largest {soft_largest})",
+                            "  {format:?} {name} {route} {back_end}: {} of {} texels past {FILTER_ALLOWANCE} from both ({first} before moving the level of detail, {third} more where they differ by more); from the gpu {gpu_count} (largest {gpu_largest}), from warp {soft_count} (largest {soft_largest})",
                             neither.len(),
                             SIZE * SIZE
                         );
@@ -707,11 +736,15 @@ fn samples_match_direct3d(pixel: &str, modes: &[&str], formats: &[Format]) {
                             // Known failure: the anisotropic footprint is the implementation's own
                             // (the GPU's and warp's differ from each other), and the program's
                             // taps along the major axis are a third (docs/status-graphics-shaders.md).
-                            // An explicit level or a gather takes no footprint and must match.
-                            if case.anisotropic_footprint(name) {
+                            // It is the cause only where the footprint matters; an explicit level
+                            // or a gather takes no footprint and must match.
+                            let elsewhere = neither.iter().filter(|&&n| !footprint[n]).count();
+                            if elsewhere == 0 {
                                 known.push(what);
                             } else {
-                                failed.push(what);
+                                failed.push(format!(
+                                    "{what} ({elsewhere} texels where no anisotropic footprint matters)"
+                                ));
                             }
                         }
                         if back_end == "webgpu" {
@@ -734,27 +767,70 @@ fn samples_match_direct3d(pixel: &str, modes: &[&str], formats: &[Format]) {
                             &plain,
                             Some(native),
                         );
+                        keep(
+                            &format!("{prefix}_{case_seed}_{format:?}_{name}_{route}_own"),
+                            &own,
+                            Format::Rgba32Float,
+                        );
                         let native = differences(&webgpu_texels, &own);
                         let soft = differences(&software, &webgpu_texels);
                         let (apart, largest) = count(&native, FILTER_ALLOWANCE);
-                        let neither = (0..native.len())
+                        let neither: Vec<usize> = (0..native.len())
                             .filter(|&n| native[n] > FILTER_ALLOWANCE && soft[n] > FILTER_ALLOWANCE)
-                            .count();
+                            .collect();
                         let (own_apart, own_largest) =
                             count(&differences(&reference, &own), FILTER_ALLOWANCE);
+                        // Of those, the texels the main comparison allows and this one does not
+                        // (A18): where the GPU and warp differ, and at a level decision (within the
+                        // allowance of the own sampler or warp with the level of detail moved by
+                        // 1/256).
+                        let where_they_differ = neither
+                            .iter()
+                            .filter(|&&n| between[n] > FILTER_ALLOWANCE)
+                            .count();
+                        let at_decision = if neither.is_empty() {
+                            0
+                        } else {
+                            let moved = [-SHIFT, SHIFT].map(|shift| {
+                                let moved = Case {
+                                    bias: case.bias + shift,
+                                    ..case.clone()
+                                };
+                                ours(
+                                    &mut gpu, pixel, route, stored, &texels, &moved, mode, &key,
+                                    None,
+                                )
+                            });
+                            let near = |a: &[u8], m: &[u8], n: usize| {
+                                differences(&a[n * 16..n * 16 + 16], &m[n * 16..n * 16 + 16])[0]
+                                    <= FILTER_ALLOWANCE
+                            };
+                            neither
+                                .iter()
+                                .filter(|&&n| {
+                                    moved
+                                        .iter()
+                                        .any(|m| near(&own, m, n) || near(&software, m, n))
+                                })
+                                .count()
+                        };
                         println!(
-                            "  {format:?} {name} {route} webgpu against its own sampler: {neither} of {} texels past {FILTER_ALLOWANCE} from it and warp; from it {apart} (largest {largest}); its own sampler from direct3d on the gpu {own_apart} (largest {own_largest})",
+                            "  {format:?} {name} {route} webgpu against its own sampler: {} of {} texels past {FILTER_ALLOWANCE} from it and warp ({at_decision} of them at a level decision, {where_they_differ} where the gpu and warp differ); from it {apart} (largest {largest}); its own sampler from direct3d on the gpu {own_apart} (largest {own_largest})",
+                            neither.len(),
                             SIZE * SIZE
                         );
                         compared += 1;
-                        if neither != 0 {
+                        if !neither.is_empty() {
                             let what = format!(
                                 "{case_seed} {format:?} {name} {route} webgpu's own sampler"
                             );
-                            if case.anisotropic_footprint(name) {
+                            let elsewhere = neither.iter().filter(|&&n| !footprint[n]).count();
+                            if elsewhere == 0 {
                                 known.push(what);
                             } else {
-                                failed.push(what);
+                                failed.push(format!(
+                                    "{what} ({elsewhere} texels where no anisotropic footprint matters)"
+                                ));
                             }
                         }
                     }
@@ -817,6 +893,28 @@ fn levels_of_detail_match_direct3d() {
             "  direct3d on the gpu against warp: {apart} of {} texels past {LOD_ALLOWANCE}, largest {largest}",
             SIZE * SIZE
         );
+        // Where an anisotropic footprint matters: texels whose level of detail on the GPU or warp
+        // lies past the allowance from the same device's without anisotropy.
+        let footprint: Vec<bool> = if case.anisotropy > 1 {
+            let isotropic = Case {
+                anisotropy: 1,
+                ..case.clone()
+            };
+            let gpu = differences(
+                &reference,
+                &direct3d_11(&d3d, LOD, format, &texels, &isotropic, 0),
+            );
+            let soft = differences(
+                &software,
+                &direct3d_11(&warp, LOD, format, &texels, &isotropic, 0),
+            );
+            gpu.iter()
+                .zip(&soft)
+                .map(|(g, w)| *g > LOD_ALLOWANCE || *w > LOD_ALLOWANCE)
+                .collect()
+        } else {
+            vec![false; (SIZE * SIZE) as usize]
+        };
         for (build, back_end) in ["dxbc", "dxil"]
             .into_iter()
             .flat_map(|b| [(b, "webgpu"), (b, "webgl")])
@@ -884,11 +982,15 @@ fn levels_of_detail_match_direct3d() {
             if !neither.is_empty() {
                 let what = format!("{case_seed} {build} {back_end}");
                 // Known failure: an anisotropic footprint's level of detail is the implementation's
-                // own (the GPU's and warp's differ from each other), as for sampling above.
-                if case.anisotropy > 1 {
+                // own (the GPU's and warp's differ from each other), as for sampling above; it is
+                // the cause only where the footprint matters.
+                let elsewhere = neither.iter().filter(|&&n| !footprint[n]).count();
+                if elsewhere == 0 {
                     known.push(what);
                 } else {
-                    failed.push(what);
+                    failed.push(format!(
+                        "{what} ({elsewhere} texels where no anisotropic footprint matters)"
+                    ));
                 }
             }
         }

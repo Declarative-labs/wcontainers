@@ -8,7 +8,7 @@ use naga::BinaryOperator::{
     ShiftRight, Subtract,
 };
 use naga::{ArraySize, ScalarKind, SwizzleComponent};
-use wcontainers_gpu::{ReflectedBinding, VertexFormat};
+use wcontainers_gpu::{ReflectedBinding, SLOT_KINDS, VertexFormat};
 
 use super::*;
 use crate::build;
@@ -142,12 +142,15 @@ pub(super) fn pulled(
         .filter(|b| b.kind == SlotKind::Storage)
         .map(|b| b.binding + b.count)
         .max()
-        .unwrap_or(SlotKind::Storage.first_binding());
+        .unwrap_or(SLOT_KINDS[SlotKind::Storage as usize].first_binding);
     for &(location, format) in pulled {
         let Some((argument, ty)) = w.input_at(module, location)? else {
             continue;
         };
-        if next >= SlotKind::Storage.first_binding() + SlotKind::Storage.slots() {
+        if next
+            >= SLOT_KINDS[SlotKind::Storage as usize].first_binding
+                + SLOT_KINDS[SlotKind::Storage as usize].slots
+        {
             return Err(ConvertError::Unsupported(
                 crate::refusal::BINDINGS_BEYOND_LIMIT,
             ));

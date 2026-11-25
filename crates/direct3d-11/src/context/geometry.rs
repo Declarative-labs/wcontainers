@@ -18,7 +18,7 @@ use wcontainers_shaders::stage::{
 
 /// The stage helper of one vertex shader, input layout, hull and domain shader where bound,
 /// geometry shader object and pixel shader.
-pub(crate) struct StageRun<B: Backend> {
+pub(crate) struct StageRun<B: Gpu> {
     /// Out while a draw runs it.
     stages: Option<Stages<B>>,
     /// On a back end without compute programs, the geometry stage's replay in place of `stages`.
@@ -114,7 +114,7 @@ fn stage_error(e: StageError) -> Error {
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     fn staged_error(&mut self, e: StageError) -> Error {
         match e {
             StageError::Gpu(e) => self.gpu::<()>(Err(e)).unwrap_err(),
@@ -194,7 +194,7 @@ impl<B: Backend> Device<B> {
             &mut bytes,
         );
         self.gpu(read)?;
-        self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+        self.backend.record_slow_path(SlowPath::ReadBackWait);
         Ok(Some(
             u32::from_le_bytes(bytes).saturating_sub(offset) / stride,
         ))
@@ -376,7 +376,7 @@ impl<B: Backend> Device<B> {
         let own_route = (vs.culled || pk.line_coverage) && gs.stage.is_none();
         let passed = (StageVariant { pulled: 0, ..vk }) == StageVariant::default()
             || (own_route && drawn_variant == StageVariant::default());
-        let replayed = !self.backend.caps().has(Features::COMPUTE);
+        let replayed = !self.backend.caps().features.contains(Features::COMPUTE);
         if !passed && !replayed {
             return not_implemented(VARIANT_BEHIND_GEOMETRY);
         }
@@ -1176,7 +1176,7 @@ impl<B: Backend> Device<B> {
             &mut bytes,
         );
         self.gpu(read)?;
-        self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+        self.backend.record_slow_path(SlowPath::ReadBackWait);
         let mut counts = crate::query::Streamed::default();
         for (count, word) in counts
             .as_flattened_mut()
@@ -1206,10 +1206,10 @@ impl<B: Backend> Device<B> {
         let layers = self.target_layers()?;
         let viewports = self.ctx.viewports.len() as u32;
         if layers > 1 {
-            self.backend.slow_paths().hit(SlowPath::LayerSplit);
+            self.backend.record_slow_path(SlowPath::LayerSplit);
         }
         if viewports > 1 {
-            self.backend.slow_paths().hit(SlowPath::MultiViewportSplit);
+            self.backend.record_slow_path(SlowPath::MultiViewportSplit);
         }
         let bound = (self.ctx.targets.clone(), self.ctx.depth.clone());
         let mut r = Ok(());

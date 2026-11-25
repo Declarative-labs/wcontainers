@@ -7,37 +7,28 @@
 //! the corpus in `WCONTAINERS_SHADER_CORPUS`. Each case is written to stderr before it runs, so a case
 //! that ends the process names itself; `WCONTAINERS_FUZZ_FIRST` starts at that case.
 
-use std::alloc::{GlobalAlloc, Layout, System};
+use cap::Cap;
+use std::alloc::System;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::Path;
+use std::time::{Duration, Instant};
 use wcontainers_gpu::VariantKey;
 use wcontainers_shaders::{ConvertError, Source, container, convert, token};
 
-/// The largest single allocation the test's Rust code may make: a larger one is refused, as on a host
-/// short of memory, so a size taken unchecked from the bytecode ends the test on every machine.
-const LARGEST_ALLOCATION: usize = 1 << 30;
-
-struct Bounded;
-
-// SAFETY: every call is passed on to the system allocator unchanged, or refused with a null pointer.
-unsafe impl GlobalAlloc for Bounded {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if layout.size() > LARGEST_ALLOCATION {
-            return std::ptr::null_mut();
-        }
-        // SAFETY: the caller's layout, as `GlobalAlloc::alloc` requires.
-        unsafe { System.alloc(layout) }
-    }
-
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        // SAFETY: `ptr` came from `System.alloc` with this layout.
-        unsafe { System.dealloc(ptr, layout) }
-    }
-}
+/// The most the test's Rust code may hold at once: an allocation past it is refused, as on a host short
+/// of memory, so a size taken unchecked from the bytecode ends the test on every machine. The
+/// converters' own memory is their module's, bounded by its instance.
+const LARGEST_HOLDING: usize = 1 << 30;
 
 #[global_allocator]
-static ALLOCATOR: Bounded = Bounded;
+static ALLOCATOR: Cap<System> = Cap::new(System, LARGEST_HOLDING);
+
+/// How a refusal says the converter's run ended (`ended` in the contained converters).
+const ENDINGS: [&str; 2] = [" stopped: ", " ran past "];
+
+/// A case taking longer than this is named as slow.
+const SLOW: Duration = Duration::from_secs(1);
 
 /// xorshift64, seeded.
 struct Rng(u64);
@@ -98,7 +89,13 @@ fn signing_again_gives_the_compilers_checksum() {
 }
 
 #[test]
-#[ignore = "seeded fuzz, a long run: WCONTAINERS_FUZZ_SEED, WCONTAINERS_FUZZ_CASES"]
+#[cfg_attr(
+    any(target_os = "wasi", not(feature = "contained-converters")),
+    ignore = "a known failure where the converters are linked in (the default natively, and the crate's \
+              own WebAssembly build): malformed DXIL can end the process or module inside the DXIL \
+              converter (gap A11); natively with `--features contained-converters` the converters run \
+              in a module of their own and it passes"
+)]
 fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
     let number = |name: &str, default: u64| {
         std::env::var(name)
@@ -119,12 +116,13 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
             let at = 32 + rng.below(b.len().saturating_sub(32));
             match rng.below(4) {
                 0 if at < b.len() => {
-                    b[at] ^= 1 << rng.below(8);
-                    what.push(format!("flip@{at}"));
+                    let bit = rng.below(8);
+                    b[at] ^= 1 << bit;
+                    what.push(format!("flip@{at}.{bit}"));
                 }
                 1 if at < b.len() => {
                     b[at] = rng.next() as u8;
-                    what.push(format!("byte@{at}"));
+                    what.push(format!("byte@{at}={}", b[at]));
                 }
                 2 => {
                     let at = 32 + rng.below(b.len().saturating_sub(32));
@@ -132,8 +130,9 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
                     what.push(format!("cut@{at}"));
                 }
                 3 if at + 4 <= b.len() => {
-                    b[at..at + 4].copy_from_slice(&(rng.next() as u32).to_le_bytes());
-                    what.push(format!("word@{at}"));
+                    let word = rng.next() as u32;
+                    b[at..at + 4].copy_from_slice(&word.to_le_bytes());
+                    what.push(format!("word@{at}={word}"));
                 }
                 _ => {}
             }
@@ -155,7 +154,13 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
         } else {
             Source::Dxbc(&b)
         };
-        let class = match convert(source, &VariantKey::default(), None) {
+        let start = Instant::now();
+        let converted = convert(source, &VariantKey::default(), None);
+        let took = start.elapsed();
+        if took > SLOW {
+            eprintln!("case {case} seed {seed}: slow, {took:?}");
+        }
+        let class = match converted {
             Ok(_) => "ok".into(),
             Err(e @ (ConvertError::Malformed(_) | ConvertError::Invalid(_))) => {
                 // Refused, but by our lowering's own checks or naga's validation rather than by a
@@ -166,6 +171,14 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
                     .take(2)
                     .collect::<Vec<_>>()
                     .join(":")
+            }
+            Err(e @ ConvertError::Rejected(_))
+                if ENDINGS.iter().any(|w| e.to_string().contains(w)) =>
+            {
+                // The converter's run ended (a trap or a bound): listed per case with what it wrote.
+                eprintln!("case {case} seed {seed}: ended: {e}");
+                let e = e.to_string();
+                e.split(':').take(3).collect::<Vec<_>>().join(":")
             }
             Err(e) => format!("{e}").split(':').next().unwrap().to_string(),
         };
@@ -178,6 +191,90 @@ fn mutated_bytecode_converts_or_fails_without_ending_the_process() {
     for (class, n) in &counts {
         eprintln!("  {n:5} {class}");
     }
+}
+
+/// Applies to `b` the mutations `what` as the seeded fuzz writes them: `flip@<byte>.<bit>`,
+/// `byte@<byte>=<value>` and `word@<byte>=<little-endian word>`, joined by commas.
+fn mutate(b: &mut [u8], what: &str) {
+    for m in what.split(',') {
+        let (kind, place) = m.split_once('@').unwrap();
+        let (at, value) = place.split_once(['.', '=']).unwrap();
+        let at: usize = at.parse().unwrap();
+        match kind {
+            "flip" => b[at] ^= 1 << value.parse::<u32>().unwrap(),
+            "byte" => b[at] = value.parse().unwrap(),
+            "word" => b[at..at + size_of::<u32>()]
+                .copy_from_slice(&value.parse::<u32>().unwrap().to_le_bytes()),
+            other => panic!("no mutation {other}"),
+        }
+    }
+}
+
+/// Cases of the seeded fuzz (seed 31337, the corpus beside it) whose DXIL module names no entry
+/// point, which ended the process in dxil-spirv's entry point lookups, as its log names them: each
+/// is refused.
+#[test]
+fn dxil_naming_no_entry_point_is_refused() {
+    let cases = [
+        (
+            "hs_line_pow2_point.dxil",
+            "byte@2289=162,word@2265=3220753132",
+        ),
+        (
+            "ps_pull.dxil",
+            "flip@837.0,flip@2898.4,word@2367=2612216941",
+        ),
+        (
+            "vs_eval_exact.dxil",
+            "word@1024=3974470098,byte@3377=152,byte@2577=231,flip@1210.2",
+        ),
+    ];
+    let own = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
+    for (name, what) in cases {
+        let mut b = std::fs::read(own.join(name)).unwrap();
+        mutate(&mut b, what);
+        sign(&mut b);
+        match convert(Source::Dxil(&b), &VariantKey::default(), None) {
+            Ok(_) => panic!("{name}: converted"),
+            Err(e) => eprintln!("{name}: {e}"),
+        }
+    }
+}
+
+/// Every signed DXIL program that converts, with its input or its output signature counting more
+/// elements than its chunk holds: refused, where dxil-spirv's container parser allocated the count it
+/// read (tens of gigabytes) and ended the process or ran for minutes.
+#[test]
+fn a_signature_counting_past_its_chunk_is_refused() {
+    let mut refused = 0;
+    for (name, original) in inputs() {
+        if !name.ends_with(".dxil")
+            || convert(Source::Dxil(&original), &VariantKey::default(), None).is_err()
+        {
+            continue;
+        }
+        for tag in [container::ISG1, container::OSG1] {
+            let Some(count) = container::chunk_list(&original)
+                .unwrap()
+                .map_while(Result::ok)
+                .find(|c| c.tag() == Some(tag))
+                .and_then(|c| c.contents())
+                .map(|contents| contents.as_ptr().addr() - original.as_ptr().addr())
+            else {
+                continue;
+            };
+            let mut b = original.clone();
+            b[count..count + size_of::<u32>()].copy_from_slice(&u32::MAX.to_le_bytes());
+            sign(&mut b);
+            assert!(
+                convert(Source::Dxil(&b), &VariantKey::default(), None).is_err(),
+                "{name}: converted"
+            );
+            refused += 1;
+        }
+    }
+    assert!(refused > 0);
+    eprintln!("{refused} signatures refused");
 }
 
 /// dxbc-spirv's enums, as build.rs writes them from its headers (`dxbc_op`, `dxbc_uav`).
@@ -208,7 +305,7 @@ const FAR_REGISTER: u32 = 0x3fff_ffff;
 
 /// A signed shader (model 5.1) declaring a sampler array whose last register is far past any
 /// binding: refused by name, where its register list once asked for gigabytes (past
-/// [`LARGEST_ALLOCATION`]) and ended the process.
+/// [`LARGEST_HOLDING`]) and ended the process.
 #[test]
 fn a_resource_array_longer_than_its_kind_binds_is_refused_by_name() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/ps_spaces.dxbc");
@@ -250,5 +347,167 @@ fn a_globally_coherent_view_is_refused_by_name() {
         Err(ConvertError::Unsupported(
             wcontainers_shaders::refusal::GLOBALLY_COHERENT
         ))
+    );
+}
+
+/// The word of `dcl_maxout` and of `dcl_gsinstances` holding its count (after the opcode).
+const COUNT_WORD: usize = 1;
+
+/// A signed geometry shader declaring more output vertices, or more instances, than Direct3D allows:
+/// refused as malformed by name, where the stage helper's slot sizes once overflowed (a caught panic,
+/// case 6539 of seed 2236067). Unchanged, it converts.
+#[test]
+fn a_geometry_count_past_direct3d_s_limit_is_refused() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/gs_instances.dxbc");
+    let original = std::fs::read(path).unwrap();
+    assert!(convert(Source::Dxbc(&original), &VariantKey::default(), None).is_ok());
+    for declaration in [
+        codes::dxbc_op::DCL_MAX_OUTPUT_VERTEX_COUNT,
+        codes::dxbc_op::DCL_GS_INSTANCE_COUNT,
+    ] {
+        let mut b = original.clone();
+        let count = instruction_at(&b, |op| op == declaration) + size_of::<u32>() * COUNT_WORD;
+        b[count..count + size_of::<u32>()].copy_from_slice(&u32::MAX.to_le_bytes());
+        sign(&mut b);
+        let refused = convert(Source::Dxbc(&b), &VariantKey::default(), None).map(|_| ());
+        assert!(
+            matches!(&refused, Err(ConvertError::Malformed(m)) if m.contains("than Direct3D allows")),
+            "{declaration}: {refused:?}"
+        );
+    }
+}
+
+/// A signed DXIL program declaring a constant-length array of views longer than its kind binds (a
+/// mutation of `cs_buffer_array.dxil`, case 5172 of seed 577215): refused by name, where the array's
+/// length once sized its list of registers (48 GiB) and ended the process in a release build.
+#[test]
+fn a_constant_resource_array_longer_than_its_kind_binds_is_refused() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/cs_buffer_array.dxil");
+    let mut b = std::fs::read(path).unwrap();
+    mutate(&mut b, "flip@2804.1,flip@1098.1");
+    sign(&mut b);
+    assert_eq!(
+        convert(Source::Dxil(&b), &VariantKey::default(), None).map(|_| ()),
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::BINDINGS_BEYOND_LIMIT
+        ))
+    );
+}
+
+/// Where a container's header keeps its size, then its chunk count, then its chunks' offsets: after
+/// the magic, the checksum and the version.
+const SIZE_AT: usize = CHECKSUM_AT + size_of::<container::Checksum>() + size_of::<u32>();
+const OFFSETS_AT: usize = SIZE_AT + 2 * size_of::<u32>();
+
+/// `cs_atomics.dxbc`, signed again, with its first `if` (not nested, closed by its first `endif`)
+/// nested `depth` deep: the `if` and its `endif` repeated.
+fn nested_ifs(depth: usize) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/cs_atomics.dxbc");
+    let original = std::fs::read(path).unwrap();
+    let word =
+        |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + size_of::<u32>()].try_into().unwrap());
+    let instruction = |op| {
+        let at = instruction_at(&original, |o| o == op);
+        at..at + token::length(word(&original, at)) as usize * size_of::<u32>()
+    };
+    let opening = instruction(codes::dxbc_op::IF);
+    let closing = instruction(codes::dxbc_op::END_IF);
+    let added = (depth - 1) * (opening.len() + closing.len());
+    let mut b = original[..opening.end].to_vec();
+    for _ in 1..depth {
+        b.extend_from_slice(&original[opening.clone()]);
+    }
+    b.extend_from_slice(&original[opening.end..closing.end]);
+    for _ in 1..depth {
+        b.extend_from_slice(&original[closing.clone()]);
+    }
+    b.extend_from_slice(&original[closing.end..]);
+    let chunks: Vec<_> = container::chunk_list(&original)
+        .unwrap()
+        .map_while(Result::ok)
+        .collect();
+    let program = chunks
+        .iter()
+        .find(|c| c.tag().is_some_and(container::is_program))
+        .and_then(|c| c.contents())
+        .map(|c| c.as_ptr().addr() - original.as_ptr().addr())
+        .expect("the program chunk");
+    let grow = |b: &mut Vec<u8>, at: usize, by: usize| {
+        let grown = word(b, at) + u32::try_from(by).unwrap();
+        b[at..at + size_of::<u32>()].copy_from_slice(&grown.to_le_bytes());
+    };
+    // The program's length in words (after its version), its chunk's size (before it), the
+    // container's size and the offsets of the chunks after it.
+    grow(&mut b, program + size_of::<u32>(), added / size_of::<u32>());
+    grow(&mut b, program - size_of::<u32>(), added);
+    grow(&mut b, SIZE_AT, added);
+    for entry in (0..chunks.len()).map(|i| OFFSETS_AT + i * size_of::<u32>()) {
+        if word(&original, entry) as usize > program {
+            grow(&mut b, entry, added);
+        }
+    }
+    sign(&mut b);
+    b
+}
+
+/// `if`s nested half as deep as the reader takes convert; nested far deeper, where lowering them once
+/// exhausted the stack and ended the process (at a depth between 3,000 and 5,000 on an 8 MiB stack),
+/// they are refused by name.
+#[test]
+fn nesting_past_the_limit_is_refused_by_name() {
+    let variant = VariantKey::default();
+    let within = convert(
+        Source::Dxbc(&nested_ifs(naga::front::spv::NESTING_LIMIT / 2)),
+        &variant,
+        None,
+    );
+    assert!(within.is_ok(), "{:?}", within.err());
+    let far = nested_ifs(naga::front::spv::NESTING_LIMIT * 40);
+    assert_eq!(
+        convert(Source::Dxbc(&far), &variant, None).map(|_| ()),
+        Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::NESTING_BEYOND_LIMIT
+        ))
+    );
+}
+
+/// More threads converting at once than the pool has converter instances (one per host thread) and
+/// than wasmtime's default pool (1,000).
+const MANY_THREADS: usize = 1100;
+
+/// Every thread of many converting at once gets the same conversion as one thread alone: where the
+/// converters run as a module, a conversion waits for a free instance of the pool rather than being
+/// refused, and no thread keeps one after its conversion.
+#[test]
+#[cfg_attr(target_os = "wasi", ignore = "WebAssembly for WASI has no threads")]
+fn many_threads_converting_at_once_each_convert() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own/cs_atomics.dxil");
+    let bytes = std::fs::read(path).unwrap();
+    let variant = VariantKey::default();
+    let alone = convert(Source::Dxil(&bytes), &variant, None)
+        .map(|c| wcontainers_shaders::cache::encode(&c));
+    assert!(alone.is_ok(), "{:?}", alone.err());
+    let start = std::sync::Barrier::new(MANY_THREADS);
+    let wrong = std::thread::scope(|scope| {
+        let threads: Vec<_> = (0..MANY_THREADS)
+            .map(|_| {
+                scope.spawn(|| {
+                    start.wait();
+                    convert(Source::Dxil(&bytes), &variant, None)
+                        .map(|c| wcontainers_shaders::cache::encode(&c))
+                })
+            })
+            .collect();
+        threads
+            .into_iter()
+            .map(|t| t.join().unwrap())
+            .filter(|got| *got != alone)
+            .collect::<Vec<_>>()
+    });
+    assert!(
+        wrong.is_empty(),
+        "{} wrong, first {:?}",
+        wrong.len(),
+        wrong.first().map(|w| w.as_ref().err())
     );
 }

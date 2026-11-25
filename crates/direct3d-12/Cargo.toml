@@ -14,6 +14,7 @@ wcontainers-shaders = { path = "../shaders" }
 slab = "0.4"
 half = { version = "2.7.1", default-features = false }
 bytemuck = { version = "1.25.2", features = ["derive"] }
+zerocopy = { version = "0.8.63", features = ["alloc"] }
 naga = { workspace = true }
 
 [dev-dependencies]
@@ -22,6 +23,7 @@ wgpu = { version = "30.0.2", default-features = false, features = ["std", "dx12"
 pollster = "1.0.1"
 blake3 = { version = "1", default-features = false }
 png = "0.18.1"
+bcdec_rs = "0.2.1"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows = { version = "0.62.2", features = [
@@ -55,5 +57,6 @@ crate-type = ["cdylib"]
 name = "dxgi"
 crate-type = ["cdylib"]
 
+# TODO: remove this crate's 495 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints]
 workspace = true

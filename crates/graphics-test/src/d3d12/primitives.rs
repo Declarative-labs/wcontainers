@@ -3,7 +3,6 @@
 //! domain and geometry shaders and the stream output layout fixed in each pipeline state object.
 
 use std::fmt::Write;
-use std::mem::transmute_copy;
 
 use anyhow::{Context, Result};
 use windows::Win32::Graphics::Direct3D::*;
@@ -14,7 +13,7 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::s;
 
 use super::states::{Immediate, RT, blend12, constants_root, raster12};
-use super::{Gpu, area, buffer_desc, bytecode, element, tex2d_desc, transition};
+use super::{Gpu, area, buffer_desc, bytecode, element, held, release, tex2d_desc, transition};
 use crate::d3d11::scenes::blend::no_blend;
 use crate::d3d11::scenes::streamout as streamout11;
 use crate::d3d11::scenes::{
@@ -265,7 +264,7 @@ pub fn streamout(gpu: &Gpu) -> Result<Vec<Output>> {
                     layout: &[D3D12_INPUT_ELEMENT_DESC]|
      -> Result<ID3D12PipelineState> {
         let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-            pRootSignature: unsafe { transmute_copy(&root) },
+            pRootSignature: held(&root),
             VS: bytecode(vs),
             GS: gs.map(bytecode).unwrap_or_default(),
             PS: bytecode(dxil!("common.ps_color")),
@@ -294,7 +293,9 @@ pub fn streamout(gpu: &Gpu) -> Result<Vec<Output>> {
             };
         }
         desc.RTVFormats[0] = RGBA;
-        Ok(unsafe { gpu.device.CreateGraphicsPipelineState(&desc)? })
+        let made = unsafe { gpu.device.CreateGraphicsPipelineState(&desc) };
+        release(&mut desc.pRootSignature);
+        Ok(made?)
     };
     let out = pipeline(
         dxil!("common.vs_color"),

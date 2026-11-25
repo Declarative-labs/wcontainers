@@ -3,6 +3,7 @@
 
 use wcontainers_gpu::*;
 use wcontainers_gpu_test::{Call, Id, Recorder};
+use wcontainers_shaders::front::cut_scissors;
 
 const PROGRAMS: &str = "
 struct Params { color: vec4<f32>, depth: f32 }
@@ -358,33 +359,6 @@ fn f32s(v: [f32; 4]) -> [u32; 4] {
 }
 
 #[test]
-fn scissors_reaching_past_the_largest_offset_are_cut_to_the_area() {
-    let area = ScissorRect {
-        x: 0,
-        y: 0,
-        width: 4,
-        height: 4,
-    };
-    let wide = ScissorRect {
-        x: 1,
-        y: 1,
-        width: u32::MAX,
-        height: u32::MAX,
-    };
-    let mut out = Vec::new();
-    cut_scissors(&[wide], area, &mut out);
-    assert_eq!(
-        out,
-        [ScissorRect {
-            x: 1,
-            y: 1,
-            width: 3,
-            height: 3
-        }]
-    );
-}
-
-#[test]
 fn an_implicit_fronts_clear_becomes_the_passs_load() {
     let mut k = Kit::new();
     let mut passes = PassTracker::default();
@@ -470,7 +444,10 @@ fn a_larger_depth_buffer_is_fitted() {
             assert_eq!(z, want, "depth at ({x}, {y})");
         }
     }
-    assert_eq!(k.r.slow_paths().count(SlowPath::AttachmentsFitted), 1);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::AttachmentsFitted as usize],
+        1
+    );
 
     // The next pass loads the colour target: its common area is copied in, and the pooled
     // temporary is used again.
@@ -578,8 +555,11 @@ fn multisampled_targets_fitted(direct: bool) {
     k.draw((2, 1), area, &two, &none, [Some(&set), None, None, None]);
     passes.close(&mut k.r).unwrap();
     assert_eq!(k.calls("copy_texture"), 0);
-    assert_eq!(k.r.slow_paths().count(SlowPath::AttachmentsFitted), 1);
-    let resolved = k.r.slow_paths().count(SlowPath::MultisampleCopyResolved);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::AttachmentsFitted as usize],
+        1
+    );
+    let resolved = k.r.slow_paths().counts[SlowPath::MultisampleCopyResolved as usize];
     assert_eq!(resolved, if direct { 0 } else { 2 });
 
     // Every sample of the larger target, as the recording back end holds them: sample i's red in
@@ -738,7 +718,10 @@ fn a_split_explicit_pass_keeps_its_depth_and_ops_between_parts() {
         read_only: false,
     });
     assert!(answer.is_ok());
-    assert_eq!(k.r.slow_paths().count(SlowPath::UsageScopeSplit), 1);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::UsageScopeSplit as usize],
+        1
+    );
     let mut want = Vec::new();
     for _y in 0..2 {
         for x in 0..2 {
@@ -785,7 +768,10 @@ fn a_split_of_a_pass_that_discards_is_refused() {
         read_only: false,
     });
     assert!(matches!(answer, Err(GpuError::Invalid(_))));
-    assert_eq!(k.r.slow_paths().count(SlowPath::UsageScopeSplit), 0);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::UsageScopeSplit as usize],
+        0
+    );
     k.healthy();
 }
 
@@ -862,7 +848,10 @@ fn a_pass_is_split_where_a_draw_reads_what_one_wrote_as_storage() {
             );
             assert_eq!(passes.end_query(&mut k.r).unwrap(), 0..2);
             passes.close(&mut k.r).unwrap();
-            assert_eq!(k.r.slow_paths().count(SlowPath::UsageScopeSplit), 1);
+            assert_eq!(
+                k.r.slow_paths().counts[SlowPath::UsageScopeSplit as usize],
+                1
+            );
             assert_eq!(k.calls("begin_pass"), 2);
             assert_eq!(k.read(&t, 4), [7, 0, 0, 255].repeat(4));
             k.healthy();
@@ -994,7 +983,10 @@ fn the_occlusion_counter_counts_exactly() {
     assert_eq!(k.calls("copy_texture"), 1);
     // The depth is now 0.5: nothing passes.
     assert_eq!(counted(&mut k, &[(&tests, &far)]), 0);
-    assert_eq!(k.r.slow_paths().count(SlowPath::OcclusionCountReplay), 3);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::OcclusionCountReplay as usize],
+        3
+    );
     k.healthy();
 }
 
@@ -1088,7 +1080,7 @@ fn the_occlusion_counter_writes_its_count_into_a_buffer_in_order() {
 #[test]
 fn the_occlusion_counter_counts_past_its_formats_bound_in_halves() {
     let mut k = Kit::on(Recorder::with_caps(|c| {
-        let at = Format::R32Float.index();
+        let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::BLEND);
     }));
     let mut passes = PassTracker::default();
@@ -1189,7 +1181,7 @@ fn the_occlusion_counter_counts_past_its_formats_bound_in_halves() {
 fn the_occlusion_counter_splits_instances_only_where_each_reads_the_same() {
     for bases in [true, false] {
         let mut k = Kit::on(Recorder::with_caps(|c| {
-            c.formats.uses[Format::R32Float.index()].remove(FormatUse::BLEND);
+            c.formats.uses[Format::R32Float as usize].remove(FormatUse::BLEND);
             if !bases {
                 c.features.remove(Features::BASE_VERTEX_INSTANCE);
             }
@@ -1551,7 +1543,10 @@ fn the_occlusion_counter_counts_across_writes_and_target_changes() {
     )
     .unwrap();
     assert_eq!(counter.end(&mut k.r, &mut passes).unwrap(), 32);
-    assert_eq!(k.r.slow_paths().count(SlowPath::OcclusionCountReplay), 5);
+    assert_eq!(
+        k.r.slow_paths().counts[SlowPath::OcclusionCountReplay as usize],
+        5
+    );
 
     // The targets changed without a flush.
     counter.begin(&mut k.r, &mut passes).unwrap();
@@ -1595,7 +1590,7 @@ fn the_occlusion_counter_counts_across_writes_and_target_changes() {
 #[test]
 fn the_occlusion_counter_counts_halves_from_the_depth_they_began_with() {
     let mut k = Kit::on(Recorder::with_caps(|c| {
-        let at = Format::R32Float.index();
+        let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::BLEND);
     }));
     let mut passes = PassTracker::default();
@@ -1674,7 +1669,7 @@ fn the_occlusion_counter_counts_halves_from_the_depth_they_began_with() {
 #[test]
 fn the_occlusion_counter_keeps_the_starting_depth_for_halves_on_four_samples() {
     let mut k = Kit::on(Recorder::with_caps(|c| {
-        let at = Format::R32Float.index();
+        let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::BLEND);
     }));
     let mut passes = PassTracker::default();
@@ -1778,65 +1773,4 @@ fn the_occlusion_counter_counts_the_samples_of_multisampled_targets() {
     }
     assert_eq!(k.calls("resolve"), 2);
     k.healthy();
-}
-
-#[test]
-fn the_combination_tracker_picks_the_tuples_drawn() {
-    // Vertex shaders are letters, programs pairs, tuples numbers; tuple 30 has a vertex layout the
-    // shader "c" cannot take.
-    let mut t = CombinationTracker::<char, (char, char), u32>::default();
-    for (vertex, program, tuple, draws) in [
-        ('a', ('a', 'x'), 10, 3),
-        ('a', ('a', 'x'), 20, 1),
-        ('b', ('b', 'y'), 30, 5),
-        ('b', ('b', 'y'), 20, 1),
-    ] {
-        let c = t.combination(&vertex, &program, &tuple);
-        for _ in 0..draws {
-            t.drawn(c);
-        }
-    }
-    // A new pairing of a drawn vertex shader takes every tuple it was drawn with.
-    assert_eq!(t.pick(&'a', &('a', 'z'), |_| true), [10, 20]);
-    // An undrawn one takes the most drawn tuple that fits: 30 (5 draws) does not, 10 (3) does.
-    assert_eq!(t.pick(&'c', &('c', 'z'), |&tuple| tuple != 30), [10]);
-    // Equal counts pick the smaller tuple.
-    t.record(&'d', &40, 3);
-    assert_eq!(t.pick(&'e', &('e', 'z'), |&tuple| tuple != 30), [10]);
-    // The cache's record counts as drawn for its vertex shader.
-    assert_eq!(t.pick(&'d', &('d', 'z'), |_| true), [40]);
-    // Of the five prepared combinations, two are drawn later.
-    let az20 = t.combination(&'a', &('a', 'z'), &20);
-    let cz10 = t.combination(&'c', &('c', 'z'), &10);
-    t.drawn(az20);
-    t.drawn(cz10);
-    t.drawn(cz10);
-    assert_eq!(t.prepared_use(), (2, 3));
-    // Preparing a combination again counts it once.
-    t.pick(&'a', &('a', 'z'), |_| true);
-    assert_eq!(t.prepared_use(), (2, 3));
-    // A pairing drawn before it is prepared counts as drawn only once a draw follows.
-    assert_eq!(t.pick(&'a', &('a', 'x'), |_| true), [10, 20]);
-    assert_eq!(t.prepared_use(), (2, 5));
-    let ax10 = t.combination(&'a', &('a', 'x'), &10);
-    t.drawn(ax10);
-    assert_eq!(t.prepared_use(), (3, 4));
-    // The record to write back: this run's draws per vertex shader and tuple, with the record's.
-    // Two programs of vertex shader 'a' drew tuple 10 (3 and 1) and 20 (1 and 1).
-    let totals: Vec<_> = t
-        .totals()
-        .into_iter()
-        .map(|((&v, &tuple), n)| (v, tuple, n))
-        .collect();
-    assert_eq!(
-        totals,
-        [
-            ('a', 10, 4),
-            ('a', 20, 2),
-            ('b', 20, 1),
-            ('b', 30, 5),
-            ('c', 10, 2),
-            ('d', 40, 3),
-        ]
-    );
 }

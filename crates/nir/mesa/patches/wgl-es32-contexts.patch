@@ -1,0 +1,12 @@
+diff --git a/src/gallium/frontends/wgl/stw_ext_context.c b/src/gallium/frontends/wgl/stw_ext_context.c
+--- a/src/gallium/frontends/wgl/stw_ext_context.c
++++ b/src/gallium/frontends/wgl/stw_ext_context.c
+@@ -147,7 +147,7 @@
+        (profileMask == WGL_CONTEXT_ES_PROFILE_BIT_EXT &&
+         ((majorVersion == 1 && minorVersion > 1) ||
+          (majorVersion == 2 && minorVersion > 0) ||
+-         (majorVersion == 3 && minorVersion > 1) ||
++         (majorVersion == 3 && minorVersion > 2) ||
+          majorVersion > 3))) {
+       SetLastError(ERROR_INVALID_VERSION_ARB);
+       return NULL;

@@ -18,7 +18,7 @@ mod draw;
 mod host;
 
 use wcontainers_gpu::{
-    Backend, ColorAttachment, DeviceStatus, Format, FormatUse, LoadOp, PassDesc, SlowPath, StoreOp,
+    ColorAttachment, DeviceStatus, Format, FormatUse, Gpu, LoadOp, PassDesc, SlowPath, StoreOp,
 };
 use wcontainers_gpu_test::Host;
 
@@ -26,10 +26,7 @@ use wcontainers_gpu_test::Host;
 fn float_frames_show_on_windows_without_float_formats() {
     let mut b = host::Native::make();
     assert!(
-        b.caps()
-            .formats
-            .get(Format::Rgba16Float)
-            .contains(FormatUse::PRESENT),
+        b.caps().formats.uses[Format::Rgba16Float as usize].contains(FormatUse::PRESENT),
         "rgba16float is declared presentable"
     );
     let window = host::Native::window(&mut b);
@@ -61,7 +58,7 @@ fn float_frames_show_on_windows_without_float_formats() {
     }
     eprintln!(
         "float frames converted at present: {}",
-        b.slow_paths().count(SlowPath::PresentConverted)
+        b.slow_paths().counts[SlowPath::PresentConverted as usize]
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
 }

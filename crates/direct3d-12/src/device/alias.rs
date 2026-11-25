@@ -9,7 +9,8 @@
 //! texture in that format, and the two inherit from each other the same way (`ReinterpretCopy`).
 
 use wcontainers_gpu::{
-    Backend, Extent, Features, Format, FormatUse, Origin, SlowPath, TextureRegion, TextureUsage,
+    Extent, FORMAT_FACTS, Features, Format, FormatUse, Gpu, Origin, SlowPath, TextureRegion,
+    TextureUsage,
 };
 
 use super::{Device, Resource, ResourceId, Storage, dxgi as format_of};
@@ -17,7 +18,7 @@ use crate::Error;
 use crate::resource;
 use wcontainers_directx_graphics_infrastructure::{dxgi, typeless_group};
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// Lists `id`, just placed, and the live resources it overlaps, `overlaps`, as inheriting from
     /// each other where Direct3D 12 says they do.
     pub(super) fn inherit(&mut self, id: ResourceId, overlaps: &[ResourceId]) {
@@ -85,16 +86,20 @@ impl<B: Backend> Device<B> {
             return Ok(id);
         };
         let stored = desc.format;
-        if view.linear() == stored.linear()
-            || view.is_depth_stencil()
-            || stored.is_depth_stencil()
-            || self.backend.caps().has(Features::FORMAT_REINTERPRET)
+        if FORMAT_FACTS[view as usize].linear == FORMAT_FACTS[stored as usize].linear
+            || FORMAT_FACTS[view as usize].depth_stencil
+            || FORMAT_FACTS[stored as usize].depth_stencil
+            || self
+                .backend
+                .caps()
+                .features
+                .contains(Features::FORMAT_REINTERPRET)
         {
             return Ok(id);
         }
         let found = twins.iter().copied().find(|t| {
             matches!(&self.resources[t.0 as usize].storage,
-                Storage::Texture { desc, .. } if desc.format.linear() == view.linear())
+                Storage::Texture { desc, .. } if FORMAT_FACTS[desc.format as usize].linear == FORMAT_FACTS[view as usize].linear)
         });
         if let Some(t) = found {
             return Ok(t);
@@ -145,7 +150,7 @@ impl<B: Backend> Device<B> {
             self.stamp += 1;
             r.written = self.stamp;
         }
-        self.backend.slow_paths().hit(SlowPath::DepthWrittenByDraw);
+        self.backend.record_slow_path(SlowPath::DepthWrittenByDraw);
         Ok((self.make_twin(id, depth, dxgi_depth)?, depth))
     }
 
@@ -170,7 +175,7 @@ impl<B: Backend> Device<B> {
                 "a multisampled texture array viewed in a format it cannot be viewed as",
             ));
         }
-        let uses = self.backend.caps().formats.get(view);
+        let uses = self.backend.caps().formats.uses[view as usize];
         let mut tdesc = *desc;
         tdesc.format = view;
         if !uses.contains(FormatUse::RENDER) {
@@ -278,7 +283,7 @@ impl<B: Backend> Device<B> {
             } else {
                 SlowPath::AliasCopied
             };
-            self.backend.slow_paths().hit(path);
+            self.backend.record_slow_path(path);
             for o in from {
                 self.alias_copy(o, id)?;
             }

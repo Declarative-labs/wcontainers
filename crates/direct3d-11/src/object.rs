@@ -4,9 +4,12 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use zerocopy::IntoBytes;
+
 use wcontainers_gpu::{
-    Backend, Extent, Format, FormatKind, Object, Origin, Reflection, SamplerDesc as GpuSampler,
-    TextureDesc as GpuTexture, TextureRegion, VertexFormat, ViewDimension,
+    Extent, FORMAT_FACTS, Format, FormatKind, Gpu, Object, Origin, Reflection,
+    SamplerDesc as GpuSampler, TextureDesc as GpuTexture, TextureRegion, VertexFormat,
+    ViewDimension,
 };
 
 use crate::desc::{
@@ -14,15 +17,30 @@ use crate::desc::{
 };
 
 /// Handles whose last front reference went, and the ids of the front objects that held them.
-pub struct Graveyard<B: Backend> {
+pub struct Graveyard<B: Gpu> {
     pub objects: Vec<Object<B>>,
     pub ids: Vec<u64>,
 }
 
 pub type SharedGraveyard<B> = Rc<RefCell<Graveyard<B>>>;
 
+/// A dynamic or staging subresource's bytes, which a map hands out: the program writes them
+/// through a pointer while the device keeps them.
+pub type Shadow = Rc<[Cell<u8>]>;
+
+/// A shadow holding `bytes`.
+pub fn shadow_of(bytes: &mut [u8]) -> Shadow {
+    Rc::from(Cell::from_mut(bytes).as_slice_of_cells())
+}
+
+/// The shadow's bytes for the device to read or fill. A [`crate::Mapped`] kept past its unmap
+/// keeps the bytes it had; the device goes on with its own copy.
+pub fn shadow_bytes(shadow: &mut Shadow) -> &mut [u8] {
+    Rc::make_mut(shadow).as_mut_bytes()
+}
+
 /// A back-end handle owned by one front object.
-pub struct Kept<B: Backend, H: Clone> {
+pub struct Kept<B: Gpu, H: Clone> {
     pub handle: H,
     pub id: u64,
     /// How the handle is destroyed; `None` for a handle another owner destroys (a swap chain's
@@ -31,7 +49,7 @@ pub struct Kept<B: Backend, H: Clone> {
     graveyard: SharedGraveyard<B>,
 }
 
-impl<B: Backend, H: Clone> Kept<B, H> {
+impl<B: Gpu, H: Clone> Kept<B, H> {
     pub fn new(
         handle: H,
         id: u64,
@@ -57,7 +75,7 @@ impl<B: Backend, H: Clone> Kept<B, H> {
     }
 }
 
-impl<B: Backend, H: Clone> Drop for Kept<B, H> {
+impl<B: Gpu, H: Clone> Drop for Kept<B, H> {
     fn drop(&mut self) {
         let mut g = self.graveyard.borrow_mut();
         if let Some(wrap) = self.wrap {
@@ -67,7 +85,7 @@ impl<B: Backend, H: Clone> Drop for Kept<B, H> {
     }
 }
 
-pub struct Buffer<B: Backend> {
+pub struct Buffer<B: Gpu> {
     pub desc: BufferDesc,
     /// The back end's buffer, replaced when a constant buffer grows to its shader's size.
     pub gpu: RefCell<Kept<B, B::Buffer>>,
@@ -78,7 +96,7 @@ pub struct Buffer<B: Backend> {
     pub grown: Cell<bool>,
     /// The latest contents of a dynamic or staging buffer, which a map hands out; for a grown dynamic
     /// buffer, all of its bytes.
-    pub shadow: RefCell<Vec<u8>>,
+    pub shadow: RefCell<Shadow>,
     /// A staging buffer's shadow against the GPU's bytes.
     pub staged: RefCell<Staged<B>>,
     /// Counts the writes into it, for the copies of its windows.
@@ -94,7 +112,7 @@ pub struct Buffer<B: Backend> {
 
 /// A buffer's elements as a 2D texture of a typed view's format, `TEXEL_BUFFER_TEXTURE_WIDTH` a
 /// row, for programs reading typed buffers through textures (`TexelBufferAsTexture`).
-pub struct TexelCopy<B: Backend> {
+pub struct TexelCopy<B: Gpu> {
     pub format: Format,
     pub texture: Kept<B, B::Texture>,
     pub view: Kept<B, B::TextureView>,
@@ -104,7 +122,7 @@ pub struct TexelCopy<B: Backend> {
 
 /// A copy of a constant buffer window of `length` bytes at `offset`, read by a block of `size` bytes:
 /// its bytes past the window are zero.
-pub struct Window<B: Backend> {
+pub struct Window<B: Gpu> {
     pub offset: u64,
     pub length: u64,
     pub size: u64,
@@ -114,7 +132,7 @@ pub struct Window<B: Backend> {
 }
 
 /// Where a window is copied to, for the binding its program reads it through.
-pub enum WindowCopy<B: Backend> {
+pub enum WindowCopy<B: Gpu> {
     /// A buffer of the block's size.
     Buffer(Kept<B, B::Buffer>),
     /// An RGBA32 unsigned texture of its 16-byte rows, `CONSTANTS_TEXTURE_WIDTH` rows to a texture
@@ -126,7 +144,7 @@ pub enum WindowCopy<B: Backend> {
 }
 
 /// A staging subresource's shadow against the GPU's copy of it.
-pub enum Staged<B: Backend> {
+pub enum Staged<B: Gpu> {
     /// The shadow holds the GPU's bytes.
     Current,
     /// The GPU wrote it since the shadow was filled; no read back started.
@@ -136,7 +154,7 @@ pub enum Staged<B: Backend> {
     Reading(B::Readback, Option<B::Readback>),
 }
 
-impl<B: Backend> Buffer<B> {
+impl<B: Gpu> Buffer<B> {
     /// The back end's buffer.
     pub fn handle(&self) -> B::Buffer {
         self.gpu.borrow().handle.clone()
@@ -145,14 +163,14 @@ impl<B: Backend> Buffer<B> {
 
 /// A 1D, 2D or 3D texture. A 1D texture is a 2D one of height 1 on the back end, as converted DXBC
 /// reads it.
-pub struct Texture<B: Backend> {
+pub struct Texture<B: Gpu> {
     /// The description as created, with `mip_levels` resolved.
     pub desc: TextureDesc,
     pub format: Format,
     pub gpu_desc: GpuTexture,
     pub gpu: Kept<B, B::Texture>,
     /// Per subresource of a staging texture, tightly packed rows and slices a map hands out.
-    pub shadow: RefCell<Vec<Vec<u8>>>,
+    pub shadow: RefCell<Vec<Shadow>>,
     /// Per subresource of a staging texture, its shadow against the GPU's copy.
     pub staged: RefCell<Vec<Staged<B>>>,
     /// Whether it is a swap chain's buffer, and whether views may draw into it.
@@ -184,7 +202,7 @@ pub enum Second {
     Chroma,
 }
 
-impl<B: Backend> Texture<B> {
+impl<B: Gpu> Texture<B> {
     /// Width, height and depth of mip `mip`, in the back end's texels (a YUY2 texel is a pixel
     /// pair).
     pub fn mip_extent(&self, mip: u32) -> Extent {
@@ -232,7 +250,7 @@ impl<B: Backend> Texture<B> {
             let (region, extent) = chroma.whole(sub)?;
             return Some((region, extent, Second::Chroma));
         }
-        if self.format.kind() != FormatKind::DepthStencil {
+        if FORMAT_FACTS[self.format as usize].kind != FormatKind::DepthStencil {
             return None;
         }
         let (mut region, extent) = self.whole(sub)?;
@@ -240,7 +258,7 @@ impl<B: Backend> Texture<B> {
         Some((
             region,
             extent,
-            Second::Stencil(self.format.block().2 as usize),
+            Second::Stencil(FORMAT_FACTS[self.format as usize].block.2 as usize),
         ))
     }
 
@@ -255,12 +273,12 @@ impl<B: Backend> Texture<B> {
 }
 
 /// The resources a view or a copy may name.
-pub enum Resource<B: Backend> {
+pub enum Resource<B: Gpu> {
     Buffer(Rc<Buffer<B>>),
     Texture(Rc<Texture<B>>),
 }
 
-impl<B: Backend> Clone for Resource<B> {
+impl<B: Gpu> Clone for Resource<B> {
     fn clone(&self) -> Self {
         match self {
             Resource::Buffer(b) => Resource::Buffer(b.clone()),
@@ -270,13 +288,13 @@ impl<B: Backend> Clone for Resource<B> {
 }
 
 /// The depth texture of a colour view's bits a program compares through, and its view.
-pub struct ComparedDepth<B: Backend> {
+pub struct ComparedDepth<B: Gpu> {
     pub texture: Kept<B, B::Texture>,
     pub view: Kept<B, B::TextureView>,
 }
 
 /// A render target, depth-stencil or shader resource view of a 2D texture.
-pub struct View<B: Backend> {
+pub struct View<B: Gpu> {
     pub texture: Rc<Texture<B>>,
     /// The description, with defaults resolved.
     pub desc: ViewDesc,
@@ -308,7 +326,7 @@ pub struct View<B: Backend> {
     pub layers: RefCell<Vec<Rc<View<B>>>>,
 }
 
-impl<B: Backend> View<B> {
+impl<B: Gpu> View<B> {
     /// Whether the view reads stencil (`X24_TYPELESS_G8_UINT`, `X32_TYPELESS_G8X24_UINT`).
     pub fn reads_stencil(&self) -> bool {
         use wcontainers_directx_graphics_infrastructure::dxgi;
@@ -323,7 +341,7 @@ impl<B: Backend> View<B> {
         if self.reads_stencil() {
             FormatKind::Uint
         } else {
-            self.values().kind()
+            FORMAT_FACTS[self.values() as usize].kind
         }
     }
 
@@ -360,12 +378,12 @@ impl<B: Backend> View<B> {
 
 /// A view a shader reads (a shader resource view) or writes (an unordered access view): of a
 /// texture, or of a range of a buffer.
-pub enum ShaderView<B: Backend> {
+pub enum ShaderView<B: Gpu> {
     Texture(Rc<View<B>>),
     Buffer(BufferSpan<B>),
 }
 
-impl<B: Backend> ShaderView<B> {
+impl<B: Gpu> ShaderView<B> {
     /// The texture view, for a view of a texture.
     pub fn texture(&self) -> Option<&Rc<View<B>>> {
         match self {
@@ -386,7 +404,7 @@ impl<B: Backend> ShaderView<B> {
 
 /// A range of a buffer a view reads or writes, with the hidden counter of an append, consume or
 /// counter view.
-pub struct BufferSpan<B: Backend> {
+pub struct BufferSpan<B: Gpu> {
     pub buffer: Rc<Buffer<B>>,
     pub offset: u64,
     pub size: u64,
@@ -398,7 +416,7 @@ pub struct BufferSpan<B: Backend> {
 /// count.
 pub type TexelPlace = (Format, u32, u32);
 
-pub struct Sampler<B: Backend> {
+pub struct Sampler<B: Gpu> {
     pub desc: SamplerDesc,
     pub gpu: Kept<B, B::Sampler>,
     /// What `gpu` was made from.
@@ -411,7 +429,7 @@ pub struct Sampler<B: Backend> {
     pub clamped: RefCell<Vec<ClampedSampler<B>>>,
 }
 
-pub struct Blend<B: Backend> {
+pub struct Blend<B: Gpu> {
     pub desc: BlendDesc,
     pub gpu: Kept<B, B::Blend>,
     /// Without the back end's per-target blends: each group of targets that agree (a mask of
@@ -419,7 +437,7 @@ pub struct Blend<B: Backend> {
     pub groups: Vec<(u8, Rc<Blend<B>>)>,
 }
 
-pub struct DepthStencil<B: Backend> {
+pub struct DepthStencil<B: Gpu> {
     pub desc: DepthStencilDesc,
     pub gpu: Kept<B, B::DepthStencil>,
     /// The state writing nothing in the aspects of a read-only depth-stencil view, by the view's
@@ -428,12 +446,12 @@ pub struct DepthStencil<B: Backend> {
 }
 
 /// A sampler made with its minimum level raised, by that minimum's bits.
-pub type ClampedSampler<B> = (u32, Kept<B, <B as Backend>::Sampler>);
+pub type ClampedSampler<B> = (u32, Kept<B, <B as Gpu>::Sampler>);
 
 /// A raster block made as one twin key (`context::RasterKey`).
-pub type MaskedRaster<B> = (crate::context::RasterKey, Kept<B, <B as Backend>::Raster>);
+pub type MaskedRaster<B> = (crate::context::RasterKey, Kept<B, <B as Gpu>::Raster>);
 
-pub struct Rasterizer<B: Backend> {
+pub struct Rasterizer<B: Gpu> {
     pub desc: RasterizerDesc,
     pub gpu: Kept<B, B::Raster>,
     /// The block made with each sample mask leaving out samples, which Direct3D sets with the
@@ -467,7 +485,7 @@ pub struct InputLayout {
     pub instance_steps: [Option<u32>; crate::context::VERTEX_SLOTS],
 }
 
-pub struct Shader<B: Backend> {
+pub struct Shader<B: Gpu> {
     pub gpu: Kept<B, B::Shader>,
     /// The content key of the module `gpu` was made from (the cache's).
     pub key: [u8; 32],
@@ -509,7 +527,7 @@ pub struct Shader<B: Backend> {
 /// A geometry shader object: the geometry stage and the stream output of its declaration. Made
 /// from a vertex shader's bytecode it has no stage of its own, and streams the vertex stage's
 /// output.
-pub struct Geometry<B: Backend> {
+pub struct Geometry<B: Gpu> {
     pub id: u64,
     /// The stage's slots and its pass-through vertex program (`gpu`), with its conversion.
     pub stage: Option<(Rc<Shader<B>>, wcontainers_shaders::Converted)>,

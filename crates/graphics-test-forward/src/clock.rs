@@ -181,12 +181,12 @@ unsafe extern "system" fn counter_now(counter: *mut i64) -> u32 {
     1
 }
 
-unsafe extern "system" fn ticks64() -> u64 {
+extern "system" fn ticks64() -> u64 {
     start().ticks + elapsed() / 10_000
 }
 
-unsafe extern "system" fn ticks32() -> u32 {
-    unsafe { ticks64() as u32 }
+extern "system" fn ticks32() -> u32 {
+    ticks64() as u32
 }
 
 unsafe extern "system" fn system_time(time: *mut FILETIME) {
@@ -206,7 +206,9 @@ fn slept(ms: u32) {
     }
 }
 
-unsafe extern "system" fn sleep_ex(ms: u32, alertable: i32) -> u32 {
+/// Takes only numbers, so any caller may call it; SLEEP_EX is set only by `install`, to SleepEx's
+/// trampoline.
+extern "system" fn sleep_ex(ms: u32, alertable: i32) -> u32 {
     if !SLEEPING.get() {
         slept(ms);
     }
@@ -215,9 +217,9 @@ unsafe extern "system" fn sleep_ex(ms: u32, alertable: i32) -> u32 {
     unsafe { original(ms, alertable) }
 }
 
-unsafe extern "system" fn sleep(ms: u32) {
+extern "system" fn sleep(ms: u32) {
     slept(ms);
     SLEEPING.set(true);
-    unsafe { sleep_ex(ms, 0) };
+    sleep_ex(ms, 0);
     SLEEPING.set(false);
 }

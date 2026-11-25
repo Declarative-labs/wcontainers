@@ -11,6 +11,8 @@
 //! measures instance data fetched in the program (`pulled_costs`,
 //! pulled.rs), and web/suite.html runs the shared suite (suite.rs).
 
+#![forbid(unsafe_code)]
+
 #[path = "../../../graphics-test/src/scene.rs"]
 #[allow(dead_code)]
 mod scene;
@@ -19,7 +21,7 @@ mod draw;
 
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> anyhow::Result<()> {
-    use wcontainers_gpu::{Backend, DeviceStatus};
+    use wcontainers_gpu::{DeviceStatus, Gpu};
     let args: Vec<String> = std::env::args().collect();
     let usage = "usage: scenes <dx12|vulkan|metal> <out-dir> [none|blend-factor|depth-function]";
     let (Some(api), Some(out)) = (args.get(1), args.get(2)) else {
@@ -109,7 +111,7 @@ mod suite;
 mod web {
     use super::{draw, scene};
     use wasm_bindgen::prelude::*;
-    use wcontainers_gpu::{Backend, DeviceStatus};
+    use wcontainers_gpu::{DeviceStatus, Gpu};
     use wcontainers_gpu_webgpu::block_on;
 
     fn js(e: impl std::fmt::Display) -> JsError {
@@ -247,7 +249,7 @@ mod web {
             let offers = f
                 .web_name()
                 .is_none_or(|name| offered.iter().any(|o| o == name));
-            if offers && !b.caps().has(f.declared()) {
+            if offers && !b.caps().features.contains(f.declared()) {
                 return Err(js(format!(
                     "the adapter offers {}, the device does not declare it",
                     f.name()

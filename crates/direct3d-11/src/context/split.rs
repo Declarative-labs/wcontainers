@@ -14,7 +14,7 @@ const SPLIT_WITH_STREAM_OUTPUT: &str = "a draw run once per group of targets wit
 /// A group of targets (a mask of target slots) and the blend state its run draws with.
 type Group<B> = (u8, Rc<Blend<B>>);
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// The groups of the bound blend state with a bound target that writes something (at least
     /// one, where every group writes nothing), and the bound targets; `None` where the state has
     /// no groups.
@@ -86,7 +86,7 @@ impl<B: Backend> Device<B> {
         if self.ctx.so_targets.iter().any(Option::is_some) {
             return not_implemented(SPLIT_WITH_STREAM_OUTPUT);
         }
-        self.backend.slow_paths().hit(SlowPath::TargetsSplit);
+        self.backend.record_slow_path(SlowPath::TargetsSplit);
         let targets = self.ctx.targets.clone();
         let blend = self.ctx.blend.clone();
         let saved = self.save_depth_stencil()?;

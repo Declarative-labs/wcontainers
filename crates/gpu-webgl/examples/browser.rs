@@ -18,7 +18,7 @@ mod scenes;
 use scenes::{Change, Scene};
 use std::cell::RefCell;
 use wasm_bindgen::prelude::*;
-use wcontainers_gpu::Backend;
+use wcontainers_gpu::Gpu;
 use wcontainers_gpu_webgl::Gl;
 
 #[wasm_bindgen]

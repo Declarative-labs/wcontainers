@@ -179,7 +179,10 @@ fn references() -> PathBuf {
 fn route(name: &str, off: &[&str]) {
     let mut b = webgl(off);
     let decoded = off.contains(&BC_EXTENSIONS[0]);
-    assert_eq!(b.caps().has(Features::BLOCK_COMPRESSION), !decoded);
+    assert_eq!(
+        b.caps().features.contains(Features::BLOCK_COMPRESSION),
+        !decoded
+    );
     let dir = Path::new(env!("CARGO_TARGET_TMPDIR"))
         .join("bc-reference")
         .join(name);

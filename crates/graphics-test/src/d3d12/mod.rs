@@ -107,6 +107,32 @@ pub fn buffer_desc(size: u64) -> D3D12_RESOURCE_DESC {
     }
 }
 
+/// An interface for a description's pointer field, holding a reference of its own (an AddRef) that
+/// [`release`] gives back once the call that reads the description has returned.
+pub fn held<T: Interface>(object: &T) -> ManuallyDrop<Option<T>> {
+    ManuallyDrop::new(Some(object.clone()))
+}
+
+/// Gives back the reference [`held`] took for a description's field, and leaves the field empty.
+pub fn release<T>(field: &mut ManuallyDrop<Option<T>>) {
+    drop(ManuallyDrop::into_inner(std::mem::replace(
+        field,
+        ManuallyDrop::new(None),
+    )));
+}
+
+/// Direct3D 11's viewport as Direct3D 12's, which has the same six fields.
+pub fn viewport12(v: &windows::Win32::Graphics::Direct3D11::D3D11_VIEWPORT) -> D3D12_VIEWPORT {
+    D3D12_VIEWPORT {
+        TopLeftX: v.TopLeftX,
+        TopLeftY: v.TopLeftY,
+        Width: v.Width,
+        Height: v.Height,
+        MinDepth: v.MinDepth,
+        MaxDepth: v.MaxDepth,
+    }
+}
+
 pub fn tex2d_desc(
     width: u32,
     height: u32,

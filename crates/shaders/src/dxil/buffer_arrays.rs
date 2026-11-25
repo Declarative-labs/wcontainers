@@ -6,16 +6,16 @@
 //! switches on the index and uses the element it names.
 
 use super::arrays::{
-    case_value, constant, constant_index, copy_constant, is_signed, refused, typing_copy,
-    unbounded_length, unemit,
+    array_length, case_value, constant, constant_index, copy_constant, is_signed, refused,
+    typing_copy, unemit,
 };
 use super::{Placed, Resources, each_block, functions_first, place_calls};
 use crate::ConvertError;
 use alloc::vec::Vec;
 use naga::{
-    AddressSpace, ArraySize, AtomicFunction, Block, Expression, Function, FunctionArgument,
-    FunctionResult, GlobalVariable, Handle, LocalVariable, Module, Range, ResourceBinding, Scalar,
-    Span, Statement, SwitchCase, Type, TypeInner,
+    AddressSpace, AtomicFunction, Block, Expression, Function, FunctionArgument, FunctionResult,
+    GlobalVariable, Handle, LocalVariable, Module, Range, ResourceBinding, Scalar, Span, Statement,
+    SwitchCase, Type, TypeInner,
 };
 use wcontainers_gpu::VariantKey;
 
@@ -116,11 +116,7 @@ pub(super) fn split(
         let &[class, space, register] = resources
             .get(binding.binding as usize)
             .ok_or(ConvertError::Malformed(super::PAST_THE_LIST.into()))?;
-        let n = match size {
-            ArraySize::Constant(n) => n.get(),
-            ArraySize::Dynamic => unbounded_length(variant, class, space, register)?,
-            ArraySize::Pending(_) => return Err(refused()),
-        };
+        let n = array_length(variant, class, space, register, size)?;
         let first = resources.len() as u32;
         resources.extend((0..n).map(|i| [class, space, register + i]));
         let array = module.global_variables[g].clone();

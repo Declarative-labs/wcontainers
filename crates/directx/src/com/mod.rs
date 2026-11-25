@@ -59,7 +59,7 @@ pub type Shared = Rc<RefCell<Front>>;
 /// Makes the back end, or none if there is no GPU to make it on.
 pub fn backend() -> Option<Chosen> {
     let b = chosen::make()?;
-    let _ = CAPS.set(wcontainers_gpu::Backend::caps(&b).clone());
+    let _ = CAPS.set(wcontainers_gpu::Gpu::caps(&b).clone());
     Some(b)
 }
 
@@ -89,22 +89,37 @@ pub fn lock() -> ReentrantMutexGuard<'static, ()> {
 pub fn creating<T: windows::core::Type<T>>(
     out: OutRef<T>,
     make: impl FnOnce(OutRef<T>) -> Result<()>,
-) -> Result<()> {
-    // SAFETY: `OutRef` is a transparent pointer.
-    let raw: *mut *mut c_void = unsafe { std::mem::transmute_copy(&out) };
-    let r = make(out);
-    if r.is_err() && !raw.is_null() {
-        unsafe { *raw = std::ptr::null_mut() };
+) -> Result<()>
+where
+    T::Default: Default,
+{
+    if out.is_null() {
+        return make(out);
     }
+    let mut made = T::Default::default();
+    let r = make(OutRef::from(&mut made));
+    out.write(if r.is_ok() {
+        made
+    } else {
+        T::Default::default()
+    })?;
     r
 }
 
-/// Gives back one hold of the library's lock whose guard was forgotten.
-///
-/// # Safety
-/// The calling thread holds the lock through a forgotten guard.
-pub unsafe fn unlock() {
-    unsafe { LOCK.force_unlock() }
+thread_local! {
+    /// The holds of the library's lock that `ID3D11Multithread::Enter` took on this thread.
+    static ENTERED: RefCell<Vec<ReentrantMutexGuard<'static, ()>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Takes a hold of the library's lock kept until this thread's next [`leave`].
+pub fn enter() {
+    let hold = lock();
+    ENTERED.with_borrow_mut(|e| e.push(hold));
+}
+
+/// Gives back this thread's latest hold taken by [`enter`]; false when it has none.
+pub fn leave() -> bool {
+    ENTERED.with_borrow_mut(Vec::pop).is_some()
 }
 
 /// Held through each method of the device and the context: the library's lock and, on leaving, the
@@ -136,25 +151,25 @@ impl Drop for Call<'_> {
 
 /// A value shared between COM objects that is touched only under the library's lock, dropped
 /// under it too (COM objects are released on any thread).
-pub struct Locked<T>(ManuallyDrop<T>);
+pub struct Locked<T>(Option<T>);
 
 impl<T> Locked<T> {
     pub fn new(value: T) -> Self {
-        Locked(ManuallyDrop::new(value))
+        Locked(Some(value))
     }
 }
 
 impl<T> Deref for Locked<T> {
     type Target = T;
     fn deref(&self) -> &T {
-        &self.0
+        self.0.as_ref().expect("a value is held until its drop")
     }
 }
 
 impl<T> Drop for Locked<T> {
     fn drop(&mut self) {
         let _lock = lock();
-        unsafe { ManuallyDrop::drop(&mut self.0) }
+        drop(self.0.take());
     }
 }
 

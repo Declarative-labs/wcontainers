@@ -6,7 +6,8 @@
 
 use std::{collections::HashMap, ops::Range};
 
-use wcontainers_gpu::{Format, FormatKind, SlowPath, TargetLayout};
+use wcontainers_gpu::Gpu;
+use wcontainers_gpu::{FORMAT_FACTS, Format, FormatKind, SlowPath, TargetLayout};
 
 use crate::{Stream, WebGpu, convert};
 
@@ -28,6 +29,9 @@ pub(crate) const NO_FRAGMENT: &str = "none";
 /// The output type and value of a clear drawing a float format's bits, in WGSL.
 const FLOAT_CLEAR_OUTPUT: (&str, &str) = ("vec4<f32>", "bitcast<vec4<f32>>(value)");
 
+/// The texture a depth draw reads a float's bits from in an `r32sint` texture, in WGSL.
+const SIGNED_BITS_TEXTURE: &str = "texture_2d<i32>";
+
 /// A uniform of four words, as the programs' `vec4`.
 pub(crate) type Words = [u32; 4];
 
@@ -44,8 +48,10 @@ const COVER_WGSL: &str = "
 pub enum DepthSource {
     /// Read as a float: `r32float`, or a depth format's depth.
     Float,
-    /// The bits of a 32-bit float in an `r32uint` or `r32sint` texture.
+    /// The bits of a 32-bit float in an `r32uint` texture.
     FloatBits,
+    /// The bits of a 32-bit float in an `r32sint` texture.
+    FloatBitsSigned,
     /// 24-bit unorm depth in the low bits of an `r32uint` texture.
     Unorm24,
     /// 16-bit unorm depth as the integers of an `r16uint` texture.
@@ -61,9 +67,8 @@ impl DepthSource {
                 Depth32Float | Depth32FloatStencil8,
                 R32Float | Depth32Float | Depth32FloatStencil8,
             ) => Some(DepthSource::Float),
-            (Depth32Float | Depth32FloatStencil8, R32Uint | R32Sint) => {
-                Some(DepthSource::FloatBits)
-            }
+            (Depth32Float | Depth32FloatStencil8, R32Uint) => Some(DepthSource::FloatBits),
+            (Depth32Float | Depth32FloatStencil8, R32Sint) => Some(DepthSource::FloatBitsSigned),
             (Depth24Plus | Depth24PlusStencil8, Depth24Plus | Depth24PlusStencil8)
             | (Depth16Unorm, Depth16Unorm | R16Unorm) => Some(DepthSource::Float),
             (Depth16Unorm, R16Uint) => Some(DepthSource::Unorm16),
@@ -80,7 +85,10 @@ impl DepthSource {
                 | Format::R32Sint
                 | Format::R16Unorm
                 | Format::R16Uint
-        ) || matches!(format.kind(), FormatKind::Depth | FormatKind::DepthStencil)
+        ) || matches!(
+            FORMAT_FACTS[format as usize].kind,
+            FormatKind::Depth | FormatKind::DepthStencil
+        )
     }
 }
 
@@ -391,7 +399,7 @@ impl WebGpu {
         dst: &wgpu::TextureView,
         format: wgpu::TextureFormat,
     ) {
-        self.slow.hit(SlowPath::ResolveByDraw);
+        self.record_slow_path(SlowPath::ResolveByDraw);
         if !self.fills.resolves.contains_key(&format) {
             let program = self.texel_program(RESOLVE_WGSL, true, format, 1);
             self.fills.resolves.insert(format, program);
@@ -426,7 +434,7 @@ impl WebGpu {
     /// the subresource and draws it back from the copy, per sample where multisampled
     /// (`PackedTargetQuantised`). In the frame's encoder, outside a pass.
     pub(crate) fn quantise(&mut self, target: &PackedTarget) {
-        self.slow.hit(SlowPath::PackedTargetQuantised);
+        self.record_slow_path(SlowPath::PackedTargetQuantised);
         let samples = target.texture.sample_count();
         let size = target
             .texture
@@ -526,7 +534,7 @@ impl WebGpu {
     /// Draws `frame` into `window`, a texture of its size in the window's own format
     /// (`PresentConverted`), in the frame's encoder.
     pub(crate) fn present_by_draw(&mut self, frame: &wgpu::Texture, window: &wgpu::Texture) {
-        self.slow.hit(SlowPath::PresentConverted);
+        self.record_slow_path(SlowPath::PresentConverted);
         let format = window.format();
         if !self.fills.presents.contains_key(&format) {
             let program = self.texel_program(PRESENT_WGSL, false, format, 1);
@@ -746,8 +754,9 @@ impl WebGpu {
         index: usize,
         bits: Words,
     ) {
-        let float = targets.colors[index].is_some_and(|f| f.kind() == FormatKind::Float);
-        self.slow.hit(if float {
+        let float = targets.colors[index]
+            .is_some_and(|f| FORMAT_FACTS[f as usize].kind == FormatKind::Float);
+        self.record_slow_path(if float {
             SlowPath::FloatBitsClearByDraw
         } else {
             SlowPath::IntegerClearByDraw
@@ -795,7 +804,7 @@ impl WebGpu {
             (layout, pl)
         });
         let format = targets.colors[index].expect("the cleared target");
-        let (ty, value) = match format.kind() {
+        let (ty, value) = match FORMAT_FACTS[format as usize].kind {
             FormatKind::Sint => ("vec4<i32>", "bitcast<vec4<i32>>(value)"),
             FormatKind::Float => FLOAT_CLEAR_OUTPUT,
             _ => ("vec4<u32>", "value"),
@@ -877,7 +886,7 @@ impl WebGpu {
         size: [u32; 2],
         layers: u32,
     ) {
-        self.slow.hit(SlowPath::DepthWrittenByDraw);
+        self.record_slow_path(SlowPath::DepthWrittenByDraw);
         let (src_tex, src_format, how) = src;
         let (dst_tex, dst_format) = dst;
         let Some(raw_dst) = convert::texture_format(dst_format) else {
@@ -970,10 +979,22 @@ impl WebGpu {
         let cover = self.cover();
         let (texture, depth) = match how {
             DepthSource::Float => ("texture_2d<f32>", "v.x".into()),
-            DepthSource::FloatBits => ("texture_2d<u32>", "bitcast<f32>(v.x)".into()),
+            DepthSource::FloatBits | DepthSource::FloatBitsSigned => (
+                match how {
+                    DepthSource::FloatBitsSigned => SIGNED_BITS_TEXTURE,
+                    _ => "texture_2d<u32>",
+                },
+                "bitcast<f32>(v.x)".into(),
+            ),
+            // x / (2^24 - 1) is x 2^-24 (1 + 2^-24 + ...): both products are exact and their sum
+            // rounds once, nearest to the quotient, where WGSL's division may be 2.5 ulp off.
             DepthSource::Unorm24 => (
                 "texture_2d<u32>",
-                format!("f32(v.x & {UNORM24_MAX}u) / {UNORM24_MAX}.0"),
+                format!(
+                    "f32(v.x & {UNORM24_MAX}u) * 0x1p-{UNORM24_BITS}f \
+                     + f32(v.x & {UNORM24_MAX}u) * 0x1p-{}f",
+                    2 * UNORM24_BITS
+                ),
             ),
             DepthSource::Unorm16 => ("texture_2d<u32>", format!("f32(v.x) / {}.0", u16::MAX)),
         };
@@ -993,6 +1014,7 @@ impl WebGpu {
             });
         let sample_type = match how {
             DepthSource::Float => wgpu::TextureSampleType::Float { filterable: false },
+            DepthSource::FloatBitsSigned => wgpu::TextureSampleType::Sint,
             _ => wgpu::TextureSampleType::Uint,
         };
         let (layout, pipeline_layout) = loader_layout(&self.device, sample_type);
@@ -1045,7 +1067,7 @@ impl WebGpu {
         size: [u32; 2],
         layers: u32,
     ) {
-        self.slow.hit(SlowPath::StencilWrittenByDraw);
+        self.record_slow_path(SlowPath::StencilWrittenByDraw);
         let raw = dst.format();
         if !self.fills.stencils.contains_key(&raw) {
             let program = self.stencil_program(raw);
@@ -1176,7 +1198,7 @@ impl WebGpu {
         size: [u32; 2],
         layers: u32,
     ) {
-        self.slow.hit(SlowPath::DepthReadByDraw);
+        self.record_slow_path(SlowPath::DepthReadByDraw);
         let (src_tex, read) = src;
         if !self.fills.reads.contains_key(&read) {
             let program = self.read_program(read, dst.format());

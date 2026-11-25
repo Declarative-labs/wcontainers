@@ -1,6 +1,6 @@
 //! Gallium's formats in the interface's terms, and what the device can do with each.
 
-use wcontainers_gpu::{Format, FormatCaps, FormatUse, VertexFormat};
+use wcontainers_gpu::{FORMAT_FACTS, Format, FormatCaps, FormatUse, VertexFormat};
 
 use crate::gallium::*;
 
@@ -71,6 +71,9 @@ const FORMATS: &[(pipe_format, Format)] = &[
     ),
     (PIPE_FORMAT_DXT1_RGBA, Format::Bc1RgbaUnorm),
     (PIPE_FORMAT_DXT1_SRGBA, Format::Bc1RgbaUnormSrgb),
+    // Read with alpha one (`OPAQUE_IN_ALPHA`).
+    (PIPE_FORMAT_DXT1_RGB, Format::Bc1RgbaUnorm),
+    (PIPE_FORMAT_DXT1_SRGB, Format::Bc1RgbaUnormSrgb),
     (PIPE_FORMAT_DXT3_RGBA, Format::Bc2RgbaUnorm),
     (PIPE_FORMAT_DXT3_SRGBA, Format::Bc2RgbaUnormSrgb),
     (PIPE_FORMAT_DXT5_RGBA, Format::Bc3RgbaUnorm),
@@ -90,6 +93,16 @@ const FORMATS: &[(pipe_format, Format)] = &[
     (PIPE_FORMAT_ASTC_4x4, Format::Astc4x4Unorm),
     (PIPE_FORMAT_ASTC_4x4_SRGB, Format::Astc4x4UnormSrgb),
 ];
+
+/// Formats held in an interface format that has alpha where they have none, read with alpha one:
+/// BC1 without alpha decodes as BC1 with it but for the alpha of its three-colour blocks' fourth
+/// colour, which is one without alpha and zero with it.
+const OPAQUE_IN_ALPHA: &[pipe_format] = &[PIPE_FORMAT_DXT1_RGB, PIPE_FORMAT_DXT1_SRGB];
+
+/// Whether views of `format` read alpha one in place of the alpha of its interface format.
+pub fn opaque_in_alpha(format: pipe_format) -> bool {
+    OPAQUE_IN_ALPHA.contains(&format)
+}
 
 /// The interface's format of a Gallium format, if it holds it.
 /// The stencil of a depth-stencil format, as a sampler view names it (OpenGL's stencil texturing):
@@ -206,15 +219,34 @@ pub fn supported(
     bindings: u32,
 ) -> bool {
     if target == PIPE_BUFFER {
-        // Vertex streams of the formats the interface reads; texel buffers are not served yet.
+        // Vertex streams of the formats the interface reads; texel buffers of the formats the
+        // device samples, read through 2D textures of the format (`TexelBufferAsTexture`).
         let plain = PIPE_BIND_VERTEX_BUFFER
             | PIPE_BIND_INDEX_BUFFER
             | PIPE_BIND_CONSTANT_BUFFER
             | PIPE_BIND_STREAM_OUTPUT
             | PIPE_BIND_SHADER_BUFFER
-            | PIPE_BIND_COMMAND_ARGS_BUFFER;
-        return bindings & !plain == 0
-            && (bindings & PIPE_BIND_VERTEX_BUFFER == 0 || vertex_format(format).is_some());
+            | PIPE_BIND_COMMAND_ARGS_BUFFER
+            | PIPE_BIND_SAMPLER_VIEW;
+        let texel = bindings & PIPE_BIND_SAMPLER_VIEW == 0
+            || self::format(format).is_some_and(|f| {
+                matches!(FORMAT_FACTS[f as usize].block, (1, 1, _))
+                    && !FORMAT_FACTS[f as usize].depth_stencil
+                    && caps.uses[f as usize].contains(FormatUse::SAMPLE)
+            });
+        // Images of buffers, read and written as storage words by the program
+        // (`TexelBufferAsStorage`).
+        let image = bindings & PIPE_BIND_SHADER_IMAGE == 0
+            || self::format(format).is_some_and(|f| {
+                matches!(FORMAT_FACTS[f as usize].block, (1, 1, _))
+                    && !FORMAT_FACTS[f as usize].depth_stencil
+            });
+        return bindings & !(plain | PIPE_BIND_SHADER_IMAGE) == 0
+            && texel
+            && image
+            && (bindings & PIPE_BIND_VERTEX_BUFFER == 0
+                || vertex_format(format).is_some()
+                || crate::packed::packed_format(format).is_some());
     }
     let sampled = samples.max(1);
     // A framebuffer without attachments: the pass tracker's empty pass, of the samples its own
@@ -226,7 +258,7 @@ pub fn supported(
     if let Some(depth_stencil) = stencil_view(format) {
         return bindings == PIPE_BIND_SAMPLER_VIEW
             && sampled == 1
-            && caps.get(depth_stencil).contains(FormatUse::SAMPLE);
+            && caps.uses[depth_stencil as usize].contains(FormatUse::SAMPLE);
     }
     let Some(ours) = self::format(format) else {
         return false;
@@ -239,10 +271,10 @@ pub fn supported(
             left &= !binding;
         }
     }
-    let (_, block_height, _) = ours.block();
+    let (_, block_height, _) = FORMAT_FACTS[ours as usize].block;
     let dimension = match target {
         PIPE_TEXTURE_1D | PIPE_TEXTURE_1D_ARRAY => block_height == 1,
-        PIPE_TEXTURE_3D => !ours.is_depth_stencil(),
+        PIPE_TEXTURE_3D => !FORMAT_FACTS[ours as usize].depth_stencil,
         PIPE_TEXTURE_2D
         | PIPE_TEXTURE_2D_ARRAY
         | PIPE_TEXTURE_RECT
@@ -251,13 +283,14 @@ pub fn supported(
         _ => false,
     };
     let storage = bindings & PIPE_BIND_SHADER_IMAGE == 0 || sampled == 1;
-    // The host's multisampled textures are single 2D layers.
-    let layers = sampled == 1 || target == PIPE_TEXTURE_2D;
+    // The host's multisampled textures are single 2D layers; an array of them is held a layer a
+    // texture.
+    let layers = sampled == 1 || target == PIPE_TEXTURE_2D || target == PIPE_TEXTURE_2D_ARRAY;
     left == 0
         && storage
         && layers
         && dimension
-        && caps.get(ours).contains(needed)
+        && caps.uses[ours as usize].contains(needed)
         && sampled == storage_samples.max(1)
         && (sampled == 1 || caps.takes_samples(ours, sampled))
 }

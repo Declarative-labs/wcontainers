@@ -6,6 +6,9 @@
 //! topology and layout keys names a cached pipeline, and binding sets become cached bind groups whose
 //! uniform buffers take dynamic offsets (plan sections 4.4 and 4.5).
 
+// The package waits on its tests to inherit the workspace's ban; the back end itself is held to it now.
+#![forbid(unsafe_code)]
+
 mod blocks;
 mod convert;
 mod draw;
@@ -26,12 +29,13 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingLayoutKey, BlendDesc, BufferDesc, BufferUsage, Caps,
-    CopyBufferTexture, DepthStencilDesc, DeviceStatus, Extent, Features, FillMode, Filter, Format,
-    FormatCaps, FormatKind, FormatUse, GpuError, Helpers, Limits, LossReason, MAX_BINDING_SETS,
-    MapIntent, Object, PassDesc, Program, ProvokingVertex, QueryKind, RasterDesc, ReadSource,
-    ReadState, SamplerDesc, ShaderModule, ShaderStage, SlowPaths, StepMode, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, VertexLayoutDesc, WriteMode,
+    BindingEntry, BindingLayoutKey, BlendDesc, BufferDesc, BufferUsage, Caps, CopyBufferTexture,
+    DepthStencilDesc, DeviceStatus, Extent, FORMAT_COUNT, FORMAT_FACTS, Features, FillMode, Filter,
+    Format, FormatCaps, FormatKind, FormatUse, Gpu, GpuError, Helpers, Limits, LossReason,
+    MAX_BINDING_SETS, MapIntent, Object, PassDesc, Program, ProvokingVertex, QueryKind, RasterDesc,
+    ReadSource, ReadState, SLOW_PATHS, SamplerDesc, ShaderModule, ShaderStage, SlowPaths, StepMode,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, VertexLayoutDesc,
+    WriteMode,
 };
 
 pub use draw::Counters;
@@ -58,7 +62,7 @@ pub struct WebGpu {
     /// cannot carry out.
     lost: Arc<Mutex<Option<LossReason>>>,
     next_id: u64,
-    /// The number of the command encoder being recorded; [`Backend::submit`] moves to the next.
+    /// The number of the command encoder being recorded; [`Gpu::submit`] moves to the next.
     serial: u64,
     /// The highest serial whose work the GPU has finished.
     completed: Arc<AtomicU64>,
@@ -73,8 +77,8 @@ pub struct WebGpu {
     destroy_after_submit: Vec<Doomed>,
     blocks: draw::BlockTables,
     caches: draw::Caches,
-    pool: memory::Pool<wgpu::Buffer>,
-    texture_pool: memory::Pool<wgpu::Texture>,
+    pool: memory::Pool,
+    texture_pool: memory::Pool,
     arena: Option<memory::Arena>,
     ring: Option<memory::Ring>,
     /// The ring resolved query results are taken from.
@@ -99,8 +103,10 @@ pub struct WebGpu {
     /// Host windows the graphics hook registered, by the number it gives them.
     windows: HashMap<u32, wgpu::Surface<'static>>,
     counters: Counters,
-    /// The texture usages each format allows on this device, by [`Format::index`].
-    usages: [wgpu::TextureUsages; Format::COUNT],
+    /// The texture usages each format allows on this device, by `Format as usize`.
+    usages: [wgpu::TextureUsages; FORMAT_COUNT],
+    /// Whether a resolve of each format is a draw averaging its samples, by `Format as usize`.
+    resolved_by_draw: [bool; FORMAT_COUNT],
 }
 
 #[derive(Debug)]
@@ -533,6 +539,7 @@ impl WebGpu {
             | wgpu::Features::CLIP_DISTANCES
             | wgpu::Features::DEPTH32FLOAT_STENCIL8
             | wgpu::Features::RG11B10UFLOAT_RENDERABLE
+            | wgpu::Features::BGRA8UNORM_STORAGE
             | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
             | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
             | wgpu::Features::TIMESTAMP_QUERY
@@ -572,7 +579,13 @@ impl WebGpu {
             on_lost.lock().unwrap().get_or_insert(reason);
             wait::wake();
         });
-        let (mut caps, usages) = caps(adapter, &device);
+        let (
+            mut caps,
+            FormatTables {
+                usages,
+                resolved_by_draw,
+            },
+        ) = caps(adapter, &device);
         let depth24 = probe::run(&device, &queue);
         if let Depth24::Unorm(_) = depth24 {
             caps.features |= Features::DEPTH24_UNORM;
@@ -592,7 +605,7 @@ impl WebGpu {
             device,
             queue,
             caps,
-            slow: SlowPaths::default(),
+            slow: wcontainers_gpu::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             lost,
             next_id: 1,
@@ -621,6 +634,7 @@ impl WebGpu {
             windows: HashMap::new(),
             counters: Counters::default(),
             usages,
+            resolved_by_draw,
             depth24,
         }
     }
@@ -630,7 +644,7 @@ impl WebGpu {
         self.depth24
     }
 
-    /// Registers a host window for [`Backend::create_surface`] under the number the graphics hook
+    /// Registers a host window for [`Gpu::create_surface`] under the number the graphics hook
     /// uses for it.
     pub fn add_window(&mut self, window: u32, surface: wgpu::Surface<'static>) {
         self.windows.insert(window, surface);
@@ -649,8 +663,8 @@ impl WebGpu {
                 line += &format!(" {name}={count}");
             }
         }
-        for path in wcontainers_gpu::SlowPath::ALL {
-            let count = self.slow.count(path);
+        for path in SLOW_PATHS {
+            let count = self.slow.counts[path as usize];
             if count > 0 {
                 line += &format!(" {path:?}={count}");
             }
@@ -735,10 +749,7 @@ fn raw_views(
 
 /// What the device can do, in the interface's words (plan section 4.11). Only what this back end
 /// carries out is declared.
-fn caps(
-    adapter: &wgpu::Adapter,
-    device: &wgpu::Device,
-) -> (Caps, [wgpu::TextureUsages; Format::COUNT]) {
+fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> (Caps, FormatTables) {
     let f = device.features();
     let l = device.limits();
     let mut features = Features::COMPUTE
@@ -794,10 +805,11 @@ fn caps(
     features |= Features::FRACTIONAL_VIEWPORT;
     let adapter_specific = f.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES);
     let mut formats = FormatCaps {
-        uses: [FormatUse::empty(); Format::COUNT],
-        samples: [0; Format::COUNT],
+        uses: [FormatUse::empty(); FORMAT_COUNT],
+        samples: [0; FORMAT_COUNT],
     };
-    let mut usages = [wgpu::TextureUsages::empty(); Format::COUNT];
+    let mut usages = [wgpu::TextureUsages::empty(); FORMAT_COUNT];
+    let mut resolved_by_draw = [false; FORMAT_COUNT];
     for (i, allowed) in usages.iter_mut().enumerate() {
         let format = format_at(i);
         // Without native BC, a BC format is held decoded (`BlockDecoded`): sampled, filtered and
@@ -819,11 +831,43 @@ fn caps(
         };
         // Copies follow WebGPU's rules whatever the adapter has: `depth24plus` is never copied.
         let copies = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
-        let u = (ff.allowed_usages - copies) | (guaranteed.allowed_usages & copies);
+        let mut u = (ff.allowed_usages - copies) | (guaranteed.allowed_usages & copies);
+        let mut flags = ff.flags;
+        // `bgra8unorm` is stored into only on a device with its feature, which gives programs
+        // storage writes without a format, whatever the adapter's own flags say.
+        if raw == wgpu::TextureFormat::Bgra8Unorm && !f.contains(wgpu::Features::BGRA8UNORM_STORAGE)
+        {
+            u -= wgpu::TextureUsages::STORAGE_BINDING;
+            flags -= wgpu::TextureFormatFeatureFlags::STORAGE_READ_ONLY
+                | wgpu::TextureFormatFeatureFlags::STORAGE_WRITE_ONLY
+                | wgpu::TextureFormatFeatureFlags::STORAGE_READ_WRITE
+                | wgpu::TextureFormatFeatureFlags::STORAGE_ATOMIC;
+        }
         *allowed = u;
-        let flags = ff.flags;
         let mut uses = FormatUse::empty();
-        let depth = format.is_depth_stencil();
+        let depth = FORMAT_FACTS[format as usize].depth_stencil;
+        // A resolve averages: integer formats never resolve, as in WebGPU and Direct3D, whatever
+        // the adapter's own flags allow. A float format drawn multisampled that WebGPU does not
+        // resolve (`r32float` without float32 resolves) is resolved by a draw averaging its samples.
+        let averaged = matches!(
+            raw.sample_type(None, None),
+            Some(wgpu::TextureSampleType::Float { .. })
+        );
+        // A resolve writes a texture drawn into, which some adapters' flags leave out.
+        let native_resolve = averaged
+            && u.contains(wgpu::TextureUsages::RENDER_ATTACHMENT)
+            && flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE);
+        let drawn_resolve = averaged
+            && !native_resolve
+            && !depth
+            && u.contains(
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            )
+            && flags
+                .supported_sample_counts()
+                .iter()
+                .any(|&count| count > 1);
+        resolved_by_draw[i] = drawn_resolve;
         let pairs = [
             (
                 u.contains(wgpu::TextureUsages::TEXTURE_BINDING),
@@ -844,16 +888,7 @@ fn caps(
                     && flags.contains(wgpu::TextureFormatFeatureFlags::BLENDABLE),
                 FormatUse::BLEND,
             ),
-            // A resolve averages: integer formats never resolve, as in WebGPU and Direct3D, whatever
-            // the adapter's own flags allow.
-            (
-                flags.contains(wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE)
-                    && matches!(
-                        raw.sample_type(None, None),
-                        Some(wgpu::TextureSampleType::Float { .. })
-                    ),
-                FormatUse::RESOLVE,
-            ),
+            (native_resolve || drawn_resolve, FormatUse::RESOLVE),
             (
                 flags.contains(wgpu::TextureFormatFeatureFlags::STORAGE_READ_ONLY),
                 FormatUse::STORAGE_READ,
@@ -972,13 +1007,27 @@ fn caps(
         limits,
         formats,
     };
-    (caps, usages)
+    (
+        caps,
+        FormatTables {
+            usages,
+            resolved_by_draw,
+        },
+    )
+}
+
+/// What the device does with each format beside its [`Caps`], by `Format as usize`.
+struct FormatTables {
+    /// The texture usages each format allows.
+    usages: [wgpu::TextureUsages; FORMAT_COUNT],
+    /// Whether a resolve of the format is a draw averaging its samples (`ResolveByDraw`).
+    resolved_by_draw: [bool; FORMAT_COUNT],
 }
 
 /// The format at position `i` of [`Format`]'s list.
 fn format_at(i: usize) -> Format {
-    // Every format, in order, so the table indexes match `Format::index`.
-    const ALL: [Format; Format::COUNT] = {
+    // Every format, in order, so the table indexes match `Format as usize`.
+    const ALL: [Format; FORMAT_COUNT] = {
         use Format::*;
         [
             R8Unorm,
@@ -1084,7 +1133,7 @@ fn buffer_usage(u: BufferUsage) -> wgpu::BufferUsages {
     w
 }
 
-impl Backend for WebGpu {
+impl Gpu for WebGpu {
     type Buffer = Buffer;
     type Texture = Texture;
     type TextureView = TextureView;
@@ -1167,7 +1216,7 @@ impl Backend for WebGpu {
             .or(packed::held(desc.format))
             .unwrap_or(desc.format);
         let format = convert::texture_format(held)
-            .filter(|_| !self.caps.formats.get(desc.format).is_empty())
+            .filter(|_| !self.caps.formats.uses[desc.format as usize].is_empty())
             .ok_or(GpuError::Invalid(
                 "texture format this back end does not hold",
             ))?;
@@ -1190,14 +1239,14 @@ impl Backend for WebGpu {
         // Read backs and the staging route of ordered writes copy in and out of every texture whose
         // format allows it.
         let copies = wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::COPY_DST;
-        let allowed = self.usages[desc.format.index()];
+        let allowed = self.usages[desc.format as usize];
         if packed::held(desc.format).is_some() {
             if !allowed.contains(usage) {
                 return Err(GpuError::Invalid(
                     "a use of a converted format this back end does not declare",
                 ));
             }
-            self.slow.hit(wcontainers_gpu::SlowPath::FormatConverted);
+            self.record_slow_path(wcontainers_gpu::SlowPath::FormatConverted);
         }
         usage |= copies & allowed;
         // Copies between a buffer and a converted format are draws, into the texture or from it.
@@ -1207,16 +1256,23 @@ impl Backend for WebGpu {
         // Depth and stencil copies and read backs WebGPU has no copy for are draws: from a bound
         // source into an attachment.
         if desc.usage.contains(TextureUsage::COPY_SRC)
-            && (fill::DepthSource::readable(desc.format) || desc.format.is_depth_stencil())
+            && (fill::DepthSource::readable(desc.format)
+                || FORMAT_FACTS[desc.format as usize].depth_stencil)
         {
             usage |= allowed & wgpu::TextureUsages::TEXTURE_BINDING;
         }
-        if desc.usage.contains(TextureUsage::COPY_DST) && desc.format.is_depth_stencil() {
+        if desc.usage.contains(TextureUsage::COPY_DST)
+            && FORMAT_FACTS[desc.format as usize].depth_stencil
+        {
             usage |= allowed & wgpu::TextureUsages::RENDER_ATTACHMENT;
         }
         let srgb_twin = convert::srgb_twin(format);
-        // In the browser a resolve in the other twin is drawn from the samples (`ResolveByDraw`).
-        if cfg!(target_arch = "wasm32") && desc.samples > 1 && srgb_twin.is_some() {
+        // In the browser a resolve in the other twin is drawn from the samples, and so is every
+        // resolve of a format WebGPU does not resolve (`ResolveByDraw`).
+        if desc.samples > 1
+            && (cfg!(target_arch = "wasm32") && srgb_twin.is_some()
+                || self.resolved_by_draw[desc.format as usize])
+        {
             usage |= allowed & wgpu::TextureUsages::TEXTURE_BINDING;
         }
         let raw = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -1253,7 +1309,7 @@ impl Backend for WebGpu {
         texture: &Texture,
         desc: &TextureViewDesc,
     ) -> Result<TextureView, GpuError> {
-        let format_usages = self.usages[desc.format.index()];
+        let format_usages = self.usages[desc.format as usize];
         let views = raw_views(&texture.0, desc, format_usages).ok_or(GpuError::Invalid(
             "view format or aspect this back end does not hold",
         ))?;
@@ -1413,7 +1469,7 @@ impl Backend for WebGpu {
     }
 
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Raster, GpuError> {
-        let has = |f| self.caps.has(f);
+        let has = |f| self.caps.features.contains(f);
         let absent = [
             (
                 desc.fill == FillMode::Line && !has(Features::POLYGON_MODE),
@@ -1430,7 +1486,7 @@ impl Backend for WebGpu {
             (desc.depth_minus_one, Features::CLIP_DEPTH_MINUS_ONE),
             (f32::from_bits(desc.line_width) != 1.0, Features::WIDE_LINES),
             (
-                !desc.depth_clip && !self.caps.has(Features::DEPTH_CLAMP),
+                !desc.depth_clip && !self.caps.features.contains(Features::DEPTH_CLAMP),
                 Features::DEPTH_CLAMP,
             ),
             (
@@ -1492,7 +1548,7 @@ impl Backend for WebGpu {
         let ty = match kind {
             QueryKind::OcclusionAny => wgpu::QueryType::Occlusion,
             QueryKind::Occlusion => return Err(GpuError::Absent(Features::OCCLUSION_COUNT)),
-            QueryKind::Timestamp if self.caps.has(Features::TIMESTAMPS) => {
+            QueryKind::Timestamp if self.caps.features.contains(Features::TIMESTAMPS) => {
                 wgpu::QueryType::Timestamp
             }
             QueryKind::Timestamp => return Err(GpuError::Absent(Features::TIMESTAMPS)),
@@ -1836,7 +1892,7 @@ impl Backend for WebGpu {
         height: u32,
         vsync: bool,
     ) -> Result<(), GpuError> {
-        if !self.caps.formats.get(format).contains(FormatUse::PRESENT) {
+        if !self.caps.formats.uses[format as usize].contains(FormatUse::PRESENT) {
             return Err(GpuError::Invalid("surface format without PRESENT"));
         }
         let raw = convert::texture_format(format).ok_or(GpuError::Invalid("surface format"))?;
@@ -1975,7 +2031,7 @@ impl Backend for WebGpu {
             views: RefCell::new((texture.clone(), texture)),
             desc: None,
             made_for: Cell::new(0),
-            format_usages: self.usages[surface.0.format.get().index()],
+            format_usages: self.usages[surface.0.format.get() as usize],
             width,
             height,
             samples: 1,
@@ -2020,7 +2076,7 @@ impl Backend for WebGpu {
     }
 
     fn write_timestamp(&mut self, set: &QuerySet, index: u32) -> Result<(), GpuError> {
-        if !self.caps.has(Features::TIMESTAMPS) {
+        if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }
         if set.0.kind != QueryKind::Timestamp || index >= set.0.count {
@@ -2046,7 +2102,7 @@ impl Backend for WebGpu {
     }
 
     fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
-        if !self.caps.has(Features::TIMESTAMPS) {
+        if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }
         // WebGPU reports no clock changes.
@@ -2067,14 +2123,14 @@ impl WebGpu {
 /// Whether a format has stencil (true) or is a depth format.
 fn has_stencil(format: Format) -> bool {
     matches!(
-        format.kind(),
+        FORMAT_FACTS[format as usize].kind,
         FormatKind::DepthStencil | FormatKind::Stencil
     )
 }
 
 /// Bytes of one row of blocks and rows of blocks of `extent` in `format`.
 fn row_bytes(format: Format, width: u32, height: u32) -> (u64, u64) {
-    let (bw, bh, bytes) = format.block();
+    let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
     (
         u64::from(width.div_ceil(bw)) * u64::from(bytes),
         u64::from(height.div_ceil(bh)),

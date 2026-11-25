@@ -4,9 +4,9 @@
 
 use crate::draw;
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, ColorAttachment, DeviceStatus, DrawCall,
-    DrawRange, Extent, Format, LoadOp, Object, Origin, PassDesc, ReadSource, SlowPath, StageSet,
-    StoreOp, TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
+    BindingEntry, BindingResource, BlendDesc, ColorAttachment, DeviceStatus, DrawCall, DrawRange,
+    Extent, Format, Gpu, LoadOp, Object, Origin, PassDesc, ReadSource, SlowPath, StageSet, StoreOp,
+    TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -23,13 +23,13 @@ struct C { color: vec4f }
 
 /// What every draw here shares but its set and viewport.
 pub struct Kit {
-    pub program: <WebGpu as Backend>::Program,
-    pub blend: <WebGpu as Backend>::Blend,
-    pub depth_stencil: <WebGpu as Backend>::DepthStencil,
-    pub raster: <WebGpu as Backend>::Raster,
-    pub vertex_layout: <WebGpu as Backend>::VertexLayout,
-    pub target: <WebGpu as Backend>::Texture,
-    pub view: <WebGpu as Backend>::TextureView,
+    pub program: <WebGpu as Gpu>::Program,
+    pub blend: <WebGpu as Gpu>::Blend,
+    pub depth_stencil: <WebGpu as Gpu>::DepthStencil,
+    pub raster: <WebGpu as Gpu>::Raster,
+    pub vertex_layout: <WebGpu as Gpu>::VertexLayout,
+    pub target: <WebGpu as Gpu>::Texture,
+    pub view: <WebGpu as Gpu>::TextureView,
     pub width: u32,
 }
 
@@ -72,7 +72,7 @@ pub fn begin(b: &mut WebGpu, k: &Kit, clear: [f32; 4]) {
 }
 
 /// Draws the triangle with `set` into pixel `x` alone, or the whole target.
-pub fn draw_at(b: &mut WebGpu, k: &Kit, set: &<WebGpu as Backend>::BindingSet, x: Option<u32>) {
+pub fn draw_at(b: &mut WebGpu, k: &Kit, set: &<WebGpu as Gpu>::BindingSet, x: Option<u32>) {
     let (x, width) = x.map_or((0.0, k.width as f32), |x| (x as f32, 1.0));
     let viewport = [Viewport {
         x: x.to_bits(),
@@ -146,7 +146,7 @@ pub const LOAD_WGSL: &str = r#"
 "#;
 
 /// Writes one texel of row 0 with `Discard`.
-pub fn one_texel(b: &mut WebGpu, texture: &<WebGpu as Backend>::Texture, x: u32, rgba: [u8; 4]) {
+pub fn one_texel(b: &mut WebGpu, texture: &<WebGpu as Gpu>::Texture, x: u32, rgba: [u8; 4]) {
     b.write_texture(
         &TextureRegion {
             texture,
@@ -225,7 +225,7 @@ pub fn discarded_textures_are_renamed_from_the_pool(b: &mut WebGpu) {
     }
     eprintln!("texture renames and spares reused per frame: {seen:?}");
     assert_eq!(seen, [(3, 0), (3, 3), (3, 3), (3, 3)]);
-    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 0);
+    assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 0);
     // The pass draws into the target: a discard of it is ordered in the pass instead.
     let before = *b.counters();
     begin(b, &k, [0.0, 1.0, 0.0, 1.0]);
@@ -245,7 +245,7 @@ pub fn discarded_textures_are_renamed_from_the_pool(b: &mut WebGpu) {
         .concat()
     );
     assert_eq!(b.counters().texture_renames, before.texture_renames);
-    assert_eq!(b.slow_paths().count(SlowPath::WriteSplitPass), 1);
+    assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 1);
     b.destroy(Object::Texture(texture));
     let fence = b.submit();
     b.wait_fence(&fence);

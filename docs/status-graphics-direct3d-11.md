@@ -6,18 +6,385 @@ This file keeps the current state only; each earlier run's record (what it did, 
 its literal counts) is in this file's git history (`git log -p docs/status-graphics-direct3d-11.md`).
 Runs so far: six on G4a, 25 on G4 (2026-11-17 and 18), round 2 runs 1 to 12 (2026-11-19 and 20),
 round 3 run 1 and round 4 runs 2 to 6 (2026-11-20), main runs 1 to 3 and agents runs 1 to 3
-(2026-11-21), G4h runs 1 to 5 (2026-11-22).
+(2026-11-21), G4h runs 1 to 10 (2026-11-22 and 23), G4h round 6 runs 1 and 2 (2026-11-23), 3
+to 6 (2026-11-24), G4h round 7 runs 1 and 2 (2026-11-24).
 
 ## Where things stand
 
-G4 passed its check. G4h (feature level 11_0 reported truthfully, the owner's ruling of
-2026-11-22) is complete as of run 5, and the G4 bar was run again at its end (Measurements). The
-device reports the highest level whose every format requirement of Microsoft's tables it meets
-(4c9d43b2): the RTX 3080 device (WebGPU build, wgpu on Direct3D 12) is 11_0 with every
-requirement met and tested, and the WebGL 2 build (ANGLE on the RTX 3080) is 10_0 again since
-G4h run 5 built its five missing formats in the WebGL 2 back end. Still differing from real
-Direct3D: the Gap list's absent features, and atg-simplecomputepc, a real difference waiting on
-the shaders track's division (Asked).
+G4 passed its check. G4h (feature level 11_0 reported truthfully, the owner's ruling of 2026-11-22) is reported
+complete for its check (round 7 run 2, its check's findings settled): lint of both builds, the
+whole library suite, the WebGL 2 build's cases and the shaders crate's compute_draw file pass at
+3a043d13 on the RTX 3080, and atg-simplecomputepc now gives the answer both real implementations
+agree on. The device reports the
+highest level whose every format requirement of Microsoft's tables (their video columns aside,
+Departures) and whose per-stage slots it serves: the RTX 3080 device (WebGPU build, wgpu on
+Direct3D 12) is 11_0 with every requirement met and tested; the WebGPU build without
+texture-formats-tier1 is 10_0; the WebGL 2 build (ANGLE on the RTX 3080) is 9_3 (16 texture units
+a stage where 10_0 reads 128 views); a browser's WebGPU at Chrome's 48 sampled textures a stage
+would be 9_3. What stands:
+- atg-simplecomputepc: fixed by the shaders crate's refined `div` (48f3959d, applied by this
+  track under the orchestrator's ruling (b) of 2026-11-24, noted in the shaders track's status).
+  Its isolated test runs again and passes; the program is 1,705 pixels from the RTX 3080's
+  reference in each saved frame, where WARP is 1,889 (Gap list). Not a near-exact match: 899
+  pixels of each frame are beyond 8 from both real implementations (Gap list).
+- That division change made two of the shaders crate's tests fail (compute_draw.rs
+  `atomics_and_counters_match_direct3d` and `storage_views_at_any_first_element_match_direct3d`,
+  `cs_divide` and `cs_escape` on the DXBC route, 50 to 94 words from the RTX 3080); round 7 run 1
+  ran only this track's suites and did not see it. Settled in run 2: those comparisons run each case
+  on WARP too and accept a word equal to either real Direct3D 11 (25d84e56), the whole file 17 of
+  17 on the RTX 3080.
+
+G4h round 7 run 2 (2026-11-24, from about 10:50 Pacific), the check of round 7 run 1:
+- The check's blocking finding (above) fixed in the shaders crate's test file, one commit of that
+  file, as the graphics bar of 2026-11-22 rules (the either-real rule of programs.rs
+  `case_either_real`); noted in the shaders track's status (1bf9e412). lower.rs's comment now says
+  the refinement is WARP's answer, correctly rounded except where the fused remainder is flushed
+  (a53d6d4c; the check's probe: quotients with a in 2^-126 to 2^-110 and b in 2^0 to 2^12 keep the
+  device's, 1 ULP from WARP's and equal to the RTX 3080's).
+- programs.rs's comment of the isolated atg case corrected (the RTX 3080 gives its own quotient
+  there, ours WARP's); the Wine d3d10core line of the WebGL 2 build marked as no longer run.
+- Unsafe: 9 more lines gone from the Windows library (1069 to 1060, Unsafe below).
+- Tests at trial f6c1bd56 (this run's shaders files; desktop RTX 3080 through the queue, 10:58 to
+  11:00 Pacific, other tracks' jobs queued beside it; scratch r12/run.sh, logs/r12-*): lint of
+  both builds and of the compute_draw file clean; compute_draw 17 passed, 0 failed (seeds 1 to 4,
+  the default).
+- Tests at trial 3a043d13 (the above with the unsafe removals; the same tree as the commits
+  c8ca7220 and d7b67b3e; desktop RTX 3080 through the queue, 11:00 to 11:07 Pacific, other tracks'
+  jobs queued beside it; logs/r12b-*): lint of both builds and of the compute_draw file clean;
+  library com 15 pass (1 ignored), programs 71 pass (8 ignored, the known failures), 0 failed,
+  the isolated atg case among the 71; the WebGL 2 build's cases (filters `below_10_0 10_0 nv12
+  direct3d_10s`) 2 passed, 8 ignored (the 10_0 cases that 9_3 build refuses), 0 failed.
+- atg-simplecomputepc not run again: nothing that it runs changed since run 1 (lower.rs's change
+  is its comment).
+- The bar's two WebGL 2 items: absent on that back end by the feature level rule (ruling (a) of
+  2026-11-24 keeps this): the build is truthfully 9_3, which has neither ability; their three
+  tests are known failures named for that cause and do not count against the bar. The packed
+  views route to 10_0 there is described (Gap list), not built.
+
+G4h round 7 run 1 (2026-11-24, from about 06:10 Pacific):
+- Round 6 run 6's queued desktop run never started (another track's shader fuzz job held the
+  desktop's GPU slot from 04:55 to past 07:00); it was withdrawn and run here at the tip instead.
+- r9/div.patch applied to crates/shaders/src/lower.rs (48f3959d; the file had no
+  uncommitted change and its last commit was b9edb814 of 2026-11-23);
+  `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` un-ignored (4da02921).
+- Unsafe: the front is free of it (10 uses gone; mapped bytes are `Rc<[Cell<u8>]>`, Unsafe
+  below) and inherits the workspace lints, which forbid it; the Windows library went from 1076 to
+  1069 lines. Both counts lowered in the root Cargo.toml.
+- Tests at 97fdfcd2 (scratch r11/run.sh, logs/r11c-*; desktop RTX 3080 through the rig and its
+  queue, 07:02 to 07:06 Pacific, other tracks' jobs waiting beside it): lint of both builds clean;
+  library com 15 pass (1 ignored), programs 71 pass (8 ignored, the known failures), 0 failed; the
+  atg case among the 71. The front's unit 7, cache 1 and front.rs 61 and its clippy pass on the
+  rented x86 machine (96 cores, load 0.9; logs/r11-x1-front.log, the same front code).
+- The WebGL 2 build's cases at 97fdfcd2 (filters `below_10_0 10_0 nv12 direct3d_10s`, 08:27 to
+  08:33 Pacific; logs/r11d-webgllib.log): 2 passed, 8 ignored (the 10_0 cases that build refuses
+  as 9_3), 0 failed. Its first try (r11c) failed to link: a build of the shaders crate this run
+  stopped mid-way had left broken output in that build folder; `cargo clean -p
+  wcontainers-shaders` there fixed it (scratch r11/webgl.sh).
+- atg-simplecomputepc through the rig (07:31 to 07:44 Pacific): ours 1,705 of 921,600 pixels
+  beyond the RTX 3080's reference in frames 10, 60 and 120 (largest 255, the set's edge;
+  logs/r11c-atg.log). WARP through g4h/warpshim (08:20 to 08:26): 1,889 in each
+  (logs/r11c-atgwarp.log). Ours against WARP's frames directly (gt-compare on the desktop, frames
+  in scratch r11/ours and r11/warp): 1,188 pixels beyond 8 in each frame (8,619, 8,619 and 8,781
+  beyond 0; largest 255). So ours is nearer each real implementation than the two are to each
+  other: a pass under the graphics bar of 2026-11-22.
+- Literal check (rented x86 machine, at 6d2e836c): nothing new in this track's files or in
+  lower.rs; the one listed line is the tool's stale `required.rs` (round 6 run 5).
+
+G4h round 6 run 6 (2026-11-24, from about 06:00 Pacific):
+- Nothing of the shaders crate changed since run 5 (its division is as before, r9/div.patch still
+  applies to lower.rs at 3dcd74e4); no new ruling on the WebGL 2 items, so they take ruling (2)'s
+  form (Departures) and the milestone is reported for its check with the Gap list as it stands.
+- 24 literal baseline lines cut in context.rs (Literals). The front's unit 7, cache 1, front.rs
+  61 and clippy pass at that code on the rented x86 machine (96 cores, load 0.6;
+  logs/r10-lit2-front.log). Not yet run: lint of both builds and the library suite on the desktop
+  at 180958a6. They wait detached behind another track's fuzz job, which has held the desktop
+  since 04:55 Pacific (scratch r10/suite.sh, driver logs/r10b-driver.log, results
+  logs/r10b-lint.log, r10b-lib.log, r10b-webgllib.log). Read those logs before anything else.
+
+G4h round 6 run 5 (2026-11-24, from about 03:40 Pacific), the eighth round's check:
+- atg-simplecomputepc: ruled (ruling (1)), so the fix is the shaders crate's division, asked of
+  that track with a patch (scratch r9/div.patch: refined once, the device's quotient kept where it
+  is zero or the refined one is infinite or NaN). Measured in trials never committed, desktop RTX
+  3080 through the queue, 04:12 to 04:16 Pacific (scratch r9/run.sh; logs/r9b-*): at trial A
+  (e4f609d9, this run's tests, no patch) `divisions_give_a_real_devices_quotient`,
+  `colour_map_sampled_at_its_edges_as_direct3d_samples_it` and `a8_storage` pass and the frames
+  test fails as before (WARP `8180803e...`, ours `0000803f...`); at trial B (9eef5d09, A with the
+  patch) all four pass, the frames test among them, and the program has 1,705 pixels beyond in
+  frames 10, 60 and 120 (largest 255; WARP 1,889), so it passes under the graphics bar once the
+  patch lands. The rig's own verdict still prints FAIL, as its references allow only the RTX
+  3080's own variation.
+- New test `divisions_give_a_real_devices_quotient` (own_cases `divisions`): 384 quotients
+  k * b / b (k 1 to 64, b 3, 7, 10, 300, 301, 999) and 19 of zeros, infinities, NaNs, overflow and
+  results below the normal range, divisor read at run time; each 32-bit result must be the RTX
+  3080's or WARP's (a NaN printed as `nan`). Passes with and without the patch.
+- `colour_map_sampled_at_its_edges_as_direct3d_samples_it` now takes either real answer word by
+  word (the RTX 3080's or WARP's), as the graphics bar allows where the two differ (1200 / 300).
+- The WebGL 2 bar items: the status file and plan no longer say they pass; listed as failing
+  with the cause, the packed views route described (possible, not built, three crates) and asked
+  of the orchestrator. The plan's WebGL 2 level reads 9_3 (6182d805).
+- The WebGL 2 build now compares its 9_x devices with real Direct3D:
+  `format_support_and_creations_below_10_0_as_direct3d_reports_them` runs there; its creations
+  allow only a 4-sample texture refused where that build reports no 4-sample quality level.
+  `format_support_as_direct3d_reports_it_but_the_named_shortfalls` (an 11_0 device) is ignored
+  there. Measured (logs/r9b-webglA.log, the whole programs file on the WebGL 2 build, before the
+  allowance): 1 passed, 45 failed, 12 ignored; the 45 make 11_0 devices and have failed there
+  since the build stopped reporting 11_0 (G4h); the bar's WebGL 2 run takes its filters (How to run).
+  9_1's format support matched real Direct3D; the 9_x creations differed first at the 4-sample
+  texture. With the allowance (trial 940434cd, logs/r9d-*, 04:20 to 04:55 Pacific through the
+  queue): lint of both builds clean; on the WebGL 2 build the 9_x comparison and the 10_0
+  refusal pass (2 passed, 8 ignored, filters `below_10_0 10_0 nv12 direct3d_10s`).
+- Not run this run: the whole library suite at the last commit, and the same 9_x test on the
+  WebGPU build (whose path it does not change). The desktop was held from 04:55 to past 06:05
+  Pacific by another track's fuzz job, beside which the rig runs nothing; the jobs were withdrawn
+  before they reached the queue. The front's tests at 6310c582 on the rented x86 machine: unit 7,
+  cache 1, front.rs 61 pass (logs/r9e-front.log). This run changed only the library's tests and
+  examples, and their cases above were run; the last whole suite is run 4's (40094011).
+- Literals: own_cases' 300.0 is named (`INSIDE_LOOPS / 4.0`); the check on the rented x86 machine
+  at 6096d419 finds nothing in this track's files but a file it lists that 6572e2e9 deleted
+  (`crates/direct3d-11/src/required.rs` "unparsed", the tool's, not a literal).
+- Unsafe: unchanged (the new case's block offset by joining a8_storage's two).
+
+G4h round 6 run 4 (2026-11-24, from about 02:20 Pacific):
+- The creation refusal of a stage reading more textures than the back end has
+  (`BindingsBeyondLimit`) has a test: front.rs
+  `a_shader_reading_more_textures_than_the_back_end_has_is_refused_at_creation` (the 14
+  constant buffer shader on the recorder with one texture a stage: `E_INVALIDARG`, counted once,
+  warned once, the device not lost).
+- A vertex element's size is its DXGI format's texel size from the interface's `Format::block`
+  (`format::vertex_size`), not a table of its own; the formats after `V408` and the unserved
+  format's message are named. Ten baseline lines cut.
+- own_cases' iteration count: run 3's mark was wrong (the example is test code, where a mark
+  fails); it is removed, and the `restated` finding it was meant to answer is left (Literals).
+- Tests at trial 40094011 (this run's tree; scratch r8/run.sh, logs/r8b-*, desktop through the
+  rig and its queue, 02:32 to 02:45 Pacific, other tracks sharing it): lint of both builds clean;
+  the front's unit 7, cache 1 and front.rs 61 pass; library com 15 pass (1 ignored), programs 69
+  pass (9 ignored, the known failures), lifetimes seeds 1 to 9 of 300 steps; the WebGL 2 build's
+  run 1 passes (8 ignored). The ignored tests were not run with `--ignored`: their causes are
+  unchanged since run 3.
+
+G4h round 6 run 3 (2026-11-24, from about 00:30 Pacific), the seventh round's check:
+- Per-stage slots counted in the level check (device.rs `level_slots`, `slots_served`): from
+  10_0 a stage's 128 shader resource views and 16 samplers, at 11_0 also 8 unordered access views
+  as storage textures and as storage buffers; below 10_0 shader model 2's 16 samplers, each with
+  its texture. The check's probe (25 views up to t127, s0 and s15 at 10_0) lost the WebGL 2
+  device; that build is now 9_3 and warns, for each level above, which slots it lacks. Measured
+  with the check's probe at dfbdf3ab's code (r7/probe/out): through WebGL 2 the default device is
+  9_3 and devices of 10_0 and up are refused with `DXGI_ERROR_UNSUPPORTED`; through WebGPU the
+  probe's `slots` gives real Direct3D's bits (`7473134300000000000000000000803f`). WebGL 2
+  has no route to more than `MAX_TEXTURE_IMAGE_UNITS` textures a stage (16 here and the
+  specification's least; no storage buffers or bindless textures to read more through), so the
+  level is the truthful answer, not a gap ours can build past. A browser's WebGPU: Chrome gave 48
+  sampled textures a stage on the plan's measurement (WebGPU's default 16), so 9_3 too unless an
+  adapter offers 128; a software sampler over storage buffers would be the only other route (not
+  built: filtering, addressing, mips and comparisons in the shader).
+- Shaders needing more textures (constant buffers read through textures among them) or samplers
+  than the back end's stage has are refused at creation with `E_INVALIDARG`, counted and warned
+  (`BindingsBeyondLimit`, plan 4.12), where the WebGL 2 device was lost before. With the level
+  check only a 9_3 shader on WebGL 2 reading 16 textures and more than 12 constant buffers can
+  reach it; no case of that is built.
+- Tests: front.rs level cases (127 and 16 textures give 9_3, 7 storage textures 10_1, 15
+  samplers no device); own_cases `slots` and programs.rs
+  `a_stages_last_view_and_sampler_read_at_10_0_as_direct3d_reads_them` (WebGPU build, against
+  real Direct3D) and `no_device_of_10_0_where_a_stage_reads_fewer_than_128_views` (WebGL 2
+  build). The WebGL 2 build's seven 10_0 cases are ignored there with that reason (Known
+  failures). The recorder's sampled textures are 128 (wgpu's on Direct3D 12 are more; 48 was
+  Chrome's).
+- The frames test is renamed for what it checks:
+  `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it`. WARP gives its answer
+  with or without the program's draws, so the draws decide nothing in it. The earlier summary
+  ("the state that moves the RTX 3080 is found and made a test") overstated it and is withdrawn.
+- The division measured further for the ruling (scratch r7/probe `divk`, r7/probe/out, through
+  the queue at 01:25 Pacific): quotients k * b / b, k 1 to 64, b in 3, 7, 10, 300, 301 and 999,
+  first dispatch. The divisor came three ways: from a constant buffer (`div` by `cb0[0].x`), as
+  an immediate (`div` by `l(300.0)`, fxc unoptimised), and as fxc's own `mul` by the reciprocal.
+  The RTX 3080 divides by a constant buffer value 1 ULP short on 48 of 64 for b = 300
+  (1200 / 300 = 0x407fffff) and 39 of 64 for b = 7. By the same divisor as an immediate it gives
+  0 of 64 short for 300 and the same 39 for 7, which is what a multiply by the correctly rounded
+  reciprocal gives (fxc's `mul` form gives the same on every device). WARP rounds every `div`
+  correctly. Ours equals the RTX 3080 in all 18 forms. So the RTX 3080 gives 4 for 1200 / 300
+  when the driver knows the divisor as a constant. Inside the program the divisor is the
+  constant buffer's `g_MaxThreadIter.z` (300). That fits its driver re-compiling the program with
+  the constant buffer's values folded in after some frames. This is inferred: the driver's
+  re-compilation cannot be seen from outside, but no other measured form gives 4 on the RTX 3080.
+- Tests through the rig's queue on the desktop (r7/run.sh; logs/r7b-*, r7c-*, r7g-*): lint of both
+  builds clean; the front's unit (7, 1), front.rs (60) and cache tests pass; library com 15 pass
+  (1 ignored), programs 69 pass (9 ignored, the known failures) at this run's last code (trial
+  baac4ebd, the tree committed as the run's last commits); the WebGL 2 build's run 1 passes (8
+  ignored) at d4bad0bf. The ignored programs were not run with `--ignored` this run: their causes
+  are as at run 2, apart from the WebGL 2 build's 10_0 cases, ignored for the level.
+- The check's minor finding on packed blends with `SRC_ALPHA_SAT` and `BLEND_FACTOR` is kept as
+  is, judged under the graphics bar (Gap list, packed targets): one code off where the two
+  references are themselves one code apart.
+
+G4h round 6 run 2 (2026-11-23, from about 14:20 Pacific), the sixth round's check:
+- atg-simplecomputepc bisected (Gap list, with every number): the program's calls traced, groups
+  of them dropped from frames 2 to 99 and replayed, and the isolated copy built up call by call
+  (scratch r6d). The RTX 3080 moves from ours' answer to the reference's only where each frame
+  draws twice after the dispatch: the result's sprite quad and then a second draw from another
+  texture (the program's text). With the program's sprite draws dropped from frames 1 to 99 it
+  gives ours' answer at frame 100, 3 of 3; with only one of them dropped, the reference's. Even
+  then it is the driver's choice, not repeatable: the same plan flipped at frame 31 in one
+  process and never in 40 frames in another. Run 1's reading (no state decides it, counted
+  passing) was wrong and is withdrawn: the program fails at frames 60 and 120.
+- The state as a test: own_cases `colour_map_frames` (30 frames of the dispatch, the quad of the
+  result and 100 quads from another texture) and programs.rs
+  `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it`, which holds
+  ours to WARP (both real implementations' settled answer; the RTX 3080's first frames give
+  either). Ours prints the map's last texel where WARP prints its first, at frames 1 and 30: a
+  known failure, ignored with that reason. The fix is the division's rounding in the shaders
+  crate's conversion (Asked of other tracks); nothing in this track's crates decides it.
+- Unsafe: the 15 `unsafe` uses own_cases.rs gained after the ban are gone (blocks merged, the
+  removed reason read through one closure; the new case adds none): the directx crate is back at
+  the root manifest's 1091 (c5be9197). The lifetimes test now writes its seeds and steps past the
+  harness's capture (f0fe1e5b), so a passing run's log records them ("lifetimes: seeds 1..9 of
+  300 steps each", logs/r6d-lib.log).
+- The whole bar at a93c8576, this run's last code (logs/r6g-*, Measurements): every result as at
+  run 9 (Wine d3d11 152 of 166, d3d10core 110 of 111, scenes 137 pass, programs as listed in the
+  Gap list); with `--ignored`, exactly the ten known failures fail (logs/r6g-ignored.log).
+- Found by that bar: through the WebGL 2 build, d3d10core test_clip_distance crashes since G4h
+  run 9 (96 of 111, not 97): the shaders crate's capture program refuses a geometry shader that
+  reads no clip distance behind a vertex shader writing one (Gap list, asked of the shaders track).
+  The 97 and 96 this file gave are now each placed by run.
+- The fix of atg-simplecomputepc measured in a trial never committed: the converter's division
+  refined once makes the frames case pass and the program 1,705 pixels from the reference, WARP
+  being 1,889 (Gap list). The change is the shaders crate's; the owner is asked whose it is (For
+  the owner), as the shaders track also asked him.
+
+G4h round 6 run 1 (2026-11-23, from about 08:50 Pacific), the orchestrator's two rulings:
+- atg-simplecomputepc read as explained and counted passing; the check showed that wrong (the
+  RTX 3080 settles on the reference's answer by frame 18 with every frame waited on), corrected in
+  run 2.
+- The bar item for compute stores to `R11G11B10_FLOAT` and `R16G16_UNORM` typed views without
+  texture-formats-tier1 is superseded by the feature level rule: on the gap list as absent on that
+  back end, its two tests known failures named for that cause (4a2a8e8d).
+- Literals: the context's slot counts named, ten baseline lines cut (Literals).
+- Tests at 3fe49ed3 (main/q5-final.sh r6c-suite lint lib webgllib, logs/r6c-suite-*): lint of both
+  builds clean; library com 15 pass (1 ignored), programs 68 pass (8 ignored, the known failures),
+  as at run 10; the front's unit, front.rs (60) and cache tests and clippy pass on a rented machine
+  at the same code (logs/r6c-t1-front.log). The WebGL 2 build's 10_0 cases 7 pass (1 ignored).
+
+G4h run 10 (2026-11-23, from about 05:45 Pacific), the ninth check's findings:
+- Packed targets blended within one draw: a draw of several primitives whose blend reads a
+  `B5G6R5_UNORM` or `B5G5R5A1_UNORM` target is drawn one primitive at a time, instance by
+  instance, rounded between each (Departures). Before, primitives of one draw read each other's
+  8-bit values (the check's Draw(30) of 0.3-step increments gave 2 where both real
+  implementations give 0, and a 1-bit alpha set where neither sets it). Through the check's own
+  cases (check_g4h10 `overlap`, `packed_mrt`, `packed_msaa_mask`, `msaa_mask`, patched into a
+  trial; logs/g4h10-r4-lib.log): additive ten draws, one draw and ten instances now equal both
+  references exactly on both formats; the 1-bit alpha over one draw is 0 everywhere, as on both,
+  and ours equals WARP's whole row. Left: single codes where both references agree and ours is
+  one off, the 8-bit intermediate's rounding (Departures): `overlap` 2 of 280 channels (6-bit
+  green 60 for 61), `packed_mrt` 1 of 56 (43 for 44), `packed_msaa_mask` 6 of 224 (resolves of
+  masked samples), `msaa_mask` 0 of 384; the RTX 3080 and WARP differ from each other in 70, 6,
+  50 and 96 of the same channels, by one code.
+- The 1-bit alpha is compared exactly: own_cases `packed_codes` prints it as 00 or ff, where the
+  one-code allowance of the "rounded" lines let it flip.
+- Sample masks: a draw is dropped only when its mask keeps no sample of the targets' count (bit 0
+  alone without multisampling); before, every mask without bit 0 dropped it, also into 4- and
+  8-sample targets. The check's `msaa_mask` (masks 0x1 to 0xf0 at 4 and 8 samples, on
+  `R8G8B8A8_UNORM` and `B5G6R5_UNORM`): every line of ours equals the RTX 3080's or WARP's.
+- Tests: programs.rs `sample_masks_without_sample_0_as_direct3d_applies_them`, and
+  `packed_blend_reads` within one draw (Tests); both pass on the RTX 3080 with
+  `packed_targets_drawn_blended_and_resolved_as_direct3d_does` (logs/g4h10-r4-lib.log).
+- At f002c33e (in HEAD ec243063), on the desktop under the queue (q5-final.sh g4h10-suite lint lib
+  webgllib): lint of both builds clean; com 15 pass (1 ignored), programs 68 pass (8 ignored, the
+  known failures); the WebGL 2 build's 10_0 cases 7 pass (1 ignored). The front's unit, front.rs
+  (60) and cache tests pass on the rented x86 machine at the same code (logs/g4h10-x1-front.log);
+  the literal check finds nothing new in this track's files or in the lines of the WebGPU back end
+  this run wrote.
+- atg-simplecomputepc counted failing and the bar item without texture-formats-tier1 left to the
+  orchestrator's ruling (For the owner), as the check asked; the level check's circularity for
+  multisample bits of formats without multisampled textures recorded there.
+
+G4h run 9 (2026-11-23, from about 00:10 Pacific):
+- The WebGPU device without texture-formats-tier1 meets 10_0 (9_3 before): the WebGPU back end
+  resolves by a draw averaging the samples (`ResolveByDraw`) every float format it multisamples
+  but WebGPU does not resolve (`r32float` in core WebGPU), and declares `RESOLVE` for it (lib.rs
+  `resolved_by_draw`, its multisampled textures also bound for sampling; draw.rs `resolve_impl`).
+  The front reports the multisample loads and resolves the tables require of every format it draws
+  no count of (the integer twins, `R32G32_FLOAT`, `R32G32B32A32_FLOAT` there), as before for
+  formats never drawn into (Departures). Tests: the three format support comparisons without
+  features now check that 10_0 is made and 10_1 and 11_0 refused, and compare at 10_0 (the 16-bit
+  unsigned twins' blending named: optional at 10_0, not served for twins); programs.rs
+  `copies_and_float_resolves_of_multisampled_textures_without_texture_formats_tier1_as_direct3d_does`
+  (own_cases `msaa_copy` at 10_0, now also a 4-sample `R32_FLOAT` target resolved, bits compared
+  exactly, and the route's warning checked). All pass on the RTX 3080 (logs/r9-t2-lib.log,
+  r9-t4.out).
+- Found by that test: real Direct3D drops copies of multisampled textures below 10_1 (the copies
+  read back zero at 10_0); ours copied them. The front now drops them there too (context.rs
+  `copy_subresource_region`). own_cases' vertex and pixel shaders are compiled for the device's
+  level's model (4_0 at 10_0, 4_1 at 10_1), so cases can run at 10_x.
+- Microsoft's requirement tables are one table: the Direct3D 12 track moved this track's
+  generated rows into the infrastructure crate (8e473ba1, `required`, with `unmet`), so the front
+  re-exports that module and its own copy (src/required.rs) is deleted.
+- atg-simplecomputepc: the RTX 3080 gives ours' picture for the program's own dispatch with every
+  part of its setup copied (Gap list); judged an open choice under the orchestrator's rule, so
+  passing then; the ninth check counted it failing, and the bar item without texture-formats-tier1
+  waits on a ruling (G4h run 10, For the owner).
+
+G4h run 8 (2026-11-22, from about 20:50 Pacific), the seventh check's findings:
+- Direct3D's 32 input slots and elements: elements of slots past the back end's vertex buffers
+  (16 on wgpu's Direct3D 12) or of input registers past its attribute locations (30) are fetched
+  in the vertex program (`VertexPulledInShader`), where the check's 32-slot layout crashed wgpu.
+- 32 stage registers: where a pair passes a value past the back end's inter-stage locations (31),
+  the front moves both programs' values onto free locations after conversion (Departures), where
+  31 values beside the position removed the device; refused with `VaryingsBeyondLimit` when they
+  do not fit.
+- The level check counts both (16 registers up to 10_0, 32 from 10_1) and warns for a level passed
+  over; the recorder declares wgpu's Direct3D 12 limits.
+- A draw reading inputs the input layout (or none) does not give is dropped, as real Direct3D
+  drops it, where ours removed the device.
+- `A8_UNORM` typed storage loads are served through a buffer (the shaders crate's 5e73ebc2) and
+  claimed, as the RTX 3080 claims them.
+- `B5G6R5_UNORM`'s "Other Multisample Count RT" at 10_1 is a requirement row too.
+- Corrected in this file and in the plan: a browser's WebGPU meets 10_0 at most, not 10_1 (8-sample
+  `B5G6R5_UNORM` targets at 10_1), and no exact route to 8 samples exists; the bar's case without
+  texture-formats-tier1 cannot hold beside truthful levels (Gap list, asked of the orchestrator);
+  atg-simplecomputepc is counted failing until the orchestrator rules; the packed rounding's 0.62
+  of a step for 6 bits is recorded (Departures); the multisample bits of formats with no
+  multisampled texture kept, with the reason (Departures).
+- Test: programs.rs `every_input_slot_and_stage_register_as_direct3d_draws_them` and own_cases
+  `a8_storage`'s typed loads; shader.rs's unit test of the moves (Tests). The whole bar at the
+  end: as at run 7, with the new test passing (Measurements).
+
+G4h run 7 (2026-11-22, from about 17:10 Pacific):
+- The whole bar at 54fc06fc, run 6's code (q5-final.sh r7-bar; Measurements): every result as at
+  run 5, with run 6's two new library tests passing. Nothing failed that is not in the Gap list.
+- Why run 6's library suite never started: its desktop job (pueue task 40) kept running after
+  the Mac's side of it was stopped. It held the queue's hazard group from 15:47. A remote command
+  of the agents' folder held the GPU slot shared, and its `cargo test -p wcontainers-shaders
+  --no-run` waited on a lock with no CPU used for 90 minutes. Each waited for the other. This run
+  killed task 40 (`pueue kill`) and then that hung cargo process, and the queue moved (How to run).
+- atg-simplecomputepc: presenting after each dispatch does not change the RTX 3080's answer
+  either: the program's own fractal.cso still divides to just below 4 (What comes next, item 1).
+- Lint of both builds and the library suite at 317499e8, after this run's code change: clean, and
+  com 15 (1 ignored) and programs 65 (8 ignored) pass (logs/r7-head-*).
+- Literals: building ahead's tuple key and reported counts are a tuple and a named struct, and
+  their three baseline lines are cut (d05bba20, 39658541). The check at 39658541 finds nothing in
+  this track's crates.
+
+G4h run 6 (2026-11-22, from about 14:00 Pacific), the sixth check's findings:
+- Packed targets read by blends: the WebGPU back end ends the pass part and rounds the
+  `B5G6R5_UNORM` and `B5G5R5A1_UNORM` targets before any blend that reads them, when a draw wrote
+  them since (draw.rs `reads_target`, `PackedTargetReadByBlend`, a new slow path at the interface's
+  end). Test: programs.rs `packed_targets_read_by_blends_as_direct3d_reads_them` (own_cases
+  `packed_blend_reads`: the 1-bit alpha as a blend factor both ways, and ten additive draws of 0.3,
+  1 and 2 steps). The increments are chosen where the RTX 3080 and WARP round alike, by the sixth
+  check's own measurements (both drop 0.3 of a step and below; they differ near 0.6, where the
+  RTX 3080 rounds down to 0.81 of a step), so the case's verdict needs no WARP run; WARP was not
+  run on it.
+- Typed storage loads: a program that loads from a storage texture of a format other than the
+  three one-channel 32-bit ones reads and writes it through a buffer of its texels
+  (`StorageReadWriteThroughBuffer`, a new slow path; `TypedView::loaded` from the program's
+  `ld_uav_typed`). `UAV_TYPED_LOAD` is claimed only where served: no longer for `A8_UNORM`
+  (optional; the RTX 3080 claims it). Test: `typed_storage_loads_as_direct3d_does` (each of the
+  15 formats of Microsoft's set loaded, changed and stored twice).
+- `B5G6R5_UNORM`'s "Other Multisample Count RT" at 11_0 is now a requirement row
+  (`required::SAMPLES_OTHER`: a count other than 1, 4 and 8); the video columns are recorded as
+  not part of a level (Departures, For the owner).
+- atg-simplecomputepc traced (Gap list); the extended-range test's tolerance is one 8-bit step as
+  its comment says; the WebGL 2 build's failing scenes re-judged (Gap list); this file's stale
+  lines corrected.
 
 G4h run 5 (2026-11-22, from about 11:50 Pacific):
 - The WebGL 2 back end (crates/gpu-webgl, the task allows it for this) holds the five
@@ -114,8 +481,10 @@ G4h run 3 (2026-11-22, from about 10:20 Pacific):
   `R8G8_B8G8_UNORM` and `G8R8_G8B8_UNORM` (logs/g4h3-t6-webgl.log)); the WebGPU
   build without texture-formats-tier1, 16-bit norm or float32-filterable meets no level above 9_3
   (10_0 needs resolves of multisampled 32-bit float targets and of the normalised formats held as
-  integer twins; 11_0 also needs 8 samples, which WebGPU's sample counts of 1 and 4 never give, so
-  a browser's WebGPU can reach 10_1 at most). Gap list and For the owner.
+  integer twins; 11_0 also needs 8 samples, which WebGPU's sample counts of 1 and 4 never give).
+  This run concluded a browser's WebGPU could reach 10_1; that was wrong: 10_1 too requires
+  8-sample `B5G6R5_UNORM` targets, so a browser's WebGPU meets 10_0 at most (G4h run 8). Gap list
+  and For the owner.
 - Programs re-judged against WARP under the orchestrator's rule (g4h/warpshim, a test-only
   d3d11.dll making every device on WARP, through the rig's programs and its RTX 3080 references):
   atg-simplemsaa_pc's frame 10 on WARP has 25 pixels beyond the channel tolerance (largest 21),
@@ -148,8 +517,8 @@ G4h run 2 (2026-11-22, from about 09:00 Pacific):
   (Measurements): the RTX 3080 and WARP differ in 94 of the case's 1,232 channel codes, by 1 at
   most; ours differs from the RTX 3080 in 116 and from WARP in 114, by 1 at most. Most of ours'
   extra differences are in the twice-blended rows (72 against the RTX 3080, where WARP differs by
-  12): ours blends at 8 bits and rounds once, at the pass's end, which the specification allows
-  (blending at equal or more precision).
+  12): ours blended at 8 bits and rounded once, at the pass's end (since run 6 also before each
+  blend reading the target, Departures).
 - The seven format support comparisons pass, and the requirement test (still ignored) lacks only
   formats 88 and 89 at each level (logs/g4h2-b.log).
 - The B8G8R8X8 vertex format's arms in every crate but the shaders crate are written and checked
@@ -163,7 +532,7 @@ G4h run 1 (2026-11-22, from about 08:00 Pacific):
   `A8Unorm` through the `rgba8unorm` it holds it in (packed.rs `stored`), and the front binds such
   views with `A8Unorm` in the shaders crate's `storage_formats` (its run 81 makes every store keep
   alpha alone). `CheckFormatSupport` now claims `TYPED_UNORDERED_ACCESS_VIEW`, `UAV_TYPED_STORE`
-  and `UAV_TYPED_LOAD` for it as the RTX 3080 does (its row left `support_differences`). Test:
+  and `UAV_TYPED_LOAD` for it as the RTX 3080 does (typed loads withdrawn in run 6). Test:
   programs.rs `a8_storage_views_store_as_direct3d_does` (stores, then sampled), against the RTX
   3080: passed.
 - `required::LEVEL_REQUIRED`: Microsoft's 10_0, 10_1 and 11_0 format tables, generated (scratch
@@ -228,16 +597,15 @@ Agents run 2 (2026-11-21, from about 20:00 Pacific), the eighth check's findings
 ## Wine's Direct3D 11 tests through ours
 
 Files passing (the bar: real Direct3D's verdict for every test, except the gap list), on the RTX
-3080 through the queue, not alone, rigfix/wine.sh, agents run 3 at 3b1cd4f3 (logs/a3b-wine*.log):
-- d3d11: 151 pass of 166, the same 15 failing as since round 4 run 3; the failing tests are in the
-  Gap list. test_format_support fails 1 check, XR_BIAS's display (the B5 targets' 6 pass since
-  G4h run 2; logs/g4h2-wine.log).
-- d3d10core: 110 of 111: test_desktop_window (Gap list). Its test_format_support passes since
-  G4h run 2 (it failed on the B5 targets' blending).
-- d3d10core through the WebGL 2 build (10_0): 96 of 111 (logs/a3b-wine10gl.log): the 13 failing
-  since round 2 run 12 and, since main run 3 reports no multisampling there,
-  test_alpha_to_coverage and test_check_multisample_quality_levels; all are under the WebGL 2
-  item of the Gap list.
+3080 through the queue, not alone, at beeec184 (G4h run 5, logs/g4h5-bar*), and the same again at
+54fc06fc (G4h run 7, logs/r7-bar*) and at a93c8576 (G4h round 6 run 2, logs/r6g-*):
+- d3d11: 152 pass of 166; the 14 failing are the Gap list's absent features. test_format_support
+  and test_swapchain_formats fail no check (each runs fewer than real Direct3D, which also makes an
+  11_1 device), and test_vertex_formats passes, since G4h run 4.
+- d3d10core: 110 of 111: test_desktop_window (Gap list).
+- d3d10core through the WebGL 2 build: no longer run. That build reports 9_3 since round 6 run 3
+  and refuses the 10_0 devices d3d10core makes (Gap list, the WebGL 2 build). Its last run at 10_0
+  was 96 of 111 (round 6 run 2, logs/r6g-wine10gl.log).
 - dxgi (not on G4's bar): 4 of the 17 tests without a Direct3D 12 part at round 2 run 8.
 
 ## Gap list (the pass bar's written list)
@@ -261,18 +629,50 @@ Waiting on the joint step after G4 and G5 (orchestrator's ruling, 2026-11-20):
 The reported level is the highest whose every requirement of Microsoft's format tables is met
 (G4h run 4, 4c9d43b2); the RTX 3080 device meets 11_0. What that costs, measured (logs/g4h3-t6-*
 and logs/g4h4-t2-*), each the highest level met, on that back end only:
-- WebGPU in a browser: at most 10_1 ever. 11_0 requires 8-sample targets of most formats, and
-  WebGPU's `GPUTextureDescriptor.sampleCount` takes 1 or 4 only; drawing 8 samples another way
-  (two 4-sample passes at offset positions) would change every draw, sample mask and per-sample
-  input, and is not built.
+- WebGPU in a browser: 9_3 at Chrome's limits, 10_0 at most (reasoned from the tables, WebGPU's
+  specification and the plan's measurement of Chrome's limits, not run in a browser). 10_0 reads
+  128 shader resource views a stage; Chrome gave 48 sampled textures a stage
+  (`maxSampledTexturesPerShaderStage`, WebGPU's default 16), so the device is 9_3 unless the
+  adapter offers 128 (round 6 run 3) or views past the limit are packed (the route of the WebGL 2
+  item below, not built; reasoned, not run with wgpu held to 48). WebGPU's `GPUTextureDescriptor.sampleCount` takes 1 or 4 only, and 10_1 already
+  requires 8-sample `B5G6R5_UNORM` targets (its "8x Multisample RenderTarget" row); 11_0 requires 8
+  samples of 47 formats and 4-sample `R32G32B32A32_FLOAT` and `R32G32_FLOAT` targets, which core
+  WebGPU never multisamples (texture-formats-tier1 adds no multisampling of 32-bit floats). No
+  exact route to 8 samples exists (plan 4.12): two 4-sample passes run the pixel shader twice,
+  which storage writes and per-sample inputs would see. Also a browser's default limits (8 vertex
+  buffers, 8 storage buffers a stage, 16 inter-stage values) give 16 input slots and stage
+  registers, 10_0's count (G4h run 8).
 - WebGPU without texture-formats-tier1, 16-bit norm or float32-filterable (natively by
-  `WEBGPU_OFF`): 9_3. 10_0 requires multisample resolves of the 32-bit float formats (core WebGPU
-  resolves none of them) and of the normalised formats held as integer twins, which are not
-  multisampled (plan 4.12) nor blended (`BlendInShader` not built for them). A resolve by a
-  program averaging the samples would give the 32-bit float ones; not built.
-- The WebGL 2 build: 10_0, every requirement met since G4h run 5 (the five formats it lacked,
-  `A8_UNORM`, `R8G8_B8G8_UNORM`, `G8R8_G8B8_UNORM`, `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM`, built in
-  the WebGL 2 back end). 10_1 and 11_0 are out of WebGL 2's reach: 10_1 requires 4-sample
+  `WEBGPU_OFF`): 10_0 since G4h run 9 (9_3 before). 10_0 requires multisample resolves of the
+  32-bit float formats and of the normalised formats held as integer twins. Core WebGPU draws
+  `r32float` with 4 samples but resolves no 32-bit float format, so the WebGPU back end now
+  resolves every float format it multisamples and does not resolve by a draw averaging the
+  samples (`ResolveByDraw`, until then used only for sRGB twins in the browser; lib.rs
+  `resolved_by_draw`). The twins, `R32G32_FLOAT` and `R32G32B32A32_FLOAT` have no multisampled
+  textures there (no count reported), so their resolves apply to no texture and are reported as
+  for the formats never drawn into (Departures). 10_1 and 11_0 stay out of reach there: 10_1
+  requires 4-sample loads and targets of the 16-bit and 8-bit signed normalised formats, held as
+  integer twins and not multisampled (plan 4.12), and 8 samples (above); 11_0 also 4-sample
+  `R32G32B32A32_FLOAT` and `R32G32_FLOAT` targets, which core WebGPU never multisamples.
+- The WebGL 2 build: 9_3 since round 6 run 3. 10_0 reads 128 shader resource views a stage and
+  WebGL 2 gives `MAX_TEXTURE_IMAGE_UNITS` (16 on ANGLE here, 16 the specification's least); the
+  seventh round's check showed a valid 10_0 pixel shader reading 25 views (t127 among them) and
+  s15 lose the device. A stage's texels can be read only through its texture units (uniform
+  blocks are 12 a stage of 16 KiB at the least, too small for views; no storage buffers). So a
+  route to 128 is possible but not built, and not this track's crates alone ("packed views"): views
+  past the units copied, before each draw that reads them, as the values `texelFetch` gives into
+  one packed texture (a 2D array of 32-bit float or integer texels), and the program reading them
+  from it at their offsets and filtering, addressing, comparing and gathering them itself
+  (`FilterInShader`'s form, extended to a view inside a pack). Pieces: a binding of a view inside
+  a pack in the interface, the copies in the WebGL 2 back end, the program variant in the shaders
+  crate. Cost: each such draw copies every packed view whole (memory four times an 8-bit view's),
+  and anisotropic filtering in the program is an approximation (as the hardware's is). The same
+  route would take a browser's WebGPU (48 sampled textures a stage in Chrome) to 10_0, there with
+  storage buffers. Asked of the orchestrator whether to build it (For the orchestrator). Its format requirements of 10_0 are
+  met since G4h run 5 (the five formats it lacked, `A8_UNORM`, `R8G8_B8G8_UNORM`,
+  `G8R8_G8B8_UNORM`, `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM`, built in the WebGL 2 back end), so
+  the slots are what keeps it from 10_0. Its Wine d3d10core run (96 of 111 at 10_0) no longer
+  applies: d3d10core makes 10_0 devices only. 10_1 and 11_0 are out of WebGL 2's reach: 10_1 requires 4-sample
   targets, which need a partial sample mask WebGL 2 has no route for (OES_sample_variables and
   `SampleMaskInShader`, not built); 11_0 requires compute shaders and storage views, which WebGL 2
   has not.
@@ -282,7 +682,15 @@ and logs/g4h4-t2-*), each the highest level met, on that back end only:
   float32_textures_filtered_in_the_program, normalised_targets_through_integer_twins and both
   typed_storage_stores_without_texture_formats_tier1 tests. Their routes serve no level a browser
   without those features meets. The three format support comparisons without features check that
-  no device above 9_3 is made and compare at 9_3.
+  no device above 10_0 is made and compare at 10_0 (G4h run 9; 9_3 before).
+- Absent on that back end by the feature level rule (the orchestrator's ruling of 2026-11-23,
+  superseding the G4 bar item "a compute shader storing to `R11G11B10_FLOAT` and `R16G16_UNORM`
+  typed views on a device made without texture-formats-tier1"): typed storage views are shader
+  model 5's, 11_0 only, and a device without texture-formats-tier1 is truthfully 10_0 (above), so
+  it has none. The two tests, both `typed_storage_stores_without_texture_formats_tier1` ones, stay
+  known failures named for that cause; the item no longer counts against the bar. The route itself
+  (`StorageFormatThroughBuffer`, `NormAsInteger`) is built and was proven against the RTX 3080
+  before G4h.
 - Blending into the 8-bit signed and 16-bit normalised formats where the back end does not draw
   into them is part of the second item (`BlendInShader`, the shaders crate's `combine`, Asked).
 
@@ -291,9 +699,7 @@ Found in G4h run 3: on the rig's hidden desktop real Direct3D's presents to a sh
 verdicts; own_extended_range leaves that answer out.
 
 Absent features (each reported absent through its own query, so Wine's verdicts there differ):
-every failing test of Wine's d3d11 file but test_format_support and test_swapchain_formats (the
-11_0 shortfalls above; with the patches, only real Direct3D's 11_1 device, skipped by ours) and
-test_vertex_formats (fewer checks, the B8G8R8X8 shortfall) sits behind one of these:
+every failing test of Wine's d3d11 file sits behind one of these:
 - The 11_1 device and Wine's WARP fallback: `D3D11CreateDevice` with 11_1 alone fails, logic
   operations have no route (plan section 9), and this library offers no WARP adapter:
   test_state_refcounting, test_logic_op, test_create_shader, test_shared_resource (its 11_1 part).
@@ -319,9 +725,15 @@ Not on Wine's verdicts, against the RTX 3080:
   into, so no route can write it. Refused by name, which removes the device (a `ClearView` has no
   result). Needs a route the interface does not have; no program measured reaches it.
 
-The WebGL 2 build (10_0; the bar's WebGL 2 cases match real Direct3D through it): what it does
-not give real Direct3D's verdict on (G4h run 5: Wine's d3d10core 97 of 111; the rig's scenes 95
-pass, 17 fail, 30 absent), each with its owner:
+The WebGL 2 build: 9_3 since round 6 run 3, so the bar's WebGL 2 cases fail there (the WebGL 2
+item of the level costs above). Before that, at 10_0, what it did
+not give real Direct3D's verdict on (round 6 run 2, logs/r6g-*: Wine's d3d10core 96 of 111; the
+rig's scenes 95 pass, 17 fail, 30 absent), each with its owner. Re-judged under the orchestrator's rule (G4h run
+6, from logs/g4h5-bar-webgl.log): no scene fails by its pixels. The 17 are the pictures of three
+scenes (raster, views, geometry), each of which stops at a refusal (`E_NOTIMPL`, named below:
+`FillModeConverted`, `TEXTURE_VIEWS`, `SV_PrimitiveID` and layers without compute) before writing
+them, so there are no pixels to set against WARP's. The 95 that are drawn pass against the RTX
+3080's references.
 - Multisampling: plan section 9 makes it optional at 10_0 (Microsoft's 10_0 table requires no
   sample count, so the device meets 10_0 without it), and without a route for a partial
   sample mask (WebGL 2's `gl_SampleMask` needs OES_sample_variables and `SampleMaskInShader`,
@@ -339,6 +751,15 @@ pass, 17 fail, 30 absent), each with its owner:
   `DXGI_ERROR_DEVICE_REMOVED` and Wine's test uses the object it was not given. The crash is the
   test's; the gap is the refusal.
 - Cull distances (`CullDistanceAsGeometry` needs compute): test_combined_clip_and_cull_distances.
+- test_clip_distance (passing at G4h run 8, crashing since run 9): its geometry shader reads no
+  clip distance while its vertex shader writes one, and the shaders crate's
+  `stage::capture_program` refuses every pair whose counts differ (`GeometryDistancesRead`, added
+  by its 03b897de of 2026-11-23); the device is removed and Wine's test then crashes on a texture
+  it was not given. Measured with the test's own bytecode on the rented x86 machine (scratch
+  r6h/clip_probe.rs, logs/r6h-clip-front.log): vertex outputs `SV_ClipDistance` mask 1, geometry
+  inputs none, refused with and without the front's clip key. Real Direct3D lets a stage leave
+  an earlier stage's values unread. The shaders track's (Asked); WebGPU draws it through compute
+  and passes.
 - Views in another format of the group (`Features::TEXTURE_VIEWS`, the WebGL 2 back end's):
   test_create_shader_resource_view, the rig's views scene.
 - `A8_UNORM` and the other four formats 10_0 requires are built since G4h run 5. Of the d3d10core
@@ -371,7 +792,7 @@ Real programs: the three of the pass bar (godot-platformer-3d-d3d11, chocolate-d
 atg-simplelightingpc) match real Direct3D on every compared frame (logs/a3b-programs.log, agents run 3), and so do
 atg-simplebezierpc, atg-simpleinstancingpc, godot-platformer-2d-d3d11 and sdk-tutorial02 and 04
 to 07; of bgfx's six (logs/q2f-bgfx.log, round 4 run 2) five pass or run to their end. Outside
-the bar's three, three differ:
+the bar's three, three differ from the rig's recorded frames:
 - bgfx-26-occlusion: 6,458 pixels beyond the tolerance in each saved frame, all in one line of
   the overlay: real Direct3D's frames print "GPU mem: 341 MiB / 10 GiB", ours leave that line out
   (scratch m2bgfx, crops of both frames; every other pixel within the tolerance). bgfx prints it
@@ -379,9 +800,68 @@ the bar's three, three differ:
   `IDXGIAdapter1` alone and reports memory sizes of zero, as no browser API reports memory (the
   infrastructure crate's rule). An absent feature, reported absent through `QueryInterface`; the
   occlusion queries themselves match. Found in main run 1; earlier runs thought it the counts.
-- atg-simplecomputepc: every pixel inside the Mandelbrot set differs; the converted compute
-  program's division gives just below 4 where real Direct3D gives 4 (inferred). The shaders
-  track's (Asked).
+- atg-simplecomputepc: FIXED in round 7 run 1 by the refined `div` below (48f3959d): ours 1,705
+  pixels from the RTX 3080's reference in each saved frame, WARP 1,889, so closer than another
+  real implementation; the isolated case passes. Not a near-exact match: the round 7 check found
+  899 pixels of each frame beyond 8 from both real implementations (597 beyond 64), all on the
+  Mandelbrot set's edge, where the iteration counts follow every rounding. The rig's own verdict prints FAIL, as its
+  references allow only the RTX 3080's own variation. The record of the difference: at the
+  rig's frames 60 and 120 every real run gives the colour map's first texel inside the Mandelbrot
+  set and ours its last, 154,515 pixels beyond in each frame (logs/r6c-o1.log). Inside the set the
+  colour is `frac(1200 / 300)` sampled clamped from its 8-texel map: a quotient of 4 gives the
+  first texel (64, 0, 0), 3.9999998 (within the functional specification's 2.5 ULP) the last
+  (255, 255, 0). WARP gives the first in every frame (1,889 pixels from the reference, on the
+  set's edge); the RTX 3080 gives the last in its first frames and the first from frame 18 on,
+  even with every frame captured and so waited on (the sixth check: 17 then 103 of 120). Ours
+  gives the last everywhere. The state that moves the RTX 3080, bisected in G4h round 6 run 2 on
+  the desktop (RTX 3080, driver 32.0.16.2101, through the queue):
+  - The program's calls (apitrace 14.0 trace of round 6 run 1), groups dropped from frames 2 to 99
+    with `apitrace trim`, replayed by d3dretrace three times each, snapshots at frames 10, 30, 60
+    and 100, frame 1 and the snapshot frames keeping every call: the whole trace F F F F; the
+    clear, the text draw, the result's sprite quad or both draws dropped: F at every snapshot of a
+    frame that drew the quad; the dispatch kept only in frames 1, 30, 60 and 100: L L L F
+    (logs/r6d-a-summary.txt). Both sprite draws dropped from frames 1 to 99 as well (the dispatch
+    kept in every frame), with or without the clear: L at frame 100, 3 of 3
+    (logs/r6d-b-summary.txt). So frame 1's two draws alone are enough for the later change.
+  - The isolated copy built up (r6d/scp5: the program's shader bytes, map, sampler and constants, a
+    window, a flip swap chain and Present(1, 0), the result read every frame): the dispatch alone,
+    with the clear, with the clear and the sprite quad of the result: L in all 40 frames; with a
+    second draw of 100 quads from another texture after the quad: L to frame 30, F from frame 31
+    (0.49 s); with that draw reading the result instead, or drawing one quad: F from frames 18
+    and 22; the second draw without the quad: L throughout (logs/r6d-probe-a.log). Later in the
+    same job the two-draw plan gave L in all 40 frames, and so did its forms without presents or
+    drawing into a texture (logs/r6d-probe-b.log): the driver's own choice, not a fixed rule.
+  So no Direct3D state ours mishandles decides it. After some frames that draw twice after the
+  dispatch, the RTX 3080's driver sometimes changes how it divides in this program and then gives
+  WARP's answer. That is its own choice and does not repeat from run to run. Outside the program
+  its division equals ours bit for bit (the seventh round's check: 2,048 quotients, first dispatch
+  and after 200 more; 555 of them 1 ULP from the correctly rounded quotient on both, 1200 / 300
+  among them, where WARP rounds all 2,048 correctly). So the "state" the ruling asked for is the
+  driver's choice, which no Direct3D call names, and a fix toward WARP would make ours differ from
+  the RTX 3080's own division on 27% of the check's plain quotients. Round 6 run 3's `divk` (Where
+  things stand) adds that the RTX 3080 divides by an immediate 300 exactly (a multiply by the
+  correctly rounded reciprocal) and by a constant buffer's 300 1 ULP short, and ours does the same
+  in every form. The likely "state" is the program's constant buffer value, which the driver folds
+  into the program after some frames. Ruled (2026-11-23, ruling (1), and the graphics bar): both
+  real implementations agree in the program, so ours must give their answer. own_cases `colour_map_frames` copies the program's frames;
+  programs.rs `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` compares
+  ours with WARP alone (WARP gives the same with or without the draws, and the RTX 3080 gives its
+  own quotient in this copy, so the draws decide nothing in the test): WARP
+  `8180803e00000000000000000000803f` (64/255, 0, 0, 1) at frames 1 and 30; the RTX 3080 without
+  presents gave `0000803f0000803f000000000000803f` (1, 1, 0, 1) in three runs (logs/r6f-frames.log),
+  which ours gave before 48f3959d; ours gives WARP's since. The fix: the shaders crate's conversion of `div` refined once after the
+  division (a fused multiply-add for the remainder and one for the correction), which gives
+  exactly 4 here, at that cost on every division (a reciprocal, two fused multiply-adds, a
+  comparison and two selects), keeping the device's quotient where it is zero or the refined one
+  is not finite. Applied by this track (ruling (b) of 2026-11-24) as r9/div.patch.
+  - Measured with that refinement patched into the converter in a trial commit never committed
+    (scratch r6h/div.patch on lower.rs's `F_DIV`, r6h/div.sh; trial 9b484b63, round 6 run 2,
+    22:30 to 22:58 through the queue): the frames case passes (ours equals WARP at frames 1 and
+    30, logs/r6h-a-case.log), and the program's frames 10, 60 and 120 each have 1,705 pixels
+    beyond (largest 255; where they lie not checked), where WARP has 1,889 (logs/r6h-a-program.log): then closer to
+    the RTX 3080's reference than another real implementation, so passing under the graphics bar.
+    The patch is a measurement only: it does not keep the plain quotient where it is not finite
+    (a division by zero would become NaN), which the shaders crate's form must.
 - atg-simplemsaa_pc: frame 10 has 8 pixels beyond the channel tolerance (largest 11), 4 of them
   beyond their tiles' allowance; frames 60 and 120 pass. Real Direct3D's own two runs had 0 and 1
   such pixels in frame 10 (logs/q3j-sysruns.log). WARP, drawing the same program, has 25 such
@@ -391,8 +871,20 @@ the bar's three, three differ:
   run-to-run variation.
 
 Listed cases of section 12, each with its test against real Direct3D:
-- Every listed case passes against real Direct3D on WebGPU, the WebGL 2 cases through the WebGL 2
-  build, and the cases without texture-formats-tier1 or 16-bit norm.
+- Every listed case passes against real Direct3D on WebGPU, but the two cases without
+  texture-formats-tier1 (or 16-bit norm), which need an 11_0 device that configuration truthfully
+  is not (the truthful-level item above, superseded by the orchestrator's ruling of 2026-11-23).
+- Absent on the WebGL 2 build by the feature level rule (round 6 run 6, ruling (2)'s form;
+  failing since round 6 run 3): the WebGL 2 cases ("per-target blends on WebGL 2 without
+  OES_draw_buffers_indexed", "`resinfo` on WebGL 2", run through the WebGL 2 build). Their tests
+  (`targets_blended_and_masked_each_their_own_way_at_10_0`, `view_sizes_and_level_counts_at_10_0`,
+  `an_empty_slots_size_and_level_count_at_10_0`) make 10_0 devices, which the WebGL 2 build
+  truthfully refuses (the WebGL 2 item of the level costs above); they are ignored on that build
+  with that reason, and the check's run of them with `--include-ignored` fails (refused device).
+  At 9_3 neither ability exists to test: `resinfo` is shader model 4's, and 9_3 has no
+  independent blends. Recorded as the texture-formats-tier1 item was ruled: absent on that back
+  end, not counted against the bar. They pass again when the WebGL 2 build serves 10_0 (the
+  packed views route, not built; For the orchestrator).
 - Failing: constant buffers updated per draw, counted on the WebGPU back end itself (com.rs
   `constants_rewritten_between_draws_make_no_bind_group_per_draw_on_webgpu`, ignored as a known
   failure): after each buffer's first draw, 2 more bind groups for 2 more draws, for
@@ -445,6 +937,14 @@ Differences from the RTX 3080 that Wine's verdicts do not show:
   multisample resolve and initial data, where the RTX 3080 writes 0x00 for clears, draws, blends
   and resolves and keeps the bytes it was given (the
   WebGPU back end's `bgra8unorm`, src/packed.rs; Asked).
+- Packed targets blended with `SRC_ALPHA_SAT` and `BLEND_FACTOR` (the seventh round's check,
+  probe20 `packed`: clear (0.4, 0.55, 0.7, 1), factor (0.3, 0.6, 0.9, 0.5), three blends into an
+  8 by 1 target): `B5G6R5_UNORM` the RTX 3080 0x00f0 (green 7, blue 16), WARP 0x0110 (8, 16), ours
+  0x010f (8, 15); `B5G5R5A1_UNORM` the RTX 3080 0x8070, ours 0x808f (green and blue one code each),
+  WARP different per texel. Ours is one code from WARP where the two references are one code from
+  each other, so it passes under the graphics bar; the cause is the 8-bit intermediate's rounding
+  (Departures), kept. Min, max, reverse subtract and the `B5G5R5A1_UNORM` subtract cases equal
+  WARP or lie within one code of a reference.
 - Values just past a half between two codes drawn into a 16-bit normalised texture held as its
   integer twin: 6553.5006 is written 6553 by the RTX 3080 and 6554 by ours; both within the
   specification's tolerance. Filtered samples and mips of twins differ by 1 ULP at most.
@@ -492,9 +992,18 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
 - Optional video formats absent altogether: AYUV, Y410, Y416, P010, P016, Y210, Y216, NV11, AI44,
   IA44, P8, A8P8.
 - Shortfalls of the reported level: none. Every requirement of Microsoft's 10_0, 10_1 and 11_0
-  tables is met at 11_0 on the WebGPU build (G4h runs 1 to 4: `A8_UNORM` storage views, the B5
-  targets, `B8G8R8X8_UNORM` elements and typed buffers, the extended-range display), and of 10_0 on
-  the WebGL 2 build (G4h run 5); the device reports the highest level met.
+  tables but their video columns (Departures) is met at 11_0 on the WebGPU build (G4h runs 1 to 4:
+  `A8_UNORM` storage views, the B5 targets, `B8G8R8X8_UNORM` elements and typed buffers, the
+  extended-range display; run 6: the B5 targets blended in one pass as stored, and `B5G6R5_UNORM`'s
+  "Other Multisample Count RT", now a row; run 8: its 10_1 cell too), and of 10_0 on the WebGL 2
+  build (G4h run 5); the device reports the highest level met. Beside the tables, the level check
+  counts input slots and elements and stage registers (16 up to 10_0, 32 from 10_1; G4h run 8).
+- Typed storage loads (`UAV_TYPED_LOAD`, optional): claimed only where served (G4h run 6). WebGPU
+  loads and stores one storage texture in one program only in `r32float`, `r32uint` and
+  `r32sint`, so a program that loads from a storage view of another format reads and writes it
+  through a buffer of its texels (`StorageReadWriteThroughBuffer`). `A8_UNORM` goes the same way
+  since G4h run 8 (the shaders crate's 5e73ebc2 reads and writes its alpha through a buffer) and
+  claims typed loads, as the RTX 3080 does.
 - Below 10_0, as the RTX 3080 answers: only the 10Level9 table's bits; no buffers, comparisons,
   gathers or storage; `SHAREABLE` for the 17 formats the RTX 3080 reports it for, and shared
   textures made of them but `R8G8B8A8_UNORM` and its sRGB twin (both refused there, measured in
@@ -521,16 +1030,28 @@ Direct3D on devices of 11_0 (`format_support_as_direct3d_reports_it_but_the_name
   build and are marked `#[ignore]` with the reason (Gap list); run them with `--include-ignored`.
 - The six tests with WebGPU features off named in the Gap list's truthful-level item, marked
   `#[ignore]` with that reason.
-- On the WebGL 2 build only: the library tests asking for a device above 10_0 fail by refusing
-  it; the bar's WebGL 2 run takes the 10_0 cases. Of those,
-  `direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does` (an 11_0 device with a 10_1
-  state) is marked ignored on that build with that reason.
+- On the WebGL 2 build only: the library tests asking for a device of 10_0 or above fail by
+  refusing it, as the build is 9_3 (Gap list). The seven 10_0 cases the bar's WebGL 2 run took
+  (nv12, small formats, the four `own_level10` cases and
+  `no_multisampling_without_a_sample_mask_route_at_10_0`) and
+  `direct3d_10s_device_draws_and_keeps_its_state_as_direct3d_does` are marked ignored on that
+  build with that reason; the run now takes `no_device_of_10_0_where_a_stage_reads_fewer_than_128_views`.
+  Since round 6 run 5 also `format_support_as_direct3d_reports_it_but_the_named_shortfalls` (an
+  11_0 device) is ignored there, and `format_support_and_creations_below_10_0_as_direct3d_reports_them`
+  runs there, comparing the WebGL 2 build's 9_x devices with real Direct3D's.
 
 ## What comes next
 
 In order:
-1. atg-simplecomputepc: re-run against WARP once the shaders track's division lands (Asked).
+0. Values moved between a geometry stage's or domain program's pass-through and the pixel
+   stage, as between vertex and pixel programs now (Departures). The tests that ask an 11_0 device
+   with WebGPU features off could run their 10_0 parts on the 10_0 device without
+   texture-formats-tier1 (shader model 4 forms of their cases).
+1. G4h's independent check. Unsafe in the Windows library, a few lines a run (Unsafe).
+   The WebGL 2 bar items: as recorded (ruling (a) of 2026-11-24).
 2. Re-judge the other programs against WARP the same way when they differ (g4h/warpshim).
+   Once the shaders crate accepts unread clip distances behind a geometry shader (Asked), run
+   d3d10core test_clip_distance through the WebGL 2 build again.
 3. The YUY2 view's size, once the interface and shaders tracks give the helper value (Asked).
 4. Constant buffers rewritten per draw: once the WebGPU back end's arena admits uniform buffers
    with other usages (Asked), un-ignore the counters test and run it.
@@ -564,7 +1085,10 @@ Commit before running anything. Do not send this checkout's tree (remote, gpu-jo
 scenes) while another of its jobs waits in the queue: the waiting job then stops ("holds tree
 ..., not the sent ..."). Never run `tools/graphics-rig/gpu-job --help` (it queues `--help` as a
 command). The desktop's checkout needs the shaders crate's submodules, so commands start with
-`git submodule update --init --recursive -q`.
+`git submodule update --init --recursive -q`. Stopping a gpu-job on the Mac does not stop its
+job on the desktop. Before a run, look at the queue with `ssh tom@192.168.2.183
+"C:\wc\bin\pueue.exe -c C:\wc\pueue\pueue.yml status"`. Kill a leftover job of this track (label
+`phase-2-graphics-direct3d-11: ...`) with `... pueue.yml kill <id>`.
 
 - Work in progress through the rig without touching the shared index (G4h): `c=$(g4h/trial.sh
   [--patch <file>]... <path>...)` makes a commit of HEAD with this track's working files of the
@@ -577,6 +1101,9 @@ command). The desktop's checkout needs the shaders crate's submodules, so comman
 - Real programs drawn by WARP: g4h/warpshim is a test-only d3d11.dll (built on the desktop in
   C:\wc\out\phase-2-graphics-direct3d-11\warpshim) that makes every device of the system's
   Direct3D 11 on WARP; pass it to `programs run` as `--dll 'd3d11.dll=<its path>'`.
+- G4h's check in one command: `r11/run.sh <label> <commit> [lint lib webgllib atg atgwarp]`
+  (lint of both builds, the library suite, the WebGL 2 build's cases, atg-simplecomputepc through
+  ours and through WARP, frames copied to r11/ours and r11/warp).
 - The whole bar in one command: `q5-final.sh <label> [steps]` (the literal check, lint of both
   builds, the library suite, the WebGL 2 build's 10_0 cases, Wine's two files, scenes, programs,
   sizes and load times, building ahead, Wine's d3d10core through the WebGL 2 build). Steps:
@@ -653,6 +1180,21 @@ command). The desktop's checkout needs the shaders crate's submodules, so comman
 
 ## Tests
 
+At G4h round 6 run 2: programs.rs gains
+`colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` (own_cases
+`colour_map_frames`, compared with WARP, a known failure); the program's compute shader is the
+constant `FRACTAL` shared with `colour_map_edge`.
+At G4h run 10: programs.rs gains `sample_masks_without_sample_0_as_direct3d_applies_them`
+(own_cases `sample_masks`), and own_cases `packed_blend_reads` also blends within one draw (a list
+of ten triangles, ten instances, strips with culled odd triangles, an indexed strip with a
+restart, and four half-transparent triangles over one `B5G5R5A1_UNORM` target); `packed_codes`
+prints a 1-bit alpha as 00 or ff, so it is compared exactly. The WebGPU back end's unit test
+`draws_split_into_their_primitives_in_order` (packed.rs).
+At G4h run 8: unit 7 (shader.rs's new
+`stage_values_past_the_locations_move_into_free_ones_both_stages_agree_on`); programs.rs gains
+`every_input_slot_and_stage_register_as_direct3d_draws_them` (own_cases `stage_registers`: 32
+input slots, 15, 30 and 31 values between stages, a draw with inputs and no input layout), and
+own_cases `a8_storage` also loads its storage view.
 At G4h run 5: programs.rs 70 (8 ignored); new: `small_formats_read_and_drawn_at_10_0_as_direct3d_does`
 (own_cases `small_formats`). The WebGL back end's unit tests 17 (two new, format.rs).
 At G4h run 4: programs.rs 69 (8 ignored, the known failures listed); the infrastructure crate's
@@ -689,18 +1231,61 @@ listed case of section 12 has its test against real Direct3D.
   call can rely on them. This is how Direct3D's drivers report formats they do not multisample
   (the RTX 3080 for `R32G32B32_*`), and the 10_0 table requires these bits without requiring any
   sample count. It applies on the WebGL 2 build, which has no route for a partial sample mask.
-- 16-bit packed targets (G4h run 2): drawn and blended in an 8-bit format and rounded to their
-  bits at each end of a pass part, not after each draw, so a texel blended twice in one pass is
-  rounded once. The specification allows blending at more precision than the format's; against
-  the RTX 3080 it leaves more channels a code apart than WARP does (72 against 12 of the case's
-  twice-blended codes), never more than one code. Rounding after each draw would split every
-  pass at every draw.
+  The seventh check called this claim copied from the requirement it is checked against. Kept
+  (G4h run 8), with the reason: the bits describe a multisampled texture's loads and resolves, of
+  which none can be made there, so no call they allow exists to serve or fail; real drivers report
+  them the same way for formats they do not multisample, and the alternative, deriving them from
+  a route for textures that cannot exist, would be the same claim under another name. The owner
+  is told (For the owner).
+- Stage values past the back end's inter-stage locations (G4h run 8): the shaders crate places
+  every value at location = register (its design, so two stages converted apart agree), and
+  Direct3D numbers 32 registers, one of them the position, where wgpu on Direct3D 12 has 31
+  locations (0 to 30). Where a pixel shader reads a location past the back end's, the front moves
+  its inputs into order from 0, and moves the vertex shader's outputs to meet them, after
+  conversion (shader.rs `input_moves`, `output_moves`, `relocate`: the naga module's bindings,
+  the reflection and the content key). Only such pairs are converted again; nothing changes at
+  run time. Pairs that do not fit after moving, or that also pass linked values (clip distances,
+  depth clamp in the program), are refused with `VaryingsBeyondLimit`, counted and warned. Not
+  moved: values passed by a geometry stage's pass-through or a domain program (their programs are
+  made apart; no measured program passes 31 values there).
+- Input slots and elements past the back end's (G4h run 8): wgpu on Direct3D 12 takes 16 vertex
+  buffers and 30 attribute locations; an element of a slot from 16 or of an input register from
+  30 is fetched in the vertex program (`VertexPulledInShader`), each from a storage buffer, so
+  Direct3D's 32 of each are served. The level check counts both (device.rs
+  `stage_values_served`: 16 registers up to 10_0, 32 from 10_1).
+- A draw whose vertex shader reads an input the bound input layout (or none) does not give is
+  dropped with one warning, as both the RTX 3080 and WARP drop it (the seventh check's slots32
+  with refused layouts); before, the back end refused the pipeline and the device was removed.
+- 16-bit packed targets (G4h runs 2, 6 and 10): drawn and blended in an 8-bit format and rounded
+  to their bits at each end of a pass part and before every blend that reads the target
+  (`PackedTargetReadByBlend` ends the pass part there), so every blend reads values the format
+  holds, as on real Direct3D (the sixth check found blends reading the 8-bit values of earlier
+  draws in the same pass, the ninth those of earlier primitives of the same draw). WebGPU has no
+  5- or 6-bit format and no blending that reads a target in the program, so a draw of several
+  primitives with such a blend is drawn one primitive at a time, instance by instance, a pass
+  split and a rounding between each (`packed::pieces`; a strip's odd triangles with front faces
+  reversed, as the strip reverses them); indirect arguments, and a strip's indices where it
+  restarts, are read back first, which waits on the GPU. Draws without such a blend are not split:
+  a texel they write is rounded later, which gives the same value. Each primitive of such a blend
+  costs a pass split. Rounding from 8 bits adds up to `(2^n - 1) / 510` of
+  a step to exact rounding: 0.56 of a step for 5 bits, 0.62 for `B5G6R5_UNORM`'s 6-bit green,
+  0.02 past the specification's 0.6. Judged under the orchestrator's rule (seventh check's case
+  rounding): the RTX 3080 itself rounds to 8 bits and drops the low bits (up to a whole step off:
+  0.85295 gives 27 where WARP gives 26), WARP rounds exactly, and ours is within one code of both
+  on every channel; in 6 of the check's 24 channels ours gave a code neither gave, by 1. A held
+  format wider than 8 bits would remove it, but blending into a float twin would not clamp as a
+  normalised target does; not built.
 - Multisample loads and resolves of formats with no multisampled textures (G4h run 2): reported
   where Microsoft's tables require them, though no sample count of the format exists, exactly as
   the RTX 3080 reports them (`R32G32B32_*`: load from 10_1, the float one's resolve from 10_0;
   `B4G4R4A4_UNORM`'s resolve). Nothing can use them, so nothing is claimed that is not served; the
   other reading, building multisampled `R32G32B32` textures, would claim counts the RTX 3080
-  itself refuses (and core WebGPU multisamples no `rgba32` format). For the owner too.
+  itself refuses (and core WebGPU multisamples no `rgba32` format). For the owner too. Since G4h
+  run 4 the same holds where the device reports no multisampling at all (the WebGL 2 build), and
+  since run 9 for every format of which the device draws no count (device.rs `no_samples`: no
+  `MULTISAMPLE_RENDERTARGET`), which on a back end without texture-formats-tier1 are the integer
+  twins and the 32-bit float pairs and quadruples; `CheckMultisampleQualityLevels` answers no
+  count of each.
 
 - Integer target clears follow the RTX 3080 where it departs from the functional specification's
   clamp for values past 32 bits (`target_integer`); storage views keep the clamp
@@ -721,7 +1306,14 @@ listed case of section 12 has its test against real Direct3D.
 - Normalised clear values of integer twins round halves toward zero, as the RTX 3080 clears.
 - 16-bit normalised textures held as integer twins are blended nowhere (refused by name) where plan
   4.12 blends them in the program (`BlendInShader`, refused by the shaders crate).
-- 11_0 is reported with the shortfalls of the Gap list, against section 9's rule (Gap list).
+- The level reported is the highest whose every requirement of Microsoft's format tables is met
+  (section 9's rule), but for their video columns: video is reported through its own interface
+  (`ID3D11VideoDevice`), which a device of any level may lack (`D3D11_CREATE_DEVICE_VIDEO_SUPPORT`
+  fails creation where the driver has none), and ours serves none (Gap list, Absent features), so
+  `VIDEO_PROCESSOR_OUTPUT` and the other video bits are never claimed. The RTX 3080 claims
+  `VIDEO_PROCESSOR_OUTPUT` of the formats the 10_0 and 11_0 tables mark (10, 24, 28, 29, 87, 88,
+  and 89 at 11_0). required.rs says so; its generator (scratch g4h/required_rows.py) names why it
+  skips them.
 - A swap chain on another process's window is refused with `DXGI_ERROR_INVALID_CALL` (warned): the
   WebGPU back end presents through a flip-model swap chain, which presents only to the process's
   own windows.
@@ -734,7 +1326,8 @@ listed case of section 12 has its test against real Direct3D.
 - The library reads `WEBGPU_OFF` beside `WEBGL_OFF`, so routes browsers without a feature take are
   tested natively against real Direct3D.
 - The feature level check probes the back end for cube arrays at device creation (no `Caps` feature
-  names them); a refusal stops the level at 10_0, which is how the WebGL 2 build reports 10_0.
+  names them); a refusal stops the level at 10_0. (The WebGL 2 build stops lower, at 9_3, by its
+  16 texture units a stage since round 6 run 3.)
 - Typed buffers read through texture copies copy the whole buffer into a texture of each view
   format the first time a draw reads it after a write.
 - Aliased lines drawn into multisampled targets by the back end's rule are not compared with
@@ -831,25 +1424,46 @@ listed case of section 12 has its test against real Direct3D.
   storage rectangles through the shaders crate's storage clear program; 3D target rectangles copied
   into each slice from a cleared slice.
 - The library draws through wgpu on Direct3D 12 only.
+- The bar's two WebGL 2 items (per-target blends without OES_draw_buffers_indexed, `resinfo`)
+  are recorded as absent on the WebGL 2 build by the feature level rule, the form ruling (2) of
+  2026-11-23 gave the texture-formats-tier1 item, though no ruling names them (round 6 run 6):
+  that build is truthfully 9_3, and 9_3 has neither shader model 4's `resinfo` nor independent
+  blends, so the bar cannot ask them of it without asking for a level it does not meet.
+
+## For the orchestrator
+
+- Both rulings of 2026-11-24 are applied: the division patch is in (48f3959d) and the WebGL 2
+  items stay absent on that build by the feature level rule. Nothing waits on you for G4h.
+- The unsafe removal list's item 10 (sharing.rs `unsafe impl Sync for Shares`, "put the cells
+  inside a Mutex") cannot be done as written: the shares are `Weak<Share>` of `Rc`, which are not
+  `Send`, so a `Mutex` of them is not `Sync` either. It needs the shares to be `Arc` (and their
+  cells locks) or kept per thread; not started.
 
 ## For the owner
 
-- G4h needs two commits in another track's crate, both written and tested by this track (scratch
-  g4h/xr-infrastructure.patch and bgrx8-infrastructure-row.patch): extended-range swap chains and
-  one `B8G8R8X8_UNORM` row in the infrastructure crate (the Direct3D 12 track's, which has not run
-  on it since 2026-11-21). Until they land the device reports 11_0 with two formats short. If the orchestrator lets
-  this track commit them, the milestone closes in one run.
 - Truthful levels cost the browsers: WebGPU allows 1 or 4 samples only, so a browser's Direct3D 11
-  can never be 11_0 (11_0 requires 8-sample targets), and without texture-formats-tier1 it is 9_3
-  until resolves of 32-bit float targets and multisampled integer twins are built; the WebGL 2
-  build is 9_3 until its multisampling is. Programs requiring 10_0 or 11_0 then refuse to start
-  there, as on hardware without the level. Building 8 samples from two 4-sample passes is possible
-  but costly in every draw; say if you want it.
+  is 10_0 at most: 10_1 already requires 8-sample `B5G6R5_UNORM` targets, and 11_0 8 samples of 47
+  formats and 4-sample 32-bit float targets core WebGPU never multisamples. No exact route to 8
+  samples exists (plan 4.12: two 4-sample passes run the pixel shader twice, which storage writes
+  see). Without texture-formats-tier1 it is 10_0 too since G4h run 9 (resolves of 4-sample
+  `R32_FLOAT` targets by a draw). Counting a stage's 128 shader resource views (round 6 run 3)
+  takes the WebGL 2 build to 9_3 (16 texture units a stage) and a browser's WebGPU at Chrome's 48
+  sampled textures a stage to 9_3, unless an adapter offers 128. Programs requiring a higher level
+  then refuse to start there, as on hardware without the level. Natively on the RTX 3080 the
+  device is 11_0.
+- Video is read as no part of a feature level (Departures): the tables' video columns are not
+  required of ours, which serves no video device. If you read them as required, 10_0 and above
+  need a video processor (`ID3D11VideoDevice`, `VideoProcessorBlt`) built first.
 
 - `R32G32B32_*` and `B4G4R4A4_UNORM` report the multisample load and resolve bits Microsoft's
-  11_0 table requires while reporting no sample count, as the RTX 3080 does (Departures). If you
-  read the tables as requiring real multisampled textures of them, say so: then 11_0 needs those
-  textures built (natively on the RTX 3080 through `rgba32` twins; no route in core WebGPU).
+  11_0 table requires while reporting no sample count, as the RTX 3080 does (Departures). The
+  WebGL 2 build, which makes no multisampled texture at all, does the same for every format at
+  10_0 (G4h run 4; without it that build would be 9_3): the bits promise nothing a program can
+  use, as no multisampled texture of the format can be made. For these formats the level check
+  cannot find the two bits missing (device.rs `no_samples` takes them from the same table), so the
+  level there rests on this reading, not on a check. If you read the tables as requiring
+  real multisampled textures of them, say so: then 11_0 needs those textures built (natively on the
+  RTX 3080 through `rgba32` twins; no route in core WebGPU), and the WebGL 2 build is 9_3.
 
 - Sharing at 9_x copies the RTX 3080's own contradiction: `R8G8B8A8_UNORM` and its sRGB twin are
   reported shareable and refused when made, and `R32_FLOAT` is made though not reported
@@ -858,6 +1472,9 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Interface changes
 
+- 8a714142 "interface: named the slow paths of a packed target read by a blend and of a storage
+  texture loaded and stored through a buffer": `SlowPath::PackedTargetReadByBlend` and
+  `SlowPath::StorageReadWriteThroughBuffer`, at the list's end (G4h run 6).
 - 45a4e0b7 "interface: named the slow path of packed targets drawn wider and rounded to their
   bits": `SlowPath::PackedTargetQuantised` (G4h run 2).
 
@@ -877,6 +1494,135 @@ listed case of section 12 has its test against real Direct3D.
 
 ## Measurements
 
+G4h round 6 run 2 (2026-11-23, Pacific; desktop i9-9900K with the RTX 3080, driver 32.0.16.2101,
+through the queue, not alone, the OpenGL track's conformance runs holding the hazard group between
+steps). The whole bar at a93c8576, this run's last code (main/q5-final.sh r6g lint lib webgllib bar
+wine10gl, logs/r6g-*), 17:06 to 21:45:
+- Lint of both builds clean. Library: com 15 pass (1 ignored), programs 68 pass (9 ignored: run
+  10's 8 and the new frames case), "lifetimes: seeds 1..9 of 300 steps each" in the log. The WebGL
+  2 build's 10_0 cases 7 pass (1 ignored).
+- Wine d3d11 152 of 166, d3d10core 110 of 111, the same failing tests as at run 9;
+  d3d10core through the WebGL 2 build 96 of 111, as at run 9 (test_clip_distance's crash, Gap list).
+- Scenes 137 pass, 0 fail, 2 absent; through the WebGL 2 build 95 pass, 17 fail, 30 absent.
+- Programs: the bar's three and atg-simplebezierpc, atg-simpleinstancingpc,
+  godot-platformer-2d-d3d11 and sdk-tutorial02, 04 to 07 pass with 0 pixels beyond;
+  atg-simplecomputepc 154,515 beyond in frames 10, 60 and 120 (Gap list); atg-simplemsaa_pc frame 10
+  8 beyond (largest 11), as at run 8. bgfx: 01, 24, 35, 37, 38 pass, 26-occlusion 6,458 beyond in
+  each frame (the overlay's memory line, Gap list).
+- The library with `--ignored` (r6d/final.sh, 21:45 to 22:21, logs/r6g-ignored.log): com 1 and
+  programs 9 fail, exactly the ten known failures.
+- The front's tests (front 60, unit, cache) were not rerun: no commit of this run touches
+  crates/direct3d-11 (last tested at 3fe49ed3, round 6 run 1).
+- Sizes, load times and building ahead were not rerun: no code of this run is in the shipped
+  library (own cases and tests only).
+
+G4h round 6 run 1 (2026-11-23, 09:50 to 10:10 Pacific; desktop i9-9900K with the RTX 3080, driver
+32.0.16.2101, through the queue in the hazard group, one job at a time, after the OpenGL track's
+conformance run):
+- atg-simplecomputepc's middle pixel (inside the set) per frame, F the colour map's first texel
+  (the reference), L its last (ours): real Direct3D with frames 1 to 12, 30, 60 to 62 and 120
+  captured: LLLLLLLLLLLL FFFFF (logs/r6c-realdense.log, r6c-dense-summary.txt). Its trace replayed
+  by d3dretrace five times with snapshots at frames 10 to 100 by tens: 50 F; once with snapshots at
+  frames 1 to 12: 12 L; once at frames 8 to 11: L F F L (logs/r6c-rep1-summary.txt,
+  r6c-replay2.log). Through ours (frames 10, 60, 120): 154,515 pixels beyond in each, as before
+  (logs/r6c-o1.log); ours' frame 10 against the replay's L frame 10: 0 beyond, largest 0.
+- The isolated copy r6c/scp3: L at 0.008 s, after 101 dispatches, at 3 s and 9 s
+  (logs/r6c-replay1.log).
+
+G4h run 9 (2026-11-23, Pacific; desktop i9-9900K with the RTX 3080, through the queue, not alone,
+the OpenGL track's conformance runs holding the queue's hazard group for most of the run):
+- The whole bar at 968aef83 (main/q5-final.sh r9-bar, logs/r9-bar-*): lint of both builds clean;
+  library com 15 (1 ignored) and programs 67 (8 ignored) pass, the run-9 test among them. The
+  later steps (the WebGL 2 build's cases, Wine's files, scenes, programs, sizes, building ahead)
+  were still queued behind the OpenGL track's job at 03:45 when this run ended; the detached run
+  goes on writing logs/r9-bar-*. Run 8's whole bar (below) is the last complete one.
+- Front 60, unit 7, cache 1 and the infrastructure crate's 11 tests pass at 6572e2e9's tree (the
+  desktop, as the rented x86 machine was being replaced); lint of the front, the infrastructure
+  crate and the WebGPU back end clean at e295cb5a's tree (rented x86); the WebGPU back end's own
+  tests pass but `wireframe_fill_matches_direct3d`, the WebGPU track's known failure.
+- The literal check at e295cb5a (rented x86, logs/r9-lit-front.log): nothing in this track's
+  files but an "unparsed" line for the deleted src/required.rs, which no tree tracks (the remote
+  copy's stale file list); the `SUPPORT2_SHAREABLE`, `CPU_LOCKABLE`, `MIP_AUTOGEN` and level
+  redefinitions the infrastructure crate's new constants made are fixed (505618c1) and the old
+  resolve refusal's baseline line cut (e295cb5a).
+- atg-simplecomputepc's dispatch copied whole (g4h9/scp2): the RTX 3080 gives (255, 255, 0) inside
+  the set in all 8 combinations of colour map, sampler and device, in both sessions and through
+  the forwarder (logs/r9-scp2b.log, r9-scp2c.log, r9-scp2fwd.log).
+
+G4h run 8 (2026-11-22 and 23, Pacific). The whole bar at c1abc9c4 (this track's code at
+d0422d34; main/q5-final.sh r8-bar, logs/r8-bar-*). Machine: the desktop (i9-9900K, RTX 3080),
+through the queue, not alone, other tracks' jobs queued (an OpenGL conformance run and the shaders
+track's tessellation tests).
+- Lint of both builds: clean. Front 60, unit 7, cache 1 and the infrastructure crate's 11 tests,
+  and clippy, pass on the rented x86 machine (trials 7a999bc2 and the code of d0422d34).
+- Library: com 15 pass (1 ignored), programs 66 pass (8 ignored): run 7's 65 and
+  `every_input_slot_and_stage_register_as_direct3d_draws_them`. Before the last fix that test
+  failed (logs/r8-t1-lib.log): slots past 16 were also bound as vertex buffers, which wgpu refused
+  ("Vertex buffer index 16 is greater than the device's requested `max_vertex_buffers` limit
+  16"); d0422d34 binds only the slots the back end fetches. Its 32-slot draw, 31 values and the
+  dropped draw without a layout now print what the RTX 3080 prints, byte for byte.
+- The WebGL 2 build's 10_0 cases: 7 pass, 1 ignored.
+- Wine d3d11: 152 of 166; d3d10core: 110 of 111; d3d10core through the WebGL 2 build: 97 of 111.
+  The failing tests are the same as at run 7 (compared by name), all in the Gap list.
+- Scenes: 137 pass, 0 fail, 2 absent. Through the WebGL 2 build: 95 pass, 17 fail, 30 absent, as
+  before.
+- Programs: as at run 7. The bar's three and eight more pass; atg-simplemsaa_pc frame 10 has 8
+  pixels beyond (largest 11; WARP 25, largest 21), passing under the orchestrator's rule;
+  atg-simplecomputepc 154,515 pixels beyond in each frame (WARP 1,889), failing (For the owner);
+  bgfx as before (bgfx-26-occlusion's memory line, an absent feature).
+- Literal check (rented x86 machine, at 1531751a's tree): nothing in this track's crates; three
+  recorder baseline lines cut.
+
+G4h run 7 (2026-11-22, Pacific). The whole bar at 54fc06fc (q5-final.sh r7-bar, logs/r7-bar-*).
+Machine: the desktop (i9-9900K, RTX 3080), through the queue, not alone unless noted, with other
+tracks' jobs queued.
+- Literal check: nothing in this track's crates. The webgl back end's `clear_buffer::BLOCK` line
+  is new because the kernel added `ECHO_BLOCK`; that line belongs to the WebGL track. At 39658541
+  (rented x86 machine, logs/r7-lit2-front.log): nothing in this track's crates.
+- Lint of both builds: clean. Front 60, unit 6, cache 1 and the infrastructure crate's 11 tests,
+  and clippy, at 39658541's code (trial d0f0585e on the rented x86 machine): pass.
+- Library: com 15 pass (1 ignored), programs 65 pass (8 ignored). The WebGL 2 build's 10_0 cases:
+  7 pass, 1 ignored.
+- Wine d3d11: 152 of 166 pass. The 14 failures are the same tests as at run 5, all in the Gap
+  list. d3d10core: 110 of 111 (test_desktop_window).
+- Scenes through the library: 137 pass, 0 fail, 2 absent. Through the WebGL 2 build: 95 pass, 17
+  fail, 30 absent, as before. Wine's d3d10core through the WebGL 2 build: 97 of 111 pass. The 14
+  that fail are the same tests as at run 5, all listed under the Gap list's WebGL 2 item.
+- Programs: the eleven pass as before. atg-simplemsaa_pc frame 10: 8 pixels beyond (largest 11), 4
+  beyond their tiles' allowance, as before. atg-simplecomputepc: 154,515 beyond in each frame, as
+  before. bgfx: five of six pass or run to their end, and bgfx-26-occlusion fails on its memory
+  line, as before.
+- Release modules (built from 54fc06fc's tree): `wcontainers_directx.dll` is 14,581,760 bytes on
+  WebGPU and 10,154,496 on WebGL 2. The Direct3D 12 track's `wcontainers_d3d12.dll` is 13,983,744.
+  Load times, 20 runs each, `gpu-job --alone`, 18:06, given as min / median / max: the system's
+  d3d11.dll 1,122 / 1,185 / 1,425 us; ours on WebGPU 1,575 / 1,688 / 2,585 us; ours on WebGL 2
+  1,059 / 1,137 / 1,910 us; the Direct3D 12 module 1,586 / 1,691 / 2,679 us.
+- Building ahead (r7-bar-warm, 18:34 to 18:44; two warm runs of five programs): Godot 3D built its
+  61 recorded combinations at start and drew all 61 by the end. It built up to 124 more ahead and
+  drew none of them, and built 26 at their first draw. The other four programs built their
+  recorded combinations at start and drew them. All ten runs pass against real Direct3D. This is
+  the same as agents run 3; the miss is still the tuple (item 5 of What comes next).
+
+G4h run 6 (2026-11-22, Pacific). Logs in scratch logs/r6*; the desktop (i9-9900K, RTX 3080),
+library tests through the queue, not alone, other tracks' jobs queued.
+- Trial 3 (g4h/r6-trial3.commit, r6c): lint of the interface crate, both back ends, the
+  infrastructure crate, the front and the library, both builds, clean; the interface crate's and
+  the front's tests pass (front 60, unit 6, cache 1 after the recording back end took two samples
+  too); the library's `packed_targets`, `typed_storage`, `colour_map`, `format_support`,
+  `every_format_requirement`, `a8_storage` and `extended_range` tests, 15 pass, 2 ignored (as
+  before), against the RTX 3080. The WebGPU back end's own `raster` test
+  `wireframe_fill_matches_direct3d` fails (214 pixels, on Vulkan) at HEAD 2338bf61 as at the
+  trial (r6d-raster-head.log): not this change's; the WebGPU track's test.
+- Trial 4 (the init conversion's dead read-write retry dropped): lint of the front and the
+  library and the front's tests pass. The whole bar at aa99df0f (q5-final.sh r6-bar): the
+  literal check found two new findings of this run (the fractal case's 300.0, fixed in 196fca6a)
+  and one baseline line to cut (cut, 457ff8a1); lint of both builds clean; the library suite then
+  waited in the queue's hazard group from 15:24 to past 17:20 behind another track's job
+  (a `cargo test -p wcontainers-shaders --no-run` held since 15:47), so the whole library suite,
+  Wine's files, scenes and programs were not run again this run.
+- atg-simplecomputepc through ours at trial 1: 154,515 pixels beyond, as before; real Direct3D
+  through the rig at 14:40: passes, 0 beyond. The replicas (own_cases `colour_map_edge`): real and
+  ours both give 0x3f7ffffc and the colour map's last texel, bit for bit (r6a-*; Gap list).
 G4h run 5 (2026-11-22, Pacific). Logs in scratch logs/g4h5-*; the desktop (i9-9900K, RTX 3080)
 through the queue, not alone, other tracks' jobs queued; the rented x86 machine (96 cores, load 0
 to 5).
@@ -1022,6 +1768,10 @@ Earlier runs' measurements are in this file's git history.
 - No front (recording back end) tests for 1D and 3D textures or queries; they are checked against
   real Direct3D instead (`own_volumes`, `own_queries`, the rig's textures scene).
 - The rig's replacement check cannot see wcontainers_directx.dll behind the forwarder.
+- The refined `div` (48f3959d) costs every 32-bit float division on the DXBC route a reciprocal,
+  two fused multiply-adds, an absolute value, two comparisons and two selects more than the
+  device's division; not measured. The DXIL route keeps the device's quotient (its `fdiv` is not
+  refined; asked of the shaders track).
 
 ## Asked of other tracks
 
@@ -1037,23 +1787,74 @@ Earlier runs' measurements are in this file's git history.
   format features are on; wgpu-core takes it away on the device);
   the uniform arena admitting uniform buffers whose other usages lie within the arena's
   own; `B8G8R8X8_UNORM`'s X byte kept as given and written 0 by clears and draws.
-- WebGL 2 track: the 10_0 format abilities of the Gap list's WebGL 2 item; copies from a depth
-  texture into a colour texture stored as a half float keeping every bit pattern; mips of whole
+- WebGL 2 track: copies from a depth texture into a colour texture stored as a half float keeping every bit pattern; mips of whole
   3D views as Direct3D generates them.
 - Interface and shaders tracks: a helper value giving a program a view's width other than its
   texture's (YUY2 views).
 - Shaders track: blending into integer twins (`TargetInShader::combine`, built in its run 80 for
-  single-sample targets; not yet used here); atg-simplecomputepc's division; the geometry replay's streams past
+  single-sample targets; not yet used here); the geometry replay's streams past
   the first; an aliased-line route for multisampled targets (with the interface track).
 - NIR track: import `wcontainers_gpu::CUBE_FACES` in crates/nir/src/lib.rs in place of
   its own copy; until then the literal check reports that copy as a redefinition (its one finding
   outside the shaders and OpenGL crates' new code that touches this track).
+- Shaders track: `stage::capture_program` accepting a geometry shader that reads fewer clip or
+  cull distances than its vertex program writes (none, in Wine's d3d10core test_clip_distance:
+  vertex outputs `SV_ClipDistance` mask 1, geometry inputs none); since 03b897de it refuses with
+  `GeometryDistancesRead`, which removes the WebGL 2 build's device there (Gap list).
+- Shaders track, DONE by this track under the orchestrator's ruling (b) of 2026-11-24: DXBC
+  `div` of 32-bit floats gives WARP's quotient (48f3959d, r9/div.patch: the device's quotient
+  refined once by its fused remainder, kept where it is zero or the refined one is not finite;
+  correctly rounded except where that remainder is flushed), and the crate's compute comparisons
+  it broke accept either real answer (25d84e56, round 7 run 2),
+  noted in your status's "Requests to other tracks". Tests that hold it: programs.rs
+  `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it`,
+  `divisions_give_a_real_devices_quotient`, `colour_map_sampled_at_its_edges_as_direct3d_samples_it`.
+  Still asked: DXIL's `fdiv` likewise for the Direct3D 12 front, if you keep the two routes alike.
 - Rig track: the rig names the desktop's folder by the branch, which is `main` for every track now
   (this track runs its scratch copy, How to run).
 - Rig track: a way to run Wine's dxgi file with its Direct3D 12 tests kept off the GPU; the scene
   programs reporting every `--dll` library they loaded.
 
 ## Literals
+
+- G4h round 6 run 6 (2026-11-24): context.rs reads indirect draw and dispatch arguments as named
+  words (`ARGUMENT_WORD_BYTES`, `DRAW_ARGUMENT_WORDS`, `INDEXED_DRAW_ARGUMENT_WORDS`,
+  `DISPATCH_AXES`, destructured by `argument_words`), takes a structure count's size from
+  `COUNTER_BYTES` and names the depth bias's bits and refusal: 24 baseline lines cut (180958a6),
+  546 left. The check at that tree on the rented x86 machine (logs/r10-lit2-front.log) finds
+  nothing in this track's files but the stale "unparsed" line for the deleted src/required.rs, and
+  host-process's `NANOSECONDS` (that file's).
+
+- G4h round 6 run 5 (2026-11-24): own_cases' `restated` 300.0 is gone: both atg-simplecomputepc
+  cases and the new `divisions` case take the count as `INSIDE_LOOPS / 4.0`, the program's loop
+  count inside the set named once at the example's top level.
+
+- G4h round 6 run 4 (2026-11-24): format.rs's `vertex_size` table (six lines), the two numbers
+  and the message of `unserved` and `vertex_alignment`'s 4 (`size_of::<u32>()`) are gone: ten
+  baseline lines cut, 570 left. The check on the desktop (logs/r8a-literals.log, r8b-literals.log)
+  finds in this track's files: three multi-line strings of context.rs and device.rs reported as
+  new and as stale at once, only because the desktop's checkout ends lines with `\r\n` (not
+  findings); and own_cases' 300.0 (atg-simplecomputepc's iteration count) as `restated`, equal by
+  chance to `ROWS`, a constant inside a function of wcontainers-gpu-test's route suite. They are
+  two facts; naming the count in the example still restates it (a test's constant counts), so
+  it is left for the orchestrator (For the orchestrator). Also listed, in another track's file:
+  host-process's `NANOSECONDS` redefines the front's query.rs constant; that is that file's to
+  import from a shared place, not this front's.
+
+- G4h round 6 run 3 (2026-11-24): the check at e4ffcf04 on the desktop (logs/r7f-literals.log)
+  finds nothing in this run's new lines (a stage's slots are a named struct, not an array of
+  three). The recorder's old 48 baseline line is cut (8997446e): 580 lines. Four findings in this
+  track's files were new since round 6 run 1 because other crates gained constants. They are fixed:
+  the two refusal strings of moved stage values are imported from the infrastructure crate's
+  `stage_registers`; own_cases' iteration count carries a mark; and a byte pattern's `% 256` is a
+  cast. The whole tree's check fails on other tracks' lines (2,697 to act on, nearly all outside
+  this track).
+
+- G4h round 6 run 1 (2026-11-23): the context's slot counts are named (`CONSTANT_BUFFER_SLOTS`,
+  `RESOURCE_SLOTS`, `SAMPLER_SLOTS`, `TARGET_SLOTS`, `STREAM_OUTPUT_SLOTS`; bf0291d7) and their ten
+  baseline lines cut (3fe49ed3): this track's crates hold 581 baseline lines (591 before). The
+  check at that tree on a rented machine (logs/r6c-t1lit-front.log) finds nothing new in this
+  track's files but the remote copy's stale "unparsed" line for the deleted src/required.rs.
 
 - G4h run 3 (2026-11-22): the check at f23c2563 finds nothing in this track's crates (one
   restatement in the new example, a wait equal to another crate's constant, changed in that
@@ -1092,9 +1893,31 @@ Earlier runs' measurements are in this file's git history.
 Left: the export names in build.rs (a build script cannot import the crate it builds), and the rest
 of the fix list (orchestrator magic-literals/fix-graphics.md), a part per run.
 
+## Unsafe
+
+- crates/direct3d-11: none since round 7 run 1 (b22d18cc); `[lints] workspace = true`,
+  so `unsafe_code` is forbidden there. A map hands out `Mapped { data: Shadow }`, `Shadow` being
+  `Rc<[Cell<u8>]>` (object.rs): the Windows library gives the program `data.as_ptr()`, tests
+  read and write with `Cell::get`/`set`, and the device reads or fills the bytes through
+  `shadow_bytes` (`Rc::make_mut` and zerocopy's `as_mut_bytes`, no copy while no `Mapped` is
+  kept; one kept past its unmap keeps its old bytes and the device goes on with a copy).
+- crates/directx: 1060 lines (1076 at round 7's start). Round 7 run 1: the four reads
+  and writes of mapped bytes (sharing.rs two, objects.rs, the deferred context's unmap), `Locked`'s
+  `ManuallyDrop` (now an `Option` taken at drop), `as_one`'s transmuted null `OutRef` (now
+  `OutRef::default()`) and a test's write (com.rs). Run 2: nine callers of `same_fields` (the 11.3
+  texture descriptions both ways, the Direct3D 10 texture descriptions, the 11.3 rasterizer
+  descriptions both ways) now copy field by field. Left of the removal list (boundary-unsafe-primitives
+  removals-by-track.md): `same_fields` (10: the function and the view, depth-stencil union and
+  10.1 blend callers), Direct3D 10 descriptions (8), `words` (1), calls into
+  our own objects (5), `creating`'s `OutRef` (1, 55 generated callers), `force_unlock` (3),
+  `Child`'s `ManuallyDrop` device (1; counted.rs releases that reference by hand, so an `Option`
+  would release it twice), `Shares` (1; For the orchestrator).
+- Needs a primitive: nothing new.
+
 ## Licences
 
-G4h run 1 added no dependency. Downloaded to scratch downloads/msdocs: Microsoft's 10_0, 10_1 and
+Round 7 run 1 added `zerocopy` 0.8 (BSD-2-Clause OR Apache-2.0 OR MIT, already in the workspace)
+to the front. G4h run 1 added no dependency. Downloaded to scratch downloads/msdocs: Microsoft's 10_0, 10_1 and
 11_0 format support pages (markdown from github.com/MicrosoftDocs/win32, CC-BY-4.0 text; the
 table in required.rs is facts generated from them, not their text).
 
@@ -1113,5 +1936,8 @@ the programs' cache files under C:\wc\out\phase-2-graphics-direct3d-11\gpu-cache
 test-only WARP d3d11.dll (G4h run 3, built with no dependency; 2.6 MB with its build folder)
 in C:\wc\out\phase-2-graphics-direct3d-11\warpshim, the test-only
 d3d10_1.dll forwarder in C:\wc\out\phase-2-graphics-direct3d-11\d3d10_1fwd, and the LF worktree
-C:\wc\src\phase-2-graphics-direct3d-11-lf for the literal check. On the Mac (not the desktop),
+C:\wc\src\phase-2-graphics-direct3d-11-lf for the literal check, and apitrace 14.0 (MIT; a
+released build, 48 MB without its debug files, in C:\wc\d3d11-tools\apitrace-14.0, used to trace
+and replay programs for testing only, never a dependency; its trace and dumps in
+C:\wc\out\phase-2-graphics-direct3d-11\r6c, 7 MB). On the Mac (not the desktop),
 rustup's x86_64-pc-windows-msvc standard library for 1.99.0.

@@ -55,6 +55,9 @@ impl<I: Iterator<Item = u32>> Frontend<I> {
         // this block has no entry in `ctx.body_for_label`, it must be the
         // function's first block. This always has body index zero.
         let mut body_idx = *ctx.body_for_label.entry(block_id).or_default();
+        if !super::within_nesting_limit(body_idx, ctx) {
+            return Err(Error::ControlFlowTooDeep(super::NESTING_LIMIT));
+        }
 
         // The Naga IR block this call builds. This will end up as
         // `ctx.blocks[&block_id]`, and `ctx.bodies[body_idx]` will refer to it

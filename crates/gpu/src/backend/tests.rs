@@ -10,7 +10,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Recorder {
     caps: Option<Caps>,
     slow: SlowPaths,
@@ -74,11 +74,20 @@ impl Recorder {
                 features: Features::empty(),
                 limits,
                 formats: FormatCaps {
-                    uses: [FormatUse::all(); Format::COUNT],
-                    samples: [0b101; Format::COUNT],
+                    uses: [FormatUse::all(); crate::FORMAT_COUNT],
+                    samples: [0b101; crate::FORMAT_COUNT],
                 },
             }),
-            ..Default::default()
+            slow: crate::NO_SLOW_PATHS,
+            helpers: Helpers::default(),
+            next: 0,
+            log: Vec::new(),
+            buffers: Vec::new(),
+            ready_after_wait: false,
+            samplers: Vec::new(),
+            bound_samplers: Vec::new(),
+            usages: Vec::new(),
+            view_formats: Vec::new(),
         }
     }
 
@@ -88,7 +97,7 @@ impl Recorder {
     }
 }
 
-impl Backend for Recorder {
+impl Gpu for Recorder {
     type Buffer = Id;
     type Texture = Id;
     type TextureView = Id;
@@ -391,9 +400,9 @@ fn fan_default_draws_a_generated_list() {
         [1, 2, 0],
         "the next list follows in the ring"
     );
-    assert_eq!(r.slow_paths().count(SlowPath::FanConverted), 2);
+    assert_eq!(r.slow_paths().counts[SlowPath::FanConverted as usize], 2);
     assert_eq!(
-        r.slow_paths().take_warnings(),
+        r.take_slow_path_warnings(),
         [SlowPath::FanConverted],
         "one warning however often"
     );
@@ -472,7 +481,7 @@ fn read_back_now_default_waits_and_counts() {
     .unwrap();
     assert_eq!(out, [1, 2, 3, 4]);
     assert_eq!(&r.log[2..], ["read_back 1", "wait_read 1", "finish_read 1"]);
-    assert_eq!(r.slow_paths().count(SlowPath::ReadBackWait), 1);
+    assert_eq!(r.slow_paths().counts[SlowPath::ReadBackWait as usize], 1);
 }
 
 fn texture(dimension: TextureDimension, format: Format, layers: u32, mips: u32) -> TextureDesc {
@@ -976,7 +985,10 @@ fn resolve_queries_default_reads_back_and_writes_in_order() {
     );
     assert_eq!(&r.buffers[dst as usize][16..24], 7u64.to_le_bytes());
     assert_eq!(&r.buffers[dst as usize][32..40], (1u64 << 40).to_le_bytes());
-    assert_eq!(r.slow_paths().count(SlowPath::QueryResolveWait), 1);
+    assert_eq!(
+        r.slow_paths().counts[SlowPath::QueryResolveWait as usize],
+        1
+    );
 }
 
 #[test]
@@ -1043,10 +1055,10 @@ fn generate(r: &mut Recorder, desc: &TextureDesc, values: Format) {
 fn generate_mips_filters_in_the_program_where_the_format_cannot_be_filtered() {
     let mut r = Recorder::new();
     let filter = FormatUse::all() - FormatUse::FILTER;
-    r.caps.as_mut().unwrap().formats.uses[Format::R32Float.index()] = filter;
+    r.caps.as_mut().unwrap().formats.uses[Format::R32Float as usize] = filter;
     let desc = texture(TextureDimension::D2, Format::R32Float, 1, 2);
     generate(&mut r, &desc, desc.format);
-    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 1);
+    assert_eq!(r.slow_paths().counts[SlowPath::FilterInShader as usize], 1);
     assert_eq!(
         made(&r),
         [Builtin::Mip(ViewDimension::D2, MipRead::Unfiltered)]
@@ -1060,7 +1072,7 @@ fn generate_mips_filters_in_the_program_where_the_format_cannot_be_filtered() {
     let mut r = Recorder::new();
     let desc = texture(TextureDimension::D2, Format::R32Float, 1, 2);
     generate(&mut r, &desc, desc.format);
-    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 0);
+    assert_eq!(r.slow_paths().counts[SlowPath::FilterInShader as usize], 0);
     assert_eq!(
         made(&r),
         [Builtin::Mip(ViewDimension::D2, MipRead::Filtered)]
@@ -1068,10 +1080,10 @@ fn generate_mips_filters_in_the_program_where_the_format_cannot_be_filtered() {
 
     // Two layers drawn in the program: counted once per draw.
     let mut r = Recorder::new();
-    r.caps.as_mut().unwrap().formats.uses[Format::R32Float.index()] = filter;
+    r.caps.as_mut().unwrap().formats.uses[Format::R32Float as usize] = filter;
     let desc = texture(TextureDimension::D2, Format::R32Float, 2, 2);
     generate(&mut r, &desc, desc.format);
-    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 2);
+    assert_eq!(r.slow_paths().counts[SlowPath::FilterInShader as usize], 2);
 }
 
 #[test]
@@ -1086,7 +1098,7 @@ fn generate_mips_through_the_srgb_twin_reads_and_writes_srgb_views() {
         made(&r),
         [Builtin::Mip(ViewDimension::D2, MipRead::Filtered)]
     );
-    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 0);
+    assert_eq!(r.slow_paths().counts[SlowPath::FilterInShader as usize], 0);
     assert!(matches!(
         r.generate_mips(&50, &desc, Format::Bgra8UnormSrgb, 1..3, 0..1),
         Err(GpuError::Invalid(_))
@@ -1097,14 +1109,14 @@ fn generate_mips_through_the_srgb_twin_reads_and_writes_srgb_views() {
 fn generate_mips_with_nothing_to_draw_builds_and_counts_nothing() {
     let mut r = Recorder::new();
     let filter = FormatUse::all() - FormatUse::FILTER;
-    r.caps.as_mut().unwrap().formats.uses[Format::R32Float.index()] = filter;
+    r.caps.as_mut().unwrap().formats.uses[Format::R32Float as usize] = filter;
     let one_level = texture(TextureDimension::D2, Format::R32Float, 1, 1);
     r.generate_mips(&50, &one_level, one_level.format, 0..1, 0..1)
         .unwrap();
     let two_levels = texture(TextureDimension::D2, Format::R32Float, 1, 2);
     r.generate_mips(&50, &two_levels, two_levels.format, 1..2, 1..1)
         .unwrap();
-    assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 0);
+    assert_eq!(r.slow_paths().counts[SlowPath::FilterInShader as usize], 0);
     assert!(made(&r).is_empty());
     assert!(r.log.is_empty());
 }
@@ -1151,12 +1163,12 @@ fn generate_mips_of_an_integer_cube_reads_a_2d_array() {
         [Builtin::Mip(ViewDimension::D2Array, MipRead::Unorm)]
     );
     assert!(lines(&r, "create_view")[0].ends_with(" of 50 D2Array mip 0+1 layer 0+6"));
-    assert_eq!(r.slow_paths().count(SlowPath::ReinterpretCopy), 0);
+    assert_eq!(r.slow_paths().counts[SlowPath::ReinterpretCopy as usize], 0);
 
     // Without: the level above copied into a 2D array texture first.
     let mut r = Recorder::new();
     generate(&mut r, &desc, Format::R16Unorm);
-    assert_eq!(r.slow_paths().count(SlowPath::ReinterpretCopy), 1);
+    assert_eq!(r.slow_paths().counts[SlowPath::ReinterpretCopy as usize], 1);
     let copy = lines(&r, "copy_texture");
     assert_eq!(copy.len(), 1);
     assert!(

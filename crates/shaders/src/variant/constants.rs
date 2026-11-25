@@ -31,7 +31,7 @@ pub(super) fn constants_as_texture(
         .filter(|b| b.kind == SlotKind::Texture)
         .map(|b| b.binding + b.count)
         .max()
-        .unwrap_or(SlotKind::Texture.first_binding());
+        .unwrap_or(wcontainers_gpu::SLOT_KINDS[SlotKind::Texture as usize].first_binding);
     let texture_ty = module.types.insert(
         Type {
             name: None,
@@ -50,10 +50,18 @@ pub(super) fn constants_as_texture(
     // stay valid until compaction drops them), and its texture.
     let mut moved = Vec::new();
     for b in &mut reflection.bindings {
-        if b.kind != SlotKind::Uniform || b.added.is_some() || slots & (1 << b.slot()) == 0 {
+        if b.kind != SlotKind::Uniform
+            || b.added.is_some()
+            || slots
+                & (1 << (b.binding - wcontainers_gpu::SLOT_KINDS[b.kind as usize].first_binding))
+                == 0
+        {
             continue;
         }
-        if next >= SlotKind::Texture.first_binding() + SlotKind::Texture.slots() {
+        if next
+            >= wcontainers_gpu::SLOT_KINDS[SlotKind::Texture as usize].first_binding
+                + wcontainers_gpu::SLOT_KINDS[SlotKind::Texture as usize].slots
+        {
             return Err(ConvertError::Unsupported(
                 crate::refusal::BINDINGS_BEYOND_LIMIT,
             ));
@@ -86,7 +94,9 @@ pub(super) fn constants_as_texture(
             Span::UNDEFINED,
         );
         moved.push((g, texture));
-        b.added = Some(AddedBinding::ConstantsAsTexture(b.slot()));
+        b.added = Some(AddedBinding::ConstantsAsTexture(
+            b.binding - wcontainers_gpu::SLOT_KINDS[b.kind as usize].first_binding,
+        ));
         b.kind = SlotKind::Texture;
         b.binding = next;
         next += 1;

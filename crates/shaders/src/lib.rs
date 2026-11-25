@@ -8,13 +8,16 @@ pub mod builtin;
 pub mod cache;
 mod common;
 pub mod container;
+mod converters;
 mod dxbc;
 mod dxil;
+pub mod front;
 mod ir;
 mod lower;
 pub mod refusal;
 pub mod stage;
 pub mod staged;
+pub mod typed;
 mod variant;
 
 use alloc::format;
@@ -230,7 +233,8 @@ fn finished(
 /// one reading the draw's first vertex or instance (`BuiltIn::BaseVertex`, `BaseInstance`) reads them
 /// from where `draw_base` says.
 /// `route_key` is the key the route gives the program it made; the module carries
-/// [`cache::rewritten_key`] of it. Geometry, hull and domain programs take [`staged`]'s entries.
+/// [`cache::rewritten_key`] of it. Geometry, hull and domain programs take [`staged`]'s entries;
+/// typed buffers are given their functions by [`typed::buffers`] first.
 pub fn rewrite(
     module: naga::Module,
     reflection: Reflection,
@@ -249,6 +253,7 @@ pub fn rewrite(
             },
             _ => return Err(ConvertError::Malformed(ONE_ENTRY_POINT.into())),
         };
+        early_tests(&mut module, &mut reflection)?;
         route_rewrites(&mut module, &mut reflection, stage, variant)?;
         // The draw's bases a vertex program reads as built-ins WGSL lacks, as the DXIL route's.
         dxil::draw_bases(&mut module, variant, &mut reflection)?;
@@ -262,6 +267,21 @@ pub fn rewrite(
         variant,
         cache::rewritten_key(route_key, variant),
     )
+}
+
+/// Early tests a fragment program forces move into its pixel extras, where the back ends take them
+/// from, as on the DXIL route; the module keeps no early test mode (`Allow` is only a hint).
+fn early_tests(module: &mut naga::Module, reflection: &mut Reflection) -> Result<(), ConvertError> {
+    if module.entry_points[0].early_depth_test.take() != Some(naga::EarlyDepthTest::Force) {
+        return Ok(());
+    }
+    match &mut reflection.extras {
+        StageExtras::Pixel { early_tests, .. } => {
+            *early_tests = true;
+            Ok(())
+        }
+        _ => Err(ConvertError::Malformed(EARLY_TESTS_OUTSIDE_PIXEL.into())),
+    }
 }
 
 /// The rewrites of 15.4 that [`rewrite`] makes, before the variant's: arrays of textures, storage
@@ -308,12 +328,17 @@ pub(crate) fn writes_storage(module: &naga::Module) -> bool {
 /// What [`rewrite`] takes a module to have.
 const ONE_ENTRY_POINT: &str = "a module of one entry point named by ENTRY_POINT";
 
+/// What [`rewrite`] takes a program forcing early tests to be given.
+const EARLY_TESTS_OUTSIDE_PIXEL: &str =
+    "a fragment program forcing early tests with a reflection of no pixel extras";
+
 /// Refuses, by name, the rewrites of the last vertex stage for a geometry shader that its draw's vertex
 /// program, the stage helper's pass-through, does not make.
 fn geometry_variant(variant: &VariantKey) -> Result<(), ConvertError> {
     let vertex_flags = VariantFlags::VIEWPORT_ADJUST
         | VariantFlags::VIEWPORT_DEPTH_FLIP
-        | VariantFlags::CLIP_DEPTH_REWRITE;
+        | VariantFlags::CLIP_DEPTH_REWRITE
+        | VariantFlags::CULL_DISTANCE_LINKED;
     if variant.flags.intersects(vertex_flags)
         || !variant.pulled.is_empty()
         || variant.draw_base != DrawBaseSource::None
@@ -325,8 +350,10 @@ fn geometry_variant(variant: &VariantKey) -> Result<(), ConvertError> {
 
 /// Runs a conversion step on bytecode from the guest, so that a panic in it (our bug) fails this call
 /// as `Malformed` instead of ending the host. Where panics abort (WebAssembly) it ends the module
-/// instance, which the host reports as a failed conversion.
+/// instance, which the host reports as a failed conversion. Its calls into the converters are one
+/// conversion (`converters::Conversion`).
 fn contained<T>(f: impl FnOnce() -> Result<T, ConvertError>) -> Result<T, ConvertError> {
+    let _conversion = converters::Conversion::begin();
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|panic| {
         let text = panic
             .downcast_ref::<&str>()

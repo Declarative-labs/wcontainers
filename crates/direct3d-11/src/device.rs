@@ -5,13 +5,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    AddressMode, Backend, BlendComponent, BlendFactor, BlendOp, BorderColor,
-    BufferDesc as GpuBuffer, BufferUsage, Caps, ColorWrites, CompareFn, CullMode,
-    DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, Features, FillMode, Filter, Format,
-    FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object,
-    Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, ScalarKind,
-    SlowPath, StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
+    AddressMode, BlendComponent, BlendFactor, BlendOp, BorderColor, BufferDesc as GpuBuffer,
+    BufferUsage, Caps, ColorWrites, CompareFn, CullMode, DepthStencilDesc as GpuDepthStencil,
+    DeviceStatus, Extent, FORMAT_FACTS, Features, FillMode, Filter, Format, FormatKind, FormatUse,
+    FrontFace, Gpu, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object, Origin,
+    ProvokingVertex, RasterDesc, RenderTargetBlend, SLOW_PATH_REASONS, SamplerDesc as GpuSampler,
+    ScalarKind, SlowPath, StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
 };
 
 use crate::context::ContextState;
@@ -25,7 +25,7 @@ use wcontainers_directx_graphics_infrastructure::dxgi;
 
 /// The helper constants of both draw stages as written into the back end's data ring, the indirect
 /// arguments buffer bound beside them (by id, 0 for none), and the set binding them.
-pub(crate) struct HelperBlocks<B: Backend> {
+pub(crate) struct HelperBlocks<B: Gpu> {
     pub blocks: [Vec<u8>; 2],
     pub arguments: u64,
     /// The ids of the merged samplers bound beside the blocks.
@@ -40,18 +40,18 @@ pub(crate) struct HelperBlocks<B: Backend> {
 /// (0 for none) and variant.
 /// A compute helper block as written and its binding set.
 /// A compute program's helper block, the merged samplers' identities and the binding set of both.
-pub(crate) type ComputeHelpers<B> = (Vec<u8>, Vec<u64>, Kept<B, <B as Backend>::BindingSet>);
+pub(crate) type ComputeHelpers<B> = (Vec<u8>, Vec<u64>, Kept<B, <B as Gpu>::BindingSet>);
 
 pub(crate) type ProgramKey = (u64, StageVariant, u64, StageVariant);
 
 /// A linked program and where its two stages read their helper constants.
-pub(crate) struct Linked<B: Backend> {
+pub(crate) struct Linked<B: Gpu> {
     pub program: Kept<B, B::Program>,
     pub helpers: [Rc<Helpers>; 2],
 }
 
 /// A shader converted again as a variant, and where it reads its helper constants.
-pub(crate) struct Variant<B: Backend> {
+pub(crate) struct Variant<B: Gpu> {
     pub shader: Kept<B, B::Shader>,
     /// The content key of its module.
     pub key: [u8; 32],
@@ -68,7 +68,7 @@ pub(crate) type LayoutKey = (u64, [u32; 32], u64);
 pub(crate) type StageKey = (u64, u64, [u64; 2], u64, u64, Option<u32>);
 
 /// A Direct3D 11 device and its immediate context on back end `B`.
-pub struct Device<B: Backend> {
+pub struct Device<B: Gpu> {
     pub backend: B,
     pub(crate) graveyard: SharedGraveyard<B>,
     next_id: u64,
@@ -139,7 +139,7 @@ pub struct Device<B: Backend> {
 
 /// What empty slots read, made at their first use: Direct3D reads zeros from an empty vertex,
 /// constant or texture slot, and samples with its default sampler state through an empty sampler slot.
-pub(crate) struct Zeros<B: Backend> {
+pub(crate) struct Zeros<B: Gpu> {
     /// The largest constant buffer's bytes of zeros, also past any vertex element's offset.
     pub buffer: Option<Kept<B, B::Buffer>>,
     /// The same bytes for empty structured and raw buffer slots.
@@ -152,7 +152,7 @@ pub(crate) struct Zeros<B: Backend> {
 }
 
 /// A texture of zeros and its view.
-pub(crate) struct ZeroView<B: Backend> {
+pub(crate) struct ZeroView<B: Gpu> {
     _texture: Kept<B, B::Texture>,
     view: Kept<B, B::TextureView>,
 }
@@ -187,7 +187,7 @@ fn gpu_error(e: GpuError) -> Error {
 }
 
 /// The blocks a `None` state stands for.
-pub(crate) struct Defaults<B: Backend> {
+pub(crate) struct Defaults<B: Gpu> {
     pub blend: Rc<Blend<B>>,
     pub depth_stencil: Rc<DepthStencil<B>>,
     pub raster: Rc<Rasterizer<B>>,
@@ -240,6 +240,8 @@ const OPAQUE_420_BOUND: &str = "a 420_OPAQUE texture is of default usage, bound 
 const TYPED_BUFFER_UNCLAIMED: &str =
     "a typed buffer view of a format whose typed buffers are not served";
 const STORAGE_UNCLAIMED: &str = "a storage view of a format whose storage views are not served";
+const BINDINGS_BEYOND_LIMIT: &str =
+    "a shader reading more textures or samplers than a stage of the back end reads";
 
 /// The color targets a pass takes at feature level `level`.
 fn level_targets(level: u32) -> u32 {
@@ -247,6 +249,20 @@ fn level_targets(level: u32) -> u32 {
         level::L9_1 | level::L9_2 => 1,
         level::L9_3 => L9_3_TARGETS,
         _ => MAX_COLOR_TARGETS as u32,
+    }
+}
+
+/// Input slots, input elements and vertex shader output registers up to 10_0
+/// (`D3D10_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT`, `D3D10_VS_OUTPUT_REGISTER_COUNT`) and from 10_1
+/// (`D3D10_1_IA_VERTEX_INPUT_RESOURCE_SLOT_COUNT`, `D3D10_1_VS_OUTPUT_REGISTER_COUNT`).
+const L10_0_REGISTERS: u32 = 16;
+const L10_1_REGISTERS: u32 = 32;
+
+/// The input slots, input elements and vertex shader output registers of feature level `level`.
+fn level_registers(level: u32) -> u32 {
+    match level >= level::L10_1 {
+        true => L10_1_REGISTERS,
+        false => L10_0_REGISTERS,
     }
 }
 
@@ -275,15 +291,75 @@ fn serves(caps: &wcontainers_gpu::Caps, level: u32, cube_arrays: bool) -> bool {
         && limits.max_texture_3d >= volume
         && limits.max_texture_layers >= layers
         && limits.color_targets >= level_targets(level);
-    let renders = |f: Format, u: FormatUse| caps.formats.get(f).contains(u);
-    let staged = caps.has(Features::COMPUTE)
-        || (level < level::L11_0 && caps.has(Features::TRANSFORM_FEEDBACK));
+    let renders = |f: Format, u: FormatUse| caps.formats.uses[f as usize].contains(u);
+    let staged = caps.features.contains(Features::COMPUTE)
+        || (level < level::L11_0 && caps.features.contains(Features::TRANSFORM_FEEDBACK));
     sized
+        && stage_values_served(limits, level)
+        && slots_served(limits, level)
         && (level < level::L10_0
             || (renders(Format::Depth32FloatStencil8, FormatUse::DEPTH_STENCIL)
                 && renders(Format::Rgba32Float, FormatUse::RENDER)
                 && staged))
         && (level < level::L10_1 || cube_arrays)
+}
+
+/// Whether `limits` serve feature level `level`'s input slots and elements, fetched as laid out up
+/// to the back end's streams and locations and in the vertex program past them, one storage buffer
+/// each; and its vertex shader output registers, one the position, the rest moved onto the back
+/// end's inter-stage locations (`shader::output_moves`).
+fn stage_values_served(limits: &wcontainers_gpu::Limits, level: u32) -> bool {
+    let registers = level_registers(level);
+    let fetched =
+        limits.vertex_streams.min(limits.vertex_attributes) + limits.storage_buffers_per_stage;
+    fetched >= registers && limits.inter_stage_slots + 1 >= registers
+}
+
+/// The shader resource views and samplers one stage reads at feature level `level`: below 10_0
+/// shader model 2's 16 samplers, each read with its texture
+/// ([ps_2_0's registers](https://learn.microsoft.com/en-us/windows/win32/direct3dhlsl/dx9-graphics-reference-asm-ps-registers-ps-2-0#:~:text=Sampler%20Register)),
+/// and from 10_0 Direct3D's slots of each stage; and the unordered access views of the pixel and
+/// compute stages at 11_0, each a storage texture or a storage buffer.
+fn level_slots(level: u32) -> StageSlots {
+    let samplers = crate::context::SAMPLER_SLOTS as u32;
+    if level < level::L10_0 {
+        return StageSlots {
+            views: samplers,
+            samplers,
+            storage: 0,
+        };
+    }
+    let storage = if level < level::L11_0 {
+        0
+    } else {
+        crate::UAV_SLOTS as u32
+    };
+    StageSlots {
+        views: crate::context::RESOURCE_SLOTS as u32,
+        samplers,
+        storage,
+    }
+}
+
+/// The shader resource views, samplers and unordered access views a stage reads.
+struct StageSlots {
+    views: u32,
+    samplers: u32,
+    storage: u32,
+}
+
+/// Whether `limits` give each stage feature level `level`'s shader resource views, samplers and
+/// unordered access views ([`level_slots`]).
+fn slots_served(limits: &wcontainers_gpu::Limits, level: u32) -> bool {
+    let StageSlots {
+        views,
+        samplers,
+        storage,
+    } = level_slots(level);
+    limits.textures_per_stage >= views
+        && limits.samplers_per_stage >= samplers
+        && limits.storage_textures_per_stage >= storage
+        && limits.storage_buffers_per_stage >= storage
 }
 
 /// The highest feature level `caps` serves, if any, with `cube_arrays` as [`serves`] takes it.
@@ -297,7 +373,7 @@ pub use wcontainers_gpu::CUBE_FACES;
 
 /// Whether `backend` makes textures of more than one cube, which `Caps` does not say: a texture of
 /// two cubes of one texel, made and destroyed.
-fn makes_cube_arrays<B: Backend>(backend: &mut B) -> bool {
+fn makes_cube_arrays<B: Gpu>(backend: &mut B) -> bool {
     let made = backend.create_texture(&GpuTexture {
         dimension: TextureDimension::D2,
         format: Format::Rgba8Unorm,
@@ -313,12 +389,40 @@ fn makes_cube_arrays<B: Backend>(backend: &mut B) -> bool {
     made.map(|t| backend.destroy(Object::Texture(t))).is_ok()
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// Makes the device at the first of `levels` (or of Direct3D's default list) the back end serves
     /// with every format requirement of Microsoft's tables met.
     pub fn new(mut backend: B, levels: &[u32]) -> Result<Self> {
         let cube_arrays = makes_cube_arrays(&mut backend);
-        let top = top_level(backend.caps(), cube_arrays).ok_or(Error::Unsupported)?;
+        let found = top_level(backend.caps(), cube_arrays);
+        let limits = &backend.caps().limits;
+        for l in DEFAULT_LEVELS.into_iter().filter(|&l| found < Some(l)) {
+            if !stage_values_served(limits, l) {
+                eprintln!(
+                    "{WARNING_PREFIX}: feature level {l:#x} not reported: the back end passes fewer \
+                     vertex inputs or values between stages than its {} registers",
+                    level_registers(l)
+                );
+            }
+            if !slots_served(limits, l) {
+                let StageSlots {
+                    views,
+                    samplers,
+                    storage,
+                } = level_slots(l);
+                eprintln!(
+                    "{WARNING_PREFIX}: feature level {l:#x} not reported: a stage of the back end \
+                     reads fewer than its {views} shader resource views, {samplers} samplers or \
+                     {storage} unordered access views (textures {}, samplers {}, storage textures \
+                     {} and buffers {})",
+                    limits.textures_per_stage,
+                    limits.samplers_per_stage,
+                    limits.storage_textures_per_stage,
+                    limits.storage_buffers_per_stage
+                );
+            }
+        }
+        let top = found.ok_or(Error::Unsupported)?;
         let mut device = Self::at_level(backend, top)?;
         let top = DEFAULT_LEVELS
             .into_iter()
@@ -351,27 +455,12 @@ impl<B: Backend> Device<B> {
     /// (`required::LEVEL_REQUIRED`): per format, the missing bits of both words and 4- and 8-sample
     /// counts, of every format the tables require or the device has.
     pub fn unmet_format_requirements(&self) -> Vec<(u32, crate::required::Required)> {
-        let Some(rows) = crate::required::at(self.level) else {
-            return Vec::new();
-        };
-        rows.filter_map(|(dxgi, need)| {
-            let has = self.format_support(dxgi);
-            if need.3 && has.support1 == 0 {
-                return None;
-            }
-            let counts = crate::required::SAMPLE_COUNTS
-                .into_iter()
-                .filter(|&n| self.multisample_quality_levels(dxgi, n) > 0)
-                .fold(0, |c, n| c | 1 << n);
-            let lacks = crate::required::Required(
-                need.0 & !has.support1,
-                need.1 & !has.support2,
-                need.2 & !counts,
-                false,
-            );
-            (lacks != crate::required::Required::default()).then_some((dxgi, lacks))
-        })
-        .collect()
+        crate::required::unmet(
+            self.level,
+            crate::required::Required::default(),
+            |dxgi| self.format_support(dxgi),
+            |dxgi, samples| self.multisample_quality_levels(dxgi, samples) > 0,
+        )
     }
 
     fn at_level(mut backend: B, level: u32) -> Result<Self> {
@@ -457,7 +546,7 @@ impl<B: Backend> Device<B> {
 
     /// Counts a slow path the library around the front takes for this device.
     pub fn count_slow_path(&mut self, path: SlowPath) {
-        self.backend.slow_paths().hit(path);
+        self.backend.record_slow_path(path);
     }
 
     pub fn feature_level(&self) -> u32 {
@@ -505,7 +594,7 @@ impl<B: Backend> Device<B> {
             // Held as NV12's planes; only made, copied and shared.
             let held = [Format::R8Unorm, Format::Rg8Unorm]
                 .iter()
-                .all(|&f| caps.formats.get(f).contains(FormatUse::COPY_OUT));
+                .all(|&f| caps.formats.uses[f as usize].contains(FormatUse::COPY_OUT));
             let support1 = if held { TEXTURE2D } else { 0 };
             return FormatSupport {
                 support1,
@@ -516,10 +605,8 @@ impl<B: Backend> Device<B> {
             // 2D textures held in its bits, mapped and copied with the R10G10B10A2 formats,
             // never viewed (Microsoft's 11_0 table gives it no shader or target use); shown by
             // the swap chains that take it, whose buffers are drawn through views of its group.
-            let held = caps
-                .formats
-                .get(Format::Rgb10a2Unorm)
-                .contains(FormatUse::COPY_OUT);
+            let held =
+                caps.formats.uses[Format::Rgb10a2Unorm as usize].contains(FormatUse::COPY_OUT);
             let mut support1 = if held {
                 TEXTURE2D | CPU_LOCKABLE | CAST_WITHIN_BIT_LAYOUT
             } else {
@@ -566,12 +653,16 @@ impl<B: Backend> Device<B> {
             }
             s.support2 = 0;
         }
-        if !format::storage_viewed(dxgi)
-            || format::texture_format(dxgi)
-                .is_some_and(|f| format::not_through_buffer(f) && self.stored_through(f))
-        {
+        if !format::storage_viewed(dxgi) {
             s.support1 &= !TYPED_UNORDERED_ACCESS_VIEW;
             s.support2 &= !(UAV_TYPED_LOAD | UAV_TYPED_STORE);
+        }
+        // Loads from storage views are served where the format is loaded and stored in one
+        // program, or through a buffer of its texels.
+        if format::texture_format(dxgi)
+            .is_some_and(|f| !format::loaded_and_stored(f) && !self.read_written_through(f))
+        {
+            s.support2 &= !UAV_TYPED_LOAD;
         }
         let level = self.level;
         let texture = format::texture_format(dxgi);
@@ -590,7 +681,8 @@ impl<B: Backend> Device<B> {
             format::vertex_format(dxgi).is_some()
         } else {
             format::vertex_format(dxgi).is_some()
-                && texture.is_some_and(|f| caps.formats.get(f).contains(FormatUse::SAMPLE))
+                && texture
+                    .is_some_and(|f| caps.formats.uses[f as usize].contains(FormatUse::SAMPLE))
         };
         add(typed_buffer, BUFFER);
         add(format::stream_output_format(dxgi), SO_BUFFER);
@@ -604,7 +696,6 @@ impl<B: Backend> Device<B> {
         // texels (`StorageFormatThroughBuffer`), which serves loads too.
         let through = texture.is_some_and(|f| {
             format::storage_viewed(dxgi)
-                && !format::not_through_buffer(f)
                 && (self.stored_through(f) || as_integer.is_some_and(|t| self.through_takes(t)))
         });
         if through {
@@ -613,7 +704,7 @@ impl<B: Backend> Device<B> {
         }
         // Atomics on storage textures the back end lacks go through a buffer of their texels
         // (`AtomicsThroughBuffer`).
-        if caps.has(Features::COMPUTE) {
+        if caps.features.contains(Features::COMPUTE) {
             s.support2 |= match dxgi {
                 format::R32_UINT | format::R32_SINT => {
                     UAV_ATOMIC_ADD
@@ -640,7 +731,7 @@ impl<B: Backend> Device<B> {
         // A partial sample mask has no route without the back end's mask (`SampleMaskInShader`
         // is not built), so no multisampling is reported there (plan section 9).
         remove(
-            !caps.has(Features::SAMPLE_MASK),
+            !caps.features.contains(Features::SAMPLE_MASK),
             MULTISAMPLE_RENDERTARGET | MULTISAMPLE_LOAD | MULTISAMPLE_RESOLVE,
         );
         // Multisampled depth is read from 10_1.
@@ -651,7 +742,9 @@ impl<B: Backend> Device<B> {
         // Shader model 4.1 gathers formats of a red channel alone, uncompressed, and one aspect
         // of depth; 11_0 every format it samples.
         let red_alone = format::depth_aspect_view(dxgi)
-            || texture.is_some_and(|f| f.components() == RED && f.block().0 == 1);
+            || texture.is_some_and(|f| {
+                FORMAT_FACTS[f as usize].components == RED && FORMAT_FACTS[f as usize].block.0 == 1
+            });
         remove(
             level < level::L10_1 || level < level::L11_0 && !red_alone,
             SHADER_GATHER,
@@ -669,14 +762,15 @@ impl<B: Backend> Device<B> {
         if format::back_buffer_cast(dxgi) && s.support1 & DISPLAY != 0 {
             s.support1 |= BACK_BUFFER_CAST;
         }
-        // A format held but neither drawn into nor a depth format, or any format where no
-        // multisampling is reported, has no multisampled textures (`CheckMultisampleQualityLevels`
-        // answers no count of it), so the multisample loads and resolves Microsoft's tables require
-        // of it apply to no texture, and are reported as Direct3D's drivers report them (the RTX
-        // 3080 for `R32G32B32_*` and `B4G4R4A4_UNORM`; the 10_0 table requires resolves without
-        // requiring a sample count).
-        let no_samples = !caps.has(Features::SAMPLE_MASK)
-            || s.support1 & (RENDER_TARGET | crate::desc::support::DEPTH_STENCIL) == 0;
+        // A format of which no multisampled texture is made (held but neither drawn into nor a
+        // depth format, drawn only singly, as integer twins and the 32-bit float pairs and
+        // quadruples core WebGPU are, or any format where no multisampling is reported:
+        // `CheckMultisampleQualityLevels` answers no count of it) has the multisample loads and
+        // resolves Microsoft's tables require of it apply to no texture, so they are reported as
+        // Direct3D's drivers report them (the RTX 3080 for `R32G32B32_*` and `B4G4R4A4_UNORM`; the
+        // 10_0 table requires resolves without requiring a sample count).
+        let no_samples = !caps.features.contains(Features::SAMPLE_MASK)
+            || s.support1 & MULTISAMPLE_RENDERTARGET == 0;
         if s.support1 != 0
             && no_samples
             && let Some((_, row)) =
@@ -708,7 +802,7 @@ impl<B: Backend> Device<B> {
         };
         let uses = planes
             .iter()
-            .fold(FormatUse::all(), |all, &f| all & formats.get(f));
+            .fold(FormatUse::all(), |all, &f| all & formats.uses[f as usize]);
         if uses.is_empty() {
             return FormatSupport::default();
         }
@@ -731,9 +825,9 @@ impl<B: Backend> Device<B> {
                 s.support1 |= bit;
             }
         }
-        let stored = planes
-            .iter()
-            .all(|&f| formats.get(f).contains(FormatUse::STORAGE_WRITE) || self.through_takes(f));
+        let stored = planes.iter().all(|&f| {
+            formats.uses[f as usize].contains(FormatUse::STORAGE_WRITE) || self.through_takes(f)
+        });
         if stored && self.level >= level::L11_0 {
             s.support1 |= TYPED_UNORDERED_ACCESS_VIEW;
             s.support2 |= UAV_TYPED_STORE;
@@ -747,7 +841,7 @@ impl<B: Backend> Device<B> {
 
     /// Whether textures of `format` drawn into or for depth take `samples` samples.
     fn takes_samples(&self, format: Format, samples: u32) -> bool {
-        let uses = self.backend.caps().formats.get(format);
+        let uses = self.backend.caps().formats.uses[format as usize];
         uses.intersects(FormatUse::RENDER | FormatUse::DEPTH_STENCIL)
             && self.backend.caps().formats.takes_samples(format, samples)
     }
@@ -763,7 +857,7 @@ impl<B: Backend> Device<B> {
                     || self.format_support(dxgi).support1 & crate::desc::support::TEXTURE2D != 0,
             );
         }
-        if !self.backend.caps().has(Features::SAMPLE_MASK) {
+        if !self.backend.caps().features.contains(Features::SAMPLE_MASK) {
             return 0;
         }
         let format = format::texture_format(dxgi).or_else(|| {
@@ -835,10 +929,9 @@ impl<B: Backend> Device<B> {
     /// The warnings not yet shown: each slow path the first time it is taken.
     pub fn take_warnings(&mut self) -> Vec<&'static str> {
         self.backend
-            .slow_paths()
-            .take_warnings()
+            .take_slow_path_warnings()
             .into_iter()
-            .map(SlowPath::reason)
+            .map(|path| SLOW_PATH_REASONS[path as usize])
             .collect()
     }
 
@@ -1025,22 +1118,23 @@ impl<B: Backend> Device<B> {
     /// Whether storage views of `format` are read and written through a buffer of their texels,
     /// where the back end copies the format but cannot store into it (`StorageFormatThroughBuffer`).
     pub(crate) fn stored_through(&self, format: Format) -> bool {
-        !self
-            .backend
-            .caps()
-            .formats
-            .get(format)
-            .contains(FormatUse::STORAGE_WRITE)
+        !self.backend.caps().formats.uses[format as usize].contains(FormatUse::STORAGE_WRITE)
             && self.through_takes(format)
+    }
+
+    /// Whether a program loading from storage views of `format` reads and writes them through a
+    /// buffer of its texels (`StorageReadWriteThroughBuffer`).
+    pub(crate) fn read_written_through(&self, format: Format) -> bool {
+        !format::loaded_and_stored(format) && self.through_takes(format)
     }
 
     /// Whether storage views of a texture stored as `format` can be read and written through a
     /// buffer of its texels.
     pub(crate) fn through_takes(&self, format: Format) -> bool {
         let caps = self.backend.caps();
-        caps.formats.get(format).contains(FormatUse::COPY_OUT)
-            && format.block().0 == 1
-            && caps.has(Features::COMPUTE)
+        caps.formats.uses[format as usize].contains(FormatUse::COPY_OUT)
+            && FORMAT_FACTS[format as usize].block.0 == 1
+            && caps.features.contains(Features::COMPUTE)
             && caps.limits.storage_buffers_per_stage > 0
     }
 
@@ -1055,9 +1149,9 @@ impl<B: Backend> Device<B> {
     /// into the format but draws into the twin. Programs decode its loads and encode their outputs.
     pub(crate) fn held_as_integer(&self, format: Format, drawn: bool) -> Option<Format> {
         let formats = &self.backend.caps().formats;
-        let own = formats.get(format);
-        format.integer_twin().filter(|&twin| {
-            let held = formats.get(twin);
+        let own = formats.uses[format as usize];
+        FORMAT_FACTS[format as usize].integer_twin.filter(|&twin| {
+            let held = formats.uses[twin as usize];
             held.contains(FormatUse::SAMPLE)
                 && (own.is_empty()
                     || drawn
@@ -1077,14 +1171,16 @@ impl<B: Backend> Device<B> {
     }
 
     fn check_format(&self, format: Format, needs: FormatUse) -> Result<()> {
-        let has = self.backend.caps().formats.get(format);
+        let has = self.backend.caps().formats.uses[format as usize];
         if has.is_empty() {
             not_implemented("a format the back end lacks")
         } else if has.contains(needs) {
             Ok(())
-        } else if (needs.contains(FormatUse::DEPTH_STENCIL) && !format.is_depth_stencil())
+        } else if (needs.contains(FormatUse::DEPTH_STENCIL)
+            && !FORMAT_FACTS[format as usize].depth_stencil)
             || (needs.contains(FormatUse::RENDER)
-                && (format.is_depth_stencil() || format.block().0 > 1))
+                && (FORMAT_FACTS[format as usize].depth_stencil
+                    || FORMAT_FACTS[format as usize].block.0 > 1))
         {
             // Direct3D's own rule: depth formats are bound for depth only, block formats never
             // as targets.
@@ -1130,8 +1226,9 @@ impl<B: Backend> Device<B> {
         // helper's compute programs read vertices and indices and write stream output.
         let caps = self.backend.caps();
         let staged = bind::VERTEX_BUFFER | bind::INDEX_BUFFER | bind::STREAM_OUTPUT;
-        if d.bind_flags & bind::VERTEX_BUFFER != 0 && !caps.has(Features::INSTANCE_STEP_RATE)
-            || d.bind_flags & staged != 0 && caps.has(Features::COMPUTE)
+        if d.bind_flags & bind::VERTEX_BUFFER != 0
+            && !caps.features.contains(Features::INSTANCE_STEP_RATE)
+            || d.bind_flags & staged != 0 && caps.features.contains(Features::COMPUTE)
         {
             desc.usage |= BufferUsage::STORAGE;
         }
@@ -1154,9 +1251,9 @@ impl<B: Backend> Device<B> {
             if let Some(bytes) = init {
                 s.copy_from_slice(&bytes[..d.byte_width as usize]);
             }
-            s
+            shadow_of(&mut s)
         } else {
-            Vec::new()
+            Shadow::default()
         };
         let id = self.id();
         Ok(Rc::new(Buffer {
@@ -1474,11 +1571,12 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("bind flags a texture cannot have"));
         }
         if d.dimension == TexDim::D3
-            && (d.bind_flags & bind::DEPTH_STENCIL != 0 || format.is_depth_stencil())
+            && (d.bind_flags & bind::DEPTH_STENCIL != 0
+                || FORMAT_FACTS[format as usize].depth_stencil)
         {
             return Err(Error::InvalidArg("a 3D texture cannot hold depth"));
         }
-        if d.dimension == TexDim::D1 && format.block().1 > 1 {
+        if d.dimension == TexDim::D1 && FORMAT_FACTS[format as usize].block.1 > 1 {
             return Err(Error::InvalidArg("a 1D texture cannot be block-compressed"));
         }
         if d.bind_flags & bind::UNORDERED_ACCESS != 0
@@ -1500,9 +1598,9 @@ impl<B: Backend> Device<B> {
     ) -> Result<Rc<Texture<B>>> {
         let (format, mips) = self.check_texture(d, !init.is_empty())?;
         if format::texture_format(d.format)
-            .is_some_and(|f| f != format && f.integer_twin() == Some(format))
+            .is_some_and(|f| f != format && FORMAT_FACTS[f as usize].integer_twin == Some(format))
         {
-            self.backend.slow_paths().hit(SlowPath::NormAsInteger);
+            self.backend.record_slow_path(SlowPath::NormAsInteger);
         }
         // The back end's cubes are whole: a cube texture of other layer counts is a 2D array
         // whose cube views see its first sixes.
@@ -1533,23 +1631,13 @@ impl<B: Backend> Device<B> {
         // A depth buffer is read by pixel programs running their forced early tests themselves
         // (`EarlyTestsInShader`), where the back end can sample its format.
         if d.bind_flags & bind::DEPTH_STENCIL != 0
-            && self
-                .backend
-                .caps()
-                .formats
-                .get(format)
-                .contains(FormatUse::SAMPLE)
+            && self.backend.caps().formats.uses[format as usize].contains(FormatUse::SAMPLE)
         {
             usage |= TextureUsage::SAMPLE;
         }
         // Unordered access views are cleared by clearing passes where the format can be drawn into.
         if d.bind_flags & bind::UNORDERED_ACCESS != 0
-            && self
-                .backend
-                .caps()
-                .formats
-                .get(format)
-                .contains(FormatUse::RENDER)
+            && self.backend.caps().formats.uses[format as usize].contains(FormatUse::RENDER)
         {
             usage |= TextureUsage::RENDER;
         }
@@ -1646,7 +1734,7 @@ impl<B: Backend> Device<B> {
                         }
                         debug_assert_eq!(shadow.len(), slice * slices as usize);
                     }
-                    shadow
+                    shadow_of(&mut shadow)
                 })
                 .collect::<Vec<_>>();
             *texture.staged.borrow_mut() = shadow.iter().map(|_| Staged::Current).collect();
@@ -1669,9 +1757,9 @@ impl<B: Backend> Device<B> {
         let row_pitch = if rows == 1 { row } else { data.row_pitch };
         let slice_pitch = data.slice_pitch;
         let depth = extent.depth_or_layers;
-        if format.kind() == FormatKind::DepthStencil {
+        if FORMAT_FACTS[format as usize].kind == FormatKind::DepthStencil {
             // Each aspect apart, from the rows packed (depth-stencil textures are 2D: one slice).
-            let texel = format.block().2;
+            let texel = FORMAT_FACTS[format as usize].block.2;
             let mut packed = Vec::with_capacity((row * rows) as usize);
             for y in 0..rows {
                 let at = (y * row_pitch) as usize;
@@ -1691,7 +1779,7 @@ impl<B: Backend> Device<B> {
         }
         if row_pitch < row || (depth > 1 && slice_pitch < row_pitch * rows) {
             // Rows or slices laid over each other (a pitch of zero repeats one), packed apart.
-            self.backend.slow_paths().hit(SlowPath::RowsRepacked);
+            self.backend.record_slow_path(SlowPath::RowsRepacked);
             let mut packed = Vec::with_capacity((row * rows * depth) as usize);
             for z in 0..depth {
                 for y in 0..rows {
@@ -1892,7 +1980,7 @@ impl<B: Backend> Device<B> {
             }
             _ => format::view_format(v.format, t.format, texture.format)?,
         };
-        let on_twin = format.integer_twin() == Some(texture.format);
+        let on_twin = FORMAT_FACTS[format as usize].integer_twin == Some(texture.format);
         let (format, decoded) = match self.held_as_integer(format, on_twin) {
             Some(twin) => (twin, Some(format)),
             None => (format, None),
@@ -2021,7 +2109,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<Rc<View<B>>> {
         let gpu_format = format::texture_format_of(format)
             .map_err(|_| Error::InvalidArg("a format a buffer's target view cannot have"))?;
-        let (block_width, block_height, bytes) = gpu_format.block();
+        let (block_width, block_height, bytes) = FORMAT_FACTS[gpu_format as usize].block;
         let end = (u64::from(first) + u64::from(count)) * u64::from(bytes);
         if buffer.desc.bind_flags & bind::RENDER_TARGET == 0
             || format::is_typeless(format)
@@ -2064,9 +2152,6 @@ impl<B: Backend> Device<B> {
         let v = self.create_view(texture, desc, bind::UNORDERED_ACCESS)?;
         if format::is_srgb(v.desc.format) {
             return Err(Error::InvalidArg("an sRGB unordered access view"));
-        }
-        if format::not_through_buffer(v.format) && self.stored_through(v.format) {
-            return not_implemented(STORAGE_UNCLAIMED);
         }
         self.check_format(v.format, self.storage_use(v.format))?;
         Ok(Rc::new(ShaderView::Texture(v)))
@@ -2190,8 +2275,10 @@ impl<B: Backend> Device<B> {
                 ));
             }
             let f = format::texture_format_of(format)?;
-            match f.block() {
-                (1, 1, bytes) if !f.is_depth_stencil() && format::buffer_viewed(format) => {
+            match FORMAT_FACTS[f as usize].block {
+                (1, 1, bytes)
+                    if !FORMAT_FACTS[f as usize].depth_stencil && format::buffer_viewed(format) =>
+                {
                     // Served exactly where `CheckFormatSupport` claims typed buffers, and typed
                     // storage where it claims typed storage views.
                     let claims = self.format_support(format).support1;
@@ -2229,13 +2316,7 @@ impl<B: Backend> Device<B> {
         if let Some(f) = typed {
             // A texture copy holds the whole buffer, its first element at its first texel.
             if self.typed_buffers_textured() {
-                if !self
-                    .backend
-                    .caps()
-                    .formats
-                    .get(f)
-                    .contains(FormatUse::SAMPLE)
-                {
+                if !self.backend.caps().formats.uses[f as usize].contains(FormatUse::SAMPLE) {
                     return not_implemented(TYPED_BUFFER_FORMAT_UNHELD);
                 }
                 let within = u32::try_from(offset).map_err(|_| Error::OutOfMemory)?;
@@ -2303,7 +2384,13 @@ impl<B: Backend> Device<B> {
         // Without the back end's per-target blends, a block per group of targets that agree,
         // each drawn by a run of its own (`TargetsSplit`).
         let mut groups = Vec::new();
-        if !block.same_for_all && !self.backend.caps().has(Features::INDEPENDENT_BLEND) {
+        if !block.same_for_all
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::INDEPENDENT_BLEND)
+        {
             let mut left = u8::MAX;
             while left != 0 {
                 let first = left.trailing_zeros() as usize;
@@ -2376,7 +2463,7 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("unknown fill or cull mode"));
         }
         let caps = self.backend.caps();
-        if d.fill == fill_mode::WIREFRAME && !caps.has(Features::POLYGON_MODE) {
+        if d.fill == fill_mode::WIREFRAME && !caps.features.contains(Features::POLYGON_MODE) {
             return not_implemented("wireframe without the back end's polygon mode");
         }
         self.live()?;
@@ -2419,7 +2506,11 @@ impl<B: Backend> Device<B> {
             }
         }
         let layered = shader::multisampled_arrays(bytecode)?;
-        let texture_info = !self.backend.caps().has(Features::TEXTURE_LEVEL_QUERY);
+        let texture_info = !self
+            .backend
+            .caps()
+            .features
+            .contains(Features::TEXTURE_LEVEL_QUERY);
         let (mut converted, reads_samples) =
             shader::convert(bytecode, stage, &mut typed, layered, texture_info)?;
         let samplers = shader::sampler_slots(&converted);
@@ -2450,6 +2541,15 @@ impl<B: Backend> Device<B> {
         } else {
             0
         };
+        // A stage reading more textures (constant buffers read through textures among them) or
+        // samplers than the back end has has no route: refused (plan 4.12).
+        let limits = &self.backend.caps().limits;
+        if textures.count_ones() + past_limit.count_ones() > limits.textures_per_stage
+            || samplers.count_ones() > limits.samplers_per_stage
+        {
+            self.count_slow_path(SlowPath::BindingsBeyondLimit);
+            return Err(Error::InvalidArg(BINDINGS_BEYOND_LIMIT));
+        }
         if past_limit != 0 {
             let key = StageVariant {
                 texture_info,
@@ -2465,7 +2565,11 @@ impl<B: Backend> Device<B> {
         let mut clip = None;
         if wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::CLIP_DISTANCES)
-            && !self.backend.caps().has(Features::CLIP_DISTANCE)
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::CLIP_DISTANCE)
         {
             let outputs = &converted.reflection.outputs;
             let at = (
@@ -2487,10 +2591,14 @@ impl<B: Backend> Device<B> {
         // helper, which drops the primitives they cull, and the back end holds its pass-through.
         let culled = wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::CULL_DISTANCE)
-            && !self.backend.caps().has(Features::CULL_DISTANCE);
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::CULL_DISTANCE);
         if culled {
             if stage != wcontainers_gpu::SourceStage::Vertex
-                || !self.backend.caps().has(Features::COMPUTE)
+                || !self.backend.caps().features.contains(Features::COMPUTE)
             {
                 return not_implemented(CULL_DISTANCES_UNSERVED);
             }
@@ -2507,7 +2615,11 @@ impl<B: Backend> Device<B> {
         }
         if wcontainers_shaders::capabilities(&module.module)
             .contains(naga::valid::Capabilities::PRIMITIVE_INDEX)
-            && !self.backend.caps().has(Features::PRIMITIVE_INDEX)
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::PRIMITIVE_INDEX)
         {
             return not_implemented(
                 "the primitive index without the back end's (PrimitiveIdAsGeometry)",
@@ -2578,8 +2690,8 @@ impl<B: Backend> Device<B> {
         // Without compute programs a geometry shader, or a vertex shader's stream output, is
         // replayed through transform feedback (`GeometryAsReplay`, `StreamOutAfterReplay`).
         let caps = self.backend.caps();
-        let replayed = !caps.has(Features::COMPUTE);
-        if replayed && !caps.has(Features::TRANSFORM_FEEDBACK) {
+        let replayed = !caps.features.contains(Features::COMPUTE);
+        if replayed && !caps.features.contains(Features::TRANSFORM_FEEDBACK) {
             return not_implemented(GEOMETRY_STAGE_UNSERVED);
         }
         let stage = if vertex {
@@ -2593,7 +2705,11 @@ impl<B: Backend> Device<B> {
             // pixel program to apply, at the location past the stage's outputs.
             let clip = (wcontainers_shaders::capabilities(&converted.modules[1].module)
                 .contains(naga::valid::Capabilities::CLIP_DISTANCES)
-                && !self.backend.caps().has(Features::CLIP_DISTANCE))
+                && !self
+                    .backend
+                    .caps()
+                    .features
+                    .contains(Features::CLIP_DISTANCE))
             .then(|| {
                 let outputs = &converted.reflection.outputs;
                 (
@@ -2672,13 +2788,22 @@ impl<B: Backend> Device<B> {
         let mut resolved = Vec::new();
         let mut pulled = Vec::new();
         let mut pulled_paths = Vec::new();
-        let steps_natively = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
+        let steps_natively = self
+            .backend
+            .caps()
+            .features
+            .contains(Features::INSTANCE_STEP_RATE);
+        // Direct3D's 32 slots and inputs where the back end fetches fewer: those past its streams
+        // or attribute locations are fetched in the vertex program.
+        let limits = &self.backend.caps().limits;
+        let (streams, attributes) = (limits.vertex_streams, limits.vertex_attributes);
         for e in elements {
             if e.slot as usize >= crate::context::VERTEX_SLOTS {
                 return Err(Error::InvalidArg("an input slot past the last"));
             }
-            let vf = format::vertex_format(e.format)
-                .ok_or(Error::InvalidArg("a format vertex input cannot have"))?;
+            let unread = Error::InvalidArg("a format vertex input cannot have");
+            let vf = format::vertex_format(e.format).ok_or(unread)?;
+            let size = format::vertex_size(e.format).ok_or(unread)?;
             let slot = e.slot as usize;
             let align = format::vertex_alignment(vf);
             let offset = if e.offset == APPEND_ALIGNED {
@@ -2690,7 +2815,7 @@ impl<B: Backend> Device<B> {
             } else {
                 e.offset
             };
-            next_offset[slot] = offset + format::vertex_size(vf);
+            next_offset[slot] = offset + size;
             let step = e.per_instance.then_some(e.step_rate);
             if resolved
                 .iter()
@@ -2730,6 +2855,8 @@ impl<B: Backend> Device<B> {
                     Some(SlowPath::InstanceRateInShader)
                 } else if resigned {
                     Some(SlowPath::VertexFormatConverted)
+                } else if e.slot >= streams || input.register >= attributes {
+                    Some(SlowPath::VertexPulledInShader)
                 } else {
                     None
                 };
@@ -2899,7 +3026,7 @@ fn stand_ins(module: &naga::Module) -> Vec<(u32, Option<StandIn>)> {
 /// Whether multisampled textures of `format` resolve (averaging: not integer or depth).
 pub(crate) fn resolvable(format: Format) -> bool {
     !matches!(
-        format.kind(),
+        FORMAT_FACTS[format as usize].kind,
         FormatKind::Uint | FormatKind::Sint | FormatKind::DepthStencil
     )
 }
@@ -3100,7 +3227,7 @@ pub(crate) fn depth_stencil_block(d: &DepthStencilDesc) -> GpuDepthStencil {
 /// The back end's raster block for Direct3D's description. A bias clamp the back end lacks is left
 /// out: draws with depth to bias add the bias in the pixel program instead (`DepthBiasInShader`).
 pub(crate) fn raster_block(d: &RasterizerDesc, caps: &Caps) -> RasterDesc {
-    let clamp = if caps.has(Features::DEPTH_BIAS_CLAMP) {
+    let clamp = if caps.features.contains(Features::DEPTH_BIAS_CLAMP) {
         d.depth_bias_clamp
     } else {
         0.0
@@ -3125,7 +3252,7 @@ pub(crate) fn raster_block(d: &RasterizerDesc, caps: &Caps) -> RasterDesc {
         depth_bias_slope: d.slope_scaled_depth_bias.to_bits(),
         depth_bias_clamp: clamp.to_bits(),
         // Where the back end clips only, the programs clamp (`DepthClampInShader`).
-        depth_clip: d.depth_clip || !caps.has(Features::DEPTH_CLAMP),
+        depth_clip: d.depth_clip || !caps.features.contains(Features::DEPTH_CLAMP),
         scissor: d.scissor,
         line_width: 1.0f32.to_bits(),
         provoking: ProvokingVertex::First,
@@ -3136,7 +3263,10 @@ pub(crate) fn raster_block(d: &RasterizerDesc, caps: &Caps) -> RasterDesc {
 
 /// Whether clear values of `format` are integers rather than floats.
 pub(crate) fn integer_format(format: Format) -> bool {
-    matches!(format.kind(), FormatKind::Uint | FormatKind::Sint)
+    matches!(
+        FORMAT_FACTS[format as usize].kind,
+        FormatKind::Uint | FormatKind::Sint
+    )
 }
 
 /// The back end's sampler for Direct3D's description. Border and mirror-once addressing the back end
@@ -3164,8 +3294,12 @@ fn gpu_sampler(d: &SamplerDesc, caps: &Caps) -> Result<GpuSampler> {
             address::WRAP => AddressMode::Repeat,
             address::MIRROR => AddressMode::Mirror,
             address::CLAMP => AddressMode::Clamp,
-            address::BORDER if caps.has(Features::BORDER_COLOR) => AddressMode::Border,
-            address::MIRROR_ONCE if caps.has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
+            address::BORDER if caps.features.contains(Features::BORDER_COLOR) => {
+                AddressMode::Border
+            }
+            address::MIRROR_ONCE if caps.features.contains(Features::MIRROR_ONCE) => {
+                AddressMode::MirrorOnce
+            }
             address::BORDER | address::MIRROR_ONCE => AddressMode::Clamp,
             _ => return Err(Error::InvalidArg("unknown address mode")),
         };
@@ -3217,7 +3351,7 @@ fn gpu_sampler(d: &SamplerDesc, caps: &Caps) -> Result<GpuSampler> {
 /// The sampler's state as programs that filter or address in the program read it
 /// (`HelperValue::SamplerState`): filters and address modes as codes in the order of the interface's
 /// enums, the anisotropy, then the level range.
-pub(crate) fn sampler_state(s: &Sampler<impl Backend>) -> [u32; 9] {
+pub(crate) fn sampler_state(s: &Sampler<impl Gpu>) -> [u32; 9] {
     let m = &s.made;
     let mut words = [0; 9];
     for (w, f) in words.iter_mut().zip([m.min, m.mag, m.mip]) {

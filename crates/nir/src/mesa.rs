@@ -6,7 +6,7 @@ use crate::bind::{self, KINDS};
 use std::ffi::{CStr, CString, c_char};
 #[cfg(feature = "standalone")]
 use std::sync::Once;
-use wcontainers_gpu::{ReflectedBinding, ShaderStage};
+use wcontainers_gpu::{ReflectedBinding, SLOT_KINDS, ShaderStage};
 
 /// The program stages the routes take (`enum wc_stage`).
 #[repr(C)]
@@ -200,16 +200,42 @@ unsafe extern "C" {
     fn wc_bytes_free(bytes: *mut Bytes);
     fn wc_nir_clone(nir: *const NirShader) -> *mut NirShader;
     fn wc_nir_number_vertex_elements(nir: *mut NirShader) -> u64;
+    fn wc_nir_geometry_vertices_out(nir: *const NirShader) -> u32;
+    fn wc_nir_control_points_out(nir: *const NirShader) -> u32;
+    fn wc_nir_makes_points(nir: *const NirShader) -> bool;
+    fn wc_nir_named_layer_location(nir: *const NirShader) -> u32;
     fn wc_nir_fragcolor_to_buffers(nir: *mut NirShader, buffers: u32);
     fn wc_nir_uniform_blocks_as_words(nir: *mut NirShader);
     fn wc_nir_split_resource_arrays(nir: *mut NirShader);
+    fn wc_nir_textures_1d_as_2d(nir: *mut NirShader);
+    fn wc_nir_drop_name(nir: *mut NirShader);
     fn wc_nir_transform_position(nir: *mut NirShader, transform: PositionTransform);
+    fn wc_nir_reads_sample_positions(nir: *mut NirShader) -> bool;
+    fn wc_nir_interpolate_elsewhere(nir: *mut NirShader, samples: u32) -> bool;
+    fn wc_nir_fit_sample_masks(nir: *mut NirShader, single_sampled: bool);
+    fn wc_nir_writes_sample_mask(nir: *mut NirShader) -> bool;
+    fn wc_nir_fetches_target(nir: *mut NirShader) -> bool;
+    fn wc_nir_formatless_images(nir: *mut NirShader) -> u64;
+    fn wc_nir_fetch_from_texture(nir: *mut NirShader, unit: u32, multisampled: bool);
     fn wc_nir_swizzle_textures(nir: *mut NirShader, swizzles: *const TextureSwizzle, count: usize);
     fn wc_nir_nearest_integer_textures(
         nir: *mut NirShader,
         samplers: *const NearestSampler,
         count: usize,
-    );
+    ) -> bool;
+    fn wc_nir_integer_sampled_units(nir: *mut NirShader) -> u64;
+    fn wc_nir_stream_point_size_at_a_location(nir: *mut NirShader);
+    fn wc_nir_generic_end(nir: *const NirShader) -> u32;
+    fn wc_nir_point_size_also_at(nir: *mut NirShader, at: u32) -> bool;
+    fn wc_nir_point_size_at_most(nir: *const NirShader, size: f32) -> bool;
+    fn wc_nir_point_square(vs: *const NirShader, at: u32, largest: f32) -> *mut NirShader;
+    fn wc_nir_geometry_squares(
+        gs: *const NirShader,
+        at: u32,
+        largest: f32,
+        block: u32,
+    ) -> *mut NirShader;
+    fn wc_nir_storage_pass_through(last: *mut NirShader, made: *mut *mut NirShader) -> bool;
     fn wc_nir_stream_outputs(
         nir: *const NirShader,
         outputs: *mut StreamedOutput,
@@ -236,6 +262,8 @@ pub struct StreamedOutput {
 /// The bridge's answer for a streamed value the route places neither at a location nor as the
 /// position.
 const STREAMED_ELSEWHERE: u32 = u32::MAX;
+/// `wc_nir_named_layer_location`'s answer for a program naming no layer.
+const NO_NAMED_LAYER: u32 = u32::MAX;
 
 /// What one component of a texture's result is made of (`enum wc_swizzle`).
 #[repr(u8)]
@@ -282,6 +310,28 @@ pub struct NearestSampler {
     pub min_lod: u32,
     pub max_lod: u32,
     pub border: [u32; naga::VectorSize::MAX],
+}
+
+/// The primitive a pass-through geometry program takes (`Nir::storage_pass_through`), in the
+/// bridge's order (`WC_PASS_THROUGH_INPUTS`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Assembled {
+    Points,
+    Lines,
+    Triangles,
+    LinesAdjacency,
+    TrianglesAdjacency,
+}
+
+impl Assembled {
+    /// Every one, in the bridge's order.
+    pub const ALL: &[Assembled] = &[
+        Assembled::Points,
+        Assembled::Lines,
+        Assembled::Triangles,
+        Assembled::LinesAdjacency,
+        Assembled::TrianglesAdjacency,
+    ];
 }
 
 /// How a vertex program's position (and point size) is changed to meet the host's clip space,
@@ -361,6 +411,33 @@ impl Nir {
         unsafe { wc_nir_number_vertex_elements(self.0) }
     }
 
+    /// The most vertices a geometry program emits an invocation; zero for another stage.
+    pub fn geometry_vertices_out(&self) -> u32 {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_geometry_vertices_out(self.0) }
+    }
+
+    /// For a geometry program writing `gl_Layer`, the location after its generic outputs, where
+    /// its pass-through can pass the layer it names on; `None` for one that writes none.
+    pub fn named_layer_location(&self) -> Option<u32> {
+        // SAFETY: self.0 is a live shader.
+        let at = unsafe { wc_nir_named_layer_location(self.0) };
+        (at != NO_NAMED_LAYER).then_some(at)
+    }
+
+    /// The control points of a tessellation control program's output patch; zero for another
+    /// stage.
+    pub fn control_points_out(&self) -> u32 {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_control_points_out(self.0) }
+    }
+
+    /// An evaluation program in point mode, or a geometry program whose output is points.
+    pub fn makes_points(&self) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_makes_points(self.0) }
+    }
+
     /// gl_FragColor written to each of the first `buffers` draw buffers. Nothing for a program
     /// that does not write it, or of another stage.
     pub fn fragcolor_to_buffers(&mut self, buffers: u32) {
@@ -373,6 +450,20 @@ impl Nir {
     pub fn split_resource_arrays(&mut self) {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_split_resource_arrays(self.0) }
+    }
+
+    /// Every 1D texture the program samples as a 2D texture of one row, for a driver making its 1D
+    /// textures 2D.
+    pub fn textures_1d_as_2d(&mut self) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_textures_1d_as_2d(self.0) }
+    }
+
+    /// The program's name and label dropped (st/mesa names each by the API program's number), so
+    /// that programs of equal content have one [`key`](Nir::key).
+    pub fn drop_name(&mut self) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_drop_name(self.0) }
     }
 
     /// Every uniform block access st/mesa hands over (`load_ubo`, the default uniforms as block
@@ -389,10 +480,92 @@ impl Nir {
     }
 
     /// Every sampling of an integer texture at the units of `samplers` made a load of its
-    /// nearest texel, as OpenGL samples them; cube maps are left as they are.
-    pub fn nearest_integer_textures(&mut self, samplers: &[NearestSampler]) {
+    /// nearest texel, as OpenGL samples them; a sampled cube map or cube map array becomes a 2D
+    /// array of its faces, six a cube, which the driver binds such a view of. False where the
+    /// program also gathers such a cube: its gathers then read their own face's edge texels past
+    /// the edge, not the next face's, which is not built.
+    #[must_use]
+    pub fn nearest_integer_textures(&mut self, samplers: &[NearestSampler]) -> bool {
         // SAFETY: self.0 is a live shader; the bridge reads the list during the call.
         unsafe { wc_nir_nearest_integer_textures(self.0, samplers.as_ptr(), samplers.len()) }
+    }
+
+    /// The texture units the program samples integers at (not loads, gathers or queries), a bit
+    /// each: an integer texture there is sampled by [`Self::nearest_integer_textures`].
+    pub fn integer_sampled_units(&mut self) -> u64 {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_integer_sampled_units(self.0) }
+    }
+
+    /// A streamed point size (a built-in the common form keeps and the stage helper does not
+    /// stream) also written at a location no output takes, which the stream then names.
+    pub fn stream_point_size_at_a_location(&mut self) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_stream_point_size_at_a_location(self.0) }
+    }
+
+    /// Where the generic locations a fragment program reads, or another stage's program writes,
+    /// end.
+    pub fn generic_end(&self) -> u32 {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_generic_end(self.0) }
+    }
+
+    /// A vertex program's point size also written at the generic location `at`; false where it
+    /// writes none.
+    pub fn point_size_also_at(&mut self, at: u32) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_point_size_also_at(self.0, at) }
+    }
+
+    /// Every point size the program writes is a constant no larger than `size`; false where it
+    /// writes none. Read after [`Self::point_size_also_at`], which lowers its outputs.
+    pub fn point_size_at_most(&self, size: f32) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_point_size_at_most(self.0, size) }
+    }
+
+    /// A geometry program drawing each point of this vertex program as a square of two triangles
+    /// (`SlowPath::PointsAsQuads`), each corner with every output and `gl_PointCoord` at the
+    /// generic location `at`. Its size is the point size the program also writes at `at`
+    /// ([`Self::point_size_also_at`]), clamped to 1..`largest`, or else the first word of uniform
+    /// block 0, whose next three are half a pixel's clip-space length over w in x and in y (signed
+    /// as the viewport's scale) and the direction of `gl_PointCoord`'s t (1 where it grows with the
+    /// rows, -1 where it falls). `None` for a program writing clip distances or outputs at offsets
+    /// known only when run.
+    pub fn point_square(&self, at: u32, largest: f32) -> Option<Nir> {
+        // SAFETY: self.0 is a live shader; the result is a new shader or null.
+        let square = unsafe { wc_nir_point_square(self.0, at, largest) };
+        (!square.is_null()).then_some(Nir(square))
+    }
+
+    /// This geometry program, whose output is points and whose uniform blocks are words
+    /// ([`Self::uniform_blocks_as_words`]), rewritten to draw each as a square of two triangles as
+    /// [`Self::point_square`] draws them (its new block in words too): its size the point size it writes, clamped
+    /// to 1..`largest`, or else the first word of uniform block `block`, whose words are
+    /// [`Self::point_square`]'s block 0's; `gl_PointCoord` at the generic location `at`. `None`
+    /// for a program of another output, writing clip distances, outputs at offsets known only
+    /// when run or at `at`, or to more than one stream.
+    pub fn geometry_squares(&self, at: u32, largest: f32, block: u32) -> Option<Nir> {
+        // SAFETY: self.0 is a live shader; the result is a new shader or null.
+        let squares = unsafe { wc_nir_geometry_squares(self.0, at, largest, block) };
+        (!squares.is_null()).then_some(Nir(squares))
+    }
+
+    /// For a vertex or evaluation program using storage buffers or images, which runs as compute
+    /// work before a geometry program passing each of its primitives' own vertices on unchanged,
+    /// every output as written: those geometry programs, by the primitive taken (`Assembled`),
+    /// with this program's point size also written at the generic location after its outputs,
+    /// where the geometry program reads it and does not pass it on. An evaluation program has
+    /// one, for the primitive it makes. `None` for a program of another stage or using no
+    /// storage; an entry is `None` for one writing outputs at offsets known only when run, or a
+    /// point size the geometry program cannot read.
+    pub fn storage_pass_through(&mut self) -> Option<[Option<Nir>; Assembled::ALL.len()]> {
+        let mut made = [std::ptr::null_mut(); Assembled::ALL.len()];
+        // SAFETY: self.0 is a live shader; the bridge writes `made`'s entries, each a new shader
+        // or null.
+        let wanted = unsafe { wc_nir_storage_pass_through(self.0, made.as_mut_ptr()) };
+        wanted.then(|| made.map(|geometry| (!geometry.is_null()).then_some(Nir(geometry))))
     }
 
     /// The outputs the program streams (its transform feedback, none without it) and each of the
@@ -425,7 +598,62 @@ impl Nir {
         (count != STREAMED_ELSEWHERE && written != STREAMED_ELSEWHERE).then_some((outputs, strides))
     }
 
-    /// A vertex program's position changed by `transform`. Nothing for another stage.
+    /// Whether a fragment program reads where its samples are (`gl_SamplePosition`,
+    /// `interpolateAtSample`, `interpolateAtOffset` of a value read per sample), which depends on
+    /// the targets' sample count.
+    pub fn reads_sample_positions(&mut self) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_reads_sample_positions(self.0) }
+    }
+
+    /// A fragment program's reads of inputs at an offset or at a sample, and of the sample
+    /// position, made from the values the common form interpolates and their slopes, for targets
+    /// of `samples` samples. False where that count's positions are needed and not known (one,
+    /// and the standard patterns of two, four, eight and sixteen, are).
+    pub fn interpolate_elsewhere(&mut self, samples: u32) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_interpolate_elsewhere(self.0, samples) }
+    }
+
+    /// A fragment program's sample masks as OpenGL defines them: `gl_SampleMaskIn` of a program
+    /// run per sample holds only that sample's bit (a host may give every covered sample's), and
+    /// with `single_sampled` targets its writes of `gl_SampleMask` are dropped (OpenGL applies
+    /// the mask only as a multisample operation; a host applies its first bit).
+    pub fn fit_sample_masks(&mut self, single_sampled: bool) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_fit_sample_masks(self.0, single_sampled) }
+    }
+
+    /// Whether a fragment program writes `gl_SampleMask`, which depends on the targets' sample
+    /// count.
+    pub fn writes_sample_mask(&mut self) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_writes_sample_mask(self.0) }
+    }
+
+    /// Whether a fragment program reads its first target's texels (framebuffer fetch, which
+    /// Mesa's lowering of `KHR_blend_equation_advanced` writes).
+    pub fn fetches_target(&mut self) -> bool {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_fetches_target(self.0) }
+    }
+
+    /// The image units the program declares images at without a format, a bit each: their stores
+    /// take the bound image's format, which the variant converting it names.
+    pub fn formatless_images(&mut self) -> u64 {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_formatless_images(self.0) }
+    }
+
+    /// A fragment program's reads of its first target's texels made loads of the texture at
+    /// `unit`, a copy of the target the driver binds there, multisampled where the target is.
+    pub fn fetch_from_texture(&mut self, unit: u32, multisampled: bool) {
+        // SAFETY: self.0 is a live shader.
+        unsafe { wc_nir_fetch_from_texture(self.0, unit, multisampled) }
+    }
+
+    /// A vertex, geometry or tessellation evaluation program's position changed by `transform`.
+    /// Nothing for another stage.
     pub fn transform_position(&mut self, transform: PositionTransform) {
         // SAFETY: self.0 is a live shader.
         unsafe { wc_nir_transform_position(self.0, transform) }
@@ -520,8 +748,8 @@ impl Nir {
     /// each resource's reflection.
     pub fn to_common_form(&mut self, stage: Stage) -> Result<Vec<ReflectedBinding>, ConvertError> {
         let ranges = KINDS.map(|k| SlotRange {
-            first: k.first_binding(),
-            slots: k.slots(),
+            first: SLOT_KINDS[k as usize].first_binding,
+            slots: SLOT_KINDS[k as usize].slots,
         });
         let set = bind::stage_set(stage.shader_stage());
         let mut out = Bindings {

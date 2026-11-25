@@ -306,7 +306,7 @@ const DEPTH_FORMATS: [Format; 6] = [
 ];
 
 /// What the steps draw with, made once.
-struct Kit<B: Backend> {
+struct Kit<B: Gpu> {
     float_program: B::Program,
     uint_program: B::Program,
     sint_program: B::Program,
@@ -326,7 +326,7 @@ struct Kit<B: Backend> {
     timestamps: Option<B::QuerySet>,
 }
 
-fn kit<B: Backend>(b: &mut B) -> Result<Kit<B>, GpuError> {
+fn kit<B: Gpu>(b: &mut B) -> Result<Kit<B>, GpuError> {
     let module = naga::front::wgsl::parse_str(PROGRAMS).map_err(|_| GpuError::Invalid("wgsl"))?;
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
@@ -510,7 +510,7 @@ fn bytes(len: usize, seed: u8) -> Vec<u8> {
 }
 
 fn texel_size(f: Format) -> u32 {
-    f.block().2
+    FORMAT_FACTS[f as usize].block.2
 }
 
 /// A region of level `mip` of a texture, chosen by six numbers: mip, layer, x, y, width, height.
@@ -536,12 +536,7 @@ fn region_of(desc: &TextureDesc, at: &[u8]) -> (u32, u32, Origin, Extent) {
     )
 }
 
-fn region<B: Backend>(
-    t: &B::Texture,
-    mip: u32,
-    layer: u32,
-    origin: Origin,
-) -> TextureRegion<'_, B> {
+fn region<B: Gpu>(t: &B::Texture, mip: u32, layer: u32, origin: Origin) -> TextureRegion<'_, B> {
     TextureRegion {
         texture: t,
         mip,
@@ -590,7 +585,7 @@ impl Area {
 }
 
 /// Runs `steps` on `b` as valid calls, and gives every byte read back, in order.
-pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuError> {
+pub fn run<B: Gpu>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuError> {
     let kit = kit(b)?;
     let mut buffers: Vec<(B::Buffer, u64)> = Vec::new();
     let mut textures: Vec<(B::Texture, TextureDesc)> = Vec::new();
@@ -603,11 +598,11 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
     let drawn = FormatUse::RENDER | FormatUse::SAMPLE;
     let formats: Vec<Format> = FORMATS
         .into_iter()
-        .filter(|&f| b.caps().formats.get(f).contains(drawn))
+        .filter(|&f| b.caps().formats.uses[f as usize].contains(drawn))
         .collect();
     let depth_formats: Vec<Format> = DEPTH_FORMATS
         .into_iter()
-        .filter(|&f| b.caps().formats.get(f).contains(FormatUse::COPY_OUT))
+        .filter(|&f| b.caps().formats.uses[f as usize].contains(FormatUse::COPY_OUT))
         .collect();
     // Buffer ranges (by index into `buffers`) commands or writes touched since the last wait for
     // all work: what a no-overwrite write keeps off without waiting.
@@ -917,7 +912,7 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                         texels.push(Area::whole(i, mip, layer));
                     }
                 }
-                let value = match desc.format.kind() {
+                let value = match FORMAT_FACTS[desc.format as usize].kind {
                     FormatKind::Uint => value.map(|v| (v * 255.0) as u32),
                     FormatKind::Sint => value.map(|v| ((v * 255.0) as i32 - 128) as u32),
                     _ => value.map(f32::to_bits),
@@ -1066,7 +1061,7 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
 /// beside the source to its right, or below it where the level is one texel wide. Each aspect is read
 /// before and after the copy, and the after must be the before with the region moved.
 #[allow(clippy::too_many_arguments)]
-fn depth_copy<B: Backend>(
+fn depth_copy<B: Gpu>(
     b: &mut B,
     format: Format,
     size: [u8; 2],
@@ -1148,7 +1143,7 @@ fn depth_copy<B: Backend>(
         stencil,
         ..region::<B>(&t, mip, layer, Origin { x: 0, y: 0, z: 0 })
     };
-    let kind = format.kind();
+    let kind = FORMAT_FACTS[format as usize].kind;
     let has_depth = kind != FormatKind::Stencil;
     let has_stencil = kind != FormatKind::Depth;
     let depth_bytes = if format == Format::Depth16Unorm { 2 } else { 4 };
@@ -1230,7 +1225,7 @@ fn depth_copy<B: Backend>(
 
 /// One pass of [`Step::Pass`] on texture `t`.
 #[allow(clippy::too_many_arguments)]
-fn pass<B: Backend>(
+fn pass<B: Gpu>(
     b: &mut B,
     kit: &Kit<B>,
     t: &B::Texture,
@@ -1241,13 +1236,10 @@ fn pass<B: Backend>(
     options: &PassOptions,
     read: &mut Vec<Vec<u8>>,
 ) -> Result<(), GpuError> {
-    let kind = desc.format.kind();
+    let kind = FORMAT_FACTS[desc.format as usize].kind;
     let float = kind == FormatKind::Float;
     let multisampled = multisampled
-        && b.caps()
-            .formats
-            .get(desc.format)
-            .contains(FormatUse::RESOLVE)
+        && b.caps().formats.uses[desc.format as usize].contains(FormatUse::RESOLVE)
         && b.caps().formats.takes_samples(desc.format, 4);
     let samples = if multisampled { 4 } else { 1 };
     let vertices: Vec<u8> = triangles
@@ -1300,10 +1292,7 @@ fn pass<B: Backend>(
     let depth_format = Format::Depth24PlusStencil8;
     let depth = match options.depth {
         Some(_)
-            if b.caps()
-                .formats
-                .get(depth_format)
-                .contains(FormatUse::DEPTH_STENCIL) =>
+            if b.caps().formats.uses[depth_format as usize].contains(FormatUse::DEPTH_STENCIL) =>
         {
             let d = b.create_texture(&TextureDesc {
                 format: depth_format,
@@ -1385,7 +1374,7 @@ fn pass<B: Backend>(
         _ => None,
     };
     // Indices for each triangle, its corners in reverse, and the instances drawn.
-    let bases = b.caps().has(Features::BASE_VERTEX_INSTANCE);
+    let bases = b.caps().features.contains(Features::BASE_VERTEX_INSTANCE);
     let indexed = options.indexed.map(|n| {
         let wide = n & 1 == 1;
         let instances = 1 + u32::from(n >> 1 & 1);

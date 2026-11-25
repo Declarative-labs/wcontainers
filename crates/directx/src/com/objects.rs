@@ -440,15 +440,13 @@ impl Dc {
             None,
         )?;
         let mapped = f.map(&staging, 0, desc::map::READ, 0)?;
+        let pitch = self.pitch();
         for y in 0..self.height as usize {
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    mapped.data.add(y * mapped.row_pitch as usize),
-                    self.bits.as_mut_ptr().add(y * self.pitch()),
-                    self.pitch(),
-                )
-            };
+            let row = &mut self.bits[y * pitch..][..pitch];
+            let from = &mapped.data[y * mapped.row_pitch as usize..][..pitch];
+            row.iter_mut().zip(from).for_each(|(t, f)| *t = f.get());
         }
+        drop(mapped);
         f.unmap(&staging, 0);
         Ok(())
     }
@@ -523,7 +521,7 @@ texture!(
 impl Texture2D {
     pub(super) fn get_desc1(&self, out: *mut D3D11_TEXTURE2D_DESC1) {
         if let Some(out) = unsafe { out.as_mut() } {
-            *out = unsafe { convert::same_fields(&convert::texture2d_back(&self.front.desc)) };
+            *out = convert::texture2d_back1(&self.front.desc);
         }
     }
 }
@@ -531,7 +529,7 @@ impl Texture2D {
 impl Texture3D {
     pub(super) fn get_desc1(&self, out: *mut D3D11_TEXTURE3D_DESC1) {
         if let Some(out) = unsafe { out.as_mut() } {
-            *out = unsafe { convert::same_fields(&convert::texture3d_back(&self.front.desc)) };
+            *out = convert::texture3d_back1(&self.front.desc);
         }
     }
 }
@@ -872,7 +870,20 @@ impl RasterizerState {
         let mut d = D3D11_RASTERIZER_DESC1::default();
         self.get_desc1(&mut d);
         if let Some(out) = unsafe { out.as_mut() } {
-            *out = unsafe { convert::same_fields(&d) };
+            *out = D3D11_RASTERIZER_DESC2 {
+                FillMode: d.FillMode,
+                CullMode: d.CullMode,
+                FrontCounterClockwise: d.FrontCounterClockwise,
+                DepthBias: d.DepthBias,
+                DepthBiasClamp: d.DepthBiasClamp,
+                SlopeScaledDepthBias: d.SlopeScaledDepthBias,
+                DepthClipEnable: d.DepthClipEnable,
+                ScissorEnable: d.ScissorEnable,
+                MultisampleEnable: d.MultisampleEnable,
+                AntialiasedLineEnable: d.AntialiasedLineEnable,
+                ForcedSampleCount: d.ForcedSampleCount,
+                ConservativeRaster: D3D11_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+            };
         }
     }
 }

@@ -10,12 +10,12 @@
 use std::collections::VecDeque;
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
-    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, FillMode, Format, FrontFace,
-    GpuError, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, Origin, PassDesc, Program,
-    ProvokingVertex, RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule, ShaderStage,
-    SlowPath, StageSet, StencilFace, StoreOp, TextureDesc, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
+    BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
+    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, FillMode, Format,
+    FrontFace, Gpu, GpuError, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, Origin,
+    PassDesc, Program, ProvokingVertex, RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule,
+    ShaderStage, SlowPath, StageSet, StencilFace, StoreOp, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
 };
 
 use crate::format::{BACK_BUFFER_FORMATS, back_buffer_format, dxgi, present_format};
@@ -83,7 +83,7 @@ impl SwapChainDesc {
             if !(2..=MAX_BUFFERS).contains(&self.buffers) {
                 return Err("flip models take 2 to 16 buffers");
             }
-            if format != format.linear() {
+            if format != FORMAT_FACTS[format as usize].linear {
                 return Err(
                     "flip models take no sRGB formats; sRGB views of the buffers draw sRGB",
                 );
@@ -168,7 +168,7 @@ impl Shown {
     fn of(value: u32, format: Format) -> Shown {
         if value == dxgi::R10G10B10_XR_BIAS_A2_UNORM {
             Shown::Extended
-        } else if format != format.linear() || format == Format::Rgba16Float {
+        } else if format != FORMAT_FACTS[format as usize].linear || format == Format::Rgba16Float {
             Shown::Encoded
         } else {
             Shown::Copied
@@ -189,7 +189,7 @@ impl Shown {
     }
 }
 
-fn copy_program<B: Backend>(backend: &mut B, shown: Shown) -> Result<B::Program, GpuError> {
+fn copy_program<B: Gpu>(backend: &mut B, shown: Shown) -> Result<B::Program, GpuError> {
     let fragment = shown.entry_point();
     let vs = backend.create_shader(&ShaderModule::from_wgsl(
         PRESENT_WGSL,
@@ -211,7 +211,7 @@ fn copy_program<B: Backend>(backend: &mut B, shown: Shown) -> Result<B::Program,
 }
 
 /// The blocks and program of the present copy.
-struct Copy<B: Backend> {
+struct Copy<B: Gpu> {
     program: B::Program,
     blend: B::Blend,
     depth_stencil: B::DepthStencil,
@@ -220,14 +220,14 @@ struct Copy<B: Backend> {
 }
 
 /// One back buffer: its texture, the view the present copy reads, and that view's binding set.
-struct Buffer<B: Backend> {
+struct Buffer<B: Gpu> {
     texture: B::Texture,
     view: B::TextureView,
     set: B::BindingSet,
 }
 
 /// A DXGI swap chain on back end `B`.
-pub struct SwapChain<B: Backend> {
+pub struct SwapChain<B: Gpu> {
     desc: SwapChainDesc,
     format: Format,
     surface: B::Surface,
@@ -247,7 +247,7 @@ pub struct SwapChain<B: Backend> {
     shown: Shown,
 }
 
-impl<B: Backend> SwapChain<B> {
+impl<B: Gpu> SwapChain<B> {
     /// Makes a swap chain on the host window `window`, as `IDXGIFactory2::CreateSwapChainForHwnd` and
     /// the others do.
     pub fn new(backend: &mut B, window: u32, desc: &SwapChainDesc) -> Result<Self, SwapChainError> {
@@ -546,7 +546,7 @@ impl<B: Backend> SwapChain<B> {
     /// The sequential blit model's move at present: each buffer takes the next one's contents, and
     /// the last takes the first's, by way of `spare`.
     fn move_down(&self, backend: &mut B, spare: &B::Texture) {
-        backend.slow_paths().hit(SlowPath::SequentialBuffersCopied);
+        backend.record_slow_path(SlowPath::SequentialBuffersCopied);
         let extent = Extent {
             width: self.desc.width,
             height: self.desc.height,

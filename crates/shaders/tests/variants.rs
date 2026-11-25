@@ -3,8 +3,8 @@
 use std::path::Path;
 use wcontainers_gpu::{
     AddedBinding, DrawBaseSource, Format, HelperSlot, HelperValue, Interpolation, LinkedValues,
-    ScalarKind, SlotKind, SystemValue, TargetInShader, TexelBufferRoute, VariantFlags, VariantKey,
-    VertexFormat,
+    SLOT_KINDS, ScalarKind, SlotKind, SystemValue, TargetInShader, TexelBufferRoute, VariantFlags,
+    VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{ConvertError, Source, convert};
 
@@ -134,7 +134,16 @@ fn register_spaces_are_numbered_by_the_programs_own_slots() {
             .reflection
             .bindings
             .iter()
-            .map(|b| (b.kind, b.space, b.register, b.set, b.binding, b.slot()))
+            .map(|b| {
+                (
+                    b.kind,
+                    b.space,
+                    b.register,
+                    b.set,
+                    b.binding,
+                    b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                )
+            })
             .collect();
         bindings.sort_by_key(|b| b.4);
         assert_eq!(
@@ -156,7 +165,12 @@ fn register_spaces_are_numbered_by_the_programs_own_slots() {
         None,
     )
     .unwrap();
-    assert!(c.reflection.bindings.iter().all(|b| b.slot() == b.register));
+    assert!(
+        c.reflection
+            .bindings
+            .iter()
+            .all(|b| (b.binding - SLOT_KINDS[b.kind as usize].first_binding) == b.register)
+    );
 }
 
 /// A vertex program writes each output as the pixel program reads it, taken from the pixel program's
@@ -688,7 +702,10 @@ fn constants_read_as_storage_are_added_bindings() {
             .find(|b| b.added.is_some())
             .unwrap();
         assert_eq!(b.kind, SlotKind::Storage);
-        assert_eq!(b.binding, SlotKind::Storage.first_binding());
+        assert_eq!(
+            b.binding,
+            SLOT_KINDS[SlotKind::Storage as usize].first_binding
+        );
         assert_eq!(b.added, Some(AddedBinding::ConstantsAsStorage(0)));
         assert!(wgsl(&c).contains("var<storage>"), "{}", wgsl(&c));
         // Its registers are runtime-sized, so an index past the declared array reads the buffer.
@@ -908,6 +925,145 @@ fn clip_distances_and_depth_clamp_pass_through_the_linked_location() {
         &vs,
         wcontainers_shaders::refusal::LINKED_LOCATION_TAKEN,
     );
+}
+
+/// A pixel program reading its clip distances, on both routes: refused by name without the
+/// distances in the linked values (no back end reads the built-in in a pixel program), read from
+/// them with, and refused where it reads more than they hold.
+#[test]
+fn clip_distances_a_pixel_program_reads_come_from_the_linked_values() {
+    let ps = own_pair("ps_clip_read");
+    let location = 3;
+    let key = |clip_distances| VariantKey {
+        flags: VariantFlags::CLIP_DISTANCE,
+        linked: LinkedValues {
+            location,
+            clip_distances,
+        },
+        samples: 1,
+        ..Default::default()
+    };
+    for source in [Source::Dxbc(&ps[0]), Source::Dxil(&ps[1])] {
+        let plain = VariantKey {
+            samples: 1,
+            ..Default::default()
+        };
+        assert_eq!(
+            convert(source, &plain, None).map(|_| ()),
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::CLIP_DISTANCE
+            ))
+        );
+        let c = convert(source, &key(6), None).unwrap();
+        let text = wgsl(&c);
+        assert!(!text.contains("clip_distances"), "{text}");
+        assert!(text.contains(&format!("@location({location})")), "{text}");
+        assert!(
+            text.contains(&format!("@location({})", location + 1)),
+            "{text}"
+        );
+        assert!(text.contains("discard"), "{text}");
+        let reads: Vec<_> = c
+            .reflection
+            .inputs
+            .iter()
+            .filter(|v| v.system == Some(wcontainers_gpu::SystemValue::ClipDistance))
+            .map(|v| v.mask)
+            .collect();
+        assert_eq!(reads.iter().map(|m| m.count_ones()).sum::<u32>(), 6);
+        assert_eq!(
+            convert(source, &key(5), None).map(|_| ()),
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::LINKED_CLIP_DISTANCE_COUNT
+            ))
+        );
+    }
+}
+
+/// Cull distances a pixel program reads, on both routes (`vs_cull_read`'s four over two registers, the
+/// second shared with clip distances; `ps_cull_read` reading three of them): refused by name without
+/// `CULL_DISTANCE_LINKED`; with it the vertex program keeps its built-in and passes the four after
+/// its clip distances' slot, and the pixel program reads them from there; a geometry program is
+/// refused it by name.
+#[test]
+fn cull_distances_a_pixel_program_reads_come_from_the_linked_values() {
+    let (vs, ps) = (own_pair("vs_cull_read"), own_pair("ps_cull_read"));
+    let gs = own_pair("gs_distances");
+    let location = 2;
+    let key = VariantKey {
+        flags: VariantFlags::CULL_DISTANCE_LINKED | VariantFlags::CLIP_DISTANCE,
+        linked: LinkedValues {
+            location,
+            clip_distances: 2,
+        },
+        samples: 1,
+        ..Default::default()
+    };
+    let plain = VariantKey {
+        samples: 1,
+        ..Default::default()
+    };
+    fn on(route: usize, code: &[Vec<u8>; 2]) -> Source<'_> {
+        match route {
+            0 => Source::Dxbc(&code[0]),
+            _ => Source::Dxil(&code[1]),
+        }
+    }
+    for route in 0..2 {
+        assert_eq!(
+            convert(on(route, &ps), &plain, None).map(|_| ()),
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::CULL_DISTANCE
+            ))
+        );
+        let c = convert(on(route, &ps), &key, None).unwrap();
+        let text = wgsl(&c);
+        assert!(!text.contains("cull_distance"), "{text}");
+        assert!(
+            text.contains(&format!("@location({})", location + 1)),
+            "{text}"
+        );
+        assert!(
+            !text.contains(&format!("@location({})", location + 2)),
+            "{text}"
+        );
+
+        let v = convert(on(route, &vs), &key, None).unwrap();
+        let m = &v.modules[0].module;
+        let result = m.entry_points[0].function.result.as_ref().unwrap();
+        let naga::TypeInner::Struct { members, .. } = &m.types[result.ty].inner else {
+            panic!("{result:?}")
+        };
+        let bindings: Vec<_> = members.iter().filter_map(|m| m.binding.clone()).collect();
+        let at = |l: u32| {
+            bindings
+                .iter()
+                .any(|b| matches!(b, naga::Binding::Location { location, .. } if *location == l))
+        };
+        assert!(
+            at(location) && at(location + 1) && !at(location + 2),
+            "{bindings:?}"
+        );
+        assert!(
+            bindings.contains(&naga::Binding::BuiltIn(naga::BuiltIn::CullDistance)),
+            "{bindings:?}"
+        );
+        assert!(
+            !bindings.contains(&naga::Binding::BuiltIn(naga::BuiltIn::ClipDistances)),
+            "{bindings:?}"
+        );
+
+        let geometry = VariantKey {
+            flags: VariantFlags::CULL_DISTANCE_LINKED,
+            ..Default::default()
+        };
+        assert_eq!(
+            convert(on(route, &gs), &geometry, None).map(|_| ()),
+            Err(ConvertError::Unsupported(
+                wcontainers_shaders::refusal::GEOMETRY_VARIANT
+            ))
+        );
+    }
 }
 
 /// Mirror-once addressing in the program: the sampler's state from the helper block picks the axes to
@@ -1230,7 +1386,12 @@ fn texture_arrays_are_a_texture_per_element() {
             .bindings
             .iter()
             .filter(|b| b.kind == SlotKind::Texture)
-            .map(|b| (b.register, b.slot()))
+            .map(|b| {
+                (
+                    b.register,
+                    b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                )
+            })
             .collect();
         textures.sort_unstable();
         assert_eq!(textures, [(0, 0), (1, 1), (2, 2), (3, 3)], "{path}");
@@ -1268,7 +1429,12 @@ fn storage_texture_arrays_are_a_storage_texture_per_element() {
             .bindings
             .iter()
             .filter(|b| b.kind == SlotKind::Storage)
-            .map(|b| (b.register, b.slot()))
+            .map(|b| {
+                (
+                    b.register,
+                    b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                )
+            })
             .collect();
         storage.sort_unstable();
         assert_eq!(
@@ -1357,7 +1523,14 @@ fn buffer_arrays_are_a_binding_per_element() {
                     .iter()
                     .find(|b| b.kind == kind && b.register == register)
                     .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
-                assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
+                assert_eq!(
+                    (
+                        b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                        b.count
+                    ),
+                    (register, 1),
+                    "{b:?}"
+                );
             }
         }
         let text = wgsl(&c);
@@ -1394,7 +1567,14 @@ fn structured_buffer_arrays_are_a_binding_per_element_on_both_routes() {
                     .iter()
                     .find(|b| b.kind == kind && b.register == register)
                     .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
-                assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
+                assert_eq!(
+                    (
+                        b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                        b.count
+                    ),
+                    (register, 1),
+                    "{b:?}"
+                );
             }
         }
         assert_eq!(
@@ -1433,7 +1613,14 @@ fn typed_buffer_arrays_are_a_binding_per_element_on_both_routes() {
                     .iter()
                     .find(|b| b.kind == kind && b.register == register)
                     .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
-                assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
+                assert_eq!(
+                    (
+                        b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                        b.count
+                    ),
+                    (register, 1),
+                    "{b:?}"
+                );
             }
         }
         let without = VariantKey {
@@ -1451,7 +1638,11 @@ fn typed_buffer_arrays_are_a_binding_per_element_on_both_routes() {
     let past = VariantKey {
         register_ranges: vec![
             ranges[0].clone(),
-            (SlotKind::Storage, 0, 0..SlotKind::Storage.slots() + 1),
+            (
+                SlotKind::Storage,
+                0,
+                0..SLOT_KINDS[SlotKind::Storage as usize].slots + 1,
+            ),
         ],
         ..key
     };
@@ -1527,7 +1718,7 @@ fn multisampled_array_layers_are_a_texture_each() {
             .map(|b| (b.binding, b.added))
             .collect();
         textures.sort_unstable_by_key(|t| t.0);
-        let first = SlotKind::Texture.first_binding();
+        let first = SLOT_KINDS[SlotKind::Texture as usize].first_binding;
         assert_eq!(
             textures,
             [
@@ -1811,9 +2002,10 @@ fn textures_of_another_kind_are_read_by_their_bits() {
         let text = wgsl(&viewed);
         // The float declaration now holds unsigned texels and the unsigned one floats; the signed
         // one, bound in its own kind, is unchanged.
-        assert_eq!(text.matches("texture_2d<u32>").count(), 1, "{text}");
-        assert_eq!(text.matches("texture_2d<f32>").count(), 1, "{text}");
-        assert_eq!(text.matches("texture_2d<i32>").count(), 1, "{text}");
+        for kind in ["u32", "f32", "i32"] {
+            let declared = format!("texture_2d<{kind}>");
+            assert_eq!(text.matches(&declared).count(), 1, "{kind}: {text}");
+        }
         assert!(text.contains("bitcast<vec4<f32>>"), "{text}");
         assert!(text.contains("bitcast<vec4<u32>>"), "{text}");
     }
@@ -1973,4 +2165,65 @@ fn inputs_evaluated_elsewhere_convert_on_both_routes() {
         };
         assert_eq!((per_sample(&dxbc), per_sample(&dxil)), (2, 2));
     }
+}
+
+/// A position declared at the centroid: in a program run once a pixel into four samples both routes
+/// move it by its slopes to Direct3D's centroid (from the coverage), into one sample neither moves
+/// it; in a program run per sample both refuse it by name at four samples, and without a sample
+/// count both refuse it as needing one.
+#[test]
+fn centroid_positions_move_or_are_refused_by_name_on_both_routes() {
+    let moved = |c: &wcontainers_shaders::Converted| {
+        let text = wgsl(c);
+        text.contains("dpdx(") && text.contains("sample_mask")
+    };
+    for (samples, expected) in [(1u8, false), (4, true)] {
+        let key = VariantKey {
+            samples,
+            ..Default::default()
+        };
+        let [dxbc, dxil] = both(&own_pair("ps_position_centroid"), &key);
+        assert_eq!((moved(&dxbc), moved(&dxil)), (expected, expected));
+        // The coverage the move reads is left out of the reflection.
+        assert_eq!(dxbc.reflection.inputs.len(), dxil.reflection.inputs.len());
+    }
+    // Without the targets' sample count the centroid is not known.
+    for code in [
+        own_pair("ps_position_centroid"),
+        own_pair("ps_position_centroid_sampled"),
+    ] {
+        let key = VariantKey::default();
+        let refused = Err(ConvertError::Unsupported(
+            wcontainers_shaders::refusal::SAMPLE_COUNT,
+        ));
+        assert_eq!(
+            convert(Source::Dxbc(&code[0]), &key, None).map(|_| ()),
+            refused
+        );
+        assert_eq!(
+            convert(Source::Dxil(&code[1]), &key, None).map(|_| ()),
+            refused
+        );
+    }
+    let code = own_pair("ps_position_centroid_sampled");
+    let key = VariantKey {
+        samples: 4,
+        ..Default::default()
+    };
+    let refused = Err(ConvertError::Unsupported(
+        wcontainers_shaders::refusal::CENTROID_POSITION_PER_SAMPLE,
+    ));
+    assert_eq!(
+        convert(Source::Dxbc(&code[0]), &key, None).map(|_| ()),
+        refused
+    );
+    assert_eq!(
+        convert(Source::Dxil(&code[1]), &key, None).map(|_| ()),
+        refused
+    );
+    let key = VariantKey {
+        samples: 1,
+        ..Default::default()
+    };
+    both(&code, &key);
 }

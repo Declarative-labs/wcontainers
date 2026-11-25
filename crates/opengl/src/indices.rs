@@ -6,14 +6,16 @@
 
 use std::ffi::{c_uint, c_void};
 
-use wcontainers_gpu::{IndexFormat, ProvokingVertex, Topology};
+use wcontainers_gpu::{INDEX_FORMATS, IndexFormat, ProvokingVertex, Topology};
 use wcontainers_shaders::stage::TRIANGLE_VERTICES;
+use zerocopy::IntoBytes;
 
 use crate::gallium::*;
 
 /// A draw's indices as the host draws them.
 pub struct Rewritten {
-    pub topology: Topology,
+    /// Mesa's primitive of the indices: a list or strip, or a list with adjacency.
+    pub primitive: mesa_prim,
     pub format: IndexFormat,
     /// The indices, little-endian, as words so that either width is aligned.
     words: Vec<u32>,
@@ -22,12 +24,17 @@ pub struct Rewritten {
 
 impl Rewritten {
     pub fn indices(&self) -> &[u8] {
-        // SAFETY: the words' bytes, of which the first `bytes` were written.
-        unsafe { std::slice::from_raw_parts(self.words.as_ptr().cast::<u8>(), self.bytes) }
+        // The words' bytes, of which the first `bytes` were written.
+        &self.words.as_bytes()[..self.bytes]
     }
 
     pub fn count(&self) -> u32 {
-        (self.bytes / self.format.size() as usize) as u32
+        (self.bytes / INDEX_FORMATS[self.format as usize].size as usize) as u32
+    }
+
+    /// The host's topology of the indices, which have no adjacency.
+    pub fn topology(&self) -> Result<Topology, String> {
+        topology(self.primitive)
     }
 }
 
@@ -39,7 +46,13 @@ const STRIPS_AND_LISTS: &[mesa_prim] = &[
     MESA_PRIM_TRIANGLES,
     MESA_PRIM_TRIANGLE_STRIP,
 ];
-const LISTS: &[mesa_prim] = &[MESA_PRIM_POINTS, MESA_PRIM_LINES, MESA_PRIM_TRIANGLES];
+const LISTS: &[mesa_prim] = &[
+    MESA_PRIM_POINTS,
+    MESA_PRIM_LINES,
+    MESA_PRIM_TRIANGLES,
+    MESA_PRIM_LINES_ADJACENCY,
+    MESA_PRIM_TRIANGLES_ADJACENCY,
+];
 
 /// Whether the host's lists and strips would draw `mode` otherwise than OpenGL with restart as
 /// given: lists never restart there.
@@ -61,12 +74,56 @@ fn convention(provoking: ProvokingVertex) -> c_uint {
 /// `count` less the vertices of an unfinished last primitive, or zero where not one is whole.
 pub fn trimmed(mode: mesa_prim, count: u32) -> u32 {
     let line = 2;
+    let [line_adjacency, triangle_adjacency] =
+        [line, TRIANGLE_VERTICES].map(|n| n * WITH_ADJACENCY);
     match mode {
         MESA_PRIM_LINES => count - count % line,
         MESA_PRIM_TRIANGLES => count - count % TRIANGLE_VERTICES,
+        MESA_PRIM_LINES_ADJACENCY => count - count % line_adjacency,
+        MESA_PRIM_TRIANGLES_ADJACENCY => count - count % triangle_adjacency,
         MESA_PRIM_LINE_STRIP | MESA_PRIM_LINE_LOOP if count < line => 0,
         MESA_PRIM_TRIANGLE_STRIP | MESA_PRIM_TRIANGLE_FAN if count < TRIANGLE_VERTICES => 0,
+        MESA_PRIM_LINE_STRIP_ADJACENCY if count < line_adjacency => 0,
+        MESA_PRIM_TRIANGLE_STRIP_ADJACENCY if count < triangle_adjacency => 0,
         _ => count,
+    }
+}
+
+/// The vertices of the first primitive with adjacency for each of its own: one beside each.
+const WITH_ADJACENCY: u32 = 2;
+
+/// The places of a primitive's own vertices among those of its primitive with adjacency, which
+/// OpenGL draws without the adjacent ones where no geometry program runs.
+const LINE_IN_ADJACENCY: [usize; 2] = [1, 2];
+const TRIANGLE_IN_ADJACENCY: [usize; 3] = [0, 2, 4];
+
+/// A list with adjacency as the list of its primitives without their adjacent vertices
+/// (`AdjacencyDropped`); any other as it is.
+pub fn without_adjacency(rewritten: Rewritten) -> Rewritten {
+    let (primitive, own): (mesa_prim, &[usize]) = match rewritten.primitive {
+        MESA_PRIM_LINES_ADJACENCY => (MESA_PRIM_LINES, &LINE_IN_ADJACENCY),
+        MESA_PRIM_TRIANGLES_ADJACENCY => (MESA_PRIM_TRIANGLES, &TRIANGLE_IN_ADJACENCY),
+        _ => return rewritten,
+    };
+    let size = INDEX_FORMATS[rewritten.format as usize].size as usize;
+    let each = own.len() * WITH_ADJACENCY as usize * size;
+    let mut kept = Vec::with_capacity(rewritten.bytes / WITH_ADJACENCY as usize);
+    for vertices in rewritten.indices().chunks_exact(each) {
+        for &at in own {
+            kept.extend_from_slice(&vertices[at * size..(at + 1) * size]);
+        }
+    }
+    let mut words = words_for(kept.len());
+    for (word, bytes) in words.iter_mut().zip(kept.chunks(size_of::<u32>())) {
+        let mut whole = [0; size_of::<u32>()];
+        whole[..bytes.len()].copy_from_slice(bytes);
+        *word = u32::from_ne_bytes(whole);
+    }
+    Rewritten {
+        primitive,
+        format: rewritten.format,
+        bytes: kept.len(),
+        words,
     }
 }
 
@@ -82,7 +139,7 @@ fn topology(primitive: mesa_prim) -> Result<Topology, String> {
 }
 
 fn format(bytes: c_uint) -> IndexFormat {
-    if bytes == IndexFormat::U32.size() {
+    if bytes == INDEX_FORMATS[IndexFormat::U32 as usize].size {
         IndexFormat::U32
     } else {
         IndexFormat::U16
@@ -95,11 +152,13 @@ fn words_for(bytes: usize) -> Vec<u32> {
 }
 
 /// The vertices `first..first + count` drawn as `mode` without indices, as indices that draw them
-/// with the host's provoking vertex `host` where OpenGL's is `api`.
+/// (as lists only where `lists_only`) with the host's provoking vertex `host` where OpenGL's is
+/// `api`.
 pub fn generated(
     mode: mesa_prim,
     first: u32,
     count: u32,
+    lists_only: bool,
     api: ProvokingVertex,
     host: ProvokingVertex,
 ) -> Result<Option<Rewritten>, String> {
@@ -112,7 +171,7 @@ pub fn generated(
     // SAFETY: Mesa's generator fills the four values it is given.
     let mode_of = unsafe {
         u_index_generator(
-            mask(STRIPS_AND_LISTS),
+            mask(if lists_only { LISTS } else { STRIPS_AND_LISTS }),
             mode,
             first,
             count,
@@ -132,7 +191,7 @@ pub fn generated(
     // SAFETY: the generator writes `out` indices of `size` bytes, which the words hold.
     unsafe { generate(first, out, words.as_mut_ptr().cast::<c_void>()) };
     Ok(Some(Rewritten {
-        topology: topology(primitive)?,
+        primitive,
         format: format(size),
         words,
         bytes,
@@ -160,17 +219,9 @@ pub fn translated(
         indices
     } else {
         let mut words = words_for(indices.len());
-        // SAFETY: the words hold at least the indices' bytes.
-        unsafe {
-            std::ptr::copy_nonoverlapping(
-                indices.as_ptr(),
-                words.as_mut_ptr().cast::<u8>(),
-                indices.len(),
-            );
-        }
+        words.as_mut_bytes()[..indices.len()].copy_from_slice(indices);
         aligned = words;
-        // SAFETY: as above.
-        unsafe { std::slice::from_raw_parts(aligned.as_ptr().cast::<u8>(), indices.len()) }
+        &aligned.as_bytes()[..indices.len()]
     };
     let pieces = if split_restart {
         restart_pieces(info, indices, count)?
@@ -227,7 +278,7 @@ pub fn translated(
         at += out as usize * size as usize;
     }
     Ok(Some(Rewritten {
-        topology: topology(primitive)?,
+        primitive,
         format: format(size),
         words,
         bytes,

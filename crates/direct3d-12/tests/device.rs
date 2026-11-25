@@ -12,9 +12,10 @@ use triangle::{PS, RGBA8, VS};
 use wcontainers_direct3d_12::list::*;
 use wcontainers_direct3d_12::resource::*;
 use wcontainers_direct3d_12::state::*;
-use wcontainers_direct3d_12::{Device, Error};
+use wcontainers_direct3d_12::{Device, Error, PipelineId};
 use wcontainers_directx_graphics_infrastructure::dxgi::{self, D32_FLOAT};
-use wcontainers_gpu::{Backend, Features};
+use wcontainers_directx_graphics_infrastructure::stage_registers::TOO_MANY_VALUES;
+use wcontainers_gpu::{FORMAT_FACTS, Features, Gpu};
 
 #[test]
 fn footprints_follow_the_pitch_and_placement_rules() {
@@ -75,7 +76,7 @@ fn every_texture_shape_check_feature_support_answers_is_made() {
                 ..Default::default()
             };
             let (format, _) = one.texture_format().unwrap();
-            let (block_width, block_height, _) = format.block();
+            let (block_width, block_height, _) = FORMAT_FACTS[format as usize].block;
             let blocks = 4;
             let desc = ResourceDesc {
                 width: u64::from(block_width * blocks),
@@ -245,10 +246,7 @@ fn the_triangle_scene_replays() {
     );
     assert_eq!(calls.iter().filter(|c| c.starts_with("draw")).count(), 1);
     assert_eq!(
-        device
-            .backend()
-            .slow_paths()
-            .count(wcontainers_gpu::SlowPath::MappedUploadWhole),
+        device.backend().slow_paths().counts[wcontainers_gpu::SlowPath::MappedUploadWhole as usize],
         1
     );
 }
@@ -333,6 +331,135 @@ fn wireframe_without_polygon_mode_is_refused_by_name() {
         matches!(refused, Err(Error::NotImplemented(_))),
         "{refused:?}"
     );
+}
+
+/// tests/registers.rs's programs: 31 values from the vertex to the pixel stage beside the
+/// position, read from 32 input slots.
+const REGISTERS_VS: &[u8] = include_bytes!("registers/vs.dxbc");
+const REGISTERS_PS: &[u8] = include_bytes!("registers/ps.dxbc");
+
+/// The 32-slot pipeline of tests/registers.rs on a recorder with `locations` inter-stage
+/// locations.
+fn registers_pipeline(locations: u32) -> (Device<Recorder>, Result<PipelineId, Error>) {
+    let mut device = Device::new(Recorder::with_caps(|c| {
+        c.limits.inter_stage_slots = locations
+    }));
+    let element = |semantic: &str, index: u32, format: u32| InputElement {
+        semantic: semantic.into(),
+        semantic_index: index,
+        format,
+        slot: index,
+        offset: 0,
+        per_instance: false,
+        step_rate: 0,
+    };
+    let mut inputs = vec![element("P", 0, dxgi::R32G32_FLOAT)];
+    inputs.extend((1..32).map(|i| element("A", i, dxgi::R32_FLOAT)));
+    let (_, raster) = scene_raster(true, FILL_MODE_SOLID);
+    let made = triangle::pipeline_with(
+        &mut device,
+        REGISTERS_VS,
+        REGISTERS_PS,
+        inputs,
+        raster,
+        TOPOLOGY_TYPE_TRIANGLE,
+        dxgi::UNKNOWN,
+    );
+    (device, made)
+}
+
+#[test]
+fn values_past_the_back_ends_locations_move_or_are_refused_by_name() {
+    // 31 values and the position fit 31 locations once moved.
+    let (_, made) = registers_pipeline(31);
+    assert!(made.is_ok(), "{made:?}");
+    // They do not fit 30: refused by name and counted.
+    let (mut device, refused) = registers_pipeline(30);
+    assert!(
+        matches!(refused, Err(Error::NotImplemented(TOO_MANY_VALUES))),
+        "{refused:?}"
+    );
+    let slow = device.backend().slow_paths();
+    assert_eq!(
+        slow.counts[wcontainers_gpu::SlowPath::VaryingsBeyondLimit as usize],
+        1
+    );
+}
+
+/// tests/registers.rs's programs passing the position and 31 values behind a geometry shader and
+/// behind a domain shader, and 30 values beside clip distances the pixel shader reads.
+const BEHIND_GEOMETRY: [&[u8]; 5] = [
+    include_bytes!("registers/gs-vs.dxbc"),
+    &[],
+    &[],
+    include_bytes!("registers/gs.dxbc"),
+    include_bytes!("registers/values-ps.dxbc"),
+];
+const BEHIND_DOMAIN: [&[u8]; 5] = [
+    include_bytes!("registers/ds-vs.dxbc"),
+    include_bytes!("registers/hs.dxbc"),
+    include_bytes!("registers/ds.dxbc"),
+    &[],
+    include_bytes!("registers/values-ps.dxbc"),
+];
+const BESIDE_LINKED: [&[u8]; 5] = [
+    include_bytes!("registers/linked-vs.dxbc"),
+    &[],
+    &[],
+    &[],
+    include_bytes!("registers/linked-ps.dxbc"),
+];
+
+/// The pipeline of `programs` (vertex, hull, domain, geometry and pixel shaders) on a recorder with
+/// `locations` inter-stage locations.
+fn staged_pipeline(programs: [&[u8]; 5], locations: u32) -> Result<PipelineId, Error> {
+    use wcontainers_direct3d_12::GraphicsPipelineDesc;
+    use wcontainers_direct3d_12::root::{RootSignatureDesc, VERSION_1_0, serialize};
+    let mut device = Device::new(Recorder::with_caps(|c| {
+        c.limits.inter_stage_slots = locations
+    }));
+    let root = device.create_root_signature(&serialize(&RootSignatureDesc {
+        version: VERSION_1_0,
+        parameters: vec![],
+        samplers: vec![],
+        flags: 0,
+    }))?;
+    let [vs, hs, ds, gs, ps] = programs;
+    let mut blend = Blend::default();
+    blend.targets[0].write_mask = wcontainers_gpu::ColorWrites::all().bits();
+    device.create_graphics_pipeline(&GraphicsPipelineDesc {
+        root: Some(root),
+        vs,
+        hs,
+        ds,
+        gs,
+        ps,
+        blend,
+        sample_mask: u32::MAX,
+        raster: scene_raster(true, FILL_MODE_SOLID).1,
+        topology_type: match hs.is_empty() {
+            true => TOPOLOGY_TYPE_TRIANGLE,
+            false => TOPOLOGY_TYPE_PATCH,
+        },
+        rtv_formats: vec![dxgi::R32G32B32A32_FLOAT],
+        samples: 1,
+        ..Default::default()
+    })
+}
+
+#[test]
+fn values_behind_the_stage_helper_and_beside_linked_ones_move_or_are_refused_by_name() {
+    for programs in [BEHIND_GEOMETRY, BEHIND_DOMAIN, BESIDE_LINKED] {
+        // 31 values and the position, or 30, linked clip distances and the position, fit 31
+        // locations once moved.
+        let made = staged_pipeline(programs, 31);
+        assert!(made.is_ok(), "{made:?}");
+        let refused = staged_pipeline(programs, 30);
+        assert!(
+            matches!(refused, Err(Error::NotImplemented(TOO_MANY_VALUES))),
+            "{refused:?}"
+        );
+    }
 }
 
 #[test]
@@ -638,7 +765,7 @@ fn placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes() {
             .cloned()
             .collect::<Vec<_>>()
     };
-    let copied = |d: &mut Device<Recorder>| d.backend().slow_paths().count(AliasCopied);
+    let copied = |d: &mut Device<Recorder>| d.backend().slow_paths().counts[AliasCopied as usize];
     // Nothing written yet, and c overlaps nothing: no copies of inherited bytes.
     assert_eq!(
         run(&mut device, vec![copy(c, upload), copy(readback, c)]).len(),
@@ -668,7 +795,8 @@ fn placed_resources_lie_in_their_heap_and_overlapping_buffers_inherit_bytes() {
         .unwrap();
     let x = device.create_placed(shared, 0, &buffer(2 * page)).unwrap();
     let y = device.create_placed(shared, page, &buffer(page)).unwrap();
-    let (px, py) = (device.map(x).unwrap(), device.map(y).unwrap());
+    let px = device.map(x).unwrap().as_ptr();
+    let py = device.map(y).unwrap().as_ptr();
     assert_eq!(py as usize - px as usize, page as usize);
     device.destroy_resource(b);
     device.destroy_resource(a);
@@ -701,8 +829,8 @@ fn shared_buffers_take_the_program_bytes_and_give_back_the_gpu_ones() {
     let shared = device.create_committed(HeapType::Shared, &buffer).unwrap();
     let other = device.create_committed(HeapType::Default, &buffer).unwrap();
     let memory = device.map(shared).unwrap();
-    // SAFETY: the 64 bytes `Map` gave.
-    unsafe { std::slice::from_raw_parts_mut(memory, 64).fill(7) };
+    memory[..64].iter().for_each(|c| c.set(7));
+    let memory = memory.as_ptr();
     let copy = |dst, dst_offset, src, size| Command::CopyBuffer {
         dst,
         dst_offset,
@@ -742,7 +870,7 @@ fn shared_buffers_take_the_program_bytes_and_give_back_the_gpu_ones() {
     // Once the work is done and the program maps the buffer, its memory holds the GPU's bytes.
     device.backend().finish();
     let start = device.backend().calls.len();
-    assert_eq!(device.map(shared).unwrap(), memory);
+    assert_eq!(device.map(shared).unwrap().as_ptr(), memory);
     assert_eq!(device.backend().named("finish_read").len(), 1);
     assert!(device.backend().calls[start..][0].ends_with(" 16"));
     let calls = run(&mut device, copy(other, 0, shared, 64));

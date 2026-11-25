@@ -11,12 +11,10 @@ use wcontainers_direct3d_12::root::{
 use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error, GraphicsPipelineDesc, PipelineId, ResourceId};
 use wcontainers_directx_graphics_infrastructure::dxgi;
-use wcontainers_gpu::{Backend, ColorWrites};
+use wcontainers_gpu::{ColorWrites, Gpu};
 
-pub const VS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxil/triangle.vs.dxil");
-pub const PS: &[u8] =
-    include_bytes!("../../../graphics-test/shaders/dxil/triangle.ps.dxil");
+pub const VS: &[u8] = include_bytes!("../../../graphics-test/shaders/dxil/triangle.vs.dxil");
+pub const PS: &[u8] = include_bytes!("../../../graphics-test/shaders/dxil/triangle.ps.dxil");
 pub const RGBA8: u32 = dxgi::R8G8B8A8_UNORM;
 pub const SIZE: u32 = 256;
 /// The scene's clear colour and vertices (crates/graphics-test/src/scene.rs).
@@ -40,7 +38,7 @@ pub fn buffer(size: u64) -> ResourceDesc {
     }
 }
 
-pub fn pipeline<B: Backend>(device: &mut Device<B>, vs: &[u8]) -> Result<PipelineId, Error> {
+pub fn pipeline<B: Gpu>(device: &mut Device<B>, vs: &[u8]) -> Result<PipelineId, Error> {
     pipeline_with(
         device,
         vs,
@@ -79,7 +77,7 @@ pub fn element(name: &str, format: u32, offset: u32) -> InputElement {
 }
 
 /// The scene's pipeline with other programs, inputs, rasterising and topology type.
-pub fn pipeline_with<B: Backend>(
+pub fn pipeline_with<B: Gpu>(
     device: &mut Device<B>,
     vs: &[u8],
     ps: &[u8],
@@ -121,7 +119,7 @@ pub struct Scene {
     pub total: u64,
 }
 
-pub fn record<B: Backend>(device: &mut Device<B>) -> Scene {
+pub fn record<B: Gpu>(device: &mut Device<B>) -> Scene {
     let pso = pipeline(device, VS).unwrap();
     let data: Vec<u8> = TRIANGLE
         .iter()
@@ -134,7 +132,7 @@ pub fn record<B: Backend>(device: &mut Device<B>) -> Scene {
 
 /// The scene drawn with pipeline `pso` from vertices `data`, `stride` bytes apart, in an upload
 /// buffer of `buffer_bytes`.
-pub fn record_with<B: Backend>(
+pub fn record_with<B: Gpu>(
     device: &mut Device<B>,
     pso: PipelineId,
     data: &[u8],
@@ -161,8 +159,7 @@ pub fn record_with<B: Backend>(
     let address = device.address(vertices);
     assert_ne!(address, 0);
     let mapped = device.map(vertices).unwrap();
-    // The upload heap's memory stays where it is for the resource's life.
-    unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), mapped, data.len()) };
+    mapped.iter().zip(data.iter()).for_each(|(c, b)| c.set(*b));
 
     let rtv = Descriptor::RenderTarget(TargetView {
         resource: target,

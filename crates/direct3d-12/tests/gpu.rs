@@ -10,14 +10,12 @@ use wcontainers_direct3d_12::state::{
     CULL_MODE_NONE, FILL_MODE_SOLID, Raster, TOPOLOGY_TYPE_TRIANGLE,
 };
 use wcontainers_directx_graphics_infrastructure::dxgi;
-use wcontainers_gpu::{Backend, DeviceStatus, Features, SlowPath};
+use wcontainers_gpu::{DeviceStatus, Features, Gpu, SlowPath};
 use wcontainers_gpu_webgpu::WebGpu;
 
 /// The rig's shaders passing a three-component position and a colour.
-const COLOR_VS: &[u8] =
-    include_bytes!("../../graphics-test/shaders/dxil/common.vs_color.dxil");
-const COLOR_PS: &[u8] =
-    include_bytes!("../../graphics-test/shaders/dxil/common.ps_color.dxil");
+const COLOR_VS: &[u8] = include_bytes!("../../graphics-test/shaders/dxil/common.vs_color.dxil");
+const COLOR_PS: &[u8] = include_bytes!("../../graphics-test/shaders/dxil/common.ps_color.dxil");
 
 fn webgpu() -> WebGpu {
     webgpu_without(wgpu::Features::empty())
@@ -100,15 +98,33 @@ fn picture(device: &mut Device<WebGpu>, scene: &triangle::Scene) -> Vec<u8> {
     device.queue_signal(queue, fence, 1).unwrap();
     assert!(device.wait(fence, 1));
     assert_eq!(device.backend().status(), DeviceStatus::Ok);
-    let mapped = device.map(scene.readback).unwrap();
     // The readback heap's bytes, finished into its memory when the fence was reached.
-    let bytes = unsafe { std::slice::from_raw_parts(mapped, scene.total as usize) };
+    let bytes: Vec<u8> = device.map(scene.readback).unwrap()[..scene.total as usize]
+        .iter()
+        .map(std::cell::Cell::get)
+        .collect();
     let f = scene.footprint;
     let row = (f.width * 4) as usize;
     (0..f.height as usize)
         .flat_map(|y| &bytes[y * f.row_pitch as usize..][..row])
         .copied()
         .collect()
+}
+
+/// On this adapter the front answers every ability Microsoft's 11_0 format table requires, so
+/// `D3D12CreateDevice` makes its 11_0 device; each format short of one is named.
+#[test]
+fn the_adapter_meets_every_format_requirement_of_11_0() {
+    let backend = webgpu();
+    let caps = backend.caps();
+    let unmet = wcontainers_direct3d_12::features::unmet_format_requirements(caps);
+    for (format, lacks) in &unmet {
+        eprintln!("format {format} lacks {lacks:x?}");
+    }
+    assert!(unmet.is_empty(), "{} formats short of 11_0", unmet.len());
+    assert!(wcontainers_direct3d_12::features::has_abilities_of_11_0(
+        caps
+    ));
 }
 
 #[test]
@@ -161,7 +177,11 @@ fn depth_clamped_in_the_programs_draws_as_the_back_ends_clamp() {
     let pictures = [wgpu::Features::empty(), wgpu::Features::DEPTH_CLIP_CONTROL].map(|hidden| {
         let mut device = Device::new(webgpu_without(hidden));
         assert_eq!(
-            device.backend().caps().has(Features::DEPTH_CLAMP),
+            device
+                .backend()
+                .caps()
+                .features
+                .contains(Features::DEPTH_CLAMP),
             hidden.is_empty(),
             "the adapter's own depth clamping"
         );
@@ -187,10 +207,8 @@ fn depth_clamped_in_the_programs_draws_as_the_back_ends_clamp() {
         .unwrap();
         let scene = triangle::record_with(&mut device, pso, &data, stride, data.len() as u64);
         let picture = picture(&mut device, &scene);
-        let in_programs = device
-            .backend()
-            .slow_paths()
-            .count(SlowPath::DepthClampInShader);
+        let in_programs =
+            device.backend().slow_paths().counts[SlowPath::DepthClampInShader as usize];
         assert_eq!(in_programs > 0, !hidden.is_empty(), "the slow path's count");
         eprintln!("warnings: {:?}", device.take_warnings());
         picture
@@ -214,68 +232,20 @@ fn depth_clamped_in_the_programs_draws_as_the_back_ends_clamp() {
     assert_eq!(differing, 0, "pixels differing between the two clamps");
 }
 
-/// HLSL compiled with the system's compiler (`D3DCompile`) for shader model `target`.
-#[cfg(windows)]
-fn compiled(source: &str, target: windows::core::PCSTR) -> Vec<u8> {
-    use windows::Win32::Graphics::Direct3D::{Fxc::D3DCompile, ID3DInclude};
-    let mut code = None;
-    let entry = std::ffi::CString::new(wcontainers_shaders::ENTRY_POINT).unwrap();
-    // The source and entry outlive the call; the blob is copied out before it is released.
-    unsafe {
-        D3DCompile(
-            source.as_ptr().cast(),
-            source.len(),
-            None,
-            None,
-            None::<&ID3DInclude>,
-            windows::core::PCSTR(entry.as_ptr().cast()),
-            target,
-            0,
-            0,
-            &mut code,
-            None,
-        )
-        .unwrap();
-        let code = code.unwrap();
-        std::slice::from_raw_parts(code.GetBufferPointer().cast::<u8>(), code.GetBufferSize())
-            .to_vec()
-    }
-}
-
-/// HLSL of the depth clamp scene's routes: a vertex shader passing position and colour, a pixel
-/// shader writing the colour, a geometry shader passing each triangle on, vertex shaders writing a
-/// cull distance that culls nothing, a clip distance cutting off the left, or both, and hull and
-/// domain shaders passing each triangle on once.
+/// The depth clamp scene's routes, compiled by tests/clamp/compile.cmd from the sources beside it: a
+/// vertex shader passing position and colour, a pixel shader writing the colour, a geometry shader
+/// passing each triangle on, vertex shaders writing a cull distance that culls nothing, a clip distance
+/// cutting off the left, or both, and hull and domain shaders passing each triangle on once.
 #[cfg(windows)]
 mod clamp_routes {
-    pub const VS: &str = "struct O { float4 p : SV_Position; float4 c : COLOR; };
-         O main(float4 p : POSITION, float4 c : COLOR) { O o; o.p = p; o.c = c; return o; }";
-    pub const PS: &str =
-        "float4 main(float4 p : SV_Position, float4 c : COLOR) : SV_Target { return c; }";
-    pub const GS: &str = "struct V { float4 p : SV_Position; float4 c : COLOR; };
-         [maxvertexcount(3)] void main(triangle V i[3], inout TriangleStream<V> s) {
-             for (uint k = 0; k < 3; k++) { s.Append(i[k]); } }";
-    pub const CULLED_VS: &str =
-        "struct O { float4 p : SV_Position; float4 c : COLOR; float d : SV_CullDistance; };
-         O main(float4 p : POSITION, float4 c : COLOR) { O o; o.p = p; o.c = c; o.d = 1.0; return o; }";
-    pub const CLIPPED_VS: &str =
-        "struct O { float4 p : SV_Position; float4 c : COLOR; float d : SV_ClipDistance; };
-         O main(float4 p : POSITION, float4 c : COLOR) {
-             O o; o.p = p; o.c = c; o.d = p.x + 0.25 * p.w; return o; }";
-    pub const CLIPPED_CULLED_VS: &str = "struct O { float4 p : SV_Position; float4 c : COLOR;
-             float d : SV_ClipDistance; float e : SV_CullDistance; };
-         O main(float4 p : POSITION, float4 c : COLOR) {
-             O o; o.p = p; o.c = c; o.d = p.x + 0.25 * p.w; o.e = 1.0; return o; }";
-    pub const HS: &str = "struct V { float4 p : SV_Position; float4 c : COLOR; };
-         struct F { float e[3] : SV_TessFactor; float i : SV_InsideTessFactor; };
-         F constants() { F f; f.e[0] = 1.0; f.e[1] = 1.0; f.e[2] = 1.0; f.i = 1.0; return f; }
-         [domain(\"tri\")] [partitioning(\"integer\")] [outputtopology(\"triangle_cw\")]
-         [outputcontrolpoints(3)] [patchconstantfunc(\"constants\")]
-         V main(InputPatch<V, 3> p, uint i : SV_OutputControlPointID) { return p[i]; }";
-    pub const DS: &str = "struct V { float4 p : SV_Position; float4 c : COLOR; };
-         struct F { float e[3] : SV_TessFactor; float i : SV_InsideTessFactor; };
-         [domain(\"tri\")] V main(F f, float3 b : SV_DomainLocation, const OutputPatch<V, 3> p) {
-             V o; o.p = p[0].p * b.x + p[1].p * b.y + p[2].p * b.z; o.c = p[0].c; return o; }";
+    pub const VS: &[u8] = include_bytes!("clamp/vs.dxbc");
+    pub const PS: &[u8] = include_bytes!("clamp/ps.dxbc");
+    pub const GS: &[u8] = include_bytes!("clamp/gs.dxbc");
+    pub const CULLED_VS: &[u8] = include_bytes!("clamp/culled_vs.dxbc");
+    pub const CLIPPED_VS: &[u8] = include_bytes!("clamp/clipped_vs.dxbc");
+    pub const CLIPPED_CULLED_VS: &[u8] = include_bytes!("clamp/clipped_culled_vs.dxbc");
+    pub const HS: &[u8] = include_bytes!("clamp/hs.dxbc");
+    pub const DS: &[u8] = include_bytes!("clamp/ds.dxbc");
 }
 
 /// The shaders of one route the depth clamp scene's triangle is drawn through (empty where none).
@@ -301,9 +271,7 @@ struct ClampRoute {
 #[cfg(windows)]
 #[test]
 fn depth_clamped_in_the_programs_into_a_depth_target_draws_as_the_back_ends_clamp() {
-    use windows::core::s;
-    let vs = compiled(clamp_routes::VS, s!("vs_5_0"));
-    let ps = compiled(clamp_routes::PS, s!("ps_5_0"));
+    let (vs, ps) = (clamp_routes::VS, clamp_routes::PS);
     let route =
         |name: &'static str, vs: &[u8], hs: &[u8], ds: &[u8], gs: &[u8], ps: &[u8]| ClampRoute {
             name,
@@ -315,27 +283,13 @@ fn depth_clamped_in_the_programs_into_a_depth_target_draws_as_the_back_ends_clam
             clipped: name.starts_with("clipped"),
         };
     let routes = [
-        route("direct", &vs, &[], &[], &[], &ps),
-        route("without a pixel shader", &vs, &[], &[], &[], &[]),
-        route(
-            "geometry shader",
-            &vs,
-            &[],
-            &[],
-            &compiled(clamp_routes::GS, s!("gs_5_0")),
-            &ps,
-        ),
-        route(
-            "cull route",
-            &compiled(clamp_routes::CULLED_VS, s!("vs_5_0")),
-            &[],
-            &[],
-            &[],
-            &ps,
-        ),
+        route("direct", vs, &[], &[], &[], ps),
+        route("without a pixel shader", vs, &[], &[], &[], &[]),
+        route("geometry shader", vs, &[], &[], clamp_routes::GS, ps),
+        route("cull route", clamp_routes::CULLED_VS, &[], &[], &[], ps),
         route(
             "clipped without a pixel shader",
-            &compiled(clamp_routes::CLIPPED_VS, s!("vs_5_0")),
+            clamp_routes::CLIPPED_VS,
             &[],
             &[],
             &[],
@@ -343,19 +297,19 @@ fn depth_clamped_in_the_programs_into_a_depth_target_draws_as_the_back_ends_clam
         ),
         route(
             "clipped cull route",
-            &compiled(clamp_routes::CLIPPED_CULLED_VS, s!("vs_5_0")),
+            clamp_routes::CLIPPED_CULLED_VS,
             &[],
             &[],
             &[],
-            &ps,
+            ps,
         ),
         route(
             "tessellation",
-            &vs,
-            &compiled(clamp_routes::HS, s!("hs_5_0")),
-            &compiled(clamp_routes::DS, s!("ds_5_0")),
+            vs,
+            clamp_routes::HS,
+            clamp_routes::DS,
             &[],
-            &ps,
+            ps,
         ),
     ];
     let size = triangle::SIZE;
@@ -363,7 +317,7 @@ fn depth_clamped_in_the_programs_into_a_depth_target_draws_as_the_back_ends_clam
         for range in [[0.0f32, 1.0], [0.25, 0.75]] {
             let hidden = wgpu::Features::DEPTH_CLIP_CONTROL | wgpu::Features::CLIP_DISTANCES;
             let pictures = [wgpu::Features::empty(), hidden]
-                .map(|hidden| clamp_scene(route, &vs, &ps, range, hidden));
+                .map(|hidden| clamp_scene(route, vs, ps, range, hidden));
             let count = |p: &[u8], c: [u8; 4]| p.chunks(c.len()).filter(|x| *x == c).count();
             let red = count(&pictures[0], [u8::MAX, 0, 0, u8::MAX]);
             let green = count(&pictures[0], [0, u8::MAX, 0, u8::MAX]);
@@ -527,8 +481,7 @@ fn clamp_scene(
         .unwrap();
     let address = device.address(vertex_buffer);
     let mapped = device.map(vertex_buffer).unwrap();
-    // The upload heap's memory stays where it is for the resource's life.
-    unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), mapped, data.len()) };
+    mapped.iter().zip(&data).for_each(|(c, b)| c.set(*b));
     let view = |resource, format| TargetView {
         resource,
         format,
@@ -625,20 +578,14 @@ fn clamp_scene(
         total,
     };
     let picture = picture(&mut device, &scene);
-    let in_programs = device
-        .backend()
-        .slow_paths()
-        .count(SlowPath::DepthClampInShader);
+    let in_programs = device.backend().slow_paths().counts[SlowPath::DepthClampInShader as usize];
     assert_eq!(
         in_programs > 0,
         !hidden.is_empty(),
         "{}: the slow path's count",
         route.name
     );
-    let clipped = device
-        .backend()
-        .slow_paths()
-        .count(SlowPath::ClipDistanceInShader);
+    let clipped = device.backend().slow_paths().counts[SlowPath::ClipDistanceInShader as usize];
     assert_eq!(
         clipped > 0,
         route.clipped && !hidden.is_empty(),

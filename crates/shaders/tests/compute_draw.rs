@@ -1,19 +1,21 @@
 //! Compute shaders with atomic operations, append, consume and counter views, storage textures
-//! (`compute.hlsl`), raw and structured shader resource views (`readonly.hlsl`), division and an escape loop (`divide.hlsl`), NaN rules (`compare.hlsl`) and typed buffers (`texels.hlsl`) on the WebGPU back end, against real Direct3D 11
+//! (`compute.hlsl`), raw and structured shader resource views (`readonly.hlsl`), division and an escape loop (`divide.hlsl`), NaN rules (`compare.hlsl`) and typed buffers (`texels.hlsl`, and `cs_texels` written as another route hands it to `wcontainers_shaders::typed`) on the WebGPU back end, against real Direct3D 11
 //! running the same shaders on the same GPU. The values consumed and the texels read are seeded: `WCONTAINERS_COMPUTE_SEED` (default 1) and `WCONTAINERS_COMPUTE_CASES` seeds
 //! from it (default 4).
 
 #![cfg(windows)]
 
 mod common;
+mod forms;
 
 use common::*;
+// The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddressMode, Backend, BindingEntry, BindingResource, BorderColor, BufferRange, BufferUsage,
-    DispatchCall, DispatchGroups, Extent, Filter, Format, HELPER_SET, HelperValue, Origin, Program,
-    ReadSource, SamplerDesc, ShaderStage, SlotKind, StageSet, TexelBufferRoute, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, VariantKey, ViewDimension,
-    WriteMode, helper_binding,
+    AddressMode, BindingEntry, BindingResource, BorderColor, BufferRange, BufferUsage,
+    DispatchCall, DispatchGroups, Extent, FORMAT_FACTS, Filter, Format, Gpu as Backend, HELPER_SET,
+    HelperValue, Origin, Program, ReadSource, SamplerDesc, ShaderStage, SlotKind, StageSet,
+    TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
+    VariantKey, ViewDimension, WriteMode, helper_binding,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{ConvertError, Source, convert};
@@ -711,15 +713,14 @@ fn compare_compute<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
-/// The cases run by Direct3D 11 and by `backend` from both builds, at each seed; the names of those
-/// that differ.
+/// The cases run by Direct3D 11 on the GPU and on WARP and by `backend` from both builds, at each
+/// seed; the names of those where ours is neither real implementation's answer as a whole, every
+/// word and counter of the GPU's or every word and counter of WARP's (they differ where Direct3D
+/// leaves a result free, such as a division's last bit).
 fn compute_failures<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) -> Vec<String> {
-    let gpu = d3d11::create(
-        wcontainers_graphics_test::Driver::Hardware,
-        false,
-        &[D3D_FEATURE_LEVEL_11_0],
-    )
-    .unwrap();
+    let real = |driver| d3d11::create(driver, false, &[D3D_FEATURE_LEVEL_11_0]).unwrap();
+    let gpu = real(wcontainers_graphics_test::Driver::Hardware);
+    let warp = real(wcontainers_graphics_test::Driver::Warp);
     let seed: u64 = std::env::var("WCONTAINERS_COMPUTE_SEED")
         .map(|s| s.parse().unwrap())
         .unwrap_or(1);
@@ -736,6 +737,7 @@ fn compute_failures<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) ->
             let build = if dxil { "dxil" } else { "dxbc" };
             let name = format!("seed {seed} {} {build}", case.shader);
             let mut reference = direct3d(&gpu, &case);
+            let mut software = direct3d(&warp, &case);
             let mut made = match ours(backend, &case, dxil) {
                 Ok(made) => made,
                 Err(e) => {
@@ -752,28 +754,43 @@ fn compute_failures<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) ->
                 }
             };
             ordered(&case, &mut reference);
+            ordered(&case, &mut software);
             ordered(&case, &mut made);
             compared += 1;
-            let mut apart = 0;
-            for (slot, (a, o)) in reference.views.iter().zip(&made.views).enumerate() {
-                for (w, (x, y)) in a.chunks(4).zip(o.chunks(4)).enumerate() {
-                    if x != y {
-                        apart += 1;
-                        if apart <= 8 {
-                            eprintln!(
-                                "  view {slot} word {w}: direct3d {:#010x}, ours {:#010x}",
-                                u32::from_le_bytes(x.try_into().unwrap()),
-                                u32::from_le_bytes(y.try_into().unwrap())
-                            );
-                        }
+            let word = |w: &[u8]| u32::from_le_bytes(w.try_into().unwrap());
+            // Words and counters of ours that differ from one real implementation's run.
+            let apart = |real: &Ran| {
+                let words: usize = (real.views.iter().zip(&made.views))
+                    .map(|(a, o)| a.chunks(4).zip(o.chunks(4)).filter(|(x, y)| x != y).count())
+                    .sum();
+                words + usize::from(real.counters != made.counters)
+            };
+            let (from_gpu, from_warp) = (apart(&reference), apart(&software));
+            let mut shown = 0;
+            for (slot, ((a, s), o)) in reference
+                .views
+                .iter()
+                .zip(&software.views)
+                .zip(&made.views)
+                .enumerate()
+            {
+                for (w, ((x, z), y)) in a.chunks(4).zip(s.chunks(4)).zip(o.chunks(4)).enumerate() {
+                    if (y != x || y != z) && shown < 8 {
+                        shown += 1;
+                        eprintln!(
+                            "  view {slot} word {w}: direct3d {:#010x}, warp {:#010x}, ours {:#010x}",
+                            word(x),
+                            word(z),
+                            word(y)
+                        );
                     }
                 }
             }
             eprintln!(
-                "{name}: counters direct3d {:?}, ours {:?}; {apart} words apart",
-                reference.counters, made.counters
+                "{name}: counters direct3d {:?}, warp {:?}, ours {:?}; {from_gpu} words and counters apart from the gpu's, {from_warp} from warp's",
+                reference.counters, software.counters, made.counters
             );
-            if apart > 0 || reference.counters != made.counters {
+            if from_gpu > 0 && from_warp > 0 {
                 failures.push(name);
             }
         }
@@ -842,7 +859,7 @@ fn held(format: Format, texels: &[u8]) -> (Format, Vec<u8>) {
 }
 
 fn image_texels(seed: u64, format: Format, layers: u32, seeded: bool) -> Vec<u8> {
-    let n = (IMAGE_SIZE * IMAGE_SIZE * layers * format.block().2) as usize;
+    let n = (IMAGE_SIZE * IMAGE_SIZE * layers * FORMAT_FACTS[format as usize].block.2) as usize;
     if !seeded {
         return vec![0; n];
     }
@@ -861,7 +878,7 @@ fn direct3d_images(gpu: &Gpu, seed: u64, images: &[Image]) -> Vec<Vec<u8>> {
         let mut desc = d3d11::tex2d(IMAGE_SIZE, IMAGE_SIZE, dxgi, D3D11_BIND_UNORDERED_ACCESS);
         desc.ArraySize = layers;
         let texels = image_texels(seed, format, layers, seeded);
-        let row = IMAGE_SIZE * format.block().2;
+        let row = IMAGE_SIZE * FORMAT_FACTS[format as usize].block.2;
         let data: Vec<_> = texels
             .chunks((row * IMAGE_SIZE) as usize)
             .map(|layer| d3d11::data(layer, row, row * IMAGE_SIZE))
@@ -881,7 +898,7 @@ fn direct3d_images(gpu: &Gpu, seed: u64, images: &[Image]) -> Vec<Vec<u8>> {
     textures
         .iter()
         .map(|(texture, format, layers)| {
-            let row = (IMAGE_SIZE * format.block().2) as usize;
+            let row = (IMAGE_SIZE * FORMAT_FACTS[*format as usize].block.2) as usize;
             let mut desc = D3D11_TEXTURE2D_DESC::default();
             unsafe { texture.GetDesc(&mut desc) };
             desc.Usage = D3D11_USAGE_STAGING;
@@ -957,7 +974,7 @@ fn ours_images<B: Backend>(b: &mut B, seed: u64, dxil: bool, images: &[Image]) -
                 },
             )
             .unwrap();
-        let row = IMAGE_SIZE * format.block().2;
+        let row = IMAGE_SIZE * FORMAT_FACTS[format as usize].block.2;
         b.write_texture(
             &TextureRegion {
                 texture: &texture,
@@ -1009,7 +1026,11 @@ fn ours_images<B: Backend>(b: &mut B, seed: u64, dxil: bool, images: &[Image]) -
         .map(|(texture, _, format, layers)| {
             let mut all = Vec::new();
             for layer in 0..*layers {
-                let mut out = vec![0; (IMAGE_SIZE * IMAGE_SIZE * format.block().2) as usize];
+                let mut out = vec![
+                    0;
+                    (IMAGE_SIZE * IMAGE_SIZE * FORMAT_FACTS[*format as usize].block.2)
+                        as usize
+                ];
                 b.read_back_now(
                     &ReadSource::Texture {
                         region: TextureRegion {
@@ -1194,7 +1215,7 @@ fn storage_texture_arrays_use_the_elements_picked() {
     let dxil = bytecode("cs_image_array.dxil");
     let dxbc = bytecode("cs_image_array.dxbc");
     let (width, height) = (ARRAY_SIDE, ARRAY_SIDE);
-    let texel = format.block().2;
+    let texel = FORMAT_FACTS[format as usize].block.2;
     let mut failures = Vec::new();
     for (route, source) in [("dxil", Source::Dxil(&dxil)), ("dxbc", Source::Dxbc(&dxbc))] {
         let c = convert(source, &key, None).unwrap();
@@ -1701,7 +1722,7 @@ fn texel_views(gpu: &Gpu, seed: u64, kinds: Kinds) -> Vec<TexelView> {
     slots
         .into_iter()
         .map(|(kind, register, format)| {
-            let size = format.block().2;
+            let size = FORMAT_FACTS[format as usize].block.2;
             let first = next() % 8;
             let count = 100 + next() % 41;
             let len = ((first + count + 3) * size).next_multiple_of(16);
@@ -1815,7 +1836,16 @@ fn direct3d_texels(gpu: &Gpu, views: &[TexelView]) -> Vec<Vec<u8>> {
 /// storage from its view's first byte rounded down to the storage offset alignment, its place and
 /// length in the helpers. The views' registers start at 0 and have no gaps, so Direct3D 12's slots
 /// (the DXIL route's) are the registers.
-fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView], dxil: bool) -> Vec<Vec<u8>> {
+/// Where `cs_texels` comes from: fxc's or dxc's build through `convert`, or `typed_texels.wgsl`
+/// through `typed::buffers` and `rewrite`.
+#[derive(Clone, Copy)]
+enum TexelBuild {
+    Dxbc,
+    Dxil,
+    Module,
+}
+
+fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView], build: TexelBuild) -> Vec<Vec<u8>> {
     let format_of = |kind| {
         views
             .iter()
@@ -1829,16 +1859,17 @@ fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView], dxil: bool) -> Vec<Ve
         storage_formats: format_of(SlotKind::Storage),
         ..Default::default()
     };
-    let c = match dxil {
-        true => convert(Source::Dxil(&bytecode("cs_texels.dxil")), &key, None).unwrap(),
-        false => convert(Source::Dxbc(&bytecode("cs_texels.dxbc")), &key, None).unwrap(),
+    let c = match build {
+        TexelBuild::Dxil => convert(Source::Dxil(&bytecode("cs_texels.dxil")), &key, None).unwrap(),
+        TexelBuild::Dxbc => convert(Source::Dxbc(&bytecode("cs_texels.dxbc")), &key, None).unwrap(),
+        TexelBuild::Module => forms::typed_texels(&key, &forms::TYPED_TEXELS).unwrap(),
     };
     let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
     let buffers: Vec<_> = views.iter().map(|v| buffer(b, &v.bytes, usage)).collect();
     let results_len = (TEXEL_INVOCATIONS * 6 * 16) as u64;
     let results = buffer(b, &vec![0; results_len as usize], usage);
     let align = 256;
-    let start = |v: &TexelView| (v.first * v.format.block().2) / align * align;
+    let start = |v: &TexelView| (v.first * FORMAT_FACTS[v.format as usize].block.2) / align * align;
     let view_of = |set: u32, binding: u32| {
         c.reflection
             .bindings
@@ -1888,7 +1919,7 @@ fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView], dxil: bool) -> Vec<Ve
         };
         let v = &views[view_of(set, binding).unwrap()];
         let at = h.offset as usize;
-        let offset = v.first * v.format.block().2 - start(v);
+        let offset = v.first * FORMAT_FACTS[v.format as usize].block.2 - start(v);
         helpers[at..at + 4].copy_from_slice(&offset.to_le_bytes());
         helpers[at + 4..at + 8].copy_from_slice(&v.count.to_le_bytes());
     }
@@ -1966,7 +1997,7 @@ fn normalised(format: Format) -> Option<(Vec<Component>, bool)> {
 /// give a code 0.6 from the exact value (functional specification 3.2.3.4 and 3.2.3.6); the value
 /// stored is known from the results, so a component passes where both codes are that close.
 fn stored_apart(v: &TexelView, results: &[u8], a: &[u8], o: &[u8]) -> (usize, usize) {
-    let size = v.format.block().2 as usize;
+    let size = FORMAT_FACTS[v.format as usize].block.2 as usize;
     let word = |b: &[u8], at: usize| u32::from_le_bytes(b[at..at + 4].try_into().unwrap());
     let (mut apart, mut tolerated) = (0, 0);
     for (e, (x, y)) in a.chunks(size).zip(o.chunks(size)).enumerate() {
@@ -2069,8 +2100,13 @@ fn typed_buffers_alike(kinds: Kinds) {
         let views = texel_views(&gpu, seed, kinds);
         let formats: Vec<_> = views.iter().map(|v| v.format).collect();
         let reference = direct3d_texels(&gpu, &views);
-        for (dxil, build) in [(false, "dxbc"), (true, "dxil")] {
-            let made = ours_texels(&mut backend, &views, dxil);
+        let builds = [
+            (TexelBuild::Dxbc, "dxbc"),
+            (TexelBuild::Dxil, "dxil"),
+            (TexelBuild::Module, "module"),
+        ];
+        for (from, build) in builds {
+            let made = ours_texels(&mut backend, &views, from);
             let results = &reference[2];
             for (n, (a, o)) in reference.iter().zip(&made).enumerate() {
                 let name = ["u0", "u1", "results"][n];
@@ -2160,7 +2196,7 @@ fn through_views(gpu: &Gpu, seed: u64) -> Vec<Through> {
     ]
     .into_iter()
     .map(|(slot, volume, size, format)| {
-        let n = size[0] * size[1] * size[2] * format.block().2;
+        let n = size[0] * size[1] * size[2] * FORMAT_FACTS[format as usize].block.2;
         let texels = if format == Format::R32Float {
             (0..n / 4)
                 .flat_map(|_| ((next() % 2000) as f32 / 16.0 - 60.0).to_le_bytes())
@@ -2179,14 +2215,15 @@ fn through_views(gpu: &Gpu, seed: u64) -> Vec<Through> {
     .collect()
 }
 
-/// Each texture's texels after real Direct3D 11 runs `cs_through`, layer after layer.
-fn direct3d_through(gpu: &Gpu, views: &[Through]) -> Vec<Vec<u8>> {
-    let shader = gpu.cs(&bytecode("cs_through.dxbc")).unwrap();
+/// Each texture's texels after real Direct3D 11 runs `shader` (`cs_through` or `cs_alpha`), layer
+/// after layer.
+fn direct3d_through(gpu: &Gpu, views: &[Through], shader: &str) -> Vec<Vec<u8>> {
+    let shader = gpu.cs(&bytecode(&format!("{shader}.dxbc"))).unwrap();
     let mut resources: Vec<ID3D11Resource> = Vec::new();
-    let mut uavs = vec![None; 3];
+    let mut uavs = vec![None; views[0].slot as usize];
     for t in views {
         let [w, h, l] = t.size;
-        let row = w * t.format.block().2;
+        let row = w * FORMAT_FACTS[t.format as usize].block.2;
         let resource: ID3D11Resource = if t.volume {
             let desc = D3D11_TEXTURE3D_DESC {
                 Width: w,
@@ -2229,7 +2266,7 @@ fn direct3d_through(gpu: &Gpu, views: &[Through]) -> Vec<Vec<u8>> {
         .zip(&resources)
         .map(|(t, resource)| {
             let [w, h, l] = t.size;
-            let row = (w * t.format.block().2) as usize;
+            let row = (w * FORMAT_FACTS[t.format as usize].block.2) as usize;
             let staging: ID3D11Resource = if t.volume {
                 let desc = D3D11_TEXTURE3D_DESC {
                     Width: w,
@@ -2283,7 +2320,13 @@ fn direct3d_through(gpu: &Gpu, views: &[Through]) -> Vec<Vec<u8>> {
 /// are 3 texels longer and layers one row taller than the view, the padding seeded too; from fxc's
 /// DXBC or dxc's DXIL, whose slots are the views' places among the program's (Direct3D 12's
 /// numbering).
-fn ours_through<B: Backend>(b: &mut B, views: &[Through], seed: u64, dxil: bool) -> Vec<Vec<u8>> {
+fn ours_through<B: Backend>(
+    b: &mut B,
+    views: &[Through],
+    shader: &str,
+    seed: u64,
+    dxil: bool,
+) -> Vec<Vec<u8>> {
     let slot = |t: &Through| match dxil {
         true => views.iter().filter(|v| v.slot < t.slot).count() as u32,
         false => t.slot,
@@ -2294,16 +2337,25 @@ fn ours_through<B: Backend>(b: &mut B, views: &[Through], seed: u64, dxil: bool)
         ..Default::default()
     };
     let c = match dxil {
-        true => convert(Source::Dxil(&bytecode("cs_through.dxil")), &key, None).unwrap(),
-        false => convert(Source::Dxbc(&bytecode("cs_through.dxbc")), &key, None).unwrap(),
-    };
+        true => convert(
+            Source::Dxil(&bytecode(&format!("{shader}.dxil"))),
+            &key,
+            None,
+        ),
+        false => convert(
+            Source::Dxbc(&bytecode(&format!("{shader}.dxbc"))),
+            &key,
+            None,
+        ),
+    }
+    .unwrap();
     let mut next = rng(seed ^ 0x5eed);
     let layout = |t: &Through| (t.size[0] + 3, t.size[1] + 1);
     let usage = BufferUsage::STORAGE | BufferUsage::COPY_SRC;
     let buffers: Vec<_> = views
         .iter()
         .map(|t| {
-            let size = t.format.block().2 as usize;
+            let size = FORMAT_FACTS[t.format as usize].block.2 as usize;
             let (pitch, rows) = layout(t);
             let len = (pitch * rows * t.size[2]) as usize * size;
             let mut bytes: Vec<u8> = (0..len.next_multiple_of(4)).map(|_| next() as u8).collect();
@@ -2391,7 +2443,7 @@ fn ours_through<B: Backend>(b: &mut B, views: &[Through], seed: u64, dxil: bool)
                 &mut bytes,
             )
             .unwrap();
-            let size = t.format.block().2 as usize;
+            let size = FORMAT_FACTS[t.format as usize].block.2 as usize;
             let (pitch, rows) = layout(t);
             let mut texels = Vec::new();
             for z in 0..t.size[2] {
@@ -2425,34 +2477,99 @@ fn storage_textures_through_buffers_match_direct3d() {
     let mut failures = Vec::new();
     for seed in seed..seed + seeds {
         let views = through_views(&gpu, seed);
-        let reference = direct3d_through(&gpu, &views);
-        for dxil in [false, true] {
-            let made = ours_through(&mut backend, &views, seed, dxil);
-            let build = if dxil { "dxil" } else { "dxbc" };
-            for ((a, o), t) in reference.iter().zip(&made).zip(&views) {
-                let size = t.format.block().2 as usize;
-                let mut apart = 0;
-                for (n, (x, y)) in a.chunks(size).zip(o.chunks(size)).enumerate() {
-                    if x != y {
-                        apart += 1;
-                        if apart <= 6 {
-                            eprintln!("  u{} texel {n}: direct3d {x:02x?}, ours {y:02x?}", t.slot);
-                        }
-                    }
-                }
-                eprintln!(
-                    "seed {seed} {build} u{} {:?}: {apart} texels apart",
-                    t.slot, t.format
-                );
-                if apart > 0 {
-                    failures.push(format!("seed {seed} {build} u{}", t.slot));
-                }
-            }
-        }
+        let reference = direct3d_through(&gpu, &views, "cs_through");
+        through_alike(
+            &mut backend,
+            seed,
+            &views,
+            &reference,
+            "cs_through",
+            &mut failures,
+        );
     }
     eprintln!("{seeds} seeds, {} failed", failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }
+
+/// `shader` on `views` through ours, both builds, each texture's texels compared with `reference`.
+fn through_alike<B: Backend>(
+    backend: &mut B,
+    seed: u64,
+    views: &[Through],
+    reference: &[Vec<u8>],
+    shader: &str,
+    failures: &mut Vec<String>,
+) {
+    for dxil in [false, true] {
+        let made = ours_through(backend, views, shader, seed, dxil);
+        let build = if dxil { "dxil" } else { "dxbc" };
+        for ((a, o), t) in reference.iter().zip(&made).zip(views) {
+            let size = FORMAT_FACTS[t.format as usize].block.2 as usize;
+            let mut apart = 0;
+            for (n, (x, y)) in a.chunks(size).zip(o.chunks(size)).enumerate() {
+                if x != y {
+                    apart += 1;
+                    if apart <= 6 {
+                        eprintln!("  u{} texel {n}: direct3d {x:02x?}, ours {y:02x?}", t.slot);
+                    }
+                }
+            }
+            eprintln!(
+                "seed {seed} {build} {shader} u{} {:?}: {apart} texels apart",
+                t.slot, t.format
+            );
+            if apart > 0 {
+                failures.push(format!("seed {seed} {build} {shader} u{}", t.slot));
+            }
+        }
+    }
+}
+
+/// `cs_alpha` loading and storing an `A8_UNORM` storage texture read through a buffer of its
+/// one-byte texels, against Direct3D 11's typed loads and stores of the format: loads give
+/// (0, 0, 0, a), stores keep the value's alpha.
+#[test]
+fn a8_storage_textures_load_and_store_through_buffers_as_direct3d_does() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_COMPUTE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_COMPUTE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut failures = Vec::new();
+    for seed in seed..seed + seeds {
+        let mut next = rng(seed);
+        let size = [ALPHA_SIDE, ALPHA_SIDE, 1];
+        let views = [Through {
+            slot: 0,
+            volume: false,
+            size,
+            format: Format::A8Unorm,
+            texels: (0..ALPHA_SIDE * ALPHA_SIDE).map(|_| next() as u8).collect(),
+        }];
+        let reference = direct3d_through(&gpu, &views, "cs_alpha");
+        through_alike(
+            &mut backend,
+            seed,
+            &views,
+            &reference,
+            "cs_alpha",
+            &mut failures,
+        );
+    }
+    eprintln!("{seeds} seeds, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The side of `cs_alpha`'s texture, which its dispatch of two by two groups covers.
+const ALPHA_SIDE: u32 = 16;
 
 /// `cs_one_d`'s textures: register, whether an unordered access view, format, layers (none for a
 /// texture that is not an array), and whether seeded.
@@ -2468,7 +2585,7 @@ const ONE_D_WIDTH: u32 = 64;
 /// A 1D texture's texels, layer after layer: seeded floats, or zeros.
 fn one_d_texels(seed: u64, i: usize) -> Vec<u8> {
     let (_, _, format, layers, seeded) = ONE_D[i];
-    let n = (ONE_D_WIDTH * layers.unwrap_or(1) * format.block().2) as usize;
+    let n = (ONE_D_WIDTH * layers.unwrap_or(1) * FORMAT_FACTS[format as usize].block.2) as usize;
     let mut next = rng(seed + i as u64);
     match seeded {
         true => (0..n / 4)
@@ -2499,7 +2616,7 @@ fn direct3d_one_d(gpu: &Gpu, seed: u64) -> Vec<Vec<u8>> {
             MiscFlags: 0,
         };
         let texels = one_d_texels(seed, i);
-        let row = ONE_D_WIDTH * format.block().2;
+        let row = ONE_D_WIDTH * FORMAT_FACTS[format as usize].block.2;
         let data: Vec<_> = texels
             .chunks(row as usize)
             .map(|layer| d3d11::data(layer, row, row))
@@ -2639,7 +2756,7 @@ fn ours_one_d<B: Backend>(b: &mut B, seed: u64, dxil: bool) -> Vec<Vec<u8>> {
             },
             extent,
             &one_d_texels(seed, i),
-            ONE_D_WIDTH * format.block().2,
+            ONE_D_WIDTH * FORMAT_FACTS[format as usize].block.2,
             1,
             WriteMode::Ordered,
         );
@@ -2696,7 +2813,11 @@ fn ours_one_d<B: Backend>(b: &mut B, seed: u64, dxil: bool) -> Vec<Vec<u8>> {
         .zip(&textures)
         .filter(|(t, _)| t.1)
         .map(|(t, (texture, _, extent))| {
-            let mut out = vec![0; (extent.width * extent.depth_or_layers * t.2.block().2) as usize];
+            let mut out = vec![
+                0;
+                (extent.width * extent.depth_or_layers * FORMAT_FACTS[t.2 as usize].block.2)
+                    as usize
+            ];
             b.read_back_now(
                 &ReadSource::Texture {
                     region: TextureRegion {
@@ -2778,7 +2899,8 @@ fn view_kind_views(seed: u64) -> Vec<(Format, Vec<u8>)> {
     (0..VIEW_KIND_TEXTURES)
         .map(|_| {
             let format = VIEW_KIND_FORMATS[next() as usize % VIEW_KIND_FORMATS.len()];
-            let n = (VIEW_KIND_SIDE * VIEW_KIND_SIDE * format.block().2) as usize;
+            let n =
+                (VIEW_KIND_SIDE * VIEW_KIND_SIDE * FORMAT_FACTS[format as usize].block.2) as usize;
             let mut texels: Vec<u8> = (0..n).map(|_| next() as u8).collect();
             if format == Format::Rgba16Float {
                 // The top exponent bit of each half cleared: no infinities or NaNs.
@@ -2802,7 +2924,7 @@ fn direct3d_view_kinds(gpu: &Gpu, views: &[(Format, Vec<u8>)]) -> Vec<u8> {
     let srvs: Vec<_> = views
         .iter()
         .map(|(format, texels)| {
-            let row = VIEW_KIND_SIDE * format.block().2;
+            let row = VIEW_KIND_SIDE * FORMAT_FACTS[*format as usize].block.2;
             let desc = d3d11::tex2d(
                 VIEW_KIND_SIDE,
                 VIEW_KIND_SIDE,
@@ -2837,7 +2959,7 @@ fn direct3d_view_kinds(gpu: &Gpu, views: &[(Format, Vec<u8>)]) -> Vec<u8> {
     staging_desc.BindFlags = 0;
     staging_desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
     let staging = gpu.texture2d(&staging_desc, &[]).unwrap();
-    let row = (width * VIEW_KIND_OUTPUT.block().2) as usize;
+    let row = (width * FORMAT_FACTS[VIEW_KIND_OUTPUT as usize].block.2) as usize;
     let mut out = Vec::new();
     unsafe {
         gpu.context.CopyResource(&staging, &output);
@@ -2917,7 +3039,7 @@ fn ours_view_kinds<B: Backend>(b: &mut B, views: &[(Format, Vec<u8>)], dxil: boo
                 depth_or_layers: 1,
             },
             texels,
-            VIEW_KIND_SIDE * format.block().2,
+            VIEW_KIND_SIDE * FORMAT_FACTS[*format as usize].block.2,
             VIEW_KIND_SIDE,
             WriteMode::Ordered,
         );
@@ -2950,7 +3072,11 @@ fn ours_view_kinds<B: Backend>(b: &mut B, views: &[(Format, Vec<u8>)], dxil: boo
         groups: DispatchGroups::Direct([1, 1, 1]),
     })
     .unwrap();
-    let mut out = vec![0; (width * VIEW_KIND_SIDE * VIEW_KIND_OUTPUT.block().2) as usize];
+    let mut out = vec![
+        0;
+        (width * VIEW_KIND_SIDE * FORMAT_FACTS[VIEW_KIND_OUTPUT as usize].block.2)
+            as usize
+    ];
     b.read_back_now(
         &ReadSource::Texture {
             region: TextureRegion {
@@ -3032,7 +3158,7 @@ enum FormatKindOf {
 
 impl FormatKindOf {
     fn of(format: Format) -> FormatKindOf {
-        match format.kind() {
+        match FORMAT_FACTS[format as usize].kind {
             wcontainers_gpu::FormatKind::Uint => FormatKindOf::Uint,
             wcontainers_gpu::FormatKind::Sint => FormatKindOf::Sint,
             _ => FormatKindOf::Float,

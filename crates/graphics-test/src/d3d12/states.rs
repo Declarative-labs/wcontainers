@@ -6,7 +6,6 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Write;
-use std::mem::transmute_copy;
 
 use anyhow::Result;
 use windows::Win32::Foundation::RECT;
@@ -16,7 +15,10 @@ use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::core::{Interface, s};
 
-use super::{Gpu, bytecode, element, footprint_location, tex2d_desc, texture_location, transition};
+use super::{
+    Gpu, bytecode, element, footprint_location, held, release, tex2d_desc, texture_location,
+    transition, viewport12,
+};
 use crate::d3d11::scenes::blend::{self, CONSTANT, no_blend};
 use crate::d3d11::scenes::depth::{self, FUNCS};
 use crate::d3d11::scenes::formats::{FORMATS, Kind};
@@ -146,7 +148,7 @@ impl<'a> Immediate<'a> {
     }
 
     pub fn viewport(&self, v: D3D11_VIEWPORT) {
-        unsafe { self.gpu.list.RSSetViewports(&[transmute_copy(&v)]) };
+        unsafe { self.gpu.list.RSSetViewports(&[viewport12(&v)]) };
     }
 
     fn stencil_ref(&self, value: u32) {
@@ -159,8 +161,8 @@ impl<'a> Immediate<'a> {
             element(s!("POSITION"), DXGI_FORMAT_R32G32B32_FLOAT, 0),
             element(s!("COLOR"), DXGI_FORMAT_R32G32B32A32_FLOAT, 12),
         ];
+        // The root signature goes in only for the call that makes the pipeline (`held`).
         let mut desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-            pRootSignature: unsafe { transmute_copy(&self.root) },
             VS: bytecode(self.vs),
             HS: self.hs.map(bytecode).unwrap_or_default(),
             DS: self.ds.map(bytecode).unwrap_or_default(),
@@ -209,8 +211,10 @@ impl<'a> Immediate<'a> {
         if let Some(pipeline) = self.pipelines.borrow().get(&key) {
             return Ok(pipeline.clone());
         }
-        let pipeline: ID3D12PipelineState =
-            unsafe { self.gpu.device.CreateGraphicsPipelineState(&desc)? };
+        desc.pRootSignature = held(&self.root);
+        let made = unsafe { self.gpu.device.CreateGraphicsPipelineState(&desc) };
+        release(&mut desc.pRootSignature);
+        let pipeline: ID3D12PipelineState = made?;
         self.pipelines.borrow_mut().insert(key, pipeline.clone());
         Ok(pipeline)
     }

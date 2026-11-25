@@ -270,6 +270,53 @@ CullOut vs_cull(float3 position : POSITION, float4 colour : COLOR0, uint vertex 
     return o;
 }
 
+struct CullReadOut {
+    float4 position : SV_Position;
+    nointerpolation uint4 ids : TEXCOORD0;
+    float3 cull : SV_CullDistance0;
+    float2 clip : SV_ClipDistance0;
+    float more : SV_CullDistance1;
+};
+
+// vs_cull's distances with a fourth cull distance, which drops nothing, sharing a register with two
+// clip distances, as vkd3d's clip-cull-distance tests pack them.
+CullReadOut vs_cull_read(float3 position : POSITION, float4 colour : COLOR0,
+                         uint vertex : SV_VertexID, uint instance : SV_InstanceID) {
+    CullOut c = vs_cull(position, colour, vertex, instance);
+    CullReadOut o;
+    o.position = c.position;
+    o.ids = c.ids;
+    o.cull = c.cull;
+    o.clip = float2(c.clip, 1.0);
+    o.more = 2.0 + position.x - position.y;
+    return o;
+}
+
+// vs_cull_read's cull distances read as interpolated inputs (the first register's first and third,
+// and the second register's), each its own share of the colour.
+float4 ps_cull_read(CullReadOut i) : SV_Target0 {
+    return float4(saturate(i.cull.x * 0.5 + 0.25), saturate(i.cull.z * 0.25 + 0.5),
+                  saturate(i.more * 0.25), 1.0) * 0.75 + float4((i.ids % 4) / 16.0);
+}
+
+// vs_cull's clip and cull distances read by a geometry shader: each triangle passed on with the cull
+// distances it read, which drop what vs_cull's would, coloured by every distance read, so a distance
+// read from the wrong place shows in the colour or in what is dropped.
+[maxvertexcount(3)]
+void gs_distances(triangle CullOut t[3], uint primitive : SV_PrimitiveID,
+                  inout TriangleStream<GsCullOut> stream) {
+    for (uint i = 0; i < 3; i++) {
+        GsCullOut o;
+        o.position = t[i].position;
+        o.colour = float4(saturate(t[i].cull.xy + 0.25), saturate(t[i].clip - 0.5), 1.0);
+        o.ids = t[i].ids + uint4(0, 0, primitive, 0);
+        o.clip = float2(1.0, 0.5);
+        o.cull = t[i].cull.xy;
+        o.more = t[i].cull.z;
+        stream.Append(o);
+    }
+}
+
 float4 ps_geometry(GsOut i) : SV_Target0 {
     return float4(i.colour.rgb, 1.0) * 0.75 + float4((i.ids % 4) / 16.0);
 }
@@ -372,5 +419,42 @@ void gs_streams(point GsIn p[1], uint primitive : SV_PrimitiveID,
         StreamPlace o;
         o.place = p[0].position.xy * float(k + 1);
         s3.Append(o);
+    }
+}
+
+#ifndef PROVOKING_SHIFT
+#define PROVOKING_SHIFT 0
+#endif
+
+// Each triangle becomes a strip of five vertices across it and, after a cut, a strip of four about
+// its centre (even and odd triangles both), each vertex's flat value its place in its strip plus
+// PROVOKING_SHIFT: built with 2 (gs_provoking_last), each triangle's first vertex carries its last's.
+[maxvertexcount(9)]
+void gs_provoking(triangle GsIn t[3], uint primitive : SV_PrimitiveID,
+                  inout TriangleStream<GsOut> stream) {
+    GsIn m02 = t[0];
+    m02.position = (t[0].position + t[2].position) * 0.5;
+    m02.colour = (t[0].colour + t[2].colour) * 0.5;
+    GsIn m12 = t[1];
+    m12.position = (t[1].position + t[2].position) * 0.5;
+    m12.colour = (t[1].colour + t[2].colour) * 0.5;
+    GsIn across[5] = { t[0], t[1], m02, m12, t[2] };
+    for (uint i = 0; i < 5; i++) {
+        GsOut o;
+        o.position = across[i].position;
+        o.colour = across[i].colour;
+        o.ids = uint4(i + PROVOKING_SHIFT, primitive, 0, 0);
+        stream.Append(o);
+    }
+    stream.RestartStrip();
+    float4 centre = (t[0].position + t[1].position + t[2].position) / 3.0;
+    float4 about[4] = { lerp(centre, t[0].position, 0.5), lerp(centre, t[1].position, 0.5), centre,
+                        lerp(centre, t[2].position, 0.5) };
+    for (uint k = 0; k < 4; k++) {
+        GsOut o;
+        o.position = about[k];
+        o.colour = t[k % 3].colour;
+        o.ids = uint4(k + PROVOKING_SHIFT, primitive, 1, 0);
+        stream.Append(o);
     }
 }

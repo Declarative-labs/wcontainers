@@ -25,6 +25,18 @@ const QUERY_SET_SPLIT_PASS: &str = "query set out of indices split a pass";
 /// The reason [`SlowPath::PackedTargetQuantised`] shows.
 const PACKED_TARGET_QUANTISED: &str = "packed target drawn wider and rounded to its bits by a draw";
 
+/// The reason [`SlowPath::PackedTargetReadByBlend`] shows.
+const PACKED_TARGET_READ_BY_BLEND: &str =
+    "packed target read by a blend split a pass to round it first";
+
+/// The reason [`SlowPath::StorageReadWriteThroughBuffer`] shows.
+const STORAGE_READ_WRITE_THROUGH_BUFFER: &str =
+    "storage texture loaded and stored by one program through a buffer of its texels";
+
+/// The reason [`SlowPath::AliasedLinesAsQuads`] shows.
+const ALIASED_LINES_AS_QUADS: &str =
+    "aliased lines drawn as rectangles keeping the pixels of their rule";
+
 /// Why something took the slow way. A variant whose description starts "Refused" names a valid request
 /// that failed because no exact route exists; it is counted and warned the same way. Serialised as its
 /// number (the shaders crate's cache), so a new reason goes at the end and none moves.
@@ -321,302 +333,393 @@ pub enum SlowPath {
     /// drawn, blended and resolved at the wider precision, and each channel rounded to its own bits
     /// by a draw when the pass ends.
     PackedTargetQuantised,
+    /// A blend reading a packed target ([`SlowPath::PackedTargetQuantised`]) that earlier draws
+    /// in the pass wrote: the pass ended there so the blend reads values the format holds.
+    PackedTargetReadByBlend,
+    /// A storage texture a program loads from and stores into, of a format the back end does not
+    /// load and store in one program (WebGPU: all but `r32float`, `r32uint` and `r32sint`), read
+    /// and written through a buffer of its texels copied around each use.
+    StorageReadWriteThroughBuffer,
+    /// Aliased lines into a multisampled target drawn as rectangles whose program keeps the pixels
+    /// Direct3D's line rule picks (every sample of each), where the back end draws lines there by
+    /// its own multisampled rule.
+    AliasedLinesAsQuads,
 }
 
-impl SlowPath {
-    /// Every reason, for reading all counters.
-    pub const ALL: [SlowPath; 113] = [
-        SlowPath::FanConverted,
-        SlowPath::LoopConverted,
-        SlowPath::ReadBackWait,
-        SlowPath::PipelineMiss,
-        SlowPath::WriteSplitPass,
-        SlowPath::ReinterpretCopy,
-        SlowPath::GeometryAsCompute,
-        SlowPath::GeometryAsReplay,
-        SlowPath::TessellationAsCompute,
-        SlowPath::StreamOutAsCompute,
-        SlowPath::VertexStorageAsCompute,
-        SlowPath::RestartRewrite,
-        SlowPath::ProvokingRewrite,
-        SlowPath::DepthBiasInShader,
-        SlowPath::BorderInShader,
-        SlowPath::LogicOpInShader,
-        SlowPath::FillModeConverted,
-        SlowPath::TexelBufferAsStorage,
-        SlowPath::StoragePacked,
-        SlowPath::SamplerPairsExpanded,
-        SlowPath::ClipDepthRewrite,
-        SlowPath::VertexFormatConverted,
-        SlowPath::FormatConverted,
-        SlowPath::TexelBufferAsTexture,
-        SlowPath::BaseVertexRebind,
-        SlowPath::IndirectReadBack,
-        SlowPath::IndirectCountExpanded,
-        SlowPath::MappedUploadWhole,
-        SlowPath::ImmediatesSpilled,
-        SlowPath::MultiviewSerial,
-        SlowPath::MultiViewportSplit,
-        SlowPath::PointsAsQuads,
-        SlowPath::F64Emulated,
-        SlowPath::PredicationWait,
-        SlowPath::DepthReadByDraw,
-        SlowPath::StencilFacesSplit,
-        SlowPath::MirrorOnceInShader,
-        SlowPath::InstanceRateInShader,
-        SlowPath::OcclusionCountReplay,
-        SlowPath::TimestampSplitPass,
-        SlowPath::UnalignedBufferEdge,
-        SlowPath::TargetsSplit,
-        SlowPath::FilterInShader,
-        SlowPath::StreamOutRepacked,
-        SlowPath::TargetReadPerPrimitive,
-        SlowPath::LayerSplit,
-        SlowPath::VertexFetchZeroed,
-        SlowPath::BindingsBeyondLimit,
-        SlowPath::VertexPulledInShader,
-        SlowPath::ConstantsAsStorage,
-        SlowPath::ConstantsAsTexture,
-        SlowPath::BlockDecoded,
-        SlowPath::HostCopyReadBack,
-        SlowPath::LodBiasInShader,
-        SlowPath::ViewportDepthFlip,
-        SlowPath::VaryingsBeyondLimit,
-        SlowPath::AtomicsThroughBuffer,
-        SlowPath::NormAsInteger,
-        SlowPath::BlendInShader,
-        SlowPath::SampleMaskInShader,
-        SlowPath::StencilCopiedByDraw,
-        SlowPath::CopyThroughBuffer,
-        SlowPath::DepthWrittenByDraw,
-        SlowPath::HostCopyKept,
-        SlowPath::QueriesSegmented,
-        SlowPath::CopyWithinBuffer,
-        SlowPath::EarlyTestsInShader,
-        SlowPath::EarlyTestsPerPrimitive,
-        SlowPath::MinLodClamp,
-        SlowPath::ViewportInShader,
-        SlowPath::StagingRefreshed,
-        SlowPath::AttachmentsFitted,
-        SlowPath::IndexBufferTwin,
-        SlowPath::IndexTwinReadBack,
-        SlowPath::QueryResolveWait,
-        SlowPath::PredicationIndirect,
-        SlowPath::IndexWidened,
-        SlowPath::AdjacencyDropped,
-        SlowPath::TextureInfoInHelpers,
-        SlowPath::DrawBaseInHelpers,
-        SlowPath::DrawBaseFromArguments,
-        SlowPath::StorageFormatThroughBuffer,
-        SlowPath::MultisampleCopyResolved,
-        SlowPath::AliasCopied,
-        SlowPath::AntialiasedLinesAsQuads,
-        SlowPath::UsageScopeSplit,
-        SlowPath::UsageScopeCopied,
-        SlowPath::ClipDistanceInShader,
-        SlowPath::DepthClampInShader,
-        SlowPath::CullDistanceAsGeometry,
-        SlowPath::PrimitiveIdAsGeometry,
-        SlowPath::RowsRepacked,
-        SlowPath::ResolveInStoredFormat,
-        SlowPath::ResolveByDraw,
-        SlowPath::PatternClearCopied,
-        SlowPath::ConstantBufferGrown,
-        SlowPath::IntegerClearByDraw,
-        SlowPath::StencilWrittenByDraw,
-        SlowPath::PresentConverted,
-        SlowPath::CaptureExpanded,
-        SlowPath::CopyWithinTexture,
-        SlowPath::PixelInvocationsCounted,
-        SlowPath::SwizzleInShader,
-        SlowPath::AtomicExchangeLoop,
-        SlowPath::SequentialBuffersCopied,
-        SlowPath::IndirectFetchPastEnd,
-        SlowPath::StorageOffsetInShader,
-        SlowPath::FloatBitsClearByDraw,
-        SlowPath::StreamOutAfterReplay,
-        SlowPath::FrameStretched,
-        SlowPath::SharedThroughHost,
-        SlowPath::QuerySetSplitPass,
-        SlowPath::PackedTargetQuantised,
-    ];
+/// How many reasons there are.
+pub const SLOW_PATH_COUNT: usize = SlowPath::AliasedLinesAsQuads as usize + 1;
 
-    /// The fixed name the host's warning and counter hooks show.
-    pub fn reason(self) -> &'static str {
-        match self {
-            SlowPath::FanConverted => "triangle fan converted to a list",
-            SlowPath::LoopConverted => "line loop converted to a list",
-            SlowPath::ReadBackWait => "read back waited for the gpu",
-            SlowPath::PipelineMiss => "state combination built at first draw",
-            SlowPath::WriteSplitPass => "ordered write split a pass",
-            SlowPath::ReinterpretCopy => "texture copied to view it another way",
-            SlowPath::GeometryAsCompute => "geometry shader run as compute",
-            SlowPath::GeometryAsReplay => "geometry shader run by vertex replay",
-            SlowPath::TessellationAsCompute => "tessellation run as compute",
-            SlowPath::StreamOutAsCompute => "stream output run as compute",
-            SlowPath::VertexStorageAsCompute => "vertex stage storage writes run as compute",
-            SlowPath::RestartRewrite => "indices rewritten for primitive restart",
-            SlowPath::ProvokingRewrite => "provoking vertex rewritten",
-            SlowPath::DepthBiasInShader => "depth bias applied in the shader",
-            SlowPath::BorderInShader => "sampler border color applied in the shader",
-            SlowPath::LogicOpInShader => "logic operation applied in the shader",
-            SlowPath::FillModeConverted => "fill mode drawn as generated lines or points",
-            SlowPath::TexelBufferAsStorage => "typed buffer read through a storage buffer",
-            SlowPath::StoragePacked => "storage bindings packed into one buffer",
-            SlowPath::SamplerPairsExpanded => "texture and sampler pairs expanded",
-            SlowPath::ClipDepthRewrite => "clip space depth rewritten in the shader",
-            SlowPath::VertexFormatConverted => "vertex format converted",
-            SlowPath::FormatConverted => "texture format stored in a wider one",
-            SlowPath::TexelBufferAsTexture => "typed buffer read as a texture",
-            SlowPath::BaseVertexRebind => "vertex streams rebound for base vertex or instance",
-            SlowPath::IndirectReadBack => "indirect arguments read back",
-            SlowPath::IndirectCountExpanded => "indirect draw count expanded",
-            SlowPath::MappedUploadWhole => "mapped range uploaded whole",
-            SlowPath::ImmediatesSpilled => "immediate constants spilled to a buffer",
-            SlowPath::MultiviewSerial => "multiview drawn one view at a time",
-            SlowPath::MultiViewportSplit => "draw split per viewport",
-            SlowPath::PointsAsQuads => "large points drawn as quads",
-            SlowPath::F64Emulated => "64-bit floats emulated",
-            SlowPath::PredicationWait => "predicated operation waited for its predicate",
-            SlowPath::DepthReadByDraw => "depth read back through a draw",
-            SlowPath::StencilFacesSplit => "draw split per stencil face",
-            SlowPath::MirrorOnceInShader => "mirror once addressing applied in the shader",
-            SlowPath::InstanceRateInShader => "instance step rate applied in the shader",
-            SlowPath::OcclusionCountReplay => "occlusion count made by replaying draws",
-            SlowPath::TimestampSplitPass => "timestamp split a pass",
-            SlowPath::UnalignedBufferEdge => "unaligned buffer edge merged by a program",
-            SlowPath::TargetsSplit => "draw run once per group of targets",
-            SlowPath::FilterInShader => "texture filtered in the shader",
-            SlowPath::StreamOutRepacked => "stream output repacked",
-            SlowPath::TargetReadPerPrimitive => {
-                "draw reading its target run one primitive at a time"
-            }
-            SlowPath::LayerSplit => "layered draw split per layer",
-            SlowPath::VertexFetchZeroed => "vertex fetch past the end zeroed",
-            SlowPath::BindingsBeyondLimit => "program refused: more bindings than the back end has",
-            SlowPath::VertexPulledInShader => "vertex streams fetched in the shader",
-            SlowPath::ConstantsAsStorage => "constant buffers read as storage buffers",
-            SlowPath::ConstantsAsTexture => "constant buffers read through a texture",
-            SlowPath::BlockDecoded => "block-compressed texture stored decoded",
-            SlowPath::HostCopyReadBack => "copy source read back to the host copy",
-            SlowPath::LodBiasInShader => "sampler lod bias applied in the shader",
-            SlowPath::ViewportDepthFlip => "viewport depth range flipped in the shader",
-            SlowPath::VaryingsBeyondLimit => {
-                "program refused: more stage values than the back end has"
-            }
-            SlowPath::AtomicsThroughBuffer => "storage texture atomics run through a buffer",
-            SlowPath::NormAsInteger => "normalised format stored as integers",
-            SlowPath::BlendInShader => "blending done in the shader",
-            SlowPath::SampleMaskInShader => "sample mask written by the shader",
-            SlowPath::StencilCopiedByDraw => "stencil copied by draws to be sampled",
-            SlowPath::CopyThroughBuffer => "texture copy made through a buffer",
-            SlowPath::DepthWrittenByDraw => "depth copy made by a draw",
-            SlowPath::HostCopyKept => "texture kept on the host as well",
-            SlowPath::QueriesSegmented => "overlapping queries segmented",
-            SlowPath::CopyWithinBuffer => "copy within one buffer made through another",
-            SlowPath::EarlyTestsInShader => "early depth and stencil tests run in the shader",
-            SlowPath::EarlyTestsPerPrimitive => {
-                "early depth and stencil tests run one primitive at a time"
-            }
-            SlowPath::MinLodClamp => {
-                "resource minimum lod clamp applied by samplers and the shader"
-            }
-            SlowPath::ViewportInShader => "fractional or oversized viewport applied in the shader",
-            SlowPath::StagingRefreshed => "staging resource read back before a write-only map",
-            SlowPath::AttachmentsFitted => {
-                "attachments of different sizes fitted through temporaries"
-            }
-            SlowPath::IndexBufferTwin => "buffer kept twice for indices and other data",
-            SlowPath::IndexTwinReadBack => "index twin refreshed through a read back",
-            SlowPath::QueryResolveWait => "query results resolved through a read back",
-            SlowPath::PredicationIndirect => "predicated draws recorded as indirect draws",
-            SlowPath::IndexWidened => "8-bit indices widened",
-            SlowPath::AdjacencyDropped => "adjacent vertices dropped from a draw",
-            SlowPath::TextureInfoInHelpers => "texture level counts passed in helper constants",
-            SlowPath::DrawBaseInHelpers => "draw bases passed in helper constants",
-            SlowPath::DrawBaseFromArguments => "draw bases read from indirect arguments",
-            SlowPath::StorageFormatThroughBuffer => {
-                "storage texture of an unstorable format run through a buffer"
-            }
-            SlowPath::MultisampleCopyResolved => "multisampled copy made from the resolved source",
-            SlowPath::AliasCopied => "aliased resource bytes copied before use",
-            SlowPath::AntialiasedLinesAsQuads => "antialiased lines drawn as covered rectangles",
-            SlowPath::UsageScopeSplit => "pass split between a storage write and another use",
-            SlowPath::UsageScopeCopied => "buffer used two ways in one draw read from a copy",
-            SlowPath::ClipDistanceInShader => "clip distances applied in the shader",
-            SlowPath::DepthClampInShader => "depth clamped in the shader",
-            SlowPath::CullDistanceAsGeometry => "cull distances applied by the stage helper",
-            SlowPath::PrimitiveIdAsGeometry => "primitive index made by the stage helper",
-            SlowPath::RowsRepacked => "copy rows repacked to the api's pitch",
-            SlowPath::ResolveInStoredFormat => "resolve averaged in the stored format",
-            SlowPath::ResolveByDraw => "resolve averaged by a draw",
-            SlowPath::PatternClearCopied => "buffer filled with a pattern by copies",
-            SlowPath::ConstantBufferGrown => "constant buffer grown to its shader's size",
-            SlowPath::IntegerClearByDraw => "integer colour clear made by a draw",
-            SlowPath::StencilWrittenByDraw => "stencil written by a draw per bit",
-            SlowPath::PresentConverted => "surface format converted by a draw at present",
-            SlowPath::CaptureExpanded => "captured draw expanded into points in list order",
-            SlowPath::CopyWithinTexture => {
-                "copy within one subresource made through a temporary buffer or texture"
-            }
-            SlowPath::PixelInvocationsCounted => {
-                "pixel shader invocations counted by drawing again"
-            }
-            SlowPath::SwizzleInShader => "view component mapping applied in the program",
-            SlowPath::AtomicExchangeLoop => {
-                "atomic minimum or maximum made by a compare-exchange loop"
-            }
-            SlowPath::SequentialBuffersCopied => "swap chain buffers moved by copies at present",
-            SlowPath::IndirectFetchPastEnd => {
-                "indirect draw skipped whole if it fetches past a vertex buffer's end"
-            }
-            SlowPath::StorageOffsetInShader => STORAGE_OFFSET_IN_SHADER,
-            SlowPath::FloatBitsClearByDraw => FLOAT_BITS_CLEAR_BY_DRAW,
-            SlowPath::StreamOutAfterReplay => STREAM_OUT_AFTER_REPLAY,
-            SlowPath::FrameStretched => FRAME_STRETCHED,
-            SlowPath::SharedThroughHost => SHARED_THROUGH_HOST,
-            SlowPath::QuerySetSplitPass => QUERY_SET_SPLIT_PASS,
-            SlowPath::PackedTargetQuantised => PACKED_TARGET_QUANTISED,
-        }
-    }
-}
+/// Every reason, in declaration order, for reading all counters: `SlowPath as usize` indexes it.
+pub const SLOW_PATHS: [SlowPath; SLOW_PATH_COUNT] = [
+    SlowPath::FanConverted,
+    SlowPath::LoopConverted,
+    SlowPath::ReadBackWait,
+    SlowPath::PipelineMiss,
+    SlowPath::WriteSplitPass,
+    SlowPath::ReinterpretCopy,
+    SlowPath::GeometryAsCompute,
+    SlowPath::GeometryAsReplay,
+    SlowPath::TessellationAsCompute,
+    SlowPath::StreamOutAsCompute,
+    SlowPath::VertexStorageAsCompute,
+    SlowPath::RestartRewrite,
+    SlowPath::ProvokingRewrite,
+    SlowPath::DepthBiasInShader,
+    SlowPath::BorderInShader,
+    SlowPath::LogicOpInShader,
+    SlowPath::FillModeConverted,
+    SlowPath::TexelBufferAsStorage,
+    SlowPath::StoragePacked,
+    SlowPath::SamplerPairsExpanded,
+    SlowPath::ClipDepthRewrite,
+    SlowPath::VertexFormatConverted,
+    SlowPath::FormatConverted,
+    SlowPath::TexelBufferAsTexture,
+    SlowPath::BaseVertexRebind,
+    SlowPath::IndirectReadBack,
+    SlowPath::IndirectCountExpanded,
+    SlowPath::MappedUploadWhole,
+    SlowPath::ImmediatesSpilled,
+    SlowPath::MultiviewSerial,
+    SlowPath::MultiViewportSplit,
+    SlowPath::PointsAsQuads,
+    SlowPath::F64Emulated,
+    SlowPath::PredicationWait,
+    SlowPath::DepthReadByDraw,
+    SlowPath::StencilFacesSplit,
+    SlowPath::MirrorOnceInShader,
+    SlowPath::InstanceRateInShader,
+    SlowPath::OcclusionCountReplay,
+    SlowPath::TimestampSplitPass,
+    SlowPath::UnalignedBufferEdge,
+    SlowPath::TargetsSplit,
+    SlowPath::FilterInShader,
+    SlowPath::StreamOutRepacked,
+    SlowPath::TargetReadPerPrimitive,
+    SlowPath::LayerSplit,
+    SlowPath::VertexFetchZeroed,
+    SlowPath::BindingsBeyondLimit,
+    SlowPath::VertexPulledInShader,
+    SlowPath::ConstantsAsStorage,
+    SlowPath::ConstantsAsTexture,
+    SlowPath::BlockDecoded,
+    SlowPath::HostCopyReadBack,
+    SlowPath::LodBiasInShader,
+    SlowPath::ViewportDepthFlip,
+    SlowPath::VaryingsBeyondLimit,
+    SlowPath::AtomicsThroughBuffer,
+    SlowPath::NormAsInteger,
+    SlowPath::BlendInShader,
+    SlowPath::SampleMaskInShader,
+    SlowPath::StencilCopiedByDraw,
+    SlowPath::CopyThroughBuffer,
+    SlowPath::DepthWrittenByDraw,
+    SlowPath::HostCopyKept,
+    SlowPath::QueriesSegmented,
+    SlowPath::CopyWithinBuffer,
+    SlowPath::EarlyTestsInShader,
+    SlowPath::EarlyTestsPerPrimitive,
+    SlowPath::MinLodClamp,
+    SlowPath::ViewportInShader,
+    SlowPath::StagingRefreshed,
+    SlowPath::AttachmentsFitted,
+    SlowPath::IndexBufferTwin,
+    SlowPath::IndexTwinReadBack,
+    SlowPath::QueryResolveWait,
+    SlowPath::PredicationIndirect,
+    SlowPath::IndexWidened,
+    SlowPath::AdjacencyDropped,
+    SlowPath::TextureInfoInHelpers,
+    SlowPath::DrawBaseInHelpers,
+    SlowPath::DrawBaseFromArguments,
+    SlowPath::StorageFormatThroughBuffer,
+    SlowPath::MultisampleCopyResolved,
+    SlowPath::AliasCopied,
+    SlowPath::AntialiasedLinesAsQuads,
+    SlowPath::UsageScopeSplit,
+    SlowPath::UsageScopeCopied,
+    SlowPath::ClipDistanceInShader,
+    SlowPath::DepthClampInShader,
+    SlowPath::CullDistanceAsGeometry,
+    SlowPath::PrimitiveIdAsGeometry,
+    SlowPath::RowsRepacked,
+    SlowPath::ResolveInStoredFormat,
+    SlowPath::ResolveByDraw,
+    SlowPath::PatternClearCopied,
+    SlowPath::ConstantBufferGrown,
+    SlowPath::IntegerClearByDraw,
+    SlowPath::StencilWrittenByDraw,
+    SlowPath::PresentConverted,
+    SlowPath::CaptureExpanded,
+    SlowPath::CopyWithinTexture,
+    SlowPath::PixelInvocationsCounted,
+    SlowPath::SwizzleInShader,
+    SlowPath::AtomicExchangeLoop,
+    SlowPath::SequentialBuffersCopied,
+    SlowPath::IndirectFetchPastEnd,
+    SlowPath::StorageOffsetInShader,
+    SlowPath::FloatBitsClearByDraw,
+    SlowPath::StreamOutAfterReplay,
+    SlowPath::FrameStretched,
+    SlowPath::SharedThroughHost,
+    SlowPath::QuerySetSplitPass,
+    SlowPath::PackedTargetQuantised,
+    SlowPath::PackedTargetReadByBlend,
+    SlowPath::StorageReadWriteThroughBuffer,
+    SlowPath::AliasedLinesAsQuads,
+];
+
+/// The fixed name the host's warning and counter hooks show for each reason, indexed by
+/// `SlowPath as usize`.
+pub const SLOW_PATH_REASONS: [&str; SLOW_PATH_COUNT] = [
+    // FanConverted
+    "triangle fan converted to a list",
+    // LoopConverted
+    "line loop converted to a list",
+    // ReadBackWait
+    "read back waited for the gpu",
+    // PipelineMiss
+    "state combination built at first draw",
+    // WriteSplitPass
+    "ordered write split a pass",
+    // ReinterpretCopy
+    "texture copied to view it another way",
+    // GeometryAsCompute
+    "geometry shader run as compute",
+    // GeometryAsReplay
+    "geometry shader run by vertex replay",
+    // TessellationAsCompute
+    "tessellation run as compute",
+    // StreamOutAsCompute
+    "stream output run as compute",
+    // VertexStorageAsCompute
+    "vertex stage storage writes run as compute",
+    // RestartRewrite
+    "indices rewritten for primitive restart",
+    // ProvokingRewrite
+    "provoking vertex rewritten",
+    // DepthBiasInShader
+    "depth bias applied in the shader",
+    // BorderInShader
+    "sampler border color applied in the shader",
+    // LogicOpInShader
+    "logic operation applied in the shader",
+    // FillModeConverted
+    "fill mode drawn as generated lines or points",
+    // TexelBufferAsStorage
+    "typed buffer read through a storage buffer",
+    // StoragePacked
+    "storage bindings packed into one buffer",
+    // SamplerPairsExpanded
+    "texture and sampler pairs expanded",
+    // ClipDepthRewrite
+    "clip space depth rewritten in the shader",
+    // VertexFormatConverted
+    "vertex format converted",
+    // FormatConverted
+    "texture format stored in a wider one",
+    // TexelBufferAsTexture
+    "typed buffer read as a texture",
+    // BaseVertexRebind
+    "vertex streams rebound for base vertex or instance",
+    // IndirectReadBack
+    "indirect arguments read back",
+    // IndirectCountExpanded
+    "indirect draw count expanded",
+    // MappedUploadWhole
+    "mapped range uploaded whole",
+    // ImmediatesSpilled
+    "immediate constants spilled to a buffer",
+    // MultiviewSerial
+    "multiview drawn one view at a time",
+    // MultiViewportSplit
+    "draw split per viewport",
+    // PointsAsQuads
+    "large points drawn as quads",
+    // F64Emulated
+    "64-bit floats emulated",
+    // PredicationWait
+    "predicated operation waited for its predicate",
+    // DepthReadByDraw
+    "depth read back through a draw",
+    // StencilFacesSplit
+    "draw split per stencil face",
+    // MirrorOnceInShader
+    "mirror once addressing applied in the shader",
+    // InstanceRateInShader
+    "instance step rate applied in the shader",
+    // OcclusionCountReplay
+    "occlusion count made by replaying draws",
+    // TimestampSplitPass
+    "timestamp split a pass",
+    // UnalignedBufferEdge
+    "unaligned buffer edge merged by a program",
+    // TargetsSplit
+    "draw run once per group of targets",
+    // FilterInShader
+    "texture filtered in the shader",
+    // StreamOutRepacked
+    "stream output repacked",
+    // TargetReadPerPrimitive
+    { "draw reading its target run one primitive at a time" },
+    // LayerSplit
+    "layered draw split per layer",
+    // VertexFetchZeroed
+    "vertex fetch past the end zeroed",
+    // BindingsBeyondLimit
+    "program refused: more bindings than the back end has",
+    // VertexPulledInShader
+    "vertex streams fetched in the shader",
+    // ConstantsAsStorage
+    "constant buffers read as storage buffers",
+    // ConstantsAsTexture
+    "constant buffers read through a texture",
+    // BlockDecoded
+    "block-compressed texture stored decoded",
+    // HostCopyReadBack
+    "copy source read back to the host copy",
+    // LodBiasInShader
+    "sampler lod bias applied in the shader",
+    // ViewportDepthFlip
+    "viewport depth range flipped in the shader",
+    // VaryingsBeyondLimit
+    { "program refused: more stage values than the back end has" },
+    // AtomicsThroughBuffer
+    "storage texture atomics run through a buffer",
+    // NormAsInteger
+    "normalised format stored as integers",
+    // BlendInShader
+    "blending done in the shader",
+    // SampleMaskInShader
+    "sample mask written by the shader",
+    // StencilCopiedByDraw
+    "stencil copied by draws to be sampled",
+    // CopyThroughBuffer
+    "texture copy made through a buffer",
+    // DepthWrittenByDraw
+    "depth copy made by a draw",
+    // HostCopyKept
+    "texture kept on the host as well",
+    // QueriesSegmented
+    "overlapping queries segmented",
+    // CopyWithinBuffer
+    "copy within one buffer made through another",
+    // EarlyTestsInShader
+    "early depth and stencil tests run in the shader",
+    // EarlyTestsPerPrimitive
+    { "early depth and stencil tests run one primitive at a time" },
+    // MinLodClamp
+    { "resource minimum lod clamp applied by samplers and the shader" },
+    // ViewportInShader
+    "fractional or oversized viewport applied in the shader",
+    // StagingRefreshed
+    "staging resource read back before a write-only map",
+    // AttachmentsFitted
+    { "attachments of different sizes fitted through temporaries" },
+    // IndexBufferTwin
+    "buffer kept twice for indices and other data",
+    // IndexTwinReadBack
+    "index twin refreshed through a read back",
+    // QueryResolveWait
+    "query results resolved through a read back",
+    // PredicationIndirect
+    "predicated draws recorded as indirect draws",
+    // IndexWidened
+    "8-bit indices widened",
+    // AdjacencyDropped
+    "adjacent vertices dropped from a draw",
+    // TextureInfoInHelpers
+    "texture level counts passed in helper constants",
+    // DrawBaseInHelpers
+    "draw bases passed in helper constants",
+    // DrawBaseFromArguments
+    "draw bases read from indirect arguments",
+    // StorageFormatThroughBuffer
+    { "storage texture of an unstorable format run through a buffer" },
+    // MultisampleCopyResolved
+    "multisampled copy made from the resolved source",
+    // AliasCopied
+    "aliased resource bytes copied before use",
+    // AntialiasedLinesAsQuads
+    "antialiased lines drawn as covered rectangles",
+    // UsageScopeSplit
+    "pass split between a storage write and another use",
+    // UsageScopeCopied
+    "buffer used two ways in one draw read from a copy",
+    // ClipDistanceInShader
+    "clip distances applied in the shader",
+    // DepthClampInShader
+    "depth clamped in the shader",
+    // CullDistanceAsGeometry
+    "cull distances applied by the stage helper",
+    // PrimitiveIdAsGeometry
+    "primitive index made by the stage helper",
+    // RowsRepacked
+    "copy rows repacked to the api's pitch",
+    // ResolveInStoredFormat
+    "resolve averaged in the stored format",
+    // ResolveByDraw
+    "resolve averaged by a draw",
+    // PatternClearCopied
+    "buffer filled with a pattern by copies",
+    // ConstantBufferGrown
+    "constant buffer grown to its shader's size",
+    // IntegerClearByDraw
+    "integer colour clear made by a draw",
+    // StencilWrittenByDraw
+    "stencil written by a draw per bit",
+    // PresentConverted
+    "surface format converted by a draw at present",
+    // CaptureExpanded
+    "captured draw expanded into points in list order",
+    // CopyWithinTexture
+    { "copy within one subresource made through a temporary buffer or texture" },
+    // PixelInvocationsCounted
+    { "pixel shader invocations counted by drawing again" },
+    // SwizzleInShader
+    "view component mapping applied in the program",
+    // AtomicExchangeLoop
+    { "atomic minimum or maximum made by a compare-exchange loop" },
+    // SequentialBuffersCopied
+    "swap chain buffers moved by copies at present",
+    // IndirectFetchPastEnd
+    { "indirect draw skipped whole if it fetches past a vertex buffer's end" },
+    // StorageOffsetInShader
+    STORAGE_OFFSET_IN_SHADER,
+    // FloatBitsClearByDraw
+    FLOAT_BITS_CLEAR_BY_DRAW,
+    // StreamOutAfterReplay
+    STREAM_OUT_AFTER_REPLAY,
+    // FrameStretched
+    FRAME_STRETCHED,
+    // SharedThroughHost
+    SHARED_THROUGH_HOST,
+    // QuerySetSplitPass
+    QUERY_SET_SPLIT_PASS,
+    // PackedTargetQuantised
+    PACKED_TARGET_QUANTISED,
+    // PackedTargetReadByBlend
+    PACKED_TARGET_READ_BY_BLEND,
+    // StorageReadWriteThroughBuffer
+    STORAGE_READ_WRITE_THROUGH_BUFFER,
+    // AliasedLinesAsQuads
+    ALIASED_LINES_AS_QUADS,
+];
 
 /// Counters for every slow path, and the warnings not yet handed to the host.
 #[derive(Clone, Debug)]
 pub struct SlowPaths {
-    counts: [u64; SlowPath::ALL.len()],
-    unwarned: Vec<SlowPath>,
+    /// How many times each path has been taken, at the path's place in [`SlowPath`].
+    pub counts: [u64; SLOW_PATH_COUNT],
+    /// The paths taken for the first time since the host last took the warnings, in that order.
+    pub unwarned: Vec<SlowPath>,
 }
 
-impl Default for SlowPaths {
-    fn default() -> Self {
-        SlowPaths {
-            counts: [0; SlowPath::ALL.len()],
-            unwarned: Vec::new(),
-        }
-    }
-}
-
-impl SlowPaths {
-    /// Records one use of `path`. The first use queues a warning.
-    pub fn hit(&mut self, path: SlowPath) {
-        let c = &mut self.counts[path as usize];
-        if *c == 0 {
-            self.unwarned.push(path);
-        }
-        *c += 1;
-    }
-
-    /// How many times `path` has been taken.
-    pub fn count(&self, path: SlowPath) -> u64 {
-        self.counts[path as usize]
-    }
-
-    /// Takes the warnings raised since the last call, for the host's warning hook.
-    pub fn take_warnings(&mut self) -> Vec<SlowPath> {
-        core::mem::take(&mut self.unwarned)
-    }
-}
+/// The counters of a back end that has taken no slow path yet.
+pub const NO_SLOW_PATHS: SlowPaths = SlowPaths {
+    counts: [0; SLOW_PATH_COUNT],
+    unwarned: Vec::new(),
+};
 
 #[cfg(test)]
 mod tests {
@@ -624,13 +727,13 @@ mod tests {
 
     #[test]
     fn all_lists_every_reason_in_order() {
-        for (i, p) in SlowPath::ALL.iter().enumerate() {
+        for (i, p) in SLOW_PATHS.iter().enumerate() {
             assert_eq!(*p as usize, i);
         }
-        let mut names: Vec<_> = SlowPath::ALL.iter().map(|p| p.reason()).collect();
+        let mut names: Vec<_> = SLOW_PATH_REASONS.to_vec();
         names.sort();
         names.dedup();
-        assert_eq!(names.len(), SlowPath::ALL.len());
+        assert_eq!(names.len(), SLOW_PATH_COUNT);
     }
 
     /// Every reason keeps the number it had when it was added, the place serialised caches read.
@@ -663,15 +766,12 @@ mod tests {
             PresentConverted CaptureExpanded CopyWithinTexture PixelInvocationsCounted \
             SwizzleInShader AtomicExchangeLoop SequentialBuffersCopied IndirectFetchPastEnd \
             StorageOffsetInShader FloatBitsClearByDraw StreamOutAfterReplay FrameStretched \
-            SharedThroughHost QuerySetSplitPass PackedTargetQuantised";
+            SharedThroughHost QuerySetSplitPass PackedTargetQuantised PackedTargetReadByBlend \
+            StorageReadWriteThroughBuffer AliasedLinesAsQuads";
         let held: Vec<_> = HELD.split_whitespace().collect();
-        assert!(held.len() <= SlowPath::ALL.len());
+        assert!(held.len() <= SLOW_PATH_COUNT);
         for (i, name) in held.iter().enumerate() {
-            assert_eq!(
-                alloc::format!("{:?}", SlowPath::ALL[i]),
-                *name,
-                "reason {i}"
-            );
+            assert_eq!(alloc::format!("{:?}", SLOW_PATHS[i]), *name, "reason {i}");
         }
     }
 }

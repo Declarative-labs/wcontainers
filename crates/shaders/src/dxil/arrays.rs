@@ -226,11 +226,7 @@ pub(super) fn split(
             let &[class, space, register] = resources
                 .get(binding.binding as usize)
                 .ok_or(ConvertError::Malformed(super::PAST_THE_LIST.into()))?;
-            let n = match size {
-                ArraySize::Constant(n) => n.get(),
-                ArraySize::Dynamic => unbounded_length(variant, class, space, register)?,
-                _ => return Err(refused()),
-            };
+            let n = array_length(variant, class, space, register, size)?;
             let first = resources.len() as u32;
             super::images::declare_elements(declared, binding, first..first + n);
             resources.extend((0..n).map(|i| [class, space, register + i]));
@@ -568,12 +564,37 @@ struct Pick {
 
 /// The length of an array declared without one: the rest of the root signature's range of its kind
 /// and space holding its first register. No more elements than the kind's slots hold.
-pub(super) fn unbounded_length(
+/// The length of the resource array of `size` at `register`: a constant one's own, an unbounded one's
+/// to the end of the variant's range; refused past the slots of its kind or the register space.
+pub(super) fn array_length(
     variant: &VariantKey,
     class: u32,
     space: u32,
     register: u32,
+    size: ArraySize,
 ) -> Result<u32> {
+    let n = match size {
+        ArraySize::Constant(n) => n.get(),
+        ArraySize::Dynamic => return unbounded_length(variant, class, space, register),
+        ArraySize::Pending(_) => return Err(refused()),
+    };
+    let kind =
+        super::slot_kind(class).ok_or_else(|| ConvertError::Malformed(super::NO_CLASS.into()))?;
+    if n > wcontainers_gpu::SLOT_KINDS[kind as usize].slots {
+        return Err(ConvertError::Unsupported(
+            crate::refusal::BINDINGS_BEYOND_LIMIT,
+        ));
+    }
+    if register.checked_add(n).is_none() {
+        return Err(ConvertError::Malformed(PAST_THE_REGISTERS.into()));
+    }
+    Ok(n)
+}
+
+/// Why a resource array is malformed: its registers pass the last.
+const PAST_THE_REGISTERS: &str = "a resource array past the last register";
+
+fn unbounded_length(variant: &VariantKey, class: u32, space: u32, register: u32) -> Result<u32> {
     let kind =
         super::slot_kind(class).ok_or_else(|| ConvertError::Malformed(super::NO_CLASS.into()))?;
     let length = variant
@@ -584,7 +605,7 @@ pub(super) fn unbounded_length(
         .ok_or(ConvertError::Unsupported(
             crate::refusal::UNBOUNDED_RESOURCE_ARRAY,
         ))?;
-    if length > kind.slots() {
+    if length > wcontainers_gpu::SLOT_KINDS[kind as usize].slots {
         return Err(ConvertError::Unsupported(
             crate::refusal::BINDINGS_BEYOND_LIMIT,
         ));

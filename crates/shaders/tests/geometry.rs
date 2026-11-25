@@ -99,39 +99,30 @@ fn geometry_shaders_declare_what_they_are() {
 }
 
 /// A geometry shader taking patches of four control points (`gs_patch`) takes them as primitives of
-/// four vertices, in the compute and the replay form; dxc's build is refused by name, as dxil-spirv
-/// converts no such input.
+/// four vertices, in the compute and the replay form, from fxc's and dxc's builds.
 #[test]
 fn geometry_shaders_take_patches_as_primitives() {
     let replay = VariantKey {
         flags: VariantFlags::GEOMETRY_REPLAY,
         ..Default::default()
     };
-    for key in [VariantKey::default(), replay] {
-        let c = convert(Source::Dxbc(&own("gs_patch.dxbc")), &key, None).unwrap();
-        assert_eq!(
-            c.reflection.extras,
-            StageExtras::Geometry {
-                input_vertices: 4,
-                max_output_vertices: 4,
-                output_vertices: 3,
-                instances: 1,
-                streams: 1,
-            }
-        );
-        c.modules.iter().for_each(|m| drop(wgsl(m)));
+    let (dxbc, dxil) = (own("gs_patch.dxbc"), own("gs_patch.dxil"));
+    for source in [Source::Dxbc(&dxbc), Source::Dxil(&dxil)] {
+        for key in [VariantKey::default(), replay.clone()] {
+            let c = convert(source, &key, None).unwrap();
+            assert_eq!(
+                c.reflection.extras,
+                StageExtras::Geometry {
+                    input_vertices: 4,
+                    max_output_vertices: 4,
+                    output_vertices: 3,
+                    instances: 1,
+                    streams: 1,
+                }
+            );
+            c.modules.iter().for_each(|m| drop(wgsl(m)));
+        }
     }
-    assert_eq!(
-        convert(
-            Source::Dxil(&own("gs_patch.dxil")),
-            &VariantKey::default(),
-            None
-        )
-        .err(),
-        Some(ConvertError::Unsupported(
-            wcontainers_shaders::refusal::GEOMETRY_PATCH_INPUT
-        ))
-    );
 }
 
 /// Geometry shaders writing cull distances beside clip distances in one register (`gs_cull`,
@@ -188,6 +179,109 @@ fn geometry_shaders_write_cull_distances() {
         }
     }
     wgsl(&wcontainers_shaders::stage::geometry_cull_program().unwrap());
+}
+
+/// A geometry shader reading its vertices' clip and cull distances (`gs_distances`, reading
+/// `vs_cull`'s) converts from fxc's and dxc's builds with them reflected as its input signature
+/// places them (one clip, three cull); the vertex stage's compute form and capture program write
+/// them, and a vertex program writing other counts of them is refused by name.
+#[test]
+fn geometry_shaders_read_clip_and_cull_distances() {
+    let pulled = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        ..Default::default()
+    };
+    for ext in ["dxbc", "dxil"] {
+        let (gs, vs) = (
+            own(&format!("gs_distances.{ext}")),
+            own(&format!("vs_cull.{ext}")),
+        );
+        let source = |b| match ext {
+            "dxbc" => Source::Dxbc(b),
+            _ => Source::Dxil(b),
+        };
+        let g = convert(source(&gs), &VariantKey::default(), None)
+            .unwrap_or_else(|e| panic!("gs_distances.{ext}: {e}"));
+        let count = |system| -> u32 {
+            g.reflection
+                .inputs
+                .iter()
+                .filter(|v| v.system == Some(system))
+                .map(|v| v.mask.count_ones())
+                .sum()
+        };
+        assert_eq!(
+            (
+                count(SystemValue::ClipDistance),
+                count(SystemValue::CullDistance)
+            ),
+            (1, 3),
+            "{ext}"
+        );
+        g.modules.iter().for_each(|m| drop(wgsl(m)));
+        let v = convert(source(&vs), &pulled, None).unwrap();
+        wgsl(&stage::vertex_program(&v, &g).unwrap_or_else(|e| panic!("{ext}: {e}")));
+        let drawn = convert(source(&vs), &VariantKey::default(), None).unwrap();
+        wgsl(&stage::capture_program(&drawn, &g).unwrap_or_else(|e| panic!("{ext}: {e}")));
+        assert_eq!(
+            stage::vertex_program(&vertex(), &g).err(),
+            Some(ConvertError::Unsupported(stage::DISTANCES_READ)),
+            "{ext}"
+        );
+    }
+}
+
+/// Domain shaders writing cull distances (tessellation.hlsl's, every domain, both builds) convert with
+/// their two cull distances reflected; the cull route's programs of them are a compute form writing
+/// the distances' slots after the position and colour, and a pass-through drawing the first two
+/// slots; the cull program is valid WGSL.
+#[test]
+fn domain_shaders_write_cull_distances() {
+    for name in ["ds_tri_cull", "ds_quad_cull", "ds_line_cull"] {
+        for ext in ["dxbc", "dxil"] {
+            let bytes = own(&format!("{name}.{ext}"));
+            let source = match ext {
+                "dxbc" => Source::Dxbc(&bytes),
+                _ => Source::Dxil(&bytes),
+            };
+            let c = convert(source, &VariantKey::default(), None)
+                .unwrap_or_else(|e| panic!("{name}.{ext}: {e}"));
+            assert!(
+                matches!(c.reflection.extras, StageExtras::Domain { .. }),
+                "{name}.{ext}: {:?}",
+                c.reflection.extras
+            );
+            let culled: u32 = c
+                .reflection
+                .outputs
+                .iter()
+                .filter(|v| v.system == Some(SystemValue::CullDistance))
+                .map(|v| v.mask.count_ones())
+                .sum();
+            assert_eq!(culled, 2, "{name}.{ext}");
+            assert!(stage::writes_cull_distances(&c), "{name}.{ext}");
+            let programs = stage::domain_cull_programs(&c).unwrap();
+            assert_eq!(
+                (
+                    programs.locations.len(),
+                    programs.clip_distances,
+                    programs.cull_distances
+                ),
+                (1, 0, 2),
+                "{name}.{ext}"
+            );
+            wgsl(&programs.compute);
+            wgsl(&programs.passthrough);
+        }
+    }
+    let plain = convert(
+        Source::Dxbc(&own("ds_tri.dxbc")),
+        &VariantKey::default(),
+        None,
+    )
+    .unwrap();
+    assert!(!stage::writes_cull_distances(&plain));
+    wgsl(&stage::cull_program().unwrap());
 }
 
 /// The replay form (`GEOMETRY_REPLAY`, for back ends without compute) is a vertex program writing a
@@ -557,6 +651,68 @@ fn antialiased_lines_take_the_stage_helpers_route() {
         assert!(
             fragment.contains(&format!("@location({coverage}) @interpolate(linear")),
             "{route}: {fragment}"
+        );
+    }
+}
+
+/// The same lines drawn by Direct3D's aliased rule into a multisampled target: the pass-through
+/// writes the line's ends flat at the coverage location, where the pixel program made with
+/// `LINE_DIAMOND` reads them and discards the pixels the rule leaves; a pixel program keyed for both
+/// line routes is refused. Drawn in `tests/stage_draw.rs`.
+#[test]
+fn aliased_lines_take_the_stage_helpers_route() {
+    let key = VariantKey {
+        pulled: vec![(0, VertexFormat::Float32x3), (1, VertexFormat::Float32x4)],
+        ..Default::default()
+    };
+    for (route, dxil) in [("dxbc", false), ("dxil", true)] {
+        let read = |code| match dxil {
+            false => Source::Dxbc(code),
+            true => Source::Dxil(code),
+        };
+        let vs_code = own(&format!("vs_line.{route}"));
+        let ps_code = own(&format!("ps_line.{route}"));
+        let vs = convert(read(&vs_code), &key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let location = stage::locations(&vs.reflection.outputs)
+            .last()
+            .map_or(0, |l| l + 1);
+        let ps_key = VariantKey {
+            flags: VariantFlags::LINE_DIAMOND,
+            linked: LinkedValues {
+                location,
+                clip_distances: 0,
+            },
+            ..Default::default()
+        };
+        let programs =
+            stage::line_programs(&vs, &ps_key).unwrap_or_else(|e| panic!("{route}: {e}"));
+        assert!(programs.diamond, "{route}");
+        let ends = stage::line_coverage_location(&ps_key);
+        let flat = format!("@location({ends}) @interpolate(flat");
+        let passthrough = wgsl(&programs.passthrough);
+        assert!(passthrough.contains(&flat), "{route}: {passthrough}");
+        let ps = convert(read(&ps_code), &ps_key, None).unwrap_or_else(|e| panic!("{route}: {e}"));
+        let fragment = wgsl(&ps.modules[0]);
+        assert!(fragment.contains(&flat), "{route}: {fragment}");
+        assert!(fragment.contains("fn diamond_exit"), "{route}");
+        assert!(fragment.contains("discard"), "{route}");
+        assert!(
+            matches!(
+                ps.reflection.extras,
+                StageExtras::Pixel { discards: true, .. }
+            ),
+            "{route}"
+        );
+        let both = VariantKey {
+            flags: VariantFlags::LINE_DIAMOND | VariantFlags::LINE_COVERAGE,
+            ..ps_key.clone()
+        };
+        assert!(
+            matches!(
+                convert(read(&ps_code), &both, None),
+                Err(ConvertError::Malformed(_))
+            ),
+            "{route}"
         );
     }
 }

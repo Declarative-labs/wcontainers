@@ -1,7 +1,7 @@
 //! How each interface format is stored in GL ES 3.0, and what GL lets it do.
 
 use glow::*;
-use wcontainers_gpu::{Format, FormatUse};
+use wcontainers_gpu::{FORMAT_FACTS, Format, FormatUse};
 
 /// A format's GL sized internal format and the format and type its texels are written in.
 #[derive(Clone, Copy, Debug)]
@@ -162,9 +162,9 @@ pub fn unwritten(format: Format) -> u8 {
         format,
         Format::Bgrx8Unorm | Format::Bgrx8UnormSrgb | Format::A8Unorm
     );
-    let rgba = Format::Rgba8Unorm.components();
+    let rgba = FORMAT_FACTS[Format::Rgba8Unorm as usize].components;
     if held_in_rgba {
-        (rgba & !format.components()) as u8
+        (rgba & !FORMAT_FACTS[format as usize].components) as u8
     } else {
         0
     }
@@ -457,7 +457,7 @@ pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
         Class::Single if ext.color_buffer_float && gl.format != RGB => (RGBA, FLOAT, 4),
         _ => return None,
     };
-    let (_, _, texel) = format.block();
+    let (_, _, texel) = FORMAT_FACTS[format as usize].block;
     Some(ReadAs {
         format: format_read,
         ty,
@@ -465,7 +465,7 @@ pub fn read_as(format: Format, ext: FormatExtensions) -> Option<ReadAs> {
         comp_kept,
         n: texel as usize / comp_kept,
         // 8-bit alpha keeps the fourth component alone.
-        first: format.components().trailing_zeros() as usize,
+        first: FORMAT_FACTS[format as usize].components.trailing_zeros() as usize,
         swap: swapped(format),
         fields: None,
     })

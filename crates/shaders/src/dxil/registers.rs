@@ -19,38 +19,28 @@ pub(crate) const COMPONENTS: u32 = VectorSize::Quad as u32;
 
 /// Gives every stage variable of `spirv` the location `register * COMPONENTS + component`, so that
 /// naga's reader, which drops SPIR-V's component, keeps each packed value apart and the component known.
-pub(crate) fn encode(spirv: &mut [u32]) {
-    use super::words;
-    use spirv::{Decoration, Op};
-    let mut components = Vec::new();
-    let mut locations = Vec::new();
-    let mut at = words::HEADER;
-    while at < spirv.len() {
-        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
-        if count == 0 || at + count > spirv.len() {
-            return;
+pub(crate) fn encode(spirv: &mut rspirv::dr::Module) {
+    use super::staged::{DECORATION_LITERAL, DECORATION_TARGET, decorates, id, literal};
+    use rspirv::dr::Operand;
+    use spirv::Decoration;
+    let components: Vec<(u32, u32)> = spirv
+        .annotations
+        .iter()
+        .filter(|i| decorates(i, Decoration::Component))
+        .filter_map(|i| Some((id(i, DECORATION_TARGET)?, literal(i, DECORATION_LITERAL)?)))
+        .collect();
+    for i in spirv.annotations.iter_mut() {
+        if !decorates(i, Decoration::Location) {
+            continue;
         }
-        let (target, decoration, literal) = (
-            at + words::decorate::TARGET,
-            at + words::decorate::DECORATION,
-            at + words::decorate::LITERAL,
-        );
-        if spirv[at] & words::OPCODE_MASK == Op::Decorate as u32 && literal < at + count {
-            if spirv[decoration] == Decoration::Component as u32 {
-                components.push((spirv[target], spirv[literal]));
-            } else if spirv[decoration] == Decoration::Location as u32 {
-                locations.push(literal);
-            }
-        }
-        at += count;
-    }
-    for literal in locations {
-        let target = spirv[literal - words::decorate::LITERAL + words::decorate::TARGET];
+        let target = id(i, DECORATION_TARGET);
         let component = components
             .iter()
-            .find(|(t, _)| *t == target)
+            .find(|(t, _)| Some(*t) == target)
             .map_or(0, |c| c.1);
-        spirv[literal] = spirv[literal] * COMPONENTS + component;
+        if let Some(Operand::LiteralBit32(location)) = i.operands.get_mut(DECORATION_LITERAL) {
+            *location = *location * COMPONENTS + component;
+        }
     }
 }
 
@@ -89,6 +79,35 @@ fn element_of(module: &Module, ty: Handle<Type>) -> Result<(Handle<Type>, u32), 
         } => Ok((base, n.get())),
         TypeInner::Scalar(_) | TypeInner::Vector { .. } => Ok((ty, 1)),
         _ => Err(ConvertError::Unsupported(crate::refusal::STAGE_VALUE_TYPE)),
+    }
+}
+
+/// Why a stage value is refused whose components pass its register's last.
+const PAST_REGISTER: &str = "a stage value past its register's last component";
+
+/// Refuses a value whose components from `component` pass its register's last.
+fn within_register(
+    module: &Module,
+    element: Handle<Type>,
+    component: u32,
+) -> Result<(), ConvertError> {
+    match component + shape(module, element).1 <= COMPONENTS {
+        true => Ok(()),
+        false => Err(ConvertError::Malformed(PAST_REGISTER.into())),
+    }
+}
+
+/// The registers of a stage's signature, Direct3D's for every stage.
+const REGISTERS: u32 = crate::stage::tess::LOCATIONS;
+
+/// Why a stage value is refused whose registers pass the signature's last.
+const PAST_SIGNATURE: &str = "a stage value past its signature's last register";
+
+/// Refuses a value whose `rows` registers from `register` pass the signature's last.
+fn within_signature(register: u32, rows: u32) -> Result<(), ConvertError> {
+    match register.checked_add(rows) {
+        Some(end) if end <= REGISTERS => Ok(()),
+        _ => Err(ConvertError::Malformed(PAST_SIGNATURE.into())),
     }
 }
 
@@ -178,7 +197,7 @@ fn registers(values: &[Value]) -> Vec<u32> {
 /// Rewrites the entry point's stage values as Direct3D's registers; returns each value as placed.
 pub(crate) fn lay_out(module: &mut Module) -> Result<Vec<Placed>, ConvertError> {
     let stage = module.entry_points[0].stage;
-    let mut w = Wrapped::new(module);
+    let mut w = Wrapped::new(module)?;
     let mut placed = Vec::new();
 
     // Inputs.
@@ -189,6 +208,8 @@ pub(crate) fn lay_out(module: &mut Module) -> Result<Vec<Placed>, ConvertError> 
         };
         let (register, component) = decode(*location);
         let (element, rows) = element_of(module, a.ty)?;
+        within_register(module, element, component)?;
+        within_signature(register, rows)?;
         for row in 0..rows {
             placed.push(Placed {
                 output: false,
@@ -304,6 +325,8 @@ pub(crate) fn lay_out(module: &mut Module) -> Result<Vec<Placed>, ConvertError> 
         };
         let (register, component) = decode(location);
         let (element, rows) = element_of(module, o.ty)?;
+        within_register(module, element, component)?;
+        within_signature(register, rows)?;
         for row in 0..rows {
             placed.push(Placed {
                 output: true,
@@ -544,5 +567,58 @@ fn zero(s: Scalar) -> Literal {
         ScalarKind::Float => Literal::F32(0.0),
         ScalarKind::Sint => Literal::I32(0),
         _ => Literal::U32(0),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WIDTH: u32 = VectorSize::Bi as u32;
+
+    /// A pixel program reading a value of [`WIDTH`] components from `component` of register 0.
+    fn reading_from(component: u32) -> Module {
+        let text = alloc::format!(
+            "@fragment fn {}(@location({component}) v: vec{WIDTH}f) -> @location(0) vec4f \
+             {{ return vec4f(v, v); }}",
+            crate::ENTRY_POINT
+        );
+        naga::front::wgsl::parse_str(&text).unwrap()
+    }
+
+    /// A value ending at its register's last component is laid out; one passing it is refused, where
+    /// its swizzle indexed past the register's components (gap A41, a fuzz case of seed 1).
+    #[test]
+    fn a_value_past_its_registers_last_component_is_refused() {
+        assert!(lay_out(&mut reading_from(COMPONENTS - WIDTH)).is_ok());
+        assert_eq!(
+            lay_out(&mut reading_from(COMPONENTS - WIDTH + 1)).map(|_| ()),
+            Err(ConvertError::Malformed(PAST_REGISTER.into()))
+        );
+    }
+
+    /// A program giving a struct with a member bound to nothing is refused by name, where its
+    /// wrapper took the binding as given (a fuzz case of seed 662607).
+    #[test]
+    fn a_result_member_bound_to_nothing_is_refused() {
+        let text = alloc::format!(
+            "struct Out {{ @location(0) a: vec4f, @location({COMPONENTS}) b: vec4f }} \
+             @fragment fn {}() -> Out {{ return Out(vec4f(), vec4f()); }}",
+            crate::ENTRY_POINT
+        );
+        let mut module = naga::front::wgsl::parse_str(&text).unwrap();
+        assert_eq!(lay_out(&mut module.clone()).map(|_| ()), Ok(()));
+        let result = module.entry_points[0].function.result.as_mut().unwrap();
+        let mut unbound = module.types[result.ty].clone();
+        if let TypeInner::Struct { members, .. } = &mut unbound.inner {
+            members[1].binding = None;
+        }
+        result.ty = module.types.insert(unbound, naga::Span::UNDEFINED);
+        assert_eq!(
+            lay_out(&mut module).map(|_| ()),
+            Err(ConvertError::Malformed(
+                crate::variant::UNBOUND_RESULT.into()
+            ))
+        );
     }
 }

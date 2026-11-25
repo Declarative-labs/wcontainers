@@ -15,14 +15,17 @@
 #include "util/bitset.h"
 #include "util/blob.h"
 #include "util/ralloc.h"
+#include "util/u_dynarray.h"
 
 /* What the routes take: NIR with the operations the common form lacks lowered by NIR itself (the
  * drivers report the same, so the NIR they hand over has this shape). */
 static const struct nir_shader_compiler_options compiler_options = {
    /* A convergent value stays interpolated: the host may lack flat values from OpenGL's last
-    * vertex, and interpolating one value gives that value. */
+    * vertex, and interpolating one value gives that value. The position is the common form's
+    * built-in, never a slot the linker may pack other values into. */
    .io_options = nir_io_has_intrinsics | nir_io_mediump_is_32bit |
-                 nir_io_always_interpolate_convergent_fs_inputs,
+                 nir_io_always_interpolate_convergent_fs_inputs |
+                 nir_io_dont_use_pos_for_non_fs_varyings,
    .lower_scmp = true,
    .lower_fdph = true,
    .lower_flrp32 = true,
@@ -458,6 +461,40 @@ wc_nir_number_vertex_elements(struct nir_shader *nir)
    return read;
 }
 
+uint32_t
+wc_nir_geometry_vertices_out(const struct nir_shader *nir)
+{
+   return nir->info.stage == MESA_SHADER_GEOMETRY ? nir->info.gs.vertices_out : 0;
+}
+
+uint32_t
+wc_nir_named_layer_location(const struct nir_shader *nir)
+{
+   const uint64_t written = nir->info.outputs_written;
+   if (nir->info.stage != MESA_SHADER_GEOMETRY || !(written & VARYING_BIT_LAYER))
+      return UINT32_MAX;
+   return util_last_bit64(written >> VARYING_SLOT_VAR0);
+}
+
+uint32_t
+wc_nir_control_points_out(const struct nir_shader *nir)
+{
+   return nir->info.stage == MESA_SHADER_TESS_CTRL ? nir->info.tess.tcs_vertices_out : 0;
+}
+
+bool
+wc_nir_makes_points(const struct nir_shader *nir)
+{
+   switch (nir->info.stage) {
+   case MESA_SHADER_TESS_EVAL:
+      return nir->info.tess.point_mode;
+   case MESA_SHADER_GEOMETRY:
+      return nir->info.gs.output_primitive == MESA_PRIM_POINTS;
+   default:
+      return false;
+   }
+}
+
 static bool
 fragcolor_to_every_buffer(nir_builder *b, nir_intrinsic_instr *intr, void *buffers)
 {
@@ -522,7 +559,8 @@ transform_position(nir_builder *b, nir_intrinsic_instr *intr, void *transform)
 void
 wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform transform)
 {
-   if (nir->info.stage != MESA_SHADER_VERTEX && nir->info.stage != MESA_SHADER_GEOMETRY)
+   if (nir->info.stage != MESA_SHADER_VERTEX && nir->info.stage != MESA_SHADER_GEOMETRY &&
+       nir->info.stage != MESA_SHADER_TESS_EVAL)
       return;
    wc_nir_lower_io(nir);
    if (nir_shader_intrinsics_pass(nir, transform_position, nir_metadata_control_flow, &transform) &&
@@ -532,25 +570,513 @@ wc_nir_transform_position(struct nir_shader *nir, struct wc_position_transform t
    }
 }
 
-/* The texture unit a texture instruction samples: its variable's binding plus a constant index. */
+/* A pixel's centre from its corner, along each axis. */
+#define PIXEL_CENTRE 0.5f
+enum { AXIS_X, AXIS_Y, AXIS_W = 3 };
+
+/* The standard sample positions, in steps of SAMPLE_POSITION_STEPS from the pixel's centre
+ * (y down), which Direct3D's standard pattern and Vulkan's standard sample locations share
+ * (https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#primsrast-multisampling);
+ * WebGPU's four are the same. */
+#define SAMPLE_POSITION_STEPS 16.0f
+static const int8_t two_samples[][2] = {{4, 4}, {-4, -4}};
+static const int8_t four_samples[][2] = {{-2, -6}, {6, -2}, {-6, 2}, {2, 6}};
+static const int8_t eight_samples[][2] = {{1, -3}, {-1, 3}, {5, 1},  {-3, -5},
+                                          {-5, 5}, {-7, -1}, {3, 7}, {7, -7}};
+static const int8_t sixteen_samples[][2] = {
+   {1, 1},   {-1, -3}, {-3, 2}, {4, -1}, {-5, -2}, {2, 5},  {5, 3},  {3, -5},
+   {-2, 6},  {0, -7},  {-4, -6}, {-6, 4}, {-8, 0},  {7, -4}, {6, 7},  {-7, -8},
+};
+
+struct sample_pattern {
+   unsigned samples;
+   const int8_t (*at)[2];
+};
+
+#define PATTERN(p) {ARRAY_SIZE(p), p}
+static const struct sample_pattern standard_patterns[] = {
+   PATTERN(two_samples),
+   PATTERN(four_samples),
+   PATTERN(eight_samples),
+   PATTERN(sixteen_samples),
+};
+#undef PATTERN
+
+/* The standard positions of `samples` samples; NULL for a count without them. */
+static const struct sample_pattern *
+standard_pattern(unsigned samples)
+{
+   for (unsigned n = 0; n < ARRAY_SIZE(standard_patterns); n++) {
+      if (standard_patterns[n].samples == samples)
+         return &standard_patterns[n];
+   }
+   return NULL;
+}
+
+/* Whether the positions of `samples` samples are known: the centre for one. */
 static bool
-texture_unit(nir_tex_instr *tex, uint32_t *unit)
+positions_known(unsigned samples)
+{
+   return samples == 1 || standard_pattern(samples);
+}
+
+/* What a fragment program reads of where its samples are. */
+struct sample_reads {
+   nir_function_impl *impl;
+   bool position;
+   bool at_sample;
+   bool at_offset;
+   bool sampled_input;
+   /* A slot read at its centroid and another way too, whose centroid reads are made from the
+    * other's value. */
+   bool centroid_moved;
+};
+
+static nir_intrinsic_instr *
+barycentric_of(nir_intrinsic_instr *intr)
+{
+   if (intr->intrinsic != nir_intrinsic_load_interpolated_input)
+      return NULL;
+   return nir_src_as_intrinsic(intr->src[0]);
+}
+
+/* Whether the program reads the slot `intr` reads at its centroid also some other way. */
+static bool
+read_off_centroid(nir_function_impl *impl, nir_intrinsic_instr *intr)
+{
+   const unsigned location = nir_intrinsic_io_semantics(intr).location;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *other = nir_instr_as_intrinsic(instr);
+         nir_intrinsic_instr *bary = barycentric_of(other);
+         if (bary && nir_intrinsic_io_semantics(other).location == location &&
+             bary->intrinsic != nir_intrinsic_load_barycentric_centroid)
+            return true;
+      }
+   }
+   return false;
+}
+
+static bool
+gather_sample_reads(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   struct sample_reads *r = data;
+   if (intr->intrinsic == nir_intrinsic_load_sample_pos)
+      r->position = true;
+   nir_intrinsic_instr *bary = barycentric_of(intr);
+   if (!bary)
+      return false;
+   r->at_sample |= bary->intrinsic == nir_intrinsic_load_barycentric_at_sample;
+   r->at_offset |= bary->intrinsic == nir_intrinsic_load_barycentric_at_offset;
+   r->sampled_input |= bary->intrinsic == nir_intrinsic_load_barycentric_sample;
+   r->centroid_moved |= bary->intrinsic == nir_intrinsic_load_barycentric_centroid &&
+                        read_off_centroid(r->impl, intr);
+   return false;
+}
+
+static struct sample_reads
+sample_reads(nir_shader *nir)
+{
+   struct sample_reads r = {0};
+   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      r.impl = nir_shader_get_entrypoint(nir);
+      nir_shader_intrinsics_pass(nir, gather_sample_reads, nir_metadata_all, &r);
+   }
+   return r;
+}
+
+bool
+wc_nir_reads_sample_positions(struct nir_shader *nir)
+{
+   wc_nir_lower_io(nir);
+   struct sample_reads r = sample_reads(nir);
+   return r.position || r.at_sample || (r.at_offset && r.sampled_input) || r.centroid_moved;
+}
+
+struct elsewhere {
+   unsigned samples;
+   nir_function_impl *impl;
+   bool refused;
+};
+
+/* Where sample `sample` of the targets' samples is, from the pixel's corner. */
+static nir_def *
+sample_position(nir_builder *b, const struct elsewhere *e, nir_def *sample)
+{
+   const struct sample_pattern *p = standard_pattern(e->samples);
+   if (!p)
+      return nir_imm_vec2(b, PIXEL_CENTRE, PIXEL_CENTRE);
+   nir_def *at = NULL;
+   for (unsigned s = 0; s < p->samples; s++) {
+      nir_def *here = nir_imm_vec2(b, PIXEL_CENTRE + p->at[s][AXIS_X] / SAMPLE_POSITION_STEPS,
+                                   PIXEL_CENTRE + p->at[s][AXIS_Y] / SAMPLE_POSITION_STEPS);
+      at = at ? nir_bcsel(b, nir_ieq_imm(b, sample, s), here, at) : here;
+   }
+   return at;
+}
+
+/* How the program's other reads of the slot `intr` reads are interpolated: the place its value is
+ * known at, which an evaluation elsewhere starts from. A slot read at its centroid and another way
+ * is interpolated that other way, its centroid reads made from it (`centroid_place`). */
+static nir_intrinsic_op
+known_at(nir_function_impl *impl, nir_intrinsic_instr *intr)
+{
+   const unsigned location = nir_intrinsic_io_semantics(intr).location;
+   const unsigned offset = nir_src_as_uint(intr->src[1]);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *other = nir_instr_as_intrinsic(instr);
+         nir_intrinsic_instr *bary = barycentric_of(other);
+         if (!bary || nir_intrinsic_io_semantics(other).location != location ||
+             !nir_src_is_const(other->src[1]) || nir_src_as_uint(other->src[1]) != offset)
+            continue;
+         if (bary->intrinsic == nir_intrinsic_load_barycentric_sample)
+            return bary->intrinsic;
+      }
+   }
+   return nir_intrinsic_load_barycentric_pixel;
+}
+
+/* Where a centroid read is taken, from the pixel's centre: the centre where every sample is
+ * covered (and for one sample), otherwise the first covered sample, a place inside both the
+ * pixel and the primitive; a program run per sample takes its own sample. */
+static nir_def *
+centroid_place(nir_builder *b, const struct elsewhere *e)
+{
+   nir_def *at_centre = nir_imm_vec2(b, 0, 0);
+   if (e->samples <= 1)
+      return at_centre;
+   nir_def *centre = nir_imm_vec2(b, PIXEL_CENTRE, PIXEL_CENTRE);
+   if (b->shader->info.fs.uses_sample_shading)
+      return nir_fsub(b, sample_position(b, e, nir_load_sample_id(b)), centre);
+   nir_def *every = nir_imm_int(b, (int)BITFIELD_MASK(e->samples));
+   nir_def *covered = nir_iand(b, nir_load_sample_mask_in(b), every);
+   nir_def *first = nir_fsub(b, sample_position(b, e, nir_find_lsb(b, covered)), centre);
+   nir_def *whole = nir_ior(b, nir_ieq(b, covered, every), nir_ieq_imm(b, covered, 0));
+   return nir_bcsel(b, whole, at_centre, first);
+}
+
+/* A slot's value known where `from` interpolates it, and its slopes, taken at the program's start
+ * where every lane of a quad runs: an interpolated value is affine on the screen (over w where
+ * perspective-correct), so the slopes are exact. */
+struct slopes {
+   /* Where the value is known, from the pixel's centre. */
+   nir_def *place;
+   nir_def *value, *dx, *dy;
+   /* Perspective-correct only: one over the clip w there, and its slopes. */
+   nir_def *w, *w_dx, *w_dy;
+};
+
+static struct slopes
+slopes_of(nir_builder *b, struct elsewhere *e, nir_intrinsic_instr *intr,
+          enum glsl_interp_mode mode, nir_intrinsic_op from)
+{
+   struct slopes s = {0};
+   b->cursor = nir_before_impl(e->impl);
+   nir_def *centre = nir_imm_vec2(b, PIXEL_CENTRE, PIXEL_CENTRE);
+   s.place = from == nir_intrinsic_load_barycentric_sample
+                ? nir_fsub(b, sample_position(b, e, nir_load_sample_id(b)), centre)
+                : nir_imm_vec2(b, 0, 0);
+   nir_def *known_bary = nir_load_barycentric(b, from, mode);
+   nir_def *io_offset = nir_imm_int(b, nir_src_as_uint(intr->src[1]));
+   nir_intrinsic_instr *known = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &intr->instr));
+   /* Not yet inserted, so its sources are on no use list. */
+   known->src[0] = nir_src_for_ssa(known_bary);
+   known->src[1] = nir_src_for_ssa(io_offset);
+   nir_builder_instr_insert(b, &known->instr);
+   s.value = &known->def;
+   if (mode != INTERP_MODE_NOPERSPECTIVE) {
+      /* The position's w is one over the clip w, affine on the screen; its x and y say where it
+       * was taken. */
+      nir_def *position = nir_load_frag_coord(b);
+      nir_def *taken = nir_fsub(b, nir_ffract(b, nir_trim_vector(b, position, 2)), centre);
+      nir_def *w = nir_channel(b, position, AXIS_W);
+      s.w_dx = nir_ddx(b, w);
+      s.w_dy = nir_ddy(b, w);
+      nir_def *to_place = nir_fsub(b, s.place, taken);
+      s.w = nir_fadd(b, w,
+                     nir_fadd(b, nir_fmul(b, s.w_dx, nir_channel(b, to_place, AXIS_X)),
+                              nir_fmul(b, s.w_dy, nir_channel(b, to_place, AXIS_Y))));
+      s.value = nir_fmul(b, s.value, s.w);
+   }
+   s.dx = nir_ddx(b, s.value);
+   s.dy = nir_ddy(b, s.value);
+   return s;
+}
+
+/* The value at `target`, from the pixel's centre, moved from where `s` knows it. */
+static nir_def *
+value_at(nir_builder *b, const struct slopes *s, nir_def *target)
+{
+   nir_def *step = nir_fsub(b, target, s->place);
+   nir_def *step_x = nir_channel(b, step, AXIS_X), *step_y = nir_channel(b, step, AXIS_Y);
+   nir_def *there =
+      nir_fadd(b, s->value, nir_fadd(b, nir_fmul(b, s->dx, step_x), nir_fmul(b, s->dy, step_y)));
+   if (!s->w)
+      return there;
+   nir_def *w_there =
+      nir_fadd(b, s->w, nir_fadd(b, nir_fmul(b, s->w_dx, step_x), nir_fmul(b, s->w_dy, step_y)));
+   return nir_fdiv(b, there, w_there);
+}
+
+/* Whether a read at a sample is at the program's own sample
+ * (interpolateAtSample(v, gl_SampleID)). */
+static bool
+at_own_sample(nir_intrinsic_instr *bary)
+{
+   if (bary->intrinsic != nir_intrinsic_load_barycentric_at_sample)
+      return false;
+   nir_intrinsic_instr *sample = nir_src_as_intrinsic(bary->src[0]);
+   return sample && sample->intrinsic == nir_intrinsic_load_sample_id;
+}
+
+/* Whether the program reads the slot `intr` reads anywhere but at its own sample. */
+static bool
+read_off_own_sample(nir_function_impl *impl, nir_intrinsic_instr *intr)
+{
+   const unsigned location = nir_intrinsic_io_semantics(intr).location;
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *other = nir_instr_as_intrinsic(instr);
+         nir_intrinsic_instr *bary = barycentric_of(other);
+         if (!bary || nir_intrinsic_io_semantics(other).location != location)
+            continue;
+         if (!nir_src_is_const(other->src[1]) ||
+             nir_src_as_uint(other->src[1]) != nir_src_as_uint(intr->src[1]))
+            return true;
+         if (bary->intrinsic != nir_intrinsic_load_barycentric_sample && !at_own_sample(bary))
+            return true;
+      }
+   }
+   return false;
+}
+
+/* An input read at an offset or a sample (interpolateAtOffset, interpolateAtSample), which the
+ * common form lacks, from its value where the program's other reads take it and that value's
+ * slopes: an interpolated value is affine on the screen (over w where perspective-correct), so its
+ * derivatives, taken at the program's start where every lane of a quad runs, are exact. */
+static bool
+evaluate_elsewhere(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   struct elsewhere *e = data;
+   if (intr->intrinsic == nir_intrinsic_load_sample_pos) {
+      if (!positions_known(e->samples)) {
+         e->refused = true;
+         return false;
+      }
+      b->cursor = nir_before_instr(&intr->instr);
+      nir_def_replace(&intr->def, sample_position(b, e, nir_load_sample_id(b)));
+      return true;
+   }
+   nir_intrinsic_instr *bary = barycentric_of(intr);
+   if (!bary)
+      return false;
+   const enum glsl_interp_mode mode = nir_intrinsic_interp_mode(bary);
+   /* A centroid read of a slot also read another way, which the host interpolates only one way:
+    * made from the other's value. */
+   if (bary->intrinsic == nir_intrinsic_load_barycentric_centroid) {
+      if (!nir_src_is_const(intr->src[1]) || mode == INTERP_MODE_FLAT ||
+          !read_off_centroid(e->impl, intr))
+         return false;
+      if (!positions_known(e->samples) && e->samples > 1) {
+         e->refused = true;
+         return false;
+      }
+      const struct slopes s = slopes_of(b, e, intr, mode, known_at(e->impl, intr));
+      b->cursor = nir_before_instr(&intr->instr);
+      nir_def_replace(&intr->def, value_at(b, &s, centroid_place(b, e)));
+      return true;
+   }
+   if (bary->intrinsic != nir_intrinsic_load_barycentric_at_offset &&
+       bary->intrinsic != nir_intrinsic_load_barycentric_at_sample)
+      return false;
+   /* At its own sample, where the slot is read nowhere else, the value is the slot's own
+    * interpolation at the sample, which the host makes. */
+   if (at_own_sample(bary) && nir_src_is_const(intr->src[1]) &&
+       !read_off_own_sample(e->impl, intr)) {
+      b->cursor = nir_before_instr(&intr->instr);
+      nir_src_rewrite(&intr->src[0],
+                      nir_load_barycentric(b, nir_intrinsic_load_barycentric_sample, mode));
+      return true;
+   }
+   /* A flat value is read as it is elsewhere. */
+   if (!nir_src_is_const(intr->src[1]) || mode == INTERP_MODE_FLAT)
+      return false;
+   const nir_intrinsic_op from = known_at(e->impl, intr);
+   const bool needs_samples = bary->intrinsic == nir_intrinsic_load_barycentric_at_sample ||
+                              from == nir_intrinsic_load_barycentric_sample;
+   if (needs_samples && !positions_known(e->samples)) {
+      e->refused = true;
+      return false;
+   }
+   const struct slopes s = slopes_of(b, e, intr, mode, from);
+
+   /* Where it is read: the value moved from its place to the target. */
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *centre = nir_imm_vec2(b, PIXEL_CENTRE, PIXEL_CENTRE);
+   nir_def *target = bary->intrinsic == nir_intrinsic_load_barycentric_at_offset
+                        ? bary->src[0].ssa
+                        : nir_fsub(b, sample_position(b, e, bary->src[0].ssa), centre);
+   nir_def_replace(&intr->def, value_at(b, &s, target));
+   return true;
+}
+
+bool
+wc_nir_interpolate_elsewhere(struct nir_shader *nir, unsigned samples)
+{
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return true;
+   wc_nir_lower_io(nir);
+   struct elsewhere e = {.samples = samples, .impl = nir_shader_get_entrypoint(nir)};
+   if (nir_shader_intrinsics_pass(nir, evaluate_elsewhere, nir_metadata_none, &e)) {
+      NIR_PASS(_, nir, nir_opt_dce);
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   }
+   return !e.refused;
+}
+
+static bool
+fit_sample_mask(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const bool *single = data;
+   if (intr->intrinsic == nir_intrinsic_load_sample_mask_in &&
+       b->shader->info.fs.uses_sample_shading) {
+      b->cursor = nir_after_instr(&intr->instr);
+      nir_def *own = nir_ishl(b, nir_imm_int(b, 1), nir_load_sample_id(b));
+      nir_def_rewrite_uses_after(&intr->def, nir_iand(b, &intr->def, own));
+      return true;
+   }
+   if (*single && intr->intrinsic == nir_intrinsic_store_output &&
+       nir_intrinsic_io_semantics(intr).location == FRAG_RESULT_SAMPLE_MASK) {
+      nir_instr_remove(&intr->instr);
+      return true;
+   }
+   return false;
+}
+
+bool
+wc_nir_writes_sample_mask(struct nir_shader *nir)
+{
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return false;
+   wc_nir_lower_io(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   return nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK);
+}
+
+void
+wc_nir_fit_sample_masks(struct nir_shader *nir, bool single_sampled)
+{
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return;
+   wc_nir_lower_io(nir);
+   if (nir_shader_intrinsics_pass(nir, fit_sample_mask, nir_metadata_control_flow,
+                                  &single_sampled)) {
+      NIR_PASS(_, nir, nir_opt_dce);
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   }
+}
+
+static bool
+fetches(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   return intr->intrinsic == nir_intrinsic_load_output &&
+          nir_intrinsic_io_semantics(intr).fb_fetch_output;
+}
+
+uint64_t
+wc_nir_formatless_images(struct nir_shader *nir)
+{
+   uint64_t units = 0;
+   nir_foreach_variable_with_modes(var, nir, nir_var_image) {
+      if (var->data.image.format != PIPE_FORMAT_NONE)
+         continue;
+      const unsigned count = MAX2(glsl_get_aoa_size(var->type), 1);
+      const unsigned end = MIN2(var->data.binding + count, sizeof(units) * CHAR_BIT);
+      for (unsigned unit = var->data.binding; unit < end; unit++)
+         units |= BITFIELD64_BIT(unit);
+   }
+   return units;
+}
+
+bool
+wc_nir_fetches_target(struct nir_shader *nir)
+{
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return false;
+   wc_nir_lower_io(nir);
+   return nir_shader_intrinsics_pass(nir, fetches, nir_metadata_all, NULL);
+}
+
+/* The texture a fragment program reads its target's texels from. */
+static bool
+fetch_from_texture(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   if (!fetches(b, intr, NULL) || nir_intrinsic_io_semantics(intr).location != FRAG_RESULT_DATA0)
+      return false;
+   nir_variable *fetched = data;
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *at = nir_f2i32(b, nir_trim_vector(b, nir_load_frag_coord(b), 2));
+   nir_deref_instr *deref = nir_build_deref_var(b, fetched);
+   nir_def *texel = glsl_get_sampler_dim(fetched->type) == GLSL_SAMPLER_DIM_MS
+                       ? nir_txf_ms(b, at, nir_load_sample_id(b), .texture_deref = deref)
+                       : nir_txf(b, at, .texture_deref = deref);
+   const unsigned first = nir_intrinsic_component(intr);
+   nir_def_replace(&intr->def,
+                   nir_channels(b, texel, BITFIELD_RANGE(first, intr->def.num_components)));
+   return true;
+}
+
+void
+wc_nir_fetch_from_texture(struct nir_shader *nir, unsigned unit, bool multisampled)
+{
+   if (!wc_nir_fetches_target(nir))
+      return;
+   const struct glsl_type *type = glsl_texture_type(
+      multisampled ? GLSL_SAMPLER_DIM_MS : GLSL_SAMPLER_DIM_2D, false, GLSL_TYPE_FLOAT);
+   nir_variable *fetched = nir_variable_create(nir, nir_var_uniform, type, "fetched_target");
+   fetched->data.binding = unit;
+   nir_shader_intrinsics_pass(nir, fetch_from_texture, nir_metadata_control_flow, fetched);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+}
+
+/* The texture units a texture instruction may sample, from `*first`: its variable's binding plus a
+ * constant index, or every element of an array it indexes at run time. */
+static bool
+texture_units(nir_tex_instr *tex, uint32_t *first, uint32_t *count)
 {
    int at = nir_tex_instr_src_index(tex, nir_tex_src_texture_deref);
    if (at < 0)
       return false;
    nir_deref_instr *deref = nir_src_as_deref(tex->src[at].src);
    uint32_t index = 0;
+   *count = 1;
    if (deref->deref_type == nir_deref_type_array) {
-      if (!nir_src_is_const(deref->arr.index))
-         return false;
-      index = nir_src_as_uint(deref->arr.index);
-      deref = nir_deref_instr_parent(deref);
+      nir_deref_instr *array = nir_deref_instr_parent(deref);
+      if (nir_src_is_const(deref->arr.index))
+         index = nir_src_as_uint(deref->arr.index);
+      else
+         *count = glsl_get_length(array->type);
+      deref = array;
    }
    if (deref->deref_type != nir_deref_type_var)
       return false;
-   *unit = deref->var->data.binding + index;
+   *first = deref->var->data.binding + index;
    return true;
+}
+
+/* The texture unit a texture instruction samples: its variable's binding plus a constant index. */
+static bool
+texture_unit(nir_tex_instr *tex, uint32_t *unit)
+{
+   uint32_t count;
+   return texture_units(tex, unit, &count) && count == 1;
 }
 
 static nir_def *
@@ -626,6 +1152,8 @@ wc_nir_swizzle_textures(struct nir_shader *nir, const struct wc_texture_swizzle 
 struct nearest_samplers {
    const struct wc_nearest_sampler *data;
    size_t count;
+   /* A gather of a cube map made a 2D array of its faces was rewritten. */
+   bool cube_gathered;
 };
 
 /* The texel `i` of a side of `size` texels lands on, wrapped. */
@@ -664,37 +1192,88 @@ nearest_level(nir_builder *b, nir_def *lod, nir_def *levels)
    return nir_imin(b, level, nir_iadd_imm(b, levels, -1));
 }
 
-/* The components of a cube map's direction. */
+/* The components of a cube map's direction; a cube map array's coordinate has its cube after them. */
 #define WC_CUBE_AXES 3
+/* The layers of one cube in a 2D array of a cube map array's faces. */
+#define WC_CUBE_FACES 6
+
+/* The layer nearest an array coordinate, among `layers`. */
+static nir_def *
+nearest_layer(nir_builder *b, nir_def *coordinate, nir_def *layers)
+{
+   nir_def *nearest = nir_f2i32(b, nir_ffloor(b, nir_fadd_imm(b, coordinate, WC_HALF)));
+   return nir_imin(b, nir_imax(b, nearest, nir_imm_int(b, 0)), nir_iadd_imm(b, layers, -1));
+}
+
+/* A cube map array's face `layer` of its cube nearest the coordinate's, as a layer of the 2D array
+ * of its faces holding `layers`. */
+static nir_def *
+cube_array_layer(nir_builder *b, nir_def *coord, nir_def *layer, nir_def *layers)
+{
+   nir_def *cube = nearest_layer(b, nir_channel(b, coord, WC_CUBE_AXES),
+                                 nir_udiv_imm(b, layers, WC_CUBE_FACES));
+   return nir_iadd(b, layer, nir_imul_imm(b, cube, WC_CUBE_FACES));
+}
+
+/* The parts of vector `v` OpenGL's table of cube map faces takes for the face of direction
+ * `coord`: the numerators of the face's coordinates and its major axis, signed as the face is
+ * picked (for `v` = `coord`, the major axis's magnitude); in `layer`, where given, the face's
+ * layer, +x, -x, +y, -y, +z and -z in order. */
+static void
+cube_parts(nir_builder *b, nir_def *coord, nir_def *v, nir_def **sc, nir_def **tc, nir_def **major,
+           nir_def **layer)
+{
+   nir_def *r[WC_CUBE_AXES], *a[WC_CUBE_AXES], *positive[WC_CUBE_AXES], *signed_v[WC_CUBE_AXES];
+   for (unsigned i = 0; i < WC_CUBE_AXES; i++) {
+      nir_def *c = nir_channel(b, coord, i);
+      r[i] = nir_channel(b, v, i);
+      a[i] = nir_fabs(b, c);
+      positive[i] = nir_fge(b, c, nir_imm_float(b, 0.0f));
+      signed_v[i] = nir_bcsel(b, positive[i], r[i], nir_fneg(b, r[i]));
+   }
+   enum { X, Y, Z };
+   nir_def *x_major = nir_iand(b, nir_fge(b, a[X], a[Y]), nir_fge(b, a[X], a[Z]));
+   nir_def *y_major = nir_iand(b, nir_inot(b, x_major), nir_fge(b, a[Y], a[Z]));
+   *major = nir_bcsel(b, x_major, signed_v[X], nir_bcsel(b, y_major, signed_v[Y], signed_v[Z]));
+   *sc = nir_bcsel(b, x_major, nir_bcsel(b, positive[X], nir_fneg(b, r[Z]), r[Z]),
+                   nir_bcsel(b, y_major, r[X], nir_bcsel(b, positive[Z], r[X], nir_fneg(b, r[X]))));
+   *tc = nir_bcsel(b, y_major, nir_bcsel(b, positive[Y], r[Z], nir_fneg(b, r[Z])), nir_fneg(b, r[Y]));
+   if (!layer)
+      return;
+   nir_def *axis = nir_bcsel(b, x_major, nir_imm_int(b, X),
+                             nir_bcsel(b, y_major, nir_imm_int(b, Y), nir_imm_int(b, Z)));
+   nir_def *towards = nir_bcsel(b, x_major, positive[X],
+                                nir_bcsel(b, y_major, positive[Y], positive[Z]));
+   *layer = nir_iadd(b, nir_ishl_imm(b, axis, 1), nir_b2i32(b, nir_inot(b, towards)));
+}
 
 /* OpenGL's face of a cube map for direction `coord` (its table of cube map faces): the face's
  * coordinates, 0 to 1, and in `layer` its layer, +x, -x, +y, -y, +z and -z in order. */
 static nir_def *
 cube_face(nir_builder *b, nir_def *coord, nir_def **layer)
 {
-   nir_def *r[WC_CUBE_AXES], *a[WC_CUBE_AXES], *positive[WC_CUBE_AXES];
-   for (unsigned i = 0; i < WC_CUBE_AXES; i++) {
-      r[i] = nir_channel(b, coord, i);
-      a[i] = nir_fabs(b, r[i]);
-      positive[i] = nir_fge(b, r[i], nir_imm_float(b, 0.0f));
-   }
-   enum { X, Y, Z };
-   nir_def *x_major = nir_iand(b, nir_fge(b, a[X], a[Y]), nir_fge(b, a[X], a[Z]));
-   nir_def *y_major = nir_iand(b, nir_inot(b, x_major), nir_fge(b, a[Y], a[Z]));
-   nir_def *major = nir_bcsel(b, x_major, a[X], nir_bcsel(b, y_major, a[Y], a[Z]));
-   nir_def *sc = nir_bcsel(b, x_major, nir_bcsel(b, positive[X], nir_fneg(b, r[Z]), r[Z]),
-                           nir_bcsel(b, y_major, r[X],
-                                     nir_bcsel(b, positive[Z], r[X], nir_fneg(b, r[X]))));
-   nir_def *tc = nir_bcsel(b, y_major, nir_bcsel(b, positive[Y], r[Z], nir_fneg(b, r[Z])),
-                           nir_fneg(b, r[Y]));
-   nir_def *axis = nir_bcsel(b, x_major, nir_imm_int(b, X),
-                             nir_bcsel(b, y_major, nir_imm_int(b, Y), nir_imm_int(b, Z)));
-   nir_def *towards = nir_bcsel(b, x_major, positive[X],
-                                nir_bcsel(b, y_major, positive[Y], positive[Z]));
-   *layer = nir_iadd(b, nir_ishl_imm(b, axis, 1), nir_b2i32(b, nir_inot(b, towards)));
+   nir_def *sc, *tc, *major;
+   cube_parts(b, coord, coord, &sc, &tc, &major, layer);
    nir_def *face[] = {sc, tc};
    for (unsigned i = 0; i < ARRAY_SIZE(face); i++)
       face[i] = nir_fmul_imm(b, nir_fadd_imm(b, nir_fdiv(b, face[i], major), 1.0f), WC_HALF);
+   return nir_vec(b, face, ARRAY_SIZE(face));
+}
+
+/* The derivative of the face's coordinates of direction `coord` along the direction's derivative
+ * `d`, on the face `coord` picks, as OpenGL's level of detail of a cube map takes it:
+ * (dc * major - c * dmajor) / (2 * major * major) for each coordinate's numerator c. */
+static nir_def *
+cube_face_derivative(nir_builder *b, nir_def *coord, nir_def *d)
+{
+   nir_def *sc, *tc, *major, *dsc, *dtc, *dmajor;
+   cube_parts(b, coord, coord, &sc, &tc, &major, NULL);
+   cube_parts(b, coord, d, &dsc, &dtc, &dmajor, NULL);
+   nir_def *square = nir_fmul(b, major, major);
+   nir_def *face[] = {nir_fsub(b, nir_fmul(b, dsc, major), nir_fmul(b, sc, dmajor)),
+                      nir_fsub(b, nir_fmul(b, dtc, major), nir_fmul(b, tc, dmajor))};
+   for (unsigned i = 0; i < ARRAY_SIZE(face); i++)
+      face[i] = nir_fmul_imm(b, nir_fdiv(b, face[i], square), WC_HALF);
    return nir_vec(b, face, ARRAY_SIZE(face));
 }
 
@@ -706,6 +1285,23 @@ listed_sampler(const struct nearest_samplers *s, uint32_t unit)
    for (size_t i = 0; i < s->count; i++) {
       if (s->data[i].unit == unit)
          sampler = &s->data[i];
+   }
+   return sampler;
+}
+
+/* The sampler listed at each of `count` units from `first`, where they are alike (an array of
+ * textures indexed at run time takes one nearest load for every element); none otherwise. */
+static const struct wc_nearest_sampler *
+alike_samplers(const struct nearest_samplers *s, uint32_t first, uint32_t count)
+{
+   const struct wc_nearest_sampler *sampler = listed_sampler(s, first);
+   for (uint32_t unit = first + 1; sampler && unit < first + count; unit++) {
+      const struct wc_nearest_sampler *other = listed_sampler(s, unit);
+      if (!other || memcmp(other->wrap, sampler->wrap, sizeof(sampler->wrap)) ||
+          other->mipmapped != sampler->mipmapped || other->min_lod != sampler->min_lod ||
+          other->max_lod != sampler->max_lod ||
+          memcmp(other->border, sampler->border, sizeof(sampler->border)))
+         return NULL;
    }
    return sampler;
 }
@@ -739,9 +1335,9 @@ sampled_through(nir_shader *nir, const nir_variable *var)
    return false;
 }
 
-/* An integer cube map at a listed unit that the program samples made a 2D array of its six faces,
- * which the host loads (it loads no cube texel, and gathers its cubes as they are); the driver
- * binds such a view of it. */
+/* An integer cube map or cube map array at a listed unit that the program samples made a 2D array
+ * of its faces, six a cube, which the host loads (it loads no cube texel, and gathers its cubes as
+ * they are); the driver binds such a view of it. */
 static void
 integer_cubes_as_layers(nir_shader *nir, const struct nearest_samplers *s)
 {
@@ -749,8 +1345,7 @@ integer_cubes_as_layers(nir_shader *nir, const struct nearest_samplers *s)
    nir_foreach_variable_with_modes(var, nir, nir_var_uniform) {
       const struct glsl_type *t = glsl_without_array(var->type);
       if ((!glsl_type_is_sampler(t) && !glsl_type_is_texture(t)) ||
-          glsl_get_sampler_dim(t) != GLSL_SAMPLER_DIM_CUBE || glsl_sampler_type_is_array(t) ||
-          glsl_sampler_type_is_shadow(t))
+          glsl_get_sampler_dim(t) != GLSL_SAMPLER_DIM_CUBE || glsl_sampler_type_is_shadow(t))
          continue;
       enum glsl_base_type base = glsl_get_sampler_result_type(t);
       if ((base != GLSL_TYPE_INT && base != GLSL_TYPE_UINT) ||
@@ -766,19 +1361,29 @@ integer_cubes_as_layers(nir_shader *nir, const struct nearest_samplers *s)
       nir_fixup_deref_types(nir);
 }
 
-/* A query of a cube map made a 2D array of its faces, answered as of the cube. */
+/* A query of a cube map or cube map array made a 2D array of its faces, answered as of the cube or
+ * the cubes. */
 static bool
 cube_layers_query(nir_builder *b, nir_tex_instr *tex)
 {
+   bool array = tex->is_array;
    tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
    tex->is_array = true;
    if (tex->op != nir_texop_txs)
       return true;
-   /* Its size without the layers. */
-   unsigned components = tex->def.num_components;
-   tex->def.num_components = components + 1;
    b->cursor = nir_after_instr(&tex->instr);
-   nir_def *size = nir_trim_vector(b, &tex->def, components);
+   nir_def *size;
+   if (array) {
+      /* Its cubes, of the faces. */
+      unsigned at = tex->def.num_components - 1;
+      size = nir_vector_insert_imm(
+         b, &tex->def, nir_udiv_imm(b, nir_channel(b, &tex->def, at), WC_CUBE_FACES), at);
+   } else {
+      /* Its size without the layers. */
+      unsigned components = tex->def.num_components;
+      tex->def.num_components = components + 1;
+      size = nir_trim_vector(b, &tex->def, components);
+   }
    nir_def_rewrite_uses_after(&tex->def, size);
    return true;
 }
@@ -786,12 +1391,17 @@ cube_layers_query(nir_builder *b, nir_tex_instr *tex)
 /* A gather of a cube map made a 2D array of its faces, from its face's coordinates; texels past
  * the face's edges are its edge's, not the next face's. */
 static bool
-cube_layers_gather(nir_builder *b, nir_tex_instr *tex)
+cube_layers_gather(nir_builder *b, nir_tex_instr *tex, nir_deref_instr *texture)
 {
    b->cursor = nir_before_instr(&tex->instr);
    int at = nir_tex_instr_src_index(tex, nir_tex_src_coord);
    nir_def *layer;
    nir_def *face = cube_face(b, tex->src[at].src.ssa, &layer);
+   if (tex->is_array) {
+      nir_def *size = nir_txs(b, .texture_deref = texture, .lod = nir_imm_int(b, 0));
+      layer = cube_array_layer(b, tex->src[at].src.ssa, layer,
+                               nir_channel(b, size, size->num_components - 1));
+   }
    nir_def *coord = nir_vec3(b, nir_channel(b, face, 0), nir_channel(b, face, 1), nir_i2f32(b, layer));
    nir_src_rewrite(&tex->src[at].src, coord);
    tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
@@ -814,15 +1424,17 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
                      glsl_get_sampler_dim(texture->type) == GLSL_SAMPLER_DIM_2D;
    nir_alu_type base = nir_alu_type_get_base_type(tex->dest_type);
    bool sampled = sampling(tex);
-   if (cube && tex->op == nir_texop_tg4)
-      return cube_layers_gather(b, tex);
+   if (cube && tex->op == nir_texop_tg4) {
+      ((struct nearest_samplers *)data)->cube_gathered = true;
+      return cube_layers_gather(b, tex, texture);
+   }
    if (cube && !sampled)
       return cube_layers_query(b, tex);
-   uint32_t unit;
+   uint32_t unit, units;
    if (!sampled || tex->is_shadow || (base != nir_type_int && base != nir_type_uint) ||
-       !texture_unit(tex, &unit))
+       !texture_units(tex, &unit, &units))
       return false;
-   const struct wc_nearest_sampler *sampler = listed_sampler(data, unit);
+   const struct wc_nearest_sampler *sampler = alike_samplers(data, unit, units);
    if (!sampler || (tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE && !cube))
       return false;
    b->cursor = nir_before_instr(&tex->instr);
@@ -853,12 +1465,9 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
          nir_def *dy = tex->op == nir_texop_txd && !cube ? tex_source(tex, nir_tex_src_ddy)
                                                          : nir_ddy(b, position);
          if (tex->op == nir_texop_txd && cube) {
-            nir_def *unused;
             nir_def *at = nir_trim_vector(b, coord, WC_CUBE_AXES);
-            dx = nir_fsub(b, cube_face(b, nir_fadd(b, at, tex_source(tex, nir_tex_src_ddx)), &unused),
-                          position);
-            dy = nir_fsub(b, cube_face(b, nir_fadd(b, at, tex_source(tex, nir_tex_src_ddy)), &unused),
-                          position);
+            dx = cube_face_derivative(b, at, tex_source(tex, nir_tex_src_ddx));
+            dy = cube_face_derivative(b, at, tex_source(tex, nir_tex_src_ddy));
          }
          nir_def *sx = nir_fmul(b, dx, base_size), *sy = nir_fmul(b, dy, base_size);
          nir_def *rho = nir_fsqrt(b, nir_fmax(b, nir_fdot(b, sx, sx), nir_fdot(b, sy, sy)));
@@ -893,12 +1502,12 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
    }
    unsigned components = axes;
    if (cube) {
+      if (tex->is_array)
+         layer = cube_array_layer(b, coord, layer, nir_channel(b, size, axes));
       parts[components++] = nir_get_scalar(layer, 0);
    } else if (tex->is_array) {
       /* The layer nearest the coordinate's, within the array. */
-      nir_def *nearest = nir_f2i32(b, nir_ffloor(b, nir_fadd_imm(b, nir_channel(b, coord, axes), WC_HALF)));
-      nearest = nir_imin(b, nir_imax(b, nearest, nir_imm_int(b, 0)),
-                         nir_iadd_imm(b, nir_channel(b, size, axes), -1));
+      nir_def *nearest = nearest_layer(b, nir_channel(b, coord, axes), nir_channel(b, size, axes));
       parts[components++] = nir_get_scalar(nearest, 0);
    }
    nir_def *loaded = nir_txf(b, nir_vec_scalars(b, parts, components), .texture_deref = texture,
@@ -912,13 +1521,38 @@ nearest_integer_texture(nir_builder *b, nir_instr *instr, void *data)
    return true;
 }
 
-void
+bool
 wc_nir_nearest_integer_textures(struct nir_shader *nir, const struct wc_nearest_sampler *samplers,
                                 size_t count)
 {
-   struct nearest_samplers s = {samplers, count};
+   struct nearest_samplers s = {samplers, count, false};
    integer_cubes_as_layers(nir, &s);
    nir_shader_instructions_pass(nir, nearest_integer_texture, nir_metadata_control_flow, &s);
+   return !s.cube_gathered;
+}
+
+uint64_t
+wc_nir_integer_sampled_units(struct nir_shader *nir)
+{
+   uint64_t units = 0;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_tex)
+               continue;
+            nir_tex_instr *tex = nir_instr_as_tex(instr);
+            nir_alu_type base = nir_alu_type_get_base_type(tex->dest_type);
+            uint32_t first, count;
+            if (!sampling(tex) || tex->is_shadow || (base != nir_type_int && base != nir_type_uint) ||
+                !texture_units(tex, &first, &count))
+               continue;
+            const uint32_t end = MIN2(first + count, sizeof(units) * CHAR_BIT);
+            for (uint32_t unit = first; unit < end; unit++)
+               units |= BITFIELD64_BIT(unit);
+         }
+      }
+   }
+   return units;
 }
 
 void
@@ -1175,12 +1809,64 @@ workgroup_words(nir_shader *nir)
    nir_shader_intrinsics_pass(nir, shared_words, nir_metadata_control_flow, var);
 }
 
+/* `intr` as a load of the block among `first` and the blocks after it, up to `end`, that its index
+ * names at run time. */
+static nir_def *
+load_named_block(nir_builder *b, nir_intrinsic_instr *intr, uint32_t first, uint32_t end)
+{
+   nir_intrinsic_instr *copy = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &intr->instr));
+   /* Not yet inserted, so its sources are on no use list. */
+   copy->src[0] = nir_src_for_ssa(nir_imm_int(b, first));
+   copy->src[1] = nir_src_for_ssa(intr->src[1].ssa);
+   if (first + 1 >= end) {
+      nir_builder_instr_insert(b, &copy->instr);
+      return &copy->def;
+   }
+   nir_if *named = nir_push_if(b, nir_ieq_imm(b, intr->src[0].ssa, first));
+   nir_builder_instr_insert(b, &copy->instr);
+   nir_push_else(b, named);
+   nir_def *later = load_named_block(b, intr, first + 1, end);
+   nir_pop_if(b, named);
+   return nir_if_phi(b, &copy->def, later);
+}
+
+/* Loads of uniform blocks whose index is known only at run time (an array of blocks), each as
+ * the load of every one of the `uniforms` blocks the index may name, since the common form binds
+ * each block on its own. */
+static void
+name_uniform_blocks(nir_shader *nir, uint32_t uniforms)
+{
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   struct util_dynarray loads;
+   util_dynarray_init(&loads, NULL);
+   nir_foreach_block(block, impl) {
+      nir_foreach_instr(instr, block) {
+         if (instr->type != nir_instr_type_intrinsic)
+            continue;
+         nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+         if (intr->intrinsic == nir_intrinsic_load_ubo && !nir_src_is_const(intr->src[0]))
+            util_dynarray_append(&loads, intr);
+      }
+   }
+   bool progress = loads.size && uniforms;
+   if (progress) {
+      nir_builder b = nir_builder_create(impl);
+      util_dynarray_foreach(&loads, nir_intrinsic_instr *, at) {
+         b.cursor = nir_before_instr(&(*at)->instr);
+         nir_def_replace(&(*at)->def, load_named_block(&b, *at, 0, uniforms));
+      }
+   }
+   util_dynarray_fini(&loads);
+   nir_progress(progress, impl, nir_metadata_none);
+}
+
 void
 wc_nir_buffers_as_words(nir_shader *nir, const uint32_t *uniform_bytes, uint32_t uniforms,
                         uint32_t storage_base)
 {
    /* Block indices that are constants show as constants. */
    wc_optimize(nir);
+   name_uniform_blocks(nir, uniforms);
    struct storage_use use = {0};
    nir_shader_intrinsics_pass(nir, note_storage, nir_metadata_all, &use);
    nir_variable **vars = calloc(uniforms + use.blocks + 1, sizeof(*vars));
@@ -1255,15 +1941,117 @@ constant_element(nir_builder *b, nir_instr *instr, void *data)
    return true;
 }
 
+/* Whether a uniform is an array of arrays of textures, samplers or images. */
+static bool
+is_resource_arrays(const nir_variable *var)
+{
+   const struct glsl_type *bare = glsl_without_array(var->type);
+   return var->data.mode == nir_var_uniform && glsl_type_is_array_of_arrays(var->type) &&
+          (glsl_type_is_sampler(bare) || glsl_type_is_texture(bare) || glsl_type_is_image(bare));
+}
+
+/* An element of an array of arrays of resources named in one array of every element, in
+ * OpenGL's order, which is the order of the units its elements take. */
+static bool
+flatten_element(nir_builder *b, nir_instr *instr, void *flattened)
+{
+   if (instr->type != nir_instr_type_deref)
+      return false;
+   nir_deref_instr *deref = nir_instr_as_deref(instr);
+   if (deref->deref_type != nir_deref_type_array || glsl_type_is_array(deref->type))
+      return false;
+   nir_deref_instr *root = deref;
+   while (root->deref_type == nir_deref_type_array)
+      root = nir_deref_instr_parent(root);
+   if (root->deref_type != nir_deref_type_var ||
+       !_mesa_set_search((struct set *)flattened, root->var))
+      return false;
+   b->cursor = nir_before_instr(instr);
+   nir_def *index = NULL;
+   unsigned stride = 1;
+   for (nir_deref_instr *d = deref; d != root; d = nir_deref_instr_parent(d)) {
+      nir_def *step = nir_imul_imm(b, d->arr.index.ssa, stride);
+      index = index ? nir_iadd(b, index, step) : step;
+      stride *= glsl_get_length(nir_deref_instr_parent(d)->type);
+   }
+   nir_deref_instr *element = nir_build_deref_array(b, nir_build_deref_var(b, root->var), index);
+   nir_def_replace(&deref->def, &element->def);
+   return true;
+}
+
+/* Every array of arrays of resources as one array of its elements. */
+static void
+flatten_resource_arrays(nir_shader *nir)
+{
+   struct set *flattened = _mesa_pointer_set_create(NULL);
+   nir_foreach_variable_with_modes(var, nir, nir_var_uniform) {
+      if (!is_resource_arrays(var))
+         continue;
+      var->type = glsl_array_type(glsl_without_array(var->type), glsl_get_aoa_size(var->type), 0);
+      _mesa_set_add(flattened, var);
+   }
+   if (flattened->entries &&
+       nir_shader_instructions_pass(nir, flatten_element, nir_metadata_control_flow, flattened)) {
+      /* The chains of the arrays' old type go first. */
+      NIR_PASS(_, nir, nir_opt_dce);
+      NIR_PASS(_, nir, nir_opt_constant_folding);
+   }
+   _mesa_set_destroy(flattened, NULL);
+}
+
 void
 wc_nir_split_resource_arrays(nir_shader *nir)
 {
+   flatten_resource_arrays(nir);
    struct resource_elements r = {_mesa_pointer_hash_table_create(NULL), nir};
    if (nir_shader_instructions_pass(nir, constant_element, nir_metadata_control_flow, &r)) {
       NIR_PASS(_, nir, nir_opt_dce);
       NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_uniform, NULL);
    }
    _mesa_hash_table_destroy(r.elements, NULL);
+}
+
+/* A 1D sampler or texture type (or an array of them) as its 2D twin; any other type as it is. */
+static const struct glsl_type *
+one_row(const struct glsl_type *type)
+{
+   if (glsl_type_is_array(type)) {
+      const struct glsl_type *element = one_row(glsl_get_array_element(type));
+      return element == glsl_get_array_element(type)
+                ? type
+                : glsl_array_type(element, glsl_get_length(type), glsl_get_explicit_stride(type));
+   }
+   if (!(glsl_type_is_sampler(type) || glsl_type_is_texture(type)) ||
+       glsl_get_sampler_dim(type) != GLSL_SAMPLER_DIM_1D)
+      return type;
+   bool array = glsl_sampler_type_is_array(type);
+   enum glsl_base_type result = glsl_get_sampler_result_type(type);
+   return glsl_type_is_sampler(type)
+             ? glsl_sampler_type(GLSL_SAMPLER_DIM_2D, glsl_sampler_type_is_shadow(type), array, result)
+             : glsl_texture_type(GLSL_SAMPLER_DIM_2D, array, result);
+}
+
+void
+wc_nir_drop_name(nir_shader *nir)
+{
+   nir->info.name = NULL;
+   nir->info.label = NULL;
+}
+
+void
+wc_nir_textures_1d_as_2d(nir_shader *nir)
+{
+   bool retyped = false;
+   nir_foreach_variable_with_modes(var, nir, nir_var_uniform) {
+      const struct glsl_type *type = one_row(var->type);
+      retyped |= type != var->type;
+      var->type = type;
+   }
+   if (!retyped)
+      return;
+   const nir_lower_tex_options lowered = {.lower_1d = true};
+   NIR_PASS(_, nir, nir_lower_tex, &lowered);
+   NIR_PASS(_, nir, nir_fixup_deref_types);
 }
 
 /* The uniform blocks the loads reach, and the bytes each reaches at constant offsets. */
@@ -1321,6 +2109,527 @@ wc_nir_uniform_blocks_as_words(nir_shader *nir)
    wc_nir_buffers_as_words(nir, bytes, blocks, PIPE_MAX_SHADER_IMAGES);
    /* The default uniforms' own variables, which st/mesa keeps after their loads became block 0's. */
    NIR_PASS(_, nir, nir_remove_dead_variables, nir_var_uniform, NULL);
+}
+
+static bool
+point_size_also_at(nir_builder *b, nir_intrinsic_instr *intr, void *location)
+{
+   if (intr->intrinsic != nir_intrinsic_store_output ||
+       nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_PSIZ)
+      return false;
+   nir_intrinsic_instr *copy = nir_instr_as_intrinsic(nir_instr_clone(b->shader, &intr->instr));
+   nir_io_semantics semantics = nir_intrinsic_io_semantics(copy);
+   semantics.location = *(const unsigned *)location;
+   nir_intrinsic_set_io_semantics(copy, semantics);
+   b->cursor = nir_after_instr(&intr->instr);
+   nir_builder_instr_insert(b, &copy->instr);
+   /* The stream's entry is the copy's. */
+   nir_intrinsic_set_io_xfb(intr, (nir_io_xfb){0});
+   return true;
+}
+
+void
+wc_nir_stream_point_size_at_a_location(struct nir_shader *nir)
+{
+   nir_xfb_info *xfb = nir->xfb_info;
+   if (!xfb)
+      return;
+   bool streamed = false;
+   for (unsigned i = 0; i < xfb->output_count; i++)
+      streamed |= xfb->outputs[i].location == VARYING_SLOT_PSIZ;
+   if (!streamed)
+      return;
+   wc_nir_lower_io(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   /* The generic locations, which end where the written outputs' bits do. */
+   const unsigned end = sizeof(nir->info.outputs_written) * CHAR_BIT;
+   unsigned location = VARYING_SLOT_VAR0;
+   while (location < end && (nir->info.outputs_written & BITFIELD64_BIT(location)))
+      location++;
+   /* Every location taken: the stream stays the point size's, which the route refuses. */
+   if (location == end)
+      return;
+   nir_shader_intrinsics_pass(nir, point_size_also_at, nir_metadata_control_flow, &location);
+   for (unsigned i = 0; i < xfb->output_count; i++) {
+      if (xfb->outputs[i].location == VARYING_SLOT_PSIZ)
+         xfb->outputs[i].location = location;
+   }
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   nir_recompute_io_bases(nir, nir_var_shader_out);
+}
+
+uint32_t
+wc_nir_generic_end(const struct nir_shader *nir)
+{
+   const uint64_t used =
+      nir->info.stage == MESA_SHADER_FRAGMENT ? nir->info.inputs_read : nir->info.outputs_written;
+   return util_last_bit64(used >> VARYING_SLOT_VAR0);
+}
+
+bool
+wc_nir_point_size_also_at(struct nir_shader *nir, uint32_t at)
+{
+   wc_nir_lower_io(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   if (!(nir->info.outputs_written & VARYING_BIT_PSIZ))
+      return false;
+   unsigned location = VARYING_SLOT_VAR0 + at;
+   nir_shader_intrinsics_pass(nir, point_size_also_at, nir_metadata_control_flow, &location);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   nir_recompute_io_bases(nir, nir_var_shader_out);
+   return true;
+}
+
+bool
+wc_nir_point_size_at_most(const struct nir_shader *nir, float size)
+{
+   bool written = false;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_store_output ||
+                nir_intrinsic_io_semantics(intr).location != VARYING_SLOT_PSIZ)
+               continue;
+            if (!nir_src_is_const(intr->src[0]) || nir_src_as_float(intr->src[0]) > size)
+               return false;
+            written = true;
+         }
+      }
+   }
+   return written;
+}
+
+/* An output component a vertex program writes, which a point's square copies to each corner. */
+struct written_slot {
+   nir_io_semantics semantics;
+   uint32_t offset;
+   uint32_t components;
+   nir_alu_type types[NIR_MAX_VEC_COMPONENTS];
+};
+
+struct written_slots {
+   struct written_slot slots[VARYING_SLOT_MAX];
+   bool indirect;
+};
+
+static bool
+note_written(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   struct written_slots *written = data;
+   if (intr->intrinsic != nir_intrinsic_store_output)
+      return false;
+   nir_src offset = *nir_get_io_offset_src(intr);
+   if (!nir_src_is_const(offset)) {
+      written->indirect = true;
+      return false;
+   }
+   const nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
+   const uint32_t at = nir_src_as_uint(offset);
+   const unsigned slot = semantics.location + at;
+   if (slot >= VARYING_SLOT_MAX)
+      return false;
+   struct written_slot *s = &written->slots[slot];
+   s->semantics = semantics;
+   s->semantics.num_slots = 1;
+   s->offset = at;
+   const nir_alu_type type = nir_intrinsic_src_type(intr);
+   const unsigned first = nir_intrinsic_component(intr);
+   u_foreach_bit(c, nir_intrinsic_write_mask(intr)) {
+      s->components |= BITFIELD_BIT(first + c);
+      s->types[first + c] = type;
+   }
+   return false;
+}
+
+/* The corners of a point's square in the order of a strip, as the signs of x and y: the first
+ * triangle turns counter-clockwise in Gallium's window space, which counts rows down. */
+static const float square_corners[][2] = {{-1, -1}, {1, -1}, {-1, 1}, {1, 1}};
+enum { SQUARE_SIZE, SQUARE_STEP_X, SQUARE_STEP_Y, SQUARE_COORD_T };
+
+/* A slot a point's square copies to its corners: not the position, the size or the coordinate. */
+static bool
+copied_to_corners(unsigned slot, unsigned coord_slot)
+{
+   return slot != VARYING_SLOT_POS && slot != VARYING_SLOT_PSIZ && slot != VARYING_SLOT_EDGE &&
+          slot != coord_slot;
+}
+
+/* A point's square emitted as a strip of two triangles and ended: `values` (by slot and
+ * component, as `written` lists them) at each corner, the clip-space `position` moved half `size`
+ * pixels each way by the square's `block`, and gl_PointCoord at `coord_slot`. */
+static void
+emit_square(nir_builder *b, const struct written_slots *written,
+            nir_def *values[VARYING_SLOT_MAX][NIR_MAX_VEC_COMPONENTS], nir_def *position,
+            nir_def *size, nir_def *block, unsigned coord_slot)
+{
+   nir_def *zero = nir_imm_int(b, 0);
+   nir_def *w = nir_channel(b, position, 3);
+   nir_def *step_x = nir_fmul(b, nir_fmul(b, size, nir_channel(b, block, SQUARE_STEP_X)), w);
+   nir_def *step_y = nir_fmul(b, nir_fmul(b, size, nir_channel(b, block, SQUARE_STEP_Y)), w);
+   const nir_io_semantics position_semantics = {.location = VARYING_SLOT_POS, .num_slots = 1};
+   const nir_io_semantics coord_semantics = {.location = coord_slot, .num_slots = 1};
+   for (unsigned i = 0; i < ARRAY_SIZE(square_corners); i++) {
+      const float sx = square_corners[i][0], sy = square_corners[i][1];
+      for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
+         const struct written_slot *s = &written->slots[slot];
+         for (unsigned c = 0; c < NIR_MAX_VEC_COMPONENTS; c++) {
+            if (!values[slot][c])
+               continue;
+            nir_store_output(b, values[slot][c], nir_imm_int(b, s->offset), .component = c,
+                             .src_type = s->types[c], .io_semantics = s->semantics);
+         }
+      }
+      nir_def *corner =
+         nir_vec4(b, nir_fadd(b, nir_channel(b, position, 0), nir_fmul_imm(b, step_x, sx)),
+                  nir_fadd(b, nir_channel(b, position, 1), nir_fmul_imm(b, step_y, sy)),
+                  nir_channel(b, position, 2), w);
+      nir_store_output(b, corner, zero, .src_type = nir_type_float32,
+                       .io_semantics = position_semantics);
+      const float half = 0.5f;
+      nir_def *t =
+         nir_fadd_imm(b, nir_fmul_imm(b, nir_channel(b, block, SQUARE_COORD_T), half * sy), half);
+      nir_def *coord = nir_vec2(b, nir_imm_float(b, half + half * sx), t);
+      nir_store_output(b, coord, zero, .src_type = nir_type_float32,
+                       .io_semantics = coord_semantics);
+      nir_emit_vertex(b, 0);
+   }
+   nir_end_primitive(b, 0);
+}
+
+struct nir_shader *
+wc_nir_point_square(const struct nir_shader *vs, uint32_t at, float largest)
+{
+   nir_shader *lowered = nir_shader_clone(NULL, vs);
+   wc_nir_lower_io(lowered);
+   nir_shader_gather_info(lowered, nir_shader_get_entrypoint(lowered));
+   struct written_slots *written = calloc(1, sizeof(*written));
+   if (!written) {
+      ralloc_free(lowered);
+      return NULL;
+   }
+   nir_shader_intrinsics_pass(lowered, note_written, nir_metadata_all, written);
+   const bool sized = lowered->info.outputs_written & VARYING_BIT_PSIZ;
+   const bool clipped = lowered->info.outputs_written &
+                        (VARYING_BIT_CLIP_DIST0 | VARYING_BIT_CLIP_DIST1 | VARYING_BIT_CLIP_VERTEX);
+   ralloc_free(lowered);
+   if (written->indirect || clipped || VARYING_SLOT_VAR0 + at >= VARYING_SLOT_MAX) {
+      free(written);
+      return NULL;
+   }
+   const unsigned coord_slot = VARYING_SLOT_VAR0 + at;
+
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_GEOMETRY, vs->options, "point square");
+   nir_shader *nir = b.shader;
+   nir->info.io_lowered = true;
+   nir->info.gs.input_primitive = MESA_PRIM_POINTS;
+   nir->info.gs.output_primitive = MESA_PRIM_TRIANGLE_STRIP;
+   nir->info.gs.vertices_in = 1;
+   nir->info.gs.vertices_out = ARRAY_SIZE(square_corners);
+   nir->info.gs.invocations = 1;
+   nir->info.gs.active_stream_mask = 1;
+
+   nir_def *zero = nir_imm_int(&b, 0);
+   /* Block 0: the size where the program writes none, the clip-space step of half a pixel over w
+    * in x and y (signed as the viewport's scale), and the direction of gl_PointCoord's t. */
+   nir_def *block = nir_load_ubo(&b, 4, 32, zero, zero, .align_mul = 16, .align_offset = 0,
+                                 .range_base = 0, .range = 16);
+   const nir_io_semantics size_semantics = {.location = coord_slot, .num_slots = 1};
+   nir_def *size =
+      sized ? nir_fclamp(&b,
+                         nir_load_per_vertex_input(&b, 1, 32, zero, zero,
+                                                   .dest_type = nir_type_float32,
+                                                   .io_semantics = size_semantics),
+                         nir_imm_float(&b, 1), nir_imm_float(&b, largest))
+            : nir_channel(&b, block, SQUARE_SIZE);
+   const nir_io_semantics position_semantics = {.location = VARYING_SLOT_POS, .num_slots = 1};
+   nir_def *position = nir_load_per_vertex_input(&b, 4, 32, zero, zero,
+                                                 .dest_type = nir_type_float32,
+                                                 .io_semantics = position_semantics);
+
+   /* Every other output, as the program wrote it. */
+   nir_def *values[VARYING_SLOT_MAX][NIR_MAX_VEC_COMPONENTS] = {{0}};
+   for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
+      const struct written_slot *s = &written->slots[slot];
+      if (!copied_to_corners(slot, coord_slot))
+         continue;
+      u_foreach_bit(c, s->components) {
+         values[slot][c] = nir_load_per_vertex_input(
+            &b, 1, nir_alu_type_get_type_size(s->types[c]), zero, nir_imm_int(&b, s->offset),
+            .component = c, .dest_type = s->types[c], .io_semantics = s->semantics);
+      }
+   }
+   emit_square(&b, written, values, position, size, block, coord_slot);
+   free(written);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   nir_recompute_io_bases(nir, nir_var_shader_in | nir_var_shader_out);
+   nir_validate_shader(nir, "point square");
+   return nir;
+}
+
+/* What a geometry program's squares rewrite (`wc_nir_geometry_squares`) reads and writes. */
+struct squares_rewrite {
+   const struct written_slots *written;
+   /* Each output component the program writes, held until it emits a vertex. */
+   nir_variable *held[VARYING_SLOT_MAX][NIR_MAX_VEC_COMPONENTS];
+   nir_def *block;
+   float largest;
+   unsigned coord_slot;
+   /* The program emits with counters (nir_lower_gs_intrinsics' form), which is not rewritten. */
+   bool counted;
+};
+
+static bool
+rewrite_to_squares(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   struct squares_rewrite *r = data;
+   b->cursor = nir_before_instr(&intr->instr);
+   switch (intr->intrinsic) {
+   case nir_intrinsic_store_output: {
+      const nir_io_semantics semantics = nir_intrinsic_io_semantics(intr);
+      const unsigned slot = semantics.location + nir_src_as_uint(*nir_get_io_offset_src(intr));
+      const unsigned first = nir_intrinsic_component(intr);
+      u_foreach_bit(c, nir_intrinsic_write_mask(intr)) {
+         nir_store_var(b, r->held[slot][first + c], nir_channel(b, intr->src[0].ssa, c), 1);
+      }
+      nir_instr_remove(&intr->instr);
+      return true;
+   }
+   case nir_intrinsic_emit_vertex: {
+      nir_def *values[VARYING_SLOT_MAX][NIR_MAX_VEC_COMPONENTS] = {{0}};
+      for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
+         if (!copied_to_corners(slot, r->coord_slot))
+            continue;
+         for (unsigned c = 0; c < NIR_MAX_VEC_COMPONENTS; c++) {
+            if (r->held[slot][c])
+               values[slot][c] = nir_load_var(b, r->held[slot][c]);
+         }
+      }
+      nir_def *position_parts[4];
+      for (unsigned c = 0; c < ARRAY_SIZE(position_parts); c++) {
+         nir_variable *v = r->held[VARYING_SLOT_POS][c];
+         position_parts[c] = v ? nir_load_var(b, v) : nir_undef(b, 1, 32);
+      }
+      nir_def *position = nir_vec(b, position_parts, ARRAY_SIZE(position_parts));
+      nir_variable *sized = r->held[VARYING_SLOT_PSIZ][0];
+      nir_def *size = sized ? nir_fclamp(b, nir_load_var(b, sized), nir_imm_float(b, 1),
+                                         nir_imm_float(b, r->largest))
+                            : nir_channel(b, r->block, SQUARE_SIZE);
+      emit_square(b, r->written, values, position, size, r->block, r->coord_slot);
+      nir_instr_remove(&intr->instr);
+      return true;
+   }
+   /* Each square ends its own strip. */
+   case nir_intrinsic_end_primitive:
+      nir_instr_remove(&intr->instr);
+      return true;
+   case nir_intrinsic_emit_vertex_with_counter:
+   case nir_intrinsic_end_primitive_with_counter:
+      r->counted = true;
+      return false;
+   default:
+      return false;
+   }
+}
+
+struct nir_shader *
+wc_nir_geometry_squares(const struct nir_shader *gs, uint32_t at, float largest, uint32_t block)
+{
+   if (gs->info.stage != MESA_SHADER_GEOMETRY || gs->info.gs.output_primitive != MESA_PRIM_POINTS ||
+       VARYING_SLOT_VAR0 + at >= VARYING_SLOT_MAX)
+      return NULL;
+   nir_shader *nir = nir_shader_clone(NULL, gs);
+   wc_nir_lower_io(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   const bool clipped = nir->info.outputs_written &
+                        (VARYING_BIT_CLIP_DIST0 | VARYING_BIT_CLIP_DIST1 | VARYING_BIT_CLIP_VERTEX);
+   struct written_slots *written = calloc(1, sizeof(*written));
+   if (!written || clipped || nir->info.gs.active_stream_mask > 1) {
+      free(written);
+      ralloc_free(nir);
+      return NULL;
+   }
+   nir_shader_intrinsics_pass(nir, note_written, nir_metadata_all, written);
+   const unsigned coord_slot = VARYING_SLOT_VAR0 + at;
+   if (written->indirect || written->slots[coord_slot].components) {
+      free(written);
+      ralloc_free(nir);
+      return NULL;
+   }
+   struct squares_rewrite r = {.written = written, .largest = largest, .coord_slot = coord_slot};
+   nir_function_impl *impl = nir_shader_get_entrypoint(nir);
+   for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
+      const struct written_slot *s = &written->slots[slot];
+      u_foreach_bit(c, s->components) {
+         const enum glsl_base_type base = nir_get_glsl_base_type_for_nir_type(s->types[c]);
+         r.held[slot][c] = nir_local_variable_create(impl, glsl_scalar_type(base), "held output");
+      }
+   }
+   /* The squares' block, in the words every other block of the program was made
+    * (`wc_nir_uniform_blocks_as_words`). */
+   const uint32_t block_bytes = WC_UNIFORM_VECTOR_WORDS * WC_WORD_BYTES;
+   nir_variable *words = word_block(nir, nir_var_mem_ubo, block, block_bytes, false, false);
+   nir_builder b = nir_builder_at(nir_before_impl(impl));
+   r.block = nir_load_deref(
+      &b, nir_build_deref_array_imm(&b, nir_build_deref_struct(&b, nir_build_deref_var(&b, words), 0),
+                                    0));
+   nir_shader_intrinsics_pass(nir, rewrite_to_squares, nir_metadata_none, &r);
+   free(written);
+   if (r.counted) {
+      ralloc_free(nir);
+      return NULL;
+   }
+   nir->info.gs.output_primitive = MESA_PRIM_TRIANGLE_STRIP;
+   nir->info.gs.vertices_out *= ARRAY_SIZE(square_corners);
+   nir_lower_vars_to_ssa(nir);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   nir_recompute_io_bases(nir, nir_var_shader_out);
+   nir_validate_shader(nir, "geometry squares");
+   return nir;
+}
+
+static bool
+uses_storage(const struct nir_shader *nir)
+{
+   if (nir->info.num_ssbos || nir->info.num_images)
+      return true;
+   nir_foreach_variable_with_modes(var, nir, nir_var_mem_ssbo | nir_var_image)
+      return true;
+   return false;
+}
+
+/* The primitives a pass-through geometry program takes, at their index in
+ * `wc_nir_storage_pass_through`'s results. */
+static const enum mesa_prim pass_through_inputs[WC_PASS_THROUGH_INPUTS] = {
+   MESA_PRIM_POINTS,           MESA_PRIM_LINES,
+   MESA_PRIM_TRIANGLES,        MESA_PRIM_LINES_ADJACENCY,
+   MESA_PRIM_TRIANGLES_ADJACENCY,
+};
+
+/* The primitive an evaluation program makes. */
+static enum mesa_prim
+evaluated_primitive(const struct nir_shader *tes)
+{
+   if (tes->info.tess.point_mode)
+      return MESA_PRIM_POINTS;
+   if (tes->info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES)
+      return MESA_PRIM_LINES;
+   return MESA_PRIM_TRIANGLES;
+}
+
+static struct nir_shader *
+pass_through_geometry(const struct nir_shader *last, enum mesa_prim in, uint32_t size_at)
+{
+   nir_shader *lowered = nir_shader_clone(NULL, last);
+   wc_nir_lower_io(lowered);
+   nir_shader_gather_info(lowered, nir_shader_get_entrypoint(lowered));
+   struct written_slots *written = calloc(1, sizeof(*written));
+   if (!written) {
+      ralloc_free(lowered);
+      return NULL;
+   }
+   nir_shader_intrinsics_pass(lowered, note_written, nir_metadata_all, written);
+   ralloc_free(lowered);
+   const bool sized = written->slots[VARYING_SLOT_PSIZ].components;
+   const unsigned size_slot = VARYING_SLOT_VAR0 + size_at;
+   if (written->indirect ||
+       (sized && (size_slot >= VARYING_SLOT_MAX || !written->slots[size_slot].components))) {
+      free(written);
+      return NULL;
+   }
+   /* The vertices passed on, of those taken: an adjacency primitive's own, without its
+    * neighbours. */
+   static const unsigned own_lines[] = {1, 2}, own_triangles[] = {0, 2, 4}, every[] = {0, 1, 2};
+   const unsigned *passed = every;
+   enum mesa_prim out = MESA_PRIM_TRIANGLE_STRIP;
+   unsigned vertices = ARRAY_SIZE(own_triangles);
+   switch (in) {
+   case MESA_PRIM_POINTS:
+      out = MESA_PRIM_POINTS;
+      vertices = 1;
+      break;
+   case MESA_PRIM_LINES:
+      out = MESA_PRIM_LINE_STRIP;
+      vertices = ARRAY_SIZE(own_lines);
+      break;
+   case MESA_PRIM_LINES_ADJACENCY:
+      out = MESA_PRIM_LINE_STRIP;
+      vertices = ARRAY_SIZE(own_lines);
+      passed = own_lines;
+      break;
+   case MESA_PRIM_TRIANGLES_ADJACENCY:
+      passed = own_triangles;
+      break;
+   default:
+      break;
+   }
+
+   nir_builder b =
+      nir_builder_init_simple_shader(MESA_SHADER_GEOMETRY, last->options, "pass-through");
+   nir_shader *nir = b.shader;
+   nir->info.io_lowered = true;
+   nir->info.gs.input_primitive = in;
+   nir->info.gs.output_primitive = out;
+   nir->info.gs.vertices_in = mesa_vertices_per_prim(in);
+   nir->info.gs.vertices_out = vertices;
+   nir->info.gs.invocations = 1;
+   nir->info.gs.active_stream_mask = 1;
+   for (unsigned v = 0; v < vertices; v++) {
+      nir_def *vertex = nir_imm_int(&b, passed[v]);
+      for (unsigned slot = 0; slot < VARYING_SLOT_MAX; slot++) {
+         const struct written_slot *s = &written->slots[slot];
+         if (slot == VARYING_SLOT_EDGE || (sized && slot == size_slot))
+            continue;
+         /* The point size is read where the program also wrote it. */
+         const struct written_slot *from =
+            slot == VARYING_SLOT_PSIZ ? &written->slots[size_slot] : s;
+         nir_def *offset = nir_imm_int(&b, s->offset);
+         /* The position whole, as the position's transform takes it (`transform_position`). */
+         if (slot == VARYING_SLOT_POS && s->components == BITFIELD_MASK(4)) {
+            nir_def *value = nir_load_per_vertex_input(
+               &b, 4, nir_alu_type_get_type_size(s->types[0]), vertex, offset,
+               .dest_type = s->types[0], .io_semantics = s->semantics);
+            nir_store_output(&b, value, offset, .write_mask = BITFIELD_MASK(4),
+                             .src_type = s->types[0], .io_semantics = s->semantics);
+            continue;
+         }
+         u_foreach_bit(c, s->components) {
+            nir_def *value = nir_load_per_vertex_input(
+               &b, 1, nir_alu_type_get_type_size(from->types[c]), vertex,
+               nir_imm_int(&b, from->offset), .component = c, .dest_type = from->types[c],
+               .io_semantics = from->semantics);
+            nir_store_output(&b, value, offset, .component = c, .src_type = s->types[c],
+                             .io_semantics = s->semantics);
+         }
+      }
+      nir_emit_vertex(&b, 0);
+   }
+   nir_end_primitive(&b, 0);
+   free(written);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   nir_recompute_io_bases(nir, nir_var_shader_in | nir_var_shader_out);
+   nir_validate_shader(nir, "pass-through");
+   return nir;
+}
+
+bool
+wc_nir_storage_pass_through(struct nir_shader *last, struct nir_shader *made[WC_PASS_THROUGH_INPUTS])
+{
+   for (unsigned i = 0; i < WC_PASS_THROUGH_INPUTS; i++)
+      made[i] = NULL;
+   const bool evaluation = last->info.stage == MESA_SHADER_TESS_EVAL;
+   if ((!evaluation && last->info.stage != MESA_SHADER_VERTEX) || !uses_storage(last))
+      return false;
+   const uint32_t at = wc_nir_generic_end(last);
+   wc_nir_point_size_also_at(last, at);
+   for (unsigned i = 0; i < WC_PASS_THROUGH_INPUTS; i++) {
+      if (!evaluation || pass_through_inputs[i] == evaluated_primitive(last))
+         made[i] = pass_through_geometry(last, pass_through_inputs[i], at);
+   }
+   return true;
 }
 
 uint32_t

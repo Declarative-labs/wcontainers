@@ -1,11 +1,14 @@
+cs_alpha.dxbc	ok views:R32Float ; glsl absent compute
 cs_atomics.dxbc	ok ; glsl absent compute
 cs_buffer_array.dxbc	unsupported UnboundedResourceArray
 cs_compare.dxbc	ok ; glsl absent compute
 cs_decrement.dxbc	ok ; glsl absent compute
 cs_divide.dxbc	ok ; glsl absent compute
 cs_escape.dxbc	ok ; glsl absent compute
+cs_frexp.dxbc	ok ; glsl absent compute
 cs_image_array.dxbc	ok views:R32Float ; glsl absent compute
 cs_images.dxbc	ok views:R32Float ; glsl absent compute
+cs_min16.dxbc	ok ; glsl absent compute
 cs_one_d.dxbc	ok views:R32Float ; glsl absent compute
 cs_readonly.dxbc	ok ; glsl absent compute
 cs_shared.dxbc	ok ; glsl absent compute
@@ -16,9 +19,12 @@ cs_typed_array.dxbc	unsupported UnboundedResourceArray
 cs_view_kinds.dxbc	ok views:R32Float ; glsl absent compute
 cs_view_sampled.dxbc	ok views:R32Float ; glsl absent compute
 ds_line.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ds_line_cull.dxbc	ok ; glsl needs VERTEX_STORAGE_READ|CULL_DISTANCE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_quad.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
-ds_rows_gap.dxbc	unsupported ComponentPastVector
+ds_quad_cull.dxbc	ok ; glsl needs VERTEX_STORAGE_READ|CULL_DISTANCE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ds_rows_gap.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_tri.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ds_tri_cull.dxbc	ok ; glsl needs VERTEX_STORAGE_READ|CULL_DISTANCE write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_tri_none.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 ds_values.dxbc	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 gs_adjacent.dxbc	ok ; glsl absent compute
@@ -27,6 +33,7 @@ gs_cull.dxbc	ok ; glsl absent compute
 gs_cull_lines.dxbc	ok ; glsl absent compute
 gs_cull_points.dxbc	ok ; glsl absent compute
 gs_cut.dxbc	ok ; glsl absent compute
+gs_distances.dxbc	ok ; glsl absent compute
 gs_instances.dxbc	ok ; glsl absent compute
 gs_layers.dxbc	ok ; glsl absent compute
 gs_line_adjacent.dxbc	ok ; glsl absent compute
@@ -35,6 +42,8 @@ gs_numbered.dxbc	ok ; glsl absent compute
 gs_numbered_layer.dxbc	ok ; glsl absent compute
 gs_patch.dxbc	ok ; glsl absent compute
 gs_points.dxbc	ok ; glsl absent compute
+gs_provoking.dxbc	ok ; glsl absent compute
+gs_provoking_last.dxbc	ok ; glsl absent compute
 gs_quads.dxbc	ok ; glsl absent compute
 gs_rows_lines.dxbc	ok ; glsl absent compute
 gs_rows_out.dxbc	ok ; glsl absent compute
@@ -66,6 +75,7 @@ hs_quad_odd_point.dxbc	ok ; glsl absent compute
 hs_quad_pow2_ccw.dxbc	ok ; glsl absent compute
 hs_quad_pow2_cw.dxbc	ok ; glsl absent compute
 hs_quad_pow2_point.dxbc	ok ; glsl absent compute
+hs_rows_gap.dxbc	ok ; glsl absent compute
 hs_tri_even_ccw.dxbc	ok ; glsl absent compute
 hs_tri_even_cw.dxbc	ok ; glsl absent compute
 hs_tri_even_point.dxbc	ok ; glsl absent compute
@@ -86,10 +96,13 @@ ps_array.dxbc	ok ; glsl compiles
 ps_cases.dxbc	ok ; glsl compiles
 ps_clamp.dxbc	ok ; glsl compiles
 ps_clip.dxbc	ok ; glsl compiles
+ps_clip_read.dxbc	unsupported ClipDistance
 ps_coarse.dxbc	ok ; glsl compiles
 ps_compare.dxbc	ok ; glsl compiles
 ps_component.dxbc	ok ; glsl compiles
 ps_contend.dxbc	ok ; glsl needs FRAGMENT_STORAGE_WRITE|SAMPLE_SHADING write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
+ps_cull.dxbc	ok ; glsl compiles
+ps_cull_read.dxbc	unsupported CullDistance
 ps_depth.dxbc	ok ; glsl compiles
 ps_deriv.dxbc	ok ; glsl needs FINE_DERIVATIVES write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(DERIVATIVE_CONTROL)
 ps_dual.dxbc	ok ; glsl compiles
@@ -125,6 +138,8 @@ ps_negate.dxbc	ok ; glsl compiles
 ps_numbered.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 ps_offset.dxbc	ok ; glsl compiles
 ps_pack.dxbc	ok ; glsl compiles
+ps_position_centroid.dxbc	unsupported SampleCount
+ps_position_centroid_sampled.dxbc	unsupported SampleCount
 ps_primid.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 ps_primitive.dxbc	ok ; glsl needs PRIMITIVE_INDEX compile 'gl_PrimitiveID' : undeclared identifier
 ps_pull.dxbc	ok ; glsl compiles
@@ -153,6 +168,7 @@ vs_carry.dxbc	ok ; glsl compiles
 vs_clip.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 vs_clip_six.dxbc	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 vs_cull.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
+vs_cull_read.dxbc	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 vs_deep.dxbc	ok ; glsl compiles
 vs_early.dxbc	ok ; glsl compiles
 vs_eval_exact.dxbc	ok ; glsl compiles

@@ -6,9 +6,10 @@ use std::cmp::Ordering;
 use std::rc::{Rc, Weak};
 
 use wcontainers_gpu::{
-    Backend, BindingLayoutKey, Combination, CombinationTracker, Format, MAX_BINDING_SETS,
-    PrepareDesc, ScalarKind, SlowPath, SystemValue, TargetLayout, Topology,
+    BindingLayoutKey, FORMAT_FACTS, Format, Gpu, MAX_BINDING_SETS, PrepareDesc, ScalarKind,
+    SlowPath, SystemValue, TargetLayout, Topology,
 };
+use wcontainers_shaders::front::{Combination, CombinationTracker};
 
 use crate::cache::Record;
 use crate::context::VERTEX_SLOTS;
@@ -19,7 +20,7 @@ use crate::{PIXEL, VERTEX};
 /// What a pipeline is built from besides its program: state objects, the input layout and the
 /// strides it is read at, the targets, the topology and the binding sets' layout keys. It holds its
 /// objects, so a tuple picked later can still be prepared.
-pub(crate) struct Tuple<B: Backend> {
+pub(crate) struct Tuple<B: Gpu> {
     blend: Rc<Blend<B>>,
     depth_stencil: Rc<DepthStencil<B>>,
     raster: Rc<Rasterizer<B>>,
@@ -30,8 +31,9 @@ pub(crate) struct Tuple<B: Backend> {
     layouts: [BindingLayoutKey; MAX_BINDING_SETS],
 }
 
+/// The tuple's objects (blend, depth stencil, rasterizer, input layout ids), then its other parts.
 type TupleKey = (
-    [u64; 4],
+    (u64, u64, u64, u64),
     [u32; VERTEX_SLOTS],
     [Option<Format>; wcontainers_gpu::MAX_COLOR_TARGETS],
     Option<Format>,
@@ -40,15 +42,15 @@ type TupleKey = (
     [u128; MAX_BINDING_SETS],
 );
 
-impl<B: Backend> Tuple<B> {
+impl<B: Gpu> Tuple<B> {
     fn key(&self) -> TupleKey {
         (
-            [
+            (
                 self.blend.gpu.id,
                 self.depth_stencil.gpu.id,
                 self.raster.gpu.id,
                 self.layout.as_ref().map_or(0, |l| l.id),
-            ],
+            ),
             self.strides,
             self.targets.colors,
             self.targets.depth_stencil,
@@ -59,7 +61,7 @@ impl<B: Backend> Tuple<B> {
     }
 }
 
-impl<B: Backend> Clone for Tuple<B> {
+impl<B: Gpu> Clone for Tuple<B> {
     fn clone(&self) -> Self {
         Tuple {
             blend: self.blend.clone(),
@@ -74,36 +76,47 @@ impl<B: Backend> Clone for Tuple<B> {
     }
 }
 
-impl<B: Backend> PartialEq for Tuple<B> {
+impl<B: Gpu> PartialEq for Tuple<B> {
     fn eq(&self, other: &Self) -> bool {
         self.key() == other.key()
     }
 }
 
-impl<B: Backend> Eq for Tuple<B> {}
+impl<B: Gpu> Eq for Tuple<B> {}
 
-impl<B: Backend> PartialOrd for Tuple<B> {
+impl<B: Gpu> PartialOrd for Tuple<B> {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl<B: Backend> Ord for Tuple<B> {
+impl<B: Gpu> Ord for Tuple<B> {
     fn cmp(&self, other: &Self) -> Ordering {
         self.key().cmp(&other.key())
     }
 }
 
 /// The last draw's combination, and the binding sets its layout keys were read from.
-struct Last<B: Backend> {
+struct Last<B: Gpu> {
     program: (u64, u64),
     sets: [u64; 2],
     tuple: Tuple<B>,
     combination: Combination,
 }
 
+/// What `report_ahead` reports: prepared combinations drawn and not, combinations built at their
+/// first draw, and recorded combinations built at start and drawn since.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+struct UseCounts {
+    drawn: u64,
+    not: u64,
+    missed: u64,
+    started: u64,
+    started_drawn: u64,
+}
+
 /// The device's record of combinations drawn and prepared.
-pub(crate) struct Ahead<B: Backend> {
+pub(crate) struct Ahead<B: Gpu> {
     /// Keyed by vertex shader id, program (vertex and pixel shader ids) and tuple.
     tracker: CombinationTracker<u64, (u64, u64), Tuple<B>>,
     last: Option<Last<B>>,
@@ -113,10 +126,10 @@ pub(crate) struct Ahead<B: Backend> {
     /// Combinations whose record was written.
     recorded: std::collections::HashSet<Combination>,
     /// The counts last reported.
-    reported: [u64; 5],
+    reported: UseCounts,
 }
 
-impl<B: Backend> Ahead<B> {
+impl<B: Gpu> Ahead<B> {
     pub fn new() -> Self {
         Ahead {
             tracker: CombinationTracker::default(),
@@ -124,7 +137,7 @@ impl<B: Backend> Ahead<B> {
             last_vertex: Weak::new(),
             last_pixel: Weak::new(),
             recorded: Default::default(),
-            reported: [0; 5],
+            reported: UseCounts::default(),
         }
     }
 
@@ -136,7 +149,7 @@ impl<B: Backend> Ahead<B> {
 
 /// The vertex shader writes every value the pixel shader reads, at its location, with its type and
 /// components: a pair a pipeline can be built from.
-fn covers<B: Backend>(vs: &Shader<B>, ps: &Shader<B>) -> bool {
+fn covers<B: Gpu>(vs: &Shader<B>, ps: &Shader<B>) -> bool {
     ps.reflection
         .inputs
         .iter()
@@ -154,7 +167,7 @@ fn covers<B: Backend>(vs: &Shader<B>, ps: &Shader<B>) -> bool {
 /// Whether the pixel shader's colour outputs are of the kinds (float, unsigned or signed) of
 /// the formats `target` gives for each target: a pipeline with targets of another kind is refused
 /// by the back ends.
-pub(crate) fn writes<B: Backend>(
+pub(crate) fn writes<B: Gpu>(
     ps: &Shader<B>,
     target: impl Fn(usize) -> Option<wcontainers_gpu::Format>,
 ) -> bool {
@@ -168,7 +181,7 @@ pub(crate) fn writes<B: Backend>(
 
 /// Whether an output of `scalar`'s kind is of the kind (float, unsigned or signed) of `format`.
 pub(crate) fn fits_target(scalar: ScalarKind, format: wcontainers_gpu::Format) -> bool {
-    let kind = match format.kind() {
+    let kind = match FORMAT_FACTS[format as usize].kind {
         wcontainers_gpu::FormatKind::Uint => ScalarKind::Uint,
         wcontainers_gpu::FormatKind::Sint => ScalarKind::Sint,
         _ => ScalarKind::Float,
@@ -177,7 +190,7 @@ pub(crate) fn fits_target(scalar: ScalarKind, format: wcontainers_gpu::Format) -
 }
 
 /// The input layout gives the vertex shader every input it reads, at its location and of its type.
-fn fits<B: Backend>(vs: &Shader<B>, layout: Option<&InputLayout>) -> bool {
+fn fits<B: Gpu>(vs: &Shader<B>, layout: Option<&InputLayout>) -> bool {
     vs.reflection
         .inputs
         .iter()
@@ -194,7 +207,7 @@ fn fits<B: Backend>(vs: &Shader<B>, layout: Option<&InputLayout>) -> bool {
         })
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// How many combinations built ahead were drawn since, and how many were not.
     pub fn prepared_use(&self) -> (u64, u64) {
         self.ahead.prepared_use()
@@ -351,15 +364,21 @@ impl<B: Backend> Device<B> {
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// Reports how the pipelines built ahead were used (plan 4.4), beside the combinations the
     /// back end built at their first draw, where these changed since the last report: at each
     /// present, since programs may end without releasing the device.
     pub(crate) fn report_ahead(&mut self) {
         let (drawn, not) = self.ahead.prepared_use();
-        let missed = self.backend.slow_paths().count(SlowPath::PipelineMiss);
+        let missed = self.backend.slow_paths().counts[SlowPath::PipelineMiss as usize];
         let (started, started_drawn) = self.warm.used();
-        let counts = [drawn, not, missed, started, started_drawn];
+        let counts = UseCounts {
+            drawn,
+            not,
+            missed,
+            started,
+            started_drawn,
+        };
         if counts == self.ahead.reported {
             return;
         }
@@ -375,7 +394,7 @@ impl<B: Backend> Device<B> {
     }
 }
 
-impl<B: Backend> Drop for Device<B> {
+impl<B: Gpu> Drop for Device<B> {
     fn drop(&mut self) {
         self.report_ahead();
     }

@@ -1,19 +1,22 @@
 //! Storage textures read and written through a buffer of their texels
 //! (`VariantKey::texels_through_buffer`), where the back end has no atomics on storage textures
-//! (`AtomicsThroughBuffer`) or cannot store into the view's format (`StorageFormatThroughBuffer`):
+//! (`AtomicsThroughBuffer`), cannot store into the view's format (`StorageFormatThroughBuffer`), or
+//! cannot load and store it in one program (`StorageReadWriteThroughBuffer`):
 //! the view's texels are copied into a buffer before each draw or
 //! dispatch, outside a pass, and back after it; the program decodes and encodes the view's format.
 
 use super::*;
 use crate::desc::ViewDim;
-use wcontainers_gpu::{BufferUsage, CopyBufferTexture, TextureDesc as GpuTexture, TextureRegion};
+use wcontainers_gpu::{
+    BufferUsage, CopyBufferTexture, FORMAT_FACTS, TextureDesc as GpuTexture, TextureRegion,
+};
 
 const COMPARED_FORMAT_UNCLAIMED: &str =
     "a comparison through a view of a format Direct3D does not compare";
 const COMPARED_VIEW_INVALID: &str = "a comparison through a multisampled or 3D view";
 
 /// A storage view of a stage read through a buffer, and the copies around its uses.
-pub(crate) struct Through<B: Backend> {
+pub(crate) struct Through<B: Gpu> {
     register: u32,
     texture: Rc<Texture<B>>,
     mip: u32,
@@ -28,7 +31,7 @@ pub(crate) struct Through<B: Backend> {
     why: SlowPath,
 }
 
-impl<B: Backend> Through<B> {
+impl<B: Gpu> Through<B> {
     pub(super) fn register(&self) -> u32 {
         self.register
     }
@@ -45,36 +48,55 @@ impl<B: Backend> Through<B> {
     }
 }
 
-impl<B: Backend> Device<B> {
-    /// Whether `stage`'s shader reads its storage view at `register` through a buffer.
-    pub(super) fn reads_through(&self, stage: usize, register: u32) -> bool {
-        self.stage_shader(stage).as_ref().is_some_and(|s| {
-            s.typed
-                .iter()
-                .any(|t| t.storage && !t.buffer && t.through && t.register == register)
-                || register < u64::BITS
-                    && self.stored_through_slots(stage, s) & (1 << register) != 0
-        })
+impl<B: Gpu> Device<B> {
+    /// Why `stage`'s shader reads its storage view at `register` through a buffer, where it does.
+    pub(super) fn reads_through(&self, stage: usize, register: u32) -> Option<SlowPath> {
+        let s = self.stage_shader(stage).as_ref()?;
+        let t = s
+            .typed
+            .iter()
+            .find(|t| t.storage && !t.buffer && t.register == register)?;
+        t.through.or_else(|| self.format_through(stage, t))
     }
 
-    /// The storage texture slots of `s` whose view bound at `stage` is of a format the back end
-    /// cannot store into (`StorageFormatThroughBuffer`).
+    /// The storage texture slots of `s` read through a buffer for the format of the view bound
+    /// at `stage` ([`Self::format_through`]).
     pub(super) fn stored_through_slots(&self, stage: usize, s: &Shader<B>) -> u64 {
         s.typed
             .iter()
-            .filter(|t| t.storage && !t.buffer && !t.through && t.register < u64::BITS)
-            .filter(|t| {
-                matches!(
-                    self.ctx.uavs[stage].get(t.register as usize).and_then(Option::as_deref),
-                    Some(ShaderView::Texture(v)) if self.stored_through(v.format) || v.decoded.is_some()
-                )
-            })
+            .filter(|t| t.storage && !t.buffer && t.through.is_none() && t.register < u64::BITS)
+            .filter(|t| self.format_through(stage, t).is_some())
             .fold(0, |m, t| m | 1 << t.register)
     }
 
+    /// Why the storage view bound at `t`'s slot of `stage` is read through a buffer of its texels:
+    /// the back end cannot store into its format (`StorageFormatThroughBuffer`), or the program
+    /// loads from it and the back end does not load and store the format in one program
+    /// (`StorageReadWriteThroughBuffer`).
+    fn format_through(&self, stage: usize, t: &crate::shader::TypedView) -> Option<SlowPath> {
+        let Some(ShaderView::Texture(v)) = self.ctx.uavs[stage]
+            .get(t.register as usize)
+            .and_then(Option::as_deref)
+        else {
+            return None;
+        };
+        if self.stored_through(v.format) || v.decoded.is_some() {
+            Some(SlowPath::StorageFormatThroughBuffer)
+        } else if t.loaded && self.read_written_through(v.format) {
+            Some(SlowPath::StorageReadWriteThroughBuffer)
+        } else {
+            None
+        }
+    }
+
     /// A buffer holding the texels of storage view `v`, bound at `register` of a stage.
-    pub(super) fn through_view(&mut self, register: u32, v: &View<B>) -> Result<Through<B>> {
-        let (bw, bh, bytes) = v.format.block();
+    pub(super) fn through_view(
+        &mut self,
+        register: u32,
+        v: &View<B>,
+        why: SlowPath,
+    ) -> Result<Through<B>> {
+        let (bw, bh, bytes) = FORMAT_FACTS[v.format as usize].block;
         if (bw, bh) != (1, 1) || v.texture.desc.sample_count > 1 {
             return Err(Error::InvalidArg(
                 "a storage view of a block-compressed or multisampled texture",
@@ -108,11 +130,7 @@ impl<B: Backend> Device<B> {
             buffer: Kept::new(buffer, id, Object::Buffer, &self.graveyard),
             row_pitch,
             layout: [row_pitch / bytes, height, width, height, layers],
-            why: if self.stored_through(v.format) || v.decoded.is_some() {
-                SlowPath::StorageFormatThroughBuffer
-            } else {
-                SlowPath::AtomicsThroughBuffer
-            },
+            why,
         })
     }
 
@@ -132,7 +150,7 @@ impl<B: Backend> Device<B> {
         }
         self.end_pass();
         for t in &self.ctx.through[stage] {
-            self.backend.slow_paths().hit(t.why);
+            self.backend.record_slow_path(t.why);
             let texture = t.texture.gpu.handle.clone();
             self.backend.copy_texture_to_buffer(
                 &region(t, &texture),
@@ -167,7 +185,7 @@ impl<B: Backend> Device<B> {
     }
 }
 
-fn region<'a, B: Backend>(t: &Through<B>, texture: &'a B::Texture) -> TextureRegion<'a, B> {
+fn region<'a, B: Gpu>(t: &Through<B>, texture: &'a B::Texture) -> TextureRegion<'a, B> {
     TextureRegion {
         texture,
         mip: t.mip,
@@ -181,13 +199,13 @@ fn region<'a, B: Backend>(t: &Through<B>, texture: &'a B::Texture) -> TextureReg
     }
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// Copies the levels and layers view `v` sees between its texture and its twin: into the twin
     /// before a use, out of it after a write.
     pub(super) fn copy_twin(&mut self, v: &View<B>, into: bool) {
         if let Some((buffer, offset)) = &v.buffer {
             let extent = v.texture.mip_extent(0);
-            let (_, _, bytes) = v.format.block();
+            let (_, _, bytes) = FORMAT_FACTS[v.format as usize].block;
             let handle = buffer.handle();
             let copy = CopyBufferTexture {
                 buffer: &handle,
@@ -362,7 +380,7 @@ impl<B: Backend> Device<B> {
             return false;
         }
         self.end_pass();
-        self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+        self.backend.record_slow_path(SlowPath::ReinterpretCopy);
         for (v, _) in &views {
             if let ShaderView::Texture(t) = &**v {
                 self.copy_twin(t, true);

@@ -1563,6 +1563,12 @@ the API's own mechanism, or (in the few places that say so) listed as a loss.
   and GLES likewise; neither lets a program choose, so the raster block has no field for it. Lines are
   drawn by the back end's rule: a listed loss, at most the pixels at a line's ends and along its edges
   (compared with the reference at G4 with the tolerance Microsoft's own conformance allows lines).
+  Aliased lines into a multisampled target are the exception: Direct3D covers every sample of each
+  pixel the rule picks, where the back ends cover the samples their own multisampled rule picks, a
+  difference along the whole line. The front hands such draws to the stage helper, which draws each
+  line as a rectangle covering every pixel the rule may pick and passes the line's window-space ends;
+  the pixel program variant `VariantFlags::LINE_DIAMOND` keeps the pixels the diamond-exit rule picks
+  and discards the rest (`AliasedLinesAsQuads`), exact.
 - **Fractional constant depth bias.** OpenGL's `glPolygonOffset` units, Vulkan's
   `depthBiasConstantFactor` and Direct3D 12's `D3D12_RASTERIZER_DESC1::DepthBias` are floats;
   Direct3D 9 to 11's are integers. `RasterDesc::depth_bias` is a float; WebGPU's `depthBias` is an
@@ -1674,7 +1680,8 @@ and `420_OPAQUE` textures are built from ordinary ones, `R8G8_B8G8_UNORM` and `G
 `BlockDecoded`; `ID3D11VideoDevice` is not offered (4.12). `CopyResource` between multisampled
 textures: native on WebGPU, `MultisampleCopyResolved` on WebGL 2 (a listed loss, 4.12). A rasterizer
 state with `AntialiasedLineEnable` and `MultisampleEnable` off, on line draws:
-`AntialiasedLinesAsQuads` (4.12). `MultisampleEnable`'s choice between quadrilateral and aliased line
+`AntialiasedLinesAsQuads` (4.12). Line draws with both off into a multisampled
+target: `AliasedLinesAsQuads` (4.12). `MultisampleEnable`'s choice between quadrilateral and aliased line
 rasterisation for other line draws is a listed loss (4.12). A pixel shader's storage view read by a
 later draw of the same targets as a shader resource, vertex or constant buffer: `UsageScopeSplit` (4.7). A staging copy of a depth texture read back: `DepthReadByDraw` on both
 back ends (4.12).
@@ -2180,7 +2187,8 @@ the hull stage's patches and the tessellator's points a domain program reads, at
   variant, early tests in the program, the viewport adjustment, texture level and sample counts from
   the helpers (`TEXTURE_INFO`), line coverage (`LINE_COVERAGE`), clip distances and depth clamping in
   the program (`CLIP_DISTANCE`, `DEPTH_CLAMP`) and the primitive index from the stage helper
-  (`PRIMITIVE_ID_FROM_STAGE`) and a geometry shader's replay form (`GEOMETRY_REPLAY`, section 7)
+  (`PRIMITIVE_ID_FROM_STAGE`), cull distances a pixel shader reads, passed on by the vertex
+  program (`CULL_DISTANCE_LINKED`), and a geometry shader's replay form (`GEOMETRY_REPLAY`, section 7)
   are its flags; the clamped texture
   slots are `min_lod_clamped`; storage slots run through a buffer are `texels_through_buffer`; where
   the draw's bases come from is `draw_base`; a view's component mapping, applied by the program
@@ -2383,8 +2391,12 @@ met:
   and G3 compare); read backs of every format natively or from the host copy (`HostCopyKept`).
 
 Direct3D 11:
-- **WebGPU: feature level 11_0, when the adapter has 16384-texel 2D textures, 2048 3D extent and 2048
-  array layers, and depth32float-stencil8** (this Mac's Chrome has; WebGPU's defaults do not). An adapter
+- **WebGPU: the highest feature level whose every requirement the device meets: its sizes and stage
+  limits below and every row of Microsoft's format tables (4.12).** Natively (wgpu on Direct3D 12 with the
+  adapter's formats) that is 11_0; a browser's WebGPU meets 10_0 at most, since 10_1 and 11_0 require
+  8-sample targets (`B5G6R5_UNORM` at 10_1, 47 formats at 11_0) and 11_0 4-sample `R32G32B32A32_FLOAT`
+  targets, which it lacks. 11_0 needs 16384-texel 2D textures, 2048 3D extent and 2048
+  array layers, and depth32float-stencil8 (this Mac's Chrome has; WebGPU's defaults do not). An adapter
   without depth32float-stencil8 reports 9_3 whatever its sizes (9_3 has no `D32_FLOAT_S8X24_UINT`
   target). An adapter short of the sizes reports
   10_1 if it meets 10_1's sizes, with compute reported present at 10_1
@@ -2411,13 +2423,15 @@ Direct3D 11:
   instance step rates, fat targets, layered drawing, exact occlusion counts (4.12), typed storage
   stores without `texture-formats-tier1` (`StorageFormatThroughBuffer`), `SV_VertexID` and
   `SV_InstanceID` with non-zero bases (`DrawBaseInHelpers`, `DrawBaseFromArguments`), alpha-antialiased
-  lines (`AntialiasedLinesAsQuads`). Multisampling: 4 samples where WebGPU allows, reported per format
+  lines (`AntialiasedLinesAsQuads`). Multisampling: the counts the adapter allows, reported per format
   (4.12). Typed UAV loads of more formats follow `FormatCaps` storage read.
-- **WebGL 2: feature level 10_0**, when the device has 8 color targets, 8192-texel 2D and cube
-  textures, 2048 3D extent and 512 array layers, and EXT_color_buffer_float (GLES 3.0 guarantees only
-  2048, 2048, 256 and 256, and no float targets;
-  this Mac's Chrome gives 16384, 16384, 2048 and 2048); otherwise 9_3 (4096 2D and cube, 256 3D, 4
-  targets), otherwise 9_1. BC1 to BC5, 16 input slots and 14 constant buffers as above. `resinfo` and
+- **WebGL 2: feature level 9_3** (4096 2D and cube, 256 3D, 4 targets), otherwise 9_1. 10_0 reads
+  128 shader resource views a stage, and a WebGL 2 stage reads `MAX_TEXTURE_IMAGE_UNITS` textures (16
+  on ANGLE, the specification's least) with no other way to read texels, so 10_0 waits on views
+  past the units being read from textures they are copied into (not built). With that, 10_0 when
+  the device has 8 color targets, 8192-texel 2D and cube textures, 2048 3D extent and 512 array
+  layers, and EXT_color_buffer_float (GLES 3.0 guarantees only 2048, 2048, 256 and 256, and no float
+  targets; this Mac's Chrome gives 16384, 16384, 2048 and 2048), as follows. BC1 to BC5, 16 input slots and 14 constant buffers as above. `resinfo` and
   `sampleinfo` (shader model 4.0) by `TextureInfoInHelpers` (4.12). Compute is optional at 10_x and reported absent
   (`ComputeShaders_Plus_RawAndStructuredBuffers_Via_Shader_4_x` FALSE). Copies between multisampled
   textures: `MultisampleCopyResolved` (a listed loss, 4.12). Multisampling is optional for
@@ -2472,7 +2486,7 @@ the infrastructure crate and both back ends, and is where `B` is chosen):
   the stencil rule of 4.11) on a context that would not enforce them, and it reads ANGLE's `GL_`
   extension names for the WebGL ones it would read in Chrome (`GL_EXT_clip_control` for
   `EXT_clip_control`, and so on, one table in the back end). It reports the same `Caps` the browser
-  would on that GPU, so the Direct3D 11 front reports 10_0 as it does in Chrome. This is how G3 and G4
+  would on that GPU, so the Direct3D 11 front reports the level it does in Chrome. This is how G3 and G4
   run their Direct3D 11 tests on WebGL 2 against real Direct3D on the same GPU; what WebGL adds over
   GLES 3.0 (its validation) is then covered by the same back end's tests in Chrome (G3).
 - **Container modules.** The same crate built for `wasm32-unknown-unknown` once per back end:

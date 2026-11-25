@@ -12,7 +12,7 @@ use meson_build::{
 };
 
 /// The Gallium headers the driver is written against, and the bindings made of them in `OUT_DIR`
-/// (`src/gallium.rs` includes them).
+/// (`src/gallium.rs` includes them from there by their file name).
 const GALLIUM_HEADER: &str = "bridge/gallium.h";
 /// The bit fields bindgen cannot lay out as Visual C++ does, read in C (`bridge/fields.h`).
 const FIELDS: &str = "bridge/fields.c";
@@ -21,13 +21,14 @@ const FIELDS_LIBRARY: &str = "wcontainers_opengl_fields";
 const BINDINGS: &str = "gallium.rs";
 /// What the bindings hold: Gallium's types and constants, and the functions of Mesa's that the
 /// driver calls.
-const ALLOWED_TYPES: &str = "pipe_.*|util_format_description|blitter_context";
+const ALLOWED_TYPES: &str = "pipe_.*|util_format_description|blitter_context|u_transfer_vtbl";
 const ALLOWED_FUNCTIONS: &str = "u_init_pipe_screen_caps|u_upload_create_default|u_upload_destroy|\
-     util_format_description|util_copy_framebuffer_state|util_blitter_(create|destroy|blit|is_blit_supported)|\
+     util_format_description|util_copy_framebuffer_state|util_blitter_(create|destroy|blit|is_blit_supported|stencil_fallback|clear_depth_stencil|default_dst_texture)|\
      wc_sampler_view_.*|tgsi_to_nir|u_index_(translator|generator)|util_prim_restart_convert_to_direct|\
-     u_default_get_sample_position";
-const ALLOWED_CONSTANTS: &str =
-    "PIPE_.*|MESA_SHADER_.*|MESA_PRIM_.*|PV_(FIRST|LAST)|PR_DISABLE|U_TRANSLATE_.*";
+     u_default_get_sample_position|u_default_texture_subdata|\
+     u_transfer_helper_(create|destroy|transfer_map|transfer_unmap|transfer_flush_region)";
+const ALLOWED_CONSTANTS: &str = "PIPE_.*|MESA_SHADER_.*|MESA_PRIM_.*|PV_(FIRST|LAST)|PR_DISABLE|U_TRANSLATE_.*|\
+     U_TRANSFER_HELPER_.*|MAX_GEOMETRY_(OUTPUT_VERTICES|TOTAL_OUTPUT_COMPONENTS|SHADER_INVOCATIONS)";
 /// The Gallium file whose defines (and, for `FIELDS`, C standard) the bindings take from Mesa's
 /// compile commands.
 const FLAGS_FROM: &str = "u_screen.c";
@@ -86,8 +87,7 @@ fn main() {
         .generate_comments(false)
         .generate()
         .expect("bindgen reads Mesa's Gallium headers");
-    let file =
-        PathBuf::from(env::var_os("OUT_DIR").expect("cargo sets the output folder")).join(BINDINGS);
+    let file = build_rs::input::out_dir().join(BINDINGS);
     bindings
         .write_to_file(&file)
         .expect("the bindings are written");

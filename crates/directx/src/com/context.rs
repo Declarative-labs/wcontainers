@@ -263,7 +263,7 @@ fn load<O: Counted + ComObjectInterface<I>, I: Interface>(
 
 /// A deferred context's copy of a mapped subresource, laid out at its own pitches.
 struct Staging {
-    bytes: Vec<u8>,
+    bytes: wcontainers_direct3d_11::object::Shadow,
     row_pitch: u32,
     depth_pitch: u32,
     /// Bytes of a row and rows of a slice, and slices, of the subresource.
@@ -1545,17 +1545,16 @@ impl Context {
 
     /// `ID3D11Multithread::Enter`: the library's lock, held until `Leave`.
     pub(super) fn enter(&self) {
-        std::mem::forget(lock());
+        super::enter();
         let entered = &self.kept.entered;
         entered.set(entered.get() + 1);
     }
 
+    /// Gives back a hold this thread took by `Enter`; a thread that took none gives back nothing.
     pub(super) fn leave(&self) {
         let entered = &self.kept.entered;
-        if entered.get() > 0 {
+        if entered.get() > 0 && super::leave() {
             entered.set(entered.get() - 1);
-            // SAFETY: this thread holds the lock taken by its `Enter`, and the call's own above it.
-            unsafe { unlock() };
         }
     }
 
@@ -1696,7 +1695,7 @@ impl Context {
         match mapped {
             Ok(m) => {
                 *out = D3D11_MAPPED_SUBRESOURCE {
-                    pData: m.data.cast(),
+                    pData: m.data.as_ptr().cast_mut().cast(),
                     RowPitch: m.row_pitch,
                     DepthPitch: m.depth_pitch,
                 };
@@ -1734,16 +1733,14 @@ impl Context {
                 for y in 0..rows {
                     let from = (z * depth_pitch + y * row_pitch) as usize;
                     let to = (z * m.depth_pitch + y * m.row_pitch) as usize;
-                    // SAFETY: the map hands out its subresource's rows at its pitches.
-                    unsafe {
-                        std::ptr::copy_nonoverlapping(
-                            bytes[from..][..row as usize].as_ptr(),
-                            m.data.add(to),
-                            row as usize,
-                        )
-                    };
+                    let (from, to) = (
+                        &bytes[from..][..row as usize],
+                        &m.data[to..][..row as usize],
+                    );
+                    to.iter().zip(from).for_each(|(t, f)| t.set(f.get()));
                 }
             }
+            drop(m);
             f.unmap(&r, sub);
             Ok(())
         });
@@ -1773,7 +1770,11 @@ impl Context {
         let key = (address(r), sub);
         let s = match kind {
             map::WRITE_DISCARD => staged.entry(key).insert_entry(Staging {
-                bytes: vec![0; (rows.0 * rows.1 * rows.2) as usize],
+                bytes: wcontainers_direct3d_11::object::shadow_of(&mut vec![
+                    0;
+                    (rows.0 * rows.1 * rows.2)
+                        as usize
+                ]),
                 row_pitch: rows.0,
                 depth_pitch: rows.0 * rows.1,
                 rows,
@@ -1788,7 +1789,7 @@ impl Context {
         };
         let s = s.into_mut();
         Ok(wcontainers_direct3d_11::Mapped {
-            data: s.bytes.as_mut_ptr(),
+            data: s.bytes.clone(),
             row_pitch: s.row_pitch,
             depth_pitch: s.depth_pitch,
         })

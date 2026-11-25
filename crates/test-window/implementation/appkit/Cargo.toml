@@ -1,0 +1,34 @@
+[package]
+name = "wcontainers-test-window-appkit"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+raw-window-handle = "0.6.2"
+wcontainers-test-window = { path = "../.." }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.3"
+objc2-app-kit = "0.3.2"
+# `CFData::to_vec`, for a capture's bytes.
+objc2-core-foundation = "0.3.2"
+objc2-core-graphics = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-quartz-core = "0.3.2"
+objc2-screen-capture-kit = "0.3.2"
+
+[dev-dependencies]
+wcontainers-test-window-conformance = { path = "../../conformance" }
+
+# A bindings crate: it denies unsafe code, so that each use is marked with its reason.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

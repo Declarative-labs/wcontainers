@@ -18,7 +18,7 @@ use naga::{
     TypeInner, VectorSize,
 };
 use spirv::{Decoration, Dim, ImageFormat, Op, StorageClass};
-use wcontainers_gpu::{Reflection, ShaderStage, TexelBufferRoute, VariantKey};
+use wcontainers_gpu::{Reflection, SLOT_KINDS, ShaderStage, TexelBufferRoute, VariantKey};
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
@@ -59,76 +59,85 @@ impl Declared {
         let binding = module.global_variables[var]
             .binding
             .map_or(0, |b| b.binding);
-        binding.wrapping_sub(kind.first_binding())
+        binding.wrapping_sub(SLOT_KINDS[kind as usize].first_binding)
     }
 }
 
 /// How many pointer and array levels are looked through from a variable to its image type.
 const ELEMENT_LEVELS: usize = 4;
 
+/// `Sampled` of an `OpTypeImage` used without a sampler: a storage image.
+const STORAGE: u32 = 2;
+
 /// Finds the typed buffers and storage images the SPIR-V declares, and rewrites the image types of
 /// typed buffers and formatless storage images in place into ones naga's reader takes.
-pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
-    use super::words::{
-        POINTER_TYPE, POINTER_WORDS, VARIABLE_STORAGE_CLASS, decorate, type_image, type_int,
+pub(super) fn prepare(spirv: &mut rspirv::dr::Module) -> Vec<Declared> {
+    use super::staged::{
+        DECORATION_LITERAL, DECORATION_TARGET, POINTEE, SIGNEDNESS, STORAGE_CLASS, decorates, id,
+        literal,
     };
-    let mut sets = BTreeMap::new();
-    let mut bindings = BTreeMap::new();
+    use rspirv::dr::{Instruction, Operand};
+    /// `OpTypeImage`'s operands (3.32.6) used here.
+    const SAMPLED_TYPE: usize = 0;
+    const DIM: usize = 1;
+    const SAMPLED: usize = 5;
+    const FORMAT: usize = 6;
+    let decorated = |d: Decoration| -> BTreeMap<u32, u32> {
+        spirv
+            .annotations
+            .iter()
+            .filter(|i| decorates(i, d))
+            .filter_map(|i| Some((id(i, DECORATION_TARGET)?, literal(i, DECORATION_LITERAL)?)))
+            .collect()
+    };
+    let (sets, bindings) = (
+        decorated(Decoration::DescriptorSet),
+        decorated(Decoration::Binding),
+    );
     let mut kinds = BTreeMap::new();
     let mut images = BTreeMap::new();
     // A pointer's or array's element type.
     let mut elements = BTreeMap::new();
     let mut variables = Vec::new();
-    let mut at = super::words::HEADER;
-    while at < words.len() {
-        let count = (words[at] >> super::words::COUNT_SHIFT) as usize;
-        let Some(w) = words.get(at..at + count).filter(|_| count > 0) else {
-            break;
+    for (at, i) in spirv.types_global_values.iter().enumerate() {
+        let Some(result) = i.result_id else {
+            continue;
         };
-        match Op::from_u32(w[0] & super::words::OPCODE_MASK) {
-            Some(Op::Decorate) if count >= decorate::DECORATE_WORDS => {
-                let (target, literal) = (w[decorate::TARGET], w[decorate::LITERAL]);
-                if w[decorate::DECORATION] == Decoration::DescriptorSet as u32 {
-                    sets.insert(target, literal);
-                } else if w[decorate::DECORATION] == Decoration::Binding as u32 {
-                    bindings.insert(target, literal);
-                }
-            }
-            Some(Op::TypeInt) if count >= type_int::TYPE_INT_WORDS => {
-                let kind = if w[type_int::SIGNEDNESS] != 0 {
-                    ScalarKind::Sint
-                } else {
-                    ScalarKind::Uint
+        match i.class.opcode {
+            Op::TypeInt => {
+                let kind = match literal(i, SIGNEDNESS) {
+                    Some(0) => ScalarKind::Uint,
+                    _ => ScalarKind::Sint,
                 };
-                kinds.insert(w[1], kind);
+                kinds.insert(result, kind);
             }
-            Some(Op::TypeFloat) if count >= 3 => {
-                kinds.insert(w[1], ScalarKind::Float);
+            Op::TypeFloat => {
+                kinds.insert(result, ScalarKind::Float);
             }
-            Some(Op::TypeImage) if count >= type_image::TYPE_IMAGE_WORDS => {
-                images.insert(w[1], at);
+            Op::TypeImage => {
+                images.insert(result, at);
             }
-            Some(Op::TypePointer) if count >= POINTER_WORDS => {
-                elements.insert(w[1], w[POINTER_TYPE]);
+            Op::TypePointer => {
+                elements.extend(id(i, POINTEE).map(|e| (result, e)));
             }
-            Some(Op::TypeArray | Op::TypeRuntimeArray) if count >= 3 => {
-                elements.insert(w[1], w[2]);
+            Op::TypeArray | Op::TypeRuntimeArray => {
+                elements.extend(id(i, 0).map(|e| (result, e)));
             }
-            Some(Op::Variable)
-                if count >= POINTER_WORDS
-                    && w[VARIABLE_STORAGE_CLASS] == StorageClass::UniformConstant as u32 =>
+            Op::Variable
+                if i.operands.get(STORAGE_CLASS)
+                    == Some(&Operand::StorageClass(StorageClass::UniformConstant)) =>
             {
-                variables.push((w[1], w[2]));
+                variables.extend(i.result_type.map(|t| (t, result)));
             }
             _ => {}
         }
-        at += count;
     }
-    let buffer = |words: &[u32], i: usize| words[i + type_image::DIM] == Dim::DimBuffer as u32;
-    let storage = |words: &[u32], i: usize| words[i + type_image::SAMPLED] == type_image::STORAGE;
-    let formatless = |words: &[u32], i: usize| {
-        storage(words, i) && words[i + type_image::FORMAT] == ImageFormat::Unknown as u32
+    let buffer = |i: &Instruction| i.operands.get(DIM) == Some(&Operand::Dim(Dim::DimBuffer));
+    let storage = |i: &Instruction| literal(i, SAMPLED) == Some(STORAGE);
+    let formatless = |i: &Instruction| {
+        storage(i) && i.operands.get(FORMAT) == Some(&Operand::ImageFormat(ImageFormat::Unknown))
     };
+    let globals = &mut spirv.types_global_values;
     let mut declared = Vec::new();
     for (ty, id) in variables {
         let mut element = ty;
@@ -141,28 +150,29 @@ pub(super) fn prepare(words: &mut [u32]) -> Vec<Declared> {
         let (Some(&i), Some(&binding)) = (images.get(&element), bindings.get(&id)) else {
             continue;
         };
-        let storage = storage(words, i);
-        if buffer(words, i) || storage {
+        let image = &globals[i];
+        if buffer(image) || storage(image) {
             declared.push(Declared {
                 set: sets.get(&id).copied().unwrap_or(0),
                 binding,
-                storage,
-                buffer: buffer(words, i),
+                storage: storage(image),
+                buffer: buffer(image),
             });
         }
     }
     for &i in images.values() {
-        if formatless(words, i) {
-            let placeholder = match kinds.get(&words[i + type_image::SAMPLED_TYPE]) {
+        let image = &mut globals[i];
+        if formatless(image) {
+            let placeholder = match id(image, SAMPLED_TYPE).and_then(|t| kinds.get(&t)) {
                 Some(ScalarKind::Float) => ImageFormat::R32f,
                 Some(ScalarKind::Sint) => ImageFormat::R32i,
                 Some(ScalarKind::Uint) => ImageFormat::R32ui,
                 _ => continue,
             };
-            words[i + type_image::FORMAT] = placeholder as u32;
+            image.operands[FORMAT] = Operand::ImageFormat(placeholder);
         }
-        if buffer(words, i) {
-            words[i + type_image::DIM] = Dim::Dim1D as u32;
+        if buffer(image) {
+            image.operands[DIM] = Operand::Dim(Dim::Dim1D);
         }
     }
     declared
@@ -1712,3 +1722,85 @@ fn spelled(module: &mut Module, ty: Handle<Type>) -> Handle<Type> {
 
 /// The declared name of a compare-exchange's result returned from a function.
 const COMPARE_EXCHANGE_RESULT: &str = "CompareExchangeResult";
+
+#[cfg(test)]
+mod tests {
+    use super::STORAGE;
+
+    /// A fragment program sampling a texture through a storage texture in the sampler's place, as
+    /// damaged DXIL once made dxil-spirv write: the carried SPIR-V reader refuses it with an error
+    /// instead of panicking (which ends a WebAssembly instance).
+    #[test]
+    fn a_sample_through_no_sampler_is_an_error_of_the_reader() -> Result<(), rspirv::dr::Error> {
+        use rspirv::binary::Assemble;
+        use rspirv::dr::Operand;
+        use spirv::{
+            AddressingModel, Capability, Decoration, Dim, ExecutionMode, ExecutionModel,
+            FunctionControl, ImageFormat, MemoryModel, StorageClass,
+        };
+        /// `Sampled` of an image used with a sampler.
+        const WITH_SAMPLER: u32 = 1;
+        let mut b = rspirv::dr::Builder::new();
+        b.capability(Capability::Shader);
+        b.memory_model(AddressingModel::Logical, MemoryModel::GLSL450);
+        let void = b.type_void();
+        let function_type = b.type_function(void, []);
+        let float = b.type_float(32, None);
+        let vec2 = b.type_vector(float, 2);
+        let vec4 = b.type_vector(float, 4);
+        let mut image =
+            |sampled, format| b.type_image(float, Dim::Dim2D, 0, 0, 0, sampled, format, None);
+        let texture_type = image(WITH_SAMPLER, ImageFormat::Unknown);
+        let storage_type = image(STORAGE, ImageFormat::R32f);
+        let sampled_type = b.type_sampled_image(texture_type);
+        let uniform = StorageClass::UniformConstant;
+        let texture_pointer = b.type_pointer(None, uniform, texture_type);
+        let storage_pointer = b.type_pointer(None, uniform, storage_type);
+        let output_pointer = b.type_pointer(None, StorageClass::Output, vec4);
+        let texture = b.variable(texture_pointer, None, uniform, None);
+        let storage = b.variable(storage_pointer, None, uniform, None);
+        let output = b.variable(output_pointer, None, StorageClass::Output, None);
+        b.decorate(output, Decoration::Location, [Operand::LiteralBit32(0)]);
+        for (binding, variable) in [texture, storage].into_iter().enumerate() {
+            let binding = u32::try_from(binding).unwrap();
+            b.decorate(
+                variable,
+                Decoration::DescriptorSet,
+                [Operand::LiteralBit32(0)],
+            );
+            b.decorate(
+                variable,
+                Decoration::Binding,
+                [Operand::LiteralBit32(binding)],
+            );
+        }
+        let zero = b.constant_bit32(float, 0);
+        let coordinate = b.constant_composite(vec2, [zero, zero]);
+        let main = b.begin_function(void, None, FunctionControl::NONE, function_type)?;
+        b.begin_block(None)?;
+        let texture_value = b.load(texture_type, None, texture, None, [])?;
+        let storage_value = b.load(storage_type, None, storage, None, [])?;
+        let sampled = b.sampled_image(sampled_type, None, texture_value, storage_value)?;
+        let colour = b.image_sample_implicit_lod(vec4, None, sampled, coordinate, None, [])?;
+        b.store(output, colour, None, [])?;
+        b.ret()?;
+        b.end_function()?;
+        b.entry_point(ExecutionModel::Fragment, main, crate::ENTRY_POINT, [output]);
+        b.execution_mode(main, ExecutionMode::OriginUpperLeft, []);
+        let words = b.module().assemble();
+
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let options = naga::front::spv::Options::default();
+        let read = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            naga::front::spv::parse_u8_slice(&bytes, &options)
+        }));
+        assert!(
+            matches!(
+                read,
+                Ok(Err(naga::front::spv::Error::InvalidImageExpression(_)))
+            ),
+            "{read:?}"
+        );
+        Ok(())
+    }
+}

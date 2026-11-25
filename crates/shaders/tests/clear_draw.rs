@@ -11,10 +11,12 @@
 mod common;
 
 use common::*;
+// The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
-    Extent, Format, FormatUse, Origin, Program, ReadSource, StageSet, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
+    BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups, Extent,
+    FORMAT_FACTS, Format, FormatUse, Gpu as Backend, Origin, Program, ReadSource, StageSet,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
+    WriteMode,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::ConvertError;
@@ -26,8 +28,8 @@ use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::core::Interface;
 
-/// The formats WGSL has storage views of.
-const FORMATS: [Format; 40] = [
+/// The formats WGSL has storage views of, and `A8Unorm`, which the back ends hold as `rgba8unorm`.
+const FORMATS: [Format; 41] = [
     Format::R8Unorm,
     Format::R8Snorm,
     Format::R8Uint,
@@ -68,6 +70,7 @@ const FORMATS: [Format; 40] = [
     Format::Rgba32Uint,
     Format::Rgba32Sint,
     Format::Rgba32Float,
+    Format::A8Unorm,
 ];
 
 /// Float clear values, from which each case picks four.
@@ -107,7 +110,7 @@ fn cases(gpu: &Gpu, b: &impl Backend, seed: u64, n: u64) -> Vec<Case> {
     let can = |f: Format| {
         let need = D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW.0 as u32;
         let d3d = unsafe { gpu.device.CheckFormatSupport(dxgi(f)) }.is_ok_and(|s| s & need == need);
-        d3d && b.caps().formats.get(f).contains(FormatUse::STORAGE_WRITE)
+        d3d && b.caps().formats.uses[f as usize].contains(FormatUse::STORAGE_WRITE)
     };
     let formats: Vec<Format> = FORMATS.into_iter().filter(|&f| can(f)).collect();
     eprintln!("{} formats: {formats:?}", formats.len());
@@ -126,7 +129,7 @@ fn cases(gpu: &Gpu, b: &impl Backend, seed: u64, n: u64) -> Vec<Case> {
             let size = [3 + next() % 18, 3 + next() % 18, layers];
             let first = next() % layers;
             let count = 1 + next() % (layers - first);
-            let bytes = size[0] * size[1] * layers * format.block().2;
+            let bytes = size[0] * size[1] * layers * FORMAT_FACTS[format as usize].block.2;
             let texels = (0..bytes).map(|_| next() as u8).collect();
             let float = next() % 2 == 0;
             let values = [0; 4].map(|_| {
@@ -156,7 +159,7 @@ fn cases(gpu: &Gpu, b: &impl Backend, seed: u64, n: u64) -> Vec<Case> {
 /// layer or slice.
 fn direct3d(gpu: &Gpu, case: &Case) -> Vec<u8> {
     let [w, h, l] = case.size;
-    let row = w * case.format.block().2;
+    let row = w * FORMAT_FACTS[case.format as usize].block.2;
     let volume = case.dimension == ViewDimension::D3;
     let make = |staging: bool| -> ID3D11Resource {
         let (usage, bind, cpu) = if staging {
@@ -255,7 +258,7 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Vec<u8> {
 /// value is refused (`refused`).
 fn ours<B: Backend>(b: &mut B, case: &Case, refused: &mut Vec<&'static str>) -> Vec<u8> {
     let [w, h, l] = case.size;
-    let row = w * case.format.block().2;
+    let row = w * FORMAT_FACTS[case.format as usize].block.2;
     let volume = case.dimension == ViewDimension::D3;
     let texture = b
         .create_texture(&TextureDesc {
@@ -414,7 +417,7 @@ fn storage_clears_match_direct3d() {
         let hardware = direct3d(&gpu, case);
         let before = refused.len();
         let made = ours(&mut backend, case, &mut refused);
-        let size = case.format.block().2 as usize;
+        let size = FORMAT_FACTS[case.format as usize].block.2 as usize;
         let differ = |a: &[u8], b: &[u8], name: &str| {
             let mut apart = 0;
             for (t, (x, y)) in a.chunks(size).zip(b.chunks(size)).enumerate() {

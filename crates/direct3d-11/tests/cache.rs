@@ -2,11 +2,16 @@
 //! run's first device builds the recorded combination before any draw, which its first draw then
 //! uses. Its own test binary, since the cache is the process's.
 
+#[allow(dead_code)]
+#[path = "support/record.rs"]
+mod record;
+
+use record::Recorder;
+
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
 use wcontainers_direct3d_11::desc::*;
-use wcontainers_direct3d_11::record::Recorder;
 use wcontainers_direct3d_11::{Device, cache};
 use wcontainers_gpu::SourceStage;
 use wcontainers_shaders::cache::Cache;

@@ -5,7 +5,7 @@
 use crate::draw;
 use crate::renames::{Kit, begin, finish, kit};
 use wcontainers_gpu::{
-    Backend, DeviceStatus, DrawCall, DrawRange, Features, Format, GpuError, Program, ShaderModule,
+    DeviceStatus, DrawCall, DrawRange, Features, Format, Gpu, GpuError, Program, ShaderModule,
     ShaderStage, Topology, Viewport,
 };
 use wcontainers_gpu_webgpu::WebGpu;
@@ -173,7 +173,7 @@ pub fn shader(
     b: &mut WebGpu,
     feature: Feature,
     stage: ShaderStage,
-) -> Result<<WebGpu as Backend>::Shader, GpuError> {
+) -> Result<<WebGpu as Gpu>::Shader, GpuError> {
     let module = naga::front::wgsl::parse_str(&feature.source()).expect("the program parses");
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
@@ -199,7 +199,7 @@ pub fn shader(
 /// Where the device declares `feature`, draws its program and requires every pixel as the
 /// feature defines it; one line saying what was found, or the failed check.
 pub fn check(b: &mut WebGpu, feature: Feature) -> Result<String, String> {
-    if !b.caps().has(feature.declared()) {
+    if !b.caps().features.contains(feature.declared()) {
         return Ok(format!("{}: absent", feature.name()));
     }
     let vs = shader(b, feature, ShaderStage::Vertex).map_err(|e| format!("{e:?}"))?;
@@ -235,7 +235,7 @@ pub fn check(b: &mut WebGpu, feature: Feature) -> Result<String, String> {
 }
 
 /// Draws `count` vertices of the kit's program over the whole row.
-fn draw_vertices(b: &mut WebGpu, k: &Kit, set: &<WebGpu as Backend>::BindingSet, count: u32) {
+fn draw_vertices(b: &mut WebGpu, k: &Kit, set: &<WebGpu as Gpu>::BindingSet, count: u32) {
     let viewport = [Viewport {
         x: 0,
         y: 0,

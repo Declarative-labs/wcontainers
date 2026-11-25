@@ -152,6 +152,24 @@ fn blend11(d: &D3D10_BLEND_DESC) -> D3D11_BLEND_DESC {
     b
 }
 
+/// Direct3D 10.1's blend description as Direct3D 11's, which has the same fields.
+fn blend11_of1(d: &D3D10_BLEND_DESC1) -> D3D11_BLEND_DESC {
+    D3D11_BLEND_DESC {
+        AlphaToCoverageEnable: d.AlphaToCoverageEnable,
+        IndependentBlendEnable: d.IndependentBlendEnable,
+        RenderTarget: d.RenderTarget.map(|t| D3D11_RENDER_TARGET_BLEND_DESC {
+            BlendEnable: t.BlendEnable,
+            SrcBlend: D3D11_BLEND(t.SrcBlend.0),
+            DestBlend: D3D11_BLEND(t.DestBlend.0),
+            BlendOp: D3D11_BLEND_OP(t.BlendOp.0),
+            SrcBlendAlpha: D3D11_BLEND(t.SrcBlendAlpha.0),
+            DestBlendAlpha: D3D11_BLEND(t.DestBlendAlpha.0),
+            BlendOpAlpha: D3D11_BLEND_OP(t.BlendOpAlpha.0),
+            RenderTargetWriteMask: t.RenderTargetWriteMask,
+        }),
+    }
+}
+
 impl Device_Impl {
     /// No device-dependent counters, as Direct3D answers for a device without them.
     pub(super) fn check_counter_info10(&self, info: *mut D3D10_COUNTER_INFO) {
@@ -832,9 +850,17 @@ impl Device_Impl {
         init: *const D3D10_SUBRESOURCE_DATA,
     ) -> Result<ID3D10Texture1D> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let mut d: D3D11_TEXTURE1D_DESC = unsafe { convert::same_fields(d) };
-        d.MiscFlags = misc11(d.MiscFlags);
-        d.CPUAccessFlags = cpu_access10(d.Usage, d.BindFlags, d.CPUAccessFlags);
+        let usage = D3D11_USAGE(d.Usage.0);
+        let d = D3D11_TEXTURE1D_DESC {
+            Width: d.Width,
+            MipLevels: d.MipLevels,
+            ArraySize: d.ArraySize,
+            Format: d.Format,
+            Usage: usage,
+            BindFlags: d.BindFlags,
+            CPUAccessFlags: cpu_access10(usage, d.BindFlags, d.CPUAccessFlags),
+            MiscFlags: misc11(d.MiscFlags),
+        };
         let mut t = None;
         self.create_texture1_d(&d, init.cast(), OutRef::from(&mut t))?;
         t.ok_or(E_INVALIDARG)?.cast()
@@ -846,9 +872,19 @@ impl Device_Impl {
         init: *const D3D10_SUBRESOURCE_DATA,
     ) -> Result<ID3D10Texture2D> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let mut d: D3D11_TEXTURE2D_DESC = unsafe { convert::same_fields(d) };
-        d.MiscFlags = misc11(d.MiscFlags);
-        d.CPUAccessFlags = cpu_access10(d.Usage, d.BindFlags, d.CPUAccessFlags);
+        let usage = D3D11_USAGE(d.Usage.0);
+        let d = D3D11_TEXTURE2D_DESC {
+            Width: d.Width,
+            Height: d.Height,
+            MipLevels: d.MipLevels,
+            ArraySize: d.ArraySize,
+            Format: d.Format,
+            SampleDesc: d.SampleDesc,
+            Usage: usage,
+            BindFlags: d.BindFlags,
+            CPUAccessFlags: cpu_access10(usage, d.BindFlags, d.CPUAccessFlags),
+            MiscFlags: misc11(d.MiscFlags),
+        };
         let mut t = None;
         self.create_texture2_d(&d, init.cast(), OutRef::from(&mut t))?;
         t.ok_or(E_INVALIDARG)?.cast()
@@ -860,9 +896,18 @@ impl Device_Impl {
         init: *const D3D10_SUBRESOURCE_DATA,
     ) -> Result<ID3D10Texture3D> {
         let d = unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?;
-        let mut d: D3D11_TEXTURE3D_DESC = unsafe { convert::same_fields(d) };
-        d.MiscFlags = misc11(d.MiscFlags);
-        d.CPUAccessFlags = cpu_access10(d.Usage, d.BindFlags, d.CPUAccessFlags);
+        let usage = D3D11_USAGE(d.Usage.0);
+        let d = D3D11_TEXTURE3D_DESC {
+            Width: d.Width,
+            Height: d.Height,
+            Depth: d.Depth,
+            MipLevels: d.MipLevels,
+            Format: d.Format,
+            Usage: usage,
+            BindFlags: d.BindFlags,
+            CPUAccessFlags: cpu_access10(usage, d.BindFlags, d.CPUAccessFlags),
+            MiscFlags: misc11(d.MiscFlags),
+        };
         let mut t = None;
         self.create_texture3_d(&d, init.cast(), OutRef::from(&mut t))?;
         t.ok_or(E_INVALIDARG)?.cast()
@@ -1065,14 +1110,12 @@ impl Device_Impl {
         as_one(out, |o| self.create_blend_state(&d, o))
     }
 
-    /// Direct3D 10.1's blend description is Direct3D 11's, in the same layout.
     pub(super) fn create_blend_state110(
         &self,
         desc: *const D3D10_BLEND_DESC1,
         out: OutRef<ID3D10BlendState1>,
     ) -> Result<()> {
-        let d: D3D11_BLEND_DESC =
-            unsafe { convert::same_fields(desc.as_ref().ok_or(E_INVALIDARG)?) };
+        let d = blend11_of1(unsafe { desc.as_ref() }.ok_or(E_INVALIDARG)?);
         as_one(out, |o| self.create_blend_state(&d, o))
     }
 

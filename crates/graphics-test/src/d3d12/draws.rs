@@ -3,8 +3,6 @@
 //! vertex and index buffer views starting inside their buffers; and fourteen constant buffer views
 //! in one table, and views of windows into one large buffer, past whose end reads give zero.
 
-use std::mem::transmute_copy;
-
 use anyhow::{Context, Result};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::D3D11_VIEWPORT;
@@ -14,7 +12,7 @@ use windows::core::s;
 
 use super::scenes::pipeline;
 use super::states::{Immediate, RT};
-use super::{Gpu, area, element};
+use super::{Gpu, area, element, viewport12};
 use crate::d3d11::cell;
 use crate::d3d11::scenes::{constants as constants11, draws as draws11};
 use crate::dxil;
@@ -133,7 +131,7 @@ pub fn draws(gpu: &Gpu) -> Result<Vec<Output>> {
                 vertex_view(&colors, 0, colors_size, 16),
             ]),
         );
-        let at = |i: u32| list.RSSetViewports(&[transmute_copy(&cell(i, 3, 64.0))]);
+        let at = |i: u32| list.RSSetViewports(&[viewport12(&cell(i, 3, 64.0))]);
         at(0);
         list.DrawInstanced(6, 1, start, 0);
         at(1);

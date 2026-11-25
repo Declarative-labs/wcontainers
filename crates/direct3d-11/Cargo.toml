@@ -17,6 +17,8 @@ wcontainers-directx-graphics-infrastructure = { path = "../directx-graphics-infr
 blake3 = { version = "1", default-features = false }
 naga = { workspace = true }
 serde = { version = "1", features = ["derive"] }
+# Mapped bytes are cells the program writes through a pointer; the device reads them as bytes.
+zerocopy = { workspace = true }
 
 [lints]
 workspace = true

@@ -26,17 +26,11 @@ fn launch() -> anyhow::Result<i32> {
     use std::os::windows::process::CommandExt;
 
     use anyhow::Context;
-    use windows::Win32::Foundation::{
-        CloseHandle, DBG_CONTINUE, DBG_EXCEPTION_NOT_HANDLED, EXCEPTION_BREAKPOINT, HANDLE,
-        STATUS_INVALID_HANDLE,
-    };
-    use windows::Win32::Storage::FileSystem::{FILE_NAME_NORMALIZED, GetFinalPathNameByHandleW};
-    use windows::Win32::System::Diagnostics::Debug::{
-        CREATE_PROCESS_DEBUG_EVENT, ContinueDebugEvent, DEBUG_EVENT, DebugActiveProcessStop,
-        DebugSetProcessKillOnExit, EXCEPTION_DEBUG_EVENT, EXIT_PROCESS_DEBUG_EVENT,
-        LOAD_DLL_DEBUG_EVENT, WaitForDebugEvent,
-    };
-    use windows::Win32::System::Threading::{DEBUG_PROCESS, INFINITE};
+    use wcontainers_win32::{DebugContinuation, DebugEventKind, StandaloneWin32, Win32};
+    use windows::Win32::Foundation::{EXCEPTION_BREAKPOINT, STATUS_INVALID_HANDLE};
+    use windows::Win32::System::Threading::DEBUG_PROCESS;
+
+    let win32 = wcontainers_win32_windows::WindowsWin32::new(());
 
     let args: Vec<String> = std::env::args().skip(1).collect();
     let [report, libraries, program, arguments @ ..] = &args[..] else {
@@ -63,80 +57,60 @@ fn launch() -> anyhow::Result<i32> {
         .spawn()
         .with_context(|| format!("starting {program}"))?;
     let root = child.id();
-    let path = |file: HANDLE| -> String {
-        let mut buffer = [0u16; 1024];
-        let n = unsafe { GetFinalPathNameByHandleW(file, &mut buffer, FILE_NAME_NORMALIZED) };
-        let path = String::from_utf16_lossy(&buffer[..(n as usize).min(buffer.len())]);
-        let _ = unsafe { CloseHandle(file) };
-        path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
-    };
     if !wanted.is_empty() {
-        unsafe { DebugSetProcessKillOnExit(false)? };
+        win32.set_debugged_processes_ended_on_exit(false)?;
     }
     // Processes being debugged: whether the loader's first breakpoint has passed, and which named
     // libraries each has loaded.
     let mut processes: HashMap<u32, (bool, Vec<bool>)> = HashMap::new();
     let mut root_let_go = false;
     while !wanted.is_empty() {
-        let mut event = DEBUG_EVENT::default();
-        unsafe { WaitForDebugEvent(&mut event, INFINITE)? };
-        let pid = event.dwProcessId;
+        let event = win32.wait_for_debug_event()?;
+        let pid = event.process;
         let process = processes
             .entry(pid)
             .or_insert_with(|| (false, vec![false; wanted.len()]));
-        let mut status = DBG_CONTINUE;
-        match event.dwDebugEventCode {
-            CREATE_PROCESS_DEBUG_EVENT => {
-                let file = unsafe { event.u.CreateProcessInfo.hFile };
-                if !file.is_invalid() {
-                    path(file);
-                }
-            }
-            LOAD_DLL_DEBUG_EVENT => {
-                let file = unsafe { event.u.LoadDll.hFile };
-                if !file.is_invalid() {
-                    let loaded = path(file);
-                    let name = loaded.rsplit('\\').next().unwrap_or("").to_lowercase();
-                    for (i, library) in wanted.iter().enumerate() {
-                        // Only a process's first load of a name is the one its program asked
-                        // for; a later one is by full path, as a stand-in loads the library it
-                        // stands in for.
-                        if *library == name && !process.1[i] {
-                            process.1[i] = true;
-                            if !found[i].iter().any(|p| p.eq_ignore_ascii_case(&loaded)) {
-                                found[i].push(loaded.clone());
-                            }
+        let mut status = DebugContinuation::Continue;
+        match &event.kind {
+            DebugEventKind::LibraryLoaded { path: Some(loaded) } => {
+                let name = loaded.rsplit('\\').next().unwrap_or("").to_lowercase();
+                for (i, library) in wanted.iter().enumerate() {
+                    // Only a process's first load of a name is the one its program asked
+                    // for; a later one is by full path, as a stand-in loads the library it
+                    // stands in for.
+                    if *library == name && !process.1[i] {
+                        process.1[i] = true;
+                        if !found[i].iter().any(|p| p.eq_ignore_ascii_case(loaded)) {
+                            found[i].push(loaded.clone());
                         }
                     }
                 }
             }
-            EXCEPTION_DEBUG_EVENT => {
+            DebugEventKind::Exception { code, first_chance } => {
                 // The loader's breakpoint for a starting debugger is the debugger's, and so is
                 // an invalid handle closed, which Windows raises only under a debugger; any
                 // other exception is the program's own business.
-                let code = unsafe { event.u.Exception.ExceptionRecord.ExceptionCode };
-                let ours = (!process.0 && code == EXCEPTION_BREAKPOINT)
-                    || (code == STATUS_INVALID_HANDLE
-                        && unsafe { event.u.Exception.dwFirstChance } != 0);
+                let ours = (!process.0 && *code == EXCEPTION_BREAKPOINT.0)
+                    || (*code == STATUS_INVALID_HANDLE.0 && *first_chance);
                 if !ours {
-                    status = DBG_EXCEPTION_NOT_HANDLED;
+                    status = DebugContinuation::ExceptionNotHandled;
                 }
-                if code == EXCEPTION_BREAKPOINT {
+                if *code == EXCEPTION_BREAKPOINT.0 {
                     process.0 = true;
                 }
             }
             _ => {}
         }
         let done = process.1.iter().all(|&loaded| loaded);
-        unsafe { ContinueDebugEvent(pid, event.dwThreadId, status)? };
-        if event.dwDebugEventCode == EXIT_PROCESS_DEBUG_EVENT {
+        win32.continue_debug_event(pid, event.thread, status)?;
+        if matches!(event.kind, DebugEventKind::ProcessExited) {
             processes.remove(&pid);
             // The program has ended: what it left running is not followed further.
             if pid == root {
                 break;
             }
         } else if done {
-            unsafe { DebugActiveProcessStop(pid)? };
+            win32.stop_debugging(pid)?;
             processes.remove(&pid);
             root_let_go |= pid == root;
         }
@@ -146,7 +120,7 @@ fn launch() -> anyhow::Result<i32> {
     }
     // Processes the program left running are let go.
     for pid in processes.keys() {
-        let _ = unsafe { DebugActiveProcessStop(*pid) };
+        let _ = win32.stop_debugging(*pid);
     }
     let code = child.wait()?.code().unwrap_or(2);
     let lines: Vec<String> = wanted

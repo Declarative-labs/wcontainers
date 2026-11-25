@@ -20,7 +20,7 @@ mod pulled;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use wcontainers_gpu::{Backend, Features};
+use wcontainers_gpu::{Features, Gpu};
 
 /// Milliseconds since the first call.
 fn now() -> f64 {
@@ -39,7 +39,7 @@ fn pulled_instance_data_draws_alike_and_its_cost_is_printed() {
     let (mut b, adapter) = pollster::block_on(draw::device(backends)).expect("a GPU adapter");
     eprintln!("adapter: {adapter}");
     assert!(
-        b.caps().has(Features::TIMESTAMPS),
+        b.caps().features.contains(Features::TIMESTAMPS),
         "timings need timestamps"
     );
     let frames: u32 = std::env::var("WEBGPU_FRAMES")

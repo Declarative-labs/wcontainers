@@ -17,7 +17,8 @@ use super::*;
 use crate::dxbc::{Kind, TypedView};
 use pull::Helpers;
 use std::ops::Range;
-use wcontainers_gpu::{Filter, SlotKind, ViewComponent};
+use wcontainers_gpu::{Filter, SLOT_KINDS, SlotKind, ViewComponent};
+use wcontainers_shaders::container::DxilViews;
 
 /// A typed view's slot: a storage slot (else a texture slot) and its place in its kind's range
 /// (`ReflectedBinding::slot`).
@@ -47,10 +48,10 @@ pub(super) struct Bound {
 
 /// A program made for what is bound, with its helper layout; `None` where the conversion
 /// failed.
-type Variant<B> = (Bound, Option<(<B as Backend>::Program, Helpers)>);
+type Variant<B> = (Bound, Option<(<B as Gpu>::Program, Helpers)>);
 
 /// A pipeline's stage whose program depends on what is bound.
-pub(super) struct Formats<B: Backend> {
+pub(super) struct Formats<B: Gpu> {
     /// The API stage (`D3D12_SHADER_VISIBILITY`, 0 for compute) and its bytecode.
     visibility: u32,
     code: Vec<u8>,
@@ -71,11 +72,12 @@ pub(super) struct Formats<B: Backend> {
 fn declared(
     code: &[u8],
     ranges: &[(SlotKind, u32, Range<u32>)],
+    dxil: Option<DxilViews>,
 ) -> (Vec<TypedView>, Vec<Range<u32>>) {
     let views = crate::dxbc::typed_views(code, ranges);
     let arrays = crate::dxbc::multisampled_arrays(code, ranges);
     let (dxil_views, dxil_arrays) = match views.is_none() || arrays.is_none() {
-        true => crate::dxil::declared(code),
+        true => crate::dxil::of(dxil, ranges),
         false => (None, None),
     };
     (
@@ -97,11 +99,20 @@ pub(super) fn typed_key(
     visibility: u32,
 ) -> (VariantKey, u64) {
     let mut key = VariantKey::default();
+    // A DXIL program's views, read once (no DXBC program chunk).
+    let dxil = match crate::dxbc::typed_views(code, &[]) {
+        Some(_) => None,
+        None => crate::cache::dxil_views(code),
+    };
     // Arrays declared without a length take the rest of the root signature's range.
-    if crate::dxbc::declares_unbounded_array(code) {
+    if crate::dxbc::declares_unbounded_array(code)
+        || dxil
+            .as_ref()
+            .is_some_and(crate::dxil::declares_unbounded_array)
+    {
         key.register_ranges = root.register_ranges(visibility);
     }
-    let (views, arrays) = declared(code, &key.register_ranges);
+    let (views, arrays) = declared(code, &key.register_ranges, dxil);
     for v in &views {
         let format = match v.kind {
             Kind::Float => Format::R32Float,
@@ -112,7 +123,7 @@ pub(super) fn typed_key(
             true => (&mut key.storage_formats, SlotKind::Storage),
             false => (&mut key.texel_formats, SlotKind::Texture),
         };
-        formats.extend(within(&v.slots, kind.slots()).map(|s| (s, format)));
+        formats.extend(within(&v.slots, SLOT_KINDS[kind as usize].slots).map(|s| (s, format)));
         if v.buffer {
             key.texel_buffers = route;
         }
@@ -120,7 +131,7 @@ pub(super) fn typed_key(
     key.storage_formats.sort_by_key(|f| f.0);
     key.texel_formats.sort_by_key(|f| f.0);
     // Converted reading one layer of each; the bound views' layer counts come at the draw.
-    let textures = SlotKind::Texture.slots();
+    let textures = SLOT_KINDS[SlotKind::Texture as usize].slots;
     key.texture_layers = arrays
         .iter()
         .flat_map(|a| within(a, textures))
@@ -149,7 +160,7 @@ fn slots(key: &VariantKey) -> Vec<(Slot, Format)> {
     all
 }
 
-impl<B: Backend> Formats<B> {
+impl<B: Gpu> Formats<B> {
     /// The record of a stage converted with `key`, whose formats it made the program with.
     pub(super) fn of(
         visibility: u32,
@@ -196,7 +207,7 @@ pub(super) enum VertexKind {
 /// and where its vertex stage was converted for what is bound too, that stage's helper layout and
 /// pulled streams (binding, input location).
 pub(super) type BoundProgram<B> = (
-    <B as Backend>::Program,
+    <B as Gpu>::Program,
     Helpers,
     Option<(Helpers, Vec<(u32, u32)>)>,
 );
@@ -228,7 +239,7 @@ fn keyed(base: &VariantKey, made: &[(Slot, Format)], bound: Option<&Bound>) -> V
     key
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// The program to draw or dispatch with for the typed views and samplers the last
     /// `binding_sets` bound: `None` for the program `vertex` names, else the one converted for
     /// them. Views bound with no format (null views) keep the program's. A vertex stage drawn
@@ -283,7 +294,7 @@ impl<B: Backend> Device<B> {
             return p.clone().map(Some).ok_or(refused);
         }
         // A program made at the draw, as a state combination first met there.
-        self.backend.slow_paths().hit(SlowPath::PipelineMiss);
+        self.backend.record_slow_path(SlowPath::PipelineMiss);
         let made = self.combined_program(pid, &combination);
         self.render_mut(pid)
             .bound
@@ -305,7 +316,7 @@ impl<B: Backend> Device<B> {
         let (visibility, code) = (f.visibility, f.code.clone());
         let key = keyed(&f.key, &f.made, Some(&bound));
         // A program made at the draw, as a state combination first met there.
-        self.backend.slow_paths().hit(SlowPath::PipelineMiss);
+        self.backend.record_slow_path(SlowPath::PipelineMiss);
         let made = self.formats_program(pid, visibility, &code, key);
         let f = self.pipelines[pid.0 as usize]
             .formats
@@ -349,10 +360,13 @@ impl<B: Backend> Device<B> {
         };
         let own_fragment = r.fragment.clone();
         let own_helpers = p.helpers.clone();
+        let moves = r.moves.clone();
         let vs = self.convert(&vertex_code, ShaderStage::Vertex, vertex_key)?;
+        let vs = super::pull::moved(vs, &moves.outputs)?;
         let (fragment, helpers) = match fragment {
             Some((code, key)) => {
                 let ps = self.convert(&code, ShaderStage::Fragment, key)?;
+                let ps = super::pull::moved(ps, &moves.inputs)?;
                 (Some(ps.modules[0].clone()), Helpers::of(&ps))
             }
             None => (own_fragment, own_helpers),
@@ -464,16 +478,16 @@ impl<B: Backend> Device<B> {
             }
         }
         if lod_bias != 0 {
-            self.backend.slow_paths().hit(SlowPath::LodBiasInShader);
+            self.backend.record_slow_path(SlowPath::LodBiasInShader);
         }
         if border != 0 {
-            self.backend.slow_paths().hit(SlowPath::BorderInShader);
+            self.backend.record_slow_path(SlowPath::BorderInShader);
         }
         if clamped != 0 {
-            self.backend.slow_paths().hit(SlowPath::MinLodClamp);
+            self.backend.record_slow_path(SlowPath::MinLodClamp);
         }
         if filtered != 0 {
-            self.backend.slow_paths().hit(SlowPath::FilterInShader);
+            self.backend.record_slow_path(SlowPath::FilterInShader);
         }
         Ok(Some(Bound {
             formats,
@@ -525,13 +539,12 @@ impl<B: Backend> Device<B> {
             self.backend.destroy(Object::Shader(shader));
             return Ok((program?, Helpers::of(&cs)));
         }
-        let ps = self.convert(code, ShaderStage::Fragment, key)?;
-        let vertex = self.pipelines[pid.0 as usize]
+        let r = self.pipelines[pid.0 as usize]
             .render
             .as_ref()
-            .expect("a graphics pipeline")
-            .vertex
-            .clone();
+            .expect("a graphics pipeline");
+        let (vertex, moves) = (r.vertex.clone(), r.moves.inputs.clone());
+        let ps = super::pull::moved(self.convert(code, ShaderStage::Fragment, key)?, &moves)?;
         let vertex = self.backend.create_shader(&vertex)?;
         let fragment = match self.backend.create_shader(&ps.modules[0]) {
             Ok(f) => f,
@@ -621,7 +634,7 @@ mod tests {
         code.extend(tokens.iter().flat_map(|t| t.to_le_bytes()));
         let route = TexelBufferRoute::Storage;
         let (key, through) = typed_key(&code, route, &empty_root(), bind::ALL);
-        let storage: Vec<_> = (0..SlotKind::Storage.slots())
+        let storage: Vec<_> = (0..SLOT_KINDS[SlotKind::Storage as usize].slots)
             .map(|s| (s, Format::R32Uint))
             .collect();
         assert_eq!((key.storage_formats, through), (storage, u64::MAX));

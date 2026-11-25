@@ -11,8 +11,8 @@ use std::fmt::Write;
 
 use anyhow::{Result, anyhow, ensure};
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment,
-    DeviceStatus, DrawCall, DrawRange, Extent, Format, LoadOp, Object, Origin, PassDesc, QueryKind,
+    BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment, DeviceStatus,
+    DrawCall, DrawRange, Extent, Format, Gpu, LoadOp, Object, Origin, PassDesc, QueryKind,
     ReadSource, StageSet, StepMode, StoreOp, TextureRegion, TextureUsage, Topology, VertexBinding,
     VertexFormat, Viewport,
 };
@@ -21,7 +21,7 @@ use wcontainers_gpu_webgpu::WebGpu;
 use crate::draw;
 
 type B = WebGpu;
-type Buffer = <B as Backend>::Buffer;
+type Buffer = <B as Gpu>::Buffer;
 
 /// The side of the square target, the reference scenes' width.
 pub const TARGET_SIDE: u32 = crate::scene::WIDTH;
@@ -187,7 +187,7 @@ fn object(b: &mut B, k: u32, streams: u32) -> Result<Vec<Buffer>> {
 }
 
 /// The binding set of a pulled draw of object `o`.
-fn pulled_set(b: &mut B, pull: &Buffer, o: &[Buffer]) -> Result<<B as Backend>::BindingSet> {
+fn pulled_set(b: &mut B, pull: &Buffer, o: &[Buffer]) -> Result<<B as Gpu>::BindingSet> {
     let mut entries = vec![BindingEntry {
         binding: 0,
         stages: StageSet::VERTEX,

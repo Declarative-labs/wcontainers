@@ -82,8 +82,9 @@ struct PrecisionElement {
 pub(crate) const ISGN: Tag = *b"ISGN";
 pub(crate) const OSGN: Tag = *b"OSGN";
 pub(crate) const OSG5: Tag = *b"OSG5";
-pub(crate) const ISG1: Tag = *b"ISG1";
-pub(crate) const OSG1: Tag = *b"OSG1";
+/// The tags of the input and output signature chunks of the form DXIL programs carry.
+pub const ISG1: Tag = *b"ISG1";
+pub const OSG1: Tag = *b"OSG1";
 /// The tag of a DXIL program's chunk.
 const DXIL: Tag = *b"DXIL";
 
@@ -248,16 +249,6 @@ pub(crate) fn shader_model(container: &[u8]) -> Option<(u32, u32)> {
         version >> VERSION_PART_BITS & VERSION_PART_MASK,
         version & VERSION_PART_MASK,
     ))
-}
-
-/// The program's type (`ir::program`), from the version token of its code chunk (`DXIL`, `SHEX` or
-/// `SHDR`): the token's high half.
-pub(crate) fn program_type(container: &[u8]) -> Option<u32> {
-    let code = chunks(container, DXIL)
-        .chain(chunks(container, SHEX))
-        .chain(chunks(container, SHDR))
-        .next()?;
-    Some(word(code, offset_of!(CodeHeader, version))? >> u16::BITS)
 }
 
 /// DXBC's opcodes (`D3D10_SB_OPCODE_TYPE`), resource dimensions (`D3D10_SB_RESOURCE_DIMENSION`) and
@@ -687,6 +678,11 @@ pub struct DxilViews {
     pub views: Option<alloc::vec::Vec<DxilView>>,
     /// The unordered access views.
     pub storage: Option<alloc::vec::Vec<DxilView>>,
+}
+
+/// Whether `container` holds a whole `DXIL` chunk, which the DXIL route takes its program from.
+pub(crate) fn holds_dxil(container: &[u8]) -> bool {
+    is_container(container) && chunks(container, DXIL).next().is_some()
 }
 
 /// The views `container`'s DXIL module declares, read by dxil-spirv's reader in one pass over the

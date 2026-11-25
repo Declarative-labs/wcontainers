@@ -1,4 +1,4 @@
-//! The [`Backend`] trait: the base every back end provides, and the fast paths with their defaults.
+//! The [`Gpu`] trait: the base every back end provides, and the fast paths with their defaults.
 
 use crate::caps::{Caps, Features, FormatUse};
 use crate::draw::{
@@ -24,7 +24,7 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::ops::Range;
 
-/// Bytes of the ring [`Backend::write_buffer_ring`] starts with; it grows to fit larger writes.
+/// Bytes of the ring [`Gpu::write_buffer_ring`] starts with; it grows to fit larger writes.
 const RING_SIZE: u64 = 1 << 22;
 
 /// Where the vertices of a fan or loop come from.
@@ -40,7 +40,7 @@ pub enum IndexSource<'a> {
     },
 }
 
-/// Which ring [`Backend::write_buffer_ring`] writes into. Indices have a ring of their own because WebGL 2
+/// Which ring [`Gpu::write_buffer_ring`] writes into. Indices have a ring of their own because WebGL 2
 /// never lets one buffer hold both indices and other data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RingKind {
@@ -50,14 +50,14 @@ pub enum RingKind {
     Data,
 }
 
-/// The primitive kinds [`Backend::draw_fan_or_loop`] draws.
+/// The primitive kinds [`Gpu::draw_fan_or_loop`] draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FanOrLoop {
     TriangleFan,
     LineLoop,
 }
 
-/// A clear value for [`Backend::clear_texture`].
+/// A clear value for [`Gpu::clear_texture`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ClearValue {
     /// Raw bits: f32 for float formats, the integer for integer formats.
@@ -71,7 +71,7 @@ pub enum ClearValue {
 
 /// One combination of state blocks to build ahead of drawing with it.
 #[derive(Debug)]
-pub struct PrepareDesc<'a, B: Backend> {
+pub struct PrepareDesc<'a, B: Gpu> {
     pub program: &'a B::Program,
     pub blend: &'a B::Blend,
     pub depth_stencil: &'a B::DepthStencil,
@@ -79,14 +79,14 @@ pub struct PrepareDesc<'a, B: Backend> {
     pub vertex_layout: &'a B::VertexLayout,
     pub targets: TargetLayout,
     pub topology: Topology,
-    /// The layout keys of the binding sets the draws will bind, as [`Backend::binding_layout_key`] gave
+    /// The layout keys of the binding sets the draws will bind, as [`Gpu::binding_layout_key`] gave
     /// them or a cache recorded them; the zero key means every texture can be filtered.
     pub layouts: [BindingLayoutKey; crate::MAX_BINDING_SETS],
 }
 
-/// Any object a back end made, for [`Backend::destroy`].
+/// Any object a back end made, for [`Gpu::destroy`].
 #[derive(Debug)]
-pub enum Object<B: Backend> {
+pub enum Object<B: Gpu> {
     Buffer(B::Buffer),
     Texture(B::Texture),
     TextureView(B::TextureView),
@@ -111,7 +111,7 @@ pub enum Object<B: Backend> {
 ///
 /// Objects are named by handles. A handle is cheap to clone and a clone names the same object, which is
 /// destroyed once, through any of its handles.
-pub trait Backend: Sized {
+pub trait Gpu: Sized {
     type Buffer: Clone + Debug;
     type Texture: Clone + Debug;
     type TextureView: Clone + Debug;
@@ -143,6 +143,19 @@ pub trait Backend: Sized {
     fn status(&mut self) -> DeviceStatus;
     /// What the fast-path defaults keep between calls. Back ends hold a `Helpers::default()`.
     fn helpers(&mut self) -> &mut Helpers<Self>;
+    /// Records one use of `path` in the slow-path counters; its first use queues a warning for the host.
+    fn record_slow_path(&mut self, path: SlowPath) {
+        let paths = self.slow_paths();
+        let count = &mut paths.counts[path as usize];
+        if *count == 0 {
+            paths.unwarned.push(path);
+        }
+        *count += 1;
+    }
+    /// Takes the warnings queued since the last call, for the host's warning hook.
+    fn take_slow_path_warnings(&mut self) -> Vec<SlowPath> {
+        core::mem::take(&mut self.slow_paths().unwarned)
+    }
 
     // ---- Objects ----
 
@@ -190,7 +203,7 @@ pub trait Backend: Sized {
     /// already there.
     fn write_buffer(&mut self, buffer: &Self::Buffer, offset: u64, data: &[u8], mode: WriteMode);
     /// Writes texels into one region of a texture, read during the call as for
-    /// [`Backend::write_buffer`]. `row_pitch` is the bytes between rows of blocks in `data`.
+    /// [`Gpu::write_buffer`]. `row_pitch` is the bytes between rows of blocks in `data`.
     /// [`WriteMode::Discard`] drops the whole texture's old contents (Direct3D's dynamic textures), so a
     /// back end may rename it instead of ordering the write.
     fn write_texture(
@@ -289,7 +302,7 @@ pub trait Backend: Sized {
 
     // ---- Bytes out ----
 
-    /// Starts reading data back. The copy is recorded now and finishes after a later [`Backend::submit`].
+    /// Starts reading data back. The copy is recorded now and finishes after a later [`Gpu::submit`].
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Self::Readback, GpuError>;
     /// Starts reading query results back to the host, one u64 per query.
     fn read_queries(
@@ -334,7 +347,7 @@ pub trait Backend: Sized {
     ) -> Result<(), GpuError> {
         let rb = self.read_back(src)?;
         if self.read_state(&rb) == ReadState::Pending {
-            self.slow_paths().hit(SlowPath::ReadBackWait);
+            self.record_slow_path(SlowPath::ReadBackWait);
             self.wait_read(&rb);
         }
         self.finish_read(rb, dst);
@@ -344,7 +357,7 @@ pub trait Backend: Sized {
     /// Draws a triangle fan or a line loop. `call.topology`, `call.index` and `call.range` are ignored:
     /// the vertices come from `source`, and instances from `instances`. `provoking` is the convention
     /// of the front's API, so flat-shaded values come from the vertex it names. The default builds a
-    /// triangle list or a line list in the ring ([`Backend::write_buffer_ring`]) and draws that. WebGL 2
+    /// triangle list or a line list in the ring ([`Gpu::write_buffer_ring`]) and draws that. WebGL 2
     /// overrides it.
     fn draw_fan_or_loop(
         &mut self,
@@ -370,7 +383,7 @@ pub trait Backend: Sized {
             FanOrLoop::TriangleFan => (Topology::TriangleList, SlowPath::FanConverted),
             FanOrLoop::LineLoop => (Topology::LineList, SlowPath::LoopConverted),
         };
-        self.slow_paths().hit(path);
+        self.record_slow_path(path);
         self.draw(&DrawCall {
             index: Some(IndexBinding {
                 buffer: &buffer,
@@ -523,7 +536,7 @@ pub trait Backend: Sized {
                     load: LoadOp::Load,
                     store: StoreOp::Store,
                 });
-                let program = match format.kind() {
+                let program = match crate::FORMAT_FACTS[format as usize].kind {
                     FormatKind::Uint => Builtin::ClearUint,
                     FormatKind::Sint => Builtin::ClearSint,
                     _ => Builtin::ClearFloat,
@@ -733,7 +746,7 @@ pub trait Backend: Sized {
         }
         let rb = self.read_queries(set, first, count)?;
         if self.read_state(&rb) == ReadState::Pending {
-            self.slow_paths().hit(SlowPath::QueryResolveWait);
+            self.record_slow_path(SlowPath::QueryResolveWait);
             self.wait_read(&rb);
         }
         let mut bytes = core::mem::take(&mut self.helpers().scratch);
@@ -816,8 +829,8 @@ pub trait Backend: Sized {
     }
 }
 
-/// The default of [`Backend::generate_mips`], for a back end whose override takes only some cases.
-pub fn generate_mips_by_draws<B: Backend>(
+/// The default of [`Gpu::generate_mips`], for a back end whose override takes only some cases.
+pub fn generate_mips_by_draws<B: Gpu>(
     b: &mut B,
     texture: &B::Texture,
     desc: &TextureDesc,
@@ -848,7 +861,9 @@ pub fn generate_mips_by_draws<B: Backend>(
     let read = match decoded {
         Some((_, false)) => MipRead::Unorm,
         Some((_, true)) => MipRead::Snorm,
-        None if b.caps().formats.get(seen).contains(FormatUse::FILTER) => MipRead::Filtered,
+        None if b.caps().formats.uses[seen as usize].contains(FormatUse::FILTER) => {
+            MipRead::Filtered
+        }
         None => MipRead::Unfiltered,
     };
     let cube = matches!(own, ViewDimension::Cube | ViewDimension::CubeArray);
@@ -857,7 +872,7 @@ pub fn generate_mips_by_draws<B: Backend>(
     } else {
         own
     };
-    let copied = read_dim != own && !b.caps().has(Features::TEXTURE_VIEWS);
+    let copied = read_dim != own && !b.caps().features.contains(Features::TEXTURE_VIEWS);
     let which = Builtin::Mip(read_dim, read);
     let program = helpers::program(b, which)?;
     for mip in mips {
@@ -887,7 +902,7 @@ pub fn generate_mips_by_draws<B: Backend>(
         };
         // A cube read by loads without views: the level above copied into a 2D array first.
         let copy = if copied {
-            b.slow_paths().hit(SlowPath::ReinterpretCopy);
+            b.record_slow_path(SlowPath::ReinterpretCopy);
             let above = |n: u32| (n >> (mip - 1)).max(1);
             let extent = Extent {
                 width: above(desc.width),
@@ -939,7 +954,7 @@ pub fn generate_mips_by_draws<B: Backend>(
             )?;
             for slice in 0..slices {
                 if read != MipRead::Filtered {
-                    b.slow_paths().hit(SlowPath::FilterInShader);
+                    b.record_slow_path(SlowPath::FilterInShader);
                 }
                 let ring;
                 let mut entries = alloc::vec![BindingEntry {
@@ -1013,7 +1028,7 @@ pub fn generate_mips_by_draws<B: Backend>(
 
 /// Which aspects a depth-stencil format has: depth, stencil.
 pub(crate) fn aspects(format: Format) -> (bool, bool) {
-    match format.kind() {
+    match crate::FORMAT_FACTS[format as usize].kind {
         FormatKind::Depth => (true, false),
         FormatKind::Stencil => (false, true),
         FormatKind::DepthStencil => (true, true),
@@ -1026,14 +1041,24 @@ pub(crate) fn aspects(format: Format) -> (bool, bool) {
 fn norm_twin(values: Format, stored: Format) -> Result<Option<(u32, bool)>, GpuError> {
     use Format::*;
     Ok(match (values, stored) {
-        _ if values.linear() == stored.linear() => None,
-        (R16Unorm | Rg16Unorm | Rgba16Unorm, _) if values.integer_twin() == Some(stored) => {
+        _ if crate::FORMAT_FACTS[values as usize].linear
+            == crate::FORMAT_FACTS[stored as usize].linear =>
+        {
+            None
+        }
+        (R16Unorm | Rg16Unorm | Rgba16Unorm, _)
+            if crate::FORMAT_FACTS[values as usize].integer_twin == Some(stored) =>
+        {
             Some((u16::MAX.into(), false))
         }
-        (R16Snorm | Rg16Snorm | Rgba16Snorm, _) if values.integer_twin() == Some(stored) => {
+        (R16Snorm | Rg16Snorm | Rgba16Snorm, _)
+            if crate::FORMAT_FACTS[values as usize].integer_twin == Some(stored) =>
+        {
             Some((i16::MAX as u32, true))
         }
-        (R8Snorm | Rg8Snorm | Rgba8Snorm, _) if values.integer_twin() == Some(stored) => {
+        (R8Snorm | Rg8Snorm | Rgba8Snorm, _)
+            if crate::FORMAT_FACTS[values as usize].integer_twin == Some(stored) =>
+        {
             Some((i8::MAX as u32, true))
         }
         _ => {
@@ -1057,7 +1082,7 @@ pub(crate) fn full_viewport(width: u32, height: u32) -> Viewport {
 }
 
 /// A draw of the built-in full-screen triangle with `program`, no bindings and no depth test.
-pub(crate) fn builtin_draw<'a, B: Backend>(
+pub(crate) fn builtin_draw<'a, B: Gpu>(
     b: &'a helpers::Builtins<B>,
     program: &'a B::Program,
     viewports: &'a [Viewport],
@@ -1156,7 +1181,8 @@ fn fan_or_loop_indices(
             format,
             base_vertex,
         } => {
-            let restart_value = restart.then(|| format.restart_value());
+            let restart_value =
+                restart.then(|| crate::INDEX_FORMATS[format as usize].restart_value);
             match format {
                 IndexFormat::U8 => walk(
                     kind,

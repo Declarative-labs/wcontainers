@@ -13,7 +13,8 @@ mod common;
 mod forms;
 
 use common::*;
-use wcontainers_gpu::{Backend, BufferRange, BufferUsage, ReadSource, RingKind};
+// The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
+use wcontainers_gpu::{BufferRange, BufferUsage, Gpu as Backend, ReadSource, RingKind};
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::stage::{Tessellation, Tessellator, tess};
 use windows::Win32::Graphics::Direct3D::*;
@@ -22,6 +23,9 @@ use windows::core::s;
 
 /// Patches per draw; the constant buffer holds 32.
 const PATCHES: usize = 8;
+
+/// Rows of the hull shaders' constant buffer (`float4 factors[64]`), two a patch.
+const HULL_FACTOR_ROWS: usize = 64;
 
 /// One streamed vertex: the domain location's three components (f32 bits) and the primitive number.
 type Vertex = [u32; 4];
@@ -57,6 +61,17 @@ fn factors(rng: &mut fastrand::Rng) -> Vec<[f32; 8]> {
             f
         })
         .collect()
+}
+
+/// The hull shaders' constant buffer (`factors[64]`, four floats each) holding each patch's factors.
+fn factor_constants(factors: &[[f32; 8]]) -> Vec<u8> {
+    let mut constants = vec![0u8; HULL_FACTOR_ROWS * size_of::<[f32; 4]>()];
+    for (p, f) in factors.iter().enumerate() {
+        for (i, v) in f.iter().enumerate() {
+            constants[p * 32 + i * 4..][..4].copy_from_slice(&v.to_le_bytes());
+        }
+    }
+    constants
 }
 
 /// Real Direct3D 11's streamed domain shader output (or the output of geometry shader `gs` after it)
@@ -107,12 +122,7 @@ fn direct3d(
         )
     })
     .unwrap();
-    let mut constants = vec![0u8; 1024];
-    for (p, f) in factors.iter().enumerate() {
-        for (i, v) in f.iter().enumerate() {
-            constants[p * 32 + i * 4..][..4].copy_from_slice(&v.to_le_bytes());
-        }
-    }
+    let constants = factor_constants(factors);
     let constants = gpu
         .immutable(&constants, D3D11_BIND_CONSTANT_BUFFER)
         .unwrap();
@@ -187,12 +197,14 @@ fn direct3d(
     (vertices, statistics.NumPrimitivesWritten)
 }
 
-/// Our tessellator's points and indices for the same patches, as the vertices a draw of them makes.
+/// Our tessellator's points and indices for the same patches, as the vertices a draw of them makes,
+/// each primitive turned by `rotate` (`Tessellator::run`'s).
 fn ours<B: Backend>(
     b: &mut B,
     tessellator: &mut Tessellator<B>,
     t: &Tessellation,
     factors: &[[f32; 8]],
+    rotate: u32,
 ) -> Vec<Vertex> {
     let mut words = vec![tess::NO_SLOT; tess::HEADER_WORDS as usize];
     words[tess::PATCH_WORDS as usize] = 8;
@@ -216,6 +228,7 @@ fn ours<B: Backend>(
             },
             n,
             n,
+            rotate,
         )
         .unwrap();
     let read = |b: &mut B, buffer: &B::Buffer, words: usize| -> Vec<u32> {
@@ -345,7 +358,8 @@ fn compare(reference: &[Vertex], ours: &[Vertex], per: usize) -> Result<String, 
 
 /// Our tessellator against real Direct3D 11's on the GPU and on WARP, every topology: each patch's
 /// primitives equal to the GPU's (whose order within a patch is the device's), and every point and
-/// index equal to WARP's in order (WARP's order is the reference tessellator's, which ours follows).
+/// index equal to WARP's in order (WARP's order is the reference tessellator's, which ours follows);
+/// and, turned for another provoking vertex, every primitive of ours turned.
 #[test]
 fn tessellator_matches_direct3d() {
     let mut backend = webgpu();
@@ -400,7 +414,29 @@ fn tessellator_matches_direct3d() {
                 _ => 3,
             };
             let bound = PATCHES * tess::patch_bounds(t.max_factor).1 as usize;
-            let streamed = ours(&mut backend, &mut tessellator, t, &factors);
+            let streamed = ours(&mut backend, &mut tessellator, t, &factors, 0);
+            // Turned for another provoking vertex (`Stages::provoking`): the last vertex leading
+            // (1) or the first trailing (2), each triangle's winding kept and each line reversed.
+            for rotate in [1, 2] {
+                let turned = ours(&mut backend, &mut tessellator, t, &factors, rotate);
+                let expected: Vec<Vertex> = streamed
+                    .chunks(per)
+                    .flat_map(|p| {
+                        let mut p = p.to_vec();
+                        match (p.len(), rotate) {
+                            (1, _) => {}
+                            (2, _) => p.reverse(),
+                            (_, 1) => p.rotate_right(1),
+                            _ => p.rotate_left(1),
+                        }
+                        p
+                    })
+                    .collect();
+                if turned != expected {
+                    eprintln!("seed {seed} {hs} turned {rotate}: not each primitive turned");
+                    failures.push(format!("seed {seed} {hs} turned {rotate}"));
+                }
+            }
             for (driver, gpu) in &gpus {
                 let (reference, written) = direct3d(gpu, hs, ds, None, 1, bound, &factors);
                 let reference = &reference[..written as usize * per];
@@ -805,7 +841,7 @@ fn scene_ours<B: Backend>(b: &mut B, all_solid: bool, route: Route, max: bool) -
     .unwrap();
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert!(
-        b.slow_paths().count(SlowPath::TessellationAsCompute) > 0,
+        b.slow_paths().counts[SlowPath::TessellationAsCompute as usize] > 0,
         "the slow path is counted"
     );
     out
@@ -821,9 +857,60 @@ const MAX_BLEND: wcontainers_gpu::BlendComponent = wcontainers_gpu::BlendCompone
 /// The rig's tessellation scene by real Direct3D 11, every patch drawn solid or, as the scene draws
 /// it, all but the last as lines; with `max`, blended as [`scene_ours`] blends.
 fn direct3d_scene(gpu: &Gpu, all_solid: bool, max: bool) -> Vec<u8> {
-    let rig = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../graphics-test/shaders/dxbc");
+    let rig =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphics-test/shaders/dxbc");
     let read = |name: &str| std::fs::read(rig.join(format!("tessellation.{name}.dxbc"))).unwrap();
+    let factors: Vec<u8> = SCENE_FACTORS.iter().flat_map(|f| f.to_le_bytes()).collect();
+    let draws: Vec<PatchDraw> = scene_patches()
+        .into_iter()
+        .enumerate()
+        .map(|(i, (hs, ds, points, solid_fill))| {
+            let flat: Vec<f32> = points.iter().flatten().copied().collect();
+            PatchDraw {
+                hs: read(hs),
+                ds: read(ds),
+                vertices: bytes_of(&flat).to_vec(),
+                count: points.len() as u32,
+                points: points.len() as u32,
+                viewport: d3d11::cell(i as u32, 4, 64.0),
+                solid: solid_fill || all_solid,
+            }
+        })
+        .collect();
+    direct3d_patches(
+        gpu,
+        (&read("vs"), &read("ps")),
+        &d3d11::scenes::colored_layout(),
+        &factors,
+        &draws,
+        max,
+    )
+}
+
+/// One draw of patches by real Direct3D 11: the hull and domain shaders, the vertices (28 bytes
+/// each, none for a vertex shader reading none), the vertices drawn and the control points per patch,
+/// the viewport, and whether drawn solid or as lines.
+struct PatchDraw {
+    hs: Vec<u8>,
+    ds: Vec<u8>,
+    vertices: Vec<u8>,
+    count: u32,
+    points: u32,
+    viewport: D3D11_VIEWPORT,
+    solid: bool,
+}
+
+/// `draws` by real Direct3D 11 into a picture of the scene's size, through the vertex and pixel
+/// shaders `vs` and `ps` with `layout`, the hull stage's constant buffer at b0 holding `constants`;
+/// with `max`, each texel keeps the largest value drawn there in each channel.
+fn direct3d_patches(
+    gpu: &Gpu,
+    (vs, ps): (&[u8], &[u8]),
+    layout: &[D3D11_INPUT_ELEMENT_DESC],
+    constants: &[u8],
+    draws: &[PatchDraw],
+    max: bool,
+) -> Vec<u8> {
     let (target, rtv) = gpu
         .target(
             SCENE_WIDTH,
@@ -832,10 +919,10 @@ fn direct3d_scene(gpu: &Gpu, all_solid: bool, max: bool) -> Vec<u8> {
         )
         .unwrap();
     gpu.begin(&rtv, None, SCENE_WIDTH, SCENE_HEIGHT);
-    gpu.program(&read("vs"), &read("ps"), &d3d11::scenes::colored_layout())
+    gpu.program(vs, ps, layout).unwrap();
+    let constants = gpu
+        .immutable(constants, D3D11_BIND_CONSTANT_BUFFER)
         .unwrap();
-    let factors: Vec<u8> = SCENE_FACTORS.iter().flat_map(|f| f.to_le_bytes()).collect();
-    let constants = gpu.immutable(&factors, D3D11_BIND_CONSTANT_BUFFER).unwrap();
     let solid = gpu.rasterizer(&d3d11::solid()).unwrap();
     let lines = gpu
         .rasterizer(&D3D11_RASTERIZER_DESC {
@@ -860,25 +947,17 @@ fn direct3d_scene(gpu: &Gpu, all_solid: bool, max: bool) -> Vec<u8> {
         c.HSSetConstantBuffers(0, Some(&[Some(constants)]));
         c.OMSetBlendState(&blend, None, u32::MAX);
     }
-    for (i, (hs, ds, points, solid_fill)) in scene_patches().into_iter().enumerate() {
-        let flat: Vec<f32> = points.iter().flatten().copied().collect();
-        let _vertices = gpu.vertices(0, bytes_of(&flat), 28).unwrap();
-        let topology = match points.len() {
-            2 => D3D_PRIMITIVE_TOPOLOGY_2_CONTROL_POINT_PATCHLIST,
-            3 => D3D_PRIMITIVE_TOPOLOGY_3_CONTROL_POINT_PATCHLIST,
-            _ => D3D_PRIMITIVE_TOPOLOGY_4_CONTROL_POINT_PATCHLIST,
-        };
+    for d in draws {
+        let _vertices = (!d.vertices.is_empty()).then(|| gpu.vertices(0, &d.vertices, 28).unwrap());
         unsafe {
-            c.RSSetState(if solid_fill || all_solid {
-                &solid
-            } else {
-                &lines
-            });
-            c.RSSetViewports(Some(&[d3d11::cell(i as u32, 4, 64.0)]));
-            c.HSSetShader(&gpu.hs(&read(hs)).unwrap(), None);
-            c.DSSetShader(&gpu.ds(&read(ds)).unwrap(), None);
-            c.IASetPrimitiveTopology(topology);
-            c.Draw(points.len() as u32, 0);
+            c.RSSetState(if d.solid { &solid } else { &lines });
+            c.RSSetViewports(Some(&[d.viewport]));
+            c.HSSetShader(&gpu.hs(&d.hs).unwrap(), None);
+            c.DSSetShader(&gpu.ds(&d.ds).unwrap(), None);
+            c.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY(
+                D3D_PRIMITIVE_TOPOLOGY_1_CONTROL_POINT_PATCHLIST.0 + d.points as i32 - 1,
+            ));
+            c.Draw(d.count, 0);
         }
     }
     unsafe {
@@ -1154,12 +1233,7 @@ fn ours_staged<B: Backend>(
             c.reflection.helpers
         );
     }
-    let mut constants = vec![0u8; 1024];
-    for (p, f) in factors.iter().enumerate() {
-        for (i, v) in f.iter().enumerate() {
-            constants[p * 32 + i * 4..][..4].copy_from_slice(&v.to_le_bytes());
-        }
-    }
+    let constants = factor_constants(factors);
     let constant_buffer = buffer(b, &constants, BufferUsage::UNIFORM);
     let hull_entries: Vec<_> = hull
         .reflection
@@ -1261,7 +1335,10 @@ fn ours_staged<B: Backend>(
         SlowPath::TessellationAsCompute,
         SlowPath::StreamOutAsCompute,
     ] {
-        assert!(b.slow_paths().count(path) > 0, "{path:?} is counted");
+        assert!(
+            b.slow_paths().counts[path as usize] > 0,
+            "{path:?} is counted"
+        );
     }
     stages.destroy(b);
     let vertices = words.chunks(4).map(|v| [v[0], v[1], v[2], v[3]]).collect();
@@ -1327,6 +1404,11 @@ fn stream_output_after_the_domain_stage_matches_direct3d() {
         ("hs_values_integer_point", Some("gs_tess_point"), 1),
     ] {
         cases.push((hs.into(), "ds_values".into(), gs, per, 3));
+    }
+    // A domain shader reading its control points' rows at an index known only at run time, through a
+    // component mask with a gap.
+    for gs in [None, Some("gs_tess_tri")] {
+        cases.push(("hs_rows_gap".into(), "ds_rows_gap".into(), gs, 3, 1));
     }
     let mut failures = Vec::new();
     let mut compared = 0;
@@ -1628,6 +1710,319 @@ fn stage_values_hold_wherever_the_data_ring_wraps() {
                         eprintln!("{name}: {}", why.join("; "));
                         failures.push(name);
                     }
+                }
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Patches of `factors` (one control point each, `vs_patch`) through hull shader `hs` and domain
+/// shader `ds`, which writes cull distances, drawn solid with `ps_cull` through the stage helper as a
+/// front draws them: the vertex, hull and domain stages as compute, the tessellator, the cull program,
+/// then the primitives kept through the pass-through. Each texel keeps the largest value drawn there.
+fn culled_ours<B: Backend>(
+    b: &mut B,
+    route: Route,
+    (hs, ds): (&str, &str),
+    factors: &[[f32; 8]],
+) -> Vec<u8> {
+    use wcontainers_gpu::*;
+    use wcontainers_shaders::convert;
+    use wcontainers_shaders::stage::{DomainSets, InputTopology, StageDraw, Stages};
+    let plain = VariantKey::default();
+    let read = |name: &str| bytecode(&format!("{name}.{}", route.extension()));
+    let [vs, hull, domain, ps] = ["vs_patch", hs, ds, "ps_cull"]
+        .map(|name| convert(route.source(&read(name)), &plain, None).unwrap());
+    let mut stages = Stages::tessellated_with(b, &vs, &hull, &domain, None, None).unwrap();
+    let constants = factor_constants(factors);
+    let constant_buffer = buffer(b, &constants, BufferUsage::UNIFORM);
+    let hull_entries: Vec<_> = hull
+        .reflection
+        .bindings
+        .iter()
+        .map(|r| {
+            (
+                r.set,
+                BindingEntry {
+                    binding: r.binding,
+                    stages: StageSet::COMPUTE,
+                    resource: BindingResource::UniformBuffer(BufferRange {
+                        buffer: &constant_buffer,
+                        offset: 0,
+                        size: constants.len() as u64,
+                    }),
+                },
+            )
+        })
+        .collect();
+    let hull_sets = sets(b, hull_entries);
+    let none = [None; 4];
+    let last = stages
+        .run_after_domain(
+            b,
+            &StageDraw {
+                vertex_sets: none,
+                geometry_sets: hull_sets.each_ref().map(Option::as_ref),
+                index: None,
+                topology: InputTopology::PatchList(1),
+                range: DrawRange::Vertices {
+                    first: 0,
+                    count: factors.len() as u32,
+                    first_instance: 0,
+                    instances: 1,
+                },
+                stream_output: None,
+            },
+            &DomainSets {
+                domain_sets: none,
+                geometry_sets: none,
+            },
+        )
+        .unwrap()
+        .expect("patches");
+    assert!(last.tessellated.is_none(), "the kept primitives are listed");
+    let vertex = b.create_shader(stages.passthrough().unwrap()).unwrap();
+    let fragment = b.create_shader(&ps.modules[0]).unwrap();
+    let program = b
+        .create_program(&Program::Render {
+            vertex: &vertex,
+            fragment: Some(&fragment),
+        })
+        .unwrap();
+    let vertex_layout = b
+        .create_vertex_layout(&stages.vertex_layout().unwrap())
+        .unwrap();
+    let blend = b
+        .create_blend(&BlendDesc {
+            targets: [RenderTargetBlend {
+                blend: Some((MAX_BLEND, MAX_BLEND)),
+                writes: ColorWrites::all(),
+            }; 8],
+            same_for_all: true,
+            alpha_to_coverage: false,
+            logic_op: None,
+        })
+        .unwrap();
+    let depth_stencil = b
+        .create_depth_stencil(&DepthStencilDesc {
+            depth_compare: None,
+            depth_write: false,
+            stencil: None,
+            stencil_read_mask: [0xff; 2],
+            stencil_write_mask: [0xff; 2],
+            depth_bounds: None,
+        })
+        .unwrap();
+    let raster = b
+        .create_raster(&RasterDesc {
+            fill: FillMode::Solid,
+            cull: CullMode::None,
+            front: FrontFace::Clockwise,
+            depth_bias: 0,
+            depth_bias_slope: 0,
+            depth_bias_clamp: 0,
+            depth_clip: true,
+            scissor: false,
+            line_width: 1.0f32.to_bits(),
+            provoking: ProvokingVertex::First,
+            depth_minus_one: false,
+            sample_mask: !0,
+        })
+        .unwrap();
+    let target = b
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: SCENE_WIDTH,
+            height: SCENE_HEIGHT,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER | TextureUsage::COPY_SRC,
+            cube: false,
+            reinterpret: false,
+        })
+        .unwrap();
+    let view = b
+        .create_view(
+            &target,
+            &TextureViewDesc {
+                format: Format::Rgba8Unorm,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        )
+        .unwrap();
+    let mut pass = PassDesc {
+        colors: Default::default(),
+        depth: None,
+        empty: None,
+        occlusion: None,
+    };
+    pass.colors[0] = Some(ColorAttachment {
+        view: &view,
+        depth_slice: 0,
+        resolve: None,
+        load: LoadOp::Clear(wcontainers_graphics_test::scene::CLEAR.map(f32::to_bits)),
+        store: StoreOp::Store,
+    });
+    b.begin_pass(&pass);
+    b.draw(&DrawCall {
+        program: &program,
+        blend: &blend,
+        depth_stencil: &depth_stencil,
+        raster: &raster,
+        vertex_layout: &vertex_layout,
+        bindings: [None; 4],
+        vertex_buffers: &[Some(VertexBinding {
+            buffer: &last.buffer,
+            offset: 0,
+        })],
+        index: last.index_offset.map(|offset| IndexBinding {
+            buffer: &last.buffer,
+            offset,
+            format: IndexFormat::U32,
+        }),
+        topology: last.topology,
+        restart: false,
+        viewports: &[Viewport {
+            x: 0,
+            y: 0,
+            width: (SCENE_WIDTH as f32).to_bits(),
+            height: (SCENE_HEIGHT as f32).to_bits(),
+            min_depth: 0.0f32.to_bits(),
+            max_depth: 1.0f32.to_bits(),
+        }],
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Indexed {
+            first: 0,
+            count: last.count,
+            base_vertex: 0,
+            first_instance: 0,
+            instances: 1,
+        },
+    });
+    b.end_pass();
+    let mut out = vec![0; (SCENE_WIDTH * SCENE_HEIGHT * 4) as usize];
+    b.read_back_now(
+        &ReadSource::Texture {
+            region: TextureRegion {
+                texture: &target,
+                mip: 0,
+                layer: 0,
+                origin: Origin::default(),
+                stencil: false,
+            },
+            extent: Extent {
+                width: SCENE_WIDTH,
+                height: SCENE_HEIGHT,
+                depth_or_layers: 1,
+            },
+        },
+        &mut out,
+    )
+    .unwrap();
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    assert!(
+        b.slow_paths().counts[SlowPath::CullDistanceAsGeometry as usize] > 0,
+        "the slow path is counted"
+    );
+    stages.destroy(b);
+    out
+}
+
+/// Domain shaders writing cull distances (`ds_tri_cull`, `ds_quad_cull`, `ds_line_cull`: two
+/// distances, each dropping a different part of each patch) after hull shaders of every output
+/// topology, drawn through the stage helper on the WebGPU back end against real Direct3D 11 drawing
+/// the same on the RTX 3080, fxc's and dxc's builds: every texel equal, each texel keeping its largest
+/// value so that the order of the primitives drawn does not count. Seeded factors as
+/// [`stream_output_after_the_domain_stage_matches_direct3d`] takes them.
+#[test]
+fn domain_shaders_writing_cull_distances_draw_as_direct3d_does() {
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_TESSELLATION_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_TESSELLATION_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let cases = [
+        ("hs_tri_odd_cw", "ds_tri_cull"),
+        ("hs_tri_integer_ccw", "ds_tri_cull"),
+        ("hs_tri_even_point", "ds_tri_cull"),
+        ("hs_quad_pow2_cw", "ds_quad_cull"),
+        ("hs_quad_even_point", "ds_quad_cull"),
+        ("hs_line_odd_line", "ds_line_cull"),
+        ("hs_line_integer_point", "ds_line_cull"),
+    ];
+    let mut backend = webgpu();
+    let (mut compared, mut failures) = (0, Vec::new());
+    for seed in seed..seed + seeds {
+        for (i, (hs, ds)) in cases.into_iter().enumerate() {
+            let mut rng = fastrand::Rng::with_seed(seed * 1000 + i as u64);
+            let factors = factors(&mut rng);
+            let constants = factor_constants(&factors);
+            let draw = PatchDraw {
+                hs: bytecode(&format!("{hs}.dxbc")),
+                ds: bytecode(&format!("{ds}.dxbc")),
+                vertices: Vec::new(),
+                count: factors.len() as u32,
+                points: 1,
+                viewport: D3D11_VIEWPORT {
+                    TopLeftX: 0.0,
+                    TopLeftY: 0.0,
+                    Width: SCENE_WIDTH as f32,
+                    Height: SCENE_HEIGHT as f32,
+                    MinDepth: 0.0,
+                    MaxDepth: 1.0,
+                },
+                solid: true,
+            };
+            let reference = direct3d_patches(
+                &gpu,
+                (&bytecode("vs_patch.dxbc"), &bytecode("ps_cull.dxbc")),
+                &[],
+                &constants,
+                &[draw],
+                true,
+            );
+            let drawn = drawn_texels(&reference);
+            for route in Route::BOTH {
+                let ours = culled_ours(&mut backend, route, (hs, ds), &factors);
+                compared += 1;
+                let name = format!("seed {seed} {hs} {ds} {route:?}");
+                let differ = reference
+                    .chunks(4)
+                    .zip(ours.chunks(4))
+                    .filter(|(p, q)| p != q)
+                    .count();
+                eprintln!("{name}: {differ} texels differ, {drawn} drawn by direct3d");
+                if differ != 0 {
+                    keep(
+                        &format!("cull-{seed}-{hs}-{ds}-direct3d"),
+                        &reference,
+                        wcontainers_gpu::Format::Rgba8Unorm,
+                    );
+                    keep(
+                        &format!("cull-{seed}-{hs}-{ds}-{}", route.extension()),
+                        &ours,
+                        wcontainers_gpu::Format::Rgba8Unorm,
+                    );
+                    failures.push(name);
                 }
             }
         }

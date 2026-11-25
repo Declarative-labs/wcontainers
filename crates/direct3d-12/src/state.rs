@@ -256,7 +256,7 @@ impl Blend {
                         "blending and a logic operation on one target",
                     ));
                 }
-                if !caps.has(Features::LOGIC_OP) {
+                if !caps.features.contains(Features::LOGIC_OP) {
                     return Err(Error::NotImplemented("logic operations without LOGIC_OP"));
                 }
                 out.logic_op = Some(logic_op(t.logic_op)?);
@@ -285,7 +285,7 @@ impl Blend {
         if self.independent {
             let first = out.targets[0];
             out.same_for_all = out.targets[..targets.max(1)].iter().all(|t| *t == first);
-            if !out.same_for_all && !caps.has(Features::INDEPENDENT_BLEND) {
+            if !out.same_for_all && !caps.features.contains(Features::INDEPENDENT_BLEND) {
                 return Err(Error::NotImplemented(
                     "independent blending without INDEPENDENT_BLEND",
                 ));
@@ -313,7 +313,7 @@ impl Raster {
             FILL_MODE_SOLID => FillMode::Solid,
             _ => return Err(Error::Invalid("unknown fill mode")),
         };
-        if fill == FillMode::Line && !caps.has(Features::POLYGON_MODE) {
+        if fill == FillMode::Line && !caps.features.contains(Features::POLYGON_MODE) {
             return Err(Error::NotImplemented(
                 "wireframe without the back end's polygon mode (FillModeConverted, which needs the stage helper's route)",
             ));
@@ -335,7 +335,10 @@ impl Raster {
             }
             None => false,
         };
-        if biased && self.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP) {
+        if biased
+            && self.depth_bias_clamp != 0.0
+            && !caps.features.contains(Features::DEPTH_BIAS_CLAMP)
+        {
             return Err(Error::NotImplemented("a depth bias clamp"));
         }
         if self.forced_sample_count != 0 || self.conservative != 0 {
@@ -344,7 +347,9 @@ impl Raster {
             ));
         }
         let mask = sample_mask & ((1u64 << samples.min(32)) - 1) as u32;
-        if mask != ((1u64 << samples.min(32)) - 1) as u32 && !caps.has(Features::SAMPLE_MASK) {
+        if mask != ((1u64 << samples.min(32)) - 1) as u32
+            && !caps.features.contains(Features::SAMPLE_MASK)
+        {
             return Err(Error::NotImplemented(
                 "a partial sample mask without SAMPLE_MASK",
             ));
@@ -373,12 +378,12 @@ impl Raster {
                 0
             },
             // Where the back end only clips, the programs clamp (`DepthClampInShader`).
-            depth_clip: self.depth_clip || !caps.has(Features::DEPTH_CLAMP),
+            depth_clip: self.depth_clip || !caps.features.contains(Features::DEPTH_CLAMP),
             scissor: true,
             line_width: 1.0f32.to_bits(),
             provoking: ProvokingVertex::First,
             depth_minus_one: false,
-            sample_mask: if caps.has(Features::SAMPLE_MASK) {
+            sample_mask: if caps.features.contains(Features::SAMPLE_MASK) {
                 sample_mask
             } else {
                 u32::MAX
@@ -543,11 +548,11 @@ pub fn sampler(v: &crate::list::SamplerView, caps: &Caps) -> Result<SamplerDesc,
             1 => AddressMode::Repeat,
             2 => AddressMode::Mirror,
             3 => AddressMode::Clamp,
-            4 if caps.has(Features::BORDER_COLOR) => {
+            4 if caps.features.contains(Features::BORDER_COLOR) => {
                 border_used = true;
                 AddressMode::Border
             }
-            5 if caps.has(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
+            5 if caps.features.contains(Features::MIRROR_ONCE) => AddressMode::MirrorOnce,
             4 | 5 => AddressMode::Clamp,
             _ => return Err(Error::Invalid("unknown address mode")),
         };
@@ -596,7 +601,8 @@ pub fn sampler(v: &crate::list::SamplerView, caps: &Caps) -> Result<SamplerDesc,
 pub fn in_program(v: &crate::list::SamplerView, caps: &Caps) -> (bool, bool) {
     let bias = f32::from_bits(v.lod_bias) != 0.0;
     let border = v.address.iter().any(|&a| {
-        a == 4 && !caps.has(Features::BORDER_COLOR) || a == 5 && !caps.has(Features::MIRROR_ONCE)
+        a == 4 && !caps.features.contains(Features::BORDER_COLOR)
+            || a == 5 && !caps.features.contains(Features::MIRROR_ONCE)
     });
     (bias, border)
 }

@@ -10,7 +10,7 @@ use naga::{
     AddressSpace, ArraySize, BinaryOperator, Expression, Function, Handle, Literal, Module, Range,
     Scalar, ScalarKind, Span, Statement, TypeInner,
 };
-use wcontainers_gpu::{HelperValue, Reflection, ShaderStage, SlotKind};
+use wcontainers_gpu::{HelperValue, Reflection, SLOT_KINDS, ShaderStage, SlotKind};
 
 /// One of the program's storage buffers: its variable, the struct member holding its runtime array
 /// (none where the variable is the array), the array's stride and its offset's helper member.
@@ -68,7 +68,10 @@ fn moved(reflection: &Reflection, rb: naga::ResourceBinding) -> bool {
     !reflection.helpers.iter().any(|h| match h.value {
         HelperValue::TexelBufferView { set, binding } => set == rb.group && binding == rb.binding,
         HelperValue::TexelLayout { slot } => {
-            kind == SlotKind::Storage && kind.binding(slot) == Some(rb.binding)
+            kind == SlotKind::Storage
+                && (slot < SLOT_KINDS[kind as usize].slots)
+                    .then(|| SLOT_KINDS[kind as usize].first_binding + slot)
+                    == Some(rb.binding)
         }
         _ => false,
     })

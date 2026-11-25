@@ -1,7 +1,8 @@
 //! The stage helper's routes of a vertex shader alone on the WebGPU back end, against real Direct3D 11:
 //! alpha-antialiased lines (and WARP drawing them), both blending each line's colour over the target
 //! by its alpha, and the same lines replayed on the WebGL 2 back end (ANGLE); and the primitive's
-//! number for a pixel shader reading it; a vertex shader writing storage, run as compute; and a
+//! number for a pixel shader reading it; aliased lines into a multisampled target by Direct3D's rule
+//! (and WARP drawing them); a vertex shader writing storage, run as compute; and a
 //! geometry shader reading a typed buffer. Seeded vertices: `WCONTAINERS_LINE_SEED` (default 1) and
 //! `WCONTAINERS_LINE_CASES` seeds from it (default 4); every case runs per seed. An indexed list
 //! Direct3D draws nothing of is passed over for the seed's next (`scene`), and ours must draw nothing
@@ -12,10 +13,11 @@
 mod common;
 
 use common::*;
+// The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor, BlendOp,
-    BufferRange, BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc,
-    DrawBaseSource, DrawCall, DrawRange, Extent, Features, FillMode, Format, FrontFace,
+    BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor, BlendOp, BufferRange,
+    BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawBaseSource,
+    DrawCall, DrawRange, Extent, Features, FillMode, Format, FrontFace, Gpu as Backend,
     HelperValue, IndexBinding, IndexFormat, LinkedValues, Origin, PassDesc, Program,
     ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, ShaderModule, ShaderStage,
     SlotKind, SlowPath, StageSet, StepMode, StoreOp, TextureRegion, TextureUsage, VariantFlags,
@@ -53,12 +55,33 @@ enum Route {
     Lines,
     /// `ps_primitive`, reading its primitive's number (`PRIMITIVE_ID_FROM_STAGE`).
     Primitives,
+    /// `ps_line` drawing aliased lines into a multisampled target by Direct3D's rule
+    /// (`LINE_DIAMOND`), unblended, through [`ALIASED_VIEWPORT`].
+    Aliased,
+}
+
+/// The aliased route's target samples, and its viewport (x, y, width, height), placed away from the
+/// target's corner.
+const ALIASED_SAMPLES: u32 = 4;
+const ALIASED_VIEWPORT: [f32; 4] = [3.0, 5.0, SIZE as f32 - 8.0, SIZE as f32 - 6.0];
+
+/// [`ALIASED_VIEWPORT`] as the interface gives a viewport, depth from 0 to 1.
+fn aliased_viewport() -> Viewport {
+    let [x, y, width, height] = ALIASED_VIEWPORT.map(f32::to_bits);
+    Viewport {
+        x,
+        y,
+        width,
+        height,
+        min_depth: 0,
+        max_depth: 1.0f32.to_bits(),
+    }
 }
 
 impl Route {
     fn pixel_shader(self) -> &'static str {
         match self {
-            Route::Lines => "ps_line",
+            Route::Lines | Route::Aliased => "ps_line",
             Route::Primitives => "ps_primitive",
         }
     }
@@ -235,7 +258,22 @@ fn direct3d(
         RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
     };
     let blend = gpu.blend(&blend).unwrap();
-    let (target, rtv) = gpu.target(SIZE, SIZE, DXGI_FORMAT_R8G8B8A8_UNORM).unwrap();
+    let aliased = route == Route::Aliased;
+    let (target, rtv) = match aliased {
+        false => gpu.target(SIZE, SIZE, DXGI_FORMAT_R8G8B8A8_UNORM).unwrap(),
+        true => {
+            let mut desc = d3d11::tex2d(
+                SIZE,
+                SIZE,
+                DXGI_FORMAT_R8G8B8A8_UNORM,
+                D3D11_BIND_RENDER_TARGET,
+            );
+            desc.SampleDesc.Count = ALIASED_SAMPLES;
+            let texture = gpu.texture2d(&desc, &[]).unwrap();
+            let view = gpu.rtv(&texture.cast().unwrap(), None).unwrap();
+            (texture, view)
+        }
+    };
     let index_buffer = case
         .indexed
         .then(|| gpu.immutable(indices, D3D11_BIND_INDEX_BUFFER).unwrap());
@@ -247,6 +285,17 @@ fn direct3d(
         c.ClearRenderTargetView(&rtv, if blending { &CLEAR } else { &[0.0; 4] });
         c.OMSetRenderTargets(Some(&[Some(rtv)]), None);
         gpu.viewport(SIZE, SIZE);
+        if aliased {
+            let [x, y, width, height] = ALIASED_VIEWPORT;
+            c.RSSetViewports(Some(&[D3D11_VIEWPORT {
+                TopLeftX: x,
+                TopLeftY: y,
+                Width: width,
+                Height: height,
+                MinDepth: 0.0,
+                MaxDepth: 1.0,
+            }]));
+        }
         match &index_buffer {
             Some(ib) => {
                 c.IASetIndexBuffer(ib, DXGI_FORMAT_R16_UINT, 0);
@@ -255,6 +304,14 @@ fn direct3d(
             None => c.DrawInstanced(case.count, case.instances, 0, 0),
         }
         c.OMSetBlendState(None, None, !0);
+    }
+    if aliased {
+        let (resolved, _) = gpu.target(SIZE, SIZE, DXGI_FORMAT_R8G8B8A8_UNORM).unwrap();
+        unsafe {
+            gpu.context
+                .ResolveSubresource(&resolved, 0, &target, 0, DXGI_FORMAT_R8G8B8A8_UNORM)
+        };
+        return read(gpu, &resolved, Format::Rgba8Unorm);
     }
     read(gpu, &target, Format::Rgba8Unorm)
 }
@@ -313,6 +370,7 @@ fn linked(dxil: bool, route: Route, vs_key: &VariantKey) -> (Converted, Converte
         flags: match route {
             Route::Lines => VariantFlags::LINE_COVERAGE,
             Route::Primitives => VariantFlags::PRIMITIVE_ID_FROM_STAGE,
+            Route::Aliased => VariantFlags::LINE_DIAMOND,
         },
         linked: LinkedValues {
             location,
@@ -340,7 +398,7 @@ fn ours<B: Backend>(
     };
     let (vs, ps, ps_key) = linked(dxil, route, &vs_key);
     let mut stages = match route {
-        Route::Lines => Stages::antialiased_lines(b, &vs, &ps_key).unwrap(),
+        Route::Lines | Route::Aliased => Stages::antialiased_lines(b, &vs, &ps_key).unwrap(),
         Route::Primitives => Stages::primitive_numbered(b, &vs, &ps_key).unwrap(),
     };
 
@@ -432,6 +490,7 @@ fn ours<B: Backend>(
     let last = match route {
         Route::Lines => stages.run_antialiased_lines(b, &draw, [SIZE as f32; 2]),
         Route::Primitives => stages.run(b, &draw),
+        Route::Aliased => stages.run_lines(b, &draw, &aliased_viewport()),
     }
     .unwrap()
     .expect("primitives");
@@ -443,6 +502,7 @@ fn ours<B: Backend>(
         &ps,
         &last,
         blending,
+        route == Route::Aliased,
     );
     stages.destroy(b);
     out
@@ -471,7 +531,9 @@ fn ours_replayed<B: Backend>(
     };
     let (vs, ps, ps_key) = linked(dxil, route, &vs_key);
     let mut replay = match route {
-        Route::Lines => GeometryReplay::antialiased_lines(b, &vs, &ps_key).unwrap(),
+        Route::Lines | Route::Aliased => {
+            GeometryReplay::antialiased_lines(b, &vs, &ps_key).unwrap()
+        }
         Route::Primitives => GeometryReplay::primitive_numbered(b, &vs, &ps_key).unwrap(),
     };
     let vertex_buffer = buffer(b, bytes_of(vertices), BufferUsage::VERTEX);
@@ -551,6 +613,7 @@ fn ours_replayed<B: Backend>(
     let last = match route {
         Route::Lines => replay.run_antialiased_lines(b, draw, [SIZE as f32; 2]),
         Route::Primitives => replay.run(b, draw),
+        Route::Aliased => replay.run_lines(b, draw, &aliased_viewport()),
     };
     let last = last.unwrap().expect("primitives");
     let out = drawn(
@@ -560,13 +623,15 @@ fn ours_replayed<B: Backend>(
         &ps,
         &last,
         blending,
+        route == Route::Aliased,
     );
     replay.destroy(b);
     out
 }
 
 /// `last` drawn through `passthrough` (its records laid out as `layout`) and the pixel program `ps`
-/// into a cleared target, blended by alpha with `blending`; returns the target's texels.
+/// into a cleared target, blended by alpha with `blending`; returns the target's texels. With
+/// `aliased`, into [`ALIASED_SAMPLES`] samples through [`ALIASED_VIEWPORT`], resolved.
 fn drawn<B: Backend>(
     b: &mut B,
     passthrough: &ShaderModule,
@@ -574,6 +639,7 @@ fn drawn<B: Backend>(
     ps: &Converted,
     last: &FinalDraw<B>,
     blending: bool,
+    aliased: bool,
 ) -> Vec<u8> {
     let vertex = b.create_shader(passthrough).unwrap();
     let fragment = b.create_shader(&ps.modules[0]).unwrap();
@@ -623,12 +689,26 @@ fn drawn<B: Backend>(
             sample_mask: !0,
         })
         .unwrap();
-    let (target, target_view) = texture(
+    let (samples, viewport) = match aliased {
+        true => (ALIASED_SAMPLES, ALIASED_VIEWPORT),
+        false => (1, [0.0, 0.0, SIZE as f32, SIZE as f32]),
+    };
+    let (target, target_view) = texture_levels(
         b,
         Format::Rgba8Unorm,
         SIZE,
+        1,
+        samples,
         TextureUsage::RENDER | TextureUsage::COPY_SRC,
     );
+    let resolved = aliased.then(|| {
+        texture(
+            b,
+            Format::Rgba8Unorm,
+            SIZE,
+            TextureUsage::RENDER | TextureUsage::COPY_SRC,
+        )
+    });
     let mut pass = PassDesc {
         colors: Default::default(),
         depth: None,
@@ -638,7 +718,7 @@ fn drawn<B: Backend>(
     pass.colors[0] = Some(ColorAttachment {
         view: &target_view,
         depth_slice: 0,
-        resolve: None,
+        resolve: resolved.as_ref().map(|(_, view)| view),
         load: wcontainers_gpu::LoadOp::Clear(
             if blending { CLEAR } else { [0.0; 4] }.map(f32::to_bits),
         ),
@@ -664,10 +744,10 @@ fn drawn<B: Backend>(
         topology: last.topology,
         restart: false,
         viewports: &[Viewport {
-            x: 0.0f32.to_bits(),
-            y: 0.0f32.to_bits(),
-            width: (SIZE as f32).to_bits(),
-            height: (SIZE as f32).to_bits(),
+            x: viewport[0].to_bits(),
+            y: viewport[1].to_bits(),
+            width: viewport[2].to_bits(),
+            height: viewport[3].to_bits(),
             min_depth: 0.0f32.to_bits(),
             max_depth: 1.0f32.to_bits(),
         }],
@@ -696,7 +776,7 @@ fn drawn<B: Backend>(
     b.read_back_now(
         &ReadSource::Texture {
             region: TextureRegion {
-                texture: &target,
+                texture: resolved.as_ref().map_or(&target, |(t, _)| t),
                 mip: 0,
                 layer: 0,
                 origin: Origin::default(),
@@ -742,23 +822,7 @@ const MEASURED: [[f32; 4]; 12] = [
 /// Prints the alpha `draw` gives [`MEASURED`]'s white lines over a transparent target, unblended:
 /// the coverage, and which pixels are drawn at all.
 fn print_coverage(name: &str, draw: impl FnOnce(&Case, &[f32]) -> Vec<u8>) {
-    let mut vertices = Vec::new();
-    for [x0, y0, x1, y1] in MEASURED {
-        for (x, y) in [(x0, y0), (x1, y1)] {
-            vertices.extend([
-                x / SIZE as f32 * 2.0 - 1.0,
-                1.0 - y / SIZE as f32 * 2.0,
-                0.5,
-            ]);
-            vertices.extend([1.0; 4]);
-        }
-    }
-    let case = Case {
-        topology: InputTopology::LineList,
-        count: (vertices.len() / (COLOURED_VERTEX_BYTES as usize / 4)) as u32,
-        instances: 1,
-        indexed: false,
-    };
+    let (case, vertices) = measured([0.0, 0.0, SIZE as f32, SIZE as f32]);
     let picture = draw(&case, &vertices);
     eprintln!("{name}: alpha, '.' where nothing is drawn");
     for y in 0..SIZE {
@@ -774,6 +838,29 @@ fn print_coverage(name: &str, draw: impl FnOnce(&Case, &[f32]) -> Vec<u8>) {
             .collect();
         eprintln!("{y:2} {row}");
     }
+}
+
+/// [`MEASURED`]'s lines as a list of white vertices placed through `viewport` (x, y, width, height).
+fn measured(viewport: [f32; 4]) -> (Case, Vec<f32>) {
+    let [vx, vy, width, height] = viewport;
+    let mut vertices = Vec::new();
+    for [x0, y0, x1, y1] in MEASURED {
+        for (x, y) in [(x0, y0), (x1, y1)] {
+            vertices.extend([
+                (x - vx) / width * 2.0 - 1.0,
+                1.0 - (y - vy) / height * 2.0,
+                0.5,
+            ]);
+            vertices.extend([1.0; 4]);
+        }
+    }
+    let case = Case {
+        topology: InputTopology::LineList,
+        count: (vertices.len() / (COLOURED_VERTEX_BYTES as usize / 4)) as u32,
+        instances: 1,
+        indexed: false,
+    };
+    (case, vertices)
 }
 
 /// The largest channel difference of each texel, as a picture of one byte per texel.
@@ -996,6 +1083,160 @@ fn antialiased_lines_draw_as_direct3d_does() {
         spread > ALLOWANCE,
         "the allowance exceeds what two Direct3D implementations differ by"
     );
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// How two resolved pictures of aliased lines differ: the pixels one covers (alpha not zero) and the
+/// other does not, and the largest channel difference of pixels both cover.
+fn aliased_apart(a: &[u8], b: &[u8]) -> (Vec<usize>, u8) {
+    let alpha = |t: &[u8]| t[3];
+    let mut coverage = Vec::new();
+    let mut colour = 0;
+    for (i, (x, y)) in a.chunks(4).zip(b.chunks(4)).enumerate() {
+        if (alpha(x) == 0) != (alpha(y) == 0) {
+            coverage.push(i);
+        } else if alpha(x) != 0 {
+            colour = x
+                .iter()
+                .zip(y)
+                .map(|(p, q)| p.abs_diff(*q))
+                .fold(colour, u8::max);
+        }
+    }
+    (coverage, colour)
+}
+
+/// Aliased lines (`MultisampleEnable` and `AntialiasedLineEnable` off) into four samples through a
+/// viewport away from the target's corner, by the stage helper's line route with `LINE_DIAMOND`: by
+/// compute on WebGPU, and replayed on WebGL 2 with and without EXT_clip_control, from the fxc and the
+/// dxc build, against real Direct3D 11 on the RTX 3080 and WARP, resolved. Ours passes where its
+/// covered pixels are no further from the RTX 3080's than WARP's are, and the colours of pixels both
+/// cover no further apart than the two references' (at least one step): Direct3D covers every
+/// sample of each pixel its rule picks, so a pixel ours covered in part would resolve towards the
+/// clear colour, further than that. [`MEASURED`]'s lines (on pixel centres,
+/// between rows, diagonal, ends between centres), then the seeded cases of [`CASES`]
+/// (`WCONTAINERS_LINE_SEED`, `WCONTAINERS_LINE_CASES`).
+#[test]
+fn aliased_lines_into_a_multisampled_target_draw_as_direct3d_does() {
+    let mut backend = webgpu();
+    let mut gl = webgl();
+    let mut gl_no_clip = webgl_without(&["EXT_clip_control"]);
+    let gpus: Vec<(Driver, Gpu)> = [Driver::Hardware, Driver::Warp]
+        .into_iter()
+        .map(|d| {
+            (
+                d,
+                d3d11::create(d, false, &[D3D_FEATURE_LEVEL_11_0]).unwrap(),
+            )
+        })
+        .collect();
+    let seed: u64 = std::env::var("WCONTAINERS_LINE_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_LINE_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let mut scenes = vec![(
+        "measured".to_string(),
+        measured(ALIASED_VIEWPORT),
+        Vec::new(),
+    )];
+    for seed in seed..seed + seeds {
+        for case in &CASES {
+            let name = format!(
+                "seed {seed} {:?}{}",
+                case.topology,
+                if case.indexed { " indexed" } else { "" }
+            );
+            let indices = match case.indexed {
+                true => indices(seed, case, 0),
+                false => Vec::new(),
+            };
+            let case = Case {
+                topology: case.topology,
+                count: case.count,
+                instances: case.instances,
+                indexed: case.indexed,
+            };
+            scenes.push((name, (case, vertices(seed)), indices));
+        }
+    }
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    let before = backend.slow_paths().counts[SlowPath::AliasedLinesAsQuads as usize];
+    for (name, (case, vertices), indices) in &scenes {
+        let drawn_from = (vertices.as_slice(), indices.as_slice());
+        let references: Vec<Vec<u8>> = gpus
+            .iter()
+            .map(|(_, gpu)| direct3d(gpu, case, drawn_from, false, Route::Aliased))
+            .collect();
+        let (between, spread) = aliased_apart(&references[0], &references[1]);
+        eprintln!(
+            "{name}: {} pixels covered by the RTX 3080, {} covered by one of it and WARP, colours \
+             at most {spread} apart",
+            drawn_texels(&references[0]),
+            between.len(),
+        );
+        for (dxil, replayed) in [false, true]
+            .into_iter()
+            .flat_map(|d| [(d, 0), (d, 1), (d, 2)])
+        {
+            let picture = match replayed {
+                0 => ours(&mut backend, case, drawn_from, dxil, false, Route::Aliased),
+                1 => ours_replayed(&mut gl, case, drawn_from, dxil, false, Route::Aliased),
+                _ => ours_replayed(
+                    &mut gl_no_clip,
+                    case,
+                    drawn_from,
+                    dxil,
+                    false,
+                    Route::Aliased,
+                ),
+            };
+            let route = [
+                "",
+                " replayed on webgl",
+                " replayed on webgl without clip control",
+            ][replayed];
+            let name = format!("{name} {}{route}", if dxil { "dxil" } else { "dxbc" });
+            let (coverage, colour) = aliased_apart(&references[0], &picture);
+            let warp = aliased_apart(&references[1], &picture).0.len();
+            compared += 1;
+            eprintln!(
+                "{name}: {} pixels covered by one of the RTX 3080 and ours ({warp} of WARP and \
+                 ours), colours at most {colour} apart",
+                coverage.len()
+            );
+            if std::env::var_os("WCONTAINERS_SHADERS_OUT").is_some() {
+                let kind = if dxil { "dxil" } else { "dxbc" };
+                let file = name.replace(' ', "-");
+                keep(
+                    &format!("aliased-{file}-reference"),
+                    &references[0],
+                    Format::Rgba8Unorm,
+                );
+                keep(
+                    &format!("aliased-{file}-{kind}-{replayed}-ours"),
+                    &picture,
+                    Format::Rgba8Unorm,
+                );
+            }
+            if coverage.len() > between.len() || colour > spread.max(1) {
+                for &t in coverage.iter().take(16) {
+                    let (px, py) = (t as u32 % SIZE, t as u32 / SIZE);
+                    let at = t * 4;
+                    eprintln!(
+                        "  ({px}, {py}): direct3d {:?}, ours {:?}",
+                        &references[0][at..at + 4],
+                        &picture[at..at + 4]
+                    );
+                }
+                failures.push(name);
+            }
+        }
+    }
+    assert!(backend.slow_paths().counts[SlowPath::AliasedLinesAsQuads as usize] > before);
+    eprintln!("{compared} comparisons, {} failed", failures.len());
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
@@ -1363,15 +1604,26 @@ fn ours_stored<B: Backend>(
         },
         stream_output: None,
     };
-    let before = b.slow_paths().count(SlowPath::VertexStorageAsCompute);
+    let before = b.slow_paths().counts[SlowPath::VertexStorageAsCompute as usize];
     let last = stages.run(b, &draw).unwrap().expect("primitives");
     assert_eq!(
-        b.slow_paths().count(SlowPath::VertexStorageAsCompute),
+        b.slow_paths().counts[SlowPath::VertexStorageAsCompute as usize],
         before + 1
     );
-    assert_eq!(b.slow_paths().count(SlowPath::CullDistanceAsGeometry), 0);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::CullDistanceAsGeometry as usize],
+        0
+    );
     let layout = stages.vertex_layout().unwrap();
-    let picture = drawn(b, stages.passthrough().unwrap(), &layout, &ps, &last, false);
+    let picture = drawn(
+        b,
+        stages.passthrough().unwrap(),
+        &layout,
+        &ps,
+        &last,
+        false,
+        false,
+    );
     stages.destroy(b);
     let mut stored_words = vec![0; STORED_WORD_BYTES];
     b.read_back_now(
@@ -1823,7 +2075,15 @@ fn ours_geometry<B: Backend>(
     };
     let last = stages.run(b, &draw).unwrap().expect("primitives");
     let layout = stages.vertex_layout().unwrap();
-    let picture = drawn(b, stages.passthrough().unwrap(), &layout, &ps, &last, false);
+    let picture = drawn(
+        b,
+        stages.passthrough().unwrap(),
+        &layout,
+        &ps,
+        &last,
+        false,
+        false,
+    );
     stages.destroy(b);
     picture
 }
@@ -1936,25 +2196,10 @@ fn list_indices(seed: u64, count: u32) -> Vec<u8> {
 
 /// A geometry shader taking patches of four control points, drawn without tessellation (`gs_patch`:
 /// each patch a quadrilateral, its points picked at run time, its colour by the patch's number), run
-/// as compute by the stage helper on WebGPU: every texel equal to real Direct3D 11's on the RTX 3080.
-/// fxc's build; dxc's is refused by name, as dxil-spirv converts no geometry shader taking patches.
+/// as compute by the stage helper on WebGPU: every texel equal to real Direct3D 11's on the RTX 3080
+/// drawing fxc's build, for fxc's and dxc's builds.
 #[test]
 fn geometry_shaders_taking_patches_draw_as_direct3d_does() {
-    let refused = convert(
-        Source::Dxil(&bytecode("gs_patch.dxil")),
-        &VariantKey::default(),
-        None,
-    );
-    assert!(
-        matches!(
-            refused,
-            Err(wcontainers_shaders::ConvertError::Unsupported(
-                wcontainers_shaders::refusal::GEOMETRY_PATCH_INPUT
-            ))
-        ),
-        "{:?}",
-        refused.err()
-    );
     let mut backend = webgpu();
     let gpu = d3d11::create(Driver::Hardware, false, &[D3D_FEATURE_LEVEL_11_0]).unwrap();
     eprintln!("direct3d 11: {}", gpu.adapter().unwrap());
@@ -1982,23 +2227,26 @@ fn geometry_shaders_taking_patches_draw_as_direct3d_does() {
             };
             let data = (vertices.as_slice(), indices.as_slice());
             let reference = direct3d_geometry(&gpu, "gs_patch", case, data);
-            let picture = ours_geometry(&mut backend, "gs_patch", case, data, false);
-            let d = apart(&reference, &picture);
-            let count = d.iter().filter(|x| **x != 0).count();
-            let drawn = drawn_texels(&reference);
-            compared += 1;
-            eprintln!("{name}: {drawn} texels drawn by direct3d, {count} differ");
-            if drawn == 0 || count != 0 {
-                for (t, _) in d.iter().enumerate().filter(|(_, x)| **x != 0).take(16) {
-                    let (px, py) = (t as u32 % SIZE, t as u32 / SIZE);
-                    let at = t * 4;
-                    eprintln!(
-                        "  ({px}, {py}): direct3d {:?}, ours {:?}",
-                        &reference[at..at + 4],
-                        &picture[at..at + 4]
-                    );
+            for dxil in [false, true] {
+                let name = format!("{name} {}", if dxil { "dxil" } else { "dxbc" });
+                let picture = ours_geometry(&mut backend, "gs_patch", case, data, dxil);
+                let d = apart(&reference, &picture);
+                let count = d.iter().filter(|x| **x != 0).count();
+                let drawn = drawn_texels(&reference);
+                compared += 1;
+                eprintln!("{name}: {drawn} texels drawn by direct3d, {count} differ");
+                if drawn == 0 || count != 0 {
+                    for (t, _) in d.iter().enumerate().filter(|(_, x)| **x != 0).take(16) {
+                        let (px, py) = (t as u32 % SIZE, t as u32 / SIZE);
+                        let at = t * 4;
+                        eprintln!(
+                            "  ({px}, {py}): direct3d {:?}, ours {:?}",
+                            &reference[at..at + 4],
+                            &picture[at..at + 4]
+                        );
+                    }
+                    failures.push(name);
                 }
-                failures.push(name);
             }
         }
     }

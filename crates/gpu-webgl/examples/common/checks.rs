@@ -82,7 +82,7 @@ fn module(entry: &str, stage: ShaderStage) -> ShaderModule {
     }
 }
 
-fn buffer<B: Backend>(b: &mut B, usage: BufferUsage, bytes: &[u8]) -> B::Buffer {
+fn buffer<B: Gpu>(b: &mut B, usage: BufferUsage, bytes: &[u8]) -> B::Buffer {
     let buffer = b
         .create_buffer(&BufferDesc {
             size: bytes.len() as u64,
@@ -167,7 +167,7 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
             fragment: Some(&fs),
         })
         .expect("create_program");
-    assert!(b.caps().has(Features::INSTANCE_STEP_RATE));
+    assert!(b.caps().features.contains(Features::INSTANCE_STEP_RATE));
     let layout_with_rate = |b: &mut H::Backend, rate| {
         let mut layout = VertexLayoutDesc {
             streams: [None; MAX_VERTEX_STREAMS],
@@ -225,7 +225,7 @@ pub fn vertex_and_instance_numbers_include_the_bases<H: Host>() {
             scissor: false,
             line_width: 1.0f32.to_bits(),
             provoking: ProvokingVertex::Last,
-            depth_minus_one: !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE),
+            depth_minus_one: !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE),
             sample_mask: u32::MAX,
         })
         .expect("create_raster");
@@ -500,10 +500,10 @@ pub fn depth_and_stencil_read_back<H: Host>() {
     ];
     let inside = |p: usize| (1..3).contains(&(p % 4)) && (1..3).contains(&(p / 4));
     for format in formats {
-        if !b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+        if !b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
             continue;
         }
-        let stencil = format.kind() == FormatKind::DepthStencil;
+        let stencil = FORMAT_FACTS[format as usize].kind == FormatKind::DepthStencil;
         let t = b
             .create_texture(&TextureDesc {
                 dimension: TextureDimension::D2,
@@ -657,7 +657,7 @@ pub fn stencil_sampled_and_read_back<H: Host>() {
     let out_view = kit::target(&mut b, &out, Format::R32Uint, 0, 0);
     let viewports = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
     for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
-        let uses = b.caps().formats.get(format);
+        let uses = b.caps().formats.uses[format as usize];
         assert!(
             uses.contains(FormatUse::SAMPLE | FormatUse::COPY_OUT),
             "{format:?} samples and reads back on every route"
@@ -839,13 +839,13 @@ pub fn copies_within_a_typeless_group<H: Host>() {
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for (i, (from, to)) in pairs.into_iter().enumerate() {
         // Formats absent here (16-bit normalised without EXT_texture_norm16) are not copied.
-        if !b.caps().formats.get(from).contains(FormatUse::SAMPLE)
-            || !b.caps().formats.get(to).contains(FormatUse::SAMPLE)
+        if !b.caps().formats.uses[from as usize].contains(FormatUse::SAMPLE)
+            || !b.caps().formats.uses[to as usize].contains(FormatUse::SAMPLE)
         {
             println!("not copied, a format absent: {from:?} to {to:?}");
             continue;
         }
-        let texel = from.block().2 as usize;
+        let texel = FORMAT_FACTS[from as usize].block.2 as usize;
         let make = |b: &mut H::Backend, format| {
             kit::texture(b, TextureDimension::D2, format, [4, 4, 2], 1, usage, false)
         };
@@ -922,7 +922,7 @@ pub fn srgb_copies_keep_every_byte<H: Host>() {
     ];
     let side = (usize::from(u8::MAX) + 1).isqrt() as u32;
     let size = [side, side, 1];
-    let texel = Format::Rgba8Unorm.block().2;
+    let texel = FORMAT_FACTS[Format::Rgba8Unorm as usize].block.2;
     // Texel i holds i, its complement, i with its bits reversed and i again.
     let bytes: Vec<u8> = (0..=u8::MAX)
         .flat_map(|i| [i, !i, i.reverse_bits(), i])
@@ -944,13 +944,13 @@ pub fn srgb_copies_keep_every_byte<H: Host>() {
             side,
             WriteMode::Ordered,
         );
-        let before = b.slow_paths().count(SlowPath::CopyThroughBuffer);
+        let before = b.slow_paths().counts[SlowPath::CopyThroughBuffer as usize];
         b.copy_texture(
             &layer_at(&src, 0, 0, 0, false),
             &layer_at(&dst, 0, 0, 0, false),
             whole,
         );
-        let counted = b.slow_paths().count(SlowPath::CopyThroughBuffer) - before;
+        let counted = b.slow_paths().counts[SlowPath::CopyThroughBuffer as usize] - before;
         let got = read_typeless(&mut b, &dst, to, size);
         assert_eq!(b.status(), DeviceStatus::Ok, "{from:?} to {to:?}");
         let texel = texel as usize;
@@ -976,7 +976,10 @@ pub fn srgb_copies_keep_every_byte<H: Host>() {
 /// one of the infinities, NaNs with payloads (signalling and quiet, of either sign), denormals and
 /// signed zeros, whose bits a copy must keep.
 fn typeless_bytes(format: Format, texels: usize, seed: u32) -> Vec<u8> {
-    let mut bytes = pattern(texels * format.block().2 as usize, seed);
+    let mut bytes = pattern(
+        texels * FORMAT_FACTS[format as usize].block.2 as usize,
+        seed,
+    );
     match format {
         Format::R16Float | Format::Rg16Float | Format::Rgba16Float => {
             let special: [u16; 8] = [
@@ -1075,7 +1078,7 @@ pub fn signed_normalised_texels_drawn_then_copied<H: Host>() {
     use crate::kit;
     let mut b = H::make();
     let f = Format::Rgba8Snorm;
-    if !b.caps().formats.get(f).contains(FormatUse::RENDER) {
+    if !b.caps().formats.uses[f as usize].contains(FormatUse::RENDER) {
         return not_run_because(format!("{f:?} does not render here"));
     }
     let usage = TextureUsage::RENDER
@@ -1103,7 +1106,7 @@ pub fn signed_normalised_texels_drawn_then_copied<H: Host>() {
         b.destroy(Object::Texture(u));
         got
     };
-    let count = |b: &mut H::Backend, path| b.slow_paths().count(path);
+    let count = |b: &mut H::Backend, path| b.slow_paths().counts[path as usize];
     b.begin_pass(&kit::pass(&v, clear, None));
     b.end_pass();
     let gpu = count(&mut b, SlowPath::CopyThroughBuffer);
@@ -1166,12 +1169,7 @@ pub fn signed_normalised_texels_drawn_then_copied<H: Host>() {
 pub fn signed_normalised_minimum_judged_by_whole_components<H: Host>() {
     use crate::kit;
     let mut b = H::make();
-    if !b
-        .caps()
-        .formats
-        .get(Format::Rgba8Snorm)
-        .contains(FormatUse::RENDER)
-    {
+    if !b.caps().formats.uses[Format::Rgba8Snorm as usize].contains(FormatUse::RENDER) {
         return not_run_because("Rgba8Snorm does not render here".into());
     }
     let usage = TextureUsage::RENDER
@@ -1284,7 +1282,7 @@ pub fn signed_normalised_minimum_judged_by_whole_components<H: Host>() {
     // reads back as it is, level 0 through its twin and level 1 as written.
     let f = Format::Rgba8Snorm;
     let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 2, usage, false);
-    fn level<B: Backend>(texture: &B::Texture, mip: u32) -> TextureRegion<'_, B> {
+    fn level<B: Gpu>(texture: &B::Texture, mip: u32) -> TextureRegion<'_, B> {
         TextureRegion {
             mip,
             ..layer_at(texture, 0, 0, 0, false)
@@ -1356,10 +1354,10 @@ pub fn half_floats_read_back_as_stored<H: Host>() {
     .enumerate()
     {
         assert!(
-            b.caps().formats.get(format).contains(FormatUse::COPY_OUT),
+            b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT),
             "{format:?} copies out"
         );
-        let texel = format.block().2 as usize;
+        let texel = FORMAT_FACTS[format as usize].block.2 as usize;
         let (w, h, layers) = (5usize, 4usize, 2u32);
         let t = kit::texture(
             &mut b,
@@ -1405,8 +1403,8 @@ pub fn half_floats_read_back_as_stored<H: Host>() {
                 bytes[at..at + 3 * texel].to_vec()
             })
             .collect();
-        let drawn = b.slow_paths().count(SlowPath::CopyThroughBuffer);
-        let converted = b.slow_paths().count(SlowPath::FormatConverted);
+        let drawn = b.slow_paths().counts[SlowPath::CopyThroughBuffer as usize];
+        let converted = b.slow_paths().counts[SlowPath::FormatConverted as usize];
         let source = ReadSource::Texture {
             region: TextureRegion { ..region },
             extent: part,
@@ -1446,9 +1444,9 @@ pub fn half_floats_read_back_as_stored<H: Host>() {
             (SlowPath::CopyThroughBuffer, drawn)
         };
         assert!(
-            b.slow_paths().count(path) >= before + 3,
+            b.slow_paths().counts[path as usize] >= before + 3,
             "{format:?}: {path:?} counted {} times in three reads",
-            b.slow_paths().count(path) - before
+            b.slow_paths().counts[path as usize] - before
         );
         assert_eq!(b.status(), DeviceStatus::Ok);
         b.destroy(Object::Buffer(out));
@@ -1467,7 +1465,7 @@ pub fn two_devices_on_one_thread_keep_their_own_objects<H: Host>() {
     let mut b = H::make();
     let tb = kit::texture(&mut b, TextureDimension::D2, f, [2, 2, 1], 1, usage, false);
     let vb = kit::target(&mut b, &tb, f, 0, 0);
-    let write = |d: &mut H::Backend, t: &<H::Backend as Backend>::Texture, v: u8| {
+    let write = |d: &mut H::Backend, t: &<H::Backend as Gpu>::Texture, v: u8| {
         d.write_texture(
             &layer_at(t, 0, 0, 0, false),
             Extent {
@@ -1554,7 +1552,7 @@ pub fn programs_of_equal_shaders_draw_until_each_is_destroyed<H: Host>() {
             .expect("create_program");
         (v, f, p)
     };
-    let draw = |b: &mut H::Backend, p: &<H::Backend as Backend>::Program| {
+    let draw = |b: &mut H::Backend, p: &<H::Backend as Gpu>::Program| {
         b.begin_pass(&kit::pass(&view, [0; 4], None));
         b.draw(&kit::call(
             &k,
@@ -2199,7 +2197,7 @@ pub fn depth_textures_compared_and_read_plainly<H: Host>() {
         3,
     ));
     b.end_pass();
-    let texel_size = f.block().2 as usize;
+    let texel_size = FORMAT_FACTS[f as usize].block.2 as usize;
     let got = kit::read(&mut b, &out, 0, 0, [target, target, 1], texel_size, false);
     assert_eq!(b.status(), DeviceStatus::Ok);
     let side = side as i32;
@@ -2267,7 +2265,7 @@ pub fn linear_values_interpolate_in_window_space<H: Host>() {
     let mut b = H::make();
     let k = Kit::new(&mut b);
     let f = Format::Rgba32Float;
-    if !b.caps().formats.get(f).contains(FormatUse::RENDER) {
+    if !b.caps().formats.uses[f as usize].contains(FormatUse::RENDER) {
         not_run_because(format!("{f:?} does not render here"));
         return;
     }
@@ -2301,7 +2299,7 @@ pub fn linear_values_interpolate_in_window_space<H: Host>() {
         0,
         0,
         [side, side, 1],
-        f.block().2 as usize,
+        FORMAT_FACTS[f as usize].block.2 as usize,
         false,
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
@@ -2422,7 +2420,7 @@ pub fn programs_run_per_sample_and_write_the_sample_mask<H: Host>() {
     let mut b = H::make();
     let f = Format::Rgba8Unorm;
     let samples = 4;
-    if !b.caps().has(Features::SAMPLE_SHADING) {
+    if !b.caps().features.contains(Features::SAMPLE_SHADING) {
         not_run(Features::SAMPLE_SHADING);
         return;
     }
@@ -2492,7 +2490,7 @@ pub fn programs_run_per_sample_and_write_the_sample_mask<H: Host>() {
             0,
             0,
             [side, side, 1],
-            f.block().2 as usize,
+            FORMAT_FACTS[f as usize].block.2 as usize,
             false,
         ));
         b.destroy(Object::Program(program));
@@ -2553,7 +2551,7 @@ pub fn special_float_values_keep_their_bits<H: Host>() {
     let mut b = H::make();
     let k = Kit::new(&mut b);
     let f = Format::Rgba32Float;
-    if !b.caps().formats.get(f).contains(FormatUse::RENDER) {
+    if !b.caps().formats.uses[f as usize].contains(FormatUse::RENDER) {
         not_run_because(format!("{f:?} does not render here"));
         return;
     }
@@ -2595,7 +2593,7 @@ pub fn special_float_values_keep_their_bits<H: Host>() {
         3,
     ));
     b.end_pass();
-    let texel = f.block().2 as usize;
+    let texel = FORMAT_FACTS[f as usize].block.2 as usize;
     let got = kit::read(&mut b, &out, 0, 0, [width, 1, 1], texel, false);
     assert_eq!(b.status(), DeviceStatus::Ok);
     let wrong: Vec<String> = routes
@@ -2662,7 +2660,7 @@ pub fn copies_within_one_float_format_take_the_probed_route<
         };
         b.copy_texture(&at(&a), &at(&c), extent);
         let counted = [SlowPath::CopyThroughBuffer, SlowPath::HostCopyReadBack]
-            .map(|s| b.slow_paths().count(s) - before.count(s));
+            .map(|s| b.slow_paths().counts[s as usize] - before.counts[s as usize]);
         println!(
             "{format:?}: exact float blits {}, counted {counted:?}",
             b.exact_float_blits()
@@ -2680,15 +2678,15 @@ pub fn copies_within_one_float_format_take_the_probed_route<
 
 /// Reads back the first layers of `texture` (of `format`, mip 0): directly, or where the format
 /// does not read back (16-bit floats), through a copy into its unsigned integer twin.
-fn read_typeless<B: Backend>(
+fn read_typeless<B: Gpu>(
     b: &mut B,
     texture: &B::Texture,
     format: Format,
     size: [u32; 3],
 ) -> Vec<u8> {
     use crate::kit;
-    let texel = format.block().2 as usize;
-    if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+    let texel = FORMAT_FACTS[format as usize].block.2 as usize;
+    if b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
         return kit::read(b, texture, 0, 0, size, texel, false);
     }
     if matches!(format, Format::Rgb10a2Unorm | Format::Rgb10a2Uint) {
@@ -2732,12 +2730,7 @@ const PACKED_LOAD: &str = "
 
 /// Reads a 10-10-10-2 2D array texture, which GL does not read back, by loading each layer in a
 /// program and packing the fields into the format's words again.
-fn read_packed<B: Backend>(
-    b: &mut B,
-    texture: &B::Texture,
-    format: Format,
-    size: [u32; 3],
-) -> Vec<u8> {
+fn read_packed<B: Gpu>(b: &mut B, texture: &B::Texture, format: Format, size: [u32; 3]) -> Vec<u8> {
     use crate::kit::{self, Kit};
     let k = Kit::new(b);
     let (fs, binding) = match format {
@@ -2838,7 +2831,7 @@ pub fn cube_faces_copied_between_typeless_formats<H: Host>() {
         depth_or_layers: 1,
     };
     for (i, (from, to)) in pairs.into_iter().enumerate() {
-        let texel = from.block().2 as usize;
+        let texel = FORMAT_FACTS[from as usize].block.2 as usize;
         let cube = kit::texture(
             &mut b,
             TextureDimension::D2,
@@ -2848,7 +2841,7 @@ pub fn cube_faces_copied_between_typeless_formats<H: Host>() {
             usage,
             true,
         );
-        let bytes = if from.is_depth_stencil() {
+        let bytes = if FORMAT_FACTS[from as usize].depth_stencil {
             depth_values(from, 96, 0x2545_f491 ^ i as u32)
         } else {
             typeless_bytes(from, 96, 0x2545_f491 ^ i as u32)
@@ -2933,12 +2926,12 @@ pub fn copies_within_one_subresource<H: Host>() {
         (Format::Rgba16Float, TextureDimension::D3, [8, 4, 2]),
         (Format::R16Float, TextureDimension::D2, [8, 4, 2]),
     ];
-    let before = b.slow_paths().count(SlowPath::CopyWithinTexture);
+    let before = b.slow_paths().counts[SlowPath::CopyWithinTexture as usize];
     for (n, (format, dimension, size)) in cases.into_iter().enumerate() {
-        let texel = format.block().2 as usize;
+        let texel = FORMAT_FACTS[format as usize].block.2 as usize;
         let t = kit::texture(&mut b, dimension, format, size, 1, usage, false);
         let count = (size[0] * size[1] * size[2]) as usize;
-        let bytes = if format.is_depth_stencil() {
+        let bytes = if FORMAT_FACTS[format as usize].depth_stencil {
             depth_values(format, count, 0x7a3d_1c55 ^ n as u32)
         } else {
             typeless_bytes(format, count, 0x7a3d_1c55 ^ n as u32)
@@ -2964,7 +2957,7 @@ pub fn copies_within_one_subresource<H: Host>() {
             WriteMode::Ordered,
         );
         let read = |b: &mut H::Backend| {
-            if format.is_depth_stencil() {
+            if FORMAT_FACTS[format as usize].depth_stencil {
                 kit::read(b, &t, 0, 0, size, texel, false)
             } else {
                 read_typeless(b, &t, format, size)
@@ -3013,7 +3006,7 @@ pub fn copies_within_one_subresource<H: Host>() {
     }
     // Every copy but that of the texture kept on the host, which reads the region before it writes.
     assert_eq!(
-        b.slow_paths().count(SlowPath::CopyWithinTexture) - before,
+        b.slow_paths().counts[SlowPath::CopyWithinTexture as usize] - before,
         cases.len() as u64 - 1,
         "each copy through a texture counted"
     );
@@ -3051,7 +3044,7 @@ fn depth_values(format: Format, texels: usize, seed: u32) -> Vec<u8> {
 }
 
 /// Level 0 of `texture` from layer `layer` and texel (`x`, `y`), the stencil aspect with `stencil`.
-fn layer_at<B: Backend>(
+fn layer_at<B: Gpu>(
     texture: &B::Texture,
     layer: u32,
     x: u32,
@@ -3093,7 +3086,7 @@ pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
         .flat_map(|(n, f)| [(n, f, false), (n + formats.len(), f, true)]);
     let mut wrong = Vec::new();
     for (n, format, cube) in shapes {
-        if !b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+        if !b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
             continue;
         }
         let (layers, first) = if cube { (6, 3) } else { (2, 0) };
@@ -3106,14 +3099,14 @@ pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
             usage,
             cube,
         );
-        let combined = format.kind() == FormatKind::DepthStencil;
+        let combined = FORMAT_FACTS[format as usize].kind == FormatKind::DepthStencil;
         let aspects: &[bool] = if combined { &[false, true] } else { &[false] };
         let mut want = Vec::new();
         for &stencil in aspects {
             let bytes = if stencil {
                 1
             } else {
-                format.block().2.min(4) as usize
+                FORMAT_FACTS[format as usize].block.2.min(4) as usize
             };
             let seed = 0x51ed_270b ^ (n as u32 * 2 + stencil as u32);
             let all = if stencil {
@@ -3234,12 +3227,12 @@ pub fn copies_between_depth_and_colour_formats<H: Host>() {
     .enumerate()
     {
         let caps = &b.caps().formats;
-        if !caps.get(colour).contains(FormatUse::COPY_OUT)
-            || !caps.get(depth).contains(FormatUse::COPY_OUT)
+        if !caps.uses[colour as usize].contains(FormatUse::COPY_OUT)
+            || !caps.uses[depth as usize].contains(FormatUse::COPY_OUT)
         {
             continue;
         }
-        let bytes = colour.block().2 as usize;
+        let bytes = FORMAT_FACTS[colour as usize].block.2 as usize;
         for (from, to) in [(colour, depth), (depth, colour)] {
             let src = kit::texture(
                 &mut b,
@@ -3443,7 +3436,7 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
     use crate::kit::{self, Kit};
     let mut formats = vec![IndexFormat::U16, IndexFormat::U32];
     let mut b = H::make();
-    if b.caps().has(Features::INDEX_U8) {
+    if b.caps().features.contains(Features::INDEX_U8) {
         formats.insert(0, IndexFormat::U8);
     }
     let k = Kit::new(&mut b);
@@ -3457,10 +3450,10 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
         let got = kit::read(b, &t, 0, 0, [4, 4, 1], 4, false);
         got.as_chunks::<4>().0.iter().filter(|p| p[0] == 1).count()
     };
-    let rewrites = |b: &mut H::Backend| b.slow_paths().count(SlowPath::RestartRewrite);
+    let rewrites = |b: &mut H::Backend| b.slow_paths().counts[SlowPath::RestartRewrite as usize];
     for format in formats {
-        let width = format.size() as usize;
-        let largest = format.restart_value();
+        let width = INDEX_FORMATS[format as usize].size as usize;
+        let largest = INDEX_FORMATS[format as usize].restart_value;
         let bytes = |values: &[u32]| {
             let mut out: Vec<u8> = values
                 .iter()
@@ -3476,7 +3469,7 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
         let both = BufferUsage::INDEX | BufferUsage::VERTEX;
         let copied = buffer(&mut b, both, &vec![0; indices.len()]);
         b.copy_buffer(&data, 0, &copied, 0, indices.len() as u64);
-        let draw = |b: &mut H::Backend, ib: &<H::Backend as Backend>::Buffer, first: u32| {
+        let draw = |b: &mut H::Backend, ib: &<H::Backend as Gpu>::Buffer, first: u32| {
             b.begin_pass(&kit::pass(&v, [0; 4], None));
             b.draw(&DrawCall {
                 index: Some(IndexBinding {
@@ -3584,7 +3577,7 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
 pub fn fractional_viewports_are_refused<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if b.caps().has(Features::FRACTIONAL_VIEWPORT) {
+    if b.caps().features.contains(Features::FRACTIONAL_VIEWPORT) {
         return;
     }
     let k = Kit::new(&mut b);
@@ -3686,7 +3679,7 @@ const TWO_LOADS: &str = "
 pub fn sampled_views_are_whole_textures_of_one_mip_range<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    assert!(!b.caps().has(Features::TEXTURE_VIEWS));
+    assert!(!b.caps().features.contains(Features::TEXTURE_VIEWS));
     let f = Format::Rgba8Uint;
     let usage = TextureUsage::SAMPLE | TextureUsage::RENDER | TextureUsage::COPY_DST;
     let array = kit::texture(&mut b, TextureDimension::D2, f, [2, 2, 3], 1, usage, false);
@@ -3812,12 +3805,7 @@ pub fn sampled_views_are_whole_textures_of_one_mip_range<H: Host>() {
 /// (the hosts read the window's bytes, which are RGBA).
 pub fn bgra_surfaces_present<H: Host>() {
     let mut b = H::make();
-    assert!(
-        b.caps()
-            .formats
-            .get(Format::Bgra8Unorm)
-            .contains(FormatUse::PRESENT)
-    );
+    assert!(b.caps().formats.uses[Format::Bgra8Unorm as usize].contains(FormatUse::PRESENT));
     let window = H::window(&mut b);
     let surface = b.create_surface(window).expect("create_surface");
     b.configure_surface(&surface, Format::Bgra8Unorm, 4, 4, true)
@@ -3867,13 +3855,9 @@ pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
     use crate::kit::{self, Kit};
     use Format as F;
     let mut b = H::make();
-    let has = b
-        .caps()
-        .formats
-        .get(F::Rgba8Snorm)
-        .contains(FormatUse::RENDER);
+    let has = b.caps().formats.uses[F::Rgba8Snorm as usize].contains(FormatUse::RENDER);
     let mut formats = vec![F::R8Snorm, F::Rg8Snorm, F::Rgba8Snorm];
-    if b.caps().formats.get(F::Rgba16Snorm) != FormatUse::empty() {
+    if b.caps().formats.uses[F::Rgba16Snorm as usize] != FormatUse::empty() {
         formats.extend([F::R16Snorm, F::Rg16Snorm, F::Rgba16Snorm]);
     }
     let k = Kit::new(&mut b);
@@ -3893,7 +3877,7 @@ pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
     let vp = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
     let usage = TextureUsage::SAMPLE | TextureUsage::RENDER;
     for format in formats {
-        let uses = b.caps().formats.get(format);
+        let uses = b.caps().formats.uses[format as usize];
         assert!(
             uses.contains(FormatUse::SAMPLE | FormatUse::FILTER)
                 && uses.contains(FormatUse::COPY_OUT) != has,
@@ -3962,7 +3946,7 @@ pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         // Channels the format lacks load as 0, 0 and 1.
-        let n = (format.block().2 as usize) / if max > 200.0 { 2 } else { 1 };
+        let n = (FORMAT_FACTS[format as usize].block.2 as usize) / if max > 200.0 { 2 } else { 1 };
         let mut want = [0.0, 0.0, 0.0, 1.0];
         want[..n].copy_from_slice(&value[..n]);
         assert_eq!(got, want, "{format:?}");
@@ -3977,10 +3961,10 @@ pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
     use crate::kit;
     use Format as F;
     let mut b = H::make();
-    let has = b.caps().formats.get(F::Rgba16Unorm) != FormatUse::empty();
+    let has = b.caps().formats.uses[F::Rgba16Unorm as usize] != FormatUse::empty();
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for format in [F::R16Unorm, F::Rg16Unorm, F::Rgba16Unorm] {
-        let uses = b.caps().formats.get(format);
+        let uses = b.caps().formats.uses[format as usize];
         if !has {
             assert_eq!(uses, FormatUse::empty(), "{format:?}");
             continue;
@@ -3991,7 +3975,7 @@ pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
             | FormatUse::BLEND
             | FormatUse::COPY_OUT;
         assert!(uses.contains(want), "{format:?}: {uses:?}");
-        let texel = format.block().2 as usize;
+        let texel = FORMAT_FACTS[format as usize].block.2 as usize;
         let bytes = pattern(12 * texel, 0x51ed_270b);
         let t = kit::texture(
             &mut b,
@@ -4037,7 +4021,7 @@ pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
         assert_eq!(later, bytes, "{format:?} later");
     }
     for format in [F::R16Snorm, F::Rg16Snorm, F::Rgba16Snorm] {
-        let uses = b.caps().formats.get(format);
+        let uses = b.caps().formats.uses[format as usize];
         if has {
             // Rendering them too needs EXT_render_snorm.
             assert!(
@@ -4098,10 +4082,10 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
         F::R16Unorm,
     ] {
         let need = FormatUse::RENDER | FormatUse::FILTER | FormatUse::COPY_OUT;
-        if !b.caps().formats.get(format).contains(need) {
+        if !b.caps().formats.uses[format as usize].contains(need) {
             continue;
         }
-        let texel = format.block().2 as usize;
+        let texel = FORMAT_FACTS[format as usize].block.2 as usize;
         for (seed, &(dimension, size, cube)) in shapes.iter().enumerate() {
             // Four levels, or the full chain where it is shorter.
             let largest: u32 = size[0]
@@ -4176,12 +4160,15 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
                     cube,
                     reinterpret: false,
                 };
-                let before = b.slow_paths().count(SlowPath::FilterInShader);
+                let before = b.slow_paths().counts[SlowPath::FilterInShader as usize];
                 b.generate_mips(&native, &desc, format, first..levels, 0..layers)
                     .expect("generate_mips");
                 generate_mips_by_draws(&mut b, &drawn, &desc, format, first..levels, 0..layers)
                     .expect("generate_mips_by_draws");
-                assert_eq!(b.slow_paths().count(SlowPath::FilterInShader), before);
+                assert_eq!(
+                    b.slow_paths().counts[SlowPath::FilterInShader as usize],
+                    before
+                );
                 let what =
                     format!("{format:?} {dimension:?} {size:?} cube {cube}, from level {first}");
                 for mip in 0..levels {
@@ -4269,7 +4256,7 @@ pub fn timestamps_and_their_disjoint_flag<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
     let absent = Err(GpuError::Absent(Features::TIMESTAMPS));
-    if !b.caps().has(Features::TIMESTAMPS) {
+    if !b.caps().features.contains(Features::TIMESTAMPS) {
         assert_eq!(
             b.create_query_set(QueryKind::Timestamp, 2).err(),
             absent.err()
@@ -4397,9 +4384,9 @@ pub fn multisampled_copies_resolve_as_their_source<H: Host>() {
         height: 4,
         depth_or_layers: 1,
     };
-    let before = b.slow_paths().count(SlowPath::MultisampleCopyResolved);
+    let before = b.slow_paths().counts[SlowPath::MultisampleCopyResolved as usize];
     b.copy_texture(&region(&ms), &region(&copy), extent);
-    let counted = b.slow_paths().count(SlowPath::MultisampleCopyResolved) - before;
+    let counted = b.slow_paths().counts[SlowPath::MultisampleCopyResolved as usize] - before;
     b.resolve(&region(&ms), &region(&of_source), f);
     b.resolve(&region(&copy), &region(&of_copy), f);
     let [end, source, copied] =
@@ -4416,7 +4403,8 @@ pub fn multisampled_copies_resolve_as_their_source<H: Host>() {
     assert!(partial > 0, "no pixel on the diagonal is partly covered");
     let reads = b
         .caps()
-        .has(Features::MULTISAMPLE_READ | Features::SAMPLE_SHADING);
+        .features
+        .contains(Features::MULTISAMPLE_READ | Features::SAMPLE_SHADING);
     assert_eq!(
         counted,
         u64::from(!reads),
@@ -4446,7 +4434,7 @@ fn at_depth(z: f64, minus_one: bool) -> String {
 pub fn fractional_depth_bias<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if !b.caps().has(Features::FRACTIONAL_DEPTH_BIAS) {
+    if !b.caps().features.contains(Features::FRACTIONAL_DEPTH_BIAS) {
         let desc = RasterDesc {
             fill: FillMode::Solid,
             cull: CullMode::None,
@@ -4458,7 +4446,7 @@ pub fn fractional_depth_bias<H: Host>() {
             scissor: false,
             line_width: 1.0f32.to_bits(),
             provoking: ProvokingVertex::Last,
-            depth_minus_one: !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE),
+            depth_minus_one: !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE),
             sample_mask: u32::MAX,
         };
         assert_eq!(
@@ -4469,7 +4457,7 @@ pub fn fractional_depth_bias<H: Host>() {
         return;
     }
     let k = Kit::new(&mut b);
-    let minus_one = !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE);
+    let minus_one = !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE);
     let program = kit::program(&mut b, &at_depth(1000.45 / 65535.0, minus_one), "vs", "fs");
     let always = kit::depth_stencil(&mut b, Some(CompareFn::Always), true, None);
     let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
@@ -4514,7 +4502,7 @@ pub fn fractional_depth_bias<H: Host>() {
 pub fn constant_alpha_blends<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if !b.caps().has(Features::BLEND_CONSTANT_ALPHA) {
+    if !b.caps().features.contains(Features::BLEND_CONSTANT_ALPHA) {
         not_run(Features::BLEND_CONSTANT_ALPHA);
         return;
     }
@@ -4641,11 +4629,11 @@ struct Read {
 ";
 
 /// A buffer of `size` zero bytes with `usage`, for captures.
-fn zeros<B: Backend>(b: &mut B, usage: BufferUsage, size: usize) -> B::Buffer {
+fn zeros<B: Gpu>(b: &mut B, usage: BufferUsage, size: usize) -> B::Buffer {
     buffer(b, usage | BufferUsage::CAPTURE, &vec![0; size])
 }
 
-fn read_buffer<B: Backend>(b: &mut B, buffer: &B::Buffer, size: usize) -> Vec<u8> {
+fn read_buffer<B: Gpu>(b: &mut B, buffer: &B::Buffer, size: usize) -> Vec<u8> {
     let mut got = vec![0; size];
     b.read_back_now(
         &ReadSource::Buffer {
@@ -4674,7 +4662,7 @@ fn captured(v: u32) -> (Vec<u8>, Vec<u8>) {
 pub fn vertices_captured_with_and_without_rasterising<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+    if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
         not_run(Features::TRANSFORM_FEEDBACK);
         return;
     }
@@ -4775,7 +4763,7 @@ pub fn vertices_captured_with_and_without_rasterising<H: Host>() {
 pub fn captured_indices_drawn_both_ways<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+    if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
         not_run(Features::TRANSFORM_FEEDBACK);
         return;
     }
@@ -4847,7 +4835,7 @@ pub fn captured_indices_drawn_both_ways<H: Host>() {
                 offset: 0,
             }),
         ];
-        let before = b.slow_paths().count(SlowPath::IndexTwinReadBack);
+        let before = b.slow_paths().counts[SlowPath::IndexTwinReadBack as usize];
         b.begin_pass(&kit::pass(&v, [u32::MAX; 4], None));
         b.draw(&DrawCall {
             vertex_layout: &layout,
@@ -4876,7 +4864,7 @@ pub fn captured_indices_drawn_both_ways<H: Host>() {
             ..kit::call(&k, &numbers, None, &whole, Topology::PointList, 4)
         });
         b.end_pass();
-        let refreshed = b.slow_paths().count(SlowPath::IndexTwinReadBack) - before;
+        let refreshed = b.slow_paths().counts[SlowPath::IndexTwinReadBack as usize] - before;
         let got = kit::read(&mut b, &t, 0, 0, [8, 4, 1], 16, false);
         let texel = |p: usize| -> [u32; 4] {
             core::array::from_fn(|c| {
@@ -4907,7 +4895,7 @@ pub fn captured_indices_drawn_both_ways<H: Host>() {
                 "as indices {as_indices}: pixel {p}"
             );
         }
-        if as_indices && b.slow_paths().count(SlowPath::IndexBufferTwin) > 0 {
+        if as_indices && b.slow_paths().counts[SlowPath::IndexBufferTwin as usize] > 0 {
             assert_eq!(refreshed, 1, "the index twin refreshed once");
         }
     }
@@ -4969,11 +4957,11 @@ pub fn block_compressed_and_shared_exponent_textures_read_back_as_written<H: Hos
     let mut served = 0;
     for (n, format) in formats.into_iter().enumerate() {
         let want = FormatUse::SAMPLE | FormatUse::COPY_OUT;
-        if !b.caps().formats.get(format).contains(want) {
+        if !b.caps().formats.uses[format as usize].contains(want) {
             continue;
         }
         served += 1;
-        let (bw, bh, bytes) = format.block();
+        let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
         let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::COPY_SRC;
         let t = kit::texture(
             &mut b,
@@ -5148,12 +5136,7 @@ pub fn block_compressed_and_shared_exponent_textures_read_back_as_written<H: Hos
         }
     }
     assert!(
-        served > 0
-            || !b
-                .caps()
-                .formats
-                .get(F::Rgb9e5Float)
-                .contains(FormatUse::SAMPLE)
+        served > 0 || !b.caps().formats.uses[F::Rgb9e5Float as usize].contains(FormatUse::SAMPLE)
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
@@ -5179,7 +5162,7 @@ pub fn interpolated_bc4_and_bc5_values<H: Host>() {
     use Format as F;
     let mut b = H::make();
     let out_format = F::Rgba32Float;
-    if !b.caps().formats.get(out_format).contains(FormatUse::RENDER) {
+    if !b.caps().formats.uses[out_format as usize].contains(FormatUse::RENDER) {
         return;
     }
     let k = Kit::new(&mut b);
@@ -5204,9 +5187,9 @@ pub fn interpolated_bc4_and_bc5_values<H: Host>() {
         out[2..].copy_from_slice(&bits.to_le_bytes()[..6]);
         out
     };
-    let compressed = b.caps().has(Features::BLOCK_COMPRESSION);
+    let compressed = b.caps().features.contains(Features::BLOCK_COMPRESSION);
     for format in [F::Bc4RUnorm, F::Bc4RSnorm, F::Bc5RgUnorm, F::Bc5RgSnorm] {
-        if !b.caps().formats.get(format).contains(FormatUse::SAMPLE) {
+        if !b.caps().formats.uses[format as usize].contains(FormatUse::SAMPLE) {
             continue;
         }
         let signed = matches!(format, F::Bc4RSnorm | F::Bc5RgSnorm);
@@ -5337,7 +5320,7 @@ pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
     let mut b = H::make();
     let colour = Format::R32Float;
     let wanted = FormatUse::RENDER | FormatUse::COPY_OUT;
-    if !b.caps().formats.get(colour).contains(wanted) {
+    if !b.caps().formats.uses[colour as usize].contains(wanted) {
         return;
     }
     let k = Kit::new(&mut b);
@@ -5367,7 +5350,7 @@ pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
     let ds = kit::depth_stencil(&mut b, Some(CompareFn::Always), true, None);
     let whole = [kit::viewport(0.0, 0.0, 2.0, 2.0)];
     let mut conventions = vec![(true, 0.75f32)];
-    if b.caps().has(Features::CLIP_DEPTH_ZERO_ONE) {
+    if b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE) {
         conventions.push((false, 0.5));
     }
     for (minus_one, want) in conventions {
@@ -5413,11 +5396,11 @@ pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
 pub fn strips_fans_loops_and_indexed_draws_captured_in_list_order<H: Host>() {
     use crate::kit::{self, Kit};
     let mut b = H::make();
-    if !b.caps().has(Features::TRANSFORM_FEEDBACK) {
+    if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
         not_run(Features::TRANSFORM_FEEDBACK);
         return;
     }
-    let first = b.caps().has(Features::PROVOKING_VERTEX_FIRST);
+    let first = b.caps().features.contains(Features::PROVOKING_VERTEX_FIRST);
     let k = Kit::new(&mut b);
     let program = kit::program(&mut b, CAPTURED, "vs_numbers", "fs_numbers");
     let whole = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
@@ -5770,7 +5753,7 @@ pub fn absent_features_are_refused<H: Host>() {
     };
     // Made where the feature is declared, refused as absent where not.
     let by_caps = |r: Result<(), GpuError>, f: Features, what: &str| {
-        if caps.has(f) {
+        if caps.features.contains(f) {
             r.unwrap_or_else(|e| panic!("{what}: {e:?}"));
         } else {
             absent(r, f, what);
@@ -5848,7 +5831,7 @@ pub fn absent_features_are_refused<H: Host>() {
         scissor: false,
         line_width: 1.0f32.to_bits(),
         provoking: ProvokingVertex::Last,
-        depth_minus_one: !caps.has(Features::CLIP_DEPTH_ZERO_ONE),
+        depth_minus_one: !caps.features.contains(Features::CLIP_DEPTH_ZERO_ONE),
         sample_mask: u32::MAX,
     };
     b.create_raster(&raster_desc)
@@ -5857,7 +5840,7 @@ pub fn absent_features_are_refused<H: Host>() {
         let mut d = raster_desc;
         change(&mut d);
         let r = b.create_raster(&d).map(drop);
-        if caps.has(f) {
+        if caps.features.contains(f) {
             r.unwrap_or_else(|e| panic!("{what}: {e:?}"));
         } else {
             absent(r, f, what);
@@ -6216,10 +6199,10 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
     .enumerate()
     {
         let want = FormatUse::SAMPLE | FormatUse::COPY_OUT;
-        if !b.caps().formats.get(format).contains(want) {
+        if !b.caps().formats.uses[format as usize].contains(want) {
             continue;
         }
-        let (bw, bh, bytes) = format.block();
+        let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
         let (cols, rows) = (8 / bw, 8 / bh);
         let block = bytes as usize;
         let row = (cols * bytes) as usize;
@@ -6240,7 +6223,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
             );
             t
         };
-        let read = |b: &mut H::Backend, t: &<H::Backend as Backend>::Texture| {
+        let read = |b: &mut H::Backend, t: &<H::Backend as Gpu>::Texture| {
             let mut got = vec![0; layer_bytes * 2];
             b.read_back_now(
                 &ReadSource::Texture {
@@ -6285,7 +6268,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
             model[d..d + row].copy_from_slice(&fresh[r * row..(r + 1) * row]);
         }
         let staging = buffer(&mut b, BufferUsage::VERTEX, &staged);
-        let readbacks = b.slow_paths().count(SlowPath::HostCopyReadBack);
+        let readbacks = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
         b.copy_buffer_to_texture(
             &CopyBufferTexture {
                 buffer: &staging,
@@ -6297,7 +6280,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
             extent(8, 4, 1),
         );
         assert_eq!(
-            b.slow_paths().count(SlowPath::HostCopyReadBack),
+            b.slow_paths().counts[SlowPath::HostCopyReadBack as usize],
             readbacks + 1,
             "{format:?}: the buffer read back"
         );
@@ -6381,7 +6364,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
         let d = at(0, 0, 0);
         model[d..d + block].copy_from_slice(&solid[s..s + block]);
         assert_eq!(
-            b.slow_paths().count(SlowPath::HostCopyReadBack),
+            b.slow_paths().counts[SlowPath::HostCopyReadBack as usize],
             readbacks + 2,
             "{format:?}: {plain:?} read back"
         );
@@ -6449,7 +6432,7 @@ pub fn srgb_views_of_block_compressed_textures<H: Host>() {
     use Format as F;
     let mut b = H::make();
     let want = FormatUse::SAMPLE;
-    if !b.caps().formats.get(F::Bc1RgbaUnorm).contains(want) {
+    if !b.caps().formats.uses[F::Bc1RgbaUnorm as usize].contains(want) {
         return;
     }
     let k = Kit::new(&mut b);
@@ -6581,10 +6564,10 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
     for format in [F::Bgra8Unorm, F::Bgra8UnormSrgb] {
         let want = FormatUse::SAMPLE | FormatUse::RENDER | FormatUse::COPY_OUT;
         assert!(
-            b.caps().formats.get(format).contains(want),
+            b.caps().formats.uses[format as usize].contains(want),
             "{format:?}: {want:?}"
         );
-        let before = b.slow_paths().count(SlowPath::FormatConverted);
+        let before = b.slow_paths().counts[SlowPath::FormatConverted as usize];
         let t = kit::texture(
             &mut b,
             TextureDimension::D2,
@@ -6595,14 +6578,14 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
             false,
         );
         b.write_texture(&region!(&t), extent(4, 2), &bgra, 16, 2, WriteMode::Ordered);
-        let written = b.slow_paths().count(SlowPath::FormatConverted);
+        let written = b.slow_paths().counts[SlowPath::FormatConverted as usize];
         assert!(written > before);
         assert_eq!(
             kit::read(&mut b, &t, 0, 0, [4, 2, 1], 4, false),
             bgra,
             "{format:?} now"
         );
-        let read = b.slow_paths().count(SlowPath::FormatConverted);
+        let read = b.slow_paths().counts[SlowPath::FormatConverted as usize];
         assert!(
             read > written,
             "{format:?}: a read swapping on the host is not counted"
@@ -6618,7 +6601,7 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
         let mut later = vec![0; 32];
         b.finish_read(rb, &mut later);
         assert_eq!(later, bgra, "{format:?} later");
-        assert!(b.slow_paths().count(SlowPath::FormatConverted) > read);
+        assert!(b.slow_paths().counts[SlowPath::FormatConverted as usize] > read);
         // Loaded through a view of its own format, texel (0, 0) is red 200 (sRGB decoded for the
         // sRGB format).
         let view = kit::view(&mut b, &t, format, ViewDimension::D2, 0, 1, 0, 1);
@@ -6723,9 +6706,9 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
         row_pitch: 4,
         rows_per_layer: 2,
     };
-    let before = b.slow_paths().count(SlowPath::HostCopyReadBack);
+    let before = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
     b.copy_texture_to_buffer(&region!(&t), &into, extent(4, 2));
-    assert!(b.slow_paths().count(SlowPath::HostCopyReadBack) > before);
+    assert!(b.slow_paths().counts[SlowPath::HostCopyReadBack as usize] > before);
     assert_eq!(read_buffer(&mut b, &buf, 8), bytes, "r8uint in a buffer");
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
@@ -6824,7 +6807,7 @@ pub fn bgrx_textures_hold_alpha_one<H: Host>() {
             | FormatUse::BLEND
             | FormatUse::COPY_OUT;
         assert!(
-            b.caps().formats.get(format).contains(want),
+            b.caps().formats.uses[format as usize].contains(want),
             "{format:?}: {want:?}"
         );
         let t = kit::texture(
@@ -6924,7 +6907,7 @@ pub fn bgrx_textures_hold_alpha_one<H: Host>() {
         let got = kit::read(&mut b, &t, 0, 0, [1, 1, 1], 4, false);
         assert_eq!(got, [255, 0, 0, 255], "{format:?} cleared blue");
         // With an RGBA target in one pass: its alpha drawn, the BGRX one left one.
-        if b.caps().has(Features::INDEPENDENT_BLEND) {
+        if b.caps().features.contains(Features::INDEPENDENT_BLEND) {
             let two = kit::program(&mut b, QUARTER_ALPHA, "vs", "fs_two");
             let colors = [&out_view, &target];
             b.begin_pass(&PassDesc {
@@ -7496,7 +7479,7 @@ pub fn packed_vertex_formats_are_converted<H: Host>() {
         buffer: &vb,
         offset: 0,
     })];
-    let before = b.slow_paths().count(SlowPath::VertexFormatConverted);
+    let before = b.slow_paths().counts[SlowPath::VertexFormatConverted as usize];
     b.begin_pass(&kit::pass(&target, [0; 4], None));
     for p in &programs {
         let mut call = kit::call(&k, p, None, &vp, Topology::PointList, 3);
@@ -7507,7 +7490,7 @@ pub fn packed_vertex_formats_are_converted<H: Host>() {
     b.end_pass();
     assert_eq!(b.status(), DeviceStatus::Ok);
     assert_eq!(
-        b.slow_paths().count(SlowPath::VertexFormatConverted) - before,
+        b.slow_paths().counts[SlowPath::VertexFormatConverted as usize] - before,
         2
     );
     let got: Vec<u32> = kit::read(&mut b, &t, 0, 0, [3, 2, 1], 16, false)

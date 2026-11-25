@@ -7,9 +7,9 @@
 
 use anyhow::{Result, anyhow, ensure};
 use wcontainers_gpu::{
-    AddressMode, Backend, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp,
-    BorderColor, BufferDesc, BufferUsage, ColorAttachment, CopyBufferTexture, DeviceStatus,
-    DrawCall, DrawRange, Extent, Filter, Format, FormatUse, LoadOp, MapIntent, Origin, PassDesc,
+    AddressMode, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp, BorderColor,
+    BufferDesc, BufferUsage, ColorAttachment, CopyBufferTexture, DeviceStatus, DrawCall, DrawRange,
+    Extent, FORMAT_FACTS, Filter, Format, FormatUse, Gpu, LoadOp, MapIntent, Origin, PassDesc,
     ReadSource, SamplerDesc, SlowPath, StageSet, StoreOp, TextureDesc, TextureDimension,
     TextureRegion, TextureUsage, Topology, WriteMode,
 };
@@ -63,7 +63,7 @@ pub const STORED: [Format; 1] = [Format::A8Unorm];
 
 /// Bytes of a row of `width` texels of `format`: whole blocks.
 pub fn row_bytes(format: Format, width: u32) -> usize {
-    let (bw, _, bytes) = format.block();
+    let (bw, _, bytes) = FORMAT_FACTS[format as usize].block;
     (width.div_ceil(bw) * bytes) as usize
 }
 
@@ -227,7 +227,7 @@ pub fn whole() -> Extent {
     }
 }
 
-pub fn at(texture: &<B as Backend>::Texture, x: u32, y: u32) -> TextureRegion<'_, B> {
+pub fn at(texture: &<B as Gpu>::Texture, x: u32, y: u32) -> TextureRegion<'_, B> {
     TextureRegion {
         texture,
         mip: 0,
@@ -243,7 +243,7 @@ pub fn upload(
     format: Format,
     texels: Option<&[u8]>,
     usage: TextureUsage,
-) -> Result<(<B as Backend>::Texture, <B as Backend>::TextureView)> {
+) -> Result<(<B as Gpu>::Texture, <B as Gpu>::TextureView)> {
     let usage = usage | TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::COPY_SRC;
     let (t, v) = draw::texture_2d(b, format, SIZE.0, SIZE.1, usage)?;
     if let Some(texels) = texels {
@@ -282,7 +282,7 @@ pub fn read(b: &mut B, region: &TextureRegion<'_, B>, extent: Extent, len: usize
 
 /// What [`SAMPLED_WGSL`] draws from `view`: the loaded texels, then the filtered ones, each as
 /// float RGBA, rows packed.
-pub fn sampled(b: &mut B, view: &<B as Backend>::TextureView) -> Result<(Vec<f32>, Vec<f32>)> {
+pub fn sampled(b: &mut B, view: &<B as Gpu>::TextureView) -> Result<(Vec<f32>, Vec<f32>)> {
     let sampler = gpu(b.create_sampler(&SamplerDesc {
         min: Filter::Linear,
         mag: Filter::Linear,
@@ -341,10 +341,10 @@ pub fn sampled(b: &mut B, view: &<B as Backend>::TextureView) -> Result<(Vec<f32
 /// One draw of three vertices covering `target`, cleared to `clear` first.
 fn full_draw(
     b: &mut B,
-    program: &<B as Backend>::Program,
-    target: &<B as Backend>::TextureView,
+    program: &<B as Gpu>::Program,
+    target: &<B as Gpu>::TextureView,
     blend: &wcontainers_gpu::BlendDesc,
-    sets: [Option<&<B as Backend>::BindingSet>; 2],
+    sets: [Option<&<B as Gpu>::BindingSet>; 2],
     clear: [u32; 4],
 ) -> Result<()> {
     let blend = gpu(b.create_blend(blend))?;
@@ -428,7 +428,7 @@ pub fn kept(format: Format, texels: &[u8]) -> Vec<u8> {
 /// X as one).
 pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
     let texels = &kept(format, written)[..];
-    let waits = b.slow_paths().count(SlowPath::HostCopyReadBack);
+    let waits = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
     let h = SIZE.1 as usize;
     let row = row_bytes(format, SIZE.0);
     let len = row * h;
@@ -501,7 +501,7 @@ pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
     let got = read(b, &at(&v, 0, 0), part, want.len());
     ensure!(got == want, "{format:?}: copied between textures");
     // Into a texture of another format of equal blocks and back, the bytes kept.
-    let other = match format.block() {
+    let other = match FORMAT_FACTS[format as usize].block {
         (1, 1, 1) => Format::R8Uint,
         (1, 1, 2) => Format::R16Uint,
         (1, 1, 4) => Format::R32Uint,
@@ -519,7 +519,7 @@ pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
     let got = read(b, &at(&back, 4, 2), part, want.len());
     ensure!(got == want, "{format:?}: copied from {other:?}");
     ensure!(
-        b.slow_paths().count(SlowPath::HostCopyReadBack) == waits,
+        b.slow_paths().counts[SlowPath::HostCopyReadBack as usize] == waits,
         "{format:?}: copies with a buffer or between textures waited for the host"
     );
     volume_copies(b, format, texels)?;
@@ -530,7 +530,7 @@ pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
 /// slice the texels with its rows turned by its number; slice 0 stays as made. No copy waits for
 /// the host.
 fn volume_copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
-    let waits = b.slow_paths().count(SlowPath::HostCopyReadBack);
+    let waits = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
     let (row, h, pitch) = (row_bytes(format, SIZE.0), SIZE.1 as usize, 256usize);
     let slices: Vec<u8> = (0..3)
         .flat_map(|s| {
@@ -610,7 +610,7 @@ fn volume_copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
         out[s..] == kept_slices[s..],
         "{format:?}: slices 1 and 2 of a 3D texture copied through buffers"
     );
-    let now = b.slow_paths().count(SlowPath::HostCopyReadBack);
+    let now = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
     ensure!(
         now == waits,
         "{format:?}: copies with a buffer waited for the host {} times",
@@ -621,11 +621,7 @@ fn volume_copies(b: &mut B, format: Format, texels: &[u8]) -> Result<()> {
 
 /// Every texel of `view`, of a three-channel format, loaded in a program: the bits of its four
 /// channels, rows packed.
-pub fn loaded_bits(
-    b: &mut B,
-    format: Format,
-    view: &<B as Backend>::TextureView,
-) -> Result<Vec<u8>> {
+pub fn loaded_bits(b: &mut B, format: Format, view: &<B as Gpu>::TextureView) -> Result<Vec<u8>> {
     let (t, bits) = match format {
         Format::Rgb32Uint => ("u32", ""),
         Format::Rgb32Sint => ("i32", "bitcast<vec4u>"),
@@ -679,14 +675,14 @@ pub fn three_channels(b: &mut B, seed: u64, cases: u32) -> Result<String> {
             .into_iter()
             .zip([Format::Rgba32Float, Format::Rgba32Uint, Format::Rgba32Sint])
     {
-        let uses = b.caps().formats.get(format);
-        let filter = b.caps().formats.get(twin) & FormatUse::FILTER;
+        let uses = b.caps().formats.uses[format as usize];
+        let filter = b.caps().formats.uses[twin as usize] & FormatUse::FILTER;
         ensure!(
             uses == FormatUse::SAMPLE | FormatUse::COPY_OUT | filter,
             "{format:?} declares {uses:?}"
         );
     }
-    let hits = b.slow_paths().count(SlowPath::FormatConverted);
+    let hits = b.slow_paths().counts[SlowPath::FormatConverted as usize];
     for (i, format) in THREE_CHANNEL.into_iter().enumerate() {
         for c in 0..u64::from(cases) {
             let texels = texels(format, seed + c * THREE_CHANNEL.len() as u64 + i as u64);
@@ -700,7 +696,7 @@ pub fn three_channels(b: &mut B, seed: u64, cases: u32) -> Result<String> {
         }
     }
     ensure!(
-        b.slow_paths().count(SlowPath::FormatConverted) > hits,
+        b.slow_paths().counts[SlowPath::FormatConverted as usize] > hits,
         "FormatConverted was not counted"
     );
     ensure!(
@@ -750,7 +746,7 @@ pub fn filter_bound(format: Format) -> f32 {
 pub fn check(b: &mut B, seed: u64, cases: u32) -> Result<String> {
     let mut line = format!("converted formats (seed {seed}, {cases} textures each):");
     for format in FORMATS {
-        let uses = b.caps().formats.get(format);
+        let uses = b.caps().formats.uses[format as usize];
         let drawn = DRAWN.contains(&format);
         let want = FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
         ensure!(uses.contains(want), "{format:?} declares {uses:?}");
@@ -811,7 +807,7 @@ pub fn check(b: &mut B, seed: u64, cases: u32) -> Result<String> {
             "{format:?} drawn loads {l} from its bytes"
         );
     }
-    let hits = b.slow_paths().count(SlowPath::FormatConverted);
+    let hits = b.slow_paths().counts[SlowPath::FormatConverted as usize];
     ensure!(hits > 0, "FormatConverted was not counted");
     ensure!(
         b.status() == DeviceStatus::Ok,

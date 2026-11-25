@@ -14,13 +14,19 @@ use naga::{
     VectorSize,
 };
 use std::ffi::{CStr, c_char};
+use wcontainers_gpu::Format as GpuFormat;
 use wcontainers_gpu::{
-    ReflectedBinding, Reflection, ShaderModule, SlotKind, SourceStage, StageExtras, VariantKey,
+    CUBE_FACES, HELPER_SET, HelperSlot, HelperValue, ReflectedBinding, Reflection, SLOT_KINDS,
+    ShaderModule, ShaderStage as GpuStage, SlotKind, SlowPath, SourceStage, StageExtras,
+    TEXEL_BUFFER_TEXTURE_WIDTH, TexelBufferRoute, VariantFlags, VariantKey, helper_binding,
 };
 use wcontainers_shaders::cache;
 use wcontainers_shaders::staged::{
-    BuiltIn as StagedBuiltIn, GeometryInput, GeometryOutput, GeometryProgram, Place, StageVariable,
+    BuiltIn as StagedBuiltIn, DomainProgram, GeometryInput, GeometryOutput, GeometryProgram,
+    HullProgram, Partitioning, Place, StageVariable, TessellationDomain, TessellatorOutput,
 };
+use wcontainers_shaders::typed::{TypedAtomic, TypedBuffer};
+use zerocopy::TryFromBytes;
 
 const NONE: u32 = u32::MAX;
 /// A workgroup's size along x, y and z, as naga's entry points hold it.
@@ -28,6 +34,26 @@ type WorkgroupSize = [u32; VectorSize::Tri as usize];
 const SOURCES: usize = 5;
 /// The source of an image store holding the value (after the image, coordinate and sample).
 const IMAGE_STORE_VALUE: usize = 3;
+/// A helper block's row, as a uniform block aligns a vector of four words.
+const HELPER_ROW_BYTES: u32 = size_of::<[u32; VectorSize::Quad as usize]>() as u32;
+/// The words of `HelperValue::TexelLayout`, and the helper block's rows holding them.
+pub const TEXEL_LAYOUT_WORDS: usize = 5;
+/// The location a fragment program's `gl_Layer` input is routed at, a flat value: the driver
+/// moves it to where a geometry program's pass-through passes the layer it names, or replaces it
+/// with zero where no earlier stage names one.
+pub const NAMED_LAYER_INPUT: u32 = u32::MAX;
+/// The location a fragment program's `gl_PointCoord` input is routed at, interpolated without
+/// perspective: the driver moves it to where a point's square passes it, or replaces it with the
+/// centre's coordinate where points are drawn as one pixel.
+pub const POINT_COORD_INPUT: u32 = NAMED_LAYER_INPUT - 1;
+const POINT_COORD_BINDING: Binding = Binding::Location {
+    location: POINT_COORD_INPUT,
+    interpolation: Some(Interpolation::Linear),
+    sampling: Some(Sampling::Center),
+    blend_src: None,
+    per_primitive: false,
+};
+const TEXEL_LAYOUT_ROWS: u32 = TEXEL_LAYOUT_WORDS.div_ceil(VectorSize::Quad as usize) as u32;
 /// The source of a compare-and-swap holding the value compared (after the pointer); the value
 /// stored follows it, and is the only one of the other atomics.
 const ATOMIC_COMPARE: usize = 1;
@@ -132,6 +158,9 @@ enum FlatBuiltIn {
     Layer,
     ViewportIndex,
     PrimitiveId,
+    TessLevelOuter,
+    TessLevelInner,
+    PointCoord,
     Other,
 }
 
@@ -208,6 +237,9 @@ struct FlatVar {
     format: Format,
     initialised: u32,
     stream: u32,
+    blend_source: u32,
+    patch: u32,
+    invariant: u32,
 }
 
 #[repr(C)]
@@ -233,7 +265,7 @@ enum Kind {
 
 /// The ALU operations of `WC_ALU_OPS` in `bridge/flat.h`, in its order.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Alu {
     Mov,
@@ -348,7 +380,7 @@ enum Alu {
 
 /// The intrinsics of `WC_INTRINSICS` in `bridge/flat.h`, in its order.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Intrinsic {
     LoadDeref,
@@ -394,12 +426,17 @@ enum Intrinsic {
     LoadInvocationId,
     EmitVertex,
     EndPrimitive,
+    LoadTessCoord,
+    LoadPatchVerticesIn,
+    ImageDerefAtomic,
+    ImageDerefAtomicSwap,
+    LoadHelperInvocation,
     Unsupported,
 }
 
 /// An atomic operation, by `enum wc_atomic_op`.
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Atomic {
     Add,
@@ -416,7 +453,7 @@ enum Atomic {
 }
 
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum Deref {
     Var,
@@ -426,7 +463,7 @@ enum Deref {
 }
 
 #[repr(u32)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, TryFromBytes)]
 #[allow(dead_code, reason = "the bridge makes every value")]
 enum TexOp {
     Sample,
@@ -490,6 +527,42 @@ enum FlatStage {
     Fragment,
     Compute,
     Geometry,
+    TessControl,
+    TessEvaluation,
+}
+
+/// `enum wc_tess_domain`, in `staged::TessellationDomain`'s order.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code, reason = "the bridge makes every value")]
+enum FlatTessDomain {
+    Triangles,
+    Quads,
+    Isolines,
+    Other,
+}
+
+/// `enum wc_tess_spacing`, in `staged::Partitioning`'s order.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code, reason = "the bridge makes every value")]
+enum FlatTessSpacing {
+    Equal,
+    FractionalOdd,
+    FractionalEven,
+    Other,
+}
+
+/// `struct wc_flat_tessellation`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+struct FlatTessellation {
+    points_in: u32,
+    points_out: u32,
+    domain: FlatTessDomain,
+    spacing: FlatTessSpacing,
+    counter_clockwise: u32,
+    point_mode: u32,
 }
 
 /// `enum wc_geometry_input`, in `staged::GeometryInput`'s order.
@@ -544,10 +617,11 @@ struct Flat {
     instrs: *const FlatInstr,
     instr_count: u32,
     geometry: FlatGeometry,
+    tessellation: FlatTessellation,
 }
 
 unsafe extern "C" {
-    fn wc_nir_flatten(nir: *mut NirShader, out: *mut Flat) -> bool;
+    fn wc_nir_flatten(nir: *mut NirShader, points_in: u32, out: *mut Flat) -> bool;
     fn wc_flat_free(flat: *mut Flat);
 }
 
@@ -635,6 +709,14 @@ struct Builder<'a> {
     /// atomics take the operation's signedness from the word's type.
     signed_atomic_fields: Vec<(u32, u32)>,
     signed_atomic_vars: Vec<u32>,
+    /// Signed words that are a block variable's own fields (variable, field): the variable gets a
+    /// type of its own, as blocks of one layout share their flat type.
+    signed_block_fields: Vec<(u32, u32)>,
+    /// Images atomics act on. Where there are any, every image of a texture is read and written
+    /// through a buffer of its texels (`VariantKey::texels_through_buffer`'s layout): the common
+    /// form has no image atomic giving its old value, and images bound to one texture then share
+    /// one buffer.
+    atomic_images: Vec<u32>,
     /// The derefs into those signed words, whose loads, stores and atomics take signed values.
     signed_derefs: std::collections::HashSet<u32>,
     /// The samples `demote_samples` has left, ANDed into the sample mask output on return.
@@ -643,14 +725,37 @@ struct Builder<'a> {
     rewrites: Rewrites,
     /// A geometry program's stage values and the functions its emits and ends call.
     staged: Option<Staged>,
+    /// Route B's own helper constants (each texel buffer's view) and the block holding them, which
+    /// the shaders crate's rewrites extend.
+    helpers: Vec<HelperSlot>,
+    helper_block: Option<Handle<GlobalVariable>>,
+    /// Images of buffers, read and written through `wcontainers_shaders::typed`.
+    typed: TypedBuffers,
+    /// The slow paths the program takes whenever it runs.
+    slow_paths: Vec<SlowPath>,
 }
 
-/// A geometry program's stage values (private variables) and the empty functions its emits, one a
-/// stream, and its strips' ends call, which the shaders crate fills (`wcontainers_shaders::staged`).
+/// Which of the stage helper's programs a staged program is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StagedForm {
+    Geometry,
+    Control,
+    Evaluation,
+}
+
+/// A geometry or tessellation program's stage values (private variables), and a geometry
+/// program's empty functions its emits, one a stream, and its strips' ends call, which the shaders
+/// crate fills (`wcontainers_shaders::staged`).
 struct Staged {
+    form: StagedForm,
     values: Vec<StageVariable>,
     emit: Vec<Handle<Function>>,
-    cut: Handle<Function>,
+    cut: Option<Handle<Function>>,
+    /// A tessellation program's input control points.
+    points_in: u32,
+    /// A control program waits for its other control points (`barrier()`), which the stage helper
+    /// runs one after another.
+    barrier: bool,
     /// The position output, whose y each emit negates as a vertex program's return does.
     position: Option<Handle<GlobalVariable>>,
     /// The built-in inputs read so far.
@@ -666,25 +771,98 @@ pub struct Rewrites {
     pub runtime_gather_offsets: bool,
 }
 
-/// Route B's module and what it needs of the rewrites; a geometry program's declarations, for
-/// [`geometry`], where the program is one.
+/// What route B gives of a program the stage helper runs.
+pub enum StagedProgram {
+    /// For [`geometry`].
+    Geometry(GeometryProgram),
+    /// A control program's stage values and declarations, for [`hull`], which takes the
+    /// tessellator's from its evaluation program.
+    Control(ControlProgram),
+    /// An evaluation program's, for [`domain`].
+    Evaluation(DomainProgram),
+}
+
+/// A control program as route B gives it: its function and stage values, the control points of
+/// its input and output patches.
+pub struct ControlProgram {
+    pub function: Handle<Function>,
+    pub input_points: u32,
+    pub output_points: u32,
+    pub values: Vec<StageVariable>,
+}
+
+/// The tessellator's declarations, which OpenGL makes in the evaluation program.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Tessellator {
+    pub domain: TessellationDomain,
+    pub partitioning: Partitioning,
+    pub output: TessellatorOutput,
+}
+
+/// By its declarations, for a driver keying the control programs it converts by them (the shaders
+/// crate's enums have no hash of their own).
+impl std::hash::Hash for Tessellator {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::mem::discriminant(&self.domain).hash(state);
+        std::mem::discriminant(&self.partitioning).hash(state);
+        std::mem::discriminant(&self.output).hash(state);
+    }
+}
+
+/// Route B's module and what it needs of the rewrites; a geometry or tessellation program's
+/// declarations, where the program is one.
 pub struct Routed {
     pub module: Module,
     pub rewrites: Rewrites,
-    pub geometry: Option<GeometryProgram>,
+    pub staged: Option<StagedProgram>,
+    /// An evaluation program's tessellator, for its control program's [`hull`].
+    pub tessellator: Option<Tessellator>,
+    /// The helper constants the module reads, in its block at [`HELPER_SET`].
+    pub helpers: Vec<HelperSlot>,
+    pub typed: TypedBuffers,
+    /// The slow paths the program takes whenever it runs, which its reflection names.
+    pub slow_paths: Vec<SlowPath>,
+}
+
+/// A program's images of buffers, each a storage buffer of words whose stand-in functions
+/// `wcontainers_shaders::typed::buffers` writes, and the format each slot declares.
+#[derive(Default)]
+pub struct TypedBuffers {
+    pub buffers: Vec<TypedBuffer>,
+    pub formats: Vec<(u32, GpuFormat)>,
 }
 
 /// Candidate B: the program of `nir` as a naga module, for a program that needs none of the
 /// shaders crate's rewrites (refused by name otherwise). The shader is changed by the preparation.
 pub fn module(nir: &mut Nir) -> Result<Module, ConvertError> {
+    plain(route(nir)?)
+}
+
+/// Route B's module of `routed`, where it needs none of the shaders crate's rewrites and reads no
+/// helper constants (refused by name otherwise).
+pub fn plain(routed: Routed) -> Result<Module, ConvertError> {
     let Routed {
         module,
         rewrites,
-        geometry,
-    } = route(nir)?;
-    if geometry.is_some() {
+        staged,
+        tessellator: _,
+        helpers,
+        typed,
+        slow_paths,
+    } = routed;
+    if !slow_paths.is_empty() {
         return Err(unsupported(format_args!(
-            "a geometry program outside the stage helper"
+            "a program taking a slow path, which only its reflection names"
+        )));
+    }
+    if !helpers.is_empty() || !typed.buffers.is_empty() {
+        return Err(unsupported(format_args!(
+            "a texel buffer, whose length the driver gives"
+        )));
+    }
+    if staged.is_some() {
+        return Err(unsupported(format_args!(
+            "a geometry or tessellation program outside the stage helper"
         )));
     }
     if !rewrites.formatless.is_empty() {
@@ -703,6 +881,12 @@ pub fn module(nir: &mut Nir) -> Result<Module, ConvertError> {
 /// Candidate B: the program of `nir` as a naga module, with what it leaves for the shaders crate's
 /// rewrites ([`rewrite`]). The shader is changed by the preparation.
 pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
+    route_patches(nir, 0)
+}
+
+/// [`route`], for a tessellation program whose input patches have `points_in` control points (a
+/// control program's draw's patch size, an evaluation program's control program's output).
+pub fn route_patches(nir: &mut Nir, points_in: u32) -> Result<Routed, ConvertError> {
     let mut flat = Flattened(Flat {
         stage: FlatStage::Vertex,
         workgroup_size: WorkgroupSize::default(),
@@ -726,17 +910,27 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
             invocations: 0,
             streams: 0,
         },
+        tessellation: FlatTessellation {
+            points_in: 0,
+            points_out: 0,
+            domain: FlatTessDomain::Other,
+            spacing: FlatTessSpacing::Other,
+            counter_clockwise: 0,
+            point_mode: 0,
+        },
     });
     // SAFETY: the shader is live; the bridge fills `flat` with arrays it owns.
-    if !unsafe { wc_nir_flatten(nir.raw(), &mut flat.0) } {
+    if !unsafe { wc_nir_flatten(nir.raw(), points_in, &mut flat.0) } {
         return Err(ConvertError::Mesa(FLATTEN));
     }
     let f = &flat.0;
     let stage = match f.stage {
         FlatStage::Vertex => ShaderStage::Vertex,
         FlatStage::Fragment => ShaderStage::Fragment,
-        // A geometry program becomes the stage helper's compute work.
-        FlatStage::Compute | FlatStage::Geometry => ShaderStage::Compute,
+        // A geometry or control program becomes the stage helper's compute work; an evaluation
+        // program the vertex program the helper's tessellator draws through.
+        FlatStage::Compute | FlatStage::Geometry | FlatStage::TessControl => ShaderStage::Compute,
+        FlatStage::TessEvaluation => ShaderStage::Vertex,
     };
     let mut b = Builder {
         stage,
@@ -759,16 +953,44 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
         atomic_vars: Vec::new(),
         signed_atomic_fields: Vec::new(),
         signed_atomic_vars: Vec::new(),
+        signed_block_fields: Vec::new(),
+        atomic_images: Vec::new(),
         signed_derefs: std::collections::HashSet::new(),
         kept_samples: None,
         rewrites: Rewrites::default(),
         staged: None,
+        helpers: Vec::new(),
+        helper_block: None,
+        typed: TypedBuffers::default(),
+        slow_paths: Vec::new(),
     };
-    if f.stage == FlatStage::Geometry {
-        b.staged = Some(b.staged_functions(f.geometry.streams));
+    match f.stage {
+        FlatStage::Geometry => b.staged = Some(b.staged_functions(f.geometry.streams)),
+        FlatStage::TessControl | FlatStage::TessEvaluation => {
+            b.staged = Some(Staged {
+                form: if f.stage == FlatStage::TessControl {
+                    StagedForm::Control
+                } else {
+                    StagedForm::Evaluation
+                },
+                values: Vec::new(),
+                emit: Vec::new(),
+                cut: None,
+                points_in: f.tessellation.points_in,
+                barrier: false,
+                position: None,
+                inputs: Vec::new(),
+            });
+        }
+        _ => {}
     }
     let instrs = slice(f.instrs, f.instr_count);
     b.mark_atomics(instrs);
+    if let Some(staged) = b.staged.as_mut().filter(|s| s.form == StagedForm::Control) {
+        staged.barrier = instrs
+            .iter()
+            .any(|i| i.kind == Kind::Intrinsic && intrinsic_op(i.op) == Intrinsic::Barrier);
+    }
     b.emitter.start(&b.function.expressions);
     b.variables()?;
     if instrs
@@ -781,11 +1003,21 @@ pub fn route(nir: &mut Nir) -> Result<Routed, ConvertError> {
         b.instr(instr)?;
     }
     let rewrites = std::mem::take(&mut b.rewrites);
-    let (module, geometry) = b.finish(f)?;
+    let helpers = std::mem::take(&mut b.helpers);
+    let typed = std::mem::take(&mut b.typed);
+    let slow_paths = std::mem::take(&mut b.slow_paths);
+    let (module, staged) = b.finish(f)?;
+    let tessellator = (f.stage == FlatStage::TessEvaluation)
+        .then(|| tessellator(&f.tessellation))
+        .transpose()?;
     Ok(Routed {
         module,
         rewrites,
-        geometry,
+        staged,
+        tessellator,
+        helpers,
+        typed,
+        slow_paths,
     })
 }
 
@@ -906,6 +1138,85 @@ fn storage_format(f: Format) -> Result<StorageFormat, ConvertError> {
     })
 }
 
+/// The format an image of a buffer declares, as the interface names it.
+fn buffer_format(f: Format) -> Result<GpuFormat, ConvertError> {
+    Ok(match f {
+        Format::R8Unorm => GpuFormat::R8Unorm,
+        Format::R8Snorm => GpuFormat::R8Snorm,
+        Format::R8Uint => GpuFormat::R8Uint,
+        Format::R8Sint => GpuFormat::R8Sint,
+        Format::R16Uint => GpuFormat::R16Uint,
+        Format::R16Sint => GpuFormat::R16Sint,
+        Format::R16Float => GpuFormat::R16Float,
+        Format::R16Unorm => GpuFormat::R16Unorm,
+        Format::R16Snorm => GpuFormat::R16Snorm,
+        Format::Rg8Unorm => GpuFormat::Rg8Unorm,
+        Format::Rg8Snorm => GpuFormat::Rg8Snorm,
+        Format::Rg8Uint => GpuFormat::Rg8Uint,
+        Format::Rg8Sint => GpuFormat::Rg8Sint,
+        Format::R32Uint => GpuFormat::R32Uint,
+        Format::R32Sint => GpuFormat::R32Sint,
+        Format::R32Float => GpuFormat::R32Float,
+        Format::Rg16Uint => GpuFormat::Rg16Uint,
+        Format::Rg16Sint => GpuFormat::Rg16Sint,
+        Format::Rg16Float => GpuFormat::Rg16Float,
+        Format::Rg16Unorm => GpuFormat::Rg16Unorm,
+        Format::Rg16Snorm => GpuFormat::Rg16Snorm,
+        Format::Rgba8Unorm => GpuFormat::Rgba8Unorm,
+        Format::Rgba8Snorm => GpuFormat::Rgba8Snorm,
+        Format::Rgba8Uint => GpuFormat::Rgba8Uint,
+        Format::Rgba8Sint => GpuFormat::Rgba8Sint,
+        Format::Rgb10a2Uint => GpuFormat::Rgb10a2Uint,
+        Format::Rgb10a2Unorm => GpuFormat::Rgb10a2Unorm,
+        Format::Rg32Uint => GpuFormat::Rg32Uint,
+        Format::Rg32Sint => GpuFormat::Rg32Sint,
+        Format::Rg32Float => GpuFormat::Rg32Float,
+        Format::Rgba16Uint => GpuFormat::Rgba16Uint,
+        Format::Rgba16Sint => GpuFormat::Rgba16Sint,
+        Format::Rgba16Float => GpuFormat::Rgba16Float,
+        Format::Rgba16Unorm => GpuFormat::Rgba16Unorm,
+        Format::Rgba16Snorm => GpuFormat::Rgba16Snorm,
+        Format::Rgba32Uint => GpuFormat::Rgba32Uint,
+        Format::Rgba32Sint => GpuFormat::Rgba32Sint,
+        Format::Rgba32Float => GpuFormat::Rgba32Float,
+        Format::Rg11b10Ufloat => GpuFormat::Rg11b10Float,
+        Format::None => {
+            return Err(unsupported(format_args!(
+                "an image of a buffer without a format"
+            )));
+        }
+        Format::Other => {
+            return Err(unsupported(format_args!(
+                "an image of a buffer of another format"
+            )));
+        }
+    })
+}
+
+/// The typed buffer operation of an atomic on an image of a buffer of `kind`.
+fn typed_atomic(op: Atomic, kind: ScalarKind) -> Result<TypedAtomic, ConvertError> {
+    let needs = |want: ScalarKind, made: TypedAtomic| {
+        if kind == want {
+            Ok(made)
+        } else {
+            Err(unsupported(format_args!("an atomic {op:?} on a {kind:?}")))
+        }
+    };
+    match op {
+        Atomic::Add => Ok(TypedAtomic::Add),
+        Atomic::And => Ok(TypedAtomic::And),
+        Atomic::Or => Ok(TypedAtomic::InclusiveOr),
+        Atomic::Xor => Ok(TypedAtomic::ExclusiveOr),
+        Atomic::Imin => needs(ScalarKind::Sint, TypedAtomic::Min),
+        Atomic::Umin => needs(ScalarKind::Uint, TypedAtomic::Min),
+        Atomic::Imax => needs(ScalarKind::Sint, TypedAtomic::Max),
+        Atomic::Umax => needs(ScalarKind::Uint, TypedAtomic::Max),
+        Atomic::Exchange => Ok(TypedAtomic::Exchange),
+        Atomic::CompareExchange => Ok(TypedAtomic::CompareExchange),
+        Atomic::Other => Err(unsupported(format_args!("an atomic of another operation"))),
+    }
+}
+
 impl Builder<'_> {
     fn add_type(&mut self, inner: TypeInner) -> Handle<Type> {
         self.module
@@ -987,45 +1298,19 @@ impl Builder<'_> {
                     }
                 }
             }
-            TypeKind::Struct => {
-                let mut members = Vec::new();
-                let mut end = 0;
-                for i in 0..t.length {
-                    let field = self.fields[(t.element + i) as usize];
-                    if self.is_resource(field.ty) {
-                        return Err(unsupported(format_args!(
-                            "a structure holding textures, samplers or images"
-                        )));
-                    }
-                    let ty = if self.atomic_fields.contains(&(index, i)) {
-                        let signed = self.signed_atomic_fields.contains(&(index, i));
-                        self.atomic_ty(field.ty, signed)?
-                    } else {
-                        self.ty(field.ty)?
-                    };
-                    let layout = self.layout(ty)?;
-                    let offset = u32::try_from(field.offset)
-                        .unwrap_or_else(|_| layout.alignment.round_up(end));
-                    end = offset + layout.size;
-                    members.push(naga::StructMember {
-                        name: None,
-                        ty,
-                        binding: None,
-                        offset,
-                    });
-                }
-                let alignment = members
-                    .iter()
-                    .map(|m| self.layouter[m.ty].alignment)
-                    .max()
-                    .unwrap_or(naga::proc::Alignment::ONE);
-                TypeInner::Struct {
-                    members,
-                    span: alignment.round_up(end),
-                }
-            }
+            TypeKind::Struct => self.struct_inner(index, None)?,
             TypeKind::Sampler => TypeInner::Sampler {
                 comparison: t.shadow != 0,
+            },
+            // A texel buffer is read through the 2D texture the driver copies it into
+            // (`TexelBufferRoute::Texture`).
+            TypeKind::Texture if t.dim == Dim::Buffer => TypeInner::Image {
+                dim: ImageDimension::D2,
+                arrayed: false,
+                class: ImageClass::Sampled {
+                    kind: scalar_of(t.sampled)?.kind,
+                    multi: false,
+                },
             },
             TypeKind::Texture => TypeInner::Image {
                 dim: dimension(t.dim)?,
@@ -1048,6 +1333,48 @@ impl Builder<'_> {
         let h = self.add_type(inner);
         self.naga_types[index as usize] = Some(h);
         Ok(h)
+    }
+
+    /// A flat struct type's naga form; with `block`, that block variable's, whose own signed words
+    /// are signed.
+    fn struct_inner(&mut self, index: u32, block: Option<u32>) -> Result<TypeInner, ConvertError> {
+        let t = self.types[index as usize];
+        let mut members = Vec::new();
+        let mut end = 0;
+        for i in 0..t.length {
+            let field = self.fields[(t.element + i) as usize];
+            if self.is_resource(field.ty) {
+                return Err(unsupported(format_args!(
+                    "a structure holding textures, samplers or images"
+                )));
+            }
+            let ty = if self.atomic_fields.contains(&(index, i)) {
+                let signed = self.signed_atomic_fields.contains(&(index, i))
+                    || block.is_some_and(|v| self.signed_block_fields.contains(&(v, i)));
+                self.atomic_ty(field.ty, signed)?
+            } else {
+                self.ty(field.ty)?
+            };
+            let layout = self.layout(ty)?;
+            let offset =
+                u32::try_from(field.offset).unwrap_or_else(|_| layout.alignment.round_up(end));
+            end = offset + layout.size;
+            members.push(naga::StructMember {
+                name: None,
+                ty,
+                binding: None,
+                offset,
+            });
+        }
+        let alignment = members
+            .iter()
+            .map(|m| self.layouter[m.ty].alignment)
+            .max()
+            .unwrap_or(naga::proc::Alignment::ONE);
+        Ok(TypeInner::Struct {
+            members,
+            span: alignment.round_up(end),
+        })
     }
 
     /// An array's stride: the type's explicit one, or its element's size rounded to its alignment.
@@ -1113,44 +1440,79 @@ impl Builder<'_> {
             let mut at = derefs.get(&atomic.src[0].def).copied();
             while let Some(d) = at {
                 match deref_kind(d.op) {
-                    Deref::Array => at = derefs.get(&d.src[0].def).copied(),
-                    Deref::Struct => {
+                    Some(Deref::Array) => at = derefs.get(&d.src[0].def).copied(),
+                    Some(Deref::Struct) => {
                         if let Some(parent) = derefs.get(&d.src[0].def) {
                             self.atomic_fields.push((parent.ty, d.value[0]));
                             if signed {
-                                self.signed_atomic_fields.push((parent.ty, d.value[0]));
+                                // Blocks of one layout share a type whatever their words'
+                                // signedness: a block variable's own field is keyed by it.
+                                if matches!(deref_kind(parent.op), Some(Deref::Var)) {
+                                    self.signed_block_fields.push((parent.value[0], d.value[0]));
+                                } else {
+                                    self.signed_atomic_fields.push((parent.ty, d.value[0]));
+                                }
                             }
                         }
                         break;
                     }
-                    Deref::Var => {
+                    Some(Deref::Var) => {
                         self.atomic_vars.push(d.value[0]);
                         if signed {
                             self.signed_atomic_vars.push(d.value[0]);
                         }
                         break;
                     }
-                    Deref::Cast => break,
+                    // A value the bridge does not write is refused where the deref is converted.
+                    Some(Deref::Cast) | None => break,
                 }
             }
         }
-        if self.signed_atomic_vars.is_empty() && self.signed_atomic_fields.is_empty() {
+        let image_atomics = instrs.iter().filter(|i| {
+            i.kind == Kind::Intrinsic
+                && matches!(
+                    intrinsic_op(i.op),
+                    Intrinsic::ImageDerefAtomic | Intrinsic::ImageDerefAtomicSwap
+                )
+        });
+        for atomic in image_atomics {
+            let mut at = derefs.get(&atomic.src[0].def).copied();
+            while let Some(d) = at {
+                match deref_kind(d.op) {
+                    Some(Deref::Array) => at = derefs.get(&d.src[0].def).copied(),
+                    Some(Deref::Var) => {
+                        self.atomic_images.push(d.value[0]);
+                        break;
+                    }
+                    Some(Deref::Struct | Deref::Cast) | None => break,
+                }
+            }
+        }
+        if self.signed_atomic_vars.is_empty()
+            && self.signed_atomic_fields.is_empty()
+            && self.signed_block_fields.is_empty()
+        {
             return;
         }
         for d in derefs.values() {
             let mut at = Some(*d);
             while let Some(step) = at {
                 let signed = match deref_kind(step.op) {
-                    Deref::Array => {
+                    Some(Deref::Array) => {
                         at = derefs.get(&step.src[0].def).copied();
                         continue;
                     }
-                    Deref::Struct => derefs.get(&step.src[0].def).is_some_and(|parent| {
-                        self.signed_atomic_fields
-                            .contains(&(parent.ty, step.value[0]))
+                    Some(Deref::Struct) => derefs.get(&step.src[0].def).is_some_and(|parent| {
+                        if matches!(deref_kind(parent.op), Some(Deref::Var)) {
+                            self.signed_block_fields
+                                .contains(&(parent.value[0], step.value[0]))
+                        } else {
+                            self.signed_atomic_fields
+                                .contains(&(parent.ty, step.value[0]))
+                        }
                     }),
-                    Deref::Var => self.signed_atomic_vars.contains(&step.value[0]),
-                    Deref::Cast => false,
+                    Some(Deref::Var) => self.signed_atomic_vars.contains(&step.value[0]),
+                    Some(Deref::Cast) | None => false,
                 };
                 if signed {
                     self.signed_derefs.insert(d.def);
@@ -1190,6 +1552,176 @@ impl Builder<'_> {
         scalar_of(t.scalar).map_or(ScalarKind::Uint, |s| s.kind)
     }
 
+    /// An image of a buffer, or with `texels` an image of a texture atomics act on: a storage
+    /// buffer of words at its binding, its type and access `wcontainers_shaders::typed` makes
+    /// (`TexelBufferRoute::Storage`), its format the declared one. A texture's texels are laid
+    /// out in it as its `HelperValue::TexelLayout` says.
+    fn image_buffer(
+        &mut self,
+        var: &FlatVar,
+        texels: bool,
+    ) -> Result<(AddressSpace, Handle<Type>), ConvertError> {
+        if self.staged.is_some() {
+            if texels {
+                return Err(unsupported(format_args!(
+                    "an atomic on an image in a geometry or tessellation program"
+                )));
+            }
+            return Err(unsupported(format_args!(
+                "an image of a buffer in a geometry or tessellation program"
+            )));
+        }
+        let slot = var
+            .binding
+            .checked_sub(SLOT_KINDS[SlotKind::Storage as usize].first_binding)
+            .ok_or_else(|| unsupported(format_args!("an image of a buffer out of its range")))?;
+        self.typed.formats.push((slot, buffer_format(var.format)?));
+        // Read-write in compute programs, as their storage buffers are.
+        let mut access = StorageAccess::LOAD;
+        access.set(
+            StorageAccess::STORE,
+            var.writable != 0 || self.stage == ShaderStage::Compute,
+        );
+        let word = self.scalar_type(ScalarKind::Uint, 1)?;
+        let words = self.add_type(TypeInner::Array {
+            base: word,
+            size: naga::ArraySize::Dynamic,
+            stride: size_of::<u32>() as u32,
+        });
+        Ok((AddressSpace::Storage { access }, words))
+    }
+
+    /// A load, store, size or atomic operation of the image of a buffer `image` through the
+    /// stand-in function `wcontainers_shaders::typed` writes, made at its first use.
+    fn image_buffer_access(
+        &mut self,
+        i: &FlatInstr,
+        image: Handle<Expression>,
+        op: Intrinsic,
+    ) -> Result<(), ConvertError> {
+        let Expression::GlobalVariable(g) = self.function.expressions[image] else {
+            return Err(unsupported(format_args!("an array of images of buffers")));
+        };
+        let at = self
+            .typed
+            .buffers
+            .iter()
+            .position(|t| t.global == g)
+            .ok_or_else(|| unsupported(format_args!("an image of a buffer not declared")))?;
+        let kind = self.typed.buffers[at].kind;
+        let t = self.image(i)?.1;
+        // An image of a texture: its texel's element, and its size, from its layout.
+        let texture = t.dim != Dim::Buffer;
+        let layout = if texture {
+            Some(self.texel_layout(g)?)
+        } else {
+            None
+        };
+        if let (Intrinsic::ImageDerefSize, Some(layout)) = (op, layout) {
+            let e = self.texel_layout_size(t, layout, i.components)?;
+            self.set(i, Value::Expr(e, ScalarKind::Uint));
+            return Ok(());
+        }
+        let index_ty = self.scalar_type(ScalarKind::Uint, 1)?;
+        let element_ty = self.scalar_type(kind, VectorSize::Quad as u32)?;
+        let value_ty = self.scalar_type(kind, 1)?;
+        let atomic = match op {
+            Intrinsic::ImageDerefAtomic | Intrinsic::ImageDerefAtomicSwap => {
+                Some(typed_atomic(atomic_op(i.value[VectorSize::MAX - 1]), kind)?)
+            }
+            _ => None,
+        };
+        let typed = &self.typed.buffers[at];
+        let (made, arguments, result) = match (op, atomic) {
+            (_, Some(TypedAtomic::CompareExchange)) => (
+                typed
+                    .atomics
+                    .iter()
+                    .find(|t| t.0 == TypedAtomic::CompareExchange)
+                    .map(|t| t.1),
+                vec![index_ty, value_ty, value_ty],
+                Some(value_ty),
+            ),
+            (_, Some(a)) => (
+                typed.atomics.iter().find(|t| t.0 == a).map(|t| t.1),
+                vec![index_ty, value_ty],
+                Some(value_ty),
+            ),
+            (Intrinsic::ImageDerefLoad, None) => (typed.load, vec![index_ty], Some(element_ty)),
+            (Intrinsic::ImageDerefStore, None) => (typed.store, vec![index_ty, element_ty], None),
+            _ => (typed.length, Vec::new(), Some(index_ty)),
+        };
+        let function = made.unwrap_or_else(|| {
+            let stand_in = Function {
+                arguments: arguments
+                    .iter()
+                    .map(|&ty| FunctionArgument {
+                        name: None,
+                        ty,
+                        binding: None,
+                    })
+                    .collect(),
+                result: result.map(|ty| naga::FunctionResult { ty, binding: None }),
+                ..Function::default()
+            };
+            self.module.functions.append(stand_in, Span::UNDEFINED)
+        });
+        let typed = &mut self.typed.buffers[at];
+        match (op, atomic) {
+            (_, Some(a)) if made.is_none() => typed.atomics.push((a, function)),
+            (_, Some(_)) => {}
+            (Intrinsic::ImageDerefLoad, None) => typed.load = Some(function),
+            (Intrinsic::ImageDerefStore, None) => typed.store = Some(function),
+            _ => typed.length = Some(function),
+        }
+        // A negative element's bits are past every length.
+        let mut values = Vec::new();
+        match layout {
+            Some(layout) => values.push(self.texel_element(i, t, layout)?),
+            None if op != Intrinsic::ImageDerefSize => {
+                values.push(self.src(i, 1, 1, ScalarKind::Uint)?);
+            }
+            None => {}
+        }
+        match op {
+            Intrinsic::ImageDerefStore => {
+                let (value, components) = self.whole(i.src[IMAGE_STORE_VALUE].def, kind)?;
+                if components != VectorSize::Quad as u32 {
+                    return Err(unsupported(format_args!(
+                        "an image store of {components} components"
+                    )));
+                }
+                values.push(value);
+            }
+            // NIR's data, a swap's compared value before its new one; the stand-in takes the
+            // value, then the compared one.
+            Intrinsic::ImageDerefAtomic => {
+                values.push(self.src(i, IMAGE_STORE_VALUE, 1, kind)?);
+            }
+            Intrinsic::ImageDerefAtomicSwap => {
+                values.push(self.src(i, IMAGE_STORE_VALUE + 1, 1, kind)?);
+                values.push(self.src(i, IMAGE_STORE_VALUE, 1, kind)?);
+            }
+            _ => {}
+        }
+        let result = result.map(|_| self.add_unemitted(Expression::CallResult(function)));
+        self.statement(Statement::Call {
+            function,
+            arguments: values,
+            result,
+        });
+        match (op, result) {
+            (Intrinsic::ImageDerefLoad, Some(e)) => {
+                let e = self.first(e, VectorSize::Quad as u32, i.components)?;
+                self.set(i, Value::Expr(e, kind));
+            }
+            (Intrinsic::ImageDerefSize, Some(e)) => self.set(i, Value::Expr(e, ScalarKind::Uint)),
+            (_, Some(e)) => self.set(i, Value::Expr(e, kind)),
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn storage_image(&mut self, var: &FlatVar) -> Result<Handle<Type>, ConvertError> {
         let mut t = self.types[var.ty as usize];
         let count = (t.kind == TypeKind::Array).then_some(t.length);
@@ -1205,7 +1737,7 @@ impl Builder<'_> {
         let format = if var.format == Format::None {
             let first = var
                 .binding
-                .checked_sub(SlotKind::Storage.first_binding())
+                .checked_sub(SLOT_KINDS[SlotKind::Storage as usize].first_binding)
                 .ok_or_else(|| unsupported(format_args!("a storage image out of its range")))?;
             self.rewrites
                 .formatless
@@ -1269,6 +1801,16 @@ impl Builder<'_> {
     }
 
     fn builtin(&mut self, builtin: BuiltIn, inner: TypeInner) -> Handle<Expression> {
+        self.argument(builtin, Binding::BuiltIn(builtin), inner)
+    }
+
+    /// The entry point's argument for `builtin`, bound at `binding`, made the first time.
+    fn argument(
+        &mut self,
+        builtin: BuiltIn,
+        binding: Binding,
+        inner: TypeInner,
+    ) -> Handle<Expression> {
         if let Some(&(_, h)) = self.builtins.iter().find(|(b, _)| *b == builtin) {
             return h;
         }
@@ -1277,7 +1819,7 @@ impl Builder<'_> {
         self.function.arguments.push(FunctionArgument {
             name: None,
             ty,
-            binding: Some(Binding::BuiltIn(builtin)),
+            binding: Some(binding),
         });
         let h = self.add(Expression::FunctionArgument(index));
         self.builtins.push((builtin, h));
@@ -1314,18 +1856,27 @@ impl Builder<'_> {
                 if self.stage == ShaderStage::Vertex && var.mode == VarMode::Input
                     || self.stage == ShaderStage::Fragment && var.mode == VarMode::Output
                 {
+                    // With dual-source blending both of target 0's outputs name their source.
+                    let dual = self.stage == ShaderStage::Fragment
+                        && self
+                            .vars
+                            .iter()
+                            .any(|v| v.mode == VarMode::Output && v.blend_source != 0);
                     Binding::Location {
                         location: var.location,
                         interpolation: None,
                         sampling: None,
-                        blend_src: None,
+                        blend_src: dual.then_some(var.blend_source),
                         per_primitive: false,
                     }
                 } else {
                     Self::location(var)
                 }
             }
-            FlatBuiltIn::Position => Binding::BuiltIn(BuiltIn::Position { invariant: false }),
+            // An invariant position is the writers' `@invariant` and HLSL's `precise`.
+            FlatBuiltIn::Position => Binding::BuiltIn(BuiltIn::Position {
+                invariant: var.mode == VarMode::Output && var.invariant != 0,
+            }),
             FlatBuiltIn::PointSize => Binding::BuiltIn(BuiltIn::PointSize),
             FlatBuiltIn::ClipDistance if self.stage == ShaderStage::Fragment => {
                 return Err(unsupported(format_args!(
@@ -1341,9 +1892,36 @@ impl Builder<'_> {
                     var.location
                 )));
             }
+            FlatBuiltIn::Layer
+                if self.stage == ShaderStage::Fragment && var.mode == VarMode::Input =>
+            {
+                Binding::Location {
+                    location: NAMED_LAYER_INPUT,
+                    interpolation: Some(Interpolation::Flat),
+                    sampling: None,
+                    blend_src: None,
+                    per_primitive: false,
+                }
+            }
+            FlatBuiltIn::PointCoord
+                if self.stage == ShaderStage::Fragment && var.mode == VarMode::Input =>
+            {
+                POINT_COORD_BINDING
+            }
+            FlatBuiltIn::PointCoord => {
+                return Err(unsupported(format_args!(
+                    "gl_PointCoord outside a fragment program"
+                )));
+            }
             FlatBuiltIn::Layer | FlatBuiltIn::ViewportIndex | FlatBuiltIn::PrimitiveId => {
                 return Err(unsupported(format_args!(
                     "a stage value of the built-in {:?} outside a geometry program",
+                    var.builtin
+                )));
+            }
+            FlatBuiltIn::TessLevelOuter | FlatBuiltIn::TessLevelInner => {
+                return Err(unsupported(format_args!(
+                    "a stage value of the built-in {:?} outside a tessellation program",
                     var.builtin
                 )));
             }
@@ -1354,7 +1932,12 @@ impl Builder<'_> {
     fn variables(&mut self) -> Result<(), ConvertError> {
         for (index, var) in self.vars.iter().enumerate() {
             let place = match var.mode {
-                VarMode::Input | VarMode::Output if self.staged.is_some() => {
+                // An evaluation program's outputs are its vertex entry point's own.
+                VarMode::Input | VarMode::Output
+                    if self.staged.as_ref().is_some_and(|s| {
+                        var.mode == VarMode::Input || s.form != StagedForm::Evaluation
+                    }) =>
+                {
                     self.staged_value(var)?
                 }
                 VarMode::Input | VarMode::Output => {
@@ -1443,8 +2026,25 @@ impl Builder<'_> {
                         }
                         t.kind == TypeKind::Image
                     };
-                    let ty = if is_image {
-                        self.storage_image(var)?
+                    let atomic_image = is_image
+                        && self
+                            .atomic_images
+                            .contains(&u32::try_from(index).expect("few"));
+                    let flat = self.types[var.ty as usize];
+                    if atomic_image && flat.kind == TypeKind::Array {
+                        return Err(unsupported(format_args!("an atomic on an array of images")));
+                    }
+                    // Every image of a texture of a program with atomics on images, so that
+                    // images bound to one texture share its texels.
+                    let texels = is_image
+                        && !self.atomic_images.is_empty()
+                        && flat.kind == TypeKind::Image
+                        && flat.dim != Dim::Buffer;
+                    let buffer = is_image && flat.dim == Dim::Buffer;
+                    let (space, ty) = if buffer || texels {
+                        self.image_buffer(var, texels)?
+                    } else if is_image {
+                        (space, self.storage_image(var)?)
                     } else if self
                         .atomic_vars
                         .contains(&u32::try_from(index).expect("few"))
@@ -1452,21 +2052,28 @@ impl Builder<'_> {
                         let signed = self
                             .signed_atomic_vars
                             .contains(&u32::try_from(index).expect("few"));
-                        self.atomic_ty(var.ty, signed)?
+                        (space, self.atomic_ty(var.ty, signed)?)
                     } else {
-                        let block = self.ty(var.ty)?;
+                        let own = u32::try_from(index).expect("few");
+                        let block = if self.signed_block_fields.iter().any(|&(v, _)| v == own) {
+                            let inner = self.struct_inner(var.ty, Some(own))?;
+                            self.add_type(inner)
+                        } else {
+                            self.ty(var.ty)?
+                        };
                         let t = self.types[var.ty as usize];
                         if t.kind == TypeKind::Array
                             && matches!(space, AddressSpace::Uniform | AddressSpace::Storage { .. })
                         {
                             let element = self.ty(t.element)?;
-                            self.add_type(TypeInner::BindingArray {
+                            let array = self.add_type(TypeInner::BindingArray {
                                 base: element,
                                 size: std::num::NonZeroU32::new(t.length)
                                     .map_or(naga::ArraySize::Dynamic, naga::ArraySize::Constant),
-                            })
+                            });
+                            (space, array)
                         } else {
-                            block
+                            (space, block)
                         }
                     };
                     let binding = matches!(
@@ -1488,6 +2095,16 @@ impl Builder<'_> {
                         },
                         Span::UNDEFINED,
                     );
+                    if buffer || texels {
+                        self.typed.buffers.push(TypedBuffer {
+                            global,
+                            kind: scalar_of(self.types[var.ty as usize].sampled)?.kind,
+                            load: None,
+                            store: None,
+                            length: None,
+                            atomics: Vec::new(),
+                        });
+                    }
                     self.add(Expression::GlobalVariable(global))
                 }
             };
@@ -1818,36 +2435,26 @@ fn source_count(op: Alu, components: u32) -> u32 {
     }
 }
 
-fn alu_op(raw: u32) -> Alu {
-    if raw < Alu::Unsupported as u32 {
-        // SAFETY: Alu is repr(u32) with every value below Unsupported a variant, in the bridge's order.
-        unsafe { std::mem::transmute::<u32, Alu>(raw) }
-    } else {
-        Alu::Unsupported
-    }
+/// The variant of `T` the bridge wrote as `raw`; `None` for a value that is none of them.
+fn variant<T: TryFromBytes>(raw: u32) -> Option<T> {
+    T::try_read_from_bytes(&raw.to_ne_bytes()).ok()
 }
 
-fn deref_kind(raw: u32) -> Deref {
-    // SAFETY: the bridge writes only Deref's values as a deref's operation.
-    unsafe { std::mem::transmute::<u32, Deref>(raw) }
+fn alu_op(raw: u32) -> Alu {
+    variant(raw).unwrap_or(Alu::Unsupported)
+}
+
+/// A deref's operation; `None` for a value the bridge does not write, refused where converted.
+fn deref_kind(raw: u32) -> Option<Deref> {
+    variant(raw)
 }
 
 fn atomic_op(raw: u32) -> Atomic {
-    if raw < Atomic::Other as u32 {
-        // SAFETY: as alu_op, for Atomic.
-        unsafe { std::mem::transmute::<u32, Atomic>(raw) }
-    } else {
-        Atomic::Other
-    }
+    variant(raw).unwrap_or(Atomic::Other)
 }
 
 fn intrinsic_op(raw: u32) -> Intrinsic {
-    if raw < Intrinsic::Unsupported as u32 {
-        // SAFETY: as alu_op, for Intrinsic.
-        unsafe { std::mem::transmute::<u32, Intrinsic>(raw) }
-    } else {
-        Intrinsic::Unsupported
-    }
+    variant(raw).unwrap_or(Intrinsic::Unsupported)
 }
 
 impl Builder<'_> {
@@ -2157,6 +2764,28 @@ impl Builder<'_> {
                 });
                 (e, ScalarKind::Float)
             }
+            // A value compared with itself (GLSL's `isnan`): the common form's NaN test, which every
+            // back end writes from the bits, where a comparison may be folded by a compiler that
+            // assumes no NaN.
+            Alu::Feq | Alu::Fneu
+                if i.src[0].def == i.src[1].def
+                    && i.src[0].swizzle[..n as usize] == i.src[1].swizzle[..n as usize] =>
+            {
+                let x = self.src(i, 0, n, ScalarKind::Float)?;
+                let nan = self.add(Expression::Relational {
+                    fun: RelationalFunction::IsNan,
+                    argument: x,
+                });
+                let e = if matches!(op, Alu::Fneu) {
+                    nan
+                } else {
+                    self.add(Expression::Unary {
+                        op: UnaryOperator::LogicalNot,
+                        expr: nan,
+                    })
+                };
+                (e, ScalarKind::Bool)
+            }
             _ => {
                 let (source_kind, form) = alu_form(op).ok_or_else(|| unsupported(name(i)))?;
                 let boolean = i.bits == BOOL_BITS
@@ -2423,7 +3052,12 @@ impl Builder<'_> {
     }
 
     fn deref(&mut self, i: &FlatInstr) -> Result<(), ConvertError> {
-        let kind = deref_kind(i.op);
+        let kind = deref_kind(i.op).ok_or_else(|| {
+            unsupported(format_args!(
+                "a deref operation the bridge does not write ({})",
+                i.op
+            ))
+        })?;
         let e = match kind {
             Deref::Var => self.places[i.value[0] as usize]
                 .ok_or_else(|| unsupported(format_args!("a variable the module does not have")))?,
@@ -2583,7 +3217,7 @@ impl Builder<'_> {
         self.statement(Statement::Store { pointer, value });
     }
 
-    fn finish(mut self, f: &Flat) -> Result<(Module, Option<GeometryProgram>), ConvertError> {
+    fn finish(mut self, f: &Flat) -> Result<(Module, Option<StagedProgram>), ConvertError> {
         if !self.open.is_empty() {
             return Err(unsupported(format_args!(
                 "control flow the walk did not close"
@@ -2592,11 +3226,25 @@ impl Builder<'_> {
         self.ret();
         let _ = self.emitter.finish(&self.function.expressions);
         self.function.body = self.blocks.pop().expect("the body");
-        if let Some(staged) = self.staged.take() {
-            let main = self.module.functions.append(self.function, Span::UNDEFINED);
-            let program = geometry_program(&f.geometry, staged, main)?;
-            return Ok((self.module, Some(program)));
-        }
+        let staged = self.staged.take();
+        let evaluation = match staged {
+            Some(staged) if staged.form == StagedForm::Evaluation => Some(staged),
+            Some(staged) => {
+                let main = self.module.functions.append(self.function, Span::UNDEFINED);
+                let program = if staged.form == StagedForm::Geometry {
+                    StagedProgram::Geometry(geometry_program(&f.geometry, staged, main)?)
+                } else {
+                    StagedProgram::Control(ControlProgram {
+                        function: main,
+                        input_points: f.tessellation.points_in,
+                        output_points: f.tessellation.points_out,
+                        values: staged.values,
+                    })
+                };
+                return Ok((self.module, Some(program)));
+            }
+            None => None,
+        };
         self.module.entry_points.push(naga::EntryPoint {
             name: wcontainers_shaders::ENTRY_POINT.into(),
             stage: self.stage,
@@ -2612,7 +3260,15 @@ impl Builder<'_> {
             task_payload: None,
             incoming_ray_payload: None,
         });
-        Ok((self.module, None))
+        let program = match evaluation {
+            Some(staged) => Some(StagedProgram::Evaluation(DomainProgram {
+                domain: tessellator(&f.tessellation)?.domain,
+                input_points: staged.points_in,
+                values: staged.values,
+            })),
+            None => None,
+        };
+        Ok((self.module, program))
     }
 }
 
@@ -2895,6 +3551,22 @@ impl Builder<'_> {
             }
             Intrinsic::LoadSampleId => self.system_value(i, BuiltIn::SampleIndex, Uint)?,
             Intrinsic::LoadSampleMaskIn => self.system_value(i, BuiltIn::SampleMask, Uint)?,
+            // The common form has no helper query: a helper invocation covers no sample.
+            Intrinsic::LoadHelperInvocation if self.stage == ShaderStage::Fragment => {
+                let mask = self.builtin(BuiltIn::SampleMask, TypeInner::Scalar(Scalar::U32));
+                let none = self.scalar_constant(Uint, 0);
+                let e = self.add(Expression::Binary {
+                    op: BinaryOperator::Equal,
+                    left: mask,
+                    right: none,
+                });
+                self.set(i, Value::Expr(e, Bool));
+            }
+            // Only fragment programs run helper invocations.
+            Intrinsic::LoadHelperInvocation => {
+                let e = self.add(Expression::Literal(Literal::Bool(false)));
+                self.set(i, Value::Expr(e, Bool));
+            }
             Intrinsic::LoadLocalInvocationId => {
                 self.system_value(i, BuiltIn::LocalInvocationId, Uint)?;
             }
@@ -2920,6 +3592,17 @@ impl Builder<'_> {
             Intrinsic::Barrier => {
                 let mut flags = naga::Barrier::empty();
                 let [execution, shared, storage, ..] = i.value;
+                // A control program's wait for its other control points: the stage helper runs
+                // them one after another, each after every earlier one has written its outputs.
+                if self
+                    .staged
+                    .as_ref()
+                    .is_some_and(|s| s.form == StagedForm::Control)
+                    && shared == 0
+                    && storage == 0
+                {
+                    return Ok(());
+                }
                 flags.set(naga::Barrier::WORK_GROUP, shared != 0);
                 flags.set(naga::Barrier::STORAGE, storage != 0);
                 if execution != 0 {
@@ -2952,7 +3635,30 @@ impl Builder<'_> {
                 let e = self.add(Expression::Derivative { axis, ctrl, expr });
                 self.set(i, Value::Expr(e, Float));
             }
+            Intrinsic::LoadPointCoord if self.stage == ShaderStage::Fragment => {
+                let inner = TypeInner::Vector {
+                    size: VectorSize::Bi,
+                    scalar: Scalar::F32,
+                };
+                let e = self.argument(BuiltIn::PointCoord, POINT_COORD_BINDING, inner);
+                self.set(i, Value::Expr(e, Float));
+            }
             Intrinsic::LoadPointCoord => self.system_value(i, BuiltIn::PointCoord, Float)?,
+            Intrinsic::ImageDerefLoad
+            | Intrinsic::ImageDerefStore
+            | Intrinsic::ImageDerefSize
+            | Intrinsic::ImageDerefAtomic
+            | Intrinsic::ImageDerefAtomicSwap
+                if self.image_in_words(i)? =>
+            {
+                let image = self.image(i)?.0;
+                self.image_buffer_access(i, image, intrinsic_op(i.op))?;
+            }
+            Intrinsic::ImageDerefAtomic | Intrinsic::ImageDerefAtomicSwap => {
+                return Err(unsupported(format_args!(
+                    "an atomic on an element of an array of images"
+                )));
+            }
             Intrinsic::ImageDerefLoad => {
                 let (image, t) = self.image(i)?;
                 let (coordinate, array_index) = self.image_coordinate(i, t)?;
@@ -3006,6 +3712,16 @@ impl Builder<'_> {
             Intrinsic::DerefAtomic | Intrinsic::DerefAtomicSwap => self.atomic(i)?,
             Intrinsic::LoadStage => {
                 let (mut pointer, mut ty) = self.stage_value(i)?;
+                let output = self
+                    .vars
+                    .get(i.value[0] as usize)
+                    .is_some_and(|v| v.mode == VarMode::Output);
+                if output && self.staged.as_ref().is_some_and(|s| s.barrier) {
+                    return Err(unsupported(format_args!(
+                        "a control program reading outputs after barrier(), whose control points \
+                         the stage helper runs one after another"
+                    )));
+                }
                 if i.arrayed != 0 {
                     let index = self.src(i, 0, 1, Uint)?;
                     pointer = self.add(Expression::Access {
@@ -3019,7 +3735,16 @@ impl Builder<'_> {
                 self.set(i, Value::Expr(e, self.kind_of(ty)));
             }
             Intrinsic::StoreStage => {
-                let (pointer, ty) = self.stage_value(i)?;
+                let (mut pointer, mut ty) = self.stage_value(i)?;
+                // A control program's output for one control point, its second source.
+                if i.arrayed != 0 {
+                    let index = self.src(i, 1, 1, Uint)?;
+                    pointer = self.add(Expression::Access {
+                        base: pointer,
+                        index,
+                    });
+                    ty = self.types[ty as usize].element;
+                }
                 let (value, components) = self.whole(i.src[0].def, self.kind_of(ty))?;
                 if self.types[ty as usize].kind == TypeKind::Scalar {
                     self.statement(Statement::Store { pointer, value });
@@ -3060,7 +3785,27 @@ impl Builder<'_> {
                 self.statement(Statement::Store { pointer, value });
             }
             Intrinsic::LoadPrimitiveId => self.staged_input(i, StagedBuiltIn::PrimitiveId)?,
-            Intrinsic::LoadInvocationId => self.staged_input(i, StagedBuiltIn::GeometryInstance)?,
+            Intrinsic::LoadInvocationId => {
+                let builtin = match self.staged.as_ref().map(|s| s.form) {
+                    Some(StagedForm::Control) => StagedBuiltIn::ControlPointId,
+                    _ => StagedBuiltIn::GeometryInstance,
+                };
+                self.staged_input(i, builtin)?;
+            }
+            Intrinsic::LoadPatchVerticesIn => match self.staged.as_ref() {
+                Some(s) if s.form == StagedForm::Control => {
+                    self.staged_input(i, StagedBuiltIn::ControlPointCount)?;
+                }
+                // An evaluation program's patches are its control program's output.
+                Some(s) if s.form == StagedForm::Evaluation => {
+                    let points = s.points_in;
+                    self.set(i, Value::Const([points, 0, 0, 0], 1, false));
+                }
+                _ => return Err(unsupported(name(i))),
+            },
+            Intrinsic::LoadTessCoord => {
+                self.staged_input(i, StagedBuiltIn::TessellationCoordinate)?
+            }
             Intrinsic::EmitVertex => {
                 let staged = self.staged.as_ref().ok_or_else(|| unsupported(name(i)))?;
                 let function = *staged.emit.get(i.value[0] as usize).ok_or_else(|| {
@@ -3080,7 +3825,7 @@ impl Builder<'_> {
             }
             Intrinsic::EndPrimitive => {
                 let staged = self.staged.as_ref().ok_or_else(|| unsupported(name(i)))?;
-                let function = staged.cut;
+                let function = staged.cut.ok_or_else(|| unsupported(name(i)))?;
                 self.statement(Statement::Call {
                     function,
                     arguments: Vec::new(),
@@ -3096,6 +3841,15 @@ impl Builder<'_> {
     fn image(&self, i: &FlatInstr) -> Result<(Handle<Expression>, FlatType), ConvertError> {
         let (image, ty) = self.pointer(i.src[0].def)?;
         Ok((image, self.types[ty as usize]))
+    }
+
+    /// Whether an image intrinsic acts on an image declared as a buffer of words: an image of a
+    /// buffer, or one atomics act on.
+    fn image_in_words(&self, i: &FlatInstr) -> Result<bool, ConvertError> {
+        let (image, t) = self.image(i)?;
+        Ok(t.dim == Dim::Buffer
+            || matches!(self.function.expressions[image],
+                Expression::GlobalVariable(g) if self.typed.buffers.iter().any(|b| b.global == g)))
     }
 
     /// An image intrinsic's coordinate (its second source, four components in NIR) as the
@@ -3197,7 +3951,7 @@ impl Builder<'_> {
             image,
             query: naga::ImageQuery::NumLayers,
         });
-        let faces = self.add(Expression::Literal(Literal::U32(crate::CUBE_FACES)));
+        let faces = self.add(Expression::Literal(Literal::U32(CUBE_FACES)));
         let cubes = self.add(Expression::Binary {
             op: BinaryOperator::Divide,
             left: layers,
@@ -3227,29 +3981,28 @@ impl Builder<'_> {
         let op = atomic_op(i.value[VectorSize::MAX - 1]);
         let (pointer, ty) = self.pointer(i.src[0].def)?;
         let kind = self.pointer_kind(i.src[0].def, ty);
-        let needs = |want: ScalarKind| {
-            if kind == want {
-                Ok(())
-            } else {
-                Err(unsupported(format_args!("an atomic {op:?} on a {kind:?}")))
-            }
-        };
         let fun = match op {
             Atomic::Add => F::Add,
             Atomic::And => F::And,
             Atomic::Or => F::InclusiveOr,
             Atomic::Xor => F::ExclusiveOr,
             Atomic::Imin | Atomic::Umin | Atomic::Imax | Atomic::Umax => {
-                needs(if matches!(op, Atomic::Imin | Atomic::Imax) {
+                let want = if matches!(op, Atomic::Imin | Atomic::Imax) {
                     ScalarKind::Sint
                 } else {
                     ScalarKind::Uint
-                })?;
-                if matches!(op, Atomic::Imin | Atomic::Umin) {
-                    F::Min
-                } else {
-                    F::Max
+                };
+                let min = matches!(op, Atomic::Imin | Atomic::Umin);
+                if kind != want {
+                    if !matches!(kind, ScalarKind::Sint | ScalarKind::Uint) {
+                        return Err(unsupported(format_args!("an atomic {op:?} on a {kind:?}")));
+                    }
+                    let (value, _) = self.whole(i.src[ATOMIC_COMPARE].def, kind)?;
+                    let e = self.exchange_loop(pointer, kind, value, want, min);
+                    self.set(i, Value::Expr(e, kind));
+                    return Ok(());
                 }
+                if min { F::Min } else { F::Max }
             }
             Atomic::Exchange => F::Exchange { compare: None },
             Atomic::CompareExchange => F::Exchange {
@@ -3296,6 +4049,124 @@ impl Builder<'_> {
         Ok(())
     }
 
+    /// An atomic minimum (or maximum) of `value` compared as `want` into the word of `kind` at
+    /// `pointer`, the other signedness than the word's (`SlowPath::AtomicExchangeLoop`: naga's
+    /// atomics take theirs from the word's type): a compare-exchange loop, each try comparing with
+    /// the value the last one gave. Gives the old value.
+    fn exchange_loop(
+        &mut self,
+        pointer: Handle<Expression>,
+        kind: ScalarKind,
+        value: Handle<Expression>,
+        want: ScalarKind,
+        min: bool,
+    ) -> Handle<Expression> {
+        if !self.slow_paths.contains(&SlowPath::AtomicExchangeLoop) {
+            self.slow_paths.push(SlowPath::AtomicExchangeLoop);
+        }
+        let scalar = Scalar { kind, width: WIDTH };
+        let ty = self.add_type(TypeInner::Scalar(scalar));
+        let old = self.function.local_variables.append(
+            LocalVariable {
+                name: None,
+                ty,
+                init: None,
+            },
+            Span::UNDEFINED,
+        );
+        let local = self.add(Expression::LocalVariable(old));
+        let first = self.add(Expression::Load { pointer });
+        self.statement(Statement::Store {
+            pointer: local,
+            value: first,
+        });
+        let operand = self.add(Expression::As {
+            expr: value,
+            kind: want,
+            convert: None,
+        });
+        self.flush();
+        self.blocks.push(Block::new());
+        let current = self.add(Expression::Load { pointer: local });
+        let compared = self.add(Expression::As {
+            expr: current,
+            kind: want,
+            convert: None,
+        });
+        let chosen = self.add(Expression::Math {
+            fun: if min {
+                MathFunction::Min
+            } else {
+                MathFunction::Max
+            },
+            arg: compared,
+            arg1: Some(operand),
+            arg2: None,
+            arg3: None,
+        });
+        let new = self.add(Expression::As {
+            expr: chosen,
+            kind,
+            convert: None,
+        });
+        let result_ty = self.module.generate_predeclared_type(
+            naga::PredeclaredType::AtomicCompareExchangeWeakResult(scalar),
+        );
+        let result = self.add_unemitted(Expression::AtomicResult {
+            ty: result_ty,
+            comparison: true,
+        });
+        self.statement(Statement::Atomic {
+            pointer,
+            fun: naga::AtomicFunction::Exchange {
+                compare: Some(current),
+            },
+            value: new,
+            result: Some(result),
+        });
+        let seen = self.add(Expression::AccessIndex {
+            base: result,
+            index: 0,
+        });
+        self.statement(Statement::Store {
+            pointer: local,
+            value: seen,
+        });
+        let mut leave = self.add(Expression::AccessIndex {
+            base: result,
+            index: 1,
+        });
+        // A helper invocation's exchange does nothing: it leaves (it covers no sample).
+        if self.stage == ShaderStage::Fragment {
+            let mask = self.builtin(BuiltIn::SampleMask, TypeInner::Scalar(Scalar::U32));
+            let none = self.scalar_constant(ScalarKind::Uint, 0);
+            let helper = self.add(Expression::Binary {
+                op: BinaryOperator::Equal,
+                left: mask,
+                right: none,
+            });
+            leave = self.add(Expression::Binary {
+                op: BinaryOperator::LogicalOr,
+                left: leave,
+                right: helper,
+            });
+        }
+        let mut accept = Block::new();
+        accept.push(Statement::Break, Span::UNDEFINED);
+        self.statement(Statement::If {
+            condition: leave,
+            accept,
+            reject: Block::new(),
+        });
+        let body = self.blocks.pop().expect("the loop's block");
+        self.statement(Statement::Loop {
+            body,
+            continuing: Block::new(),
+            break_if: None,
+        });
+        self.add(Expression::Load { pointer: local })
+    }
+
     fn tex_src(&mut self, i: &FlatInstr, at: TexSrc) -> Option<u32> {
         let def = i.tex[at as usize];
         (def != NONE).then_some(def)
@@ -3303,14 +4174,21 @@ impl Builder<'_> {
 
     fn tex(&mut self, i: &FlatInstr) -> Result<(), ConvertError> {
         use ScalarKind::{Float, Sint, Uint};
-        // SAFETY: the bridge writes only TexOp's values here.
-        let op = unsafe { std::mem::transmute::<u32, TexOp>(i.op) };
+        let op = variant::<TexOp>(i.op).ok_or_else(|| {
+            unsupported(format_args!(
+                "a texture operation the bridge does not write ({})",
+                i.op
+            ))
+        })?;
         let texture = self.tex_src(i, TexSrc::Texture).ok_or_else(|| {
             unsupported(format_args!(
                 "a texture instruction without a texture deref"
             ))
         })?;
         let (image, _) = self.pointer(texture)?;
+        if i.dim == Dim::Buffer {
+            return self.texel_buffer(i, op, image);
+        }
         let dim = dimension(i.dim)?;
         let space = coordinate_size(dim);
         let arrayed = i.arrayed != 0;
@@ -3498,6 +4376,347 @@ impl Builder<'_> {
         Ok(())
     }
 
+    /// A texel buffer's load or length. It is read through the 2D texture of
+    /// [`TEXEL_BUFFER_TEXTURE_WIDTH`] texels a row the driver copies the view into
+    /// (`TexelBufferRoute::Texture`), its length from the helper constants
+    /// (`HelperValue::TexelBufferView`); elements at or past the length read zero.
+    fn texel_buffer(
+        &mut self,
+        i: &FlatInstr,
+        op: TexOp,
+        image: Handle<Expression>,
+    ) -> Result<(), ConvertError> {
+        use ScalarKind::{Float, Sint, Uint};
+        let view = self.texel_buffer_view(image)?;
+        let length = self.add(Expression::AccessIndex {
+            base: view,
+            index: 1,
+        });
+        let kind = match i.ty {
+            t if t == FlatScalar::Float as u32 => Float,
+            t if t == FlatScalar::Sint as u32 => Sint,
+            _ => Uint,
+        };
+        let (e, kind) = match op {
+            TexOp::Size => (length, Uint),
+            TexOp::Load => {
+                let def = self.tex_src(i, TexSrc::Coord).ok_or_else(|| {
+                    unsupported(format_args!("a texture instruction without coordinates"))
+                })?;
+                // A negative element's bits are past every length.
+                let element = self.whole(def, Uint)?.0;
+                let width = self.scalar_constant(Uint, TEXEL_BUFFER_TEXTURE_WIDTH);
+                let column = self.add(Expression::Binary {
+                    op: BinaryOperator::Modulo,
+                    left: element,
+                    right: width,
+                });
+                let row = self.add(Expression::Binary {
+                    op: BinaryOperator::Divide,
+                    left: element,
+                    right: width,
+                });
+                let ty = self.scalar_type(Uint, VectorSize::Bi as u32)?;
+                let coordinate = self.add(Expression::Compose {
+                    ty,
+                    components: vec![column, row],
+                });
+                let level = self.scalar_constant(Uint, 0);
+                let load = self.add(Expression::ImageLoad {
+                    image,
+                    coordinate,
+                    array_index: None,
+                    sample: None,
+                    level: Some(level),
+                });
+                let inside = self.add(Expression::Binary {
+                    op: BinaryOperator::Less,
+                    left: element,
+                    right: length,
+                });
+                let ty = self.scalar_type(kind, VectorSize::Quad as u32)?;
+                let zero = self.add(Expression::ZeroValue(ty));
+                let e = self.add(Expression::Select {
+                    condition: inside,
+                    accept: load,
+                    reject: zero,
+                });
+                let e = if i.components == 1 {
+                    self.add(Expression::AccessIndex { base: e, index: 0 })
+                } else {
+                    e
+                };
+                (e, kind)
+            }
+            _ => {
+                return Err(unsupported(format_args!(
+                    "a texel buffer read other than by a load or its size"
+                )));
+            }
+        };
+        self.set(i, Value::Expr(e, kind));
+        Ok(())
+    }
+
+    /// The view of the texel buffer `image`, its two words of [`HelperValue::TexelBufferView`]
+    /// (where the view starts in the texture, zero, and its length), loaded from the helper
+    /// block, which gets a member for it on its first use.
+    fn texel_buffer_view(
+        &mut self,
+        image: Handle<Expression>,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let Expression::GlobalVariable(g) = self.function.expressions[image] else {
+            return Err(unsupported(format_args!("an array of texel buffers")));
+        };
+        if self.staged.is_some() {
+            return Err(unsupported(format_args!(
+                "a texel buffer in a geometry or tessellation program"
+            )));
+        }
+        let at = self.module.global_variables[g]
+            .binding
+            .ok_or_else(|| unsupported(format_args!("a texel buffer without a binding")))?;
+        self.helper(HelperValue::TexelBufferView {
+            set: at.group,
+            binding: at.binding,
+        })
+    }
+
+    /// The texel layout of the image of a texture `image` read through a buffer of words, its
+    /// [`HelperValue::TexelLayout`] (two rows of four words) from the helper block.
+    fn texel_layout(
+        &mut self,
+        image: Handle<GlobalVariable>,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let slot = self.module.global_variables[image]
+            .binding
+            .and_then(|b| {
+                b.binding
+                    .checked_sub(SLOT_KINDS[SlotKind::Storage as usize].first_binding)
+            })
+            .ok_or_else(|| unsupported(format_args!("an image out of its range")))?;
+        self.helper(HelperValue::TexelLayout { slot })
+    }
+
+    /// The words of a texel layout `layout`: row pitch in texels, rows per layer, the view's
+    /// width, height and layers.
+    fn layout_words(
+        &mut self,
+        layout: Handle<Expression>,
+    ) -> [Handle<Expression>; TEXEL_LAYOUT_WORDS] {
+        let row_words = VectorSize::Quad as u32;
+        std::array::from_fn(|word| {
+            let word = word as u32;
+            let row = self.add(Expression::AccessIndex {
+                base: layout,
+                index: word / row_words,
+            });
+            self.add(Expression::AccessIndex {
+                base: row,
+                index: word % row_words,
+            })
+        })
+    }
+
+    /// The element of a buffer of texels laid out as `layout` that an image intrinsic's
+    /// coordinate names: past every element where the coordinate is outside the view.
+    fn texel_element(
+        &mut self,
+        i: &FlatInstr,
+        t: FlatType,
+        layout: Handle<Expression>,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        use ScalarKind::Uint;
+        if t.multisampled != 0 {
+            return Err(unsupported(format_args!(
+                "an atomic on a multisampled image"
+            )));
+        }
+        let (dim, arrayed) = storage_dimension(t)?;
+        let space = coordinate_size(dim);
+        let parts = space + u32::from(arrayed);
+        // A negative coordinate's bits are past every size.
+        let coordinate = self.src(i, 1, parts, Uint)?;
+        let component = |s: &mut Self, c: u32| {
+            if parts == 1 {
+                coordinate
+            } else {
+                s.add(Expression::AccessIndex {
+                    base: coordinate,
+                    index: c,
+                })
+            }
+        };
+        let x = component(self, 0);
+        let y = if space >= VectorSize::Bi as u32 {
+            component(self, 1)
+        } else {
+            self.scalar_constant(Uint, 0)
+        };
+        let z = if arrayed || space == VectorSize::Tri as u32 {
+            component(self, parts - 1)
+        } else {
+            self.scalar_constant(Uint, 0)
+        };
+        let [pitch, rows, width, height, layers] = self.layout_words(layout);
+        let mut inside = None;
+        for (value, bound) in [(x, width), (y, height), (z, layers)] {
+            let less = self.add(Expression::Binary {
+                op: BinaryOperator::Less,
+                left: value,
+                right: bound,
+            });
+            inside = Some(match inside {
+                None => less,
+                Some(left) => self.add(Expression::Binary {
+                    op: BinaryOperator::LogicalAnd,
+                    left,
+                    right: less,
+                }),
+            });
+        }
+        let layer_rows = self.add(Expression::Binary {
+            op: BinaryOperator::Multiply,
+            left: rows,
+            right: z,
+        });
+        let row = self.add(Expression::Binary {
+            op: BinaryOperator::Add,
+            left: y,
+            right: layer_rows,
+        });
+        let row_start = self.add(Expression::Binary {
+            op: BinaryOperator::Multiply,
+            left: pitch,
+            right: row,
+        });
+        let element = self.add(Expression::Binary {
+            op: BinaryOperator::Add,
+            left: x,
+            right: row_start,
+        });
+        let past = self.scalar_constant(Uint, u32::MAX);
+        Ok(self.add(Expression::Select {
+            condition: inside.expect("three bounds"),
+            accept: element,
+            reject: past,
+        }))
+    }
+
+    /// The size an image of a texture read through a buffer of words gives, from its layout: a
+    /// cube's faces' width and height, a cube array's cubes after them.
+    fn texel_layout_size(
+        &mut self,
+        t: FlatType,
+        layout: Handle<Expression>,
+        components: u32,
+    ) -> Result<Handle<Expression>, ConvertError> {
+        let dim = dimension(t.dim)?;
+        let [_, _, width, height, layers] = self.layout_words(layout);
+        let mut parts = vec![width, height];
+        parts.truncate(size_components(dim) as usize);
+        if t.arrayed != 0 || dim == ImageDimension::D3 {
+            parts.push(if dim == ImageDimension::Cube {
+                let faces = self.add(Expression::Literal(Literal::U32(CUBE_FACES)));
+                self.add(Expression::Binary {
+                    op: BinaryOperator::Divide,
+                    left: layers,
+                    right: faces,
+                })
+            } else {
+                layers
+            });
+        }
+        if parts.len() != components as usize {
+            return Err(unsupported(format_args!(
+                "an image size of {components} components"
+            )));
+        }
+        Ok(if components == 1 {
+            parts[0]
+        } else {
+            let ty = self.scalar_type(ScalarKind::Uint, components)?;
+            self.add(Expression::Compose {
+                ty,
+                components: parts,
+            })
+        })
+    }
+
+    /// The helper constant `value`, loaded from route B's helper block, which gets a member for
+    /// it on its first use.
+    fn helper(&mut self, value: HelperValue) -> Result<Handle<Expression>, ConvertError> {
+        let member = match self.helpers.iter().position(|s| s.value == value) {
+            Some(member) => member,
+            None => {
+                self.helpers.push(HelperSlot {
+                    value,
+                    offset: helper_size(&self.helpers),
+                });
+                let pair = self.scalar_type(ScalarKind::Uint, VectorSize::Bi as u32)?;
+                let row = self.scalar_type(ScalarKind::Uint, VectorSize::Quad as u32)?;
+                let layout = self.add_type(TypeInner::Array {
+                    base: row,
+                    size: naga::ArraySize::Constant(
+                        std::num::NonZeroU32::new(TEXEL_LAYOUT_ROWS).expect("rows"),
+                    ),
+                    stride: HELPER_ROW_BYTES,
+                });
+                let members = self
+                    .helpers
+                    .iter()
+                    .map(|s| naga::StructMember {
+                        name: None,
+                        ty: match s.value {
+                            HelperValue::TexelLayout { .. } => layout,
+                            _ => pair,
+                        },
+                        binding: None,
+                        offset: s.offset,
+                    })
+                    .collect();
+                let block = self.add_type(TypeInner::Struct {
+                    members,
+                    span: helper_size(&self.helpers),
+                });
+                match self.helper_block {
+                    Some(b) => self.module.global_variables[b].ty = block,
+                    None => {
+                        let stage = match self.stage {
+                            ShaderStage::Vertex => GpuStage::Vertex,
+                            ShaderStage::Fragment => GpuStage::Fragment,
+                            _ => GpuStage::Compute,
+                        };
+                        self.helper_block = Some(self.module.global_variables.append(
+                            GlobalVariable {
+                                name: None,
+                                space: AddressSpace::Uniform,
+                                binding: Some(naga::ResourceBinding {
+                                    group: HELPER_SET,
+                                    binding: helper_binding(stage),
+                                }),
+                                ty: block,
+                                init: None,
+                                memory_decorations: naga::MemoryDecorations::empty(),
+                            },
+                            Span::UNDEFINED,
+                        ));
+                    }
+                }
+                self.helpers.len() - 1
+            }
+        };
+        let block = self
+            .helper_block
+            .expect("the helper block, made with its first member");
+        let base = self.add(Expression::GlobalVariable(block));
+        let pointer = self.add(Expression::AccessIndex {
+            base,
+            index: u32::try_from(member).expect("few members"),
+        });
+        Ok(self.add(Expression::Load { pointer }))
+    }
+
     /// A texture sampled with a comparison is a depth texture in the common form; NIR's texture
     /// types (split from combined image samplers) do not say so, its sampling does.
     fn make_depth(&mut self, image: Handle<Expression>) {
@@ -3604,31 +4823,49 @@ impl Builder<'_> {
         };
         let emit = (0..streams.max(1)).map(|_| empty()).collect();
         Staged {
+            form: StagedForm::Geometry,
             values: Vec::new(),
             emit,
-            cut: empty(),
+            cut: Some(empty()),
+            points_in: 0,
+            barrier: false,
             position: None,
             inputs: Vec::new(),
         }
     }
 
-    /// A geometry program's stage value as a private variable the shaders crate fills or reads. The
-    /// vertex stage's positions come with y negated (its return's), which is undone here.
+    /// A geometry or tessellation program's stage value as a private variable the shaders crate
+    /// fills or reads. The vertex stage's positions come with y negated (its return's), which is
+    /// undone here.
     fn staged_value(&mut self, var: &FlatVar) -> Result<Handle<Expression>, ConvertError> {
         let output = var.mode == VarMode::Output;
+        let form = self.staged.as_ref().expect("a staged program").form;
+        let tessellation = form != StagedForm::Geometry;
         let place = match var.builtin {
             FlatBuiltIn::None => Place::Location {
                 location: var.location,
                 component: 0,
             },
             FlatBuiltIn::Position => Place::BuiltIn(StagedBuiltIn::Position),
-            FlatBuiltIn::ClipDistance if output => Place::BuiltIn(StagedBuiltIn::ClipDistance),
+            FlatBuiltIn::ClipDistance if output || tessellation => {
+                Place::BuiltIn(StagedBuiltIn::ClipDistance)
+            }
             FlatBuiltIn::Layer if output => Place::BuiltIn(StagedBuiltIn::Layer),
             FlatBuiltIn::ViewportIndex if output => Place::BuiltIn(StagedBuiltIn::ViewportIndex),
+            FlatBuiltIn::TessLevelOuter if tessellation => {
+                Place::BuiltIn(StagedBuiltIn::OuterFactors)
+            }
+            FlatBuiltIn::TessLevelInner if tessellation => {
+                Place::BuiltIn(StagedBuiltIn::InnerFactors)
+            }
+            other if output => {
+                return Err(unsupported(format_args!(
+                    "a {form:?} program's output of the built-in {other:?}"
+                )));
+            }
             other => {
                 return Err(unsupported(format_args!(
-                    "a geometry program's {} of the built-in {other:?}",
-                    if output { "output" } else { "input" }
+                    "a {form:?} program's input of the built-in {other:?}"
                 )));
             }
         };
@@ -3650,13 +4887,16 @@ impl Builder<'_> {
             output,
             place,
             stream: var.stream,
-            patch: false,
+            patch: var.patch != 0,
         });
-        if output && var.builtin == FlatBuiltIn::Position {
+        // A geometry program's emits flip its position as a vertex program's return does; a
+        // control program's outputs go to the evaluation program, whose return flips them.
+        if output && var.builtin == FlatBuiltIn::Position && form == StagedForm::Geometry {
             staged.position = Some(variable);
         }
         let pointer = self.add(Expression::GlobalVariable(variable));
-        if !output && var.builtin == FlatBuiltIn::Position {
+        // The inputs a vertex program wrote; an evaluation program's are its control program's.
+        if !output && var.builtin == FlatBuiltIn::Position && form != StagedForm::Evaluation {
             for vertex in 0..self.types[var.ty as usize].length {
                 let at = self.add(Expression::AccessIndex {
                     base: pointer,
@@ -3668,13 +4908,23 @@ impl Builder<'_> {
         Ok(pointer)
     }
 
-    /// A geometry program's built-in input, an unsigned integer.
+    /// A staged program's built-in input: an unsigned integer, or the tessellation coordinate's
+    /// three floats.
     fn staged_input(&mut self, i: &FlatInstr, builtin: StagedBuiltIn) -> Result<(), ConvertError> {
         let staged = self.staged.as_ref().ok_or_else(|| unsupported(name(i)))?;
+        let (inner, kind) = if builtin == StagedBuiltIn::TessellationCoordinate {
+            let inner = TypeInner::Vector {
+                size: VectorSize::Tri,
+                scalar: Scalar::F32,
+            };
+            (inner, ScalarKind::Float)
+        } else {
+            (TypeInner::Scalar(Scalar::U32), ScalarKind::Uint)
+        };
         let pointer = match staged.inputs.iter().find(|(b, _)| *b == builtin) {
             Some(&(_, pointer)) => pointer,
             None => {
-                let ty = self.add_type(TypeInner::Scalar(Scalar::U32));
+                let ty = self.add_type(inner);
                 let variable = self.module.global_variables.append(
                     GlobalVariable {
                         name: None,
@@ -3700,9 +4950,50 @@ impl Builder<'_> {
             }
         };
         let e = self.add(Expression::Load { pointer });
-        self.set(i, Value::Expr(e, ScalarKind::Uint));
+        self.set(i, Value::Expr(e, kind));
         Ok(())
     }
+}
+
+/// An evaluation program's tessellator in the shaders crate's terms.
+fn tessellator(t: &FlatTessellation) -> Result<Tessellator, ConvertError> {
+    let domain = match t.domain {
+        FlatTessDomain::Triangles => TessellationDomain::Triangle,
+        FlatTessDomain::Quads => TessellationDomain::Quad,
+        FlatTessDomain::Isolines => TessellationDomain::Isoline,
+        FlatTessDomain::Other => {
+            return Err(unsupported(format_args!(
+                "an evaluation program without a domain"
+            )));
+        }
+    };
+    let partitioning = match t.spacing {
+        FlatTessSpacing::Equal => Partitioning::Integer,
+        FlatTessSpacing::FractionalOdd => Partitioning::FractionalOdd,
+        FlatTessSpacing::FractionalEven => Partitioning::FractionalEven,
+        FlatTessSpacing::Other => {
+            return Err(unsupported(format_args!(
+                "an evaluation program without a spacing"
+            )));
+        }
+    };
+    // The same coordinates, seen with OpenGL's origin at the lower left and Direct3D's at the upper
+    // left, so each winding is the other's (as Mesa's d3d12 driver turns it,
+    // https://gitlab.freedesktop.org/mesa/mesa/-/blob/mesa-26.3.1/src/gallium/drivers/d3d12/d3d12_compiler.cpp#:~:text=GL%20tess%20domain%20is%20lower%2Dleft).
+    let output = if t.point_mode != 0 {
+        TessellatorOutput::Points
+    } else if domain == TessellationDomain::Isoline {
+        TessellatorOutput::Lines
+    } else if t.counter_clockwise != 0 {
+        TessellatorOutput::TrianglesClockwise
+    } else {
+        TessellatorOutput::TrianglesCounterClockwise
+    };
+    Ok(Tessellator {
+        domain,
+        partitioning,
+        output,
+    })
 }
 
 /// A geometry program's declarations in the shaders crate's terms, `main` its function.
@@ -3736,7 +5027,7 @@ fn geometry_program(
     Ok(GeometryProgram {
         main,
         emit: staged.emit,
-        cut: staged.cut,
+        cut: staged.cut.expect("a geometry program's end function"),
         input,
         output,
         max_vertices: g.max_vertices,
@@ -3757,9 +5048,15 @@ pub fn geometry(
     let Routed {
         module,
         rewrites,
-        geometry,
+        staged,
+        tessellator: _,
+        helpers: _,
+        typed: _,
+        slow_paths,
     } = routed;
-    let program = geometry.ok_or_else(|| unsupported(format_args!("no geometry program")))?;
+    let Some(StagedProgram::Geometry(program)) = staged else {
+        return Err(unsupported(format_args!("no geometry program")));
+    };
     let named = |slot: &u32| variant.storage_formats.iter().any(|(s, _)| s == slot);
     if !rewrites.formatless.iter().all(named) {
         return Err(unsupported(format_args!(
@@ -3775,21 +5072,179 @@ pub fn geometry(
         helper_size: 0,
         sampled_pairs: Vec::new(),
         extras: StageExtras::None,
-        slow_paths: Vec::new(),
+        slow_paths,
     };
     wcontainers_shaders::staged::geometry(module, &program, reflection, variant, route_key)
         .map_err(|e| ConvertError::Rewrite(e.to_string()))
 }
 
+/// A control program of route B (`routed.staged`) in the stage helper's compute form, with the
+/// tessellator of its evaluation program, as `wcontainers_shaders::staged::hull` makes it;
+/// otherwise as [`geometry`].
+pub fn hull(
+    routed: Routed,
+    bindings: Vec<ReflectedBinding>,
+    tessellator: Tessellator,
+    variant: &VariantKey,
+    route_key: &[u8; cache::KEY_BYTES],
+) -> Result<wcontainers_shaders::Converted, ConvertError> {
+    let (module, staged, reflection) = staged_parts(routed, SourceStage::Hull, bindings, variant)?;
+    let Some(StagedProgram::Control(control)) = staged else {
+        return Err(unsupported(format_args!("no control program")));
+    };
+    let program = HullProgram {
+        control_point: control.function,
+        patch_constant: None,
+        domain: tessellator.domain,
+        partitioning: tessellator.partitioning,
+        output: tessellator.output,
+        input_points: control.input_points,
+        output_points: control.output_points,
+        values: control.values,
+    };
+    wcontainers_shaders::staged::hull(module, &program, reflection, variant, route_key)
+        .map_err(|e| ConvertError::Rewrite(e.to_string()))
+}
+
+/// An evaluation program of route B (`routed.staged`) in the vertex form the stage helper's
+/// tessellator draws through, as `wcontainers_shaders::staged::domain` makes it; otherwise as
+/// [`geometry`].
+pub fn domain(
+    routed: Routed,
+    bindings: Vec<ReflectedBinding>,
+    variant: &VariantKey,
+    route_key: &[u8; cache::KEY_BYTES],
+) -> Result<wcontainers_shaders::Converted, ConvertError> {
+    let (module, staged, reflection) =
+        staged_parts(routed, SourceStage::Domain, bindings, variant)?;
+    let Some(StagedProgram::Evaluation(program)) = staged else {
+        return Err(unsupported(format_args!("no evaluation program")));
+    };
+    wcontainers_shaders::staged::domain(module, &program, reflection, variant, route_key)
+        .map_err(|e| ConvertError::Rewrite(e.to_string()))
+}
+
+/// A staged program's module, declarations and the reflection the shaders crate's staged forms
+/// start from (its bindings and slow paths), where every storage slot without a format is one
+/// `variant` names and the program reads no helper constants of route B's own.
+fn staged_parts(
+    routed: Routed,
+    stage: SourceStage,
+    bindings: Vec<ReflectedBinding>,
+    variant: &VariantKey,
+) -> Result<(Module, Option<StagedProgram>, Reflection), ConvertError> {
+    let named = |slot: &u32| variant.storage_formats.iter().any(|(s, _)| s == slot);
+    if !routed.rewrites.formatless.iter().all(named) {
+        return Err(unsupported(format_args!(
+            "a storage image without a format the variant does not name"
+        )));
+    }
+    if !routed.helpers.is_empty() {
+        return Err(unsupported(format_args!(
+            "a texel buffer in a tessellation program"
+        )));
+    }
+    let reflection = Reflection {
+        stage,
+        inputs: Vec::new(),
+        outputs: Vec::new(),
+        bindings,
+        helpers: Vec::new(),
+        helper_size: 0,
+        sampled_pairs: Vec::new(),
+        extras: StageExtras::None,
+        slow_paths: routed.slow_paths,
+    };
+    Ok((routed.module, routed.staged, reflection))
+}
+
+/// The bytes of route B's helper block holding `helpers`, each two words
+/// ([`HelperValue::TexelBufferView`]) or two rows ([`HelperValue::TexelLayout`]), as a uniform
+/// block rounds them.
+fn helper_size(helpers: &[HelperSlot]) -> u32 {
+    let bytes = |value: HelperValue| match value {
+        HelperValue::TexelLayout { .. } => TEXEL_LAYOUT_ROWS * HELPER_ROW_BYTES,
+        _ => size_of::<[u32; VectorSize::Bi as usize]>() as u32,
+    };
+    let end = helpers
+        .iter()
+        .map(|s| s.offset + bytes(s.value))
+        .max()
+        .unwrap_or(0);
+    naga::proc::Alignment::MIN_UNIFORM.round_up(end)
+}
+
 /// Why [`rewrite`] failed where the shaders crate gave no module.
 const NO_MODULE: &str = "the shaders crate's rewrite gave no module";
+
+/// A fragment program's pixel extras, which the shaders crate's rewrite fills in with the early
+/// tests the program forces: whether it writes storage, may discard, or runs per sample.
+fn pixel_extras(module: &Module) -> StageExtras {
+    let writable = |g: &GlobalVariable| match g.space {
+        AddressSpace::Storage { access } => access.contains(StorageAccess::STORE),
+        AddressSpace::Handle => matches!(
+            module.types[g.ty].inner,
+            TypeInner::Image {
+                class: ImageClass::Storage { access, .. },
+                ..
+            } if access.contains(StorageAccess::STORE)
+        ),
+        _ => false,
+    };
+    fn kills(block: &Block) -> bool {
+        block.iter().any(|s| match s {
+            Statement::Kill => true,
+            Statement::Block(b) => kills(b),
+            Statement::If { accept, reject, .. } => kills(accept) || kills(reject),
+            Statement::Loop {
+                body, continuing, ..
+            } => kills(body) || kills(continuing),
+            Statement::Switch { cases, .. } => cases.iter().any(|c| kills(&c.body)),
+            _ => false,
+        })
+    }
+    let per_sample = module.entry_points.iter().any(|ep| {
+        let bindings = ep.function.arguments.iter().flat_map(|a| match a.binding {
+            Some(ref b) => vec![b.clone()],
+            None => match module.types[a.ty].inner {
+                TypeInner::Struct { ref members, .. } => {
+                    members.iter().filter_map(|m| m.binding.clone()).collect()
+                }
+                _ => Vec::new(),
+            },
+        });
+        bindings.into_iter().any(|b| {
+            matches!(
+                b,
+                Binding::BuiltIn(BuiltIn::SampleIndex)
+                    | Binding::Location {
+                        sampling: Some(Sampling::Sample),
+                        ..
+                    }
+            )
+        })
+    });
+    StageExtras::Pixel {
+        early_tests: false,
+        side_effects: module.global_variables.iter().any(|(_, g)| writable(g)),
+        discards: module
+            .entry_points
+            .iter()
+            .any(|ep| kills(&ep.function.body))
+            || module.functions.iter().any(|(_, f)| kills(&f.body)),
+        per_sample,
+    }
+}
 
 /// The shaders crate's rewrites of plan 15.4 on route B's module: arrays of textures, storage
 /// textures and samplers split into a binding an element, gathers at offsets known only at run
 /// time moved into their coordinates, and each storage texture whose slot `variant` names given
 /// the bound view's format; vertex inputs fetched in the program (`VariantKey::pulled`), which
 /// find their inputs by location; and border colours applied in the program
-/// (`VariantKey::border_in_shader`), which read the sampler's state from helper constants. A slot declared without a format that `variant` does not name is
+/// (`VariantKey::border_in_shader`), which read the sampler's state from helper constants, and
+/// level-of-detail biases added in the program (`VariantKey::lod_bias`); and a fragment program's
+/// counting form (`VariantFlags::COUNTING`). A slot declared without a format that `variant` does
+/// not name is
 /// refused by name, as is a variant asking for more than these (its rewrites read the program's
 /// stage values, which the driver's reflection holds). `bindings` is what `Nir::to_common_form`
 /// gave, `route_key` the program's `Nir::key`. The module carries `cache::rewritten_key` of it;
@@ -3806,11 +5261,15 @@ pub fn rewrite(
             "a storage image without a format the variant does not name"
         )));
     }
+    // The counting form reads only the program's own outputs.
     let routed_rewrites = VariantKey {
+        flags: variant.flags & VariantFlags::COUNTING,
         storage_formats: variant.storage_formats.clone(),
         texels_through_buffer: variant.texels_through_buffer,
         pulled: variant.pulled.clone(),
         border_in_shader: variant.border_in_shader,
+        lod_bias: variant.lod_bias,
+        texture_layers: variant.texture_layers.clone(),
         ..VariantKey::default()
     };
     if *variant != routed_rewrites {
@@ -3823,22 +5282,59 @@ pub fn rewrite(
         Some(ShaderStage::Fragment) => SourceStage::Pixel,
         _ => SourceStage::Compute,
     };
-    let reflection = Reflection {
+    let helper_size = helper_size(&routed.helpers);
+    let mut reflection = Reflection {
         stage,
         inputs: Vec::new(),
         outputs: Vec::new(),
         bindings,
-        helpers: Vec::new(),
-        helper_size: 0,
+        helpers: routed.helpers,
+        helper_size,
         sampled_pairs: Vec::new(),
-        extras: StageExtras::None,
-        slow_paths: Vec::new(),
+        extras: if stage == SourceStage::Pixel {
+            pixel_extras(&routed.module)
+        } else {
+            StageExtras::None
+        },
+        slow_paths: routed.slow_paths,
     };
-    let mut converted = wcontainers_shaders::rewrite(routed.module, reflection, variant, route_key)
+    let mut module = routed.module;
+    if !routed.typed.buffers.is_empty() {
+        let typed = VariantKey {
+            texel_buffers: TexelBufferRoute::Storage,
+            storage_formats: routed.typed.formats,
+            ..VariantKey::default()
+        };
+        wcontainers_shaders::typed::buffers(
+            &mut module,
+            &mut reflection,
+            &typed,
+            &routed.typed.buffers,
+        )
+        .map_err(|e| ConvertError::Rewrite(e.to_string()))?;
+    }
+    let mut converted = wcontainers_shaders::rewrite(module, reflection, variant, route_key)
         .map_err(|e| ConvertError::Rewrite(e.to_string()))?;
     let module = converted
         .modules
         .pop()
         .ok_or_else(|| ConvertError::Rewrite(NO_MODULE.into()))?;
     Ok((module, converted.reflection))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_value_the_bridge_does_not_write_is_no_variant() {
+        assert_eq!(deref_kind(Deref::Cast as u32), Some(Deref::Cast));
+        assert_eq!(deref_kind(Deref::Cast as u32 + 1), None);
+        assert_eq!(variant::<TexOp>(TexOp::Gather as u32 + 1), None);
+        assert_eq!(variant::<TexOp>(TexOp::Gather as u32), Some(TexOp::Gather));
+        assert_eq!(alu_op(Alu::B2b32 as u32), Alu::B2b32);
+        assert_eq!(alu_op(u32::MAX), Alu::Unsupported);
+        assert_eq!(atomic_op(Atomic::Other as u32 + 1), Atomic::Other);
+        assert_eq!(intrinsic_op(u32::MAX), Intrinsic::Unsupported);
+    }
 }

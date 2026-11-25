@@ -3,7 +3,7 @@
 
 use crate::{draw, scene};
 use wcontainers_gpu::{
-    Backend, BufferUsage, ColorAttachment, DeviceStatus, Features, LoadOp, PassDesc, QueryKind,
+    BufferUsage, ColorAttachment, DeviceStatus, Features, Gpu, LoadOp, PassDesc, QueryKind,
     SlowPath, StoreOp, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
@@ -19,7 +19,7 @@ fn gpu<T>(r: Result<T, wcontainers_gpu::GpuError>) -> Result<T, String> {
 }
 
 /// Finishes a read back of `count` 64-bit results.
-fn words(b: &mut WebGpu, rb: <WebGpu as Backend>::Readback, count: usize) -> Vec<u64> {
+fn words(b: &mut WebGpu, rb: <WebGpu as Gpu>::Readback, count: usize) -> Vec<u64> {
     b.wait_read(&rb);
     let mut bytes = vec![0; count * 8];
     b.finish_read(rb, &mut bytes);
@@ -29,10 +29,7 @@ fn words(b: &mut WebGpu, rb: <WebGpu as Backend>::Readback, count: usize) -> Vec
         .collect()
 }
 
-fn pass_with<'a>(
-    t: &'a draw::Targets,
-    set: &'a <WebGpu as Backend>::QuerySet,
-) -> PassDesc<'a, WebGpu> {
+fn pass_with<'a>(t: &'a draw::Targets, set: &'a <WebGpu as Gpu>::QuerySet) -> PassDesc<'a, WebGpu> {
     let mut pass = PassDesc {
         colors: Default::default(),
         depth: None,
@@ -66,7 +63,7 @@ pub fn paged_sets(b: &mut WebGpu) -> Result<String, String> {
     )
     .map_err(|e| e.to_string())?;
     let vertices: Vec<u8> = bytemuck::cast_slice(&scene::TRIANGLE).to_vec();
-    let segmented = b.slow_paths().count(SlowPath::QueriesSegmented);
+    let segmented = b.slow_paths().counts[SlowPath::QueriesSegmented as usize];
     b.begin_pass(&pass_with(&t, &set));
     for (query, drawn) in [
         (PAGE - 1, true),
@@ -107,7 +104,7 @@ pub fn paged_sets(b: &mut WebGpu) -> Result<String, String> {
         ));
     }
     // One split moved the part to the second page, one carried 4999.
-    let split = b.slow_paths().count(SlowPath::QueriesSegmented) - segmented;
+    let split = b.slow_paths().counts[SlowPath::QueriesSegmented as usize] - segmented;
     if split != 2 {
         return Err(format!(
             "occlusion set of {QUERIES}: {split} segmented, not 2"
@@ -117,7 +114,7 @@ pub fn paged_sets(b: &mut WebGpu) -> Result<String, String> {
         "occlusion set of {QUERIES}: 4094 to 4097 {:?}, 4999 {l}",
         &a[1..5]
     );
-    if !b.caps().has(Features::TIMESTAMPS) {
+    if !b.caps().features.contains(Features::TIMESTAMPS) {
         line += "; timestamps absent";
         return Ok(line);
     }

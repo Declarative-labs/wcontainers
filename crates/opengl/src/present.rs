@@ -4,11 +4,11 @@
 use std::ffi::{c_uint, c_void};
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
-    DepthStencilDesc, DrawCall, DrawRange, FillMode, Format, FormatUse, FrontFace, LoadOp,
+    BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
+    DepthStencilDesc, DrawCall, DrawRange, FillMode, Format, FormatUse, FrontFace, Gpu, LoadOp,
     MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, PassDesc, Program, ProvokingVertex, RasterDesc,
-    RenderTargetBlend, ScissorRect, ShaderModule, ShaderStage, SlotKind, StageSet, StoreOp,
-    TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
+    RenderTargetBlend, SLOT_KINDS, ScissorRect, ShaderModule, ShaderStage, SlotKind, StageSet,
+    StoreOp, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
 };
 
 use crate::context::Context;
@@ -20,14 +20,14 @@ use crate::state::refused;
 use wcontainers_shaders::stage::TRIANGLE_VERTICES;
 
 /// A host window the driver presents to, by the device context OpenGL names it with.
-pub struct Window<B: Backend> {
+pub struct Window<B: Gpu> {
     surface: B::Surface,
     /// Width, height and format the surface is configured for.
     configured: Option<(u32, u32, Format)>,
 }
 
 /// The copy of a picture into a window's texture: a full-screen triangle loading each pixel.
-pub struct Copy<B: Backend> {
+pub struct Copy<B: Gpu> {
     program: B::Program,
     blend: B::Blend,
     depth_stencil: B::DepthStencil,
@@ -41,9 +41,9 @@ const COPY_VERTICES: u32 = TRIANGLE_VERTICES;
 const VERTEX_ENTRY: &str = "vs";
 const FRAGMENT_ENTRY: &str = "fs";
 
-impl<B: Backend> Copy<B> {
+impl<B: Gpu> Copy<B> {
     fn new(backend: &mut B) -> Result<Copy<B>, wcontainers_gpu::GpuError> {
-        let picture = SlotKind::Texture.first_binding();
+        let picture = SLOT_KINDS[SlotKind::Texture as usize].first_binding;
         let source = format!(
             "@group(0) @binding({picture}) var picture: texture_2d<f32>;
 @vertex fn {VERTEX_ENTRY}(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {{
@@ -120,10 +120,10 @@ impl<B: Backend> Copy<B> {
 }
 
 /// The format a window shows a picture of `format` in.
-fn window_format<B: Backend>(backend: &B, format: Format) -> Option<Format> {
+fn window_format<B: Gpu>(backend: &B, format: Format) -> Option<Format> {
     [format, Format::Bgra8Unorm, Format::Rgba8Unorm]
         .into_iter()
-        .find(|f| backend.caps().formats.get(*f).contains(FormatUse::PRESENT))
+        .find(|f| backend.caps().formats.uses[*f as usize].contains(FormatUse::PRESENT))
 }
 
 /// Shows one level and layer of `resource` in the window `device_context` names.
@@ -147,7 +147,7 @@ fn show<B: HostWindows>(
         .ok_or("a frame of a format the device lacks")?;
     let shown = window_format(backend, format).ok_or("no format the window shows")?;
     let (width, height) = ((desc.width >> level).max(1), (desc.height >> level).max(1));
-    let mut windows = screen.windows.lock().map_err(|_| "the windows' lock")?;
+    let mut windows = crate::screen::whole(&screen.windows);
     let key = device_context as usize;
     if !windows.contains_key(&key) {
         let id = windows.len() as u32;
@@ -193,7 +193,7 @@ fn show<B: HostWindows>(
         .map_err(|e| format!("{e:?}"))?;
     let set = backend
         .create_binding_set(&[BindingEntry {
-            binding: SlotKind::Texture.first_binding(),
+            binding: SLOT_KINDS[SlotKind::Texture as usize].first_binding,
             stages: StageSet::FRAGMENT,
             resource: BindingResource::Texture(&picture),
         }])
@@ -270,19 +270,21 @@ pub unsafe extern "C" fn flush_frontbuffer<B: HostWindows>(
     _: c_uint,
     _: *mut pipe_box,
 ) {
-    if pipe.is_null() {
-        eprintln!(
-            "{}: a frame shown without a context is not shown",
-            DRIVER_NAME.to_string_lossy()
-        );
-        return;
-    }
-    // SAFETY: the WGL target passes this driver's context and a texture of it.
-    let (context, resource) = unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource)) };
-    if let Err(why) = show(context, resource, level, layer, device_context) {
-        eprintln!(
-            "{}: a frame not shown: {why}",
-            DRIVER_NAME.to_string_lossy()
-        );
-    }
+    crate::state::guest_call(std::ptr::null_mut(), (), move || {
+        if pipe.is_null() {
+            eprintln!(
+                "{}: a frame shown without a context is not shown",
+                DRIVER_NAME.to_string_lossy()
+            );
+            return;
+        }
+        // SAFETY: the WGL target passes this driver's context and a texture of it.
+        let (context, resource) = unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource)) };
+        if let Err(why) = show(context, resource, level, layer, device_context) {
+            eprintln!(
+                "{}: a frame not shown: {why}",
+                DRIVER_NAME.to_string_lossy()
+            );
+        }
+    })
 }

@@ -1,7 +1,8 @@
 //! What the Direct3D 12 front reads from the declarations of every real shader container the
 //! crates hold (the shaders crate's own corpus and the graphics test's shaders): typed views and
 //! multisampled arrays, one line per container and element, against the answers recorded in
-//! declared.expected before views were kept as ranges. `WC_RECORD_DECLARED=1` writes the file.
+//! declared.expected: before views were kept as ranges, and for each container a corpus gained
+//! since, when it was added. `WC_RECORD_DECLARED=1` writes the file.
 
 use std::fmt::Write;
 use std::ops::Range;
@@ -56,7 +57,14 @@ fn answers() -> String {
     let mut out = String::new();
     for path in containers() {
         let code = std::fs::read(&path).unwrap();
-        let name = path.strip_prefix(&root).unwrap().display().to_string();
+        // Named with `/` on every host, as declared.expected holds them.
+        let name = path
+            .strip_prefix(&root)
+            .unwrap()
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
         for (label, r) in [("", &[][..]), ("ranged ", &ranges[..])] {
             let views = dxbc::typed_views(&code, r).map(|v| elements(&v));
             let arrays = dxbc::multisampled_arrays(&code, r).map(|a| slots(&a));
@@ -79,9 +87,18 @@ fn real_containers_declare_what_they_did_before_ranges() {
         std::fs::write(expected, &got).unwrap();
     }
     let want = std::fs::read_to_string(expected).unwrap();
-    assert!(containers().len() > 300);
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let found = containers();
+    for dir in CORPORA {
+        assert!(
+            found.iter().any(|p| p.starts_with(root.join(dir))),
+            "no containers in {dir}"
+        );
+    }
+    // Every container answers as recorded, and a container a corpus gains fails until its answers
+    // are recorded (`WC_RECORD_DECLARED`) and reviewed.
     for (line, (g, w)) in got.lines().zip(want.lines()).enumerate() {
         assert_eq!(g, w, "line {}", line + 1);
     }
-    assert_eq!(got.lines().count(), want.lines().count());
+    assert_eq!(got.lines().count(), want.lines().count(), "containers");
 }

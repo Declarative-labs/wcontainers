@@ -1,27 +1,30 @@
 //! The Direct3D 12 device on one back end: its objects, the one queue order every guest queue shares,
 //! the replay of command lists, and fences.
 
-use std::cell::UnsafeCell;
+use std::cell::Cell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
 use slab::Slab;
+use wcontainers_directx_graphics_infrastructure::stage_registers::OUTPUT_REGISTERS;
 use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, SwapChainError};
 use wcontainers_gpu::{
-    AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
+    AspectOps, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
     CopyBufferTexture, CountedDraw, DepthAttachment, DeviceStatus, DispatchCall, DispatchGroups,
-    DrawBaseSource, DrawCall, DrawRange, EmptyPass, Extent, Features, Format, FormatKind,
-    FormatUse, GpuError, HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation,
-    LinkedValues, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object,
-    OcclusionCounter, Origin, PassDesc, PassTargets, PassTracker, PrepareDesc, Program, ReadSource,
-    ReadState, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlowPath,
-    StageSet, StageValue, StepMode, StoreOp, SystemValue, Target, TargetInShader, TargetLayout,
-    TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    Topology, VariantFlags, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, ViewComponent, ViewDimension, Viewport, WriteMode,
+    DrawBaseSource, DrawCall, DrawRange, EmptyPass, Extent, FORMAT_FACTS, Features, Format,
+    FormatKind, FormatUse, Gpu, GpuError, HELPER_SET, HelperValue, INDEX_FORMATS, IndexBinding,
+    IndexFormat, Interpolation, LinkedValues, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS,
+    MapIntent, Object, OcclusionCounter, Origin, PassDesc, PassTargets, PassTracker, PrepareDesc,
+    Program, ReadSource, ReadState, SLOW_PATH_REASONS, STORAGE_WORD, SamplerDesc, ScissorRect,
+    ShaderModule, ShaderStage, SlowPath, StageSet, StageValue, StepMode, StoreOp, SystemValue,
+    Target, TargetInShader, TargetLayout, TexelBufferRoute, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantFlags, VariantKey,
+    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, ViewComponent, ViewDimension,
+    Viewport, WriteMode,
 };
-use wcontainers_shaders::{ConvertError, Converted, Source};
+use wcontainers_shaders::{ConvertError, Converted, Source, refusal};
+use zerocopy::FromZeros;
 
 use crate::Error;
 use crate::address::AddressMap;
@@ -104,7 +107,8 @@ const READBACK_BUFFER: BufferUsage = BufferUsage::COPY_DST.union(BufferUsage::RE
 const SHARED_BUFFER: BufferUsage = UPLOAD_BUFFER.union(BufferUsage::READ_BACK);
 
 /// Guest-visible memory of an upload, readback or shared heap, shared by the buffers placed in it.
-type HostMemory = Rc<UnsafeCell<Box<[u8]>>>;
+/// Cells, because the program writes it through `Map`'s pointer while the device holds it.
+type HostMemory = Rc<Box<[Cell<u8>]>>;
 
 /// The bytes `Map` hands out for an upload, readback or shared buffer: its own memory, or its part
 /// of its heap's, which overlapping placed buffers share as the memory they alias.
@@ -117,26 +121,22 @@ struct Host {
 impl Host {
     fn new(len: usize) -> Self {
         Host {
-            memory: Rc::new(UnsafeCell::new(vec![0; len].into_boxed_slice())),
+            // Zeroed by the allocator, so pages the program never touches stay untouched.
+            memory: Rc::new(
+                <[Cell<u8>]>::new_box_zeroed_with_elems(len).expect("memory for a mapped heap"),
+            ),
             offset: 0,
             len,
         }
     }
 
-    fn ptr(&self) -> *mut u8 {
-        // SAFETY: `offset` lies inside the memory, as `create_placed` checked.
-        unsafe { (*self.memory.get()).as_mut_ptr().add(self.offset) }
-    }
-
-    /// The bytes. The program writes them through `Map`'s pointer, never while work reading them is
-    /// being submitted, and no other reference to them lives across a call of the device.
-    fn bytes(&mut self) -> &mut [u8] {
-        // SAFETY: as above; `len` bytes from `offset` lie inside the memory.
-        unsafe { std::slice::from_raw_parts_mut(self.ptr(), self.len) }
+    /// The bytes; `offset` and `len` lie inside the memory, as `create_placed` checked.
+    fn cells(&self) -> &[Cell<u8>] {
+        &self.memory[self.offset..][..self.len]
     }
 }
 
-enum Storage<B: Backend> {
+enum Storage<B: Gpu> {
     Buffer {
         buffer: B::Buffer,
         /// The bytes `Map` hands out, for upload, readback and shared heaps.
@@ -157,7 +157,7 @@ enum Storage<B: Backend> {
     },
 }
 
-impl<B: Backend> Storage<B> {
+impl<B: Gpu> Storage<B> {
     /// The back end's texture holding array layer `layer`, and the layer's index in it.
     fn layer(&self, layer: u32) -> Option<(&B::Texture, u32)> {
         match self {
@@ -175,7 +175,7 @@ impl<B: Backend> Storage<B> {
     }
 }
 
-struct Resource<B: Backend> {
+struct Resource<B: Gpu> {
     desc: ResourceDesc,
     heap: HeapType,
     storage: Storage<B>,
@@ -209,7 +209,7 @@ struct Memory {
 }
 
 /// What a pipeline state object holds.
-struct Pipeline<B: Backend> {
+struct Pipeline<B: Gpu> {
     program: B::Program,
     /// Graphics pipelines' fixed state; none for compute pipelines.
     render: Option<Render<B>>,
@@ -227,7 +227,7 @@ struct Pipeline<B: Backend> {
 }
 
 /// A graphics pipeline's fixed state.
-struct Render<B: Backend> {
+struct Render<B: Gpu> {
     /// The root signature, which sizes arrays its programs declare without a length.
     root: RootSignature,
     /// Depth clamped by the vertex program alone, the pipeline having no depth-stencil format.
@@ -267,8 +267,9 @@ struct Render<B: Backend> {
     /// for (`formats::bound_program`), None where the conversion failed.
     vertex_formats: Option<Box<formats::Formats<B>>>,
     bound: Vec<(formats::Combination, Option<formats::BoundProgram<B>>)>,
-    /// For counted occlusion queries: the vertex program, the pixel shader's bytecode, and the
-    /// counting program made from them at the first counted draw.
+    /// For counted occlusion queries and pixel programs made later: the vertex stage drawn (the
+    /// vertex program, the domain program or the stage helper's pass-through), the pixel shader's
+    /// bytecode, and the counting program made from them at the first counted draw.
     vertex: ShaderModule,
     pixel: Vec<u8>,
     counting: Option<B::Program>,
@@ -293,6 +294,9 @@ struct Render<B: Backend> {
     instances_step_by_one: bool,
     /// The geometry stage, for pipelines with a geometry shader.
     geometry: Option<geometry::Geometry<B>>,
+    /// Where the values between its drawn vertex stage and pixel program move, which every
+    /// program made for it later follows.
+    moves: pull::StageMoves,
 }
 
 /// `D3D12_GRAPHICS_PIPELINE_STATE_DESC`, the parts this front reads.
@@ -321,7 +325,7 @@ pub struct GraphicsPipelineDesc<'a> {
     pub stream_output: Option<(wcontainers_shaders::stage::StreamOutput, u32)>,
 }
 
-struct Fence<B: Backend> {
+struct Fence<B: Gpu> {
     /// The value reached by work known to be done, or set by the CPU.
     value: u64,
     /// Values queue signals will reach, with the back-end fence of the work before each.
@@ -329,7 +333,7 @@ struct Fence<B: Backend> {
 }
 
 /// A read back into readback-heap memory, finished when its submission is done.
-struct PendingRead<B: Backend> {
+struct PendingRead<B: Gpu> {
     submission: Option<B::Fence>,
     readback: B::Readback,
     resource: ResourceId,
@@ -346,7 +350,8 @@ enum Work {
 
 /// A descriptor heap: the slots CPU handles point into, and the first GPU handle.
 struct Heap {
-    slots: Box<[Descriptor]>,
+    /// Cells, because the program writes them through its CPU handles while the device holds them.
+    slots: Box<[Cell<Descriptor>]>,
     gpu: u64,
 }
 
@@ -363,7 +368,7 @@ const NO_PIPELINE_SKIPPED: &str =
 type Waiter = (Vec<(FenceId, u64)>, bool, u64);
 
 /// The device: every object and the replay of command lists, on one back end owned by one thread.
-pub struct Device<B: Backend> {
+pub struct Device<B: Gpu> {
     backend: B,
     /// The bound targets as the occlusion counter reads them, and the counter.
     passes: PassTracker<B>,
@@ -379,6 +384,8 @@ pub struct Device<B: Backend> {
     samplers: HashMap<SamplerDesc, B::Sampler>,
     /// Upload buffers already written to the GPU in this `ExecuteCommandLists`.
     uploaded: Vec<ResourceId>,
+    /// The bytes of an upload or read back on their way between the GPU and mapped memory.
+    staging: Vec<u8>,
     layouts: HashMap<VertexLayoutDesc, B::VertexLayout>,
     reads: Vec<PendingRead<B>>,
     /// Events to set when fences reach values.
@@ -436,14 +443,14 @@ pub struct Device<B: Backend> {
 }
 
 /// A swap chain and the resources standing for its back buffers.
-struct Chain<B: Backend> {
+struct Chain<B: Gpu> {
     chain: SwapChain<B>,
     buffers: Vec<ResourceId>,
     /// The token of the frame latency waitable object, and the retired frames it was released for.
     waitable: Option<(u64, u64)>,
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     pub fn new(backend: B) -> Self {
         Device {
             backend,
@@ -455,6 +462,7 @@ impl<B: Backend> Device<B> {
             handles: AddressMap::new(HANDLE_BASE),
             samplers: HashMap::new(),
             uploaded: Vec::new(),
+            staging: Vec::new(),
             layouts: HashMap::new(),
             reads: Vec::new(),
             waiters: Vec::new(),
@@ -518,10 +526,9 @@ impl<B: Backend> Device<B> {
     pub fn take_warnings(&mut self) -> Vec<String> {
         let mut out: Vec<String> = self
             .backend
-            .slow_paths()
-            .take_warnings()
+            .take_slow_path_warnings()
             .into_iter()
-            .map(|p| p.reason().to_string())
+            .map(|p| SLOW_PATH_REASONS[p as usize].to_string())
             .collect();
         out.append(&mut self.messages);
         out
@@ -594,28 +601,23 @@ impl<B: Backend> Device<B> {
             // draw into whatever their flags say: the back end multisamples and resolves only into
             // textures drawn into, which Direct3D 12 does not require.
             let resolves_into = desc.dimension == resource::DIMENSION_TEXTURE2D
-                && self
-                    .backend
-                    .caps()
-                    .formats
-                    .get(format)
-                    .contains(FormatUse::RESOLVE);
+                && self.backend.caps().formats.uses[format as usize].contains(FormatUse::RESOLVE);
             if desc.flags & (resource::FLAG_RENDER_TARGET | resource::FLAG_DEPTH_STENCIL) != 0
                 || desc.sample_count > 1
                 || resolves_into
             {
                 usage |= TextureUsage::RENDER;
             }
+            // Formats the back end cannot store into are read and written through a buffer of
+            // their texels (`StorageFormatThroughBuffer`).
+            let stores = self.backend.caps().formats.uses[format as usize]
+                .intersects(FormatUse::STORAGE_READ | FormatUse::STORAGE_WRITE);
             if desc.flags & resource::FLAG_UNORDERED_ACCESS != 0 {
-                usage |= TextureUsage::STORAGE;
+                if stores {
+                    usage |= TextureUsage::STORAGE;
+                }
                 // `ClearUnorderedAccessView*` clears it by a pass where the format renders.
-                if self
-                    .backend
-                    .caps()
-                    .formats
-                    .get(format)
-                    .contains(FormatUse::RENDER)
-                {
+                if self.backend.caps().formats.uses[format as usize].contains(FormatUse::RENDER) {
                     usage |= TextureUsage::RENDER;
                 }
             }
@@ -886,7 +888,9 @@ impl<B: Backend> Device<B> {
         self.live()?;
         let (id, sub) = self.plane_holder(id, sub);
         let (origin, extent) = self.in_texels(id, origin, extent);
-        let rows = extent.height.div_ceil(self.texture(id)?.1.format.block().1);
+        let rows = extent
+            .height
+            .div_ceil(FORMAT_FACTS[self.texture(id)?.1.format as usize].block.1);
         for z in 0..extent.depth_or_layers {
             let start = (z * depth_pitch) as usize;
             let region = self.subresource_region(id, sub, origin, z)?;
@@ -924,7 +928,7 @@ impl<B: Backend> Device<B> {
         self.live()?;
         let (id, sub) = self.plane_holder(id, sub);
         let (origin, extent) = self.in_texels(id, origin, extent);
-        let (bw, bh, bytes) = self.texture(id)?.1.format.block();
+        let (bw, bh, bytes) = FORMAT_FACTS[self.texture(id)?.1.format as usize].block;
         let (rows, row) = (
             extent.height.div_ceil(bh) as usize,
             (extent.width.div_ceil(bw) * bytes) as usize,
@@ -966,7 +970,7 @@ impl<B: Backend> Device<B> {
     /// `Map` of an upload or readback buffer: the bytes the program reads and writes, which stay
     /// where they are for the resource's life. Before handing out readback memory, read backs whose
     /// work is done are finished into it.
-    pub fn map(&mut self, id: ResourceId) -> Result<*mut u8, Error> {
+    pub fn map(&mut self, id: ResourceId) -> Result<&[Cell<u8>], Error> {
         self.finish_reads(false);
         match self
             .resources
@@ -975,7 +979,7 @@ impl<B: Backend> Device<B> {
         {
             Some(Storage::Buffer {
                 host: Some(host), ..
-            }) => Ok(host.ptr()),
+            }) => Ok(host.cells()),
             Some(_) => Err(Error::Invalid("only upload and readback buffers map")),
             None => Err(Error::Invalid("no such resource")),
         }
@@ -1032,10 +1036,16 @@ impl<B: Backend> Device<B> {
         let gpu = self
             .handles
             .insert(u64::from(count) * crate::address::DESCRIPTOR_SIZE, id);
-        let mut slots = vec![Descriptor::Empty; count as usize].into_boxed_slice();
-        let cpu = slots.as_mut_ptr();
+        let slots: Box<[Cell<Descriptor>]> = (0..count).map(|_| Cell::default()).collect();
+        let cpu = slots.as_ptr().cast::<Descriptor>().cast_mut();
         self.heaps.insert(Heap { slots, gpu });
         (id, cpu, gpu)
+    }
+
+    /// The slots of descriptor heap `id`, which a caller in Rust writes in place of the pointer
+    /// `create_descriptor_heap` returns.
+    pub fn descriptor_slots(&self, id: HeapId) -> Option<&[Cell<Descriptor>]> {
+        self.heaps.get(id.0 as usize).map(|h| &*h.slots)
     }
 
     pub fn destroy_descriptor_heap(&mut self, id: HeapId) {
@@ -1052,9 +1062,7 @@ impl<B: Backend> Device<B> {
             .ok_or(Error::Invalid("a GPU descriptor handle of no heap"))?;
         let heap = &self.heaps[heap.0 as usize];
         let index = (offset / crate::address::DESCRIPTOR_SIZE) as usize;
-        // SAFETY: a slot of a live heap. The program writes slots through its CPU handles; it may
-        // not change a descriptor while work that reads it is being submitted.
-        Ok(unsafe { std::ptr::read_volatile(&heap.slots[index]) })
+        Ok(heap.slots[index].get())
     }
 
     // ---- Root signatures and pipelines ----
@@ -1177,14 +1185,25 @@ impl<B: Backend> Device<B> {
         let clip_distances = clip_distances(&vs.reflection.outputs);
         let mut slow_paths = Vec::new();
         let drawn_directly = !has_geometry && !vertex_alone;
+        // A pixel shader reading its clip distances reads them as values the vertex program
+        // passes.
+        let pixel_reads_clip = ps
+            .iter()
+            .flat_map(|p| &p.reflection.inputs)
+            .any(|i| i.system == Some(SystemValue::ClipDistance));
         let clipped_in_shader = clip_distances != 0
             && drawn_directly
-            && !self.backend.caps().has(Features::CLIP_DISTANCE);
+            && (!self
+                .backend
+                .caps()
+                .features
+                .contains(Features::CLIP_DISTANCE)
+                || pixel_reads_clip);
         // Depth clamping the back end lacks (`DepthClampInShader`): the vertex program keeps z
         // inside the clip volume; with a depth target it also passes z past both programs' values
         // and the pixel program writes it clamped to the viewport's depth range.
-        let clamped_in_shader =
-            !desc.raster.depth_clip && !self.backend.caps().has(Features::DEPTH_CLAMP);
+        let clamped_in_shader = !desc.raster.depth_clip
+            && !self.backend.caps().features.contains(Features::DEPTH_CLAMP);
         let clamped_in_pixels = clamped_in_shader && desc.dsv_format != 0;
         // Behind the stage helper the last vertex stage clamps: a geometry shader's pass-through,
         // the domain program, or the vertex program the cull route runs.
@@ -1441,23 +1460,42 @@ impl<B: Backend> Device<B> {
                 *p = self.convert(desc.ps, ShaderStage::Fragment, key.clone())?;
             }
         }
-        let vs_shader = match made.as_ref().filter(|m| m.shader.is_some() || vertex_alone) {
+        // The vertex stage drawn when not the vertex program: the domain program, or the stage
+        // helper's pass-through.
+        let staged_last = match made.as_ref().filter(|m| m.shader.is_some() || vertex_alone) {
             Some(geometry::Made {
                 domain: Some(domain),
                 late: None,
                 ..
-            }) => &domain.modules[0],
-            Some(m) => m
-                .geometry
-                .stages
-                .as_ref()
-                .and_then(wcontainers_shaders::stage::Stages::passthrough)
-                .expect("a geometry stage's pass-through"),
-            None => &vs.modules[0],
+            }) => Some(&domain.modules[0]),
+            Some(m) => Some(
+                m.geometry
+                    .stages
+                    .as_ref()
+                    .and_then(wcontainers_shaders::stage::Stages::passthrough)
+                    .expect("a geometry stage's pass-through"),
+            ),
+            None => None,
         };
+        let moves = self.stage_moves(
+            staged_last.unwrap_or(&vs.modules[0]),
+            ps.as_ref().map(|p| &p.modules[0]),
+        )?;
+        let staged_last = staged_last
+            .map(|m| pull::moved_module(m.clone(), &moves.outputs))
+            .transpose()?;
+        if staged_last.is_none() {
+            vs = pull::moved(vs, &moves.outputs)?;
+        }
+        let ps = ps.map(|p| pull::moved(p, &moves.inputs)).transpose()?;
+        let vs_shader = staged_last.as_ref().unwrap_or(&vs.modules[0]);
         if wcontainers_shaders::capabilities(&vs_shader.module)
             .contains(naga::valid::Capabilities::CLIP_DISTANCES)
-            && !self.backend.caps().has(Features::CLIP_DISTANCE)
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::CLIP_DISTANCE)
         {
             return Err(Error::NotImplemented(
                 "clip distances from a geometry, domain, culling or antialiased line stage without \
@@ -1467,12 +1505,17 @@ impl<B: Backend> Device<B> {
         if ps.as_ref().is_some_and(|p| {
             wcontainers_shaders::capabilities(&p.modules[0].module)
                 .contains(naga::valid::Capabilities::PRIMITIVE_INDEX)
-        }) && !self.backend.caps().has(Features::PRIMITIVE_INDEX)
+        }) && !self
+            .backend
+            .caps()
+            .features
+            .contains(Features::PRIMITIVE_INDEX)
         {
             return Err(Error::NotImplemented(
                 "the primitive index without the back end's (PrimitiveIdAsGeometry)",
             ));
         }
+        let vs_drawn = vs_shader.clone();
         let vs_shader = self.backend.create_shader(vs_shader)?;
         let ps_shader = match &ps {
             Some(ps) => match self.backend.create_shader(&ps.modules[0]) {
@@ -1495,13 +1538,14 @@ impl<B: Backend> Device<B> {
         let program = program?;
         // Indirect draws of such a program read the bases from their arguments on the GPU.
         let fragment = ps.as_ref().map(|p| p.modules[0].clone());
-        let arguments = if reads_bases && self.backend.caps().has(Features::INDIRECT) {
+        let arguments = if reads_bases && self.backend.caps().features.contains(Features::INDIRECT)
+        {
             let key = VariantKey {
                 output_interpolation: interpolation.clone(),
                 draw_base: DrawBaseSource::Arguments,
                 ..vs_typed.clone()
             };
-            self.vertex_program(desc.vs, key, fragment.as_ref())
+            self.vertex_program(desc.vs, key, fragment.as_ref(), &moves.outputs)
                 .ok()
                 .filter(|p| {
                     p.helpers
@@ -1561,7 +1605,7 @@ impl<B: Backend> Device<B> {
             typed_key: vs_typed,
             vertex_formats,
             bound: Vec::new(),
-            vertex: vs.modules[0].clone(),
+            vertex: vs_drawn,
             pixel: desc.ps.to_vec(),
             counting: None,
             per_sample: ps
@@ -1578,11 +1622,11 @@ impl<B: Backend> Device<B> {
             linked,
             instances_step_by_one,
             geometry: made.map(|m| m.geometry),
+            moves,
         };
         // Built ahead with the strides of packed elements, where the back end fetches them so.
         let packed = packed_strides(&render.inputs);
-        let rates = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
-        let fetched = pull::pulled_streams(&render.inputs, &packed, rates)
+        let fetched = pull::pulled_streams(&render.inputs, &packed, self.backend.caps())
             .iter()
             .all(Option::is_none);
         if let Some(topology) = topology
@@ -1630,7 +1674,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<PipelineId, Error> {
         self.live()?;
         let root = self.pipeline_root(root, &[cs])?;
-        if !self.backend.caps().has(Features::COMPUTE) {
+        if !self.backend.caps().features.contains(Features::COMPUTE) {
             return Err(Error::NotImplemented("compute shaders on this back end"));
         }
         let (mut key, through) = formats::typed_key(cs, self.texel_route(), &root, bind::ALL);
@@ -1662,7 +1706,7 @@ impl<B: Backend> Device<B> {
     /// Counts the slow paths pipeline `pid`'s programs take by themselves.
     fn pipeline_slow_paths(&mut self, pid: PipelineId) {
         for &p in &self.pipelines[pid.0 as usize].slow_paths {
-            self.backend.slow_paths().hit(p);
+            self.backend.record_slow_path(p);
         }
     }
 
@@ -1699,7 +1743,8 @@ impl<B: Backend> Device<B> {
 
     /// A pixel or compute shader in the common form with `key`; where the converter refuses
     /// atomics on storage textures, with its typed texture views (the slots `through`, from
-    /// `formats::typed_key`) read through buffers (`AtomicsThroughBuffer`), which `key` then says.
+    /// `formats::typed_key`) read through buffers (`AtomicsThroughBuffer`), and where a pixel
+    /// shader reads its clip or cull distances, with them linked; which `key` then says.
     fn convert_stage(
         &mut self,
         code: &[u8],
@@ -1718,7 +1763,36 @@ impl<B: Backend> Device<B> {
         {
             key.texels_through_buffer = through;
         }
-        self.convert(code, stage, key.clone())
+        // A pixel shader reading its clip or cull distances reads them as values the last vertex
+        // stage passes, past every register: converted so first, for its reflection, and linked
+        // to that stage's values later (`link_pixel_program`). One reading both is refused for
+        // each in turn.
+        let mut result = crate::cache::convert(source, key);
+        loop {
+            let reads = match result {
+                Err(ConvertError::Unsupported(refusal::CLIP_DISTANCE)) => {
+                    VariantFlags::CLIP_DISTANCE
+                }
+                Err(ConvertError::Unsupported(refusal::CULL_DISTANCE)) => {
+                    VariantFlags::CULL_DISTANCE_LINKED
+                }
+                _ => break,
+            };
+            if key.flags.contains(reads) {
+                break;
+            }
+            key.flags |= reads;
+            key.linked = LinkedValues {
+                location: OUTPUT_REGISTERS,
+                clip_distances: MOST_DISTANCES,
+            };
+            result = crate::cache::convert(source, key);
+        }
+        let converted = self.checked(result, &format!("{stage:?}"))?;
+        if converted.modules.len() != 1 || converted.modules[0].stage != stage {
+            return Err(Error::Invalid("a shader of another stage"));
+        }
+        Ok(converted)
     }
 
     /// A geometry, hull or domain shader in the common form, as the stage helper takes it.
@@ -1747,7 +1821,18 @@ impl<B: Backend> Device<B> {
         } else {
             Source::Dxbc(code)
         };
-        let converted = crate::cache::convert(source, &variant).map_err(|e| {
+        self.checked(crate::cache::convert(source, &variant), stage)
+    }
+
+    /// A conversion's result of a shader of `stage` (named in messages): the converter's refusal as
+    /// the front's, and kept as a message; refused where it reads helper constants the front does
+    /// not write.
+    fn checked(
+        &mut self,
+        result: Result<Converted, ConvertError>,
+        stage: &str,
+    ) -> Result<Converted, Error> {
+        let converted = result.map_err(|e| {
             let error = match e {
                 ConvertError::Rejected(_) => Error::Invalid("the shader bytecode was refused"),
                 ConvertError::Unsupported(_) | ConvertError::Reader(_) => {
@@ -1835,7 +1920,12 @@ impl<B: Backend> Device<B> {
 
     /// How programs read typed buffers on this back end.
     fn texel_route(&self) -> TexelBufferRoute {
-        match self.backend.caps().has(Features::TEXEL_BUFFERS) {
+        match self
+            .backend
+            .caps()
+            .features
+            .contains(Features::TEXEL_BUFFERS)
+        {
             true => TexelBufferRoute::Native,
             false => TexelBufferRoute::Storage,
         }
@@ -1852,6 +1942,7 @@ impl<B: Backend> Device<B> {
             return Ok(p.clone());
         }
         let (vertex, pixel) = (render.vertex.clone(), render.pixel.clone());
+        let moves = render.moves.inputs.clone();
         let root = render.root.clone();
         let samples = render.targets.samples.clamp(1, 32) as u8;
         let linked = render.linked;
@@ -1870,7 +1961,7 @@ impl<B: Backend> Device<B> {
                 ..formats::typed_key(&pixel, self.texel_route(), &root, bind::PIXEL).0
             };
             linked.apply(&mut key);
-            self.convert(&pixel, ShaderStage::Fragment, key)?
+            pull::moved(self.convert(&pixel, ShaderStage::Fragment, key)?, &moves)?
                 .modules
                 .swap_remove(0)
         };
@@ -1942,7 +2033,11 @@ impl<B: Backend> Device<B> {
             streams: [None; MAX_VERTEX_STREAMS],
             attributes: [None; MAX_VERTEX_STREAMS],
         };
-        let rates = self.backend.caps().has(Features::INSTANCE_STEP_RATE);
+        let rates = self
+            .backend
+            .caps()
+            .features
+            .contains(Features::INSTANCE_STEP_RATE);
         for (i, (e, location)) in inputs.iter().enumerate() {
             let slot = e.slot as usize;
             desc.streams[slot] = Some(match (e.per_instance, e.step_rate) {
@@ -2265,10 +2360,13 @@ impl<B: Backend> Device<B> {
                 host: Some(host), ..
             },
             ..
-        }) = self.resources.get_mut(r.resource.0 as usize)
+        }) = self.resources.get(r.resource.0 as usize)
         {
-            self.backend
-                .finish_read(r.readback, &mut host.bytes()[r.offset..r.offset + r.size]);
+            self.staging.clear();
+            self.staging.resize(r.size, 0);
+            self.backend.finish_read(r.readback, &mut self.staging);
+            let cells = &host.cells()[r.offset..r.offset + r.size];
+            cells.iter().zip(&self.staging).for_each(|(c, b)| c.set(*b));
         }
     }
 
@@ -2486,7 +2584,7 @@ impl<B: Backend> Device<B> {
                 "a resolve from a multisampled texture into a single-sampled one of its size",
             ));
         }
-        if format.linear() != stored.linear() {
+        if FORMAT_FACTS[format as usize].linear != FORMAT_FACTS[stored as usize].linear {
             return Err(Error::NotImplemented(
                 "a resolve in a format reinterpreting the stored bits",
             ));
@@ -2624,9 +2722,13 @@ impl<B: Backend> Device<B> {
         if let Some((_, view)) = views.iter().find(|(k, _)| *k == desc) {
             return Ok(view.clone());
         }
-        if stored.linear() != desc.format.linear()
-            && !stored.is_depth_stencil()
-            && !self.backend.caps().has(Features::FORMAT_REINTERPRET)
+        if FORMAT_FACTS[stored as usize].linear != FORMAT_FACTS[desc.format as usize].linear
+            && !FORMAT_FACTS[stored as usize].depth_stencil
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::FORMAT_REINTERPRET)
         {
             return Err(Error::NotImplemented(
                 "a view reinterpreting a texture's bits without its twin",
@@ -2675,7 +2777,7 @@ impl<B: Backend> Device<B> {
                     let bytes = storage_texel(format, values, float).ok_or(
                         Error::NotImplemented("clearing a typed buffer view of this format"),
                     )?;
-                    (u64::from(format.block().2), bytes)
+                    (u64::from(FORMAT_FACTS[format as usize].block.2), bytes)
                 };
                 if !element.is_multiple_of(pattern.len() as u64) {
                     return Err(Error::NotImplemented(
@@ -2778,7 +2880,7 @@ impl<B: Backend> Device<B> {
         value: ClearValue,
         rects: &[Rect],
     ) -> Result<(), Error> {
-        if format.linear() != desc.format.linear() {
+        if FORMAT_FACTS[format as usize].linear != FORMAT_FACTS[desc.format as usize].linear {
             return Err(Error::NotImplemented(
                 "clearing rectangles of a 3D texture's view in another format",
             ));
@@ -2898,7 +3000,7 @@ pub(super) fn restart_rewritten(format: IndexFormat, strip_cut: u32) -> bool {
     }
 }
 
-fn adopt_buffers<B: Backend>(
+fn adopt_buffers<B: Gpu>(
     resources: &mut Slab<Resource<B>>,
     chain: &SwapChain<B>,
 ) -> Vec<ResourceId> {
@@ -3003,7 +3105,7 @@ impl From<GpuError> for Error {
 
 /// The state a command list's replay carries from command to command. A list starts with none of
 /// the previous list's state, as Direct3D 12 defines.
-struct Replay<B: Backend> {
+struct Replay<B: Gpu> {
     pipeline: Option<PipelineId>,
     topology: Topology,
     /// `D3D_PRIMITIVE_TOPOLOGY` as set, adjacency included, which only a geometry stage takes.
@@ -3065,7 +3167,7 @@ struct Replay<B: Backend> {
 }
 
 /// A predicated draw's or dispatch's argument record: buffer and offset.
-type Record<B> = Option<(<B as Backend>::Buffer, u64)>;
+type Record<B> = Option<(<B as Gpu>::Buffer, u64)>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum QueryState {
@@ -3074,7 +3176,7 @@ enum QueryState {
     Ended,
 }
 
-impl<B: Backend> Replay<B> {
+impl<B: Gpu> Replay<B> {
     /// Gives the depth range a pixel program clamping depth reads (`DepthClampInShader`) to the
     /// pixel stage's bound helper values.
     fn bind_depth_range(&self, d: &mut Device<B>) {
@@ -3360,7 +3462,11 @@ impl<B: Backend> Replay<B> {
                 if self.empty_pass {
                     self.end_pass(d)?;
                 }
-                let fractional = d.backend.caps().has(Features::FRACTIONAL_VIEWPORT);
+                let fractional = d
+                    .backend
+                    .caps()
+                    .features
+                    .contains(Features::FRACTIONAL_VIEWPORT);
                 self.viewports = v
                     .iter()
                     .map(|v| viewport(v, fractional))
@@ -3845,7 +3951,7 @@ impl<B: Backend> Replay<B> {
         self.pass_early = early;
         self.pass_written = written;
         if early {
-            d.backend.slow_paths().hit(SlowPath::EarlyTestsInShader);
+            d.backend.record_slow_path(SlowPath::EarlyTestsInShader);
         }
         d.pipeline_slow_paths(pid);
         if geometry && !self.draw_geometry(d, pid, same_range(&range), record)? {
@@ -3870,7 +3976,7 @@ impl<B: Backend> Replay<B> {
                 .ok_or(Error::NotImplemented(
                     "patch topologies without a hull shader",
                 ))?;
-            d.backend.slow_paths().hit(SlowPath::AdjacencyDropped);
+            d.backend.record_slow_path(SlowPath::AdjacencyDropped);
             if kept.is_empty() {
                 return Ok(());
             }
@@ -3915,7 +4021,11 @@ impl<B: Backend> Replay<B> {
         if let (Some(_), DrawRange::Vertices { first_instance, .. })
         | (Some(_), DrawRange::Indexed { first_instance, .. }) = (record, &range)
             && *first_instance != 0
-            && !d.backend.caps().has(Features::INDIRECT_FIRST_INSTANCE)
+            && !d
+                .backend
+                .caps()
+                .features
+                .contains(Features::INDIRECT_FIRST_INSTANCE)
         {
             return Err(Error::NotImplemented(
                 "a predicated draw with a first instance on this back end",
@@ -3940,18 +4050,21 @@ impl<B: Backend> Replay<B> {
             (None, range) => range,
         };
         // Inputs the back end cannot fetch as laid out are fetched in the program.
-        let rates = d.backend.caps().has(Features::INSTANCE_STEP_RATE);
         let inputs = std::mem::take(&mut d.render_mut(pid).inputs);
         let mut strides = [0; MAX_VERTEX_STREAMS];
         for (s, v) in strides.iter_mut().zip(&self.vertex_buffers) {
             *s = v.stride;
         }
-        let pulled = pull::pulled_streams(&inputs, &strides, rates);
+        let pulled = pull::pulled_streams(&inputs, &strides, d.backend.caps());
         let fetch = d.fetch(&inputs, &self.vertex_buffers, &pulled, first_instance);
         let mut used = [false; MAX_VERTEX_STREAMS];
         // Streams that never step, bound at the first instance's element (see `vertex_layout`).
         let mut fixed = [false; MAX_VERTEX_STREAMS];
-        let rates = d.backend.caps().has(Features::INSTANCE_STEP_RATE);
+        let rates = d
+            .backend
+            .caps()
+            .features
+            .contains(Features::INSTANCE_STEP_RATE);
         // Each stream's elements this draw reads, and where in an element its inputs end.
         let mut reads = [None; MAX_VERTEX_STREAMS];
         let mut ends = [0u64; MAX_VERTEX_STREAMS];
@@ -3991,10 +4104,10 @@ impl<B: Backend> Replay<B> {
         d.render_mut(pid).inputs = inputs;
         let fetch = fetch?;
         for why in pulled.iter().flatten() {
-            d.backend.slow_paths().hit(*why);
+            d.backend.record_slow_path(*why);
         }
         if unknown_count && fetches_vertices {
-            d.backend.slow_paths().hit(SlowPath::IndirectFetchPastEnd);
+            d.backend.record_slow_path(SlowPath::IndirectFetchPastEnd);
         }
         let variant = if fetch.inputs.is_empty() {
             None
@@ -4191,7 +4304,7 @@ impl<B: Backend> Replay<B> {
         if !short.is_empty() {
             self.end_pass(d)?;
             for (slot, id, buffer, offset, held, needed) in short {
-                d.backend.slow_paths().hit(SlowPath::VertexFetchZeroed);
+                d.backend.record_slow_path(SlowPath::VertexFetchZeroed);
                 if !offset.is_multiple_of(4) {
                     return Err(Error::NotImplemented(
                         "a vertex buffer view read past its end at an address not a multiple of 4",
@@ -4260,17 +4373,17 @@ impl<B: Backend> Replay<B> {
                 },
             ) if rewrite && count > 0 => {
                 self.end_pass(d)?;
-                d.backend.slow_paths().hit(SlowPath::RestartRewrite);
+                d.backend.record_slow_path(SlowPath::RestartRewrite);
                 // 16-bit indices are widened and keep every value; 32-bit ones restart at the
                 // largest 16-bit value.
                 let wide = format == IndexFormat::U32;
                 let cut = if wide {
-                    IndexFormat::U16.restart_value()
+                    INDEX_FORMATS[IndexFormat::U16 as usize].restart_value
                 } else {
                     0
                 };
-                let size = u64::from(format.size());
-                let out_index = u64::from(IndexFormat::U32.size());
+                let size = u64::from(INDEX_FORMATS[format as usize].size);
+                let out_index = u64::from(INDEX_FORMATS[IndexFormat::U32 as usize].size);
                 if !offset.is_multiple_of(size) {
                     return Err(Error::Invalid(
                         "an index buffer view not aligned to its format",
@@ -4674,7 +4787,7 @@ impl<B: Backend> Replay<B> {
 }
 
 /// The same range again, for a second call.
-fn same_range<'a, B: Backend>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
+fn same_range<'a, B: Gpu>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
     match *r {
         DrawRange::Vertices {
             first,
@@ -4816,7 +4929,7 @@ fn storage_bits(
             .map(|(&bits, v)| {
                 let f = f32::from_bits(v);
                 let m = mask(bits);
-                let stored = match (float, format.kind()) {
+                let stored = match (float, FORMAT_FACTS[format as usize].kind) {
                     (false, _) => v,
                     (true, FormatKind::Uint) => f as u32,
                     (true, FormatKind::Sint) => f as i32 as u32,
@@ -4860,7 +4973,7 @@ fn storage_clear_value(
     let mut out = [0; 4];
     for ((o, s), &bits) in out.iter_mut().zip(stored).zip(widths) {
         let m = mask(bits);
-        *o = match format.kind() {
+        *o = match FORMAT_FACTS[format as usize].kind {
             FormatKind::Uint => s,
             // Sign-extended from the component's width.
             FormatKind::Sint => (((s << (u32::BITS - bits)) as i32) >> (u32::BITS - bits)) as u32,
@@ -4877,7 +4990,7 @@ fn storage_clear_value(
 
 /// A clear color as the bits the format's kind takes.
 fn clear_bits(format: wcontainers_gpu::Format, color: [f32; 4]) -> [u32; 4] {
-    match format.kind() {
+    match FORMAT_FACTS[format as usize].kind {
         FormatKind::Uint => color.map(|c| c as u32),
         FormatKind::Sint => color.map(|c| c as i32 as u32),
         _ => color.map(f32::to_bits),
@@ -4885,7 +4998,7 @@ fn clear_bits(format: wcontainers_gpu::Format, color: [f32; 4]) -> [u32; 4] {
 }
 
 /// `CopyTextureRegion` between a texture and a buffer footprint, or two textures.
-fn copy_texture<B: Backend>(
+fn copy_texture<B: Gpu>(
     d: &mut Device<B>,
     dst: &CopyLocation,
     at: [u32; 3],
@@ -4957,7 +5070,7 @@ fn copy_texture<B: Backend>(
                 ..Default::default()
             }
             .texture_format()?;
-            let (bw, bh, bytes) = format.block();
+            let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
             let extent = extent_of(Extent {
                 width: footprint.width,
                 height: footprint.height,
@@ -5008,7 +5121,7 @@ fn copy_texture<B: Backend>(
                 ..Default::default()
             }
             .texture_format()?;
-            let (bw, bh, bytes) = format.block();
+            let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
             let extent = extent_of(Extent {
                 width: footprint.width,
                 height: footprint.height,
@@ -5087,6 +5200,9 @@ pub(crate) fn stored_size(width: u64, max: u64) -> u64 {
 }
 
 /// The slow paths converted `programs` take by themselves, each once.
+/// `D3D12_CLIP_OR_CULL_DISTANCE_COUNT`: the most clip and cull distances a stage passes.
+const MOST_DISTANCES: u8 = 8;
+
 /// The refusal of clip distances the back end lacks where no pixel shader can apply them.
 /// The refusals of depth clamping the back end lacks where the programs cannot apply it.
 const CLAMP_BOUND_DEPTH: &str = "depth clamping the back end lacks, in a pipeline made with no \
@@ -5190,7 +5306,7 @@ fn retyped_targets(ps: &Converted, colors: &[Option<Format>]) -> Vec<TargetInSha
             };
             let format = (*colors.get(usize::from(target))?)?;
             let fits = matches!(
-                (format.kind(), o.scalar),
+                (FORMAT_FACTS[format as usize].kind, o.scalar),
                 (FormatKind::Float, wcontainers_gpu::ScalarKind::Float)
                     | (FormatKind::Uint, wcontainers_gpu::ScalarKind::Uint)
                     | (FormatKind::Sint, wcontainers_gpu::ScalarKind::Sint)

@@ -7,7 +7,7 @@ use super::{RECORD_SLOT_BYTES, WORKGROUP, tess};
 use crate::build::WORD;
 use core::mem::size_of;
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
+    BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups, Gpu,
     MAX_BINDING_SETS, Program, RingKind, StageSet,
 };
 
@@ -26,7 +26,7 @@ pub struct Tessellation {
 }
 
 /// The tessellator program and its output buffers, grown as draws need.
-pub struct Tessellator<B: Backend> {
+pub struct Tessellator<B: Gpu> {
     program: B::Program,
     counts: Option<Owned<B>>,
     points: Option<Owned<B>>,
@@ -43,7 +43,8 @@ struct Values {
     partitioning: u32,
     output: u32,
     primitives: u32,
-    pad: [u32; 2],
+    rotate: u32,
+    pad: u32,
 }
 
 /// The program's passes in order, chosen by `Values::mode`: counting each patch's points and indices,
@@ -59,7 +60,7 @@ const TESSELLATOR_COUNTS_BINDING: u32 = 2;
 const TESSELLATOR_POINTS_BINDING: u32 = 3;
 const TESSELLATOR_INDICES_BINDING: u32 = 4;
 
-impl<B: Backend> Tessellator<B> {
+impl<B: Gpu> Tessellator<B> {
     pub fn new(backend: &mut B) -> Result<Self, StageError> {
         let shader = backend.create_shader(&super::tessellator_program()?)?;
         Ok(Tessellator {
@@ -71,7 +72,8 @@ impl<B: Backend> Tessellator<B> {
     }
 
     /// Records the passes for `patches` patches (`primitives` per API instance) whose records are in
-    /// `hull` (header first). Afterwards [`Self::counts`] holds the indexed indirect draw of
+    /// `hull` (header first), each primitive's indices turned by `rotate` (`tessellator.wgsl`'s
+    /// `Values::rotate`; 0 writes them as made). Afterwards [`Self::counts`] holds the indexed indirect draw of
     /// [`Self::indices`] (u32 point numbers) at offset 0, and [`Self::points`] the points.
     pub fn run(
         &mut self,
@@ -80,6 +82,7 @@ impl<B: Backend> Tessellator<B> {
         hull: BufferRange<&B::Buffer>,
         patches: u32,
         primitives: u32,
+        rotate: u32,
     ) -> Result<(), StageError> {
         if t.domain > 2 || t.partitioning > 3 || t.output > 3 || (t.domain == 2 && t.output > 1) {
             return Err(StageError::Declaration);
@@ -114,6 +117,7 @@ impl<B: Backend> Tessellator<B> {
                 t.partitioning.into(),
                 t.output.into(),
                 primitives.max(1),
+                rotate,
             ];
             let mut bytes = [0; size_of::<Values>()];
             for (b, w) in bytes.chunks_mut(size_of::<u32>()).zip(words) {
@@ -219,7 +223,7 @@ impl<B: Backend> Tessellator<B> {
     }
 }
 
-fn storage<B: Backend>(binding: u32, buffer: &B::Buffer, size: u64) -> BindingEntry<'_, B> {
+fn storage<B: Gpu>(binding: u32, buffer: &B::Buffer, size: u64) -> BindingEntry<'_, B> {
     BindingEntry {
         binding,
         stages: StageSet::COMPUTE,

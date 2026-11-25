@@ -11,9 +11,9 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    AddressMode, BlendComponent, BlendFactor, BlendOp, DrawBaseSource, Filter, Format, HelperValue,
-    LinkedValues, ProvokingVertex, TargetInShader, TexelBufferRoute, VariantFlags, VariantKey,
-    VertexFormat,
+    AddressMode, BlendComponent, BlendFactor, BlendOp, DrawBaseSource, FORMAT_FACTS, Filter,
+    Format, HelperValue, LinkedValues, ProvokingVertex, TargetInShader, TexelBufferRoute,
+    VariantFlags, VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -346,10 +346,11 @@ fn variants_draw_as_the_native_feature_does() {
                 Format::Rgba16Unorm,
                 Format::Rgba8Snorm,
             ] {
-                let stored = format.integer_twin().unwrap();
-                let signed = stored.kind() == wcontainers_gpu::FormatKind::Sint;
-                let channels = stored.components().count_ones();
-                let width = stored.block().2 / channels;
+                let stored = FORMAT_FACTS[format as usize].integer_twin.unwrap();
+                let signed =
+                    FORMAT_FACTS[stored as usize].kind == wcontainers_gpu::FormatKind::Sint;
+                let channels = FORMAT_FACTS[stored as usize].components.count_ones();
+                let width = FORMAT_FACTS[stored as usize].block.2 / channels;
                 let largest = (1u64 << (u8::BITS * width - u32::from(signed))) - 1;
                 // Old values whose codes are exact.
                 let fractions: [f64; 4] = match signed {
@@ -1103,6 +1104,38 @@ fn variants_draw_as_the_native_feature_does() {
                 ));
             }
 
+            // A pixel shader reading the distances, which Direct3D interpolates as any input: the
+            // pixel program takes them from the linked values.
+            if vs == "vs_clip_six" {
+                let code = [
+                    bytecode(&format!("{vs}.{route}")),
+                    bytecode(&format!("ps_clip_read.{route}")),
+                ];
+                let (reference, _) = direct3d_11(
+                    &d3d,
+                    vs,
+                    "ps_clip_read",
+                    Format::Rgba8Unorm,
+                    tint,
+                    true,
+                    &Reference::default(),
+                );
+                let mut read = grid_draw(&code, dxil, &grid);
+                read.setup = variant.setup.clone();
+                for (back_end, texels) in [
+                    ("webgpu", ours(&mut gpu, &read, ProvokingVertex::First)),
+                    ("webgl", ours(&mut gl, &read, ProvokingVertex::Last)),
+                ] {
+                    results.push(compare(
+                        format!("clip_distance read by ps_clip_read {route} {back_end} against direct3d 11"),
+                        &reference,
+                        &texels,
+                        Format::Rgba8Unorm,
+                        (SIZE as usize * SIZE as usize, 2),
+                    ));
+                }
+            }
+
             // The same without a pixel shader, through the built-in pixel program for the variant:
             // the depth buffer shows which texels were drawn. They must be Direct3D's texels, and
             // their depth the unclipped triangle's: Direct3D's clipped polygon has new vertices,
@@ -1163,15 +1196,15 @@ fn variants_draw_as_the_native_feature_does() {
         }
 
         // Depth clamped instead of clipped, with depth reaching past both ends of the clip volume and
-        // a depth range of 0.25 to 0.75: against real Direct3D 11 with DepthClipEnable false, depth
-        // buffers compared as f32 steps. Clipping must change Direct3D's depth, or the case shows
-        // nothing.
-        {
+        // depth ranges of 0.25 to 0.75 and 0.1 to 0.45: against real Direct3D 11 with
+        // DepthClipEnable false, depth buffers compared as f32 steps. Clipping must change
+        // Direct3D's depth, or the case shows nothing.
+        for range in [[0.25f32, 0.75], [0.1, 0.45]] {
             let code = [
                 bytecode(&format!("vs_deep.{route}")),
                 bytecode(&format!("ps_textured.{route}")),
             ];
-            let range = [0.25f32, 0.75];
+            let [near, far] = range;
             let drawn = |clip_off| {
                 direct3d_11(
                     &d3d,
@@ -1190,7 +1223,9 @@ fn variants_draw_as_the_native_feature_does() {
             };
             let (reference, clipped) = (drawn(true), drawn(false));
             let (changed, _) = differ(&clipped, &reference, Format::Depth32Float);
-            eprintln!("depth_clamp {route}: clipping changes {changed} of Direct3D's texels");
+            eprintln!(
+                "depth_clamp {route} at {near} to {far}: clipping changes {changed} of Direct3D's texels"
+            );
             assert!(changed > 0);
             let mut variant = grid_draw(&code, dxil, &grid);
             variant.setup.depth = true;
@@ -1213,7 +1248,9 @@ fn variants_draw_as_the_native_feature_does() {
                 ("webgl", ours(&mut gl, &variant, ProvokingVertex::Last)),
             ] {
                 results.push(compare(
-                    format!("depth_clamp {route} {back_end} against direct3d 11"),
+                    format!(
+                        "depth_clamp {route} {back_end} at {near} to {far} against direct3d 11"
+                    ),
                     &reference,
                     &texels,
                     Format::Depth32Float,
@@ -1246,7 +1283,7 @@ fn variants_draw_as_the_native_feature_does() {
             ] {
                 results.push(compare(
                     format!(
-                        "depth_clamp {route} {back_end} without a pixel shader against direct3d 11"
+                        "depth_clamp {route} {back_end} at {near} to {far} without a pixel shader against direct3d 11"
                     ),
                     &reference,
                     &texels,
@@ -1413,7 +1450,10 @@ fn variants_draw_as_the_native_feature_does() {
                 // a size is many steps (1/16 and 1/32 of the range), so one step hides none.
                 let allowed = match unbound {
                     true => (0, 0),
-                    false => (d3d11.len() / Format::Rgba8Unorm.block().2 as usize, 1),
+                    false => (
+                        d3d11.len() / FORMAT_FACTS[Format::Rgba8Unorm as usize].block.2 as usize,
+                        1,
+                    ),
                 };
                 results.push(compare(
                     format!("texture_info {shader} {route} {back_end} against {against}"),
@@ -1632,6 +1672,85 @@ fn inputs_evaluated_elsewhere_match_direct3d() {
     assert!(failures.is_empty(), "differ: {failures:?}");
 }
 
+/// A position declared at the centroid in a program run once a pixel (`ps_position_centroid`), drawn
+/// through the WebGPU back end at one and four samples against real Direct3D 11, fxc's build and
+/// dxc's: at the edges of a primitive, where some samples are uncovered, the position is Direct3D's
+/// centroid, and its steep waves show a place a sixteenth of a pixel off.
+#[test]
+fn centroid_positions_match_direct3d() {
+    let mut gpu = webgpu();
+    let d3d = wcontainers_graphics_test::d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[windows::Win32::Graphics::Direct3D::D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let grid = grid();
+    let builds = [
+        (
+            "dxbc",
+            [
+                bytecode("vs_evaluate.dxbc"),
+                bytecode("ps_position_centroid.dxbc"),
+            ],
+        ),
+        (
+            "dxil",
+            [
+                bytecode("vs_evaluate.dxil"),
+                bytecode("ps_position_centroid.dxil"),
+            ],
+        ),
+    ];
+    let mut results = Vec::new();
+    for samples in [1u8, LAYER_SAMPLES as u8] {
+        let (reference, _) = direct3d_11(
+            &d3d,
+            "vs_evaluate",
+            "ps_position_centroid",
+            Format::Rgba8Unorm,
+            [1.0, 0.75, 0.5, 1.5],
+            true,
+            &Reference {
+                samples: samples.into(),
+                ..Default::default()
+            },
+        );
+        for (route, code) in &builds {
+            let mut ours_draw = grid_draw(code, *route == "dxil", &grid);
+            ours_draw.setup.samples = samples.into();
+            ours_draw.setup.ps_key.samples = samples;
+            let texels = ours(&mut gpu, &ours_draw, ProvokingVertex::First);
+            results.push(compare(
+                format!("centroid position {route} {samples} samples webgpu against direct3d 11"),
+                &reference,
+                &texels,
+                Format::Rgba8Unorm,
+                (
+                    SIZE as usize * SIZE as usize,
+                    (FILTER_ALLOWANCE * f32::from(u8::MAX)).ceil() as u64,
+                ),
+            ));
+        }
+    }
+    let mut failures = Vec::new();
+    for r in &results {
+        eprintln!(
+            "{}: {} of {} texels differ, largest difference {} (allowed {} by {})",
+            r.name,
+            r.count,
+            SIZE * SIZE,
+            r.largest,
+            r.allowed.0,
+            r.allowed.1
+        );
+        if r.count > r.allowed.0 || r.largest > r.allowed.1 {
+            failures.push(r.name.clone());
+        }
+    }
+    assert!(failures.is_empty(), "differ: {failures:?}");
+}
+
 /// An input evaluated at the sample being run (`ps_eval_exact`, Direct3D 12's
 /// shader_eval_attribute) is exactly the value interpolated there, as on Direct3D 11 at four
 /// samples: the program scales any difference so that the smallest shows, and every texel must match,
@@ -1789,7 +1908,7 @@ fn typed_buffers_draw_as_direct3d_does() {
                 let first = next() % 8;
                 let count = 100 + next() % 29;
                 let elements = (first + count + 3).next_multiple_of(4);
-                let bytes = (0..elements * format.block().2)
+                let bytes = (0..elements * FORMAT_FACTS[format as usize].block.2)
                     .map(|_| next() as u8)
                     .collect();
                 TexelData {

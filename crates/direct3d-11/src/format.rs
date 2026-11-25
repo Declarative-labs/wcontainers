@@ -1,6 +1,6 @@
 //! DXGI formats (their numbers in `dxgiformat.h`) as the interface's formats.
 
-use wcontainers_gpu::{Format, FormatKind, IndexFormat, ScalarKind, VertexFormat};
+use wcontainers_gpu::{FORMAT_FACTS, Format, FormatKind, IndexFormat, ScalarKind, VertexFormat};
 
 use crate::desc::level;
 use crate::error::{Error, Result, not_implemented};
@@ -270,11 +270,10 @@ pub fn storage_viewed(dxgi: u32) -> bool {
         )
 }
 
-/// Whether storage views of textures stored as `format` are not served through a buffer of their
-/// texels (`StorageFormatThroughBuffer`): `A8_UNORM`, which the shaders crate stores into only
-/// through the `rgba8unorm` the back ends hold it in.
-pub fn not_through_buffer(format: Format) -> bool {
-    format == Format::A8Unorm
+/// Whether programs load and store storage textures of `format` in one program: WebGPU's
+/// read-write storage textures are of its one-channel 32-bit formats.
+pub fn loaded_and_stored(format: Format) -> bool {
+    matches!(format, Format::R32Float | Format::R32Uint | Format::R32Sint)
 }
 
 /// The formats Microsoft's typed storage loads page lists as supported as a set, which
@@ -318,7 +317,10 @@ pub fn buffer_viewed(dxgi: u32) -> bool {
 
 /// Whether `format` holds integers, which are neither filtered nor resolved.
 pub fn is_integer(format: Format) -> bool {
-    matches!(format.kind(), FormatKind::Uint | FormatKind::Sint)
+    matches!(
+        FORMAT_FACTS[format as usize].kind,
+        FormatKind::Uint | FormatKind::Sint
+    )
 }
 
 /// The plane of an NV12 texture a view of DXGI format `view` names (0 luma, 1 chroma), or none
@@ -356,11 +358,14 @@ pub fn texture_format_of(dxgi: u32) -> Result<Format> {
 }
 
 /// Not served for a defined DXGI format, invalid for others.
+/// `DXGI_FORMAT_SAMPLER_FEEDBACK_MIN_MIP_OPAQUE` to `DXGI_FORMAT_A4B4G4R4_UNORM`: the formats
+/// defined after `V408`, which the infrastructure crate's table does not name.
+const PAST_V408: std::ops::RangeInclusive<u32> = 189..=191;
+const UNSERVED_FORMAT: &str = "a DXGI format this front does not serve";
+
 fn unserved<T>(dxgi: u32) -> Result<T> {
-    // Defined DXGI formats: up to V408, the sampler feedback formats 189 and 190, and 191 (the
-    // infrastructure crate's table does not name the last three).
-    if matches!(dxgi, dxgi::R32G32B32A32_TYPELESS..=dxgi::V408 | 189..=191) {
-        not_implemented("a DXGI format this front does not serve")
+    if (dxgi::R32G32B32A32_TYPELESS..=dxgi::V408).contains(&dxgi) || PAST_V408.contains(&dxgi) {
+        not_implemented(UNSERVED_FORMAT)
     } else {
         Err(Error::InvalidArg("unknown format"))
     }
@@ -466,7 +471,7 @@ pub fn view_format(view: u32, texture: u32, storage: Format) -> Result<(Format, 
 /// Whether a view of `format` of a texture stored as `storage` reads other bits than the storage
 /// format's, which no back end's view does (`ReinterpretCopy`).
 pub fn reinterprets(format: Format, storage: Format) -> bool {
-    format.linear() != storage.linear()
+    FORMAT_FACTS[format as usize].linear != FORMAT_FACTS[storage as usize].linear
 }
 
 /// The sRGB format of a linear one, or the linear one of an sRGB one, where the pair exists.
@@ -772,23 +777,12 @@ pub fn vertex_scalar(f: VertexFormat) -> ScalarKind {
     }
 }
 
-/// Bytes one element of a vertex format takes.
-pub fn vertex_size(format: VertexFormat) -> u32 {
-    use VertexFormat::*;
-    match format {
-        Uint8x1 | Sint8x1 | Unorm8x1 | Snorm8x1 => 1,
-        Uint8x2 | Sint8x2 | Unorm8x2 | Snorm8x2 | Uint16x1 | Sint16x1 | Unorm16x1 | Snorm16x1
-        | Float16x1 => 2,
-        Uint8x3 | Sint8x3 | Unorm8x3 | Snorm8x3 => 3,
-        Uint8x4 | Sint8x4 | Unorm8x4 | Snorm8x4 | Uint16x2 | Sint16x2 | Unorm16x2 | Snorm16x2
-        | Float16x2 | Float32x1 | Uint32x1 | Sint32x1 | Bgra8Unorm | Unorm10_10_10_2
-        | Uint10_10_10_2 | Float11_11_10 | Bgrx8Unorm => 4,
-        Uint16x3 | Sint16x3 | Unorm16x3 | Snorm16x3 | Float16x3 => 6,
-        Uint16x4 | Sint16x4 | Unorm16x4 | Snorm16x4 | Float16x4 | Float32x2 | Uint32x2
-        | Sint32x2 => 8,
-        Float32x3 | Uint32x3 | Sint32x3 => 12,
-        Float32x4 | Uint32x4 | Sint32x4 => 16,
-    }
+/// Bytes one vertex element of DXGI format `dxgi` takes: a texel of that format.
+pub fn vertex_size(dxgi: u32) -> Option<u32> {
+    texture_format(dxgi).map(|f| {
+        let (_, _, bytes) = FORMAT_FACTS[f as usize].block;
+        bytes
+    })
 }
 
 /// The alignment of a vertex element's offset: the size of its components, at most 4 bytes.
@@ -800,7 +794,7 @@ pub fn vertex_alignment(format: VertexFormat) -> u32 {
         Uint16x1 | Sint16x1 | Unorm16x1 | Snorm16x1 | Float16x1 | Uint16x2 | Sint16x2
         | Unorm16x2 | Snorm16x2 | Float16x2 | Uint16x3 | Sint16x3 | Unorm16x3 | Snorm16x3
         | Float16x3 | Uint16x4 | Sint16x4 | Unorm16x4 | Snorm16x4 | Float16x4 => 2,
-        _ => 4,
+        _ => size_of::<u32>() as u32,
     }
 }
 
@@ -815,14 +809,14 @@ pub fn index_format(dxgi: u32) -> Option<IndexFormat> {
 
 /// Bytes a row of `width` texels of `format` takes, and how many rows of blocks `height` texels make.
 pub fn row_bytes(format: Format, width: u32, height: u32) -> (u32, u32) {
-    let (bw, bh, bytes) = format.block();
+    let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
     (width.div_ceil(bw) * bytes, height.div_ceil(bh))
 }
 
 /// The components `format` has, a bit each from red, as a view reads them: a border colour is read
 /// as a texel of the view's format (`HelperValue::TextureComponents`). Depth reads as red.
 pub fn components(format: Format) -> u32 {
-    format.components()
+    FORMAT_FACTS[format as usize].components
 }
 
 /// Direct3D's conversion of `value` into a channel of normalised `format` (clamped to its range,
@@ -830,7 +824,8 @@ pub fn components(format: Format) -> u32 {
 /// clears and draws them), as the bits of a channel of its integer twin (`NormAsInteger`).
 pub fn encode_norm(format: Format, value: f32) -> u32 {
     let signed = signed_normalized(format);
-    let bits = format.block().2 * u8::BITS / format.components().count_ones();
+    let bits = FORMAT_FACTS[format as usize].block.2 * u8::BITS
+        / FORMAT_FACTS[format as usize].components.count_ones();
     let max = (1u32 << (bits - u32::from(signed))) - 1;
     let low = if signed { -1.0 } else { 0.0 };
     let v = if value.is_nan() {

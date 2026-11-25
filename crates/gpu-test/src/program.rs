@@ -4,6 +4,7 @@
 //! samples and loads. Anything else is an error naming it, which the back end reports as device loss, never a
 //! silent wrong answer.
 
+use crate::draw::Bindings;
 use naga::{
     BinaryOperator, Expression, Function, Handle, Literal, MathFunction, Module,
     RelationalFunction, SampleLevel, ScalarKind, Statement, TypeInner, UnaryOperator,
@@ -85,33 +86,6 @@ pub enum Level {
     Bias(f32),
 }
 
-/// The resources bound to a draw, as the program sees them by group and binding.
-pub trait Resources {
-    /// The bytes of the buffer range bound at (group, binding).
-    fn buffer(&self, group: u32, binding: u32) -> Result<&[u8], Error>;
-    /// Samples the texture at `image` with the sampler at `sampler`; `compare` is a depth reference.
-    fn sample(
-        &self,
-        image: (u32, u32),
-        sampler: (u32, u32),
-        coord: [f32; 3],
-        layer: Option<i64>,
-        level: Level,
-        compare: Option<f32>,
-    ) -> Result<[f64; 4], Error>;
-    /// Loads one texel, or one sample of a multisampled texel.
-    fn load(
-        &self,
-        image: (u32, u32),
-        coord: [i64; 3],
-        layer: Option<i64>,
-        level: i64,
-        sample: Option<i64>,
-    ) -> Result<[f64; 4], Error>;
-    /// The size of a level of the texture.
-    fn size(&self, image: (u32, u32), level: i64) -> Result<[u32; 3], Error>;
-}
-
 /// A program's write into a storage buffer: group, binding, byte offset in the bound range, bytes.
 pub type StorageWrite = (u32, u32, u32, Vec<u8>);
 
@@ -133,7 +107,7 @@ enum Flow {
 }
 
 /// One running invocation of an entry point.
-pub struct Invocation<'a, R: Resources> {
+pub(crate) struct Invocation<'a> {
     module: &'a Module,
     module_info: &'a naga::valid::ModuleInfo,
     info: &'a naga::valid::FunctionInfo,
@@ -141,18 +115,18 @@ pub struct Invocation<'a, R: Resources> {
     args: Vec<Value>,
     locals: Vec<Value>,
     cache: Vec<Option<Value>>,
-    resources: &'a R,
+    resources: &'a Bindings<'a>,
     writes: &'a mut Vec<StorageWrite>,
 }
 
 /// Runs entry point `index` with its arguments; None when the invocation was discarded. Its writes into
 /// storage buffers are added to `writes`, in order; the invocation's own loads see them.
-pub fn run<R: Resources>(
+pub(crate) fn run(
     module: &Module,
     info: &naga::valid::ModuleInfo,
     index: usize,
     args: Vec<Value>,
-    resources: &R,
+    resources: &Bindings<'_>,
     writes: &mut Vec<StorageWrite>,
 ) -> Result<Option<Value>, Error> {
     let fun = &module.entry_points[index].function;
@@ -161,13 +135,13 @@ pub fn run<R: Resources>(
 }
 
 /// Runs one function with its arguments; None when the invocation was discarded.
-fn invoke<R: Resources>(
+fn invoke(
     module: &Module,
     module_info: &naga::valid::ModuleInfo,
     fun: &Function,
     info: &naga::valid::FunctionInfo,
     args: Vec<Value>,
-    resources: &R,
+    resources: &Bindings<'_>,
     writes: &mut Vec<StorageWrite>,
 ) -> Result<Option<Value>, Error> {
     let mut inv = Invocation {
@@ -395,7 +369,7 @@ fn dot(a: &Value, b: &Value) -> Result<f32, Error> {
     a.iter().zip(&b).map(|(x, y)| Ok(x.f32()? * y.f32()?)).sum()
 }
 
-impl<R: Resources> Invocation<'_, R> {
+impl Invocation<'_> {
     fn kind(&self, h: Handle<Expression>) -> &TypeInner {
         self.info[h].ty.inner_with(&self.module.types)
     }

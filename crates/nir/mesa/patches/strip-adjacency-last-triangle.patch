@@ -1,0 +1,18 @@
+Triangle strips with adjacency: the last triangle, when odd, takes its third adjacent vertex from
+the strip's last vertex, as OpenGL's table of them says, not from one past the strip.
+
+diff --git a/src/gallium/auxiliary/indices/u_indices_gen.py b/src/gallium/auxiliary/indices/u_indices_gen.py
+--- a/src/gallium/auxiliary/indices/u_indices_gen.py
++++ b/src/gallium/auxiliary/indices/u_indices_gen.py
+@@ -359,9 +359,9 @@
+     do_triadj(f, intype, outtype, 'out+j',
+               'i+0', 'i+1', 'i+2', 'i+3', 'i+4', 'i+5', inpv, outpv )
+     f.write('    } else {\n')
+-    f.write('      /* odd triangle */\n')
++    f.write('      /* odd triangle; the last one\'s third adjacent vertex is the strip\'s last */\n')
+     do_triadj(f, intype, outtype, 'out+j',
+-              'i+2', 'i-2', 'i+0', 'i+3', 'i+4', 'i+6', inpv, outpv )
++              'i+2', 'i-2', 'i+0', 'i+3', 'i+4', '(j + 6 < out_nr ? i+6 : i+5)', inpv, outpv )
+     f.write('    }\n')
+     f.write('  }\n')
+     postamble(f)

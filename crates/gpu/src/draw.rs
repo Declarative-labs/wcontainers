@@ -7,7 +7,7 @@
 //! implicit ones (Direct3D 11, OpenGL) open and close passes as their targets change and before copies.
 
 use crate::MAX_COLOR_TARGETS;
-use crate::backend::Backend;
+use crate::backend::Gpu;
 use crate::resource::BufferRange;
 use crate::state::{IndexFormat, Topology};
 
@@ -32,7 +32,7 @@ pub enum StoreOp {
 
 /// One color target of a pass.
 #[derive(Debug)]
-pub struct ColorAttachment<'a, B: Backend> {
+pub struct ColorAttachment<'a, B: Gpu> {
     pub view: &'a B::TextureView,
     /// The slice drawn into when `view` is a 3D view (Direct3D's render target of a volume slice); zero
     /// otherwise. Layered drawing through a program's layer output is plan section 7's stage work.
@@ -58,7 +58,7 @@ pub struct AspectOps<V> {
 /// The depth and stencil target of a pass. Each aspect is present exactly when the view's format has it,
 /// so back ends never see operations on an aspect that does not exist.
 #[derive(Debug)]
-pub struct DepthAttachment<'a, B: Backend> {
+pub struct DepthAttachment<'a, B: Gpu> {
     pub view: &'a B::TextureView,
     /// Clear depth as f32 bits.
     pub depth: Option<AspectOps<u32>>,
@@ -94,7 +94,7 @@ pub struct EmptyPass {
 /// break it ([`crate::SlowPath::UsageScopeSplit`]), and a draw that itself uses one buffer both ways
 /// (OpenGL and Vulkan allow it) reads the other use from a copy ([`crate::SlowPath::UsageScopeCopied`]).
 #[derive(Debug)]
-pub struct PassDesc<'a, B: Backend> {
+pub struct PassDesc<'a, B: Gpu> {
     pub colors: [Option<ColorAttachment<'a, B>>; MAX_COLOR_TARGETS],
     pub depth: Option<DepthAttachment<'a, B>>,
     pub empty: Option<EmptyPass>,
@@ -135,14 +135,14 @@ pub struct ScissorRect {
 
 /// One bound vertex stream.
 #[derive(Debug)]
-pub struct VertexBinding<'a, B: Backend> {
+pub struct VertexBinding<'a, B: Gpu> {
     pub buffer: &'a B::Buffer,
     pub offset: u64,
 }
 
 /// The bound index buffer.
 #[derive(Debug)]
-pub struct IndexBinding<'a, B: Backend> {
+pub struct IndexBinding<'a, B: Gpu> {
     pub buffer: &'a B::Buffer,
     pub offset: u64,
     pub format: IndexFormat,
@@ -166,7 +166,7 @@ pub struct IndexBinding<'a, B: Backend> {
 /// defines that fetch's value binds the variant that fetches its streams in the program
 /// ([`crate::VariantKey::pulled`]).
 #[derive(Debug)]
-pub enum DrawRange<'a, B: Backend> {
+pub enum DrawRange<'a, B: Gpu> {
     Vertices {
         first: u32,
         count: u32,
@@ -195,7 +195,7 @@ pub enum DrawRange<'a, B: Backend> {
 /// each draw; back ends compare it with the previous draw's by handle and value, and change only what
 /// differs.
 #[derive(Debug)]
-pub struct DrawCall<'a, B: Backend> {
+pub struct DrawCall<'a, B: Gpu> {
     pub program: &'a B::Program,
     pub blend: &'a B::Blend,
     pub depth_stencil: &'a B::DepthStencil,
@@ -234,7 +234,7 @@ pub struct DrawCall<'a, B: Backend> {
 /// on each axis, [`crate::Limits::compute_invocations`] in all, and its workgroup variables at most
 /// [`crate::Limits::compute_workgroup_storage`] bytes.
 #[derive(Debug)]
-pub struct DispatchCall<'a, B: Backend> {
+pub struct DispatchCall<'a, B: Gpu> {
     pub program: &'a B::Program,
     pub bindings: [Option<&'a B::BindingSet>; crate::MAX_BINDING_SETS],
     pub immediates: &'a [u8],
@@ -243,12 +243,12 @@ pub struct DispatchCall<'a, B: Backend> {
 
 /// How many workgroups a dispatch runs.
 #[derive(Debug)]
-pub enum DispatchGroups<'a, B: Backend> {
+pub enum DispatchGroups<'a, B: Gpu> {
     Direct([u32; 3]),
     Indirect { args: &'a B::Buffer, offset: u64 },
 }
 
-/// Where captured vertices go, for [`crate::Backend::capture_vertices`]: ranges of buffers with
+/// Where captured vertices go, for [`crate::Gpu::capture_vertices`]: ranges of buffers with
 /// [`crate::BufferUsage::CAPTURE`], each holding every vertex the draw makes, and used no other way by
 /// the call (WebGL 2 refuses a buffer bound for capture and for anything else at once).
-pub type CaptureTargets<'a, B> = &'a [BufferRange<&'a <B as Backend>::Buffer>];
+pub type CaptureTargets<'a, B> = &'a [BufferRange<&'a <B as Gpu>::Buffer>];

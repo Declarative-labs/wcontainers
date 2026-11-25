@@ -34,8 +34,10 @@ struct Values {
     output: u32,
     // Patches per API instance.
     primitives: u32,
-    pad0: u32,
-    pad1: u32,
+    // Each primitive written as made (0), turned so its last vertex leads (1), or so its first trails
+    // (2): the vertex the API takes flat values from moved to where the draw takes them.
+    rotate: u32,
+    pad: u32,
 }
 
 @group(1) @binding(0) var<uniform> tv: Values;
@@ -70,6 +72,8 @@ const ODD: u32 = 1u;
 const OUTPUT_POINT: u32 = 0u;
 const OUTPUT_LINE: u32 = 1u;
 const OUTPUT_TRIANGLE_CW: u32 = 2u;
+const ROTATE_NONE: u32 = 0u;
+const ROTATE_LAST_FIRST: u32 = 1u;
 
 const DIAGONALS_INSIDE_TO_OUTSIDE: u32 = 0u;
 const DIAGONALS_INSIDE_TO_OUTSIDE_EXCEPT_MIDDLE: u32 = 1u;
@@ -372,13 +376,27 @@ fn define_index(index: i32, offset: i32) {
 }
 
 fn clockwise_triangle(i0: i32, i1: i32, i2: i32, base: i32) {
-    define_index(i0, base);
-    if tv.output == OUTPUT_TRIANGLE_CW {
+    var order = vec3<i32>(i0, i1, i2);
+    if tv.output != OUTPUT_TRIANGLE_CW {
+        order = order.xzy;
+    }
+    if tv.rotate == ROTATE_LAST_FIRST {
+        order = order.zxy;
+    } else if tv.rotate != ROTATE_NONE {
+        order = order.yzx;
+    }
+    define_index(order.x, base);
+    define_index(order.y, base + 1);
+    define_index(order.z, base + 2);
+}
+
+fn segment(i0: i32, i1: i32, base: i32) {
+    if tv.rotate == ROTATE_NONE {
+        define_index(i0, base);
         define_index(i1, base + 1);
-        define_index(i2, base + 2);
     } else {
-        define_index(i2, base + 1);
-        define_index(i1, base + 2);
+        define_index(i1, base);
+        define_index(i0, base + 1);
     }
 }
 
@@ -391,8 +409,7 @@ fn dump_points() {
 
 fn dump_lines() {
     for (var p = 1; p < num_points; p++) {
-        define_index(p - 1, num_indices);
-        define_index(p, num_indices + 1);
+        segment(p - 1, p, num_indices);
         num_indices += 2;
     }
 }
@@ -990,8 +1007,7 @@ fn isoline() {
                 define_index(offset, index);
                 index += 1;
             } else if p > 0 {
-                define_index(offset - 1, index);
-                define_index(offset, index + 1);
+                segment(offset - 1, offset, index);
                 index += 2;
             }
             offset += 1;

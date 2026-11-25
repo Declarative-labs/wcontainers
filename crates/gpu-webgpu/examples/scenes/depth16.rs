@@ -2,14 +2,14 @@
 //! by tests/copies.rs and the browser page.
 
 use wcontainers_gpu::{
-    Backend, DeviceStatus, Extent, Format, FormatUse, Origin, ReadSource, TextureRegion,
-    TextureUsage, WriteMode,
+    DeviceStatus, Extent, Format, FormatUse, Gpu, Origin, ReadSource, TextureRegion, TextureUsage,
+    WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
 use crate::draw;
 
-type Tex = <WebGpu as Backend>::Texture;
+type Tex = <WebGpu as Gpu>::Texture;
 
 /// The size of the textures the copies here and in tests/copies.rs move between.
 pub const W: u32 = 8;
@@ -77,7 +77,7 @@ pub fn group_copies(b: &mut WebGpu) -> Result<String, String> {
         Format::R16Snorm,
         Format::R16Sint,
     ] {
-        if !b.caps().formats.get(colour).contains(FormatUse::SAMPLE) {
+        if !b.caps().formats.uses[colour as usize].contains(FormatUse::SAMPLE) {
             continue;
         }
         let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;

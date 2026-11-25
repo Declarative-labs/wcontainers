@@ -2,7 +2,8 @@
 //! with only their own channels written: 8-bit alpha as (0, 0, 0, a), and BGRX as BGRA with alpha
 //! one. The 16-bit packed formats (`B5G6R5`, `B5G5R5A1`, `B4G4R4A4`) hold each channel widened to 8
 //! bits; the two 5-bit ones are drawn, blended and resolved at 8 bits, and each channel rounded to
-//! its own bits when the pass or resolve ends (`PackedTargetQuantised`). Sampled and filtered only:
+//! its own bits when the pass or resolve ends (`PackedTargetQuantised`) and before a blend reads
+//! it (`PackedTargetReadByBlend`). Sampled and filtered only:
 //! `B4G4R4A4`, and the two-pixel formats (`R8G8_B8G8`, `G8R8_G8B8`), each pixel its own texel
 //! (`BlockDecoded`'s formats, converted the same way). The three-channel 32-bit formats (`R32G32B32_*`) are held in their
 //! four-channel twins with alpha one, sampled (filtered where the twin is) and copied. Writes are
@@ -11,8 +12,8 @@
 //! the GPU, by a draw.
 
 use wcontainers_gpu::{
-    Backend, CopyBufferTexture, Extent, Format, Origin, SlowPath, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, WriteMode,
+    CopyBufferTexture, Extent, FORMAT_FACTS, Format, Gpu, Origin, SlowPath, TextureDesc,
+    TextureDimension, TextureRegion, TextureUsage, WriteMode,
 };
 
 use crate::memory::DX12_PLACEMENT_ALIGNMENT;
@@ -78,19 +79,21 @@ pub(crate) fn clear(format: Format, c: wgpu::Color) -> wgpu::Color {
 pub(crate) fn raw(format: Format) -> Format {
     [Format::R8Uint, Format::R16Uint]
         .into_iter()
-        .find(|r| r.block().2 == format.block().2)
+        .find(|r| FORMAT_FACTS[*r as usize].block.2 == FORMAT_FACTS[format as usize].block.2)
         .unwrap_or(Format::R32Uint)
 }
 
 /// Texels of [`raw`] a row of `width` texels of `format` takes.
 pub(crate) fn raw_width(format: Format, width: u32) -> u32 {
-    let (bw, _, bytes) = format.block();
-    width.div_ceil(bw) * bytes.div_ceil(Format::R32Uint.block().2)
+    let (bw, _, bytes) = FORMAT_FACTS[format as usize].block;
+    width.div_ceil(bw) * bytes.div_ceil(FORMAT_FACTS[Format::R32Uint as usize].block.2)
 }
 
 /// Bytes of one texel of the format a converted `format` is held in.
 pub(crate) fn held_bytes(format: Format) -> u32 {
-    held(format).unwrap_or(Format::Rgba8Unorm).block().2
+    FORMAT_FACTS[held(format).unwrap_or(Format::Rgba8Unorm) as usize]
+        .block
+        .2
 }
 
 /// Whether `format` is a three-channel 32-bit format, held with a fourth channel.
@@ -247,7 +250,7 @@ pub(crate) fn program(format: Format, into: bool, three_d: bool) -> String {
                  {body}\n\
                  return vec4f(c) / 255.0;\n\
              }}\n",
-            per = format.block().0,
+            per = FORMAT_FACTS[format as usize].block.0,
             body = widen_wgsl(format),
         )
     } else {
@@ -290,8 +293,8 @@ fn repeat(x: u32, n: u32) -> u32 {
 /// The fragment program, entry point `quantise`, rounding each channel of a target of the packed
 /// `format`, read from a copy of it bound at binding 0 (multisampled: per sample), to its own bits
 /// and widening it back to 8 as [`widen`] does: `round(v * (2^n - 1))`, its bits repeated. The
-/// 8-bit value it starts from adds at most `(2^n - 1) / 510` of a step to the specification's
-/// rounding (0.56 of a step for 6 bits, inside its 0.6).
+/// 8-bit value it starts from adds at most `(2^n - 1) / 510` of a step to the half step of exact
+/// rounding: 0.56 of a step for 5 bits, inside the specification's 0.6, and 0.62 for 6 bits.
 pub(crate) fn quantise_program(format: Format, multisampled: bool) -> String {
     let (texture, sample, index) = QUANTISE_READS[usize::from(multisampled)];
     let [b, g, r, a] = fields(format);
@@ -427,7 +430,7 @@ pub(crate) fn pack(format: Format, texels: &[u8], out: &mut Vec<u8>) {
 
 /// Bytes of `texels` texels of `format` packed: whole blocks.
 pub(crate) fn packed_bytes(format: Format, texels: u64) -> u64 {
-    let (bw, _, bytes) = format.block();
+    let (bw, _, bytes) = FORMAT_FACTS[format as usize].block;
     texels.div_ceil(u64::from(bw)) * u64::from(bytes)
 }
 
@@ -443,7 +446,11 @@ impl WebGpu {
         mode: WriteMode,
     ) {
         let format = region.texture.0.desc.format;
-        if !region.origin.x.is_multiple_of(format.block().0) {
+        if !region
+            .origin
+            .x
+            .is_multiple_of(FORMAT_FACTS[format as usize].block.0)
+        {
             return self.fail("a region of a two-pixel format starting inside a pair");
         }
         let row = packed_bytes(format, u64::from(extent.width)) as usize;
@@ -464,7 +471,7 @@ impl WebGpu {
                 texels.truncate(at + wide);
             }
         }
-        self.slow.hit(SlowPath::FormatConverted);
+        self.record_slow_path(SlowPath::FormatConverted);
         self.write_texels(
             region,
             extent,
@@ -479,7 +486,11 @@ impl WebGpu {
     /// inside its level and starts on a block.
     fn first_slice(&mut self, region: &TextureRegion<'_, Self>, extent: Extent) -> Option<u32> {
         let t = &region.texture.0;
-        if !region.origin.x.is_multiple_of(t.desc.format.block().0) {
+        if !region
+            .origin
+            .x
+            .is_multiple_of(FORMAT_FACTS[t.desc.format as usize].block.0)
+        {
             self.fail("a region of a two-pixel format starting inside a pair");
             return None;
         }
@@ -519,7 +530,7 @@ impl WebGpu {
             self.fail("the texture a converted copy goes through could not be made");
             return None;
         };
-        self.slow.hit(SlowPath::FormatConverted);
+        self.record_slow_path(SlowPath::FormatConverted);
         Some(staged)
     }
 
@@ -550,8 +561,9 @@ impl WebGpu {
     /// one placement (where Direct3D 12 implementations move an unplaced copy back to a placed
     /// offset), stays within the device's widest 2D texture.
     fn raw_run(&self, format: Format) -> u32 {
-        let bw = format.block().0;
-        let placement = (DX12_PLACEMENT_ALIGNMENT / u64::from(raw(format).block().2)) as u32;
+        let bw = FORMAT_FACTS[format as usize].block.0;
+        let placement = (DX12_PLACEMENT_ALIGNMENT
+            / u64::from(FORMAT_FACTS[raw(format) as usize].block.2)) as u32;
         let widest = self.device.limits().max_texture_dimension_2d;
         let blocks = widest.saturating_sub(placement) / raw_width(format, bw);
         (blocks / placement * placement).max(1) * bw
@@ -627,7 +639,7 @@ impl WebGpu {
         extent: Extent,
     ) {
         let (sf, df) = (src.texture.0.desc.format, dst.texture.0.desc.format);
-        if sf.block() != df.block() {
+        if FORMAT_FACTS[sf as usize].block != FORMAT_FACTS[df as usize].block {
             return self.fail("a copy between a converted format and one of another texel size");
         }
         let run = self.raw_run(sf);
@@ -696,6 +708,72 @@ fn moved<'a>(region: &TextureRegion<'a, WebGpu>, x: u32) -> TextureRegion<'a, We
 }
 
 /// The whole of a texture's first level and layer, as a copy names it.
+/// One primitive of a draw, drawn alone where a blend reads a packed target, so that each
+/// primitive's blend reads what the one before it left rounded to the format's bits
+/// (`PackedTargetReadByBlend`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Piece {
+    /// Its vertices, or its indices in an indexed draw.
+    pub range: std::ops::Range<u32>,
+    pub instance: u32,
+    /// A strip's odd triangle, whose facing the strip reverses and a draw of its own does not.
+    pub odd: bool,
+}
+
+/// The vertices each primitive of `topology` takes.
+fn vertices_per_primitive(topology: wgpu::PrimitiveTopology) -> u32 {
+    use wgpu::PrimitiveTopology as T;
+    /// A triangle's corners.
+    const CORNERS: u32 = 3;
+    match topology {
+        T::PointList => 1,
+        T::LineList | T::LineStrip => 2,
+        T::TriangleList | T::TriangleStrip => CORNERS,
+    }
+}
+
+/// The primitives of `count` vertices or indices from `first`, instance by instance, in the order
+/// they are rasterised. `cuts` marks a strip's restart indices, by position from `first`.
+pub(crate) fn pieces(
+    topology: wgpu::PrimitiveTopology,
+    first: u32,
+    count: u32,
+    instances: std::ops::Range<u32>,
+    cuts: &[bool],
+) -> Vec<Piece> {
+    let n = vertices_per_primitive(topology);
+    let strip = topology.is_strip();
+    let mut starts = Vec::new();
+    if strip {
+        let mut run = 0;
+        for p in 0..count {
+            if cuts.get(p as usize) == Some(&true) {
+                run = 0;
+                continue;
+            }
+            run += 1;
+            if run >= n {
+                starts.push((
+                    first + p + 1 - n,
+                    topology == wgpu::PrimitiveTopology::TriangleStrip
+                        && !(run - n).is_multiple_of(2),
+                ));
+            }
+        }
+    } else {
+        starts.extend((0..count / n).map(|i| (first + i * n, false)));
+    }
+    instances
+        .flat_map(|instance| {
+            starts.iter().map(move |&(start, odd)| Piece {
+                range: start..start + n,
+                instance,
+                odd,
+            })
+        })
+        .collect()
+}
+
 fn at_origin(texture: &Texture) -> TextureRegion<'_, WebGpu> {
     TextureRegion {
         texture,
@@ -709,6 +787,41 @@ fn at_origin(texture: &Texture) -> TextureRegion<'_, WebGpu> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Lists split into whole primitives, strips into every primitive they make, restarting at a
+    /// cut, with odd triangles counted from the strip's start; instances follow one another.
+    #[test]
+    fn draws_split_into_their_primitives_in_order() {
+        use wgpu::PrimitiveTopology as T;
+        let ranges = |p: Vec<Piece>| -> Vec<(u32, u32, u32, bool)> {
+            p.into_iter()
+                .map(|p| (p.range.start, p.range.end, p.instance, p.odd))
+                .collect()
+        };
+        assert_eq!(
+            ranges(pieces(T::TriangleList, 2, 7, 0..2, &[])),
+            [
+                (2, 5, 0, false),
+                (5, 8, 0, false),
+                (2, 5, 1, false),
+                (5, 8, 1, false)
+            ]
+        );
+        assert_eq!(
+            ranges(pieces(T::TriangleStrip, 0, 5, 3..4, &[])),
+            [(0, 3, 3, false), (1, 4, 3, true), (2, 5, 3, false)]
+        );
+        let cut = [false, false, false, true, false, false, false, false];
+        assert_eq!(
+            ranges(pieces(T::TriangleStrip, 10, 8, 0..1, &cut)),
+            [(10, 13, 0, false), (14, 17, 0, false), (15, 18, 0, true)]
+        );
+        assert_eq!(
+            ranges(pieces(T::LineStrip, 0, 3, 0..1, &[])),
+            [(0, 2, 0, false), (1, 3, 0, false)]
+        );
+        assert_eq!(ranges(pieces(T::PointList, 4, 2, 0..1, &[])).len(), 2);
+    }
 
     /// Every value of every converted format comes back from its widened form exactly.
     #[test]

@@ -81,8 +81,15 @@ impl Lowering<'_> {
                 dcls.push(dcl);
             }
         }
+        // Where the centroid is depends on the targets' sample count.
+        if self.centroid_position() && self.variant.samples == 0 {
+            return Err(unsupported(crate::refusal::SAMPLE_COUNT));
+        }
         if dcls.is_empty() && !self.position_moved() {
             return Ok(());
+        }
+        if self.position_moved() && self.per_sample() && self.centroid_position() {
+            return Err(unsupported(crate::refusal::CENTROID_POSITION_PER_SAMPLE));
         }
         if self.per_sample() {
             for &dcl in &dcls {
@@ -161,6 +168,15 @@ impl Lowering<'_> {
         }) && self.stage == wcontainers_gpu::SourceStage::Pixel
             // With one sample every place is the centre.
             && self.variant.samples > 1
+    }
+
+    fn centroid_position(&self) -> bool {
+        self.stage == wcontainers_gpu::SourceStage::Pixel
+            && self.io.iter().any(|(_, io)| {
+                io.builtin == Some(builtin::POSITION)
+                    && io.location.is_none()
+                    && io.interpolation & interp::CENTROID != 0
+            })
     }
 
     fn per_sample(&self) -> bool {

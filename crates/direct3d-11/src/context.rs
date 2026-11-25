@@ -4,17 +4,17 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    AspectOps, Backend, BindingEntry, BindingResource, BufferRange, CONSTANTS_TEXTURE_WIDTH,
-    ClearValue, ColorAttachment, ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment,
+    AspectOps, BindingEntry, BindingResource, BufferRange, CONSTANTS_TEXTURE_WIDTH, ClearValue,
+    ColorAttachment, ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment,
     DispatchCall, DispatchGroups, DrawCall, DrawRange, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING,
-    EmptyPass, Extent, Features, Filter, Format, FormatKind, FormatUse, HELPER_SET, HelperValue,
-    IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc,
-    PassOps, PassTargets, Program, ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler,
-    ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage, StageSet, StencilOp,
-    StepMode, StoreOp, SystemValue, TEXEL_BUFFER_TEXTURE_WIDTH, Target, TargetInShader,
-    TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute,
-    VertexBinding, VertexLayoutDesc, VertexStream, ViewDimension, Viewport as GpuViewport,
-    WriteMode, helper_binding,
+    EmptyPass, Extent, FORMAT_FACTS, Features, Filter, Format, FormatKind, FormatUse, Gpu,
+    HELPER_SET, HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS,
+    Object, Origin, PassDesc, PassOps, PassTargets, Program, ReadSource, ReadState, RingKind,
+    SLOT_KINDS, SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage, SlotKind,
+    SlowPath, SourceStage, StageSet, StencilOp, StepMode, StoreOp, SystemValue,
+    TEXEL_BUFFER_TEXTURE_WIDTH, Target, TargetInShader, TextureRegion, TextureUsage,
+    TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
+    VertexStream, ViewDimension, Viewport as GpuViewport, WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -22,7 +22,8 @@ use crate::desc::{
     TexDim, TextureDesc, Viewport, level, map, topology, usage,
 };
 use crate::device::{
-    Device, HelperBlocks, Linked, Variant, ZERO_BYTES, gpu_buffer, integer_format, resolvable,
+    COUNTER_BYTES, Device, HelperBlocks, Linked, Variant, ZERO_BYTES, gpu_buffer, integer_format,
+    resolvable,
 };
 use crate::error::{Error, Result, WARNING_PREFIX, not_implemented};
 use crate::format;
@@ -50,11 +51,21 @@ pub const STAGES: usize = 6;
 
 /// Unordered access slots of the pixel and compute stages at feature level 11_0.
 pub const UAV_SLOTS: usize = 8;
+/// Constant buffer slots of a stage (`D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT`).
+const CONSTANT_BUFFER_SLOTS: usize = 14;
+/// Shader resource slots of a stage (`D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT`).
+pub(crate) const RESOURCE_SLOTS: usize = 128;
+/// Sampler slots of a stage (`D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT`).
+pub(crate) const SAMPLER_SLOTS: usize = 16;
+/// Render targets bound at once (`D3D11_SIMULTANEOUS_RENDER_TARGET_COUNT`).
+const TARGET_SLOTS: usize = 8;
+/// Stream output targets (`D3D11_SO_BUFFER_SLOT_COUNT`).
+const STREAM_OUTPUT_SLOTS: usize = 4;
 
 /// The binding set a stage's program reads its slots from.
 /// The bytes a constant buffer window of `(first, count)` 16-byte constants covers: offset and
 /// length, cut at the buffer's end.
-fn window_of<B: Backend>(c: &Buffer<B>, (first, count): (u32, u32)) -> (u64, u64) {
+fn window_of<B: Gpu>(c: &Buffer<B>, (first, count): (u32, u32)) -> (u64, u64) {
     let offset = u64::from(first) * 16;
     let length = (u64::from(count) * 16).min(c.size.get().saturating_sub(offset));
     (offset, length)
@@ -86,7 +97,7 @@ pub(crate) fn set_of(stage: usize) -> u32 {
 
 /// The interpolation the pixel shader `ps` reads its inputs with where it is not the default, by
 /// location: the stage before it writes its outputs so.
-fn interpolation<B: Backend>(ps: Option<&Shader<B>>) -> Vec<(u32, Interpolation)> {
+fn interpolation<B: Gpu>(ps: Option<&Shader<B>>) -> Vec<(u32, Interpolation)> {
     let mut interpolation: Vec<(u32, Interpolation)> = ps
         .iter()
         .flat_map(|p| &p.reflection.inputs)
@@ -106,19 +117,19 @@ pub(crate) const VERTEX_SLOTS: usize = 32;
 const VIEWPORTS: usize = 16;
 
 /// A clear recorded but not yet run: it becomes the next pass's load, or a `clear_texture`.
-struct PendingClear<B: Backend> {
+struct PendingClear<B: Gpu> {
     view: Rc<View<B>>,
     value: ClearValue,
 }
 
 /// A mapped subresource, released by `unmap`.
 pub struct Mapped {
-    pub data: *mut u8,
+    pub data: Shadow,
     pub row_pitch: u32,
     pub depth_pitch: u32,
 }
 
-pub struct ContextState<B: Backend> {
+pub struct ContextState<B: Gpu> {
     vs: Option<Rc<Shader<B>>>,
     ps: Option<Rc<Shader<B>>>,
     cs: Option<Rc<Shader<B>>>,
@@ -128,7 +139,7 @@ pub struct ContextState<B: Backend> {
     hs: Option<Rc<Shader<B>>>,
     ds: Option<Rc<Shader<B>>>,
     /// The stream output targets.
-    so_targets: [Option<Rc<Buffer<B>>>; 4],
+    so_targets: [Option<Rc<Buffer<B>>>; STREAM_OUTPUT_SLOTS],
     /// The vertex stage's set is made for the stage helper's compute programs.
     vertex_compute: bool,
     /// The domain stage's set is made for the stage helper's compute programs.
@@ -207,7 +218,7 @@ pub struct ContextState<B: Backend> {
     predication: Option<(Rc<crate::query::Query<B>>, bool)>,
 }
 
-impl<B: Backend> ContextState<B> {
+impl<B: Gpu> ContextState<B> {
     pub fn new() -> Self {
         ContextState {
             vs: None,
@@ -227,15 +238,15 @@ impl<B: Backend> ContextState<B> {
             topology: topology::UNDEFINED,
             vertex_buffers: vec![None; VERTEX_SLOTS],
             index: None,
-            constant_buffers: std::array::from_fn(|_| vec![None; 14]),
-            constant_ranges: std::array::from_fn(|_| vec![None; 14]),
-            resources: std::array::from_fn(|_| vec![None; 128]),
-            samplers: std::array::from_fn(|_| vec![None; 16]),
+            constant_buffers: std::array::from_fn(|_| vec![None; CONSTANT_BUFFER_SLOTS]),
+            constant_ranges: std::array::from_fn(|_| vec![None; CONSTANT_BUFFER_SLOTS]),
+            resources: std::array::from_fn(|_| vec![None; RESOURCE_SLOTS]),
+            samplers: std::array::from_fn(|_| vec![None; SAMPLER_SLOTS]),
             uavs: std::array::from_fn(|stage| match stage {
                 PIXEL | COMPUTE => vec![None; UAV_SLOTS],
                 _ => Vec::new(),
             }),
-            targets: vec![None; 8],
+            targets: vec![None; TARGET_SLOTS],
             depth: None,
             blend: None,
             blend_factor: [1.0; COLOR_COMPONENTS],
@@ -269,7 +280,7 @@ impl<B: Backend> ContextState<B> {
     }
 }
 
-impl<B: Backend> Default for ContextState<B> {
+impl<B: Gpu> Default for ContextState<B> {
     fn default() -> Self {
         Self::new()
     }
@@ -371,6 +382,9 @@ const ADJUST_WORDS: usize = 4;
 /// Where a pixel's centre lies within it, in pixels from its top left corner.
 const PIXEL_CENTRE: f32 = 0.5;
 
+/// Refused: a vertex and pixel program pair passing more values between stages than the back
+/// end's inter-stage locations hold after moving them (`VaryingsBeyondLimit`).
+const VARYINGS_BEYOND_LIMIT: &str = "more values between stages than the back end passes";
 /// Draws refused by name.
 pub(crate) const ALPHA_ANTIALIASED_LINES: &str = "alpha-antialiased lines of a geometry or domain stage, an adjacency topology or beside stream output (AntialiasedLinesAsQuads)";
 const LINES_WITHOUT_COMPUTE: &str =
@@ -506,7 +520,7 @@ fn half(e: Extent) -> Extent {
 }
 
 /// The back end's object a draw binds for an empty slot.
-enum Zero<B: Backend> {
+enum Zero<B: Gpu> {
     /// A buffer of zeros, bound for this many bytes.
     Buffer(B::Buffer, u64),
     View(B::TextureView),
@@ -602,12 +616,38 @@ pub(crate) fn split_depth_stencil(texel: u32, bytes: &[u8]) -> (Vec<u8>, Vec<u8>
     (depth, stencil)
 }
 
-/// Bytes of one indirect draw's arguments: four words, five for an indexed draw.
+/// The bits of the normalised depth formats, whose steps a depth bias counts in.
+const DEPTH16_BITS: u32 = 16;
+const DEPTH24_BITS: u32 = 24;
+/// What a depth bias clamp on a float depth target needs and no back end route gives.
+const FLOAT_DEPTH_BIAS_CLAMP: &str = "a depth bias clamp on float depth without the back end's";
+
+/// The bytes of one word of indirect arguments.
+const ARGUMENT_WORD_BYTES: usize = size_of::<u32>();
+/// Words of `D3D11_DRAW_INSTANCED_INDIRECT_ARGS`.
+const DRAW_ARGUMENT_WORDS: usize = 4;
+/// Words of `D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS`.
+const INDEXED_DRAW_ARGUMENT_WORDS: usize = 5;
+/// A dispatch's axes: its group counts, and the words of its indirect arguments.
+pub(crate) const DISPATCH_AXES: usize = 3;
+
+/// Bytes of one indirect draw's arguments.
 const fn indirect_bytes(indexed: bool) -> u32 {
-    if indexed { 20 } else { 16 }
+    let words = if indexed {
+        INDEXED_DRAW_ARGUMENT_WORDS
+    } else {
+        DRAW_ARGUMENT_WORDS
+    };
+    (words * ARGUMENT_WORD_BYTES) as u32
 }
 
-impl<B: Backend> Device<B> {
+/// Little-endian words read back from a buffer.
+fn argument_words<const N: usize>(bytes: &[u8]) -> [u32; N] {
+    let (words, _) = bytes.as_chunks::<ARGUMENT_WORD_BYTES>();
+    std::array::from_fn(|i| words.get(i).copied().map_or(0, u32::from_le_bytes))
+}
+
+impl<B: Gpu> Device<B> {
     pub fn vs_set_shader(&mut self, shader: Option<Rc<Shader<B>>>) {
         if !same(&self.ctx.vs, &shader) {
             self.ctx.vs = shader;
@@ -660,10 +700,10 @@ impl<B: Backend> Device<B> {
         buffers: &[Option<Rc<Buffer<B>>>],
         offsets: &[u32],
     ) -> Result<()> {
-        if buffers.len() > 4 {
+        if buffers.len() > STREAM_OUTPUT_SLOTS {
             return Err(Error::InvalidArg("more than four stream output targets"));
         }
-        let mut targets: [Option<Rc<Buffer<B>>>; 4] = Default::default();
+        let mut targets: [Option<Rc<Buffer<B>>>; STREAM_OUTPUT_SLOTS] = Default::default();
         for (i, b) in buffers.iter().enumerate() {
             let Some(b) = b else { continue };
             if b.desc.bind_flags & desc::bind::STREAM_OUTPUT == 0 {
@@ -880,10 +920,10 @@ impl<B: Backend> Device<B> {
         targets: &[Option<Rc<View<B>>>],
         depth: Option<Rc<View<B>>>,
     ) -> Result<()> {
-        if targets.len() > 8 {
+        if targets.len() > TARGET_SLOTS {
             return Err(Error::InvalidArg("more than eight render targets"));
         }
-        let mut new = vec![None; 8];
+        let mut new = vec![None; TARGET_SLOTS];
         new[..targets.len()].clone_from_slice(targets);
         let changed = !same(&self.ctx.depth, &depth)
             || new.iter().zip(&self.ctx.targets).any(|(a, b)| !same(a, b));
@@ -1024,7 +1064,7 @@ impl<B: Backend> Device<B> {
         let slice = self.gpu(slice)?;
         let id = self.id();
         let slice = Kept::new(slice, id, Object::Texture, &self.graveyard);
-        self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+        self.backend.record_slow_path(SlowPath::ReinterpretCopy);
         let cleared =
             self.backend
                 .clear_texture(&slice.handle, &desc, view.format, 0..1, 0..1, value);
@@ -1113,7 +1153,7 @@ impl<B: Backend> Device<B> {
         if self.predicated_out() || clears_depth && !(0.0..=1.0).contains(&depth) {
             return;
         }
-        let kind = view.format.kind();
+        let kind = FORMAT_FACTS[view.format as usize].kind;
         let has_stencil = matches!(kind, FormatKind::DepthStencil | FormatKind::Stencil);
         let value = ClearValue::DepthStencil {
             depth: (clears_depth && kind != FormatKind::Stencil).then(|| depth.to_bits()),
@@ -1407,7 +1447,7 @@ impl<B: Backend> Device<B> {
         if bytes == 0 {
             return Ok((0, 0));
         }
-        self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+        self.backend.record_slow_path(SlowPath::ReadBackWait);
         self.settle();
         let handle = buffer.handle();
         let rb = self.backend.read_back(&ReadSource::Buffer {
@@ -1588,7 +1628,7 @@ impl<B: Backend> Device<B> {
         if self.ctx.pass_open
             && (meets(&written, &self.ctx.pass_read) || meets(&read, &self.ctx.pass_written))
         {
-            self.backend.slow_paths().hit(SlowPath::UsageScopeSplit);
+            self.backend.record_slow_path(SlowPath::UsageScopeSplit);
             self.end_pass();
         }
         if !self.ctx.pass_open {
@@ -1650,7 +1690,7 @@ impl<B: Backend> Device<B> {
         // Targets on twins of their textures start from the texture's texels.
         for t in targets.iter().flatten() {
             if t.copied() && clear_of(t).is_none() {
-                self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+                self.backend.record_slow_path(SlowPath::ReinterpretCopy);
                 self.copy_twin(t, true);
             }
         }
@@ -1720,7 +1760,7 @@ impl<B: Backend> Device<B> {
                 Some(ClearValue::DepthStencil { depth, stencil }) => (depth, stencil),
                 _ => (None, None),
             };
-            let kind = v.format.kind();
+            let kind = FORMAT_FACTS[v.format as usize].kind;
             // An aspect a read-only view marks is only read by the pass's draws (their
             // depth-stencil blocks write nothing there), unless the pass clears it.
             fn ops<V>(clear: Option<V>, read_only: bool) -> AspectOps<V> {
@@ -1823,7 +1863,8 @@ impl<B: Backend> Device<B> {
             && self
                 .backend
                 .caps()
-                .has(Features::INDIRECT | Features::INDIRECT_FIRST_INSTANCE)
+                .features
+                .contains(Features::INDIRECT | Features::INDIRECT_FIRST_INSTANCE)
         {
             self.try_draw(Range::Indirect { indexed, offset }, 0, 1, Some(args))
         } else {
@@ -1837,25 +1878,23 @@ impl<B: Backend> Device<B> {
     }
 
     /// An indirect dispatch's group counts read back (`IndirectReadBack`), for pipeline statistics.
-    fn read_dispatch(&mut self, args: &Buffer<B>, offset: u32) -> Result<[u32; 3]> {
-        self.backend.slow_paths().hit(SlowPath::IndirectReadBack);
+    fn read_dispatch(&mut self, args: &Buffer<B>, offset: u32) -> Result<[u32; DISPATCH_AXES]> {
+        self.backend.record_slow_path(SlowPath::IndirectReadBack);
         self.settle();
         let handle = args.handle();
+        let mut bytes = [0u8; DISPATCH_AXES * ARGUMENT_WORD_BYTES];
         let rb = self.backend.read_back(&ReadSource::Buffer {
             buffer: &handle,
             offset: u64::from(offset),
-            size: 12,
+            size: bytes.len() as u64,
         });
         drop(handle);
         let rb = self.gpu(rb)?;
         if self.backend.read_state(&rb) == ReadState::Pending {
             self.backend.wait_read(&rb);
         }
-        let mut bytes = [0u8; 12];
         self.backend.finish_read(rb, &mut bytes);
-        Ok(std::array::from_fn(|i| {
-            u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into().unwrap())
-        }))
+        Ok(argument_words(&bytes))
     }
 
     /// An indirect draw's arguments read back (`IndirectReadBack`), as the range, first instance and
@@ -1867,7 +1906,7 @@ impl<B: Backend> Device<B> {
         offset: u32,
         indexed: bool,
     ) -> Result<(Range, u32, u32)> {
-        self.backend.slow_paths().hit(SlowPath::IndirectReadBack);
+        self.backend.record_slow_path(SlowPath::IndirectReadBack);
         self.settle();
         let size = indirect_bytes(indexed) as usize;
         let handle = args.handle();
@@ -1880,23 +1919,19 @@ impl<B: Backend> Device<B> {
         if self.backend.read_state(&rb) == ReadState::Pending {
             self.backend.wait_read(&rb);
         }
-        let mut bytes = [0u8; 20];
+        let mut bytes = [0u8; INDEXED_DRAW_ARGUMENT_WORDS * ARGUMENT_WORD_BYTES];
         self.backend.finish_read(rb, &mut bytes[..size]);
-        let word = |i: usize| u32::from_le_bytes(bytes[4 * i..4 * i + 4].try_into().unwrap());
-        // D3D11_DRAW_INSTANCED_INDIRECT_ARGS and D3D11_DRAW_INDEXED_INSTANCED_INDIRECT_ARGS.
         Ok(if indexed {
+            let [count, instances, start, base, first_instance] = argument_words(&bytes);
             let range = Range::Indexed {
-                count: word(0),
-                start: word(2),
-                base: word(3) as i32,
+                count,
+                start,
+                base: base as i32,
             };
-            (range, word(4), word(1))
+            (range, first_instance, instances)
         } else {
-            let range = Range::Vertices {
-                count: word(0),
-                start: word(2),
-            };
-            (range, word(3), word(1))
+            let [count, instances, start, first_instance] = argument_words(&bytes);
+            (Range::Vertices { count, start }, first_instance, instances)
         })
     }
 
@@ -1907,7 +1942,7 @@ impl<B: Backend> Device<B> {
                 "indirect arguments in a buffer not made for them",
             ));
         }
-        if !offset.is_multiple_of(4)
+        if !offset.is_multiple_of(ARGUMENT_WORD_BYTES as u32)
             || u64::from(offset) + u64::from(indirect_bytes(indexed))
                 > u64::from(args.desc.byte_width)
         {
@@ -1998,11 +2033,22 @@ impl<B: Backend> Device<B> {
         pk: StageVariant,
     ) -> Result<(Option<B::Shader>, Rc<Helpers>)> {
         let id = ps.map_or(BUILT_IN_PIXEL, |p| p.gpu.id);
-        if pk != StageVariant::default() && !self.variants.contains_key(&(id, pk)) {
+        let slots = self.backend.caps().limits.inter_stage_slots;
+        let moves = match ps.map(|p| crate::shader::input_moves(&p.reflection.inputs, slots)) {
+            None => Vec::new(),
+            Some(Some(moves)) => moves,
+            Some(None) => return self.varyings_beyond_limit(),
+        };
+        if (pk != StageVariant::default() || !moves.is_empty())
+            && !self.variants.contains_key(&(id, pk))
+        {
             let v = match ps {
                 Some(p) => {
+                    if !moves.is_empty() && pk.linked != 0 {
+                        return self.varyings_beyond_limit();
+                    }
                     let key = self.variant_key(p, pk, SourceStage::Pixel);
-                    self.convert_kept(&p.bytecode, SourceStage::Pixel, &key)?
+                    self.convert_kept(&p.bytecode, SourceStage::Pixel, &key, &moves)?
                 }
                 None => {
                     let key = pk.key(SourceStage::Pixel, &[], 0, &[]);
@@ -2034,7 +2080,18 @@ impl<B: Backend> Device<B> {
         // WebGPU and GLSL ES require the stages to agree on interpolation, which in Direct3D the
         // pixel shader alone chooses: the vertex shader is converted again to write its outputs so.
         let interpolation = interpolation(ps.map(|p| &**p));
-        if interpolation.is_empty() && vk == StageVariant::default() {
+        // Values past the back end's inter-stage locations move to free ones, as the pixel
+        // program's move (`Context::pixel_stage`).
+        let slots = self.backend.caps().limits.inter_stage_slots;
+        let moves = crate::shader::output_moves(
+            &vs.reflection.outputs,
+            ps.map_or(&[][..], |p| p.reflection.inputs.as_slice()),
+            slots,
+        );
+        let Some(moves) = moves.filter(|m| m.is_empty() || vk.linked == 0) else {
+            return self.varyings_beyond_limit();
+        };
+        if interpolation.is_empty() && vk == StageVariant::default() && moves.is_empty() {
             return Ok(());
         }
         let pulled = match &self.ctx.layout {
@@ -2048,19 +2105,29 @@ impl<B: Backend> Device<B> {
             pulled,
             ..self.variant_key(vs, vk, SourceStage::Vertex)
         };
-        let v = self.convert_kept(&vs.bytecode, SourceStage::Vertex, &variant)?;
+        let v = self.convert_kept(&vs.bytecode, SourceStage::Vertex, &variant, &moves)?;
         self.interpolated.insert(key, v);
         Ok(())
     }
 
-    /// `bytecode` converted as `key` and handed to the back end.
+    /// Refused: a vertex and pixel program pair passing more values than the back end's
+    /// inter-stage locations hold after moving them (`VaryingsBeyondLimit`).
+    fn varyings_beyond_limit<T>(&mut self) -> Result<T> {
+        self.backend.record_slow_path(SlowPath::VaryingsBeyondLimit);
+        not_implemented(VARYINGS_BEYOND_LIMIT)
+    }
+
+    /// `bytecode` converted as `key`, its stage values moved by `moves`
+    /// ([`crate::shader::relocate`]), and handed to the back end.
     fn convert_kept(
         &mut self,
         bytecode: &[u8],
         stage: SourceStage,
         key: &VariantKey,
+        moves: &[(u32, u32)],
     ) -> Result<Variant<B>> {
-        let c = crate::shader::convert_variant(bytecode, stage, key)?;
+        let mut c = crate::shader::convert_variant(bytecode, stage, key)?;
+        crate::shader::relocate(&mut c, moves)?;
         self.kept_variant(c)
     }
 
@@ -2098,8 +2165,9 @@ impl<B: Backend> Device<B> {
                 }
                 // The program filters through a border sampler, every address mode included, and
                 // mirrors once around plain samples.
-                let mirror = b.desc.address.contains(&5) && !caps.has(Features::MIRROR_ONCE);
-                if b.desc.address.contains(&4) && !caps.has(Features::BORDER_COLOR)
+                let mirror =
+                    b.desc.address.contains(&5) && !caps.features.contains(Features::MIRROR_ONCE);
+                if b.desc.address.contains(&4) && !caps.features.contains(Features::BORDER_COLOR)
                     || mirror && s.mirror_filtered & (1 << i) != 0
                 {
                     v.border_in_shader |= 1 << i;
@@ -2151,7 +2219,7 @@ impl<B: Backend> Device<B> {
             {
                 Some(ShaderView::Texture(view)) => {
                     view.decoded.is_none()
-                        && !caps.formats.get(view.format).contains(FormatUse::FILTER)
+                        && !caps.formats.uses[view.format as usize].contains(FormatUse::FILTER)
                 }
                 _ => false,
             };
@@ -2164,7 +2232,7 @@ impl<B: Backend> Device<B> {
         }
         (v.decoded, v.decoded_formats) = self.decoded_slots(stage, s);
         if v.stencil != 0 {
-            self.backend.slow_paths().hit(SlowPath::SwizzleInShader);
+            self.backend.record_slow_path(SlowPath::SwizzleInShader);
         }
         if matches!(stage, VERTEX | PIXEL) {
             v.constants_as_storage = self.constants_past_declared(stage, s);
@@ -2178,7 +2246,11 @@ impl<B: Backend> Device<B> {
     pub(crate) fn base_variant(&self) -> StageVariant {
         StageVariant {
             // Variants filtering in the program read level counts too.
-            texture_info: !self.backend.caps().has(Features::TEXTURE_LEVEL_QUERY),
+            texture_info: !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::TEXTURE_LEVEL_QUERY),
             ..StageVariant::default()
         }
     }
@@ -2242,7 +2314,7 @@ impl<B: Backend> Device<B> {
     /// Counts the slow paths `s`'s program takes by itself, whatever its variant.
     pub(super) fn program_paths(&mut self, s: &Shader<B>) {
         for &path in &s.reflection.slow_paths {
-            self.backend.slow_paths().hit(path);
+            self.backend.record_slow_path(path);
         }
     }
 
@@ -2347,7 +2419,7 @@ impl<B: Backend> Device<B> {
         if slots == 0 {
             return (0, 0);
         }
-        self.backend.slow_paths().hit(SlowPath::NormAsInteger);
+        self.backend.record_slow_path(SlowPath::NormAsInteger);
         (slots, self.format_list_id(formats))
     }
 
@@ -2455,17 +2527,17 @@ impl<B: Backend> Device<B> {
             depth.format,
             Format::Depth24Plus | Format::Depth24PlusStencil8
         );
-        let unclamped = r.depth_bias_clamp != 0.0 && !caps.has(Features::DEPTH_BIAS_CLAMP);
-        let float_steps = r.depth_bias != 0 && d24 && !caps.has(Features::DEPTH24_UNORM);
+        let unclamped =
+            r.depth_bias_clamp != 0.0 && !caps.features.contains(Features::DEPTH_BIAS_CLAMP);
+        let float_steps =
+            r.depth_bias != 0 && d24 && !caps.features.contains(Features::DEPTH24_UNORM);
         if (!unclamped && !float_steps) || !self.draws_triangles() {
             return Ok(None);
         }
         let bits = match depth.format {
-            Format::Depth16Unorm => 16,
-            _ if d24 => 24,
-            _ => {
-                return not_implemented("a depth bias clamp on float depth without the back end's");
-            }
+            Format::Depth16Unorm => DEPTH16_BITS,
+            _ if d24 => DEPTH24_BITS,
+            _ => return not_implemented(FLOAT_DEPTH_BIAS_CLAMP),
         };
         Ok(Some(1.0 / ((1u32 << bits) - 1) as f32))
     }
@@ -2478,7 +2550,11 @@ impl<B: Backend> Device<B> {
         let v = *self.ctx.viewports.first()?;
         let fractional = |f: f32| f.fract() != 0.0;
         let rounded = |o: f32| o < 0.0 && fractional(o);
-        let inexact = !self.backend.caps().has(Features::FRACTIONAL_VIEWPORT)
+        let inexact = !self
+            .backend
+            .caps()
+            .features
+            .contains(Features::FRACTIONAL_VIEWPORT)
             && [v.x, v.y, v.width, v.height].into_iter().any(fractional);
         if !inexact && (self.feature_level() >= level::L11_0 || !(rounded(v.x) || rounded(v.y))) {
             return None;
@@ -2656,7 +2732,7 @@ impl<B: Backend> Device<B> {
 
     /// Moves a buffer into a back-end buffer of `size` bytes whose bytes past its own are zero.
     fn grow(&mut self, b: &Buffer<B>, size: u64) -> Result<()> {
-        self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
+        self.backend.record_slow_path(SlowPath::ConstantBufferGrown);
         self.settle();
         let old = b.size.get();
         let new = self.backend.create_buffer(&gpu_buffer(&b.desc, size));
@@ -2669,7 +2745,9 @@ impl<B: Backend> Device<B> {
         b.grown.set(true);
         let mut shadow = b.shadow.borrow_mut();
         if !shadow.is_empty() {
-            shadow.resize(size as usize, 0);
+            let mut grown = vec![0; size as usize];
+            grown[..shadow.len()].copy_from_slice(shadow_bytes(&mut shadow));
+            *shadow = shadow_of(&mut grown);
         }
         Ok(())
     }
@@ -2725,7 +2803,7 @@ impl<B: Backend> Device<B> {
             self.settle();
             match &w.copy {
                 WindowCopy::Buffer(twin) => {
-                    self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
+                    self.backend.record_slow_path(SlowPath::ConstantBufferGrown);
                     if length > 0 {
                         self.backend
                             .copy_buffer(&c.handle(), offset, &twin.handle, 0, length);
@@ -2862,7 +2940,7 @@ impl<B: Backend> Device<B> {
     /// use and copied again where `b` was written since.
     fn texel_copy(&mut self, b: &Buffer<B>, format: Format) -> Result<B::TextureView> {
         let source = (b.writes.get(), b.gpu.borrow().id);
-        let (.., bytes) = format.block();
+        let (.., bytes) = FORMAT_FACTS[format as usize].block;
         let texels = TexelRows {
             count: b.desc.byte_width / bytes,
             bytes,
@@ -2916,8 +2994,7 @@ impl<B: Backend> Device<B> {
         if copy.copied.get() != Some(source) {
             self.settle();
             self.backend
-                .slow_paths()
-                .hit(SlowPath::TexelBufferAsTexture);
+                .record_slow_path(SlowPath::TexelBufferAsTexture);
             self.copy_rows(&b.handle(), 0, texels, &copy.texture.handle);
             copy.copied.set(Some(source));
         }
@@ -2992,12 +3069,16 @@ impl<B: Backend> Device<B> {
             (any(|v| v.filter_in_shader != 0), SlowPath::FilterInShader),
         ];
         for (_, path) in paths.iter().filter(|(taken, _)| *taken) {
-            self.backend.slow_paths().hit(*path);
+            self.backend.record_slow_path(*path);
         }
     }
 
     /// `Dispatch` and `DispatchIndirect`; one this front cannot serve removes the device.
-    pub fn dispatch(&mut self, groups: [u32; 3], indirect: Option<(&Rc<Buffer<B>>, u32)>) {
+    pub fn dispatch(
+        &mut self,
+        groups: [u32; DISPATCH_AXES],
+        indirect: Option<(&Rc<Buffer<B>>, u32)>,
+    ) {
         if let Err(e) = self.try_dispatch(groups, indirect) {
             self.lose(e);
         }
@@ -3005,7 +3086,7 @@ impl<B: Backend> Device<B> {
 
     fn try_dispatch(
         &mut self,
-        groups: [u32; 3],
+        groups: [u32; DISPATCH_AXES],
         indirect: Option<(&Rc<Buffer<B>>, u32)>,
     ) -> Result<()> {
         if self.predicated_out() {
@@ -3049,7 +3130,7 @@ impl<B: Backend> Device<B> {
             None => {
                 if varied && !self.variants.contains_key(&(cs.gpu.id, cv)) {
                     let key = self.variant_key(&cs, cv, SourceStage::Compute);
-                    let v = self.convert_kept(&cs.bytecode, SourceStage::Compute, &key)?;
+                    let v = self.convert_kept(&cs.bytecode, SourceStage::Compute, &key, &[])?;
                     self.variants.insert((cs.gpu.id, cv), v);
                 }
                 let (shader, helpers) = match self.variants.get(&(cs.gpu.id, cv)) {
@@ -3071,8 +3152,7 @@ impl<B: Backend> Device<B> {
         };
         if cs.typed.iter().any(|t| t.buffer) {
             self.backend
-                .slow_paths()
-                .hit(SlowPath::TexelBufferAsStorage);
+                .record_slow_path(SlowPath::TexelBufferAsStorage);
         }
         let helper_set = self.compute_helpers(&helpers)?;
         if !self.queries.statistics.is_empty() {
@@ -3192,13 +3272,16 @@ impl<B: Backend> Device<B> {
         else {
             return Err(Error::InvalidArg("a view without a counter"));
         };
-        if !offset.is_multiple_of(4) || u64::from(offset) + 4 > u64::from(dst.desc.byte_width) {
+        let count_bytes = COUNTER_BYTES as u64;
+        if !u64::from(offset).is_multiple_of(count_bytes)
+            || u64::from(offset) + count_bytes > u64::from(dst.desc.byte_width)
+        {
             return Err(Error::InvalidArg("a count written past the buffer"));
         }
         self.settle();
         dst.writes.set(dst.writes.get() + 1);
         self.backend
-            .copy_buffer(&c.handle, 0, &dst.handle(), u64::from(offset), 4);
+            .copy_buffer(&c.handle, 0, &dst.handle(), u64::from(offset), count_bytes);
         self.buffer_written(dst)
     }
 
@@ -3322,7 +3405,7 @@ impl<B: Backend> Device<B> {
         self.helper_blocks = None;
         self.compute_helpers = None;
         if v.twin.is_some() {
-            self.backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+            self.backend.record_slow_path(SlowPath::ReinterpretCopy);
             self.copy_twin(v, true);
         }
         for (&(origin, end), &offset) in boxes.iter().zip(&offsets) {
@@ -3438,7 +3521,10 @@ impl<B: Backend> Device<B> {
                     _ => (values, float),
                 };
                 let integer = v.decoded.is_none()
-                    && matches!(v.format.kind(), FormatKind::Uint | FormatKind::Sint);
+                    && matches!(
+                        FORMAT_FACTS[v.format as usize].kind,
+                        FormatKind::Uint | FormatKind::Sint
+                    );
                 if integer && float {
                     return not_implemented(
                         "a float clear of an unordered access view of an integer format",
@@ -3544,7 +3630,9 @@ impl<B: Backend> Device<B> {
             VERTEX if !self.ctx.vertex_compute => StageSet::VERTEX,
             DOMAIN if !self.ctx.domain_compute => StageSet::VERTEX,
             // A geometry shader's replay form is a vertex program (`GeometryAsReplay`).
-            GEOMETRY if !self.backend.caps().has(Features::COMPUTE) => StageSet::VERTEX,
+            GEOMETRY if !self.backend.caps().features.contains(Features::COMPUTE) => {
+                StageSet::VERTEX
+            }
             PIXEL => StageSet::FRAGMENT,
             _ => StageSet::COMPUTE,
         };
@@ -3657,7 +3745,7 @@ impl<B: Backend> Device<B> {
             if let Some(view) = bound
                 && let ShaderView::Texture(v) = &*view
                 && !matches!(
-                    v.format.kind(),
+                    FORMAT_FACTS[v.format as usize].kind,
                     FormatKind::Depth | FormatKind::DepthStencil
                 )
             {
@@ -3761,13 +3849,13 @@ impl<B: Backend> Device<B> {
         // Storage views the program reads through buffers of their texels.
         let mut through = Vec::new();
         for b in wanted().filter(|b| b.kind == SlotKind::Storage) {
-            if let (true, Some(Some(view))) = (
+            if let (Some(why), Some(Some(view))) = (
                 self.reads_through(stage, b.register),
                 self.ctx.uavs[stage].get(b.register as usize),
             ) && let ShaderView::Texture(v) = &**view
             {
                 let v = v.clone();
-                through.push(self.through_view(b.register, &v)?);
+                through.push(self.through_view(b.register, &v, why)?);
             }
         }
         self.ctx.through[stage] = through;
@@ -4145,8 +4233,7 @@ impl<B: Backend> Device<B> {
             }
         };
         self.backend
-            .slow_paths()
-            .hit(SlowPath::EarlyTestsPerPrimitive);
+            .record_slow_path(SlowPath::EarlyTestsPerPrimitive);
         let targets = self.ctx.targets.clone();
         let ps = self.ctx.ps.clone();
         let mut r = Ok(());
@@ -4284,8 +4371,8 @@ impl<B: Backend> Device<B> {
     /// The first element's byte in the bound range and the element count of the typed buffer view
     /// bound to `stage` at `binding`; none for an empty slot or a view of another kind.
     fn texel_view(&self, stage: usize, binding: u32) -> [u32; 2] {
-        let texture = SlotKind::Texture.first_binding();
-        let storage = SlotKind::Storage.first_binding();
+        let texture = SLOT_KINDS[SlotKind::Texture as usize].first_binding;
+        let storage = SLOT_KINDS[SlotKind::Storage as usize].first_binding;
         let view = match binding {
             b if (texture..storage).contains(&b) => {
                 self.ctx.resources[stage].get((b - texture) as usize)
@@ -4408,8 +4495,7 @@ impl<B: Backend> Device<B> {
                 HelperValue::TextureLevels { texture }
                 | HelperValue::TextureSamples { texture } => {
                     self.backend
-                        .slow_paths()
-                        .hit(SlowPath::TextureInfoInHelpers);
+                        .record_slow_path(SlowPath::TextureInfoInHelpers);
                     let view = match self.ctx.resources[stage]
                         .get(texture as usize)
                         .and_then(Option::as_deref)
@@ -4502,7 +4588,7 @@ impl<B: Backend> Device<B> {
             .iter()
             .any(|h| h.value == HelperValue::DrawBase)
         {
-            self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
+            self.backend.record_slow_path(SlowPath::DrawBaseInHelpers);
         }
         let align = self.backend.caps().limits.min_uniform_offset_alignment;
         let mut offsets = [0u64; 2];
@@ -4593,7 +4679,7 @@ impl<B: Backend> Device<B> {
             .depth
             .clone()
             .expect("early tests only with a depth-stencil view bound");
-        let stencil = if view.format.kind() == FormatKind::DepthStencil {
+        let stencil = if FORMAT_FACTS[view.format as usize].kind == FormatKind::DepthStencil {
             if view.stencil_aspect.borrow().is_none() {
                 let gpu = self.backend.create_view(
                     &view.texture.gpu.handle,
@@ -4636,7 +4722,43 @@ impl<B: Backend> Device<B> {
         let Some(vs) = self.ctx.vs.clone() else {
             return Ok(());
         };
-        if self.ctx.sample_mask & 1 == 0 || instances == 0 {
+        // Nor when the vertex shader reads an input the bound input layout, or none, does not
+        // give.
+        let given = |at: u32| {
+            self.ctx
+                .layout
+                .as_ref()
+                .is_some_and(|l| l.all.iter().any(|e| e.location == at))
+        };
+        if vs
+            .reflection
+            .inputs
+            .iter()
+            .any(|i| i.system.is_none() && !given(i.location))
+        {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                eprintln!(
+                    "{WARNING_PREFIX}: invalid: draws whose vertex shader reads an input the \
+                     input layout does not give are dropped"
+                );
+            });
+            return Ok(());
+        }
+        // Direct3D uses the mask's bits up to the targets' sample count, bit 0 alone without
+        // multisampling; a draw it leaves no sample of writes nothing.
+        let samples = self
+            .ctx
+            .targets
+            .iter()
+            .chain([&self.ctx.depth])
+            .flatten()
+            .map(|v| v.texture.desc.sample_count)
+            .max()
+            .unwrap_or(1);
+        let all = u32::MAX >> (32 - samples.min(32));
+        let mask = self.ctx.sample_mask & all;
+        if mask == 0 || instances == 0 {
             return Ok(());
         }
         let early = match self.early_tests(self.ctx.ps.as_ref())? {
@@ -4652,19 +4774,8 @@ impl<B: Backend> Device<B> {
         self.fit_depth_stencil()?;
         // A mask leaving out samples of multisampled targets draws through a twin of the raster
         // block made with it.
-        let samples = self
-            .ctx
-            .targets
-            .iter()
-            .chain([&self.ctx.depth])
-            .flatten()
-            .map(|v| v.texture.desc.sample_count)
-            .max()
-            .unwrap_or(1);
-        let all = u32::MAX >> (32 - samples.min(32));
-        let mask = self.ctx.sample_mask & all;
         let masks = samples > 1 && mask != all;
-        if masks && !self.backend.caps().has(Features::SAMPLE_MASK) {
+        if masks && !self.backend.caps().features.contains(Features::SAMPLE_MASK) {
             return not_implemented("a sample mask without the back end's (SampleMaskInShader)");
         }
         let depth_bias = self.bias_step()?.is_some();
@@ -4722,7 +4833,13 @@ impl<B: Backend> Device<B> {
                 .blend
                 .as_ref()
                 .is_some_and(|b| b.desc.dual_source());
-        if dual_source && !self.backend.caps().has(Features::DUAL_SOURCE_BLEND) {
+        if dual_source
+            && !self
+                .backend
+                .caps()
+                .features
+                .contains(Features::DUAL_SOURCE_BLEND)
+        {
             return not_implemented("dual-source blending without the back end's");
         }
         let target_samples = samples.min(u32::from(u8::MAX)) as u8;
@@ -4742,7 +4859,7 @@ impl<B: Backend> Device<B> {
             .unwrap_or(&self.defaults.raster)
             .desc
             .depth_clip
-            && !self.backend.caps().has(Features::DEPTH_CLAMP);
+            && !self.backend.caps().features.contains(Features::DEPTH_CLAMP);
         // Clip distances the back end lacks, applied by the pixel program
         // (`ClipDistanceInShader`), passed at the location the last stage before the rasteriser
         // (the vertex program, the domain program behind a hull shader, or a geometry stage's
@@ -4766,7 +4883,7 @@ impl<B: Backend> Device<B> {
             .as_ref()
             .is_some_and(|g| crate::shader::names_layer(&g.reflection.outputs));
         if aa_lines {
-            if !self.backend.caps().has(Features::COMPUTE) {
+            if !self.backend.caps().features.contains(Features::COMPUTE) {
                 return not_implemented(LINES_WITHOUT_COMPUTE);
             }
             match &ps {
@@ -4810,7 +4927,7 @@ impl<B: Backend> Device<B> {
         };
         let shader_viewport = self.viewport_in_shader();
         if shader_viewport.is_some() {
-            self.backend.slow_paths().hit(SlowPath::ViewportInShader);
+            self.backend.record_slow_path(SlowPath::ViewportInShader);
         }
         let vk = StageVariant {
             viewport_adjust: shader_viewport.is_some(),
@@ -4849,12 +4966,11 @@ impl<B: Backend> Device<B> {
         });
         if clip.is_some() {
             self.backend
-                .slow_paths()
-                .hit(SlowPath::ClipDistanceInShader);
+                .record_slow_path(SlowPath::ClipDistanceInShader);
         }
         let pk = if early || clip.is_some() {
             if early {
-                self.backend.slow_paths().hit(SlowPath::EarlyTestsInShader);
+                self.backend.record_slow_path(SlowPath::EarlyTestsInShader);
             }
             StageVariant {
                 samples: target_samples,
@@ -4864,20 +4980,19 @@ impl<B: Backend> Device<B> {
             pk
         };
         if clamps {
-            self.backend.slow_paths().hit(SlowPath::DepthClampInShader);
+            self.backend.record_slow_path(SlowPath::DepthClampInShader);
         }
         if depth_bias {
-            self.backend.slow_paths().hit(SlowPath::DepthBiasInShader);
+            self.backend.record_slow_path(SlowPath::DepthBiasInShader);
         }
         self.count_sampling_in_shader(&[&vk, &pk]);
         if vk.from_arguments {
             self.backend
-                .slow_paths()
-                .hit(SlowPath::DrawBaseFromArguments);
+                .record_slow_path(SlowPath::DrawBaseFromArguments);
         }
         if vk.pulled != 0 {
             for path in self.ctx.layout.iter().flat_map(|l| &l.pulled_paths) {
-                self.backend.slow_paths().hit(*path);
+                self.backend.record_slow_path(*path);
             }
         }
         if vs
@@ -4887,8 +5002,7 @@ impl<B: Backend> Device<B> {
             .any(|t| t.buffer)
         {
             self.backend
-                .slow_paths()
-                .hit(SlowPath::TexelBufferAsStorage);
+                .record_slow_path(SlowPath::TexelBufferAsStorage);
         }
         if self.ctx.hs.is_some() || self.ctx.ds.is_some() {
             return self.draw_tessellated(
@@ -4965,7 +5079,7 @@ impl<B: Backend> Device<B> {
         self.ctx.pulled_set = vk.pulled;
         self.update_set(PIXEL, &[], &helpers[1].relocated)?;
         for r in helpers.iter().flat_map(|h| &h.relocated) {
-            self.backend.slow_paths().hit(match r.read_as {
+            self.backend.record_slow_path(match r.read_as {
                 ConstantsReadAs::Storage => SlowPath::ConstantsAsStorage,
                 ConstantsReadAs::Texture => SlowPath::ConstantsAsTexture,
             });
@@ -5030,7 +5144,7 @@ impl<B: Backend> Device<B> {
                 let Some((t, list)) = adjacency_indices(self.ctx.topology, count) else {
                     return not_implemented("a topology without a geometry or hull shader");
                 };
-                self.backend.slow_paths().hit(SlowPath::AdjacencyDropped);
+                self.backend.record_slow_path(SlowPath::AdjacencyDropped);
                 let bytes: Vec<u8> = list.iter().flat_map(|i| i.to_le_bytes()).collect();
                 let mut offsets = [0u64];
                 let ring = self.backend.write_buffer_ring(
@@ -5116,9 +5230,11 @@ impl<B: Backend> Device<B> {
                         .as_ref()
                         .is_some_and(|l| l.elements.iter().any(|e| e.slot as usize == slot))
                 };
+                // Only the slots the back end fetches: those the vertex program fetches past its
+                // streams are bound as storage.
                 let vertex_buffers: [Option<VertexBinding<'_, B>>; VERTEX_SLOTS] =
                     std::array::from_fn(|slot| match (&vertex_handles[slot], &zero_stream) {
-                        (Some((b, offset)), _) => Some(VertexBinding {
+                        (Some((b, offset)), _) if read(slot) => Some(VertexBinding {
                             buffer: &b.handle,
                             offset: u64::from(*offset),
                         }),
@@ -5175,7 +5291,7 @@ impl<B: Backend> Device<B> {
                 let mut covered = Vec::new();
                 let scissors: &[ScissorRect] = match &shader_viewport {
                     Some(a) => {
-                        wcontainers_gpu::cut_scissors(scissors, a.pixels, &mut covered);
+                        wcontainers_shaders::front::cut_scissors(scissors, a.pixels, &mut covered);
                         &covered
                     }
                     None => scissors,
@@ -5184,7 +5300,7 @@ impl<B: Backend> Device<B> {
                 let mut cut = Vec::new();
                 let scissors: &[ScissorRect] = match ctx.fitted {
                     Some(area) => {
-                        wcontainers_gpu::cut_scissors(scissors, area, &mut cut);
+                        wcontainers_shaders::front::cut_scissors(scissors, area, &mut cut);
                         &cut
                     }
                     None => scissors,
@@ -5297,7 +5413,7 @@ impl<B: Backend> Device<B> {
                 // Measured in blocks: a block-compressed texture copies with an uncompressed one
                 // whose texels are its blocks.
                 let shape = |t: &TextureDesc, f: Format| {
-                    let (bw, bh, _) = f.block();
+                    let (bw, bh, _) = FORMAT_FACTS[f as usize].block;
                     (
                         t.dimension,
                         t.width.div_ceil(bw),
@@ -5360,6 +5476,13 @@ impl<B: Backend> Device<B> {
             }
             (Resource::Texture(d), Resource::Texture(s)) => {
                 copy_formats(d.desc.format, s.desc.format, self.feature_level())?;
+                // Multisampled textures are copied from 10_1; below it Direct3D drops the copy
+                // (measured on the RTX 3080).
+                if self.feature_level() < desc::level::L10_1
+                    && (d.desc.sample_count > 1 || s.desc.sample_count > 1)
+                {
+                    return Ok(());
+                }
                 // YUY2's pixel pairs are its texels; Direct3D drops an odd box or place.
                 let pairs = d.desc.format == format::YUY2;
                 let Some(src_box) = pixel_box(s.desc.format == format::YUY2, src_box) else {
@@ -5401,7 +5524,10 @@ impl<B: Backend> Device<B> {
                 };
                 // The destination's extent covers the same blocks; a block-compressed level is
                 // as large as its whole blocks.
-                let ((sbw, sbh, _), (dbw, dbh, _)) = (s.format.block(), d.format.block());
+                let ((sbw, sbh, _), (dbw, dbh, _)) = (
+                    FORMAT_FACTS[s.format as usize].block,
+                    FORMAT_FACTS[d.format as usize].block,
+                );
                 if at[0] + extent.width.div_ceil(sbw) * dbw > de.width.div_ceil(dbw) * dbw
                     || at[1] + extent.height.div_ceil(sbh) * dbh > de.height.div_ceil(dbh) * dbh
                     || at[2] + extent.depth_or_layers > de.depth_or_layers
@@ -5688,11 +5814,12 @@ impl<B: Backend> Device<B> {
                         size: u64::from(d.byte_width),
                     };
                     let mut staged = b.staged.borrow_mut();
-                    let shadow = &mut b.shadow.borrow_mut();
+                    let mut shadow = b.shadow.borrow_mut();
+                    let shadow = shadow_bytes(&mut shadow);
                     self.refresh(&mut staged, &src, None, shadow, reads, wait)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(b) as usize, 0, kind));
-                let data = b.shadow.borrow_mut().as_mut_ptr();
+                let data = b.shadow.borrow().clone();
                 Ok(Mapped {
                     data,
                     row_pitch: d.byte_width,
@@ -5725,11 +5852,12 @@ impl<B: Backend> Device<B> {
                     let second = second
                         .map(|(region, extent, how)| (ReadSource::Texture { region, extent }, how));
                     let second = second.as_ref().map(|(s, how)| (s, *how));
-                    self.refresh(&mut staged[s], &src, second, &mut shadow[s], reads, wait)?;
+                    let bytes = shadow_bytes(&mut shadow[s]);
+                    self.refresh(&mut staged[s], &src, second, bytes, reads, wait)?;
                 }
                 self.ctx.mapped.push((Rc::as_ptr(t) as usize, sub, kind));
                 Ok(Mapped {
-                    data: shadow[sub as usize].as_mut_ptr(),
+                    data: shadow[s].clone(),
                     row_pitch: row,
                     depth_pitch: row * rows,
                 })
@@ -5827,14 +5955,14 @@ impl<B: Backend> Device<B> {
                 self.flush();
                 return Err(Error::StillDrawing);
             }
-            self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+            self.backend.record_slow_path(SlowPath::ReadBackWait);
             self.backend.wait_read(&rb);
             if let Some(s) = &stencil_rb {
                 self.backend.wait_read(s);
             }
         }
         if !reads {
-            self.backend.slow_paths().hit(SlowPath::StagingRefreshed);
+            self.backend.record_slow_path(SlowPath::StagingRefreshed);
         }
         match (stencil_rb, second.map(|s| s.1)) {
             (None, _) => self.backend.finish_read(rb, shadow),
@@ -5891,7 +6019,7 @@ impl<B: Backend> Device<B> {
             return;
         }
         self.before_write();
-        self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
+        self.backend.record_slow_path(SlowPath::MappedUploadWhole);
         match resource {
             Resource::Buffer(b) => {
                 b.writes.set(b.writes.get() + 1);
@@ -5900,14 +6028,16 @@ impl<B: Backend> Device<B> {
                     map::WRITE_NO_OVERWRITE => WriteMode::NoOverwrite,
                     _ => WriteMode::Ordered,
                 };
+                let mut shadow = b.shadow.borrow_mut();
                 self.backend
-                    .write_buffer(&b.handle(), 0, &b.shadow.borrow(), mode);
+                    .write_buffer(&b.handle(), 0, shadow_bytes(&mut shadow), mode);
             }
             Resource::Texture(t) => {
                 let (region, extent) = t.whole(sub).expect("a subresource the map checked");
                 let (row, rows, _) = t.packed(region.mip);
                 self.end_pass();
-                let shadow = &t.shadow.borrow()[sub as usize];
+                let mut shadows = t.shadow.borrow_mut();
+                let shadow: &[u8] = shadow_bytes(&mut shadows[sub as usize]);
                 let (stencil, texel) = match t.second_region(sub) {
                     None => {
                         self.backend.write_texture(
@@ -6037,7 +6167,7 @@ impl<B: Backend> Device<B> {
 }
 
 /// The same range again, for a draw's call built twice.
-fn same_range<'a, B: Backend>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
+fn same_range<'a, B: Gpu>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
     match *r {
         DrawRange::Vertices {
             first,
@@ -6071,7 +6201,7 @@ fn same_range<'a, B: Backend>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
 /// One element of `format` holding the low bits of each of `values` in its channel, as
 /// `ClearUnorderedAccessViewUint` writes it: formats whose channels are stored in RGBA order.
 fn uint_element(format: Format, values: [u32; 4]) -> Result<Vec<u8>> {
-    let (_, _, bytes) = format.block();
+    let (_, _, bytes) = FORMAT_FACTS[format as usize].block;
     let Some(bits) = channel_bits(format) else {
         return not_implemented(CLEAR_OF_PACKED_FORMAT);
     };
@@ -6175,7 +6305,7 @@ fn pixel_rect([l, t, r, b]: Rect) -> ScissorRect {
 
 /// A target view's clear value of `color`: integer formats take each value as a target clear
 /// converts it.
-fn color_value<B: Backend>(view: &View<B>, color: Color) -> ClearValue {
+fn color_value<B: Gpu>(view: &View<B>, color: Color) -> ClearValue {
     ClearValue::Color(if let Some(f) = view.decoded {
         color.map(|c| format::encode_norm(f, c))
     } else if integer_format(view.format) {
@@ -6229,7 +6359,7 @@ fn integer_clear(
 ) -> [u32; COLOR_COMPONENTS] {
     // Every integer format stores its channels in RGBA order.
     let bits = channel_bits(format).unwrap_or_else(|| vec![u32::BITS; COLOR_COMPONENTS]);
-    let signed = format.kind() == FormatKind::Sint;
+    let signed = FORMAT_FACTS[format as usize].kind == FormatKind::Sint;
     std::array::from_fn(|i| {
         let Some(&b) = bits.get(i) else { return 0 };
         let (min, max) = if signed {
@@ -6244,8 +6374,8 @@ fn integer_clear(
 /// The bits of each channel of `format` in the order they are stored, for formats whose channels
 /// are stored in RGBA order; none for the packed and BGR ones.
 fn channel_bits(format: Format) -> Option<Vec<u32>> {
-    let (_, _, bytes) = format.block();
-    let mask = format.components();
+    let (_, _, bytes) = FORMAT_FACTS[format as usize].block;
+    let mask = FORMAT_FACTS[format as usize].components;
     let n = mask.count_ones();
     match format {
         Format::Rgb10a2Unorm | Format::Rgb10a2Uint => Some(RGB10A2_BITS.to_vec()),

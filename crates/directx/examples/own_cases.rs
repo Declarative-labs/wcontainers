@@ -4,6 +4,8 @@
 //! views' rectangles and of whole views of buffers and of 1D, 2D and 3D textures), `cs_min_lod` (a compute shader sampling, loading and
 //! gathering under `SetResourceMinLOD` clamps), `typed` (stores to `R11G11B10_FLOAT` and `R16G16_UNORM` storage
 //! views), `split` (a pixel shader's storage view read by the next draw on the same targets),
+//! `stage_registers` (32 input slots, 31 values passed between stages, and a draw with inputs but
+//! no input layout),
 //! `packed_targets` (16-bit packed targets drawn, blended, multisampled, resolved and their mips
 //! generated), `small_formats` (the 8-bit alpha, two-pixel and 16-bit packed formats' textures of
 //! each dimension read, and the targets among them drawn, at any level),
@@ -20,8 +22,10 @@
 //! pixel shader, depth clamped and clipped), `aa_lines` (alpha-antialiased lines
 //! blended by their coverage), `aa_strip_indexed` (the same as an indexed strip),
 //! `format_support` (both words of every format's support), `ms_depth_read` (multisampled depth
-//! textures made for reading and their views) and `bgrx` (what a vertex shader reads from a
-//! `B8G8R8X8_UNORM` element). A second argument, `10_1` or `10_0`, asks for that feature level
+//! textures made for reading and their views), `slots` (a pixel shader reading 25 shader
+//! resource views, the last at t127, and the samplers s0 and s15), `bgrx` (what a vertex
+//! shader reads from a `B8G8R8X8_UNORM` element) and `divisions` (quotients of values read at run
+//! time). A second argument, `10_1` or `10_0`, asks for that feature level
 //! in place of 11_0. Shaders are compiled by
 //! the system's d3dcompiler_47.dll. Prints each answer and the resources' bytes as hex, for
 //! comparing with real Direct3D line by line.
@@ -106,6 +110,7 @@ fn main() -> windows::core::Result<()> {
     };
     let (device, context): (ID3D11Device, ID3D11DeviceContext) =
         (device.unwrap(), context.unwrap());
+    let removed = || code(unsafe { device.GetDeviceRemovedReason() });
 
     struct Tex {
         w: u32,
@@ -246,11 +251,17 @@ fn main() -> windows::core::Result<()> {
         };
         v
     };
+    // The vertex and pixel shader models of the device's level.
+    let models = match level {
+        D3D_FEATURE_LEVEL_10_0 => (s!("vs_4_0"), s!("ps_4_0")),
+        D3D_FEATURE_LEVEL_10_1 => (s!("vs_4_1"), s!("ps_4_1")),
+        _ => (s!("vs_5_0"), s!("ps_5_0")),
+    };
     let vs = |src: &str| {
         let mut out = None;
         unsafe {
             device
-                .CreateVertexShader(&compile(src, s!("vs_5_0")), None, Some(&mut out))
+                .CreateVertexShader(&compile(src, models.0), None, Some(&mut out))
                 .unwrap()
         };
         out
@@ -259,7 +270,7 @@ fn main() -> windows::core::Result<()> {
         let mut out = None;
         unsafe {
             device
-                .CreatePixelShader(&compile(src, s!("ps_5_0")), None, Some(&mut out))
+                .CreatePixelShader(&compile(src, models.1), None, Some(&mut out))
                 .unwrap()
         };
         out
@@ -306,6 +317,56 @@ fn main() -> windows::core::Result<()> {
         };
         b
     };
+    let sampler_state =
+        |desc: &D3D11_SAMPLER_DESC| -> windows::core::Result<Option<ID3D11SamplerState>> {
+            let mut s = None;
+            unsafe { device.CreateSamplerState(desc, Some(&mut s))? };
+            Ok(s)
+        };
+    // Runs `shader` in `groups` with `views` from t0, `samplers` from s0 and `stores` from u0, and
+    // takes the views and the stores away after.
+    let dispatch = |shader: &Option<ID3D11ComputeShader>,
+                    views: &[Option<ID3D11ShaderResourceView>],
+                    samplers: &[Option<ID3D11SamplerState>],
+                    stores: &[Option<ID3D11UnorderedAccessView>],
+                    (x, y, z): (u32, u32, u32)| {
+        let (no_views, no_stores) = (vec![None; views.len()], vec![None; stores.len()]);
+        let count = stores.len() as u32;
+        unsafe {
+            context.CSSetShader(shader.as_ref(), None);
+            context.CSSetShaderResources(0, Some(views));
+            context.CSSetSamplers(0, Some(samplers));
+            context.CSSetUnorderedAccessViews(0, count, Some(stores.as_ptr()), None);
+            context.Dispatch(x, y, z);
+            context.CSSetUnorderedAccessViews(0, count, Some(no_stores.as_ptr()), None);
+            context.CSSetShaderResources(0, Some(&no_views));
+        }
+    };
+    // Draws a triangle of `vertex` covering `target` with `pixel`, the constant buffers
+    // `constants` (vertex, pixel) at b0 and each run of `views` and `samplers` from its first
+    // slot, and takes the views and the target away after.
+    let draw = |target: &Option<ID3D11RenderTargetView>,
+                (vertex, pixel): (&Option<ID3D11VertexShader>, &Option<ID3D11PixelShader>),
+                [vertex_constants, pixel_constants]: [&Option<ID3D11Buffer>; 2],
+                views: &[(u32, &[Option<ID3D11ShaderResourceView>])],
+                samplers: &[(u32, &[Option<ID3D11SamplerState>])]| unsafe {
+        context.OMSetRenderTargets(Some(std::slice::from_ref(target)), None);
+        context.VSSetShader(vertex.as_ref(), None);
+        context.VSSetConstantBuffers(0, Some(std::slice::from_ref(vertex_constants)));
+        context.PSSetConstantBuffers(0, Some(std::slice::from_ref(pixel_constants)));
+        context.PSSetShader(pixel.as_ref(), None);
+        for &(first, run) in views {
+            context.PSSetShaderResources(first, Some(run));
+        }
+        for &(first, run) in samplers {
+            context.PSSetSamplers(first, Some(run));
+        }
+        context.Draw(3, 0);
+        for &(first, run) in views {
+            context.PSSetShaderResources(first, Some(&vec![None; run.len()]));
+        }
+        context.OMSetRenderTargets(None, None);
+    };
     unsafe { context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST) };
 
     match case.as_str() {
@@ -338,6 +399,21 @@ fn main() -> windows::core::Result<()> {
                     unsafe { device.CheckMultisampleQualityLevels(DXGI_FORMAT(format), 8) };
                 let count = levels.as_ref().copied().unwrap_or(0);
                 println!("msq8 {format} {:#010x} {count}", code(levels.map(|_| ())));
+                // The other counts targets of the format take.
+                let other: Vec<String> = (2..=D3D11_MAX_MULTISAMPLE_SAMPLE_COUNT)
+                    .filter(|n| ![4, 8].contains(n))
+                    .filter(|&n| {
+                        unsafe { device.CheckMultisampleQualityLevels(DXGI_FORMAT(format), n) }
+                            .is_ok_and(|l| l > 0)
+                    })
+                    .map(|n| n.to_string())
+                    .collect();
+                let other = if other.is_empty() {
+                    "-".to_string()
+                } else {
+                    other.join(",")
+                };
+                println!("msqo {format} {other}");
             }
             let mut options2 = D3D11_FEATURE_DATA_D3D11_OPTIONS2::default();
             let r = unsafe {
@@ -366,9 +442,7 @@ fn main() -> windows::core::Result<()> {
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
-                let mut s = None;
-                unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
-                s
+                sampler_state(&desc).unwrap()
             };
             let sampler = |filter| addressed(filter, D3D11_TEXTURE_ADDRESS_CLAMP);
             let (point, linear) = (
@@ -439,16 +513,13 @@ fn main() -> windows::core::Result<()> {
                     },
                     None,
                 )?;
-                unsafe {
-                    context.CSSetShader(read.as_ref(), None);
-                    context.CSSetShaderResources(0, Some(&[srv(&small, DXGI_FORMAT_UNKNOWN)]));
-                    context.CSSetSamplers(0, Some(&[point.clone(), linear.clone()]));
-                    let views = [uav(&out)];
-                    context.CSSetUnorderedAccessViews(0, 1, Some(views.as_ptr()), None);
-                    context.Dispatch(1, 1, 1);
-                    context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
-                    context.CSSetShaderResources(0, Some(&[None]));
-                }
+                dispatch(
+                    &read,
+                    &[srv(&small, DXGI_FORMAT_UNKNOWN)],
+                    &[point.clone(), linear.clone()],
+                    &[uav(&out)],
+                    (1, 1, 1),
+                );
                 print(&format!("{name} gathers and samples"), &out, 16);
                 // Texel (x, y, z)'s channel c holds (x + 2y + 4z + c) / 4, so a channel's texels
                 // span 7/4; each of the three weights may be off by 1/256 of that span.
@@ -482,15 +553,8 @@ fn main() -> windows::core::Result<()> {
                         None,
                         Some(&mut view),
                     )?;
-                    context.CSSetShader(read3.as_ref(), None);
-                    context.CSSetShaderResources(0, Some(&[view]));
-                    context.CSSetSamplers(0, Some(&volume_samplers));
-                    let views = [uav(&out)];
-                    context.CSSetUnorderedAccessViews(0, 1, Some(views.as_ptr()), None);
-                    context.Dispatch(1, 1, 1);
-                    context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
-                    context.CSSetShaderResources(0, Some(&[None]));
                 }
+                dispatch(&read3, &[view], &volume_samplers, &[uav(&out)], (1, 1, 1));
                 print(&format!("weighted {tolerance} {name} 3D samples"), &out, 16);
                 let desc = D3D11_TEXTURE2D_DESC {
                     Width: 4,
@@ -557,9 +621,7 @@ fn main() -> windows::core::Result<()> {
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
-                let mut s = None;
-                unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
-                s
+                sampler_state(&desc).unwrap()
             };
             let samplers = [
                 sampler(D3D11_FILTER_MIN_MAG_MIP_POINT),
@@ -607,16 +669,8 @@ fn main() -> windows::core::Result<()> {
             };
             let (exact, filtered) = (made(3)?, made(1)?);
             let compute = |what: &str, shader: &Option<ID3D11ComputeShader>, view| {
-                unsafe {
-                    context.CSSetShader(shader.as_ref(), None);
-                    context.CSSetShaderResources(0, Some(&[view]));
-                    context.CSSetSamplers(0, Some(&samplers));
-                    let views = [uav(&exact), uav(&filtered)];
-                    context.CSSetUnorderedAccessViews(0, 2, Some(views.as_ptr()), None);
-                    context.Dispatch(1, 1, 1);
-                    context.CSSetUnorderedAccessViews(0, 2, Some([None, None].as_ptr()), None);
-                    context.CSSetShaderResources(0, Some(&[None]));
-                }
+                let stores = [uav(&exact), uav(&filtered)];
+                dispatch(shader, &[view], &samplers, &stores, (1, 1, 1));
                 print(what, &exact, 16);
                 print(&format!("weighted {tolerance} {what}"), &filtered, 16);
             };
@@ -756,6 +810,77 @@ fn main() -> windows::core::Result<()> {
                     println!("view {} {:#010x}", view.0, code(r));
                 }
             }
+        }
+        "slots" => {
+            // One pixel shader reading a stage's last shader resource view (t127) through its
+            // last sampler (s15) beside 24 more views and the first sampler: the target's red
+            // holds their weighted sum.
+            const VIEWS: usize = 24;
+            let texture = Tex {
+                w: 1,
+                h: 1,
+                format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                samples: 1,
+                bind: D3D11_BIND_SHADER_RESOURCE,
+            };
+            let views = (0..=VIEWS)
+                .map(|i| {
+                    let texel = [(i as u8 + 1) * 4, 0, 0, u8::MAX];
+                    make(&texture, Some((texel.as_slice(), 4)))
+                        .map(|t| srv(&t, DXGI_FORMAT_UNKNOWN))
+                })
+                .collect::<windows::core::Result<Vec<_>>>()?;
+            let mut source = String::new();
+            for i in 0..VIEWS {
+                source += &format!("Texture2D t{i} : register(t{i});\n");
+            }
+            source += "Texture2D last : register(t127);
+                SamplerState first : register(s0);
+                SamplerState latest : register(s15);
+                float4 main(float4 p : SV_Position) : SV_Target {
+                    float a = last.SampleLevel(latest, float2(0.5, 0.5), 0).r * 100
+                        + t1.SampleLevel(first, float2(0.5, 0.5), 0).r * 1000;\n";
+            for i in 0..VIEWS {
+                source += &format!("a += t{i}.Load(int3(0, 0, 0)).r * {};\n", i + 1);
+            }
+            source += "return float4(a, 0, 0, 1); }";
+            let pixel = ps(&source);
+            let vertex = vs("float4 main(uint id : SV_VertexID) : SV_Position {
+                float2 uv = float2((id << 1) & 2, id & 2);
+                return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+            }");
+            let sampler_desc = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_MIP_POINT,
+                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                MaxAnisotropy: 1,
+                MaxLOD: f32::MAX,
+                ..Default::default()
+            };
+            // Made holding -1 in each component, which a draw that did not run leaves.
+            let unwritten: Vec<u8> = [-1.0f32; 4].iter().flat_map(|v| v.to_le_bytes()).collect();
+            let target = make(
+                &Tex {
+                    w: 1,
+                    h: 1,
+                    format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    samples: 1,
+                    bind: D3D11_BIND_RENDER_TARGET,
+                },
+                Some((&unwritten, 16)),
+            )?;
+            viewport(1, 1);
+            let sampler = [sampler_state(&sampler_desc)?];
+            draw(
+                &rtv(&target),
+                (&vertex, &pixel),
+                [&None, &None],
+                &[(0, &views[..VIEWS]), (127, &views[VIEWS..])],
+                &[(0, &sampler), (15, &sampler)],
+            );
+            println!("slots: removed {:#010x}", removed());
+            print("slots", &target, 16);
         }
         "bgrx" => {
             // One point whose B8G8R8X8_UNORM element (its X byte not 255) the vertex shader
@@ -975,11 +1100,12 @@ fn main() -> windows::core::Result<()> {
                     )
                 };
             }
-            unsafe { context.Unmap(&s, 0) };
-            unsafe { context.CopyResource(&t, &s) };
+            unsafe {
+                context.Unmap(&s, 0);
+                context.CopyResource(&t, &s);
+            }
             print("written by the CPU", &t, texel);
-            let removed = unsafe { device.GetDeviceRemovedReason() };
-            println!("removed: {:#010x}", code(removed));
+            println!("removed: {:#010x}", removed());
         }
         "atomics" => {
             // Each texel gets four threads' operations, which commute, so the result is fixed.
@@ -1524,8 +1650,7 @@ fn main() -> windows::core::Result<()> {
                     );
                 }
             }
-            let removed = code(unsafe { device.GetDeviceRemovedReason() });
-            println!("clear view removed {removed:#010x}");
+            println!("clear view removed {:#010x}", removed());
         }
         "cs_min_lod" => {
             // An 8x8 chain of four levels; texel (x, y) of level l is (l * 60, x * 32, y * 32, 255).
@@ -1577,9 +1702,7 @@ fn main() -> windows::core::Result<()> {
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
-                let mut s = None;
-                unsafe { device.CreateSamplerState(&desc, Some(&mut s))? };
-                s
+                sampler_state(&desc)?
             };
             // Each clamp's five results in a row: two samples, two loads and a gather.
             let clamps = [1.5f32, 5.0, 0.25];
@@ -1641,12 +1764,8 @@ fn main() -> windows::core::Result<()> {
             let a = make(&at(DXGI_FORMAT_R11G11B10_FLOAT), None)?;
             let b = make(&at(DXGI_FORMAT_R16G16_UNORM), None)?;
             let c = make(&at(DXGI_FORMAT_R16G16B16A16_FLOAT), None)?;
-            unsafe {
-                context.CSSetShader(shader.as_ref(), None);
-                let views = [uav(&a), uav(&b), uav(&c)];
-                context.CSSetUnorderedAccessViews(0, 3, Some(views.as_ptr()), None);
-                context.Dispatch(1, 1, 1);
-            }
+            let stores = [uav(&a), uav(&b), uav(&c)];
+            dispatch(&shader, &[], &[], &stores, (1, 1, 1));
             print("R11G11B10_FLOAT", &a, 4);
             print("R16G16_UNORM", &b, 4);
             print("R16G16B16A16_FLOAT", &c, 8);
@@ -1678,18 +1797,664 @@ fn main() -> windows::core::Result<()> {
                 &at(DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_UNORDERED_ACCESS),
                 None,
             )?;
-            unsafe {
-                context.CSSetShader(shader.as_ref(), None);
-                context.CSSetUnorderedAccessViews(0, 1, Some([uav(&a)].as_ptr()), None);
-                context.Dispatch(1, 1, 1);
-                context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
-                context.CSSetShader(read.as_ref(), None);
-                context.CSSetShaderResources(0, Some(&[srv(&a, DXGI_FORMAT_UNKNOWN)]));
-                context.CSSetUnorderedAccessViews(0, 1, Some([uav(&o)].as_ptr()), None);
-                context.Dispatch(1, 1, 1);
-            }
+            // Typed loads of the view, after the reads: each texel loaded whole, changed and stored.
+            let loaded = cs("RWTexture2D<unorm float4> a : register(u0);
+                [numthreads(4, 4, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    float4 v = a[id.xy];
+                    a[id.xy] = float4(0.5, 0.5, 0.5, v.a * 0.5 + v.r + v.g * 0.25 + 0.125);
+                }");
+            dispatch(&shader, &[], &[], &[uav(&a)], (1, 1, 1));
+            let view = [srv(&a, DXGI_FORMAT_UNKNOWN)];
+            dispatch(&read, &view, &[], &[uav(&o)], (1, 1, 1));
             print("A8_UNORM", &a, 1);
             print("read", &o, 4);
+            dispatch(&loaded, &[], &[], &[uav(&a)], (1, 1, 1));
+            print("A8_UNORM loaded and stored", &a, 1);
+        }
+        // A colour map of eight texels sampled bilinearly and clamped at a coordinate a program
+        // works out as the fraction of a count over the count it was made from (just below 1 on
+        // real Direct3D), and at fixed coordinates around both edges; the coordinate's bits too.
+        "colour_map_edge" => {
+            let program = cs("cbuffer c : register(b0) { float4 limits; }
+                Texture2D map : register(t0);
+                SamplerState s : register(s0);
+                RWTexture2D<float4> o : register(u0);
+                RWTexture2D<uint> bits : register(u1);
+                [numthreads(8, 1, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    uint count = (uint)limits.z * 4;
+                    float worked = frac((float)count / limits.z);
+                    const float fixed[8] =
+                        { 0, 0.9999998, 1, 0.9375, 0, 0.5, 1.0625, -0.0625 };
+                    float u = id.x == 0 ? worked : fixed[id.x];
+                    o[id.xy] = map.SampleLevel(s, float2(u, 0), 0);
+                    bits[id.xy] = asuint(u);
+                }");
+            let bytes: Vec<u8> = COLOUR_MAP.iter().flat_map(|t| t.to_le_bytes()).collect();
+            let at = |format, bind| Tex {
+                w: 8,
+                h: 1,
+                format,
+                samples: 1,
+                bind,
+            };
+            let map = make(
+                &at(DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE),
+                Some((&bytes, 32)),
+            )?;
+            let o = make(
+                &at(DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_UNORDERED_ACCESS),
+                None,
+            )?;
+            let bits = make(&at(DXGI_FORMAT_R32_UINT, D3D11_BIND_UNORDERED_ACCESS), None)?;
+            let sampler = {
+                let desc = D3D11_SAMPLER_DESC {
+                    Filter: D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
+                    AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                    MaxAnisotropy: 1,
+                    ComparisonFunc: D3D11_COMPARISON_NEVER,
+                    BorderColor: [1.0; 4],
+                    MinLOD: -f32::MAX,
+                    MaxLOD: f32::MAX,
+                    ..Default::default()
+                };
+                sampler_state(&desc)?
+            };
+            let iterations = INSIDE_LOOPS / 4.0;
+            let limits = constants([1280.0, 720.0, iterations, 0.0]);
+            unsafe {
+                context.CSSetShader(program.as_ref(), None);
+                context.CSSetConstantBuffers(0, Some(&[limits]));
+                context.CSSetShaderResources(0, Some(&[srv(&map, DXGI_FORMAT_UNKNOWN)]));
+                context.CSSetSamplers(0, Some(&[sampler]));
+                context.CSSetUnorderedAccessViews(0, 2, Some([uav(&o), uav(&bits)].as_ptr()), None);
+                context.Dispatch(1, 1, 1);
+            }
+            print("sampled", &o, 4);
+            print("coordinates", &bits, 4);
+            let fractal = cs(FRACTAL);
+            // As the program runs it: its window over a 1280 by 720 target of 32-bit floats, its
+            // constants written through a mapped dynamic buffer; eight points of the middle row
+            // copied out, inside the set.
+            let (w, h) = (1280, 720);
+            let target = make(
+                &Tex {
+                    w,
+                    h,
+                    format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    samples: 1,
+                    bind: D3D11_BIND_UNORDERED_ACCESS,
+                },
+                None,
+            )?;
+            let block = make(
+                &Tex {
+                    w: 8,
+                    h: 1,
+                    format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    samples: 1,
+                    bind: D3D11_BIND_SHADER_RESOURCE,
+                },
+                None,
+            )?;
+            let desc = D3D11_BUFFER_DESC {
+                ByteWidth: 32,
+                Usage: D3D11_USAGE_DYNAMIC,
+                BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+                CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+                ..Default::default()
+            };
+            let values: [f32; 8] = [w as f32, h as f32, iterations, 0.0, 4.0, 2.25, -0.65, 0.0];
+            let mut window = None;
+            let group = 8;
+            unsafe {
+                device.CreateBuffer(&desc, None, Some(&mut window))?;
+                let buffer = window.as_ref().unwrap();
+                let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                context.Map(buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))?;
+                std::ptr::copy_nonoverlapping(values.as_ptr(), mapped.pData.cast(), values.len());
+                context.Unmap(buffer, 0);
+                context.CSSetShader(fractal.as_ref(), None);
+                context.CSSetConstantBuffers(0, Some(&[window]));
+                context.CSSetUnorderedAccessViews(0, 2, Some([uav(&target), None].as_ptr()), None);
+                context.Dispatch(w / group, h / group, 1);
+                context.CSSetUnorderedAccessViews(0, 2, Some([None, None].as_ptr()), None);
+                let middle = D3D11_BOX {
+                    left: w / 2,
+                    top: h / 2,
+                    front: 0,
+                    right: w / 2 + 8,
+                    bottom: h / 2 + 1,
+                    back: 1,
+                };
+                context.CopySubresourceRegion(&block, 0, 0, 0, 0, &target, 0, Some(&middle));
+            }
+            print("fractal", &block, 16);
+        }
+        // Quotients of a numerator and a divisor read at run time: k * b / b for k 1 to 64 over
+        // six divisors (atg-simplecomputepc's among them), and zeros, infinities, NaNs, overflows
+        // and results below the normal range; each quotient's bits, a NaN as `nan`.
+        "divisions" => {
+            const QUOTIENTS_A_DIVISOR: u16 = 64;
+            let divisors = [3.0, 7.0, 10.0, INSIDE_LOOPS / 4.0, 301.0, 999.0];
+            let (inf, max, tiny) = (f32::INFINITY, f32::MAX, f32::MIN_POSITIVE);
+            let mut pairs: Vec<[f32; 2]> = divisors
+                .iter()
+                .flat_map(|&b| (1..=QUOTIENTS_A_DIVISOR).map(move |k| [f32::from(k) * b, b]))
+                .collect();
+            pairs.extend([
+                [0.0, 0.0],
+                [1.0, 0.0],
+                [-1.0, 0.0],
+                [1.0, -0.0],
+                [inf, 2.0],
+                [-inf, 2.0],
+                [2.0, inf],
+                [2.0, -inf],
+                [inf, inf],
+                [f32::NAN, 1.0],
+                [1.0, f32::NAN],
+                [-0.0, 3.0],
+                [0.0, -3.0],
+                [max, 0.5],
+                [max, 3.0],
+                [tiny, 3.0],
+                [3.0, max],
+                [1.0, 3.0],
+                [-2.0, 3.0],
+            ]);
+            // Whole groups of the program's 64 threads, the rest dividing one by one.
+            let group = usize::from(QUOTIENTS_A_DIVISOR);
+            pairs.resize(pairs.len().div_ceil(group) * group, [1.0, 1.0]);
+            let rows = pairs.len() as u32;
+            let bytes: Vec<u8> = pairs
+                .iter()
+                .flatten()
+                .flat_map(|v| v.to_le_bytes())
+                .collect();
+            let at = |format, bind| Tex {
+                w: 1,
+                h: rows,
+                format,
+                samples: 1,
+                bind,
+            };
+            let p = make(
+                &at(DXGI_FORMAT_R32G32_FLOAT, D3D11_BIND_SHADER_RESOURCE),
+                Some((&bytes, 8)),
+            )?;
+            let o = make(&at(DXGI_FORMAT_R32_UINT, D3D11_BIND_UNORDERED_ACCESS), None)?;
+            let program = cs("Texture2D<float2> p : register(t0);
+                RWTexture2D<uint> o : register(u0);
+                [numthreads(1, 64, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    float2 v = p.Load(int3(id.xy, 0));
+                    o[id.xy] = asuint(v.x / v.y);
+                }");
+            let groups = (1, rows / u32::from(QUOTIENTS_A_DIVISOR), 1);
+            dispatch(
+                &program,
+                &[srv(&p, DXGI_FORMAT_UNKNOWN)],
+                &[],
+                &[uav(&o)],
+                groups,
+            );
+            print_rows("divisions", &o, 4, &|row| {
+                let bits = u32::from_le_bytes([row[0], row[1], row[2], row[3]]);
+                if f32::from_bits(bits).is_nan() {
+                    "nan".to_string()
+                } else {
+                    format!("{bits:08x}")
+                }
+            });
+        }
+        // The time of divisions by a divisor read at run time: 16384 threads each run four
+        // chains of `CHAIN` divisions, each quotient feeding the next; the fastest of `RUNS` timings
+        // of `DISPATCHES` dispatches and a read of the result, in microseconds.
+        "division_cost" => {
+            const THREADS: u32 = 16384;
+            const GROUP: u32 = 64;
+            const DISPATCHES: u32 = 20;
+            const RUNS: u32 = 5;
+            let values: Vec<u8> = [0.5f32, 1.0003].iter().flat_map(|v| v.to_le_bytes()).collect();
+            let at = |w, format, bind| Tex {
+                w,
+                h: 1,
+                format,
+                samples: 1,
+                bind,
+            };
+            let p = make(
+                &at(1, DXGI_FORMAT_R32G32_FLOAT, D3D11_BIND_SHADER_RESOURCE),
+                Some((&values, 8)),
+            )?;
+            let o = make(
+                &at(THREADS, DXGI_FORMAT_R32_FLOAT, D3D11_BIND_UNORDERED_ACCESS),
+                None,
+            )?;
+            let program = cs("Texture2D<float2> p : register(t0);
+                RWTexture2D<float> o : register(u0);
+                static const uint CHAIN = 16384;
+                [numthreads(64, 1, 1)]
+                void main(uint3 id : SV_DispatchThreadID) {
+                    float2 v = p.Load(int3(0, 0, 0));
+                    float4 x = float4(1, 2, 3, 4) + id.x;
+                    [loop] for (uint i = 0; i < CHAIN; i++) { x = x / v.y + v.x; }
+                    o[id.xy] = x.x + x.y + x.z + x.w;
+                }");
+            let (view, store) = ([srv(&p, DXGI_FORMAT_UNKNOWN)], [uav(&o)]);
+            let mut fastest = u128::MAX;
+            for run in 0..=RUNS {
+                let start = std::time::Instant::now();
+                for _ in 0..DISPATCHES {
+                    dispatch(&program, &view, &[], &store, (THREADS / GROUP, 1, 1));
+                }
+                print_rows("division cost", &o, 4, &|row| format!("{} bytes", row.len()));
+                // The first run builds the program.
+                if run > 0 {
+                    fastest = fastest.min(start.elapsed().as_micros());
+                }
+            }
+            println!("division cost: {DISPATCHES} dispatches and a read in {fastest} us");
+        }
+        // atg-simplecomputepc's frames: its dispatch, then its sprite pass drawing the result and
+        // a second draw of 100 quads from another texture, frame after frame; the colour inside
+        // the set (its loop count 1200 over 300) at the first and the last frame.
+        "colour_map_frames" => {
+            const FRAMES: u32 = 30;
+            const GROUP: u32 = 8;
+            const GLYPHS: usize = 100;
+            const QUAD_INDICES: u32 = 6;
+            let (w, h) = (320u32, 180u32);
+            let iterations = INSIDE_LOOPS / 4.0;
+            let values: [f32; 8] = [w as f32, h as f32, iterations, 0.0, 4.0, 2.25, -0.65, 0.0];
+            let fractal = cs(FRACTAL);
+            let bytes: Vec<u8> = COLOUR_MAP.iter().flat_map(|t| t.to_le_bytes()).collect();
+            let at = |w, h, format, bind: D3D11_BIND_FLAG| Tex {
+                w,
+                h,
+                format,
+                samples: 1,
+                bind,
+            };
+            let map = make(
+                &at(8, 1, DXGI_FORMAT_R8G8B8A8_UNORM, D3D11_BIND_SHADER_RESOURCE),
+                Some((&bytes, 32)),
+            )?;
+            let glyph_bytes: Vec<u8> = (0..16 * 16 * 4).map(|i| (i * 37) as u8).collect();
+            let glyphs = make(
+                &at(
+                    16,
+                    16,
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    D3D11_BIND_SHADER_RESOURCE,
+                ),
+                Some((&glyph_bytes, 64)),
+            )?;
+            let both =
+                D3D11_BIND_FLAG(D3D11_BIND_UNORDERED_ACCESS.0 | D3D11_BIND_SHADER_RESOURCE.0);
+            let target = make(&at(w, h, DXGI_FORMAT_R32G32B32A32_FLOAT, both), None)?;
+            let back = make(
+                &at(w, h, DXGI_FORMAT_B8G8R8A8_UNORM, D3D11_BIND_RENDER_TARGET),
+                None,
+            )?;
+            let middle = make(
+                &at(
+                    1,
+                    1,
+                    DXGI_FORMAT_R32G32B32A32_FLOAT,
+                    D3D11_BIND_SHADER_RESOURCE,
+                ),
+                None,
+            )?;
+            let (back_view, target_view) = (rtv(&back), srv(&target, DXGI_FORMAT_UNKNOWN));
+            let (map_view, glyph_view) = (
+                srv(&map, DXGI_FORMAT_UNKNOWN),
+                srv(&glyphs, DXGI_FORMAT_UNKNOWN),
+            );
+            let store = uav(&target);
+            let sprite_vs = compile(
+                "struct O { float4 c : COLOR; float2 uv : TEXCOORD; float4 p : SV_Position; };
+                O main(float4 p : SV_Position, float4 c : COLOR, float2 uv : TEXCOORD) {
+                    O o;
+                    o.p = p;
+                    o.c = c;
+                    o.uv = uv;
+                    return o;
+                }",
+                models.0,
+            );
+            let sprite_ps = ps("Texture2D t : register(t0);
+                SamplerState s : register(s0);
+                float4 main(float4 c : COLOR, float2 uv : TEXCOORD) : SV_Target {
+                    return t.Sample(s, uv) * c;
+                }");
+            // Position, colour and texture coordinates of each corner of `n` quads.
+            const VERTEX_FLOATS: usize = 9;
+            let quads = |n: usize, size: f32| -> Vec<[f32; VERTEX_FLOATS]> {
+                let mut v = Vec::new();
+                for i in 0..n {
+                    let (x, y) = (-1.0 + (i % 50) as f32 * size, 1.0 - (i / 50) as f32 * size);
+                    for (dx, dy) in [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0)] {
+                        let (px, py) = (x + dx * size, y - dy * size);
+                        v.push([px, py, 0.0, 1.0, 1.0, 1.0, 1.0, dx, dy]);
+                    }
+                }
+                v
+            };
+            let corners = (GLYPHS + 1) * 4;
+            let indices: Vec<u16> = (0..(GLYPHS + 1) as u16)
+                .flat_map(|q| [0, 1, 2, 1, 3, 2].map(|i| q * 4 + i))
+                .collect();
+            let elements = [
+                (s!("SV_Position"), DXGI_FORMAT_R32G32B32_FLOAT, 0),
+                (s!("COLOR"), DXGI_FORMAT_R32G32B32A32_FLOAT, 12),
+                (s!("TEXCOORD"), DXGI_FORMAT_R32G32_FLOAT, 28),
+            ]
+            .map(|(name, format, offset)| D3D11_INPUT_ELEMENT_DESC {
+                SemanticName: name,
+                Format: format,
+                AlignedByteOffset: offset,
+                InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
+                ..Default::default()
+            });
+            let dynamic = |bytes: usize, bind: D3D11_BIND_FLAG| D3D11_BUFFER_DESC {
+                ByteWidth: bytes as u32,
+                Usage: D3D11_USAGE_DYNAMIC,
+                BindFlags: bind.0 as u32,
+                CPUAccessFlags: D3D11_CPU_ACCESS_WRITE.0 as u32,
+                ..Default::default()
+            };
+            let index_desc = D3D11_BUFFER_DESC {
+                ByteWidth: size_of_val(&indices[..]) as u32,
+                Usage: D3D11_USAGE_IMMUTABLE,
+                BindFlags: D3D11_BIND_INDEX_BUFFER.0 as u32,
+                ..Default::default()
+            };
+            let index_data = D3D11_SUBRESOURCE_DATA {
+                pSysMem: indices.as_ptr().cast(),
+                ..Default::default()
+            };
+            let map_sampling = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT,
+                AddressU: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressV: D3D11_TEXTURE_ADDRESS_CLAMP,
+                AddressW: D3D11_TEXTURE_ADDRESS_CLAMP,
+                MaxAnisotropy: 1,
+                ComparisonFunc: D3D11_COMPARISON_NEVER,
+                MaxLOD: f32::MAX,
+                ..Default::default()
+            };
+            let sprite_sampling = D3D11_SAMPLER_DESC {
+                Filter: D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                ..map_sampling
+            };
+            let mut blend_desc = D3D11_BLEND_DESC::default();
+            blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+                BlendEnable: true.into(),
+                SrcBlend: D3D11_BLEND_ONE,
+                DestBlend: D3D11_BLEND_INV_SRC_ALPHA,
+                BlendOp: D3D11_BLEND_OP_ADD,
+                SrcBlendAlpha: D3D11_BLEND_ONE,
+                DestBlendAlpha: D3D11_BLEND_INV_SRC_ALPHA,
+                BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+            };
+            let depth_desc = D3D11_DEPTH_STENCIL_DESC::default();
+            let raster_desc = D3D11_RASTERIZER_DESC {
+                FillMode: D3D11_FILL_SOLID,
+                CullMode: D3D11_CULL_NONE,
+                DepthClipEnable: true.into(),
+                ..Default::default()
+            };
+            let (mut window, mut vertices, mut index_buffer) = (None, None, None);
+            let (mut map_sampler, mut sprite_sampler, mut layout, mut sprite) =
+                (None, None, None, None);
+            let (mut blend, mut depth, mut raster) = (None, None, None);
+            let stride = (VERTEX_FLOATS * size_of::<f32>()) as u32;
+            let middle_box = D3D11_BOX {
+                left: w / 2,
+                top: h / 2,
+                front: 0,
+                right: w / 2 + 1,
+                bottom: h / 2 + 1,
+                back: 1,
+            };
+            unsafe {
+                device.CreateBuffer(
+                    &dynamic(size_of_val(&values), D3D11_BIND_CONSTANT_BUFFER),
+                    None,
+                    Some(&mut window),
+                )?;
+                device.CreateBuffer(
+                    &dynamic(corners * stride as usize, D3D11_BIND_VERTEX_BUFFER),
+                    None,
+                    Some(&mut vertices),
+                )?;
+                device.CreateBuffer(&index_desc, Some(&index_data), Some(&mut index_buffer))?;
+                device.CreateSamplerState(&map_sampling, Some(&mut map_sampler))?;
+                device.CreateSamplerState(&sprite_sampling, Some(&mut sprite_sampler))?;
+                device.CreateInputLayout(&elements, &sprite_vs, Some(&mut layout))?;
+                device.CreateVertexShader(&sprite_vs, None, Some(&mut sprite))?;
+                device.CreateBlendState(&blend_desc, Some(&mut blend))?;
+                device.CreateDepthStencilState(&depth_desc, Some(&mut depth))?;
+                device.CreateRasterizerState(&raster_desc, Some(&mut raster))?;
+                let (window, vertices) = (window.as_ref().unwrap(), vertices.as_ref().unwrap());
+                // Writes `data` from corner `at` of the vertex buffer, mapped as `how`.
+                let write = |data: &[[f32; VERTEX_FLOATS]], how, at: usize| {
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    context.Map(vertices, 0, how, 0, Some(&mut mapped)).unwrap();
+                    let start = mapped.pData.cast::<[f32; VERTEX_FLOATS]>().add(at);
+                    std::ptr::copy_nonoverlapping(data.as_ptr(), start, data.len());
+                    context.Unmap(vertices, 0);
+                };
+                for frame in 1..=FRAMES {
+                    let mut mapped = D3D11_MAPPED_SUBRESOURCE::default();
+                    context.Map(window, 0, D3D11_MAP_WRITE_DISCARD, 0, Some(&mut mapped))?;
+                    std::ptr::copy_nonoverlapping(
+                        values.as_ptr(),
+                        mapped.pData.cast(),
+                        values.len(),
+                    );
+                    context.Unmap(window, 0);
+                    context.CSSetConstantBuffers(0, Some(&[Some(window.clone())]));
+                    context.CSSetShaderResources(0, Some(std::slice::from_ref(&map_view)));
+                    context.CSSetSamplers(0, Some(&[map_sampler.clone()]));
+                    context.CSSetShader(fractal.as_ref(), None);
+                    context.CSSetUnorderedAccessViews(0, 1, Some(&store), None);
+                    context.Dispatch(w / GROUP, h / GROUP, 1);
+                    context.CSSetUnorderedAccessViews(0, 1, Some(&None), None);
+                    context.ClearRenderTargetView(
+                        back_view.as_ref().unwrap(),
+                        &[0.25, 0.25, 0.25, 1.0],
+                    );
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&back_view)), None);
+                    viewport(w, h);
+                    context.OMSetBlendState(blend.as_ref(), None, u32::MAX);
+                    context.OMSetDepthStencilState(depth.as_ref(), 0);
+                    context.RSSetState(raster.as_ref());
+                    context.PSSetSamplers(0, Some(&[sprite_sampler.clone()]));
+                    context.IASetInputLayout(layout.as_ref());
+                    context.VSSetShader(sprite.as_ref(), None);
+                    context.PSSetShader(sprite_ps.as_ref(), None);
+                    context.IASetVertexBuffers(
+                        0,
+                        1,
+                        Some(&Some(vertices.clone())),
+                        Some(&stride),
+                        Some(&0),
+                    );
+                    context.IASetIndexBuffer(index_buffer.as_ref(), DXGI_FORMAT_R16_UINT, 0);
+                    // The result drawn over the target, after the glyphs' corners, as the program
+                    // appends it; then the glyphs from the buffer's start.
+                    context.PSSetShaderResources(0, Some(std::slice::from_ref(&target_view)));
+                    write(&quads(1, 2.0), D3D11_MAP_WRITE_NO_OVERWRITE, GLYPHS * 4);
+                    context.DrawIndexed(QUAD_INDICES, GLYPHS as u32 * QUAD_INDICES, 0);
+                    context.PSSetShaderResources(0, Some(std::slice::from_ref(&glyph_view)));
+                    write(&quads(GLYPHS, 0.04), D3D11_MAP_WRITE_DISCARD, 0);
+                    context.DrawIndexed(GLYPHS as u32 * QUAD_INDICES, 0, 0);
+                    context.PSSetShaderResources(0, Some(&[None]));
+                    context.OMSetRenderTargets(None, None);
+                    context.Flush();
+                    if frame == 1 || frame == FRAMES {
+                        context.CopySubresourceRegion(
+                            &middle,
+                            0,
+                            0,
+                            0,
+                            0,
+                            &target,
+                            0,
+                            Some(&middle_box),
+                        );
+                        print(&format!("frame {frame} inside the set"), &middle, 16);
+                    }
+                }
+                context.RSSetState(None);
+                context.OMSetBlendState(None, None, u32::MAX);
+                context.OMSetDepthStencilState(None, 0);
+            }
+        }
+        // Programs loading from and storing into storage views of each format Microsoft's typed
+        // storage loads page lists as a set, where the device claims such loads: a pattern stored,
+        // then loaded, changed and stored again twice.
+        "typed_loads" => {
+            let groups: [(&str, &str, &str, &[DXGI_FORMAT]); 8] = [
+                (
+                    "unorm float4",
+                    "float4(x * 0.11, x * 0.07 + 0.2, 0.6 - x * 0.04, x * 0.12)",
+                    "v * 0.5 + 0.25",
+                    &[DXGI_FORMAT_R8G8B8A8_UNORM],
+                ),
+                (
+                    "unorm float",
+                    "x * 0.11",
+                    "v * 0.5 + 0.25",
+                    &[DXGI_FORMAT_R8_UNORM],
+                ),
+                (
+                    "float4",
+                    "float4(x * 0.125, x * 0.25 + 1, 2 - x * 0.5, -x)",
+                    "v * 0.5 + 0.25",
+                    &[
+                        DXGI_FORMAT_R32G32B32A32_FLOAT,
+                        DXGI_FORMAT_R16G16B16A16_FLOAT,
+                    ],
+                ),
+                (
+                    "float",
+                    "x * 0.375 - 1",
+                    "v * 0.5 + 0.25",
+                    &[DXGI_FORMAT_R16_FLOAT],
+                ),
+                (
+                    "uint4",
+                    "uint4(x, x * 3, x * 7, 200 - x)",
+                    "v + uint4(1, 2, 3, 4)",
+                    &[
+                        DXGI_FORMAT_R32G32B32A32_UINT,
+                        DXGI_FORMAT_R16G16B16A16_UINT,
+                        DXGI_FORMAT_R8G8B8A8_UINT,
+                    ],
+                ),
+                (
+                    "uint",
+                    "x * 9 + 1",
+                    "v + 5",
+                    &[DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R8_UINT],
+                ),
+                (
+                    "int4",
+                    "int4(x, -x * 3, x * 7, x - 100)",
+                    "v - int4(1, 2, 3, 4)",
+                    &[
+                        DXGI_FORMAT_R32G32B32A32_SINT,
+                        DXGI_FORMAT_R16G16B16A16_SINT,
+                        DXGI_FORMAT_R8G8B8A8_SINT,
+                    ],
+                ),
+                (
+                    "int",
+                    "5 - x * 9",
+                    "v - 5",
+                    &[DXGI_FORMAT_R16_SINT, DXGI_FORMAT_R8_SINT],
+                ),
+            ];
+            for (ty, pattern, change, formats) in groups {
+                let store = cs(&format!(
+                    "RWTexture2D<{ty}> a : register(u0);
+                    [numthreads(8, 1, 1)]
+                    void main(uint3 id : SV_DispatchThreadID) {{
+                        int x = id.x;
+                        a[id.xy] = {pattern};
+                    }}"
+                ));
+                let load = cs(&format!(
+                    "RWTexture2D<{ty}> a : register(u0);
+                    [numthreads(8, 1, 1)]
+                    void main(uint3 id : SV_DispatchThreadID) {{
+                        {} v = a[id.xy];
+                        a[id.xy] = {change};
+                    }}",
+                    ty.trim_start_matches("unorm ")
+                ));
+                for &format in formats {
+                    let mut support = D3D11_FEATURE_DATA_FORMAT_SUPPORT2 {
+                        InFormat: format,
+                        OutFormatSupport2: 0,
+                    };
+                    unsafe {
+                        device.CheckFeatureSupport(
+                            D3D11_FEATURE_FORMAT_SUPPORT2,
+                            (&raw mut support).cast(),
+                            size_of_val(&support) as u32,
+                        )?
+                    };
+                    let loads = support.OutFormatSupport2
+                        & D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD.0 as u32
+                        != 0;
+                    println!("format {} typed loads {loads}", format.0);
+                    if !loads {
+                        continue;
+                    }
+                    let bytes = match format {
+                        DXGI_FORMAT_R32G32B32A32_FLOAT
+                        | DXGI_FORMAT_R32G32B32A32_UINT
+                        | DXGI_FORMAT_R32G32B32A32_SINT => 16,
+                        DXGI_FORMAT_R16G16B16A16_FLOAT
+                        | DXGI_FORMAT_R16G16B16A16_UINT
+                        | DXGI_FORMAT_R16G16B16A16_SINT => 8,
+                        DXGI_FORMAT_R8G8B8A8_UNORM
+                        | DXGI_FORMAT_R8G8B8A8_UINT
+                        | DXGI_FORMAT_R8G8B8A8_SINT => 4,
+                        DXGI_FORMAT_R16_FLOAT | DXGI_FORMAT_R16_UINT | DXGI_FORMAT_R16_SINT => 2,
+                        _ => 1,
+                    };
+                    let a = make(
+                        &Tex {
+                            w: 8,
+                            h: 1,
+                            format,
+                            samples: 1,
+                            bind: D3D11_BIND_UNORDERED_ACCESS,
+                        },
+                        None,
+                    )?;
+                    unsafe {
+                        context.CSSetUnorderedAccessViews(0, 1, Some([uav(&a)].as_ptr()), None);
+                        context.CSSetShader(store.as_ref(), None);
+                        context.Dispatch(1, 1, 1);
+                        context.CSSetShader(load.as_ref(), None);
+                        context.Dispatch(1, 1, 1);
+                        context.Dispatch(1, 1, 1);
+                        context.CSSetUnorderedAccessViews(0, 1, Some([None].as_ptr()), None);
+                    }
+                    print(&format!("format {} loaded and stored", format.0), &a, bytes);
+                }
+            }
         }
         // The five formats Microsoft's 10_0 table requires beside the common ones: 1D, 2D, 3D and
         // cube textures of each written, read back, loaded and sampled; the two that are targets
@@ -1723,9 +2488,7 @@ fn main() -> windows::core::Result<()> {
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
-                let mut s = None;
-                unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
-                s
+                sampler_state(&desc).unwrap()
             };
             let point = sampler(D3D11_FILTER_MIN_MAG_MIP_POINT);
             let linear = sampler(D3D11_FILTER_MIN_MAG_MIP_LINEAR);
@@ -1782,20 +2545,14 @@ fn main() -> windows::core::Result<()> {
                     },
                     None,
                 )?;
-                let rt = rtv(&target);
-                unsafe {
-                    viewport(w, h);
-                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
-                    context.VSSetShader(full.as_ref(), None);
-                    context.VSSetConstantBuffers(0, Some(&[mip_constants[0].clone()]));
-                    context.PSSetConstantBuffers(0, Some(&[mip_constants[mip].clone()]));
-                    context.PSSetShader(shader.as_ref(), None);
-                    context.PSSetShaderResources(0, Some(std::slice::from_ref(view)));
-                    context.PSSetSamplers(0, Some(std::slice::from_ref(s)));
-                    context.Draw(3, 0);
-                    context.PSSetShaderResources(0, Some(&[None]));
-                    context.OMSetRenderTargets(None, None);
-                }
+                viewport(w, h);
+                draw(
+                    &rtv(&target),
+                    (&full, shader),
+                    [&mip_constants[0], &mip_constants[mip]],
+                    &[(0, std::slice::from_ref(view))],
+                    &[(0, std::slice::from_ref(s))],
+                );
                 print_rows(&format!("rounded {what}"), &target, 4, &|row| {
                     row.iter().map(|b| format!("{b:02x}")).collect()
                 });
@@ -2078,23 +2835,7 @@ fn main() -> windows::core::Result<()> {
             };
             let mut blend = None;
             unsafe { device.CreateBlendState(&blend_desc, Some(&mut blend))? };
-            // Each texel's channel codes, red first, as bytes: implementations round to a 5- or
-            // 6-bit channel differently within the specification's 0.6 of a step.
-            let codes = |five_alpha: bool| {
-                move |row: &[u8]| -> String {
-                    row.chunks(2)
-                        .flat_map(|t| {
-                            let w = u16::from_le_bytes([t[0], t[1]]);
-                            let fields = if five_alpha {
-                                vec![(w >> 10) & 31, (w >> 5) & 31, w & 31, w >> 15]
-                            } else {
-                                vec![w >> 11, (w >> 5) & 63, w & 31]
-                            };
-                            fields.into_iter().map(|c| format!("{c:02x}"))
-                        })
-                        .collect()
-                }
-            };
+            let codes = |five_alpha: bool| move |row: &[u8]| packed_codes(five_alpha, row);
             let (w, h) = (8, 4);
             for (name, format) in [
                 ("B5G6R5_UNORM", DXGI_FORMAT_B5G6R5_UNORM),
@@ -2191,6 +2932,417 @@ fn main() -> windows::core::Result<()> {
                     context.CopySubresourceRegion(&level1, 0, 0, 0, 0, &chain, 1, None);
                 }
                 print("level 1", &level1);
+            }
+        }
+        "packed_blend_reads" => {
+            // Blends reading what earlier draws of the same pass left in a packed target read it
+            // as the format holds it: a 1-bit alpha as its blend factor, and increments of a
+            // fraction of a step added ten times, each rounded away (as both the RTX 3080 and WARP
+            // do for 0.3 of a step) or kept whole.
+            let first = ps("float4 main(float4 p : SV_Position) : SV_Target {
+                    return float4(0.25, 0.5, 0.75, (p.x - 0.5) / 7.0);
+                }");
+            let white = ps("float4 main() : SV_Target { return float4(1, 1, 1, 1); }");
+            let five = ps("float4 main() : SV_Target {
+                    return float4(0.3 / 31.0, 1.0 / 31.0, 2.0 / 31.0, 0.3);
+                }");
+            let six = ps("float4 main() : SV_Target {
+                    return float4(0.3 / 31.0, 1.0 / 63.0, 2.0 / 31.0, 0);
+                }");
+            let blend = |src, dst| -> windows::core::Result<Option<ID3D11BlendState>> {
+                let mut desc = D3D11_BLEND_DESC::default();
+                desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
+                    BlendEnable: true.into(),
+                    SrcBlend: src,
+                    DestBlend: dst,
+                    BlendOp: D3D11_BLEND_OP_ADD,
+                    SrcBlendAlpha: src,
+                    DestBlendAlpha: dst,
+                    BlendOpAlpha: D3D11_BLEND_OP_ADD,
+                    RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
+                };
+                let mut out = None;
+                unsafe { device.CreateBlendState(&desc, Some(&mut out))? };
+                Ok(out)
+            };
+            let (w, h) = (8, 1);
+            let target = |format| {
+                make(
+                    &Tex {
+                        w,
+                        h,
+                        format,
+                        samples: 1,
+                        bind: D3D11_BIND_RENDER_TARGET,
+                    },
+                    None,
+                )
+            };
+            unsafe {
+                viewport(w, h);
+                context.VSSetShader(vs(FULL).as_ref(), None);
+            }
+            for (label, src) in [
+                ("dest alpha", D3D11_BLEND_DEST_ALPHA),
+                ("inverse dest alpha", D3D11_BLEND_INV_DEST_ALPHA),
+            ] {
+                let t = target(DXGI_FORMAT_B5G5R5A1_UNORM)?;
+                let rt = rtv(&t);
+                let b = blend(src, D3D11_BLEND_ZERO)?;
+                unsafe {
+                    context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                    context.PSSetShader(first.as_ref(), None);
+                    context.Draw(3, 0);
+                    context.OMSetBlendState(b.as_ref(), None, u32::MAX);
+                    context.PSSetShader(white.as_ref(), None);
+                    context.Draw(3, 0);
+                    context.OMSetBlendState(None, None, u32::MAX);
+                    context.OMSetRenderTargets(None, None);
+                }
+                print_rows(&format!("rounded {label}"), &t, 2, &|r| {
+                    packed_codes(true, r)
+                });
+            }
+            let add = blend(D3D11_BLEND_ONE, D3D11_BLEND_ONE)?;
+            for (name, format, program) in [
+                ("B5G6R5_UNORM", DXGI_FORMAT_B5G6R5_UNORM, &six),
+                ("B5G5R5A1_UNORM", DXGI_FORMAT_B5G5R5A1_UNORM, &five),
+            ] {
+                let t = target(format)?;
+                let rt = rtv(&t);
+                unsafe {
+                    context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                    context.OMSetBlendState(add.as_ref(), None, u32::MAX);
+                    context.PSSetShader(program.as_ref(), None);
+                    for _ in 0..10 {
+                        context.Draw(3, 0);
+                    }
+                    context.OMSetBlendState(None, None, u32::MAX);
+                    context.OMSetRenderTargets(None, None);
+                }
+                let five_alpha = format == DXGI_FORMAT_B5G5R5A1_UNORM;
+                print_rows(&format!("rounded {name} added ten times"), &t, 2, &|r| {
+                    packed_codes(five_alpha, r)
+                });
+            }
+            // The same within one draw: each primitive's blend reads what the one before it left.
+            // Ten triangles of a list, ten instances, and strips whose odd triangles the default
+            // raster block culls, one restarting at a cut index.
+            let repeated = vs("float4 main(uint id : SV_VertexID) : SV_Position {
+                    uint k = id % 3;
+                    float2 uv = float2((k << 1) & 2, k & 2);
+                    return float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+                }");
+            let strip: [u16; 10] = [0, 1, 2, 3, 4, 5, u16::MAX, 1, 2, 3];
+            let index_desc = D3D11_BUFFER_DESC {
+                ByteWidth: size_of_val(&strip) as u32,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_INDEX_BUFFER.0 as u32,
+                ..Default::default()
+            };
+            let index_data = D3D11_SUBRESOURCE_DATA {
+                pSysMem: strip.as_ptr().cast(),
+                ..Default::default()
+            };
+            let mut indices = None;
+            unsafe { device.CreateBuffer(&index_desc, Some(&index_data), Some(&mut indices))? };
+            for (name, format, program) in [
+                ("B5G6R5_UNORM", DXGI_FORMAT_B5G6R5_UNORM, &six),
+                ("B5G5R5A1_UNORM", DXGI_FORMAT_B5G5R5A1_UNORM, &five),
+            ] {
+                for how in ["list", "instances", "strip", "indexed strip"] {
+                    let t = target(format)?;
+                    let rt = rtv(&t);
+                    unsafe {
+                        context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                        context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                        context.OMSetBlendState(add.as_ref(), None, u32::MAX);
+                        context.PSSetShader(program.as_ref(), None);
+                        context.VSSetShader(repeated.as_ref(), None);
+                        match how {
+                            "list" => context.Draw(30, 0),
+                            "instances" => context.DrawInstanced(3, 10, 0, 0),
+                            "strip" => {
+                                context
+                                    .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                                context.Draw(6, 0);
+                            }
+                            _ => {
+                                context.IASetIndexBuffer(indices.as_ref(), DXGI_FORMAT_R16_UINT, 0);
+                                context
+                                    .IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+                                context.DrawIndexed(strip.len() as u32, 0, 0);
+                                context.IASetIndexBuffer(None, DXGI_FORMAT_R16_UINT, 0);
+                            }
+                        }
+                        context.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                        context.VSSetShader(vs(FULL).as_ref(), None);
+                        context.OMSetBlendState(None, None, u32::MAX);
+                        context.OMSetRenderTargets(None, None);
+                    }
+                    let five_alpha = format == DXGI_FORMAT_B5G5R5A1_UNORM;
+                    print_rows(
+                        &format!("rounded {name} added in one draw, {how}"),
+                        &t,
+                        2,
+                        &|r| packed_codes(five_alpha, r),
+                    );
+                }
+            }
+            // Four half-transparent white triangles over black in one draw: the 1-bit alpha each
+            // blend leaves is what the next one reads.
+            let over = blend(D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA)?;
+            let half = ps("float4 main(float4 p : SV_Position) : SV_Target {
+                    return float4(1, 1, 1, 0.5 + (p.x - 0.5) / 64.0);
+                }");
+            let t = target(DXGI_FORMAT_B5G5R5A1_UNORM)?;
+            let rt = rtv(&t);
+            unsafe {
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                context.OMSetBlendState(over.as_ref(), None, u32::MAX);
+                context.PSSetShader(half.as_ref(), None);
+                context.VSSetShader(repeated.as_ref(), None);
+                context.Draw(12, 0);
+                context.VSSetShader(vs(FULL).as_ref(), None);
+                context.OMSetBlendState(None, None, u32::MAX);
+                context.OMSetRenderTargets(None, None);
+            }
+            print_rows("rounded B5G5R5A1_UNORM over in one draw", &t, 2, &|r| {
+                packed_codes(true, r)
+            });
+        }
+        "sample_masks" => {
+            // A white draw under masks with and without sample 0, resolved: Direct3D uses the
+            // mask's bits up to the sample count, and bit 0 alone without multisampling.
+            let white = ps("float4 main() : SV_Target { return float4(1, 1, 1, 1); }");
+            let (w, h) = (4, 1);
+            unsafe {
+                viewport(w, h);
+                context.VSSetShader(vs(FULL).as_ref(), None);
+                context.PSSetShader(white.as_ref(), None);
+            }
+            for (samples, mask) in [
+                (4, 0x1),
+                (4, 0x2),
+                (4, 0xe),
+                (4, 0x3c),
+                (8, 0x2),
+                (8, 0xf0),
+                (1, 0x2),
+                (1, 0x3),
+            ] {
+                let tex = |samples, bind| {
+                    make(
+                        &Tex {
+                            w,
+                            h,
+                            format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                            samples,
+                            bind,
+                        },
+                        None,
+                    )
+                };
+                let t = tex(samples, D3D11_BIND_RENDER_TARGET)?;
+                let rt = rtv(&t);
+                unsafe {
+                    context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                    context.OMSetBlendState(None, None, mask);
+                    context.Draw(3, 0);
+                    context.OMSetBlendState(None, None, u32::MAX);
+                    context.OMSetRenderTargets(None, None);
+                }
+                let what = format!("rounded {samples} samples under mask {mask:#x}");
+                if samples == 1 {
+                    print(&what, &t, 4);
+                    continue;
+                }
+                let resolved = tex(1, D3D11_BIND_SHADER_RESOURCE)?;
+                unsafe {
+                    context.ResolveSubresource(&resolved, 0, &t, 0, DXGI_FORMAT_R8G8B8A8_UNORM)
+                };
+                print(&what, &resolved, 4);
+            }
+        }
+        "stage_registers" => {
+            // Direct3D 11's 32 input slots, each element in its own (a position in slot 0 and 31
+            // values the vertex shader sums); 15, 30 and 31 values passed to the pixel shader
+            // beside the position (its 32 input registers); and a draw whose vertex shader reads
+            // inputs with no input layout bound, which Direct3D drops.
+            let (w, h) = (4, 4);
+            let target = || {
+                make(
+                    &Tex {
+                        w,
+                        h,
+                        format: DXGI_FORMAT_R32G32B32A32_FLOAT,
+                        samples: 1,
+                        bind: D3D11_BIND_RENDER_TARGET,
+                    },
+                    None,
+                )
+            };
+            let vertex_buffer = |values: &[f32]| -> windows::core::Result<Option<ID3D11Buffer>> {
+                let desc = D3D11_BUFFER_DESC {
+                    ByteWidth: size_of_val(values) as u32,
+                    Usage: D3D11_USAGE_DEFAULT,
+                    BindFlags: D3D11_BIND_VERTEX_BUFFER.0 as u32,
+                    ..Default::default()
+                };
+                let data = D3D11_SUBRESOURCE_DATA {
+                    pSysMem: values.as_ptr().cast(),
+                    ..Default::default()
+                };
+                let mut buffer = None;
+                unsafe { device.CreateBuffer(&desc, Some(&data), Some(&mut buffer))? };
+                Ok(buffer)
+            };
+            const SLOTS: u32 = 32;
+            let decl: String = (1..SLOTS).map(|i| format!("float a{i} : A{i}; ")).collect();
+            let sum: String = (1..SLOTS)
+                .map(|i| format!("i.a{i} * {}.0 + ", 1u32 << (i % 8)))
+                .collect();
+            let source = format!(
+                "struct I {{ float2 a0 : A0; {decl} }};
+                struct O {{ float4 p : SV_Position; float4 c : C; }};
+                O main(I i) {{
+                    O o;
+                    o.p = float4(i.a0, 0, 1);
+                    o.c = float4({sum} 0.0, i.a31, i.a16, i.a1);
+                    return o;
+                }}"
+            );
+            let bytecode = compile(&source, s!("vs_5_0"));
+            let name = "A\0";
+            let elements: Vec<D3D11_INPUT_ELEMENT_DESC> = (0..SLOTS)
+                .map(|i| D3D11_INPUT_ELEMENT_DESC {
+                    SemanticName: PCSTR(name.as_ptr()),
+                    SemanticIndex: i,
+                    Format: match i {
+                        0 => DXGI_FORMAT_R32G32_FLOAT,
+                        _ => DXGI_FORMAT_R32_FLOAT,
+                    },
+                    InputSlot: i,
+                    InputSlotClass: D3D11_INPUT_PER_VERTEX_DATA,
+                    ..Default::default()
+                })
+                .collect();
+            let (mut layout, mut shader) = (None, None);
+            let r = unsafe {
+                device.CreateVertexShader(&bytecode, None, Some(&mut shader))?;
+                device.CreateInputLayout(&elements, &bytecode, Some(&mut layout))
+            };
+            println!("CreateInputLayout of 32 slots {:#010x}", code(r));
+            let mut buffers = Vec::new();
+            for i in 0..SLOTS {
+                buffers.push(match i {
+                    0 => vertex_buffer(&[-1.0, 1.0, 3.0, 1.0, -1.0, -3.0])?,
+                    _ => vertex_buffer(&[(i + 1) as f32 / 64.0; 3])?,
+                });
+            }
+            let mut strides = [size_of::<f32>() as u32; SLOTS as usize];
+            strides[0] = 2 * size_of::<f32>() as u32;
+            let offsets = [0; SLOTS as usize];
+            let passed = ps(
+                "float4 main(float4 p : SV_Position, float4 c : C) : SV_Target {
+                    return c;
+                }",
+            );
+            // First a draw with no input layout ever bound, the buffers and shader set.
+            let t = target()?;
+            let rt = rtv(&t);
+            unsafe {
+                viewport(w, h);
+                context.IASetVertexBuffers(
+                    0,
+                    SLOTS,
+                    Some(buffers.as_ptr()),
+                    Some(strides.as_ptr()),
+                    Some(offsets.as_ptr()),
+                );
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                context.VSSetShader(shader.as_ref(), None);
+                context.PSSetShader(passed.as_ref(), None);
+                context.Draw(3, 0);
+                context.OMSetRenderTargets(None, None);
+            }
+            println!(
+                "no input layout: GetDeviceRemovedReason {:#010x}",
+                removed()
+            );
+            print("no input layout", &t, 16);
+            let t = target()?;
+            let rt = rtv(&t);
+            unsafe {
+                viewport(w, h);
+                context.IASetInputLayout(layout.as_ref());
+                context.IASetVertexBuffers(
+                    0,
+                    SLOTS,
+                    Some(buffers.as_ptr()),
+                    Some(strides.as_ptr()),
+                    Some(offsets.as_ptr()),
+                );
+                context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                context.VSSetShader(shader.as_ref(), None);
+                context.PSSetShader(passed.as_ref(), None);
+                context.Draw(3, 0);
+                context.OMSetRenderTargets(None, None);
+                context.IASetInputLayout(None);
+                let none: [Option<ID3D11Buffer>; SLOTS as usize] = Default::default();
+                context.IASetVertexBuffers(
+                    0,
+                    SLOTS,
+                    Some(none.as_ptr()),
+                    Some(strides.as_ptr()),
+                    Some(offsets.as_ptr()),
+                );
+            }
+            print("32 slots", &t, 16);
+            for count in [15, 30, 31] {
+                let decl: String = (0..count)
+                    .map(|i| format!("float4 v{i} : V{i}; "))
+                    .collect();
+                let set: String = (0..count)
+                    .map(|i| format!("o.v{i} = float4({i}, {i} * 2, 1, 0.5); "))
+                    .collect();
+                let sum: String = (0..count)
+                    .map(|i| format!("i.v{i} * {} + ", (i % 5) + 1))
+                    .collect();
+                let vertex = vs(&format!(
+                    "struct O {{ float4 p : SV_Position; {decl} }};
+                    O main(uint id : SV_VertexID) {{
+                        O o;
+                        float2 uv = float2((id << 1) & 2, id & 2);
+                        o.p = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
+                        {set}
+                        return o;
+                    }}"
+                ));
+                let pixel = ps(&format!(
+                    "struct I {{ float4 p : SV_Position; {decl} }};
+                    float4 main(I i) : SV_Target {{
+                        return {sum} float4(0, 0, 0, i.v{}.x);
+                    }}",
+                    count - 1
+                ));
+                let t = target()?;
+                let rt = rtv(&t);
+                unsafe {
+                    context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
+                    context.OMSetRenderTargets(Some(std::slice::from_ref(&rt)), None);
+                    context.VSSetShader(vertex.as_ref(), None);
+                    context.PSSetShader(pixel.as_ref(), None);
+                    context.Draw(3, 0);
+                    context.OMSetRenderTargets(None, None);
+                }
+                print(&format!("{count} values between stages"), &t, 16);
             }
         }
         "split" => {
@@ -2732,10 +3884,7 @@ fn main() -> windows::core::Result<()> {
                     }
                 }
             }
-            println!(
-                "removed {:#010x}",
-                code(unsafe { device.GetDeviceRemovedReason() })
-            );
+            println!("removed {:#010x}", removed());
         }
         "compare_colour" => {
             // Comparisons and gathers with comparison through views of colour textures of the two
@@ -2779,9 +3928,7 @@ fn main() -> windows::core::Result<()> {
                     MaxLOD: f32::MAX,
                     ..Default::default()
                 };
-                let mut s = None;
-                unsafe { device.CreateSamplerState(&desc, Some(&mut s)).unwrap() };
-                s
+                sampler_state(&desc).unwrap()
             };
             let samplers = [
                 sampler(D3D11_FILTER_COMPARISON_MIN_MAG_MIP_POINT),
@@ -2883,10 +4030,7 @@ fn main() -> windows::core::Result<()> {
                     print(&format!("filtered {name} {round}"), &filtered, 16);
                     print(&format!("{name} {round} drawn"), &target, 4);
                 }
-                println!(
-                    "{name} removed {:#010x}",
-                    code(unsafe { device.GetDeviceRemovedReason() })
-                );
+                println!("{name} removed {:#010x}", removed());
             }
         }
         "deep" => {
@@ -3085,7 +4229,11 @@ fn main() -> windows::core::Result<()> {
             let samples = ps("Texture2DMS<float4, 4> t : register(t0);
                 float4 main(float4 pos : SV_Position) : SV_Target {
                     uint2 p = uint2(pos.xy);
-                    return t.Load(int2(p.x / 4, p.y), p.x % 4);
+                    int2 q = int2(p.x / 4, p.y);
+                    uint s = p.x % 4;
+                    // Shader model 4.0 takes a sample index only as a literal.
+                    return s == 0 ? t.Load(q, 0) : s == 1 ? t.Load(q, 1)
+                        : s == 2 ? t.Load(q, 2) : t.Load(q, 3);
                 }");
             let out = make(
                 &Tex {
@@ -3097,7 +4245,21 @@ fn main() -> windows::core::Result<()> {
                 },
                 None,
             )?;
-            let (rt, rt_out) = (rtv(&drawn), rtv(&out));
+            // A 32-bit float target drawn with 4 samples and resolved (by a draw where the back end
+            // resolves no 32-bit float format): values whose averages are exact.
+            let float_at = |samples, bind| Tex {
+                w: 4,
+                h: 4,
+                format: DXGI_FORMAT_R32_FLOAT,
+                samples,
+                bind,
+            };
+            let floats = make(&float_at(4, D3D11_BIND_RENDER_TARGET), None)?;
+            let floats_resolved = make(&float_at(1, D3D11_BIND_SHADER_RESOURCE), None)?;
+            let float_value = ps("float4 main(float4 pos : SV_Position) : SV_Target {
+                    return float4(0.75 + pos.x, 0, 0, 1);
+                }");
+            let (rt, rt_out, rt_floats) = (rtv(&drawn), rtv(&out), rtv(&floats));
             unsafe {
                 viewport(4, 4);
                 context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0, 0.0, 0.125, 1.0]);
@@ -3108,7 +4270,24 @@ fn main() -> windows::core::Result<()> {
                 context.OMSetRenderTargets(None, None);
                 context.CopyResource(&copied, &drawn);
                 context.CopySubresourceRegion(&region, 0, 0, 0, 0, &drawn, 0, None);
+                context.ClearRenderTargetView(rt_floats.as_ref().unwrap(), &[-2.0, 0.0, 0.0, 0.0]);
+                context.OMSetRenderTargets(Some(std::slice::from_ref(&rt_floats)), None);
+                context.PSSetShader(float_value.as_ref(), None);
+                context.Draw(3, 0);
+                context.OMSetRenderTargets(None, None);
+                context.ResolveSubresource(&floats_resolved, 0, &floats, 0, DXGI_FORMAT_R32_FLOAT);
             }
+            print_rows(
+                "resolved R32_FLOAT",
+                &floats_resolved,
+                4,
+                &|row: &[u8]| {
+                    row.chunks(4)
+                        .map(|c| format!("{:08x}", u32::from_le_bytes([c[0], c[1], c[2], c[3]])))
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                },
+            );
             for (what, t) in [("drawn", &drawn), ("copied", &copied), ("region", &region)] {
                 unsafe {
                     viewport(16, 4);
@@ -3385,7 +4564,7 @@ fn main() -> windows::core::Result<()> {
                 None,
             )?;
             let rt = rtv(&target);
-            let mut raster = None;
+            let (mut raster, mut always) = (None, None);
             let desc = D3D11_RASTERIZER_DESC {
                 FillMode: D3D11_FILL_SOLID,
                 CullMode: D3D11_CULL_NONE,
@@ -3393,15 +4572,16 @@ fn main() -> windows::core::Result<()> {
                 DepthClipEnable: true.into(),
                 ..Default::default()
             };
-            unsafe { device.CreateRasterizerState(&desc, Some(&mut raster))? };
-            let mut always = None;
             let dss = D3D11_DEPTH_STENCIL_DESC {
                 DepthEnable: true.into(),
                 DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
                 DepthFunc: D3D11_COMPARISON_ALWAYS,
                 ..Default::default()
             };
-            unsafe { device.CreateDepthStencilState(&dss, Some(&mut always))? };
+            unsafe {
+                device.CreateRasterizerState(&desc, Some(&mut raster))?;
+                device.CreateDepthStencilState(&dss, Some(&mut always))?;
+            }
             let c = constants([0.25, 0.0, 0.0, 0.0]);
             for (name, typeless, format, texel) in [
                 ("d16", DXGI_FORMAT_R16_TYPELESS, DXGI_FORMAT_D16_UNORM, 2),
@@ -3428,8 +4608,8 @@ fn main() -> windows::core::Result<()> {
                     ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
                     ..Default::default()
                 };
-                unsafe { device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))? };
                 unsafe {
+                    device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))?;
                     viewport(16, 4);
                     context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
                     context.ClearDepthStencilView(
@@ -3477,7 +4657,6 @@ fn main() -> windows::core::Result<()> {
                 ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
                 ..Default::default()
             };
-            unsafe { device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))? };
             let mut always = None;
             let dss = D3D11_DEPTH_STENCIL_DESC {
                 DepthEnable: true.into(),
@@ -3485,7 +4664,10 @@ fn main() -> windows::core::Result<()> {
                 DepthFunc: D3D11_COMPARISON_ALWAYS,
                 ..Default::default()
             };
-            unsafe { device.CreateDepthStencilState(&dss, Some(&mut always))? };
+            unsafe {
+                device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))?;
+                device.CreateDepthStencilState(&dss, Some(&mut always))?;
+            }
             let raster = |clip: bool| {
                 let desc = D3D11_RASTERIZER_DESC {
                     FillMode: D3D11_FILL_SOLID,
@@ -3627,7 +4809,7 @@ fn main() -> windows::core::Result<()> {
                 None,
             )?;
             let rt = rtv(&target);
-            let mut raster = None;
+            let (mut raster, mut always) = (None, None);
             let desc = D3D11_RASTERIZER_DESC {
                 FillMode: D3D11_FILL_SOLID,
                 CullMode: D3D11_CULL_NONE,
@@ -3635,15 +4817,16 @@ fn main() -> windows::core::Result<()> {
                 DepthClipEnable: true.into(),
                 ..Default::default()
             };
-            unsafe { device.CreateRasterizerState(&desc, Some(&mut raster))? };
-            let mut always = None;
             let dss = D3D11_DEPTH_STENCIL_DESC {
                 DepthEnable: true.into(),
                 DepthWriteMask: D3D11_DEPTH_WRITE_MASK_ALL,
                 DepthFunc: D3D11_COMPARISON_ALWAYS,
                 ..Default::default()
             };
-            unsafe { device.CreateDepthStencilState(&dss, Some(&mut always))? };
+            unsafe {
+                device.CreateRasterizerState(&desc, Some(&mut raster))?;
+                device.CreateDepthStencilState(&dss, Some(&mut always))?;
+            }
             for name in ["points", "lines", "patches", "outline"] {
                 let depth = make(
                     &Tex {
@@ -3661,8 +4844,8 @@ fn main() -> windows::core::Result<()> {
                     ViewDimension: D3D11_DSV_DIMENSION_TEXTURE2D,
                     ..Default::default()
                 };
-                unsafe { device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))? };
                 unsafe {
+                    device.CreateDepthStencilView(&depth, Some(&desc), Some(&mut dsv))?;
                     viewport(16, 8);
                     context.ClearRenderTargetView(rt.as_ref().unwrap(), &[0.0; 4]);
                     context.ClearDepthStencilView(
@@ -3756,7 +4939,6 @@ fn main() -> windows::core::Result<()> {
                 AntialiasedLineEnable: true.into(),
                 ..Default::default()
             };
-            unsafe { device.CreateRasterizerState(&desc, Some(&mut raster))? };
             let mut blend_desc = D3D11_BLEND_DESC::default();
             blend_desc.RenderTarget[0] = D3D11_RENDER_TARGET_BLEND_DESC {
                 BlendEnable: true.into(),
@@ -3769,7 +4951,6 @@ fn main() -> windows::core::Result<()> {
                 RenderTargetWriteMask: D3D11_COLOR_WRITE_ENABLE_ALL.0 as u8,
             };
             let mut blend = None;
-            unsafe { device.CreateBlendState(&blend_desc, Some(&mut blend))? };
             // Vertices 0 to 5, cut, then the strip's three; drawn from base vertex 0.
             let strip: [u16; 10] = [0, 1, 2, 3, 4, 5, u16::MAX, 8, 9, 10];
             let index_desc = D3D11_BUFFER_DESC {
@@ -3783,8 +4964,10 @@ fn main() -> windows::core::Result<()> {
                 ..Default::default()
             };
             let mut indices = None;
-            unsafe { device.CreateBuffer(&index_desc, Some(&index_data), Some(&mut indices))? };
             unsafe {
+                device.CreateRasterizerState(&desc, Some(&mut raster))?;
+                device.CreateBlendState(&blend_desc, Some(&mut blend))?;
+                device.CreateBuffer(&index_desc, Some(&index_data), Some(&mut indices))?;
                 context.RSSetViewports(Some(&[D3D11_VIEWPORT {
                     TopLeftX: 6.0,
                     TopLeftY: 4.0,
@@ -3819,9 +5002,70 @@ fn main() -> windows::core::Result<()> {
         }
         _ => println!("no case {case:?}"),
     }
-    let r = unsafe { device.GetDeviceRemovedReason() };
-    println!("GetDeviceRemovedReason {:#010x}", code(r));
+    println!("GetDeviceRemovedReason {:#010x}", removed());
     Ok(())
+}
+
+/// atg-simplecomputepc's loop count of a point inside the set: four times its iteration constant,
+/// the third value of its constant buffer.
+#[cfg(windows)]
+const INSIDE_LOOPS: f32 = 1200.0;
+
+/// atg-simplecomputepc's colour map.
+#[cfg(windows)]
+const COLOUR_MAP: [u32; 8] = [
+    0xFF000040, 0xFF000080, 0xFF0000C0, 0xFF0000FF, 0xFF0040FF, 0xFF0080FF, 0xFF00C0FF, 0xFF00FFFF,
+];
+
+/// atg-simplecomputepc's own compute program (Microsoft's ATG samples, MIT): a Mandelbrot set,
+/// each point coloured from an 8-texel map by its loop count over the iteration constant.
+#[cfg(windows)]
+const FRACTAL: &str = "RWTexture2D<float4> OutputTexture : register(u0);
+    Texture2D ColorMapTexture : register(t0);
+    SamplerState ColorMapSampler : register(s0);
+    cbuffer cb0 {
+        float4 g_MaxThreadIter : packoffset(c0);
+        float4 g_Window : packoffset(c1);
+    }
+    [numthreads(8, 8, 1)]
+    void main(uint3 DTid : SV_DispatchThreadID) {
+        float2 WindowLocal = ((float2)DTid.xy / g_MaxThreadIter.xy) * float2(1, -1)
+            + float2(-0.5f, 0.5f);
+        float2 coord = WindowLocal.xy * g_Window.xy + g_Window.zw;
+        uint maxiter = (uint)g_MaxThreadIter.z * 4;
+        uint iter = 0;
+        float2 constant = coord;
+        float2 sq;
+        do {
+            float2 newvalue;
+            sq = coord * coord;
+            newvalue.x = sq.x - sq.y;
+            newvalue.y = 2 * coord.y * coord.x;
+            coord = newvalue + constant;
+            iter++;
+        } while (iter < maxiter && (sq.x + sq.y) < 4.0);
+        float colorIndex = frac((float)iter / g_MaxThreadIter.z);
+        float4 SampledColor =
+            ColorMapTexture.SampleLevel(ColorMapSampler, float2(colorIndex, 0), 0);
+        OutputTexture[DTid.xy] = SampledColor;
+    }";
+
+/// Each 16-bit packed texel's channel codes, red first, as bytes: implementations round to a 5-
+/// or 6-bit channel differently within the specification's 0.6 of a step. A 1-bit alpha is 00 or
+/// ff, so comparisons allowing a code's difference still compare it exactly.
+#[cfg(windows)]
+fn packed_codes(five_alpha: bool, row: &[u8]) -> String {
+    row.chunks(2)
+        .flat_map(|t| {
+            let w = u16::from_le_bytes([t[0], t[1]]);
+            let fields = if five_alpha {
+                vec![(w >> 10) & 31, (w >> 5) & 31, w & 31, (w >> 15) * 0xff]
+            } else {
+                vec![w >> 11, (w >> 5) & 63, w & 31]
+            };
+            fields.into_iter().map(|c| format!("{c:02x}"))
+        })
+        .collect()
 }
 
 #[cfg(not(windows))]

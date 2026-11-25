@@ -1,0 +1,14 @@
+[package]
+name = "wcontainers-win32-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "suite.rs"
+
+[dependencies]
+wcontainers-win32 = { path = ".." }
+
+[lints]
+workspace = true

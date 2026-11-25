@@ -9,7 +9,7 @@ use wcontainers_directx_graphics_infrastructure::{
     COLOR_SPACE_SRGB, DisplayMode, Model, OutputDesc, SwapChainDesc, SwapChainError, presents_in,
     sdr,
 };
-use wcontainers_gpu::{Backend, SlowPath, TextureUsage};
+use wcontainers_gpu::{Gpu, SlowPath, TextureUsage};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D12::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -497,7 +497,7 @@ impl SwapChain {
         let result = gpu::call_windowed(move |s| {
             let d = &mut s.front;
             if stretched {
-                d.backend().slow_paths().hit(SlowPath::FrameStretched);
+                d.backend().record_slow_path(SlowPath::FrameStretched);
             }
             if flags & PRESENT_DO_NOT_WAIT != 0 && d.would_wait(id) {
                 return Err(None);

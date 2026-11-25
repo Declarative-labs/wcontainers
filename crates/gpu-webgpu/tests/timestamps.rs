@@ -19,7 +19,7 @@ mod timestamps;
 use std::sync::OnceLock;
 use std::time::Instant;
 
-use wcontainers_gpu::{Backend, Features, GpuError, QueryKind};
+use wcontainers_gpu::{Features, Gpu, GpuError, QueryKind};
 use wcontainers_gpu_webgpu::WebGpu;
 
 fn backends() -> wgpu::Backends {
@@ -55,7 +55,7 @@ fn timestamps_are_absent_on_a_device_without_timestamp_queries() {
         wgpu::Features::TIMESTAMP_QUERY,
     ))
     .unwrap();
-    assert!(!b.caps().has(Features::TIMESTAMPS));
+    assert!(!b.caps().features.contains(Features::TIMESTAMPS));
     assert_eq!(
         b.create_query_set(QueryKind::Timestamp, 1).unwrap_err(),
         GpuError::Absent(Features::TIMESTAMPS)
@@ -87,9 +87,9 @@ fn timestamps_are_absent_where_they_would_not_be_nanoseconds() {
     let period = queue.get_timestamp_period();
     eprintln!("timestamp period without conversion: {period} ns");
     if period == 1.0 {
-        assert!(b.caps().has(Features::TIMESTAMPS));
+        assert!(b.caps().features.contains(Features::TIMESTAMPS));
     } else {
-        assert!(!b.caps().has(Features::TIMESTAMPS));
+        assert!(!b.caps().features.contains(Features::TIMESTAMPS));
         assert_eq!(
             b.create_query_set(QueryKind::Timestamp, 1).unwrap_err(),
             GpuError::Absent(Features::TIMESTAMPS)

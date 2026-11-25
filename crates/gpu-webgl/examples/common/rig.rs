@@ -150,16 +150,16 @@ fn cell(i: u32, columns: u32, size: f32, depth: [f32; 2]) -> Viewport {
 }
 
 /// Draws coloured triangles in a pass, cell by cell.
-struct Drawing<B: Backend> {
+struct Drawing<B: Gpu> {
     program: B::Program,
     blend: B::Blend,
     layout: B::VertexLayout,
     minus_one: bool,
 }
 
-impl<B: Backend> Drawing<B> {
+impl<B: Gpu> Drawing<B> {
     fn new(b: &mut B) -> Result<Drawing<B>, String> {
-        let minus_one = !b.caps().has(Features::CLIP_DEPTH_ZERO_ONE);
+        let minus_one = !b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE);
         let source = if minus_one {
             // What a front does without CLIP_DEPTH_ZERO_ONE: clip z from zero rewritten as 2z - w.
             PROGRAM.replace("vec4<f32>(p, 1.0)", "vec4<f32>(p.xy, 2.0 * p.z - 1.0, 1.0)")
@@ -303,7 +303,7 @@ impl<B: Backend> Drawing<B> {
     }
 }
 
-fn depth_block<B: Backend>(
+fn depth_block<B: Gpu>(
     b: &mut B,
     compare: Option<CompareFn>,
     write: bool,
@@ -319,7 +319,7 @@ fn depth_block<B: Backend>(
     .map_err(|e| format!("{e:?}"))
 }
 
-fn texture<B: Backend>(
+fn texture<B: Gpu>(
     b: &mut B,
     format: Format,
     w: u32,
@@ -356,7 +356,7 @@ fn texture<B: Backend>(
     Ok((t, v))
 }
 
-fn read<B: Backend>(b: &mut B, t: &B::Texture, w: u32, h: u32) -> Result<Vec<u8>, String> {
+fn read<B: Gpu>(b: &mut B, t: &B::Texture, w: u32, h: u32) -> Result<Vec<u8>, String> {
     let mut got = vec![0u8; (w * h * 4) as usize];
     b.read_back_now(
         &ReadSource::Texture {
@@ -380,7 +380,7 @@ fn read<B: Backend>(b: &mut B, t: &B::Texture, w: u32, h: u32) -> Result<Vec<u8>
 }
 
 /// A pass on `target` cleared to `clear`, with `depth` cleared to 1.
-fn pass<'a, B: Backend>(
+fn pass<'a, B: Gpu>(
     target: &'a B::TextureView,
     depth: Option<&'a B::TextureView>,
     clear: [u32; 4],
@@ -411,8 +411,8 @@ fn pass<'a, B: Backend>(
 
 /// Draws the scene of `output` and returns its bytes: RGBA8 rows top first, or for depth RGBA f32
 /// (depth, stencil 0, 0, 1). None where the back end lacks what the scene needs.
-pub fn draw<B: Backend>(b: &mut B, output: &Output) -> Result<Option<Vec<u8>>, String> {
-    if !b.caps().has(output.needs) {
+pub fn draw<B: Gpu>(b: &mut B, output: &Output) -> Result<Option<Vec<u8>>, String> {
+    if !b.caps().features.contains(output.needs) {
         return Ok(None);
     }
     let d = Drawing::new(b)?;

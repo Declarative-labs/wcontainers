@@ -2,7 +2,7 @@
 //! that the written WGSL reads back. Run against real Direct3D 11 in `tests/compute_draw.rs`.
 
 use std::path::Path;
-use wcontainers_gpu::{Format, HelperValue, SlotKind, TexelBufferRoute, VariantKey};
+use wcontainers_gpu::{Format, HelperValue, SLOT_KINDS, SlotKind, TexelBufferRoute, VariantKey};
 use wcontainers_shaders::ConvertError;
 use wcontainers_shaders::{Source, convert};
 
@@ -36,7 +36,13 @@ fn atomics_and_counters_declare_their_bindings() {
                 .iter()
                 .filter(|b| b.kind == kind)
                 .map(|b| {
-                    assert_eq!(b.binding, kind.binding(b.register).unwrap(), "{file}");
+                    assert_eq!(
+                        b.binding,
+                        (b.register < SLOT_KINDS[kind as usize].slots)
+                            .then(|| SLOT_KINDS[kind as usize].first_binding + b.register)
+                            .unwrap(),
+                        "{file}"
+                    );
                     b.register
                 })
                 .collect();
@@ -47,6 +53,26 @@ fn atomics_and_counters_declare_their_bindings() {
         assert_eq!(of(SlotKind::Counter), counters, "{file}");
         reads_back(&file, &c.modules[0]);
     }
+}
+
+/// A DXBC program handed to the DXIL route is refused by a reason naming the input, in every
+/// round, and the routes give the same bytes afterwards as before.
+#[test]
+fn a_dxbc_program_through_the_dxil_route_is_refused_by_name() {
+    let (dxbc, dxil) = (own("cs_atomics.dxbc"), own("cs_atomics.dxil"));
+    let encoded = |source| {
+        let c = convert(source, &VariantKey::default(), None).expect("converts");
+        format!("{:?}", c.modules[0].module)
+    };
+    let before = [encoded(Source::Dxbc(&dxbc)), encoded(Source::Dxil(&dxil))];
+    for round in 0..3 {
+        match convert(Source::Dxil(&dxbc), &VariantKey::default(), None) {
+            Err(ConvertError::Rejected(reason)) if reason.contains("no DXIL program") => {}
+            other => panic!("round {round}: {other:?}"),
+        }
+    }
+    let after = [encoded(Source::Dxbc(&dxbc)), encoded(Source::Dxil(&dxil))];
+    assert_eq!(before, after);
 }
 
 fn reads_back(file: &str, m: &wcontainers_gpu::ShaderModule) {
@@ -270,7 +296,9 @@ fn alpha_storage_views_store_their_alpha_alone_on_both_routes() {
         ],
         ..Default::default()
     };
-    let binding = SlotKind::Storage.binding(0).unwrap();
+    let binding = (0 < SLOT_KINDS[SlotKind::Storage as usize].slots)
+        .then(|| SLOT_KINDS[SlotKind::Storage as usize].first_binding + 0)
+        .unwrap();
     for dxil in [false, true] {
         let file = format!("cs_images.{}", if dxil { "dxil" } else { "dxbc" });
         let bytes = own(&file);
@@ -330,7 +358,7 @@ fn alpha_storage_views_store_their_alpha_alone_on_both_routes() {
         }
         assert_eq!(stores, 1, "{file}");
         reads_back(&file, &c.modules[0]);
-        // Through a buffer the format has no layout.
+        // Through a buffer of its one-byte texels, laid out as the helper constants say.
         let through = VariantKey {
             texels_through_buffer: 1,
             ..key.clone()
@@ -339,15 +367,16 @@ fn alpha_storage_views_store_their_alpha_alone_on_both_routes() {
             true => Source::Dxil(&bytes),
             false => Source::Dxbc(&bytes),
         };
+        let c = convert(source, &through, None)
+            .unwrap_or_else(|e| panic!("{file} through a buffer: {e}"));
         assert!(
-            matches!(
-                convert(source, &through, None),
-                Err(ConvertError::Unsupported(
-                    wcontainers_shaders::refusal::STORAGE_FORMAT_ABSENT
-                ))
-            ),
+            c.reflection
+                .helpers
+                .iter()
+                .any(|h| matches!(h.value, HelperValue::TexelLayout { slot: 0 })),
             "{file}"
         );
+        reads_back(&file, &c.modules[0]);
     }
 }
 
@@ -379,7 +408,12 @@ fn storage_textures_convert_through_buffers() {
     layouts.sort();
     assert_eq!(layouts, [3, 4, 5, 6]);
     for b in &c.reflection.bindings {
-        assert_eq!(b.binding, SlotKind::Storage.binding(b.register).unwrap());
+        assert_eq!(
+            b.binding,
+            (b.register < SLOT_KINDS[SlotKind::Storage as usize].slots)
+                .then(|| SLOT_KINDS[SlotKind::Storage as usize].first_binding + b.register)
+                .unwrap()
+        );
     }
     reads_back("cs_through", &c.modules[0]);
     // Without the variant, the atomics are refused; without a format, the texture is.

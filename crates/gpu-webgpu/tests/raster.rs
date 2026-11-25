@@ -20,10 +20,9 @@ mod viewports;
 
 use libtest_mimic::{Completion, Failed, Trial};
 use wcontainers_gpu::{
-    Backend, BufferUsage, ColorAttachment, CullMode, DeviceStatus, DrawCall, DrawRange, Extent,
-    Features, FillMode, Format, GpuError, LoadOp, Origin, PassDesc, RasterDesc, ReadSource,
-    StepMode, StoreOp, TextureRegion, TextureUsage, Topology, VertexBinding, VertexFormat,
-    Viewport,
+    BufferUsage, ColorAttachment, CullMode, DeviceStatus, DrawCall, DrawRange, Extent, Features,
+    FillMode, Format, Gpu, GpuError, LoadOp, Origin, PassDesc, RasterDesc, ReadSource, StepMode,
+    StoreOp, TextureRegion, TextureUsage, Topology, VertexBinding, VertexFormat, Viewport,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -149,12 +148,12 @@ use draw::COLORED_WGSL;
 fn wireframe_fill_matches_direct3d() -> Result<Completion, Failed> {
     let mut b = device();
     // wgpu fills polygons with lines on every native API; points only on some (not Direct3D 12).
-    assert!(b.caps().has(Features::POLYGON_MODE));
+    assert!(b.caps().features.contains(Features::POLYGON_MODE));
     eprintln!(
         "POLYGON_MODE_POINT: {}",
-        b.caps().has(Features::POLYGON_MODE_POINT)
+        b.caps().features.contains(Features::POLYGON_MODE_POINT)
     );
-    if !b.caps().has(Features::POLYGON_MODE_POINT) {
+    if !b.caps().features.contains(Features::POLYGON_MODE_POINT) {
         let point = RasterDesc {
             fill: FillMode::Point,
             ..draw::solid()
@@ -315,7 +314,7 @@ fn cells(b: &mut WebGpu, fills: &[RasterDesc], vertices: &[[f32; 7]], h: u32) ->
 /// the three pixels holding the corners are drawn. Elsewhere reported ignored, with its reason.
 fn point_fill_draws_the_corners() -> Result<Completion, Failed> {
     let mut b = device();
-    if !b.caps().has(Features::POLYGON_MODE_POINT) {
+    if !b.caps().features.contains(Features::POLYGON_MODE_POINT) {
         return Ok(Completion::ignored_with(
             "POLYGON_MODE_POINT is absent on this device (its refusal is checked beside the \
              wireframe)",

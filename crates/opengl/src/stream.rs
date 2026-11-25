@@ -5,7 +5,7 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferRange, BufferUsage, Interpolation, MapIntent, Object, STORAGE_WORD,
+    BufferDesc, BufferRange, BufferUsage, Gpu, Interpolation, MapIntent, Object, STORAGE_WORD,
     ScalarKind, StageValue, SystemValue, WriteMode,
 };
 use wcontainers_nir::mesa::StreamedOutput;
@@ -68,6 +68,19 @@ pub fn declaration(outputs: &[StreamedOutput], strides: [u32; STREAM_BUFFERS]) -
     StreamOutput { entries, strides }
 }
 
+/// A geometry program's outputs, as the shaders crate reflects them, named as [`declaration`]
+/// names streamed values: the position, and every other value by its location.
+pub fn name_outputs(outputs: &mut [StageValue]) {
+    for value in outputs {
+        let (semantic, index) = match value.system {
+            Some(SystemValue::Position) => (POSITION_SEMANTIC, 0),
+            _ => (LOCATION_SEMANTIC, value.location),
+        };
+        value.semantic = semantic.into();
+        value.semantic_index = index;
+    }
+}
+
 /// A converted vertex program's outputs in the stage helper's terms (`declaration`'s names).
 pub fn outputs(module: &naga::Module) -> Vec<StageValue> {
     let mut values = Vec::new();
@@ -120,7 +133,7 @@ pub fn outputs(module: &naga::Module) -> Vec<StageValue> {
 
 /// One stream output target: Gallium's struct first, so that a pointer to it is one to this.
 #[repr(C)]
-pub struct Target<B: Backend> {
+pub struct Target<B: Gpu> {
     base: pipe_stream_output_target,
     /// The bytes written from the bound range's start while the target is not bound, one word.
     filled: B::Buffer,
@@ -131,12 +144,12 @@ pub struct Target<B: Backend> {
 
 /// The targets bound, and the stage helper's block of filled sizes and statistics, which holds
 /// theirs while they are bound.
-pub struct Bound<B: Backend> {
+pub struct Bound<B: Gpu> {
     targets: [*mut pipe_stream_output_target; STREAM_BUFFERS],
     pub filled: Option<B::Buffer>,
 }
 
-impl<B: Backend> Default for Bound<B> {
+impl<B: Gpu> Default for Bound<B> {
     fn default() -> Self {
         Bound {
             targets: [std::ptr::null_mut(); STREAM_BUFFERS],
@@ -145,7 +158,7 @@ impl<B: Backend> Default for Bound<B> {
     }
 }
 
-impl<B: Backend> Bound<B> {
+impl<B: Gpu> Bound<B> {
     pub fn active(&self) -> bool {
         self.targets.iter().any(|t| !t.is_null())
     }
@@ -181,6 +194,23 @@ impl<B: Backend> Bound<B> {
         })
     }
 
+    /// Where the stage helper counts one draw's primitives while no target is bound: no buffer, and
+    /// the block (made at the first such draw).
+    pub fn counted(&mut self, backend: &mut B) -> Result<StreamTargets<'_, B>, String> {
+        if self.filled.is_none() {
+            self.filled = Some(block(backend)?);
+        }
+        let filled = self.filled.as_ref().ok_or("stream output's block")?;
+        Ok(StreamTargets {
+            buffers: [const { None }; STREAM_BUFFERS],
+            filled: BufferRange {
+                buffer: filled,
+                offset: 0,
+                size: STREAM_FILLED_WORDS as u64 * STORAGE_WORD,
+            },
+        })
+    }
+
     /// Lets every target go, with the context.
     pub fn release(&mut self, screen: &crate::screen::Screen<B>) {
         for t in std::mem::replace(&mut self.targets, [std::ptr::null_mut(); STREAM_BUFFERS]) {
@@ -198,63 +228,78 @@ const COUNTER_USAGE: BufferUsage = BufferUsage::STORAGE
     .union(BufferUsage::COPY_DST)
     .union(BufferUsage::READ_BACK);
 
+/// The stage helper's block of filled sizes and statistics.
+fn block<B: Gpu>(backend: &mut B) -> Result<B::Buffer, String> {
+    backend
+        .create_buffer(&BufferDesc {
+            size: STREAM_FILLED_WORDS as u64 * STORAGE_WORD,
+            usage: COUNTER_USAGE,
+            intent: MapIntent::Rarely,
+        })
+        .map_err(|e| format!("stream output's block: {e:?}"))
+}
+
 /// `pipe_context::create_stream_output_target`.
-pub unsafe extern "C" fn create_stream_output_target<B: Backend>(
+pub unsafe extern "C" fn create_stream_output_target<B: Gpu>(
     pipe: *mut pipe_context,
     buffer: *mut pipe_resource,
     offset: c_uint,
     size: c_uint,
 ) -> *mut pipe_stream_output_target {
-    // SAFETY: Mesa passes this driver's context.
-    let context = unsafe { Context::<B>::of(pipe) };
-    let screen = context.screen();
-    let mut backend = screen.backend();
-    let align = u64::from(backend.caps().limits.min_storage_offset_alignment);
-    let lead = u64::from(offset) % align;
-    let filled = backend
-        .create_buffer(&BufferDesc {
-            size: STORAGE_WORD,
-            usage: COUNTER_USAGE,
-            intent: MapIntent::Rarely,
-        })
-        .unwrap_or_else(|e| refuse(format!("a stream output target: {e:?}")));
-    backend.write_buffer(&filled, 0, &(lead as u32).to_le_bytes(), WriteMode::Ordered);
-    let mut target = Box::new(Target::<B> {
-        base: pipe_stream_output_target::default(),
-        filled,
-        lead,
-    });
-    target.base.reference.count = 1;
-    target.base.context = pipe;
-    target.base.buffer_offset = offset;
-    target.base.buffer_size = size;
-    // SAFETY: the buffer is a live resource Mesa hands over; the target takes a reference.
-    unsafe { resource::reference(&mut target.base.buffer, buffer) };
-    Box::into_raw(target).cast()
+    crate::state::guest_call(pipe, std::ptr::null_mut(), move || {
+        // SAFETY: Mesa passes this driver's context.
+        let context = unsafe { Context::<B>::of(pipe) };
+        let screen = context.screen();
+        let mut backend = screen.backend();
+        let align = u64::from(backend.caps().limits.min_storage_offset_alignment);
+        let lead = u64::from(offset) % align;
+        let filled = backend
+            .create_buffer(&BufferDesc {
+                size: STORAGE_WORD,
+                usage: COUNTER_USAGE,
+                intent: MapIntent::Rarely,
+            })
+            .unwrap_or_else(|e| refuse(format!("a stream output target: {e:?}")));
+        backend.write_buffer(&filled, 0, &(lead as u32).to_le_bytes(), WriteMode::Ordered);
+        let mut target = Box::new(Target::<B> {
+            base: pipe_stream_output_target::default(),
+            filled,
+            lead,
+        });
+        target.base.reference.count = 1;
+        target.base.context = pipe;
+        target.base.buffer_offset = offset;
+        target.base.buffer_size = size;
+        // SAFETY: the buffer is a live resource Mesa hands over; the target takes a reference.
+        unsafe { resource::reference(&mut target.base.buffer, buffer) };
+        Box::into_raw(target).cast()
+    })
 }
 
 /// `pipe_context::stream_output_target_destroy`, when its last reference goes.
-pub unsafe extern "C" fn stream_output_target_destroy<B: Backend>(
+pub unsafe extern "C" fn stream_output_target_destroy<B: Gpu>(
     pipe: *mut pipe_context,
     target: *mut pipe_stream_output_target,
 ) {
-    // SAFETY: Mesa passes this driver's context and a target it made, destroyed once.
-    let (context, target) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            Box::from_raw(target.cast::<Target<B>>()),
-        )
-    };
-    context.screen().retire(Object::Buffer(target.filled));
-    // SAFETY: the target held a reference on its buffer.
-    unsafe { resource::release(target.base.buffer) };
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and a target it made, destroyed once.
+        let (context, target) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                Box::from_raw(target.cast::<Target<B>>()),
+            )
+        };
+        context.screen().retire(Object::Buffer(target.filled));
+        // SAFETY: the target held a reference on its buffer.
+        unsafe { resource::release(target.base.buffer) };
+    })
 }
 
 /// Drops one reference on a target (null for none), destroying it with the last.
 ///
 /// # Safety
 /// `target` is null or a live target of this driver holding the reference dropped.
-unsafe fn unreference<B: Backend>(
+unsafe fn unreference<B: Gpu>(
     target: *mut pipe_stream_output_target,
     screen: &crate::screen::Screen<B>,
 ) {
@@ -276,63 +321,58 @@ unsafe fn unreference<B: Backend>(
 
 /// `pipe_context::set_stream_output_targets`: each target unbound keeps its filled size in its
 /// own word; each bound goes on from it (`APPEND`) or starts at the offset given.
-pub unsafe extern "C" fn set_stream_output_targets<B: Backend>(
+pub unsafe extern "C" fn set_stream_output_targets<B: Gpu>(
     pipe: *mut pipe_context,
     count: c_uint,
     targets: *mut *mut pipe_stream_output_target,
     offsets: *const c_uint,
     _: mesa_prim,
 ) {
-    // SAFETY: Mesa passes this driver's context and `count` targets and offsets.
-    let (context, new, offsets) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            std::slice::from_raw_parts(targets, count as usize),
-            std::slice::from_raw_parts(offsets, count as usize),
-        )
-    };
-    let screen = context.screen();
-    let mut backend = screen.backend();
-    let backend = &mut *backend;
-    if let Err(error) = context.tracker.close(backend) {
-        refuse(format!("stream output targets: {error:?}"));
-    }
-    let streams = &mut context.streams;
-    if streams.filled.is_none() && !new.iter().all(|t| t.is_null()) {
-        let block = backend
-            .create_buffer(&BufferDesc {
-                size: STREAM_FILLED_WORDS as u64 * STORAGE_WORD,
-                usage: COUNTER_USAGE,
-                intent: MapIntent::Rarely,
-            })
-            .unwrap_or_else(|e| refuse(format!("stream output's block: {e:?}")));
-        streams.filled = Some(block);
-    }
-    for (slot, old) in streams.targets.iter_mut().enumerate() {
-        let word = slot as u64 * STORAGE_WORD;
-        if let (Some(filled), false) = (&streams.filled, old.is_null()) {
-            // SAFETY: a bound target holds a reference on itself.
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and `count` targets and offsets.
+        let (context, new, offsets) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                std::slice::from_raw_parts(targets, count as usize),
+                std::slice::from_raw_parts(offsets, count as usize),
+            )
+        };
+        let screen = context.screen();
+        let mut backend = screen.backend();
+        let backend = &mut *backend;
+        if let Err(error) = context.tracker.close(backend) {
+            refuse(format!("stream output targets: {error:?}"));
+        }
+        let streams = &mut context.streams;
+        if streams.filled.is_none() && !new.iter().all(|t| t.is_null()) {
+            streams.filled = Some(block(backend).unwrap_or_else(|e| refuse(e)));
+        }
+        for (slot, old) in streams.targets.iter_mut().enumerate() {
+            let word = slot as u64 * STORAGE_WORD;
+            if let (Some(filled), false) = (&streams.filled, old.is_null()) {
+                // SAFETY: a bound target holds a reference on itself.
+                let target = unsafe { &*old.cast::<Target<B>>() };
+                backend.copy_buffer(filled, word, &target.filled, 0, STORAGE_WORD);
+            }
+            // SAFETY: a bound target holds a reference.
+            unsafe { unreference::<B>(*old, screen) };
+            *old = new.get(slot).copied().unwrap_or(std::ptr::null_mut());
+            if old.is_null() {
+                continue;
+            }
+            // SAFETY: Mesa hands over live targets of this driver; the slot takes a reference.
             let target = unsafe { &*old.cast::<Target<B>>() };
-            backend.copy_buffer(filled, word, &target.filled, 0, STORAGE_WORD);
-        }
-        // SAFETY: a bound target holds a reference.
-        unsafe { unreference::<B>(*old, screen) };
-        *old = new.get(slot).copied().unwrap_or(std::ptr::null_mut());
-        if old.is_null() {
-            continue;
-        }
-        // SAFETY: Mesa hands over live targets of this driver; the slot takes a reference.
-        let target = unsafe { &*old.cast::<Target<B>>() };
-        // SAFETY: as above.
-        unsafe { AtomicI32::from_ptr(&raw mut (**old).reference.count) }
-            .fetch_add(1, Ordering::Relaxed);
-        let filled = streams.filled.as_ref().expect("made above");
-        match offsets[slot] {
-            APPEND => backend.copy_buffer(&target.filled, 0, filled, word, STORAGE_WORD),
-            start => {
-                let bytes = (target.lead + u64::from(start)) as u32;
-                backend.write_buffer(filled, word, &bytes.to_le_bytes(), WriteMode::Ordered);
+            // SAFETY: as above.
+            unsafe { AtomicI32::from_ptr(&raw mut (**old).reference.count) }
+                .fetch_add(1, Ordering::Relaxed);
+            let filled = streams.filled.as_ref().expect("made above");
+            match offsets[slot] {
+                APPEND => backend.copy_buffer(&target.filled, 0, filled, word, STORAGE_WORD),
+                start => {
+                    let bytes = (target.lead + u64::from(start)) as u32;
+                    backend.write_buffer(filled, word, &bytes.to_le_bytes(), WriteMode::Ordered);
+                }
             }
         }
-    }
+    })
 }

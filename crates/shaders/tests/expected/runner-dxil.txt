@@ -274,7 +274,7 @@ hlsl+clip-cull-distance-1-12-vs.dxil	ok ; glsl needs CLIP_DISTANCE compile '#ext
 hlsl+clip-cull-distance-1-13-vs.dxil	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-cull-distance-1-14-vs.dxil	ok ; glsl needs CLIP_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
 hlsl+clip-cull-distance-1-15-vs.dxil	ok ; glsl needs CLIP_DISTANCE|CULL_DISTANCE compile '#extension' : extension not supported: GL_ANGLE_clip_cull_distance
-hlsl+clip-cull-distance-1-16-gs.dxil	unsupported ClipDistance
+hlsl+clip-cull-distance-1-16-gs.dxil	ok ; glsl absent compute
 hlsl+clip-cull-distance-1-17-vs.dxil	ok ; glsl compiles
 hlsl+clip-cull-distance-1-18-gs.dxil	ok ; glsl absent compute
 hlsl+clip-cull-distance-1-19-gs.dxil	ok ; glsl absent compute
@@ -389,7 +389,7 @@ hlsl+discard-6-ps.dxil	ok views:R32Float ; glsl needs FRAGMENT_STORAGE_WRITE wri
 hlsl+distance-1-ps.dxil	ok ; glsl compiles
 hlsl+distance-2-ps.dxil	ok ; glsl compiles
 hlsl+distance-3-ps.dxil	ok ; glsl compiles
-hlsl+distance-4-ps.dxil	convert rejected: Unknown type!
+hlsl+distance-4-ps.dxil	unsupported TypeOutsideDxil
 hlsl+distance-5-ps.dxil	ok ; glsl compiles
 hlsl+dot-1-ps.dxil	ok ; glsl compiles
 hlsl+dot-2-ps.dxil	ok ; glsl compiles
@@ -428,7 +428,7 @@ hlsl+eval-attrib-13-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID'
 hlsl+eval-attrib-14-ps.dxil	unsupported SampleCount
 hlsl+eval-attrib-15-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 hlsl+eval-attrib-2-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
-hlsl+eval-attrib-3-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
+hlsl+eval-attrib-3-ps.dxil	unsupported SampleCount
 hlsl+eval-attrib-4-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 hlsl+eval-attrib-5-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
 hlsl+eval-attrib-6-ps.dxil	ok ; glsl needs SAMPLE_SHADING compile 'gl_SampleID' : undeclared identifier
@@ -864,7 +864,7 @@ hlsl+object-references-8-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-1-ps.dxil	ok ; glsl compiles
 hlsl+patch-syntax-10-hs.dxil	ok ; glsl absent compute
 hlsl+patch-syntax-11-ds.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
-hlsl+patch-syntax-12-gs.dxil	unsupported GeometryPatchInput
+hlsl+patch-syntax-12-gs.dxil	ok ; glsl absent compute
 hlsl+patch-syntax-13-hs.dxil	ok ; glsl absent compute
 hlsl+patch-syntax-14-ds.dxil	ok ; glsl needs VERTEX_STORAGE_READ write Invalid("webgl: naga could not write the shader as GLSL ES 3.00"); naga alone: The selected version doesn't support Features(BUFFER_STORAGE | DYNAMIC_ARRAY_SIZE)
 hlsl+patch-syntax-15-hs.dxil	ok ; glsl absent compute

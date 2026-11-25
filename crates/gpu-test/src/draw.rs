@@ -2,7 +2,7 @@
 //! by Direct3D's rules (vertices snapped to 1/256 pixel, pixel centres, the top-left rule), depth and
 //! stencil tests, and blending. Sampling and loads of textures are here too.
 
-use crate::program::{self, Error, Level, Resources, StorageWrite, Value};
+use crate::program::{self, Error, Level, StorageWrite, Value};
 use crate::recorder::{
     Bound, DepthOps, Entries, Obj, Recorder, StageCounts, TextureObj, as_kind, level_size,
     subresource,
@@ -49,7 +49,7 @@ struct Target {
 impl Target {
     /// Sample `sample` of a texel: a multisampled target (2D, slice 0) holds its samples as planes.
     fn texel(&mut self, x: u32, y: u32, sample: u32) -> &mut [u8] {
-        let size = self.format.block().2 as usize;
+        let size = FORMAT_FACTS[self.format as usize].block.2 as usize;
         let at = (((self.slice + sample) * self.height + y) * self.width + x) as usize * size;
         &mut self.bytes[at..at + size]
     }
@@ -81,8 +81,9 @@ impl Bindings<'_> {
     }
 }
 
-impl Resources for Bindings<'_> {
-    fn buffer(&self, group: u32, binding: u32) -> Result<&[u8], Error> {
+impl Bindings<'_> {
+    /// The bytes of the buffer range bound at (group, binding).
+    pub fn buffer(&self, group: u32, binding: u32) -> Result<&[u8], Error> {
         let Bound::Buffer {
             buffer,
             offset,
@@ -99,7 +100,8 @@ impl Resources for Bindings<'_> {
             .ok_or_else(|| "a bound range past the buffer's end".into())
     }
 
-    fn sample(
+    /// Samples the texture at `image` with the sampler at `sampler`; `compare` is a depth reference.
+    pub fn sample(
         &self,
         image: (u32, u32),
         sampler: (u32, u32),
@@ -118,7 +120,8 @@ impl Resources for Bindings<'_> {
         sample_view(self.rec, view, &s, coord, layer, level, compare)
     }
 
-    fn load(
+    /// Loads one texel, or one sample of a multisampled texel.
+    pub fn load(
         &self,
         image: (u32, u32),
         coord: [i64; 3],
@@ -159,7 +162,8 @@ impl Resources for Bindings<'_> {
         ))
     }
 
-    fn size(&self, image: (u32, u32), level: i64) -> Result<[u32; 3], Error> {
+    /// The size of a level of the texture.
+    pub fn size(&self, image: (u32, u32), level: i64) -> Result<[u32; 3], Error> {
         let v = self.rec.view(self.texture(image)?)?;
         let t = self.rec.texture(v.texture)?;
         let (w, h, d) = level_size(&t.desc, v.desc.base_mip + level as u32);
@@ -199,7 +203,7 @@ fn fetch(
     reference: Option<(CompareFn, f64)>,
 ) -> [f64; 4] {
     let (w, h, _) = level_size(&t.desc, mip);
-    let size = t.desc.format.block().2 as usize;
+    let size = FORMAT_FACTS[t.desc.format as usize].block.2 as usize;
     let sub = subresource(
         &t.desc,
         mip,
@@ -212,7 +216,7 @@ fn fetch(
     let i = (((at[2] * h + at[1]) * w + at[0]) as usize) * size;
     let bytes = &t.subresources[sub][i..i + size];
     let format = view.format;
-    if format.is_depth_stencil() {
+    if FORMAT_FACTS[format as usize].depth_stencil {
         if view.stencil {
             let s = texel::stencil_byte(format).map_or(0, |b| bytes[b]);
             return [f64::from(s), 0.0, 0.0, 1.0];
@@ -927,7 +931,7 @@ impl Recorder {
                 let format = self.view(*view)?.desc.format;
                 if d.compare.is_none()
                     && [d.min, d.mag, d.mip].contains(&Filter::Linear)
-                    && !self.caps().formats.get(format).contains(FormatUse::FILTER)
+                    && !self.caps().formats.uses[format as usize].contains(FormatUse::FILTER)
                 {
                     return Err(format!(
                         "{format:?} filtered, which this back end does not filter"
@@ -970,7 +974,7 @@ impl Recorder {
                 };
                 let view = self.view(*view)?;
                 let samples = self.texture(view.texture)?.desc.samples;
-                let aspect = match view.desc.format.kind() {
+                let aspect = match FORMAT_FACTS[view.desc.format as usize].kind {
                     FormatKind::DepthStencil if view.desc.stencil => FormatKind::Stencil,
                     FormatKind::DepthStencil => FormatKind::Depth,
                     kind => kind,
@@ -1149,7 +1153,7 @@ impl Recorder {
             }
         }
         if let (Some(i), DrawRange::Indexed { first, count, .. }) = (&call.index, &call.range) {
-            let size = u64::from(i.format.size());
+            let size = u64::from(INDEX_FORMATS[i.format as usize].size);
             let start = i.offset.saturating_add(u64::from(*first) * size);
             reads.push((
                 *i.buffer,
@@ -1287,7 +1291,9 @@ impl Recorder {
                 state.blend.targets[i]
             };
             let format = self.view(*view)?.desc.format;
-            if rule.blend.is_some() && !self.caps().formats.get(format).contains(FormatUse::BLEND) {
+            if rule.blend.is_some()
+                && !self.caps().formats.uses[format as usize].contains(FormatUse::BLEND)
+            {
                 return Err(format!(
                     "blending into {format:?}, which this back end does not blend"
                 ));
@@ -1382,7 +1388,7 @@ impl Recorder {
                     .as_ref()
                     .ok_or("an indexed draw without indices")?;
                 let bytes = &self.buffer(*index.buffer)?.bytes;
-                let size = index.format.size() as usize;
+                let size = INDEX_FORMATS[index.format as usize].size as usize;
                 let mut list = Vec::new();
                 for k in first..first + count {
                     let at = (index.offset as usize).saturating_add(k as usize * size);
@@ -1390,7 +1396,7 @@ impl Recorder {
                         .get(at..at.saturating_add(size))
                         .ok_or("an index past the buffer's end")?;
                     let v = b.iter().rev().fold(0u32, |a, &x| (a << 8) | u32::from(x));
-                    if call.restart && v == index.format.restart_value() {
+                    if call.restart && v == INDEX_FORMATS[index.format as usize].restart_value {
                         list.push(None);
                     } else {
                         list.push(Some((i64::from(v) + i64::from(base_vertex)) as u32));

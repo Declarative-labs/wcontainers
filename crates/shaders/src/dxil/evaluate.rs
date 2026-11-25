@@ -82,6 +82,7 @@ const NOT_FOUND: &str = "an input not found";
 const NO_CENTROID: &str = "a centroid";
 const NO_SAMPLES: &str = "a sample's place";
 const NO_PLACE: &str = "a call's place";
+const POSITION_NOT_STORED: &str = "a centroid position not stored whole into a copy by the reader";
 
 fn malformed(what: &str) -> ConvertError {
     ConvertError::Malformed(format!(
@@ -92,10 +93,34 @@ fn malformed(what: &str) -> ConvertError {
 /// Replaces every evaluation of an input elsewhere in the pixel in `module`, drawn into targets of
 /// `samples` samples. Gives the system values it added to the entry point to compute them, which the
 /// program's reflection leaves out.
-pub(super) fn inputs(module: &mut Module, samples: u8) -> Result<Vec<SystemValue>> {
+/// `position` is how dxil-spirv decorated the position input ([`position_sampling`]): one declared at
+/// the centroid is moved there, from where the hardware took it.
+pub(super) fn inputs(
+    module: &mut Module,
+    samples: u8,
+    position: Option<Sampling>,
+) -> Result<Vec<SystemValue>> {
+    let mut added = Vec::new();
+    let mut shared = Shared::default();
+    let fragment = module
+        .entry_points
+        .first()
+        .is_some_and(|e| e.stage == ShaderStage::Fragment);
+    // Where the centroid is depends on the targets' sample count.
+    if position == Some(Sampling::Centroid) && fragment && samples == 0 {
+        return Err(ConvertError::Unsupported(crate::refusal::SAMPLE_COUNT));
+    }
+    if position == Some(Sampling::Centroid) && fragment && samples > 1 {
+        if per_sample(&module.entry_points[0].function) {
+            return Err(ConvertError::Unsupported(
+                crate::refusal::CENTROID_POSITION_PER_SAMPLE,
+            ));
+        }
+        centroid_position(module, samples, &mut shared, &mut added)?;
+    }
     let stand_ins = stand_ins(module);
     if stand_ins.is_empty() {
-        return Ok(Vec::new());
+        return Ok(added);
     }
     if module.entry_points[0].stage != ShaderStage::Fragment {
         return Err(ConvertError::Unsupported(crate::refusal::INTERPOLATE_AT));
@@ -138,8 +163,6 @@ pub(super) fn inputs(module: &mut Module, samples: u8) -> Result<Vec<SystemValue
         }
     }
 
-    let mut added = Vec::new();
-    let mut shared = Shared::default();
     let inputs = declare(module, &evaluated, &mut shared)?;
     let mut ep = core::mem::take(&mut module.entry_points[0].function);
     let done = prologue(
@@ -674,28 +697,10 @@ fn prologue(
         .w_slope
         .map(|g| position_taken(ep, &mut body, g, [vec2, vec4], added));
 
-    // Direct3D's centroid: the centre where every sample is covered, else the first covered one.
     if stand_ins.iter().any(|s| s.place == Place::Centroid) {
         let centroid = if samples > 1 {
             let table = sample_positions(module, shared, samples)?;
-            let mask = argument(ep, &mut body, BuiltIn::SampleMask, u32_ty, added);
-            let all = push(
-                ep,
-                &mut body,
-                Expression::Literal(Literal::U32(u32::MAX >> (u32::BITS - u32::from(samples)))),
-            );
-            let full = binary(ep, &mut body, BinaryOperator::Equal, mask, all);
-            let first = math(ep, &mut body, MathFunction::FirstTrailingBit, mask, None);
-            let first = sample_position(ep, &mut body, table, first);
-            push(
-                ep,
-                &mut body,
-                Expression::Select {
-                    condition: full,
-                    accept: zero,
-                    reject: first,
-                },
-            )
+            direct3d_centroid(ep, &mut body, (table, samples), u32_ty, zero, added)
         } else {
             zero
         };
@@ -789,6 +794,167 @@ fn sample_position(
     let p = push(f, body, Expression::GlobalVariable(table));
     let p = push(f, body, Expression::Access { base: p, index });
     push(f, body, Expression::Load { pointer: p })
+}
+
+/// Direct3D's centroid of `samples` samples, from the centre: the centre (`zero`) where every sample is
+/// covered, else the first covered one.
+fn direct3d_centroid(
+    ep: &mut Function,
+    body: &mut Block,
+    (table, samples): (Handle<GlobalVariable>, u8),
+    u32_ty: Handle<Type>,
+    zero: Handle<Expression>,
+    added: &mut Vec<SystemValue>,
+) -> Handle<Expression> {
+    let mask = argument(ep, body, BuiltIn::SampleMask, u32_ty, added);
+    let all = push(
+        ep,
+        body,
+        Expression::Literal(Literal::U32(u32::MAX >> (u32::BITS - u32::from(samples)))),
+    );
+    let full = binary(ep, body, BinaryOperator::Equal, mask, all);
+    let first = math(ep, body, MathFunction::FirstTrailingBit, mask, None);
+    let first = sample_position(ep, body, table, first);
+    push(
+        ep,
+        body,
+        Expression::Select {
+            condition: full,
+            accept: zero,
+            reject: first,
+        },
+    )
+}
+
+/// How dxil-spirv decorated the position input of `spirv`: `Centroid` or `Sample` where the program
+/// declares it so (naga's reader keeps no sampling for a built-in).
+pub(super) fn position_sampling(spirv: &rspirv::dr::Module) -> Option<Sampling> {
+    use super::staged::{DECORATION_LITERAL, DECORATION_TARGET, decorates, id};
+    use rspirv::dr::Operand;
+    use spirv::{BuiltIn as SpvBuiltIn, Decoration};
+    let position = spirv.annotations.iter().find_map(|i| {
+        let built_in = i.operands.get(DECORATION_LITERAL);
+        (decorates(i, Decoration::BuiltIn)
+            && built_in == Some(&Operand::BuiltIn(SpvBuiltIn::FragCoord)))
+        .then(|| id(i, DECORATION_TARGET))
+        .flatten()
+    })?;
+    spirv.annotations.iter().find_map(|i| {
+        let sampling = [
+            (Decoration::Centroid, Sampling::Centroid),
+            (Decoration::Sample, Sampling::Sample),
+        ]
+        .into_iter()
+        .find(|(d, _)| decorates(i, *d))?
+        .1;
+        (id(i, DECORATION_TARGET) == Some(position)).then_some(sampling)
+    })
+}
+
+/// Moves the position of a program declaring it at the centroid there: once the reader has stored
+/// the position argument into its copy, the copy becomes the position plus its slopes times the way
+/// from where the hardware took it to Direct3D's centroid (the program runs once a pixel).
+fn centroid_position(
+    module: &mut Module,
+    samples: u8,
+    shared: &mut Shared,
+    added: &mut Vec<SystemValue>,
+) -> Result<()> {
+    let ep = &module.entry_points[0].function;
+    let copy = ep.body.iter().find_map(|s| match *s {
+        Statement::Store { pointer, value } => {
+            match (&ep.expressions[pointer], &ep.expressions[value]) {
+                (&Expression::GlobalVariable(g), &Expression::FunctionArgument(i))
+                    if matches!(
+                        ep.arguments.get(i as usize)?.binding,
+                        Some(Binding::BuiltIn(BuiltIn::Position { .. }))
+                    ) =>
+                {
+                    Some((g, i))
+                }
+                _ => None,
+            }
+        }
+        _ => None,
+    });
+    let not_stored = || ConvertError::Malformed(POSITION_NOT_STORED.into());
+    let (copy, index) = copy.ok_or_else(not_stored)?;
+    if module.types[module.global_variables[copy].ty].inner
+        != (TypeInner::Vector {
+            size: VectorSize::Quad,
+            scalar: Scalar::F32,
+        })
+    {
+        return Err(not_stored());
+    }
+    let vec2 = vector(module, VectorSize::Bi as u8, Scalar::F32);
+    let u32_ty = module.types.insert(
+        Type {
+            name: None,
+            inner: TypeInner::Scalar(Scalar::U32),
+        },
+        Span::UNDEFINED,
+    );
+    let table = sample_positions(module, shared, samples)?;
+    let mut ep = core::mem::take(&mut module.entry_points[0].function);
+    let f = &mut ep;
+    let mut body = Block::new();
+    let position = push(f, &mut body, Expression::FunctionArgument(index));
+    let xy = push(
+        f,
+        &mut body,
+        Expression::Swizzle {
+            size: VectorSize::Bi,
+            vector: position,
+            pattern: [
+                SwizzleComponent::X,
+                SwizzleComponent::Y,
+                SwizzleComponent::X,
+                SwizzleComponent::X,
+            ],
+        },
+    );
+    let floor = math(f, &mut body, MathFunction::Floor, xy, None);
+    let half = push(
+        f,
+        &mut body,
+        Expression::Literal(Literal::F32(PIXEL_CENTRE)),
+    );
+    let half = push(
+        f,
+        &mut body,
+        Expression::Splat {
+            size: VectorSize::Bi,
+            value: half,
+        },
+    );
+    let centre = binary(f, &mut body, BinaryOperator::Add, floor, half);
+    let taken = binary(f, &mut body, BinaryOperator::Subtract, xy, centre);
+    let zero = push(f, &mut body, Expression::ZeroValue(vec2));
+    let centroid = direct3d_centroid(f, &mut body, (table, samples), u32_ty, zero, added);
+    let moved = binary(f, &mut body, BinaryOperator::Subtract, centroid, taken);
+    let [px, py] = slopes(f, &mut body, position);
+    let [mx, my] =
+        [0, 1].map(|index| push(f, &mut body, Expression::AccessIndex { base: moved, index }));
+    let along_x = binary(f, &mut body, BinaryOperator::Multiply, px, mx);
+    let along_y = binary(f, &mut body, BinaryOperator::Multiply, py, my);
+    let at = binary(f, &mut body, BinaryOperator::Add, position, along_x);
+    let at = binary(f, &mut body, BinaryOperator::Add, at, along_y);
+    let pointer = push(f, &mut body, Expression::GlobalVariable(copy));
+    store(&mut body, pointer, at);
+    let first_call = f
+        .body
+        .iter()
+        .position(|s| matches!(s, Statement::Call { .. }));
+    let done = match first_call {
+        Some(at) => {
+            f.body.splice(at..at, body);
+            Ok(())
+        }
+        None => Err(malformed(NO_PROGRAM)),
+    };
+    module.entry_points[0].function = ep;
+    done
 }
 
 /// The function a stand-in becomes. Of floats: the value, its slopes along x and y, w where it was

@@ -16,8 +16,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use wcontainers_gpu::{
-    DrawBaseSource, Format, ShaderModule, SlotKind, SystemValue, TexelBufferRoute, VariantFlags,
-    VariantKey, VertexFormat,
+    DrawBaseSource, Format, SLOT_KINDS, ShaderModule, SlotKind, SystemValue, TexelBufferRoute,
+    VariantFlags, VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source, cache, capabilities, convert, stage};
 
@@ -175,11 +175,14 @@ fn verdict(path: &Path, out: Option<&Path>) -> String {
     };
     let m = &converted.modules[0];
     let name = path.file_stem().unwrap().to_string_lossy().into_owned();
-    // A vertex shader writing cull distances or storage reaches WebGPU through the stage helper: the
-    // WGSL written is its compute form's, converted with every input pulled.
+    // A vertex shader writing cull distances or storage, and a domain shader writing cull distances,
+    // reach WebGPU through the stage helper: the WGSL written is the compute form's, converted with
+    // every input pulled.
     let drawn = |converted: &Converted| -> Result<ShaderModule, String> {
         let (route, programs): (_, fn(&Converted) -> _) = if stage::writes_storage(converted) {
             (" (storage route)", stage::stored_programs)
+        } else if writes_cull_distances(converted) && is_domain(converted) {
+            (" (domain cull route)", stage::domain_cull_programs)
         } else if writes_cull_distances(converted) {
             (" (cull route)", stage::cull_programs)
         } else {
@@ -561,13 +564,6 @@ const CITED_FORMS: [(&str, &[&str]); 5] = [
 /// extension (wcontainers-gpu-webgl's caps.rs): a shader needing only these must be written.
 const WEBGL_DECLARABLE: [&str; 3] = ["DUAL_SOURCE_BLEND", "POINT_SIZE", "SAMPLE_SHADING"];
 
-/// Shaders whose recorded verdict is not a named one, each with its gap: their verdict must still
-/// equal the record.
-const KNOWN_UNNAMED: [(&str, &str); 1] = [(
-    "hlsl+distance-4-ps.dxil",
-    "gap A1: dxc 10.0.26100 writes a PPC_FP128 constant, cast to the float the program stores, which dxil-spirv's reader does not know",
-)];
-
 /// A verdict's GLSL ES part as its `needs` words (with their space, empty where none) and the
 /// outcome after them.
 fn split_needs(glsl: &str) -> (&str, &str) {
@@ -596,6 +592,13 @@ fn writes_cull_distances(converted: &Converted) -> bool {
             .outputs
             .iter()
             .any(|v| v.system == Some(SystemValue::CullDistance))
+}
+
+fn is_domain(converted: &Converted) -> bool {
+    matches!(
+        converted.reflection.extras,
+        wcontainers_gpu::StageExtras::Domain { .. }
+    )
 }
 
 /// Every vertex input pulled, in the format its reflection gives.
@@ -680,12 +683,8 @@ fn verdicts(dir: &Path, ext: &str, label: &str) -> (BTreeMap<String, usize>, Str
         let matches = expected
             .get(&file)
             .is_some_and(|e| as_checked(e, glslang) == v);
-        // Only conversions and named failures may be recorded, besides the known ones.
-        let known = KNOWN_UNNAMED.iter().find(|(f, _)| *f == file);
-        if let Some((_, gap)) = known {
-            eprintln!("{file}: known unnamed verdict {v:?} ({gap})");
-        }
-        if !matches || (!is_named(&v) && known.is_none()) {
+        // Only conversions and named failures may be recorded.
+        if !matches || !is_named(&v) {
             differ.push(format!(
                 "{file}: expected {:?}, got {v:?}",
                 expected.get(&file)
@@ -725,8 +724,7 @@ fn verdicts(dir: &Path, ext: &str, label: &str) -> (BTreeMap<String, usize>, Str
 /// a change either way, including invalid WGSL, fails until the record is updated.
 #[test]
 fn rig_shaders_give_their_recorded_verdicts() {
-    let dir =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphics-test/shaders/dxbc");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphics-test/shaders/dxbc");
     let counts = run(&dir, "dxbc", "rig");
     assert!(counts.values().sum::<usize>() > 0);
 }
@@ -843,8 +841,7 @@ fn only_the_readers_unsupported_refusals_are_named() {
 
 #[test]
 fn rig_dxil_shaders_give_their_recorded_verdicts() {
-    let dir =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphics-test/shaders/dxil");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphics-test/shaders/dxil");
     let counts = run(&dir, "dxil", "rig-dxil");
     assert!(counts.values().sum::<usize>() > 0);
 }
@@ -1080,7 +1077,13 @@ fn dxil_bindings_and_sampled_pairs_match_dxbc() {
         let (a, b) = (&a.reflection, &b.reflection);
         assert_eq!(bindings(a), bindings(b), "{name} bindings");
         for d in &a.bindings {
-            assert_eq!(d.binding, d.kind.binding(d.register).unwrap(), "{name}");
+            assert_eq!(
+                d.binding,
+                (d.register < SLOT_KINDS[d.kind as usize].slots)
+                    .then(|| SLOT_KINDS[d.kind as usize].first_binding + d.register)
+                    .unwrap(),
+                "{name}"
+            );
         }
         for d in &b.bindings {
             let rank = b
@@ -1088,12 +1091,19 @@ fn dxil_bindings_and_sampled_pairs_match_dxbc() {
                 .iter()
                 .filter(|e| e.kind == d.kind && (e.space, e.register) < (d.space, d.register))
                 .count() as u32;
-            assert_eq!(d.slot(), rank, "{name}");
+            assert_eq!(
+                d.binding - SLOT_KINDS[d.kind as usize].first_binding,
+                rank,
+                "{name}"
+            );
         }
         let register = |r: &wcontainers_gpu::Reflection, kind: SlotKind, slot: u32| {
             r.bindings
                 .iter()
-                .find(|d| d.kind == kind && d.slot() == slot)
+                .find(|d| {
+                    d.kind == kind
+                        && (d.binding - SLOT_KINDS[d.kind as usize].first_binding) == slot
+                })
                 .map(|d| d.register)
         };
         let pairs = |r: &wcontainers_gpu::Reflection| -> Vec<_> {

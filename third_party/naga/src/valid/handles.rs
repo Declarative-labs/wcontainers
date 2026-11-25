@@ -125,9 +125,14 @@ impl super::Validator {
         // they include types. But we've shown that all types are acyclic, so
         // all expressions must be acyclic as well.
         //
-        // Validate the remaining expressions normally.
+        // Validate the remaining expressions normally; every type is visited, so the types they
+        // name need only exist.
         for handle_and_expr in global_exprs_iter {
-            Self::validate_const_expression_handles(handle_and_expr, constants, overrides)?;
+            if let Some(ty) =
+                Self::validate_const_expression_handles(handle_and_expr, constants, overrides)?
+            {
+                Self::validate_type_handle(ty, types)?;
+            }
         }
 
         let validate_type = |handle| Self::validate_type_handle(handle, types);
@@ -215,10 +220,11 @@ impl super::Validator {
                     global_variables,
                     functions,
                     function_handle,
+                    arguments,
                 )?;
             }
 
-            Self::validate_block_handles(body, expressions, functions)?;
+            Self::validate_block_handles(body, expressions, functions, function_handle)?;
 
             if let Some(handle) = *diagnostic_filter_leaf {
                 handle.check_valid_for(diagnostic_filters)?;
@@ -456,7 +462,7 @@ impl super::Validator {
         (handle, expression): (Handle<crate::Expression>, &crate::Expression),
         constants: &Arena<crate::Constant>,
         overrides: &Arena<crate::Override>,
-    ) -> Result<Option<Handle<crate::Type>>, InvalidHandleError> {
+    ) -> Result<Option<Handle<crate::Type>>, ValidationError> {
         let validate_constant = |handle| Self::validate_constant_handle(handle, constants);
         let validate_override = |handle| Self::validate_override_handle(handle, overrides);
 
@@ -479,7 +485,58 @@ impl super::Validator {
                 handle.check_dep_iter(components.iter().copied())?;
                 Some(ty)
             }
-            _ => None,
+            crate::Expression::Access { base, index } => {
+                handle.check_dep(base)?.check_dep(index)?;
+                None
+            }
+            crate::Expression::AccessIndex { base: value, .. }
+            | crate::Expression::Splat { value, .. }
+            | crate::Expression::Swizzle { vector: value, .. }
+            | crate::Expression::Unary { expr: value, .. }
+            | crate::Expression::Relational {
+                argument: value, ..
+            } => {
+                handle.check_dep(value)?;
+                None
+            }
+            crate::Expression::Binary { left, right, .. } => {
+                handle.check_dep(left)?.check_dep(right)?;
+                None
+            }
+            crate::Expression::Select {
+                condition,
+                accept,
+                reject,
+            } => {
+                handle.check_dep_iter([condition, accept, reject].into_iter())?;
+                None
+            }
+            crate::Expression::Math {
+                arg,
+                arg1,
+                arg2,
+                arg3,
+                ..
+            } => {
+                handle
+                    .check_dep(arg)?
+                    .check_dep_opt(arg1)?
+                    .check_dep_opt(arg2)?
+                    .check_dep_opt(arg3)?;
+                None
+            }
+            crate::Expression::As { expr, .. } => {
+                handle.check_dep(expr)?;
+                None
+            }
+            // Any other expression names handles of a function's arenas, which a global
+            // expression has none of.
+            _ => {
+                return Err(ValidationError::ConstExpression {
+                    handle,
+                    source: super::ConstExpressionError::NonConstOrOverride,
+                })
+            }
         };
         Ok(max_type)
     }
@@ -495,6 +552,7 @@ impl super::Validator {
         functions: &Arena<crate::Function>,
         // The handle of the current function or `None` if it's an entry point
         current_function: Option<Handle<crate::Function>>,
+        arguments: &[crate::FunctionArgument],
     ) -> Result<(), InvalidHandleError> {
         let validate_constant = |handle| Self::validate_constant_handle(handle, constants);
         let validate_override = |handle| Self::validate_override_handle(handle, overrides);
@@ -527,7 +585,15 @@ impl super::Validator {
                 validate_type(ty)?;
                 handle.check_dep_iter(components.iter().copied())?;
             }
-            crate::Expression::FunctionArgument(_arg_idx) => (),
+            crate::Expression::FunctionArgument(arg_idx) => {
+                if arg_idx as usize >= arguments.len() {
+                    return Err(BadHandle {
+                        kind: core::any::type_name::<crate::FunctionArgument>(),
+                        index: arg_idx as usize,
+                    }
+                    .into());
+                }
+            }
             crate::Expression::GlobalVariable(global_variable) => {
                 global_variable.check_valid_for(global_variables)?;
             }
@@ -646,11 +712,12 @@ impl super::Validator {
                     handle.check_dep(function)?;
                 }
             }
-            crate::Expression::AtomicResult { .. }
-            | crate::Expression::RayQueryProceedResult
-            | crate::Expression::SubgroupBallotResult
-            | crate::Expression::SubgroupOperationResult { .. }
-            | crate::Expression::WorkGroupUniformLoadResult { .. } => (),
+            crate::Expression::AtomicResult { ty, .. }
+            | crate::Expression::SubgroupOperationResult { ty }
+            | crate::Expression::WorkGroupUniformLoadResult { ty } => {
+                validate_type(ty)?;
+            }
+            crate::Expression::RayQueryProceedResult | crate::Expression::SubgroupBallotResult => {}
             crate::Expression::ArrayLength(array) => {
                 handle.check_dep(array)?;
             }
@@ -678,8 +745,11 @@ impl super::Validator {
         block: &crate::Block,
         expressions: &Arena<crate::Expression>,
         functions: &Arena<crate::Function>,
+        // The handle of the current function or `None` if it's an entry point
+        current_function: Option<Handle<crate::Function>>,
     ) -> Result<(), InvalidHandleError> {
-        let validate_block = |block| Self::validate_block_handles(block, expressions, functions);
+        let validate_block =
+            |block| Self::validate_block_handles(block, expressions, functions, current_function);
         let validate_expr = |handle| Self::validate_expression_handle(handle, expressions);
         let validate_expr_opt = |handle_opt| {
             if let Some(handle) = handle_opt {
@@ -797,6 +867,9 @@ impl super::Validator {
                 result,
             } => {
                 Self::validate_function_handle(function, functions)?;
+                if let Some(handle) = current_function {
+                    handle.check_dep(function)?;
+                }
                 for arg in arguments.iter().copied() {
                     validate_expr(arg)?;
                 }

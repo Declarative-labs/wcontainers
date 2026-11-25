@@ -3666,6 +3666,22 @@ pub fn parse_u8_slice(data: &[u8], options: &Options) -> Result<crate::Module, E
     Frontend::new(words, options).parse()
 }
 
+/// The deepest nesting of structured control flow the reader takes. Lowering a function recurses
+/// once per nested body, and so does every pass over the IR after it, so deeper nesting is refused
+/// before it can exhaust a thread's stack.
+pub const NESTING_LIMIT: usize = 128;
+
+/// Whether `body` is nested at most [`NESTING_LIMIT`] deep.
+fn within_nesting_limit(mut body: usize, block_ctx: &BlockContext) -> bool {
+    for _ in 0..=NESTING_LIMIT {
+        if body == 0 {
+            return true;
+        }
+        body = block_ctx.bodies[body].parent;
+    }
+    false
+}
+
 /// Helper function to check if `child` is in the scope of `parent`
 fn is_parent(mut child: usize, parent: usize, block_ctx: &BlockContext) -> bool {
     loop {

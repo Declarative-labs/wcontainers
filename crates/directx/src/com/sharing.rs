@@ -402,7 +402,7 @@ fn read(device: &Shared, r: &Resource<Chosen>) -> wcontainers_direct3d_11::Resul
             f.copy_resource(&staging, r)?;
             let mapped = f.map(&staging, 0, desc::map::READ, 0)?;
             let len = b.desc.byte_width as usize;
-            out.push(unsafe { std::slice::from_raw_parts(mapped.data, len) }.to_vec());
+            out.push(mapped.data[..len].iter().map(Cell::get).collect());
             f.unmap(&staging, 0);
         }
         Resource::Texture(t) => {
@@ -422,9 +422,8 @@ fn read(device: &Shared, r: &Resource<Chosen>) -> wcontainers_direct3d_11::Resul
                 for slice in 0..slices {
                     for y in 0..rows {
                         let at = slice * mapped.depth_pitch + y * mapped.row_pitch;
-                        bytes.extend_from_slice(unsafe {
-                            std::slice::from_raw_parts(mapped.data.add(at as usize), row as usize)
-                        });
+                        let from = &mapped.data[at as usize..][..row as usize];
+                        bytes.extend(from.iter().map(Cell::get));
                     }
                 }
                 f.unmap(&staging, sub);

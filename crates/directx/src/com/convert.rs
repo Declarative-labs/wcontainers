@@ -133,6 +133,72 @@ pub fn texture3d_back(d: &TextureDesc) -> D3D11_TEXTURE3D_DESC {
     }
 }
 
+/// Direct3D 11.3's 2D texture description as the front's; its layout is the caller's to check.
+pub fn texture2d_of1(d: &D3D11_TEXTURE2D_DESC1) -> TextureDesc {
+    texture2d(&D3D11_TEXTURE2D_DESC {
+        Width: d.Width,
+        Height: d.Height,
+        MipLevels: d.MipLevels,
+        ArraySize: d.ArraySize,
+        Format: d.Format,
+        SampleDesc: d.SampleDesc,
+        Usage: d.Usage,
+        BindFlags: d.BindFlags,
+        CPUAccessFlags: d.CPUAccessFlags,
+        MiscFlags: d.MiscFlags,
+    })
+}
+
+/// The front's 2D texture description in Direct3D 11.3's form, the only layout served.
+pub fn texture2d_back1(d: &TextureDesc) -> D3D11_TEXTURE2D_DESC1 {
+    let b = texture2d_back(d);
+    D3D11_TEXTURE2D_DESC1 {
+        Width: b.Width,
+        Height: b.Height,
+        MipLevels: b.MipLevels,
+        ArraySize: b.ArraySize,
+        Format: b.Format,
+        SampleDesc: b.SampleDesc,
+        Usage: b.Usage,
+        BindFlags: b.BindFlags,
+        CPUAccessFlags: b.CPUAccessFlags,
+        MiscFlags: b.MiscFlags,
+        TextureLayout: D3D11_TEXTURE_LAYOUT_UNDEFINED,
+    }
+}
+
+/// Direct3D 11.3's 3D texture description as the front's; its layout is the caller's to check.
+pub fn texture3d_of1(d: &D3D11_TEXTURE3D_DESC1) -> TextureDesc {
+    texture3d(&D3D11_TEXTURE3D_DESC {
+        Width: d.Width,
+        Height: d.Height,
+        Depth: d.Depth,
+        MipLevels: d.MipLevels,
+        Format: d.Format,
+        Usage: d.Usage,
+        BindFlags: d.BindFlags,
+        CPUAccessFlags: d.CPUAccessFlags,
+        MiscFlags: d.MiscFlags,
+    })
+}
+
+/// The front's 3D texture description in Direct3D 11.3's form, the only layout served.
+pub fn texture3d_back1(d: &TextureDesc) -> D3D11_TEXTURE3D_DESC1 {
+    let b = texture3d_back(d);
+    D3D11_TEXTURE3D_DESC1 {
+        Width: b.Width,
+        Height: b.Height,
+        Depth: b.Depth,
+        MipLevels: b.MipLevels,
+        Format: b.Format,
+        Usage: b.Usage,
+        BindFlags: b.BindFlags,
+        CPUAccessFlags: b.CPUAccessFlags,
+        MiscFlags: b.MiscFlags,
+        TextureLayout: D3D11_TEXTURE_LAYOUT_UNDEFINED,
+    }
+}
+
 /// A view's part of a texture from (dimension kind, the union's fields).
 fn view(format: DXGI_FORMAT, dimension: ViewDim, mips: (u32, u32), layers: (u32, u32)) -> ViewDesc {
     ViewDesc {
@@ -879,5 +945,17 @@ pub fn rasterizer_of2(d: &D3D11_RASTERIZER_DESC2) -> Result<D3D11_RASTERIZER_DES
     if d.ConservativeRaster != D3D11_CONSERVATIVE_RASTERIZATION_MODE_OFF {
         return Err(E_INVALIDARG.into());
     }
-    Ok(unsafe { same_fields(d) })
+    Ok(D3D11_RASTERIZER_DESC1 {
+        FillMode: d.FillMode,
+        CullMode: d.CullMode,
+        FrontCounterClockwise: d.FrontCounterClockwise,
+        DepthBias: d.DepthBias,
+        DepthBiasClamp: d.DepthBiasClamp,
+        SlopeScaledDepthBias: d.SlopeScaledDepthBias,
+        DepthClipEnable: d.DepthClipEnable,
+        ScissorEnable: d.ScissorEnable,
+        MultisampleEnable: d.MultisampleEnable,
+        AntialiasedLineEnable: d.AntialiasedLineEnable,
+        ForcedSampleCount: d.ForcedSampleCount,
+    })
 }

@@ -4,8 +4,12 @@
 //! back end without them (`InstanceRateInShader`).
 
 use wcontainers_gpu::{
-    AddedBinding, BindingEntry, BindingResource, BufferRange, CLAMPED_SAMPLER_BINDING,
+    AddedBinding, BindingEntry, BindingResource, BufferRange, CLAMPED_SAMPLER_BINDING, Caps,
     DRAW_ARGUMENTS_BINDING, HelperSlot, RingKind, VertexFormat, helper_binding,
+};
+
+use wcontainers_directx_graphics_infrastructure::stage_registers::{
+    TOO_MANY_VALUES, input_moves, output_moves, passed_locations, relocate,
 };
 
 use super::*;
@@ -53,11 +57,41 @@ impl Helpers {
 }
 
 /// A vertex program made with its pipeline's pixel program.
-pub(super) struct VertexProgram<B: Backend> {
+pub(super) struct VertexProgram<B: Gpu> {
     pub program: B::Program,
     pub helpers: Helpers,
     /// Each pulled input's stream binding (set 0): binding and input location.
     pub streams: Vec<(u32, u32)>,
+}
+
+/// Where the values a pipeline's last vertex stage and pixel program pass each other move, where
+/// the back end has fewer inter-stage locations than Direct3D's 32 registers (`stage_registers`):
+/// the outputs of the vertex program, the domain program or the stage helper's pass-through that
+/// is drawn, and the pixel program's inputs.
+#[derive(Clone, Debug, Default)]
+pub(super) struct StageMoves {
+    pub outputs: Vec<(u32, u32)>,
+    pub inputs: Vec<(u32, u32)>,
+}
+
+/// `c` with its values between the vertex and pixel stages moved by `moves`: a vertex program's
+/// outputs, a pixel program's inputs.
+pub(super) fn moved(mut c: Converted, moves: &[(u32, u32)]) -> Result<Converted, Error> {
+    let values = match c.modules[0].stage {
+        ShaderStage::Vertex => &mut c.reflection.outputs,
+        _ => &mut c.reflection.inputs,
+    };
+    relocate(&mut c.modules[0], values, moves).map_err(Error::NotImplemented)?;
+    Ok(c)
+}
+
+/// `module`, a vertex stage the stage helper makes, with its outputs moved by `moves`.
+pub(super) fn moved_module(
+    mut module: ShaderModule,
+    moves: &[(u32, u32)],
+) -> Result<ShaderModule, Error> {
+    relocate(&mut module, &mut [], moves).map_err(Error::NotImplemented)?;
+    Ok(module)
 }
 
 /// The inputs a program fetches itself, by location, with their formats; and whether it reads
@@ -65,7 +99,7 @@ pub(super) struct VertexProgram<B: Backend> {
 pub(super) type PulledKey = (Vec<(u32, VertexFormat)>, bool);
 
 /// Where a draw's bases come from.
-pub(super) enum Bases<'a, B: Backend> {
+pub(super) enum Bases<'a, B: Gpu> {
     /// Base vertex (or first vertex) and first instance.
     Direct([u32; 2]),
     /// An indirect draw's arguments.
@@ -77,7 +111,7 @@ pub(super) enum Bases<'a, B: Backend> {
 }
 
 /// How a draw fetches its vertex inputs.
-pub(super) struct Fetch<B: Backend> {
+pub(super) struct Fetch<B: Gpu> {
     /// The layout of the streams fetched as laid out.
     pub layout: B::VertexLayout,
     /// The inputs fetched in the program: location, format and the words of
@@ -87,16 +121,19 @@ pub(super) struct Fetch<B: Backend> {
     pub ranges: [Option<(B::Buffer, u64, u64)>; MAX_VERTEX_STREAMS],
 }
 
-/// The streams a draw fetches in the program, with the reason: strides WebGPU's vertex fetch
-/// refuses (not a multiple of 4, or with an element reaching past the stride), or a step of
+/// The streams a draw fetches in the program, with the reason: Direct3D's slots and input
+/// registers past the back end's vertex buffers and attribute locations, strides WebGPU's vertex
+/// fetch refuses (not a multiple of 4, or with an element reaching past the stride), or a step of
 /// several instances where the back end has none.
 pub(super) fn pulled_streams(
     inputs: &[(InputElement, u32)],
     strides: &[u32; MAX_VERTEX_STREAMS],
-    rates: bool,
+    caps: &Caps,
 ) -> [Option<SlowPath>; MAX_VERTEX_STREAMS] {
+    let rates = caps.features.contains(Features::INSTANCE_STEP_RATE);
+    let (streams, attributes) = (caps.limits.vertex_streams, caps.limits.vertex_attributes);
     let mut out = [None; MAX_VERTEX_STREAMS];
-    for (e, _) in inputs {
+    for (e, location) in inputs {
         let slot = e.slot as usize;
         let size = vertex_format(e.format).map_or(4, |f| f.1);
         // Never-stepping streams are laid out with stride 0 (`Device::vertex_layout`).
@@ -104,7 +141,9 @@ pub(super) fn pulled_streams(
             true => 0,
             false => strides[slot],
         };
-        if !stride.is_multiple_of(4)
+        if e.slot >= streams
+            || *location >= attributes
+            || !stride.is_multiple_of(4)
             || stride != 0 && u64::from(e.offset) + u64::from(size) > u64::from(stride)
         {
             out[slot] = Some(SlowPath::VertexPulledInShader);
@@ -115,7 +154,27 @@ pub(super) fn pulled_streams(
     out
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
+    /// Where the values between `last`, the vertex stage a pipeline draws, and pixel program `ps`
+    /// move (`StageMoves`): every value the two pass, those the front links beside theirs too.
+    pub(super) fn stage_moves(
+        &mut self,
+        last: &ShaderModule,
+        ps: Option<&ShaderModule>,
+    ) -> Result<StageMoves, Error> {
+        let slots = self.backend.caps().limits.inter_stage_slots;
+        let read = ps.map_or_else(Vec::new, passed_locations);
+        let written = passed_locations(last);
+        let (Some(inputs), Some(outputs)) = (
+            input_moves(&read, slots),
+            output_moves(&written, &read, slots),
+        ) else {
+            self.backend.record_slow_path(SlowPath::VaryingsBeyondLimit);
+            return Err(Error::NotImplemented(TOO_MANY_VALUES));
+        };
+        Ok(StageMoves { outputs, inputs })
+    }
+
     /// How a draw fetches `inputs` with the bound `views`: the streams `pulled` names in the
     /// program, the rest as laid out.
     pub(super) fn fetch(
@@ -204,14 +263,16 @@ impl<B: Backend> Device<B> {
         })
     }
 
-    /// A vertex program converted with `key` and made with `fragment`.
+    /// A vertex program converted with `key`, its outputs moved by `moves`, and made with
+    /// `fragment`.
     pub(super) fn vertex_program(
         &mut self,
         vs: &[u8],
         key: VariantKey,
         fragment: Option<&ShaderModule>,
+        moves: &[(u32, u32)],
     ) -> Result<VertexProgram<B>, Error> {
-        let vs = self.convert(vs, ShaderStage::Vertex, key)?;
+        let vs = moved(self.convert(vs, ShaderStage::Vertex, key)?, moves)?;
         self.program_of(&vs, fragment)
     }
 
@@ -275,7 +336,8 @@ impl<B: Backend> Device<B> {
             ..r.typed_key.clone()
         };
         let (code, fragment) = (r.vs_code.clone(), r.fragment.clone());
-        let made = self.vertex_program(&code, variant, fragment.as_ref());
+        let moves = r.moves.outputs.clone();
+        let made = self.vertex_program(&code, variant, fragment.as_ref(), &moves);
         let r = self.render_mut(pid);
         let failed = made.as_ref().err().cloned();
         r.pulled.push((key, made.ok()));
@@ -307,7 +369,7 @@ impl<B: Backend> Device<B> {
             for slot in &helpers.slots {
                 let words = match (slot.value, bases) {
                     (HelperValue::DrawBase, Bases::Direct(b)) => {
-                        self.backend.slow_paths().hit(SlowPath::DrawBaseInHelpers);
+                        self.backend.record_slow_path(SlowPath::DrawBaseInHelpers);
                         words(&[b[0], b[1]])
                     }
                     (
@@ -319,8 +381,7 @@ impl<B: Backend> Device<B> {
                         },
                     ) => {
                         self.backend
-                            .slow_paths()
-                            .hit(SlowPath::DrawBaseFromArguments);
+                            .record_slow_path(SlowPath::DrawBaseFromArguments);
                         arguments =
                             Some(((*args).clone(), offset + if *indexed { 20 } else { 16 }));
                         words(&[(offset / 4) as u32, u32::from(*indexed)])
@@ -426,13 +487,37 @@ impl<B: Backend> Device<B> {
 
     /// The words the last `binding_sets` found for `value` of the API stage `visibility`.
     fn bound_helper(&self, visibility: u32, value: HelperValue) -> Result<Words, Error> {
-        self.bound_helpers
+        let unwritten = Error::NotImplemented("a helper value the front does not write");
+        if let Some(h) = self
+            .bound_helpers
             .iter()
             .find(|h| h.0 == visibility && h.1 == value)
-            .map(|h| h.2)
-            .ok_or(Error::NotImplemented(
-                "a helper value the front does not write",
-            ))
+        {
+            return Ok(h.2);
+        }
+        // A bound sampler's values, which programs read where they compute with its state
+        // (Direct3D's level-of-detail query, a sample's clamp) though nothing of it is applied
+        // in the program.
+        let (HelperValue::LodBias { sampler }
+        | HelperValue::BorderColor { sampler }
+        | HelperValue::SamplerState { sampler }) = value
+        else {
+            return Err(unwritten);
+        };
+        let v = self
+            .bound_samplers
+            .iter()
+            .find(|s| s.0 == visibility && s.1 == sampler)
+            .ok_or(unwritten)?
+            .2;
+        Ok(match value {
+            HelperValue::LodBias { .. } => words(&[v.lod_bias]),
+            HelperValue::BorderColor { .. } => words(&v.border),
+            _ => {
+                let desc = crate::state::sampler(&v, self.backend.caps())?;
+                crate::state::sampler_state(&v, &desc)
+            }
+        })
     }
 
     /// A helper set of `blocks` (binding, the back end's stages, bytes), written into the data

@@ -17,8 +17,8 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
-    CopyBufferTexture, DeviceStatus, DrawCall, DrawRange, Extent, Features, Format, FormatUse,
+    BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment, CopyBufferTexture,
+    DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, Features, Format, FormatUse, Gpu,
     LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath, StageSet, StoreOp, TextureDesc,
     TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology, ViewDimension,
     WriteMode,
@@ -70,10 +70,10 @@ fn blocks_extent(mip: u32) -> Extent {
 
 fn level_bytes(format: Format, mip: u32) -> usize {
     let e = blocks_extent(mip);
-    (e.width / 4 * e.height / 4 * format.block().2) as usize
+    (e.width / 4 * e.height / 4 * FORMAT_FACTS[format as usize].block.2) as usize
 }
 
-fn region(texture: &<B as Backend>::Texture, mip: u32) -> TextureRegion<'_, B> {
+fn region(texture: &<B as Gpu>::Texture, mip: u32) -> TextureRegion<'_, B> {
     TextureRegion {
         texture,
         mip,
@@ -83,7 +83,7 @@ fn region(texture: &<B as Backend>::Texture, mip: u32) -> TextureRegion<'_, B> {
     }
 }
 
-fn bc_texture(b: &mut B, format: Format, levels: u32) -> <B as Backend>::Texture {
+fn bc_texture(b: &mut B, format: Format, levels: u32) -> <B as Gpu>::Texture {
     b.create_texture(&TextureDesc {
         dimension: TextureDimension::D2,
         format,
@@ -108,7 +108,7 @@ fn read(b: &mut B, src: &ReadSource<'_, B>, len: usize) -> Vec<u8> {
     out
 }
 
-fn read_level(b: &mut B, texture: &<B as Backend>::Texture, format: Format, mip: u32) -> Vec<u8> {
+fn read_level(b: &mut B, texture: &<B as Gpu>::Texture, format: Format, mip: u32) -> Vec<u8> {
     let src = ReadSource::Texture {
         region: region(texture, mip),
         extent: blocks_extent(mip),
@@ -117,7 +117,7 @@ fn read_level(b: &mut B, texture: &<B as Backend>::Texture, format: Format, mip:
 }
 
 /// Every texel of one level, loaded by a program into an `rgba32float` target.
-fn load_level(b: &mut B, texture: &<B as Backend>::Texture, format: Format, mip: u32) -> Vec<f32> {
+fn load_level(b: &mut B, texture: &<B as Gpu>::Texture, format: Format, mip: u32) -> Vec<f32> {
     let (w, h) = (size(SIZE.0, mip), size(SIZE.1, mip));
     let view = b
         .create_view(
@@ -276,12 +276,17 @@ fn sample_and_read_back(checked: fn(Format) -> bool) {
     let (seed, cases) = seed_and_cases(0xbc);
     let mut native = device_without(wgpu::Features::empty());
     let mut decoded = device_without(wgpu::Features::TEXTURE_COMPRESSION_BC);
-    assert!(native.caps().has(Features::BLOCK_COMPRESSION));
-    assert!(!decoded.caps().has(Features::BLOCK_COMPRESSION));
+    assert!(native.caps().features.contains(Features::BLOCK_COMPRESSION));
+    assert!(
+        !decoded
+            .caps()
+            .features
+            .contains(Features::BLOCK_COMPRESSION)
+    );
     let mut rng = fastrand::Rng::with_seed(seed);
     let mut beyond = Vec::new();
     for format in FORMATS {
-        let uses = decoded.caps().formats.get(format);
+        let uses = decoded.caps().formats.uses[format as usize];
         assert_eq!(
             uses,
             FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT,
@@ -295,7 +300,8 @@ fn sample_and_read_back(checked: fn(Format) -> bool) {
             for b in [&mut native, &mut decoded] {
                 let t = bc_texture(b, format, LEVELS);
                 for (mip, blocks) in levels.iter().enumerate() {
-                    let pitch = blocks_extent(mip as u32).width / 4 * format.block().2;
+                    let pitch =
+                        blocks_extent(mip as u32).width / 4 * FORMAT_FACTS[format as usize].block.2;
                     b.write_texture(
                         &region(&t, mip as u32),
                         blocks_extent(mip as u32),
@@ -340,8 +346,11 @@ fn sample_and_read_back(checked: fn(Format) -> bool) {
         }
     }
     assert!(beyond.is_empty(), "beyond the tolerance: {beyond:?}");
-    assert!(decoded.slow_paths().count(SlowPath::BlockDecoded) > 0);
-    assert_eq!(native.slow_paths().count(SlowPath::BlockDecoded), 0);
+    assert!(decoded.slow_paths().counts[SlowPath::BlockDecoded as usize] > 0);
+    assert_eq!(
+        native.slow_paths().counts[SlowPath::BlockDecoded as usize],
+        0
+    );
 }
 
 #[test]
@@ -473,7 +482,7 @@ fn bc_copies_keep_the_blocks_natively_and_decoded() {
                 "{route}: sampled"
             );
             assert_eq!(b.status(), DeviceStatus::Ok, "{route}");
-            let host = b.slow_paths().count(SlowPath::HostCopyReadBack);
+            let host = b.slow_paths().counts[SlowPath::HostCopyReadBack as usize];
             eprintln!("{route} texture {case}: HostCopyReadBack {host}");
             assert_eq!(host > 0, route == "decoded");
         }
@@ -511,7 +520,7 @@ fn levels_smaller_than_a_block_take_their_texel_size() {
                     &region(&t, mip),
                     texels(mip),
                     blocks,
-                    blocks_extent(mip).width / 4 * format.block().2,
+                    blocks_extent(mip).width / 4 * FORMAT_FACTS[format as usize].block.2,
                     blocks_extent(mip).height / 4,
                     WriteMode::Ordered,
                 );

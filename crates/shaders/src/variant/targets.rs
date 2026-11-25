@@ -8,8 +8,8 @@
 
 use naga::ScalarKind;
 use wcontainers_gpu::{
-    FormatKind, HELPER_SET, HelperValue, Reflection, ScalarKind as ValueKind, ShaderStage,
-    SystemValue, TARGET_COPY_BINDING, TargetInShader,
+    FORMAT_FACTS, FormatKind, HELPER_SET, HelperValue, Reflection, ScalarKind as ValueKind,
+    ShaderStage, SystemValue, TARGET_COPY_BINDING, TargetInShader,
 };
 
 use super::pull::{Kind, layout};
@@ -25,7 +25,7 @@ type Encoding = (Kind, Vec<u32>);
 /// by name.
 fn target_scalar(t: &TargetInShader) -> Result<(Scalar, Option<Encoding>)> {
     let format = t.format;
-    match format.kind() {
+    match FORMAT_FACTS[format as usize].kind {
         FormatKind::Uint => Ok((Scalar::U32, None)),
         FormatKind::Sint => Ok((Scalar::I32, None)),
         FormatKind::Float => match vertex_format(format).map(layout) {
@@ -65,7 +65,7 @@ fn retyped(
     if t.combine && encoding.is_none() && float != (to.kind == ScalarKind::Float) {
         return Err(ConvertError::Unsupported(crate::refusal::TARGETS_IN_SHADER));
     }
-    let format_count = u32::BITS - t.format.components().leading_zeros();
+    let format_count = u32::BITS - FORMAT_FACTS[t.format as usize].components.leading_zeros();
     let count = own_count.max(format_count);
     let changed = t.combine || own_scalar != to || own_count != count;
     Ok(changed.then_some((to, count, own_count)))

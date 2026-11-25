@@ -2,6 +2,10 @@
 //! methods named after the API's; the Windows library and the container module are thin shells
 //! around them (plan section 10).
 
+// The package waits on its Windows library and tests to inherit the workspace's ban; the front
+// itself is held to it now.
+#![forbid(unsafe_code)]
+
 pub mod address;
 pub mod cache;
 pub mod device;

@@ -4,7 +4,7 @@
 //! extension, and the two-pixel formats, are stored decoded (`BlockDecoded`).
 
 use std::cell::RefCell;
-use wcontainers_gpu::{Format, TextureDesc, TextureDimension};
+use wcontainers_gpu::{FORMAT_FACTS, Format, TextureDesc, TextureDimension};
 
 /// Whether textures of `format` keep a host copy: GL cannot read them back, and GPU writes never
 /// reach them (they are not renderable) or, for signed normalised formats with EXT_render_snorm,
@@ -14,7 +14,7 @@ pub fn kept(format: Format) -> bool {
     matches!(
         format,
         F::Rgb9e5Float | F::Rgb32Float | F::Rgb32Uint | F::Rgb32Sint
-    ) || format.block().0 > 1
+    ) || FORMAT_FACTS[format as usize].block.0 > 1
         || crate::format::signed_normalised(format)
 }
 
@@ -70,7 +70,7 @@ pub struct HostCopy {
 
 /// One level's shape: bytes per row of blocks, rows of blocks, slices.
 fn shape(desc: &TextureDesc, mip: u32) -> (usize, usize, usize) {
-    let (bw, bh, bytes) = desc.format.block();
+    let (bw, bh, bytes) = FORMAT_FACTS[desc.format as usize].block;
     let w = (desc.width >> mip).max(1).div_ceil(bw);
     let h = (desc.height >> mip).max(1).div_ceil(bh);
     let slices = match desc.dimension {
@@ -107,7 +107,7 @@ impl HostCopy {
     }
 
     fn blocks(desc: &TextureDesc, mip: u32, origin: [u32; 3], extent: [u32; 3]) -> Blocks {
-        let (bw, bh, bytes) = desc.format.block();
+        let (bw, bh, bytes) = FORMAT_FACTS[desc.format as usize].block;
         let (row, rows, slices) = shape(desc, mip);
         let (x, y) = ((origin[0] / bw) as usize, (origin[1] / bh) as usize);
         let z = origin[2] as usize;
@@ -137,7 +137,7 @@ impl HostCopy {
     ) {
         let b = Self::blocks(desc, mip, origin, extent);
         let (row, rows, _) = shape(desc, mip);
-        let bytes_per_block = desc.format.block().2 as usize;
+        let bytes_per_block = FORMAT_FACTS[desc.format as usize].block.2 as usize;
         let mut host = self.bytes.borrow_mut();
         for s in 0..b.slices {
             for r in 0..b.rows {
@@ -181,7 +181,7 @@ impl HostCopy {
     ) -> usize {
         let b = Self::blocks(desc, mip, origin, extent);
         let (row, rows, _) = shape(desc, mip);
-        let bytes_per_block = desc.format.block().2 as usize;
+        let bytes_per_block = FORMAT_FACTS[desc.format as usize].block.2 as usize;
         let host = self.bytes.borrow();
         let mut at = 0;
         for s in 0..b.slices {
@@ -239,12 +239,12 @@ pub fn decoded(format: Format) -> Option<Format> {
 /// [`decoded`] names, tightly packed rows as many texels high per row of blocks as a block is.
 pub fn decode(format: Format, blocks: &[u8], blocks_wide: usize) -> Vec<u8> {
     use Format as F;
-    let (bw, bh, block_bytes) = format.block();
+    let (bw, bh, block_bytes) = FORMAT_FACTS[format as usize].block;
     let (bw, bh, block_bytes) = (bw as usize, bh as usize, block_bytes as usize);
     let Some(decoded) = decoded(format) else {
         return Vec::new();
     };
-    let texel = decoded.block().2 as usize;
+    let texel = FORMAT_FACTS[decoded as usize].block.2 as usize;
     let pitch = blocks_wide * bw * texel;
     let rows = blocks.len() / block_bytes / blocks_wide.max(1);
     let mut out = vec![0u8; rows * bh * pitch];

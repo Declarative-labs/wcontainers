@@ -6,11 +6,11 @@
 //! decodes and encodes the view's format.
 
 use super::*;
-use crate::list::ResourceView;
+use crate::list::{ResourceView, UAV_DIMENSION_BUFFER};
 use bind::StageBinding;
 
 /// The copies a bound view read through a buffer needs around its draw or dispatch.
-pub(super) struct Through<B: Backend> {
+pub(super) struct Through<B: Gpu> {
     resource: ResourceId,
     mip: u32,
     /// First layer, or first depth slice of a 3D view.
@@ -24,7 +24,7 @@ pub(super) struct Through<B: Backend> {
     writable: bool,
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// An unordered access view of a texture bound for `b` as a storage buffer of its texels.
     pub(super) fn texels_through(
         &mut self,
@@ -38,14 +38,18 @@ impl<B: Backend> Device<B> {
                 "storage textures read through a buffer in a vertex or geometry shader",
             ));
         }
-        let slot = b.binding.slot();
+        if v.dimension == UAV_DIMENSION_BUFFER {
+            return Err(Error::NotImplemented(bind::OTHER_UAV_DIMENSION));
+        }
+        let slot =
+            b.binding.binding - wcontainers_gpu::SLOT_KINDS[b.binding.kind as usize].first_binding;
         if slot >= 64 {
             return Err(Error::NotImplemented(
                 "a storage texture read through a buffer at a slot past 63",
             ));
         }
         let format = dxgi(v.format)?;
-        let (bw, bh, bytes) = format.block();
+        let (bw, bh, bytes) = wcontainers_gpu::FORMAT_FACTS[format as usize].block;
         if (bw, bh) != (1, 1) {
             return Err(Error::Invalid(
                 "a storage view of a block-compressed format",
@@ -86,7 +90,7 @@ impl<B: Backend> Device<B> {
             size,
             BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
         )?;
-        self.backend.slow_paths().hit(why);
+        self.backend.record_slow_path(why);
         self.note(v.resource, writable);
         self.bound_formats
             .push((b.visibility, (true, slot), format));
@@ -179,7 +183,7 @@ impl<B: Backend> Device<B> {
 }
 
 /// The back end's texture of resource `id`.
-fn stored<B: Backend>(resources: &Slab<Resource<B>>, id: ResourceId) -> Result<&B::Texture, Error> {
+fn stored<B: Gpu>(resources: &Slab<Resource<B>>, id: ResourceId) -> Result<&B::Texture, Error> {
     match resources.get(id.0 as usize) {
         Some(Resource {
             storage: Storage::Texture { texture, .. },

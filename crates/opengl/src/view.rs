@@ -4,9 +4,10 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, Format, FormatKind, MapIntent,
-    Object, Origin, STORAGE_WORD, SlowPath, TextureDesc, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, ViewDimension,
+    BufferDesc, BufferUsage, CUBE_FACES, CopyBufferTexture, Extent, FORMAT_FACTS, Features, Format,
+    FormatKind, Gpu, MapIntent, Object, Origin, STORAGE_WORD, SlowPath, TEXEL_BUFFER_TEXTURE_WIDTH,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
+    WriteMode,
 };
 
 use naga::VectorSize;
@@ -15,12 +16,11 @@ use wcontainers_nir::mesa::Swizzle;
 use crate::context::Context;
 use crate::gallium::*;
 use crate::resource::{self, Resource};
-use crate::screen::DRIVER_NAME;
 use crate::state::refused;
 
 /// One sampler view: Gallium's struct first, then the interface's view, or why there is none.
 #[repr(C)]
-pub struct View<B: Backend> {
+pub struct View<B: Gpu> {
     base: pipe_sampler_view,
     view: Result<B::TextureView, &'static str>,
     /// How the programs that sample it rearrange its results.
@@ -30,8 +30,45 @@ pub struct View<B: Backend> {
     /// The components its format has (`Format::components`), as a border colour applied in the
     /// program reads them.
     pub components: u32,
-    /// For an integer cube map, a 2D array of its faces, which programs load from.
+    /// For an integer cube map or cube map array, a 2D array of its faces, which programs load from.
     faces: Option<Result<B::TextureView, &'static str>>,
+    /// For a texel buffer, the 2D texture its range is copied into, which `view` views.
+    pub texels: Option<TexelCopy<B>>,
+    /// For a view in another format than its texture's that the back end cannot view it in, the
+    /// texture of the view's format its levels and layers are copied into, which `view` views.
+    twin: Option<ViewTwin<B>>,
+    /// The kind of value programs sample from it.
+    pub sampled: naga::ScalarKind,
+    /// Its dimension and samples, which a stand-in of another kind takes ([`Images::stand_in`]).
+    dimension: ViewDimension,
+    samples: u32,
+    /// For a view of a multisampled array, the views of its layers after the first, a texture each
+    /// ([`Storage::Layers`](crate::resource::Storage::Layers)), which `view` is the first of.
+    layers: Option<Vec<B::TextureView>>,
+}
+
+/// A texture in a sampler view's format, of its levels and layers, copied from the view's texture
+/// before each work that reads it (`ReinterpretCopy`): the interface views a texture only in its
+/// own format or its sRGB twin unless the back end reinterprets.
+struct ViewTwin<B: Gpu> {
+    texture: B::Texture,
+    first_level: u32,
+    first_layer: u32,
+    levels: u32,
+    /// The layers of a 2D texture's, or the depth of a volume texture's first level.
+    layers: u32,
+    three_d: bool,
+}
+
+/// A texel buffer view's 2D texture, rows of [`TEXEL_BUFFER_TEXTURE_WIDTH`] texels, which the
+/// buffer's range is copied into before each work that reads it (`TexelBufferAsTexture`).
+pub struct TexelCopy<B: Gpu> {
+    texture: B::Texture,
+    /// Where the view starts in its buffer, in bytes.
+    offset: u64,
+    /// The view's elements, which programs read up to.
+    pub length: u32,
+    texel_bytes: u32,
 }
 
 /// The identity swizzle, which needs no change to a program.
@@ -49,7 +86,7 @@ fn swizzle(s: pipe_swizzle) -> Swizzle {
     }
 }
 
-impl<B: Backend> View<B> {
+impl<B: Gpu> View<B> {
     /// # Safety
     /// `view` is one this driver made, alive for `'a`.
     pub unsafe fn of<'a>(view: *mut pipe_sampler_view) -> &'a View<B> {
@@ -62,7 +99,91 @@ impl<B: Backend> View<B> {
         self.view.as_ref().map_err(|why| (*why).to_owned())
     }
 
-    /// The 2D array of an integer cube map's faces, or none for another view.
+    /// Whether the view reads a copy, which [`View::copy_texels`] makes (outside a pass).
+    pub fn copies(&self) -> bool {
+        self.twin.is_some() || self.texels.is_some()
+    }
+
+    /// Copies what the view reads into the texture it views, where that is a copy: a texel buffer
+    /// view's range, or a twin's levels and layers, as they are now; nothing for another view.
+    pub fn copy_texels(&self, backend: &mut B) -> Result<(), String> {
+        if self.twin.is_none() && self.texels.is_none() {
+            return Ok(());
+        }
+        // SAFETY: the view holds a reference on its texture or buffer.
+        let resource = unsafe { Resource::<B>::of(self.base.texture) };
+        if let Some(twin) = &self.twin {
+            let (source, desc) = resource.texture().ok_or("a twin of a buffer's view")?;
+            backend.record_slow_path(SlowPath::ReinterpretCopy);
+            for level in 0..twin.levels {
+                let mip = twin.first_level + level;
+                let side = |n: u32| (n >> mip).max(1);
+                let depth_or_layers = if twin.three_d {
+                    side(desc.depth_or_layers)
+                } else {
+                    twin.layers
+                };
+                backend.copy_texture(
+                    &corner::<B>(source, twin.three_d, mip, 0, 0, twin.first_layer),
+                    &corner::<B>(&twin.texture, twin.three_d, level, 0, 0, 0),
+                    Extent {
+                        width: side(desc.width),
+                        height: side(desc.height),
+                        depth_or_layers,
+                    },
+                );
+            }
+            return Ok(());
+        }
+        let Some(copy) = &self.texels else {
+            return Ok(());
+        };
+        let buffer = resource
+            .buffer()
+            .ok_or("a texel buffer view of a texture")?;
+        backend.record_slow_path(SlowPath::TexelBufferAsTexture);
+        let row_pitch = TEXEL_BUFFER_TEXTURE_WIDTH * copy.texel_bytes;
+        let rows = copy.length / TEXEL_BUFFER_TEXTURE_WIDTH;
+        let last = copy.length % TEXEL_BUFFER_TEXTURE_WIDTH;
+        // The whole rows, then the last row's elements.
+        let parts = [(0, rows, TEXEL_BUFFER_TEXTURE_WIDTH), (rows, 1, last)];
+        for (row, height, width) in parts.into_iter().filter(|&(_, h, w)| h != 0 && w != 0) {
+            backend.copy_buffer_to_texture(
+                &CopyBufferTexture {
+                    buffer,
+                    offset: copy.offset + u64::from(row) * u64::from(row_pitch),
+                    row_pitch,
+                    rows_per_layer: height,
+                },
+                &TextureRegion {
+                    texture: &copy.texture,
+                    mip: 0,
+                    layer: 0,
+                    origin: Origin { x: 0, y: row, z: 0 },
+                    stencil: false,
+                },
+                Extent {
+                    width,
+                    height,
+                    depth_or_layers: 1,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// The layers a view of a multisampled array sees, which programs read a texture each
+    /// (`VariantKey::texture_layers`); none for another view.
+    pub fn layer_count(&self) -> Option<u32> {
+        self.layers.as_ref().map(|rest| rest.len() as u32 + 1)
+    }
+
+    /// The view of layer `n` (from 1) of a view of a multisampled array.
+    pub fn layer_view(&self, n: u32) -> Option<&B::TextureView> {
+        self.layers.as_ref()?.get(n.checked_sub(1)? as usize)
+    }
+
+    /// The 2D array of an integer cube map's or cube map array's faces, or none for another view.
     pub fn faces(&self) -> Option<Result<&B::TextureView, String>> {
         self.faces
             .as_ref()
@@ -113,46 +234,445 @@ unsafe fn release(view: *mut pipe_sampler_view) {
 }
 
 /// `pipe_context::sampler_view_release`: the frontend gives its reference back.
-pub unsafe extern "C" fn sampler_view_release(_: *mut pipe_context, view: *mut pipe_sampler_view) {
-    // SAFETY: Mesa passes a view it holds a reference on.
-    unsafe { release(view) };
+pub unsafe extern "C" fn sampler_view_release(
+    pipe: *mut pipe_context,
+    view: *mut pipe_sampler_view,
+) {
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes a view it holds a reference on.
+        unsafe { release(view) };
+    })
 }
 
-/// A texture of an image's own format that the image is bound through, where the texture it
-/// names is of another format of the same texel size (`ReinterpretCopy`): copied into before the
-/// work and, for an image the program writes, back after it, through `buffer`.
-struct Twin<B: Backend> {
+/// A texture of an image's own format and shape that the image is bound through, where the
+/// texture it names is of another format of the same texel size, or is a volume texture of which
+/// the image is one slice (`ReinterpretCopy`): copied into before the work and, for an image the
+/// program writes, back after it, through `buffer`. A target in another format than its texture's
+/// draws into one the same way ([`Twin::of_target`]).
+pub struct Twin<B: Gpu> {
     texture: B::Texture,
     buffer: B::Buffer,
     source: B::Texture,
     mip: u32,
     layer: u32,
+    /// The first depth slice of a volume texture's.
+    slice: u32,
     extent: Extent,
     row_pitch: u32,
     writable: bool,
 }
 
-/// The views a binding of images made for one draw or dispatch, and the twins they were bound
-/// through; given back by [`Images::finish`] after the work.
-pub struct Images<B: Backend> {
-    pub views: Vec<B::TextureView>,
-    twins: Vec<Twin<B>>,
+/// An image of a texture read and written through a buffer of its texels, as
+/// `HelperValue::TexelLayout` lays them out: for atomics on it (`AtomicsThroughBuffer`), which the
+/// common form has none of that give the old value. Copied into before the work and, for an image
+/// the program writes, back after it.
+struct Texels<B: Gpu> {
+    /// The resource the texels are of, which images naming the same texels share.
+    resource: *mut pipe_resource,
+    buffer: B::Buffer,
+    source: B::Texture,
+    layout: TexelLayout,
+    writable: bool,
 }
 
-impl<B: Backend> Default for Images<B> {
-    fn default() -> Self {
-        Images {
-            views: Vec::new(),
-            twins: Vec::new(),
+/// Where an image's texels are in its texture and in the buffer they are read through.
+#[derive(Clone, Copy, PartialEq)]
+pub struct TexelLayout {
+    mip: u32,
+    /// The first layer, or the first depth slice of a volume texture.
+    first: u32,
+    three_d: bool,
+    extent: Extent,
+    texel_bytes: u32,
+}
+
+impl TexelLayout {
+    /// `HelperValue::TexelLayout`'s words: row pitch in texels, rows per layer, then the view's
+    /// width, height and layers.
+    pub fn words(&self) -> [u32; wcontainers_nir::direct::TEXEL_LAYOUT_WORDS] {
+        let e = self.extent;
+        [e.width, e.height, e.width, e.height, e.depth_or_layers]
+    }
+
+    /// The texels in the buffer.
+    pub fn texels(&self) -> u32 {
+        let e = self.extent;
+        e.width * e.height * e.depth_or_layers
+    }
+
+    fn bytes(&self) -> u64 {
+        (u64::from(self.texels()) * u64::from(self.texel_bytes)).next_multiple_of(STORAGE_WORD)
+    }
+
+    fn region<'a, B: Gpu>(&self, texture: &'a B::Texture) -> TextureRegion<'a, B> {
+        TextureRegion {
+            texture,
+            mip: self.mip,
+            layer: if self.three_d { 0 } else { self.first },
+            origin: Origin {
+                z: if self.three_d { self.first } else { 0 },
+                ..Origin::default()
+            },
+            stencil: false,
+        }
+    }
+
+    fn rows<'a, B: Gpu>(&self, buffer: &'a B::Buffer) -> CopyBufferTexture<'a, B> {
+        CopyBufferTexture {
+            buffer,
+            offset: 0,
+            row_pitch: self.extent.width * self.texel_bytes,
+            rows_per_layer: self.extent.height,
         }
     }
 }
 
-impl<B: Backend> Images<B> {
-    /// Copies each twin the program wrote back into its texture, then destroys what was made.
+/// The layout of the texels of an image of a texture read through a buffer: its level's
+/// layers it names (one slice of a volume texture where it names one), tightly packed.
+pub fn texel_layout<B: Gpu>(image: &pipe_image_view) -> Result<TexelLayout, String> {
+    // SAFETY: an image's resource is live while it is bound.
+    let resource = unsafe { Resource::<B>::of(image.resource) };
+    let (_, desc) = resource
+        .texture()
+        .ok_or("an image of a buffer read as texels")?;
+    let format = crate::format::format(image.format).ok_or("an image format the device lacks")?;
+    let (width, height, texel_bytes) = FORMAT_FACTS[format as usize].block;
+    let (their_width, their_height, theirs) = FORMAT_FACTS[desc.format as usize].block;
+    if (width, height, their_width, their_height) != (1, 1, 1, 1) || texel_bytes != theirs {
+        return Err(format!(
+            "an image in {format:?} read as texels of a texture in {:?}",
+            desc.format
+        ));
+    }
+    if desc.samples > 1 {
+        return refused(format_args!("an atomic on a multisampled image"));
+    }
+    // SAFETY: the image of a texture holds its texture range.
+    let range = unsafe { image.u.tex };
+    let mip = range.level();
+    let size = |n: u32| (n >> mip).max(1);
+    let three_d = desc.dimension == TextureDimension::D3;
+    let (first, layers) = if range.single_layer_view {
+        (range.first_layer(), 1)
+    } else if three_d {
+        (0, size(desc.depth_or_layers))
+    } else {
+        (
+            range.first_layer(),
+            range.last_layer() - range.first_layer() + 1,
+        )
+    };
+    Ok(TexelLayout {
+        mip,
+        first,
+        three_d,
+        extent: Extent {
+            width: size(desc.width),
+            height: size(desc.height),
+            depth_or_layers: layers,
+        },
+        texel_bytes,
+    })
+}
+
+/// The buffer an image of a texture is read and written through, its texels copied into it at
+/// once (outside a pass), with its size in bytes.
+pub fn image_texels<B: Gpu>(
+    backend: &mut B,
+    image: &pipe_image_view,
+    images: &mut Images<B>,
+) -> Result<(usize, u64), String> {
+    let layout = texel_layout::<B>(image)?;
+    let writable = u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0;
+    // Images of the same texels are bound to one buffer, as they would be to one texture.
+    if let Some(i) = images
+        .texels
+        .iter()
+        .position(|t| t.resource == image.resource && t.layout == layout)
+    {
+        images.texels[i].writable |= writable;
+        return Ok((i, layout.bytes()));
+    }
+    // SAFETY: an image's resource is live while it is bound.
+    let resource = unsafe { Resource::<B>::of(image.resource) };
+    let (texture, _) = resource
+        .texture()
+        .ok_or("an image of a buffer read as texels")?;
+    let bytes = layout.bytes();
+    let buffer = backend
+        .create_buffer(&BufferDesc {
+            size: bytes,
+            usage: BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .map_err(|e| format!("an image's texels: {e:?}"))?;
+    backend.record_slow_path(SlowPath::AtomicsThroughBuffer);
+    backend.copy_texture_to_buffer(
+        &layout.region::<B>(texture),
+        &layout.rows::<B>(&buffer),
+        layout.extent,
+    );
+    images.texels.push(Texels {
+        resource: image.resource,
+        buffer,
+        source: texture.clone(),
+        layout,
+        writable,
+    });
+    Ok((images.texels.len() - 1, bytes))
+}
+
+/// The views a binding of images made for one draw or dispatch, and the twins and buffers of
+/// texels they were bound through; given back by [`Images::finish`] after the work.
+pub struct Images<B: Gpu> {
+    pub views: Vec<B::TextureView>,
+    twins: Vec<Twin<B>>,
+    texels: Vec<Texels<B>>,
+    /// Buffers the work reads that were made for it (uniform blocks grown to their declared size).
+    pub buffers: Vec<B::Buffer>,
+    /// Samplers bound beside texel buffers, which programs load and never sample: Gallium binds
+    /// none there, the converted program declares one.
+    pub samplers: Vec<B::Sampler>,
+    /// A copy of the first target and its view, which a fragment program that fetches its
+    /// target's texels reads at [`FETCHED_UNIT`].
+    pub fetched: Option<(B::Texture, B::TextureView)>,
+    /// Textures read in place of views of another kind of value than the program samples.
+    stand_ins: Vec<(B::Texture, B::TextureView)>,
+}
+
+/// The texture unit a fragment program reads its first target's copy at: one Mesa never binds
+/// (its units are fewer than `PIPE_MAX_SAMPLERS`).
+pub const FETCHED_UNIT: u32 = PIPE_MAX_SHADER_SAMPLER_VIEWS - 1;
+
+impl<B: Gpu> Default for Images<B> {
+    fn default() -> Self {
+        Images {
+            views: Vec::new(),
+            twins: Vec::new(),
+            texels: Vec::new(),
+            buffers: Vec::new(),
+            samplers: Vec::new(),
+            fetched: None,
+            stand_ins: Vec::new(),
+        }
+    }
+}
+
+impl<B: Gpu> Images<B> {
+    /// The buffer of texels `image_texels` made at `index`.
+    pub fn texel_buffer(&self, index: usize) -> &B::Buffer {
+        &self.texels[index].buffer
+    }
+
+    /// A copy of the texels of `surface`, the first target, for a fragment program that reads
+    /// them (framebuffer fetch, as OpenGL's advanced blending is made: its non-coherent form
+    /// leaves a texel drawn twice in one draw undefined, so one copy a draw is OpenGL's).
+    pub fn fetch_target(&mut self, backend: &mut B, surface: &pipe_surface) -> Result<(), String> {
+        if surface.texture.is_null() {
+            return refused(format_args!(
+                "a program fetching a target that is not bound"
+            ));
+        }
+        // SAFETY: a bound surface holds a live texture.
+        let (resource, layer) =
+            unsafe { Resource::<B>::of(surface.texture) }.layer(surface.first_layer());
+        let (source, desc) = resource.texture().ok_or("a target of a buffer")?;
+        let format = desc.format;
+        if crate::format::format(surface.format()) != Some(format) {
+            return refused(format_args!(
+                "a fetched target viewed in another format than its texture's (not built)"
+            ));
+        }
+        let side = |n: u32| (n >> surface.level).max(1);
+        let extent = Extent {
+            width: side(desc.width),
+            height: side(desc.height),
+            depth_or_layers: 1,
+        };
+        let texture = backend
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: desc.samples,
+                // A multisampled texture is made only as a target (WebGPU's rule).
+                usage: if desc.samples > 1 {
+                    TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::RENDER
+                } else {
+                    TextureUsage::SAMPLE | TextureUsage::COPY_DST
+                },
+                cube: false,
+                reinterpret: false,
+            })
+            .map_err(|_| "a copy of a fetched target the device does not make")?;
+        let three_d = desc.dimension == TextureDimension::D3;
+        backend.record_slow_path(SlowPath::BlendInShader);
+        backend.copy_texture(
+            &corner::<B>(source, three_d, surface.level, 0, 0, layer),
+            &corner::<B>(&texture, false, 0, 0, 0, 0),
+            extent,
+        );
+        let view = backend.create_view(
+            &texture,
+            &TextureViewDesc {
+                format,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        );
+        let Ok(view) = view else {
+            backend.destroy(Object::Texture(texture));
+            return refused(format_args!(
+                "a view of a fetched target the device does not make"
+            ));
+        };
+        self.fetched = Some((texture, view));
+        Ok(())
+    }
+
+    /// What a program sampling `view` as `kind`, another kind of value than the view's, reads
+    /// instead: a texture of one texel of `kind`, of the view's dimension (a cube's as a 2D array
+    /// of its faces where `faces`) and samples, holding an incomplete texture's value (0, 0, 0, 1),
+    /// or zeros where multisampled. OpenGL leaves what such a program reads undefined; the host
+    /// refuses the binding. Its index for [`Images::stand_in_view`].
+    pub fn stand_in(
+        &mut self,
+        backend: &mut B,
+        view: &View<B>,
+        kind: naga::ScalarKind,
+        faces: bool,
+    ) -> Result<usize, String> {
+        let (format, one) = match kind {
+            naga::ScalarKind::Sint => (Format::Rgba8Sint, 1),
+            naga::ScalarKind::Uint => (Format::Rgba8Uint, 1),
+            _ => (Format::Rgba8Unorm, u8::MAX),
+        };
+        let cube = matches!(
+            view.dimension,
+            ViewDimension::Cube | ViewDimension::CubeArray
+        );
+        let dimension = if cube && faces {
+            ViewDimension::D2Array
+        } else {
+            view.dimension
+        };
+        let layers = if cube { CUBE_FACES } else { 1 };
+        let multisampled = view.samples > 1;
+        let texture = backend
+            .create_texture(&TextureDesc {
+                dimension: if dimension == ViewDimension::D3 {
+                    TextureDimension::D3
+                } else {
+                    TextureDimension::D2
+                },
+                format,
+                width: 1,
+                height: 1,
+                depth_or_layers: layers,
+                mip_levels: 1,
+                samples: view.samples,
+                // A multisampled texture is made only as a target (WebGPU's rule).
+                usage: if multisampled {
+                    TextureUsage::SAMPLE | TextureUsage::RENDER
+                } else {
+                    TextureUsage::SAMPLE | TextureUsage::COPY_DST
+                },
+                cube: cube && !faces,
+                reinterpret: false,
+            })
+            .map_err(|e| format!("a stand-in texture: {e:?}"))?;
+        if !multisampled {
+            let texel = [0, 0, 0, one];
+            for layer in 0..layers {
+                backend.write_texture(
+                    &TextureRegion {
+                        texture: &texture,
+                        mip: 0,
+                        layer,
+                        origin: Origin { x: 0, y: 0, z: 0 },
+                        stencil: false,
+                    },
+                    Extent {
+                        width: 1,
+                        height: 1,
+                        depth_or_layers: 1,
+                    },
+                    &texel,
+                    texel.len() as u32,
+                    1,
+                    WriteMode::Ordered,
+                );
+            }
+        }
+        let viewed = backend.create_view(
+            &texture,
+            &TextureViewDesc {
+                format,
+                dimension,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: layers,
+                stencil: false,
+            },
+        );
+        let viewed = match viewed {
+            Ok(viewed) => viewed,
+            Err(e) => {
+                backend.destroy(Object::Texture(texture));
+                return Err(format!("a stand-in texture's view: {e:?}"));
+            }
+        };
+        self.stand_ins.push((texture, viewed));
+        Ok(self.stand_ins.len() - 1)
+    }
+
+    /// The view of the stand-in [`Images::stand_in`] made at `index`.
+    pub fn stand_in_view(&self, index: usize) -> &B::TextureView {
+        &self.stand_ins[index].1
+    }
+
+    /// Whether [`Images::finish`] copies anything back into a texture (outside a pass).
+    pub fn copies_back(&self) -> bool {
+        self.texels.iter().any(|t| t.writable) || self.twins.iter().any(|t| t.writable)
+    }
+
+    /// Copies each twin and buffer of texels the program wrote back into its texture, then
+    /// destroys what was made.
     pub fn finish(self, backend: &mut B) {
+        if let Some((texture, view)) = self.fetched {
+            backend.destroy(Object::TextureView(view));
+            backend.destroy(Object::Texture(texture));
+        }
+        for t in self.texels {
+            if t.writable {
+                backend.copy_buffer_to_texture(
+                    &t.layout.rows::<B>(&t.buffer),
+                    &t.layout.region::<B>(&t.source),
+                    t.layout.extent,
+                );
+            }
+            backend.destroy(Object::Buffer(t.buffer));
+        }
+        for buffer in self.buffers {
+            backend.destroy(Object::Buffer(buffer));
+        }
         for view in self.views {
             backend.destroy(Object::TextureView(view));
+        }
+        for sampler in self.samplers {
+            backend.destroy(Object::Sampler(sampler));
+        }
+        for (texture, view) in self.stand_ins {
+            backend.destroy(Object::TextureView(view));
+            backend.destroy(Object::Texture(texture));
         }
         for twin in self.twins {
             if twin.writable {
@@ -164,27 +684,113 @@ impl<B: Backend> Images<B> {
     }
 }
 
-impl<B: Backend> Twin<B> {
+impl<B: Gpu> Twin<B> {
+    /// A twin in `format` of one level and layer (a volume texture's depth slice) of `source`,
+    /// whose texture `desc` describes, that a target draws into (`ReinterpretCopy`); why not where
+    /// the formats' texels differ in size or the texture is multisampled (whose texels the host
+    /// does not copy through buffers).
+    pub fn of_target(
+        backend: &mut B,
+        source: &B::Texture,
+        desc: &TextureDesc,
+        format: Format,
+        mip: u32,
+        layer: u32,
+    ) -> Result<Self, String> {
+        let (width, _, bytes) = FORMAT_FACTS[format as usize].block;
+        let (their_width, _, theirs) = FORMAT_FACTS[desc.format as usize].block;
+        if bytes != theirs || width != 1 || their_width != 1 {
+            return Err(format!(
+                "a target in {format:?} of a texture in {:?}, of another texel size",
+                desc.format
+            ));
+        }
+        if desc.samples > 1 {
+            return Err(format!(
+                "a multisampled target in {format:?} of a texture in {:?}",
+                desc.format
+            ));
+        }
+        backend.record_slow_path(SlowPath::ReinterpretCopy);
+        let side = |n: u32| (n >> mip).max(1);
+        let extent = Extent {
+            width: side(desc.width),
+            height: side(desc.height),
+            depth_or_layers: 1,
+        };
+        let row_pitch = extent.width * bytes;
+        let texture = backend
+            .create_texture(&TextureDesc {
+                dimension: TextureDimension::D2,
+                format,
+                width: extent.width,
+                height: extent.height,
+                depth_or_layers: 1,
+                mip_levels: 1,
+                samples: 1,
+                usage: TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+                cube: false,
+                reinterpret: false,
+            })
+            .map_err(|e| format!("a target's twin: {e:?}"))?;
+        let buffer = backend
+            .create_buffer(&BufferDesc {
+                size: (u64::from(row_pitch) * u64::from(extent.height))
+                    .next_multiple_of(STORAGE_WORD),
+                usage: BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+                intent: MapIntent::Rarely,
+            })
+            .map_err(|e| format!("a target's copy: {e:?}"))?;
+        let three_d = desc.dimension == TextureDimension::D3;
+        Ok(Twin {
+            texture,
+            buffer,
+            source: source.clone(),
+            mip,
+            layer: if three_d { 0 } else { layer },
+            slice: if three_d { layer } else { 0 },
+            extent,
+            row_pitch,
+            writable: true,
+        })
+    }
+
+    /// The twin's texture, of one level and layer.
+    pub fn texture(&self) -> &B::Texture {
+        &self.texture
+    }
+
+    /// Copies the source's texels into the twin (outside a pass).
+    pub fn copy_in(&self, backend: &mut B) {
+        self.copy(backend, true);
+    }
+
+    /// Copies the twin's texels back into its source (outside a pass).
+    pub fn copy_back(&self, backend: &mut B) {
+        self.copy(backend, false);
+    }
+
+    /// Gives what the twin made to `release`.
+    pub fn release(self, mut release: impl FnMut(Object<B>)) {
+        release(Object::Texture(self.texture));
+        release(Object::Buffer(self.buffer));
+    }
+
     /// Moves the texels between the twin and its source: into the twin, or back from it.
     fn copy(&self, backend: &mut B, into: bool) {
-        let region = |texture, mip, layer| TextureRegion {
+        let region = |texture, mip, layer, z| TextureRegion {
             texture,
             mip,
             layer,
-            origin: Origin::default(),
+            origin: Origin {
+                z,
+                ..Origin::default()
+            },
             stencil: false,
         };
-        let (from, to) = if into {
-            (
-                region(&self.source, self.mip, self.layer),
-                region(&self.texture, 0, 0),
-            )
-        } else {
-            (
-                region(&self.texture, 0, 0),
-                region(&self.source, self.mip, self.layer),
-            )
-        };
+        let source = region(&self.source, self.mip, self.layer, self.slice);
+        let twin = region(&self.texture, 0, 0, 0);
+        let (from, to) = if into { (source, twin) } else { (twin, source) };
         let rows = CopyBufferTexture {
             buffer: &self.buffer,
             offset: 0,
@@ -196,11 +802,25 @@ impl<B: Backend> Twin<B> {
     }
 }
 
+/// Whether [`image_view`] binds an image of a texture through a copy (a twin): a view in another
+/// format than its texture's, or one slice of a volume texture.
+pub fn image_copied<B: Gpu>(image: &pipe_image_view) -> bool {
+    // SAFETY: an image's resource is live while it is bound.
+    let resource = unsafe { Resource::<B>::of(image.resource) };
+    let Some((_, desc)) = resource.texture() else {
+        return false;
+    };
+    // SAFETY: the image of a texture holds its texture range.
+    let range = unsafe { image.u.tex };
+    crate::format::format(image.format) != Some(desc.format)
+        || (range.single_layer_view && desc.dimension == TextureDimension::D3)
+}
+
 /// The interface's view of an image a program binds, kept in `images`: one layer, or the layers
 /// it names (a cube's as a 2D array of its faces, which is how the common form holds a storage
 /// cube). An image of another format than its texture's, of the same texel size, is bound
 /// through a twin of its format. Outside a pass: a twin is copied into at once.
-pub fn image_view<B: Backend>(
+pub fn image_view<B: Gpu>(
     backend: &mut B,
     image: &pipe_image_view,
     images: &mut Images<B>,
@@ -216,12 +836,10 @@ pub fn image_view<B: Backend>(
     let three_d = desc.dimension == TextureDimension::D3;
     let mip = range.level();
     let size = |n: u32| (n >> mip).max(1);
+    // One slice of a volume texture, which the host views only whole, is bound through a flat
+    // twin of it.
+    let slice = (range.single_layer_view && three_d).then(|| range.first_layer());
     let (dimension, base_layer, layer_count) = if range.single_layer_view {
-        if three_d {
-            return refused(format_args!(
-                "one slice of a volume texture as a flat image"
-            ));
-        }
         (ViewDimension::D2, range.first_layer(), 1)
     } else if three_d {
         (ViewDimension::D3, 0, 1)
@@ -236,22 +854,22 @@ pub fn image_view<B: Backend>(
         };
         (dimension, range.first_layer(), layers)
     };
-    let (viewed, base_mip, base_layer) = if format == desc.format {
+    let (viewed, base_mip, base_layer) = if format == desc.format && slice.is_none() {
         (texture.clone(), mip, base_layer)
     } else {
-        let (width, _, bytes) = format.block();
-        let (their_width, _, theirs) = desc.format.block();
+        let (width, _, bytes) = FORMAT_FACTS[format as usize].block;
+        let (their_width, _, theirs) = FORMAT_FACTS[desc.format as usize].block;
         if bytes != theirs || width != 1 || their_width != 1 {
             return Err(format!(
                 "an image in {format:?} of a texture in {:?}, of another texel size",
                 desc.format
             ));
         }
-        backend.slow_paths().hit(SlowPath::ReinterpretCopy);
+        backend.record_slow_path(SlowPath::ReinterpretCopy);
         let extent = Extent {
             width: size(desc.width),
             height: size(desc.height),
-            depth_or_layers: if three_d {
+            depth_or_layers: if three_d && slice.is_none() {
                 size(desc.depth_or_layers)
             } else {
                 layer_count
@@ -260,7 +878,11 @@ pub fn image_view<B: Backend>(
         let row_pitch = extent.width * bytes;
         let twin = backend
             .create_texture(&TextureDesc {
-                dimension: desc.dimension,
+                dimension: if slice.is_some() {
+                    TextureDimension::D2
+                } else {
+                    desc.dimension
+                },
                 format,
                 width: extent.width,
                 height: extent.height,
@@ -288,6 +910,7 @@ pub fn image_view<B: Backend>(
             source: texture.clone(),
             mip,
             layer: if three_d { 0 } else { base_layer },
+            slice: slice.unwrap_or(0),
             extent,
             row_pitch,
             writable: u32::from(image.shader_access) & PIPE_IMAGE_ACCESS_WRITE != 0,
@@ -315,133 +938,409 @@ pub fn image_view<B: Backend>(
     Ok(images.views.len() - 1)
 }
 
-/// The interface's view of a Gallium sampler view, or why there is none; with `cube_faces`, a
-/// cube map's as a 2D array of its faces.
-fn texture_view<B: Backend>(
+/// The interface's dimension of a Gallium sampler view's target; with `cube_faces`, a cube map's or
+/// cube map array's as a 2D array of its faces.
+fn view_dimension(target: pipe_texture_target, cube_faces: bool) -> ViewDimension {
+    match target {
+        PIPE_TEXTURE_3D => ViewDimension::D3,
+        PIPE_TEXTURE_CUBE | PIPE_TEXTURE_CUBE_ARRAY if cube_faces => ViewDimension::D2Array,
+        PIPE_TEXTURE_CUBE => ViewDimension::Cube,
+        PIPE_TEXTURE_CUBE_ARRAY => ViewDimension::CubeArray,
+        PIPE_TEXTURE_1D_ARRAY | PIPE_TEXTURE_2D_ARRAY => ViewDimension::D2Array,
+        _ => ViewDimension::D2,
+    }
+}
+
+/// What a Gallium sampler view of a texture sees: its format (a stencil view's, read as
+/// unsigned integers), its dimension (with `cube_faces`, a cube map's or cube map array's as a 2D array of its
+/// faces), its levels and its layers.
+struct Seen {
+    format: Format,
+    stencil: bool,
+    dimension: ViewDimension,
+    first_level: u32,
+    levels: u32,
+    first_layer: u32,
+    layers: u32,
+}
+
+impl Seen {
+    fn of(
+        view: &pipe_sampler_view,
+        desc: &TextureDesc,
+        cube_faces: bool,
+    ) -> Result<Self, &'static str> {
+        let stencil = crate::format::stencil_view(view.format());
+        let format = stencil
+            .or_else(|| crate::format::format(view.format()))
+            .ok_or("a view format the device lacks")?;
+        // SAFETY: the view of a texture holds its texture range.
+        let range = unsafe { view.u.tex };
+        // SAFETY: a live view.
+        let dimension = view_dimension(unsafe { wc_sampler_view_target(view) }, cube_faces);
+        let three_d = desc.dimension == TextureDimension::D3;
+        Ok(Self {
+            format,
+            stencil: stencil.is_some(),
+            dimension,
+            first_level: range.first_level(),
+            levels: range.last_level() - range.first_level() + 1,
+            first_layer: if three_d { 0 } else { range.first_layer() },
+            // A view of one layer reads only its first layer, whatever range Gallium gives it
+            // (st/mesa and the blitter give a cube's or an array's whole range).
+            layers: if three_d || dimension == ViewDimension::D2 {
+                1
+            } else {
+                range.last_layer() - range.first_layer() + 1
+            },
+        })
+    }
+}
+
+/// The twin a sampler view of a texture is read through, where the back end cannot view the
+/// texture in the view's format; none where it can.
+fn view_twin<B: Gpu>(
     backend: &mut B,
     resource: &Resource<B>,
     view: &pipe_sampler_view,
+) -> Result<Option<ViewTwin<B>>, &'static str> {
+    let Some((_, desc)) = resource.texture() else {
+        return Ok(None);
+    };
+    let seen = Seen::of(view, desc, false)?;
+    let reinterprets = desc.reinterpret
+        && backend
+            .caps()
+            .features
+            .contains(Features::FORMAT_REINTERPRET);
+    if seen.stencil
+        || FORMAT_FACTS[seen.format as usize].linear == FORMAT_FACTS[desc.format as usize].linear
+        || reinterprets
+    {
+        return Ok(None);
+    }
+    if FORMAT_FACTS[seen.format as usize].block != FORMAT_FACTS[desc.format as usize].block
+        || FORMAT_FACTS[seen.format as usize].depth_stencil
+        || FORMAT_FACTS[desc.format as usize].depth_stencil
+    {
+        return Err("a view in a format of another block than its texture's");
+    }
+    if desc.samples > 1 {
+        return Err("a multisampled texture viewed in another format (not built)");
+    }
+    let three_d = desc.dimension == TextureDimension::D3;
+    let side = |n: u32| (n >> seen.first_level).max(1);
+    let texture = backend
+        .create_texture(&TextureDesc {
+            dimension: desc.dimension,
+            format: seen.format,
+            width: side(desc.width),
+            height: side(desc.height),
+            depth_or_layers: if three_d {
+                side(desc.depth_or_layers)
+            } else {
+                seen.layers
+            },
+            mip_levels: seen.levels,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            cube: matches!(
+                seen.dimension,
+                ViewDimension::Cube | ViewDimension::CubeArray
+            ),
+            reinterpret: false,
+        })
+        .map_err(|_| "a view's twin the device does not make")?;
+    Ok(Some(ViewTwin {
+        texture,
+        first_level: seen.first_level,
+        first_layer: seen.first_layer,
+        levels: seen.levels,
+        layers: seen.layers,
+        three_d,
+    }))
+}
+
+/// The interface's view of a Gallium sampler view, or why there is none; with `cube_faces`, a
+/// cube map's or cube map array's as a 2D array of its faces. A view with a twin views the twin.
+fn texture_view<B: Gpu>(
+    backend: &mut B,
+    resource: &Resource<B>,
+    view: &pipe_sampler_view,
+    twin: Option<&ViewTwin<B>>,
     cube_faces: bool,
 ) -> Result<B::TextureView, &'static str> {
     let (texture, desc) = resource
         .texture()
         .ok_or("a texel buffer (the screen reports none)")?;
-    let stencil = crate::format::stencil_view(view.format());
-    let format = stencil
-        .or_else(|| crate::format::format(view.format()))
-        .ok_or("a view format the device lacks")?;
-    // SAFETY: the view of a texture holds its texture range.
-    let range = unsafe { view.u.tex };
-    let (first_layer, last_layer) = (range.first_layer(), range.last_layer());
-    let (first_level, last_level) = (range.first_level(), range.last_level());
-    // SAFETY: a live view.
-    let dimension = match unsafe { wc_sampler_view_target(view) } {
-        PIPE_TEXTURE_3D => ViewDimension::D3,
-        PIPE_TEXTURE_CUBE if cube_faces => ViewDimension::D2Array,
-        PIPE_TEXTURE_CUBE => ViewDimension::Cube,
-        PIPE_TEXTURE_CUBE_ARRAY => ViewDimension::CubeArray,
-        PIPE_TEXTURE_1D_ARRAY | PIPE_TEXTURE_2D_ARRAY => ViewDimension::D2Array,
-        _ => ViewDimension::D2,
+    let seen = Seen::of(view, desc, cube_faces)?;
+    let (viewed, base_mip, base_layer) = match twin {
+        Some(twin) => (&twin.texture, 0, 0),
+        None => (texture, seen.first_level, seen.first_layer),
     };
-    let three_d = desc.dimension == TextureDimension::D3;
     backend
         .create_view(
-            texture,
+            viewed,
             &TextureViewDesc {
-                format,
-                dimension,
-                base_mip: first_level,
-                mip_count: last_level - first_level + 1,
-                base_layer: if three_d { 0 } else { first_layer },
-                // A view of one layer reads only its first layer, whatever range Gallium gives
-                // it (st/mesa and the blitter give a cube's or an array's whole range).
-                layer_count: if three_d || dimension == ViewDimension::D2 {
-                    1
-                } else {
-                    last_layer - first_layer + 1
-                },
-                stencil: stencil.is_some(),
+                format: seen.format,
+                dimension: seen.dimension,
+                base_mip,
+                mip_count: seen.levels,
+                base_layer,
+                layer_count: seen.layers,
+                stencil: seen.stencil,
             },
         )
         .map_err(|_| "a view the device does not make")
 }
 
+/// The interface's views of the layers a Gallium sampler view of a multisampled array sees, a
+/// texture each, first first, or why there are none.
+fn layer_views<B: Gpu>(
+    backend: &mut B,
+    resource: &Resource<B>,
+    view: &pipe_sampler_view,
+) -> Result<Vec<B::TextureView>, &'static str> {
+    let (_, desc) = resource
+        .layer(0)
+        .0
+        .texture()
+        .ok_or("a multisampled array without layers")?;
+    let seen = Seen::of(view, desc, false)?;
+    if !seen.stencil
+        && FORMAT_FACTS[seen.format as usize].linear != FORMAT_FACTS[desc.format as usize].linear
+    {
+        return Err("a multisampled texture viewed in another format (not built)");
+    }
+    let mut views = Vec::new();
+    for layer in seen.first_layer..seen.first_layer + seen.layers {
+        let made = resource
+            .layer(layer)
+            .0
+            .texture()
+            .ok_or("a view of layers past its texture's")
+            .and_then(|(texture, _)| {
+                backend
+                    .create_view(
+                        texture,
+                        &TextureViewDesc {
+                            format: seen.format,
+                            dimension: ViewDimension::D2,
+                            base_mip: seen.first_level,
+                            mip_count: seen.levels,
+                            base_layer: 0,
+                            layer_count: 1,
+                            stencil: seen.stencil,
+                        },
+                    )
+                    .map_err(|_| "a view the device does not make")
+            });
+        match made {
+            Ok(made) => views.push(made),
+            Err(why) => {
+                for made in views {
+                    backend.destroy(Object::TextureView(made));
+                }
+                return Err(why);
+            }
+        }
+    }
+    Ok(views)
+}
+
+/// A texel buffer view's texture and the interface's view of it, or why there are none.
+fn texel_buffer<B: Gpu>(
+    backend: &mut B,
+    view: &pipe_sampler_view,
+) -> Result<(TexelCopy<B>, B::TextureView), &'static str> {
+    let format =
+        crate::format::format(view.format()).ok_or("a texel buffer format the device lacks")?;
+    let (_, _, texel_bytes) = FORMAT_FACTS[format as usize].block;
+    // SAFETY: the view of a buffer holds its buffer range.
+    let range = unsafe { view.u.buf };
+    let length = range.size / texel_bytes;
+    let rows = length.div_ceil(TEXEL_BUFFER_TEXTURE_WIDTH).max(1);
+    if rows > backend.caps().limits.max_texture_2d {
+        return Err("a texel buffer longer than its texture holds");
+    }
+    let texture = backend
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format,
+            width: TEXEL_BUFFER_TEXTURE_WIDTH,
+            height: rows,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+            cube: false,
+            reinterpret: false,
+        })
+        .map_err(|_| "a texel buffer's texture the device does not make")?;
+    let viewed = backend
+        .create_view(
+            &texture,
+            &TextureViewDesc {
+                format,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        )
+        .map_err(|_| "a texel buffer's view the device does not make")?;
+    Ok((
+        TexelCopy {
+            texture,
+            offset: u64::from(range.offset),
+            length,
+            texel_bytes,
+        },
+        viewed,
+    ))
+}
+
 /// `pipe_context::create_sampler_view`.
-pub unsafe extern "C" fn create_sampler_view<B: Backend>(
+pub unsafe extern "C" fn create_sampler_view<B: Gpu>(
     pipe: *mut pipe_context,
     texture: *mut pipe_resource,
     template: *const pipe_sampler_view,
 ) -> *mut pipe_sampler_view {
-    // SAFETY: Mesa passes this driver's context, a resource of it and a template.
-    let (context, resource, template) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            Resource::<B>::of(texture),
-            *template,
-        )
-    };
-    let mut base = template;
-    base.reference = pipe_reference { count: 1 };
-    base.texture = std::ptr::null_mut();
-    base.context = pipe;
-    // SAFETY: as above; the view takes its own reference.
-    unsafe { resource::reference(&mut base.texture, texture) };
-    let mut backend = context.screen().backend();
-    let view = texture_view::<B>(&mut backend, resource, &base, false);
-    let mut swizzles = [0; naga::VectorSize::MAX];
-    // SAFETY: a live view, and a place for one swizzle a component.
-    unsafe { wc_sampler_view_swizzle(&base, swizzles.as_mut_ptr()) };
-    let swizzle = swizzles.map(|s| swizzle(s as pipe_swizzle));
-    let stencil = crate::format::stencil_view(base.format());
-    let format = stencil.or_else(|| crate::format::format(base.format()));
-    // A stencil view's texels are unsigned integers, as a stencil texture's are.
-    let integer = stencil.is_some()
-        || format.is_some_and(|f| {
-            matches!(
-                f.kind(),
-                FormatKind::Uint | FormatKind::Sint | FormatKind::Stencil
+    crate::state::guest_call(pipe, std::ptr::null_mut(), move || {
+        // SAFETY: Mesa passes this driver's context, a resource of it and a template.
+        let (context, resource, template) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                Resource::<B>::of(texture),
+                *template,
             )
+        };
+        let mut base = template;
+        base.reference = pipe_reference { count: 1 };
+        base.texture = std::ptr::null_mut();
+        base.context = pipe;
+        // SAFETY: as above; the view takes its own reference.
+        unsafe { resource::reference(&mut base.texture, texture) };
+        let mut backend = context.screen().backend();
+        let mut layers = None;
+        let (view, texels, twin) = if !resource.layers().is_empty() {
+            match layer_views::<B>(&mut backend, resource, &base) {
+                Ok(mut views) if !views.is_empty() => {
+                    let first = views.remove(0);
+                    layers = Some(views);
+                    (Ok(first), None, None)
+                }
+                Ok(_) => (Err("a view of no layers"), None, None),
+                // Programs are converted for one layer, and binding it says why there is none.
+                Err(why) => {
+                    layers = Some(Vec::new());
+                    (Err(why), None, None)
+                }
+            }
+        } else if resource.buffer().is_some() {
+            match texel_buffer::<B>(&mut backend, &base) {
+                Ok((texels, view)) => (Ok(view), Some(texels), None),
+                Err(why) => (Err(why), None, None),
+            }
+        } else {
+            match view_twin::<B>(&mut backend, resource, &base) {
+                Ok(twin) => (
+                    texture_view::<B>(&mut backend, resource, &base, twin.as_ref(), false),
+                    None,
+                    twin,
+                ),
+                Err(why) => (Err(why), None, None),
+            }
+        };
+        let mut swizzles = [0; naga::VectorSize::MAX];
+        // SAFETY: a live view, and a place for one swizzle a component.
+        unsafe { wc_sampler_view_swizzle(&base, swizzles.as_mut_ptr()) };
+        let opaque = crate::format::opaque_in_alpha(base.format());
+        let swizzle = swizzles.map(|s| match swizzle(s as pipe_swizzle) {
+            Swizzle::W if opaque => Swizzle::One,
+            s => s,
         });
-    let components = format.map_or(0, Format::components);
-    // SAFETY: a live view.
-    let cube = unsafe { wc_sampler_view_target(&base) } == PIPE_TEXTURE_CUBE;
-    let faces = (integer && cube).then(|| texture_view::<B>(&mut backend, resource, &base, true));
-    Box::into_raw(Box::new(View::<B> {
-        base,
-        view,
-        swizzle,
-        integer,
-        components,
-        faces,
-    }))
-    .cast()
+        let stencil = crate::format::stencil_view(base.format());
+        let format = stencil.or_else(|| crate::format::format(base.format()));
+        // A stencil view's texels are unsigned integers, as a stencil texture's are.
+        let integer = stencil.is_some()
+            || format.is_some_and(|f| {
+                matches!(
+                    FORMAT_FACTS[f as usize].kind,
+                    FormatKind::Uint | FormatKind::Sint | FormatKind::Stencil
+                )
+            });
+        let components = format.map_or(0, |f| FORMAT_FACTS[f as usize].components);
+        let sampled = match format.map(|f| FORMAT_FACTS[f as usize].kind) {
+            Some(FormatKind::Sint) => naga::ScalarKind::Sint,
+            _ if integer => naga::ScalarKind::Uint,
+            _ => naga::ScalarKind::Float,
+        };
+        // SAFETY: a live view.
+        let target = unsafe { wc_sampler_view_target(&base) };
+        let cube = matches!(target, PIPE_TEXTURE_CUBE | PIPE_TEXTURE_CUBE_ARRAY);
+        let samples = u32::from(resource.base.nr_samples).max(1);
+        let faces = (integer && cube)
+            .then(|| texture_view::<B>(&mut backend, resource, &base, twin.as_ref(), true));
+        Box::into_raw(Box::new(View::<B> {
+            base,
+            view,
+            swizzle,
+            integer,
+            components,
+            faces,
+            texels,
+            twin,
+            sampled,
+            // A multisampled array's views are of its layers' 2D textures.
+            dimension: if layers.is_some() {
+                ViewDimension::D2
+            } else {
+                view_dimension(target, false)
+            },
+            samples,
+            layers,
+        }))
+        .cast()
+    })
 }
 
 /// `pipe_context::sampler_view_destroy`.
-pub unsafe extern "C" fn sampler_view_destroy<B: Backend>(
+pub unsafe extern "C" fn sampler_view_destroy<B: Gpu>(
     pipe: *mut pipe_context,
     view: *mut pipe_sampler_view,
 ) {
-    // SAFETY: Mesa passes this driver's context and a view whose last reference went.
-    let (context, view) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            Box::from_raw(view.cast::<View<B>>()),
-        )
-    };
-    for made in [Some(view.view), view.faces]
-        .into_iter()
-        .flatten()
-        .flatten()
-    {
-        context.screen().retire(Object::TextureView(made));
-    }
-    // SAFETY: the view held one reference on its texture.
-    unsafe { resource::release(view.base.texture) };
+    crate::state::guest_call(pipe, (), move || {
+        // SAFETY: Mesa passes this driver's context and a view whose last reference went.
+        let (context, view) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                Box::from_raw(view.cast::<View<B>>()),
+            )
+        };
+        for made in [Some(view.view), view.faces]
+            .into_iter()
+            .flatten()
+            .flatten()
+            .chain(view.layers.into_iter().flatten())
+        {
+            context.screen().retire(Object::TextureView(made));
+        }
+        for texture in [view.texels.map(|t| t.texture), view.twin.map(|t| t.texture)]
+            .into_iter()
+            .flatten()
+        {
+            context.screen().retire(Object::Texture(texture));
+        }
+        // SAFETY: the view held one reference on its texture.
+        unsafe { resource::release(view.base.texture) };
+    })
 }
 
 /// One level's region of a texture at a box's corner.
-fn corner<'a, B: Backend>(
+pub fn corner<'a, B: Gpu>(
     texture: &'a B::Texture,
     three_d: bool,
     level: c_uint,
@@ -464,7 +1363,7 @@ fn corner<'a, B: Backend>(
 
 /// `pipe_context::resource_copy_region`.
 #[allow(clippy::too_many_arguments, reason = "Gallium's signature")]
-pub unsafe extern "C" fn resource_copy_region<B: Backend>(
+pub unsafe extern "C" fn resource_copy_region<B: Gpu>(
     pipe: *mut pipe_context,
     dst: *mut pipe_resource,
     dst_level: c_uint,
@@ -475,56 +1374,95 @@ pub unsafe extern "C" fn resource_copy_region<B: Backend>(
     src_level: c_uint,
     area: *const pipe_box,
 ) {
-    // SAFETY: Mesa passes this driver's context, two of its resources and a box of the source.
-    let (context, dst, src, area) = unsafe {
-        (
-            Context::<B>::of(pipe),
-            Resource::<B>::of(dst),
-            Resource::<B>::of(src),
-            *area,
-        )
-    };
-    let mut backend = context.screen().backend();
-    if let Err(error) = context.tracker.close(&mut backend) {
-        eprintln!(
-            "{}: closing a pass: {error:?}",
-            DRIVER_NAME.to_string_lossy()
-        );
-    }
-    match (src.buffer(), dst.buffer(), src.texture(), dst.texture()) {
-        (Some(from), Some(to), _, _) => {
-            backend.copy_buffer(from, area.x as u64, to, u64::from(dst_x), area.width as u64)
+    crate::state::guest_call(pipe, (), move || {
+        let (dst_resource, src_resource) = (dst, src);
+        // SAFETY: Mesa passes this driver's context, two of its resources and a box of the source.
+        let (context, dst, src, area) = unsafe {
+            (
+                Context::<B>::of(pipe),
+                Resource::<B>::of(dst),
+                Resource::<B>::of(src),
+                *area,
+            )
+        };
+        // A texture held a layer a resource is copied a layer at a time between the layers' own.
+        if !src.layers().is_empty() || !dst.layers().is_empty() {
+            for i in 0..area.depth {
+                let (from, from_z) = layer_of(src_resource, src, area.z + i);
+                let (to, to_z) = layer_of(dst_resource, dst, dst_z as i16 + i);
+                let one = pipe_box {
+                    z: from_z,
+                    depth: 1,
+                    ..area
+                };
+                // SAFETY: the context Mesa passed and two live resources of this driver.
+                unsafe {
+                    resource_copy_region::<B>(
+                        pipe,
+                        to,
+                        dst_level,
+                        dst_x,
+                        dst_y,
+                        to_z as c_uint,
+                        from,
+                        src_level,
+                        &one,
+                    )
+                };
+            }
+            return;
         }
-        (_, _, Some((from, from_desc)), Some((to, to_desc))) => backend.copy_texture(
-            &corner::<B>(
-                from,
-                from_desc.dimension == TextureDimension::D3,
-                src_level,
-                area.x as u32,
-                area.y as u32,
-                area.z as u32,
+        let mut backend = context.screen().backend();
+        if let Err(error) = context.tracker.close(&mut backend) {
+            crate::state::refuse(format_args!("closing a pass: {error:?}"));
+        }
+        match (src.buffer(), dst.buffer(), src.texture(), dst.texture()) {
+            (Some(from), Some(to), _, _) => {
+                backend.copy_buffer(from, area.x as u64, to, u64::from(dst_x), area.width as u64)
+            }
+            (_, _, Some((from, from_desc)), Some((to, to_desc))) => backend.copy_texture(
+                &corner::<B>(
+                    from,
+                    from_desc.dimension == TextureDimension::D3,
+                    src_level,
+                    area.x as u32,
+                    area.y as u32,
+                    area.z as u32,
+                ),
+                &corner::<B>(
+                    to,
+                    to_desc.dimension == TextureDimension::D3,
+                    dst_level,
+                    dst_x,
+                    dst_y,
+                    dst_z,
+                ),
+                Extent {
+                    width: area.width as u32,
+                    height: area.height as u32,
+                    depth_or_layers: area.depth as u32,
+                },
             ),
-            &corner::<B>(
-                to,
-                to_desc.dimension == TextureDimension::D3,
-                dst_level,
-                dst_x,
-                dst_y,
-                dst_z,
-            ),
-            Extent {
-                width: area.width as u32,
-                height: area.height as u32,
-                depth_or_layers: area.depth as u32,
-            },
-        ),
-        _ => crate::state::refuse(format_args!("a copy between a buffer and a texture")),
+            _ => crate::state::refuse(format_args!("a copy between a buffer and a texture")),
+        }
+    })
+}
+
+/// The resource holding layer `z` of `resource`, whose own is `ours`, and the layer's place in it.
+fn layer_of<B: Gpu>(
+    resource: *mut pipe_resource,
+    ours: &Resource<B>,
+    z: i16,
+) -> (*mut pipe_resource, i16) {
+    match ours.layers().get(z as usize) {
+        Some(&layer) => (layer, 0),
+        None => (resource, z),
     }
 }
 
 /// `pipe_context::generate_mipmap`: levels after `base` filled from the one above, in `format`;
 /// false when the device cannot, and st/mesa then makes them its own way.
-pub unsafe extern "C" fn generate_mipmap<B: Backend>(
+pub unsafe extern "C" fn generate_mipmap<B: Gpu>(
     pipe: *mut pipe_context,
     resource: *mut pipe_resource,
     format: pipe_format,
@@ -533,23 +1471,26 @@ pub unsafe extern "C" fn generate_mipmap<B: Backend>(
     first_layer: c_uint,
     last_layer: c_uint,
 ) -> bool {
-    // SAFETY: Mesa passes this driver's context and a texture of it.
-    let (context, resource) = unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource)) };
-    let (Some((texture, desc)), Some(values)) = (resource.texture(), crate::format::format(format))
-    else {
-        return false;
-    };
-    let mut backend = context.screen().backend();
-    if context.tracker.close(&mut backend).is_err() {
-        return false;
-    }
-    backend
-        .generate_mips(
-            texture,
-            desc,
-            values,
-            base + 1..last + 1,
-            first_layer..last_layer + 1,
-        )
-        .is_ok()
+    crate::state::guest_call(pipe, false, move || {
+        // SAFETY: Mesa passes this driver's context and a texture of it.
+        let (context, resource) = unsafe { (Context::<B>::of(pipe), Resource::<B>::of(resource)) };
+        let (Some((texture, desc)), Some(values)) =
+            (resource.texture(), crate::format::format(format))
+        else {
+            return false;
+        };
+        let mut backend = context.screen().backend();
+        if context.tracker.close(&mut backend).is_err() {
+            return false;
+        }
+        backend
+            .generate_mips(
+                texture,
+                desc,
+                values,
+                base + 1..last + 1,
+                first_layer..last_layer + 1,
+            )
+            .is_ok()
+    })
 }

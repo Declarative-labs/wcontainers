@@ -3,8 +3,6 @@
 //! eight viewports), multisampled targets resolved by the list, and four targets bound as one
 //! descriptor range.
 
-use std::mem::transmute_copy;
-
 use anyhow::Result;
 use image::DynamicImage;
 use windows::Win32::Foundation::RECT;
@@ -14,7 +12,7 @@ use windows::Win32::Graphics::Dxgi::Common::*;
 
 use super::states::{Immediate, RT};
 use super::textures::texture_root;
-use super::{Gpu, area, tex2d_desc, transition};
+use super::{Gpu, area, tex2d_desc, transition, viewport12};
 use crate::d3d11::scenes::blend::no_blend;
 use crate::d3d11::scenes::{msaa, raster as raster11, targets as targets11};
 use crate::d3d11::{cell, solid};
@@ -89,10 +87,7 @@ pub fn raster(gpu: &Gpu) -> Result<Vec<Output>> {
     im.vs = dxil!("raster.vs");
     im.gs = Some(dxil!("raster.gs"));
     im.ps = dxil!("raster.ps");
-    let viewports: Vec<D3D12_VIEWPORT> = raster11::viewports()
-        .iter()
-        .map(|v| unsafe { transmute_copy(v) })
-        .collect();
+    let viewports: Vec<D3D12_VIEWPORT> = raster11::viewports().iter().map(viewport12).collect();
     unsafe {
         gpu.list.RSSetViewports(&viewports);
         gpu.list.RSSetScissorRects(&raster11::scissors());

@@ -14,13 +14,14 @@ mod scene;
 mod draw;
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, ColorTarget, DeviceStatus,
-    DrawCall, DrawRange, Extent, Features, Format, MAX_COLOR_TARGETS, Origin, PassTargets,
-    PassTracker, Program, ReadSource, ScissorRect, ShaderModule, ShaderStage, SlowPath, StageSet,
-    Target, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
-    ViewDimension, Viewport, WriteMode, cut_scissors,
+    BindingEntry, BindingResource, BufferRange, BufferUsage, ColorTarget, DeviceStatus, DrawCall,
+    DrawRange, Extent, Features, Format, Gpu, MAX_COLOR_TARGETS, Origin, PassTargets, PassTracker,
+    Program, ReadSource, ScissorRect, ShaderModule, ShaderStage, SlowPath, StageSet, Target,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
+    ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
+use wcontainers_shaders::front::cut_scissors;
 
 type B = WebGpu;
 
@@ -62,7 +63,7 @@ fn device() -> B {
         .0
 }
 
-fn program(b: &mut B, fragment: &str) -> <B as Backend>::Program {
+fn program(b: &mut B, fragment: &str) -> <B as Gpu>::Program {
     let shader = |b: &mut B, entry: &str, stage| {
         let module = naga::front::wgsl::parse_str(PROGRAMS).unwrap();
         let info = naga::valid::Validator::new(
@@ -149,11 +150,11 @@ fn colors(t: Target<B>) -> PassTargets<B> {
 }
 
 struct Kit {
-    blend: <B as Backend>::Blend,
-    depth_stencil: <B as Backend>::DepthStencil,
-    raster: <B as Backend>::Raster,
-    scissored: <B as Backend>::Raster,
-    layout: <B as Backend>::VertexLayout,
+    blend: <B as Gpu>::Blend,
+    depth_stencil: <B as Gpu>::DepthStencil,
+    raster: <B as Gpu>::Raster,
+    scissored: <B as Gpu>::Raster,
+    layout: <B as Gpu>::VertexLayout,
 }
 
 /// Draws the covering triangle over `size`, cut to the area the tracker gave.
@@ -162,8 +163,8 @@ fn draw_in(
     k: &Kit,
     size: (u32, u32),
     area: Option<ScissorRect>,
-    program: &<B as Backend>::Program,
-    sets: [Option<&<B as Backend>::BindingSet>; 4],
+    program: &<B as Gpu>::Program,
+    sets: [Option<&<B as Gpu>::BindingSet>; 4],
 ) {
     let mut scissors = Vec::new();
     if let Some(area) = area {
@@ -272,8 +273,14 @@ fn multisampled_targets_of_different_sizes_are_fitted() {
         [Some(&params), None, None, None],
     );
     passes.close(&mut b).unwrap();
-    assert_eq!(b.slow_paths().count(SlowPath::AttachmentsFitted), 1);
-    assert_eq!(b.slow_paths().count(SlowPath::MultisampleCopyResolved), 0);
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::AttachmentsFitted as usize],
+        1
+    );
+    assert_eq!(
+        b.slow_paths().counts[SlowPath::MultisampleCopyResolved as usize],
+        0
+    );
 
     let check = target(&mut b, 3, 3, 1);
     let read = b

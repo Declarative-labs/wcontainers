@@ -136,10 +136,10 @@ if ($flexOutputs) {
 # Our driver, a static library built against this build's headers and compile flags for the static
 # Visual C++ runtime Mesa uses, then linked into libgallium_wgl.dll with the native libraries rustc
 # names for it (printed only when rustc runs, so kept between runs).
-# The driver links route B through wcontainers-nir, which builds the shaders crate's C++ from its
-# submodules (and dxil-spirv's SPIR-V headers).
+# The driver links route B through wcontainers-nir, which builds the shader converters' C++ from
+# their submodules (and dxil-spirv's SPIR-V headers).
 $repository = Join-Path $Here '..\..\..'
-$shaders = 'crates/shaders'
+$shaders = 'crates/shader-converters/implementation/linked'
 & git -C $repository submodule update -q --init "$shaders/dxbc-spirv" "$shaders/dxil-spirv"; Run 'git submodule update'
 & git -C (Join-Path $repository "$shaders/dxil-spirv") submodule update -q --init third_party/spirv-headers
 Run 'git submodule update (dxil-spirv)'

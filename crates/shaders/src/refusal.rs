@@ -8,6 +8,9 @@ pub const BUILT_IN: &str = "BuiltIn";
 pub const BUILT_IN_ARRAY: &str = "BuiltInArray";
 pub const CALCULATE_LEVEL_OF_DETAIL: &str = "CalculateLevelOfDetail";
 pub const CALCULATE_LEVEL_OF_DETAIL_CUBE: &str = "CalculateLevelOfDetailCube";
+/// A centroid position in a pixel program run per sample into several samples: Direct3D gives the
+/// centroid of the whole pixel's coverage, of which a program run per sample sees its own sample only.
+pub const CENTROID_POSITION_PER_SAMPLE: &str = "CentroidPositionPerSample";
 pub const CLEAR_DIMENSION: &str = "ClearDimension";
 pub const CLIP_DISTANCE: &str = "ClipDistance";
 pub const CLIP_DISTANCE_PER_SAMPLE: &str = "ClipDistancePerSample";
@@ -47,7 +50,6 @@ pub const GEOMETRY_INPUT: &str = "GeometryInput";
 pub const GEOMETRY_INPUT_SHAPE: &str = "GeometryInputShape";
 pub const GEOMETRY_OUTPUT: &str = "GeometryOutput";
 /// A DXIL geometry shader taking patches: dxil-spirv converts no such input primitive.
-pub const GEOMETRY_PATCH_INPUT: &str = "GeometryPatchInput";
 /// A geometry shader writing cull distances, in the replay form (WebGL 2): the replay's slots keep
 /// one vertex of a primitive, not all of them, so no slot can tell whether its primitive is dropped.
 pub const GEOMETRY_CULL_DISTANCE_REPLAY: &str = "GeometryCullDistanceReplay";
@@ -80,6 +82,7 @@ pub const MULTISAMPLED_ARRAY_TEXTURE: &str = "MultisampledArrayTexture";
 pub const MULTISAMPLED_STORAGE: &str = "MultisampledStorage";
 pub const MUL_EXTENDED: &str = "MulExtended";
 pub const NESTED_ARRAY_CONSTANT: &str = "NestedArrayConstant";
+pub const NESTING_BEYOND_LIMIT: &str = "NestingBeyondLimit";
 pub const NON_FINITE_CONSTANT: &str = "NonFiniteConstant";
 pub const NON_FINITE_CONSTANT_ARRAY: &str = "NonFiniteConstantArray";
 pub const NORM_AS_INTEGER: &str = "NormAsInteger";
@@ -148,6 +151,8 @@ pub const TYPED_BUFFER_STORAGE_AS_TEXTURE: &str = "TypedBufferStorageAsTexture";
 pub const TYPED_BUFFER_USE: &str = "TypedBufferUse";
 pub const TYPE_16_BIT: &str = "Type16Bit";
 pub const TYPE_64_BIT_INTEGER: &str = "Type64BitInteger";
+/// A type of LLVM that DXIL does not have (dxc writes a `ppc_fp128` constant for some programs).
+pub const TYPE_OUTSIDE_DXIL: &str = "TypeOutsideDxil";
 /// An array declared without a length where `VariantKey::register_ranges` holds no range sizing it.
 pub const UNBOUNDED_RESOURCE_ARRAY: &str = "UnboundedResourceArray";
 pub const VECTOR_LOAD_ACROSS_ELEMENTS: &str = "VectorLoadAcrossElements";

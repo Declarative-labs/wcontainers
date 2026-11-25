@@ -1,4 +1,4 @@
-//! DXIL through dxil-spirv (C++, built by `build.rs`) to SPIR-V, read by naga's SPIR-V reader, then
+//! DXIL through dxil-spirv (C++, through wcontainers-shader-converters) to SPIR-V, read by naga's SPIR-V reader, then
 //! given the binding rule of plan section 6.4 and stripped of what WGSL cannot express.
 
 pub(crate) mod arrays;
@@ -19,82 +19,32 @@ mod widths;
 
 use crate::ConvertError;
 use crate::container::{self, Element, signature};
+use crate::converters::{self, Entry, Failure};
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ffi::{c_char, c_int, c_void};
 use naga::{
     AddressSpace, Binding, BuiltIn, Expression, Function, FunctionArgument, GlobalVariable, Handle,
     Literal, Module, Range, Scalar, ScalarKind, Span, Statement, StructMember, Type, TypeInner,
 };
 use wcontainers_gpu::{
     DrawBaseSource, HELPER_SET, HelperSlot, HelperValue, Interpolation, ReflectedBinding,
-    Reflection, ScalarKind as ValueKind, ShaderStage, SlotKind, SourceStage, StageExtras,
-    StageValue, SystemValue, VariantKey, helper_binding,
+    Reflection, SLOT_KINDS, ScalarKind as ValueKind, ShaderStage, SlotKind, SourceStage,
+    StageExtras, StageValue, SystemValue, VariantKey, helper_binding,
 };
 
-unsafe extern "C" {
-    fn wcs_dxil_to_spirv(
-        data: *const u8,
-        size: usize,
-        samples: u32,
-        out: *mut *mut u32,
-        out_words: *mut usize,
-        table: *mut *mut u32,
-        table_words: *mut usize,
-        error: *mut *mut c_char,
-    ) -> c_int;
-    fn wcs_dxil_constant_sizes(
-        data: *const u8,
-        size: usize,
-        out: *mut *mut u32,
-        out_words: *mut usize,
-        error: *mut *mut c_char,
-    ) -> c_int;
-    fn wcs_dxil_compared_gather_channels(
-        data: *const u8,
-        size: usize,
-        out: *mut *mut u32,
-        out_words: *mut usize,
-        error: *mut *mut c_char,
-    ) -> c_int;
-    fn wcs_dxil_declared_registers(
-        data: *const u8,
-        size: usize,
-        out: *mut *mut u32,
-        out_words: *mut usize,
-        error: *mut *mut c_char,
-    ) -> c_int;
-    fn wcs_dxil_views(
-        data: *const u8,
-        size: usize,
-        out: *mut *mut u32,
-        out_words: *mut usize,
-        error: *mut *mut c_char,
-    ) -> c_int;
-    fn wcs_free(p: *mut c_void);
-}
+/// The reason the carried patch of dxil-spirv's reader logs for a type of LLVM outside DXIL
+/// (`converter-patches/dxil-spirv/bc/module.cpp.patch`).
+const OUTSIDE_DXIL: &str = "LLVM type outside DXIL";
 
-/// The reason in `error` from the C side (a log line, its line end dropped), freed.
-fn reason(error: *mut c_char) -> String {
-    if error.is_null() {
-        return String::from("dxil-spirv gave no reason");
+/// The refusal of a call that gave nothing: by name for a type outside DXIL, otherwise the
+/// converter's own reason (a log line, its line end dropped).
+fn rejected(failure: Failure) -> ConvertError {
+    let (Failure::Refused(reason) | Failure::Ended(reason)) = failure;
+    match reason.trim_end() {
+        OUTSIDE_DXIL => ConvertError::Unsupported(crate::refusal::TYPE_OUTSIDE_DXIL),
+        reason => ConvertError::Rejected(reason.into()),
     }
-    // SAFETY: a NUL-terminated string from the C side, freed right after.
-    let s = unsafe { core::ffi::CStr::from_ptr(error) }
-        .to_string_lossy()
-        .trim_end()
-        .into();
-    unsafe { wcs_free(error.cast()) };
-    s
-}
-
-/// Words the C side allocated, copied out and freed.
-fn words(out: *mut u32, words: usize) -> Vec<u32> {
-    // SAFETY: `out` holds `words` words written by the C side, freed right after.
-    let v = unsafe { core::slice::from_raw_parts(out, words) }.to_vec();
-    unsafe { wcs_free(out.cast()) };
-    v
 }
 
 /// The resource classes of Direct3D 12 the SPIR-V's descriptor sets name (`cpp/boundary.h`).
@@ -114,68 +64,31 @@ type Resources = Vec<Resource>;
 /// DXIL to SPIR-V words, the targets' sample count fixed where `samples` is not zero, with the
 /// resources the SPIR-V's bindings index.
 fn to_spirv(dxil: &[u8], samples: u8) -> Result<(Vec<u32>, Resources), ConvertError> {
-    let mut out = core::ptr::null_mut();
-    let mut words = 0;
-    let mut table = core::ptr::null_mut();
-    let mut table_words = 0;
-    let mut error = core::ptr::null_mut();
-    // SAFETY: the pointers are valid for the call; the C side allocates `out` and `error` with malloc.
-    let status = unsafe {
-        wcs_dxil_to_spirv(
-            dxil.as_ptr(),
-            dxil.len(),
-            samples.into(),
-            &mut out,
-            &mut words,
-            &mut table,
-            &mut table_words,
-            &mut error,
-        )
-    };
-    if status != 0 {
-        return Err(ConvertError::Rejected(reason(error)));
-    }
-    let spirv = self::words(out, words);
-    let resources = self::words(table, table_words)
-        .as_chunks::<TRIPLE>()
-        .0
-        .to_vec();
-    Ok((spirv, resources))
+    let [spirv, table] =
+        converters::call(&converters::DXIL_TO_SPIRV, dxil, samples.into()).map_err(rejected)?;
+    let resources = converters::words(&table).as_chunks::<TRIPLE>().0.to_vec();
+    Ok((converters::words(&spirv), resources))
 }
 
-/// The status the C side returns for a call that succeeded.
-const SUCCESS: c_int = 0;
-
-/// A C side reader of the DXIL's module, giving words it allocated.
-type ListReader =
-    unsafe extern "C" fn(*const u8, usize, *mut *mut u32, *mut usize, *mut *mut c_char) -> c_int;
-
-/// The words `read` gives for `dxil`.
-fn resource_list(dxil: &[u8], read: ListReader) -> Result<Vec<u32>, ConvertError> {
-    let mut out = core::ptr::null_mut();
-    let mut n = 0;
-    let mut error = core::ptr::null_mut();
-    // SAFETY: the pointers are valid for the call; the C side allocates `out` and `error` with malloc.
-    let status = unsafe { read(dxil.as_ptr(), dxil.len(), &mut out, &mut n, &mut error) };
-    if status != SUCCESS {
-        return Err(ConvertError::Rejected(reason(error)));
-    }
-    Ok(words(out, n))
+/// The words `entry` gives for `dxil`.
+fn resource_list(dxil: &[u8], entry: &Entry<1>) -> Result<Vec<u32>, ConvertError> {
+    let [words] = converters::call(entry, dxil, converters::NO_SAMPLES).map_err(rejected)?;
+    Ok(converters::words(&words))
 }
 
 /// (space, register, size in bytes) of every constant buffer the DXIL declares.
 fn constant_sizes(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
-    resource_list(dxil, wcs_dxil_constant_sizes)
+    resource_list(dxil, &converters::DXIL_CONSTANT_SIZES)
 }
 
 /// The channel of each comparison gather the DXIL calls, `u32::MAX` for one not constant.
 fn compared_gather_channels(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
-    resource_list(dxil, wcs_dxil_compared_gather_channels)
+    resource_list(dxil, &converters::DXIL_COMPARED_GATHER_CHANNELS)
 }
 
 /// Every register the DXIL's resource list declares, used by the program or not, as resources.
 fn declared_registers(dxil: &[u8]) -> Result<Resources, ConvertError> {
-    Ok(resource_list(dxil, wcs_dxil_declared_registers)?
+    Ok(resource_list(dxil, &converters::DXIL_DECLARED_REGISTERS)?
         .as_chunks::<TRIPLE>()
         .0
         .to_vec())
@@ -184,7 +97,7 @@ fn declared_registers(dxil: &[u8]) -> Result<Resources, ConvertError> {
 /// The views of the DXIL's resource list, as `cpp/dxil.cpp`'s `views` gives them
 /// (`container::dxil_views`).
 pub(crate) fn views(dxil: &[u8]) -> Result<Vec<u32>, ConvertError> {
-    resource_list(dxil, wcs_dxil_views)
+    resource_list(dxil, &converters::DXIL_VIEWS)
 }
 
 /// The largest constant buffer, in bytes, which dxil-spirv declares for every dynamically indexed one.
@@ -277,29 +190,30 @@ fn declared_sizes(
     Ok(())
 }
 
+/// Why the DXIL route refuses a container: it holds no whole `DXIL` chunk.
+const NO_DXIL_CHUNK: &str = "a container holding no DXIL program";
+
 /// Converts DXIL into a naga module and its reflection.
 pub(crate) fn lower(
     dxil: &[u8],
     variant: &VariantKey,
 ) -> Result<(Module, Reflection, ShaderStage), ConvertError> {
-    if crate::container::program_type(dxil) == Some(crate::ir::program::GEOMETRY)
-        && container::geometry_input_primitive(dxil)
-            .is_some_and(|p| p >= container::FIRST_PATCH_PRIMITIVE)
-    {
-        return Err(ConvertError::Unsupported(
-            crate::refusal::GEOMETRY_PATCH_INPUT,
-        ));
+    // dxil-spirv would take a DXBC program through its own copy of dxbc-spirv.
+    if !container::holds_dxil(dxil) {
+        return Err(ConvertError::Rejected(NO_DXIL_CHUNK.into()));
     }
-    let (mut spirv, mut resources) = to_spirv(dxil, variant.samples)?;
+    let (words, mut resources) = to_spirv(dxil, variant.samples)?;
+    let mut spirv = staged::load(&words)?;
     if let Some(name) = absent_extension(&spirv) {
         return Err(ConvertError::Unsupported(name));
     }
     widths::widen(&mut spirv)?;
     registers::encode(&mut spirv);
-    let geometry = geometry::prepare(&mut spirv)?;
+    let geometry = geometry::prepare(&mut spirv, dxil)?;
     let tessellation = tessellation::prepare(&mut spirv, dxil)?;
     let selected = selected::prepare(&mut spirv)?;
     let mut declared = images::prepare(&mut spirv);
+    let position = evaluate::position_sampling(&spirv);
     let options = naga::front::spv::Options {
         adjust_coordinate_space: false,
         strict_capabilities: false,
@@ -324,7 +238,7 @@ pub(crate) fn lower(
     }
     sample_mask_input(&mut module);
     sample_mask_output(&mut module);
-    unconverted(&module)?;
+    unconverted(&module, variant)?;
     if !module.overrides.is_empty() {
         // dxil-spirv's only specialisation constant here: the targets' sample count.
         return Err(ConvertError::Unsupported(crate::refusal::SAMPLE_COUNT));
@@ -335,7 +249,7 @@ pub(crate) fn lower(
     declared_sizes(dxil, &resources, &mut module)?;
     let images = images::globals(&module, &declared);
     crate::lower::derivatives_anywhere(&mut module);
-    let added = evaluate::inputs(&mut module, variant.samples)?;
+    let added = evaluate::inputs(&mut module, variant.samples, position)?;
     let ep = module
         .entry_points
         .first()
@@ -576,7 +490,7 @@ fn sample_mask_input(module: &mut Module) {
 }
 
 /// Refuses by name what the reader's module has that the common form cannot take as it stands.
-fn unconverted(module: &Module) -> Result<(), ConvertError> {
+fn unconverted(module: &Module, variant: &VariantKey) -> Result<(), ConvertError> {
     let ep = module
         .entry_points
         .first()
@@ -609,14 +523,25 @@ fn unconverted(module: &Module) -> Result<(), ConvertError> {
     {
         return Err(ConvertError::Unsupported(crate::refusal::PRIMITIVE_ID));
     }
-    // Cull distances are drawn through the stage helper from a vertex program only, and no stage
-    // reads clip distances.
+    // Cull distances are drawn through the stage helper from a vertex or domain program only (both
+    // vertex programs here), and a pixel program reads clip and cull distances from the linked values
+    // alone.
+    let culls = ep.stage == naga::ShaderStage::Fragment
+        && variant
+            .flags
+            .contains(wcontainers_gpu::VariantFlags::CULL_DISTANCE_LINKED);
     if ep.stage != naga::ShaderStage::Vertex
+        && !culls
         && builtins.iter().any(|(b, _)| *b == BuiltIn::CullDistance)
     {
         return Err(ConvertError::Unsupported(crate::refusal::CULL_DISTANCE));
     }
+    let linked = variant
+        .flags
+        .contains(wcontainers_gpu::VariantFlags::CLIP_DISTANCE)
+        && variant.linked.clip_distances > 0;
     if ep.stage == naga::ShaderStage::Fragment
+        && !linked
         && builtins.iter().any(|(b, _)| *b == BuiltIn::ClipDistances)
     {
         return Err(ConvertError::Unsupported(crate::refusal::CLIP_DISTANCE));
@@ -1792,9 +1717,11 @@ fn bindings(
         let key = (rank(kind), space, register);
         let first = order.partition_point(|o| o.0 < key.0);
         let slot = (order.partition_point(|o| *o < key) - first) as u32;
-        let number = kind.binding(slot).ok_or(ConvertError::Unsupported(
-            crate::refusal::BINDINGS_BEYOND_LIMIT,
-        ))?;
+        let number = (slot < SLOT_KINDS[kind as usize].slots)
+            .then(|| SLOT_KINDS[kind as usize].first_binding + slot)
+            .ok_or(ConvertError::Unsupported(
+                crate::refusal::BINDINGS_BEYOND_LIMIT,
+            ))?;
         module.global_variables[handle].binding = Some(naga::ResourceBinding {
             group: set,
             binding: number,
@@ -1814,12 +1741,12 @@ fn bindings(
     Ok(slots)
 }
 
-/// The slot kind of a resource class (`cpp/boundary.h`).
 /// Why a resource is malformed: its class is none of Direct3D's.
 const NO_CLASS: &str = "a resource of no class";
 /// Why a resource is malformed: its binding names no entry of the resource list.
 const PAST_THE_LIST: &str = "a binding past the resource list";
 
+/// The slot kind of a resource class (`cpp/boundary.h`).
 fn slot_kind(class: u32) -> Option<SlotKind> {
     match class {
         CONSTANTS => Some(SlotKind::Uniform),
@@ -1831,89 +1758,22 @@ fn slot_kind(class: u32) -> Option<SlotKind> {
     }
 }
 
-/// SPIR-V's physical layout (its specification, 2.3 and 2.2.1): the header's words before the first
-/// instruction, and where an instruction's first word keeps its word count and its opcode.
-pub(crate) mod words {
-    pub const HEADER: usize = 5;
-    /// The header's word holding the bound of the module's ids.
-    pub const BOUND: usize = 3;
-    pub const COUNT_SHIFT: u32 = u16::BITS;
-    pub const OPCODE_MASK: u32 = u16::MAX as u32;
-
-    /// `OpDecorate`'s words (3.32.2): the target, the decoration, then its first literal.
-    pub mod decorate {
-        pub const TARGET: usize = 1;
-        pub const DECORATION: usize = 2;
-        pub const LITERAL: usize = 3;
-        pub const DECORATE_WORDS: usize = LITERAL + 1;
-    }
-
-    /// `OpTypeInt`'s words (3.32.6): the result, the width, then the signedness.
-    pub mod type_int {
-        pub const SIGNEDNESS: usize = 3;
-        pub const TYPE_INT_WORDS: usize = SIGNEDNESS + 1;
-    }
-
-    /// `OpTypeImage`'s words (3.32.6) up to its format; the access qualifier may follow.
-    pub mod type_image {
-        pub const SAMPLED_TYPE: usize = 2;
-        pub const DIM: usize = 3;
-        pub const SAMPLED: usize = 7;
-        pub const FORMAT: usize = 8;
-        pub const TYPE_IMAGE_WORDS: usize = FORMAT + 1;
-        /// `Sampled` of an image used without a sampler: a storage image.
-        pub const STORAGE: u32 = 2;
-    }
-
-    /// `OpTypePointer`'s and `OpVariable`'s third word: the pointee type, the storage class.
-    pub const POINTER_TYPE: usize = 3;
-    pub const VARIABLE_STORAGE_CLASS: usize = 3;
-    pub const POINTER_WORDS: usize = POINTER_TYPE + 1;
-
-    /// A type declaration's result id.
-    pub const RESULT_ID: usize = 1;
-    /// An instruction's result type and result id, where it has both.
-    pub const RESULT_TYPE: usize = 1;
-    pub const RESULT_AFTER_TYPE: usize = 2;
-    /// An atomic instruction's pointer, after its result type and result.
-    pub const ATOMIC_POINTER: usize = 3;
-}
-
 /// The name of the feature WebGPU lacks that `spirv` asks for by a SPIR-V extension: fragment
 /// interlock (rasterizer ordered views), the stencil reference from a pixel program, and the layer
 /// or viewport chosen before the geometry stage. The names are the DXBC route's.
-fn absent_extension(spirv: &[u32]) -> Option<&'static str> {
-    use spirv::{BuiltIn, Decoration, Op};
-    let mut extensions = Vec::new();
-    let mut layer = false;
-    let mut at = words::HEADER;
-    while at < spirv.len() {
-        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
-        if count == 0 || at + count > spirv.len() {
-            return None;
-        }
-        let w = &spirv[at + 1..at + count];
-        match Op::from_u32(spirv[at] & words::OPCODE_MASK) {
-            Some(Op::Extension) => {
-                let name: Vec<u8> = w.iter().flat_map(|x| x.to_le_bytes()).collect();
-                extensions.push(name);
-            }
-            // OpDecorate: the target, the decoration, then the built-in.
-            Some(Op::Decorate)
-                if w.get(1) == Some(&(Decoration::BuiltIn as u32))
-                    && w.get(2) == Some(&(BuiltIn::Layer as u32)) =>
-            {
-                layer = true;
-            }
-            _ => {}
-        }
-        at += count;
-    }
+fn absent_extension(spirv: &rspirv::dr::Module) -> Option<&'static str> {
+    use rspirv::dr::Operand;
+    use spirv::{BuiltIn, Decoration};
     let has = |name: &str| {
-        extensions
+        spirv
+            .extensions
             .iter()
-            .any(|e| e.split(|&b| b == 0).next() == Some(name.as_bytes()))
+            .any(|e| e.operands.first() == Some(&Operand::LiteralString(name.into())))
     };
+    let layer = spirv.annotations.iter().any(|i| {
+        staged::decorates(i, Decoration::BuiltIn)
+            && i.operands.get(staged::DECORATION_LITERAL) == Some(&Operand::BuiltIn(BuiltIn::Layer))
+    });
     let (_, name) = ABSENT_EXTENSIONS.iter().find(|(e, _)| has(e))?;
     Some(match *name {
         crate::refusal::VIEWPORT_ARRAY_INDEX if layer => crate::refusal::RENDER_TARGET_ARRAY_INDEX,
@@ -1936,8 +1796,9 @@ const ABSENT_EXTENSIONS: [(&str, &str); 3] = [
 
 /// Whether an atomic minimum or maximum in `spirv` is of the other signedness than the integers it
 /// works on, which naga's reader makes a compare-exchange loop.
-fn atomic_signedness_differs(spirv: &[u32]) -> bool {
+fn atomic_signedness_differs(spirv: &rspirv::dr::Module) -> bool {
     use spirv::Op;
+    use staged::SIGNEDNESS;
     use std::collections::HashMap;
     const SIGNED: [Op; 2] = [Op::AtomicSMin, Op::AtomicSMax];
     const UNSIGNED: [Op; 2] = [Op::AtomicUMin, Op::AtomicUMax];
@@ -1950,40 +1811,31 @@ fn atomic_signedness_differs(spirv: &[u32]) -> bool {
         Op::ImageTexelPointer,
         Op::FunctionParameter,
     ];
+    /// An atomic instruction's pointer.
+    const ATOMIC_POINTER: usize = 0;
     // Signedness of integer types, pointee of pointer types, type of each result.
     let mut signed = HashMap::new();
     let mut pointee = HashMap::new();
     let mut types = HashMap::new();
     let mut atomics = Vec::new();
-    let mut at = words::HEADER;
-    while at < spirv.len() {
-        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
-        if count == 0 || at + count > spirv.len() {
-            return false;
-        }
-        let Some(op) = Op::from_u32(spirv[at] & words::OPCODE_MASK) else {
-            at += count;
-            continue;
-        };
-        let w = &spirv[at..at + count];
-        match op {
-            Op::TypeInt if w.len() >= words::type_int::TYPE_INT_WORDS => {
-                signed.insert(w[words::RESULT_ID], w[words::type_int::SIGNEDNESS] != 0);
+    for i in spirv.all_inst_iter() {
+        let op = i.class.opcode;
+        match (op, i.result_id) {
+            (Op::TypeInt, Some(result)) => {
+                signed.insert(result, staged::literal(i, SIGNEDNESS) != Some(0));
             }
-            Op::TypePointer if w.len() >= words::POINTER_WORDS => {
-                pointee.insert(w[words::RESULT_ID], w[words::POINTER_TYPE]);
+            (Op::TypePointer, Some(result)) => {
+                pointee.extend(staged::id(i, staged::POINTEE).map(|p| (result, p)));
             }
-            _ if (SIGNED.contains(&op) || UNSIGNED.contains(&op))
-                && w.len() > words::ATOMIC_POINTER =>
-            {
-                atomics.push((SIGNED.contains(&op), w[words::ATOMIC_POINTER]));
+            _ if SIGNED.contains(&op) || UNSIGNED.contains(&op) => {
+                atomics.extend(staged::id(i, ATOMIC_POINTER).map(|p| (SIGNED.contains(&op), p)));
             }
             _ => {}
         }
-        if POINTERS.contains(&op) && w.len() > words::RESULT_AFTER_TYPE {
-            types.insert(w[words::RESULT_AFTER_TYPE], w[words::RESULT_TYPE]);
+        if let (true, Some(ty), Some(result)) = (POINTERS.contains(&op), i.result_type, i.result_id)
+        {
+            types.insert(result, ty);
         }
-        at += count;
     }
     atomics.iter().any(|&(op_signed, pointer)| {
         types
@@ -2052,7 +1904,11 @@ mod tests {
         };
         let slots = bindings(&mut module, &resources, &declared, 0, &mut reflection).unwrap();
         assert_eq!(slots, [(vars[0], used[0]), (vars[1], used[1])]);
-        let slots: Vec<u32> = reflection.bindings.iter().map(|b| b.slot()).collect();
+        let slots: Vec<u32> = reflection
+            .bindings
+            .iter()
+            .map(|b| b.binding - SLOT_KINDS[b.kind as usize].first_binding)
+            .collect();
         assert_eq!(slots, used);
     }
 }

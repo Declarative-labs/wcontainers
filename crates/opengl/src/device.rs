@@ -2,12 +2,12 @@
 
 use std::ffi::{CString, c_void};
 
-use wcontainers_gpu::Backend;
+use wcontainers_gpu::Gpu;
 use wcontainers_gpu_webgpu::WebGpu;
 
 /// What the driver needs of a back end beside the interface: the host's windows, which OpenGL
 /// names by their device contexts.
-pub trait HostWindows: Backend {
+pub trait HostWindows: Gpu {
     /// Registers the window a device context draws into as host window `id`; false when the
     /// back end cannot present to it.
     fn add_window_of(&mut self, id: u32, device_context: *mut c_void) -> bool;
@@ -30,6 +30,7 @@ pub fn webgpu() -> Option<(WebGpu, CString)> {
     let instance = INSTANCE.get_or_init(|| {
         let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
         desc.backends = HOST_BACKENDS;
+        desc.flags |= WebGpu::INSTANCE_FLAGS;
         wgpu::Instance::new(desc)
     });
     let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -48,25 +49,21 @@ pub fn webgpu() -> Option<(WebGpu, CString)> {
 impl HostWindows for WebGpu {
     #[cfg(windows)]
     fn add_window_of(&mut self, id: u32, device_context: *mut c_void) -> bool {
-        use std::num::NonZeroIsize;
-        use windows_sys::Win32::Graphics::Gdi::WindowFromDC;
-        use windows_sys::Win32::UI::WindowsAndMessaging::{GWLP_HINSTANCE, GetWindowLongPtrW};
+        use wcontainers_win32::{StandaloneWin32, Win32};
         let Some(instance) = INSTANCE.get() else {
             return false;
         };
-        // SAFETY: asks which window a device context the program passed draws into.
-        let window = unsafe { WindowFromDC(device_context) };
-        let Some(handle) = NonZeroIsize::new(window as isize) else {
+        // Asks which window a device context the program passed draws into.
+        let Some(window) = wcontainers_win32_windows::WindowsWin32::new(())
+            .window_of_device_context(device_context as isize)
+        else {
             return false;
         };
-        let mut handle = wgpu::rwh::Win32WindowHandle::new(handle);
-        // SAFETY: reads a field of the program's window.
-        handle.hinstance = NonZeroIsize::new(unsafe { GetWindowLongPtrW(window, GWLP_HINSTANCE) });
         let target = wgpu::SurfaceTargetUnsafe::RawHandle {
             raw_display_handle: Some(wgpu::rwh::RawDisplayHandle::Windows(
                 wgpu::rwh::WindowsDisplayHandle::new(),
             )),
-            raw_window_handle: wgpu::rwh::RawWindowHandle::Win32(handle),
+            raw_window_handle: wgpu::rwh::RawWindowHandle::Win32(window),
         };
         // SAFETY: OpenGL's program keeps its window while it draws into it.
         let Ok(surface) = (unsafe { instance.create_surface_unsafe(target) }) else {
@@ -89,18 +86,18 @@ impl HostWindows for WebGpu {
 /// end, where Mesa releases nothing.
 #[cfg(windows)]
 fn stay_loaded() -> Option<()> {
-    use windows_sys::Win32::System::LibraryLoader::{
-        GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, GET_MODULE_HANDLE_EX_FLAG_PIN, GetModuleHandleExW,
-    };
-    let mut module = std::ptr::null_mut();
-    let address = stay_loaded as *const u16;
-    // SAFETY: the address is in this module and `module` is writable.
-    let pinned = unsafe {
-        GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-            address,
-            &mut module,
-        )
-    };
-    (pinned != 0).then_some(())
+    libloading::os::windows::Library::open_already_loaded(DRIVER_MODULE)
+        .and_then(|module| module.pin())
+        .map_err(|e| {
+            eprintln!(
+                "{}: no back end: the module {DRIVER_MODULE} could not be kept loaded: {e}",
+                crate::screen::DRIVER_NAME.to_string_lossy()
+            );
+        })
+        .ok()
 }
+
+/// The module Mesa's WGL target links the driver into (`libgallium_wgl`, `name_prefix : ''`, in
+/// `src/gallium/targets/wgl/meson.build`).
+#[cfg(windows)]
+const DRIVER_MODULE: &str = "libgallium_wgl.dll";

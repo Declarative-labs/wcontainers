@@ -3,9 +3,10 @@
 //! would be, and the back end keeps the blocks on the host, updated by every write and copy, to
 //! answer read backs and copies in blocks.
 
+use wcontainers_gpu::Gpu;
 use wcontainers_gpu::{
-    CopyBufferTexture, Extent, Format, ReadSource, SlowPath, TextureDesc, TextureDimension,
-    TextureRegion, WriteMode,
+    CopyBufferTexture, Extent, FORMAT_FACTS, Format, ReadSource, SlowPath, TextureDesc,
+    TextureDimension, TextureRegion, WriteMode,
 };
 
 use crate::{Readback, WebGpu};
@@ -36,7 +37,7 @@ pub(crate) fn decoded(format: Format) -> Option<Format> {
 /// The blocks of a new texture, all zero: one array of block rows per level and layer, or per level
 /// of a 3D texture with its slices in order.
 pub(crate) fn zeroed(desc: &TextureDesc) -> Vec<Vec<u8>> {
-    let bytes = desc.format.block().2 as usize;
+    let bytes = FORMAT_FACTS[desc.format as usize].block.2 as usize;
     let layers = if desc.dimension == TextureDimension::D3 {
         1
     } else {
@@ -52,7 +53,7 @@ pub(crate) fn zeroed(desc: &TextureDesc) -> Vec<Vec<u8>> {
 
 /// Blocks across and down one level, and its slices (1 but for 3D).
 fn level(desc: &TextureDesc, mip: u32) -> (u32, u32, u32) {
-    let (bw, bh, _) = desc.format.block();
+    let (bw, bh, _) = FORMAT_FACTS[desc.format as usize].block;
     let size = |n: u32| (n >> mip).max(1);
     let slices = if desc.dimension == TextureDimension::D3 {
         size(desc.depth_or_layers)
@@ -77,12 +78,12 @@ struct Area {
 }
 
 impl Area {
-    fn of<B: wcontainers_gpu::Backend>(
+    fn of<B: wcontainers_gpu::Gpu>(
         desc: &TextureDesc,
         region: &TextureRegion<'_, B>,
         extent: Extent,
     ) -> Result<Area, &'static str> {
-        let (bw, bh, _) = desc.format.block();
+        let (bw, bh, _) = FORMAT_FACTS[desc.format as usize].block;
         let (o, mip) = (region.origin, region.mip);
         if !o.x.is_multiple_of(bw) || !o.y.is_multiple_of(bh) {
             return Err("a region of a block-compressed texture not on block edges");
@@ -118,7 +119,7 @@ impl Area {
         let (w, h, _) = level(desc, self.mip);
         let slice = self.layers[l].1;
         ((slice * h + self.first.1 + r) * w + self.first.0) as usize
-            * desc.format.block().2 as usize
+            * FORMAT_FACTS[desc.format as usize].block.2 as usize
     }
 }
 
@@ -131,7 +132,7 @@ fn put(
     row_pitch: u32,
     rows_per_layer: u32,
 ) -> Result<(), &'static str> {
-    let row = (area.cols * desc.format.block().2) as usize;
+    let row = (area.cols * FORMAT_FACTS[desc.format as usize].block.2) as usize;
     for (l, &(sub, _)) in area.layers.iter().enumerate() {
         for r in 0..area.rows {
             let from = (l * rows_per_layer as usize + r as usize) * row_pitch as usize;
@@ -147,7 +148,7 @@ fn put(
 
 /// The blocks of an area, rows packed.
 fn take(desc: &TextureDesc, blocks: &[Vec<u8>], area: &Area) -> Vec<u8> {
-    let row = (area.cols * desc.format.block().2) as usize;
+    let row = (area.cols * FORMAT_FACTS[desc.format as usize].block.2) as usize;
     let mut out = Vec::with_capacity(row * (area.rows as usize) * area.layers.len());
     for (l, &(sub, _)) in area.layers.iter().enumerate() {
         for r in 0..area.rows {
@@ -162,7 +163,7 @@ fn take(desc: &TextureDesc, blocks: &[Vec<u8>], area: &Area) -> Vec<u8> {
 fn decode_block(format: Format, block: &[u8], out: &mut [u8]) {
     use Format::*;
     // The decoder's pitches are a row's elements: bytes, floats or halves.
-    let row_bytes = SIDE * decoded(format).map_or(0, |d| d.block().2 as usize);
+    let row_bytes = SIDE * decoded(format).map_or(0, |d| FORMAT_FACTS[d as usize].block.2 as usize);
     let signed = matches!(format, Bc4RSnorm | Bc5RgSnorm | Bc6hRgbFloat);
     let halves = |values: &[f32], out: &mut [u8]| {
         for (v, o) in values.iter().zip(out.as_chunks_mut::<2>().0) {
@@ -200,8 +201,8 @@ fn decode_block(format: Format, block: &[u8], out: &mut [u8]) {
 
 /// Decodes packed blocks (`cols` by `rows` per layer) into `width` by `height` texels per layer.
 fn decode(format: Format, packed: &[u8], cols: u32, rows: u32, width: u32, height: u32) -> Vec<u8> {
-    let bytes = format.block().2 as usize;
-    let texel = decoded(format).map_or(0, |d| d.block().2) as usize;
+    let bytes = FORMAT_FACTS[format as usize].block.2 as usize;
+    let texel = decoded(format).map_or(0, |d| FORMAT_FACTS[d as usize].block.2) as usize;
     let (cols, rows, width, height) = (
         cols as usize,
         rows as usize,
@@ -254,14 +255,14 @@ impl WebGpu {
             }
             take(&t.desc, &blocks, &area)
         };
-        self.slow.hit(SlowPath::BlockDecoded);
+        self.record_slow_path(SlowPath::BlockDecoded);
         // The texels the area covers inside the level, which may end inside a block.
         let size = |n: u32| (n >> region.mip).max(1);
-        let (block_width, block_height, _) = t.desc.format.block();
+        let (block_width, block_height, _) = FORMAT_FACTS[t.desc.format as usize].block;
         let width = (area.cols * block_width).min(size(t.desc.width) - region.origin.x);
         let height = (area.rows * block_height).min(size(t.desc.height) - region.origin.y);
         let texels = decode(t.desc.format, &packed, area.cols, area.rows, width, height);
-        let texel = t.held.block().2;
+        let texel = FORMAT_FACTS[t.held as usize].block.2;
         let extent = Extent {
             width,
             height,
@@ -295,7 +296,7 @@ impl WebGpu {
 
     /// Reads a region back and waits for it: the bytes of a texture the host keeps no copy of.
     pub(crate) fn read_now(&mut self, src: &ReadSource<'_, Self>, len: usize) -> Option<Vec<u8>> {
-        self.slow.hit(SlowPath::HostCopyReadBack);
+        self.record_slow_path(SlowPath::HostCopyReadBack);
         let rb = match self.read_back_impl(src) {
             Ok(rb) => rb,
             Err(_) => {
@@ -303,7 +304,7 @@ impl WebGpu {
                 return None;
             }
         };
-        wcontainers_gpu::Backend::wait_read(self, &rb);
+        wcontainers_gpu::Gpu::wait_read(self, &rb);
         let mut out = vec![0; len];
         self.finish_read_impl(rb, &mut out);
         Some(out)
@@ -319,7 +320,7 @@ impl WebGpu {
         extent: Extent,
     ) {
         let (s, d) = (&src.texture.0, &dst.texture.0);
-        let (sbw, sbh, bytes) = s.desc.format.block();
+        let (sbw, sbh, bytes) = FORMAT_FACTS[s.desc.format as usize].block;
         let (cols, rows) = (extent.width.div_ceil(sbw), extent.height.div_ceil(sbh));
         let packed = if s.blocks.is_some() {
             self.blocks_of(src, extent)
@@ -335,7 +336,7 @@ impl WebGpu {
             self.read_now(&ReadSource::Texture { region, extent }, len)
         };
         let Some(packed) = packed else { return };
-        let (dbw, dbh, _) = d.desc.format.block();
+        let (dbw, dbh, _) = FORMAT_FACTS[d.desc.format as usize].block;
         let into = Extent {
             width: cols * dbw,
             height: rows * dbh,
@@ -359,7 +360,7 @@ impl WebGpu {
         to_texture: bool,
     ) {
         let t = &region.texture.0;
-        let (bw, bh, bytes) = t.desc.format.block();
+        let (bw, bh, bytes) = FORMAT_FACTS[t.desc.format as usize].block;
         let (row, rows) = (
             u64::from(extent.width.div_ceil(bw) * bytes),
             u64::from(extent.height.div_ceil(bh)),
@@ -404,11 +405,14 @@ mod tests {
     /// The decoder's block and texel sizes agree with the interface's for every BC format.
     #[test]
     fn block_sizes_match_the_formats() {
-        for format in (0..Format::COUNT).map(crate::format_at) {
+        for format in (0..wcontainers_gpu::FORMAT_COUNT).map(crate::format_at) {
             if let Some(d) = decoded(format) {
-                let (w, h, _) = format.block();
+                let (w, h, _) = FORMAT_FACTS[format as usize].block;
                 assert_eq!((w as usize, h as usize), (SIDE, SIDE), "{format:?}");
-                assert!(d.block().2 as usize <= WIDEST_DECODED, "{format:?}");
+                assert!(
+                    FORMAT_FACTS[d as usize].block.2 as usize <= WIDEST_DECODED,
+                    "{format:?}"
+                );
             }
         }
     }

@@ -5,7 +5,7 @@ use wcontainers_directx_graphics_infrastructure::d3d::{
     SMALL_RESOURCE_PLACEMENT_ALIGNMENT, TEXTURE_DATA_PLACEMENT_ALIGNMENT,
 };
 use wcontainers_directx_graphics_infrastructure::dxgi::{
-    NV12, OPAQUE_420, R8_TYPELESS, R8G8_TYPELESS, R32_TYPELESS, YUY2,
+    NV12, OPAQUE_420, R8_TYPELESS, R8G8_TYPELESS, R10G10B10_XR_BIAS_A2_UNORM, R32_TYPELESS, YUY2,
 };
 use wcontainers_directx_graphics_infrastructure::dxgi_format;
 use wcontainers_gpu::Format;
@@ -291,7 +291,7 @@ pub fn check_creation(
         }
     }
     // Blocks of one texel's height (the two-pixel formats) also make 1D textures.
-    let (bw, bh, _) = format.block();
+    let (bw, bh, _) = wcontainers_gpu::FORMAT_FACTS[format as usize].block;
     if bw > 1
         && (desc.dimension == DIMENSION_TEXTURE1D && bh > 1
             || !desc.width.is_multiple_of(u64::from(bw))
@@ -374,7 +374,7 @@ impl ResourceDesc {
     /// plane's in turn (`420_OPAQUE` is one plane to the program).
     pub fn planes(&self) -> Result<u32, Error> {
         let (format, _) = self.texture_format()?;
-        Ok(match format.kind() {
+        Ok(match wcontainers_gpu::FORMAT_FACTS[format as usize].kind {
             wcontainers_gpu::FormatKind::DepthStencil => 2,
             _ if self.format == NV12 => 2,
             _ => 1,
@@ -409,17 +409,35 @@ impl ResourceDesc {
         let plane = index / (mips * layers);
         let chroma = has_chroma_plane(self.format);
         let (block, plane_format, pitch_alignment) = match (planar, plane) {
-            _ if chroma && plane == 0 => {
-                (Format::R8Unorm.block(), R8_TYPELESS, 2 * PITCH_ALIGNMENT)
-            }
-            _ if chroma => (Format::Rg8Unorm.block(), R8G8_TYPELESS, 2 * PITCH_ALIGNMENT),
+            _ if chroma && plane == 0 => (
+                wcontainers_gpu::FORMAT_FACTS[Format::R8Unorm as usize].block,
+                R8_TYPELESS,
+                2 * PITCH_ALIGNMENT,
+            ),
+            _ if chroma => (
+                wcontainers_gpu::FORMAT_FACTS[Format::Rg8Unorm as usize].block,
+                R8G8_TYPELESS,
+                2 * PITCH_ALIGNMENT,
+            ),
             (false, _) if self.format == YUY2 => {
-                let (_, bh, bytes) = format.block();
+                let (_, bh, bytes) = wcontainers_gpu::FORMAT_FACTS[format as usize].block;
                 ((2, bh, bytes), self.format, PITCH_ALIGNMENT)
             }
-            (false, _) => (format.block(), self.format, PITCH_ALIGNMENT),
-            (true, 0) => (Format::R32Float.block(), R32_TYPELESS, 2 * PITCH_ALIGNMENT),
-            (true, _) => (Format::R8Uint.block(), R8_TYPELESS, 2 * PITCH_ALIGNMENT),
+            (false, _) => (
+                wcontainers_gpu::FORMAT_FACTS[format as usize].block,
+                self.format,
+                PITCH_ALIGNMENT,
+            ),
+            (true, 0) => (
+                wcontainers_gpu::FORMAT_FACTS[Format::R32Float as usize].block,
+                R32_TYPELESS,
+                2 * PITCH_ALIGNMENT,
+            ),
+            (true, _) => (
+                wcontainers_gpu::FORMAT_FACTS[Format::R8Uint as usize].block,
+                R8_TYPELESS,
+                2 * PITCH_ALIGNMENT,
+            ),
         };
         let subsampled = u32::from(chroma && plane == 1);
         let mip = index % mips;
@@ -458,6 +476,18 @@ impl ResourceDesc {
         match self.format {
             NV12 | OPAQUE_420 => return Ok((Format::R8Unorm, true)),
             YUY2 => return Ok((Format::Rgba8Unorm, true)),
+            // 2D textures held in its bits, copied and mapped with the R10G10B10A2 formats;
+            // Microsoft's 11_0 table gives it no view, target or storage use. Real Direct3D 12
+            // makes it allowing target and unordered access views, though none can be made.
+            R10G10B10_XR_BIAS_A2_UNORM => {
+                if self.dimension != DIMENSION_TEXTURE2D || self.flags & FLAG_DEPTH_STENCIL != 0 {
+                    return Err(Error::Invalid(
+                        "an R10G10B10_XR_BIAS_A2_UNORM texture other than a 2D one, or allowing \
+                         depth-stencil views",
+                    ));
+                }
+                return Ok((Format::Rgb10a2Unorm, false));
+            }
             _ => {}
         }
         let (format, typeless) =

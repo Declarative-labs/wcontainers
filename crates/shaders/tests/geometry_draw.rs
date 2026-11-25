@@ -9,13 +9,14 @@ mod common;
 mod forms;
 
 use common::*;
+// The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage,
+    AddedBinding, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage,
     ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawBaseSource, DrawCall, DrawRange,
-    Extent, FillMode, Format, FrontFace, HelperValue, IndexBinding, IndexFormat, Interpolation,
-    LinkedValues, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
-    RenderTargetBlend, ShaderModule, ShaderStage, SlotKind, StageSet, StepMode, StoreOp,
-    SystemValue, TextureRegion, TextureUsage, VariantFlags, VariantKey, VertexAttribute,
+    Extent, FillMode, Format, FrontFace, Gpu as Backend, HelperValue, IndexBinding, IndexFormat,
+    Interpolation, LinkedValues, Origin, PassDesc, Program, ProvokingVertex, RasterDesc,
+    ReadSource, RenderTargetBlend, ShaderModule, ShaderStage, SlotKind, StageSet, StepMode,
+    StoreOp, SystemValue, TextureRegion, TextureUsage, VariantFlags, VariantKey, VertexAttribute,
     VertexBinding, VertexFormat, VertexLayoutDesc, VertexStream, Viewport, helper_binding,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
@@ -25,7 +26,7 @@ use wcontainers_shaders::stage::{
     ReplayDraw, STREAM_BUFFERS, STREAM_FILLED_WORDS, STREAMS, StageDraw, StageError, StageIndex,
     Stages, StreamOutput, StreamOutputEntry, StreamTargets,
 };
-use wcontainers_shaders::{Converted, Source, convert};
+use wcontainers_shaders::{ConvertError, Converted, Source, convert, refusal};
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
@@ -295,7 +296,7 @@ const CASES: [Case; 22] = [
 
 /// Vertex shaders writing cull distances, drawn without a geometry shader: the stage helper's cull
 /// route.
-const CULLED: [Case; 8] = [
+const CULLED: [Case; 10] = [
     Case {
         vs: "vs_cull",
         gs: "",
@@ -384,9 +385,31 @@ const CULLED: [Case; 8] = [
         indexed: Some(0),
         route: Route::Dxbc,
     },
+    Case {
+        vs: "vs_cull_read",
+        gs: "",
+        topology: InputTopology::TriangleList,
+        count: 30,
+        first: 3,
+        instances: 2,
+        first_instance: 1,
+        indexed: None,
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_cull_read",
+        gs: "",
+        topology: InputTopology::TriangleStrip,
+        count: 16,
+        first: 1,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(1),
+        route: Route::Dxbc,
+    },
 ];
 
-/// The cull cases as fxc and as dxc build `vs_cull`.
+/// The cull cases as fxc and as dxc build `vs_cull` and `vs_cull_read`.
 fn culled_by_both_builds() -> Vec<Case> {
     let dxil = CULLED.map(|c| Case {
         route: Route::Dxil,
@@ -435,7 +458,7 @@ fn compared_clipped(case: &Case, reference: &[u8], picture: &[u8]) -> (usize, u3
     // Direct3D clips the line and rasterises what is left by its diamond rule: a line's clipped end
     // may differ by a pixel (Known gaps). Those texels are listed apart; any other difference
     // counts.
-    let (ends, largest) = if case.vs == "vs_cull" && lines(case.topology) {
+    let (ends, largest) = if clipped_in_pixels(case) && lines(case.topology) {
         let mut ends = 0;
         let mut largest = 0;
         for (i, (a, b)) in reference.chunks(4).zip(picture.chunks(4)).enumerate() {
@@ -461,12 +484,18 @@ fn compared_clipped(case: &Case, reference: &[u8], picture: &[u8]) -> (usize, u3
     // Clipped in the pixel program, attributes are interpolated over the whole triangle, which
     // rounds apart from Direct3D's over the clipped one by a step or two; a pixel drawn on one side
     // only differs by far more.
-    let allowed = if case.gs == "gs_clip" || case.vs == "vs_cull" {
+    let allowed = if case.gs == "gs_clip" || clipped_in_pixels(case) {
         2
     } else {
         0
     };
     (count, ends, largest, allowed)
+}
+
+/// Whether the case's vertex shader writes `vs_cull`'s clip distance, which the pixel program clips
+/// by.
+fn clipped_in_pixels(case: &Case) -> bool {
+    matches!(case.vs, "vs_cull" | "vs_cull_read")
 }
 
 fn lines(t: InputTopology) -> bool {
@@ -485,6 +514,248 @@ fn near_clip_plane(case: &Case, x: u32, y: u32) -> bool {
         let distance = (cx - i as f32 * 0.25 - cy + 0.9) / std::f32::consts::SQRT_2;
         distance.abs() <= pixel * std::f32::consts::SQRT_2
     })
+}
+
+/// Bits of subpixel precision of Direct3D's rasteriser, whose grid every vertex is snapped to, those
+/// clipping makes among them.
+const SUBPIXEL_BITS: i32 = 8;
+
+/// `gs_clip`'s three clip distances at a vertex at (x, y) of primitive `primitive`.
+fn gs_clip_distances(x: f32, y: f32, primitive: usize) -> [f32; 3] {
+    let more = match primitive % 4 {
+        1 => -1.0,
+        _ => x - y + 0.5113,
+    };
+    [x + 0.3037, 0.4129 - y, more]
+}
+
+/// The clip distances the case's planes give a vertex at (x, y) of primitive `primitive`, its
+/// instance moving it right by `moved`; empty for a case clipping by none.
+fn case_clip_distances(case: &Case, x: f32, y: f32, moved: f32, primitive: usize) -> Vec<f32> {
+    if case.gs == "gs_clip" {
+        gs_clip_distances(x + moved, y, primitive).to_vec()
+    } else if case.gs.is_empty() && clipped_in_pixels(case) {
+        // `vs_cull`'s, of the position before its instance's move.
+        vec![x - y + 0.9]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The part of an edge from a to b that every plane keeps, as parameters from a (low above high
+/// where none is kept), and whether a plane cuts it.
+fn kept(at_a: &[f32], at_b: &[f32]) -> (f32, f32, bool) {
+    let (mut low, mut high, mut cut) = (0.0f32, 1.0f32, false);
+    for (p, q) in at_a.iter().zip(at_b) {
+        if (*p < 0.0) == (*q < 0.0) {
+            if *p < 0.0 {
+                high = -1.0;
+            }
+            continue;
+        }
+        cut = true;
+        let t = p / (p - q);
+        if *p < 0.0 {
+            low = low.max(t);
+        } else {
+            high = high.min(t);
+        }
+    }
+    (low, high, cut)
+}
+
+/// Where a texel's centre lies, in pixels, from what Direct3D's clipping and line rule decide; each
+/// `None` where the case has none of it.
+#[derive(Default)]
+struct Placed {
+    /// From the nearest part a triangle keeps of an edge a plane cuts. Direct3D snaps the vertices
+    /// clipping makes to its subpixel grid, which moves that part by up to half a step, where the
+    /// program's clip test takes the distance at the centre: a centre within a step of it may be
+    /// drawn on one side only.
+    clipped_edge: Option<f32>,
+    /// From the nearest point where a plane cuts a line. Direct3D ends the line there and lights
+    /// pixels by its diamond rule, where the program keeps the pixels whose centres the plane keeps.
+    clipped_end: Option<f32>,
+    /// From the nearest end of a line that no plane cuts there.
+    line_end: Option<f32>,
+    /// For the nearest line a plane cuts ([`cut_line_decision`]): its crossing's distance from the
+    /// boundary deciding which pixel it lights, in units of how far the snapped vertices can move it.
+    cut_line: Option<f32>,
+}
+
+/// For a line from `a` along `e` (pixels) of which the planes keep the parameters `low` to `high`:
+/// where it crosses the centre line along its major axis of the texel at `centre`, if within a pixel
+/// and a half of the centre, how far that crossing lies from the boundary deciding which of two
+/// pixels the line lights, in units of how far snapping can move it there. Direct3D draws the line
+/// to its cut ends snapped to the subpixel grid, the program the whole line to its own snapped ends,
+/// so the two lines turn apart by up to half a step at each of those ends.
+fn cut_line_decision(
+    a: (f32, f32),
+    e: (f32, f32),
+    low: f32,
+    high: f32,
+    centre: (f32, f32),
+) -> Option<f32> {
+    let (major, minor, e_major, e_minor, c_major, c_minor) = if e.0.abs() >= e.1.abs() {
+        (a.0, a.1, e.0, e.1, centre.0, centre.1)
+    } else {
+        (a.1, a.0, e.1, e.0, centre.1, centre.0)
+    };
+    let s = (c_major - major) / e_major;
+    let crossing = minor + s * e_minor;
+    if !(low..=high).contains(&s) || (crossing - c_minor).abs() > 1.5 {
+        return None;
+    }
+    // Each end's snap moves the crossing by its weight there: the program's line's weight against
+    // Direct3D's, which share the end where no plane cuts.
+    let span = high - low;
+    let end = |cut: bool, program: f32, direct3d: f32| match cut {
+        true => program + direct3d,
+        false => (program - direct3d).abs(),
+    };
+    let weight = end(low > 0.0, 1.0 - s, (high - s) / span) + end(high < 1.0, s, (s - low) / span);
+    let half_step = 2.0f32.powi(-SUBPIXEL_BITS) / 2.0;
+    let reach = weight * half_step * (1.0 + (e_minor / e_major).abs());
+    Some((crossing - crossing.round()).abs() / reach)
+}
+
+/// Where texel (x, y)'s centre lies from the case's clipped edges and line ends ([`Placed`]).
+fn placed(case: &Case, vertices: &[f32], indices: &[u8], x: u32, y: u32) -> Placed {
+    let n: u32 = match case.topology {
+        InputTopology::LineList | InputTopology::LineStrip => 2,
+        InputTopology::TriangleList | InputTopology::TriangleStrip => 3,
+        _ => return Placed::default(),
+    };
+    let floats = COLOURED_VERTEX_BYTES as usize / std::mem::size_of::<f32>();
+    let vertex = |i: u32| -> usize {
+        let place = case.first + i;
+        match case.indexed {
+            Some(base) => {
+                let at = std::mem::size_of::<u16>() * place as usize;
+                let index = u16::from_le_bytes([indices[at], indices[at + 1]]);
+                (i32::from(index) + base) as usize
+            }
+            None => place as usize,
+        }
+    };
+    let half = SIZE as f32 / 2.0;
+    let centre = (x as f32 + 0.5, y as f32 + 0.5);
+    let nearer = |slot: &mut Option<f32>, d: f32| *slot = Some(slot.map_or(d, |s| s.min(d)));
+    let mut found = Placed::default();
+    for instance in 0..case.instances {
+        let moved = instance as f32 * 0.25;
+        for (primitive, places) in primitive_places(case, n, indices).iter().enumerate() {
+            let corners: Vec<((f32, f32), Vec<f32>)> = places
+                .iter()
+                .map(|&k| {
+                    let v = vertex(k) * floats;
+                    let (px, py) = (vertices[v], vertices[v + 1]);
+                    (
+                        ((px + moved + 1.0) * half, (1.0 - py) * half),
+                        case_clip_distances(case, px, py, moved, primitive),
+                    )
+                })
+                .collect();
+            let edges = if n == 2 { 1 } else { 3 };
+            for e in 0..edges {
+                let ((a, da), (b, db)) = (&corners[e], &corners[(e + 1) % n as usize]);
+                let (low, high, cut) = kept(da, db);
+                let (ex, ey) = (b.0 - a.0, b.1 - a.1);
+                let length = ex.hypot(ey);
+                if low > high || length == 0.0 {
+                    continue;
+                }
+                if n == 2 {
+                    for t in [low, high] {
+                        let d = (a.0 + t * ex - centre.0).hypot(a.1 + t * ey - centre.1);
+                        match t > 0.0 && t < 1.0 {
+                            true => nearer(&mut found.clipped_end, d),
+                            false => nearer(&mut found.line_end, d),
+                        }
+                    }
+                    if let Some(d) = cut
+                        .then(|| cut_line_decision(*a, (ex, ey), low, high, centre))
+                        .flatten()
+                    {
+                        nearer(&mut found.cut_line, d);
+                    }
+                    continue;
+                }
+                let along = ((centre.0 - a.0) * ex + (centre.1 - a.1) * ey) / (length * length);
+                if cut && along >= low && along <= high {
+                    let across = (ex * (centre.1 - a.1) - ey * (centre.0 - a.0)).abs() / length;
+                    nearer(&mut found.clipped_edge, across);
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Prints the first texels `picture` draws apart from `reference`, each with where it lies from the
+/// case's clipped edges and line ends ([`placed`]), and how many of those apart by more than
+/// `allowed` lie within a subpixel step of a clipped edge, within a pixel of a clipped line end,
+/// within a pixel of a line's own end, or within a snap's reach of a cut line's pixel decision.
+fn print_apart(
+    case: &Case,
+    vertices: &[f32],
+    indices: &[u8],
+    reference: &[u8],
+    picture: &[u8],
+    allowed: u64,
+) {
+    let at = |i: usize| placed(case, vertices, indices, i as u32 % SIZE, i as u32 / SIZE);
+    let apart: Vec<(usize, &[u8], &[u8])> = reference
+        .chunks(4)
+        .zip(picture.chunks(4))
+        .enumerate()
+        .filter(|(_, (a, b))| a != b)
+        .map(|(i, (a, b))| (i, a, b))
+        .collect();
+    for &(i, a, b) in apart.iter().take(16) {
+        let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
+        let p = at(i);
+        let mut near = String::new();
+        for (d, what) in [
+            (p.clipped_edge, "a clipped edge"),
+            (p.clipped_end, "a clipped line end"),
+            (p.line_end, "a line's end"),
+        ] {
+            if let Some(d) = d {
+                near += &format!(" ({d} px from {what})");
+            }
+        }
+        if let Some(d) = p.cut_line {
+            near += &format!(" ({d} of a snap's reach from a cut line's pixel decision)");
+        }
+        eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}{near}");
+    }
+    let beyond: Vec<Placed> = apart
+        .iter()
+        .filter(|(_, a, b)| {
+            a.iter()
+                .zip(*b)
+                .any(|(p, q)| u64::from(p.abs_diff(*q)) > allowed)
+        })
+        .map(|(i, _, _)| at(*i))
+        .collect();
+    let step = 2.0f32.powi(-SUBPIXEL_BITS);
+    let within = |of: fn(&Placed) -> Option<f32>, reach: f32| {
+        beyond
+            .iter()
+            .filter(|p| of(p).is_some_and(|d| d <= reach))
+            .count()
+    };
+    eprintln!(
+        "  {} texels apart by more than {allowed}: {} of them within a subpixel step of a clipped \
+         edge, {} within a pixel of a clipped line end, {} within a pixel of a line's end, {} \
+         within a snap's reach of a cut line's pixel decision",
+        beyond.len(),
+        within(|p| p.clipped_edge, step),
+        within(|p| p.clipped_end, 1.0),
+        within(|p| p.line_end, 1.0),
+        within(|p| p.cut_line, 1.0),
+    );
 }
 
 fn d3d_topology(t: InputTopology) -> D3D_PRIMITIVE_TOPOLOGY {
@@ -642,6 +913,28 @@ fn constants() -> Vec<u8> {
 /// to 1 and written by every fragment, whose texels the draw returns instead of the target's.
 type Clamped = Option<[f32; 2]>;
 
+/// `case` drawn by real Direct3D 11 on WARP, the second real implementation, where ours differs from
+/// the GPU: how far the two real ones lie apart beside how far ours lies from each.
+fn on_warp(case: &Case, vertices: &[f32], indices: &[u8], clamped: Clamped) -> Vec<u8> {
+    let warp = d3d11::create(
+        wcontainers_graphics_test::Driver::Warp,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    direct3d(&warp, case, vertices, indices, clamped)
+}
+
+/// The colour figures of [`on_warp`]'s picture `soft` beside the GPU's `reference` and our `picture`.
+fn warp_spread(case: &Case, reference: &[u8], soft: &[u8], picture: &[u8]) -> String {
+    let (between, _, between_largest, _) = compared_clipped(case, reference, soft);
+    let (from_warp, _, largest, _) = compared_clipped(case, soft, picture);
+    format!(
+        "warp from direct3d on the gpu {between} texels (largest {between_largest}); ours from warp \
+         {from_warp} (largest {largest})"
+    )
+}
+
 fn direct3d(gpu: &Gpu, case: &Case, vertices: &[f32], indices: &[u8], clamped: Clamped) -> Vec<u8> {
     let (vs, ps) = (
         bytecode(&format!("{}.dxbc", case.vs)),
@@ -772,8 +1065,9 @@ fn declaration(gs: &str) -> StreamOutput {
 
 /// The pixel shader of a case: `ps_numbered` behind a geometry shader writing its primitives' numbers.
 fn ps_of(case: &Case) -> &'static str {
-    match case.gs {
-        "gs_numbered" => "ps_numbered",
+    match (case.gs, case.vs) {
+        ("gs_numbered", _) => "ps_numbered",
+        ("", "vs_cull_read") => "ps_cull_read",
         _ => "ps_geometry",
     }
 }
@@ -810,8 +1104,48 @@ fn linked(
     // Linked as a front links them: the pixel program first, the geometry program's outputs written
     // as it reads them.
     let ext = case.route.extension();
+    let vs_code = bytecode(&format!("{}.{ext}", case.vs));
+    let vs = convert(case.route.source(&vs_code), &vs_key, None).unwrap();
     let ps_code = bytecode(&format!("{}.{ext}", ps_of(case)));
-    let ps = convert(case.route.source(&ps_code), &VariantKey::default(), None).unwrap();
+    // Cull distances the pixel program reads, passed on by the vertex program past its values; a
+    // front learns it from the refusal of the plain conversion.
+    let past_vertex_values = vs
+        .reflection
+        .outputs
+        .iter()
+        .filter(|v| v.system.is_none())
+        .map(|v| v.location + 1)
+        .max()
+        .unwrap_or(0);
+    let (ps, culls) = match convert(case.route.source(&ps_code), &VariantKey::default(), None) {
+        Err(ConvertError::Unsupported(refusal::CULL_DISTANCE)) => {
+            // dxc's build declares every distance of its signature, so it takes the clip distances
+            // too.
+            let clips: u32 = vs
+                .reflection
+                .outputs
+                .iter()
+                .filter(|v| v.system == Some(SystemValue::ClipDistance))
+                .map(|v| v.mask.count_ones())
+                .sum();
+            let clip = match clips {
+                0 => VariantFlags::empty(),
+                _ => VariantFlags::CLIP_DISTANCE,
+            };
+            let key = VariantKey {
+                flags: VariantFlags::CULL_DISTANCE_LINKED | clip,
+                linked: LinkedValues {
+                    location: past_vertex_values,
+                    clip_distances: clips as u8,
+                },
+                samples: 1,
+                ..Default::default()
+            };
+            let ps = convert(case.route.source(&ps_code), &key, None).unwrap();
+            (ps, VariantFlags::CULL_DISTANCE_LINKED)
+        }
+        ps => (ps.unwrap(), VariantFlags::empty()),
+    };
     let gs_key = VariantKey {
         output_interpolation: ps
             .reflection
@@ -829,8 +1163,6 @@ fn linked(
         None => convert(gs_source(case, &gs_code), key, None).unwrap(),
     };
     let gs = (!case.gs.is_empty()).then(|| gs_converted(&gs_key));
-    let vs_code = bytecode(&format!("{}.{ext}", case.vs));
-    let vs = convert(case.route.source(&vs_code), &vs_key, None).unwrap();
     // Clip distances from the last vertex stage, clipped in the pixel program as on a back end
     // without them (wgpu's Direct3D 12 path), linked past every value either program passes;
     // counted from the reflection as a front counts them.
@@ -859,7 +1191,7 @@ fn linked(
         true => VariantFlags::PRIMITIVE_ID_FROM_STAGE,
         false => VariantFlags::empty(),
     };
-    let (vs, gs, ps) = if (clip | clamp | numbered).is_empty() {
+    let (vs, gs, ps) = if (clip | clamp | numbered | culls).is_empty() {
         (vs, gs, ps)
     } else {
         let location = last_stage
@@ -876,7 +1208,7 @@ fn linked(
             clip_distances: clips as u8,
         };
         let key = |base: &VariantKey, samples| VariantKey {
-            flags: base.flags | clip | clamp | numbered,
+            flags: base.flags | clip | clamp | numbered | culls,
             linked,
             samples,
             ..base.clone()
@@ -909,14 +1241,26 @@ fn ours<B: Backend>(
     stream: Option<(&StreamOutput, &Bound)>,
     clamped: Clamped,
 ) -> Made {
-    ours_made(b, case, None, vertices, indices, stream, clamped)
+    let how = Making {
+        made: None,
+        provoking: ProvokingVertex::First,
+    };
+    ours_made(b, case, how, vertices, indices, stream, clamped)
 }
 
-/// [`ours`] with the geometry program `made` makes, where given.
+/// How [`ours_made`] makes and draws the geometry stage: its program by `made` where given, and flat
+/// values from the vertex `provoking` names (`Stages::provoking`; the final draw takes the first).
+#[derive(Clone, Copy)]
+struct Making {
+    made: Option<GeometryMade>,
+    provoking: ProvokingVertex,
+}
+
+/// [`ours`] made and drawn as `how` says.
 fn ours_made<B: Backend>(
     b: &mut B,
     case: &Case,
-    made: Option<GeometryMade>,
+    how: Making,
     vertices: &[f32],
     indices: &[u8],
     stream: Option<(&StreamOutput, &Bound)>,
@@ -928,12 +1272,15 @@ fn ours_made<B: Backend>(
         draw_base: DrawBaseSource::Helpers,
         ..Default::default()
     };
-    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::empty(), clamped, made);
+    let (vs, gs, ps) = linked(case, vs_key, VariantFlags::empty(), clamped, how.made);
     // Without a geometry stage or stream output, the vertex stage writes cull distances.
     let mut stages = match (&gs, stream) {
         (None, None) => Stages::culled(b, &vs, None).unwrap(),
         _ => Stages::new(b, &vs, gs.as_ref(), stream).unwrap(),
     };
+    stages
+        .provoking(b, how.provoking, ProvokingVertex::First)
+        .unwrap();
 
     // The vertex stage's sets: the pulled streams in set 0, their layout in its helper block.
     let vertex_buffer = buffer(
@@ -1632,7 +1979,7 @@ fn direct3d12_streamed(
         d3d12::element(s!("COLOR"), DXGI_FORMAT_R32G32B32A32_FLOAT, 12),
     ];
     let desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
-        pRootSignature: unsafe { std::mem::transmute_copy(&root) },
+        pRootSignature: std::mem::ManuallyDrop::new(Some(root.clone())),
         VS: d3d12::bytecode(&vs),
         GS: gs.as_deref().map(d3d12::bytecode).unwrap_or_default(),
         StreamOutput: D3D12_STREAM_OUTPUT_DESC {
@@ -1667,6 +2014,7 @@ fn direct3d12_streamed(
     };
     let pipeline: ID3D12PipelineState =
         unsafe { gpu.device.CreateGraphicsPipelineState(&desc) }.unwrap();
+    drop(std::mem::ManuallyDrop::into_inner(desc.pRootSignature));
     let mut heap: Option<ID3D12QueryHeap> = None;
     unsafe {
         gpu.device.CreateQueryHeap(
@@ -2932,16 +3280,9 @@ fn geometry_shaders_draw_as_direct3d_does() {
             let empty = drawn == 0 && (planes == 0 || count > 0);
             if empty || largest > allowed {
                 // The first texels apart, where and what each drew, to find the cause.
-                let apart = reference
-                    .chunks(4)
-                    .zip(picture.chunks(4))
-                    .enumerate()
-                    .filter(|(_, (a, b))| a != b)
-                    .take(16);
-                for (i, (a, b)) in apart {
-                    let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
-                    eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}");
-                }
+                print_apart(case, &vertices, &indices, &reference, &picture, allowed);
+                let soft = on_warp(case, &vertices, &indices, None);
+                eprintln!("  {}", warp_spread(case, &reference, &soft, &picture));
                 failures.push(name);
             }
         }
@@ -2959,8 +3300,9 @@ fn geometry_shaders_draw_as_direct3d_does() {
 }
 
 /// Geometry shaders writing cull distances beside clip distances in one register, as fxc packs them:
-/// triangle, line and point output, cut strips, from lists and strips, indexed and instanced.
-const GEOMETRY_CULLED: [Case; 6] = [
+/// triangle, line and point output, cut strips, from lists and strips, indexed and instanced; and one
+/// writing the clip and cull distances it reads from `vs_cull`'s vertices (`gs_distances`).
+const GEOMETRY_CULLED: [Case; 8] = [
     Case {
         vs: "vs_geometry",
         gs: "gs_cull",
@@ -3027,6 +3369,28 @@ const GEOMETRY_CULLED: [Case; 6] = [
         indexed: None,
         route: Route::Dxbc,
     },
+    Case {
+        vs: "vs_cull",
+        gs: "gs_distances",
+        topology: InputTopology::TriangleList,
+        count: 30,
+        first: 3,
+        instances: 2,
+        first_instance: 1,
+        indexed: None,
+        route: Route::Dxbc,
+    },
+    Case {
+        vs: "vs_cull",
+        gs: "gs_distances",
+        topology: InputTopology::TriangleStrip,
+        count: 14,
+        first: 2,
+        instances: 1,
+        first_instance: 0,
+        indexed: Some(3),
+        route: Route::Dxbc,
+    },
 ];
 
 /// Geometry shaders writing cull distances (`gs_cull`, `gs_cull_lines`, `gs_cull_points`: whole
@@ -3034,7 +3398,8 @@ const GEOMETRY_CULLED: [Case; 6] = [
 /// below zero on another distance kept), run as compute by the stage helper on WebGPU with its
 /// geometry cull program, from fxc's and dxc's builds: every texel equal to real Direct3D 11's
 /// drawing fxc's builds. Every fourth primitive is dropped whole, so a helper that kept every
-/// primitive would draw what Direct3D does not.
+/// primitive would draw what Direct3D does not. `gs_distances` drops by and is coloured by the
+/// distances it reads from the vertex stage, so a distance read from another slot shows.
 #[test]
 fn geometry_shaders_writing_cull_distances_draw_as_direct3d_does() {
     let mut backend = webgpu();
@@ -3114,6 +3479,8 @@ fn geometry_shaders_writing_cull_distances_draw_as_direct3d_does() {
                     let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
                     eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}");
                 }
+                let soft = on_warp(case, &vertices, &indices, None);
+                eprintln!("  {}", warp_spread(case, &reference, &soft, &picture));
                 failures.push(name);
             }
         }
@@ -3207,6 +3574,22 @@ fn depth_clamped_behind_a_geometry_shader_draws_as_direct3d_does() {
                  ({steps} steps; allowed {allowed:e})"
             );
             if at_ends == 0 || largest > allowed {
+                let soft = on_warp(case, &vertices, &indices, Some(range));
+                let apart = |a: &[u8], b: &[u8]| {
+                    let (count, _) = differ(a, b, Format::Depth32Float);
+                    let largest = depths(a)
+                        .iter()
+                        .zip(depths(b))
+                        .map(|(x, y)| (x - y).abs())
+                        .fold(0.0f32, f32::max);
+                    (count, largest)
+                };
+                let (between, between_largest) = apart(&reference, &soft);
+                let (from_warp, warp_largest) = apart(&soft, &picture);
+                eprintln!(
+                    "  warp from direct3d on the gpu {between} texels (largest \
+                     {between_largest:e}); ours from warp {from_warp} (largest {warp_largest:e})"
+                );
                 failures.push(name);
             }
         }
@@ -3256,7 +3639,7 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
             let name = format!(
                 "seed {seed} {} {:?} {:?} {} from {} x{}{}",
                 match (case.gs, case.vs) {
-                    ("", "vs_cull") => "vs_cull",
+                    ("", vs @ ("vs_cull" | "vs_cull_read")) => vs,
                     ("", _) => "vertex",
                     (gs, _) => gs,
                 },
@@ -3327,16 +3710,10 @@ fn geometry_shaders_replayed_on_webgl_draw_as_direct3d_does() {
             // nothing either.
             let empty = drawn == 0 && (planes == 0 || count > 0);
             if empty || largest > allowed {
-                let apart = reference
-                    .chunks(4)
-                    .zip(picture.chunks(4))
-                    .enumerate()
-                    .filter(|(_, (a, b))| a != b)
-                    .take(16);
-                for (i, (a, b)) in apart {
-                    let (x, y) = (i as u32 % SIZE, i as u32 / SIZE);
-                    eprintln!("  ({x}, {y}): direct3d {a:?}, ours {b:?}");
-                }
+                // The first texels apart, where and what each drew, to find the cause.
+                print_apart(case, &vertices, &indices, &reference, &picture, allowed);
+                let soft = on_warp(case, &vertices, &indices, None);
+                eprintln!("  {}", warp_spread(case, &reference, &soft, &picture));
                 failures.push(name);
             }
         }
@@ -3768,7 +4145,10 @@ fn geometry_programs_from_a_module_draw_as_direct3d_does() {
                     let made = ours_made(
                         &mut backend,
                         case,
-                        Some(made),
+                        Making {
+                            made: Some(made),
+                            provoking: ProvokingVertex::First,
+                        },
                         &vertices,
                         indices,
                         None,
@@ -3783,7 +4163,10 @@ fn geometry_programs_from_a_module_draw_as_direct3d_does() {
             let Made::Picture(picture) = ours_made(
                 &mut backend,
                 case,
-                Some(made),
+                Making {
+                    made: Some(made),
+                    provoking: ProvokingVertex::First,
+                },
                 &vertices,
                 &indices,
                 None,
@@ -3799,6 +4182,115 @@ fn geometry_programs_from_a_module_draw_as_direct3d_does() {
                 drawn_texels(&reference)
             );
             if drawn_texels(&reference) == 0 || largest > allowed {
+                let soft = on_warp(case, &vertices, &indices, None);
+                eprintln!("  {}", warp_spread(case, &reference, &soft, &picture));
+                failures.push(name);
+            }
+        }
+    }
+    eprintln!("{compared} comparisons, {} failed", failures.len());
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// Flat values from each triangle's last vertex (`Stages::provoking` with `ProvokingVertex::Last`,
+/// OpenGL's rule: a strip's triangle `i` takes vertex `i + 2`'s) for `gs_provoking`, whose strips
+/// number each vertex by its place in a flat value, draw as Direct3D 11 draws `gs_provoking_last`,
+/// the same shader numbering each vertex two places on (so Direct3D's first vertex of each triangle
+/// carries its last's number), in the cases `gs_cut` draws, both routes; drawn from the first
+/// vertex, they differ from it.
+#[test]
+fn flat_values_from_the_last_vertex_draw_as_its_place_names() {
+    let mut backend = webgpu();
+    let gpu = d3d11::create(
+        wcontainers_graphics_test::Driver::Hardware,
+        false,
+        &[D3D_FEATURE_LEVEL_11_0],
+    )
+    .unwrap();
+    let seed: u64 = std::env::var("WCONTAINERS_GEOMETRY_SEED")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(1);
+    let seeds: u64 = std::env::var("WCONTAINERS_GEOMETRY_CASES")
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(4);
+    let cases: Vec<Case> = CASES
+        .iter()
+        .filter(|c| c.gs == "gs_cut" && c.route == Route::Dxbc)
+        .map(|c| Case {
+            gs: "gs_provoking",
+            ..*c
+        })
+        .collect();
+    let cases = on_both_routes(&cases);
+    assert!(!cases.is_empty());
+    let drawn = |provoking| Making {
+        made: None,
+        provoking,
+    };
+    let mut failures = Vec::new();
+    let mut compared = 0;
+    for seed in seed..seed + seeds {
+        let vertices = vertices(seed);
+        for case in &cases {
+            let reference_case = Case {
+                gs: "gs_provoking_last",
+                ..*case
+            };
+            let name = format!(
+                "seed {seed} {:?} {:?} {} from {}{}",
+                case.route,
+                case.topology,
+                case.count,
+                case.first,
+                case.indexed
+                    .map(|b| format!(" indexed, base {b}"))
+                    .unwrap_or_default()
+            );
+            let Ok((indices, reference)) = scene(
+                case.indexed.is_some(),
+                |attempt| indices(seed, case, attempt),
+                |indices| direct3d(&gpu, &reference_case, &vertices, indices, None),
+                |reference| drawn_texels(reference) != 0,
+                |indices, _| {
+                    let made = ours_made(
+                        &mut backend,
+                        case,
+                        drawn(ProvokingVertex::Last),
+                        &vertices,
+                        indices,
+                        None,
+                        None,
+                    );
+                    matches!(made, Made::Picture(picture) if drawn_texels(&picture) == 0)
+                },
+            )
+            .map_err(|e| failures.push(format!("{name}: {e}"))) else {
+                continue;
+            };
+            let [last, first] = [ProvokingVertex::Last, ProvokingVertex::First].map(|provoking| {
+                match ours_made(
+                    &mut backend,
+                    case,
+                    drawn(provoking),
+                    &vertices,
+                    &indices,
+                    None,
+                    None,
+                ) {
+                    Made::Picture(picture) => picture,
+                    _ => unreachable!(),
+                }
+            });
+            let (count, ends, largest, allowed) = compared_clipped(case, &reference, &last);
+            let (first_count, ..) = compared_clipped(case, &reference, &first);
+            compared += 1;
+            eprintln!(
+                "{name}: {} texels drawn by direct3d, {count} differ ({ends} at a clipped line end; \
+                 largest of the others {largest}, allowed {allowed}); from the first vertex \
+                 {first_count} differ",
+                drawn_texels(&reference)
+            );
+            if drawn_texels(&reference) == 0 || largest > allowed || first_count == 0 {
                 failures.push(name);
             }
         }

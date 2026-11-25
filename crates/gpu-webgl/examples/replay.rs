@@ -128,10 +128,10 @@ pub fn replay_report() -> String {
             Some(Device::Gl(b, _)) => (b.status(), b.renderer().to_string(), b.slow_paths()),
             Some(Device::Gpu(b, _, _, name)) => (b.status(), name.clone(), b.slow_paths()),
         };
-        let slow: Vec<String> = SlowPath::ALL
+        let slow: Vec<String> = SLOW_PATHS
             .iter()
-            .filter(|&&p| slow.count(p) > 0)
-            .map(|&p| format!("{:?} {}", p, slow.count(p)))
+            .filter(|&&p| slow.counts[p as usize] > 0)
+            .map(|&p| format!("{:?} {}", p, slow.counts[p as usize]))
             .collect();
         format!("{status:?}, {name}; slow paths: {}", slow.join(", "))
     })

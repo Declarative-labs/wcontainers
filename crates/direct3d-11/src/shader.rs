@@ -1,10 +1,13 @@
 //! DXBC handed to the device: its stage from the container, and its conversion through the shaders
 //! crate into the common form.
 
+use wcontainers_directx_graphics_infrastructure::stage_registers::{
+    MOVED_INVALID, MOVED_ONTO_A_TYPE,
+};
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DrawBaseSource, Format, FormatKind, HELPER_SET,
     HelperSlot, HelperValue, LinkedValues, Reflection, ShaderModule, ShaderStage, SlotKind,
-    SourceStage, StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey,
+    SlowPath, SourceStage, StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey,
     ViewComponent, helper_binding,
 };
 use wcontainers_shaders::container::{
@@ -100,9 +103,13 @@ pub struct TypedView {
     pub buffer: bool,
     /// The kind of value the declaration reads and writes.
     pub kind: FormatKind,
-    /// A storage texture read and written through a buffer of its texels, where the back end
-    /// has no atomics on storage textures (`AtomicsThroughBuffer`).
-    pub through: bool,
+    /// A storage texture read and written through a buffer of its texels, whatever the bound
+    /// view's format, and why: the back end has no atomics on storage textures
+    /// (`AtomicsThroughBuffer`).
+    pub through: Option<SlowPath>,
+    /// A storage texture of a program that loads typed values from storage textures; every
+    /// storage texture of such a program counts, its loads' operands are not read.
+    pub loaded: bool,
     /// A typed buffer read through a texture copy of its buffer, where the back end has no
     /// storage buffers (`TexelBufferAsTexture`).
     pub textured: bool,
@@ -142,15 +149,8 @@ struct Declared {
 /// program, in the token format of Microsoft's `d3d11TokenizedProgramFormat.hpp`.
 fn declarations(bytecode: &[u8]) -> Result<Vec<Declared>> {
     let bad = Error::InvalidArg("malformed DXBC program");
-    let (_, chunk) = chunks(bytecode)?
-        .into_iter()
-        .find(|(tag, _)| container::is_program(*tag))
-        .ok_or(bad)?;
-    let program = chunk
-        .contents()
-        .ok_or(Error::InvalidArg("not DXBC bytecode"))?;
     let mut found = Vec::new();
-    for instruction in container::instructions(program) {
+    for instruction in container::instructions(program(bytecode)?) {
         let instruction = instruction.map_err(|_| bad)?;
         let opcode = token::opcode(instruction.opcode_token());
         if matches!(opcode, DCL_RESOURCE | DCL_UAV_TYPED | DCL_CONSTANT_BUFFER) {
@@ -179,9 +179,32 @@ fn declarations(bytecode: &[u8]) -> Result<Vec<Declared>> {
     Ok(found)
 }
 
+/// Whether a DXBC container's program loads typed values from a storage view (`ld_uav_typed`).
+fn loads_typed_storage(bytecode: &[u8]) -> Result<bool> {
+    for instruction in container::instructions(program(bytecode)?) {
+        let instruction = instruction.map_err(|_| Error::InvalidArg("malformed DXBC program"))?;
+        if token::opcode(instruction.opcode_token()) == dxbc_op::LD_UAV_TYPED {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The program chunk of a DXBC container.
+fn program(bytecode: &[u8]) -> Result<&[u8]> {
+    let (_, chunk) = chunks(bytecode)?
+        .into_iter()
+        .find(|(tag, _)| container::is_program(*tag))
+        .ok_or(Error::InvalidArg("malformed DXBC program"))?;
+    chunk
+        .contents()
+        .ok_or(Error::InvalidArg("not DXBC bytecode"))
+}
+
 /// The typed views a DXBC container's program declares.
 pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
     let mut views = Vec::new();
+    let loads = loads_typed_storage(bytecode)?;
     for d in declarations(bytecode)? {
         let storage = match d.opcode {
             DCL_RESOURCE if d.dimension == dxbc_dimension::BUFFER => false,
@@ -199,7 +222,8 @@ pub fn typed_views(bytecode: &[u8]) -> Result<Vec<TypedView>> {
             register: d.register,
             buffer: d.dimension == dxbc_dimension::BUFFER,
             kind,
-            through: false,
+            through: None,
+            loaded: storage && loads,
             textured: false,
         });
     }
@@ -231,6 +255,142 @@ pub fn clip_distances(outputs: &[StageValue]) -> u8 {
         .filter(|v| v.system == Some(SystemValue::ClipDistance))
         .map(|v| v.mask.count_ones() as u8)
         .sum()
+}
+
+/// The locations of the user values among `values`, in order, each once.
+fn between_stages(values: &[StageValue]) -> Vec<u32> {
+    let mut at: Vec<u32> = values
+        .iter()
+        .filter(|v| v.system.is_none())
+        .map(|v| v.location)
+        .collect();
+    at.sort_unstable();
+    at.dedup();
+    at
+}
+
+/// Where a pixel program's `inputs` move (from, to) when one lies past the back end's `slots`
+/// inter-stage locations: the registers Direct3D numbers to 31, one of them the position, taken in
+/// order from location 0. Nothing moves otherwise; none when they are more than `slots`.
+pub fn input_moves(inputs: &[StageValue], slots: u32) -> Option<Vec<(u32, u32)>> {
+    let at = between_stages(inputs);
+    if at.last().is_none_or(|&l| l < slots) {
+        return Some(Vec::new());
+    }
+    if at.len() > slots as usize {
+        return None;
+    }
+    Some(at.into_iter().zip(0..).filter(|(f, t)| f != t).collect())
+}
+
+/// Where a vertex program's `outputs` move to meet the pixel program reading `inputs` (moved by
+/// [`input_moves`]): each value it reads where it reads it, each other at its own location when
+/// that is inside `slots` and free, or else at the first free one; none when they do not fit.
+pub fn output_moves(
+    outputs: &[StageValue],
+    inputs: &[StageValue],
+    slots: u32,
+) -> Option<Vec<(u32, u32)>> {
+    let read_moves = input_moves(inputs, slots)?;
+    let written = between_stages(outputs);
+    if read_moves.is_empty() && written.last().is_none_or(|&l| l < slots) {
+        return Some(Vec::new());
+    }
+    let read = between_stages(inputs);
+    let read_at = |l: u32| read_moves.iter().find(|m| m.0 == l).map_or(l, |m| m.1);
+    let mut taken: Vec<u32> = read.iter().map(|&l| read_at(l)).collect();
+    let mut moves = Vec::new();
+    for l in written {
+        let to = if read.contains(&l) {
+            read_at(l)
+        } else if l < slots && !taken.contains(&l) {
+            l
+        } else {
+            (0..slots).find(|t| !taken.contains(t))?
+        };
+        taken.push(to);
+        if to != l {
+            moves.push((l, to));
+        }
+    }
+    Some(moves)
+}
+
+/// Moves the values `c`'s program passes between stages (a vertex program's outputs, a pixel
+/// program's inputs) from and to the locations `moves` names, in its module and its reflection.
+/// The module's content key becomes one of its key and the moves.
+pub fn relocate(c: &mut Converted, moves: &[(u32, u32)]) -> Result<()> {
+    use naga::{Binding, TypeInner};
+    if moves.is_empty() {
+        return Ok(());
+    }
+    let to = |l: u32| moves.iter().find(|m| m.0 == l).map_or(l, |m| m.1);
+    let shift = |b: &mut Binding| {
+        if let Binding::Location { location, .. } = b {
+            *location = to(*location);
+        }
+    };
+    let unmovable = Error::NotImplemented("stage values moved in a program of no such values");
+    let m = c.modules.last_mut().ok_or(unmovable)?;
+    let module = &mut m.module;
+    let ep = module
+        .entry_points
+        .iter_mut()
+        .find(|e| e.name == m.entry_point)
+        .ok_or(unmovable)?;
+    let mut structs = Vec::new();
+    let mut each = |binding: &mut Option<Binding>, ty| match binding {
+        Some(b) => shift(b),
+        None => structs.push(ty),
+    };
+    match ep.stage {
+        naga::ShaderStage::Vertex => {
+            if let Some(r) = ep.function.result.as_mut() {
+                each(&mut r.binding, r.ty);
+            }
+        }
+        naga::ShaderStage::Fragment => {
+            for a in &mut ep.function.arguments {
+                each(&mut a.binding, a.ty);
+            }
+        }
+        _ => return Err(unmovable),
+    }
+    for ty in structs {
+        let mut t = module.types[ty].clone();
+        if let TypeInner::Struct { members, .. } = &mut t.inner {
+            members
+                .iter_mut()
+                .filter_map(|m| m.binding.as_mut())
+                .for_each(shift);
+        }
+        if t != module.types[ty] {
+            if module.types.get(&t).is_some() {
+                return not_implemented(MOVED_ONTO_A_TYPE);
+            }
+            module.types.replace(ty, t);
+        }
+    }
+    m.info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        wcontainers_shaders::capabilities(module),
+    )
+    .validate(module)
+    .or_else(|_| not_implemented(MOVED_INVALID))?;
+    let mut key = blake3::Hasher::new();
+    key.update(&m.key);
+    for (from, to) in moves {
+        key.update(&from.to_le_bytes()).update(&to.to_le_bytes());
+    }
+    m.key = *key.finalize().as_bytes();
+    let values = match m.stage {
+        ShaderStage::Vertex => &mut c.reflection.outputs,
+        _ => &mut c.reflection.inputs,
+    };
+    for v in values.iter_mut().filter(|v| v.system.is_none()) {
+        v.location = to(v.location);
+    }
+    Ok(())
 }
 
 /// The constant buffer slots a DXBC container's program indexes at run time, a bit each.
@@ -666,11 +826,14 @@ pub fn convert(
             &variant.key(expected, typed, layered, &[]),
         )? {
             Err(ConvertError::Unsupported("SampleCount")) if !samples => samples = true,
-            Err(ConvertError::Unsupported("StorageImageAtomics"))
-                if typed.iter().any(|t| t.storage && !t.buffer && !t.through) =>
+            Err(ConvertError::Unsupported(why))
+                if why == wcontainers_shaders::refusal::STORAGE_IMAGE_ATOMICS
+                    && typed
+                        .iter()
+                        .any(|t| t.storage && !t.buffer && t.through.is_none()) =>
             {
                 for t in typed.iter_mut().filter(|t| t.storage && !t.buffer) {
-                    t.through = true;
+                    t.through = Some(SlowPath::AtomicsThroughBuffer);
                 }
             }
             r => return Ok((answer(r, 1)?, samples)),
@@ -730,7 +893,7 @@ pub fn base_key(stage: SourceStage, typed: &[TypedView], layered: u128) -> Varia
         },
         texels_through_buffer: typed
             .iter()
-            .filter(|t| t.through && t.register < 64)
+            .filter(|t| t.through.is_some() && t.register < 64)
             .fold(0, |m, t| m | 1 << t.register),
         texture_layers: (0..128)
             .filter(|i| layered & (1 << i) != 0)
@@ -963,6 +1126,57 @@ fn refusal<T>(e: ConvertError) -> Result<T> {
 mod tests {
     use super::*;
 
+    /// Values at `locations`, with a position at register 0.
+    fn values(locations: impl IntoIterator<Item = u32>) -> Vec<StageValue> {
+        let value = |location, system| StageValue {
+            semantic: String::new(),
+            semantic_index: 0,
+            register: location,
+            mask: 0xf,
+            scalar: wcontainers_gpu::ScalarKind::Float,
+            interpolation: wcontainers_gpu::Interpolation::Perspective,
+            system,
+            location,
+            component: 0,
+            stream: 0,
+        };
+        let mut v = vec![value(0, Some(SystemValue::Position))];
+        v.extend(locations.into_iter().map(|l| value(l, None)));
+        v
+    }
+
+    #[test]
+    fn stage_values_past_the_locations_move_into_free_ones_both_stages_agree_on() {
+        // 31 values beside the position: registers 1 to 31 onto locations 0 to 30.
+        let all = values(1..32);
+        let read = input_moves(&all, 31);
+        assert_eq!(read, Some((1..32).map(|r| (r, r - 1)).collect()));
+        assert_eq!(output_moves(&all, &all, 31), read);
+        // Within the locations nothing moves.
+        assert_eq!(input_moves(&values(1..31), 31), Some(Vec::new()));
+        assert_eq!(
+            output_moves(&values(1..31), &values(1..31), 31),
+            Some(Vec::new())
+        );
+        // A pixel shader reading two of them: those keep their places, the vertex shader's value
+        // at 31 takes the first free location.
+        let written = values([1, 2, 31]);
+        let some = values([1, 2]);
+        assert_eq!(output_moves(&written, &some, 31), Some(vec![(31, 0)]));
+        // The pixel shader reading the one past: its inputs from 0, the vertex shader's others
+        // after them.
+        let last = values([5, 31]);
+        assert_eq!(input_moves(&last, 31), Some(vec![(5, 0), (31, 1)]));
+        assert_eq!(
+            output_moves(&values([3, 5, 31]), &last, 31),
+            Some(vec![(5, 0), (31, 1)])
+        );
+        // More than the locations hold, read or only written: refused.
+        assert_eq!(input_moves(&values(0..32), 31), None);
+        assert_eq!(output_moves(&values(0..32), &values(0..32), 31), None);
+        assert_eq!(output_moves(&values(0..32), &values([1]), 31), None);
+    }
+
     /// A container holding one program chunk of `tokens`.
     fn container(tokens: &[u32]) -> Vec<u8> {
         let mut code = b"DXBC".to_vec();
@@ -1012,7 +1226,8 @@ mod tests {
                     register: 2,
                     buffer: false,
                     kind: FormatKind::Uint,
-                    through: false,
+                    through: None,
+                    loaded: false,
                     textured: false,
                 },
                 TypedView {
@@ -1020,7 +1235,8 @@ mod tests {
                     register: 1,
                     buffer: true,
                     kind: FormatKind::Float,
-                    through: false,
+                    through: None,
+                    loaded: false,
                     textured: false,
                 },
             ]

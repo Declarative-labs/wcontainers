@@ -12,7 +12,7 @@ pub use routes::*;
 
 /// What the suite needs of a back end beyond the interface.
 pub trait Host {
-    type Backend: Backend;
+    type Backend: Gpu;
     /// A new device.
     fn make() -> Self::Backend;
     /// A window to present into, as the host's graphics hook names it.
@@ -93,12 +93,12 @@ fn pattern(len: usize, seed: u8) -> Vec<u8> {
         .collect()
 }
 
-fn ok<B: Backend>(b: &mut B) {
+fn ok<B: Gpu>(b: &mut B) {
     assert_eq!(b.status(), DeviceStatus::Ok, "the device was lost");
 }
 
-fn needs<B: Backend>(b: &B, format: Format, uses: FormatUse) {
-    let has = b.caps().formats.get(format);
+fn needs<B: Gpu>(b: &B, format: Format, uses: FormatUse) {
+    let has = b.caps().formats.uses[format as usize];
     assert!(
         has.contains(uses),
         "{format:?} lacks {:?}, which every back end has",
@@ -106,7 +106,7 @@ fn needs<B: Backend>(b: &B, format: Format, uses: FormatUse) {
     );
 }
 
-fn buffer<B: Backend>(b: &mut B, size: u64, usage: BufferUsage) -> B::Buffer {
+fn buffer<B: Gpu>(b: &mut B, size: u64, usage: BufferUsage) -> B::Buffer {
     b.create_buffer(&BufferDesc {
         size,
         usage,
@@ -115,7 +115,7 @@ fn buffer<B: Backend>(b: &mut B, size: u64, usage: BufferUsage) -> B::Buffer {
     .expect("create_buffer")
 }
 
-fn texture<B: Backend>(
+fn texture<B: Gpu>(
     b: &mut B,
     format: Format,
     size: (u32, u32),
@@ -139,7 +139,7 @@ fn texture<B: Backend>(
 }
 
 /// A 2D view of one level and one layer.
-fn view<B: Backend>(b: &mut B, texture: &B::Texture, format: Format) -> B::TextureView {
+fn view<B: Gpu>(b: &mut B, texture: &B::Texture, format: Format) -> B::TextureView {
     b.create_view(
         texture,
         &TextureViewDesc {
@@ -155,7 +155,7 @@ fn view<B: Backend>(b: &mut B, texture: &B::Texture, format: Format) -> B::Textu
     .expect("create_view")
 }
 
-fn region<B: Backend>(
+fn region<B: Gpu>(
     texture: &B::Texture,
     mip: u32,
     layer: u32,
@@ -180,7 +180,7 @@ fn extent(width: u32, height: u32, layers: u32) -> Extent {
 }
 
 /// Reads back later: records the read, submits, waits and copies the answer out.
-fn read<B: Backend>(b: &mut B, src: &ReadSource<'_, B>, len: usize) -> Vec<u8> {
+fn read<B: Gpu>(b: &mut B, src: &ReadSource<'_, B>, len: usize) -> Vec<u8> {
     let rb = b.read_back(src).expect("read_back");
     b.submit();
     b.wait_read(&rb);
@@ -194,7 +194,7 @@ fn read<B: Backend>(b: &mut B, src: &ReadSource<'_, B>, len: usize) -> Vec<u8> {
     out
 }
 
-fn read_buffer<B: Backend>(b: &mut B, buffer: &B::Buffer, offset: u64, size: u64) -> Vec<u8> {
+fn read_buffer<B: Gpu>(b: &mut B, buffer: &B::Buffer, offset: u64, size: u64) -> Vec<u8> {
     read(
         b,
         &ReadSource::Buffer {
@@ -206,7 +206,7 @@ fn read_buffer<B: Backend>(b: &mut B, buffer: &B::Buffer, offset: u64, size: u64
     )
 }
 
-fn read_texture<B: Backend>(
+fn read_texture<B: Gpu>(
     b: &mut B,
     region: TextureRegion<'_, B>,
     e: Extent,
@@ -216,7 +216,7 @@ fn read_texture<B: Backend>(
     read(b, &ReadSource::Texture { region, extent: e }, len)
 }
 
-fn shader<B: Backend>(b: &mut B, source: &str, entry: &str, stage: ShaderStage) -> B::Shader {
+fn shader<B: Gpu>(b: &mut B, source: &str, entry: &str, stage: ShaderStage) -> B::Shader {
     let module = naga::front::wgsl::parse_str(source).expect("test program parses");
     // Programs reading the sample index run only where the back end declares `SAMPLE_SHADING`.
     let info = naga::valid::Validator::new(
@@ -238,7 +238,7 @@ fn shader<B: Backend>(b: &mut B, source: &str, entry: &str, stage: ShaderStage) 
     .expect("create_shader")
 }
 
-fn program<B: Backend>(b: &mut B, source: &str, vs: &str, fs: &str) -> B::Program {
+fn program<B: Gpu>(b: &mut B, source: &str, vs: &str, fs: &str) -> B::Program {
     let v = shader(b, source, vs, ShaderStage::Vertex);
     let f = shader(b, source, fs, ShaderStage::Fragment);
     let p = b
@@ -263,7 +263,7 @@ fn opaque() -> RenderTargetBlend {
     }
 }
 
-fn blend<B: Backend>(b: &mut B, target: RenderTargetBlend) -> B::Blend {
+fn blend<B: Gpu>(b: &mut B, target: RenderTargetBlend) -> B::Blend {
     b.create_blend(&BlendDesc {
         targets: [target; MAX_COLOR_TARGETS],
         same_for_all: true,
@@ -273,7 +273,7 @@ fn blend<B: Backend>(b: &mut B, target: RenderTargetBlend) -> B::Blend {
     .expect("create_blend")
 }
 
-fn depth_test<B: Backend>(b: &mut B, compare: Option<CompareFn>, write: bool) -> B::DepthStencil {
+fn depth_test<B: Gpu>(b: &mut B, compare: Option<CompareFn>, write: bool) -> B::DepthStencil {
     b.create_depth_stencil(&DepthStencilDesc {
         depth_compare: compare,
         depth_write: write,
@@ -285,7 +285,7 @@ fn depth_test<B: Backend>(b: &mut B, compare: Option<CompareFn>, write: bool) ->
     .expect("create_depth_stencil")
 }
 
-fn raster<B: Backend>(b: &mut B, cull: CullMode) -> B::Raster {
+fn raster<B: Gpu>(b: &mut B, cull: CullMode) -> B::Raster {
     b.create_raster(&RasterDesc {
         fill: FillMode::Solid,
         cull,
@@ -304,7 +304,7 @@ fn raster<B: Backend>(b: &mut B, cull: CullMode) -> B::Raster {
 }
 
 /// A layout of one stream of `vec2<f32>` positions at location 0.
-fn positions<B: Backend>(b: &mut B) -> B::VertexLayout {
+fn positions<B: Gpu>(b: &mut B) -> B::VertexLayout {
     let mut desc = VertexLayoutDesc {
         streams: [None; MAX_VERTEX_STREAMS],
         attributes: [None; MAX_VERTEX_STREAMS],
@@ -337,7 +337,7 @@ fn floats(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|f| f.to_le_bytes()).collect()
 }
 
-fn color_pass<'a, B: Backend>(view: &'a B::TextureView, load: LoadOp<[u32; 4]>) -> PassDesc<'a, B> {
+fn color_pass<'a, B: Gpu>(view: &'a B::TextureView, load: LoadOp<[u32; 4]>) -> PassDesc<'a, B> {
     let mut pass = PassDesc {
         colors: Default::default(),
         depth: None,
@@ -1085,7 +1085,7 @@ pub fn present_shows_the_frame<H: Host>() {
 
 /// Draws `count` vertices from `first` of `vb` with fixed state into an `n` by `n` viewport.
 #[allow(clippy::too_many_arguments)]
-fn draw<B: Backend>(
+fn draw<B: Gpu>(
     b: &mut B,
     program: &B::Program,
     blend: &B::Blend,
@@ -1129,7 +1129,7 @@ fn draw<B: Backend>(
 }
 
 /// A layout of one stream of a `vec2<f32>` position at location 0 and one `f32` at location 1.
-fn positions_and_values<B: Backend>(b: &mut B) -> B::VertexLayout {
+fn positions_and_values<B: Gpu>(b: &mut B) -> B::VertexLayout {
     let mut desc = VertexLayoutDesc {
         streams: [None; MAX_VERTEX_STREAMS],
         attributes: [None; MAX_VERTEX_STREAMS],
@@ -1153,7 +1153,7 @@ fn positions_and_values<B: Backend>(b: &mut B) -> B::VertexLayout {
     b.create_vertex_layout(&desc).expect("create_vertex_layout")
 }
 
-fn raster_with<B: Backend>(b: &mut B, provoking: ProvokingVertex) -> B::Raster {
+fn raster_with<B: Gpu>(b: &mut B, provoking: ProvokingVertex) -> B::Raster {
     b.create_raster(&RasterDesc {
         fill: FillMode::Solid,
         cull: CullMode::None,
@@ -1172,7 +1172,7 @@ fn raster_with<B: Backend>(b: &mut B, provoking: ProvokingVertex) -> B::Raster {
 }
 
 /// An `n` by `n` `rgba8unorm` target that can be read back, and its view.
-fn rgba8_target<B: Backend>(b: &mut B, n: u32) -> (B::Texture, B::TextureView) {
+fn rgba8_target<B: Gpu>(b: &mut B, n: u32) -> (B::Texture, B::TextureView) {
     needs(
         b,
         Format::Rgba8Unorm,
@@ -1191,17 +1191,14 @@ fn rgba8_target<B: Backend>(b: &mut B, n: u32) -> (B::Texture, B::TextureView) {
 }
 
 /// An `n` by `n` `depth32float` target and its view, cleared to 1 by the pass that uses it.
-fn depth_target<B: Backend>(b: &mut B, n: u32) -> (B::Texture, B::TextureView) {
+fn depth_target<B: Gpu>(b: &mut B, n: u32) -> (B::Texture, B::TextureView) {
     needs(b, Format::Depth32Float, FormatUse::DEPTH_STENCIL);
     let t = texture(b, Format::Depth32Float, (n, n), 1, 1, TextureUsage::RENDER);
     let v = view(b, &t, Format::Depth32Float);
     (t, v)
 }
 
-fn with_depth<'a, B: Backend>(
-    mut pass: PassDesc<'a, B>,
-    depth: &'a B::TextureView,
-) -> PassDesc<'a, B> {
+fn with_depth<'a, B: Gpu>(mut pass: PassDesc<'a, B>, depth: &'a B::TextureView) -> PassDesc<'a, B> {
     pass.depth = Some(DepthAttachment {
         view: depth,
         depth: Some(AspectOps {

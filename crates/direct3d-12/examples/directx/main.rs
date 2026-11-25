@@ -32,7 +32,7 @@ use wcontainers_direct3d_12::features;
 use wcontainers_direct3d_12::root::{
     DescriptorRange, RootParameter, RootParameterKind, RootSignatureDesc, StaticSampler, serialize,
 };
-use wcontainers_gpu::Backend;
+use wcontainers_gpu::Gpu;
 use windows::Win32::Foundation::{E_INVALIDARG, E_NOINTERFACE, E_POINTER, S_FALSE, S_OK};
 use windows::Win32::Graphics::Direct3D::{
     D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_12_0,
@@ -185,7 +185,23 @@ pub unsafe extern "system" fn wc_D3D12CreateDevice(
     {
         return E_INVALIDARG;
     }
-    let level = gpu::call(|d| features::feature_level(d.backend().caps()));
+    let level = gpu::call(|d| {
+        let caps = d.backend().caps();
+        if !features::has_abilities_of_11_0(caps) {
+            eprintln!(
+                "wcontainers: no feature level 11_0 device: the back end lacks one of its \
+                 abilities (compute, storage writes in pixel shaders, its sizes, 32 input slots \
+                 and stage registers, D32_FLOAT_S8X24_UINT targets, its raster and blend state)"
+            );
+        }
+        for (format, lacks) in features::unmet_format_requirements(caps) {
+            eprintln!(
+                "wcontainers: no feature level 11_0 device: format {format} lacks {lacks:x?} \
+                 (both words, sample counts) of Microsoft's 11_0 table"
+            );
+        }
+        features::feature_level(caps)
+    });
     match level {
         Some(l) if l >= minimum_level as u32 => {}
         _ => return DXGI_ERROR_UNSUPPORTED,

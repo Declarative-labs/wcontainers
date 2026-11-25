@@ -8,9 +8,11 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::vec::Vec;
 use naga::{Module, ScalarKind, TypeInner};
+use rspirv::binary::Assemble;
+use rspirv::dr::{self, Instruction, Operand};
 use spirv::{GlslStd450Op as GLOp, Op, StorageClass};
 
-use super::words;
+use super::staged::{self, Ids, id, literal};
 use crate::ConvertError;
 
 /// The bits of the narrow integers, and the mask keeping them.
@@ -93,27 +95,6 @@ const KEEP: [Op; 35] = [
     Op::FunctionEnd,
     Op::Undef,
 ];
-/// Instructions of a function's body with no result type (their first operand is no type).
-const NO_RESULT_TYPE: [Op; 18] = [
-    Op::Label,
-    Op::Store,
-    Op::Branch,
-    Op::BranchConditional,
-    Op::Switch,
-    Op::SelectionMerge,
-    Op::LoopMerge,
-    Op::Return,
-    Op::ReturnValue,
-    Op::Kill,
-    Op::Unreachable,
-    Op::DemoteToHelperInvocation,
-    Op::ControlBarrier,
-    Op::MemoryBarrier,
-    Op::ImageWrite,
-    Op::AtomicStore,
-    Op::Line,
-    Op::NoLine,
-];
 /// Control flow, which takes a 16-bit selector's bits as they are.
 const CONTROL: [Op; 11] = [
     Op::Label,
@@ -128,6 +109,8 @@ const CONTROL: [Op; 11] = [
     Op::Line,
     Op::NoLine,
 ];
+/// The name the GLSL.std.450 extended instruction set is imported by.
+const GLSL_STD_450: &str = "GLSL.std.450";
 /// GLSL.std.450 instructions reading their operands as signed.
 const GLSL_SIGNED: [GLOp; 6] = [
     GLOp::SAbs,
@@ -156,38 +139,18 @@ fn unlisted(op: Op) -> ConvertError {
     ConvertError::Reader(format!("{op:?} on 16-bit integers"))
 }
 
-/// An instruction: its opcode and its operand words.
-struct Instruction {
-    op: u32,
-    operands: Vec<u32>,
-}
-
-impl Instruction {
-    fn new(op: Op, operands: Vec<u32>) -> Self {
-        Self {
-            op: op as u32,
-            operands,
-        }
-    }
-}
-
-/// The instructions of `spirv` after its header, or `None` where a word count runs past its end.
-fn parse(spirv: &[u32]) -> Option<Vec<Instruction>> {
-    let mut list = Vec::new();
-    let mut at = words::HEADER;
-    while at < spirv.len() {
-        let count = (spirv[at] >> words::COUNT_SHIFT) as usize;
-        if count == 0 || at + count > spirv.len() {
-            return None;
-        }
-        list.push(Instruction {
-            op: spirv[at] & words::OPCODE_MASK,
-            operands: spirv[at + 1..at + count].to_vec(),
-        });
-        at += count;
-    }
-    Some(list)
-}
+/// `OpTypeInt`'s and `OpTypeFloat`'s width, `OpTypeVector`'s component type and count, and the
+/// element of an array or matrix type.
+const WIDTH: usize = 0;
+const VECTOR_COMPONENT: usize = 0;
+const VECTOR_COUNT: usize = 1;
+const ELEMENT: usize = 0;
+/// `OpMemberDecorate`'s decoration, after its target and member.
+const MEMBER_DECORATION: usize = 2;
+/// `OpExtInst`'s set and instruction, then its arguments.
+const EXT_SET: usize = 0;
+const EXT_INSTRUCTION: usize = 1;
+const EXT_ARGUMENTS: usize = 2;
 
 /// The constants a narrow type needs: its mask and its shift by the narrow width.
 #[derive(Clone, Copy)]
@@ -197,25 +160,24 @@ struct Narrow {
 }
 
 /// The name of the 64-bit type `spirv` declares, if any.
-fn double_width(spirv: &[u32]) -> Option<&'static str> {
-    let list = parse(spirv)?;
-    list.iter().find_map(|i| match Op::from_u32(i.op) {
-        Some(Op::TypeInt) if i.operands.get(1) == Some(&DOUBLE_BITS) => Some("Int64"),
-        Some(Op::TypeFloat) if i.operands.get(1) == Some(&DOUBLE_BITS) => {
-            Some(crate::refusal::FLOAT_64)
+fn double_width(spirv: &dr::Module) -> Option<&'static str> {
+    spirv.types_global_values.iter().find_map(|i| {
+        match (i.class.opcode, literal(i, WIDTH) == Some(DOUBLE_BITS)) {
+            (Op::TypeInt, true) => Some("Int64"),
+            (Op::TypeFloat, true) => Some(crate::refusal::FLOAT_64),
+            _ => None,
         }
-        _ => None,
     })
 }
 
 /// Reads `spirv` with naga's reader, refusing a module with 64-bit types by name: where the reader
 /// fails on them, and where the module keeps them (WebGPU has neither).
 pub(crate) fn read(
-    spirv: &[u32],
+    spirv: &dr::Module,
     options: &naga::front::spv::Options,
 ) -> Result<Module, ConvertError> {
     let double = double_width(spirv);
-    let module = naga::front::spv::Frontend::new(spirv.iter().copied(), options)
+    let module = naga::front::spv::Frontend::new(spirv.assemble().into_iter(), options)
         .parse()
         .map_err(|e| match double {
             Some(name) => ConvertError::Unsupported(name),
@@ -238,75 +200,90 @@ pub(crate) fn read(
     Ok(module)
 }
 
+/// A 32-bit constant of type `ty`.
+fn constant(ty: u32, id: u32, value: u32) -> Instruction {
+    let value = alloc::vec![Operand::LiteralBit32(value)];
+    Instruction::new(Op::Constant, Some(ty), Some(id), value)
+}
+
+/// An instruction of type `ty` on the ids `operands`.
+fn on_ids(op: Op, ty: u32, id: u32, operands: &[u32]) -> Instruction {
+    let operands = operands.iter().map(|&o| Operand::IdRef(o)).collect();
+    Instruction::new(op, Some(ty), Some(id), operands)
+}
+
 /// Makes every 16-bit integer of `spirv` a 32-bit one holding the same bits (see the module's text).
 /// A 16-bit integer in memory with a layout (a buffer's member), between stages, or under an
 /// instruction not listed here is refused by name.
-pub(crate) fn widen(spirv: &mut Vec<u32>) -> Result<(), ConvertError> {
-    let Some(list) = parse(spirv) else {
-        return Ok(());
-    };
+pub(crate) fn widen(spirv: &mut dr::Module) -> Result<(), ConvertError> {
     let narrow_scalar =
-        |i: &Instruction| i.op == Op::TypeInt as u32 && i.operands.get(1) == Some(&NARROW_BITS);
-    if !list.iter().any(narrow_scalar) {
+        |i: &Instruction| i.class.opcode == Op::TypeInt && literal(i, WIDTH) == Some(NARROW_BITS);
+    if !spirv.types_global_values.iter().any(narrow_scalar) {
         return Ok(());
     }
-    let mut bound = spirv[words::BOUND];
-    let mut next = || {
-        bound += 1;
-        bound - 1
-    };
+    let mut ids = Ids::of(spirv);
 
     // The narrow scalar and vector types, the types holding them, and the GLSL.std.450 set.
     let mut narrow: BTreeMap<u32, Narrow> = BTreeMap::new();
     let mut holding: BTreeSet<u32> = BTreeSet::new();
-    let mut glsl = None;
-    let mut laid_out = Vec::new();
-    for i in &list {
-        let w = &i.operands;
-        match Op::from_u32(i.op) {
-            Some(Op::TypeInt) if narrow_scalar(i) => {
-                let n = Narrow {
-                    mask: next(),
-                    shift: next(),
-                };
-                narrow.insert(w[0], n);
-                holding.insert(w[0]);
-            }
-            Some(Op::TypeVector) if narrow.contains_key(&w[1]) => {
-                let n = Narrow {
-                    mask: next(),
-                    shift: next(),
-                };
-                narrow.insert(w[0], n);
-                holding.insert(w[0]);
-            }
-            Some(Op::TypeArray | Op::TypeRuntimeArray | Op::TypeMatrix)
-                if holding.contains(&w[1]) =>
+    let glsl = spirv
+        .ext_inst_imports
+        .iter()
+        .find(|i| i.operands.first() == Some(&Operand::LiteralString(GLSL_STD_450.into())))
+        .and_then(|i| i.result_id);
+    let laid_out = spirv
+        .annotations
+        .iter()
+        .filter_map(|i| match i.class.opcode {
+            Op::MemberDecorate
+                if i.operands.get(MEMBER_DECORATION)
+                    == Some(&Operand::Decoration(spirv::Decoration::Offset)) =>
             {
-                holding.insert(w[0]);
+                id(i, 0)
             }
-            Some(Op::TypeStruct) if w[1..].iter().any(|m| holding.contains(m)) => {
-                holding.insert(w[0]);
+            _ if staged::decorates(i, spirv::Decoration::ArrayStride) => id(i, 0),
+            _ => None,
+        });
+    let laid_out: Vec<u32> = laid_out.collect();
+    for i in &spirv.types_global_values {
+        let Some(result) = i.result_id else {
+            continue;
+        };
+        let held = |n: usize| id(i, n).is_some_and(|t| holding.contains(&t));
+        match i.class.opcode {
+            Op::TypeInt if narrow_scalar(i) => {
+                let n = Narrow {
+                    mask: ids.next(),
+                    shift: ids.next(),
+                };
+                narrow.insert(result, n);
+                holding.insert(result);
             }
-            Some(Op::TypePointer) if holding.contains(&w[2]) => {
-                holding.insert(w[0]);
+            Op::TypeVector if id(i, VECTOR_COMPONENT).is_some_and(|c| narrow.contains_key(&c)) => {
+                let n = Narrow {
+                    mask: ids.next(),
+                    shift: ids.next(),
+                };
+                narrow.insert(result, n);
+                holding.insert(result);
             }
-            Some(Op::ExtInstImport) => {
-                let name: Vec<u8> = w[1..].iter().flat_map(|x| x.to_le_bytes()).collect();
-                if name.starts_with(b"GLSL.std.450\0") {
-                    glsl = Some(w[0]);
-                }
+            Op::TypeArray | Op::TypeRuntimeArray | Op::TypeMatrix if held(ELEMENT) => {
+                holding.insert(result);
             }
-            Some(Op::MemberDecorate) if w.get(2) == Some(&(spirv::Decoration::Offset as u32)) => {
-                laid_out.push(w[0]);
+            Op::TypeStruct if (0..i.operands.len()).any(held) => {
+                holding.insert(result);
             }
-            Some(Op::Decorate) if w.get(1) == Some(&(spirv::Decoration::ArrayStride as u32)) => {
-                laid_out.push(w[0]);
+            Op::TypePointer if held(staged::POINTEE) => {
+                holding.insert(result);
             }
-            Some(Op::Variable)
-                if holding.contains(&w[0])
-                    && [StorageClass::Input as u32, StorageClass::Output as u32]
-                        .contains(&w[2]) =>
+            Op::Variable
+                if i.result_type.is_some_and(|t| holding.contains(&t))
+                    && matches!(
+                        i.operands.get(staged::STORAGE_CLASS),
+                        Some(Operand::StorageClass(
+                            StorageClass::Input | StorageClass::Output
+                        ))
+                    ) =>
             {
                 return Err(ConvertError::Unsupported(
                     crate::refusal::INT_16_STAGE_VALUE,
@@ -320,182 +297,134 @@ pub(crate) fn widen(spirv: &mut Vec<u32>) -> Result<(), ConvertError> {
     }
 
     // Each value's type.
-    let mut types: BTreeMap<u32, u32> = BTreeMap::new();
-    let mut in_function = false;
-    for i in &list {
-        let Some(op) = Op::from_u32(i.op) else {
-            continue;
-        };
-        match op {
-            Op::Function => in_function = true,
-            Op::FunctionEnd => in_function = false,
-            _ => {}
-        }
-        let typed = matches!(
-            op,
-            Op::Constant
-                | Op::ConstantComposite
-                | Op::ConstantNull
-                | Op::SpecConstant
-                | Op::SpecConstantComposite
-                | Op::Variable
-                | Op::Undef
-                | Op::Function
-                | Op::FunctionParameter
-        ) || (in_function && !NO_RESULT_TYPE.contains(&op) && op != Op::FunctionEnd);
-        if typed && i.operands.len() >= 2 {
-            types.insert(i.operands[1], i.operands[0]);
-        }
-    }
+    let types: BTreeMap<u32, u32> = spirv
+        .all_inst_iter()
+        .filter_map(|i| Some((i.result_id?, i.result_type?)))
+        .collect();
     let is_narrow = |id: u32| types.get(&id).is_some_and(|t| narrow.contains_key(t));
 
-    let mut out: Vec<Instruction> = Vec::with_capacity(list.len());
-    let mut in_function = false;
-    for mut i in list {
-        let Some(op) = Op::from_u32(i.op) else {
-            out.push(i);
-            continue;
-        };
-        match op {
-            Op::Function => in_function = true,
-            Op::FunctionEnd => in_function = false,
-            _ => {}
-        }
-        if !in_function {
-            match op {
-                Op::Capability
-                    if i.operands.first() == Some(&(spirv::Capability::Int16 as u32)) =>
-                {
-                    continue;
+    spirv
+        .capabilities
+        .retain(|c| c.operands.first() != Some(&Operand::Capability(spirv::Capability::Int16)));
+    let mut globals = Vec::with_capacity(spirv.types_global_values.len());
+    for mut i in core::mem::take(&mut spirv.types_global_values) {
+        let narrowed = |t: Option<u32>| t.and_then(|t| narrow.get(&t).copied().map(|n| (t, n)));
+        match i.class.opcode {
+            Op::TypeInt if narrow_scalar(&i) => {
+                let n = narrowed(i.result_id);
+                i.operands[WIDTH] = Operand::LiteralBit32(WIDE_BITS);
+                globals.push(i);
+                if let Some((id, n)) = n {
+                    globals.push(constant(id, n.mask, NARROW_MASK));
+                    globals.push(constant(id, n.shift, NARROW_BITS));
                 }
-                Op::TypeInt if narrow_scalar(&i) => {
-                    let id = i.operands[0];
-                    i.operands[1] = WIDE_BITS;
-                    out.push(i);
-                    let n = narrow[&id];
-                    out.push(Instruction::new(
-                        Op::Constant,
-                        alloc::vec![id, n.mask, NARROW_MASK],
-                    ));
-                    out.push(Instruction::new(
-                        Op::Constant,
-                        alloc::vec![id, n.shift, NARROW_BITS],
-                    ));
-                }
-                Op::TypeVector if narrow.contains_key(&i.operands[0]) => {
-                    let (id, component, count) = (i.operands[0], i.operands[1], i.operands[2]);
-                    out.push(i);
-                    let (n, c) = (narrow[&id], narrow[&component]);
+            }
+            Op::TypeVector => {
+                let vector = narrowed(i.result_id);
+                let component = narrowed(id(&i, VECTOR_COMPONENT));
+                let count = literal(&i, VECTOR_COUNT).unwrap_or(0) as usize;
+                globals.push(i);
+                if let (Some((id, n)), Some((_, c))) = (vector, component) {
                     let splat = |of: u32, v: u32| {
-                        let mut w = alloc::vec![id, of];
-                        w.extend(core::iter::repeat_n(v, count as usize));
-                        Instruction::new(Op::ConstantComposite, w)
+                        let operands = alloc::vec![Operand::IdRef(v); count];
+                        Instruction::new(Op::ConstantComposite, Some(id), Some(of), operands)
                     };
-                    out.push(splat(n.mask, c.mask));
-                    out.push(splat(n.shift, c.shift));
+                    globals.push(splat(n.mask, c.mask));
+                    globals.push(splat(n.shift, c.shift));
                 }
-                Op::Constant | Op::SpecConstant if narrow.contains_key(&i.operands[0]) => {
-                    if let Some(value) = i.operands.get_mut(2) {
-                        *value &= NARROW_MASK;
+            }
+            Op::Constant | Op::SpecConstant if narrowed(i.result_type).is_some() => {
+                if let Some(Operand::LiteralBit32(value)) = i.operands.first_mut() {
+                    *value &= NARROW_MASK;
+                }
+                globals.push(i);
+            }
+            _ => globals.push(i),
+        }
+    }
+    spirv.types_global_values = globals;
+
+    for block in spirv.functions.iter_mut().flat_map(|f| &mut f.blocks) {
+        let mut out = Vec::with_capacity(block.instructions.len());
+        for mut i in core::mem::take(&mut block.instructions) {
+            let op = i.class.opcode;
+            let result = i.result_type.zip(i.result_id);
+            let narrow_result = result.is_some_and(|(t, _)| narrow.contains_key(&t));
+            let ids_at = |i: &Instruction, at: core::ops::Range<usize>| {
+                at.filter_map(|a| id(i, a)).any(is_narrow)
+            };
+            // The operand positions read as signed, and whether the result is masked.
+            let (signed, carry): (Vec<usize>, bool) =
+                if op == Op::ExtInst && glsl.is_some() && id(&i, EXT_SET) == glsl {
+                    let code = match i.operands.get(EXT_INSTRUCTION) {
+                        Some(&Operand::LiteralExtInstInteger(c)) => GLOp::from_u32(c),
+                        _ => None,
+                    };
+                    let Some(code) = code else {
+                        return Err(unlisted(op));
+                    };
+                    let args = EXT_ARGUMENTS..i.operands.len();
+                    let touches = narrow_result || ids_at(&i, args.clone());
+                    if !touches {
+                        (Vec::new(), false)
+                    } else if GLSL_SIGNED.contains(&code) {
+                        (args.collect(), GLSL_CARRY.contains(&code))
+                    } else if GLSL_CARRY.contains(&code) {
+                        (Vec::new(), true)
+                    } else if GLSL_KEEP.contains(&code) {
+                        (Vec::new(), false)
+                    } else {
+                        return Err(ConvertError::Reader(format!("{code:?} on 16-bit integers")));
                     }
+                } else if op == Op::Bitcast {
+                    if ids_at(&i, 0..1) != narrow_result {
+                        return Err(ConvertError::Unsupported(crate::refusal::INT_16_BITCAST));
+                    }
+                    (Vec::new(), false)
+                } else if SIGNED.contains(&op) {
+                    ((0..i.operands.len()).collect(), CARRY.contains(&op))
+                } else if SIGNED_BASE.contains(&op) {
+                    (alloc::vec![0], true)
+                } else if CARRY.contains(&op) {
+                    (Vec::new(), true)
+                } else if KEEP.contains(&op) || CONTROL.contains(&op) {
+                    (Vec::new(), false)
+                } else {
+                    if narrow_result || ids_at(&i, 0..i.operands.len()) {
+                        return Err(unlisted(op));
+                    }
+                    (Vec::new(), false)
+                };
+            for at in signed {
+                let Some((value, ty)) = id(&i, at).and_then(|v| Some((v, *types.get(&v)?))) else {
+                    continue;
+                };
+                let Some(n) = narrow.get(&ty).copied() else {
+                    continue;
+                };
+                // Sign-extended: shifted up to the top, then arithmetically back down.
+                let (up, down) = (ids.next(), ids.next());
+                out.push(on_ids(Op::ShiftLeftLogical, ty, up, &[value, n.shift]));
+                out.push(on_ids(Op::ShiftRightArithmetic, ty, down, &[up, n.shift]));
+                i.operands[at] = Operand::IdRef(down);
+            }
+            match result {
+                Some((ty, id)) if carry && narrow_result => {
+                    let unmasked = ids.next();
+                    i.result_id = Some(unmasked);
                     out.push(i);
+                    out.push(on_ids(
+                        Op::BitwiseAnd,
+                        ty,
+                        id,
+                        &[unmasked, narrow[&ty].mask],
+                    ));
                 }
                 _ => out.push(i),
             }
-            continue;
         }
-
-        let result = if NO_RESULT_TYPE.contains(&op) || i.operands.len() < 2 {
-            None
-        } else {
-            Some((i.operands[0], i.operands[1]))
-        };
-        let narrow_result = result.is_some_and(|(t, _)| narrow.contains_key(&t));
-        // The operand positions read as signed, and whether the result is masked.
-        let (signed, carry): (Vec<usize>, bool) =
-            if op == Op::ExtInst && i.operands.get(2) == glsl.as_ref() {
-                let Some(code) = i.operands.get(3).and_then(|c| GLOp::from_u32(*c)) else {
-                    return Err(unlisted(op));
-                };
-                let args = 4..i.operands.len();
-                let touches = narrow_result || args.clone().any(|a| is_narrow(i.operands[a]));
-                if !touches {
-                    (Vec::new(), false)
-                } else if GLSL_SIGNED.contains(&code) {
-                    (args.collect(), GLSL_CARRY.contains(&code))
-                } else if GLSL_CARRY.contains(&code) {
-                    (Vec::new(), true)
-                } else if GLSL_KEEP.contains(&code) {
-                    (Vec::new(), false)
-                } else {
-                    return Err(ConvertError::Reader(format!("{code:?} on 16-bit integers")));
-                }
-            } else if op == Op::Bitcast {
-                let source = i.operands.get(2).copied().is_some_and(is_narrow);
-                if source != narrow_result {
-                    return Err(ConvertError::Unsupported(crate::refusal::INT_16_BITCAST));
-                }
-                (Vec::new(), false)
-            } else if SIGNED.contains(&op) {
-                ((2..i.operands.len()).collect(), CARRY.contains(&op))
-            } else if SIGNED_BASE.contains(&op) {
-                (alloc::vec![2], true)
-            } else if CARRY.contains(&op) {
-                (Vec::new(), true)
-            } else if KEEP.contains(&op) || CONTROL.contains(&op) {
-                (Vec::new(), false)
-            } else {
-                let first = if result.is_some() { 2 } else { 0 };
-                if narrow_result
-                    || i.operands[first.min(i.operands.len())..]
-                        .iter()
-                        .any(|&w| is_narrow(w))
-                {
-                    return Err(unlisted(op));
-                }
-                (Vec::new(), false)
-            };
-        for at in signed {
-            let value = i.operands[at];
-            let Some(ty) = types.get(&value).copied() else {
-                continue;
-            };
-            let Some(n) = narrow.get(&ty).copied() else {
-                continue;
-            };
-            // Sign-extended: shifted up to the top, then arithmetically back down.
-            let (up, down) = (next(), next());
-            out.push(Instruction::new(
-                Op::ShiftLeftLogical,
-                alloc::vec![ty, up, value, n.shift],
-            ));
-            out.push(Instruction::new(
-                Op::ShiftRightArithmetic,
-                alloc::vec![ty, down, up, n.shift],
-            ));
-            i.operands[at] = down;
-        }
-        match result {
-            Some((ty, id)) if carry && narrow_result => {
-                let unmasked = next();
-                i.operands[1] = unmasked;
-                out.push(i);
-                out.push(Instruction::new(
-                    Op::BitwiseAnd,
-                    alloc::vec![ty, id, unmasked, narrow[&ty].mask],
-                ));
-            }
-            _ => out.push(i),
-        }
+        block.instructions = out;
     }
-
-    let mut words_out: Vec<u32> = spirv[..words::HEADER].to_vec();
-    words_out[words::BOUND] = bound;
-    for i in out {
-        let count = (i.operands.len() + 1) as u32;
-        words_out.push((count << words::COUNT_SHIFT) | i.op);
-        words_out.extend(i.operands);
-    }
-    *spirv = words_out;
+    ids.store(spirv);
     Ok(())
 }

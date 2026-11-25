@@ -22,7 +22,7 @@ const CONSTANT: &str = "
 
 /// A draw call of fixed state but for what each test names.
 #[allow(clippy::too_many_arguments)]
-fn call<'a, B: Backend>(
+fn call<'a, B: Gpu>(
     program: &'a B::Program,
     blend: &'a B::Blend,
     depth_stencil: &'a B::DepthStencil,
@@ -53,7 +53,7 @@ fn call<'a, B: Backend>(
     }
 }
 
-fn vertices<'a, B: Backend>(first: u32, count: u32) -> DrawRange<'a, B> {
+fn vertices<'a, B: Gpu>(first: u32, count: u32) -> DrawRange<'a, B> {
     DrawRange::Vertices {
         first,
         count,
@@ -62,7 +62,7 @@ fn vertices<'a, B: Backend>(first: u32, count: u32) -> DrawRange<'a, B> {
     }
 }
 
-fn vertex_buffer<B: Backend>(b: &mut B, values: &[f32]) -> B::Buffer {
+fn vertex_buffer<B: Gpu>(b: &mut B, values: &[f32]) -> B::Buffer {
     let vb = buffer(
         b,
         values.len() as u64 * 4,
@@ -1416,7 +1416,7 @@ const SAMPLES_OF: &str = "
 ";
 
 /// A four-sample `rgba8unorm` target of n by n, or none where the back end has no such texture.
-fn four_sample_target<B: Backend>(b: &mut B, n: u32) -> Option<(B::Texture, B::TextureView)> {
+fn four_sample_target<B: Gpu>(b: &mut B, n: u32) -> Option<(B::Texture, B::TextureView)> {
     if !b.caps().formats.takes_samples(Format::Rgba8Unorm, 4) {
         return None;
     }
@@ -1440,7 +1440,7 @@ fn four_sample_target<B: Backend>(b: &mut B, n: u32) -> Option<(B::Texture, B::T
 
 /// Reads sample 0 to 3 of each texel of a four-sample target through [`SAMPLES_OF`] into a
 /// single-sampled one, and gives its bytes.
-fn samples_of<B: Backend>(b: &mut B, ms: &B::TextureView, n: u32) -> Vec<u8> {
+fn samples_of<B: Gpu>(b: &mut B, ms: &B::TextureView, n: u32) -> Vec<u8> {
     let (t, v) = rgba8_target(b, n);
     let vb = vertex_buffer(b, &QUAD);
     let p = program(b, SAMPLES_OF, "vs", "fs");
@@ -1484,7 +1484,7 @@ fn samples_of<B: Backend>(b: &mut B, ms: &B::TextureView, n: u32) -> Vec<u8> {
 /// Draws white into the four-sample 4 by 4 `rgba8unorm` target `ms`, cleared to zero: all of row 3,
 /// and rows 0 to 2 from the left edge to 1.25, 1.5 and 1.75 pixels, so pixel 1 of those rows has one,
 /// two and three of its samples covered. The pass resolves into `resolve` where given.
-fn cover_rows<B: Backend>(b: &mut B, ms: &B::TextureView, resolve: Option<&B::TextureView>) {
+fn cover_rows<B: Gpu>(b: &mut B, ms: &B::TextureView, resolve: Option<&B::TextureView>) {
     // Rows 0 to 3, each from x = 0 to its right edge, in pixels.
     let edges = [1.25f32, 1.5, 1.75, 4.0];
     let mut quads = Vec::new();
@@ -1612,10 +1612,10 @@ pub fn resolves_average_in_the_format_named<H: Host>() {
     let at = |t| region(t, 0, 0, 0, 0);
     for format in [Format::Rgba8Unorm, Format::Rgba8UnormSrgb] {
         for t in [&linear, &srgb] {
-            let losses = b.slow_paths().count(SlowPath::ResolveInStoredFormat);
+            let losses = b.slow_paths().counts[SlowPath::ResolveInStoredFormat as usize];
             b.resolve(&at(&ms), &at(t), format);
             let stored = format == Format::Rgba8Unorm
-                || b.slow_paths().count(SlowPath::ResolveInStoredFormat) > losses;
+                || b.slow_paths().counts[SlowPath::ResolveInStoredFormat as usize] > losses;
             let mut expected = Vec::new();
             for row in 0..N as usize {
                 for x in 0..N {

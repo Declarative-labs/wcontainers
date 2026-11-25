@@ -4,8 +4,8 @@
 //! sets are made from them (plan 4.5 and 5.2).
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, MAX_BINDING_SETS, ReflectedBinding, SlotKind,
-    ViewComponent,
+    BindingEntry, BindingResource, BufferRange, FORMAT_FACTS, MAX_BINDING_SETS, ReflectedBinding,
+    SLOT_KINDS, SlotKind, ViewComponent,
 };
 
 use super::*;
@@ -18,6 +18,11 @@ use crate::list::{
     UAV_DIMENSION_TEXTURE3D,
 };
 use crate::root::{RootParameterKind, RootSignatureDesc};
+
+/// The refusal of an unordered access view whose dimension the program does not declare, which
+/// Direct3D 12 leaves undefined.
+pub(super) const OTHER_UAV_DIMENSION: &str =
+    "an unordered access view of another dimension than the program declares";
 
 /// One binding of one stage's program.
 #[derive(Clone, Debug)]
@@ -164,10 +169,12 @@ pub(super) fn stage_bindings(
                     }
             });
             let through = b.kind == SlotKind::Storage
-                && c.reflection
-                    .helpers
-                    .iter()
-                    .any(|h| h.value == HelperValue::TexelLayout { slot: b.slot() });
+                && c.reflection.helpers.iter().any(|h| {
+                    h.value
+                        == HelperValue::TexelLayout {
+                            slot: b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                        }
+                });
             StageBinding {
                 stages,
                 visibility,
@@ -322,12 +329,12 @@ impl RootState {
 /// A draw's or dispatch's binding sets, with the program made for what they bind where it is
 /// not the pipeline's own.
 pub(super) type BoundSets<B> = (
-    [Option<<B as Backend>::BindingSet>; MAX_BINDING_SETS],
+    [Option<<B as Gpu>::BindingSet>; MAX_BINDING_SETS],
     Option<super::formats::BoundProgram<B>>,
 );
 
 /// A resource of a binding set, held while the set is made.
-pub(super) enum Held<B: Backend> {
+pub(super) enum Held<B: Gpu> {
     Uniform(B::Buffer, u64, u64),
     Texture(B::TextureView),
     Sampler(B::Sampler),
@@ -340,7 +347,7 @@ pub(super) enum Held<B: Backend> {
     StorageTexture(B::TextureView, bool),
 }
 
-impl<B: Backend> Device<B> {
+impl<B: Gpu> Device<B> {
     /// The binding sets of a draw or dispatch with pipeline `pid` and root arguments `state`:
     /// of the API stages `only` (`D3D12_SHADER_VISIBILITY`s), or of every stage where it is
     /// empty. `extra` are
@@ -562,7 +569,7 @@ impl<B: Backend> Device<B> {
                             .next_multiple_of(CONSTANT_REGISTER as usize),
                         0,
                     );
-                    self.backend.slow_paths().hit(SlowPath::ImmediatesSpilled);
+                    self.backend.record_slow_path(SlowPath::ImmediatesSpilled);
                     let align = self.backend.caps().limits.min_uniform_offset_alignment;
                     let mut offset = [0];
                     let buffer = self.backend.write_buffer_ring(
@@ -613,11 +620,12 @@ impl<B: Backend> Device<B> {
                             let view = self.shader_resource(&v, b)?;
                             self.note_clamp(&v, b)?;
                             self.note_filtering(Some(&v), b)?;
-                            let components = dxgi(v.format)?.components();
+                            let components = FORMAT_FACTS[dxgi(v.format)? as usize].components;
                             self.bound_helpers.push((
                                 b.visibility,
                                 HelperValue::TextureComponents {
-                                    texture: b.binding.slot(),
+                                    texture: b.binding.binding
+                                        - SLOT_KINDS[b.binding.kind as usize].first_binding,
                                 },
                                 pull::words(&[components]),
                             ));
@@ -652,7 +660,11 @@ impl<B: Backend> Device<B> {
                                 let view = self.storage_texture(&v, b)?;
                                 self.bound_formats.push((
                                     b.visibility,
-                                    (true, b.binding.slot()),
+                                    (
+                                        true,
+                                        b.binding.binding
+                                            - SLOT_KINDS[b.binding.kind as usize].first_binding,
+                                    ),
                                     dxgi(v.format)?,
                                 ));
                                 Held::StorageTexture(view, writable)
@@ -701,7 +713,8 @@ impl<B: Backend> Device<B> {
                     self.bound_helpers.push((
                         b.visibility,
                         HelperValue::TexelLayout {
-                            slot: b.binding.slot(),
+                            slot: b.binding.binding
+                                - SLOT_KINDS[b.binding.kind as usize].first_binding,
                         },
                         pull::words(&[0; 5]),
                     ));
@@ -724,8 +737,14 @@ impl<B: Backend> Device<B> {
                     .ok_or(Error::NotImplemented("null views of this storage texture"))?;
                 // A null view's format is the program's own: its reads are zeros and its
                 // writes are dropped in any format.
-                self.bound_formats
-                    .push((b.visibility, (true, b.binding.slot()), shape.format));
+                self.bound_formats.push((
+                    b.visibility,
+                    (
+                        true,
+                        b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+                    ),
+                    shape.format,
+                ));
                 Held::StorageTexture(self.null_view(shape, writable)?, writable)
             }
             (_, Form::Plain) => {
@@ -736,7 +755,8 @@ impl<B: Backend> Device<B> {
                 self.bound_helpers.push((
                     b.visibility,
                     HelperValue::TextureComponents {
-                        texture: b.binding.slot(),
+                        texture: b.binding.binding
+                            - SLOT_KINDS[b.binding.kind as usize].first_binding,
                     },
                     pull::words(&[0b1111]),
                 ));
@@ -781,20 +801,22 @@ impl<B: Backend> Device<B> {
                 host: Some(host), ..
             },
             ..
-        }) = self.resources.get_mut(id.0 as usize)
+        }) = self.resources.get(id.0 as usize)
         else {
             return Err(Error::Invalid("an upload buffer without its memory"));
         };
-        self.backend.slow_paths().hit(SlowPath::ConstantBufferGrown);
-        let held = host.bytes();
+        self.backend.record_slow_path(SlowPath::ConstantBufferGrown);
+        let held = host.cells();
         let (start, end) = (
             offset as usize,
             (end.min(width) as usize).max(offset as usize),
         );
-        let mut bytes = held
+        let mut bytes: Vec<u8> = held
             .get(start..end.min(held.len()))
             .unwrap_or_default()
-            .to_vec();
+            .iter()
+            .map(Cell::get)
+            .collect();
         bytes.resize(size.next_multiple_of(CONSTANT_REGISTER) as usize, 0);
         let align = self.backend.caps().limits.min_uniform_offset_alignment;
         let mut at = [0];
@@ -879,8 +901,7 @@ impl<B: Backend> Device<B> {
             .push((b.visibility, value, pull::words(&[rest as u32])));
         if rest != 0 {
             self.backend
-                .slow_paths()
-                .hit(SlowPath::StorageOffsetInShader);
+                .record_slow_path(SlowPath::StorageOffsetInShader);
             self.bound_offsets.push(b.visibility);
         }
         self.storage_range(id, start, rest + size, writable)
@@ -897,7 +918,7 @@ impl<B: Backend> Device<B> {
         let raw = v.flags & 1 != 0;
         let element = match (raw, v.stride) {
             (true, _) => 4,
-            (false, 0) => u64::from(dxgi(v.format)?.block().2),
+            (false, 0) => u64::from(FORMAT_FACTS[dxgi(v.format)? as usize].block.2),
             (false, stride) => u64::from(stride),
         };
         if !matches!(
@@ -924,7 +945,9 @@ impl<B: Backend> Device<B> {
         writable: bool,
     ) -> Result<Held<B>, Error> {
         if v.flags & 1 != 0 || v.stride != 0 {
-            return Err(Error::Invalid("a raw or structured view of a typed buffer"));
+            return Err(Error::NotImplemented(
+                "a raw or structured view where the program declares a typed buffer",
+            ));
         }
         let width = match self.resources.get(v.resource.0 as usize) {
             Some(Resource {
@@ -935,7 +958,7 @@ impl<B: Backend> Device<B> {
             _ => return Err(Error::Invalid("a buffer view of a texture")),
         };
         let format = dxgi(v.format)?;
-        let element = u64::from(format.block().2);
+        let element = u64::from(FORMAT_FACTS[format as usize].block.2);
         let offset = v.first_element * element;
         let size = u64::from(v.count) * element;
         if offset + size > width {
@@ -948,11 +971,13 @@ impl<B: Backend> Device<B> {
             .max(STORAGE_WORD)
             .min(width.next_multiple_of(STORAGE_WORD) - start);
         self.backend
-            .slow_paths()
-            .hit(SlowPath::TexelBufferAsStorage);
+            .record_slow_path(SlowPath::TexelBufferAsStorage);
         self.bound_formats.push((
             b.visibility,
-            (b.binding.kind != SlotKind::Texture, b.binding.slot()),
+            (
+                b.binding.kind != SlotKind::Texture,
+                b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+            ),
             format,
         ));
         self.bound_helpers.push((
@@ -1008,7 +1033,7 @@ impl<B: Backend> Device<B> {
         if clamp <= 0.0 {
             return Ok(());
         }
-        let texture = b.binding.slot();
+        let texture = b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding;
         if !matches!(b.visibility, 0 | PIXEL) || texture >= 128 {
             return Err(Error::NotImplemented(
                 "a minimum level-of-detail clamp in a vertex or geometry shader or past \
@@ -1040,7 +1065,10 @@ impl<B: Backend> Device<B> {
             return Ok(());
         }
         if b.compared {
-            self.bound_unfiltered.push((b.visibility, b.binding.slot()));
+            self.bound_unfiltered.push((
+                b.visibility,
+                b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+            ));
             return Ok(());
         }
         let Some(v) = v else {
@@ -1054,21 +1082,19 @@ impl<B: Backend> Device<B> {
             _ => return Ok(()),
         };
         let format = dxgi(v.format)?;
-        let filters = |f: Format| {
-            self.backend
-                .caps()
-                .formats
-                .get(f)
-                .contains(FormatUse::FILTER)
-        };
+        let filters =
+            |f: Format| self.backend.caps().formats.uses[f as usize].contains(FormatUse::FILTER);
         // A view reading a depth texture's depth reads a texture of the depth format.
-        let read = if stored.is_depth_stencil() {
+        let read = if FORMAT_FACTS[stored as usize].depth_stencil {
             stored
         } else {
             format
         };
         if !filters(read) {
-            self.bound_unfiltered.push((b.visibility, b.binding.slot()));
+            self.bound_unfiltered.push((
+                b.visibility,
+                b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+            ));
         }
         Ok(())
     }
@@ -1095,7 +1121,7 @@ impl<B: Backend> Device<B> {
     /// WGSL's `read_write` formats, as the converter does.
     fn stores(&self, value: u32, read: bool, writable: bool) -> bool {
         dxgi(value).is_ok_and(|f| {
-            let uses = self.backend.caps().formats.get(f);
+            let uses = self.backend.caps().formats.uses[f as usize];
             match (read, writable) {
                 (true, true) => {
                     matches!(f, Format::R32Float | Format::R32Uint | Format::R32Sint)
@@ -1118,11 +1144,7 @@ impl<B: Backend> Device<B> {
             UAV_DIMENSION_TEXTURE1D | UAV_DIMENSION_TEXTURE2D => ViewDimension::D2,
             UAV_DIMENSION_TEXTURE1DARRAY | UAV_DIMENSION_TEXTURE2DARRAY => ViewDimension::D2Array,
             UAV_DIMENSION_TEXTURE3D => ViewDimension::D3,
-            UAV_DIMENSION_BUFFER => {
-                return Err(Error::NotImplemented(
-                    "typed buffer views bound as storage textures",
-                ));
-            }
+            UAV_DIMENSION_BUFFER => return Err(Error::NotImplemented(OTHER_UAV_DIMENSION)),
             _ => return Err(Error::Invalid("an unordered access view's dimension")),
         };
         // Array sizes past the texture's layers (such as -1) take the layers left, as for
@@ -1150,9 +1172,7 @@ impl<B: Backend> Device<B> {
                  program declaring {:?}",
                 v.dimension, b.binding, shape.dimension
             ));
-            return Err(Error::NotImplemented(
-                "an unordered access view of another dimension than the program declares",
-            ));
+            return Err(Error::NotImplemented(OTHER_UAV_DIMENSION));
         }
         self.texture_view(
             v.resource,
@@ -1179,7 +1199,7 @@ impl<B: Backend> Device<B> {
         // Direct3D's stencil views read the stencil in green, the interface's in the first
         // component.
         let stencil = matches!(v.format, 22 | 47);
-        let components = dxgi(v.format).map_or(0b1111, |f| f.components());
+        let components = dxgi(v.format).map_or(0b1111, |f| FORMAT_FACTS[f as usize].components);
         let swizzle = match stencil || !reads_as_identity(v.mapping, components) {
             true => Some(
                 view_mapping(v.mapping, stencil)
@@ -1201,17 +1221,21 @@ impl<B: Backend> Device<B> {
                      shader or a vertex shader before one",
                 ));
             }
-            self.backend.slow_paths().hit(SlowPath::SwizzleInShader);
-            self.bound_swizzles
-                .push((b.visibility, b.binding.slot(), map));
+            self.backend.record_slow_path(SlowPath::SwizzleInShader);
+            self.bound_swizzles.push((
+                b.visibility,
+                b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+                map,
+            ));
         }
         // Comparison sampling reads a texture not stored in a depth format through its depth twin.
-        let (resource, depth) = if b.compared && !texture_desc.format.is_depth_stencil() {
-            let (twin, format) = self.depth_twin(v.resource)?;
-            (twin, Some(format))
-        } else {
-            (v.resource, None)
-        };
+        let (resource, depth) =
+            if b.compared && !FORMAT_FACTS[texture_desc.format as usize].depth_stencil {
+                let (twin, format) = self.depth_twin(v.resource)?;
+                (twin, Some(format))
+            } else {
+                (v.resource, None)
+            };
         // One-dimensional textures are stored as 2D ones of one row.
         let (dimension, arrayed) = match v.dimension {
             SRV_DIMENSION_TEXTURE1D | SRV_DIMENSION_TEXTURE2D | SRV_DIMENSION_TEXTURE2DMS => {
@@ -1249,7 +1273,7 @@ impl<B: Backend> Device<B> {
         // Direct3D returns what the view's format gives and the shader takes those bits as the
         // type it declares; the back ends read a view only as its own type, so the program is
         // converted again reading the view's values by their bits (`VariantKey::texel_formats`).
-        let read_as = |f: Format| match f.kind() {
+        let read_as = |f: Format| match FORMAT_FACTS[f as usize].kind {
             FormatKind::Uint | FormatKind::Stencil => FormatKind::Uint,
             FormatKind::Sint => FormatKind::Sint,
             _ => FormatKind::Float,
@@ -1268,8 +1292,14 @@ impl<B: Backend> Device<B> {
                      in a geometry, hull or domain shader or a vertex shader before one",
                 ));
             }
-            self.bound_formats
-                .push((b.visibility, (false, b.binding.slot()), format));
+            self.bound_formats.push((
+                b.visibility,
+                (
+                    false,
+                    b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+                ),
+                format,
+            ));
         }
         let dimension = declared_dimension(dimension, layer_count, b);
         // Direct3D leaves a view of another dimension than the declaration undefined, and the
@@ -1322,8 +1352,12 @@ impl<B: Backend> Device<B> {
             rest.push(self.texture_view(resource, one(layer))?);
         }
         if layer_count > 1 {
-            self.bound_layers
-                .push((b.visibility, b.binding.slot(), b.stages, rest));
+            self.bound_layers.push((
+                b.visibility,
+                b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+                b.stages,
+                rest,
+            ));
         }
         Ok(first)
     }
@@ -1337,8 +1371,11 @@ impl<B: Backend> Device<B> {
     ) -> Result<B::Sampler, Error> {
         let caps = self.backend.caps();
         let desc = crate::state::sampler(v, caps)?;
-        self.bound_samplers
-            .push((b.visibility, b.binding.slot(), *v));
+        self.bound_samplers.push((
+            b.visibility,
+            b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+            *v,
+        ));
         let (bias, border) = crate::state::in_program(v, caps);
         if bias || border {
             if !reconverted(b) {
@@ -1347,7 +1384,7 @@ impl<B: Backend> Device<B> {
                      domain shader or a vertex shader before one",
                 ));
             }
-            let sampler = b.binding.slot();
+            let sampler = b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding;
             if sampler >= 16 {
                 return Err(Error::NotImplemented(
                     "sampling in the program through a sampler slot past 15",
@@ -1423,7 +1460,7 @@ impl<B: Backend> Device<B> {
                 }
             }
             if !wait.is_empty() {
-                self.backend.slow_paths().hit(SlowPath::ReadBackWait);
+                self.backend.record_slow_path(SlowPath::ReadBackWait);
             }
             for (k, i) in wait.into_iter().enumerate() {
                 self.finish_read(i - k);
@@ -1437,19 +1474,22 @@ impl<B: Backend> Device<B> {
                     host: Some(host),
                 },
             ..
-        }) = self.resources.get_mut(id.0 as usize)
+        }) = self.resources.get(id.0 as usize)
         else {
             return Ok(());
         };
-        self.backend.slow_paths().hit(SlowPath::MappedUploadWhole);
-        let bytes = host.bytes();
+        self.backend.record_slow_path(SlowPath::MappedUploadWhole);
+        let cells = host.cells();
         let mut from = 0;
-        for (start, end) in skip.into_iter().chain([(bytes.len(), bytes.len())]) {
+        for (start, end) in skip.into_iter().chain([(cells.len(), cells.len())]) {
             if start > from {
+                self.staging.clear();
+                self.staging
+                    .extend(cells[from..start].iter().map(Cell::get));
                 self.backend.write_buffer(
                     buffer,
                     from as u64,
-                    &bytes[from..start],
+                    &self.staging,
                     WriteMode::NoOverwrite,
                 );
             }
