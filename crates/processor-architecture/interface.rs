@@ -47,7 +47,6 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
     /// Simulates applying this instruction to the given processor + memory.
     ///
     /// Processor changes are written in place, memory changes are written through the hook.
-    /// On error the processor is left as it was.
     fn simulate_in_place(
         &self,
         processor: &mut Architecture::ProcessorState,
