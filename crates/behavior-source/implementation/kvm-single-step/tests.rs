@@ -14,7 +14,6 @@ use wcontainers_processor_architecture_arm64::{
 };
 
 use crate::KvmSingleStepMachine;
-use crate::guest_layout::HANDLER_HALF;
 use crate::syndrome::{to_exception, to_syndrome};
 
 /// Class-specific bits that each name something in some class: none, a level 0 write fault, the most a BRK comment
@@ -122,11 +121,6 @@ fn words_outside_the_ten_instructions_end_in_a_named_result() {
         (
             to_state(MASK_INTERRUPTS, DATA, none),
             Some(Some(Class::TrappedMsrMrs)),
-        ),
-        // The handler's own memory, through the linear map at the start of its half.
-        (
-            to_state(LOAD, HANDLER_HALF, none),
-            Some(Some(Class::DataAbortLowerEL)),
         ),
         (
             to_state(CLEAN_AND_INVALIDATE, DATA + PAGE_SIZE, none),

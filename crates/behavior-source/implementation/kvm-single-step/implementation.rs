@@ -11,7 +11,8 @@ use std::mem::{self, offset_of};
 use std::ops::Range;
 
 use aarch64_cpu::registers::{
-    CPACR_EL1, ID_AA64MMFR0_EL1, ID_AA64PFR0_EL1, MDSCR_EL1, SCTLR_EL1, SPSR_EL1, TTBR0_EL1,
+    CPACR_EL1, ID_AA64MMFR0_EL1, ID_AA64MMFR2_EL1, ID_AA64PFR0_EL1, MDSCR_EL1, SCTLR_EL1, SPSR_EL1,
+    TTBR0_EL1,
 };
 use aarch64_paging::descriptor::El1Attributes;
 use wcontainers_abi::PAGE_SIZE;
@@ -103,6 +104,9 @@ const SME_IMPLEMENTED: u64 = 0b1111 << 24;
 
 /// [SMEN](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CPACR-EL1--Architectural-Feature-Access-Control-Register#:~:text=SMEN%2C%20bits%20%5B25%3A24%5D) at 0b11: EL0 may use SME, as Linux lets a program once it has used it.
 const SME_TRAPS_NOTHING: u64 = 0b11 << 24;
+
+/// [E0PD1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TCR-EL1--Translation-Control-Register--EL1-#:~:text=E0PD1%2C%20bit%20%5B56%5D), which makes every EL0 access to the handler's half fault at level 0, as Linux sets it on a chip with FEAT_E0PD.
+const E0PD1: u64 = 1 << 56;
 
 /// A slot loaded for the next run, and the pages of it that EL0 may write.
 struct LoadedSlot {
@@ -245,6 +249,9 @@ impl KvmSingleStepMachine {
             pstate,
         } = to_boot_registers(BOOT_MAP, memory_model_features);
         self.entry_pstate = pstate;
+        let has_e0pd =
+            ID_AA64MMFR2_EL1::E0PD.read(self.machine.get(Register::MemoryModelFeatures2)?) != 0;
+        let tcr = if has_e0pd { tcr | E0PD1 } else { tcr };
         self.asid_count = match ID_AA64MMFR0_EL1::ASIDBits.read_as_enum(memory_model_features) {
             Some(ID_AA64MMFR0_EL1::ASIDBits::Value::Bits_16) => 1 << u16::BITS,
             Some(ID_AA64MMFR0_EL1::ASIDBits::Value::Bits_8) | None => 1 << u8::BITS,

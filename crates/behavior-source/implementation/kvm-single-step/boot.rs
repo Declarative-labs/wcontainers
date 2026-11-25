@@ -80,6 +80,8 @@ const GRANULE: (TCR_EL1::TG0::Value, TCR_EL1::TG1::Value) =
 pub(crate) fn to_boot_registers(root: u64, memory_model_features: u64) -> BootRegisters {
     let physical_range = ID_AA64MMFR0_EL1::PARange.read(memory_model_features);
     let size = u64::from(u64::BITS - crate::guest_layout::VA_BITS);
+    // The top byte of an EL0 address is part of it (TBI0 clear), so a tagged address lies past the addresses a program
+    // can use and faults at level 0, as the architecture's model has it; Linux sets TBI0 instead.
     let tcr = TCR_EL1::T0SZ.val(size)
         + TCR_EL1::T1SZ.val(size)
         + TCR_EL1::TG0.val(GRANULE.0 as u64)
@@ -93,7 +95,7 @@ pub(crate) fn to_boot_registers(root: u64, memory_model_features: u64) -> BootRe
         + TCR_EL1::IPS.val(physical_range)
         + TCR_EL1::AS::ASID16Bits
         + TCR_EL1::A1::TTBR0
-        + TCR_EL1::TBI0::Ignored
+        + TCR_EL1::TBI0::Used
         + TCR_EL1::TBI1::Used;
     let mair = MAIR_EL1::Attr0_Normal_Outer::WriteBack_NonTransient_ReadWriteAlloc
         + MAIR_EL1::Attr0_Normal_Inner::WriteBack_NonTransient_ReadWriteAlloc
