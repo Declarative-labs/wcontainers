@@ -183,11 +183,20 @@ fn address(at: usize) -> u32 {
 /// Returns the module compiled for an engine, once for each engine.
 fn module(engine: &Engine) -> Module {
     static MADE: Mutex<Vec<(Engine, Module)>> = Mutex::new(Vec::new());
-    let mut made = MADE.lock().unwrap();
-    if let Some((_, module)) = made.iter().find(|(e, _)| Engine::same(e, engine)) {
-        return module.clone();
+    let kept = |made: &[(Engine, Module)]| {
+        made.iter()
+            .find(|(e, _)| Engine::same(e, engine))
+            .map(|(_, module)| module.clone())
+    };
+    if let Some(module) = kept(&MADE.lock().unwrap()) {
+        return module;
     }
+    // Compiled with no lock held: the compiler's threads may run other work of this thread's pool meanwhile.
     let module = Module::new(engine, module_bytes()).expect("the state memory's module");
+    let mut made = MADE.lock().unwrap();
+    if let Some(module) = kept(&made) {
+        return module;
+    }
     made.push((engine.clone(), module.clone()));
     module
 }
