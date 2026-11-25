@@ -27,3 +27,6 @@ rustix = { version = "1.1.6", features = ["net", "thread"] }
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioctl", "net", "if_tun", "no_std"] }
 # The host's interfaces, to find the loopback one by its flag.
 nix = { version = "0.31.3", default-features = false, features = ["net"] }
+
+[lints]
+workspace = true
