@@ -75,6 +75,7 @@ macro_rules! suite {
             every_vertex_format_reads_its_element,
             indirect_draws_and_dispatches_read_their_arguments_when_they_run,
             timestamps_between_passes_read_back_in_order,
+            programs_ask_a_texture_its_levels_and_samples,
             present_shows_the_frame,
         );
     };

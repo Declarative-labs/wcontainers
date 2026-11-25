@@ -2086,3 +2086,111 @@ pub fn timestamps_between_passes_read_back_in_order<H: Host>() {
     b.timestamps_disjoint().expect("timestamps_disjoint");
     ok(&mut b);
 }
+
+/// Writes the level count of the texture at binding 32, as a count of 255ths of red.
+const LEVEL_COUNT: &str = "
+@group(0) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(textureNumLevels(t)) / 255.0, 0.0, 0.0, 1.0);
+}
+";
+
+/// Writes the sample count of the multisampled texture at binding 32, as a count of 255ths of red.
+const SAMPLE_COUNT: &str = "
+@group(0) @binding(32) var t: texture_multisampled_2d<f32>;
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(textureNumSamples(t)) / 255.0, 0.0, 0.0, 1.0);
+}
+";
+
+/// Draws one texel with `source` reading `view` at binding 32 and returns its red.
+fn asked<B: Gpu>(b: &mut B, source: &str, view: &B::TextureView) -> u8 {
+    let (t, v) = rgba8_target(b, 1);
+    let quad = vertex_buffer(b, &QUAD);
+    let p = program(b, source, "vs", "fs");
+    let bl = blend(b, opaque());
+    let ds = depth_test(b, None, false);
+    let rs = raster(b, CullMode::None);
+    let vl = positions(b);
+    let vp = viewport(1, 1);
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(view),
+        }])
+        .expect("create_binding_set");
+    let streams = [Some(VertexBinding {
+        buffer: &quad,
+        offset: 0,
+    })];
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        bindings: [Some(&set), None, None, None],
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+        )
+    });
+    b.end_pass();
+    read_texture(b, region(&t, 0, 0, 0, 0), extent(1, 1, 1), 4)[0]
+}
+
+/// Programs ask a texture its level count, a view counting its own levels, and, where
+/// `MULTISAMPLE_READ` is declared too, a four-sample texture its sample count. Where
+/// `TEXTURE_LEVEL_QUERY` is declared.
+pub fn programs_ask_a_texture_its_levels_and_samples<H: Host>() {
+    let mut b = H::make();
+    let has = b.caps().features;
+    if !has.contains(Features::TEXTURE_LEVEL_QUERY) {
+        return;
+    }
+    let tex = texture(
+        &mut b,
+        Format::Rgba8Unorm,
+        (4, 4),
+        1,
+        3,
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+    );
+    for (base_mip, mip_count) in [(0, 3), (1, 2)] {
+        let levels = b
+            .create_view(
+                &tex,
+                &TextureViewDesc {
+                    format: Format::Rgba8Unorm,
+                    dimension: ViewDimension::D2,
+                    base_mip,
+                    mip_count,
+                    base_layer: 0,
+                    layer_count: 1,
+                    stencil: false,
+                },
+            )
+            .expect("create_view");
+        assert_eq!(
+            u32::from(asked(&mut b, LEVEL_COUNT, &levels)),
+            mip_count,
+            "the levels of a view from level {base_mip}"
+        );
+    }
+    if has.contains(Features::MULTISAMPLE_READ)
+        && let Some((_ms, view)) = four_sample_target(&mut b, 1)
+    {
+        assert_eq!(asked(&mut b, SAMPLE_COUNT, &view), 4);
+    }
+    ok(&mut b);
+}

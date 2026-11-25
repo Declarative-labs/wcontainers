@@ -194,7 +194,8 @@ impl<M: Metal> MetalGpu<M> {
                 | Features::OCCLUSION_COUNT
                 | Features::POINT_SIZE
                 | Features::INDIRECT
-                | Features::INDIRECT_FIRST_INSTANCE,
+                | Features::INDIRECT_FIRST_INSTANCE
+                | Features::TEXTURE_LEVEL_QUERY,
             limits: LIMITS,
             formats: convert::format_caps(),
         };

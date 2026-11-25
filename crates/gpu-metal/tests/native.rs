@@ -396,7 +396,8 @@ fn declares_the_metal_features_tested_here() {
         | Features::POINT_SIZE
         | Features::INDIRECT
         | Features::INDIRECT_FIRST_INSTANCE
-        | Features::TIMESTAMPS;
+        | Features::TIMESTAMPS
+        | Features::TEXTURE_LEVEL_QUERY;
     assert!(device().caps().features.contains(wanted));
     // Metal drops a constant bias's fraction, so a front adds the bias in the program.
     assert!(
