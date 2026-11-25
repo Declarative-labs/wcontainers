@@ -96,10 +96,12 @@ pub trait Process: ProcessInfo {
     fn state(&mut self) -> &mut Self::State;
 
     fn memory_id(&self) -> MemoryId;
+    // VERUS: no `impl Trait` in a trait and no lifetime on a type of this handle, so the parts go to a reader.
     fn read_memory(
         &mut self,
         range: Range<u64>,
-    ) -> Result<impl Iterator<Item = &[u8]>, MemoryError>;
+        reader: &mut impl MemoryReader,
+    ) -> Result<(), MemoryError>;
     fn write_memory(&mut self, range: Range<u64>, bytes: &[u8]) -> Result<(), WriteMemoryError>;
     /// Sets which accesses to a range fire `ProcessTracer::on_watched_memory_accessing`.
     fn watch_memory(&mut self, range: Range<u64>, watches: WatchesFor);
@@ -116,6 +118,11 @@ pub trait Process: ProcessInfo {
     /// Takes the process off this kernel instance, returning its context and each of its tasks that is still executing on it.
     fn suspend_process(self) -> (ProcessContextOf<Self::Kernel>, Self::SuspendedTasks);
     fn copy_process_context(&self) -> ProcessContextOf<Self::Kernel>;
+}
+
+/// Where the parts of a read of a process's memory go, in order.
+pub trait MemoryReader {
+    fn read_part(&mut self, part: &[u8]);
 }
 
 pub trait ProcessOf<State, K: Kernel>: Process<State = State, Kernel = K> {}
