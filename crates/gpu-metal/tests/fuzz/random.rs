@@ -237,14 +237,17 @@ impl Random {
         self.chance(65).then(|| self.below(fields))
     }
 
-    /// Returns a value past `most` for a field whose sum with `other` must stay within it: one past, the largest, a
-    /// power of two, or one whose sum with `other` wraps to a small number.
+    /// Returns a value past `most`, for a field whose sum with `other` must stay within it.
+    ///
+    /// It is one past, the largest, a power of two, or one whose sum with `other` wraps to a small number.
     pub fn past(&mut self, most: u32, other: u32) -> u32 {
         match self.below(5) {
             0 => most.saturating_add(1),
             1 => u32::MAX,
             // Only a sum with a field past zero wraps.
-            2 if other > 0 => 0u32.wrapping_sub(other).wrapping_add(self.below(u64::from(other).min(3)) as u32),
+            2 if other > 0 => 0u32
+                .wrapping_sub(other)
+                .wrapping_add(self.below(u64::from(other).min(3)) as u32),
             2 => most.saturating_add(2),
             3 => most.saturating_add(other).saturating_add(1),
             _ => 1u32 << (31u64.saturating_sub(self.below(6)) as u32),
@@ -256,7 +259,9 @@ impl Random {
         match self.below(5) {
             0 => most.saturating_add(1),
             1 => u64::MAX,
-            2 if other > 0 => 0u64.wrapping_sub(other).wrapping_add(self.below(other.min(3))),
+            2 if other > 0 => 0u64
+                .wrapping_sub(other)
+                .wrapping_add(self.below(other.min(3))),
             2 => most.saturating_add(8),
             3 => most.saturating_add(other).saturating_add(4),
             _ => 1u64 << 63u64.saturating_sub(self.below(4)),

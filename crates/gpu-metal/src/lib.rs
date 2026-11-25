@@ -724,6 +724,10 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         if desc.width > most || desc.height > most || desc.depth_or_layers > layers {
             return Err(GpuError::Invalid("a texture past the limits declared"));
         }
+        // A multisampled texture is made of one layer whatever it names, so no side or layer count may be zero.
+        if desc.width == 0 || desc.height == 0 || desc.depth_or_layers == 0 {
+            return Err(GpuError::Invalid("a texture of no texels"));
+        }
         let takes = desc.samples.is_power_of_two()
             && 1u8
                 .checked_shl(desc.samples.trailing_zeros())
@@ -1608,7 +1612,8 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     ) -> Result<(), GpuError> {
         // The default draws each level as floats, which a target of integers, depth or stencil refuses, so that such a
         // draw loses the device: it is refused here instead (a note for the review of the default, in STATUS.md).
-        if wcontainers_gpu::FORMAT_FACTS[values as usize].kind != wcontainers_gpu::FormatKind::Float {
+        if wcontainers_gpu::FORMAT_FACTS[values as usize].kind != wcontainers_gpu::FormatKind::Float
+        {
             return Err(GpuError::Invalid(
                 "mipmaps of an integer, depth or stencil format, which the default draws as floats",
             ));

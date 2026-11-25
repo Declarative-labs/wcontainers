@@ -56,8 +56,10 @@ mod driver {
     /// The lines a batch prints its checks' outcomes on, one a site: refused, passed, then the site.
     pub const REACH_LINE: &str = "FUZZ-REACH";
 
-    /// What a batch found: calls, refusals, canary bytes changed, GPU errors and calls taken that had to be refused, and
-    /// of the bytes read back to check, how many were free and how many in all.
+    /// What a batch found, and how many of the bytes it read back to check were free to change.
+    ///
+    /// Its counts: calls, refusals, canary bytes changed, GPU errors, calls taken that had to be refused, bytes free and
+    /// bytes checked.
     #[derive(Default)]
     pub struct Counts {
         pub calls: u64,
@@ -113,7 +115,7 @@ mod driver {
             crate::gpu::run(&mut random, calls, window)
         };
         counts.print();
-        for (site, [refused, passed]) in wcontainers_metal_direct::reach::outcomes() {
+        for (site, wcontainers_metal_direct::reach::Outcomes { refused, passed }) in wcontainers_metal_direct::reach::outcomes() {
             println!("{REACH_LINE} {refused} {passed} {site}");
         }
         if counts.clean() {
@@ -161,7 +163,8 @@ mod driver {
         let mut total = Counts::default();
         let mut failures: Vec<String> = Vec::new();
         let mut batches = 0u64;
-        let mut reach: std::collections::BTreeMap<String, [u64; 2]> = std::collections::BTreeMap::new();
+        let mut reach: std::collections::BTreeMap<String, [u64; 2]> =
+            std::collections::BTreeMap::new();
         // The free and checked bytes of the batches of the Metal trait, then of `Gpu`.
         let mut canaries = [[0u64; 2]; 2];
         while !waiting.is_empty() || !running.is_empty() {
@@ -310,8 +313,9 @@ mod driver {
         }
     }
 
-    /// Prints how often each check site of `direct` refused and passed, writes the table to `FUZZ_REACH_TABLE` if set,
-    /// and returns how many sites lack an outcome: a site that never refused, or never passed, is a hole.
+    /// Prints how often each check site of `direct` refused and passed, and returns how many sites lack an outcome.
+    ///
+    /// A site that never refused, or never passed, is a hole. The table goes to `FUZZ_REACH_TABLE` too, if it is set.
     fn report_reach(reach: &std::collections::BTreeMap<String, [u64; 2]>) -> usize {
         let sites = wcontainers_metal_direct::reach::sites();
         let mut table = String::from("| Site | Line | Refused | Passed |\n|---|---|---|---|\n");
@@ -320,7 +324,9 @@ mod driver {
             let [refused, passed] = reach.get(*site).copied().unwrap_or_default();
             table.push_str(&format!("| {site} | {line} | {refused} | {passed} |\n"));
             if refused == 0 || passed == 0 {
-                holes.push(format!("{site} (line {line}: {refused} refused, {passed} passed)"));
+                holes.push(format!(
+                    "{site} (line {line}: {refused} refused, {passed} passed)"
+                ));
             }
         }
         let unknown: Vec<&String> = reach

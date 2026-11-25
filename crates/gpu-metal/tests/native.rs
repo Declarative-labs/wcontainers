@@ -443,9 +443,12 @@ fn point_scene(size: f32) -> Vec<u8> {
             *ty = sized_point;
         }
     }
-    sized.info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
-        .validate(&sized.module)
-        .expect("a point size validates");
+    sized.info = naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&sized.module)
+    .expect("a point size validates");
     sized.key[0] ^= 1;
     let vertex = b.create_shader(&sized).expect("create_shader");
     let red = ShaderModule::from_wgsl(&source, "red", ShaderStage::Fragment).expect("parses");
@@ -489,10 +492,18 @@ fn point_scene(size: f32) -> Vec<u8> {
 #[test]
 fn a_point_is_as_large_as_its_program_writes() {
     assert!(device().caps().features.contains(Features::POINT_SIZE));
-    let red = |texels: Vec<u8>| -> Vec<bool> { texels.chunks(RGBA8_BYTES).map(|t| t[0] == u8::MAX).collect() };
+    let red = |texels: Vec<u8>| -> Vec<bool> {
+        texels
+            .chunks(RGBA8_BYTES)
+            .map(|t| t[0] == u8::MAX)
+            .collect()
+    };
     let (o, x) = (false, true);
     // Two texels wide about the center covers the middle four of sixteen; four wide, all of them.
-    assert_eq!(red(point_scene(2.0)), [o, o, o, o, o, x, x, o, o, x, x, o, o, o, o, o]);
+    assert_eq!(
+        red(point_scene(2.0)),
+        [o, o, o, o, o, x, x, o, o, x, x, o, o, o, o, o]
+    );
     assert_eq!(red(point_scene(4.0)), [x; 16]);
 }
 
@@ -941,7 +952,10 @@ fn a_view_reinterprets_its_texture_as_the_reference_does() {
             stencil: false,
         },
     );
-    assert!(refused.is_err(), "a view in another format of a texture not made to be reinterpreted");
+    assert!(
+        refused.is_err(),
+        "a view in another format of a texture not made to be reinterpreted"
+    );
 }
 
 #[test]
@@ -962,7 +976,10 @@ fn mipmaps_of_an_integer_format_are_refused_and_the_device_stays() {
         };
         let made = b.create_texture(&desc).expect("create_texture");
         let generated = b.generate_mips(&made, &desc, format, 1..3, 0..1);
-        assert!(matches!(generated, Err(GpuError::Invalid(_))), "{format:?}: {generated:?}");
+        assert!(
+            matches!(generated, Err(GpuError::Invalid(_))),
+            "{format:?}: {generated:?}"
+        );
     }
     let fence = b.submit();
     b.wait_fence(&fence);

@@ -1357,6 +1357,28 @@ pub fn refuses_copy_pitches_metal_does_not_take<M: Metal>(mut subject: M) {
     };
     refuses_blit(&mut subject, copy(row, RGBA8_BYTES, TARGET_SIDE));
     refuses_blit(&mut subject, copy(BEYOND_ROW, 0, 1));
+    // A 3D texture's rows are as long as its own longest side at most, shorter than a 2D texture's (MEASURED: Metal's
+    // validation stops 24000 bytes past 16384, found by the fuzzer).
+    let volume = made(&mut subject, described(TextureType::Type3D, PixelFormat::Rgba8Unorm));
+    refuses_blit(
+        &mut subject,
+        BlitCommand::CopyFromBufferToTexture {
+            source_buffer: buffer.clone(),
+            source_offset: u64::MIN,
+            source_bytes_per_row: u64::from(BEYOND_3D_SIDE) * RGBA8_BYTES,
+            source_bytes_per_image: 0,
+            source_size: Size {
+                width: TARGET_SIDE,
+                height: 1,
+                depth: SINGLE,
+            },
+            destination_texture: volume,
+            destination_slice: u32::MIN,
+            destination_level: u32::MIN,
+            destination_origin: Origin::default(),
+            options: BlitOption::None,
+        },
+    );
 }
 
 /// Checks that a copy between an sRGB texture and one of its linear twin is refused, which Metal's validation stops.

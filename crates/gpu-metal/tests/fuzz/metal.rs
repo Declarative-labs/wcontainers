@@ -615,12 +615,18 @@ pub fn run(random: &mut Random, calls: u64, window: bool) -> Counts {
             read_mask: 255,
             write_mask: 255,
         };
-        let made = world.metal.make_depth_stencil_state(&DepthStencilDescriptor {
-            depth_compare_function: if depth { CompareFunction::Less } else { CompareFunction::Always },
-            depth_write_enabled: depth,
-            front_face_stencil: stencil.then_some(face),
-            back_face_stencil: stencil.then_some(face),
-        });
+        let made = world
+            .metal
+            .make_depth_stencil_state(&DepthStencilDescriptor {
+                depth_compare_function: if depth {
+                    CompareFunction::Less
+                } else {
+                    CompareFunction::Always
+                },
+                depth_write_enabled: depth,
+                front_face_stencil: stencil.then_some(face),
+                back_face_stencil: stencil.then_some(face),
+            });
         if let Ok(state) = made {
             world.ds_states.push((state, depth, stencil));
         }
@@ -747,7 +753,10 @@ impl World {
         if self.metal.read_contents(&held.buffer, 0, &mut read).is_ok() {
             let changed = held.shadow.borrow().changed(&read);
             self.counts.canary_bytes = self.counts.canary_bytes.saturating_add(changed);
-            self.counts.free_bytes = self.counts.free_bytes.saturating_add(held.shadow.borrow().free());
+            self.counts.free_bytes = self
+                .counts
+                .free_bytes
+                .saturating_add(held.shadow.borrow().free());
             self.counts.checked_bytes = self.counts.checked_bytes.saturating_add(read.len() as u64);
         }
     }
@@ -2085,7 +2094,7 @@ struct Made {
     height: u32,
     depth: u32,
     levels: u32,
-    /// Slices, each face of a cube one.
+    /// How many slices it has, each face of a cube one.
     slices: u32,
     samples: u32,
     usage: TextureUsage,
@@ -2096,7 +2105,10 @@ struct Made {
 impl Made {
     /// Returns what a texture made of `d` is.
     fn of(d: &TextureDescriptor) -> Made {
-        let cube = matches!(d.texture_type, TextureType::TypeCube | TextureType::TypeCubeArray);
+        let cube = matches!(
+            d.texture_type,
+            TextureType::TypeCube | TextureType::TypeCubeArray
+        );
         Made {
             format: d.pixel_format,
             texture_type: d.texture_type,
@@ -2105,7 +2117,7 @@ impl Made {
             depth: d.depth,
             levels: d.mipmap_level_count,
             slices: if cube {
-                d.array_length.saturating_mul(CUBE_FACES)
+                d.array_length.saturating_mul(wcontainers_gpu::CUBE_FACES)
             } else {
                 d.array_length
             },
@@ -2168,21 +2180,19 @@ impl Made {
     }
 }
 
-/// The faces of a cube. https://developer.apple.com/documentation/metal/mtltexturetype/typecube
-const CUBE_FACES: u32 = 6;
+/// The longest side of a 2D texture on this Mac's GPU, as the Metal interface names it.
+const MOST_SIDE: u32 = wcontainers_metal::MAX_TEXTURE_SIDE;
 
-/// The longest side of a 2D texture on this Mac's GPU, and of a 3D one, and the most layers.
+/// The longest side of a 3D texture, and the most layers.
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
-const MOST_SIDE: u32 = 32768;
 const MOST_3D_SIDE: u32 = 2048;
 const MOST_LAYERS: u64 = 2048;
 
-/// The bytes of the visibility result buffer a pass counts into, and of one result.
+/// The bytes of the visibility result buffer a pass counts into.
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 const VISIBILITY_SPAN: u64 = 262_144;
-const RESULT_BYTES: u64 = 8;
 
 /// The number type a function reads a texture's texels as, and depth.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2242,8 +2252,24 @@ fn depth_or_stencil(format: PixelFormat) -> bool {
 
 /// The color formats of each size a view may reinterpret a texture made for such views as.
 const SAME_SIZE: &[(u64, &[PixelFormat])] = &[
-    (1, &[PixelFormat::R8Unorm, PixelFormat::R8Uint, PixelFormat::R8Sint, PixelFormat::R8Snorm]),
-    (2, &[PixelFormat::R16Float, PixelFormat::Rg8Unorm, PixelFormat::R16Uint, PixelFormat::Rg8Sint]),
+    (
+        1,
+        &[
+            PixelFormat::R8Unorm,
+            PixelFormat::R8Uint,
+            PixelFormat::R8Sint,
+            PixelFormat::R8Snorm,
+        ],
+    ),
+    (
+        2,
+        &[
+            PixelFormat::R16Float,
+            PixelFormat::Rg8Unorm,
+            PixelFormat::R16Uint,
+            PixelFormat::Rg8Sint,
+        ],
+    ),
     (
         4,
         &[
@@ -2255,7 +2281,14 @@ const SAME_SIZE: &[(u64, &[PixelFormat])] = &[
             PixelFormat::Bgra8Unorm,
         ],
     ),
-    (8, &[PixelFormat::Rg32Float, PixelFormat::Rgba16Float, PixelFormat::Rgba16Uint]),
+    (
+        8,
+        &[
+            PixelFormat::Rg32Float,
+            PixelFormat::Rgba16Float,
+            PixelFormat::Rgba16Uint,
+        ],
+    ),
     (16, &[PixelFormat::Rgba32Float, PixelFormat::Rgba32Uint]),
 ];
 
@@ -2270,7 +2303,11 @@ const FLOAT_TARGETS: &[PixelFormat] = &[
     PixelFormat::Rgb10a2Unorm,
     PixelFormat::R8Unorm,
 ];
-const UINT_TARGETS: &[PixelFormat] = &[PixelFormat::Rgba8Uint, PixelFormat::R32Uint, PixelFormat::Rg16Uint];
+const UINT_TARGETS: &[PixelFormat] = &[
+    PixelFormat::Rgba8Uint,
+    PixelFormat::R32Uint,
+    PixelFormat::Rg16Uint,
+];
 const SINT_TARGETS: &[PixelFormat] = &[PixelFormat::Rgba8Sint, PixelFormat::R32Sint];
 
 /// What one function reads at a slot, which a valid draw or dispatch binds.
@@ -2325,19 +2362,65 @@ fn needs(entry: &str) -> &'static [Need] {
         "fs_write" => &[SOURCE, SINK, TAIL],
         "fs_textures" => &[
             SOURCE,
-            Need::Texture { slot: 0, texture_type: TextureType::Type2D, kind: Kind::Float },
-            Need::Texture { slot: 1, texture_type: TextureType::Type2D, kind: Kind::Uint },
-            Need::Texture { slot: 2, texture_type: TextureType::Type2D, kind: Kind::Sint },
-            Need::Texture { slot: 3, texture_type: TextureType::Type2DArray, kind: Kind::Float },
-            Need::Texture { slot: 4, texture_type: TextureType::TypeCube, kind: Kind::Float },
-            Need::Texture { slot: 5, texture_type: TextureType::Type3D, kind: Kind::Float },
-            Need::Texture { slot: 6, texture_type: TextureType::Type2D, kind: Kind::Depth },
-            Need::Texture { slot: 7, texture_type: TextureType::Type2DMultisample, kind: Kind::Float },
+            Need::Texture {
+                slot: 0,
+                texture_type: TextureType::Type2D,
+                kind: Kind::Float,
+            },
+            Need::Texture {
+                slot: 1,
+                texture_type: TextureType::Type2D,
+                kind: Kind::Uint,
+            },
+            Need::Texture {
+                slot: 2,
+                texture_type: TextureType::Type2D,
+                kind: Kind::Sint,
+            },
+            Need::Texture {
+                slot: 3,
+                texture_type: TextureType::Type2DArray,
+                kind: Kind::Float,
+            },
+            Need::Texture {
+                slot: 4,
+                texture_type: TextureType::TypeCube,
+                kind: Kind::Float,
+            },
+            Need::Texture {
+                slot: 5,
+                texture_type: TextureType::Type3D,
+                kind: Kind::Float,
+            },
+            Need::Texture {
+                slot: 6,
+                texture_type: TextureType::Type2D,
+                kind: Kind::Depth,
+            },
+            Need::Texture {
+                slot: 7,
+                texture_type: TextureType::Type2DMultisample,
+                kind: Kind::Float,
+            },
             Need::Sampler { slot: 0 },
             Need::Sampler { slot: 1 },
         ],
-        "fs_sample_f" => &[Need::Texture { slot: 0, texture_type: TextureType::Type2D, kind: Kind::Float }, Need::Sampler { slot: 0 }],
-        "fs_load_u" => &[SOURCE, Need::Texture { slot: 1, texture_type: TextureType::Type2D, kind: Kind::Uint }],
+        "fs_sample_f" => &[
+            Need::Texture {
+                slot: 0,
+                texture_type: TextureType::Type2D,
+                kind: Kind::Float,
+            },
+            Need::Sampler { slot: 0 },
+        ],
+        "fs_load_u" => &[
+            SOURCE,
+            Need::Texture {
+                slot: 1,
+                texture_type: TextureType::Type2D,
+                kind: Kind::Uint,
+            },
+        ],
         "fs_imm" => &[Need::Buffer {
             slot: IMMEDIATES_AT,
             least: 16,
@@ -2349,9 +2432,21 @@ fn needs(entry: &str) -> &'static [Need] {
         "cs_textures" => &[
             SOURCE,
             SINK,
-            Need::Texture { slot: 1, texture_type: TextureType::Type2D, kind: Kind::Uint },
-            Need::Texture { slot: 2, texture_type: TextureType::Type2D, kind: Kind::Sint },
-            Need::Texture { slot: 5, texture_type: TextureType::Type3D, kind: Kind::Float },
+            Need::Texture {
+                slot: 1,
+                texture_type: TextureType::Type2D,
+                kind: Kind::Uint,
+            },
+            Need::Texture {
+                slot: 2,
+                texture_type: TextureType::Type2D,
+                kind: Kind::Sint,
+            },
+            Need::Texture {
+                slot: 5,
+                texture_type: TextureType::Type3D,
+                kind: Kind::Float,
+            },
         ],
         _ => &[],
     }
@@ -2379,9 +2474,15 @@ fn texture_refused(d: &TextureDescriptor) -> bool {
     } else {
         MOST_SIDE
     };
-    let cube = matches!(d.texture_type, TextureType::TypeCube | TextureType::TypeCubeArray);
+    let cube = matches!(
+        d.texture_type,
+        TextureType::TypeCube | TextureType::TypeCubeArray
+    );
     let layers = u64::from(d.array_length).saturating_mul(if cube { 6 } else { 1 });
-    let one_slice = !matches!(d.texture_type, TextureType::Type2DArray | TextureType::TypeCubeArray);
+    let one_slice = !matches!(
+        d.texture_type,
+        TextureType::Type2DArray | TextureType::TypeCubeArray
+    );
     let multisampled = d.texture_type == TextureType::Type2DMultisample;
     d.width > most
         || d.height > most
@@ -2412,7 +2513,6 @@ struct Region {
     origin: Origin,
     size: Size,
 }
-
 
 /// A render pipeline the batch made of unmangled functions, with what its draws must bind.
 #[derive(Clone)]
@@ -2449,7 +2549,9 @@ fn primitive_of(random: &mut Random, class: PrimitiveTopologyClass, other: bool)
     let of = |class| match class {
         PrimitiveTopologyClass::Point => &[PrimitiveType::Point][..],
         PrimitiveTopologyClass::Line => &[PrimitiveType::Line, PrimitiveType::LineStrip][..],
-        PrimitiveTopologyClass::Triangle => &[PrimitiveType::Triangle, PrimitiveType::TriangleStrip][..],
+        PrimitiveTopologyClass::Triangle => {
+            &[PrimitiveType::Triangle, PrimitiveType::TriangleStrip][..]
+        }
     };
     if !other {
         return random.pick(of(class));
@@ -2468,7 +2570,8 @@ fn region_refused(made: &Made, region: &Region, side: u32) -> bool {
         return true;
     }
     let (w, h, d) = made.level(region.level);
-    let past = |at: u32, n: u32, most: u32| u64::from(at).saturating_add(u64::from(n)) > u64::from(most);
+    let past =
+        |at: u32, n: u32, most: u32| u64::from(at).saturating_add(u64::from(n)) > u64::from(most);
     let (o, s) = (region.origin, region.size);
     let partial = |at: u32, n: u32, most: u32| {
         !at.is_multiple_of(side) || !(n.is_multiple_of(side) || at.checked_add(n) == Some(most))
@@ -2509,7 +2612,12 @@ fn buffer_copy_refused(
     let s = region.size;
     let row = u128::from(s.width.div_ceil(side)).saturating_mul(u128::from(bytes));
     let rows = u128::from(s.height.div_ceil(side));
-    let longest = u128::from(MOST_SIDE / side).saturating_mul(u128::from(bytes));
+    let most = if made.texture_type == TextureType::Type3D {
+        MOST_3D_SIDE
+    } else {
+        MOST_SIDE
+    };
+    let longest = u128::from(most.checked_div(side).unwrap_or(0)).saturating_mul(u128::from(bytes));
     let pitch = u128::from(bytes_per_row);
     if pitch < row || !bytes_per_row.is_multiple_of(bytes) || pitch > longest {
         return true;
@@ -2530,7 +2638,9 @@ fn buffer_copy_refused(
 
 /// Returns whether a view `d` of a texture is one `direct` must refuse; a format it may take as an sRGB twin is not.
 fn view_refused(made: &Made, d: &TextureViewDescriptor) -> bool {
-    let past = |first: u32, count: u32, most: u32| u64::from(first).saturating_add(u64::from(count)) > u64::from(most);
+    let past = |first: u32, count: u32, most: u32| {
+        u64::from(first).saturating_add(u64::from(count)) > u64::from(most)
+    };
     if made.drawable
         || d.level_count == 0
         || d.slice_count == 0
@@ -2549,18 +2659,29 @@ fn view_refused(made: &Made, d: &TextureViewDescriptor) -> bool {
         // A twin is of the same size and kind of block.
         || block(from) == block(to) && depth_or_stencil(from) == depth_or_stencil(to) && !depth_or_stencil(from);
     let slices_fit = match d.texture_type {
-        TextureType::Type2D | TextureType::Type2DMultisample | TextureType::Type3D => d.slice_count == 1,
-        TextureType::TypeCube => d.slice_count == CUBE_FACES,
-        TextureType::TypeCubeArray => d.slice_count.is_multiple_of(CUBE_FACES),
+        TextureType::Type2D | TextureType::Type2DMultisample | TextureType::Type3D => {
+            d.slice_count == 1
+        }
+        TextureType::TypeCube => d.slice_count == wcontainers_gpu::CUBE_FACES,
+        TextureType::TypeCubeArray => d.slice_count.is_multiple_of(wcontainers_gpu::CUBE_FACES),
         TextureType::Type2DArray => true,
     };
-    let cube = matches!(d.texture_type, TextureType::TypeCube | TextureType::TypeCubeArray);
+    let cube = matches!(
+        d.texture_type,
+        TextureType::TypeCube | TextureType::TypeCubeArray
+    );
     let type_fits = match made.texture_type {
         TextureType::Type3D => d.texture_type == TextureType::Type3D,
         TextureType::Type2DMultisample => d.texture_type == TextureType::Type2DMultisample,
-        TextureType::Type2D => matches!(d.texture_type, TextureType::Type2D | TextureType::Type2DArray),
+        TextureType::Type2D => matches!(
+            d.texture_type,
+            TextureType::Type2D | TextureType::Type2DArray
+        ),
         TextureType::Type2DArray | TextureType::TypeCube | TextureType::TypeCubeArray => {
-            matches!(d.texture_type, TextureType::Type2D | TextureType::Type2DArray) || cube
+            matches!(
+                d.texture_type,
+                TextureType::Type2D | TextureType::Type2DArray
+            ) || cube
         }
     };
     !format_ok || !slices_fit || !type_fits || cube && made.width != made.height
@@ -2586,13 +2707,23 @@ impl World {
                     return;
                 };
                 let mut d = LayerDescriptor {
-                    pixel_format: random.pick(&[PixelFormat::Bgra8Unorm, PixelFormat::Rgba16Float, PixelFormat::Bgra8UnormSrgb]),
+                    pixel_format: random.pick(&[
+                        PixelFormat::Bgra8Unorm,
+                        PixelFormat::Rgba16Float,
+                        PixelFormat::Bgra8UnormSrgb,
+                    ]),
                     width: random.pick(&[4, 8, 16]),
                     height: random.pick(&[4, 8, 16]),
                     display_sync_enabled: false,
                 };
                 match random.broken(4) {
-                    Some(0) => d.pixel_format = random.pick(&[PixelFormat::Rgba8Unorm, PixelFormat::R32Float, PixelFormat::Depth32Float]),
+                    Some(0) => {
+                        d.pixel_format = random.pick(&[
+                            PixelFormat::Rgba8Unorm,
+                            PixelFormat::R32Float,
+                            PixelFormat::Depth32Float,
+                        ])
+                    }
                     Some(1) => d.width = 0,
                     Some(2) => d.height = 0,
                     Some(_) => d.width = random.past(MOST_SIDE, 0),
@@ -2601,7 +2732,12 @@ impl World {
                 let refuse = d.width == 0
                     || d.height == 0
                     || d.width > MOST_SIDE
-                    || !matches!(d.pixel_format, PixelFormat::Bgra8Unorm | PixelFormat::Rgba16Float | PixelFormat::Bgra8UnormSrgb);
+                    || !matches!(
+                        d.pixel_format,
+                        PixelFormat::Bgra8Unorm
+                            | PixelFormat::Rgba16Float
+                            | PixelFormat::Bgra8UnormSrgb
+                    );
                 let refused = self.metal.configure_layer(&layer, &d).is_err();
                 self.counts.call(refused);
                 self.must(refused, refuse, "a layer's configuration");
@@ -2643,7 +2779,9 @@ impl World {
             buffer: made.ok()?,
             shadow: Shadow::new(length),
         };
-        let fill: Vec<u8> = (0..length.min(65536)).map(|_| random.next() as u8).collect();
+        let fill: Vec<u8> = (0..length.min(65536))
+            .map(|_| random.next() as u8)
+            .collect();
         if self.metal.write_contents(&held.buffer, 0, &fill).is_ok() {
             held.shadow.borrow_mut().wrote(0, &fill);
         }
@@ -2661,7 +2799,10 @@ impl World {
         if !self.textures.is_empty() && random.chance(70) {
             let start = random.index(self.textures.len());
             for at in 0..self.textures.len() {
-                let (texture, made) = &self.textures[at.saturating_add(start).checked_rem(self.textures.len()).unwrap_or(0)];
+                let (texture, made) = &self.textures[at
+                    .saturating_add(start)
+                    .checked_rem(self.textures.len())
+                    .unwrap_or(0)];
                 if fits(made) {
                     return Some((texture.clone(), *made));
                 }
@@ -2671,7 +2812,11 @@ impl World {
     }
 
     /// Makes a texture of `d`, which must be valid, and keeps it.
-    fn make_texture_of(&mut self, random: &mut Random, d: &TextureDescriptor) -> Option<(Texture, Made)> {
+    fn make_texture_of(
+        &mut self,
+        random: &mut Random,
+        d: &TextureDescriptor,
+    ) -> Option<(Texture, Made)> {
         let made = self.metal.make_texture(d);
         self.counts.call(made.is_err());
         let texture = made.ok()?;
@@ -2680,23 +2825,47 @@ impl World {
     }
 
     /// Returns a texture a function reads at a slot of `texture_type` and `kind`, made to be read.
-    fn readable(&mut self, random: &mut Random, texture_type: TextureType, kind: Kind) -> Option<(Texture, Made)> {
+    fn readable(
+        &mut self,
+        random: &mut Random,
+        texture_type: TextureType,
+        kind: Kind,
+    ) -> Option<(Texture, Made)> {
         let format = match kind {
-            Kind::Float => random.pick(&[PixelFormat::Rgba8Unorm, PixelFormat::R32Float, PixelFormat::Rgba16Float]),
+            Kind::Float => random.pick(&[
+                PixelFormat::Rgba8Unorm,
+                PixelFormat::R32Float,
+                PixelFormat::Rgba16Float,
+            ]),
             Kind::Uint => random.pick(&[PixelFormat::Rgba8Uint, PixelFormat::R32Uint]),
             Kind::Sint => PixelFormat::Rgba8Sint,
             Kind::Depth => random.pick(&[PixelFormat::Depth32Float, PixelFormat::Depth16Unorm]),
         };
-        let cube = matches!(texture_type, TextureType::TypeCube | TextureType::TypeCubeArray);
+        let cube = matches!(
+            texture_type,
+            TextureType::TypeCube | TextureType::TypeCubeArray
+        );
         let d = TextureDescriptor {
             texture_type,
             pixel_format: format,
             width: 4,
             height: 4,
-            depth: if texture_type == TextureType::Type3D { 4 } else { 1 },
+            depth: if texture_type == TextureType::Type3D {
+                4
+            } else {
+                1
+            },
             mipmap_level_count: 1,
-            sample_count: if texture_type == TextureType::Type2DMultisample { 4 } else { 1 },
-            array_length: if texture_type == TextureType::Type2DArray { 2 } else { 1 },
+            sample_count: if texture_type == TextureType::Type2DMultisample {
+                4
+            } else {
+                1
+            },
+            array_length: if texture_type == TextureType::Type2DArray {
+                2
+            } else {
+                1
+            },
             usage: TextureUsage {
                 shader_read: true,
                 shader_write: false,
@@ -2719,7 +2888,11 @@ impl World {
     }
 
     /// Returns a texture of the pool that `fits`.
-    fn pick_texture(&self, random: &mut Random, fits: impl Fn(&Made) -> bool) -> Option<(Texture, Made)> {
+    fn pick_texture(
+        &self,
+        random: &mut Random,
+        fits: impl Fn(&Made) -> bool,
+    ) -> Option<(Texture, Made)> {
         let of: Vec<&(Texture, Made)> = self.textures.iter().filter(|(_, m)| fits(m)).collect();
         (!of.is_empty()).then(|| of[random.index(of.len())].clone())
     }
@@ -2728,7 +2901,10 @@ impl World {
     fn precise_texture(&mut self, random: &mut Random) {
         let texture_type = random.pick(TEXTURE_TYPES);
         let multisampled = texture_type == TextureType::Type2DMultisample;
-        let cube = matches!(texture_type, TextureType::TypeCube | TextureType::TypeCubeArray);
+        let cube = matches!(
+            texture_type,
+            TextureType::TypeCube | TextureType::TypeCubeArray
+        );
         let pixel_format = match texture_type {
             TextureType::Type2DMultisample => random.pick(&[
                 PixelFormat::Rgba8Unorm,
@@ -2752,7 +2928,11 @@ impl World {
             },
         };
         let side = random.pick(&[1, 2, 3, 4, 5, 8, 16, 32]);
-        let height = if cube { side } else { random.pick(&[side, 1, 2, 4, 7]) };
+        let height = if cube {
+            side
+        } else {
+            random.pick(&[side, 1, 2, 4, 7])
+        };
         let depth = if texture_type == TextureType::Type3D {
             random.pick(&[1, 2, 3, 4, 8])
         } else {
@@ -2770,7 +2950,11 @@ impl World {
             } else {
                 1u32.saturating_add(random.below(u64::from(chain)) as u32)
             },
-            sample_count: if multisampled { random.pick(&[4, 2]) } else { 1 },
+            sample_count: if multisampled {
+                random.pick(&[4, 2])
+            } else {
+                1
+            },
             array_length: match texture_type {
                 TextureType::Type2DArray | TextureType::TypeCubeArray => random.pick(&[1, 2, 3, 4]),
                 _ => 1,
@@ -2791,9 +2975,13 @@ impl World {
             Some(0) => d.width = random.past(most, 0),
             Some(1) if cube => d.height = side.saturating_add(1),
             Some(1) => d.height = random.past(most, 0),
-            Some(2) if texture_type == TextureType::Type3D => d.depth = random.past(MOST_3D_SIDE, 0),
+            Some(2) if texture_type == TextureType::Type3D => {
+                d.depth = random.past(MOST_3D_SIDE, 0)
+            }
             Some(2) => d.depth = random.pick(&[2, 0, u32::MAX]),
-            Some(3) => d.mipmap_level_count = random.pick(&[0, chain.saturating_add(1), u32::MAX, 32]),
+            Some(3) => {
+                d.mipmap_level_count = random.pick(&[0, chain.saturating_add(1), u32::MAX, 32])
+            }
             Some(4) if multisampled => d.sample_count = random.pick(&[0, 1, 3, 16, u32::MAX]),
             Some(4) => d.sample_count = random.pick(&[2, 4, 0, 3]),
             Some(5) => {
@@ -2811,9 +2999,11 @@ impl World {
                         PixelFormat::Depth32Float,
                         PixelFormat::Stencil8,
                     ]),
-                    TextureType::Type2DMultisample => {
-                        random.pick(&[PixelFormat::Bc1Rgba, PixelFormat::Etc2Rgb8, PixelFormat::X32Stencil8])
-                    }
+                    TextureType::Type2DMultisample => random.pick(&[
+                        PixelFormat::Bc1Rgba,
+                        PixelFormat::Etc2Rgb8,
+                        PixelFormat::X32Stencil8,
+                    ]),
                     _ => PixelFormat::X32Stencil8,
                 }
             }
@@ -2865,7 +3055,7 @@ impl World {
             TextureType::Type3D => &[TextureType::Type3D],
             TextureType::Type2DMultisample => &[TextureType::Type2DMultisample],
             TextureType::Type2D => &[TextureType::Type2D, TextureType::Type2DArray],
-            _ if made.width == made.height && made.slices >= CUBE_FACES => &[
+            _ if made.width == made.height && made.slices >= wcontainers_gpu::CUBE_FACES => &[
                 TextureType::Type2D,
                 TextureType::Type2DArray,
                 TextureType::TypeCube,
@@ -2878,60 +3068,78 @@ impl World {
         let (first_slice, slice_count) = match texture_type {
             TextureType::Type2DArray => {
                 let first = random.below(slices);
-                (first, 1u64.saturating_add(random.below(slices.saturating_sub(first))))
+                (
+                    first,
+                    1u64.saturating_add(random.below(slices.saturating_sub(first))),
+                )
             }
             TextureType::TypeCube => (
                 random.below(slices.saturating_sub(5)),
-                u64::from(CUBE_FACES),
+                u64::from(wcontainers_gpu::CUBE_FACES),
             ),
             TextureType::TypeCubeArray => (
                 0,
-                u64::from(CUBE_FACES).saturating_mul(1u64.saturating_add(random.below(slices / 6))),
+                u64::from(wcontainers_gpu::CUBE_FACES).saturating_mul(1u64.saturating_add(random.below(slices / 6))),
             ),
             _ => (random.below(slices), 1),
         };
         let levels = u64::from(made.levels.max(1));
         let first_level = random.below(levels);
         let plain = |f: PixelFormat| !compressed(f) && !depth_or_stencil(f);
-        let pixel_format = if made.usage.pixel_format_view && plain(made.format) && random.chance(40) {
-            let bytes = block(made.format).1;
-            SAME_SIZE
-                .iter()
-                .find(|(size, _)| *size == bytes)
-                .map_or(made.format, |(_, formats)| random.pick(formats))
-        } else if made.usage.pixel_format_view
-            && made.format == PixelFormat::Depth32FloatStencil8
-            && random.chance(30)
-        {
-            PixelFormat::X32Stencil8
-        } else {
-            made.format
-        };
+        let pixel_format =
+            if made.usage.pixel_format_view && plain(made.format) && random.chance(40) {
+                let bytes = block(made.format).1;
+                SAME_SIZE
+                    .iter()
+                    .find(|(size, _)| *size == bytes)
+                    .map_or(made.format, |(_, formats)| random.pick(formats))
+            } else if made.usage.pixel_format_view
+                && made.format == PixelFormat::Depth32FloatStencil8
+                && random.chance(30)
+            {
+                PixelFormat::X32Stencil8
+            } else {
+                made.format
+            };
         let mut d = TextureViewDescriptor {
             pixel_format,
             texture_type,
             first_level: first_level as u32,
-            level_count: 1u64.saturating_add(random.below(levels.saturating_sub(first_level))) as u32,
+            level_count: 1u64.saturating_add(random.below(levels.saturating_sub(first_level)))
+                as u32,
             first_slice: first_slice as u32,
             slice_count: slice_count as u32,
         };
         match random.broken(6) {
-            Some(0) => d.first_level = random.past(made.levels.saturating_sub(d.level_count), d.level_count),
+            Some(0) => {
+                d.first_level =
+                    random.past(made.levels.saturating_sub(d.level_count), d.level_count)
+            }
             Some(1) => d.level_count = random.pick(&[0, made.levels.saturating_add(1), u32::MAX]),
-            Some(2) => d.first_slice = random.past(made.slices.saturating_sub(d.slice_count), d.slice_count),
-            Some(3) => d.slice_count = random.pick(&[0, made.slices.saturating_add(1), u32::MAX, 5]),
+            Some(2) => {
+                d.first_slice =
+                    random.past(made.slices.saturating_sub(d.slice_count), d.slice_count)
+            }
+            Some(3) => {
+                d.slice_count = random.pick(&[0, made.slices.saturating_add(1), u32::MAX, 5])
+            }
             Some(4) => {
                 let others: Vec<PixelFormat> = FORMATS
                     .iter()
                     .copied()
-                    .filter(|f| block(*f) != block(made.format) || depth_or_stencil(*f) != depth_or_stencil(made.format))
+                    .filter(|f| {
+                        block(*f) != block(made.format)
+                            || depth_or_stencil(*f) != depth_or_stencil(made.format)
+                    })
                     .collect();
                 d.pixel_format = random.pick(&others);
             }
             Some(_) => {
                 d.texture_type = match made.texture_type {
                     TextureType::Type3D | TextureType::Type2DMultisample => TextureType::Type2D,
-                    TextureType::Type2D => random.pick(&[TextureType::Type3D, TextureType::TypeCube]),
+                    TextureType::Type2D => {
+                        random.pick(&[TextureType::Type3D, TextureType::TypeCube])
+                    }
                     _ => random.pick(&[TextureType::Type3D, TextureType::Type2DMultisample]),
                 }
             }
@@ -2995,9 +3203,27 @@ impl World {
             2 => region.origin.x = random.past(w.saturating_sub(s.width), s.width),
             3 => region.origin.y = random.past(h.saturating_sub(s.height), s.height),
             4 => region.origin.z = random.past(d.saturating_sub(s.depth), s.depth),
-            5 => region.size.width = random.pick(&[0, w.saturating_sub(region.origin.x).saturating_add(1), u32::MAX]),
-            6 => region.size.height = random.pick(&[0, h.saturating_sub(region.origin.y).saturating_add(1), u32::MAX]),
-            _ => region.size.depth = random.pick(&[0, d.saturating_sub(region.origin.z).saturating_add(1), u32::MAX]),
+            5 => {
+                region.size.width = random.pick(&[
+                    0,
+                    w.saturating_sub(region.origin.x).saturating_add(1),
+                    u32::MAX,
+                ])
+            }
+            6 => {
+                region.size.height = random.pick(&[
+                    0,
+                    h.saturating_sub(region.origin.y).saturating_add(1),
+                    u32::MAX,
+                ])
+            }
+            _ => {
+                region.size.depth = random.pick(&[
+                    0,
+                    d.saturating_sub(region.origin.z).saturating_add(1),
+                    u32::MAX,
+                ])
+            }
         }
     }
 
@@ -3048,20 +3274,34 @@ impl World {
             bytes_per_row = random.pick(&[
                 row.saturating_sub(1),
                 row.saturating_add(1),
-                u64::from(MOST_SIDE / side).saturating_mul(bytes).saturating_add(bytes),
+                u64::from(MOST_SIDE.checked_div(side).unwrap_or(0))
+                    .saturating_mul(bytes)
+                    .saturating_add(bytes),
                 u64::MAX,
                 0,
             ]);
         }
         if w(9) {
-            bytes_per_image = random.pick(&[pitched.saturating_sub(1), u64::MAX / 2 + 1, 1 << 63, u64::MAX]);
+            bytes_per_image = random.pick(&[
+                pitched.saturating_sub(1),
+                u64::MAX / 2 + 1,
+                1 << 63,
+                u64::MAX,
+            ]);
         }
         if w(10) {
-            offset = random.pick(&[offset.saturating_add(1), u64::MAX - 3, held.shadow.borrow().length()]);
+            offset = random.pick(&[
+                offset.saturating_add(1),
+                u64::MAX - 3,
+                held.shadow.borrow().length(),
+            ]);
         }
         if w(11) {
             option = match option {
-                BlitOption::None => random.pick(&[BlitOption::DepthFromDepthStencil, BlitOption::StencilFromDepthStencil]),
+                BlitOption::None => random.pick(&[
+                    BlitOption::DepthFromDepthStencil,
+                    BlitOption::StencilFromDepthStencil,
+                ]),
                 _ => BlitOption::None,
             };
         }
@@ -3084,7 +3324,15 @@ impl World {
             }
         }
         let length = held.shadow.borrow().length();
-        let refuse = buffer_copy_refused(&made, option, &region, bytes_per_row, bytes_per_image, offset, length);
+        let refuse = buffer_copy_refused(
+            &made,
+            option,
+            &region,
+            bytes_per_row,
+            bytes_per_image,
+            offset,
+            length,
+        );
         let mut allowed: Vec<Allowed> = Vec::new();
         let command = if random.chance(50) {
             BlitCommand::CopyFromBufferToTexture {
@@ -3105,7 +3353,9 @@ impl World {
                 BlitOption::StencilFromDepthStencil => PixelFormat::Stencil8,
                 BlitOption::None => made.format,
             };
-            for (start, size) in copy_rows(format, offset, bytes_per_row, bytes_per_image, region.size) {
+            for (start, size) in
+                copy_rows(format, offset, bytes_per_row, bytes_per_image, region.size)
+            {
                 allowed.push((held.shadow.clone(), start, size));
             }
             BlitCommand::CopyFromTextureToBuffer {
@@ -3121,9 +3371,17 @@ impl World {
                 options: option,
             }
         };
-        let refused = self.metal.encode_blit_commands(&command_buffer, &[command]).is_err();
+        let refused = self
+            .metal
+            .encode_blit_commands(&command_buffer, &[command])
+            .is_err();
         self.counts.call(refused);
-        self.taken(refused, refuse, &allowed, &format!("a copy between a buffer and a texture, break {wrong:?}"));
+        self.taken(
+            refused,
+            refuse,
+            &allowed,
+            &format!("a copy between a buffer and a texture, break {wrong:?}"),
+        );
     }
 
     /// Copies a region between two textures, or within one, every field valid but at most one.
@@ -3131,9 +3389,9 @@ impl World {
         let Some(command_buffer) = self.command_buffer(random) else {
             return;
         };
-        let Some((mut source, mut source_made)) =
-            self.pick_texture(random, |m| !m.drawable && m.format != PixelFormat::X32Stencil8)
-        else {
+        let Some((mut source, mut source_made)) = self.pick_texture(random, |m| {
+            !m.drawable && m.format != PixelFormat::X32Stencil8
+        }) else {
             return;
         };
         let wrong = random.broken(11);
@@ -3147,12 +3405,20 @@ impl World {
         let (mut destination, mut destination_made, mut destination_region) = if within || w(9) {
             let mut other = region;
             if !w(9) {
-                other.slice = region.slice.saturating_add(1).checked_rem(source_made.slices).unwrap_or(0);
+                other.slice = region
+                    .slice
+                    .saturating_add(1)
+                    .checked_rem(source_made.slices)
+                    .unwrap_or(0);
             }
             (source.clone(), source_made, other)
         } else {
             let s = region.size;
-            let grow = if random.chance(30) { side.saturating_mul(2) } else { 0 };
+            let grow = if random.chance(30) {
+                side.saturating_mul(2)
+            } else {
+                0
+            };
             let three_d = s.depth > 1;
             let format = if w(7) {
                 let bytes = block(source_made.format).1;
@@ -3209,10 +3475,18 @@ impl World {
             (texture, made, to)
         };
         match wrong {
-            Some(field @ 0..=3) => Self::break_region(random, &source_made, &mut region, [0, 1, 2, 5][field as usize]),
-            Some(field @ 4..=6) => {
-                Self::break_region(random, &destination_made, &mut destination_region, [0, 1, 3][usize::try_from(field).unwrap_or(4).saturating_sub(4)])
-            }
+            Some(field @ 0..=3) => Self::break_region(
+                random,
+                &source_made,
+                &mut region,
+                [0, 1, 2, 5][field as usize],
+            ),
+            Some(field @ 4..=6) => Self::break_region(
+                random,
+                &destination_made,
+                &mut destination_region,
+                [0, 1, 3][usize::try_from(field).unwrap_or(4).saturating_sub(4)],
+            ),
             Some(10) => {
                 // A drawable's texture and one of its format and size, so that only the drawable is wrong.
                 let plain = TextureDescriptor {
@@ -3238,11 +3512,19 @@ impl World {
                         slice: 0,
                         level: 0,
                         origin: Origin { x: 0, y: 0, z: 0 },
-                        size: Size { width: 1, height: 1, depth: 1 },
+                        size: Size {
+                            width: 1,
+                            height: 1,
+                            depth: 1,
+                        },
                     };
                     (region, destination_region) = (first, first);
-                    ((source, source_made), (destination, destination_made)) =
-                        if random.chance(50) { (drawable, other) } else { (other, drawable) };
+                    ((source, source_made), (destination, destination_made)) = if random.chance(50)
+                    {
+                        (drawable, other)
+                    } else {
+                        (other, drawable)
+                    };
                 }
             }
             _ => {}
@@ -3285,9 +3567,17 @@ impl World {
             destination_level: destination_region.level,
             destination_origin: destination_region.origin,
         };
-        let refused = self.metal.encode_blit_commands(&command_buffer, &[command]).is_err();
+        let refused = self
+            .metal
+            .encode_blit_commands(&command_buffer, &[command])
+            .is_err();
         self.counts.call(refused);
-        self.taken(refused, refuse, &[], &format!("a copy between textures, break {wrong:?}"));
+        self.taken(
+            refused,
+            refuse,
+            &[],
+            &format!("a copy between textures, break {wrong:?}"),
+        );
     }
 
     /// Copies bytes between buffers or fills a range, every field valid but at most one.
@@ -3299,34 +3589,59 @@ impl World {
             return;
         };
         let same = random.chance(25);
-        let Some(destination) = (if same { Some(source.clone()) } else { self.buffer_of(random, 64) }) else {
+        let Some(destination) = (if same {
+            Some(source.clone())
+        } else {
+            self.buffer_of(random, 64)
+        }) else {
             return;
         };
-        let (source_length, destination_length) = (source.shadow.borrow().length(), destination.shadow.borrow().length());
+        let (source_length, destination_length) = (
+            source.shadow.borrow().length(),
+            destination.shadow.borrow().length(),
+        );
         let words = |n: u64| n / 4;
-        let mut size = 4u64.saturating_mul(1u64.saturating_add(random.below(words(source_length.min(destination_length)).min(16))));
-        let mut source_offset = 4u64.saturating_mul(random.below(words(source_length.saturating_sub(size)).saturating_add(1)));
-        let mut destination_offset = 4u64.saturating_mul(random.below(words(destination_length.saturating_sub(size)).saturating_add(1)));
+        let mut size = 4u64.saturating_mul(
+            1u64.saturating_add(random.below(words(source_length.min(destination_length)).min(16))),
+        );
+        let mut source_offset = 4u64.saturating_mul(
+            random.below(words(source_length.saturating_sub(size)).saturating_add(1)),
+        );
+        let mut destination_offset = 4u64.saturating_mul(
+            random.below(words(destination_length.saturating_sub(size)).saturating_add(1)),
+        );
         if same && random.chance(90) {
             // Two ranges apart: the second after the first, if the buffer holds both.
             source_offset = 0;
             destination_offset = size;
-            size = size.min(source_length / 2 / 4 * 4).max(4);
+            size = size
+                .min(source_length.checked_div(8).unwrap_or(0).saturating_mul(4))
+                .max(4);
         }
         let fill = random.chance(40);
         match random.broken(6) {
             Some(0) => size = 0,
             Some(1) => size = size.saturating_add(random.pick(&[1, 2, 3])),
             Some(2) => source_offset = random.past_64(source_length.saturating_sub(size), size),
-            Some(3) => destination_offset = random.past_64(destination_length.saturating_sub(size), size),
+            Some(3) => {
+                destination_offset = random.past_64(destination_length.saturating_sub(size), size)
+            }
             Some(4) => destination_offset = destination_offset.saturating_add(2),
-            Some(_) if same => destination_offset = source_offset.saturating_add(random.pick(&[0, 4]).min(size.saturating_sub(4))),
+            Some(_) if same => {
+                destination_offset =
+                    source_offset.saturating_add(random.pick(&[0, 4]).min(size.saturating_sub(4)))
+            }
             _ => {}
         }
-        let inside = |offset: u64, length: u64| offset.checked_add(size).is_some_and(|end| end <= length);
-        let words_ok = [size, source_offset, destination_offset].iter().all(|n| n.is_multiple_of(4));
+        let inside =
+            |offset: u64, length: u64| offset.checked_add(size).is_some_and(|end| end <= length);
+        let words_ok = [size, source_offset, destination_offset]
+            .iter()
+            .all(|n| n.is_multiple_of(4));
         let (command, refuse, allowed): (BlitCommand<M>, bool, Vec<Allowed>) = if fill {
-            let refuse = size == 0 || !size.is_multiple_of(4) || !destination_offset.is_multiple_of(4)
+            let refuse = size == 0
+                || !size.is_multiple_of(4)
+                || !destination_offset.is_multiple_of(4)
                 || !inside(destination_offset, destination_length);
             (
                 BlitCommand::FillBuffer {
@@ -3344,7 +3659,9 @@ impl World {
                 || !words_ok
                 || !inside(source_offset, source_length)
                 || !inside(destination_offset, destination_length)
-                || same && !(apart(source_offset, destination_offset) || apart(destination_offset, source_offset));
+                || same
+                    && !(apart(source_offset, destination_offset)
+                        || apart(destination_offset, source_offset));
             (
                 BlitCommand::CopyFromBufferToBuffer {
                     source_buffer: source.buffer.clone(),
@@ -3357,7 +3674,10 @@ impl World {
                 vec![(destination.shadow.clone(), destination_offset, size)],
             )
         };
-        let refused = self.metal.encode_blit_commands(&command_buffer, &[command]).is_err();
+        let refused = self
+            .metal
+            .encode_blit_commands(&command_buffer, &[command])
+            .is_err();
         self.counts.call(refused);
         self.taken(refused, refuse, &allowed, "a copy or fill of bytes");
     }
@@ -3368,12 +3688,18 @@ impl World {
             return;
         };
         let filtered = |m: &Made| {
-            m.levels > 1 && kind_of(m.format) == Kind::Float && !compressed(m.format) && m.samples == 1 && !m.drawable
+            m.levels > 1
+                && kind_of(m.format) == Kind::Float
+                && !compressed(m.format)
+                && m.samples == 1
+                && !m.drawable
         };
         let wrong = random.broken(4);
         let found = match wrong {
             Some(0) => self.pick_texture(random, |m| m.levels == 1 && !m.drawable),
-            Some(1) => self.pick_texture(random, |m| m.levels > 1 && kind_of(m.format) != Kind::Float),
+            Some(1) => {
+                self.pick_texture(random, |m| m.levels > 1 && kind_of(m.format) != Kind::Float)
+            }
             Some(2) => self.pick_texture(random, |m| m.levels > 1 && compressed(m.format)),
             Some(_) => self.pick_texture(random, |m| m.drawable),
             None => None,
@@ -3390,7 +3716,11 @@ impl World {
                     PixelFormat::Rgba8UnormSrgb,
                 ]);
                 let d = TextureDescriptor {
-                    texture_type: random.pick(&[TextureType::Type2D, TextureType::Type2DArray, TextureType::Type3D]),
+                    texture_type: random.pick(&[
+                        TextureType::Type2D,
+                        TextureType::Type2DArray,
+                        TextureType::Type3D,
+                    ]),
                     pixel_format: format,
                     width: 8,
                     height: 8,
@@ -3431,10 +3761,19 @@ impl World {
         let vertex = random.pick(&["vs_plain", "vs_pulled", "vs_inputs"]);
         let fragment = random.chance(85).then(|| {
             random.pick(&[
-                "fs_color", "fs_uint", "fs_sint", "fs_two", "fs_write", "fs_textures", "fs_sample_f", "fs_load_u", "fs_imm",
+                "fs_color",
+                "fs_uint",
+                "fs_sint",
+                "fs_two",
+                "fs_write",
+                "fs_textures",
+                "fs_sample_f",
+                "fs_load_u",
+                "fs_imm",
             ])
         });
-        let mut colors: [Option<RenderPipelineColorAttachmentDescriptor>; MAX_COLOR_ATTACHMENTS] = [None; MAX_COLOR_ATTACHMENTS];
+        let mut colors: [Option<RenderPipelineColorAttachmentDescriptor>; MAX_COLOR_ATTACHMENTS] =
+            [None; MAX_COLOR_ATTACHMENTS];
         let kinds: &[Kind] = match fragment {
             Some(entry) => outputs(entry),
             None if random.chance(70) => &[Kind::Float],
@@ -3466,7 +3805,11 @@ impl World {
             });
         }
         let mut depth = random.chance(40).then(|| {
-            random.pick(&[PixelFormat::Depth32Float, PixelFormat::Depth16Unorm, PixelFormat::Depth32FloatStencil8])
+            random.pick(&[
+                PixelFormat::Depth32Float,
+                PixelFormat::Depth16Unorm,
+                PixelFormat::Depth32FloatStencil8,
+            ])
         });
         let mut stencil = match depth {
             Some(PixelFormat::Depth32FloatStencil8) if random.chance(70) => depth,
@@ -3483,16 +3826,36 @@ impl World {
         ]);
         let first_float = colors[0].is_some_and(|c| kind_of(c.pixel_format) == Kind::Float);
         let mut alpha_to_coverage = first_float && random.chance(10);
-        let (mut vertex_function, mut fragment_function) = (self.plain(vertex), fragment.and_then(|f| self.plain(f)));
+        let (mut vertex_function, mut fragment_function) =
+            (self.plain(vertex), fragment.and_then(|f| self.plain(f)));
         let wrong = random.broken(11);
         let mut refuse = wrong.is_some();
         match wrong {
             Some(0) => vertex_function = self.plain(random.pick(&["fs_color", "cs_scatter"])),
-            Some(1) if fragment_function.is_some() => fragment_function = self.plain(random.pick(&["vs_plain", "cs_shared"])),
+            Some(1) if fragment_function.is_some() => {
+                fragment_function = self.plain(random.pick(&["vs_plain", "cs_shared"]))
+            }
             Some(2) => samples = random.pick(&[3, 0, 16, u32::MAX]),
-            Some(3) => depth = Some(random.pick(&[PixelFormat::Stencil8, PixelFormat::Rgba8Unorm, PixelFormat::X32Stencil8])),
-            Some(4) => stencil = Some(random.pick(&[PixelFormat::Depth32Float, PixelFormat::X32Stencil8, PixelFormat::R8Uint])),
-            Some(5) => (depth, stencil) = (Some(PixelFormat::Depth32FloatStencil8), Some(PixelFormat::Stencil8)),
+            Some(3) => {
+                depth = Some(random.pick(&[
+                    PixelFormat::Stencil8,
+                    PixelFormat::Rgba8Unorm,
+                    PixelFormat::X32Stencil8,
+                ]))
+            }
+            Some(4) => {
+                stencil = Some(random.pick(&[
+                    PixelFormat::Depth32Float,
+                    PixelFormat::X32Stencil8,
+                    PixelFormat::R8Uint,
+                ]))
+            }
+            Some(5) => {
+                (depth, stencil) = (
+                    Some(PixelFormat::Depth32FloatStencil8),
+                    Some(PixelFormat::Stencil8),
+                )
+            }
             Some(6) => {
                 colors[0] = Some(RenderPipelineColorAttachmentDescriptor {
                     pixel_format: PixelFormat::Rgba8Unorm,
@@ -3504,24 +3867,48 @@ impl World {
                         source_alpha_blend_factor: BlendFactor::One,
                         destination_alpha_blend_factor: BlendFactor::Zero,
                     }),
-                    write_mask: ColorWriteMask { red: true, green: true, blue: true, alpha: true },
+                    write_mask: ColorWriteMask {
+                        red: true,
+                        green: true,
+                        blue: true,
+                        alpha: true,
+                    },
                 });
-                let at = 1usize.saturating_add(random.index(MAX_COLOR_ATTACHMENTS.saturating_sub(1)));
-                colors[at] = Some(RenderPipelineColorAttachmentDescriptor { blending: None, ..colors[0].unwrap_or_else(|| unreachable!()) });
+                let at =
+                    1usize.saturating_add(random.index(MAX_COLOR_ATTACHMENTS.saturating_sub(1)));
+                colors[at] = Some(RenderPipelineColorAttachmentDescriptor {
+                    blending: None,
+                    ..colors[0].unwrap_or_else(|| unreachable!())
+                });
             }
             Some(7) => {
                 let at = random.index(MAX_COLOR_ATTACHMENTS);
                 colors[at] = Some(RenderPipelineColorAttachmentDescriptor {
-                    pixel_format: random.pick(&[PixelFormat::Depth32Float, PixelFormat::Bc1Rgba, PixelFormat::Stencil8, PixelFormat::Astc4x4Ldr]),
+                    pixel_format: random.pick(&[
+                        PixelFormat::Depth32Float,
+                        PixelFormat::Bc1Rgba,
+                        PixelFormat::Stencil8,
+                        PixelFormat::Astc4x4Ldr,
+                    ]),
                     blending: None,
-                    write_mask: ColorWriteMask { red: true, green: true, blue: true, alpha: true },
+                    write_mask: ColorWriteMask {
+                        red: true,
+                        green: true,
+                        blue: true,
+                        alpha: true,
+                    },
                 });
             }
             Some(8) => {
                 colors[0] = Some(RenderPipelineColorAttachmentDescriptor {
                     pixel_format: PixelFormat::Rgb9e5Float,
                     blending: None,
-                    write_mask: ColorWriteMask { red: true, green: false, blue: true, alpha: random.chance(50) },
+                    write_mask: ColorWriteMask {
+                        red: true,
+                        green: false,
+                        blue: true,
+                        alpha: random.chance(50),
+                    },
                 });
             }
             Some(9) => {
@@ -3535,14 +3922,24 @@ impl World {
                         source_alpha_blend_factor: BlendFactor::One,
                         destination_alpha_blend_factor: BlendFactor::One,
                     }),
-                    write_mask: ColorWriteMask { red: true, green: true, blue: true, alpha: true },
+                    write_mask: ColorWriteMask {
+                        red: true,
+                        green: true,
+                        blue: true,
+                        alpha: true,
+                    },
                 });
             }
             Some(_) => {
                 colors[0] = Some(RenderPipelineColorAttachmentDescriptor {
                     pixel_format: random.pick(SINT_TARGETS),
                     blending: None,
-                    write_mask: ColorWriteMask { red: true, green: true, blue: true, alpha: true },
+                    write_mask: ColorWriteMask {
+                        red: true,
+                        green: true,
+                        blue: true,
+                        alpha: true,
+                    },
                 });
                 alpha_to_coverage = true;
             }
@@ -3554,17 +3951,19 @@ impl World {
         let Some(vertex_function) = vertex_function else {
             return;
         };
-        let made = self.metal.make_render_pipeline_state(&RenderPipelineDescriptor {
-            vertex_function: &vertex_function,
-            fragment_function: fragment_function.as_ref(),
-            color_attachments: colors,
-            depth_attachment_pixel_format: depth,
-            stencil_attachment_pixel_format: stencil,
-            raster_sample_count: samples,
-            alpha_to_coverage_enabled: alpha_to_coverage,
-            rasterization_enabled: random.chance(95),
-            input_primitive_topology: topology,
-        });
+        let made = self
+            .metal
+            .make_render_pipeline_state(&RenderPipelineDescriptor {
+                vertex_function: &vertex_function,
+                fragment_function: fragment_function.as_ref(),
+                color_attachments: colors,
+                depth_attachment_pixel_format: depth,
+                stencil_attachment_pixel_format: stencil,
+                raster_sample_count: samples,
+                alpha_to_coverage_enabled: alpha_to_coverage,
+                rasterization_enabled: random.chance(95),
+                input_primitive_topology: topology,
+            });
         self.counts.call(made.is_err());
         self.must(made.is_err(), refuse, "a render pipeline");
         if let Ok(state) = made
@@ -3595,7 +3994,11 @@ impl World {
         render_target: bool,
     ) -> Option<Target> {
         let aspect = depth_or_stencil(format);
-        let layout = if samples > 1 { 0 } else if aspect && layout == 3 { 0 } else { layout };
+        let layout = if samples > 1 || aspect && layout == 3 {
+            0
+        } else {
+            layout
+        };
         let (texture_type, width, levels, array_length, depth) = match layout {
             1 => (TextureType::Type2DArray, side, 1, 3, 1),
             2 => (TextureType::Type2D, side.saturating_mul(2), 2, 1, 1),
@@ -3627,8 +4030,16 @@ impl World {
             texture,
             made: Made::of(&d),
             level: if layout == 2 { 1 } else { 0 },
-            slice: if layout == 1 { 1u32.saturating_add(random.below(2) as u32) } else { 0 },
-            plane: if layout == 3 { random.below(4) as u32 } else { 0 },
+            slice: if layout == 1 {
+                1u32.saturating_add(random.below(2) as u32)
+            } else {
+                0
+            },
+            plane: if layout == 3 {
+                random.below(4) as u32
+            } else {
+                0
+            },
         })
     }
 
@@ -3648,7 +4059,7 @@ impl World {
         let w = |k| wrong == Some(k);
         let all = needs(entry);
         // The one read the break is about: each kind of break takes the first read it applies to.
-        let target = |pred: &dyn Fn(&Need) -> bool| all.iter().position(|n| pred(n));
+        let target = |pred: &dyn Fn(&Need) -> bool| all.iter().position(pred);
         let buffer_at = target(&|n| matches!(n, Need::Buffer { .. }));
         let written_at = target(&|n| matches!(n, Need::Buffer { written: true, .. }));
         let texture_at = target(&|n| matches!(n, Need::Texture { .. }));
@@ -3656,7 +4067,12 @@ impl World {
         for (at, need) in all.iter().enumerate() {
             let here = Some(at);
             match *need {
-                Need::Buffer { slot, least, align, written } => {
+                Need::Buffer {
+                    slot,
+                    least,
+                    align,
+                    written,
+                } => {
                     if w(3) && here == buffer_at {
                         broke = true;
                         continue;
@@ -3689,20 +4105,48 @@ impl World {
                         allowed.push((held.shadow.clone(), offset, length));
                     }
                     commands.push(if vertex {
-                        RenderCommand::SetVertexBuffer { buffer: held.buffer, offset, length, index: slot }
+                        RenderCommand::SetVertexBuffer {
+                            buffer: held.buffer,
+                            offset,
+                            length,
+                            index: slot,
+                        }
                     } else {
-                        RenderCommand::SetFragmentBuffer { buffer: held.buffer, offset, length, index: slot }
+                        RenderCommand::SetFragmentBuffer {
+                            buffer: held.buffer,
+                            offset,
+                            length,
+                            index: slot,
+                        }
                     });
                 }
-                Need::Texture { slot, texture_type, kind } => {
+                Need::Texture {
+                    slot,
+                    texture_type,
+                    kind,
+                } => {
                     if w(7) && here == texture_at {
                         broke = true;
                         continue;
                     }
                     let found = if w(8) && here == texture_at {
                         broke = true;
-                        let other = random.pick(&TEXTURE_TYPES.iter().copied().filter(|t| *t != texture_type).collect::<Vec<_>>());
-                        self.readable(random, other, if kind == Kind::Depth { Kind::Float } else { kind })
+                        let other = random.pick(
+                            &TEXTURE_TYPES
+                                .iter()
+                                .copied()
+                                .filter(|t| *t != texture_type)
+                                .collect::<Vec<_>>(),
+                        );
+                        self.readable(
+                            random,
+                            other,
+                            if kind == Kind::Depth {
+                                Kind::Float
+                            } else {
+                                kind
+                            },
+                        )
                     } else if w(9) && here == texture_at {
                         broke = true;
                         let other = match kind {
@@ -3724,9 +4168,15 @@ impl World {
                         continue;
                     };
                     commands.push(if vertex {
-                        RenderCommand::SetVertexTexture { texture, index: slot }
+                        RenderCommand::SetVertexTexture {
+                            texture,
+                            index: slot,
+                        }
                     } else {
-                        RenderCommand::SetFragmentTexture { texture, index: slot }
+                        RenderCommand::SetFragmentTexture {
+                            texture,
+                            index: slot,
+                        }
                     });
                 }
                 Need::Sampler { slot } => {
@@ -3738,9 +4188,15 @@ impl World {
                         continue;
                     };
                     commands.push(if vertex {
-                        RenderCommand::SetVertexSamplerState { sampler, index: slot }
+                        RenderCommand::SetVertexSamplerState {
+                            sampler,
+                            index: slot,
+                        }
                     } else {
-                        RenderCommand::SetFragmentSamplerState { sampler, index: slot }
+                        RenderCommand::SetFragmentSamplerState {
+                            sampler,
+                            index: slot,
+                        }
                     });
                 }
             }
@@ -3789,24 +4245,33 @@ impl World {
             let render_target = !(w(22) && Some(at) == first_color);
             refuse |= !render_target;
             let grow = w(24) && at > 0;
-            colors.push(self.target(random, format, samples, if grow { side.saturating_mul(2) } else { side }, layout, render_target));
+            colors.push(self.target(
+                random,
+                format,
+                samples,
+                if grow { side.saturating_mul(2) } else { side },
+                layout,
+                render_target,
+            ));
             refuse |= grow;
         }
         if w(2) && first_color.is_none() {
             colors[0] = self.target(random, PixelFormat::Rgba8Unorm, samples, side, layout, true);
             refuse = true;
         }
-        if w(28) && p.colors[0].is_some() && p.colors[1].is_some() {
-            if let Some(first) = &colors[0] {
-                colors[1] = Some(Target {
-                    texture: first.texture.clone(),
-                    made: first.made,
-                    level: first.level,
-                    slice: first.slice,
-                    plane: first.plane,
-                });
-                refuse = true;
-            }
+        if w(28)
+            && p.colors[0].is_some()
+            && p.colors[1].is_some()
+            && let Some(first) = &colors[0]
+        {
+            colors[1] = Some(Target {
+                texture: first.texture.clone(),
+                made: first.made,
+                level: first.level,
+                slice: first.slice,
+                plane: first.plane,
+            });
+            refuse = true;
         }
         // Resolves of a multisampled first target, into one of its format and size.
         let mut resolve: Option<Target> = None;
@@ -3823,7 +4288,13 @@ impl World {
                 if w(27) {
                     refuse = true;
                     match random.below(4) {
-                        0 => format_to = if format == PixelFormat::Rgba8Unorm { PixelFormat::Bgra8Unorm } else { PixelFormat::Rgba8Unorm },
+                        0 => {
+                            format_to = if format == PixelFormat::Rgba8Unorm {
+                                PixelFormat::Bgra8Unorm
+                            } else {
+                                PixelFormat::Rgba8Unorm
+                            }
+                        }
                         1 => samples_to = 4,
                         2 => side_to = level_side.saturating_mul(2),
                         _ => resolve_level = random.past(0, 0),
@@ -3841,16 +4312,34 @@ impl World {
         let mut depth: Option<Target> = None;
         let mut stencil: Option<Target> = None;
         if let Some(format) = p.depth {
-            let format = if w(26) && p.stencil != p.depth { PixelFormat::Rgba8Unorm } else { format };
+            let format = if w(26) && p.stencil != p.depth {
+                PixelFormat::Rgba8Unorm
+            } else {
+                format
+            };
             refuse |= w(26) && p.stencil != p.depth;
-            depth = self.target(random, format, samples, if w(24) { side.saturating_mul(2) } else { side }, layout, true);
+            depth = self.target(
+                random,
+                format,
+                samples,
+                if w(24) { side.saturating_mul(2) } else { side },
+                layout,
+                true,
+            );
             refuse |= w(24);
         }
         if let Some(format) = p.stencil {
-            if p.stencil == p.depth && !w(26)
+            if p.stencil == p.depth
+                && !w(26)
                 && let Some(d) = &depth
             {
-                stencil = Some(Target { texture: d.texture.clone(), made: d.made, level: d.level, slice: d.slice, plane: 0 });
+                stencil = Some(Target {
+                    texture: d.texture.clone(),
+                    made: d.made,
+                    level: d.level,
+                    slice: d.slice,
+                    plane: 0,
+                });
             } else {
                 stencil = self.target(random, format, samples, side, layout, true);
                 refuse |= w(26) && p.stencil == p.depth;
@@ -3885,7 +4374,10 @@ impl World {
                 t.slice = random.past(t.made.slices.saturating_sub(1), 0);
             }
         }
-        let attachments = colors.iter().flatten().count()
+        let attachments = colors
+            .iter()
+            .flatten()
+            .count()
             .saturating_add(depth.iter().count())
             .saturating_add(usize::from(stencil.is_some() && p.stencil != p.depth));
         if w(24) && area.is_some() && attachments < 2 {
@@ -3921,27 +4413,61 @@ impl World {
         }
         let read_break = wrong.filter(|k| (3..=11).contains(k));
         let vertex_breaks = random.chance(50);
-        refuse |= self.bind_reads(random, p.vertex, true, read_break.filter(|_| vertex_breaks), &mut commands, &mut allowed);
+        refuse |= self.bind_reads(
+            random,
+            p.vertex,
+            true,
+            read_break.filter(|_| vertex_breaks),
+            &mut commands,
+            &mut allowed,
+        );
         if let Some(fragment) = p.fragment {
-            refuse |= self.bind_reads(random, fragment, false, read_break.filter(|_| !vertex_breaks), &mut commands, &mut allowed);
+            refuse |= self.bind_reads(
+                random,
+                fragment,
+                false,
+                read_break.filter(|_| !vertex_breaks),
+                &mut commands,
+                &mut allowed,
+            );
         }
         // Vertex inputs for the functions that read them, of the strides they were compiled for.
         if random.chance(50)
             && let Some(held) = self.buffer_of(random, 256)
         {
-            commands.push(RenderCommand::SetVertexBuffer { buffer: held.buffer, offset: 0, length: 256, index: VERTEX_SLOTS[0] });
+            commands.push(RenderCommand::SetVertexBuffer {
+                buffer: held.buffer,
+                offset: 0,
+                length: 256,
+                index: VERTEX_SLOTS[0],
+            });
         }
         if w(12) {
             refuse = true;
             commands.push(match random.below(3) {
-                0 => RenderCommand::SetFragmentBytes { bytes: vec![0; 16], index: random.past(30, 0) },
+                0 => RenderCommand::SetFragmentBytes {
+                    bytes: vec![0; 16],
+                    index: random.past(30, 0),
+                },
                 1 => match any(random, &self.textures) {
-                    Some((texture, _)) => RenderCommand::SetFragmentTexture { texture, index: random.past(127, 0) },
-                    None => RenderCommand::SetVertexBytes { bytes: vec![0; 4], index: 31 },
+                    Some((texture, _)) => RenderCommand::SetFragmentTexture {
+                        texture,
+                        index: random.past(127, 0),
+                    },
+                    None => RenderCommand::SetVertexBytes {
+                        bytes: vec![0; 4],
+                        index: 31,
+                    },
                 },
                 _ => match any(random, &self.samplers) {
-                    Some(sampler) => RenderCommand::SetVertexSamplerState { sampler, index: random.past(15, 0) },
-                    None => RenderCommand::SetVertexBytes { bytes: vec![0; 4], index: u32::MAX },
+                    Some(sampler) => RenderCommand::SetVertexSamplerState {
+                        sampler,
+                        index: random.past(15, 0),
+                    },
+                    None => RenderCommand::SetVertexBytes {
+                        bytes: vec![0; 4],
+                        index: u32::MAX,
+                    },
                 },
             });
         }
@@ -3960,25 +4486,60 @@ impl World {
             refuse = true;
         }
         if w(14) {
-            commands.push(RenderCommand::SetVertexBytes { bytes: vec![0; random.pick(&[4097, 8192, 65536])], index: 6 });
+            commands.push(RenderCommand::SetVertexBytes {
+                bytes: vec![0; random.pick(&[4097, 8192, 65536])],
+                index: 6,
+            });
             refuse = true;
         }
         let viewports = if w(15) {
             refuse = true;
             match random.below(3) {
                 0 => Vec::new(),
-                1 => vec![Viewport { origin_x: 0.0, origin_y: 0.0, width: 4.0, height: 4.0, znear: 0.0, zfar: 1.0 }; 17],
-                _ => vec![Viewport { origin_x: random.pick(&[f64::NAN, f64::INFINITY]), origin_y: 0.0, width: 4.0, height: 4.0, znear: 0.0, zfar: 1.0 }],
+                1 => vec![
+                    Viewport {
+                        origin_x: 0.0,
+                        origin_y: 0.0,
+                        width: 4.0,
+                        height: 4.0,
+                        znear: 0.0,
+                        zfar: 1.0
+                    };
+                    17
+                ],
+                _ => vec![Viewport {
+                    origin_x: random.pick(&[f64::NAN, f64::INFINITY]),
+                    origin_y: 0.0,
+                    width: 4.0,
+                    height: 4.0,
+                    znear: 0.0,
+                    zfar: 1.0,
+                }],
             }
         } else {
-            vec![Viewport { origin_x: 0.0, origin_y: 0.0, width: f64::from(width), height: f64::from(width), znear: 0.0, zfar: 1.0 }; 1usize.saturating_add(random.index(2))]
+            vec![
+                Viewport {
+                    origin_x: 0.0,
+                    origin_y: 0.0,
+                    width: f64::from(width),
+                    height: f64::from(width),
+                    znear: 0.0,
+                    zfar: 1.0
+                };
+                1usize.saturating_add(random.index(2))
+            ]
         };
         if w(15) || random.chance(40) {
             commands.push(RenderCommand::SetViewports(viewports));
         }
         if w(16) || random.chance(40) {
             let inside = width.max(1);
-            let mut rect = ScissorRect { x: 0, y: 0, width: inside, height: inside };
+            let mut rect = ScissorRect {
+                x: 0,
+                y: 0,
+                width: inside,
+                height: inside,
+            };
             let mut count = 1usize;
             if w(16) {
                 refuse = true;
@@ -3996,7 +4557,10 @@ impl World {
             refuse = true;
             let short = self.metal.make_buffer(random.pick(&[0, 4, 7]));
             self.counts.call(short.is_err());
-            short.ok().map(|buffer| Held { buffer, shadow: Shadow::new(0) })
+            short.ok().map(|buffer| Held {
+                buffer,
+                shadow: Shadow::new(0),
+            })
         } else if w(17) || random.chance(25) {
             self.buffer_of(random, 64)
         } else {
@@ -4005,26 +4569,35 @@ impl World {
         if let Some(held) = &visibility {
             let length = held.shadow.borrow().length();
             for at in 0..random.below(3).saturating_add(1) {
-                let offset = at.saturating_mul(RESULT_BYTES);
-                allowed.push((held.shadow.clone(), offset, RESULT_BYTES));
+                let offset = at.saturating_mul(wcontainers_metal::VISIBILITY_RESULT_BYTES);
+                allowed.push((held.shadow.clone(), offset, wcontainers_metal::VISIBILITY_RESULT_BYTES));
                 commands.push(RenderCommand::SetVisibilityResultMode {
-                    mode: random.pick(&[VisibilityResultMode::Boolean, VisibilityResultMode::Counting]),
+                    mode: random.pick(&[
+                        VisibilityResultMode::Boolean,
+                        VisibilityResultMode::Counting,
+                    ]),
                     offset,
                 });
             }
             if w(17) {
                 refuse = true;
                 let offset = match random.below(4) {
-                    0 => RESULT_BYTES.saturating_add(random.pick(&[1, 4])),
+                    0 => wcontainers_metal::VISIBILITY_RESULT_BYTES.saturating_add(random.pick(&[1, 4])),
                     1 => random.pick(&[VISIBILITY_SPAN, u64::MAX - 7, 1 << 63]),
-                    2 => length.next_multiple_of(RESULT_BYTES),
+                    2 => length.next_multiple_of(wcontainers_metal::VISIBILITY_RESULT_BYTES),
                     _ => 0,
                 };
-                commands.push(RenderCommand::SetVisibilityResultMode { mode: VisibilityResultMode::Counting, offset });
+                commands.push(RenderCommand::SetVisibilityResultMode {
+                    mode: VisibilityResultMode::Counting,
+                    offset,
+                });
             }
         } else if w(17) {
             refuse = true;
-            commands.push(RenderCommand::SetVisibilityResultMode { mode: VisibilityResultMode::Counting, offset: 0 });
+            commands.push(RenderCommand::SetVisibilityResultMode {
+                mode: VisibilityResultMode::Counting,
+                offset: 0,
+            });
         }
         // The draw.
         let other_class = w(20);
@@ -4038,18 +4611,35 @@ impl World {
             if w(18) {
                 refuse = true;
                 match random.below(3) {
-                    0 => vertex_start = random.past(u32::MAX.saturating_sub(vertex_count), vertex_count).max(u32::MAX - 2),
+                    0 => {
+                        vertex_start = random
+                            .past(u32::MAX.saturating_sub(vertex_count), vertex_count)
+                            .max(u32::MAX - 2)
+                    }
                     1 => base_instance = u32::MAX.saturating_sub(random.below(1) as u32),
                     _ => instance_count = 0,
                 }
             }
-            commands.push(RenderCommand::DrawPrimitives { primitive_type, vertex_start, vertex_count, instance_count, base_instance });
+            commands.push(RenderCommand::DrawPrimitives {
+                primitive_type,
+                vertex_start,
+                vertex_count,
+                instance_count,
+                base_instance,
+            });
         } else {
             let index_type = random.pick(&[IndexType::UInt16, IndexType::UInt32]);
-            let size: u64 = if index_type == IndexType::UInt16 { 2 } else { 4 };
+            let size: u64 = if index_type == IndexType::UInt16 {
+                2
+            } else {
+                4
+            };
             let mut index_count = 3u32.saturating_add(random.below(6) as u32);
             let mut offset = size.saturating_mul(random.below(4));
-            let Some(held) = self.buffer_of(random, offset.saturating_add(u64::from(index_count).saturating_mul(size))) else {
+            let Some(held) = self.buffer_of(
+                random,
+                offset.saturating_add(u64::from(index_count).saturating_mul(size)),
+            ) else {
                 return;
             };
             let mut instance_count = 1u32.saturating_add(random.below(2) as u32);
@@ -4058,7 +4648,13 @@ impl World {
                 refuse = true;
                 match random.below(4) {
                     0 => offset = offset.saturating_add(1),
-                    1 => index_count = u32::try_from(held.shadow.borrow().length() / size).unwrap_or(u32::MAX).saturating_add(1),
+                    1 => {
+                        index_count = u32::try_from(
+                            held.shadow.borrow().length().checked_div(size).unwrap_or(0),
+                        )
+                        .unwrap_or(u32::MAX)
+                        .saturating_add(1)
+                    }
                     2 => index_count = 0,
                     _ => {
                         base_instance = u32::MAX;
@@ -4082,7 +4678,9 @@ impl World {
             });
         }
         // The pass.
-        let load = |random: &mut Random| random.pick(&[LoadAction::Clear, LoadAction::Load, LoadAction::DontCare]);
+        let load = |random: &mut Random| {
+            random.pick(&[LoadAction::Clear, LoadAction::Load, LoadAction::DontCare])
+        };
         let store = |random: &mut Random| random.pick(&[StoreAction::Store, StoreAction::DontCare]);
         let mut color_attachments = [const { None }; MAX_COLOR_ATTACHMENTS];
         for (at, slot) in color_attachments.iter_mut().enumerate() {
@@ -4098,7 +4696,12 @@ impl World {
                     resolve: (Some(at) == first_color)
                         .then_some(resolve.as_ref())
                         .flatten()
-                        .map(|r| ResolveTarget { texture: &r.texture, level: resolve_level, slice: 0, depth_plane: 0 }),
+                        .map(|r| ResolveTarget {
+                            texture: &r.texture,
+                            level: resolve_level,
+                            slice: 0,
+                            depth_plane: 0,
+                        }),
                 });
             }
         }
@@ -4140,9 +4743,17 @@ impl World {
             refuse = true;
             let _ = self.metal.commit(&command_buffer);
         }
-        let refused = self.metal.encode_render_commands(&command_buffer, &pass, &commands).is_err();
+        let refused = self
+            .metal
+            .encode_render_commands(&command_buffer, &pass, &commands)
+            .is_err();
         self.counts.call(refused);
-        self.taken(refused, refuse, &allowed, &format!("a precise render pass, break {wrong:?}"));
+        self.taken(
+            refused,
+            refuse,
+            &allowed,
+            &format!("a precise render pass, break {wrong:?}"),
+        );
     }
 
     /// Encodes a dispatch of an unmangled compute function, every field valid but at most one.
@@ -4150,7 +4761,13 @@ impl World {
         let Some(command_buffer) = self.command_buffer(random) else {
             return;
         };
-        let entry = random.pick(&["cs_scatter", "cs_shared", "cs_textures", "cs_wide", "cs_big"]);
+        let entry = random.pick(&[
+            "cs_scatter",
+            "cs_shared",
+            "cs_textures",
+            "cs_wide",
+            "cs_big",
+        ]);
         let Some(function) = self.plain(entry) else {
             return;
         };
@@ -4160,7 +4777,11 @@ impl World {
         if too_large && std::env::var("FUZZ_SHOW_PLAIN").is_ok() {
             eprintln!("PLAIN {entry}: {:?}", pipeline.as_ref().err());
         }
-        self.must(pipeline.is_err(), too_large, "a compute pipeline past the device's threads or memory");
+        self.must(
+            pipeline.is_err(),
+            too_large,
+            "a compute pipeline past the device's threads or memory",
+        );
         let Ok(pipeline) = pipeline else {
             return;
         };
@@ -4184,12 +4805,19 @@ impl World {
         }
         let all = needs(entry);
         let buffer_at = all.iter().position(|n| matches!(n, Need::Buffer { .. }));
-        let written_at = all.iter().position(|n| matches!(n, Need::Buffer { written: true, .. }));
+        let written_at = all
+            .iter()
+            .position(|n| matches!(n, Need::Buffer { written: true, .. }));
         let texture_at = all.iter().position(|n| matches!(n, Need::Texture { .. }));
         for (at, need) in all.iter().enumerate() {
             let here = Some(at);
             match *need {
-                Need::Buffer { slot, least, align, written } => {
+                Need::Buffer {
+                    slot,
+                    least,
+                    align,
+                    written,
+                } => {
                     if w(1) && here == buffer_at {
                         refuse = true;
                         continue;
@@ -4202,7 +4830,10 @@ impl World {
                     };
                     if (w(4) && here == written_at) || !written && random.chance(25) {
                         refuse |= w(4) && here == written_at;
-                        commands.push(ComputeCommand::SetBytes { bytes: random.bytes(&[usize::try_from(length).unwrap_or(16)]), index: slot });
+                        commands.push(ComputeCommand::SetBytes {
+                            bytes: random.bytes(&[usize::try_from(length).unwrap_or(16)]),
+                            index: slot,
+                        });
                         continue;
                     }
                     let mut offset = align.saturating_mul(random.below(4));
@@ -4216,9 +4847,18 @@ impl World {
                     if written {
                         allowed.push((held.shadow.clone(), offset, length));
                     }
-                    commands.push(ComputeCommand::SetBuffer { buffer: held.buffer, offset, length, index: slot });
+                    commands.push(ComputeCommand::SetBuffer {
+                        buffer: held.buffer,
+                        offset,
+                        length,
+                        index: slot,
+                    });
                 }
-                Need::Texture { slot, texture_type, kind } => {
+                Need::Texture {
+                    slot,
+                    texture_type,
+                    kind,
+                } => {
                     if w(5) && here == texture_at {
                         refuse = true;
                         continue;
@@ -4228,18 +4868,32 @@ impl World {
                         self.readable(random, TextureType::Type2DArray, kind)
                     } else if w(7) && here == texture_at {
                         refuse = true;
-                        self.readable(random, texture_type, if kind == Kind::Float { Kind::Uint } else { Kind::Float })
+                        self.readable(
+                            random,
+                            texture_type,
+                            if kind == Kind::Float {
+                                Kind::Uint
+                            } else {
+                                Kind::Float
+                            },
+                        )
                     } else {
                         self.readable(random, texture_type, kind)
                     };
                     match found {
-                        Some((texture, _)) => commands.push(ComputeCommand::SetTexture { texture, index: slot }),
+                        Some((texture, _)) => commands.push(ComputeCommand::SetTexture {
+                            texture,
+                            index: slot,
+                        }),
                         None => refuse = false,
                     }
                 }
                 Need::Sampler { slot } => {
                     if let Some(sampler) = any(random, &self.samplers) {
-                        commands.push(ComputeCommand::SetSamplerState { sampler, index: slot });
+                        commands.push(ComputeCommand::SetSamplerState {
+                            sampler,
+                            index: slot,
+                        });
                     }
                 }
             }
@@ -4253,10 +4907,19 @@ impl World {
         if w(8) {
             refuse = true;
             commands.push(match random.below(2) {
-                0 => ComputeCommand::SetBytes { bytes: vec![0; 4], index: random.past(30, 0) },
+                0 => ComputeCommand::SetBytes {
+                    bytes: vec![0; 4],
+                    index: random.past(30, 0),
+                },
                 _ => match any(random, &self.textures) {
-                    Some((texture, _)) => ComputeCommand::SetTexture { texture, index: random.past(127, 0) },
-                    None => ComputeCommand::SetBytes { bytes: vec![0; 4], index: 31 },
+                    Some((texture, _)) => ComputeCommand::SetTexture {
+                        texture,
+                        index: random.past(127, 0),
+                    },
+                    None => ComputeCommand::SetBytes {
+                        bytes: vec![0; 4],
+                        index: 31,
+                    },
                 },
             });
         }
@@ -4264,31 +4927,58 @@ impl World {
             && let Some(held) = self.buffer_of(random, 64)
         {
             let length = held.shadow.borrow().length();
-            commands.push(ComputeCommand::SetBuffer { buffer: held.buffer, offset: random.past_64(length.saturating_sub(16), 16), length: 16, index: 6 });
+            commands.push(ComputeCommand::SetBuffer {
+                buffer: held.buffer,
+                offset: random.past_64(length.saturating_sub(16), 16),
+                length: 16,
+                index: 6,
+            });
             refuse = true;
         }
         if w(10) {
-            commands.push(ComputeCommand::SetBytes { bytes: vec![0; random.pick(&[4097, 8192])], index: 7 });
+            commands.push(ComputeCommand::SetBytes {
+                bytes: vec![0; random.pick(&[4097, 8192])],
+                index: 7,
+            });
             refuse = true;
         }
-        let mut groups = [1u32.saturating_add(random.below(4) as u32), 1u32.saturating_add(random.below(2) as u32), 1];
+        let mut groups = [
+            1u32.saturating_add(random.below(4) as u32),
+            1u32.saturating_add(random.below(2) as u32),
+            1,
+        ];
         if w(11) {
             refuse = true;
             let axis = random.index(3);
             groups[axis] = if random.chance(50) || threads[axis] == 1 {
                 0
             } else {
-                (u32::MAX / threads[axis]).saturating_add(1)
+                u32::MAX
+                    .checked_div(threads[axis])
+                    .unwrap_or(0)
+                    .saturating_add(1)
             };
         }
-        commands.push(ComputeCommand::DispatchThreadgroups(Size { width: groups[0], height: groups[1], depth: groups[2] }));
+        commands.push(ComputeCommand::DispatchThreadgroups(Size {
+            width: groups[0],
+            height: groups[1],
+            depth: groups[2],
+        }));
         if w(12) {
             refuse = true;
             let _ = self.metal.commit(&command_buffer);
         }
-        let refused = self.metal.encode_compute_commands(&command_buffer, &commands).is_err();
+        let refused = self
+            .metal
+            .encode_compute_commands(&command_buffer, &commands)
+            .is_err();
         self.counts.call(refused);
-        self.taken(refused, refuse, &allowed, &format!("a precise dispatch, break {wrong:?}"));
+        self.taken(
+            refused,
+            refuse,
+            &allowed,
+            &format!("a precise dispatch, break {wrong:?}"),
+        );
     }
 
     /// Compiles an entry point, valid but for one field of its slots, layouts or module.
@@ -4298,17 +4988,34 @@ impl World {
         let mut entry_point = entry;
         let mut slots: Vec<ResourceSlot> = SLOTS
             .iter()
-            .map(|&(binding, index)| ResourceSlot { group: 0, binding, index })
+            .map(|&(binding, index)| ResourceSlot {
+                group: 0,
+                binding,
+                index,
+            })
             .collect();
         let mut vertex_buffers = vertex_layouts(entry);
         let (mut immediates, mut sizes) = (IMMEDIATES_AT, LENGTHS_AT);
         let mut module: Option<naga::Module> = None;
         let used: Vec<(naga::Handle<naga::GlobalVariable>, Bound)> = self.used[index].clone();
-        let of = |kind: Bound| used.iter().filter(|(_, k)| *k == kind).map(|(h, _)| *h).collect::<Vec<_>>();
-        let (buffers, textures, samplers) = (of(Bound::Buffer), of(Bound::Texture), of(Bound::Sampler));
-        let pick = |random: &mut Random, of: &[naga::Handle<naga::GlobalVariable>]| (!of.is_empty()).then(|| of[random.index(of.len())]);
-        let slot_of = |slots: &[ResourceSlot], binding: u32| slots.iter().position(|s| s.binding == binding);
-        let binding_of = |m: &naga::Module, h: naga::Handle<naga::GlobalVariable>| m.global_variables[h].binding.map_or(u32::MAX, |b| b.binding);
+        let of = |kind: Bound| {
+            used.iter()
+                .filter(|(_, k)| *k == kind)
+                .map(|(h, _)| *h)
+                .collect::<Vec<_>>()
+        };
+        let (buffers, textures, samplers) =
+            (of(Bound::Buffer), of(Bound::Texture), of(Bound::Sampler));
+        let pick = |random: &mut Random, of: &[naga::Handle<naga::GlobalVariable>]| {
+            (!of.is_empty()).then(|| of[random.index(of.len())])
+        };
+        let slot_of =
+            |slots: &[ResourceSlot], binding: u32| slots.iter().position(|s| s.binding == binding);
+        let binding_of = |m: &naga::Module, h: naga::Handle<naga::GlobalVariable>| {
+            m.global_variables[h]
+                .binding
+                .map_or(u32::MAX, |b| b.binding)
+        };
         let refuse = match random.broken(17) {
             None => false,
             Some(0) => {
@@ -4331,21 +5038,31 @@ impl World {
                 }
                 true
             }
-            Some(3) => match pick(random, &[buffers.clone(), textures.clone(), samplers.clone()].concat()) {
+            Some(3) => match pick(
+                random,
+                &[buffers.clone(), textures.clone(), samplers.clone()].concat(),
+            ) {
                 Some(h) => {
-                    copy(&mut module, &self.module).global_variables[h].space = naga::AddressSpace::TaskPayload;
+                    copy(&mut module, &self.module).global_variables[h].space =
+                        naga::AddressSpace::TaskPayload;
                     true
                 }
                 None => false,
             },
-            Some(4) => match pick(random, &[buffers.clone(), textures.clone(), samplers.clone()].concat()) {
+            Some(4) => match pick(
+                random,
+                &[buffers.clone(), textures.clone(), samplers.clone()].concat(),
+            ) {
                 Some(h) => {
                     copy(&mut module, &self.module).global_variables[h].binding = None;
                     true
                 }
                 None => false,
             },
-            Some(5) => match pick(random, &[buffers.clone(), textures.clone(), samplers.clone()].concat()) {
+            Some(5) => match pick(
+                random,
+                &[buffers.clone(), textures.clone(), samplers.clone()].concat(),
+            ) {
                 Some(h) => {
                     let binding = binding_of(&self.module, h);
                     if let Some(at) = slot_of(&slots, binding) {
@@ -4359,7 +5076,14 @@ impl World {
                 Some(h) => {
                     let binding = binding_of(&self.module, h);
                     if let Some(at) = slot_of(&slots, binding) {
-                        slots[at].index = random.pick(&[31, 32, IMMEDIATES_AT, LENGTHS_AT, VERTEX_SLOTS[0], u32::MAX]);
+                        slots[at].index = random.pick(&[
+                            31,
+                            32,
+                            IMMEDIATES_AT,
+                            LENGTHS_AT,
+                            VERTEX_SLOTS[0],
+                            u32::MAX,
+                        ]);
                     }
                     true
                 }
@@ -4369,9 +5093,13 @@ impl World {
                 Some(h) => {
                     let m = copy(&mut module, &self.module);
                     let base = m.global_variables[h].ty;
-                    let size = naga::ArraySize::Constant(std::num::NonZeroU32::MIN.saturating_add(1));
+                    let size =
+                        naga::ArraySize::Constant(std::num::NonZeroU32::MIN.saturating_add(1));
                     let ty = m.types.insert(
-                        naga::Type { name: None, inner: naga::TypeInner::BindingArray { base, size } },
+                        naga::Type {
+                            name: None,
+                            inner: naga::TypeInner::BindingArray { base, size },
+                        },
                         naga::Span::UNDEFINED,
                     );
                     m.global_variables[h].ty = ty;
@@ -4393,28 +5121,42 @@ impl World {
                 let sampled: Vec<_> = textures
                     .iter()
                     .copied()
-                    .filter(|h| matches!(self.module.types[self.module.global_variables[*h].ty].inner,
-                        naga::TypeInner::Image { class: naga::ImageClass::Sampled { .. }, .. }))
+                    .filter(|h| {
+                        matches!(
+                            self.module.types[self.module.global_variables[*h].ty].inner,
+                            naga::TypeInner::Image {
+                                class: naga::ImageClass::Sampled { .. },
+                                ..
+                            }
+                        )
+                    })
                     .collect();
                 match pick(random, &sampled) {
                     Some(h) => {
                         let external = random.chance(50);
                         let m = copy(&mut module, &self.module);
                         let inner = match m.types[m.global_variables[h].ty].inner {
-                            naga::TypeInner::Image { dim, arrayed, class: naga::ImageClass::Sampled { multi, .. } } => {
-                                naga::TypeInner::Image {
-                                    dim,
-                                    arrayed,
-                                    class: if external {
-                                        naga::ImageClass::External
-                                    } else {
-                                        naga::ImageClass::Sampled { kind: naga::ScalarKind::Bool, multi }
-                                    },
-                                }
-                            }
+                            naga::TypeInner::Image {
+                                dim,
+                                arrayed,
+                                class: naga::ImageClass::Sampled { multi, .. },
+                            } => naga::TypeInner::Image {
+                                dim,
+                                arrayed,
+                                class: if external {
+                                    naga::ImageClass::External
+                                } else {
+                                    naga::ImageClass::Sampled {
+                                        kind: naga::ScalarKind::Bool,
+                                        multi,
+                                    }
+                                },
+                            },
                             ref other => other.clone(),
                         };
-                        let ty = m.types.insert(naga::Type { name: None, inner }, naga::Span::UNDEFINED);
+                        let ty = m
+                            .types
+                            .insert(naga::Type { name: None, inner }, naga::Span::UNDEFINED);
                         m.global_variables[h].ty = ty;
                         true
                     }
@@ -4435,7 +5177,10 @@ impl World {
                 Some(h) => {
                     let m = copy(&mut module, &self.module);
                     let ty = m.types.insert(
-                        naga::Type { name: None, inner: naga::TypeInner::Scalar(naga::Scalar::U32) },
+                        naga::Type {
+                            name: None,
+                            inner: naga::TypeInner::Scalar(naga::Scalar::U32),
+                        },
                         naga::Span::UNDEFINED,
                     );
                     m.global_variables[h].ty = ty;
@@ -4444,7 +5189,8 @@ impl World {
                 None => false,
             },
             Some(13) if stage == naga::ShaderStage::Vertex && !vertex_buffers.is_empty() => {
-                vertex_buffers[0].buffer_index = random.pick(&[31, IMMEDIATES_AT, LENGTHS_AT, u32::MAX]);
+                vertex_buffers[0].buffer_index =
+                    random.pick(&[31, IMMEDIATES_AT, LENGTHS_AT, u32::MAX]);
                 true
             }
             Some(14) if stage == naga::ShaderStage::Vertex && !vertex_buffers.is_empty() => {
@@ -4453,7 +5199,8 @@ impl World {
             }
             Some(15) if stage == naga::ShaderStage::Vertex && !vertex_buffers.is_empty() => {
                 let stride = vertex_buffers[0].stride;
-                vertex_buffers[0].attributes[0].offset = random.pick(&[stride.saturating_sub(1), u32::MAX - 3, stride]);
+                vertex_buffers[0].attributes[0].offset =
+                    random.pick(&[stride.saturating_sub(1), u32::MAX - 3, stride]);
                 true
             }
             Some(16) => {
@@ -4490,7 +5237,11 @@ fn vertex_layouts(entry: &str) -> Vec<VertexBufferLayout> {
             attributes: vec![VertexAttribute {
                 location: 0,
                 offset: 0,
-                format: if entry == "vs_plain" { VertexFormat::Float2 } else { VertexFormat::Float4 },
+                format: if entry == "vs_plain" {
+                    VertexFormat::Float2
+                } else {
+                    VertexFormat::Float4
+                },
             }],
         },
         VertexBufferLayout {
@@ -4498,19 +5249,34 @@ fn vertex_layouts(entry: &str) -> Vec<VertexBufferLayout> {
             stride: 24,
             step_function: VertexStepFunction::PerInstance,
             attributes: vec![
-                VertexAttribute { location: 1, offset: 0, format: VertexFormat::UInt4 },
-                VertexAttribute { location: 2, offset: 16, format: VertexFormat::Int2 },
+                VertexAttribute {
+                    location: 1,
+                    offset: 0,
+                    format: VertexFormat::UInt4,
+                },
+                VertexAttribute {
+                    location: 2,
+                    offset: 16,
+                    format: VertexFormat::Int2,
+                },
             ],
         },
     ]
 }
 
 /// Returns, for every entry point, the globals it uses that are bound, and as what.
-fn used_globals(module: &naga::Module, info: &naga::valid::ModuleInfo) -> Vec<Vec<(naga::Handle<naga::GlobalVariable>, Bound)>> {
+fn used_globals(
+    module: &naga::Module,
+    info: &naga::valid::ModuleInfo,
+) -> Vec<Vec<(naga::Handle<naga::GlobalVariable>, Bound)>> {
     ENTRIES
         .iter()
         .map(|(name, stage)| {
-            let Some(at) = module.entry_points.iter().position(|e| e.name == *name && e.stage == *stage) else {
+            let Some(at) = module
+                .entry_points
+                .iter()
+                .position(|e| e.name == *name && e.stage == *stage)
+            else {
                 return Vec::new();
             };
             let uses = info.get_entry_point(at);
@@ -4520,7 +5286,9 @@ fn used_globals(module: &naga::Module, info: &naga::valid::ModuleInfo) -> Vec<Ve
                 .filter(|(h, var)| !uses[*h].is_empty() && var.binding.is_some())
                 .filter_map(|(h, var)| {
                     let bound = match (var.space, &module.types[var.ty].inner) {
-                        (naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. }, _) => Bound::Buffer,
+                        (naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. }, _) => {
+                            Bound::Buffer
+                        }
                         (_, naga::TypeInner::Image { .. }) => Bound::Texture,
                         (_, naga::TypeInner::Sampler { .. }) => Bound::Sampler,
                         _ => return None,

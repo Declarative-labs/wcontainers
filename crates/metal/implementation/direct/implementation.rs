@@ -94,7 +94,7 @@ macro_rules! refuses {
     ($site:literal, $refused:expr) => {{
         let refused: bool = $refused;
         #[cfg(feature = "reach")]
-        crate::reach::note($site, refused);
+        crate::reach::add_outcome($site, refused);
         refused
     }};
 }
@@ -104,7 +104,7 @@ macro_rules! found {
     ($site:literal, $found:expr) => {{
         let found = $found;
         #[cfg(feature = "reach")]
-        crate::reach::note($site, found.is_none());
+        crate::reach::add_outcome($site, found.is_none());
         found
     }};
 }
@@ -118,19 +118,29 @@ pub mod reach {
     /// The source, whose checks are the sites.
     const SOURCE: &str = include_str!("implementation.rs");
 
-    /// The refusals and passes counted at each site.
-    static OUTCOMES: Mutex<BTreeMap<&'static str, [u64; 2]>> = Mutex::new(BTreeMap::new());
-
-    /// Counts one outcome of the check at a site.
-    pub(crate) fn note(site: &'static str, refused: bool) {
-        let mut outcomes = OUTCOMES.lock().unwrap_or_else(PoisonError::into_inner);
-        let counts = outcomes.entry(site).or_default();
-        let at = usize::from(!refused);
-        counts[at] = counts[at].saturating_add(1);
+    /// How often one check refused its calls and passed them.
+    #[derive(Clone, Copy, Default)]
+    pub struct Outcomes {
+        pub refused: u64,
+        pub passed: u64,
     }
 
-    /// Returns the refusals and passes counted at each site so far.
-    pub fn outcomes() -> BTreeMap<&'static str, [u64; 2]> {
+    /// The outcomes counted at each site.
+    static OUTCOMES: Mutex<BTreeMap<&'static str, Outcomes>> = Mutex::new(BTreeMap::new());
+
+    /// Adds one to the refusals or the passes of a site.
+    pub(crate) fn add_outcome(site: &'static str, refused: bool) {
+        let mut outcomes = OUTCOMES.lock().unwrap_or_else(PoisonError::into_inner);
+        let counts = outcomes.entry(site).or_default();
+        if refused {
+            counts.refused = counts.refused.saturating_add(1);
+        } else {
+            counts.passed = counts.passed.saturating_add(1);
+        }
+    }
+
+    /// Returns the outcomes counted at each site so far.
+    pub fn outcomes() -> BTreeMap<&'static str, Outcomes> {
         OUTCOMES
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -142,7 +152,10 @@ pub mod reach {
         // Spelled in two parts, so that this function is not a site.
         let needles = [concat!("refuses", "!("), concat!("found", "!(")];
         let mut sites = Vec::new();
-        for (at, _) in SOURCE.match_indices(needles[0]).chain(SOURCE.match_indices(needles[1])) {
+        for (at, _) in SOURCE
+            .match_indices(needles[0])
+            .chain(SOURCE.match_indices(needles[1]))
+        {
             let after = &SOURCE[at..];
             let Some(open) = after.find('"') else {
                 continue;
@@ -495,7 +508,10 @@ impl Metal for DirectMetal {
     }
 
     fn make_buffer(&mut self, length: u64) -> Result<DirectBuffer, MakeBufferError> {
-        if refuses!("buffer: longer than the device's most", length > self.max_buffer_length()) {
+        if refuses!(
+            "buffer: longer than the device's most",
+            length > self.max_buffer_length()
+        ) {
             return Err(MakeBufferError::TooLong);
         }
         // Every buffer holds `MAX_VERTEX_STRIDE` unread bytes past its length: Metal's validation stops a draw whose
@@ -521,10 +537,16 @@ impl Metal for DirectMetal {
         offset: u64,
         bytes: &[u8],
     ) -> Result<(), WriteContentsError> {
-        if refuses!("write: past the buffer", !buffer.holds(offset, bytes.len() as u64)) {
+        if refuses!(
+            "write: past the buffer",
+            !buffer.holds(offset, bytes.len() as u64)
+        ) {
             return Err(WriteContentsError::OutOfRange);
         }
-        if refuses!("write: a buffer uncommitted work uses", buffer.settle().is_err()) {
+        if refuses!(
+            "write: a buffer uncommitted work uses",
+            buffer.settle().is_err()
+        ) {
             return Err(WriteContentsError::UsedByUncommittedWork);
         }
         // The place in the buffer's memory, by arithmetic that needs no `unsafe` and is checked by `holds` above.
@@ -551,10 +573,16 @@ impl Metal for DirectMetal {
         offset: u64,
         bytes: &mut [u8],
     ) -> Result<(), ReadContentsError> {
-        if refuses!("read: past the buffer", !buffer.holds(offset, bytes.len() as u64)) {
+        if refuses!(
+            "read: past the buffer",
+            !buffer.holds(offset, bytes.len() as u64)
+        ) {
             return Err(ReadContentsError::OutOfRange);
         }
-        if refuses!("read: a buffer uncommitted work uses", buffer.settle().is_err()) {
+        if refuses!(
+            "read: a buffer uncommitted work uses",
+            buffer.settle().is_err()
+        ) {
             return Err(ReadContentsError::UsedByUncommittedWork);
         }
         // The place in the buffer's memory, by arithmetic that needs no `unsafe` and is checked by `holds` above.
@@ -594,7 +622,9 @@ impl Metal for DirectMetal {
         };
         // A cube's six faces are six slices to copy, view and draw into, as each cube's are in a cube array.
         let layers = match d.texture_type {
-            TextureType::TypeCube | TextureType::TypeCubeArray => d.array_length.checked_mul(CUBE_FACES),
+            TextureType::TypeCube | TextureType::TypeCubeArray => {
+                d.array_length.checked_mul(CUBE_FACES)
+            }
             _ => Some(d.array_length),
         };
         if refuses!(
@@ -621,7 +651,10 @@ impl Metal for DirectMetal {
                 "a stencil view format, which no texture is made in",
             ));
         }
-        if refuses!("texture: an empty size", d.width == 0 || d.height == 0 || d.depth == 0) {
+        if refuses!(
+            "texture: an empty size",
+            d.width == 0 || d.height == 0 || d.depth == 0
+        ) {
             return Err(MakeTextureError::Invalid("an empty size"));
         }
         if refuses!(
@@ -815,13 +848,15 @@ impl Metal for DirectMetal {
                 )
             }
             // Six slices of an array, or of cubes, are seen as a cube (the `square` check below).
-            TextureType::Type2DArray | TextureType::TypeCube | TextureType::TypeCubeArray => matches!(
-                d.texture_type,
-                TextureType::Type2D
-                    | TextureType::Type2DArray
-                    | TextureType::TypeCube
-                    | TextureType::TypeCubeArray
-            ),
+            TextureType::Type2DArray | TextureType::TypeCube | TextureType::TypeCubeArray => {
+                matches!(
+                    d.texture_type,
+                    TextureType::Type2D
+                        | TextureType::Type2DArray
+                        | TextureType::TypeCube
+                        | TextureType::TypeCubeArray
+                )
+            }
         };
         let square = t.width == t.height
             || !matches!(
@@ -843,7 +878,10 @@ impl Metal for DirectMetal {
         if refuses!("view: a cube of a texture not square", !square) {
             return Err(MakeTextureViewError::Incompatible);
         }
-        let (base_level, base_slice) = (base_level.unwrap_or(u32::MAX), base_slice.unwrap_or(u32::MAX));
+        let (base_level, base_slice) = (
+            base_level.unwrap_or(u32::MAX),
+            base_slice.unwrap_or(u32::MAX),
+        );
         let levels = NSRange::new(d.first_level as usize, d.level_count as usize);
         let slices = NSRange::new(d.first_slice as usize, d.slice_count as usize);
         #[expect(unsafe_code, reason = "the call that makes a texture view")]
@@ -897,7 +935,9 @@ impl Metal for DirectMetal {
         }
         if refuses!(
             "sampler: an empty level range",
-            d.lod_min_clamp.is_nan() || d.lod_max_clamp.is_nan() || d.lod_min_clamp > d.lod_max_clamp
+            d.lod_min_clamp.is_nan()
+                || d.lod_max_clamp.is_nan()
+                || d.lod_min_clamp > d.lod_max_clamp
         ) {
             return Err(MakeSamplerStateError::Invalid(
                 "a level range that is empty",
@@ -1270,7 +1310,10 @@ impl Metal for DirectMetal {
         pass: &RenderPassDescriptor<'_, Self>,
         commands: &[RenderCommand<Self>],
     ) -> Result<(), EncodeRenderCommandsError> {
-        if refuses!("render: a committed command buffer", command_buffer.0.committed.get()) {
+        if refuses!(
+            "render: a committed command buffer",
+            command_buffer.0.committed.get()
+        ) {
             return Err(EncodeRenderCommandsError::Committed);
         }
         let area = check_pass(pass, self.limits)?;
@@ -1306,7 +1349,10 @@ impl Metal for DirectMetal {
         command_buffer: &DirectCommandBuffer,
         commands: &[BlitCommand<Self>],
     ) -> Result<(), EncodeBlitCommandsError> {
-        if refuses!("blit: a committed command buffer", command_buffer.0.committed.get()) {
+        if refuses!(
+            "blit: a committed command buffer",
+            command_buffer.0.committed.get()
+        ) {
             return Err(EncodeBlitCommandsError::Committed);
         }
         for command in commands {
@@ -1331,7 +1377,10 @@ impl Metal for DirectMetal {
         command_buffer: &DirectCommandBuffer,
         commands: &[ComputeCommand<Self>],
     ) -> Result<(), EncodeComputeCommandsError> {
-        if refuses!("compute: a committed command buffer", command_buffer.0.committed.get()) {
+        if refuses!(
+            "compute: a committed command buffer",
+            command_buffer.0.committed.get()
+        ) {
             return Err(EncodeComputeCommandsError::Committed);
         }
         check_compute_commands(commands)?;
@@ -1420,7 +1469,10 @@ impl Metal for DirectMetal {
     }
 
     fn commit(&mut self, command_buffer: &DirectCommandBuffer) -> Result<(), CommitError> {
-        if refuses!("commit: committed before", command_buffer.0.committed.replace(true)) {
+        if refuses!(
+            "commit: committed before",
+            command_buffer.0.committed.replace(true)
+        ) {
             return Err(CommitError::AlreadyCommitted);
         }
         command_buffer.0.raw.commit();
@@ -1453,14 +1505,20 @@ impl Metal for DirectMetal {
     }
 
     fn make_layer(&mut self, window: &dyn HasWindowHandle) -> Result<DirectLayer, MakeLayerError> {
-        if refuses!("layer: off the main thread", MainThreadMarker::new().is_none()) {
+        if refuses!(
+            "layer: off the main thread",
+            MainThreadMarker::new().is_none()
+        ) {
             return Err(MakeLayerError::NotMainThread);
         }
         let handle = window.window_handle();
-        let appkit = handle.as_ref().ok().and_then(|handle| match handle.as_raw() {
-            RawWindowHandle::AppKit(appkit) => Some(appkit),
-            _ => None,
-        });
+        let appkit = handle
+            .as_ref()
+            .ok()
+            .and_then(|handle| match handle.as_raw() {
+                RawWindowHandle::AppKit(appkit) => Some(appkit),
+                _ => None,
+            });
         let Some(appkit) = found!("layer: a window without an AppKit view", appkit) else {
             return Err(MakeLayerError::NotAppKit);
         };
@@ -1498,7 +1556,10 @@ impl Metal for DirectMetal {
         ) {
             return Err(ConfigureLayerError::Invalid("a format no layer takes"));
         }
-        if refuses!("layer: an empty size", descriptor.width == 0 || descriptor.height == 0) {
+        if refuses!(
+            "layer: an empty size",
+            descriptor.width == 0 || descriptor.height == 0
+        ) {
             return Err(ConfigureLayerError::Invalid("an empty size"));
         }
         if refuses!(
@@ -1561,10 +1622,16 @@ impl Metal for DirectMetal {
         command_buffer: &DirectCommandBuffer,
         drawable: &DirectDrawable,
     ) -> Result<(), PresentDrawableError> {
-        if refuses!("present: a committed command buffer", command_buffer.0.committed.get()) {
+        if refuses!(
+            "present: a committed command buffer",
+            command_buffer.0.committed.get()
+        ) {
             return Err(PresentDrawableError::Committed);
         }
-        if refuses!("present: presented before", drawable.0.presented.replace(true)) {
+        if refuses!(
+            "present: presented before",
+            drawable.0.presented.replace(true)
+        ) {
             return Err(PresentDrawableError::AlreadyPresented);
         }
         let shown = ProtocolObject::from_retained(drawable.0.raw.clone());
@@ -1643,10 +1710,14 @@ fn lengths(reads: &Reads, bound: &StageBindings) -> Vec<u8> {
 /// Checks that every slot a function reads holds a resource of the kind and size it reads.
 fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str> {
     for (slot, least, alignment) in &reads.buffers {
-        let Some((length, offset)) = found!("reads: an empty buffer slot", bound.buffers.get(slot)) else {
+        let Some((length, offset)) = found!("reads: an empty buffer slot", bound.buffers.get(slot))
+        else {
             return Err("a buffer slot the function reads is empty");
         };
-        if refuses!("reads: a buffer shorter than the function reads", length < least) {
+        if refuses!(
+            "reads: a buffer shorter than the function reads",
+            length < least
+        ) {
             return Err("a buffer shorter than what the function reads at its slot");
         }
         // Metal takes no buffer offset that is not a multiple of four, whatever the type.
@@ -1656,7 +1727,9 @@ fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str>
                 alignment.is_aligned(offset) && Alignment::FOUR.is_aligned(offset)
             })
         ) {
-            return Err("a buffer at an offset not a multiple of what the function reads at its slot");
+            return Err(
+                "a buffer at an offset not a multiple of what the function reads at its slot",
+            );
         }
     }
     // Metal's validation stops a function that writes a slot holding bytes (MEASURED: `cs_shared` at slot 2).
@@ -1680,7 +1753,9 @@ fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str>
         "reads: immediates off their alignment",
         reads.immediates.is_some_and(|(slot, _, alignment)| {
             bound.buffers.get(&slot).is_some_and(|(_, offset)| {
-                !u32::try_from(*offset).is_ok_and(|offset| alignment.is_aligned(offset) && Alignment::FOUR.is_aligned(offset))
+                !u32::try_from(*offset).is_ok_and(|offset| {
+                    alignment.is_aligned(offset) && Alignment::FOUR.is_aligned(offset)
+                })
             })
         })
     ) {
@@ -1704,8 +1779,13 @@ fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str>
             return Err("a texture of another type than the function reads at its slot");
         }
         // Metal's validation stops the process at a draw reading, say, an integer texture as floats.
-        if refuses!("reads: texels of another number type", facts.texel != read.texel) {
-            return Err("a texture whose texels are of another number type than the function reads");
+        if refuses!(
+            "reads: texels of another number type",
+            facts.texel != read.texel
+        ) {
+            return Err(
+                "a texture whose texels are of another number type than the function reads",
+            );
         }
     }
     if refuses!(
@@ -1728,7 +1808,10 @@ fn check_pass(
     let mut area: Option<(u32, u32, u32)> = None;
     let mut fit = |texture: &DirectTexture, level: u32, slice: u32, depth_plane: u32| {
         let t = &texture.0;
-        if refuses!("pass: an attachment not made to draw into", !t.render_target) {
+        if refuses!(
+            "pass: an attachment not made to draw into",
+            !t.render_target
+        ) {
             return Err(EncodeRenderCommandsError::Invalid(
                 "an attachment not made to draw into",
             ));
@@ -1839,7 +1922,10 @@ fn check_pass(
                     "a resolve from or into the wrong sample count",
                 ));
             }
-            if refuses!("pass: a resolve into another format", r.pixel_format != t.pixel_format) {
+            if refuses!(
+                "pass: a resolve into another format",
+                r.pixel_format != t.pixel_format
+            ) {
                 return Err(EncodeRenderCommandsError::Invalid(
                     "a resolve into another format",
                 ));
@@ -2033,13 +2119,18 @@ fn check_render_commands(
                 let s = &state.0;
                 if refuses!(
                     "render: a pipeline made for other attachments",
-                    s.colors.as_slice() != colors.as_slice() || s.depth != depth || s.stencil != stencil
+                    s.colors.as_slice() != colors.as_slice()
+                        || s.depth != depth
+                        || s.stencil != stencil
                 ) {
                     return Err(EncodeRenderCommandsError::Invalid(
                         "a pipeline made for other attachments",
                     ));
                 }
-                if refuses!("render: a pipeline made for another sample count", s.sample_count != samples) {
+                if refuses!(
+                    "render: a pipeline made for another sample count",
+                    s.sample_count != samples
+                ) {
                     return Err(EncodeRenderCommandsError::Invalid(
                         "a pipeline made for another sample count",
                     ));
@@ -2059,7 +2150,10 @@ fn check_render_commands(
                 index,
             } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
-                if refuses!("render: a bound range past its buffer", !buffer.holds(*offset, *length)) {
+                if refuses!(
+                    "render: a bound range past its buffer",
+                    !buffer.holds(*offset, *length)
+                ) {
                     return Err(EncodeRenderCommandsError::OutOfRange(
                         "a bound range past its buffer's end",
                     ));
@@ -2075,7 +2169,10 @@ fn check_render_commands(
             RenderCommand::SetVertexBytes { bytes, index }
             | RenderCommand::SetFragmentBytes { bytes, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
-                if refuses!("render: more bytes than Metal copies", bytes.len() > MAX_BYTES) {
+                if refuses!(
+                    "render: more bytes than Metal copies",
+                    bytes.len() > MAX_BYTES
+                ) {
                     return Err(EncodeRenderCommandsError::OutOfRange(
                         "more bytes than Metal copies into a command buffer",
                     ));
@@ -2118,7 +2215,10 @@ fn check_render_commands(
                         .iter()
                         .all(|n| n.is_finite())
                 };
-                if refuses!("render: a viewport not finite", !viewports.iter().all(finite)) {
+                if refuses!(
+                    "render: a viewport not finite",
+                    !viewports.iter().all(finite)
+                ) {
                     return Err(EncodeRenderCommandsError::Invalid(
                         "a viewport that is not finite",
                     ));
@@ -2137,7 +2237,10 @@ fn check_render_commands(
                     r.x.checked_add(r.width).is_some_and(|end| end <= width)
                         && r.y.checked_add(r.height).is_some_and(|end| end <= height)
                 };
-                if refuses!("render: a scissor rectangle outside the pass", !rects.iter().all(inside)) {
+                if refuses!(
+                    "render: a scissor rectangle outside the pass",
+                    !rects.iter().all(inside)
+                ) {
                     return Err(EncodeRenderCommandsError::OutOfRange(
                         "a scissor rectangle outside the pass",
                     ));
@@ -2177,7 +2280,10 @@ fn check_render_commands(
                     ));
                 }
                 if *mode != VisibilityResultMode::Disabled {
-                    if refuses!("render: counting twice at one offset", counted.contains(offset)) {
+                    if refuses!(
+                        "render: counting twice at one offset",
+                        counted.contains(offset)
+                    ) {
                         return Err(EncodeRenderCommandsError::Invalid(
                             "counting twice at one offset in a pass",
                         ));
@@ -2225,7 +2331,8 @@ fn check_render_commands(
                 if refuses!(
                     "indexed draw: indices outside their buffer or off their size",
                     !index_buffer_offset.is_multiple_of(size)
-                        || indices.is_none_or(|bytes| !index_buffer.holds(*index_buffer_offset, bytes))
+                        || indices
+                            .is_none_or(|bytes| !index_buffer.holds(*index_buffer_offset, bytes))
                 ) {
                     return Err(EncodeRenderCommandsError::OutOfRange(
                         "indices outside their buffer, or at an offset not a multiple of their size",
@@ -2272,7 +2379,10 @@ fn check_draw(bound: &RenderBindings, primitive_type: PrimitiveType) -> Result<(
         PrimitiveType::Line | PrimitiveType::LineStrip => PrimitiveTopologyClass::Line,
         PrimitiveType::Triangle | PrimitiveType::TriangleStrip => PrimitiveTopologyClass::Triangle,
     };
-    if refuses!("draw: primitives of another class than the pipeline's", class != pipeline.0.topology) {
+    if refuses!(
+        "draw: primitives of another class than the pipeline's",
+        class != pipeline.0.topology
+    ) {
         return Err("a draw of primitives the pipeline was not made for");
     }
     check_reads(&pipeline.0.vertex.reads, &bound.vertex)?;
@@ -2653,7 +2763,10 @@ fn check_compute_commands(
                 index,
             } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
-                if refuses!("compute: a bound range past its buffer", !buffer.holds(*offset, *length)) {
+                if refuses!(
+                    "compute: a bound range past its buffer",
+                    !buffer.holds(*offset, *length)
+                ) {
                     return Err(EncodeComputeCommandsError::OutOfRange(
                         "a bound range past its buffer's end",
                     ));
@@ -2663,7 +2776,10 @@ fn check_compute_commands(
             }
             ComputeCommand::SetBytes { bytes, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
-                if refuses!("compute: more bytes than Metal copies", bytes.len() > MAX_BYTES) {
+                if refuses!(
+                    "compute: more bytes than Metal copies",
+                    bytes.len() > MAX_BYTES
+                ) {
                     return Err(EncodeComputeCommandsError::OutOfRange(
                         "more bytes than Metal copies into a command buffer",
                     ));
@@ -2704,7 +2820,8 @@ fn check_compute_commands(
                 if refuses!(
                     "dispatch: more threads on an axis than a u32 holds",
                     axes.iter().any(|(groups, threads)| {
-                        u32::try_from(u64::from(*groups).saturating_mul(u64::from(*threads))).is_err()
+                        u32::try_from(u64::from(*groups).saturating_mul(u64::from(*threads)))
+                            .is_err()
                     })
                 ) {
                     return Err(EncodeComputeCommandsError::OutOfRange(
@@ -2765,7 +2882,10 @@ fn check_region(
     block: (u32, u32),
 ) -> Result<(), &'static str> {
     let t = &texture.0;
-    if refuses!("region: a level or slice outside the texture", level >= t.levels || slice >= t.slices) {
+    if refuses!(
+        "region: a level or slice outside the texture",
+        level >= t.levels || slice >= t.slices
+    ) {
         return Err("a level or slice outside the texture");
     }
     // Only a 3D texture is deeper than one.
@@ -2903,12 +3023,20 @@ fn check_blit(
             let blocks_wide = u64::from(source_size.width.div_ceil(block.0));
             let rows = u64::from(source_size.height.div_ceil(block.1));
             let row = blocks_wide.checked_mul(bytes);
-            let longest_row = limits
-                .max_side
+            // A row is as long as the longest side of the texture's type (MEASURED: Metal's validation stops 24000 bytes
+            // a row of a 3D texture of 8-byte texels, past 2048 of them, found by the fuzzer).
+            let longest_side = if texture.0.texture_type == TextureType::Type3D {
+                MAX_3D_SIDE
+            } else {
+                limits.max_side
+            };
+            let longest_row = longest_side
                 .checked_div(block.0)
                 .and_then(|blocks| u64::from(blocks).checked_mul(bytes));
             let Some((row, longest_row)) = row.zip(longest_row) else {
-                return Err(EncodeBlitCommandsError::OutOfRange("a copy whose length overflows"));
+                return Err(EncodeBlitCommandsError::OutOfRange(
+                    "a copy whose length overflows",
+                ));
             };
             if refuses!(
                 "copy buffer and texture: a row pitch short, long or off a block",
@@ -2954,7 +3082,9 @@ fn check_blit(
                         .and_then(|n| n.checked_add(image))
                 })
             ) else {
-                return Err(EncodeBlitCommandsError::OutOfRange("a copy whose length overflows"));
+                return Err(EncodeBlitCommandsError::OutOfRange(
+                    "a copy whose length overflows",
+                ));
             };
             if refuses!(
                 "copy buffer and texture: outside the buffer",
@@ -2986,7 +3116,10 @@ fn check_blit(
                     "a copy between textures of formats or sample counts that differ",
                 ));
             }
-            if refuses!("copy textures: a drawable's texture", s.framebuffer_only || d.framebuffer_only) {
+            if refuses!(
+                "copy textures: a drawable's texture",
+                s.framebuffer_only || d.framebuffer_only
+            ) {
                 return Err(EncodeBlitCommandsError::Invalid(
                     "a copy from or into a drawable's texture",
                 ));
@@ -3048,7 +3181,10 @@ fn check_blit(
             length,
             ..
         } => {
-            if refuses!("fill: no bytes, or off whole words", *length == 0 || !granular(&[*offset, *length])) {
+            if refuses!(
+                "fill: no bytes, or off whole words",
+                *length == 0 || !granular(&[*offset, *length])
+            ) {
                 return Err(EncodeBlitCommandsError::Invalid(
                     "a fill of no bytes, or at an offset or of a length not in whole words",
                 ));
@@ -3370,7 +3506,7 @@ fn translation(
     if refuses!(
         "function: immediates and lengths not at two slots of their own",
         reserved.iter().any(|&slot| slot >= MAX_BUFFER_SLOTS) || reserved[0] == reserved[1]
-        ) {
+    ) {
         return Err(MakeFunctionError::Unchecked(
             "the immediates and the lengths need two buffer slots of their own",
         ));
@@ -3433,7 +3569,9 @@ fn translation(
             "function: a global in an address space not checked",
             !matches!(
                 var.space,
-                naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. } | naga::AddressSpace::Handle
+                naga::AddressSpace::Uniform
+                    | naga::AddressSpace::Storage { .. }
+                    | naga::AddressSpace::Handle
             )
         ) {
             return Err(MakeFunctionError::Unchecked(
@@ -3457,8 +3595,13 @@ fn translation(
             "function: a resource of a type not checked",
             !matches!(
                 (var.space, ty),
-                (naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. }, _)
-                    | (_, naga::TypeInner::Image { .. } | naga::TypeInner::Sampler { .. })
+                (
+                    naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. },
+                    _
+                ) | (
+                    _,
+                    naga::TypeInner::Image { .. } | naga::TypeInner::Sampler { .. }
+                )
             )
         ) {
             return Err(MakeFunctionError::Unchecked(
@@ -3523,7 +3666,10 @@ fn translation(
                     class,
                 },
             ) => {
-                if refuses!("function: a texture slot past the last", index >= MAX_TEXTURE_SLOTS) {
+                if refuses!(
+                    "function: a texture slot past the last",
+                    index >= MAX_TEXTURE_SLOTS
+                ) {
                     return Err(MakeFunctionError::Unchecked("a texture slot past the last"));
                 }
                 if refuses!(
@@ -3537,12 +3683,18 @@ fn translation(
                     ));
                 }
                 let read = match *class {
-                    naga::ImageClass::Sampled { multi, kind } => Some((multi, false, texel_kind(kind)?)),
+                    naga::ImageClass::Sampled { multi, kind } => {
+                        Some((multi, false, texel_kind(kind)?))
+                    }
                     naga::ImageClass::Depth { multi } => Some((multi, true, TexelKind::Float)),
-                    naga::ImageClass::Storage { format, .. } => Some((false, false, storage_texel_kind(format))),
+                    naga::ImageClass::Storage { format, .. } => {
+                        Some((false, false, storage_texel_kind(format)))
+                    }
                     _ => None,
                 };
-                let Some((multisampled, depth, texel)) = found!("function: an external texture", read) else {
+                let Some((multisampled, depth, texel)) =
+                    found!("function: an external texture", read)
+                else {
                     return Err(MakeFunctionError::Unchecked("an external texture"));
                 };
                 let texture_type = match (dim, arrayed, multisampled) {
@@ -3554,7 +3706,8 @@ fn translation(
                     (naga::ImageDimension::D3, false, false) => Some(TextureType::Type3D),
                     _ => None,
                 };
-                let Some(texture_type) = found!("function: a texture type not made", texture_type) else {
+                let Some(texture_type) = found!("function: a texture type not made", texture_type)
+                else {
                     return Err(MakeFunctionError::Unchecked(
                         "a texture type this crate does not make",
                     ));
@@ -3570,7 +3723,10 @@ fn translation(
                 ));
             }
             (_, naga::TypeInner::Sampler { .. }) => {
-                if refuses!("function: a sampler slot past the last", index >= MAX_SAMPLER_SLOTS) {
+                if refuses!(
+                    "function: a sampler slot past the last",
+                    index >= MAX_SAMPLER_SLOTS
+                ) {
                     return Err(MakeFunctionError::Unchecked("a sampler slot past the last"));
                 }
                 target.sampler = Some(naga::back::msl::BindSamplerTarget::Resource(slot_number(

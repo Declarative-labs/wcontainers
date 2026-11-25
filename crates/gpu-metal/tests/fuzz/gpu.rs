@@ -558,7 +558,10 @@ impl World {
             Ok(()) => {
                 let changed = shadow.borrow().changed(&read);
                 self.counts.canary_bytes = self.counts.canary_bytes.saturating_add(changed);
-                self.counts.free_bytes = self.counts.free_bytes.saturating_add(shadow.borrow().free());
+                self.counts.free_bytes = self
+                    .counts
+                    .free_bytes
+                    .saturating_add(shadow.borrow().free());
                 self.counts.checked_bytes = self.counts.checked_bytes.saturating_add(size);
             }
             Err(error) => eprintln!("CANARY a buffer not read back: {error:?}"),
@@ -607,8 +610,16 @@ impl World {
         // texture the limits take but past the budget keeps its widest side and loses the rest.
         let limits = self.b.caps().limits;
         let three_d = desc.dimension == TextureDimension::D3;
-        let most = if three_d { limits.max_texture_3d } else { limits.max_texture_2d };
-        let layers = if three_d { limits.max_texture_3d } else { limits.max_texture_layers };
+        let most = if three_d {
+            limits.max_texture_3d
+        } else {
+            limits.max_texture_2d
+        };
+        let layers = if three_d {
+            limits.max_texture_3d
+        } else {
+            limits.max_texture_layers
+        };
         let past = desc.width > most
             || desc.height > most
             || desc.depth_or_layers > layers
@@ -1065,7 +1076,8 @@ impl World {
                     if refill.is_empty() {
                         continue;
                     }
-                    self.b.write_buffer(&buffer, start, &refill, WriteMode::Ordered);
+                    self.b
+                        .write_buffer(&buffer, start, &refill, WriteMode::Ordered);
                     self.counts.call(false);
                     tracked.borrow_mut().wrote_pending(start, &refill);
                 }
