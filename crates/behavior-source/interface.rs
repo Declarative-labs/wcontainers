@@ -250,6 +250,25 @@ pub type Shown<Architecture> = spec_fn(
     Seq<Assignment<<Architecture as ProcessorArchitecture>::PagePermission>>,
 );
 
+/// What the source shows, as a function of the processor and memory before.
+pub open spec fn shown_by<Source: BehaviorSource + ?Sized>(source: &Source) -> Shown<Source::Architecture> {
+    |processor, memory| source.shown(processor, memory)
+}
+
+/// Of the instruction's known behaviors, the source shows this one and no other on some states.
+pub open spec fn shows_alone<Source>(
+    source: &Source,
+    instruction: <Source::Architecture as ProcessorArchitecture>::Instruction,
+    behavior: <Source::Architecture as ProcessorArchitecture>::PreciseInstruction,
+) -> bool
+    where
+        Source: BehaviorSource + ?Sized,
+        <Source::Architecture as ProcessorArchitecture>::PreciseInstruction: Simulator<Source::Architecture, Error = Infallible>,
+{
+    exists|states: Seq<ExecutionState<'static, Source::Architecture>>| #[trigger] alone_agrees(behavior,
+        <Source::Architecture as ProcessorArchitecture>::known_behaviors(instruction), shown_by(source), states)
+}
+
 /// The behavior leaves the processor and memory the source shows from every one of the states.
 pub open spec fn agrees_on_every_state<Architecture, Behavior>(
     behavior: Behavior,

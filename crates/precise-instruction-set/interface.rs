@@ -1,8 +1,12 @@
 #![no_std]
 
+use core::convert::Infallible;
+
 use vstd::prelude::*;
 use wcontainers_behavior_source::BehaviorSource;
-use wcontainers_processor_architecture::ProcessorArchitecture;
+#[cfg(verus_keep_ghost)]
+use wcontainers_behavior_source::shows_alone;
+use wcontainers_processor_architecture::{ProcessorArchitecture, Simulator};
 
 verus! {
 
@@ -16,10 +20,13 @@ pub trait PreciseInstructionSet<Architecture: ProcessorArchitecture>: Sized {
     spec fn behavior(&self, instruction: Architecture::Instruction) -> Architecture::PreciseInstruction;
 
     /// Measures which behavior each instruction shows.
+    // VERUS: no bound on the trait says known behaviors simulate, so measuring has that bound of its own.
     fn measure(source: Self::Source) -> (set: Result<Self, Self::MeasureError>)
+    where
+        Architecture::PreciseInstruction: Simulator<Architecture, Error = Infallible>,
         ensures
             set matches Ok(set) ==> forall|instruction| #[trigger] Architecture::instructions().contains(instruction)
-                ==> Architecture::known_behaviors(instruction).contains(set.behavior(instruction)),
+                ==> shows_alone(&source, instruction, set.behavior(instruction)),
     ;
 
     /// Returns the instruction with the behavior this set gives it.

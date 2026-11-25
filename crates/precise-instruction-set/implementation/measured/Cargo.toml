@@ -20,6 +20,7 @@ wcontainers-behavior-source = { path = "../../../behavior-source" }
 wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
 wcontainers-precise-instruction-set = { path = "../.." }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+vstd.workspace = true
 
 [dev-dependencies]
 wcontainers-behavior-source-recording = { path = "../../../behavior-source/implementation/recording" }
@@ -31,6 +32,9 @@ wcontainers-processor-architecture-arm64 = { path = "../../../processor-architec
 # The chip the chip test measures.
 [target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dev-dependencies]
 wcontainers-behavior-source-kvm-single-step = { path = "../../../behavior-source/implementation/kvm-single-step" }
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true
