@@ -1,169 +1,147 @@
-use alloc::vec::Vec;
-use core::iter;
+extern crate std;
 
-use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
+use alloc::vec::Vec;
+use core::convert::Infallible;
+use std::path::Path;
+
+use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
+use wcontainers_behavior_source_recording::Recording;
 use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
-use wcontainers_executor::Executor;
-use wcontainers_executor_simulation::Simulation;
 use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
-use wcontainers_precise_instruction_set_apple_m5::AppleM5;
-use wcontainers_precise_instruction_set_neoverse_v2::NeoverseV2;
-use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
+use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
+use wcontainers_processor_architecture_arm64::{
+    Arm64, Instruction, LoadIntoBaseWithWriteback, MisalignedStackPointer, PreciseInstruction,
+    Processor, SmeTrapCode, StoreAcrossFault, User, VectorLength, VectorLengthReading,
 };
-use wcontainers_processor_architecture_arm64::{Arm64, Instruction, PreciseInstruction, Processor};
 
-use crate::{MeasuredInstructionSet, MeasurementFailure};
+use crate::MeasuredInstructionSet;
 
-/// Every combination of the critical values of each instruction's operands.
-const GENERATOR: CriticalValueProduct<Arm64InputDomain> =
-    CriticalValueProduct::new(Arm64InputDomain);
+type Generator = CriticalValueProduct<Arm64InputDomain>;
 
-const KNOWN: [&dyn PreciseInstructionSet<Arm64>; 2] = [&AppleM5, &NeoverseV2];
+/// The folder of a chip's committed recordings.
+fn read_recording(chip: &str) -> Recording {
+    let folder = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../behavior-source/implementation/recording/recordings")
+        .join(chip);
+    match Recording::read(&folder) {
+        Ok(recording) => recording,
+        Err(error) => panic!("reading {}: {error}", folder.display()),
+    }
+}
 
-/// A chip like the M5 whose cache type no known set gives.
-struct UnknownCacheType;
-
-const UNKNOWN_CACHE_TYPE: u64 = 0x8444_C004;
-
-impl PreciseInstructionSet<Arm64> for UnknownCacheType {
-    fn to_precise(&self, instruction: Instruction) -> PreciseInstruction {
-        match AppleM5.to_precise(instruction) {
-            PreciseInstruction::MrsCtrEl0 { .. } => PreciseInstruction::MrsCtrEl0 {
-                cache_type: UNKNOWN_CACHE_TYPE,
-            },
-            precise => precise,
+/// The behaviors a chip showed where the manual leaves a choice, every other instruction having one behavior.
+fn expect_chip(
+    into_base: LoadIntoBaseWithWriteback,
+    vector_length: VectorLengthReading,
+    cache_type: u64,
+) -> impl Fn(Instruction<Infallible>) -> PreciseInstruction<Infallible> {
+    let misaligned_stack_pointer = MisalignedStackPointer::Faults;
+    let across_fault = StoreAcrossFault::WritesNothing;
+    move |instruction| match instruction {
+        Instruction::AddShiftedRegister64 => PreciseInstruction::AddShiftedRegister64,
+        Instruction::AddsShiftedRegister64 => PreciseInstruction::AddsShiftedRegister64,
+        Instruction::Csel64 => PreciseInstruction::Csel64,
+        Instruction::LdrImmediateUnsignedOffset64 => {
+            PreciseInstruction::LdrImmediateUnsignedOffset64 {
+                misaligned_stack_pointer,
+            }
         }
+        Instruction::StrImmediateUnsignedOffset64 => {
+            PreciseInstruction::StrImmediateUnsignedOffset64 {
+                misaligned_stack_pointer,
+                across_fault,
+            }
+        }
+        Instruction::StpSignedOffset64 => PreciseInstruction::StpSignedOffset64 {
+            misaligned_stack_pointer,
+            across_fault,
+        },
+        Instruction::LdrImmediatePostIndex64 => PreciseInstruction::LdrImmediatePostIndex64 {
+            misaligned_stack_pointer,
+            into_base,
+        },
+        Instruction::Brk => PreciseInstruction::Brk,
+        Instruction::Rdvl => PreciseInstruction::Rdvl(vector_length),
+        Instruction::MrsCtrEl0 => PreciseInstruction::MrsCtrEl0 { cache_type },
     }
 }
 
-/// A generator that gives no states, so it tells no two behaviors apart.
-struct NoStates;
-
-impl DistinguishingStateGenerator<Arm64> for NoStates {
-    fn generate_states(
-        &self,
-        _: Instruction,
-    ) -> impl Iterator<Item = ExecutionState<'static, Arm64>> {
-        iter::empty()
+fn assert_measures_as(
+    recording: Recording,
+    expected: impl Fn(Instruction<Infallible>) -> PreciseInstruction<Infallible>,
+) {
+    let Ok(measured) = MeasuredInstructionSet::<Recording, Generator>::measure(recording) else {
+        panic!("a recording of a known chip measures as that chip");
+    };
+    for instruction in Arm64::<User>::list_instructions() {
+        assert_eq!(measured.to_precise(instruction), expected(instruction));
     }
 }
 
-/// A chip that counts the instructions it runs.
-struct Counted<Chip> {
-    chip: Chip,
-    runs: usize,
+#[test]
+fn the_neoverse_v2_recording_measures_as_the_neoverse_v2() {
+    assert_measures_as(
+        read_recording("neoverse-v2"),
+        expect_chip(
+            LoadIntoBaseWithWriteback::WritebackSuppressed,
+            VectorLengthReading::Reads(VectorLength::Bits128),
+            0xB444_C004,
+        ),
+    );
 }
 
-impl<Chip: Executor<Architecture = Arm64>> Executor for Counted<Chip> {
-    type Architecture = Arm64;
-    type TranslatorConfig = ();
+#[test]
+fn the_apple_m5_recording_measures_as_the_apple_m5() {
+    assert_measures_as(
+        read_recording("apple-m5"),
+        expect_chip(
+            LoadIntoBaseWithWriteback::Undefined,
+            VectorLengthReading::SmeTrapped(SmeTrapCode::Disabled),
+            0x9_9444_C004,
+        ),
+    );
+}
+
+/// A recording whose every state after also changes TPIDR_EL0, which none of the instructions writes.
+struct ThreadIdChanged(Recording);
+
+impl BehaviorSource for ThreadIdChanged {
+    type Architecture = Arm64<User>;
 
     fn execute_single_instruction_in_place(
         &mut self,
-        processor: &mut Processor,
-        memory: &[MemoryDelta<'_, Arm64>],
-        on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
+        processor: &mut Processor<()>,
+        memory: &[MemoryDelta<'_, Arm64<User>>],
+        mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) {
-        self.runs += 1;
-        self.chip
-            .execute_single_instruction_in_place(processor, memory, on_memory_mutated);
-    }
-}
-
-/// Measures a stand-in that plays the chip of `played`, which `set` is a second value of.
-fn assert_measures_as<Set: PreciseInstructionSet<Arm64>>(set: Set, played: Set) {
-    let Ok(measured) =
-        MeasuredInstructionSet::measure(&mut Simulation::new(played), &KNOWN, &GENERATOR)
-    else {
-        panic!("a stand-in playing a known set measures as that set");
-    };
-    for instruction in Arm64::list_instructions() {
-        assert_eq!(
-            measured.to_precise(instruction),
-            set.to_precise(instruction)
-        );
+        self.0
+            .execute_single_instruction_in_place(processor, memory, mutation_hook);
+        processor.software_thread_id ^= 1;
     }
 }
 
 #[test]
-fn stand_in_playing_the_m5_measures_as_the_m5() {
-    assert_measures_as(AppleM5, AppleM5);
-}
-
-#[test]
-fn stand_in_playing_the_v2_measures_as_the_v2() {
-    assert_measures_as(NeoverseV2, NeoverseV2);
-}
-
-#[test]
-fn only_states_that_tell_the_behaviors_in_play_apart_are_run() {
-    let mut chip = Counted {
-        chip: Simulation::new(AppleM5),
-        runs: 0,
+fn behavior_no_known_one_agrees_with_is_named_with_its_state() {
+    let source = ThreadIdChanged(read_recording("neoverse-v2"));
+    let Err(failure) = MeasuredInstructionSet::<ThreadIdChanged, Generator>::measure(source) else {
+        panic!("no known behavior changes TPIDR_EL0");
     };
-    assert!(MeasuredInstructionSet::measure(&mut chip, &[&AppleM5, &AppleM5], &GENERATOR).is_ok());
-    assert_eq!(chip.runs, 0);
-    assert!(MeasuredInstructionSet::measure(&mut chip, &KNOWN, &GENERATOR).is_ok());
-    // The two sets differ on three instructions, each between two behaviors: one run decides each.
-    let differing = Arm64::list_instructions().filter(|instruction| {
-        AppleM5.to_precise(*instruction) != NeoverseV2.to_precise(*instruction)
-    });
-    assert_eq!(chip.runs, differing.count());
-}
-
-#[test]
-fn behavior_no_set_knows_is_named_with_its_state() {
-    let Err(failure) =
-        MeasuredInstructionSet::measure(&mut Simulation::new(UnknownCacheType), &KNOWN, &GENERATOR)
-    else {
-        panic!("no known set gives the chip's cache type");
-    };
-    let MeasurementFailure::NoBehaviorAgrees {
+    let MeasureInstructionError::NoBehaviorAgrees {
         instruction,
         before,
         behaviors,
-        chip,
+        observed,
     } = failure
     else {
         panic!("the failure is that no behavior agrees");
     };
-    assert_eq!(instruction, Instruction::MrsCtrEl0);
-    let said: Vec<PreciseInstruction> = behaviors.iter().map(|(precise, _)| *precise).collect();
-    assert_eq!(
-        said,
-        KNOWN.map(|set| set.to_precise(Instruction::MrsCtrEl0))
+    assert_eq!(Some(instruction), Arm64::<User>::list_instructions().next());
+    assert_ne!(
+        observed.processor.software_thread_id,
+        before.processor.software_thread_id
     );
-    let Ok(expected) = PreciseInstruction::MrsCtrEl0 {
-        cache_type: UNKNOWN_CACHE_TYPE,
-    }
-    .simulate(before);
-    assert!(chip == expected);
-}
-
-#[test]
-fn behaviors_no_state_tells_apart_are_named() {
-    let measured =
-        MeasuredInstructionSet::measure(&mut Simulation::new(AppleM5), &KNOWN, &NoStates);
-    let Err(MeasurementFailure::IndistinguishableBehaviors {
-        instruction,
-        behaviors,
-    }) = measured
-    else {
-        panic!("with no states, the first instruction the sets differ on cannot be told");
-    };
-    assert_eq!(instruction, Instruction::LdrImmediatePostIndex64);
-    assert_eq!(behaviors, KNOWN.map(|set| set.to_precise(instruction)));
-}
-
-#[test]
-fn no_known_set_is_named() {
-    let measured = MeasuredInstructionSet::measure(&mut Simulation::new(AppleM5), &[], &GENERATOR);
-    assert!(matches!(
-        measured,
-        Err(MeasurementFailure::NoKnownBehavior {
-            instruction: Instruction::AddShiftedRegister64
-        })
-    ));
+    let listed: Vec<_> = Arm64::<User>::list_known_behaviors(instruction).collect();
+    let named: Vec<_> = behaviors.iter().map(|(precise, _)| *precise).collect();
+    assert_eq!(named, listed);
 }
