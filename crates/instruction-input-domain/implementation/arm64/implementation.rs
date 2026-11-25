@@ -26,6 +26,7 @@ use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_arm64::branch::{BranchOperation, to_branch_operation};
 use wcontainers_processor_architecture_arm64::encoding::{Field, IMM16, RD, RDVL_IMM6, RN, RT};
+use wcontainers_processor_architecture_arm64::floating_point::scalable_elements::Conversion;
 use wcontainers_processor_architecture_arm64::floating_point::{
     ALTERNATIVE_HALF, DEFAULT_NAN, DIVIDE_BY_ZERO, FLUSH_HALF_TO_ZERO, FLUSH_TO_ZERO,
     FloatingPointOperation, INEXACT, INPUT_DENORMAL, INVALID_OPERATION, OVERFLOW, Precision,
@@ -35,6 +36,7 @@ use wcontainers_processor_architecture_arm64::load_store::{AtomicOperation, Tran
 use wcontainers_processor_architecture_arm64::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Signedness,
 };
+use wcontainers_processor_architecture_arm64::scalable_floating_point::{Lanes, VectorRole};
 use wcontainers_processor_architecture_arm64::simd::to_vector_operation;
 use wcontainers_processor_architecture_arm64::system_register::SYSTEM_REGISTER;
 use wcontainers_processor_architecture_arm64::{
@@ -241,6 +243,14 @@ pub enum ScalableValues {
     Integer,
     /// Indices into a table, besides bits.
     TableIndices,
+    /// Floating-point values in the lanes given, or where none, in the lanes of every element size, of which an
+    /// instruction takes those of the size its size field gives.
+    FloatingPoint {
+        lanes: Option<Lanes>,
+        role: VectorRole,
+    },
+    /// What a conversion reads, with the bounds and roundings of what it converts to.
+    Converted(Conversion),
 }
 
 /// What every byte of the data pages holds before the instruction.
@@ -316,9 +326,26 @@ pub enum OperandValue {
     MemoryFill(MemoryFill),
     /// The low bytes of a SIMD and floating-point register.
     Vector(u128),
+    /// A whole Z register, the lanes its values lie in.
+    ScalableVector {
+        bits: u128,
+        lanes: Lanes,
+    },
 }
 
 impl Arm64InputDomain {
+    /// Whether an operand's critical value is one the word gives its operand: a floating-point source of an SVE
+    /// instruction whose size field sizes its elements takes only the values of that size.
+    pub fn is_value_of_word(
+        &self,
+        instruction: Instruction<Infallible>,
+        operand_type: OperandType,
+        value: OperandValue,
+        word: u32,
+    ) -> bool {
+        scalable::is_value_of_word(instruction, operand_type, value, word)
+    }
+
     /// The numbers of ordinary registers of the operand's kind enough for every register operand of an instruction to
     /// name its own, which the critical values alone do not give: one register's value is a critical value only
     /// beside the others'. None for an operand that names no register.
@@ -669,7 +696,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                     vector_values.push((field, bytes, value));
                 }
                 OperandType::ScalableVectorValue { field, offset, .. } => {
-                    let OperandValue::Vector(value) = operand else {
+                    let (OperandValue::Vector(value)
+                    | OperandValue::ScalableVector { bits: value, .. }) = operand
+                    else {
                         reject_mismatch(operand_type, operand)
                     };
                     scalable_values.push((field, offset, value));

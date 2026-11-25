@@ -25,6 +25,9 @@
 //!   subnormal source nothing is flushed, so the flush controls do too;
 //! - a page the access does not reach: its permission takes one value.
 //!
+//! A floating-point source of an SVE instruction whose size field sizes its elements takes only the values of that size:
+//! the domain gives each size's values, and those of another size are bits the instruction does not read as its own.
+//!
 //! A predicate of an SVE instruction that leaves some element inactive only chooses which elements it computes: only
 //! where every element is active do the values, controls and written state take every combination; under any other
 //! predicate they take each of their values once.
@@ -64,6 +67,7 @@ use wcontainers_processor_architecture_arm64::floating_point::{
 use wcontainers_processor_architecture_arm64::integer::IntegerOperation;
 use wcontainers_processor_architecture_arm64::load_store::Transfer;
 use wcontainers_processor_architecture_arm64::operand::Operand;
+use wcontainers_processor_architecture_arm64::scalable::is_unallocated;
 use wcontainers_processor_architecture_arm64::system_register::{
     HeldRegister, SystemRegisterAccess, to_system_register_access,
 };
@@ -577,7 +581,8 @@ impl Cut {
                     facts.undefined |= self
                         .reserved
                         .iter()
-                        .any(|pattern| pattern.is_matching(facts.word));
+                        .any(|pattern| pattern.is_matching(facts.word))
+                        || is_unallocated(self.instruction, facts.word);
                 }
                 Group::Condition => {}
                 // An encoding that is undefined or that EL1 traps decides the outcome whatever the state holds.
@@ -822,7 +827,18 @@ impl Cut {
                 if decided || facts.held & (1 << index) == 0 || !read {
                     one
                 } else {
-                    all
+                    // Only the values whose lanes are those the word gives the operand.
+                    let own: Vec<usize> = (0..count)
+                        .filter(|value| {
+                            self.domain.is_value_of_word(
+                                self.instruction,
+                                operand_type,
+                                self.values[index][*value],
+                                facts.word,
+                            )
+                        })
+                        .collect();
+                    if own.is_empty() { one } else { own }
                 }
             }
             Group::Control if facts.undefined || !compares => one,
@@ -834,7 +850,14 @@ impl Cut {
                     let mode = (control >> ROUNDING_MODE_SHIFT) & ((1 << ROUNDING_MODE_BITS) - 1);
                     let flush = control & (FLUSH_TO_ZERO | FLUSH_HALF_TO_ZERO);
                     let flushes_nothing = facts.nonfinite_source && !facts.subnormal_source;
-                    (!facts.nonfinite_source || mode == 0) && (!flushes_nothing || flush == 0)
+                    (!facts.nonfinite_source || mode == 0)
+                        && (!flushes_nothing || flush == 0)
+                        && self.domain.is_value_of_word(
+                            self.instruction,
+                            operand_type,
+                            self.values[index][*value],
+                            facts.word,
+                        )
                 })
                 .collect(),
             Group::Written => match operand_type {

@@ -1,6 +1,7 @@
 //! The SVE and SVE2 instructions of the second half of the work list at a 128-bit vector length, where a Z register
-//! is the V register of its number: permutes and table lookups, each transcribed from Arm's pseudocode (for example
-//! [ZIP1](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/ZIP1--ZIP2--vectors---Interleave-elements-from-two-half-vectors-)).
+//! is the V register of its number: permutes and table lookups here, each transcribed from Arm's pseudocode (for
+//! example [ZIP1](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/ZIP1--ZIP2--vectors---Interleave-elements-from-two-half-vectors-)),
+//! and floating point in `scalable_floating_point`.
 //!
 //! Each modeled instruction names its operands by field here, since the list leaves SVE operands unmodeled.
 
@@ -8,6 +9,10 @@ use alloc::vec::Vec;
 use core::convert::Infallible;
 
 use crate::encoding::Field;
+use crate::scalable_floating_point::{
+    FloatingPointForm, VectorRole, list_floating_point_operands, simulate_floating_point_form,
+    to_floating_point_form,
+};
 use crate::{Exception, Instruction, PREDICATE_REGISTERS, Processor, VECTOR_REGISTERS};
 
 /// The bits of a Z register and the bytes of one at a 128-bit vector length.
@@ -49,6 +54,17 @@ pub enum ScalableOperand {
     EveryValue(&'static [Field]),
     /// A byte position in a Z register, split over fields, the most significant first.
     BytePosition(&'static [Field]),
+    /// A Z register of floating-point elements of the size the size field gives, read and also written where it is
+    /// the destination's field.
+    FloatingPointSource { number: Field, role: VectorRole },
+    /// The Z register a conversion reads, its lanes as the instruction gives them.
+    ConvertedSource(Field),
+    /// A predicate the instruction writes without reading it.
+    PredicateDestination(Field),
+    /// The bit that chooses an immediate form's constant.
+    ImmediateChoice(Field),
+    /// FPCR, as an arithmetic instruction or a conversion between precisions reads it, and FPSR before.
+    FloatingPointControl { conversion: bool },
 }
 
 /// What a modeled permute computes.
@@ -83,15 +99,32 @@ pub enum PermuteOperation {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ScalableOperation {
     Permute(PermuteOperation),
+    FloatingPoint(FloatingPointForm),
 }
 
 /// The operation of each SVE instruction this module models, none for every other instruction.
 pub const fn to_scalable_operation(
     instruction: Instruction<Infallible>,
 ) -> Option<ScalableOperation> {
+    if let Some(permute) = to_permute_operation(instruction) {
+        return Some(ScalableOperation::Permute(permute));
+    }
+    match to_floating_point_form(instruction) {
+        Some(form) => Some(ScalableOperation::FloatingPoint(form)),
+        None => None,
+    }
+}
+
+/// Whether the word is unallocated for a modeled SVE instruction: its element size has no encoding.
+pub fn is_unallocated(instruction: Instruction<Infallible>, word: u32) -> bool {
+    to_scalable_operation(instruction)
+        .is_some_and(|operation| to_element_bits(operation, word).is_none())
+}
+
+const fn to_permute_operation(instruction: Instruction<Infallible>) -> Option<PermuteOperation> {
     use Instruction as I;
     use PermuteOperation as P;
-    Some(ScalableOperation::Permute(match instruction {
+    Some(match instruction {
         I::Zip1ZZZ => P::Zip { high: false },
         I::Zip2ZZZ => P::Zip { high: true },
         I::Uzp1ZZZ => P::Unzip { odd: false },
@@ -134,7 +167,7 @@ pub const fn to_scalable_operation(
         },
         I::CompactZPZ64 => P::Compact,
         _ => return None,
-    }))
+    })
 }
 
 /// The operands of a modeled SVE instruction in the order of its syntax, none for every other instruction.
@@ -154,8 +187,10 @@ pub fn list_scalable_operands(
             registers: 1,
         },
     ];
-    let operation = to_scalable_operation(instruction)?;
-    let ScalableOperation::Permute(permute) = operation;
+    let permute = match to_scalable_operation(instruction)? {
+        ScalableOperation::Permute(permute) => permute,
+        ScalableOperation::FloatingPoint(form) => return Some(list_floating_point_operands(form)),
+    };
     Some(match permute {
         PermuteOperation::Zip { .. }
         | PermuteOperation::Unzip { .. }
@@ -280,7 +315,12 @@ pub fn read_predicate(processor: &Processor<impl Sized>, word: u32, field: Field
 
 /// The esize of a modeled instruction's elements in bits, none where its encoding is unallocated.
 pub fn to_element_bits(operation: ScalableOperation, word: u32) -> Option<u32> {
-    let ScalableOperation::Permute(permute) = operation;
+    let permute = match operation {
+        ScalableOperation::Permute(permute) => permute,
+        ScalableOperation::FloatingPoint(form) => {
+            return crate::scalable_floating_point::to_element_bits(form, word);
+        }
+    };
     match permute {
         PermuteOperation::Extract { .. } => Some(u8::BITS),
         // The lowest set bit of tsz; a tsz of zero is unallocated.
@@ -304,10 +344,15 @@ pub fn simulate_scalable<LevelSpecific>(
     word: u32,
     operation: ScalableOperation,
 ) -> Result<(), Exception> {
+    let permute = match operation {
+        ScalableOperation::Permute(permute) => permute,
+        ScalableOperation::FloatingPoint(form) => {
+            return simulate_floating_point_form(processor, word, form);
+        }
+    };
     let Some(esize) = to_element_bits(operation, word) else {
         return Err(Exception::UndefinedInstruction);
     };
-    let ScalableOperation::Permute(permute) = operation;
     let result = permute_vectors(processor, word, permute, esize);
     processor.vector_registers[ZD.read(word) as usize] = result;
     Ok(())

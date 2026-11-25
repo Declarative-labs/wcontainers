@@ -5,14 +5,19 @@ use alloc::vec::Vec;
 use core::convert::Infallible;
 
 use wcontainers_processor_architecture_arm64::Instruction;
+use wcontainers_processor_architecture_arm64::encoding::Field;
+use wcontainers_processor_architecture_arm64::floating_point::{FLUSH_HALF_TO_ZERO, Precision};
 use wcontainers_processor_architecture_arm64::scalable::{
-    ScalableOperand, VECTOR_BITS, list_scalable_operands,
+    ScalableOperand, ScalableOperation, VECTOR_BITS, list_scalable_operands, to_element_bits,
+    to_scalable_operation,
+};
+use wcontainers_processor_architecture_arm64::scalable_floating_point::{
+    FloatingPointForm, LaneKind, Lanes, VectorRole, to_conversion_lanes,
 };
 
-use wcontainers_processor_architecture_arm64::encoding::Field;
-
 use crate::{
-    OperandType, OperandValue, ScalableValues, low_ones, to_vector_values, with_each_bit_alone,
+    ControlReads, OperandType, OperandValue, ScalableValues, low_ones, to_floating_point_bits,
+    to_vector_values, with_each_bit_alone,
 };
 
 /// The element sizes of SVE in bytes, smallest first.
@@ -81,6 +86,49 @@ pub(crate) fn list_scalable_operand_types(
             ]),
             ScalableOperand::EveryValue(fields) => types.push(OperandType::EveryValue(fields)),
             ScalableOperand::BytePosition(fields) => types.push(OperandType::BytePosition(fields)),
+            ScalableOperand::FloatingPointSource { number, role } => types.extend([
+                OperandType::ScalableVectorNumber {
+                    field: number,
+                    registers: 1,
+                },
+                OperandType::ScalableVectorValue {
+                    field: number,
+                    offset: 0,
+                    values: ScalableValues::FloatingPoint { lanes: None, role },
+                },
+            ]),
+            ScalableOperand::ConvertedSource(number) => {
+                let Some(ScalableOperation::FloatingPoint(FloatingPointForm::Convert(conversion))) =
+                    to_scalable_operation(instruction)
+                else {
+                    unreachable!("only a conversion has a converted source");
+                };
+                types.extend([
+                    OperandType::ScalableVectorNumber {
+                        field: number,
+                        registers: 1,
+                    },
+                    OperandType::ScalableVectorValue {
+                        field: number,
+                        offset: 0,
+                        values: ScalableValues::Converted(conversion),
+                    },
+                ]);
+            }
+            ScalableOperand::PredicateDestination(number) => {
+                types.push(OperandType::PredicateNumber(number));
+            }
+            ScalableOperand::ImmediateChoice(field) => {
+                types.push(OperandType::UnsignedImmediate(field))
+            }
+            ScalableOperand::FloatingPointControl { conversion } => types.extend([
+                OperandType::FloatingPointControl(if conversion {
+                    ControlReads::Conversion
+                } else {
+                    ControlReads::Half
+                }),
+                OperandType::StatusFlags,
+            ]),
         }
     }
     Some(types)
@@ -90,6 +138,33 @@ pub(crate) fn list_scalable_operand_types(
 /// size, each element its own index, the indices reversed, the last index and the first past one table alternating,
 /// and the indices of a second table, and the last index of two tables and the first past them alternating.
 pub(crate) fn to_scalable_vector_values(values: ScalableValues) -> Vec<OperandValue> {
+    match values {
+        ScalableValues::FloatingPoint { lanes: None, role } => {
+            return [Precision::Half, Precision::Single, Precision::Double]
+                .into_iter()
+                .flat_map(|precision| {
+                    let lanes = Lanes {
+                        kind: LaneKind::FloatingPoint(precision),
+                        container_bits: precision.to_bits(),
+                    };
+                    pack(&to_floating_point_bits(precision), lanes, role)
+                })
+                .collect();
+        }
+        ScalableValues::FloatingPoint {
+            lanes: Some(lanes),
+            role,
+        } => return pack(&to_lane_values(lanes.kind, None), lanes, role),
+        ScalableValues::Converted(conversion) => {
+            let (lanes, target) = to_conversion_lanes(conversion);
+            return pack(
+                &to_lane_values(lanes.kind, Some(target.kind)),
+                lanes,
+                VectorRole::Packed,
+            );
+        }
+        ScalableValues::Integer | ScalableValues::TableIndices => {}
+    }
     let mut chosen = to_vector_values(VECTOR_BITS / u8::BITS);
     if values == ScalableValues::TableIndices {
         for bytes in ELEMENT_BYTES {
@@ -120,6 +195,151 @@ pub(crate) fn to_scalable_vector_values(values: ScalableValues) -> Vec<OperandVa
         }
     }
     chosen
+}
+
+/// The values one lane of the kind takes: a floating-point value's, with the bounds of an integer it converts to; an
+/// integer's, with the integers just past the significand of the precision it converts to.
+fn to_lane_values(kind: LaneKind, target: Option<LaneKind>) -> Vec<u64> {
+    match (kind, target) {
+        (LaneKind::FloatingPoint(precision), Some(LaneKind::Integer { bits })) => {
+            to_converted_floating_point_bits(precision, bits)
+        }
+        (LaneKind::FloatingPoint(precision), _) => to_floating_point_bits(precision),
+        (LaneKind::Integer { bits }, target) => {
+            let mask = low_ones(bits);
+            let mut values = [
+                0,
+                1,
+                mask,
+                1 << (bits - 1),
+                mask >> 1,
+                (1 << (u8::BITS - 1)) & mask,
+            ]
+            .to_vec();
+            if let Some(LaneKind::FloatingPoint(precision)) = target {
+                let significand_bits = precision.to_fraction_bits() + 1;
+                for power in [significand_bits, significand_bits + 1] {
+                    if power + 1 >= bits {
+                        continue;
+                    }
+                    for odd in [1, 3] {
+                        let integer = (1_u64 << power) + odd;
+                        values.extend([integer, integer.wrapping_neg() & mask]);
+                    }
+                }
+            }
+            to_distinct(values)
+        }
+    }
+}
+
+/// The values in their order, each once.
+fn to_distinct(values: Vec<u64>) -> Vec<u64> {
+    let mut distinct = Vec::new();
+    for value in values {
+        if !distinct.contains(&value) {
+            distinct.push(value);
+        }
+    }
+    distinct
+}
+
+/// The values of a precision, and both signs of two to the integer's bits less one and of two to its bits, each with
+/// the values beside it, and two to the bits less one, less a half: the bounds of the integer's range and the
+/// roundings at them.
+fn to_converted_floating_point_bits(precision: Precision, bits: u32) -> Vec<u64> {
+    let fraction_bits = precision.to_fraction_bits();
+    let exponent_ones = (1_u64 << precision.to_exponent_bits()) - 1;
+    let bias = exponent_ones >> 1;
+    let sign = 1 << (precision.to_bits() - 1);
+    let mut values = to_floating_point_bits(precision);
+    for power in [bits - 1, bits] {
+        let exponent = bias + u64::from(power);
+        if exponent >= exponent_ones {
+            continue;
+        }
+        let bound = exponent << fraction_bits;
+        for magnitude in [bound - 1, bound, bound + 1] {
+            values.extend([magnitude, sign | magnitude]);
+        }
+        if power == bits - 1 && fraction_bits >= power {
+            let fraction = (1 << fraction_bits) - (1 << (fraction_bits - power));
+            values.push(((exponent - 1) << fraction_bits) | fraction);
+        }
+    }
+    to_distinct(values)
+}
+
+/// The values in the lanes: packed, each value once in turn over as few registers as hold them; or rotated, each value
+/// in the first lane of a register of its own with the values after it in the next lanes. A container wider than its
+/// value holds zeros above it in its even lanes and ones in its odd ones, which no instruction reads.
+fn pack(values: &[u64], lanes: Lanes, role: VectorRole) -> Vec<OperandValue> {
+    let count = VECTOR_BITS / lanes.container_bits;
+    let value_bits = lanes.kind.to_bits();
+    let registers = match role {
+        VectorRole::Packed => values.len().div_ceil(count as usize),
+        VectorRole::Rotated => values.len(),
+    };
+    (0..registers)
+        .map(|register| {
+            let bits = (0..count).fold(0_u128, |vector, lane| {
+                let place = match role {
+                    VectorRole::Packed => register * count as usize + lane as usize,
+                    VectorRole::Rotated => register + lane as usize,
+                };
+                let value = u128::from(values[place % values.len()]);
+                let above = if lane % 2 == 1 && value_bits < lanes.container_bits {
+                    (u128::MAX >> (u128::BITS - lanes.container_bits))
+                        & !(u128::MAX >> (u128::BITS - value_bits))
+                } else {
+                    0
+                };
+                vector | ((value | above) << (lane * lanes.container_bits))
+            });
+            OperandValue::ScalableVector { bits, lanes }
+        })
+        .collect()
+}
+
+/// Whether the value is one of the lanes the word gives its operand: a floating-point source of an instruction whose
+/// size field sizes its elements takes only the values of that size, and its FPCR sets FZ16 only for half precision,
+/// as a scalar instruction of single or double precision reads FPCR.
+pub(crate) fn is_value_of_word(
+    instruction: Instruction<Infallible>,
+    operand_type: OperandType,
+    value: OperandValue,
+    word: u32,
+) -> bool {
+    match (operand_type, value) {
+        (
+            OperandType::ScalableVectorValue {
+                values: ScalableValues::FloatingPoint { lanes: None, .. },
+                ..
+            },
+            OperandValue::ScalableVector { lanes, .. },
+        ) => to_scalable_operation(instruction)
+            .and_then(|operation| to_element_bits(operation, word))
+            .is_some_and(|bits| bits == lanes.container_bits),
+        (OperandType::FloatingPointControl(ControlReads::Half), OperandValue::Bits(control)) => {
+            match to_scalable_operation(instruction) {
+                Some(
+                    operation @ ScalableOperation::FloatingPoint(
+                        FloatingPointForm::Unpredicated(_)
+                        | FloatingPointForm::Predicated(_)
+                        | FloatingPointForm::Unary(_)
+                        | FloatingPointForm::Immediate { .. }
+                        | FloatingPointForm::Compare { .. }
+                        | FloatingPointForm::MultiplyAdd { .. },
+                    ),
+                ) => {
+                    control & FLUSH_HALF_TO_ZERO == 0
+                        || to_element_bits(operation, word) == Some(u16::BITS)
+                }
+                _ => true,
+            }
+        }
+        _ => true,
+    }
 }
 
 /// Every byte position of a Z register and the first past it, the largest the fields hold, and each bit alone.

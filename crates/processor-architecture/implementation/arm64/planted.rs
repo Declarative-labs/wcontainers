@@ -59,7 +59,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 395] = [
+pub const PLANTED_BUGS: [PlantedBug; 414] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2429,5 +2429,119 @@ pub const PLANTED_BUGS: [PlantedBug; 395] = [
         instruction: Instruction::CompactZPZ64,
         planted_by: PlantedBy::ScalableSecondHalf,
         what: "the elements above the active ones kept, not zero",
+    },
+    PlantedBug {
+        number: 2015,
+        instruction: Instruction::FaddZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "inactive elements computed too",
+    },
+    PlantedBug {
+        number: 2016,
+        instruction: Instruction::FsubrZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the sources not swapped",
+    },
+    PlantedBug {
+        number: 2017,
+        instruction: Instruction::FmulxZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "an infinity times a zero is the default NaN, as FMUL",
+    },
+    PlantedBug {
+        number: 2018,
+        instruction: Instruction::FrecpsZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the first source not negated",
+    },
+    PlantedBug {
+        number: 2019,
+        instruction: Instruction::FrsqrtsZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the sum not halved",
+    },
+    PlantedBug {
+        number: 2020,
+        instruction: Instruction::FscaleZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the scale read unsigned",
+    },
+    PlantedBug {
+        number: 2021,
+        instruction: Instruction::FabdZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "a NaN keeps its sign",
+    },
+    PlantedBug {
+        number: 2022,
+        instruction: Instruction::FcmnePPzZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "a NaN compares equal",
+    },
+    PlantedBug {
+        number: 2023,
+        instruction: Instruction::FcmgePPzZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "a quiet NaN raises no Invalid Operation",
+    },
+    PlantedBug {
+        number: 2024,
+        instruction: Instruction::FcmltPPzZ0,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the source compared greater than zero",
+    },
+    PlantedBug {
+        number: 2025,
+        instruction: Instruction::Fmad,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the addend and the multiplier swapped",
+    },
+    PlantedBug {
+        number: 2026,
+        instruction: Instruction::Fnmla,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the addend not negated",
+    },
+    PlantedBug {
+        number: 2027,
+        instruction: Instruction::FcvtZPmZStoH,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "FPCR.AHP read",
+    },
+    PlantedBug {
+        number: 2028,
+        instruction: Instruction::FcvtzsZPmZDtoS,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the word zero-extended",
+    },
+    PlantedBug {
+        number: 2029,
+        instruction: Instruction::ScvtfZPmZStoD,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the whole doubleword converted",
+    },
+    PlantedBug {
+        number: 2030,
+        instruction: Instruction::FrecpxZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "a zero exponent complemented",
+    },
+    PlantedBug {
+        number: 2031,
+        instruction: Instruction::FmaxnmZPmI,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the immediate's two constants swapped",
+    },
+    PlantedBug {
+        number: 2033,
+        instruction: Instruction::FcmeqPPzZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "inactive elements keep the destination's bits",
+    },
+    PlantedBug {
+        number: 2034,
+        instruction: Instruction::FaddZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "only the last element's flags raised",
     },
 ];

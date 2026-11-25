@@ -13,7 +13,7 @@ use wcontainers_processor_architecture_arm64::{
 use crate::{
     AccessPlacement, Arm64InputDomain, CODE_ADDRESS, CodePlacement, Comparison, DataPage,
     GENERAL_PURPOSE_REGISTERS, LOWER_DATA_ADDRESS, MemoryFill, OperandType, OperandValue,
-    UPPER_DATA_ADDRESS, to_access_address,
+    ScalableValues, UPPER_DATA_ADDRESS, to_access_address,
 };
 
 const PLACEMENTS: [AccessPlacement; 7] = [
@@ -66,10 +66,25 @@ fn read_operand(
         | OperandType::PredicateNumber(field) => {
             Some(OperandValue::RegisterNumber(field.read(word)))
         }
-        OperandType::ScalableVectorValue { field, offset, .. } => Some(OperandValue::Vector(
-            state.processor.vector_registers
-                [(field.read(word) + offset) as usize % state.processor.vector_registers.len()],
-        )),
+        OperandType::ScalableVectorValue {
+            field,
+            offset,
+            values,
+        } => {
+            let bits = state.processor.vector_registers
+                [(field.read(word) + offset) as usize % state.processor.vector_registers.len()];
+            match values {
+                ScalableValues::Integer | ScalableValues::TableIndices => {
+                    Some(OperandValue::Vector(bits))
+                }
+                // The critical value of these bits, whose lanes the bits alone do not name.
+                ScalableValues::FloatingPoint { .. } | ScalableValues::Converted(_) => {
+                    Arm64InputDomain.generate_critical_values(operand_type).find(|value| {
+                        matches!(value, OperandValue::ScalableVector { bits: held, .. } if *held == bits)
+                    })
+                }
+            }
+        }
         OperandType::PredicateValue(field) => Some(OperandValue::Bits(u64::from(
             state.processor.predicate_registers[field.read(word) as usize],
         ))),
@@ -377,6 +392,22 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                 ) = operand_types.get(index)
                     && operand_types[index + 1..].iter().any(|later| {
                         matches!(later, OperandType::FloatingPointValue { field: other, .. } | OperandType::VectorValue { field: other, .. } if other.read(word) == field.read(word))
+                    })
+                {
+                    continue;
+                }
+                // So does a Z register or a predicate an SVE instruction names twice.
+                if let Some(OperandType::ScalableVectorValue { field, offset, .. }) =
+                    operand_types.get(index)
+                    && operand_types[index + 1..].iter().any(|later| {
+                        matches!(later, OperandType::ScalableVectorValue { field: other, offset: other_offset, .. } if (other.read(word) + other_offset) % 32 == (field.read(word) + offset) % 32)
+                    })
+                {
+                    continue;
+                }
+                if let Some(OperandType::PredicateValue(field)) = operand_types.get(index)
+                    && operand_types[index + 1..].iter().any(|later| {
+                        matches!(later, OperandType::PredicateValue(other) if other.read(word) == field.read(word))
                     })
                 {
                     continue;

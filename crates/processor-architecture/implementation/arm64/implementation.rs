@@ -31,6 +31,7 @@ pub mod planted;
 pub mod pointer_authentication;
 mod registers;
 pub mod scalable;
+pub mod scalable_floating_point;
 pub mod simd;
 mod simulation;
 pub mod system_register;
