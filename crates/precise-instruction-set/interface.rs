@@ -23,7 +23,10 @@ pub trait PreciseInstructionSet<Architecture: ProcessorArchitecture>: Sized {
     ;
 
     /// Returns the instruction with the behavior this set gives it.
-    fn to_precise(&self, instruction: Architecture::Instruction) -> (precise: Architecture::PreciseInstruction)
+    fn to_precise(
+        &self,
+        instruction: Architecture::Instruction,
+    ) -> (precise: Architecture::PreciseInstruction)
         ensures
             precise == self.behavior(instruction),
     ;

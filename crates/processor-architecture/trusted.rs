@@ -1,4 +1,4 @@
-//! What the memory diff trusts of code Verus cannot read: each function states what that code does, and
+//! What the memory diff trusts of code Verus cannot read, none of it callable from a proof: each function states what that code does, and
 //! `trusted_tests.rs` checks each statement on the real code.
 
 use alloc::vec::Vec;
@@ -40,6 +40,7 @@ pub open spec fn bounds_separate<V>(values: spec_fn(u64) -> Option<V>, bounds: S
 /// A map that gives no address a value.
 #[cfg_attr(verus_keep_ghost, verus::trusted)]
 #[verifier::external_body]
+#[inline]
 pub fn new_range_map<V: Eq + Clone>() -> (map: RangeMap<u64, V>)
     ensures
         forall|address: u64| #[trigger] range_map_values(&map)(address) is None,
@@ -51,7 +52,8 @@ pub fn new_range_map<V: Eq + Clone>() -> (map: RangeMap<u64, V>)
 /// joins neighbors that are `==`.
 #[cfg_attr(verus_keep_ghost, verus::trusted)]
 #[verifier::external_body]
-pub fn insert_range<V: Eq + Clone>(map: &mut RangeMap<u64, V>, addresses: Range<u64>, value: V)
+#[inline]
+pub fn insert_range<V: Eq + Clone>(map: &mut RangeMap<u64, V>, addresses: &Range<u64>, value: V)
     requires
         addresses.start < addresses.end,
         obeys_concrete_eq::<V>(),
@@ -59,12 +61,13 @@ pub fn insert_range<V: Eq + Clone>(map: &mut RangeMap<u64, V>, addresses: Range<
         forall|address: u64| #[trigger] range_map_values(&*final(map))(address)
             == if addresses.start <= address < addresses.end { Some(value) } else { range_map_values(&*old(map))(address) },
 {
-    map.insert(addresses, value)
+    map.insert(addresses.clone(), value)
 }
 
 /// The value the map gives the address.
 #[cfg_attr(verus_keep_ghost, verus::trusted)]
 #[verifier::external_body]
+#[inline]
 pub fn range_map_get<V: Eq + Copy>(map: &RangeMap<u64, V>, address: u64) -> (value: Option<V>)
     ensures
         value == range_map_values(map)(address),
@@ -75,6 +78,7 @@ pub fn range_map_get<V: Eq + Copy>(map: &RangeMap<u64, V>, address: u64) -> (val
 /// The number of ranges the map holds, which says nothing a proof uses.
 #[cfg_attr(verus_keep_ghost, verus::trusted)]
 #[verifier::external_body]
+#[inline]
 pub fn range_map_len<V: Eq + Clone>(map: &RangeMap<u64, V>) -> usize {
     map.len()
 }
@@ -82,6 +86,7 @@ pub fn range_map_len<V: Eq + Clone>(map: &RangeMap<u64, V>) -> usize {
 /// Appends the start and the end of each range of the map, in order.
 #[cfg_attr(verus_keep_ghost, verus::trusted)]
 #[verifier::external_body]
+#[inline]
 pub fn append_bounds<V: Eq + Clone>(map: &RangeMap<u64, V>, bounds: &mut Vec<u64>)
     ensures
         old(bounds)@.is_prefix_of(final(bounds)@),
@@ -93,19 +98,10 @@ pub fn append_bounds<V: Eq + Clone>(map: &RangeMap<u64, V>, bounds: &mut Vec<u64
     }
 }
 
-/// A list holding the bytes.
-#[cfg_attr(verus_keep_ghost, verus::trusted)]
-#[verifier::external_body]
-pub fn bytes_to_vec(bytes: &[u8]) -> (owned: Vec<u8>)
-    ensures
-        owned@ == bytes@,
-{
-    bytes.to_vec()
-}
-
 /// Whether the two slices are the same slice, which then holds the same bytes.
 #[cfg_attr(verus_keep_ghost, verus::trusted)]
 #[verifier::external_body]
+#[inline]
 pub fn is_same_slice(first: &[u8], second: &[u8]) -> (same: bool)
     ensures
         same ==> first@ == second@,

@@ -1,8 +1,11 @@
 //! The proofs about the memory model that the methods of this crate use; nothing here is part of the specification.
 
+use rangemap::RangeMap;
 use vstd::prelude::*;
+use vstd::std_specs::cmp::PartialEqSpec;
 use vstd::std_specs::slice::{cmp_le, sorted_by_le};
 
+use crate::trusted::*;
 use crate::*;
 
 verus! {
@@ -26,16 +29,84 @@ pub proof fn lemma_apply_all_append<Permission>(memory: Memory<Permission>, firs
     }
 }
 
-/// The memory of a list with mutations appended is the memory of the list with their changes applied.
+/// The memory of a list with a list sink's mutations appended is what the sink makes of the list's memory.
 pub proof fn lemma_appended_memory<'memory, Architecture: ProcessorArchitecture>(
-    memory: Seq<MemoryDelta<'memory, Architecture>>,
-    added: Seq<MemoryDelta<'memory, Architecture>>,
+    list: Seq<MemoryDelta<'memory, Architecture>>,
+    appended: Vec<MemoryDelta<'memory, Architecture>>,
 )
     ensures
-        memory_of(memory + added) == apply_all(memory_of(memory), assignments(added)),
+        memory_of(list + appended@) == appended.applied_to(memory_of(list)),
+        forall|empty: Vec<MemoryDelta<'memory, Architecture>>, memory: Memory<Architecture::PagePermission>|
+            empty@.len() == 0 ==> #[trigger] empty.applied_to(memory) == memory,
 {
-    assert(assignments(memory + added) =~= assignments(memory) + assignments(added));
-    lemma_apply_all_append(zeroed::<Architecture>(), assignments(memory), assignments(added));
+    assert(assignments(list + appended@) =~= assignments(list) + assignments(appended@));
+    lemma_apply_all_append(zeroed::<Architecture>(), assignments(list), assignments(appended@));
+    assert forall|empty: Vec<MemoryDelta<'memory, Architecture>>, memory: Memory<Architecture::PagePermission>|
+        empty@.len() == 0 implies #[trigger] empty.applied_to(memory) == memory by {
+        lemma_no_assignments(empty@, memory);
+    }
+}
+
+/// A list sink with one more mutation pushed applies that mutation's change last.
+pub proof fn lemma_list_sink_push<'memory, Architecture: ProcessorArchitecture>(
+    list: Seq<MemoryDelta<'memory, Architecture>>,
+    change: Assignment<Architecture::PagePermission>,
+)
+    ensures
+        forall|added: MemoryDelta<'memory, Architecture>, memory: Memory<Architecture::PagePermission>|
+            added@ == change ==> #[trigger] apply_all(memory, assignments(list.push(added))) == apply(apply_all(memory, assignments(list)), change),
+{
+    assert forall|added: MemoryDelta<'memory, Architecture>, memory: Memory<Architecture::PagePermission>|
+        added@ == change implies #[trigger] apply_all(memory, assignments(list.push(added))) == apply(apply_all(memory, assignments(list)), change) by {
+        assert(assignments(list.push(added)).drop_last() =~= assignments(list));
+        assert(assignments(list.push(added)).last() == change);
+    }
+}
+
+/// A state built from a clone of each part of another holds the same processor and memory.
+pub proof fn lemma_execution_state_clone<'memory, Architecture: ProcessorArchitecture>(
+    state: ExecutionState<'memory, Architecture>,
+    copy: ExecutionState<'memory, Architecture>,
+)
+    requires
+        vstd::pervasive::cloned(state.processor, copy.processor),
+        copy.memory_mutations@.len() == state.memory_mutations@.len(),
+        forall|index: int| 0 <= index < state.memory_mutations@.len()
+            ==> vstd::pervasive::cloned(#[trigger] state.memory_mutations@[index], copy.memory_mutations@[index]),
+    ensures
+        copy.processor == state.processor,
+        memory_of(copy.memory_mutations@) == memory_of(state.memory_mutations@),
+{
+    Architecture::clone_is_identity();
+    assert(assignments(copy.memory_mutations@) =~= assignments(state.memory_mutations@)) by {
+        assert forall|index: int| 0 <= index < state.memory_mutations@.len()
+            implies #[trigger] copy.memory_mutations@[index]@ == state.memory_mutations@[index]@ by {
+            assert(vstd::pervasive::cloned(state.memory_mutations@[index], copy.memory_mutations@[index]));
+        }
+    }
+}
+
+/// `==` on processors is equality, and changes a list sink that stays empty received leave a memory as it was.
+pub proof fn lemma_state_equality<'memory, Architecture: ProcessorArchitecture>()
+    ensures
+        <Architecture::ProcessorState as PartialEqSpec>::obeys_eq_spec(),
+        forall|first: Architecture::ProcessorState, second: Architecture::ProcessorState|
+            #[trigger] first.eq_spec(&second) <==> first == second,
+        forall|memory: Memory<Architecture::PagePermission>, before: Vec<MemoryDelta<'memory, Architecture>>,
+            after: Vec<MemoryDelta<'memory, Architecture>>, changes: Seq<Assignment<Architecture::PagePermission>>|
+            #![trigger receives(before, after, changes), apply_all(memory, changes)]
+            before@.len() == 0 && after@.len() == 0 && receives(before, after, changes) ==> apply_all(memory, changes) == memory,
+{
+    Architecture::equality_is_identity();
+    reveal(vstd::laws_eq::obeys_concrete_eq);
+    assert forall|memory: Memory<Architecture::PagePermission>, before: Vec<MemoryDelta<'memory, Architecture>>,
+        after: Vec<MemoryDelta<'memory, Architecture>>, changes: Seq<Assignment<Architecture::PagePermission>>|
+        #![trigger receives(before, after, changes), apply_all(memory, changes)]
+        before@.len() == 0 && after@.len() == 0 && receives(before, after, changes) implies apply_all(memory, changes) == memory by {
+        assert(after.applied_to(memory) == apply_all(before.applied_to(memory), changes));
+        lemma_no_assignments(after@, memory);
+        lemma_no_assignments(before@, memory);
+    }
 }
 
 /// No change applied leaves the memory as it was.
@@ -49,31 +120,6 @@ pub proof fn lemma_no_assignments<'memory, Architecture: ProcessorArchitecture>(
         apply_all(memory, assignments(mutations)) == memory,
 {
     assert(assignments(mutations) =~= Seq::empty());
-}
-
-/// A list sink that starts empty and is sent changes that turn one memory into another stays empty exactly when the
-/// two memories are the same, given that equal memories send it nothing.
-pub proof fn lemma_diff_into_empty<'memory, Architecture: ProcessorArchitecture>(
-    first: Memory<Architecture::PagePermission>,
-    second: Memory<Architecture::PagePermission>,
-    before: Vec<MemoryDelta<'memory, Architecture>>,
-    after: Vec<MemoryDelta<'memory, Architecture>>,
-)
-    requires
-        before@.len() == 0,
-        exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(first, changes)]
-            receives(before, after, changes) && apply_all(first, changes) == second,
-        first == second ==> after == before,
-    ensures
-        after@.len() == 0 <==> first == second,
-{
-    if after@.len() == 0 && first != second {
-        let changes = choose|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(first, changes)]
-            receives(before, after, changes) && apply_all(first, changes) == second;
-        assert(after.applied_to(first) == apply_all(before.applied_to(first), changes));
-        lemma_no_assignments(after@, first);
-        lemma_no_assignments(before@, first);
-    }
 }
 
 /// The memory of a list's first `index + 1` mutations is that of its first `index` with the next one applied.
@@ -546,8 +592,64 @@ pub open spec fn values_by_bounds<V>(values: spec_fn(u64) -> Option<V>, walked: 
         ==> #[trigger] values(address) is None
 }
 
+/// Between a walked bound and the next, a map whose bounds are among the walked ones gives one value.
+#[verifier::spinoff_prover]
+pub proof fn lemma_value_between<V>(values: spec_fn(u64) -> Option<V>, bounds: Seq<u64>, walked: Seq<u64>, index: int, address: u64)
+    requires
+        bounds_separate(values, bounds),
+        bounds_within(bounds, walked),
+        strictly_ascending(walked),
+        0 <= index,
+        index + 1 < walked.len(),
+        walked[index] <= address < walked[index + 1],
+    ensures
+        values(address) == values(walked[index]),
+{
+    assert forall|at: int| 0 <= at < bounds.len() implies !(walked[index] < #[trigger] bounds[at] <= address) by {
+        assert(walked.contains(bounds[at]));
+        let place = choose|place: int| 0 <= place < walked.len() && walked[place] == bounds[at];
+        if walked[index] < bounds[at] <= address {
+            if place < index {
+                assert(walked[place] < walked[index]);
+            } else if place > index + 1 {
+                assert(walked[index + 1] < walked[place]);
+            }
+        }
+    }
+    assert(values(walked[index]) == values(address));
+}
+
+/// Before the first walked bound and from the last on, a map whose bounds are among the walked ones gives no value.
+#[verifier::spinoff_prover]
+pub proof fn lemma_value_outside<V>(values: spec_fn(u64) -> Option<V>, bounds: Seq<u64>, walked: Seq<u64>, address: u64)
+    requires
+        bounds_separate(values, bounds),
+        bounds_within(bounds, walked),
+        strictly_ascending(walked),
+        walked.len() == 0 || address < walked[0] || walked[walked.len() - 1] <= address,
+    ensures
+        values(address) is None,
+{
+    if values(address) is Some {
+        let (below, above) = choose|below: int, above: int|
+            #![trigger bounds[below], bounds[above]]
+            0 <= below < bounds.len() && 0 <= above < bounds.len() && bounds[below] <= address < bounds[above];
+        assert(walked.contains(bounds[below]));
+        assert(walked.contains(bounds[above]));
+        let low = choose|low: int| 0 <= low < walked.len() && walked[low] == bounds[below];
+        let high = choose|high: int| 0 <= high < walked.len() && walked[high] == bounds[above];
+        if low > 0 {
+            assert(walked[0] < walked[low]);
+        }
+        if high < walked.len() - 1 {
+            assert(walked[high] < walked[walked.len() - 1]);
+        }
+    }
+}
+
 /// A map whose bounds are among strictly rising ones gives one value from each of them up to the next, and none
 /// before the first or from the last on.
+#[verifier::spinoff_prover]
 pub proof fn lemma_values_between<V>(values: spec_fn(u64) -> Option<V>, bounds: Seq<u64>, walked: Seq<u64>)
     requires
         bounds_separate(values, bounds),
@@ -559,40 +661,11 @@ pub proof fn lemma_values_between<V>(values: spec_fn(u64) -> Option<V>, bounds: 
     reveal(values_by_bounds);
     assert forall|index: int, address: u64| 0 <= index && index + 1 < walked.len() && walked[index] <= address < walked[index + 1]
         implies #[trigger] values(address) == values(#[trigger] walked[index]) by {
-        assert forall|at: int| 0 <= at < bounds.len() implies !(walked[index] < #[trigger] bounds[at] <= address) by {
-            assert(walked.contains(bounds[at]));
-            let place = choose|place: int| 0 <= place < walked.len() && walked[place] == bounds[at];
-            if walked[index] < bounds[at] <= address {
-                if place <= index {
-                    if place < index {
-                        assert(walked[place] < walked[index]);
-                    }
-                } else if place >= index + 1 {
-                    if place > index + 1 {
-                        assert(walked[index + 1] < walked[place]);
-                    }
-                }
-            }
-        }
-        assert(values(walked[index]) == values(address));
+        lemma_value_between(values, bounds, walked, index, address);
     }
     assert forall|address: u64| (walked.len() == 0 || address < walked[0] || walked[walked.len() - 1] <= address)
         implies #[trigger] values(address) is None by {
-        if values(address) is Some {
-            let (below, above) = choose|below: int, above: int|
-                #![trigger bounds[below], bounds[above]]
-                0 <= below < bounds.len() && 0 <= above < bounds.len() && bounds[below] <= address < bounds[above];
-            assert(walked.contains(bounds[below]));
-            assert(walked.contains(bounds[above]));
-            let low = choose|low: int| 0 <= low < walked.len() && walked[low] == bounds[below];
-            let high = choose|high: int| 0 <= high < walked.len() && walked[high] == bounds[above];
-            if low > 0 {
-                assert(walked[0] < walked[low]);
-            }
-            if high < walked.len() - 1 {
-                assert(walked[high] < walked[walked.len() - 1]);
-            }
-        }
+        lemma_value_outside(values, bounds, walked, address);
     }
 }
 
@@ -1048,6 +1121,379 @@ pub proof fn lemma_repeat_bound(kept_before: Seq<u64>, sorted: Seq<u64>, next: i
             assert(sorted.take(next).contains(bound));
             let at = choose|at: int| 0 <= at < next && #[trigger] sorted.take(next)[at] == bound;
             assert(sorted.take(next + 1)[at] == bound);
+        }
+    }
+}
+
+/// Applying one more change applies it last.
+pub proof fn lemma_apply_all_push<Permission>(memory: Memory<Permission>, changes: Seq<Assignment<Permission>>, change: Assignment<Permission>)
+    ensures
+        apply_all(memory, changes.push(change)) == apply(apply_all(memory, changes), change),
+{
+    assert(changes.push(change).drop_last() =~= changes);
+}
+
+/// One list of addresses is the start of another, which is the start of a third.
+pub proof fn lemma_prefix_transitive(first: Seq<(u128, u128)>, second: Seq<(u128, u128)>, third: Seq<(u128, u128)>)
+    requires
+        first.is_prefix_of(second),
+        second.is_prefix_of(third),
+    ensures
+        first.is_prefix_of(third),
+{
+    assert(third.take(second.len() as int) == second);
+    assert(second.take(first.len() as int) == first);
+    assert(third.take(first.len() as int) =~= first);
+}
+
+/// The bytes of one memory with the permissions of another.
+pub open spec fn bytes_of_with_permissions_of<Permission>(bytes: Memory<Permission>, permissions: Memory<Permission>) -> Memory<Permission> {
+    |address: u64| (bytes(address).0, permissions(address).1)
+}
+
+/// The sink received changes that turn the first memory's bytes into the second's, and nothing when the two are the same.
+pub open spec fn bytes_sent<Architecture: ProcessorArchitecture, Sink: MemorySink<Architecture>>(
+    first: Memory<Architecture::PagePermission>,
+    second: Memory<Architecture::PagePermission>,
+    before: Sink,
+    after: Sink,
+) -> bool {
+    &&& exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(first, changes)]
+        receives(before, after, changes) && apply_all(first, changes) == bytes_of_with_permissions_of(second, first)
+    &&& first == second ==> after == before
+}
+
+/// The sink received changes that turn the second memory's bytes with the first's permissions into the second memory,
+/// and nothing when the two are the same.
+pub open spec fn permissions_sent<Architecture: ProcessorArchitecture, Sink: MemorySink<Architecture>>(
+    first: Memory<Architecture::PagePermission>,
+    second: Memory<Architecture::PagePermission>,
+    before: Sink,
+    after: Sink,
+) -> bool {
+    &&& exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(bytes_of_with_permissions_of(second, first), changes)]
+        receives(before, after, changes) && apply_all(bytes_of_with_permissions_of(second, first), changes) == second
+    &&& first == second ==> after == before
+}
+
+/// The bytes sent are all the diff sends where the two memories hold the same permissions.
+pub proof fn lemma_bytes_were_all<Architecture: ProcessorArchitecture, Sink: MemorySink<Architecture>>(
+    first: Memory<Architecture::PagePermission>,
+    second: Memory<Architecture::PagePermission>,
+    before: Sink,
+    after: Sink,
+)
+    requires
+        bytes_sent(first, second, before, after),
+        forall|address: u64| #[trigger] first(address).1 == second(address).1,
+    ensures
+        exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(first, changes)]
+            receives(before, after, changes) && apply_all(first, changes) == second,
+        first == second ==> after == before,
+{
+    let changes = choose|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(first, changes)]
+        receives(before, after, changes) && apply_all(first, changes) == bytes_of_with_permissions_of(second, first);
+    assert(bytes_of_with_permissions_of(second, first) =~= second) by {
+        assert forall|address: u64| #[trigger] bytes_of_with_permissions_of(second, first)(address) == second(address) by {
+            assert(first(address).1 == second(address).1);
+        }
+    }
+    assert(apply_all(first, changes) == second);
+}
+
+/// The bytes sent and then the permissions sent are what the diff sends.
+pub proof fn lemma_bytes_then_permissions<Architecture: ProcessorArchitecture, Sink: MemorySink<Architecture>>(
+    first: Memory<Architecture::PagePermission>,
+    second: Memory<Architecture::PagePermission>,
+    before: Sink,
+    middle: Sink,
+    after: Sink,
+)
+    requires
+        bytes_sent(first, second, before, middle),
+        permissions_sent(first, second, middle, after),
+    ensures
+        exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(first, changes)]
+            receives(before, after, changes) && apply_all(first, changes) == second,
+        first == second ==> after == before,
+{
+    let byte_changes = choose|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(first, changes)]
+        receives(before, middle, changes) && apply_all(first, changes) == bytes_of_with_permissions_of(second, first);
+    let permission_changes = choose|changes: Seq<Assignment<Architecture::PagePermission>>|
+        #![trigger apply_all(bytes_of_with_permissions_of(second, first), changes)]
+        receives(middle, after, changes) && apply_all(bytes_of_with_permissions_of(second, first), changes) == second;
+    lemma_receives_append(before, middle, after, byte_changes, permission_changes);
+    lemma_apply_all_append(first, byte_changes, permission_changes);
+    assert(apply_all(first, byte_changes + permission_changes) == second);
+}
+
+/// Before the first range, or anywhere when there is none, the cursor has passed no address of the ranges.
+pub proof fn lemma_cursor_at_first_range<Permission>(first: Memory<Permission>, second: Memory<Permission>, ranges: Seq<(u128, u128)>)
+    requires
+        well_formed(ranges),
+        separated(ranges),
+    ensures
+        values_up_to(first, second, apply_all(first, Seq::empty()), ranges,
+            if 0 < ranges.len() { ranges[0].0 as int } else { address_count() }),
+{
+    if ranges.len() > 0 {
+        assert forall|address: u64| address < ranges[0].0 implies !#[trigger] in_ranges(ranges, address) by {
+            lemma_before_ranges(ranges, address);
+        }
+    }
+}
+
+/// From the end of one range the cursor moves to the start of the next, or past the last address after the last.
+pub proof fn lemma_cursor_to_next_range<Permission>(
+    first: Memory<Permission>,
+    second: Memory<Permission>,
+    memory: Memory<Permission>,
+    ranges: Seq<(u128, u128)>,
+    index: int,
+)
+    requires
+        well_formed(ranges),
+        separated(ranges),
+        0 <= index < ranges.len(),
+        values_up_to(first, second, memory, ranges, ranges[index].1 as int),
+    ensures
+        values_up_to(first, second, memory, ranges, if index + 1 < ranges.len() { ranges[index + 1].0 as int } else { address_count() }),
+{
+    if index + 1 < ranges.len() {
+        assert(ranges[index].1 < ranges[index + 1].0);
+        assert forall|address: u64| ranges[index].1 <= address < ranges[index + 1].0 implies !#[trigger] in_ranges(ranges, address) by {
+            lemma_between_ranges(ranges, index, address);
+        }
+        lemma_cursor_skip(first, second, memory, ranges, ranges[index].1 as int, ranges[index + 1].0 as int);
+    } else {
+        assert(ranges[index].0 < ranges[index].1 <= address_count());
+        assert forall|address: u64| ranges[index].1 <= address < address_count() implies !#[trigger] in_ranges(ranges, address) by {
+            lemma_between_ranges(ranges, index, address);
+        }
+        lemma_cursor_skip(first, second, memory, ranges, ranges[index].1 as int, address_count());
+    }
+}
+
+/// A byte the two windows hold alike is passed by the cursor with nothing to change.
+pub proof fn lemma_same_resolved_byte_passed<Permission>(
+    first: Memory<Permission>,
+    second: Memory<Permission>,
+    memory: Memory<Permission>,
+    ranges: Seq<(u128, u128)>,
+    index: int,
+    start: u64,
+    first_bytes: Seq<u8>,
+    second_bytes: Seq<u8>,
+    at: int,
+)
+    requires
+        0 <= index < ranges.len(),
+        ranges[index].0 <= start,
+        0 <= at < first_bytes.len(),
+        first_bytes.len() == second_bytes.len(),
+        start + first_bytes.len() <= ranges[index].1 <= address_count(),
+        bytes_resolved(first, first_bytes, start),
+        bytes_resolved(second, second_bytes, start),
+        first_bytes[at] == second_bytes[at],
+        values_up_to(first, second, memory, ranges, start + at),
+    ensures
+        values_up_to(first, second, memory, ranges, start + at + 1),
+{
+    assert(first_bytes[at] == first((start + at) as u64).0);
+    assert(second_bytes[at] == second((start + at) as u64).0);
+    assert((start + at) as u64 == start + at);
+    lemma_same_byte_passed(first, second, memory, ranges, index, (start + at) as u64);
+}
+
+/// A run of bytes the two windows hold differently, sent as the second's, moves the cursor past the run, and shows
+/// the two memories differ.
+pub proof fn lemma_run_sent<Permission>(
+    first: Memory<Permission>,
+    second: Memory<Permission>,
+    memory: Memory<Permission>,
+    ranges: Seq<(u128, u128)>,
+    index: int,
+    start: u64,
+    first_bytes: Seq<u8>,
+    second_bytes: Seq<u8>,
+    run_start: int,
+    run_end: int,
+    change: Assignment<Permission>,
+)
+    requires
+        0 <= index < ranges.len(),
+        ranges[index].0 <= start,
+        0 <= run_start < run_end <= second_bytes.len(),
+        first_bytes.len() == second_bytes.len(),
+        start + second_bytes.len() <= ranges[index].1 <= address_count(),
+        values_up_to(first, second, memory, ranges, start + run_start),
+        bytes_resolved(first, first_bytes, start),
+        bytes_resolved(second, second_bytes, start),
+        first_bytes[run_start] != second_bytes[run_start],
+        change == (Assignment::<Permission>::ValueAssignment {
+            start: (start + run_start) as u64,
+            bytes: second_bytes.subrange(run_start, run_end),
+        }),
+    ensures
+        values_up_to(first, second, apply(memory, change), ranges, start + run_end),
+        first != second,
+{
+    lemma_run_written(first, second, memory, ranges, index, start, second_bytes, run_start, run_end, change);
+    assert(first_bytes[run_start] == first((start + run_start) as u64).0);
+    assert(second_bytes[run_start] == second((start + run_start) as u64).0);
+}
+
+/// Past the last address, the memory holds the second's bytes with the first's permissions everywhere.
+pub proof fn lemma_bytes_sent<Architecture: ProcessorArchitecture, Sink: MemorySink<Architecture>>(
+    first: Memory<Architecture::PagePermission>,
+    second: Memory<Architecture::PagePermission>,
+    before: Sink,
+    after: Sink,
+    changes: Seq<Assignment<Architecture::PagePermission>>,
+    ranges: Seq<(u128, u128)>,
+)
+    requires
+        receives(before, after, changes),
+        values_up_to(first, second, apply_all(first, changes), ranges, address_count()),
+        forall|address: u64| !in_ranges(ranges, address) ==> #[trigger] first(address).0 == second(address).0,
+        first == second ==> changes.len() == 0 && after == before,
+    ensures
+        bytes_sent(first, second, before, after),
+{
+    assert(apply_all(first, changes) =~= bytes_of_with_permissions_of(second, first)) by {
+        assert forall|address: u64| #[trigger] apply_all(first, changes)(address) == bytes_of_with_permissions_of(second, first)(address) by {
+            assert(apply_all(first, changes)(address)
+                == if in_ranges(ranges, address) && address < address_count() { (second(address).0, first(address).1) } else { first(address) });
+        }
+    }
+}
+
+/// The permission changes sent are what the diff sends after the bytes.
+pub proof fn lemma_permissions_sent<Architecture: ProcessorArchitecture, Sink: MemorySink<Architecture>>(
+    first: Memory<Architecture::PagePermission>,
+    second: Memory<Architecture::PagePermission>,
+    before: Sink,
+    after: Sink,
+    changes: Seq<Assignment<Architecture::PagePermission>>,
+)
+    requires
+        receives(before, after, changes),
+        apply_all(bytes_of_with_permissions_of(second, first), changes) == second,
+        first == second ==> changes.len() == 0 && after == before,
+    ensures
+        permissions_sent(first, second, before, after),
+{
+}
+
+/// The bounds walked after sorting and dropping repeats separate each map's values.
+pub proof fn lemma_walked_bounds<V>(
+    first_values: spec_fn(u64) -> Option<V>,
+    second_values: spec_fn(u64) -> Option<V>,
+    first_bounds: Seq<u64>,
+    unsorted: Seq<u64>,
+    sorted: Seq<u64>,
+    walked: Seq<u64>,
+)
+    requires
+        bounds_separate(first_values, first_bounds.skip(0)),
+        first_bounds.is_prefix_of(unsorted),
+        bounds_separate(second_values, unsorted.skip(first_bounds.len() as int)),
+        sorted.to_multiset() == unsorted.to_multiset(),
+        forall|bound: u64| #[trigger] walked.contains(bound) == sorted.contains(bound),
+        strictly_ascending(walked),
+    ensures
+        values_by_bounds(first_values, walked),
+        values_by_bounds(second_values, walked),
+{
+    let second_bounds = unsorted.skip(first_bounds.len() as int);
+    assert(first_bounds.skip(0) =~= first_bounds);
+    assert forall|at: int| 0 <= at < first_bounds.len() implies #[trigger] first_bounds[at] == unsorted[0 + at] by {
+        assert(unsorted.take(first_bounds.len() as int) == first_bounds);
+        assert(unsorted.take(first_bounds.len() as int)[at] == unsorted[at]);
+    }
+    lemma_bounds_kept(first_bounds, 0, unsorted, sorted, walked);
+    lemma_bounds_kept(second_bounds, first_bounds.len() as int, unsorted, sorted, walked);
+    lemma_values_between(first_values, first_bounds, walked);
+    lemma_values_between(second_values, second_bounds, walked);
+}
+
+/// A window resolved for a list's first mutations, rewritten where the next one writes, is resolved for one more.
+#[verifier::spinoff_prover]
+pub proof fn lemma_resolved_after_change<'memory, Architecture: ProcessorArchitecture>(
+    mutations: Seq<MemoryDelta<'memory, Architecture>>,
+    index: int,
+    before: Seq<u8>,
+    after: Seq<u8>,
+    start: u64,
+)
+    requires
+        0 <= index < mutations.len(),
+        before.len() == after.len(),
+        start + before.len() <= address_count(),
+        bytes_resolved(memory_of(mutations.take(index)), before, start),
+        match mutations[index]@ {
+            Assignment::ValueAssignment { start: written_start, bytes } => forall|at: int| 0 <= at < before.len() ==> #[trigger] after[at]
+                == if offset(written_start, (start + at) as u64) < bytes.len() { bytes[offset(written_start, (start + at) as u64)] } else { before[at] },
+            Assignment::PermissionAssignment { .. } => after == before,
+        },
+    ensures
+        bytes_resolved(memory_of(mutations.take(index + 1)), after, start),
+{
+    lemma_memory_of_take(mutations, index);
+    let memory = memory_of(mutations.take(index));
+    let change = mutations[index]@;
+    assert forall|at: int| 0 <= at < after.len() implies #[trigger] after[at] == apply(memory, change)((start + at) as u64).0 by {
+        assert(before[at] == memory((start + at) as u64).0);
+    }
+}
+
+/// Recording the one or two ranges a value assignment writes, around the last address, records every byte it writes.
+#[verifier::spinoff_prover]
+pub proof fn lemma_value_reach_recorded<Permission>(
+    start: u64,
+    bytes: Seq<u8>,
+    before: Seq<(u128, u128)>,
+    below_wrap: Seq<(u128, u128)>,
+    after: Seq<(u128, u128)>,
+)
+    requires
+        bytes.len() <= usize::MAX,
+        ({
+            let end = start + bytes.len();
+            let below_end = if end < address_count() { end } else { address_count() };
+            &&& below_wrap == if start < below_end { before.push((start as u128, below_end as u128)) } else { before }
+            &&& after == if end > address_count() { below_wrap.push((0u128, (end - address_count()) as u128)) } else { below_wrap }
+        }),
+    ensures
+        forall|flag: bool| records_unpaired(
+            Assignment::<Permission>::ValueAssignment { start, bytes }, before, flag, after, flag),
+{
+    let end = start + bytes.len();
+    let below_end = if end < address_count() { end } else { address_count() };
+    assert(after.take(before.len() as int) =~= before);
+    assert(before.is_prefix_of(after));
+    if well_formed(before) {
+        assert forall|index: int| 0 <= index < after.len()
+            implies #[trigger] after[index].0 < after[index].1 <= address_count() by {
+            if index < before.len() {
+                assert(below_wrap[index] == before[index]);
+                assert(after[index] == below_wrap[index]);
+            } else if index < below_wrap.len() {
+                assert(after[index] == below_wrap[index]);
+            }
+        }
+    }
+    let change = Assignment::<Permission>::ValueAssignment { start, bytes };
+    assert forall|address: u64| #[trigger] writes_byte(change, address) implies in_ranges(after, address) by {
+        if start <= address {
+            let at = before.len() as int;
+            assert(below_wrap[at] == (start as u128, below_end as u128));
+            assert(after[at] == below_wrap[at]);
+            assert(after[at].0 <= address < after[at].1);
+        } else {
+            let at = below_wrap.len() as int;
+            assert(after[at] == (0u128, (end - address_count()) as u128));
+            assert(after[at].0 <= address < after[at].1);
         }
     }
 }

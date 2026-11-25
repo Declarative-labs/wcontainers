@@ -22,7 +22,10 @@ pub trait DistinguishingStateGenerator<Architecture: ProcessorArchitecture> {
         Self: 'generator;
 
     /// Returns a set of execution states that can be used to distinguish between all possible behaviors of the given instruction.
-    fn generate_states(&self, instruction: Architecture::Instruction) -> (states: Self::States<'_>)
+    fn generate_states(
+        &self,
+        instruction: Architecture::Instruction,
+    ) -> (states: Self::States<'_>)
         ensures
             states.obeys_prophetic_iter_laws(),
             states.remaining() == self.states(instruction),
