@@ -680,6 +680,13 @@ impl LoadStoreInstruction {
             })
             .sum::<u32>();
         let writeback = matches!(base, Some(Indexing::PreIndex | Indexing::PostIndex));
+        // A SIMD and floating-point register is never the base, a general-purpose one.
+        let general_purpose = operands.iter().any(|operand| {
+            matches!(
+                operand,
+                Operand::GeneralPurposeRegister { .. } | Operand::GeneralPurposeRegisterPair { .. }
+            )
+        });
         let loads = matches!(operation.transfer, Transfer::Load(_));
         let stores = operation.transfer == Transfer::Store;
         let stores_exclusive = operation.transfer == Transfer::StoreExclusive;
@@ -690,8 +697,8 @@ impl LoadStoreInstruction {
             across_fault: stores
                 && operation.bytes * registers > 1
                 && operation.alignment == Alignment::Unchecked,
-            load_into_base: loads && writeback,
-            store_of_base: stores && writeback,
+            load_into_base: loads && writeback && general_purpose,
+            store_of_base: stores && writeback && general_purpose,
             load_pair_into_one_register: loads && registers == 2,
             failed_store_exclusive: stores_exclusive,
             store_exclusive_overlap: stores_exclusive,
