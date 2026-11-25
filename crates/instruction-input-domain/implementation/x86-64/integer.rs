@@ -226,6 +226,9 @@ pub enum ImmediateClass {
     Relative32,
     /// CMPcc's predicate: each of the eight, and two with bits above them set, which legacy SSE ignores.
     Predicate,
+    /// INT n's vector: 0, 1, those whose gates ring 3 may use (3 and 4), others up to 0xFF, but never Linux's system
+    /// call 0x80, which the chip source refuses.
+    Vector,
 }
 
 /// What each operand of a form is, from its first code.
@@ -448,6 +451,7 @@ pub fn generate_immediates(class: ImmediateClass) -> Vec<OperandValue> {
         ImmediateClass::Relative8 => &[0, 1, -1, 0x7F, -0x80],
         ImmediateClass::Relative32 => &[0, 1, -1, 0x7FFF_FFFF, i32::MIN as i64],
         ImmediateClass::Predicate => &[0, 1, 2, 3, 4, 5, 6, 7, 0x0D, 0xFF],
+        ImmediateClass::Vector => &[0, 1, 2, 3, 4, 5, 8, 0x0E, 0x20, 0x7F, 0x81, 0xFF],
     };
     values.iter().map(|&value| OperandValue::Immediate(value)).collect()
 }

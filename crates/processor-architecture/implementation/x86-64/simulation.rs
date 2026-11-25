@@ -23,6 +23,8 @@ use crate::{
 };
 
 const MAXIMUM_INSTRUCTION_BYTES: usize = 15;
+/// The byte 64-bit mode leaves undefined that XED names UDB.
+const UNDEFINED_SINGLE_BYTE: u8 = 0xD6;
 /// The legacy prefixes: segment overrides, operand and address size, LOCK, REPNE and REP.
 const LEGACY_PREFIXES: [u8; 11] = [0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF0, 0xF2, 0xF3];
 /// The legacy prefixes that never change an instruction's length: the segment overrides and LOCK.
@@ -39,6 +41,8 @@ type Memory<'list, 'memory> = &'list [MemoryDelta<'memory, X86_64>];
 
 #[path = "extension_simulation.rs"]
 mod extension_simulation;
+#[path = "fixed_simulation.rs"]
+mod fixed_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -59,8 +63,18 @@ impl Simulator<X86_64> for PreciseInstruction {
         mutation_hook: &mut impl MemorySink<X86_64>,
     ) -> Result<ProcessorExpectation, Infallible> {
         let mut processor = processor.clone();
+        let before = processor.instruction_pointer;
         simulate_processor(*self, &mut processor, memory.mutations, mutation_hook);
-        Ok(processor.to_expectation())
+        let mut expectation = processor.to_expectation();
+        let undecided = matches!(self, PreciseInstruction::Fixed(instruction)
+            if crate::fixed::find_fixed_form(*instruction).is_some_and(|form| form.outcome == crate::fixed::FixedOutcome::WritesUndecided));
+        if undecided && processor.exception.is_none() {
+            let decoded = fetch(memory.mutations, before).expect("a completed instruction was fetched");
+            for number in crate::fixed::list_undecided_registers(&decoded) {
+                expectation.general_purpose_registers[number] = crate::RegisterValueExpectation::NonDeterministic;
+            }
+        }
+        Ok(expectation)
     }
 }
 
@@ -181,6 +195,7 @@ fn apply(
                 }
             }
         }
+        PreciseInstruction::Fixed(instruction) => fixed_simulation::execute_fixed(instruction, processor, memory, decoded),
         PreciseInstruction::Extension { instruction, behavior } => {
             extension_simulation::execute_extension(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
@@ -303,6 +318,10 @@ fn measure_length(bytes: &[u8]) -> Length {
     }
     if count == bytes.len() {
         return Length::BeyondAvailable;
+    }
+    // The chip measures 0xD6 as one byte, where iced-x86 would read a ModRM byte after it.
+    if bytes[count] == UNDEFINED_SINGLE_BYTE {
+        return Length::Bytes(count + 1);
     }
     let vector = VECTOR_PREFIXES.contains(&bytes[count]);
     let mut kept: Vec<u8> = Vec::new();

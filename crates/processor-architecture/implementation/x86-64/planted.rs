@@ -721,6 +721,16 @@ pub enum Bug {
     CompareExchangePairComparesLowHalf,
     /// CMPXCHG8B and CMPXCHG16B write EDX:EAX also when the comparison holds, clearing upper halves.
     CompareExchangePairWritesAccumulatorWhenEqual,
+    /// The privileged forms raise #UD, not #GP(0).
+    PrivilegedOperandFormsInvalidOpcode,
+    /// INT 4 raises #GP, as if its gate were the kernel's.
+    InterruptOverflowGeneralProtection,
+    /// INT n's #GP error code lacks the bit that names the IDT.
+    InterruptErrorCodeWithoutTableBit,
+    /// A hint-space no-op reads its memory operand.
+    NoOperationReadsItsOperand,
+    /// CLFLUSH, CLFLUSHOPT and CLWB need their page writable.
+    FlushChecksWrite,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1047,7 +1057,31 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::CompareExchangePairAlignmentUnchecked, "CMPXCHG16B", Family::Forms(CMPXCHG16B), Origin::IntegerX87Mmx),
     row(Bug::CompareExchangePairComparesLowHalf, "CMPXCHG8B, CMPXCHG16B", Family::Forms(CMPXCHG_PAIR), Origin::IntegerX87Mmx),
     row(Bug::CompareExchangePairWritesAccumulatorWhenEqual, "CMPXCHG8B", Family::Forms(CMPXCHG8B), Origin::IntegerX87Mmx),
+    row(Bug::PrivilegedOperandFormsInvalidOpcode, "LGDT, MOV CR, IN, OUT", Family::Forms(PRIVILEGED_OPERAND_FORMS), Origin::IntegerX87Mmx),
+    row(Bug::InterruptOverflowGeneralProtection, "INT n", Family::Forms(&[Instruction::IntImmb]), Origin::IntegerX87Mmx),
+    row(Bug::InterruptErrorCodeWithoutTableBit, "INT n", Family::Forms(&[Instruction::IntImmb]), Origin::IntegerX87Mmx),
+    row(Bug::NoOperationReadsItsOperand, "hint-space no-ops", Family::Forms(HINT_NO_OPERATIONS), Origin::IntegerX87Mmx),
+    row(Bug::FlushChecksWrite, "CLFLUSH, CLFLUSHOPT, CLWB", Family::Forms(FLUSHES), Origin::IntegerX87Mmx),
 ];
+
+const PRIVILEGED_OPERAND_FORMS: &[Instruction] = &[
+    Instruction::LgdtMems64,
+    Instruction::LldtGpr16,
+    Instruction::MovCrCrGpr64,
+    Instruction::InAlDx,
+    Instruction::OutImmbOeax,
+    Instruction::Insb,
+    Instruction::SldtMemw,
+];
+const HINT_NO_OPERATIONS: &[Instruction] = &[
+    Instruction::NopMemv0f18r4,
+    Instruction::NopMemvGprv0f19,
+    Instruction::NopGprvMemv0f1a,
+    Instruction::Prefetchw0f0dr1,
+    Instruction::CldemoteMemu8,
+];
+const FLUSHES: &[Instruction] =
+    &[Instruction::ClflushMemmprefetch, Instruction::ClflushoptMemmprefetch, Instruction::ClwbMemmprefetch];
 
 const ANDN: &[Instruction] = &[
     Instruction::AndnGpr32dGpr32dGpr32d,

@@ -25,6 +25,7 @@ use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::extension::find_extension_form;
+use wcontainers_processor_architecture_x86_64::fixed::find_fixed_form;
 use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -36,6 +37,7 @@ use wcontainers_processor_architecture_x86_64::{
 
 pub mod branch;
 pub mod extension;
+pub mod fixed;
 pub mod float;
 pub mod integer;
 pub mod vector;
@@ -297,6 +299,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         if let Some(form) = find_extension_form(instruction) {
             return extension::list_operand_types(form).into_iter();
         }
+        if let Some(form) = find_fixed_form(instruction) {
+            return fixed::list_operand_types(form).into_iter();
+        }
         if let Some(form) = find_vector_form(instruction) {
             return vector::list_operand_types(form).into_iter();
         }
@@ -518,6 +523,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         if let Some(form) = find_extension_form(instruction) {
             return extension::build_state(form, &typed);
         }
+        if let Some(form) = find_fixed_form(instruction) {
+            return fixed::build_state(form, &typed);
+        }
         if let Some(form) = find_vector_form(instruction) {
             return vector::build_state(form, &typed);
         }
@@ -689,6 +697,7 @@ fn encode(instruction: Instruction, choice: &Choice) -> Vec<u8> {
 fn is_modeled(instruction: Instruction) -> bool {
     find_integer_form(instruction).is_some()
         || find_extension_form(instruction).is_some()
+        || find_fixed_form(instruction).is_some()
         || find_vector_form(instruction).is_some()
         || find_float_form(instruction).is_some()
         || find_branch_form(instruction).is_some()

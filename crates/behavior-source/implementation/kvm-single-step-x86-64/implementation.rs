@@ -986,7 +986,7 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 /// not set as Linux does), a far CALL, JMP or RET (it changes CS), any other write of a segment register (the
 /// selectors are not modeled), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does
 /// not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
-/// on the page says why: an EVEX one, RDTSC, RDTSCP, RDPID, UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
+/// on the page says why: an EVEX one, UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
 /// XSAVE family, LAR, LSL, VERR and VERW, SGDT, SIDT and SMSW, INT 0x80, and AMX's; and RDRAND and RDSEED, whose
 /// results are random.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
@@ -1043,11 +1043,9 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         _ if writes_segment => Some("it writes a selector, which is not modeled"),
         Mnemonic::Vmcall | Mnemonic::Vmmcall => Some("KVM answers it as a hypercall"),
         _ if decoded.encoding() == EncodingKind::EVEX => Some("AVX-512's state is not modeled"),
-        Mnemonic::Rdtsc | Mnemonic::Rdtscp | Mnemonic::Umwait | Mnemonic::Tpause => {
-            Some("its result depends on the time, which is not in the state")
-        }
+        // RDTSC, RDTSCP and RDPID run: their behaviors do not compare the registers the time and IA32_TSC_AUX decide.
+        Mnemonic::Umwait | Mnemonic::Tpause => Some("its result depends on the time, which is not in the state"),
         Mnemonic::Rdrand | Mnemonic::Rdseed => Some("its result is random, which is not in the state"),
-        Mnemonic::Rdpid => Some("it reads IA32_TSC_AUX, which Linux sets to the CPU's number and the source leaves 0"),
         Mnemonic::Rdpkru | Mnemonic::Wrpkru => Some("PKRU is not modeled, and Linux starts it at 0x55555554"),
         Mnemonic::Xgetbv => Some("XCR0 under Linux also enables AMX's tiles, and XINUSE is not in the state"),
         Mnemonic::Xsave
