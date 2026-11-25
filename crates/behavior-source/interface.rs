@@ -7,7 +7,8 @@ use core::convert::Infallible;
 
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
+    ExecutionState, ExecutionStateExpectation, MemorySink, MemorySnapshot, ProcessorArchitecture,
+    Simulator,
 };
 
 /// Something whose behavior can be measured one instruction at a time, such as a live chip or a recording of one.
@@ -25,7 +26,7 @@ pub trait BehaviorSource {
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut <Self::Architecture as ProcessorArchitecture>::ProcessorState,
-        memory: &[MemoryDelta<'_, Self::Architecture>],
+        memory: MemorySnapshot<'_, '_, Self::Architecture>,
         mutation_hook: &mut impl MemorySink<Self::Architecture>,
     ) -> Result<(), Self::Error>;
 
@@ -37,7 +38,9 @@ pub trait BehaviorSource {
         let mut mutations = Vec::new();
         self.execute_single_instruction_in_place(
             &mut before.processor,
-            &before.memory_mutations,
+            MemorySnapshot {
+                mutations: &before.memory_mutations,
+            },
             &mut mutations,
         )?;
         before.memory_mutations.append(&mut mutations);
@@ -56,7 +59,6 @@ pub trait BehaviorSource {
         MeasureInstructionError<Self::Architecture, Self::Error>,
     >
     where
-        Self::Architecture: Clone,
         // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
         <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
             Simulator<Self::Architecture, Error = Infallible>,
@@ -64,11 +66,14 @@ pub trait BehaviorSource {
         let mut candidates: Vec<_> =
             <Self::Architecture as ProcessorArchitecture>::list_known_behaviors(instruction)
                 .collect();
+        if candidates.is_empty() {
+            return Err(MeasureInstructionError::NoKnownBehavior { instruction });
+        }
         for before in generator.generate_states(instruction) {
             let simulated_results: Vec<_> = candidates
                 .iter()
                 .map(|&precise| {
-                    let Ok(after) = precise.simulate(before.clone());
+                    let Ok(after) = precise.simulate_state(before.clone());
                     (precise, after)
                 })
                 .collect();
@@ -84,7 +89,7 @@ pub trait BehaviorSource {
             };
             candidates = simulated_results
                 .iter()
-                .filter(|(_, after)| *after == observed_result)
+                .filter(|(_, after)| observed_result.meets_expectations(after))
                 .map(|&(precise, _)| precise)
                 .collect();
             if candidates.is_empty() {
@@ -97,10 +102,9 @@ pub trait BehaviorSource {
             }
         }
         match candidates.as_slice() {
-            [] => Err(MeasureInstructionError::NoKnownBehavior { instruction }),
             [precise] => Ok(*precise),
             // No generated state tells these candidates apart, so two known behaviors are the same or our generator lacks a state that separates them.
-            [_, _, ..] => Err(MeasureInstructionError::IndistinguishableBehaviors {
+            _ => Err(MeasureInstructionError::IndistinguishableBehaviors {
                 instruction,
                 behaviors: candidates,
             }),
@@ -119,7 +123,6 @@ pub trait BehaviorSource {
         MeasureInstructionError<Self::Architecture, Self::Error>,
     >
     where
-        Self::Architecture: Clone,
         // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
         <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
             Simulator<Self::Architecture, Error = Infallible>,
@@ -148,10 +151,10 @@ pub enum MeasureInstructionError<Architecture: ProcessorArchitecture, ExecutionE
     NoBehaviorAgrees {
         instruction: Architecture::Instruction,
         before: ExecutionState<'static, Architecture>,
-        /// Each behavior with the state after it simulates.
+        /// Each behavior with what it expects after.
         behaviors: Vec<(
             Architecture::PreciseInstruction,
-            ExecutionState<'static, Architecture>,
+            ExecutionStateExpectation<'static, Architecture>,
         )>,
         observed: ExecutionState<'static, Architecture>,
     },

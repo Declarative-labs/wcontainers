@@ -10,3 +10,6 @@ path = "interface.rs"
 wcontainers-abi.workspace = true
 etherparse.workspace = true
 mitsein.workspace = true
+
+[lints]
+workspace = true

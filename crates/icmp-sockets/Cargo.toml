@@ -13,3 +13,6 @@ wcontainers-internet-protocol = { path = "../internet-protocol" }
 wcontainers-kernel = { path = "../kernel" }
 wcontainers-configurable = { path = "../configurable" }
 wcontainers-volatile-bytes = { path = "../volatile-bytes" }
+
+[lints]
+workspace = true
