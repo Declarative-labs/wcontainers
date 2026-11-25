@@ -10,8 +10,9 @@
 mod common;
 
 use common::*;
+// The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AspectOps, Gpu, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage,
+    AspectOps, Gpu as Backend, BindingEntry, BindingResource, BlendDesc, BufferRange, BufferUsage,
     ColorAttachment, ColorWrites, CompareFn, CullMode, DepthAttachment, DepthStencilDesc, DrawCall,
     DrawRange, Extent, FillMode, Format, FrontFace, HELPER_SET, HelperValue, LoadOp, Origin,
     PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, ShaderStage,
@@ -235,7 +236,7 @@ fn converted(name: &str, dxil: bool, key: &VariantKey) -> Converted {
 
 /// The same through the WebGPU back end: the second draw's pixel program runs the tests itself,
 /// with the pass's depth and stencil read-only and bound to it.
-fn ours<B: Gpu>(b: &mut B, case: &Case, dxil: bool) -> (Vec<u8>, Vec<u8>) {
+fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> (Vec<u8>, Vec<u8>) {
     let vs = converted("vs_early", dxil, &VariantKey::default());
     let mark = converted("ps_mark", dxil, &VariantKey::default());
     let key = VariantKey {

@@ -9,8 +9,9 @@ mod common;
 mod forms;
 
 use common::*;
+// The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddressMode, Gpu, BindingEntry, BindingResource, BorderColor, BufferRange, BufferUsage,
+    AddressMode, Gpu as Backend, BindingEntry, BindingResource, BorderColor, BufferRange, BufferUsage,
     DispatchCall, DispatchGroups, Extent, FORMAT_FACTS, Filter, Format, HELPER_SET, HelperValue,
     Origin, Program, ReadSource, SamplerDesc, ShaderStage, SlotKind, StageSet, TexelBufferRoute,
     TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, VariantKey,
@@ -442,7 +443,7 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Ran {
 
 /// The same through the WebGPU back end, from fxc's DXBC or dxc's DXIL (whose views are numbered
 /// from u0 without gaps, so a slot is the register on both routes).
-fn ours<B: Gpu>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertError> {
+fn ours<B: Backend>(b: &mut B, case: &Case, dxil: bool) -> Result<Ran, ConvertError> {
     let moved = case.views.iter().any(|v| v.first != 0);
     let mut key = VariantKey::default();
     if moved {
@@ -707,7 +708,7 @@ fn compare_cases(seed: u64) -> Vec<Case> {
     }]
 }
 
-fn compare_compute<B: Gpu>(cases: fn(u64) -> Vec<Case>, backend: &mut B) {
+fn compare_compute<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) {
     let failures = compute_failures(cases, backend);
     assert!(failures.is_empty(), "{failures:#?}");
 }
@@ -716,7 +717,7 @@ fn compare_compute<B: Gpu>(cases: fn(u64) -> Vec<Case>, backend: &mut B) {
 /// seed; the names of those where ours is neither real implementation's answer as a whole, every
 /// word and counter of the GPU's or every word and counter of WARP's (they differ where Direct3D
 /// leaves a result free, such as a division's last bit).
-fn compute_failures<B: Gpu>(cases: fn(u64) -> Vec<Case>, backend: &mut B) -> Vec<String> {
+fn compute_failures<B: Backend>(cases: fn(u64) -> Vec<Case>, backend: &mut B) -> Vec<String> {
     let real = |driver| d3d11::create(driver, false, &[D3D_FEATURE_LEVEL_11_0]).unwrap();
     let gpu = real(wcontainers_graphics_test::Driver::Hardware);
     let warp = real(wcontainers_graphics_test::Driver::Warp);
@@ -926,7 +927,7 @@ fn direct3d_images(gpu: &Gpu, seed: u64, images: &[Image]) -> Vec<Vec<u8>> {
 
 /// The same through the WebGPU back end, each view's format given in the variant, from fxc's
 /// bytecode (DXBC) or dxc's (DXIL).
-fn ours_images<B: Gpu>(b: &mut B, seed: u64, dxil: bool, images: &[Image]) -> Vec<Vec<u8>> {
+fn ours_images<B: Backend>(b: &mut B, seed: u64, dxil: bool, images: &[Image]) -> Vec<Vec<u8>> {
     let key = VariantKey {
         storage_formats: images.iter().map(|&(slot, f, ..)| (slot, f)).collect(),
         ..Default::default()
@@ -1844,7 +1845,7 @@ enum TexelBuild {
     Module,
 }
 
-fn ours_texels<B: Gpu>(b: &mut B, views: &[TexelView], build: TexelBuild) -> Vec<Vec<u8>> {
+fn ours_texels<B: Backend>(b: &mut B, views: &[TexelView], build: TexelBuild) -> Vec<Vec<u8>> {
     let format_of = |kind| {
         views
             .iter()
@@ -2319,7 +2320,7 @@ fn direct3d_through(gpu: &Gpu, views: &[Through], shader: &str) -> Vec<Vec<u8>> 
 /// are 3 texels longer and layers one row taller than the view, the padding seeded too; from fxc's
 /// DXBC or dxc's DXIL, whose slots are the views' places among the program's (Direct3D 12's
 /// numbering).
-fn ours_through<B: Gpu>(
+fn ours_through<B: Backend>(
     b: &mut B,
     views: &[Through],
     shader: &str,
@@ -2491,7 +2492,7 @@ fn storage_textures_through_buffers_match_direct3d() {
 }
 
 /// `shader` on `views` through ours, both builds, each texture's texels compared with `reference`.
-fn through_alike<B: Gpu>(
+fn through_alike<B: Backend>(
     backend: &mut B,
     seed: u64,
     views: &[Through],
@@ -2689,7 +2690,7 @@ fn direct3d_one_d(gpu: &Gpu, seed: u64) -> Vec<Vec<u8>> {
 
 /// The same through the WebGPU back end on 2D textures one texel high, as the fronts make 1D ones,
 /// from fxc's bytecode (DXBC) or dxc's (DXIL).
-fn ours_one_d<B: Gpu>(b: &mut B, seed: u64, dxil: bool) -> Vec<Vec<u8>> {
+fn ours_one_d<B: Backend>(b: &mut B, seed: u64, dxil: bool) -> Vec<Vec<u8>> {
     let key = VariantKey {
         storage_formats: ONE_D.iter().filter(|t| t.1).map(|t| (t.0, t.2)).collect(),
         ..Default::default()
@@ -2977,7 +2978,7 @@ fn direct3d_view_kinds(gpu: &Gpu, views: &[(Format, Vec<u8>)]) -> Vec<u8> {
 
 /// The same through the WebGPU back end, each texture of its view's format, from fxc's bytecode
 /// (DXBC) or dxc's (DXIL), with the views' formats in `texel_formats`.
-fn ours_view_kinds<B: Gpu>(b: &mut B, views: &[(Format, Vec<u8>)], dxil: bool) -> Vec<u8> {
+fn ours_view_kinds<B: Backend>(b: &mut B, views: &[(Format, Vec<u8>)], dxil: bool) -> Vec<u8> {
     let key = VariantKey {
         texel_formats: (0..).zip(views.iter().map(|v| v.0)).collect(),
         storage_formats: vec![(0, VIEW_KIND_OUTPUT)],

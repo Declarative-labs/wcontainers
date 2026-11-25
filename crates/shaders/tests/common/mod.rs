@@ -4,8 +4,9 @@
 #![allow(dead_code)]
 
 use std::path::Path;
+// The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    AddedBinding, Gpu, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc,
+    AddedBinding, Gpu as Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc,
     BufferRange, BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall,
     DrawRange, Extent, FORMAT_FACTS, FillMode, Filter, Format, FrontFace, GpuError, HelperValue,
     Interpolation, MapIntent, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
@@ -631,7 +632,7 @@ pub fn bytes_of(v: &[f32]) -> &[u8] {
     zerocopy::IntoBytes::as_bytes(v)
 }
 
-pub fn buffer<B: Gpu>(b: &mut B, data: &[u8], usage: BufferUsage) -> B::Buffer {
+pub fn buffer<B: Backend>(b: &mut B, data: &[u8], usage: BufferUsage) -> B::Buffer {
     let buf = b
         .create_buffer(&BufferDesc {
             size: data.len() as u64,
@@ -643,7 +644,7 @@ pub fn buffer<B: Gpu>(b: &mut B, data: &[u8], usage: BufferUsage) -> B::Buffer {
     buf
 }
 
-pub fn texture<B: Gpu>(
+pub fn texture<B: Backend>(
     b: &mut B,
     format: Format,
     size: u32,
@@ -681,7 +682,7 @@ pub fn texture<B: Gpu>(
 }
 
 /// A 2D texture of `levels` levels and `samples` samples, and a view of all of it.
-pub fn texture_levels<B: Gpu>(
+pub fn texture_levels<B: Backend>(
     b: &mut B,
     format: Format,
     size: u32,
@@ -840,7 +841,7 @@ pub fn fill_constants(layer: u32) -> Vec<u8> {
 /// `layers` Rgba8Unorm textures of [`TEXTURE_SIZE`] and [`LAYER_SAMPLES`] samples, each drawn by
 /// `ps_fill` (a value per sample) with [`fill_constants`] of its layer, as a front holds a
 /// multisampled array texture.
-pub fn multisampled_layers<B: Gpu>(
+pub fn multisampled_layers<B: Backend>(
     b: &mut B,
     layers: u32,
 ) -> Vec<(B::Texture, B::TextureView)> {
@@ -1016,7 +1017,7 @@ fn buffer_size(bases: &Option<Bases>) -> u64 {
 
 /// A constant buffer's bytes in the texture `AddedBinding::ConstantsAsTexture` reads: one 16-byte row
 /// per RGBA32 unsigned texel, `CONSTANTS_TEXTURE_WIDTH` rows to a texture row.
-pub fn constants_texture<B: Gpu>(b: &mut B, bytes: &[u8]) -> (B::Texture, B::TextureView) {
+pub fn constants_texture<B: Backend>(b: &mut B, bytes: &[u8]) -> (B::Texture, B::TextureView) {
     let width = wcontainers_gpu::CONSTANTS_TEXTURE_WIDTH;
     let rows = bytes.len().div_ceil(16) as u32;
     let (w, h) = (rows.min(width), rows.div_ceil(width));
@@ -1074,7 +1075,7 @@ pub fn constants_texture<B: Gpu>(b: &mut B, bytes: &[u8]) -> (B::Texture, B::Tex
 /// Draws through a back end with the converted shaders, binding by their reflection (every slot is
 /// register 0: the constants, the texture of [`texels`] and a linear clamping sampler); returns the
 /// target's texels. `provoking` is the back end's own (it only decides `ps_integer`'s value).
-pub fn ours<B: Gpu + 'static>(
+pub fn ours<B: Backend + 'static>(
     b: &mut B,
     draw: &Draw<'_>,
     provoking: ProvokingVertex,
@@ -1083,7 +1084,7 @@ pub fn ours<B: Gpu + 'static>(
 }
 
 /// [`ours`], or the back end's refusal of the converted programs.
-pub fn try_ours<B: Gpu + 'static>(
+pub fn try_ours<B: Backend + 'static>(
     b: &mut B,
     draw: &Draw<'_>,
     provoking: ProvokingVertex,

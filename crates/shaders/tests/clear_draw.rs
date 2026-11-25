@@ -11,8 +11,9 @@
 mod common;
 
 use common::*;
+// The trait by its old name: graphics-test's Direct3D 11 device is named `Gpu` in this file.
 use wcontainers_gpu::{
-    Gpu, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
+    Gpu as Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
     Extent, FORMAT_FACTS, Format, FormatUse, Origin, Program, ReadSource, StageSet, TextureDesc,
     TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
 };
@@ -104,7 +105,7 @@ struct Case {
     float: bool,
 }
 
-fn cases(gpu: &Gpu, b: &impl Gpu, seed: u64, n: u64) -> Vec<Case> {
+fn cases(gpu: &Gpu, b: &impl Backend, seed: u64, n: u64) -> Vec<Case> {
     let can = |f: Format| {
         let need = D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW.0 as u32;
         let d3d = unsafe { gpu.device.CheckFormatSupport(dxgi(f)) }.is_ok_and(|s| s & need == need);
@@ -254,7 +255,7 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Vec<u8> {
 
 /// The same through the WebGPU back end and the clear program, or the texels untouched where the
 /// value is refused (`refused`).
-fn ours<B: Gpu>(b: &mut B, case: &Case, refused: &mut Vec<&'static str>) -> Vec<u8> {
+fn ours<B: Backend>(b: &mut B, case: &Case, refused: &mut Vec<&'static str>) -> Vec<u8> {
     let [w, h, l] = case.size;
     let row = w * FORMAT_FACTS[case.format as usize].block.2;
     let volume = case.dimension == ViewDimension::D3;
