@@ -523,7 +523,7 @@ pub trait Backend: Sized {
                     load: LoadOp::Load,
                     store: StoreOp::Store,
                 });
-                let program = match format.kind() {
+                let program = match crate::FORMAT_FACTS[format as usize].kind {
                     FormatKind::Uint => Builtin::ClearUint,
                     FormatKind::Sint => Builtin::ClearSint,
                     _ => Builtin::ClearFloat,
@@ -1013,7 +1013,7 @@ pub fn generate_mips_by_draws<B: Backend>(
 
 /// Which aspects a depth-stencil format has: depth, stencil.
 pub(crate) fn aspects(format: Format) -> (bool, bool) {
-    match format.kind() {
+    match crate::FORMAT_FACTS[format as usize].kind {
         FormatKind::Depth => (true, false),
         FormatKind::Stencil => (false, true),
         FormatKind::DepthStencil => (true, true),
@@ -1026,14 +1026,24 @@ pub(crate) fn aspects(format: Format) -> (bool, bool) {
 fn norm_twin(values: Format, stored: Format) -> Result<Option<(u32, bool)>, GpuError> {
     use Format::*;
     Ok(match (values, stored) {
-        _ if values.linear() == stored.linear() => None,
-        (R16Unorm | Rg16Unorm | Rgba16Unorm, _) if values.integer_twin() == Some(stored) => {
+        _ if crate::FORMAT_FACTS[values as usize].linear
+            == crate::FORMAT_FACTS[stored as usize].linear =>
+        {
+            None
+        }
+        (R16Unorm | Rg16Unorm | Rgba16Unorm, _)
+            if crate::FORMAT_FACTS[values as usize].integer_twin == Some(stored) =>
+        {
             Some((u16::MAX.into(), false))
         }
-        (R16Snorm | Rg16Snorm | Rgba16Snorm, _) if values.integer_twin() == Some(stored) => {
+        (R16Snorm | Rg16Snorm | Rgba16Snorm, _)
+            if crate::FORMAT_FACTS[values as usize].integer_twin == Some(stored) =>
+        {
             Some((i16::MAX as u32, true))
         }
-        (R8Snorm | Rg8Snorm | Rgba8Snorm, _) if values.integer_twin() == Some(stored) => {
+        (R8Snorm | Rg8Snorm | Rgba8Snorm, _)
+            if crate::FORMAT_FACTS[values as usize].integer_twin == Some(stored) =>
+        {
             Some((i8::MAX as u32, true))
         }
         _ => {

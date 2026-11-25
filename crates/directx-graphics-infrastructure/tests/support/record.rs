@@ -22,7 +22,7 @@ pub struct Recorder {
 
 /// Capabilities like WebGPU's in Chrome on a desktop GPU, as far as the tests need them.
 pub fn webgpu_like_caps() -> Caps {
-    let mut uses = [FormatUse::empty(); Format::COUNT];
+    let mut uses = [FormatUse::empty(); FORMAT_COUNT];
     let colour = FormatUse::SAMPLE
         | FormatUse::FILTER
         | FormatUse::RENDER
@@ -38,19 +38,19 @@ pub fn webgpu_like_caps() -> Caps {
         Format::Rgb10a2Unorm,
         Format::R32Float,
     ] {
-        uses[f.index()] = colour;
+        uses[f as usize] = colour;
     }
     for f in [Format::Rgba8Unorm, Format::Bgra8Unorm, Format::Rgba16Float] {
-        uses[f.index()] |= FormatUse::PRESENT;
+        uses[f as usize] |= FormatUse::PRESENT;
     }
     for f in [
         Format::Depth32Float,
         Format::Depth24PlusStencil8,
         Format::Depth32FloatStencil8,
     ] {
-        uses[f.index()] = FormatUse::SAMPLE | FormatUse::DEPTH_STENCIL;
+        uses[f as usize] = FormatUse::SAMPLE | FormatUse::DEPTH_STENCIL;
     }
-    uses[Format::R32Uint.index()] =
+    uses[Format::R32Uint as usize] =
         FormatUse::SAMPLE | FormatUse::RENDER | FormatUse::STORAGE_WRITE;
     Caps {
         adapter: AdapterInfo {
@@ -103,7 +103,7 @@ pub fn webgpu_like_caps() -> Caps {
         },
         formats: FormatCaps {
             uses,
-            samples: [0b101; Format::COUNT],
+            samples: [0b101; FORMAT_COUNT],
         },
     }
 }

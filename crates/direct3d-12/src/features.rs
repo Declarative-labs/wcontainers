@@ -11,7 +11,7 @@ use wcontainers_directx_graphics_infrastructure::{
     FormatSupport, atomic_operations, dxgi, dxgi_format, dxgi_vertex_format,
     format_support as shared_format_support, storage_viewed, support1, support2, takes_samples,
 };
-use wcontainers_gpu::{Caps, Features, Format, FormatUse};
+use wcontainers_gpu::{Caps, FORMAT_FACTS, Features, Format, FormatUse};
 
 pub const FEATURE_LEVEL_11_0: u32 = required::level::L11_0;
 /// Feature level 11_0's sizes (`D3D12_REQ_TEXTURE2D_U_OR_V_DIMENSION`, which cube faces share,
@@ -136,7 +136,9 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     }
     let word = size_of::<u32>() as u32;
     let streamed = match (dxgi_format(value), dxgi_vertex_format(value)) {
-        (Some((format, false)), Some((_, size))) => size == word * format.components().count_ones(),
+        (Some((format, false)), Some((_, size))) => {
+            size == word * FORMAT_FACTS[format as usize].components.count_ones()
+        }
         _ => false,
     };
     if streamed && caps.features.contains(Features::COMPUTE) {

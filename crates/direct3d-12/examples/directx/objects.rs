@@ -22,7 +22,7 @@ use wcontainers_direct3d_12::{
     ResourceId, features,
 };
 use wcontainers_directx_graphics_infrastructure::{AdapterDesc, dxgi_format, plane_count};
-use wcontainers_gpu::{Backend, Extent, Origin};
+use wcontainers_gpu::{Backend, Extent, FORMAT_FACTS, Origin};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D12::*;
@@ -2789,7 +2789,9 @@ unsafe fn descriptor(h: D3D12_CPU_DESCRIPTOR_HANDLE) -> Descriptor {
 fn holder(r: &Resource, format: u32) -> ResourceId {
     let stored = resource_desc(&r.desc);
     let reinterprets = match (stored.texture_format(), dxgi_format(format)) {
-        (Ok((stored, true)), Some((view, _))) => stored.linear() != view.linear(),
+        (Ok((stored, true)), Some((view, _))) => {
+            FORMAT_FACTS[stored as usize].linear != FORMAT_FACTS[view as usize].linear
+        }
         _ => false,
     };
     let id = r.id;
@@ -3767,7 +3769,7 @@ impl List {
                 // SAFETY: the union member `Type` names.
                 unsafe { l.Anonymous.PlacedFootprint }.Footprint.Format.0 as u32
             };
-            let (w, h, _) = dxgi_format(format)?.0.block();
+            let (w, h, _) = FORMAT_FACTS[dxgi_format(format)?.0 as usize].block;
             Some((w, h))
         };
         let (dw, dh) = dst.and_then(block).unwrap_or((1, 1));

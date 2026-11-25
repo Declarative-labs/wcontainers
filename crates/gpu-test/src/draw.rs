@@ -49,7 +49,7 @@ struct Target {
 impl Target {
     /// Sample `sample` of a texel: a multisampled target (2D, slice 0) holds its samples as planes.
     fn texel(&mut self, x: u32, y: u32, sample: u32) -> &mut [u8] {
-        let size = self.format.block().2 as usize;
+        let size = FORMAT_FACTS[self.format as usize].block.2 as usize;
         let at = (((self.slice + sample) * self.height + y) * self.width + x) as usize * size;
         &mut self.bytes[at..at + size]
     }
@@ -199,7 +199,7 @@ fn fetch(
     reference: Option<(CompareFn, f64)>,
 ) -> [f64; 4] {
     let (w, h, _) = level_size(&t.desc, mip);
-    let size = t.desc.format.block().2 as usize;
+    let size = FORMAT_FACTS[t.desc.format as usize].block.2 as usize;
     let sub = subresource(
         &t.desc,
         mip,
@@ -212,7 +212,7 @@ fn fetch(
     let i = (((at[2] * h + at[1]) * w + at[0]) as usize) * size;
     let bytes = &t.subresources[sub][i..i + size];
     let format = view.format;
-    if format.is_depth_stencil() {
+    if FORMAT_FACTS[format as usize].depth_stencil {
         if view.stencil {
             let s = texel::stencil_byte(format).map_or(0, |b| bytes[b]);
             return [f64::from(s), 0.0, 0.0, 1.0];
@@ -970,7 +970,7 @@ impl Recorder {
                 };
                 let view = self.view(*view)?;
                 let samples = self.texture(view.texture)?.desc.samples;
-                let aspect = match view.desc.format.kind() {
+                let aspect = match FORMAT_FACTS[view.desc.format as usize].kind {
                     FormatKind::DepthStencil if view.desc.stencil => FormatKind::Stencil,
                     FormatKind::DepthStencil => FormatKind::Depth,
                     kind => kind,

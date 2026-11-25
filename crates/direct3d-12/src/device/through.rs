@@ -49,7 +49,7 @@ impl<B: Backend> Device<B> {
             ));
         }
         let format = dxgi(v.format)?;
-        let (bw, bh, bytes) = format.block();
+        let (bw, bh, bytes) = wcontainers_gpu::FORMAT_FACTS[format as usize].block;
         if (bw, bh) != (1, 1) {
             return Err(Error::Invalid(
                 "a storage view of a block-compressed format",

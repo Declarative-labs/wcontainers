@@ -9,9 +9,9 @@ use std::rc::{Rc, Weak};
 
 use wcontainers_gpu::{
     BindingEntry, BindingLayoutKey, BindingResource, BlendDesc, DepthStencilDesc, DispatchCall,
-    DispatchGroups, DrawCall, DrawRange, Features, FormatKind, FormatUse, GpuError, INDEX_FORMATS,
-    LoadOp, MAX_BINDING_SETS, MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc, ScissorRect,
-    SlowPath, StepMode, TargetLayout, VertexLayoutDesc, Viewport,
+    DispatchGroups, DrawCall, DrawRange, FORMAT_FACTS, Features, FormatKind, FormatUse, GpuError,
+    INDEX_FORMATS, LoadOp, MAX_BINDING_SETS, MAX_COLOR_TARGETS, PassDesc, PrepareDesc, RasterDesc,
+    ScissorRect, SlowPath, StepMode, TargetLayout, VertexLayoutDesc, Viewport,
 };
 
 use crate::{Buffer, Sampler, TextureView, WebGpu, convert, layout};
@@ -421,9 +421,9 @@ struct LastGroup {
 /// Whether a clear value would change these bits of a format of 32-bit float channels: a
 /// denormal (flushed) or a NaN (its payload quieted) among the channels it has.
 fn float_bits_changed(format: wcontainers_gpu::Format, bits: crate::fill::Words) -> bool {
-    let (_, _, bytes) = format.block();
-    let channels = format.components().count_ones();
-    format.kind() == FormatKind::Float
+    let (_, _, bytes) = FORMAT_FACTS[format as usize].block;
+    let channels = FORMAT_FACTS[format as usize].components.count_ones();
+    FORMAT_FACTS[format as usize].kind == FormatKind::Float
         && bytes == channels * size_of::<f32>() as u32
         && bits[..channels as usize].iter().any(|&b| {
             let f = f32::from_bits(b);
@@ -826,7 +826,14 @@ impl WebGpu {
                 // Integer targets ignore blending, as in every API; any other format this device
                 // cannot blend is the front's to blend in the program (BlendInShader).
                 let blend = match t.blend {
-                    Some(_) if matches!(f.kind(), FormatKind::Uint | FormatKind::Sint) => None,
+                    Some(_)
+                        if matches!(
+                            FORMAT_FACTS[f as usize].kind,
+                            FormatKind::Uint | FormatKind::Sint
+                        ) =>
+                    {
+                        None
+                    }
                     Some(_) if !self.caps.formats.get(f).contains(FormatUse::BLEND) => {
                         return Err(
                             "blending into a format this device cannot blend; fronts blend in the program (BlendInShader)",
@@ -869,7 +876,10 @@ impl WebGpu {
             wgpu::PrimitiveTopology::TriangleList | wgpu::PrimitiveTopology::TriangleStrip
         );
         let depth_stencil = key.targets.depth_stencil.map(|f| {
-            let has_depth = matches!(f.kind(), FormatKind::Depth | FormatKind::DepthStencil);
+            let has_depth = matches!(
+                FORMAT_FACTS[f as usize].kind,
+                FormatKind::Depth | FormatKind::DepthStencil
+            );
             let stencil = ds.stencil.filter(|_| crate::has_stencil(f));
             wgpu::DepthStencilState {
                 format: convert::texture_format(f).unwrap_or(wgpu::TextureFormat::Depth32Float),
@@ -1002,7 +1012,7 @@ impl WebGpu {
                 clear: match c.load {
                     LoadOp::Load => None,
                     LoadOp::Clear(bits) => {
-                        let kind = v.format.kind();
+                        let kind = FORMAT_FACTS[v.format as usize].kind;
                         let exact = |b: u32| match kind {
                             FormatKind::Uint => b <= 1 << f32::MANTISSA_DIGITS,
                             FormatKind::Sint => {
@@ -1736,7 +1746,7 @@ impl WebGpu {
         let stored = src.texture.0.held;
         let format = crate::packed::held(format).unwrap_or(format);
         let by_draw = cfg!(target_arch = "wasm32") && format != stored
-            || self.resolved_by_draw[format.index()];
+            || self.resolved_by_draw[format as usize];
         let Some(format) = convert::texture_format(format) else {
             self.fail("resolve in a format this back end does not hold");
             return;

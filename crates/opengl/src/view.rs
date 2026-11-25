@@ -4,10 +4,10 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, CUBE_FACES, CopyBufferTexture, Extent, Features, Format,
-    FormatKind, MapIntent, Object, Origin, STORAGE_WORD, SlowPath, TEXEL_BUFFER_TEXTURE_WIDTH,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension,
-    WriteMode,
+    Backend, BufferDesc, BufferUsage, CUBE_FACES, CopyBufferTexture, Extent, FORMAT_FACTS,
+    Features, Format, FormatKind, MapIntent, Object, Origin, STORAGE_WORD, SlowPath,
+    TEXEL_BUFFER_TEXTURE_WIDTH, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
+    TextureViewDesc, ViewDimension, WriteMode,
 };
 
 use naga::VectorSize;
@@ -336,8 +336,8 @@ pub fn texel_layout<B: Backend>(image: &pipe_image_view) -> Result<TexelLayout, 
         .texture()
         .ok_or("an image of a buffer read as texels")?;
     let format = crate::format::format(image.format).ok_or("an image format the device lacks")?;
-    let (width, height, texel_bytes) = format.block();
-    let (their_width, their_height, theirs) = desc.format.block();
+    let (width, height, texel_bytes) = FORMAT_FACTS[format as usize].block;
+    let (their_width, their_height, theirs) = FORMAT_FACTS[desc.format as usize].block;
     if (width, height, their_width, their_height) != (1, 1, 1, 1) || texel_bytes != theirs {
         return Err(format!(
             "an image in {format:?} read as texels of a texture in {:?}",
@@ -697,8 +697,8 @@ impl<B: Backend> Twin<B> {
         mip: u32,
         layer: u32,
     ) -> Result<Self, String> {
-        let (width, _, bytes) = format.block();
-        let (their_width, _, theirs) = desc.format.block();
+        let (width, _, bytes) = FORMAT_FACTS[format as usize].block;
+        let (their_width, _, theirs) = FORMAT_FACTS[desc.format as usize].block;
         if bytes != theirs || width != 1 || their_width != 1 {
             return Err(format!(
                 "a target in {format:?} of a texture in {:?}, of another texel size",
@@ -857,8 +857,8 @@ pub fn image_view<B: Backend>(
     let (viewed, base_mip, base_layer) = if format == desc.format && slice.is_none() {
         (texture.clone(), mip, base_layer)
     } else {
-        let (width, _, bytes) = format.block();
-        let (their_width, _, theirs) = desc.format.block();
+        let (width, _, bytes) = FORMAT_FACTS[format as usize].block;
+        let (their_width, _, theirs) = FORMAT_FACTS[desc.format as usize].block;
         if bytes != theirs || width != 1 || their_width != 1 {
             return Err(format!(
                 "an image in {format:?} of a texture in {:?}, of another texel size",
@@ -1013,12 +1013,15 @@ fn view_twin<B: Backend>(
             .caps()
             .features
             .contains(Features::FORMAT_REINTERPRET);
-    if seen.stencil || seen.format.linear() == desc.format.linear() || reinterprets {
+    if seen.stencil
+        || FORMAT_FACTS[seen.format as usize].linear == FORMAT_FACTS[desc.format as usize].linear
+        || reinterprets
+    {
         return Ok(None);
     }
-    if seen.format.block() != desc.format.block()
-        || seen.format.is_depth_stencil()
-        || desc.format.is_depth_stencil()
+    if FORMAT_FACTS[seen.format as usize].block != FORMAT_FACTS[desc.format as usize].block
+        || FORMAT_FACTS[seen.format as usize].depth_stencil
+        || FORMAT_FACTS[desc.format as usize].depth_stencil
     {
         return Err("a view in a format of another block than its texture's");
     }
@@ -1104,7 +1107,9 @@ fn layer_views<B: Backend>(
         .texture()
         .ok_or("a multisampled array without layers")?;
     let seen = Seen::of(view, desc, false)?;
-    if !seen.stencil && seen.format.linear() != desc.format.linear() {
+    if !seen.stencil
+        && FORMAT_FACTS[seen.format as usize].linear != FORMAT_FACTS[desc.format as usize].linear
+    {
         return Err("a multisampled texture viewed in another format (not built)");
     }
     let mut views = Vec::new();
@@ -1150,7 +1155,7 @@ fn texel_buffer<B: Backend>(
 ) -> Result<(TexelCopy<B>, B::TextureView), &'static str> {
     let format =
         crate::format::format(view.format()).ok_or("a texel buffer format the device lacks")?;
-    let (_, _, texel_bytes) = format.block();
+    let (_, _, texel_bytes) = FORMAT_FACTS[format as usize].block;
     // SAFETY: the view of a buffer holds its buffer range.
     let range = unsafe { view.u.buf };
     let length = range.size / texel_bytes;
@@ -1263,12 +1268,12 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
         let integer = stencil.is_some()
             || format.is_some_and(|f| {
                 matches!(
-                    f.kind(),
+                    FORMAT_FACTS[f as usize].kind,
                     FormatKind::Uint | FormatKind::Sint | FormatKind::Stencil
                 )
             });
-        let components = format.map_or(0, Format::components);
-        let sampled = match format.map(Format::kind) {
+        let components = format.map_or(0, |f| FORMAT_FACTS[f as usize].components);
+        let sampled = match format.map(|f| FORMAT_FACTS[f as usize].kind) {
             Some(FormatKind::Sint) => naga::ScalarKind::Sint,
             _ if integer => naga::ScalarKind::Uint,
             _ => naga::ScalarKind::Float,

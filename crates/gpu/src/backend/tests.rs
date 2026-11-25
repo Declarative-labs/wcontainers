@@ -74,8 +74,8 @@ impl Recorder {
                 features: Features::empty(),
                 limits,
                 formats: FormatCaps {
-                    uses: [FormatUse::all(); Format::COUNT],
-                    samples: [0b101; Format::COUNT],
+                    uses: [FormatUse::all(); crate::FORMAT_COUNT],
+                    samples: [0b101; crate::FORMAT_COUNT],
                 },
             }),
             ..Default::default()
@@ -1043,7 +1043,7 @@ fn generate(r: &mut Recorder, desc: &TextureDesc, values: Format) {
 fn generate_mips_filters_in_the_program_where_the_format_cannot_be_filtered() {
     let mut r = Recorder::new();
     let filter = FormatUse::all() - FormatUse::FILTER;
-    r.caps.as_mut().unwrap().formats.uses[Format::R32Float.index()] = filter;
+    r.caps.as_mut().unwrap().formats.uses[Format::R32Float as usize] = filter;
     let desc = texture(TextureDimension::D2, Format::R32Float, 1, 2);
     generate(&mut r, &desc, desc.format);
     assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 1);
@@ -1068,7 +1068,7 @@ fn generate_mips_filters_in_the_program_where_the_format_cannot_be_filtered() {
 
     // Two layers drawn in the program: counted once per draw.
     let mut r = Recorder::new();
-    r.caps.as_mut().unwrap().formats.uses[Format::R32Float.index()] = filter;
+    r.caps.as_mut().unwrap().formats.uses[Format::R32Float as usize] = filter;
     let desc = texture(TextureDimension::D2, Format::R32Float, 2, 2);
     generate(&mut r, &desc, desc.format);
     assert_eq!(r.slow_paths().count(SlowPath::FilterInShader), 2);
@@ -1097,7 +1097,7 @@ fn generate_mips_through_the_srgb_twin_reads_and_writes_srgb_views() {
 fn generate_mips_with_nothing_to_draw_builds_and_counts_nothing() {
     let mut r = Recorder::new();
     let filter = FormatUse::all() - FormatUse::FILTER;
-    r.caps.as_mut().unwrap().formats.uses[Format::R32Float.index()] = filter;
+    r.caps.as_mut().unwrap().formats.uses[Format::R32Float as usize] = filter;
     let one_level = texture(TextureDimension::D2, Format::R32Float, 1, 1);
     r.generate_mips(&50, &one_level, one_level.format, 0..1, 0..1)
         .unwrap();

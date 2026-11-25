@@ -174,8 +174,8 @@ impl Default for Recorder {
 
 impl Recorder {
     pub fn new() -> Self {
-        let mut uses = [FormatUse::empty(); Format::COUNT];
-        let mut samples = [0u8; Format::COUNT];
+        let mut uses = [FormatUse::empty(); FORMAT_COUNT];
+        let mut samples = [0u8; FORMAT_COUNT];
         // Positions without a format the back end holds keep no uses and no sample counts.
         for ((u, n), f) in uses.iter_mut().zip(&mut samples).zip(every_format()) {
             if !texel::held(f) {
@@ -184,7 +184,7 @@ impl Recorder {
             // One sample, and four for every format drawn into (bit n for 2^n samples).
             *n = 0b101;
             *u = FormatUse::SAMPLE | FormatUse::COPY_OUT;
-            if f.is_depth_stencil() {
+            if FORMAT_FACTS[f as usize].depth_stencil {
                 *u |= FormatUse::DEPTH_STENCIL;
             } else {
                 *u |= FormatUse::RENDER;
@@ -465,7 +465,7 @@ impl Recorder {
         if aspect_size(format, region.stencil)?.is_none() {
             return Ok(texels);
         }
-        let size = format.block().2 as usize;
+        let size = FORMAT_FACTS[format as usize].block.2 as usize;
         let mut out = Vec::new();
         for t in texels.chunks_exact(size) {
             match (region.stencil, texel::stencil_byte(format)) {
@@ -503,7 +503,7 @@ impl Recorder {
             return Err("write or copy pitch smaller than the region".into());
         }
         let mut texels = self.read_texels(region, extent)?;
-        let size = format.block().2 as usize;
+        let size = FORMAT_FACTS[format as usize].block.2 as usize;
         for (i, t) in texels.chunks_exact_mut(size).enumerate() {
             let (layer, y, x) = (
                 i / (rows * extent.width as usize),
@@ -534,14 +534,15 @@ impl Recorder {
         rows_per_layer: u32,
     ) -> Result<(), String> {
         let t = self.texture_mut(*region.texture)?;
-        let (bw, bh, _) = t.desc.format.block();
+        let (bw, bh, _) = FORMAT_FACTS[t.desc.format as usize].block;
         let rows = extent.height.div_ceil(bh);
         let rows_per_layer = if rows_per_layer == 0 {
             rows
         } else {
             rows_per_layer
         };
-        if rows_per_layer < rows || row_pitch < extent.width.div_ceil(bw) * t.desc.format.block().2
+        if rows_per_layer < rows
+            || row_pitch < extent.width.div_ceil(bw) * FORMAT_FACTS[t.desc.format as usize].block.2
         {
             return Err("write or copy pitch smaller than the region".into());
         }
@@ -604,7 +605,7 @@ impl Recorder {
         let t = self.texture_mut(texture)?;
         let mip = (sub as u32) / layers(&t.desc);
         let (w, h, _) = level_size(&t.desc, mip);
-        let size = format.block().2 as usize;
+        let size = FORMAT_FACTS[format as usize].block.2 as usize;
         let plane = (w * h * t.desc.samples) as usize * size;
         let bytes = &mut t.subresources[sub][slice as usize * plane..(slice as usize + 1) * plane];
         for texel in bytes.chunks_exact_mut(size) {
@@ -648,7 +649,7 @@ impl Recorder {
             let (w, h) = self.view_size(*c.view)?;
             same(w, h)?;
             let format = self.view(*c.view)?.desc.format;
-            if format.is_depth_stencil() {
+            if FORMAT_FACTS[format as usize].depth_stencil {
                 return Err("a depth format as a colour attachment".into());
             }
             formats.push(format);
@@ -682,9 +683,9 @@ impl Recorder {
             let (w, h) = self.view_size(*d.view)?;
             same(w, h)?;
             let format = self.view(*d.view)?.desc.format;
-            let has_depth = !matches!(format.kind(), FormatKind::Stencil);
+            let has_depth = !matches!(FORMAT_FACTS[format as usize].kind, FormatKind::Stencil);
             let has_stencil = texel::stencil_byte(format).is_some();
-            if !format.is_depth_stencil() {
+            if !FORMAT_FACTS[format as usize].depth_stencil {
                 return Err("a colour format as the depth attachment".into());
             }
             if d.depth.is_some() != has_depth || d.stencil.is_some() != has_stencil {
@@ -738,7 +739,7 @@ impl Recorder {
             match c.load {
                 LoadOp::Load => {}
                 LoadOp::Clear(v) => {
-                    let mut texel = vec![0u8; format.block().2 as usize];
+                    let mut texel = vec![0u8; FORMAT_FACTS[format as usize].block.2 as usize];
                     texel::encode(format, clear_values(format, v), &mut texel);
                     self.fill_attachment(*c.view, c.depth_slice, |t| t.copy_from_slice(&texel))?;
                 }
@@ -859,7 +860,7 @@ impl Recorder {
     ) -> Result<(), String> {
         let s = self.texture(src)?;
         let n = s.desc.samples as usize;
-        let size = format.block().2 as usize;
+        let size = FORMAT_FACTS[format as usize].block.2 as usize;
         let bytes = &s.subresources[src_sub];
         let plane = bytes.len() / n;
         let mut out = vec![0u8; plane];
@@ -1065,14 +1066,14 @@ fn every_format() -> Vec<Format> {
         Astc4x4Unorm,
         Astc4x4UnormSrgb,
     ];
-    assert_eq!(all.len(), Format::COUNT);
-    assert!(all.iter().enumerate().all(|(i, f)| f.index() == i));
+    assert_eq!(all.len(), FORMAT_COUNT);
+    assert!(all.iter().enumerate().all(|(i, f)| *f as usize == i));
     all
 }
 
 /// A clear value's bits as the values of `format`.
 pub(crate) fn clear_values(format: Format, v: [u32; 4]) -> [f64; 4] {
-    match format.kind() {
+    match FORMAT_FACTS[format as usize].kind {
         FormatKind::Uint => v.map(f64::from),
         FormatKind::Sint => v.map(|x| f64::from(x as i32)),
         _ => v.map(|x| f64::from(f32::from_bits(x))),
@@ -1210,7 +1211,7 @@ pub(crate) fn level_size(desc: &TextureDesc, mip: u32) -> (u32, u32, u32) {
 /// Bytes of one row of blocks and the number of rows of a level.
 fn level_rows(desc: &TextureDesc, mip: u32) -> (usize, usize) {
     let (w, h, _) = level_size(desc, mip);
-    let (bw, bh, size) = desc.format.block();
+    let (bw, bh, size) = FORMAT_FACTS[desc.format as usize].block;
     ((w.div_ceil(bw) * size) as usize, h.div_ceil(bh) as usize)
 }
 
@@ -1221,7 +1222,7 @@ fn for_rows(
     extent: Extent,
     mut f: impl FnMut(usize, usize, usize),
 ) -> Result<(), String> {
-    let (bw, bh, size) = desc.format.block();
+    let (bw, bh, size) = FORMAT_FACTS[desc.format as usize].block;
     if desc.samples > 1 {
         return Err(
             "a multisampled texture's bytes moved other than by a draw, a resolve or a whole copy"
@@ -1420,12 +1421,14 @@ impl Backend for Recorder {
             let t = self
                 .texture(*texture)
                 .map_err(|_| GpuError::Invalid("view of an object that is not a live texture"))?;
-            let twin = desc.format.linear() == t.desc.format.linear();
+            let twin = FORMAT_FACTS[desc.format as usize].linear
+                == FORMAT_FACTS[t.desc.format as usize].linear;
             // Another colour format of the same block size, which draws read and write by the
             // view's format.
-            let same_size = !desc.format.is_depth_stencil()
-                && !t.desc.format.is_depth_stencil()
-                && desc.format.block() == t.desc.format.block()
+            let same_size = !FORMAT_FACTS[desc.format as usize].depth_stencil
+                && !FORMAT_FACTS[t.desc.format as usize].depth_stencil
+                && FORMAT_FACTS[desc.format as usize].block
+                    == FORMAT_FACTS[t.desc.format as usize].block
                 && !self.caps.formats.get(desc.format).is_empty();
             if desc.format != t.desc.format && !(twin && t.desc.reinterpret) {
                 if !(same_size && t.desc.reinterpret) {
@@ -2236,10 +2239,10 @@ impl Backend for Recorder {
                 );
             }
             let bytes = r.read_texels(src, extent)?;
-            let (bw, bh, size) = sf.block();
+            let (bw, bh, size) = FORMAT_FACTS[sf as usize].block;
             let pitch = extent.width.div_ceil(bw) * size;
             // The destination's extent in its own blocks.
-            let (dbw, dbh, _) = df.block();
+            let (dbw, dbh, _) = FORMAT_FACTS[df as usize].block;
             let dst_extent = Extent {
                 width: extent.width.div_ceil(bw) * dbw,
                 height: extent.height.div_ceil(bh) * dbh,
@@ -2266,7 +2269,7 @@ impl Backend for Recorder {
             r.outside_pass("copy_buffer_to_texture")?;
             r.buffer_for(*src.buffer, BufferUsage::COPY_SRC, "copy_buffer_to_texture")?;
             let format = r.texture(*dst.texture)?.desc.format;
-            let (bw, bh, size) = format.block();
+            let (bw, bh, size) = FORMAT_FACTS[format as usize].block;
             let size = aspect_size(format, dst.stencil)?.map_or(size, |n| n as u32);
             blocks_whole(src, size)?;
             let rows = u64::from(extent.height.div_ceil(bh));
@@ -2317,7 +2320,7 @@ impl Backend for Recorder {
             let bytes = r.read_region(src, extent)?;
             r.touch_region(src, extent)?;
             let format = r.texture(*src.texture)?.desc.format;
-            let (bw, bh, size) = format.block();
+            let (bw, bh, size) = FORMAT_FACTS[format as usize].block;
             let size = aspect_size(format, src.stencil)?.map_or(size, |n| n as u32);
             blocks_whole(dst, size)?;
             let len = (extent.width.div_ceil(bw) * size) as usize;
@@ -2394,7 +2397,9 @@ impl Backend for Recorder {
                     "a resolve from a single-sampled texture or into a multisampled one".into(),
                 );
             }
-            if format.linear() != s.format.linear() || d.format.linear() != s.format.linear() {
+            if FORMAT_FACTS[format as usize].linear != FORMAT_FACTS[s.format as usize].linear
+                || FORMAT_FACTS[d.format as usize].linear != FORMAT_FACTS[s.format as usize].linear
+            {
                 return Err(
                     "a resolve between formats other than one format and its sRGB twin".into(),
                 );

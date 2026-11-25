@@ -11,9 +11,9 @@ mod common;
 
 use common::*;
 use wcontainers_gpu::{
-    AddressMode, BlendComponent, BlendFactor, BlendOp, DrawBaseSource, Filter, Format, HelperValue,
-    LinkedValues, ProvokingVertex, TargetInShader, TexelBufferRoute, VariantFlags, VariantKey,
-    VertexFormat,
+    AddressMode, BlendComponent, BlendFactor, BlendOp, DrawBaseSource, FORMAT_FACTS, Filter,
+    Format, HelperValue, LinkedValues, ProvokingVertex, TargetInShader, TexelBufferRoute,
+    VariantFlags, VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D11::*;
@@ -346,10 +346,11 @@ fn variants_draw_as_the_native_feature_does() {
                 Format::Rgba16Unorm,
                 Format::Rgba8Snorm,
             ] {
-                let stored = format.integer_twin().unwrap();
-                let signed = stored.kind() == wcontainers_gpu::FormatKind::Sint;
-                let channels = stored.components().count_ones();
-                let width = stored.block().2 / channels;
+                let stored = FORMAT_FACTS[format as usize].integer_twin.unwrap();
+                let signed =
+                    FORMAT_FACTS[stored as usize].kind == wcontainers_gpu::FormatKind::Sint;
+                let channels = FORMAT_FACTS[stored as usize].components.count_ones();
+                let width = FORMAT_FACTS[stored as usize].block.2 / channels;
                 let largest = (1u64 << (u8::BITS * width - u32::from(signed))) - 1;
                 // Old values whose codes are exact.
                 let fractions: [f64; 4] = match signed {
@@ -1449,7 +1450,10 @@ fn variants_draw_as_the_native_feature_does() {
                 // a size is many steps (1/16 and 1/32 of the range), so one step hides none.
                 let allowed = match unbound {
                     true => (0, 0),
-                    false => (d3d11.len() / Format::Rgba8Unorm.block().2 as usize, 1),
+                    false => (
+                        d3d11.len() / FORMAT_FACTS[Format::Rgba8Unorm as usize].block.2 as usize,
+                        1,
+                    ),
                 };
                 results.push(compare(
                     format!("texture_info {shader} {route} {back_end} against {against}"),
@@ -1904,7 +1908,7 @@ fn typed_buffers_draw_as_direct3d_does() {
                 let first = next() % 8;
                 let count = 100 + next() % 29;
                 let elements = (first + count + 3).next_multiple_of(4);
-                let bytes = (0..elements * format.block().2)
+                let bytes = (0..elements * FORMAT_FACTS[format as usize].block.2)
                     .map(|_| next() as u8)
                     .collect();
                 TexelData {

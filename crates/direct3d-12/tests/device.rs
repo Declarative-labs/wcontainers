@@ -15,7 +15,7 @@ use wcontainers_direct3d_12::state::*;
 use wcontainers_direct3d_12::{Device, Error, PipelineId};
 use wcontainers_directx_graphics_infrastructure::dxgi::{self, D32_FLOAT};
 use wcontainers_directx_graphics_infrastructure::stage_registers::TOO_MANY_VALUES;
-use wcontainers_gpu::{Backend, Features};
+use wcontainers_gpu::{Backend, FORMAT_FACTS, Features};
 
 #[test]
 fn footprints_follow_the_pitch_and_placement_rules() {
@@ -76,7 +76,7 @@ fn every_texture_shape_check_feature_support_answers_is_made() {
                 ..Default::default()
             };
             let (format, _) = one.texture_format().unwrap();
-            let (block_width, block_height, _) = format.block();
+            let (block_width, block_height, _) = FORMAT_FACTS[format as usize].block;
             let blocks = 4;
             let desc = ResourceDesc {
                 width: u64::from(block_width * blocks),

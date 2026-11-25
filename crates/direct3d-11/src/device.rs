@@ -7,11 +7,12 @@ use std::rc::Rc;
 use wcontainers_gpu::{
     AddressMode, Backend, BlendComponent, BlendFactor, BlendOp, BorderColor,
     BufferDesc as GpuBuffer, BufferUsage, Caps, ColorWrites, CompareFn, CullMode,
-    DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, Features, FillMode, Filter, Format,
-    FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS, MapIntent, Object,
-    Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SamplerDesc as GpuSampler, ScalarKind,
-    SlowPath, StencilFace, StencilOp, TextureDesc as GpuTexture, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
+    DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, FORMAT_FACTS, Features, FillMode,
+    Filter, Format, FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS,
+    MapIntent, Object, Origin, ProvokingVertex, RasterDesc, RenderTargetBlend,
+    SamplerDesc as GpuSampler, ScalarKind, SlowPath, StencilFace, StencilOp,
+    TextureDesc as GpuTexture, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
+    ViewDimension, WriteMode,
 };
 
 use crate::context::ContextState;
@@ -743,7 +744,9 @@ impl<B: Backend> Device<B> {
         // Shader model 4.1 gathers formats of a red channel alone, uncompressed, and one aspect
         // of depth; 11_0 every format it samples.
         let red_alone = format::depth_aspect_view(dxgi)
-            || texture.is_some_and(|f| f.components() == RED && f.block().0 == 1);
+            || texture.is_some_and(|f| {
+                FORMAT_FACTS[f as usize].components == RED && FORMAT_FACTS[f as usize].block.0 == 1
+            });
         remove(
             level < level::L10_1 || level < level::L11_0 && !red_alone,
             SHADER_GATHER,
@@ -1138,7 +1141,7 @@ impl<B: Backend> Device<B> {
     pub(crate) fn through_takes(&self, format: Format) -> bool {
         let caps = self.backend.caps();
         caps.formats.get(format).contains(FormatUse::COPY_OUT)
-            && format.block().0 == 1
+            && FORMAT_FACTS[format as usize].block.0 == 1
             && caps.features.contains(Features::COMPUTE)
             && caps.limits.storage_buffers_per_stage > 0
     }
@@ -1155,7 +1158,7 @@ impl<B: Backend> Device<B> {
     pub(crate) fn held_as_integer(&self, format: Format, drawn: bool) -> Option<Format> {
         let formats = &self.backend.caps().formats;
         let own = formats.get(format);
-        format.integer_twin().filter(|&twin| {
+        FORMAT_FACTS[format as usize].integer_twin.filter(|&twin| {
             let held = formats.get(twin);
             held.contains(FormatUse::SAMPLE)
                 && (own.is_empty()
@@ -1181,9 +1184,11 @@ impl<B: Backend> Device<B> {
             not_implemented("a format the back end lacks")
         } else if has.contains(needs) {
             Ok(())
-        } else if (needs.contains(FormatUse::DEPTH_STENCIL) && !format.is_depth_stencil())
+        } else if (needs.contains(FormatUse::DEPTH_STENCIL)
+            && !FORMAT_FACTS[format as usize].depth_stencil)
             || (needs.contains(FormatUse::RENDER)
-                && (format.is_depth_stencil() || format.block().0 > 1))
+                && (FORMAT_FACTS[format as usize].depth_stencil
+                    || FORMAT_FACTS[format as usize].block.0 > 1))
         {
             // Direct3D's own rule: depth formats are bound for depth only, block formats never
             // as targets.
@@ -1574,11 +1579,12 @@ impl<B: Backend> Device<B> {
             return Err(Error::InvalidArg("bind flags a texture cannot have"));
         }
         if d.dimension == TexDim::D3
-            && (d.bind_flags & bind::DEPTH_STENCIL != 0 || format.is_depth_stencil())
+            && (d.bind_flags & bind::DEPTH_STENCIL != 0
+                || FORMAT_FACTS[format as usize].depth_stencil)
         {
             return Err(Error::InvalidArg("a 3D texture cannot hold depth"));
         }
-        if d.dimension == TexDim::D1 && format.block().1 > 1 {
+        if d.dimension == TexDim::D1 && FORMAT_FACTS[format as usize].block.1 > 1 {
             return Err(Error::InvalidArg("a 1D texture cannot be block-compressed"));
         }
         if d.bind_flags & bind::UNORDERED_ACCESS != 0
@@ -1600,7 +1606,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<Rc<Texture<B>>> {
         let (format, mips) = self.check_texture(d, !init.is_empty())?;
         if format::texture_format(d.format)
-            .is_some_and(|f| f != format && f.integer_twin() == Some(format))
+            .is_some_and(|f| f != format && FORMAT_FACTS[f as usize].integer_twin == Some(format))
         {
             self.backend.slow_paths().hit(SlowPath::NormAsInteger);
         }
@@ -1769,9 +1775,9 @@ impl<B: Backend> Device<B> {
         let row_pitch = if rows == 1 { row } else { data.row_pitch };
         let slice_pitch = data.slice_pitch;
         let depth = extent.depth_or_layers;
-        if format.kind() == FormatKind::DepthStencil {
+        if FORMAT_FACTS[format as usize].kind == FormatKind::DepthStencil {
             // Each aspect apart, from the rows packed (depth-stencil textures are 2D: one slice).
-            let texel = format.block().2;
+            let texel = FORMAT_FACTS[format as usize].block.2;
             let mut packed = Vec::with_capacity((row * rows) as usize);
             for y in 0..rows {
                 let at = (y * row_pitch) as usize;
@@ -1992,7 +1998,7 @@ impl<B: Backend> Device<B> {
             }
             _ => format::view_format(v.format, t.format, texture.format)?,
         };
-        let on_twin = format.integer_twin() == Some(texture.format);
+        let on_twin = FORMAT_FACTS[format as usize].integer_twin == Some(texture.format);
         let (format, decoded) = match self.held_as_integer(format, on_twin) {
             Some(twin) => (twin, Some(format)),
             None => (format, None),
@@ -2121,7 +2127,7 @@ impl<B: Backend> Device<B> {
     ) -> Result<Rc<View<B>>> {
         let gpu_format = format::texture_format_of(format)
             .map_err(|_| Error::InvalidArg("a format a buffer's target view cannot have"))?;
-        let (block_width, block_height, bytes) = gpu_format.block();
+        let (block_width, block_height, bytes) = FORMAT_FACTS[gpu_format as usize].block;
         let end = (u64::from(first) + u64::from(count)) * u64::from(bytes);
         if buffer.desc.bind_flags & bind::RENDER_TARGET == 0
             || format::is_typeless(format)
@@ -2287,8 +2293,10 @@ impl<B: Backend> Device<B> {
                 ));
             }
             let f = format::texture_format_of(format)?;
-            match f.block() {
-                (1, 1, bytes) if !f.is_depth_stencil() && format::buffer_viewed(format) => {
+            match FORMAT_FACTS[f as usize].block {
+                (1, 1, bytes)
+                    if !FORMAT_FACTS[f as usize].depth_stencil && format::buffer_viewed(format) =>
+                {
                     // Served exactly where `CheckFormatSupport` claims typed buffers, and typed
                     // storage where it claims typed storage views.
                     let claims = self.format_support(format).support1;
@@ -3042,7 +3050,7 @@ fn stand_ins(module: &naga::Module) -> Vec<(u32, Option<StandIn>)> {
 /// Whether multisampled textures of `format` resolve (averaging: not integer or depth).
 pub(crate) fn resolvable(format: Format) -> bool {
     !matches!(
-        format.kind(),
+        FORMAT_FACTS[format as usize].kind,
         FormatKind::Uint | FormatKind::Sint | FormatKind::DepthStencil
     )
 }
@@ -3279,7 +3287,10 @@ pub(crate) fn raster_block(d: &RasterizerDesc, caps: &Caps) -> RasterDesc {
 
 /// Whether clear values of `format` are integers rather than floats.
 pub(crate) fn integer_format(format: Format) -> bool {
-    matches!(format.kind(), FormatKind::Uint | FormatKind::Sint)
+    matches!(
+        FORMAT_FACTS[format as usize].kind,
+        FormatKind::Uint | FormatKind::Sint
+    )
 }
 
 /// The back end's sampler for Direct3D's description. Border and mirror-once addressing the back end

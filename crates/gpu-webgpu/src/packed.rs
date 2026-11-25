@@ -12,8 +12,8 @@
 //! the GPU, by a draw.
 
 use wcontainers_gpu::{
-    Backend, CopyBufferTexture, Extent, Format, Origin, SlowPath, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, WriteMode,
+    Backend, CopyBufferTexture, Extent, FORMAT_FACTS, Format, Origin, SlowPath, TextureDesc,
+    TextureDimension, TextureRegion, TextureUsage, WriteMode,
 };
 
 use crate::memory::DX12_PLACEMENT_ALIGNMENT;
@@ -79,19 +79,21 @@ pub(crate) fn clear(format: Format, c: wgpu::Color) -> wgpu::Color {
 pub(crate) fn raw(format: Format) -> Format {
     [Format::R8Uint, Format::R16Uint]
         .into_iter()
-        .find(|r| r.block().2 == format.block().2)
+        .find(|r| FORMAT_FACTS[*r as usize].block.2 == FORMAT_FACTS[format as usize].block.2)
         .unwrap_or(Format::R32Uint)
 }
 
 /// Texels of [`raw`] a row of `width` texels of `format` takes.
 pub(crate) fn raw_width(format: Format, width: u32) -> u32 {
-    let (bw, _, bytes) = format.block();
-    width.div_ceil(bw) * bytes.div_ceil(Format::R32Uint.block().2)
+    let (bw, _, bytes) = FORMAT_FACTS[format as usize].block;
+    width.div_ceil(bw) * bytes.div_ceil(FORMAT_FACTS[Format::R32Uint as usize].block.2)
 }
 
 /// Bytes of one texel of the format a converted `format` is held in.
 pub(crate) fn held_bytes(format: Format) -> u32 {
-    held(format).unwrap_or(Format::Rgba8Unorm).block().2
+    FORMAT_FACTS[held(format).unwrap_or(Format::Rgba8Unorm) as usize]
+        .block
+        .2
 }
 
 /// Whether `format` is a three-channel 32-bit format, held with a fourth channel.
@@ -248,7 +250,7 @@ pub(crate) fn program(format: Format, into: bool, three_d: bool) -> String {
                  {body}\n\
                  return vec4f(c) / 255.0;\n\
              }}\n",
-            per = format.block().0,
+            per = FORMAT_FACTS[format as usize].block.0,
             body = widen_wgsl(format),
         )
     } else {
@@ -428,7 +430,7 @@ pub(crate) fn pack(format: Format, texels: &[u8], out: &mut Vec<u8>) {
 
 /// Bytes of `texels` texels of `format` packed: whole blocks.
 pub(crate) fn packed_bytes(format: Format, texels: u64) -> u64 {
-    let (bw, _, bytes) = format.block();
+    let (bw, _, bytes) = FORMAT_FACTS[format as usize].block;
     texels.div_ceil(u64::from(bw)) * u64::from(bytes)
 }
 
@@ -444,7 +446,11 @@ impl WebGpu {
         mode: WriteMode,
     ) {
         let format = region.texture.0.desc.format;
-        if !region.origin.x.is_multiple_of(format.block().0) {
+        if !region
+            .origin
+            .x
+            .is_multiple_of(FORMAT_FACTS[format as usize].block.0)
+        {
             return self.fail("a region of a two-pixel format starting inside a pair");
         }
         let row = packed_bytes(format, u64::from(extent.width)) as usize;
@@ -480,7 +486,11 @@ impl WebGpu {
     /// inside its level and starts on a block.
     fn first_slice(&mut self, region: &TextureRegion<'_, Self>, extent: Extent) -> Option<u32> {
         let t = &region.texture.0;
-        if !region.origin.x.is_multiple_of(t.desc.format.block().0) {
+        if !region
+            .origin
+            .x
+            .is_multiple_of(FORMAT_FACTS[t.desc.format as usize].block.0)
+        {
             self.fail("a region of a two-pixel format starting inside a pair");
             return None;
         }
@@ -551,8 +561,9 @@ impl WebGpu {
     /// one placement (where Direct3D 12 implementations move an unplaced copy back to a placed
     /// offset), stays within the device's widest 2D texture.
     fn raw_run(&self, format: Format) -> u32 {
-        let bw = format.block().0;
-        let placement = (DX12_PLACEMENT_ALIGNMENT / u64::from(raw(format).block().2)) as u32;
+        let bw = FORMAT_FACTS[format as usize].block.0;
+        let placement = (DX12_PLACEMENT_ALIGNMENT
+            / u64::from(FORMAT_FACTS[raw(format) as usize].block.2)) as u32;
         let widest = self.device.limits().max_texture_dimension_2d;
         let blocks = widest.saturating_sub(placement) / raw_width(format, bw);
         (blocks / placement * placement).max(1) * bw
@@ -628,7 +639,7 @@ impl WebGpu {
         extent: Extent,
     ) {
         let (sf, df) = (src.texture.0.desc.format, dst.texture.0.desc.format);
-        if sf.block() != df.block() {
+        if FORMAT_FACTS[sf as usize].block != FORMAT_FACTS[df as usize].block {
             return self.fail("a copy between a converted format and one of another texel size");
         }
         let run = self.raw_run(sf);

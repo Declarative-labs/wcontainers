@@ -7,8 +7,9 @@ use std::rc::Rc;
 use zerocopy::IntoBytes;
 
 use wcontainers_gpu::{
-    Backend, Extent, Format, FormatKind, Object, Origin, Reflection, SamplerDesc as GpuSampler,
-    TextureDesc as GpuTexture, TextureRegion, VertexFormat, ViewDimension,
+    Backend, Extent, FORMAT_FACTS, Format, FormatKind, Object, Origin, Reflection,
+    SamplerDesc as GpuSampler, TextureDesc as GpuTexture, TextureRegion, VertexFormat,
+    ViewDimension,
 };
 
 use crate::desc::{
@@ -249,7 +250,7 @@ impl<B: Backend> Texture<B> {
             let (region, extent) = chroma.whole(sub)?;
             return Some((region, extent, Second::Chroma));
         }
-        if self.format.kind() != FormatKind::DepthStencil {
+        if FORMAT_FACTS[self.format as usize].kind != FormatKind::DepthStencil {
             return None;
         }
         let (mut region, extent) = self.whole(sub)?;
@@ -257,7 +258,7 @@ impl<B: Backend> Texture<B> {
         Some((
             region,
             extent,
-            Second::Stencil(self.format.block().2 as usize),
+            Second::Stencil(FORMAT_FACTS[self.format as usize].block.2 as usize),
         ))
     }
 
@@ -340,7 +341,7 @@ impl<B: Backend> View<B> {
         if self.reads_stencil() {
             FormatKind::Uint
         } else {
-            self.values().kind()
+            FORMAT_FACTS[self.values() as usize].kind
         }
     }
 

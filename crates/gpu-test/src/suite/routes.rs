@@ -624,10 +624,15 @@ pub fn missing_components_read_their_defaults<H: Host>() {
             128
         };
         let expected: Vec<u8> = (0..4)
-            .map(|c| match (format.components() >> c & 1, c) {
-                (1, _) => present,
-                (_, 3) => 255,
-                _ => 0,
+            .map(|c| {
+                match (
+                    wcontainers_gpu::FORMAT_FACTS[format as usize].components >> c & 1,
+                    c,
+                ) {
+                    (1, _) => present,
+                    (_, 3) => 255,
+                    _ => 0,
+                }
             })
             .collect();
         assert_close(&got, &expected, 1, 4, 1);
@@ -808,7 +813,7 @@ pub fn a_copy_within_one_3d_or_compressed_subresource_moves_the_region<H: Host>(
         {
             continue;
         }
-        let (w, h, size) = format.block();
+        let (w, h, size) = wcontainers_gpu::FORMAT_FACTS[format as usize].block;
         let t = texture(
             &mut b,
             format,

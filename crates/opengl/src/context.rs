@@ -5,9 +5,9 @@ use std::ffi::{c_uint, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, ClearValue, ColorTarget, DeviceStatus, EmptyPass, MAX_COLOR_TARGETS, Object,
-    PassTargets, PassTracker, ScissorRect, Target, TextureDesc, TextureDimension, TextureViewDesc,
-    ViewDimension,
+    Backend, ClearValue, ColorTarget, DeviceStatus, EmptyPass, FORMAT_FACTS, MAX_COLOR_TARGETS,
+    Object, PassTargets, PassTracker, ScissorRect, Target, TextureDesc, TextureDimension,
+    TextureViewDesc, ViewDimension,
 };
 
 use crate::draw::Programs;
@@ -582,8 +582,11 @@ fn through_twin<B: Backend>(
             .caps()
             .features
             .contains(wcontainers_gpu::Features::FORMAT_REINTERPRET);
-    let colour = !format.is_depth_stencil() && !desc.format.is_depth_stencil();
-    colour && format.linear() != desc.format.linear() && !reinterprets
+    let colour = !FORMAT_FACTS[format as usize].depth_stencil
+        && !FORMAT_FACTS[desc.format as usize].depth_stencil;
+    colour
+        && FORMAT_FACTS[format as usize].linear != FORMAT_FACTS[desc.format as usize].linear
+        && !reinterprets
 }
 
 /// The pass tracker's target of layer `run` of one surface (its first layer and on), with the view

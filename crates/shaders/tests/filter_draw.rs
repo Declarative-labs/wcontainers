@@ -28,10 +28,10 @@ use common::*;
 use wcontainers_gpu::{
     AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange,
     BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall, DrawRange,
-    Extent, FillMode, Filter, Format, FrontFace, HelperValue, Origin, PassDesc, Program,
-    ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc, SlotKind, StageSet,
-    StoreOp, TextureRegion, TextureUsage, Topology, VariantKey, VertexLayoutDesc, Viewport,
-    WriteMode,
+    Extent, FORMAT_FACTS, FillMode, Filter, Format, FrontFace, HelperValue, Origin, PassDesc,
+    Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc, SlotKind,
+    StageSet, StoreOp, TextureRegion, TextureUsage, Topology, VariantKey, VertexLayoutDesc,
+    Viewport, WriteMode,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};
@@ -195,7 +195,7 @@ impl Case {
             HelperValue::BorderColor { .. } => self.border.map(f32::to_bits).to_vec(),
             HelperValue::LodBias { .. } => vec![self.bias.to_bits()],
             HelperValue::TextureLevels { .. } => vec![LEVELS],
-            HelperValue::TextureComponents { .. } => vec![format.components()],
+            HelperValue::TextureComponents { .. } => vec![FORMAT_FACTS[format as usize].components],
             other => panic!("no value for {other:?}"),
         }
     }
@@ -209,7 +209,9 @@ fn levels(format: Format, seed: u64) -> Vec<Vec<u8>> {
             let texels = (TEX >> n) * (TEX >> n);
             match format {
                 Format::R32Float => (0..texels).flat_map(|_| rng.f32().to_le_bytes()).collect(),
-                _ => (0..texels * format.block().2).map(|_| rng.u8(..)).collect(),
+                _ => (0..texels * FORMAT_FACTS[format as usize].block.2)
+                    .map(|_| rng.u8(..))
+                    .collect(),
             }
         })
         .collect()
@@ -235,7 +237,7 @@ fn direct3d_11(
         .unwrap();
     let mut desc = d3d11::tex2d(TEX, TEX, dxgi(format), D3D11_BIND_SHADER_RESOURCE);
     desc.MipLevels = LEVELS;
-    let size = format.block().2;
+    let size = FORMAT_FACTS[format as usize].block.2;
     let data: Vec<_> = texels
         .iter()
         .enumerate()
@@ -308,7 +310,7 @@ fn ours<B: Backend>(
         1,
         TextureUsage::SAMPLE | TextureUsage::COPY_DST,
     );
-    let size = format.block().2;
+    let size = FORMAT_FACTS[format as usize].block.2;
     for (level, data) in texels.iter().enumerate() {
         let side = TEX >> level;
         b.write_texture(

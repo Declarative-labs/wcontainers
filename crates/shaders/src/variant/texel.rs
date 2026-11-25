@@ -10,7 +10,7 @@
 
 use alloc::vec;
 use naga::{AtomicFunction, BinaryOperator as B, ScalarKind};
-use wcontainers_gpu::{Format, TEXEL_BUFFER_TEXTURE_WIDTH, VertexFormat};
+use wcontainers_gpu::{FORMAT_FACTS, Format, TEXEL_BUFFER_TEXTURE_WIDTH, VertexFormat};
 
 use super::pull::{Component, Kind, decode, layout, select};
 use super::*;
@@ -117,7 +117,12 @@ impl TexelBuffer {
     pub(crate) fn layout(format: Format) -> Result<Layout> {
         if format == Format::A8Unorm {
             let alpha = (0, 0, u8::BITS);
-            return Ok((Kind::Unorm, vec![alpha], format.block().2, ALPHA));
+            return Ok((
+                Kind::Unorm,
+                vec![alpha],
+                FORMAT_FACTS[format as usize].block.2,
+                ALPHA,
+            ));
         }
         let v = vertex_format(format).ok_or(ConvertError::Unsupported(
             crate::refusal::TYPED_BUFFER_FORMAT_ABSENT,

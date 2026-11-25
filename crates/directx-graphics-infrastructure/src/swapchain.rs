@@ -11,11 +11,11 @@ use std::collections::VecDeque;
 
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
-    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, FillMode, Format, FrontFace,
-    GpuError, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, Origin, PassDesc, Program,
-    ProvokingVertex, RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule, ShaderStage,
-    SlowPath, StageSet, StencilFace, StoreOp, TextureDesc, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
+    DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, FillMode, Format,
+    FrontFace, GpuError, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, Origin, PassDesc,
+    Program, ProvokingVertex, RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule,
+    ShaderStage, SlowPath, StageSet, StencilFace, StoreOp, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
 };
 
 use crate::format::{BACK_BUFFER_FORMATS, back_buffer_format, dxgi, present_format};
@@ -83,7 +83,7 @@ impl SwapChainDesc {
             if !(2..=MAX_BUFFERS).contains(&self.buffers) {
                 return Err("flip models take 2 to 16 buffers");
             }
-            if format != format.linear() {
+            if format != FORMAT_FACTS[format as usize].linear {
                 return Err(
                     "flip models take no sRGB formats; sRGB views of the buffers draw sRGB",
                 );
@@ -168,7 +168,7 @@ impl Shown {
     fn of(value: u32, format: Format) -> Shown {
         if value == dxgi::R10G10B10_XR_BIAS_A2_UNORM {
             Shown::Extended
-        } else if format != format.linear() || format == Format::Rgba16Float {
+        } else if format != FORMAT_FACTS[format as usize].linear || format == Format::Rgba16Float {
             Shown::Encoded
         } else {
             Shown::Copied

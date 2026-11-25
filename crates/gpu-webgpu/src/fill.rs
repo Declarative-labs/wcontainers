@@ -6,7 +6,7 @@
 
 use std::{collections::HashMap, ops::Range};
 
-use wcontainers_gpu::{Format, FormatKind, SlowPath, TargetLayout};
+use wcontainers_gpu::{FORMAT_FACTS, Format, FormatKind, SlowPath, TargetLayout};
 
 use crate::{Stream, WebGpu, convert};
 
@@ -84,7 +84,10 @@ impl DepthSource {
                 | Format::R32Sint
                 | Format::R16Unorm
                 | Format::R16Uint
-        ) || matches!(format.kind(), FormatKind::Depth | FormatKind::DepthStencil)
+        ) || matches!(
+            FORMAT_FACTS[format as usize].kind,
+            FormatKind::Depth | FormatKind::DepthStencil
+        )
     }
 }
 
@@ -750,7 +753,8 @@ impl WebGpu {
         index: usize,
         bits: Words,
     ) {
-        let float = targets.colors[index].is_some_and(|f| f.kind() == FormatKind::Float);
+        let float = targets.colors[index]
+            .is_some_and(|f| FORMAT_FACTS[f as usize].kind == FormatKind::Float);
         self.slow.hit(if float {
             SlowPath::FloatBitsClearByDraw
         } else {
@@ -799,7 +803,7 @@ impl WebGpu {
             (layout, pl)
         });
         let format = targets.colors[index].expect("the cleared target");
-        let (ty, value) = match format.kind() {
+        let (ty, value) = match FORMAT_FACTS[format as usize].kind {
             FormatKind::Sint => ("vec4<i32>", "bitcast<vec4<i32>>(value)"),
             FormatKind::Float => FLOAT_CLEAR_OUTPUT,
             _ => ("vec4<u32>", "value"),

@@ -7,7 +7,9 @@
 
 use super::*;
 use crate::desc::ViewDim;
-use wcontainers_gpu::{BufferUsage, CopyBufferTexture, TextureDesc as GpuTexture, TextureRegion};
+use wcontainers_gpu::{
+    BufferUsage, CopyBufferTexture, FORMAT_FACTS, TextureDesc as GpuTexture, TextureRegion,
+};
 
 const COMPARED_FORMAT_UNCLAIMED: &str =
     "a comparison through a view of a format Direct3D does not compare";
@@ -94,7 +96,7 @@ impl<B: Backend> Device<B> {
         v: &View<B>,
         why: SlowPath,
     ) -> Result<Through<B>> {
-        let (bw, bh, bytes) = v.format.block();
+        let (bw, bh, bytes) = FORMAT_FACTS[v.format as usize].block;
         if (bw, bh) != (1, 1) || v.texture.desc.sample_count > 1 {
             return Err(Error::InvalidArg(
                 "a storage view of a block-compressed or multisampled texture",
@@ -203,7 +205,7 @@ impl<B: Backend> Device<B> {
     pub(super) fn copy_twin(&mut self, v: &View<B>, into: bool) {
         if let Some((buffer, offset)) = &v.buffer {
             let extent = v.texture.mip_extent(0);
-            let (_, _, bytes) = v.format.block();
+            let (_, _, bytes) = FORMAT_FACTS[v.format as usize].block;
             let handle = buffer.handle();
             let copy = CopyBufferTexture {
                 buffer: &handle,

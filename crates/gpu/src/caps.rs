@@ -268,22 +268,24 @@ bitflags! {
 /// or converted (slow paths [`crate::SlowPath::BlockDecoded`], [`crate::SlowPath::FormatConverted`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FormatCaps {
-    pub uses: [FormatUse; Format::COUNT],
+    pub uses: [FormatUse; crate::FORMAT_COUNT],
     /// The sample counts a texture of each format may have, a bit per count (bit n for 2^n samples, so
     /// bit 0 is one sample), as Direct3D's `CheckMultisampleQualityLevels` and Vulkan's sample count
     /// flags ask per format.
-    pub samples: [u8; Format::COUNT],
+    pub samples: [u8; crate::FORMAT_COUNT],
 }
 
 impl FormatCaps {
     /// What `format` can be used for.
     pub fn get(&self, format: Format) -> FormatUse {
-        self.uses[format.index()]
+        self.uses[format as usize]
     }
 
     /// Whether a texture of `format` may have `count` samples.
     pub fn takes_samples(&self, format: Format, count: u32) -> bool {
-        count.is_power_of_two() && count <= 128 && self.samples[format.index()] & (count as u8) != 0
+        count.is_power_of_two()
+            && count <= 128
+            && self.samples[format as usize] & (count as u8) != 0
     }
 }
 
@@ -318,10 +320,10 @@ mod tests {
     #[test]
     fn sample_counts_are_per_format() {
         let mut caps = FormatCaps {
-            uses: [FormatUse::empty(); Format::COUNT],
-            samples: [0b1; Format::COUNT],
+            uses: [FormatUse::empty(); crate::FORMAT_COUNT],
+            samples: [0b1; crate::FORMAT_COUNT],
         };
-        caps.samples[Format::Rgba8Unorm.index()] = 0b1101;
+        caps.samples[Format::Rgba8Unorm as usize] = 0b1101;
         assert!(caps.takes_samples(Format::Rgba8Unorm, 1));
         assert!(caps.takes_samples(Format::Rgba8Unorm, 4));
         assert!(caps.takes_samples(Format::Rgba8Unorm, 8));

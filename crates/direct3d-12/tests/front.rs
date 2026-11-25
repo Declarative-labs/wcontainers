@@ -77,10 +77,7 @@ fn signature(version: u32) -> RootSignatureDesc {
 /// with last blocks of 4 to 60 bytes, both of DXBC's paddings).
 #[test]
 fn dxbc_checksums_are_the_ones_fxc_writes() {
-    let dir = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../shaders/tests/own"
-    );
+    let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../shaders/tests/own");
     let mut checked = 0;
     for entry in std::fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
@@ -366,10 +363,10 @@ fn atomics_on_typed_storage_views_are_answered_through_a_buffer() {
     );
     // No atomics where no storage view is answered: a format neither stored nor copied out.
     let mut held = caps.clone();
-    held.formats.uses[Format::R32Float.index()].remove(FormatUse::COPY_OUT);
+    held.formats.uses[Format::R32Float as usize].remove(FormatUse::COPY_OUT);
     assert_eq!(format_support(&held, dxgi::R32_FLOAT).support2, 0);
     let mut stored = caps.clone();
-    stored.formats.uses[Format::R32Float.index()] |= FormatUse::STORAGE_WRITE;
+    stored.formats.uses[Format::R32Float as usize] |= FormatUse::STORAGE_WRITE;
     assert_eq!(
         format_support(&stored, dxgi::R32_FLOAT).support2 & support2::UAV_ATOMIC_EXCHANGE,
         support2::UAV_ATOMIC_EXCHANGE
@@ -416,7 +413,7 @@ fn no_device_without_compute_11_0_sizes_or_d32_s8_targets() {
     caps.limits.max_texture_layers = 256;
     assert!(!has_abilities_of_11_0(&caps));
     let mut caps = with_11_0_limits();
-    caps.formats.uses[Format::Depth32FloatStencil8.index()] = FormatUse::empty();
+    caps.formats.uses[Format::Depth32FloatStencil8 as usize] = FormatUse::empty();
     assert!(!has_abilities_of_11_0(&caps));
 }
 

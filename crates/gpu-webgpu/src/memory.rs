@@ -9,8 +9,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 use wcontainers_gpu::{
-    Backend, CopyBufferTexture, Extent, Format, FormatKind, GpuError, Origin, QueryKind,
-    ReadSource, SlowPath, TextureDesc, TextureDimension, TextureRegion, TextureUsage, WriteMode,
+    Backend, CopyBufferTexture, Extent, FORMAT_FACTS, Format, FormatKind, GpuError, Origin,
+    QueryKind, ReadSource, SlowPath, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
+    WriteMode,
 };
 
 use crate::fill::{AspectRead, DepthSource};
@@ -366,7 +367,7 @@ const PAGE_ALIGN: u32 = 32;
 /// WebGPU's size of a copy of `e` texels of `format`: whole blocks, as a level smaller than a block
 /// still holds one.
 fn extent3d(e: Extent, format: Format) -> wgpu::Extent3d {
-    let (bw, bh, _) = format.block();
+    let (bw, bh, _) = FORMAT_FACTS[format as usize].block;
     wgpu::Extent3d {
         width: e.width.next_multiple_of(bw),
         height: e.height.next_multiple_of(bh),
@@ -872,7 +873,7 @@ impl WebGpu {
                     && dst.layer < src.layer + extent.depth_or_layers));
         // Depth and stencil go through a temporary texture of their format, each half by the
         // draws below.
-        if within && df.is_depth_stencil() {
+        if within && FORMAT_FACTS[df as usize].depth_stencil {
             self.slow.hit(SlowPath::CopyWithinTexture);
             let Ok(temp) = self.create_texture(&TextureDesc {
                 dimension: TextureDimension::D2,
@@ -901,17 +902,17 @@ impl WebGpu {
             return;
         }
         // A combined format is copied with both aspects.
-        let combined =
-            sf.kind() == FormatKind::DepthStencil || df.kind() == FormatKind::DepthStencil;
+        let combined = FORMAT_FACTS[sf as usize].kind == FormatKind::DepthStencil
+            || FORMAT_FACTS[df as usize].kind == FormatKind::DepthStencil;
         if combined && sf != df {
             self.fail("a copy between a combined depth-stencil format and another format");
             return;
         }
         // WebGPU copies depth and stencil only between equal formats and only whole; the rest
         // are draws writing each aspect.
-        if df.is_depth_stencil() && (sf != df || !whole) {
+        if FORMAT_FACTS[df as usize].depth_stencil && (sf != df || !whole) {
             let at = (src.mip, src.layer, [src.origin.x, src.origin.y]);
-            if df.kind() != FormatKind::Stencil {
+            if FORMAT_FACTS[df as usize].kind != FormatKind::Stencil {
                 if let Some(how) = DepthSource::of(sf, df) {
                     self.depth_copy((&s.raw(), sf, how), at, dst, extent, Stream::Main);
                 } else if df == Format::Depth16Unorm
@@ -956,7 +957,7 @@ impl WebGpu {
                     return;
                 }
             }
-            if df.kind() != FormatKind::Depth {
+            if FORMAT_FACTS[df as usize].kind != FormatKind::Depth {
                 if sf != df {
                     self.fail("a copy into stencil from another format");
                     return;
@@ -977,14 +978,16 @@ impl WebGpu {
             from.aspect = wgpu::TextureAspect::All;
             to.aspect = wgpu::TextureAspect::All;
         }
-        if sf.linear() == df.linear() && !within {
+        if FORMAT_FACTS[sf as usize].linear == FORMAT_FACTS[df as usize].linear && !within {
             self.encoder
                 .get_or_insert_with(|| {
                     self.device
                         .create_command_encoder(&wgpu::CommandEncoderDescriptor::default())
                 })
                 .copy_texture_to_texture(from, to, extent3d(extent, sf));
-        } else if sf.block().2 == df.block().2 && !df.is_depth_stencil() {
+        } else if FORMAT_FACTS[sf as usize].block.2 == FORMAT_FACTS[df as usize].block.2
+            && !FORMAT_FACTS[df as usize].depth_stencil
+        {
             // Regions of one subresource, typeless twins, or a block-compressed format and an
             // uncompressed one whose texels are its blocks: the destination's extent covers the
             // same blocks.
@@ -995,7 +998,7 @@ impl WebGpu {
             });
             // Depth WebGPU cannot copy out (part of a level, 24-bit) is drawn into a colour
             // texture of its bytes first (`DepthReadByDraw`).
-            let drawn = match sf.is_depth_stencil() {
+            let drawn = match FORMAT_FACTS[sf as usize].depth_stencil {
                 true => match self.aspect_as_colour(src, extent) {
                     Ok(drawn) => drawn,
                     Err(()) => return,
@@ -1006,7 +1009,10 @@ impl WebGpu {
             if let (Some(t), Some(raw)) = (&drawn, &drawn_raw) {
                 from = texel_copy(raw, &t.0, 0, 0, Default::default(), false);
             }
-            let ((sbw, sbh, _), (dbw, dbh, _)) = (sf.block(), df.block());
+            let ((sbw, sbh, _), (dbw, dbh, _)) = (
+                FORMAT_FACTS[sf as usize].block,
+                FORMAT_FACTS[df as usize].block,
+            );
             let into = Extent {
                 width: extent.width.div_ceil(sbw) * dbw,
                 height: extent.height.div_ceil(sbh) * dbh,
@@ -1122,7 +1128,7 @@ impl WebGpu {
     ) -> Result<Option<Texture>, ()> {
         let t = &region.texture.0;
         let format = t.desc.format;
-        let stencil = region.stencil || format.kind() == FormatKind::Stencil;
+        let stencil = region.stencil || FORMAT_FACTS[format as usize].kind == FormatKind::Stencil;
         let Some((read, colour)) = AspectRead::of(format, stencil) else {
             return Ok(None);
         };
@@ -1230,7 +1236,8 @@ impl WebGpu {
             origin: Origin::default(),
             stencil: false,
         };
-        let stencil = region.stencil || t.desc.format.kind() == FormatKind::Stencil;
+        let stencil =
+            region.stencil || FORMAT_FACTS[t.desc.format as usize].kind == FormatKind::Stencil;
         let whole = region.origin.x == 0
             && region.origin.y == 0
             && extent.width == (t.desc.width >> region.mip).max(1)
@@ -1553,7 +1560,11 @@ impl WebGpu {
                 t.used_in.set(self.serial);
                 let packed = packed::held(t.desc.format).map(|_| t.desc.format);
                 if let Some(f) = packed {
-                    if !region.origin.x.is_multiple_of(f.block().0) {
+                    if !region
+                        .origin
+                        .x
+                        .is_multiple_of(FORMAT_FACTS[f as usize].block.0)
+                    {
                         return Err(GpuError::Invalid(
                             "a read back of a two-pixel format starting inside a pair",
                         ));

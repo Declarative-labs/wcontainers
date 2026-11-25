@@ -8,8 +8,8 @@ use std::ffi::c_uint;
 use wcontainers_gpu::{
     AddedBinding, AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor,
     BorderColor, BufferDesc, BufferRange, BufferUsage, CountedDraw, CullMode,
-    DOMAIN_PATCHES_BINDING, DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FanOrLoop, Features,
-    FillMode, Filter, Format, FormatKind, FormatUse, FrontFace, HELPER_SET, HelperSlot,
+    DOMAIN_PATCHES_BINDING, DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FORMAT_FACTS, FanOrLoop,
+    Features, FillMode, Filter, Format, FormatKind, FormatUse, FrontFace, HELPER_SET, HelperSlot,
     HelperValue, INDEX_FORMATS, IndexBinding, IndexFormat, IndexSource, Interpolation,
     LinkedValues, MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter,
     PassTracker, Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection,
@@ -1409,8 +1409,10 @@ fn blend_for<B: Backend>(
             .filter(|_| i < usize::from(framebuffer.nr_cbufs))
             .and_then(|s| crate::format::format(s.format()));
         let blends = format.is_some_and(|f| {
-            !matches!(f.kind(), FormatKind::Uint | FormatKind::Sint)
-                && caps.formats.get(f).contains(FormatUse::BLEND)
+            !matches!(
+                FORMAT_FACTS[f as usize].kind,
+                FormatKind::Uint | FormatKind::Sint
+            ) && caps.formats.get(f).contains(FormatUse::BLEND)
         });
         if !blends {
             target.blend = None;
@@ -2105,7 +2107,7 @@ fn image_buffer<'a, B: Backend + 'a>(
     let buffer = resource.buffer().ok_or("an image of a texture")?;
     let format =
         crate::format::format(image.format).ok_or("an image of a buffer the device lacks")?;
-    let (_, _, element_bytes) = format.block();
+    let (_, _, element_bytes) = FORMAT_FACTS[format as usize].block;
     // SAFETY: the image of a buffer holds its buffer range.
     let range = unsafe { image.u.buf };
     let first = u64::from(range.offset);
@@ -4887,7 +4889,7 @@ fn target_kinds(framebuffer: &pipe_framebuffer_state) -> outputs::Targets {
         .take(usize::from(framebuffer.nr_cbufs))
         .enumerate()
         .filter_map(|(i, s)| {
-            let kind = match crate::format::format(s.format())?.kind() {
+            let kind = match FORMAT_FACTS[crate::format::format(s.format())? as usize].kind {
                 FormatKind::Uint => naga::ScalarKind::Uint,
                 FormatKind::Sint => naga::ScalarKind::Sint,
                 _ => naga::ScalarKind::Float,

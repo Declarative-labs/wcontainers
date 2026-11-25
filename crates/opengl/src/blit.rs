@@ -4,7 +4,7 @@
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    Backend, Extent, Format, FormatKind, FormatUse, Origin, SlowPath, TextureDesc,
+    Backend, Extent, FORMAT_FACTS, Format, FormatKind, FormatUse, Origin, SlowPath, TextureDesc,
     TextureDimension, TextureRegion,
 };
 
@@ -192,13 +192,18 @@ fn bit_copy<B: Backend>(
         return false;
     };
     let one_texel = |f: Format| {
-        let (width, height, bytes) = f.block();
-        width == 1 && height == 1 && bytes == format.block().2 && !f.is_depth_stencil()
+        let (width, height, bytes) = FORMAT_FACTS[f as usize].block;
+        width == 1
+            && height == 1
+            && bytes == FORMAT_FACTS[format as usize].block.2
+            && !FORMAT_FACTS[f as usize].depth_stencil
     };
     let (a, b) = (&src.box_, &dst.box_);
     let reinterprets = src.format != from.base.format() || dst.format != to.base.format();
-    let exact = matches!(format.kind(), FormatKind::Uint | FormatKind::Sint)
-        || reinterprets && format.linear() == format;
+    let exact = matches!(
+        FORMAT_FACTS[format as usize].kind,
+        FormatKind::Uint | FormatKind::Sint
+    ) || reinterprets && FORMAT_FACTS[format as usize].linear == format;
     let plain = src.format == dst.format
         && exact
         && one_texel(from_desc.format)

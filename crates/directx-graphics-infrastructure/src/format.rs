@@ -1,6 +1,6 @@
 //! DXGI format numbers (`DXGI_FORMAT`) and the interface formats that hold them.
 
-use wcontainers_gpu::{Caps, Format, FormatUse, VertexFormat};
+use wcontainers_gpu::{Caps, FORMAT_FACTS, Format, FormatUse, VertexFormat};
 
 /// `DXGI_FORMAT` values (dxgiformat.h), named as there without the prefix (`420_OPAQUE` as
 /// `OPAQUE_420`).
@@ -297,7 +297,7 @@ pub fn back_buffer_format(value: u32) -> Option<Format> {
 /// every back end presents.
 pub fn present_format(caps: &Caps, format: Format) -> Format {
     let presents = |f: Format| caps.formats.get(f).contains(FormatUse::PRESENT);
-    let own = format.linear();
+    let own = FORMAT_FACTS[format as usize].linear;
     if own != Format::Rgba16Float && presents(own) {
         own
     } else if matches!(own, Format::Rgba16Float | Format::Rgb10a2Unorm)
@@ -365,7 +365,10 @@ pub fn dxgi_vertex_format(value: u32) -> Option<(VertexFormat, u32)> {
         dxgi::R8_SNORM => (Snorm8x1, 1),
         dxgi::R8_SINT => (Sint8x1, 1),
         dxgi::B8G8R8A8_UNORM => (Bgra8Unorm, 4),
-        dxgi::B8G8R8X8_UNORM => (Bgrx8Unorm, Format::Bgrx8Unorm.block().2),
+        dxgi::B8G8R8X8_UNORM => (
+            Bgrx8Unorm,
+            FORMAT_FACTS[Format::Bgrx8Unorm as usize].block.2,
+        ),
         _ => return None,
     })
 }

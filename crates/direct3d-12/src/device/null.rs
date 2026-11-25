@@ -174,7 +174,8 @@ impl<B: Backend> Device<B> {
             } else {
                 TextureUsage::SAMPLE
             };
-            let drawn = shape.samples > 1 || shape.format.is_depth_stencil();
+            let drawn = shape.samples > 1
+                || wcontainers_gpu::FORMAT_FACTS[shape.format as usize].depth_stencil;
             if drawn {
                 usage |= TextureUsage::RENDER;
             }
@@ -222,8 +223,10 @@ impl<B: Backend> Device<B> {
 
     fn zero_texture(&mut self, t: &NullTexture<B>) -> Result<(), Error> {
         let layers = t.desc.depth_or_layers;
-        if t.shape.samples > 1 || t.shape.format.is_depth_stencil() {
-            let value = if t.shape.format.is_depth_stencil() {
+        if t.shape.samples > 1
+            || wcontainers_gpu::FORMAT_FACTS[t.shape.format as usize].depth_stencil
+        {
+            let value = if wcontainers_gpu::FORMAT_FACTS[t.shape.format as usize].depth_stencil {
                 ClearValue::DepthStencil {
                     depth: Some(0),
                     stencil: None,
@@ -240,7 +243,9 @@ impl<B: Backend> Device<B> {
                 value,
             )?;
         } else {
-            let bytes = t.shape.format.block().2;
+            let bytes = wcontainers_gpu::FORMAT_FACTS[t.shape.format as usize]
+                .block
+                .2;
             let zeros = vec![0; (bytes * layers) as usize];
             self.backend.write_texture(
                 &TextureRegion {

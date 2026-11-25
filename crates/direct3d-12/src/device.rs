@@ -12,15 +12,16 @@ use wcontainers_directx_graphics_infrastructure::{SwapChain, SwapChainDesc, Swap
 use wcontainers_gpu::{
     AspectOps, Backend, BufferDesc, BufferUsage, ClearValue, ColorAttachment, ColorTarget,
     CopyBufferTexture, CountedDraw, DepthAttachment, DeviceStatus, DispatchCall, DispatchGroups,
-    DrawBaseSource, DrawCall, DrawRange, EmptyPass, Extent, Features, Format, FormatKind,
-    FormatUse, GpuError, HELPER_SET, HelperValue, INDEX_FORMATS, IndexBinding, IndexFormat,
-    Interpolation, LinkedValues, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Object,
-    OcclusionCounter, Origin, PassDesc, PassTargets, PassTracker, PrepareDesc, Program, ReadSource,
-    ReadState, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlowPath,
-    StageSet, StageValue, StepMode, StoreOp, SystemValue, Target, TargetInShader, TargetLayout,
-    TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
-    Topology, VariantFlags, VariantKey, VertexAttribute, VertexBinding, VertexLayoutDesc,
-    VertexStream, ViewComponent, ViewDimension, Viewport, WriteMode,
+    DrawBaseSource, DrawCall, DrawRange, EmptyPass, Extent, FORMAT_FACTS, Features, Format,
+    FormatKind, FormatUse, GpuError, HELPER_SET, HelperValue, INDEX_FORMATS, IndexBinding,
+    IndexFormat, Interpolation, LinkedValues, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS,
+    MapIntent, Object, OcclusionCounter, Origin, PassDesc, PassTargets, PassTracker, PrepareDesc,
+    Program, ReadSource, ReadState, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule,
+    ShaderStage, SlowPath, StageSet, StageValue, StepMode, StoreOp, SystemValue, Target,
+    TargetInShader, TargetLayout, TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion,
+    TextureUsage, TextureViewDesc, Topology, VariantFlags, VariantKey, VertexAttribute,
+    VertexBinding, VertexLayoutDesc, VertexStream, ViewComponent, ViewDimension, Viewport,
+    WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source, refusal};
 use zerocopy::FromZeros;
@@ -903,7 +904,9 @@ impl<B: Backend> Device<B> {
         self.live()?;
         let (id, sub) = self.plane_holder(id, sub);
         let (origin, extent) = self.in_texels(id, origin, extent);
-        let rows = extent.height.div_ceil(self.texture(id)?.1.format.block().1);
+        let rows = extent
+            .height
+            .div_ceil(FORMAT_FACTS[self.texture(id)?.1.format as usize].block.1);
         for z in 0..extent.depth_or_layers {
             let start = (z * depth_pitch) as usize;
             let region = self.subresource_region(id, sub, origin, z)?;
@@ -941,7 +944,7 @@ impl<B: Backend> Device<B> {
         self.live()?;
         let (id, sub) = self.plane_holder(id, sub);
         let (origin, extent) = self.in_texels(id, origin, extent);
-        let (bw, bh, bytes) = self.texture(id)?.1.format.block();
+        let (bw, bh, bytes) = FORMAT_FACTS[self.texture(id)?.1.format as usize].block;
         let (rows, row) = (
             extent.height.div_ceil(bh) as usize,
             (extent.width.div_ceil(bw) * bytes) as usize,
@@ -2597,7 +2600,7 @@ impl<B: Backend> Device<B> {
                 "a resolve from a multisampled texture into a single-sampled one of its size",
             ));
         }
-        if format.linear() != stored.linear() {
+        if FORMAT_FACTS[format as usize].linear != FORMAT_FACTS[stored as usize].linear {
             return Err(Error::NotImplemented(
                 "a resolve in a format reinterpreting the stored bits",
             ));
@@ -2735,8 +2738,8 @@ impl<B: Backend> Device<B> {
         if let Some((_, view)) = views.iter().find(|(k, _)| *k == desc) {
             return Ok(view.clone());
         }
-        if stored.linear() != desc.format.linear()
-            && !stored.is_depth_stencil()
+        if FORMAT_FACTS[stored as usize].linear != FORMAT_FACTS[desc.format as usize].linear
+            && !FORMAT_FACTS[stored as usize].depth_stencil
             && !self
                 .backend
                 .caps()
@@ -2790,7 +2793,7 @@ impl<B: Backend> Device<B> {
                     let bytes = storage_texel(format, values, float).ok_or(
                         Error::NotImplemented("clearing a typed buffer view of this format"),
                     )?;
-                    (u64::from(format.block().2), bytes)
+                    (u64::from(FORMAT_FACTS[format as usize].block.2), bytes)
                 };
                 if !element.is_multiple_of(pattern.len() as u64) {
                     return Err(Error::NotImplemented(
@@ -2893,7 +2896,7 @@ impl<B: Backend> Device<B> {
         value: ClearValue,
         rects: &[Rect],
     ) -> Result<(), Error> {
-        if format.linear() != desc.format.linear() {
+        if FORMAT_FACTS[format as usize].linear != FORMAT_FACTS[desc.format as usize].linear {
             return Err(Error::NotImplemented(
                 "clearing rectangles of a 3D texture's view in another format",
             ));
@@ -4942,7 +4945,7 @@ fn storage_bits(
             .map(|(&bits, v)| {
                 let f = f32::from_bits(v);
                 let m = mask(bits);
-                let stored = match (float, format.kind()) {
+                let stored = match (float, FORMAT_FACTS[format as usize].kind) {
                     (false, _) => v,
                     (true, FormatKind::Uint) => f as u32,
                     (true, FormatKind::Sint) => f as i32 as u32,
@@ -4986,7 +4989,7 @@ fn storage_clear_value(
     let mut out = [0; 4];
     for ((o, s), &bits) in out.iter_mut().zip(stored).zip(widths) {
         let m = mask(bits);
-        *o = match format.kind() {
+        *o = match FORMAT_FACTS[format as usize].kind {
             FormatKind::Uint => s,
             // Sign-extended from the component's width.
             FormatKind::Sint => (((s << (u32::BITS - bits)) as i32) >> (u32::BITS - bits)) as u32,
@@ -5003,7 +5006,7 @@ fn storage_clear_value(
 
 /// A clear color as the bits the format's kind takes.
 fn clear_bits(format: wcontainers_gpu::Format, color: [f32; 4]) -> [u32; 4] {
-    match format.kind() {
+    match FORMAT_FACTS[format as usize].kind {
         FormatKind::Uint => color.map(|c| c as u32),
         FormatKind::Sint => color.map(|c| c as i32 as u32),
         _ => color.map(f32::to_bits),
@@ -5083,7 +5086,7 @@ fn copy_texture<B: Backend>(
                 ..Default::default()
             }
             .texture_format()?;
-            let (bw, bh, bytes) = format.block();
+            let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
             let extent = extent_of(Extent {
                 width: footprint.width,
                 height: footprint.height,
@@ -5134,7 +5137,7 @@ fn copy_texture<B: Backend>(
                 ..Default::default()
             }
             .texture_format()?;
-            let (bw, bh, bytes) = format.block();
+            let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
             let extent = extent_of(Extent {
                 width: footprint.width,
                 height: footprint.height,
@@ -5319,7 +5322,7 @@ fn retyped_targets(ps: &Converted, colors: &[Option<Format>]) -> Vec<TargetInSha
             };
             let format = (*colors.get(usize::from(target))?)?;
             let fits = matches!(
-                (format.kind(), o.scalar),
+                (FORMAT_FACTS[format as usize].kind, o.scalar),
                 (FormatKind::Float, wcontainers_gpu::ScalarKind::Float)
                     | (FormatKind::Uint, wcontainers_gpu::ScalarKind::Uint)
                     | (FormatKind::Sint, wcontainers_gpu::ScalarKind::Sint)

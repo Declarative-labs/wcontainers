@@ -3,8 +3,8 @@
 //! and the browser page.
 
 use wcontainers_gpu::{
-    Backend, ClearValue, DeviceStatus, Extent, Format, Origin, ReadSource, SlowPath, TextureDesc,
-    TextureDimension, TextureRegion, TextureUsage,
+    Backend, ClearValue, DeviceStatus, Extent, FORMAT_FACTS, Format, Origin, ReadSource, SlowPath,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -50,7 +50,7 @@ pub fn float_clears_keep_their_bits(b: &mut WebGpu) -> Result<String, String> {
             reinterpret: false,
         };
         let texture = b.create_texture(&desc).map_err(|e| format!("{e:?}"))?;
-        let channels = format.components().count_ones() as usize;
+        let channels = FORMAT_FACTS[format as usize].components.count_ones() as usize;
         for value in VALUES {
             b.clear_texture(
                 &texture,

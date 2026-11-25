@@ -115,13 +115,13 @@ impl Recorder {
                     | Features::TEXTURE_LEVEL_QUERY,
                 limits,
                 formats: FormatCaps {
-                    uses: [FormatUse::all(); Format::COUNT],
+                    uses: [FormatUse::all(); FORMAT_COUNT],
                     // A bit per count: one sample, two (one of the tables' other counts) and the
                     // counts the tables require.
                     samples: [crate::required::SAMPLE_COUNTS
                         .into_iter()
                         .fold(1 | 2, |bits, count| bits | count as u8);
-                        Format::COUNT],
+                        FORMAT_COUNT],
                 },
                 adapter: AdapterInfo {
                     name: "wcontainers recording back end (draws nothing)".into(),
@@ -159,7 +159,7 @@ impl Recorder {
     /// Byte ranges of each block row a region of `extent` at `origin` of `mip` covers, in the
     /// subresource's tight storage: (offset in storage, bytes per row, row count).
     fn rows(t: &Texture, mip: u32, origin: Origin, extent: Extent) -> (usize, usize, usize, usize) {
-        let (_, bh, _) = t.desc.format.block();
+        let (_, bh, _) = FORMAT_FACTS[t.desc.format as usize].block;
         let width = (t.desc.width >> mip).max(1);
         let (pitch, _) = row_bytes(t.desc.format, width, 1);
         let (row, rows) = row_bytes(t.desc.format, extent.width, extent.height);
@@ -172,14 +172,14 @@ impl Recorder {
     /// a region names: bytes per stored texel, the aspect's bytes within one, and its bytes per texel
     /// as the interface hands it over (depth in four, stencil in one).
     fn aspect(t: &Texture, stencil: bool) -> Option<(usize, core::ops::Range<usize>, usize)> {
-        let texel = t.desc.format.block().2 as usize;
+        let texel = FORMAT_FACTS[t.desc.format as usize].block.2 as usize;
         let aspect = match (texel, stencil) {
             (4, false) => (4, 0..3, 4),
             (4, true) => (4, 3..4, 1),
             (_, false) => (texel, 0..4, 4),
             (_, true) => (texel, 4..5, 1),
         };
-        (t.desc.format.kind() == FormatKind::DepthStencil).then_some(aspect)
+        (FORMAT_FACTS[t.desc.format as usize].kind == FormatKind::DepthStencil).then_some(aspect)
     }
 
     fn subresource(t: &Texture, mip: u32, layer: u32) -> usize {

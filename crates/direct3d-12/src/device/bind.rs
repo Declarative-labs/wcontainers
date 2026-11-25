@@ -4,8 +4,8 @@
 //! sets are made from them (plan 4.5 and 5.2).
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, MAX_BINDING_SETS, ReflectedBinding, SLOT_KINDS,
-    SlotKind, ViewComponent,
+    BindingEntry, BindingResource, BufferRange, FORMAT_FACTS, MAX_BINDING_SETS, ReflectedBinding,
+    SLOT_KINDS, SlotKind, ViewComponent,
 };
 
 use super::*;
@@ -620,7 +620,7 @@ impl<B: Backend> Device<B> {
                             let view = self.shader_resource(&v, b)?;
                             self.note_clamp(&v, b)?;
                             self.note_filtering(Some(&v), b)?;
-                            let components = dxgi(v.format)?.components();
+                            let components = FORMAT_FACTS[dxgi(v.format)? as usize].components;
                             self.bound_helpers.push((
                                 b.visibility,
                                 HelperValue::TextureComponents {
@@ -919,7 +919,7 @@ impl<B: Backend> Device<B> {
         let raw = v.flags & 1 != 0;
         let element = match (raw, v.stride) {
             (true, _) => 4,
-            (false, 0) => u64::from(dxgi(v.format)?.block().2),
+            (false, 0) => u64::from(FORMAT_FACTS[dxgi(v.format)? as usize].block.2),
             (false, stride) => u64::from(stride),
         };
         if !matches!(
@@ -959,7 +959,7 @@ impl<B: Backend> Device<B> {
             _ => return Err(Error::Invalid("a buffer view of a texture")),
         };
         let format = dxgi(v.format)?;
-        let element = u64::from(format.block().2);
+        let element = u64::from(FORMAT_FACTS[format as usize].block.2);
         let offset = v.first_element * element;
         let size = u64::from(v.count) * element;
         if offset + size > width {
@@ -1092,7 +1092,7 @@ impl<B: Backend> Device<B> {
                 .contains(FormatUse::FILTER)
         };
         // A view reading a depth texture's depth reads a texture of the depth format.
-        let read = if stored.is_depth_stencil() {
+        let read = if FORMAT_FACTS[stored as usize].depth_stencil {
             stored
         } else {
             format
@@ -1206,7 +1206,7 @@ impl<B: Backend> Device<B> {
         // Direct3D's stencil views read the stencil in green, the interface's in the first
         // component.
         let stencil = matches!(v.format, 22 | 47);
-        let components = dxgi(v.format).map_or(0b1111, |f| f.components());
+        let components = dxgi(v.format).map_or(0b1111, |f| FORMAT_FACTS[f as usize].components);
         let swizzle = match stencil || !reads_as_identity(v.mapping, components) {
             true => Some(
                 view_mapping(v.mapping, stencil)
@@ -1236,12 +1236,13 @@ impl<B: Backend> Device<B> {
             ));
         }
         // Comparison sampling reads a texture not stored in a depth format through its depth twin.
-        let (resource, depth) = if b.compared && !texture_desc.format.is_depth_stencil() {
-            let (twin, format) = self.depth_twin(v.resource)?;
-            (twin, Some(format))
-        } else {
-            (v.resource, None)
-        };
+        let (resource, depth) =
+            if b.compared && !FORMAT_FACTS[texture_desc.format as usize].depth_stencil {
+                let (twin, format) = self.depth_twin(v.resource)?;
+                (twin, Some(format))
+            } else {
+                (v.resource, None)
+            };
         // One-dimensional textures are stored as 2D ones of one row.
         let (dimension, arrayed) = match v.dimension {
             SRV_DIMENSION_TEXTURE1D | SRV_DIMENSION_TEXTURE2D | SRV_DIMENSION_TEXTURE2DMS => {
@@ -1279,7 +1280,7 @@ impl<B: Backend> Device<B> {
         // Direct3D returns what the view's format gives and the shader takes those bits as the
         // type it declares; the back ends read a view only as its own type, so the program is
         // converted again reading the view's values by their bits (`VariantKey::texel_formats`).
-        let read_as = |f: Format| match f.kind() {
+        let read_as = |f: Format| match FORMAT_FACTS[f as usize].kind {
             FormatKind::Uint | FormatKind::Stencil => FormatKind::Uint,
             FormatKind::Sint => FormatKind::Sint,
             _ => FormatKind::Float,

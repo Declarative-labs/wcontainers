@@ -1,8 +1,9 @@
 //! The interface's plain values in wgpu's words.
 
 use wcontainers_gpu::{
-    AddressMode, BlendFactor, BlendOp, ColorWrites, CompareFn, CullMode, FillMode, Filter, Format,
-    FrontFace, IndexFormat, StencilFace, StencilOp, Topology, VertexFormat, ViewDimension,
+    AddressMode, BlendFactor, BlendOp, ColorWrites, CompareFn, CullMode, FORMAT_FACTS, FillMode,
+    Filter, Format, FrontFace, IndexFormat, StencilFace, StencilOp, Topology, VertexFormat,
+    ViewDimension,
 };
 use wgpu::TextureFormat as T;
 
@@ -112,7 +113,7 @@ pub fn texture_format(format: Format) -> Option<T> {
 
 /// The aspect a view reads: the stencil, the depth of a format with both, or all of it.
 pub fn aspect(stencil: bool, format: Format) -> wgpu::TextureAspect {
-    match (stencil, format.kind()) {
+    match (stencil, FORMAT_FACTS[format as usize].kind) {
         (true, _) => wgpu::TextureAspect::StencilOnly,
         (false, wcontainers_gpu::FormatKind::DepthStencil) => wgpu::TextureAspect::DepthOnly,
         _ => wgpu::TextureAspect::All,

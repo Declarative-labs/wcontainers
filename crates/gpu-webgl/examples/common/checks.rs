@@ -503,7 +503,7 @@ pub fn depth_and_stencil_read_back<H: Host>() {
         if !b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
             continue;
         }
-        let stencil = format.kind() == FormatKind::DepthStencil;
+        let stencil = FORMAT_FACTS[format as usize].kind == FormatKind::DepthStencil;
         let t = b
             .create_texture(&TextureDesc {
                 dimension: TextureDimension::D2,
@@ -845,7 +845,7 @@ pub fn copies_within_a_typeless_group<H: Host>() {
             println!("not copied, a format absent: {from:?} to {to:?}");
             continue;
         }
-        let texel = from.block().2 as usize;
+        let texel = FORMAT_FACTS[from as usize].block.2 as usize;
         let make = |b: &mut H::Backend, format| {
             kit::texture(b, TextureDimension::D2, format, [4, 4, 2], 1, usage, false)
         };
@@ -922,7 +922,7 @@ pub fn srgb_copies_keep_every_byte<H: Host>() {
     ];
     let side = (usize::from(u8::MAX) + 1).isqrt() as u32;
     let size = [side, side, 1];
-    let texel = Format::Rgba8Unorm.block().2;
+    let texel = FORMAT_FACTS[Format::Rgba8Unorm as usize].block.2;
     // Texel i holds i, its complement, i with its bits reversed and i again.
     let bytes: Vec<u8> = (0..=u8::MAX)
         .flat_map(|i| [i, !i, i.reverse_bits(), i])
@@ -976,7 +976,10 @@ pub fn srgb_copies_keep_every_byte<H: Host>() {
 /// one of the infinities, NaNs with payloads (signalling and quiet, of either sign), denormals and
 /// signed zeros, whose bits a copy must keep.
 fn typeless_bytes(format: Format, texels: usize, seed: u32) -> Vec<u8> {
-    let mut bytes = pattern(texels * format.block().2 as usize, seed);
+    let mut bytes = pattern(
+        texels * FORMAT_FACTS[format as usize].block.2 as usize,
+        seed,
+    );
     match format {
         Format::R16Float | Format::Rg16Float | Format::Rgba16Float => {
             let special: [u16; 8] = [
@@ -1359,7 +1362,7 @@ pub fn half_floats_read_back_as_stored<H: Host>() {
             b.caps().formats.get(format).contains(FormatUse::COPY_OUT),
             "{format:?} copies out"
         );
-        let texel = format.block().2 as usize;
+        let texel = FORMAT_FACTS[format as usize].block.2 as usize;
         let (w, h, layers) = (5usize, 4usize, 2u32);
         let t = kit::texture(
             &mut b,
@@ -2199,7 +2202,7 @@ pub fn depth_textures_compared_and_read_plainly<H: Host>() {
         3,
     ));
     b.end_pass();
-    let texel_size = f.block().2 as usize;
+    let texel_size = FORMAT_FACTS[f as usize].block.2 as usize;
     let got = kit::read(&mut b, &out, 0, 0, [target, target, 1], texel_size, false);
     assert_eq!(b.status(), DeviceStatus::Ok);
     let side = side as i32;
@@ -2301,7 +2304,7 @@ pub fn linear_values_interpolate_in_window_space<H: Host>() {
         0,
         0,
         [side, side, 1],
-        f.block().2 as usize,
+        FORMAT_FACTS[f as usize].block.2 as usize,
         false,
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
@@ -2492,7 +2495,7 @@ pub fn programs_run_per_sample_and_write_the_sample_mask<H: Host>() {
             0,
             0,
             [side, side, 1],
-            f.block().2 as usize,
+            FORMAT_FACTS[f as usize].block.2 as usize,
             false,
         ));
         b.destroy(Object::Program(program));
@@ -2595,7 +2598,7 @@ pub fn special_float_values_keep_their_bits<H: Host>() {
         3,
     ));
     b.end_pass();
-    let texel = f.block().2 as usize;
+    let texel = FORMAT_FACTS[f as usize].block.2 as usize;
     let got = kit::read(&mut b, &out, 0, 0, [width, 1, 1], texel, false);
     assert_eq!(b.status(), DeviceStatus::Ok);
     let wrong: Vec<String> = routes
@@ -2687,7 +2690,7 @@ fn read_typeless<B: Backend>(
     size: [u32; 3],
 ) -> Vec<u8> {
     use crate::kit;
-    let texel = format.block().2 as usize;
+    let texel = FORMAT_FACTS[format as usize].block.2 as usize;
     if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
         return kit::read(b, texture, 0, 0, size, texel, false);
     }
@@ -2838,7 +2841,7 @@ pub fn cube_faces_copied_between_typeless_formats<H: Host>() {
         depth_or_layers: 1,
     };
     for (i, (from, to)) in pairs.into_iter().enumerate() {
-        let texel = from.block().2 as usize;
+        let texel = FORMAT_FACTS[from as usize].block.2 as usize;
         let cube = kit::texture(
             &mut b,
             TextureDimension::D2,
@@ -2848,7 +2851,7 @@ pub fn cube_faces_copied_between_typeless_formats<H: Host>() {
             usage,
             true,
         );
-        let bytes = if from.is_depth_stencil() {
+        let bytes = if FORMAT_FACTS[from as usize].depth_stencil {
             depth_values(from, 96, 0x2545_f491 ^ i as u32)
         } else {
             typeless_bytes(from, 96, 0x2545_f491 ^ i as u32)
@@ -2935,10 +2938,10 @@ pub fn copies_within_one_subresource<H: Host>() {
     ];
     let before = b.slow_paths().count(SlowPath::CopyWithinTexture);
     for (n, (format, dimension, size)) in cases.into_iter().enumerate() {
-        let texel = format.block().2 as usize;
+        let texel = FORMAT_FACTS[format as usize].block.2 as usize;
         let t = kit::texture(&mut b, dimension, format, size, 1, usage, false);
         let count = (size[0] * size[1] * size[2]) as usize;
-        let bytes = if format.is_depth_stencil() {
+        let bytes = if FORMAT_FACTS[format as usize].depth_stencil {
             depth_values(format, count, 0x7a3d_1c55 ^ n as u32)
         } else {
             typeless_bytes(format, count, 0x7a3d_1c55 ^ n as u32)
@@ -2964,7 +2967,7 @@ pub fn copies_within_one_subresource<H: Host>() {
             WriteMode::Ordered,
         );
         let read = |b: &mut H::Backend| {
-            if format.is_depth_stencil() {
+            if FORMAT_FACTS[format as usize].depth_stencil {
                 kit::read(b, &t, 0, 0, size, texel, false)
             } else {
                 read_typeless(b, &t, format, size)
@@ -3106,14 +3109,14 @@ pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
             usage,
             cube,
         );
-        let combined = format.kind() == FormatKind::DepthStencil;
+        let combined = FORMAT_FACTS[format as usize].kind == FormatKind::DepthStencil;
         let aspects: &[bool] = if combined { &[false, true] } else { &[false] };
         let mut want = Vec::new();
         for &stencil in aspects {
             let bytes = if stencil {
                 1
             } else {
-                format.block().2.min(4) as usize
+                FORMAT_FACTS[format as usize].block.2.min(4) as usize
             };
             let seed = 0x51ed_270b ^ (n as u32 * 2 + stencil as u32);
             let all = if stencil {
@@ -3239,7 +3242,7 @@ pub fn copies_between_depth_and_colour_formats<H: Host>() {
         {
             continue;
         }
-        let bytes = colour.block().2 as usize;
+        let bytes = FORMAT_FACTS[colour as usize].block.2 as usize;
         for (from, to) in [(colour, depth), (depth, colour)] {
             let src = kit::texture(
                 &mut b,
@@ -3962,7 +3965,7 @@ pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         // Channels the format lacks load as 0, 0 and 1.
-        let n = (format.block().2 as usize) / if max > 200.0 { 2 } else { 1 };
+        let n = (FORMAT_FACTS[format as usize].block.2 as usize) / if max > 200.0 { 2 } else { 1 };
         let mut want = [0.0, 0.0, 0.0, 1.0];
         want[..n].copy_from_slice(&value[..n]);
         assert_eq!(got, want, "{format:?}");
@@ -3991,7 +3994,7 @@ pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
             | FormatUse::BLEND
             | FormatUse::COPY_OUT;
         assert!(uses.contains(want), "{format:?}: {uses:?}");
-        let texel = format.block().2 as usize;
+        let texel = FORMAT_FACTS[format as usize].block.2 as usize;
         let bytes = pattern(12 * texel, 0x51ed_270b);
         let t = kit::texture(
             &mut b,
@@ -4101,7 +4104,7 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
         if !b.caps().formats.get(format).contains(need) {
             continue;
         }
-        let texel = format.block().2 as usize;
+        let texel = FORMAT_FACTS[format as usize].block.2 as usize;
         for (seed, &(dimension, size, cube)) in shapes.iter().enumerate() {
             // Four levels, or the full chain where it is shorter.
             let largest: u32 = size[0]
@@ -4974,7 +4977,7 @@ pub fn block_compressed_and_shared_exponent_textures_read_back_as_written<H: Hos
             continue;
         }
         served += 1;
-        let (bw, bh, bytes) = format.block();
+        let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
         let usage = TextureUsage::SAMPLE | TextureUsage::COPY_DST | TextureUsage::COPY_SRC;
         let t = kit::texture(
             &mut b,
@@ -6220,7 +6223,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
         if !b.caps().formats.get(format).contains(want) {
             continue;
         }
-        let (bw, bh, bytes) = format.block();
+        let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
         let (cols, rows) = (8 / bw, 8 / bh);
         let block = bytes as usize;
         let row = (cols * bytes) as usize;

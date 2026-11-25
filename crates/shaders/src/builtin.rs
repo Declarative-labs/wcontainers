@@ -7,8 +7,8 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use wcontainers_gpu::{
-    Format, FormatKind, Reflection, ShaderModule, ShaderStage, SourceStage, StageExtras,
-    VariantKey, ViewDimension,
+    FORMAT_FACTS, Format, FormatKind, Reflection, ShaderModule, ShaderStage, SourceStage,
+    StageExtras, VariantKey, ViewDimension,
 };
 
 use crate::{ConvertError, Converted};
@@ -102,7 +102,7 @@ pub fn storage_clear(
             return Err(ConvertError::Unsupported(crate::refusal::CLEAR_DIMENSION));
         }
     };
-    let value = match format.kind() {
+    let value = match FORMAT_FACTS[format as usize].kind {
         FormatKind::Uint => "clear.value",
         FormatKind::Sint => "bitcast<vec4<i32>>(clear.value)",
         _ => "bitcast<vec4<f32>>(clear.value)",

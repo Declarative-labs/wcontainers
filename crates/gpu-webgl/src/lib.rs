@@ -545,7 +545,7 @@ impl Gl {
 
     /// Whether `bytes`, one row of `format`, come back the same after a blit into a second texture.
     fn blit_keeps(&mut self, format: Format, twin: Format, bytes: &[u8]) -> bool {
-        let width = bytes.len() as u32 / format.block().2;
+        let width = bytes.len() as u32 / FORMAT_FACTS[format as usize].block.2;
         let make = |b: &mut Self, format| {
             b.create_texture(&TextureDesc {
                 dimension: TextureDimension::D2,
@@ -933,7 +933,7 @@ impl Gl {
     /// Averages the samples of multisampled `src` into level `mip`, layer `layer` of single-sampled
     /// `dst` of the same format, by `blitFramebuffer`.
     fn blit_resolve(&mut self, src: &Texture, dst: &Texture, mip: u32, layer: u32) {
-        let mask = match src.desc.format.kind() {
+        let mask = match FORMAT_FACTS[src.desc.format as usize].kind {
             FormatKind::DepthStencil => glow::DEPTH_BUFFER_BIT | glow::STENCIL_BUFFER_BIT,
             FormatKind::Depth => glow::DEPTH_BUFFER_BIT,
             FormatKind::Stencil => glow::STENCIL_BUFFER_BIT,
@@ -961,14 +961,15 @@ impl Gl {
         if s.desc.samples != d.desc.samples
             || s.desc.width != d.desc.width
             || s.desc.height != d.desc.height
-            || s.desc.format.block() != d.desc.format.block()
+            || FORMAT_FACTS[s.desc.format as usize].block
+                != FORMAT_FACTS[d.desc.format as usize].block
         {
             return self.invalid(
                 "a copy of a multisampled texture other than whole into one of its sample count"
                     .into(),
             );
         }
-        match s.desc.format.kind() {
+        match FORMAT_FACTS[s.desc.format as usize].kind {
             FormatKind::Uint | FormatKind::Sint => {
                 return self.invalid(
                     "a copy of integer samples, which cannot be averaged and need the absent \
@@ -1086,7 +1087,7 @@ impl Gl {
             _ => t.own.as_ref().and_then(|own| own.upgrade()).map(Handle),
         };
         if let Some(other) = other {
-            if other.desc.format.is_depth_stencil() {
+            if FORMAT_FACTS[other.desc.format as usize].depth_stencil {
                 // A failure has lost the device.
                 let _ = self.fill_stencil_copy(&other, t);
             } else {
@@ -1241,7 +1242,7 @@ impl Gl {
             glow::TEXTURE_3D => "3D",
             _ => "Cube",
         };
-        let drawn = if to.is_depth_stencil() {
+        let drawn = if FORMAT_FACTS[to as usize].depth_stencil {
             FormatUse::DEPTH_STENCIL
         } else {
             FormatUse::RENDER
@@ -1279,7 +1280,7 @@ impl Gl {
             self.fail(LossReason::OutOfMemory);
             return true;
         }
-        if from.is_depth_stencil() {
+        if FORMAT_FACTS[from as usize].depth_stencil {
             self.aspect(src.texture, false);
         }
         let rect = [
@@ -1304,7 +1305,7 @@ impl Gl {
                     self.gl.uniform_2_f32(unit.as_ref(), u[0], u[1]);
                 }
             }
-            if to.is_depth_stencil() {
+            if FORMAT_FACTS[to as usize].depth_stencil {
                 self.own_depth_draw_into(fb, rect);
             } else {
                 self.own_draw_into(fb, rect);
@@ -1369,9 +1370,9 @@ impl Gl {
             self.copy_texture(&at, dst, extent);
             return self.destroy(Object::Texture(held));
         }
-        let (bw, bh, bytes) = format.block();
+        let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
         // A buffer's depth of a combined format is a 32-bit word, its stencil a byte.
-        let aspects: &[(bool, u32)] = match format.kind() {
+        let aspects: &[(bool, u32)] = match FORMAT_FACTS[format as usize].kind {
             FormatKind::DepthStencil => &[(false, 4), (true, 1)],
             _ => &[(false, bytes)],
         };
@@ -1405,7 +1406,7 @@ impl Gl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        let mask = match src.texture.desc.format.kind() {
+        let mask = match FORMAT_FACTS[src.texture.desc.format as usize].kind {
             FormatKind::DepthStencil => glow::DEPTH_BUFFER_BIT | glow::STENCIL_BUFFER_BIT,
             FormatKind::Depth => glow::DEPTH_BUFFER_BIT,
             FormatKind::Stencil => glow::STENCIL_BUFFER_BIT,
@@ -1492,7 +1493,7 @@ impl Gl {
                     draw_buffers[i] = glow::COLOR_ATTACHMENT0 + i as u32;
                     glow::COLOR_ATTACHMENT0 + i as u32
                 } else {
-                    match t.desc.format.kind() {
+                    match FORMAT_FACTS[t.desc.format as usize].kind {
                         FormatKind::DepthStencil => glow::DEPTH_STENCIL_ATTACHMENT,
                         FormatKind::Stencil => glow::STENCIL_ATTACHMENT,
                         _ => glow::DEPTH_ATTACHMENT,
@@ -1643,7 +1644,7 @@ impl Gl {
         let mut views: [Option<TextureView>; MAX_COLOR_TARGETS + 1] = Default::default();
         let mut colour = 0;
         for &(texture, mip, layer) in parts {
-            let slot = if texture.desc.format.is_depth_stencil() {
+            let slot = if FORMAT_FACTS[texture.desc.format as usize].depth_stencil {
                 MAX_COLOR_TARGETS
             } else {
                 colour += 1;
@@ -2171,8 +2172,8 @@ impl Gl {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        let (sbw, sbh, bytes) = src.texture.desc.format.block();
-        let (dbw, dbh, dst_bytes) = dst.texture.desc.format.block();
+        let (sbw, sbh, bytes) = FORMAT_FACTS[src.texture.desc.format as usize].block;
+        let (dbw, dbh, dst_bytes) = FORMAT_FACTS[dst.texture.desc.format as usize].block;
         if bytes != dst_bytes {
             return self.invalid(format!(
                 "a copy from {:?} into {:?}, whose blocks differ in size",
@@ -2251,7 +2252,10 @@ impl Gl {
                 origin: Origin::default(),
                 stencil: false,
             };
-            let (texel, texels) = (twin.block().2, extent.width * extent.height);
+            let (texel, texels) = (
+                FORMAT_FACTS[twin as usize].block.2,
+                extent.width * extent.height,
+            );
             let mut bytes = vec![0; (texels * extent.depth_or_layers * texel) as usize];
             let read = match self.copy_by_draw(&region(t, mip), &region(&held, 0), extent) {
                 true => self.read_texture_now(&region(&held, 0), extent, &mut bytes),
@@ -2276,7 +2280,7 @@ impl Gl {
         // The texels the region covers inside the level; blocks may reach past its edge.
         let w = extent.width.min(level(t.desc.width) - region.origin.x);
         let ht = extent.height.min(level(t.desc.height) - region.origin.y);
-        let (bw, bh, block_bytes) = t.desc.format.block();
+        let (bw, bh, block_bytes) = FORMAT_FACTS[t.desc.format as usize].block;
         let (wide, high) = (w.div_ceil(bw) as usize, ht.div_ceil(bh) as usize);
         let slices = extent.depth_or_layers as usize;
         let mut blocks = vec![0; wide * high * slices * block_bytes as usize];
@@ -2294,7 +2298,7 @@ impl Gl {
         };
         if let Some(decoded) = t.decoded {
             let texels = host::decode(t.desc.format, &blocks, wide);
-            let texel = decoded.block().2;
+            let texel = FORMAT_FACTS[decoded as usize].block.2;
             return self.upload(
                 region,
                 extent,
@@ -2364,7 +2368,7 @@ impl Gl {
         rows_per_layer: u32,
     ) {
         let t = region.texture.clone();
-        let (_, _, block_bytes) = t.decoded.unwrap_or(t.desc.format).block();
+        let (_, _, block_bytes) = FORMAT_FACTS[t.decoded.unwrap_or(t.desc.format) as usize].block;
         let Some(raw) = t.tex() else {
             return self.invalid("texels written into a multisampled texture".into());
         };
@@ -2756,7 +2760,8 @@ impl Gl {
                 return Err(Unbindable::Multisampled(*texture));
             };
             let levels = (v.desc.base_mip, v.desc.base_mip + v.desc.mip_count - 1);
-            let aspect = t.desc.format.is_depth_stencil() && t.stencil_mode.get() != v.desc.stencil;
+            let aspect = FORMAT_FACTS[t.desc.format as usize].depth_stencil
+                && t.stencil_mode.get() != v.desc.stencil;
             if self.applied.units[unit] != ids || t.levels.get() != levels || aspect {
                 // SAFETY: plain GL calls; the texture is alive.
                 unsafe {
@@ -2801,7 +2806,7 @@ impl Gl {
         // one texture, or read it through two mip ranges.
         for (texture, _, _) in &linked.units {
             if let Some(Bound::Texture(v)) = find(*texture) {
-                if v.texture.desc.format.is_depth_stencil()
+                if FORMAT_FACTS[v.texture.desc.format as usize].depth_stencil
                     && v.texture.stencil_mode.get() != v.desc.stencil
                 {
                     return Err(Unbindable::BothAspects);
@@ -3536,7 +3541,7 @@ impl Backend for Gl {
             return Err(GpuError::Absent(Features::TEXTURE_VIEWS));
         }
         if desc.stencil {
-            if t.format.kind() != FormatKind::DepthStencil {
+            if FORMAT_FACTS[t.format as usize].kind != FormatKind::DepthStencil {
                 return Err(GpuError::Invalid(
                     "webgl: a stencil view of a texture without stencil",
                 ));
@@ -3556,7 +3561,9 @@ impl Backend for Gl {
         }
         let texture = if desc.format == t.format {
             texture.clone()
-        } else if desc.format.linear() == t.format.linear() {
+        } else if FORMAT_FACTS[desc.format as usize].linear
+            == FORMAT_FACTS[t.format as usize].linear
+        {
             self.twin_of(texture, desc.format)?
         } else {
             return Err(GpuError::Absent(Features::FORMAT_REINTERPRET));
@@ -4105,7 +4112,7 @@ impl Backend for Gl {
                 return self.upload_blocks(region, extent);
             }
         }
-        if region.texture.desc.format.is_depth_stencil() {
+        if FORMAT_FACTS[region.texture.desc.format as usize].depth_stencil {
             return self.write_depth(
                 region,
                 extent,
@@ -4118,7 +4125,7 @@ impl Backend for Gl {
         if format::converts_writes(format) {
             // Converted into tightly packed rows of the stored texels.
             self.slow.hit(SlowPath::FormatConverted);
-            let row = extent.width as usize * format.block().2 as usize;
+            let row = extent.width as usize * FORMAT_FACTS[format as usize].block.2 as usize;
             let (rows, layers) = (extent.height as usize, extent.depth_or_layers as usize);
             let mut stored = Vec::new();
             for layer in 0..layers {
@@ -4127,7 +4134,7 @@ impl Backend for Gl {
                     format::stored_texels(format, &data[at..at + row], &mut stored);
                 }
             }
-            let texel = t.decoded.unwrap_or(format).block().2;
+            let texel = FORMAT_FACTS[t.decoded.unwrap_or(format) as usize].block.2;
             return self.upload(
                 region,
                 extent,
@@ -4253,7 +4260,7 @@ impl Backend for Gl {
                 // A target lacking channels keeps their values, which a discard would lose.
                 let whole = whole(c.view) && format::unwritten(format) == 0;
                 match c.load {
-                    LoadOp::Clear(value) => match format.kind() {
+                    LoadOp::Clear(value) => match FORMAT_FACTS[format as usize].kind {
                         FormatKind::Uint => {
                             gl.clear_buffer_u32_slice(glow::COLOR, i as u32, &value)
                         }
@@ -4504,13 +4511,13 @@ impl Backend for Gl {
         self.fresh(src.texture);
         self.fresh(dst.texture);
         self.written(dst.texture);
-        if from == to && from.is_depth_stencil() {
+        if from == to && FORMAT_FACTS[from as usize].depth_stencil {
             return self.blit_same(src, dst, extent);
         }
-        if from.is_depth_stencil() || to.is_depth_stencil() {
+        if FORMAT_FACTS[from as usize].depth_stencil || FORMAT_FACTS[to as usize].depth_stencil {
             // A colour and a depth format of one typeless group.
             if self.copy_by_draw(src, dst, extent) {
-                self.slow.hit(if to.is_depth_stencil() {
+                self.slow.hit(if FORMAT_FACTS[to as usize].depth_stencil {
                     SlowPath::DepthWrittenByDraw
                 } else {
                     SlowPath::CopyThroughBuffer
@@ -4538,7 +4545,7 @@ impl Backend for Gl {
                 to,
                 Format::R16Float | Format::Rg16Float | Format::Rgba16Float
             );
-            if as_stored && from.block() == to.block() {
+            if as_stored && FORMAT_FACTS[from as usize].block == FORMAT_FACTS[to as usize].block {
                 self.copy_same_bytes(src, dst, extent);
             } else if half {
                 // A draw writes half floats from 32-bit ones, which lose NaN payloads; the host
@@ -4616,7 +4623,7 @@ impl Backend for Gl {
         let Some(data) = data else {
             // The buffer's bytes read back, then written as a host write: into textures kept on the
             // host or swapped there, and from index-only buffers, which no unpack buffer can be.
-            let (bw, bh, bytes) = dst.texture.desc.format.block();
+            let (bw, bh, bytes) = FORMAT_FACTS[dst.texture.desc.format as usize].block;
             let (row, rows) = (
                 u64::from(extent.width.div_ceil(bw) * bytes),
                 u64::from(extent.height.div_ceil(bh)),
@@ -4646,7 +4653,7 @@ impl Backend for Gl {
         // SAFETY: a plain GL call; the buffer holds other data.
         unsafe { self.gl.bind_buffer(glow::PIXEL_UNPACK_BUFFER, Some(data)) };
         let texels = Texels::Offset(src.offset as u32);
-        if dst.texture.desc.format.is_depth_stencil() {
+        if FORMAT_FACTS[dst.texture.desc.format as usize].depth_stencil {
             self.write_depth(dst, extent, texels, src.row_pitch, src.rows_per_layer);
         } else {
             self.upload(dst, extent, texels, src.row_pitch, src.rows_per_layer);
@@ -4679,7 +4686,7 @@ impl Backend for Gl {
             // colour texture it was drawn into, whose texels keep the depth's own bytes.
             let (bw, bh, bytes) = match (&src.texture.host, src.texture.read) {
                 (None, Some(r)) => (1, 1, r.texel_kept() as u32),
-                _ => src.texture.desc.format.block(),
+                _ => FORMAT_FACTS[src.texture.desc.format as usize].block,
             };
             let (row, rows) = (
                 (extent.width.div_ceil(bw) * bytes) as usize,
@@ -4908,7 +4915,7 @@ impl Backend for Gl {
             && let Some(h) = &region.texture.host
         {
             self.host_current(region.texture, 1 << region.mip)?;
-            let (bw, bh, bytes) = region.texture.desc.format.block();
+            let (bw, bh, bytes) = FORMAT_FACTS[region.texture.desc.format as usize].block;
             let size = extent.width.div_ceil(bw) * extent.height.div_ceil(bh) * bytes;
             let mut kept = vec![0; (size * extent.depth_or_layers) as usize];
             let corner = Self::corner(region);
@@ -5359,7 +5366,7 @@ impl Backend for Gl {
             empty: None,
             occlusion: None,
         };
-        let kind = format.kind();
+        let kind = FORMAT_FACTS[format as usize].kind;
         let (depth, stencil) = match value {
             ClearValue::Color(_) => {
                 pass.colors[0] = Some(ColorAttachment {

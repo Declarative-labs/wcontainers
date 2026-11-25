@@ -5,12 +5,13 @@ use anyhow::{Context, Result, anyhow};
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BlendComponent, BlendDesc, BlendFactor,
     BlendOp, BorderColor, BufferDesc, BufferRange, BufferUsage, ColorAttachment, ColorWrites,
-    CompareFn, CullMode, DepthAttachment, DepthStencilDesc, DrawCall, DrawRange, Extent, FillMode,
-    Filter, Format, FrontFace, GpuError, IndexBinding, IndexFormat, LoadOp, MapIntent, Origin,
-    PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend, SamplerDesc,
-    ShaderModule, ShaderStage, StageSet, StepMode, StoreOp, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexAttribute, VertexBinding,
-    VertexFormat, VertexLayoutDesc, VertexStream, ViewDimension, WriteMode,
+    CompareFn, CullMode, DepthAttachment, DepthStencilDesc, DrawCall, DrawRange, Extent,
+    FORMAT_FACTS, FillMode, Filter, Format, FrontFace, GpuError, IndexBinding, IndexFormat, LoadOp,
+    MapIntent, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
+    RenderTargetBlend, SamplerDesc, ShaderModule, ShaderStage, StageSet, StepMode, StoreOp,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
+    VertexAttribute, VertexBinding, VertexFormat, VertexLayoutDesc, VertexStream, ViewDimension,
+    WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -520,7 +521,9 @@ pub fn begin(b: &mut B, t: &Targets, clear: bool) {
             // A stencil the format has is cleared too, as Direct3D programs clear both.
             stencil: t
                 .depth_format
-                .filter(|f| f.kind() == wcontainers_gpu::FormatKind::DepthStencil)
+                .filter(|f| {
+                    FORMAT_FACTS[*f as usize].kind == wcontainers_gpu::FormatKind::DepthStencil
+                })
                 .map(|_| AspectOps {
                     load: if clear {
                         LoadOp::Clear(0)

@@ -602,8 +602,9 @@ fn generate_mips_averages_the_four_texels_below_on_every_route() {
     healthy(&mut r);
 
     // r32float holding k, on a back end that does not filter it.
-    let mut r =
-        Recorder::with_caps(|c| c.formats.uses[Format::R32Float.index()].remove(FormatUse::FILTER));
+    let mut r = Recorder::with_caps(|c| {
+        c.formats.uses[Format::R32Float as usize].remove(FormatUse::FILTER)
+    });
     let texels: Vec<u8> = (0..16).flat_map(|k| (k as f32).to_le_bytes()).collect();
     let got = mipped(&mut r, Format::R32Float, Format::R32Float, &texels, 4);
     let values: Vec<f32> = got

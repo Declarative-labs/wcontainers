@@ -46,7 +46,7 @@ use wcontainers_directx_graphics_infrastructure::required::MOST_SAMPLES;
 use wcontainers_directx_graphics_infrastructure::{
     dxgi, dxgi_format, support1, support2, typeless_group,
 };
-use wcontainers_gpu::{Backend, CUBE_FACES, ColorWrites, DeviceStatus, FormatKind};
+use wcontainers_gpu::{Backend, CUBE_FACES, ColorWrites, DeviceStatus, FORMAT_FACTS, FormatKind};
 use wcontainers_gpu_webgpu::{UNORM24_MAX, WebGpu};
 
 /// The DXGI format values up to `B4G4R4A4_UNORM`, the last Direct3D 12 defines below its video
@@ -438,7 +438,7 @@ enum Kind {
 fn kind_of(format: u32) -> Kind {
     match format {
         dxgi::X24_TYPELESS_G8_UINT | dxgi::X32_TYPELESS_G8X24_UINT => Kind::Uint,
-        _ => match dxgi_format(format).map(|(f, _)| f.kind()) {
+        _ => match dxgi_format(format).map(|(f, _)| FORMAT_FACTS[f as usize].kind) {
             Some(FormatKind::Uint | FormatKind::Stencil) => Kind::Uint,
             Some(FormatKind::Sint) => Kind::Sint,
             _ => Kind::Float,
@@ -1158,7 +1158,7 @@ fn filled(device: &mut Device<WebGpu>, format: u32, bytes: &[u8], size: u64) -> 
     let desc = texture(format, DIMENSION_TEXTURE2D, 1, 1, 1, 0);
     let (f, _) = desc.footprints(plane_of(format), 1, 0).unwrap();
     let pitch = f[0].footprint.row_pitch as usize;
-    let block = dxgi_format(format).map_or(1, |(f, _)| f.block().0);
+    let block = dxgi_format(format).map_or(1, |(f, _)| FORMAT_FACTS[f as usize].block.0);
     let mut fill = vec![0; size as usize];
     for row in 0..f[0].rows as usize {
         for x in 0..(f[0].footprint.width / block) as usize {

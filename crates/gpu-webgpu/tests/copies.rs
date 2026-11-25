@@ -21,9 +21,9 @@ mod gaps;
 
 use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferDesc, BufferUsage, ColorAttachment,
-    CopyBufferTexture, DepthAttachment, DeviceStatus, DrawCall, DrawRange, Extent, Format,
-    FormatKind, FormatUse, LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath, StageSet,
-    StoreOp, TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
+    CopyBufferTexture, DepthAttachment, DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS,
+    Format, FormatKind, FormatUse, LoadOp, MapIntent, Origin, PassDesc, ReadSource, SlowPath,
+    StageSet, StoreOp, TextureRegion, TextureUsage, Topology, Viewport, WriteMode,
 };
 use wcontainers_gpu_webgpu::{UNORM24_MAX, WebGpu};
 
@@ -345,7 +345,7 @@ fn group_textures_copy_into_part_of_depth_exactly() {
             _ => &[format],
         };
         for &source in sources {
-            let src = if source.is_depth_stencil() {
+            let src = if FORMAT_FACTS[source as usize].depth_stencil {
                 let (t, _) = depth_texture(&mut b, source);
                 b.write_texture(
                     &region(&t, 0, 0),
@@ -402,7 +402,7 @@ fn group_textures_copy_into_part_of_depth_exactly() {
             }
             assert!(wrong.is_empty(), "{source:?} into {format:?}: {wrong:?}");
             assert_eq!(b.status(), DeviceStatus::Ok, "{source:?} into {format:?}");
-            let stencil = format.kind() == FormatKind::DepthStencil;
+            let stencil = FORMAT_FACTS[format as usize].kind == FormatKind::DepthStencil;
             assert_eq!(
                 (
                     b.slow_paths().count(SlowPath::DepthWrittenByDraw) - before.0,
@@ -611,7 +611,7 @@ fn depth_and_stencil_parts_copy_and_read_back_exactly() {
         [0, 1, 2].map(|i| now[i] - before[i])
     };
     for format in depth_formats(&b) {
-        let stencil = format.kind() == FormatKind::DepthStencil;
+        let stencil = FORMAT_FACTS[format as usize].kind == FormatKind::DepthStencil;
         let unorm24 = matches!(format, Format::Depth24Plus | Format::Depth24PlusStencil8);
         let (a, a_view) = depth_texture(&mut b, format);
         clear_depth(&mut b, &a_view, format, 0.5);

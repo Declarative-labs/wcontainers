@@ -1,6 +1,6 @@
 //! Gallium's formats in the interface's terms, and what the device can do with each.
 
-use wcontainers_gpu::{Format, FormatCaps, FormatUse, VertexFormat};
+use wcontainers_gpu::{FORMAT_FACTS, Format, FormatCaps, FormatUse, VertexFormat};
 
 use crate::gallium::*;
 
@@ -230,15 +230,17 @@ pub fn supported(
             | PIPE_BIND_SAMPLER_VIEW;
         let texel = bindings & PIPE_BIND_SAMPLER_VIEW == 0
             || self::format(format).is_some_and(|f| {
-                matches!(f.block(), (1, 1, _))
-                    && !f.is_depth_stencil()
+                matches!(FORMAT_FACTS[f as usize].block, (1, 1, _))
+                    && !FORMAT_FACTS[f as usize].depth_stencil
                     && caps.get(f).contains(FormatUse::SAMPLE)
             });
         // Images of buffers, read and written as storage words by the program
         // (`TexelBufferAsStorage`).
         let image = bindings & PIPE_BIND_SHADER_IMAGE == 0
-            || self::format(format)
-                .is_some_and(|f| matches!(f.block(), (1, 1, _)) && !f.is_depth_stencil());
+            || self::format(format).is_some_and(|f| {
+                matches!(FORMAT_FACTS[f as usize].block, (1, 1, _))
+                    && !FORMAT_FACTS[f as usize].depth_stencil
+            });
         return bindings & !(plain | PIPE_BIND_SHADER_IMAGE) == 0
             && texel
             && image
@@ -269,10 +271,10 @@ pub fn supported(
             left &= !binding;
         }
     }
-    let (_, block_height, _) = ours.block();
+    let (_, block_height, _) = FORMAT_FACTS[ours as usize].block;
     let dimension = match target {
         PIPE_TEXTURE_1D | PIPE_TEXTURE_1D_ARRAY => block_height == 1,
-        PIPE_TEXTURE_3D => !ours.is_depth_stencil(),
+        PIPE_TEXTURE_3D => !FORMAT_FACTS[ours as usize].depth_stencil,
         PIPE_TEXTURE_2D
         | PIPE_TEXTURE_2D_ARRAY
         | PIPE_TEXTURE_RECT

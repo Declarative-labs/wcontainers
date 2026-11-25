@@ -17,9 +17,9 @@ mod allowance;
 mod clears;
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, ColorAttachment, DeviceStatus, Extent, Format, LoadOp,
-    MapIntent, Object, Origin, PassDesc, QueryKind, ReadSource, SlowPath, StoreOp, TextureRegion,
-    TextureUsage, WriteMode,
+    Backend, BufferDesc, BufferUsage, ColorAttachment, DeviceStatus, Extent, FORMAT_FACTS, Format,
+    LoadOp, MapIntent, Object, Origin, PassDesc, QueryKind, ReadSource, SlowPath, StoreOp,
+    TextureRegion, TextureUsage, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -875,7 +875,7 @@ fn written_bytes_are_counted_and_reported() {
     let before = *b.counters();
     b.write_buffer(&buffer, 0, &[1; BUFFER_BYTES], WriteMode::Discard);
     b.write_buffer(&buffer, 0, &[2; BUFFER_BYTES / 2], WriteMode::Ordered);
-    let texel = Format::Rgba8Unorm.block().2;
+    let texel = FORMAT_FACTS[Format::Rgba8Unorm as usize].block.2;
     let texels = vec![3; (TEXTURE_SIDE * TEXTURE_SIDE * texel) as usize];
     b.write_texture(
         &TextureRegion {

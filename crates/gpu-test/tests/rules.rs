@@ -2565,7 +2565,7 @@ fn textures_take_only_the_usages_their_format_does() {
         refused
     );
     let mut r = Recorder::with_caps(|c| {
-        let at = Format::R32Float.index();
+        let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::RENDER);
     });
     assert_eq!(
@@ -2577,7 +2577,7 @@ fn textures_take_only_the_usages_their_format_does() {
             .is_ok()
     );
     let mut r = Recorder::with_caps(|c| {
-        let at = Format::R32Float.index();
+        let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::SAMPLE);
     });
     assert_eq!(
@@ -2730,8 +2730,9 @@ fn immediates_stay_within_the_limit() {
 
 #[test]
 fn draws_blend_only_into_formats_that_blend() {
-    let mut d =
-        Drawing::with_caps(|c| c.formats.uses[Format::Rgba8Unorm.index()].remove(FormatUse::BLEND));
+    let mut d = Drawing::with_caps(|c| {
+        c.formats.uses[Format::Rgba8Unorm as usize].remove(FormatUse::BLEND)
+    });
     let add = component(BlendFactor::One, BlendFactor::One);
     d.blend = d.r.create_blend(&blend_desc(Some((add, add)))).unwrap();
     let p = d.program("plain");
@@ -2743,7 +2744,7 @@ fn draws_blend_only_into_formats_that_blend() {
 #[test]
 fn draws_filter_only_formats_that_filter() {
     let mut d =
-        Drawing::with_caps(|c| c.formats.uses[Format::R32Float.index()].remove(FormatUse::FILTER));
+        Drawing::with_caps(|c| c.formats.uses[Format::R32Float as usize].remove(FormatUse::FILTER));
     let t = texture(&mut d.r, Format::R32Float, 2, TextureUsage::SAMPLE);
     let v = view(&mut d.r, &t, Format::R32Float);
     let s =
@@ -2790,7 +2791,7 @@ fn programs_run_per_sample_only_with_sample_shading() {
 #[test]
 fn resolves_and_copies_out_need_the_formats_uses() {
     let mut r = Recorder::with_caps(|c| {
-        c.formats.uses[Format::Rgba8Unorm.index()].remove(FormatUse::RESOLVE | FormatUse::COPY_OUT)
+        c.formats.uses[Format::Rgba8Unorm as usize].remove(FormatUse::RESOLVE | FormatUse::COPY_OUT)
     });
     let many = r
         .create_texture(&TextureDesc {
@@ -2813,7 +2814,7 @@ fn resolves_and_copies_out_need_the_formats_uses() {
         ["a resolve of a format that cannot be averaged"]
     );
     let mut r = Recorder::with_caps(|c| {
-        c.formats.uses[Format::Rgba8Unorm.index()].remove(FormatUse::COPY_OUT)
+        c.formats.uses[Format::Rgba8Unorm as usize].remove(FormatUse::COPY_OUT)
     });
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     let b = buffer(&mut r, 16, COPIES);
@@ -2833,7 +2834,7 @@ fn resolves_and_copies_out_need_the_formats_uses() {
     );
     // A read back copies out too.
     let mut r = Recorder::with_caps(|c| {
-        c.formats.uses[Format::Rgba8Unorm.index()].remove(FormatUse::COPY_OUT)
+        c.formats.uses[Format::Rgba8Unorm as usize].remove(FormatUse::COPY_OUT)
     });
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     let _ = r.read_back(&ReadSource::Texture {
@@ -3728,7 +3729,7 @@ fn colour_attachments_have_colour_formats() {
 #[test]
 fn textures_are_of_held_formats_and_not_empty() {
     let mut r =
-        Recorder::with_caps(|c| c.formats.uses[Format::R8Unorm.index()] = FormatUse::empty());
+        Recorder::with_caps(|c| c.formats.uses[Format::R8Unorm as usize] = FormatUse::empty());
     let desc = TextureDesc {
         dimension: TextureDimension::D2,
         format: Format::Rgba8Unorm,
@@ -4520,7 +4521,7 @@ fn an_indexed_draw_fetching_past_a_stream_still_holds_the_draw_rules() {
             "blending into Rgba8Unorm, which this back end does not blend",
             || {
                 let mut d = Drawing::with_caps(|c| {
-                    c.formats.uses[Format::Rgba8Unorm.index()].remove(FormatUse::BLEND)
+                    c.formats.uses[Format::Rgba8Unorm as usize].remove(FormatUse::BLEND)
                 });
                 let add = component(BlendFactor::One, BlendFactor::One);
                 d.blend = d.r.create_blend(&blend_desc(Some((add, add)))).unwrap();
@@ -4777,7 +4778,7 @@ fn linear_filters_pair_only_with_textures_the_back_end_filters() {
         ([N, N, N], false),
     ] {
         let mut d = Drawing::with_caps(|c| {
-            c.formats.uses[Format::R32Float.index()].remove(FormatUse::FILTER)
+            c.formats.uses[Format::R32Float as usize].remove(FormatUse::FILTER)
         });
         let t = texture(&mut d.r, Format::R32Float, 2, TextureUsage::SAMPLE);
         let v = view(&mut d.r, &t, Format::R32Float);

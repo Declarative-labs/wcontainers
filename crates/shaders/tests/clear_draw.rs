@@ -13,7 +13,7 @@ mod common;
 use common::*;
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, DispatchCall, DispatchGroups,
-    Extent, Format, FormatUse, Origin, Program, ReadSource, StageSet, TextureDesc,
+    Extent, FORMAT_FACTS, Format, FormatUse, Origin, Program, ReadSource, StageSet, TextureDesc,
     TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, ViewDimension, WriteMode,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
@@ -127,7 +127,7 @@ fn cases(gpu: &Gpu, b: &impl Backend, seed: u64, n: u64) -> Vec<Case> {
             let size = [3 + next() % 18, 3 + next() % 18, layers];
             let first = next() % layers;
             let count = 1 + next() % (layers - first);
-            let bytes = size[0] * size[1] * layers * format.block().2;
+            let bytes = size[0] * size[1] * layers * FORMAT_FACTS[format as usize].block.2;
             let texels = (0..bytes).map(|_| next() as u8).collect();
             let float = next() % 2 == 0;
             let values = [0; 4].map(|_| {
@@ -157,7 +157,7 @@ fn cases(gpu: &Gpu, b: &impl Backend, seed: u64, n: u64) -> Vec<Case> {
 /// layer or slice.
 fn direct3d(gpu: &Gpu, case: &Case) -> Vec<u8> {
     let [w, h, l] = case.size;
-    let row = w * case.format.block().2;
+    let row = w * FORMAT_FACTS[case.format as usize].block.2;
     let volume = case.dimension == ViewDimension::D3;
     let make = |staging: bool| -> ID3D11Resource {
         let (usage, bind, cpu) = if staging {
@@ -256,7 +256,7 @@ fn direct3d(gpu: &Gpu, case: &Case) -> Vec<u8> {
 /// value is refused (`refused`).
 fn ours<B: Backend>(b: &mut B, case: &Case, refused: &mut Vec<&'static str>) -> Vec<u8> {
     let [w, h, l] = case.size;
-    let row = w * case.format.block().2;
+    let row = w * FORMAT_FACTS[case.format as usize].block.2;
     let volume = case.dimension == ViewDimension::D3;
     let texture = b
         .create_texture(&TextureDesc {
@@ -415,7 +415,7 @@ fn storage_clears_match_direct3d() {
         let hardware = direct3d(&gpu, case);
         let before = refused.len();
         let made = ours(&mut backend, case, &mut refused);
-        let size = case.format.block().2 as usize;
+        let size = FORMAT_FACTS[case.format as usize].block.2 as usize;
         let differ = |a: &[u8], b: &[u8], name: &str| {
             let mut apart = 0;
             for (t, (x, y)) in a.chunks(size).zip(b.chunks(size)).enumerate() {

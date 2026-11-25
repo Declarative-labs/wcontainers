@@ -9,9 +9,9 @@ use anyhow::{Result, anyhow, ensure};
 use wcontainers_gpu::{
     AddressMode, Backend, BindingEntry, BindingResource, BlendComponent, BlendFactor, BlendOp,
     BorderColor, BufferDesc, BufferUsage, ColorAttachment, CopyBufferTexture, DeviceStatus,
-    DrawCall, DrawRange, Extent, Filter, Format, FormatUse, LoadOp, MapIntent, Origin, PassDesc,
-    ReadSource, SamplerDesc, SlowPath, StageSet, StoreOp, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, Topology, WriteMode,
+    DrawCall, DrawRange, Extent, FORMAT_FACTS, Filter, Format, FormatUse, LoadOp, MapIntent,
+    Origin, PassDesc, ReadSource, SamplerDesc, SlowPath, StageSet, StoreOp, TextureDesc,
+    TextureDimension, TextureRegion, TextureUsage, Topology, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -63,7 +63,7 @@ pub const STORED: [Format; 1] = [Format::A8Unorm];
 
 /// Bytes of a row of `width` texels of `format`: whole blocks.
 pub fn row_bytes(format: Format, width: u32) -> usize {
-    let (bw, _, bytes) = format.block();
+    let (bw, _, bytes) = FORMAT_FACTS[format as usize].block;
     (width.div_ceil(bw) * bytes) as usize
 }
 
@@ -501,7 +501,7 @@ pub fn copies(b: &mut B, format: Format, written: &[u8]) -> Result<()> {
     let got = read(b, &at(&v, 0, 0), part, want.len());
     ensure!(got == want, "{format:?}: copied between textures");
     // Into a texture of another format of equal blocks and back, the bytes kept.
-    let other = match format.block() {
+    let other = match FORMAT_FACTS[format as usize].block {
         (1, 1, 1) => Format::R8Uint,
         (1, 1, 2) => Format::R16Uint,
         (1, 1, 4) => Format::R32Uint,

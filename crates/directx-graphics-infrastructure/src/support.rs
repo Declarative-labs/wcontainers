@@ -6,7 +6,7 @@
 //! end cannot reinterpret). Typed buffer views and stream output are the front's to add; tiling,
 //! video and the formats the back end lacks are absent.
 
-use wcontainers_gpu::{Caps, Features, Format, FormatUse};
+use wcontainers_gpu::{Caps, FORMAT_FACTS, Features, Format, FormatUse};
 
 use crate::format::{BACK_BUFFER_FORMATS, dxgi, dxgi_format, dxgi_vertex_format, typeless_group};
 
@@ -117,7 +117,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         return FormatSupport::default();
     };
     let uses = caps.formats.get(format);
-    let depth = format.is_depth_stencil();
+    let depth = FORMAT_FACTS[format as usize].depth_stencil;
     let texture = uses.intersects(
         FormatUse::SAMPLE
             | FormatUse::RENDER
@@ -127,7 +127,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     );
     // The texture shapes a format may have (`FormatCaps`): 1D only with blocks one texel high, and
     // no 3D for depth.
-    let one_texel_high = format.block().1 == 1;
+    let one_texel_high = FORMAT_FACTS[format as usize].block.1 == 1;
     let shapes = match texture {
         false => 0,
         true => {
@@ -158,7 +158,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     // Formats the back end cannot filter are filtered in the program (`FilterInShader`), but for
     // those whose sampling Direct3D leaves optional; integer formats are not sampled.
     let filter = sample
-        && format.kind() == wcontainers_gpu::FormatKind::Float
+        && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::FormatKind::Float
         && (has(FormatUse::FILTER) || !OPTIONAL_SAMPLE.contains(&value));
     // A multisampled texture exists only as a target, so only formats that are targets load samples.
     let target = has(FormatUse::RENDER) || has(FormatUse::DEPTH_STENCIL);
@@ -234,7 +234,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         has(FormatUse::RESOLVE)
             && render
             && multisampled(caps, format)
-            && format.kind() == wcontainers_gpu::FormatKind::Float,
+            && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::FormatKind::Float,
         MULTISAMPLE_RESOLVE,
     );
     bit(multisample_load, MULTISAMPLE_LOAD);
@@ -264,7 +264,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     }
     if render
         && caps.features.contains(Features::LOGIC_OP)
-        && format.kind() == wcontainers_gpu::FormatKind::Uint
+        && FORMAT_FACTS[format as usize].kind == wcontainers_gpu::FormatKind::Uint
     {
         s.support2 |= OUTPUT_MERGER_LOGIC_OP;
     }
@@ -287,7 +287,10 @@ pub fn storage_viewed(value: u32) -> bool {
                 | dxgi::R8G8_B8G8_UNORM
                 | dxgi::G8R8_G8B8_UNORM
     ) && dxgi_format(value).is_some_and(|(f, typeless)| {
-        !typeless && !f.is_depth_stencil() && f.linear() == f && f.block().0 == 1
+        !typeless
+            && !FORMAT_FACTS[f as usize].depth_stencil
+            && FORMAT_FACTS[f as usize].linear == f
+            && FORMAT_FACTS[f as usize].block.0 == 1
     })
 }
 

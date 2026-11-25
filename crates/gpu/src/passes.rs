@@ -555,7 +555,7 @@ impl<B: Backend> PassTracker<B> {
         dst: &Target<B>,
         extent: Extent,
     ) -> Result<(), GpuError> {
-        let kind = match src.format.kind() {
+        let kind = match crate::FORMAT_FACTS[src.format as usize].kind {
             k @ (FormatKind::Uint | FormatKind::Sint) => k,
             _ => FormatKind::Float,
         };

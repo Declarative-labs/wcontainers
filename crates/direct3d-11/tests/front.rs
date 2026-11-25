@@ -209,7 +209,7 @@ fn the_top_feature_level_is_the_highest_whose_sizes_targets_and_features_the_bac
     );
     // No `D32_FLOAT_S8X24_UINT` target, no float targets, or no geometry stage: 9_3.
     let unformatted =
-        |f: Format, u: FormatUse| move |r: &mut Recorder| r.caps.formats.uses[f.index()] -= u;
+        |f: Format, u: FormatUse| move |r: &mut Recorder| r.caps.formats.uses[f as usize] -= u;
     assert_eq!(
         top(&unformatted(
             Format::Depth32FloatStencil8,
@@ -2571,7 +2571,7 @@ fn dual_source_blending_draws_the_programs_second_output_where_the_back_end_blen
 #[test]
 fn a_texture_the_back_end_cannot_filter_is_filtered_in_the_program() {
     let mut dev = device();
-    let uses = &mut dev.backend.caps.formats.uses[wcontainers_gpu::Format::R32Float.index()];
+    let uses = &mut dev.backend.caps.formats.uses[wcontainers_gpu::Format::R32Float as usize];
     uses.remove(wcontainers_gpu::FormatUse::FILTER);
     sampling(&mut dev, "samplers.ps_sample");
     let draws = |dev: &Dev| {
@@ -3552,7 +3552,7 @@ fn a_normalised_format_the_back_end_lacks_is_held_as_its_integer_twin() {
     use wcontainers_directx_graphics_infrastructure::dxgi;
     use wcontainers_gpu::{Format, FormatUse};
     let mut dev = device();
-    dev.backend.caps.formats.uses[Format::R16Unorm.index()] = FormatUse::empty();
+    dev.backend.caps.formats.uses[Format::R16Unorm as usize] = FormatUse::empty();
     let both = bind::SHADER_RESOURCE | bind::RENDER_TARGET;
     let target = dev
         .create_texture(&tex2d(16, 16, dxgi::R16_UNORM, both), &[])

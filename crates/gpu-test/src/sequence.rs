@@ -510,7 +510,7 @@ fn bytes(len: usize, seed: u8) -> Vec<u8> {
 }
 
 fn texel_size(f: Format) -> u32 {
-    f.block().2
+    FORMAT_FACTS[f as usize].block.2
 }
 
 /// A region of level `mip` of a texture, chosen by six numbers: mip, layer, x, y, width, height.
@@ -917,7 +917,7 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
                         texels.push(Area::whole(i, mip, layer));
                     }
                 }
-                let value = match desc.format.kind() {
+                let value = match FORMAT_FACTS[desc.format as usize].kind {
                     FormatKind::Uint => value.map(|v| (v * 255.0) as u32),
                     FormatKind::Sint => value.map(|v| ((v * 255.0) as i32 - 128) as u32),
                     _ => value.map(f32::to_bits),
@@ -1148,7 +1148,7 @@ fn depth_copy<B: Backend>(
         stencil,
         ..region::<B>(&t, mip, layer, Origin { x: 0, y: 0, z: 0 })
     };
-    let kind = format.kind();
+    let kind = FORMAT_FACTS[format as usize].kind;
     let has_depth = kind != FormatKind::Stencil;
     let has_stencil = kind != FormatKind::Depth;
     let depth_bytes = if format == Format::Depth16Unorm { 2 } else { 4 };
@@ -1241,7 +1241,7 @@ fn pass<B: Backend>(
     options: &PassOptions,
     read: &mut Vec<Vec<u8>>,
 ) -> Result<(), GpuError> {
-    let kind = desc.format.kind();
+    let kind = FORMAT_FACTS[desc.format as usize].kind;
     let float = kind == FormatKind::Float;
     let multisampled = multisampled
         && b.caps()

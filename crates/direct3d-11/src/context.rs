@@ -7,9 +7,9 @@ use wcontainers_gpu::{
     AspectOps, Backend, BindingEntry, BindingResource, BufferRange, CONSTANTS_TEXTURE_WIDTH,
     ClearValue, ColorAttachment, ColorTarget, CountedDraw, DRAW_ARGUMENTS_BINDING, DepthAttachment,
     DispatchCall, DispatchGroups, DrawCall, DrawRange, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING,
-    EmptyPass, Extent, Features, Filter, Format, FormatKind, FormatUse, HELPER_SET, HelperValue,
-    IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc,
-    PassOps, PassTargets, Program, ReadSource, ReadState, RingKind, SLOT_KINDS,
+    EmptyPass, Extent, FORMAT_FACTS, Features, Filter, Format, FormatKind, FormatUse, HELPER_SET,
+    HelperValue, IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object,
+    Origin, PassDesc, PassOps, PassTargets, Program, ReadSource, ReadState, RingKind, SLOT_KINDS,
     SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath,
     SourceStage, StageSet, StencilOp, StepMode, StoreOp, SystemValue, TEXEL_BUFFER_TEXTURE_WIDTH,
     Target, TargetInShader, TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey,
@@ -1153,7 +1153,7 @@ impl<B: Backend> Device<B> {
         if self.predicated_out() || clears_depth && !(0.0..=1.0).contains(&depth) {
             return;
         }
-        let kind = view.format.kind();
+        let kind = FORMAT_FACTS[view.format as usize].kind;
         let has_stencil = matches!(kind, FormatKind::DepthStencil | FormatKind::Stencil);
         let value = ClearValue::DepthStencil {
             depth: (clears_depth && kind != FormatKind::Stencil).then(|| depth.to_bits()),
@@ -1760,7 +1760,7 @@ impl<B: Backend> Device<B> {
                 Some(ClearValue::DepthStencil { depth, stencil }) => (depth, stencil),
                 _ => (None, None),
             };
-            let kind = v.format.kind();
+            let kind = FORMAT_FACTS[v.format as usize].kind;
             // An aspect a read-only view marks is only read by the pass's draws (their
             // depth-stencil blocks write nothing there), unless the pass clears it.
             fn ops<V>(clear: Option<V>, read_only: bool) -> AspectOps<V> {
@@ -2940,7 +2940,7 @@ impl<B: Backend> Device<B> {
     /// use and copied again where `b` was written since.
     fn texel_copy(&mut self, b: &Buffer<B>, format: Format) -> Result<B::TextureView> {
         let source = (b.writes.get(), b.gpu.borrow().id);
-        let (.., bytes) = format.block();
+        let (.., bytes) = FORMAT_FACTS[format as usize].block;
         let texels = TexelRows {
             count: b.desc.byte_width / bytes,
             bytes,
@@ -3523,7 +3523,10 @@ impl<B: Backend> Device<B> {
                     _ => (values, float),
                 };
                 let integer = v.decoded.is_none()
-                    && matches!(v.format.kind(), FormatKind::Uint | FormatKind::Sint);
+                    && matches!(
+                        FORMAT_FACTS[v.format as usize].kind,
+                        FormatKind::Uint | FormatKind::Sint
+                    );
                 if integer && float {
                     return not_implemented(
                         "a float clear of an unordered access view of an integer format",
@@ -3744,7 +3747,7 @@ impl<B: Backend> Device<B> {
             if let Some(view) = bound
                 && let ShaderView::Texture(v) = &*view
                 && !matches!(
-                    v.format.kind(),
+                    FORMAT_FACTS[v.format as usize].kind,
                     FormatKind::Depth | FormatKind::DepthStencil
                 )
             {
@@ -4680,7 +4683,7 @@ impl<B: Backend> Device<B> {
             .depth
             .clone()
             .expect("early tests only with a depth-stencil view bound");
-        let stencil = if view.format.kind() == FormatKind::DepthStencil {
+        let stencil = if FORMAT_FACTS[view.format as usize].kind == FormatKind::DepthStencil {
             if view.stencil_aspect.borrow().is_none() {
                 let gpu = self.backend.create_view(
                     &view.texture.gpu.handle,
@@ -5417,7 +5420,7 @@ impl<B: Backend> Device<B> {
                 // Measured in blocks: a block-compressed texture copies with an uncompressed one
                 // whose texels are its blocks.
                 let shape = |t: &TextureDesc, f: Format| {
-                    let (bw, bh, _) = f.block();
+                    let (bw, bh, _) = FORMAT_FACTS[f as usize].block;
                     (
                         t.dimension,
                         t.width.div_ceil(bw),
@@ -5528,7 +5531,10 @@ impl<B: Backend> Device<B> {
                 };
                 // The destination's extent covers the same blocks; a block-compressed level is
                 // as large as its whole blocks.
-                let ((sbw, sbh, _), (dbw, dbh, _)) = (s.format.block(), d.format.block());
+                let ((sbw, sbh, _), (dbw, dbh, _)) = (
+                    FORMAT_FACTS[s.format as usize].block,
+                    FORMAT_FACTS[d.format as usize].block,
+                );
                 if at[0] + extent.width.div_ceil(sbw) * dbw > de.width.div_ceil(dbw) * dbw
                     || at[1] + extent.height.div_ceil(sbh) * dbh > de.height.div_ceil(dbh) * dbh
                     || at[2] + extent.depth_or_layers > de.depth_or_layers
@@ -6202,7 +6208,7 @@ fn same_range<'a, B: Backend>(r: &DrawRange<'a, B>) -> DrawRange<'a, B> {
 /// One element of `format` holding the low bits of each of `values` in its channel, as
 /// `ClearUnorderedAccessViewUint` writes it: formats whose channels are stored in RGBA order.
 fn uint_element(format: Format, values: [u32; 4]) -> Result<Vec<u8>> {
-    let (_, _, bytes) = format.block();
+    let (_, _, bytes) = FORMAT_FACTS[format as usize].block;
     let Some(bits) = channel_bits(format) else {
         return not_implemented(CLEAR_OF_PACKED_FORMAT);
     };
@@ -6360,7 +6366,7 @@ fn integer_clear(
 ) -> [u32; COLOR_COMPONENTS] {
     // Every integer format stores its channels in RGBA order.
     let bits = channel_bits(format).unwrap_or_else(|| vec![u32::BITS; COLOR_COMPONENTS]);
-    let signed = format.kind() == FormatKind::Sint;
+    let signed = FORMAT_FACTS[format as usize].kind == FormatKind::Sint;
     std::array::from_fn(|i| {
         let Some(&b) = bits.get(i) else { return 0 };
         let (min, max) = if signed {
@@ -6375,8 +6381,8 @@ fn integer_clear(
 /// The bits of each channel of `format` in the order they are stored, for formats whose channels
 /// are stored in RGBA order; none for the packed and BGR ones.
 fn channel_bits(format: Format) -> Option<Vec<u32>> {
-    let (_, _, bytes) = format.block();
-    let mask = format.components();
+    let (_, _, bytes) = FORMAT_FACTS[format as usize].block;
+    let mask = FORMAT_FACTS[format as usize].components;
     let n = mask.count_ones();
     match format {
         Format::Rgb10a2Unorm | Format::Rgb10a2Uint => Some(RGB10A2_BITS.to_vec()),

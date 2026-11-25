@@ -827,7 +827,7 @@ pub fn caps_report(caps: &Caps) -> String {
         "features: {:?}\nlimits: {:#?}\nformats:\n",
         caps.features, caps.limits
     );
-    for i in 0..Format::COUNT {
+    for i in 0..FORMAT_COUNT {
         let uses = caps.formats.uses[i];
         if !uses.is_empty() {
             // The format numbered `i`, which serde's derive reads as the variant's position.

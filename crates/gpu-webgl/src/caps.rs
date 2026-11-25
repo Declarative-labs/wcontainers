@@ -4,7 +4,8 @@
 use glow::HasContext;
 use std::collections::BTreeSet;
 use wcontainers_gpu::{
-    AdapterInfo, Caps, Features, Format, FormatCaps, FormatKind, FormatUse, Limits,
+    AdapterInfo, Caps, FORMAT_COUNT, FORMAT_FACTS, Features, Format, FormatCaps, FormatKind,
+    FormatUse, Limits,
 };
 
 use crate::format::{self, FormatExtensions};
@@ -15,7 +16,7 @@ fn format_at(i: usize) -> Format {
     use serde::Deserialize;
     use serde::de::value::{Error, U32Deserializer};
     Format::deserialize(U32Deserializer::<Error>::new(i as u32))
-        .expect("every index below Format::COUNT is a format")
+        .expect("every index below FORMAT_COUNT is a format")
 }
 
 pub fn caps(
@@ -139,10 +140,10 @@ pub fn caps(
     };
     let format_ext = FormatExtensions::found(ext);
     let mut formats = FormatCaps {
-        uses: [FormatUse::empty(); Format::COUNT],
-        samples: [0; Format::COUNT],
+        uses: [FormatUse::empty(); FORMAT_COUNT],
+        samples: [0; FORMAT_COUNT],
     };
-    for i in 0..Format::COUNT {
+    for i in 0..FORMAT_COUNT {
         let format = format_at(i);
         formats.uses[i] = format::uses(format, format_ext);
         if formats.uses[i].is_empty() {
@@ -163,7 +164,7 @@ pub fn caps(
                 .filter(|c| (2..=128).contains(c) && (*c as u32).is_power_of_two())
                 .fold(0, |bits, c| bits | c as u8);
             // Blits average the samples of colour formats that are not integers.
-            if formats.samples[i] > 1 && format.kind() == FormatKind::Float {
+            if formats.samples[i] > 1 && FORMAT_FACTS[format as usize].kind == FormatKind::Float {
                 formats.uses[i] |= FormatUse::RESOLVE;
             }
         }

@@ -13,7 +13,9 @@ mod common;
 
 use common::*;
 use std::path::Path;
-use wcontainers_gpu::{Backend, Features, Format, ProvokingVertex, VariantKey, VertexFormat};
+use wcontainers_gpu::{
+    Backend, FORMAT_FACTS, Features, Format, ProvokingVertex, VariantKey, VertexFormat,
+};
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_shaders::{Source, convert};
 use windows::Win32::Graphics::Direct3D::*;
@@ -620,7 +622,7 @@ fn direct3d_12(gpu: &wcontainers_graphics_test::d3d12::Gpu, case: &Case) -> Vec<
         );
     }
     gpu.submit().unwrap();
-    let row = (SIZE * case.format.block().2) as usize;
+    let row = (SIZE * FORMAT_FACTS[case.format as usize].block.2) as usize;
     let pitch = footprint.Footprint.RowPitch as usize;
     let mut out = Vec::with_capacity(row * SIZE as usize);
     unsafe {
@@ -802,7 +804,7 @@ fn wave_operations_draw_as_direct3d_12_does() {
     )
     .unwrap();
     let mut backend = webgpu_with(wgpu::Backends::VULKAN, wgpu::Features::SUBGROUP);
-    let texel = Format::Rgba32Uint.block().2 as usize;
+    let texel = FORMAT_FACTS[Format::Rgba32Uint as usize].block.2 as usize;
     for ps in ["ps_wave", "ps_wave_signed"] {
         let case = Case {
             vs: "vs_transform",
@@ -931,9 +933,9 @@ fn narrower_targets_draw_as_direct3d_12_does() {
         false,
     )
     .unwrap();
-    let texel = case.format.block().2 as usize;
+    let texel = FORMAT_FACTS[case.format as usize].block.2 as usize;
     // `ps_two` writes a `uint2`.
-    let written = texel / case.format.components() as usize * 2;
+    let written = texel / FORMAT_FACTS[case.format as usize].components as usize * 2;
     // Only the components the program writes.
     let written_only = |mut texels: Vec<u8>| {
         for t in texels.chunks_mut(texel) {

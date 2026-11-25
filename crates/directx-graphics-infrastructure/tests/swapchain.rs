@@ -291,10 +291,10 @@ fn format_support_follows_the_back_ends_format_uses() {
         wcontainers_gpu::Format::R32Uint,
         wcontainers_gpu::Format::Bc1RgbaUnorm,
     ] {
-        generous.formats.uses[f.index()] |=
+        generous.formats.uses[f as usize] |=
             wcontainers_gpu::FormatUse::RESOLVE | wcontainers_gpu::FormatUse::SAMPLE;
-        generous.formats.samples[f.index()] =
-            generous.formats.samples[wcontainers_gpu::Format::Rgba8Unorm.index()];
+        generous.formats.samples[f as usize] =
+            generous.formats.samples[wcontainers_gpu::Format::Rgba8Unorm as usize];
     }
     assert_eq!(
         format_support(&generous, dxgi::R32_UINT).support1 & MULTISAMPLE_RESOLVE,
@@ -313,7 +313,7 @@ fn format_support_follows_the_back_ends_format_uses() {
         wcontainers_gpu::Format::Rgbg8Unorm,
         wcontainers_gpu::Format::Grgb8Unorm,
     ] {
-        sampled.formats.uses[f.index()] = wcontainers_gpu::FormatUse::SAMPLE;
+        sampled.formats.uses[f as usize] = wcontainers_gpu::FormatUse::SAMPLE;
     }
     assert_eq!(
         format_support(&sampled, dxgi::BC1_UNORM).support1 & shapes,

@@ -1,6 +1,6 @@
 //! DXGI formats (their numbers in `dxgiformat.h`) as the interface's formats.
 
-use wcontainers_gpu::{Format, FormatKind, IndexFormat, ScalarKind, VertexFormat};
+use wcontainers_gpu::{FORMAT_FACTS, Format, FormatKind, IndexFormat, ScalarKind, VertexFormat};
 
 use crate::desc::level;
 use crate::error::{Error, Result, not_implemented};
@@ -317,7 +317,10 @@ pub fn buffer_viewed(dxgi: u32) -> bool {
 
 /// Whether `format` holds integers, which are neither filtered nor resolved.
 pub fn is_integer(format: Format) -> bool {
-    matches!(format.kind(), FormatKind::Uint | FormatKind::Sint)
+    matches!(
+        FORMAT_FACTS[format as usize].kind,
+        FormatKind::Uint | FormatKind::Sint
+    )
 }
 
 /// The plane of an NV12 texture a view of DXGI format `view` names (0 luma, 1 chroma), or none
@@ -468,7 +471,7 @@ pub fn view_format(view: u32, texture: u32, storage: Format) -> Result<(Format, 
 /// Whether a view of `format` of a texture stored as `storage` reads other bits than the storage
 /// format's, which no back end's view does (`ReinterpretCopy`).
 pub fn reinterprets(format: Format, storage: Format) -> bool {
-    format.linear() != storage.linear()
+    FORMAT_FACTS[format as usize].linear != FORMAT_FACTS[storage as usize].linear
 }
 
 /// The sRGB format of a linear one, or the linear one of an sRGB one, where the pair exists.
@@ -777,7 +780,7 @@ pub fn vertex_scalar(f: VertexFormat) -> ScalarKind {
 /// Bytes one vertex element of DXGI format `dxgi` takes: a texel of that format.
 pub fn vertex_size(dxgi: u32) -> Option<u32> {
     texture_format(dxgi).map(|f| {
-        let (_, _, bytes) = f.block();
+        let (_, _, bytes) = FORMAT_FACTS[f as usize].block;
         bytes
     })
 }
@@ -806,14 +809,14 @@ pub fn index_format(dxgi: u32) -> Option<IndexFormat> {
 
 /// Bytes a row of `width` texels of `format` takes, and how many rows of blocks `height` texels make.
 pub fn row_bytes(format: Format, width: u32, height: u32) -> (u32, u32) {
-    let (bw, bh, bytes) = format.block();
+    let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
     (width.div_ceil(bw) * bytes, height.div_ceil(bh))
 }
 
 /// The components `format` has, a bit each from red, as a view reads them: a border colour is read
 /// as a texel of the view's format (`HelperValue::TextureComponents`). Depth reads as red.
 pub fn components(format: Format) -> u32 {
-    format.components()
+    FORMAT_FACTS[format as usize].components
 }
 
 /// Direct3D's conversion of `value` into a channel of normalised `format` (clamped to its range,
@@ -821,7 +824,8 @@ pub fn components(format: Format) -> u32 {
 /// clears and draws them), as the bits of a channel of its integer twin (`NormAsInteger`).
 pub fn encode_norm(format: Format, value: f32) -> u32 {
     let signed = signed_normalized(format);
-    let bits = format.block().2 * u8::BITS / format.components().count_ones();
+    let bits = FORMAT_FACTS[format as usize].block.2 * u8::BITS
+        / FORMAT_FACTS[format as usize].components.count_ones();
     let max = (1u32 << (bits - u32::from(signed))) - 1;
     let low = if signed { -1.0 } else { 0.0 };
     let v = if value.is_nan() {

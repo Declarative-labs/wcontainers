@@ -812,7 +812,7 @@ fn mips<B: Backend>(b: &mut B, format: Format, values: Format, bytes: &[u8]) -> 
         reinterpret: false,
     };
     let t = b.create_texture(&desc).expect("create_texture");
-    let texel = format.block().2;
+    let texel = FORMAT_FACTS[format as usize].block.2;
     b.write_texture(
         &TextureRegion {
             texture: &t,

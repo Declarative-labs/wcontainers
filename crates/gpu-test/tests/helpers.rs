@@ -1062,7 +1062,7 @@ fn the_occlusion_counter_writes_its_count_into_a_buffer_in_order() {
 #[test]
 fn the_occlusion_counter_counts_past_its_formats_bound_in_halves() {
     let mut k = Kit::on(Recorder::with_caps(|c| {
-        let at = Format::R32Float.index();
+        let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::BLEND);
     }));
     let mut passes = PassTracker::default();
@@ -1163,7 +1163,7 @@ fn the_occlusion_counter_counts_past_its_formats_bound_in_halves() {
 fn the_occlusion_counter_splits_instances_only_where_each_reads_the_same() {
     for bases in [true, false] {
         let mut k = Kit::on(Recorder::with_caps(|c| {
-            c.formats.uses[Format::R32Float.index()].remove(FormatUse::BLEND);
+            c.formats.uses[Format::R32Float as usize].remove(FormatUse::BLEND);
             if !bases {
                 c.features.remove(Features::BASE_VERTEX_INSTANCE);
             }
@@ -1569,7 +1569,7 @@ fn the_occlusion_counter_counts_across_writes_and_target_changes() {
 #[test]
 fn the_occlusion_counter_counts_halves_from_the_depth_they_began_with() {
     let mut k = Kit::on(Recorder::with_caps(|c| {
-        let at = Format::R32Float.index();
+        let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::BLEND);
     }));
     let mut passes = PassTracker::default();
@@ -1648,7 +1648,7 @@ fn the_occlusion_counter_counts_halves_from_the_depth_they_began_with() {
 #[test]
 fn the_occlusion_counter_keeps_the_starting_depth_for_halves_on_four_samples() {
     let mut k = Kit::on(Recorder::with_caps(|c| {
-        let at = Format::R32Float.index();
+        let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::BLEND);
     }));
     let mut passes = PassTracker::default();

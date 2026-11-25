@@ -7,8 +7,8 @@ use std::path::Path;
 use wcontainers_gpu::{
     AddedBinding, Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferDesc,
     BufferRange, BufferUsage, ColorAttachment, ColorWrites, CullMode, DepthStencilDesc, DrawCall,
-    DrawRange, Extent, FillMode, Filter, Format, FrontFace, GpuError, HelperValue, Interpolation,
-    MapIntent, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
+    DrawRange, Extent, FORMAT_FACTS, FillMode, Filter, Format, FrontFace, GpuError, HelperValue,
+    Interpolation, MapIntent, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
     RenderTargetBlend, SamplerDesc, SlotKind, StageSet, StepMode, StoreOp,
     TEXEL_BUFFER_TEXTURE_WIDTH, TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion,
     TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute, VertexBinding,
@@ -606,7 +606,7 @@ pub fn direct3d_11(
 
 /// Reads a target back through a staging texture.
 pub fn read(gpu: &Gpu, texture: &ID3D11Texture2D, format: Format) -> Vec<u8> {
-    let row = (SIZE * format.block().2) as usize;
+    let row = (SIZE * FORMAT_FACTS[format as usize].block.2) as usize;
     let mut desc = d3d11::tex2d(SIZE, SIZE, dxgi(format), D3D11_BIND_FLAG(0));
     desc.Usage = D3D11_USAGE_STAGING;
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
@@ -1184,7 +1184,7 @@ pub fn try_ours<B: Backend + 'static>(
         .iter()
         .filter(|_| route == TexelBufferRoute::Texture)
         .map(|t| {
-            let size = t.format.block().2;
+            let size = FORMAT_FACTS[t.format as usize].block.2;
             let elements = t.bytes.len() as u32 / size;
             let width = elements.min(TEXEL_BUFFER_TEXTURE_WIDTH);
             let height = elements.div_ceil(TEXEL_BUFFER_TEXTURE_WIDTH);
@@ -1256,7 +1256,7 @@ pub fn try_ours<B: Backend + 'static>(
             0,
         );
         let at = h.offset as usize;
-        let offset = t.first * t.format.block().2;
+        let offset = t.first * FORMAT_FACTS[t.format as usize].block.2;
         pixel_helpers[at..at + 4].copy_from_slice(&offset.to_le_bytes());
         pixel_helpers[at + 4..at + 8].copy_from_slice(&t.count.to_le_bytes());
     }
@@ -1627,7 +1627,7 @@ pub fn try_ours<B: Backend + 'static>(
         (None, Some((resolved, _))) => (resolved, draw.format),
         (None, None) => (&target, draw.format),
     };
-    let mut out = vec![0; (draw.size * draw.size * format.block().2) as usize];
+    let mut out = vec![0; (draw.size * draw.size * FORMAT_FACTS[format as usize].block.2) as usize];
     b.read_back_now(
         &ReadSource::Texture {
             region: TextureRegion {
@@ -1683,12 +1683,16 @@ pub fn differ(a: &[u8], b: &[u8], format: Format) -> (usize, u64) {
         | F::R8Sint
         | F::Rg8Sint
         | F::Rgba8Sint => {
-            let texel = format.block().2 as usize;
-            (texel / format.components().count_ones() as usize, texel)
+            let texel = FORMAT_FACTS[format as usize].block.2 as usize;
+            (
+                texel / FORMAT_FACTS[format as usize].components.count_ones() as usize,
+                texel,
+            )
         }
         _ => (1, 4),
     };
-    let signed = format.kind() == wcontainers_gpu::FormatKind::Sint && channel < 4;
+    let signed =
+        FORMAT_FACTS[format as usize].kind == wcontainers_gpu::FormatKind::Sint && channel < 4;
     let mut count = 0;
     let mut largest = 0;
     for (x, y) in a.chunks(texel).zip(b.chunks(texel)) {

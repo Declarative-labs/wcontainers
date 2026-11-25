@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use naga::{
     Expression, GlobalVariable, Handle, ImageClass, Module, ScalarKind, Span, Type, TypeInner,
 };
-use wcontainers_gpu::{Format, FormatKind, Reflection, SlotKind, VariantKey};
+use wcontainers_gpu::{FORMAT_FACTS, Format, FormatKind, Reflection, SlotKind, VariantKey};
 
 use super::{Result, global_of, owners, slot_of};
 use crate::{ConvertError, refusal};
@@ -22,7 +22,7 @@ pub(super) struct Viewed {
 
 /// The scalar kind a texture view of `format` reads as.
 fn view_kind(format: Format) -> ScalarKind {
-    match format.kind() {
+    match FORMAT_FACTS[format as usize].kind {
         FormatKind::Uint => ScalarKind::Uint,
         FormatKind::Sint => ScalarKind::Sint,
         _ => ScalarKind::Float,

@@ -5,8 +5,8 @@ use std::ffi::{c_uint, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, Format, FormatKind, FormatUse,
-    MapIntent, Object, Origin, ReadSource, STORAGE_WORD, TextureDesc, TextureDimension,
+    Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, FORMAT_FACTS, Format, FormatKind,
+    FormatUse, MapIntent, Object, Origin, ReadSource, STORAGE_WORD, TextureDesc, TextureDimension,
     TextureRegion, TextureUsage, WriteMode,
 };
 
@@ -165,7 +165,7 @@ fn texture_desc<B: Backend>(screen: &Screen<B>, template: &pipe_resource) -> Opt
     // OpenGL binds any colour texture as an image later (st/mesa names no image binding at
     // creation). Depth formats are never images, whatever their caps say.
     if uses.contains(FormatUse::STORAGE_WRITE)
-        && !format.is_depth_stencil()
+        && !FORMAT_FACTS[format as usize].depth_stencil
         && template.nr_samples <= 1
     {
         usage |= TextureUsage::STORAGE;
@@ -680,7 +680,7 @@ pub unsafe extern "C" fn texture_map<B: Backend>(
             } else {
                 read(
                     &mut backend,
-                    desc.format.kind() == FormatKind::Stencil,
+                    FORMAT_FACTS[desc.format as usize].kind == FormatKind::Stencil,
                     transfer.bytes(),
                 )
             };
@@ -747,7 +747,7 @@ fn write_texels<B: Backend>(
         return;
     }
     write(
-        desc.format.kind() == FormatKind::Stencil,
+        FORMAT_FACTS[desc.format as usize].kind == FormatKind::Stencil,
         data,
         row_pitch,
         mode,
@@ -779,7 +779,7 @@ fn write_aspect<B: Backend>(
         && extent.height == (desc.height >> region.mip).max(1);
     let aspect = region.stencil
         || matches!(
-            desc.format.kind(),
+            FORMAT_FACTS[desc.format as usize].kind,
             FormatKind::Depth | FormatKind::DepthStencil | FormatKind::Stencil
         );
     if whole || !aspect {

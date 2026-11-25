@@ -38,10 +38,10 @@ mod renames;
 
 use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BufferRange, BufferUsage, ColorAttachment,
-    DeviceStatus, DrawCall, DrawRange, Extent, Features, Format, FormatUse, LoadOp, Origin,
-    PassDesc, ReadSource, SlowPath, StageSet, StepMode, StoreOp, TextureDesc, TextureDimension,
-    TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexBinding, VertexFormat,
-    ViewDimension, WriteMode,
+    DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, Features, Format, FormatUse, LoadOp,
+    Origin, PassDesc, ReadSource, SlowPath, StageSet, StepMode, StoreOp, TextureDesc,
+    TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology, VertexBinding,
+    VertexFormat, ViewDimension, WriteMode,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 use wcontainers_graphics_test::Driver;
@@ -691,7 +691,7 @@ fn our_bc_texels(b: &mut B, format: Format, blocks: &[u8]) -> Vec<f32> {
         &region(&texture),
         whole,
         blocks,
-        BC_SIZE / 4 * format.block().2,
+        BC_SIZE / 4 * FORMAT_FACTS[format as usize].block.2,
         BC_SIZE / 4,
         WriteMode::Ordered,
     );
@@ -832,7 +832,7 @@ fn bc_textures_decoded_are_as_close_to_direct3d_as_warp() {
     let mut rng = fastrand::Rng::with_seed(seed);
     let mut beyond = Vec::new();
     for (format, dxgi) in BC_FORMATS {
-        let block = format.block().2;
+        let block = FORMAT_FACTS[format as usize].block.2;
         for case in 0..cases {
             let blocks: Vec<u8> = (0..(BC_SIZE / 4).pow(2) * block)
                 .map(|_| rng.u8(..))

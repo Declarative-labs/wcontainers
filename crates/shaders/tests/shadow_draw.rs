@@ -17,11 +17,11 @@ use common::*;
 use wcontainers_gpu::{
     AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BorderColor, BufferRange,
     BufferUsage, ColorAttachment, ColorWrites, CompareFn, CullMode, DepthStencilDesc, DrawCall,
-    DrawRange, Extent, FillMode, Filter, Format, FrontFace, HELPER_SET, HelperValue, Interpolation,
-    LoadOp, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource, RenderTargetBlend,
-    SamplerDesc, ShaderStage, SlotKind, StageSet, StepMode, StoreOp, TextureRegion, TextureUsage,
-    Topology, VariantKey, VertexAttribute, VertexFormat, VertexLayoutDesc, VertexStream,
-    ViewComponent, Viewport, WriteMode, helper_binding,
+    DrawRange, Extent, FORMAT_FACTS, FillMode, Filter, Format, FrontFace, HELPER_SET, HelperValue,
+    Interpolation, LoadOp, Origin, PassDesc, Program, ProvokingVertex, RasterDesc, ReadSource,
+    RenderTargetBlend, SamplerDesc, ShaderStage, SlotKind, StageSet, StepMode, StoreOp,
+    TextureRegion, TextureUsage, Topology, VariantKey, VertexAttribute, VertexFormat,
+    VertexLayoutDesc, VertexStream, ViewComponent, Viewport, WriteMode, helper_binding,
 };
 use wcontainers_graphics_test::d3d11::{self, Gpu};
 use wcontainers_graphics_test::d3d12;
@@ -123,7 +123,7 @@ fn direct3d(gpu: &Gpu, shader: &str, filters: Filters, shadow: &[u8]) -> Vec<u8>
     let constants = gpu
         .immutable(&constants([1.0; 4]), D3D11_BIND_CONSTANT_BUFFER)
         .unwrap();
-    let texel = SHADOW.block().2;
+    let texel = FORMAT_FACTS[SHADOW as usize].block.2;
     let texture = gpu
         .texture2d(
             &d3d11::tex2d(SIZE, SIZE, SHADOW_DXGI, D3D11_BIND_SHADER_RESOURCE),
@@ -196,7 +196,7 @@ fn helpers(c: &Converted, plain: Filter) -> Vec<u8> {
             HelperValue::BorderColor { sampler: PLAIN } => vec![0; 4],
             HelperValue::TextureComponents {
                 texture: SHADOW_SLOT,
-            } => vec![SHADOW.components()],
+            } => vec![FORMAT_FACTS[SHADOW as usize].components],
             other => panic!("no value for {other:?}"),
         };
         let at = h.offset as usize;
@@ -348,7 +348,7 @@ fn direct3d12(
             None,
         )
         .unwrap();
-    gpu.fill_texture(&map, shadow, SIZE * SHADOW.block().2)
+    gpu.fill_texture(&map, shadow, SIZE * FORMAT_FACTS[SHADOW as usize].block.2)
         .unwrap();
     let views = gpu
         .descriptor_heap(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 1, true)
@@ -521,7 +521,7 @@ fn ours<B: Backend>(
         1,
         TextureUsage::SAMPLE | TextureUsage::COPY_DST,
     );
-    let texel = SHADOW.block().2;
+    let texel = FORMAT_FACTS[SHADOW as usize].block.2;
     b.write_texture(
         &TextureRegion {
             texture: &map,
@@ -668,7 +668,7 @@ fn ours<B: Backend>(
         },
     });
     b.end_pass();
-    let mut texels = vec![0; (SIZE * SIZE * TARGET.block().2) as usize];
+    let mut texels = vec![0; (SIZE * SIZE * FORMAT_FACTS[TARGET as usize].block.2) as usize];
     b.read_back_now(
         &ReadSource::Texture {
             region: TextureRegion {
@@ -693,7 +693,7 @@ fn ours<B: Backend>(
 
 /// Texels with a float past its channel's allowance, and the largest difference of any float.
 fn apart(a: &[u8], b: &[u8], allowed: [f32; 4]) -> (usize, f32) {
-    let texel = TARGET.block().2 as usize;
+    let texel = FORMAT_FACTS[TARGET as usize].block.2 as usize;
     let float = |c: &[u8]| f32::from_le_bytes(c.try_into().unwrap());
     let mut count = 0;
     let mut largest = 0f32;
@@ -838,7 +838,7 @@ fn floats(t: &[u8]) -> Vec<f32> {
 
 /// Prints the first texel where `ours` differs from `reference`, beside the unmapped picture's.
 fn first_apart(reference: &[u8], ours: &[u8], unmapped: &[u8]) {
-    let texel = TARGET.block().2 as usize;
+    let texel = FORMAT_FACTS[TARGET as usize].block.2 as usize;
     if let Some((at, (want, got))) = reference
         .chunks(texel)
         .zip(ours.chunks(texel))
@@ -868,7 +868,7 @@ fn depth_views_with_component_mappings_read_as_mapped() {
     )
     .unwrap();
     let filters = SCENES[0];
-    let texel = TARGET.block().2 as usize;
+    let texel = FORMAT_FACTS[TARGET as usize].block.2 as usize;
     let mut failures = Vec::new();
     let mut compared = 0;
     for seed in seeds() {
@@ -991,7 +991,7 @@ fn depth_views_with_component_mappings_read_as_direct3d_12_maps_them() {
                         let case = format!("seed {seed} {shader} {compare:?} {mapping:?} {route}");
                         // Texels the two draw apart unmapped too (which neighbour a sample on a
                         // texel's edge takes) say nothing of the mapping.
-                        let texel = TARGET.block().2 as usize;
+                        let texel = FORMAT_FACTS[TARGET as usize].block.2 as usize;
                         let otherwise: Vec<usize> = (0..reference.len() / texel)
                             .filter(|&t| {
                                 let at = t * texel..(t + 1) * texel;

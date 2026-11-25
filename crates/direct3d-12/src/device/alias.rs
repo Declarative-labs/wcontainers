@@ -9,7 +9,8 @@
 //! texture in that format, and the two inherit from each other the same way (`ReinterpretCopy`).
 
 use wcontainers_gpu::{
-    Backend, Extent, Features, Format, FormatUse, Origin, SlowPath, TextureRegion, TextureUsage,
+    Backend, Extent, FORMAT_FACTS, Features, Format, FormatUse, Origin, SlowPath, TextureRegion,
+    TextureUsage,
 };
 
 use super::{Device, Resource, ResourceId, Storage, dxgi as format_of};
@@ -85,9 +86,9 @@ impl<B: Backend> Device<B> {
             return Ok(id);
         };
         let stored = desc.format;
-        if view.linear() == stored.linear()
-            || view.is_depth_stencil()
-            || stored.is_depth_stencil()
+        if FORMAT_FACTS[view as usize].linear == FORMAT_FACTS[stored as usize].linear
+            || FORMAT_FACTS[view as usize].depth_stencil
+            || FORMAT_FACTS[stored as usize].depth_stencil
             || self
                 .backend
                 .caps()
@@ -98,7 +99,7 @@ impl<B: Backend> Device<B> {
         }
         let found = twins.iter().copied().find(|t| {
             matches!(&self.resources[t.0 as usize].storage,
-                Storage::Texture { desc, .. } if desc.format.linear() == view.linear())
+                Storage::Texture { desc, .. } if FORMAT_FACTS[desc.format as usize].linear == FORMAT_FACTS[view as usize].linear)
         });
         if let Some(t) = found {
             return Ok(t);

@@ -15,7 +15,7 @@ mod allowance;
 
 use draw::Twist;
 use scene::Scene;
-use wcontainers_gpu::{Backend, DeviceStatus};
+use wcontainers_gpu::{Backend, DeviceStatus, FORMAT_FACTS};
 use wcontainers_gpu_webgpu::WebGpu;
 
 fn device() -> WebGpu {
@@ -356,7 +356,12 @@ fn integer_formats_are_not_resolvable() {
     ];
     let resolvable: Vec<Format> = integer
         .into_iter()
-        .inspect(|f| assert!(matches!(f.kind(), FormatKind::Uint | FormatKind::Sint)))
+        .inspect(|f| {
+            assert!(matches!(
+                FORMAT_FACTS[*f as usize].kind,
+                FormatKind::Uint | FormatKind::Sint
+            ))
+        })
         .filter(|&f| b.caps().formats.get(f).contains(FormatUse::RESOLVE))
         .collect();
     assert!(resolvable.is_empty(), "declared resolvable: {resolvable:?}");
