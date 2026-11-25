@@ -105,7 +105,7 @@ native-restart/tools/marks.py (attributes `expect(...)` naming `unsafe_code`, by
 Upload the linter source (`git -C reviewable-rust archive 59ad72ce | arm-run --ssh 'tar -x -C <your target>/linter-src'`),
 then run tools/r0-job.txt and r0-job-2.txt with your own `--name`, and summarize the JSON with tools/findings.py.
 
-## R1: the mapping rule for `crates/kvm` and `crates/hypervisor-framework` (proposal; nothing built; STOP for it)
+## R1: the mapping rule for `crates/kvm` and `crates/hypervisor-framework` (proposal of the first run; superseded by "R1: built" below)
 
 Each crate: interface.rs holds one generated trait, mirroring the API one to one; `implementation/direct` is its one
 implementation and holds every unsafe line, each marked; a conformance crate per the linter's A7.
@@ -138,3 +138,119 @@ Open points in the rule, for the owner:
    used today (kvm.rs and hvf.rs).
 3. KVM: arm64 and generic ioctls only, x86 added when an x86 host is served.
 4. Each trait has one implementation (`direct`) today; brief rule 5 accepts a trait for several environments only.
+
+## R1: built (run of 2026-11-25 evening)
+
+Ruling it builds on (READ, the orchestrator's task text): one crate named for the API holds a safe trait; its
+`implementation/direct` makes the real calls and holds every marked `unsafe`; our own code is the other
+implementation. Branch state: the owner's main of today merged (d11d8a87d, a normal merge, no conflict);
+the port's own commit that gives `PointerBytes` and `SharedMapping` an `address()` cherry-picked unchanged
+(8117188b3, from instruction-port a14efecce), so the port's later merge meets the same lines.
+
+### The mapping rule as built (the open points of the first run, decided)
+
+1. One trait per API, one associated type per object the API makes (KVM: `System`, `Vm`, `Vcpu`, `Device`;
+   HVF: `VmConfig`, `VcpuConfig`, `GicConfig`, `GicState`, `Vm`, `Vcpu`). Drop is the API's close, release
+   or destroy.
+2. Scope: KVM, every ioctl kvm-ioctls 0.25.1 offers on aarch64 plus the two the monitor uses that it lacks
+   (`KVM_ARM_SET_COUNTER_OFFSET`, `KVM_GET_DEVICE_ATTR` on a VM and a vCPU): 42 ioctl methods. HVF, every
+   function applevisor-sys 1.0.0 declares for ARM64 (generated from Apple's headers) except `hv_vm_allocate`
+   and `hv_vm_deallocate`: 85 function methods. kvm.h's ioctls kvm-ioctls does not offer (for example
+   `KVM_ARM_MTE_COPY_TAGS`, `KVM_ARM_GET_REG_WRITABLE_MASKS`, `KVM_SET_USER_MEMORY_REGION2`) are not in yet.
+3. ARM64 only (`#![cfg(target_arch = "aarch64")]` on both interfaces).
+4. Each trait has one implementation (`direct`) today.
+Non-API methods, one rule each: `create_user_memory` (both: the memory a slot or `vm_map` keeps, a
+`SharedMapping`, so no new `VolatileBytes` kind), KVM's `vcpu_run_page` (a borrow of the vCPU's
+`PointerBytes`, so it cannot outlive the mapping), HVF's `vcpu_exit` (the exit record decoded from its bytes)
+and `vcpu_id` (the `Copy` id `vcpus_exit` takes from any thread). Names: the API's name without its prefix,
+each in reviewable-external-names.toml with its documentation link (42 KVM, 86 HVF). Errors: one per API
+(`rustix::io::Errno`; HVF's `hv_return_t`), each under one reasoned `explicit_shared_error` exclusion.
+Pointers into our memory that KVM keeps reading (`kvm_device_attr.addr`, `kvm_dirty_log`) never come from a
+caller: the attribute value goes through a buffer at least as long as any ARM64 attribute
+(`size_of::<kvm_smccc_filter>()`), and the dirty log is sized from the slot's own length.
+
+### Files
+
+| Crate | Files | Lines with `unsafe` (root manifest's command) | Marks |
+|---|---|---|---|
+| wcontainers-kvm | crates/kvm/interface.rs | 0 (workspace `forbid`) | 0 |
+| wcontainers-kvm-conformance | crates/kvm/conformance/suite.rs (11 tests) | 0 (workspace `forbid`) | 0 |
+| wcontainers-kvm-direct | implementation.rs, conformance_run.rs | 9 | 9 (all marked, none UNSOUND) |
+| wcontainers-hypervisor-framework | crates/hypervisor-framework/interface.rs | 0 (workspace `forbid`) | 0 |
+| wcontainers-hypervisor-framework-conformance | suite.rs (5 tests) | 0 (workspace `forbid`) | 0 |
+| wcontainers-hypervisor-framework-direct | implementation.rs, build.rs, vector.c, conformance_run.rs | 93 | 93 (one per framework call, plus the extern block and 6 drops) |
+
+### Where each unsafe line of kvm.rs (12) and hvf.rs (5) goes
+
+| Line | What | Destination |
+|---|---|---|
+| kvm.rs:159 | `KVM_ARM_SET_COUNTER_OFFSET` | kvm direct `arm_set_counter_offset` |
+| kvm.rs:183 | vCPU `KVM_GET_DEVICE_ATTR` | kvm direct `get_attribute` (VM, vCPU and device) |
+| kvm.rs:325 | `set_user_memory_region` | kvm direct `set_user_memory_region` |
+| kvm.rs:374 | second mapping of the run page | kvm direct `create_vcpu` (memmap2, safe) and `run_page_bytes` (the one promise) |
+| kvm.rs:93, 99 | `unsafe impl Send`/`Sync for Remote` (UNSOUND) | gone: the run page is `PointerBytes`, `Send` and `Sync` with no `unsafe impl` |
+| kvm.rs:415 | atomic view of `immediate_exit` (UNSOUND) | gone: R3 writes the byte through `vcpu_run_page` |
+| kvm.rs:426 | `munmap` of the second mapping | gone: memmap2 unmaps on drop |
+| kvm.rs:132, 140 | `sigaction` for the stop signal | not KVM: R3, by a safe crate (INFERRED: signal-hook's `flag::register`) |
+| kvm.rs:344 | `madvise(MADV_DONTNEED)` in `give_back` | not KVM: R3, a hole punched in the memory file (INFERRED: rustix `fallocate`, safe; needs the file kept) |
+| kvm.rs:654 | `tgkill` of the vCPU's thread | not KVM: R3, by a safe call (INFERRED: rustix or nix; to check) |
+| hvf.rs:25 | the C function's declaration | hvf direct (the same C file, vector.c) |
+| hvf.rs:86, 105 | `hv_vm_map`, `hv_vm_unmap` (map UNSOUND) | hvf direct `vm_map` (keeps the memory), `vm_unmap` |
+| hvf.rs:299 | the C function's call | hvf direct `vcpu_set_simd_fp_reg` |
+| hvf.rs:322 | `hv_vcpus_exit` | hvf direct `vcpus_exit` |
+
+The monitor still holds its own 58 lines until R3 switches it onto these crates.
+
+### Measured (rented Graviton4, Linux 7.0.0-1018-aws, rustc 1.99.0; job tools/r1-full-job.txt)
+
+- `cargo fmt`, then `cargo clippy --all-targets -- -D warnings` on the three KVM crates: exit 0.
+- `cargo test -p wcontainers-kvm-direct` (KVM, /dev/kvm): 11 passed, 0 failed.
+- Hostile cases in the suite: register bytes shorter than the register refused both ways (`EINVAL`);
+  attribute values longer (128 bytes) and shorter (1 byte) than the attribute; a vCPU run after its VM, its
+  memory's handle and the system are dropped; a vCPU made on one thread and run on another; overlapping
+  slots refused (`EEXIST`) until one is taken away; a dirty log asked of an empty slot (`ENOENT`).
+- Mutation check: with the slot's keep-alive removed (`Some(_) => None`), `keeps_memory_mapped_while_a_vcpu_lives`
+  and `refuses_overlapping_slots_until_one_is_taken_away` fail (9 passed, 2 failed), so the test sees it.
+- HVF: `cargo clippy --all-targets -- -D warnings` on the three crates, with the suite and its run type-checked
+  as if on macOS (the job edits their `cfg` in the machine's copy only): exit 0. NOT RUN on a Mac: this run's
+  rules ban building on the Mac, so the 5 HVF tests have never run.
+- `cargo reviewable check` (linter 59ad72ce, no model key on the machine): findings in these crates by class:
+
+| Class | kvm | hvf | Why it stays |
+|---|---|---|---|
+| summary_unanswered, name_unanswered | 89, 26 | 34, 12 | need the model's answers; no key on the rented machine and nothing is sent out |
+| public_outside_interface (a handle's private fields) | 8 | 14 | see linter conflict 1 |
+| conformance_not_run (the run's platform `cfg`) | 1 | 1 | see linter conflict 2 |
+| constant_defined_twice (build.rs: `TARGET_OS`, `MACOS`, `RERUN_IF_CHANGED`) | 0 | 3 | the inside's build_environment.rs holds the same; they meet when R3 moves the monitor's HVF build lines here |
+
+### Linter conflicts, for the orchestrator (the rule is not loosened; smallest examples)
+
+1. `public_outside_interface` wants a type that fills an associated type to be plain data with every field
+   public. An API handle cannot be: `pub struct KvmVm(Arc<Machine>);` fills `Kvm::Vm`; a public field would let
+   safe code build a VM handle around any file descriptor, or drop the memory a slot still reaches.
+2. `conformance_not_run` wants conformance_run.rs to be exactly the `tests!` line. The KVM suite builds only on
+   Linux ARM64 and the HVF suite only on macOS ARM64, so the run starts with `#![cfg(...)]`, as
+   crates/raw-sockets/implementation/host/conformance.rs already does on main; without it, every
+   `cargo test --workspace` on the x86 machine or on Linux would fail to build that target.
+
+### What R1 still lacks
+
+- The HVF suite run on the Mac (waits on a Mac slot; this run's rules ban the Mac).
+- The two linter conflicts, and the model's answers for summaries and names.
+- An independent check by a fresh agent.
+- The instruction port's `crates/kvm` (instruction-port 5d54c52d0, one method, `&VmFd` in its interface)
+  conflicts with this one when the port merges; this crate covers it (`create_user_memory` and
+  `set_user_memory_region`), and kvm-single-step moves onto it.
+
+### Lint tables (task of this run)
+
+The monitor, the inside and host-process keep their own `deny` table only because each still holds its marked
+lines (58, 49, 9); each goes back to `[lints] workspace = true` when R3, R4 and R2 empty it. arm64-stop and every
+new crate except the two `direct` ones inherit the workspace (`forbid`).
+
+### Milestones after R1
+
+R2 (form P, the host-process form; brief order) and R3 wait on the port, KP1, TR1 and the runtime on this branch
+(none merged yet), their tests also on X2 and X3. Form I (the kernel in process with our own memory checks,
+docs/native.md and the owner's ruling of 2026-11-23) is R5, after R4, and waits on the owner's answers to brief
+question 4. R4 (the inside) waits on question 3 for its unsafe lines with no outside API.
