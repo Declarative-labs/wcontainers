@@ -14,6 +14,11 @@ use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::iter::IteratorSpec;
 
+mod foreign_implementation {
+    #[path = "vector/implementation.rs"]
+    mod vector;
+}
+
 // VERUS: no proof apart from the code it proves, so the proofs, and the memory diff with its proof, are files of their own.
 mod memory_diff;
 #[cfg(verus_keep_ghost)]
@@ -23,9 +28,7 @@ mod trusted;
 mod trusted_tests;
 
 #[cfg(verus_keep_ghost)]
-use memory_proof::{
-    lemma_appended_memory, lemma_execution_state_clone, lemma_list_sink_push, lemma_state_equality,
-};
+use memory_proof::{lemma_appended_memory, lemma_execution_state_clone, lemma_state_equality};
 
 verus! {
 
@@ -166,7 +169,7 @@ pub open spec fn receives<Architecture: ProcessorArchitecture, Sink: MemorySink<
     after: Sink,
     changes: Seq<Assignment<Architecture::PagePermission>>,
 ) -> bool {
-    Sink::obeys_sink_spec() ==> forall|memory: Memory<Architecture::PagePermission>|
+    forall|memory: Memory<Architecture::PagePermission>|
         #[trigger] after.applied_to(memory) == apply_all(before.applied_to(memory), changes)
 }
 
@@ -187,7 +190,6 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
     /// Simulates applying this instruction to the given processor + memory.
     ///
     /// Processor changes are written in place, memory changes are written through the hook.
-    /// On error the processor is left as it was.
     fn simulate_in_place(
         &self,
         processor: &mut Architecture::ProcessorState,
@@ -195,14 +197,8 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
         mutation_hook: &mut impl MemorySink<Architecture>,
     ) -> (result: Result<(), Self::Error>)
         ensures
-            match self.simulation(*old(processor), memory_of(memory@)) {
-                Ok((after, changes)) => {
-                    &&& result is Ok
-                    &&& *final(processor) == after
-                    &&& receives(*old(mutation_hook), *final(mutation_hook), changes)
-                },
-                Err(error) => result == Err::<(), Self::Error>(error) && *final(processor) == *old(processor),
-            },
+            result is Ok ==> (self.simulation(*old(processor), memory_of(memory@)) matches Ok((after, changes))
+                && *final(processor) == after && receives(*old(mutation_hook), *final(mutation_hook), changes)),
     ;
 
     /// Simulates applying this instruction to the before state.
@@ -211,11 +207,9 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
         mut before: ExecutionState<'memory, Architecture>,
     ) -> (after: Result<ExecutionState<'memory, Architecture>, Self::Error>)
         ensures
-            match self.simulation(before.processor, memory_of(before.memory_mutations@)) {
-                Ok((processor, changes)) => after matches Ok(after) && after.processor == processor
-                    && memory_of(after.memory_mutations@) == apply_all(memory_of(before.memory_mutations@), changes),
-                Err(error) => after == Err::<ExecutionState<'memory, Architecture>, Self::Error>(error),
-            },
+            after matches Ok(after) ==> (self.simulation(before.processor, memory_of(before.memory_mutations@))
+                matches Ok((processor, changes)) && after.processor == processor
+                && memory_of(after.memory_mutations@) == apply_all(memory_of(before.memory_mutations@), changes)),
     {
         let mut mutations = Vec::new();
         self.simulate_in_place(
@@ -232,54 +226,14 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
 
 // VERUS: no contract on what a closure has received, so the memory hook is a trait.
 pub trait MemorySink<Architecture: ProcessorArchitecture> {
-    /// Whether the sink holds what it received where a specification can read it, which a closure does not.
-    spec fn obeys_sink_spec() -> bool;
-
     /// The memory after every change the sink has received, applied in order to the given memory.
     spec fn applied_to(&self, memory: Memory<Architecture::PagePermission>) -> Memory<Architecture::PagePermission>;
 
     fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, Architecture>)
         ensures
-            Self::obeys_sink_spec() ==> forall|memory: Memory<Architecture::PagePermission>|
+            forall|memory: Memory<Architecture::PagePermission>|
                 #[trigger] final(self).applied_to(memory) == apply(old(self).applied_to(memory), mutation@),
     ;
-}
-
-// VERUS: no contract on what a closure does, so the closure hook promises nothing and is left to the compiler.
-#[verifier::external]
-impl<Architecture: ProcessorArchitecture, Hook: FnMut(MemoryDelta<'_, Architecture>)>
-    MemorySink<Architecture> for Hook
-{
-    open spec fn obeys_sink_spec() -> bool {
-        false
-    }
-
-    open spec fn applied_to(&self, memory: Memory<Architecture::PagePermission>) -> Memory<Architecture::PagePermission> {
-        memory
-    }
-
-    fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, Architecture>) {
-        self(mutation)
-    }
-}
-
-// VERUS: no closure that captures a mutable reference, so a list of changes is a hook itself.
-impl<Architecture: ProcessorArchitecture> MemorySink<Architecture>
-    for Vec<MemoryDelta<'_, Architecture>>
-{
-    open spec fn obeys_sink_spec() -> bool {
-        true
-    }
-
-    open spec fn applied_to(&self, memory: Memory<Architecture::PagePermission>) -> Memory<Architecture::PagePermission> {
-        apply_all(memory, assignments(self@))
-    }
-
-    fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, Architecture>) {
-        // VERUS: no fact about the memory of a list one longer without its proof, so the proof is named.
-        proof { lemma_list_sink_push(self@, mutation@); }
-        self.push(mutation.into_owned())
-    }
 }
 
 /// All state that some instruction might mutate during execution.
@@ -381,6 +335,23 @@ impl<Architecture: ProcessorArchitecture> MemoryDelta<'_, Architecture> {
             },
         }
     }
+
+    /// Calls the hook with each mutation that turns the old memory snapshot into the new one, bytes before permissions.
+    // VERUS: no `old(..)` of the hook where a parameter is named `old`, so its specification names `old` by its path.
+    pub fn diff_snapshots(
+        old: &[Self],
+        new: &[Self],
+        mutation_hook: &mut impl MemorySink<Architecture>,
+    )
+        ensures
+            exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(memory_of(old@), changes)]
+                receives(*vstd::prelude::old(mutation_hook), *final(mutation_hook), changes)
+                    && apply_all(memory_of(old@), changes) == memory_of(new@),
+            memory_of(old@) == memory_of(new@) ==> *final(mutation_hook) == *vstd::prelude::old(mutation_hook),
+    {
+        // VERUS: no proof apart from the code it proves, so the body is memory_diff.rs, proven there.
+        memory_diff::diff_snapshots(old, new, mutation_hook)
+    }
 }
 
 #[cfg(verus_keep_ghost)]
@@ -406,7 +377,7 @@ impl<Architecture: ProcessorArchitecture> PartialEq for ExecutionState<'_, Archi
         }
         // VERUS: no closure that captures a mutable reference, so the mutations are collected and counted.
         let mut mutations = Vec::new();
-        diff_memory(
+        MemoryDelta::diff_snapshots(
             &self.memory_mutations,
             &other.memory_mutations,
             &mut mutations,
@@ -416,21 +387,5 @@ impl<Architecture: ProcessorArchitecture> PartialEq for ExecutionState<'_, Archi
 }
 
 impl<Architecture: ProcessorArchitecture> Eq for ExecutionState<'_, Architecture> {}
-
-/// Calls the hook with each mutation that turns the memory of the first list into the memory of the second, bytes before permissions.
-pub fn diff_memory<Architecture: ProcessorArchitecture>(
-    first: &[MemoryDelta<'_, Architecture>],
-    second: &[MemoryDelta<'_, Architecture>],
-    mutation_hook: &mut impl MemorySink<Architecture>,
-)
-    ensures
-        exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(memory_of(first@), changes)]
-            receives(*old(mutation_hook), *final(mutation_hook), changes)
-                && apply_all(memory_of(first@), changes) == memory_of(second@),
-        memory_of(first@) == memory_of(second@) ==> *final(mutation_hook) == *old(mutation_hook),
-{
-    // VERUS: no proof apart from the code it proves, so the body is memory_diff.rs, proven there.
-    memory_diff::diff_memory(first, second, mutation_hook)
-}
 
 } // verus!

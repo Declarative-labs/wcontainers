@@ -1,6 +1,6 @@
 [package]
 name = "wcontainers-precise-instruction-set-measured"
-description = "The precise instruction set of a chip, found by running it and keeping the known behavior that agrees."
+description = "The precise instruction set of a chip as measurements give it."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -16,14 +16,14 @@ name = "conformance"
 path = "conformance_run.rs"
 
 [dependencies]
-wcontainers-behavior-source = { path = "../../../behavior-source" }
-wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
 wcontainers-precise-instruction-set = { path = "../.." }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 vstd.workspace = true
 
 [dev-dependencies]
+wcontainers-behavior-source = { path = "../../../behavior-source" }
 wcontainers-behavior-source-recording = { path = "../../../behavior-source/implementation/recording" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
 wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
 wcontainers-precise-instruction-set-conformance = { path = "../../conformance" }

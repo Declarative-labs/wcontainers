@@ -1,32 +1,26 @@
 #![no_std]
 
-use core::convert::Infallible;
-
 use vstd::prelude::*;
-use wcontainers_behavior_source::BehaviorSource;
-#[cfg(verus_keep_ghost)]
-use wcontainers_behavior_source::shows_alone;
-use wcontainers_processor_architecture::{ProcessorArchitecture, Simulator};
+use wcontainers_processor_architecture::ProcessorArchitecture;
 
 verus! {
 
 /// One choice of behavior for every instruction of an architecture.
 pub trait PreciseInstructionSet<Architecture: ProcessorArchitecture>: Sized {
-    /// What the behaviors are measured from, such as a live chip or a recording of one.
-    type Source: BehaviorSource<Architecture = Architecture>;
-    type MeasureError;
-
     /// The behavior this set gives the instruction.
     spec fn behavior(&self, instruction: Architecture::Instruction) -> Architecture::PreciseInstruction;
 
-    /// Measures which behavior each instruction shows.
-    // VERUS: no bound on the trait says known behaviors simulate, so measuring has that bound of its own.
-    fn measure(source: Self::Source) -> (set: Result<Self, Self::MeasureError>)
-    where
-        Architecture::PreciseInstruction: Simulator<Architecture, Error = Infallible>,
+    fn from_measurements(
+        measurements: &[(
+            Architecture::Instruction,
+            Architecture::PreciseInstruction,
+        )],
+    ) -> (set: Self)
         ensures
-            set matches Ok(set) ==> forall|instruction| #[trigger] Architecture::instructions().contains(instruction)
-                ==> shows_alone(&source, instruction, set.behavior(instruction)),
+            // Each instruction has the behavior of the first pair that names it.
+            forall|at: int| #![trigger measurements@[at]] 0 <= at < measurements@.len()
+                && (forall|earlier: int| 0 <= earlier < at ==> (#[trigger] measurements@[earlier]).0 != measurements@[at].0)
+                ==> set.behavior(measurements@[at].0) == measurements@[at].1,
     ;
 
     /// Returns the instruction with the behavior this set gives it.

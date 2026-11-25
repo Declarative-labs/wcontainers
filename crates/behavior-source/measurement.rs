@@ -1,5 +1,5 @@
-//! The lemmas `measure_instruction` names, and the one trusted function it calls; none of it is part of the
-//! specification.
+//! The lemmas `measure_instruction` and `measure_instructions` name, and the one trusted function they call; none of it
+//! is part of the specification.
 
 use core::convert::Infallible;
 
@@ -10,7 +10,7 @@ use wcontainers_processor_architecture::{
 };
 
 #[cfg(verus_keep_ghost)]
-use crate::{Shown, agrees_on_every_state, alone_agrees};
+use crate::{Shown, agrees_on_every_state, alone_agrees, measured_alone};
 
 verus! {
 
@@ -299,6 +299,39 @@ pub proof fn lemma_candidates_at_end<Architecture, Behavior>(
         assert(known.contains(first) && known.contains(second));
         lemma_agrees_on_all(shown, first, states);
         lemma_agrees_on_all(shown, second, states);
+    }
+}
+
+/// One more instruction measured, the next one listed, keeps every measured instruction with the one behavior that
+/// alone agrees with the source.
+pub proof fn lemma_measured_one_more<Architecture>(
+    measured_before: Seq<(Architecture::Instruction, Architecture::PreciseInstruction)>,
+    measured: Seq<(Architecture::Instruction, Architecture::PreciseInstruction)>,
+    shown: Shown<Architecture>,
+    shown_at_call: Shown<Architecture>,
+    states: spec_fn(Architecture::Instruction) -> Seq<ExecutionState<'static, Architecture>>,
+)
+    where
+        Architecture: ProcessorArchitecture,
+        Architecture::PreciseInstruction: Simulator<Architecture, Error = Infallible>,
+    requires
+        measured_alone(measured_before, measured_before.len() as int, shown, states),
+        measured.len() == measured_before.len() + 1,
+        forall|at: int| 0 <= at < measured_before.len() ==> #[trigger] measured[at] == measured_before[at],
+        measured.last().0 == Architecture::instructions()[measured_before.len() as int],
+        alone_agrees(measured.last().1, Architecture::known_behaviors(measured.last().0), shown_at_call, states(measured.last().0)),
+        forall|processor, memory| #[trigger] shown_at_call(processor, memory) == shown(processor, memory),
+    ensures
+        measured_alone(measured, measured.len() as int, shown, states),
+{
+    assert(shown_at_call =~= shown);
+    assert forall|at: int| 0 <= at < measured.len() implies (#[trigger] measured[at]).0 == Architecture::instructions()[at]
+        && alone_agrees(measured[at].1, Architecture::known_behaviors(measured[at].0), shown, states(measured[at].0)) by {
+        if at < measured_before.len() {
+            assert(measured[at] == measured_before[at]);
+        } else {
+            assert(measured[at] == measured.last());
+        }
     }
 }
 

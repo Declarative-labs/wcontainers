@@ -1,4 +1,4 @@
-//! The body of `diff_memory` with its proof: the owner's code, changed only where a `// VERUS:` line says why.
+//! The body of `MemoryDelta::diff_snapshots` with its proof: the owner's code, changed only where a `// VERUS:` line says why.
 
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
@@ -16,24 +16,25 @@ use crate::*;
 
 verus! {
 
-/// Calls the hook with each mutation that turns the memory of the first list into the memory of the second, bytes before permissions.
+/// Calls the hook with each mutation that turns the old memory snapshot into the new one, bytes before permissions.
+// VERUS: no `old(..)` of the hook where a parameter is named `old`, so these specifications name `old` by its path.
 #[verifier::spinoff_prover]
-pub fn diff_memory<Architecture: ProcessorArchitecture>(
-    first: &[MemoryDelta<'_, Architecture>],
-    second: &[MemoryDelta<'_, Architecture>],
+pub fn diff_snapshots<Architecture: ProcessorArchitecture>(
+    old: &[MemoryDelta<'_, Architecture>],
+    new: &[MemoryDelta<'_, Architecture>],
     mutation_hook: &mut impl MemorySink<Architecture>,
 )
     ensures
-        exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(memory_of(first@), changes)]
-            receives(*old(mutation_hook), *final(mutation_hook), changes)
-                && apply_all(memory_of(first@), changes) == memory_of(second@),
-        memory_of(first@) == memory_of(second@) ==> *final(mutation_hook) == *old(mutation_hook),
+        exists|changes: Seq<Assignment<Architecture::PagePermission>>| #![trigger apply_all(memory_of(old@), changes)]
+            receives(*vstd::prelude::old(mutation_hook), *final(mutation_hook), changes)
+                && apply_all(memory_of(old@), changes) == memory_of(new@),
+        memory_of(old@) == memory_of(new@) ==> *final(mutation_hook) == *vstd::prelude::old(mutation_hook),
 {
     let ghost hook_before = *mutation_hook;
     // Mutations both lists make in the same order leave the same memory wherever no other mutation reaches, so only
     // what the unpaired mutations reach can differ.
     // VERUS: a function this long is more than the verifier checks at once, so each step is a function of its own.
-    let (mut written, has_unpaired_permission) = record_unpaired_reach(first, second);
+    let (mut written, has_unpaired_permission) = record_unpaired_reach(old, new);
     let ghost unsorted = written@;
     proof {
         broadcast use vstd::laws_cmp::group_laws_cmp;
@@ -49,21 +50,21 @@ pub fn diff_memory<Architecture: ProcessorArchitecture>(
     merge_ranges(&mut written);
     proof {
         assert forall|address: u64| !in_ranges(written@, address)
-            implies #[trigger] memory_of(first@)(address).0 == memory_of(second@)(address).0 by {
+            implies #[trigger] memory_of(old@)(address).0 == memory_of(new@)(address).0 by {
             assert(in_ranges(sorted, address) == in_ranges(unsorted, address));
         }
     }
-    send_changed_bytes(first, second, written.as_slice(), mutation_hook);
+    send_changed_bytes(old, new, written.as_slice(), mutation_hook);
     if !has_unpaired_permission {
         proof {
-            lemma_bytes_were_all(memory_of(first@), memory_of(second@), hook_before, *mutation_hook);
+            lemma_bytes_were_all(memory_of(old@), memory_of(new@), hook_before, *mutation_hook);
         }
         return;
     }
     let ghost hook_after_bytes = *mutation_hook;
-    send_changed_permissions(first, second, mutation_hook);
+    send_changed_permissions(old, new, mutation_hook);
     proof {
-        lemma_bytes_then_permissions(memory_of(first@), memory_of(second@), hook_before, hook_after_bytes, *mutation_hook);
+        lemma_bytes_then_permissions(memory_of(old@), memory_of(new@), hook_before, hook_after_bytes, *mutation_hook);
     }
 }
 
@@ -71,47 +72,47 @@ pub fn diff_memory<Architecture: ProcessorArchitecture>(
 /// a permission: outside those the two lists leave the same memory.
 #[verifier::spinoff_prover]
 fn record_unpaired_reach<Architecture: ProcessorArchitecture>(
-    first: &[MemoryDelta<'_, Architecture>],
-    second: &[MemoryDelta<'_, Architecture>],
+    old: &[MemoryDelta<'_, Architecture>],
+    new: &[MemoryDelta<'_, Architecture>],
 ) -> (reach: (Vec<(u128, u128)>, bool))
     ensures
         well_formed(reach.0@),
-        same_outside(memory_of(first@), memory_of(second@), reach.0@, reach.1),
+        same_outside(memory_of(old@), memory_of(new@), reach.0@, reach.1),
 {
     proof {
         Architecture::equality_is_identity();
-        assert(first@.take(0) =~= Seq::<MemoryDelta<'_, Architecture>>::empty());
-        assert(second@.take(0) =~= Seq::<MemoryDelta<'_, Architecture>>::empty());
-        assert(memory_of(first@.take(0)) =~= memory_of(second@.take(0)));
+        assert(old@.take(0) =~= Seq::<MemoryDelta<'_, Architecture>>::empty());
+        assert(new@.take(0) =~= Seq::<MemoryDelta<'_, Architecture>>::empty());
+        assert(memory_of(old@.take(0)) =~= memory_of(new@.take(0)));
     }
-    let ghost memory_first = memory_of(first@);
-    let ghost memory_second = memory_of(second@);
+    let ghost memory_old = memory_of(old@);
+    let ghost memory_new = memory_of(new@);
     let (mut written, mut has_unpaired_permission) = (Vec::new(), false);
     // VERUS: no `position` with a closure, so both lists are walked by index.
     let mut rest_start: usize = 0;
     let mut index: usize = 0;
-    while index < first.len()
+    while index < old.len()
         invariant
-            index <= first@.len(),
-            rest_start <= second@.len(),
+            index <= old@.len(),
+            rest_start <= new@.len(),
             obeys_concrete_eq::<Architecture::PagePermission>(),
             well_formed(written@),
-            same_outside(memory_of(first@.take(index as int)), memory_of(second@.take(rest_start as int)), written@, has_unpaired_permission),
-        decreases first@.len() - index,
+            same_outside(memory_of(old@.take(index as int)), memory_of(new@.take(rest_start as int)), written@, has_unpaired_permission),
+        decreases old@.len() - index,
     {
-        let mutation = &first[index];
+        let mutation = &old[index];
         let mut candidate = rest_start;
         let mut found = false;
-        while !found && candidate < second.len()
+        while !found && candidate < new.len()
             invariant
-                index < first@.len(),
-                    rest_start <= candidate <= second@.len(),
-                *mutation == first@[index as int],
-                found ==> candidate < second@.len() && first@[index as int]@ == second@[candidate as int]@,
+                index < old@.len(),
+                    rest_start <= candidate <= new@.len(),
+                *mutation == old@[index as int],
+                found ==> candidate < new@.len() && old@[index as int]@ == new@[candidate as int]@,
                 obeys_concrete_eq::<Architecture::PagePermission>(),
-            decreases second@.len() - candidate + if found { 0int } else { 1int },
+            decreases new@.len() - candidate + if found { 0int } else { 1int },
         {
-            if is_same_mutation(mutation, &second[candidate]) {
+            if is_same_mutation(mutation, &new[candidate]) {
                 found = true;
             } else {
                 candidate += 1;
@@ -123,19 +124,19 @@ fn record_unpaired_reach<Architecture: ProcessorArchitecture>(
             let mut skipped = rest_start;
             while skipped < candidate
                 invariant
-                            rest_start <= skipped <= candidate < second@.len(),
+                            rest_start <= skipped <= candidate < new@.len(),
                     well_formed(written@),
                     paired_written.is_prefix_of(written@),
                     paired_flag ==> has_unpaired_permission,
-                    same_outside(memory_of(second@.take(skipped as int)), memory_of(second@.take(rest_start as int)), written@,
+                    same_outside(memory_of(new@.take(skipped as int)), memory_of(new@.take(rest_start as int)), written@,
                         has_unpaired_permission),
                 decreases candidate - skipped,
             {
                 let ghost skipped_written = written@;
                 let ghost skipped_flag = has_unpaired_permission;
-                add_unpaired(&second[skipped], &mut written, &mut has_unpaired_permission);
+                add_unpaired(&new[skipped], &mut written, &mut has_unpaired_permission);
                 proof {
-                    lemma_unpaired_change(second@, skipped as int, memory_of(second@.take(rest_start as int)), skipped_written,
+                    lemma_unpaired_change(new@, skipped as int, memory_of(new@.take(rest_start as int)), skipped_written,
                         skipped_flag, written@, has_unpaired_permission);
                     lemma_prefix_transitive(paired_written, skipped_written, written@);
                 }
@@ -143,10 +144,10 @@ fn record_unpaired_reach<Architecture: ProcessorArchitecture>(
             }
             proof {
                 if rest_start == candidate {
-                    assert(same_outside(memory_of(second@.take(skipped as int)), memory_of(second@.take(rest_start as int)), written@,
+                    assert(same_outside(memory_of(new@.take(skipped as int)), memory_of(new@.take(rest_start as int)), written@,
                         has_unpaired_permission));
                 }
-                lemma_paired_change(first@, second@, index as int, rest_start as int, candidate as int, paired_written, paired_flag,
+                lemma_paired_change(old@, new@, index as int, rest_start as int, candidate as int, paired_written, paired_flag,
                     written@, has_unpaired_permission);
             }
             rest_start = candidate + 1;
@@ -155,35 +156,35 @@ fn record_unpaired_reach<Architecture: ProcessorArchitecture>(
             let ghost unpaired_flag = has_unpaired_permission;
             add_unpaired(mutation, &mut written, &mut has_unpaired_permission);
             proof {
-                lemma_unpaired_change(first@, index as int, memory_of(second@.take(rest_start as int)), unpaired_written,
+                lemma_unpaired_change(old@, index as int, memory_of(new@.take(rest_start as int)), unpaired_written,
                     unpaired_flag, written@, has_unpaired_permission);
             }
         }
         index += 1;
     }
     proof {
-        assert(first@.take(first@.len() as int) =~= first@);
-        lemma_same_outside_symmetric(memory_first, memory_of(second@.take(rest_start as int)), written@, has_unpaired_permission);
+        assert(old@.take(old@.len() as int) =~= old@);
+        lemma_same_outside_symmetric(memory_old, memory_of(new@.take(rest_start as int)), written@, has_unpaired_permission);
     }
-    while rest_start < second.len()
+    while rest_start < new.len()
         invariant
-            rest_start <= second@.len(),
+            rest_start <= new@.len(),
             well_formed(written@),
-            same_outside(memory_of(second@.take(rest_start as int)), memory_first, written@, has_unpaired_permission),
-            memory_first == memory_of(first@),
-        decreases second@.len() - rest_start,
+            same_outside(memory_of(new@.take(rest_start as int)), memory_old, written@, has_unpaired_permission),
+            memory_old == memory_of(old@),
+        decreases new@.len() - rest_start,
     {
         let ghost rest_written = written@;
         let ghost rest_flag = has_unpaired_permission;
-        add_unpaired(&second[rest_start], &mut written, &mut has_unpaired_permission);
+        add_unpaired(&new[rest_start], &mut written, &mut has_unpaired_permission);
         proof {
-            lemma_unpaired_change(second@, rest_start as int, memory_first, rest_written, rest_flag, written@, has_unpaired_permission);
+            lemma_unpaired_change(new@, rest_start as int, memory_old, rest_written, rest_flag, written@, has_unpaired_permission);
         }
         rest_start += 1;
     }
     proof {
-        assert(second@.take(second@.len() as int) =~= second@);
-        lemma_same_outside_symmetric(memory_second, memory_first, written@, has_unpaired_permission);
+        assert(new@.take(new@.len() as int) =~= new@);
+        lemma_same_outside_symmetric(memory_new, memory_old, written@, has_unpaired_permission);
     }
     (written, has_unpaired_permission)
 }
@@ -192,26 +193,26 @@ fn record_unpaired_reach<Architecture: ProcessorArchitecture>(
 /// they leave different.
 #[verifier::spinoff_prover]
 fn send_changed_bytes<Architecture: ProcessorArchitecture>(
-    first: &[MemoryDelta<'_, Architecture>],
-    second: &[MemoryDelta<'_, Architecture>],
+    old: &[MemoryDelta<'_, Architecture>],
+    new: &[MemoryDelta<'_, Architecture>],
     written: &[(u128, u128)],
     mutation_hook: &mut impl MemorySink<Architecture>,
 )
     requires
         well_formed(written@),
         separated(written@),
-        forall|address: u64| !in_ranges(written@, address) ==> #[trigger] memory_of(first@)(address).0 == memory_of(second@)(address).0,
+        forall|address: u64| !in_ranges(written@, address) ==> #[trigger] memory_of(old@)(address).0 == memory_of(new@)(address).0,
     ensures
-        bytes_sent(memory_of(first@), memory_of(second@), *old(mutation_hook), *final(mutation_hook)),
+        bytes_sent(memory_of(old@), memory_of(new@), *vstd::prelude::old(mutation_hook), *final(mutation_hook)),
 {
-    let ghost memory_first = memory_of(first@);
-    let ghost memory_second = memory_of(second@);
+    let ghost memory_old = memory_of(old@);
+    let ghost memory_new = memory_of(new@);
     let ghost hook_before = *mutation_hook;
     proof {
-        lemma_cursor_at_first_range(memory_first, memory_second, written@);
+        lemma_cursor_at_first_range(memory_old, memory_new, written@);
     }
     let ghost mut changes: Seq<Assignment<Architecture::PagePermission>> = Seq::empty();
-    let (mut first_bytes, mut second_bytes) = (Vec::new(), Vec::new());
+    let (mut old_bytes, mut new_bytes) = (Vec::new(), Vec::new());
     // VERUS: no `for` over ranges a proof can count, so the ranges are walked by index.
     let mut range_index: usize = 0;
     while range_index < written.len()
@@ -219,13 +220,13 @@ fn send_changed_bytes<Architecture: ProcessorArchitecture>(
             range_index <= written@.len(),
             well_formed(written@),
             separated(written@),
-            forall|address: u64| !in_ranges(written@, address) ==> #[trigger] memory_first(address).0 == memory_second(address).0,
-            values_up_to(memory_first, memory_second, apply_all(memory_first, changes), written@,
+            forall|address: u64| !in_ranges(written@, address) ==> #[trigger] memory_old(address).0 == memory_new(address).0,
+            values_up_to(memory_old, memory_new, apply_all(memory_old, changes), written@,
                 if range_index < written@.len() { written@[range_index as int].0 as int } else { address_count() }),
             receives(hook_before, *mutation_hook, changes),
-            memory_first == memory_second ==> changes.len() == 0 && *mutation_hook == hook_before,
-            memory_first == memory_of(first@),
-            memory_second == memory_of(second@),
+            memory_old == memory_new ==> changes.len() == 0 && *mutation_hook == hook_before,
+            memory_old == memory_of(old@),
+            memory_new == memory_of(new@),
         decreases written@.len() - range_index,
     {
         let (range_start, range_end) = written[range_index];
@@ -238,19 +239,19 @@ fn send_changed_bytes<Architecture: ProcessorArchitecture>(
                 range_start <= piece_start <= range_end <= address_count(),
                 well_formed(written@),
                 separated(written@),
-                forall|address: u64| !in_ranges(written@, address) ==> #[trigger] memory_first(address).0 == memory_second(address).0,
-                values_up_to(memory_first, memory_second, apply_all(memory_first, changes), written@, piece_start as int),
+                forall|address: u64| !in_ranges(written@, address) ==> #[trigger] memory_old(address).0 == memory_new(address).0,
+                values_up_to(memory_old, memory_new, apply_all(memory_old, changes), written@, piece_start as int),
                 receives(hook_before, *mutation_hook, changes),
-                memory_first == memory_second ==> changes.len() == 0 && *mutation_hook == hook_before,
-                memory_first == memory_of(first@),
-                memory_second == memory_of(second@),
+                memory_old == memory_new ==> changes.len() == 0 && *mutation_hook == hook_before,
+                memory_old == memory_of(old@),
+                memory_new == memory_of(new@),
             decreases range_end - piece_start,
         {
             let piece_end = if range_end - piece_start > usize::MAX as u128 { piece_start + usize::MAX as u128 } else { range_end };
             let start = piece_start as u64;
             let length = (piece_end - piece_start) as usize;
-            resolve_bytes(first, start, length, &mut first_bytes);
-            resolve_bytes(second, start, length, &mut second_bytes);
+            resolve_bytes(old, start, length, &mut old_bytes);
+            resolve_bytes(new, start, length, &mut new_bytes);
             // Each run of bytes the two lists leave different is one mutation.
             // VERUS: no `find` with a closure, so each run's start and end are found by index.
             let mut run_end = usize::MIN;
@@ -263,17 +264,17 @@ fn send_changed_bytes<Architecture: ProcessorArchitecture>(
                     range_start <= piece_start,
                     range_index < written@.len(),
                     written@[range_index as int] == (range_start, range_end),
-                    first_bytes@.len() == length,
-                    second_bytes@.len() == length,
-                    bytes_resolved(memory_first, first_bytes@, start),
-                    bytes_resolved(memory_second, second_bytes@, start),
-                    values_up_to(memory_first, memory_second, apply_all(memory_first, changes), written@, start + run_end),
+                    old_bytes@.len() == length,
+                    new_bytes@.len() == length,
+                    bytes_resolved(memory_old, old_bytes@, start),
+                    bytes_resolved(memory_new, new_bytes@, start),
+                    values_up_to(memory_old, memory_new, apply_all(memory_old, changes), written@, start + run_end),
                     receives(hook_before, *mutation_hook, changes),
-                    memory_first == memory_second ==> changes.len() == 0 && *mutation_hook == hook_before,
+                    memory_old == memory_new ==> changes.len() == 0 && *mutation_hook == hook_before,
                 decreases length - run_end,
             {
                 let mut run_start = run_end;
-                while run_start < length && first_bytes[run_start] == second_bytes[run_start]
+                while run_start < length && old_bytes[run_start] == new_bytes[run_start]
                     invariant
                         run_end <= run_start <= length,
                         start as int + length as int <= range_end as int,
@@ -281,28 +282,28 @@ fn send_changed_bytes<Architecture: ProcessorArchitecture>(
                         range_start <= start,
                         range_index < written@.len(),
                         written@[range_index as int] == (range_start, range_end),
-                        first_bytes@.len() == length,
-                        second_bytes@.len() == length,
-                        bytes_resolved(memory_first, first_bytes@, start),
-                        bytes_resolved(memory_second, second_bytes@, start),
-                        values_up_to(memory_first, memory_second, apply_all(memory_first, changes), written@, start + run_start),
+                        old_bytes@.len() == length,
+                        new_bytes@.len() == length,
+                        bytes_resolved(memory_old, old_bytes@, start),
+                        bytes_resolved(memory_new, new_bytes@, start),
+                        values_up_to(memory_old, memory_new, apply_all(memory_old, changes), written@, start + run_start),
                     decreases length - run_start,
                 {
                     proof {
-                        lemma_same_resolved_byte_passed(memory_first, memory_second, apply_all(memory_first, changes), written@,
-                            range_index as int, start, first_bytes@, second_bytes@, run_start as int);
+                        lemma_same_resolved_byte_passed(memory_old, memory_new, apply_all(memory_old, changes), written@,
+                            range_index as int, start, old_bytes@, new_bytes@, run_start as int);
                     }
                     run_start += 1;
                 }
                 run_end = run_start;
                 if run_start < length {
-                    while run_end < length && first_bytes[run_end] != second_bytes[run_end]
+                    while run_end < length && old_bytes[run_end] != new_bytes[run_end]
                         invariant
                             run_start <= run_end <= length,
-                            first_bytes@.len() == length,
-                            second_bytes@.len() == length,
+                            old_bytes@.len() == length,
+                            new_bytes@.len() == length,
                             run_start < length,
-                            first_bytes@[run_start as int] != second_bytes@[run_start as int],
+                            old_bytes@[run_start as int] != new_bytes@[run_start as int],
                         decreases length - run_end,
                     {
                         run_end += 1;
@@ -311,15 +312,15 @@ fn send_changed_bytes<Architecture: ProcessorArchitecture>(
                     let mutation = MemoryDelta::ValueAssignment {
                         start: start + run_start as u64,
                         // VERUS: no range index of a `Vec` it reads, so the run is cut from its slice.
-                        bytes: Cow::Borrowed(&second_bytes.as_slice()[run_start..run_end]),
+                        bytes: Cow::Borrowed(&new_bytes.as_slice()[run_start..run_end]),
                     };
                     let ghost change = mutation@;
                     mutation_hook.on_memory_mutated(mutation);
                     proof {
-                        lemma_run_sent(memory_first, memory_second, apply_all(memory_first, changes), written@, range_index as int,
-                            start, first_bytes@, second_bytes@, run_start as int, run_end as int, change);
+                        lemma_run_sent(memory_old, memory_new, apply_all(memory_old, changes), written@, range_index as int,
+                            start, old_bytes@, new_bytes@, run_start as int, run_end as int, change);
                         lemma_receives_one(hook_before, hook_now, *mutation_hook, changes, change);
-                        lemma_apply_all_push(memory_first, changes, change);
+                        lemma_apply_all_push(memory_old, changes, change);
                         changes = changes.push(change);
                     }
                 }
@@ -327,43 +328,43 @@ fn send_changed_bytes<Architecture: ProcessorArchitecture>(
             piece_start = piece_end;
         }
         proof {
-            lemma_cursor_to_next_range(memory_first, memory_second, apply_all(memory_first, changes), written@, range_index as int);
+            lemma_cursor_to_next_range(memory_old, memory_new, apply_all(memory_old, changes), written@, range_index as int);
         }
         range_index += 1;
     }
     proof {
-        lemma_bytes_sent(memory_first, memory_second, hook_before, *mutation_hook, changes, written@);
+        lemma_bytes_sent(memory_old, memory_new, hook_before, *mutation_hook, changes, written@);
     }
 }
 
 /// Sends a mutation for each interval between neighboring bounds of the two lists' permissions where they leave
-/// different ones, which turns the second list's bytes with the first's permissions into the second list's memory.
+/// different ones, which turns the new list's bytes with the old list's permissions into the new list's memory.
 #[verifier::spinoff_prover]
 fn send_changed_permissions<Architecture: ProcessorArchitecture>(
-    first: &[MemoryDelta<'_, Architecture>],
-    second: &[MemoryDelta<'_, Architecture>],
+    old: &[MemoryDelta<'_, Architecture>],
+    new: &[MemoryDelta<'_, Architecture>],
     mutation_hook: &mut impl MemorySink<Architecture>,
 )
     ensures
-        permissions_sent(memory_of(first@), memory_of(second@), *old(mutation_hook), *final(mutation_hook)),
+        permissions_sent(memory_of(old@), memory_of(new@), *vstd::prelude::old(mutation_hook), *final(mutation_hook)),
 {
     proof {
         Architecture::equality_is_identity();
     }
-    let ghost memory_first = memory_of(first@);
-    let ghost memory_second = memory_of(second@);
+    let ghost memory_old = memory_of(old@);
+    let ghost memory_new = memory_of(new@);
     let ghost hook_before = *mutation_hook;
-    let ghost after_values = bytes_of_with_permissions_of(memory_second, memory_first);
+    let ghost after_values = bytes_of_with_permissions_of(memory_new, memory_old);
     let ghost mut changes: Seq<Assignment<Architecture::PagePermission>> = Seq::empty();
-    let first_permissions = resolve_permissions(first);
-    let second_permissions = resolve_permissions(second);
+    let old_permissions = resolve_permissions(old);
+    let new_permissions = resolve_permissions(new);
     // VERUS: no iterator chain over the range maps, so each map's bounds are appended to one list made to hold them, as
     // `collect` would size it.
     let mut bounds: Vec<u64> =
-        Vec::with_capacity(range_map_len(&first_permissions).saturating_add(range_map_len(&second_permissions)).saturating_mul(2));
-    append_bounds(&first_permissions, &mut bounds);
-    let ghost first_bounds = bounds@;
-    append_bounds(&second_permissions, &mut bounds);
+        Vec::with_capacity(range_map_len(&old_permissions).saturating_add(range_map_len(&new_permissions)).saturating_mul(2));
+    append_bounds(&old_permissions, &mut bounds);
+    let ghost old_bounds = bounds@;
+    append_bounds(&new_permissions, &mut bounds);
     let ghost unsorted_bounds = bounds@;
     proof {
         broadcast use vstd::laws_cmp::group_laws_cmp;
@@ -373,7 +374,7 @@ fn send_changed_permissions<Architecture: ProcessorArchitecture>(
     // VERUS: no `dedup`, so repeated bounds are dropped by index.
     dedup_sorted(&mut bounds);
     proof {
-        lemma_walked_bounds(range_map_values(&first_permissions), range_map_values(&second_permissions), first_bounds,
+        lemma_walked_bounds(range_map_values(&old_permissions), range_map_values(&new_permissions), old_bounds,
             unsorted_bounds, sorted_bounds, bounds@);
     }
     let read_permission = |permissions: &RangeMap<u64, Architecture::PagePermission>, address: u64|
@@ -388,9 +389,9 @@ fn send_changed_permissions<Architecture: ProcessorArchitecture>(
     // VERUS: no `for` over a consumed iterator whose first item is taken apart, so the bounds are walked by index.
     if bounds.is_empty() {
         proof {
-            lemma_permissions_outside::<Architecture>(memory_first, memory_second, after_values, first_permissions, second_permissions,
+            lemma_permissions_outside::<Architecture>(memory_old, memory_new, after_values, old_permissions, new_permissions,
                 bounds@, 0, 0);
-            lemma_permissions_sent(memory_first, memory_second, hook_before, *mutation_hook, changes);
+            lemma_permissions_sent(memory_old, memory_new, hook_before, *mutation_hook, changes);
         }
         return;
     }
@@ -401,16 +402,16 @@ fn send_changed_permissions<Architecture: ProcessorArchitecture>(
             1 <= end_index <= bounds@.len(),
             low == bounds@[0] as int,
             strictly_ascending(bounds@),
-            permissions_resolved::<Architecture>(memory_first, first_permissions),
-            permissions_resolved::<Architecture>(memory_second, second_permissions),
-            values_by_bounds(range_map_values(&first_permissions), bounds@),
-            values_by_bounds(range_map_values(&second_permissions), bounds@),
-            permissions_up_to(memory_first, memory_second, apply_all(after_values, changes), low, bounds@[end_index - 1] as int),
+            permissions_resolved::<Architecture>(memory_old, old_permissions),
+            permissions_resolved::<Architecture>(memory_new, new_permissions),
+            values_by_bounds(range_map_values(&old_permissions), bounds@),
+            values_by_bounds(range_map_values(&new_permissions), bounds@),
+            permissions_up_to(memory_old, memory_new, apply_all(after_values, changes), low, bounds@[end_index - 1] as int),
             receives(hook_before, *mutation_hook, changes),
-            memory_first == memory_second ==> changes.len() == 0 && *mutation_hook == hook_before,
-            memory_first == memory_of(first@),
-            memory_second == memory_of(second@),
-            after_values == bytes_of_with_permissions_of(memory_second, memory_first),
+            memory_old == memory_new ==> changes.len() == 0 && *mutation_hook == hook_before,
+            memory_old == memory_of(old@),
+            memory_new == memory_of(new@),
+            after_values == bytes_of_with_permissions_of(memory_new, memory_old),
             obeys_concrete_eq::<Architecture::PagePermission>(),
             forall|permissions: &RangeMap<u64, Architecture::PagePermission>, address: u64|
                 #[trigger] read_permission.requires((permissions, address)),
@@ -423,10 +424,10 @@ fn send_changed_permissions<Architecture: ProcessorArchitecture>(
             reveal(obeys_concrete_eq);
         }
         let addresses = bounds[end_index - 1]..bounds[end_index];
-        let permission = read_permission(&second_permissions, addresses.start);
-        if read_permission(&first_permissions, addresses.start) != permission {
+        let permission = read_permission(&new_permissions, addresses.start);
+        if read_permission(&old_permissions, addresses.start) != permission {
             proof {
-                assert(memory_first(addresses.start).1 != memory_second(addresses.start).1);
+                assert(memory_old(addresses.start).1 != memory_new(addresses.start).1);
             }
             let ghost hook_now = *mutation_hook;
             let mutation = MemoryDelta::PermissionAssignment {
@@ -438,23 +439,23 @@ fn send_changed_permissions<Architecture: ProcessorArchitecture>(
             proof {
                 lemma_receives_one(hook_before, hook_now, *mutation_hook, changes, change);
                 lemma_apply_all_push(after_values, changes, change);
-                lemma_permission_interval::<Architecture>(memory_first, memory_second, apply_all(after_values, changes),
-                    apply_all(after_values, changes.push(change)), first_permissions, second_permissions, bounds@,
+                lemma_permission_interval::<Architecture>(memory_old, memory_new, apply_all(after_values, changes),
+                    apply_all(after_values, changes.push(change)), old_permissions, new_permissions, bounds@,
                     end_index as int, low, true);
                 changes = changes.push(change);
             }
         } else {
             proof {
-                lemma_permission_interval::<Architecture>(memory_first, memory_second, apply_all(after_values, changes),
-                    apply_all(after_values, changes), first_permissions, second_permissions, bounds@, end_index as int, low, false);
+                lemma_permission_interval::<Architecture>(memory_old, memory_new, apply_all(after_values, changes),
+                    apply_all(after_values, changes), old_permissions, new_permissions, bounds@, end_index as int, low, false);
             }
         }
         end_index += 1;
     }
     proof {
-        lemma_permissions_outside::<Architecture>(memory_first, memory_second, apply_all(after_values, changes), first_permissions,
-            second_permissions, bounds@, low, bounds@[bounds@.len() - 1] as int);
-        lemma_permissions_sent(memory_first, memory_second, hook_before, *mutation_hook, changes);
+        lemma_permissions_outside::<Architecture>(memory_old, memory_new, apply_all(after_values, changes), old_permissions,
+            new_permissions, bounds@, low, bounds@[bounds@.len() - 1] as int);
+        lemma_permissions_sent(memory_old, memory_new, hook_before, *mutation_hook, changes);
     }
 }
 

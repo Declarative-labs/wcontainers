@@ -142,17 +142,15 @@ pub proof fn lemma_receives_one<Architecture: ProcessorArchitecture, Sink: Memor
 )
     requires
         receives(before, middle, changes),
-        Sink::obeys_sink_spec() ==> forall|memory: Memory<Architecture::PagePermission>|
+        forall|memory: Memory<Architecture::PagePermission>|
             #[trigger] after.applied_to(memory) == apply(middle.applied_to(memory), change),
     ensures
         receives(before, after, changes.push(change)),
 {
-    if Sink::obeys_sink_spec() {
-        assert forall|memory: Memory<Architecture::PagePermission>|
-            #[trigger] after.applied_to(memory) == apply_all(before.applied_to(memory), changes.push(change)) by {
-            assert(changes.push(change).drop_last() =~= changes);
-            assert(middle.applied_to(memory) == apply_all(before.applied_to(memory), changes));
-        }
+    assert forall|memory: Memory<Architecture::PagePermission>|
+        #[trigger] after.applied_to(memory) == apply_all(before.applied_to(memory), changes.push(change)) by {
+        assert(changes.push(change).drop_last() =~= changes);
+        assert(middle.applied_to(memory) == apply_all(before.applied_to(memory), changes));
     }
 }
 
@@ -170,13 +168,11 @@ pub proof fn lemma_receives_append<Architecture: ProcessorArchitecture, Sink: Me
     ensures
         receives(before, after, first + second),
 {
-    if Sink::obeys_sink_spec() {
-        assert forall|memory: Memory<Architecture::PagePermission>|
-            #[trigger] after.applied_to(memory) == apply_all(before.applied_to(memory), first + second) by {
-            assert(after.applied_to(memory) == apply_all(middle.applied_to(memory), second));
-            assert(middle.applied_to(memory) == apply_all(before.applied_to(memory), first));
-            lemma_apply_all_append(before.applied_to(memory), first, second);
-        }
+    assert forall|memory: Memory<Architecture::PagePermission>|
+        #[trigger] after.applied_to(memory) == apply_all(before.applied_to(memory), first + second) by {
+        assert(after.applied_to(memory) == apply_all(middle.applied_to(memory), second));
+        assert(middle.applied_to(memory) == apply_all(before.applied_to(memory), first));
+        lemma_apply_all_append(before.applied_to(memory), first, second);
     }
 }
 
