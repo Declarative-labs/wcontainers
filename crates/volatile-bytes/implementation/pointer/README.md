@@ -8,11 +8,11 @@ view of a sub-range, checked (PROVISIONAL). It does NOT keep the memory alive, m
 
 ## The unsafe items (4)
 
-1. implementation.rs:146, `unsafe fn copy`: the one call to `memcpy`, through a pointer read by a volatile load so the
+1. implementation.rs:153, `unsafe fn copy`: the one call to `memcpy`, through a pointer read by a volatile load so the
    compiler cannot swap in its own copy. Rests on: the caller gives a readable source and a writable destination that
    do not overlap.
-2. implementation.rs:89, the copy out in `read`. Rests on: `bytes` checked that the count lies inside the view.
-3. implementation.rs:103, the copy in in `write`. Rests on the same check.
+2. implementation.rs:96, the copy out in `read`. Rests on: `bytes` checked that the count lies inside the view.
+3. implementation.rs:110, the copy in in `write`. Rests on the same check.
 4. implementation.rs:33, `unsafe fn PointerAndLength::new`: the promise. Rests on its caller: while the value and every
    view made from it live, the bytes are valid for reads and writes from any thread, never trap, and no one forms a
    reference or a slice over them.
