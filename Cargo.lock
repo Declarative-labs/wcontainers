@@ -4866,6 +4866,7 @@ name = "wcontainers-precise-instruction-set"
 version = "0.1.0"
 dependencies = [
  "wcontainers-behavior-source",
+ "wcontainers-distinguishing-state-generator",
  "wcontainers-processor-architecture",
 ]
 
@@ -4873,6 +4874,7 @@ dependencies = [
 name = "wcontainers-precise-instruction-set-conformance"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-distinguishing-state-generator",
  "wcontainers-precise-instruction-set",
  "wcontainers-processor-architecture",
 ]

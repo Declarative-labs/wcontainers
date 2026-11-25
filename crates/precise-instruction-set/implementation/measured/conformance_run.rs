@@ -1,7 +1,10 @@
 use std::convert::Infallible;
+use std::iter::Rev;
 use std::path::Path;
+use std::vec::IntoIter;
 
 use wcontainers_behavior_source_recording::Recording;
+use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
 use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
@@ -14,7 +17,7 @@ const RECORDINGS: &str = concat!(
     "/../../../behavior-source/implementation/recording/recordings/neoverse-v2"
 );
 
-type Measured = MeasuredInstructionSet<Recording, CriticalValueProduct<Arm64InputDomain>>;
+type Measured = MeasuredInstructionSet<Recording>;
 
 fn recording() -> Recording {
     match Recording::read(Path::new(RECORDINGS)) {
@@ -37,4 +40,26 @@ fn recorded_cases() -> Vec<RecordedCase> {
         .collect()
 }
 
-wcontainers_precise_instruction_set_conformance::tests!(Measured, recording(), recorded_cases());
+/// The critical value product's states of each instruction, last first: a second generator whose every state the
+/// recording holds.
+struct LastFirst(CriticalValueProduct<Arm64InputDomain>);
+
+impl DistinguishingStateGenerator<Arm64<User>> for LastFirst {
+    type States<'generator>
+        = Rev<IntoIter<ExecutionState<'static, Arm64<User>>>>
+    where
+        Self: 'generator;
+
+    fn generate_states(&self, instruction: Instruction<Infallible>) -> Self::States<'_> {
+        let states: Vec<_> = self.0.generate_states(instruction).collect();
+        states.into_iter().rev()
+    }
+}
+
+wcontainers_precise_instruction_set_conformance::tests!(
+    Measured,
+    recording(),
+    CriticalValueProduct::new(Arm64InputDomain),
+    LastFirst(CriticalValueProduct::new(Arm64InputDomain)),
+    recorded_cases()
+);
