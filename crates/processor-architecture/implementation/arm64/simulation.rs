@@ -245,6 +245,10 @@ fn fetch<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     if !address.is_multiple_of(INSTRUCTION_SIZE) {
         return Err(Exception::ProgramCounterAlignmentFault { address });
     }
+    if !Architecture::ADDRESSABLE.contains(&address) {
+        let status = FaultStatus::TranslationFaultLevel0;
+        return Err(Exception::InstructionAbort { status, address });
+    }
     let status = match read_permission(memory, address) {
         PagePermission::Mapped {
             instruction_fetch: InstructionFetch::Allowed,
@@ -483,7 +487,7 @@ fn load<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     }
 }
 
-/// Finds the lowest address of the access that its page refuses, and the fault's status.
+/// Finds the lowest address of the access that its page refuses, or that no page holds, and the fault's status.
 fn find_fault<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     memory: &[MemoryDelta<'_, Architecture>],
     start: u64,
@@ -493,6 +497,9 @@ fn find_fault<Architecture: ProcessorArchitecture<PagePermission = PagePermissio
     (0..length)
         .map(|offset| start.wrapping_add(offset))
         .find_map(|address| {
+            if !Architecture::ADDRESSABLE.contains(&address) {
+                return Some((address, FaultStatus::TranslationFaultLevel0));
+            }
             let status = match read_permission(memory, address) {
                 PagePermission::Unmapped => FaultStatus::TranslationFaultLevel3,
                 PagePermission::Mapped { data_access, .. } => match (data_access, access) {

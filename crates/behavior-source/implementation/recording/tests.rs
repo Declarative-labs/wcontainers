@@ -4,7 +4,8 @@ use std::path::Path;
 use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
-    Arm64, DataAccess, InstructionFetch, PagePermission, User, ZERO_PROCESSOR,
+    AccessDirection, Arm64, DataAccess, Exception, FaultStatus, Instruction, InstructionFetch,
+    PagePermission, User, ZERO_PROCESSOR,
 };
 
 use crate::Recording;
@@ -153,4 +154,40 @@ fn recording_plays_only_its_states() {
     let mut unrecorded = before.clone();
     unrecorded.processor.stack_pointer ^= 1;
     recording.execute_single_instruction(unrecorded);
+}
+
+#[test]
+fn a_level_0_fault_and_an_undecoded_exception_read_back_as_written() {
+    let instruction = Instruction::StrImmediateUnsignedOffset64;
+    let cases: Vec<_> = [
+        Exception::DataAbort {
+            status: FaultStatus::TranslationFaultLevel0,
+            access: AccessDirection::Write,
+            address: Arm64::<User>::ADDRESSABLE.end,
+        },
+        Exception::Undecoded {
+            syndrome: 0x5600_0000,
+            fault_address: u64::MAX,
+        },
+    ]
+    .into_iter()
+    .map(|exception| {
+        let before = to_state(&NO_CHANGES, &NO_CHANGES);
+        let mut after = before.clone();
+        after.processor.exception = Some(exception);
+        (before, after)
+    })
+    .collect();
+    let text = to_text(instruction, &cases);
+    let Ok((named, read)) = from_text(&text) else {
+        panic!("the text does not read: {text}");
+    };
+    assert!(named == instruction);
+    let exceptions = |cases: &[(_, ExecutionState<'_, Arm64<User>>)]| {
+        cases
+            .iter()
+            .map(|(_, after)| after.processor.exception)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(exceptions(&read), exceptions(&cases));
 }

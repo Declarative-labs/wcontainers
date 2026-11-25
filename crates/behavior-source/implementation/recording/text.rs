@@ -250,6 +250,10 @@ fn to_exception_text(exception: Option<Exception>) -> String {
         ),
         Exception::Breakpoint { comment } => format!("Breakpoint:{comment:#x}"),
         Exception::SmeTrap(code) => format!("SmeTrap:{}", to_sme_trap_text(code)),
+        Exception::Undecoded {
+            syndrome,
+            fault_address,
+        } => format!("Undecoded:{syndrome:#x}@{fault_address:#x}"),
     }
 }
 
@@ -281,6 +285,10 @@ fn from_exception_text(text: &str) -> Option<Option<Exception>> {
             comment: from_hex_number(comment)?,
         },
         (["SmeTrap", code], None) => Exception::SmeTrap(from_sme_trap_text(code)?),
+        (["Undecoded", syndrome], Some(fault_address)) => Exception::Undecoded {
+            syndrome: from_hex_number(syndrome)?,
+            fault_address,
+        },
         _ => return None,
     };
     Some(Some(exception))
@@ -288,6 +296,7 @@ fn from_exception_text(text: &str) -> Option<Option<Exception>> {
 
 fn to_status_text(status: FaultStatus) -> &'static str {
     match status {
+        FaultStatus::TranslationFaultLevel0 => "TranslationFaultLevel0",
         FaultStatus::TranslationFaultLevel3 => "TranslationFaultLevel3",
         FaultStatus::PermissionFaultLevel3 => "PermissionFaultLevel3",
     }
@@ -295,6 +304,7 @@ fn to_status_text(status: FaultStatus) -> &'static str {
 
 fn from_status_text(text: &str) -> Option<FaultStatus> {
     match text {
+        "TranslationFaultLevel0" => Some(FaultStatus::TranslationFaultLevel0),
         "TranslationFaultLevel3" => Some(FaultStatus::TranslationFaultLevel3),
         "PermissionFaultLevel3" => Some(FaultStatus::PermissionFaultLevel3),
         _ => None,

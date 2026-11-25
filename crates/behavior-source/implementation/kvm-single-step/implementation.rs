@@ -41,6 +41,8 @@ mod guest_layout;
 mod machine;
 mod slot;
 mod syndrome;
+#[cfg(test)]
+mod tests;
 
 include!(concat!(env!("OUT_DIR"), "/handler_offsets.rs"));
 
@@ -480,7 +482,7 @@ impl KvmSingleStepMachine {
 
     /// Gives pages the permission.
     fn write_resident_permission(&mut self, addresses: &Range<u64>, permission: PagePermission) {
-        for page in to_pages(addresses) {
+        for page in to_addressable_pages(addresses) {
             let entry = match permission {
                 PagePermission::Mapped {
                     data_access,
@@ -738,6 +740,11 @@ impl BehaviorSource for KvmSingleStepMachine {
         memory: &[MemoryDelta<'_, Arm64<User>>],
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) {
+        if let Some(addresses) = find_permission_within_a_page(memory) {
+            panic!(
+                "a chip gives permissions to whole pages, not {addresses:#x?}: the state is refused before anything is written"
+            );
+        }
         self.start_batch();
         let resident_pages = match self.loading {
             MemoryLoading::Full => None,
@@ -818,6 +825,28 @@ fn to_pages(addresses: &Range<u64>) -> impl Iterator<Item = u64> + use<> {
     (addresses.start..addresses.end).step_by(PAGE_SIZE as usize)
 }
 
+/// Returns the first address of each page of the addresses that a program can use: no access reaches the others, each
+/// faulting at level 0 whatever the state gives its page.
+fn to_addressable_pages(addresses: &Range<u64>) -> impl Iterator<Item = u64> + use<> {
+    to_pages(&(addresses.start..addresses.end.min(Arm64::<User>::ADDRESSABLE.end)))
+}
+
+/// Returns the addresses of a permission that starts or ends inside a page, which no chip can give.
+fn find_permission_within_a_page<'memory>(
+    memory: &'memory [MemoryDelta<'_, Arm64<User>>],
+) -> Option<&'memory Range<u64>> {
+    memory.iter().find_map(|delta| match delta {
+        MemoryDelta::PermissionAssignment { addresses, .. }
+            if !addresses.is_empty()
+                && !(addresses.start.is_multiple_of(PAGE_SIZE)
+                    && addresses.end.is_multiple_of(PAGE_SIZE)) =>
+        {
+            Some(addresses)
+        }
+        _ => None,
+    })
+}
+
 fn unmapped_table(level: u32) -> u64 {
     UNMAPPED_TABLES + u64::from(level - TOP_LEVEL - 1) * PAGE_SIZE
 }
@@ -863,7 +892,8 @@ const _: () = assert!(matches!(
     PagePermission::Unmapped
 ));
 
-/// Returns the permission of each page the deltas give one, by its first address; a later delta wins.
+/// Returns the permission of each page a program can use that the deltas give one, by its first address; a later delta
+/// wins.
 fn to_page_permissions(memory: &[MemoryDelta<'_, Arm64<User>>]) -> BTreeMap<u64, PagePermission> {
     let mut pages = BTreeMap::new();
     for delta in memory {
@@ -872,12 +902,7 @@ fn to_page_permissions(memory: &[MemoryDelta<'_, Arm64<User>>]) -> BTreeMap<u64,
             permission,
         } = delta
         {
-            assert!(
-                addresses.start.is_multiple_of(PAGE_SIZE)
-                    && addresses.end.is_multiple_of(PAGE_SIZE),
-                "a chip gives permissions to whole pages, not {addresses:#x?}"
-            );
-            for page in addresses.clone().step_by(PAGE_SIZE as usize) {
+            for page in to_addressable_pages(addresses) {
                 pages.insert(page, *permission);
             }
         }
@@ -917,7 +942,10 @@ fn to_registers(processor: &Processor<()>) -> Registers {
         general_purpose: processor.general_purpose_registers,
         stack_pointer: processor.stack_pointer,
         program_counter: processor.program_counter,
-        saved_program_status: u64::from(processor.condition_flags.bits()) | el0.value,
+        // Only NZCV: any other bit would put EL0 in another state, which the handler does not expect.
+        saved_program_status: u64::from(
+            ConditionFlags::from_bits_truncate(processor.condition_flags.bits()).bits(),
+        ) | el0.value,
         software_thread_id: processor.software_thread_id,
         floating_point_control: processor.floating_point_control,
         floating_point_status: processor.floating_point_status,

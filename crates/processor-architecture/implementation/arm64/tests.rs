@@ -631,3 +631,100 @@ fn mrs_reads_the_cache_type_the_chip_fixes() {
     assert_completed(&processor, &after);
     assert_eq!(after.general_purpose_registers[3], 0x8444_C004);
 }
+
+/// The first address above those a program can use.
+const ADDRESSABLE_END: u64 = Arm64::<User>::ADDRESSABLE.end;
+
+/// The state about to run the word with its last addressable page writable as well.
+fn to_state_with_last_page(word: u32) -> ExecutionState<'static, Arm64<User>> {
+    let mut before = to_state(word, READ_WRITE, READ_WRITE);
+    before
+        .memory_mutations
+        .push(MemoryDelta::PermissionAssignment {
+            addresses: ADDRESSABLE_END - PAGE..ADDRESSABLE_END,
+            permission: READ_WRITE,
+        });
+    before
+}
+
+#[test]
+fn str_across_the_last_addressable_byte_faults_at_level_0() {
+    let word = encode(
+        Instruction::StrImmediateUnsignedOffset64,
+        &[(RT, 2), (RN, 1)],
+    );
+    let mut before = to_state_with_last_page(word);
+    before.processor.general_purpose_registers[1] = ADDRESSABLE_END - 4;
+    before.processor.general_purpose_registers[2] = u64::MAX;
+    let fault = to_data_abort(
+        FaultStatus::TranslationFaultLevel0,
+        AccessDirection::Write,
+        ADDRESSABLE_END,
+    );
+    let (after, written) = run(STORE, before.clone());
+    assert_raised(&after, fault);
+    assert!(written.is_empty());
+    let (after, written) = run(
+        PreciseInstruction::StrImmediateUnsignedOffset64 {
+            misaligned_stack_pointer: MisalignedStackPointer::Faults,
+            across_fault: StoreAcrossFault::WritesBytesBelowFault,
+        },
+        before,
+    );
+    assert_raised(&after, fault);
+    assert!(
+        written
+            == [MemoryDelta::ValueAssignment {
+                start: ADDRESSABLE_END - 4,
+                bytes: Cow::Owned([u8::MAX; 4].to_vec())
+            }]
+    );
+}
+
+#[test]
+fn ldr_across_the_last_addressable_byte_faults_at_level_0() {
+    let word = encode(
+        Instruction::LdrImmediateUnsignedOffset64,
+        &[(RT, 0), (RN, 1)],
+    );
+    let mut before = to_state_with_last_page(word);
+    before.processor.general_purpose_registers[1] = ADDRESSABLE_END - 4;
+    let (after, _) = run(LOAD, before);
+    assert_raised(
+        &after,
+        to_data_abort(
+            FaultStatus::TranslationFaultLevel0,
+            AccessDirection::Read,
+            ADDRESSABLE_END,
+        ),
+    );
+}
+
+#[test]
+fn an_instruction_above_the_addressable_addresses_faults_at_level_0_whatever_its_page_holds() {
+    let word = encode(Instruction::Brk, &[]);
+    let mut before = to_state(word, READ_WRITE, READ_WRITE);
+    before.processor.program_counter = ADDRESSABLE_END;
+    before.memory_mutations.extend([
+        MemoryDelta::PermissionAssignment {
+            addresses: ADDRESSABLE_END..ADDRESSABLE_END + PAGE,
+            permission: PagePermission::Mapped {
+                data_access: DataAccess::ReadOnly,
+                instruction_fetch: InstructionFetch::Allowed,
+            },
+        },
+        MemoryDelta::ValueAssignment {
+            start: ADDRESSABLE_END,
+            bytes: Cow::Owned(word.to_le_bytes().to_vec()),
+        },
+    ]);
+    let (after, _) = run(PreciseInstruction::Brk, before);
+    assert_eq!(
+        after.exception,
+        Some(Exception::InstructionAbort {
+            status: FaultStatus::TranslationFaultLevel0,
+            address: ADDRESSABLE_END,
+        })
+    );
+    assert_eq!(after.program_counter, ADDRESSABLE_END);
+}
