@@ -4965,6 +4965,7 @@ dependencies = [
 name = "wcontainers-precise-instruction-set-measured"
 version = "0.1.0"
 dependencies = [
+ "vstd",
  "wcontainers-behavior-source",
  "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-behavior-source-recording",
