@@ -21,7 +21,11 @@ fn main() {
         Err(error) => panic!("this host makes no single step machine: {error:?}"),
     };
     let started = Instant::now();
-    let recording = Recording::record(&mut chip, &CriticalValueProduct::new(Arm64InputDomain));
+    let recording = match Recording::record(&mut chip, &CriticalValueProduct::new(Arm64InputDomain))
+    {
+        Ok(recording) => recording,
+        Err(refusal) => panic!("the chip did not run a generated state: {refusal:?}"),
+    };
     if let Err(error) = recording.write(&folder) {
         panic!("writing into {}: {error}", folder.display());
     }

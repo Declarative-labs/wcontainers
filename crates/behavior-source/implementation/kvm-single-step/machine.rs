@@ -46,6 +46,8 @@ pub(crate) enum Register {
     Ttbr1,
     /// ID_AA64MMFR0_EL1.
     MemoryModelFeatures,
+    /// ID_AA64MMFR2_EL1.
+    MemoryModelFeatures2,
     /// ID_AA64PFR0_EL1.
     ProcessorFeatures,
     /// ID_AA64PFR1_EL1.
@@ -202,6 +204,7 @@ const TTBR1_EL1: SystemRegister = system(3, 0, 2, 0, 1);
 const TCR_EL1: SystemRegister = system(3, 0, 2, 0, 2);
 const MAIR_EL1: SystemRegister = system(3, 0, 10, 2, 0);
 const ID_AA64MMFR0_EL1: SystemRegister = system(3, 0, 0, 7, 0);
+const ID_AA64MMFR2_EL1: SystemRegister = system(3, 0, 0, 7, 2);
 const ID_AA64PFR0_EL1: SystemRegister = system(3, 0, 0, 4, 0);
 const ID_AA64PFR1_EL1: SystemRegister = system(3, 0, 0, 4, 1);
 const VBAR_EL1: SystemRegister = system(3, 0, 12, 0, 0);
@@ -228,6 +231,7 @@ fn to_id(register: Register) -> u64 {
         Register::Cpacr => CPACR_EL1,
         Register::Ttbr1 => TTBR1_EL1,
         Register::MemoryModelFeatures => ID_AA64MMFR0_EL1,
+        Register::MemoryModelFeatures2 => ID_AA64MMFR2_EL1,
         Register::ProcessorFeatures => ID_AA64PFR0_EL1,
         Register::ProcessorFeatures1 => ID_AA64PFR1_EL1,
         Register::Vectors => VBAR_EL1,
