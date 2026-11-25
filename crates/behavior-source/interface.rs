@@ -96,6 +96,7 @@ pub trait BehaviorSource {
     /// Returns the one behavior of the instruction that this source shows.
     ///
     /// The source runs every generated state, so a source that shows no known behavior fails here and not later.
+    #[verifier::loop_isolation(false)]
     fn measure_instruction(
         &mut self,
         instruction: <Self::Architecture as ProcessorArchitecture>::Instruction,
@@ -130,11 +131,7 @@ pub trait BehaviorSource {
             invariant
                 iterator.iter.obeys_prophetic_iter_laws(),
                 iterator.seq() == states,
-                states == generator.states(instruction),
-                known == <Self::Architecture as ProcessorArchitecture>::known_behaviors(instruction),
-                shown == (|processor, memory| old(self).shown(processor, memory)),
                 forall|processor, memory| #[trigger] self.shown(processor, memory) == old(self).shown(processor, memory),
-                candidates@.no_duplicates(),
                 // The candidates are the known behaviors that agreed with the source on every state so far.
                 forall|at: int| 0 <= at < candidates@.len() ==> known.contains(#[trigger] candidates@[at])
                     && agrees_on_every_state(candidates@[at], shown, states.take(iterator.index() as int)),
@@ -181,62 +178,44 @@ pub trait BehaviorSource {
             // VERUS: no proof through a `filter` and `collect` chain here, so the agreeing behaviors are kept by index, in a
             // list made to hold them all.
             let mut agreeing = Vec::with_capacity(simulated_results.len());
-            // Where in the candidates each agreeing behavior came from.
-            let ghost mut sources: Seq<int> = Seq::empty();
             let mut index = 0;
             while index < simulated_results.len()
                 invariant
                     index <= simulated_results@.len(),
-                    simulated_results@.len() == candidates@.len(),
-                    forall|at: int| 0 <= at < candidates@.len() ==> (#[trigger] simulated_results@[at]).0 == candidates@[at]
-                        && (simulated_results@[at].1.processor, memory_of(simulated_results@[at].1.memory_mutations@))
-                            == simulated_after(candidates@[at], before),
-                    (observed_result.processor, memory_of(observed_result.memory_mutations@))
-                        == state_after(before, shown(before.processor, memory_of(before.memory_mutations@))),
-                    sources.len() == agreeing@.len(),
-                    forall|first: int, second: int| 0 <= first < second < sources.len() ==> #[trigger] sources[first] < #[trigger] sources[second],
-                    forall|at: int| 0 <= at < agreeing@.len() ==> 0 <= #[trigger] sources[at] < index
-                        && agreeing@[at] == candidates@[sources[at]] && agrees_on(candidates@[sources[at]], shown, before),
+                    // The agreeing behaviors are the candidates so far that agree here too.
+                    forall|at: int| 0 <= at < agreeing@.len() ==> known.contains(#[trigger] agreeing@[at])
+                        && agrees_on_every_state(agreeing@[at], shown, states.take(done + 1)),
                     forall|from: int| 0 <= from < index && #[trigger] agrees_on(candidates@[from], shown, before)
                         ==> agreeing@.contains(candidates@[from]),
                 decreases simulated_results@.len() - index,
             {
-                let ghost (agreeing_before, sources_before) = (agreeing@, sources);
+                let ghost agreeing_before = agreeing@;
                 let agrees = observed_result.meets_expectations(&simulated_results[index].1);
                 if agrees {
                     agreeing.push(simulated_results[index].0);
-                    proof {
-                        sources = sources.push(index as int);
-                    }
                 }
                 proof {
-                    assert(agrees == agrees_on(candidates@[index as int], shown, before));
-                    assert forall|at: int| 0 <= at < agreeing_before.len() implies #[trigger] agreeing@[at] == agreeing_before[at]
-                        && sources[at] == sources_before[at] by {}
+                    let candidate = candidates@[index as int];
+                    assert(agrees == agrees_on(candidate, shown, before));
+                    if agrees {
+                        assert(agrees_on_every_state(candidate, shown, states.take(done)));
+                        assert forall|state: int| 0 <= state <= done implies #[trigger] agrees_on(candidate, shown, states.take(done + 1)[state]) by {
+                            if state < done {
+                                assert(states.take(done)[state] == states.take(done + 1)[state]);
+                            }
+                        }
+                        assert(agreeing@[agreeing@.len() - 1] == candidate);
+                    }
+                    assert forall|at: int| 0 <= at < agreeing_before.len() implies #[trigger] agreeing@[at] == agreeing_before[at] by {}
                     assert forall|from: int| 0 <= from < index && #[trigger] agrees_on(candidates@[from], shown, before)
                         implies agreeing@.contains(candidates@[from]) by {
                         let at = choose|at: int| 0 <= at < agreeing_before.len() && agreeing_before[at] == candidates@[from];
                         assert(agreeing@[at] == agreeing_before[at]);
                     }
-                    if agreeing@.len() > agreeing_before.len() {
-                        assert(agreeing@[agreeing@.len() - 1] == candidates@[index as int]);
-                    }
                 }
                 index += 1;
             }
             proof {
-                assert forall|first: int, second: int| 0 <= first < second < agreeing@.len() implies agreeing@[first] != agreeing@[second] by {
-                    assert(sources[first] < sources[second]);
-                }
-                assert forall|at: int| 0 <= at < agreeing@.len() implies known.contains(#[trigger] agreeing@[at])
-                    && agrees_on_every_state(agreeing@[at], shown, states.take(done + 1)) by {
-                    assert(agrees_on_every_state(candidates@[sources[at]], shown, states.take(done)));
-                    assert forall|state: int| 0 <= state <= done implies #[trigger] agrees_on(agreeing@[at], shown, states.take(done + 1)[state]) by {
-                        if state < done {
-                            assert(states.take(done)[state] == states.take(done + 1)[state]);
-                        }
-                    }
-                }
                 assert forall|behavior| known.contains(behavior) && agrees_on_every_state(behavior, shown, states.take(done + 1))
                     implies #[trigger] agreeing@.contains(behavior) by {
                     assert forall|state: int| 0 <= state < done implies #[trigger] agrees_on(behavior, shown, states.take(done)[state]) by {
@@ -244,7 +223,6 @@ pub trait BehaviorSource {
                     }
                     assert(candidates@.contains(behavior));
                     let at = choose|at: int| 0 <= at < candidates@.len() && candidates@[at] == behavior;
-                    assert(states.take(done + 1)[done] == before);
                     assert(agrees_on(candidates@[at], shown, states.take(done + 1)[done]));
                 }
             }

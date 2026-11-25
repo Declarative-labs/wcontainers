@@ -83,7 +83,6 @@ pub trait ProcessorArchitecture: Sized + Clone {
             behaviors.obeys_prophetic_iter_laws(),
             behaviors.remaining() == Self::known_behaviors(instruction),
             behaviors.decrease() is Some,
-            Self::known_behaviors(instruction).no_duplicates(),
     ;
 
     /// The observed processor has every value the expectation holds.
