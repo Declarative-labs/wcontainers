@@ -1,0 +1,18 @@
+[package]
+name = "api-crate-generator"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Writes an outside API's crate (its safe trait, calling glue and serving glue) from the API's own description."
+
+# A tool, not part of the product: its own workspace, so the repository's workspace and linter never build it.
+[workspace]
+
+[dependencies]
+# Microsoft's reader of ECMA-335 metadata, the form of Windows.Win32.winmd (Microsoft's description of the Win32 API).
+windows-metadata = "=0.60.0"
+
+[lints.rust]
+unsafe_code = "forbid"
