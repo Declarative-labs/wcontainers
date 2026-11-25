@@ -292,7 +292,7 @@ fn serves(caps: &wcontainers_gpu::Caps, level: u32, cube_arrays: bool) -> bool {
         && limits.max_texture_3d >= volume
         && limits.max_texture_layers >= layers
         && limits.color_targets >= level_targets(level);
-    let renders = |f: Format, u: FormatUse| caps.formats.get(f).contains(u);
+    let renders = |f: Format, u: FormatUse| caps.formats.uses[f as usize].contains(u);
     let staged = caps.features.contains(Features::COMPUTE)
         || (level < level::L11_0 && caps.features.contains(Features::TRANSFORM_FEEDBACK));
     sized
@@ -595,7 +595,7 @@ impl<B: Backend> Device<B> {
             // Held as NV12's planes; only made, copied and shared.
             let held = [Format::R8Unorm, Format::Rg8Unorm]
                 .iter()
-                .all(|&f| caps.formats.get(f).contains(FormatUse::COPY_OUT));
+                .all(|&f| caps.formats.uses[f as usize].contains(FormatUse::COPY_OUT));
             let support1 = if held { TEXTURE2D } else { 0 };
             return FormatSupport {
                 support1,
@@ -606,10 +606,8 @@ impl<B: Backend> Device<B> {
             // 2D textures held in its bits, mapped and copied with the R10G10B10A2 formats,
             // never viewed (Microsoft's 11_0 table gives it no shader or target use); shown by
             // the swap chains that take it, whose buffers are drawn through views of its group.
-            let held = caps
-                .formats
-                .get(Format::Rgb10a2Unorm)
-                .contains(FormatUse::COPY_OUT);
+            let held =
+                caps.formats.uses[Format::Rgb10a2Unorm as usize].contains(FormatUse::COPY_OUT);
             let mut support1 = if held {
                 TEXTURE2D | CPU_LOCKABLE | CAST_WITHIN_BIT_LAYOUT
             } else {
@@ -684,7 +682,8 @@ impl<B: Backend> Device<B> {
             format::vertex_format(dxgi).is_some()
         } else {
             format::vertex_format(dxgi).is_some()
-                && texture.is_some_and(|f| caps.formats.get(f).contains(FormatUse::SAMPLE))
+                && texture
+                    .is_some_and(|f| caps.formats.uses[f as usize].contains(FormatUse::SAMPLE))
         };
         add(typed_buffer, BUFFER);
         add(format::stream_output_format(dxgi), SO_BUFFER);
@@ -804,7 +803,7 @@ impl<B: Backend> Device<B> {
         };
         let uses = planes
             .iter()
-            .fold(FormatUse::all(), |all, &f| all & formats.get(f));
+            .fold(FormatUse::all(), |all, &f| all & formats.uses[f as usize]);
         if uses.is_empty() {
             return FormatSupport::default();
         }
@@ -827,9 +826,9 @@ impl<B: Backend> Device<B> {
                 s.support1 |= bit;
             }
         }
-        let stored = planes
-            .iter()
-            .all(|&f| formats.get(f).contains(FormatUse::STORAGE_WRITE) || self.through_takes(f));
+        let stored = planes.iter().all(|&f| {
+            formats.uses[f as usize].contains(FormatUse::STORAGE_WRITE) || self.through_takes(f)
+        });
         if stored && self.level >= level::L11_0 {
             s.support1 |= TYPED_UNORDERED_ACCESS_VIEW;
             s.support2 |= UAV_TYPED_STORE;
@@ -843,7 +842,7 @@ impl<B: Backend> Device<B> {
 
     /// Whether textures of `format` drawn into or for depth take `samples` samples.
     fn takes_samples(&self, format: Format, samples: u32) -> bool {
-        let uses = self.backend.caps().formats.get(format);
+        let uses = self.backend.caps().formats.uses[format as usize];
         uses.intersects(FormatUse::RENDER | FormatUse::DEPTH_STENCIL)
             && self.backend.caps().formats.takes_samples(format, samples)
     }
@@ -1121,12 +1120,7 @@ impl<B: Backend> Device<B> {
     /// Whether storage views of `format` are read and written through a buffer of their texels,
     /// where the back end copies the format but cannot store into it (`StorageFormatThroughBuffer`).
     pub(crate) fn stored_through(&self, format: Format) -> bool {
-        !self
-            .backend
-            .caps()
-            .formats
-            .get(format)
-            .contains(FormatUse::STORAGE_WRITE)
+        !self.backend.caps().formats.uses[format as usize].contains(FormatUse::STORAGE_WRITE)
             && self.through_takes(format)
     }
 
@@ -1140,7 +1134,7 @@ impl<B: Backend> Device<B> {
     /// buffer of its texels.
     pub(crate) fn through_takes(&self, format: Format) -> bool {
         let caps = self.backend.caps();
-        caps.formats.get(format).contains(FormatUse::COPY_OUT)
+        caps.formats.uses[format as usize].contains(FormatUse::COPY_OUT)
             && FORMAT_FACTS[format as usize].block.0 == 1
             && caps.features.contains(Features::COMPUTE)
             && caps.limits.storage_buffers_per_stage > 0
@@ -1157,9 +1151,9 @@ impl<B: Backend> Device<B> {
     /// into the format but draws into the twin. Programs decode its loads and encode their outputs.
     pub(crate) fn held_as_integer(&self, format: Format, drawn: bool) -> Option<Format> {
         let formats = &self.backend.caps().formats;
-        let own = formats.get(format);
+        let own = formats.uses[format as usize];
         FORMAT_FACTS[format as usize].integer_twin.filter(|&twin| {
-            let held = formats.get(twin);
+            let held = formats.uses[twin as usize];
             held.contains(FormatUse::SAMPLE)
                 && (own.is_empty()
                     || drawn
@@ -1179,7 +1173,7 @@ impl<B: Backend> Device<B> {
     }
 
     fn check_format(&self, format: Format, needs: FormatUse) -> Result<()> {
-        let has = self.backend.caps().formats.get(format);
+        let has = self.backend.caps().formats.uses[format as usize];
         if has.is_empty() {
             not_implemented("a format the back end lacks")
         } else if has.contains(needs) {
@@ -1639,23 +1633,13 @@ impl<B: Backend> Device<B> {
         // A depth buffer is read by pixel programs running their forced early tests themselves
         // (`EarlyTestsInShader`), where the back end can sample its format.
         if d.bind_flags & bind::DEPTH_STENCIL != 0
-            && self
-                .backend
-                .caps()
-                .formats
-                .get(format)
-                .contains(FormatUse::SAMPLE)
+            && self.backend.caps().formats.uses[format as usize].contains(FormatUse::SAMPLE)
         {
             usage |= TextureUsage::SAMPLE;
         }
         // Unordered access views are cleared by clearing passes where the format can be drawn into.
         if d.bind_flags & bind::UNORDERED_ACCESS != 0
-            && self
-                .backend
-                .caps()
-                .formats
-                .get(format)
-                .contains(FormatUse::RENDER)
+            && self.backend.caps().formats.uses[format as usize].contains(FormatUse::RENDER)
         {
             usage |= TextureUsage::RENDER;
         }
@@ -2334,13 +2318,7 @@ impl<B: Backend> Device<B> {
         if let Some(f) = typed {
             // A texture copy holds the whole buffer, its first element at its first texel.
             if self.typed_buffers_textured() {
-                if !self
-                    .backend
-                    .caps()
-                    .formats
-                    .get(f)
-                    .contains(FormatUse::SAMPLE)
-                {
+                if !self.backend.caps().formats.uses[f as usize].contains(FormatUse::SAMPLE) {
                     return not_implemented(TYPED_BUFFER_FORMAT_UNHELD);
                 }
                 let within = u32::try_from(offset).map_err(|_| Error::OutOfMemory)?;

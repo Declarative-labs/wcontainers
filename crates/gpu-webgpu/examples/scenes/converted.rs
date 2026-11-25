@@ -679,8 +679,8 @@ pub fn three_channels(b: &mut B, seed: u64, cases: u32) -> Result<String> {
             .into_iter()
             .zip([Format::Rgba32Float, Format::Rgba32Uint, Format::Rgba32Sint])
     {
-        let uses = b.caps().formats.get(format);
-        let filter = b.caps().formats.get(twin) & FormatUse::FILTER;
+        let uses = b.caps().formats.uses[format as usize];
+        let filter = b.caps().formats.uses[twin as usize] & FormatUse::FILTER;
         ensure!(
             uses == FormatUse::SAMPLE | FormatUse::COPY_OUT | filter,
             "{format:?} declares {uses:?}"
@@ -750,7 +750,7 @@ pub fn filter_bound(format: Format) -> f32 {
 pub fn check(b: &mut B, seed: u64, cases: u32) -> Result<String> {
     let mut line = format!("converted formats (seed {seed}, {cases} textures each):");
     for format in FORMATS {
-        let uses = b.caps().formats.get(format);
+        let uses = b.caps().formats.uses[format as usize];
         let drawn = DRAWN.contains(&format);
         let want = FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
         ensure!(uses.contains(want), "{format:?} declares {uses:?}");

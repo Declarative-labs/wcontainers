@@ -123,7 +123,7 @@ impl<B: Backend> Copy<B> {
 fn window_format<B: Backend>(backend: &B, format: Format) -> Option<Format> {
     [format, Format::Bgra8Unorm, Format::Rgba8Unorm]
         .into_iter()
-        .find(|f| backend.caps().formats.get(*f).contains(FormatUse::PRESENT))
+        .find(|f| backend.caps().formats.uses[*f as usize].contains(FormatUse::PRESENT))
 }
 
 /// Shows one level and layer of `resource` in the window `device_context` names.

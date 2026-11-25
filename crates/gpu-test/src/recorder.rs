@@ -395,7 +395,7 @@ impl Recorder {
     /// Checks a texture's format copies out into buffers.
     fn copies_out(&self, id: Id) -> Result<(), String> {
         let format = self.texture(id)?.desc.format;
-        if self.caps.formats.get(format).contains(FormatUse::COPY_OUT) {
+        if self.caps.formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
             Ok(())
         } else {
             Err(format!(
@@ -671,7 +671,7 @@ impl Recorder {
                 if self.view(*r)?.desc.format != format {
                     return Err("a resolve target of another format than its attachment".into());
                 }
-                if !self.caps.formats.get(format).contains(FormatUse::RESOLVE) {
+                if !self.caps.formats.uses[format as usize].contains(FormatUse::RESOLVE) {
                     return Err("a resolve of a format that cannot be averaged".into());
                 }
                 resolves.push((*c.view, *r));
@@ -1325,7 +1325,7 @@ impl Backend for Recorder {
         self.nested += 1;
         #[allow(clippy::redundant_closure_call)]
         let made = (|| -> Result<Id, GpuError> {
-            let uses = self.caps.formats.get(desc.format);
+            let uses = self.caps.formats.uses[desc.format as usize];
             if uses.is_empty() {
                 return Err(GpuError::Invalid(
                     "texture of a format this back end does not hold",
@@ -1429,7 +1429,7 @@ impl Backend for Recorder {
                 && !FORMAT_FACTS[t.desc.format as usize].depth_stencil
                 && FORMAT_FACTS[desc.format as usize].block
                     == FORMAT_FACTS[t.desc.format as usize].block
-                && !self.caps.formats.get(desc.format).is_empty();
+                && !self.caps.formats.uses[desc.format as usize].is_empty();
             if desc.format != t.desc.format && !(twin && t.desc.reinterpret) {
                 if !(same_size && t.desc.reinterpret) {
                     return Err(GpuError::Invalid(
@@ -2404,7 +2404,7 @@ impl Backend for Recorder {
                     "a resolve between formats other than one format and its sRGB twin".into(),
                 );
             }
-            if !r.caps.formats.get(format).contains(FormatUse::RESOLVE) {
+            if !r.caps.formats.uses[format as usize].contains(FormatUse::RESOLVE) {
                 return Err("a resolve of a format that cannot be averaged".into());
             }
             if dst.mip >= d.mip_levels
@@ -2573,7 +2573,7 @@ impl Backend for Recorder {
     ) -> Result<(), GpuError> {
         #[allow(clippy::redundant_closure_call)]
         let made = (|| -> Result<(), GpuError> {
-            if !self.caps.formats.get(format).contains(FormatUse::PRESENT) {
+            if !self.caps.formats.uses[format as usize].contains(FormatUse::PRESENT) {
                 return Err(GpuError::Invalid("surface format without PRESENT"));
             }
             match self

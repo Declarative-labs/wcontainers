@@ -127,12 +127,8 @@ fn whole_resolve<B: Backend>(
     };
     // The host resolves only formats it averages; Gallium's blitter takes the rest (integers, one
     // sample of each pixel, as OpenGL resolves them).
-    let resolves = context
-        .screen()
-        .caps()
-        .formats
-        .get(format)
-        .contains(FormatUse::RESOLVE);
+    let resolves =
+        context.screen().caps().formats.uses[format as usize].contains(FormatUse::RESOLVE);
     let plain = resolves
         && from.base.nr_samples > 1
         && to.base.nr_samples <= 1

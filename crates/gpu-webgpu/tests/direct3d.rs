@@ -252,7 +252,7 @@ fn mips_against_direct3d(
         ("by the sampler", wgpu::Features::empty()),
     ] {
         let mut b = device_without(features);
-        let filtered = b.caps().formats.get(values).contains(FormatUse::FILTER);
+        let filtered = b.caps().formats.uses[values as usize].contains(FormatUse::FILTER);
         // With the feature, in the format itself, as Direct3D holds it.
         let held = if filtered { values } else { format };
         let ours = our_mips(&mut b, held, values, texel, reference);

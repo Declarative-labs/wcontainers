@@ -26,10 +26,7 @@ use wcontainers_gpu_test::Host;
 fn float_frames_show_on_windows_without_float_formats() {
     let mut b = host::Native::make();
     assert!(
-        b.caps()
-            .formats
-            .get(Format::Rgba16Float)
-            .contains(FormatUse::PRESENT),
+        b.caps().formats.uses[Format::Rgba16Float as usize].contains(FormatUse::PRESENT),
         "rgba16float is declared presentable"
     );
     let window = host::Native::window(&mut b);

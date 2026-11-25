@@ -147,11 +147,7 @@ fn float_targets_blend_or_fail_loudly() {
             op: BlendOp::Add,
         },
     ));
-    let blendable = b
-        .caps()
-        .formats
-        .get(Format::Rgba32Float)
-        .contains(FormatUse::BLEND);
+    let blendable = b.caps().formats.uses[Format::Rgba32Float as usize].contains(FormatUse::BLEND);
     eprintln!("rgba32float blendable on this device: {blendable}");
     let k = kit(&mut b, Format::Rgba32Float, 1, &blend);
     let ub = constants(&mut b, 16, MapIntent::Rarely);
@@ -276,10 +272,7 @@ fn combined_depth_stencil_views_draw_and_read_each_aspect() {
     let mut b = device();
     let mut ran = 0;
     for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
-        if !b
-            .caps()
-            .formats
-            .get(format)
+        if !b.caps().formats.uses[format as usize]
             .contains(FormatUse::DEPTH_STENCIL | FormatUse::SAMPLE)
         {
             eprintln!("{format:?}: not held by this device");
@@ -415,10 +408,7 @@ fn stencil_views_bound_alone_read_each_stencil_clear() {
     let mut b = device();
     let mut ran = 0;
     for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
-        if !b
-            .caps()
-            .formats
-            .get(format)
+        if !b.caps().formats.uses[format as usize]
             .contains(FormatUse::DEPTH_STENCIL | FormatUse::SAMPLE)
         {
             eprintln!("{format:?}: not held by this device");
@@ -799,11 +789,7 @@ fn layouts_follow_each_views_filterability() {
         let mut b = pollster::block_on(draw::device_without(&draw::instance(backends), without))
             .unwrap()
             .0;
-        let filters = b
-            .caps()
-            .formats
-            .get(Format::R32Float)
-            .contains(FormatUse::FILTER);
+        let filters = b.caps().formats.uses[Format::R32Float as usize].contains(FormatUse::FILTER);
         if float32_filterable && !filters {
             eprintln!("this adapter has no float32-filterable");
             continue;
@@ -877,12 +863,15 @@ fn tier1_formats_are_declared_only_with_it() {
     .unwrap()
     .0;
     for f in sixteen {
-        assert!(b.caps().formats.get(f).is_empty(), "{f:?} without tier 1");
+        assert!(
+            b.caps().formats.uses[f as usize].is_empty(),
+            "{f:?} without tier 1"
+        );
         let made = draw::texture_2d(&mut b, f, 1, 1, TextureUsage::SAMPLE);
         assert!(made.is_err(), "{f:?} made without tier 1");
     }
     for f in snorm8 {
-        let uses = b.caps().formats.get(f);
+        let uses = b.caps().formats.uses[f as usize];
         assert!(
             uses.contains(FormatUse::SAMPLE | FormatUse::FILTER),
             "{f:?}: {uses:?}"
@@ -891,13 +880,13 @@ fn tier1_formats_are_declared_only_with_it() {
     }
     assert_eq!(b.status(), DeviceStatus::Ok);
     let b = pollster::block_on(draw::device_on(&instance)).unwrap().0;
-    let adapter_has = |f: Format| !b.caps().formats.get(f).is_empty();
+    let adapter_has = |f: Format| !b.caps().formats.uses[f as usize].is_empty();
     if !sixteen.into_iter().all(adapter_has) {
         eprintln!("this adapter has no 16-bit normalised formats");
         return;
     }
     for f in sixteen.into_iter().chain(snorm8) {
-        let uses = b.caps().formats.get(f);
+        let uses = b.caps().formats.uses[f as usize];
         assert!(uses.contains(FormatUse::SAMPLE), "{f:?}: {uses:?}");
         if f != Format::R16Snorm && f != Format::Rg16Snorm && f != Format::Rgba16Snorm {
             assert!(

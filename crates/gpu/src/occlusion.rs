@@ -545,7 +545,8 @@ impl<B: Backend> OcclusionCounter<B> {
             .or(targets.empty.map(|e| (e.width, e.height, e.samples)))
             .ok_or(GpuError::Invalid("a counted draw with no targets"))?;
         let float32 = FormatUse::RENDER | FormatUse::BLEND;
-        let (format, bound) = if b.caps().formats.get(Format::R32Float).contains(float32) {
+        let (format, bound) = if b.caps().formats.uses[Format::R32Float as usize].contains(float32)
+        {
             (Format::R32Float, 16_777_216.0)
         } else {
             (Format::R16Float, 2048.0)

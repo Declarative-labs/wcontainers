@@ -848,7 +848,9 @@ pub fn generate_mips_by_draws<B: Backend>(
     let read = match decoded {
         Some((_, false)) => MipRead::Unorm,
         Some((_, true)) => MipRead::Snorm,
-        None if b.caps().formats.get(seen).contains(FormatUse::FILTER) => MipRead::Filtered,
+        None if b.caps().formats.uses[seen as usize].contains(FormatUse::FILTER) => {
+            MipRead::Filtered
+        }
         None => MipRead::Unfiltered,
     };
     let cube = matches!(own, ViewDimension::Cube | ViewDimension::CubeArray);

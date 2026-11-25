@@ -233,10 +233,7 @@ fn depth_formats(b: &WebGpu) -> Vec<Format> {
     ]
     .into_iter()
     .filter(|f| {
-        let held = b
-            .caps()
-            .formats
-            .get(*f)
+        let held = b.caps().formats.uses[*f as usize]
             .contains(FormatUse::DEPTH_STENCIL | FormatUse::SAMPLE);
         if !held {
             eprintln!("{f:?}: not held by this device");
@@ -935,7 +932,7 @@ fn sixteen_bit_group_copies_into_depth_keep_the_bits() {
         .collect();
     let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
     for source in [Format::R16Unorm, Format::R16Uint] {
-        if !b.caps().formats.get(source).contains(FormatUse::SAMPLE) {
+        if !b.caps().formats.uses[source as usize].contains(FormatUse::SAMPLE) {
             eprintln!("{source:?} is absent on this device: not copied");
             continue;
         }

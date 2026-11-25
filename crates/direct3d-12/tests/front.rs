@@ -339,12 +339,7 @@ fn atomics_on_typed_storage_views_are_answered_through_a_buffer() {
     use wcontainers_directx_graphics_infrastructure::{atomic_operations, dxgi, support2};
     // The recorder stores into R32_UINT but has no atomics on storage textures.
     let caps = record::webgpu_like_caps();
-    assert!(
-        !caps
-            .formats
-            .get(Format::R32Uint)
-            .contains(FormatUse::STORAGE_ATOMIC)
-    );
+    assert!(!caps.formats.uses[Format::R32Uint as usize].contains(FormatUse::STORAGE_ATOMIC));
     let uint = format_support(&caps, dxgi::R32_UINT).support2;
     assert_eq!(
         uint & atomic_operations(dxgi::R32_UINT),

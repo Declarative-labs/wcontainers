@@ -98,7 +98,7 @@ fn ok<B: Backend>(b: &mut B) {
 }
 
 fn needs<B: Backend>(b: &B, format: Format, uses: FormatUse) {
-    let has = b.caps().formats.get(format);
+    let has = b.caps().formats.uses[format as usize];
     assert!(
         has.contains(uses),
         "{format:?} lacks {:?}, which every back end has",

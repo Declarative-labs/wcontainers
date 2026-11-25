@@ -70,10 +70,8 @@ pub fn has_abilities_of_11_0(caps: &Caps) -> bool {
         && l.max_texture_cube >= LEVEL_11_0_TEXTURE_2D
         && l.max_texture_3d >= LEVEL_11_0_TEXTURE_3D
         && l.max_texture_layers >= LEVEL_11_0_TEXTURE_LAYERS;
-    let depth_stencil = caps
-        .formats
-        .get(Format::Depth32FloatStencil8)
-        .contains(FormatUse::DEPTH_STENCIL);
+    let depth_stencil =
+        caps.formats.uses[Format::Depth32FloatStencil8 as usize].contains(FormatUse::DEPTH_STENCIL);
     // 11_0 has compute shaders and unordered access views in pixel shaders, and the raster and
     // blend abilities this front serves only through the back end's own.
     let stages = caps
@@ -203,9 +201,7 @@ fn video_format_support(caps: &Caps, value: u32) -> Option<FormatSupport> {
         // answered as the RTX 3080 answers them.
         dxgi::R10G10B10_XR_BIAS_A2_UNORM => (
             FormatSupport {
-                support1: match caps
-                    .formats
-                    .get(Format::Rgb10a2Unorm)
+                support1: match caps.formats.uses[Format::Rgb10a2Unorm as usize]
                     .contains(FormatUse::COPY_OUT)
                 {
                     true => u32::MAX,
@@ -245,7 +241,7 @@ pub fn stored_through(caps: &Caps, value: u32) -> bool {
         && caps.features.contains(Features::COMPUTE)
         && caps.limits.storage_buffers_per_stage > 0
         && dxgi_format(value).is_some_and(|(f, _)| {
-            let uses = caps.formats.get(f);
+            let uses = caps.formats.uses[f as usize];
             !uses.contains(FormatUse::STORAGE_WRITE) && uses.contains(FormatUse::COPY_OUT)
         })
 }
@@ -325,7 +321,7 @@ pub fn options(caps: &Caps) -> Options {
         ps_specified_stencil_ref_supported: false,
         typed_uav_load_additional_formats: ADDITIONAL_UAV_LOADS
             .iter()
-            .all(|f| caps.formats.get(*f).contains(FormatUse::STORAGE_READ)),
+            .all(|f| caps.formats.uses[*f as usize].contains(FormatUse::STORAGE_READ)),
         rovs_supported: false,
         conservative_rasterization_tier: 0,
         max_gpu_virtual_address_bits_per_resource: VIRTUAL_ADDRESS_BITS,

@@ -314,7 +314,7 @@ fn fill_caps(caps: &mut pipe_caps, ours: &Caps) {
     caps.glsl_feature_level = glsl_version(limits);
     caps.glsl_feature_level_compatibility = GLSL_COMPATIBILITY_VERSION;
     caps.essl_feature_level = ESSL_VERSION;
-    let filters = |format| ours.formats.get(format).contains(FormatUse::FILTER);
+    let filters = |format| ours.formats.uses[format as usize].contains(FormatUse::FILTER);
     caps.texture_half_float_linear = filters(Format::Rgba16Float);
     caps.texture_float_linear = filters(Format::Rgba32Float);
     caps.texture_shadow_map = true;

@@ -2219,7 +2219,7 @@ impl<B: Backend> Device<B> {
             {
                 Some(ShaderView::Texture(view)) => {
                     view.decoded.is_none()
-                        && !caps.formats.get(view.format).contains(FormatUse::FILTER)
+                        && !caps.formats.uses[view.format as usize].contains(FormatUse::FILTER)
                 }
                 _ => false,
             };

@@ -232,7 +232,7 @@ pub fn supported(
             || self::format(format).is_some_and(|f| {
                 matches!(FORMAT_FACTS[f as usize].block, (1, 1, _))
                     && !FORMAT_FACTS[f as usize].depth_stencil
-                    && caps.get(f).contains(FormatUse::SAMPLE)
+                    && caps.uses[f as usize].contains(FormatUse::SAMPLE)
             });
         // Images of buffers, read and written as storage words by the program
         // (`TexelBufferAsStorage`).
@@ -258,7 +258,7 @@ pub fn supported(
     if let Some(depth_stencil) = stencil_view(format) {
         return bindings == PIPE_BIND_SAMPLER_VIEW
             && sampled == 1
-            && caps.get(depth_stencil).contains(FormatUse::SAMPLE);
+            && caps.uses[depth_stencil as usize].contains(FormatUse::SAMPLE);
     }
     let Some(ours) = self::format(format) else {
         return false;
@@ -290,7 +290,7 @@ pub fn supported(
         && storage
         && layers
         && dimension
-        && caps.get(ours).contains(needed)
+        && caps.uses[ours as usize].contains(needed)
         && sampled == storage_samples.max(1)
         && (sampled == 1 || caps.takes_samples(ours, sampled))
 }

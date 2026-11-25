@@ -154,7 +154,7 @@ const BUFFER_USAGE: BufferUsage = BufferUsage::VERTEX
 /// The interface's texture of a Gallium template, if the interface holds its format and shape.
 fn texture_desc<B: Backend>(screen: &Screen<B>, template: &pipe_resource) -> Option<TextureDesc> {
     let format = format::format(template.format())?;
-    let uses = screen.caps().formats.get(format);
+    let uses = screen.caps().formats.uses[format as usize];
     let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     if uses.contains(FormatUse::SAMPLE) {
         usage |= TextureUsage::SAMPLE;

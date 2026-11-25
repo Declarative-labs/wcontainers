@@ -566,7 +566,7 @@ pub fn missing_components_read_their_defaults<H: Host>() {
         (Format::A8Unorm, vec![128]),
         (Format::B5g6r5Unorm, vec![0xff; 2]),
     ] {
-        if b.caps().formats.get(format).contains(FormatUse::SAMPLE) {
+        if b.caps().formats.uses[format as usize].contains(FormatUse::SAMPLE) {
             cases.push((format, texel));
         }
     }
@@ -805,11 +805,7 @@ pub fn a_copy_within_one_3d_or_compressed_subresource_moves_the_region<H: Host>(
         Format::Etc2Rgba8Unorm,
         Format::Astc4x4Unorm,
     ] {
-        if !b
-            .caps()
-            .formats
-            .get(format)
-            .contains(FormatUse::SAMPLE | FormatUse::COPY_OUT)
+        if !b.caps().formats.uses[format as usize].contains(FormatUse::SAMPLE | FormatUse::COPY_OUT)
         {
             continue;
         }
@@ -871,7 +867,7 @@ pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<H: Host>(
         (Format::Depth16Unorm, 2, depth16),
         (Format::Stencil8, 1, pattern(8, 3)),
     ] {
-        if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+        if b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
             copy_within_one_subresource(&mut b, format, texel, bytes);
         }
     }
@@ -880,7 +876,7 @@ pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<H: Host>(
         Format::Depth24PlusStencil8,
         Format::Depth32FloatStencil8,
     ] {
-        if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+        if b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
             copy_within_one_depth_subresource(&mut b, format);
         }
     }

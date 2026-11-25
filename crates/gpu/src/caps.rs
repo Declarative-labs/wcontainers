@@ -262,12 +262,13 @@ bitflags! {
     }
 }
 
-/// Per-format abilities, indexed by [`Format::index`]. A format with any use is served in every
+/// Per-format abilities, indexed by `Format as usize`. A format with any use is served in every
 /// texture dimension: 1D where its blocks are one texel high, 2D, cube, and 3D but for depth and
 /// stencil formats. A back end whose API lacks a dimension for a format holds such textures decoded
 /// or converted (slow paths [`crate::SlowPath::BlockDecoded`], [`crate::SlowPath::FormatConverted`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FormatCaps {
+    /// What each format can be used for.
     pub uses: [FormatUse; crate::FORMAT_COUNT],
     /// The sample counts a texture of each format may have, a bit per count (bit n for 2^n samples, so
     /// bit 0 is one sample), as Direct3D's `CheckMultisampleQualityLevels` and Vulkan's sample count
@@ -276,11 +277,6 @@ pub struct FormatCaps {
 }
 
 impl FormatCaps {
-    /// What `format` can be used for.
-    pub fn get(&self, format: Format) -> FormatUse {
-        self.uses[format as usize]
-    }
-
     /// Whether a texture of `format` may have `count` samples.
     pub fn takes_samples(&self, format: Format, count: u32) -> bool {
         count.is_power_of_two()

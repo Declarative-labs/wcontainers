@@ -85,10 +85,7 @@ fn r32float_filtered_in_the_program_without_filtering(
     caps: &Caps,
     slow: &SlowPaths,
 ) -> Result<(), String> {
-    let filterable = caps
-        .formats
-        .get(Format::R32Float)
-        .contains(FormatUse::FILTER);
+    let filterable = caps.formats.uses[Format::R32Float as usize].contains(FormatUse::FILTER);
     if !filterable && slow.count(SlowPath::FilterInShader) == 0 {
         return Err("r32float is not filterable, but no FilterInShader was counted".into());
     }
@@ -173,11 +170,7 @@ pub const COMPARISONS: [Comparison; 9] = [
             bytes: r32float_bytes,
         },
         expect: |_, caps, slow| {
-            if caps
-                .formats
-                .get(Format::R32Float)
-                .contains(FormatUse::FILTER)
-            {
+            if caps.formats.uses[Format::R32Float as usize].contains(FormatUse::FILTER) {
                 return Err("r32float is filterable".into());
             }
             r32float_filtered_in_the_program_without_filtering(false, caps, slow)

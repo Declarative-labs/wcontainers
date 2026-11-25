@@ -296,7 +296,7 @@ pub fn back_buffer_format(value: u32) -> Option<Format> {
 /// use their own where presented, else `rgb10a2unorm` for 10-bit buffers, else `rgba8unorm`, which
 /// every back end presents.
 pub fn present_format(caps: &Caps, format: Format) -> Format {
-    let presents = |f: Format| caps.formats.get(f).contains(FormatUse::PRESENT);
+    let presents = |f: Format| caps.formats.uses[f as usize].contains(FormatUse::PRESENT);
     let own = FORMAT_FACTS[format as usize].linear;
     if own != Format::Rgba16Float && presents(own) {
         own

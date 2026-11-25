@@ -602,12 +602,7 @@ impl<B: Backend> Device<B> {
             // draw into whatever their flags say: the back end multisamples and resolves only into
             // textures drawn into, which Direct3D 12 does not require.
             let resolves_into = desc.dimension == resource::DIMENSION_TEXTURE2D
-                && self
-                    .backend
-                    .caps()
-                    .formats
-                    .get(format)
-                    .contains(FormatUse::RESOLVE);
+                && self.backend.caps().formats.uses[format as usize].contains(FormatUse::RESOLVE);
             if desc.flags & (resource::FLAG_RENDER_TARGET | resource::FLAG_DEPTH_STENCIL) != 0
                 || desc.sample_count > 1
                 || resolves_into
@@ -616,24 +611,14 @@ impl<B: Backend> Device<B> {
             }
             // Formats the back end cannot store into are read and written through a buffer of
             // their texels (`StorageFormatThroughBuffer`).
-            let stores = self
-                .backend
-                .caps()
-                .formats
-                .get(format)
+            let stores = self.backend.caps().formats.uses[format as usize]
                 .intersects(FormatUse::STORAGE_READ | FormatUse::STORAGE_WRITE);
             if desc.flags & resource::FLAG_UNORDERED_ACCESS != 0 {
                 if stores {
                     usage |= TextureUsage::STORAGE;
                 }
                 // `ClearUnorderedAccessView*` clears it by a pass where the format renders.
-                if self
-                    .backend
-                    .caps()
-                    .formats
-                    .get(format)
-                    .contains(FormatUse::RENDER)
-                {
+                if self.backend.caps().formats.uses[format as usize].contains(FormatUse::RENDER) {
                     usage |= TextureUsage::RENDER;
                 }
             }

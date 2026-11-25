@@ -1084,13 +1084,8 @@ impl<B: Backend> Device<B> {
             _ => return Ok(()),
         };
         let format = dxgi(v.format)?;
-        let filters = |f: Format| {
-            self.backend
-                .caps()
-                .formats
-                .get(f)
-                .contains(FormatUse::FILTER)
-        };
+        let filters =
+            |f: Format| self.backend.caps().formats.uses[f as usize].contains(FormatUse::FILTER);
         // A view reading a depth texture's depth reads a texture of the depth format.
         let read = if FORMAT_FACTS[stored as usize].depth_stencil {
             stored
@@ -1128,7 +1123,7 @@ impl<B: Backend> Device<B> {
     /// WGSL's `read_write` formats, as the converter does.
     fn stores(&self, value: u32, read: bool, writable: bool) -> bool {
         dxgi(value).is_ok_and(|f| {
-            let uses = self.backend.caps().formats.get(f);
+            let uses = self.backend.caps().formats.uses[f as usize];
             match (read, writable) {
                 (true, true) => {
                     matches!(f, Format::R32Float | Format::R32Uint | Format::R32Sint)

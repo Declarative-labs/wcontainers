@@ -175,7 +175,7 @@ impl<B: Backend> Device<B> {
                 "a multisampled texture array viewed in a format it cannot be viewed as",
             ));
         }
-        let uses = self.backend.caps().formats.get(view);
+        let uses = self.backend.caps().formats.uses[view as usize];
         let mut tdesc = *desc;
         tdesc.format = view;
         if !uses.contains(FormatUse::RENDER) {

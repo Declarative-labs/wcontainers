@@ -103,9 +103,9 @@ pub struct WebGpu {
     /// Host windows the graphics hook registered, by the number it gives them.
     windows: HashMap<u32, wgpu::Surface<'static>>,
     counters: Counters,
-    /// The texture usages each format allows on this device, by [`Format::index`].
+    /// The texture usages each format allows on this device, by `Format as usize`.
     usages: [wgpu::TextureUsages; FORMAT_COUNT],
-    /// Whether a resolve of each format is a draw averaging its samples, by [`Format::index`].
+    /// Whether a resolve of each format is a draw averaging its samples, by `Format as usize`.
     resolved_by_draw: [bool; FORMAT_COUNT],
 }
 
@@ -1016,7 +1016,7 @@ fn caps(adapter: &wgpu::Adapter, device: &wgpu::Device) -> (Caps, FormatTables) 
     )
 }
 
-/// What the device does with each format beside its [`Caps`], by [`Format::index`].
+/// What the device does with each format beside its [`Caps`], by `Format as usize`.
 struct FormatTables {
     /// The texture usages each format allows.
     usages: [wgpu::TextureUsages; FORMAT_COUNT],
@@ -1026,7 +1026,7 @@ struct FormatTables {
 
 /// The format at position `i` of [`Format`]'s list.
 fn format_at(i: usize) -> Format {
-    // Every format, in order, so the table indexes match `Format::index`.
+    // Every format, in order, so the table indexes match `Format as usize`.
     const ALL: [Format; FORMAT_COUNT] = {
         use Format::*;
         [
@@ -1216,7 +1216,7 @@ impl Backend for WebGpu {
             .or(packed::held(desc.format))
             .unwrap_or(desc.format);
         let format = convert::texture_format(held)
-            .filter(|_| !self.caps.formats.get(desc.format).is_empty())
+            .filter(|_| !self.caps.formats.uses[desc.format as usize].is_empty())
             .ok_or(GpuError::Invalid(
                 "texture format this back end does not hold",
             ))?;
@@ -1892,7 +1892,7 @@ impl Backend for WebGpu {
         height: u32,
         vsync: bool,
     ) -> Result<(), GpuError> {
-        if !self.caps.formats.get(format).contains(FormatUse::PRESENT) {
+        if !self.caps.formats.uses[format as usize].contains(FormatUse::PRESENT) {
             return Err(GpuError::Invalid("surface format without PRESENT"));
         }
         let raw = convert::texture_format(format).ok_or(GpuError::Invalid("surface format"))?;

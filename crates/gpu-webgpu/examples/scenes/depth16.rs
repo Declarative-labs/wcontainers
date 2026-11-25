@@ -77,7 +77,7 @@ pub fn group_copies(b: &mut WebGpu) -> Result<String, String> {
         Format::R16Snorm,
         Format::R16Sint,
     ] {
-        if !b.caps().formats.get(colour).contains(FormatUse::SAMPLE) {
+        if !b.caps().formats.uses[colour as usize].contains(FormatUse::SAMPLE) {
             continue;
         }
         let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;

@@ -116,7 +116,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
     let Some((format, typeless)) = dxgi_format(value) else {
         return FormatSupport::default();
     };
-    let uses = caps.formats.get(format);
+    let uses = caps.formats.uses[format as usize];
     let depth = FORMAT_FACTS[format as usize].depth_stencil;
     let texture = uses.intersects(
         FormatUse::SAMPLE
@@ -220,7 +220,7 @@ pub fn format_support(caps: &Caps, value: u32) -> FormatSupport {
         _ => None,
     };
     bit(
-        depth_twin.is_some_and(|d| caps.formats.get(d).contains(FormatUse::SAMPLE)),
+        depth_twin.is_some_and(|d| caps.formats.uses[d as usize].contains(FormatUse::SAMPLE)),
         SHADER_SAMPLE_COMPARISON | SHADER_GATHER_COMPARISON,
     );
     bit(render, RENDER_TARGET);
@@ -322,10 +322,8 @@ pub fn takes_samples(caps: &Caps, value: u32, samples: u32) -> bool {
     let Some((format, typeless)) = dxgi_format(value) else {
         return false;
     };
-    let target = caps
-        .formats
-        .get(format)
-        .intersects(FormatUse::RENDER | FormatUse::DEPTH_STENCIL);
+    let target =
+        caps.formats.uses[format as usize].intersects(FormatUse::RENDER | FormatUse::DEPTH_STENCIL);
     (typeless || role(value) == Role::Whole)
         && target
         && caps.formats.takes_samples(format, samples)

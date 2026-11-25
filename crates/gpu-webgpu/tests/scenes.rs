@@ -100,12 +100,7 @@ fn quads_match_direct3d_on_every_depth_format() {
         Format::Depth32Float,
         Format::Depth32FloatStencil8,
     ] {
-        if !b
-            .caps()
-            .formats
-            .get(format)
-            .contains(FormatUse::DEPTH_STENCIL)
-        {
+        if !b.caps().formats.uses[format as usize].contains(FormatUse::DEPTH_STENCIL) {
             eprintln!("{format:?}: not held by this device");
             continue;
         }
@@ -362,13 +357,8 @@ fn integer_formats_are_not_resolvable() {
                 FormatKind::Uint | FormatKind::Sint
             ))
         })
-        .filter(|&f| b.caps().formats.get(f).contains(FormatUse::RESOLVE))
+        .filter(|&f| b.caps().formats.uses[f as usize].contains(FormatUse::RESOLVE))
         .collect();
     assert!(resolvable.is_empty(), "declared resolvable: {resolvable:?}");
-    assert!(
-        b.caps()
-            .formats
-            .get(Rgba8Unorm)
-            .contains(FormatUse::RESOLVE)
-    );
+    assert!(b.caps().formats.uses[Rgba8Unorm as usize].contains(FormatUse::RESOLVE));
 }

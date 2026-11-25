@@ -500,7 +500,7 @@ pub fn depth_and_stencil_read_back<H: Host>() {
     ];
     let inside = |p: usize| (1..3).contains(&(p % 4)) && (1..3).contains(&(p / 4));
     for format in formats {
-        if !b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+        if !b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
             continue;
         }
         let stencil = FORMAT_FACTS[format as usize].kind == FormatKind::DepthStencil;
@@ -657,7 +657,7 @@ pub fn stencil_sampled_and_read_back<H: Host>() {
     let out_view = kit::target(&mut b, &out, Format::R32Uint, 0, 0);
     let viewports = [kit::viewport(0.0, 0.0, 4.0, 4.0)];
     for format in [Format::Depth24PlusStencil8, Format::Depth32FloatStencil8] {
-        let uses = b.caps().formats.get(format);
+        let uses = b.caps().formats.uses[format as usize];
         assert!(
             uses.contains(FormatUse::SAMPLE | FormatUse::COPY_OUT),
             "{format:?} samples and reads back on every route"
@@ -839,8 +839,8 @@ pub fn copies_within_a_typeless_group<H: Host>() {
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for (i, (from, to)) in pairs.into_iter().enumerate() {
         // Formats absent here (16-bit normalised without EXT_texture_norm16) are not copied.
-        if !b.caps().formats.get(from).contains(FormatUse::SAMPLE)
-            || !b.caps().formats.get(to).contains(FormatUse::SAMPLE)
+        if !b.caps().formats.uses[from as usize].contains(FormatUse::SAMPLE)
+            || !b.caps().formats.uses[to as usize].contains(FormatUse::SAMPLE)
         {
             println!("not copied, a format absent: {from:?} to {to:?}");
             continue;
@@ -1078,7 +1078,7 @@ pub fn signed_normalised_texels_drawn_then_copied<H: Host>() {
     use crate::kit;
     let mut b = H::make();
     let f = Format::Rgba8Snorm;
-    if !b.caps().formats.get(f).contains(FormatUse::RENDER) {
+    if !b.caps().formats.uses[f as usize].contains(FormatUse::RENDER) {
         return not_run_because(format!("{f:?} does not render here"));
     }
     let usage = TextureUsage::RENDER
@@ -1169,12 +1169,7 @@ pub fn signed_normalised_texels_drawn_then_copied<H: Host>() {
 pub fn signed_normalised_minimum_judged_by_whole_components<H: Host>() {
     use crate::kit;
     let mut b = H::make();
-    if !b
-        .caps()
-        .formats
-        .get(Format::Rgba8Snorm)
-        .contains(FormatUse::RENDER)
-    {
+    if !b.caps().formats.uses[Format::Rgba8Snorm as usize].contains(FormatUse::RENDER) {
         return not_run_because("Rgba8Snorm does not render here".into());
     }
     let usage = TextureUsage::RENDER
@@ -1359,7 +1354,7 @@ pub fn half_floats_read_back_as_stored<H: Host>() {
     .enumerate()
     {
         assert!(
-            b.caps().formats.get(format).contains(FormatUse::COPY_OUT),
+            b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT),
             "{format:?} copies out"
         );
         let texel = FORMAT_FACTS[format as usize].block.2 as usize;
@@ -2270,7 +2265,7 @@ pub fn linear_values_interpolate_in_window_space<H: Host>() {
     let mut b = H::make();
     let k = Kit::new(&mut b);
     let f = Format::Rgba32Float;
-    if !b.caps().formats.get(f).contains(FormatUse::RENDER) {
+    if !b.caps().formats.uses[f as usize].contains(FormatUse::RENDER) {
         not_run_because(format!("{f:?} does not render here"));
         return;
     }
@@ -2556,7 +2551,7 @@ pub fn special_float_values_keep_their_bits<H: Host>() {
     let mut b = H::make();
     let k = Kit::new(&mut b);
     let f = Format::Rgba32Float;
-    if !b.caps().formats.get(f).contains(FormatUse::RENDER) {
+    if !b.caps().formats.uses[f as usize].contains(FormatUse::RENDER) {
         not_run_because(format!("{f:?} does not render here"));
         return;
     }
@@ -2691,7 +2686,7 @@ fn read_typeless<B: Backend>(
 ) -> Vec<u8> {
     use crate::kit;
     let texel = FORMAT_FACTS[format as usize].block.2 as usize;
-    if b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+    if b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
         return kit::read(b, texture, 0, 0, size, texel, false);
     }
     if matches!(format, Format::Rgb10a2Unorm | Format::Rgb10a2Uint) {
@@ -3096,7 +3091,7 @@ pub fn depth_and_stencil_written_read_back_as_written<H: Host>() {
         .flat_map(|(n, f)| [(n, f, false), (n + formats.len(), f, true)]);
     let mut wrong = Vec::new();
     for (n, format, cube) in shapes {
-        if !b.caps().formats.get(format).contains(FormatUse::COPY_OUT) {
+        if !b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
             continue;
         }
         let (layers, first) = if cube { (6, 3) } else { (2, 0) };
@@ -3237,8 +3232,8 @@ pub fn copies_between_depth_and_colour_formats<H: Host>() {
     .enumerate()
     {
         let caps = &b.caps().formats;
-        if !caps.get(colour).contains(FormatUse::COPY_OUT)
-            || !caps.get(depth).contains(FormatUse::COPY_OUT)
+        if !caps.uses[colour as usize].contains(FormatUse::COPY_OUT)
+            || !caps.uses[depth as usize].contains(FormatUse::COPY_OUT)
         {
             continue;
         }
@@ -3815,12 +3810,7 @@ pub fn sampled_views_are_whole_textures_of_one_mip_range<H: Host>() {
 /// (the hosts read the window's bytes, which are RGBA).
 pub fn bgra_surfaces_present<H: Host>() {
     let mut b = H::make();
-    assert!(
-        b.caps()
-            .formats
-            .get(Format::Bgra8Unorm)
-            .contains(FormatUse::PRESENT)
-    );
+    assert!(b.caps().formats.uses[Format::Bgra8Unorm as usize].contains(FormatUse::PRESENT));
     let window = H::window(&mut b);
     let surface = b.create_surface(window).expect("create_surface");
     b.configure_surface(&surface, Format::Bgra8Unorm, 4, 4, true)
@@ -3870,13 +3860,9 @@ pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
     use crate::kit::{self, Kit};
     use Format as F;
     let mut b = H::make();
-    let has = b
-        .caps()
-        .formats
-        .get(F::Rgba8Snorm)
-        .contains(FormatUse::RENDER);
+    let has = b.caps().formats.uses[F::Rgba8Snorm as usize].contains(FormatUse::RENDER);
     let mut formats = vec![F::R8Snorm, F::Rg8Snorm, F::Rgba8Snorm];
-    if b.caps().formats.get(F::Rgba16Snorm) != FormatUse::empty() {
+    if b.caps().formats.uses[F::Rgba16Snorm as usize] != FormatUse::empty() {
         formats.extend([F::R16Snorm, F::Rg16Snorm, F::Rgba16Snorm]);
     }
     let k = Kit::new(&mut b);
@@ -3896,7 +3882,7 @@ pub fn signed_normalised_formats_follow_their_extension<H: Host>() {
     let vp = [kit::viewport(0.0, 0.0, 1.0, 1.0)];
     let usage = TextureUsage::SAMPLE | TextureUsage::RENDER;
     for format in formats {
-        let uses = b.caps().formats.get(format);
+        let uses = b.caps().formats.uses[format as usize];
         assert!(
             uses.contains(FormatUse::SAMPLE | FormatUse::FILTER)
                 && uses.contains(FormatUse::COPY_OUT) != has,
@@ -3980,10 +3966,10 @@ pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
     use crate::kit;
     use Format as F;
     let mut b = H::make();
-    let has = b.caps().formats.get(F::Rgba16Unorm) != FormatUse::empty();
+    let has = b.caps().formats.uses[F::Rgba16Unorm as usize] != FormatUse::empty();
     let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
     for format in [F::R16Unorm, F::Rg16Unorm, F::Rgba16Unorm] {
-        let uses = b.caps().formats.get(format);
+        let uses = b.caps().formats.uses[format as usize];
         if !has {
             assert_eq!(uses, FormatUse::empty(), "{format:?}");
             continue;
@@ -4040,7 +4026,7 @@ pub fn sixteen_bit_normalised_formats_follow_their_extension<H: Host>() {
         assert_eq!(later, bytes, "{format:?} later");
     }
     for format in [F::R16Snorm, F::Rg16Snorm, F::Rgba16Snorm] {
-        let uses = b.caps().formats.get(format);
+        let uses = b.caps().formats.uses[format as usize];
         if has {
             // Rendering them too needs EXT_render_snorm.
             assert!(
@@ -4101,7 +4087,7 @@ pub fn generate_mipmap_equals_the_draws<H: Host>() {
         F::R16Unorm,
     ] {
         let need = FormatUse::RENDER | FormatUse::FILTER | FormatUse::COPY_OUT;
-        if !b.caps().formats.get(format).contains(need) {
+        if !b.caps().formats.uses[format as usize].contains(need) {
             continue;
         }
         let texel = FORMAT_FACTS[format as usize].block.2 as usize;
@@ -4973,7 +4959,7 @@ pub fn block_compressed_and_shared_exponent_textures_read_back_as_written<H: Hos
     let mut served = 0;
     for (n, format) in formats.into_iter().enumerate() {
         let want = FormatUse::SAMPLE | FormatUse::COPY_OUT;
-        if !b.caps().formats.get(format).contains(want) {
+        if !b.caps().formats.uses[format as usize].contains(want) {
             continue;
         }
         served += 1;
@@ -5152,12 +5138,7 @@ pub fn block_compressed_and_shared_exponent_textures_read_back_as_written<H: Hos
         }
     }
     assert!(
-        served > 0
-            || !b
-                .caps()
-                .formats
-                .get(F::Rgb9e5Float)
-                .contains(FormatUse::SAMPLE)
+        served > 0 || !b.caps().formats.uses[F::Rgb9e5Float as usize].contains(FormatUse::SAMPLE)
     );
     assert_eq!(b.status(), DeviceStatus::Ok);
 }
@@ -5183,7 +5164,7 @@ pub fn interpolated_bc4_and_bc5_values<H: Host>() {
     use Format as F;
     let mut b = H::make();
     let out_format = F::Rgba32Float;
-    if !b.caps().formats.get(out_format).contains(FormatUse::RENDER) {
+    if !b.caps().formats.uses[out_format as usize].contains(FormatUse::RENDER) {
         return;
     }
     let k = Kit::new(&mut b);
@@ -5210,7 +5191,7 @@ pub fn interpolated_bc4_and_bc5_values<H: Host>() {
     };
     let compressed = b.caps().features.contains(Features::BLOCK_COMPRESSION);
     for format in [F::Bc4RUnorm, F::Bc4RSnorm, F::Bc5RgUnorm, F::Bc5RgSnorm] {
-        if !b.caps().formats.get(format).contains(FormatUse::SAMPLE) {
+        if !b.caps().formats.uses[format as usize].contains(FormatUse::SAMPLE) {
             continue;
         }
         let signed = matches!(format, F::Bc4RSnorm | F::Bc5RgSnorm);
@@ -5341,7 +5322,7 @@ pub fn fragment_depth_follows_the_clip_convention<H: Host>() {
     let mut b = H::make();
     let colour = Format::R32Float;
     let wanted = FormatUse::RENDER | FormatUse::COPY_OUT;
-    if !b.caps().formats.get(colour).contains(wanted) {
+    if !b.caps().formats.uses[colour as usize].contains(wanted) {
         return;
     }
     let k = Kit::new(&mut b);
@@ -6220,7 +6201,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
     .enumerate()
     {
         let want = FormatUse::SAMPLE | FormatUse::COPY_OUT;
-        if !b.caps().formats.get(format).contains(want) {
+        if !b.caps().formats.uses[format as usize].contains(want) {
             continue;
         }
         let (bw, bh, bytes) = FORMAT_FACTS[format as usize].block;
@@ -6453,7 +6434,7 @@ pub fn srgb_views_of_block_compressed_textures<H: Host>() {
     use Format as F;
     let mut b = H::make();
     let want = FormatUse::SAMPLE;
-    if !b.caps().formats.get(F::Bc1RgbaUnorm).contains(want) {
+    if !b.caps().formats.uses[F::Bc1RgbaUnorm as usize].contains(want) {
         return;
     }
     let k = Kit::new(&mut b);
@@ -6585,7 +6566,7 @@ pub fn bgra_textures_keep_their_byte_order<H: Host>() {
     for format in [F::Bgra8Unorm, F::Bgra8UnormSrgb] {
         let want = FormatUse::SAMPLE | FormatUse::RENDER | FormatUse::COPY_OUT;
         assert!(
-            b.caps().formats.get(format).contains(want),
+            b.caps().formats.uses[format as usize].contains(want),
             "{format:?}: {want:?}"
         );
         let before = b.slow_paths().count(SlowPath::FormatConverted);
@@ -6828,7 +6809,7 @@ pub fn bgrx_textures_hold_alpha_one<H: Host>() {
             | FormatUse::BLEND
             | FormatUse::COPY_OUT;
         assert!(
-            b.caps().formats.get(format).contains(want),
+            b.caps().formats.uses[format as usize].contains(want),
             "{format:?}: {want:?}"
         );
         let t = kit::texture(

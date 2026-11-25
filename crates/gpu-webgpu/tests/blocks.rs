@@ -286,7 +286,7 @@ fn sample_and_read_back(checked: fn(Format) -> bool) {
     let mut rng = fastrand::Rng::with_seed(seed);
     let mut beyond = Vec::new();
     for format in FORMATS {
-        let uses = decoded.caps().formats.get(format);
+        let uses = decoded.caps().formats.uses[format as usize];
         assert_eq!(
             uses,
             FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT,

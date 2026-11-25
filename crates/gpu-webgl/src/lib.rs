@@ -538,7 +538,7 @@ impl Gl {
             ),
         ];
         cases.iter().all(|(format, twin, bytes)| {
-            self.caps.formats.get(*format).contains(FormatUse::RENDER)
+            self.caps.formats.uses[*format as usize].contains(FormatUse::RENDER)
                 && self.blit_keeps(*format, *twin, bytes)
         })
     }
@@ -1247,7 +1247,7 @@ impl Gl {
         } else {
             FormatUse::RENDER
         };
-        if !self.caps.formats.get(to).contains(drawn) {
+        if !self.caps.formats.uses[to as usize].contains(drawn) {
             return false;
         }
         let key = (from, to, src.texture.target);
@@ -1341,7 +1341,7 @@ impl Gl {
     ) {
         self.slow.hit(SlowPath::CopyWithinTexture);
         let format = src.texture.desc.format;
-        if !self.caps.formats.get(format).contains(FormatUse::COPY_OUT) {
+        if !self.caps.formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
             let d = &src.texture.desc;
             let Ok(held) = self.create_texture(&TextureDesc {
                 dimension: TextureDimension::D2,
@@ -2970,7 +2970,7 @@ const NO_PASS: (u32, u32) = (i32::MAX as u32, i32::MAX as u32);
 
 /// The byte range of a buffer that a draw's indices `first..first + count` take.
 fn index_bytes(index: &IndexBinding<'_, Gl>, first: u32, count: u32) -> Range<u64> {
-    let size = u64::from(wcontainers_gpu::INDEX_FORMATS[index.format as usize].size);
+    let size = u64::from(INDEX_FORMATS[index.format as usize].size);
     let start = index.offset + u64::from(first) * size;
     start..start + u64::from(count) * size
 }
@@ -3331,8 +3331,7 @@ impl Gl {
                     IndexFormat::U32 => glow::UNSIGNED_INT,
                 };
                 let offset = index.offset
-                    + u64::from(first)
-                        * u64::from(wcontainers_gpu::INDEX_FORMATS[index.format as usize].size);
+                    + u64::from(first) * u64::from(INDEX_FORMATS[index.format as usize].size);
                 // SAFETY: the draw's state and index buffer are applied.
                 unsafe {
                     gl.draw_elements_instanced(
@@ -3435,7 +3434,7 @@ impl Backend for Gl {
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture, GpuError> {
         self.platform.current();
-        if self.caps.formats.get(desc.format) == FormatUse::empty() {
+        if self.caps.formats.uses[desc.format as usize] == FormatUse::empty() {
             return Err(GpuError::Invalid(
                 "webgl: the format has no capabilities here",
             ));
@@ -4527,7 +4526,7 @@ impl Backend for Gl {
             }
             return;
         }
-        let renderable = |f| self.caps.formats.get(f).contains(FormatUse::RENDER);
+        let renderable = |f| self.caps.formats.uses[f as usize].contains(FormatUse::RENDER);
         // copyTexSubImage may copy floats through arithmetic, which loses NaN payloads and denormals.
         let float = format::float_bits(from);
         if from == to && renderable(from) && float && self.float_blits {
@@ -5459,7 +5458,7 @@ impl Backend for Gl {
             values == desc.format
                 && every_layer
                 && texture.host.is_none()
-                && self.caps.formats.get(values).contains(native)
+                && self.caps.formats.uses[values as usize].contains(native)
         }) else {
             return generate_mips_by_draws(self, texture, desc, values, mips, layers);
         };
@@ -5519,7 +5518,7 @@ impl Backend for Gl {
                 format,
                 base_vertex,
             } => {
-                let width = wcontainers_gpu::INDEX_FORMATS[format as usize].size as usize;
+                let width = INDEX_FORMATS[format as usize].size as usize;
                 let count = indices.len() / width;
                 if count == 0 {
                     return Ok(());
@@ -5555,7 +5554,7 @@ impl Backend for Gl {
                 let ring = self.write_buffer_ring(
                     RingKind::Indices,
                     &[bytes],
-                    wcontainers_gpu::INDEX_FORMATS[format as usize].size,
+                    INDEX_FORMATS[format as usize].size,
                     &mut offset,
                 )?;
                 self.draw(&DrawCall {
@@ -5662,12 +5661,12 @@ impl Backend for Gl {
                 let Some(index) = &call.index else {
                     return Err(GpuError::Invalid("an indexed draw with no index buffer"));
                 };
-                let size = wcontainers_gpu::INDEX_FORMATS[index.format as usize].size;
+                let size = INDEX_FORMATS[index.format as usize].size;
                 let raw = self.read_indices(index, *first, *count)?;
                 // Only strips that restart restart: GL's restart value is a vertex elsewhere.
                 let restart = call
                     .restart
-                    .then(|| wcontainers_gpu::INDEX_FORMATS[index.format as usize].restart_value);
+                    .then(|| INDEX_FORMATS[index.format as usize].restart_value);
                 let mut negative = false;
                 let numbers = raw.chunks_exact(size as usize).map(|c| {
                     let mut word = [0; 4];

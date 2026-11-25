@@ -516,11 +516,8 @@ impl WebGpu {
                     }
                 }
                 BindingResource::Texture(v) => {
-                    let filterable = self
-                        .caps
-                        .formats
-                        .get(v.0.format)
-                        .contains(FormatUse::FILTER);
+                    let filterable =
+                        self.caps.formats.uses[v.0.format as usize].contains(FormatUse::FILTER);
                     if let Some(bit) = crate::layout::texture_bit(e.binding)
                         && !filterable
                     {
@@ -834,7 +831,7 @@ impl WebGpu {
                     {
                         None
                     }
-                    Some(_) if !self.caps.formats.get(f).contains(FormatUse::BLEND) => {
+                    Some(_) if !self.caps.formats.uses[f as usize].contains(FormatUse::BLEND) => {
                         return Err(
                             "blending into a format this device cannot blend; fronts blend in the program (BlendInShader)",
                         );

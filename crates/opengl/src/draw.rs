@@ -1412,7 +1412,7 @@ fn blend_for<B: Backend>(
             !matches!(
                 FORMAT_FACTS[f as usize].kind,
                 FormatKind::Uint | FormatKind::Sint
-            ) && caps.formats.get(f).contains(FormatUse::BLEND)
+            ) && caps.formats.uses[f as usize].contains(FormatUse::BLEND)
         });
         if !blends {
             target.blend = None;

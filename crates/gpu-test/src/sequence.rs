@@ -603,11 +603,11 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
     let drawn = FormatUse::RENDER | FormatUse::SAMPLE;
     let formats: Vec<Format> = FORMATS
         .into_iter()
-        .filter(|&f| b.caps().formats.get(f).contains(drawn))
+        .filter(|&f| b.caps().formats.uses[f as usize].contains(drawn))
         .collect();
     let depth_formats: Vec<Format> = DEPTH_FORMATS
         .into_iter()
-        .filter(|&f| b.caps().formats.get(f).contains(FormatUse::COPY_OUT))
+        .filter(|&f| b.caps().formats.uses[f as usize].contains(FormatUse::COPY_OUT))
         .collect();
     // Buffer ranges (by index into `buffers`) commands or writes touched since the last wait for
     // all work: what a no-overwrite write keeps off without waiting.
@@ -1244,10 +1244,7 @@ fn pass<B: Backend>(
     let kind = FORMAT_FACTS[desc.format as usize].kind;
     let float = kind == FormatKind::Float;
     let multisampled = multisampled
-        && b.caps()
-            .formats
-            .get(desc.format)
-            .contains(FormatUse::RESOLVE)
+        && b.caps().formats.uses[desc.format as usize].contains(FormatUse::RESOLVE)
         && b.caps().formats.takes_samples(desc.format, 4);
     let samples = if multisampled { 4 } else { 1 };
     let vertices: Vec<u8> = triangles
@@ -1300,10 +1297,7 @@ fn pass<B: Backend>(
     let depth_format = Format::Depth24PlusStencil8;
     let depth = match options.depth {
         Some(_)
-            if b.caps()
-                .formats
-                .get(depth_format)
-                .contains(FormatUse::DEPTH_STENCIL) =>
+            if b.caps().formats.uses[depth_format as usize].contains(FormatUse::DEPTH_STENCIL) =>
         {
             let d = b.create_texture(&TextureDesc {
                 format: depth_format,

@@ -108,7 +108,7 @@ fn cases(gpu: &Gpu, b: &impl Backend, seed: u64, n: u64) -> Vec<Case> {
     let can = |f: Format| {
         let need = D3D11_FORMAT_SUPPORT_TYPED_UNORDERED_ACCESS_VIEW.0 as u32;
         let d3d = unsafe { gpu.device.CheckFormatSupport(dxgi(f)) }.is_ok_and(|s| s & need == need);
-        d3d && b.caps().formats.get(f).contains(FormatUse::STORAGE_WRITE)
+        d3d && b.caps().formats.uses[f as usize].contains(FormatUse::STORAGE_WRITE)
     };
     let formats: Vec<Format> = FORMATS.into_iter().filter(|&f| can(f)).collect();
     eprintln!("{} formats: {formats:?}", formats.len());

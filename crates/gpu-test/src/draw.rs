@@ -927,7 +927,7 @@ impl Recorder {
                 let format = self.view(*view)?.desc.format;
                 if d.compare.is_none()
                     && [d.min, d.mag, d.mip].contains(&Filter::Linear)
-                    && !self.caps().formats.get(format).contains(FormatUse::FILTER)
+                    && !self.caps().formats.uses[format as usize].contains(FormatUse::FILTER)
                 {
                     return Err(format!(
                         "{format:?} filtered, which this back end does not filter"
@@ -1149,7 +1149,7 @@ impl Recorder {
             }
         }
         if let (Some(i), DrawRange::Indexed { first, count, .. }) = (&call.index, &call.range) {
-            let size = u64::from(wcontainers_gpu::INDEX_FORMATS[i.format as usize].size);
+            let size = u64::from(INDEX_FORMATS[i.format as usize].size);
             let start = i.offset.saturating_add(u64::from(*first) * size);
             reads.push((
                 *i.buffer,
@@ -1287,7 +1287,9 @@ impl Recorder {
                 state.blend.targets[i]
             };
             let format = self.view(*view)?.desc.format;
-            if rule.blend.is_some() && !self.caps().formats.get(format).contains(FormatUse::BLEND) {
+            if rule.blend.is_some()
+                && !self.caps().formats.uses[format as usize].contains(FormatUse::BLEND)
+            {
                 return Err(format!(
                     "blending into {format:?}, which this back end does not blend"
                 ));
@@ -1382,7 +1384,7 @@ impl Recorder {
                     .as_ref()
                     .ok_or("an indexed draw without indices")?;
                 let bytes = &self.buffer(*index.buffer)?.bytes;
-                let size = wcontainers_gpu::INDEX_FORMATS[index.format as usize].size as usize;
+                let size = INDEX_FORMATS[index.format as usize].size as usize;
                 let mut list = Vec::new();
                 for k in first..first + count {
                     let at = (index.offset as usize).saturating_add(k as usize * size);
@@ -1390,9 +1392,7 @@ impl Recorder {
                         .get(at..at.saturating_add(size))
                         .ok_or("an index past the buffer's end")?;
                     let v = b.iter().rev().fold(0u32, |a, &x| (a << 8) | u32::from(x));
-                    if call.restart
-                        && v == wcontainers_gpu::INDEX_FORMATS[index.format as usize].restart_value
-                    {
+                    if call.restart && v == INDEX_FORMATS[index.format as usize].restart_value {
                         list.push(None);
                     } else {
                         list.push(Some((i64::from(v) + i64::from(base_vertex)) as u32));
