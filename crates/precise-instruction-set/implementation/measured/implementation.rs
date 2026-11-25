@@ -22,34 +22,34 @@ type InstructionOf<Source> =
 type PreciseInstructionOf<Source> =
     <<Source as BehaviorSource>::Architecture as ProcessorArchitecture>::PreciseInstruction;
 
-/// Each listed instruction with the behavior a source showed on every state `Generator` makes for it.
-pub struct MeasuredInstructionSet<Source: BehaviorSource, Generator> {
+/// Each listed instruction with the behavior a source showed on every state the generator it was measured with made.
+pub struct MeasuredInstructionSet<Source: BehaviorSource> {
     behaviors: Vec<(InstructionOf<Source>, PreciseInstructionOf<Source>)>,
-    measured_with: PhantomData<(Source, Generator)>,
+    measured_from: PhantomData<Source>,
 }
 
-impl<Source, Generator> PreciseInstructionSet<Source::Architecture>
-    for MeasuredInstructionSet<Source, Generator>
+impl<Source> PreciseInstructionSet<Source::Architecture> for MeasuredInstructionSet<Source>
 where
     Source: BehaviorSource,
     Source::Architecture: Clone,
     PreciseInstructionOf<Source>: Simulator<Source::Architecture, Error = Infallible>,
-    Generator: DistinguishingStateGenerator<Source::Architecture> + Default,
 {
     type Source = Source;
-    type MeasureError = MeasureInstructionError<Source::Architecture>;
+    type MeasureError = MeasureInstructionError<Source::Architecture, Source::Error>;
 
-    fn measure(mut source: Source) -> Result<Self, Self::MeasureError> {
-        let generator = Generator::default();
+    fn measure(
+        mut source: Source,
+        generator: &impl DistinguishingStateGenerator<Source::Architecture>,
+    ) -> Result<Self, Self::MeasureError> {
         let behaviors = Source::Architecture::list_instructions()
             .map(|instruction| {
-                let precise = source.measure_instruction(instruction, &generator)?;
+                let precise = source.measure_instruction(instruction, generator)?;
                 Ok((instruction, precise))
             })
             .collect::<Result<_, _>>()?;
         Ok(Self {
             behaviors,
-            measured_with: PhantomData,
+            measured_from: PhantomData,
         })
     }
 

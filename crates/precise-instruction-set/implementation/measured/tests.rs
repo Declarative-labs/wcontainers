@@ -5,7 +5,7 @@ use core::convert::Infallible;
 use std::path::Path;
 
 use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
-use wcontainers_behavior_source_recording::Recording;
+use wcontainers_behavior_source_recording::{NotRecorded, Recording};
 use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
 use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
@@ -71,7 +71,9 @@ fn assert_measures_as(
     recording: Recording,
     expected: impl Fn(Instruction<Infallible>) -> PreciseInstruction<Infallible>,
 ) {
-    let Ok(measured) = MeasuredInstructionSet::<Recording, Generator>::measure(recording) else {
+    let Ok(measured) =
+        MeasuredInstructionSet::measure(recording, &Generator::new(Arm64InputDomain))
+    else {
         panic!("a recording of a known chip measures as that chip");
     };
     for instruction in Arm64::<User>::list_instructions() {
@@ -108,23 +110,26 @@ struct ThreadIdChanged(Recording);
 
 impl BehaviorSource for ThreadIdChanged {
     type Architecture = Arm64<User>;
+    type Error = NotRecorded;
 
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
         memory: &[MemoryDelta<'_, Arm64<User>>],
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
-    ) {
+    ) -> Result<(), NotRecorded> {
         self.0
-            .execute_single_instruction_in_place(processor, memory, mutation_hook);
+            .execute_single_instruction_in_place(processor, memory, mutation_hook)?;
         processor.software_thread_id ^= 1;
+        Ok(())
     }
 }
 
 #[test]
 fn behavior_no_known_one_agrees_with_is_named_with_its_state() {
     let source = ThreadIdChanged(read_recording("neoverse-v2"));
-    let Err(failure) = MeasuredInstructionSet::<ThreadIdChanged, Generator>::measure(source) else {
+    let Err(failure) = MeasuredInstructionSet::measure(source, &Generator::new(Arm64InputDomain))
+    else {
         panic!("no known behavior changes TPIDR_EL0");
     };
     let MeasureInstructionError::NoBehaviorAgrees {
@@ -157,13 +162,14 @@ fn this_chip_measures_as_the_neoverse_v2_recording() {
         Ok(chip) => chip,
         Err(error) => panic!("this host makes no single step machine: {error:?}"),
     };
-    let Ok(measured) = MeasuredInstructionSet::<KvmSingleStepMachine, Generator>::measure(chip)
+    let Ok(measured) = MeasuredInstructionSet::measure(chip, &Generator::new(Arm64InputDomain))
     else {
         panic!("the chip shows one known behavior of every instruction");
     };
-    let Ok(recorded) =
-        MeasuredInstructionSet::<Recording, Generator>::measure(read_recording("neoverse-v2"))
-    else {
+    let Ok(recorded) = MeasuredInstructionSet::measure(
+        read_recording("neoverse-v2"),
+        &Generator::new(Arm64InputDomain),
+    ) else {
         panic!("the recording measures");
     };
     for instruction in Arm64::<User>::list_instructions() {
@@ -328,16 +334,19 @@ fn this_chip_faults_past_the_last_addressable_byte_as_its_recording_simulates() 
         Ok(chip) => chip,
         Err(error) => panic!("this host makes no single step machine: {error:?}"),
     };
-    let Ok(recorded) =
-        MeasuredInstructionSet::<Recording, Generator>::measure(read_recording("neoverse-v2"))
-    else {
+    let Ok(recorded) = MeasuredInstructionSet::measure(
+        read_recording("neoverse-v2"),
+        &Generator::new(Arm64InputDomain),
+    ) else {
         panic!("the recording measures");
     };
     let mut level_0_faults = 0;
     for (instruction, before) in to_states_past_the_last_addressable_byte() {
         let precise = recorded.to_precise(instruction);
         let Ok(simulated) = precise.simulate(before.clone());
-        let observed = chip.execute_single_instruction(before);
+        let Ok(observed) = chip.execute_single_instruction(before) else {
+            panic!("{instruction:?}: the chip refused a state it runs");
+        };
         assert!(
             observed == simulated,
             "{instruction:?}: the chip gives {:?}, {precise:?} simulates {:?}",
