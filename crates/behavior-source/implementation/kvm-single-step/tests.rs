@@ -1,20 +1,23 @@
-//! Every way a single step can end names its result: the decoder over every syndrome, and words outside the ten
-//! instructions on the live chip.
+//! Every way a single step can end names its result: the decoder over every syndrome, words outside the ten
+//! instructions and addresses outside those a program can use on the live chip, and states the chip cannot run, which
+//! it refuses before it writes anything.
 
 use std::borrow::Cow;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use aarch64_cpu::registers::ESR_EL1;
 use aarch64_cpu::registers::ESR_EL1::EC::Value as Class;
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_behavior_source::BehaviorSource;
-use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
+use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
-    Arm64, ConditionFlags, DataAccess, Exception, InstructionFetch, PagePermission, User,
-    ZERO_PROCESSOR,
+    AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, FaultStatus, InstructionFetch,
+    PagePermission, User, ZERO_PROCESSOR,
 };
 
-use crate::KvmSingleStepMachine;
+use crate::guest_layout::{HANDLER_HALF, linear};
 use crate::syndrome::{to_exception, to_syndrome};
+use crate::{HANDLER, KvmSingleStepMachine, MemoryLoading, WINDOW_BYTES};
 
 /// Class-specific bits that each name something in some class: none, a level 0 write fault, the most a BRK comment
 /// holds, and all of them.
@@ -155,4 +158,248 @@ fn words_outside_the_ten_instructions_end_in_a_named_result() {
         after.processor.exception,
         Some(Exception::Breakpoint { comment: 0 })
     );
+}
+
+/// [STR X0, \[X1\]](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate--).
+const STORE: u32 = 0xF900_0020;
+
+/// What X0 holds in the states that store, a value with no zero byte.
+const STORED: u64 = 0x0123_4567_89AB_CDEF;
+
+/// The loading modes a machine can be made with.
+const LOADINGS: [MemoryLoading; 3] = [
+    MemoryLoading::Full,
+    MemoryLoading::Incremental,
+    MemoryLoading::Checked,
+];
+
+fn to_machine(loading: MemoryLoading) -> KvmSingleStepMachine {
+    match KvmSingleStepMachine::with_loading(loading) {
+        Ok(chip) => chip,
+        Err(error) => panic!("this host makes no single step machine: {error:?}"),
+    }
+}
+
+/// The state about to store X0 at the address, with the extra deltas after its own.
+fn to_store(
+    address: u64,
+    extra: Vec<MemoryDelta<'static, Arm64<User>>>,
+) -> ExecutionState<'static, Arm64<User>> {
+    let mut state = to_state(STORE, address, ConditionFlags::empty());
+    state.processor.general_purpose_registers[0] = STORED;
+    state.memory_mutations.extend(extra);
+    state
+}
+
+fn to_permission(
+    addresses: std::ops::Range<u64>,
+    permission: PagePermission,
+) -> MemoryDelta<'static, Arm64<User>> {
+    MemoryDelta::PermissionAssignment {
+        addresses,
+        permission,
+    }
+}
+
+const READ_WRITE: PagePermission = PagePermission::Mapped {
+    data_access: DataAccess::ReadWrite,
+    instruction_fetch: InstructionFetch::Forbidden,
+};
+
+/// What a run ends in: the exception, the program counter, and where each run of bytes the instruction changed starts
+/// with the bytes it holds.
+type Outcome = (Option<Exception>, u64, Vec<(u64, Vec<u8>)>);
+
+/// Gives what the instruction does, without the state's own changes.
+fn run_on(
+    chip: &mut KvmSingleStepMachine,
+    before: &ExecutionState<'static, Arm64<User>>,
+) -> Outcome {
+    let own = before.memory_mutations.len();
+    let after = chip.execute_single_instruction(before.clone());
+    let changes = after.memory_mutations[own..]
+        .iter()
+        .map(|mutation| match mutation {
+            MemoryDelta::ValueAssignment { start, bytes } => (*start, bytes.to_vec()),
+            MemoryDelta::PermissionAssignment { .. } => panic!("the chip changed a permission"),
+        })
+        .collect();
+    (
+        after.processor.exception,
+        after.processor.program_counter,
+        changes,
+    )
+}
+
+/// A load from the handler's half, or from an address with a tag in its top byte, faults at level 0, as the
+/// architecture's model has every address past the addressable ones.
+#[test]
+#[ignore = "needs KVM"]
+fn addresses_a_program_cannot_use_fault_at_level_0() {
+    let tagged = |tag: u64| tag << 56 | DATA;
+    let addresses = [
+        HANDLER_HALF,
+        linear(HANDLER),
+        tagged(1),
+        tagged(0x80),
+        tagged(0xFF),
+        Arm64::<User>::ADDRESSABLE.end + DATA,
+    ];
+    for loading in LOADINGS {
+        let mut chip = to_machine(loading);
+        for address in addresses {
+            let (exception, program_counter, changes) =
+                run_on(&mut chip, &to_state(LOAD, address, ConditionFlags::empty()));
+            let fault = Exception::DataAbort {
+                status: FaultStatus::TranslationFaultLevel0,
+                access: AccessDirection::Read,
+                address,
+            };
+            assert_eq!(exception, Some(fault), "{loading:?} {address:#x}");
+            assert_eq!((program_counter, changes.len()), (CODE, 0));
+        }
+    }
+}
+
+/// Returns the text of a panic.
+fn to_message(payload: &(dyn std::any::Any + Send)) -> String {
+    match (
+        payload.downcast_ref::<String>(),
+        payload.downcast_ref::<&str>(),
+    ) {
+        (Some(message), _) => message.clone(),
+        (None, Some(message)) => (*message).to_owned(),
+        (None, None) => String::new(),
+    }
+}
+
+/// A state the chip cannot run stops it before anything is written, saying which rule it breaks, and the states after
+/// it run as on a fresh machine in every loading mode.
+#[test]
+#[ignore = "needs KVM"]
+fn a_state_the_chip_cannot_run_is_refused_before_anything_is_written() {
+    let refused = [
+        (
+            to_store(
+                DATA,
+                vec![to_permission(DATA + 5..DATA + PAGE_SIZE, READ_WRITE)],
+            ),
+            "a chip gives permissions to whole pages",
+        ),
+        (
+            to_store(DATA, vec![to_permission(0..1 << 40, READ_WRITE)]),
+            "pages of the guest",
+        ),
+        (
+            to_store(
+                DATA,
+                vec![to_permission(0..Arm64::<User>::ADDRESSABLE.end, READ_WRITE)],
+            ),
+            "pages of the guest",
+        ),
+    ];
+    let afterwards = [
+        to_store(DATA + 8, Vec::new()),
+        to_state(LOAD, DATA, ConditionFlags::empty()),
+        to_store(DATA + PAGE_SIZE, Vec::new()),
+    ];
+    for loading in LOADINGS {
+        let mut fresh = to_machine(loading);
+        let expected: Vec<_> = afterwards
+            .iter()
+            .map(|state| run_on(&mut fresh, state))
+            .collect();
+        let mut chip = to_machine(loading);
+        for (state, rule) in &refused {
+            run_on(&mut chip, &afterwards[0]);
+            let Err(payload) = catch_unwind(AssertUnwindSafe(|| run_on(&mut chip, state))) else {
+                panic!("{loading:?}: the chip ran a state it cannot ({rule})");
+            };
+            let message = to_message(&*payload);
+            assert!(
+                message.starts_with("the state is refused before anything is written")
+                    && message.contains(rule),
+                "{loading:?}: {message}"
+            );
+            let observed: Vec<_> = afterwards
+                .iter()
+                .map(|state| run_on(&mut chip, state))
+                .collect();
+            assert_eq!(observed, expected, "{loading:?} after {rule}");
+        }
+    }
+}
+
+/// An empty permission assigns nothing wherever it lies, and an unmapped range of any size costs nothing: each state
+/// runs as the same state without it.
+#[test]
+#[ignore = "needs KVM"]
+fn empty_and_unmapped_ranges_change_nothing() {
+    let top = Arm64::<User>::ADDRESSABLE.end;
+    let extras = [
+        vec![to_permission(5..5, READ_WRITE)],
+        vec![to_permission(top + 5..top + 5, READ_WRITE)],
+        vec![to_permission(
+            DATA + PAGE_SIZE..DATA + PAGE_SIZE,
+            READ_WRITE,
+        )],
+        vec![to_permission(
+            DATA + PAGE_SIZE..top,
+            PagePermission::Unmapped,
+        )],
+        vec![to_permission(
+            DATA + PAGE_SIZE..u64::MAX,
+            PagePermission::Unmapped,
+        )],
+    ];
+    for loading in LOADINGS {
+        let mut fresh = to_machine(loading);
+        let mut chip = to_machine(loading);
+        let plain = to_store(DATA + 8, Vec::new());
+        let expected = run_on(&mut fresh, &plain);
+        assert_eq!(expected.2.len(), 1);
+        for (index, extra) in extras.iter().enumerate() {
+            let state = to_store(DATA + 8, extra.clone());
+            assert_eq!(
+                run_on(&mut chip, &state),
+                expected,
+                "{loading:?} extra {index}"
+            );
+        }
+        // Unmapped over every address before the state's own permissions.
+        let mut state = to_store(DATA + 8, Vec::new());
+        state
+            .memory_mutations
+            .insert(0, to_permission(0..u64::MAX, PagePermission::Unmapped));
+        assert_eq!(run_on(&mut chip, &state), expected, "{loading:?}");
+    }
+}
+
+/// A large writable range runs, and a store across the end of one compared window is one change.
+#[test]
+#[ignore = "needs KVM"]
+fn a_large_writable_range_reports_each_change_once() {
+    let large = |address| {
+        to_store(
+            address,
+            vec![to_permission(DATA..DATA + (32 << 20), READ_WRITE)],
+        )
+    };
+    let addresses = [
+        DATA + WINDOW_BYTES - 4,
+        DATA + 3 * WINDOW_BYTES - 1,
+        DATA + (32 << 20) - 8,
+    ];
+    for loading in LOADINGS {
+        let mut chip = to_machine(loading);
+        for address in addresses {
+            let (exception, _, changes) = run_on(&mut chip, &large(address));
+            let stored = (address, STORED.to_le_bytes().to_vec());
+            assert_eq!(
+                (exception, changes),
+                (None, vec![stored]),
+                "{loading:?} {address:#x}"
+            );
+        }
+    }
 }

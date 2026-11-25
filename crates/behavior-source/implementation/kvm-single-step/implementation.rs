@@ -6,7 +6,9 @@
 
 #![cfg(all(target_arch = "aarch64", target_os = "linux"))]
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::fmt;
 use std::mem::{self, offset_of};
 use std::ops::Range;
 
@@ -32,7 +34,7 @@ use crate::boot::{
 };
 use crate::guest_layout::{
     ATTRIBUTE_NORMAL, ENTRIES, ENTRY_BYTES, LEAF_LEVEL, LEVEL_BITS, MEMORY_BASE, TOP_LEVEL,
-    VECTOR_BYTES, VECTOR_TABLE_BYTES, VECTORS, level_index, linear,
+    VECTOR_BYTES, VECTOR_TABLE_BYTES, VECTORS, level_index, level_span, linear,
 };
 use crate::machine::{GuestMemory, Machine, MachineError, Register, create_machine};
 use crate::slot::{Ending, Registers, Slot};
@@ -66,6 +68,19 @@ const ARENA: Range<u64> = UNMAPPED_TABLES + LEAF_LEVEL as u64 * PAGE_SIZE..RESID
 const RESIDENT: Range<u64> = MEMORY_BASE + MEMORY_BYTES - (64 << 20)..MEMORY_BASE + MEMORY_BYTES;
 const RESIDENT_SLOT: u64 = RESIDENT.start;
 const RESIDENT_TOP: u64 = RESIDENT.start + PAGE_SIZE;
+
+/// Pages a slot takes besides those its state maps: the slot itself and its top-level table.
+const SLOT_PAGES: u64 = 2;
+
+/// Pages the arena holds, and so the most one state takes when loaded in full.
+const ARENA_PAGES: u64 = (ARENA.end - ARENA.start) / PAGE_SIZE;
+
+/// Pages the resident frames and lower tables can take, after the resident slot and top-level table.
+const RESIDENT_ROOM: u64 = (RESIDENT.end - RESIDENT_TOP - PAGE_SIZE) / PAGE_SIZE;
+
+/// Bytes of a writable run compared at once after the instruction, so that the host holds a window of a large run and
+/// never the whole of it.
+const WINDOW_BYTES: u64 = 16 * PAGE_SIZE;
 
 // VBAR_EL1 holds the vectors aligned to their size, and the entry follows the last vector.
 const _: () = assert!(HANDLER.is_multiple_of(VECTOR_TABLE_BYTES));
@@ -116,13 +131,49 @@ struct LoadedSlot {
 
 /// Consecutive pages EL0 may write.
 struct WritableRun {
-    /// Its first virtual address.
-    start: u64,
+    addresses: Range<u64>,
     /// The first frame when the pages lie on consecutive frames, which a full load always gives them; otherwise
     /// `None`, and each page's frame is the resident one.
     frame: Option<u64>,
-    /// Where the bytes before the run lie in [`KvmSingleStepMachine::bytes_before`].
-    before: Range<usize>,
+}
+
+/// Pages a program can use that hold one permission other than the default, which leaves a page unmapped.
+#[derive(Clone, Debug)]
+struct MappedRange {
+    /// Whole pages, below the end of the addressable ones.
+    addresses: Range<u64>,
+    data_access: DataAccess,
+    instruction_fetch: InstructionFetch,
+}
+
+/// A state this source cannot run, by the rule it breaks; it is found before anything is written to the guest.
+#[derive(Debug)]
+enum Refusal {
+    /// A permission starts or ends inside a page a program can use, which no chip can give.
+    PermissionWithinAPage(Range<u64>),
+    /// The pages the state maps, with the tables that lead to them and its slot, are more than the guest has.
+    MorePagesThanTheGuestHas { pages: u64, room: u64 },
+}
+
+impl fmt::Display for Refusal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Refusal::PermissionWithinAPage(addresses) => write!(
+                formatter,
+                "a chip gives permissions to whole pages, not {addresses:#x?}"
+            ),
+            Refusal::MorePagesThanTheGuestHas { pages, room } => write!(
+                formatter,
+                "its mapped pages take {pages} pages of the guest, which has {room}"
+            ),
+        }
+    }
+}
+
+/// Stops on a state this source cannot run: the interface gives it no error to return, so this is the one place a
+/// state stops it, always before anything is written, and the machine stays as it was for the next state.
+fn refuse(refusal: Refusal) -> ! {
+    panic!("the state is refused before anything is written: {refusal}")
 }
 
 /// One KVM virtual machine with one virtual CPU, bound to the thread that made it, that runs one instruction a state.
@@ -142,9 +193,12 @@ pub struct KvmSingleStepMachine {
     first_slot: Option<u64>,
     last_slot: Option<u64>,
     writable_runs: Vec<WritableRun>,
+    /// The bytes a window of a writable run holds before the instruction, as the state gives them.
     bytes_before: Vec<u8>,
-    /// The bytes a run of writable pages holds after the instruction, read back from guest memory.
+    /// The bytes a window of a writable run holds after the instruction, read back from guest memory.
     bytes_after: Vec<u8>,
+    /// The mapped ranges of the state being run, kept to reuse their room.
+    mapped_ranges: Vec<MappedRange>,
     loading: MemoryLoading,
     entry_path: EntryPath,
     /// The slot TPIDR_EL1 names while the CPU waits at the doorbell of a run that ended there, which goes on to the
@@ -160,6 +214,9 @@ struct Resident {
     memory: Held,
     /// The frame of each virtual page the guest has held bytes or a permission on; any other page holds zeros.
     frames: BTreeMap<u64, u64>,
+    /// The address of the valid last-level entry of each virtual page the resident tables map; every other page is
+    /// unmapped, so unmapping a range of any size visits only these.
+    mapped: BTreeMap<u64, u64>,
     next_free_page: u64,
 }
 
@@ -212,12 +269,14 @@ impl KvmSingleStepMachine {
             writable_runs: Vec::new(),
             bytes_before: Vec::new(),
             bytes_after: Vec::new(),
+            mapped_ranges: Vec::new(),
             loading,
             entry_path: EntryPath::Plain,
             parked_at: None,
             resident: Resident {
                 memory: Held::Unknown,
                 frames: BTreeMap::new(),
+                mapped: BTreeMap::new(),
                 next_free_page: RESIDENT_TOP + PAGE_SIZE,
             },
         };
@@ -292,68 +351,61 @@ impl KvmSingleStepMachine {
         self.first_slot = None;
         self.last_slot = None;
         self.writable_runs.clear();
-        self.bytes_before.clear();
     }
 
-    /// Writes a state into a slot after the batch's others, or gives `None` when the batch has no room for it.
+    /// Writes a state, whose mapped ranges are given, into a slot after the batch's others, or gives `None`, having
+    /// written nothing, when the batch has no room for it.
     fn load(
         &mut self,
         processor: &Processor<()>,
         memory: &[MemoryDelta<'_, Arm64<User>>],
+        mapped: &[MappedRange],
     ) -> Option<LoadedSlot> {
         if self.slot_count == self.asid_count {
             return None;
         }
-        let pages = to_page_permissions(memory);
-        let mapped: Vec<(u64, DataAccess, InstructionFetch)> = pages
-            .iter()
-            .filter_map(|(&page, permission)| match *permission {
-                PagePermission::Unmapped => None,
-                PagePermission::Mapped {
-                    data_access,
-                    instruction_fetch,
-                } => Some((page, data_access, instruction_fetch)),
-            })
-            .collect();
-        // The slot, its top-level table, a frame and at most one table of each lower level per page.
-        let most_pages = 2 + mapped.len() as u64 * (1 + u64::from(LEAF_LEVEL));
-        if self.next_free_page + most_pages * PAGE_SIZE > ARENA.end {
+        let most_pages = SLOT_PAGES + count_guest_pages(mapped);
+        if most_pages > (ARENA.end - self.next_free_page) / PAGE_SIZE {
             return None;
         }
         let slot = allocate(&mut self.next_free_page);
         let top = allocate(&mut self.next_free_page);
         self.fill_table(top, to_unmapped_entry(TOP_LEVEL));
         // Frames first, in address order, so that consecutive pages lie on consecutive frames.
-        let frames: Vec<u64> = mapped
-            .iter()
-            .map(|_| allocate(&mut self.next_free_page))
-            .collect();
+        let first_frame = self.next_free_page;
         let writable_start = self.writable_runs.len();
         let mut bytes = vec![0; PAGE_SIZE as usize];
-        for (&(page, data_access, _), &frame) in mapped.iter().zip(&frames) {
-            compose_page(page, memory, &mut bytes);
-            self.write_bytes(frame, &bytes);
-            if data_access != DataAccess::ReadWrite {
+        for range in mapped {
+            let range_frame = self.next_free_page;
+            for page in to_pages(&range.addresses) {
+                compose_bytes(page, memory, &mut bytes);
+                let frame = allocate(&mut self.next_free_page);
+                self.write_bytes(frame, &bytes);
+            }
+            if range.data_access != DataAccess::ReadWrite {
                 continue;
             }
-            let continues = self.writable_runs[writable_start..]
-                .last()
-                .is_some_and(|run| run.start + run.before.len() as u64 == page);
-            let before_start = self.bytes_before.len();
-            self.bytes_before.extend_from_slice(&bytes);
-            match (continues, self.writable_runs.last_mut()) {
-                (true, Some(run)) => run.before.end = self.bytes_before.len(),
+            match self.writable_runs[writable_start..].last_mut() {
+                Some(run) if run.addresses.end == range.addresses.start => {
+                    run.addresses.end = range.addresses.end;
+                }
                 _ => self.writable_runs.push(WritableRun {
-                    start: page,
-                    frame: Some(frame),
-                    before: before_start..self.bytes_before.len(),
+                    addresses: range.addresses.clone(),
+                    frame: Some(range_frame),
                 }),
             }
         }
         let mut next_free_page = self.next_free_page;
-        for (&(page, data_access, instruction_fetch), &frame) in mapped.iter().zip(&frames) {
-            let leaf = self.find_leaf_entry(&mut next_free_page, top, page);
-            self.write_entry(leaf, to_page_entry(frame, data_access, instruction_fetch));
+        let mut frame = first_frame;
+        for range in mapped {
+            for page in to_pages(&range.addresses) {
+                let leaf = self.find_leaf_entry(&mut next_free_page, top, page);
+                self.write_entry(
+                    leaf,
+                    to_page_entry(frame, range.data_access, range.instruction_fetch),
+                );
+                frame += PAGE_SIZE;
+            }
         }
         self.next_free_page = next_free_page;
         let slot_contents = Slot {
@@ -384,6 +436,7 @@ impl KvmSingleStepMachine {
         &mut self,
         processor: &Processor<()>,
         memory: &[MemoryDelta<'_, Arm64<User>>],
+        mapped: &[MappedRange],
         resident_pages: u64,
     ) -> (LoadedSlot, Vec<MemoryDelta<'static, Arm64<User>>>) {
         // Unknown from here on: a panic before the caller stores the next record makes the next load reset.
@@ -411,38 +464,28 @@ impl KvmSingleStepMachine {
                 permission,
             } => self.write_resident_permission(&addresses, permission),
         });
-        // What EL0 may write, and the bytes it holds before, to find what the instruction changes.
-        let writable: Vec<u64> = to_page_permissions(memory)
-            .into_iter()
-            .filter_map(|(page, permission)| match permission {
-                PagePermission::Mapped {
-                    data_access: DataAccess::ReadWrite,
-                    ..
-                } => Some(page),
-                _ => None,
-            })
-            .collect();
-        for page in writable {
-            let frame = self.resident.frames[&page];
-            let before_start = self.bytes_before.len();
-            self.bytes_before
-                .resize(before_start + PAGE_SIZE as usize, 0);
-            compose_page(page, memory, &mut self.bytes_before[before_start..]);
-            match self.writable_runs.last_mut() {
-                Some(run) if run.start + run.before.len() as u64 == page => {
-                    if run
-                        .frame
-                        .is_some_and(|first| first + run.before.len() as u64 != frame)
-                    {
-                        run.frame = None;
+        // What EL0 may write, to find what the instruction changes.
+        for range in mapped {
+            if range.data_access != DataAccess::ReadWrite {
+                continue;
+            }
+            for page in to_pages(&range.addresses) {
+                let frame = self.resident.frames[&page];
+                match self.writable_runs.last_mut() {
+                    Some(run) if run.addresses.end == page => {
+                        if run
+                            .frame
+                            .is_some_and(|first| first + (page - run.addresses.start) != frame)
+                        {
+                            run.frame = None;
+                        }
+                        run.addresses.end = page + PAGE_SIZE;
                     }
-                    run.before.end = self.bytes_before.len();
+                    _ => self.writable_runs.push(WritableRun {
+                        addresses: page..page + PAGE_SIZE,
+                        frame: Some(frame),
+                    }),
                 }
-                _ => self.writable_runs.push(WritableRun {
-                    start: page,
-                    frame: Some(frame),
-                    before: before_start..self.bytes_before.len(),
-                }),
             }
         }
         held.clear();
@@ -471,6 +514,7 @@ impl KvmSingleStepMachine {
     fn reset_resident(&mut self) {
         self.fill_table(RESIDENT_TOP, to_unmapped_entry(TOP_LEVEL));
         self.resident.frames.clear();
+        self.resident.mapped.clear();
         self.resident.next_free_page = RESIDENT_TOP + PAGE_SIZE;
     }
 
@@ -487,21 +531,43 @@ impl KvmSingleStepMachine {
         }
     }
 
-    /// Gives pages the permission.
+    /// Gives the pages a program can use among the addresses, which come from a state the source runs, the permission.
     fn write_resident_permission(&mut self, addresses: &Range<u64>, permission: PagePermission) {
-        for page in to_addressable_pages(addresses) {
-            let entry = match permission {
-                PagePermission::Mapped {
-                    data_access,
-                    instruction_fetch,
-                } => to_page_entry(self.find_frame(page), data_access, instruction_fetch),
-                PagePermission::Unmapped => to_unmapped_entry(LEAF_LEVEL),
-            };
-            let mut next_free_page = self.resident.next_free_page;
-            let leaf = self.find_leaf_entry(&mut next_free_page, RESIDENT_TOP, page);
-            assert!(next_free_page <= RESIDENT.end, "the resident pages fit");
-            self.resident.next_free_page = next_free_page;
-            self.write_entry(leaf, entry);
+        let addresses = to_addressable(addresses);
+        if addresses.is_empty() {
+            return;
+        }
+        match permission {
+            PagePermission::Mapped {
+                data_access,
+                instruction_fetch,
+            } => {
+                for page in to_pages(&addresses) {
+                    let entry =
+                        to_page_entry(self.find_frame(page), data_access, instruction_fetch);
+                    let leaf = match self.resident.mapped.get(&page) {
+                        Some(&leaf) => leaf,
+                        None => {
+                            let mut next_free_page = self.resident.next_free_page;
+                            let leaf =
+                                self.find_leaf_entry(&mut next_free_page, RESIDENT_TOP, page);
+                            assert!(next_free_page <= RESIDENT.end, "the resident pages fit");
+                            self.resident.next_free_page = next_free_page;
+                            self.resident.mapped.insert(page, leaf);
+                            leaf
+                        }
+                    };
+                    self.write_entry(leaf, entry);
+                }
+            }
+            // Only the pages mapped now change, however many the addresses cover.
+            PagePermission::Unmapped => {
+                let mut mapped = mem::take(&mut self.resident.mapped);
+                for (_, leaf) in mapped.extract_if(addresses, |_, _| true) {
+                    self.write_entry(leaf, to_unmapped_entry(LEAF_LEVEL));
+                }
+                self.resident.mapped = mapped;
+            }
         }
     }
 
@@ -519,7 +585,11 @@ impl KvmSingleStepMachine {
 
     /// Reads the guest's whole resident memory back, its tables and every frame, and gives whether it holds exactly
     /// the state's bytes and permissions.
-    fn check_guest_holds(&self, memory: &[MemoryDelta<'_, Arm64<User>>]) -> bool {
+    fn check_guest_holds(
+        &self,
+        memory: &[MemoryDelta<'_, Arm64<User>>],
+        mapped: &[MappedRange],
+    ) -> bool {
         let mut same = true;
         let mut bytes = vec![0; PAGE_SIZE as usize];
         let mut held = vec![0; PAGE_SIZE as usize];
@@ -538,7 +608,7 @@ impl KvmSingleStepMachine {
         pages.sort_unstable();
         pages.dedup();
         for page in pages {
-            compose_page(page, memory, &mut bytes);
+            compose_bytes(page, memory, &mut bytes);
             match self.resident.frames.get(&page) {
                 Some(&frame) => self.read_bytes(frame, &mut held),
                 None => held.fill(0),
@@ -551,30 +621,32 @@ impl KvmSingleStepMachine {
         // Every valid last-level entry the guest's tables hold, against the one the state's permissions give.
         let mut leaves = BTreeMap::new();
         self.collect_leaves(RESIDENT_TOP, TOP_LEVEL, 0, &mut leaves);
-        let wanted: BTreeMap<u64, u64> = to_page_permissions(memory)
-            .into_iter()
-            .filter_map(|(page, permission)| match permission {
-                PagePermission::Unmapped => None,
-                PagePermission::Mapped {
-                    data_access,
-                    instruction_fetch,
-                } => Some((
-                    page,
-                    to_page_entry(
-                        *self.resident.frames.get(&page)?,
-                        data_access,
-                        instruction_fetch,
-                    ),
-                )),
-            })
-            .collect();
-        let mapped = to_page_permissions(memory)
-            .values()
-            .filter(|permission| **permission != PagePermission::Unmapped)
-            .count();
-        if leaves != wanted || wanted.len() != mapped {
+        let mut wanted = BTreeMap::new();
+        let mut frameless = false;
+        for range in mapped {
+            for page in to_pages(&range.addresses) {
+                match self.resident.frames.get(&page) {
+                    Some(&frame) => {
+                        let entry =
+                            to_page_entry(frame, range.data_access, range.instruction_fetch);
+                        wanted.insert(page, entry);
+                    }
+                    None => frameless = true,
+                }
+            }
+        }
+        if leaves != wanted || frameless {
             eprintln!(
                 "checked loading: the guest's tables map {leaves:#x?}, the state {wanted:#x?}"
+            );
+            same = false;
+        }
+        // Every page the tables map is one the machine knows to unmap.
+        if !leaves.keys().eq(self.resident.mapped.keys()) {
+            eprintln!(
+                "checked loading: the guest's tables map {:#x?}, the machine knows of {:#x?}",
+                leaves.keys(),
+                self.resident.mapped.keys()
             );
             same = false;
         }
@@ -629,10 +701,12 @@ impl KvmSingleStepMachine {
         }
     }
 
-    /// Gives the processor after a slot's run, and each run of bytes it changed, read back from guest memory.
+    /// Gives the processor after a slot's run, and each run of bytes it changed from the state's memory, read back from
+    /// guest memory.
     fn read_back(
         &mut self,
         loaded: &LoadedSlot,
+        memory: &[MemoryDelta<'_, Arm64<User>>],
         processor: &mut Processor<()>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) {
@@ -648,24 +722,49 @@ impl KvmSingleStepMachine {
             slot.after.saved_program_status,
         );
         *processor = to_processor(&slot.after);
+        let mut before = mem::take(&mut self.bytes_before);
         let mut after = mem::take(&mut self.bytes_after);
         for run in &self.writable_runs[loaded.writable.clone()] {
-            let before = &self.bytes_before[run.before.clone()];
-            after.clear();
-            after.resize(before.len(), 0);
-            match run.frame {
-                Some(frame) => self.read_bytes(frame, &mut after),
-                None => {
-                    for (page, held) in to_pages(&(run.start..run.start + before.len() as u64))
-                        .zip(after.chunks_mut(PAGE_SIZE as usize))
-                    {
-                        self.read_bytes(self.resident.frames[&page], held);
-                    }
+            // A change that reaches the end of its window, held until the next window shows where it ends.
+            let mut pending = None;
+            let mut window_start = run.addresses.start;
+            while window_start < run.addresses.end {
+                let window = window_start..run.addresses.end.min(window_start + WINDOW_BYTES);
+                window_start = window.end;
+                let length = (window.end - window.start) as usize;
+                before.resize(length, 0);
+                compose_bytes(window.start, memory, &mut before);
+                after.resize(length, 0);
+                self.read_writable(run, &window, &mut after);
+                if window == run.addresses {
+                    report_changed_bytes(window.start, &before, &after, mutation_hook);
+                } else {
+                    report_changed_bytes(
+                        window.start,
+                        &before,
+                        &after,
+                        &mut |mutation: MemoryDelta<'_, Arm64<User>>| {
+                            join_across_windows(&mut pending, mutation, window.end, mutation_hook);
+                        },
+                    );
                 }
             }
-            report_changed_bytes(run.start, before, &after, mutation_hook);
+            report_pending(pending, mutation_hook);
         }
+        self.bytes_before = before;
         self.bytes_after = after;
+    }
+
+    /// Reads the bytes a writable run's frames hold at the addresses, which lie in it and start on a page.
+    fn read_writable(&self, run: &WritableRun, addresses: &Range<u64>, into: &mut [u8]) {
+        match run.frame {
+            Some(frame) => self.read_bytes(frame + (addresses.start - run.addresses.start), into),
+            None => {
+                for (page, held) in to_pages(addresses).zip(into.chunks_mut(PAGE_SIZE as usize)) {
+                    self.read_bytes(self.resident.frames[&page], held);
+                }
+            }
+        }
     }
 
     /// Returns the address of the last-level entry of a virtual page, making the tables that lead to it from the given
@@ -747,73 +846,207 @@ impl BehaviorSource for KvmSingleStepMachine {
         memory: &[MemoryDelta<'_, Arm64<User>>],
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) {
-        if let Some(addresses) = find_permission_within_a_page(memory) {
-            panic!(
-                "a chip gives permissions to whole pages, not {addresses:#x?}: the state is refused before anything is written"
-            );
+        let mut mapped = mem::take(&mut self.mapped_ranges);
+        if let Err(refusal) = resolve_mapped_ranges(memory, &mut mapped) {
+            refuse(refusal);
         }
         self.start_batch();
         let resident_pages = match self.loading {
             MemoryLoading::Full => None,
-            MemoryLoading::Incremental | MemoryLoading::Checked => count_resident_pages(memory),
-        };
-        let Some(resident_pages) = resident_pages else {
-            if self.loading != MemoryLoading::Full {
-                self.resident.memory = Held::Unknown;
+            MemoryLoading::Incremental | MemoryLoading::Checked => {
+                count_resident_pages(memory, &mapped)
             }
-            let Some(loaded) = self.load(processor, memory) else {
-                panic!("one state's pages fit in the guest's memory");
-            };
-            self.run();
-            self.read_back(&loaded, processor, mutation_hook);
-            return;
         };
-        let (loaded, mut held) = self.prepare(processor, memory, resident_pages);
-        if self.loading == MemoryLoading::Checked {
-            assert!(
-                self.check_guest_holds(memory),
-                "checked loading: the guest holds memory other than the state's"
-            );
+        match resident_pages {
+            None => {
+                // An empty batch has room for every state the guest can hold.
+                let Some(loaded) = self.load(processor, memory, &mapped) else {
+                    refuse(Refusal::MorePagesThanTheGuestHas {
+                        pages: SLOT_PAGES + count_guest_pages(&mapped),
+                        room: ARENA_PAGES,
+                    });
+                };
+                if self.loading != MemoryLoading::Full {
+                    self.resident.memory = Held::Unknown;
+                }
+                self.run();
+                self.read_back(&loaded, memory, processor, mutation_hook);
+            }
+            Some(resident_pages) => {
+                let (loaded, mut held) = self.prepare(processor, memory, &mapped, resident_pages);
+                if self.loading == MemoryLoading::Checked {
+                    assert!(
+                        self.check_guest_holds(memory, &mapped),
+                        "checked loading: the guest holds memory other than the state's"
+                    );
+                }
+                self.run();
+                // What the instruction changed is part of what the guest holds, which is known again once all is read
+                // back.
+                self.read_back(&loaded, memory, processor, &mut |mutation: MemoryDelta<
+                    '_,
+                    Arm64<User>,
+                >| {
+                    held.push(mutation.clone().into_owned());
+                    mutation_hook.on_memory_mutated(mutation);
+                });
+                self.resident.memory = Held::Known(held);
+            }
         }
-        self.run();
-        // What the instruction changed is part of what the guest holds, which is known again once all is read back.
-        self.read_back(&loaded, processor, &mut |mutation: MemoryDelta<
-            '_,
-            Arm64<User>,
-        >| {
-            held.push(mutation.clone().into_owned());
-            mutation_hook.on_memory_mutated(mutation);
-        });
-        self.resident.memory = Held::Known(held);
+        self.mapped_ranges = mapped;
     }
 }
 
-/// Returns the most resident pages the state needs, frames and lower tables, from empty resident pages; `None` when
-/// they cannot hold it, or when it reaches addresses the guest's tables do not translate.
-fn count_resident_pages(memory: &[MemoryDelta<'_, Arm64<User>>]) -> Option<u64> {
-    let mut pages: u64 = 0;
+/// Writes into `mapped` the pages a program can use that the state maps, in address order and apart, a later permission
+/// winning where two meet; an empty range assigns nothing, and no page past the addressable ones is loaded, since every
+/// access there faults at level 0 whatever its page holds.
+fn resolve_mapped_ranges(
+    memory: &[MemoryDelta<'_, Arm64<User>>],
+    mapped: &mut Vec<MappedRange>,
+) -> Result<(), Refusal> {
+    mapped.clear();
     for delta in memory {
-        let (addresses, needed_per_page) = match delta {
-            MemoryDelta::ValueAssignment { start, bytes } => {
-                (*start..start.checked_add(bytes.len() as u64)?, 1)
-            }
-            MemoryDelta::PermissionAssignment {
-                addresses,
-                permission: PagePermission::Mapped { .. },
-            } => (addresses.clone(), 1 + u64::from(LEAF_LEVEL - TOP_LEVEL)),
-            MemoryDelta::PermissionAssignment { .. } => continue,
+        let MemoryDelta::PermissionAssignment {
+            addresses,
+            permission,
+        } = delta
+        else {
+            continue;
         };
-        if addresses.is_empty() {
+        let addressable = to_addressable(addresses);
+        if addressable.is_empty() {
             continue;
         }
-        if addresses.end > Arm64::<User>::ADDRESSABLE.end {
-            return None;
+        if !(addressable.start.is_multiple_of(PAGE_SIZE)
+            && addressable.end.is_multiple_of(PAGE_SIZE))
+        {
+            return Err(Refusal::PermissionWithinAPage(addresses.clone()));
         }
-        pages = pages.saturating_add(
-            (addresses.end.div_ceil(PAGE_SIZE) - addresses.start / PAGE_SIZE) * needed_per_page,
+        // The ranges this one reaches, wholly or in part, give way to it, and keep what lies outside it.
+        let first = mapped.partition_point(|range| range.addresses.end <= addressable.start);
+        let end = mapped.partition_point(|range| range.addresses.start < addressable.end);
+        let kept_before = mapped[first..end]
+            .first()
+            .filter(|range| range.addresses.start < addressable.start)
+            .map(|range| MappedRange {
+                addresses: range.addresses.start..addressable.start,
+                ..range.clone()
+            });
+        let kept_after = mapped[first..end]
+            .last()
+            .filter(|range| range.addresses.end > addressable.end)
+            .map(|range| MappedRange {
+                addresses: addressable.end..range.addresses.end,
+                ..range.clone()
+            });
+        let assigned = match *permission {
+            PagePermission::Mapped {
+                data_access,
+                instruction_fetch,
+            } => Some(MappedRange {
+                addresses: addressable,
+                data_access,
+                instruction_fetch,
+            }),
+            PagePermission::Unmapped => None,
+        };
+        mapped.splice(
+            first..end,
+            kept_before.into_iter().chain(assigned).chain(kept_after),
         );
     }
-    (pages <= (RESIDENT.end - RESIDENT_TOP - PAGE_SIZE) / PAGE_SIZE).then_some(pages)
+    Ok(())
+}
+
+/// Returns the pages mapped ranges take in a guest whose tables map nothing else: a frame for each page, and the tables
+/// below the top level that lead to them.
+fn count_guest_pages(mapped: &[MappedRange]) -> u64 {
+    let frames: u64 = mapped
+        .iter()
+        .map(|range| (range.addresses.end - range.addresses.start) / PAGE_SIZE)
+        .sum();
+    let tables: u64 = (TOP_LEVEL + 1..=LEAF_LEVEL)
+        .map(|level| count_tables(mapped, level))
+        .sum();
+    frames + tables
+}
+
+/// Returns how many tables of the level the pages of the ranges, which lie in address order, lie under.
+fn count_tables(mapped: &[MappedRange], level: u32) -> u64 {
+    // One table of the level covers what one entry of the level above does.
+    let table_bits = level_span(level - 1).trailing_zeros();
+    let mut tables = 0;
+    let mut last_table = None;
+    for range in mapped {
+        let first = range.addresses.start >> table_bits;
+        let last = (range.addresses.end - 1) >> table_bits;
+        tables += last - first + 1 - u64::from(last_table == Some(first));
+        last_table = Some(last);
+    }
+    tables
+}
+
+/// Returns the most resident pages the state needs, frames and lower tables, from empty resident pages; `None` when
+/// they cannot hold it, or when its values reach past the addressable addresses.
+fn count_resident_pages(
+    memory: &[MemoryDelta<'_, Arm64<User>>],
+    mapped: &[MappedRange],
+) -> Option<u64> {
+    let mut pages = count_guest_pages(mapped);
+    for delta in memory {
+        if let MemoryDelta::ValueAssignment { start, bytes } = delta
+            && !bytes.is_empty()
+        {
+            let end = start.checked_add(bytes.len() as u64)?;
+            if end > Arm64::<User>::ADDRESSABLE.end {
+                return None;
+            }
+            pages += end.div_ceil(PAGE_SIZE) - start / PAGE_SIZE;
+        }
+    }
+    (pages <= RESIDENT_ROOM).then_some(pages)
+}
+
+/// Passes a change of a window on to the hook, joined to the one before it where that one ran to the end of the last
+/// window; a change that runs to the end of this window is held, so that each run of changed bytes is one change.
+fn join_across_windows(
+    pending: &mut Option<(u64, Vec<u8>)>,
+    mutation: MemoryDelta<'_, Arm64<User>>,
+    window_end: u64,
+    mutation_hook: &mut impl MemorySink<Arm64<User>>,
+) {
+    let MemoryDelta::ValueAssignment { start, bytes } = mutation else {
+        mutation_hook.on_memory_mutated(mutation);
+        return;
+    };
+    match pending {
+        Some((pending_start, pending_bytes))
+            if *pending_start + pending_bytes.len() as u64 == start =>
+        {
+            pending_bytes.extend_from_slice(&bytes);
+        }
+        _ => {
+            report_pending(pending.take(), mutation_hook);
+            *pending = Some((start, bytes.into_owned()));
+        }
+    }
+    let whole = pending.take_if(|(pending_start, pending_bytes)| {
+        *pending_start + pending_bytes.len() as u64 != window_end
+    });
+    report_pending(whole, mutation_hook);
+}
+
+/// Passes a held change, if there is one, on to the hook.
+fn report_pending(
+    pending: Option<(u64, Vec<u8>)>,
+    mutation_hook: &mut impl MemorySink<Arm64<User>>,
+) {
+    if let Some((start, bytes)) = pending {
+        mutation_hook.on_memory_mutated(MemoryDelta::ValueAssignment {
+            start,
+            bytes: Cow::Owned(bytes),
+        });
+    }
 }
 
 /// Takes the next page of the given pages.
@@ -825,33 +1058,13 @@ fn allocate(next_free_page: &mut u64) -> u64 {
 
 /// Returns the first address of each page in the addresses, which start on a page.
 fn to_pages(addresses: &Range<u64>) -> impl Iterator<Item = u64> + use<> {
-    assert!(
-        addresses.start.is_multiple_of(PAGE_SIZE),
-        "a chip gives permissions to whole pages, not {addresses:#x?}"
-    );
     (addresses.start..addresses.end).step_by(PAGE_SIZE as usize)
 }
 
-/// Returns the first address of each page of the addresses that a program can use: no access reaches the others, each
-/// faulting at level 0 whatever the state gives its page.
-fn to_addressable_pages(addresses: &Range<u64>) -> impl Iterator<Item = u64> + use<> {
-    to_pages(&(addresses.start..addresses.end.min(Arm64::<User>::ADDRESSABLE.end)))
-}
-
-/// Returns the addresses of a permission that starts or ends inside a page, which no chip can give.
-fn find_permission_within_a_page<'memory>(
-    memory: &'memory [MemoryDelta<'_, Arm64<User>>],
-) -> Option<&'memory Range<u64>> {
-    memory.iter().find_map(|delta| match delta {
-        MemoryDelta::PermissionAssignment { addresses, .. }
-            if !addresses.is_empty()
-                && !(addresses.start.is_multiple_of(PAGE_SIZE)
-                    && addresses.end.is_multiple_of(PAGE_SIZE)) =>
-        {
-            Some(addresses)
-        }
-        _ => None,
-    })
+/// Returns the addresses among the given ones that a program can use.
+fn to_addressable(addresses: &Range<u64>) -> Range<u64> {
+    let end = Arm64::<User>::ADDRESSABLE.end;
+    addresses.start.min(end)..addresses.end.min(end)
 }
 
 fn unmapped_table(level: u32) -> u64 {
@@ -899,26 +1112,11 @@ const _: () = assert!(matches!(
     PagePermission::Unmapped
 ));
 
-/// Returns the permission of each page a program can use that the deltas give one, by its first address; a later delta
-/// wins.
-fn to_page_permissions(memory: &[MemoryDelta<'_, Arm64<User>>]) -> BTreeMap<u64, PagePermission> {
-    let mut pages = BTreeMap::new();
-    for delta in memory {
-        if let MemoryDelta::PermissionAssignment {
-            addresses,
-            permission,
-        } = delta
-        {
-            for page in to_addressable_pages(addresses) {
-                pages.insert(page, *permission);
-            }
-        }
-    }
-    pages
-}
+// Every address from zero to the end of the addressable ones is one a program can use.
+const _: () = assert!(Arm64::<User>::ADDRESSABLE.start == 0);
 
-/// Writes the bytes the deltas leave in a page, which start as zeros.
-fn compose_page(page: u64, memory: &[MemoryDelta<'_, Arm64<User>>], bytes: &mut [u8]) {
+/// Writes the bytes the deltas leave from the address on, which start as zeros.
+fn compose_bytes(address: u64, memory: &[MemoryDelta<'_, Arm64<User>>], bytes: &mut [u8]) {
     bytes.fill(0);
     for delta in memory {
         if let MemoryDelta::ValueAssignment {
@@ -927,13 +1125,14 @@ fn compose_page(page: u64, memory: &[MemoryDelta<'_, Arm64<User>>], bytes: &mut 
         } = delta
         {
             // Addresses wrap after the last one, as the memory diff has them.
-            let (into_values, into_page) = (page.wrapping_sub(*start), start.wrapping_sub(page));
+            let (into_values, into_bytes) =
+                (address.wrapping_sub(*start), start.wrapping_sub(address));
             if into_values < values.len() as u64 {
                 let length = (values.len() - into_values as usize).min(bytes.len());
                 bytes[..length].copy_from_slice(&values[into_values as usize..][..length]);
-            } else if into_page < bytes.len() as u64 {
-                let length = values.len().min(bytes.len() - into_page as usize);
-                bytes[into_page as usize..][..length].copy_from_slice(&values[..length]);
+            } else if into_bytes < bytes.len() as u64 {
+                let length = values.len().min(bytes.len() - into_bytes as usize);
+                bytes[into_bytes as usize..][..length].copy_from_slice(&values[..length]);
             }
         }
     }
