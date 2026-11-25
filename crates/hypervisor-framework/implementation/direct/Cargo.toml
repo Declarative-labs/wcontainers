@@ -1,0 +1,38 @@
+[package]
+name = "wcontainers-hypervisor-framework-direct"
+description = "Hypervisor.framework's functions on this Mac, each one marked call through applevisor-sys."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-hypervisor-framework = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+# The exit records' bytes, whose pointer and length this crate promises.
+wcontainers-volatile-bytes-pointer = { path = "../../../volatile-bytes/implementation/pointer" }
+# The memory given to the VM: an anonymous mapping, kept while any view of it lives.
+wcontainers-volatile-bytes-shared-mapping = { path = "../../../volatile-bytes/implementation/shared-mapping" }
+# The framework's functions, declared from its headers.
+applevisor-sys = "1.0.0"
+
+[build-dependencies]
+# The call that sets a vector register, in C.
+cc = "1.11.2"
+
+[dev-dependencies]
+wcontainers-hypervisor-framework-conformance = { path = "../../conformance" }
+
+# The bindings of an outside API: it denies unsafe code, so that each of its uses is marked.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

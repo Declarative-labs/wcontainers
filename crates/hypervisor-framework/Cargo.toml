@@ -1,0 +1,20 @@
+[package]
+name = "wcontainers-hypervisor-framework"
+description = "Hypervisor.framework, Apple's virtual machines, on Apple silicon: one safe trait mirroring its functions."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+# The framework's types, declared from its headers.
+applevisor-sys = "1.0.0"
+wcontainers-volatile-bytes = { path = "../volatile-bytes" }
+
+[lints]
+workspace = true
