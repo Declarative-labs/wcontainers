@@ -14,6 +14,17 @@ pub fn read_bytes<Architecture: ProcessorArchitecture, const LENGTH: usize>(
     core::array::from_fn(|offset| read_byte(memory, start.wrapping_add(offset as u64)))
 }
 
+/// Reads bytes as the memory holds them into the slice, whatever its permissions.
+pub fn read_bytes_into<Architecture: ProcessorArchitecture>(
+    memory: &[MemoryDelta<'_, Architecture>],
+    start: u64,
+    bytes: &mut [u8],
+) {
+    for (offset, byte) in bytes.iter_mut().enumerate() {
+        *byte = read_byte(memory, start.wrapping_add(offset as u64));
+    }
+}
+
 fn read_byte<Architecture: ProcessorArchitecture>(
     memory: &[MemoryDelta<'_, Architecture>],
     address: u64,

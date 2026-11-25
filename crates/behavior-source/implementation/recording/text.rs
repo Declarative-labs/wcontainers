@@ -19,7 +19,8 @@ use std::convert::Infallible;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, FaultStatus, Instruction,
-    InstructionFetch, PagePermission, Processor, SmeTrapCode, User, ZERO_PROCESSOR,
+    InstructionFetch, PagePermission, Processor, SmeTrapCode, SystemAccess, User, WaitInstruction,
+    ZERO_PROCESSOR,
 };
 
 use crate::RecordedCase;
@@ -250,6 +251,24 @@ fn to_exception_text(exception: Option<Exception>) -> String {
         ),
         Exception::Breakpoint { comment } => format!("Breakpoint:{comment:#x}"),
         Exception::SmeTrap(code) => format!("SmeTrap:{}", to_sme_trap_text(code)),
+        Exception::SupervisorCall { immediate } => format!("SupervisorCall:{immediate:#x}"),
+        Exception::WaitTrapped(instruction) => format!(
+            "WaitTrapped:{}",
+            match instruction {
+                WaitInstruction::WaitForInterrupt => "WaitForInterrupt",
+                WaitInstruction::WaitForEvent => "WaitForEvent",
+            }
+        ),
+        Exception::SystemAccessTrapped(access) => format!(
+            "SystemAccessTrapped:{:#x}:{:#x}:{:#x}:{:#x}:{:#x}:{:#x}:{}",
+            access.op0,
+            access.op1,
+            access.crn,
+            access.crm,
+            access.op2,
+            access.rt,
+            to_access_text(access.direction)
+        ),
         Exception::Undecoded {
             syndrome,
             fault_address,
@@ -285,6 +304,36 @@ fn from_exception_text(text: &str) -> Option<Option<Exception>> {
             comment: from_hex_number(comment)?,
         },
         (["SmeTrap", code], None) => Exception::SmeTrap(from_sme_trap_text(code)?),
+        (["SupervisorCall", immediate], None) => Exception::SupervisorCall {
+            immediate: from_hex_number(immediate)?,
+        },
+        (["WaitTrapped", "WaitForInterrupt"], None) => {
+            Exception::WaitTrapped(WaitInstruction::WaitForInterrupt)
+        }
+        (["WaitTrapped", "WaitForEvent"], None) => {
+            Exception::WaitTrapped(WaitInstruction::WaitForEvent)
+        }
+        (
+            [
+                "SystemAccessTrapped",
+                op0,
+                op1,
+                crn,
+                crm,
+                op2,
+                rt,
+                direction,
+            ],
+            None,
+        ) => Exception::SystemAccessTrapped(SystemAccess {
+            op0: from_hex_number(op0)?,
+            op1: from_hex_number(op1)?,
+            crn: from_hex_number(crn)?,
+            crm: from_hex_number(crm)?,
+            op2: from_hex_number(op2)?,
+            rt: from_hex_number(rt)?,
+            direction: from_access_text(direction)?,
+        }),
         (["Undecoded", syndrome], Some(fault_address)) => Exception::Undecoded {
             syndrome: from_hex_number(syndrome)?,
             fault_address,
@@ -299,6 +348,7 @@ fn to_status_text(status: FaultStatus) -> &'static str {
         FaultStatus::TranslationFaultLevel0 => "TranslationFaultLevel0",
         FaultStatus::TranslationFaultLevel3 => "TranslationFaultLevel3",
         FaultStatus::PermissionFaultLevel3 => "PermissionFaultLevel3",
+        FaultStatus::AlignmentFault => "AlignmentFault",
     }
 }
 
@@ -307,6 +357,7 @@ fn from_status_text(text: &str) -> Option<FaultStatus> {
         "TranslationFaultLevel0" => Some(FaultStatus::TranslationFaultLevel0),
         "TranslationFaultLevel3" => Some(FaultStatus::TranslationFaultLevel3),
         "PermissionFaultLevel3" => Some(FaultStatus::PermissionFaultLevel3),
+        "AlignmentFault" => Some(FaultStatus::AlignmentFault),
         _ => None,
     }
 }

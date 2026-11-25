@@ -15,21 +15,42 @@ use wcontainers_privilege_level::PrivilegeLevel;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
 mod behavior;
+pub mod branch;
 mod condition_flags;
+mod documented;
 pub mod encoding;
 mod exception;
+pub mod floating_point;
+pub mod integer;
+mod listing;
+pub mod load_store;
 pub mod memory;
+pub mod operand;
+pub mod pointer_authentication;
+mod registers;
+pub mod simd;
 mod simulation;
+pub mod system_register;
 #[cfg(test)]
 mod tests;
 
-use behavior::list_known_behaviors;
 pub use behavior::{
-    LoadIntoBaseWithWriteback, MisalignedStackPointer, StoreAcrossFault, VectorLength,
-    VectorLengthReading,
+    FailedStoreExclusive, FaultAddressTag, LoadIntoBaseWithWriteback, LoadPairIntoOneRegister,
+    MisalignedExclusive, MisalignedStackPointer, StoreAcrossFault, StoreExclusiveOverlap,
+    StoreOfBaseWithWriteback, VectorLength, VectorLengthReading, WaitForInterruptBehavior,
 };
-pub use condition_flags::ConditionFlags;
-pub use exception::{AccessDirection, Exception, FaultStatus, SmeTrapCode};
+pub use condition_flags::{CONDITIONS, Condition, ConditionFlags};
+pub use documented::{
+    DocumentedInstruction, DocumentedOperation, to_documented_operation, to_implicit_inputs,
+    writes_condition_flags,
+};
+pub use exception::{
+    AccessDirection, Exception, FaultStatus, SmeTrapCode, SystemAccess, WaitInstruction,
+};
+pub use listing::{
+    Instruction, InstructionClass, InstructionRecord, LISTED_INSTRUCTIONS, PrivilegeBehavior,
+};
+pub use load_store::{LoadStoreChoices, LoadStoreInstruction};
 pub use wcontainers_privilege_level_arm64_user::User;
 
 /// The number of bits of a virtual address under a 4 KiB granule without [FEAT_LVA](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-2-architecture-extension#:~:text=FEAT_LVA%2C%20Large%20VA%20support).
@@ -79,21 +100,16 @@ impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
     const ADDRESSABLE: Range<u64> = 0..1 << VIRTUAL_ADDRESS_BITS;
     const DEFAULT_PERMISSION: PagePermission = PagePermission::Unmapped;
 
+    /// Every variant of Arm's list in its order, then MRS of CTR_EL0, then those `Level` adds.
+    ///
+    /// An instruction no behavior models has no known behavior, so measuring it fails as `measure_instruction` says.
     fn list_instructions() -> Instructions<Level> {
-        let every_level = [
-            Instruction::AddShiftedRegister64,
-            Instruction::AddsShiftedRegister64,
-            Instruction::Csel64,
-            Instruction::LdrImmediateUnsignedOffset64,
-            Instruction::StrImmediateUnsignedOffset64,
-            Instruction::StpSignedOffset64,
-            Instruction::LdrImmediatePostIndex64,
-            Instruction::Brk,
-            Instruction::Rdvl,
-            Instruction::MrsCtrEl0,
-        ];
+        let every_level: Vec<_> = Instruction::LISTED
+            .into_iter()
+            .chain([Instruction::MrsCtrEl0])
+            .collect();
         Instructions {
-            every_level: Vec::from(every_level).into_iter(),
+            every_level: every_level.into_iter(),
             level_specific: Level::list_specific_instructions(),
         }
     }
@@ -101,7 +117,7 @@ impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
     fn list_known_behaviors(
         instruction: Instruction<Level::PrivilegedInstruction>,
     ) -> vec::IntoIter<Self::PreciseInstruction> {
-        list_known_behaviors(instruction).into_iter()
+        behavior::list_known_behaviors(instruction).into_iter()
     }
 }
 
@@ -181,47 +197,22 @@ pub enum InstructionFetch {
     Allowed,
 }
 
-/// An A64 [instruction variant](https://developer.arm.com/documentation/ddi0487/mc/-Part-C-The-AArch64-Instruction-Set/-Chapter-C1-The-A64-Instruction-Set/-C1-1-About-the-A64-instruction-set#:~:text=each%20syntax%20is%20an%20instruction%20variant).
-///
-/// TODO: temporary placeholder until every variant is listed: these are the ten of the first slice.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Instruction<LevelSpecific> {
-    AddShiftedRegister64,
-    AddsShiftedRegister64,
-    Csel64,
-    LdrImmediateUnsignedOffset64,
-    StrImmediateUnsignedOffset64,
-    StpSignedOffset64,
-    LdrImmediatePostIndex64,
-    Brk,
-    Rdvl,
-    MrsCtrEl0,
-    LevelSpecific(LevelSpecific),
-}
-
 /// An instruction with one behavior for every case the manual leaves open or a chip does its own way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PreciseInstruction<LevelSpecific> {
-    AddShiftedRegister64,
-    AddsShiftedRegister64,
-    Csel64,
-    LdrImmediateUnsignedOffset64 {
-        misaligned_stack_pointer: MisalignedStackPointer,
-    },
-    StrImmediateUnsignedOffset64 {
-        misaligned_stack_pointer: MisalignedStackPointer,
-        across_fault: StoreAcrossFault,
-    },
-    StpSignedOffset64 {
-        misaligned_stack_pointer: MisalignedStackPointer,
-        across_fault: StoreAcrossFault,
-    },
-    LdrImmediatePostIndex64 {
-        misaligned_stack_pointer: MisalignedStackPointer,
-        into_base: LoadIntoBaseWithWriteback,
+    Documented(DocumentedInstruction),
+    LoadStore {
+        instruction: LoadStoreInstruction,
+        choices: LoadStoreChoices,
     },
     Brk,
     Rdvl(VectorLengthReading),
+    WaitForInterrupt(WaitForInterruptBehavior),
+    /// MRS (a read) or MSR (register) (a write), with what the chip fixes about the registers it reaches.
+    SystemRegisterMove {
+        direction: AccessDirection,
+        choices: system_register::SystemRegisterChoices,
+    },
     MrsCtrEl0 {
         cache_type: u64,
     },

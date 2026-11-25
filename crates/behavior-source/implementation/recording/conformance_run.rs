@@ -1,8 +1,7 @@
 use std::path::Path;
 
 use wcontainers_behavior_source_recording::Recording;
-use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
-use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
+use wcontainers_distinguishing_state_generator_arm64::CriticalValueCut;
 
 /// What a Neoverse V2 under KVM did, written by the record tool.
 const RECORDINGS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/recordings/neoverse-v2");
@@ -14,7 +13,4 @@ fn recording() -> Recording {
     }
 }
 
-wcontainers_behavior_source_conformance::tests!(
-    recording(),
-    CriticalValueProduct::new(Arm64InputDomain)
-);
+wcontainers_behavior_source_conformance::tests!(recording(), CriticalValueCut::default());

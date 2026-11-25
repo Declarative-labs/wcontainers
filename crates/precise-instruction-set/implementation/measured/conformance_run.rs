@@ -2,8 +2,7 @@ use std::convert::Infallible;
 use std::path::Path;
 
 use wcontainers_behavior_source_recording::Recording;
-use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
-use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
+use wcontainers_distinguishing_state_generator_arm64::CriticalValueCut;
 use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
 use wcontainers_processor_architecture::ExecutionState;
 use wcontainers_processor_architecture_arm64::{Arm64, Instruction, User};
@@ -14,7 +13,7 @@ const RECORDINGS: &str = concat!(
     "/../../../behavior-source/implementation/recording/recordings/neoverse-v2"
 );
 
-type Measured = MeasuredInstructionSet<Recording, CriticalValueProduct<Arm64InputDomain>>;
+type Measured = MeasuredInstructionSet<Recording, CriticalValueCut>;
 
 fn recording() -> Recording {
     match Recording::read(Path::new(RECORDINGS)) {

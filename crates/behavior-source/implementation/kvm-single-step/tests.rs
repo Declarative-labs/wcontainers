@@ -94,8 +94,8 @@ fn to_state(
     }
 }
 
-/// Words a state may hold that none of the ten instructions is, each ending in an exception the decoder names
-/// whole or keeps undecoded; the chip runs every one and goes on to the next.
+/// Words a state may hold that no modeled instruction is, each ending in an exception the decoder names whole or
+/// keeps undecoded with its class; the chip runs every one and goes on to the next.
 #[test]
 #[ignore = "needs KVM"]
 fn words_outside_the_ten_instructions_end_in_a_named_result() {
@@ -112,27 +112,15 @@ fn words_outside_the_ten_instructions_end_in_a_named_result() {
         _ => None,
     };
     let cases = [
-        (
-            to_state(SUPERVISOR_CALL, DATA, none),
-            Some(Some(Class::SVC64)),
-        ),
+        (to_state(SUPERVISOR_CALL, DATA, none), None),
         (to_state(HYPERVISOR_CALL, DATA, none), None),
-        (
-            to_state(WAIT_FOR_INTERRUPT, DATA, none),
-            Some(Some(Class::TrappedWFIorWFE)),
-        ),
-        (
-            to_state(MASK_INTERRUPTS, DATA, none),
-            Some(Some(Class::TrappedMsrMrs)),
-        ),
+        (to_state(WAIT_FOR_INTERRUPT, DATA, none), None),
+        (to_state(MASK_INTERRUPTS, DATA, none), None),
         (
             to_state(CLEAN_AND_INVALIDATE, DATA + PAGE_SIZE, none),
             Some(Some(Class::DataAbortLowerEL)),
         ),
-        (
-            to_state(ATOMIC_ADD, DATA + 12, none),
-            Some(Some(Class::DataAbortLowerEL)),
-        ),
+        (to_state(ATOMIC_ADD, DATA + 12, none), None),
         // Bits beyond NZCV would put EL0 in another state; the chip keeps only NZCV.
         (to_state(BREAKPOINT, DATA, every_bit), None),
     ];
@@ -231,8 +219,8 @@ fn run_on(
     )
 }
 
-/// A load from the handler's half, or from an address with a tag in its top byte, faults at level 0, as the
-/// architecture's model has every address past the addressable ones.
+/// A load from the handler's half, or from above the addresses a program can use, faults at level 0, as the
+/// architecture's model has it; a tagged address reaches its untagged page, as Linux sets TBI0.
 #[test]
 #[ignore = "needs KVM"]
 fn addresses_a_program_cannot_use_fault_at_level_0() {
@@ -240,10 +228,8 @@ fn addresses_a_program_cannot_use_fault_at_level_0() {
     let addresses = [
         HANDLER_HALF,
         linear(HANDLER),
-        tagged(1),
-        tagged(0x80),
-        tagged(0xFF),
         Arm64::<User>::ADDRESSABLE.end + DATA,
+        tagged(1) + Arm64::<User>::ADDRESSABLE.end,
     ];
     for loading in LOADINGS {
         let mut chip = to_machine(loading);
@@ -257,6 +243,14 @@ fn addresses_a_program_cannot_use_fault_at_level_0() {
             };
             assert_eq!(exception, Some(fault), "{loading:?} {address:#x}");
             assert_eq!((program_counter, changes.len()), (CODE, 0));
+        }
+        for tag in [1, 0x80, 0xFF] {
+            let (exception, program_counter, _) = run_on(
+                &mut chip,
+                &to_state(LOAD, tagged(tag), ConditionFlags::empty()),
+            );
+            assert_eq!(exception, None, "{loading:?} {:#x}", tagged(tag));
+            assert_eq!(program_counter, CODE + 4);
         }
     }
 }
