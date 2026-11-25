@@ -31,7 +31,7 @@ use wcontainers_executor::{
 };
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
+    ExecutionState, ExecutionStateExpectation, MemoryDelta, ProcessorArchitecture, Simulator,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -101,18 +101,19 @@ const DATA_PERMISSIONS: Permissions = Permissions::READ.union(Permissions::WRITE
 
 /// Checks that on every state the generator makes for every instruction the executor ends where the set says.
 ///
-/// Memory is compared by the bytes and permissions it ends with, not by the list of changes: an executor reports
-/// a store of the bytes already there as no change, where a simulation may report it.
+/// The executor's state must meet what the behavior expects. Memory is compared by the bytes and permissions it ends
+/// with, not by the list of changes: an executor reports a store of the bytes already there as no change, where a
+/// simulation may report it.
 pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
     mut executor: Chip,
     set: Set,
     generator: Generator,
 ) where
     Chip: Executor,
-    Chip::Architecture: Clone,
     <Chip::Architecture as ProcessorArchitecture>::PreciseInstruction:
         Simulator<Chip::Architecture, Error = Infallible>,
     <Chip::Architecture as ProcessorArchitecture>::ProcessorState: Debug,
+    <Chip::Architecture as ProcessorArchitecture>::ProcessorStateExpectation: Debug,
     <Chip::Architecture as ProcessorArchitecture>::Instruction: Debug,
     <Chip::Architecture as ProcessorArchitecture>::PagePermission: Debug,
     Set: PreciseInstructionSet<Chip::Architecture>,
@@ -126,7 +127,7 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
         let mut first = None;
         for before in generator.generate_states(instruction) {
             states += 1;
-            let Ok(simulated) = precise.simulate(before.clone());
+            let Ok(simulated) = precise.simulate_state(before.clone());
             let Ok(executed) = executor.execute_single_instruction(before.clone()) else {
                 disagreeing += 1;
                 first.get_or_insert_with(|| {
@@ -137,7 +138,7 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
                 });
                 continue;
             };
-            if simulated != executed {
+            if !executed.meets_expectations(&simulated) {
                 disagreeing += 1;
                 first.get_or_insert_with(|| describe(&before, &simulated, &executed));
             }
@@ -817,12 +818,13 @@ pub fn write_from_drains_the_standard_sources<Chip: Executor>(executor: Chip) {
 
 fn describe<Architecture>(
     before: &ExecutionState<'_, Architecture>,
-    simulated: &ExecutionState<'_, Architecture>,
+    simulated: &ExecutionStateExpectation<'_, Architecture>,
     executed: &ExecutionState<'_, Architecture>,
 ) -> String
 where
     Architecture: ProcessorArchitecture,
     Architecture::ProcessorState: Debug,
+    Architecture::ProcessorStateExpectation: Debug,
     Architecture::PagePermission: Debug,
 {
     let start = before.memory_mutations.len();

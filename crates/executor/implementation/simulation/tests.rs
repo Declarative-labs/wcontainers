@@ -20,7 +20,7 @@ use wcontainers_executor::{
 use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
-use wcontainers_processor_architecture::MemoryDelta;
+use wcontainers_processor_architecture::{MemoryDelta, MemorySnapshot};
 use wcontainers_processor_architecture_arm64::encoding::{RN, RT};
 use wcontainers_processor_architecture_arm64::memory::read_bytes;
 use wcontainers_processor_architecture_arm64::{
@@ -76,8 +76,10 @@ fn word_no_listed_instruction_matches_is_undefined() {
     let mut copy = SpaceCopy::default();
     refresh(&memory, &mut copy);
     let mut stopped = start.clone();
-    let Ok(()) =
-        chip.execute_single_instruction_in_place(&mut stopped, copy.deltas(), &mut Vec::new());
+    let memory = MemorySnapshot {
+        mutations: copy.deltas(),
+    };
+    let Ok(()) = chip.execute_single_instruction_in_place(&mut stopped, memory, &mut Vec::new());
     assert_eq!(
         stopped,
         Processor {

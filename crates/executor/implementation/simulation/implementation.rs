@@ -12,7 +12,7 @@ use wcontainers_executor::{
 };
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
-    MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
+    MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture, Simulator,
 };
 use wcontainers_processor_architecture_arm64::memory::read_bytes;
 use wcontainers_processor_architecture_arm64::{
@@ -97,26 +97,25 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> BehaviorSource for Simulation<Set>
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
-        memory: &[MemoryDelta<'_, Arm64<User>>],
+        memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), Infallible> {
-        let word = u32::from_le_bytes(read_bytes(memory, processor.program_counter));
+        let word = u32::from_le_bytes(read_bytes(memory.mutations, processor.program_counter));
         let listed = Arm64::<User>::list_instructions().find(|instruction| {
             let fixed = instruction.to_fixed_bits();
             word & fixed.mask == fixed.value
         });
         if let Some(instruction) = listed {
-            let Ok(()) = self.set.to_precise(instruction).simulate_in_place(
-                processor,
-                memory,
-                mutation_hook,
-            );
+            // ARM64 expects every value of the processor, so the expected processor is the one the chip ends with.
+            let Ok(after) =
+                self.set
+                    .to_precise(instruction)
+                    .simulate(processor, memory, mutation_hook);
+            *processor = after;
             return Ok(());
         }
-        // A breakpoint changes nothing but the exception, so on a copy it gives the fault of the fetch, if any.
-        let mut fetched = processor.clone();
-        let Ok(()) =
-            PreciseInstruction::Brk.simulate_in_place(&mut fetched, memory, &mut DroppedChanges);
+        // A breakpoint changes nothing but the exception, so it gives the fault of the fetch, if any.
+        let Ok(fetched) = PreciseInstruction::Brk.simulate(processor, memory, &mut DroppedChanges);
         let fetch_fault = fetched
             .exception
             .filter(|exception| !matches!(exception, Exception::Breakpoint { .. }));
@@ -165,7 +164,9 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> Executor for Simulation<Set> {
                 refresh(memory, &mut copy);
                 let Ok(()) = self.execute_single_instruction_in_place(
                     &mut processor,
-                    copy.deltas(),
+                    MemorySnapshot {
+                        mutations: copy.deltas(),
+                    },
                     &mut changes,
                 );
                 for delta in changes.drain(..) {
