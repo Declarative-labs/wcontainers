@@ -68,6 +68,8 @@ where
 }
 
 /// The behavior measured for each instruction agrees with the source on every generated state.
+///
+/// Measuring every instruction at once gives each the behavior measuring it alone gives, in the order they are listed.
 pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
     mut source: Source,
     generator: Generator,
@@ -78,10 +80,17 @@ pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
         Simulator<Source::Architecture, Error = Infallible>,
     Generator: DistinguishingStateGenerator<Source::Architecture>,
 {
+    let Ok(measurements) = source.measure_instructions(&generator) else {
+        panic!("an instruction shows no one known behavior");
+    };
     for (index, instruction) in Source::Architecture::list_instructions().enumerate() {
         let Ok(precise) = source.measure_instruction(instruction, &generator) else {
             panic!("instruction {index} shows no one known behavior");
         };
+        assert!(
+            measurements.get(index) == Some(&(instruction, precise)),
+            "measuring every instruction gives instruction {index} another behavior than measuring it alone"
+        );
         for before in generator.generate_states(instruction) {
             let Ok(simulated) = precise.simulate(before.clone());
             let Ok(executed) = source.execute_single_instruction(before) else {
@@ -95,10 +104,15 @@ pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
             );
         }
     }
+    assert!(
+        measurements.len() == Source::Architecture::list_instructions().count(),
+        "measuring every instruction gives another number of behaviors than there are instructions"
+    );
 }
 
-/// After each state the source cannot execute, the first generated state of every instruction executes as on a source
-/// that met no error.
+/// Checks that the states after an error execute as on a source that met no error.
+///
+/// After each state the source cannot execute, it runs the first generated state of every instruction.
 pub fn next_state_after_an_error_executes_as_on_a_fresh_source<Source, Generator>(
     mut source: Source,
     mut unbroken: Source,
