@@ -40,8 +40,9 @@ pub enum Spare {
     Texture(wgpu::Texture),
 }
 
-/// What storage must share to stand in for another. A buffer's key finds only buffers, and a
-/// texture's only textures.
+/// What storage must share to stand in for another.
+///
+/// A buffer's key finds only buffers, and a texture's only textures.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SpareKey {
     /// Size and usage.
@@ -57,12 +58,12 @@ pub enum SpareKey {
     ),
 }
 
-/// What storage must share to stand in for this buffer.
+/// Returns what storage must share to stand in for this buffer.
 fn buffer_key(b: &wgpu::Buffer) -> SpareKey {
     SpareKey::Buffer(b.size(), b.usage().bits())
 }
 
-/// What storage must share to stand in for this texture.
+/// Returns what storage must share to stand in for this texture.
 fn texture_key(t: &wgpu::Texture) -> SpareKey {
     SpareKey::Texture(
         t.size(),
