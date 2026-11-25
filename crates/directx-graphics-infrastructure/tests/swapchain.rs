@@ -7,7 +7,7 @@ mod support {
 
 use support::record::Recorder;
 use wcontainers_directx_graphics_infrastructure::*;
-use wcontainers_gpu::{Backend, Format, TextureUsage};
+use wcontainers_gpu::{Gpu, Format, TextureUsage};
 
 fn desc(format: u32, buffers: u32, model: Model) -> SwapChainDesc {
     SwapChainDesc {

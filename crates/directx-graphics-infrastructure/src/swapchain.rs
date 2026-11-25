@@ -10,7 +10,7 @@
 use std::collections::VecDeque;
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
+    Gpu, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
     DepthStencilDesc, DeviceStatus, DrawCall, DrawRange, Extent, FORMAT_FACTS, FillMode, Format,
     FrontFace, GpuError, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, Origin, PassDesc,
     Program, ProvokingVertex, RasterDesc, RenderTargetBlend, ScissorRect, ShaderModule,
@@ -189,7 +189,7 @@ impl Shown {
     }
 }
 
-fn copy_program<B: Backend>(backend: &mut B, shown: Shown) -> Result<B::Program, GpuError> {
+fn copy_program<B: Gpu>(backend: &mut B, shown: Shown) -> Result<B::Program, GpuError> {
     let fragment = shown.entry_point();
     let vs = backend.create_shader(&ShaderModule::from_wgsl(
         PRESENT_WGSL,
@@ -211,7 +211,7 @@ fn copy_program<B: Backend>(backend: &mut B, shown: Shown) -> Result<B::Program,
 }
 
 /// The blocks and program of the present copy.
-struct Copy<B: Backend> {
+struct Copy<B: Gpu> {
     program: B::Program,
     blend: B::Blend,
     depth_stencil: B::DepthStencil,
@@ -220,14 +220,14 @@ struct Copy<B: Backend> {
 }
 
 /// One back buffer: its texture, the view the present copy reads, and that view's binding set.
-struct Buffer<B: Backend> {
+struct Buffer<B: Gpu> {
     texture: B::Texture,
     view: B::TextureView,
     set: B::BindingSet,
 }
 
 /// A DXGI swap chain on back end `B`.
-pub struct SwapChain<B: Backend> {
+pub struct SwapChain<B: Gpu> {
     desc: SwapChainDesc,
     format: Format,
     surface: B::Surface,
@@ -247,7 +247,7 @@ pub struct SwapChain<B: Backend> {
     shown: Shown,
 }
 
-impl<B: Backend> SwapChain<B> {
+impl<B: Gpu> SwapChain<B> {
     /// Makes a swap chain on the host window `window`, as `IDXGIFactory2::CreateSwapChainForHwnd` and
     /// the others do.
     pub fn new(backend: &mut B, window: u32, desc: &SwapChainDesc) -> Result<Self, SwapChainError> {
