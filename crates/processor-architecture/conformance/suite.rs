@@ -1,12 +1,12 @@
 //! The tests every implementation of wcontainers-processor-architecture runs, written against its traits alone.
 //!
-//! Each function of an architecture takes the cases to simulate: a simulator and a state before. `Clone + Eq` on the
-//! architecture is what the derives of `ExecutionState` require of it. The function of a memory sink takes the sink.
+//! Each function of an architecture takes the cases to simulate: a simulator and a state before. The function of a
+//! memory sink takes the sink.
 
 use std::borrow::Cow;
 
 use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
+    ExecutionState, ExecutionStateExpectation, MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
 };
 
 /// Lists each instruction once, and each behavior known for an instruction once.
@@ -28,34 +28,33 @@ pub fn lists_each_instruction_and_known_behavior_once<Architecture: ProcessorArc
     }
 }
 
-/// The provided `simulate` gives what `simulate_in_place` does: its processor, and its memory mutations appended.
-pub fn simulate_agrees_with_simulate_in_place<Architecture, S>(
+/// The provided `simulate_state` gives what `simulate` does: its processor expectation, and its memory mutations
+/// appended.
+pub fn simulate_state_agrees_with_simulate<Architecture, S>(
     cases: impl IntoIterator<Item = (S, ExecutionState<'static, Architecture>)>,
 ) where
-    Architecture: ProcessorArchitecture + Clone + Eq,
+    Architecture: ProcessorArchitecture,
     S: Simulator<Architecture>,
 {
     for (simulator, before) in cases {
-        let mut processor = before.processor.clone();
         let mut mutated = Vec::new();
-        let in_place =
-            simulator.simulate_in_place(&mut processor, &before.memory_mutations, &mut mutated);
-        let simulated = simulator.simulate(before.clone());
-        match (in_place, simulated) {
-            (Ok(()), Ok(after)) => {
+        let simulated = simulator.simulate(&before.processor, before.memory(), &mut mutated);
+        let simulated_state = simulator.simulate_state(before.clone());
+        match (simulated, simulated_state) {
+            (Ok(processor), Ok(after)) => {
                 let mut memory_mutations = before.memory_mutations;
                 memory_mutations.append(&mut mutated);
                 assert!(
                     after
-                        == ExecutionState {
+                        == ExecutionStateExpectation {
                             processor,
                             memory_mutations
                         }
                 );
             }
             (Err(_), Err(_)) => {}
-            (Ok(()), Err(_)) | (Err(_), Ok(_)) => {
-                panic!("only one of simulate and simulate_in_place failed")
+            (Ok(_), Err(_)) | (Err(_), Ok(_)) => {
+                panic!("only one of simulate_state and simulate failed")
             }
         }
     }
@@ -65,12 +64,12 @@ pub fn simulate_agrees_with_simulate_in_place<Architecture, S>(
 pub fn simulation_is_deterministic<Architecture, S>(
     cases: impl IntoIterator<Item = (S, ExecutionState<'static, Architecture>)>,
 ) where
-    Architecture: ProcessorArchitecture + Clone + Eq,
+    Architecture: ProcessorArchitecture,
     S: Simulator<Architecture>,
     S::Error: PartialEq,
 {
     for (simulator, before) in cases {
-        assert!(simulator.simulate(before.clone()) == simulator.simulate(before));
+        assert!(simulator.simulate_state(before.clone()) == simulator.simulate_state(before));
     }
 }
 
@@ -121,8 +120,8 @@ macro_rules! tests {
         }
 
         #[test]
-        fn simulate_agrees_with_simulate_in_place() {
-            $crate::simulate_agrees_with_simulate_in_place($cases);
+        fn simulate_state_agrees_with_simulate() {
+            $crate::simulate_state_agrees_with_simulate($cases);
         }
 
         #[test]

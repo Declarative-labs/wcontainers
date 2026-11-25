@@ -63,9 +63,9 @@ pub fn agrees_with_recordings<Architecture, Set>(
         if !recorded.contains(&instruction) {
             recorded.push(instruction);
         }
-        let Ok(simulated) = set.to_precise(instruction).simulate(before);
+        let Ok(simulated) = set.to_precise(instruction).simulate_state(before);
         assert!(
-            simulated == after,
+            after.meets_expectations(&simulated),
             "recorded case {case} disagrees with the set"
         );
     }

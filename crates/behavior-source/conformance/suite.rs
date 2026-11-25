@@ -13,18 +13,14 @@ pub fn execute_agrees_with_execute_in_place<Source, Generator>(
     generator: Generator,
 ) where
     Source: BehaviorSource,
-    Source::Architecture: Clone,
     Generator: DistinguishingStateGenerator<Source::Architecture>,
 {
     for instruction in Source::Architecture::list_instructions() {
         for before in generator.generate_states(instruction) {
             let mut processor = before.processor.clone();
             let mut mutated = Vec::new();
-            let in_place = source.execute_single_instruction_in_place(
-                &mut processor,
-                &before.memory_mutations,
-                &mut mutated,
-            );
+            let in_place =
+                source.execute_single_instruction_in_place(&mut processor, before.memory(), &mut mutated);
             let executed = source.execute_single_instruction(before.clone());
             match (in_place, executed) {
                 (Ok(()), Ok(executed)) => {
@@ -52,7 +48,6 @@ pub fn execute_agrees_with_execute_in_place<Source, Generator>(
 pub fn execution_is_deterministic<Source, Generator>(mut source: Source, generator: Generator)
 where
     Source: BehaviorSource,
-    Source::Architecture: Clone,
     Generator: DistinguishingStateGenerator<Source::Architecture>,
 {
     for instruction in Source::Architecture::list_instructions() {
@@ -75,7 +70,6 @@ pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
     generator: Generator,
 ) where
     Source: BehaviorSource,
-    Source::Architecture: Clone,
     <Source::Architecture as ProcessorArchitecture>::PreciseInstruction:
         Simulator<Source::Architecture, Error = Infallible>,
     Generator: DistinguishingStateGenerator<Source::Architecture>,
@@ -92,14 +86,14 @@ pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
             "measuring every instruction gives instruction {index} another behavior than measuring it alone"
         );
         for before in generator.generate_states(instruction) {
-            let Ok(simulated) = precise.simulate(before.clone());
+            let Ok(simulated) = precise.simulate_state(before.clone());
             let Ok(executed) = source.execute_single_instruction(before) else {
                 panic!(
                     "the source did not execute a state of instruction {index} it was measured on"
                 );
             };
             assert!(
-                simulated == executed,
+                executed.meets_expectations(&simulated),
                 "the behavior measured for instruction {index} disagrees with the source"
             );
         }
@@ -120,7 +114,6 @@ pub fn next_state_after_an_error_executes_as_on_a_fresh_source<Source, Generator
     unexecutable: impl IntoIterator<Item = ExecutionState<'static, Source::Architecture>>,
 ) where
     Source: BehaviorSource,
-    Source::Architecture: Clone,
     Generator: DistinguishingStateGenerator<Source::Architecture>,
 {
     for (index, state) in unexecutable.into_iter().enumerate() {
