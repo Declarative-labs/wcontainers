@@ -8,6 +8,7 @@ path = "interface.rs"
 
 [dependencies]
 wcontainers-abi.workspace = true
+wcontainers-behavior-source = { path = "../behavior-source" }
 wcontainers-processor-architecture = { path = "../processor-architecture" }
 wcontainers-volatile-bytes = { path = "../volatile-bytes" }
 thiserror = { version = "2.0.21", default-features = false }

@@ -4102,6 +4102,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-behavior-source"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-behavior-source-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-behavior-source",
+]
+
+[[package]]
 name = "wcontainers-byte-sink"
 version = "0.1.0"
 
@@ -4268,6 +4283,7 @@ version = "0.1.0"
 dependencies = [
  "thiserror",
  "wcontainers-abi",
+ "wcontainers-behavior-source",
  "wcontainers-processor-architecture",
  "wcontainers-volatile-bytes",
 ]
@@ -4790,6 +4806,7 @@ dependencies = [
 name = "wcontainers-precise-instruction-set"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-behavior-source",
  "wcontainers-processor-architecture",
 ]
 
@@ -4864,8 +4881,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-privilege-level"
+version = "0.1.0"
+
+[[package]]
 name = "wcontainers-processor-architecture"
 version = "0.1.0"
+dependencies = [
+ "litemap",
+ "rangemap",
+]
 
 [[package]]
 name = "wcontainers-processor-architecture-arm64"
@@ -5341,6 +5366,32 @@ name = "wcontainers-volatile-bytes-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-volatile-bytes-pointer"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-conformance",
+]
+
+[[package]]
+name = "wcontainers-volatile-bytes-shared-mapping"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "memmap2",
+ "rustix",
+ "thiserror",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-conformance",
+ "wcontainers-volatile-bytes-pointer",
 ]
 
 [[package]]

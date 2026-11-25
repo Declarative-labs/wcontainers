@@ -17,3 +17,6 @@ Set by the owner on 2026-11-18. They apply to every crate, test and document in 
   it describes, imported from the crate that defines it, or one named constant defined once.
 - Standard-library and established-crate types come before our own (`std::ops::Range<u64>`, not a range
   struct).
+- Code made longer or more indirect only because Verus cannot read the plain Rust form carries
+  `// VERUS: <what Verus cannot read>, so <what is written instead>.` on the line above, so it can be
+  undone when Verus catches up.
