@@ -304,7 +304,7 @@ pub fn diff_memory<Architecture: ProcessorArchitecture>(
         resolve_bytes(second, start, length, &mut second_bytes);
         let is_same_at = |offset: &usize| first_bytes[*offset] == second_bytes[*offset];
         // Each run of bytes the two lists leave different is one mutation.
-        let mut run_end = 0;
+        let mut run_end = usize::MIN;
         while let Some(run_start) = (run_end..length).find(|offset| !is_same_at(offset)) {
             run_end = (run_start..length).find(is_same_at).unwrap_or(length);
             mutation_hook.on_memory_mutated(MemoryDelta::ValueAssignment {
@@ -331,7 +331,13 @@ pub fn diff_memory<Architecture: ProcessorArchitecture>(
             .unwrap_or(&Architecture::DEFAULT_PERMISSION)
     };
     // Between two neighboring bounds each list leaves one permission.
-    for addresses in bounds.windows(2).map(|pair| pair[0]..pair[1]) {
+    let mut bounds = bounds.into_iter();
+    let Some(mut start) = bounds.next() else {
+        return;
+    };
+    for end in bounds {
+        let addresses = start..end;
+        start = end;
         let permission = read_permission(&second_permissions, addresses.start);
         if read_permission(&first_permissions, addresses.start) != permission {
             mutation_hook.on_memory_mutated(MemoryDelta::PermissionAssignment {
