@@ -11,7 +11,9 @@ use naga::{
     AddressSpace, Arena, AtomicFunction, Expression, Function, GlobalVariable, Handle, ImageClass,
     ImageDimension, Literal, Module, ScalarKind, Span, StorageAccess, Type, TypeInner,
 };
-use wcontainers_gpu::{Reflection, ShaderStage, SlotKind, TexelBufferRoute, VariantKey};
+use wcontainers_gpu::{
+    Reflection, SLOT_KINDS, ShaderStage, SlotKind, TexelBufferRoute, VariantKey,
+};
 
 /// One typed buffer of a module and the functions its program calls for it, stand-ins whose bodies
 /// [`buffers`] writes. Each function is placed in the module's function arena before every function
@@ -112,7 +114,9 @@ pub fn buffers(
         };
         let format = formats
             .iter()
-            .find(|(slot, _)| *slot == reflected.slot())
+            .find(|(slot, _)| {
+                *slot == reflected.binding - SLOT_KINDS[reflected.kind as usize].first_binding
+            })
             .ok_or(ConvertError::Unsupported(
                 crate::refusal::TYPED_BUFFER_FORMAT,
             ))?

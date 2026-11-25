@@ -1091,12 +1091,19 @@ fn dxil_bindings_and_sampled_pairs_match_dxbc() {
                 .iter()
                 .filter(|e| e.kind == d.kind && (e.space, e.register) < (d.space, d.register))
                 .count() as u32;
-            assert_eq!(d.slot(), rank, "{name}");
+            assert_eq!(
+                d.binding - SLOT_KINDS[d.kind as usize].first_binding,
+                rank,
+                "{name}"
+            );
         }
         let register = |r: &wcontainers_gpu::Reflection, kind: SlotKind, slot: u32| {
             r.bindings
                 .iter()
-                .find(|d| d.kind == kind && d.slot() == slot)
+                .find(|d| {
+                    d.kind == kind
+                        && (d.binding - SLOT_KINDS[d.kind as usize].first_binding) == slot
+                })
                 .map(|d| d.register)
         };
         let pairs = |r: &wcontainers_gpu::Reflection| -> Vec<_> {

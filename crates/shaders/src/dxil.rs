@@ -1904,7 +1904,11 @@ mod tests {
         };
         let slots = bindings(&mut module, &resources, &declared, 0, &mut reflection).unwrap();
         assert_eq!(slots, [(vars[0], used[0]), (vars[1], used[1])]);
-        let slots: Vec<u32> = reflection.bindings.iter().map(|b| b.slot()).collect();
+        let slots: Vec<u32> = reflection
+            .bindings
+            .iter()
+            .map(|b| b.binding - SLOT_KINDS[b.kind as usize].first_binding)
+            .collect();
         assert_eq!(slots, used);
     }
 }

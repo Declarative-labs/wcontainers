@@ -13,9 +13,9 @@ use wcontainers_gpu::{
     HelperValue, INDEX_FORMATS, IndexBinding, IndexFormat, IndexSource, Interpolation,
     LinkedValues, MAX_BINDING_SETS, MAX_VERTEX_STREAMS, MapIntent, Object, OcclusionCounter,
     PassTracker, Program, ProvokingVertex, RasterDesc, ReadSource, ReflectedBinding, Reflection,
-    RingKind, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage, SlotKind,
-    SlowPath, SourceStage, StageExtras, StageSet, StepMode, Topology, VariantFlags, VariantKey,
-    VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode, helper_binding,
+    RingKind, SLOT_KINDS, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule, ShaderStage,
+    SlotKind, SlowPath, SourceStage, StageExtras, StageSet, StepMode, Topology, VariantFlags,
+    VariantKey, VertexBinding, VertexFormat, VertexLayoutDesc, Viewport, WriteMode, helper_binding,
 };
 use wcontainers_nir::direct::Tessellator;
 use wcontainers_nir::mesa::{
@@ -618,7 +618,7 @@ fn slots_of(bindings: &[ReflectedBinding], kind: SlotKind, units: u16) -> Result
             if unit >= u16::BITS || units & (1 << unit) == 0 {
                 continue;
             }
-            let slot = b.slot() + i;
+            let slot = (b.binding - SLOT_KINDS[b.kind as usize].first_binding) + i;
             if slot >= u16::BITS {
                 return refused(format_args!("a border colour at a slot past the variant's"));
             }
@@ -633,8 +633,12 @@ fn unit_of(bindings: &[ReflectedBinding], kind: SlotKind, slot: u32) -> Option<u
     bindings
         .iter()
         .filter(|b| b.kind == kind && b.added.is_none())
-        .find(|b| (b.slot()..b.slot() + b.count).contains(&slot))
-        .map(|b| b.register + slot - b.slot())
+        .find(|b| {
+            ((b.binding - SLOT_KINDS[b.kind as usize].first_binding)
+                ..(b.binding - SLOT_KINDS[b.kind as usize].first_binding) + b.count)
+                .contains(&slot)
+        })
+        .map(|b| b.register + slot - (b.binding - SLOT_KINDS[b.kind as usize].first_binding))
 }
 
 /// A program's outputs and inputs fitted to the stages and targets it meets.
@@ -1799,9 +1803,13 @@ pub(crate) fn binding_sets<B: Backend>(
                 .find(|m| {
                     m.added.is_none()
                         && m.kind == SlotKind::Texture
-                        && (m.slot()..m.slot() + m.count).contains(&slot)
+                        && ((m.binding - SLOT_KINDS[m.kind as usize].first_binding)
+                            ..(m.binding - SLOT_KINDS[m.kind as usize].first_binding) + m.count)
+                            .contains(&slot)
                 })
-                .map(|m| m.binding + slot - m.slot());
+                .map(|m| {
+                    m.binding + slot - (m.binding - SLOT_KINDS[m.kind as usize].first_binding)
+                });
             let stand_in = stand_ins.iter().find(|&&(at, _)| Some(at) == first);
             let view = match stand_in {
                 Some(&(_, index)) => made.stand_in_view(index),
@@ -1954,10 +1962,12 @@ enum ImageBinding {
 /// Whether the program reads and writes the image at storage binding `b` through a buffer of its
 /// texels (route B's `HelperValue::TexelLayout` of its slot).
 fn read_as_texels<B: Backend>(built: &Built<B>, b: &ReflectedBinding) -> bool {
-    built
-        .helpers
-        .iter()
-        .any(|h| h.value == HelperValue::TexelLayout { slot: b.slot() })
+    built.helpers.iter().any(|h| {
+        h.value
+            == HelperValue::TexelLayout {
+                slot: b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+            }
+    })
 }
 
 /// How each image the program binds is bound in `made`, by its unit, with whether the program
@@ -4776,7 +4786,12 @@ fn by_slot<T: Copy>(
             by_unit
                 .iter()
                 .filter(|&&(unit, _)| (b.register..b.register + b.count).contains(&unit))
-                .map(|&(unit, value)| (b.slot() + unit - b.register, value))
+                .map(|&(unit, value)| {
+                    (
+                        (b.binding - SLOT_KINDS[b.kind as usize].first_binding) + unit - b.register,
+                        value,
+                    )
+                })
         })
         .collect()
 }

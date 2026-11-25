@@ -4,8 +4,8 @@
 //! sets are made from them (plan 4.5 and 5.2).
 
 use wcontainers_gpu::{
-    BindingEntry, BindingResource, BufferRange, MAX_BINDING_SETS, ReflectedBinding, SlotKind,
-    ViewComponent,
+    BindingEntry, BindingResource, BufferRange, MAX_BINDING_SETS, ReflectedBinding, SLOT_KINDS,
+    SlotKind, ViewComponent,
 };
 
 use super::*;
@@ -169,10 +169,12 @@ pub(super) fn stage_bindings(
                     }
             });
             let through = b.kind == SlotKind::Storage
-                && c.reflection
-                    .helpers
-                    .iter()
-                    .any(|h| h.value == HelperValue::TexelLayout { slot: b.slot() });
+                && c.reflection.helpers.iter().any(|h| {
+                    h.value
+                        == HelperValue::TexelLayout {
+                            slot: b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                        }
+                });
             StageBinding {
                 stages,
                 visibility,
@@ -622,7 +624,8 @@ impl<B: Backend> Device<B> {
                             self.bound_helpers.push((
                                 b.visibility,
                                 HelperValue::TextureComponents {
-                                    texture: b.binding.slot(),
+                                    texture: b.binding.binding
+                                        - SLOT_KINDS[b.binding.kind as usize].first_binding,
                                 },
                                 pull::words(&[components]),
                             ));
@@ -657,7 +660,11 @@ impl<B: Backend> Device<B> {
                                 let view = self.storage_texture(&v, b)?;
                                 self.bound_formats.push((
                                     b.visibility,
-                                    (true, b.binding.slot()),
+                                    (
+                                        true,
+                                        b.binding.binding
+                                            - SLOT_KINDS[b.binding.kind as usize].first_binding,
+                                    ),
                                     dxgi(v.format)?,
                                 ));
                                 Held::StorageTexture(view, writable)
@@ -706,7 +713,8 @@ impl<B: Backend> Device<B> {
                     self.bound_helpers.push((
                         b.visibility,
                         HelperValue::TexelLayout {
-                            slot: b.binding.slot(),
+                            slot: b.binding.binding
+                                - SLOT_KINDS[b.binding.kind as usize].first_binding,
                         },
                         pull::words(&[0; 5]),
                     ));
@@ -729,8 +737,14 @@ impl<B: Backend> Device<B> {
                     .ok_or(Error::NotImplemented("null views of this storage texture"))?;
                 // A null view's format is the program's own: its reads are zeros and its
                 // writes are dropped in any format.
-                self.bound_formats
-                    .push((b.visibility, (true, b.binding.slot()), shape.format));
+                self.bound_formats.push((
+                    b.visibility,
+                    (
+                        true,
+                        b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+                    ),
+                    shape.format,
+                ));
                 Held::StorageTexture(self.null_view(shape, writable)?, writable)
             }
             (_, Form::Plain) => {
@@ -741,7 +755,8 @@ impl<B: Backend> Device<B> {
                 self.bound_helpers.push((
                     b.visibility,
                     HelperValue::TextureComponents {
-                        texture: b.binding.slot(),
+                        texture: b.binding.binding
+                            - SLOT_KINDS[b.binding.kind as usize].first_binding,
                     },
                     pull::words(&[0b1111]),
                 ));
@@ -961,7 +976,10 @@ impl<B: Backend> Device<B> {
             .hit(SlowPath::TexelBufferAsStorage);
         self.bound_formats.push((
             b.visibility,
-            (b.binding.kind != SlotKind::Texture, b.binding.slot()),
+            (
+                b.binding.kind != SlotKind::Texture,
+                b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+            ),
             format,
         ));
         self.bound_helpers.push((
@@ -1017,7 +1035,7 @@ impl<B: Backend> Device<B> {
         if clamp <= 0.0 {
             return Ok(());
         }
-        let texture = b.binding.slot();
+        let texture = b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding;
         if !matches!(b.visibility, 0 | PIXEL) || texture >= 128 {
             return Err(Error::NotImplemented(
                 "a minimum level-of-detail clamp in a vertex or geometry shader or past \
@@ -1049,7 +1067,10 @@ impl<B: Backend> Device<B> {
             return Ok(());
         }
         if b.compared {
-            self.bound_unfiltered.push((b.visibility, b.binding.slot()));
+            self.bound_unfiltered.push((
+                b.visibility,
+                b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+            ));
             return Ok(());
         }
         let Some(v) = v else {
@@ -1077,7 +1098,10 @@ impl<B: Backend> Device<B> {
             format
         };
         if !filters(read) {
-            self.bound_unfiltered.push((b.visibility, b.binding.slot()));
+            self.bound_unfiltered.push((
+                b.visibility,
+                b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+            ));
         }
         Ok(())
     }
@@ -1205,8 +1229,11 @@ impl<B: Backend> Device<B> {
                 ));
             }
             self.backend.slow_paths().hit(SlowPath::SwizzleInShader);
-            self.bound_swizzles
-                .push((b.visibility, b.binding.slot(), map));
+            self.bound_swizzles.push((
+                b.visibility,
+                b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+                map,
+            ));
         }
         // Comparison sampling reads a texture not stored in a depth format through its depth twin.
         let (resource, depth) = if b.compared && !texture_desc.format.is_depth_stencil() {
@@ -1271,8 +1298,14 @@ impl<B: Backend> Device<B> {
                      in a geometry, hull or domain shader or a vertex shader before one",
                 ));
             }
-            self.bound_formats
-                .push((b.visibility, (false, b.binding.slot()), format));
+            self.bound_formats.push((
+                b.visibility,
+                (
+                    false,
+                    b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+                ),
+                format,
+            ));
         }
         let dimension = declared_dimension(dimension, layer_count, b);
         // Direct3D leaves a view of another dimension than the declaration undefined, and the
@@ -1325,8 +1358,12 @@ impl<B: Backend> Device<B> {
             rest.push(self.texture_view(resource, one(layer))?);
         }
         if layer_count > 1 {
-            self.bound_layers
-                .push((b.visibility, b.binding.slot(), b.stages, rest));
+            self.bound_layers.push((
+                b.visibility,
+                b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+                b.stages,
+                rest,
+            ));
         }
         Ok(first)
     }
@@ -1340,8 +1377,11 @@ impl<B: Backend> Device<B> {
     ) -> Result<B::Sampler, Error> {
         let caps = self.backend.caps();
         let desc = crate::state::sampler(v, caps)?;
-        self.bound_samplers
-            .push((b.visibility, b.binding.slot(), *v));
+        self.bound_samplers.push((
+            b.visibility,
+            b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding,
+            *v,
+        ));
         let (bias, border) = crate::state::in_program(v, caps);
         if bias || border {
             if !reconverted(b) {
@@ -1350,7 +1390,7 @@ impl<B: Backend> Device<B> {
                      domain shader or a vertex shader before one",
                 ));
             }
-            let sampler = b.binding.slot();
+            let sampler = b.binding.binding - SLOT_KINDS[b.binding.kind as usize].first_binding;
             if sampler >= 16 {
                 return Err(Error::NotImplemented(
                     "sampling in the program through a sampler slot past 15",

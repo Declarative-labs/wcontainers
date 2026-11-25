@@ -824,11 +824,11 @@ fn an_image_without_a_format_is_declared_in_the_format_the_variant_names() {
     assert_eq!(stage.nir.formatless_images(), 1 << unit);
     let key = stage.nir.key().unwrap();
     let bindings = stage.nir.to_common_form(Stage::Compute).unwrap();
-    let slot = bindings
+    let found = bindings
         .iter()
         .find(|b| b.kind == SlotKind::Storage && b.register == unit)
-        .unwrap()
-        .slot();
+        .unwrap();
+    let slot = found.binding - SLOT_KINDS[found.kind as usize].first_binding;
     let routed = || wcontainers_nir::direct::route(&mut stage.nir.try_clone().unwrap()).unwrap();
     assert_eq!(routed().rewrites.formatless, [slot]);
     let unnamed = wcontainers_gpu::VariantKey::default();

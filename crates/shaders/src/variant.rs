@@ -1683,7 +1683,10 @@ fn constants_as_storage(
         .max()
         .unwrap_or(SLOT_KINDS[SlotKind::Storage as usize].first_binding);
     for b in &mut reflection.bindings {
-        if b.kind != SlotKind::Uniform || b.added.is_some() || slots & (1 << b.slot()) == 0 {
+        if b.kind != SlotKind::Uniform
+            || b.added.is_some()
+            || slots & (1 << (b.binding - SLOT_KINDS[b.kind as usize].first_binding)) == 0
+        {
             continue;
         }
         if next
@@ -1715,7 +1718,9 @@ fn constants_as_storage(
             group: b.set,
             binding: next,
         });
-        b.added = Some(AddedBinding::ConstantsAsStorage(b.slot()));
+        b.added = Some(AddedBinding::ConstantsAsStorage(
+            b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+        ));
         b.kind = SlotKind::Storage;
         b.binding = next;
         next += 1;
@@ -2131,7 +2136,7 @@ fn slot_of(
         .find(|b| {
             b.kind == kind && b.added.is_none() && b.set == rb.group && b.binding == rb.binding
         })
-        .map(|b| b.slot())
+        .map(|b| b.binding - SLOT_KINDS[b.kind as usize].first_binding)
 }
 
 /// Samplings the variant changes, each replaced by one callee that applies every change it asks for.

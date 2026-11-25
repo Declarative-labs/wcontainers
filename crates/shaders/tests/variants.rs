@@ -134,7 +134,16 @@ fn register_spaces_are_numbered_by_the_programs_own_slots() {
             .reflection
             .bindings
             .iter()
-            .map(|b| (b.kind, b.space, b.register, b.set, b.binding, b.slot()))
+            .map(|b| {
+                (
+                    b.kind,
+                    b.space,
+                    b.register,
+                    b.set,
+                    b.binding,
+                    b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                )
+            })
             .collect();
         bindings.sort_by_key(|b| b.4);
         assert_eq!(
@@ -156,7 +165,12 @@ fn register_spaces_are_numbered_by_the_programs_own_slots() {
         None,
     )
     .unwrap();
-    assert!(c.reflection.bindings.iter().all(|b| b.slot() == b.register));
+    assert!(
+        c.reflection
+            .bindings
+            .iter()
+            .all(|b| (b.binding - SLOT_KINDS[b.kind as usize].first_binding) == b.register)
+    );
 }
 
 /// A vertex program writes each output as the pixel program reads it, taken from the pixel program's
@@ -1372,7 +1386,12 @@ fn texture_arrays_are_a_texture_per_element() {
             .bindings
             .iter()
             .filter(|b| b.kind == SlotKind::Texture)
-            .map(|b| (b.register, b.slot()))
+            .map(|b| {
+                (
+                    b.register,
+                    b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                )
+            })
             .collect();
         textures.sort_unstable();
         assert_eq!(textures, [(0, 0), (1, 1), (2, 2), (3, 3)], "{path}");
@@ -1410,7 +1429,12 @@ fn storage_texture_arrays_are_a_storage_texture_per_element() {
             .bindings
             .iter()
             .filter(|b| b.kind == SlotKind::Storage)
-            .map(|b| (b.register, b.slot()))
+            .map(|b| {
+                (
+                    b.register,
+                    b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                )
+            })
             .collect();
         storage.sort_unstable();
         assert_eq!(
@@ -1499,7 +1523,14 @@ fn buffer_arrays_are_a_binding_per_element() {
                     .iter()
                     .find(|b| b.kind == kind && b.register == register)
                     .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
-                assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
+                assert_eq!(
+                    (
+                        b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                        b.count
+                    ),
+                    (register, 1),
+                    "{b:?}"
+                );
             }
         }
         let text = wgsl(&c);
@@ -1536,7 +1567,14 @@ fn structured_buffer_arrays_are_a_binding_per_element_on_both_routes() {
                     .iter()
                     .find(|b| b.kind == kind && b.register == register)
                     .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
-                assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
+                assert_eq!(
+                    (
+                        b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                        b.count
+                    ),
+                    (register, 1),
+                    "{b:?}"
+                );
             }
         }
         assert_eq!(
@@ -1575,7 +1613,14 @@ fn typed_buffer_arrays_are_a_binding_per_element_on_both_routes() {
                     .iter()
                     .find(|b| b.kind == kind && b.register == register)
                     .unwrap_or_else(|| panic!("{kind:?} {register}: {:?}", c.reflection.bindings));
-                assert_eq!((b.slot(), b.count), (register, 1), "{b:?}");
+                assert_eq!(
+                    (
+                        b.binding - SLOT_KINDS[b.kind as usize].first_binding,
+                        b.count
+                    ),
+                    (register, 1),
+                    "{b:?}"
+                );
             }
         }
         let without = VariantKey {

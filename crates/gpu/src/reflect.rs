@@ -136,6 +136,9 @@ pub struct ReflectedBinding {
     pub count: u32,
     /// Where the converted program binds it: set and binding number.
     pub set: u32,
+    /// Its place in its kind's range, `binding` less the range's first binding in [`SLOT_KINDS`], is
+    /// the slot per-slot fields of [`VariantKey`] and [`Reflection::sampled_pairs`] name: the register
+    /// under Direct3D 10 and 11's numbering.
     pub binding: u32,
     /// For a binding the variant adds rather than one of the API's slots, what it holds; `space`,
     /// `register` and `count` then say nothing.
@@ -143,14 +146,6 @@ pub struct ReflectedBinding {
     /// For a storage buffer, the size in bytes of the program's element of it, the step a
     /// [`HelperValue::StorageOffset`] comes in; zero otherwise.
     pub stride: u32,
-}
-
-impl ReflectedBinding {
-    /// The binding's place in its kind's range, which per-slot fields of [`VariantKey`] and
-    /// [`Reflection::sampled_pairs`] name: the register under Direct3D 10 and 11's numbering.
-    pub const fn slot(&self) -> u32 {
-        self.binding - crate::SLOT_KINDS[self.kind as usize].first_binding
-    }
 }
 
 /// A binding a variant adds to a program. It lives in the set of the one stage that reads it (set 0 for
@@ -824,7 +819,11 @@ mod tests {
                     added: None,
                     stride: 0,
                 };
-                assert_eq!(b.slot(), slot, "{kind:?}");
+                assert_eq!(
+                    b.binding - crate::SLOT_KINDS[b.kind as usize].first_binding,
+                    slot,
+                    "{kind:?}"
+                );
             }
             assert_eq!(
                 ((crate::SLOT_KINDS[kind as usize].slots) < crate::SLOT_KINDS[kind as usize].slots)

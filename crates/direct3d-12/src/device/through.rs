@@ -41,7 +41,8 @@ impl<B: Backend> Device<B> {
         if v.dimension == UAV_DIMENSION_BUFFER {
             return Err(Error::NotImplemented(bind::OTHER_UAV_DIMENSION));
         }
-        let slot = b.binding.slot();
+        let slot =
+            b.binding.binding - wcontainers_gpu::SLOT_KINDS[b.binding.kind as usize].first_binding;
         if slot >= 64 {
             return Err(Error::NotImplemented(
                 "a storage texture read through a buffer at a slot past 63",
