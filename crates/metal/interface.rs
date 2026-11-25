@@ -19,6 +19,8 @@ pub trait Metal {
     type Function: Clone + Debug;
     type RenderPipelineState: Clone + Debug;
     type ComputePipelineState: Clone + Debug;
+    /// A render pipeline Metal builds on a thread of its own, which `finish_render_pipeline_state` waits for.
+    type PendingRenderPipelineState: Clone + Debug;
     type CommandBuffer: Clone + Debug;
     /// The Core Animation layer of a window's view, whose drawables a window shows.
     type Layer: Clone + Debug;
@@ -78,6 +80,27 @@ pub trait Metal {
     fn make_render_pipeline_state(
         &mut self,
         descriptor: &RenderPipelineDescriptor<'_, Self>,
+    ) -> Result<Self::RenderPipelineState, MakeRenderPipelineStateError>;
+    /// Makes a function as `make_function` does, every check made now, but compiled by Metal on a thread of its own:
+    /// a pipeline made of it waits for the compile, and a compile Metal refuses refuses that pipeline.
+    ///
+    /// https://developer.apple.com/documentation/metal/mtldevice/makelibrary(source:options:completionhandler:)
+    fn make_function_in_background(
+        &mut self,
+        source: &FunctionSource<'_>,
+    ) -> Result<Self::Function, MakeFunctionError>;
+    /// Makes a render pipeline as `make_render_pipeline_state` does, every check made now, but built by Metal on a
+    /// thread of its own once its functions are compiled.
+    ///
+    /// https://developer.apple.com/documentation/metal/mtldevice/makerenderpipelinestate(descriptor:completionhandler:)
+    fn make_render_pipeline_state_in_background(
+        &mut self,
+        descriptor: &RenderPipelineDescriptor<'_, Self>,
+    ) -> Result<Self::PendingRenderPipelineState, MakeRenderPipelineStateError>;
+    /// Waits for a pipeline built in the background and returns it, or why Metal refused it.
+    fn finish_render_pipeline_state(
+        &mut self,
+        pending: &Self::PendingRenderPipelineState,
     ) -> Result<Self::RenderPipelineState, MakeRenderPipelineStateError>;
     /// Makes a pipeline that runs a compute function, its threadgroup the size the function declares.
     fn make_compute_pipeline_state(

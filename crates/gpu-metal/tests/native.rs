@@ -402,7 +402,8 @@ fn declares_the_metal_features_tested_here() {
         | Features::SHADER_F16
         | Features::VERTEX_STORAGE_WRITE
         | Features::CLIP_DISTANCE
-        | Features::FRACTIONAL_VIEWPORT;
+        | Features::FRACTIONAL_VIEWPORT
+        | Features::BACKGROUND_PREPARE;
     assert!(device().caps().features.contains(wanted));
     // Depth bounds where Metal has them: macOS 26 on.
     assert_eq!(
@@ -2027,4 +2028,98 @@ fn a_depth_copy_past_its_buffer_or_off_its_words_is_refused_and_writes_nothing()
             assert_eq!(read_words(&mut b, &into, 96), vec![0xa5a5_a5a5; 24]);
         }
     }
+}
+
+/// A program Metal has not compiled before: its numbers are `salt`'s, and its fragments loop over a few sines so that
+/// compiling it takes a while.
+fn fresh_program(
+    b: &mut MetalGpu<DirectMetal>,
+    salt: u64,
+) -> <MetalGpu<DirectMetal> as Gpu>::Program {
+    let source = format!(
+        "
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {{
+    var p = array(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    return vec4<f32>(p[i] + vec2(f32({}) * 0.0), 0.5, 1.0);
+}}
+@fragment fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {{
+    var x = at.x;
+    for (var j = 0; j < 8; j++) {{ x = sin(x * {}.0 + cos(at.y)); }}
+    return vec4<f32>(1.0, x * 0.0, 0.0, 1.0);
+}}",
+        salt % 1_000_003,
+        salt % 999_983 + 1
+    );
+    let module = |entry, stage| ShaderModule::from_wgsl(&source, entry, stage).expect("parses");
+    let vertex = b
+        .create_shader(&module("vs", ShaderStage::Vertex))
+        .expect("create_shader");
+    let fragment = b
+        .create_shader(&module("fs", ShaderStage::Fragment))
+        .expect("create_shader");
+    b.create_program(&Program::Render {
+        vertex: &vertex,
+        fragment: Some(&fragment),
+    })
+    .expect("create_program")
+}
+
+#[test]
+fn prepare_returns_before_metal_compiles_and_the_first_draw_waits_for_it() {
+    let mut b = device();
+    assert!(b.caps().features.contains(Features::BACKGROUND_PREPARE));
+    let states = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
+    let salt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("after 1970")
+        .as_nanos() as u64;
+    // More programs than Metal builds at once, so that some are built on the calling thread.
+    let programs: Vec<_> = (0..24)
+        .map(|k| fresh_program(&mut b, salt.wrapping_add(k)))
+        .collect();
+    let mut prepares = Vec::new();
+    for program in &programs {
+        let clock = std::time::Instant::now();
+        b.prepare(&wcontainers_gpu::PrepareDesc {
+            program,
+            blend: &states.blend,
+            depth_stencil: &states.depth_stencil,
+            raster: &states.raster,
+            vertex_layout: &states.layout,
+            targets: wcontainers_gpu::TargetLayout {
+                colors: {
+                    let mut colors = [None; MAX_COLOR_TARGETS];
+                    colors[0] = Some(Format::Rgba8Unorm);
+                    colors
+                },
+                depth_stencil: None,
+                samples: 1,
+            },
+            topology: Topology::TriangleList,
+            layouts: Default::default(),
+        });
+        prepares.push(clock.elapsed().as_micros());
+    }
+    let before = b.slow_paths().counts[wcontainers_gpu::SlowPath::PipelineMiss as usize];
+    let (drawn, drawn_view) = target(&mut b, Format::Rgba8Unorm, DRAWN_SIDE);
+    let clock = std::time::Instant::now();
+    for program in &programs {
+        b.begin_pass(&color_pass(&drawn_view, [0; 4]));
+        draw(
+            &mut b, program, &states, None, DRAWN_SIDE, 3, [0; 2], [0.0; 4],
+        );
+        b.end_pass();
+    }
+    let draws = clock.elapsed().as_micros();
+    let after = b.slow_paths().counts[wcontainers_gpu::SlowPath::PipelineMiss as usize];
+    let mut sorted = prepares.clone();
+    sorted.sort_unstable();
+    eprintln!(
+        "prepare in µs: {prepares:?} (median {}); the draws after: {draws} µs",
+        sorted[sorted.len() / 2]
+    );
+    assert_eq!(after, before, "a draw missed its prepared pipeline");
+    let red = [255, 0, 0, 255].repeat((DRAWN_SIDE * DRAWN_SIDE) as usize);
+    assert_eq!(read_texture(&mut b, &drawn, DRAWN_SIDE, RGBA8_BYTES), red);
+    assert_eq!(b.status(), wcontainers_gpu::DeviceStatus::Ok);
 }

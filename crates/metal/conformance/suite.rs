@@ -893,6 +893,141 @@ pub fn refuses_a_swizzle_of_a_texture_drawn_into<M: Metal>(mut subject: M) {
     }
 }
 
+/// Compiles one entry point of the tests' functions on a thread of Metal's own.
+fn function_in_background<M: Metal>(
+    subject: &mut M,
+    stage: naga::ShaderStage,
+    entry_point: &str,
+) -> M::Function {
+    let (module, info) = programs();
+    let vertex_buffers = [VertexBufferLayout {
+        buffer_index: VERTICES,
+        stride: 8,
+        step_function: VertexStepFunction::PerVertex,
+        attributes: vec![VertexAttribute {
+            location: u32::MIN,
+            offset: u32::MIN,
+            format: VertexFormat::Float2,
+        }],
+    }];
+    subject
+        .make_function_in_background(&FunctionSource {
+            module: &module,
+            info: &info,
+            stage,
+            entry_point,
+            resources: SLOTS,
+            immediates_buffer_index: IMMEDIATES,
+            sizes_buffer_index: SIZES,
+            vertex_buffers: &vertex_buffers,
+            point_size: false,
+        })
+        .expect("Metal answers make function in background")
+}
+
+/// Checks that functions and pipelines built in the background draw and dispatch as those built at once: more pipelines
+/// pending at once than any thread pool runs, each finished after; that a pipeline's checks refuse it at once; and
+/// that a compute pipeline waits for its function's compile.
+pub fn builds_functions_and_pipelines_in_the_background<M: Metal>(mut subject: M) {
+    let (green, _) = green_and_clear();
+    let mut pending = Vec::new();
+    for _ in 0..20 {
+        let vertex = function_in_background(&mut subject, naga::ShaderStage::Vertex, VERTEX);
+        let fragment = function_in_background(&mut subject, naga::ShaderStage::Fragment, FLAT);
+        let mut color_attachments = [None; MAX_COLOR_ATTACHMENTS];
+        color_attachments[0] = Some(RenderPipelineColorAttachmentDescriptor {
+            pixel_format: PixelFormat::Rgba8Unorm,
+            blending: None,
+            write_mask: ColorWriteMask {
+                red: true,
+                green: true,
+                blue: true,
+                alpha: true,
+            },
+        });
+        let descriptor = RenderPipelineDescriptor {
+            vertex_function: &vertex,
+            fragment_function: Some(&fragment),
+            color_attachments,
+            depth_attachment_pixel_format: None,
+            stencil_attachment_pixel_format: None,
+            raster_sample_count: SINGLE,
+            alpha_to_coverage_enabled: false,
+            rasterization_enabled: true,
+            input_primitive_topology: PrimitiveTopologyClass::Triangle,
+        };
+        pending.push(
+            subject
+                .make_render_pipeline_state_in_background(&descriptor)
+                .expect("Metal answers make render pipeline state in background"),
+        );
+        // Its fragment function as the vertex function is refused at once.
+        assert!(matches!(
+            subject.make_render_pipeline_state_in_background(&RenderPipelineDescriptor {
+                vertex_function: &fragment,
+                ..descriptor
+            }),
+            Err(MakeRenderPipelineStateError::Invalid(_))
+        ));
+    }
+    for (k, pending) in pending.iter().enumerate() {
+        let state = subject
+            .finish_render_pipeline_state(pending)
+            .expect("Metal answers finish render pipeline state");
+        let draw = RenderCommand::DrawPrimitives {
+            primitive_type: PrimitiveType::Triangle,
+            vertex_start: u32::MIN,
+            vertex_count: TRIANGLE_VERTICES,
+            instance_count: SINGLE,
+            base_instance: u32::MIN,
+        };
+        assert_eq!(
+            drawn_with(&mut subject, &state, draw),
+            green,
+            "pipeline {k}"
+        );
+    }
+    // Finishing a pipeline again gives it again.
+    subject
+        .finish_render_pipeline_state(&pending[0])
+        .expect("Metal answers finish render pipeline state");
+    let words: Vec<u32> = (1..=WORD_COUNT as u32).collect();
+    let buffer = filled(&mut subject, &word_bytes(&words));
+    let compute = function_in_background(&mut subject, naga::ShaderStage::Compute, DOUBLE);
+    let state = subject
+        .make_compute_pipeline_state(&compute)
+        .expect("Metal answers make compute pipeline state");
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject
+        .encode_compute_commands(
+            &command_buffer,
+            &[
+                ComputeCommand::SetComputePipelineState(state),
+                ComputeCommand::SetBuffer {
+                    buffer: buffer.clone(),
+                    offset: u64::MIN,
+                    length: WORDS_BYTES,
+                    index: WORDS_SLOT,
+                },
+                ComputeCommand::DispatchThreadgroups(Size {
+                    width: 2,
+                    height: SINGLE,
+                    depth: SINGLE,
+                }),
+            ],
+        )
+        .expect("Metal answers encode compute commands");
+    finish(&mut subject, &command_buffer);
+    let mut read = vec![0; WORDS_BYTES as usize];
+    subject
+        .read_contents(&buffer, 0, &mut read)
+        .expect("Metal answers read contents");
+    let doubled: Vec<u32> = words.iter().map(|w| w * 2).collect();
+    assert_eq!(read, word_bytes(&doubled));
+}
+
 /// Checks that a compute function doubles every word of a storage buffer.
 pub fn dispatches_a_compute_function<M: Metal>(mut subject: M) {
     let words: Vec<u32> = (1..=WORD_COUNT as u32).collect();
@@ -3708,6 +3843,11 @@ macro_rules! tests {
         #[test]
         fn discards_fragments_whose_stored_depth_is_outside_the_bounds() {
             $crate::discards_fragments_whose_stored_depth_is_outside_the_bounds($value);
+        }
+
+        #[test]
+        fn builds_functions_and_pipelines_in_the_background() {
+            $crate::builds_functions_and_pipelines_in_the_background($value);
         }
 
         #[test]

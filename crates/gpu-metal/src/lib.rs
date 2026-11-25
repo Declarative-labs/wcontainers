@@ -149,6 +149,8 @@ pub struct MetalGpu<M: Metal> {
     vertex_functions: HashMap<(u64, u64, bool), M::Function>,
     fragment_functions: HashMap<u64, M::Function>,
     render_pipelines: HashMap<record::PipelineKey, M::RenderPipelineState>,
+    /// The render pipelines `prepare` left Metal building in the background, which the first draw of each waits for.
+    pending_pipelines: HashMap<record::PipelineKey, M::PendingRenderPipelineState>,
     compute_pipelines: HashMap<u64, M::ComputePipelineState>,
     depth_stencil_states: HashMap<u64, M::DepthStencilState>,
     /// The layers of the windows the host added, by the number its graphics hook names each by.
@@ -207,7 +209,8 @@ impl<M: Metal> MetalGpu<M> {
                 | Features::SHADER_F16
                 | Features::VERTEX_STORAGE_WRITE
                 | Features::CLIP_DISTANCE
-                | Features::FRACTIONAL_VIEWPORT,
+                | Features::FRACTIONAL_VIEWPORT
+                | Features::BACKGROUND_PREPARE,
             limits: LIMITS,
             formats: convert::format_caps(),
         };
@@ -235,6 +238,7 @@ impl<M: Metal> MetalGpu<M> {
             vertex_functions: HashMap::new(),
             fragment_functions: HashMap::new(),
             render_pipelines: HashMap::new(),
+            pending_pipelines: HashMap::new(),
             compute_pipelines: HashMap::new(),
             depth_stencil_states: HashMap::new(),
             windows: HashMap::new(),
@@ -1627,7 +1631,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     }
 
     fn prepare(&mut self, desc: &wcontainers_gpu::PrepareDesc<'_, Self>) {
-        // Metal builds the pipeline now, so the first draw finds it.
+        // Metal builds the pipeline on threads of its own, and the first draw waits for it.
         self.prepare_pipeline(desc);
     }
 

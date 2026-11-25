@@ -381,6 +381,14 @@ fn vertex_buffers(
     Ok(out)
 }
 
+/// When a render pipeline is built: for a draw now, ahead of draws now, or ahead of draws in the background.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Build {
+    ForDraw,
+    Now,
+    InBackground,
+}
+
 impl<M: Metal> MetalGpu<M> {
     /// Compiles a shader's entry point with the given vertex buffers.
     pub(crate) fn make_function(
@@ -388,6 +396,17 @@ impl<M: Metal> MetalGpu<M> {
         shader: &ShaderObj,
         vertex_buffers: &[VertexBufferLayout],
         point_size: bool,
+    ) -> Result<M::Function, &'static str> {
+        self.function(shader, vertex_buffers, point_size, false)
+    }
+
+    /// Compiles a shader's entry point with the given vertex buffers, on a thread of Metal's own where `background`.
+    fn function(
+        &mut self,
+        shader: &ShaderObj,
+        vertex_buffers: &[VertexBufferLayout],
+        point_size: bool,
+        background: bool,
     ) -> Result<M::Function, &'static str> {
         let resources: Vec<ResourceSlot> = shader
             .slots
@@ -403,22 +422,26 @@ impl<M: Metal> MetalGpu<M> {
             ShaderStage::Fragment => naga::ShaderStage::Fragment,
             ShaderStage::Compute => naga::ShaderStage::Compute,
         };
-        self.metal
-            .make_function(&FunctionSource {
-                module: &shader.module,
-                info: &shader.info,
-                stage,
-                entry_point: &shader.entry_point,
-                resources: &resources,
-                immediates_buffer_index: IMMEDIATES_SLOT,
-                sizes_buffer_index: SIZES_SLOT,
-                vertex_buffers,
-                point_size,
-            })
-            .map_err(|error| {
-                eprintln!("metal: {} refused: {error:?}", shader.entry_point);
-                "a function Metal refuses"
-            })
+        let source = FunctionSource {
+            module: &shader.module,
+            info: &shader.info,
+            stage,
+            entry_point: &shader.entry_point,
+            resources: &resources,
+            immediates_buffer_index: IMMEDIATES_SLOT,
+            sizes_buffer_index: SIZES_SLOT,
+            vertex_buffers,
+            point_size,
+        };
+        let made = if background {
+            self.metal.make_function_in_background(&source)
+        } else {
+            self.metal.make_function(&source)
+        };
+        made.map_err(|error| {
+            eprintln!("metal: {} refused: {error:?}", shader.entry_point);
+            "a function Metal refuses"
+        })
     }
 
     /// Builds the render pipeline of a state combination ahead of its first draw.
@@ -433,17 +456,27 @@ impl<M: Metal> MetalGpu<M> {
             targets: desc.targets,
             class,
         };
-        if let Err(why) = self.pipeline(&combination, false) {
+        let build = if self
+            .caps
+            .features
+            .contains(wcontainers_gpu::Features::BACKGROUND_PREPARE)
+        {
+            Build::InBackground
+        } else {
+            Build::Now
+        };
+        if let Err(why) = self.pipeline(&combination, build) {
             eprintln!("metal: a pipeline not prepared: {why}");
         }
     }
 
-    /// Returns the render pipeline of a combination, made at its first use, a miss counted where a draw needs it.
+    /// Returns the render pipeline of a combination, made at its first use, a miss counted where a draw needs it; one
+    /// built in the background is left pending, and returned by the draw that needs it once it is built.
     fn pipeline(
         &mut self,
         combination: &Combination<'_>,
-        draw: bool,
-    ) -> Result<M::RenderPipelineState, &'static str> {
+        build: Build,
+    ) -> Result<Option<M::RenderPipelineState>, &'static str> {
         let Combination {
             program,
             blend,
@@ -467,18 +500,35 @@ impl<M: Metal> MetalGpu<M> {
             class: class as u8,
         };
         if let Some(pipeline) = self.render_pipelines.get(&key) {
-            return Ok(pipeline.clone());
+            return Ok(Some(pipeline.clone()));
         }
-        if draw {
+        if let Some(pending) = self.pending_pipelines.get(&key) {
+            if build != Build::ForDraw {
+                return Ok(None);
+            }
+            let pending = pending.clone();
+            self.pending_pipelines.remove(&key);
+            let pipeline = self
+                .metal
+                .finish_render_pipeline_state(&pending)
+                .map_err(|error| {
+                    eprintln!("metal: pipeline refused: {error:?}");
+                    "a render pipeline Metal refuses"
+                })?;
+            self.render_pipelines.insert(key, pipeline.clone());
+            return Ok(Some(pipeline));
+        }
+        if build == Build::ForDraw {
             self.record_slow_path(wcontainers_gpu::SlowPath::PipelineMiss);
         }
+        let background = build == Build::InBackground;
         let points = class == PrimitiveTopologyClass::Point;
         let vertex_key = (vertex.id, layout.id, points);
         let vertex_function = match self.vertex_functions.get(&vertex_key) {
             Some(function) => function.clone(),
             None => {
                 let buffers = vertex_buffers(&layout.desc)?;
-                let function = self.make_function(vertex, &buffers, points)?;
+                let function = self.function(vertex, &buffers, points, background)?;
                 self.vertex_functions.insert(vertex_key, function.clone());
                 function
             }
@@ -488,7 +538,7 @@ impl<M: Metal> MetalGpu<M> {
             Some(shader) => Some(match self.fragment_functions.get(&shader.id) {
                 Some(function) => function.clone(),
                 None => {
-                    let function = self.make_function(shader, &[], false)?;
+                    let function = self.function(shader, &[], false, background)?;
                     self.fragment_functions.insert(shader.id, function.clone());
                     function
                 }
@@ -544,25 +594,37 @@ impl<M: Metal> MetalGpu<M> {
             }
             None => (None, None),
         };
+        let descriptor = RenderPipelineDescriptor {
+            vertex_function: &vertex_function,
+            fragment_function: fragment_function.as_ref(),
+            color_attachments,
+            depth_attachment_pixel_format: depth_format,
+            stencil_attachment_pixel_format: stencil_format,
+            raster_sample_count: targets.samples.max(1),
+            alpha_to_coverage_enabled: blend.alpha_to_coverage,
+            rasterization_enabled: true,
+            input_primitive_topology: class,
+        };
+        if background {
+            let pending = self
+                .metal
+                .make_render_pipeline_state_in_background(&descriptor)
+                .map_err(|error| {
+                    eprintln!("metal: pipeline refused: {error:?}");
+                    "a render pipeline Metal refuses"
+                })?;
+            self.pending_pipelines.insert(key, pending);
+            return Ok(None);
+        }
         let pipeline = self
             .metal
-            .make_render_pipeline_state(&RenderPipelineDescriptor {
-                vertex_function: &vertex_function,
-                fragment_function: fragment_function.as_ref(),
-                color_attachments,
-                depth_attachment_pixel_format: depth_format,
-                stencil_attachment_pixel_format: stencil_format,
-                raster_sample_count: targets.samples.max(1),
-                alpha_to_coverage_enabled: blend.alpha_to_coverage,
-                rasterization_enabled: true,
-                input_primitive_topology: class,
-            })
+            .make_render_pipeline_state(&descriptor)
             .map_err(|error| {
                 eprintln!("metal: pipeline refused: {error:?}");
                 "a render pipeline Metal refuses"
             })?;
         self.render_pipelines.insert(key, pipeline.clone());
-        Ok(pipeline)
+        Ok(Some(pipeline))
     }
 
     /// Records one draw into the open pass.
@@ -640,7 +702,9 @@ impl<M: Metal> MetalGpu<M> {
             targets,
             class,
         };
-        let pipeline = self.pipeline(&combination, true)?;
+        let pipeline = self
+            .pipeline(&combination, Build::ForDraw)?
+            .ok_or("a draw's pipeline not built")?;
         let depth_stencil = self
             .depth_stencil_states
             .get(&call.depth_stencil.id)

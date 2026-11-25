@@ -1019,7 +1019,7 @@ impl World {
                 vertex_buffers.clear();
             }
         }
-        let made = self.metal.make_function(&FunctionSource {
+        let source = FunctionSource {
             module: &self.module,
             info: &self.info,
             stage,
@@ -1029,7 +1029,13 @@ impl World {
             sizes_buffer_index: sizes,
             vertex_buffers: &vertex_buffers,
             point_size,
-        });
+        };
+        // Some compiled on a thread of Metal's own, which the pipelines made of them wait for.
+        let made = if random.chance(25) {
+            self.metal.make_function_in_background(&source)
+        } else {
+            self.metal.make_function(&source)
+        };
         self.counts.call(made.is_err());
         if let Err(error) = &made
             && !mangled
@@ -1142,19 +1148,25 @@ impl World {
             PrimitiveTopologyClass::Line,
             PrimitiveTopologyClass::Point,
         ]);
-        let made = self
-            .metal
-            .make_render_pipeline_state(&RenderPipelineDescriptor {
-                vertex_function: &vertex,
-                fragment_function: fragment.as_ref().map(|(f, _)| f),
-                color_attachments: colors,
-                depth_attachment_pixel_format: depth,
-                stencil_attachment_pixel_format: stencil,
-                raster_sample_count: samples,
-                alpha_to_coverage_enabled: random.chance(10),
-                rasterization_enabled: random.chance(90),
-                input_primitive_topology: topology,
-            });
+        let descriptor = RenderPipelineDescriptor {
+            vertex_function: &vertex,
+            fragment_function: fragment.as_ref().map(|(f, _)| f),
+            color_attachments: colors,
+            depth_attachment_pixel_format: depth,
+            stencil_attachment_pixel_format: stencil,
+            raster_sample_count: samples,
+            alpha_to_coverage_enabled: random.chance(10),
+            rasterization_enabled: random.chance(90),
+            input_primitive_topology: topology,
+        };
+        // Some built on a thread of Metal's own and finished at once: refused by the same checks.
+        let made = if random.chance(25) {
+            self.metal
+                .make_render_pipeline_state_in_background(&descriptor)
+                .and_then(|pending| self.metal.finish_render_pipeline_state(&pending))
+        } else {
+            self.metal.make_render_pipeline_state(&descriptor)
+        };
         self.counts.call(made.is_err());
         if let Ok(state) = made {
             let pipeline = Pipeline {

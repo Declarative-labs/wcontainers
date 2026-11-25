@@ -10,6 +10,8 @@ use std::ffi::c_void;
 use std::fmt;
 use std::ptr::NonNull;
 use std::rc::{Rc, Weak};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use naga::proc::Alignment;
 use objc2::MainThreadMarker;
@@ -50,11 +52,12 @@ use wcontainers_metal::{
     MakeSamplerStateError, MakeTextureError, MakeTextureViewError, MakeTimestampBufferError, Metal,
     NextDrawableError, Origin, PixelFormat, PresentDrawableError, PrimitiveTopologyClass,
     PrimitiveType, ReadContentsError, ReadTimestampsError, RenderCommand, RenderPassDescriptor,
-    RenderPipelineDescriptor, SamplerAddressMode, SamplerBorderColor, SamplerDescriptor,
-    SamplerMinMagFilter, SamplerMipFilter, Size, StandaloneMetal, StencilDescriptor,
-    StencilOperation, StoreAction, TextureDescriptor, TextureSwizzle, TextureSwizzleChannels,
-    TextureType, TextureViewDescriptor, TriangleFillMode, VISIBILITY_RESULT_BYTES, VertexFormat,
-    VertexStepFunction, VisibilityResultMode, WaitUntilCompletedError, Winding, WriteContentsError,
+    RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor, SamplerAddressMode,
+    SamplerBorderColor, SamplerDescriptor, SamplerMinMagFilter, SamplerMipFilter, Size,
+    StandaloneMetal, StencilDescriptor, StencilOperation, StoreAction, TextureDescriptor,
+    TextureSwizzle, TextureSwizzleChannels, TextureType, TextureViewDescriptor, TriangleFillMode,
+    VISIBILITY_RESULT_BYTES, VertexFormat, VertexStepFunction, VisibilityResultMode,
+    WaitUntilCompletedError, Winding, WriteContentsError,
 };
 
 /// The Metal Shading Language version functions are written in and compiled as.
@@ -213,6 +216,8 @@ pub struct DirectMetal {
     timestamp_value: u64,
     /// Whether encoders take depth test bounds: macOS 26 on.
     depth_test_bounds: bool,
+    /// The background builds running.
+    background: Arc<AtomicUsize>,
 }
 
 /// The sample counts a texture or a pass may have, which the device is asked about.
@@ -292,10 +297,65 @@ struct DepthStencilState {
 pub struct DirectFunction(Rc<FunctionState>);
 
 struct FunctionState {
-    raw: Retained<ProtocolObject<dyn MTLFunction>>,
+    code: Built<Retained<ProtocolObject<dyn MTLFunction>>>,
     stage: naga::ShaderStage,
     reads: Reads,
 }
+
+/// A Metal object made now, or on a thread of its own and taken once that thread is done.
+#[derive(Clone)]
+enum Built<T> {
+    Made(T),
+    Building(Slot<T>),
+}
+
+/// Where a thread of its own leaves what it built, or why Metal refused it.
+type Slot<T> = Arc<(Mutex<Option<Result<T, String>>>, Condvar)>;
+
+impl<T: Clone> Built<T> {
+    /// Returns the object, waiting for its thread.
+    fn get(&self) -> Result<T, String> {
+        match self {
+            Built::Made(made) => Ok(made.clone()),
+            Built::Building(slot) => {
+                let (lock, done) = &**slot;
+                let mut held = lock.lock().unwrap_or_else(PoisonError::into_inner);
+                loop {
+                    if let Some(result) = held.as_ref() {
+                        return result.clone();
+                    }
+                    held = done.wait(held).unwrap_or_else(PoisonError::into_inner);
+                }
+            }
+        }
+    }
+}
+
+/// Fills a slot when dropped: with what its thread built, or, where the thread ended without, with a refusal.
+struct Filling<T>(Slot<T>, Option<Result<T, String>>, Arc<AtomicUsize>);
+
+impl<T> Filling<T> {
+    /// Leaves what the thread built in the slot.
+    fn finish(mut self, result: Result<T, String>) {
+        self.1 = Some(result);
+    }
+}
+
+impl<T> Drop for Filling<T> {
+    fn drop(&mut self) {
+        let (lock, done) = &*self.0;
+        let result = self
+            .1
+            .take()
+            .unwrap_or_else(|| Err("a background build ended without a result".into()));
+        *lock.lock().unwrap_or_else(PoisonError::into_inner) = Some(result);
+        done.notify_all();
+        self.2.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// The background builds that may run at once; past them a build is made on the calling thread.
+const MOST_BACKGROUND_BUILDS: usize = 8;
 
 /// What a function reads, which a draw or dispatch must have bound.
 #[derive(Clone, Default)]
@@ -348,6 +408,29 @@ enum SizeOf {
 /// A render pipeline and what it was made for.
 #[derive(Clone)]
 pub struct DirectRenderPipelineState(Rc<RenderPipelineState>);
+
+/// A render pipeline built on a thread of its own, and what it is made for.
+#[derive(Clone)]
+pub struct DirectPendingRenderPipelineState(Rc<PendingPipeline>);
+
+struct PendingPipeline {
+    raw: Built<Retained<ProtocolObject<dyn MTLRenderPipelineState>>>,
+    plan: PipelinePlan,
+    vertex: Rc<FunctionState>,
+    fragment: Option<Rc<FunctionState>>,
+}
+
+/// The plain parts of a render pipeline's descriptor, which a thread of its own builds the pipeline from.
+#[derive(Clone, Copy)]
+struct PipelinePlan {
+    color_attachments: [Option<RenderPipelineColorAttachmentDescriptor>; MAX_COLOR_ATTACHMENTS],
+    depth: Option<PixelFormat>,
+    stencil: Option<PixelFormat>,
+    sample_count: u32,
+    alpha_to_coverage: bool,
+    rasterization: bool,
+    topology: PrimitiveTopologyClass,
+}
 
 struct RenderPipelineState {
     raw: Retained<ProtocolObject<dyn MTLRenderPipelineState>>,
@@ -425,6 +508,7 @@ opaque_debug!(
     DirectDepthStencilState,
     DirectFunction,
     DirectRenderPipelineState,
+    DirectPendingRenderPipelineState,
     DirectComputePipelineState,
     DirectCommandBuffer,
     DirectLayer,
@@ -482,6 +566,7 @@ impl StandaloneMetal for DirectMetal {
             empty,
             limits,
             depth_test_bounds: objc2::available!(macos = 26.0),
+            background: Arc::new(AtomicUsize::new(0)),
             in_flight: Vec::new(),
             argument_check: None,
             timestamp_word,
@@ -510,6 +595,254 @@ impl DirectBuffer {
     }
 }
 
+impl DirectMetal {
+    /// Checks a render pipeline's descriptor as Metal's validation would, and returns its plain parts.
+    fn check_render_pipeline(
+        &self,
+        descriptor: &RenderPipelineDescriptor<'_, Self>,
+    ) -> Result<PipelinePlan, MakeRenderPipelineStateError> {
+        let d = descriptor;
+        if refuses!(
+            "pipeline: a vertex function of another stage",
+            d.vertex_function.0.stage != naga::ShaderStage::Vertex
+        ) {
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "a vertex function of another stage",
+            ));
+        }
+        if refuses!(
+            "pipeline: a fragment function of another stage",
+            d.fragment_function
+                .is_some_and(|f| f.0.stage != naga::ShaderStage::Fragment)
+        ) {
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "a fragment function of another stage",
+            ));
+        }
+        if refuses!(
+            "pipeline: a sample count the device lacks",
+            !self.limits.takes_samples(d.raster_sample_count)
+        ) {
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "a sample count the device lacks",
+            ));
+        }
+        if refuses!(
+            "pipeline: a depth or stencil format without the aspect",
+            d.depth_attachment_pixel_format
+                .is_some_and(|f| !format_facts(f).depth)
+                || d.stencil_attachment_pixel_format
+                    .is_some_and(|f| !format_facts(f).stencil || f == PixelFormat::X32Stencil8)
+        ) {
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "a depth or stencil format without that aspect",
+            ));
+        }
+        if refuses!(
+            "pipeline: a combined depth and stencil format beside another",
+            matches!(
+                (d.depth_attachment_pixel_format, d.stencil_attachment_pixel_format),
+                (Some(depth), Some(stencil)) if depth != stencil
+                    && (format_facts(depth).stencil || format_facts(stencil).depth)
+            )
+        ) {
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "a combined depth and stencil format beside another format",
+            ));
+        }
+        // Metal's validation stops a pipeline that blends with the second source into any attachment but the first, or
+        // with more than one color attachment (MEASURED: `OneMinusSource1Alpha` at attachment 3, and at attachment 0
+        // beside others).
+        let second_source = d.color_attachments.iter().flatten().any(|attachment| {
+            attachment.blending.is_some_and(|b| {
+                [
+                    b.source_rgb_blend_factor,
+                    b.destination_rgb_blend_factor,
+                    b.source_alpha_blend_factor,
+                    b.destination_alpha_blend_factor,
+                ]
+                .iter()
+                .any(|factor| reads_second_source(*factor))
+            })
+        });
+        if refuses!(
+            "pipeline: a second source beside other attachments",
+            second_source && d.color_attachments.iter().skip(1).any(Option::is_some)
+        ) {
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "a second source's blend factor in a pipeline of more than its first color attachment",
+            ));
+        }
+        for attachment in d.color_attachments.iter().flatten() {
+            let facts = format_facts(attachment.pixel_format);
+            if refuses!("pipeline: a color format no attachment takes", !facts.color) {
+                return Err(MakeRenderPipelineStateError::Invalid(
+                    "a color format no color attachment takes",
+                ));
+            }
+            // Metal's validation stops a pipeline that writes some channels of a shared-exponent target, but not all
+            // or none (MEASURED: a mask of 0xe into `RGB9E5Float`).
+            let mask = attachment.write_mask;
+            let channels = [mask.red, mask.green, mask.blue, mask.alpha];
+            if refuses!(
+                "pipeline: some channels of a shared exponent",
+                attachment.pixel_format == PixelFormat::Rgb9e5Float
+                    && channels.contains(&true)
+                    && channels.contains(&false)
+            ) {
+                return Err(MakeRenderPipelineStateError::Invalid(
+                    "a write mask of some channels of a shared-exponent format",
+                ));
+            }
+            if refuses!(
+                "pipeline: blending a format that does not blend",
+                attachment.blending.is_some() && !facts.blend
+            ) {
+                return Err(MakeRenderPipelineStateError::Invalid(
+                    "blending into a format that does not blend",
+                ));
+            }
+        }
+        // Metal stops the process when the first color attachment of a pipeline with alpha to coverage is not of a
+        // format that blends, a float or normalized one.
+        if refuses!(
+            "pipeline: alpha to coverage without a blending first attachment",
+            d.alpha_to_coverage_enabled
+                && !d.color_attachments[0].is_some_and(|a| format_facts(a.pixel_format).blend)
+        ) {
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "alpha to coverage without a first color attachment of a float or normalized format",
+            ));
+        }
+        Ok(PipelinePlan {
+            color_attachments: d.color_attachments,
+            depth: d.depth_attachment_pixel_format,
+            stencil: d.stencil_attachment_pixel_format,
+            sample_count: d.raster_sample_count,
+            alpha_to_coverage: d.alpha_to_coverage_enabled,
+            rasterization: d.rasterization_enabled,
+            topology: d.input_primitive_topology,
+        })
+    }
+
+    /// Runs `build` on a thread of its own and returns where it leaves its result, or none where the most background
+    /// builds already run or no thread is made, for the caller to build it itself.
+    fn in_background<T: Clone + Send + 'static>(
+        &self,
+        build: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Option<Built<T>> {
+        if self.background.fetch_add(1, Ordering::AcqRel) >= MOST_BACKGROUND_BUILDS {
+            self.background.fetch_sub(1, Ordering::AcqRel);
+            return None;
+        }
+        let slot: Slot<T> = Arc::new((Mutex::new(None), Condvar::new()));
+        let filling = Filling(slot.clone(), None, self.background.clone());
+        let spawned = std::thread::Builder::new()
+            .name("metal background build".into())
+            .spawn(move || filling.finish(build()));
+        match spawned {
+            Ok(_) => Some(Built::Building(slot)),
+            // The closure, and the filling with it, was dropped: the slot holds a refusal, which is not used.
+            Err(_) => None,
+        }
+    }
+}
+
+/// Builds a render pipeline of checked plain parts and compiled functions.
+fn build_render_pipeline(
+    device: &ProtocolObject<dyn MTLDevice>,
+    plan: &PipelinePlan,
+    vertex: &ProtocolObject<dyn MTLFunction>,
+    fragment: Option<&ProtocolObject<dyn MTLFunction>>,
+) -> Result<Retained<ProtocolObject<dyn MTLRenderPipelineState>>, String> {
+    let d = plan;
+    let raw_descriptor = MTLRenderPipelineDescriptor::new();
+    raw_descriptor.setVertexFunction(Some(vertex));
+    raw_descriptor.setFragmentFunction(fragment);
+    raw_descriptor.setRasterSampleCount(d.sample_count as NSUInteger);
+    let topology = match d.topology {
+        PrimitiveTopologyClass::Point => MTLPrimitiveTopologyClass::Point,
+        PrimitiveTopologyClass::Line => MTLPrimitiveTopologyClass::Line,
+        PrimitiveTopologyClass::Triangle => MTLPrimitiveTopologyClass::Triangle,
+    };
+    #[expect(unsafe_code, reason = "the topology class of a pipeline")]
+    // SAFETY: the class is one of Metal's three.
+    unsafe {
+        raw_descriptor.setInputPrimitiveTopology(topology)
+    };
+    let attachments = raw_descriptor.colorAttachments();
+    for (index, attachment) in d.color_attachments.iter().enumerate() {
+        let Some(attachment) = attachment else {
+            continue;
+        };
+        #[expect(unsafe_code, reason = "the read of one color attachment of a pipeline")]
+        // SAFETY: the index is below `MAX_COLOR_ATTACHMENTS`, which every Apple GPU has.
+        let raw = unsafe { attachments.objectAtIndexedSubscript(index as NSUInteger) };
+        raw.setPixelFormat(pixel_format(attachment.pixel_format));
+        raw.setWriteMask(write_mask(attachment.write_mask));
+        if let Some(blending) = attachment.blending {
+            raw.setBlendingEnabled(true);
+            raw.setRgbBlendOperation(blend_operation(blending.rgb_blend_operation));
+            raw.setAlphaBlendOperation(blend_operation(blending.alpha_blend_operation));
+            raw.setSourceRGBBlendFactor(map_blend_factor(blending.source_rgb_blend_factor));
+            raw.setDestinationRGBBlendFactor(map_blend_factor(
+                blending.destination_rgb_blend_factor,
+            ));
+            raw.setSourceAlphaBlendFactor(map_blend_factor(blending.source_alpha_blend_factor));
+            raw.setDestinationAlphaBlendFactor(map_blend_factor(
+                blending.destination_alpha_blend_factor,
+            ));
+        }
+    }
+    if let Some(format) = d.depth {
+        raw_descriptor.setDepthAttachmentPixelFormat(pixel_format(format));
+    }
+    if let Some(format) = d.stencil {
+        raw_descriptor.setStencilAttachmentPixelFormat(pixel_format(format));
+    }
+    raw_descriptor.setAlphaToCoverageEnabled(d.alpha_to_coverage);
+    raw_descriptor.setRasterizationEnabled(d.rasterization);
+    device
+        .newRenderPipelineStateWithDescriptor_error(&raw_descriptor)
+        .map_err(|error| error.localizedDescription().to_string())
+}
+
+/// Writes a function's source as Metal's shading language, and returns it, its entry point's name, and what it reads.
+fn function_text(
+    source: &FunctionSource<'_>,
+) -> Result<(String, String, Reads), MakeFunctionError> {
+    let (options, pipeline, reads) = translation(source)?;
+    let (text, info) =
+        naga::back::msl::write_string(source.module, source.info, &options, &pipeline)
+            .map_err(|error| MakeFunctionError::Translation(error.to_string()))?;
+    let name = match info.entry_point_names.first() {
+        Some(Ok(name)) => name.clone(),
+        Some(Err(error)) => return Err(MakeFunctionError::Translation(error.to_string())),
+        None => {
+            return Err(MakeFunctionError::Translation(
+                "no entry point written".into(),
+            ));
+        }
+    };
+    Ok((text, name, reads))
+}
+
+/// Compiles a function's Metal shading language and returns its entry point `name`.
+fn compile_function(
+    device: &ProtocolObject<dyn MTLDevice>,
+    text: &str,
+    name: &str,
+) -> Result<Retained<ProtocolObject<dyn MTLFunction>>, String> {
+    let compile_options = MTLCompileOptions::new();
+    compile_options.setLanguageVersion(MTLLanguageVersion::Version3_1);
+    let library = device
+        .newLibraryWithSource_options_error(&NSString::from_str(text), Some(&compile_options))
+        .map_err(|error| error.localizedDescription().to_string())?;
+    library
+        .newFunctionWithName(&NSString::from_str(name))
+        .ok_or_else(|| format!("no function {name}"))
+}
+
 impl Metal for DirectMetal {
     type Buffer = DirectBuffer;
     type Texture = DirectTexture;
@@ -518,6 +851,7 @@ impl Metal for DirectMetal {
     type Function = DirectFunction;
     type RenderPipelineState = DirectRenderPipelineState;
     type ComputePipelineState = DirectComputePipelineState;
+    type PendingRenderPipelineState = DirectPendingRenderPipelineState;
     type CommandBuffer = DirectCommandBuffer;
     type Layer = DirectLayer;
     type Drawable = DirectDrawable;
@@ -1061,34 +1395,102 @@ impl Metal for DirectMetal {
         &mut self,
         source: &FunctionSource<'_>,
     ) -> Result<DirectFunction, MakeFunctionError> {
-        let (options, pipeline, reads) = translation(source)?;
-        let (text, info) =
-            naga::back::msl::write_string(source.module, source.info, &options, &pipeline)
-                .map_err(|error| MakeFunctionError::Translation(error.to_string()))?;
-        let name = match info.entry_point_names.first() {
-            Some(Ok(name)) => name.clone(),
-            Some(Err(error)) => return Err(MakeFunctionError::Translation(error.to_string())),
-            None => {
-                return Err(MakeFunctionError::Translation(
-                    "no entry point written".into(),
-                ));
-            }
-        };
-        let compile_options = MTLCompileOptions::new();
-        compile_options.setLanguageVersion(MTLLanguageVersion::Version3_1);
-        let library = self
-            .device
-            .newLibraryWithSource_options_error(&NSString::from_str(&text), Some(&compile_options))
-            .map_err(|error| {
-                MakeFunctionError::Compilation(error.localizedDescription().to_string())
-            })?;
-        let raw = library
-            .newFunctionWithName(&NSString::from_str(&name))
-            .ok_or_else(|| MakeFunctionError::Compilation(format!("no function {name}")))?;
+        let (text, name, reads) = function_text(source)?;
+        let raw =
+            compile_function(&self.device, &text, &name).map_err(MakeFunctionError::Compilation)?;
         Ok(DirectFunction(Rc::new(FunctionState {
-            raw,
+            code: Built::Made(raw),
             stage: source.stage,
             reads,
+        })))
+    }
+
+    fn make_function_in_background(
+        &mut self,
+        source: &FunctionSource<'_>,
+    ) -> Result<DirectFunction, MakeFunctionError> {
+        let (text, name, reads) = function_text(source)?;
+        let (device, built_text, built_name) = (self.device.clone(), text.clone(), name.clone());
+        let code = self.in_background(move || compile_function(&device, &built_text, &built_name));
+        let code = match code {
+            Some(code) => code,
+            None => Built::Made(
+                compile_function(&self.device, &text, &name)
+                    .map_err(MakeFunctionError::Compilation)?,
+            ),
+        };
+        Ok(DirectFunction(Rc::new(FunctionState {
+            code,
+            stage: source.stage,
+            reads,
+        })))
+    }
+
+    fn make_render_pipeline_state_in_background(
+        &mut self,
+        descriptor: &RenderPipelineDescriptor<'_, Self>,
+    ) -> Result<DirectPendingRenderPipelineState, MakeRenderPipelineStateError> {
+        let plan = self.check_render_pipeline(descriptor)?;
+        let (vertex, fragment) = (
+            descriptor.vertex_function.0.clone(),
+            descriptor.fragment_function.map(|f| f.0.clone()),
+        );
+        let (vertex_code, fragment_code) = (
+            vertex.code.clone(),
+            fragment.as_ref().map(|f| f.code.clone()),
+        );
+        let device = self.device.clone();
+        let build = move || {
+            let vertex = vertex_code.get()?;
+            let fragment = fragment_code.map(|f| f.get()).transpose()?;
+            build_render_pipeline(&device, &plan, &vertex, fragment.as_deref())
+        };
+        let raw = match self.in_background(build) {
+            Some(raw) => raw,
+            None => {
+                let vertex_raw = vertex
+                    .code
+                    .get()
+                    .map_err(MakeRenderPipelineStateError::Refused)?;
+                let fragment_raw = fragment
+                    .as_ref()
+                    .map(|f| f.code.get())
+                    .transpose()
+                    .map_err(MakeRenderPipelineStateError::Refused)?;
+                Built::Made(
+                    build_render_pipeline(
+                        &self.device,
+                        &plan,
+                        &vertex_raw,
+                        fragment_raw.as_deref(),
+                    )
+                    .map_err(MakeRenderPipelineStateError::Refused)?,
+                )
+            }
+        };
+        Ok(DirectPendingRenderPipelineState(Rc::new(PendingPipeline {
+            raw,
+            plan,
+            vertex,
+            fragment,
+        })))
+    }
+
+    fn finish_render_pipeline_state(
+        &mut self,
+        pending: &DirectPendingRenderPipelineState,
+    ) -> Result<DirectRenderPipelineState, MakeRenderPipelineStateError> {
+        let p = &pending.0;
+        let raw = p.raw.get().map_err(MakeRenderPipelineStateError::Refused)?;
+        Ok(DirectRenderPipelineState(Rc::new(RenderPipelineState {
+            raw,
+            vertex: p.vertex.clone(),
+            fragment: p.fragment.clone(),
+            colors: p.plan.color_attachments.map(|a| a.map(|a| a.pixel_format)),
+            depth: p.plan.depth,
+            stencil: p.plan.stencil,
+            sample_count: p.plan.sample_count,
+            topology: p.plan.topology,
         })))
     }
 
@@ -1096,171 +1498,21 @@ impl Metal for DirectMetal {
         &mut self,
         descriptor: &RenderPipelineDescriptor<'_, Self>,
     ) -> Result<DirectRenderPipelineState, MakeRenderPipelineStateError> {
+        let plan = self.check_render_pipeline(descriptor)?;
         let d = descriptor;
-        if refuses!(
-            "pipeline: a vertex function of another stage",
-            d.vertex_function.0.stage != naga::ShaderStage::Vertex
-        ) {
-            return Err(MakeRenderPipelineStateError::Invalid(
-                "a vertex function of another stage",
-            ));
-        }
-        if refuses!(
-            "pipeline: a fragment function of another stage",
-            d.fragment_function
-                .is_some_and(|f| f.0.stage != naga::ShaderStage::Fragment)
-        ) {
-            return Err(MakeRenderPipelineStateError::Invalid(
-                "a fragment function of another stage",
-            ));
-        }
-        if refuses!(
-            "pipeline: a sample count the device lacks",
-            !self.limits.takes_samples(d.raster_sample_count)
-        ) {
-            return Err(MakeRenderPipelineStateError::Invalid(
-                "a sample count the device lacks",
-            ));
-        }
-        if refuses!(
-            "pipeline: a depth or stencil format without the aspect",
-            d.depth_attachment_pixel_format
-                .is_some_and(|f| !format_facts(f).depth)
-                || d.stencil_attachment_pixel_format
-                    .is_some_and(|f| !format_facts(f).stencil || f == PixelFormat::X32Stencil8)
-        ) {
-            return Err(MakeRenderPipelineStateError::Invalid(
-                "a depth or stencil format without that aspect",
-            ));
-        }
-        if refuses!(
-            "pipeline: a combined depth and stencil format beside another",
-            matches!(
-                (d.depth_attachment_pixel_format, d.stencil_attachment_pixel_format),
-                (Some(depth), Some(stencil)) if depth != stencil
-                    && (format_facts(depth).stencil || format_facts(stencil).depth)
-            )
-        ) {
-            return Err(MakeRenderPipelineStateError::Invalid(
-                "a combined depth and stencil format beside another format",
-            ));
-        }
-        // Metal's validation stops a pipeline that blends with the second source into any attachment but the first, or
-        // with more than one color attachment (MEASURED: `OneMinusSource1Alpha` at attachment 3, and at attachment 0
-        // beside others).
-        let second_source = d.color_attachments.iter().flatten().any(|attachment| {
-            attachment.blending.is_some_and(|b| {
-                [
-                    b.source_rgb_blend_factor,
-                    b.destination_rgb_blend_factor,
-                    b.source_alpha_blend_factor,
-                    b.destination_alpha_blend_factor,
-                ]
-                .iter()
-                .any(|factor| reads_second_source(*factor))
-            })
-        });
-        if refuses!(
-            "pipeline: a second source beside other attachments",
-            second_source && d.color_attachments.iter().skip(1).any(Option::is_some)
-        ) {
-            return Err(MakeRenderPipelineStateError::Invalid(
-                "a second source's blend factor in a pipeline of more than its first color attachment",
-            ));
-        }
-        for attachment in d.color_attachments.iter().flatten() {
-            let facts = format_facts(attachment.pixel_format);
-            if refuses!("pipeline: a color format no attachment takes", !facts.color) {
-                return Err(MakeRenderPipelineStateError::Invalid(
-                    "a color format no color attachment takes",
-                ));
-            }
-            // Metal's validation stops a pipeline that writes some channels of a shared-exponent target, but not all
-            // or none (MEASURED: a mask of 0xe into `RGB9E5Float`).
-            let mask = attachment.write_mask;
-            let channels = [mask.red, mask.green, mask.blue, mask.alpha];
-            if refuses!(
-                "pipeline: some channels of a shared exponent",
-                attachment.pixel_format == PixelFormat::Rgb9e5Float
-                    && channels.contains(&true)
-                    && channels.contains(&false)
-            ) {
-                return Err(MakeRenderPipelineStateError::Invalid(
-                    "a write mask of some channels of a shared-exponent format",
-                ));
-            }
-            if refuses!(
-                "pipeline: blending a format that does not blend",
-                attachment.blending.is_some() && !facts.blend
-            ) {
-                return Err(MakeRenderPipelineStateError::Invalid(
-                    "blending into a format that does not blend",
-                ));
-            }
-        }
-        // Metal stops the process when the first color attachment of a pipeline with alpha to coverage is not of a
-        // format that blends, a float or normalized one.
-        if refuses!(
-            "pipeline: alpha to coverage without a blending first attachment",
-            d.alpha_to_coverage_enabled
-                && !d.color_attachments[0].is_some_and(|a| format_facts(a.pixel_format).blend)
-        ) {
-            return Err(MakeRenderPipelineStateError::Invalid(
-                "alpha to coverage without a first color attachment of a float or normalized format",
-            ));
-        }
-        let raw_descriptor = MTLRenderPipelineDescriptor::new();
-        raw_descriptor.setVertexFunction(Some(&d.vertex_function.0.raw));
-        raw_descriptor.setFragmentFunction(d.fragment_function.map(|f| &*f.0.raw));
-        raw_descriptor.setRasterSampleCount(d.raster_sample_count as NSUInteger);
-        let topology = match d.input_primitive_topology {
-            PrimitiveTopologyClass::Point => MTLPrimitiveTopologyClass::Point,
-            PrimitiveTopologyClass::Line => MTLPrimitiveTopologyClass::Line,
-            PrimitiveTopologyClass::Triangle => MTLPrimitiveTopologyClass::Triangle,
-        };
-        #[expect(unsafe_code, reason = "the topology class of a pipeline")]
-        // SAFETY: the class is one of Metal's three.
-        unsafe {
-            raw_descriptor.setInputPrimitiveTopology(topology)
-        };
-        let attachments = raw_descriptor.colorAttachments();
-        for (index, attachment) in d.color_attachments.iter().enumerate() {
-            let Some(attachment) = attachment else {
-                continue;
-            };
-            #[expect(unsafe_code, reason = "the read of one color attachment of a pipeline")]
-            // SAFETY: the index is below `MAX_COLOR_ATTACHMENTS`, which every Apple GPU has.
-            let raw = unsafe { attachments.objectAtIndexedSubscript(index as NSUInteger) };
-            raw.setPixelFormat(pixel_format(attachment.pixel_format));
-            raw.setWriteMask(write_mask(attachment.write_mask));
-            if let Some(blending) = attachment.blending {
-                raw.setBlendingEnabled(true);
-                raw.setRgbBlendOperation(blend_operation(blending.rgb_blend_operation));
-                raw.setAlphaBlendOperation(blend_operation(blending.alpha_blend_operation));
-                raw.setSourceRGBBlendFactor(map_blend_factor(blending.source_rgb_blend_factor));
-                raw.setDestinationRGBBlendFactor(map_blend_factor(
-                    blending.destination_rgb_blend_factor,
-                ));
-                raw.setSourceAlphaBlendFactor(map_blend_factor(blending.source_alpha_blend_factor));
-                raw.setDestinationAlphaBlendFactor(map_blend_factor(
-                    blending.destination_alpha_blend_factor,
-                ));
-            }
-        }
-        if let Some(format) = d.depth_attachment_pixel_format {
-            raw_descriptor.setDepthAttachmentPixelFormat(pixel_format(format));
-        }
-        if let Some(format) = d.stencil_attachment_pixel_format {
-            raw_descriptor.setStencilAttachmentPixelFormat(pixel_format(format));
-        }
-        raw_descriptor.setAlphaToCoverageEnabled(d.alpha_to_coverage_enabled);
-        raw_descriptor.setRasterizationEnabled(d.rasterization_enabled);
-        let raw = self
-            .device
-            .newRenderPipelineStateWithDescriptor_error(&raw_descriptor)
-            .map_err(|error| {
-                MakeRenderPipelineStateError::Refused(error.localizedDescription().to_string())
-            })?;
+        let vertex = d
+            .vertex_function
+            .0
+            .code
+            .get()
+            .map_err(MakeRenderPipelineStateError::Refused)?;
+        let fragment = d
+            .fragment_function
+            .map(|f| f.0.code.get())
+            .transpose()
+            .map_err(MakeRenderPipelineStateError::Refused)?;
+        let raw = build_render_pipeline(&self.device, &plan, &vertex, fragment.as_deref())
+            .map_err(MakeRenderPipelineStateError::Refused)?;
         Ok(DirectRenderPipelineState(Rc::new(RenderPipelineState {
             raw,
             vertex: d.vertex_function.0.clone(),
@@ -1306,9 +1558,14 @@ impl Metal for DirectMetal {
                 "a workgroup larger than the pipeline runs",
             ));
         }
+        let compiled = function
+            .0
+            .code
+            .get()
+            .map_err(MakeComputePipelineStateError::Refused)?;
         let raw = self
             .device
-            .newComputePipelineStateWithFunction_error(&function.0.raw)
+            .newComputePipelineStateWithFunction_error(&compiled)
             .map_err(|error| {
                 MakeComputePipelineStateError::Refused(error.localizedDescription().to_string())
             })?;

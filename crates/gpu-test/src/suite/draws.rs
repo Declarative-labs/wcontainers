@@ -2899,3 +2899,53 @@ const CONSTANT_GREEN: &str = "
     return vec4<f32>(0.0, 1.0, 0.0, 1.0);
 }
 ";
+
+/// Combinations prepared ahead of their draws draw as those built at the draw: two programs prepared, one of them
+/// twice, and a third whose program is destroyed once prepared, before the others draw. Where `BACKGROUND_PREPARE` is
+/// declared.
+pub fn prepared_combinations_draw_as_those_built_at_the_draw<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::BACKGROUND_PREPARE) {
+        return;
+    }
+    const N: u32 = 4;
+    let constant = program(&mut b, CONSTANT, "vs", "fs");
+    let green = program(&mut b, CONSTANT_GREEN, "vs", "fs");
+    let dropped = program(&mut b, CONSTANT_GREEN, "vs", "fs");
+    let states = fixed(&mut b, false);
+    let mut colors = [None; MAX_COLOR_TARGETS];
+    colors[0] = Some(Format::Rgba8Unorm);
+    let targets = TargetLayout {
+        colors,
+        depth_stencil: None,
+        samples: 1,
+    };
+    for program in [&constant, &green, &constant, &dropped] {
+        b.prepare(&PrepareDesc {
+            program,
+            blend: &states.blend,
+            depth_stencil: &states.depth,
+            raster: &states.raster,
+            vertex_layout: &states.layout,
+            targets,
+            topology: Topology::TriangleStrip,
+            layouts: Default::default(),
+        });
+    }
+    b.destroy(Object::Program(dropped));
+    for (program, texel) in [(&constant, ROUNDED_BYTES), (&green, [0, 255, 0, 255])] {
+        let got = drawn(
+            &mut b,
+            N,
+            program,
+            &states,
+            &QUAD,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+            None,
+            &viewport(N, N),
+        );
+        assert_eq!(got, texels_where(N, texel, |_, _| true));
+    }
+    ok(&mut b);
+}
