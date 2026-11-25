@@ -59,7 +59,7 @@ pub type Shared = Rc<RefCell<Front>>;
 /// Makes the back end, or none if there is no GPU to make it on.
 pub fn backend() -> Option<Chosen> {
     let b = chosen::make()?;
-    let _ = CAPS.set(wcontainers_gpu::Backend::caps(&b).clone());
+    let _ = CAPS.set(wcontainers_gpu::Gpu::caps(&b).clone());
     Some(b)
 }
 

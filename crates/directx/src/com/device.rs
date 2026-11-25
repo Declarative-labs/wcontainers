@@ -198,7 +198,7 @@ pub fn create_device(
     super::cache::open_once();
     let backend = backend().ok_or(windows::Win32::Graphics::Dxgi::DXGI_ERROR_UNSUPPORTED)?;
     let front = Front::new(backend, levels).map_err(hresult)?;
-    let adapter = Adapter::new(wcontainers_gpu::Backend::caps(&front.backend), dxgi10);
+    let adapter = Adapter::new(wcontainers_gpu::Gpu::caps(&front.backend), dxgi10);
     let level = front.feature_level();
     let device: ID3D11Device3 = Device {
         immediate_kept: Locked::new(Rc::default()),
@@ -1478,7 +1478,7 @@ impl Device_Impl {
 
     /// The back end runs compute programs.
     fn compute(&self) -> bool {
-        wcontainers_gpu::Backend::caps(&self.front.borrow().backend)
+        wcontainers_gpu::Gpu::caps(&self.front.borrow().backend)
             .features
             .contains(wcontainers_gpu::Features::COMPUTE)
     }
