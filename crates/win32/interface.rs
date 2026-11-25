@@ -5,13 +5,10 @@ use std::fs::File;
 use std::io;
 use std::path::PathBuf;
 
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use raw_window_handle::Win32WindowHandle;
 
 /// The Windows system calls the graphics tests and the OpenGL driver make, other than Direct3D's.
 pub trait Win32 {
-    /// A window another part of the program made, which a GPU API presents into through its handles.
-    type Window: HasWindowHandle + HasDisplayHandle + Send + Sync;
-
     /// Returns this process's command line as Windows gave it.
     fn command_line(&self) -> OsString;
 
@@ -40,10 +37,10 @@ pub trait Win32 {
     /// Stops debugging `process`, which goes on running.
     fn stop_debugging(&self, process: u32) -> io::Result<()>;
 
-    /// Returns the window a device context draws into, or none when it draws into no window.
+    /// Returns the handle of the window a device context draws into now, or none when it draws into no window.
     ///
-    /// The window is the program's, which keeps it while it draws into it through the device context.
-    fn window_of_device_context(&self, device_context: isize) -> Option<Self::Window>;
+    /// The handle only names the window: nothing here keeps it alive, so whoever presents into it promises that.
+    fn window_of_device_context(&self, device_context: isize) -> Option<Win32WindowHandle>;
 }
 
 /// A process to start suspended in a job object that ends every process in it when it closes, then run and wait for.

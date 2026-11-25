@@ -8,10 +8,7 @@ use std::num::NonZeroIsize;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::os::windows::io::AsRawHandle;
 
-use raw_window_handle::{
-    DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, RawWindowHandle,
-    Win32WindowHandle, WindowHandle,
-};
+use raw_window_handle::Win32WindowHandle;
 use wcontainers_win32::{
     DebugContinuation, DebugEvent, DebugEventKind, ProcessRun, StandaloneWin32, StandardHandles,
     Win32,
@@ -63,14 +60,6 @@ const LONG_PATH_PREFIX: &str = r"\\?\";
 /// The calls, which keep no state between them.
 pub struct WindowsWin32;
 
-/// A window of the program, named by its handle.
-pub struct Win32Window {
-    /// The window's handle, kept as its number so that a value may go to any thread.
-    window: NonZeroIsize,
-    /// The module of the window's instance, which Vulkan's surfaces need.
-    module: Option<NonZeroIsize>,
-}
-
 impl StandaloneWin32 for WindowsWin32 {
     type Config = ();
 
@@ -80,8 +69,6 @@ impl StandaloneWin32 for WindowsWin32 {
 }
 
 impl Win32 for WindowsWin32 {
-    type Window = Win32Window;
-
     fn command_line(&self) -> OsString {
         #[expect(unsafe_code, reason = "the read of this process's command line")]
         // SAFETY: GetCommandLineW returns the process's nul-terminated command line, which lives as long as the
@@ -305,41 +292,19 @@ impl Win32 for WindowsWin32 {
         Ok(())
     }
 
-    fn window_of_device_context(&self, device_context: isize) -> Option<Win32Window> {
+    fn window_of_device_context(&self, device_context: isize) -> Option<Win32WindowHandle> {
         #[expect(
             unsafe_code,
             reason = "the call that asks which window a device context draws into"
         )]
         // SAFETY: a handle Windows checks; one that names no device context gives no window.
         let window = unsafe { WindowFromDC(HDC(device_context as *mut c_void)) };
-        let handle = NonZeroIsize::new(window.0 as isize)?;
+        let mut handle = Win32WindowHandle::new(NonZeroIsize::new(window.0 as isize)?);
         #[expect(unsafe_code, reason = "the read of a field of the program's window")]
         // SAFETY: a window handle Windows gave, which it checks.
         let module = unsafe { GetWindowLongPtrW(window, GWLP_HINSTANCE) };
-        Some(Win32Window {
-            window: handle,
-            module: NonZeroIsize::new(module),
-        })
-    }
-}
-
-impl HasWindowHandle for Win32Window {
-    fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        let mut window = Win32WindowHandle::new(self.window);
-        window.hinstance = self.module;
-        #[expect(
-            unsafe_code,
-            reason = "the promise that the program's window outlives the handle"
-        )]
-        // SAFETY: the program keeps its window while it draws into it.
-        let handle = unsafe { WindowHandle::borrow_raw(RawWindowHandle::Win32(window)) };
-        Ok(handle)
-    }
-}
-
-impl HasDisplayHandle for Win32Window {
-    fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
-        Ok(DisplayHandle::windows())
+        handle.hinstance = NonZeroIsize::new(module);
+        Some(handle)
     }
 }
 

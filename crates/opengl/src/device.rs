@@ -59,7 +59,14 @@ impl HostWindows for WebGpu {
         else {
             return false;
         };
-        let Ok(surface) = instance.create_surface(window) else {
+        let target = wgpu::SurfaceTargetUnsafe::RawHandle {
+            raw_display_handle: Some(wgpu::rwh::RawDisplayHandle::Windows(
+                wgpu::rwh::WindowsDisplayHandle::new(),
+            )),
+            raw_window_handle: wgpu::rwh::RawWindowHandle::Win32(window),
+        };
+        // SAFETY: OpenGL's program keeps its window while it draws into it.
+        let Ok(surface) = (unsafe { instance.create_surface_unsafe(target) }) else {
             return false;
         };
         self.add_window(id, surface);
