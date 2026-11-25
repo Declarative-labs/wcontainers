@@ -2156,9 +2156,7 @@ Handled, and proven by tests rather than assumed:
 ## 9. Milestones
 
 Each milestone ends with its bar run and recorded in docs/status-native.md, with the number of cases of
-every seeded test. Every bar also includes the repository's automatic literal check passing (branch
-phase-1-literals, once it has landed with a passing milestone and is merged here; until then the brief's
-rule is applied by hand and what is left is listed in the status file). What each needs from others is named; nothing before N3 needs another track or an owner's
+every seeded test. What each needs from others is named; nothing before N3 needs another track or an owner's
 decision except the names of decision 2 (until the owner rules, the suggested names are used and renamed at
 the ruling).
 
