@@ -399,6 +399,11 @@ fn declares_the_metal_features_tested_here() {
         | Features::TIMESTAMPS
         | Features::TEXTURE_LEVEL_QUERY;
     assert!(device().caps().features.contains(wanted));
+    // Depth bounds where Metal has them: macOS 26 on.
+    assert_eq!(
+        device().caps().features.contains(Features::DEPTH_BOUNDS),
+        wcontainers_metal::Metal::supports_depth_test_bounds(&DirectMetal::new(()))
+    );
     // Metal drops a constant bias's fraction, so a front adds the bias in the program.
     assert!(
         !device()

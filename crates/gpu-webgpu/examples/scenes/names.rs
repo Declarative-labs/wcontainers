@@ -55,6 +55,7 @@ macro_rules! suite_but_present {
             programs_ask_a_texture_its_levels_and_samples,
             depth_copies_through_buffers_keep_their_pitches_and_values,
             bgra4_texels_sample_and_copy_in_direct3d_bit_order,
+            depth_bounds_keep_fragments_whose_stored_depth_lies_within,
         );
     };
 }

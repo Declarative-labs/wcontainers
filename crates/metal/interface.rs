@@ -31,6 +31,10 @@ pub trait Metal {
     fn name(&self) -> String;
     /// Returns the most bytes one buffer may hold, past which `make_buffer` refuses.
     fn max_buffer_length(&self) -> u64;
+    /// Returns whether passes take [`RenderCommand::SetDepthTestBounds`], which Metal has from macOS 26.
+    ///
+    /// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setdepthtestbounds(_:)
+    fn supports_depth_test_bounds(&self) -> bool;
     /// Makes a buffer of `length` bytes, all zero.
     fn make_buffer(&mut self, length: u64) -> Result<Self::Buffer, MakeBufferError>;
     /// Copies `bytes` into the buffer at `offset`, after every committed command buffer that uses it has completed.
@@ -856,6 +860,15 @@ pub enum RenderCommand<M: Metal + ?Sized> {
     SetStencilReferenceValues {
         front: u32,
         back: u32,
+    },
+    /// Discards each fragment whose stored depth is below `min_bound` or above `max_bound`, from then on in the pass; zero
+    /// and one test nothing. Both within zero to one, `min_bound` at most `max_bound`, in a pass with a depth attachment,
+    /// where [`Metal::supports_depth_test_bounds`].
+    ///
+    /// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setdepthtestbounds(_:)
+    SetDepthTestBounds {
+        min_bound: f32,
+        max_bound: f32,
     },
     /// Counts into the pass's visibility result buffer at `offset`, a multiple of eight counted into once a pass.
     SetVisibilityResultMode {

@@ -211,6 +211,8 @@ pub struct DirectMetal {
     /// The event a timestamp's pass waits on, signalled once the work before it ends, and its last value.
     timestamp_event: Retained<ProtocolObject<dyn MTLEvent>>,
     timestamp_value: u64,
+    /// Whether encoders take depth test bounds: macOS 26 on.
+    depth_test_bounds: bool,
 }
 
 /// The sample counts a texture or a pass may have, which the device is asked about.
@@ -479,6 +481,7 @@ impl StandaloneMetal for DirectMetal {
             queue,
             empty,
             limits,
+            depth_test_bounds: objc2::available!(macos = 26.0),
             in_flight: Vec::new(),
             argument_check: None,
             timestamp_word,
@@ -526,6 +529,10 @@ impl Metal for DirectMetal {
 
     fn max_buffer_length(&self) -> u64 {
         (self.device.maxBufferLength() as u64).saturating_sub(u64::from(MAX_VERTEX_STRIDE))
+    }
+
+    fn supports_depth_test_bounds(&self) -> bool {
+        self.depth_test_bounds
     }
 
     fn make_buffer(&mut self, length: u64) -> Result<DirectBuffer, MakeBufferError> {
@@ -1349,7 +1356,7 @@ impl Metal for DirectMetal {
             return Err(EncodeRenderCommandsError::Committed);
         }
         let area = check_pass(pass, self.limits)?;
-        check_render_commands(pass, area, commands)?;
+        check_render_commands(pass, area, commands, self.depth_test_bounds)?;
         let jobs = render_argument_jobs(commands);
         let checked = self
             .encode_argument_checks(command_buffer, &jobs)
@@ -2329,6 +2336,7 @@ fn check_render_commands(
     pass: &RenderPassDescriptor<'_, DirectMetal>,
     (width, height, samples): (u32, u32, u32),
     commands: &[RenderCommand<DirectMetal>],
+    depth_test_bounds: bool,
 ) -> Result<(), EncodeRenderCommandsError> {
     let unbound = EncodeRenderCommandsError::Unbound;
     let colors: Vec<Option<PixelFormat>> = pass
@@ -2659,6 +2667,30 @@ fn check_render_commands(
                 check_attachments(depth_stencil)?;
                 check_draw(&bound, *primitive_type).map_err(unbound)?;
             }
+            RenderCommand::SetDepthTestBounds {
+                min_bound,
+                max_bound,
+            } => {
+                if refuses!(
+                    "render: depth test bounds Metal lacks, or outside zero to one",
+                    !depth_test_bounds
+                        || !(0.0..=1.0).contains(min_bound)
+                        || !(0.0..=1.0).contains(max_bound)
+                        || min_bound > max_bound
+                ) {
+                    return Err(EncodeRenderCommandsError::Invalid(
+                        "depth test bounds this Metal lacks, outside zero to one, or the low above the high",
+                    ));
+                }
+                if refuses!(
+                    "render: depth test bounds with no depth attachment",
+                    pass.depth_attachment.is_none()
+                ) {
+                    return Err(EncodeRenderCommandsError::Invalid(
+                        "depth test bounds in a pass with no depth attachment",
+                    ));
+                }
+            }
             RenderCommand::SetCullMode(_)
             | RenderCommand::SetFrontFacingWinding(_)
             | RenderCommand::SetTriangleFillMode(_)
@@ -2863,6 +2895,11 @@ fn encode_render_command(
         RenderCommand::SetStencilReferenceValues { front, back } => {
             encoder.setStencilFrontReferenceValue_backReferenceValue(*front, *back)
         }
+        // Taken only from macOS 26 on, within zero to one and in order (check_render_commands).
+        RenderCommand::SetDepthTestBounds {
+            min_bound,
+            max_bound,
+        } => encoder.setDepthTestMinBound_maxBound(*min_bound, *max_bound),
         RenderCommand::SetVisibilityResultMode { mode, offset } => encoder
             .setVisibilityResultMode_offset(
                 match mode {

@@ -1372,10 +1372,17 @@ impl World {
                         random.pick(&[DepthClipMode::Clip, DepthClipMode::Clamp]),
                     ),
                 }),
-                18 => Some(RenderCommand::SetDepthBias {
-                    depth_bias: random.f32(&[0.0, 2.5]),
-                    slope_scale: random.f32(&[0.0, 1.0]),
-                    clamp: random.f32(&[0.0]),
+                18 => Some(if random.chance(50) {
+                    RenderCommand::SetDepthBias {
+                        depth_bias: random.f32(&[0.0, 2.5]),
+                        slope_scale: random.f32(&[0.0, 1.0]),
+                        clamp: random.f32(&[0.0]),
+                    }
+                } else {
+                    RenderCommand::SetDepthTestBounds {
+                        min_bound: random.f32(&[0.0, 0.25, 0.5]),
+                        max_bound: random.f32(&[0.5, 0.75, 1.0]),
+                    }
                 }),
                 19 => Some(if random.chance(50) {
                     RenderCommand::SetBlendColor([
@@ -1544,7 +1551,28 @@ impl World {
             .chance(30)
             .then(|| any(random, &self.buffers))
             .flatten();
-        let (commands, mut allowed, refuse) = self.render_commands(random, pipeline.as_ref());
+        let (mut commands, mut allowed, mut refuse) =
+            self.render_commands(random, pipeline.as_ref());
+        // Passes with depth take bounds more often than the commands above draw them.
+        if depth.is_some() && random.chance(30) {
+            commands.insert(
+                usize::from(!commands.is_empty()),
+                RenderCommand::SetDepthTestBounds {
+                    min_bound: random.f32(&[0.0, 0.25]),
+                    max_bound: random.f32(&[0.75, 1.0]),
+                },
+            );
+        }
+        // Depth test bounds Metal lacks, outside zero to one, out of order, or with no depth attachment.
+        let bounds = self.metal.supports_depth_test_bounds();
+        refuse |= commands.iter().any(|command| {
+            matches!(command, RenderCommand::SetDepthTestBounds { min_bound, max_bound }
+                if !bounds
+                    || depth.is_none()
+                    || !(0.0..=1.0).contains(min_bound)
+                    || !(0.0..=1.0).contains(max_bound)
+                    || min_bound > max_bound)
+        });
         // Metal counts into the visibility buffer at each offset a command names.
         if let Some(held) = &visibility {
             for command in &commands {

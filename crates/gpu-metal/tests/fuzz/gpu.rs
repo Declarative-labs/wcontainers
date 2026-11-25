@@ -808,7 +808,19 @@ impl World {
             stencil: random.chance(20).then(|| (face(random), face(random))),
             stencil_read_mask: [random.next() as u8, u8::MAX],
             stencil_write_mask: [u8::MAX, random.next() as u8],
-            depth_bounds: random.chance(5).then_some([0, 1.0f32.to_bits()]),
+            depth_bounds: random.chance(10).then(|| {
+                random
+                    .pick(&[
+                        [0.0f32, 1.0],
+                        [0.25, 0.75],
+                        [0.5, 0.5],
+                        [0.75, 0.25],
+                        [-1.0, 1.0],
+                        [0.0, 2.0],
+                        [f32::NAN, 1.0],
+                    ])
+                    .map(f32::to_bits)
+            }),
         });
         self.counts.call(depth_stencil.is_err());
         if let Ok(state) = depth_stencil {

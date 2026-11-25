@@ -211,6 +211,9 @@ impl<M: Metal> MetalGpu<M> {
         if metal.make_timestamp_buffer(1).is_ok() {
             caps.features |= Features::TIMESTAMPS;
         }
+        if metal.supports_depth_test_bounds() {
+            caps.features |= Features::DEPTH_BOUNDS;
+        }
         MetalGpu {
             metal,
             caps,
@@ -874,8 +877,18 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         &mut self,
         desc: &DepthStencilDesc,
     ) -> Result<Self::DepthStencil, GpuError> {
-        if desc.depth_bounds.is_some() {
-            return Err(GpuError::Absent(Features::DEPTH_BOUNDS));
+        if let Some([low, high]) = desc.depth_bounds {
+            if !self.caps.features.contains(Features::DEPTH_BOUNDS) {
+                return Err(GpuError::Absent(Features::DEPTH_BOUNDS));
+            }
+            // Metal takes bounds within zero to one, the low at most the high, as Direct3D 12 and Vulkan do.
+            let (low, high) = (f32::from_bits(low), f32::from_bits(high));
+            let inside = |n: f32| (0.0..=1.0).contains(&n);
+            if !inside(low) || !inside(high) || low > high {
+                return Err(GpuError::Invalid(
+                    "depth bounds outside zero to one, or the low above the high",
+                ));
+            }
         }
         let id = self.id();
         let raw = self

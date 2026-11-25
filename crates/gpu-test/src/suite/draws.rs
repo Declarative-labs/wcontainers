@@ -2308,3 +2308,125 @@ pub fn bgra4_texels_sample_and_copy_in_direct3d_bit_order<H: Host>() {
     );
     ok(&mut b);
 }
+
+/// A depth that rises from 0 at the left edge to 1 at the right, and constant colours.
+const BOUNDED: &str = "
+@vertex fn ramp(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, (p.x + 1.0) * 0.5, 1.0);
+}
+@vertex fn level(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn green() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+@fragment fn red() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+}
+@fragment fn blue() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 1.0, 1.0);
+}
+";
+
+/// The depth bounds test keeps the fragments whose stored depth lies within the bounds, whatever
+/// their own depth: over a stored depth of 1/8, 3/8, 5/8 and 7/8 in the four columns, a draw
+/// bounded to 1/4 to 3/4 colours the middle two columns, one bounded to 0 to 1/2 the left two, and
+/// a draw of a block without bounds after them every column. Where `DEPTH_BOUNDS` is declared;
+/// bounds outside zero to one, or the low above the high, are refused there.
+pub fn depth_bounds_keep_fragments_whose_stored_depth_lies_within<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::DEPTH_BOUNDS) {
+        return;
+    }
+    const N: u32 = 4;
+    let (t, v) = rgba8_target(&mut b, N);
+    let (_, d) = depth_target(&mut b, N);
+    let quad = vertex_buffer(&mut b, &QUAD);
+    let bl = blend(&mut b, opaque());
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &quad,
+        offset: 0,
+    })];
+    let bounded = |b: &mut H::Backend, bounds: Option<[f32; 2]>| {
+        b.create_depth_stencil(&DepthStencilDesc {
+            depth_compare: Some(CompareFn::Always),
+            depth_write: bounds.is_none(),
+            stencil: None,
+            stencil_read_mask: [0xff; 2],
+            stencil_write_mask: [0xff; 2],
+            depth_bounds: bounds.map(|pair| pair.map(f32::to_bits)),
+        })
+    };
+    for refused in [[-0.25, 0.5], [0.5, 1.5], [0.75, 0.25], [f32::NAN, 1.0]] {
+        assert!(
+            bounded(&mut b, Some(refused)).is_err(),
+            "bounds {refused:?} taken"
+        );
+    }
+    let writes = bounded(&mut b, None).expect("create_depth_stencil");
+    let middle = bounded(&mut b, Some([0.25, 0.75])).expect("create_depth_stencil");
+    let left = bounded(&mut b, Some([0.0, 0.5])).expect("create_depth_stencil");
+    let ramp_green = program(&mut b, BOUNDED, "ramp", "green");
+    let red = program(&mut b, BOUNDED, "level", "red");
+    let blue = program(&mut b, BOUNDED, "level", "blue");
+    let pass = |load: bool| {
+        let mut pass = color_pass::<H::Backend>(
+            &v,
+            if load {
+                LoadOp::Load
+            } else {
+                LoadOp::Clear([0; 4])
+            },
+        );
+        pass.depth = Some(DepthAttachment {
+            view: &d,
+            depth: Some(AspectOps {
+                load: if load {
+                    LoadOp::Load
+                } else {
+                    LoadOp::Clear(1.0f32.to_bits())
+                },
+                store: StoreOp::Store,
+                read_only: false,
+            }),
+            stencil: None,
+        });
+        pass
+    };
+    let draw = |b: &mut H::Backend, p: &<H::Backend as Gpu>::Program, ds| {
+        b.draw(&call(
+            p,
+            &bl,
+            ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+        ));
+    };
+    let (g, r, bu) = ([0, 255, 0, 255], [255, 0, 0, 255], [0, 0, 255, 255]);
+    let rows = |columns: [[u8; 4]; 4]| columns.concat().repeat(N as usize);
+    b.begin_pass(&pass(false));
+    draw(&mut b, &ramp_green, &writes);
+    draw(&mut b, &red, &middle);
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    assert_eq!(got, rows([g, r, r, g]), "bounded to 1/4 to 3/4");
+    b.begin_pass(&pass(true));
+    draw(&mut b, &blue, &left);
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    assert_eq!(got, rows([bu, bu, r, g]), "bounded to 0 to 1/2");
+    b.begin_pass(&pass(true));
+    draw(&mut b, &blue, &left);
+    draw(&mut b, &red, &writes);
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    assert_eq!(got, rows([r, r, r, r]), "no bounds after bounds");
+    ok(&mut b);
+}

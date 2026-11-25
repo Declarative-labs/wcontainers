@@ -571,6 +571,20 @@ impl<M: Metal> MetalGpu<M> {
             return Err("a draw outside a pass");
         };
         let (targets, width, height) = (pass.targets, pass.width, pass.height);
+        // Bounds are set for every draw where the pass has depth: zero to one where the draw's block has none.
+        let depth_bounds = (self
+            .caps
+            .features
+            .contains(wcontainers_gpu::Features::DEPTH_BOUNDS)
+            && pass.depth.as_ref().is_some_and(|d| d.depth.is_some()))
+        .then(|| {
+            call.depth_stencil
+                .desc
+                .depth_bounds
+                .map_or((0.0, 1.0), |[low, high]| {
+                    (f32::from_bits(low), f32::from_bits(high))
+                })
+        });
         let (primitive_type, class) =
             primitive(call.topology).ok_or("a fan or loop through draw")?;
         let raster = call.raster.desc;
@@ -683,6 +697,12 @@ impl<M: Metal> MetalGpu<M> {
                 back: u32::from(call.stencil_reference[1]),
             },
         ];
+        if let Some((min_bound, max_bound)) = depth_bounds {
+            commands.push(RenderCommand::SetDepthTestBounds {
+                min_bound,
+                max_bound,
+            });
+        }
         for (group, set) in call.bindings.iter().enumerate() {
             let Some(set) = set else {
                 continue;

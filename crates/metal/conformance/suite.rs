@@ -1485,6 +1485,115 @@ pub fn refuses_depth_and_stencil_tests_without_attachments<M: Metal>(mut subject
     }
 }
 
+/// Draws the covering triangle in green with depth test bounds `bounds` into a target whose `depth32Float` depth is
+/// cleared to `stored`, testing nothing else, and returns the target's texels or the encode's refusal.
+fn drawn_within_bounds<M: Metal>(
+    subject: &mut M,
+    stored: f64,
+    bounds: (f32, f32),
+) -> Result<Vec<u8>, EncodeRenderCommandsError> {
+    let vertex = function(subject, naga::ShaderStage::Vertex, VERTEX);
+    let fragment = function(subject, naga::ShaderStage::Fragment, FLAT);
+    let state = subject
+        .make_render_pipeline_state(&pipeline_descriptor(
+            &vertex,
+            &fragment,
+            Some((PixelFormat::Rgba8Unorm, None)),
+            Some(PixelFormat::Depth32Float),
+            None,
+        ))
+        .expect("Metal answers make render pipeline state");
+    let depth = made(
+        subject,
+        described(TextureType::Type2D, PixelFormat::Depth32Float),
+    );
+    let drawn = target(subject);
+    let mut descriptor = pass(&drawn);
+    descriptor.depth_attachment = Some(RenderPassDepthStencilAttachment {
+        texture: &depth,
+        level: u32::MIN,
+        slice: u32::MIN,
+        load_action: LoadAction::Clear,
+        store_action: StoreAction::Store,
+        clear_value: stored,
+    });
+    let (min_bound, max_bound) = bounds;
+    let mut commands = green_draw(
+        subject,
+        &state,
+        RenderCommand::SetDepthTestBounds {
+            min_bound,
+            max_bound,
+        },
+    );
+    commands.push(RenderCommand::DrawPrimitives {
+        primitive_type: PrimitiveType::Triangle,
+        vertex_start: u32::MIN,
+        vertex_count: TRIANGLE_VERTICES,
+        instance_count: SINGLE,
+        base_instance: u32::MIN,
+    });
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject.encode_render_commands(&command_buffer, &descriptor, &commands)?;
+    finish(subject, &command_buffer);
+    Ok(read_texture(subject, &drawn))
+}
+
+/// Checks that depth test bounds discard the fragments whose stored depth lies outside them, bounds included, where
+/// Metal has them; and that they are refused where it lacks them, outside zero to one, out of order, not numbers, or in a
+/// pass with no depth attachment.
+pub fn discards_fragments_whose_stored_depth_is_outside_the_bounds<M: Metal>(mut subject: M) {
+    let (green, clear) = green_and_clear();
+    let bad = [
+        (-0.25, 0.5),
+        (0.25, 1.5),
+        (0.75, 0.25),
+        (f32::NAN, 1.0),
+        (0.0, f32::INFINITY),
+    ];
+    if !subject.supports_depth_test_bounds() {
+        for bounds in [(0.0, 1.0), (0.25, 0.75)].into_iter().chain(bad) {
+            assert!(drawn_within_bounds(&mut subject, 0.5, bounds).is_err());
+        }
+        return;
+    }
+    for (stored, bounds, drawn) in [
+        (0.75, (0.0, 0.5), &clear),
+        (0.75, (0.5, 1.0), &green),
+        (0.5, (0.5, 0.5), &green),
+        (0.25, (0.5, 1.0), &clear),
+        (0.25, (0.0, 1.0), &green),
+    ] {
+        assert_eq!(
+            &drawn_within_bounds(&mut subject, stored, bounds).expect("bounds taken"),
+            drawn,
+            "stored depth {stored} within {bounds:?}"
+        );
+    }
+    for bounds in bad {
+        assert!(
+            matches!(
+                drawn_within_bounds(&mut subject, 0.5, bounds),
+                Err(EncodeRenderCommandsError::Invalid(_))
+            ),
+            "bounds {bounds:?}"
+        );
+    }
+    let state = pipeline(&mut subject, FLAT);
+    let texture = target(&mut subject);
+    refuses_draw(
+        &mut subject,
+        &pass(&texture),
+        &state,
+        vec![RenderCommand::SetDepthTestBounds {
+            min_bound: 0.25,
+            max_bound: 0.75,
+        }],
+    );
+}
+
 /// Checks that an empty dispatch and words at a misaligned offset are refused, which Metal's validation stops.
 pub fn refuses_empty_dispatches_and_misaligned_words<M: Metal>(mut subject: M) {
     let words = filled(&mut subject, &[0; (WORDS_BYTES * 2) as usize]);
@@ -3594,6 +3703,11 @@ macro_rules! tests {
         #[test]
         fn refuses_a_swizzle_of_a_texture_drawn_into() {
             $crate::refuses_a_swizzle_of_a_texture_drawn_into($value);
+        }
+
+        #[test]
+        fn discards_fragments_whose_stored_depth_is_outside_the_bounds() {
+            $crate::discards_fragments_whose_stored_depth_is_outside_the_bounds($value);
         }
 
         #[test]
