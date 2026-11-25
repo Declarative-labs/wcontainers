@@ -964,11 +964,11 @@ impl<M: Metal> MetalGpu<M> {
     /// Starts or stops counting into the open pass's occlusion set.
     pub(crate) fn record_query(&mut self, index: Option<u32>) {
         let Some(pass) = &mut self.pass else {
-            self.fail("a query outside a pass");
+            self.fail(format_args!("a query outside a pass"));
             return;
         };
         let Some(set) = &pass.occlusion else {
-            self.fail("a query in a pass with no occlusion set");
+            self.fail(format_args!("a query in a pass with no occlusion set"));
             return;
         };
         let command = match index {
@@ -977,7 +977,7 @@ impl<M: Metal> MetalGpu<M> {
                 offset: u64::from(index) * QUERY_BYTES,
             },
             Some(_) => {
-                self.fail("a query past its set's end");
+                self.fail(format_args!("a query past its set's end"));
                 return;
             }
             None => RenderCommand::SetVisibilityResultMode {
@@ -1014,7 +1014,7 @@ impl<M: Metal> MetalGpu<M> {
             self.metal
                 .encode_render_commands(&command_buffer, &pass.descriptor(), &pass.commands)
         {
-            self.fail(&format!("a pass refused: {error:?}"));
+            self.fail(format_args!("a pass refused: {error:?}"));
         }
         Some(resumed)
     }

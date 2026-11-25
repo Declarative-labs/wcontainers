@@ -86,6 +86,43 @@ const DEPTH24_MAX: f64 = 16_777_215.0;
 /// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#copies-buffers-images-depth-stencil
 const DEPTH24_BITS: u32 = 0x00ff_ffff;
 
+/// What this implementation's devices take, from Apple's feature set tables for the Apple7 family on.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const LIMITS: Limits = Limits {
+    max_texture_2d: 16384,
+    max_texture_cube: 16384,
+    max_texture_3d: 2048,
+    max_texture_layers: 2048,
+    max_buffer_size: 1 << 30,
+    max_uniform_buffer_size: 1 << 16,
+    max_storage_buffer_size: 1 << 30,
+    uniform_buffers_per_stage: 12,
+    textures_per_stage: 16,
+    samplers_per_stage: wcontainers_metal::MAX_SAMPLER_SLOTS,
+    storage_buffers_per_stage: 8,
+    storage_textures_per_stage: 4,
+    vertex_streams: VERTEX_STREAMS,
+    vertex_attributes: 16,
+    max_vertex_stride: 2048,
+    color_targets: 8,
+    color_bytes_per_sample: 32,
+    inter_stage_slots: 16,
+    min_uniform_offset_alignment: 256,
+    min_storage_offset_alignment: 256,
+    buffer_copy_alignment: 1,
+    immediate_bytes: 256,
+    compute_workgroup_storage: 32768,
+    compute_invocations: 1024,
+    compute_size: [1024, 1024, 64],
+    max_dispatch: 65535,
+    max_point_size: 511.0,
+    max_line_width: 1.0,
+    max_anisotropy: wcontainers_metal::MAX_ANISOTROPY as u16,
+    capture_buffers: 0,
+    capture_components: 0,
+};
+
 /// The interface drawn with Metal.
 pub struct MetalGpu<M: Metal> {
     metal: M,
@@ -156,39 +193,7 @@ impl<M: Metal> MetalGpu<M> {
                 | Features::STENCIL_PER_FACE
                 | Features::FRACTIONAL_DEPTH_BIAS
                 | Features::OCCLUSION_COUNT,
-            limits: Limits {
-                max_texture_2d: 16384,
-                max_texture_cube: 16384,
-                max_texture_3d: 2048,
-                max_texture_layers: 2048,
-                max_buffer_size: 1 << 30,
-                max_uniform_buffer_size: 1 << 16,
-                max_storage_buffer_size: 1 << 30,
-                uniform_buffers_per_stage: 12,
-                textures_per_stage: 16,
-                samplers_per_stage: wcontainers_metal::MAX_SAMPLER_SLOTS,
-                storage_buffers_per_stage: 8,
-                storage_textures_per_stage: 4,
-                vertex_streams: VERTEX_STREAMS,
-                vertex_attributes: 16,
-                max_vertex_stride: 2048,
-                color_targets: 8,
-                color_bytes_per_sample: 32,
-                inter_stage_slots: 16,
-                min_uniform_offset_alignment: 256,
-                min_storage_offset_alignment: 256,
-                buffer_copy_alignment: 1,
-                immediate_bytes: 256,
-                compute_workgroup_storage: 32768,
-                compute_invocations: 1024,
-                compute_size: [1024, 1024, 64],
-                max_dispatch: 65535,
-                max_point_size: 511.0,
-                max_line_width: 1.0,
-                max_anisotropy: wcontainers_metal::MAX_ANISOTROPY as u16,
-                capture_buffers: 0,
-                capture_components: 0,
-            },
+            limits: LIMITS,
             formats: convert::format_caps(),
         };
         MetalGpu {
@@ -238,7 +243,7 @@ impl<M: Metal> MetalGpu<M> {
     }
 
     /// Notes a refusal that is a bug here or in a front, which loses the device.
-    fn fail(&mut self, why: &str) {
+    fn fail(&mut self, why: std::fmt::Arguments<'_>) {
         eprintln!("metal: {why}");
         self.lost = Some(LossReason::Error);
     }
@@ -249,7 +254,7 @@ impl<M: Metal> MetalGpu<M> {
             match self.metal.make_command_buffer() {
                 Ok(command_buffer) => self.recording = Some(command_buffer),
                 Err(error) => {
-                    self.fail(&format!("no command buffer: {error:?}"));
+                    self.fail(format_args!("no command buffer: {error:?}"));
                     return None;
                 }
             }
@@ -268,7 +273,7 @@ impl<M: Metal> MetalGpu<M> {
         };
         self.encodes += 1;
         if let Err(error) = self.metal.encode_blit_commands(&command_buffer, &blits) {
-            self.fail(&format!("copies refused: {error:?}"));
+            self.fail(format_args!("copies refused: {error:?}"));
         }
     }
 
@@ -335,14 +340,14 @@ impl<M: Metal> MetalGpu<M> {
     /// Commits the command buffer being recorded, and returns its serial.
     fn commit(&mut self) -> u64 {
         if self.pass.is_some() {
-            self.fail("submit inside a pass");
+            self.fail(format_args!("submit inside a pass"));
             self.pass = None;
         }
         self.flush_blits();
         let serial = self.serial;
         if let Some(command_buffer) = self.command_buffer() {
             if let Err(error) = self.metal.commit(&command_buffer) {
-                self.fail(&format!("commit refused: {error:?}"));
+                self.fail(format_args!("commit refused: {error:?}"));
             }
             self.in_flight.push_back((serial, command_buffer));
         }
@@ -361,7 +366,7 @@ impl<M: Metal> MetalGpu<M> {
                 break;
             };
             if let Err(error) = self.metal.wait_until_completed(&command_buffer) {
-                self.fail(&format!("wait refused: {error:?}"));
+                self.fail(format_args!("wait refused: {error:?}"));
                 break;
             }
             self.poll();
@@ -501,7 +506,7 @@ impl<M: Metal> MetalGpu<M> {
         self.wait_serial(serial);
         let mut bytes = vec![0; length as usize];
         if let Err(error) = self.metal.read_contents(buffer, offset, &mut bytes) {
-            self.fail(&format!("read refused: {error:?}"));
+            self.fail(format_args!("read refused: {error:?}"));
         }
         bytes
     }
@@ -937,7 +942,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             .checked_add(data.len() as u64)
             .is_none_or(|end| end > buffer.size)
         {
-            self.fail("a write past its buffer's end");
+            self.fail(format_args!("a write past its buffer's end"));
             return;
         }
         if self.busy(buffer) && mode == WriteMode::Discard {
@@ -947,7 +952,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                     buffer.last_use.set(0);
                 }
                 Err(_) => {
-                    self.fail("no buffer to rename into");
+                    self.fail(format_args!("no buffer to rename into"));
                     return;
                 }
             }
@@ -955,12 +960,12 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         if !self.busy(buffer) {
             let raw = buffer.raw.borrow().clone();
             if let Err(error) = self.metal.write_contents(&raw, offset, data) {
-                self.fail(&format!("write refused: {error:?}"));
+                self.fail(format_args!("write refused: {error:?}"));
             }
             return;
         }
         let Some(staging) = self.staging(data) else {
-            self.fail("no staging buffer");
+            self.fail(format_args!("no staging buffer"));
             return;
         };
         self.mark_used(buffer);
@@ -979,7 +984,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         let texture = region.texture.clone();
         let bytes = Self::converted_in(texture.desc.format, region.stencil, data);
         let Some(staging) = self.staging(&bytes) else {
-            self.fail("no staging buffer");
+            self.fail(format_args!("no staging buffer"));
             return;
         };
         let copies = self.buffer_texture_copies(
@@ -1008,7 +1013,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
 
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
         if let Err(why) = self.record_draw(call) {
-            self.fail(why);
+            self.fail(format_args!("{why}"));
         }
     }
 
@@ -1138,7 +1143,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 region: TextureRegion { ..*src },
                 extent,
             }) else {
-                self.fail("no read back for a depth copy");
+                self.fail(format_args!("no read back for a depth copy"));
                 return;
             };
             self.wait_read(&readback);
@@ -1151,7 +1156,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                     let from = ((layer * rows + y) * row) as usize;
                     let at = dst.offset + layer * layer_bytes + y * pitch;
                     let Some(staging) = self.staging(&words[from..from + row as usize]) else {
-                        self.fail("no staging buffer");
+                        self.fail(format_args!("no staging buffer"));
                         return;
                     };
                     self.copy_bytes(staging, Self::range(dst.buffer, at), row);
@@ -1191,7 +1196,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             .take(size as usize)
             .collect();
         let Some(staging) = self.staging(&bytes) else {
-            self.fail("no staging buffer");
+            self.fail(format_args!("no staging buffer"));
             return;
         };
         self.copy_bytes(staging, Self::range(buffer, offset), size);
@@ -1204,7 +1209,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         format: Format,
     ) {
         if let Err(why) = self.record_resolve(src, dst, format) {
-            self.fail(why);
+            self.fail(format_args!("{why}"));
         }
     }
 
@@ -1320,7 +1325,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         self.wait_serial(readback.serial);
         let mut bytes = vec![0; readback.length as usize];
         if let Err(error) = self.metal.read_contents(&readback.buffer, 0, &mut bytes) {
-            self.fail(&format!("read refused: {error:?}"));
+            self.fail(format_args!("read refused: {error:?}"));
             return;
         }
         if let ReadLayout::Depth24 = readback.layout {
@@ -1491,7 +1496,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             let raw = buffer.raw.borrow().clone();
             let length = (*size as usize).min(dst.len());
             if let Err(error) = self.metal.read_contents(&raw, *offset, &mut dst[..length]) {
-                self.fail(&format!("read refused: {error:?}"));
+                self.fail(format_args!("read refused: {error:?}"));
             }
             return Ok(());
         }

@@ -1,6 +1,6 @@
-//! What this implementation does beyond the shared suite: the refusals that keep Metal from stopping the process, the
-//! features it declares that WebGPU on Metal lacks, and its fast paths, each against the recording back end or against
-//! values worked out by hand where the recording back end lacks the feature.
+//! What this implementation does beyond the shared suite: refusals, the features WebGPU on Metal lacks, and fast paths.
+//!
+//! Each is checked against the recording back end, or against values worked out by hand where it lacks the feature.
 
 #![cfg(target_os = "macos")]
 
@@ -19,19 +19,17 @@ use wcontainers_gpu_test::Recorder;
 use wcontainers_metal::StandaloneMetal;
 use wcontainers_metal_direct::DirectMetal;
 
-/// A side longer than any Apple GPU's longest texture side, which is 32768.
+/// The side of the square targets the tests draw into: four texels, one for each coordinate the mirrored sample reads.
 ///
-/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
-const BEYOND_ANY_SIDE: u32 = 40_000;
-
-/// The side of the square targets the tests draw into.
-const SIDE: u32 = 4;
+/// https://developer.apple.com/documentation/metal/mtlsampleraddressmode/mirrorclamptoedge
+const DRAWN_SIDE: u32 = 4;
 
 /// The bytes of one `rgba8` texel.
-const RGBA8_BYTES: usize = 4;
+const RGBA8_BYTES: usize = wcontainers_gpu::FORMAT_FACTS[Format::Rgba8Unorm as usize]
+    .block
+    .2 as usize;
 
-/// The tests' programs: a covering triangle or two halves, flat or uniform colors, a mirrored sample and a reinterpreted
-/// load.
+/// The tests' programs: a covering triangle or two halves, flat or uniform colors, a mirrored sample and a load.
 const PROGRAMS: &str = "
 struct Constant { color: vec4<f32> }
 @group(0) @binding(0) var tex: texture_2d<f32>;
@@ -77,7 +75,7 @@ fn reference(features: Features) -> Recorder {
     Recorder::with_caps(|caps| caps.features |= features)
 }
 
-/// Makes a 2D texture of one level, `SIDE` high.
+/// Makes a 2D texture of one level, `DRAWN_SIDE` high.
 fn texture<B: Gpu>(
     b: &mut B,
     format: Format,
@@ -89,7 +87,7 @@ fn texture<B: Gpu>(
         dimension: TextureDimension::D2,
         format,
         width,
-        height: SIDE,
+        height: DRAWN_SIDE,
         depth_or_layers: 1,
         mip_levels: 1,
         samples: 1,
@@ -140,10 +138,10 @@ fn whole<B: Gpu>(texture: &B::Texture) -> TextureRegion<'_, B> {
 
 /// Reads a texture back, tightly packed.
 fn read_texture<B: Gpu>(b: &mut B, texture: &B::Texture, width: u32, texel: usize) -> Vec<u8> {
-    let mut out = vec![0; width as usize * SIDE as usize * texel];
+    let mut out = vec![0; width as usize * DRAWN_SIDE as usize * texel];
     let extent = Extent {
         width,
-        height: SIDE,
+        height: DRAWN_SIDE,
         depth_or_layers: 1,
     };
     b.submit();
@@ -255,7 +253,7 @@ fn viewport(width: u32) -> [Viewport; 1] {
         x: 0,
         y: 0,
         width: (width as f32).to_bits(),
-        height: (SIDE as f32).to_bits(),
+        height: (DRAWN_SIDE as f32).to_bits(),
         min_depth: 0,
         max_depth: 1.0f32.to_bits(),
     }]
@@ -351,7 +349,7 @@ fn a_texture_wider_than_metal_makes_is_refused_not_fatal() {
     let texture = gpu.create_texture(&TextureDesc {
         dimension: TextureDimension::D2,
         format: Format::Rgba8Unorm,
-        width: BEYOND_ANY_SIDE,
+        width: wcontainers_metal::MAX_TEXTURE_SIDE + 1,
         height: 1,
         depth_or_layers: 1,
         mip_levels: 1,
@@ -405,7 +403,7 @@ fn reads_back_at_once_as_the_reference_does() {
 
 /// Writes ring parts before each of three passes that read the ring, and returns what each part holds afterwards.
 fn ring_scene<B: Gpu>(b: &mut B) -> Vec<Vec<u8>> {
-    let (_, target_view) = target(b, Format::Rgba8Unorm, SIDE);
+    let (_, target_view) = target(b, Format::Rgba8Unorm, DRAWN_SIDE);
     let tinted = program(b, "covering", "tinted");
     let states = states(b, writes_all(None), &no_tests(), &plain_raster(0.0));
     let parts: [&[u8]; 3] = [&[1, 2, 3], &[4, 5, 6, 7, 8], &[9; 300]];
@@ -419,7 +417,16 @@ fn ring_scene<B: Gpu>(b: &mut B) -> Vec<Vec<u8>> {
             .create_binding_set(&[uniform(&ring, offsets[0])])
             .expect("create_binding_set");
         b.begin_pass(&color_pass(&target_view, [0; 4]));
-        draw(b, &tinted, &states, Some(&set), SIDE, 3, [0; 2], [0.0; 4]);
+        draw(
+            b,
+            &tinted,
+            &states,
+            Some(&set),
+            DRAWN_SIDE,
+            3,
+            [0; 2],
+            [0.0; 4],
+        );
         b.end_pass();
         written.push((ring, offsets, round));
     }
@@ -456,23 +463,23 @@ fn mirror_once_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
     let source = texture(
         b,
         Format::Rgba8Unorm,
-        SIDE,
+        DRAWN_SIDE,
         TextureUsage::SAMPLE | TextureUsage::COPY_DST,
         false,
     );
-    let texels: Vec<u8> = (0..SIDE * SIDE)
-        .flat_map(|i| [10 * (1 + (i % SIDE) as u8), 0, 0, u8::MAX])
+    let texels: Vec<u8> = (0..DRAWN_SIDE * DRAWN_SIDE)
+        .flat_map(|i| [10 * (1 + (i % DRAWN_SIDE) as u8), 0, 0, u8::MAX])
         .collect();
     b.write_texture(
         &whole(&source),
         Extent {
-            width: SIDE,
-            height: SIDE,
+            width: DRAWN_SIDE,
+            height: DRAWN_SIDE,
             depth_or_layers: 1,
         },
         &texels,
-        SIDE * RGBA8_BYTES as u32,
-        SIDE,
+        DRAWN_SIDE * RGBA8_BYTES as u32,
+        DRAWN_SIDE,
         WriteMode::Ordered,
     );
     let source_view = view(b, &source, Format::Rgba8Unorm, false);
@@ -502,14 +509,23 @@ fn mirror_once_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
             },
         ])
         .expect("create_binding_set");
-    let (drawn, drawn_view) = target(b, Format::Rgba8Unorm, SIDE);
+    let (drawn, drawn_view) = target(b, Format::Rgba8Unorm, DRAWN_SIDE);
     let mirrored = program(b, "covering", "mirrored");
     let states = states(b, writes_all(None), &no_tests(), &plain_raster(0.0));
     b.begin_pass(&color_pass(&drawn_view, [0; 4]));
-    draw(b, &mirrored, &states, Some(&set), SIDE, 3, [0; 2], [0.0; 4]);
+    draw(
+        b,
+        &mirrored,
+        &states,
+        Some(&set),
+        DRAWN_SIDE,
+        3,
+        [0; 2],
+        [0.0; 4],
+    );
     b.end_pass();
-    let texels = read_texture(b, &drawn, SIDE, RGBA8_BYTES);
-    texels[..SIDE as usize * RGBA8_BYTES]
+    let texels = read_texture(b, &drawn, DRAWN_SIDE, RGBA8_BYTES);
+    texels[..DRAWN_SIDE as usize * RGBA8_BYTES]
         .chunks(RGBA8_BYTES)
         .map(|t| t[0])
         .collect()
@@ -524,7 +540,7 @@ fn mirror_once_mirrors_once_then_clamps() {
 
 /// Draws red into a target cleared to half grey, blended by the constant's alpha both ways.
 fn constant_alpha_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
-    let (drawn, drawn_view) = target(b, Format::Rgba8Unorm, SIDE);
+    let (drawn, drawn_view) = target(b, Format::Rgba8Unorm, DRAWN_SIDE);
     let red = program(b, "covering", "red");
     let component = BlendComponent {
         src: BlendFactor::ConstantAlpha,
@@ -544,13 +560,13 @@ fn constant_alpha_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
         &red,
         &states,
         None,
-        SIDE,
+        DRAWN_SIDE,
         3,
         [0; 2],
         [0.0, 0.0, 0.0, 0.25],
     );
     b.end_pass();
-    read_texture(b, &drawn, SIDE, RGBA8_BYTES)
+    read_texture(b, &drawn, DRAWN_SIDE, RGBA8_BYTES)
 }
 
 #[test]
@@ -565,11 +581,11 @@ fn blends_by_the_constant_alpha_as_the_reference_does() {
 
 /// Writes stencil per face, 3 on the front-facing left half and 7 on the back-facing right, then colors each value.
 fn stencil_per_face_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
-    let (drawn, drawn_view) = target(b, Format::Rgba8Unorm, SIDE);
+    let (drawn, drawn_view) = target(b, Format::Rgba8Unorm, DRAWN_SIDE);
     let stencil_texture = texture(
         b,
         Format::Depth24PlusStencil8,
-        SIDE,
+        DRAWN_SIDE,
         TextureUsage::RENDER,
         false,
     );
@@ -622,11 +638,11 @@ fn stencil_per_face_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
     });
     let quads = 12;
     b.begin_pass(&pass);
-    draw(b, &red, &replace, None, SIDE, quads, [3, 7], [0.0; 4]);
-    draw(b, &red, &reds, None, SIDE, quads, [3, 3], [0.0; 4]);
-    draw(b, &red, &greens, None, SIDE, quads, [7, 7], [0.0; 4]);
+    draw(b, &red, &replace, None, DRAWN_SIDE, quads, [3, 7], [0.0; 4]);
+    draw(b, &red, &reds, None, DRAWN_SIDE, quads, [3, 3], [0.0; 4]);
+    draw(b, &red, &greens, None, DRAWN_SIDE, quads, [7, 7], [0.0; 4]);
     b.end_pass();
-    read_texture(b, &drawn, SIDE, RGBA8_BYTES)
+    read_texture(b, &drawn, DRAWN_SIDE, RGBA8_BYTES)
 }
 
 #[test]
@@ -637,17 +653,17 @@ fn stencil_references_per_face_as_the_reference_does() {
         stencil_per_face_scene(&mut reference(Features::STENCIL_PER_FACE))
     );
     // The left half is front-facing and red; the right is back-facing and would be red too with one reference.
-    let right = &got[(SIDE as usize - 1) * RGBA8_BYTES..SIDE as usize * RGBA8_BYTES];
+    let right = &got[(DRAWN_SIDE as usize - 1) * RGBA8_BYTES..DRAWN_SIDE as usize * RGBA8_BYTES];
     assert_eq!(right, [0, 0, 0, u8::MAX]);
 }
 
 /// Draws at depth one half with a constant depth bias of a half step into 32-bit float depth, and returns the depth.
 fn fractional_bias_scene<B: Gpu>(b: &mut B, bias: f32) -> Vec<u8> {
-    let (_, drawn_view) = target(b, Format::Rgba8Unorm, SIDE);
+    let (_, drawn_view) = target(b, Format::Rgba8Unorm, DRAWN_SIDE);
     let depth = texture(
         b,
         Format::Depth32Float,
-        SIDE,
+        DRAWN_SIDE,
         TextureUsage::RENDER | TextureUsage::COPY_SRC,
         false,
     );
@@ -674,9 +690,9 @@ fn fractional_bias_scene<B: Gpu>(b: &mut B, bias: f32) -> Vec<u8> {
         stencil: None,
     });
     b.begin_pass(&pass);
-    draw(b, &red, &states, None, SIDE, 3, [0; 2], [0.0; 4]);
+    draw(b, &red, &states, None, DRAWN_SIDE, 3, [0; 2], [0.0; 4]);
     b.end_pass();
-    read_texture(b, &depth, SIDE, 4)
+    read_texture(b, &depth, DRAWN_SIDE, 4)
 }
 
 #[test]
@@ -692,23 +708,23 @@ fn reinterpret_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
     let source = texture(
         b,
         Format::Rgba8Unorm,
-        SIDE,
+        DRAWN_SIDE,
         TextureUsage::SAMPLE | TextureUsage::COPY_DST,
         true,
     );
-    let texels: Vec<u8> = (0..SIDE * SIDE * RGBA8_BYTES as u32)
+    let texels: Vec<u8> = (0..DRAWN_SIDE * DRAWN_SIDE * RGBA8_BYTES as u32)
         .map(|i| (i as u8).wrapping_mul(29))
         .collect();
     b.write_texture(
         &whole(&source),
         Extent {
-            width: SIDE,
-            height: SIDE,
+            width: DRAWN_SIDE,
+            height: DRAWN_SIDE,
             depth_or_layers: 1,
         },
         &texels,
-        SIDE * RGBA8_BYTES as u32,
-        SIDE,
+        DRAWN_SIDE * RGBA8_BYTES as u32,
+        DRAWN_SIDE,
         WriteMode::Ordered,
     );
     let words = view(b, &source, Format::Rgba8Uint, false);
@@ -719,13 +735,22 @@ fn reinterpret_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
             resource: BindingResource::Texture(&words),
         }])
         .expect("create_binding_set");
-    let (drawn, drawn_view) = target(b, Format::Rgba8Uint, SIDE);
+    let (drawn, drawn_view) = target(b, Format::Rgba8Uint, DRAWN_SIDE);
     let loaded = program(b, "covering", "loaded");
     let states = states(b, writes_all(None), &no_tests(), &plain_raster(0.0));
     b.begin_pass(&color_pass(&drawn_view, [0; 4]));
-    draw(b, &loaded, &states, Some(&set), SIDE, 3, [0; 2], [0.0; 4]);
+    draw(
+        b,
+        &loaded,
+        &states,
+        Some(&set),
+        DRAWN_SIDE,
+        3,
+        [0; 2],
+        [0.0; 4],
+    );
     b.end_pass();
-    read_texture(b, &drawn, SIDE, RGBA8_BYTES)
+    read_texture(b, &drawn, DRAWN_SIDE, RGBA8_BYTES)
 }
 
 #[test]
@@ -734,10 +759,11 @@ fn a_view_reinterprets_its_texture_as_the_reference_does() {
     assert_eq!(got, reinterpret_scene(&mut reference(Features::empty())));
 }
 
-/// Counts samples of the left half in query 0, and in query 1 of the left half twice around a write that splits the
-/// pass; returns the counts as read back and as resolved on the GPU.
+/// Counts the left half's samples once in query 0 and twice in query 1, around a write that splits the pass.
+///
+/// Returns the counts as read back and as resolved on the GPU.
 fn occlusion_count_scene<B: Gpu>(b: &mut B) -> (Vec<u8>, Vec<u8>) {
-    let (_, drawn_view) = target(b, Format::Rgba8Unorm, SIDE);
+    let (_, drawn_view) = target(b, Format::Rgba8Unorm, DRAWN_SIDE);
     let tinted = program(b, "halves", "tinted");
     let states = states(b, writes_all(None), &no_tests(), &plain_raster(0.0));
     let queries = b
@@ -758,7 +784,7 @@ fn occlusion_count_scene<B: Gpu>(b: &mut B) -> (Vec<u8>, Vec<u8>) {
         &tinted,
         &states,
         Some(&set),
-        SIDE,
+        DRAWN_SIDE,
         left_half,
         [0; 2],
         [0.0; 4],
@@ -770,7 +796,7 @@ fn occlusion_count_scene<B: Gpu>(b: &mut B) -> (Vec<u8>, Vec<u8>) {
         &tinted,
         &states,
         Some(&set),
-        SIDE,
+        DRAWN_SIDE,
         left_half,
         [0; 2],
         [0.0; 4],
@@ -782,7 +808,7 @@ fn occlusion_count_scene<B: Gpu>(b: &mut B) -> (Vec<u8>, Vec<u8>) {
         &tinted,
         &states,
         Some(&set),
-        SIDE,
+        DRAWN_SIDE,
         left_half,
         [0; 2],
         [0.0; 4],
@@ -812,7 +838,7 @@ fn occlusion_count_scene<B: Gpu>(b: &mut B) -> (Vec<u8>, Vec<u8>) {
 #[test]
 fn occlusion_counts_every_sample_across_a_split_pass() {
     let (read, resolved) = occlusion_count_scene(&mut device());
-    let half = u64::from(SIDE * SIDE / 2);
+    let half = u64::from(DRAWN_SIDE * DRAWN_SIDE / 2);
     let expected: Vec<u8> = [half, 2 * half]
         .iter()
         .flat_map(|n| n.to_le_bytes())
@@ -824,7 +850,7 @@ fn occlusion_counts_every_sample_across_a_split_pass() {
 /// Draws red, built ahead by `prepare` or not, and returns the texels and the pipelines the draw had to build.
 fn prepared_scene(prepare: bool) -> (Vec<u8>, u64) {
     let mut b = device();
-    let (drawn, drawn_view) = target(&mut b, Format::Rgba8Unorm, SIDE);
+    let (drawn, drawn_view) = target(&mut b, Format::Rgba8Unorm, DRAWN_SIDE);
     let red = program(&mut b, "covering", "red");
     let states = states(&mut b, writes_all(None), &no_tests(), &plain_raster(0.0));
     if prepare {
@@ -849,11 +875,11 @@ fn prepared_scene(prepare: bool) -> (Vec<u8>, u64) {
     }
     let before = b.slow_paths().counts[wcontainers_gpu::SlowPath::PipelineMiss as usize];
     b.begin_pass(&color_pass(&drawn_view, [0; 4]));
-    draw(&mut b, &red, &states, None, SIDE, 3, [0; 2], [0.0; 4]);
+    draw(&mut b, &red, &states, None, DRAWN_SIDE, 3, [0; 2], [0.0; 4]);
     b.end_pass();
     let after = b.slow_paths().counts[wcontainers_gpu::SlowPath::PipelineMiss as usize];
     (
-        read_texture(&mut b, &drawn, SIDE, RGBA8_BYTES),
+        read_texture(&mut b, &drawn, DRAWN_SIDE, RGBA8_BYTES),
         after - before,
     )
 }

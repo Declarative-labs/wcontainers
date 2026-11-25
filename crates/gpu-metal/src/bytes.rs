@@ -200,13 +200,13 @@ impl<M: Metal> MetalGpu<M> {
                 .is_some_and(|end| end <= range.length && end <= u64::from(u32::MAX))
         };
         if !inside(destination) || source.is_some_and(|s| !inside(s)) {
-            self.fail("a byte copy or fill outside its buffers");
+            self.fail(format_args!("a byte copy or fill outside its buffers"));
             return;
         }
         let (state, span_slot, source_slot, destination_slot) = match self.byte_pipeline(fill) {
             Ok(p) => (p.state.clone(), p.span, p.source, p.destination),
             Err(error) => {
-                self.fail(&format!("no byte program: {error:?}"));
+                self.fail(format_args!("no byte program: {error:?}"));
                 return;
             }
         };
@@ -260,7 +260,7 @@ impl<M: Metal> MetalGpu<M> {
                 .metal
                 .encode_compute_commands(&command_buffer, &commands)
         {
-            self.fail(&format!("a byte program refused: {error:?}"));
+            self.fail(format_args!("a byte program refused: {error:?}"));
         }
         if resumed.is_some() {
             self.pass = resumed;
