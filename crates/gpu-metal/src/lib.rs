@@ -713,6 +713,24 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Self::Texture, GpuError> {
+        // The limits and sample counts this implementation declares are the ones it takes (found by the fuzzer: a side
+        // of 16385 and a count of two were taken past them).
+        let limits = self.caps.limits;
+        let (most, layers) = match desc.dimension {
+            TextureDimension::D3 => (limits.max_texture_3d, limits.max_texture_3d),
+            _ if desc.cube => (limits.max_texture_cube, limits.max_texture_layers),
+            _ => (limits.max_texture_2d, limits.max_texture_layers),
+        };
+        if desc.width > most || desc.height > most || desc.depth_or_layers > layers {
+            return Err(GpuError::Invalid("a texture past the limits declared"));
+        }
+        let takes = desc.samples.is_power_of_two()
+            && 1u8
+                .checked_shl(desc.samples.trailing_zeros())
+                .is_some_and(|bit| self.caps.formats.samples[desc.format as usize] & bit != 0);
+        if !takes {
+            return Err(GpuError::Invalid("a sample count the format does not take"));
+        }
         let pixel_format = convert::pixel_format(desc.format)
             .filter(|_| !self.caps.formats.uses[desc.format as usize].is_empty())
             .ok_or(GpuError::Invalid(
