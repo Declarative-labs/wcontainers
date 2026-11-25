@@ -4,7 +4,7 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, CUBE_FACES, CopyBufferTexture, Extent, FORMAT_FACTS,
+    Gpu, BufferDesc, BufferUsage, CUBE_FACES, CopyBufferTexture, Extent, FORMAT_FACTS,
     Features, Format, FormatKind, MapIntent, Object, Origin, STORAGE_WORD, SlowPath,
     TEXEL_BUFFER_TEXTURE_WIDTH, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
     TextureViewDesc, ViewDimension, WriteMode,
@@ -20,7 +20,7 @@ use crate::state::refused;
 
 /// One sampler view: Gallium's struct first, then the interface's view, or why there is none.
 #[repr(C)]
-pub struct View<B: Backend> {
+pub struct View<B: Gpu> {
     base: pipe_sampler_view,
     view: Result<B::TextureView, &'static str>,
     /// How the programs that sample it rearrange its results.
@@ -50,7 +50,7 @@ pub struct View<B: Backend> {
 /// A texture in a sampler view's format, of its levels and layers, copied from the view's texture
 /// before each work that reads it (`ReinterpretCopy`): the interface views a texture only in its
 /// own format or its sRGB twin unless the back end reinterprets.
-struct ViewTwin<B: Backend> {
+struct ViewTwin<B: Gpu> {
     texture: B::Texture,
     first_level: u32,
     first_layer: u32,
@@ -62,7 +62,7 @@ struct ViewTwin<B: Backend> {
 
 /// A texel buffer view's 2D texture, rows of [`TEXEL_BUFFER_TEXTURE_WIDTH`] texels, which the
 /// buffer's range is copied into before each work that reads it (`TexelBufferAsTexture`).
-pub struct TexelCopy<B: Backend> {
+pub struct TexelCopy<B: Gpu> {
     texture: B::Texture,
     /// Where the view starts in its buffer, in bytes.
     offset: u64,
@@ -86,7 +86,7 @@ fn swizzle(s: pipe_swizzle) -> Swizzle {
     }
 }
 
-impl<B: Backend> View<B> {
+impl<B: Gpu> View<B> {
     /// # Safety
     /// `view` is one this driver made, alive for `'a`.
     pub unsafe fn of<'a>(view: *mut pipe_sampler_view) -> &'a View<B> {
@@ -249,7 +249,7 @@ pub unsafe extern "C" fn sampler_view_release(
 /// the image is one slice (`ReinterpretCopy`): copied into before the work and, for an image the
 /// program writes, back after it, through `buffer`. A target in another format than its texture's
 /// draws into one the same way ([`Twin::of_target`]).
-pub struct Twin<B: Backend> {
+pub struct Twin<B: Gpu> {
     texture: B::Texture,
     buffer: B::Buffer,
     source: B::Texture,
@@ -266,7 +266,7 @@ pub struct Twin<B: Backend> {
 /// `HelperValue::TexelLayout` lays them out: for atomics on it (`AtomicsThroughBuffer`), which the
 /// common form has none of that give the old value. Copied into before the work and, for an image
 /// the program writes, back after it.
-struct Texels<B: Backend> {
+struct Texels<B: Gpu> {
     /// The resource the texels are of, which images naming the same texels share.
     resource: *mut pipe_resource,
     buffer: B::Buffer,
@@ -304,7 +304,7 @@ impl TexelLayout {
         (u64::from(self.texels()) * u64::from(self.texel_bytes)).next_multiple_of(STORAGE_WORD)
     }
 
-    fn region<'a, B: Backend>(&self, texture: &'a B::Texture) -> TextureRegion<'a, B> {
+    fn region<'a, B: Gpu>(&self, texture: &'a B::Texture) -> TextureRegion<'a, B> {
         TextureRegion {
             texture,
             mip: self.mip,
@@ -317,7 +317,7 @@ impl TexelLayout {
         }
     }
 
-    fn rows<'a, B: Backend>(&self, buffer: &'a B::Buffer) -> CopyBufferTexture<'a, B> {
+    fn rows<'a, B: Gpu>(&self, buffer: &'a B::Buffer) -> CopyBufferTexture<'a, B> {
         CopyBufferTexture {
             buffer,
             offset: 0,
@@ -329,7 +329,7 @@ impl TexelLayout {
 
 /// The layout of the texels of an image of a texture read through a buffer: its level's
 /// layers it names (one slice of a volume texture where it names one), tightly packed.
-pub fn texel_layout<B: Backend>(image: &pipe_image_view) -> Result<TexelLayout, String> {
+pub fn texel_layout<B: Gpu>(image: &pipe_image_view) -> Result<TexelLayout, String> {
     // SAFETY: an image's resource is live while it is bound.
     let resource = unsafe { Resource::<B>::of(image.resource) };
     let (_, desc) = resource
@@ -377,7 +377,7 @@ pub fn texel_layout<B: Backend>(image: &pipe_image_view) -> Result<TexelLayout, 
 
 /// The buffer an image of a texture is read and written through, its texels copied into it at
 /// once (outside a pass), with its size in bytes.
-pub fn image_texels<B: Backend>(
+pub fn image_texels<B: Gpu>(
     backend: &mut B,
     image: &pipe_image_view,
     images: &mut Images<B>,
@@ -424,7 +424,7 @@ pub fn image_texels<B: Backend>(
 
 /// The views a binding of images made for one draw or dispatch, and the twins and buffers of
 /// texels they were bound through; given back by [`Images::finish`] after the work.
-pub struct Images<B: Backend> {
+pub struct Images<B: Gpu> {
     pub views: Vec<B::TextureView>,
     twins: Vec<Twin<B>>,
     texels: Vec<Texels<B>>,
@@ -444,7 +444,7 @@ pub struct Images<B: Backend> {
 /// (its units are fewer than `PIPE_MAX_SAMPLERS`).
 pub const FETCHED_UNIT: u32 = PIPE_MAX_SHADER_SAMPLER_VIEWS - 1;
 
-impl<B: Backend> Default for Images<B> {
+impl<B: Gpu> Default for Images<B> {
     fn default() -> Self {
         Images {
             views: Vec::new(),
@@ -458,7 +458,7 @@ impl<B: Backend> Default for Images<B> {
     }
 }
 
-impl<B: Backend> Images<B> {
+impl<B: Gpu> Images<B> {
     /// The buffer of texels `image_texels` made at `index`.
     pub fn texel_buffer(&self, index: usize) -> &B::Buffer {
         &self.texels[index].buffer
@@ -684,7 +684,7 @@ impl<B: Backend> Images<B> {
     }
 }
 
-impl<B: Backend> Twin<B> {
+impl<B: Gpu> Twin<B> {
     /// A twin in `format` of one level and layer (a volume texture's depth slice) of `source`,
     /// whose texture `desc` describes, that a target draws into (`ReinterpretCopy`); why not where
     /// the formats' texels differ in size or the texture is multisampled (whose texels the host
@@ -804,7 +804,7 @@ impl<B: Backend> Twin<B> {
 
 /// Whether [`image_view`] binds an image of a texture through a copy (a twin): a view in another
 /// format than its texture's, or one slice of a volume texture.
-pub fn image_copied<B: Backend>(image: &pipe_image_view) -> bool {
+pub fn image_copied<B: Gpu>(image: &pipe_image_view) -> bool {
     // SAFETY: an image's resource is live while it is bound.
     let resource = unsafe { Resource::<B>::of(image.resource) };
     let Some((_, desc)) = resource.texture() else {
@@ -820,7 +820,7 @@ pub fn image_copied<B: Backend>(image: &pipe_image_view) -> bool {
 /// it names (a cube's as a 2D array of its faces, which is how the common form holds a storage
 /// cube). An image of another format than its texture's, of the same texel size, is bound
 /// through a twin of its format. Outside a pass: a twin is copied into at once.
-pub fn image_view<B: Backend>(
+pub fn image_view<B: Gpu>(
     backend: &mut B,
     image: &pipe_image_view,
     images: &mut Images<B>,
@@ -999,7 +999,7 @@ impl Seen {
 
 /// The twin a sampler view of a texture is read through, where the back end cannot view the
 /// texture in the view's format; none where it can.
-fn view_twin<B: Backend>(
+fn view_twin<B: Gpu>(
     backend: &mut B,
     resource: &Resource<B>,
     view: &pipe_sampler_view,
@@ -1063,7 +1063,7 @@ fn view_twin<B: Backend>(
 
 /// The interface's view of a Gallium sampler view, or why there is none; with `cube_faces`, a
 /// cube map's or cube map array's as a 2D array of its faces. A view with a twin views the twin.
-fn texture_view<B: Backend>(
+fn texture_view<B: Gpu>(
     backend: &mut B,
     resource: &Resource<B>,
     view: &pipe_sampler_view,
@@ -1096,7 +1096,7 @@ fn texture_view<B: Backend>(
 
 /// The interface's views of the layers a Gallium sampler view of a multisampled array sees, a
 /// texture each, first first, or why there are none.
-fn layer_views<B: Backend>(
+fn layer_views<B: Gpu>(
     backend: &mut B,
     resource: &Resource<B>,
     view: &pipe_sampler_view,
@@ -1149,7 +1149,7 @@ fn layer_views<B: Backend>(
 }
 
 /// A texel buffer view's texture and the interface's view of it, or why there are none.
-fn texel_buffer<B: Backend>(
+fn texel_buffer<B: Gpu>(
     backend: &mut B,
     view: &pipe_sampler_view,
 ) -> Result<(TexelCopy<B>, B::TextureView), &'static str> {
@@ -1203,7 +1203,7 @@ fn texel_buffer<B: Backend>(
 }
 
 /// `pipe_context::create_sampler_view`.
-pub unsafe extern "C" fn create_sampler_view<B: Backend>(
+pub unsafe extern "C" fn create_sampler_view<B: Gpu>(
     pipe: *mut pipe_context,
     texture: *mut pipe_resource,
     template: *const pipe_sampler_view,
@@ -1308,7 +1308,7 @@ pub unsafe extern "C" fn create_sampler_view<B: Backend>(
 }
 
 /// `pipe_context::sampler_view_destroy`.
-pub unsafe extern "C" fn sampler_view_destroy<B: Backend>(
+pub unsafe extern "C" fn sampler_view_destroy<B: Gpu>(
     pipe: *mut pipe_context,
     view: *mut pipe_sampler_view,
 ) {
@@ -1340,7 +1340,7 @@ pub unsafe extern "C" fn sampler_view_destroy<B: Backend>(
 }
 
 /// One level's region of a texture at a box's corner.
-pub fn corner<'a, B: Backend>(
+pub fn corner<'a, B: Gpu>(
     texture: &'a B::Texture,
     three_d: bool,
     level: c_uint,
@@ -1363,7 +1363,7 @@ pub fn corner<'a, B: Backend>(
 
 /// `pipe_context::resource_copy_region`.
 #[allow(clippy::too_many_arguments, reason = "Gallium's signature")]
-pub unsafe extern "C" fn resource_copy_region<B: Backend>(
+pub unsafe extern "C" fn resource_copy_region<B: Gpu>(
     pipe: *mut pipe_context,
     dst: *mut pipe_resource,
     dst_level: c_uint,
@@ -1449,7 +1449,7 @@ pub unsafe extern "C" fn resource_copy_region<B: Backend>(
 }
 
 /// The resource holding layer `z` of `resource`, whose own is `ours`, and the layer's place in it.
-fn layer_of<B: Backend>(
+fn layer_of<B: Gpu>(
     resource: *mut pipe_resource,
     ours: &Resource<B>,
     z: i16,
@@ -1462,7 +1462,7 @@ fn layer_of<B: Backend>(
 
 /// `pipe_context::generate_mipmap`: levels after `base` filled from the one above, in `format`;
 /// false when the device cannot, and st/mesa then makes them its own way.
-pub unsafe extern "C" fn generate_mipmap<B: Backend>(
+pub unsafe extern "C" fn generate_mipmap<B: Gpu>(
     pipe: *mut pipe_context,
     resource: *mut pipe_resource,
     format: pipe_format,

@@ -4,7 +4,7 @@
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    Backend, Extent, FORMAT_FACTS, Format, FormatKind, FormatUse, Origin, SlowPath, TextureDesc,
+    Gpu, Extent, FORMAT_FACTS, Format, FormatKind, FormatUse, Origin, SlowPath, TextureDesc,
     TextureDimension, TextureRegion,
 };
 
@@ -14,7 +14,7 @@ use crate::resource::{self, Resource};
 use crate::state::{Stage, refuse};
 
 /// The fragment stage's uniform buffer the blitter uses (`cb_slot`), saved with its bytes.
-fn save_constants<B: Backend>(context: &mut Context<B>, blitter: &mut blitter_context) {
+fn save_constants<B: Gpu>(context: &mut Context<B>, blitter: &mut blitter_context) {
     let slot = blitter.cb_slot as usize;
     let constants = &context.stages.get(Stage::Fragment).constants[slot];
     context.blit_bytes.clone_from(&constants.bytes);
@@ -33,7 +33,7 @@ fn save_constants<B: Backend>(context: &mut Context<B>, blitter: &mut blitter_co
 }
 
 /// Everything the blitter changes, saved in it so that it puts it back after its draws.
-fn save<B: Backend>(context: &mut Context<B>, blitter: &mut blitter_context) {
+fn save<B: Gpu>(context: &mut Context<B>, blitter: &mut blitter_context) {
     // The render condition, which the blitter lifts for a blit that ignores it; every mode waits.
     let (query, condition) = context.condition.unwrap_or((std::ptr::null_mut(), false));
     blitter.saved_render_cond_query = query;
@@ -103,7 +103,7 @@ fn save<B: Backend>(context: &mut Context<B>, blitter: &mut blitter_context) {
 
 /// Resolves a whole multisampled level's layer into a single-sampled one of its size and format
 /// by the back end's own resolve, where the blit is that and nothing more; false for any other.
-fn whole_resolve<B: Backend>(
+fn whole_resolve<B: Gpu>(
     context: &mut Context<B>,
     info: &pipe_blit_info,
     from: &Resource<B>,
@@ -173,7 +173,7 @@ fn whole_resolve<B: Backend>(
 /// integer or unsigned normalised, which a blit carries bit for bit); false for any other. The
 /// host copies between formats of one texel size, which no view of a texture in another format is
 /// needed for.
-fn bit_copy<B: Backend>(
+fn bit_copy<B: Gpu>(
     context: &mut Context<B>,
     info: &pipe_blit_info,
     from: &Resource<B>,
@@ -245,7 +245,7 @@ fn bit_copy<B: Backend>(
 }
 
 /// `pipe_context::blit`.
-pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const pipe_blit_info) {
+pub unsafe extern "C" fn blit<B: Gpu>(pipe: *mut pipe_context, info: *const pipe_blit_info) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context and a blit.
         let context = unsafe { Context::<B>::of(pipe) };
@@ -302,7 +302,7 @@ pub unsafe extern "C" fn blit<B: Backend>(pipe: *mut pipe_context, info: *const 
 
 /// A blit from or into a texture held a layer a resource, as a blit a layer between the layers'
 /// own resources.
-fn by_layers<B: Backend>(
+fn by_layers<B: Gpu>(
     pipe: *mut pipe_context,
     info: &pipe_blit_info,
     from: &Resource<B>,
@@ -335,7 +335,7 @@ fn by_layers<B: Backend>(
 /// A blit's stencil, which no program writes on the host (no stencil export): the destination's
 /// stencil cleared within the blit, then each bit of it set by a draw keeping the fragments whose
 /// source has it (Gallium's blitter, `util_blitter_stencil_fallback`).
-fn stencil_by_bits<B: Backend>(context: &mut Context<B>, info: &pipe_blit_info) {
+fn stencil_by_bits<B: Gpu>(context: &mut Context<B>, info: &pipe_blit_info) {
     let blitter = context.blitter;
     let (src, dst) = (&info.src, &info.dst);
     let mut surface = pipe_surface::default();

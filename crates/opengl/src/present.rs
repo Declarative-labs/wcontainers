@@ -4,7 +4,7 @@
 use std::ffi::{c_uint, c_void};
 
 use wcontainers_gpu::{
-    Backend, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
+    Gpu, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
     DepthStencilDesc, DrawCall, DrawRange, FillMode, Format, FormatUse, FrontFace, LoadOp,
     MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, PassDesc, Program, ProvokingVertex, RasterDesc,
     RenderTargetBlend, SLOT_KINDS, ScissorRect, ShaderModule, ShaderStage, SlotKind, StageSet,
@@ -20,14 +20,14 @@ use crate::state::refused;
 use wcontainers_shaders::stage::TRIANGLE_VERTICES;
 
 /// A host window the driver presents to, by the device context OpenGL names it with.
-pub struct Window<B: Backend> {
+pub struct Window<B: Gpu> {
     surface: B::Surface,
     /// Width, height and format the surface is configured for.
     configured: Option<(u32, u32, Format)>,
 }
 
 /// The copy of a picture into a window's texture: a full-screen triangle loading each pixel.
-pub struct Copy<B: Backend> {
+pub struct Copy<B: Gpu> {
     program: B::Program,
     blend: B::Blend,
     depth_stencil: B::DepthStencil,
@@ -41,7 +41,7 @@ const COPY_VERTICES: u32 = TRIANGLE_VERTICES;
 const VERTEX_ENTRY: &str = "vs";
 const FRAGMENT_ENTRY: &str = "fs";
 
-impl<B: Backend> Copy<B> {
+impl<B: Gpu> Copy<B> {
     fn new(backend: &mut B) -> Result<Copy<B>, wcontainers_gpu::GpuError> {
         let picture = SLOT_KINDS[SlotKind::Texture as usize].first_binding;
         let source = format!(
@@ -120,7 +120,7 @@ impl<B: Backend> Copy<B> {
 }
 
 /// The format a window shows a picture of `format` in.
-fn window_format<B: Backend>(backend: &B, format: Format) -> Option<Format> {
+fn window_format<B: Gpu>(backend: &B, format: Format) -> Option<Format> {
     [format, Format::Bgra8Unorm, Format::Rgba8Unorm]
         .into_iter()
         .find(|f| backend.caps().formats.uses[*f as usize].contains(FormatUse::PRESENT))

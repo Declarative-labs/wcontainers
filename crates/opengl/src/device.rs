@@ -2,12 +2,12 @@
 
 use std::ffi::{CString, c_void};
 
-use wcontainers_gpu::Backend;
+use wcontainers_gpu::Gpu;
 use wcontainers_gpu_webgpu::WebGpu;
 
 /// What the driver needs of a back end beside the interface: the host's windows, which OpenGL
 /// names by their device contexts.
-pub trait HostWindows: Backend {
+pub trait HostWindows: Gpu {
     /// Registers the window a device context draws into as host window `id`; false when the
     /// back end cannot present to it.
     fn add_window_of(&mut self, id: u32, device_context: *mut c_void) -> bool;

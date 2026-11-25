@@ -8,7 +8,7 @@ use std::ffi::c_uint;
 use std::ops::Range;
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, MapIntent, Object, PassTracker, QueryKind, ReadSource,
+    Gpu, BufferDesc, BufferUsage, MapIntent, Object, PassTracker, QueryKind, ReadSource,
     ReadState, STORAGE_WORD, SlowPath,
 };
 use wcontainers_shaders::stage::STREAM_BUFFERS;
@@ -23,13 +23,13 @@ use crate::state::{refuse, refused};
 const OCCLUSION_QUERY_BATCH: u32 = 4096;
 
 /// The occlusion sets a context made, the last of them the one queries begin in.
-pub struct Sets<B: Backend> {
+pub struct Sets<B: Gpu> {
     sets: Vec<B::QuerySet>,
     /// Interface queries of the last set already taken.
     used: u32,
 }
 
-impl<B: Backend> Default for Sets<B> {
+impl<B: Gpu> Default for Sets<B> {
     fn default() -> Self {
         Sets {
             sets: Vec::new(),
@@ -38,7 +38,7 @@ impl<B: Backend> Default for Sets<B> {
     }
 }
 
-impl<B: Backend> Sets<B> {
+impl<B: Gpu> Sets<B> {
     /// Gives every set back, with the context.
     pub fn release(&mut self, screen: &crate::screen::Screen<B>) {
         for set in self.sets.drain(..) {
@@ -70,7 +70,7 @@ impl<B: Backend> Sets<B> {
 }
 
 /// Where a query's answer is.
-enum Answer<B: Backend> {
+enum Answer<B: Gpu> {
     /// Begun, not yet ended: the interface queries from its first.
     Running {
         set: B::QuerySet,
@@ -85,7 +85,7 @@ enum Answer<B: Backend> {
     Known(bool),
 }
 
-pub struct Query<B: Backend> {
+pub struct Query<B: Gpu> {
     answer: Option<Answer<B>>,
     /// Paused while st/mesa draws for itself (its blits and clears).
     paused: bool,
@@ -100,7 +100,7 @@ pub struct Query<B: Backend> {
 /// An exact count of the samples that passed (`SAMPLES_PASSED`), which the interface's occlusion
 /// counter writes into `slot` at the query's end (`OcclusionCountReplay`), read back once asked
 /// for.
-pub struct Counted<B: Backend> {
+pub struct Counted<B: Gpu> {
     slot: B::Buffer,
     read: Option<B::Readback>,
     known: Option<u64>,
@@ -110,7 +110,7 @@ pub struct Counted<B: Backend> {
 const COUNT_BYTES: u64 = size_of::<u64>() as u64;
 
 /// A counted query's count, once known (reading back, and waiting if asked to).
-fn counted_value<B: Backend>(
+fn counted_value<B: Gpu>(
     tracker: &mut PassTracker<B>,
     backend: &mut B,
     counted: &mut Counted<B>,
@@ -148,7 +148,7 @@ fn counted_value<B: Backend>(
 
 /// A timer's two timestamps, at its begin and its end (a timestamp query writes only the end's),
 /// read back once asked for.
-pub struct Timer<B: Backend> {
+pub struct Timer<B: Gpu> {
     set: B::QuerySet,
     elapsed: bool,
     read: Option<B::Readback>,
@@ -162,7 +162,7 @@ const TIMER_STAMPS: u32 = 2;
 
 /// Writes the GPU time into query `index` of `set`: timestamps are written between passes, so
 /// the open pass ends first.
-fn stamp<B: Backend>(
+fn stamp<B: Gpu>(
     tracker: &mut PassTracker<B>,
     backend: &mut B,
     set: &B::QuerySet,
@@ -175,7 +175,7 @@ fn stamp<B: Backend>(
 }
 
 /// The timestamps of `set` from `first`, `count` of them in nanoseconds, waited for.
-fn stamps_now<B: Backend>(
+fn stamps_now<B: Gpu>(
     backend: &mut B,
     set: &B::QuerySet,
     first: u32,
@@ -188,7 +188,7 @@ fn stamps_now<B: Backend>(
     Ok(finished_stamps(backend, read, count))
 }
 
-fn finished_stamps<B: Backend>(backend: &mut B, read: B::Readback, count: u32) -> Vec<u64> {
+fn finished_stamps<B: Gpu>(backend: &mut B, read: B::Readback, count: u32) -> Vec<u64> {
     let mut bytes = vec![0; count as usize * size_of::<u64>()];
     backend.finish_read(read, &mut bytes);
     let (stamps, _) = bytes.as_chunks::<{ size_of::<u64>() }>();
@@ -197,7 +197,7 @@ fn finished_stamps<B: Backend>(backend: &mut B, read: B::Readback, count: u32) -
 
 /// `pipe_context::get_timestamp`: the GPU time now, on the clock timer queries read, written after
 /// the work recorded so far and waited for.
-pub unsafe extern "C" fn get_timestamp<B: Backend>(pipe: *mut pipe_context) -> u64 {
+pub unsafe extern "C" fn get_timestamp<B: Gpu>(pipe: *mut pipe_context) -> u64 {
     crate::state::guest_call(pipe, 0, move || {
         // SAFETY: Mesa passes this driver's context.
         let context = unsafe { Context::<B>::of(pipe) };
@@ -227,7 +227,7 @@ const MADE_WORD: u64 = WRITTEN_WORD + 1;
 /// copied from the stage helper's statistics into a slot, read back and summed when asked for (or
 /// when the slots are full); and for a count of those made, the primitives of each draw the stage
 /// helper did not run, counted on the host.
-pub struct Emitted<B: Backend> {
+pub struct Emitted<B: Gpu> {
     slots: B::Buffer,
     used: u64,
     sum: u64,
@@ -235,7 +235,7 @@ pub struct Emitted<B: Backend> {
     word: u64,
 }
 
-impl<B: Backend> Emitted<B> {
+impl<B: Gpu> Emitted<B> {
     /// The slots' counts summed into `sum`, read back now (outside a pass).
     fn gather(&mut self, backend: &mut B) -> Result<(), String> {
         if self.used == 0 {
@@ -264,7 +264,7 @@ impl<B: Backend> Emitted<B> {
 
 /// After a streamed draw: the running count takes its primitives written from `statistics`, the
 /// stage helper's block (outside a pass).
-pub fn count_emitted<B: Backend>(
+pub fn count_emitted<B: Gpu>(
     counting: &[*mut pipe_query],
     backend: &mut B,
     statistics: &B::Buffer,
@@ -316,7 +316,7 @@ fn primitives(mode: mesa_prim, count: u32) -> u32 {
 /// the host from its ranges; a draw through a geometry or tessellation stage (`staged`) was counted
 /// by the stage helper. A draw restarting its strips, whose count needs its indices read, is
 /// refused by name.
-pub fn count_drawn<B: Backend>(
+pub fn count_drawn<B: Gpu>(
     counting: &[*mut pipe_query],
     info: &pipe_draw_info,
     draws: &[pipe_draw_start_count_bias],
@@ -348,7 +348,7 @@ pub fn count_drawn<B: Backend>(
 
 /// `pipe_context::create_query`: occlusion predicates and exact counts, counts of primitives
 /// streamed and timers.
-pub unsafe extern "C" fn create_query<B: Backend>(
+pub unsafe extern "C" fn create_query<B: Gpu>(
     pipe: *mut pipe_context,
     kind: c_uint,
     _: c_uint,
@@ -446,12 +446,12 @@ pub unsafe extern "C" fn create_query<B: Backend>(
 
 /// # Safety
 /// `query` is one `create_query` made, not yet destroyed.
-unsafe fn of<'a, B: Backend>(query: *mut pipe_query) -> &'a mut Query<B> {
+unsafe fn of<'a, B: Gpu>(query: *mut pipe_query) -> &'a mut Query<B> {
     // SAFETY: the caller's.
     unsafe { &mut *query.cast::<Query<B>>() }
 }
 
-pub unsafe extern "C" fn destroy_query<B: Backend>(
+pub unsafe extern "C" fn destroy_query<B: Gpu>(
     pipe: *mut pipe_context,
     query: *mut pipe_query,
 ) {
@@ -474,7 +474,7 @@ pub unsafe extern "C" fn destroy_query<B: Backend>(
     })
 }
 
-pub unsafe extern "C" fn begin_query<B: Backend>(
+pub unsafe extern "C" fn begin_query<B: Gpu>(
     pipe: *mut pipe_context,
     query: *mut pipe_query,
 ) -> bool {
@@ -535,7 +535,7 @@ pub unsafe extern "C" fn begin_query<B: Backend>(
     })
 }
 
-pub unsafe extern "C" fn end_query<B: Backend>(
+pub unsafe extern "C" fn end_query<B: Gpu>(
     pipe: *mut pipe_context,
     query: *mut pipe_query,
 ) -> bool {
@@ -595,7 +595,7 @@ pub unsafe extern "C" fn end_query<B: Backend>(
 }
 
 /// Starts the read back of every query ended since the last flush (outside a pass).
-pub fn start_reads<B: Backend>(context: &mut Context<B>, backend: &mut B) {
+pub fn start_reads<B: Gpu>(context: &mut Context<B>, backend: &mut B) {
     for query in std::mem::take(&mut context.unread) {
         // SAFETY: a query in the list is live: destroying one takes it out.
         let query = unsafe { of::<B>(query) };
@@ -611,7 +611,7 @@ pub fn start_reads<B: Backend>(context: &mut Context<B>, backend: &mut B) {
     }
 }
 
-pub unsafe extern "C" fn get_query_result<B: Backend>(
+pub unsafe extern "C" fn get_query_result<B: Gpu>(
     pipe: *mut pipe_context,
     query: *mut pipe_query,
     wait: bool,
@@ -632,7 +632,7 @@ pub unsafe extern "C" fn get_query_result<B: Backend>(
 }
 
 /// A query's answer, once known (waiting for it if asked to).
-fn query_result<B: Backend>(
+fn query_result<B: Gpu>(
     context: &mut Context<B>,
     query: &mut Query<B>,
     wait: bool,
@@ -672,7 +672,7 @@ fn query_result<B: Backend>(
 /// `pipe_context::render_condition`: draws and clears from now on are skipped while `query`'s
 /// answer equals `condition`; no query lifts it. Every mode waits for the answer (the waiting
 /// modes as they ask; the others may draw before it is known and are given it).
-pub unsafe extern "C" fn render_condition<B: Backend>(
+pub unsafe extern "C" fn render_condition<B: Gpu>(
     pipe: *mut pipe_context,
     query: *mut pipe_query,
     condition: bool,
@@ -687,7 +687,7 @@ pub unsafe extern "C" fn render_condition<B: Backend>(
 
 /// Whether the render condition lets the next draw or clear through, its occlusion answer waited
 /// for (`PredicationWait`).
-pub fn condition_holds<B: Backend>(context: &mut Context<B>) -> bool {
+pub fn condition_holds<B: Gpu>(context: &mut Context<B>) -> bool {
     let Some((query, condition)) = context.condition else {
         return true;
     };
@@ -720,7 +720,7 @@ pub fn condition_holds<B: Backend>(context: &mut Context<B>) -> bool {
 
 /// A timer's nanoseconds (a timestamp, or the time between its begin and end), once known
 /// (reading back, and waiting if asked to).
-fn timer_value<B: Backend>(
+fn timer_value<B: Gpu>(
     tracker: &mut PassTracker<B>,
     backend: &mut B,
     timer: &mut Timer<B>,
@@ -757,7 +757,7 @@ fn timer_value<B: Backend>(
 }
 
 /// Whether any sample passed, once known (reading back, and waiting if asked to).
-fn answer<B: Backend>(
+fn answer<B: Gpu>(
     context: &mut Context<B>,
     query: &mut Query<B>,
     wait: bool,
@@ -802,7 +802,7 @@ fn answer<B: Backend>(
 /// `pipe_context::set_active_query_state`: st/mesa's own draws (blits, clears) count in no query;
 /// the running query's interface queries stop and go on from the next index, which no other
 /// query takes meanwhile, and a running count of samples keeps none of them.
-pub unsafe extern "C" fn set_active_query_state<B: Backend>(pipe: *mut pipe_context, enable: bool) {
+pub unsafe extern "C" fn set_active_query_state<B: Gpu>(pipe: *mut pipe_context, enable: bool) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         let context = unsafe { Context::<B>::of(pipe) };

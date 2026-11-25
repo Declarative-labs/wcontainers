@@ -5,7 +5,7 @@ use std::ffi::{c_uint, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, ClearValue, ColorTarget, DeviceStatus, EmptyPass, FORMAT_FACTS, MAX_COLOR_TARGETS,
+    Gpu, ClearValue, ColorTarget, DeviceStatus, EmptyPass, FORMAT_FACTS, MAX_COLOR_TARGETS,
     Object, PassTargets, PassTracker, ScissorRect, Target, TextureDesc, TextureDimension,
     TextureViewDesc, ViewDimension,
 };
@@ -19,7 +19,7 @@ use crate::{blit, draw, present, query, stream, view};
 
 /// Refuses the call once the back end has lost its device: the loss belongs to the work that
 /// made it, and every later call of the context would fail.
-pub fn end_if_lost<B: Backend>(backend: &mut B) {
+pub fn end_if_lost<B: Gpu>(backend: &mut B) {
     if let DeviceStatus::Lost(reason) = backend.status() {
         state::refuse(format_args!("the device was lost: {reason:?}"));
     }
@@ -27,7 +27,7 @@ pub fn end_if_lost<B: Backend>(backend: &mut B) {
 
 /// What the framebuffer holds: Gallium's state, with references on its textures, and the views
 /// the pass tracker draws into.
-pub struct Framebuffer<B: Backend> {
+pub struct Framebuffer<B: Gpu> {
     pub state: pipe_framebuffer_state,
     pub views: Vec<B::TextureView>,
     /// The samples of each pixel its targets have.
@@ -37,7 +37,7 @@ pub struct Framebuffer<B: Backend> {
     pub twins: Vec<view::Twin<B>>,
 }
 
-impl<B: Backend> Framebuffer<B> {
+impl<B: Gpu> Framebuffer<B> {
     /// Whether one of its targets is of `resource`.
     pub fn draws_into(&self, resource: &Resource<B>) -> bool {
         let colors = usize::from(self.state.nr_cbufs);
@@ -88,7 +88,7 @@ impl<B: Backend> Framebuffer<B> {
 
 /// One context: Gallium's struct first, so that a `pipe_context` pointer is one to it.
 #[repr(C)]
-pub struct Context<B: Backend> {
+pub struct Context<B: Gpu> {
     base: pipe_context,
     screen: *const Screen<B>,
     pub tracker: PassTracker<B>,
@@ -119,7 +119,7 @@ pub struct Context<B: Backend> {
     pub streams: stream::Bound<B>,
 }
 
-impl<B: Backend> Context<B> {
+impl<B: Gpu> Context<B> {
     /// # Safety
     /// `context` is one this driver made, alive for `'a`, and used by one thread at a time.
     pub unsafe fn of<'a>(context: *mut pipe_context) -> &'a mut Context<B> {
@@ -230,7 +230,7 @@ fn fill<B: crate::device::HostWindows>(c: &mut pipe_context) {
     state::fill::<B>(c);
 }
 
-unsafe extern "C" fn destroy<B: Backend>(pipe: *mut pipe_context) {
+unsafe extern "C" fn destroy<B: Gpu>(pipe: *mut pipe_context) {
     crate::state::guest_call(pipe, (), move || {
         state::forget_reset(pipe);
         // SAFETY: Mesa destroys a context it made once, after its last use.
@@ -273,12 +273,12 @@ fn surfaces(state: &mut pipe_framebuffer_state) -> impl Iterator<Item = &mut pip
 }
 
 /// The fence `flush` hands out: a reference count and the back end's fence.
-pub struct Fence<B: Backend> {
+pub struct Fence<B: Gpu> {
     count: AtomicI32,
     pub fence: B::Fence,
 }
 
-unsafe extern "C" fn flush<B: Backend>(
+unsafe extern "C" fn flush<B: Gpu>(
     pipe: *mut pipe_context,
     fence: *mut *mut pipe_fence_handle,
     _: c_uint,
@@ -308,7 +308,7 @@ unsafe extern "C" fn flush<B: Backend>(
 }
 
 /// `pipe_screen::fence_reference`.
-pub unsafe extern "C" fn fence_reference<B: Backend>(
+pub unsafe extern "C" fn fence_reference<B: Gpu>(
     _: *mut pipe_screen,
     place: *mut *mut pipe_fence_handle,
     fence: *mut pipe_fence_handle,
@@ -329,7 +329,7 @@ pub unsafe extern "C" fn fence_reference<B: Backend>(
 }
 
 /// `pipe_screen::fence_finish`: done, or waited on with any time-out but none.
-pub unsafe extern "C" fn fence_finish<B: Backend>(
+pub unsafe extern "C" fn fence_finish<B: Gpu>(
     screen: *mut pipe_screen,
     _: *mut pipe_context,
     fence: *mut pipe_fence_handle,
@@ -360,7 +360,7 @@ fn stencil_bits(stencil: c_uint) -> u8 {
     (stencil & c_uint::from(u8::MAX)) as u8
 }
 
-unsafe extern "C" fn clear<B: Backend>(
+unsafe extern "C" fn clear<B: Gpu>(
     pipe: *mut pipe_context,
     buffers: c_uint,
     _: u32,
@@ -437,7 +437,7 @@ unsafe extern "C" fn clear<B: Backend>(
     clippy::too_many_arguments,
     reason = "one clear of Gallium's, unpacked"
 )]
-fn clear_surface<B: Backend>(
+fn clear_surface<B: Gpu>(
     context: &mut Context<B>,
     surface: &pipe_surface,
     value: ClearValue,
@@ -473,7 +473,7 @@ const NO_VIEW: wcontainers_gpu::GpuError =
     wcontainers_gpu::GpuError::Invalid("a surface of no texture or of a format the device lacks");
 
 #[allow(clippy::too_many_arguments, reason = "Gallium's signature")]
-unsafe extern "C" fn clear_render_target<B: Backend>(
+unsafe extern "C" fn clear_render_target<B: Gpu>(
     pipe: *mut pipe_context,
     surface: *mut pipe_surface,
     color: *const pipe_color_union,
@@ -502,7 +502,7 @@ unsafe extern "C" fn clear_render_target<B: Backend>(
 }
 
 #[allow(clippy::too_many_arguments, reason = "Gallium's signature")]
-unsafe extern "C" fn clear_depth_stencil<B: Backend>(
+unsafe extern "C" fn clear_depth_stencil<B: Gpu>(
     pipe: *mut pipe_context,
     surface: *mut pipe_surface,
     flags: c_uint,
@@ -529,7 +529,7 @@ unsafe extern "C" fn clear_depth_stencil<B: Backend>(
 }
 
 /// A view to draw into of layer `layer` of one surface's texture, with the format it is seen in.
-pub fn surface_view<B: Backend>(
+pub fn surface_view<B: Gpu>(
     backend: &mut B,
     surface: &pipe_surface,
     layer: u32,
@@ -572,7 +572,7 @@ pub fn surface_view<B: Backend>(
 
 /// Whether a colour target in `format` of a texture `desc` describes is drawn into through a twin:
 /// the host views a texture only in its own format or its sRGB twin unless it reinterprets.
-fn through_twin<B: Backend>(
+fn through_twin<B: Gpu>(
     backend: &B,
     format: wcontainers_gpu::Format,
     desc: &TextureDesc,
@@ -592,7 +592,7 @@ fn through_twin<B: Backend>(
 /// The pass tracker's target of layer `run` of one surface (its first layer and on), with the view
 /// made for it; a target in another format than its texture's draws into a twin, added to
 /// `twins`.
-fn target<B: Backend>(
+fn target<B: Gpu>(
     backend: &mut B,
     surface: &pipe_surface,
     run: u32,
@@ -653,7 +653,7 @@ fn target<B: Backend>(
 /// The pass tracker's targets of layer `run` of each surface of `state`, the views made for them
 /// and their samples; targets in another format than their textures' draw into twins, added to
 /// `twins`.
-pub fn layer_targets<B: Backend>(
+pub fn layer_targets<B: Gpu>(
     backend: &mut B,
     state: &pipe_framebuffer_state,
     run: u32,
@@ -713,7 +713,7 @@ pub fn layers(state: &pipe_framebuffer_state) -> u32 {
         .max(1)
 }
 
-unsafe extern "C" fn set_framebuffer_state<B: Backend>(
+unsafe extern "C" fn set_framebuffer_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *const pipe_framebuffer_state,
 ) {
@@ -760,7 +760,7 @@ unsafe extern "C" fn set_framebuffer_state<B: Backend>(
 
 /// Later draws see what earlier ones wrote, to targets or storage: the open pass ends (the host
 /// orders passes and dispatches after the ones before).
-unsafe extern "C" fn texture_barrier<B: Backend>(pipe: *mut pipe_context, _: c_uint) {
+unsafe extern "C" fn texture_barrier<B: Gpu>(pipe: *mut pipe_context, _: c_uint) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         let context = unsafe { Context::<B>::of(pipe) };

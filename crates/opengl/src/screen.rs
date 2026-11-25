@@ -5,7 +5,7 @@ use std::ffi::{CString, c_char, c_int, c_uint};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use wcontainers_gpu::{
-    Backend, Caps, DeviceStatus, Features, Format, FormatUse, Object, SLOT_KINDS,
+    Gpu, Caps, DeviceStatus, Features, Format, FormatUse, Object, SLOT_KINDS,
     SLOW_PATH_REASONS, SLOW_PATHS, SlotKind, TEXEL_BUFFER_TEXTURE_WIDTH,
 };
 use wcontainers_shaders::stage::STREAM_BUFFERS;
@@ -21,7 +21,7 @@ pub const DRIVER_NAME: &core::ffi::CStr = c"wcontainers";
 
 /// One screen: Gallium's struct first, so that a `pipe_screen` pointer is one to it.
 #[repr(C)]
-pub struct Screen<B: Backend> {
+pub struct Screen<B: Gpu> {
     base: pipe_screen,
     backend: Mutex<B>,
     /// Objects whose Gallium owner went, given back to the back end when it is next used (Mesa
@@ -37,7 +37,7 @@ pub struct Screen<B: Backend> {
     transfers: Box<u_transfer_vtbl>,
 }
 
-impl<B: Backend> Screen<B> {
+impl<B: Gpu> Screen<B> {
     /// # Safety
     /// `screen` is one this driver made.
     pub unsafe fn of<'a>(screen: *mut pipe_screen) -> &'a Screen<B> {
@@ -103,7 +103,7 @@ pub fn whole<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Warns once of each slow path the first time it is taken, on the process's error output.
-fn warn_slow_paths<B: Backend>(backend: &mut B) {
+fn warn_slow_paths<B: Gpu>(backend: &mut B) {
     for path in backend.slow_paths().take_warnings() {
         eprintln!(
             "{}: slow path: {}",
@@ -114,7 +114,7 @@ fn warn_slow_paths<B: Backend>(backend: &mut B) {
 }
 
 /// Every slow path the screen's device took, with how many times, for the end of its life.
-fn slow_path_counts<B: Backend>(backend: &mut B) -> Vec<(&'static str, u64)> {
+fn slow_path_counts<B: Gpu>(backend: &mut B) -> Vec<(&'static str, u64)> {
     let paths = backend.slow_paths();
     SLOW_PATHS
         .iter()
@@ -123,7 +123,7 @@ fn slow_path_counts<B: Backend>(backend: &mut B) -> Vec<(&'static str, u64)> {
         .collect()
 }
 
-unsafe extern "C" fn destroy<B: Backend>(screen: *mut pipe_screen) {
+unsafe extern "C" fn destroy<B: Gpu>(screen: *mut pipe_screen) {
     crate::state::guest_call(std::ptr::null_mut(), (), move || {
         // SAFETY: Mesa destroys the screen it was given once.
         let screen = unsafe { Box::from_raw(screen.cast::<Screen<B>>()) };
@@ -146,12 +146,12 @@ extern "C" fn name(_: *mut pipe_screen) -> *const c_char {
     DRIVER_NAME.as_ptr()
 }
 
-unsafe extern "C" fn device_name<B: Backend>(screen: *mut pipe_screen) -> *const c_char {
+unsafe extern "C" fn device_name<B: Gpu>(screen: *mut pipe_screen) -> *const c_char {
     // SAFETY: Mesa passes this driver's screen; the name lives as long as it.
     unsafe { Screen::<B>::of(screen) }.name.as_ptr()
 }
 
-unsafe extern "C" fn is_format_supported<B: Backend>(
+unsafe extern "C" fn is_format_supported<B: Gpu>(
     screen: *mut pipe_screen,
     format: pipe_format,
     target: pipe_texture_target,
@@ -594,7 +594,7 @@ pub extern "C" fn wcontainers_screen_create() -> *mut pipe_screen {
 
 #[cfg(test)]
 mod tests {
-    use wcontainers_gpu::{Backend, SlowPath};
+    use wcontainers_gpu::{Gpu, SlowPath};
     use wcontainers_gpu_test::Recorder;
 
     use super::*;

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use wcontainers_gpu::{
-    AddressMode, Backend, BlendComponent, BlendDesc, BlendFactor, BlendOp, BorderColor,
+    AddressMode, Gpu, BlendComponent, BlendDesc, BlendFactor, BlendOp, BorderColor,
     ColorWrites, CompareFn, CullMode, DepthStencilDesc, Features, FillMode, Filter, FrontFace,
     LogicOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, ProvokingVertex, RasterDesc,
     RenderTargetBlend, SamplerDesc, SlowPath, StencilFace, StencilOp, StepMode, VertexAttribute,
@@ -166,7 +166,7 @@ impl Default for ShaderBuffer {
 }
 
 /// What one stage has bound.
-pub struct StageState<B: Backend> {
+pub struct StageState<B: Gpu> {
     pub constants: Vec<Constants>,
     pub views: Vec<*mut pipe_sampler_view>,
     pub samplers: Vec<*const Sampler<B>>,
@@ -176,7 +176,7 @@ pub struct StageState<B: Backend> {
     pub shader: *const Shader,
 }
 
-impl<B: Backend> Default for StageState<B> {
+impl<B: Gpu> Default for StageState<B> {
     fn default() -> Self {
         StageState {
             constants: (0..PIPE_MAX_CONSTANT_BUFFERS)
@@ -193,7 +193,7 @@ impl<B: Backend> Default for StageState<B> {
     }
 }
 
-impl<B: Backend> StageState<B> {
+impl<B: Gpu> StageState<B> {
     /// Drops the references the storage buffers and images hold.
     fn release_storage(&mut self) {
         for buffer in &mut self.buffers {
@@ -208,15 +208,15 @@ impl<B: Backend> StageState<B> {
 }
 
 /// Every stage's bindings.
-pub struct Stages<B: Backend>(pub [StageState<B>; Stage::ALL.len()]);
+pub struct Stages<B: Gpu>(pub [StageState<B>; Stage::ALL.len()]);
 
-impl<B: Backend> Default for Stages<B> {
+impl<B: Gpu> Default for Stages<B> {
     fn default() -> Self {
         Stages(std::array::from_fn(|_| StageState::default()))
     }
 }
 
-impl<B: Backend> Stages<B> {
+impl<B: Gpu> Stages<B> {
     pub fn get(&self, stage: Stage) -> &StageState<B> {
         &self.0[stage as usize]
     }
@@ -238,7 +238,7 @@ pub struct VertexBuffer {
 }
 
 /// The state set between draws that is not a stage's.
-pub struct Bound<B: Backend> {
+pub struct Bound<B: Gpu> {
     pub blend: *const Blend,
     pub depth_stencil: *const DepthStencil<B>,
     pub raster: *const Raster<B>,
@@ -253,7 +253,7 @@ pub struct Bound<B: Backend> {
     pub patch_vertices: u8,
 }
 
-impl<B: Backend> Default for Bound<B> {
+impl<B: Gpu> Default for Bound<B> {
     fn default() -> Self {
         Bound {
             blend: std::ptr::null(),
@@ -271,7 +271,7 @@ impl<B: Backend> Default for Bound<B> {
     }
 }
 
-impl<B: Backend> Bound<B> {
+impl<B: Gpu> Bound<B> {
     /// Drops the references the bound vertex streams hold.
     pub fn release(&mut self) {
         for stream in self.vertex_buffers.drain(..) {
@@ -287,7 +287,7 @@ pub struct Blend {
     pub desc: BlendDesc,
 }
 
-pub struct DepthStencil<B: Backend> {
+pub struct DepthStencil<B: Gpu> {
     pub block: B::DepthStencil,
     pub depth: bool,
     pub stencil: bool,
@@ -299,7 +299,7 @@ pub struct DepthStencil<B: Backend> {
     pub faces: Option<[B::DepthStencil; 2]>,
 }
 
-pub struct Raster<B: Backend> {
+pub struct Raster<B: Gpu> {
     pub block: B::Raster,
     /// What `block` was made from, for the blocks of other sample masks.
     pub desc: RasterDesc,
@@ -324,7 +324,7 @@ pub struct Raster<B: Backend> {
     pub point_coord_down: bool,
 }
 
-pub struct Sampler<B: Backend> {
+pub struct Sampler<B: Gpu> {
     pub sampler: B::Sampler,
     /// How it samples an integer texture, by the nearest texel's load: none for wraps such loads
     /// do not make (the mirrored clamp).
@@ -338,7 +338,7 @@ pub struct Sampler<B: Backend> {
     pub lod_bias: f32,
 }
 
-pub struct Elements<B: Backend> {
+pub struct Elements<B: Gpu> {
     pub desc: VertexLayoutDesc,
     /// The streams the elements read.
     pub streams: u32,
@@ -354,7 +354,7 @@ pub struct Elements<B: Backend> {
     pub packed: Vec<(u32, Packed)>,
 }
 
-impl<B: Backend> Elements<B> {
+impl<B: Gpu> Elements<B> {
     /// The format each input reads, by location.
     pub fn format(&self, location: u32) -> Option<VertexFormat> {
         self.desc
@@ -410,7 +410,7 @@ impl<B: Backend> Elements<B> {
 pub const VERTEX_ALIGNMENT: u32 = wgpu::VERTEX_ALIGNMENT as u32;
 
 /// Why the back end cannot read `element` from its stream itself, if it cannot.
-fn pulled_because<B: Backend>(backend: &B, element: &pipe_vertex_element) -> Option<SlowPath> {
+fn pulled_because<B: Gpu>(backend: &B, element: &pipe_vertex_element) -> Option<SlowPath> {
     let stride = element.src_stride;
     let offset = u32::from(element.src_offset);
     let bytes = resource::block_bytes(pipe_format::from(element.src_format));
@@ -615,7 +615,7 @@ unsafe extern "C" fn create_blend_state(
     })
 }
 
-unsafe extern "C" fn bind_blend_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+unsafe extern "C" fn bind_blend_state<B: Gpu>(pipe: *mut pipe_context, state: *mut c_void) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         unsafe { Context::<B>::of(pipe) }.bound.blend = state.cast();
@@ -638,7 +638,7 @@ fn face(state: &pipe_stencil_state) -> StencilFace {
     }
 }
 
-unsafe extern "C" fn create_depth_stencil_alpha_state<B: Backend>(
+unsafe extern "C" fn create_depth_stencil_alpha_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *const pipe_depth_stencil_alpha_state,
 ) -> *mut c_void {
@@ -695,7 +695,7 @@ unsafe extern "C" fn create_depth_stencil_alpha_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn bind_depth_stencil_alpha_state<B: Backend>(
+unsafe extern "C" fn bind_depth_stencil_alpha_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *mut c_void,
 ) {
@@ -705,7 +705,7 @@ unsafe extern "C" fn bind_depth_stencil_alpha_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn delete_depth_stencil_alpha_state<B: Backend>(
+unsafe extern "C" fn delete_depth_stencil_alpha_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *mut c_void,
 ) {
@@ -745,7 +745,7 @@ fn fill_mode(mode: c_uint) -> FillMode {
 /// two steps, as Mesa's Direct3D 12 and Zink drivers take it.
 const DEPTH_STEPS_PER_OFFSET_UNIT: f32 = 2.0;
 
-unsafe extern "C" fn create_rasterizer_state<B: Backend>(
+unsafe extern "C" fn create_rasterizer_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *const pipe_rasterizer_state,
 ) -> *mut c_void {
@@ -839,7 +839,7 @@ unsafe extern "C" fn create_rasterizer_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn bind_rasterizer_state<B: Backend>(
+unsafe extern "C" fn bind_rasterizer_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *mut c_void,
 ) {
@@ -849,7 +849,7 @@ unsafe extern "C" fn bind_rasterizer_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn delete_rasterizer_state<B: Backend>(
+unsafe extern "C" fn delete_rasterizer_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *mut c_void,
 ) {
@@ -908,7 +908,7 @@ fn border(color: [f32; COLOR_CHANNELS]) -> BorderColor {
     }
 }
 
-unsafe extern "C" fn create_sampler_state<B: Backend>(
+unsafe extern "C" fn create_sampler_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *const pipe_sampler_state,
 ) -> *mut c_void {
@@ -989,7 +989,7 @@ unsafe extern "C" fn create_sampler_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn delete_sampler_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+unsafe extern "C" fn delete_sampler_state<B: Gpu>(pipe: *mut pipe_context, state: *mut c_void) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: made by create_sampler_state, deleted once, on this driver's context.
         let (context, state) =
@@ -1000,7 +1000,7 @@ unsafe extern "C" fn delete_sampler_state<B: Backend>(pipe: *mut pipe_context, s
     })
 }
 
-unsafe extern "C" fn bind_sampler_states<B: Backend>(
+unsafe extern "C" fn bind_sampler_states<B: Gpu>(
     pipe: *mut pipe_context,
     shader: mesa_shader_stage,
     start: c_uint,
@@ -1025,7 +1025,7 @@ unsafe extern "C" fn bind_sampler_states<B: Backend>(
     })
 }
 
-unsafe extern "C" fn create_vertex_elements_state<B: Backend>(
+unsafe extern "C" fn create_vertex_elements_state<B: Gpu>(
     pipe: *mut pipe_context,
     count: c_uint,
     elements: *const pipe_vertex_element,
@@ -1091,7 +1091,7 @@ unsafe extern "C" fn create_vertex_elements_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn bind_vertex_elements_state<B: Backend>(
+unsafe extern "C" fn bind_vertex_elements_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *mut c_void,
 ) {
@@ -1101,7 +1101,7 @@ unsafe extern "C" fn bind_vertex_elements_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn delete_vertex_elements_state<B: Backend>(
+unsafe extern "C" fn delete_vertex_elements_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *mut c_void,
 ) {
@@ -1117,7 +1117,7 @@ unsafe extern "C" fn delete_vertex_elements_state<B: Backend>(
 
 /// Takes the NIR st/mesa hands over (or Mesa's own converter makes of a TGSI program, which
 /// Gallium's helpers hand over) in the shape every variant starts from.
-fn create_shader<B: Backend>(
+fn create_shader<B: Gpu>(
     pipe: *mut pipe_context,
     ir: pipe_shader_ir,
     program: *const c_void,
@@ -1221,7 +1221,7 @@ fn create_shader<B: Backend>(
 }
 
 /// A graphics stage's program: its NIR, or its TGSI tokens.
-fn create_stage<B: Backend>(
+fn create_stage<B: Gpu>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
     stage: Stage,
@@ -1237,7 +1237,7 @@ fn create_stage<B: Backend>(
     create_shader::<B>(pipe, state.type_, program, stage)
 }
 
-unsafe extern "C" fn create_vs_state<B: Backend>(
+unsafe extern "C" fn create_vs_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
@@ -1246,7 +1246,7 @@ unsafe extern "C" fn create_vs_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn create_fs_state<B: Backend>(
+unsafe extern "C" fn create_fs_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
@@ -1255,7 +1255,7 @@ unsafe extern "C" fn create_fs_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn create_gs_state<B: Backend>(
+unsafe extern "C" fn create_gs_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
@@ -1264,7 +1264,7 @@ unsafe extern "C" fn create_gs_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn bind_gs_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+unsafe extern "C" fn bind_gs_state<B: Gpu>(pipe: *mut pipe_context, state: *mut c_void) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         unsafe { Context::<B>::of(pipe) }
@@ -1274,7 +1274,7 @@ unsafe extern "C" fn bind_gs_state<B: Backend>(pipe: *mut pipe_context, state: *
     })
 }
 
-unsafe extern "C" fn create_tcs_state<B: Backend>(
+unsafe extern "C" fn create_tcs_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
@@ -1283,7 +1283,7 @@ unsafe extern "C" fn create_tcs_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn bind_tcs_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+unsafe extern "C" fn bind_tcs_state<B: Gpu>(pipe: *mut pipe_context, state: *mut c_void) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         unsafe { Context::<B>::of(pipe) }
@@ -1293,7 +1293,7 @@ unsafe extern "C" fn bind_tcs_state<B: Backend>(pipe: *mut pipe_context, state: 
     })
 }
 
-unsafe extern "C" fn create_tes_state<B: Backend>(
+unsafe extern "C" fn create_tes_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *const pipe_shader_state,
 ) -> *mut c_void {
@@ -1302,7 +1302,7 @@ unsafe extern "C" fn create_tes_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn bind_tes_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+unsafe extern "C" fn bind_tes_state<B: Gpu>(pipe: *mut pipe_context, state: *mut c_void) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         unsafe { Context::<B>::of(pipe) }
@@ -1312,14 +1312,14 @@ unsafe extern "C" fn bind_tes_state<B: Backend>(pipe: *mut pipe_context, state: 
     })
 }
 
-unsafe extern "C" fn set_patch_vertices<B: Backend>(pipe: *mut pipe_context, vertices: u8) {
+unsafe extern "C" fn set_patch_vertices<B: Gpu>(pipe: *mut pipe_context, vertices: u8) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         unsafe { Context::<B>::of(pipe) }.bound.patch_vertices = vertices;
     })
 }
 
-unsafe extern "C" fn create_compute_state<B: Backend>(
+unsafe extern "C" fn create_compute_state<B: Gpu>(
     pipe: *mut pipe_context,
     state: *const pipe_compute_state,
 ) -> *mut c_void {
@@ -1330,7 +1330,7 @@ unsafe extern "C" fn create_compute_state<B: Backend>(
     })
 }
 
-unsafe extern "C" fn bind_compute_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+unsafe extern "C" fn bind_compute_state<B: Gpu>(pipe: *mut pipe_context, state: *mut c_void) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         unsafe { Context::<B>::of(pipe) }
@@ -1340,7 +1340,7 @@ unsafe extern "C" fn bind_compute_state<B: Backend>(pipe: *mut pipe_context, sta
     })
 }
 
-unsafe extern "C" fn bind_vs_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+unsafe extern "C" fn bind_vs_state<B: Gpu>(pipe: *mut pipe_context, state: *mut c_void) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         unsafe { Context::<B>::of(pipe) }
@@ -1350,7 +1350,7 @@ unsafe extern "C" fn bind_vs_state<B: Backend>(pipe: *mut pipe_context, state: *
     })
 }
 
-unsafe extern "C" fn bind_fs_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+unsafe extern "C" fn bind_fs_state<B: Gpu>(pipe: *mut pipe_context, state: *mut c_void) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         unsafe { Context::<B>::of(pipe) }
@@ -1360,7 +1360,7 @@ unsafe extern "C" fn bind_fs_state<B: Backend>(pipe: *mut pipe_context, state: *
     })
 }
 
-unsafe extern "C" fn delete_shader_state<B: Backend>(pipe: *mut pipe_context, state: *mut c_void) {
+unsafe extern "C" fn delete_shader_state<B: Gpu>(pipe: *mut pipe_context, state: *mut c_void) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context and a shader it made, deleted once.
         let (context, shader) = unsafe { (Context::<B>::of(pipe), drop_object::<Shader>(state)) };
@@ -1375,7 +1375,7 @@ unsafe extern "C" fn delete_shader_state<B: Backend>(pipe: *mut pipe_context, st
     })
 }
 
-unsafe extern "C" fn set_blend_color<B: Backend>(
+unsafe extern "C" fn set_blend_color<B: Gpu>(
     pipe: *mut pipe_context,
     color: *const pipe_blend_color,
 ) {
@@ -1386,14 +1386,14 @@ unsafe extern "C" fn set_blend_color<B: Backend>(
     })
 }
 
-unsafe extern "C" fn set_stencil_ref<B: Backend>(pipe: *mut pipe_context, value: pipe_stencil_ref) {
+unsafe extern "C" fn set_stencil_ref<B: Gpu>(pipe: *mut pipe_context, value: pipe_stencil_ref) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         unsafe { Context::<B>::of(pipe) }.bound.stencil_ref = value.ref_value;
     })
 }
 
-unsafe extern "C" fn set_sample_mask<B: Backend>(pipe: *mut pipe_context, mask: c_uint) {
+unsafe extern "C" fn set_sample_mask<B: Gpu>(pipe: *mut pipe_context, mask: c_uint) {
     crate::state::guest_call(pipe, (), move || {
         // SAFETY: Mesa passes this driver's context.
         unsafe { Context::<B>::of(pipe) }.bound.sample_mask = mask;
@@ -1403,7 +1403,7 @@ unsafe extern "C" fn set_sample_mask<B: Backend>(pipe: *mut pipe_context, mask: 
 /// User clip planes are lowered into the programs by st/mesa (the screen reports none).
 extern "C" fn set_clip_state(_: *mut pipe_context, _: *const pipe_clip_state) {}
 
-unsafe extern "C" fn set_constant_buffer<B: Backend>(
+unsafe extern "C" fn set_constant_buffer<B: Gpu>(
     pipe: *mut pipe_context,
     shader: mesa_shader_stage,
     index: c_uint,
@@ -1459,7 +1459,7 @@ unsafe extern "C" fn set_constant_buffer<B: Backend>(
     })
 }
 
-unsafe extern "C" fn set_scissor_states<B: Backend>(
+unsafe extern "C" fn set_scissor_states<B: Gpu>(
     pipe: *mut pipe_context,
     start: c_uint,
     count: c_uint,
@@ -1473,7 +1473,7 @@ unsafe extern "C" fn set_scissor_states<B: Backend>(
     })
 }
 
-unsafe extern "C" fn set_viewport_states<B: Backend>(
+unsafe extern "C" fn set_viewport_states<B: Gpu>(
     pipe: *mut pipe_context,
     start: c_uint,
     count: c_uint,
@@ -1487,7 +1487,7 @@ unsafe extern "C" fn set_viewport_states<B: Backend>(
     })
 }
 
-unsafe extern "C" fn set_sampler_views<B: Backend>(
+unsafe extern "C" fn set_sampler_views<B: Gpu>(
     pipe: *mut pipe_context,
     shader: mesa_shader_stage,
     start: c_uint,
@@ -1515,7 +1515,7 @@ unsafe extern "C" fn set_sampler_views<B: Backend>(
     })
 }
 
-unsafe extern "C" fn set_shader_buffers<B: Backend>(
+unsafe extern "C" fn set_shader_buffers<B: Gpu>(
     pipe: *mut pipe_context,
     shader: mesa_shader_stage,
     start: c_uint,
@@ -1552,7 +1552,7 @@ unsafe extern "C" fn set_shader_buffers<B: Backend>(
     })
 }
 
-unsafe extern "C" fn set_shader_images<B: Backend>(
+unsafe extern "C" fn set_shader_images<B: Gpu>(
     pipe: *mut pipe_context,
     shader: mesa_shader_stage,
     start: c_uint,
@@ -1592,7 +1592,7 @@ unsafe extern "C" fn set_shader_images<B: Backend>(
     })
 }
 
-unsafe extern "C" fn set_vertex_buffers<B: Backend>(
+unsafe extern "C" fn set_vertex_buffers<B: Gpu>(
     pipe: *mut pipe_context,
     count: c_uint,
     buffers: *const pipe_vertex_buffer,
@@ -1632,7 +1632,7 @@ unsafe extern "C" fn set_vertex_buffers<B: Backend>(
 }
 
 /// Fills the context's state entry points.
-pub fn fill<B: Backend>(c: &mut pipe_context) {
+pub fn fill<B: Gpu>(c: &mut pipe_context) {
     c.create_blend_state = Some(create_blend_state);
     c.bind_blend_state = Some(bind_blend_state::<B>);
     c.delete_blend_state = Some(delete_blend_state);

@@ -5,7 +5,7 @@ use std::ffi::{c_uint, c_void};
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferUsage, CopyBufferTexture, Extent, FORMAT_FACTS, Format, FormatKind,
+    Gpu, BufferDesc, BufferUsage, CopyBufferTexture, Extent, FORMAT_FACTS, Format, FormatKind,
     FormatUse, MapIntent, Object, Origin, ReadSource, STORAGE_WORD, TextureDesc, TextureDimension,
     TextureRegion, TextureUsage, WriteMode,
 };
@@ -17,7 +17,7 @@ use crate::screen::Screen;
 use zerocopy::IntoBytes;
 
 /// What a resource holds on the back end.
-pub enum Storage<B: Backend> {
+pub enum Storage<B: Gpu> {
     Buffer(B::Buffer),
     Texture {
         texture: B::Texture,
@@ -30,12 +30,12 @@ pub enum Storage<B: Backend> {
 
 /// One resource: Gallium's struct first, so that a `pipe_resource` pointer is one to it.
 #[repr(C)]
-pub struct Resource<B: Backend> {
+pub struct Resource<B: Gpu> {
     pub base: pipe_resource,
     pub storage: Storage<B>,
 }
 
-impl<B: Backend> Resource<B> {
+impl<B: Gpu> Resource<B> {
     /// # Safety
     /// `resource` is one this driver made, alive for `'a`.
     pub unsafe fn of<'a>(resource: *mut pipe_resource) -> &'a Resource<B> {
@@ -152,7 +152,7 @@ const BUFFER_USAGE: BufferUsage = BufferUsage::VERTEX
     .union(BufferUsage::READ_BACK);
 
 /// The interface's texture of a Gallium template, if the interface holds its format and shape.
-fn texture_desc<B: Backend>(screen: &Screen<B>, template: &pipe_resource) -> Option<TextureDesc> {
+fn texture_desc<B: Gpu>(screen: &Screen<B>, template: &pipe_resource) -> Option<TextureDesc> {
     let format = format::format(template.format())?;
     let uses = screen.caps().formats.uses[format as usize];
     let mut usage = TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
@@ -191,7 +191,7 @@ fn texture_desc<B: Backend>(screen: &Screen<B>, template: &pipe_resource) -> Opt
 }
 
 /// `pipe_screen::resource_create`.
-pub unsafe extern "C" fn resource_create<B: Backend>(
+pub unsafe extern "C" fn resource_create<B: Gpu>(
     screen: *mut pipe_screen,
     template: *const pipe_resource,
 ) -> *mut pipe_resource {
@@ -258,7 +258,7 @@ fn screen_name() -> std::borrow::Cow<'static, str> {
 }
 
 /// `pipe_screen::resource_destroy`. The back end's object goes when the device is next used.
-pub unsafe extern "C" fn resource_destroy<B: Backend>(
+pub unsafe extern "C" fn resource_destroy<B: Gpu>(
     screen: *mut pipe_screen,
     resource: *mut pipe_resource,
 ) {
@@ -342,14 +342,14 @@ unsafe fn transfer(
 }
 
 /// Closes the context's open pass, as every read back and copy needs.
-fn outside_pass<B: Backend>(context: &mut Context<B>, backend: &mut B) {
+fn outside_pass<B: Gpu>(context: &mut Context<B>, backend: &mut B) {
     if let Err(error) = context.tracker.close(backend) {
         crate::state::refuse(format_args!("closing a pass: {error:?}"));
     }
 }
 
 /// `pipe_context::buffer_map`.
-pub unsafe extern "C" fn buffer_map<B: Backend>(
+pub unsafe extern "C" fn buffer_map<B: Gpu>(
     pipe: *mut pipe_context,
     resource: *mut pipe_resource,
     level: c_uint,
@@ -402,7 +402,7 @@ pub unsafe extern "C" fn buffer_map<B: Backend>(
 }
 
 /// Writes `range` (bytes from the map's start) of a buffer map.
-fn write_mapped_buffer<B: Backend>(
+fn write_mapped_buffer<B: Gpu>(
     context: &mut Context<B>,
     transfer: &mut Transfer,
     range: std::ops::Range<usize>,
@@ -425,7 +425,7 @@ fn write_mapped_buffer<B: Backend>(
 }
 
 /// `pipe_context::transfer_flush_region`: `area` is relative to the map.
-pub unsafe extern "C" fn transfer_flush_region<B: Backend>(
+pub unsafe extern "C" fn transfer_flush_region<B: Gpu>(
     pipe: *mut pipe_context,
     transfer: *mut pipe_transfer,
     area: *const pipe_box,
@@ -480,7 +480,7 @@ pub unsafe extern "C" fn transfer_flush_region<B: Backend>(
 
 /// `pipe_context::buffer_unmap`: writes what was mapped for writing, unless the caller flushed
 /// its parts itself.
-pub unsafe extern "C" fn buffer_unmap<B: Backend>(
+pub unsafe extern "C" fn buffer_unmap<B: Gpu>(
     pipe: *mut pipe_context,
     transfer: *mut pipe_transfer,
 ) {
@@ -503,7 +503,7 @@ pub unsafe extern "C" fn buffer_unmap<B: Backend>(
 }
 
 /// `pipe_context::buffer_subdata`: written from the caller's bytes, with no copy before.
-pub unsafe extern "C" fn buffer_subdata<B: Backend>(
+pub unsafe extern "C" fn buffer_subdata<B: Gpu>(
     pipe: *mut pipe_context,
     resource: *mut pipe_resource,
     usage: c_uint,
@@ -552,7 +552,7 @@ fn box_layout(format: pipe_format, area: &pipe_box) -> (u32, u32) {
 }
 
 /// The texels of one map or write: a level's region and its size.
-fn region_of<'a, B: Backend>(
+fn region_of<'a, B: Gpu>(
     texture: &'a B::Texture,
     desc: &TextureDesc,
     level: c_uint,
@@ -640,7 +640,7 @@ fn split_depth_stencil(format: Format, texels: &[u8]) -> (Vec<u8>, Vec<u8>) {
 
 /// `pipe_context::texture_map` of a single-sampled texture (the screen's transfer helper maps
 /// multisampled ones through one).
-pub unsafe extern "C" fn texture_map<B: Backend>(
+pub unsafe extern "C" fn texture_map<B: Gpu>(
     pipe: *mut pipe_context,
     resource: *mut pipe_resource,
     level: c_uint,
@@ -703,7 +703,7 @@ pub unsafe extern "C" fn texture_map<B: Backend>(
     clippy::too_many_arguments,
     reason = "one write of Gallium's, unpacked"
 )]
-fn write_texels<B: Backend>(
+fn write_texels<B: Gpu>(
     context: &mut Context<B>,
     resource: &Resource<B>,
     level: c_uint,
@@ -761,7 +761,7 @@ fn write_texels<B: Backend>(
     clippy::too_many_arguments,
     reason = "one write of Gallium's, unpacked"
 )]
-fn write_aspect<B: Backend>(
+fn write_aspect<B: Gpu>(
     context: &mut Context<B>,
     desc: &TextureDesc,
     region: &TextureRegion<'_, B>,
@@ -816,7 +816,7 @@ fn write_aspect<B: Backend>(
 
 /// `pipe_context::texture_unmap`: writes what was mapped for writing, unless the caller flushed
 /// its parts itself.
-pub unsafe extern "C" fn texture_unmap<B: Backend>(
+pub unsafe extern "C" fn texture_unmap<B: Gpu>(
     pipe: *mut pipe_context,
     transfer: *mut pipe_transfer,
 ) {
@@ -855,7 +855,7 @@ pub unsafe extern "C" fn texture_unmap<B: Backend>(
 
 /// `pipe_context::texture_subdata`: written from the caller's bytes.
 #[allow(clippy::too_many_arguments, reason = "Gallium's signature")]
-pub unsafe extern "C" fn texture_subdata<B: Backend>(
+pub unsafe extern "C" fn texture_subdata<B: Gpu>(
     pipe: *mut pipe_context,
     resource: *mut pipe_resource,
     level: c_uint,

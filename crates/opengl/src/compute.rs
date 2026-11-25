@@ -1,6 +1,6 @@
 //! Dispatches: the compute program converted by the NIR route, its resources bound as a draw's.
 
-use wcontainers_gpu::{Backend, DispatchCall, DispatchGroups, Object, Program, SlowPath, StageSet};
+use wcontainers_gpu::{Gpu, DispatchCall, DispatchGroups, Object, Program, SlowPath, StageSet};
 
 use crate::context::{Context, end_if_lost};
 use crate::draw::{self, Variant};
@@ -10,7 +10,7 @@ use crate::state::{Stage, refuse, refused};
 use crate::view::Images;
 
 /// `pipe_context::launch_grid`.
-pub unsafe extern "C" fn launch_grid<B: Backend>(
+pub unsafe extern "C" fn launch_grid<B: Gpu>(
     pipe: *mut pipe_context,
     info: *const pipe_grid_info,
 ) {
@@ -23,7 +23,7 @@ pub unsafe extern "C" fn launch_grid<B: Backend>(
     })
 }
 
-fn dispatch<B: Backend>(context: &mut Context<B>, info: &pipe_grid_info) -> Result<(), String> {
+fn dispatch<B: Gpu>(context: &mut Context<B>, info: &pipe_grid_info) -> Result<(), String> {
     let shader = context.stages.get(Stage::Compute).shader;
     if shader.is_null() {
         return refused(format_args!("a dispatch without a compute program"));

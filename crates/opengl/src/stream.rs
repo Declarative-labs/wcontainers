@@ -5,7 +5,7 @@ use std::ffi::c_uint;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use wcontainers_gpu::{
-    Backend, BufferDesc, BufferRange, BufferUsage, Interpolation, MapIntent, Object, STORAGE_WORD,
+    Gpu, BufferDesc, BufferRange, BufferUsage, Interpolation, MapIntent, Object, STORAGE_WORD,
     ScalarKind, StageValue, SystemValue, WriteMode,
 };
 use wcontainers_nir::mesa::StreamedOutput;
@@ -133,7 +133,7 @@ pub fn outputs(module: &naga::Module) -> Vec<StageValue> {
 
 /// One stream output target: Gallium's struct first, so that a pointer to it is one to this.
 #[repr(C)]
-pub struct Target<B: Backend> {
+pub struct Target<B: Gpu> {
     base: pipe_stream_output_target,
     /// The bytes written from the bound range's start while the target is not bound, one word.
     filled: B::Buffer,
@@ -144,12 +144,12 @@ pub struct Target<B: Backend> {
 
 /// The targets bound, and the stage helper's block of filled sizes and statistics, which holds
 /// theirs while they are bound.
-pub struct Bound<B: Backend> {
+pub struct Bound<B: Gpu> {
     targets: [*mut pipe_stream_output_target; STREAM_BUFFERS],
     pub filled: Option<B::Buffer>,
 }
 
-impl<B: Backend> Default for Bound<B> {
+impl<B: Gpu> Default for Bound<B> {
     fn default() -> Self {
         Bound {
             targets: [std::ptr::null_mut(); STREAM_BUFFERS],
@@ -158,7 +158,7 @@ impl<B: Backend> Default for Bound<B> {
     }
 }
 
-impl<B: Backend> Bound<B> {
+impl<B: Gpu> Bound<B> {
     pub fn active(&self) -> bool {
         self.targets.iter().any(|t| !t.is_null())
     }
@@ -229,7 +229,7 @@ const COUNTER_USAGE: BufferUsage = BufferUsage::STORAGE
     .union(BufferUsage::READ_BACK);
 
 /// The stage helper's block of filled sizes and statistics.
-fn block<B: Backend>(backend: &mut B) -> Result<B::Buffer, String> {
+fn block<B: Gpu>(backend: &mut B) -> Result<B::Buffer, String> {
     backend
         .create_buffer(&BufferDesc {
             size: STREAM_FILLED_WORDS as u64 * STORAGE_WORD,
@@ -240,7 +240,7 @@ fn block<B: Backend>(backend: &mut B) -> Result<B::Buffer, String> {
 }
 
 /// `pipe_context::create_stream_output_target`.
-pub unsafe extern "C" fn create_stream_output_target<B: Backend>(
+pub unsafe extern "C" fn create_stream_output_target<B: Gpu>(
     pipe: *mut pipe_context,
     buffer: *mut pipe_resource,
     offset: c_uint,
@@ -277,7 +277,7 @@ pub unsafe extern "C" fn create_stream_output_target<B: Backend>(
 }
 
 /// `pipe_context::stream_output_target_destroy`, when its last reference goes.
-pub unsafe extern "C" fn stream_output_target_destroy<B: Backend>(
+pub unsafe extern "C" fn stream_output_target_destroy<B: Gpu>(
     pipe: *mut pipe_context,
     target: *mut pipe_stream_output_target,
 ) {
@@ -299,7 +299,7 @@ pub unsafe extern "C" fn stream_output_target_destroy<B: Backend>(
 ///
 /// # Safety
 /// `target` is null or a live target of this driver holding the reference dropped.
-unsafe fn unreference<B: Backend>(
+unsafe fn unreference<B: Gpu>(
     target: *mut pipe_stream_output_target,
     screen: &crate::screen::Screen<B>,
 ) {
@@ -321,7 +321,7 @@ unsafe fn unreference<B: Backend>(
 
 /// `pipe_context::set_stream_output_targets`: each target unbound keeps its filled size in its
 /// own word; each bound goes on from it (`APPEND`) or starts at the offset given.
-pub unsafe extern "C" fn set_stream_output_targets<B: Backend>(
+pub unsafe extern "C" fn set_stream_output_targets<B: Gpu>(
     pipe: *mut pipe_context,
     count: c_uint,
     targets: *mut *mut pipe_stream_output_target,

@@ -6,7 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ffi::c_uint;
 
 use wcontainers_gpu::{
-    AddedBinding, AddressMode, Backend, BindingEntry, BindingResource, BlendDesc, BlendFactor,
+    AddedBinding, AddressMode, Gpu, BindingEntry, BindingResource, BlendDesc, BlendFactor,
     BorderColor, BufferDesc, BufferRange, BufferUsage, CountedDraw, CullMode,
     DOMAIN_PATCHES_BINDING, DOMAIN_POINTS_BINDING, DrawCall, DrawRange, FORMAT_FACTS, FanOrLoop,
     Features, FillMode, Filter, Format, FormatKind, FormatUse, FrontFace, HELPER_SET, HelperSlot,
@@ -38,7 +38,7 @@ use crate::view::{FETCHED_UNIT, IDENTITY, Images, View};
 use crate::{indices, outputs, query, stream};
 
 /// One stage's program converted for one variant, and what it binds.
-pub(crate) struct Built<B: Backend> {
+pub(crate) struct Built<B: Gpu> {
     /// The program drawn or dispatched; none for a control program, which only the stage helper
     /// runs.
     pub(crate) shader: Option<B::Shader>,
@@ -171,7 +171,7 @@ pub(crate) struct Variant {
 impl Variant {
     /// The variant of a program that only samples what `bound` binds (a compute program), and
     /// whether it rearranges what it samples.
-    pub(crate) fn sampling<B: Backend>(bound: &state::StageState<B>) -> (Variant, bool) {
+    pub(crate) fn sampling<B: Gpu>(bound: &state::StageState<B>) -> (Variant, bool) {
         let variant = Variant {
             swizzles: swizzles(bound),
             nearest: nearest_samplers(bound),
@@ -189,7 +189,7 @@ impl Variant {
 /// A value passed between stages at one location, and how it is interpolated.
 type Interpolated = (u32, Option<naga::Interpolation>, Option<naga::Sampling>);
 
-impl<B: Backend> Programs<B> {
+impl<B: Gpu> Programs<B> {
     /// `shader` converted for `variant`, converted now if it was not before.
     pub(crate) fn built_for(
         &mut self,
@@ -210,7 +210,7 @@ impl<B: Backend> Programs<B> {
 }
 
 /// The programs and blocks made so far, by what they were made from.
-pub struct Programs<B: Backend> {
+pub struct Programs<B: Gpu> {
     built: HashMap<(ShaderId, Variant), Built<B>>,
     programs: HashMap<(ShaderId, Variant, ShaderId, Variant), B::Program>,
     blends: HashMap<BlendDesc, B::Blend>,
@@ -257,14 +257,14 @@ struct Squares {
 
 /// A vertex program and the geometry program after it run by the stage helper, and the vertex
 /// layout a geometry program's output is drawn with.
-struct Staged<B: Backend> {
+struct Staged<B: Gpu> {
     stages: Stages<B>,
     layout: Option<B::VertexLayout>,
     /// Indices made on the host, and the buffer's bytes, grown as draws need.
     indices: Option<(B::Buffer, u64)>,
 }
 
-impl<B: Backend> Staged<B> {
+impl<B: Gpu> Staged<B> {
     fn destroy(self, backend: &mut B) {
         self.stages.destroy(backend);
         if let Some(layout) = self.layout {
@@ -300,7 +300,7 @@ impl<B: Backend> Staged<B> {
     }
 }
 
-impl<B: Backend> Default for Programs<B> {
+impl<B: Gpu> Default for Programs<B> {
     fn default() -> Self {
         Programs {
             built: HashMap::new(),
@@ -316,7 +316,7 @@ impl<B: Backend> Default for Programs<B> {
     }
 }
 
-impl<B: Backend> Programs<B> {
+impl<B: Gpu> Programs<B> {
     /// A shader state Mesa deleted, none of equal content left live: what was made of it is kept
     /// for one made again, and what was made of the longest deleted beyond [`KEPT_DELETED`] whose
     /// content no live state has is dropped.
@@ -535,7 +535,7 @@ fn vertex_kind(format: VertexFormat) -> naga::ScalarKind {
 /// `vertex` with each input whose stream holds another kind of value than the program reads
 /// fetched in the program, which keeps its bits as the declared kind (OpenGL leaves what such a
 /// program reads undefined; the host refuses the pipeline).
-fn fit_input_kinds<B: Backend>(
+fn fit_input_kinds<B: Gpu>(
     programs: &mut Programs<B>,
     backend: &mut B,
     shader: &Shader,
@@ -766,7 +766,7 @@ fn read_named_layer(module: &mut naga::Module, at: Option<u32>) {
 }
 
 /// One stage's program through the NIR route, for `variant`.
-fn convert<B: Backend>(
+fn convert<B: Gpu>(
     backend: &mut B,
     shader: &Shader,
     variant: &Variant,
@@ -942,7 +942,7 @@ fn convert<B: Backend>(
 /// A geometry program through route B in the stage helper's forms: its compute form, which each
 /// draw's stage helper is made from, and the pass-through vertex program the draw of its output
 /// runs, made here. Its outputs are written as the fragment program interpolates them.
-fn convert_geometry<B: Backend>(
+fn convert_geometry<B: Gpu>(
     backend: &mut B,
     nir: &mut wcontainers_nir::mesa::Nir,
     bindings: Vec<ReflectedBinding>,
@@ -1011,7 +1011,7 @@ fn convert_geometry<B: Backend>(
 
 /// A tessellation control program through route B in the stage helper's compute form, for input
 /// patches of `variant.points_in` control points and its evaluation program's tessellator.
-fn convert_control<B: Backend>(
+fn convert_control<B: Gpu>(
     nir: &mut wcontainers_nir::mesa::Nir,
     bindings: Vec<ReflectedBinding>,
     variant: &Variant,
@@ -1059,7 +1059,7 @@ fn convert_control<B: Backend>(
 /// A tessellation evaluation program through route B in the vertex form that draws the
 /// tessellated points, for patches of `variant.points_in` control points, its outputs written as
 /// the fragment program interpolates them; with the tessellator it declares.
-fn convert_evaluation<B: Backend>(
+fn convert_evaluation<B: Gpu>(
     backend: &mut B,
     nir: &mut wcontainers_nir::mesa::Nir,
     bindings: Vec<ReflectedBinding>,
@@ -1315,7 +1315,7 @@ fn second_source_of_alpha(factor: BlendFactor) -> BlendFactor {
 /// block's colour factors read the constant's colour and its alpha, for a constant whose colour is
 /// not its alpha, on a back end with no constant alpha factors but a second source, drawing into
 /// one target (`BlendInShader`).
-fn second_source_alpha<B: Backend>(
+fn second_source_alpha<B: Gpu>(
     backend: &B,
     desc: &BlendDesc,
     framebuffer: &pipe_framebuffer_state,
@@ -1363,7 +1363,7 @@ fn second_source_alpha<B: Backend>(
 /// constant's alpha is the constant factor (exact); a colour factor reading it is too where the
 /// constant is given its alpha in every channel, which a block whose colour factors also read the
 /// constant's colour allows only for a constant whose colour is its alpha.
-fn blend_for<B: Backend>(
+fn blend_for<B: Gpu>(
     programs: &mut Programs<B>,
     backend: &mut B,
     desc: &BlendDesc,
@@ -1435,7 +1435,7 @@ fn blend_for<B: Backend>(
 
 /// Where a uniform block's bytes come from: the next copy written to the ring, or a range of a
 /// buffer.
-enum Uniform<'a, B: Backend> {
+enum Uniform<'a, B: Gpu> {
     Copied,
     Range(&'a B::Buffer, u64, u64),
     /// A buffer of `made`'s, at this index, of this size.
@@ -1443,7 +1443,7 @@ enum Uniform<'a, B: Backend> {
 }
 
 /// A stream the vertex program fetches an input from itself.
-pub(crate) struct Pulled<'a, B: Backend> {
+pub(crate) struct Pulled<'a, B: Gpu> {
     location: u32,
     buffer: &'a B::Buffer,
     /// The bytes of the buffer that hold data.
@@ -1457,7 +1457,7 @@ pub(crate) struct Pulled<'a, B: Backend> {
 }
 
 /// The helper constants of `built` for a draw from `first_instance`, of the stage `bound`.
-fn helper_block<B: Backend>(
+fn helper_block<B: Gpu>(
     built: &Built<B>,
     bound: &state::StageState<B>,
     pulled: &[Pulled<'_, B>],
@@ -1585,7 +1585,7 @@ fn stage_visibility(stage: Stage, vertex_visible: StageSet) -> StageSet {
 
 /// The helper set of the stages' helper constants `blocks`, written to the ring; none without
 /// any.
-fn helper_set<B: Backend>(
+fn helper_set<B: Gpu>(
     backend: &mut B,
     blocks: &[(Stage, Vec<u8>)],
     vertex_visible: StageSet,
@@ -1623,7 +1623,7 @@ fn helper_set<B: Backend>(
 /// program's visible to `vertex_visible`. What images are bound through goes to `made`, to
 /// finish after the work that binds them (outside a pass where binding copies texels:
 /// [`close_for_copies`]).
-pub(crate) fn binding_sets<B: Backend>(
+pub(crate) fn binding_sets<B: Gpu>(
     backend: &mut B,
     stages: &state::Stages<B>,
     built: &[(Stage, &Built<B>)],
@@ -1925,7 +1925,7 @@ pub(crate) fn binding_sets<B: Backend>(
 
 /// The storage buffer bound at `index` of a stage, as the interface binds it: its range rounded
 /// to whole words, within the buffer and the back end's largest binding.
-fn storage_buffer<'a, B: Backend>(
+fn storage_buffer<'a, B: Gpu>(
     bound: &'a state::StageState<B>,
     index: u32,
     largest: u64,
@@ -1963,7 +1963,7 @@ enum ImageBinding {
 
 /// Whether the program reads and writes the image at storage binding `b` through a buffer of its
 /// texels (route B's `HelperValue::TexelLayout` of its slot).
-fn read_as_texels<B: Backend>(built: &Built<B>, b: &ReflectedBinding) -> bool {
+fn read_as_texels<B: Gpu>(built: &Built<B>, b: &ReflectedBinding) -> bool {
     built.helpers.iter().any(|h| {
         h.value
             == HelperValue::TexelLayout {
@@ -1974,7 +1974,7 @@ fn read_as_texels<B: Backend>(built: &Built<B>, b: &ReflectedBinding) -> bool {
 
 /// How each image the program binds is bound in `made`, by its unit, with whether the program
 /// may write it.
-fn image_views<B: Backend>(
+fn image_views<B: Gpu>(
     backend: &mut B,
     bound: &state::StageState<B>,
     built: &Built<B>,
@@ -2002,7 +2002,7 @@ fn image_views<B: Backend>(
 }
 
 /// The image bound at `unit` of a stage.
-fn bound_image<B: Backend>(
+fn bound_image<B: Gpu>(
     bound: &state::StageState<B>,
     unit: u32,
 ) -> Result<&pipe_image_view, &'static str> {
@@ -2015,7 +2015,7 @@ fn bound_image<B: Backend>(
 
 /// The stand-ins made for the views bound where a stage's program samples another kind of value
 /// than theirs ([`Images::stand_in`]), by binding.
-fn stand_ins<B: Backend>(
+fn stand_ins<B: Gpu>(
     backend: &mut B,
     bound: &state::StageState<B>,
     built: &Built<B>,
@@ -2046,7 +2046,7 @@ fn stand_ins<B: Backend>(
 
 /// Closes the open pass where binding the resources of `built`'s stages copies texels
 /// ([`binding_sets`]).
-fn close_for_copies<B: Backend>(
+fn close_for_copies<B: Gpu>(
     tracker: &mut PassTracker<B>,
     backend: &mut B,
     stages: &state::Stages<B>,
@@ -2065,7 +2065,7 @@ fn close_for_copies<B: Backend>(
 
 /// Whether binding a stage's resources copies texels, which is done outside a pass: a texture
 /// read from a copy of its texels, an image bound through a twin or a buffer of its texels.
-fn makes_copies<B: Backend>(bound: &state::StageState<B>, built: &Built<B>) -> bool {
+fn makes_copies<B: Gpu>(bound: &state::StageState<B>, built: &Built<B>) -> bool {
     built
         .bindings
         .iter()
@@ -2087,7 +2087,7 @@ fn makes_copies<B: Backend>(bound: &state::StageState<B>, built: &Built<B>) -> b
 }
 
 /// Whether a bound image views a buffer.
-fn views_buffer<B: Backend>(image: &pipe_image_view) -> bool {
+fn views_buffer<B: Gpu>(image: &pipe_image_view) -> bool {
     // SAFETY: a bound image holds a reference on a live resource.
     unsafe { Resource::<B>::of(image.resource) }
         .buffer()
@@ -2098,7 +2098,7 @@ fn views_buffer<B: Backend>(image: &pipe_image_view) -> bool {
 /// (`TexelBufferRoute::Storage`): from its view's offset rounded down to the back end's
 /// alignment `align` to the view's end rounded up to a word; and its
 /// `HelperValue::TexelBufferView`, the view's first byte in that range and its elements.
-fn image_buffer<'a, B: Backend + 'a>(
+fn image_buffer<'a, B: Gpu + 'a>(
     image: &'a pipe_image_view,
     align: u64,
 ) -> Result<(BufferRange<&'a B::Buffer>, [u32; 2]), String> {
@@ -2129,7 +2129,7 @@ fn image_buffer<'a, B: Backend + 'a>(
 }
 
 /// `pipe_context::draw_vbo`.
-pub unsafe extern "C" fn draw_vbo<B: Backend>(
+pub unsafe extern "C" fn draw_vbo<B: Gpu>(
     pipe: *mut pipe_context,
     info: *const pipe_draw_info,
     _: c_uint,
@@ -2179,7 +2179,7 @@ struct DrawElementsArguments {
 
 /// An indirect draw, its arguments read back now (`IndirectReadBack`) and drawn as a direct draw,
 /// so that every rewrite a direct draw takes applies to it.
-fn draw_indirect<B: Backend>(
+fn draw_indirect<B: Gpu>(
     context: &mut Context<B>,
     info: &pipe_draw_info,
     indirect: &pipe_draw_indirect_info,
@@ -2264,7 +2264,7 @@ fn draw_indirect<B: Backend>(
 
 /// One draw: the API's vertices drawn by the vertex program, or, behind a geometry program, what
 /// the stage helper made of them drawn by its pass-through program, with the fragment program.
-fn draw<B: Backend>(
+fn draw<B: Gpu>(
     context: &mut Context<B>,
     info: &pipe_draw_info,
     draws: &[pipe_draw_start_count_bias],
@@ -3114,7 +3114,7 @@ fn triangles(topology: Topology) -> bool {
 
 /// What the geometry stage made of one range of a draw: the stage helper's output, and the vertex
 /// layout it is drawn with.
-struct Made<B: Backend> {
+struct Made<B: Gpu> {
     out: FinalDraw<B>,
     layout: B::VertexLayout,
     /// Its geometry program names layers: it is drawn once a layer of a layered framebuffer
@@ -3133,7 +3133,7 @@ struct LayeredHelpers {
 impl LayeredHelpers {
     /// The helper set of run `run` of a framebuffer of `count` layers (zero where it is not
     /// layered: every primitive is then drawn in the one run, as OpenGL draws it).
-    fn set<B: Backend>(
+    fn set<B: Gpu>(
         &self,
         backend: &mut B,
         run: u32,
@@ -3164,7 +3164,7 @@ impl LayeredHelpers {
 const PASSTHROUGH_MODULE: usize = 1;
 
 /// The bytes of the helper block a geometry program's pass-through reads its run from.
-fn passthrough_helper_size<B: Backend>(built: &Built<B>) -> Result<u32, String> {
+fn passthrough_helper_size<B: Gpu>(built: &Built<B>) -> Result<u32, String> {
     let module = &built
         .converted
         .as_ref()
@@ -3186,7 +3186,7 @@ fn passthrough_helper_size<B: Backend>(built: &Built<B>) -> Result<u32, String> 
 
 /// The program a counted occlusion query draws a draw again with: the first stage's program, as
 /// drawn, and `counting`, the fragment program's variant of its counting form.
-fn counting_program<B: Backend>(
+fn counting_program<B: Gpu>(
     programs: &mut Programs<B>,
     backend: &mut B,
     (first_id, first_variant): (ShaderId, &Variant),
@@ -3219,7 +3219,7 @@ fn counting_program<B: Backend>(
 /// A counted occlusion query's part in a draw (`OcclusionCountReplay`): each host draw is kept by
 /// the occlusion counter, drawn, and counted at once with the fragment program's counting form, as
 /// what it reads from the rings stays valid only until their next write.
-struct Counting<'a, B: Backend> {
+struct Counting<'a, B: Gpu> {
     counter: &'a mut OcclusionCounter<B>,
     tracker: &'a mut PassTracker<B>,
     program: &'a B::Program,
@@ -3229,7 +3229,7 @@ struct Counting<'a, B: Backend> {
 }
 
 /// Draws `call`, counted where a counted query runs.
-fn host_draw<B: Backend>(
+fn host_draw<B: Gpu>(
     backend: &mut B,
     counting: &mut Option<Counting<'_, B>>,
     call: &DrawCall<'_, B>,
@@ -3256,7 +3256,7 @@ fn host_draw<B: Backend>(
 
 /// The draw of what the stage helper made, as `pass` binds it otherwise: its vertices from the
 /// helper's buffer as stream 0, through its indices (32-bit, strips restarting) where it gives them.
-fn draw_made<B: Backend>(
+fn draw_made<B: Gpu>(
     backend: &mut B,
     counting: &mut Option<Counting<'_, B>>,
     pass: &DrawCall<'_, B>,
@@ -3340,7 +3340,7 @@ enum HelperIndices {
 /// as Direct3D does), or a triangle strip whose odd triangles OpenGL orders otherwise. The
 /// vertices keep OpenGL's order for its provoking vertex `provoking` (Mesa's index translator
 /// with it as both conventions).
-fn helper_indices<B: Backend>(
+fn helper_indices<B: Gpu>(
     tracker: &mut PassTracker<B>,
     backend: &mut B,
     info: &pipe_draw_info,
@@ -3407,7 +3407,7 @@ fn helper_indices<B: Backend>(
 /// back end draws points of one size and these are larger (`PointsAsQuads`), the program before
 /// it (`vs` or its copy also writing its point size where the squares read it), and where the
 /// squares pass `gl_PointCoord`; `None` for points of one pixel.
-fn squares_for<B: Backend>(
+fn squares_for<B: Gpu>(
     programs: &mut Programs<B>,
     backend: &B,
     vs: &Shader,
@@ -3495,7 +3495,7 @@ fn squares_for<B: Backend>(
 /// draws points of one size and these are larger (`PointsAsQuads`), where it passes
 /// `gl_PointCoord`, and the uniform block its squares read (after every one the screen reports,
 /// which leaves one of the host's free); `None` for points of one pixel.
-fn geometry_squares_for<B: Backend>(
+fn geometry_squares_for<B: Gpu>(
     programs: &mut Programs<B>,
     backend: &B,
     gs: &Shader,
@@ -3565,7 +3565,7 @@ fn geometry_squares_for<B: Backend>(
 /// The uniform block of a point's square (`Nir::point_square`): the bound size, half a pixel's
 /// clip-space length over w in x and in y (signed as the viewport's scale), and the direction of
 /// `gl_PointCoord`'s t.
-fn square_block<B: Backend>(viewport: &pipe_viewport_state, raster: &state::Raster<B>) -> Vec<u8> {
+fn square_block<B: Gpu>(viewport: &pipe_viewport_state, raster: &state::Raster<B>) -> Vec<u8> {
     let [sx, sy, _] = viewport.scale;
     let words: [f32; SQUARE_WORDS] = [
         raster.point_size,
@@ -3583,7 +3583,7 @@ fn square_block<B: Backend>(viewport: &pipe_viewport_state, raster: &state::Rast
 /// One range of points drawn as squares (`PointsAsQuads`): the stage helper runs the vertex
 /// program and the geometry program making squares, which reads `block` as its uniform block
 /// `at`, and neither streams nor counts what it makes (the API's points are counted as drawn).
-fn draw_squares<B: Backend>(
+fn draw_squares<B: Gpu>(
     context: &mut Context<B>,
     backend: &mut B,
     (vertex, geometry): ((&Shader, &Variant), (&Shader, &Variant)),
@@ -3620,7 +3620,7 @@ fn draw_squares<B: Backend>(
 /// bound targets where stream output is active (`StreamOutAsCompute`). What a geometry program
 /// made, to draw, its flat values from `provoking.host`; `None` without one, or where it made no
 /// primitive.
-fn run_stages<B: Backend>(
+fn run_stages<B: Gpu>(
     context: &mut Context<B>,
     backend: &mut B,
     (vs, vertex): (&Shader, &Variant),
@@ -3850,7 +3850,7 @@ fn run_stages<B: Backend>(
 /// or geometry program draws, its flat values from `provoking.host`; `None` where the range holds
 /// no whole patch. The control program's variant is completed here with its evaluation program's
 /// tessellator.
-fn run_tessellated<B: Backend>(
+fn run_tessellated<B: Gpu>(
     context: &mut Context<B>,
     backend: &mut B,
     [(vs, vertex), (tcs, control), (tes, evaluation)]: [(&Shader, &Variant); TESSELLATED.len()],
@@ -4118,7 +4118,7 @@ fn run_tessellated<B: Backend>(
 }
 
 /// A program's forms for the stage helper.
-fn staged_forms<B: Backend>(built: &Built<B>) -> Result<&Converted, &'static str> {
+fn staged_forms<B: Gpu>(built: &Built<B>) -> Result<&Converted, &'static str> {
     built
         .converted
         .as_ref()
@@ -4126,7 +4126,7 @@ fn staged_forms<B: Backend>(built: &Built<B>) -> Result<&Converted, &'static str
 }
 
 /// A buffer of the tessellated patches or points the evaluation program reads.
-fn domain_read<B: Backend>(binding: u32, range: &BufferRange<B::Buffer>) -> BindingEntry<'_, B> {
+fn domain_read<B: Gpu>(binding: u32, range: &BufferRange<B::Buffer>) -> BindingEntry<'_, B> {
     BindingEntry {
         binding,
         stages: StageSet::VERTEX,
@@ -4144,7 +4144,7 @@ fn domain_read<B: Backend>(binding: u32, range: &BufferRange<B::Buffer>) -> Bind
 /// The variant of a vertex program the stage helper runs, and the locations of its inputs: every
 /// input fetched in it, its position streamed as written (before the host's depth range and
 /// flips, which a stage after it or the stream's reader takes).
-fn streamed_variant<B: Backend>(
+fn streamed_variant<B: Gpu>(
     vertex: &Variant,
     elements: &state::Elements<B>,
 ) -> (Variant, Vec<u32>) {
@@ -4198,7 +4198,7 @@ fn depth_steps(drawn: PositionTransform) -> PositionTransform {
 }
 
 /// The streams of the inputs at `pulled`, which the vertex program fetches itself.
-fn fetched_streams<'a, B: Backend + 'a>(
+fn fetched_streams<'a, B: Gpu + 'a>(
     elements: &state::Elements<B>,
     streams: &'a [state::VertexBuffer],
     pulled: &[u32],
@@ -4252,8 +4252,8 @@ fn input_topology(topology: Topology) -> Option<InputTopology> {
 
 /// One depth, stencil and rasterizer block and stencil reference a draw is made with.
 type FacePass<'a, B> = (
-    &'a <B as Backend>::DepthStencil,
-    &'a <B as Backend>::Raster,
+    &'a <B as Gpu>::DepthStencil,
+    &'a <B as Gpu>::Raster,
     [u8; 2],
 );
 
@@ -4266,7 +4266,7 @@ struct RasterBlocks<R> {
 
 /// The bound rasterizer's blocks, or with `mask` (fewer than all of the targets' samples) blocks of
 /// it with that sample mask.
-fn masked_blocks<B: Backend>(
+fn masked_blocks<B: Gpu>(
     programs: &mut Programs<B>,
     backend: &mut B,
     raster: &state::Raster<B>,
@@ -4340,7 +4340,7 @@ fn masked_blocks<B: Backend>(
 /// The blocks a draw is made with: its own, or, where the stencil test's faces differ in masks or
 /// reference and the back end has one of each per draw, each face alone with its own
 /// (`StencilFacesSplit`). Points and lines are front faces, as OpenGL draws them.
-fn face_passes<'a, B: Backend>(
+fn face_passes<'a, B: Gpu>(
     backend: &mut B,
     depth_stencil: &'a state::DepthStencil<B>,
     raster: &'a RasterBlocks<B::Raster>,
@@ -4393,7 +4393,7 @@ fn face_passes<'a, B: Backend>(
 
 /// The indices of every range of a draw from an index buffer, read back, and the first one's
 /// position in the buffer.
-fn read_indices<B: Backend>(
+fn read_indices<B: Gpu>(
     tracker: &mut PassTracker<B>,
     backend: &mut B,
     info: &pipe_draw_info,
@@ -4456,7 +4456,7 @@ fn holds_largest(indices: &[u8], format: IndexFormat) -> bool {
 }
 
 /// Draws `rewritten`'s indices, from the ring, with `base`'s blocks.
-fn draw_rewritten<B: Backend>(
+fn draw_rewritten<B: Gpu>(
     backend: &mut B,
     counting: &mut Option<Counting<'_, B>>,
     base: &DrawCall<'_, B>,
@@ -4505,7 +4505,7 @@ fn draw_rewritten<B: Backend>(
     clippy::too_many_arguments,
     reason = "one draw call's ranges and how each is rewritten"
 )]
-fn draw_ranges<B: Backend>(
+fn draw_ranges<B: Gpu>(
     backend: &mut B,
     counting: &mut Option<Counting<'_, B>>,
     base: &DrawCall<'_, B>,
@@ -4706,7 +4706,7 @@ fn draw_ranges<B: Backend>(
 
 /// The inputs the vertex program fetches from their streams itself, by location, and why: those
 /// the elements state named, and those of streams bound at offsets the back end cannot read from.
-fn pulled_inputs<B: Backend>(
+fn pulled_inputs<B: Gpu>(
     elements: &state::Elements<B>,
     streams: &[state::VertexBuffer],
 ) -> (Vec<u32>, Vec<SlowPath>) {
@@ -4799,7 +4799,7 @@ fn by_slot<T: Copy>(
 }
 
 /// The layers of the multisampled arrays a stage binds, by unit.
-fn texture_layers<B: Backend>(stage: &state::StageState<B>) -> Vec<(u32, u32)> {
+fn texture_layers<B: Gpu>(stage: &state::StageState<B>) -> Vec<(u32, u32)> {
     stage
         .views
         .iter()
@@ -4827,7 +4827,7 @@ const UNDEFINED_INTEGER_SAMPLER: NearestSampler = NearestSampler {
 
 /// The samplers bound with a stage's integer textures, by unit, and the undefined one at the
 /// units where its program samples integers from a texture that holds none.
-fn nearest_samplers<B: Backend>(stage: &state::StageState<B>) -> Vec<NearestSampler> {
+fn nearest_samplers<B: Gpu>(stage: &state::StageState<B>) -> Vec<NearestSampler> {
     // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
     let integer_sampled = unsafe { stage.shader.as_ref() }.map_or(0, |s| s.integer_sampled);
     stage
@@ -4860,7 +4860,7 @@ fn nearest_samplers<B: Backend>(stage: &state::StageState<B>) -> Vec<NearestSamp
 
 /// The units of a stage whose sampler's border colour the program applies, a bit each: those
 /// whose texture is not integer (an integer texture's nearest load applies it, `NearestSampler`).
-fn border_in_program<B: Backend>(stage: &state::StageState<B>) -> u16 {
+fn border_in_program<B: Gpu>(stage: &state::StageState<B>) -> u16 {
     let mut mask = 0;
     for (unit, (&v, &s)) in stage.views.iter().zip(&stage.samplers).enumerate() {
         if v.is_null() || s.is_null() {
@@ -4901,7 +4901,7 @@ fn target_kinds(framebuffer: &pipe_framebuffer_state) -> outputs::Targets {
 
 /// The formats of the images of textures bound at the units where a stage's program declares
 /// images without a format.
-fn image_formats<B: Backend>(stage: &state::StageState<B>) -> Vec<(u32, Format)> {
+fn image_formats<B: Gpu>(stage: &state::StageState<B>) -> Vec<(u32, Format)> {
     // SAFETY: a bound shader lives until Mesa unbinds and deletes it.
     let Some(shader) = (unsafe { stage.shader.as_ref() }) else {
         return Vec::new();
@@ -4920,7 +4920,7 @@ fn image_formats<B: Backend>(stage: &state::StageState<B>) -> Vec<(u32, Format)>
 
 /// The units of a stage whose sampler's level-of-detail bias the program adds, a bit each: those
 /// with a bias other than zero (the host's samplers have none).
-fn lod_bias_in_program<B: Backend>(stage: &state::StageState<B>) -> u16 {
+fn lod_bias_in_program<B: Gpu>(stage: &state::StageState<B>) -> u16 {
     let mut mask = 0;
     for (unit, (&v, &s)) in stage.views.iter().zip(&stage.samplers).enumerate() {
         if v.is_null() || s.is_null() {
@@ -4947,7 +4947,7 @@ fn lod_bias_in_program<B: Backend>(stage: &state::StageState<B>) -> u16 {
 }
 
 /// The swizzles of a stage's bound views that rearrange their results.
-fn swizzles<B: Backend>(stage: &state::StageState<B>) -> Vec<TextureSwizzle> {
+fn swizzles<B: Gpu>(stage: &state::StageState<B>) -> Vec<TextureSwizzle> {
     stage
         .views
         .iter()
@@ -4973,7 +4973,7 @@ fn fan_or_loop(topology: Topology) -> FanOrLoop {
 }
 
 /// Whether the back end lacks indices of this width.
-fn needs_widening<B: Backend>(backend: &B, format: IndexFormat) -> bool {
+fn needs_widening<B: Gpu>(backend: &B, format: IndexFormat) -> bool {
     format == IndexFormat::U8 && !backend.caps().features.contains(Features::INDEX_U8)
 }
 
