@@ -1,0 +1,13 @@
+[package]
+name = "wcontainers-observation-collector"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+wcontainers-processor-architecture = { path = "../processor-architecture" }
+
+[lints]
+workspace = true
