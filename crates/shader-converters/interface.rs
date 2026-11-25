@@ -1,12 +1,13 @@
-//! The C++ shader converters dxbc-spirv and dxil-spirv, each function called with a shader's bytes and giving back the
-//! buffers it wrote.
+//! The C++ shader converters dxbc-spirv and dxil-spirv, called with a shader's bytes.
+//!
+//! Each function gives back the buffers it wrote.
 
 /// One function of the converters' boundary, `name(data, size, flags, slots) -> status` in `cpp/boundary.h`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Function {
     /// DXBC to dxbc-spirv's legalized IR, with the declared size of each constant buffer.
     DxbcToIr,
-    /// DXIL to SPIR-V words, with the resources its bindings index.
+    /// SPIR-V words from DXIL, with the resources its bindings index.
     DxilToSpirv,
     /// The space, register and size in bytes of every constant buffer a DXIL module declares.
     DxilConstantSizes,
@@ -23,8 +24,9 @@ pub enum Function {
 pub enum Failure {
     /// The converter refused the shader, with its reason.
     Refused(String),
-    /// The converter's run ended before it returned (a trap, a memory bound or an instruction bound), as the reason
-    /// says.
+    /// The converter's run ended before it returned, as the reason says.
+    ///
+    /// It ends by a trap, a memory bound or an instruction bound.
     Ended(String),
 }
 
@@ -83,12 +85,15 @@ pub const ALLOCATE: &str = "wcs_allocate";
 /// The status a boundary function returns when it gave its buffers.
 pub const SUCCEEDED: i32 = 0;
 
-/// The flags of a call whose function reads none; only `Function::DxilToSpirv` reads them, as the targets' sample
-/// count.
+/// The flags of a call whose function reads none.
+///
+/// Only `Function::DxilToSpirv` reads them, as the targets' sample count.
 pub const NO_FLAGS: u32 = 0;
 
-/// The slots a boundary function fills (`Slot` in `cpp/boundary.h`), each a word: the first buffer's address and
-/// element count, the second's, and the reason's address and length.
+/// The slot of the first buffer's address, of those a boundary function fills (`Slot` in `cpp/boundary.h`).
+///
+/// Each slot is a word: the first buffer's address and element count, the second's, and the reason's address and
+/// length.
 pub const SLOT_FIRST: usize = 0;
 
 /// The slot of the first buffer's element count.
