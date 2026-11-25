@@ -2621,7 +2621,7 @@ pub fn special_float_values_keep_their_bits<H: Host>() {
 /// every bit; else they take a counted route. The bits kept are checked by
 /// `copies_within_a_typeless_group`, on both routes (all.cmd runs it with `float_blits` off).
 pub fn copies_within_one_float_format_take_the_probed_route<
-    H: Host<Gpu = wcontainers_gpu_webgl::Gl>,
+    H: Host<Backend = wcontainers_gpu_webgl::Gl>,
 >() {
     use crate::kit;
     let mut b = H::make();
