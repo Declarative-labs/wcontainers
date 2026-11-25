@@ -13,7 +13,6 @@ pub mod format;
 pub mod object;
 mod present;
 pub mod query;
-pub mod record;
 pub use wcontainers_directx_graphics_infrastructure::required;
 pub mod runtime;
 pub mod shader;

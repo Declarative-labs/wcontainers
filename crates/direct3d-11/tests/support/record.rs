@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::fmt::Write;
 
+use wcontainers_direct3d_11::format::row_bytes;
+use wcontainers_direct3d_11::required::SAMPLE_COUNTS;
 use wcontainers_gpu::*;
-
-use crate::format::row_bytes;
 
 /// The recording back end's handles: a number per object.
 pub type Id = u32;
@@ -118,7 +118,7 @@ impl Recorder {
                     uses: [FormatUse::all(); FORMAT_COUNT],
                     // A bit per count: one sample, two (one of the tables' other counts) and the
                     // counts the tables require.
-                    samples: [crate::required::SAMPLE_COUNTS
+                    samples: [SAMPLE_COUNTS
                         .into_iter()
                         .fold(1 | 2, |bits, count| bits | count as u8);
                         FORMAT_COUNT],

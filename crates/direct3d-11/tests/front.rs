@@ -2,12 +2,17 @@
 //! programs make them (their DXBC from the rig's corpus), checked by the calls recorded; and the
 //! creation checks, lifetimes and maps.
 
+#[allow(dead_code)]
+#[path = "support/record.rs"]
+mod record;
+
+use record::Recorder;
+
 use std::cell::Cell;
 use std::rc::Rc;
 
 use wcontainers_direct3d_11::desc::*;
 use wcontainers_direct3d_11::object::{Buffer, Resource, ShaderView, Texture, View};
-use wcontainers_direct3d_11::record::Recorder;
 use wcontainers_direct3d_11::{
     DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, level_texture_limits, shader,
 };
