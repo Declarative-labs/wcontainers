@@ -13,30 +13,36 @@ use wcontainers_processor_architecture::{
 /// Something whose behavior can be measured one instruction at a time, such as a live chip or a recording of one.
 pub trait BehaviorSource {
     type Architecture: ProcessorArchitecture;
+    #[allow(
+        reviewable::explicit_shared_error,
+        reason = "execute_single_instruction only runs execute_single_instruction_in_place and passes its error on unchanged"
+    )]
+    type Error;
 
     /// Executes exactly one instruction on the given processor + memory.
     ///
     /// Processor changes are written in place, memory changes are written through the hook.
+    /// On error the processor is left as it was and the hook received nothing.
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut <Self::Architecture as ProcessorArchitecture>::ProcessorState,
         memory: &[MemoryDelta<'_, Self::Architecture>],
         mutation_hook: &mut impl MemorySink<Self::Architecture>,
-    );
+    ) -> Result<(), Self::Error>;
 
     /// Executes exactly one instruction from the before state.
     fn execute_single_instruction<'memory>(
         &mut self,
         mut before: ExecutionState<'memory, Self::Architecture>,
-    ) -> ExecutionState<'memory, Self::Architecture> {
+    ) -> Result<ExecutionState<'memory, Self::Architecture>, Self::Error> {
         let mut mutations = Vec::new();
         self.execute_single_instruction_in_place(
             &mut before.processor,
             &before.memory_mutations,
             &mut mutations,
-        );
+        )?;
         before.memory_mutations.append(&mut mutations);
-        before
+        Ok(before)
     }
 
     /// Returns the one behavior of the instruction that this source shows.
@@ -48,7 +54,7 @@ pub trait BehaviorSource {
         generator: &impl DistinguishingStateGenerator<Self::Architecture>,
     ) -> Result<
         <Self::Architecture as ProcessorArchitecture>::PreciseInstruction,
-        MeasureInstructionError<Self::Architecture>,
+        MeasureInstructionError<Self::Architecture, Self::Error>,
     >
     where
         Self::Architecture: Clone,
@@ -67,7 +73,16 @@ pub trait BehaviorSource {
                     (precise, after)
                 })
                 .collect();
-            let observed_result = self.execute_single_instruction(before.clone());
+            let observed_result = match self.execute_single_instruction(before.clone()) {
+                Ok(observed_result) => observed_result,
+                Err(error) => {
+                    return Err(MeasureInstructionError::ExecutionFailed {
+                        instruction,
+                        before,
+                        error,
+                    });
+                }
+            };
             candidates = simulated_results
                 .iter()
                 .filter(|(_, after)| *after == observed_result)
@@ -94,9 +109,15 @@ pub trait BehaviorSource {
     }
 }
 
-pub enum MeasureInstructionError<Architecture: ProcessorArchitecture> {
+pub enum MeasureInstructionError<Architecture: ProcessorArchitecture, ExecutionError> {
     NoKnownBehavior {
         instruction: Architecture::Instruction,
+    },
+    /// The source could not execute the instruction from this state.
+    ExecutionFailed {
+        instruction: Architecture::Instruction,
+        before: ExecutionState<'static, Architecture>,
+        error: ExecutionError,
     },
     /// On this state the source did what none of the behaviors still in play does.
     NoBehaviorAgrees {
