@@ -66,6 +66,9 @@ pub trait BehaviorSource {
         let mut candidates: Vec<_> =
             <Self::Architecture as ProcessorArchitecture>::list_known_behaviors(instruction)
                 .collect();
+        if candidates.is_empty() {
+            return Err(MeasureInstructionError::NoKnownBehavior { instruction });
+        }
         for before in generator.generate_states(instruction) {
             let simulated_results: Vec<_> = candidates
                 .iter()
@@ -99,10 +102,9 @@ pub trait BehaviorSource {
             }
         }
         match candidates.as_slice() {
-            [] => Err(MeasureInstructionError::NoKnownBehavior { instruction }),
             [precise] => Ok(*precise),
             // No generated state tells these candidates apart, so two known behaviors are the same or our generator lacks a state that separates them.
-            [_, _, ..] => Err(MeasureInstructionError::IndistinguishableBehaviors {
+            _ => Err(MeasureInstructionError::IndistinguishableBehaviors {
                 instruction,
                 behaviors: candidates,
             }),

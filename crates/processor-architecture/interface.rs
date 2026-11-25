@@ -2,6 +2,11 @@
 
 extern crate alloc;
 
+mod foreign_implementation {
+    #[path = "vector/implementation.rs"]
+    mod vector;
+}
+
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
 use core::ops::Range;
@@ -80,23 +85,6 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
 // VERUS: no contract on what a closure has received, so the memory hook is a trait.
 pub trait MemorySink<Architecture: ProcessorArchitecture> {
     fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, Architecture>);
-}
-
-impl<Architecture: ProcessorArchitecture, Hook: FnMut(MemoryDelta<'_, Architecture>)>
-    MemorySink<Architecture> for Hook
-{
-    fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, Architecture>) {
-        self(mutation)
-    }
-}
-
-// VERUS: no closure that captures a mutable reference, so a list of changes is a hook itself.
-impl<Architecture: ProcessorArchitecture> MemorySink<Architecture>
-    for Vec<MemoryDelta<'_, Architecture>>
-{
-    fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, Architecture>) {
-        self.push(mutation.into_owned())
-    }
 }
 
 /// All state that some instruction might mutate during execution.
