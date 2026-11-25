@@ -4,6 +4,7 @@
 //!
 //! A buffer write no work can see lands in place; others go through a staging copy.
 
+mod bytes;
 mod convert;
 mod objects;
 mod record;
@@ -26,6 +27,7 @@ use wcontainers_metal::{
     TextureViewDescriptor,
 };
 
+use bytes::{ByteRange, rounded};
 pub use objects::{
     BlendBlock, BufferObj, DepthStencilBlock, MetalFence, Never, ProgramObj, QueryObj, RasterBlock,
     ReadbackObj, SamplerObj, SetObj, ShaderObj, Shared, SurfaceObj, TextureObj, VertexLayoutBlock,
@@ -112,6 +114,8 @@ pub struct MetalGpu<M: Metal> {
     widened_layouts: HashMap<u64, Shared<VertexLayoutBlock>>,
     /// What draws a frame into a drawable, made at the first present.
     present: Option<record::PresentDraw<M>>,
+    /// The programs that copy and fill bytes where Metal's blits take only multiples of four.
+    byte_programs: bytes::BytePrograms<M>,
 }
 
 impl<M: Metal> MetalGpu<M> {
@@ -197,6 +201,7 @@ impl<M: Metal> MetalGpu<M> {
             windows: HashMap::new(),
             widened_layouts: HashMap::new(),
             present: None,
+            byte_programs: bytes::BytePrograms::default(),
         }
     }
 
@@ -292,11 +297,25 @@ impl<M: Metal> MetalGpu<M> {
         buffer.last_use.get() > self.completed
     }
 
-    /// Makes a buffer holding `bytes`, which no work uses yet.
-    fn staging(&mut self, bytes: &[u8]) -> Option<M::Buffer> {
-        let buffer = self.metal.make_buffer(bytes.len() as u64).ok()?;
+    /// Makes a buffer holding `bytes`, which no work uses yet, as a range from its start.
+    fn staging(&mut self, bytes: &[u8]) -> Option<ByteRange<M>> {
+        let length = rounded(bytes.len() as u64);
+        let buffer = self.metal.make_buffer(length).ok()?;
         self.metal.write_contents(&buffer, 0, bytes).ok()?;
-        Some(buffer)
+        Some(ByteRange {
+            buffer,
+            length,
+            offset: 0,
+        })
+    }
+
+    /// Returns a range of a buffer's current storage.
+    fn range(buffer: &BufferObj<M>, offset: u64) -> ByteRange<M> {
+        ByteRange {
+            buffer: buffer.raw.borrow().clone(),
+            length: rounded(buffer.size),
+            offset,
+        }
     }
 
     /// Commits the command buffer being recorded, and returns its serial.
@@ -344,7 +363,7 @@ impl<M: Metal> MetalGpu<M> {
     ) -> Result<Shared<ReadbackObj<M>>, GpuError> {
         let buffer = self
             .metal
-            .make_buffer(length)
+            .make_buffer(rounded(length))
             .map_err(|_| GpuError::OutOfMemory)?;
         for command in copy(&buffer) {
             self.queue_blit(command);
@@ -569,7 +588,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         }
         let raw = self
             .metal
-            .make_buffer(desc.size)
+            .make_buffer(rounded(desc.size))
             .map_err(|_| GpuError::OutOfMemory)?;
         Ok(Shared(Rc::new(BufferObj {
             size: desc.size,
@@ -908,7 +927,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             return;
         }
         if self.busy(buffer) && mode == WriteMode::Discard {
-            match self.metal.make_buffer(buffer.size) {
+            match self.metal.make_buffer(rounded(buffer.size)) {
                 Ok(fresh) => {
                     *buffer.raw.borrow_mut() = fresh;
                     buffer.last_use.set(0);
@@ -931,14 +950,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             return;
         };
         self.mark_used(buffer);
-        let raw = buffer.raw.borrow().clone();
-        self.queue_blit(BlitCommand::CopyFromBufferToBuffer {
-            source_buffer: staging,
-            source_offset: 0,
-            destination_buffer: raw,
-            destination_offset: offset,
-            size: data.len() as u64,
-        });
+        self.copy_bytes(staging, Self::range(buffer, offset), data.len() as u64);
     }
 
     fn write_texture(
@@ -960,7 +972,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             &texture,
             region,
             extent,
-            &staging,
+            &staging.buffer,
             0,
             u64::from(row_pitch),
             u64::from(rows_per_layer),
@@ -1004,14 +1016,11 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     ) {
         self.mark_used(src);
         self.mark_used(dst);
-        let (source, destination) = (src.raw.borrow().clone(), dst.raw.borrow().clone());
-        self.queue_blit(BlitCommand::CopyFromBufferToBuffer {
-            source_buffer: source,
-            source_offset: src_offset,
-            destination_buffer: destination,
-            destination_offset: dst_offset,
+        self.copy_bytes(
+            Self::range(src, src_offset),
+            Self::range(dst, dst_offset),
             size,
-        });
+        );
     }
 
     fn copy_texture(
@@ -1131,13 +1140,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                         self.fail("no staging buffer");
                         return;
                     };
-                    self.queue_blit(BlitCommand::CopyFromBufferToBuffer {
-                        source_buffer: staging,
-                        source_offset: 0,
-                        destination_buffer: raw.clone(),
-                        destination_offset: at,
-                        size: row,
-                    });
+                    self.copy_bytes(staging, Self::range(dst.buffer, at), row);
                 }
             }
             return;
@@ -1162,14 +1165,8 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             return;
         }
         self.mark_used(buffer);
-        let raw = buffer.raw.borrow().clone();
         if pattern.iter().all(|b| *b == pattern[0]) {
-            self.queue_blit(BlitCommand::FillBuffer {
-                buffer: raw,
-                offset,
-                length: size,
-                value: pattern[0],
-            });
+            self.fill_bytes(Self::range(buffer, offset), size, pattern[0]);
             return;
         }
         self.record_slow_path(wcontainers_gpu::SlowPath::PatternClearCopied);
@@ -1183,13 +1180,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             self.fail("no staging buffer");
             return;
         };
-        self.queue_blit(BlitCommand::CopyFromBufferToBuffer {
-            source_buffer: staging,
-            source_offset: 0,
-            destination_buffer: raw,
-            destination_offset: offset,
-            size,
-        });
+        self.copy_bytes(staging, Self::range(buffer, offset), size);
     }
 
     fn resolve(
@@ -1224,17 +1215,29 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 size,
             } => {
                 self.mark_used(buffer);
-                let raw = buffer.raw.borrow().clone();
-                let (offset, size) = (*offset, *size);
-                self.read_into(size, ReadLayout::Bytes, |into| {
-                    vec![BlitCommand::CopyFromBufferToBuffer {
-                        source_buffer: raw,
-                        source_offset: offset,
-                        destination_buffer: into.clone(),
-                        destination_offset: 0,
-                        size,
-                    }]
-                })
+                let length = rounded(*size);
+                let into = self
+                    .metal
+                    .make_buffer(length)
+                    .map_err(|_| GpuError::OutOfMemory)?;
+                // The read back buffer is this implementation's own, so the copy may run to its end.
+                let copied = if offset.is_multiple_of(bytes::COPY_GRANULE) {
+                    length
+                } else {
+                    *size
+                };
+                let destination = ByteRange {
+                    buffer: into.clone(),
+                    length,
+                    offset: 0,
+                };
+                self.copy_bytes(Self::range(buffer, *offset), destination, copied);
+                Ok(Shared(Rc::new(ReadbackObj {
+                    serial: self.serial,
+                    buffer: into,
+                    length: *size,
+                    layout: ReadLayout::Bytes,
+                })))
             }
             ReadSource::Texture { region, extent } => {
                 let texture = region.texture.clone();
@@ -1247,7 +1250,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 };
                 let buffer = self
                     .metal
-                    .make_buffer(length)
+                    .make_buffer(rounded(length))
                     .map_err(|_| GpuError::OutOfMemory)?;
                 let commands = self
                     .buffer_texture_copies(&texture, region, *extent, &buffer, 0, row, rows, false);

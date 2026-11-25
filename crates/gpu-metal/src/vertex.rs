@@ -190,7 +190,7 @@ impl<M: Metal> MetalGpu<M> {
                 stride: if s.stride == 0 { 0 } else { stride },
                 ..*s
             });
-            let buffer = self.staging(&out).ok_or(GpuError::OutOfMemory)?;
+            let buffer = self.staging(&out).ok_or(GpuError::OutOfMemory)?.buffer;
             streams.push(Some((buffer, 0, out.len() as u64)));
         }
         let id = self.widened_layout(call.vertex_layout.id, layout);
