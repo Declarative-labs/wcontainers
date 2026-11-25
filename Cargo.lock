@@ -4127,7 +4127,6 @@ dependencies = [
  "arm-sysregs",
  "cc",
  "kvm-bindings",
- "kvm-ioctls",
  "object 0.37.3",
  "wcontainers-abi",
  "wcontainers-behavior-source",
@@ -4339,6 +4338,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-executor-arm64-stop"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-guest-cpu",
+]
+
+[[package]]
 name = "wcontainers-executor-conformance"
 version = "0.1.0"
 dependencies = [
@@ -4368,12 +4376,15 @@ dependencies = [
  "perf-event2",
  "postcard",
  "proptest",
+ "rustix",
  "serde",
  "tempfile",
  "unicorn-engine",
  "vmm-sys-util",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-clock",
  "wcontainers-executor",
  "wcontainers-executor-hardware-virtualization-inside",
@@ -4390,6 +4401,7 @@ dependencies = [
  "wcontainers-system-seeded-test-policy",
  "wcontainers-translator",
  "wcontainers-translator-test",
+ "wcontainers-volatile-bytes",
  "zerocopy",
 ]
 
@@ -4413,14 +4425,62 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-arm64",
  "wcontainers-clock",
+ "wcontainers-executor-arm64-stop",
  "wcontainers-guest-cpu",
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
+ "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
  "wcontainers-readiness",
  "wcontainers-runtime-single-kernel",
  "wcontainers-system",
  "wcontainers-system-seeded-test-policy",
+ "wcontainers-volatile-bytes",
+ "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-executor-host-process"
+version = "0.1.0"
+dependencies = [
+ "aarch64-cpu",
+ "fastrand",
+ "iced-x86",
+ "libc",
+ "linux-raw-sys",
+ "memmap2",
+ "nix",
+ "object 0.41.0",
+ "proptest",
+ "rangemap",
+ "rustc-hash 2.1.3",
+ "rustix",
+ "unicorn-engine",
+ "wcontainers-abi",
+ "wcontainers-arm64",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-clock",
+ "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-executor",
+ "wcontainers-executor-arm64-stop",
+ "wcontainers-executor-conformance",
+ "wcontainers-executor-unicorn",
+ "wcontainers-executor-wasmtime",
+ "wcontainers-guest-cpu",
+ "wcontainers-instruction-input-domain-arm64",
+ "wcontainers-kernel-linux",
+ "wcontainers-precise-instruction-set-translator",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+ "wcontainers-random-source",
+ "wcontainers-readiness",
+ "wcontainers-runtime-single-kernel",
+ "wcontainers-system",
+ "wcontainers-system-seeded-test-policy",
+ "wcontainers-translator",
+ "wcontainers-translator-test",
+ "wcontainers-volatile-bytes",
  "zerocopy",
 ]
 
@@ -4637,6 +4697,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-hypervisor-framework"
+version = "0.1.0"
+dependencies = [
+ "applevisor-sys",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-hypervisor-framework-conformance"
+version = "0.1.0"
+dependencies = [
+ "applevisor-sys",
+ "wcontainers-hypervisor-framework",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-hypervisor-framework-direct"
+version = "0.1.0"
+dependencies = [
+ "applevisor-sys",
+ "cc",
+ "wcontainers-hypervisor-framework",
+ "wcontainers-hypervisor-framework-conformance",
+ "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-pointer",
+ "wcontainers-volatile-bytes-shared-mapping",
+]
+
+[[package]]
 name = "wcontainers-icmp-sockets"
 version = "0.1.0"
 dependencies = [
@@ -4791,7 +4881,8 @@ dependencies = [
 name = "wcontainers-kvm"
 version = "0.1.0"
 dependencies = [
- "kvm-ioctls",
+ "kvm-bindings",
+ "rustix",
  "wcontainers-volatile-bytes",
 ]
 
@@ -4799,7 +4890,8 @@ dependencies = [
 name = "wcontainers-kvm-conformance"
 version = "0.1.0"
 dependencies = [
- "kvm-ioctls",
+ "kvm-bindings",
+ "rustix",
  "wcontainers-kvm",
  "wcontainers-volatile-bytes",
 ]
@@ -4810,10 +4902,13 @@ version = "0.1.0"
 dependencies = [
  "kvm-bindings",
  "kvm-ioctls",
- "thiserror",
+ "memmap2",
+ "rustix",
+ "vmm-sys-util",
  "wcontainers-kvm",
  "wcontainers-kvm-conformance",
  "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-pointer",
  "wcontainers-volatile-bytes-shared-mapping",
 ]
 
@@ -4967,6 +5062,17 @@ version = "0.1.0"
 dependencies = [
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
+]
+
+[[package]]
+name = "wcontainers-processor-cores"
+version = "0.1.0"
+
+[[package]]
+name = "wcontainers-processor-cores-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-processor-cores",
 ]
 
 [[package]]
