@@ -57,6 +57,5 @@ crate-type = ["cdylib"]
 name = "dxgi"
 crate-type = ["cdylib"]
 
-# TODO: remove this crate's 495 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints]
 workspace = true

@@ -43,6 +43,5 @@ windows = { version = "0.62.2", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# TODO: remove this crate's 319 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints]
 workspace = true

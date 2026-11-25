@@ -71,6 +71,5 @@ harness = false
 name = "raster"
 harness = false
 
-# TODO: remove this crate's 19 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints]
 workspace = true

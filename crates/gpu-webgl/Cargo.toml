@@ -75,6 +75,5 @@ name = "replay"
 crate-type = ["cdylib"]
 required-features = ["trace"]
 
-# TODO: remove this crate's 160 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints]
 workspace = true
