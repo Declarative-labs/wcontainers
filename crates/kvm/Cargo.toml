@@ -1,0 +1,22 @@
+[package]
+name = "wcontainers-kvm"
+description = "KVM, the Linux kernel's virtual machines, as seen from an ARM64 host: one safe trait mirroring its ioctls."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+# The structures KVM's ioctls take and return.
+kvm-bindings = "0.14.2"
+# The kernel's error number, which every ioctl fails with.
+rustix = { version = "1.1.6", default-features = false, features = ["std"] }
+wcontainers-volatile-bytes = { path = "../volatile-bytes" }
+
+[lints]
+workspace = true

@@ -1,0 +1,44 @@
+[package]
+name = "wcontainers-kvm-direct"
+description = "KVM's ioctls on this host's /dev/kvm: kvm-ioctls where it is sound, and each other call one marked raw ioctl."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-kvm = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+# The run pages' bytes, whose pointer and length this crate promises.
+wcontainers-volatile-bytes-pointer = { path = "../../../volatile-bytes/implementation/pointer" }
+# The user memory: a sealed memory file's mapping, kept while any view of it lives.
+wcontainers-volatile-bytes-shared-mapping = { path = "../../../volatile-bytes/implementation/shared-mapping" }
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+# The structures and numbers of KVM's ioctls.
+kvm-bindings = { version = "0.14.2", features = ["fam-wrappers"] }
+# KVM's ioctls, nearly all of them safe.
+kvm-ioctls = "0.25.1"
+# The raw ioctls kvm-ioctls does not offer soundly, and its flexible arrays.
+vmm-sys-util = "0.15.0"
+# Maps the run pages with a safe call; the raw mapping hands out the address and nothing else.
+memmap2 = "0.9.12"
+# The error number, the memory files and the host's page size, with safe calls.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "fs", "param"] }
+
+[dev-dependencies]
+wcontainers-kvm-conformance = { path = "../../conformance" }
+
+# The bindings of an outside API: it denies unsafe code, so that each of its 9 uses is marked.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

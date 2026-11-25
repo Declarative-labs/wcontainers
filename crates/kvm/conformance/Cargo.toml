@@ -1,0 +1,24 @@
+[package]
+name = "wcontainers-kvm-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "suite.rs"
+
+[dependencies]
+wcontainers-kvm = { path = ".." }
+wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+# The structures and numbers the tests give KVM.
+kvm-bindings = "0.14.2"
+# The host's page size and the event files the interrupt tests tie, with safe calls.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "event", "param"] }
+
+[lints]
+workspace = true
