@@ -29,25 +29,24 @@ pub trait Kernel: Sync + Sized {
     type Runner: Runner<Self::Executor>;
     type SuspendedTask;
     type ProcessContext;
+    // VERUS: no `impl Trait` in a trait, so each returned iterator is a named type.
+    type Runners: Iterator<Item = Self::Runner>;
+    type SuspendedTasks<'kernel>: Iterator<Item = (TaskId, Self::SuspendedTask)>
+    where
+        Self: 'kernel;
+    type UnresumedTasks<'kernel>: Iterator<Item = Self::SuspendedTask>
+    where
+        Self: 'kernel;
 
     /// Makes a kernel that executes at most the given number of threads at the same time, and one runner for each.
-    fn new(
-        config: Self::Config,
-        parallelism: NonZeroUsize,
-    ) -> (Self, impl Iterator<Item = Self::Runner>);
+    fn new(config: Self::Config, parallelism: NonZeroUsize) -> (Self, Self::Runners);
     /// Takes the given tasks out of this kernel instance atomically, whichever processes they belong to, returning each one that is still executing on it.
-    fn suspend_tasks(
-        &self,
-        tasks: &[TaskId],
-    ) -> impl Iterator<Item = (TaskId, Self::SuspendedTask)>;
+    fn suspend_tasks(&self, tasks: &[TaskId]) -> Self::SuspendedTasks<'_>;
     /// Takes the process off this kernel instance, returning its context and each of its tasks that is still executing on it.
     fn suspend_process(
         &self,
         process: TaskId,
-    ) -> Option<(
-        Self::ProcessContext,
-        impl Iterator<Item = (TaskId, Self::SuspendedTask)>,
-    )>;
+    ) -> Option<(Self::ProcessContext, Self::SuspendedTasks<'_>)>;
     fn copy_process_context(&self, process: TaskId) -> Option<Self::ProcessContext>;
     fn resume_process(
         &self,
@@ -57,9 +56,8 @@ pub trait Kernel: Sync + Sized {
     fn resume_tasks(
         &self,
         tasks: impl IntoIterator<Item = Self::SuspendedTask>,
-    ) -> impl Iterator<Item = Self::SuspendedTask>;
+    ) -> Self::UnresumedTasks<'_>;
 }
-
 
 pub trait Runner<E: Executor>: Send {
     /// Runs what the kernel decides is next, using the given executor.
@@ -70,7 +68,9 @@ pub trait Runner<E: Executor>: Send {
 pub enum StopReason {
     Interrupted,
     Suspended,
-    Idle { until: Option<Duration> },
+    Idle {
+        until: Option<Duration>,
+    },
     Finished(ProcessEnd),
     /// A host thread ended inside a run, so the kernel can no longer be run.
     Panicked,
@@ -88,6 +88,8 @@ pub enum ProcessEnd {
 pub trait Process: ProcessInfo {
     type State;
     type Kernel: Kernel;
+    // VERUS: no `impl Trait` in a trait, so the returned iterator is a named type.
+    type SuspendedTasks: Iterator<Item = (TaskId, SuspendedTaskOf<Self::Kernel>)>;
 
     fn id(&self) -> TaskId;
     fn execution_config(&self) -> &ExecutionConfig<ExecutorOf<Self::Kernel>>;
@@ -110,17 +112,9 @@ pub trait Process: ProcessInfo {
 
     fn send_signal(&mut self, thread: TaskId, signal: SignalInformation);
     /// Takes the given threads of this process out of this kernel instance atomically, returning each one that is still executing on it.
-    fn suspend_threads(
-        &mut self,
-        threads: &[TaskId],
-    ) -> impl Iterator<Item = (TaskId, SuspendedTaskOf<Self::Kernel>)>;
+    fn suspend_threads(&mut self, threads: &[TaskId]) -> Self::SuspendedTasks;
     /// Takes the process off this kernel instance, returning its context and each of its tasks that is still executing on it.
-    fn suspend_process(
-        self,
-    ) -> (
-        ProcessContextOf<Self::Kernel>,
-        impl Iterator<Item = (TaskId, SuspendedTaskOf<Self::Kernel>)>,
-    );
+    fn suspend_process(self) -> (ProcessContextOf<Self::Kernel>, Self::SuspendedTasks);
     fn copy_process_context(&self) -> ProcessContextOf<Self::Kernel>;
 }
 
