@@ -490,7 +490,12 @@ fn library_symbol(library: &Path, crate_name: &str, name: &str) -> String {
                 .filter(|s| s.starts_with("_R") && s.ends_with(&ending)),
         );
     }
-    assert_eq!(found.len(), 1, "one {name} in {}: {found:?}", library.display());
+    assert_eq!(
+        found.len(),
+        1,
+        "one {name} in {}: {found:?}",
+        library.display()
+    );
     found.remove(0)
 }
 
