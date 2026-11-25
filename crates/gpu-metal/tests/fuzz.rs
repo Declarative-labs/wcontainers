@@ -53,6 +53,9 @@ mod driver {
     /// The line a batch prints its counts on, which the driver adds up.
     pub const RESULT_LINE: &str = "FUZZ-RESULT";
 
+    /// The lines a batch prints its checks' outcomes on, one a site: refused, passed, then the site.
+    pub const REACH_LINE: &str = "FUZZ-REACH";
+
     /// What a batch found: calls, refusals, canary bytes changed, GPU errors and calls taken that had to be refused.
     #[derive(Default)]
     pub struct Counts {
@@ -101,6 +104,9 @@ mod driver {
             crate::gpu::run(&mut random, calls, window)
         };
         counts.print();
+        for (site, [refused, passed]) in wcontainers_metal_direct::reach::outcomes() {
+            println!("{REACH_LINE} {refused} {passed} {site}");
+        }
         if counts.clean() {
             std::process::ExitCode::SUCCESS
         } else {
@@ -146,6 +152,7 @@ mod driver {
         let mut total = Counts::default();
         let mut failures: Vec<String> = Vec::new();
         let mut batches = 0u64;
+        let mut reach: std::collections::BTreeMap<String, [u64; 2]> = std::collections::BTreeMap::new();
         while !waiting.is_empty() || !running.is_empty() {
             while running.len() < jobs
                 && let Some((seed, batch)) = waiting.pop_front()
@@ -187,6 +194,18 @@ mod driver {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let mut counted = false;
                 for line in stdout.lines() {
+                    if let Some(rest) = line.strip_prefix(REACH_LINE) {
+                        let mut words = rest.trim_start().splitn(3, ' ');
+                        let (Some(refused), Some(passed), Some(site)) =
+                            (words.next(), words.next(), words.next())
+                        else {
+                            continue;
+                        };
+                        let counts = reach.entry(site.to_owned()).or_default();
+                        counts[0] = counts[0].saturating_add(refused.parse().unwrap_or(0));
+                        counts[1] = counts[1].saturating_add(passed.parse().unwrap_or(0));
+                        continue;
+                    }
                     let words: Vec<u64> = line
                         .strip_prefix(RESULT_LINE)
                         .map(|rest| {
@@ -254,11 +273,53 @@ mod driver {
             failures.len(),
             started.elapsed().as_secs_f64()
         );
+        let holes = report_reach(&reach);
+        if holes > 0 && variable("FUZZ_REACH_REQUIRED", "0") == "1" {
+            failures.push(format!("{holes} check sites without both outcomes"));
+        }
         if failures.is_empty() {
             Ok(())
         } else {
             Err(failures.join("\n").into())
         }
+    }
+
+    /// Prints how often each check site of `direct` refused and passed, writes the table to `FUZZ_REACH_TABLE` if set,
+    /// and returns how many sites lack an outcome: a site that never refused, or never passed, is a hole.
+    fn report_reach(reach: &std::collections::BTreeMap<String, [u64; 2]>) -> usize {
+        let sites = wcontainers_metal_direct::reach::sites();
+        let mut table = String::from("| Site | Line | Refused | Passed |\n|---|---|---|---|\n");
+        let mut holes = Vec::new();
+        for (site, line) in &sites {
+            let [refused, passed] = reach.get(*site).copied().unwrap_or_default();
+            table.push_str(&format!("| {site} | {line} | {refused} | {passed} |\n"));
+            if refused == 0 || passed == 0 {
+                holes.push(format!("{site} (line {line}: {refused} refused, {passed} passed)"));
+            }
+        }
+        let unknown: Vec<&String> = reach
+            .keys()
+            .filter(|site| !sites.iter().any(|(known, _)| known == site))
+            .collect();
+        let mut seen = std::collections::BTreeSet::new();
+        let twice: Vec<&str> = sites
+            .iter()
+            .filter(|(site, _)| !seen.insert(*site))
+            .map(|(site, _)| *site)
+            .collect();
+        println!(
+            "reach: {} check sites, {} with both outcomes, {} holes; unknown sites {unknown:?}, sites named twice {twice:?}",
+            sites.len(),
+            sites.len().saturating_sub(holes.len()),
+            holes.len()
+        );
+        for hole in &holes {
+            println!("HOLE {hole}");
+        }
+        if let Ok(path) = std::env::var("FUZZ_REACH_TABLE") {
+            let _ = std::fs::write(path, table);
+        }
+        holes.len().saturating_add(twice.len())
     }
 }
 
