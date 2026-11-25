@@ -19,7 +19,7 @@ wcontainers-gpu-test = { path = "../gpu-test" }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 libtest-mimic = "0.8.1"
-wcontainers-metal-direct = { path = "../metal/implementation/direct" }
+wcontainers-metal-direct = { path = "../metal/implementation/direct", features = ["reach"] }
 # The suite's window, and reading what it shows: made on the main thread (tests/present.rs).
 wcontainers-test-window = { path = "../test-window" }
 wcontainers-test-window-appkit = { path = "../test-window/implementation/appkit" }

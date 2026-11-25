@@ -26,6 +26,10 @@ objc2-quartz-core = "0.3.2"
 # The Metal layer of a window's view, as wgpu finds it.
 raw-window-metal = "1.1.0"
 
+[features]
+# Counts how often each check refuses and passes its calls, for the fuzzer's measure of reach; never in a product.
+reach = []
+
 [dev-dependencies]
 wcontainers-metal-conformance = { path = "../../conformance" }
 
