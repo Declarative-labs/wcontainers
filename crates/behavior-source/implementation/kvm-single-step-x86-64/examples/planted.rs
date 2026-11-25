@@ -56,8 +56,11 @@ mod on_chip {
     /// The behavior's result, or `None` where its simulation panics, as a planted bug's may.
     fn simulate(behavior: PreciseInstruction, before: &State) -> Option<State> {
         catch_unwind(AssertUnwindSafe(|| {
-            let Ok(simulated) = behavior.simulate(before.clone());
-            simulated
+            let Ok(simulated) = behavior.simulate_state(before.clone());
+            State {
+                processor: simulated.processor,
+                memory_mutations: simulated.memory_mutations,
+            }
         }))
         .ok()
     }

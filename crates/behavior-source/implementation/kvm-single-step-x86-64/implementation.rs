@@ -32,7 +32,7 @@ use kvm_ioctls::{Kvm as KvmSystem, VcpuExit, VcpuFd, VmFd};
 use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_kvm::Kvm;
 use wcontainers_kvm_direct::DirectKvm;
-use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
+use wcontainers_processor_architecture::{MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture};
 use wcontainers_processor_architecture_x86_64::memory::{read_bytes, read_permission, report_changed_bytes};
 use wcontainers_processor_architecture_x86_64::{
     Access, DataAccess, Exception, Flags, GENERAL_PURPOSE_REGISTERS, InstructionFetch, MXCSR_DEFAULT,
@@ -554,7 +554,7 @@ impl SingleStepMachine {
                 Vec::new()
             }
         };
-        MemoryDelta::diff_snapshots(&held, memory, &mut ResidentWriter(self));
+        MemorySnapshot { mutations: &held }.diff(&MemorySnapshot { mutations: memory }, &mut ResidentWriter(self));
         for (page, permission) in to_page_permissions(memory) {
             if let PagePermission::Mapped {
                 data_access: DataAccess::ReadWrite,
@@ -860,9 +860,10 @@ impl BehaviorSource for SingleStepMachine {
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor,
-        memory: &[MemoryDelta<'_, X86_64>],
+        memory: MemorySnapshot<'_, '_, X86_64>,
         mutation_hook: &mut impl MemorySink<X86_64>,
     ) -> Result<(), Refusal> {
+        let memory = memory.mutations;
         if self.renew_machine {
             self.renew()?;
         }

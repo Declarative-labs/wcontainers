@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::convert::Infallible;
 
 use iced_x86::{Code, Decoder, DecoderError, DecoderOptions, EncodingKind, Instruction as Decoded, OpKind, Register};
-use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture, Simulator};
+use wcontainers_processor_architecture::{MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture, Simulator};
 
 use crate::behavior::{CpuidReading, IntegerBehavior, StoreAcrossFault};
 use crate::branch::{Decision, find_branch_form};
@@ -47,25 +47,27 @@ struct MemoryOperand {
 impl Simulator<X86_64> for PreciseInstruction {
     type Error = Infallible;
 
-    /// Decodes the instruction at the instruction pointer and applies this behavior to it.
-    fn simulate_in_place(
+    /// Decodes the instruction at the instruction pointer and applies this behavior to a copy of the processor.
+    fn simulate(
         &self,
-        processor: &mut Processor,
-        memory: &[MemoryDelta<'_, X86_64>],
+        processor: &Processor,
+        memory: MemorySnapshot<'_, '_, X86_64>,
         mutation_hook: &mut impl MemorySink<X86_64>,
-    ) -> Result<(), Infallible> {
+    ) -> Result<Processor, Infallible> {
+        let mut processor = processor.clone();
+        let memory = memory.mutations;
         let decoded = match fetch(memory, processor.instruction_pointer) {
             Ok(decoded) => decoded,
             Err(exception) => {
                 processor.exception = Some(exception);
-                return Ok(());
+                return Ok(processor);
             }
         };
         let mut changed = processor.clone();
         let on_memory_mutated = |mutation: MemoryDelta<'_, X86_64>| mutation_hook.on_memory_mutated(mutation);
         match apply(*self, &mut changed, memory, &decoded, on_memory_mutated) {
             Ok(()) => {
-                *processor = changed;
+                processor = changed;
                 // A jump leaves the instruction pointer where it goes.
                 if !matches!(self, PreciseInstruction::Branch(_)) {
                     processor.instruction_pointer = decoded.next_ip();
@@ -73,7 +75,7 @@ impl Simulator<X86_64> for PreciseInstruction {
                 processor.exception = None;
             }
             Err(exception) => {
-                keep_planted_writes(*self, exception, processor, &changed);
+                keep_planted_writes(*self, exception, &mut processor, &changed);
                 // #XM leaves the flags of the exceptions it found in MXCSR.
                 if exception == Exception::SimdFloatingPoint
                     && !(is_active(Bug::SubtractScalarSingleFaultLeavesFlags)
@@ -87,7 +89,7 @@ impl Simulator<X86_64> for PreciseInstruction {
                 processor.exception = Some(exception);
             }
         }
-        Ok(())
+        Ok(processor)
     }
 }
 

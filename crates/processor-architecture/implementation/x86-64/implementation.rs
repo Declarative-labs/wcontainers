@@ -98,6 +98,8 @@ pub struct X86_64;
 
 impl ProcessorArchitecture for X86_64 {
     type ProcessorState = Processor;
+    /// A behavior expects every value of the processor.
+    type ProcessorStateExpectation = Processor;
     type PagePermission = PagePermission;
     type Instruction = Instruction;
     type PreciseInstruction = PreciseInstruction;
@@ -124,6 +126,10 @@ impl ProcessorArchitecture for X86_64 {
 
     fn list_known_behaviors(instruction: Instruction) -> vec::IntoIter<PreciseInstruction> {
         behavior::list_behaviors(instruction)
+    }
+
+    fn meets_expectations(observed: &Processor, expectation: &Processor) -> bool {
+        observed == expectation
     }
 }
 

@@ -262,10 +262,12 @@ pub enum OperandValue {
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
     type OperandType = OperandType;
     type OperandValue = OperandValue;
+    type OperandTypes<'domain> = vec::IntoIter<OperandType>;
+    type CriticalValues<'domain> = vec::IntoIter<OperandValue>;
 
     /// The operands of the form in Intel's order, then the state it reads besides them; none for a form not yet
     /// modeled.
-    fn list_operand_types(&self, instruction: Instruction) -> impl Iterator<Item = OperandType> {
+    fn list_operand_types(&self, instruction: Instruction) -> vec::IntoIter<OperandType> {
         use OperandType::{
             AccessPlacement, CpuidLeaf, CpuidSubleaf, CpuidUpperHalves, DataPagePermission, OperandSize, Register,
         };
@@ -304,7 +306,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         Vec::from(operand_types).into_iter()
     }
 
-    fn generate_critical_values(&self, operand_type: OperandType) -> impl Iterator<Item = OperandValue> {
+    fn generate_critical_values(&self, operand_type: OperandType) -> vec::IntoIter<OperandValue> {
         let bits = |values: &[u64]| values.iter().copied().map(OperandValue::Bits).collect::<Vec<_>>();
         let values: Vec<OperandValue> = match operand_type {
             OperandType::OperandSize(OperandSizes::All) => {

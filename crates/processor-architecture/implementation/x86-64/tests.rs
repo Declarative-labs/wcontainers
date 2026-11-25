@@ -48,7 +48,7 @@ fn simulate(
     state: ExecutionState<'static, X86_64>,
 ) -> (Processor, Vec<MemoryDelta<'static, X86_64>>) {
     let start = state.memory_mutations.len();
-    let Ok(after) = behavior.simulate(state);
+    let Ok(after) = behavior.simulate_state(state);
     (after.processor, after.memory_mutations[start..].to_vec())
 }
 

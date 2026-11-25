@@ -74,8 +74,11 @@ mod on_chip {
     }
 
     fn simulate(behavior: PreciseInstruction, before: &State) -> State {
-        let Ok(simulated) = behavior.simulate(before.clone());
-        simulated
+        let Ok(simulated) = behavior.simulate_state(before.clone());
+        State {
+            processor: simulated.processor,
+            memory_mutations: simulated.memory_mutations,
+        }
     }
 
     /// The registers, and of the vector registers those that hold other than the complement of their number.
