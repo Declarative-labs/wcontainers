@@ -14,11 +14,6 @@ use core::ptr;
 
 use rangemap::RangeMap;
 
-mod foreign_implementation {
-    #[path = "vector/implementation.rs"]
-    mod vector;
-}
-
 /// One processor architecture, as a program running on it sees it.
 pub trait ProcessorArchitecture: Sized + Clone {
     /// All stateful components of the processor.
