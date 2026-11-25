@@ -59,7 +59,6 @@ pub trait BehaviorSource {
         MeasureInstructionError<Self::Architecture, Self::Error>,
     >
     where
-        Self::Architecture: Clone,
         // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
         <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
             Simulator<Self::Architecture, Error = Infallible>,
@@ -122,7 +121,6 @@ pub trait BehaviorSource {
         MeasureInstructionError<Self::Architecture, Self::Error>,
     >
     where
-        Self::Architecture: Clone,
         // VERUS: no trait that refers back to itself, so the `Simulator` bound is stated here.
         <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
             Simulator<Self::Architecture, Error = Infallible>,

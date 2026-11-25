@@ -10,7 +10,7 @@ use core::ptr;
 use rangemap::RangeMap;
 
 /// One processor architecture, as a program running on it sees it.
-pub trait ProcessorArchitecture: Sized {
+pub trait ProcessorArchitecture: Sized + Clone {
     /// All stateful components of the processor.
     type ProcessorState: Clone + Eq;
     /// What a behavior expects the processor to hold after an instruction.
