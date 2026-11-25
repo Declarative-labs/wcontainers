@@ -300,7 +300,7 @@ impl Call {
 }
 
 /// A back end's objects by the stream's numbers.
-pub struct Table<B: Backend> {
+pub struct Table<B: Gpu> {
     buffers: HashMap<H, B::Buffer>,
     textures: HashMap<H, B::Texture>,
     views: HashMap<H, B::TextureView>,
@@ -318,7 +318,7 @@ pub struct Table<B: Backend> {
     surfaces: HashMap<H, B::Surface>,
 }
 
-impl<B: Backend> Default for Table<B> {
+impl<B: Gpu> Default for Table<B> {
     fn default() -> Self {
         Table {
             buffers: HashMap::new(),
@@ -351,7 +351,7 @@ fn made<V>(m: &mut HashMap<H, V>, h: H, r: Result<V, GpuError>) -> Result<Answer
     Ok(Answer::Done)
 }
 
-impl<B: Backend> Table<B> {
+impl<B: Gpu> Table<B> {
     fn region(&self, r: &Region) -> Result<TextureRegion<'_, B>, GpuError> {
         Ok(TextureRegion {
             texture: get(&self.textures, r.texture)?,
@@ -587,7 +587,7 @@ impl Timer<'_> {
 
 /// Runs one call on `b`, its objects looked up in `t` (and objects it makes put there). Read backs'
 /// bytes go into `scratch`.
-pub fn apply<B: Backend>(
+pub fn apply<B: Gpu>(
     b: &mut B,
     t: &mut Table<B>,
     call: &Call,
@@ -933,7 +933,7 @@ impl Frame {
 }
 
 /// A stream replayed on one back end, frame by frame (a frame ends at each present).
-pub struct Replay<B: Backend> {
+pub struct Replay<B: Gpu> {
     bytes: Vec<u8>,
     at: usize,
     table: Table<B>,
@@ -942,7 +942,7 @@ pub struct Replay<B: Backend> {
     formats: HashMap<H, Format>,
 }
 
-impl<B: Backend> Replay<B> {
+impl<B: Gpu> Replay<B> {
     pub fn new(bytes: Vec<u8>) -> Self {
         Replay {
             bytes,
@@ -1031,7 +1031,7 @@ mod record {
 
     /// A back end that records every call into a stream file while running it on the back end it
     /// wraps. Objects are the stream's numbers.
-    pub struct Traced<B: Backend> {
+    pub struct Traced<B: Gpu> {
         inner: B,
         table: Table<B>,
         /// None without `WEBGL_TRACE`: the calls run unrecorded.
@@ -1044,7 +1044,7 @@ mod record {
         helpers: Helpers<Traced<B>>,
     }
 
-    impl<B: Backend> core::fmt::Debug for Traced<B> {
+    impl<B: Gpu> core::fmt::Debug for Traced<B> {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             write!(f, "Traced({} objects)", self.next)
         }
@@ -1053,7 +1053,7 @@ mod record {
     /// Devices made so far in the process, so the second writes beside the first.
     static DEVICES: AtomicU32 = AtomicU32::new(0);
 
-    impl<B: Backend> Traced<B> {
+    impl<B: Gpu> Traced<B> {
         /// Records `inner`'s calls into the file `WEBGL_TRACE` names (the process's second device
         /// into `<name>.1`, and so on); without it, records nothing, so a build that has the
         /// feature only through another crate's runs as it would without.
@@ -1168,13 +1168,13 @@ mod record {
         }
     }
 
-    impl<B: Backend> Drop for Traced<B> {
+    impl<B: Gpu> Drop for Traced<B> {
         fn drop(&mut self) {
             self.flush();
         }
     }
 
-    fn region(r: &TextureRegion<'_, Traced<impl Backend>>) -> Region {
+    fn region(r: &TextureRegion<'_, Traced<impl Gpu>>) -> Region {
         Region {
             texture: *r.texture,
             mip: r.mip,
@@ -1184,11 +1184,11 @@ mod record {
         }
     }
 
-    fn side(c: &CopyBufferTexture<'_, Traced<impl Backend>>) -> Side {
+    fn side(c: &CopyBufferTexture<'_, Traced<impl Gpu>>) -> Side {
         Side(*c.buffer, c.offset, c.row_pitch, c.rows_per_layer)
     }
 
-    fn source(s: &ReadSource<'_, Traced<impl Backend>>) -> Source {
+    fn source(s: &ReadSource<'_, Traced<impl Gpu>>) -> Source {
         match s {
             ReadSource::Buffer {
                 buffer,
@@ -1203,7 +1203,7 @@ mod record {
         s.map(|s| s.copied())
     }
 
-    fn draw(c: &DrawCall<'_, Traced<impl Backend>>) -> Box<Draw> {
+    fn draw(c: &DrawCall<'_, Traced<impl Gpu>>) -> Box<Draw> {
         Box::new(Draw {
             program: *c.program,
             blend: *c.blend,
@@ -1250,7 +1250,7 @@ mod record {
         GpuError::Invalid("trace: a traced device keeps no resource tables");
 
     fn entries_of(
-        entries: &[BindingEntry<'_, Traced<impl Backend>>],
+        entries: &[BindingEntry<'_, Traced<impl Gpu>>],
     ) -> Result<Vec<Entry>, GpuError> {
         entries
             .iter()
@@ -1282,7 +1282,7 @@ mod record {
             .collect()
     }
 
-    impl<B: Backend> Backend for Traced<B> {
+    impl<B: Gpu> Gpu for Traced<B> {
         type Buffer = H;
         type Texture = H;
         type TextureView = H;

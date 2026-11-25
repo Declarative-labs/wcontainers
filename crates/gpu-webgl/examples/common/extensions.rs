@@ -29,7 +29,7 @@ fn module_of(module: naga::Module, entry: &str, stage: ShaderStage) -> ShaderMod
     }
 }
 
-fn program_of<B: Backend>(
+fn program_of<B: Gpu>(
     b: &mut B,
     vertex: &ShaderModule,
     fragment: &ShaderModule,
@@ -43,7 +43,7 @@ fn program_of<B: Backend>(
 }
 
 /// A `width` by `height` `rgba8unorm` target, and its view.
-fn rgba<B: Backend>(b: &mut B, width: u32, height: u32) -> (B::Texture, B::TextureView) {
+fn rgba<B: Gpu>(b: &mut B, width: u32, height: u32) -> (B::Texture, B::TextureView) {
     let f = Format::Rgba8Unorm;
     let usage = TextureUsage::RENDER | TextureUsage::COPY_SRC;
     let t = kit::texture(
@@ -65,7 +65,7 @@ fn clear(c: [u8; 4]) -> [u32; 4] {
 }
 
 /// A pass on the views in `colours`, each loaded by `load`.
-fn pass<'a, B: Backend>(colours: &[&'a B::TextureView], load: LoadOp<[u32; 4]>) -> PassDesc<'a, B> {
+fn pass<'a, B: Gpu>(colours: &[&'a B::TextureView], load: LoadOp<[u32; 4]>) -> PassDesc<'a, B> {
     PassDesc {
         colors: core::array::from_fn(|i| {
             colours.get(i).map(|&view| ColorAttachment {
@@ -83,7 +83,7 @@ fn pass<'a, B: Backend>(colours: &[&'a B::TextureView], load: LoadOp<[u32; 4]>) 
 }
 
 /// A raster block like the kit's, changed by `change`.
-fn raster<B: Backend>(b: &mut B, change: impl FnOnce(&mut RasterDesc)) -> B::Raster {
+fn raster<B: Gpu>(b: &mut B, change: impl FnOnce(&mut RasterDesc)) -> B::Raster {
     let mut d = RasterDesc {
         fill: FillMode::Solid,
         cull: CullMode::None,
@@ -264,7 +264,7 @@ var<immediate> k: Imm;
 ";
 
 /// AT_DEPTH's program (its immediates need naga's capability).
-fn at_depth<B: Backend>(b: &mut B) -> B::Program {
+fn at_depth<B: Gpu>(b: &mut B) -> B::Program {
     program_of(
         b,
         &module_all(AT_DEPTH, "vs", ShaderStage::Vertex),
@@ -275,7 +275,7 @@ fn at_depth<B: Backend>(b: &mut B) -> B::Program {
 
 /// Draws AT_DEPTH at window depth `z` into a `depth32float` texture cleared to 0.5, with `raster`
 /// and the viewport's depth range `range`, and returns every stored depth.
-fn stored_depth<B: Backend>(
+fn stored_depth<B: Gpu>(
     b: &mut B,
     k: &Kit<B>,
     program: &B::Program,
@@ -579,7 +579,7 @@ pub fn clip_and_cull_distances<H: Host>() {
     let k = Kit::new(&mut b);
     let (t, v) = rgba(&mut b, 8, 8);
     let whole = [kit::viewport(0.0, 0.0, 8.0, 8.0)];
-    let draw = |b: &mut H::Backend, p: &<H::Backend as Backend>::Program, count| {
+    let draw = |b: &mut H::Backend, p: &<H::Backend as Gpu>::Program, count| {
         b.begin_pass(&kit::pass(&v, [0; 4], None));
         b.draw(&kit::call(
             &k,

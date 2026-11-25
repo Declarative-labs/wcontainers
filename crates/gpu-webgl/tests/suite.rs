@@ -25,7 +25,7 @@ impl wcontainers_gpu_test::Host for Angle {
         let off = std::env::var("WEBGL_OFF").unwrap_or_default();
         let off: Vec<&str> = off.split_whitespace().collect();
         let mut b = Gl::on_angle(&dir, &off).expect("ANGLE's OpenGL ES 3.0 context");
-        use wcontainers_gpu::Backend;
+        use wcontainers_gpu::Gpu;
         assert_eq!(
             b.status(),
             wcontainers_gpu::DeviceStatus::Ok,

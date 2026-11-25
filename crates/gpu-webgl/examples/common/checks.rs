@@ -82,7 +82,7 @@ fn module(entry: &str, stage: ShaderStage) -> ShaderModule {
     }
 }
 
-fn buffer<B: Backend>(b: &mut B, usage: BufferUsage, bytes: &[u8]) -> B::Buffer {
+fn buffer<B: Gpu>(b: &mut B, usage: BufferUsage, bytes: &[u8]) -> B::Buffer {
     let buffer = b
         .create_buffer(&BufferDesc {
             size: bytes.len() as u64,
@@ -1282,7 +1282,7 @@ pub fn signed_normalised_minimum_judged_by_whole_components<H: Host>() {
     // reads back as it is, level 0 through its twin and level 1 as written.
     let f = Format::Rgba8Snorm;
     let t = kit::texture(&mut b, TextureDimension::D2, f, [4, 4, 1], 2, usage, false);
-    fn level<B: Backend>(texture: &B::Texture, mip: u32) -> TextureRegion<'_, B> {
+    fn level<B: Gpu>(texture: &B::Texture, mip: u32) -> TextureRegion<'_, B> {
         TextureRegion {
             mip,
             ..layer_at(texture, 0, 0, 0, false)
@@ -1465,7 +1465,7 @@ pub fn two_devices_on_one_thread_keep_their_own_objects<H: Host>() {
     let mut b = H::make();
     let tb = kit::texture(&mut b, TextureDimension::D2, f, [2, 2, 1], 1, usage, false);
     let vb = kit::target(&mut b, &tb, f, 0, 0);
-    let write = |d: &mut H::Backend, t: &<H::Backend as Backend>::Texture, v: u8| {
+    let write = |d: &mut H::Backend, t: &<H::Backend as Gpu>::Texture, v: u8| {
         d.write_texture(
             &layer_at(t, 0, 0, 0, false),
             Extent {
@@ -1552,7 +1552,7 @@ pub fn programs_of_equal_shaders_draw_until_each_is_destroyed<H: Host>() {
             .expect("create_program");
         (v, f, p)
     };
-    let draw = |b: &mut H::Backend, p: &<H::Backend as Backend>::Program| {
+    let draw = |b: &mut H::Backend, p: &<H::Backend as Gpu>::Program| {
         b.begin_pass(&kit::pass(&view, [0; 4], None));
         b.draw(&kit::call(
             &k,
@@ -2621,7 +2621,7 @@ pub fn special_float_values_keep_their_bits<H: Host>() {
 /// every bit; else they take a counted route. The bits kept are checked by
 /// `copies_within_a_typeless_group`, on both routes (all.cmd runs it with `float_blits` off).
 pub fn copies_within_one_float_format_take_the_probed_route<
-    H: Host<Backend = wcontainers_gpu_webgl::Gl>,
+    H: Host<Gpu = wcontainers_gpu_webgl::Gl>,
 >() {
     use crate::kit;
     let mut b = H::make();
@@ -2678,7 +2678,7 @@ pub fn copies_within_one_float_format_take_the_probed_route<
 
 /// Reads back the first layers of `texture` (of `format`, mip 0): directly, or where the format
 /// does not read back (16-bit floats), through a copy into its unsigned integer twin.
-fn read_typeless<B: Backend>(
+fn read_typeless<B: Gpu>(
     b: &mut B,
     texture: &B::Texture,
     format: Format,
@@ -2730,7 +2730,7 @@ const PACKED_LOAD: &str = "
 
 /// Reads a 10-10-10-2 2D array texture, which GL does not read back, by loading each layer in a
 /// program and packing the fields into the format's words again.
-fn read_packed<B: Backend>(
+fn read_packed<B: Gpu>(
     b: &mut B,
     texture: &B::Texture,
     format: Format,
@@ -3049,7 +3049,7 @@ fn depth_values(format: Format, texels: usize, seed: u32) -> Vec<u8> {
 }
 
 /// Level 0 of `texture` from layer `layer` and texel (`x`, `y`), the stencil aspect with `stencil`.
-fn layer_at<B: Backend>(
+fn layer_at<B: Gpu>(
     texture: &B::Texture,
     layer: u32,
     x: u32,
@@ -3474,7 +3474,7 @@ pub fn lists_draw_the_largest_index_as_a_vertex<H: Host>() {
         let both = BufferUsage::INDEX | BufferUsage::VERTEX;
         let copied = buffer(&mut b, both, &vec![0; indices.len()]);
         b.copy_buffer(&data, 0, &copied, 0, indices.len() as u64);
-        let draw = |b: &mut H::Backend, ib: &<H::Backend as Backend>::Buffer, first: u32| {
+        let draw = |b: &mut H::Backend, ib: &<H::Backend as Gpu>::Buffer, first: u32| {
             b.begin_pass(&kit::pass(&v, [0; 4], None));
             b.draw(&DrawCall {
                 index: Some(IndexBinding {
@@ -4631,11 +4631,11 @@ struct Read {
 ";
 
 /// A buffer of `size` zero bytes with `usage`, for captures.
-fn zeros<B: Backend>(b: &mut B, usage: BufferUsage, size: usize) -> B::Buffer {
+fn zeros<B: Gpu>(b: &mut B, usage: BufferUsage, size: usize) -> B::Buffer {
     buffer(b, usage | BufferUsage::CAPTURE, &vec![0; size])
 }
 
-fn read_buffer<B: Backend>(b: &mut B, buffer: &B::Buffer, size: usize) -> Vec<u8> {
+fn read_buffer<B: Gpu>(b: &mut B, buffer: &B::Buffer, size: usize) -> Vec<u8> {
     let mut got = vec![0; size];
     b.read_back_now(
         &ReadSource::Buffer {
@@ -6225,7 +6225,7 @@ pub fn copies_into_and_out_of_host_kept_textures<H: Host>() {
             );
             t
         };
-        let read = |b: &mut H::Backend, t: &<H::Backend as Backend>::Texture| {
+        let read = |b: &mut H::Backend, t: &<H::Backend as Gpu>::Texture| {
             let mut got = vec![0; layer_bytes * 2];
             b.read_back_now(
                 &ReadSource::Texture {

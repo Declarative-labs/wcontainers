@@ -203,7 +203,7 @@ pub const COMPARISONS: [Comparison; 9] = [
 ];
 
 /// Draws `scene`; an error if the device did not stay whole.
-pub fn draw<B: Backend>(b: &mut B, scene: Scene) -> Result<Parts, String> {
+pub fn draw<B: Gpu>(b: &mut B, scene: Scene) -> Result<Parts, String> {
     let parts = match scene {
         Scene::Origin => origin(b),
         Scene::Fraction => fraction(b),
@@ -233,7 +233,7 @@ pub fn route_name(off: &[&str]) -> String {
 
 /// Draws `c` on the WebGPU back end `gpu` and on a WebGL back end per route, which `gl` makes with
 /// those extensions off; one verdict per route.
-pub fn compare<G: Backend, L: Backend>(
+pub fn compare<G: Gpu, L: Gpu>(
     c: &Comparison,
     gpu: &mut G,
     mut gl: impl FnMut(&[&str]) -> L,
@@ -304,7 +304,7 @@ struct V {{
 /// The triangle is clipped at the viewport's edges, so the scissor decides those pixels: the last
 /// row, whose centre (13.5) the viewport holds, is outside Direct3D's scissor. The left and top
 /// edges leave no pixel centre in the half pixel Direct3D leaves undefined.
-fn fraction<B: Backend>(b: &mut B) -> Parts {
+fn fraction<B: Gpu>(b: &mut B) -> Parts {
     let k = Kit::new(b);
     let (x, y, w, h) = (2.25f32, 1.25f32, 11.0f32, 12.5f32);
     let native = b.caps().features.contains(Features::FRACTIONAL_VIEWPORT);
@@ -404,7 +404,7 @@ const RGBA8: [u32; 3] = [16, 16, 1];
 /// Both window-origin routes against WebGPU: a culled one-sided pair of triangles and a
 /// `gl_FragCoord` gradient in one target, and the gradient drawn into each level of a mip chain, all
 /// read back.
-fn origin<B: Backend>(b: &mut B) -> Parts {
+fn origin<B: Gpu>(b: &mut B) -> Parts {
     let k = Kit::new(b);
     let cull = kit::raster(b, CullMode::Back, FrontFace::Clockwise, 0.0, 0.0);
     let tris = kit::program(b, ORIGIN, "tris", "red");
@@ -474,7 +474,7 @@ const SHAPES: &str = "
 ";
 
 /// Cube, array and 3D textures, each made with its own GL target, sampled and loaded.
-fn shapes<B: Backend>(b: &mut B) -> Parts {
+fn shapes<B: Gpu>(b: &mut B) -> Parts {
     let k = Kit::new(b);
     let program = kit::program(b, SHAPES, "vs", "fs");
     let f = Format::Rgba8Unorm;
@@ -593,7 +593,7 @@ const CUBE_GATHERS: &str = "
 }
 ";
 
-fn cube_gathers<B: Backend>(b: &mut B) -> Parts {
+fn cube_gathers<B: Gpu>(b: &mut B) -> Parts {
     let k = Kit::new(b);
     let program = kit::program(b, CUBE_GATHERS, "vs", "fs");
     let f = Format::Rgba8Unorm;
@@ -688,7 +688,7 @@ const LEVEL_ZERO_GATHERS: &str = "
 
 /// Each program of [`LEVEL_ZERO_GATHERS`] through samplers whose minimum level of detail is 0 and
 /// 1, from an 8 by 8 texture of four levels whose red tells every texel of every level apart.
-fn level_zero_gathers<B: Backend>(b: &mut B) -> Parts {
+fn level_zero_gathers<B: Gpu>(b: &mut B) -> Parts {
     let k = Kit::new(b);
     let f = Format::Rgba8Unorm;
     let levels = 4;
@@ -787,7 +787,7 @@ fn level_zero_gathers<B: Backend>(b: &mut B) -> Parts {
 
 /// `generate_mips` of an 8 by 8 texture of `format` holding `values`, written with `bytes`; every
 /// level read back.
-fn mips<B: Backend>(b: &mut B, format: Format, values: Format, bytes: &[u8]) -> Parts {
+fn mips<B: Gpu>(b: &mut B, format: Format, values: Format, bytes: &[u8]) -> Parts {
     let usage = TextureUsage::SAMPLE
         | TextureUsage::RENDER
         | TextureUsage::COPY_SRC

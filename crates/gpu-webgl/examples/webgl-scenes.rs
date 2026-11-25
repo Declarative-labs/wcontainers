@@ -207,7 +207,7 @@ fn rig_verdict(output: &rig::Output, bytes: Option<&[u8]>, out: &Path) -> Result
 }
 
 fn angle(dir: &Path, out: &Path, off: &[&str]) -> Result<bool> {
-    use wcontainers_gpu::Backend;
+    use wcontainers_gpu::Gpu;
     let mut gl = wcontainers_gpu_webgl::Gl::on_angle(dir, off).map_err(anyhow::Error::msg)?;
     std::fs::create_dir_all(out)?;
     println!("renderer: {}", gl.renderer());

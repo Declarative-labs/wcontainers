@@ -5,14 +5,14 @@ use wcontainers_gpu::*;
 
 /// The blocks most checks draw with: opaque writes of every channel, no depth or stencil test, no
 /// culling, no vertex streams.
-pub struct Kit<B: Backend> {
+pub struct Kit<B: Gpu> {
     pub blend: B::Blend,
     pub no_depth: B::DepthStencil,
     pub raster: B::Raster,
     pub layout: B::VertexLayout,
 }
 
-impl<B: Backend> Kit<B> {
+impl<B: Gpu> Kit<B> {
     pub fn new(b: &mut B) -> Kit<B> {
         Kit {
             blend: blend(b, None),
@@ -28,7 +28,7 @@ impl<B: Backend> Kit<B> {
     }
 }
 
-pub fn program<B: Backend>(b: &mut B, wgsl: &str, vs: &str, fs: &str) -> B::Program {
+pub fn program<B: Gpu>(b: &mut B, wgsl: &str, vs: &str, fs: &str) -> B::Program {
     let v = ShaderModule::from_wgsl(wgsl, vs, ShaderStage::Vertex).expect("the WGSL validates");
     let f = ShaderModule::from_wgsl(wgsl, fs, ShaderStage::Fragment).expect("the WGSL validates");
     let v = b.create_shader(&v).expect("create_shader");
@@ -41,7 +41,7 @@ pub fn program<B: Backend>(b: &mut B, wgsl: &str, vs: &str, fs: &str) -> B::Prog
 }
 
 /// A blend block applying `blend` (colour, alpha) to every target, or none.
-pub fn blend<B: Backend>(b: &mut B, blend: Option<(BlendComponent, BlendComponent)>) -> B::Blend {
+pub fn blend<B: Gpu>(b: &mut B, blend: Option<(BlendComponent, BlendComponent)>) -> B::Blend {
     b.create_blend(&BlendDesc {
         targets: [RenderTargetBlend {
             blend,
@@ -54,7 +54,7 @@ pub fn blend<B: Backend>(b: &mut B, blend: Option<(BlendComponent, BlendComponen
     .expect("create_blend")
 }
 
-pub fn depth_stencil<B: Backend>(
+pub fn depth_stencil<B: Gpu>(
     b: &mut B,
     depth: Option<CompareFn>,
     write: bool,
@@ -73,7 +73,7 @@ pub fn depth_stencil<B: Backend>(
 
 /// A raster block in the clip depth convention the back end has, with a constant and a slope depth
 /// bias.
-pub fn raster<B: Backend>(
+pub fn raster<B: Gpu>(
     b: &mut B,
     cull: CullMode,
     front: FrontFace,
@@ -103,7 +103,7 @@ pub fn raster<B: Backend>(
 }
 
 /// A texture of one sample.
-pub fn texture<B: Backend>(
+pub fn texture<B: Gpu>(
     b: &mut B,
     dimension: TextureDimension,
     format: Format,
@@ -129,7 +129,7 @@ pub fn texture<B: Backend>(
 
 /// A view of `mips` levels from `mip` and `layers` layers from `layer`.
 #[allow(clippy::too_many_arguments)]
-pub fn view<B: Backend>(
+pub fn view<B: Gpu>(
     b: &mut B,
     texture: &B::Texture,
     format: Format,
@@ -155,7 +155,7 @@ pub fn view<B: Backend>(
 }
 
 /// A view to draw into: one level and one layer.
-pub fn target<B: Backend>(
+pub fn target<B: Gpu>(
     b: &mut B,
     texture: &B::Texture,
     format: Format,
@@ -178,7 +178,7 @@ pub fn viewport(x: f32, y: f32, width: f32, height: f32) -> Viewport {
 
 /// A pass on one colour target, cleared to `clear` (raw bits), with an optional depth-stencil one
 /// cleared to `depth` and stencil 0.
-pub fn pass<'a, B: Backend>(
+pub fn pass<'a, B: Gpu>(
     colour: &'a B::TextureView,
     clear: [u32; 4],
     depth: Option<(&'a B::TextureView, f32, bool)>,
@@ -212,7 +212,7 @@ pub fn pass<'a, B: Backend>(
 }
 
 /// A draw of `count` vertices with no streams, in `kit`'s blocks unless the caller changes them.
-pub fn call<'a, B: Backend>(
+pub fn call<'a, B: Gpu>(
     kit: &'a Kit<B>,
     program: &'a B::Program,
     set: Option<&'a B::BindingSet>,
@@ -247,7 +247,7 @@ pub fn call<'a, B: Backend>(
 
 /// Reads `layers` layers of a `width` by `height` region of level `mip` from layer `layer`, now.
 #[allow(clippy::too_many_arguments)]
-pub fn read<B: Backend>(
+pub fn read<B: Gpu>(
     b: &mut B,
     texture: &B::Texture,
     mip: u32,

@@ -2984,7 +2984,7 @@ fn gl_rect(s: &ScissorRect, size: (u32, u32)) -> [i32; 4] {
 }
 
 impl Gl {
-    /// [`Backend::draw`], with the draw's instances starting `later` instances past its first
+    /// [`Gpu::draw`], with the draw's instances starting `later` instances past its first
     /// instance: `instance_index` and the per-instance streams as the full draw has them there.
     /// The bytes of a draw's indices, read back from the index GL buffer (waiting for the GPU).
     fn read_indices(
@@ -3348,7 +3348,7 @@ impl Gl {
     }
 }
 
-impl Backend for Gl {
+impl Gpu for Gl {
     type Buffer = Buffer;
     type Texture = Texture;
     type TextureView = TextureView;

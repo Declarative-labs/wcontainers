@@ -178,7 +178,7 @@ fn module(source: &str, entry: &str, stage: ShaderStage) -> Result<ShaderModule,
     })
 }
 
-fn program<B: Backend>(b: &mut B, source: &str) -> Result<B::Program, String> {
+fn program<B: Gpu>(b: &mut B, source: &str) -> Result<B::Program, String> {
     let rewritten;
     let source = if b.caps().features.contains(Features::CLIP_DEPTH_ZERO_ONE) {
         source
@@ -284,7 +284,7 @@ fn no_depth() -> DepthStencilDesc {
     }
 }
 
-fn buffer<B: Backend>(b: &mut B, usage: BufferUsage, bytes: &[u8]) -> Result<B::Buffer, String> {
+fn buffer<B: Gpu>(b: &mut B, usage: BufferUsage, bytes: &[u8]) -> Result<B::Buffer, String> {
     let buffer = b
         .create_buffer(&BufferDesc {
             size: bytes.len() as u64,
@@ -296,7 +296,7 @@ fn buffer<B: Backend>(b: &mut B, usage: BufferUsage, bytes: &[u8]) -> Result<B::
     Ok(buffer)
 }
 
-fn texture<B: Backend>(
+fn texture<B: Gpu>(
     b: &mut B,
     format: Format,
     size: u32,
@@ -317,7 +317,7 @@ fn texture<B: Backend>(
     .map_err(|e| format!("{e:?}"))
 }
 
-fn whole_view<B: Backend>(
+fn whole_view<B: Gpu>(
     b: &mut B,
     t: &B::Texture,
     format: Format,
@@ -372,7 +372,7 @@ fn as_bytes(v: &[impl Plain]) -> Vec<u8> {
 }
 
 /// Draws `scene` with `change` applied and reads the target back.
-pub fn draw<B: Backend>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u8>, String> {
+pub fn draw<B: Gpu>(b: &mut B, which: Scene, change: Change) -> Result<Vec<u8>, String> {
     let target = texture(
         b,
         Format::Rgba8Unorm,

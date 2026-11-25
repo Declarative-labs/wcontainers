@@ -34,7 +34,7 @@ fn angle() -> PathBuf {
 }
 
 /// Draws the scene into a 32 by 32 texture and reads it back.
-fn scene<B: Backend>(b: &mut B) -> Vec<u8> {
+fn scene<B: Gpu>(b: &mut B) -> Vec<u8> {
     let kit = kit::Kit::new(b);
     let program = kit::program(b, SCENE, "vs", "fs");
     let f = Format::Rgba8Unorm;
@@ -80,7 +80,7 @@ fn scene<B: Backend>(b: &mut B) -> Vec<u8> {
 }
 
 /// Replays the whole stream on `b`; every call must succeed. Answers the last read back.
-fn replay<B: Backend>(mut b: B, stream: Vec<u8>) -> Vec<u8> {
+fn replay<B: Gpu>(mut b: B, stream: Vec<u8>) -> Vec<u8> {
     let mut r = Replay::new(stream);
     while let Some(frame) = r.frame(&mut b, None, &mut |_, _| {}) {
         let frame = frame.expect("the stream decodes");
