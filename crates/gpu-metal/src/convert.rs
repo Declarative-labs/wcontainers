@@ -1,12 +1,14 @@
 //! The interface's formats and state blocks in Metal's terms, and what this implementation declares it does with each format.
 
 use wcontainers_gpu::{
-    AddressMode, BlendFactor as GpuBlendFactor, BlendOp, BorderColor, CompareFn, CullMode as GpuCullMode, FORMAT_COUNT,
-    Features, Filter, Format, FormatCaps, FormatUse, FrontFace, GpuError, StencilFace, StencilOp, VertexFormat as GpuVertexFormat,
+    AddressMode, BlendFactor as GpuBlendFactor, BlendOp, BorderColor, CompareFn,
+    CullMode as GpuCullMode, FORMAT_COUNT, Features, Filter, Format, FormatCaps, FormatUse,
+    FrontFace, GpuError, StencilFace, StencilOp, VertexFormat as GpuVertexFormat,
 };
 use wcontainers_metal::{
-    BlendFactor, BlendOperation, CompareFunction, CullMode, PixelFormat, SamplerAddressMode, SamplerBorderColor,
-    SamplerMinMagFilter, StencilDescriptor, StencilOperation, VertexFormat, Winding,
+    BlendFactor, BlendOperation, CompareFunction, CullMode, PixelFormat, SamplerAddressMode,
+    SamplerBorderColor, SamplerMinMagFilter, StencilDescriptor, StencilOperation, VertexFormat,
+    Winding,
 };
 
 /// Returns the Metal format a texture of an interface format is held in, if this implementation holds it.
@@ -110,7 +112,8 @@ pub(crate) fn format_caps() -> FormatCaps {
     let filtered = FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
     let drawn = filtered | FormatUse::RENDER | FormatUse::BLEND | FormatUse::RESOLVE;
     let integer = FormatUse::SAMPLE | FormatUse::RENDER | FormatUse::COPY_OUT;
-    let depth = FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::DEPTH_STENCIL | FormatUse::COPY_OUT;
+    let depth =
+        FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::DEPTH_STENCIL | FormatUse::COPY_OUT;
     let stencil = FormatUse::SAMPLE | FormatUse::DEPTH_STENCIL | FormatUse::COPY_OUT;
     use Format as F;
     let table: &[(&[Format], FormatUse, bool)] = &[
@@ -139,8 +142,16 @@ pub(crate) fn format_caps() -> FormatCaps {
             drawn,
             true,
         ),
-        (&[F::Bgra8Unorm, F::Bgra8UnormSrgb], drawn | FormatUse::PRESENT, true),
-        (&[F::R32Float, F::Rg32Float, F::Rgba32Float], filtered | FormatUse::RENDER | FormatUse::BLEND, true),
+        (
+            &[F::Bgra8Unorm, F::Bgra8UnormSrgb],
+            drawn | FormatUse::PRESENT,
+            true,
+        ),
+        (
+            &[F::R32Float, F::Rg32Float, F::Rgba32Float],
+            filtered | FormatUse::RENDER | FormatUse::BLEND,
+            true,
+        ),
         (
             &[
                 F::R8Uint,
@@ -167,8 +178,16 @@ pub(crate) fn format_caps() -> FormatCaps {
             true,
         ),
         (&[F::Rgb9e5Float, F::A8Unorm], filtered, false),
-        (&[F::Depth16Unorm, F::Depth24Plus, F::Depth32Float], depth, true),
-        (&[F::Stencil8, F::Depth24PlusStencil8, F::Depth32FloatStencil8], stencil, true),
+        (
+            &[F::Depth16Unorm, F::Depth24Plus, F::Depth32Float],
+            depth,
+            true,
+        ),
+        (
+            &[F::Stencil8, F::Depth24PlusStencil8, F::Depth32FloatStencil8],
+            stencil,
+            true,
+        ),
         (
             &[
                 F::Bc1RgbaUnorm,
@@ -310,13 +329,18 @@ pub(crate) fn filter(filter: Filter) -> SamplerMinMagFilter {
 }
 
 /// Returns Metal's address mode of an interface one and its border, or the feature it needs.
-pub(crate) fn address(mode: AddressMode, border: BorderColor) -> Result<(SamplerAddressMode, SamplerBorderColor), GpuError> {
+pub(crate) fn address(
+    mode: AddressMode,
+    border: BorderColor,
+) -> Result<(SamplerAddressMode, SamplerBorderColor), GpuError> {
     let none = SamplerBorderColor::TransparentBlack;
     Ok(match (mode, border) {
         (AddressMode::Repeat, _) => (SamplerAddressMode::Repeat, none),
         (AddressMode::Mirror, _) => (SamplerAddressMode::MirrorRepeat, none),
         (AddressMode::Clamp, _) => (SamplerAddressMode::ClampToEdge, none),
-        (AddressMode::Border, BorderColor::TransparentBlack) => (SamplerAddressMode::ClampToZero, none),
+        (AddressMode::Border, BorderColor::TransparentBlack) => {
+            (SamplerAddressMode::ClampToZero, none)
+        }
         (AddressMode::Border, _) => return Err(GpuError::Absent(Features::BORDER_COLOR)),
         (AddressMode::MirrorOnce, _) => return Err(GpuError::Absent(Features::MIRROR_ONCE)),
     })

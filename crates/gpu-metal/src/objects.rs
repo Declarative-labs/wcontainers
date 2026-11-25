@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    BlendDesc, DepthStencilDesc, Format, QueryKind, RasterDesc, ShaderStage, TextureDesc, TextureViewDesc,
+    BlendDesc, DepthStencilDesc, Format, RasterDesc, ShaderStage, TextureDesc,
     VertexLayoutDesc,
 };
 use wcontainers_metal::{Metal, PixelFormat};
@@ -52,7 +52,6 @@ pub struct TextureObj<M: Metal> {
 pub struct ViewObj<M: Metal> {
     pub(crate) raw: M::Texture,
     pub(crate) format: Format,
-    pub(crate) desc: Option<TextureViewDesc>,
     pub(crate) width: u32,
     pub(crate) height: u32,
     pub(crate) samples: u32,
@@ -79,22 +78,23 @@ pub struct ShaderObj {
     pub(crate) entry_point: String,
     pub(crate) stage: ShaderStage,
     /// The slot of each `(group, binding)` the entry point reads.
-    pub(crate) slots: BTreeMap<(u32, u32), (SlotKind, u32)>,
+    pub(crate) slots: Slots,
 }
+
+/// The slot kind and index of each `(group, binding)` of a shader.
+pub(crate) type Slots = BTreeMap<(u32, u32), (SlotKind, u32)>;
 
 /// A program: its shaders, compiled when a draw or dispatch first needs them.
 pub enum ProgramObj {
-    Render { id: u64, vertex: Shared<ShaderObj>, fragment: Option<Shared<ShaderObj>> },
-    Compute { id: u64, shader: Shared<ShaderObj> },
-}
-
-impl ProgramObj {
-    /// Returns the program's number, which keys what is built from it.
-    pub(crate) fn id(&self) -> u64 {
-        match self {
-            ProgramObj::Render { id, .. } | ProgramObj::Compute { id, .. } => *id,
-        }
-    }
+    Render {
+        id: u64,
+        vertex: Shared<ShaderObj>,
+        fragment: Option<Shared<ShaderObj>>,
+    },
+    Compute {
+        id: u64,
+        shader: Shared<ShaderObj>,
+    },
 }
 
 /// A state block and its number, which keys the pipelines built with it.
@@ -114,7 +114,11 @@ pub type VertexLayoutBlock = Block<VertexLayoutDesc>;
 
 /// One resource of a binding set.
 pub(crate) enum SetResource<M: Metal> {
-    Buffer { buffer: Shared<BufferObj<M>>, offset: u64, size: u64 },
+    Buffer {
+        buffer: Shared<BufferObj<M>>,
+        offset: u64,
+        size: u64,
+    },
     Texture(Shared<ViewObj<M>>),
     Sampler(Shared<SamplerObj<M>>),
 }
@@ -126,7 +130,6 @@ pub struct SetObj<M: Metal> {
 
 /// A query set: one eight-byte result each, in a buffer the GPU writes.
 pub struct QueryObj<M: Metal> {
-    pub(crate) kind: QueryKind,
     pub(crate) count: u32,
     pub(crate) buffer: M::Buffer,
 }
@@ -159,7 +162,9 @@ pub enum Never {}
 /// The Metal pixel format of a format's view, for an aspect.
 pub(crate) fn view_format(format: Format, stencil: bool) -> Option<PixelFormat> {
     match (format, stencil) {
-        (Format::Depth24PlusStencil8 | Format::Depth32FloatStencil8, true) => Some(PixelFormat::X32Stencil8),
+        (Format::Depth24PlusStencil8 | Format::Depth32FloatStencil8, true) => {
+            Some(PixelFormat::X32Stencil8)
+        }
         _ => crate::convert::pixel_format(format),
     }
 }

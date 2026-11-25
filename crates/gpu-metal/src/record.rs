@@ -2,20 +2,23 @@
 //! draws build.
 
 use wcontainers_gpu::{
-    AspectOps, DrawCall, DrawRange, EmptyPass, Format, FormatKind, Gpu, IndexFormat, LoadOp, PassDesc, ScissorRect,
-    ShaderStage, StepMode, StoreOp, TargetLayout, TextureRegion, TextureViewDesc, Topology, ViewDimension, FORMAT_FACTS,
-    MAX_COLOR_TARGETS,
+    AspectOps, DrawCall, DrawRange, EmptyPass, FORMAT_FACTS, Format, FormatKind, Gpu, IndexFormat,
+    LoadOp, MAX_COLOR_TARGETS, PassDesc, ScissorRect, ShaderStage, StepMode, StoreOp, TargetLayout,
+    TextureRegion, TextureViewDesc, Topology, ViewDimension,
 };
 use wcontainers_metal::{
-    Blending, ColorWriteMask, DepthClipMode, FunctionSource, IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, Metal,
-    PrimitiveTopologyClass, PrimitiveType, RenderCommand, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
-    RenderPassDescriptor, RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor, ResolveTarget,
-    ResourceSlot, StoreAction, TriangleFillMode, VertexAttribute, VertexBufferLayout, VertexStepFunction,
+    Blending, ColorWriteMask, DepthClipMode, FunctionSource, IndexType, LoadAction,
+    MAX_COLOR_ATTACHMENTS, Metal, PrimitiveTopologyClass, PrimitiveType, RenderCommand,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
+    RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor, ResolveTarget, ResourceSlot,
+    StoreAction, TriangleFillMode, VertexAttribute, VertexBufferLayout, VertexStepFunction,
     VisibilityResultMode,
 };
 
-use crate::objects::{QueryObj, SetResource, Shared, ShaderObj, SlotKind, ViewObj};
-use crate::{FIRST_STREAM_SLOT, IMMEDIATES_SLOT, MetalGpu, ProgramObj, QUERY_BYTES, SIZES_SLOT, convert};
+use crate::objects::{QueryObj, SetResource, ShaderObj, Shared, SlotKind, ViewObj};
+use crate::{
+    FIRST_STREAM_SLOT, IMMEDIATES_SLOT, MetalGpu, ProgramObj, QUERY_BYTES, SIZES_SLOT, convert,
+};
 
 /// What keys a render pipeline: the program, vertex layout and blend blocks, the targets, and the primitive class.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
@@ -125,8 +128,14 @@ impl<M: Metal> OpenPass<M> {
                 .collect(),
             depth: self.depth.as_ref().map(|d| OpenDepth {
                 view: d.view.clone(),
-                depth: d.depth.map(|a| AspectOps { load: LoadOp::Load, ..a }),
-                stencil: d.stencil.map(|a| AspectOps { load: LoadOp::Load, ..a }),
+                depth: d.depth.map(|a| AspectOps {
+                    load: LoadOp::Load,
+                    ..a
+                }),
+                stencil: d.stencil.map(|a| AspectOps {
+                    load: LoadOp::Load,
+                    ..a
+                }),
             }),
             empty: self.empty,
             occlusion: self.occlusion.clone(),
@@ -198,7 +207,11 @@ impl<M: Metal> OpenPass<M> {
 }
 
 /// Returns Metal's depth or stencil attachment of a view, loaded and stored as given.
-fn aspect<M: Metal>(view: &Shared<ViewObj<M>>, load: LoadOp<f64>, store: StoreOp) -> RenderPassDepthStencilAttachment<'_, M> {
+fn aspect<M: Metal>(
+    view: &Shared<ViewObj<M>>,
+    load: LoadOp<f64>,
+    store: StoreOp,
+) -> RenderPassDepthStencilAttachment<'_, M> {
     let (load_action, clear_value) = match load {
         LoadOp::Load => (LoadAction::Load, 0.0),
         LoadOp::DontCare => (LoadAction::DontCare, 0.0),
@@ -238,7 +251,10 @@ fn primitive(topology: Topology) -> Option<(PrimitiveType, PrimitiveTopologyClas
         Topology::LineList => (PrimitiveType::Line, PrimitiveTopologyClass::Line),
         Topology::LineStrip => (PrimitiveType::LineStrip, PrimitiveTopologyClass::Line),
         Topology::TriangleList => (PrimitiveType::Triangle, PrimitiveTopologyClass::Triangle),
-        Topology::TriangleStrip => (PrimitiveType::TriangleStrip, PrimitiveTopologyClass::Triangle),
+        Topology::TriangleStrip => (
+            PrimitiveType::TriangleStrip,
+            PrimitiveTopologyClass::Triangle,
+        ),
         Topology::TriangleFan | Topology::LineLoop => return None,
     })
 }
@@ -254,7 +270,9 @@ fn aspects(format: Format) -> (bool, bool) {
 }
 
 /// Returns Metal's vertex buffers of a vertex layout, each stream in its own slot.
-fn vertex_buffers(layout: &wcontainers_gpu::VertexLayoutDesc) -> Result<Vec<VertexBufferLayout>, &'static str> {
+fn vertex_buffers(
+    layout: &wcontainers_gpu::VertexLayoutDesc,
+) -> Result<Vec<VertexBufferLayout>, &'static str> {
     let mut out = Vec::new();
     for (stream, s) in layout.streams.iter().enumerate() {
         let Some(s) = s else {
@@ -262,10 +280,20 @@ fn vertex_buffers(layout: &wcontainers_gpu::VertexLayoutDesc) -> Result<Vec<Vert
         };
         let mut attributes = Vec::new();
         let mut end = 0;
-        for a in layout.attributes.iter().flatten().filter(|a| a.stream as usize == stream) {
-            let format = convert::vertex_format(a.format).ok_or("a vertex format naga's vertex reads lack")?;
+        for a in layout
+            .attributes
+            .iter()
+            .flatten()
+            .filter(|a| a.stream as usize == stream)
+        {
+            let format = convert::vertex_format(a.format)
+                .ok_or("a vertex format naga's vertex reads lack")?;
             end = end.max(a.offset + convert::vertex_bytes(a.format));
-            attributes.push(VertexAttribute { location: a.location, offset: a.offset, format });
+            attributes.push(VertexAttribute {
+                location: a.location,
+                offset: a.offset,
+                format,
+            });
         }
         let (stride, step_function) = match (s.stride, s.step) {
             (0, _) => (end.next_multiple_of(4).max(4), VertexStepFunction::Constant),
@@ -293,7 +321,11 @@ impl<M: Metal> MetalGpu<M> {
         let resources: Vec<ResourceSlot> = shader
             .slots
             .iter()
-            .map(|(&(group, binding), &(_, index))| ResourceSlot { group, binding, index })
+            .map(|(&(group, binding), &(_, index))| ResourceSlot {
+                group,
+                binding,
+                index,
+            })
             .collect();
         let stage = match shader.stage {
             ShaderStage::Vertex => naga::ShaderStage::Vertex,
@@ -325,7 +357,12 @@ impl<M: Metal> MetalGpu<M> {
         targets: TargetLayout,
         class: PrimitiveTopologyClass,
     ) -> Result<M::RenderPipelineState, &'static str> {
-        let ProgramObj::Render { id, vertex, fragment } = &*call.program.0 else {
+        let ProgramObj::Render {
+            id,
+            vertex,
+            fragment,
+        } = &*call.program.0
+        else {
             return Err("a draw of a compute program");
         };
         let key = PipelineKey {
@@ -367,19 +404,30 @@ impl<M: Metal> MetalGpu<M> {
             let Some(format) = format else {
                 continue;
             };
-            let pixel_format = convert::pixel_format(*format).ok_or("a target format this implementation lacks")?;
-            let target = if blend.same_for_all { blend.targets[0] } else { blend.targets[index] };
-            let integer = matches!(FORMAT_FACTS[*format as usize].kind, FormatKind::Uint | FormatKind::Sint);
+            let pixel_format = convert::pixel_format(*format)
+                .ok_or("a target format this implementation lacks")?;
+            let target = if blend.same_for_all {
+                blend.targets[0]
+            } else {
+                blend.targets[index]
+            };
+            let integer = matches!(
+                FORMAT_FACTS[*format as usize].kind,
+                FormatKind::Uint | FormatKind::Sint
+            );
             color_attachments[index] = Some(RenderPipelineColorAttachmentDescriptor {
                 pixel_format,
-                blending: target.blend.filter(|_| !integer).map(|(color, alpha)| Blending {
-                    rgb_blend_operation: convert::blend_op(color.op),
-                    alpha_blend_operation: convert::blend_op(alpha.op),
-                    source_rgb_blend_factor: convert::blend_factor(color.src),
-                    destination_rgb_blend_factor: convert::blend_factor(color.dst),
-                    source_alpha_blend_factor: convert::blend_factor(alpha.src),
-                    destination_alpha_blend_factor: convert::blend_factor(alpha.dst),
-                }),
+                blending: target
+                    .blend
+                    .filter(|_| !integer)
+                    .map(|(color, alpha)| Blending {
+                        rgb_blend_operation: convert::blend_op(color.op),
+                        alpha_blend_operation: convert::blend_op(alpha.op),
+                        source_rgb_blend_factor: convert::blend_factor(color.src),
+                        destination_rgb_blend_factor: convert::blend_factor(color.dst),
+                        source_alpha_blend_factor: convert::blend_factor(alpha.src),
+                        destination_alpha_blend_factor: convert::blend_factor(alpha.dst),
+                    }),
                 write_mask: ColorWriteMask {
                     red: target.writes.contains(wcontainers_gpu::ColorWrites::R),
                     green: target.writes.contains(wcontainers_gpu::ColorWrites::G),
@@ -390,9 +438,13 @@ impl<M: Metal> MetalGpu<M> {
         }
         let (depth_format, stencil_format) = match targets.depth_stencil {
             Some(format) => {
-                let pixel_format = convert::pixel_format(format).ok_or("a depth format this implementation lacks")?;
+                let pixel_format = convert::pixel_format(format)
+                    .ok_or("a depth format this implementation lacks")?;
                 let (depth, stencil) = aspects(format);
-                (depth.then_some(pixel_format), stencil.then_some(pixel_format))
+                (
+                    depth.then_some(pixel_format),
+                    stencil.then_some(pixel_format),
+                )
             }
             None => (None, None),
         };
@@ -423,23 +475,40 @@ impl<M: Metal> MetalGpu<M> {
             return Err("a draw outside a pass");
         };
         let (targets, width, height) = (pass.targets, pass.width, pass.height);
-        let (primitive_type, class) = primitive(call.topology).ok_or("a fan or loop through draw")?;
+        let (primitive_type, class) =
+            primitive(call.topology).ok_or("a fan or loop through draw")?;
         let raster = call.raster.desc;
         let scissor = match call.scissors.first().filter(|_| raster.scissor) {
             Some(r) => {
                 let (x0, y0) = (r.x.min(width), r.y.min(height));
-                let (x1, y1) = (r.x.saturating_add(r.width).min(width), r.y.saturating_add(r.height).min(height));
+                let (x1, y1) = (
+                    r.x.saturating_add(r.width).min(width),
+                    r.y.saturating_add(r.height).min(height),
+                );
                 if x1 <= x0 || y1 <= y0 {
                     return Ok(());
                 }
-                ScissorRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
+                ScissorRect {
+                    x: x0,
+                    y: y0,
+                    width: x1 - x0,
+                    height: y1 - y0,
+                }
             }
-            None => ScissorRect { x: 0, y: 0, width, height },
+            None => ScissorRect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
         };
         let (instances, empty) = match call.range {
-            DrawRange::Vertices { count, instances, .. } | DrawRange::Indexed { count, instances, .. } => {
-                (instances, count == 0)
+            DrawRange::Vertices {
+                count, instances, ..
             }
+            | DrawRange::Indexed {
+                count, instances, ..
+            } => (instances, count == 0),
             DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => {
                 return Err("an indirect draw, which this implementation does not declare");
             }
@@ -453,7 +522,10 @@ impl<M: Metal> MetalGpu<M> {
             .get(&call.depth_stencil.id)
             .cloned()
             .ok_or("a depth and stencil block of no state")?;
-        let ProgramObj::Render { vertex, fragment, .. } = &*call.program.0 else {
+        let ProgramObj::Render {
+            vertex, fragment, ..
+        } = &*call.program.0
+        else {
             return Err("a draw of a compute program");
         };
         let (vertex, fragment) = (vertex.clone(), fragment.clone());
@@ -466,7 +538,11 @@ impl<M: Metal> MetalGpu<M> {
                 wcontainers_gpu::FillMode::Line => TriangleFillMode::Lines,
                 _ => TriangleFillMode::Fill,
             }),
-            RenderCommand::SetDepthClipMode(if raster.depth_clip { DepthClipMode::Clip } else { DepthClipMode::Clamp }),
+            RenderCommand::SetDepthClipMode(if raster.depth_clip {
+                DepthClipMode::Clip
+            } else {
+                DepthClipMode::Clamp
+            }),
             RenderCommand::SetDepthBias {
                 depth_bias: f32::from_bits(raster.depth_bias),
                 slope_scale: f32::from_bits(raster.depth_bias_slope),
@@ -503,30 +579,63 @@ impl<M: Metal> MetalGpu<M> {
             };
             for (binding, resource) in &set.entries {
                 for (shader, vertex_stage) in [(Some(&vertex), true), (fragment.as_ref(), false)] {
-                    let Some(&(kind, index)) = shader.and_then(|s| s.slots.get(&(group as u32, *binding))) else {
+                    let Some(&(kind, index)) =
+                        shader.and_then(|s| s.slots.get(&(group as u32, *binding)))
+                    else {
                         continue;
                     };
                     commands.push(match (resource, kind, vertex_stage) {
-                        (SetResource::Buffer { buffer, offset, size }, SlotKind::Buffer, _) => {
+                        (
+                            SetResource::Buffer {
+                                buffer,
+                                offset,
+                                size,
+                            },
+                            SlotKind::Buffer,
+                            _,
+                        ) => {
                             self.used(buffer);
-                            let (buffer, offset, length) = (buffer.raw.borrow().clone(), *offset, *size);
+                            let (buffer, offset, length) =
+                                (buffer.raw.borrow().clone(), *offset, *size);
                             if vertex_stage {
-                                RenderCommand::SetVertexBuffer { buffer, offset, length, index }
+                                RenderCommand::SetVertexBuffer {
+                                    buffer,
+                                    offset,
+                                    length,
+                                    index,
+                                }
                             } else {
-                                RenderCommand::SetFragmentBuffer { buffer, offset, length, index }
+                                RenderCommand::SetFragmentBuffer {
+                                    buffer,
+                                    offset,
+                                    length,
+                                    index,
+                                }
                             }
                         }
                         (SetResource::Texture(view), SlotKind::Texture, true) => {
-                            RenderCommand::SetVertexTexture { texture: view.raw.clone(), index }
+                            RenderCommand::SetVertexTexture {
+                                texture: view.raw.clone(),
+                                index,
+                            }
                         }
                         (SetResource::Texture(view), SlotKind::Texture, false) => {
-                            RenderCommand::SetFragmentTexture { texture: view.raw.clone(), index }
+                            RenderCommand::SetFragmentTexture {
+                                texture: view.raw.clone(),
+                                index,
+                            }
                         }
                         (SetResource::Sampler(sampler), SlotKind::Sampler, true) => {
-                            RenderCommand::SetVertexSamplerState { sampler: sampler.raw.clone(), index }
+                            RenderCommand::SetVertexSamplerState {
+                                sampler: sampler.raw.clone(),
+                                index,
+                            }
                         }
                         (SetResource::Sampler(sampler), SlotKind::Sampler, false) => {
-                            RenderCommand::SetFragmentSamplerState { sampler: sampler.raw.clone(), index }
+                            RenderCommand::SetFragmentSamplerState {
+                                sampler: sampler.raw.clone(),
+                                index,
+                            }
                         }
                         _ => return Err("a binding of another kind than the program reads"),
                     });
@@ -537,7 +646,15 @@ impl<M: Metal> MetalGpu<M> {
             let Some(binding) = binding else {
                 continue;
             };
-            if call.vertex_layout.desc.streams.get(stream).copied().flatten().is_none() {
+            if call
+                .vertex_layout
+                .desc
+                .streams
+                .get(stream)
+                .copied()
+                .flatten()
+                .is_none()
+            {
                 continue;
             }
             self.used(binding.buffer);
@@ -549,23 +666,45 @@ impl<M: Metal> MetalGpu<M> {
             });
         }
         if !call.immediates.is_empty() {
-            commands.push(RenderCommand::SetVertexBytes { bytes: call.immediates.to_vec(), index: IMMEDIATES_SLOT });
-            commands.push(RenderCommand::SetFragmentBytes { bytes: call.immediates.to_vec(), index: IMMEDIATES_SLOT });
+            commands.push(RenderCommand::SetVertexBytes {
+                bytes: call.immediates.to_vec(),
+                index: IMMEDIATES_SLOT,
+            });
+            commands.push(RenderCommand::SetFragmentBytes {
+                bytes: call.immediates.to_vec(),
+                index: IMMEDIATES_SLOT,
+            });
         }
         commands.push(match call.range {
-            DrawRange::Vertices { first, count, first_instance, instances } => RenderCommand::DrawPrimitives {
+            DrawRange::Vertices {
+                first,
+                count,
+                first_instance,
+                instances,
+            } => RenderCommand::DrawPrimitives {
                 primitive_type,
                 vertex_start: first,
                 vertex_count: count,
                 instance_count: instances,
                 base_instance: first_instance,
             },
-            DrawRange::Indexed { first, count, base_vertex, first_instance, instances } => {
-                let index = call.index.as_ref().ok_or("an indexed draw with no index buffer")?;
+            DrawRange::Indexed {
+                first,
+                count,
+                base_vertex,
+                first_instance,
+                instances,
+            } => {
+                let index = call
+                    .index
+                    .as_ref()
+                    .ok_or("an indexed draw with no index buffer")?;
                 let (index_type, size) = match index.format {
                     IndexFormat::U16 => (IndexType::UInt16, 2),
                     IndexFormat::U32 => (IndexType::UInt32, 4),
-                    IndexFormat::U8 => return Err("8-bit indices, which this implementation does not declare"),
+                    IndexFormat::U8 => {
+                        return Err("8-bit indices, which this implementation does not declare");
+                    }
                 };
                 self.used(index.buffer);
                 RenderCommand::DrawIndexedPrimitives {
@@ -579,7 +718,9 @@ impl<M: Metal> MetalGpu<M> {
                     base_instance: first_instance,
                 }
             }
-            DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => unreachable!("refused above"),
+            DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => {
+                unreachable!("refused above")
+            }
         });
         if let Some(pass) = &mut self.pass {
             pass.commands.extend(commands);
@@ -606,7 +747,10 @@ impl<M: Metal> MetalGpu<M> {
                 self.fail("a query past its set's end");
                 return;
             }
-            None => RenderCommand::SetVisibilityResultMode { mode: VisibilityResultMode::Disabled, offset: 0 },
+            None => RenderCommand::SetVisibilityResultMode {
+                mode: VisibilityResultMode::Disabled,
+                offset: 0,
+            },
         };
         pass.commands.push(command);
     }
@@ -617,7 +761,10 @@ impl<M: Metal> MetalGpu<M> {
         let resumed = pass.resumed();
         self.flush_blits();
         let command_buffer = self.command_buffer()?;
-        if let Err(error) = self.metal.encode_render_commands(&command_buffer, &pass.descriptor(), &pass.commands) {
+        if let Err(error) =
+            self.metal
+                .encode_render_commands(&command_buffer, &pass.descriptor(), &pass.commands)
+        {
             self.fail(&format!("a pass refused: {error:?}"));
         }
         Some(resumed)
@@ -646,7 +793,12 @@ impl<M: Metal> MetalGpu<M> {
         };
         let from = view(self, src).map_err(|_| "a resolve source view")?;
         let into = view(self, dst).map_err(|_| "a resolve target view")?;
-        let mut pass = PassDesc { colors: Default::default(), depth: None, empty: None, occlusion: None };
+        let mut pass = PassDesc {
+            colors: Default::default(),
+            depth: None,
+            empty: None,
+            occlusion: None,
+        };
         pass.colors[0] = Some(wcontainers_gpu::ColorAttachment {
             view: &from,
             depth_slice: 0,
