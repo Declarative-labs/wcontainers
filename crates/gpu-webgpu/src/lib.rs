@@ -77,8 +77,8 @@ pub struct WebGpu {
     destroy_after_submit: Vec<Doomed>,
     blocks: draw::BlockTables,
     caches: draw::Caches,
-    pool: memory::Pool<wgpu::Buffer>,
-    texture_pool: memory::Pool<wgpu::Texture>,
+    pool: memory::Pool,
+    texture_pool: memory::Pool,
     arena: Option<memory::Arena>,
     ring: Option<memory::Ring>,
     /// The ring resolved query results are taken from.

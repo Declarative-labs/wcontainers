@@ -34,72 +34,77 @@ pub(crate) const DX12_PLACEMENT_ALIGNMENT: u64 = 512;
 const PATTERN_BLOCK: u64 = 64 * 1024;
 
 /// GPU storage a renamed buffer or texture gives up.
-pub trait Spare: Clone {
-    /// What storage must share to stand in for another.
-    type Key: std::hash::Hash + Eq + Copy;
-    fn key(&self) -> Self::Key;
-    fn destroy(&self);
+#[derive(Clone)]
+pub enum Spare {
+    Buffer(wgpu::Buffer),
+    Texture(wgpu::Texture),
 }
 
-impl Spare for wgpu::Buffer {
-    type Key = (u64, u32);
-    fn key(&self) -> Self::Key {
-        (self.size(), self.usage().bits())
-    }
-    fn destroy(&self) {
-        wgpu::Buffer::destroy(self);
-    }
-}
-
-impl Spare for wgpu::Texture {
+/// What storage must share to stand in for another. A buffer's key finds only buffers, and a
+/// texture's only textures.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SpareKey {
+    /// Size and usage.
+    Buffer(u64, u32),
     /// Size, levels, samples, dimension, format and usage; the view formats follow the format.
-    type Key = (
+    Texture(
         wgpu::Extent3d,
         u32,
         u32,
         wgpu::TextureDimension,
         wgpu::TextureFormat,
         u32,
-    );
-    fn key(&self) -> Self::Key {
-        (
-            self.size(),
-            self.mip_level_count(),
-            self.sample_count(),
-            self.dimension(),
-            self.format(),
-            self.usage().bits(),
-        )
+    ),
+}
+
+/// What storage must share to stand in for this buffer.
+fn buffer_key(b: &wgpu::Buffer) -> SpareKey {
+    SpareKey::Buffer(b.size(), b.usage().bits())
+}
+
+/// What storage must share to stand in for this texture.
+fn texture_key(t: &wgpu::Texture) -> SpareKey {
+    SpareKey::Texture(
+        t.size(),
+        t.mip_level_count(),
+        t.sample_count(),
+        t.dimension(),
+        t.format(),
+        t.usage().bits(),
+    )
+}
+
+impl Spare {
+    fn key(&self) -> SpareKey {
+        match self {
+            Spare::Buffer(b) => buffer_key(b),
+            Spare::Texture(t) => texture_key(t),
+        }
     }
+
     fn destroy(&self) {
-        wgpu::Texture::destroy(self);
+        match self {
+            Spare::Buffer(b) => b.destroy(),
+            Spare::Texture(t) => t.destroy(),
+        }
     }
 }
 
 /// Storage that renamed buffers or textures gave up, reused once the GPU has finished with it.
 /// Each buffer or texture counts the storage its renames made; destroying it destroys as much of
 /// the pool's storage of its key, so the pool holds no more than its live objects made.
-pub struct Pool<T: Spare> {
+#[derive(Default)]
+pub struct Pool {
     /// Storage still used by the work of the serial it was retired in.
-    retired: Vec<(u64, T)>,
+    retired: Vec<(u64, Spare)>,
     /// Storage free to reuse, by key.
-    free: HashMap<T::Key, Vec<T>>,
+    free: HashMap<SpareKey, Vec<Spare>>,
     /// Storage destroyed objects made and the pool still holds, by key: destroyed as it becomes
     /// free.
-    owed: HashMap<T::Key, u64>,
+    owed: HashMap<SpareKey, u64>,
 }
 
-impl<T: Spare> Default for Pool<T> {
-    fn default() -> Self {
-        Pool {
-            retired: Vec::new(),
-            free: HashMap::new(),
-            owed: HashMap::new(),
-        }
-    }
-}
-
-impl<T: Spare> Pool<T> {
+impl Pool {
     /// Frees storage whose work has completed, destroying what is owed; answers how much it
     /// destroyed.
     pub fn reclaim(&mut self, completed: u64) -> u64 {
@@ -122,17 +127,17 @@ impl<T: Spare> Pool<T> {
         dropped
     }
 
-    fn take(&mut self, key: T::Key) -> Option<T> {
+    fn take(&mut self, key: SpareKey) -> Option<Spare> {
         self.free.get_mut(&key).and_then(Vec::pop)
     }
 
-    fn retire(&mut self, serial: u64, old: T) {
+    fn retire(&mut self, serial: u64, old: Spare) {
         self.retired.push((serial, old));
     }
 
     /// Owes back `spares` of this key, destroying free ones at once; answers how many it
     /// destroyed.
-    fn give_back(&mut self, key: T::Key, spares: u64) -> u64 {
+    fn give_back(&mut self, key: SpareKey, spares: u64) -> u64 {
         if spares == 0 {
             return 0;
         }
@@ -414,12 +419,12 @@ impl WebGpu {
     fn rename(&mut self, b: &BufferObj) {
         let old = b.raw.borrow().clone();
         self.reclaim_spares();
-        let fresh = match self.pool.take(old.key()) {
-            Some(spare) => {
+        let fresh = match self.pool.take(buffer_key(&old)) {
+            Some(Spare::Buffer(spare)) => {
                 self.counters.spares_reused += 1;
                 spare
             }
-            None => {
+            _ => {
                 b.spares.set(b.spares.get() + 1);
                 self.device.create_buffer(&wgpu::BufferDescriptor {
                     label: None,
@@ -430,7 +435,7 @@ impl WebGpu {
             }
         };
         b.raw.replace(fresh);
-        self.pool.retire(self.serial, old);
+        self.pool.retire(self.serial, Spare::Buffer(old));
         let storage = self.id();
         self.moved(b, Some(storage), 0);
         self.counters.renames += 1;
@@ -441,12 +446,12 @@ impl WebGpu {
     fn rename_texture(&mut self, t: &TextureObj) {
         let old = t.raw();
         self.reclaim_spares();
-        let fresh = match self.texture_pool.take(old.key()) {
-            Some(spare) => {
+        let fresh = match self.texture_pool.take(texture_key(&old)) {
+            Some(Spare::Texture(spare)) => {
                 self.counters.spares_reused += 1;
                 spare
             }
-            None => {
+            _ => {
                 t.spares.set(t.spares.get() + 1);
                 let twin = convert::srgb_twin(old.format());
                 self.device.create_texture(&wgpu::TextureDescriptor {
@@ -463,7 +468,7 @@ impl WebGpu {
         };
         t.raw.replace(fresh);
         t.generation.set(t.generation.get() + 1);
-        self.texture_pool.retire(self.serial, old);
+        self.texture_pool.retire(self.serial, Spare::Texture(old));
         self.bind_epoch += 1;
         self.counters.texture_renames += 1;
     }
@@ -477,13 +482,13 @@ impl WebGpu {
 
     /// Destroys as much pooled storage as a destroyed buffer's renames made.
     pub(crate) fn give_back_spares(&mut self, b: &BufferObj) {
-        let key = b.raw.borrow().key();
+        let key = buffer_key(&b.raw.borrow());
         self.counters.spares_dropped += self.pool.give_back(key, b.spares.get());
     }
 
     /// Destroys as much pooled storage as a destroyed texture's renames made.
     pub(crate) fn give_back_texture_spares(&mut self, t: &TextureObj) {
-        let key = t.raw().key();
+        let key = texture_key(&t.raw());
         self.counters.spares_dropped += self.texture_pool.give_back(key, t.spares.get());
     }
 
