@@ -28,14 +28,15 @@ use wcontainers_processor_architecture_arm64::{
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
-use crate::memory::{SimulatedMemory, SimulatedPageTable, SpaceCopy};
+use crate::memory::{SpaceCopy, apply, create_space, refresh};
+use crate::{SimulatedMemory, SimulatedPageTable};
 use crate::{Simulation, SimulationInterrupter};
 
 const PAGE: u64 = LOWEST_ADDRESS;
 /// The page the interrupt tests' guest stores to, which allows nothing until the guest faults on it.
 const DATA: u64 = PAGE + PAGE_SIZE;
-const ADDRESS_REGISTER: u32 = 0;
-const VALUE_REGISTER: u32 = ADDRESS_REGISTER + 1;
+const STORE_ADDRESS_REGISTER: u32 = 0;
+const STORED_VALUE_REGISTER: u32 = STORE_ADDRESS_REGISTER + 1;
 const STORED: u64 = u64::MAX;
 /// The bytes of a change shorter than a word, which a test places across the end of a page.
 const SHORT: u64 = size_of::<u32>() as u64;
@@ -62,7 +63,7 @@ fn simulate_apple_m5() -> Simulation<AppleM5> {
 #[test]
 fn word_no_listed_instruction_matches_is_undefined() {
     let mut chip = simulate_apple_m5();
-    let (memory, mut table) = SimulatedMemory::new();
+    let (memory, mut table) = create_space();
     let allowed = Permissions::READ | Permissions::EXECUTE;
     assert_eq!(
         table.set_permissions(PAGE..PAGE + PAGE_SIZE, allowed),
@@ -73,7 +74,7 @@ fn word_no_listed_instruction_matches_is_undefined() {
         ..ZERO_PROCESSOR
     };
     let mut copy = SpaceCopy::default();
-    memory.refresh(&mut copy);
+    refresh(&memory, &mut copy);
     let mut stopped = start.clone();
     chip.execute_single_instruction_in_place(&mut stopped, copy.deltas(), &mut |_: MemoryDelta<
         '_,
@@ -90,8 +91,8 @@ fn word_no_listed_instruction_matches_is_undefined() {
 
 #[test]
 fn page_methods_refuse_addresses_inside_a_page() {
-    let (_memory, mut table) = SimulatedMemory::new();
-    let (_other, other_table) = SimulatedMemory::new();
+    let (_memory, mut table) = create_space();
+    let (_other, other_table) = create_space();
     let inside = PAGE + WORD..PAGE + PAGE_SIZE;
     assert_eq!(
         table.set_permissions(inside.clone(), Permissions::READ),
@@ -110,7 +111,7 @@ fn page_methods_refuse_addresses_inside_a_page() {
 
 #[test]
 fn unmap_from_leaves_a_page_no_mapping_shares() {
-    let (memory, mut table) = SimulatedMemory::new();
+    let (memory, mut table) = create_space();
     let written = u64::MAX.to_le_bytes();
     let bytes = memory.borrow(PAGE..PAGE + WORD).expect("inside the space");
     assert_eq!(bytes.write(&written), written.len());
@@ -122,8 +123,8 @@ fn unmap_from_leaves_a_page_no_mapping_shares() {
 
 #[test]
 fn unmap_from_leaves_a_page_another_space_maps() {
-    let (owner, mut owner_table) = SimulatedMemory::new();
-    let (other, mut other_table) = SimulatedMemory::new();
+    let (owner, mut owner_table) = create_space();
+    let (other, mut other_table) = create_space();
     let written = u64::MAX.to_le_bytes();
     let whole = PAGE..PAGE + PAGE_SIZE;
     let bytes = owner.borrow(PAGE..PAGE + WORD).expect("inside the space");
@@ -143,16 +144,16 @@ fn unmap_from_leaves_a_page_another_space_maps() {
 
 #[test]
 fn copy_follows_a_write_through_another_space_that_maps_the_page() {
-    let (owner, owner_table) = SimulatedMemory::new();
-    let (other, mut other_table) = SimulatedMemory::new();
+    let (owner, owner_table) = create_space();
+    let (other, mut other_table) = create_space();
     let whole = PAGE..PAGE + PAGE_SIZE;
     assert_eq!(other_table.map_from(whole, &owner_table, PAGE), Ok(()));
     let mut copy = SpaceCopy::default();
-    owner.refresh(&mut copy);
+    refresh(&owner, &mut copy);
     let written = u64::MAX.to_le_bytes();
     let mapped = other.borrow(PAGE..PAGE + WORD).expect("inside the space");
     assert_eq!(mapped.write(&written), written.len());
-    owner.refresh(&mut copy);
+    refresh(&owner, &mut copy);
     assert_eq!(
         read_bytes::<Arm64<User>, { WORD as usize }>(copy.deltas(), PAGE),
         written
@@ -161,9 +162,9 @@ fn copy_follows_a_write_through_another_space_that_maps_the_page() {
 
 #[test]
 fn copy_holds_the_changes_an_instruction_applied() {
-    let (memory, _table) = SimulatedMemory::new();
+    let (memory, _table) = create_space();
     let mut copy = SpaceCopy::default();
-    memory.refresh(&mut copy);
+    refresh(&memory, &mut copy);
     let first = u64::MAX.to_le_bytes();
     let second = u32::MAX.to_le_bytes();
     // The second change crosses into the next page, which the copy holds no bytes of yet.
@@ -173,9 +174,9 @@ fn copy_holds_the_changes_an_instruction_applied() {
             start,
             bytes: Cow::Borrowed(bytes),
         };
-        memory.apply(delta, &mut copy);
+        apply(&memory, delta, &mut copy);
     }
-    memory.refresh(&mut copy);
+    refresh(&memory, &mut copy);
     assert_eq!(
         read_bytes::<Arm64<User>, { WORD as usize }>(copy.deltas(), PAGE),
         first
@@ -194,7 +195,7 @@ fn copy_holds_the_changes_an_instruction_applied() {
 
 #[test]
 fn interrupt_raised_while_running_answered_terminate_stops_before_the_next_instruction() {
-    let (memory, mut table) = SimulatedMemory::new();
+    let (memory, mut table) = create_space();
     let start = place_store_guest(&memory, &mut table);
     let raised = OnceLock::new();
     let mut handler = InterruptingAtFault::new(&mut table, &raised, true);
@@ -220,7 +221,7 @@ fn interrupt_raised_while_running_answered_terminate_stops_before_the_next_instr
 
 #[test]
 fn interrupt_raised_while_running_answered_continue_changes_nothing() {
-    let (memory, mut table) = SimulatedMemory::new();
+    let (memory, mut table) = create_space();
     let start = place_store_guest(&memory, &mut table);
     let raised = OnceLock::new();
     let mut handler = InterruptingAtFault::new(&mut table, &raised, false);
@@ -248,8 +249,9 @@ fn interrupt_raised_while_running_answered_continue_changes_nothing() {
     );
 }
 
-/// The handler of the interrupt tests: at the first memory fault it raises its execution's interrupt from another
-/// thread, then allows the page and retries.
+/// The handler of the interrupt tests, which raises the interrupt from another thread at the first memory fault.
+///
+/// It then allows the page and retries.
 struct InterruptingAtFault<'test> {
     table: &'test mut SimulatedPageTable,
     raised: &'test OnceLock<SimulationInterrupter>,
@@ -313,8 +315,8 @@ fn place_store_guest(memory: &SimulatedMemory, table: &mut SimulatedPageTable) -
     let store = Instruction::StrImmediateUnsignedOffset64
         .to_fixed_bits()
         .value
-        | RT.to_bits(VALUE_REGISTER)
-        | RN.to_bits(ADDRESS_REGISTER);
+        | RT.to_bits(STORED_VALUE_REGISTER)
+        | RN.to_bits(STORE_ADDRESS_REGISTER);
     let breakpoint = Instruction::Brk.to_fixed_bits().value;
     let code: Vec<u8> = [store, breakpoint]
         .iter()
@@ -333,8 +335,8 @@ fn place_store_guest(memory: &SimulatedMemory, table: &mut SimulatedPageTable) -
         program_counter: PAGE,
         ..ZERO_PROCESSOR
     };
-    start.general_purpose_registers[ADDRESS_REGISTER as usize] = DATA;
-    start.general_purpose_registers[VALUE_REGISTER as usize] = STORED;
+    start.general_purpose_registers[STORE_ADDRESS_REGISTER as usize] = DATA;
+    start.general_purpose_registers[STORED_VALUE_REGISTER as usize] = STORED;
     start
 }
 

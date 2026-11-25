@@ -84,7 +84,9 @@ const STORED: u64 = u32::MAX as u64;
 const COUNT: u64 = u32::MAX as u64 >> u8::BITS;
 /// How many times the guest an interrupt ends counts down: seconds of work, so that it ends by the interrupt.
 const LONG_COUNT: u64 = u32::MAX as u64;
-/// How long the interrupting thread waits between interrupts.
+/// How long the interrupting thread waits between interrupts: one tick of a kernel built with HZ at 1000.
+///
+/// <https://github.com/torvalds/linux/blob/master/kernel/Kconfig.hz>
 const INTERRUPT_PERIOD: Duration = Duration::from_millis(1);
 /// The seeds of the patterns a test writes, each pattern other than the others at every byte.
 const FIRST_PATTERN: u8 = u8::MIN;

@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use wcontainers_abi::{PAGE_MASK, PAGE_SIZE, Permissions};
 use wcontainers_byte_sink::ByteSink;
@@ -17,6 +17,8 @@ use wcontainers_processor_architecture_arm64::{
     Arm64, DataAccess, InstructionFetch, PagePermission, User,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
+
+use crate::{SimulatedBytes, SimulatedMemory, SimulatedPageTable};
 
 const PAGE_BYTES: usize = PAGE_SIZE as usize;
 
@@ -85,75 +87,58 @@ impl Default for Page {
     }
 }
 
-/// A guest's address space, every page of it owned or shared in host memory.
-///
-/// The page methods (`set_permissions`, `map_from`, `unmap_from` and `copy_from`) take whole pages: addresses that
-/// do not start and end at a page boundary are refused. A copy copies the bytes at once rather than on a write.
-pub struct SimulatedMemory {
-    shared: Arc<SpacePages>,
-}
-
 /// The pages of one space, which the space holds and its page table reaches while the space lives.
 #[derive(Default)]
-struct SpacePages {
+pub(crate) struct SpacePages {
     /// The pages that have bytes, a mapping or permissions, by their first address.
     pages: Mutex<BTreeMap<u64, Page>>,
 }
 
-/// The one page table of a [`SimulatedMemory`], made with it, which refuses every change once the space is gone.
-pub struct SimulatedPageTable {
-    shared: Weak<SpacePages>,
+/// Returns a space of zeros that allows nothing, and the one page table that changes its pages.
+pub(crate) fn create_space() -> (SimulatedMemory, SimulatedPageTable) {
+    let shared = Arc::new(SpacePages::default());
+    let table = SimulatedPageTable {
+        shared: Arc::downgrade(&shared),
+    };
+    (SimulatedMemory { shared }, table)
 }
 
-/// Addresses of a [`SimulatedMemory`], which another thread's guest may be changing while they are held.
-pub struct SimulatedBytes<'space> {
-    space: &'space SimulatedMemory,
-    addresses: Range<u64>,
+/// Takes the copy anew unless no space changed since it was taken.
+pub(crate) fn refresh(space: &SimulatedMemory, copy: &mut SpaceCopy) {
+    let changes = CHANGES.load(Ordering::Acquire);
+    if copy.changes != Some(changes) {
+        *copy = space.shared.take_copy(Some(changes));
+    }
 }
 
-impl SimulatedMemory {
-    /// Returns a space of zeros that allows nothing, and the one page table that changes its pages.
-    pub(crate) fn new() -> (Self, SimulatedPageTable) {
-        let shared = Arc::new(SpacePages::default());
-        let table = SimulatedPageTable {
-            shared: Arc::downgrade(&shared),
-        };
-        (Self { shared }, table)
-    }
-
-    /// Takes the copy anew unless no space changed since it was taken.
-    pub(crate) fn refresh(&self, copy: &mut SpaceCopy) {
-        let changes = CHANGES.load(Ordering::Acquire);
-        if copy.changes != Some(changes) {
-            *copy = self.shared.take_copy(Some(changes));
-        }
-    }
-
-    /// Applies a change an instruction made, whatever the permissions, to the space and to the copy it ran on.
-    ///
-    /// The copy stays current only if no other change came between: otherwise it is taken anew at the next refresh.
-    pub(crate) fn apply(&self, delta: MemoryDelta<'_, Arm64<User>>, copy: &mut SpaceCopy) {
-        match delta {
-            MemoryDelta::ValueAssignment { start, bytes } => {
-                let before = self.shared.write_counted(start, &bytes);
-                if copy.changes == Some(before) {
-                    copy.write_at(start, &bytes);
-                    copy.changes = Some(before.wrapping_add(1));
-                } else {
-                    copy.changes = None;
-                }
-            }
-            MemoryDelta::PermissionAssignment {
-                addresses,
-                permission,
-            } => {
-                let mut pages = self.shared.lock_pages();
-                for start in page_starts(&addresses) {
-                    pages.entry(start).or_default().permissions = to_permissions(permission);
-                }
-                count_change();
+/// Applies a change an instruction made, whatever the permissions, to the space and to the copy it ran on.
+///
+/// The copy stays current only if no other change came between: otherwise it is taken anew at the next refresh.
+pub(crate) fn apply(
+    space: &SimulatedMemory,
+    delta: MemoryDelta<'_, Arm64<User>>,
+    copy: &mut SpaceCopy,
+) {
+    match delta {
+        MemoryDelta::ValueAssignment { start, bytes } => {
+            let before = space.shared.write_counted(start, &bytes);
+            if copy.changes == Some(before) {
+                copy.write_at(start, &bytes);
+                copy.changes = Some(before.wrapping_add(1));
+            } else {
                 copy.changes = None;
             }
+        }
+        MemoryDelta::PermissionAssignment {
+            addresses,
+            permission,
+        } => {
+            let mut pages = space.shared.lock_pages();
+            for start in page_starts(&addresses) {
+                pages.entry(start).or_default().permissions = to_permissions(permission);
+            }
+            count_change();
+            copy.changes = None;
         }
     }
 }
@@ -243,11 +228,9 @@ impl MemorySpace for SimulatedMemory {
     }
 }
 
-impl SimulatedPageTable {
-    /// Returns the pages of the table's space, refused once the space is gone.
-    fn reach(&self) -> Result<Arc<SpacePages>, InvalidAddressError> {
-        self.shared.upgrade().ok_or(InvalidAddressError)
-    }
+/// Returns the pages of the table's space, refused once the space is gone.
+fn reach(table: &SimulatedPageTable) -> Result<Arc<SpacePages>, InvalidAddressError> {
+    table.shared.upgrade().ok_or(InvalidAddressError)
 }
 
 impl PageTable for SimulatedPageTable {
@@ -257,7 +240,7 @@ impl PageTable for SimulatedPageTable {
         allowed: Permissions,
     ) -> Result<(), InvalidAddressError> {
         check_pages(&addresses)?;
-        let shared = self.reach()?;
+        let shared = reach(self)?;
         let mut pages = shared.lock_pages();
         for start in page_starts(&addresses) {
             pages.entry(start).or_default().permissions = allowed;
@@ -275,8 +258,8 @@ impl PageTable for SimulatedPageTable {
         check_pages(&addresses).map_err(MapMemoryError::InvalidAddress)?;
         let other_addresses =
             shift(&addresses, other_start).map_err(MapMemoryError::InvalidAddress)?;
-        let shared = self.reach().map_err(MapMemoryError::InvalidAddress)?;
-        let other = other.reach().map_err(MapMemoryError::InvalidAddress)?;
+        let shared = reach(self).map_err(MapMemoryError::InvalidAddress)?;
+        let other = reach(other).map_err(MapMemoryError::InvalidAddress)?;
         let frames: Vec<Frame> = page_starts(&other_addresses)
             .map(|page| other.make_frame(page))
             .collect();
@@ -292,7 +275,7 @@ impl PageTable for SimulatedPageTable {
 
     fn unmap_from(&mut self, addresses: Range<u64>) -> Result<(), InvalidAddressError> {
         check_pages(&addresses)?;
-        let shared = self.reach()?;
+        let shared = reach(self)?;
         let mut pages = shared.lock_pages();
         for (_, page) in pages.range_mut(addresses) {
             if page.mapped {
@@ -313,8 +296,8 @@ impl PageTable for SimulatedPageTable {
         check_pages(&addresses).map_err(CopyMemoryError::InvalidAddress)?;
         let other_addresses =
             shift(&addresses, other_start).map_err(CopyMemoryError::InvalidAddress)?;
-        let shared = self.reach().map_err(CopyMemoryError::InvalidAddress)?;
-        let other = other.reach().map_err(CopyMemoryError::InvalidAddress)?;
+        let shared = reach(self).map_err(CopyMemoryError::InvalidAddress)?;
+        let other = reach(other).map_err(CopyMemoryError::InvalidAddress)?;
         let copied: Vec<Option<Page>> = {
             let other_pages = other.lock_pages();
             page_starts(&other_addresses)

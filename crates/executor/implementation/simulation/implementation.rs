@@ -1,8 +1,9 @@
 //! A stand-in for an ARM64 chip, for tests that need a chip whose behaviors are known.
 
 use std::convert::Infallible;
-use std::sync::Arc;
+use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
 
 use wcontainers_abi::Access;
 use wcontainers_behavior_source::BehaviorSource;
@@ -22,7 +23,7 @@ mod memory;
 #[cfg(test)]
 mod tests;
 
-use memory::{SimulatedMemory, SimulatedPageTable, SpaceCopy};
+use memory::{SpaceCopy, SpacePages, apply, create_space, refresh};
 
 /// A chip that runs each instruction as the set's precise instruction simulates it.
 pub struct Simulation<Set> {
@@ -38,8 +39,26 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> Simulation<Set> {
     }
 }
 
+/// A guest's address space, every page of it owned or shared in host memory.
+///
+/// The page methods (`set_permissions`, `map_from`, `unmap_from` and `copy_from`) take whole pages: addresses that
+/// do not start and end at a page boundary are refused. A copy copies the bytes at once rather than on a write.
+pub struct SimulatedMemory {
+    shared: Arc<SpacePages>,
+}
+
+/// The one page table of a [`SimulatedMemory`], made with it, which refuses every change once the space is gone.
+pub struct SimulatedPageTable {
+    shared: Weak<SpacePages>,
+}
+
+/// Addresses of a [`SimulatedMemory`], which another thread's guest may be changing while they are held.
+pub struct SimulatedBytes<'space> {
+    space: &'space SimulatedMemory,
+    addresses: Range<u64>,
+}
+
 /// The interrupter of one execution, which it checks before each instruction.
-#[derive(Default)]
 pub struct SimulationInterrupter {
     /// Whether an interrupt is raised and not yet answered; once the execution ends no one reads it.
     raised: Arc<AtomicBool>,
@@ -107,13 +126,12 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> Executor for Simulation<Set> {
     type CreateGuestMemoryError = Infallible;
 
     fn create_guest_memory(&self) -> Result<(SimulatedMemory, SimulatedPageTable), Infallible> {
-        Ok(SimulatedMemory::new())
+        Ok(create_space())
     }
 
-    /// Runs one instruction at a time on a copy of the memory, taken anew whenever anything but the instruction
-    /// before changed a space, so that each instruction sees what other threads wrote.
+    /// Runs one instruction at a time on a copy of the memory, which sees what other threads wrote.
     ///
-    /// The execution blocks: it runs to its end in its first poll, answering an interrupt between two instructions.
+    /// The copy is taken anew whenever anything but the instruction before changed a space. The execution blocks: it runs to its end in its first poll, answering an interrupt between two instructions.
     fn execute<'execution>(
         &'execution mut self,
         mut processor: Processor<()>,
@@ -123,7 +141,9 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> Executor for Simulation<Set> {
         impl Future<Output = Processor<()>> + 'execution,
         SimulationInterrupter,
     ) {
-        let interrupter = SimulationInterrupter::default();
+        let interrupter = SimulationInterrupter {
+            raised: Arc::default(),
+        };
         let raised = Arc::clone(&interrupter.raised);
         let execution = async move {
             let mut copy = SpaceCopy::default();
@@ -136,14 +156,14 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> Executor for Simulation<Set> {
                     }
                 }
                 let before = processor.clone();
-                memory.refresh(&mut copy);
+                refresh(memory, &mut copy);
                 self.execute_single_instruction_in_place(
                     &mut processor,
                     copy.deltas(),
                     &mut changes,
                 );
                 for delta in changes.drain(..) {
-                    memory.apply(delta, &mut copy);
+                    apply(memory, delta, &mut copy);
                 }
                 let Some(exception) = processor.exception else {
                     continue;
