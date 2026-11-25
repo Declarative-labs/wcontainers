@@ -87,20 +87,10 @@ wcontainers-executor-unicorn = { path = "../unicorn" }
 unicorn-engine = "2.1.5"
 # The system calls the exits test answers, by Linux's numbers.
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "no_std"] }
-# The executor suite, the chips' sets it agrees with and the states it runs.
-wcontainers-executor-conformance = { path = "../../conformance" }
-wcontainers-precise-instruction-set-apple-m5 = { path = "../../../precise-instruction-set/implementation/apple-m5" }
-wcontainers-precise-instruction-set-neoverse-v2 = { path = "../../../precise-instruction-set/implementation/neoverse-v2" }
-wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
-wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The speed test's counts of the whole process's cycles and instructions.
 perf-event2 = "0.7.4"
-
-[[test]]
-name = "conformance"
-path = "conformance_run.rs"
 
 [[test]]
 name = "exits"

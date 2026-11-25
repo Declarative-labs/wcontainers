@@ -1,6 +1,6 @@
 [package]
 name = "wcontainers-precise-instruction-set-measured"
-description = "The precise instruction set of a chip, found by running it and comparing with the behaviors already known."
+description = "The precise instruction set of a chip as measurements give it."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,43 +13,35 @@ path = "implementation.rs"
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
-[[test]]
-name = "chip"
-path = "chip.rs"
-harness = false
-
+# DEFAULT BEHAVIORS: every modeled instruction measured on this host's chip, timed
 [[example]]
-name = "record"
-path = "record.rs"
+name = "default_behaviors"
+path = "default_behaviors.rs"
+
+# STATE COUNTS: the full product and the cut of each class, and a hash of every generated state
+[[example]]
+name = "state_counts"
+path = "state_counts.rs"
 
 [dependencies]
 wcontainers-precise-instruction-set = { path = "../.." }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
-# The one rule for whether two lists of memory changes leave the same memory.
-wcontainers-processor-architecture-conformance = { path = "../../../processor-architecture/conformance" }
-wcontainers-executor = { path = "../../../executor" }
-wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
 
 [dev-dependencies]
-wcontainers-precise-instruction-set-conformance = { path = "../../conformance" }
-wcontainers-precise-instruction-set-apple-m5 = { path = "../apple-m5" }
-wcontainers-precise-instruction-set-neoverse-v2 = { path = "../neoverse-v2" }
-wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
-wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-behavior-source = { path = "../../../behavior-source" }
+wcontainers-behavior-source-recording = { path = "../../../behavior-source/implementation/recording" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
+wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
+wcontainers-instruction-input-domain = { path = "../../../instruction-input-domain" }
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
-wcontainers-executor-simulation = { path = "../../../executor/implementation/simulation" }
-wcontainers-executor-conformance = { path = "../../../executor/conformance" }
-wcontainers-processor-architecture-recording = { path = "../../../processor-architecture/implementation/recording" }
+wcontainers-precise-instruction-set-conformance = { path = "../../conformance" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 
-# The chip the chip test and the record tool run.
-[target.'cfg(all(target_arch = "aarch64", any(target_os = "macos", target_os = "linux")))'.dev-dependencies]
-wcontainers-executor-hardware-virtualization = { path = "../../../executor/implementation/hardware-virtualization" }
-
-[build-dependencies]
-# The Hypervisor.framework calls the linker must leave undefined, as the hardware executor's build names them.
-wcontainers-executor-hardware-virtualization-inside = { path = "../../../executor/implementation/hardware-virtualization-inside" }
+# The chip the chip test measures.
+[target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dev-dependencies]
+wcontainers-behavior-source-kvm-single-step = { path = "../../../behavior-source/implementation/kvm-single-step" }
 
 [lints]
 workspace = true
