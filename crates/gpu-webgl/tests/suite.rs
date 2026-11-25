@@ -5,8 +5,12 @@
 //! separated by spaces, to take the routes of browsers without them.
 #![cfg(windows)]
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use wcontainers_gpu_webgl::Gl;
+use wcontainers_test_window::{StandaloneTestWindow, TestWindow};
+use wcontainers_test_window_win32::Win32TestWindow;
+use wgpu::rwh::HasWindowHandle;
 
 struct Angle;
 
@@ -33,120 +37,31 @@ impl wcontainers_gpu_test::Host for Angle {
 
     fn window(b: &mut Gl) -> u32 {
         const WINDOW: u32 = 1;
+        let window = Win32TestWindow::new(());
+        let wgpu::rwh::RawWindowHandle::Win32(handle) =
+            window.window_handle().expect("a window handle").as_raw()
+        else {
+            unreachable!("a Win32 window");
+        };
+        OPEN.with(|open| *open.borrow_mut() = Some(window));
         // SAFETY: the window is never destroyed while the test runs.
-        unsafe { b.add_window(WINDOW, window::open()) };
+        unsafe { b.add_window(WINDOW, handle.hwnd.get() as *mut core::ffi::c_void) };
         WINDOW
     }
 
     fn shown(_: &mut Gl, _: u32) -> Vec<u8> {
-        window::shown()
+        OPEN.with(|open| {
+            open.borrow()
+                .as_ref()
+                .expect("window() first")
+                .shown_texels()
+        })
     }
 }
 
-/// The test's window: a 4 by 4 popup, read as the compositor shows it.
-mod window {
-    use std::cell::Cell;
-    use windows_sys::Win32::Foundation::{HWND, RECT};
-    use windows_sys::Win32::Graphics::Dwm::DwmFlush;
-    use windows_sys::Win32::Graphics::Gdi::{
-        BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CreateCompatibleBitmap, CreateCompatibleDC,
-        DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, ReleaseDC, SelectObject,
-    };
-    use windows_sys::Win32::Storage::Xps::PrintWindow;
-    use windows_sys::Win32::UI::HiDpi::{
-        DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext,
-    };
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        CreateWindowExW, DispatchMessageW, GetClientRect, MSG, PM_REMOVE, PW_RENDERFULLCONTENT,
-        PeekMessageW, WS_EX_TOOLWINDOW, WS_POPUP, WS_VISIBLE,
-    };
-
-    thread_local! {
-        static OPEN: Cell<HWND> = const { Cell::new(std::ptr::null_mut()) };
-    }
-
-    /// Opens the window on this thread, which is the device thread.
-    pub fn open() -> *mut core::ffi::c_void {
-        let class: Vec<u16> = "STATIC\0".encode_utf16().collect();
-        // SAFETY: a predefined window class, no parent, menu or creation data. Awareness of each
-        // monitor's scale keeps the window 4 by 4 pixels.
-        let hwnd = unsafe {
-            SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-            CreateWindowExW(
-                WS_EX_TOOLWINDOW,
-                class.as_ptr(),
-                std::ptr::null(),
-                WS_POPUP | WS_VISIBLE,
-                0,
-                0,
-                4,
-                4,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null(),
-            )
-        };
-        assert!(!hwnd.is_null(), "CreateWindowExW");
-        OPEN.with(|h| h.set(hwnd));
-        hwnd
-    }
-
-    /// The window's pixels after the compositor has shown the last frame, rows top first, RGBA with
-    /// opaque alpha (a window holds none).
-    pub fn shown() -> Vec<u8> {
-        let hwnd = OPEN.with(Cell::get);
-        // SAFETY: plain Win32 calls on this thread's window; every object made is released.
-        unsafe {
-            let mut msg: MSG = std::mem::zeroed();
-            while PeekMessageW(&mut msg, std::ptr::null_mut(), 0, 0, PM_REMOVE) != 0 {
-                DispatchMessageW(&msg);
-            }
-            // The composition the swapped frame entered, and one that shows it.
-            DwmFlush();
-            DwmFlush();
-            let mut rect: RECT = std::mem::zeroed();
-            GetClientRect(hwnd, &mut rect);
-            let (w, h) = (rect.right - rect.left, rect.bottom - rect.top);
-            let screen = GetDC(std::ptr::null_mut());
-            let dc = CreateCompatibleDC(screen);
-            let bitmap = CreateCompatibleBitmap(screen, w, h);
-            let old = SelectObject(dc, bitmap);
-            // Includes swap chain contents, also on a desktop no one sees.
-            let printed = PrintWindow(hwnd, dc, PW_RENDERFULLCONTENT);
-            SelectObject(dc, old);
-            let mut info: BITMAPINFO = std::mem::zeroed();
-            info.bmiHeader = BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: w,
-                biHeight: -h,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB,
-                ..std::mem::zeroed()
-            };
-            let mut bgra = vec![0u8; (w * h * 4) as usize];
-            let rows = GetDIBits(
-                dc,
-                bitmap,
-                0,
-                h as u32,
-                bgra.as_mut_ptr().cast(),
-                &mut info,
-                DIB_RGB_COLORS,
-            );
-            DeleteObject(bitmap);
-            DeleteDC(dc);
-            ReleaseDC(std::ptr::null_mut(), screen);
-            assert_ne!(printed, 0, "PrintWindow");
-            assert_eq!(rows, h, "GetDIBits");
-            bgra.as_chunks::<4>()
-                .0
-                .iter()
-                .flat_map(|p| [p[2], p[1], p[0], 255])
-                .collect()
-        }
-    }
+thread_local! {
+    /// The test's window: a 4 by 4 popup on the device thread, read as the compositor shows it.
+    static OPEN: RefCell<Option<Win32TestWindow>> = const { RefCell::new(None) };
 }
 
 wcontainers_gpu_test::suite!(Angle);

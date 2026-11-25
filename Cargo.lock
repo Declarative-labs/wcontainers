@@ -5377,9 +5377,10 @@ dependencies = [
  "wcontainers-gpu-test",
  "wcontainers-gpu-webgpu",
  "wcontainers-graphics-test",
+ "wcontainers-test-window",
+ "wcontainers-test-window-win32",
  "web-sys",
  "wgpu",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5388,7 +5389,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bcdec_rs",
- "block2",
  "bytemuck",
  "fastrand",
  "getrandom 0.4.3",
@@ -5397,13 +5397,6 @@ dependencies = [
  "js-sys",
  "libtest-mimic",
  "naga",
- "objc2",
- "objc2-app-kit",
- "objc2-core-foundation",
- "objc2-core-graphics",
- "objc2-foundation",
- "objc2-quartz-core",
- "objc2-screen-capture-kit",
  "pdb",
  "png",
  "pollster",
@@ -5413,11 +5406,13 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-test",
  "wcontainers-graphics-test",
+ "wcontainers-test-window",
+ "wcontainers-test-window-appkit",
+ "wcontainers-test-window-win32",
  "web-sys",
  "wgpu",
  "wgpu-naga-bridge",
  "windows",
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6208,6 +6203,47 @@ dependencies = [
  "wcontainers-tcp-sockets-conformance",
  "wcontainers-volatile-bytes",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-test-window"
+version = "0.1.0"
+dependencies = [
+ "raw-window-handle",
+]
+
+[[package]]
+name = "wcontainers-test-window-appkit"
+version = "0.1.0"
+dependencies = [
+ "block2",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "objc2-quartz-core",
+ "objc2-screen-capture-kit",
+ "raw-window-handle",
+ "wcontainers-test-window",
+ "wcontainers-test-window-conformance",
+]
+
+[[package]]
+name = "wcontainers-test-window-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-test-window",
+]
+
+[[package]]
+name = "wcontainers-test-window-win32"
+version = "0.1.0"
+dependencies = [
+ "raw-window-handle",
+ "wcontainers-test-window",
+ "wcontainers-test-window-conformance",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

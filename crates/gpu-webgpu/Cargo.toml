@@ -35,23 +35,19 @@ wcontainers-gpu-test = { path = "../gpu-test" }
 libtest-mimic = "0.8.1"
 pollster = "1.0.1"
 
-# The suite's present test on macOS: a window on the main thread, read through ScreenCaptureKit.
+# The suite's window, and reading what it shows: on macOS made on the main thread (tests/present.rs).
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-block2 = "0.6.2"
-objc2 = "0.6.3"
-objc2-app-kit = "0.3.2"
-objc2-core-foundation = "0.3.2"
-objc2-core-graphics = "0.3.2"
-objc2-foundation = "0.3.2"
-objc2-quartz-core = "0.3.2"
-objc2-screen-capture-kit = "0.3.2"
+wcontainers-test-window = { path = "../test-window" }
+wcontainers-test-window-appkit = { path = "../test-window/implementation/appkit" }
 
 # Real Direct3D 11 on the same GPU and WARP, through the rig's device and comparison (tests/direct3d.rs).
 [target.'cfg(windows)'.dev-dependencies]
 wcontainers-graphics-test = { path = "../graphics-test" }
 image = { version = "0.25.10", default-features = false }
 windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Storage_Xps", "Win32_System_LibraryLoader", "Win32_UI_HiDpi", "Win32_UI_WindowsAndMessaging"] }
+# The suite's window, and reading what the compositor shows in it.
+wcontainers-test-window = { path = "../test-window" }
+wcontainers-test-window-win32 = { path = "../test-window/implementation/win32" }
 
 # proptest, which the shared suite brings, takes getrandom's browser source to build for WebAssembly.
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
@@ -73,6 +69,6 @@ harness = false
 name = "raster"
 harness = false
 
-# TODO: remove this crate's 30 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
+# TODO: remove this crate's 19 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
