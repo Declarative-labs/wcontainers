@@ -4,6 +4,10 @@
 //!
 //! A buffer write no work can see lands in place; others go through a staging copy.
 
+// Every size, count, offset and length a caller gives passes through here to the Metal trait, so no operation on one
+// may wrap.
+#![deny(clippy::arithmetic_side_effects)]
+
 mod bytes;
 mod convert;
 mod objects;
