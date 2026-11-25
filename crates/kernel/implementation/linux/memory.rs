@@ -10,7 +10,7 @@ use wcontainers_abi::{Cpu, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions};
 
 use crate::fs::Node;
 use crate::linux::general::{RLIMIT_AS, RLIMIT_DATA, RLIMIT_MEMLOCK, RLIMIT_STACK};
-use crate::process::{LIMITS, Limit};
+use crate::process::{LIMITS, Limit, Tid};
 use crate::system::{AccessKind, MemoryError, WatchesFor};
 use crate::{Errno, errno};
 
@@ -405,11 +405,64 @@ fn watch_rank(watch: WatchesFor) -> u8 {
     }
 }
 
+/// A watch taken along with its page: its thread (none: every thread), its page's offset, the watch.
+pub(crate) type TakenWatch = (Option<Tid>, u64, WatchesFor);
+
+/// Takes the watched pages of `[start, end)` out of `pages`, by their offsets from `start`.
+fn take_pages(
+    pages: &mut BTreeMap<u64, WatchesFor>,
+    start: u64,
+    end: u64,
+) -> Vec<(u64, WatchesFor)> {
+    let taken: Vec<(u64, WatchesFor)> = pages
+        .range(start..end)
+        .map(|(page, watch)| (*page - start, *watch))
+        .collect();
+    for (offset, _) in &taken {
+        pages.remove(&(start + offset));
+    }
+    taken
+}
+
+/// Sets `watch` on each page of `spans` in `pages`, and says what changed.
+///
+/// `None` ends the watches of `range`'s pages. The answer is whether any page's watch changed, and
+/// how many pages' were raised (set, or widened to `All`).
+fn set_pages(
+    pages: &mut BTreeMap<u64, WatchesFor>,
+    spans: &[(u64, u64)],
+    range: core::ops::Range<u64>,
+    watch: WatchesFor,
+) -> (bool, u64) {
+    if watch == WatchesFor::None {
+        let ended = take_pages(pages, range.start, range.end);
+        return (!ended.is_empty(), 0);
+    }
+    let mut changed = false;
+    let mut raised = 0;
+    for &(from, to) in spans {
+        for page in (from..to).step_by(PAGE_SIZE as usize) {
+            let before = pages.insert(page, watch);
+            changed |= before != Some(watch);
+            if watch_rank(watch) > before.map_or(0, watch_rank) {
+                raised += 1;
+            }
+        }
+    }
+    (changed, raised)
+}
+
 /// The embedder's watches on one memory's pages, and the pages written since it last asked.
 #[derive(Clone, Default)]
 pub(crate) struct Watches {
     /// Watched pages by address; never `WatchesFor::None`.
     pages: BTreeMap<u64, WatchesFor>,
+    /// Each thread's own watched pages, which only that thread's accesses meet.
+    ///
+    /// Never an empty set, never `WatchesFor::None`.
+    threads: BTreeMap<Tid, BTreeMap<u64, WatchesFor>>,
+    /// The thread whose own watches the CPU side holds: the one readied for its turn last.
+    applied: Option<Tid>,
     /// Pages written since the embedder last asked; none until it first asks.
     written: Option<RangeSet<u64>>,
     /// The first watched page a kernel copy for the running call found, and how it touched it.
@@ -443,23 +496,38 @@ impl Watches {
         }
     }
 
-    /// Whether any page is watched.
-    pub(crate) fn any(&self) -> bool {
-        !self.pages.is_empty()
+    /// Tells whether any page is watched for thread `tid`, for every thread or for it alone.
+    pub(crate) fn any_for(&self, tid: Tid) -> bool {
+        !self.pages.is_empty() || self.threads.contains_key(&tid)
     }
 
     /// Whether anything narrows what the CPU side allows.
     pub(crate) fn narrows(&self) -> bool {
-        !self.pages.is_empty() || self.written.is_some()
+        !self.pages.is_empty() || !self.threads.is_empty() || self.written.is_some()
+    }
+
+    /// Returns the watch thread `by` meets on `page`: every thread's or its own, whichever is wider.
+    fn watch_for(&self, by: Option<Tid>, page: u64) -> WatchesFor {
+        let every = self.pages.get(&page).copied().unwrap_or(WatchesFor::None);
+        let own = by
+            .and_then(|tid| self.threads.get(&tid))
+            .and_then(|pages| pages.get(&page))
+            .copied()
+            .unwrap_or(WatchesFor::None);
+        if watch_rank(own) > watch_rank(every) {
+            own
+        } else {
+            every
+        }
     }
 
     /// What the CPU side allows of a page that would allow `full`.
     fn narrowed(&self, page: u64, full: Permissions) -> Permissions {
         let mut allowed = full;
-        match self.pages.get(&page) {
-            Some(WatchesFor::All) => allowed = Permissions::empty(),
-            Some(WatchesFor::Writes) => allowed -= Permissions::WRITE,
-            Some(WatchesFor::None) | None => {}
+        match self.watch_for(self.applied, page) {
+            WatchesFor::All => allowed = Permissions::empty(),
+            WatchesFor::Writes => allowed -= Permissions::WRITE,
+            WatchesFor::None => {}
         }
         if self
             .written
@@ -471,12 +539,9 @@ impl Watches {
         allowed
     }
 
-    /// The watch on the page holding `address`.
-    pub(crate) fn watch_at(&self, address: u64) -> WatchesFor {
-        self.pages
-            .get(&page_down(address))
-            .copied()
-            .unwrap_or(WatchesFor::None)
+    /// Returns the watch thread `by` meets on the page holding `address`.
+    pub(crate) fn watch_at(&self, by: Tid, address: u64) -> WatchesFor {
+        self.watch_for(Some(by), page_down(address))
     }
 
     /// Whether the record of written pages holds back writing the page of `address`.
@@ -486,29 +551,46 @@ impl Watches {
             .is_some_and(|written| !written.contains(&page_down(address)))
     }
 
-    /// The first address in `[start, end)` whose page is watched for `access`.
-    pub(crate) fn first_watched(&self, start: u64, end: u64, access: AccessKind) -> Option<u64> {
-        if self.pages.is_empty() || start >= end {
+    /// Finds the first address in `[start, end)` where thread `by` meets a watch for `access`.
+    pub(crate) fn first_watched(
+        &self,
+        by: Tid,
+        start: u64,
+        end: u64,
+        access: AccessKind,
+    ) -> Option<u64> {
+        if start >= end {
             return None;
         }
-        self.pages
-            .range(page_down(start)..end)
-            .find(|(_, watch)| access == AccessKind::Write || **watch == WatchesFor::All)
-            .map(|(page, _)| (*page).max(start))
+        let first = |pages: &BTreeMap<u64, WatchesFor>| {
+            pages
+                .range(page_down(start)..end)
+                .find(|(_, watch)| access == AccessKind::Write || **watch == WatchesFor::All)
+                .map(|(page, _)| *page)
+        };
+        let every = first(&self.pages);
+        let own = self.threads.get(&by).and_then(first);
+        every
+            .into_iter()
+            .chain(own)
+            .min()
+            .map(|page| page.max(start))
     }
 
-    /// How much of the `reached` bytes from `start` a kernel copy of `length` bytes takes before a
-    /// watched page, which is not there for it until the watch is met; the copy is checked against
-    /// the running call's description.
+    /// Returns how much of the `reached` bytes from `start` a kernel copy for thread `by` takes.
+    ///
+    /// The copy of `length` bytes stops before a watched page, which is not there for it until the
+    /// watch is met; the copy is checked against the running call's description.
     pub(crate) fn copy_reach(
         &mut self,
+        by: Tid,
         start: u64,
         length: u64,
         reached: u64,
         access: AccessKind,
     ) -> u64 {
         self.check_described(start, start.saturating_add(length), access);
-        match self.first_watched(start, start + reached, access) {
+        match self.first_watched(by, start, start + reached, access) {
             Some(at) => {
                 self.touched.get_or_insert((at, access));
                 at - start
@@ -530,17 +612,32 @@ impl Watches {
         fresh
     }
 
-    /// Takes the watches of `[start, end)`, by their pages' offsets from `start`.
-    fn take(&mut self, start: u64, end: u64) -> Vec<(u64, WatchesFor)> {
-        let taken: Vec<(u64, WatchesFor)> = self
-            .pages
-            .range(start..end)
-            .map(|(page, watch)| (*page - start, *watch))
+    /// Takes the watches of `[start, end)` with their threads, by their pages' offsets from `start`.
+    fn take(&mut self, start: u64, end: u64) -> Vec<TakenWatch> {
+        let mut taken: Vec<TakenWatch> = take_pages(&mut self.pages, start, end)
+            .into_iter()
+            .map(|(offset, watch)| (None, offset, watch))
             .collect();
-        for (offset, _) in &taken {
-            self.pages.remove(&(start + offset));
+        for (tid, pages) in &mut self.threads {
+            taken.extend(
+                take_pages(pages, start, end)
+                    .into_iter()
+                    .map(|(offset, watch)| (Some(*tid), offset, watch)),
+            );
         }
+        self.threads.retain(|_, pages| !pages.is_empty());
         taken
+    }
+
+    /// Sets each watch taken by [`Self::take`] on the page at its offset from `start`.
+    fn put(&mut self, start: u64, taken: Vec<TakenWatch>) {
+        for (tid, offset, watch) in taken {
+            let pages = match tid {
+                Some(tid) => self.threads.entry(tid).or_default(),
+                None => &mut self.pages,
+            };
+            pages.insert(start + offset, watch);
+        }
     }
 
     /// Forgets the watches and the record of `[start, end)`, which is unmapped.
@@ -548,14 +645,11 @@ impl Watches {
         if !self.narrows() {
             return;
         }
-        let gone: Vec<u64> = self
-            .pages
-            .range(start..end)
-            .map(|(page, _)| *page)
-            .collect();
-        for page in gone {
-            self.pages.remove(&page);
+        take_pages(&mut self.pages, start, end);
+        for pages in self.threads.values_mut() {
+            take_pages(pages, start, end);
         }
+        self.threads.retain(|_, pages| !pages.is_empty());
         if let Some(written) = &mut self.written
             && start < end
         {
@@ -644,44 +738,105 @@ impl AddressMap {
         watch: WatchesFor,
     ) -> (bool, u64) {
         // Only watched pages are visited to end watches, and only mapped ones to set them.
-        let mut changed = false;
-        let mut raised = 0;
         if range.is_empty() {
-            return (changed, raised);
+            return (false, 0);
         }
-        if watch == WatchesFor::None {
-            let ended: Vec<u64> = self
-                .watches
-                .pages
-                .range(range.clone())
-                .map(|(page, _)| *page)
-                .collect();
-            for page in &ended {
-                self.watches.pages.remove(page);
-            }
-            changed = !ended.is_empty();
-        } else {
-            let spans: Vec<(u64, u64)> = self
-                .mappings
-                .range(..range.end)
-                .map(|(_, mapping)| mapping)
-                .filter(|mapping| mapping.end > range.start)
-                .map(|mapping| (mapping.start.max(range.start), mapping.end.min(range.end)))
-                .collect();
-            for (from, to) in spans {
-                for page in (from..to).step_by(PAGE_SIZE as usize) {
-                    let before = self.watches.pages.insert(page, watch);
-                    changed |= before != Some(watch);
-                    if watch_rank(watch) > before.map_or(0, watch_rank) {
-                        raised += 1;
-                    }
-                }
-            }
-        }
+        let spans = self.mapped_spans(&range, watch);
+        let (changed, raised) = set_pages(&mut self.watches.pages, &spans, range.clone(), watch);
         if changed {
             self.reapply(cpu, memory, range.start, range.end);
         }
         (changed, raised)
+    }
+
+    /// Sets the embedder's watch for thread `tid` alone on the mapped pages of a page aligned range.
+    ///
+    /// The CPU side is told if that thread's watches are the ones it holds. The answer says what
+    /// changed, as [`Self::set_watch`]'s does.
+    pub(crate) fn set_thread_watch(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        tid: Tid,
+        range: core::ops::Range<u64>,
+        watch: WatchesFor,
+    ) -> (bool, u64) {
+        if range.is_empty() {
+            return (false, 0);
+        }
+        let spans = self.mapped_spans(&range, watch);
+        let pages = self.watches.threads.entry(tid).or_default();
+        let (changed, raised) = set_pages(pages, &spans, range.clone(), watch);
+        if pages.is_empty() {
+            self.watches.threads.remove(&tid);
+        }
+        if changed && self.watches.applied == Some(tid) {
+            self.reapply(cpu, memory, range.start, range.end);
+        }
+        (changed, raised)
+    }
+
+    /// Returns the mapped parts of `range` a watch `watch` is set on: none when it ends watches.
+    fn mapped_spans(&self, range: &core::ops::Range<u64>, watch: WatchesFor) -> Vec<(u64, u64)> {
+        if watch == WatchesFor::None {
+            return Vec::new();
+        }
+        self.mappings
+            .range(..range.end)
+            .map(|(_, mapping)| mapping)
+            .filter(|mapping| mapping.end > range.start)
+            .map(|mapping| (mapping.start.max(range.start), mapping.end.min(range.end)))
+            .collect()
+    }
+
+    /// Readies the memory for a turn of thread `tid`: the CPU side holds its own watches.
+    ///
+    /// Those of the thread readied before it are let go of.
+    pub(crate) fn ready_for(&mut self, cpu: &mut dyn Cpu, memory: MemoryId, tid: Tid) {
+        if self.watches.applied == Some(tid) {
+            return;
+        }
+        let before = self.watches.applied.replace(tid);
+        self.reapply_own(cpu, memory, before.into_iter().chain([tid]));
+    }
+
+    /// Ends thread `tid`'s own watches, as the thread has ended.
+    pub(crate) fn end_thread_watches(&mut self, cpu: &mut dyn Cpu, memory: MemoryId, tid: Tid) {
+        let Some(pages) = self.watches.threads.remove(&tid) else {
+            return;
+        };
+        if self.watches.applied == Some(tid) {
+            for page in pages.keys() {
+                self.reapply(cpu, memory, *page, page + PAGE_SIZE);
+            }
+        }
+    }
+
+    /// Tells the CPU side again what the pages watched for any of `threads` alone allow.
+    fn reapply_own(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        memory: MemoryId,
+        threads: impl Iterator<Item = Tid>,
+    ) {
+        let mut pages: Vec<u64> = threads
+            .filter_map(|tid| self.watches.threads.get(&tid))
+            .flat_map(|pages| pages.keys().copied())
+            .collect();
+        pages.sort_unstable();
+        pages.dedup();
+        // Runs of neighboring pages are told at once.
+        let mut at = 0;
+        while at < pages.len() {
+            let start = pages[at];
+            let mut end = start + PAGE_SIZE;
+            at += 1;
+            while at < pages.len() && pages[at] == end {
+                end += PAGE_SIZE;
+                at += 1;
+            }
+            self.reapply(cpu, memory, start, end);
+        }
     }
 
     /// The pages written since the embedder last asked, as ranges, and a fresh record from now
@@ -708,13 +863,19 @@ impl AddressMap {
         ranges
     }
 
-    /// A fork's child's copy: no record of written pages, and nothing of its parent's running
-    /// call.
+    /// Makes a fork's child's copy: no written record, no parent thread's watch, no running call.
+    ///
+    /// The child's thread is a new one, so the watches of its parent's threads are not its own.
     pub(crate) fn start_child(&mut self, cpu: &mut dyn Cpu, memory: MemoryId) {
         self.note_sharers_changed();
         self.watches.touched = None;
         self.watches.described = None;
         self.watches.undescribed = None;
+        // The copy's pages allow what they did for the parent's thread that ran last.
+        if let Some(applied) = self.watches.applied.take() {
+            self.reapply_own(cpu, memory, [applied].into_iter());
+        }
+        self.watches.threads.clear();
         if self.watches.written.take().is_some() {
             let starts: Vec<(u64, u64)> =
                 self.mappings.values().map(|m| (m.start, m.end)).collect();
@@ -763,8 +924,8 @@ impl AddressMap {
     }
 
     /// Takes the watches of `[start, end)` along to pages a move is about to take there.
-    pub(crate) fn take_watches(&mut self, start: u64, end: u64) -> Vec<(u64, WatchesFor)> {
-        if self.watches.pages.is_empty() {
+    pub(crate) fn take_watches(&mut self, start: u64, end: u64) -> Vec<TakenWatch> {
+        if self.watches.pages.is_empty() && self.watches.threads.is_empty() {
             return Vec::new();
         }
         self.watches.take(start, end)
@@ -778,11 +939,9 @@ impl AddressMap {
         memory: MemoryId,
         start: u64,
         end: u64,
-        watches: Vec<(u64, WatchesFor)>,
+        watches: Vec<TakenWatch>,
     ) {
-        for (offset, watch) in watches {
-            self.watches.pages.insert(start + offset, watch);
-        }
+        self.watches.put(start, watches);
         if self.watches.narrows() {
             self.watches.note_written(start, end);
             self.reapply(cpu, memory, start, end);
@@ -797,7 +956,8 @@ impl AddressMap {
         start: u64,
         end: u64,
     ) {
-        if self.watches.pages.range(start..end).next().is_some() {
+        let watched = |pages: &BTreeMap<u64, WatchesFor>| pages.range(start..end).next().is_some();
+        if watched(&self.watches.pages) || self.watches.threads.values().any(watched) {
             self.watches.forget(start, end);
             self.reapply(cpu, memory, start, end);
         }
@@ -1900,6 +2060,112 @@ fn apply_permissions_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page with a page on either side.
+    const WATCHED: u64 = 16 * PAGE_SIZE;
+    /// The thread a watch is set for, and one of its siblings.
+    const OWNER: Tid = 7;
+    const SIBLING: Tid = 8;
+
+    /// Returns `OWNER`'s own watch on writes to `WATCHED`, and every thread's on the next page.
+    fn own_and_shared() -> Watches {
+        let mut watches = Watches::default();
+        watches
+            .threads
+            .entry(OWNER)
+            .or_default()
+            .insert(WATCHED, WatchesFor::Writes);
+        watches.pages.insert(WATCHED + PAGE_SIZE, WatchesFor::All);
+        watches
+    }
+
+    #[test]
+    fn a_threads_own_watch_is_met_by_that_thread_alone() {
+        let mut watches = own_and_shared();
+        let both = (WATCHED, WATCHED + 2 * PAGE_SIZE);
+        let first =
+            |watches: &Watches, by, access| watches.first_watched(by, both.0, both.1, access);
+        assert_eq!(first(&watches, OWNER, AccessKind::Write), Some(WATCHED));
+        assert_eq!(
+            first(&watches, OWNER, AccessKind::Read),
+            Some(WATCHED + PAGE_SIZE)
+        );
+        assert_eq!(
+            first(&watches, SIBLING, AccessKind::Write),
+            Some(WATCHED + PAGE_SIZE)
+        );
+        assert_eq!(watches.watch_at(OWNER, WATCHED + 1), WatchesFor::Writes);
+        assert_eq!(watches.watch_at(SIBLING, WATCHED + 1), WatchesFor::None);
+        // A copy for the owner stops at its own page; one for a sibling goes on to the shared one.
+        let length = 2 * PAGE_SIZE;
+        assert_eq!(
+            watches.copy_reach(OWNER, WATCHED, length, length, AccessKind::Write),
+            0
+        );
+        assert_eq!(
+            watches.copy_reach(SIBLING, WATCHED, length, length, AccessKind::Write),
+            PAGE_SIZE
+        );
+    }
+
+    #[test]
+    fn the_cpu_side_holds_the_own_watches_of_the_thread_readied_last() {
+        let mut watches = own_and_shared();
+        let full = Permissions::READ | Permissions::WRITE;
+        assert!(watches.narrows());
+        assert_eq!(watches.narrowed(WATCHED, full), full);
+        watches.applied = Some(OWNER);
+        assert_eq!(watches.narrowed(WATCHED, full), Permissions::READ);
+        watches.applied = Some(SIBLING);
+        assert_eq!(watches.narrowed(WATCHED, full), full);
+        // Every thread's watch narrows the page whoever runs.
+        assert_eq!(
+            watches.narrowed(WATCHED + PAGE_SIZE, full),
+            Permissions::empty()
+        );
+    }
+
+    #[test]
+    fn a_threads_own_watches_move_and_end_with_their_pages() {
+        let mut watches = own_and_shared();
+        let taken = watches.take(WATCHED, WATCHED + 2 * PAGE_SIZE);
+        assert!(watches.threads.is_empty() && watches.pages.is_empty());
+        let moved = 64 * PAGE_SIZE;
+        watches.put(moved, taken);
+        assert_eq!(watches.watch_at(OWNER, moved), WatchesFor::Writes);
+        assert_eq!(watches.watch_at(SIBLING, moved), WatchesFor::None);
+        assert_eq!(
+            watches.watch_at(SIBLING, moved + PAGE_SIZE),
+            WatchesFor::All
+        );
+        watches.forget(moved, moved + 2 * PAGE_SIZE);
+        assert!(!watches.narrows());
+        assert!(!watches.any_for(OWNER));
+    }
+
+    #[test]
+    fn setting_a_threads_own_watch_says_what_changed() {
+        let mut pages = BTreeMap::new();
+        let spans = [(WATCHED, WATCHED + 2 * PAGE_SIZE)];
+        let range = spans[0].0..spans[0].1;
+        assert_eq!(
+            set_pages(&mut pages, &spans, range.clone(), WatchesFor::Writes),
+            (true, 2)
+        );
+        assert_eq!(
+            set_pages(&mut pages, &spans, range.clone(), WatchesFor::Writes),
+            (false, 0)
+        );
+        assert_eq!(
+            set_pages(&mut pages, &spans, range.clone(), WatchesFor::All),
+            (true, 2)
+        );
+        assert_eq!(
+            set_pages(&mut pages, &[], range.clone(), WatchesFor::None),
+            (true, 0)
+        );
+        assert!(pages.is_empty());
+    }
 
     #[test]
     fn the_mmap_gap_is_linuxs_for_an_address_space_of_any_size() {

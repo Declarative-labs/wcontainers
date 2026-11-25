@@ -281,6 +281,10 @@ pub struct Kernel {
     /// How many times any page's watch was raised (set, or widened to `All`): a walk over what a
     /// call will touch starts again when this moves under it.
     watches_raised: u64,
+    /// The processes the embedder was last told another process reads the state of.
+    ///
+    /// That is through `/proc/<pid>/mem`; none while no such file has been opened since none was.
+    inspections: Option<alloc::collections::BTreeSet<Pid>>,
     /// The embedder's watches changed outside a call into the kernel and woke threads, which the
     /// kernel settles before anything runs.
     unsettled: bool,
@@ -417,6 +421,7 @@ impl Kernel {
             ceiling: 0,
             watching: false,
             watches_raised: 0,
+            inspections: None,
             unsettled: false,
             signals_sent: VecDeque::new(),
             signals_to_returning: VecDeque::new(),

@@ -1933,7 +1933,7 @@ fn process_vm<S: crate::System>(
             let mut map = kernel.processes[&remote].map.borrow_mut();
             let pinnable = map.pinnable(base, wanted, write);
             map.watches
-                .copy_reach(base, wanted, pinnable, remote_access)
+                .copy_reach(tid, base, wanted, pinnable, remote_access)
         };
         // Linux copies a page of the other side at a time, into as many local segments as it takes.
         let mut at = base;

@@ -1,6 +1,7 @@
 //! The embedder's side of the kernel beyond the abi's `Host`: the task ids it hands out, the hooks
 //! the kernel announces to it, and the handle to one process that every hook is given.
 
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::ops::{ControlFlow, Range};
 use core::time::Duration;
@@ -34,8 +35,6 @@ pub(crate) fn pid_of(id: TaskId) -> Pid {
 pub enum Unsupported {
     ThreadOrdering(ThreadOrdering),
     ReplayDeterminism(ReplayDeterminism),
-    /// The executor cannot watch one thread and not its siblings.
-    PerThreadWatch,
 }
 
 pub use wcontainers_kernel::signal_information::SignalInformation;
@@ -162,6 +161,15 @@ where
         signal: &SignalInformation,
     ) {
         let _ = (process, thread, signal);
+    }
+    /// Another process is about to read this one's state: it holds its memory open through
+    /// `/proc/<pid>/mem`, as [`ProcessInfo::inspected`] tells, which it did not when last told.
+    fn on_inspection_starting(&self, process: Process<'_>) {
+        let _ = process;
+    }
+    /// No other process reads this one's state any more, as [`ProcessInfo::inspected`] tells.
+    fn on_inspection_ended(&self, process: Process<'_>) {
+        let _ = process;
     }
 }
 
@@ -368,15 +376,30 @@ impl Process<'_> {
         }
     }
 
-    /// Watches one thread's accesses and not its siblings'; refused where the executor cannot.
-    pub fn watch_thread_memory(
-        &mut self,
-        thread: TaskId,
-        range: Range<u64>,
-        watches: WatchesFor,
-    ) -> Result<(), Unsupported> {
-        let _ = (thread, range, watches);
-        Err(Unsupported::PerThreadWatch)
+    /// Watches as [`Self::watch_memory`] does, the accesses of one thread of the process alone
+    /// (the kernel's copies for its calls included) and not its siblings'. A thread runs only
+    /// while no other thread on its memory does, so the CPU side holds the watches of the thread
+    /// that runs. A task that is not a thread of the process on this kernel is given no watch;
+    /// one ends with its thread.
+    pub fn watch_thread_memory(&mut self, thread: TaskId, range: Range<u64>, watches: WatchesFor) {
+        let tid = pid_of(thread);
+        let process = &self.kernel.processes[&self.pid];
+        if !process.threads.contains(&tid) {
+            return;
+        }
+        let memory = process.memory;
+        let (start, end) = (page_down(range.start), page_up(range.end));
+        let (changed, raised) =
+            process
+                .map
+                .borrow_mut()
+                .set_thread_watch(self.cpu, memory, tid, start..end, watches);
+        self.kernel.watches_raised += raised;
+        if changed {
+            self.kernel.update_watching();
+            self.kernel.wake(Channel::Watch(memory.0));
+            self.kernel.unsettled = true;
+        }
     }
 
     /// Sends `signal` to one thread of the process when the kernel next settles, before any
@@ -426,7 +449,33 @@ impl Kernel {
 
     /// Whether thread `tid`'s process has watched pages, which its calls and signals meet first.
     pub(crate) fn watched(&self, tid: crate::process::Tid) -> bool {
-        self.watching && self.process_of(tid).map.borrow().watches.any()
+        self.watching && self.process_of(tid).map.borrow().watches.any_for(tid)
+    }
+
+    /// Ends the watches thread `tid` of process `pid` had for itself alone, as the thread ends.
+    pub(crate) fn end_thread_watches(
+        &mut self,
+        cpu: &mut dyn Cpu,
+        pid: Pid,
+        tid: crate::process::Tid,
+    ) {
+        let process = &self.processes[&pid];
+        let memory = process.memory;
+        process
+            .map
+            .borrow_mut()
+            .end_thread_watches(cpu, memory, tid);
+    }
+
+    /// Readies the memory of the thread the last [`Next::Run`](wcontainers_abi::Next::Run) handed
+    /// out for its turn: the CPU side holds that thread's own watches, and no other thread's.
+    pub fn ready_turn(&mut self, cpu: &mut dyn Cpu) {
+        let Some(tid) = self.running else {
+            return;
+        };
+        let process = self.process_of(tid);
+        let memory = process.memory;
+        process.map.borrow_mut().ready_for(cpu, memory, tid);
     }
 
     /// Announces a hook about process `pid` to the embedder, after what the kernel wrote before.
@@ -511,6 +560,65 @@ impl Kernel {
 }
 
 impl Kernel {
+    /// The processes another process holds the memory of open through `/proc/<pid>/mem` now, and
+    /// whether any such file is open at all.
+    fn inspected_now(&self) -> (BTreeSet<Pid>, bool) {
+        let mut inspected = BTreeSet::new();
+        let mut any = false;
+        for thread in self.threads.values() {
+            for (_, descriptor) in thread.files.borrow().iter() {
+                let file = descriptor.file.borrow();
+                let node = file.node.borrow();
+                let crate::fs::Content::Proc(crate::fs::proc::Entry::ProcessFile(
+                    task,
+                    crate::fs::proc::ProcessFile::Mem,
+                )) = node.content
+                else {
+                    continue;
+                };
+                any = true;
+                let holds_its_memory = self
+                    .processes
+                    .get(&task.pid)
+                    .is_some_and(|process| file.memory == Some(process.memory));
+                if task.pid != thread.process && holds_its_memory {
+                    inspected.insert(task.pid);
+                }
+            }
+        }
+        (inspected, any)
+    }
+
+    /// Tells the embedder of each process whose reading by another process started or ended
+    /// since it was last told; whether it told of any.
+    pub(crate) fn announce_inspections<S: crate::System>(
+        &mut self,
+        cx: &mut crate::Context<'_, S>,
+    ) -> bool {
+        let Some(announced) = &self.inspections else {
+            return false;
+        };
+        let (now, any) = self.inspected_now();
+        if now == *announced {
+            if !any {
+                self.inspections = None;
+            }
+            return false;
+        }
+        let announced = self.inspections.replace(now.clone()).unwrap_or_default();
+        for &pid in announced.difference(&now) {
+            self.announce(cx, pid, |system, process| {
+                system.on_inspection_ended(process)
+            });
+        }
+        for &pid in now.difference(&announced) {
+            self.announce(cx, pid, |system, process| {
+                system.on_inspection_starting(process)
+            });
+        }
+        true
+    }
+
     /// Runs a walk over what a thread is about to touch until it meets no watch: from its start
     /// again whenever a hook raised a watch during it, since that page may lie behind it; false
     /// if the thread must wait.
@@ -550,7 +658,7 @@ impl Kernel {
         };
         let map = process.map.borrow();
         map.watches
-            .first_watched(address, address + 1, access)
+            .first_watched(tid, address, address + 1, access)
             .is_none()
     }
 
@@ -625,7 +733,7 @@ impl<S: crate::System> CallMemory<'_, '_, '_, S> {
                 .map
                 .borrow()
                 .watches
-                .first_watched(address, end, access);
+                .first_watched(self.tid, address, end, access);
             let Some(at) = hit else {
                 return true;
             };
@@ -711,7 +819,8 @@ impl Kernel {
         let fd = crate::syscall::touch::read_descriptor(call)?;
         let (pid, _, _) = self.file_memory(tid, fd)?;
         let process = &self.processes[&pid];
-        (pid != self.threads[&tid].process && process.map.borrow().watches.any()).then_some(pid)
+        (pid != self.threads[&tid].process && process.map.borrow().watches.any_for(tid))
+            .then_some(pid)
     }
 
     /// What the ends of the threads `ending` names touch, as `thread_end` will: a thread's word

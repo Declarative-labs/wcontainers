@@ -641,6 +641,9 @@ impl Kernel {
                 self.announce_sharing(cx);
                 continue;
             }
+            if self.announce_inspections(cx) {
+                continue;
+            }
             if let Some((pid, tid, info)) = self.signals_sent.pop_front() {
                 self.send_from_embedder(cx, pid, tid, info);
                 continue;
@@ -932,6 +935,7 @@ impl Kernel {
         let thread = self.threads.remove(&tid).expect("thread exists");
         self.ids_let_go.push(tid);
         cx.cpu.thread_drop(thread.cpu);
+        self.end_thread_watches(&mut *cx.cpu, thread.process, tid);
         if let Some(node) = &thread.pidfd {
             self.wake(syscall::pidfd::channel(node));
         }
@@ -1096,6 +1100,7 @@ impl Kernel {
             syscall::mqueue::forget(self, tid);
             let thread = self.threads.remove(&tid).expect("thread exists");
             cx.cpu.thread_drop(thread.cpu);
+            self.end_thread_watches(&mut *cx.cpu, pid, tid);
             if let Some(node) = &thread.pidfd {
                 self.wake(syscall::pidfd::channel(node));
             }

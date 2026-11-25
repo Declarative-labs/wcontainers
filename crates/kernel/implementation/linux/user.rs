@@ -76,7 +76,7 @@ impl Guest<'_> {
         self.map
             .borrow_mut()
             .watches
-            .copy_reach(address, length, done, access)
+            .copy_reach(self.tid, address, length, done, access)
     }
 
     /// Asks for the pages of mapped backend files in `[start, end)` not read yet; whether all are

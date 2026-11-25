@@ -638,6 +638,8 @@ pub(super) fn open<S: crate::System>(
                     .processes
                     .get(&task.pid)
                     .map(|process| process.memory);
+                // Whether the opener reads another process's state is told when the kernel settles.
+                kernel.inspections.get_or_insert_default();
             }
             // `pid_maps_open`: only an opener that may read the process, holding its memory.
             if let proc::Entry::ProcessFile(task, proc::ProcessFile::Maps) = entry {
@@ -998,9 +1000,13 @@ pub(super) fn proc_contents<S: crate::System>(
             }
         }
         let readable = readable.min(anonymous.saturating_sub(start));
-        let readable =
-            map.watches
-                .copy_reach(start, length, readable, crate::system::AccessKind::Read);
+        let readable = map.watches.copy_reach(
+            tid,
+            start,
+            length,
+            readable,
+            crate::system::AccessKind::Read,
+        );
         drop(map);
         bytes.truncate(readable as usize);
         if cpu.read(process.memory, start, &mut bytes).is_err() {

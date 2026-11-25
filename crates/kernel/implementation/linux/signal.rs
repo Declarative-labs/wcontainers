@@ -1426,8 +1426,8 @@ impl Kernel {
                     .is_some_and(|mapping| mapping.copies_on_write(address))
                 || map.readable_whole(page..page + wcontainers_abi::PAGE_SIZE)
                     == Err(crate::system::MemoryError::NotRead);
-            match map.watches.watch_at(address) {
-                WatchesFor::None if !held_here => (map.watches.watch_at(last), last, false),
+            match map.watches.watch_at(tid, address) {
+                WatchesFor::None if !held_here => (map.watches.watch_at(tid, last), last, false),
                 watch => (watch, address, true),
             }
         };
