@@ -1,15 +1,18 @@
 //! The tests every implementation of wcontainers-metal runs, written against its traits alone.
 
 use wcontainers_metal::{
-    BlitCommand, BlitOption, ColorWriteMask, CommandBufferStatus, CommitError, CompareFunction,
-    ComputeCommand, DepthStencilDescriptor, EncodeRenderCommandsError, FunctionSource, LoadAction,
-    MAX_COLOR_ATTACHMENTS, Metal, Origin, PixelFormat, PrimitiveTopologyClass, PrimitiveType,
-    ReadContentsError, RenderCommand, RenderPassColorAttachment, RenderPassDescriptor,
-    RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor, ResourceSlot,
-    SamplerAddressMode, SamplerBorderColor, SamplerDescriptor, SamplerMinMagFilter,
-    SamplerMipFilter, ScissorRect, Size, StoreAction, TextureDescriptor, TextureType, TextureUsage,
-    TextureViewDescriptor, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepFunction,
-    Viewport, WaitUntilCompletedError, WriteContentsError,
+    BlendFactor, BlendOperation, Blending, BlitCommand, BlitOption, ColorWriteMask,
+    CommandBufferStatus, CommitError, CompareFunction, ComputeCommand, DepthStencilDescriptor,
+    EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError, FunctionSource,
+    IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, MakeRenderPipelineStateError, MakeTextureError,
+    Metal, Origin, PixelFormat, PrimitiveTopologyClass, PrimitiveType, ReadContentsError,
+    RenderCommand, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+    RenderPassDescriptor, RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor,
+    ResolveTarget, ResourceSlot, SamplerAddressMode, SamplerBorderColor, SamplerDescriptor,
+    SamplerMinMagFilter, SamplerMipFilter, ScissorRect, Size, StencilDescriptor, StencilOperation,
+    StoreAction, TextureDescriptor, TextureType, TextureUsage, TextureViewDescriptor,
+    VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepFunction, Viewport,
+    VisibilityResultMode, WaitUntilCompletedError, WriteContentsError,
 };
 
 /// The side of the square textures the tests draw into and copy, in texels.
@@ -27,7 +30,7 @@ const SIZES: u32 = 30;
 /// The buffer slot of the tests' one vertex buffer.
 const VERTICES: u32 = 20;
 
-/// The tests' functions: a triangle whose color comes from a uniform, one sampling a texture, and a doubling compute.
+/// The tests' functions: a triangle in a uniform's color or in whole numbers, one sampling a texture, and two computes.
 const PROGRAMS: &str = "
 struct Color { value: vec4<f32> }
 @group(0) @binding(0) var<uniform> color: Color;
@@ -39,6 +42,9 @@ struct Color { value: vec4<f32> }
 }
 @fragment fn flat() -> @location(0) vec4<f32> {
     return color.value;
+}
+@fragment fn whole() -> @location(0) vec4<u32> {
+    return vec4<u32>(1u);
 }
 @fragment fn sampled(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
     return textureSample(tex, samp, at.xy / 4.0);
@@ -422,10 +428,10 @@ pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
                 },
                 BlitCommand::CopyFromBufferToBuffer {
                     source_buffer: source.clone(),
-                    source_offset: 5,
+                    source_offset: 4,
                     destination_buffer: copy.clone(),
-                    destination_offset: 1,
-                    size: 7,
+                    destination_offset: 8,
+                    size: 8,
                 },
                 BlitCommand::FillBuffer {
                     buffer: copy.clone(),
@@ -439,7 +445,7 @@ pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
     finish(&mut subject, &command_buffer);
     assert_eq!(read_texture(&mut subject, &texture), bytes);
     let mut expected = vec![0; 32];
-    expected[1..8].copy_from_slice(&bytes[5..12]);
+    expected[8..16].copy_from_slice(&bytes[4..12]);
     expected[20..24].fill(0xab);
     let mut read = vec![0; 32];
     subject
@@ -656,6 +662,616 @@ pub fn dispatches_with_workgroup_memory<M: Metal>(mut subject: M) {
     assert_eq!(u32::from_le_bytes(read), 1 + 2 + 3 + 4);
 }
 
+/// A side longer than any Apple GPU's longest texture side, which is 32768.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const BEYOND_ANY_SIDE: u32 = 40_000;
+
+/// One more than the longest side of a 3D texture.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const BEYOND_3D_SIDE: u32 = 2049;
+
+/// One more than the most layers of an array texture.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const BEYOND_LAYERS: u32 = 2049;
+
+/// The fewest cubes of a cube array whose faces pass the most layers of an array texture, 2048.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const BEYOND_CUBES: u32 = 342;
+
+/// The first offset past the visibility result buffer a pass counts into, 256 KB.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const BEYOND_VISIBILITY_SPAN: u64 = 262_144;
+
+/// A row pitch longer than a row of the widest texture any Apple GPU makes, in `rgba8Unorm`.
+///
+/// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/copy(from:sourceoffset:sourcebytesperrow:sourcebytesperimage:sourcesize:to:destinationslice:destinationlevel:destinationorigin:options:)
+const BEYOND_ROW: u64 = 160_000;
+
+/// An offset of the uniform the tests read, a four-float color aligned to 16 bytes, that is not a multiple of 16.
+///
+/// https://www.w3.org/TR/WGSL/#alignment-and-size
+const MISALIGNED_UNIFORM: u64 = 4;
+
+/// An offset of the words the compute tests read, aligned to 4 bytes, that is not a multiple of 4.
+///
+/// https://www.w3.org/TR/WGSL/#alignment-and-size
+const MISALIGNED_WORDS: u64 = 2;
+
+/// A sample count every Apple GPU takes.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const SAMPLES: u32 = 4;
+
+/// Returns a descriptor of a `TARGET_SIDE` square texture of one level, read and drawn into.
+fn described(texture_type: TextureType, pixel_format: PixelFormat) -> TextureDescriptor {
+    let multisampled = texture_type == TextureType::Type2DMultisample;
+    TextureDescriptor {
+        texture_type,
+        pixel_format,
+        width: TARGET_SIDE,
+        height: TARGET_SIDE,
+        depth: 1,
+        mipmap_level_count: 1,
+        sample_count: if multisampled { SAMPLES } else { 1 },
+        array_length: 1,
+        usage: TextureUsage {
+            shader_read: true,
+            shader_write: false,
+            render_target: true,
+            pixel_format_view: false,
+        },
+    }
+}
+
+/// Checks that a texture of `descriptor` is refused.
+fn refuses_texture<M: Metal>(subject: &mut M, descriptor: TextureDescriptor) {
+    assert!(matches!(
+        subject.make_texture(&descriptor),
+        Err(MakeTextureError::Invalid(_))
+    ));
+}
+
+/// Makes a texture of `descriptor`.
+fn made<M: Metal>(subject: &mut M, descriptor: TextureDescriptor) -> M::Texture {
+    subject.make_texture(&descriptor).expect("make_texture")
+}
+
+/// Returns a pipeline descriptor drawing `fragment` into a color of `format`, blended or not, with depth and stencil.
+fn pipeline_descriptor<'a, M: Metal>(
+    vertex: &'a M::Function,
+    fragment: &'a M::Function,
+    color: Option<(PixelFormat, Option<Blending>)>,
+    depth: Option<PixelFormat>,
+    stencil: Option<PixelFormat>,
+) -> RenderPipelineDescriptor<'a, M> {
+    let mut color_attachments = [None; MAX_COLOR_ATTACHMENTS];
+    color_attachments[0] =
+        color.map(
+            |(pixel_format, blending)| RenderPipelineColorAttachmentDescriptor {
+                pixel_format,
+                blending,
+                write_mask: ColorWriteMask {
+                    red: true,
+                    green: true,
+                    blue: true,
+                    alpha: true,
+                },
+            },
+        );
+    RenderPipelineDescriptor {
+        vertex_function: vertex,
+        fragment_function: Some(fragment),
+        color_attachments,
+        depth_attachment_pixel_format: depth,
+        stencil_attachment_pixel_format: stencil,
+        raster_sample_count: 1,
+        alpha_to_coverage_enabled: false,
+        rasterization_enabled: true,
+        input_primitive_topology: PrimitiveTopologyClass::Triangle,
+    }
+}
+
+/// Checks that a pipeline is refused.
+fn refuses_pipeline<M: Metal>(
+    subject: &mut M,
+    fragment: &str,
+    color: Option<(PixelFormat, Option<Blending>)>,
+    depth: Option<PixelFormat>,
+    stencil: Option<PixelFormat>,
+) {
+    let vertex = function(subject, naga::ShaderStage::Vertex, "vs");
+    let fragment = function(subject, naga::ShaderStage::Fragment, fragment);
+    let descriptor = pipeline_descriptor::<M>(&vertex, &fragment, color, depth, stencil);
+    assert!(matches!(
+        subject.make_render_pipeline_state(&descriptor),
+        Err(MakeRenderPipelineStateError::Invalid(_))
+    ));
+}
+
+/// Returns a buffer holding the covering triangle.
+fn covering<M: Metal>(subject: &mut M) -> M::Buffer {
+    let bytes: Vec<u8> = COVERING.iter().flat_map(|v| v.to_le_bytes()).collect();
+    filled(subject, &bytes)
+}
+
+/// Checks that the covering draw in the uniform's color, with `commands` after its bindings, is refused in `pass`.
+fn refuses_draw<M: Metal>(
+    subject: &mut M,
+    pass: &RenderPassDescriptor<'_, M>,
+    state: &M::RenderPipelineState,
+    commands: Vec<RenderCommand<M>>,
+) {
+    let depth_stencil = no_depth(subject);
+    let vertices = covering(subject);
+    let color = filled(subject, &[0; COLOR_BYTES as usize]);
+    let mut bindings = vec![RenderCommand::SetFragmentBuffer {
+        buffer: color,
+        offset: 0,
+        length: COLOR_BYTES,
+        index: 0,
+    }];
+    bindings.extend(commands);
+    let commands = covering_draw(state, &vertices, &depth_stencil, bindings);
+    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    assert!(
+        subject
+            .encode_render_commands(&command_buffer, pass, &commands)
+            .is_err()
+    );
+}
+
+/// Returns a stencil test that counts what passes.
+fn counting_stencil() -> StencilDescriptor {
+    StencilDescriptor {
+        stencil_compare_function: CompareFunction::Always,
+        stencil_failure_operation: StencilOperation::Keep,
+        depth_failure_operation: StencilOperation::Keep,
+        depth_stencil_pass_operation: StencilOperation::IncrementClamp,
+        read_mask: u32::from(u8::MAX),
+        write_mask: u32::from(u8::MAX),
+    }
+}
+
+/// Checks that one copy or fill is refused.
+fn refuses_blit<M: Metal>(subject: &mut M, command: BlitCommand<M>) {
+    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    assert!(matches!(
+        subject.encode_blit_commands(&command_buffer, &[command]),
+        Err(EncodeBlitCommandsError::Invalid(_))
+    ));
+}
+
+/// Checks that a texture wider than any Apple GPU makes is refused, where Metal stops the process.
+pub fn refuses_a_texture_wider_than_any_gpu_makes<M: Metal>(mut subject: M) {
+    let mut descriptor = described(TextureType::Type2D, PixelFormat::R8Unorm);
+    descriptor.width = BEYOND_ANY_SIDE;
+    refuses_texture(&mut subject, descriptor);
+    let mut descriptor = described(TextureType::TypeCube, PixelFormat::R8Unorm);
+    descriptor.width = BEYOND_ANY_SIDE;
+    descriptor.height = BEYOND_ANY_SIDE;
+    refuses_texture(&mut subject, descriptor);
+}
+
+/// Checks that a 3D texture deeper than 2048 is refused, where Metal stops the process.
+pub fn refuses_a_3d_texture_deeper_than_the_most<M: Metal>(mut subject: M) {
+    let mut descriptor = described(TextureType::Type3D, PixelFormat::R8Unorm);
+    descriptor.depth = BEYOND_3D_SIDE;
+    refuses_texture(&mut subject, descriptor);
+}
+
+/// Checks that an array of more layers than 2048 is refused, where Metal stops the process.
+pub fn refuses_more_layers_than_the_most<M: Metal>(mut subject: M) {
+    let mut descriptor = described(TextureType::Type2DArray, PixelFormat::R8Unorm);
+    descriptor.array_length = BEYOND_LAYERS;
+    refuses_texture(&mut subject, descriptor);
+    let mut descriptor = described(TextureType::TypeCubeArray, PixelFormat::R8Unorm);
+    descriptor.array_length = BEYOND_CUBES;
+    refuses_texture(&mut subject, descriptor);
+}
+
+/// Checks that a texture in the stencil view format is refused, which Metal's validation stops.
+pub fn refuses_a_texture_in_a_view_only_format<M: Metal>(mut subject: M) {
+    refuses_texture(
+        &mut subject,
+        described(TextureType::Type2D, PixelFormat::X32Stencil8),
+    );
+}
+
+/// Checks that a stencil view of a texture not made for views is refused, which Metal's validation stops.
+pub fn refuses_a_stencil_view_of_a_texture_not_made_for_views<M: Metal>(mut subject: M) {
+    let texture = made(
+        &mut subject,
+        described(TextureType::Type2D, PixelFormat::Depth32FloatStencil8),
+    );
+    assert!(
+        subject
+            .make_texture_view(
+                &texture,
+                &TextureViewDescriptor {
+                    pixel_format: PixelFormat::X32Stencil8,
+                    texture_type: TextureType::Type2D,
+                    first_level: 0,
+                    level_count: 1,
+                    first_slice: 0,
+                    slice_count: 1,
+                },
+            )
+            .is_err()
+    );
+}
+
+/// Checks that a pipeline drawing into a compressed format is refused, where Metal stops the process.
+pub fn refuses_a_pipeline_drawing_into_a_compressed_format<M: Metal>(mut subject: M) {
+    refuses_pipeline(
+        &mut subject,
+        "flat",
+        Some((PixelFormat::Bc1Rgba, None)),
+        None,
+        None,
+    );
+}
+
+/// Checks that a pipeline blending into an integer format is refused, where Metal stops the process.
+pub fn refuses_a_pipeline_blending_an_integer_format<M: Metal>(mut subject: M) {
+    let blending = Blending {
+        rgb_blend_operation: BlendOperation::Add,
+        alpha_blend_operation: BlendOperation::Add,
+        source_rgb_blend_factor: BlendFactor::One,
+        destination_rgb_blend_factor: BlendFactor::One,
+        source_alpha_blend_factor: BlendFactor::One,
+        destination_alpha_blend_factor: BlendFactor::One,
+    };
+    refuses_pipeline(
+        &mut subject,
+        "whole",
+        Some((PixelFormat::Rgba8Uint, Some(blending))),
+        None,
+        None,
+    );
+}
+
+/// Checks that a pipeline whose combined depth and stencil format sits beside another is refused, where Metal stops
+/// the process.
+pub fn refuses_a_pipeline_of_mismatched_depth_and_stencil<M: Metal>(mut subject: M) {
+    refuses_pipeline(
+        &mut subject,
+        "flat",
+        Some((PixelFormat::Rgba8Unorm, None)),
+        Some(PixelFormat::Depth32FloatStencil8),
+        Some(PixelFormat::Stencil8),
+    );
+}
+
+/// Checks that a pass drawing into a compressed texture is refused, which Metal's validation stops.
+pub fn refuses_a_pass_drawing_into_a_compressed_texture<M: Metal>(mut subject: M) {
+    let texture = made(
+        &mut subject,
+        described(TextureType::Type2D, PixelFormat::Bc1Rgba),
+    );
+    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    assert!(
+        subject
+            .encode_render_commands(&command_buffer, &pass(&texture), &[])
+            .is_err()
+    );
+}
+
+/// Checks that a depth clear outside zero to one is refused, which Metal's validation stops.
+pub fn refuses_a_depth_clear_outside_zero_to_one<M: Metal>(mut subject: M) {
+    let color = target(&mut subject);
+    let depth = made(
+        &mut subject,
+        described(TextureType::Type2D, PixelFormat::Depth32Float),
+    );
+    let mut descriptor = pass(&color);
+    descriptor.depth_attachment = Some(RenderPassDepthStencilAttachment {
+        texture: &depth,
+        level: 0,
+        slice: 0,
+        load_action: LoadAction::Clear,
+        store_action: StoreAction::Store,
+        clear_value: 2.0,
+    });
+    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    assert!(
+        subject
+            .encode_render_commands(&command_buffer, &descriptor, &[])
+            .is_err()
+    );
+}
+
+/// Checks that resolves of an integer format, and into another format, are refused, which Metal's validation stops.
+pub fn refuses_a_resolve_metal_does_not_make<M: Metal>(mut subject: M) {
+    for (from, into) in [
+        (PixelFormat::Rgba8Uint, PixelFormat::Rgba8Uint),
+        (PixelFormat::R32Float, PixelFormat::Rg16Unorm),
+    ] {
+        let source = made(
+            &mut subject,
+            described(TextureType::Type2DMultisample, from),
+        );
+        let resolved = made(&mut subject, described(TextureType::Type2D, into));
+        let mut descriptor = pass(&source);
+        if let Some(attachment) = descriptor.color_attachments[0].as_mut() {
+            attachment.resolve = Some(ResolveTarget {
+                texture: &resolved,
+                level: 0,
+                slice: 0,
+                depth_plane: 0,
+            });
+        }
+        descriptor.default_raster_sample_count = SAMPLES;
+        let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+        assert!(
+            subject
+                .encode_render_commands(&command_buffer, &descriptor, &[])
+                .is_err()
+        );
+    }
+}
+
+/// Checks that a viewport that is not finite is refused, which Metal's validation stops.
+pub fn refuses_a_viewport_that_is_not_finite<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, "flat");
+    let texture = target(&mut subject);
+    let viewport = Viewport {
+        origin_x: f64::NAN,
+        origin_y: 0.0,
+        width: f64::from(TARGET_SIDE),
+        height: f64::from(TARGET_SIDE),
+        znear: 0.0,
+        zfar: 1.0,
+    };
+    refuses_draw(
+        &mut subject,
+        &pass(&texture),
+        &state,
+        vec![RenderCommand::SetViewports(vec![viewport])],
+    );
+}
+
+/// Checks that a uniform bound at an offset not a multiple of its alignment is refused, which Metal's validation
+/// stops.
+pub fn refuses_a_uniform_at_a_misaligned_offset<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, "flat");
+    let texture = target(&mut subject);
+    let color = filled(&mut subject, &[0; (COLOR_BYTES * 2) as usize]);
+    let bound = RenderCommand::SetFragmentBuffer {
+        buffer: color,
+        offset: MISALIGNED_UNIFORM,
+        length: COLOR_BYTES,
+        index: 0,
+    };
+    refuses_draw(&mut subject, &pass(&texture), &state, vec![bound]);
+}
+
+/// Checks that draws of no instances and of no indices are refused, which Metal's validation stops.
+pub fn refuses_draws_of_no_instances_or_indices<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, "flat");
+    let texture = target(&mut subject);
+    let indices = filled(&mut subject, &[0; COVERING_BYTES as usize]);
+    for draw in [
+        RenderCommand::DrawPrimitives {
+            primitive_type: PrimitiveType::Triangle,
+            vertex_start: 0,
+            vertex_count: 3,
+            instance_count: 0,
+            base_instance: 0,
+        },
+        RenderCommand::DrawIndexedPrimitives {
+            primitive_type: PrimitiveType::Triangle,
+            index_count: 0,
+            index_type: IndexType::UInt16,
+            index_buffer: indices,
+            index_buffer_offset: 0,
+            instance_count: 1,
+            base_vertex: 0,
+            base_instance: 0,
+        },
+    ] {
+        refuses_draw(&mut subject, &pass(&texture), &state, vec![draw]);
+    }
+}
+
+/// Checks that a texture not made to be read by functions is refused to one, which Metal's validation stops.
+pub fn refuses_a_texture_not_made_to_be_read<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, "sampled");
+    let drawn = target(&mut subject);
+    let mut descriptor = described(TextureType::Type2D, PixelFormat::Rgba8Unorm);
+    descriptor.usage.shader_read = false;
+    let unread = made(&mut subject, descriptor);
+    let sampler = subject
+        .make_sampler_state(&SamplerDescriptor {
+            min_filter: SamplerMinMagFilter::Nearest,
+            mag_filter: SamplerMinMagFilter::Nearest,
+            mip_filter: SamplerMipFilter::NotMipmapped,
+            s_address_mode: SamplerAddressMode::ClampToEdge,
+            t_address_mode: SamplerAddressMode::ClampToEdge,
+            r_address_mode: SamplerAddressMode::ClampToEdge,
+            border_color: SamplerBorderColor::TransparentBlack,
+            lod_min_clamp: 0.0,
+            lod_max_clamp: 0.0,
+            max_anisotropy: 1,
+            compare_function: None,
+        })
+        .expect("make_sampler_state");
+    let bound = vec![
+        RenderCommand::SetFragmentTexture {
+            texture: unread,
+            index: 0,
+        },
+        RenderCommand::SetFragmentSamplerState { sampler, index: 0 },
+    ];
+    refuses_draw(&mut subject, &pass(&drawn), &state, bound);
+}
+
+/// Checks that counting past the visibility result buffer's span is refused, which Metal's validation stops.
+pub fn refuses_a_visibility_offset_past_the_span<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, "flat");
+    let texture = target(&mut subject);
+    let results = subject
+        .make_buffer(BEYOND_VISIBILITY_SPAN * 2)
+        .expect("make_buffer");
+    let mut descriptor = pass(&texture);
+    descriptor.visibility_result_buffer = Some(&results);
+    let counting = RenderCommand::SetVisibilityResultMode {
+        mode: VisibilityResultMode::Counting,
+        offset: BEYOND_VISIBILITY_SPAN,
+    };
+    refuses_draw(&mut subject, &descriptor, &state, vec![counting]);
+}
+
+/// Checks that depth and stencil tests in a pass without those attachments are refused, which Metal's validation stops.
+pub fn refuses_depth_and_stencil_tests_without_attachments<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, "flat");
+    let texture = target(&mut subject);
+    for descriptor in [
+        DepthStencilDescriptor {
+            depth_compare_function: CompareFunction::Less,
+            depth_write_enabled: false,
+            front_face_stencil: None,
+            back_face_stencil: None,
+        },
+        DepthStencilDescriptor {
+            depth_compare_function: CompareFunction::Always,
+            depth_write_enabled: false,
+            front_face_stencil: Some(counting_stencil()),
+            back_face_stencil: Some(counting_stencil()),
+        },
+    ] {
+        let tests = subject
+            .make_depth_stencil_state(&descriptor)
+            .expect("make_depth_stencil_state");
+        refuses_draw(
+            &mut subject,
+            &pass(&texture),
+            &state,
+            vec![RenderCommand::SetDepthStencilState(tests)],
+        );
+    }
+}
+
+/// Checks that a dispatch of no threadgroups, and words at a misaligned offset, are refused, which Metal's validation
+/// stops.
+pub fn refuses_empty_dispatches_and_misaligned_words<M: Metal>(mut subject: M) {
+    let words = filled(&mut subject, &[0; (WORDS_BYTES * 2) as usize]);
+    let compute = function(&mut subject, naga::ShaderStage::Compute, "double");
+    let state = subject
+        .make_compute_pipeline_state(&compute)
+        .expect("make_compute_pipeline_state");
+    let one = Size {
+        width: 1,
+        height: 1,
+        depth: 1,
+    };
+    let none = Size { width: 0, ..one };
+    for (offset, groups) in [(0, none), (MISALIGNED_WORDS, one)] {
+        let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+        let commands = [
+            ComputeCommand::SetComputePipelineState(state.clone()),
+            ComputeCommand::SetBuffer {
+                buffer: words.clone(),
+                offset,
+                length: WORDS_BYTES,
+                index: 1,
+            },
+            ComputeCommand::DispatchThreadgroups(groups),
+        ];
+        assert!(matches!(
+            subject.encode_compute_commands(&command_buffer, &commands),
+            Err(EncodeComputeCommandsError::Invalid(_) | EncodeComputeCommandsError::Unbound(_))
+        ));
+    }
+}
+
+/// Checks that buffer copies and fills of no bytes, or not in multiples of four, are refused, which Metal's validation
+/// stops or macOS's documentation forbids.
+pub fn refuses_buffer_copies_and_fills_metal_does_not_make<M: Metal>(mut subject: M) {
+    let buffer = filled(&mut subject, &pattern(COVERING_BYTES as usize));
+    let copy = |source_offset, destination_offset, size| BlitCommand::CopyFromBufferToBuffer {
+        source_buffer: buffer.clone(),
+        source_offset,
+        destination_buffer: buffer.clone(),
+        destination_offset,
+        size,
+    };
+    let fill = |offset, length| BlitCommand::FillBuffer {
+        buffer: buffer.clone(),
+        offset,
+        length,
+        value: 1,
+    };
+    for command in [
+        copy(0, RGBA8_BYTES * 2, 0),
+        copy(1, RGBA8_BYTES * 2, RGBA8_BYTES),
+        copy(0, RGBA8_BYTES * 2, 3),
+        fill(0, 0),
+        fill(1, RGBA8_BYTES),
+        fill(0, 3),
+    ] {
+        refuses_blit(&mut subject, command);
+    }
+}
+
+/// Checks that image pitches shorter than an image, and row pitches longer than the longest row, are refused, which
+/// Metal's validation stops.
+pub fn refuses_copy_pitches_metal_does_not_take<M: Metal>(mut subject: M) {
+    let texture = target(&mut subject);
+    let buffer = subject.make_buffer(BEYOND_ROW * 2).expect("make_buffer");
+    let row = u64::from(TARGET_SIDE) * RGBA8_BYTES;
+    let copy = |bytes_per_row, bytes_per_image, height| BlitCommand::CopyFromBufferToTexture {
+        source_buffer: buffer.clone(),
+        source_offset: 0,
+        source_bytes_per_row: bytes_per_row,
+        source_bytes_per_image: bytes_per_image,
+        source_size: Size {
+            width: TARGET_SIDE,
+            height,
+            depth: 1,
+        },
+        destination_texture: texture.clone(),
+        destination_slice: 0,
+        destination_level: 0,
+        destination_origin: Origin { x: 0, y: 0, z: 0 },
+        options: BlitOption::None,
+    };
+    refuses_blit(&mut subject, copy(row, RGBA8_BYTES, TARGET_SIDE));
+    refuses_blit(&mut subject, copy(BEYOND_ROW, 0, 1));
+}
+
+/// Checks that a copy between textures of an sRGB format and its linear twin is refused, which Metal's validation
+/// stops.
+pub fn refuses_a_copy_between_texture_formats_that_differ<M: Metal>(mut subject: M) {
+    let linear = target(&mut subject);
+    let srgb = made(
+        &mut subject,
+        described(TextureType::Type2D, PixelFormat::Rgba8UnormSrgb),
+    );
+    refuses_blit(
+        &mut subject,
+        BlitCommand::CopyFromTextureToTexture {
+            source_texture: linear,
+            source_slice: 0,
+            source_level: 0,
+            source_origin: Origin { x: 0, y: 0, z: 0 },
+            source_size: Size {
+                width: TARGET_SIDE,
+                height: TARGET_SIDE,
+                depth: 1,
+            },
+            destination_texture: srgb,
+            destination_slice: 0,
+            destination_level: 0,
+            destination_origin: Origin { x: 0, y: 0, z: 0 },
+        },
+    );
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -728,6 +1344,111 @@ macro_rules! tests {
         #[test]
         fn dispatches_with_workgroup_memory() {
             $crate::dispatches_with_workgroup_memory($value);
+        }
+
+        #[test]
+        fn refuses_a_texture_wider_than_any_gpu_makes() {
+            $crate::refuses_a_texture_wider_than_any_gpu_makes($value);
+        }
+
+        #[test]
+        fn refuses_a_3d_texture_deeper_than_the_most() {
+            $crate::refuses_a_3d_texture_deeper_than_the_most($value);
+        }
+
+        #[test]
+        fn refuses_more_layers_than_the_most() {
+            $crate::refuses_more_layers_than_the_most($value);
+        }
+
+        #[test]
+        fn refuses_a_texture_in_a_view_only_format() {
+            $crate::refuses_a_texture_in_a_view_only_format($value);
+        }
+
+        #[test]
+        fn refuses_a_stencil_view_of_a_texture_not_made_for_views() {
+            $crate::refuses_a_stencil_view_of_a_texture_not_made_for_views($value);
+        }
+
+        #[test]
+        fn refuses_a_pipeline_drawing_into_a_compressed_format() {
+            $crate::refuses_a_pipeline_drawing_into_a_compressed_format($value);
+        }
+
+        #[test]
+        fn refuses_a_pipeline_blending_an_integer_format() {
+            $crate::refuses_a_pipeline_blending_an_integer_format($value);
+        }
+
+        #[test]
+        fn refuses_a_pipeline_of_mismatched_depth_and_stencil() {
+            $crate::refuses_a_pipeline_of_mismatched_depth_and_stencil($value);
+        }
+
+        #[test]
+        fn refuses_a_pass_drawing_into_a_compressed_texture() {
+            $crate::refuses_a_pass_drawing_into_a_compressed_texture($value);
+        }
+
+        #[test]
+        fn refuses_a_depth_clear_outside_zero_to_one() {
+            $crate::refuses_a_depth_clear_outside_zero_to_one($value);
+        }
+
+        #[test]
+        fn refuses_a_resolve_metal_does_not_make() {
+            $crate::refuses_a_resolve_metal_does_not_make($value);
+        }
+
+        #[test]
+        fn refuses_a_viewport_that_is_not_finite() {
+            $crate::refuses_a_viewport_that_is_not_finite($value);
+        }
+
+        #[test]
+        fn refuses_a_uniform_at_a_misaligned_offset() {
+            $crate::refuses_a_uniform_at_a_misaligned_offset($value);
+        }
+
+        #[test]
+        fn refuses_draws_of_no_instances_or_indices() {
+            $crate::refuses_draws_of_no_instances_or_indices($value);
+        }
+
+        #[test]
+        fn refuses_a_texture_not_made_to_be_read() {
+            $crate::refuses_a_texture_not_made_to_be_read($value);
+        }
+
+        #[test]
+        fn refuses_a_visibility_offset_past_the_span() {
+            $crate::refuses_a_visibility_offset_past_the_span($value);
+        }
+
+        #[test]
+        fn refuses_depth_and_stencil_tests_without_attachments() {
+            $crate::refuses_depth_and_stencil_tests_without_attachments($value);
+        }
+
+        #[test]
+        fn refuses_empty_dispatches_and_misaligned_words() {
+            $crate::refuses_empty_dispatches_and_misaligned_words($value);
+        }
+
+        #[test]
+        fn refuses_buffer_copies_and_fills_metal_does_not_make() {
+            $crate::refuses_buffer_copies_and_fills_metal_does_not_make($value);
+        }
+
+        #[test]
+        fn refuses_copy_pitches_metal_does_not_take() {
+            $crate::refuses_copy_pitches_metal_does_not_take($value);
+        }
+
+        #[test]
+        fn refuses_a_copy_between_texture_formats_that_differ() {
+            $crate::refuses_a_copy_between_texture_formats_that_differ($value);
         }
         $crate::tests!(@StandaloneMetal $standalone_metal ($value) $(($standalone_metal_value))?);
     };
