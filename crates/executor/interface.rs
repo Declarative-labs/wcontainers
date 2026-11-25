@@ -18,6 +18,10 @@ pub trait Executor: BehaviorSource {
     type TranslatorConfig: Default;
     type GuestMemory: MemorySpace;
     type Interrupter: ExecutionInterrupter + 'static;
+    // VERUS: no `impl Trait` in a trait, so the returned future is a named type.
+    type Execution<'execution>: Future<Output = ProcessorStateOf<Self>> + 'execution
+    where
+        Self: 'execution;
 
     type CreateGuestMemoryError;
     fn create_guest_memory(
@@ -32,10 +36,7 @@ pub trait Executor: BehaviorSource {
         processor: ProcessorStateOf<Self>,
         memory: &'execution Self::GuestMemory,
         handler: &'execution mut impl TrapHandler,
-    ) -> (
-        impl Future<Output = ProcessorStateOf<Self>> + 'execution,
-        Self::Interrupter,
-    );
+    ) -> (Self::Execution<'execution>, Self::Interrupter);
 }
 
 pub type ProcessorStateOf<E> =
