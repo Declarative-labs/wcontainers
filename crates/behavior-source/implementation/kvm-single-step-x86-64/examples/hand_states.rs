@@ -263,6 +263,8 @@ mod on_chip {
             ("16 bytes, DS 10 times then EVEX VPADDD, the 16th byte on an unmapped page", Instruction::AddGprvGprv01, make(0x1FF1, &padded(0x3E, 10, &EVEX_ADD), &[], |_| {})),
             // XCR0 has no AVX state and CR4.OSXSAVE is clear: #UD once measured, whatever form the behavior names.
             ("15 bytes, REX 11 times then VEX VPADDD", Instruction::AddGprvGprv01, make(0x1000, &padded(0x48, 11, &VEX_ADD), &[], |_| {})),
+            ("VEX VPADDD, now that XCR0 enables AVX", Instruction::VpadddXmmdqXmmdqXmmdq, make(0x1000, &VEX_ADD, &[], |_| {})),
+            ("15 bytes, DS 11 times then VEX VPADDD", Instruction::VpadddXmmdqXmmdqXmmdq, make(0x1000, &padded(0x3E, 11, &VEX_ADD), &[], |_| {})),
         ]
     }
 

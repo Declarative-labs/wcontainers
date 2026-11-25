@@ -16,7 +16,7 @@ use crate::integer::{BitChange, Condition, OperandPlace, Operation, find_integer
 use crate::memory::{read_bytes, read_permission};
 use crate::planted::{Bug, is_active};
 use crate::float::{ORDER_FLAGS, find_float_form};
-use crate::vector::find_vector_form;
+use crate::vector::{VectorEncoding, VectorForm, find_vector_form};
 use crate::{
     Access, DataAccess, Exception, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission,
     PreciseInstruction, Processor, STACK_POINTER, VIRTUAL_ADDRESS_BITS, X86_64,
@@ -802,6 +802,9 @@ fn execute_vector(
     let form = find_vector_form(instruction).unwrap_or_else(|| panic!("{instruction:?} is no vector form"));
     let length = form.memory_bytes();
     expect_code(decoded, &[form.code]);
+    if form.encoding != VectorEncoding::Legacy {
+        return execute_vex_vector(form, processor, memory, decoded);
+    }
     let source = match decoded.op1_kind() {
         OpKind::Register => processor.vector_registers[decoded.op1_register().number()],
         OpKind::Immediate8 => u128::from(decoded.immediate8()),
@@ -839,6 +842,52 @@ fn execute_vector(
     }
     Ok(())
 }
+
+/// The VEX skeleton of a lane operation: VEX.vvvv's register and a register or memory (16 or 32 bytes, any alignment)
+/// combined into the destination, each 128-bit half as the legacy form combines its lanes; VEX.128 zeroes the
+/// destination's upper half.
+fn execute_vex_vector(
+    form: &VectorForm,
+    processor: &mut Processor,
+    memory: Memory<'_, '_>,
+    decoded: &Decoded,
+) -> Result<(), Exception> {
+    let wide = form.encoding == VectorEncoding::L256;
+    let read_register = |processor: &Processor, register: Register| {
+        let number = register.number();
+        [processor.vector_registers[number], processor.upper_vector_halves[number]]
+    };
+    let first_register = if is_active(Bug::VexFirstSourceIsDestination) { decoded.op0_register() } else { decoded.op1_register() };
+    let first = read_register(processor, first_register);
+    let second = match decoded.op2_kind() {
+        OpKind::Register => read_register(processor, decoded.op2_register()),
+        _ => {
+            let operand = locate(processor, decoded);
+            if is_active(Bug::VexMisalignedFaults) && !operand.address.is_multiple_of(SSE_ALIGNMENT) {
+                return Err(Exception::GeneralProtection { error_code: 0 });
+            }
+            let read = if is_active(Bug::VexWideReadsSixteenBytes) { 16 } else { form.memory_bytes() };
+            check_access(processor.flags, memory, operand, read, Access::Read)?;
+            let bytes: [u8; 2 * VECTOR_HALF_BYTES] = read_bytes(memory, operand.address);
+            let (low, high) = bytes.split_at(VECTOR_HALF_BYTES);
+            let half = |bytes: &[u8]| u128::from_le_bytes(bytes.try_into().expect("sixteen bytes"));
+            [half(low), if wide && read > 16 { half(high) } else { 0 }]
+        }
+    };
+    let number = decoded.op0_register().number();
+    let kept = processor.upper_vector_halves[number];
+    processor.vector_registers[number] = form.operation.apply(first[0], second[0], 0);
+    processor.upper_vector_halves[number] = match (wide, is_active(Bug::VexWideUpperFromLowerHalf)) {
+        (true, false) => form.operation.apply(first[1], second[1], 0),
+        (true, true) => form.operation.apply(first[0], second[1], 0),
+        (false, _) if is_active(Bug::VexNarrowKeepsUpperHalf) => kept,
+        (false, _) => 0,
+    };
+    Ok(())
+}
+
+/// Bytes of a half of a YMM register.
+const VECTOR_HALF_BYTES: usize = size_of::<u128>();
 
 /// The legacy SSE floating-point skeleton: the destination's lanes and the source's, a register or memory (16 bytes
 /// aligned to 16 for a packed form, the lowest lane's bytes for a scalar one), computed under MXCSR; the flags found

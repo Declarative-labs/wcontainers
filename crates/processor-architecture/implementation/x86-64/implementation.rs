@@ -117,6 +117,7 @@ impl ProcessorArchitecture for X86_64 {
             .chain(vector::VECTOR_FORMS.iter().map(|form| form.instruction))
             .chain(float::FLOAT_FORMS.iter().map(|form| form.instruction))
             .chain(branch::BRANCH_FORMS.iter().map(|form| form.instruction))
+            .chain(vector::VEX_FORMS.iter().map(|form| form.instruction))
             .collect();
         modeled.into_iter()
     }

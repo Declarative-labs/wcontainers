@@ -3,7 +3,10 @@
 //!
 //! A form's operands are its two XMM registers and how its bytes lie (or, with a memory operand, the memory
 //! operand), the destination's value, the source's value, in a register or in memory, and the flags it does not
-//! read.
+//! read. A VEX form's are the destination and second source's registers and how its bytes lie (or the memory
+//! operand), VEX.vvvv's register, the first source's value as a legacy destination's, the second's as a legacy
+//! source's, and the flags; a VEX.256 source's upper half is its lower half with the lanes rotated by one, so that
+//! each half meets other values.
 //!
 //! A vector's critical values are rotations of its lane's critical values across its lanes, so that each pair of
 //! lane values meets in some lane of some pair of vectors, and the lanes beside it hold other values (the
@@ -21,13 +24,13 @@ use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorA
 use wcontainers_processor_architecture_x86_64::integer::OperandPlace;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::float::{Conversion, Precision};
-use wcontainers_processor_architecture_x86_64::vector::{Lane, LaneOperation, VectorForm, join, narrows};
+use wcontainers_processor_architecture_x86_64::vector::{Lane, LaneOperation, VectorEncoding, VectorForm, join, narrows};
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, InstructionFetch, PagePermission, Processor, X86_64, ZERO_PROCESSOR,
 };
 
 use crate::integer::{CodeLayout, ImmediateClass, encode_at_code_address, lay_out, place_memory_operand, to_padding};
-use crate::{CODE_ADDRESS, FlagSet, OperandType, OperandValue, Role, Splits, VECTOR};
+use crate::{CODE_ADDRESS, FlagSet, OperandType, OperandValue, Role, Splits, VECTOR, VECTOR_256};
 
 /// The bytes a legacy SSE memory operand reaches.
 pub const VECTOR_BYTES: u64 = size_of::<u128>() as u64;
@@ -80,6 +83,22 @@ pub fn list_operand_types(form: &VectorForm) -> Vec<OperandType> {
         false => VectorValues::Lanes { lane, every_rotation },
     };
     let source = if form.operation.shifts() { VectorValues::Count(lane) } else { values(true) };
+    if form.encoding != VectorEncoding::Legacy {
+        let place = match form.place {
+            OperandPlace::Register => OperandType::Encoding(2),
+            _ => OperandType::Memory {
+                splits: Splits::Allowed,
+                offset: false,
+            },
+        };
+        return vec![
+            place,
+            OperandType::Register(Role::Source),
+            OperandType::VectorValue(Role::Destination, values(false)),
+            OperandType::VectorValue(Role::Source, source),
+            OperandType::Flags(FlagSet::Unread),
+        ];
+    }
     // A shift by an immediate names its destination alone; a control immediate follows the source.
     let kinds = form.code.op_code().op_kinds();
     let reads_source = kinds.get(1).is_some_and(|kind| *kind != OpCodeOperandKind::imm8);
@@ -207,7 +226,99 @@ pub const fn to_float_lane(precision: Precision) -> Lane {
 
 /// Builds the state of a vector form from one value of each of its operand types.
 pub fn build_state(form: &VectorForm, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
-    build_xmm_state(form.code, form.memory_bytes(), operands)
+    match form.encoding {
+        VectorEncoding::Legacy => build_xmm_state(form.code, form.memory_bytes(), operands),
+        VectorEncoding::L128 | VectorEncoding::L256 => build_vex_state(form, operands),
+    }
+}
+
+/// Builds the state of a VEX form from one value of each of its operand types.
+fn build_vex_state(form: &VectorForm, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
+    let mut processor = Processor {
+        general_purpose_registers: array::from_fn(|number| !(number as u64)),
+        instruction_pointer: CODE_ADDRESS,
+        vector_registers: array::from_fn(|number| !(number as u128)),
+        upper_vector_halves: crate::fill_upper_vector_halves(),
+        ..ZERO_PROCESSOR
+    };
+    let (mut registers, mut access, mut layout) = ([0, 0], None, CodeLayout::PageStart);
+    let (mut first_register, mut first, mut second) = (0, 0, 0);
+    for (operand_type, operand) in operands {
+        match (operand_type, *operand) {
+            (OperandType::Encoding(_), OperandValue::Encoding(encoding)) => {
+                registers = encoding.registers;
+                layout = encoding.layout;
+            }
+            (OperandType::Memory { .. }, OperandValue::Access(chosen)) => {
+                registers[0] = chosen.register;
+                layout = chosen.layout;
+                access = Some(chosen);
+            }
+            (OperandType::Register(_), OperandValue::Register(number)) => first_register = number,
+            (OperandType::VectorValue(Role::Destination, _), OperandValue::Vector(value)) => first = value,
+            (OperandType::VectorValue(_, _), OperandValue::Vector(value)) => second = value,
+            (OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
+            (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
+        }
+    }
+    let wide = form.encoding == VectorEncoding::L256;
+    let lane_bits = form.operation.to_lane().to_bits();
+    let to_upper = |value: u128, register: usize| if wide { value.rotate_left(lane_bits) } else { processor.upper_vector_halves[register] };
+    let (first_upper, second_upper) = (to_upper(first, first_register), to_upper(second, registers[1]));
+    processor.vector_registers[first_register] = first;
+    processor.upper_vector_halves[first_register] = first_upper;
+    let mut memory_mutations = Vec::new();
+    let memory_bytes = form.memory_bytes();
+    let memory_operand: Option<MemoryOperand> = access.map(|access| {
+        let (operand, address) = place_memory_operand(access, memory_bytes, &mut processor, &mut memory_mutations);
+        let value = [second.to_le_bytes(), second_upper.to_le_bytes()].concat();
+        let bytes: Vec<u8> = (0..memory_bytes)
+            .map(|offset| address.wrapping_add(offset))
+            .take_while(|byte| X86_64::ADDRESSABLE.contains(byte))
+            .zip(value)
+            .map(|(_, byte)| byte)
+            .collect();
+        if !bytes.is_empty() {
+            memory_mutations.push(MemoryDelta::ValueAssignment {
+                start: address,
+                bytes: Cow::Owned(bytes),
+            });
+        }
+        operand
+    });
+    // A register named twice holds the second source's value, the last written.
+    if memory_operand.is_none() {
+        processor.vector_registers[registers[1]] = second;
+        processor.upper_vector_halves[registers[1]] = second_upper;
+    }
+    let named = if wide { VECTOR_256 } else { VECTOR };
+    let code = form.code;
+    let encoded = match memory_operand {
+        Some(operand) => Encoded::with3(code, named[registers[0]], named[first_register], operand),
+        None => Encoded::with3(code, named[registers[0]], named[first_register], named[registers[1]]),
+    }
+    .unwrap_or_else(|error| panic!("{code:?} takes its operands: {error}"));
+    let (code_page, start, bytes) = lay_out(layout, &encode_at_code_address(&encoded), to_padding(memory_operand));
+    processor.instruction_pointer = start;
+    let executable = PagePermission::Mapped {
+        data_access: DataAccess::ReadOnly,
+        instruction_fetch: InstructionFetch::Allowed,
+    };
+    let mut all = vec![
+        MemoryDelta::PermissionAssignment {
+            addresses: code_page..code_page + PAGE_BYTES,
+            permission: executable,
+        },
+        MemoryDelta::ValueAssignment {
+            start,
+            bytes: Cow::Owned(bytes),
+        },
+    ];
+    all.append(&mut memory_mutations);
+    ExecutionState {
+        processor,
+        memory_mutations: all,
+    }
 }
 
 /// Builds the state of a form of two XMM operands, the second a register or `memory_bytes` of memory, from one

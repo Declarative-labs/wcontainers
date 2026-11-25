@@ -1,7 +1,9 @@
 //! The legacy SSE integer forms that share one skeleton: an XMM destination combined lane by lane with an XMM
-//! register, or with 16 bytes of memory aligned to 16, and written back.
+//! register, or with 16 bytes of memory aligned to 16, and written back; and the VEX forms of those that combine two
+//! sources, whose 128-bit halves each combine as the legacy form's lanes do.
 //!
-//! A form is one row of [`VECTOR_FORMS`]: its operation, where its source lies, and its iced-x86 `Code`.
+//! A form is one row of [`VECTOR_FORMS`] or [`VEX_FORMS`]: its operation, where its source lies, its iced-x86 `Code`
+//! and its encoding.
 
 use alloc::vec::Vec;
 
@@ -154,13 +156,25 @@ pub enum LaneOperation {
     ShiftRightArithmetic(Lane),
 }
 
-/// One legacy SSE integer form.
+/// How a vector form is encoded, which decides the bits of the register it reads and writes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VectorEncoding {
+    /// Legacy SSE: the destination is the first source, and bits 128 to 255 are kept.
+    Legacy,
+    /// VEX.128: the first source is VEX.vvvv, and bits 128 to 255 of the destination are zeroed.
+    L128,
+    /// VEX.256: as VEX.128 on each 128-bit half of YMM registers or 32 bytes of memory.
+    L256,
+}
+
+/// One SSE integer form, legacy or VEX.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct VectorForm {
     pub instruction: Instruction,
     pub operation: LaneOperation,
     pub place: OperandPlace,
     pub code: Code,
+    pub encoding: VectorEncoding,
 }
 
 impl LaneOperation {
@@ -477,12 +491,18 @@ pub(crate) fn saturate(lane: Lane, signedness: Signedness, value: i128) -> u64 {
 impl VectorForm {
     /// Whether a memory source must be aligned to 16 bytes: every 16-byte one but MOVUPS, MOVUPD and MOVDQU's.
     pub fn requires_alignment(&self) -> bool {
-        !matches!(self.code, Code::Movups_xmm_xmmm128 | Code::Movupd_xmm_xmmm128 | Code::Movdqu_xmm_xmmm128)
+        self.encoding == VectorEncoding::Legacy
+            && !matches!(self.code, Code::Movups_xmm_xmmm128 | Code::Movupd_xmm_xmmm128 | Code::Movdqu_xmm_xmmm128)
             && self.memory_bytes() == 16
     }
 
-    /// The bytes a memory source reaches: 16, or as many as the form's code names.
+    /// The bytes a memory source reaches: 16, 32 for VEX.256, or as many as the form's code names.
     pub fn memory_bytes(&self) -> u64 {
+        match self.encoding {
+            VectorEncoding::L128 => return 16,
+            VectorEncoding::L256 => return 32,
+            VectorEncoding::Legacy => {}
+        }
         match self.code {
             Code::Pmovsxbq_xmm_xmmm16 | Code::Pmovzxbq_xmm_xmmm16 => 2,
             Code::Movss_xmm_xmmm32
@@ -512,7 +532,7 @@ impl VectorForm {
 
 /// The row of a legacy SSE integer form, or `None` for any other form.
 pub fn find_vector_form(instruction: Instruction) -> Option<&'static VectorForm> {
-    VECTOR_FORMS.iter().find(|form| form.instruction == instruction)
+    VECTOR_FORMS.iter().chain(VEX_FORMS).find(|form| form.instruction == instruction)
 }
 
 const fn form(instruction: Instruction, operation: LaneOperation, place: OperandPlace, code: Code) -> VectorForm {
@@ -521,6 +541,7 @@ const fn form(instruction: Instruction, operation: LaneOperation, place: Operand
         operation,
         place,
         code,
+        encoding: VectorEncoding::Legacy,
     }
 }
 
@@ -725,3 +746,202 @@ pub static VECTOR_FORMS: &[VectorForm] = forms! {
 pub const fn narrows(operation: LaneOperation) -> bool {
     matches!(operation, LaneOperation::Pack(..))
 }
+
+/// The VEX forms of each operation: the second source a register, then, after a slash, memory.
+macro_rules! vex_forms {
+    ($($register:ident / $memory:ident, $operation:expr, $code:ident, $encoding:ident;)*) => {
+        &[$(
+            VectorForm {
+                instruction: Instruction::$register,
+                operation: $operation,
+                place: Register,
+                code: Code::$code,
+                encoding: VectorEncoding::$encoding,
+            },
+            VectorForm {
+                instruction: Instruction::$memory,
+                operation: $operation,
+                place: Memory,
+                code: Code::$code,
+                encoding: VectorEncoding::$encoding,
+            },
+        )*]
+    };
+}
+
+/// The VEX.128 (AVX) and VEX.256 (AVX2, and AVX for the floating-point logic) forms of the legacy forms that combine
+/// two sources, each row found from a row of [`VECTOR_FORMS`] by name in the list and in iced-x86's codes.
+pub static VEX_FORMS: &[VectorForm] = vex_forms! {
+    VpaddbXmmdqXmmdqXmmdq / VpaddbXmmdqXmmdqMemdq, Add(Byte), VEX_Vpaddb_xmm_xmm_xmmm128, L128;
+    VpaddbYmmqqYmmqqYmmqq / VpaddbYmmqqYmmqqMemqq, Add(Byte), VEX_Vpaddb_ymm_ymm_ymmm256, L256;
+    VpaddwXmmdqXmmdqXmmdq / VpaddwXmmdqXmmdqMemdq, Add(Word), VEX_Vpaddw_xmm_xmm_xmmm128, L128;
+    VpaddwYmmqqYmmqqYmmqq / VpaddwYmmqqYmmqqMemqq, Add(Word), VEX_Vpaddw_ymm_ymm_ymmm256, L256;
+    VpadddXmmdqXmmdqXmmdq / VpadddXmmdqXmmdqMemdq, Add(Doubleword), VEX_Vpaddd_xmm_xmm_xmmm128, L128;
+    VpadddYmmqqYmmqqYmmqq / VpadddYmmqqYmmqqMemqq, Add(Doubleword), VEX_Vpaddd_ymm_ymm_ymmm256, L256;
+    VpaddqXmmdqXmmdqXmmdq / VpaddqXmmdqXmmdqMemdq, Add(Quadword), VEX_Vpaddq_xmm_xmm_xmmm128, L128;
+    VpaddqYmmqqYmmqqYmmqq / VpaddqYmmqqYmmqqMemqq, Add(Quadword), VEX_Vpaddq_ymm_ymm_ymmm256, L256;
+    VpaddsbXmmdqXmmdqXmmdq / VpaddsbXmmdqXmmdqMemdq, AddSaturating(Byte, Signed), VEX_Vpaddsb_xmm_xmm_xmmm128, L128;
+    VpaddsbYmmqqYmmqqYmmqq / VpaddsbYmmqqYmmqqMemqq, AddSaturating(Byte, Signed), VEX_Vpaddsb_ymm_ymm_ymmm256, L256;
+    VpaddswXmmdqXmmdqXmmdq / VpaddswXmmdqXmmdqMemdq, AddSaturating(Word, Signed), VEX_Vpaddsw_xmm_xmm_xmmm128, L128;
+    VpaddswYmmqqYmmqqYmmqq / VpaddswYmmqqYmmqqMemqq, AddSaturating(Word, Signed), VEX_Vpaddsw_ymm_ymm_ymmm256, L256;
+    VpaddusbXmmdqXmmdqXmmdq / VpaddusbXmmdqXmmdqMemdq, AddSaturating(Byte, Unsigned), VEX_Vpaddusb_xmm_xmm_xmmm128, L128;
+    VpaddusbYmmqqYmmqqYmmqq / VpaddusbYmmqqYmmqqMemqq, AddSaturating(Byte, Unsigned), VEX_Vpaddusb_ymm_ymm_ymmm256, L256;
+    VpadduswXmmdqXmmdqXmmdq / VpadduswXmmdqXmmdqMemdq, AddSaturating(Word, Unsigned), VEX_Vpaddusw_xmm_xmm_xmmm128, L128;
+    VpadduswYmmqqYmmqqYmmqq / VpadduswYmmqqYmmqqMemqq, AddSaturating(Word, Unsigned), VEX_Vpaddusw_ymm_ymm_ymmm256, L256;
+    VpsubbXmmdqXmmdqXmmdq / VpsubbXmmdqXmmdqMemdq, Subtract(Byte), VEX_Vpsubb_xmm_xmm_xmmm128, L128;
+    VpsubbYmmqqYmmqqYmmqq / VpsubbYmmqqYmmqqMemqq, Subtract(Byte), VEX_Vpsubb_ymm_ymm_ymmm256, L256;
+    VpsubwXmmdqXmmdqXmmdq / VpsubwXmmdqXmmdqMemdq, Subtract(Word), VEX_Vpsubw_xmm_xmm_xmmm128, L128;
+    VpsubwYmmqqYmmqqYmmqq / VpsubwYmmqqYmmqqMemqq, Subtract(Word), VEX_Vpsubw_ymm_ymm_ymmm256, L256;
+    VpsubdXmmdqXmmdqXmmdq / VpsubdXmmdqXmmdqMemdq, Subtract(Doubleword), VEX_Vpsubd_xmm_xmm_xmmm128, L128;
+    VpsubdYmmqqYmmqqYmmqq / VpsubdYmmqqYmmqqMemqq, Subtract(Doubleword), VEX_Vpsubd_ymm_ymm_ymmm256, L256;
+    VpsubqXmmdqXmmdqXmmdq / VpsubqXmmdqXmmdqMemdq, Subtract(Quadword), VEX_Vpsubq_xmm_xmm_xmmm128, L128;
+    VpsubqYmmqqYmmqqYmmqq / VpsubqYmmqqYmmqqMemqq, Subtract(Quadword), VEX_Vpsubq_ymm_ymm_ymmm256, L256;
+    VpsubsbXmmdqXmmdqXmmdq / VpsubsbXmmdqXmmdqMemdq, SubtractSaturating(Byte, Signed), VEX_Vpsubsb_xmm_xmm_xmmm128, L128;
+    VpsubsbYmmqqYmmqqYmmqq / VpsubsbYmmqqYmmqqMemqq, SubtractSaturating(Byte, Signed), VEX_Vpsubsb_ymm_ymm_ymmm256, L256;
+    VpsubswXmmdqXmmdqXmmdq / VpsubswXmmdqXmmdqMemdq, SubtractSaturating(Word, Signed), VEX_Vpsubsw_xmm_xmm_xmmm128, L128;
+    VpsubswYmmqqYmmqqYmmqq / VpsubswYmmqqYmmqqMemqq, SubtractSaturating(Word, Signed), VEX_Vpsubsw_ymm_ymm_ymmm256, L256;
+    VpsubusbXmmdqXmmdqXmmdq / VpsubusbXmmdqXmmdqMemdq, SubtractSaturating(Byte, Unsigned), VEX_Vpsubusb_xmm_xmm_xmmm128, L128;
+    VpsubusbYmmqqYmmqqYmmqq / VpsubusbYmmqqYmmqqMemqq, SubtractSaturating(Byte, Unsigned), VEX_Vpsubusb_ymm_ymm_ymmm256, L256;
+    VpsubuswXmmdqXmmdqXmmdq / VpsubuswXmmdqXmmdqMemdq, SubtractSaturating(Word, Unsigned), VEX_Vpsubusw_xmm_xmm_xmmm128, L128;
+    VpsubuswYmmqqYmmqqYmmqq / VpsubuswYmmqqYmmqqMemqq, SubtractSaturating(Word, Unsigned), VEX_Vpsubusw_ymm_ymm_ymmm256, L256;
+    VpandXmmdqXmmdqXmmdq / VpandXmmdqXmmdqMemdq, And, VEX_Vpand_xmm_xmm_xmmm128, L128;
+    VpandYmmqqYmmqqYmmqq / VpandYmmqqYmmqqMemqq, And, VEX_Vpand_ymm_ymm_ymmm256, L256;
+    VpandnXmmdqXmmdqXmmdq / VpandnXmmdqXmmdqMemdq, AndNot, VEX_Vpandn_xmm_xmm_xmmm128, L128;
+    VpandnYmmqqYmmqqYmmqq / VpandnYmmqqYmmqqMemqq, AndNot, VEX_Vpandn_ymm_ymm_ymmm256, L256;
+    VporXmmdqXmmdqXmmdq / VporXmmdqXmmdqMemdq, Or, VEX_Vpor_xmm_xmm_xmmm128, L128;
+    VporYmmqqYmmqqYmmqq / VporYmmqqYmmqqMemqq, Or, VEX_Vpor_ymm_ymm_ymmm256, L256;
+    VpxorXmmdqXmmdqXmmdq / VpxorXmmdqXmmdqMemdq, Xor, VEX_Vpxor_xmm_xmm_xmmm128, L128;
+    VpxorYmmqqYmmqqYmmqq / VpxorYmmqqYmmqqMemqq, Xor, VEX_Vpxor_ymm_ymm_ymmm256, L256;
+    VpavgbXmmdqXmmdqXmmdq / VpavgbXmmdqXmmdqMemdq, Average(Byte), VEX_Vpavgb_xmm_xmm_xmmm128, L128;
+    VpavgbYmmqqYmmqqYmmqq / VpavgbYmmqqYmmqqMemqq, Average(Byte), VEX_Vpavgb_ymm_ymm_ymmm256, L256;
+    VpavgwXmmdqXmmdqXmmdq / VpavgwXmmdqXmmdqMemdq, Average(Word), VEX_Vpavgw_xmm_xmm_xmmm128, L128;
+    VpavgwYmmqqYmmqqYmmqq / VpavgwYmmqqYmmqqMemqq, Average(Word), VEX_Vpavgw_ymm_ymm_ymmm256, L256;
+    VpcmpeqbXmmdqXmmdqXmmdq / VpcmpeqbXmmdqXmmdqMemdq, CompareEqual(Byte), VEX_Vpcmpeqb_xmm_xmm_xmmm128, L128;
+    VpcmpeqbYmmqqYmmqqYmmqq / VpcmpeqbYmmqqYmmqqMemqq, CompareEqual(Byte), VEX_Vpcmpeqb_ymm_ymm_ymmm256, L256;
+    VpcmpeqwXmmdqXmmdqXmmdq / VpcmpeqwXmmdqXmmdqMemdq, CompareEqual(Word), VEX_Vpcmpeqw_xmm_xmm_xmmm128, L128;
+    VpcmpeqwYmmqqYmmqqYmmqq / VpcmpeqwYmmqqYmmqqMemqq, CompareEqual(Word), VEX_Vpcmpeqw_ymm_ymm_ymmm256, L256;
+    VpcmpeqdXmmdqXmmdqXmmdq / VpcmpeqdXmmdqXmmdqMemdq, CompareEqual(Doubleword), VEX_Vpcmpeqd_xmm_xmm_xmmm128, L128;
+    VpcmpeqdYmmqqYmmqqYmmqq / VpcmpeqdYmmqqYmmqqMemqq, CompareEqual(Doubleword), VEX_Vpcmpeqd_ymm_ymm_ymmm256, L256;
+    VpcmpgtbXmmdqXmmdqXmmdq / VpcmpgtbXmmdqXmmdqMemdq, CompareGreater(Byte), VEX_Vpcmpgtb_xmm_xmm_xmmm128, L128;
+    VpcmpgtbYmmqqYmmqqYmmqq / VpcmpgtbYmmqqYmmqqMemqq, CompareGreater(Byte), VEX_Vpcmpgtb_ymm_ymm_ymmm256, L256;
+    VpcmpgtwXmmdqXmmdqXmmdq / VpcmpgtwXmmdqXmmdqMemdq, CompareGreater(Word), VEX_Vpcmpgtw_xmm_xmm_xmmm128, L128;
+    VpcmpgtwYmmqqYmmqqYmmqq / VpcmpgtwYmmqqYmmqqMemqq, CompareGreater(Word), VEX_Vpcmpgtw_ymm_ymm_ymmm256, L256;
+    VpcmpgtdXmmdqXmmdqXmmdq / VpcmpgtdXmmdqXmmdqMemdq, CompareGreater(Doubleword), VEX_Vpcmpgtd_xmm_xmm_xmmm128, L128;
+    VpcmpgtdYmmqqYmmqqYmmqq / VpcmpgtdYmmqqYmmqqMemqq, CompareGreater(Doubleword), VEX_Vpcmpgtd_ymm_ymm_ymmm256, L256;
+    VpmaddwdXmmdqXmmdqXmmdq / VpmaddwdXmmdqXmmdqMemdq, MultiplyAddWords, VEX_Vpmaddwd_xmm_xmm_xmmm128, L128;
+    VpmaddwdYmmqqYmmqqYmmqq / VpmaddwdYmmqqYmmqqMemqq, MultiplyAddWords, VEX_Vpmaddwd_ymm_ymm_ymmm256, L256;
+    VpmaxswXmmdqXmmdqXmmdq / VpmaxswXmmdqXmmdqMemdq, Maximum(Word, Signed), VEX_Vpmaxsw_xmm_xmm_xmmm128, L128;
+    VpmaxswYmmqqYmmqqYmmqq / VpmaxswYmmqqYmmqqMemqq, Maximum(Word, Signed), VEX_Vpmaxsw_ymm_ymm_ymmm256, L256;
+    VpmaxubXmmdqXmmdqXmmdq / VpmaxubXmmdqXmmdqMemdq, Maximum(Byte, Unsigned), VEX_Vpmaxub_xmm_xmm_xmmm128, L128;
+    VpmaxubYmmqqYmmqqYmmqq / VpmaxubYmmqqYmmqqMemqq, Maximum(Byte, Unsigned), VEX_Vpmaxub_ymm_ymm_ymmm256, L256;
+    VpminswXmmdqXmmdqXmmdq / VpminswXmmdqXmmdqMemdq, Minimum(Word, Signed), VEX_Vpminsw_xmm_xmm_xmmm128, L128;
+    VpminswYmmqqYmmqqYmmqq / VpminswYmmqqYmmqqMemqq, Minimum(Word, Signed), VEX_Vpminsw_ymm_ymm_ymmm256, L256;
+    VpminubXmmdqXmmdqXmmdq / VpminubXmmdqXmmdqMemdq, Minimum(Byte, Unsigned), VEX_Vpminub_xmm_xmm_xmmm128, L128;
+    VpminubYmmqqYmmqqYmmqq / VpminubYmmqqYmmqqMemqq, Minimum(Byte, Unsigned), VEX_Vpminub_ymm_ymm_ymmm256, L256;
+    VpmulhuwXmmdqXmmdqXmmdq / VpmulhuwXmmdqXmmdqMemdq, MultiplyHighWords(Unsigned), VEX_Vpmulhuw_xmm_xmm_xmmm128, L128;
+    VpmulhuwYmmqqYmmqqYmmqq / VpmulhuwYmmqqYmmqqMemqq, MultiplyHighWords(Unsigned), VEX_Vpmulhuw_ymm_ymm_ymmm256, L256;
+    VpmulhwXmmdqXmmdqXmmdq / VpmulhwXmmdqXmmdqMemdq, MultiplyHighWords(Signed), VEX_Vpmulhw_xmm_xmm_xmmm128, L128;
+    VpmulhwYmmqqYmmqqYmmqq / VpmulhwYmmqqYmmqqMemqq, MultiplyHighWords(Signed), VEX_Vpmulhw_ymm_ymm_ymmm256, L256;
+    VpmullwXmmdqXmmdqXmmdq / VpmullwXmmdqXmmdqMemdq, MultiplyLow(Word), VEX_Vpmullw_xmm_xmm_xmmm128, L128;
+    VpmullwYmmqqYmmqqYmmqq / VpmullwYmmqqYmmqqMemqq, MultiplyLow(Word), VEX_Vpmullw_ymm_ymm_ymmm256, L256;
+    VpmuludqXmmdqXmmdqXmmdq / VpmuludqXmmdqXmmdqMemdq, MultiplyDoublewords(Unsigned), VEX_Vpmuludq_xmm_xmm_xmmm128, L128;
+    VpmuludqYmmqqYmmqqYmmqq / VpmuludqYmmqqYmmqqMemqq, MultiplyDoublewords(Unsigned), VEX_Vpmuludq_ymm_ymm_ymmm256, L256;
+    VpsadbwXmmdqXmmdqXmmdq / VpsadbwXmmdqXmmdqMemdq, SumAbsoluteDifferences, VEX_Vpsadbw_xmm_xmm_xmmm128, L128;
+    VpsadbwYmmqqYmmqqYmmqq / VpsadbwYmmqqYmmqqMemqq, SumAbsoluteDifferences, VEX_Vpsadbw_ymm_ymm_ymmm256, L256;
+    VpacksswbXmmdqXmmdqXmmdq / VpacksswbXmmdqXmmdqMemdq, Pack(Word, Signed), VEX_Vpacksswb_xmm_xmm_xmmm128, L128;
+    VpacksswbYmmqqYmmqqYmmqq / VpacksswbYmmqqYmmqqMemqq, Pack(Word, Signed), VEX_Vpacksswb_ymm_ymm_ymmm256, L256;
+    VpackssdwXmmdqXmmdqXmmdq / VpackssdwXmmdqXmmdqMemdq, Pack(Doubleword, Signed), VEX_Vpackssdw_xmm_xmm_xmmm128, L128;
+    VpackssdwYmmqqYmmqqYmmqq / VpackssdwYmmqqYmmqqMemqq, Pack(Doubleword, Signed), VEX_Vpackssdw_ymm_ymm_ymmm256, L256;
+    VpackuswbXmmdqXmmdqXmmdq / VpackuswbXmmdqXmmdqMemdq, Pack(Word, Unsigned), VEX_Vpackuswb_xmm_xmm_xmmm128, L128;
+    VpackuswbYmmqqYmmqqYmmqq / VpackuswbYmmqqYmmqqMemqq, Pack(Word, Unsigned), VEX_Vpackuswb_ymm_ymm_ymmm256, L256;
+    VpunpckhbwXmmdqXmmdqXmmdq / VpunpckhbwXmmdqXmmdqMemdq, UnpackHigh(Byte), VEX_Vpunpckhbw_xmm_xmm_xmmm128, L128;
+    VpunpckhbwYmmqqYmmqqYmmqq / VpunpckhbwYmmqqYmmqqMemqq, UnpackHigh(Byte), VEX_Vpunpckhbw_ymm_ymm_ymmm256, L256;
+    VpunpckhwdXmmdqXmmdqXmmdq / VpunpckhwdXmmdqXmmdqMemdq, UnpackHigh(Word), VEX_Vpunpckhwd_xmm_xmm_xmmm128, L128;
+    VpunpckhwdYmmqqYmmqqYmmqq / VpunpckhwdYmmqqYmmqqMemqq, UnpackHigh(Word), VEX_Vpunpckhwd_ymm_ymm_ymmm256, L256;
+    VpunpckhdqXmmdqXmmdqXmmdq / VpunpckhdqXmmdqXmmdqMemdq, UnpackHigh(Doubleword), VEX_Vpunpckhdq_xmm_xmm_xmmm128, L128;
+    VpunpckhdqYmmqqYmmqqYmmqq / VpunpckhdqYmmqqYmmqqMemqq, UnpackHigh(Doubleword), VEX_Vpunpckhdq_ymm_ymm_ymmm256, L256;
+    VpunpckhqdqXmmdqXmmdqXmmdq / VpunpckhqdqXmmdqXmmdqMemdq, UnpackHigh(Quadword), VEX_Vpunpckhqdq_xmm_xmm_xmmm128, L128;
+    VpunpckhqdqYmmqqYmmqqYmmqq / VpunpckhqdqYmmqqYmmqqMemqq, UnpackHigh(Quadword), VEX_Vpunpckhqdq_ymm_ymm_ymmm256, L256;
+    VpunpcklbwXmmdqXmmdqXmmdq / VpunpcklbwXmmdqXmmdqMemdq, UnpackLow(Byte), VEX_Vpunpcklbw_xmm_xmm_xmmm128, L128;
+    VpunpcklbwYmmqqYmmqqYmmqq / VpunpcklbwYmmqqYmmqqMemqq, UnpackLow(Byte), VEX_Vpunpcklbw_ymm_ymm_ymmm256, L256;
+    VpunpcklwdXmmdqXmmdqXmmdq / VpunpcklwdXmmdqXmmdqMemdq, UnpackLow(Word), VEX_Vpunpcklwd_xmm_xmm_xmmm128, L128;
+    VpunpcklwdYmmqqYmmqqYmmqq / VpunpcklwdYmmqqYmmqqMemqq, UnpackLow(Word), VEX_Vpunpcklwd_ymm_ymm_ymmm256, L256;
+    VpunpckldqXmmdqXmmdqXmmdq / VpunpckldqXmmdqXmmdqMemdq, UnpackLow(Doubleword), VEX_Vpunpckldq_xmm_xmm_xmmm128, L128;
+    VpunpckldqYmmqqYmmqqYmmqq / VpunpckldqYmmqqYmmqqMemqq, UnpackLow(Doubleword), VEX_Vpunpckldq_ymm_ymm_ymmm256, L256;
+    VpunpcklqdqXmmdqXmmdqXmmdq / VpunpcklqdqXmmdqXmmdqMemdq, UnpackLow(Quadword), VEX_Vpunpcklqdq_xmm_xmm_xmmm128, L128;
+    VpunpcklqdqYmmqqYmmqqYmmqq / VpunpcklqdqYmmqqYmmqqMemqq, UnpackLow(Quadword), VEX_Vpunpcklqdq_ymm_ymm_ymmm256, L256;
+    VandpsXmmdqXmmdqXmmdq / VandpsXmmdqXmmdqMemdq, And, VEX_Vandps_xmm_xmm_xmmm128, L128;
+    VandpsYmmqqYmmqqYmmqq / VandpsYmmqqYmmqqMemqq, And, VEX_Vandps_ymm_ymm_ymmm256, L256;
+    VandpdXmmdqXmmdqXmmdq / VandpdXmmdqXmmdqMemdq, And, VEX_Vandpd_xmm_xmm_xmmm128, L128;
+    VandpdYmmqqYmmqqYmmqq / VandpdYmmqqYmmqqMemqq, And, VEX_Vandpd_ymm_ymm_ymmm256, L256;
+    VandnpsXmmdqXmmdqXmmdq / VandnpsXmmdqXmmdqMemdq, AndNot, VEX_Vandnps_xmm_xmm_xmmm128, L128;
+    VandnpsYmmqqYmmqqYmmqq / VandnpsYmmqqYmmqqMemqq, AndNot, VEX_Vandnps_ymm_ymm_ymmm256, L256;
+    VandnpdXmmdqXmmdqXmmdq / VandnpdXmmdqXmmdqMemdq, AndNot, VEX_Vandnpd_xmm_xmm_xmmm128, L128;
+    VandnpdYmmqqYmmqqYmmqq / VandnpdYmmqqYmmqqMemqq, AndNot, VEX_Vandnpd_ymm_ymm_ymmm256, L256;
+    VorpsXmmdqXmmdqXmmdq / VorpsXmmdqXmmdqMemdq, Or, VEX_Vorps_xmm_xmm_xmmm128, L128;
+    VorpsYmmqqYmmqqYmmqq / VorpsYmmqqYmmqqMemqq, Or, VEX_Vorps_ymm_ymm_ymmm256, L256;
+    VorpdXmmdqXmmdqXmmdq / VorpdXmmdqXmmdqMemdq, Or, VEX_Vorpd_xmm_xmm_xmmm128, L128;
+    VorpdYmmqqYmmqqYmmqq / VorpdYmmqqYmmqqMemqq, Or, VEX_Vorpd_ymm_ymm_ymmm256, L256;
+    VxorpsXmmdqXmmdqXmmdq / VxorpsXmmdqXmmdqMemdq, Xor, VEX_Vxorps_xmm_xmm_xmmm128, L128;
+    VxorpsYmmqqYmmqqYmmqq / VxorpsYmmqqYmmqqMemqq, Xor, VEX_Vxorps_ymm_ymm_ymmm256, L256;
+    VxorpdXmmdqXmmdqXmmdq / VxorpdXmmdqXmmdqMemdq, Xor, VEX_Vxorpd_xmm_xmm_xmmm128, L128;
+    VxorpdYmmqqYmmqqYmmqq / VxorpdYmmqqYmmqqMemqq, Xor, VEX_Vxorpd_ymm_ymm_ymmm256, L256;
+    VunpcklpsXmmdqXmmdqXmmdq / VunpcklpsXmmdqXmmdqMemdq, UnpackLow(Doubleword), VEX_Vunpcklps_xmm_xmm_xmmm128, L128;
+    VunpcklpsYmmqqYmmqqYmmqq / VunpcklpsYmmqqYmmqqMemqq, UnpackLow(Doubleword), VEX_Vunpcklps_ymm_ymm_ymmm256, L256;
+    VunpckhpsXmmdqXmmdqXmmdq / VunpckhpsXmmdqXmmdqMemdq, UnpackHigh(Doubleword), VEX_Vunpckhps_xmm_xmm_xmmm128, L128;
+    VunpckhpsYmmqqYmmqqYmmqq / VunpckhpsYmmqqYmmqqMemqq, UnpackHigh(Doubleword), VEX_Vunpckhps_ymm_ymm_ymmm256, L256;
+    VunpcklpdXmmdqXmmdqXmmdq / VunpcklpdXmmdqXmmdqMemdq, UnpackLow(Quadword), VEX_Vunpcklpd_xmm_xmm_xmmm128, L128;
+    VunpcklpdYmmqqYmmqqYmmqq / VunpcklpdYmmqqYmmqqMemqq, UnpackLow(Quadword), VEX_Vunpcklpd_ymm_ymm_ymmm256, L256;
+    VunpckhpdXmmdqXmmdqXmmdq / VunpckhpdXmmdqXmmdqMemdq, UnpackHigh(Quadword), VEX_Vunpckhpd_xmm_xmm_xmmm128, L128;
+    VunpckhpdYmmqqYmmqqYmmqq / VunpckhpdYmmqqYmmqqMemqq, UnpackHigh(Quadword), VEX_Vunpckhpd_ymm_ymm_ymmm256, L256;
+    VpmaxsbXmmdqXmmdqXmmdq / VpmaxsbXmmdqXmmdqMemdq, Maximum(Byte, Signed), VEX_Vpmaxsb_xmm_xmm_xmmm128, L128;
+    VpmaxsbYmmqqYmmqqYmmqq / VpmaxsbYmmqqYmmqqMemqq, Maximum(Byte, Signed), VEX_Vpmaxsb_ymm_ymm_ymmm256, L256;
+    VpmaxsdXmmdqXmmdqXmmdq / VpmaxsdXmmdqXmmdqMemdq, Maximum(Doubleword, Signed), VEX_Vpmaxsd_xmm_xmm_xmmm128, L128;
+    VpmaxsdYmmqqYmmqqYmmqq / VpmaxsdYmmqqYmmqqMemqq, Maximum(Doubleword, Signed), VEX_Vpmaxsd_ymm_ymm_ymmm256, L256;
+    VpmaxuwXmmdqXmmdqXmmdq / VpmaxuwXmmdqXmmdqMemdq, Maximum(Word, Unsigned), VEX_Vpmaxuw_xmm_xmm_xmmm128, L128;
+    VpmaxuwYmmqqYmmqqYmmqq / VpmaxuwYmmqqYmmqqMemqq, Maximum(Word, Unsigned), VEX_Vpmaxuw_ymm_ymm_ymmm256, L256;
+    VpmaxudXmmdqXmmdqXmmdq / VpmaxudXmmdqXmmdqMemdq, Maximum(Doubleword, Unsigned), VEX_Vpmaxud_xmm_xmm_xmmm128, L128;
+    VpmaxudYmmqqYmmqqYmmqq / VpmaxudYmmqqYmmqqMemqq, Maximum(Doubleword, Unsigned), VEX_Vpmaxud_ymm_ymm_ymmm256, L256;
+    VpminsbXmmdqXmmdqXmmdq / VpminsbXmmdqXmmdqMemdq, Minimum(Byte, Signed), VEX_Vpminsb_xmm_xmm_xmmm128, L128;
+    VpminsbYmmqqYmmqqYmmqq / VpminsbYmmqqYmmqqMemqq, Minimum(Byte, Signed), VEX_Vpminsb_ymm_ymm_ymmm256, L256;
+    VpminsdXmmdqXmmdqXmmdq / VpminsdXmmdqXmmdqMemdq, Minimum(Doubleword, Signed), VEX_Vpminsd_xmm_xmm_xmmm128, L128;
+    VpminsdYmmqqYmmqqYmmqq / VpminsdYmmqqYmmqqMemqq, Minimum(Doubleword, Signed), VEX_Vpminsd_ymm_ymm_ymmm256, L256;
+    VpminuwXmmdqXmmdqXmmdq / VpminuwXmmdqXmmdqMemdq, Minimum(Word, Unsigned), VEX_Vpminuw_xmm_xmm_xmmm128, L128;
+    VpminuwYmmqqYmmqqYmmqq / VpminuwYmmqqYmmqqMemqq, Minimum(Word, Unsigned), VEX_Vpminuw_ymm_ymm_ymmm256, L256;
+    VpminudXmmdqXmmdqXmmdq / VpminudXmmdqXmmdqMemdq, Minimum(Doubleword, Unsigned), VEX_Vpminud_xmm_xmm_xmmm128, L128;
+    VpminudYmmqqYmmqqYmmqq / VpminudYmmqqYmmqqMemqq, Minimum(Doubleword, Unsigned), VEX_Vpminud_ymm_ymm_ymmm256, L256;
+    VpcmpeqqXmmdqXmmdqXmmdq / VpcmpeqqXmmdqXmmdqMemdq, CompareEqual(Quadword), VEX_Vpcmpeqq_xmm_xmm_xmmm128, L128;
+    VpcmpeqqYmmqqYmmqqYmmqq / VpcmpeqqYmmqqYmmqqMemqq, CompareEqual(Quadword), VEX_Vpcmpeqq_ymm_ymm_ymmm256, L256;
+    VpcmpgtqXmmdqXmmdqXmmdq / VpcmpgtqXmmdqXmmdqMemdq, CompareGreater(Quadword), VEX_Vpcmpgtq_xmm_xmm_xmmm128, L128;
+    VpcmpgtqYmmqqYmmqqYmmqq / VpcmpgtqYmmqqYmmqqMemqq, CompareGreater(Quadword), VEX_Vpcmpgtq_ymm_ymm_ymmm256, L256;
+    VpackusdwXmmdqXmmdqXmmdq / VpackusdwXmmdqXmmdqMemdq, Pack(Doubleword, Unsigned), VEX_Vpackusdw_xmm_xmm_xmmm128, L128;
+    VpackusdwYmmqqYmmqqYmmqq / VpackusdwYmmqqYmmqqMemqq, Pack(Doubleword, Unsigned), VEX_Vpackusdw_ymm_ymm_ymmm256, L256;
+    VpmulldXmmdqXmmdqXmmdq / VpmulldXmmdqXmmdqMemdq, MultiplyLow(Doubleword), VEX_Vpmulld_xmm_xmm_xmmm128, L128;
+    VpmulldYmmqqYmmqqYmmqq / VpmulldYmmqqYmmqqMemqq, MultiplyLow(Doubleword), VEX_Vpmulld_ymm_ymm_ymmm256, L256;
+    VpmuldqXmmdqXmmdqXmmdq / VpmuldqXmmdqXmmdqMemdq, MultiplyDoublewords(Signed), VEX_Vpmuldq_xmm_xmm_xmmm128, L128;
+    VpmuldqYmmqqYmmqqYmmqq / VpmuldqYmmqqYmmqqMemqq, MultiplyDoublewords(Signed), VEX_Vpmuldq_ymm_ymm_ymmm256, L256;
+    VpsignbXmmdqXmmdqXmmdq / VpsignbXmmdqXmmdqMemdq, Sign(Byte), VEX_Vpsignb_xmm_xmm_xmmm128, L128;
+    VpsignbYmmqqYmmqqYmmqq / VpsignbYmmqqYmmqqMemqq, Sign(Byte), VEX_Vpsignb_ymm_ymm_ymmm256, L256;
+    VpsignwXmmdqXmmdqXmmdq / VpsignwXmmdqXmmdqMemdq, Sign(Word), VEX_Vpsignw_xmm_xmm_xmmm128, L128;
+    VpsignwYmmqqYmmqqYmmqq / VpsignwYmmqqYmmqqMemqq, Sign(Word), VEX_Vpsignw_ymm_ymm_ymmm256, L256;
+    VpsigndXmmdqXmmdqXmmdq / VpsigndXmmdqXmmdqMemdq, Sign(Doubleword), VEX_Vpsignd_xmm_xmm_xmmm128, L128;
+    VpsigndYmmqqYmmqqYmmqq / VpsigndYmmqqYmmqqMemqq, Sign(Doubleword), VEX_Vpsignd_ymm_ymm_ymmm256, L256;
+    VpshufbXmmdqXmmdqXmmdq / VpshufbXmmdqXmmdqMemdq, ShuffleBytes, VEX_Vpshufb_xmm_xmm_xmmm128, L128;
+    VpshufbYmmqqYmmqqYmmqq / VpshufbYmmqqYmmqqMemqq, ShuffleBytes, VEX_Vpshufb_ymm_ymm_ymmm256, L256;
+    VphaddwXmmdqXmmdqXmmdq / VphaddwXmmdqXmmdqMemdq, HorizontalAdd(Word), VEX_Vphaddw_xmm_xmm_xmmm128, L128;
+    VphaddwYmmqqYmmqqYmmqq / VphaddwYmmqqYmmqqMemqq, HorizontalAdd(Word), VEX_Vphaddw_ymm_ymm_ymmm256, L256;
+    VphadddXmmdqXmmdqXmmdq / VphadddXmmdqXmmdqMemdq, HorizontalAdd(Doubleword), VEX_Vphaddd_xmm_xmm_xmmm128, L128;
+    VphadddYmmqqYmmqqYmmqq / VphadddYmmqqYmmqqMemqq, HorizontalAdd(Doubleword), VEX_Vphaddd_ymm_ymm_ymmm256, L256;
+    VphaddswXmmdqXmmdqXmmdq / VphaddswXmmdqXmmdqMemdq, HorizontalAddSaturating, VEX_Vphaddsw_xmm_xmm_xmmm128, L128;
+    VphaddswYmmqqYmmqqYmmqq / VphaddswYmmqqYmmqqMemqq, HorizontalAddSaturating, VEX_Vphaddsw_ymm_ymm_ymmm256, L256;
+    VphsubwXmmdqXmmdqXmmdq / VphsubwXmmdqXmmdqMemdq, HorizontalSubtract(Word), VEX_Vphsubw_xmm_xmm_xmmm128, L128;
+    VphsubwYmmqqYmmqqYmmqq / VphsubwYmmqqYmmqqMemqq, HorizontalSubtract(Word), VEX_Vphsubw_ymm_ymm_ymmm256, L256;
+    VphsubdXmmdqXmmdqXmmdq / VphsubdXmmdqXmmdqMemdq, HorizontalSubtract(Doubleword), VEX_Vphsubd_xmm_xmm_xmmm128, L128;
+    VphsubdYmmqqYmmqqYmmqq / VphsubdYmmqqYmmqqMemqq, HorizontalSubtract(Doubleword), VEX_Vphsubd_ymm_ymm_ymmm256, L256;
+    VphsubswXmmdqXmmdqXmmdq / VphsubswXmmdqXmmdqMemdq, HorizontalSubtractSaturating, VEX_Vphsubsw_xmm_xmm_xmmm128, L128;
+    VphsubswYmmqqYmmqqYmmqq / VphsubswYmmqqYmmqqMemqq, HorizontalSubtractSaturating, VEX_Vphsubsw_ymm_ymm_ymmm256, L256;
+    VpmaddubswXmmdqXmmdqXmmdq / VpmaddubswXmmdqXmmdqMemdq, MultiplyAddBytes, VEX_Vpmaddubsw_xmm_xmm_xmmm128, L128;
+    VpmaddubswYmmqqYmmqqYmmqq / VpmaddubswYmmqqYmmqqMemqq, MultiplyAddBytes, VEX_Vpmaddubsw_ymm_ymm_ymmm256, L256;
+    VpmulhrswXmmdqXmmdqXmmdq / VpmulhrswXmmdqXmmdqMemdq, MultiplyHighRoundScale, VEX_Vpmulhrsw_xmm_xmm_xmmm128, L128;
+    VpmulhrswYmmqqYmmqqYmmqq / VpmulhrswYmmqqYmmqqMemqq, MultiplyHighRoundScale, VEX_Vpmulhrsw_ymm_ymm_ymmm256, L256;
+};

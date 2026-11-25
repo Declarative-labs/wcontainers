@@ -86,6 +86,12 @@ pub(crate) const VECTOR: [Register; 16] = [
     Register::XMM10, Register::XMM11, Register::XMM12, Register::XMM13, Register::XMM14,
     Register::XMM15,
 ];
+pub(crate) const VECTOR_256: [Register; 16] = [
+    Register::YMM0, Register::YMM1, Register::YMM2, Register::YMM3, Register::YMM4,
+    Register::YMM5, Register::YMM6, Register::YMM7, Register::YMM8, Register::YMM9,
+    Register::YMM10, Register::YMM11, Register::YMM12, Register::YMM13, Register::YMM14,
+    Register::YMM15,
+];
 
 /// The bytes of both data pages, from the lower page's first address.
 static DATA_PAGES: [u8; DATA_PAGES_BYTES] = {

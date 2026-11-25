@@ -9,7 +9,7 @@ use crate::integer::{
     BitChange, Condition, OperandPlace, Operation, Outcome, find_integer_form, sign_extend, subtract_with_borrow,
     to_accumulator, to_data, to_mask, to_result_flags, with_status,
 };
-use crate::vector::{Lane, LaneOperation, Signedness, find_vector_form, join, saturate, split, to_signed};
+use crate::vector::{Lane, LaneOperation, Signedness, VectorEncoding, find_vector_form, join, saturate, split, to_signed};
 use crate::{Flags, Instruction};
 
 /// Who planted a bug first.
@@ -25,6 +25,8 @@ pub enum Origin {
     FourthCheck,
     FifthPass,
     FifthCheck,
+    /// The port onto the committed interfaces, for the VEX forms.
+    Port,
 }
 
 /// The forms a bug shows on.
@@ -42,6 +44,8 @@ pub enum Family {
     Branch,
     /// The forms named.
     Forms(&'static [Instruction]),
+    /// Every VEX form of a lane operation.
+    VexVector,
     Every,
 }
 
@@ -70,6 +74,7 @@ impl PlantedBug {
             }
             Family::Branch => crate::branch::find_branch_form(instruction).is_some(),
             Family::Forms(forms) => forms.contains(&instruction),
+            Family::VexVector => find_vector_form(instruction).is_some_and(|form| form.encoding != VectorEncoding::Legacy),
             Family::Every => true,
         }
     }
@@ -517,6 +522,17 @@ pub enum Bug {
     UnpackLowBytesSourceFirst,
     /// The default NaN is positive.
     DefaultNanPositive,
+    // The port.
+    /// VEX.128 keeps the destination's upper half.
+    VexNarrowKeepsUpperHalf,
+    /// VEX.256 combines the first source's lower half into the destination's upper half.
+    VexWideUpperFromLowerHalf,
+    /// A VEX memory operand that is not aligned to 16 raises #GP(0), as a legacy one does.
+    VexMisalignedFaults,
+    /// VEX.256 reads 16 bytes of memory, the upper half zero.
+    VexWideReadsSixteenBytes,
+    /// The first source is the destination, as for a legacy form.
+    VexFirstSourceIsDestination,
     // Fifth check.
     /// SUB takes AF from bit 4 of the result.
     SubtractAuxiliaryFromResultBitFour,
@@ -678,7 +694,7 @@ const fn integer(test: fn(Operation) -> bool) -> Family {
     Family::Integer(test)
 }
 
-use Origin::{FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, SecondCheck, SecondPass, ThirdCheck, ThirdPass};
+use Origin::{FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck, SecondPass, ThirdCheck, ThirdPass};
 
 /// Every planted bug of every pass and check, with its family.
 pub static PLANTED_BUGS: &[PlantedBug] = &[
@@ -972,6 +988,11 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::JumpIndirectTruncated, "JmpGprv", Family::Forms(&[Instruction::JmpGprv]), FifthCheck),
     row(Bug::HaltInvalidOpcode, "Hlt", Family::Forms(&[Instruction::Hlt]), FifthCheck),
     row(Bug::ReadModelSpecificRegisterCompletes, "Rdmsr", Family::Forms(&[Instruction::Rdmsr]), FifthCheck),
+    row(Bug::VexNarrowKeepsUpperHalf, "VEX lane operations", Family::VexVector, Port),
+    row(Bug::VexWideUpperFromLowerHalf, "VEX lane operations", Family::VexVector, Port),
+    row(Bug::VexMisalignedFaults, "VEX lane operations", Family::VexVector, Port),
+    row(Bug::VexWideReadsSixteenBytes, "VEX lane operations", Family::VexVector, Port),
+    row(Bug::VexFirstSourceIsDestination, "VEX lane operations", Family::VexVector, Port),
 ];
 
 #[cfg(feature = "planted-bugs")]
