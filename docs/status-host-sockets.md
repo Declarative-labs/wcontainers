@@ -317,15 +317,15 @@ socket). READ in the commit:
 | `cargo check --all-targets`, 17 packages | exit 0 | exit 0 |
 | clippy `--all-targets -D warnings` | exit 0 | exit 0 |
 | `cargo fmt --check` | exit 0 | exit 0 |
-| TCP suite (as root, runner namespace) | 143/143 | 143/143 in 1 of 2 full runs and 142 in the other; before the change also 143 in 1 of 2 and 142 (a different test) |
+| TCP suite (as root, runner namespace) | 143/143 | 143/143 in 1 of 3 full runs, 142 in the other two; before the change 143 in 1 of 3, 142 and 139 in the others |
 | UDP 80, ICMP 69, raw 54, route resolver 38 | all pass | all pass |
 | API crate suite 13, generated test 3 | pass | pass |
 | unit and other tests of the hosts (readiness, counters, waiting, allocations) | pass | pass |
 
 x86-64's TCP misses are timing checks that fail at the commit before the change too (MEASURED: at 55fd7bafc,
 `congestion_control_state_names_the_algorithm`, `information_reads_what_the_connection_did`,
-`timestamp_reads_the_clock_in_its_unit` and `record_end_starts_a_new_segment` failed in one run each; after,
-`record_end_starts_a_new_segment` failed once; each passes five times alone on both commits). No test removed or
+`timestamp_reads_the_clock_in_its_unit` and `record_end_starts_a_new_segment` failed in one run or another; after,
+`record_end_starts_a_new_segment` failed in two; each passes five times alone on both commits). No test removed or
 ignored.
 
 Same kernel calls before and after (MEASURED, ARM64): every test binary of the five suites run under `strace -f -e
@@ -368,7 +368,7 @@ namespace setup in Rust; x86-64 lint run; the independent check.
 3. The agents-made `SocketOptions` primitive (d4aee0ae5): read for ideas only (its typed routes in 785d3fa79 taken,
    checked against the kernel by the strace comparison); nothing of `crates/socket-options` is used.
 4. nix as a vetted crate (its `recvmsg` treats the whole address buffer as written): open; nix is used as before, now
-   also for 16 socket options.
+   also for 18 socket options.
 
 ## SECURITY
 
