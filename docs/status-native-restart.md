@@ -152,11 +152,10 @@ the port's own commit that gives `PointerBytes` and `SharedMapping` an `address(
 1. One trait per API, one associated type per object the API makes (KVM: `System`, `Vm`, `Vcpu`, `Device`;
    HVF: `VmConfig`, `VcpuConfig`, `GicConfig`, `GicState`, `Vm`, `Vcpu`). Drop is the API's close, release
    or destroy.
-2. Scope: KVM, every ioctl kvm-ioctls 0.25.1 offers on aarch64 plus the two the monitor uses that it lacks
-   (`KVM_ARM_SET_COUNTER_OFFSET`, `KVM_GET_DEVICE_ATTR` on a VM and a vCPU): 42 ioctl methods. HVF, every
-   function applevisor-sys 1.0.0 declares for ARM64 (generated from Apple's headers) except `hv_vm_allocate`
-   and `hv_vm_deallocate`: 85 function methods. kvm.h's ioctls kvm-ioctls does not offer (for example
-   `KVM_ARM_MTE_COPY_TAGS`, `KVM_ARM_GET_REG_WRITABLE_MASKS`, `KVM_SET_USER_MEMORY_REGION2`) are not in yet.
+2. Scope: KVM, every ioctl of Linux 7.0's kvm.h that applies to ARM64 (CORRECTED by the repair run below: the
+   first build held only what kvm-ioctls 0.25.1 offers plus two, 42 ioctl methods, and missed 12; now 45 ioctls
+   as 54 methods, the table in "R1 repair"). HVF, every function applevisor-sys 1.0.0 declares for ARM64
+   (generated from Apple's headers) except `hv_vm_allocate` and `hv_vm_deallocate`: 85 function methods.
 3. ARM64 only (`#![cfg(target_arch = "aarch64")]` on both interfaces).
 4. Each trait has one implementation (`direct`) today.
 Non-API methods, one rule each: `create_user_memory` (both: the memory a slot or `vm_map` keeps, a
@@ -174,8 +173,8 @@ caller: the attribute value goes through a buffer at least as long as any ARM64 
 | Crate | Files | Lines with `unsafe` (root manifest's command) | Marks |
 |---|---|---|---|
 | wcontainers-kvm | crates/kvm/interface.rs | 0 (workspace `forbid`) | 0 |
-| wcontainers-kvm-conformance | crates/kvm/conformance/suite.rs (11 tests) | 0 (workspace `forbid`) | 0 |
-| wcontainers-kvm-direct | implementation.rs, conformance_run.rs | 9 | 9 (all marked, none UNSOUND) |
+| wcontainers-kvm-conformance | crates/kvm/conformance/suite.rs (21 tests since the repair; 11 before) | 0 (workspace `forbid`) | 0 |
+| wcontainers-kvm-direct | implementation.rs, conformance_run.rs | 20 since the repair (9 before) | 20 (all marked, none UNSOUND) |
 | wcontainers-hypervisor-framework | crates/hypervisor-framework/interface.rs | 0 (workspace `forbid`) | 0 |
 | wcontainers-hypervisor-framework-conformance | suite.rs (5 tests) | 0 (workspace `forbid`) | 0 |
 | wcontainers-hypervisor-framework-direct | implementation.rs, build.rs, vector.c, conformance_run.rs | 93 | 93 (one per framework call, plus the extern block and 6 drops) |
@@ -233,14 +232,279 @@ The monitor still holds its own 58 lines until R3 switches it onto these crates.
    crates/raw-sockets/implementation/host/conformance.rs already does on main; without it, every
    `cargo test --workspace` on the x86 machine or on Linux would fail to build that target.
 
-### What R1 still lacks
+### What R1 still lacks (superseded by "R1 repair" below)
 
 - The HVF suite run on the Mac (waits on a Mac slot; this run's rules ban the Mac).
-- The two linter conflicts, and the model's answers for summaries and names.
-- An independent check by a fresh agent.
-- The instruction port's `crates/kvm` (instruction-port 5d54c52d0, one method, `&VmFd` in its interface)
-  conflicts with this one when the port merges; this crate covers it (`create_user_memory` and
-  `set_user_memory_region`), and kvm-single-step moves onto it.
+- The two linter conflicts (ruled: see "R1 repair"), and the model's answers for summaries and names.
+- An independent check by a fresh agent (run: DOES NOT HOLD on two points, repaired below).
+- The instruction port's `crates/kvm` (done in the repair: one crate).
+
+## R1 repair (run of 2026-11-25 night)
+
+The independent check of R1 said DOES NOT HOLD on two points: the KVM trait was not the whole API, and two
+mutants survived the suite. Both are repaired here.
+
+### Branch state
+
+- The owner's main of today (1b6b5d6dc, the processor core interface) merged: f3218432c, a normal merge, no conflict.
+- origin/arm64-instructions (d708c4a55) merged: 87edf3b6a, a normal merge. Conflicts: the seven files of
+  `crates/kvm` (both branches added the crate; this branch's whole-API crate kept, the port's one-method crate
+  of 5d54c52d0 replaced by it), `Cargo.lock` (the port's taken, then cargo's update on the machine), and
+  `single_step.rs` (the port deleted it; deleted, every port hunk kept). The port retired the monitor's
+  single-step executor, so three files brought from agents that stood only on it went too: monitor
+  `memory_space.rs` (agents' `GuestMemorySpace`), `conformance_run.rs` (the executor suite on
+  `SingleStepMachine`) and `tests/guest_memory.rs`, with `pub mod memory_space`, the `conformance` test entry
+  and its five dev-dependencies. They are in 6eab7518e for R3 to take from.
+
+### The whole KVM API (MEASURED: `grep` of every `_IO*(KVMIO, ...)` define in Linux 7.0's
+`include/uapi/linux/kvm.h`, from the rented machine's linux-aws-7.0 headers; arm64 placement READ in
+arch/arm64/include/uapi/asm/kvm.h, which defines `__KVM_HAVE_IRQ_LINE` and `__KVM_HAVE_VCPU_EVENTS`, and in
+docs.kernel.org's api.html "Architectures" lines; the arm64 handler behavior for the excluded generic ones is
+INFERRED from the kernel's arm.c, not read in this run)
+
+The trait now holds 54 ioctl methods over 45 ioctls (one ioctl on several objects is one method each), plus
+three that are not ioctls: `create_user_memory`, `vcpu_run_page`, and new `vcpu_dirty_ring` (the vCPU's
+dirty ring pages, mapped at `KVM_DIRTY_LOG_PAGE_OFFSET` when the VM turned dirty rings on before making it).
+New: `set_user_memory_region2`, `create_irq_chip`, `irq_line_status`, `arm_set_device_addr`,
+`arm_mte_copy_tags`, `arm_get_reg_writable_masks`, `vm_get_stats_fd`, `vcpu_get_stats_fd`, `set_signal_mask`,
+`clear_dirty_log`, `reset_dirty_rings`, `pre_fault_memory`. `vcpu_run_page` now says what it maps: the
+`kvm_run` page and the coalesced MMIO ring after it (the vCPU mapping is `KVM_GET_VCPU_MMAP_SIZE` long, which
+on ARM64 covers both). Not an ioctl and not in the trait: mapping a guest_memfd (a plain file mapping) and
+reading a statistics file (a plain read). docs.kernel.org already lists `KVM_SET_MEMORY_ATTRIBUTES2`, which
+the 7.0 header does not have.
+
+| ioctl | In the trait | Object, method | How `direct` calls it, or why it is not in the trait |
+|---|---|---|---|
+| `KVM_GET_API_VERSION` | yes | system: `get_api_version` | kvm-ioctls |
+| `KVM_CREATE_VM` | yes | system: `create_vm` | kvm-ioctls |
+| `KVM_CHECK_EXTENSION` | yes | system, VM: `check_extension, vm_check_extension` | kvm-ioctls |
+| `KVM_GET_VCPU_MMAP_SIZE` | yes | system: `get_vcpu_mmap_size` | kvm-ioctls |
+| `KVM_CREATE_VCPU` | yes | VM: `create_vcpu` | kvm-ioctls |
+| `KVM_GET_DIRTY_LOG` | yes | VM: `get_dirty_log` | kvm-ioctls |
+| `KVM_SET_USER_MEMORY_REGION` | yes | VM: `set_user_memory_region` | kvm-ioctls, marked (unsafe there) |
+| `KVM_SET_USER_MEMORY_REGION2` | yes | VM: `set_user_memory_region2` | kvm-ioctls, marked (unsafe there) NEW |
+| `KVM_CREATE_IRQCHIP` | yes | VM: `create_irq_chip` | kvm-ioctls NEW |
+| `KVM_IRQ_LINE` | yes | VM: `irq_line` | kvm-ioctls |
+| `KVM_IRQ_LINE_STATUS` | yes | VM: `irq_line_status` | raw, marked NEW |
+| `KVM_SET_GSI_ROUTING` | yes | VM: `set_gsi_routing` | kvm-ioctls |
+| `KVM_IRQFD` | yes | VM: `irqfd` | raw, marked |
+| `KVM_IOEVENTFD` | yes | VM: `ioeventfd` | raw, marked |
+| `KVM_SIGNAL_MSI` | yes | VM: `signal_msi` | kvm-ioctls |
+| `KVM_ARM_SET_DEVICE_ADDR` | yes | VM: `arm_set_device_addr` | raw, marked NEW |
+| `KVM_ARM_MTE_COPY_TAGS` | yes | VM: `arm_mte_copy_tags` | raw, marked NEW |
+| `KVM_ARM_SET_COUNTER_OFFSET` | yes | VM: `arm_set_counter_offset` | raw, marked |
+| `KVM_ARM_GET_REG_WRITABLE_MASKS` | yes | VM: `arm_get_reg_writable_masks` | raw, marked NEW |
+| `KVM_CREATE_DEVICE` | yes | VM: `create_device` | kvm-ioctls |
+| `KVM_SET_DEVICE_ATTR` | yes | VM, vCPU, device: `vm_set_device_attr, vcpu_set_device_attr, set_device_attr` | raw, marked (one shared line) |
+| `KVM_GET_DEVICE_ATTR` | yes | VM, vCPU, device: `vm_get_device_attr, vcpu_get_device_attr, get_device_attr` | raw, marked (one shared line) |
+| `KVM_HAS_DEVICE_ATTR` | yes | VM, vCPU, device: `vm_has_device_attr, vcpu_has_device_attr, has_device_attr` | kvm-ioctls |
+| `KVM_RUN` | yes | vCPU: `run` | raw, marked |
+| `KVM_SET_SIGNAL_MASK` | yes | vCPU: `set_signal_mask` | raw, marked NEW |
+| `KVM_GET_MP_STATE` | yes | vCPU: `get_mp_state` | kvm-ioctls |
+| `KVM_SET_MP_STATE` | yes | vCPU: `set_mp_state` | kvm-ioctls |
+| `KVM_SET_GUEST_DEBUG` | yes | vCPU: `set_guest_debug` | kvm-ioctls |
+| `KVM_GET_VCPU_EVENTS` | yes | vCPU: `get_vcpu_events` | kvm-ioctls |
+| `KVM_SET_VCPU_EVENTS` | yes | vCPU: `set_vcpu_events` | kvm-ioctls |
+| `KVM_ENABLE_CAP` | yes | VM: `enable_cap` | kvm-ioctls |
+| `KVM_GET_ONE_REG` | yes | vCPU: `get_one_reg` | kvm-ioctls |
+| `KVM_SET_ONE_REG` | yes | vCPU: `set_one_reg` | kvm-ioctls |
+| `KVM_ARM_VCPU_INIT` | yes | vCPU: `arm_vcpu_init` | kvm-ioctls |
+| `KVM_ARM_PREFERRED_TARGET` | yes | VM: `arm_preferred_target` | kvm-ioctls |
+| `KVM_GET_REG_LIST` | yes | vCPU: `get_reg_list` | kvm-ioctls |
+| `KVM_CLEAR_DIRTY_LOG` | yes | VM: `clear_dirty_log` | raw, marked NEW |
+| `KVM_ARM_VCPU_FINALIZE` | yes | vCPU: `arm_vcpu_finalize` | kvm-ioctls |
+| `KVM_RESET_DIRTY_RINGS` | yes | VM: `reset_dirty_rings` | raw, marked NEW |
+| `KVM_GET_STATS_FD` | yes | VM, vCPU: `vm_get_stats_fd, vcpu_get_stats_fd` | raw, marked (one shared helper, 2 lines) NEW |
+| `KVM_SET_MEMORY_ATTRIBUTES` | yes | VM: `set_memory_attributes` | kvm-ioctls |
+| `KVM_CREATE_GUEST_MEMFD` | yes | VM: `create_guest_memfd` | kvm-ioctls, marked descriptor adoption |
+| `KVM_PRE_FAULT_MEMORY` | yes | vCPU: `pre_fault_memory` | raw, marked NEW |
+| `KVM_REGISTER_COALESCED_MMIO` | yes | VM: `register_coalesced_mmio` | kvm-ioctls |
+| `KVM_UNREGISTER_COALESCED_MMIO` | yes | VM: `unregister_coalesced_mmio` | kvm-ioctls |
+| `KVM_GET_MSR_INDEX_LIST` | no | | x86 |
+| `KVM_S390_ENABLE_SIE` | no | | s390 |
+| `KVM_GET_SUPPORTED_CPUID` | no | | x86 |
+| `KVM_GET_EMULATED_CPUID` | no | | x86 |
+| `KVM_GET_MSR_FEATURE_INDEX_LIST` | no | | x86 |
+| `KVM_SET_NR_MMU_PAGES` | no | | x86 |
+| `KVM_GET_NR_MMU_PAGES` | no | | x86 |
+| `KVM_SET_TSS_ADDR` | no | | x86 |
+| `KVM_SET_IDENTITY_MAP_ADDR` | no | | x86 |
+| `KVM_S390_UCAS_MAP` | no | | s390 |
+| `KVM_S390_UCAS_UNMAP` | no | | s390 |
+| `KVM_S390_VCPU_FAULT` | no | | s390 |
+| `KVM_S390_KEYOP` | no | | s390 |
+| `KVM_GET_IRQCHIP` | no | | x86 (arm64 uses the GIC device's attributes) |
+| `KVM_SET_IRQCHIP` | no | | x86 (arm64 uses the GIC device's attributes) |
+| `KVM_CREATE_PIT` | no | | x86 |
+| `KVM_GET_PIT` | no | | x86 |
+| `KVM_SET_PIT` | no | | x86 |
+| `KVM_REINJECT_CONTROL` | no | | x86 |
+| `KVM_CREATE_PIT2` | no | | x86 |
+| `KVM_SET_BOOT_CPU_ID` | no | | x86 |
+| `KVM_XEN_HVM_CONFIG` | no | | x86 (Xen) |
+| `KVM_SET_CLOCK` | no | | x86 |
+| `KVM_GET_CLOCK` | no | | x86 |
+| `KVM_GET_PIT2` | no | | x86 |
+| `KVM_SET_PIT2` | no | | x86 |
+| `KVM_PPC_GET_PVINFO` | no | | ppc |
+| `KVM_SET_TSC_KHZ` | no | | x86 |
+| `KVM_GET_TSC_KHZ` | no | | x86 |
+| `KVM_PPC_GET_SMMU_INFO` | no | | ppc |
+| `KVM_PPC_ALLOCATE_HTAB` | no | | ppc |
+| `KVM_CREATE_SPAPR_TCE` | no | | ppc |
+| `KVM_CREATE_SPAPR_TCE_64` | no | | ppc |
+| `KVM_ALLOCATE_RMA` | no | | ppc |
+| `KVM_PPC_GET_HTAB_FD` | no | | ppc |
+| `KVM_PPC_RTAS_DEFINE_TOKEN` | no | | ppc |
+| `KVM_PPC_RESIZE_HPT_PREPARE` | no | | ppc |
+| `KVM_PPC_RESIZE_HPT_COMMIT` | no | | ppc |
+| `KVM_PPC_CONFIGURE_V3_MMU` | no | | ppc |
+| `KVM_PPC_GET_RMMU_INFO` | no | | ppc |
+| `KVM_PPC_GET_CPU_CHAR` | no | | ppc |
+| `KVM_SET_PMU_EVENT_FILTER` | no | | x86 (arm64 uses the vCPU attribute KVM_ARM_VCPU_PMU_V3_FILTER) |
+| `KVM_PPC_SVM_OFF` | no | | ppc |
+| `KVM_GET_REGS` | no | | generic vCPU ioctl; api.rst: every architecture but arm64; arm64's handler returns EINVAL |
+| `KVM_SET_REGS` | no | | generic vCPU ioctl; api.rst: every architecture but arm64; arm64's handler returns EINVAL |
+| `KVM_GET_SREGS` | no | | x86, ppc (api.rst); arm64's handler returns EINVAL |
+| `KVM_SET_SREGS` | no | | x86, ppc (api.rst); arm64's handler returns EINVAL |
+| `KVM_TRANSLATE` | no | | x86 (api.rst); arm64's handler returns EINVAL |
+| `KVM_INTERRUPT` | no | | x86, ppc, mips, riscv, loongarch (api.rst); not in arm64's vCPU ioctls |
+| `KVM_GET_MSRS` | no | | x86 |
+| `KVM_SET_MSRS` | no | | x86 |
+| `KVM_SET_CPUID` | no | | x86 |
+| `KVM_GET_FPU` | no | | x86, loongarch (api.rst); arm64's handler returns EINVAL |
+| `KVM_SET_FPU` | no | | x86, loongarch (api.rst); arm64's handler returns EINVAL |
+| `KVM_GET_LAPIC` | no | | x86 |
+| `KVM_SET_LAPIC` | no | | x86 |
+| `KVM_SET_CPUID2` | no | | x86 |
+| `KVM_GET_CPUID2` | no | | x86 |
+| `KVM_TPR_ACCESS_REPORTING` | no | | x86 |
+| `KVM_SET_VAPIC_ADDR` | no | | x86 |
+| `KVM_S390_INTERRUPT` | no | | s390 |
+| `KVM_S390_STORE_STATUS` | no | | s390 |
+| `KVM_S390_SET_INITIAL_PSW` | no | | s390 |
+| `KVM_S390_INITIAL_RESET` | no | | s390 |
+| `KVM_NMI` | no | | x86 |
+| `KVM_X86_SETUP_MCE` | no | | x86 |
+| `KVM_X86_GET_MCE_CAP_SUPPORTED` | no | | x86 |
+| `KVM_X86_SET_MCE` | no | | x86 |
+| `KVM_GET_DEBUGREGS` | no | | x86 |
+| `KVM_SET_DEBUGREGS` | no | | x86 |
+| `KVM_GET_XSAVE` | no | | x86 |
+| `KVM_SET_XSAVE` | no | | x86 |
+| `KVM_GET_XCRS` | no | | x86 |
+| `KVM_SET_XCRS` | no | | x86 |
+| `KVM_DIRTY_TLB` | no | | ppc (booke) |
+| `KVM_KVMCLOCK_CTRL` | no | | x86 |
+| `KVM_S390_MEM_OP` | no | | s390 |
+| `KVM_S390_GET_SKEYS` | no | | s390 |
+| `KVM_S390_SET_SKEYS` | no | | s390 |
+| `KVM_S390_IRQ` | no | | s390 |
+| `KVM_S390_SET_IRQ_STATE` | no | | s390 |
+| `KVM_S390_GET_IRQ_STATE` | no | | s390 |
+| `KVM_SMI` | no | | x86 |
+| `KVM_S390_GET_CMMA_BITS` | no | | s390 |
+| `KVM_S390_SET_CMMA_BITS` | no | | s390 |
+| `KVM_MEMORY_ENCRYPT_OP` | no | | x86 (SEV, TDX) |
+| `KVM_MEMORY_ENCRYPT_REG_REGION` | no | | x86 (SEV) |
+| `KVM_MEMORY_ENCRYPT_UNREG_REGION` | no | | x86 (SEV) |
+| `KVM_HYPERV_EVENTFD` | no | | x86 |
+| `KVM_GET_NESTED_STATE` | no | | x86 |
+| `KVM_SET_NESTED_STATE` | no | | x86 |
+| `KVM_GET_SUPPORTED_HV_CPUID` | no | | x86 |
+| `KVM_S390_NORMAL_RESET` | no | | s390 |
+| `KVM_S390_CLEAR_RESET` | no | | s390 |
+| `KVM_S390_PV_COMMAND` | no | | s390 |
+| `KVM_X86_SET_MSR_FILTER` | no | | x86 |
+| `KVM_XEN_HVM_GET_ATTR` | no | | x86 (Xen) |
+| `KVM_XEN_HVM_SET_ATTR` | no | | x86 (Xen) |
+| `KVM_XEN_VCPU_GET_ATTR` | no | | x86 (Xen) |
+| `KVM_XEN_VCPU_SET_ATTR` | no | | x86 (Xen) |
+| `KVM_XEN_HVM_EVTCHN_SEND` | no | | x86 (Xen) |
+| `KVM_GET_SREGS2` | no | | x86 |
+| `KVM_SET_SREGS2` | no | | x86 |
+| `KVM_GET_XSAVE2` | no | | x86 |
+| `KVM_S390_PV_CPU_COMMAND` | no | | s390 |
+| `KVM_S390_ZPCI_OP` | no | | s390 |
+
+151 ioctls: 45 in the trait, 106 not; unclassified: 0; in the trait but not in the header: []
+
+Rules for the new pointers, each with a suite test that fails without it: an attribute value goes through a
+fixed buffer as long as the longest ARM64 attribute (`kvm_smccc_filter`, 24 bytes), and a value longer than
+that is refused with `E2BIG` both ways; `clear_dirty_log` refuses a bitmap with fewer bits than pages;
+`set_user_memory_region2` keeps a view of exactly `memory_size` bytes and refuses a size larger than the
+memory, or a size with no memory (KVM would take host address 0 on); `irqfd` refuses
+`KVM_IRQFD_FLAG_RESAMPLE` with no resample file (KVM would read descriptor 0); `arm_mte_copy_tags` takes the
+tag buffer as `&mut [u8]` and names a length of exactly 16 bytes a tag; `arm_get_reg_writable_masks` writes
+into an array of `KVM_ARM_FEATURE_ID_RANGE_SIZE`; `set_signal_mask` passes the length KVM checks before it
+reads; the stats files and the guest_memfd come back as `OwnedFd`.
+
+### Tests and mutants (MEASURED, rented Graviton4, Linux 7.0.0-1018-aws, rustc 1.99.0; jobs
+pyro-parked/wcontainers-scratch/native-restart-r1-repair/r1-repair-job{,-2,-3}.sh, output run1.out, run2.out, run3.out)
+
+`cargo test -p wcontainers-kvm-direct`: 21 passed, 0 failed, eight runs in a row. The checker's two tests are
+in the suite as `sizes_the_dirty_log_from_a_large_slot` and `keeps_the_slot_through_a_refused_change`.
+Each mutant is one edit of `direct`'s implementation.rs, then the suite:
+
+| Mutant | Result | Test that sees it |
+|---|---|---|
+| keepalive (a slot keeps no view) | killed, 5 fail | keeps_memory_mapped_while_a_vcpu_lives and four more |
+| dirty_half (log sized from half the slot) | killed | sizes_the_dirty_log_from_a_large_slot |
+| remove_on_failure (a refused change drops the slot) | killed | keeps_the_slot_through_a_refused_change |
+| buffer shorter than the longest attribute (the design that replaces `no_buffer_growth`) | killed, 2 fail | sets_up_the_interrupt_controller_and_its_interrupts, reads_and_sets_vcpu_and_vm_attributes |
+| no length check on a read attribute | killed | sets_up_the_interrupt_controller_and_its_interrupts |
+| run_no_error (`KVM_RUN`'s error dropped) | killed | refuses_to_run_a_vcpu_not_yet_initialized (`ENOEXEC`) |
+| irqfd_ignores_resample | killed | sets_up_the_interrupt_controller_and_its_interrupts |
+| has_attr_always, user_memory_unsealed, memory_any_length | killed | as in the check |
+| bitmap_unchecked, size_without_memory, no_dirty_ring | killed | clears_the_dirty_log..., gives_memory_as_a_slot_of_the_second_kind, keeps_a_dirty_ring_of_the_pages_written |
+| resample_unchecked (our `EINVAL` for resample with no file removed) | SURVIVES | KVM then reads descriptor 0, which in the test process is not an event file, and refuses with the same `EINVAL`; seen only where descriptor 0 is an event file |
+
+`unsafe {}` planted in interface.rs and in suite.rs: both refused by the compiler ("usage of an `unsafe`
+block"), exit 101. HVF: `cargo clippy --all-targets -- -D warnings` on its three crates with the suite and its
+run type-checked as if on macOS, exit 0. NOT RUN: the HVF tests, which need the owner's Mac, where this run's
+rules allow no hypervisor work; that half is type-checked only.
+
+### The chip source on the one KVM crate (MEASURED)
+
+Callers changed, all in crates/behavior-source/implementation/kvm-single-step (the only users of the port's
+crate: `git grep wcontainers-kvm` on origin/arm64-instructions):
+- machine.rs: `create_machine` makes the system, VM, memory slot, vCPU and GIC through `DirectKvm`'s trait
+  methods (`open`, `create_vm`, `vm_set_device_attr` for the SMCCC filter, `create_user_memory` and
+  `set_user_memory_region`, `arm_preferred_target`, `check_extension`, `create_vcpu`, `arm_vcpu_init`,
+  `arm_vcpu_finalize`, `create_device`, `set_device_attr`); `Machine::run` calls `run` and reads the exit reason
+  and the hypercall's function from `vcpu_run_page` as volatile bytes instead of kvm-ioctls' `VcpuFd::run`
+  (which held a reference over the run page); `get` and `set` call `get_one_reg` and `set_one_reg`. Its guest
+  memory is the slot's memory file, kept by the VM handle, instead of anonymous memory kept by forgetting a view.
+- Cargo.toml: the `kvm-ioctls` dependency removed.
+The port's two KVM suite tests are covered by this suite: fresh memory zeroed (refuses_overlapping_slots...)
+and an overlapping slot refused (`EEXIST`).
+Chip source tests: `--lib` 2 passed, 6 ignored (as the port has them). Its executor conformance run fails
+1 of 4 (`measured_behavior_agrees_with_the_source`: "an instruction shows no one known behavior",
+suite.rs:90), twice; the port's own kvm crate and chip source in the same tree fail the same test the same
+way (run2.out, "port's chip source conformance exit 101"), so it is the instruction track's, not this move's.
+
+### Linter (MEASURED, run4.out: `cargo reviewable check` from reviewable-rust da55b9d7 built on the machine; whole
+workspace exit 1, 83,840 findings; these crates' share by tools/findings.py)
+
+| Class | kvm (three crates) | hvf (three crates) | Why it stays |
+|---|---|---|---|
+| summary_unanswered, name_unanswered | 131, 39 | 34, 12 | need the model's answers; no key on the rented machine, nothing sent out |
+| public_outside_interface (a handle's private field) | 8 | 14 | the orchestrator's ruling: reported, counted, listed for the owner |
+| conformance_not_run (the run's platform `cfg`) | 1 | 1 | the same ruling |
+| constant_defined_twice (build.rs) | 0 | 3 | as in R1 |
+
+Every other finding in crates/kvm is fixed (the interface's comments cut to its budget, 2,900 of 2,918
+characters by this run's count). `cargo fmt` and `cargo reviewable format`: no change. The chip source has
+308 findings, nearly all in the port's own files; in machine.rs the 12 error-message strings, `MachineError`'s
+public field, `to_id`'s two-line summary and the 12 register constants without a link are the port's lines,
+unchanged by the move (INFERRED: compared by reading, the linter was not run on the port's tree).
+
+### Linter rulings applied (orchestrator, this run)
+
+No exclusion added. An API handle keeps its private field, so safe code cannot forge one; its
+`public_outside_interface` findings stay reported and counted (KVM 8, HVF 14). The suite runs keep their
+platform `cfg` line, as main's raw-sockets host conformance.rs does; their `conformance_not_run` findings stay
+reported (KVM 1, HVF 1).
 
 ### Lint tables (task of this run)
 
@@ -250,7 +514,14 @@ new crate except the two `direct` ones inherit the workspace (`forbid`).
 
 ### Milestones after R1
 
-R2 (form P, the host-process form; brief order) and R3 wait on the port, KP1, TR1 and the runtime on this branch
-(none merged yet), their tests also on X2 and X3. Form I (the kernel in process with our own memory checks,
-docs/native.md and the owner's ruling of 2026-11-23) is R5, after R4, and waits on the owner's answers to brief
-question 4. R4 (the inside) waits on question 3 for its unsafe lines with no outside API.
+R1 is repaired and waits on its second independent check. R2 (form P, the host-process form) and R3 (the VM
+monitor) build only once KP1 (kernel), TR1 (translator) and RT1 (runtime) are on this branch; the instruction
+port is on it now (87edf3b6a). Their tests also need X2 and X3 (executor). None of KP1, TR1, RT1, X2, X3 is
+merged here (READ: `git log` of this branch), so neither starts its build in this run. What R2 can take
+without them is reading: the unstopped-stub fault sits in host-process executor.rs `end_stub` (833) and the
+memory drop (1240-1272): a stub not seen to end is only marked `unstopped` or counted as left unreaped, and
+(INFERRED, read, not run) the blocks it was given stay mapped in it while `drop_unmapped_blocks`
+(execution.rs:85) drops them once no record maps them.
+The fix and its failing-first test need the crate to compile, so they wait with the build. Form I (the kernel
+in process with our own memory checks) is R5, after R4, and waits on the owner's answers to brief question 4.
+R4 (the inside) waits on question 3 for its unsafe lines with no outside API.
