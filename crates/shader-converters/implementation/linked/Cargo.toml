@@ -1,0 +1,22 @@
+[package]
+name = "wcontainers-shader-converters-linked"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-shader-converters = { path = "../.." }
+
+[dev-dependencies]
+wcontainers-shader-converters-conformance = { path = "../../conformance" }
+
+# A bindings crate: it denies unsafe code, so that each use is marked with its reason.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
