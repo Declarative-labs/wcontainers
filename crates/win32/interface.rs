@@ -7,6 +7,45 @@ use std::path::PathBuf;
 
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 
+/// The Windows system calls the graphics tests and the OpenGL driver make, other than Direct3D's.
+pub trait Win32 {
+    /// A window another part of the program made, which a GPU API presents into through its handles.
+    type Window: HasWindowHandle + HasDisplayHandle + Send + Sync;
+
+    /// Returns this process's command line as Windows gave it.
+    fn command_line(&self) -> OsString;
+
+    /// Returns the path this process loaded the module `name` from, or none when it has not loaded it.
+    fn module_path(&self, name: &str) -> Option<String>;
+
+    /// Runs `run` to its end, then closes its job, which ends what it left running.
+    ///
+    /// Returns the process's exit code, or none when the wait ended before the process did.
+    fn run_process(&self, run: ProcessRun) -> io::Result<Option<u32>>;
+
+    /// Sets whether the processes this thread debugs are ended when this thread exits.
+    fn set_debugged_processes_ended_on_exit(&self, ended: bool) -> io::Result<()>;
+
+    /// Waits for the next event of a process this thread debugs.
+    fn wait_for_debug_event(&self) -> io::Result<DebugEvent>;
+
+    /// Lets the thread of an event go on as `continuation` says.
+    fn continue_debug_event(
+        &self,
+        process: u32,
+        thread: u32,
+        continuation: DebugContinuation,
+    ) -> io::Result<()>;
+
+    /// Stops debugging `process`, which goes on running.
+    fn stop_debugging(&self, process: u32) -> io::Result<()>;
+
+    /// Returns the window a device context draws into, or none when it draws into no window.
+    ///
+    /// The window is the program's, which keeps it while it draws into it through the device context.
+    fn window_of_device_context(&self, device_context: isize) -> Option<Self::Window>;
+}
+
 /// A process to start suspended in a job object that ends every process in it when it closes, then run and wait for.
 pub struct ProcessRun {
     /// The program file, or none to take the program from the command line's first word.
@@ -82,45 +121,6 @@ pub enum DebugContinuation {
     Continue,
     /// With the exception passed to the process's own handlers.
     ExceptionNotHandled,
-}
-
-/// The Windows system calls the graphics tests and the OpenGL driver make, other than Direct3D's.
-pub trait Win32 {
-    /// A window another part of the program made, which a GPU API presents into through its handles.
-    type Window: HasWindowHandle + HasDisplayHandle + Send + Sync;
-
-    /// Returns this process's command line as Windows gave it.
-    fn command_line(&self) -> OsString;
-
-    /// Returns the path this process loaded the module `name` from, or none when it has not loaded it.
-    fn module_path(&self, name: &str) -> Option<String>;
-
-    /// Runs `run` to its end, then closes its job, which ends what it left running.
-    ///
-    /// Returns the process's exit code, or none when the wait ended before the process did.
-    fn run_process(&self, run: ProcessRun) -> io::Result<Option<u32>>;
-
-    /// Sets whether the processes this thread debugs are ended when this thread exits.
-    fn set_debugged_processes_ended_on_exit(&self, ended: bool) -> io::Result<()>;
-
-    /// Waits for the next event of a process this thread debugs.
-    fn wait_for_debug_event(&self) -> io::Result<DebugEvent>;
-
-    /// Lets the thread of an event go on as `continuation` says.
-    fn continue_debug_event(
-        &self,
-        process: u32,
-        thread: u32,
-        continuation: DebugContinuation,
-    ) -> io::Result<()>;
-
-    /// Stops debugging `process`, which goes on running.
-    fn stop_debugging(&self, process: u32) -> io::Result<()>;
-
-    /// Returns the window a device context draws into, or none when it draws into no window.
-    ///
-    /// The window is the program's, which keeps it while it draws into it through the device context.
-    fn window_of_device_context(&self, device_context: isize) -> Option<Self::Window>;
 }
 
 /// The calls as a value of their own, made with no outside state.
