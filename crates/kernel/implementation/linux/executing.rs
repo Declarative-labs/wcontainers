@@ -856,13 +856,14 @@ mod tests {
 
     impl BehaviorSource for Plain {
         type Architecture = Arm64<User>;
+        type Error = core::convert::Infallible;
 
         fn execute_single_instruction_in_place(
             &mut self,
             _processor: &mut Processor,
             _memory: &[MemoryDelta<'_, Self::Architecture>],
             _mutation_hook: &mut impl MemorySink<Self::Architecture>,
-        ) {
+        ) -> Result<(), Self::Error> {
             unreachable!("the kernel's tests use Plain only for its translator settings")
         }
     }
