@@ -6,6 +6,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 
+#[cfg(verus_keep_ghost)]
+use vstd::laws_eq::obeys_concrete_eq;
 use vstd::prelude::*;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::ProcessorArchitecture;
@@ -65,23 +67,48 @@ impl<Architecture: ProcessorArchitecture> PreciseInstructionSet<Architecture>
     }
 
     /// Panics for an instruction the measurements do not hold.
-    // VERUS: no `find` with a closure and no panic it can rule out without a precondition the trait does not have, so
-    // the lookup is trusted, its types written out.
-    #[cfg_attr(verus_keep_ghost, verus::trusted)]
-    #[verifier::external_body]
     fn to_precise(
         &self,
         instruction: Architecture::Instruction,
     ) -> Architecture::PreciseInstruction {
-        let measured = self
-            .behaviors
-            .iter()
-            .find(|(measured, _)| *measured == instruction);
-        match measured {
-            Some((_, precise)) => *precise,
-            None => panic!("only measured instructions have a behavior"),
+        proof {
+            Architecture::equality_is_identity();
+            assert(self.behaviors@.skip(0) =~= self.behaviors@);
         }
+        // VERUS: no `find` with a closure, so the measurements are searched by index.
+        let mut index = 0;
+        while index < self.behaviors.len()
+            invariant
+                index <= self.behaviors@.len(),
+                obeys_concrete_eq::<Architecture::Instruction>(),
+                first_behavior(self.behaviors@.skip(index as int), instruction) == first_behavior(self.behaviors@, instruction),
+            decreases self.behaviors@.len() - index,
+        {
+            let (measured, precise) = self.behaviors[index];
+            proof {
+                reveal(obeys_concrete_eq);
+                assert(self.behaviors@.skip(index as int)[0] == (measured, precise));
+                assert(self.behaviors@.skip(index as int).drop_first() =~= self.behaviors@.skip(index + 1));
+            }
+            if measured == instruction {
+                return precise;
+            }
+            index += 1;
+        }
+        // VERUS: no panic it can rule out without a precondition the trait does not have, so the panic is a trusted
+        // function that never returns.
+        unmeasured()
     }
+}
+
+/// Panics: the measurements do not hold the instruction.
+#[cfg_attr(verus_keep_ghost, verus::trusted)]
+#[verifier::external_body]
+fn unmeasured<Precise>() -> (never: Precise)
+    ensures
+        false,
+{
+    panic!("only measured instructions have a behavior")
 }
 
 /// The first entry for an instruction is the entry no earlier one names.

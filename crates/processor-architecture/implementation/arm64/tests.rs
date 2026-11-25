@@ -730,10 +730,10 @@ fn an_instruction_above_the_addressable_addresses_faults_at_level_0_whatever_its
 }
 
 /// The two laws a proof takes on trust for this architecture, `equality_is_identity` and `clone_is_identity`, on
-/// processors that differ from the zero processor in one field each and on every permission: `==` holds exactly when
-/// every field is the same, and a clone is equal to what it was cloned from.
+/// processors that differ from the zero processor in one field each, on every permission and on every instruction:
+/// `==` holds exactly when every field is the same, and a clone is equal to what it was cloned from.
 #[test]
-fn equality_and_clone_of_processors_and_permissions_are_identity() {
+fn equality_and_clone_of_processors_permissions_and_instructions_are_identity() {
     let mut processors = vec![ZERO_PROCESSOR];
     for register in 0..GENERAL_PURPOSE_REGISTERS {
         let mut processor = ZERO_PROCESSOR;
@@ -783,6 +783,15 @@ fn equality_and_clone_of_processors_and_permissions_are_identity() {
     }
     for first in &permissions {
         for second in &permissions {
+            assert_eq!(
+                *first == *second,
+                alloc::format!("{first:?}") == alloc::format!("{second:?}")
+            );
+        }
+    }
+    let instructions: Vec<_> = Arm64::<User>::list_instructions().collect();
+    for first in &instructions {
+        for second in &instructions {
             assert_eq!(
                 *first == *second,
                 alloc::format!("{first:?}") == alloc::format!("{second:?}")

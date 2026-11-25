@@ -407,3 +407,28 @@ fn this_chip_faults_past_the_last_addressable_byte_as_its_recording_simulates() 
     // Each state faults at level 0 but the two whose instruction runs, at the last addressable word and at the code page.
     assert_eq!(level_0_faults, 14);
 }
+
+/// The set gives an instruction the behavior of the first pair that names it, as `from_measurements` promises.
+#[test]
+fn each_instruction_has_the_behavior_of_its_first_pair() {
+    let first = PreciseInstruction::Rdvl(VectorLengthReading::Reads(VectorLength::Bits128));
+    let later = PreciseInstruction::Rdvl(VectorLengthReading::Reads(VectorLength::Bits256));
+    let measured = MeasuredInstructionSet::<Arm64<User>>::from_measurements(&[
+        (Instruction::Brk, PreciseInstruction::Brk),
+        (Instruction::Rdvl, first),
+        (Instruction::Rdvl, later),
+    ]);
+    assert_eq!(measured.to_precise(Instruction::Rdvl), first);
+    assert_eq!(measured.to_precise(Instruction::Brk), PreciseInstruction::Brk);
+}
+
+/// The trusted `unmeasured`, which promises never to return: an instruction the measurements do not hold panics.
+#[test]
+#[should_panic(expected = "only measured instructions have a behavior")]
+fn an_instruction_the_measurements_do_not_hold_panics() {
+    let measured = MeasuredInstructionSet::<Arm64<User>>::from_measurements(&[(
+        Instruction::Brk,
+        PreciseInstruction::Brk,
+    )]);
+    measured.to_precise(Instruction::Csel64);
+}

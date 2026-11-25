@@ -59,11 +59,12 @@ pub trait ProcessorArchitecture: Sized {
     /// The behaviors a chip is known to show for the instruction, in the order they are listed.
     spec fn known_behaviors(instruction: Self::Instruction) -> Seq<Self::PreciseInstruction>;
 
-    /// `==` on processors and on permissions holds exactly for the same value.
+    /// `==` on processors, on permissions and on instructions holds exactly for the same value.
     proof fn equality_is_identity()
         ensures
             obeys_concrete_eq::<Self::ProcessorState>(),
             obeys_concrete_eq::<Self::PagePermission>(),
+            obeys_concrete_eq::<Self::Instruction>(),
     ;
 
     /// A processor's clone is the same value.
