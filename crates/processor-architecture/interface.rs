@@ -15,6 +15,8 @@ use core::ops::Range;
 
 #[cfg(verus_keep_ghost)]
 use vstd::laws_eq::obeys_concrete_eq;
+#[cfg(verus_keep_ghost)]
+use vstd::std_specs::cmp::PartialEqSpec;
 use vstd::prelude::*;
 #[cfg(verus_keep_ghost)]
 use vstd::std_specs::iter::IteratorSpec;
@@ -421,9 +423,19 @@ impl<Architecture: ProcessorArchitecture> PartialEq for MemorySnapshot<'_, '_, A
 
 impl<Architecture: ProcessorArchitecture> Eq for MemorySnapshot<'_, '_, Architecture> {}
 
+#[cfg(verus_keep_ghost)]
+impl<Architecture: ProcessorArchitecture> vstd::std_specs::cmp::PartialEqSpecImpl for ExecutionState<'_, Architecture> {
+    open spec fn obeys_eq_spec() -> bool {
+        <Architecture::ProcessorState as vstd::std_specs::cmp::PartialEqSpec>::obeys_eq_spec()
+    }
+
+    /// The processors are `==` and the memory is the same at every address.
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        self.processor.eq_spec(&other.processor) && memory_of(self.memory_mutations@) == memory_of(other.memory_mutations@)
+    }
+}
+
 /// Two states are equal when they hold the same processor and the same memory.
-// VERUS: no `==` without a statement of what it means, and no proof calls this one, so the verifier leaves it out.
-#[verifier::external]
 impl<Architecture: ProcessorArchitecture> PartialEq for ExecutionState<'_, Architecture> {
     fn eq(&self, other: &Self) -> bool {
         self.processor == other.processor && self.memory() == other.memory()
@@ -457,9 +469,19 @@ impl<'memory, Architecture: ProcessorArchitecture> ExecutionState<'memory, Archi
     }
 }
 
+#[cfg(verus_keep_ghost)]
+impl<Architecture: ProcessorArchitecture> vstd::std_specs::cmp::PartialEqSpecImpl for ExecutionStateExpectation<'_, Architecture> {
+    open spec fn obeys_eq_spec() -> bool {
+        <Architecture::ProcessorStateExpectation as vstd::std_specs::cmp::PartialEqSpec>::obeys_eq_spec()
+    }
+
+    /// The processor expectations are `==` and the memory is the same at every address.
+    open spec fn eq_spec(&self, other: &Self) -> bool {
+        self.processor.eq_spec(&other.processor) && memory_of(self.memory_mutations@) == memory_of(other.memory_mutations@)
+    }
+}
+
 /// Two expectations are equal when they hold the same processor expectation and the same memory.
-// VERUS: no `==` without a statement of what it means, and no proof calls this one, so the verifier leaves it out.
-#[verifier::external]
 impl<Architecture: ProcessorArchitecture> PartialEq
     for ExecutionStateExpectation<'_, Architecture>
 {
