@@ -1,0 +1,30 @@
+[package]
+name = "wcontainers-metal-direct"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-metal = { path = "../.." }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+naga = { workspace = true, features = ["msl-out"] }
+# The vertex formats naga's Metal writer takes.
+naga-types = { version = "30.0.2", default-features = false }
+objc2 = "0.6.5"
+objc2-foundation = "0.3.2"
+objc2-metal = "0.3.2"
+
+[dev-dependencies]
+wcontainers-metal-conformance = { path = "../../conformance" }
+
+# The crate that makes Metal's own calls: it denies unsafe code, so that each use is marked with its reason.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

@@ -1,0 +1,1017 @@
+//! Apple's Metal on one GPU as a safe trait: buffers, textures, compiled functions, pipelines and command buffers.
+
+use core::fmt::Debug;
+
+/// One Metal device and its command queue, whose objects are handles that a clone names again.
+///
+/// Every call is checked before it reaches Metal: a range outside its buffer or texture, a slot a function reads and no
+/// command filled, or a command buffer used after it was committed is refused with the method's error. Functions are
+/// compiled with every buffer, array and texture access bounds-checked, so no command lets the GPU reach memory outside
+/// the resources it was given.
+pub trait Metal {
+    /// A buffer in memory the CPU and the GPU share.
+    type Buffer: Clone + Debug;
+    /// A texture in memory only the GPU reaches, or a view of one.
+    type Texture: Clone + Debug;
+    type SamplerState: Clone + Debug;
+    type DepthStencilState: Clone + Debug;
+    /// One entry point compiled for one stage, with the slots it reads.
+    type Function: Clone + Debug;
+    type RenderPipelineState: Clone + Debug;
+    type ComputePipelineState: Clone + Debug;
+    type CommandBuffer: Clone + Debug;
+
+    /// Returns the GPU's name, as Metal gives it.
+    fn name(&self) -> String;
+    /// Makes a buffer of `length` bytes, all zero.
+    fn make_buffer(&mut self, length: u64) -> Result<Self::Buffer, MakeBufferError>;
+    /// Copies `bytes` into the buffer at `offset`, after every committed command buffer that uses it has completed.
+    fn write_contents(
+        &mut self,
+        buffer: &Self::Buffer,
+        offset: u64,
+        bytes: &[u8],
+    ) -> Result<(), WriteContentsError>;
+    /// Copies the buffer's bytes from `offset` into `bytes`, after every committed command buffer that uses it has completed.
+    fn read_contents(
+        &mut self,
+        buffer: &Self::Buffer,
+        offset: u64,
+        bytes: &mut [u8],
+    ) -> Result<(), ReadContentsError>;
+    /// Makes a texture with undefined texels.
+    fn make_texture(
+        &mut self,
+        descriptor: &TextureDescriptor,
+    ) -> Result<Self::Texture, MakeTextureError>;
+    /// Makes a texture that sees levels and slices of another in another format of the same texel size.
+    fn make_texture_view(
+        &mut self,
+        texture: &Self::Texture,
+        descriptor: &TextureViewDescriptor,
+    ) -> Result<Self::Texture, MakeTextureViewError>;
+    fn make_sampler_state(
+        &mut self,
+        descriptor: &SamplerDescriptor,
+    ) -> Result<Self::SamplerState, MakeSamplerStateError>;
+    fn make_depth_stencil_state(
+        &mut self,
+        descriptor: &DepthStencilDescriptor,
+    ) -> Result<Self::DepthStencilState, MakeDepthStencilStateError>;
+    /// Writes one entry point of a module as Metal Shading Language with every access bounds-checked, and compiles it.
+    fn make_function(
+        &mut self,
+        source: &FunctionSource<'_>,
+    ) -> Result<Self::Function, MakeFunctionError>;
+    fn make_render_pipeline_state(
+        &mut self,
+        descriptor: &RenderPipelineDescriptor<'_, Self>,
+    ) -> Result<Self::RenderPipelineState, MakeRenderPipelineStateError>;
+    /// Makes a pipeline that runs a compute function, its threadgroup the size the function declares.
+    fn make_compute_pipeline_state(
+        &mut self,
+        function: &Self::Function,
+    ) -> Result<Self::ComputePipelineState, MakeComputePipelineStateError>;
+    /// Makes a command buffer that keeps every resource encoded into it until it completes.
+    fn make_command_buffer(&mut self) -> Result<Self::CommandBuffer, MakeCommandBufferError>;
+    /// Encodes one render pass of `commands` into the command buffer, checking each draw against what is bound.
+    fn encode_render_commands(
+        &mut self,
+        command_buffer: &Self::CommandBuffer,
+        pass: &RenderPassDescriptor<'_, Self>,
+        commands: &[RenderCommand<Self>],
+    ) -> Result<(), EncodeRenderCommandsError>;
+    /// Encodes copies and fills into the command buffer, in order.
+    fn encode_blit_commands(
+        &mut self,
+        command_buffer: &Self::CommandBuffer,
+        commands: &[BlitCommand<Self>],
+    ) -> Result<(), EncodeBlitCommandsError>;
+    /// Encodes dispatches into the command buffer, checking each against what is bound.
+    fn encode_compute_commands(
+        &mut self,
+        command_buffer: &Self::CommandBuffer,
+        commands: &[ComputeCommand<Self>],
+    ) -> Result<(), EncodeComputeCommandsError>;
+    /// Sends the command buffer to the GPU, after every command buffer committed before it.
+    fn commit(&mut self, command_buffer: &Self::CommandBuffer) -> Result<(), CommitError>;
+    /// Blocks the calling thread until the committed command buffer has completed.
+    fn wait_until_completed(
+        &mut self,
+        command_buffer: &Self::CommandBuffer,
+    ) -> Result<(), WaitUntilCompletedError>;
+    /// Returns how far the GPU has come with the command buffer.
+    fn status(&self, command_buffer: &Self::CommandBuffer) -> CommandBufferStatus;
+}
+
+/// A Metal device made on its own, on the system's default GPU.
+pub trait StandaloneMetal: Metal {
+    type Config;
+
+    fn new(config: Self::Config) -> Self;
+}
+
+/// The most color attachments a pass or a render pipeline has.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+pub const MAX_COLOR_ATTACHMENTS: usize = 8;
+
+/// The most buffer, texture and sampler slots one stage reads, each kind counted apart, buffers first.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+pub const MAX_BUFFER_SLOTS: u32 = 31;
+
+/// The most texture slots one stage reads.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+pub const MAX_TEXTURE_SLOTS: u32 = 128;
+
+/// The most sampler slots one stage reads.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+pub const MAX_SAMPLER_SLOTS: u32 = 16;
+
+/// The most viewports and scissor rectangles one draw has.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+pub const MAX_VIEWPORTS: usize = 16;
+
+/// The layout of texels in a texture, by Metal's names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PixelFormat {
+    A8Unorm,
+    R8Unorm,
+    R8UnormSrgb,
+    R8Snorm,
+    R8Uint,
+    R8Sint,
+    R16Unorm,
+    R16Snorm,
+    R16Uint,
+    R16Sint,
+    R16Float,
+    Rg8Unorm,
+    Rg8Snorm,
+    Rg8Uint,
+    Rg8Sint,
+    B5g6r5Unorm,
+    A1bgr5Unorm,
+    Abgr4Unorm,
+    Bgr5a1Unorm,
+    R32Uint,
+    R32Sint,
+    R32Float,
+    Rg16Unorm,
+    Rg16Snorm,
+    Rg16Uint,
+    Rg16Sint,
+    Rg16Float,
+    Rgba8Unorm,
+    Rgba8UnormSrgb,
+    Rgba8Snorm,
+    Rgba8Uint,
+    Rgba8Sint,
+    Bgra8Unorm,
+    Bgra8UnormSrgb,
+    Rgb10a2Unorm,
+    Rgb10a2Uint,
+    Rg11b10Float,
+    Rgb9e5Float,
+    Rg32Uint,
+    Rg32Sint,
+    Rg32Float,
+    Rgba16Unorm,
+    Rgba16Snorm,
+    Rgba16Uint,
+    Rgba16Sint,
+    Rgba16Float,
+    Rgba32Uint,
+    Rgba32Sint,
+    Rgba32Float,
+    Bc1Rgba,
+    Bc1RgbaSrgb,
+    Bc2Rgba,
+    Bc2RgbaSrgb,
+    Bc3Rgba,
+    Bc3RgbaSrgb,
+    Bc4RUnorm,
+    Bc4RSnorm,
+    Bc5RgUnorm,
+    Bc5RgSnorm,
+    Bc6hRgbFloat,
+    Bc6hRgbUfloat,
+    Bc7RgbaUnorm,
+    Bc7RgbaUnormSrgb,
+    Etc2Rgb8,
+    Etc2Rgb8Srgb,
+    EacRgba8,
+    EacRgba8Srgb,
+    Astc4x4Ldr,
+    Astc4x4Srgb,
+    Depth16Unorm,
+    Depth32Float,
+    Stencil8,
+    Depth32FloatStencil8,
+    X32Stencil8,
+}
+
+/// The shape of a texture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureType {
+    Type2D,
+    Type2DArray,
+    Type2DMultisample,
+    TypeCube,
+    TypeCubeArray,
+    Type3D,
+}
+
+/// The ways a texture is used besides copies, which every texture takes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureUsage {
+    pub shader_read: bool,
+    pub shader_write: bool,
+    pub render_target: bool,
+    /// Views of it may take another format of the same texel size.
+    pub pixel_format_view: bool,
+}
+
+/// A texture to make.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureDescriptor {
+    pub texture_type: TextureType,
+    pub pixel_format: PixelFormat,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub mipmap_level_count: u32,
+    pub sample_count: u32,
+    /// Layers of an array type, cubes of a cube array; one otherwise.
+    pub array_length: u32,
+    pub usage: TextureUsage,
+}
+
+/// The part of a texture a view sees, and how.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct TextureViewDescriptor {
+    pub pixel_format: PixelFormat,
+    pub texture_type: TextureType,
+    pub first_level: u32,
+    pub level_count: u32,
+    /// The first slice: a layer, or a face of a cube counted across every cube.
+    pub first_slice: u32,
+    pub slice_count: u32,
+}
+
+/// How a sampler filters between texels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SamplerMinMagFilter {
+    Nearest,
+    Linear,
+}
+
+/// How a sampler filters between levels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SamplerMipFilter {
+    NotMipmapped,
+    Nearest,
+    Linear,
+}
+
+/// What a sampler reads outside the texture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SamplerAddressMode {
+    ClampToEdge,
+    MirrorClampToEdge,
+    Repeat,
+    MirrorRepeat,
+    ClampToZero,
+    ClampToBorderColor,
+}
+
+/// The color `SamplerAddressMode::ClampToBorderColor` reads.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SamplerBorderColor {
+    TransparentBlack,
+    OpaqueBlack,
+    OpaqueWhite,
+}
+
+/// A comparison of a new value, on the left, with a stored one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CompareFunction {
+    Never,
+    Less,
+    Equal,
+    LessEqual,
+    Greater,
+    NotEqual,
+    GreaterEqual,
+    Always,
+}
+
+/// A sampler state to make.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SamplerDescriptor {
+    pub min_filter: SamplerMinMagFilter,
+    pub mag_filter: SamplerMinMagFilter,
+    pub mip_filter: SamplerMipFilter,
+    pub s_address_mode: SamplerAddressMode,
+    pub t_address_mode: SamplerAddressMode,
+    pub r_address_mode: SamplerAddressMode,
+    pub border_color: SamplerBorderColor,
+    pub lod_min_clamp: f32,
+    pub lod_max_clamp: f32,
+    /// One to 16.
+    pub max_anisotropy: u32,
+    /// The comparison of a comparison sampler, which a function reads depth through.
+    pub compare_function: Option<CompareFunction>,
+}
+
+/// What a stencil test does with the stored value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StencilOperation {
+    Keep,
+    Zero,
+    Replace,
+    IncrementClamp,
+    DecrementClamp,
+    Invert,
+    IncrementWrap,
+    DecrementWrap,
+}
+
+/// One face's stencil test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct StencilDescriptor {
+    pub stencil_compare_function: CompareFunction,
+    pub stencil_failure_operation: StencilOperation,
+    pub depth_failure_operation: StencilOperation,
+    pub depth_stencil_pass_operation: StencilOperation,
+    pub read_mask: u32,
+    pub write_mask: u32,
+}
+
+/// A depth and stencil state to make; no stencil descriptor keeps the stencil and passes its test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct DepthStencilDescriptor {
+    pub depth_compare_function: CompareFunction,
+    pub depth_write_enabled: bool,
+    pub front_face_stencil: Option<StencilDescriptor>,
+    pub back_face_stencil: Option<StencilDescriptor>,
+}
+
+/// Which slot one resource binding of a module is read through: a buffer, texture or sampler slot by its type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ResourceSlot {
+    pub group: u32,
+    pub binding: u32,
+    pub index: u32,
+}
+
+/// How a vertex buffer advances.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VertexStepFunction {
+    /// Every vertex and instance reads the first element.
+    Constant,
+    PerVertex,
+    PerInstance,
+}
+
+/// How a vertex attribute is stored, by Metal's names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VertexFormat {
+    UChar2,
+    UChar4,
+    Char2,
+    Char4,
+    UChar2Normalized,
+    UChar4Normalized,
+    Char2Normalized,
+    Char4Normalized,
+    UShort2,
+    UShort4,
+    Short2,
+    Short4,
+    UShort2Normalized,
+    UShort4Normalized,
+    Short2Normalized,
+    Short4Normalized,
+    Half2,
+    Half4,
+    Float,
+    Float2,
+    Float3,
+    Float4,
+    UInt,
+    UInt2,
+    UInt3,
+    UInt4,
+    Int,
+    Int2,
+    Int3,
+    Int4,
+    UChar,
+    Char,
+    UCharNormalized,
+    CharNormalized,
+    UShort,
+    Short,
+    UShortNormalized,
+    ShortNormalized,
+    Half,
+    UInt1010102Normalized,
+    UChar4NormalizedBgra,
+}
+
+/// One attribute of a vertex buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct VertexAttribute {
+    /// The vertex input it feeds.
+    pub location: u32,
+    pub offset: u32,
+    pub format: VertexFormat,
+}
+
+/// A vertex buffer a vertex function reads its inputs from, bounds-checked by the function itself.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct VertexBufferLayout {
+    pub buffer_index: u32,
+    pub stride: u32,
+    pub step_function: VertexStepFunction,
+    pub attributes: Vec<VertexAttribute>,
+}
+
+/// One entry point of a validated module, and where its resources come from.
+#[derive(Clone, Copy, Debug)]
+pub struct FunctionSource<'a> {
+    pub module: &'a naga::Module,
+    pub info: &'a naga::valid::ModuleInfo,
+    pub stage: naga::ShaderStage,
+    pub entry_point: &'a str,
+    /// A slot for every resource binding the entry point reads.
+    pub resources: &'a [ResourceSlot],
+    /// The buffer slot of the module's immediates, if it has any.
+    pub immediates_buffer_index: u32,
+    /// The buffer slot the lengths of bound buffers are passed in, which the bounds checks read.
+    pub sizes_buffer_index: u32,
+    /// The buffers a vertex function reads its inputs from.
+    pub vertex_buffers: &'a [VertexBufferLayout],
+    /// The function draws points, whose size it writes.
+    pub point_size: bool,
+}
+
+/// A factor a blend multiplies by.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BlendFactor {
+    Zero,
+    One,
+    SourceColor,
+    OneMinusSourceColor,
+    SourceAlpha,
+    OneMinusSourceAlpha,
+    DestinationColor,
+    OneMinusDestinationColor,
+    DestinationAlpha,
+    OneMinusDestinationAlpha,
+    SourceAlphaSaturated,
+    BlendColor,
+    OneMinusBlendColor,
+    BlendAlpha,
+    OneMinusBlendAlpha,
+    Source1Color,
+    OneMinusSource1Color,
+    Source1Alpha,
+    OneMinusSource1Alpha,
+}
+
+/// How a blend joins the two products.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BlendOperation {
+    Add,
+    Subtract,
+    ReverseSubtract,
+    Min,
+    Max,
+}
+
+/// A color attachment's blend.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Blending {
+    pub rgb_blend_operation: BlendOperation,
+    pub alpha_blend_operation: BlendOperation,
+    pub source_rgb_blend_factor: BlendFactor,
+    pub destination_rgb_blend_factor: BlendFactor,
+    pub source_alpha_blend_factor: BlendFactor,
+    pub destination_alpha_blend_factor: BlendFactor,
+}
+
+/// The channels a color attachment keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ColorWriteMask {
+    pub red: bool,
+    pub green: bool,
+    pub blue: bool,
+    pub alpha: bool,
+}
+
+/// One color attachment of a render pipeline.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RenderPipelineColorAttachmentDescriptor {
+    pub pixel_format: PixelFormat,
+    /// No blending writes the fragment's value.
+    pub blending: Option<Blending>,
+    pub write_mask: ColorWriteMask,
+}
+
+/// The kind of primitive a render pipeline draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PrimitiveTopologyClass {
+    Point,
+    Line,
+    Triangle,
+}
+
+/// A render pipeline to make.
+#[derive(Debug)]
+pub struct RenderPipelineDescriptor<'a, M: Metal + ?Sized> {
+    pub vertex_function: &'a M::Function,
+    pub fragment_function: Option<&'a M::Function>,
+    pub color_attachments: [Option<RenderPipelineColorAttachmentDescriptor>; MAX_COLOR_ATTACHMENTS],
+    pub depth_attachment_pixel_format: Option<PixelFormat>,
+    pub stencil_attachment_pixel_format: Option<PixelFormat>,
+    pub raster_sample_count: u32,
+    pub alpha_to_coverage_enabled: bool,
+    /// False draws nothing: the vertex function only writes buffers.
+    pub rasterization_enabled: bool,
+    pub input_primitive_topology: PrimitiveTopologyClass,
+}
+
+/// What an attachment holds when a pass begins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LoadAction {
+    DontCare,
+    Load,
+    Clear,
+}
+
+/// What an attachment keeps when a pass ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum StoreAction {
+    DontCare,
+    Store,
+}
+
+/// The texture a multisampled attachment is resolved into when its pass ends.
+#[derive(Debug)]
+pub struct ResolveTarget<'a, M: Metal + ?Sized> {
+    pub texture: &'a M::Texture,
+    pub level: u32,
+    pub slice: u32,
+    pub depth_plane: u32,
+}
+
+/// One color attachment of a pass.
+#[derive(Debug)]
+pub struct RenderPassColorAttachment<'a, M: Metal + ?Sized> {
+    pub texture: &'a M::Texture,
+    pub level: u32,
+    pub slice: u32,
+    pub depth_plane: u32,
+    pub load_action: LoadAction,
+    pub store_action: StoreAction,
+    /// The color `LoadAction::Clear` writes, converted to the attachment's format.
+    pub clear_color: [f64; 4],
+    pub resolve: Option<ResolveTarget<'a, M>>,
+}
+
+/// The depth or the stencil attachment of a pass.
+#[derive(Debug)]
+pub struct RenderPassDepthStencilAttachment<'a, M: Metal + ?Sized> {
+    pub texture: &'a M::Texture,
+    pub level: u32,
+    pub slice: u32,
+    pub load_action: LoadAction,
+    pub store_action: StoreAction,
+    /// The depth or the stencil value `LoadAction::Clear` writes.
+    pub clear_value: f64,
+}
+
+/// A render pass to encode; with no attachment it draws into an area of the given size and sample count.
+#[derive(Debug)]
+pub struct RenderPassDescriptor<'a, M: Metal + ?Sized> {
+    pub color_attachments: [Option<RenderPassColorAttachment<'a, M>>; MAX_COLOR_ATTACHMENTS],
+    pub depth_attachment: Option<RenderPassDepthStencilAttachment<'a, M>>,
+    pub stencil_attachment: Option<RenderPassDepthStencilAttachment<'a, M>>,
+    /// The buffer occlusion counts land in, eight bytes each.
+    pub visibility_result_buffer: Option<&'a M::Buffer>,
+    pub render_target_width: u32,
+    pub render_target_height: u32,
+    pub default_raster_sample_count: u32,
+}
+
+/// A viewport, in pixels and depth.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Viewport {
+    pub origin_x: f64,
+    pub origin_y: f64,
+    pub width: f64,
+    pub height: f64,
+    pub znear: f64,
+    pub zfar: f64,
+}
+
+/// A scissor rectangle in pixels, inside the pass's area.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ScissorRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Which faces a draw drops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CullMode {
+    None,
+    Front,
+    Back,
+}
+
+/// Which winding faces the viewer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Winding {
+    Clockwise,
+    CounterClockwise,
+}
+
+/// How triangles are filled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TriangleFillMode {
+    Fill,
+    Lines,
+}
+
+/// Whether depth outside the viewport's range is clipped or clamped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DepthClipMode {
+    Clip,
+    Clamp,
+}
+
+/// How occlusion counts are kept while drawing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VisibilityResultMode {
+    Disabled,
+    /// Non-zero where any sample passed.
+    Boolean,
+    /// The number of samples that passed.
+    Counting,
+}
+
+/// The primitives a draw makes of its vertices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PrimitiveType {
+    Point,
+    Line,
+    LineStrip,
+    Triangle,
+    TriangleStrip,
+}
+
+/// The width of index values; the largest value restarts strips.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum IndexType {
+    UInt16,
+    UInt32,
+}
+
+/// One command of a render pass, which later draws in the pass see until another command replaces it.
+#[derive(Clone, Debug)]
+pub enum RenderCommand<M: Metal + ?Sized> {
+    SetRenderPipelineState(M::RenderPipelineState),
+    SetDepthStencilState(M::DepthStencilState),
+    SetVertexBuffer {
+        buffer: M::Buffer,
+        offset: u64,
+        index: u32,
+    },
+    SetFragmentBuffer {
+        buffer: M::Buffer,
+        offset: u64,
+        index: u32,
+    },
+    SetVertexBytes {
+        bytes: Vec<u8>,
+        index: u32,
+    },
+    SetFragmentBytes {
+        bytes: Vec<u8>,
+        index: u32,
+    },
+    SetVertexTexture {
+        texture: M::Texture,
+        index: u32,
+    },
+    SetFragmentTexture {
+        texture: M::Texture,
+        index: u32,
+    },
+    SetVertexSamplerState {
+        sampler: M::SamplerState,
+        index: u32,
+    },
+    SetFragmentSamplerState {
+        sampler: M::SamplerState,
+        index: u32,
+    },
+    SetViewports(Vec<Viewport>),
+    SetScissorRects(Vec<ScissorRect>),
+    SetCullMode(CullMode),
+    SetFrontFacingWinding(Winding),
+    SetTriangleFillMode(TriangleFillMode),
+    SetDepthClipMode(DepthClipMode),
+    SetDepthBias {
+        depth_bias: f32,
+        slope_scale: f32,
+        clamp: f32,
+    },
+    SetBlendColor([f32; 4]),
+    SetStencilReferenceValues {
+        front: u32,
+        back: u32,
+    },
+    /// Counts into the pass's visibility result buffer at `offset`, a multiple of eight.
+    SetVisibilityResultMode {
+        mode: VisibilityResultMode,
+        offset: u64,
+    },
+    DrawPrimitives {
+        primitive_type: PrimitiveType,
+        vertex_start: u32,
+        vertex_count: u32,
+        instance_count: u32,
+        base_instance: u32,
+    },
+    DrawIndexedPrimitives {
+        primitive_type: PrimitiveType,
+        index_count: u32,
+        index_type: IndexType,
+        index_buffer: M::Buffer,
+        index_buffer_offset: u64,
+        instance_count: u32,
+        base_vertex: i32,
+        base_instance: u32,
+    },
+}
+
+/// A point in a texture level, in texels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Origin {
+    pub x: u32,
+    pub y: u32,
+    pub z: u32,
+}
+
+/// An extent in texels, or a count of threadgroups.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Size {
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+}
+
+/// Which aspect of a depth and stencil texture a copy between a buffer and the texture moves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BlitOption {
+    None,
+    DepthFromDepthStencil,
+    StencilFromDepthStencil,
+}
+
+/// One copy or fill.
+#[derive(Clone, Debug)]
+pub enum BlitCommand<M: Metal + ?Sized> {
+    /// Copies bytes; one buffer may be both when the ranges do not overlap.
+    CopyFromBufferToBuffer {
+        source_buffer: M::Buffer,
+        source_offset: u64,
+        destination_buffer: M::Buffer,
+        destination_offset: u64,
+        size: u64,
+    },
+    CopyFromBufferToTexture {
+        source_buffer: M::Buffer,
+        source_offset: u64,
+        source_bytes_per_row: u64,
+        source_bytes_per_image: u64,
+        source_size: Size,
+        destination_texture: M::Texture,
+        destination_slice: u32,
+        destination_level: u32,
+        destination_origin: Origin,
+        options: BlitOption,
+    },
+    CopyFromTextureToBuffer {
+        source_texture: M::Texture,
+        source_slice: u32,
+        source_level: u32,
+        source_origin: Origin,
+        source_size: Size,
+        destination_buffer: M::Buffer,
+        destination_offset: u64,
+        destination_bytes_per_row: u64,
+        destination_bytes_per_image: u64,
+        options: BlitOption,
+    },
+    /// Copies texels of one slice and level; one texture may be both when the regions do not overlap.
+    CopyFromTextureToTexture {
+        source_texture: M::Texture,
+        source_slice: u32,
+        source_level: u32,
+        source_origin: Origin,
+        source_size: Size,
+        destination_texture: M::Texture,
+        destination_slice: u32,
+        destination_level: u32,
+        destination_origin: Origin,
+    },
+    FillBuffer {
+        buffer: M::Buffer,
+        offset: u64,
+        length: u64,
+        value: u8,
+    },
+}
+
+/// One command of a compute pass, which later dispatches see until another command replaces it.
+#[derive(Clone, Debug)]
+pub enum ComputeCommand<M: Metal + ?Sized> {
+    SetComputePipelineState(M::ComputePipelineState),
+    SetBuffer {
+        buffer: M::Buffer,
+        offset: u64,
+        index: u32,
+    },
+    SetBytes {
+        bytes: Vec<u8>,
+        index: u32,
+    },
+    SetTexture {
+        texture: M::Texture,
+        index: u32,
+    },
+    SetSamplerState {
+        sampler: M::SamplerState,
+        index: u32,
+    },
+    DispatchThreadgroups(Size),
+}
+
+/// How far the GPU has come with a command buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CommandBufferStatus {
+    NotEnqueued,
+    Enqueued,
+    Committed,
+    Scheduled,
+    Completed,
+    Error,
+}
+
+/// Why a buffer was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MakeBufferError {
+    /// Longer than the device's longest buffer.
+    TooLong,
+    /// Metal made none.
+    Refused,
+}
+
+/// Why bytes were not written into a buffer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WriteContentsError {
+    OutOfRange,
+    /// A command buffer not yet committed uses the buffer, so waiting for it would never end.
+    UsedByUncommittedWork,
+}
+
+/// Why bytes were not read from a buffer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ReadContentsError {
+    OutOfRange,
+    /// A command buffer not yet committed uses the buffer, so waiting for it would never end.
+    UsedByUncommittedWork,
+}
+
+/// Why a texture was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MakeTextureError {
+    /// A size, level count, sample count or array length the type and format do not take.
+    Invalid(&'static str),
+    Refused,
+}
+
+/// Why a texture view was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MakeTextureViewError {
+    /// Levels or slices outside the texture.
+    OutOfRange,
+    /// A format or type the texture cannot be seen as.
+    Incompatible,
+    Refused,
+}
+
+/// Why a sampler state was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MakeSamplerStateError {
+    Invalid(&'static str),
+    Refused,
+}
+
+/// Why a depth and stencil state was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MakeDepthStencilStateError {
+    Refused,
+}
+
+/// Why a function was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MakeFunctionError {
+    /// A stage, binding or type this crate does not check, such as a texture the function writes.
+    Unchecked(String),
+    /// The module could not be written as Metal Shading Language.
+    Translation(String),
+    /// Metal's compiler refused the written function.
+    Compilation(String),
+}
+
+/// Why a render pipeline was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MakeRenderPipelineStateError {
+    /// A function of the wrong stage, or attachments the functions do not fit.
+    Invalid(&'static str),
+    Refused(String),
+}
+
+/// Why a compute pipeline was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MakeComputePipelineStateError {
+    /// The function is not a compute function.
+    NotCompute,
+    Refused(String),
+}
+
+/// Why a command buffer was not made.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MakeCommandBufferError {
+    Refused,
+}
+
+/// Why a render pass was not encoded; nothing of it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EncodeRenderCommandsError {
+    /// The command buffer was already committed.
+    Committed,
+    /// An attachment that does not fit the pass, or a command that breaks a rule of the pass.
+    Invalid(&'static str),
+    /// A range outside its resource.
+    OutOfRange(&'static str),
+    /// A draw whose functions read a slot no command filled, or filled with the wrong kind of resource.
+    Unbound(&'static str),
+}
+
+/// Why copies and fills were not encoded; none of them is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EncodeBlitCommandsError {
+    /// The command buffer was already committed.
+    Committed,
+    /// A copy between formats or aspects Metal does not copy, or between overlapping ranges.
+    Invalid(&'static str),
+    /// A range outside its resource.
+    OutOfRange(&'static str),
+}
+
+/// Why dispatches were not encoded; none of them is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EncodeComputeCommandsError {
+    /// The command buffer was already committed.
+    Committed,
+    Invalid(&'static str),
+    OutOfRange(&'static str),
+    /// A dispatch whose function reads a slot no command filled, or filled with the wrong kind of resource.
+    Unbound(&'static str),
+}
+
+/// Why a command buffer was not committed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommitError {
+    AlreadyCommitted,
+}
+
+/// Why a command buffer was not waited for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WaitUntilCompletedError {
+    /// Waiting for a command buffer not committed would never end.
+    NotCommitted,
+}

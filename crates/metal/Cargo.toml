@@ -1,0 +1,13 @@
+[package]
+name = "wcontainers-metal"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "interface.rs"
+
+[dependencies]
+naga.workspace = true
+
+[lints]
+workspace = true
