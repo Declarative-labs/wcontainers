@@ -4,6 +4,7 @@
 use iced_x86::Register;
 
 use crate::behavior::UndefinedFlags;
+use crate::evex::{EvexForm, EvexOperation, find_evex_form};
 use crate::float::{FloatForm, FloatOperation, Precision, find_float_form};
 use crate::integer::{
     BitChange, Condition, OperandPlace, Operation, Outcome, find_integer_form, sign_extend, subtract_with_borrow,
@@ -29,6 +30,8 @@ pub enum Origin {
     Port,
     /// The sync that lists every form, for the behavior that raises #UD.
     WholeList,
+    /// The second half of AVX-512's forms.
+    EvexSecondHalf,
 }
 
 /// The forms a bug shows on.
@@ -50,6 +53,8 @@ pub enum Family {
     VexVector,
     /// Every form a chip may lack.
     Optional,
+    /// The EVEX forms of [`crate::evex`] the test accepts.
+    Evex(fn(&EvexForm) -> bool),
     Every,
 }
 
@@ -80,6 +85,7 @@ impl PlantedBug {
             Family::Forms(forms) => forms.contains(&instruction),
             Family::VexVector => find_vector_form(instruction).is_some_and(|form| form.encoding != VectorEncoding::Legacy),
             Family::Optional => crate::is_optional(instruction),
+            Family::Evex(test) => find_evex_form(instruction).is_some_and(|form| test(&form)),
             Family::Every => true,
         }
     }
@@ -541,6 +547,23 @@ pub enum Bug {
     // The whole list.
     /// A form the chip lacks raises #GP(0), not #UD.
     UndefinedRaisesGeneralProtection,
+    // The second half of AVX-512.
+    /// An element the opmask register leaves out under zeroing keeps the destination's value.
+    EvexZeroingMerges,
+    /// Exception suppression and embedded rounding still record the flags and raise #XM.
+    EvexSuppressedExceptionsFlagged,
+    /// A scalar form keeps the destination's bits beyond 128.
+    EvexScalarKeepsUpperBits,
+    /// A write to ZMM16 to ZMM31 goes to the register 16 below.
+    EvexHighRegistersAliasLow,
+    /// The opmask register is ignored: every element is computed.
+    EvexMaskIgnored,
+    /// Embedded rounding uses MXCSR's rounding mode.
+    EvexEmbeddedRoundingIgnored,
+    /// A broadcast source is read as a whole vector.
+    EvexBroadcastReadsVector,
+    /// An element the opmask register leaves out still faults.
+    EvexMaskedFaultNotSuppressed,
     // Fifth check.
     /// SUB takes AF from bit 4 of the result.
     SubtractAuxiliaryFromResultBitFour,
@@ -703,8 +726,8 @@ const fn integer(test: fn(Operation) -> bool) -> Family {
 }
 
 use Origin::{
-    FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck, SecondPass, ThirdCheck, ThirdPass,
-    WholeList,
+    EvexSecondHalf, FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck, SecondPass,
+    ThirdCheck, ThirdPass, WholeList,
 };
 
 /// Every planted bug of every pass and check, with its family.
@@ -1005,7 +1028,20 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::VexWideReadsSixteenBytes, "VEX lane operations", Family::VexVector, Port),
     row(Bug::VexFirstSourceIsDestination, "VEX lane operations", Family::VexVector, Port),
     row(Bug::UndefinedRaisesGeneralProtection, "forms a chip may lack", Family::Optional, WholeList),
+    row(Bug::EvexZeroingMerges, "EVEX forms", Family::Evex(|_| true), EvexSecondHalf),
+    row(Bug::EvexSuppressedExceptionsFlagged, "EVEX floating-point register forms", Family::Evex(is_float_register_form), EvexSecondHalf),
+    row(Bug::EvexScalarKeepsUpperBits, "EVEX scalar forms", Family::Evex(|form| form.elements() == 1), EvexSecondHalf),
+    row(Bug::EvexHighRegistersAliasLow, "EVEX forms", Family::Evex(|_| true), EvexSecondHalf),
+    row(Bug::EvexMaskIgnored, "EVEX forms", Family::Evex(|_| true), EvexSecondHalf),
+    row(Bug::EvexEmbeddedRoundingIgnored, "EVEX forms with embedded rounding", Family::Evex(|form| form.code.op_code().can_use_rounding_control()), EvexSecondHalf),
+    row(Bug::EvexBroadcastReadsVector, "EVEX forms that broadcast", Family::Evex(|form| form.place != OperandPlace::Register && form.code.op_code().can_broadcast()), EvexSecondHalf),
+    row(Bug::EvexMaskedFaultNotSuppressed, "EVEX forms with memory", Family::Evex(|form| form.place != OperandPlace::Register), EvexSecondHalf),
 ];
+
+/// Whether the EVEX form computes floating-point elements from registers alone.
+fn is_float_register_form(form: &EvexForm) -> bool {
+    matches!(form.operation, EvexOperation::Float { .. }) && form.place == OperandPlace::Register
+}
 
 #[cfg(feature = "planted-bugs")]
 static ACTIVE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);

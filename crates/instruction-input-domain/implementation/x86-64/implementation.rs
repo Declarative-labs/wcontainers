@@ -24,6 +24,7 @@ use itertools::Itertools;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
+use wcontainers_processor_architecture_x86_64::evex::find_evex_form;
 use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -34,6 +35,7 @@ use wcontainers_processor_architecture_x86_64::{
 };
 
 pub mod branch;
+pub mod evex;
 pub mod float;
 pub mod integer;
 pub mod vector;
@@ -148,6 +150,18 @@ pub enum OperandType {
     AddressSize,
     /// The sample encoding of a form not yet modeled, at its page's start with every register as the domain fills it.
     SampleEncoding,
+    /// An EVEX register form's three registers and how its bytes lie.
+    EvexEncoding,
+    /// The first source register of an EVEX form with a memory operand.
+    EvexRegister,
+    /// The opmask register an EVEX form with a memory operand names, and its value, for a form of this many
+    /// elements.
+    EvexMask(usize),
+    /// Whether an EVEX form's memory source is one element broadcast.
+    EvexBroadcast,
+    /// The two sources of a floating-point EVEX form and MXCSR; for a register form also the opmask and the
+    /// embedded rounding or exception suppression.
+    EvexFloatData(evex::EvexFloatData),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -261,6 +275,18 @@ pub enum OperandValue {
     Mxcsr(u32),
     AddressSize(AddressSize),
     SampleEncoding,
+    EvexEncoding(evex::EvexEncoding),
+    EvexMask(evex::EvexMask),
+    Broadcast(bool),
+    /// Two ZMM values, lowest 128 bits first, an opmask (k0 where the form's own operand gives it), an embedded
+    /// control and MXCSR.
+    EvexFloatData {
+        first: [u128; 4],
+        second: [u128; 4],
+        mask: evex::EvexMask,
+        control: evex::EmbeddedControl,
+        mxcsr: u32,
+    },
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -289,6 +315,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_branch_form(instruction) {
             return branch::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_evex_form(instruction) {
+            return evex::list_operand_types(&form).into_iter();
         }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
@@ -453,6 +482,11 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::Immediate(class) => integer::generate_immediates(class),
             OperandType::AddressSize => [AddressSize::Bits64, AddressSize::Bits32].map(OperandValue::AddressSize).to_vec(),
             OperandType::SampleEncoding => vec![OperandValue::SampleEncoding],
+            OperandType::EvexEncoding => evex::generate_encodings(),
+            OperandType::EvexRegister => evex::generate_first_sources(),
+            OperandType::EvexMask(set) => evex::generate_masks(set),
+            OperandType::EvexBroadcast => vec![OperandValue::Broadcast(false), OperandValue::Broadcast(true)],
+            OperandType::EvexFloatData(data) => evex::generate_float_data(data),
         };
         values.into_iter()
     }
@@ -489,6 +523,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_branch_form(instruction) {
             return branch::build_state(form, &typed);
+        }
+        if let Some(form) = find_evex_form(instruction) {
+            return evex::build_state(&form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -654,6 +691,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_vector_form(instruction).is_some()
         || find_float_form(instruction).is_some()
         || find_branch_form(instruction).is_some()
+        || find_evex_form(instruction).is_some()
         || find_privileged_codes(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }

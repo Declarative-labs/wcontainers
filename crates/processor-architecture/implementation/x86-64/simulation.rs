@@ -17,6 +17,10 @@ use crate::memory::{read_bytes, read_permission};
 use crate::planted::{Bug, is_active};
 use crate::float::{ORDER_FLAGS, find_float_form};
 use crate::vector::{VectorEncoding, VectorForm, find_vector_form};
+
+// The EVEX skeleton, which reads memory as this module's formulas do.
+#[path = "evex_simulation.rs"]
+mod evex_simulation;
 use crate::{
     Access, DataAccess, Exception, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission,
     PreciseInstruction, Processor, ProcessorExpectation, STACK_POINTER, VIRTUAL_ADDRESS_BITS, X86_64,
@@ -181,6 +185,7 @@ fn apply(
         PreciseInstruction::Vector(instruction) => execute_vector(instruction, processor, memory, decoded),
         PreciseInstruction::Float(instruction) => execute_float(instruction, processor, memory, decoded),
         PreciseInstruction::Branch(instruction) => execute_branch(instruction, processor, decoded),
+        PreciseInstruction::Evex(instruction) => evex_simulation::execute_evex(instruction, processor, memory, decoded),
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS
                 .iter()

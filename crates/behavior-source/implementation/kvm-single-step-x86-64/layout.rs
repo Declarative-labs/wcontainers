@@ -19,6 +19,7 @@ pub const TASK_STATE_SEGMENT: u64 = GLOBAL_DESCRIPTOR_TABLE + 0x800;
 pub const INTERRUPT_DESCRIPTOR_TABLE: u64 = 0x2000;
 pub const HANDLER: u64 = 0x3000;
 pub const HANDLER_BYTES: u64 = 2 * PAGE_BYTES;
+/// Two pages, below the stack's.
 pub const SLOT: u64 = 0x5000;
 /// The stack an exception from ring 3 switches to, through the task state segment's RSP0.
 pub const STACK_TOP: u64 = 0x8000;
@@ -116,23 +117,32 @@ pub const FX_VECTOR_REGISTERS: usize = 160;
 pub const XSAVE_HEADER: usize = 512;
 /// The upper halves of YMM0 to YMM15, at the offset CPUID leaf 0xD, subleaf 2 gives in EBX.
 pub const XSAVE_AVX: usize = 576;
-/// The legacy area, the header and the AVX area, rounded up to the image's alignment.
-pub const XSAVE_IMAGE_BYTES: usize = 832;
+/// k0 to k7, at the offset of subleaf 5.
+pub const XSAVE_OPMASK: usize = 1088;
+/// Bits 256 to 511 of ZMM0 to ZMM15, at the offset of subleaf 6.
+pub const XSAVE_ZMM_HIGH_256: usize = 1152;
+/// ZMM16 to ZMM31, at the offset of subleaf 7.
+pub const XSAVE_HIGH_16_ZMM: usize = 1664;
+/// The legacy area, the header, the AVX area and AVX-512's three, which end on the image's alignment.
+pub const XSAVE_IMAGE_BYTES: usize = 2688;
 /// XCR0's bits: x87, SSE, AVX, then the opmask, ZMM_Hi256 and Hi16_ZMM components of AVX-512, then PKRU.
 pub const X87_COMPONENT: u64 = 1 << 0;
 pub const SSE_COMPONENT: u64 = 1 << 1;
 pub const AVX_COMPONENT: u64 = 1 << 2;
 pub const AVX_512_COMPONENTS: u64 = 0b111 << 5;
+pub const OPMASK_COMPONENT: u64 = 1 << 5;
+pub const ZMM_HIGH_256_COMPONENT: u64 = 1 << 6;
+pub const HIGH_16_ZMM_COMPONENT: u64 = 1 << 7;
 pub const PKRU_COMPONENT: u64 = 1 << 9;
 /// XCR0 as the source sets it: Linux's on this chip but for AMX's tile components, which KVM gives a guest only after
 /// a system call kvm-ioctls does not make.
 pub const EXTENDED_CONTROL_0: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS | PKRU_COMPONENT;
 /// The components the handler loads and saves: those the state holds, and x87's, which it checks is left alone.
-pub const SAVED_COMPONENTS: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT;
+pub const SAVED_COMPONENTS: u64 = X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT | AVX_512_COMPONENTS;
 /// The x87 control word after FNINIT, as Linux starts a program.
 pub const X87_CONTROL_DEFAULT: u16 = 0x037F;
 
-const _: () = assert!(size_of::<Slot>() as u64 <= PAGE_BYTES);
+const _: () = assert!(SLOT + size_of::<Slot>() as u64 <= STACK_TOP - PAGE_BYTES);
 
 /// The kernel's virtual address of a guest-physical address of the kernel.
 pub const fn to_kernel(physical: u64) -> u64 {

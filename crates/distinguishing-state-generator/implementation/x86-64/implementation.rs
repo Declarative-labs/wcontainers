@@ -30,6 +30,8 @@
 
 extern crate alloc;
 
+mod evex;
+
 use alloc::vec::{self, Vec};
 
 use iced_x86::OpCodeOperandKind;
@@ -42,6 +44,7 @@ use wcontainers_instruction_input_domain_x86_64::{
 };
 use wcontainers_processor_architecture::ExecutionState;
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
+use wcontainers_processor_architecture_x86_64::evex::find_evex_form;
 use wcontainers_processor_architecture_x86_64::integer::{OperandPlace, find_integer_form};
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -190,7 +193,8 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::Comparison
         | OperandType::CpuidLeaf
         | OperandType::CpuidSubleaf
-        | OperandType::CpuidUpperHalves => true,
+        | OperandType::CpuidUpperHalves
+        | OperandType::EvexFloatData(_) => true,
         _ => false,
     }
 }
@@ -224,6 +228,9 @@ fn find_access_shape(instruction: Instruction) -> Option<AccessShape> {
 
 /// The bytes the form's memory operand reaches, from the operand size and the form.
 fn find_access_bytes(instruction: Instruction, operands: &[Option<OperandValue>]) -> u64 {
+    if let Some(form) = find_evex_form(instruction) {
+        return evex::to_reference_bytes(&form, operands);
+    }
     if let Some(form) = find_vector_form(instruction) {
         return form.memory_bytes();
     }
@@ -246,6 +253,7 @@ fn decides_without_data(value: OperandValue, shape: Option<AccessShape>, width: 
     match value {
         OperandValue::Encoding(encoding) if relative => encoding.layout.faults_before_execution(),
         OperandValue::Encoding(encoding) => encoding.layout != CodeLayout::PageStart,
+        OperandValue::EvexEncoding(encoding) => encoding.layout != CodeLayout::PageStart,
         OperandValue::Access(access) => !is_plain(access) || shape.is_some_and(|shape| faults(access, shape, width)),
         _ => false,
     }

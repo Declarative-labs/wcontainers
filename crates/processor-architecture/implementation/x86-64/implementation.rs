@@ -1,5 +1,5 @@
 //! x86-64 as Linux runs a 64-bit program at ring 3: IF set, IOPL 0, CR0.AM set, UMIP, FSGSBASE, OSXSAVE and PKE
-//! on, and XCR0 enabling x87, SSE and AVX state, of which the state holds SSE's and AVX's.
+//! on, and XCR0 enabling x87, SSE, AVX and AVX-512 state, of which the state holds SSE's, AVX's and AVX-512's.
 //!
 //! A program's addresses are [`ADDRESSABLE`](ProcessorArchitecture::ADDRESSABLE), the lower canonical half. Every
 //! canonical address above it is the kernel's: present to the chip and refused to ring 3, so an access there is a
@@ -26,6 +26,7 @@ use wcontainers_processor_architecture::ProcessorArchitecture;
 mod behavior;
 pub mod branch;
 mod cpuid;
+pub mod evex;
 mod cpuid_recording;
 mod exception;
 mod flags;
@@ -60,6 +61,8 @@ pub const VIRTUAL_ADDRESS_BITS: u32 = 48;
 pub const GENERAL_PURPOSE_REGISTERS: usize = 16;
 /// XMM0 to XMM15.
 pub const VECTOR_REGISTERS: usize = 16;
+/// k0 to k7, AVX-512's opmask registers.
+pub const OPMASK_REGISTERS: usize = 8;
 /// The number of RSP among the general registers.
 pub const STACK_POINTER: usize = 4;
 /// What [MXCSR](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html) holds after reset and in a new Linux program: every exception masked, round to nearest.
@@ -131,6 +134,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(float::FLOAT_FORMS.iter().map(|form| form.instruction))
         .chain(branch::BRANCH_FORMS.iter().map(|form| form.instruction))
         .chain(vector::VEX_FORMS.iter().map(|form| form.instruction))
+        .chain(evex::list_evex_forms().into_iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -177,6 +181,9 @@ impl ProcessorArchitecture for X86_64 {
             && observed.mxcsr == expectation.mxcsr
             && observed.vector_registers == expectation.vector_registers
             && observed.upper_vector_halves == expectation.upper_vector_halves
+            && observed.zmm_upper_halves == expectation.zmm_upper_halves
+            && observed.high_vector_registers == expectation.high_vector_registers
+            && observed.opmask_registers == expectation.opmask_registers
             && observed.exception == expectation.exception
     }
 }
@@ -184,7 +191,7 @@ impl ProcessorArchitecture for X86_64 {
 /// The registers a program at ring 3 reads and writes, and the exception its last instruction raised.
 ///
 /// TODO: temporary placeholder until the rest of the state is designed: the x87 stack with its control, status and
-/// tag words and MMX; ZMM beyond 256 bits, XMM16 to XMM31 and the opmask registers; APX's R16 to R31; AMX's tile
+/// tag words and MMX; APX's R16 to R31; AMX's tile
 /// configuration and tiles; PKRU; CET's shadow stack pointer; the segment selectors; the trap flag. The chip source
 /// checks that an instruction leaves the x87 state and the selectors as they were.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -205,6 +212,12 @@ pub struct Processor {
     pub vector_registers: [u128; VECTOR_REGISTERS],
     /// Bits 128 to 255 of each vector register, the upper halves of YMM0 to YMM15, which XCR0's AVX bit enables.
     pub upper_vector_halves: [u128; VECTOR_REGISTERS],
+    /// Bits 256 to 383 and 384 to 511 of ZMM0 to ZMM15, which XCR0's ZMM_Hi256 bit enables.
+    pub zmm_upper_halves: [[u128; 2]; VECTOR_REGISTERS],
+    /// ZMM16 to ZMM31 whole, lowest 128 bits first, which XCR0's Hi16_ZMM bit enables.
+    pub high_vector_registers: [[u128; 4]; VECTOR_REGISTERS],
+    /// k0 to k7, which XCR0's opmask bit enables.
+    pub opmask_registers: [u64; OPMASK_REGISTERS],
     /// None when the last instruction completed.
     pub exception: Option<Exception>,
 }
@@ -229,6 +242,9 @@ pub struct ProcessorExpectation {
     pub mxcsr: u32,
     pub vector_registers: [u128; VECTOR_REGISTERS],
     pub upper_vector_halves: [u128; VECTOR_REGISTERS],
+    pub zmm_upper_halves: [[u128; 2]; VECTOR_REGISTERS],
+    pub high_vector_registers: [[u128; 4]; VECTOR_REGISTERS],
+    pub opmask_registers: [u64; OPMASK_REGISTERS],
     pub exception: Option<Exception>,
 }
 
@@ -244,6 +260,9 @@ impl Processor {
             mxcsr: self.mxcsr,
             vector_registers: self.vector_registers,
             upper_vector_halves: self.upper_vector_halves,
+            zmm_upper_halves: self.zmm_upper_halves,
+            high_vector_registers: self.high_vector_registers,
+            opmask_registers: self.opmask_registers,
             exception: self.exception,
         }
     }
@@ -259,6 +278,9 @@ pub const ZERO_PROCESSOR: Processor = Processor {
     mxcsr: MXCSR_DEFAULT,
     vector_registers: [0; VECTOR_REGISTERS],
     upper_vector_halves: [0; VECTOR_REGISTERS],
+    zmm_upper_halves: [[0; 2]; VECTOR_REGISTERS],
+    high_vector_registers: [[0; 4]; VECTOR_REGISTERS],
+    opmask_registers: [0; OPMASK_REGISTERS],
     exception: None,
 };
 
@@ -301,6 +323,8 @@ pub enum PreciseInstruction {
     Privileged(Instruction),
     /// A form of [`branch::BRANCH_FORMS`].
     Branch(Instruction),
+    /// A form of [`evex::EVEX_FORMS`], whose results the manuals define whole.
+    Evex(Instruction),
     /// A form of [`integer::INTEGER_FORMS`].
     Integer {
         instruction: Instruction,

@@ -25,7 +25,7 @@ pub const DENORMALS_ARE_ZEROS: u32 = 1 << 6;
 pub const MASK_SHIFT: u32 = 7;
 pub const ROUNDING_SHIFT: u32 = 13;
 pub const FLUSH_TO_ZERO: u32 = 1 << 15;
-const FLAGS: u32 = INVALID | DENORMAL | DIVIDE_BY_ZERO | OVERFLOW | UNDERFLOW | INEXACT;
+pub(crate) const FLAGS: u32 = INVALID | DENORMAL | DIVIDE_BY_ZERO | OVERFLOW | UNDERFLOW | INEXACT;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FloatOperation {
@@ -211,12 +211,12 @@ struct Operand {
 }
 
 /// A lane's result, or the exceptions that stop the instruction before it is computed.
-struct LaneOutcome {
-    bits: u64,
+pub(crate) struct LaneOutcome {
+    pub(crate) bits: u64,
     /// The flags of the exceptions detected before the computation.
-    before: u32,
+    pub(crate) before: u32,
     /// The flags of those detected after it.
-    after: u32,
+    pub(crate) after: u32,
 }
 
 impl Operand {
@@ -259,7 +259,7 @@ impl Operand {
 
 impl FloatOperation {
     /// Computes one lane from the destination's operand and the source's, under MXCSR.
-    fn compute(self, first: u64, second: u64, precision: Precision, mxcsr: u32, immediate: u8) -> LaneOutcome {
+    pub(crate) fn compute(self, first: u64, second: u64, precision: Precision, mxcsr: u32, immediate: u8) -> LaneOutcome {
         let single = precision == Precision::Single;
         let daz = mxcsr & DENORMALS_ARE_ZEROS != 0
             && !is_active(Bug::DenormalsAreZerosIgnored)
