@@ -32,6 +32,7 @@ use wcontainers_processor_architecture_arm64::floating_point::{
     FloatingPointOperation, INEXACT, INPUT_DENORMAL, INVALID_OPERATION, OVERFLOW, Precision,
     ROUNDING_MODE_BITS, ROUNDING_MODE_SHIFT, UNDERFLOW, to_floating_point_operation,
 };
+use wcontainers_processor_architecture_arm64::load_store::scalable_access::to_scalable_access;
 use wcontainers_processor_architecture_arm64::load_store::{AtomicOperation, Transfer};
 use wcontainers_processor_architecture_arm64::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Signedness,
@@ -243,6 +244,8 @@ pub enum ScalableValues {
     Integer,
     /// Indices into a table, besides bits.
     TableIndices,
+    /// The bits of one register of a structure store: fewer than `Integer`, since each register stores its own bytes.
+    Structure,
     /// Floating-point values in the lanes given, or where none, in the lanes of every element size, of which an
     /// instruction takes those of the size its size field gives.
     FloatingPoint {
@@ -824,7 +827,11 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             permission: readable_and_executable,
         }];
         let layout = LoadStoreInstruction::new(instruction)
-            .and_then(|load_store| load_store.to_access_layout(word, &processor));
+            .and_then(|load_store| load_store.to_access_layout(word, &processor))
+            .or_else(|| {
+                to_scalable_access(instruction)
+                    .and_then(|access| access.to_access_layout(word, &processor))
+            });
         if let (Some(placement), Some(layout)) = (placement, layout) {
             let address = to_access_address(placement, layout.bytes);
             let base = address.wrapping_sub(layout.offset).wrapping_add(tag);

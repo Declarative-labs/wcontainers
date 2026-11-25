@@ -74,7 +74,9 @@ fn read_operand(
             let bits = state.processor.vector_registers
                 [(field.read(word) + offset) as usize % state.processor.vector_registers.len()];
             match values {
-                ScalableValues::Integer | ScalableValues::TableIndices => {
+                ScalableValues::Integer
+                | ScalableValues::TableIndices
+                | ScalableValues::Structure => {
                     Some(OperandValue::Vector(bits))
                 }
                 // The critical value of these bits, whose lanes the bits alone do not name.

@@ -315,6 +315,11 @@ pub enum PreciseInstruction<LevelSpecific> {
     MrsCtrEl0 {
         cache_type: u64,
     },
+    /// An SVE contiguous load, store or prefetch, with what the chip fixes about its access.
+    ScalableAccess {
+        instruction: Instruction<Infallible>,
+        choices: load_store::scalable_access::ScalableAccessChoices,
+    },
     /// What a chip without the instruction's feature does with its word.
     Unimplemented(Instruction<Infallible>),
     LevelSpecific(LevelSpecific),

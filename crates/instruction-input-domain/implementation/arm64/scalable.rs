@@ -5,25 +5,31 @@ use alloc::vec::Vec;
 use core::convert::Infallible;
 
 use wcontainers_processor_architecture_arm64::Instruction;
-use wcontainers_processor_architecture_arm64::encoding::Field;
+use wcontainers_processor_architecture_arm64::encoding::{Field, RN};
 use wcontainers_processor_architecture_arm64::floating_point::{FLUSH_HALF_TO_ZERO, Precision};
+use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
+    AccessKind, ElementSize, Offset, PT, RM, ScalableAccess, to_scalable_access,
+};
+use wcontainers_processor_architecture_arm64::operand::{RegisterThirtyOne, RegisterWidth};
 use wcontainers_processor_architecture_arm64::scalable::{
-    ScalableOperand, ScalableOperation, VECTOR_BITS, list_scalable_operands, to_element_bits,
-    to_scalable_operation,
+    PG, ScalableOperand, ScalableOperation, VECTOR_BITS, ZD, list_scalable_operands,
+    to_element_bits, to_scalable_operation,
 };
 use wcontainers_processor_architecture_arm64::scalable_floating_point::{
     FloatingPointForm, LaneKind, Lanes, VectorRole, to_conversion_lanes,
 };
 
 use crate::{
-    ControlReads, OperandType, OperandValue, ScalableValues, low_ones, to_floating_point_bits,
-    to_vector_values, with_each_bit_alone,
+    ControlReads, DataPage, OperandType, OperandValue, ScalableValues, low_ones,
+    to_floating_point_bits, to_vector_values, with_each_bit_alone,
 };
 
 /// The element sizes of SVE in bytes, smallest first.
 const ELEMENT_BYTES: [u32; 4] = [1, 2, 4, 8];
 /// The bits of a predicate at a 128-bit vector length.
 const PREDICATE_BITS: u32 = u16::BITS;
+/// The values of a structure's register: zero, all ones, and each byte its own place with its top bit clear and set.
+const STRUCTURE_VALUES: usize = 4;
 /// A predicate whose every bit is set: every element of every size active.
 pub(crate) const ALL_ACTIVE: u16 = u16::MAX;
 
@@ -32,6 +38,9 @@ pub(crate) const ALL_ACTIVE: u16 = u16::MAX;
 pub(crate) fn list_scalable_operand_types(
     instruction: Instruction<Infallible>,
 ) -> Option<Vec<OperandType>> {
+    if let Some(access) = to_scalable_access(instruction) {
+        return Some(list_access_operand_types(access));
+    }
     let operands = list_scalable_operands(instruction)?;
     let mut types = Vec::new();
     for operand in operands {
@@ -134,6 +143,79 @@ pub(crate) fn list_scalable_operand_types(
     Some(types)
 }
 
+/// The operand types of an SVE contiguous access: its element size where a field gives it, the registers it moves,
+/// with their values for a store, its predicate, base and offset, then where the access lies, and for a store what
+/// the data pages hold.
+fn list_access_operand_types(access: ScalableAccess) -> Vec<OperandType> {
+    let mut types = Vec::new();
+    if let ElementSize::Field(field) = access.element {
+        types.push(OperandType::UnsignedImmediate(field));
+    }
+    let stores = access.kind == AccessKind::Store;
+    if access.predicate_register {
+        types.push(OperandType::PredicateNumber(PT));
+        if stores {
+            types.push(OperandType::PredicateValue(PT));
+        }
+    } else if access.kind != AccessKind::Prefetch {
+        types.push(OperandType::ScalableVectorNumber {
+            field: ZD,
+            registers: access.registers,
+        });
+        if stores {
+            // Each register of a structure stores bytes of its own, so a few values each tell them apart.
+            let values = if access.registers > 1 {
+                ScalableValues::Structure
+            } else {
+                ScalableValues::Integer
+            };
+            types.extend(
+                (0..access.registers).map(|offset| OperandType::ScalableVectorValue {
+                    field: ZD,
+                    offset,
+                    values,
+                }),
+            );
+        }
+    }
+    if access.predicated {
+        types.extend([
+            OperandType::PredicateNumber(PG),
+            OperandType::PredicateValue(PG),
+        ]);
+    }
+    types.push(OperandType::RegisterNumber(RN));
+    match access.offset {
+        Offset::Register => types.extend([
+            OperandType::RegisterNumber(RM),
+            OperandType::RegisterValue {
+                field: RM,
+                width: RegisterWidth::Bits64,
+                thirty_one: RegisterThirtyOne::ZeroRegister,
+            },
+        ]),
+        Offset::Immediate {
+            fields: [field],
+            signed: true,
+            ..
+        } => types.push(OperandType::SignedImmediate(*field)),
+        Offset::Immediate {
+            fields: [field], ..
+        } => types.push(OperandType::UnsignedImmediate(*field)),
+        Offset::Immediate { fields, .. } => types.push(OperandType::SplitImmediate(fields)),
+    }
+    types.extend([
+        OperandType::AccessPlacement,
+        OperandType::AddressTag,
+        OperandType::DataPagePermission(DataPage::Lower),
+        OperandType::DataPagePermission(DataPage::Upper),
+    ]);
+    if stores {
+        types.push(OperandType::MemoryFill);
+    }
+    types
+}
+
 /// The values a whole Z register takes: those of a vector register, and for indices into a table, at each element
 /// size, each element its own index, the indices reversed, the last index and the first past one table alternating,
 /// and the indices of a second table, and the last index of two tables and the first past them alternating.
@@ -162,6 +244,12 @@ pub(crate) fn to_scalable_vector_values(values: ScalableValues) -> Vec<OperandVa
                 lanes,
                 VectorRole::Packed,
             );
+        }
+        ScalableValues::Structure => {
+            return to_vector_values(VECTOR_BITS / u8::BITS)
+                .into_iter()
+                .take(STRUCTURE_VALUES)
+                .collect();
         }
         ScalableValues::Integer | ScalableValues::TableIndices => {}
     }

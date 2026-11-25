@@ -59,7 +59,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 414] = [
+pub const PLANTED_BUGS: [PlantedBug; 425] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2543,5 +2543,71 @@ pub const PLANTED_BUGS: [PlantedBug; 414] = [
         instruction: Instruction::FaddZZZ,
         planted_by: PlantedBy::ScalableSecondHalf,
         what: "only the last element's flags raised",
+    },
+    PlantedBug {
+        number: 2035,
+        instruction: Instruction::Ld1w,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "inactive elements keep the register's value, not zero",
+    },
+    PlantedBug {
+        number: 2037,
+        instruction: Instruction::Ld1bImmediate32,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the immediate scaled by the vector's length",
+    },
+    PlantedBug {
+        number: 2038,
+        instruction: Instruction::Ld3w,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the registers one after another in memory, not interleaved",
+    },
+    PlantedBug {
+        number: 2039,
+        instruction: Instruction::St1hZPBr,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "inactive elements stored too",
+    },
+    PlantedBug {
+        number: 2040,
+        instruction: Instruction::St2d,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "every register's elements from the first",
+    },
+    PlantedBug {
+        number: 2041,
+        instruction: Instruction::Ld1rwImmediate,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the element read with no element active",
+    },
+    PlantedBug {
+        number: 2042,
+        instruction: Instruction::Ld1rqwW,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the offset register scaled by sixteen bytes",
+    },
+    PlantedBug {
+        number: 2043,
+        instruction: Instruction::LdrZXI,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the immediate read unsigned",
+    },
+    PlantedBug {
+        number: 2044,
+        instruction: Instruction::StrPXI,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "only the first byte stored",
+    },
+    PlantedBug {
+        number: 2045,
+        instruction: Instruction::Ld1d,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "inactive elements fault",
+    },
+    PlantedBug {
+        number: 2046,
+        instruction: Instruction::PrfbPRR,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the prefetch faults as a load",
     },
 ];

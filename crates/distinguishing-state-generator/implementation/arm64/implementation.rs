@@ -28,6 +28,9 @@
 //! A floating-point source of an SVE instruction whose size field sizes its elements takes only the values of that size:
 //! the domain gives each size's values, and those of another size are bits the instruction does not read as its own.
 //!
+//! Where an SVE access is moved, its predicate chooses which elements reach which page and its offset only where the
+//! base lies, so the two take each of their values once beside each other.
+//!
 //! A predicate of an SVE instruction that leaves some element inactive only chooses which elements it computes: only
 //! where every element is active do the values, controls and written state take every combination; under any other
 //! predicate they take each of their values once.
@@ -66,6 +69,9 @@ use wcontainers_processor_architecture_arm64::floating_point::{
 };
 use wcontainers_processor_architecture_arm64::integer::IntegerOperation;
 use wcontainers_processor_architecture_arm64::load_store::Transfer;
+use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
+    AccessKind, Offset, RM, to_scalable_access,
+};
 use wcontainers_processor_architecture_arm64::operand::Operand;
 use wcontainers_processor_architecture_arm64::scalable::is_unallocated;
 use wcontainers_processor_architecture_arm64::system_register::{
@@ -416,8 +422,9 @@ impl Cut {
                     | Transfer::Atomic(_)
                     | Transfer::CompareAndSwapPair
             )
-        });
-        let addressing = record.map_or(Vec::new(), |record| {
+        }) || to_scalable_access(instruction)
+            .is_some_and(|access| access.kind == AccessKind::Store);
+        let mut addressing = record.map_or(Vec::new(), |record| {
             record
                 .operands
                 .iter()
@@ -436,6 +443,13 @@ impl Cut {
                 })
                 .collect()
         });
+        // An SVE access's offset: its register or its immediate's fields.
+        if let Some(access) = to_scalable_access(instruction) {
+            match access.offset {
+                Offset::Register => addressing.push(RM),
+                Offset::Immediate { fields, .. } => addressing.extend(fields.iter().copied()),
+            }
+        }
         let register_operands = groups
             .iter()
             .filter(|group| **group == Group::Register)
@@ -741,9 +755,12 @@ impl Cut {
             return Allowed::Every(every);
         }
         let values = self.allow_values(index, chosen, facts);
-        if (!facts.register_representative || facts.partial_predicate)
-            && matches!(group, Group::Data | Group::Control | Group::Written)
-        {
+        let each_beside_the_rest = (!facts.register_representative || facts.partial_predicate)
+            && matches!(group, Group::Data | Group::Control | Group::Written);
+        let moved_access = facts.moved
+            && to_scalable_access(self.instruction).is_some()
+            && (group == Group::Predicate || self.is_addressing(self.types[index]));
+        if each_beside_the_rest || moved_access {
             Allowed::EachOnce(values)
         } else {
             Allowed::Every(values)
@@ -907,6 +924,9 @@ impl Cut {
             OperandType::UnsignedImmediate(field)
             | OperandType::SignedImmediate(field)
             | OperandType::RegisterValue { field, .. } => self.addressing.contains(&field),
+            OperandType::SplitImmediate(fields) => {
+                fields.iter().all(|field| self.addressing.contains(field))
+            }
             _ => false,
         }
     }
