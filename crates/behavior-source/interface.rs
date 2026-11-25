@@ -50,15 +50,13 @@ pub trait BehaviorSource {
     /// Executes exactly one instruction from the before state.
     fn execute_single_instruction<'memory>(
         &mut self,
-        before: ExecutionState<'memory, Self::Architecture>,
+        mut before: ExecutionState<'memory, Self::Architecture>,
     ) -> (after: ExecutionState<'memory, Self::Architecture>)
         ensures
             forall|processor, memory| #[trigger] final(self).shown(processor, memory) == old(self).shown(processor, memory),
             (after.processor, memory_of(after.memory_mutations@))
                 == state_after(before, old(self).shown(before.processor, memory_of(before.memory_mutations@))),
     {
-        // VERUS: no `mut` on an argument a specification reads, so the state is moved into a local.
-        let mut before = before;
         let ghost memory = before.memory_mutations@;
         let ghost processor = before.processor;
         let mut mutations: Vec<MemoryDelta<'memory, Self::Architecture>> = Vec::new();
