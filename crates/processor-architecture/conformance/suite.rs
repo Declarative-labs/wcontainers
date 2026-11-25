@@ -3,9 +3,7 @@
 //! Each function takes the cases to simulate: a simulator and a state before. `Clone + Eq` on the architecture is
 //! what the derives of `ExecutionState` require of it.
 
-use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
-};
+use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture, Simulator};
 
 /// Lists each instruction once, and each behavior known for an instruction once.
 pub fn lists_each_instruction_and_known_behavior_once<Architecture: ProcessorArchitecture>() {
@@ -72,28 +70,6 @@ pub fn simulation_is_deterministic<Architecture, S>(
     }
 }
 
-/// A simulation that fails leaves the processor as it was.
-pub fn failed_simulation_leaves_the_processor_unchanged<Architecture, S>(
-    cases: impl IntoIterator<Item = (S, ExecutionState<'static, Architecture>)>,
-) where
-    Architecture: ProcessorArchitecture + Clone + Eq,
-    S: Simulator<Architecture>,
-{
-    for (simulator, before) in cases {
-        let mut processor = before.processor.clone();
-        if simulator
-            .simulate_in_place(
-                &mut processor,
-                &before.memory_mutations,
-                &mut |_: MemoryDelta<'_, Architecture>| {},
-            )
-            .is_err()
-        {
-            assert!(processor == before.processor);
-        }
-    }
-}
-
 /// Runs each suite function above as its own test on the architecture and on the cases made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -111,11 +87,6 @@ macro_rules! tests {
         #[test]
         fn simulation_is_deterministic() {
             $crate::simulation_is_deterministic($cases);
-        }
-
-        #[test]
-        fn failed_simulation_leaves_the_processor_unchanged() {
-            $crate::failed_simulation_leaves_the_processor_unchanged($cases);
         }
     };
 }

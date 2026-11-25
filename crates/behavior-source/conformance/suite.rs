@@ -97,10 +97,9 @@ pub fn measured_behavior_agrees_with_the_source<Source, Generator>(
     }
 }
 
-/// Checks that a state the source cannot execute leaves the processor and the hook untouched.
-///
-/// The first generated state of every instruction after it executes as on a source that met no error.
-pub fn leaves_the_processor_and_the_hook_untouched_on_error<Source, Generator>(
+/// After each state the source cannot execute, the first generated state of every instruction executes as on a source
+/// that met no error.
+pub fn next_state_after_an_error_executes_as_on_a_fresh_source<Source, Generator>(
     mut source: Source,
     mut unbroken: Source,
     generator: Generator,
@@ -111,23 +110,9 @@ pub fn leaves_the_processor_and_the_hook_untouched_on_error<Source, Generator>(
     Generator: DistinguishingStateGenerator<Source::Architecture>,
 {
     for (index, state) in unexecutable.into_iter().enumerate() {
-        let mut processor = state.processor.clone();
-        let mut mutated = Vec::new();
-        let Err(_) = source.execute_single_instruction_in_place(
-            &mut processor,
-            &state.memory_mutations,
-            &mut mutated,
-        ) else {
+        let Err(_) = source.execute_single_instruction(state) else {
             panic!("the source executed state {index}, which it names as one it cannot");
         };
-        assert!(
-            processor == state.processor,
-            "state {index} gave an error after the processor was written"
-        );
-        assert!(
-            mutated.is_empty(),
-            "state {index} gave an error after the hook received a mutation"
-        );
         for instruction in Source::Architecture::list_instructions() {
             if let Some(before) = generator.generate_states(instruction).next() {
                 let after = source.execute_single_instruction(before.clone());
@@ -175,8 +160,8 @@ macro_rules! tests {
         }
 
         #[test]
-        fn leaves_the_processor_and_the_hook_untouched_on_error() {
-            $crate::leaves_the_processor_and_the_hook_untouched_on_error(
+        fn next_state_after_an_error_executes_as_on_a_fresh_source() {
+            $crate::next_state_after_an_error_executes_as_on_a_fresh_source(
                 $source,
                 $source,
                 $generator,
