@@ -1,6 +1,71 @@
 # Translator status
 
-Plan: docs/phase-1-translator.md. Branch: phase-1-translator.
+Plan: docs/phase-1-translator.md. Branch: phase-1-translator; since the relaunch of 2026-11-25, translator-port.
+
+## Relaunch of 2026-11-25 (branch translator-port, from main at 9fe98a6a6)
+
+Brief: pyro-parked/wcontainers-scratch/orchestrator/restart-2026-11-25/brief-translator.md. Results and logs in
+scratch `translator-port/`.
+
+Nothing lost: b069b3d8 brings the five crates from origin/agents at 198bb11d6 by path, with the lock file and the
+x86 native output plan and status; `git diff 198bb11d6` of the five folders is empty, and 3a5fda94, c027d2e0 and
+e8f158ec are in it. 62abb61d prunes the lock file to this branch's crates.
+
+Baseline (62abb61d, rented x86-64 machine unless said):
+- `cargo check --all-targets --all-features` of the five packages: exit 0 on both machines. Clippy with warnings
+  denied, `--no-deps`: exit 0. The browser translator for x86-64 did not build (iced's `Instruction` has no
+  `Display` without its formatter, in `carry.rs` and `carry/window.rs`), so 10 browser and binaries tests failed.
+- Layer 2 and the other tests that translate from several threads at once hung on both machines: the
+  translator's first translation in a process held its pool's lock while the new pool's threads started, and
+  the waiting thread ran another case of its own pool, which asked for the same lock (gdb, all threads in
+  `on_translator_threads`).
+- `unsafe` lines outside comments and attributes (the root manifest's command of 198bb11d6): arm64 0, x86 0,
+  guest-cpu 0, translator 0, translator-test 15 (runner.rs 8, test_guest.rs 2, reciprocals.rs 1, the guest
+  program programs/panics.rs 4), and 16 `#[unsafe(no_mangle)]` in browser/; reference/ 86.
+- `cargo reviewable check` (the installed linter's commit 59ad72ce, no model key on the machine): 12,049 findings
+  in the five crates: translator-test 4,583, x86 3,144, arm64 2,858, translator 951, guest-cpu 513.
+
+TR1 (de124d4a, 19afeb11, f25b550c, 937e6f10):
+- The state memory is reached only through a small module of WebAssembly's own loads and stores (words, bytes,
+  a fill, and the two atomic stores) in a store of its own (`src/state_memory.rs`, a203bd58), with wasmtime's
+  safe calls; hooks and steps work on a copy and write back only the bytes they changed. No executor is needed.
+  A first form with a scratch memory of its own (de124d4a) reserved 4 GiB more for each machine and ran out of
+  address space in x86-64's layer 2 (462 of 10,000 cases "mmap failed to reserve"; the baseline at the same seed
+  had 0); a203bd58 removes it. The guest hooks use `func_new` with `Val`; the
+  reciprocal test asks the CPU through safe_arch 1.2.0 (Zlib OR Apache-2.0 OR MIT); the browser translator's
+  exports are `#[wasm_bindgen]` (0.2.130, MIT OR Apache-2.0), named by wasm-bindgen-cli-support 0.2.130 (MIT OR
+  Apache-2.0) and loaded by the page without wasm-bindgen's JavaScript; the browser crate forbids unsafe code.
+- The stop raiser from another thread sets the limit to 0 when the count is kept (it stored u32 1 in the u64
+  limit): `stop_raised_while_running_with_the_count_kept_*` failed before (count 0, not 1) and passes.
+- The translator makes its pool with no lock held: `tests/translator_threads.rs` timed out after 120 s before and
+  passes in 0.15 s. The x86 carrying code's two panic messages use `Debug`, so the browser build compiles.
+- translator-test is on `[lints] workspace = true`. Left: programs/panics.rs, a Rust guest program that rustc
+  builds for the guest (cargo never compiles it in the workspace), needs `unsafe impl GlobalAlloc` and an
+  unmangled `main`, since the stand-in kernel has no mmap and std's own start asks for more calls.
+- The root manifest of main has no TODO list of crates, so there was no line to remove.
+
+TR1's measurements (rented machines, 12 jobs; "the baseline" is 62abb61d with the two fixes above, as the bare
+baseline hangs and its browser build fails):
+- check, clippy `--no-deps` with warnings denied (all targets and features), the browser crate's wasm32 clippy for
+  both guests and the reference's clippy: exit 0 on both machines.
+- `unsafe` outside comments: 0 in the five crates' compiled files; programs/panics.rs 4; reference/ 86.
+- The whole suite of the five packages, test by test, against the baseline: every outcome the same on both
+  machines (ARM64 machine 51 failed, x86-64 machine 36, all the other guest's reference tests and the known
+  machine differences); the three new tests pass; no test removed or ignored (295 to 298, 313 to 316 listed).
+  The native output tests (x86 crate's native_* and the arm64 way) pass as at the baseline.
+- ARM64's output lists, every look-ahead, speed and size, the benchmark set and the nine real binaries (10
+  lists, 965 modules): the same sha256 for every list as the baseline's.
+- Layer 2, 10,000 programs, seed 25112502, all on the CPU, at a203bd58: ARM64 0 failing (3,392 faulted, 519 left
+  to an address); x86-64 0 failing (3,442 faulted, 1,104 left), the same counts as the baseline's run.
+- Layer 3, cases 0 to 1,199, seed 1: ARM64 at a203bd58 1,023 compared, 177 did not end in time, 0 failing;
+  x86-64 at a203bd58 1,023 compared, 177 did not end, 0 failing.
+- Layer 1 on the rented CPUs is not a verdict: ARM64 (1,000 cases a form, seed 25112503) fails only
+  `MSR_SR_systemmove`, the Graviton's FPSR bits 28-29; x86-64 (64 a form, seed 1) fails 1,126 of 2,008 forms on
+  the 5-level paging and feature differences of the Sapphire Rapids machine. Both lists are the baseline's, form
+  for form. Layer 1's verdicts were the Mac's and the i7-8750H's, which this brief does not use.
+- `cargo reviewable check` (59ad72ce): 12,072 findings in the five crates (baseline 12,049): 25 more names and
+  summaries without a model answer (no key on the machine), 1 more `stray_source` (state_memory.rs), 3 fewer
+  others.
 
 ## For the orchestrator
 
