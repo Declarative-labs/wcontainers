@@ -8,3 +8,6 @@ path = "interface.rs"
 
 [dependencies]
 wcontainers-processor-architecture = { path = "../processor-architecture" }
+
+[lints]
+workspace = true

@@ -11,3 +11,6 @@ path = "conformance.rs"
 domain = { version = "0.12.3", default-features = false }
 wcontainers-system = { path = ".." }
 wcontainers-kernel = { path = "../../kernel" }
+
+[lints]
+workspace = true

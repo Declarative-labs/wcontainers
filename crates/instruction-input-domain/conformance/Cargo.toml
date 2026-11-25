@@ -10,3 +10,6 @@ path = "conformance.rs"
 [dependencies]
 wcontainers-instruction-input-domain = { path = ".." }
 wcontainers-processor-architecture = { path = "../../processor-architecture" }
+
+[lints]
+workspace = true
