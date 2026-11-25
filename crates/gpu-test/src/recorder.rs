@@ -13,7 +13,7 @@ use wcontainers_gpu::*;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Id(pub(crate) u32);
 
-/// A frame shown by [`Backend::present`].
+/// A frame shown by [`Gpu::present`].
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub window: u32,
@@ -1269,7 +1269,7 @@ fn for_rows(
     Ok(())
 }
 
-impl Backend for Recorder {
+impl Gpu for Recorder {
     type Buffer = Id;
     type Texture = Id;
     type TextureView = Id;

@@ -9,7 +9,7 @@ const QUAD: [f32; 8] = [-1.0, -1.0, -1.0, 1.0, 1.0, -1.0, 1.0, 1.0];
 
 /// One draw of fixed state but for what each test names, into a viewport of `size`.
 #[allow(clippy::too_many_arguments)]
-fn draw_into<B: Backend>(
+fn draw_into<B: Gpu>(
     b: &mut B,
     program: &B::Program,
     raster: &B::Raster,
@@ -45,13 +45,13 @@ fn draw_into<B: Backend>(
     b.destroy(Object::DepthStencil(ds));
 }
 
-fn quad<B: Backend>(b: &mut B) -> B::Buffer {
+fn quad<B: Gpu>(b: &mut B) -> B::Buffer {
     let vb = buffer(b, 32, BufferUsage::VERTEX | BufferUsage::COPY_DST);
     b.write_buffer(&vb, 0, &floats(&QUAD), WriteMode::Discard);
     vb
 }
 
-fn once<'a, B: Backend>(count: u32) -> DrawRange<'a, B> {
+fn once<'a, B: Gpu>(count: u32) -> DrawRange<'a, B> {
     DrawRange::Vertices {
         first: 0,
         count,
@@ -885,7 +885,7 @@ pub fn a_copy_within_one_depth_or_stencil_subresource_moves_the_region<H: Host>(
 /// As [`copy_within_one_subresource`] for a format whose depth reads back as a value, not its
 /// bytes, and whose one copy moves its stencil too where it has one: depth written and read in
 /// eighths (24-bit depth within one step of 2^-24), stencil any.
-fn copy_within_one_depth_subresource<B: Backend>(b: &mut B, format: Format) {
+fn copy_within_one_depth_subresource<B: Gpu>(b: &mut B, format: Format) {
     let has_stencil = format != Format::Depth24Plus;
     let t = texture(
         b,
@@ -956,7 +956,7 @@ fn copy_within_one_depth_subresource<B: Backend>(b: &mut B, format: Format) {
 
 /// Writes a 4 by 2 texture of `format`, copies its left half onto its right half, and reads back
 /// the left half twice.
-fn copy_within_one_subresource<B: Backend>(b: &mut B, format: Format, texel: u32, bytes: Vec<u8>) {
+fn copy_within_one_subresource<B: Gpu>(b: &mut B, format: Format, texel: u32, bytes: Vec<u8>) {
     let t = texture(
         b,
         format,

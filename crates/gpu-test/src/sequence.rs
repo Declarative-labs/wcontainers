@@ -306,7 +306,7 @@ const DEPTH_FORMATS: [Format; 6] = [
 ];
 
 /// What the steps draw with, made once.
-struct Kit<B: Backend> {
+struct Kit<B: Gpu> {
     float_program: B::Program,
     uint_program: B::Program,
     sint_program: B::Program,
@@ -326,7 +326,7 @@ struct Kit<B: Backend> {
     timestamps: Option<B::QuerySet>,
 }
 
-fn kit<B: Backend>(b: &mut B) -> Result<Kit<B>, GpuError> {
+fn kit<B: Gpu>(b: &mut B) -> Result<Kit<B>, GpuError> {
     let module = naga::front::wgsl::parse_str(PROGRAMS).map_err(|_| GpuError::Invalid("wgsl"))?;
     let info = naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
@@ -536,7 +536,7 @@ fn region_of(desc: &TextureDesc, at: &[u8]) -> (u32, u32, Origin, Extent) {
     )
 }
 
-fn region<B: Backend>(
+fn region<B: Gpu>(
     t: &B::Texture,
     mip: u32,
     layer: u32,
@@ -590,7 +590,7 @@ impl Area {
 }
 
 /// Runs `steps` on `b` as valid calls, and gives every byte read back, in order.
-pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuError> {
+pub fn run<B: Gpu>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuError> {
     let kit = kit(b)?;
     let mut buffers: Vec<(B::Buffer, u64)> = Vec::new();
     let mut textures: Vec<(B::Texture, TextureDesc)> = Vec::new();
@@ -1066,7 +1066,7 @@ pub fn run<B: Backend>(b: &mut B, steps: &[Step]) -> Result<Vec<Vec<u8>>, GpuErr
 /// beside the source to its right, or below it where the level is one texel wide. Each aspect is read
 /// before and after the copy, and the after must be the before with the region moved.
 #[allow(clippy::too_many_arguments)]
-fn depth_copy<B: Backend>(
+fn depth_copy<B: Gpu>(
     b: &mut B,
     format: Format,
     size: [u8; 2],
@@ -1230,7 +1230,7 @@ fn depth_copy<B: Backend>(
 
 /// One pass of [`Step::Pass`] on texture `t`.
 #[allow(clippy::too_many_arguments)]
-fn pass<B: Backend>(
+fn pass<B: Gpu>(
     b: &mut B,
     kit: &Kit<B>,
     t: &B::Texture,
