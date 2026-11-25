@@ -14,18 +14,15 @@
 //! longer than [`INLINE_BYTES`] is written once on a `bytes` line and named by its number.
 
 use std::borrow::Cow;
-use std::path::Path;
-use std::{fs, io};
+use std::convert::Infallible;
 
-use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
-use wcontainers_executor::Executor;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::{
-    Arm64, ConditionFlags, DataAccess, Exception, InstructionFetch, PagePermission, Processor,
-    ZERO_PROCESSOR,
+    AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, FaultStatus, Instruction,
+    InstructionFetch, PagePermission, Processor, SmeTrapCode, User, ZERO_PROCESSOR,
 };
 
-use crate::{Recording, record};
+use crate::RecordedCase;
 
 /// The longest run of bytes written where it is assigned; a store pair's 16 bytes fit.
 const INLINE_BYTES: usize = 16;
@@ -42,46 +39,17 @@ pub enum MalformedRecording {
     UnfinishedCase,
 }
 
-/// Records every listed instruction on the chip, each into the file named after it in the folder.
-pub fn write_recordings<Chip, Generator>(
-    chip: &mut Chip,
-    generator: &Generator,
-    folder: &Path,
-) -> io::Result<()>
-where
-    Chip: Executor<Architecture = Arm64>,
-    Generator: DistinguishingStateGenerator<Arm64>,
-{
-    for instruction in Arm64::list_instructions() {
-        let recording = record(chip, generator, instruction);
-        fs::write(
-            folder.join(format!("{instruction:?}.txt")),
-            to_text(&recording),
-        )?;
-    }
-    Ok(())
+/// Returns the name of the file that holds the instruction's recording.
+pub fn to_file_name(instruction: Instruction<Infallible>) -> String {
+    format!("{instruction:?}.txt")
 }
 
-/// Reads the recording of every listed instruction from the folder `write_recordings` wrote.
-pub fn read_recordings(folder: &Path) -> io::Result<Vec<Recording<Arm64>>> {
-    Arm64::list_instructions()
-        .map(|instruction| {
-            let path = folder.join(format!("{instruction:?}.txt"));
-            from_text(&fs::read_to_string(&path)?).map_err(|malformed| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{}: {malformed:?}", path.display()),
-                )
-            })
-        })
-        .collect()
-}
-
-pub fn to_text(recording: &Recording<Arm64>) -> String {
-    let mut lines = vec![format!("instruction {:?}", recording.instruction)];
-    if let Some((first, _)) = recording.cases.first() {
+/// Returns the text of an instruction's recording.
+pub fn to_text(instruction: Instruction<Infallible>, cases: &[RecordedCase]) -> String {
+    let mut lines = vec![format!("instruction {instruction:?}")];
+    if let Some((first, _)) = cases.first() {
         let mut long_runs: Vec<&[u8]> = Vec::new();
-        for (_, after) in &recording.cases {
+        for (_, after) in cases {
             for mutation in &after.memory_mutations {
                 if let MemoryDelta::ValueAssignment { bytes, .. } = mutation
                     && bytes.len() > INLINE_BYTES
@@ -96,7 +64,7 @@ pub fn to_text(recording: &Recording<Arm64>) -> String {
         for (number, bytes) in long_runs.iter().enumerate() {
             lines.push(format!("bytes #{number} {}", to_hex(bytes)));
         }
-        for (before, after) in &recording.cases {
+        for (before, after) in cases {
             let made = &after.memory_mutations[before.memory_mutations.len()..];
             for (keyword, earlier, state, mutations) in [
                 ("before", base, before, &before.memory_mutations[..]),
@@ -119,11 +87,14 @@ pub fn to_text(recording: &Recording<Arm64>) -> String {
     lines.join("\n")
 }
 
-pub fn from_text(text: &str) -> Result<Recording<Arm64>, MalformedRecording> {
+/// Returns the instruction a recording's text names and its cases.
+pub fn from_text(
+    text: &str,
+) -> Result<(Instruction<Infallible>, Vec<RecordedCase>), MalformedRecording> {
     let mut instruction = None;
     let mut base = None;
     let mut long_runs = Vec::new();
-    let mut before: Option<ExecutionState<'static, Arm64>> = None;
+    let mut before: Option<ExecutionState<'static, Arm64<User>>> = None;
     let mut cases = Vec::new();
     for (index, line) in text.lines().enumerate() {
         let mut read = || -> Option<()> {
@@ -131,7 +102,7 @@ pub fn from_text(text: &str) -> Result<Recording<Arm64>, MalformedRecording> {
             match keyword {
                 "instruction" => {
                     instruction = Some(
-                        Arm64::list_instructions()
+                        Arm64::<User>::list_instructions()
                             .find(|instruction| format!("{instruction:?}") == rest)?,
                     );
                 }
@@ -169,14 +140,11 @@ pub fn from_text(text: &str) -> Result<Recording<Arm64>, MalformedRecording> {
     if before.is_some() {
         return Err(MalformedRecording::UnfinishedCase);
     }
-    Ok(Recording {
-        instruction: instruction.ok_or(MalformedRecording::NoInstruction)?,
-        cases,
-    })
+    Ok((instruction.ok_or(MalformedRecording::NoInstruction)?, cases))
 }
 
 /// Writes `name=value` for each field of the processor whose value differs from the earlier one's.
-fn to_differing_fields(earlier: Option<&Processor>, processor: &Processor) -> String {
+fn to_differing_fields(earlier: Option<&Processor<()>>, processor: &Processor<()>) -> String {
     let fields = to_fields(processor);
     let earlier_fields = earlier.map(to_fields);
     let differing = fields.iter().enumerate().filter(|(index, field)| {
@@ -190,7 +158,7 @@ fn to_differing_fields(earlier: Option<&Processor>, processor: &Processor) -> St
     written.join(" ")
 }
 
-fn to_fields(processor: &Processor) -> Vec<(String, String)> {
+fn to_fields(processor: &Processor<()>) -> Vec<(String, String)> {
     let Processor {
         general_purpose_registers,
         stack_pointer,
@@ -201,6 +169,7 @@ fn to_fields(processor: &Processor) -> Vec<(String, String)> {
         floating_point_status,
         software_thread_id,
         exception,
+        level_specific: (),
     } = processor;
     let general = general_purpose_registers
         .iter()
@@ -210,17 +179,6 @@ fn to_fields(processor: &Processor) -> Vec<(String, String)> {
         .iter()
         .enumerate()
         .map(|(number, value)| (format!("v{number}"), format!("{value:#x}")));
-    let exception = match exception {
-        None => NO_EXCEPTION.to_owned(),
-        Some(Exception {
-            syndrome,
-            fault_address: None,
-        }) => format!("{syndrome:#x}"),
-        Some(Exception {
-            syndrome,
-            fault_address: Some(address),
-        }) => format!("{syndrome:#x}@{address:#x}"),
-    };
     let named = [
         ("sp", format!("{stack_pointer:#x}")),
         ("pc", format!("{program_counter:#x}")),
@@ -228,7 +186,7 @@ fn to_fields(processor: &Processor) -> Vec<(String, String)> {
         ("fpcr", format!("{floating_point_control:#x}")),
         ("fpsr", format!("{floating_point_status:#x}")),
         ("tpidr_el0", format!("{software_thread_id:#x}")),
-        ("exception", exception),
+        ("exception", to_exception_text(*exception)),
     ];
     general
         .chain(named.map(|(name, value)| (name.to_owned(), value)))
@@ -236,7 +194,7 @@ fn to_fields(processor: &Processor) -> Vec<(String, String)> {
         .collect()
 }
 
-fn from_fields(mut processor: Processor, fields: &str) -> Option<Processor> {
+fn from_fields(mut processor: Processor<()>, fields: &str) -> Option<Processor<()>> {
     for field in fields.split_whitespace() {
         let (name, value) = field.split_once('=')?;
         match name {
@@ -267,22 +225,113 @@ fn from_fields(mut processor: Processor, fields: &str) -> Option<Processor> {
     Some(processor)
 }
 
-/// Reads an exception as `to_fields` writes it: none, a syndrome, or a syndrome `@` a fault address.
+/// Writes `none`, or the exception's name, then each field after a colon, and its fault address after `@`.
+fn to_exception_text(exception: Option<Exception>) -> String {
+    let Some(exception) = exception else {
+        return NO_EXCEPTION.to_owned();
+    };
+    match exception {
+        Exception::UndefinedInstruction => "UndefinedInstruction".to_owned(),
+        Exception::ProgramCounterAlignmentFault { address } => {
+            format!("ProgramCounterAlignmentFault@{address:#x}")
+        }
+        Exception::StackPointerAlignmentFault => "StackPointerAlignmentFault".to_owned(),
+        Exception::InstructionAbort { status, address } => {
+            format!("InstructionAbort:{}@{address:#x}", to_status_text(status))
+        }
+        Exception::DataAbort {
+            status,
+            access,
+            address,
+        } => format!(
+            "DataAbort:{}:{}@{address:#x}",
+            to_status_text(status),
+            to_access_text(access)
+        ),
+        Exception::Breakpoint { comment } => format!("Breakpoint:{comment:#x}"),
+        Exception::SmeTrap(code) => format!("SmeTrap:{}", to_sme_trap_text(code)),
+    }
+}
+
 fn from_exception_text(text: &str) -> Option<Option<Exception>> {
     if text == NO_EXCEPTION {
         return Some(None);
     }
-    let (syndrome, fault_address) = match text.split_once('@') {
-        Some((syndrome, address)) => (syndrome, Some(from_hex_number(address)?)),
+    let (fields, address) = match text.split_once('@') {
+        Some((fields, address)) => (fields, Some(from_hex_number(address)?)),
         None => (text, None),
     };
-    Some(Some(Exception {
-        syndrome: from_hex_number(syndrome)?,
-        fault_address,
-    }))
+    let fields: Vec<&str> = fields.split(':').collect();
+    let exception = match (&fields[..], address) {
+        (["UndefinedInstruction"], None) => Exception::UndefinedInstruction,
+        (["ProgramCounterAlignmentFault"], Some(address)) => {
+            Exception::ProgramCounterAlignmentFault { address }
+        }
+        (["StackPointerAlignmentFault"], None) => Exception::StackPointerAlignmentFault,
+        (["InstructionAbort", status], Some(address)) => Exception::InstructionAbort {
+            status: from_status_text(status)?,
+            address,
+        },
+        (["DataAbort", status, access], Some(address)) => Exception::DataAbort {
+            status: from_status_text(status)?,
+            access: from_access_text(access)?,
+            address,
+        },
+        (["Breakpoint", comment], None) => Exception::Breakpoint {
+            comment: from_hex_number(comment)?,
+        },
+        (["SmeTrap", code], None) => Exception::SmeTrap(from_sme_trap_text(code)?),
+        _ => return None,
+    };
+    Some(Some(exception))
 }
 
-fn to_mutation_text(mutation: &MemoryDelta<'_, Arm64>, long_runs: &[&[u8]]) -> String {
+fn to_status_text(status: FaultStatus) -> &'static str {
+    match status {
+        FaultStatus::TranslationFaultLevel3 => "TranslationFaultLevel3",
+        FaultStatus::PermissionFaultLevel3 => "PermissionFaultLevel3",
+    }
+}
+
+fn from_status_text(text: &str) -> Option<FaultStatus> {
+    match text {
+        "TranslationFaultLevel3" => Some(FaultStatus::TranslationFaultLevel3),
+        "PermissionFaultLevel3" => Some(FaultStatus::PermissionFaultLevel3),
+        _ => None,
+    }
+}
+
+fn to_access_text(access: AccessDirection) -> &'static str {
+    match access {
+        AccessDirection::Read => "Read",
+        AccessDirection::Write => "Write",
+    }
+}
+
+fn from_access_text(text: &str) -> Option<AccessDirection> {
+    match text {
+        "Read" => Some(AccessDirection::Read),
+        "Write" => Some(AccessDirection::Write),
+        _ => None,
+    }
+}
+
+fn to_sme_trap_text(code: SmeTrapCode) -> &'static str {
+    match code {
+        SmeTrapCode::Disabled => "Disabled",
+        SmeTrapCode::NotInStreamingMode => "NotInStreamingMode",
+    }
+}
+
+fn from_sme_trap_text(text: &str) -> Option<SmeTrapCode> {
+    match text {
+        "Disabled" => Some(SmeTrapCode::Disabled),
+        "NotInStreamingMode" => Some(SmeTrapCode::NotInStreamingMode),
+        _ => None,
+    }
+}
+
+fn to_mutation_text(mutation: &MemoryDelta<'_, Arm64<User>>, long_runs: &[&[u8]]) -> String {
     match mutation {
         MemoryDelta::PermissionAssignment {
             addresses,
@@ -305,7 +354,7 @@ fn to_mutation_text(mutation: &MemoryDelta<'_, Arm64>, long_runs: &[&[u8]]) -> S
 fn from_mutations_text(
     text: &str,
     long_runs: &[Vec<u8>],
-) -> Option<Vec<MemoryDelta<'static, Arm64>>> {
+) -> Option<Vec<MemoryDelta<'static, Arm64<User>>>> {
     let entries = text
         .split(';')
         .map(str::trim)
