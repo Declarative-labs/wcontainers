@@ -12,3 +12,6 @@ mozangle = { version = "=0.7.1", features = ["build_dlls"] }
 
 # A tool of its own, outside the repository's workspace.
 [workspace]
+
+[lints]
+workspace = true

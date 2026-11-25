@@ -9,3 +9,6 @@ path = "interface.rs"
 [dependencies]
 futures-core = { version = "0.3.34", default-features = false }
 thiserror = { version = "2.0.21", default-features = false }
+
+[lints]
+workspace = true
