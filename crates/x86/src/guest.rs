@@ -234,6 +234,7 @@ impl X86_64 {
 
 impl Guest for X86_64 {
     const ID: GuestId = GuestId::X86_64;
+    const ORDERED_ACCESSES: bool = true;
     const ALIGN: u64 = 1;
     const MAX_LENGTH: u64 = 15;
     type Instruction = Instruction;

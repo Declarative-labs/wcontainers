@@ -29,6 +29,7 @@ fn the_first_translations_from_another_pool_end() {
                 LookAhead::Full,
                 Optimise::Speed,
                 ProgressCount::Absent,
+                wcontainers_translator::AccessOrdering::Unordered,
                 host,
                 (),
             )

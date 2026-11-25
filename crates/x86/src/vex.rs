@@ -9,7 +9,7 @@ use crate::operand::*;
 use crate::{Condition, Flag, Flags, Host, Offer, X86_64, XMM_BYTES};
 use iced_x86::{Mnemonic, OpKind, Register};
 use wasm_encoder::{BlockType, InstructionSink, ValType};
-use wcontainers_guest_cpu::{Access, Emitter, Guest, Target};
+use wcontainers_guest_cpu::{Access, AccessOrdering, Emitter, Guest, Target};
 
 /// Where a lane's operand is: a register of the second file, or a local the lane's result is built in.
 #[derive(Clone, Copy)]
@@ -95,6 +95,9 @@ impl<E: Emitter<X86_64> + ?Sized> Emitter<X86_64> for Lane<'_, E> {
     }
     fn offer(&self) -> Offer {
         self.e.offer()
+    }
+    fn access_ordering(&self) -> AccessOrdering {
+        self.e.access_ordering()
     }
     fn float_mode(&mut self) -> bool {
         self.e.float_mode()

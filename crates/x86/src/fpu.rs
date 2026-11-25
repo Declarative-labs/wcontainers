@@ -14,7 +14,7 @@ use crate::x87::{
 };
 use crate::{CF, PF, X86_64, ZF};
 use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
-use wasm_encoder::{BlockType, MemArg, ValType};
+use wasm_encoder::{BlockType, ValType};
 use wcontainers_guest_cpu::{Access, Emitter};
 
 /// Whether the instruction is one of these.
@@ -184,40 +184,6 @@ fn format(i: &Instruction) -> Format {
         MemorySize::Bcd => Format::Decimal,
         _ => Format::Register,
     }
-}
-
-use crate::simd::{BYTE, DWORD as DOUBLEWORD, WORD};
-
-/// Load `bytes` bytes at `at` plus `offset` as an i64.
-pub(crate) fn load_at<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, offset: u64, bytes: u32) {
-    let m = MemArg { offset, ..memory() };
-    let mut s = e.sink();
-    s.local_get(at);
-    match bytes {
-        BYTE => s.i64_load8_u(m),
-        WORD => s.i64_load16_u(m),
-        DOUBLEWORD => s.i64_load32_u(m),
-        _ => s.i64_load(m),
-    };
-}
-
-/// Store the low `bytes` bytes of the i64 local `value` at `at` plus `offset`.
-pub(crate) fn store_at<E: Emitter<X86_64> + ?Sized>(
-    e: &mut E,
-    at: u32,
-    offset: u64,
-    bytes: u32,
-    value: u32,
-) {
-    let m = MemArg { offset, ..memory() };
-    let mut s = e.sink();
-    s.local_get(at).local_get(value);
-    match bytes {
-        BYTE => s.i64_store8(m),
-        WORD => s.i64_store16(m),
-        DOUBLEWORD => s.i64_store32(m),
-        _ => s.i64_store(m),
-    };
 }
 
 pub(crate) use crate::x87::{STORED_STATUS_SHIFT, VALUE_HIGH, VALUE_LOW};
@@ -956,10 +922,7 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
             let v = e.local(ValType::V128);
             e.sink().local_set(v);
             let offset = IMAGE_XMM + u64::from(x) * crate::answer::IMAGE_SLOT as u64;
-            e.sink()
-                .local_get(at)
-                .local_get(v)
-                .v128_store(MemArg { offset, ..memory() });
+            store_vector_at(e, at, offset, v);
         }
         return;
     }
@@ -993,9 +956,7 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     });
     for x in 0..crate::guest::XMM_COUNT as u8 {
         let offset = IMAGE_XMM + u64::from(x) * crate::answer::IMAGE_SLOT as u64;
-        e.sink()
-            .local_get(at)
-            .v128_load(MemArg { offset, ..memory() });
+        load_vector_at(e, at, offset);
         e.set_vector(x);
     }
 }
@@ -1106,14 +1067,9 @@ fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wi
             for x in 0..crate::guest::XMM_COUNT as u8 {
                 e.get_vector(if high { crate::operand::ymm_high(x) } else { x });
                 let v = e.local(ValType::V128);
-                e.sink()
-                    .local_set(v)
-                    .local_get(at)
-                    .local_get(v)
-                    .v128_store(MemArg {
-                        offset: offset + u64::from(x) * crate::answer::IMAGE_SLOT as u64,
-                        ..memory()
-                    });
+                e.sink().local_set(v);
+                let offset = offset + u64::from(x) * crate::answer::IMAGE_SLOT as u64;
+                store_vector_at(e, at, offset, v);
             }
             e.sink().end();
         }
@@ -1252,11 +1208,7 @@ fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wi
             choose(
                 e,
                 n,
-                &|e| {
-                    e.sink()
-                        .local_get(at)
-                        .v128_load(MemArg { offset, ..memory() });
-                },
+                &|e| load_vector_at(e, at, offset),
                 &|e| {
                     e.sink().v128_const(0);
                 },

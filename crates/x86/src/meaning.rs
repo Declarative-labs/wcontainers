@@ -1366,6 +1366,7 @@ fn bulk_or_element<E: Emitter<X86_64> + ?Sized>(
         }
         s.if_(BlockType::Empty);
     }
+    bulk_fence(e);
     match source_at {
         Some(source) => {
             e.sink()
@@ -1376,6 +1377,7 @@ fn bulk_or_element<E: Emitter<X86_64> + ?Sized>(
         }
         None => bulk_store(e, i, destination, length),
     }
+    bulk_fence(e);
     e.sink().else_();
     for (bit, reason) in [
         (DF, Reason::StringDirectionDown),
@@ -1479,10 +1481,7 @@ fn bulk_store<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, at: u32, 
             .end();
     };
     stores(e, vectors_end, vector, &|e: &mut E| {
-        e.sink()
-            .local_get(at)
-            .local_get(pattern)
-            .v128_store(memory());
+        store_vector_at(e, at, 0, pattern)
     });
     stores(e, end, bytes, &|e: &mut E| store(e, at, bytes, value));
     e.sink().end();

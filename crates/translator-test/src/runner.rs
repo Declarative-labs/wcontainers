@@ -21,7 +21,8 @@ pub use wcontainers_translator::contract::thread_state_size;
 use wcontainers_translator::contract::{self, Reason, SLOT_BYTES, WASM_PAGE_BYTES};
 use wcontainers_translator::contract::{progress_count_offset, progress_limit_offset};
 use wcontainers_translator::{
-    LookAhead, Omit, Optimise, ProgressCount, Translation, translate_in_modules, translate_omitting,
+    AccessOrdering, LookAhead, Omit, Optimise, OrderedAccess, ProgressCount, Translation,
+    translate_in_modules, translate_omitting,
 };
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -337,6 +338,26 @@ fn block<G: GuestTest>(thread: &[u8]) -> G::Block {
 /// translator emits for another host runs and is checked here too.
 pub const PROBE_ANSWER_SETTING: &str = "WC_PROBE_ANSWER";
 
+/// Set to [`ORDERED`], every translation the runners make has ordered guest accesses, so that the ordered form
+/// runs every test of one thread too.
+pub const ACCESS_ORDERING_SETTING: &str = "WC_ACCESS_ORDERING";
+/// The value of [`ACCESS_ORDERING_SETTING`] that asks for ordered guest accesses.
+pub const ORDERED: &str = "ordered";
+
+/// The access ordering [`ACCESS_ORDERING_SETTING`] asks for: unordered unless it says [`ORDERED`].
+pub fn access_ordering<G: GuestTest>() -> AccessOrdering {
+    match std::env::var(ACCESS_ORDERING_SETTING).as_deref() {
+        Ok(ORDERED) => {
+            assert!(
+                G::ORDERED_ACCESSES,
+                "{ACCESS_ORDERING_SETTING} asks for ordered accesses this guest does not make"
+            );
+            AccessOrdering::Ordered(OrderedAccess::SequentiallyConsistent)
+        }
+        _ => AccessOrdering::Unordered,
+    }
+}
+
 /// The probe of this engine, run once per process, or the answer `PROBE_ANSWER_SETTING` names.
 pub fn probe<G: GuestTest>() -> G::Host {
     per_guest::<G, _>(|| {
@@ -635,6 +656,7 @@ impl<G: GuestTest> Machine<G> {
             LookAhead::Full,
             host.optimise,
             host.progress,
+            access_ordering::<G>(),
             host.facts,
             host.offer,
             module_bytes,
@@ -1633,6 +1655,7 @@ fn translate_load<G: GuestTest>(
         look_ahead,
         optimise,
         host.progress,
+        access_ordering::<G>(),
         host.facts,
         host.offer,
         omit,

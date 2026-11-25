@@ -231,6 +231,7 @@ fn cut_functions_and_split_translations_match_linux<G: GuestTest>(split: &[(&str
                 LookAhead::Full,
                 wcontainers_translator::Optimise::Speed,
                 wcontainers_translator::ProgressCount::Absent,
+                wcontainers_translator::AccessOrdering::Unordered,
                 wcontainers_translator_test::runner::probe::<G>(),
                 G::Offer::default(),
                 module_bytes,
@@ -307,6 +308,7 @@ fn main_is_in_the_full_translation<G: GuestTest>(
                     LookAhead::Full,
                     Optimise::Speed,
                     wcontainers_translator::ProgressCount::Absent,
+                    wcontainers_translator::AccessOrdering::Unordered,
                     wcontainers_translator_test::runner::probe::<G>(),
                     G::Offer::default(),
                 )
@@ -572,6 +574,7 @@ fn measure<G: GuestTest>() {
                     look_ahead,
                     wcontainers_translator::Optimise::Speed,
                     wcontainers_translator::ProgressCount::Absent,
+                    wcontainers_translator::AccessOrdering::Unordered,
                     wcontainers_translator_test::runner::probe::<G>(),
                     G::Offer::default(),
                 )

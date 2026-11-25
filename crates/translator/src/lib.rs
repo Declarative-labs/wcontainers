@@ -21,3 +21,4 @@ pub use code::{Omit, translate_in_modules, translate_omitting};
 #[cfg(feature = "native")]
 pub use native::{NativeRequest, translate_native, translate_native_for, translate_native_request};
 pub use thread::thread_module;
+pub use wcontainers_guest_cpu::{AccessOrdering, OrderedAccess};

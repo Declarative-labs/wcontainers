@@ -3,10 +3,12 @@
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
-use wasmparser::{Validator, WasmFeatures};
+use wasmparser::{Operator, Parser, Payload, Validator, WasmFeatures};
 use wcontainers_arm64::{Arm64, Host};
 use wcontainers_guest_cpu::Guest;
-use wcontainers_translator::{LookAhead, Optimise, thread_module, translate};
+use wcontainers_translator::{
+    AccessOrdering, Error, LookAhead, Optimise, OrderedAccess, thread_module, translate,
+};
 use wcontainers_translator_test::programs::LOAD;
 use wcontainers_x86::{Offer, X86_64};
 
@@ -51,6 +53,118 @@ fn check(wasm: &[u8]) -> Result<(), String> {
         .validate_all(wasm)
         .map(|_| ())
         .map_err(|e| e.to_string())
+}
+
+/// The ordered form, as the runners' setting asks for it.
+const ORDERED: AccessOrdering = AccessOrdering::Ordered(OrderedAccess::SequentiallyConsistent);
+
+/// The guest's memory in a code module (`wcontainers_x86::GUEST_MEMORY`).
+const GUEST_MEMORY: u32 = wcontainers_x86::GUEST_MEMORY;
+
+/// The plain (not atomic) access to the guest's memory an operator makes, if any.
+fn plain_guest_access(operator: &Operator<'_>) -> bool {
+    use Operator::*;
+    let memarg = match operator {
+        I32Load { memarg }
+        | I64Load { memarg }
+        | F32Load { memarg }
+        | F64Load { memarg }
+        | I32Load8S { memarg }
+        | I32Load8U { memarg }
+        | I32Load16S { memarg }
+        | I32Load16U { memarg }
+        | I64Load8S { memarg }
+        | I64Load8U { memarg }
+        | I64Load16S { memarg }
+        | I64Load16U { memarg }
+        | I64Load32S { memarg }
+        | I64Load32U { memarg }
+        | I32Store { memarg }
+        | I64Store { memarg }
+        | F32Store { memarg }
+        | F64Store { memarg }
+        | I32Store8 { memarg }
+        | I32Store16 { memarg }
+        | I64Store8 { memarg }
+        | I64Store16 { memarg }
+        | I64Store32 { memarg }
+        | V128Load { memarg }
+        | V128Load8x8S { memarg }
+        | V128Load8x8U { memarg }
+        | V128Load16x4S { memarg }
+        | V128Load16x4U { memarg }
+        | V128Load32x2S { memarg }
+        | V128Load32x2U { memarg }
+        | V128Load8Splat { memarg }
+        | V128Load16Splat { memarg }
+        | V128Load32Splat { memarg }
+        | V128Load64Splat { memarg }
+        | V128Load32Zero { memarg }
+        | V128Load64Zero { memarg }
+        | V128Store { memarg }
+        | V128Load8Lane { memarg, .. }
+        | V128Load16Lane { memarg, .. }
+        | V128Load32Lane { memarg, .. }
+        | V128Load64Lane { memarg, .. }
+        | V128Store8Lane { memarg, .. }
+        | V128Store16Lane { memarg, .. }
+        | V128Store32Lane { memarg, .. }
+        | V128Store64Lane { memarg, .. } => memarg,
+        _ => return false,
+    };
+    memarg.target == wasmparser::MemArgTarget::Memory(GUEST_MEMORY)
+}
+
+/// What in a module's functions is not an ordered access to the guest's memory: each plain access, and each
+/// function whose bulk operations on it are not between fences, one line each.
+fn unordered_guest_accesses(wasm: &[u8]) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut function = 0;
+    for payload in Parser::new(0).parse_all(wasm) {
+        let Payload::CodeSectionEntry(body) = payload.expect("a module") else {
+            continue;
+        };
+        let (mut bulk, mut fences) = (0, 0);
+        for operator in body.get_operators_reader().expect("a body") {
+            let operator = operator.expect("an operator");
+            match operator {
+                Operator::MemoryCopy { dst_mem, .. } if dst_mem == GUEST_MEMORY => bulk += 1,
+                Operator::MemoryFill { mem } if mem == GUEST_MEMORY => bulk += 1,
+                Operator::AtomicFence { .. } => fences += 1,
+                ref operator if plain_guest_access(operator) => {
+                    found.push(format!("function {function}: {operator:?}"));
+                }
+                _ => {}
+            }
+        }
+        if fences < 2 * bulk {
+            found.push(format!(
+                "function {function}: {bulk} bulk operations and {fences} fences"
+            ));
+        }
+        function += 1;
+    }
+    found
+}
+
+/// ARM64's meanings make no ordered accesses, so the ordered form is refused for it.
+#[test]
+fn the_ordered_form_is_refused_arm64() {
+    // ret
+    let code = 0xd65f03c0u32.to_le_bytes();
+    let refused = translate::<Arm64>(
+        &code,
+        0..code.len() as u64,
+        None,
+        &[0],
+        LookAhead::Full,
+        Optimise::Speed,
+        wcontainers_translator::ProgressCount::Absent,
+        ORDERED,
+        HOST,
+        (),
+    );
+    assert_eq!(refused.err(), Some(Error::OrderedAccessesNotMade));
 }
 
 #[test]
@@ -149,6 +263,7 @@ fn target_below_zero_arm64() {
         LookAhead::None,
         Optimise::Speed,
         wcontainers_translator::ProgressCount::Absent,
+        wcontainers_translator::AccessOrdering::Unordered,
         HOST,
         (),
     )
@@ -179,6 +294,7 @@ fn long_chains_translate_on_a_small_stack_arm64() {
                 LookAhead::Full,
                 Optimise::Speed,
                 wcontainers_translator::ProgressCount::Absent,
+                wcontainers_translator::AccessOrdering::Unordered,
                 HOST,
                 (),
             )
@@ -221,6 +337,7 @@ fn run_bytes_x86_64(unit: &[u8], count: usize, optimise: Optimise) -> usize {
         LookAhead::Full,
         optimise,
         wcontainers_translator::ProgressCount::Absent,
+        wcontainers_translator::AccessOrdering::Unordered,
         HOST_X86_64,
         Offer::default(),
     )
@@ -255,7 +372,7 @@ proptest! {
     fn code_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64)) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let starts: Vec<u64> = (0..words.len() as u64).map(|i| 4 * i).collect();
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::None, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::None, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, wcontainers_translator::AccessOrdering::Unordered, HOST, ()).unwrap();
         validate(&translation.modules[0].wasm);
     }
 
@@ -265,7 +382,7 @@ proptest! {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut starts = vec![0];
         starts.extend(picks.iter().map(|p| 4 * p.index(words.len()) as u64));
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Full, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Full, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, wcontainers_translator::AccessOrdering::Unordered, HOST, ()).unwrap();
         validate(&translation.modules[0].wasm);
     }
 
@@ -274,7 +391,7 @@ proptest! {
     #[test]
     fn code_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), v3 in any::<bool>()) {
         let starts: Vec<u64> = (0..bytes.len() as u64).collect();
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::None, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, told(v3)).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::None, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, wcontainers_translator::AccessOrdering::Unordered, HOST_X86_64, told(v3)).unwrap();
         prop_assert_eq!(&translation.modules[0].pieces, &whole_x86_64(&bytes, &starts));
         validate(&translation.modules[0].wasm);
     }
@@ -284,7 +401,7 @@ proptest! {
     fn full_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4), v3 in any::<bool>()) {
         let mut starts = vec![0];
         starts.extend(picks.iter().map(|p| p.index(bytes.len()) as u64));
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Full, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, told(v3)).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Full, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, wcontainers_translator::AccessOrdering::Unordered, HOST_X86_64, told(v3)).unwrap();
         for module in &translation.modules {
             validate(&module.wasm);
         }
@@ -294,7 +411,7 @@ proptest! {
     #[test]
     fn bounded_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32, v3 in any::<bool>()) {
         let mut starts: Vec<u64> = picks.iter().map(|p| p.index(bytes.len()) as u64).collect();
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Bounded(bound), Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, told(v3)).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Bounded(bound), Optimise::Speed, wcontainers_translator::ProgressCount::Absent, wcontainers_translator::AccessOrdering::Unordered, HOST_X86_64, told(v3)).unwrap();
         starts.sort();
         starts.dedup();
         prop_assert_eq!(&translation.modules[0].pieces, &whole_x86_64(&bytes, &starts));
@@ -316,7 +433,7 @@ proptest! {
         code.extend(&bytes);
         let starts: Vec<u64> = (0..code.len() as u64).filter(|&t| X86_64::decode(&code[t as usize..]).is_some()).collect();
         for look_ahead in [LookAhead::Full, LookAhead::Bounded(bound)] {
-            let translation = translate::<X86_64>(&code, 0..code.len() as u64, Some(LOAD), &[0], look_ahead, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST_X86_64, Offer::default()).unwrap();
+            let translation = translate::<X86_64>(&code, 0..code.len() as u64, Some(LOAD), &[0], look_ahead, Optimise::Speed, wcontainers_translator::ProgressCount::Absent, wcontainers_translator::AccessOrdering::Unordered, HOST_X86_64, Offer::default()).unwrap();
             for module in &translation.modules {
                 validate(&module.wasm);
             }
@@ -334,7 +451,7 @@ proptest! {
     fn bounded_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut starts: Vec<u64> = picks.iter().map(|p| 4 * p.index(words.len()) as u64).collect();
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Bounded(bound), Optimise::Speed, wcontainers_translator::ProgressCount::Absent, HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Bounded(bound), Optimise::Speed, wcontainers_translator::ProgressCount::Absent, wcontainers_translator::AccessOrdering::Unordered, HOST, ()).unwrap();
         starts.sort();
         starts.dedup();
         prop_assert_eq!(&translation.modules[0].pieces, &starts);
@@ -370,6 +487,7 @@ fn every_form_is_valid_arm64() {
                 LookAhead::None,
                 Optimise::Speed,
                 wcontainers_translator::ProgressCount::Absent,
+                wcontainers_translator::AccessOrdering::Unordered,
                 HOST,
                 (),
             )
@@ -415,6 +533,7 @@ fn every_form_is_valid_arm64() {
                 look_ahead,
                 Optimise::Speed,
                 wcontainers_translator::ProgressCount::Absent,
+                wcontainers_translator::AccessOrdering::Unordered,
                 HOST,
                 (),
             )
@@ -457,21 +576,30 @@ fn every_form_is_valid_x86_64() {
             let code = one.repeat(REPEATS);
             cases += 1;
             for look_ahead in [LookAhead::None, LookAhead::Bounded(16), LookAhead::Full] {
-                let translation = translate::<X86_64>(
-                    &code,
-                    0..code.len() as u64,
-                    None,
-                    &[0],
-                    look_ahead,
-                    Optimise::Speed,
-                    wcontainers_translator::ProgressCount::Absent,
-                    HOST_X86_64,
-                    X86_64::case_offer(&case),
-                )
-                .unwrap();
-                for module in &translation.modules {
-                    if let Err(error) = check(&module.wasm) {
-                        failures.push(format!("{name} {one:02x?} at {look_ahead:?}: {error}"));
+                for ordering in [AccessOrdering::Unordered, ORDERED] {
+                    let translation = translate::<X86_64>(
+                        &code,
+                        0..code.len() as u64,
+                        None,
+                        &[0],
+                        look_ahead,
+                        Optimise::Speed,
+                        wcontainers_translator::ProgressCount::Absent,
+                        ordering,
+                        HOST_X86_64,
+                        X86_64::case_offer(&case),
+                    )
+                    .unwrap();
+                    let at = format!("{name} {one:02x?} at {look_ahead:?} {ordering:?}");
+                    for module in &translation.modules {
+                        if let Err(error) = check(&module.wasm) {
+                            failures.push(format!("{at}: {error}"));
+                        }
+                        if ordering == ORDERED {
+                            for left in unordered_guest_accesses(&module.wasm) {
+                                failures.push(format!("{at}: {left}"));
+                            }
+                        }
                     }
                 }
             }

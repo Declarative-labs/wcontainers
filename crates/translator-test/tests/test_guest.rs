@@ -877,6 +877,7 @@ fn every_translation_valid<const F: bool>() {
                     look_ahead,
                     optimise,
                     wcontainers_translator::ProgressCount::Absent,
+                    wcontainers_translator::AccessOrdering::Unordered,
                     (),
                     offer,
                 )
@@ -1129,6 +1130,7 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
                     look_ahead,
                     optimise,
                     wcontainers_translator::ProgressCount::Absent,
+                    wcontainers_translator::AccessOrdering::Unordered,
                     (),
                     false,
                 )
@@ -1350,6 +1352,7 @@ fn run<const F: bool>(
         look_ahead,
         optimise,
         wcontainers_translator::ProgressCount::Absent,
+        wcontainers_translator::AccessOrdering::Unordered,
         (),
         false,
     )

@@ -8,7 +8,8 @@
 //! default. A real binary is translated from all its starts at each look-ahead, and at full and bounded also
 //! from each kind of start alone. The benchmark set and [`EVERY_HOST`] are translated for each answer the
 //! guest's probe can give, the other binaries for this machine's. Written once over the guest, with one test
-//! per guest.
+//! per guest. The runners' access ordering setting chooses the form; with [`CUT_DESCRIPTION_SETTING`] set,
+//! each module is hashed without its description section, whose layout two commits may differ in.
 
 use std::fmt::Write;
 use wcontainers_arm64::Arm64;
@@ -16,7 +17,12 @@ use wcontainers_translator::{BOUND, LookAhead, Optimise, Translation, translate}
 use wcontainers_translator_test::binaries::{Binary, sources};
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{Library, Position, build_with};
-use wcontainers_translator_test::runner::probe;
+use wcontainers_translator::contract::DESCRIPTION_SECTION;
+use wcontainers_translator_test::runner::{access_ordering, probe};
+use wcontainers_x86::X86_64;
+
+/// Set to any value, a module's line is of its bytes without the description section.
+const CUT_DESCRIPTION_SETTING: &str = "WC_OUTPUT_CUT_DESCRIPTION";
 
 const LOOK_AHEADS: [(&str, LookAhead); 7] = [
     ("none", LookAhead::None),
@@ -53,7 +59,52 @@ fn hosts<G: GuestTest>(set: &str) -> Vec<(String, G::Host)> {
 }
 
 fn line(out: &mut String, name: &str, wasm: &[u8]) {
-    writeln!(out, "{name} {} {}", wasm.len(), blake3::hash(wasm)).unwrap();
+    let wasm = if std::env::var_os(CUT_DESCRIPTION_SETTING).is_some() {
+        without_description(wasm)
+    } else {
+        wasm.to_vec()
+    };
+    writeln!(out, "{name} {} {}", wasm.len(), blake3::hash(&wasm)).unwrap();
+}
+
+/// The module with its description section left out: the header, then every other section as it is.
+fn without_description(wasm: &[u8]) -> Vec<u8> {
+    /// The magic and the version: https://webassembly.github.io/spec/core/binary/modules.html#binary-module
+    const HEADER_BYTES: usize = 8;
+    /// https://webassembly.github.io/spec/core/binary/modules.html#custom-section
+    const CUSTOM: u8 = 0;
+    let mut kept = wasm[..HEADER_BYTES].to_vec();
+    let mut at = HEADER_BYTES;
+    while at < wasm.len() {
+        let id = wasm[at];
+        let (size, size_bytes) = leb128(&wasm[at + 1..]);
+        let contents = at + 1 + size_bytes;
+        let end = contents + size;
+        let (name_length, name_bytes) = leb128(&wasm[contents..]);
+        let name = &wasm[contents + name_bytes..][..name_length.min(end - contents - name_bytes)];
+        if id != CUSTOM || name != DESCRIPTION_SECTION.as_bytes() {
+            kept.extend_from_slice(&wasm[at..end]);
+        }
+        at = end;
+    }
+    kept
+}
+
+/// An unsigned LEB128 number at the start of `bytes`, and how many bytes it takes.
+fn leb128(bytes: &[u8]) -> (usize, usize) {
+    /// Each byte's high bit says another follows, below it 7 bits of the number:
+    /// https://webassembly.github.io/spec/core/binary/values.html#integers
+    const MORE: u8 = 0x80;
+    const BITS: u32 = MORE.trailing_zeros();
+    let (mut value, mut taken) = (0, 0);
+    for (i, &byte) in bytes.iter().enumerate() {
+        value |= usize::from(byte & !MORE) << (BITS * i as u32);
+        taken = i + 1;
+        if byte & MORE == 0 {
+            break;
+        }
+    }
+    (value, taken)
 }
 
 fn lines(out: &mut String, name: &str, translation: &Translation) {
@@ -99,6 +150,7 @@ fn bench<G: GuestTest>(out: &mut String) {
                         look_ahead,
                         optimise,
                         wcontainers_translator::ProgressCount::Absent,
+                        access_ordering::<G>(),
                         host,
                         G::Offer::default(),
                     )
@@ -142,6 +194,7 @@ fn binary<G: GuestTest>(out: &mut String, name: &str) {
                         look_ahead,
                         optimise,
                         wcontainers_translator::ProgressCount::Absent,
+                        access_ordering::<G>(),
                         host,
                         G::Offer::default(),
                     )
@@ -161,6 +214,12 @@ fn binary<G: GuestTest>(out: &mut String, name: &str) {
 #[ignore]
 fn write_output_arm64() {
     write_output::<Arm64>();
+}
+
+#[test]
+#[ignore]
+fn write_output_x86_64() {
+    write_output::<X86_64>();
 }
 
 fn write_output<G: GuestTest>() {

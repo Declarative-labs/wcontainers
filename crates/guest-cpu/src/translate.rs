@@ -5,10 +5,49 @@ use crate::{Bit, Effects, MemoryFault, Personality, Registers, TrapKind};
 use core::fmt::Debug;
 use core::hash::Hash;
 use core::ops::Range;
-use wasm_encoder::{InstructionSink, ValType};
+use wasm_encoder::{InstructionSink, MemArgOrdering, ValType};
 
 /// The export of a guest's probe module (`Guest::probe_module`) that gives the host answer.
 pub const PROBE: &str = "probe";
+
+/// How translated code orders the guest's loads and stores between threads that run at once (docs/threads.md 9).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AccessOrdering {
+    /// Each access as written, with no order of its own between threads.
+    #[default]
+    Unordered,
+    /// Every guest load and store an ordered access: x86's order kept for threads in parallel on a host that
+    /// orders memory more weakly.
+    Ordered(OrderedAccess),
+}
+
+impl AccessOrdering {
+    /// The form as the description section and the cache key write it.
+    pub fn code(self) -> u8 {
+        match self {
+            AccessOrdering::Unordered => 0,
+            AccessOrdering::Ordered(OrderedAccess::SequentiallyConsistent) => 1,
+        }
+    }
+}
+
+/// The kind of WebAssembly access an ordered guest access becomes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum OrderedAccess {
+    /// The atomic loads and stores of WebAssembly's threads proposal, which every engine with threads has.
+    SequentiallyConsistent,
+}
+
+impl OrderedAccess {
+    /// The ordering immediate of an atomic access of this kind: none for the threads proposal's own encoding.
+    /// Cheaper acquire and release accesses (`MemArgOrdering::Op(Ordering::AcqRel)`) become a kind here once
+    /// engines have them, behind a start-up probe.
+    pub fn memarg_ordering(self) -> Option<MemArgOrdering> {
+        match self {
+            OrderedAccess::SequentiallyConsistent => None,
+        }
+    }
+}
 
 /// Byte sizes of the single and double precision float formats, as instructions give them.
 pub const SINGLE: u8 = size_of::<f32>() as u8;
@@ -19,6 +58,8 @@ pub trait Guest: Personality {
     // --- identity ---
     /// Names the guest in the description section and the cache key.
     const ID: GuestId;
+    /// Whether the meanings make every guest access ordered when asked ([`AccessOrdering::Ordered`]).
+    const ORDERED_ACCESSES: bool = false;
 
     // --- the instruction unit ---
     /// Every instruction starts at a multiple of this many bytes: ARM64 4, x86-64 1, RV64GC 2.
@@ -294,6 +335,10 @@ pub trait Emitter<G: Guest> {
     fn host(&self) -> G::Host;
     /// What the container offers beyond the default claims.
     fn offer(&self) -> G::Offer;
+    /// How the meaning's guest loads and stores are ordered between threads.
+    fn access_ordering(&self) -> AccessOrdering {
+        AccessOrdering::Unordered
+    }
     /// Push whether floating point takes the slow path (`Guest::float_slow`), as an i32 not zero when it
     /// does, and return true: the meaning then writes both paths. Or, as nothing of the instruction is
     /// written yet, carry on from this instruction in other code when it does, and return false: the meaning

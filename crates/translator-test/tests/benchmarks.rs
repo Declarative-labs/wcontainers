@@ -5,7 +5,8 @@
 //! `WC_BENCH_WORKLOADS` (numbers from bench.c, default all), `WC_BENCH_VARIANTS` (which of the six check
 //! variants, numbered from 1, default all), `WC_BENCH_CHROME` (0 leaves Chrome out), `WC_BENCH_REPEAT` (how
 //! many times Chrome runs the program in the same instances, each run timed by itself, default 1),
-//! `WC_CHROME_JS_FLAGS` (V8 flags for Chrome) and `WC_OPTIMISE` (`size` translates for size, default speed).
+//! `WC_CHROME_JS_FLAGS` (V8 flags for Chrome) and `WC_OPTIMISE` (`size` translates for size, default speed);
+//! the runners' access ordering setting chooses the form.
 
 use std::io::Write;
 use std::time::{Duration, Instant};
@@ -95,6 +96,7 @@ fn size<G: GuestTest>(blob: &Blob) {
             LookAhead::Full,
             optimise(),
             wcontainers_translator::ProgressCount::Absent,
+            wcontainers_translator_test::runner::access_ordering::<G>(),
             wcontainers_translator_test::runner::probe::<G>(),
             G::Offer::default(),
         )

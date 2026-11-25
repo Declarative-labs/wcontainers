@@ -67,6 +67,7 @@ fn translated<G: GuestTest>(binary: &Binary, optimise: Optimise, offer: G::Offer
         LookAhead::Full,
         optimise,
         wcontainers_translator::ProgressCount::Absent,
+        wcontainers_translator::AccessOrdering::Unordered,
         probe::<G>(),
         offer,
     )
