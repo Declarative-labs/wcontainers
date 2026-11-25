@@ -60,9 +60,19 @@ fn read_operand(
 ) -> Option<OperandValue> {
     let registers = &state.processor.general_purpose_registers;
     match operand_type {
-        OperandType::RegisterNumber(field) | OperandType::VectorRegisterNumber(field) => {
+        OperandType::RegisterNumber(field)
+        | OperandType::VectorRegisterNumber(field)
+        | OperandType::ScalableVectorNumber { field, .. }
+        | OperandType::PredicateNumber(field) => {
             Some(OperandValue::RegisterNumber(field.read(word)))
         }
+        OperandType::ScalableVectorValue { field, offset, .. } => Some(OperandValue::Vector(
+            state.processor.vector_registers
+                [(field.read(word) + offset) as usize % state.processor.vector_registers.len()],
+        )),
+        OperandType::PredicateValue(field) => Some(OperandValue::Bits(u64::from(
+            state.processor.predicate_registers[field.read(word) as usize],
+        ))),
         OperandType::FloatingPointValue { field, precision }
         | OperandType::ConvertedFloatingPoint {
             field, precision, ..
@@ -104,7 +114,10 @@ fn read_operand(
             state.processor.vector_registers[field.read(word) as usize]
                 & (u128::MAX >> (u128::BITS - bytes * u8::BITS)),
         )),
-        OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields) => {
+        OperandType::ProgramCounterOffset(fields)
+        | OperandType::SplitImmediate(fields)
+        | OperandType::EveryValue(fields)
+        | OperandType::BytePosition(fields) => {
             Some(OperandValue::Bits(fields.iter().fold(0, |bits, field| {
                 (bits << field.width) | u64::from(field.read(word))
             })))

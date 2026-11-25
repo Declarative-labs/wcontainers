@@ -30,6 +30,7 @@ pub mod operand;
 pub mod planted;
 pub mod pointer_authentication;
 mod registers;
+pub mod scalable;
 pub mod simd;
 mod simulation;
 pub mod system_register;
@@ -62,6 +63,8 @@ pub const INSTRUCTION_SIZE: u64 = size_of::<u32>() as u64;
 pub const GENERAL_PURPOSE_REGISTERS: usize = 31;
 /// V0 to V31.
 pub const VECTOR_REGISTERS: usize = 32;
+/// P0 to P15.
+pub const PREDICATE_REGISTERS: usize = 16;
 
 /// What every privilege level has, and what `Level` adds to it.
 ///
@@ -142,6 +145,8 @@ impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
             && observed.stack_pointer == expected.stack_pointer
             && observed.program_counter == expected.program_counter
             && observed.vector_registers == expected.vector_registers
+            && observed.predicate_registers == expected.predicate_registers
+            && observed.first_fault == expected.first_fault
             && observed.floating_point_control == expected.floating_point_control
             && observed.floating_point_status == expected.floating_point_status
             && observed.software_thread_id == expected.software_thread_id
@@ -223,15 +228,20 @@ impl<Level: PrivilegeLevel> Iterator for Instructions<Level> {
 /// The registers every privilege level has, the exception its last instruction raised, and what one level adds.
 ///
 /// TODO: temporary placeholder until the rest of the state every level has is designed: TPIDRRO_EL0 and TPIDR2_EL0;
-/// PSTATE's DIT, SSBS, TCO and BTYPE; SVCR (streaming mode and ZA); Z beyond 128 bits, P and FFR; ZA and ZT0;
-/// FPMR; GCSPR_EL0.
+/// PSTATE's DIT, SSBS, TCO and BTYPE; SVCR (streaming mode and ZA); Z, P and FFR beyond a 128-bit vector length; ZA
+/// and ZT0; FPMR; GCSPR_EL0.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Processor<LevelSpecific> {
     pub general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS],
     pub stack_pointer: u64,
     pub program_counter: u64,
     pub condition_flags: ConditionFlags,
+    /// V0 to V31, which are Z0 to Z31 at a 128-bit vector length.
     pub vector_registers: [u128; VECTOR_REGISTERS],
+    /// The SVE predicates at a 128-bit vector length: one bit for each byte of a Z register.
+    pub predicate_registers: [u16; PREDICATE_REGISTERS],
+    /// FFR, the first-fault register, as wide as a predicate.
+    pub first_fault: u16,
     /// [FPCR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FPCR--Floating-point-Control-Register).
     pub floating_point_control: u64,
     /// [FPSR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FPSR--Floating-point-Status-Register).
@@ -252,6 +262,8 @@ pub const ZERO_PROCESSOR: Processor<()> = Processor {
     program_counter: 0,
     condition_flags: ConditionFlags::empty(),
     vector_registers: [0; VECTOR_REGISTERS],
+    predicate_registers: [0; PREDICATE_REGISTERS],
+    first_fault: 0,
     floating_point_control: 0,
     floating_point_status: 0,
     software_thread_id: 0,

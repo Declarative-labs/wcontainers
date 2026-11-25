@@ -40,10 +40,11 @@ use wcontainers_processor_architecture_arm64::system_register::SYSTEM_REGISTER;
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, DocumentedInstruction, GENERAL_PURPOSE_REGISTERS,
     INSTRUCTION_SIZE, Instruction, InstructionClass, InstructionFetch, LoadStoreInstruction,
-    PagePermission, Processor, User, VIRTUAL_ADDRESS_BITS, ZERO_PROCESSOR, to_implicit_inputs,
-    writes_condition_flags,
+    PagePermission, Processor, User, VECTOR_REGISTERS, VIRTUAL_ADDRESS_BITS, ZERO_PROCESSOR,
+    to_implicit_inputs, writes_condition_flags,
 };
 
+mod scalable;
 #[cfg(test)]
 mod tests;
 
@@ -90,6 +91,8 @@ const STICKY_FLAGS: [u64; 7] = [
 ];
 /// The vector register beside V0, which holds zero where no operand names it, as X30 does.
 const SECOND_VECTOR_REGISTER: usize = 1;
+/// The predicate beside P0, which holds zero in the state of an SVE instruction, as V1 does.
+const SECOND_PREDICATE_REGISTER: usize = 1;
 /// The bytes FEAT_LSE2 lets an unaligned ordered or atomic access lie anywhere inside.
 const SINGLE_COPY_ATOMIC_BYTES: u64 = 16;
 /// A doubleword's bytes: a boundary the alignment rules name besides an access's own size and 16 bytes.
@@ -210,6 +213,34 @@ pub enum OperandType {
     /// The whole word of an instruction whose operands no model reads: a word LLVM decodes as the instruction, or its
     /// fixed bits where the list has none.
     Word(u32),
+    /// The Z registers an SVE operand names, `registers` consecutive ones from the field's.
+    ScalableVectorNumber {
+        field: Field,
+        registers: u32,
+    },
+    /// The whole Z register `offset` registers after the one the field names, wrapping after Z31.
+    ScalableVectorValue {
+        field: Field,
+        offset: u32,
+        values: ScalableValues,
+    },
+    /// The P register an SVE operand names.
+    PredicateNumber(Field),
+    /// The value of the P register the field names.
+    PredicateValue(Field),
+    /// An immediate split over fields, the most significant first, which takes every value it can hold.
+    EveryValue(&'static [Field]),
+    /// A byte position in a Z register, split over fields, the most significant first.
+    BytePosition(&'static [Field]),
+}
+
+/// What the elements of a Z register an SVE instruction reads hold.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScalableValues {
+    /// Bits, as a vector register's.
+    Integer,
+    /// Indices into a table, besides bits.
+    TableIndices,
 }
 
 /// What every byte of the data pages holds before the instruction.
@@ -296,9 +327,10 @@ impl Arm64InputDomain {
         operand_type: OperandType,
     ) -> impl Iterator<Item = OperandValue> {
         let numbers: &[u32] = match operand_type {
-            OperandType::RegisterNumber(_) | OperandType::VectorRegisterNumber(_) => {
-                &DISTINCT_REGISTER_NUMBERS
-            }
+            OperandType::RegisterNumber(_)
+            | OperandType::VectorRegisterNumber(_)
+            | OperandType::ScalableVectorNumber { .. }
+            | OperandType::PredicateNumber(_) => &DISTINCT_REGISTER_NUMBERS,
             _ => &[],
         };
         numbers.iter().copied().map(OperandValue::RegisterNumber)
@@ -318,6 +350,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         instruction: Instruction<Infallible>,
     ) -> vec::IntoIter<OperandType> {
         use OperandType::{RegisterNumber, SignedImmediate, UnsignedImmediate};
+        if let Some(operand_types) = scalable::list_scalable_operand_types(instruction) {
+            return operand_types.into_iter();
+        }
         if DocumentedInstruction::new(instruction).is_some()
             || LoadStoreInstruction::new(instruction).is_some()
         {
@@ -490,6 +525,22 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             OperandType::CodePlacement => [CodePlacement::PageStart, CodePlacement::PageEnd]
                 .map(OperandValue::CodePlacement)
                 .to_vec(),
+            // Two registers, the second holding zero, as the vector registers; and for a list, the last, whose next is Z0.
+            OperandType::ScalableVectorNumber { registers, .. } => [0, 1]
+                .into_iter()
+                .chain((registers > 1).then_some(VECTOR_REGISTERS as u32 - 1))
+                .map(OperandValue::RegisterNumber)
+                .collect(),
+            OperandType::ScalableVectorValue { values, .. } => {
+                scalable::to_scalable_vector_values(values)
+            }
+            OperandType::PredicateNumber(_) => [0, 1].map(OperandValue::RegisterNumber).to_vec(),
+            OperandType::PredicateValue(_) => scalable::to_predicate_values(),
+            OperandType::EveryValue(fields) => {
+                let width: u32 = fields.iter().map(|field| field.width).sum();
+                (0..1 << width).map(OperandValue::Bits).collect()
+            }
+            OperandType::BytePosition(fields) => scalable::to_byte_positions(fields),
             OperandType::DataPagePermission(_) => {
                 let mapped = |data_access| PagePermission::Mapped {
                     data_access,
@@ -552,8 +603,23 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             floating_point_status: SATURATION,
             ..ZERO_PROCESSOR
         };
+        // The P registers of an SVE instruction as its Z registers are: each the complement of its number, but P1 zero.
+        if typed
+            .iter()
+            .any(|(operand_type, _)| matches!(operand_type, OperandType::PredicateNumber(_)))
+        {
+            processor.predicate_registers = array::from_fn(|number| {
+                if number == SECOND_PREDICATE_REGISTER {
+                    0
+                } else {
+                    !(number as u16)
+                }
+            });
+        }
         let mut floating_point_values = Vec::new();
         let mut vector_values = Vec::new();
+        let mut scalable_values = Vec::new();
+        let mut predicate_values = Vec::new();
         let mut placement = None;
         let mut tag = 0;
         let mut comparand = None;
@@ -602,8 +668,24 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                     };
                     vector_values.push((field, bytes, value));
                 }
+                OperandType::ScalableVectorValue { field, offset, .. } => {
+                    let OperandValue::Vector(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    scalable_values.push((field, offset, value));
+                }
+                OperandType::PredicateValue(field) => {
+                    let OperandValue::Bits(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    predicate_values.push((field, value as u16));
+                }
                 // `encode_word` has put them in the word.
-                OperandType::RegisterNumber(_)
+                OperandType::ScalableVectorNumber { .. }
+                | OperandType::PredicateNumber(_)
+                | OperandType::EveryValue(_)
+                | OperandType::BytePosition(_)
+                | OperandType::RegisterNumber(_)
                 | OperandType::VectorRegisterNumber(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)
@@ -683,6 +765,13 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             let register = &mut processor.vector_registers[field.read(word) as usize];
             let mask = u128::MAX >> (u128::BITS - bytes * u8::BITS);
             *register = (*register & !mask) | (value & mask);
+        }
+        for (field, offset, value) in scalable_values {
+            let number = (field.read(word) + offset) as usize % VECTOR_REGISTERS;
+            processor.vector_registers[number] = value;
+        }
+        for (field, value) in predicate_values {
+            processor.predicate_registers[field.read(word) as usize] = value;
         }
         for (field, thirty_one, value) in register_values {
             match processor
@@ -799,7 +888,10 @@ pub fn encode_word(
     for (operand_type, operand) in operands {
         match (operand_type, operand) {
             (
-                OperandType::RegisterNumber(field) | OperandType::VectorRegisterNumber(field),
+                OperandType::RegisterNumber(field)
+                | OperandType::VectorRegisterNumber(field)
+                | OperandType::ScalableVectorNumber { field, .. }
+                | OperandType::PredicateNumber(field),
                 OperandValue::RegisterNumber(number),
             ) => word |= field.to_bits(number),
             (
@@ -812,7 +904,10 @@ pub fn encode_word(
             ) => word |= field.to_bits(bits as u32),
             (OperandType::Word(_), OperandValue::Bits(bits)) => word = bits as u32,
             (
-                OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields),
+                OperandType::ProgramCounterOffset(fields)
+                | OperandType::SplitImmediate(fields)
+                | OperandType::EveryValue(fields)
+                | OperandType::BytePosition(fields),
                 OperandValue::Bits(bits),
             ) => {
                 let mut remaining = bits;
@@ -824,6 +919,10 @@ pub fn encode_word(
             (
                 OperandType::RegisterNumber(_)
                 | OperandType::VectorRegisterNumber(_)
+                | OperandType::ScalableVectorNumber { .. }
+                | OperandType::PredicateNumber(_)
+                | OperandType::EveryValue(_)
+                | OperandType::BytePosition(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)
                 | OperandType::ShiftAmount { .. }

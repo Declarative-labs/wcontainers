@@ -25,6 +25,10 @@
 //!   subnormal source nothing is flushed, so the flush controls do too;
 //! - a page the access does not reach: its permission takes one value.
 //!
+//! A predicate of an SVE instruction that leaves some element inactive only chooses which elements it computes: only
+//! where every element is active do the values, controls and written state take every combination; under any other
+//! predicate they take each of their values once.
+//!
 //! A source the instruction is documented not to read on a path (the register a conditional select does not select,
 //! what a conditional compare compares where its condition fails, with FPCR) is not decided by that: a wrong model
 //! could read it, and raise a flag on a signaling NaN or fault on an address, so on that path's first condition and
@@ -193,18 +197,21 @@ enum Group {
     Condition,
     Flags,
     Field,
+    /// The value of an SVE predicate, which decides which elements the instruction computes.
+    Predicate,
     Data,
     Control,
     Written,
 }
 
-const GROUPS: [Group; 9] = [
+const GROUPS: [Group; 10] = [
     Group::Register,
     Group::Placement,
     Group::Selector,
     Group::Condition,
     Group::Flags,
     Group::Field,
+    Group::Predicate,
     Group::Data,
     Group::Control,
     Group::Written,
@@ -213,7 +220,11 @@ const GROUPS: [Group; 9] = [
 /// The group of an operand, the field naming a condition aside.
 const fn to_group(operand_type: OperandType) -> Group {
     match operand_type {
-        OperandType::RegisterNumber(_) | OperandType::VectorRegisterNumber(_) => Group::Register,
+        OperandType::RegisterNumber(_)
+        | OperandType::VectorRegisterNumber(_)
+        | OperandType::ScalableVectorNumber { .. }
+        | OperandType::PredicateNumber(_) => Group::Register,
+        OperandType::PredicateValue(_) => Group::Predicate,
         OperandType::AccessPlacement
         | OperandType::AddressTag
         | OperandType::DataPagePermission(_)
@@ -224,6 +235,8 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::BitmaskImmediate(_)
         | OperandType::ProgramCounterOffset(_)
         | OperandType::SplitImmediate(_)
+        | OperandType::EveryValue(_)
+        | OperandType::BytePosition(_)
         | OperandType::Word(_) => Group::Field,
         OperandType::ConditionFlags => Group::Flags,
         OperandType::RegisterValue { .. }
@@ -233,7 +246,8 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::ConvertedFloatingPoint { .. }
         | OperandType::Comparand { .. }
         | OperandType::SoftwareThreadId
-        | OperandType::VectorValue { .. } => Group::Data,
+        | OperandType::VectorValue { .. }
+        | OperandType::ScalableVectorValue { .. } => Group::Data,
         OperandType::SystemRegister(_) => Group::Selector,
         OperandType::FloatingPointControl(_) => Group::Control,
         OperandType::StatusFlags | OperandType::WrittenConditionFlags | OperandType::MemoryFill => {
@@ -275,6 +289,8 @@ struct Facts {
     /// Whether every register operand names a register of its own, the one choice of register numbers under which the
     /// other operands take every combination.
     register_representative: bool,
+    /// Whether some predicate the state holds leaves an element of the instruction inactive.
+    partial_predicate: bool,
 }
 
 impl Facts {
@@ -290,6 +306,7 @@ impl Facts {
         subnormal_source: false,
         first_control: true,
         register_representative: true,
+        partial_predicate: false,
     };
 }
 
@@ -624,6 +641,15 @@ impl Cut {
                         facts.subnormal_source |= exponent == 0 && fraction != 0;
                     }
                 }
+                Group::Predicate => {
+                    facts.partial_predicate =
+                        self.types.iter().enumerate().any(|(index, operand_type)| {
+                            matches!(operand_type, OperandType::PredicateValue(_))
+                                && facts.held & (1 << index) != 0
+                                && self.values[index][chosen[index]]
+                                    != OperandValue::Bits(u64::from(u16::MAX))
+                        });
+                }
                 Group::Control => {
                     facts.first_control = self
                         .groups
@@ -710,7 +736,7 @@ impl Cut {
             return Allowed::Every(every);
         }
         let values = self.allow_values(index, chosen, facts);
-        if !facts.register_representative
+        if (!facts.register_representative || facts.partial_predicate)
             && matches!(group, Group::Data | Group::Control | Group::Written)
         {
             Allowed::EachOnce(values)
@@ -758,6 +784,8 @@ impl Cut {
         let compares = self.compares(facts);
         match self.groups[index] {
             Group::Register | Group::Condition | Group::Selector => all,
+            Group::Predicate if facts.undefined => one,
+            Group::Predicate => all,
             Group::Placement => {
                 let placement = self.find(chosen, |operand_type| {
                     operand_type == OperandType::AccessPlacement
@@ -874,12 +902,14 @@ fn to_register_assignments(
     values: &[Vec<OperandValue>],
 ) -> Vec<Vec<(usize, usize)>> {
     let field = |operand_type: OperandType| match operand_type {
-        OperandType::RegisterNumber(field) => Some((field, false)),
-        OperandType::VectorRegisterNumber(field) => Some((field, true)),
+        OperandType::RegisterNumber(field) => Some((field, RegisterKind::General)),
+        OperandType::VectorRegisterNumber(field)
+        | OperandType::ScalableVectorNumber { field, .. } => Some((field, RegisterKind::Vector)),
+        OperandType::PredicateNumber(field) => Some((field, RegisterKind::Predicate)),
         _ => None,
     };
     // The first operand of each field, with its kind.
-    let mut named: Vec<(usize, Field, bool)> = Vec::new();
+    let mut named: Vec<(usize, Field, RegisterKind)> = Vec::new();
     for (index, operand_type) in types.iter().enumerate() {
         if let Some((field, vector)) = field(*operand_type)
             && !named.iter().any(|(_, other, _)| *other == field)
@@ -902,12 +932,12 @@ fn to_register_assignments(
             .filter(|value| !distinct(index).contains(value))
             .collect()
     };
-    let mut used = [0_usize; 2];
+    let mut used = [0_usize; 3];
     let base: Vec<OperandValue> = named
         .iter()
-        .map(|(index, _, vector)| {
+        .map(|(index, _, kind)| {
             let own = distinct(*index);
-            let place = &mut used[usize::from(*vector)];
+            let place = &mut used[*kind as usize];
             let Some(number) = own.get(*place).copied() else {
                 panic!("more registers of one kind than distinct numbers in {types:?}")
             };
@@ -961,6 +991,14 @@ fn to_register_assignments(
                 .collect()
         })
         .collect()
+}
+
+/// The kinds of register whose operands name registers of their own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RegisterKind {
+    General,
+    Vector,
+    Predicate,
 }
 
 /// The register of the state an operand of an MRS or MSR gives a value.

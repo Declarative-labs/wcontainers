@@ -49,6 +49,14 @@ impl Hash {
         for register in processor.vector_registers {
             self.add(&register.to_le_bytes());
         }
+        // Only an SVE instruction's states set a predicate or FFR, so the states of every other instruction hash as
+        // they did before the processor held them.
+        if processor.first_fault != 0 || processor.predicate_registers.iter().any(|p| *p != 0) {
+            for register in processor.predicate_registers {
+                self.add(&register.to_le_bytes());
+            }
+            self.add(&processor.first_fault.to_le_bytes());
+        }
         self.add(format!("{:?}", processor.exception).as_bytes());
         for mutation in &state.memory_mutations {
             match mutation {

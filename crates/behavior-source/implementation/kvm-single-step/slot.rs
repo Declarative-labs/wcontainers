@@ -3,7 +3,9 @@
 use std::mem::offset_of;
 
 use wcontainers_abi::PAGE_SIZE;
-use wcontainers_processor_architecture_arm64::{GENERAL_PURPOSE_REGISTERS, VECTOR_REGISTERS};
+use wcontainers_processor_architecture_arm64::{
+    GENERAL_PURPOSE_REGISTERS, PREDICATE_REGISTERS, VECTOR_REGISTERS,
+};
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
 /// Bytes of one general register.
@@ -31,6 +33,12 @@ pub(crate) struct Registers {
     /// Unused: it puts `vector` where the alignment of its registers puts it.
     pub(crate) alignment: u64,
     pub(crate) vector: [u128; VECTOR_REGISTERS],
+    /// P0 to P15 at a 128-bit vector length, which the handler moves only where the slot says so.
+    pub(crate) predicate: [u16; PREDICATE_REGISTERS],
+    /// FFR, moved with the predicates.
+    pub(crate) first_fault: u16,
+    /// Unused: it ends the registers at the alignment of their vector registers.
+    pub(crate) predicate_alignment: [u16; 7],
 }
 
 /// One state in guest memory: its registers before and after, and where the handler goes next.
@@ -43,8 +51,9 @@ pub(crate) struct Slot {
     pub(crate) next: u64,
     /// An [`Ending`], which the handler writes.
     pub(crate) ending: u64,
-    /// Unused: it puts `before` where the alignment of its vector registers puts it.
-    pub(crate) alignment: u64,
+    /// Nonzero where the chip has SVE, so that the handler moves the predicates and FFR; it also puts `before` where the
+    /// alignment of its vector registers puts it.
+    pub(crate) scalable_vectors: u64,
     pub(crate) before: Registers,
     pub(crate) after: Registers,
 }

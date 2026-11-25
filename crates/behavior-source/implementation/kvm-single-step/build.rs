@@ -90,6 +90,18 @@ fn assemble() -> (Vec<u8>, u64) {
         ),
         ("REGISTERS_SYNDROME", offset_of!(Registers, syndrome) as u64),
         ("REGISTERS_VECTOR", offset_of!(Registers, vector) as u64),
+        (
+            "REGISTERS_PREDICATE",
+            offset_of!(Registers, predicate) as u64,
+        ),
+        (
+            "REGISTERS_FIRST_FAULT",
+            offset_of!(Registers, first_fault) as u64,
+        ),
+        (
+            "SLOT_SCALABLE_VECTORS",
+            offset_of!(Slot, scalable_vectors) as u64,
+        ),
         ("ENDING_EXCEPTION_FROM_EL0", Ending::ExceptionFromEl0 as u64),
         ("ENDING_UNEXPECTED", Ending::Unexpected as u64),
     ];
