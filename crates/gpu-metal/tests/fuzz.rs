@@ -4,8 +4,11 @@
 //! the largest integers, and values whose sums and products wrap) and from valid values, in random sequences of calls on
 //! random live objects, objects of a device since dropped, and objects whose other handles were dropped. Each batch
 //! runs in a process of its own with Metal's API and shader validation on, so that an abort is caught and counted with
-//! its seed. After each batch every canary buffer, made next to every buffer the calls may write, is read back: one
-//! that changed is a write outside its buffer.
+//! its seed. Every buffer keeps a shadow of what it must hold: when it is dropped and when the batch ends it is read
+//! back, and a byte changed outside every range a taken call was allowed to change is a write outside its range, the
+//! bytes on both sides of each call's range among them. A value past a limit reaches the call as drawn, and the call
+//! must refuse it: one taken is a failure too, and ends its batch before the GPU runs it. Only a value the checks
+//! pass is cut, after them, where it would make large objects or long work.
 //!
 //! It is an ignored test: `cargo test -p wcontainers-gpu-metal --test fuzz -- --ignored`, with `FUZZ_SEEDS` (seeds
 //! joined by commas), `FUZZ_CALLS` (calls of each seed), `FUZZ_BATCH` (calls of each batch) and `FUZZ_JOBS` (batches
@@ -20,10 +23,13 @@ mod metal;
 #[cfg(target_os = "macos")]
 #[path = "fuzz/random.rs"]
 mod random;
-
-/// The bytes of each canary buffer, made before and after every buffer the calls may write.
 #[cfg(target_os = "macos")]
-const CANARY_BYTES: u64 = 4096;
+#[path = "fuzz/shadow.rs"]
+mod shadow;
+
+/// The most bytes of a buffer a batch makes: a length past a limit is sent as drawn, one within it is cut to this.
+#[cfg(target_os = "macos")]
+const LARGEST_MADE: u64 = 1 << 21;
 
 /// The most of each kind of object a batch keeps; past it a new one replaces, and so drops, an old one.
 #[cfg(target_os = "macos")]
@@ -47,21 +53,23 @@ mod driver {
     /// The line a batch prints its counts on, which the driver adds up.
     pub const RESULT_LINE: &str = "FUZZ-RESULT";
 
-    /// What a batch found: calls, refusals, canary bytes changed, and command buffers the GPU ended in an error.
+    /// What a batch found: calls, refusals, canary bytes changed, command buffers the GPU ended in an error, and calls
+    /// taken that had to be refused.
     #[derive(Default)]
     pub struct Counts {
         pub calls: u64,
         pub refused: u64,
         pub canary_bytes: u64,
         pub gpu_errors: u64,
+        pub accepted: u64,
     }
 
     impl Counts {
         /// Prints the counts on the result line.
         pub fn print(&self) {
             println!(
-                "{RESULT_LINE} {} {} {} {}",
-                self.calls, self.refused, self.canary_bytes, self.gpu_errors
+                "{RESULT_LINE} {} {} {} {} {}",
+                self.calls, self.refused, self.canary_bytes, self.gpu_errors, self.accepted
             );
         }
 
@@ -75,7 +83,7 @@ mod driver {
 
         /// Returns whether the batch found nothing wrong.
         pub fn clean(&self) -> bool {
-            self.canary_bytes == 0 && self.gpu_errors == 0
+            self.canary_bytes == 0 && self.gpu_errors == 0 && self.accepted == 0
         }
     }
 
@@ -107,6 +115,8 @@ mod driver {
         batch: u64,
         child: Child,
         started: Instant,
+        /// The file its messages go to: a pipe would fill and stop a batch that writes many before it ends.
+        messages: std::path::PathBuf,
     }
 
     /// How long a batch may run before it counts as hung.
@@ -141,13 +151,18 @@ mod driver {
             while running.len() < jobs
                 && let Some((seed, batch)) = waiting.pop_front()
             {
+                let messages = std::env::temp_dir().join(format!(
+                    "fuzz-{}-{seed}-{batch}.txt",
+                    std::process::id()
+                ));
+                let file = std::fs::File::create(&messages).map_err(|e| e.to_string())?;
                 let child = Command::new(&program)
                     .env(BATCH_VARIABLE, format!("{seed}:{batch}:{per_batch}"))
                     .env("MTL_DEBUG_LAYER", "1")
                     .env("MTL_DEBUG_LAYER_ERROR_MODE", "assert")
                     .env("MTL_SHADER_VALIDATION", "1")
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
+                    .stderr(file)
                     .spawn()
                     .map_err(|e| e.to_string())?;
                 running.push(Running {
@@ -155,6 +170,7 @@ mod driver {
                     batch,
                     child,
                     started: Instant::now(),
+                    messages,
                 });
             }
             std::thread::sleep(Duration::from_millis(20));
@@ -182,26 +198,33 @@ mod driver {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    if let [calls, refused, canary, errors] = words[..] {
+                    if let [calls, refused, canary, errors, accepted] = words[..] {
                         total.calls = total.calls.saturating_add(calls);
                         total.refused = total.refused.saturating_add(refused);
                         total.canary_bytes = total.canary_bytes.saturating_add(canary);
                         total.gpu_errors = total.gpu_errors.saturating_add(errors);
+                        total.accepted = total.accepted.saturating_add(accepted);
                         counted = true;
                     }
                 }
+                let stderr = std::fs::read_to_string(&job.messages).unwrap_or_default();
+                let _ = std::fs::remove_file(&job.messages);
                 if !output.status.success() || !counted {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    let why: String = stderr
-                        .lines()
-                        .filter(|l| {
+                    // Each line that names a failure, with the line after it, where Metal's assertions give their reason.
+                    let lines: Vec<&str> = stderr.lines().collect();
+                    let why: String = lines
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, l)| {
                             l.contains("failed assertion")
                                 || l.contains("panicked")
                                 || l.contains("validation")
                                 || l.contains("CANARY")
+                                || l.contains("ACCEPTED")
                                 || l.contains("error")
                         })
                         .take(4)
+                        .flat_map(|(at, l)| [*l, lines.get(at.saturating_add(1)).copied().unwrap_or_default()])
                         .collect::<Vec<_>>()
                         .join(" | ");
                     let line = format!(
@@ -220,11 +243,12 @@ mod driver {
         }
         println!(
             "fuzz: seeds {seeds:?}, {batches} batches, {} calls, {} refused, {} canary bytes changed, {} GPU errors, {} \
-             failed batches, {:.1} s",
+             taken that had to be refused, {} failed batches, {:.1} s",
             total.calls,
             total.refused,
             total.canary_bytes,
             total.gpu_errors,
+            total.accepted,
             failures.len(),
             started.elapsed().as_secs_f64()
         );

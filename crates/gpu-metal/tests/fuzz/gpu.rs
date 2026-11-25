@@ -21,9 +21,52 @@ use wcontainers_test_window_appkit::AppkitTestWindow;
 
 use crate::driver::Counts;
 use crate::random::Random;
-use crate::{CANARY_BYTES, POOL, TEXTURE_BUDGET};
+use crate::shadow::{Shadow, Tracked};
+use crate::{LARGEST_MADE, POOL, TEXTURE_BUDGET};
 
 type B = MetalGpu<DirectMetal>;
+type Buffer = <B as Gpu>::Buffer;
+
+/// A range of a buffer that a call may change; a buffer of the ring has no shadow.
+type Allowed = (Option<Tracked>, u64, u64);
+
+/// The bytes of one query's result.
+const QUERY_BYTES: u64 = 8;
+
+/// Notes a range that a call may change.
+fn allow(allowed: &Allowed) {
+    if let (Some(shadow), offset, size) = allowed {
+        shadow.borrow_mut().allow(*offset, *size);
+    }
+}
+
+/// Returns the rows of blocks a copy between a buffer and a texture region touches in the buffer: one range a row.
+fn copy_rows(format: Format, side: &CopyBufferTexture<'_, B>, extent: Extent, stencil: bool) -> Vec<(u64, u64)> {
+    let (width, height, bytes) = wcontainers_gpu::FORMAT_FACTS[format as usize].block;
+    // A stencil aspect is one byte a texel; a depth and stencil format's depth is taken at its widest.
+    let (width, height, bytes) = if stencil { (1, 1, 1) } else { (width.max(1), height.max(1), bytes) };
+    let row = u64::from(extent.width.div_ceil(width)).saturating_mul(u64::from(bytes));
+    let rows = extent.height.div_ceil(height);
+    let layers = extent.depth_or_layers;
+    if u64::from(rows).saturating_mul(u64::from(layers)) > 4096 {
+        return vec![(side.offset, u64::MAX)];
+    }
+    let mut ranges = Vec::new();
+    for layer in 0..layers {
+        for at in 0..rows {
+            let start = side
+                .offset
+                .saturating_add(
+                    u64::from(layer)
+                        .saturating_mul(u64::from(side.rows_per_layer))
+                        .saturating_mul(u64::from(side.row_pitch)),
+                )
+                .saturating_add(u64::from(at).saturating_mul(u64::from(side.row_pitch)));
+            ranges.push((start, row));
+        }
+    }
+    ranges
+}
 
 /// The programs the batches draw and dispatch with, which read and write at indices the data chooses.
 const PROGRAMS: &str = "
@@ -250,8 +293,8 @@ struct MadeProgram {
 /// Everything a batch has made, and what it found.
 struct World {
     b: B,
-    buffers: Vec<<B as Gpu>::Buffer>,
-    canaries: Vec<(<B as Gpu>::Buffer, u8)>,
+    /// Buffers, each with what it must still hold.
+    buffers: Vec<(Buffer, Option<Tracked>)>,
     textures: Vec<MadeTexture>,
     views: Vec<<B as Gpu>::TextureView>,
     samplers: Vec<<B as Gpu>::Sampler>,
@@ -261,12 +304,15 @@ struct World {
     depth_stencils: Vec<<B as Gpu>::DepthStencil>,
     rasters: Vec<<B as Gpu>::Raster>,
     layouts: Vec<<B as Gpu>::VertexLayout>,
-    sets: Vec<<B as Gpu>::BindingSet>,
+    /// Binding sets, with the storage ranges a draw or dispatch through each may write.
+    sets: Vec<(<B as Gpu>::BindingSet, Vec<Allowed>)>,
     queries: Vec<<B as Gpu>::QuerySet>,
     readbacks: Vec<<B as Gpu>::Readback>,
     fences: Vec<<B as Gpu>::Fence>,
     surfaces: Vec<<B as Gpu>::Surface>,
     in_pass: bool,
+    /// Whether the device was lost: once it is, a write may be dropped, so it no longer makes its bytes known.
+    lost: bool,
     counts: Counts,
 }
 
@@ -321,7 +367,6 @@ pub fn run(random: &mut Random, calls: u64, window: bool) -> Counts {
     let mut world = World {
         b: MetalGpu::new(DirectMetal::new(())),
         buffers: Vec::new(),
-        canaries: Vec::new(),
         textures: Vec::new(),
         views: Vec::new(),
         samplers: Vec::new(),
@@ -337,6 +382,7 @@ pub fn run(random: &mut Random, calls: u64, window: bool) -> Counts {
         fences: Vec::new(),
         surfaces: Vec::new(),
         in_pass: false,
+        lost: false,
         counts: Counts::default(),
     };
     // A window of four pixels, which takes no focus and closes when the process ends.
@@ -358,6 +404,7 @@ pub fn run(random: &mut Random, calls: u64, window: bool) -> Counts {
     }
     for _ in 0..calls {
         world.step(random);
+        world.note_loss();
     }
     world.finish()
 }
@@ -400,6 +447,28 @@ impl World {
         }
     }
 
+    /// Notes the device's loss once: a call it refused may have dropped writes recorded since the last submission.
+    fn note_loss(&mut self) {
+        if self.lost || self.b.status() == wcontainers_gpu::DeviceStatus::Ok {
+            return;
+        }
+        self.lost = true;
+        for (_, shadow) in &self.buffers {
+            if let Some(shadow) = shadow {
+                shadow.borrow_mut().lost();
+            }
+        }
+    }
+
+    /// Notes that the work recorded so far was submitted.
+    fn submitted(&mut self) {
+        for (_, shadow) in &self.buffers {
+            if let Some(shadow) = shadow {
+                shadow.borrow_mut().submitted();
+            }
+        }
+    }
+
     /// Ends the open pass, before calls that come outside one.
     fn leave_pass(&mut self) {
         if self.in_pass {
@@ -408,38 +477,80 @@ impl World {
         }
     }
 
-    /// Makes a buffer of a random size, with a canary before and after it.
+    /// Makes a buffer of a random size, filled with random bytes as far as 64 KiB.
     fn create_buffer(&mut self, random: &mut Random) {
-        let size = random.u64(&[4, 16, 64, 256, 4096]);
-        // Sizes from 2^21 up to the limit, 2^30, would make large buffers on the owner's Mac; past it none is made.
-        let size = if size > 1 << 21 && size <= 1 << 30 {
-            1 << 21
+        let most = self.b.caps().limits.max_buffer_size;
+        let size = if random.chance(5) {
+            random.pick(&[most, most.saturating_add(1)])
+        } else {
+            random.u64(&[4, 16, 64, 256, 4096])
+        };
+        // A size past the limit reaches `create_buffer` as drawn, which must refuse it; one within it but past
+        // `LARGEST_MADE` would make a large buffer on the owner's Mac, so it is cut after that check.
+        let refuse = size > most;
+        let size = if !refuse && size > LARGEST_MADE {
+            LARGEST_MADE
         } else {
             size
         };
-        let desc = |size| BufferDesc {
+        let made = self.b.create_buffer(&BufferDesc {
             size,
             usage: BufferUsage::all(),
             intent: MapIntent::Rarely,
-        };
-        let before = self.b.create_buffer(&desc(CANARY_BYTES));
-        let made = self.b.create_buffer(&desc(size));
-        let after = self.b.create_buffer(&desc(CANARY_BYTES));
+        });
         self.counts.call(made.is_err());
-        for canary in [before, after].into_iter().flatten() {
-            let byte = random.next() as u8 | 1;
-            self.b.write_buffer(
-                &canary,
-                0,
-                &vec![byte; CANARY_BYTES as usize],
-                WriteMode::Ordered,
-            );
-            self.canaries.push((canary, byte));
+        let Ok(buffer) = made else {
+            return;
+        };
+        if refuse {
+            eprintln!("ACCEPTED a buffer of {size} bytes, past max_buffer_size, {most}");
+            self.counts.accepted = self.counts.accepted.saturating_add(1);
+            return;
         }
-        if let Ok(buffer) = made {
-            let fill: Vec<u8> = (0..size.min(65536)).map(|_| random.next() as u8).collect();
-            self.b.write_buffer(&buffer, 0, &fill, WriteMode::Ordered);
-            keep(random, &mut self.buffers, buffer);
+        let shadow = Shadow::new(size);
+        let fill: Vec<u8> = (0..size.min(65536)).map(|_| random.next() as u8).collect();
+        self.b.write_buffer(&buffer, 0, &fill, WriteMode::Ordered);
+        if self.lost {
+            shadow.borrow_mut().allow(0, fill.len() as u64);
+        } else {
+            shadow.borrow_mut().wrote_pending(0, &fill);
+        }
+        self.keep_buffer(random, (buffer, Some(shadow)));
+    }
+
+    /// Keeps a buffer, checking the one it replaces.
+    fn keep_buffer(&mut self, random: &mut Random, held: (Buffer, Option<Tracked>)) {
+        if self.buffers.len() >= POOL {
+            let at = random.index(self.buffers.len());
+            let old = std::mem::replace(&mut self.buffers[at], held);
+            self.check(&old);
+        } else {
+            self.buffers.push(held);
+        }
+    }
+
+    /// Reads a buffer back, after the work recorded before, and counts its bytes changed outside every allowed range.
+    fn check(&mut self, (buffer, shadow): &(Buffer, Option<Tracked>)) {
+        let Some(shadow) = shadow else {
+            return;
+        };
+        let size = shadow.borrow().length();
+        if size == 0 {
+            return;
+        }
+        self.leave_pass();
+        let mut read = vec![0; size as usize];
+        let source = ReadSource::Buffer {
+            buffer,
+            offset: 0,
+            size,
+        };
+        match self.b.read_back_now(&source, &mut read) {
+            Ok(()) => {
+                let changed = shadow.borrow().changed(&read);
+                self.counts.canary_bytes = self.counts.canary_bytes.saturating_add(changed);
+            }
+            Err(error) => eprintln!("CANARY a buffer not read back: {error:?}"),
         }
     }
 
@@ -736,8 +847,10 @@ impl World {
     }
 
     /// Returns a random range of a random buffer.
-    fn range(&mut self, random: &mut Random) -> Option<(<B as Gpu>::Buffer, u64, u64)> {
-        let buffer = any(random, &self.buffers)?;
+    ///
+    /// The last of the tuple is the buffer's shadow.
+    fn range(&mut self, random: &mut Random) -> Option<(Buffer, u64, u64, Option<Tracked>)> {
+        let (buffer, shadow) = any(random, &self.buffers)?;
         let offset = if random.chance(70) {
             random.pick(&[0, 256])
         } else {
@@ -748,7 +861,7 @@ impl World {
         } else {
             random.u64(&[0, 4])
         };
-        Some((buffer, offset, size))
+        Some((buffer, offset, size, shadow))
     }
 
     /// Makes a binding set of random resources at the programs' bindings.
@@ -768,7 +881,8 @@ impl World {
                 random.u32(&[usual])
             }
         };
-        if let Some((buffer, offset, size)) = &uniform {
+        let mut writable = Vec::new();
+        if let Some((buffer, offset, size, _)) = &uniform {
             entries.push(BindingEntry {
                 binding: binding(random, 0),
                 stages: all,
@@ -780,7 +894,10 @@ impl World {
             });
         }
         for (at, range) in [(1, &source), (2, &sink)] {
-            if let Some((buffer, offset, size)) = range {
+            if let Some((buffer, offset, size, shadow)) = range {
+                if at == 2 {
+                    writable.push((shadow.clone(), *offset, *size));
+                }
                 entries.push(BindingEntry {
                     binding: binding(random, at),
                     stages: all,
@@ -812,7 +929,7 @@ impl World {
             });
         }
         if random.chance(5)
-            && let Some((buffer, offset, size)) = &source
+            && let Some((buffer, offset, size, _)) = &source
         {
             entries.push(BindingEntry {
                 binding: 9,
@@ -833,7 +950,7 @@ impl World {
         if let Ok(set) = made {
             let _ = self.b.binding_layout_key(&set);
             self.counts.call(false);
-            keep(random, &mut self.sets, set);
+            keep(random, &mut self.sets, (set, writable));
         }
     }
 
@@ -844,11 +961,18 @@ impl World {
             QueryKind::OcclusionAny,
             QueryKind::Timestamp,
         ]);
-        // Counts up to 2^20 make small buffers; one past it would make a large one, so it is cut.
-        let count = random.u32(&[1, 2, 8]).min(1 << 20);
+        // A count whose results pass `max_buffer_size` reaches the call as drawn, which must refuse it; one within it
+        // but past 2^20 would make a large buffer, so it is cut after that check.
+        let count = random.u32(&[1, 2, 8]);
+        let refuse = u64::from(count).saturating_mul(QUERY_BYTES) > self.b.caps().limits.max_buffer_size;
+        let count = if refuse { count } else { count.min(1 << 20) };
         let made = self.b.create_query_set(kind, count);
         self.counts.call(made.is_err());
         if let Ok(set) = made {
+            if refuse {
+                eprintln!("ACCEPTED a query set of {count} queries, past max_buffer_size");
+                self.counts.accepted = self.counts.accepted.saturating_add(1);
+            }
             keep(random, &mut self.queries, set);
         }
     }
@@ -881,12 +1005,35 @@ impl World {
             WriteMode::NoOverwrite,
         ]);
         if random.chance(50) {
-            let Some((buffer, offset, _)) = self.range(random) else {
+            let Some((buffer, offset, _, shadow)) = self.range(random) else {
                 return;
             };
             let bytes = random.bytes(&[0, 1, 3, 4, 16, 256, 4096]);
             self.b.write_buffer(&buffer, offset, &bytes, mode);
             self.counts.call(false);
+            let Some(shadow) = shadow else {
+                return;
+            };
+            let mut shadow = shadow.borrow_mut();
+            // A write past the buffer is refused and writes nothing.
+            if offset
+                .checked_add(bytes.len() as u64)
+                .is_none_or(|end| end > shadow.length())
+            {
+                return;
+            }
+            match mode {
+                _ if self.lost => shadow.allow(offset, bytes.len() as u64),
+                WriteMode::Ordered => shadow.wrote_pending(offset, &bytes),
+                // The bytes outside the written part are undefined until written.
+                WriteMode::Discard => {
+                    shadow.allow_all();
+                    shadow.wrote_pending(offset, &bytes);
+                }
+                // The batch does not keep the promise this mode asks, so the written bytes may land before or after
+                // the work recorded earlier.
+                WriteMode::NoOverwrite => shadow.allow(offset, bytes.len() as u64),
+            }
             return;
         }
         let Some((made, mip, layer, origin, extent)) = self.region(random) else {
@@ -997,13 +1144,14 @@ impl World {
         ) else {
             return;
         };
-        let set = any(random, &self.sets);
+        let (set, writable) = any(random, &self.sets).unzip();
+        let writable = writable.unwrap_or_default();
         let streams: Vec<_> = (0..random.index(3)).map(|_| self.range(random)).collect();
         let index = self.range(random);
         let vertex_buffers: Vec<Option<VertexBinding<'_, B>>> = streams
             .iter()
             .map(|s| {
-                s.as_ref().map(|(buffer, offset, _)| VertexBinding {
+                s.as_ref().map(|(buffer, offset, _, _)| VertexBinding {
                     buffer,
                     offset: *offset,
                 })
@@ -1026,25 +1174,32 @@ impl World {
         let immediates = random.bytes(&[0, 0, 4, 16, 300]);
         let mut count = random.u32(&[3, 6]);
         let mut instances = random.u32(&[1, 2]);
-        // A draw of a great many vertices is cut to few: it is the bounds, not the GPU's time, under test.
-        if u64::from(count).saturating_mul(u64::from(instances)) > 1 << 14 {
-            count = count.min(1 << 10);
+        let (first, first_instance) = (random.u32(&[0, 1]), random.u32(&[0]));
+        let indexed = random.chance(40);
+        // Counts whose sums pass the largest `u32` reach the draw as drawn, which must refuse them; an indexed draw's
+        // count is bounded by its index buffer. A draw that passes those checks but would run a great many vertices is
+        // cut after them: the bounds, not the GPU's time, are under test.
+        let refuse = first_instance.checked_add(instances).is_none()
+            || (!indexed && first.checked_add(count).is_none());
+        if !refuse && u64::from(count).saturating_mul(u64::from(instances)) > 1 << 14 {
+            if !indexed {
+                count = count.min(1 << 10);
+            }
             instances = instances.min(4);
         }
-        let indexed = random.chance(40);
         let range = if indexed {
             DrawRange::Indexed {
-                first: random.u32(&[0, 1]),
+                first,
                 count,
                 base_vertex: random.i32(),
-                first_instance: random.u32(&[0]),
+                first_instance,
                 instances,
             }
         } else {
             DrawRange::Vertices {
-                first: random.u32(&[0, 1]),
+                first,
                 count,
-                first_instance: random.u32(&[0]),
+                first_instance,
                 instances,
             }
         };
@@ -1052,7 +1207,7 @@ impl World {
         let index_binding = index
             .as_ref()
             .filter(|_| indexed)
-            .map(|(buffer, offset, _)| IndexBinding {
+            .map(|(buffer, offset, _, _)| IndexBinding {
                 buffer,
                 offset: *offset,
                 format: index_format,
@@ -1076,6 +1231,9 @@ impl World {
             immediates: &immediates,
             range,
         };
+        for range in &writable {
+            allow(range);
+        }
         match random.below(10) {
             0 => {
                 let kind = random.pick(&[FanOrLoop::TriangleFan, FanOrLoop::LineLoop]);
@@ -1083,6 +1241,8 @@ impl World {
                 let source = if random.chance(50) {
                     IndexSource::Sequential {
                         first: random.u32(&[0]),
+                        // The trait's default builds three indices a vertex in memory before any check, so a count
+                        // near the largest `u32` would take some 48 GiB: it is cut until the trait bounds it.
                         count: random.u32(&[3, 4, 6]).min(4096),
                     }
                 } else {
@@ -1102,10 +1262,13 @@ impl World {
                 let targets: Vec<BufferRange<&<B as Gpu>::Buffer>> = streams
                     .iter()
                     .flatten()
-                    .map(|(buffer, offset, size)| BufferRange {
-                        buffer,
-                        offset: *offset,
-                        size: *size,
+                    .map(|(buffer, offset, size, shadow)| {
+                        allow(&(shadow.clone(), *offset, *size));
+                        BufferRange {
+                            buffer,
+                            offset: *offset,
+                            size: *size,
+                        }
                     })
                     .collect();
                 let rasterize = random.chance(50);
@@ -1133,12 +1296,13 @@ impl World {
     fn copy(&mut self, random: &mut Random) {
         match random.below(4) {
             0 => {
-                let (Some((src, src_offset, size)), Some((dst, dst_offset, _))) =
+                let (Some((src, src_offset, size, _)), Some((dst, dst_offset, _, shadow))) =
                     (self.range(random), self.range(random))
                 else {
                     return;
                 };
                 self.b.copy_buffer(&src, src_offset, &dst, dst_offset, size);
+                allow(&(shadow, dst_offset, size));
             }
             1 => {
                 let (Some((src, sm, sl, so, extent)), Some((dst, dm, dl, d_o, _))) =
@@ -1153,7 +1317,7 @@ impl World {
                 );
             }
             other => {
-                let (Some((buffer, offset, _)), Some((made, mip, layer, origin, extent))) =
+                let (Some((buffer, offset, _, shadow)), Some((made, mip, layer, origin, extent))) =
                     (self.range(random), self.region(random))
                 else {
                     return;
@@ -1177,6 +1341,9 @@ impl World {
                         &side,
                         extent,
                     );
+                    for (start, length) in copy_rows(made.desc.format, &side, extent, stencil) {
+                        allow(&(shadow.clone(), start, length));
+                    }
                 }
             }
         }
@@ -1185,11 +1352,12 @@ impl World {
 
     /// Clears a random range of a random buffer with a random pattern.
     fn clear_buffer(&mut self, random: &mut Random) {
-        let Some((buffer, offset, size)) = self.range(random) else {
+        let Some((buffer, offset, size, shadow)) = self.range(random) else {
             return;
         };
         let pattern = random.bytes(&[1, 2, 4, 8, 16, 0, 3]);
         self.b.clear_buffer(&buffer, offset, size, &pattern);
+        allow(&(shadow, offset, size));
         self.counts.call(false);
     }
 
@@ -1219,6 +1387,7 @@ impl World {
             0 => {
                 self.leave_pass();
                 let fence = self.b.submit();
+                self.submitted();
                 keep(random, &mut self.fences, fence);
             }
             1 => {
@@ -1240,7 +1409,7 @@ impl World {
     fn read(&mut self, random: &mut Random) {
         match random.below(6) {
             0 | 1 => {
-                let Some((buffer, offset, size)) = self.range(random) else {
+                let Some((buffer, offset, size, _)) = self.range(random) else {
                     return;
                 };
                 let source = ReadSource::Buffer {
@@ -1486,13 +1655,14 @@ impl World {
         if let Ok(ring) = written
             && random.chance(10)
         {
-            keep(random, &mut self.buffers, ring);
+            // The ring's other parts are written by later calls, so no byte of it is a canary.
+            self.keep_buffer(random, (ring, None));
         }
     }
 
     /// Resolves random queries into a random buffer.
     fn resolve_queries(&mut self, random: &mut Random) {
-        let (Some(set), Some((buffer, offset, _))) =
+        let (Some(set), Some((buffer, offset, _, shadow))) =
             (any(random, &self.queries), self.range(random))
         else {
             return;
@@ -1501,6 +1671,9 @@ impl World {
         let (first, count) = (random.u32(&[0, 1]), random.u32(&[0, 1, 2]));
         let resolved = self.b.resolve_queries(&set, first, count, &buffer, offset);
         self.counts.call(resolved.is_err());
+        if resolved.is_ok() {
+            allow(&(shadow, offset, u64::from(count).saturating_mul(QUERY_BYTES)));
+        }
     }
 
     /// Dispatches a random program with random bindings and groups.
@@ -1511,17 +1684,27 @@ impl World {
         if random.chance(80) {
             self.leave_pass();
         }
-        let set = any(random, &self.sets);
+        let (set, writable) = any(random, &self.sets).unzip();
         let immediates = random.bytes(&[0, 0, 4, 16]);
         let args = self.range(random);
-        // A dispatch of a great many groups is cut to few: it is the bounds, not the GPU's time, under test.
-        let group = |random: &mut Random| random.u32(&[1, 2, 4, 0]).min(64);
+        // Counts past `max_dispatch` reach the dispatch as drawn, which must refuse them; a dispatch within it that
+        // runs a great many groups is cut after that check: the bounds, not the GPU's time, are under test.
+        let most = self.b.caps().limits.max_dispatch;
+        let mut direct = [random.u32(&[1, 2, 4, 0]), random.u32(&[1, 2, 4, 0]), random.u32(&[1, 2, 0])];
+        let refuse = direct.iter().any(|n| *n > most);
+        let total = direct
+            .iter()
+            .fold(1u64, |total, n| total.saturating_mul(u64::from(*n)));
+        if !refuse && total > 4096 {
+            direct = [direct[0].min(64), direct[1].min(16), direct[2].min(4)];
+        }
+        let indirect = random.chance(10);
         let groups = match &args {
-            Some((buffer, offset, _)) if random.chance(10) => DispatchGroups::Indirect {
+            Some((buffer, offset, _, _)) if indirect => DispatchGroups::Indirect {
                 args: buffer,
                 offset: *offset,
             },
-            _ => DispatchGroups::Direct([group(random), group(random), group(random).min(4)]),
+            _ => DispatchGroups::Direct(direct),
         };
         let dispatched = self.b.dispatch(&DispatchCall {
             program: &program.program,
@@ -1530,6 +1713,15 @@ impl World {
             groups,
         });
         self.counts.call(dispatched.is_err());
+        if dispatched.is_ok() {
+            if refuse && !indirect {
+                eprintln!("ACCEPTED a dispatch of {direct:?} groups, past max_dispatch, {most}");
+                self.counts.accepted = self.counts.accepted.saturating_add(1);
+            }
+            for range in writable.iter().flatten() {
+                allow(range);
+            }
+        }
     }
 
     /// Calls the methods this implementation leaves absent, and timestamps.
@@ -1563,7 +1755,9 @@ impl World {
     fn destroy(&mut self, random: &mut Random) {
         let object = match random.below(8) {
             0 if !self.buffers.is_empty() => {
-                Object::Buffer(self.buffers.swap_remove(random.index(self.buffers.len())))
+                let held = self.buffers.swap_remove(random.index(self.buffers.len()));
+                self.check(&held);
+                Object::Buffer(held.0)
             }
             1 if !self.textures.is_empty() => Object::Texture(
                 self.textures
@@ -1574,7 +1768,7 @@ impl World {
                 Object::TextureView(self.views.swap_remove(random.index(self.views.len())))
             }
             3 if !self.sets.is_empty() => {
-                Object::BindingSet(self.sets.swap_remove(random.index(self.sets.len())))
+                Object::BindingSet(self.sets.swap_remove(random.index(self.sets.len())).0)
             }
             4 if !self.programs.is_empty() => Object::Program(
                 self.programs
@@ -1596,28 +1790,13 @@ impl World {
         self.counts.call(false);
     }
 
-    /// Ends the batch: ends the pass, submits, waits, and reads every canary back.
+    /// Ends the batch: ends the pass, submits, waits, and checks every buffer.
     fn finish(mut self) -> Counts {
         self.leave_pass();
         let fence = self.b.submit();
         self.b.wait_fence(&fence);
-        for (canary, byte) in &self.canaries {
-            let mut read = vec![0; CANARY_BYTES as usize];
-            let source = ReadSource::Buffer {
-                buffer: canary,
-                offset: 0,
-                size: CANARY_BYTES,
-            };
-            if let Err(error) = self.b.read_back_now(&source, &mut read) {
-                eprintln!("CANARY not read back: {error:?}");
-                self.counts.canary_bytes = self.counts.canary_bytes.saturating_add(CANARY_BYTES);
-                continue;
-            }
-            let changed = read.iter().filter(|b| *b != byte).count() as u64;
-            if changed > 0 {
-                eprintln!("CANARY {changed} bytes of a canary changed");
-            }
-            self.counts.canary_bytes = self.counts.canary_bytes.saturating_add(changed);
+        for held in std::mem::take(&mut self.buffers) {
+            self.check(&held);
         }
         self.counts
     }
