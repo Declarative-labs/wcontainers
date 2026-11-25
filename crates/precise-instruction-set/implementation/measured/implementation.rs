@@ -30,7 +30,10 @@ impl<Architecture: ProcessorArchitecture> PreciseInstructionSet<Architecture>
     }
 
     /// Panics for an instruction the measurements do not hold.
-    fn to_precise(&self, instruction: Architecture::Instruction) -> Architecture::PreciseInstruction {
+    fn to_precise(
+        &self,
+        instruction: Architecture::Instruction,
+    ) -> Architecture::PreciseInstruction {
         let measured = self
             .behaviors
             .iter()
