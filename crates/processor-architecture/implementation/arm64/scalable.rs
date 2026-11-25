@@ -13,6 +13,9 @@ use crate::scalable_floating_point::{
     FloatingPointForm, VectorRole, list_floating_point_operands, simulate_floating_point_form,
     to_floating_point_form,
 };
+use crate::scalable_integer::{
+    IntegerForm, list_integer_operands, simulate_integer_form, to_integer_form,
+};
 use crate::{Exception, Instruction, PREDICATE_REGISTERS, Processor, VECTOR_REGISTERS};
 
 /// The bits of a Z register and the bytes of one at a 128-bit vector length.
@@ -100,6 +103,7 @@ pub enum PermuteOperation {
 pub enum ScalableOperation {
     Permute(PermuteOperation),
     FloatingPoint(FloatingPointForm),
+    Integer(IntegerForm),
 }
 
 /// The operation of each SVE instruction this module models, none for every other instruction.
@@ -108,6 +112,9 @@ pub const fn to_scalable_operation(
 ) -> Option<ScalableOperation> {
     if let Some(permute) = to_permute_operation(instruction) {
         return Some(ScalableOperation::Permute(permute));
+    }
+    if let Some(form) = to_integer_form(instruction) {
+        return Some(ScalableOperation::Integer(form));
     }
     match to_floating_point_form(instruction) {
         Some(form) => Some(ScalableOperation::FloatingPoint(form)),
@@ -192,6 +199,7 @@ pub fn list_scalable_operands(
     let permute = match to_scalable_operation(instruction)? {
         ScalableOperation::Permute(permute) => permute,
         ScalableOperation::FloatingPoint(form) => return Some(list_floating_point_operands(form)),
+        ScalableOperation::Integer(form) => return Some(list_integer_operands(form)),
     };
     Some(match permute {
         PermuteOperation::Zip { .. }
@@ -322,6 +330,9 @@ pub fn to_element_bits(operation: ScalableOperation, word: u32) -> Option<u32> {
         ScalableOperation::FloatingPoint(form) => {
             return crate::scalable_floating_point::to_element_bits(form, word);
         }
+        ScalableOperation::Integer(form) => {
+            return crate::scalable_integer::to_element_bits(form, word);
+        }
     };
     match permute {
         PermuteOperation::Extract { .. } => Some(u8::BITS),
@@ -350,6 +361,9 @@ pub fn simulate_scalable<LevelSpecific>(
         ScalableOperation::Permute(permute) => permute,
         ScalableOperation::FloatingPoint(form) => {
             return simulate_floating_point_form(processor, word, form);
+        }
+        ScalableOperation::Integer(form) => {
+            return simulate_integer_form(processor, word, form);
         }
     };
     let Some(esize) = to_element_bits(operation, word) else {

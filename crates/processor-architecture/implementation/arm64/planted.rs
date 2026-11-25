@@ -59,7 +59,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 425] = [
+pub const PLANTED_BUGS: [PlantedBug; 431] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2609,5 +2609,41 @@ pub const PLANTED_BUGS: [PlantedBug; 425] = [
         instruction: Instruction::PrfbPRR,
         planted_by: PlantedBy::ScalableSecondHalf,
         what: "the prefetch faults as a load",
+    },
+    PlantedBug {
+        number: 2047,
+        instruction: Instruction::Saddlb,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the top elements taken, not the bottom",
+    },
+    PlantedBug {
+        number: 2048,
+        instruction: Instruction::SqdmlalbZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the accumulation not saturated",
+    },
+    PlantedBug {
+        number: 2049,
+        instruction: Instruction::SqrdmulhZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the product not rounded",
+    },
+    PlantedBug {
+        number: 2050,
+        instruction: Instruction::Sabalb,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the difference not made absolute",
+    },
+    PlantedBug {
+        number: 2051,
+        instruction: Instruction::Addhnb,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the top halves kept, not zero",
+    },
+    PlantedBug {
+        number: 2052,
+        instruction: Instruction::BcaxZZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the second and third sources swapped",
     },
 ];

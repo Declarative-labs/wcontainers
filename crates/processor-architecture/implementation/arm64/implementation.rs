@@ -32,6 +32,7 @@ pub mod pointer_authentication;
 mod registers;
 pub mod scalable;
 pub mod scalable_floating_point;
+pub mod scalable_integer;
 pub mod simd;
 mod simulation;
 pub mod system_register;
