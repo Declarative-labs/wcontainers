@@ -251,26 +251,139 @@ long as any "none" option does, the tcp host's ioctl serves three "none" request
 linux-socket-options still does not compile, and with it the tcp, udp, icmp, raw and route-resolver hosts. The
 runtime's RT1 needs those hosts, so RT1 holds on owner question 1 even after HS1.
 
-## Owner questions this track waits on
+## HS1 and HS2 (2026-11-25): typed routes and the API crate (done by this track's measurement; independent check pending)
 
-1. Where do the 80 options, 3 ioctl requests and 2 partial cases listed above as "none" go: an API crate for the Linux
-   socket calls `setsockopt(2)`/`getsockopt(2)`/`ioctl(2)` (named for that API, its `implementation/direct` holding
-   the marked calls behind a safe trait), or are the settings dropped (each a change a guest can observe)?
-2. Which socket options may a hostile guest make the host kernel act on at all?
-3. The agents-made `SocketOptions` primitive (d4aee0ae5): taken as that API crate, or left as a study?
-4. nix as a vetted crate (its `recvmsg` treats the whole address buffer as written).
+Commits on `host-sockets`: 5df67976f merges the owner's main (FETCH_HEAD e295234c7; no file of these crates changed in
+it), 55fd7bafc brings the fourteen folders by path from agents 198bb11d6, 3caf049bc adds the API crate, 24d3b3b6a routes
+every caller. The owner ruled the shape of every outside API on 2026-11-25, so HS2 no longer waits on question 1.
+
+### The API crate: `crates/linux-socket-options` (package `wcontainers-linux-socket-options`)
+
+Named for the one outside API, Linux's socket option and socket ioctl calls (setsockopt(2), getsockopt(2), ioctl(2) on a
+socket). READ in the commit:
+- `options.table`: 96 rows (method, level, option, value kind, manual page): the 80 options HS0 found with no safe
+  route, split by direction and by IP level where Linux takes the option at both (for example `MCAST_JOIN_GROUP` at
+  `IPPROTO_IP` and `IPPROTO_IPV6`), the 3 ioctl requests, and the two partial cases (`SO_TIMESTAMPING` with a bound
+  clock, `TCP_QUICKACK` set to 2).
+- `interface.rs`, the trait `LinuxSocketOptions`, one method per row, and `implementation/direct/generated.rs`, its
+  implementation, are both written by `tests/generated.rs` from the table; that test fails when either file differs
+  from what the table gives (MEASURED: passes on both machines), checks every method is listed once, and checks the
+  suite calls every method. Typed arguments only: numbers, `bool`, byte strings the kernel reads whole, the listed uapi
+  structures by reference, `&[libc::sock_filter]` for the one program option, `GroupFilter` for `MCAST_MSFILTER`.
+  Reads of varying length give `Written<ROOM>` (the bytes and the length the kernel wrote) for a room the caller names
+  as a constant type parameter, never a buffer it passes; `MPTCP_FULL_INFO` gives `MptcpFullInformation`, its subflow
+  rooms allocated by the implementation from a count.
+- `implementation/direct` (`DirectLinuxSocketOptions`): its own lint table `unsafe_code = "deny"`; **4 marked lines**,
+  each `#[expect(unsafe_code, reason = "..")]` on the one statement (implementation.rs:118 `setsockopt` of plain values
+  and of the program header, :229 `getsockopt` into a byte room, :338 `getsockopt` of `MPTCP_FULL_INFO` whose header
+  names the answer's two runs, :365 `ioctl` of the three requests that write one int). A private `Plain` marker trait,
+  implemented only by the generated list of uapi structures and by numbers, limits what the set reaches the kernel as.
+  Hostile guards in safe code before the calls: `TCP_AO_GET_KEYS` asking for more than one answer is refused with
+  EINVAL (the kernel writes one answer per key asked, past the length it is given), a program longer than 65535
+  instructions is refused with EINVAL, a returned length is never more than the room.
+- `conformance/suite.rs`: 13 checks, each in a network namespace of its own with its loopback up, every method called;
+  hostile cases: rooms shorter than the value (8 bytes of `TCP_INFO` equal the first 8 of the whole; 1 byte of
+  `SO_MEMINFO`), a room longer than the value (the rest stays zero), `TCP_SAVED_SYN` into one byte (EINVAL, headers kept
+  and read whole after), an empty program, one of 4097 and one of 65536 instructions (EINVAL), 41 bytes of IPv4 options
+  and an IPv6 header claiming more than given (EINVAL), a key query of 2 and of 2^32-1 answers (EINVAL), options on
+  sockets of the wrong kind (UDP refusing `SO_TXREHASH` with EOPNOTSUPP, `IP_ROUTER_ALERT` with EINVAL, a TCP option
+  on UDP with ENOPROTOOPT, the ioctls on a listener and a Unix socket), MPTCP full information into rooms of 0, 1 and 1
+  byte. A closed descriptor cannot be given: `BorrowedFd` is open by construction. The kernel answers the suite
+  records were measured on Linux 7.0.0-1018-aws (four expectations corrected to what it answers: `SO_TXREHASH` is TCP's,
+  router alerts refuse `IPPROTO_RAW` and UDP sockets, `TCP_TIMESTAMP` is written only in repair mode, an empty
+  `TCP_AO_INFO` write is taken).
+
+### Callers (READ in 24d3b3b6a)
+
+- linux-socket-options: new `options.rs` keeps `set_flag`, `set_int` and `get_int` by level and name, each arm a
+  typed call of socket2, rustix, nix or the API crate, any other option ENOPROTOOPT; `set_option`, `set_bytes`,
+  `get_bytes`, `get_option` and `set_raw` are gone, their 50-odd call sites now name the typed call. `sticky.rs` writes
+  each slot through its typed call. `StorageBytes` is the API crate's `SocketStorage`.
+- 785d3fa79's typed arms are taken with its SO_MARK/SO_PRIORITY defect fixed (marks and priorities go to socket2 as
+  the same 32 bits). Found while routing: socket2's `attach_filter` casts the instruction count to `u16`, so 65537
+  instructions would attach a one-instruction program; the shared crate refuses more than 65535 first, as before.
+- The three suite `setsockopt`s and the tcp host's `ioctl` call the API crate (or socket2's `bind_device_by_index_v4/6`
+  for `SO_BINDTOIFINDEX`); `FIONREAD` goes to rustix `ioctl_fionread`. The four `[lints.rust]` tables are now
+  `[lints] workspace = true`; the root manifest names none of these crates.
+- Scripts: `run-conformance.sh`, `mutants.sh` and `conformance.sh` are out of the crates, kept in
+  SCRATCH/host-sockets/tools/. The TCP suite's namespace setup (route feature, fq qdisc, sysctls, VRF device) now lives
+  in the job's cargo runner SCRATCH/host-sockets/hs1/tcp-namespace.sh; a Rust setup inside the TCP suite is still owed
+  (INFERRED: netlink-packet-route can express it), so the TCP suite is not yet "one cargo command".
+
+### HS1/HS2 bar, measured on both machines (rustc 1.99.0, Linux 7.0.0-1018-aws)
+
+| | ARM64 | x86-64 |
+|---|---|---|
+| `cargo check --all-targets`, 17 packages | exit 0 | exit 0 |
+| clippy `--all-targets -D warnings` | exit 0 | exit 0 |
+| `cargo fmt --check` | exit 0 | exit 0 |
+| TCP suite (as root, runner namespace) | 143/143 | 143/143 in 1 of 2 full runs and 142 in the other; before the change also 143 in 1 of 2 and 142 (a different test) |
+| UDP 80, ICMP 69, raw 54, route resolver 38 | all pass | all pass |
+| API crate suite 13, generated test 3 | pass | pass |
+| unit and other tests of the hosts (readiness, counters, waiting, allocations) | pass | pass |
+
+x86-64's TCP misses are timing checks that fail at the commit before the change too (MEASURED: at 55fd7bafc,
+`congestion_control_state_names_the_algorithm`, `information_reads_what_the_connection_did`,
+`timestamp_reads_the_clock_in_its_unit` and `record_end_starts_a_new_segment` failed in one run each; after,
+`record_end_starts_a_new_segment` failed once; each passes five times alone on both commits). No test removed or
+ignored.
+
+Same kernel calls before and after (MEASURED, ARM64): every test binary of the five suites run under `strace -f -e
+trace=setsockopt,getsockopt,ioctl`, at 55fd7bafc and at the new code, one test thread: 35885 and 36002 calls, 520
+distinct each (a set's arguments but the descriptor, a read's level and name, an ioctl's request, each with its
+outcome). The diff holds only values that differ run to run (ports chosen, sequence numbers, timestamps, filter
+addresses) and one change of form: `SO_TIMESTAMPING` without a bound clock is now 4 bytes of flags (nix
+`sockopt::Timestamping`) instead of the 8-byte `struct so_timestamping` with `bind_phc` 0; Linux reads a value of any
+other length as the flags with no clock bound (INFERRED from net/core/sock.c, read, not copied), and every outcome is
+the same.
+
+Speed (MEASURED, median of 4000 batches of 32, three runs each, same machine and load):
+
+| | before (55fd7bafc) | after (24d3b3b6a) |
+|---|---|---|
+| ARM64 TCP send / receive | 390-392 / 381-383 ns | 389-390 / 381-383 ns |
+| ARM64 UDP send / receive | 1.442-1.465 us / 790-806 ns | 1.453-1.461 us / 800-805 ns |
+| x86-64 TCP send / receive | 341-357 / 365-383 ns | 307-358 / 337-369 ns |
+| x86-64 UDP send / receive | 1.652-1.663 us / 879-881 ns | 1.444-1.646 us / 762-826 ns |
+
+Linter (`cargo reviewable check`, ARM64, no model key so model questions unanswered and left out; x86-64 not run):
+NOT at 0. Findings per folder: tcp host 89, udp host 73, icmp host 24, raw host 24, route-resolver host 14,
+linux-socket-options 329, tcp suite 159, udp suite 272, icmp suite 240, raw suite 67, route-resolver suite 59,
+configurable 4, readiness 43, negative-route-advisable 6 (all within a few of HS0's counts at agents); the new API
+crate: direct 30 (public_outside_interface 17, summary_starts_with_name 9, trait_outside_interface 1 for the private
+`Plain` marker, 3 more), suite 54, interface.rs 9 (interface_item 3 for the types beside the trait, comment budget 1,
+5 more), tests 4. New and worth a ruling: depends_on_implementation and names_implementation in the icmp, raw and
+route-resolver suites, which now depend on the API crate's direct implementation for their probes; the smallest fix is
+for those suites to take a `LinuxSocketOptions` value from their caller.
+
+Still owed for HS1/HS2: the linter findings above to 0 or each listed with its smallest example; the TCP suite's
+namespace setup in Rust; x86-64 lint run; the independent check.
+
+## Owner questions
+
+1. Ruled 2026-11-25 (every outside API: one crate named for it, a safe trait, the unsafe in `implementation/direct`):
+   done above as `crates/linux-socket-options`.
+2. Which socket options may a hostile guest make the host kernel act on at all? Open; the list is the table and the
+   safe routes above.
+3. The agents-made `SocketOptions` primitive (d4aee0ae5): read for ideas only (its typed routes in 785d3fa79 taken,
+   checked against the kernel by the strace comparison); nothing of `crates/socket-options` is used.
+4. nix as a vetted crate (its `recvmsg` treats the whole address buffer as written): open; nix is used as before, now
+   also for 16 socket options.
 
 ## SECURITY
 
-- Unsafe lines (root manifest's count), before and after HS0, per crate. HS0 changed no product code, so before =
-  after. At main: linux-socket-options 40, tcp host 23, udp host 11, route-resolver host 2, tcp suite 4, icmp suite 15,
-  route-resolver suite 4, all others 0 (99). At agents: linux-socket-options 2, tcp host 1, icmp suite 1,
-  route-resolver suite 2, all others 0 (6). MEASURED by `git grep`.
-- Marked exceptions: none in these crates; the 6 lines at agents sit in crates whose own `[lints.rust]` table holds
-  only `unsafe_op_in_unsafe_fn = "deny"` and so leaves `unsafe_code` allowed and unmarked (READ); main's rule removes
-  those tables.
-- New dependencies: none added by HS0. Already in the agents suites and hosts and outside the vetted four: stats_alloc
-  0.1.10 (MIT, icmp and raw host tests; holds its own `GlobalAlloc` unsafe), netlink-packet-core 0.9.0,
-  netlink-packet-route 0.34.0, netlink-sys 0.9.0 (MIT, TCP suite). To vet before HS1 keeps them.
-- Options a guest can make the host kernel act on today: every option in both tables above (question 2).
-- Hostile-guest suite: not run and not built (the thread-test design review is owed to the owner first).
+- Unsafe lines (root manifest's count, `git grep` at HEAD), before HS1 (55fd7bafc, agents' copies) and after
+  (24d3b3b6a): linux-socket-options 2 -> 0, tcp host 1 -> 0, icmp suite 1 -> 0, route-resolver suite 2 -> 0, every
+  other crate of the track 0 -> 0; new `crates/linux-socket-options/implementation/direct` 0 -> 4, its interface,
+  suite and test 0. Against main's copies (99 lines) the track is now 4. MEASURED.
+- Marked exceptions: the 4 lines of the direct crate, each with its own `#[expect(unsafe_code, reason = "..")]` on the
+  one statement, in a crate whose own table denies `unsafe_code`; every other crate of the track inherits
+  `forbid`. No linter exclusion added; no lint table lowers `forbid`.
+- New dependencies: none from outside the workspace. The API crate uses linux-raw-sys 0.12.1, libc 0.2.191, zerocopy
+  0.8 (all already in the lock), its suite socket2 0.6.5, nix 0.31.4 and netlink-packet-core 0.9.0, netlink-packet-route
+  0.34.0, netlink-sys 0.9.0 (MIT, already in the TCP suite). New uses: the shared crate takes nix's `socket` and `time`
+  features; the route-resolver suite takes socket2.
+- Options a guest can make the host kernel act on: the 96 methods of `options.table` and the safe routes listed under
+  HS0 (question 2 open).
+- Hostile-guest suite: not run and not built (the thread-test design review is owed to the owner first). The API
+  crate's suite is the hostile-caller check of that crate only.
