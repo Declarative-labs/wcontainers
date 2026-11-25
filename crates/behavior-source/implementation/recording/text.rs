@@ -160,7 +160,8 @@ fn to_differing_fields(earlier: Option<&Processor<()>>, processor: &Processor<()
 }
 
 /// Leaves out the exclusive monitor, which is open in every recorded state: a chip source refuses a state that holds
-/// it, and a single step opens it.
+/// it, and a single step opens it. Leaves out the SVE predicates and FFR too, which every recorded state holds zero
+/// and no recorded instruction reads or writes.
 fn to_fields(processor: &Processor<()>) -> Vec<(String, String)> {
     let Processor {
         general_purpose_registers,
@@ -168,6 +169,8 @@ fn to_fields(processor: &Processor<()>) -> Vec<(String, String)> {
         program_counter,
         condition_flags,
         vector_registers,
+        predicate_registers: _,
+        first_fault_register: _,
         floating_point_control,
         floating_point_status,
         software_thread_id,
