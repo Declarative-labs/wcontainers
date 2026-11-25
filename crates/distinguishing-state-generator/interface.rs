@@ -31,20 +31,25 @@ pub trait DistinguishingStateGenerator<Architecture: ProcessorArchitecture> {
             states.remaining() == self.states(instruction),
             states.decrease() is Some,
     ;
+}
 
-    /// Every two different known behaviors of the instruction leave different states after some generated state.
-    // VERUS: no bound on the trait says known behaviors simulate, so the property is a proof with that bound of its own.
-    proof fn distinguishes_known_behaviors(&self, instruction: Architecture::Instruction)
-        where
-            Architecture::PreciseInstruction: Simulator<Architecture, Error = Infallible>,
-        ensures
-            forall|first, second|
-                #![trigger Architecture::known_behaviors(instruction).contains(first), Architecture::known_behaviors(instruction).contains(second)]
-                Architecture::known_behaviors(instruction).contains(first) && Architecture::known_behaviors(instruction).contains(second)
-                    && first != second ==> exists|index: int| 0 <= index < self.states(instruction).len()
-                        && #[trigger] simulated_after(first, self.states(instruction)[index])
-                            != simulated_after(second, self.states(instruction)[index]),
-    ;
+/// Every two different known behaviors of the instruction leave different states after some state the generator makes
+/// for it. This is a definition, which no generator claims: whether it holds depends on the instructions' inputs.
+pub open spec fn distinguishes_known_behaviors<Architecture, Generator>(
+    generator: &Generator,
+    instruction: Architecture::Instruction,
+) -> bool
+    where
+        Architecture: ProcessorArchitecture,
+        Architecture::PreciseInstruction: Simulator<Architecture, Error = Infallible>,
+        Generator: DistinguishingStateGenerator<Architecture> + ?Sized,
+{
+    forall|first, second|
+        #![trigger Architecture::known_behaviors(instruction).contains(first), Architecture::known_behaviors(instruction).contains(second)]
+        Architecture::known_behaviors(instruction).contains(first) && Architecture::known_behaviors(instruction).contains(second)
+            && first != second ==> exists|index: int| 0 <= index < generator.states(instruction).len()
+                && #[trigger] simulated_after(first, generator.states(instruction)[index])
+                    != simulated_after(second, generator.states(instruction)[index])
 }
 
 } // verus!
