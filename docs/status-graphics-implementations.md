@@ -38,6 +38,22 @@ run named here are in the scratch folder graphics-implementations/.
   RTX 3080 and Apple M5 did.
 - fmt and clippy (`--all-targets --no-deps -D warnings`) of wcontainers-gpu-webgpu exit 0.
 
+## GI3, gpu becomes the interface (started 2026-11-25)
+
+- Step 1 done (decision D3 of the brief): `dispatch`, `capture_vertices`, `create_resource_table`,
+  `write_resource_table`, `write_timestamp` and `timestamps_disjoint` have no default; each implementation that
+  lacked one now answers `GpuError::Absent` itself (Gl, WebGpu, the recorder and the three test recorders; gpu-webgl's
+  tracer already forwarded each). No answer changed. The front hunks are the two test recorders of direct3d-11 and
+  directx-graphics-infrastructure only.
+- Both machines: checks as after GI1; gpu 37, gpu-test 202, directx-graphics-infrastructure 13, direct3d-11 69 pass;
+  in the scratch copy shaders 157, gpu-webgl 17, opengl 11 pass and wasm32 exits 0; WebGPU on lavapipe as GI2;
+  fmt and clippy `-D warnings` exit 0 on the six crates touched. nir's 41 pass on x86-64.
+- Found, not caused by this: on ARM64 nir's tests do not link with Mesa on (ld.bfd: `_mesa_reference_shader` and
+  others defined in both libmesa and Mesa's glsl standalone scaffolding). The graphics tests had only ever run on
+  x86-64. Left for GI8.
+- Next: `StandaloneGpu` (D4), then the interface crate made by the tool (D2), PLAN.md group 3 steps 5 and 6.
+- The Metal implementation on `graphics-metal` must add the same six methods when it is merged.
+
 ## SECURITY
 
 - Lines with unsafe, unchanged from graphics-layout: gpu-webgl 160, opengl 353, nir 113, shaders 71, gpu-webgpu 19,
