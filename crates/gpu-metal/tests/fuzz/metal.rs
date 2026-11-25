@@ -20,13 +20,13 @@ use wcontainers_test_window_appkit::AppkitTestWindow;
 
 use crate::driver::Counts;
 use crate::random::Random;
+use crate::{CANARY_BYTES, POOL, TEXTURE_BUDGET};
 
 type M = DirectMetal;
 type Buffer = <M as Metal>::Buffer;
 type Texture = <M as Metal>::Texture;
 
-/// The functions the batches compile: every kind of resource the direct implementation binds, read and written at
-/// indices the data chooses, so that a bound that does not hold writes outside its buffer.
+/// The functions the batches compile: every kind of resource bound, read and written at indices the data chooses.
 const PROGRAMS: &str = "
 struct Color { value: vec4<f32> }
 struct Tail { head: u32, rest: array<u32> }
@@ -142,19 +142,12 @@ const SLOTS: &[(u32, u32)] = &[
     (13, 7),
 ];
 
-/// The buffer slots of the vertex inputs, the immediates and the lengths.
+/// The buffer slots of the vertex inputs, the immediates and the lengths, the fuzzer's own among Metal's 31.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 const VERTEX_SLOTS: [u32; 2] = [20, 21];
-const IMMEDIATES_SLOT: u32 = 29;
-const SIZES_SLOT: u32 = 30;
-
-/// The bytes of each canary buffer, and the most bytes of a buffer the batches make.
-const CANARY_BYTES: u64 = 4096;
-
-/// The most of each kind of object a batch keeps; past it a new one replaces, and so drops, an old one.
-const POOL: usize = 24;
-
-/// The most bytes a texture of the batches holds, so that no batch makes one larger than a few megabytes.
-const TEXTURE_BUDGET: u64 = 8 << 20;
+const IMMEDIATES_AT: u32 = 27;
+const LENGTHS_AT: u32 = 28;
 
 /// Every pixel format.
 const FORMATS: &[PixelFormat] = &[
@@ -725,7 +718,7 @@ impl World {
                 ],
             },
         ];
-        let (mut immediates, mut sizes, mut point_size) = (IMMEDIATES_SLOT, SIZES_SLOT, false);
+        let (mut immediates, mut sizes, mut point_size) = (IMMEDIATES_AT, LENGTHS_AT, false);
         if mangled {
             for slot in &mut slots {
                 if random.chance(15) {

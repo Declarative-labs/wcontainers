@@ -1,7 +1,6 @@
 //! The fuzzer's random numbers: a seeded generator, and the edge values every field is drawn from.
 
-/// The 32-bit values at the edges of what the calls take: limits, one past each, powers of two around them, and values
-/// whose sums and products wrap.
+/// The 32-bit edges of what the calls take: limits, one past each, powers of two near them, and values that wrap.
 const EDGES_32: &[u32] = &[
     0,
     1,
@@ -62,8 +61,9 @@ const EDGES_32: &[u32] = &[
     u32::MAX,
 ];
 
-/// The 64-bit values at the edges of what the calls take, as for `EDGES_32`; none would make a buffer of more than a
-/// few megabytes that Metal would make, since the largest buffer Metal makes is far below 2^40 bytes.
+/// The 64-bit edges of what the calls take, as for `EDGES_32`.
+///
+/// None makes a buffer of more than a few megabytes: the largest buffer Metal makes is far below 2^40 bytes.
 const EDGES_64: &[u64] = &[
     0,
     1,

@@ -88,8 +88,7 @@ impl<M: Metal> Default for BytePrograms<M> {
     }
 }
 
-/// Returns `length` rounded up to a multiple of four, the length of every buffer this implementation makes; none when
-/// that is past the largest `u64`.
+/// Returns `length` rounded up to a multiple of four, as every buffer here is, or none past the largest `u64`.
 pub(crate) fn rounded(length: u64) -> Option<u64> {
     length.checked_next_multiple_of(COPY_GRANULE)
 }

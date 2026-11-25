@@ -21,6 +21,18 @@ mod metal;
 #[path = "fuzz/random.rs"]
 mod random;
 
+/// The bytes of each canary buffer, made before and after every buffer the calls may write.
+#[cfg(target_os = "macos")]
+const CANARY_BYTES: u64 = 4096;
+
+/// The most of each kind of object a batch keeps; past it a new one replaces, and so drops, an old one.
+#[cfg(target_os = "macos")]
+const POOL: usize = 24;
+
+/// The most bytes a texture of the batches holds, so that no batch makes one larger than a few megabytes.
+#[cfg(target_os = "macos")]
+const TEXTURE_BUDGET: u64 = 8 << 20;
+
 #[cfg(target_os = "macos")]
 mod driver {
     use std::collections::VecDeque;
@@ -35,8 +47,7 @@ mod driver {
     /// The line a batch prints its counts on, which the driver adds up.
     pub const RESULT_LINE: &str = "FUZZ-RESULT";
 
-    /// What a batch found: calls made, calls refused, canary bytes found changed, and command buffers the GPU ended
-    /// in an error.
+    /// What a batch found: calls, refusals, canary bytes changed, and command buffers the GPU ended in an error.
     #[derive(Default)]
     pub struct Counts {
         pub calls: u64,
@@ -68,8 +79,7 @@ mod driver {
         }
     }
 
-    /// Runs one batch in this process: even batches drive the Metal trait, odd ones `Gpu`; batch zero of each kind of
-    /// each seed also has a window.
+    /// Runs one batch here: an even one drives the Metal trait, an odd one `Gpu`; the first two also have a window.
     pub fn run_batch(spec: &str) -> std::process::ExitCode {
         let numbers: Vec<u64> = spec.split(':').filter_map(|n| n.parse().ok()).collect();
         let [seed, batch, calls] = numbers[..] else {

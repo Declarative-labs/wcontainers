@@ -917,8 +917,9 @@ fn prepare_builds_the_pipeline_so_the_draw_finds_it() {
     assert_eq!((misses, misses_at_draw), (0, 1));
 }
 
-/// Fills levels `mips` of layers `layers` of a texture from the level above, by this implementation's `generate_mips` or
-/// by the default's draws, after writing every level of every layer apart; returns every level of every layer.
+/// Fills levels `mips` of layers `layers`, natively or by the default's draws, and returns every level of every layer.
+///
+/// Every level of every layer is written apart first, so a level the call must keep shows if it was filled.
 fn mips_scene(
     native: bool,
     (width, height, levels, layer_count): (u32, u32, u32, u32),
@@ -1033,7 +1034,7 @@ fn mipmaps_by_metal_match_the_default() {
 /// The device this file's tests draw with.
 type Device = MetalGpu<DirectMetal>;
 
-/// The trait's default `read_back_now`, which this implementation overrides, as the trait writes it.
+/// Runs the trait's default `read_back_now`, which this implementation overrides, as the trait writes it.
 fn read_back_now_by_default(
     b: &mut Device,
     src: &ReadSource<'_, Device>,
@@ -1048,7 +1049,7 @@ fn read_back_now_by_default(
     Ok(())
 }
 
-/// The trait's default `resolve_queries`, which this implementation overrides, as the trait writes it.
+/// Runs the trait's default `resolve_queries`, which this implementation overrides, as the trait writes it.
 fn resolve_queries_by_default(
     b: &mut Device,
     set: &<Device as Gpu>::QuerySet,

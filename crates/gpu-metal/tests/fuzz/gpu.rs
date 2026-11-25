@@ -21,6 +21,7 @@ use wcontainers_test_window_appkit::AppkitTestWindow;
 
 use crate::driver::Counts;
 use crate::random::Random;
+use crate::{CANARY_BYTES, POOL, TEXTURE_BUDGET};
 
 type B = MetalGpu<DirectMetal>;
 
@@ -78,17 +79,9 @@ const ENTRIES: &[(&str, ShaderStage)] = &[
     ("cs_texture", ShaderStage::Compute),
 ];
 
-/// The bytes of each canary buffer.
-const CANARY_BYTES: u64 = 4096;
-
-/// The most of each kind of object a batch keeps.
-const POOL: usize = 24;
-
-/// The most bytes a texture of the batches holds.
-const TEXTURE_BUDGET: u64 = 8 << 20;
-
-/// The number of the window of the batches that have one.
-const WINDOW_NUMBER: u32 = 1;
+/// The number the fuzzer's window goes by, and one no window does.
+const FUZZ_WINDOW: u32 = 2;
+const NO_WINDOW: u32 = 3;
 
 /// Every format.
 const FORMATS: &[Format] = &[
@@ -349,7 +342,7 @@ pub fn run(random: &mut Random, calls: u64, window: bool) -> Counts {
     // A window of four pixels, which takes no focus and closes when the process ends.
     let test_window = window.then(|| AppkitTestWindow::new(()));
     if let Some(test_window) = &test_window {
-        let added = world.b.add_window(WINDOW_NUMBER, test_window);
+        let added = world.b.add_window(FUZZ_WINDOW, test_window);
         world.counts.call(added.is_err());
     }
     for index in 0..ENTRIES.len() {
@@ -1327,7 +1320,7 @@ impl World {
     fn surface(&mut self, random: &mut Random) {
         match random.below(4) {
             0 => {
-                let surface = self.b.create_surface(random.u32(&[WINDOW_NUMBER, 2]));
+                let surface = self.b.create_surface(random.u32(&[FUZZ_WINDOW, NO_WINDOW]));
                 self.counts.call(surface.is_err());
                 if let Ok(surface) = surface {
                     keep(random, &mut self.surfaces, surface);

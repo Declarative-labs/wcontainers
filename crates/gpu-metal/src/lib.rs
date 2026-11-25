@@ -1776,8 +1776,7 @@ fn query_bytes(count: u32) -> u64 {
     u64::from(count).saturating_mul(QUERY_BYTES)
 }
 
-/// Returns whether a texture region of `extent` lies inside a level and the layers of a texture, so that every length
-/// computed of it is bounded by the texture's own bytes.
+/// Returns whether a region of `extent` lies inside a level and the layers of a texture, which bound its lengths.
 fn region_inside(
     desc: &TextureDesc,
     mip: u32,

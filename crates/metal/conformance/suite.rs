@@ -1499,6 +1499,8 @@ fn refuses_dispatch<M: Metal>(subject: &mut M, bindings: Vec<ComputeCommand<M>>)
 }
 
 /// The image pitches whose sums and products with a second image wrap past the largest `u64`, or come near it.
+///
+/// https://doc.rust-lang.org/std/primitive.u64.html#associatedconstant.MAX
 const WRAPPING_PITCHES: [u64; 5] = [
     u64::MAX,
     u64::MAX - 63,
@@ -1508,6 +1510,8 @@ const WRAPPING_PITCHES: [u64; 5] = [
 ];
 
 /// The offsets whose sum with a small length wraps past the largest `u64`.
+///
+/// https://doc.rust-lang.org/std/primitive.u64.html#associatedconstant.MAX
 const WRAPPING_OFFSETS: [u64; 3] = [u64::MAX, u64::MAX - 3, u64::MAX - 7];
 
 /// Checks that every range, place and count whose end wraps past the largest integer is refused, at each such value.
@@ -1730,8 +1734,7 @@ pub fn refuses_every_range_whose_end_wraps<M: Metal>(mut subject: M) {
     refuses_draw(&mut subject, &counted, &state, vec![counting]);
 }
 
-/// Checks that a pipeline with alpha to coverage drawing into an integer format is refused, where Metal stops the
-/// process.
+/// Checks that alpha to coverage into an integer format is refused, where Metal stops the process.
 pub fn refuses_alpha_to_coverage_into_an_integer_format<M: Metal>(mut subject: M) {
     let vertex = function(&mut subject, naga::ShaderStage::Vertex, VERTEX);
     let whole = function(&mut subject, naga::ShaderStage::Fragment, WHOLE);
@@ -1749,8 +1752,7 @@ pub fn refuses_alpha_to_coverage_into_an_integer_format<M: Metal>(mut subject: M
     ));
 }
 
-/// Checks that a sampler clamping some coordinates to zero and others to the border color is refused, which Metal's
-/// validation stops.
+/// Checks that a sampler clamping to zero and to the border color at once is refused, which Metal's validation stops.
 pub fn refuses_a_sampler_clamping_both_to_zero_and_to_the_border<M: Metal>(mut subject: M) {
     let (zero, border) = (
         SamplerAddressMode::ClampToZero,
