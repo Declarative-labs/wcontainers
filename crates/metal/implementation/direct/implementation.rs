@@ -11,6 +11,7 @@ use std::fmt;
 use std::ptr::NonNull;
 use std::rc::{Rc, Weak};
 
+use naga::proc::Alignment;
 use objc2::MainThreadMarker;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::ProtocolObject;
@@ -38,27 +39,23 @@ use wcontainers_metal::{
     CompareFunction, ComputeCommand, ConfigureLayerError, CullMode, DepthClipMode,
     DepthStencilDescriptor, EncodeBlitCommandsError, EncodeComputeCommandsError,
     EncodeRenderCommandsError, FunctionSource, IndexType, LayerDescriptor, LoadAction,
-    MAX_ANISOTROPY, MAX_BUFFER_SLOTS, MAX_COLOR_ATTACHMENTS, MAX_SAMPLER_SLOTS, MAX_TEXTURE_SLOTS,
-    MAX_VIEWPORTS, MakeBufferError, MakeCommandBufferError, MakeComputePipelineStateError,
-    MakeDepthStencilStateError, MakeFunctionError, MakeLayerError, MakeRenderPipelineStateError,
-    MakeSamplerStateError, MakeTextureError, MakeTextureViewError, Metal, NextDrawableError,
-    Origin, PixelFormat, PresentDrawableError, PrimitiveTopologyClass, PrimitiveType,
-    ReadContentsError, RenderCommand, RenderPassDescriptor, RenderPipelineDescriptor,
-    SamplerAddressMode, SamplerBorderColor, SamplerDescriptor, SamplerMinMagFilter,
-    SamplerMipFilter, Size, StandaloneMetal, StencilDescriptor, StencilOperation, StoreAction,
-    TextureDescriptor, TextureType, TextureViewDescriptor, TriangleFillMode, VertexFormat,
-    VertexStepFunction, VisibilityResultMode, WaitUntilCompletedError, Winding, WriteContentsError,
+    MAX_ANISOTROPY, MAX_BUFFER_SLOTS, MAX_COLOR_ATTACHMENTS, MAX_SAMPLER_SLOTS, MAX_TEXTURE_SIDE,
+    MAX_TEXTURE_SLOTS, MAX_VIEWPORTS, MakeBufferError, MakeCommandBufferError,
+    MakeComputePipelineStateError, MakeDepthStencilStateError, MakeFunctionError, MakeLayerError,
+    MakeRenderPipelineStateError, MakeSamplerStateError, MakeTextureError, MakeTextureViewError,
+    Metal, NextDrawableError, Origin, PixelFormat, PresentDrawableError, PrimitiveTopologyClass,
+    PrimitiveType, ReadContentsError, RenderCommand, RenderPassDescriptor,
+    RenderPipelineDescriptor, SamplerAddressMode, SamplerBorderColor, SamplerDescriptor,
+    SamplerMinMagFilter, SamplerMipFilter, Size, StandaloneMetal, StencilDescriptor,
+    StencilOperation, StoreAction, TextureDescriptor, TextureType, TextureViewDescriptor,
+    TriangleFillMode, VISIBILITY_RESULT_BYTES, VertexFormat, VertexStepFunction,
+    VisibilityResultMode, WaitUntilCompletedError, Winding, WriteContentsError,
 };
 
 /// The Metal Shading Language version functions are written in and compiled as.
 ///
 /// https://developer.apple.com/documentation/metal/mtllanguageversion/version3_1
 const LANGUAGE_VERSION: (u8, u8) = (3, 1);
-
-/// The bytes of one occlusion result in a visibility result buffer.
-///
-/// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setvisibilityresultmode(_:offset:)
-const VISIBILITY_RESULT_BYTES: u64 = 8;
 
 /// The bytes of the buffer bound to vertex buffer slots no command filled, whose length the function reads as zero.
 ///
@@ -69,11 +66,6 @@ const EMPTY_BUFFER_BYTES: usize = 16;
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 const MAX_SIDE: u32 = 16_384;
-
-/// The longest side of a 2D, cube or multisampled texture on GPUs of the Apple10 family and later.
-///
-/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
-const MAX_SIDE_APPLE10: u32 = 32_768;
 
 /// The longest side of a 3D texture.
 ///
@@ -95,11 +87,6 @@ const VISIBILITY_RESULT_SPAN: u64 = 262_144;
 /// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/fill(buffer:range:value:)
 const BUFFER_COPY_GRANULE: u64 = 4;
 
-/// The least alignment of a buffer bound to a slot.
-///
-/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
-const MIN_OFFSET_ALIGNMENT: u64 = 4;
-
 /// The system's default GPU and one command queue on it.
 pub struct DirectMetal {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
@@ -111,9 +98,16 @@ pub struct DirectMetal {
     in_flight: Vec<DirectCommandBuffer>,
 }
 
+/// The sample counts a texture or a pass may have, which the device is asked about.
+///
+/// https://developer.apple.com/documentation/metal/mtldevice/supportstexturesamplecount(_:)
+const SAMPLE_COUNTS: &[u32] = &[1, 2, 4, 8];
+
 /// What the device takes, by its GPU family.
 #[derive(Clone, Copy)]
 struct DeviceLimits {
+    /// The sample counts the device takes, bit n for a count of n.
+    sample_counts: u32,
     /// The longest side of a 2D, cube or multisampled texture.
     max_side: u32,
     /// Whether multisampled 32-bit float formats resolve, which GPUs of the Apple9 family on do.
@@ -127,8 +121,7 @@ pub struct DirectBuffer(Rc<BufferState>);
 struct BufferState {
     raw: Retained<ProtocolObject<dyn MTLBuffer>>,
     length: u64,
-    /// The command buffers that use it: one dropped uncommitted never runs, and a committed one is kept until it
-    /// completes by the device's list of those in flight.
+    /// The command buffers that use it: one dropped uncommitted never runs, and the device keeps a committed one.
     users: RefCell<Vec<Weak<CommandBufferState>>>,
 }
 
@@ -189,7 +182,7 @@ struct FunctionState {
 #[derive(Clone, Default)]
 struct Reads {
     /// Buffer slots, the least bytes each must hold past its offset, and what the offset must be a multiple of.
-    buffers: Vec<(u32, u64, u64)>,
+    buffers: Vec<(u32, u64, Alignment)>,
     textures: Vec<(u32, TextureRead)>,
     samplers: Vec<u32>,
     /// The vertex buffer slots it reads its inputs from.
@@ -199,7 +192,7 @@ struct Reads {
     sizes_index: u32,
     /// The immediates slot and the bytes it must hold.
     immediates: Option<(u32, u64)>,
-    workgroup_size: [u32; 3],
+    workgroup_size: Size,
     /// The bytes of each workgroup variable a compute function reads, in naga's order of its threadgroup arguments.
     threadgroup_lengths: Vec<u64>,
 }
@@ -295,6 +288,13 @@ opaque_debug!(
     DirectDrawable
 );
 
+impl DeviceLimits {
+    /// Returns whether the device takes a sample count.
+    fn takes_samples(&self, count: u32) -> bool {
+        count < u32::BITS && self.sample_counts & 1 << count != 0
+    }
+}
+
 impl StandaloneMetal for DirectMetal {
     type Config = ();
 
@@ -303,11 +303,16 @@ impl StandaloneMetal for DirectMetal {
         // The checks follow Apple's feature set tables, which every GPU from the Apple7 family on meets.
         assert!(
             device.supportsFamily(MTLGPUFamily::Apple7),
-            "a GPU of the Apple7 family or later"
+            "a GPU of the family Apple7 or a later one"
         );
+        let sample_counts = SAMPLE_COUNTS
+            .iter()
+            .filter(|count| device.supportsTextureSampleCount(**count as NSUInteger))
+            .fold(u32::MIN, |counts, count| counts | 1 << count);
         let limits = DeviceLimits {
+            sample_counts,
             max_side: if device.supportsFamily(MTLGPUFamily::Apple10) {
-                MAX_SIDE_APPLE10
+                MAX_TEXTURE_SIDE
             } else {
                 MAX_SIDE
             },
@@ -468,67 +473,63 @@ impl Metal for DirectMetal {
             TextureType::TypeCubeArray => d.array_length.checked_mul(CUBE_FACES),
             _ => Some(d.array_length),
         };
-        let checks = [
-            (
-                d.width > max_side || d.height > max_side || d.depth > max_side,
+        if d.width > max_side || d.height > max_side || d.depth > max_side {
+            return Err(MakeTextureError::Invalid(
                 "a side longer than the device's longest for the type",
-            ),
-            (
-                layers.is_none_or(|layers| layers > MAX_LAYERS),
+            ));
+        }
+        if layers.is_none_or(|layers| layers > MAX_LAYERS) {
+            return Err(MakeTextureError::Invalid(
                 "more layers than the device's most",
-            ),
-            (
-                d.pixel_format == PixelFormat::X32Stencil8,
+            ));
+        }
+        if d.pixel_format == PixelFormat::X32Stencil8 {
+            return Err(MakeTextureError::Invalid(
                 "a stencil view format, which no texture is made in",
-            ),
-            (
-                d.width == 0 || d.height == 0 || d.depth == 0,
-                "an empty size",
-            ),
-            (
-                d.texture_type != TextureType::Type3D && d.depth != 1,
-                "a depth other than one outside 3D",
-            ),
-            (
-                one_slice && d.array_length != 1 || d.array_length == 0,
+            ));
+        }
+        if d.width == 0 || d.height == 0 || d.depth == 0 {
+            return Err(MakeTextureError::Invalid("an empty size"));
+        }
+        if d.texture_type != TextureType::Type3D && d.depth != 1 {
+            return Err(MakeTextureError::Invalid(
+                "a depth other than one outside a volume texture",
+            ));
+        }
+        if one_slice && d.array_length != 1 || d.array_length == 0 {
+            return Err(MakeTextureError::Invalid(
                 "an array length the type does not take",
-            ),
-            (
-                matches!(
-                    d.texture_type,
-                    TextureType::TypeCube | TextureType::TypeCubeArray
-                ) && d.width != d.height,
-                "a cube that is not square",
-            ),
-            (
-                d.mipmap_level_count == 0
-                    || d.mipmap_level_count > full_chain(d.width.max(d.height).max(d.depth)),
-                "more levels than the size has",
-            ),
-            (
-                (d.sample_count > 1) != (d.texture_type == TextureType::Type2DMultisample)
-                    || ![1, 2, 4, 8].contains(&d.sample_count)
-                    || d.sample_count > 1 && d.mipmap_level_count != 1,
+            ));
+        }
+        if matches!(
+            d.texture_type,
+            TextureType::TypeCube | TextureType::TypeCubeArray
+        ) && d.width != d.height
+        {
+            return Err(MakeTextureError::Invalid("a cube that is not square"));
+        }
+        if d.mipmap_level_count == 0
+            || d.mipmap_level_count > full_chain(d.width.max(d.height).max(d.depth))
+        {
+            return Err(MakeTextureError::Invalid("more levels than the size has"));
+        }
+        if (d.sample_count > 1) != (d.texture_type == TextureType::Type2DMultisample)
+            || !self.limits.takes_samples(d.sample_count)
+            || d.sample_count > 1 && d.mipmap_level_count != 1
+        {
+            return Err(MakeTextureError::Invalid(
                 "a sample count the type does not take",
-            ),
-            (
-                facts.block != (1, 1)
-                    && (d.texture_type == TextureType::Type3D || d.sample_count > 1),
+            ));
+        }
+        if facts.compressed() && (d.texture_type == TextureType::Type3D || d.sample_count > 1) {
+            return Err(MakeTextureError::Invalid(
                 "a compressed format the type does not take",
-            ),
-            (
-                facts.depth_or_stencil && d.texture_type == TextureType::Type3D,
-                "a 3D depth or stencil texture",
-            ),
-            (
-                !self
-                    .device
-                    .supportsTextureSampleCount(d.sample_count as NSUInteger),
-                "a sample count the device lacks",
-            ),
-        ];
-        if let Some((_, why)) = checks.iter().find(|(failed, _)| *failed) {
-            return Err(MakeTextureError::Invalid(why));
+            ));
+        }
+        if facts.depth_or_stencil && d.texture_type == TextureType::Type3D {
+            return Err(MakeTextureError::Invalid(
+                "a volume texture of depth or stencil",
+            ));
         }
         let raw_descriptor = MTLTextureDescriptor::new();
         raw_descriptor.setTextureType(texture_type(d.texture_type));
@@ -561,10 +562,6 @@ impl Metal for DirectMetal {
             .device
             .newTextureWithDescriptor(&raw_descriptor)
             .ok_or(MakeTextureError::Refused)?;
-        let faces = match d.texture_type {
-            TextureType::TypeCube | TextureType::TypeCubeArray => CUBE_FACES,
-            _ => 1,
-        };
         let storage = Retained::as_ptr(&raw).cast::<c_void>() as usize;
         Ok(DirectTexture(Rc::new(TextureState {
             raw,
@@ -574,15 +571,15 @@ impl Metal for DirectMetal {
             height: d.height,
             depth: d.depth,
             levels: d.mipmap_level_count,
-            slices: d.array_length * faces,
+            slices: layers.unwrap_or(d.array_length),
             sample_count: d.sample_count,
             shader_read: d.usage.shader_read,
             render_target: d.usage.render_target,
             pixel_format_view: d.usage.pixel_format_view,
             framebuffer_only: false,
             storage,
-            base_level: 0,
-            base_slice: 0,
+            base_level: u32::MIN,
+            base_slice: u32::MIN,
         })))
     }
 
@@ -612,8 +609,8 @@ impl Metal for DirectMetal {
         let reinterpreted = t.pixel_format_view
             && !from.depth_or_stencil
             && !to.depth_or_stencil
-            && from.block == (1, 1)
-            && to.block == (1, 1)
+            && !from.compressed()
+            && !to.compressed()
             && from.bytes == to.bytes;
         let stencil_of = t.pixel_format_view
             && t.pixel_format == PixelFormat::Depth32FloatStencil8
@@ -696,7 +693,9 @@ impl Metal for DirectMetal {
     ) -> Result<DirectSamplerState, MakeSamplerStateError> {
         let d = descriptor;
         if d.max_anisotropy == 0 || d.max_anisotropy > MAX_ANISOTROPY {
-            return Err(MakeSamplerStateError::Invalid("an anisotropy of 1 to 16"));
+            return Err(MakeSamplerStateError::Invalid(
+                "an anisotropy outside what a sampler takes",
+            ));
         }
         if d.lod_min_clamp.is_nan() || d.lod_max_clamp.is_nan() || d.lod_min_clamp > d.lod_max_clamp
         {
@@ -808,28 +807,31 @@ impl Metal for DirectMetal {
         descriptor: &RenderPipelineDescriptor<'_, Self>,
     ) -> Result<DirectRenderPipelineState, MakeRenderPipelineStateError> {
         let d = descriptor;
-        let invalid = MakeRenderPipelineStateError::Invalid;
         if d.vertex_function.0.stage != naga::ShaderStage::Vertex {
-            return Err(invalid("a vertex function of another stage"));
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "a vertex function of another stage",
+            ));
         }
         if d.fragment_function
             .is_some_and(|f| f.0.stage != naga::ShaderStage::Fragment)
         {
-            return Err(invalid("a fragment function of another stage"));
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "a fragment function of another stage",
+            ));
         }
-        if ![1, 2, 4, 8].contains(&d.raster_sample_count)
-            || !self
-                .device
-                .supportsTextureSampleCount(d.raster_sample_count as NSUInteger)
-        {
-            return Err(invalid("a sample count the device lacks"));
+        if !self.limits.takes_samples(d.raster_sample_count) {
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "a sample count the device lacks",
+            ));
         }
         if d.depth_attachment_pixel_format
             .is_some_and(|f| !format_facts(f).depth)
             || d.stencil_attachment_pixel_format
                 .is_some_and(|f| !format_facts(f).stencil || f == PixelFormat::X32Stencil8)
         {
-            return Err(invalid("a depth or stencil format without that aspect"));
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "a depth or stencil format without that aspect",
+            ));
         }
         if let (Some(depth), Some(stencil)) = (
             d.depth_attachment_pixel_format,
@@ -837,17 +839,21 @@ impl Metal for DirectMetal {
         ) && depth != stencil
             && (format_facts(depth).stencil || format_facts(stencil).depth)
         {
-            return Err(invalid(
+            return Err(MakeRenderPipelineStateError::Invalid(
                 "a combined depth and stencil format beside another format",
             ));
         }
         for attachment in d.color_attachments.iter().flatten() {
             let facts = format_facts(attachment.pixel_format);
             if !facts.color {
-                return Err(invalid("a color format no color attachment takes"));
+                return Err(MakeRenderPipelineStateError::Invalid(
+                    "a color format no color attachment takes",
+                ));
             }
             if attachment.blending.is_some() && !facts.blend {
-                return Err(invalid("blending into a format that does not blend"));
+                return Err(MakeRenderPipelineStateError::Invalid(
+                    "blending into a format that does not blend",
+                ));
             }
         }
         let raw_descriptor = MTLRenderPipelineDescriptor::new();
@@ -927,16 +933,20 @@ impl Metal for DirectMetal {
             .map_err(|error| {
                 MakeComputePipelineStateError::Refused(error.localizedDescription().to_string())
             })?;
-        let [x, y, z] = function.0.reads.workgroup_size;
+        let Size {
+            width: x,
+            height: y,
+            depth: z,
+        } = function.0.reads.workgroup_size;
         if u64::from(x) * u64::from(y) * u64::from(z) > raw.maxTotalThreadsPerThreadgroup() as u64 {
-            return Err(MakeComputePipelineStateError::Refused(
-                "a workgroup larger than the pipeline runs".into(),
+            return Err(MakeComputePipelineStateError::TooLarge(
+                "a workgroup larger than the pipeline runs",
             ));
         }
         let threadgroup: u64 = function.0.reads.threadgroup_lengths.iter().sum();
         if threadgroup > self.device.maxThreadgroupMemoryLength() as u64 {
-            return Err(MakeComputePipelineStateError::Refused(
-                "workgroup variables larger than the device's threadgroup memory".into(),
+            return Err(MakeComputePipelineStateError::TooLarge(
+                "workgroup variables larger than the device's threadgroup memory",
             ));
         }
         Ok(DirectComputePipelineState(Rc::new(ComputePipelineState {
@@ -1059,7 +1069,7 @@ impl Metal for DirectMetal {
                     };
                 }
                 ComputeCommand::SetBytes { bytes, index } => {
-                    bound.buffers.insert(*index, (bytes.len() as u64, 0));
+                    bound.buffers.insert(*index, (bytes.len() as u64, u64::MIN));
                     set_compute_bytes(&encoder, bytes, *index);
                 }
                 ComputeCommand::SetTexture { texture, index } => {
@@ -1101,14 +1111,9 @@ impl Metal for DirectMetal {
                             )
                         };
                     }
-                    let [x, y, z] = function.reads.workgroup_size;
                     encoder.dispatchThreadgroups_threadsPerThreadgroup(
                         mtl_size(*groups),
-                        mtl_size(Size {
-                            width: x,
-                            height: y,
-                            depth: z,
-                        }),
+                        mtl_size(function.reads.workgroup_size),
                     );
                 }
             }
@@ -1221,22 +1226,22 @@ impl Metal for DirectMetal {
         let texture = raw.texture();
         let storage = Retained::as_ptr(&texture).cast::<c_void>() as usize;
         let state = TextureState {
+            raw: texture.clone(),
             width: texture.width() as u32,
             height: texture.height() as u32,
-            raw: texture,
             texture_type: TextureType::Type2D,
             pixel_format: descriptor.pixel_format,
-            depth: 1,
-            levels: 1,
-            slices: 1,
-            sample_count: 1,
+            depth: texture.depth() as u32,
+            levels: texture.mipmapLevelCount() as u32,
+            slices: texture.arrayLength() as u32,
+            sample_count: texture.sampleCount() as u32,
             shader_read: false,
             render_target: true,
             pixel_format_view: false,
             framebuffer_only: true,
             storage,
-            base_level: 0,
-            base_slice: 0,
+            base_level: u32::MIN,
+            base_slice: u32::MIN,
         };
         Ok(DirectDrawable(Rc::new(DrawableState {
             raw,
@@ -1305,7 +1310,10 @@ struct RenderBindings {
 
 /// Returns the bytes past the offset at a slot, for the bounds checks.
 fn bytes_past(bound: &StageBindings, slot: u32) -> u64 {
-    bound.buffers.get(&slot).map_or(0, |(length, _)| *length)
+    bound
+        .buffers
+        .get(&slot)
+        .map_or(u64::MIN, |(length, _)| *length)
 }
 
 /// Returns the buffer of lengths a function's bounds checks read, as bytes, empty when it reads none.
@@ -1316,7 +1324,7 @@ fn lengths(reads: &Reads, bound: &StageBindings) -> Vec<u8> {
         .flat_map(|size| {
             let length = match size {
                 SizeOf::Slot(slot) => bytes_past(bound, *slot),
-                SizeOf::Unused => 0,
+                SizeOf::Unused => u64::MIN,
             };
             u32::try_from(length).unwrap_or(u32::MAX).to_le_bytes()
         })
@@ -1331,7 +1339,12 @@ fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str>
             Some((length, _)) if length < least => {
                 return Err("a buffer shorter than what the function reads at its slot");
             }
-            Some((_, offset)) if !offset.is_multiple_of(*alignment) => {
+            // Metal takes no buffer offset that is not a multiple of four, whatever the type.
+            Some((_, offset))
+                if !u32::try_from(*offset).is_ok_and(|offset| {
+                    alignment.is_aligned(offset) && Alignment::FOUR.is_aligned(offset)
+                }) =>
+            {
                 return Err(
                     "a buffer at an offset not a multiple of what the function reads at its slot",
                 );
@@ -1372,12 +1385,13 @@ fn check_pass(
     pass: &RenderPassDescriptor<'_, DirectMetal>,
     limits: DeviceLimits,
 ) -> Result<(u32, u32, u32), EncodeRenderCommandsError> {
-    let invalid = EncodeRenderCommandsError::Invalid;
     let mut area: Option<(u32, u32, u32)> = None;
     let mut fit = |texture: &DirectTexture, level: u32, slice: u32, depth_plane: u32| {
         let t = &texture.0;
         if !t.render_target {
-            return Err(invalid("an attachment not made to draw into"));
+            return Err(EncodeRenderCommandsError::Invalid(
+                "an attachment not made to draw into",
+            ));
         }
         if level >= t.levels || slice >= t.slices || depth_plane >= (t.depth >> level).max(1) {
             return Err(EncodeRenderCommandsError::OutOfRange(
@@ -1390,9 +1404,9 @@ fn check_pass(
             t.sample_count,
         );
         match area {
-            Some(seen) if seen != size => {
-                Err(invalid("attachments of different sizes or sample counts"))
-            }
+            Some(seen) if seen != size => Err(EncodeRenderCommandsError::Invalid(
+                "attachments of different sizes or sample counts",
+            )),
             _ => {
                 area = Some(size);
                 Ok(())
@@ -1401,10 +1415,12 @@ fn check_pass(
     };
     for attachment in pass.color_attachments.iter().flatten() {
         if format_facts(attachment.texture.0.pixel_format).depth_or_stencil {
-            return Err(invalid("a depth or stencil texture as a color attachment"));
+            return Err(EncodeRenderCommandsError::Invalid(
+                "a depth or stencil texture as a color attachment",
+            ));
         }
         if !format_facts(attachment.texture.0.pixel_format).color {
-            return Err(invalid(
+            return Err(EncodeRenderCommandsError::Invalid(
                 "a color attachment of a format no color attachment takes",
             ));
         }
@@ -1417,25 +1433,31 @@ fn check_pass(
     }
     if let Some(depth) = &pass.depth_attachment {
         if !format_facts(depth.texture.0.pixel_format).depth {
-            return Err(invalid("a depth attachment without depth"));
+            return Err(EncodeRenderCommandsError::Invalid(
+                "a depth attachment without depth",
+            ));
         }
         if !(0.0..=1.0).contains(&depth.clear_value) {
-            return Err(invalid("a depth to clear to outside zero to one"));
+            return Err(EncodeRenderCommandsError::Invalid(
+                "a depth to clear to outside zero to one",
+            ));
         }
-        fit(depth.texture, depth.level, depth.slice, 0)?;
+        fit(depth.texture, depth.level, depth.slice, u32::MIN)?;
     }
     if let Some(stencil) = &pass.stencil_attachment {
         if !format_facts(stencil.texture.0.pixel_format).stencil
             || stencil.texture.0.pixel_format == PixelFormat::X32Stencil8
         {
-            return Err(invalid("a stencil attachment without stencil"));
+            return Err(EncodeRenderCommandsError::Invalid(
+                "a stencil attachment without stencil",
+            ));
         }
-        fit(stencil.texture, stencil.level, stencil.slice, 0)?;
+        fit(stencil.texture, stencil.level, stencil.slice, u32::MIN)?;
     }
     if let (Some(depth), Some(stencil)) = (&pass.depth_attachment, &pass.stencil_attachment)
         && depth.texture.0.storage != stencil.texture.0.storage
     {
-        return Err(invalid(
+        return Err(EncodeRenderCommandsError::Invalid(
             "depth and stencil attachments of different textures",
         ));
     }
@@ -1443,14 +1465,20 @@ fn check_pass(
         if let Some(resolve) = &attachment.resolve {
             let (t, r) = (&attachment.texture.0, &resolve.texture.0);
             if t.sample_count == 1 || r.sample_count != 1 || !r.render_target {
-                return Err(invalid("a resolve from or into the wrong sample count"));
+                return Err(EncodeRenderCommandsError::Invalid(
+                    "a resolve from or into the wrong sample count",
+                ));
             }
             if r.pixel_format != t.pixel_format {
-                return Err(invalid("a resolve into another format"));
+                return Err(EncodeRenderCommandsError::Invalid(
+                    "a resolve into another format",
+                ));
             }
             let facts = format_facts(t.pixel_format);
             if !facts.resolve || facts.float32 && !limits.float32_resolve {
-                return Err(invalid("a resolve of a format that does not resolve"));
+                return Err(EncodeRenderCommandsError::Invalid(
+                    "a resolve of a format that does not resolve",
+                ));
             }
             let level = resolve.level;
             if level >= r.levels
@@ -1467,7 +1495,9 @@ fn check_pass(
                     (t.height >> attachment.level).max(1),
                 )
             {
-                return Err(invalid("a resolve target of another size"));
+                return Err(EncodeRenderCommandsError::Invalid(
+                    "a resolve target of another size",
+                ));
             }
         }
     }
@@ -1482,7 +1512,7 @@ fn check_pass(
         Some(area) => Ok(area),
         None if pass.render_target_width > 0
             && pass.render_target_height > 0
-            && [1, 2, 4, 8].contains(&pass.default_raster_sample_count) =>
+            && limits.takes_samples(pass.default_raster_sample_count) =>
         {
             Ok((
                 pass.render_target_width,
@@ -1490,7 +1520,9 @@ fn check_pass(
                 pass.default_raster_sample_count,
             ))
         }
-        None => Err(invalid("a pass with no attachment and no area")),
+        None => Err(EncodeRenderCommandsError::Invalid(
+            "a pass with no attachment and no area",
+        )),
     }
 }
 
@@ -1500,8 +1532,6 @@ fn check_render_commands(
     (width, height, samples): (u32, u32, u32),
     commands: &[RenderCommand<DirectMetal>],
 ) -> Result<(), EncodeRenderCommandsError> {
-    let invalid = EncodeRenderCommandsError::Invalid;
-    let out = EncodeRenderCommandsError::OutOfRange;
     let unbound = EncodeRenderCommandsError::Unbound;
     let colors: Vec<Option<PixelFormat>> = pass
         .color_attachments
@@ -1524,17 +1554,19 @@ fn check_render_commands(
         if index < most {
             Ok(())
         } else {
-            Err(out("a slot past the last"))
+            Err(EncodeRenderCommandsError::OutOfRange(
+                "a slot past the last",
+            ))
         }
     };
     // A draw's depth and stencil state reads the attachments it tests.
     let check_attachments = |state: Option<&DirectDepthStencilState>| match state {
-        Some(state) if state.0.depth && pass.depth_attachment.is_none() => {
-            Err(invalid("a depth test or write with no depth attachment"))
-        }
-        Some(state) if state.0.stencil && pass.stencil_attachment.is_none() => {
-            Err(invalid("a stencil test with no stencil attachment"))
-        }
+        Some(state) if state.0.depth && pass.depth_attachment.is_none() => Err(
+            EncodeRenderCommandsError::Invalid("a depth test or write with no depth attachment"),
+        ),
+        Some(state) if state.0.stencil && pass.stencil_attachment.is_none() => Err(
+            EncodeRenderCommandsError::Invalid("a stencil test with no stencil attachment"),
+        ),
         _ => Ok(()),
     };
     for command in commands {
@@ -1546,10 +1578,14 @@ fn check_render_commands(
                     || s.depth != depth
                     || s.stencil != stencil
                 {
-                    return Err(invalid("a pipeline made for other attachments"));
+                    return Err(EncodeRenderCommandsError::Invalid(
+                        "a pipeline made for other attachments",
+                    ));
                 }
                 if s.sample_count != samples {
-                    return Err(invalid("a pipeline made for another sample count"));
+                    return Err(EncodeRenderCommandsError::Invalid(
+                        "a pipeline made for another sample count",
+                    ));
                 }
                 bound.pipeline = Some(state.clone());
             }
@@ -1567,7 +1603,9 @@ fn check_render_commands(
             } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
                 if !buffer.holds(*offset, *length) {
-                    return Err(out("a bound range past its buffer's end"));
+                    return Err(EncodeRenderCommandsError::OutOfRange(
+                        "a bound range past its buffer's end",
+                    ));
                 }
                 let stage = if matches!(command, RenderCommand::SetVertexBuffer { .. }) {
                     &mut bound.vertex
@@ -1580,14 +1618,16 @@ fn check_render_commands(
             | RenderCommand::SetFragmentBytes { bytes, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
                 if bytes.len() > MAX_BYTES {
-                    return Err(out("more bytes than Metal copies into a command buffer"));
+                    return Err(EncodeRenderCommandsError::OutOfRange(
+                        "more bytes than Metal copies into a command buffer",
+                    ));
                 }
                 let stage = if matches!(command, RenderCommand::SetVertexBytes { .. }) {
                     &mut bound.vertex
                 } else {
                     &mut bound.fragment
                 };
-                stage.buffers.insert(*index, (bytes.len() as u64, 0));
+                stage.buffers.insert(*index, (bytes.len() as u64, u64::MIN));
             }
             RenderCommand::SetVertexTexture { texture, index } => {
                 check_slot(*index, MAX_TEXTURE_SLOTS)?;
@@ -1607,7 +1647,9 @@ fn check_render_commands(
             }
             RenderCommand::SetViewports(viewports) => {
                 if viewports.is_empty() || viewports.len() > MAX_VIEWPORTS {
-                    return Err(invalid("one to 16 viewports"));
+                    return Err(EncodeRenderCommandsError::Invalid(
+                        "no viewports, or more than a draw has",
+                    ));
                 }
                 let finite = |v: &wcontainers_metal::Viewport| {
                     [v.origin_x, v.origin_y, v.width, v.height, v.znear, v.zfar]
@@ -1615,19 +1657,25 @@ fn check_render_commands(
                         .all(|n| n.is_finite())
                 };
                 if !viewports.iter().all(finite) {
-                    return Err(invalid("a viewport that is not finite"));
+                    return Err(EncodeRenderCommandsError::Invalid(
+                        "a viewport that is not finite",
+                    ));
                 }
             }
             RenderCommand::SetScissorRects(rects) => {
                 if rects.is_empty() || rects.len() > MAX_VIEWPORTS {
-                    return Err(invalid("one to 16 scissor rectangles"));
+                    return Err(EncodeRenderCommandsError::Invalid(
+                        "no scissor rectangles, or more than a draw has",
+                    ));
                 }
                 let inside = |r: &wcontainers_metal::ScissorRect| {
                     r.x.checked_add(r.width).is_some_and(|end| end <= width)
                         && r.y.checked_add(r.height).is_some_and(|end| end <= height)
                 };
                 if !rects.iter().all(inside) {
-                    return Err(out("a scissor rectangle outside the pass"));
+                    return Err(EncodeRenderCommandsError::OutOfRange(
+                        "a scissor rectangle outside the pass",
+                    ));
                 }
             }
             RenderCommand::SetVisibilityResultMode { mode, offset } => {
@@ -1635,17 +1683,23 @@ fn check_render_commands(
                     if *mode == VisibilityResultMode::Disabled {
                         continue;
                     }
-                    return Err(invalid("counting with no visibility result buffer"));
+                    return Err(EncodeRenderCommandsError::Invalid(
+                        "counting with no visibility result buffer",
+                    ));
                 };
                 if !offset.is_multiple_of(VISIBILITY_RESULT_BYTES)
                     || !buffer.holds(*offset, VISIBILITY_RESULT_BYTES)
                     || offset + VISIBILITY_RESULT_BYTES > VISIBILITY_RESULT_SPAN
                 {
-                    return Err(out("a visibility result offset"));
+                    return Err(EncodeRenderCommandsError::OutOfRange(
+                        "a visibility result offset",
+                    ));
                 }
                 if *mode != VisibilityResultMode::Disabled {
                     if counted.contains(offset) {
-                        return Err(invalid("counting twice at one offset in a pass"));
+                        return Err(EncodeRenderCommandsError::Invalid(
+                            "counting twice at one offset in a pass",
+                        ));
                     }
                     counted.push(*offset);
                 }
@@ -1660,10 +1714,12 @@ fn check_render_commands(
                 if vertex_start.checked_add(*vertex_count).is_none()
                     || base_instance.checked_add(*instance_count).is_none()
                 {
-                    return Err(out("vertices or instances past the largest index"));
+                    return Err(EncodeRenderCommandsError::OutOfRange(
+                        "vertices or instances past the largest index",
+                    ));
                 }
                 if *instance_count == 0 {
-                    return Err(invalid("a draw of no instances"));
+                    return Err(EncodeRenderCommandsError::Invalid("a draw of no instances"));
                 }
                 check_attachments(depth_stencil)?;
                 check_draw(&bound, *primitive_type).map_err(unbound)?;
@@ -1679,21 +1735,25 @@ fn check_render_commands(
                 ..
             } => {
                 let size = match index_type {
-                    IndexType::UInt16 => 2,
-                    IndexType::UInt32 => 4,
+                    IndexType::UInt16 => u64::from(bytes_of::<u16>()),
+                    IndexType::UInt32 => u64::from(bytes_of::<u32>()),
                 };
                 if !index_buffer_offset.is_multiple_of(size)
                     || !index_buffer.holds(*index_buffer_offset, u64::from(*index_count) * size)
                 {
-                    return Err(out(
+                    return Err(EncodeRenderCommandsError::OutOfRange(
                         "indices outside their buffer, or at an offset not a multiple of their size",
                     ));
                 }
                 if base_instance.checked_add(*instance_count).is_none() {
-                    return Err(out("instances past the largest index"));
+                    return Err(EncodeRenderCommandsError::OutOfRange(
+                        "instances past the largest index",
+                    ));
                 }
                 if *instance_count == 0 || *index_count == 0 {
-                    return Err(invalid("a draw of no instances or no indices"));
+                    return Err(EncodeRenderCommandsError::Invalid(
+                        "a draw of no instances or no indices",
+                    ));
                 }
                 check_attachments(depth_stencil)?;
                 check_draw(&bound, *primitive_type).map_err(unbound)?;
@@ -1784,14 +1844,17 @@ fn encode_render_command(
             };
         }
         RenderCommand::SetVertexBytes { bytes, index } => {
-            bound.vertex.buffers.insert(*index, (bytes.len() as u64, 0));
+            bound
+                .vertex
+                .buffers
+                .insert(*index, (bytes.len() as u64, u64::MIN));
             set_vertex_bytes(encoder, bytes, *index);
         }
         RenderCommand::SetFragmentBytes { bytes, index } => {
             bound
                 .fragment
                 .buffers
-                .insert(*index, (bytes.len() as u64, 0));
+                .insert(*index, (bytes.len() as u64, u64::MIN));
             set_fragment_bytes(encoder, bytes, *index);
         }
         RenderCommand::SetVertexTexture { texture, index } => {
@@ -1977,7 +2040,11 @@ fn prepare_draw(
             )]
             // SAFETY: the slot is below `MAX_BUFFER_SLOTS` (translation), and the function reads its length as zero.
             unsafe {
-                encoder.setVertexBuffer_offset_atIndex(Some(empty), 0, *slot as NSUInteger)
+                encoder.setVertexBuffer_offset_atIndex(
+                    Some(empty),
+                    NSUInteger::MIN,
+                    *slot as NSUInteger,
+                )
             };
         }
     }
@@ -2055,14 +2122,15 @@ fn set_compute_bytes(
 fn check_compute_commands(
     commands: &[ComputeCommand<DirectMetal>],
 ) -> Result<(), EncodeComputeCommandsError> {
-    let out = EncodeComputeCommandsError::OutOfRange;
     let mut bound = StageBindings::default();
     let mut pipeline: Option<&DirectComputePipelineState> = None;
     let check_slot = |index: u32, most: u32| {
         if index < most {
             Ok(())
         } else {
-            Err(out("a slot past the last"))
+            Err(EncodeComputeCommandsError::OutOfRange(
+                "a slot past the last",
+            ))
         }
     };
     for command in commands {
@@ -2076,16 +2144,20 @@ fn check_compute_commands(
             } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
                 if !buffer.holds(*offset, *length) {
-                    return Err(out("a bound range past its buffer's end"));
+                    return Err(EncodeComputeCommandsError::OutOfRange(
+                        "a bound range past its buffer's end",
+                    ));
                 }
                 bound.buffers.insert(*index, (*length, *offset));
             }
             ComputeCommand::SetBytes { bytes, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
                 if bytes.len() > MAX_BYTES {
-                    return Err(out("more bytes than Metal copies into a command buffer"));
+                    return Err(EncodeComputeCommandsError::OutOfRange(
+                        "more bytes than Metal copies into a command buffer",
+                    ));
                 }
-                bound.buffers.insert(*index, (bytes.len() as u64, 0));
+                bound.buffers.insert(*index, (bytes.len() as u64, u64::MIN));
             }
             ComputeCommand::SetTexture { texture, index } => {
                 check_slot(*index, MAX_TEXTURE_SLOTS)?;
@@ -2140,9 +2212,11 @@ fn moved(format: PixelFormat, option: BlitOption) -> Option<(u64, (u32, u32))> {
     match (option, format) {
         (BlitOption::None, PixelFormat::Depth32FloatStencil8) => None,
         (BlitOption::None, _) => Some((u64::from(facts.bytes), facts.block)),
-        (BlitOption::DepthFromDepthStencil, PixelFormat::Depth32FloatStencil8) => Some((4, (1, 1))),
+        (BlitOption::DepthFromDepthStencil, PixelFormat::Depth32FloatStencil8) => {
+            Some((u64::from(bytes_of::<f32>()), TEXEL_BLOCK))
+        }
         (BlitOption::StencilFromDepthStencil, PixelFormat::Depth32FloatStencil8) => {
-            Some((1, (1, 1)))
+            Some((u64::from(bytes_of::<u8>()), TEXEL_BLOCK))
         }
         _ => None,
     }
@@ -2198,7 +2272,6 @@ fn check_blit(
     limits: DeviceLimits,
 ) -> Result<(), EncodeBlitCommandsError> {
     let out = EncodeBlitCommandsError::OutOfRange;
-    let invalid = EncodeBlitCommandsError::Invalid;
     let granular = |numbers: &[u64]| {
         numbers
             .iter()
@@ -2213,20 +2286,24 @@ fn check_blit(
             size,
         } => {
             if *size == 0 || !granular(&[*source_offset, *destination_offset, *size]) {
-                return Err(invalid(
-                    "a copy of no bytes, or at offsets or of a size not multiples of 4",
+                return Err(EncodeBlitCommandsError::Invalid(
+                    "a copy of no bytes, or at offsets or of a size not in whole words",
                 ));
             }
             if !source_buffer.holds(*source_offset, *size)
                 || !destination_buffer.holds(*destination_offset, *size)
             {
-                return Err(out("a copy outside its buffer"));
+                return Err(EncodeBlitCommandsError::OutOfRange(
+                    "a copy outside its buffer",
+                ));
             }
             if Rc::ptr_eq(&source_buffer.0, &destination_buffer.0)
                 && source_offset < &(destination_offset + size)
                 && destination_offset < &(source_offset + size)
             {
-                return Err(invalid("a copy between overlapping ranges"));
+                return Err(EncodeBlitCommandsError::Invalid(
+                    "a copy between overlapping ranges",
+                ));
             }
         }
         BlitCommand::CopyFromBufferToTexture {
@@ -2254,12 +2331,12 @@ fn check_blit(
             options,
         } => {
             if texture.0.sample_count != 1 || texture.0.framebuffer_only {
-                return Err(invalid(
+                return Err(EncodeBlitCommandsError::Invalid(
                     "a copy between a buffer and a multisampled or drawable texture",
                 ));
             }
             let Some((bytes, block)) = moved(texture.0.pixel_format, *options) else {
-                return Err(invalid(
+                return Err(EncodeBlitCommandsError::Invalid(
                     "a copy of an aspect the format does not have, or of both at once",
                 ));
             };
@@ -2272,7 +2349,7 @@ fn check_blit(
                 || !source_bytes_per_row.is_multiple_of(bytes)
                 || *source_bytes_per_row > longest_row
             {
-                return Err(invalid(
+                return Err(EncodeBlitCommandsError::Invalid(
                     "a row pitch shorter than a row, longer than the longest, or not a multiple of a block",
                 ));
             }
@@ -2280,14 +2357,20 @@ fn check_blit(
             let depth = u64::from(source_size.depth);
             let flat = depth == 1 && *source_bytes_per_image == 0;
             if !flat && *source_bytes_per_image < rows * source_bytes_per_row {
-                return Err(invalid("an image pitch shorter than an image"));
+                return Err(EncodeBlitCommandsError::Invalid(
+                    "an image pitch shorter than an image",
+                ));
             }
             if !source_offset.is_multiple_of(bytes) {
-                return Err(invalid("a buffer offset not a multiple of a block"));
+                return Err(EncodeBlitCommandsError::Invalid(
+                    "a buffer offset not a multiple of a block",
+                ));
             }
             let length = (depth - 1) * source_bytes_per_image + image;
             if !source_buffer.holds(*source_offset, length) {
-                return Err(out("a copy outside its buffer"));
+                return Err(EncodeBlitCommandsError::OutOfRange(
+                    "a copy outside its buffer",
+                ));
             }
         }
         BlitCommand::CopyFromTextureToTexture {
@@ -2304,12 +2387,14 @@ fn check_blit(
             let (s, d) = (&source_texture.0, &destination_texture.0);
             let (sf, df) = (format_facts(s.pixel_format), format_facts(d.pixel_format));
             if s.pixel_format != d.pixel_format || s.sample_count != d.sample_count {
-                return Err(invalid(
+                return Err(EncodeBlitCommandsError::Invalid(
                     "a copy between textures of formats or sample counts that differ",
                 ));
             }
             if s.framebuffer_only || d.framebuffer_only {
-                return Err(invalid("a copy from or into a drawable's texture"));
+                return Err(EncodeBlitCommandsError::Invalid(
+                    "a copy from or into a drawable's texture",
+                ));
             }
             check_region(
                 source_texture,
@@ -2337,7 +2422,9 @@ fn check_blit(
                     || apart(source_origin.y, destination_origin.y, source_size.height)
                     || apart(source_origin.z, destination_origin.z, source_size.depth))
             {
-                return Err(invalid("a copy between overlapping regions"));
+                return Err(EncodeBlitCommandsError::Invalid(
+                    "a copy between overlapping regions",
+                ));
             }
         }
         BlitCommand::FillBuffer {
@@ -2347,12 +2434,14 @@ fn check_blit(
             ..
         } => {
             if *length == 0 || !granular(&[*offset, *length]) {
-                return Err(invalid(
-                    "a fill of no bytes, or at an offset or of a length not a multiple of 4",
+                return Err(EncodeBlitCommandsError::Invalid(
+                    "a fill of no bytes, or at an offset or of a length not in whole words",
                 ));
             }
             if !buffer.holds(*offset, *length) {
-                return Err(out("a fill outside its buffer"));
+                return Err(EncodeBlitCommandsError::OutOfRange(
+                    "a fill outside its buffer",
+                ));
             }
         }
         BlitCommand::GenerateMipmaps { texture } => {
@@ -2360,12 +2449,14 @@ fn check_blit(
             let facts = format_facts(t.pixel_format);
             let filters = facts.resolve && (!facts.float32 || limits.float32_resolve);
             if t.levels < 2 || !facts.color || !filters || t.sample_count != 1 {
-                return Err(invalid(
+                return Err(EncodeBlitCommandsError::Invalid(
                     "mipmaps of a texture of one level, or of a format not drawn into and filtered",
                 ));
             }
             if t.framebuffer_only {
-                return Err(invalid("mipmaps of a drawable's texture"));
+                return Err(EncodeBlitCommandsError::Invalid(
+                    "mipmaps of a drawable's texture",
+                ));
             }
         }
     }
@@ -2594,31 +2685,39 @@ fn translation(
     ),
     MakeFunctionError,
 > {
-    let unchecked = |why: &str| MakeFunctionError::Unchecked(why.into());
     let module = source.module;
     let entry_index = module
         .entry_points
         .iter()
         .position(|e| e.name == source.entry_point && e.stage == source.stage)
-        .ok_or_else(|| unchecked("no such entry point"))?;
+        .ok_or(MakeFunctionError::Unchecked("no such entry point"))?;
     let entry = &module.entry_points[entry_index];
     if !matches!(
         source.stage,
         naga::ShaderStage::Vertex | naga::ShaderStage::Fragment | naga::ShaderStage::Compute
     ) {
-        return Err(unchecked("a stage other than vertex, fragment and compute"));
+        return Err(MakeFunctionError::Unchecked(
+            "a stage other than vertex, fragment and compute",
+        ));
     }
     let info = source.info.get_entry_point(entry_index);
     let reserved = [source.immediates_buffer_index, source.sizes_buffer_index];
     if reserved.iter().any(|&slot| slot >= MAX_BUFFER_SLOTS) || reserved[0] == reserved[1] {
-        return Err(unchecked(
-            "the immediates and the lengths need two buffer slots below 31",
+        return Err(MakeFunctionError::Unchecked(
+            "the immediates and the lengths need two buffer slots of their own",
         ));
     }
     let mut resources = naga::back::msl::BindingMap::default();
     let mut reads = Reads {
         sizes_index: source.sizes_buffer_index,
-        workgroup_size: entry.workgroup_size,
+        workgroup_size: {
+            let [width, height, depth] = entry.workgroup_size;
+            Size {
+                width,
+                height,
+                depth,
+            }
+        },
         ..Reads::default()
     };
     let mut buffer_slots = Vec::new();
@@ -2663,20 +2762,20 @@ fn translation(
             | naga::AddressSpace::Storage { .. }
             | naga::AddressSpace::Handle => {}
             _ => {
-                return Err(unchecked(
+                return Err(MakeFunctionError::Unchecked(
                     "a global in an address space this crate does not check",
                 ));
             }
         }
         let Some(binding) = var.binding else {
-            return Err(unchecked("a resource with no binding"));
+            return Err(MakeFunctionError::Unchecked("a resource with no binding"));
         };
         let Some(slot) = source
             .resources
             .iter()
             .find(|r| r.group == binding.group && r.binding == binding.binding)
         else {
-            return Err(unchecked("a resource with no slot"));
+            return Err(MakeFunctionError::Unchecked("a resource with no slot"));
         };
         let index = slot.index;
         let mut target = naga::back::msl::BindTarget::default();
@@ -2689,20 +2788,22 @@ fn translation(
                         .iter()
                         .any(|v| v.buffer_index == index)
                 {
-                    return Err(unchecked("a buffer slot past 30 or taken"));
+                    return Err(MakeFunctionError::Unchecked(
+                        "a buffer slot past the last or taken",
+                    ));
                 }
                 let least = match *ty {
                     naga::TypeInner::Struct { ref members, .. }
                         if ty.needs_host_buffer_byte_size(&module.types) =>
                     {
-                        u64::from(members.last().map_or(0, |m| m.offset))
+                        u64::from(members.last().map_or(u32::MIN, |m| m.offset))
                     }
                     naga::TypeInner::Array {
                         size: naga::ArraySize::Dynamic,
                         ..
-                    } => 0,
+                    } => u64::MIN,
                     naga::TypeInner::BindingArray { .. } => {
-                        return Err(unchecked("an array of bindings"));
+                        return Err(MakeFunctionError::Unchecked("an array of bindings"));
                     }
                     _ => u64::from(ty.size(module.to_ctx())),
                 };
@@ -2711,10 +2812,9 @@ fn translation(
                 }
                 target.buffer = Some(slot_number(index));
                 buffer_slots.push(index);
-                let alignment = u64::from(layouter[var.ty].alignment.round_up(1));
                 reads
                     .buffers
-                    .push((index, least, alignment.max(MIN_OFFSET_ALIGNMENT)));
+                    .push((index, least, layouter[var.ty].alignment));
             }
             (
                 _,
@@ -2725,7 +2825,7 @@ fn translation(
                 },
             ) => {
                 if index >= MAX_TEXTURE_SLOTS {
-                    return Err(unchecked("a texture slot past 127"));
+                    return Err(MakeFunctionError::Unchecked("a texture slot past the last"));
                 }
                 let (multisampled, depth) = match *class {
                     naga::ImageClass::Sampled { multi, .. } => (multi, false),
@@ -2734,13 +2834,13 @@ fn translation(
                         if access.contains(naga::StorageAccess::STORE)
                             || access.contains(naga::StorageAccess::ATOMIC)
                         {
-                            return Err(unchecked(
+                            return Err(MakeFunctionError::Unchecked(
                                 "a texture the function writes, whose writes naga does not bound",
                             ));
                         }
                         (false, false)
                     }
-                    _ => return Err(unchecked("an external texture")),
+                    _ => return Err(MakeFunctionError::Unchecked("an external texture")),
                 };
                 let texture_type = match (dim, arrayed, multisampled) {
                     (naga::ImageDimension::D2, false, false) => TextureType::Type2D,
@@ -2749,7 +2849,11 @@ fn translation(
                     (naga::ImageDimension::Cube, false, false) => TextureType::TypeCube,
                     (naga::ImageDimension::Cube, true, false) => TextureType::TypeCubeArray,
                     (naga::ImageDimension::D3, false, false) => TextureType::Type3D,
-                    _ => return Err(unchecked("a texture type this crate does not make")),
+                    _ => {
+                        return Err(MakeFunctionError::Unchecked(
+                            "a texture type this crate does not make",
+                        ));
+                    }
                 };
                 target.texture = Some(slot_number(index));
                 reads.textures.push((
@@ -2762,14 +2866,18 @@ fn translation(
             }
             (_, naga::TypeInner::Sampler { .. }) => {
                 if index >= MAX_SAMPLER_SLOTS {
-                    return Err(unchecked("a sampler slot past 15"));
+                    return Err(MakeFunctionError::Unchecked("a sampler slot past the last"));
                 }
                 target.sampler = Some(naga::back::msl::BindSamplerTarget::Resource(slot_number(
                     index,
                 )));
                 reads.samplers.push(index);
             }
-            _ => return Err(unchecked("a resource of a type this crate does not check")),
+            _ => {
+                return Err(MakeFunctionError::Unchecked(
+                    "a resource of a type this crate does not check",
+                ));
+            }
         }
         resources.insert(binding, target);
     }
@@ -2780,20 +2888,27 @@ fn translation(
                 || reserved.contains(&layout.buffer_index)
                 || buffer_slots.contains(&layout.buffer_index)
             {
-                return Err(unchecked("a vertex buffer slot past 30 or taken"));
+                return Err(MakeFunctionError::Unchecked(
+                    "a vertex buffer slot past the last or taken",
+                ));
             }
             if layout.stride == 0 {
-                return Err(unchecked("a vertex buffer of stride zero"));
+                return Err(MakeFunctionError::Unchecked(
+                    "a vertex buffer of stride zero",
+                ));
             }
             let mut attributes = Vec::new();
             for attribute in &layout.attributes {
-                let (format, bytes) = vertex_format(attribute.format);
+                let format = vertex_format(attribute.format);
+                let bytes = format.size() as u32;
                 if attribute
                     .offset
                     .checked_add(bytes)
                     .is_none_or(|end| end > layout.stride)
                 {
-                    return Err(unchecked("an attribute past its vertex buffer's stride"));
+                    return Err(MakeFunctionError::Unchecked(
+                        "an attribute past its vertex buffer's stride",
+                    ));
                 }
                 attributes.push(naga::back::msl::AttributeMapping {
                     shader_location: attribute.location,
@@ -2861,51 +2976,51 @@ fn slot_number(index: u32) -> naga::back::msl::Slot {
     naga::back::msl::Slot::try_from(index).unwrap_or(naga::back::msl::Slot::MAX)
 }
 
-/// Returns naga's vertex format of a Metal vertex format, and its bytes.
-fn vertex_format(format: VertexFormat) -> (naga_types::VertexFormat, u32) {
+/// Returns naga's vertex format of a Metal vertex format.
+fn vertex_format(format: VertexFormat) -> naga_types::VertexFormat {
     use naga_types::VertexFormat as N;
     match format {
-        VertexFormat::UChar2 => (N::Uint8x2, 2),
-        VertexFormat::UChar4 => (N::Uint8x4, 4),
-        VertexFormat::Char2 => (N::Sint8x2, 2),
-        VertexFormat::Char4 => (N::Sint8x4, 4),
-        VertexFormat::UChar2Normalized => (N::Unorm8x2, 2),
-        VertexFormat::UChar4Normalized => (N::Unorm8x4, 4),
-        VertexFormat::Char2Normalized => (N::Snorm8x2, 2),
-        VertexFormat::Char4Normalized => (N::Snorm8x4, 4),
-        VertexFormat::UShort2 => (N::Uint16x2, 4),
-        VertexFormat::UShort4 => (N::Uint16x4, 8),
-        VertexFormat::Short2 => (N::Sint16x2, 4),
-        VertexFormat::Short4 => (N::Sint16x4, 8),
-        VertexFormat::UShort2Normalized => (N::Unorm16x2, 4),
-        VertexFormat::UShort4Normalized => (N::Unorm16x4, 8),
-        VertexFormat::Short2Normalized => (N::Snorm16x2, 4),
-        VertexFormat::Short4Normalized => (N::Snorm16x4, 8),
-        VertexFormat::Half2 => (N::Float16x2, 4),
-        VertexFormat::Half4 => (N::Float16x4, 8),
-        VertexFormat::Float => (N::Float32, 4),
-        VertexFormat::Float2 => (N::Float32x2, 8),
-        VertexFormat::Float3 => (N::Float32x3, 12),
-        VertexFormat::Float4 => (N::Float32x4, 16),
-        VertexFormat::UInt => (N::Uint32, 4),
-        VertexFormat::UInt2 => (N::Uint32x2, 8),
-        VertexFormat::UInt3 => (N::Uint32x3, 12),
-        VertexFormat::UInt4 => (N::Uint32x4, 16),
-        VertexFormat::Int => (N::Sint32, 4),
-        VertexFormat::Int2 => (N::Sint32x2, 8),
-        VertexFormat::Int3 => (N::Sint32x3, 12),
-        VertexFormat::Int4 => (N::Sint32x4, 16),
-        VertexFormat::UChar => (N::Uint8, 1),
-        VertexFormat::Char => (N::Sint8, 1),
-        VertexFormat::UCharNormalized => (N::Unorm8, 1),
-        VertexFormat::CharNormalized => (N::Snorm8, 1),
-        VertexFormat::UShort => (N::Uint16, 2),
-        VertexFormat::Short => (N::Sint16, 2),
-        VertexFormat::UShortNormalized => (N::Unorm16, 2),
-        VertexFormat::ShortNormalized => (N::Snorm16, 2),
-        VertexFormat::Half => (N::Float16, 2),
-        VertexFormat::UInt1010102Normalized => (N::Unorm10_10_10_2, 4),
-        VertexFormat::UChar4NormalizedBgra => (N::Unorm8x4Bgra, 4),
+        VertexFormat::UChar2 => N::Uint8x2,
+        VertexFormat::UChar4 => N::Uint8x4,
+        VertexFormat::Char2 => N::Sint8x2,
+        VertexFormat::Char4 => N::Sint8x4,
+        VertexFormat::UChar2Normalized => N::Unorm8x2,
+        VertexFormat::UChar4Normalized => N::Unorm8x4,
+        VertexFormat::Char2Normalized => N::Snorm8x2,
+        VertexFormat::Char4Normalized => N::Snorm8x4,
+        VertexFormat::UShort2 => N::Uint16x2,
+        VertexFormat::UShort4 => N::Uint16x4,
+        VertexFormat::Short2 => N::Sint16x2,
+        VertexFormat::Short4 => N::Sint16x4,
+        VertexFormat::UShort2Normalized => N::Unorm16x2,
+        VertexFormat::UShort4Normalized => N::Unorm16x4,
+        VertexFormat::Short2Normalized => N::Snorm16x2,
+        VertexFormat::Short4Normalized => N::Snorm16x4,
+        VertexFormat::Half2 => N::Float16x2,
+        VertexFormat::Half4 => N::Float16x4,
+        VertexFormat::Float => N::Float32,
+        VertexFormat::Float2 => N::Float32x2,
+        VertexFormat::Float3 => N::Float32x3,
+        VertexFormat::Float4 => N::Float32x4,
+        VertexFormat::UInt => N::Uint32,
+        VertexFormat::UInt2 => N::Uint32x2,
+        VertexFormat::UInt3 => N::Uint32x3,
+        VertexFormat::UInt4 => N::Uint32x4,
+        VertexFormat::Int => N::Sint32,
+        VertexFormat::Int2 => N::Sint32x2,
+        VertexFormat::Int3 => N::Sint32x3,
+        VertexFormat::Int4 => N::Sint32x4,
+        VertexFormat::UChar => N::Uint8,
+        VertexFormat::Char => N::Sint8,
+        VertexFormat::UCharNormalized => N::Unorm8,
+        VertexFormat::CharNormalized => N::Snorm8,
+        VertexFormat::UShort => N::Uint16,
+        VertexFormat::Short => N::Sint16,
+        VertexFormat::UShortNormalized => N::Unorm16,
+        VertexFormat::ShortNormalized => N::Snorm16,
+        VertexFormat::Half => N::Float16,
+        VertexFormat::UInt1010102Normalized => N::Unorm10_10_10_2,
+        VertexFormat::UChar4NormalizedBgra => N::Unorm8x4Bgra,
     }
 }
 
@@ -2932,12 +3047,34 @@ struct FormatFacts {
     float32: bool,
 }
 
+/// The block of a format that is not compressed: one texel.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat
+const TEXEL_BLOCK: (u32, u32) = (1, 1);
+
+/// The block of the compressed formats this crate makes: four texels by four.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/bc1_rgba
+const BLOCK_4X4: (u32, u32) = (4, 4);
+
+/// Returns the bytes of a type, the size of a texel or block that holds one.
+const fn bytes_of<T>() -> u32 {
+    size_of::<T>() as u32
+}
+
+impl FormatFacts {
+    /// Returns whether the format is compressed in blocks of more than one texel.
+    fn compressed(&self) -> bool {
+        self.block != TEXEL_BLOCK
+    }
+}
+
 /// Returns what a pixel format is.
 fn format_facts(format: PixelFormat) -> FormatFacts {
     use PixelFormat as P;
     let plain = |bytes| FormatFacts {
         bytes,
-        block: (1, 1),
+        block: TEXEL_BLOCK,
         depth: false,
         stencil: false,
         depth_or_stencil: false,
@@ -2978,56 +3115,58 @@ fn format_facts(format: PixelFormat) -> FormatFacts {
         ..plain(bytes)
     };
     match format {
-        P::A8Unorm | P::R8Snorm => plain(1),
-        P::R8Uint | P::R8Sint => integer(1),
-        P::R8Unorm => twin(1, P::R8UnormSrgb),
-        P::R8UnormSrgb => twin(1, P::R8Unorm),
-        P::R16Unorm | P::R16Snorm | P::R16Float => plain(2),
-        P::R16Uint | P::R16Sint => integer(2),
-        P::Rg8Unorm | P::Rg8Snorm => plain(2),
-        P::Rg8Uint | P::Rg8Sint => integer(2),
-        P::B5g6r5Unorm | P::A1bgr5Unorm | P::Abgr4Unorm | P::Bgr5a1Unorm => plain(2),
-        P::R32Uint | P::R32Sint => integer(4),
-        P::R32Float => float32(4),
-        P::Rg16Unorm | P::Rg16Snorm | P::Rg16Float => plain(4),
-        P::Rg16Uint | P::Rg16Sint => integer(4),
-        P::Rgba8Unorm => twin(4, P::Rgba8UnormSrgb),
-        P::Rgba8UnormSrgb => twin(4, P::Rgba8Unorm),
-        P::Bgra8Unorm => twin(4, P::Bgra8UnormSrgb),
-        P::Bgra8UnormSrgb => twin(4, P::Bgra8Unorm),
-        P::Rgba8Snorm => plain(4),
-        P::Rgba8Uint | P::Rgba8Sint => integer(4),
-        P::Rgb10a2Unorm | P::Rg11b10Float | P::Rgb9e5Float => plain(4),
-        P::Rgb10a2Uint => integer(4),
-        P::Rg32Uint | P::Rg32Sint => integer(8),
-        P::Rg32Float => float32(8),
-        P::Rgba16Unorm | P::Rgba16Snorm | P::Rgba16Float => plain(8),
-        P::Rgba16Uint | P::Rgba16Sint => integer(8),
-        P::Rgba32Uint | P::Rgba32Sint => integer(16),
-        P::Rgba32Float => float32(16),
-        P::Bc1Rgba => blocks(8, (4, 4), Some(P::Bc1RgbaSrgb)),
-        P::Bc1RgbaSrgb => blocks(8, (4, 4), Some(P::Bc1Rgba)),
-        P::Bc2Rgba => blocks(16, (4, 4), Some(P::Bc2RgbaSrgb)),
-        P::Bc2RgbaSrgb => blocks(16, (4, 4), Some(P::Bc2Rgba)),
-        P::Bc3Rgba => blocks(16, (4, 4), Some(P::Bc3RgbaSrgb)),
-        P::Bc3RgbaSrgb => blocks(16, (4, 4), Some(P::Bc3Rgba)),
-        P::Bc4RUnorm | P::Bc4RSnorm => blocks(8, (4, 4), None),
-        P::Bc5RgUnorm | P::Bc5RgSnorm | P::Bc6hRgbFloat | P::Bc6hRgbUfloat => {
-            blocks(16, (4, 4), None)
+        P::A8Unorm | P::R8Snorm => plain(bytes_of::<u8>()),
+        P::R8Uint | P::R8Sint => integer(bytes_of::<u8>()),
+        P::R8Unorm => twin(bytes_of::<u8>(), P::R8UnormSrgb),
+        P::R8UnormSrgb => twin(bytes_of::<u8>(), P::R8Unorm),
+        P::R16Unorm | P::R16Snorm | P::R16Float => plain(bytes_of::<u16>()),
+        P::R16Uint | P::R16Sint => integer(bytes_of::<u16>()),
+        P::Rg8Unorm | P::Rg8Snorm => plain(bytes_of::<u16>()),
+        P::Rg8Uint | P::Rg8Sint => integer(bytes_of::<u16>()),
+        P::B5g6r5Unorm | P::A1bgr5Unorm | P::Abgr4Unorm | P::Bgr5a1Unorm => {
+            plain(bytes_of::<u16>())
         }
-        P::Bc7RgbaUnorm => blocks(16, (4, 4), Some(P::Bc7RgbaUnormSrgb)),
-        P::Bc7RgbaUnormSrgb => blocks(16, (4, 4), Some(P::Bc7RgbaUnorm)),
-        P::Etc2Rgb8 => blocks(8, (4, 4), Some(P::Etc2Rgb8Srgb)),
-        P::Etc2Rgb8Srgb => blocks(8, (4, 4), Some(P::Etc2Rgb8)),
-        P::EacRgba8 => blocks(16, (4, 4), Some(P::EacRgba8Srgb)),
-        P::EacRgba8Srgb => blocks(16, (4, 4), Some(P::EacRgba8)),
-        P::Astc4x4Ldr => blocks(16, (4, 4), Some(P::Astc4x4Srgb)),
-        P::Astc4x4Srgb => blocks(16, (4, 4), Some(P::Astc4x4Ldr)),
-        P::Depth16Unorm => aspects(2, true, false),
-        P::Depth32Float => aspects(4, true, false),
-        P::Stencil8 => aspects(1, false, true),
-        P::Depth32FloatStencil8 => aspects(8, true, true),
-        P::X32Stencil8 => aspects(8, false, true),
+        P::R32Uint | P::R32Sint => integer(bytes_of::<u32>()),
+        P::R32Float => float32(bytes_of::<u32>()),
+        P::Rg16Unorm | P::Rg16Snorm | P::Rg16Float => plain(bytes_of::<u32>()),
+        P::Rg16Uint | P::Rg16Sint => integer(bytes_of::<u32>()),
+        P::Rgba8Unorm => twin(bytes_of::<u32>(), P::Rgba8UnormSrgb),
+        P::Rgba8UnormSrgb => twin(bytes_of::<u32>(), P::Rgba8Unorm),
+        P::Bgra8Unorm => twin(bytes_of::<u32>(), P::Bgra8UnormSrgb),
+        P::Bgra8UnormSrgb => twin(bytes_of::<u32>(), P::Bgra8Unorm),
+        P::Rgba8Snorm => plain(bytes_of::<u32>()),
+        P::Rgba8Uint | P::Rgba8Sint => integer(bytes_of::<u32>()),
+        P::Rgb10a2Unorm | P::Rg11b10Float | P::Rgb9e5Float => plain(bytes_of::<u32>()),
+        P::Rgb10a2Uint => integer(bytes_of::<u32>()),
+        P::Rg32Uint | P::Rg32Sint => integer(bytes_of::<u64>()),
+        P::Rg32Float => float32(bytes_of::<u64>()),
+        P::Rgba16Unorm | P::Rgba16Snorm | P::Rgba16Float => plain(bytes_of::<u64>()),
+        P::Rgba16Uint | P::Rgba16Sint => integer(bytes_of::<u64>()),
+        P::Rgba32Uint | P::Rgba32Sint => integer(bytes_of::<u128>()),
+        P::Rgba32Float => float32(bytes_of::<u128>()),
+        P::Bc1Rgba => blocks(bytes_of::<u64>(), BLOCK_4X4, Some(P::Bc1RgbaSrgb)),
+        P::Bc1RgbaSrgb => blocks(bytes_of::<u64>(), BLOCK_4X4, Some(P::Bc1Rgba)),
+        P::Bc2Rgba => blocks(bytes_of::<u128>(), BLOCK_4X4, Some(P::Bc2RgbaSrgb)),
+        P::Bc2RgbaSrgb => blocks(bytes_of::<u128>(), BLOCK_4X4, Some(P::Bc2Rgba)),
+        P::Bc3Rgba => blocks(bytes_of::<u128>(), BLOCK_4X4, Some(P::Bc3RgbaSrgb)),
+        P::Bc3RgbaSrgb => blocks(bytes_of::<u128>(), BLOCK_4X4, Some(P::Bc3Rgba)),
+        P::Bc4RUnorm | P::Bc4RSnorm => blocks(bytes_of::<u64>(), BLOCK_4X4, None),
+        P::Bc5RgUnorm | P::Bc5RgSnorm | P::Bc6hRgbFloat | P::Bc6hRgbUfloat => {
+            blocks(bytes_of::<u128>(), BLOCK_4X4, None)
+        }
+        P::Bc7RgbaUnorm => blocks(bytes_of::<u128>(), BLOCK_4X4, Some(P::Bc7RgbaUnormSrgb)),
+        P::Bc7RgbaUnormSrgb => blocks(bytes_of::<u128>(), BLOCK_4X4, Some(P::Bc7RgbaUnorm)),
+        P::Etc2Rgb8 => blocks(bytes_of::<u64>(), BLOCK_4X4, Some(P::Etc2Rgb8Srgb)),
+        P::Etc2Rgb8Srgb => blocks(bytes_of::<u64>(), BLOCK_4X4, Some(P::Etc2Rgb8)),
+        P::EacRgba8 => blocks(bytes_of::<u128>(), BLOCK_4X4, Some(P::EacRgba8Srgb)),
+        P::EacRgba8Srgb => blocks(bytes_of::<u128>(), BLOCK_4X4, Some(P::EacRgba8)),
+        P::Astc4x4Ldr => blocks(bytes_of::<u128>(), BLOCK_4X4, Some(P::Astc4x4Srgb)),
+        P::Astc4x4Srgb => blocks(bytes_of::<u128>(), BLOCK_4X4, Some(P::Astc4x4Ldr)),
+        P::Depth16Unorm => aspects(bytes_of::<u16>(), true, false),
+        P::Depth32Float => aspects(bytes_of::<u32>(), true, false),
+        P::Stencil8 => aspects(bytes_of::<u8>(), false, true),
+        P::Depth32FloatStencil8 => aspects(bytes_of::<u64>(), true, true),
+        P::X32Stencil8 => aspects(bytes_of::<u64>(), false, true),
     }
 }
 

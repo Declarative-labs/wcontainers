@@ -511,7 +511,7 @@ pub enum VertexFormat {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MakeFunctionError {
     /// A stage, binding or type this crate does not check, such as a texture the function writes.
-    Unchecked(String),
+    Unchecked(&'static str),
     /// The module could not be written as Metal Shading Language.
     Translation(String),
     /// Metal's compiler refused the written function.
@@ -622,6 +622,8 @@ pub enum MakeRenderPipelineStateError {
 pub enum MakeComputePipelineStateError {
     /// The function is not a compute function.
     NotCompute,
+    /// A workgroup larger than the pipeline runs, or workgroup variables larger than the device holds.
+    TooLarge(&'static str),
     Refused(String),
 }
 
@@ -919,13 +921,12 @@ pub enum BlitCommand<M: Metal + ?Sized> {
         length: u64,
         value: u8,
     },
-    /// Fills every level but the first of every slice with the level above scaled down, filtered as the GPU's family
-    /// does it.
+    /// Fills each level but the first of every slice with the level above scaled down, filtered as the GPU filters.
     GenerateMipmaps { texture: M::Texture },
 }
 
 /// An extent in texels, or a count of threadgroups.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Size {
     pub width: u32,
     pub height: u32,
@@ -933,7 +934,7 @@ pub struct Size {
 }
 
 /// A point in a texture level, in texels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Origin {
     pub x: u32,
     pub y: u32,
@@ -1095,3 +1096,13 @@ pub const MAX_TEXTURE_SLOTS: u32 = 128;
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 pub const MAX_VIEWPORTS: usize = 16;
+
+/// The longest side of a 2D, cube or multisampled texture on the GPUs that make the longest, those of the Apple10 family.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+pub const MAX_TEXTURE_SIDE: u32 = 32_768;
+
+/// The bytes of one occlusion count in a visibility result buffer.
+///
+/// https://developer.apple.com/documentation/metal/mtlvisibilityresultmode/counting
+pub const VISIBILITY_RESULT_BYTES: u64 = 8;

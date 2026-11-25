@@ -4,30 +4,40 @@ use wcontainers_metal::{
     BlendFactor, BlendOperation, Blending, BlitCommand, BlitOption, ColorWriteMask,
     CommandBufferStatus, CommitError, CompareFunction, ComputeCommand, DepthStencilDescriptor,
     EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError, FunctionSource,
-    IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, MakeRenderPipelineStateError, MakeTextureError,
-    Metal, Origin, PixelFormat, PrimitiveTopologyClass, PrimitiveType, ReadContentsError,
-    RenderCommand, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+    IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, MAX_TEXTURE_SIDE, MakeRenderPipelineStateError,
+    MakeTextureError, Metal, Origin, PixelFormat, PrimitiveTopologyClass, PrimitiveType,
+    ReadContentsError, RenderCommand, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
     RenderPassDescriptor, RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor,
     ResolveTarget, ResourceSlot, SamplerAddressMode, SamplerBorderColor, SamplerDescriptor,
     SamplerMinMagFilter, SamplerMipFilter, ScissorRect, Size, StencilDescriptor, StencilOperation,
     StoreAction, TextureDescriptor, TextureType, TextureUsage, TextureViewDescriptor,
-    VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepFunction, Viewport,
-    VisibilityResultMode, WaitUntilCompletedError, WriteContentsError,
+    VISIBILITY_RESULT_BYTES, VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepFunction,
+    Viewport, VisibilityResultMode, WaitUntilCompletedError, WriteContentsError,
 };
 
-/// The side of the square textures the tests draw into and copy, in texels.
+/// The side of the square textures the tests draw into and copy, in texels: one block of a compressed format.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/bc1_rgba
 const TARGET_SIDE: u32 = 4;
 
 /// The bytes of one `rgba8Unorm` texel.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/rgba8unorm
 const RGBA8_BYTES: u64 = 4;
 
-/// The buffer slot of the tests' immediates, which no test reads.
+/// The buffer slot of the tests' immediates, which no test reads: the last but one of a stage's 31.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 const IMMEDIATES: u32 = 29;
 
-/// The buffer slot of the lengths the bounds checks read.
+/// The buffer slot of the lengths the bounds checks read: the last of a stage's 31.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 const SIZES: u32 = 30;
 
-/// The buffer slot of the tests' one vertex buffer.
+/// The buffer slot of the tests' one vertex buffer, among a stage's 31.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
 const VERTICES: u32 = 20;
 
 /// The tests' functions: a triangle in a uniform's color or in whole numbers, one sampling a texture, and two computes.
@@ -63,19 +73,27 @@ var<workgroup> total: atomic<u32>;
 ";
 
 /// A triangle covering every pixel centre of the target.
-const COVERING: [f32; 6] = [-1.0, -1.0, 3.0, -1.0, -1.0, 3.0];
+const COVERING: &[f32] = &[-1.0, -1.0, 3.0, -1.0, -1.0, 3.0];
 
 /// The bytes of the covering triangle's positions.
-const COVERING_BYTES: u64 = 24;
+const COVERING_BYTES: u64 = size_of_val(COVERING) as u64;
 
 /// The bytes of one color of four floats.
-const COLOR_BYTES: u64 = 16;
+const COLOR_BYTES: u64 = size_of::<Color>() as u64;
 
-/// The bytes of the words the compute test doubles.
-const WORDS_BYTES: u64 = 32;
+/// The bytes of the words the compute tests read: eight, the fifth of which `sum` writes.
+const WORDS_BYTES: u64 = (WORD_COUNT * size_of::<u32>()) as u64;
+
+/// The words the compute tests read: two threadgroups of four, as their `workgroup_size` says.
+///
+/// https://www.w3.org/TR/WGSL/#attribute-workgroup_size
+const WORD_COUNT: usize = 8;
+
+/// One color as the tests' functions read it, a `vec4<f32>`.
+type Color = [f32; 4];
 
 /// The slots of the tests' resources: the uniform, the sampler, the texture and the storage buffer.
-const SLOTS: [ResourceSlot; 4] = [
+const SLOTS: &[ResourceSlot] = &[
     ResourceSlot {
         group: 0,
         binding: 0,
@@ -136,7 +154,7 @@ fn function<M: Metal>(subject: &mut M, stage: naga::ShaderStage, entry_point: &s
             info: &info,
             stage,
             entry_point,
-            resources: &SLOTS,
+            resources: SLOTS,
             immediates_buffer_index: IMMEDIATES,
             sizes_buffer_index: SIZES,
             vertex_buffers: &vertex_buffers,
@@ -600,7 +618,7 @@ pub fn samples_a_texture_view<M: Metal>(mut subject: M) {
 
 /// Checks that a compute function doubles every word of a storage buffer.
 pub fn dispatches_a_compute_function<M: Metal>(mut subject: M) {
-    let words: Vec<u32> = (1..=8).collect();
+    let words: Vec<u32> = (1..=WORD_COUNT as u32).collect();
     let buffer = filled(
         &mut subject,
         &words
@@ -643,7 +661,7 @@ pub fn dispatches_a_compute_function<M: Metal>(mut subject: M) {
 
 /// Checks that a compute function sums words through a workgroup variable, whose memory the dispatch must be given.
 pub fn dispatches_with_workgroup_memory<M: Metal>(mut subject: M) {
-    let words: Vec<u32> = (1..=8).collect();
+    let words: Vec<u32> = (1..=WORD_COUNT as u32).collect();
     let buffer = filled(
         &mut subject,
         &words
@@ -683,11 +701,6 @@ pub fn dispatches_with_workgroup_memory<M: Metal>(mut subject: M) {
     assert_eq!(u32::from_le_bytes(read), 1 + 2 + 3 + 4);
 }
 
-/// A side longer than any Apple GPU's longest texture side, which is 32768.
-///
-/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
-const BEYOND_ANY_SIDE: u32 = 40_000;
-
 /// One more than the longest side of a 3D texture.
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
@@ -722,11 +735,6 @@ const MISALIGNED_UNIFORM: u64 = 4;
 ///
 /// https://www.w3.org/TR/WGSL/#alignment-and-size
 const MISALIGNED_WORDS: u64 = 2;
-
-/// The bytes of one occlusion count.
-///
-/// https://developer.apple.com/documentation/metal/mtlvisibilityresultmode/counting
-const VISIBILITY_RESULT_BYTES: u64 = 8;
 
 /// A sample count every Apple GPU takes.
 ///
@@ -875,11 +883,11 @@ fn refuses_blit<M: Metal>(subject: &mut M, command: BlitCommand<M>) {
 /// Checks that a texture wider than any Apple GPU makes is refused, where Metal stops the process.
 pub fn refuses_a_texture_wider_than_any_gpu_makes<M: Metal>(mut subject: M) {
     let mut descriptor = described(TextureType::Type2D, PixelFormat::R8Unorm);
-    descriptor.width = BEYOND_ANY_SIDE;
+    descriptor.width = MAX_TEXTURE_SIDE + 1;
     refuses_texture(&mut subject, descriptor);
     let mut descriptor = described(TextureType::TypeCube, PixelFormat::R8Unorm);
-    descriptor.width = BEYOND_ANY_SIDE;
-    descriptor.height = BEYOND_ANY_SIDE;
+    descriptor.width = MAX_TEXTURE_SIDE + 1;
+    descriptor.height = MAX_TEXTURE_SIDE + 1;
     refuses_texture(&mut subject, descriptor);
 }
 
@@ -961,8 +969,7 @@ pub fn refuses_a_pipeline_blending_an_integer_format<M: Metal>(mut subject: M) {
     );
 }
 
-/// Checks that a pipeline whose combined depth and stencil format sits beside another is refused, where Metal stops
-/// the process.
+/// Checks that a pipeline of a combined depth and stencil format beside another is refused, where Metal stops.
 pub fn refuses_a_pipeline_of_mismatched_depth_and_stencil<M: Metal>(mut subject: M) {
     refuses_pipeline(
         &mut subject,
@@ -1061,8 +1068,7 @@ pub fn refuses_a_viewport_that_is_not_finite<M: Metal>(mut subject: M) {
     );
 }
 
-/// Checks that a uniform bound at an offset not a multiple of its alignment is refused, which Metal's validation
-/// stops.
+/// Checks that a uniform at an offset not a multiple of its alignment is refused, which Metal's validation stops.
 pub fn refuses_a_uniform_at_a_misaligned_offset<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, "flat");
     let texture = target(&mut subject);
@@ -1182,8 +1188,7 @@ pub fn refuses_depth_and_stencil_tests_without_attachments<M: Metal>(mut subject
     }
 }
 
-/// Checks that a dispatch of no threadgroups, and words at a misaligned offset, are refused, which Metal's validation
-/// stops.
+/// Checks that an empty dispatch and words at a misaligned offset are refused, which Metal's validation stops.
 pub fn refuses_empty_dispatches_and_misaligned_words<M: Metal>(mut subject: M) {
     let words = filled(&mut subject, &[0; (WORDS_BYTES * 2) as usize]);
     let compute = function(&mut subject, naga::ShaderStage::Compute, "double");
@@ -1215,8 +1220,7 @@ pub fn refuses_empty_dispatches_and_misaligned_words<M: Metal>(mut subject: M) {
     }
 }
 
-/// Checks that buffer copies and fills of no bytes, or not in multiples of four, are refused, which Metal's validation
-/// stops or macOS's documentation forbids.
+/// Checks that buffer copies and fills of no bytes or not in whole words are refused, as Metal on macOS asks.
 pub fn refuses_buffer_copies_and_fills_metal_does_not_make<M: Metal>(mut subject: M) {
     let buffer = filled(&mut subject, &pattern(COVERING_BYTES as usize));
     let copy = |source_offset, destination_offset, size| BlitCommand::CopyFromBufferToBuffer {
@@ -1244,8 +1248,7 @@ pub fn refuses_buffer_copies_and_fills_metal_does_not_make<M: Metal>(mut subject
     }
 }
 
-/// Checks that image pitches shorter than an image, and row pitches longer than the longest row, are refused, which
-/// Metal's validation stops.
+/// Checks that image pitches shorter than an image and row pitches past the longest row are refused, as Metal asks.
 pub fn refuses_copy_pitches_metal_does_not_take<M: Metal>(mut subject: M) {
     let texture = target(&mut subject);
     let buffer = subject.make_buffer(BEYOND_ROW * 2).expect("make_buffer");
@@ -1270,8 +1273,7 @@ pub fn refuses_copy_pitches_metal_does_not_take<M: Metal>(mut subject: M) {
     refuses_blit(&mut subject, copy(BEYOND_ROW, 0, 1));
 }
 
-/// Checks that a copy between textures of an sRGB format and its linear twin is refused, which Metal's validation
-/// stops.
+/// Checks that a copy between an sRGB texture and one of its linear twin is refused, which Metal's validation stops.
 pub fn refuses_a_copy_between_texture_formats_that_differ<M: Metal>(mut subject: M) {
     let linear = target(&mut subject);
     let srgb = made(
@@ -1442,21 +1444,6 @@ macro_rules! tests {
         }
 
         #[test]
-        fn refuses_mipmaps_of_one_level() {
-            $crate::refuses_mipmaps_of_one_level($value);
-        }
-
-        #[test]
-        fn refuses_counting_twice_at_one_offset() {
-            $crate::refuses_counting_twice_at_one_offset($value);
-        }
-
-        #[test]
-        fn adds_occlusion_counts_across_passes() {
-            $crate::adds_occlusion_counts_across_passes($value);
-        }
-
-        #[test]
         fn refuses_a_texture_wider_than_any_gpu_makes() {
             $crate::refuses_a_texture_wider_than_any_gpu_makes($value);
         }
@@ -1559,6 +1546,21 @@ macro_rules! tests {
         #[test]
         fn refuses_a_copy_between_texture_formats_that_differ() {
             $crate::refuses_a_copy_between_texture_formats_that_differ($value);
+        }
+
+        #[test]
+        fn refuses_counting_twice_at_one_offset() {
+            $crate::refuses_counting_twice_at_one_offset($value);
+        }
+
+        #[test]
+        fn adds_occlusion_counts_across_passes() {
+            $crate::adds_occlusion_counts_across_passes($value);
+        }
+
+        #[test]
+        fn refuses_mipmaps_of_one_level() {
+            $crate::refuses_mipmaps_of_one_level($value);
         }
         $crate::tests!(@StandaloneMetal $standalone_metal ($value) $(($standalone_metal_value))?);
     };
