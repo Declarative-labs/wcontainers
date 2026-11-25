@@ -37,6 +37,9 @@ const SSE_ALIGNMENT: u64 = 16;
 
 type Memory<'list, 'memory> = &'list [MemoryDelta<'memory, X86_64>];
 
+#[path = "extension_simulation.rs"]
+mod extension_simulation;
+
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
 struct MemoryOperand {
@@ -177,6 +180,9 @@ fn apply(
                     Ok(())
                 }
             }
+        }
+        PreciseInstruction::Extension { instruction, behavior } => {
+            extension_simulation::execute_extension(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Vector(instruction) => execute_vector(instruction, processor, memory, decoded),
         PreciseInstruction::Float(instruction) => execute_float(instruction, processor, memory, decoded),

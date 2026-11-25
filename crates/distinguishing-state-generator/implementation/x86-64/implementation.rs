@@ -37,11 +37,12 @@ use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_instruction_input_domain_x86_64::integer::to_access_bytes;
 use wcontainers_instruction_input_domain_x86_64::{
-    Access, AccessPlacement, AddressSize, Addressing, CodeLayout, DataPlacement, FlagSet, LOWER_DATA_ADDRESS, OperandType,
+    Access, AccessPlacement, AddressSize, Addressing, CodeLayout, DataPlacement, FlagSet, LOWER_DATA_ADDRESS, OperandSize, OperandType,
     OperandValue, SegmentChoice, UPPER_DATA_ADDRESS, ValueSet, X86_64InputDomain, to_data_address,
 };
 use wcontainers_processor_architecture::ExecutionState;
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
+use wcontainers_processor_architecture_x86_64::extension::{ExtensionForm, find_extension_form};
 use wcontainers_processor_architecture_x86_64::integer::{OperandPlace, find_integer_form};
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -198,6 +199,12 @@ fn is_data(operand_type: OperandType) -> bool {
 /// Whether the form writes its memory operand, and the alignment it requires; `None` for a form without one.
 fn find_access_shape(instruction: Instruction) -> Option<AccessShape> {
     use OpCodeOperandKind as Kind;
+    if let Some(form) = find_extension_form(instruction) {
+        return (form.place != OperandPlace::Register).then_some(AccessShape {
+            write: form.writes_memory(),
+            alignment: form.required_alignment(),
+        });
+    }
     if let Some(form) = find_integer_form(instruction) {
         if form.place == OperandPlace::Register {
             return None;
@@ -234,6 +241,14 @@ fn find_access_bytes(instruction: Instruction, operands: &[Option<OperandValue>]
         OperandValue::OperandSize(size) => Some(*size),
         _ => None,
     });
+    if let Some(form) = find_extension_form(instruction) {
+        let code = match size {
+            Some(OperandSize::Bits32) if form.codes.len() == 3 => form.codes[1],
+            Some(OperandSize::Bits64) if form.codes.len() == 3 => form.codes[2],
+            _ => form.codes[0],
+        };
+        return ExtensionForm::to_memory_bytes(code);
+    }
     match find_integer_form(instruction) {
         Some(form) => to_access_bytes(form, size),
         None => size.map_or(1, |size| size.to_bytes()),

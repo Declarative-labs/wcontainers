@@ -28,6 +28,7 @@ pub mod branch;
 mod cpuid;
 mod cpuid_recording;
 mod exception;
+pub mod extension;
 mod flags;
 pub mod float;
 // Every form of the list, generated from Intel XED by the `generate_forms` example.
@@ -131,6 +132,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(float::FLOAT_FORMS.iter().map(|form| form.instruction))
         .chain(branch::BRANCH_FORMS.iter().map(|form| form.instruction))
         .chain(vector::VEX_FORMS.iter().map(|form| form.instruction))
+        .chain(extension::EXTENSION_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -308,4 +310,9 @@ pub enum PreciseInstruction {
     },
     /// The form raises #UD once it is fetched: the chip lacks its feature, or the form is one of [`FORBIDDEN_FORMS`].
     Undefined(Instruction),
+    /// A form of [`extension::EXTENSION_FORMS`].
+    Extension {
+        instruction: Instruction,
+        behavior: extension::ExtensionBehavior,
+    },
 }

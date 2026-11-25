@@ -24,6 +24,7 @@ use itertools::Itertools;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
+use wcontainers_processor_architecture_x86_64::extension::find_extension_form;
 use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -34,6 +35,7 @@ use wcontainers_processor_architecture_x86_64::{
 };
 
 pub mod branch;
+pub mod extension;
 pub mod float;
 pub mod integer;
 pub mod vector;
@@ -63,6 +65,8 @@ const DATA_PAGES_BYTES: usize = 2 * PAGE_BYTES as usize;
 const NIBBLE_EDGE: u64 = 1 << 4;
 /// What a register holds above the width a narrower form reads of it.
 const ABOVE_LOW_HALF: u64 = 0xA5A5_A5A5_0000_0000;
+/// What an index or count register holds above its low byte, which the form ignores.
+const ABOVE_INDEX: u64 = 0xA5A5_A5A5_A5A5_A500;
 /// RAX's bits above AX when AX is an 8-bit division's dividend.
 const BYTE_DIVIDEND_UPPER: u64 = 0xA5A5_A5A5_A5A5_0000;
 
@@ -185,6 +189,8 @@ pub enum Role {
     Base,
     /// A register the form reads besides its operands, by number: the accumulator or the data register.
     Implicit(usize),
+    /// The register of the form's operand at this index, for a form with several register sources.
+    Operand(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -202,6 +208,13 @@ pub enum ValueSet {
     /// AX as an 8-bit division's dividend: every edge of a 16-, 32- and 64-bit sum, and the dividends whose quotient
     /// by 1 or by -1 is the least or the greatest signed byte, or one past it.
     ByteDividend,
+    /// An index or count read from a register's low bits: each side of 8, 16, 32 and 64, the largest byte, and some
+    /// with every byte above the lowest set.
+    Index,
+    /// BEXTR's control: a start and a length each at 0, 1 and each side of 32 and 64, and once with bits above them.
+    BitField,
+    /// PDEP's and PEXT's mask: none, one bit at each end of 32 and 64 bits, alternating bits and bytes, and all.
+    Mask,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -281,6 +294,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         if let Some(form) = find_integer_form(instruction) {
             return integer::list_operand_types(form).into_iter();
         }
+        if let Some(form) = find_extension_form(instruction) {
+            return extension::list_operand_types(form).into_iter();
+        }
         if let Some(form) = find_vector_form(instruction) {
             return vector::list_operand_types(form).into_iter();
         }
@@ -335,7 +351,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
                     .to_vec()
             }
             // RAX, RSP and R13, which needs REX.
-            OperandType::Register(Role::Destination | Role::Source) => {
+            OperandType::Register(Role::Destination | Role::Source | Role::Operand(_)) => {
                 [0, STACK_POINTER, 13].map(OperandValue::Register).to_vec()
             }
             OperandType::Register(Role::Base | Role::Implicit(_)) => {
@@ -352,6 +368,24 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
                         .map(|byte| OperandValue::Bits(0xA5A5_A5A5_A5A5_A500 | byte))
                         .to_vec(),
                     ValueSet::Few => bits(&[0, 1, 0x8000_0000, u64::MAX]),
+                    ValueSet::Index => bits(&[0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 0xFF, ABOVE_INDEX | 1, ABOVE_INDEX | 31, ABOVE_INDEX | 64]),
+                    ValueSet::BitField => {
+                        let edges = [0, 1, 31, 32, 63, 64];
+                        let mut values: Vec<u64> =
+                            edges.iter().flat_map(|&start| [0, 1, 31, 32, 64].map(|length| start | (length << 8))).collect();
+                        values.push(ABOVE_INDEX & !0xFFFF | 4 | (8 << 8));
+                        bits(&values)
+                    }
+                    ValueSet::Mask => bits(&[
+                        0,
+                        1,
+                        0x8000_0000,
+                        0x8000_0000_0000_0000,
+                        0x5555_5555_5555_5555,
+                        0xAAAA_AAAA_AAAA_AAAA,
+                        0x00FF_00FF_00FF_00FF,
+                        u64::MAX,
+                    ]),
                     ValueSet::BitOffset => bits(&[0, 1, 15, 16, 31, 32, 63, 64, u64::MAX, -64i64 as u64, i64::MAX as u64]),
                     ValueSet::ByteDividend => {
                         let mut values = self.generate_critical_values(OperandType::MemoryValue(ValueSet::Arithmetic)).collect::<Vec<_>>();
@@ -481,6 +515,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         if let Some(form) = find_integer_form(instruction) {
             return integer::build_state(form, &typed);
         }
+        if let Some(form) = find_extension_form(instruction) {
+            return extension::build_state(form, &typed);
+        }
         if let Some(form) = find_vector_form(instruction) {
             return vector::build_state(form, &typed);
         }
@@ -603,7 +640,7 @@ impl Choice {
     fn to_register(&self, role: Role) -> usize {
         match role {
             Role::Source => self.source,
-            Role::Destination | Role::Base | Role::Implicit(_) => {
+            Role::Destination | Role::Base | Role::Implicit(_) | Role::Operand(_) => {
                 panic!("no form of this path names a {role:?} register")
             }
         }
@@ -651,6 +688,7 @@ fn encode(instruction: Instruction, choice: &Choice) -> Vec<u8> {
 /// Whether the domain models the form's operands.
 fn is_modeled(instruction: Instruction) -> bool {
     find_integer_form(instruction).is_some()
+        || find_extension_form(instruction).is_some()
         || find_vector_form(instruction).is_some()
         || find_float_form(instruction).is_some()
         || find_branch_form(instruction).is_some()

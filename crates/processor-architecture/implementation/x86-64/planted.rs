@@ -29,6 +29,8 @@ pub enum Origin {
     Port,
     /// The sync that lists every form, for the behavior that raises #UD.
     WholeList,
+    /// The family of the legacy integer forms left, x87, MMX and the general-purpose extensions.
+    IntegerX87Mmx,
 }
 
 /// The forms a bug shows on.
@@ -692,6 +694,33 @@ pub enum Bug {
     HaltInvalidOpcode,
     /// RDMSR completes at ring 3.
     ReadModelSpecificRegisterCompletes,
+    // The family of the legacy integer forms left, x87, MMX and the general-purpose extensions.
+    /// ANDN complements its second source, not its first.
+    AndNotComplementsSecond,
+    /// BEXTR takes the field's length from the control's low byte.
+    ExtractBitFieldLengthFromLowByte,
+    /// BLSR sets CF for a zero result, not a zero source.
+    ResetLowestSetBitCarryFromResult,
+    /// BZHI reads its index from the whole register, not its low byte.
+    ZeroHighBitsIndexWholeRegister,
+    /// LZCNT sets CF for a zero count, not a zero source.
+    CountCarryFromResult,
+    /// PEXT packs the selected bits in reverse order.
+    ExtractBitsReversed,
+    /// SHLX does not mask its count.
+    ShiftLeftWithoutFlagsCountUnmasked,
+    /// ADOX ignores the OF it reads.
+    AddWithOverflowFlagIgnoresOverflow,
+    /// MULX with one register for both halves leaves the low half there.
+    MultiplyWithoutFlagsLowWins,
+    /// MOVBE of 32 bits into a register keeps its upper half.
+    MoveSwappingBytesKeepsUpperHalf,
+    /// CMPXCHG16B raises no #GP(0) for an operand not aligned to 16.
+    CompareExchangePairAlignmentUnchecked,
+    /// CMPXCHG8B and CMPXCHG16B compare the low halves alone.
+    CompareExchangePairComparesLowHalf,
+    /// CMPXCHG8B and CMPXCHG16B write EDX:EAX also when the comparison holds, clearing upper halves.
+    CompareExchangePairWritesAccumulatorWhenEqual,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1005,6 +1034,69 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::VexWideReadsSixteenBytes, "VEX lane operations", Family::VexVector, Port),
     row(Bug::VexFirstSourceIsDestination, "VEX lane operations", Family::VexVector, Port),
     row(Bug::UndefinedRaisesGeneralProtection, "forms a chip may lack", Family::Optional, WholeList),
+    row(Bug::AndNotComplementsSecond, "ANDN", Family::Forms(ANDN), Origin::IntegerX87Mmx),
+    row(Bug::ExtractBitFieldLengthFromLowByte, "BEXTR", Family::Forms(BEXTR), Origin::IntegerX87Mmx),
+    row(Bug::ResetLowestSetBitCarryFromResult, "BLSR", Family::Forms(BLSR), Origin::IntegerX87Mmx),
+    row(Bug::ZeroHighBitsIndexWholeRegister, "BZHI", Family::Forms(BZHI), Origin::IntegerX87Mmx),
+    row(Bug::CountCarryFromResult, "LZCNT", Family::Forms(LZCNT), Origin::IntegerX87Mmx),
+    row(Bug::ExtractBitsReversed, "PEXT", Family::Forms(PEXT), Origin::IntegerX87Mmx),
+    row(Bug::ShiftLeftWithoutFlagsCountUnmasked, "SHLX", Family::Forms(SHLX), Origin::IntegerX87Mmx),
+    row(Bug::AddWithOverflowFlagIgnoresOverflow, "ADOX", Family::Forms(ADOX), Origin::IntegerX87Mmx),
+    row(Bug::MultiplyWithoutFlagsLowWins, "MULX", Family::Forms(MULX), Origin::IntegerX87Mmx),
+    row(Bug::MoveSwappingBytesKeepsUpperHalf, "MOVBE", Family::Forms(MOVBE), Origin::IntegerX87Mmx),
+    row(Bug::CompareExchangePairAlignmentUnchecked, "CMPXCHG16B", Family::Forms(CMPXCHG16B), Origin::IntegerX87Mmx),
+    row(Bug::CompareExchangePairComparesLowHalf, "CMPXCHG8B, CMPXCHG16B", Family::Forms(CMPXCHG_PAIR), Origin::IntegerX87Mmx),
+    row(Bug::CompareExchangePairWritesAccumulatorWhenEqual, "CMPXCHG8B", Family::Forms(CMPXCHG8B), Origin::IntegerX87Mmx),
+];
+
+const ANDN: &[Instruction] = &[
+    Instruction::AndnGpr32dGpr32dGpr32d,
+    Instruction::AndnGpr32dGpr32dMemd,
+    Instruction::AndnGpr64qGpr64qGpr64q,
+    Instruction::AndnGpr64qGpr64qMemq,
+];
+const BEXTR: &[Instruction] = &[
+    Instruction::BextrGpr32dGpr32dGpr32d,
+    Instruction::BextrGpr32dMemdGpr32d,
+    Instruction::BextrGpr64qGpr64qGpr64q,
+    Instruction::BextrGpr64qMemqGpr64q,
+];
+const BLSR: &[Instruction] = &[
+    Instruction::BlsrGpr32dGpr32d,
+    Instruction::BlsrGpr32dMemd,
+    Instruction::BlsrGpr64qGpr64q,
+    Instruction::BlsrGpr64qMemq,
+];
+const BZHI: &[Instruction] = &[
+    Instruction::BzhiGpr32dGpr32dGpr32d,
+    Instruction::BzhiGpr32dMemdGpr32d,
+    Instruction::BzhiGpr64qGpr64qGpr64q,
+    Instruction::BzhiGpr64qMemqGpr64q,
+];
+const LZCNT: &[Instruction] = &[Instruction::LzcntGprvGprv, Instruction::LzcntGprvMemv];
+const PEXT: &[Instruction] = &[
+    Instruction::PextGpr32dGpr32dGpr32d,
+    Instruction::PextGpr32dGpr32dMemd,
+    Instruction::PextGpr64qGpr64qGpr64q,
+    Instruction::PextGpr64qGpr64qMemq,
+];
+const SHLX: &[Instruction] = &[
+    Instruction::ShlxGpr32dGpr32dGpr32d,
+    Instruction::ShlxGpr32dMemdGpr32d,
+    Instruction::ShlxGpr64qGpr64qGpr64q,
+    Instruction::ShlxGpr64qMemqGpr64q,
+];
+const ADOX: &[Instruction] =
+    &[Instruction::AdoxGpr32dGpr32d, Instruction::AdoxGpr32dMemd, Instruction::AdoxGpr64qGpr64q, Instruction::AdoxGpr64qMemq];
+const MULX: &[Instruction] = &[Instruction::MulxGpr32dGpr32dGpr32d, Instruction::MulxGpr64qGpr64qGpr64q];
+const MOVBE: &[Instruction] = &[Instruction::MovbeGprvMemv];
+const CMPXCHG16B: &[Instruction] = &[Instruction::Cmpxchg16bMemdq, Instruction::Cmpxchg16bLockMemdq];
+const CMPXCHG8B: &[Instruction] = &[Instruction::Cmpxchg8bMemq, Instruction::Cmpxchg8bLockMemq];
+const CMPXCHG_PAIR: &[Instruction] = &[
+    Instruction::Cmpxchg8bMemq,
+    Instruction::Cmpxchg8bLockMemq,
+    Instruction::Cmpxchg16bMemdq,
+    Instruction::Cmpxchg16bLockMemdq,
 ];
 
 #[cfg(feature = "planted-bugs")]
