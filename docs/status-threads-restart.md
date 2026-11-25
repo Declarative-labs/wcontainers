@@ -73,7 +73,8 @@ Rust and Linux names: `Send`, `Sync`, `&self`, `&mut self`, `CLONE_VM`, `FUTEX_W
 method), `parallelism` (the kernel's argument).
 
 ## TH1, the plan on the committed interfaces (2026-11-25)
-- Written: docs/threads.md, section "Restart, 2026-11-25" (100 lines, at the top).
+- Written: docs/threads.md, section "Restart, 2026-11-25" (103 lines, at the top). T6 is the x86 track's (its brief, XF1 to
+  XF5); this track adds TH3, the shared guest-memory import its XF3 waits on, after the translator's TR1.
 - MEASURED: `bash resolve-names.sh` (output resolve-names.out): 55 names; 28 defined on main, 19 withdrawn or proposed
   here, 8 Rust or Linux names; unresolved 0.
 - MEASURED: 23 decision rows: 6 ruled (2, 4, 5, 6, 7, 15), 9 decided here (1, 3, 8, 10, 11, 16, 19, 21, 22), 2 the

@@ -104,9 +104,12 @@ for `Runner::run`, and parking an idle host thread instead of spinning.
 - **T2, one process's threads in parallel on WebAssembly, ARM64 guests.** After T1, questions 1 and 2,
   and the translator's and executor's milestones that put them on the committed interfaces. Standard
   atomics and fences; no engine patch; wasmtime and headless Chrome.
-- **T6, x86 guests in parallel**, the ordered form on ARM64 and WebAssembly hosts included (decision 5).
-  The ordered form names the kind of access it needs, so that it can move to acquire and release
-  accesses when engines have them.
+- **TH3, the shared guest-memory import** in the translator: the guest memory imported shared, with a
+  declared maximum, when its code runs in parallel; every other module unchanged. After the translator
+  track's port (TR1). The x86 track's litmus proofs wait on it.
+- **T6, x86 guests in parallel, is the x86 track's** (its XF1 to XF5): the ordered form on ARM64 and
+  WebAssembly hosts (decision 5), which names the kind of access it needs, so that it can move to
+  acquire and release accesses when engines have them.
 - **TS, the thread test suite**, as the owner rules on docs/thread-tests.md; then **T3** (language
   runtimes), **T4** (per-thread watches, question 4), **T5** (the native executor, in the native track),
   **T8** (replay per process, question 3 and the replay primitives).
