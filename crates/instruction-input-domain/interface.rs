@@ -61,9 +61,9 @@ where
     Domain: InstructionInputDomain<Architecture>,
     Architecture: ProcessorArchitecture,
 {
-    domain: &'domain Domain,
-    instruction: Architecture::Instruction,
-    combinations: MultiProduct<vec::IntoIter<Domain::OperandValue>>,
+    pub domain: &'domain Domain,
+    pub instruction: Architecture::Instruction,
+    pub combinations: MultiProduct<vec::IntoIter<Domain::OperandValue>>,
 }
 
 impl<Domain, Architecture> Iterator for CriticalStates<'_, Domain, Architecture>
