@@ -28,3 +28,9 @@ pub trait VolatileBytes {
     /// Writes from the source in one read into all the bytes, and returns the number of bytes written.
     fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error>;
 }
+
+pub trait StandaloneVolatileBytes: VolatileBytes {
+    type Config;
+
+    fn new(config: Self::Config) -> Self;
+}

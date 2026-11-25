@@ -6016,29 +6016,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-shared-memory"
-version = "0.1.0"
-dependencies = [
- "libc",
- "memmap2",
- "rustix",
- "thiserror 2.0.21",
- "wcontainers-byte-sink",
- "wcontainers-byte-source",
- "wcontainers-shared-memory-conformance",
- "wcontainers-volatile-bytes",
- "wcontainers-volatile-bytes-conformance",
-]
-
-[[package]]
-name = "wcontainers-shared-memory-conformance"
-version = "0.1.0"
-dependencies = [
- "wcontainers-shared-memory",
- "wcontainers-volatile-bytes",
-]
-
-[[package]]
 name = "wcontainers-system"
 version = "0.1.0"
 dependencies = [
@@ -6277,6 +6254,20 @@ name = "wcontainers-volatile-bytes-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-volatile-bytes-shared-mapping"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "memmap2",
+ "rustix",
+ "thiserror 2.0.21",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-conformance",
 ]
 
 [[package]]
