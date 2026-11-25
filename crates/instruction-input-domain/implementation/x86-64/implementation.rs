@@ -23,6 +23,7 @@ use itertools::Itertools;
 
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
+use wcontainers_processor_architecture_x86_64::avx::find_avx_form;
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
@@ -33,6 +34,7 @@ use wcontainers_processor_architecture_x86_64::{
     STACK_POINTER, VECTOR_REGISTERS, X86_64, ZERO_PROCESSOR,
 };
 
+pub mod avx;
 pub mod branch;
 pub mod float;
 pub mod integer;
@@ -148,6 +150,8 @@ pub enum OperandType {
     AddressSize,
     /// The sample encoding of a form not yet modeled, at its page's start with every register as the domain fills it.
     SampleEncoding,
+    /// The sources, immediate and MXCSR of an AVX form that takes them together.
+    AvxData(avx::AvxDataSet),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -261,6 +265,7 @@ pub enum OperandValue {
     Mxcsr(u32),
     AddressSize(AddressSize),
     SampleEncoding,
+    AvxData(avx::AvxData),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -283,6 +288,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_vector_form(instruction) {
             return vector::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_avx_form(instruction) {
+            return avx::list_operand_types(form).into_iter();
         }
         if let Some(form) = find_float_form(instruction) {
             return float::list_operand_types(form).into_iter();
@@ -453,6 +461,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::Immediate(class) => integer::generate_immediates(class),
             OperandType::AddressSize => [AddressSize::Bits64, AddressSize::Bits32].map(OperandValue::AddressSize).to_vec(),
             OperandType::SampleEncoding => vec![OperandValue::SampleEncoding],
+            OperandType::AvxData(set) => avx::generate_data(set),
         };
         values.into_iter()
     }
@@ -483,6 +492,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_vector_form(instruction) {
             return vector::build_state(form, &typed);
+        }
+        if let Some(form) = find_avx_form(instruction) {
+            return avx::build_state(form, &typed);
         }
         if let Some(form) = find_float_form(instruction) {
             return float::build_state(form, &typed);
@@ -652,6 +664,7 @@ fn encode(instruction: Instruction, choice: &Choice) -> Vec<u8> {
 fn is_modeled(instruction: Instruction) -> bool {
     find_integer_form(instruction).is_some()
         || find_vector_form(instruction).is_some()
+        || find_avx_form(instruction).is_some()
         || find_float_form(instruction).is_some()
         || find_branch_form(instruction).is_some()
         || find_privileged_codes(instruction).is_some()

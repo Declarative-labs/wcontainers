@@ -240,6 +240,7 @@ impl PreciseInstruction {
             Self::Vector(instruction) | Self::Float(instruction) => instruction,
             Self::Privileged(instruction) | Self::Branch(instruction) => instruction,
             Self::Integer { instruction, .. } | Self::Undefined(instruction) => instruction,
+            Self::Avx { instruction, .. } => instruction,
         }
     }
 }
@@ -273,6 +274,7 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
         .map(PreciseInstruction::Cpuid)
         .to_vec(),
         _ if find_vector_form(instruction).is_some() => [PreciseInstruction::Vector(instruction)].to_vec(),
+        _ if crate::avx::find_avx_form(instruction).is_some() => crate::avx::list_avx_behaviors(instruction),
         _ if find_float_form(instruction).is_some() => [PreciseInstruction::Float(instruction)].to_vec(),
         _ if find_branch_form(instruction).is_some() => [PreciseInstruction::Branch(instruction)].to_vec(),
         _ if PRIVILEGED_FORMS.iter().any(|(form, _)| *form == instruction) => {

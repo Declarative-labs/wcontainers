@@ -10,6 +10,7 @@ use crate::integer::{
     to_accumulator, to_data, to_mask, to_result_flags, with_status,
 };
 use crate::vector::{Lane, LaneOperation, Signedness, VectorEncoding, find_vector_form, join, saturate, split, to_signed};
+use crate::avx::{AvxForm, AvxOperation, Wide, find_avx_form};
 use crate::{Flags, Instruction};
 
 /// Who planted a bug first.
@@ -29,6 +30,8 @@ pub enum Origin {
     Port,
     /// The sync that lists every form, for the behavior that raises #UD.
     WholeList,
+    /// The AVX family: AVX, AVX2, FMA, F16C and the VEX forms of AES, PCLMULQDQ and GFNI.
+    Avx,
 }
 
 /// The forms a bug shows on.
@@ -51,6 +54,8 @@ pub enum Family {
     /// Every form a chip may lack.
     Optional,
     Every,
+    /// The forms of [`crate::avx::AVX_FORMS`] the test accepts.
+    Avx(fn(&AvxForm) -> bool),
 }
 
 /// One planted bug.
@@ -81,6 +86,7 @@ impl PlantedBug {
             Family::VexVector => find_vector_form(instruction).is_some_and(|form| form.encoding != VectorEncoding::Legacy),
             Family::Optional => crate::is_optional(instruction),
             Family::Every => true,
+            Family::Avx(test) => find_avx_form(instruction).is_some_and(test),
         }
     }
 }
@@ -692,6 +698,60 @@ pub enum Bug {
     HaltInvalidOpcode,
     /// RDMSR completes at ring 3.
     ReadModelSpecificRegisterCompletes,
+    // The AVX family.
+    /// VZEROUPPER zeroes the upper halves of YMM0 to YMM7 alone.
+    ZeroUpperKeepsHighRegisters,
+    /// VPTEST, VTESTPS, VTESTPD and VCOMISS to VUCOMISD keep the status flags they do not set.
+    VexTestFlagsKeepStatus,
+    /// VMOVAPS and the other aligned forms take a misaligned operand.
+    VexAlignedMisalignedNoFault,
+    /// The masked loads and stores check every lane's bytes, not only those of lanes the mask selects.
+    MaskedAccessChecksEveryLane,
+    /// The forms whose upper half reads its own immediate bits (VBLENDPS, VBLENDPD, VPBLENDD, VSHUFPD,
+    /// VPERMILPD) read the lower half's.
+    UpperHalfImmediateUnshifted,
+    /// The broadcasts take the source's second lane.
+    BroadcastSecondLane,
+    /// VPMOVSX and VPMOVZX of 256 bits extend the source's low lanes into both halves.
+    ExtendUpperHalfFromLowLanes,
+    /// VPEXTRB to VPEXTRQ and VEXTRACTPS take lane 0 whatever the immediate.
+    ExtractLaneZero,
+    /// VPSLLVD to VPSRAVD shift by the count modulo the lane's width.
+    VariableShiftCountWrapped,
+    /// VBLENDVPS, VBLENDVPD and VPBLENDVB select by the mask lane's lowest bit.
+    BlendVariableLowBit,
+    /// VPERM2F128 and VPERM2I128 ignore the bits that zero a half.
+    PermuteHalvesNeverZero,
+    /// VPERMD and VPERMPS select by the index's low two bits.
+    PermuteDoublewordsTwoBits,
+    /// VPCLMULQDQ selects the second source's quadword by the immediate's bit 1.
+    CarrylessSecondFromBitOne,
+    /// VAESENC and VAESENCLAST skip ShiftRows.
+    AesEncryptWithoutShiftRows,
+    /// VMOVMSKPS, VMOVMSKPD and VPMOVMSKB of 256 bits read the lower half alone.
+    SignsLowerHalfOnly,
+    /// VGF2P8AFFINEQB and VGF2P8AFFINEINVQB read the matrix's rows in the other order.
+    AffineMatrixRowsReversed,
+    /// VCMPPS to VCMPSD read the predicate's low three bits alone.
+    ComparePredicateThreeBits,
+    /// The FMA forms round the product before adding.
+    FusedProductRounded,
+    /// VFMADDSUB and VFMSUBADD subtract in the other lanes.
+    FusedAlternationSwapped,
+    /// VROUNDPS to VROUNDSD report inexact whatever the immediate's bit 3.
+    RoundInexactNeverSuppressed,
+    /// VCVTSS2SI to VCVTTSD2SI of 64 bits give the 32-bit integer indefinite.
+    ConversionToQuadwordNarrowIndefinite,
+    /// VCVTSI2SS and VCVTSI2SD of a quadword convert its low doubleword.
+    QuadwordToScalarLowHalf,
+    /// VCVTDQ2PD and VCVTPS2PD of 256 bits convert the source's low lanes into both halves.
+    WideningUpperFromLowLanes,
+    /// VCVTPH2PS reads a subnormal half as zero.
+    HalfSubnormalAsZero,
+    /// VCVTPS2PH rounds to nearest whatever the immediate asks.
+    HalfRoundsToNearest,
+    /// The VEX scalar floating-point forms take the upper lanes from the second source.
+    VexScalarUpperFromSecond,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1005,6 +1065,32 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::VexWideReadsSixteenBytes, "VEX lane operations", Family::VexVector, Port),
     row(Bug::VexFirstSourceIsDestination, "VEX lane operations", Family::VexVector, Port),
     row(Bug::UndefinedRaisesGeneralProtection, "forms a chip may lack", Family::Optional, WholeList),
+    row(Bug::ZeroUpperKeepsHighRegisters, "VZEROUPPER", Family::Avx(|form| form.operation == AvxOperation::ZeroUpper), Origin::Avx),
+    row(Bug::VexTestFlagsKeepStatus, "VPTEST, VTESTPS, VCOMISS", Family::Avx(|form| form.operation.writes_flags()), Origin::Avx),
+    row(Bug::VexAlignedMisalignedNoFault, "VMOVAPS and the aligned forms", Family::Avx(|form| form.aligned), Origin::Avx),
+    row(Bug::MaskedAccessChecksEveryLane, "VMASKMOVPS, VPMASKMOVD", Family::Avx(|form| matches!(form.operation, AvxOperation::MaskedLoad(_) | AvxOperation::MaskedStore(_))), Origin::Avx),
+    row(Bug::UpperHalfImmediateUnshifted, "VBLENDPS, VSHUFPD", Family::Avx(|form| form.wide && matches!(form.operation, AvxOperation::Halves { upper_shift: 1.., .. })), Origin::Avx),
+    row(Bug::BroadcastSecondLane, "VBROADCASTSS, VPBROADCASTB", Family::Avx(|form| matches!(form.operation, AvxOperation::Broadcast(_))), Origin::Avx),
+    row(Bug::ExtendUpperHalfFromLowLanes, "VPMOVSX, VPMOVZX of 256 bits", Family::Avx(|form| form.wide && matches!(form.operation, AvxOperation::Extend(_))), Origin::Avx),
+    row(Bug::ExtractLaneZero, "VPEXTRB, VEXTRACTPS", Family::Avx(|form| matches!(form.operation, AvxOperation::ExtractLane(_))), Origin::Avx),
+    row(Bug::VariableShiftCountWrapped, "VPSLLVD, VPSRAVD", Family::Avx(|form| matches!(form.operation, AvxOperation::ShiftEach { .. })), Origin::Avx),
+    row(Bug::BlendVariableLowBit, "VBLENDVPS, VPBLENDVB", Family::Avx(|form| matches!(form.operation, AvxOperation::BlendVariable(_))), Origin::Avx),
+    row(Bug::PermuteHalvesNeverZero, "VPERM2F128", Family::Avx(|form| form.operation == AvxOperation::PermuteHalves), Origin::Avx),
+    row(Bug::PermuteDoublewordsTwoBits, "VPERMD, VPERMPS", Family::Avx(|form| form.operation == AvxOperation::PermuteDoublewords), Origin::Avx),
+    row(Bug::CarrylessSecondFromBitOne, "VPCLMULQDQ", Family::Avx(|form| form.operation == AvxOperation::CarrylessMultiply), Origin::Avx),
+    row(Bug::AesEncryptWithoutShiftRows, "VAESENC, VAESENCLAST", Family::Avx(|form| matches!(form.operation, AvxOperation::Aes(crate::avx::AesStep::Encrypt | crate::avx::AesStep::EncryptLast))), Origin::Avx),
+    row(Bug::SignsLowerHalfOnly, "VMOVMSKPS of 256 bits", Family::Avx(|form| form.wide && matches!(form.operation, AvxOperation::Signs(_))), Origin::Avx),
+    row(Bug::AffineMatrixRowsReversed, "VGF2P8AFFINEQB", Family::Avx(|form| matches!(form.operation, AvxOperation::GaloisAffine { .. })), Origin::Avx),
+    row(Bug::ComparePredicateThreeBits, "VCMPPS", Family::Avx(|form| matches!(form.operation, AvxOperation::Compare { .. })), Origin::Avx),
+    row(Bug::FusedProductRounded, "FMA", Family::Avx(|form| matches!(form.operation, AvxOperation::Fused { .. })), Origin::Avx),
+    row(Bug::FusedAlternationSwapped, "VFMADDSUB, VFMSUBADD", Family::Avx(|form| matches!(form.operation, AvxOperation::Fused { sign: crate::avx::FusedSign::MultiplyAddSubtract | crate::avx::FusedSign::MultiplySubtractAdd, .. })), Origin::Avx),
+    row(Bug::RoundInexactNeverSuppressed, "VROUNDPS", Family::Avx(|form| matches!(form.operation, AvxOperation::RoundToIntegral { .. })), Origin::Avx),
+    row(Bug::ConversionToQuadwordNarrowIndefinite, "VCVTSS2SI of 64 bits", Family::Avx(|form| matches!(form.operation, AvxOperation::ScalarToInteger { .. }) && form.code.op_code().op_kind(0) == iced_x86::OpCodeOperandKind::r64_reg), Origin::Avx),
+    row(Bug::QuadwordToScalarLowHalf, "VCVTSI2SS of 64 bits", Family::Avx(|form| matches!(form.operation, AvxOperation::IntegerToScalar(_)) && form.code.op_code().op_kind(2) == iced_x86::OpCodeOperandKind::r64_or_mem), Origin::Avx),
+    row(Bug::WideningUpperFromLowLanes, "VCVTPS2PD of 256 bits", Family::Avx(|form| form.wide && matches!(form.operation, AvxOperation::ConvertWidening(_))), Origin::Avx),
+    row(Bug::HalfSubnormalAsZero, "VCVTPH2PS", Family::Avx(|form| form.operation == AvxOperation::HalfToSingle), Origin::Avx),
+    row(Bug::HalfRoundsToNearest, "VCVTPS2PH", Family::Avx(|form| form.operation == AvxOperation::SingleToHalf), Origin::Avx),
+    row(Bug::VexScalarUpperFromSecond, "VADDSS and the VEX scalar forms", Family::Avx(|form| matches!(form.operation, AvxOperation::Float { arrangement: crate::float::Arrangement::Scalar, operation, .. } if !operation.writes_flags())), Origin::Avx),
 ];
 
 #[cfg(feature = "planted-bugs")]
@@ -1499,6 +1585,49 @@ pub(crate) fn mutate_lanes(operation: LaneOperation, destination: u128, source: 
             (destination & low) | (source & !low)
         }
         (Bug::AndNotReversed, LaneOperation::AndNot) => destination & !source,
+        _ => result,
+    }
+}
+
+/// An integer AVX operation's result with the planted bug of its family.
+pub(crate) fn mutate_avx(form: &AvxForm, sources: &[Wide], immediate: u8, result: Wide) -> Wide {
+    let Some(bug) = active() else {
+        return result;
+    };
+    let first = sources.first().copied().unwrap_or_default();
+    let second = sources.get(1).copied().unwrap_or(first);
+    let recompute = |operation: AvxOperation, sources: &[Wide], immediate: u8| {
+        let changed = AvxForm { operation, ..*form };
+        crate::avx::compute_integer_unplanted(&changed, sources, immediate)
+    };
+    match (bug, form.operation) {
+        (Bug::UpperHalfImmediateUnshifted, AvxOperation::Halves { operation, .. }) => {
+            recompute(AvxOperation::Halves { operation, upper_shift: 0 }, sources, immediate)
+        }
+        (Bug::BroadcastSecondLane, AvxOperation::Broadcast(lane)) => {
+            let shifted = [first[0] >> lane.to_bits(), first[1]];
+            recompute(form.operation, &[shifted], immediate)
+        }
+        (Bug::ExtendUpperHalfFromLowLanes, AvxOperation::Extend(_)) => [result[0], result[0]],
+        (Bug::ExtractLaneZero, AvxOperation::ExtractLane(_)) => recompute(form.operation, sources, 0),
+        (Bug::VariableShiftCountWrapped, AvxOperation::ShiftEach { lane, .. }) => {
+            let mask = crate::avx::fill(lane, u64::from(lane.to_bits() - 1));
+            recompute(form.operation, &[first, [second[0] & mask, second[1] & mask]], immediate)
+        }
+        (Bug::BlendVariableLowBit, AvxOperation::BlendVariable(lane)) => {
+            let third = sources.get(2).copied().unwrap_or_default();
+            let moved = |value: u128| join(lane, split(lane, value).into_iter().map(|bits| bits << (lane.to_bits() - 1)));
+            recompute(form.operation, &[first, second, [moved(third[0]), moved(third[1])]], immediate)
+        }
+        (Bug::PermuteHalvesNeverZero, AvxOperation::PermuteHalves) => recompute(form.operation, sources, immediate & 0x77),
+        (Bug::PermuteDoublewordsTwoBits, AvxOperation::PermuteDoublewords) => {
+            let mask = crate::avx::fill(Lane::Doubleword, 3);
+            recompute(form.operation, &[[first[0] & mask, first[1] & mask], second], immediate)
+        }
+        (Bug::CarrylessSecondFromBitOne, AvxOperation::CarrylessMultiply) => {
+            recompute(form.operation, sources, (immediate & 1) | ((immediate >> 1 & 1) << 4))
+        }
+        (Bug::SignsLowerHalfOnly, AvxOperation::Signs(_)) => recompute(form.operation, &[[first[0], 0]], immediate),
         _ => result,
     }
 }

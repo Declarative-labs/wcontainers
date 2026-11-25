@@ -23,6 +23,7 @@ use core::{iter, slice};
 use iced_x86::Code;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
+pub mod avx;
 mod behavior;
 pub mod branch;
 mod cpuid;
@@ -131,6 +132,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(float::FLOAT_FORMS.iter().map(|form| form.instruction))
         .chain(branch::BRANCH_FORMS.iter().map(|form| form.instruction))
         .chain(vector::VEX_FORMS.iter().map(|form| form.instruction))
+        .chain(avx::AVX_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -308,4 +310,9 @@ pub enum PreciseInstruction {
     },
     /// The form raises #UD once it is fetched: the chip lacks its feature, or the form is one of [`FORBIDDEN_FORMS`].
     Undefined(Instruction),
+    /// A form of [`avx::AVX_FORMS`].
+    Avx {
+        instruction: Instruction,
+        behavior: avx::AvxBehavior,
+    },
 }
