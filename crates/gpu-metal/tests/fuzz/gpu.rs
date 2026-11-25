@@ -30,8 +30,8 @@ type Buffer = <B as Gpu>::Buffer;
 /// A range of a buffer that a call may change; a buffer of the ring has no shadow.
 type Allowed = (Option<Tracked>, u64, u64);
 
-/// The bytes of one query's result.
-const QUERY_BYTES: u64 = 8;
+/// The bytes of one query's result, a `u64`.
+const RESULT_BYTES: u64 = size_of::<u64>() as u64;
 
 /// Notes a range that a call may change.
 fn allow(allowed: &Allowed) {
@@ -302,7 +302,7 @@ struct MadeProgram {
 /// Everything a batch has made, and what it found.
 struct World {
     b: B,
-    /// Buffers, each with what it must still hold.
+    /// Every buffer the batch keeps, with what it must still hold.
     buffers: Vec<(Buffer, Option<Tracked>)>,
     textures: Vec<MadeTexture>,
     views: Vec<<B as Gpu>::TextureView>,
@@ -974,7 +974,7 @@ impl World {
         // but past 2^20 would make a large buffer, so it is cut after that check.
         let count = random.u32(&[1, 2, 8]);
         let refuse =
-            u64::from(count).saturating_mul(QUERY_BYTES) > self.b.caps().limits.max_buffer_size;
+            u64::from(count).saturating_mul(RESULT_BYTES) > self.b.caps().limits.max_buffer_size;
         let count = if refuse { count } else { count.min(1 << 20) };
         let made = self.b.create_query_set(kind, count);
         self.counts.call(made.is_err());
@@ -1683,7 +1683,11 @@ impl World {
         let resolved = self.b.resolve_queries(&set, first, count, &buffer, offset);
         self.counts.call(resolved.is_err());
         if resolved.is_ok() {
-            allow(&(shadow, offset, u64::from(count).saturating_mul(QUERY_BYTES)));
+            allow(&(
+                shadow,
+                offset,
+                u64::from(count).saturating_mul(RESULT_BYTES),
+            ));
         }
     }
 

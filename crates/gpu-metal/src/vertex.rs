@@ -29,7 +29,7 @@ const MAX_WIDENED_BYTES: u64 = 64 << 20;
 /// Returns the range of a stream's elements a draw reads, before the stream's buffer cuts it.
 ///
 /// An indexed draw may read any element its indices name, so it reads them all.
-fn reachable<B: Gpu>(range: &DrawRange<'_, B>, step: StepMode, stride: u32) -> (u64, u64) {
+fn find_elements_read<B: Gpu>(range: &DrawRange<'_, B>, step: StepMode, stride: u32) -> (u64, u64) {
     let all = (u64::MIN, u64::MAX);
     if stride == 0 {
         return (u64::MIN, 1);
@@ -223,7 +223,7 @@ impl<M: Metal> MetalGpu<M> {
             }
             let source_stride = u64::from(s.stride);
             let in_buffer = length.checked_div(source_stride).unwrap_or(1);
-            let (first, end) = reachable(&call.range, s.step, s.stride);
+            let (first, end) = find_elements_read(&call.range, s.step, s.stride);
             // The elements the draw can read that the buffer holds: past them the copy's bounds checks read zeros, so a
             // draw that reads none of them needs an empty copy.
             let end = end.min(in_buffer);

@@ -453,7 +453,7 @@ struct World {
     module: naga::Module,
     info: naga::valid::ModuleInfo,
     buffers: Vec<Held>,
-    /// Textures and views, with the format each has.
+    /// Every texture and view the batch keeps, with its format.
     textures: Vec<(Texture, PixelFormat)>,
     samplers: Vec<<M as Metal>::SamplerState>,
     depth_stencils: Vec<<M as Metal>::DepthStencilState>,
