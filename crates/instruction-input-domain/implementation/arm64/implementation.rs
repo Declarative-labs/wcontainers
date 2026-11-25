@@ -35,6 +35,7 @@ use wcontainers_processor_architecture_arm64::floating_point::{
 use wcontainers_processor_architecture_arm64::load_store::{
     AccessLayout, AtomicOperation, Transfer,
 };
+use wcontainers_processor_architecture_arm64::memory_tagging::TagAccessInstruction;
 use wcontainers_processor_architecture_arm64::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Signedness,
 };
@@ -48,6 +49,7 @@ use wcontainers_processor_architecture_arm64::{
     ZERO_PROCESSOR, to_implicit_inputs, writes_condition_flags,
 };
 
+mod memory_tagging;
 mod structure;
 #[cfg(test)]
 mod tests;
@@ -335,6 +337,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         use OperandType::{RegisterNumber, SignedImmediate, UnsignedImmediate};
         if let Some(structure) = StructureInstruction::new(instruction) {
             return structure::to_structure_operand_types(structure).into_iter();
+        }
+        if let Some(access) = TagAccessInstruction::new(instruction) {
+            return memory_tagging::to_tag_access_operand_types(access).into_iter();
         }
         if DocumentedInstruction::new(instruction).is_some()
             || LoadStoreInstruction::new(instruction).is_some()
@@ -757,7 +762,8 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             .or_else(|| {
                 let bytes = StructureInstruction::new(instruction)?.to_access_bytes(word)?;
                 Some(AccessLayout { bytes, offset: 0 })
-            });
+            })
+            .or_else(|| Some(TagAccessInstruction::new(instruction)?.to_access_layout(word)));
         if let (Some(placement), Some(layout)) = (placement, layout) {
             let address = to_access_address(placement, layout.bytes);
             let base = address.wrapping_sub(layout.offset).wrapping_add(tag);
@@ -1079,15 +1085,17 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
         _ => None,
     });
     // A branch to a register's value, and pointer authentication, take a register as an address.
-    let takes_address = record.class == InstructionClass::PointerAuthentication
-        || matches!(
-            to_branch_operation(instruction),
-            Some(
-                BranchOperation::BranchToRegister
-                    | BranchOperation::BranchWithLinkToRegister
-                    | BranchOperation::Return
-            )
-        );
+    let takes_address = matches!(
+        record.class,
+        InstructionClass::PointerAuthentication | InstructionClass::MemoryTagging
+    ) || matches!(
+        to_branch_operation(instruction),
+        Some(
+            BranchOperation::BranchToRegister
+                | BranchOperation::BranchWithLinkToRegister
+                | BranchOperation::Return
+        )
+    );
     let (from_integer, to_integer) = match to_floating_point_operation(instruction) {
         Some(FloatingPointOperation::ConvertFromInteger { .. }) => (converted_precision, None),
         Some(

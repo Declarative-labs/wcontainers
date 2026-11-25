@@ -150,6 +150,13 @@ impl PreciseInstruction<Infallible> {
                 instruction,
                 choices,
             },
+            Self::TagAccess {
+                instruction,
+                choices,
+            } => PreciseInstruction::TagAccess {
+                instruction,
+                choices,
+            },
             Self::Unimplemented(instruction) => PreciseInstruction::Unimplemented(instruction),
             Self::LevelSpecific(never) => match never {},
         }
@@ -172,6 +179,7 @@ impl PreciseInstruction<Infallible> {
             } => Instruction::MsrRegister,
             Self::MrsCtrEl0 { .. } => Instruction::MrsCtrEl0,
             Self::Structure { instruction, .. } => instruction.instruction(),
+            Self::TagAccess { instruction, .. } => instruction.instruction(),
             Self::Unimplemented(instruction) => instruction,
         }
     }
@@ -264,6 +272,9 @@ fn list_modeled_behaviors(
     }
     if let Some(load_store) = LoadStoreInstruction::new(instruction) {
         return list_load_store_behaviors(load_store);
+    }
+    if let Some(access) = crate::memory_tagging::TagAccessInstruction::new(instruction) {
+        return crate::memory_tagging::list_tag_access_behaviors(access);
     }
     if let Some(structure) = crate::StructureInstruction::new(instruction) {
         return crate::structure::list_structure_behaviors(structure).collect();

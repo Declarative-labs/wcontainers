@@ -401,7 +401,11 @@ impl Cut {
                     | Transfer::Atomic(_)
                     | Transfer::CompareAndSwapPair
             )
-        }) || structure.is_some_and(StructureInstruction::is_store);
+        }) || structure.is_some_and(StructureInstruction::is_store)
+            || wcontainers_processor_architecture_arm64::memory_tagging::TagAccessInstruction::new(
+                instruction,
+            )
+            .is_some_and(|access| access.writes_data());
         // A structure's register post-index is the offset it writes back.
         let structure_offset = structure
             .filter(|structure| structure.has_register_offset())

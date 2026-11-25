@@ -60,7 +60,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 399] = [
+pub const PLANTED_BUGS: [PlantedBug; 403] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2454,5 +2454,29 @@ pub const PLANTED_BUGS: [PlantedBug; 399] = [
         instruction: Instruction::LdrQLdstRegoff,
         planted_by: PlantedBy::RestOfTheSet,
         what: "a 32-bit offset is taken whole",
+    },
+    PlantedBug {
+        number: 719,
+        instruction: Instruction::Addg,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "keeps the tag",
+    },
+    PlantedBug {
+        number: 720,
+        instruction: Instruction::Gmi,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "sets the bit above the tag's",
+    },
+    PlantedBug {
+        number: 721,
+        instruction: Instruction::Ldg,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "reads the tag of the unaligned address",
+    },
+    PlantedBug {
+        number: 722,
+        instruction: Instruction::StgImmediate64,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "an unaligned tag store does not fault",
     },
 ];

@@ -27,6 +27,7 @@ pub mod integer;
 mod listing;
 pub mod load_store;
 pub mod memory;
+pub mod memory_tagging;
 pub mod operand;
 pub mod planted;
 pub mod pointer_authentication;
@@ -304,6 +305,11 @@ pub enum PreciseInstruction<LevelSpecific> {
     },
     MrsCtrEl0 {
         cache_type: u64,
+    },
+    /// LDG, a tag store or STGP.
+    TagAccess {
+        instruction: memory_tagging::TagAccessInstruction,
+        choices: memory_tagging::TagAccessChoices,
     },
     /// A load or store of Advanced SIMD structures.
     Structure {

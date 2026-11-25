@@ -580,8 +580,8 @@ fn render_operand(members: &[&ListField]) -> String {
         (
             1,
             "movimm32_imm" | "imm0_15" | "imm0_31" | "imm0_63" | "imm32_0_15" | "imm32_0_31"
-            | "uimm6" | "uimm8_32b" | "uimm8_64b" | "timm32_0_65535" | "uimm16" | "barrier_op"
-            | SELECTOR | "tbz_imm0_31_diag" | "tbz_imm32_63",
+            | "uimm6" | "uimm6s16" | "uimm8_32b" | "uimm8_64b" | "timm32_0_65535" | "uimm16"
+            | "barrier_op" | SELECTOR | "tbz_imm0_31_diag" | "tbz_imm32_63",
         ) => match single_run(first) {
             Some(field) => format!("Operand::UnsignedImmediate({field})"),
             // An arrangement split over Q and size.
@@ -593,8 +593,8 @@ fn render_operand(members: &[&ListField]) -> String {
         },
         (
             1,
-            "simm9" | "uimm12s1" | "uimm12s2" | "uimm12s4" | "uimm12s8" | "uimm12s16" | "simm7s4"
-            | "simm7s8" | "simm7s16",
+            "simm9" | "simm9s16" | "uimm12s1" | "uimm12s2" | "uimm12s4" | "uimm12s8" | "uimm12s16"
+            | "simm7s4" | "simm7s8" | "simm7s16",
         ) => {
             let Some(field) = single_run(first) else {
                 return unmodeled;

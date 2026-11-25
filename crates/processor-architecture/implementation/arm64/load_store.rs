@@ -1658,7 +1658,7 @@ pub(crate) fn load<Architecture: ProcessorArchitecture<PagePermission = PagePerm
 }
 
 /// Finds the lowest address of the access that its page refuses, and the fault's status.
-fn find_fault<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+pub(crate) fn find_fault<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     memory: &[MemoryDelta<'_, Architecture>],
     start: u64,
     length: u64,
@@ -1687,7 +1687,7 @@ fn find_fault<Architecture: ProcessorArchitecture<PagePermission = PagePermissio
 
 /// The fault address FAR_EL1 gives for a fault at `fault_location` of an access to `address`, with the tag the
 /// behavior keeps.
-fn to_fault_address(address: u64, fault_location: u64, tag: FaultAddressTag) -> u64 {
+pub(crate) fn to_fault_address(address: u64, fault_location: u64, tag: FaultAddressTag) -> u64 {
     let location = to_untagged_address(fault_location);
     let tag_bits = if crate::planted::any(&[264, 35]) {
         0

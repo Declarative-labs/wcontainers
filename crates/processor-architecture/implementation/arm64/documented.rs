@@ -11,6 +11,7 @@ use crate::floating_point::{
     FloatingPointOperation, simulate_floating_point, to_floating_point_operation,
 };
 use crate::integer::{ImplicitInputs, IntegerOperation, simulate_integer, to_integer_operation};
+use crate::memory_tagging::{TagOperation, simulate_tag_operation, to_tag_operation};
 use crate::pointer_authentication::{
     PointerAuthenticationOperation, simulate_pointer_authentication,
     to_pointer_authentication_operation,
@@ -31,6 +32,7 @@ pub enum DocumentedOperation {
     Vector(VectorOperation),
     PointerAuthentication(PointerAuthenticationOperation),
     Cryptography(CryptographyOperation),
+    MemoryTagging(TagOperation),
     /// A hint or barrier, which changes nothing a single instruction's state shows.
     NoOperation,
     /// Undefined at EL0 whatever its operands.
@@ -100,6 +102,9 @@ pub const fn to_documented_operation(
     if let Some(operation) = to_cryptography_operation(instruction) {
         return Some(DocumentedOperation::Cryptography(operation));
     }
+    if let Some(operation) = to_tag_operation(instruction) {
+        return Some(DocumentedOperation::MemoryTagging(operation));
+    }
     to_system_operation(instruction)
 }
 
@@ -129,6 +134,7 @@ pub const fn to_implicit_inputs(instruction: Instruction<Infallible>) -> Implici
         Some(
             DocumentedOperation::Vector(_)
             | DocumentedOperation::Cryptography(_)
+            | DocumentedOperation::MemoryTagging(_)
             | DocumentedOperation::NoOperation
             | DocumentedOperation::Undefined
             | DocumentedOperation::SupervisorCall,
@@ -164,6 +170,8 @@ pub const fn writes_condition_flags(instruction: Instruction<Infallible>) -> boo
                 | I::ConvertFlagsFromExternalFormat
         )) | Some(DocumentedOperation::FloatingPoint(
             F::Compare { .. } | F::ConditionalCompare { .. } | F::ConvertToJavaScriptInteger
+        )) | Some(DocumentedOperation::MemoryTagging(
+            TagOperation::SubtractPointer { sets_flags: true }
         ))
     )
 }
@@ -213,6 +221,9 @@ impl DocumentedInstruction {
             }
             DocumentedOperation::Cryptography(operation) => {
                 simulate_cryptography(processor, word, operation).map(|()| None)
+            }
+            DocumentedOperation::MemoryTagging(operation) => {
+                simulate_tag_operation(processor, word, operation).map(|()| None)
             }
             DocumentedOperation::NoOperation if crate::planted::is(257) => {
                 Err(Exception::UndefinedInstruction)
