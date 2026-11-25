@@ -101,9 +101,8 @@ const DATA_PERMISSIONS: Permissions = Permissions::READ.union(Permissions::WRITE
 
 /// Checks that on every state the generator makes for every instruction the executor ends where the set says.
 ///
-/// The executor's state must meet what the behavior expects. Memory is compared by the bytes and permissions it ends
-/// with, not by the list of changes: an executor reports a store of the bytes already there as no change, where a
-/// simulation may report it.
+/// The executor's state must meet the behavior's expectation, memory by the bytes and permissions it ends with, not
+/// the list of changes: an executor reports a store of the bytes already there as no change, where a simulation may.
 pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
     mut executor: Chip,
     set: Set,
