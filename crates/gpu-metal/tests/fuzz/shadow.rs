@@ -79,6 +79,11 @@ impl Shadow {
         self.free.fill(true);
     }
 
+    /// Returns how many of its bytes calls were allowed to change, which are no canaries.
+    pub fn free(&self) -> u64 {
+        self.free.iter().filter(|free| **free).count() as u64
+    }
+
     /// Returns how many bytes read back changed where no call was allowed to change them.
     ///
     /// It prints the first and last of them, and the bytes from the first.

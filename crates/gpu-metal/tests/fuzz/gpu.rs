@@ -558,6 +558,8 @@ impl World {
             Ok(()) => {
                 let changed = shadow.borrow().changed(&read);
                 self.counts.canary_bytes = self.counts.canary_bytes.saturating_add(changed);
+                self.counts.free_bytes = self.counts.free_bytes.saturating_add(shadow.borrow().free());
+                self.counts.checked_bytes = self.counts.checked_bytes.saturating_add(size);
             }
             Err(error) => eprintln!("CANARY a buffer not read back: {error:?}"),
         }
@@ -601,7 +603,20 @@ impl World {
         if plausible {
             desc.usage |= TextureUsage::SAMPLE | TextureUsage::RENDER;
         }
-        if texture_bytes(&desc) > TEXTURE_BUDGET {
+        // A side, layer count or sample count past the device's reaches the call as drawn and must be refused; a
+        // texture the limits take but past the budget keeps its widest side and loses the rest.
+        let limits = self.b.caps().limits;
+        let three_d = desc.dimension == TextureDimension::D3;
+        let most = if three_d { limits.max_texture_3d } else { limits.max_texture_2d };
+        let layers = if three_d { limits.max_texture_3d } else { limits.max_texture_layers };
+        let past = desc.width > most
+            || desc.height > most
+            || desc.depth_or_layers > layers
+            || desc.width == 0
+            || desc.height == 0
+            || desc.depth_or_layers == 0
+            || ![1, 4].contains(&desc.samples);
+        if !past && texture_bytes(&desc) > TEXTURE_BUDGET {
             desc.height = desc.height.min(1);
             desc.depth_or_layers = desc.depth_or_layers.min(1);
             if texture_bytes(&desc) > TEXTURE_BUDGET {
@@ -610,6 +625,11 @@ impl World {
         }
         let made = self.b.create_texture(&desc);
         self.counts.call(made.is_err());
+        if past && made.is_ok() {
+            eprintln!("ACCEPTED a texture past the device's limits: {desc:?}");
+            self.counts.accepted = self.counts.accepted.saturating_add(1);
+            return;
+        }
         if let Ok(texture) = made {
             keep(random, &mut self.textures, MadeTexture { texture, desc });
             self.create_view(random);
@@ -1021,15 +1041,34 @@ impl World {
             let bytes = random.bytes(&[0, 1, 3, 4, 16, 256, 4096]);
             self.b.write_buffer(&buffer, offset, &bytes, mode);
             self.counts.call(false);
-            let Some(shadow) = shadow else {
+            let Some(tracked) = shadow else {
                 return;
             };
-            let mut shadow = shadow.borrow_mut();
+            let mut shadow = tracked.borrow_mut();
             // A write past the buffer is refused and writes nothing.
             if offset
                 .checked_add(bytes.len() as u64)
                 .is_none_or(|end| end > shadow.length())
             {
+                return;
+            }
+            // After a discard every byte but the written ones is undefined: the batch writes them again, in order, so
+            // that they are canaries again rather than free for the rest of the batch.
+            if mode == WriteMode::Discard && !self.lost {
+                let length = shadow.length();
+                let end = offset.saturating_add(bytes.len() as u64);
+                shadow.allow_all();
+                shadow.wrote_pending(offset, &bytes);
+                drop(shadow);
+                for (start, stop) in [(0, offset), (end, length)] {
+                    let refill: Vec<u8> = (start..stop).map(|_| random.next() as u8).collect();
+                    if refill.is_empty() {
+                        continue;
+                    }
+                    self.b.write_buffer(&buffer, start, &refill, WriteMode::Ordered);
+                    self.counts.call(false);
+                    tracked.borrow_mut().wrote_pending(start, &refill);
+                }
                 return;
             }
             match mode {

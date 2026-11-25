@@ -747,6 +747,8 @@ impl World {
         if self.metal.read_contents(&held.buffer, 0, &mut read).is_ok() {
             let changed = held.shadow.borrow().changed(&read);
             self.counts.canary_bytes = self.counts.canary_bytes.saturating_add(changed);
+            self.counts.free_bytes = self.counts.free_bytes.saturating_add(held.shadow.borrow().free());
+            self.counts.checked_bytes = self.counts.checked_bytes.saturating_add(read.len() as u64);
         }
     }
 

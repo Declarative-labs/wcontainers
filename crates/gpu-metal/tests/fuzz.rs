@@ -56,7 +56,8 @@ mod driver {
     /// The lines a batch prints its checks' outcomes on, one a site: refused, passed, then the site.
     pub const REACH_LINE: &str = "FUZZ-REACH";
 
-    /// What a batch found: calls, refusals, canary bytes changed, GPU errors and calls taken that had to be refused.
+    /// What a batch found: calls, refusals, canary bytes changed, GPU errors and calls taken that had to be refused, and
+    /// of the bytes read back to check, how many were free and how many in all.
     #[derive(Default)]
     pub struct Counts {
         pub calls: u64,
@@ -64,14 +65,22 @@ mod driver {
         pub canary_bytes: u64,
         pub gpu_errors: u64,
         pub accepted: u64,
+        pub free_bytes: u64,
+        pub checked_bytes: u64,
     }
 
     impl Counts {
         /// Prints the counts on the result line.
         pub fn print(&self) {
             println!(
-                "{RESULT_LINE} {} {} {} {} {}",
-                self.calls, self.refused, self.canary_bytes, self.gpu_errors, self.accepted
+                "{RESULT_LINE} {} {} {} {} {} {} {}",
+                self.calls,
+                self.refused,
+                self.canary_bytes,
+                self.gpu_errors,
+                self.accepted,
+                self.free_bytes,
+                self.checked_bytes
             );
         }
 
@@ -153,6 +162,8 @@ mod driver {
         let mut failures: Vec<String> = Vec::new();
         let mut batches = 0u64;
         let mut reach: std::collections::BTreeMap<String, [u64; 2]> = std::collections::BTreeMap::new();
+        // The free and checked bytes of the batches of the Metal trait, then of `Gpu`.
+        let mut canaries = [[0u64; 2]; 2];
         while !waiting.is_empty() || !running.is_empty() {
             while running.len() < jobs
                 && let Some((seed, batch)) = waiting.pop_front()
@@ -214,7 +225,12 @@ mod driver {
                                 .collect()
                         })
                         .unwrap_or_default();
-                    if let [calls, refused, canary, errors, accepted] = words[..] {
+                    if let [calls, refused, canary, errors, accepted, free, checked] = words[..] {
+                        total.free_bytes = total.free_bytes.saturating_add(free);
+                        total.checked_bytes = total.checked_bytes.saturating_add(checked);
+                        let kind = usize::from(!job.batch.is_multiple_of(2));
+                        canaries[kind][0] = canaries[kind][0].saturating_add(free);
+                        canaries[kind][1] = canaries[kind][1].saturating_add(checked);
                         total.calls = total.calls.saturating_add(calls);
                         total.refused = total.refused.saturating_add(refused);
                         total.canary_bytes = total.canary_bytes.saturating_add(canary);
@@ -272,6 +288,16 @@ mod driver {
             total.accepted,
             failures.len(),
             started.elapsed().as_secs_f64()
+        );
+        println!(
+            "canaries: of {} bytes read back to check, {} were free to change: of the Metal trait's batches {} of {}, \
+             of Gpu's {} of {}",
+            total.checked_bytes,
+            total.free_bytes,
+            canaries[0][0],
+            canaries[0][1],
+            canaries[1][0],
+            canaries[1][1]
         );
         let holes = report_reach(&reach);
         if holes > 0 && variable("FUZZ_REACH_REQUIRED", "0") == "1" {
