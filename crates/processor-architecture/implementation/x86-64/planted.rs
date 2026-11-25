@@ -578,6 +578,18 @@ pub enum Bug {
     EvexAlignCountUnreduced,
     /// The permutes and shuffles suppress a fault on an element the opmask leaves out.
     EvexPermuteFaultsSuppressed,
+    /// VPDPBUSDS and VPDPWSSDS wrap rather than saturate.
+    EvexDotProductWraps,
+    /// The double shifts take their two sources the other way round.
+    EvexShiftDoubleHalvesSwapped,
+    /// VPCONFLICTD and VPCONFLICTQ count the element itself.
+    EvexConflictIncludesSelf,
+    /// VAESENC and VAESDEC skip MixColumns.
+    EvexAesSkipsMixColumns,
+    /// VPCLMULQDQ always takes the second source's low quadword.
+    EvexCarryLessIgnoresBitFour,
+    /// A form that writes an opmask register keeps the bits its opmask leaves out.
+    EvexMaskDestinationMerges,
     // Fifth check.
     /// SUB takes AF from bit 4 of the result.
     SubtractAuxiliaryFromResultBitFour,
@@ -1056,6 +1068,12 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexShuffleBytesZeroBitIgnored, "VPSHUFB", Family::Evex(|form| is_integer(form, IntegerOperation::ShuffleBytes)), EvexSecondHalf),
     row(Bug::EvexUnpackSourcesSwapped, "VUNPCKH and VUNPCKL", Family::Evex(|form| is_integer(form, IntegerOperation::UnpackLow) || is_integer(form, IntegerOperation::UnpackHigh)), EvexSecondHalf),
     row(Bug::EvexAlignCountUnreduced, "VALIGND, VALIGNQ", Family::Evex(|form| is_integer(form, IntegerOperation::AlignElements)), EvexSecondHalf),
+    row(Bug::EvexDotProductWraps, "VPDPBUSDS, VPDPWSSDS", Family::Evex(|form| matches!(form.operation, EvexOperation::Integer { operation: IntegerOperation::DotBytes { saturating: true } | IntegerOperation::DotWords { saturating: true }, .. })), EvexSecondHalf),
+    row(Bug::EvexShiftDoubleHalvesSwapped, "VPSHLD, VPSHRD and their variable forms", Family::Evex(|form| matches!(form.operation, EvexOperation::Integer { operation: IntegerOperation::ShiftLeftDouble | IntegerOperation::ShiftRightDouble | IntegerOperation::ShiftLeftDoubleVariable | IntegerOperation::ShiftRightDoubleVariable, .. })), EvexSecondHalf),
+    row(Bug::EvexConflictIncludesSelf, "VPCONFLICTD, VPCONFLICTQ", Family::Evex(|form| is_integer(form, IntegerOperation::Conflict)), EvexSecondHalf),
+    row(Bug::EvexAesSkipsMixColumns, "VAESENC, VAESDEC", Family::Evex(|form| matches!(form.operation, EvexOperation::Integer { operation: IntegerOperation::Aes { last: false, .. }, .. })), EvexSecondHalf),
+    row(Bug::EvexCarryLessIgnoresBitFour, "VPCLMULQDQ", Family::Evex(|form| is_integer(form, IntegerOperation::CarryLessMultiply)), EvexSecondHalf),
+    row(Bug::EvexMaskDestinationMerges, "VPSHUFBITQMB", Family::Evex(EvexForm::writes_opmask), EvexSecondHalf),
     row(Bug::EvexPermuteFaultsSuppressed, "EVEX permutes with memory", Family::Evex(|form| form.place != OperandPlace::Register && !form.suppresses_faults()), EvexSecondHalf),
 ];
 

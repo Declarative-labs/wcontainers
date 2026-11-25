@@ -34,6 +34,9 @@ pub(super) fn execute_evex(
     let destination = decoded.op0_register().number();
     let source_operand = if form.has_immediate() { decoded.op_count() - 2 } else { decoded.op_count() - 1 };
     let second = match decoded.op_kind(source_operand) {
+        OpKind::Register if form.reads_opmask() => {
+            [u128::from(processor.read_opmask(decoded.op_register(source_operand).number())), 0, 0, 0]
+        }
         OpKind::Register => processor.read_zmm(decoded.op_register(source_operand).number()),
         _ => read_memory_source(&form, processor, memory, decoded, selected)?,
     };
@@ -41,7 +44,7 @@ pub(super) fn execute_evex(
         true => processor.read_zmm(decoded.op1_register().number()),
         false => second,
     };
-    let old = processor.read_zmm(destination);
+    let old = if form.writes_opmask() { [0; 4] } else { processor.read_zmm(destination) };
     let mut result = old;
     let computed = match form.operation {
         EvexOperation::Float { operation, precision, arrangement } => {
@@ -52,6 +55,12 @@ pub(super) fn execute_evex(
             operation.compute(&old, &first, &second, immediate, form.vector_bytes(), bytes)
         }
     };
+    if form.writes_opmask() {
+        // The opmask selects by zeroing: a bit it leaves out is cleared, as is every bit beyond the elements.
+        let keep = if is_active(Bug::EvexMaskDestinationMerges) { processor.read_opmask(destination) & !selected } else { 0 };
+        processor.opmask_registers[destination] = (computed[0] as u64 & selected) | keep;
+        return Ok(());
+    }
     for index in 0..elements {
         if selected & (1 << index) != 0 {
             write_element(&mut result, index, bytes, read_element(&computed, index, bytes));

@@ -146,7 +146,8 @@ mod on_chip {
                         };
                         let fields: Vec<String> = differences.iter().map(|(name, value)| format!("{name} {value}")).collect();
                         let detail = format!(
-                            "    code {code} mxcsr {:#x} flags {:?} k {:x?}\n    data {}\n    {}",
+                            "    code {code} r {:x?} mxcsr {:#x} flags {:?} k {:x?}\n    data {}\n    {}",
+                            &before.processor.general_purpose_registers[..8],
                             before.processor.mxcsr,
                             before.processor.flags,
                             before.processor.opmask_registers,

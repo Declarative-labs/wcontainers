@@ -104,6 +104,7 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
             element_bytes,
             vector_bytes: form.vector_bytes(),
             register,
+            maskable: op_code.can_use_op_mask_register(),
         }),
     };
     let unread = OperandType::Flags(FlagSet::Unread);
@@ -117,7 +118,7 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
     [memory]
         .into_iter()
         .chain(form.reads_first_source().then_some(OperandType::EvexRegister))
-        .chain([OperandType::EvexMask(form.elements())])
+        .chain(op_code.can_use_op_mask_register().then_some(OperandType::EvexMask(form.elements())))
         .chain(op_code.can_broadcast().then_some(OperandType::EvexBroadcast))
         .chain([data, unread])
         .collect()
@@ -242,6 +243,8 @@ pub struct EvexIntegerData {
     pub vector_bytes: usize,
     /// A register form, whose data holds the opmask.
     pub register: bool,
+    /// Whether the form takes an opmask.
+    pub maskable: bool,
 }
 
 /// What a vector of an integer form's data plays.
@@ -251,6 +254,16 @@ enum Role {
     Table,
     /// Element numbers.
     Index,
+    /// Numbers, at elements of this many bytes: each edge of the element (zero, one, two, the width less one and
+    /// the width, the signed extremes, all ones, a pattern) rotated across the elements, then each end of the signed
+    /// and unsigned range in every element.
+    Lanes(usize),
+    /// Quadwords about bit 52, where VPMADD52's products are cut.
+    FiftyTwoBits,
+    /// Elements some of which are equal: all, every other, in threes, none.
+    Repeats,
+    /// An opmask register's value: none, the lowest bit, every other, all, a pattern.
+    Mask,
 }
 
 /// The immediates an integer form's data takes.
@@ -264,10 +277,25 @@ enum Immediates {
 }
 
 /// The roles of the destination (when read), the first source and the second, and the immediates.
-fn to_roles(operation: IntegerOperation) -> (Option<Role>, Role, Role, Immediates) {
+fn to_roles(operation: IntegerOperation, bytes: usize) -> (Option<Role>, Role, Role, Immediates) {
     use IntegerOperation as I;
-    use Role::{Index, Table};
+    use Role::{Index, Lanes, Table};
     match operation {
+        I::DotBytes { .. } => (Some(Lanes(4)), Lanes(1), Lanes(1), Immediates::None),
+        I::DotWords { .. } => (Some(Lanes(4)), Lanes(2), Lanes(2), Immediates::None),
+        I::MultiplyAdd52 { .. } => (Some(Lanes(8)), Role::FiftyTwoBits, Role::FiftyTwoBits, Immediates::None),
+        I::MultiShiftBytes => (None, Lanes(1), Table, Immediates::None),
+        I::ShiftLeftDouble | I::ShiftRightDouble => (None, Lanes(bytes), Lanes(bytes), Immediates::Count),
+        I::ShiftLeftDoubleVariable | I::ShiftRightDoubleVariable => {
+            (Some(Lanes(bytes)), Lanes(bytes), Lanes(bytes), Immediates::None)
+        }
+        I::PopulationCount | I::LeadingZeros => (None, Table, Lanes(bytes), Immediates::None),
+        I::Conflict => (None, Table, Role::Repeats, Immediates::None),
+        I::GaloisMultiply => (None, Lanes(1), Lanes(1), Immediates::None),
+        I::GaloisAffine { .. } | I::CarryLessMultiply => (None, Lanes(bytes), Table, Immediates::Selector),
+        I::Aes { .. } => (None, Table, Table, Immediates::None),
+        I::ShuffleBitsToMask => (None, Table, Index, Immediates::None),
+        I::BroadcastMask => (None, Table, Role::Mask, Immediates::None),
         I::Permute => (None, Index, Table, Immediates::None),
         I::PermuteTwoTablesIndexInDestination => (Some(Index), Table, Table, Immediates::None),
         I::PermuteTwoTablesIndexInFirst => (Some(Table), Index, Table, Immediates::None),
@@ -294,7 +322,12 @@ const fn to_table_element(index: usize, salt: u64, bytes: usize) -> u64 {
 /// The vectors of a role for elements of `bytes` in `vector_bytes`: two tables; or indexes naming each element in
 /// order, in reverse, the first, the last, the next, a scattered pattern reaching both tables, and each with bits
 /// set above those an index reads, a shuffle's zeroing bit among them.
-fn generate_role(role: Role, bytes: usize, vector_bytes: usize) -> Vec<[u128; 4]> {
+fn generate_role(role: Role, bytes: usize, vector_bytes: usize, every_rotation: bool) -> Vec<[u128; 4]> {
+    let bytes = match role {
+        Role::Lanes(bytes) => bytes,
+        Role::FiftyTwoBits => 8,
+        _ => bytes,
+    };
     let elements = vector_bytes / bytes;
     let make = |value: &dyn Fn(usize) -> u64| -> [u128; 4] {
         let mut vector = [0; 4];
@@ -317,6 +350,28 @@ fn generate_role(role: Role, bytes: usize, vector_bytes: usize) -> Vec<[u128; 4]
             make(&|index| above(((index * 5 + 1) % (2 * elements)) as u64)),
             make(&|index| above((elements - 1 - index) as u64) | if index % 3 == 0 { 0x80 & width_mask } else { 0 }),
         ],
+        Role::Lanes(_) | Role::FiftyTwoBits => {
+            let bits = (bytes * 8) as u32;
+            let signed_maximum = width_mask >> 1;
+            let edges: Vec<u64> = match role {
+                Role::FiftyTwoBits => {
+                    let low = (1 << 52) - 1;
+                    vec![0, 1, low, 1 << 51, 1 << 52, (1 << 52) | 1, low | (0xA5A << 52), u64::MAX, 0x0005_A5A5_C33C_0FF0]
+                }
+                _ => vec![0, 1, 2, u64::from(bits) - 1, u64::from(bits), signed_maximum, signed_maximum + 1, width_mask, 0x5AA5_C33C_0FF0_9669 & width_mask],
+            };
+            let rotations = if every_rotation { edges.len() } else { 1 };
+            let rotated = (0..rotations).map(|rotation| make(&|index| edges[(index + rotation) % edges.len()]));
+            let ends = [0, signed_maximum, signed_maximum + 1, width_mask].map(|end| make(&|_| end));
+            rotated.chain(ends).collect()
+        }
+        Role::Repeats => vec![
+            make(&|_| to_table_element(0, 0, bytes)),
+            make(&|index| to_table_element(index % 2, 0, bytes)),
+            make(&|index| to_table_element(index / 3, 0, bytes)),
+            make(&|index| to_table_element(index, 0, bytes)),
+        ],
+        Role::Mask => [0, 1, EVERY_OTHER, u64::MAX, 0x8000_0000_0000_80A5].map(|mask| [u128::from(mask), 0, 0, 0]).to_vec(),
     }
 }
 
@@ -325,14 +380,14 @@ fn generate_role(role: Role, bytes: usize, vector_bytes: usize) -> Vec<[u128; 4]
 /// register form also the first destination and first source against each second source with every other element
 /// selected, merging and zeroing. A memory form takes the first of each against each second source.
 pub fn generate_integer_data(data: EvexIntegerData) -> Vec<OperandValue> {
-    let EvexIntegerData { operation, element_bytes, vector_bytes, register } = data;
-    let (destination_role, first_role, second_role, immediates) = to_roles(operation);
+    let EvexIntegerData { operation, element_bytes, vector_bytes, register, maskable } = data;
+    let (destination_role, first_role, second_role, immediates) = to_roles(operation, element_bytes);
     let destinations = match destination_role {
-        Some(role) => generate_role(role, element_bytes, vector_bytes),
+        Some(role) => generate_role(role, element_bytes, vector_bytes, false),
         None => vec![[0; 4]],
     };
-    let firsts = generate_role(first_role, element_bytes, vector_bytes);
-    let seconds = generate_role(second_role, element_bytes, vector_bytes);
+    let firsts = generate_role(first_role, element_bytes, vector_bytes, false);
+    let seconds = generate_role(second_role, element_bytes, vector_bytes, true);
     let immediates: &[u8] = match immediates {
         Immediates::None => &[0],
         Immediates::Selector => &[0x1B, 0x00, 0x55, 0xAA, 0xFF, 0xE4, 0x4E, 0xB1, 0x0F, 0xF0],
@@ -361,6 +416,9 @@ pub fn generate_integer_data(data: EvexIntegerData) -> Vec<OperandValue> {
             all.push(datum(destinations[0], firsts[0], second, immediate, NO_MASK));
         }
     }
+    if !maskable {
+        return all;
+    }
     let all_elements = to_all(vector_bytes / element_bytes);
     for mask in [
         EvexMask { register: 1, value: EVERY_OTHER & all_elements, zeroing: false },
@@ -371,6 +429,15 @@ pub fn generate_integer_data(data: EvexIntegerData) -> Vec<OperandValue> {
         }
     }
     all
+}
+
+/// k1 to k7 for a register number of a triple or an access.
+const fn to_opmask_number(number: usize) -> usize {
+    1 + number % 7
+}
+
+fn to_opmask_register(number: usize) -> Register {
+    Register::try_from(Register::K0 as usize + number).expect("k0 to k7")
 }
 
 /// The register of a vector of the form's length.
@@ -458,13 +525,21 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
         operand
     });
     // A register named twice holds the second source's value, the last written.
-    if memory_operand.is_none() {
+    if memory_operand.is_none() && form.reads_opmask() {
+        processor.opmask_registers[to_opmask_number(registers[2])] = second[0] as u64;
+    } else if memory_operand.is_none() {
         processor.write_zmm(registers[2], second);
     }
     let code = form.code;
-    let destination = to_vector_register(form, registers[0]);
+    let destination = match form.writes_opmask() {
+        true => to_opmask_register(to_opmask_number(registers[0])),
+        false => to_vector_register(form, registers[0]),
+    };
     let first_register = to_vector_register(form, registers[1]);
-    let second_register = to_vector_register(form, registers[2]);
+    let second_register = match form.reads_opmask() {
+        true => to_opmask_register(to_opmask_number(registers[2])),
+        false => to_vector_register(form, registers[2]),
+    };
     let immediate = form.has_immediate().then(|| u32::from(immediate.unwrap_or(0)));
     let mut encoded = match (memory_operand, form.reads_first_source(), immediate) {
         (Some(operand), true, None) => Encoded::with3(code, destination, first_register, operand),
@@ -478,8 +553,8 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
     }
     .unwrap_or_else(|error| panic!("{code:?} takes its operands: {error}"));
     if mask.register != 0 {
-        encoded.set_op_mask(Register::try_from(Register::K0 as usize + mask.register).expect("k1 to k7"));
-        encoded.set_zeroing_masking(mask.zeroing);
+        encoded.set_op_mask(to_opmask_register(mask.register));
+        encoded.set_zeroing_masking(mask.zeroing && code.op_code().can_use_zeroing_masking());
     }
     match control {
         EmbeddedControl::None => {}

@@ -127,6 +127,44 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vunpckhpd, Any, integer(I::UnpackHigh, 8)),
         (Mnemonic::Vunpcklps, Any, integer(I::UnpackLow, 4)),
         (Mnemonic::Vunpcklpd, Any, integer(I::UnpackLow, 8)),
+        (Mnemonic::Vpdpbusd, Any, integer(I::DotBytes { saturating: false }, 4)),
+        (Mnemonic::Vpdpbusds, Any, integer(I::DotBytes { saturating: true }, 4)),
+        (Mnemonic::Vpdpwssd, Any, integer(I::DotWords { saturating: false }, 4)),
+        (Mnemonic::Vpdpwssds, Any, integer(I::DotWords { saturating: true }, 4)),
+        (Mnemonic::Vpmadd52luq, Any, integer(I::MultiplyAdd52 { high: false }, 8)),
+        (Mnemonic::Vpmadd52huq, Any, integer(I::MultiplyAdd52 { high: true }, 8)),
+        (Mnemonic::Vpmultishiftqb, Any, integer(I::MultiShiftBytes, 1)),
+        (Mnemonic::Vpshldw, Any, integer(I::ShiftLeftDouble, 2)),
+        (Mnemonic::Vpshldd, Any, integer(I::ShiftLeftDouble, 4)),
+        (Mnemonic::Vpshldq, Any, integer(I::ShiftLeftDouble, 8)),
+        (Mnemonic::Vpshrdw, Any, integer(I::ShiftRightDouble, 2)),
+        (Mnemonic::Vpshrdd, Any, integer(I::ShiftRightDouble, 4)),
+        (Mnemonic::Vpshrdq, Any, integer(I::ShiftRightDouble, 8)),
+        (Mnemonic::Vpshldvw, Any, integer(I::ShiftLeftDoubleVariable, 2)),
+        (Mnemonic::Vpshldvd, Any, integer(I::ShiftLeftDoubleVariable, 4)),
+        (Mnemonic::Vpshldvq, Any, integer(I::ShiftLeftDoubleVariable, 8)),
+        (Mnemonic::Vpshrdvw, Any, integer(I::ShiftRightDoubleVariable, 2)),
+        (Mnemonic::Vpshrdvd, Any, integer(I::ShiftRightDoubleVariable, 4)),
+        (Mnemonic::Vpshrdvq, Any, integer(I::ShiftRightDoubleVariable, 8)),
+        (Mnemonic::Vpopcntb, Any, integer(I::PopulationCount, 1)),
+        (Mnemonic::Vpopcntw, Any, integer(I::PopulationCount, 2)),
+        (Mnemonic::Vpopcntd, Any, integer(I::PopulationCount, 4)),
+        (Mnemonic::Vpopcntq, Any, integer(I::PopulationCount, 8)),
+        (Mnemonic::Vplzcntd, Any, integer(I::LeadingZeros, 4)),
+        (Mnemonic::Vplzcntq, Any, integer(I::LeadingZeros, 8)),
+        (Mnemonic::Vpconflictd, Any, integer(I::Conflict, 4)),
+        (Mnemonic::Vpconflictq, Any, integer(I::Conflict, 8)),
+        (Mnemonic::Vgf2p8mulb, Any, integer(I::GaloisMultiply, 1)),
+        (Mnemonic::Vgf2p8affineqb, Any, integer(I::GaloisAffine { inverse: false }, 1)),
+        (Mnemonic::Vgf2p8affineinvqb, Any, integer(I::GaloisAffine { inverse: true }, 1)),
+        (Mnemonic::Vpclmulqdq, Any, integer(I::CarryLessMultiply, 8)),
+        (Mnemonic::Vaesenc, Any, integer(I::Aes { decrypt: false, last: false }, 1)),
+        (Mnemonic::Vaesenclast, Any, integer(I::Aes { decrypt: false, last: true }, 1)),
+        (Mnemonic::Vaesdec, Any, integer(I::Aes { decrypt: true, last: false }, 1)),
+        (Mnemonic::Vaesdeclast, Any, integer(I::Aes { decrypt: true, last: true }, 1)),
+        (Mnemonic::Vpshufbitqmb, Any, integer(I::ShuffleBitsToMask, 1)),
+        (Mnemonic::Vpbroadcastmb2q, Any, integer(I::BroadcastMask, 8)),
+        (Mnemonic::Vpbroadcastmw2d, Any, integer(I::BroadcastMask, 4)),
     ]
 };
 
@@ -137,7 +175,8 @@ pub struct EvexForm {
     pub code: Code,
     pub operation: EvexOperation,
     pub place: OperandPlace,
-    /// The bytes of one element of the memory operand, which a broadcast reads; 0 for a register form.
+    /// The bytes of the element a broadcast reads, or of one element of the memory operand where the form does not
+    /// broadcast; 0 for a register form.
     pub memory_element_bytes: usize,
 }
 
@@ -184,6 +223,16 @@ impl EvexForm {
         self.code.op_code().op_kinds().contains(&OpCodeOperandKind::imm8)
     }
 
+    /// Whether the form writes an opmask register rather than a vector.
+    pub fn writes_opmask(&self) -> bool {
+        self.code.op_code().op_kinds().first() == Some(&OpCodeOperandKind::k_reg)
+    }
+
+    /// Whether the form's source is an opmask register.
+    pub fn reads_opmask(&self) -> bool {
+        self.code.op_code().op_kinds().contains(&OpCodeOperandKind::k_rm)
+    }
+
     /// Whether the form reads its destination's value besides merging into it.
     pub const fn reads_destination(&self) -> bool {
         match self.operation {
@@ -227,8 +276,15 @@ pub fn find_evex_form(instruction: Instruction) -> Option<EvexForm> {
         code: decoded.code(),
         operation: *operation,
         place: if in_memory { OperandPlace::Memory } else { OperandPlace::Register },
-        memory_element_bytes: if in_memory { decoded.memory_size().element_size() } else { 0 },
+        memory_element_bytes: if in_memory { to_broadcast_bytes(&decoded) } else { 0 },
     })
+}
+
+/// The bytes of the element the form's broadcast reads, which may differ from its vector's element.
+fn to_broadcast_bytes(decoded: &iced_x86::Instruction) -> usize {
+    let mut broadcast = *decoded;
+    broadcast.set_is_broadcast(decoded.code().op_code().can_broadcast());
+    broadcast.memory_size().element_size()
 }
 
 /// Every modeled EVEX form, in the list's order.
