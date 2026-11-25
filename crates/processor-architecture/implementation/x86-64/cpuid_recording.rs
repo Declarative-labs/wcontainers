@@ -1,4 +1,4 @@
-//! Written by the `record_cpuid` example of wcontainers-precise-instruction-set-xeon-platinum-8488c.
+//! Written by the `record_cpuid` example of wcontainers-behavior-source-kvm-single-step-x86-64.
 
 use crate::CpuidLeaf;
 

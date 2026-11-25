@@ -4143,6 +4143,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-behavior-source-kvm-single-step-x86-64"
+version = "0.1.0"
+dependencies = [
+ "iced-x86",
+ "kvm-bindings",
+ "kvm-ioctls",
+ "wcontainers-behavior-source",
+ "wcontainers-behavior-source-conformance",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-x86-64",
+ "wcontainers-instruction-input-domain",
+ "wcontainers-instruction-input-domain-x86-64",
+ "wcontainers-kvm",
+ "wcontainers-kvm-direct",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-measured",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-x86-64",
+ "wcontainers-volatile-bytes",
+ "zerocopy",
+]
+
+[[package]]
 name = "wcontainers-behavior-source-recording"
 version = "0.1.0"
 dependencies = [
@@ -4311,6 +4334,19 @@ dependencies = [
  "wcontainers-instruction-input-domain-arm64",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
+]
+
+[[package]]
+name = "wcontainers-distinguishing-state-generator-x86-64"
+version = "0.1.0"
+dependencies = [
+ "iced-x86",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-conformance",
+ "wcontainers-instruction-input-domain",
+ "wcontainers-instruction-input-domain-x86-64",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-x86-64",
 ]
 
 [[package]]
@@ -4706,6 +4742,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-instruction-input-domain-x86-64"
+version = "0.1.0"
+dependencies = [
+ "iced-x86",
+ "itertools 0.14.0",
+ "wcontainers-instruction-input-domain",
+ "wcontainers-instruction-input-domain-conformance",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-x86-64",
+]
+
+[[package]]
 name = "wcontainers-internet-protocol"
 version = "0.1.0"
 dependencies = [
@@ -4955,6 +5003,21 @@ name = "wcontainers-processor-architecture-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-processor-architecture-x86-64"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.13.2",
+ "iced-x86",
+ "serde",
+ "serde_json",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-instruction-input-domain-x86-64",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-conformance",
 ]
 
 [[package]]

@@ -1,0 +1,71 @@
+[package]
+name = "wcontainers-behavior-source-kvm-single-step-x86-64"
+description = "A behavior source that really runs one x86-64 instruction at ring 3 of a KVM virtual machine, one state at a time."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[[test]]
+name = "machines"
+path = "tests/machines.rs"
+
+[[example]]
+name = "probe"
+path = "examples/probe.rs"
+
+[[example]]
+name = "hand_states"
+path = "examples/hand_states.rs"
+
+[[example]]
+name = "record_cpuid"
+path = "examples/record_cpuid.rs"
+
+[[example]]
+name = "planted"
+path = "examples/planted.rs"
+required-features = ["planted-bugs"]
+
+[features]
+# The planted bugs of the architecture, which only the `planted` example turns on.
+planted-bugs = ["wcontainers-processor-architecture-x86-64/planted-bugs"]
+
+[dependencies]
+wcontainers-behavior-source = { path = "../.." }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-x86-64 = { path = "../../../processor-architecture/implementation/x86-64" }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+# KVM's calls and structures, and the one call kvm-ioctls leaves unsafe, made safe.
+kvm-ioctls = "0.25.1"
+kvm-bindings = "0.14.2"
+wcontainers-kvm = { path = "../../../kvm" }
+wcontainers-kvm-direct = { path = "../../../kvm/implementation/direct" }
+# The ring 0 handler, assembled at start-up, and the instruction a state starts with, decoded to refuse those it
+# cannot step (MIT).
+iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "code_asm", "decoder"] }
+# The handler's slot and tables as bytes, copied to and from guest memory.
+zerocopy.workspace = true
+
+[dev-dependencies]
+wcontainers-behavior-source-conformance = { path = "../../conformance" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
+wcontainers-distinguishing-state-generator-x86-64 = { path = "../../../distinguishing-state-generator/implementation/x86-64" }
+wcontainers-instruction-input-domain = { path = "../../../instruction-input-domain" }
+wcontainers-instruction-input-domain-x86-64 = { path = "../../../instruction-input-domain/implementation/x86-64" }
+wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
+wcontainers-precise-instruction-set-measured = { path = "../../../precise-instruction-set/implementation/measured" }
+
+[lints]
+workspace = true
