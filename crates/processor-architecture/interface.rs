@@ -4,7 +4,6 @@ extern crate alloc;
 
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
-use core::convert::Infallible;
 use core::ops::Range;
 
 use litemap::LiteMap;
@@ -21,7 +20,8 @@ pub trait ProcessorArchitecture: Sized {
     /// On A64 this is an [instruction variant](https://developer.arm.com/documentation/ddi0487/mc/-Part-C-The-AArch64-Instruction-Set/-Chapter-C1-The-A64-Instruction-Set/-C1-1-About-the-A64-instruction-set#:~:text=each%20syntax%20is%20an%20instruction%20variant), on x86 an [instruction form](https://intelxed.github.io/ref-manual/group__IFORM.html).
     type Instruction: Copy + Eq;
     /// An instruction with a specific pinned behavior that should be expected of it.
-    type PreciseInstruction: Simulator<Self, Error = Infallible> + Copy + Eq;
+    // VERUS: no trait that refers back to itself, so code that simulates states `Simulator` itself.
+    type PreciseInstruction: Copy + Eq;
     // VERUS: no `impl Trait` in a trait, so each returned iterator is a named type.
     type Instructions: Iterator<Item = Self::Instruction>;
     type KnownBehaviors: Iterator<Item = Self::PreciseInstruction>;

@@ -3,6 +3,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use core::convert::Infallible;
 
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_processor_architecture::{
@@ -51,6 +52,8 @@ pub trait BehaviorSource {
     >
     where
         Self::Architecture: Clone,
+        <Self::Architecture as ProcessorArchitecture>::PreciseInstruction:
+            Simulator<Self::Architecture, Error = Infallible>,
     {
         let mut candidates: Vec<_> =
             <Self::Architecture as ProcessorArchitecture>::list_known_behaviors(instruction)
