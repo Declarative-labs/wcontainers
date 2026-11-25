@@ -13,6 +13,8 @@ use rangemap::RangeMap;
 pub trait ProcessorArchitecture: Sized {
     /// All stateful components of the processor.
     type ProcessorState: Clone + Eq;
+    /// What a behavior expects the processor to hold after an instruction.
+    type ProcessorStateExpectation: Clone + Eq;
     /// What a program may do with a page of memory.
     type PagePermission: Copy + Eq;
     /// An instruction at its most granular division.
@@ -35,38 +37,43 @@ pub trait ProcessorArchitecture: Sized {
 
     /// Returns the set of behaviors a chip is known to show for the instruction.
     fn list_known_behaviors(instruction: Self::Instruction) -> Self::KnownBehaviors;
+
+    /// Returns whether the observed processor has every value the expectation holds.
+    fn meets_expectations(
+        observed: &Self::ProcessorState,
+        expectation: &Self::ProcessorStateExpectation,
+    ) -> bool;
 }
 
 pub trait Simulator<Architecture: ProcessorArchitecture> {
     #[allow(
         reviewable::explicit_shared_error,
-        reason = "simulate only runs simulate_in_place and passes its error on unchanged"
+        reason = "simulate_state only runs simulate and passes its error on unchanged"
     )]
     type Error;
 
     /// Simulates applying this instruction to the given processor + memory.
     ///
-    /// Processor changes are written in place, memory changes are written through the hook.
-    fn simulate_in_place(
+    /// The processor expected afterwards is returned, memory changes are written through the hook.
+    fn simulate(
         &self,
-        processor: &mut Architecture::ProcessorState,
-        memory: &[MemoryDelta<'_, Architecture>],
+        processor: &Architecture::ProcessorState,
+        memory: MemorySnapshot<'_, '_, Architecture>,
         mutation_hook: &mut impl MemorySink<Architecture>,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<Architecture::ProcessorStateExpectation, Self::Error>;
 
     /// Simulates applying this instruction to the before state.
-    fn simulate<'memory>(
+    fn simulate_state<'memory>(
         &self,
         mut before: ExecutionState<'memory, Architecture>,
-    ) -> Result<ExecutionState<'memory, Architecture>, Self::Error> {
+    ) -> Result<ExecutionStateExpectation<'memory, Architecture>, Self::Error> {
         let mut mutations = Vec::new();
-        self.simulate_in_place(
-            &mut before.processor,
-            &before.memory_mutations,
-            &mut mutations,
-        )?;
+        let processor = self.simulate(&before.processor, before.memory(), &mut mutations)?;
         before.memory_mutations.append(&mut mutations);
-        Ok(before)
+        Ok(ExecutionStateExpectation {
+            processor,
+            memory_mutations: before.memory_mutations,
+        })
     }
 }
 
@@ -100,6 +107,14 @@ pub struct ExecutionState<'memory, Architecture: ProcessorArchitecture> {
     pub memory_mutations: Vec<MemoryDelta<'memory, Architecture>>,
 }
 
+/// What a behavior expects an instruction to leave behind.
+#[derive(Clone)]
+pub struct ExecutionStateExpectation<'memory, Architecture: ProcessorArchitecture> {
+    pub processor: Architecture::ProcessorStateExpectation,
+    /// The changes expected to have been applied to the memory (as if it started from a fully zeroed out state), in chronological order.
+    pub memory_mutations: Vec<MemoryDelta<'memory, Architecture>>,
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum MemoryDelta<'memory, Architecture: ProcessorArchitecture> {
     PermissionAssignment {
@@ -128,13 +143,17 @@ impl<Architecture: ProcessorArchitecture> MemoryDelta<'_, Architecture> {
             },
         }
     }
+}
 
-    /// Calls the hook with each mutation that turns the old memory snapshot into the new one, bytes before permissions.
-    pub fn diff_snapshots(
-        old: &[Self],
-        new: &[Self],
-        mutation_hook: &mut impl MemorySink<Architecture>,
-    ) {
+/// Memory as the mutations applied to it from a fully zeroed out state, in chronological order.
+pub struct MemorySnapshot<'snapshot, 'memory, Architecture: ProcessorArchitecture> {
+    pub mutations: &'snapshot [MemoryDelta<'memory, Architecture>],
+}
+
+impl<Architecture: ProcessorArchitecture> MemorySnapshot<'_, '_, Architecture> {
+    /// Calls the hook with each mutation that turns this snapshot into the new one, bytes before permissions.
+    pub fn diff(&self, new: &Self, mutation_hook: &mut impl MemorySink<Architecture>) {
+        let (old, new) = (self.mutations, new.mutations);
         /// Returns whether the two mutations assign the same thing to the same addresses, the same slice of bytes first.
         fn is_same_mutation<Architecture: ProcessorArchitecture>(
             first: &MemoryDelta<'_, Architecture>,
@@ -329,21 +348,63 @@ impl<Architecture: ProcessorArchitecture> MemoryDelta<'_, Architecture> {
     }
 }
 
-/// Two states are equal when they hold the same processor and the same memory, regardless of the order of changes.
-impl<Architecture: ProcessorArchitecture> PartialEq for ExecutionState<'_, Architecture> {
+/// Two snapshots are equal when they hold the same memory, regardless of the order of mutations.
+impl<Architecture: ProcessorArchitecture> PartialEq for MemorySnapshot<'_, '_, Architecture> {
     fn eq(&self, other: &Self) -> bool {
-        if self.processor != other.processor {
-            return false;
-        }
         // VERUS: no closure that captures a mutable reference, so the mutations are collected and counted.
         let mut mutations = Vec::new();
-        MemoryDelta::diff_snapshots(
-            &self.memory_mutations,
-            &other.memory_mutations,
-            &mut mutations,
-        );
+        self.diff(other, &mut mutations);
         mutations.is_empty()
     }
 }
 
+impl<Architecture: ProcessorArchitecture> Eq for MemorySnapshot<'_, '_, Architecture> {}
+
+/// Two states are equal when they hold the same processor and the same memory.
+impl<Architecture: ProcessorArchitecture> PartialEq for ExecutionState<'_, Architecture> {
+    fn eq(&self, other: &Self) -> bool {
+        self.processor == other.processor && self.memory() == other.memory()
+    }
+}
+
 impl<Architecture: ProcessorArchitecture> Eq for ExecutionState<'_, Architecture> {}
+
+impl<'memory, Architecture: ProcessorArchitecture> ExecutionState<'memory, Architecture> {
+    /// Returns the memory of this state.
+    pub fn memory(&self) -> MemorySnapshot<'_, 'memory, Architecture> {
+        MemorySnapshot {
+            mutations: &self.memory_mutations,
+        }
+    }
+
+    /// Returns whether this observed state has the memory and every processor value the expectation holds.
+    pub fn meets_expectations(
+        &self,
+        expectation: &ExecutionStateExpectation<'_, Architecture>,
+    ) -> bool {
+        self.memory() == expectation.memory()
+            && Architecture::meets_expectations(&self.processor, &expectation.processor)
+    }
+}
+
+/// Two expectations are equal when they hold the same processor expectation and the same memory.
+impl<Architecture: ProcessorArchitecture> PartialEq
+    for ExecutionStateExpectation<'_, Architecture>
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.processor == other.processor && self.memory() == other.memory()
+    }
+}
+
+impl<Architecture: ProcessorArchitecture> Eq for ExecutionStateExpectation<'_, Architecture> {}
+
+impl<'memory, Architecture: ProcessorArchitecture>
+    ExecutionStateExpectation<'memory, Architecture>
+{
+    /// Returns the memory this expectation holds.
+    pub fn memory(&self) -> MemorySnapshot<'_, 'memory, Architecture> {
+        MemorySnapshot {
+            mutations: &self.memory_mutations,
+        }
+    }
+}
