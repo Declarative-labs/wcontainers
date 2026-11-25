@@ -16,7 +16,8 @@ use wcontainers_metal::{
 
 use crate::objects::{QueryObj, SetResource, ShaderObj, Shared, SlotKind, ViewObj};
 use crate::{
-    FIRST_STREAM_SLOT, IMMEDIATES_SLOT, MetalGpu, ProgramObj, QUERY_BYTES, SIZES_SLOT, convert,
+    FIRST_STREAM_SLOT, IMMEDIATES_SLOT, MetalGpu, ProgramObj, QUERY_BYTES, SIZES_SLOT,
+    VERTEX_STREAMS, convert, count_up,
 };
 
 /// The blocks, targets and primitive class one render pipeline is built for.
@@ -322,6 +323,14 @@ fn aspects(format: Format) -> (bool, bool) {
     }
 }
 
+/// Returns the buffer slot of a vertex stream, none past the slots the streams take.
+fn stream_slot(stream: usize) -> Option<u32> {
+    u32::try_from(stream)
+        .ok()
+        .filter(|stream| *stream < VERTEX_STREAMS)
+        .and_then(|stream| FIRST_STREAM_SLOT.checked_add(stream))
+}
+
 /// Returns Metal's vertex buffers of a vertex layout, each stream in its own slot.
 fn vertex_buffers(
     layout: &wcontainers_gpu::VertexLayoutDesc,
@@ -341,7 +350,11 @@ fn vertex_buffers(
         {
             let format = convert::vertex_format(a.format)
                 .ok_or("a vertex format naga's vertex reads lack")?;
-            end = end.max(a.offset + convert::vertex_bytes(a.format));
+            let attribute_end = a
+                .offset
+                .checked_add(convert::vertex_bytes(a.format))
+                .ok_or("an attribute whose end overflows")?;
+            end = end.max(attribute_end);
             attributes.push(VertexAttribute {
                 location: a.location,
                 offset: a.offset,
@@ -349,12 +362,17 @@ fn vertex_buffers(
             });
         }
         let (stride, step_function) = match (s.stride, s.step) {
-            (0, _) => (end.next_multiple_of(4).max(4), VertexStepFunction::Constant),
+            (0, _) => (
+                end.checked_next_multiple_of(4)
+                    .ok_or("an attribute whose end overflows")?
+                    .max(4),
+                VertexStepFunction::Constant,
+            ),
             (stride, StepMode::Vertex) => (stride, VertexStepFunction::PerVertex),
             (stride, StepMode::Instance(_)) => (stride, VertexStepFunction::PerInstance),
         };
         out.push(VertexBufferLayout {
-            buffer_index: FIRST_STREAM_SLOT + stream as u32,
+            buffer_index: stream_slot(stream).ok_or("a stream past the slots")?,
             stride,
             step_function,
             attributes,
@@ -566,11 +584,12 @@ impl<M: Metal> MetalGpu<M> {
                 if x1 <= x0 || y1 <= y0 {
                     return Ok(());
                 }
+                // Both ends were compared above, so neither difference is below zero.
                 ScissorRect {
                     x: x0,
                     y: y0,
-                    width: x1 - x0,
-                    height: y1 - y0,
+                    width: x1.saturating_sub(x0),
+                    height: y1.saturating_sub(y0),
                 }
             }
             None => ScissorRect {
@@ -761,7 +780,7 @@ impl<M: Metal> MetalGpu<M> {
                 buffer,
                 offset,
                 length,
-                index: FIRST_STREAM_SLOT + stream as u32,
+                index: stream_slot(stream).ok_or("a stream past the slots")?,
             });
         }
         if !call.immediates.is_empty() {
@@ -811,7 +830,10 @@ impl<M: Metal> MetalGpu<M> {
                     index_count: count,
                     index_type,
                     index_buffer: index.buffer.raw.borrow().clone(),
-                    index_buffer_offset: index.offset + u64::from(first) * size,
+                    index_buffer_offset: u64::from(first)
+                        .checked_mul(size)
+                        .and_then(|bytes| index.offset.checked_add(bytes))
+                        .ok_or("indices whose offset overflows")?,
                     instance_count: instances,
                     base_vertex,
                     base_instance: first_instance,
@@ -1009,7 +1031,7 @@ impl<M: Metal> MetalGpu<M> {
         }
         self.flush_blits();
         let command_buffer = self.command_buffer()?;
-        self.encodes += 1;
+        count_up(&mut self.encodes);
         if let Err(error) =
             self.metal
                 .encode_render_commands(&command_buffer, &pass.descriptor(), &pass.commands)

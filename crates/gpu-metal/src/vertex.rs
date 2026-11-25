@@ -46,20 +46,27 @@ fn widened(format: VertexFormat) -> Option<VertexFormat> {
 /// Returns a float of `mantissa` bits over a 5-bit exponent, with no sign, as an f32, exactly.
 fn small_float(bits: u32, mantissa: u32) -> f32 {
     let exponent = (bits >> mantissa) & 0x1f;
-    let fraction = bits & ((1 << mantissa) - 1);
+    let fraction = bits & !(u32::MAX << mantissa);
     let scale = (1u32 << mantissa) as f32;
     match exponent {
         0 => fraction as f32 / scale * 2f32.powi(-14),
         0x1f if fraction == 0 => f32::INFINITY,
         0x1f => f32::NAN,
-        e => (1.0 + fraction as f32 / scale) * 2f32.powi(e as i32 - 15),
+        // The exponent is below 31, so the unbiased one lies within -14 to 15.
+        e => {
+            (1.0 + fraction as f32 / scale)
+                * 2f32.powi(i32::try_from(e).unwrap_or(i32::MIN).saturating_sub(15))
+        }
     }
 }
 
 /// Appends one attribute's value, widened, to `out`.
 fn widen(format: VertexFormat, src: &[u8], out: &mut Vec<u8>) {
     use VertexFormat as V;
-    let word = |at: usize| u32::from_le_bytes([src[at], src[at + 1], src[at + 2], src[at + 3]]);
+    let word = || {
+        src.first_chunk::<4>()
+            .map_or(u32::MIN, |w| u32::from_le_bytes(*w))
+    };
     match format {
         V::Uint8x3 | V::Sint8x3 => out.extend_from_slice(&[src[0], src[1], src[2], 1]),
         V::Unorm8x3 => out.extend_from_slice(&[src[0], src[1], src[2], u8::MAX]),
@@ -81,13 +88,13 @@ fn widen(format: VertexFormat, src: &[u8], out: &mut Vec<u8>) {
             out.extend_from_slice(&half_one().to_le_bytes());
         }
         V::Uint10_10_10_2 => {
-            let w = word(0);
+            let w = word();
             for (shift, bits) in [(0, 10), (10, 10), (20, 10), (30, 2)] {
-                out.extend_from_slice(&(((w >> shift) & ((1 << bits) - 1)) as u16).to_le_bytes());
+                out.extend_from_slice(&(((w >> shift) & !(u32::MAX << bits)) as u16).to_le_bytes());
             }
         }
         V::Float11_11_10 => {
-            let w = word(0);
+            let w = word();
             for value in [
                 small_float(w & 0x7ff, 6),
                 small_float((w >> 11) & 0x7ff, 6),
@@ -152,7 +159,9 @@ impl<M: Metal> MetalGpu<M> {
                 .filter_map(|(i, a)| a.filter(|a| a.stream as usize == stream).map(|a| (i, a)))
                 .collect();
             places.sort_by_key(|(_, a)| a.offset);
-            let mut stride = 0;
+            // Every place and length below is checked: one that overflows refuses the draw.
+            let overflow = GpuError::Invalid("a vertex stream whose elements overflow");
+            let mut stride: u32 = 0;
             for (i, a) in &places {
                 let format = widened(a.format).unwrap_or(a.format);
                 layout.attributes[*i] = Some(VertexAttribute {
@@ -160,30 +169,41 @@ impl<M: Metal> MetalGpu<M> {
                     format,
                     ..*a
                 });
-                stride += convert::vertex_bytes(format).next_multiple_of(ATTRIBUTE_ALIGNMENT);
+                stride = convert::vertex_bytes(format)
+                    .checked_next_multiple_of(ATTRIBUTE_ALIGNMENT)
+                    .and_then(|bytes| stride.checked_add(bytes))
+                    .ok_or(overflow)?;
             }
             let source_stride = u64::from(s.stride);
             let elements = length.checked_div(source_stride).unwrap_or(1);
             let resumed = self.end_open_pass();
             let bytes = self.read_buffer_now(&raw, binding.offset, length);
             self.pass = resumed;
-            let mut out = Vec::with_capacity(elements as usize * stride as usize);
-            for element in 0..elements as usize {
-                let at = element * s.stride as usize;
+            // The bytes read back bound the elements, so the widened copy is bounded by the stream's buffer.
+            let capacity = usize::try_from(elements)
+                .ok()
+                .and_then(|elements| elements.checked_mul(stride as usize))
+                .ok_or(overflow)?;
+            let mut out = Vec::with_capacity(capacity.min(bytes.len().saturating_mul(4)));
+            for element in 0..usize::try_from(elements).map_err(|_| overflow)? {
+                let at = element.checked_mul(s.stride as usize).ok_or(overflow)?;
                 for (_, a) in &places {
-                    let start = at + a.offset as usize;
-                    let end = start + convert::vertex_bytes(a.format) as usize;
+                    let start = at.checked_add(a.offset as usize).ok_or(overflow)?;
+                    let end = start
+                        .checked_add(convert::vertex_bytes(a.format) as usize)
+                        .ok_or(overflow)?;
                     let Some(src) = bytes.get(start..end) else {
-                        out.resize(
-                            out.len()
-                                + convert::vertex_bytes(widened(a.format).unwrap_or(a.format))
-                                    as usize,
-                            0,
-                        );
+                        let widened_bytes =
+                            convert::vertex_bytes(widened(a.format).unwrap_or(a.format)) as usize;
+                        out.resize(out.len().checked_add(widened_bytes).ok_or(overflow)?, 0);
                         continue;
                     };
                     widen(a.format, src, &mut out);
-                    out.resize(out.len().next_multiple_of(ATTRIBUTE_ALIGNMENT as usize), 0);
+                    let aligned = out
+                        .len()
+                        .checked_next_multiple_of(ATTRIBUTE_ALIGNMENT as usize)
+                        .ok_or(overflow)?;
+                    out.resize(aligned, 0);
                 }
             }
             layout.streams[stream] = Some(VertexStream {

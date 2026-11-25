@@ -53,14 +53,25 @@ impl<M: Metal> MetalGpu<M> {
         offsets: &mut [u64],
     ) -> Result<Shared<BufferObj<M>>, GpuError> {
         let align = u64::from(align).max(PART_ALIGNMENT);
-        let total: u64 = parts
+        let too_long = GpuError::Invalid("ring parts longer than a buffer holds");
+        // The parts' bytes, each at its aligned place.
+        let total = parts
             .iter()
-            .map(|p| (p.len() as u64).next_multiple_of(align))
-            .sum();
+            .try_fold(u64::MIN, |total, p| {
+                (p.len() as u64)
+                    .checked_next_multiple_of(align)
+                    .and_then(|bytes| total.checked_add(bytes))
+            })
+            .ok_or(too_long)?;
         let slot = kind as usize;
         let encodes = self.encodes;
-        let fits =
-            |chunk: &Chunk<M>| chunk.head.next_multiple_of(align) + total <= chunk.buffer.size;
+        let fits = |chunk: &Chunk<M>| {
+            chunk
+                .head
+                .checked_next_multiple_of(align)
+                .and_then(|head| head.checked_add(total))
+                .is_some_and(|end| end <= chunk.buffer.size)
+        };
         let current = match self.rings[slot].current {
             Some((index, opened)) if opened == encodes && fits(&self.rings[slot].chunks[index]) => {
                 Some(index)
@@ -81,11 +92,15 @@ impl<M: Metal> MetalGpu<M> {
                 let index = match free {
                     Some(index) => index,
                     None => {
-                        let size = total.max(CHUNK_BYTES).next_power_of_two();
+                        let size = total
+                            .max(CHUNK_BYTES)
+                            .checked_next_power_of_two()
+                            .ok_or(too_long)?;
                         let raw = self
                             .metal
-                            .make_buffer(rounded(size))
+                            .make_buffer(rounded(size).ok_or(too_long)?)
                             .map_err(|_| GpuError::OutOfMemory)?;
+                        let index = self.rings[slot].chunks.len();
                         self.rings[slot].chunks.push(Chunk {
                             buffer: Shared(Rc::new(BufferObj {
                                 size,
@@ -94,7 +109,7 @@ impl<M: Metal> MetalGpu<M> {
                             })),
                             head: u64::MIN,
                         });
-                        self.rings[slot].chunks.len() - 1
+                        index
                     }
                 };
                 self.rings[slot].chunks[index].head = 0;
@@ -105,18 +120,18 @@ impl<M: Metal> MetalGpu<M> {
         let chunk = &self.rings[slot].chunks[index];
         let (buffer, mut head) = (chunk.buffer.clone(), chunk.head);
         let raw = buffer.raw.borrow().clone();
+        // Every place below is inside the chunk, which `fits` or the chunk's size checked against `total`.
         for (part, offset) in parts.iter().zip(offsets.iter_mut()) {
-            head = head.next_multiple_of(align);
+            head = head.checked_next_multiple_of(align).ok_or(too_long)?;
             *offset = head;
             self.metal
                 .write_contents(&raw, head, part)
                 .map_err(|_| GpuError::Invalid("a ring chunk Metal's work still uses"))?;
-            head += part.len() as u64;
+            head = head.checked_add(part.len() as u64).ok_or(too_long)?;
         }
         if total == 0 {
-            offsets
-                .iter_mut()
-                .for_each(|o| *o = head.next_multiple_of(align));
+            let place = head.checked_next_multiple_of(align).ok_or(too_long)?;
+            offsets.iter_mut().for_each(|o| *o = place);
         }
         self.rings[slot].chunks[index].head = head;
         Ok(buffer)

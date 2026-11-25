@@ -10,9 +10,9 @@ use wcontainers_gpu::{
     CullMode, DepthAttachment, DepthStencilDesc, DrawCall, DrawRange, Extent, Features, FillMode,
     Filter, Format, FrontFace, Gpu, GpuError, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS,
     MapIntent, Origin, PassDesc, Program, ProvokingVertex, QueryKind, RasterDesc, ReadSource,
-    RenderTargetBlend, RingKind, SamplerDesc, ShaderModule, ShaderStage, StageSet, StencilFace,
-    StencilOp, StoreOp, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    TextureViewDesc, Topology, VertexLayoutDesc, ViewDimension, Viewport, WriteMode,
+    ReadState, RenderTargetBlend, RingKind, SamplerDesc, ShaderModule, ShaderStage, SlowPath,
+    StageSet, StencilFace, StencilOp, StoreOp, TextureDesc, TextureDimension, TextureRegion,
+    TextureUsage, TextureViewDesc, Topology, VertexLayoutDesc, ViewDimension, Viewport, WriteMode,
 };
 use wcontainers_gpu_metal::MetalGpu;
 use wcontainers_gpu_test::Recorder;
@@ -28,6 +28,20 @@ const DRAWN_SIDE: u32 = 4;
 const RGBA8_BYTES: usize = wcontainers_gpu::FORMAT_FACTS[Format::Rgba8Unorm as usize]
     .block
     .2 as usize;
+
+/// The bytes of one row of a target `DRAWN_SIDE` wide.
+const DRAWN_ROW_BYTES: u32 = DRAWN_SIDE * RGBA8_BYTES as u32;
+
+/// The bytes of a square target of `DRAWN_SIDE`.
+const DRAWN_BYTES: u32 = DRAWN_ROW_BYTES * DRAWN_SIDE;
+
+/// Returns the product of a test's sizes, which fits.
+fn product(numbers: &[usize]) -> usize {
+    numbers
+        .iter()
+        .try_fold(1usize, |total, n| total.checked_mul(*n))
+        .expect("a test's size fits")
+}
 
 /// The tests' programs: a covering triangle or two halves, flat or uniform colors, a mirrored sample and a load.
 const PROGRAMS: &str = "
@@ -138,7 +152,7 @@ fn whole<B: Gpu>(texture: &B::Texture) -> TextureRegion<'_, B> {
 
 /// Reads a texture back, tightly packed.
 fn read_texture<B: Gpu>(b: &mut B, texture: &B::Texture, width: u32, texel: usize) -> Vec<u8> {
-    let mut out = vec![0; width as usize * DRAWN_SIDE as usize * texel];
+    let mut out = vec![0; product(&[width as usize, DRAWN_SIDE as usize, texel])];
     let extent = Extent {
         width,
         height: DRAWN_SIDE,
@@ -468,7 +482,7 @@ fn mirror_once_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
         false,
     );
     let texels: Vec<u8> = (0..DRAWN_SIDE * DRAWN_SIDE)
-        .flat_map(|i| [10 * (1 + (i % DRAWN_SIDE) as u8), 0, 0, u8::MAX])
+        .flat_map(|i| [[10, 20, 30, 40][(i % DRAWN_SIDE) as usize], 0, 0, u8::MAX])
         .collect();
     b.write_texture(
         &whole(&source),
@@ -478,7 +492,7 @@ fn mirror_once_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
             depth_or_layers: 1,
         },
         &texels,
-        DRAWN_SIDE * RGBA8_BYTES as u32,
+        DRAWN_ROW_BYTES,
         DRAWN_SIDE,
         WriteMode::Ordered,
     );
@@ -697,10 +711,21 @@ fn fractional_bias_scene<B: Gpu>(b: &mut B, bias: f32) -> Vec<u8> {
 
 #[test]
 fn a_fractional_depth_bias_moves_depth_as_the_reference_does() {
-    let reference_depth =
-        fractional_bias_scene(&mut reference(Features::FRACTIONAL_DEPTH_BIAS), 2.5);
-    assert_eq!(fractional_bias_scene(&mut device(), 2.5), reference_depth);
-    assert_ne!(fractional_bias_scene(&mut device(), 0.0), reference_depth);
+    // At depth one half the bias's unit is one step of 32-bit float depth, so a bias lands on the nearest whole step:
+    // 2.25 on 2 and 2.75 on 3. Truncating the bias, or rounding it up, moves one of the two off the reference's.
+    let mut held = Vec::new();
+    for bias in [2.25, 2.75] {
+        let reference_depth =
+            fractional_bias_scene(&mut reference(Features::FRACTIONAL_DEPTH_BIAS), bias);
+        assert_eq!(
+            fractional_bias_scene(&mut device(), bias),
+            reference_depth,
+            "a bias of {bias}"
+        );
+        held.push(reference_depth);
+    }
+    assert_ne!(held[0], held[1], "the two biases land on the same step");
+    assert_ne!(fractional_bias_scene(&mut device(), 0.0), held[0]);
 }
 
 /// Writes `rgba8Unorm` texels, loads them through a view in `rgba8Uint`, and returns what the loads wrote.
@@ -712,7 +737,7 @@ fn reinterpret_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
         TextureUsage::SAMPLE | TextureUsage::COPY_DST,
         true,
     );
-    let texels: Vec<u8> = (0..DRAWN_SIDE * DRAWN_SIDE * RGBA8_BYTES as u32)
+    let texels: Vec<u8> = (0..DRAWN_BYTES)
         .map(|i| (i as u8).wrapping_mul(29))
         .collect();
     b.write_texture(
@@ -723,7 +748,7 @@ fn reinterpret_scene<B: Gpu>(b: &mut B) -> Vec<u8> {
             depth_or_layers: 1,
         },
         &texels,
-        DRAWN_SIDE * RGBA8_BYTES as u32,
+        DRAWN_ROW_BYTES,
         DRAWN_SIDE,
         WriteMode::Ordered,
     );
@@ -880,7 +905,7 @@ fn prepared_scene(prepare: bool) -> (Vec<u8>, u64) {
     let after = b.slow_paths().counts[wcontainers_gpu::SlowPath::PipelineMiss as usize];
     (
         read_texture(&mut b, &drawn, DRAWN_SIDE, RGBA8_BYTES),
-        after - before,
+        after.checked_sub(before).expect("misses only grow"),
     )
 }
 
@@ -892,15 +917,21 @@ fn prepare_builds_the_pipeline_so_the_draw_finds_it() {
     assert_eq!((misses, misses_at_draw), (0, 1));
 }
 
-/// Fills every level of a texture from level zero, by Metal's blit or by the default's draws, and returns every level.
-fn mips_scene(native: bool, width: u32, height: u32, levels: u32) -> Vec<u8> {
+/// Fills levels `mips` of layers `layers` of a texture from the level above, by this implementation's `generate_mips` or
+/// by the default's draws, after writing every level of every layer apart; returns every level of every layer.
+fn mips_scene(
+    native: bool,
+    (width, height, levels, layer_count): (u32, u32, u32, u32),
+    mips: std::ops::Range<u32>,
+    layers: std::ops::Range<u32>,
+) -> Vec<u8> {
     let mut b = device();
     let desc = TextureDesc {
         dimension: TextureDimension::D2,
         format: Format::Rgba8Unorm,
         width,
         height,
-        depth_or_layers: 1,
+        depth_or_layers: layer_count,
         mip_levels: levels,
         samples: 1,
         usage: TextureUsage::RENDER
@@ -911,69 +942,288 @@ fn mips_scene(native: bool, width: u32, height: u32, levels: u32) -> Vec<u8> {
         reinterpret: false,
     };
     let texture = b.create_texture(&desc).expect("create_texture");
-    let texels: Vec<u8> = (0..width * height * RGBA8_BYTES as u32)
-        .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
-        .collect();
-    b.write_texture(
-        &whole(&texture),
-        Extent {
-            width,
-            height,
-            depth_or_layers: 1,
-        },
-        &texels,
-        width * RGBA8_BYTES as u32,
-        height,
-        WriteMode::Ordered,
-    );
-    if native {
-        b.generate_mips(&texture, &desc, desc.format, 1..levels, 0..1)
-    } else {
-        wcontainers_gpu::generate_mips_by_draws(
-            &mut b,
-            &texture,
-            &desc,
-            desc.format,
-            1..levels,
-            0..1,
-        )
-    }
-    .expect("generate_mips");
-    b.submit();
-    let mut all = Vec::new();
-    for mip in 1..levels {
-        let (w, h) = ((width >> mip).max(1), (height >> mip).max(1));
-        let mut out = vec![0; (w * h) as usize * RGBA8_BYTES];
-        b.read_back_now(
-            &ReadSource::Texture {
-                region: TextureRegion {
+    let side = |n: u32, mip: u32| n.checked_shr(mip).unwrap_or(0).max(1);
+    let bytes = |w: u32, h: u32| product(&[w as usize, h as usize, RGBA8_BYTES]);
+    // Each level of each layer holds its own bytes, so a level the call must keep shows if it was filled.
+    for layer in 0..layer_count {
+        for mip in 0..levels {
+            let (w, h) = (side(width, mip), side(height, mip));
+            let seed = layer.wrapping_mul(levels).wrapping_add(mip).wrapping_add(1);
+            let texels: Vec<u8> = (0..bytes(w, h))
+                .map(|i| ((i as u32).wrapping_add(seed).wrapping_mul(2_654_435_761) >> 24) as u8)
+                .collect();
+            b.write_texture(
+                &TextureRegion {
                     mip,
+                    layer,
                     ..whole(&texture)
                 },
-                extent: Extent {
+                Extent {
                     width: w,
                     height: h,
                     depth_or_layers: 1,
                 },
-            },
-            &mut out,
-        )
-        .expect("read_back_now");
-        all.extend(out);
+                &texels,
+                w.checked_mul(RGBA8_BYTES as u32).expect("a row fits"),
+                h,
+                WriteMode::Ordered,
+            );
+        }
+    }
+    if native {
+        b.generate_mips(&texture, &desc, desc.format, mips, layers)
+    } else {
+        wcontainers_gpu::generate_mips_by_draws(&mut b, &texture, &desc, desc.format, mips, layers)
+    }
+    .expect("generate_mips");
+    b.submit();
+    let mut all = Vec::new();
+    for layer in 0..layer_count {
+        for mip in 0..levels {
+            let (w, h) = (side(width, mip), side(height, mip));
+            let mut out = vec![0; bytes(w, h)];
+            b.read_back_now(
+                &ReadSource::Texture {
+                    region: TextureRegion {
+                        mip,
+                        layer,
+                        ..whole(&texture)
+                    },
+                    extent: Extent {
+                        width: w,
+                        height: h,
+                        depth_or_layers: 1,
+                    },
+                },
+                &mut out,
+            )
+            .expect("read_back_now");
+            all.extend(out);
+        }
     }
     all
 }
 
 #[test]
 fn mipmaps_by_metal_match_the_default() {
-    for (width, height, levels) in [(8, 8, 4), (6, 5, 3), (2, 2, 2)] {
-        let native = mips_scene(true, width, height, levels);
-        let drawn = mips_scene(false, width, height, levels);
+    // Whole chains, which Metal's blit fills, and parts of chains and of layers, which the levels and layers outside
+    // must keep: a blit for a part would fill them too.
+    let cases = [
+        ((8, 8, 4, 1), 1..4, 0..1),
+        ((6, 5, 3, 1), 1..3, 0..1),
+        ((2, 2, 2, 1), 1..2, 0..1),
+        ((8, 8, 4, 1), 2..4, 0..1),
+        ((8, 8, 4, 1), 1..2, 0..1),
+        ((8, 8, 4, 2), 1..4, 1..2),
+        ((8, 8, 4, 2), 1..4, 0..2),
+    ];
+    for (shape, mips, layers) in cases {
+        let native = mips_scene(true, shape, mips.clone(), layers.clone());
+        let drawn = mips_scene(false, shape, mips.clone(), layers.clone());
         assert!(native.iter().any(|&byte| byte != 0), "no level was filled");
         let worst = native.iter().zip(&drawn).map(|(n, d)| n.abs_diff(*d)).max();
         assert!(
             worst <= Some(1),
-            "{width}x{height}: Metal's mipmaps differ from the default's by {worst:?}"
+            "{shape:?} levels {mips:?} layers {layers:?}: this implementation's mipmaps differ from the default's by \
+             {worst:?}"
         );
     }
+}
+
+/// The device this file's tests draw with.
+type Device = MetalGpu<DirectMetal>;
+
+/// The trait's default `read_back_now`, which this implementation overrides, as the trait writes it.
+fn read_back_now_by_default(
+    b: &mut Device,
+    src: &ReadSource<'_, Device>,
+    dst: &mut [u8],
+) -> Result<(), GpuError> {
+    let readback = b.read_back(src)?;
+    if b.read_state(&readback) == ReadState::Pending {
+        b.record_slow_path(SlowPath::ReadBackWait);
+        b.wait_read(&readback);
+    }
+    b.finish_read(readback, dst);
+    Ok(())
+}
+
+/// The trait's default `resolve_queries`, which this implementation overrides, as the trait writes it.
+fn resolve_queries_by_default(
+    b: &mut Device,
+    set: &<Device as Gpu>::QuerySet,
+    first: u32,
+    count: u32,
+    dst: &<Device as Gpu>::Buffer,
+    dst_offset: u64,
+) -> Result<(), GpuError> {
+    if !dst_offset.is_multiple_of(8) {
+        return Err(GpuError::Invalid(
+            "query results go to multiples of 8 bytes",
+        ));
+    }
+    let readback = b.read_queries(set, first, count)?;
+    if b.read_state(&readback) == ReadState::Pending {
+        b.record_slow_path(SlowPath::QueryResolveWait);
+        b.wait_read(&readback);
+    }
+    let mut bytes = vec![0; product(&[count as usize, 8])];
+    b.finish_read(readback, &mut bytes);
+    b.write_buffer(dst, dst_offset, &bytes, WriteMode::Ordered);
+    Ok(())
+}
+
+/// A byte no read back or resolve writes, in every byte a call must leave alone.
+const UNTOUCHED: u8 = 0xEE;
+
+/// Reads a 64-byte buffer that a GPU copy wrote, by the override or by the default, and returns all the call did.
+fn read_back_now_edge(by_default: bool, offset: u64, size: u64, length: usize) -> String {
+    let mut b = device();
+    let bytes: Vec<u8> = (0..64).map(|i: u8| i.wrapping_mul(37)).collect();
+    let source = buffer(&mut b, 64);
+    let copy = buffer(&mut b, 64);
+    b.write_buffer(&source, 0, &bytes, WriteMode::Ordered);
+    b.copy_buffer(&source, 4, &copy, 0, 60);
+    let mut out = vec![UNTOUCHED; length];
+    let src = ReadSource::Buffer {
+        buffer: &copy,
+        offset,
+        size,
+    };
+    let result = if by_default {
+        read_back_now_by_default(&mut b, &src, &mut out)
+    } else {
+        b.read_back_now(&src, &mut out)
+    };
+    let fence = b.submit();
+    b.wait_fence(&fence);
+    format!("{result:?} {:?} {out:?}", b.status())
+}
+
+#[test]
+fn read_back_now_agrees_with_its_default_on_every_edge() {
+    // A range past the end is the error `read_back` gives, as the recorder gives it; the device stays usable.
+    for (offset, size, length) in [
+        (0, 64, 64),
+        (3, 5, 5),
+        (8, 16, 4),
+        (0, 0, 4),
+        (64, 0, 0),
+        (60, 8, 8),
+        (65, 0, 0),
+        (u64::MAX, 2, 2),
+        (1, u64::MAX, 4),
+    ] {
+        assert_eq!(
+            read_back_now_edge(false, offset, size, length),
+            read_back_now_edge(true, offset, size, length),
+            "offset {offset}, size {size}, into {length}"
+        );
+    }
+    assert!(read_back_now_edge(false, 60, 8, 8).starts_with("Err(Invalid"));
+}
+
+/// Resolves queries of a set of three into a buffer, by the override or by the default, and returns all the call did.
+fn resolve_queries_edge(
+    by_default: bool,
+    first: u32,
+    count: u32,
+    dst_offset: u64,
+    size: u64,
+) -> String {
+    let mut b = device();
+    let set = b
+        .create_query_set(QueryKind::Occlusion, 3)
+        .expect("create_query_set");
+    let dst = buffer(&mut b, size);
+    let fill = vec![UNTOUCHED; usize::try_from(size).expect("a test size fits")];
+    b.write_buffer(&dst, 0, &fill, WriteMode::Ordered);
+    let result = if by_default {
+        resolve_queries_by_default(&mut b, &set, first, count, &dst, dst_offset)
+    } else {
+        b.resolve_queries(&set, first, count, &dst, dst_offset)
+    };
+    let mut out = fill;
+    let fence = b.submit();
+    b.wait_fence(&fence);
+    let status = b.status();
+    b.read_back_now(
+        &ReadSource::Buffer {
+            buffer: &dst,
+            offset: 0,
+            size,
+        },
+        &mut out,
+    )
+    .expect("read_back_now");
+    format!("{result:?} {status:?} {out:?}")
+}
+
+#[test]
+fn resolve_queries_agrees_with_its_default_on_every_edge() {
+    // No queries write nothing and answer Ok, as the recorder does; results past the buffer's end lose the device, as
+    // the default's `write_buffer` does.
+    for (first, count, dst_offset, size) in [
+        (0, 3, 0, 24),
+        (1, 2, 8, 32),
+        (0, 0, 0, 8),
+        (3, 0, 0, 8),
+        (0, 0, 1024, 8),
+        (0, 3, 0, 22),
+        (0, 3, 0, 16),
+        (2, 2, 0, 32),
+        (0, 1, 4, 16),
+        (u32::MAX, 2, 0, 16),
+    ] {
+        assert_eq!(
+            resolve_queries_edge(false, first, count, dst_offset, size),
+            resolve_queries_edge(true, first, count, dst_offset, size),
+            "queries {first} and {count} on, into {dst_offset} of {size} bytes"
+        );
+    }
+}
+
+/// Clears a 64-byte buffer once and returns the device's status and the buffer's bytes.
+fn clear_scene(size: u64, pattern: &[u8]) -> (wcontainers_gpu::DeviceStatus, Vec<u8>) {
+    let mut b = device();
+    let cleared = buffer(&mut b, 64);
+    b.write_buffer(&cleared, 0, &[UNTOUCHED; 64], WriteMode::Ordered);
+    b.clear_buffer(&cleared, 0, size, pattern);
+    let fence = b.submit();
+    b.wait_fence(&fence);
+    let status = b.status();
+    let mut read = vec![0; 64];
+    b.read_back_now(
+        &ReadSource::Buffer {
+            buffer: &cleared,
+            offset: 0,
+            size: 64,
+        },
+        &mut read,
+    )
+    .expect("read_back_now");
+    (status, read)
+}
+
+#[test]
+fn a_clear_of_a_huge_size_or_an_empty_pattern_is_refused_not_fatal() {
+    // Each was once fatal: an allocation of the caller's size before any check, or the first byte of no pattern.
+    let lost = wcontainers_gpu::DeviceStatus::Lost(wcontainers_gpu::LossReason::Error);
+    for (size, pattern) in [
+        (1 << 62, &[1, 2][..]),
+        (u64::MAX, &[1, 2, 3, 4][..]),
+        (u64::MAX - 1, &[1, 2][..]),
+        (66, &[1, 2][..]),
+        (64, &[][..]),
+        (6, &[1, 2, 3, 4][..]),
+    ] {
+        assert_eq!(
+            clear_scene(size, pattern),
+            (lost, vec![UNTOUCHED; 64]),
+            "{size} bytes of {pattern:?}"
+        );
+    }
+    let (status, read) = clear_scene(64, &[1, 2]);
+    assert_eq!(status, wcontainers_gpu::DeviceStatus::Ok);
+    assert_eq!(read, [1, 2].repeat(32));
 }

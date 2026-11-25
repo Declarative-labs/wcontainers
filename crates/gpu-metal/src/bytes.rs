@@ -88,9 +88,10 @@ impl<M: Metal> Default for BytePrograms<M> {
     }
 }
 
-/// Returns `length` rounded up to a multiple of four, the length of every buffer this implementation makes.
-pub(crate) fn rounded(length: u64) -> u64 {
-    length.next_multiple_of(COPY_GRANULE)
+/// Returns `length` rounded up to a multiple of four, the length of every buffer this implementation makes; none when
+/// that is past the largest `u64`.
+pub(crate) fn rounded(length: u64) -> Option<u64> {
+    length.checked_next_multiple_of(COPY_GRANULE)
 }
 
 impl<M: Metal> MetalGpu<M> {
@@ -217,7 +218,7 @@ impl<M: Metal> MetalGpu<M> {
             u64::from(value),
         ]
         .iter()
-        .flat_map(|n| (*n as u32).to_le_bytes())
+        .flat_map(|n| u32::try_from(*n).unwrap_or(u32::MAX).to_le_bytes())
         .collect();
         let mut commands = vec![
             ComputeCommand::SetComputePipelineState(state),
@@ -240,10 +241,21 @@ impl<M: Metal> MetalGpu<M> {
                 index,
             });
         }
+        // Both ends are at most `u32::MAX`, checked by `inside` above.
         let first_word = destination.offset / COPY_GRANULE;
-        let words = (destination.offset + size).div_ceil(COPY_GRANULE) - first_word;
+        let groups = destination
+            .offset
+            .checked_add(size)
+            .map(|end| end.div_ceil(COPY_GRANULE))
+            .and_then(|end| end.checked_sub(first_word))
+            .map(|words| words.div_ceil(BYTE_THREADS))
+            .and_then(|groups| u32::try_from(groups).ok());
+        let Some(groups) = groups else {
+            self.fail(format_args!("a byte copy or fill outside its buffers"));
+            return;
+        };
         commands.push(ComputeCommand::DispatchThreadgroups(Size {
-            width: words.div_ceil(BYTE_THREADS) as u32,
+            width: groups,
             height: 1,
             depth: 1,
         }));
@@ -254,7 +266,7 @@ impl<M: Metal> MetalGpu<M> {
             None
         };
         self.flush_blits();
-        self.encodes += 1;
+        crate::count_up(&mut self.encodes);
         if let Some(command_buffer) = self.command_buffer()
             && let Err(error) = self
                 .metal

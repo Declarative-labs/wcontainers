@@ -238,7 +238,7 @@ impl<M: Metal> MetalGpu<M> {
     }
 
     fn id(&mut self) -> u64 {
-        self.next_id += 1;
+        count_up(&mut self.next_id);
         self.next_id
     }
 
@@ -271,7 +271,7 @@ impl<M: Metal> MetalGpu<M> {
         let Some(command_buffer) = self.command_buffer() else {
             return;
         };
-        self.encodes += 1;
+        count_up(&mut self.encodes);
         if let Err(error) = self.metal.encode_blit_commands(&command_buffer, &blits) {
             self.fail(format_args!("copies refused: {error:?}"));
         }
@@ -287,6 +287,19 @@ impl<M: Metal> MetalGpu<M> {
             self.pass = resumed;
         } else {
             self.blits.push(command);
+        }
+    }
+
+    /// Queues copies, or notes the refusal of a call whose places overflow.
+    fn queue_copies(&mut self, copies: Option<Vec<BlitCommand<M>>>) {
+        let Some(copies) = copies else {
+            self.fail(format_args!(
+                "a copy outside its texture, or whose places overflow"
+            ));
+            return;
+        };
+        for copy in copies {
+            self.queue_blit(copy);
         }
     }
 
@@ -318,7 +331,7 @@ impl<M: Metal> MetalGpu<M> {
 
     /// Makes a buffer holding `bytes`, which no work uses yet, as a range from its start.
     fn staging(&mut self, bytes: &[u8]) -> Option<ByteRange<M>> {
-        let length = rounded(bytes.len() as u64);
+        let length = rounded(bytes.len() as u64)?;
         let buffer = self.metal.make_buffer(length).ok()?;
         self.metal.write_contents(&buffer, 0, bytes).ok()?;
         Some(ByteRange {
@@ -330,9 +343,11 @@ impl<M: Metal> MetalGpu<M> {
 
     /// Returns a range of a buffer's current storage.
     fn range(buffer: &BufferObj<M>, offset: u64) -> ByteRange<M> {
+        // Every buffer's size was rounded when it was made, so this rounds without overflow; a failure would refuse
+        // every copy of it.
         ByteRange {
             buffer: buffer.raw.borrow().clone(),
-            length: rounded(buffer.size),
+            length: rounded(buffer.size).unwrap_or(u64::MIN),
             offset,
         }
     }
@@ -352,7 +367,7 @@ impl<M: Metal> MetalGpu<M> {
             self.in_flight.push_back((serial, command_buffer));
         }
         self.recording = None;
-        self.serial += 1;
+        count_up(&mut self.serial);
         serial
     }
 
@@ -382,7 +397,7 @@ impl<M: Metal> MetalGpu<M> {
     ) -> Result<Shared<ReadbackObj<M>>, GpuError> {
         let buffer = self
             .metal
-            .make_buffer(rounded(length))
+            .make_buffer(rounded(length).ok_or(GpuError::OutOfMemory)?)
             .map_err(|_| GpuError::OutOfMemory)?;
         for command in copy(&buffer) {
             self.queue_blit(command);
@@ -395,7 +410,7 @@ impl<M: Metal> MetalGpu<M> {
         })))
     }
 
-    /// Returns the copies that move one texture region and a buffer's bytes, one per layer.
+    /// Returns the copies that move one texture region and a buffer's bytes, one per layer; none when a place overflows.
     #[allow(clippy::too_many_arguments)]
     fn buffer_texture_copies(
         &self,
@@ -407,7 +422,11 @@ impl<M: Metal> MetalGpu<M> {
         row_pitch: u64,
         rows_per_layer: u64,
         into_texture: bool,
-    ) -> Vec<BlitCommand<M>> {
+    ) -> Option<Vec<BlitCommand<M>>> {
+        // A region outside the texture is refused first, so that the layers below are bounded by the texture's.
+        if !texture_region_inside(region, extent) {
+            return None;
+        }
         let three_d = texture.desc.dimension == TextureDimension::D3;
         let options = match (
             FORMAT_FACTS[texture.desc.format as usize].kind,
@@ -417,7 +436,7 @@ impl<M: Metal> MetalGpu<M> {
             (FormatKind::DepthStencil, false) => BlitOption::DepthFromDepthStencil,
             _ => BlitOption::None,
         };
-        let image = row_pitch * rows_per_layer;
+        let image = row_pitch.checked_mul(rows_per_layer)?;
         let (layers, depth) = if three_d {
             (1, extent.depth_or_layers)
         } else {
@@ -425,7 +444,11 @@ impl<M: Metal> MetalGpu<M> {
         };
         (0..layers)
             .map(|layer| {
-                let slice = if three_d { 0 } else { region.layer + layer };
+                let slice = if three_d {
+                    0
+                } else {
+                    region.layer.checked_add(layer)?
+                };
                 let origin = Origin {
                     x: region.origin.x,
                     y: region.origin.y,
@@ -436,8 +459,10 @@ impl<M: Metal> MetalGpu<M> {
                     height: extent.height,
                     depth,
                 };
-                let at = offset + u64::from(layer) * image;
-                if into_texture {
+                let at = u64::from(layer)
+                    .checked_mul(image)
+                    .and_then(|bytes| offset.checked_add(bytes))?;
+                Some(if into_texture {
                     BlitCommand::CopyFromBufferToTexture {
                         source_buffer: buffer.clone(),
                         source_offset: at,
@@ -463,13 +488,13 @@ impl<M: Metal> MetalGpu<M> {
                         destination_bytes_per_image: image,
                         options,
                     }
-                }
+                })
             })
             .collect()
     }
 
     /// Returns the bytes of one row of blocks and the rows of blocks of an extent, for the aspect a region moves.
-    fn tight_rows(&self, format: Format, stencil: bool, extent: Extent) -> (u64, u64) {
+    fn tight_rows(&self, format: Format, stencil: bool, extent: Extent) -> Option<(u64, u64)> {
         let facts = FORMAT_FACTS[format as usize];
         let (bw, bh, bytes) = facts.block;
         let bytes = match facts.kind {
@@ -477,10 +502,79 @@ impl<M: Metal> MetalGpu<M> {
             FormatKind::DepthStencil => 4,
             _ => bytes,
         };
-        (
-            u64::from(extent.width.div_ceil(bw) * bytes),
+        Some((
+            u64::from(extent.width.div_ceil(bw)).checked_mul(u64::from(bytes))?,
             u64::from(extent.height.div_ceil(bh)),
-        )
+        ))
+    }
+
+    /// Returns the bytes of a region's tight rows over its layers, and the row's bytes and the rows.
+    fn tight_bytes(
+        &self,
+        format: Format,
+        stencil: bool,
+        extent: Extent,
+    ) -> Option<(u64, u64, u64)> {
+        let (row, rows) = self.tight_rows(format, stencil, extent)?;
+        let length = row
+            .checked_mul(rows)?
+            .checked_mul(u64::from(extent.depth_or_layers))?;
+        Some((length, row, rows))
+    }
+
+    /// Reads the depth words of a buffer's region on the host, tightly packed; none when a place overflows.
+    fn depth_words_in(
+        &mut self,
+        src: &CopyBufferTexture<'_, Self>,
+        raw: &M::Buffer,
+        extent: Extent,
+        format: Format,
+    ) -> Option<Vec<u8>> {
+        let (row, rows) = self.tight_rows(format, false, extent)?;
+        let pitch = u64::from(src.row_pitch);
+        let layer_bytes = pitch.checked_mul(u64::from(src.rows_per_layer))?;
+        let mut packed = Vec::new();
+        for layer in 0..u64::from(extent.depth_or_layers) {
+            for y in 0..rows {
+                let at = layer
+                    .checked_mul(layer_bytes)?
+                    .checked_add(y.checked_mul(pitch)?)?
+                    .checked_add(src.offset)?;
+                packed.extend(self.read_buffer_now(raw, at, row));
+            }
+        }
+        Some(packed)
+    }
+
+    /// Copies tightly packed depth words into a buffer's region at its pitches; none when a place overflows.
+    fn depth_words_out(
+        &mut self,
+        words: &[u8],
+        dst: &CopyBufferTexture<'_, Self>,
+        extent: Extent,
+        format: Format,
+    ) -> Option<()> {
+        let (row, rows) = self.tight_rows(format, false, extent)?;
+        let pitch = u64::from(dst.row_pitch);
+        let layer_bytes = pitch.checked_mul(u64::from(dst.rows_per_layer))?;
+        let row_bytes = usize::try_from(row).ok()?;
+        for layer in 0..u64::from(extent.depth_or_layers) {
+            for y in 0..rows {
+                let from = layer.checked_mul(rows)?.checked_add(y)?.checked_mul(row)?;
+                let from = usize::try_from(from).ok()?;
+                let part = words.get(from..from.checked_add(row_bytes)?)?;
+                let at = layer
+                    .checked_mul(layer_bytes)?
+                    .checked_add(y.checked_mul(pitch)?)?
+                    .checked_add(dst.offset)?;
+                let Some(staging) = self.staging(part) else {
+                    self.fail(format_args!("no staging buffer"));
+                    return Some(());
+                };
+                self.copy_bytes(staging, Self::range(dst.buffer, at), row);
+            }
+        }
+        Some(())
     }
 
     /// Returns the bytes a host write or a buffer copy into a texture holds, as Metal's copy takes them.
@@ -504,7 +598,8 @@ impl<M: Metal> MetalGpu<M> {
     fn read_buffer_now(&mut self, buffer: &M::Buffer, offset: u64, length: u64) -> Vec<u8> {
         let serial = self.serial;
         self.wait_serial(serial);
-        let mut bytes = vec![0; length as usize];
+        // Every caller's length is within the buffer, checked before.
+        let mut bytes = vec![0; usize::try_from(length).unwrap_or(usize::MIN)];
         if let Err(error) = self.metal.read_contents(buffer, offset, &mut bytes) {
             self.fail(format_args!("read refused: {error:?}"));
         }
@@ -557,7 +652,7 @@ impl<M: Metal> MetalGpu<M> {
                 ));
             }
             slots.insert((binding.group, binding.binding), (kind, *count));
-            *count += 1;
+            count_up_u32(count);
         }
         Ok(slots)
     }
@@ -607,7 +702,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         }
         let raw = self
             .metal
-            .make_buffer(rounded(desc.size))
+            .make_buffer(rounded(desc.size).ok_or(GpuError::OutOfMemory)?)
             .map_err(|_| GpuError::OutOfMemory)?;
         Ok(Shared(Rc::new(BufferObj {
             size: desc.size,
@@ -920,7 +1015,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         };
         let buffer = self
             .metal
-            .make_buffer(u64::from(count.max(1)) * QUERY_BYTES)
+            .make_buffer(query_bytes(count.max(1)))
             .map_err(|_| GpuError::OutOfMemory)?;
         Ok(Shared(Rc::new(QueryObj {
             count,
@@ -946,7 +1041,10 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             return;
         }
         if self.busy(buffer) && mode == WriteMode::Discard {
-            match self.metal.make_buffer(rounded(buffer.size)) {
+            match self
+                .metal
+                .make_buffer(rounded(buffer.size).unwrap_or(u64::MAX))
+            {
                 Ok(fresh) => {
                     *buffer.raw.borrow_mut() = fresh;
                     buffer.last_use.set(0);
@@ -997,9 +1095,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             u64::from(rows_per_layer),
             true,
         );
-        for copy in copies {
-            self.queue_blit(copy);
-        }
+        self.queue_copies(copies);
     }
 
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
@@ -1053,11 +1149,22 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             s.desc.dimension == TextureDimension::D3,
             d.desc.dimension == TextureDimension::D3,
         );
+        // Both regions are checked first, so the layers below, and each sum of them, are bounded by the textures'.
+        if !texture_region_inside(src, extent) || !texture_region_inside(dst, extent) {
+            self.fail(format_args!("a copy outside its textures"));
+            return;
+        }
         let layers = if s3 { 1 } else { extent.depth_or_layers };
         for layer in 0..layers {
+            let (Some(source_layer), Some(destination_layer)) =
+                (src.layer.checked_add(layer), dst.layer.checked_add(layer))
+            else {
+                self.fail(format_args!("a copy whose layers overflow"));
+                return;
+            };
             self.queue_blit(BlitCommand::CopyFromTextureToTexture {
                 source_texture: s.raw.clone(),
-                source_slice: if s3 { 0 } else { src.layer + layer },
+                source_slice: if s3 { 0 } else { source_layer },
                 source_level: src.mip,
                 source_origin: Origin {
                     x: src.origin.x,
@@ -1070,7 +1177,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                     depth: if s3 { extent.depth_or_layers } else { 1 },
                 },
                 destination_texture: d.raw.clone(),
-                destination_slice: if d3 { 0 } else { dst.layer + layer },
+                destination_slice: if d3 { 0 } else { destination_layer },
                 destination_level: dst.mip,
                 destination_origin: Origin {
                     x: dst.origin.x,
@@ -1092,24 +1199,22 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         let raw = src.buffer.raw.borrow().clone();
         if convert::depth_converted(texture.desc.format) && !dst.stencil {
             // Metal holds this depth as float: the words are read on the host and converted.
-            let (row, rows) = self.tight_rows(texture.desc.format, false, extent);
-            let pitch = u64::from(src.row_pitch);
-            let layer_bytes = pitch * u64::from(src.rows_per_layer);
-            let mut packed = Vec::new();
-            for layer in 0..u64::from(extent.depth_or_layers) {
-                for y in 0..rows {
-                    let at = src.offset + layer * layer_bytes + y * pitch;
-                    packed.extend(self.read_buffer_now(&raw, at, row));
-                }
+            if !texture_region_inside(dst, extent) {
+                self.fail(format_args!("a depth copy outside its texture"));
+                return;
             }
-            self.write_texture(
-                dst,
-                extent,
-                &packed,
-                row as u32,
-                rows as u32,
-                WriteMode::Ordered,
-            );
+            let Some(packed) = self.depth_words_in(src, &raw, extent, texture.desc.format) else {
+                self.fail(format_args!("a depth copy whose places overflow"));
+                return;
+            };
+            let rows = self.tight_rows(texture.desc.format, false, extent);
+            let Some((Ok(row), Ok(rows))) =
+                rows.map(|(row, rows)| (u32::try_from(row), u32::try_from(rows)))
+            else {
+                self.fail(format_args!("a depth copy whose rows overflow"));
+                return;
+            };
+            self.write_texture(dst, extent, &packed, row, rows, WriteMode::Ordered);
             return;
         }
         let copies = self.buffer_texture_copies(
@@ -1122,9 +1227,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             u64::from(src.rows_per_layer),
             true,
         );
-        for copy in copies {
-            self.queue_blit(copy);
-        }
+        self.queue_copies(copies);
     }
 
     fn copy_texture_to_buffer(
@@ -1137,8 +1240,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         self.mark_used(dst.buffer);
         let raw = dst.buffer.raw.borrow().clone();
         if convert::depth_converted(texture.desc.format) && !src.stencil {
-            let (row, rows) = self.tight_rows(texture.desc.format, false, extent);
-            let length = row * rows * u64::from(extent.depth_or_layers);
+            // `read_back` refuses a region outside the texture, so the words below are bounded by its bytes.
             let Ok(readback) = self.read_back(&ReadSource::Texture {
                 region: TextureRegion { ..*src },
                 extent,
@@ -1147,20 +1249,13 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 return;
             };
             self.wait_read(&readback);
-            let mut words = vec![0; length as usize];
+            let mut words = vec![0; usize::try_from(readback.length).unwrap_or(usize::MIN)];
             self.finish_read(readback, &mut words);
-            let pitch = u64::from(dst.row_pitch);
-            let layer_bytes = pitch * u64::from(dst.rows_per_layer);
-            for layer in 0..u64::from(extent.depth_or_layers) {
-                for y in 0..rows {
-                    let from = ((layer * rows + y) * row) as usize;
-                    let at = dst.offset + layer * layer_bytes + y * pitch;
-                    let Some(staging) = self.staging(&words[from..from + row as usize]) else {
-                        self.fail(format_args!("no staging buffer"));
-                        return;
-                    };
-                    self.copy_bytes(staging, Self::range(dst.buffer, at), row);
-                }
+            if self
+                .depth_words_out(&words, dst, extent, texture.desc.format)
+                .is_none()
+            {
+                self.fail(format_args!("a depth copy whose places overflow"));
             }
             return;
         }
@@ -1174,27 +1269,38 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             u64::from(dst.rows_per_layer),
             false,
         );
-        for copy in copies {
-            self.queue_blit(copy);
-        }
+        self.queue_copies(copies);
     }
 
     fn clear_buffer(&mut self, buffer: &Self::Buffer, offset: u64, size: u64, pattern: &[u8]) {
         if size == 0 {
             return;
         }
+        // The range and the pattern are checked before anything is sized by them.
+        if offset.checked_add(size).is_none_or(|end| end > buffer.size) {
+            self.fail(format_args!("a clear past its buffer's end"));
+            return;
+        }
+        let Some(&first) = pattern.first() else {
+            self.fail(format_args!("a clear with an empty pattern"));
+            return;
+        };
+        if !size.is_multiple_of(pattern.len() as u64) {
+            self.fail(format_args!("a clear of a part of a pattern"));
+            return;
+        }
         self.mark_used(buffer);
-        if pattern.iter().all(|b| *b == pattern[0]) {
-            self.fill_bytes(Self::range(buffer, offset), size, pattern[0]);
+        if pattern.iter().all(|b| *b == first) {
+            self.fill_bytes(Self::range(buffer, offset), size, first);
             return;
         }
         self.record_slow_path(wcontainers_gpu::SlowPath::PatternClearCopied);
-        let bytes: Vec<u8> = pattern
-            .iter()
-            .copied()
-            .cycle()
-            .take(size as usize)
-            .collect();
+        // The size is within the buffer, which is within `Limits::max_buffer_size`.
+        let Ok(length) = usize::try_from(size) else {
+            self.fail(format_args!("a clear longer than the host holds"));
+            return;
+        };
+        let bytes: Vec<u8> = pattern.iter().copied().cycle().take(length).collect();
         let Some(staging) = self.staging(&bytes) else {
             self.fail(format_args!("no staging buffer"));
             return;
@@ -1227,14 +1333,21 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     }
 
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Self::Readback, GpuError> {
+        // A range outside its resource is refused before anything is sized by it, as the recorder refuses it.
         match src {
             ReadSource::Buffer {
                 buffer,
                 offset,
                 size,
             } => {
+                if offset
+                    .checked_add(*size)
+                    .is_none_or(|end| end > buffer.size)
+                {
+                    return Err(GpuError::Invalid("a read past its buffer's end"));
+                }
                 self.mark_used(buffer);
-                let length = rounded(*size);
+                let length = rounded(*size).ok_or(GpuError::OutOfMemory)?;
                 let into = self
                     .metal
                     .make_buffer(length)
@@ -1259,9 +1372,13 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 })))
             }
             ReadSource::Texture { region, extent } => {
+                if !texture_region_inside(region, *extent) {
+                    return Err(GpuError::Invalid("a read outside its texture"));
+                }
                 let texture = region.texture.clone();
-                let (row, rows) = self.tight_rows(texture.desc.format, region.stencil, *extent);
-                let length = row * rows * u64::from(extent.depth_or_layers);
+                let (length, row, rows) = self
+                    .tight_bytes(texture.desc.format, region.stencil, *extent)
+                    .ok_or(GpuError::OutOfMemory)?;
                 let layout = if convert::depth_converted(texture.desc.format) && !region.stencil {
                     ReadLayout::Depth24
                 } else {
@@ -1269,13 +1386,11 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 };
                 let buffer = self
                     .metal
-                    .make_buffer(rounded(length))
+                    .make_buffer(rounded(length).ok_or(GpuError::OutOfMemory)?)
                     .map_err(|_| GpuError::OutOfMemory)?;
                 let commands = self
                     .buffer_texture_copies(&texture, region, *extent, &buffer, 0, row, rows, false);
-                for command in commands {
-                    self.queue_blit(command);
-                }
+                self.queue_copies(commands);
                 Ok(Shared(Rc::new(ReadbackObj {
                     serial: self.serial,
                     buffer,
@@ -1296,11 +1411,15 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             return Err(GpuError::Invalid("queries past the set's end"));
         }
         let raw = set.buffer.clone();
-        let length = u64::from(count) * QUERY_BYTES;
+        let length = query_bytes(count);
+        // No queries read nothing, with no copy, which Metal refuses of no bytes.
         self.read_into(length, ReadLayout::Bytes, |into| {
+            if length == 0 {
+                return Vec::new();
+            }
             vec![BlitCommand::CopyFromBufferToBuffer {
                 source_buffer: raw,
-                source_offset: u64::from(first) * QUERY_BYTES,
+                source_offset: query_bytes(first),
                 destination_buffer: into.clone(),
                 destination_offset: u64::MIN,
                 size: length,
@@ -1323,7 +1442,8 @@ impl<M: Metal> Gpu for MetalGpu<M> {
 
     fn finish_read(&mut self, readback: Self::Readback, dst: &mut [u8]) {
         self.wait_serial(readback.serial);
-        let mut bytes = vec![0; readback.length as usize];
+        // The length was checked against its buffer or texture when the read back began.
+        let mut bytes = vec![0; usize::try_from(readback.length).unwrap_or(usize::MIN)];
         if let Err(error) = self.metal.read_contents(&readback.buffer, 0, &mut bytes) {
             self.fail(format_args!("read refused: {error:?}"));
             return;
@@ -1476,7 +1596,8 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         src: &ReadSource<'_, Self>,
         dst: &mut [u8],
     ) -> Result<(), GpuError> {
-        // A buffer is read straight from the memory the CPU shares with the GPU once the work that uses it is done.
+        // A buffer is read straight from the memory the CPU shares with the GPU once the work that uses it is done. A
+        // range past the buffer's end is the error `read_back` gives, so this agrees with the default on every input.
         if let ReadSource::Buffer {
             buffer,
             offset,
@@ -1494,7 +1615,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 self.wait_serial(buffer.last_use.get());
             }
             let raw = buffer.raw.borrow().clone();
-            let length = (*size as usize).min(dst.len());
+            let length = usize::try_from(*size).unwrap_or(usize::MAX).min(dst.len());
             if let Err(error) = self.metal.read_contents(&raw, *offset, &mut dst[..length]) {
                 self.fail(format_args!("read refused: {error:?}"));
             }
@@ -1535,18 +1656,27 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         if first.checked_add(count).is_none_or(|end| end > set.count) {
             return Err(GpuError::Invalid("queries past the set's end"));
         }
+        // As the default: no queries write nothing, wherever, and results past the buffer's end are the refusal its
+        // `write_buffer` notes, with the call itself answered.
+        let bytes = query_bytes(count);
+        if bytes == 0 {
+            return Ok(());
+        }
+        if dst_offset
+            .checked_add(bytes)
+            .is_none_or(|end| end > dst.size)
+        {
+            self.fail(format_args!("a write past its buffer's end"));
+            return Ok(());
+        }
         // The results are copied on the GPU, in order with the work around them, and never wait.
         self.mark_used(dst);
         let source = ByteRange {
             buffer: set.buffer.clone(),
-            length: u64::from(set.count.max(1)) * QUERY_BYTES,
-            offset: u64::from(first) * QUERY_BYTES,
+            length: query_bytes(set.count.max(1)),
+            offset: query_bytes(first),
         };
-        self.copy_bytes(
-            source,
-            Self::range(dst, dst_offset),
-            u64::from(count) * QUERY_BYTES,
-        );
+        self.copy_bytes(source, Self::range(dst, dst_offset), bytes);
         Ok(())
     }
 
@@ -1621,7 +1751,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         }));
         self.flush_blits();
         let command_buffer = self.command_buffer().ok_or(GpuError::DeviceLost)?;
-        self.encodes += 1;
+        count_up(&mut self.encodes);
         self.metal
             .encode_compute_commands(&command_buffer, &commands)
             .map_err(|error| {
@@ -1629,6 +1759,77 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 GpuError::Invalid("a dispatch Metal's checks refuse")
             })
     }
+}
+
+/// Counts one more: a count of calls never reaches the end of a `u64`, and would stop there rather than wrap to reuse one.
+fn count_up(count: &mut u64) {
+    *count = count.saturating_add(1);
+}
+
+/// Counts one more binding of a kind, each below the slots of its kind, so far below the end of a `u32`.
+fn count_up_u32(count: &mut u32) {
+    *count = count.saturating_add(1);
+}
+
+/// Returns the bytes of `count` query results.
+fn query_bytes(count: u32) -> u64 {
+    u64::from(count).saturating_mul(QUERY_BYTES)
+}
+
+/// Returns whether a texture region of `extent` lies inside a level and the layers of a texture, so that every length
+/// computed of it is bounded by the texture's own bytes.
+fn region_inside(
+    desc: &TextureDesc,
+    mip: u32,
+    origin: [u32; 3],
+    layer: u32,
+    extent: Extent,
+) -> bool {
+    if mip >= desc.mip_levels {
+        return false;
+    }
+    let side = |n: u32| n.checked_shr(mip).unwrap_or(u32::MIN).max(1);
+    let (bw, bh, _) = FORMAT_FACTS[desc.format as usize].block;
+    let fits = |at: u32, n: u32, most: Option<u32>| {
+        at.checked_add(n)
+            .is_some_and(|end| most.is_some_and(|most| end <= most))
+    };
+    let three_d = desc.dimension == TextureDimension::D3;
+    let (depth, layers) = if three_d {
+        (Some(side(desc.depth_or_layers)), Some(1))
+    } else {
+        (Some(1), Some(desc.depth_or_layers))
+    };
+    let (z, slices) = if three_d {
+        ((origin[2], extent.depth_or_layers), (layer, 1))
+    } else {
+        ((origin[2], 1), (layer, extent.depth_or_layers))
+    };
+    fits(
+        origin[0],
+        extent.width,
+        side(desc.width).checked_next_multiple_of(bw),
+    ) && fits(
+        origin[1],
+        extent.height,
+        side(desc.height).checked_next_multiple_of(bh),
+    ) && fits(z.0, z.1, depth)
+        && fits(slices.0, slices.1, layers)
+}
+
+/// Returns whether a texture region of `extent` lies inside its texture.
+fn texture_region_inside<M: Metal>(
+    region: &TextureRegion<'_, MetalGpu<M>>,
+    extent: Extent,
+) -> bool {
+    let origin = [region.origin.x, region.origin.y, region.origin.z];
+    region_inside(
+        &region.texture.desc,
+        region.mip,
+        origin,
+        region.layer,
+        extent,
+    )
 }
 
 /// Returns whether a format has an sRGB twin, whose views Metal makes only of textures made for them.
