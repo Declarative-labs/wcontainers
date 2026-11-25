@@ -1688,6 +1688,11 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         let DispatchGroups::Direct(groups) = call.groups else {
             return Err(GpuError::Absent(Features::INDIRECT));
         };
+        if groups.iter().any(|&n| n > self.caps.limits.max_dispatch) {
+            return Err(GpuError::Invalid(
+                "a dispatch of more groups than max_dispatch",
+            ));
+        }
         if groups.contains(&0) {
             return Ok(());
         }
