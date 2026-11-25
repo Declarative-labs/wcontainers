@@ -1114,6 +1114,11 @@ impl Metal for DirectMetal {
     }
 }
 
+/// The most bytes one command copies into a command buffer for a slot.
+///
+/// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setvertexbytes(_:length:index:)
+const MAX_BYTES: usize = 4096;
+
 /// The bytes threadgroup memory lengths are a multiple of.
 ///
 /// https://developer.apple.com/documentation/metal/mtlcomputecommandencoder/setthreadgroupmemorylength(_:index:)
@@ -1388,6 +1393,9 @@ fn check_render_commands(
             RenderCommand::SetVertexBytes { bytes, index }
             | RenderCommand::SetFragmentBytes { bytes, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
+                if bytes.len() > MAX_BYTES {
+                    return Err(out("more bytes than Metal copies into a command buffer"));
+                }
                 let stage = if matches!(command, RenderCommand::SetVertexBytes { .. }) {
                     &mut bound.vertex
                 } else {
@@ -1861,6 +1869,9 @@ fn check_compute_commands(
             }
             ComputeCommand::SetBytes { bytes, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
+                if bytes.len() > MAX_BYTES {
+                    return Err(out("more bytes than Metal copies into a command buffer"));
+                }
                 bound.buffers.insert(*index, bytes.len() as u64);
             }
             ComputeCommand::SetTexture { texture, index } => {
