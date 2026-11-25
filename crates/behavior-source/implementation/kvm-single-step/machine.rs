@@ -24,18 +24,18 @@ use crate::guest_layout::{DOORBELL_FUNCTION, GIC_DISTRIBUTOR, GIC_REDISTRIBUTORS
 pub struct MachineError(pub String);
 
 /// The guest memory KVM gives the machine.
-pub type GuestMemory = <DirectKvm as Kvm>::GuestMemory;
+pub(crate) type GuestMemory = <DirectKvm as Kvm>::GuestMemory;
 
 /// The machine, its interrupt controller and its virtual CPU, which drop before it.
-pub struct Machine {
-    pub cpu: VcpuFd,
+pub(crate) struct Machine {
+    pub(crate) cpu: VcpuFd,
     _interrupt_controller: DeviceFd,
     _machine: VmFd,
 }
 
 /// A register the single step machine reads or writes on its virtual CPU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Register {
+pub(crate) enum Register {
     Pc,
     Pstate,
     StackEl1,
@@ -69,7 +69,7 @@ const DOORBELL_FILTER: kvm_smccc_filter = kvm_smccc_filter {
 /// Makes the machine with its memory at the guest-physical address, and its one virtual CPU.
 ///
 /// KVM refuses a virtual CPU once the interrupt controller is set up, so the CPU is made first.
-pub fn create_machine(
+pub(crate) fn create_machine(
     memory_start: u64,
     memory_bytes: usize,
 ) -> Result<(Machine, GuestMemory), MachineError> {
@@ -143,7 +143,7 @@ pub fn create_machine(
 
 impl Machine {
     /// Runs the virtual CPU until the guest rings the doorbell.
-    pub fn run(&mut self) -> Result<(), MachineError> {
+    pub(crate) fn run(&mut self) -> Result<(), MachineError> {
         loop {
             match self.cpu.run() {
                 Ok(VcpuExit::Hypercall(call)) if call.nr == u64::from(DOORBELL_FUNCTION) => {
@@ -159,7 +159,7 @@ impl Machine {
         }
     }
 
-    pub fn get(&self, register: Register) -> Result<u64, MachineError> {
+    pub(crate) fn get(&self, register: Register) -> Result<u64, MachineError> {
         let mut bytes = [0; size_of::<u64>()];
         self.cpu
             .get_one_reg(to_id(register), &mut bytes)
@@ -167,7 +167,7 @@ impl Machine {
         Ok(u64::from_le_bytes(bytes))
     }
 
-    pub fn set(&mut self, register: Register, value: u64) -> Result<(), MachineError> {
+    pub(crate) fn set(&mut self, register: Register, value: u64) -> Result<(), MachineError> {
         self.cpu
             .set_one_reg(to_id(register), &value.to_le_bytes())
             .map(drop)

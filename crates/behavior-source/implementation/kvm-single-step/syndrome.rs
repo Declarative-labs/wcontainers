@@ -27,7 +27,7 @@ const SME_NOT_IN_STREAMING_MODE: u64 = 0b010;
 /// completed.
 ///
 /// Panics where the syndrome holds a bit the exception leaves out, so nothing two behaviors could differ in is lost.
-pub fn to_exception(syndrome: u64, fault_address: u64) -> Option<Exception> {
+pub(crate) fn to_exception(syndrome: u64, fault_address: u64) -> Option<Exception> {
     let specific = ESR_EL1::ISS.read(syndrome);
     let class = ESR_EL1::EC.read_as_enum(syndrome);
     let exception = match class {
@@ -68,7 +68,7 @@ pub fn to_exception(syndrome: u64, fault_address: u64) -> Option<Exception> {
 }
 
 /// The ESR_EL1 an exception from EL0 gives.
-pub fn to_syndrome(exception: Exception) -> u64 {
+pub(crate) fn to_syndrome(exception: Exception) -> u64 {
     let (class, specific) = match exception {
         Exception::UndefinedInstruction => (Class::Unknown, 0),
         Exception::ProgramCounterAlignmentFault { .. } => (Class::PCAlignmentFault, 0),

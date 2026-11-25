@@ -31,7 +31,7 @@ const INSTRUCTION_FETCH: &str = "+execute";
 
 /// Why a text is no recording.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MalformedRecording {
+pub(crate) enum MalformedRecording {
     /// The line, counted from one, cannot be read.
     UnreadableLine(usize),
     NoInstruction,
@@ -40,12 +40,12 @@ pub enum MalformedRecording {
 }
 
 /// Returns the name of the file that holds the instruction's recording.
-pub fn to_file_name(instruction: Instruction<Infallible>) -> String {
+pub(crate) fn to_file_name(instruction: Instruction<Infallible>) -> String {
     format!("{instruction:?}.txt")
 }
 
 /// Returns the text of an instruction's recording.
-pub fn to_text(instruction: Instruction<Infallible>, cases: &[RecordedCase]) -> String {
+pub(crate) fn to_text(instruction: Instruction<Infallible>, cases: &[RecordedCase]) -> String {
     let mut lines = vec![format!("instruction {instruction:?}")];
     if let Some((first, _)) = cases.first() {
         let mut long_runs: Vec<&[u8]> = Vec::new();
@@ -88,7 +88,7 @@ pub fn to_text(instruction: Instruction<Infallible>, cases: &[RecordedCase]) -> 
 }
 
 /// Returns the instruction a recording's text names and its cases.
-pub fn from_text(
+pub(crate) fn from_text(
     text: &str,
 ) -> Result<(Instruction<Infallible>, Vec<RecordedCase>), MalformedRecording> {
     let mut instruction = None;

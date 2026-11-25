@@ -12,47 +12,47 @@ const REGISTER_BYTES: usize = size_of::<u64>();
 /// What a program at EL0 holds, in the order the handler loads and saves it.
 #[repr(C)]
 #[derive(Clone, Copy, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct Registers {
-    pub general_purpose: [u64; GENERAL_PURPOSE_REGISTERS],
+pub(crate) struct Registers {
+    pub(crate) general_purpose: [u64; GENERAL_PURPOSE_REGISTERS],
     /// SP_EL0.
-    pub stack_pointer: u64,
+    pub(crate) stack_pointer: u64,
     /// ELR_EL1: where the instruction is, and after, where the exception that ended it returns to.
-    pub program_counter: u64,
+    pub(crate) program_counter: u64,
     /// SPSR_EL1: EL0's PSTATE.
-    pub saved_program_status: u64,
+    pub(crate) saved_program_status: u64,
     /// TPIDR_EL0.
-    pub software_thread_id: u64,
-    pub floating_point_control: u64,
-    pub floating_point_status: u64,
+    pub(crate) software_thread_id: u64,
+    pub(crate) floating_point_control: u64,
+    pub(crate) floating_point_status: u64,
     /// ESR_EL1 after.
-    pub syndrome: u64,
+    pub(crate) syndrome: u64,
     /// FAR_EL1 after.
-    pub fault_address: u64,
+    pub(crate) fault_address: u64,
     /// Unused: it puts `vector` where the alignment of its registers puts it.
-    pub alignment: u64,
-    pub vector: [u128; VECTOR_REGISTERS],
+    pub(crate) alignment: u64,
+    pub(crate) vector: [u128; VECTOR_REGISTERS],
 }
 
 /// One state in guest memory: its registers before and after, and where the handler goes next.
 #[repr(C)]
 #[derive(Clone, Copy, IntoBytes, FromBytes, Immutable, KnownLayout)]
-pub struct Slot {
+pub(crate) struct Slot {
     /// TTBR0_EL1 while the instruction runs: the slot's top-level table and its ASID.
-    pub translation_table: u64,
+    pub(crate) translation_table: u64,
     /// The linear address of the next slot of the batch, zero after the last.
-    pub next: u64,
+    pub(crate) next: u64,
     /// An [`Ending`], which the handler writes.
-    pub ending: u64,
+    pub(crate) ending: u64,
     /// Unused: it puts `before` where the alignment of its vector registers puts it.
-    pub alignment: u64,
-    pub before: Registers,
-    pub after: Registers,
+    pub(crate) alignment: u64,
+    pub(crate) before: Registers,
+    pub(crate) after: Registers,
 }
 
 /// What ended a slot's run.
 #[repr(u64)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Ending {
+pub(crate) enum Ending {
     NotRun,
     /// An exception from EL0: the software step after the instruction, or the instruction's own.
     ExceptionFromEl0,

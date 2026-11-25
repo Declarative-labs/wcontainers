@@ -17,10 +17,10 @@ const BOOT_BLOCK_LEVEL: u32 = 1;
 const ATTRIBUTE_INDEX_SHIFT: u32 = El1Attributes::ATTRIBUTE_INDEX_1.bits().trailing_zeros();
 
 /// Bytes the boot map's tables take: the top-level table and one table of blocks under it.
-pub const BOOT_MAP_BYTES: u64 = (BOOT_BLOCK_LEVEL as u64 + 1) * PAGE_SIZE;
+pub(crate) const BOOT_MAP_BYTES: u64 = (BOOT_BLOCK_LEVEL as u64 + 1) * PAGE_SIZE;
 
 /// Returns the attributes of the handler's own entries: global, EL1 only, never run by EL0.
-pub fn to_handler_attributes(attribute_index: u64) -> El1Attributes {
+pub(crate) fn to_handler_attributes(attribute_index: u64) -> El1Attributes {
     El1Attributes::VALID
         | El1Attributes::ACCESSED
         | El1Attributes::INNER_SHAREABLE
@@ -30,7 +30,7 @@ pub fn to_handler_attributes(attribute_index: u64) -> El1Attributes {
 
 /// Writes the boot map of the handler's half at guest-physical `root`: guest-physical memory below
 /// [`MEMORY_BASE`] as device memory and `memory` bytes from it as normal memory, through the linear map, in blocks.
-pub fn write_boot_map(root: u64, memory: u64, mut write: impl FnMut(u64, u64)) {
+pub(crate) fn write_boot_map(root: u64, memory: u64, mut write: impl FnMut(u64, u64)) {
     let blocks = root + PAGE_SIZE;
     let table = (El1Attributes::VALID | El1Attributes::TABLE_OR_PAGE).bits() as u64;
     write(
@@ -56,14 +56,14 @@ pub fn write_boot_map(root: u64, memory: u64, mut write: impl FnMut(u64, u64)) {
 
 /// System register values at the handler's entry.
 #[derive(Clone, Copy, Debug)]
-pub struct BootRegisters {
-    pub mair: u64,
-    pub tcr: u64,
-    pub sctlr: u64,
-    pub cpacr: u64,
+pub(crate) struct BootRegisters {
+    pub(crate) mair: u64,
+    pub(crate) tcr: u64,
+    pub(crate) sctlr: u64,
+    pub(crate) cpacr: u64,
     pub ttbr1: u64,
     /// PSTATE: EL1 on its own stack, every interrupt masked.
-    pub pstate: u64,
+    pub(crate) pstate: u64,
 }
 
 /// The translation granule of both halves, from the guest's page size: the 4 KiB granule, the one aarch64-paging's
@@ -77,7 +77,7 @@ const GRANULE: (TCR_EL1::TG0::Value, TCR_EL1::TG1::Value) =
 
 /// Returns the registers for a boot map at `root` on a CPU whose ID_AA64MMFR0_EL1 is `memory_model_features`, with
 /// EL0's stack pointer alignment checked, as Linux has it.
-pub fn to_boot_registers(root: u64, memory_model_features: u64) -> BootRegisters {
+pub(crate) fn to_boot_registers(root: u64, memory_model_features: u64) -> BootRegisters {
     let physical_range = ID_AA64MMFR0_EL1::PARange.read(memory_model_features);
     let size = u64::from(u64::BITS - crate::guest_layout::VA_BITS);
     let tcr = TCR_EL1::T0SZ.val(size)
