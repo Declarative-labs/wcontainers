@@ -13,11 +13,11 @@
 
 use std::fmt::Write;
 use wcontainers_arm64::Arm64;
+use wcontainers_translator::contract::DESCRIPTION_SECTION;
 use wcontainers_translator::{BOUND, LookAhead, Optimise, Translation, translate};
 use wcontainers_translator_test::binaries::{Binary, sources};
 use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{Library, Position, build_with};
-use wcontainers_translator::contract::DESCRIPTION_SECTION;
 use wcontainers_translator_test::runner::{access_ordering, probe};
 use wcontainers_x86::X86_64;
 
