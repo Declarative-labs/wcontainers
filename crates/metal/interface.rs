@@ -919,6 +919,9 @@ pub enum BlitCommand<M: Metal + ?Sized> {
         length: u64,
         value: u8,
     },
+    /// Fills every level but the first of every slice with the level above scaled down, filtered as the GPU's family
+    /// does it.
+    GenerateMipmaps { texture: M::Texture },
 }
 
 /// An extent in texels, or a count of threadgroups.

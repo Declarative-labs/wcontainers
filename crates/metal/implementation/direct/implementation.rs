@@ -2130,6 +2130,7 @@ fn blit_buffers(command: &BlitCommand<DirectMetal>) -> Vec<&DirectBuffer> {
         } => vec![destination_buffer],
         BlitCommand::CopyFromTextureToTexture { .. } => Vec::new(),
         BlitCommand::FillBuffer { buffer, .. } => vec![buffer],
+        BlitCommand::GenerateMipmaps { .. } => Vec::new(),
     }
 }
 
@@ -2354,6 +2355,19 @@ fn check_blit(
                 return Err(out("a fill outside its buffer"));
             }
         }
+        BlitCommand::GenerateMipmaps { texture } => {
+            let t = &texture.0;
+            let facts = format_facts(t.pixel_format);
+            let filters = facts.resolve && (!facts.float32 || limits.float32_resolve);
+            if t.levels < 2 || !facts.color || !filters || t.sample_count != 1 {
+                return Err(invalid(
+                    "mipmaps of a texture of one level, or of a format not drawn into and filtered",
+                ));
+            }
+            if t.framebuffer_only {
+                return Err(invalid("mipmaps of a drawable's texture"));
+            }
+        }
     }
     Ok(())
 }
@@ -2490,6 +2504,9 @@ fn encode_blit(
                 NSRange::new(*offset as usize, *length as usize),
                 *value,
             );
+        }
+        BlitCommand::GenerateMipmaps { texture } => {
+            encoder.generateMipmapsForTexture(&texture.0.raw);
         }
     }
 }

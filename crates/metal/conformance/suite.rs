@@ -1356,6 +1356,12 @@ pub fn adds_occlusion_counts_across_passes<M: Metal>(mut subject: M) {
     );
 }
 
+/// Checks that mipmaps of a texture of one level are refused, which Metal's documentation forbids.
+pub fn refuses_mipmaps_of_one_level<M: Metal>(mut subject: M) {
+    let texture = target(&mut subject);
+    refuses_blit(&mut subject, BlitCommand::GenerateMipmaps { texture });
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -1433,6 +1439,11 @@ macro_rules! tests {
         #[test]
         fn dispatches_with_workgroup_memory() {
             $crate::dispatches_with_workgroup_memory($value);
+        }
+
+        #[test]
+        fn refuses_mipmaps_of_one_level() {
+            $crate::refuses_mipmaps_of_one_level($value);
         }
 
         #[test]
