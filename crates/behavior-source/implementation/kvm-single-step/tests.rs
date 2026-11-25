@@ -403,3 +403,119 @@ fn a_large_writable_range_reports_each_change_once() {
         }
     }
 }
+
+/// Pages of the small address space the resolving is compared in.
+const MODEL_PAGES: u64 = 16;
+
+/// The permissions the resolving is compared with, the default among them.
+const MODEL_PERMISSIONS: [PagePermission; 4] = [
+    PagePermission::Unmapped,
+    READ_WRITE,
+    PagePermission::Mapped {
+        data_access: DataAccess::ReadOnly,
+        instruction_fetch: InstructionFetch::Allowed,
+    },
+    PagePermission::Mapped {
+        data_access: DataAccess::Forbidden,
+        instruction_fetch: InstructionFetch::Forbidden,
+    },
+];
+
+/// Returns the next number of a fixed sequence.
+fn to_next(seed: &mut u64) -> u64 {
+    *seed = seed
+        .wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407);
+    *seed >> u32::BITS
+}
+
+/// Returns overlapping, empty and reversed permissions over whole pages and values of any length, one wrapping past the
+/// last address, in an order the seed chooses.
+fn to_changes(seed: u64) -> Vec<MemoryDelta<'static, Arm64<User>>> {
+    let mut seed = seed;
+    let mut changes = Vec::new();
+    for _ in 0..to_next(&mut seed) % 64 {
+        let start = to_next(&mut seed) % (MODEL_PAGES + 1) * PAGE_SIZE;
+        let end = to_next(&mut seed) % (MODEL_PAGES + 1) * PAGE_SIZE;
+        let permission = MODEL_PERMISSIONS[(to_next(&mut seed) % 4) as usize];
+        changes.push(to_permission(start..end, permission));
+        let start = to_next(&mut seed) % (MODEL_PAGES * PAGE_SIZE);
+        let length = to_next(&mut seed) % (2 * PAGE_SIZE) + 1;
+        let bytes = (0..length).map(|_| to_next(&mut seed) as u8).collect();
+        changes.push(MemoryDelta::ValueAssignment {
+            start,
+            bytes: Cow::Owned(bytes),
+        });
+    }
+    changes.push(MemoryDelta::ValueAssignment {
+        start: u64::MAX - 2,
+        bytes: Cow::Owned(vec![0xAB; 9]),
+    });
+    changes
+}
+
+/// What the resolved memory gives each page and byte agrees with applying every change in order, page by page and byte
+/// by byte; and the resolving of a million ranges in descending order takes time in their number.
+#[test]
+fn resolving_agrees_with_applying_each_change_in_order() {
+    let mut resolved = crate::Resolved::default();
+    for seed in 0..500 {
+        let changes = to_changes(seed);
+        let mut permissions = [PagePermission::Unmapped; MODEL_PAGES as usize];
+        let mut bytes = vec![0; (MODEL_PAGES * PAGE_SIZE) as usize];
+        for change in &changes {
+            match change {
+                MemoryDelta::PermissionAssignment {
+                    addresses,
+                    permission,
+                } => {
+                    for page in addresses.clone().step_by(PAGE_SIZE as usize) {
+                        permissions[(page / PAGE_SIZE) as usize] = *permission;
+                    }
+                }
+                MemoryDelta::ValueAssignment {
+                    start,
+                    bytes: value,
+                } => {
+                    for (offset, byte) in value.iter().enumerate() {
+                        let address = start.wrapping_add(offset as u64);
+                        if let Some(held) = bytes.get_mut(address as usize) {
+                            *held = *byte;
+                        }
+                    }
+                }
+            }
+        }
+        if let Err(refusal) = crate::resolve_memory(&changes, &mut resolved) {
+            panic!("seed {seed}: {refusal}");
+        }
+        let mut resolved_permissions = [PagePermission::Unmapped; MODEL_PAGES as usize];
+        for range in &resolved.mapped {
+            for page in range.addresses.clone().step_by(PAGE_SIZE as usize) {
+                resolved_permissions[(page / PAGE_SIZE) as usize] = PagePermission::Mapped {
+                    data_access: range.data_access,
+                    instruction_fetch: range.instruction_fetch,
+                };
+            }
+        }
+        assert_eq!(resolved_permissions, permissions, "seed {seed}");
+        let mut page_bytes = vec![0; PAGE_SIZE as usize];
+        for (page, expected) in bytes.chunks(PAGE_SIZE as usize).enumerate() {
+            crate::compose_bytes(
+                page as u64 * PAGE_SIZE,
+                &resolved.values,
+                &changes,
+                &mut page_bytes,
+            );
+            assert_eq!(page_bytes, expected, "seed {seed} page {page}");
+        }
+    }
+    let descending: Vec<_> = (0..1_000_000)
+        .rev()
+        .map(|page| to_permission(page * PAGE_SIZE..(page + 1) * PAGE_SIZE, READ_WRITE))
+        .collect();
+    if let Err(refusal) = crate::resolve_memory(&descending, &mut resolved) {
+        panic!("{refusal}");
+    }
+    assert_eq!(resolved.mapped.len(), 1_000_000);
+}
