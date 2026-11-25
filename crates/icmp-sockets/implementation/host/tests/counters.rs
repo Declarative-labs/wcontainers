@@ -4,7 +4,7 @@
 use etherparse::IpNumber;
 use wcontainers_abi::HostError;
 use wcontainers_icmp_sockets::IcmpSockets;
-use wcontainers_icmp_sockets_conformance::{PAD_N, PADDED};
+use wcontainers_icmp_sockets_conformance::{LentBuffers, PAD_N, PADDED};
 use wcontainers_icmp_sockets_host::HostIcmpSockets;
 use wcontainers_internet_protocol::{
     IcmpCode, IcmpType, IpHeaderFields, IpSendFields, IpVersion, Ipv6HeaderFields,
@@ -123,7 +123,7 @@ fn each_send_refusal_is_counted_under_its_reason() {
         let sockets = HostIcmpSockets::new().unwrap();
         let socket = sockets.open(IpVersion::V6, UserId(u32::MIN)).unwrap();
         assert_eq!(
-            sockets.send_to(&socket, IpHeaderFields::V6(header), fields, &message),
+            sockets.send_buffer(&socket, IpHeaderFields::V6(header), fields, &message),
             Err(SendError::Host(HostError::NotSupported)),
             "{kind}"
         );
@@ -149,7 +149,7 @@ fn each_send_refusal_is_counted_under_its_reason() {
     };
     header.route.upper_layer.selector = None;
     assert_eq!(
-        sockets.send_to(
+        sockets.send_buffer(
             &socket,
             IpHeaderFields::V4(header),
             suite::plain_fields(),
@@ -173,7 +173,7 @@ fn a_received_packet_counts_what_linux_does_not_give() {
     let to = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
     let message = suite::echo(IpVersion::V4, suite::PAYLOAD);
     sockets
-        .send_to(
+        .send_buffer(
             &socket,
             suite::header_to(to, &message),
             suite::plain_fields(),
@@ -182,7 +182,7 @@ fn a_received_packet_counts_what_linux_does_not_give() {
         .unwrap();
     let start = std::time::Instant::now();
     let mut into = suite::buffer();
-    while sockets.receive(&socket, &mut into) == Err(HostError::WouldBlock) {
+    while sockets.receive_buffer(&socket, &mut into) == Err(HostError::WouldBlock) {
         assert!(start.elapsed() < suite::PATIENCE, "no reply");
         std::thread::yield_now();
     }
@@ -227,7 +227,7 @@ fn a_packet_wish_changed_while_sends_are_held_is_counted() {
             ..suite::plain_fields()
         };
         sockets
-            .send_to(&socket, suite::header_to(to, &message), fields, &message)
+            .send_buffer(&socket, suite::header_to(to, &message), fields, &message)
             .unwrap();
     }
     let counted: Vec<_> = sockets
@@ -270,7 +270,7 @@ fn a_ping_from_a_bound_address_by_a_bound_interface_is_counted() {
             unreachable!("an IPv6 destination has an IPv6 header");
         };
         header.route.interface = Some(InterfaceSelector::Bound(suite::index(link)));
-        let sent = sockets.send_to(
+        let sent = sockets.send_buffer(
             &socket,
             IpHeaderFields::V6(header),
             suite::plain_fields(),

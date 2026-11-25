@@ -2,7 +2,6 @@
 
 use core::cell::RefCell;
 use core::cmp::Ordering;
-use core::mem::MaybeUninit;
 use std::net::{IpAddr, SocketAddr};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 
@@ -12,6 +11,7 @@ use linux_raw_sys::net as uapi;
 use rustix::net::SocketType;
 use socket2::SockAddr;
 use wcontainers_abi::{CounterReading, HostError};
+use wcontainers_byte_source::ByteSource;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     BindAddress, BindingSetting, BufferSizes, ByteCount, IpHeaderFields, IpSendFields,
@@ -26,6 +26,7 @@ use wcontainers_udp_sockets::{
     ReceiveCoalescing, UdpChecksum, UdpDatagram, UdpLocalEnd, UdpProtocol, UdpReceived,
     UdpReceivedPacket, UdpSocketSetting, UdpSockets, ZeroChecksumReceipt,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use shared::datagram::addresses::{for_family, local_address, unmapped};
 use shared::datagram::exchange::{ErrorQueue, send_message};
@@ -37,9 +38,7 @@ use shared::datagram::send::{self as datagram_send, Control, Refusal, SendState}
 use shared::datagram::sticky::{Slot, UDP_LITE_RECEIVE_COVERAGE};
 use shared::icmp_error::write_icmp_error;
 use shared::readiness::{DATAGRAM_FACTS, Watched, Watcher};
-use shared::{
-    Shortfalls, host_error as from_errno, io_host_error, last_host_error, set_flag, set_int, sock,
-};
+use shared::{Shortfalls, host_error as from_errno, io_host_error, set_flag, set_int, sock};
 
 /// UDP and UDP-Lite sockets of the Linux machine this runs on, with a count of each refusal by its reason.
 pub struct HostUdpSockets {
@@ -98,8 +97,8 @@ pub const SEND_BUFFER_CUT_BY_THE_HOST: &str =
 pub const RECEIVE_BUFFER_CUT_BY_THE_HOST: &str =
     "a receive buffer size above the host's net.core.rmem_max, which the host cuts to it";
 
-/// The largest payload of one receive: an IP packet's largest length.
-const LARGEST_PAYLOAD: usize = u16::MAX as usize;
+/// Where `SO_MEMINFO` gives the bytes the socket's sends hold, its `SK_MEMINFO_WMEM_ALLOC`.
+const UNSENT_MEMINFO_INDEX: usize = libc::SK_MEMINFO_WMEM_ALLOC as usize;
 
 /// The receive control messages every socket turns on that socket2 does not, by level.
 const IPV4_RECEIVE_OPTIONS: [u32; 6] = [
@@ -357,6 +356,30 @@ impl HostUdpSocket {
     }
 }
 
+/// One receive on a socket, made when the bytes received into read it, keeping the packet or report it gave.
+struct Receiving<'a> {
+    sockets: &'a HostUdpSockets,
+    socket: &'a HostUdpSocket,
+    state: &'a mut SocketState,
+    received: Option<UdpReceived>,
+}
+
+impl ByteSource for Receiving<'_> {
+    type Error = HostError;
+
+    fn read(&mut self, into: &mut [u8]) -> Result<usize, HostError> {
+        let received = self.sockets.receive_now(self.socket, self.state, into)?;
+        self.received = Some(received);
+        let given = match received {
+            UdpReceived::Packet(packet) => packet.fields.length,
+            UdpReceived::TransmitReport(report) => {
+                report.packet_length.map_or(usize::MIN, |length| length.0)
+            }
+        };
+        Ok(given.min(into.len()))
+    }
+}
+
 fn connect(fd: BorrowedFd<'_>, peer: SocketAddr) -> Result<(), HostError> {
     sock(&fd)
         .connect(&SockAddr::from(peer))
@@ -531,20 +554,34 @@ impl UdpSockets for HostUdpSockets {
         sent
     }
 
-    fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<UdpReceived, HostError> {
+    fn receive(
+        &self,
+        socket: &Self::Socket,
+        into: &impl VolatileBytes,
+    ) -> Result<UdpReceived, HostError> {
         let mut state = socket.state.borrow_mut();
-        let received = self.receive_now(socket, &mut state, into);
+        let mut receiving = Receiving {
+            sockets: self,
+            socket,
+            state: &mut state,
+            received: None,
+        };
+        let read = into.write_from(&mut receiving);
+        let received = receiving.received;
         socket.note_kept_entries(&mut state);
-        received
+        read?;
+        // Bytes that never read their source were given nothing.
+        received.ok_or(HostError::Errno(libc::EFAULT))
     }
 
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
-        let mut unsent: c_int = c_int::default();
-        // SAFETY: SIOCOUTQ (TIOCOUTQ) writes one int through the pointer.
-        let result = unsafe { libc::ioctl(socket.fd().as_raw_fd(), libc::TIOCOUTQ, &mut unsent) };
-        if result < 0 {
-            return Err(last_host_error());
-        }
+        // SO_MEMINFO gives what udp(7)'s SIOCOUTQ does, sk_wmem_alloc, and copies only the leading counts asked for.
+        let mut counts = [0_u8; size_of::<u32>() * (UNSENT_MEMINFO_INDEX + 1)];
+        shared::get_bytes(socket.fd(), uapi::SOL_SOCKET, uapi::SO_MEMINFO, &mut counts)?;
+        let unsent = counts
+            .last_chunk::<{ size_of::<u32>() }>()
+            .copied()
+            .map_or(u32::MIN, u32::from_ne_bytes);
         Ok(ByteCount(unsent as usize))
     }
 
@@ -709,20 +746,21 @@ impl HostUdpSockets {
                 taken => return taken,
             }
         }
-        // What does not fit `into` lands here, so that the checksum covers the whole payload.
-        let mut tail = [const { MaybeUninit::<u8>::uninit() }; LARGEST_PAYLOAD];
         let mut control = ControlBuffer::new();
-        match datagram_receive::receive_with_tail(fd, into, &mut tail, &mut control, false) {
-            Ok(message) => {
-                if message.control_truncated {
-                    self.count(datagram_receive::CONTROL_TRUNCATED);
-                }
-                let beyond = message.length.saturating_sub(into.len()).min(tail.len());
-                // SAFETY: the kernel wrote the first `beyond` bytes of the tail.
-                let tail =
-                    unsafe { core::slice::from_raw_parts(tail.as_ptr().cast::<u8>(), beyond) };
-                socket.datagram(state, into, tail, &message)
-            }
+        // What does not fit `into` lands in the tail, so that the checksum covers the whole payload.
+        let received = datagram_receive::with_tail(|tail| {
+            datagram_receive::receive_with_tail(fd, into, tail, &mut control, false).map(
+                |message| {
+                    if message.control_truncated {
+                        self.count(datagram_receive::CONTROL_TRUNCATED);
+                    }
+                    let beyond = message.length.saturating_sub(into.len()).min(tail.len());
+                    socket.datagram(state, into, &tail[..beyond], &message)
+                },
+            )
+        });
+        match received {
+            Ok(datagram) => datagram,
             // Linux sets the socket error with every ICMP error it queues, and answers it before would-block, so
             // the error queue is read only then; a send that takes that error keeps the queue's entries.
             Err(HostError::WouldBlock) => Err(HostError::WouldBlock),

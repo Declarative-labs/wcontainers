@@ -30,10 +30,14 @@ netlink-sys = { version = "0.9.0", default-features = false }
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
 [dev-dependencies]
 wcontainers-route-resolver-conformance = { path = "../../conformance" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The network namespace of the counter test and the index of its link.
+nix = { version = "0.31.3", default-features = false, features = ["net", "sched"] }
 
 [lints]
 workspace = true

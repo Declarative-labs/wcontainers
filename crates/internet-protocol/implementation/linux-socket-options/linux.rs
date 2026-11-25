@@ -1,13 +1,15 @@
 //! The shared settings of crates/internet-protocol as Linux socket options, and the raw option calls under them.
 
 use std::ffi::{c_int, c_void};
-use std::marker::PhantomData;
-use std::mem::{MaybeUninit, size_of};
+use std::io::IoSliceMut;
+use std::mem::size_of;
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
 use linux_raw_sys::net as uapi;
+use nix::sys::socket::{MsgFlags, SockaddrLike, recvmsg};
+use nix::unistd::{Uid, setfsuid};
 use rustix::io::Errno;
 use rustix::net::{Protocol, SocketType};
 use socket2::{Domain, SockAddr, Socket};
@@ -19,6 +21,7 @@ use wcontainers_internet_protocol::{
     PortSharing, RouteScope, SocketFilter, TemporaryAddressPreference, Timestamping,
 };
 use wcontainers_kernel::UserId;
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::{Shortfalls, host_error, io_host_error, last_host_error, sock};
 
@@ -126,14 +129,14 @@ pub fn get_bytes(
 }
 
 /// Reads a socket option whose value is plain data that every bit pattern is valid for.
-pub fn get_option<T: Copy>(socket: BorrowedFd<'_>, level: u32, name: u32) -> Result<T, HostError> {
-    let mut value = MaybeUninit::<T>::zeroed();
-    // SAFETY: a zeroed T is a valid T for the plain uapi types this is used with, and the buffer is its bytes.
-    let bytes =
-        unsafe { std::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), size_of::<T>()) };
-    get_bytes(socket, level, name, bytes)?;
-    // SAFETY: zeroed and then written by the kernel, so initialised.
-    Ok(unsafe { value.assume_init() })
+pub fn get_option<T: FromBytes + IntoBytes>(
+    socket: BorrowedFd<'_>,
+    level: u32,
+    name: u32,
+) -> Result<T, HostError> {
+    let mut value = T::new_zeroed();
+    get_bytes(socket, level, name, value.as_mut_bytes())?;
+    Ok(value)
 }
 
 pub fn get_int(socket: BorrowedFd<'_>, level: u32, name: u32) -> Result<c_int, HostError> {
@@ -479,21 +482,102 @@ pub const TIMESTAMP_STAGE_COMPLETED: u32 = 3;
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const TIMESTAMPING_TIMES: usize = 3;
 
+/// The places of the software and hardware times among them; the one between is deprecated.
+const SOFTWARE_TIME: usize = 0;
+const HARDWARE_TIME: usize = 2;
+
 /// The room for the control messages of one receive: timestamps, an extended error, packet information, statistics.
 ///
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-shared-crates-own-choices
 const CONTROL_ROOM: usize = 1024;
 
-/// The control messages of one `recvmsg`, in words so that they are aligned as `cmsghdr` needs.
-pub struct ControlBuffer([usize; CONTROL_ROOM / size_of::<usize>()]);
+/// Room for the control messages of a `recvmsg`, in words so that it is aligned as `cmsghdr` needs.
+///
+/// Before each receive it holds zeros, so that a walk of the control messages the receive writes ends where they end.
+pub struct ControlRoom<const WORDS: usize> {
+    words: [usize; WORDS],
+    written: bool,
+}
 
-impl Default for ControlBuffer {
-    fn default() -> Self {
-        Self([usize::MIN; CONTROL_ROOM / size_of::<usize>()])
+impl<const WORDS: usize> ControlRoom<WORDS> {
+    pub fn new() -> Self {
+        Self {
+            words: [usize::MIN; WORDS],
+            written: false,
+        }
     }
 }
 
-/// What one `recvmsg` gave: the bytes it wrote, its flags and its control messages.
+impl<const WORDS: usize> Default for ControlRoom<WORDS> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The control messages of one stream receive.
+pub type ControlBuffer = ControlRoom<{ CONTROL_ROOM / size_of::<usize>() }>;
+
+/// What one `recvmsg` gave: the bytes it wrote, its flags (`MSG_*`), the sender, and the room with its control
+/// messages, zeros after them.
+pub struct Received<'a, T> {
+    pub length: usize,
+    pub flags: c_int,
+    pub source: Option<T>,
+    pub control: &'a [u8],
+}
+
+/// Makes one `recvmsg` into `vectors` and the room for control messages, the sender read as `S` and given as
+/// `source` makes of it; `flags` are `MSG_*` flags.
+///
+/// Made with nix rather than socket2, whose `RecvFlags` gives no `MSG_CTRUNC`, or rustix, which hands out only the
+/// control messages it parses; the messages are read from the room's bytes, not through nix's parsing, which
+/// allocates for each kind it does not know.
+#[inline]
+pub fn receive_vectored<'a, S: SockaddrLike, T, const WORDS: usize>(
+    socket: BorrowedFd<'_>,
+    vectors: &mut [IoSliceMut<'_>],
+    flags: c_int,
+    control: &'a mut ControlRoom<WORDS>,
+    source: impl FnOnce(&S) -> Option<T>,
+) -> Result<Received<'a, T>, HostError> {
+    if control.written {
+        control.words.fill(usize::MIN);
+    }
+    control.written = true;
+    let received = recvmsg::<S>(
+        socket.as_raw_fd(),
+        vectors,
+        Some(control.words.as_mut_bytes()),
+        MsgFlags::from_bits_retain(flags),
+    )
+    .map_err(|errno| host_error(Errno::from_raw_os_error(errno as c_int)))?;
+    let (length, flags) = (received.bytes, received.flags.bits());
+    let source = received.address.as_ref().and_then(source);
+    Ok(Received {
+        length,
+        flags,
+        source,
+        control: control.words.as_bytes(),
+    })
+}
+
+/// How many bytes of the control messages of a receive, read up to the zeros after them, they take.
+pub fn written_length(control: &[u8]) -> usize {
+    let mut at = 0;
+    while let Some(length) = header_field(control.get(at..).unwrap_or_default(), CONTROL_LENGTH_AT)
+    {
+        let length = usize::from_ne_bytes(length);
+        if length < CONTROL_DATA_AT {
+            break;
+        }
+        at = at
+            .saturating_add(control_aligned(length))
+            .min(control.len());
+    }
+    at
+}
+
+/// What one stream `recvmsg` gave: the bytes it wrote, its flags and its control messages.
 pub struct ReceivedMessage<'a> {
     pub length: usize,
     pub flags: c_int,
@@ -507,64 +591,55 @@ impl<'a> ReceivedMessage<'a> {
 }
 
 /// Makes one `recvmsg` into the buffer with room for control messages; `flags` are `MSG_*` flags.
-///
-/// Made with libc rather than socket2, whose `RecvFlags` gives no `MSG_CTRUNC`: a cut is the caller's to count.
 pub fn receive_message<'a>(
     socket: BorrowedFd<'_>,
     into: &mut [u8],
     flags: c_int,
     control: &'a mut ControlBuffer,
 ) -> Result<ReceivedMessage<'a>, HostError> {
-    let mut vectors = [libc::iovec {
-        iov_base: into.as_mut_ptr().cast(),
-        iov_len: into.len(),
-    }];
-    // SAFETY: msghdr is plain data; the fields set below are the only ones the call reads.
-    let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
-    header.msg_iov = vectors.as_mut_ptr();
-    header.msg_iovlen = vectors.len() as _;
-    header.msg_control = control.0.as_mut_ptr().cast();
-    header.msg_controllen = CONTROL_ROOM as _;
-    // SAFETY: the vectors and the control buffer stay alive and writable for the call.
-    let length = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut header, flags) };
-    if length < 0 {
-        return Err(last_host_error());
-    }
-    // SAFETY: the kernel wrote `msg_controllen` bytes of control messages into the buffer.
-    let control = unsafe {
-        std::slice::from_raw_parts(
-            control.0.as_ptr().cast::<u8>(),
-            header.msg_controllen as usize,
-        )
-    };
-    Ok(ReceivedMessage {
-        length: length as usize,
-        flags: header.msg_flags,
+    let received = receive_vectored(
+        socket,
+        &mut [IoSliceMut::new(into)],
+        flags,
         control,
+        |_: &()| None::<()>,
+    )?;
+    Ok(ReceivedMessage {
+        length: received.length,
+        flags: received.flags,
+        control: received.control,
     })
 }
 
-/// The control messages of a receive as level, type and data, walked in place.
+/// Rounds a length up to the alignment of control messages, a `size_t`'s (`CMSG_ALIGN`).
+const fn control_aligned(length: usize) -> usize {
+    length.next_multiple_of(size_of::<uapi::__kernel_size_t>())
+}
+
+/// Where a control message's data starts, after its header (`CMSG_DATA`).
+const CONTROL_DATA_AT: usize = control_aligned(size_of::<uapi::cmsghdr>());
+
+/// Where a control message's header holds its length, data included (`cmsg_len`).
+const CONTROL_LENGTH_AT: usize = std::mem::offset_of!(uapi::cmsghdr, cmsg_len);
+
+/// The room one control message of `length` bytes of data takes (`CMSG_SPACE`).
+pub const fn control_space(length: usize) -> usize {
+    control_aligned(length) + CONTROL_DATA_AT
+}
+
+/// The bytes of one field of the control message header at the start of `bytes`.
+fn header_field<const N: usize>(bytes: &[u8], at: usize) -> Option<[u8; N]> {
+    bytes.get(at..at + N)?.try_into().ok()
+}
+
+/// The control messages of a receive as level, type and data, read from the bytes the kernel wrote.
 pub struct ControlMessages<'a> {
-    header: libc::msghdr,
-    next: *const libc::cmsghdr,
-    control: PhantomData<&'a [u8]>,
+    rest: &'a [u8],
 }
 
 impl<'a> ControlMessages<'a> {
-    /// Walks the messages of control bytes the kernel wrote, aligned as `cmsghdr` needs.
     pub fn new(control: &'a [u8]) -> Self {
-        // SAFETY: msghdr is plain data; only its control fields are read by the walk.
-        let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
-        header.msg_control = control.as_ptr().cast_mut().cast();
-        header.msg_controllen = control.len() as _;
-        // SAFETY: the header describes `control`, which outlives the walk.
-        let next = unsafe { libc::CMSG_FIRSTHDR(&header) };
-        Self {
-            header,
-            next,
-            control: PhantomData,
-        }
+        Self { rest: control }
     }
 }
 
@@ -572,32 +647,42 @@ impl<'a> Iterator for ControlMessages<'a> {
     type Item = (c_int, c_int, &'a [u8]);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let message = self.next;
-        if message.is_null() {
-            return None;
-        }
-        // SAFETY: CMSG_FIRSTHDR and CMSG_NXTHDR give only whole message headers inside the control bytes, whose data
-        // runs to `cmsg_len`.
-        unsafe {
-            let data = libc::CMSG_DATA(message);
-            let used = data.offset_from(message.cast::<u8>()) as usize;
-            // A u32 on musl, a usize on glibc.
-            let length: usize = (*message).cmsg_len as _;
-            let data_length = length.saturating_sub(used);
-            self.next = libc::CMSG_NXTHDR(&self.header, message);
-            Some((
-                (*message).cmsg_level,
-                (*message).cmsg_type,
-                std::slice::from_raw_parts(data, data_length),
-            ))
-        }
+        let rest = std::mem::take(&mut self.rest);
+        let length = usize::from_ne_bytes(header_field(rest, CONTROL_LENGTH_AT)?);
+        let level = c_int::from_ne_bytes(header_field(
+            rest,
+            std::mem::offset_of!(uapi::cmsghdr, cmsg_level),
+        )?);
+        let kind = c_int::from_ne_bytes(header_field(
+            rest,
+            std::mem::offset_of!(uapi::cmsghdr, cmsg_type),
+        )?);
+        // As CMSG_NXTHDR, a header that claims less than itself or more than the bytes there ends the walk.
+        let data = rest.get(CONTROL_DATA_AT..length)?;
+        self.rest = rest.get(control_aligned(length)..).unwrap_or_default();
+        Some((level, kind, data))
     }
 }
 
-fn timespec(time: &libc::timespec) -> Option<Duration> {
-    let seconds = u64::try_from(time.tv_sec).ok()?;
-    let nanoseconds = u32::try_from(time.tv_nsec).ok()?;
-    let duration = Duration::new(seconds, nanoseconds);
+/// Reads the `timespec` at an index of the data, absent when it is zero.
+fn timespec(data: &[u8], index: usize) -> Option<Duration> {
+    let at = index * size_of::<libc::timespec>();
+    let seconds = at + std::mem::offset_of!(libc::timespec, tv_sec);
+    let nanoseconds = at + std::mem::offset_of!(libc::timespec, tv_nsec);
+    let seconds = libc::time_t::from_ne_bytes(
+        data.get(seconds..seconds + size_of::<libc::time_t>())?
+            .try_into()
+            .ok()?,
+    );
+    let nanoseconds = libc::c_long::from_ne_bytes(
+        data.get(nanoseconds..nanoseconds + size_of::<libc::c_long>())?
+            .try_into()
+            .ok()?,
+    );
+    let duration = Duration::new(
+        u64::try_from(seconds).ok()?,
+        u32::try_from(nanoseconds).ok()?,
+    );
     (!duration.is_zero()).then_some(duration)
 }
 
@@ -606,14 +691,7 @@ pub fn timestamps(data: &[u8]) -> (Option<Duration>, Option<Duration>) {
     if data.len() < size_of::<[libc::timespec; TIMESTAMPING_TIMES]>() {
         return (None, None);
     }
-    // SAFETY: the data holds the three timespecs of scm_timestamping, read unaligned.
-    let times = unsafe {
-        data.as_ptr()
-            .cast::<[libc::timespec; TIMESTAMPING_TIMES]>()
-            .read_unaligned()
-    };
-    let [software, _, hardware] = times;
-    (timespec(&software), timespec(&hardware))
+    (timespec(data, SOFTWARE_TIME), timespec(data, HARDWARE_TIME))
 }
 
 pub fn family_of(address: &BindAddress) -> IpVersion {
@@ -647,23 +725,18 @@ pub fn open_socket(
             .map_err(|error| io_host_error(&error))
     };
     // An invalid id changes nothing and answers the thread's filesystem user.
-    // SAFETY: setfsuid only changes this thread's filesystem user, which is restored before returning.
-    let previous = unsafe { libc::setfsuid(libc::uid_t::MAX) } as libc::uid_t;
-    if previous == owner.0 {
+    let unchanged = Uid::from_raw(libc::uid_t::MAX);
+    let previous = setfsuid(unchanged);
+    if previous.as_raw() == owner.0 {
         return open();
     }
-    // SAFETY: as above.
-    let acting = unsafe {
-        libc::setfsuid(owner.0);
-        libc::setfsuid(libc::uid_t::MAX) as libc::uid_t
-    };
-    let socket = if acting == owner.0 {
+    setfsuid(Uid::from_raw(owner.0));
+    let socket = if setfsuid(unchanged).as_raw() == owner.0 {
         open()
     } else {
         Err(HostError::Errno(libc::EPERM))
     };
-    // SAFETY: as above.
-    unsafe { libc::setfsuid(previous) };
+    setfsuid(previous);
     socket
 }
 

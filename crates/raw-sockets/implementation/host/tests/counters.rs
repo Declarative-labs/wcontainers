@@ -20,7 +20,7 @@ use wcontainers_raw_sockets::{
     RouterAlertIsolation,
 };
 use wcontainers_raw_sockets_conformance::icmp_suite::{PAD_N, PADDED, PATIENCE};
-use wcontainers_raw_sockets_conformance::{EXPERIMENT, RAW_PROTOCOL};
+use wcontainers_raw_sockets_conformance::{EXPERIMENT, LentBuffers, RAW_PROTOCOL};
 use wcontainers_raw_sockets_host::HostRawSockets;
 
 const PAYLOAD: &[u8] = b"payload";
@@ -299,7 +299,7 @@ fn a_packet_taken_as_forwarded_is_counted() {
     let start = std::time::Instant::now();
     let mut into = vec![u8::MIN; packet.len()];
     let received = loop {
-        match sockets.receive(&alerted, &mut into) {
+        match sockets.receive_buffer(&alerted, &mut into) {
             Err(HostError::WouldBlock) => {
                 assert!(start.elapsed() < PATIENCE, "nothing arrives");
                 std::thread::yield_now();

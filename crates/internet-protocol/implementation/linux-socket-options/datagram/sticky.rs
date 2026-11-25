@@ -5,8 +5,8 @@ use std::os::fd::BorrowedFd;
 use libc::c_int;
 use linux_raw_sys::net as uapi;
 use wcontainers_abi::HostError;
+use zerocopy::{Immutable, IntoBytes};
 
-use crate::datagram::addresses::as_bytes;
 use crate::{io_host_error, set_bytes, sock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,13 +145,13 @@ impl Sticky {
         Ok(())
     }
 
-    pub fn ensure<T: Copy>(
+    pub fn ensure<T: IntoBytes + Immutable>(
         &mut self,
         fd: BorrowedFd<'_>,
         slot: Slot,
         wanted: &T,
     ) -> Result<(), HostError> {
-        self.ensure_bytes(fd, slot, as_bytes(wanted))
+        self.ensure_bytes(fd, slot, wanted.as_bytes())
     }
 
     pub fn ensure_int(
@@ -160,7 +160,7 @@ impl Sticky {
         slot: Slot,
         wanted: c_int,
     ) -> Result<(), HostError> {
-        self.ensure_with(slot, as_bytes(&wanted), || write_int(fd, slot, wanted))
+        self.ensure_with(slot, wanted.as_bytes(), || write_int(fd, slot, wanted))
     }
 
     pub fn ensure_flag(
@@ -195,7 +195,7 @@ fn write_int(fd: BorrowedFd<'_>, slot: Slot, value: c_int) -> Result<(), HostErr
         Slot::Ipv6Transparent => socket.set_ip_transparent_v6(on),
         _ => {
             let (level, name, _) = slot.option();
-            return set_bytes(fd, level, name, as_bytes(&value));
+            return set_bytes(fd, level, name, value.as_bytes());
         }
     }
     .map_err(|error| io_host_error(&error))

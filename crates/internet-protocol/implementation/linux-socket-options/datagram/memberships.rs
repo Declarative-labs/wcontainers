@@ -1,7 +1,7 @@
 //! Multicast group and anycast address memberships of a socket.
 
 use core::mem::{offset_of, size_of};
-use std::net::{IpAddr, Ipv6Addr};
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsFd, BorrowedFd};
 
 use libc::c_int;
@@ -11,9 +11,10 @@ use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     AnycastAddress, Membership, MulticastGroup, MulticastMembership, SourceFilter,
 };
+use zerocopy::IntoBytes;
 
-use crate::datagram::addresses::{in6_addr, storage, zeroed};
-use crate::{io_host_error, last_host_error, set_bytes, set_option};
+use crate::datagram::addresses::{StorageBytes, in6_addr, storage, storage_bytes};
+use crate::{io_host_error, set_bytes, set_option};
 
 /// The anycast addresses a socket joined, which Linux counts per join and cannot be asked back.
 #[derive(Default)]
@@ -25,9 +26,10 @@ impl AnycastMemberships {
         let interface = anycast.interface.map_or(u32::MIN, |index| index.0.get());
         let key = (anycast.address, interface);
         let joined = self.0.contains(&key);
-        let mut request = zeroed::<uapi::ipv6_mreq>();
-        request.ipv6mr_multiaddr = in6_addr(anycast.address);
-        request.ipv6mr_ifindex = interface as c_int;
+        let request = uapi::ipv6_mreq {
+            ipv6mr_multiaddr: in6_addr(anycast.address),
+            ipv6mr_ifindex: interface as c_int,
+        };
         match anycast.membership {
             Membership::Joined if !joined => {
                 set_option(fd, uapi::SOL_IPV6, uapi::IPV6_JOIN_ANYCAST, &request)?;
@@ -51,29 +53,20 @@ fn chosen_interface(level: u32, group: IpAddr) -> Result<u32, HostError> {
         IpAddr::V6(_) => Domain::IPV6,
     };
     let probe = Socket::new(domain, Type::DGRAM, None).map_err(|error| io_host_error(&error))?;
-    let mut request = zeroed::<uapi::group_req>();
-    request.gr_group = storage(group);
+    let mut request = uapi::group_req {
+        gr_interface: u32::MIN,
+        gr_group: storage(group),
+    };
     set_option(probe.as_fd(), level, uapi::MCAST_JOIN_GROUP, &request)?;
-    // SAFETY: if_nameindex gives an array ended by an entry of index 0, or null, freed below.
-    let interfaces = unsafe { libc::if_nameindex() };
-    if interfaces.is_null() {
-        return Err(last_host_error());
-    }
-    let mut chosen = Err(HostError::Errno(libc::EADDRNOTAVAIL));
-    // SAFETY: the array is read up to its ending entry and freed once.
-    unsafe {
-        let mut entry = interfaces;
-        while (*entry).if_index != u32::MIN {
-            request.gr_interface = (*entry).if_index;
-            if set_option(probe.as_fd(), level, uapi::MCAST_LEAVE_GROUP, &request).is_ok() {
-                chosen = Ok((*entry).if_index);
-                break;
-            }
-            entry = entry.add(1);
+    let interfaces =
+        nix::net::if_::if_nameindex().map_err(|error| HostError::Errno(error as i32))?;
+    for interface in &interfaces {
+        request.gr_interface = interface.index();
+        if set_option(probe.as_fd(), level, uapi::MCAST_LEAVE_GROUP, &request).is_ok() {
+            return Ok(interface.index());
         }
-        libc::if_freenameindex(interfaces);
     }
-    chosen
+    Err(HostError::Errno(libc::EADDRNOTAVAIL))
 }
 
 /// Joins a group and writes its whole source filter, or leaves it. Linux writes a filter only for a membership
@@ -85,8 +78,10 @@ pub fn set_multicast_group<A: Copy>(
     setting: &MulticastGroup<'_, A>,
     address: impl Fn(&A) -> IpAddr,
 ) -> Result<(), HostError> {
-    let mut request = zeroed::<uapi::group_req>();
-    request.gr_group = storage(group);
+    let mut request = uapi::group_req {
+        gr_interface: u32::MIN,
+        gr_group: storage(group),
+    };
     let filter = match setting.membership {
         MulticastMembership::Left => {
             request.gr_interface = setting.interface.map_or(u32::MIN, |index| index.0.get());
@@ -111,24 +106,24 @@ pub fn set_multicast_group<A: Copy>(
         SourceFilter::Exclude(sources) => (uapi::MCAST_EXCLUDE, sources),
     };
     type Header = uapi::group_filter__bindgen_ty_1__bindgen_ty_2;
-    type Storage = uapi::__kernel_sockaddr_storage;
     let start = offset_of!(Header, gf_slist_flex);
-    let length =
-        (start + sources.len() * size_of::<Storage>()).max(size_of::<uapi::group_filter>());
-    let mut words = vec![u64::MIN; length.div_ceil(size_of::<u64>())];
-    // SAFETY: the buffer is large enough and aligned for the header and its sources.
-    unsafe {
-        let header = words.as_mut_ptr().cast::<Header>();
-        (*header).gf_interface = interface;
-        (*header).gf_group = storage(group);
-        (*header).gf_fmode = mode;
-        (*header).gf_numsrc = sources.len() as u32;
-        let list = words.as_mut_ptr().cast::<u8>().add(start).cast::<Storage>();
-        for (index, source) in sources.iter().enumerate() {
-            list.add(index).write_unaligned(storage(address(source)));
-        }
+    let room = size_of::<StorageBytes>();
+    let length = (start + sources.len() * room).max(size_of::<uapi::group_filter>());
+    let mut bytes = vec![u8::MIN; length];
+    let mut put = |at: usize, value: &[u8]| bytes[at..at + value.len()].copy_from_slice(value);
+    put(offset_of!(Header, gf_interface), &interface.to_ne_bytes());
+    put(
+        offset_of!(Header, gf_group),
+        storage_bytes(SocketAddr::new(group, u16::MIN)).as_bytes(),
+    );
+    put(offset_of!(Header, gf_fmode), &mode.to_ne_bytes());
+    put(
+        offset_of!(Header, gf_numsrc),
+        &(sources.len() as u32).to_ne_bytes(),
+    );
+    for (index, source) in sources.iter().enumerate() {
+        let source = storage_bytes(SocketAddr::new(address(source), u16::MIN));
+        put(start + index * room, source.as_bytes());
     }
-    // SAFETY: the words are plain bytes of the filter.
-    let bytes = unsafe { core::slice::from_raw_parts(words.as_ptr().cast::<u8>(), length) };
-    set_bytes(fd, level, uapi::MCAST_MSFILTER, bytes)
+    set_bytes(fd, level, uapi::MCAST_MSFILTER, &bytes)
 }
