@@ -398,6 +398,27 @@ pub fn refuses_contents_of_uncommitted_work_and_a_second_commit<M: Metal>(mut su
     assert_eq!(read, [9; 4]);
 }
 
+/// Checks that a buffer whose only user was a command buffer dropped uncommitted is the CPU's again.
+pub fn frees_a_buffer_whose_command_buffer_was_dropped<M: Metal>(mut subject: M) {
+    let buffer = filled(&mut subject, &pattern(COLOR_BYTES as usize));
+    let command_buffer = subject.make_command_buffer().expect("make_command_buffer");
+    subject
+        .encode_blit_commands(
+            &command_buffer,
+            &[BlitCommand::FillBuffer {
+                buffer: buffer.clone(),
+                offset: 0,
+                length: COLOR_BYTES,
+                value: 1,
+            }],
+        )
+        .expect("encode_blit_commands");
+    drop(command_buffer);
+    subject
+        .write_contents(&buffer, 0, &[0; COLOR_BYTES as usize])
+        .expect("write_contents");
+}
+
 /// Checks that copies between buffers and a texture, and a fill, move exactly the bytes they name.
 pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
     let row = u64::from(TARGET_SIDE) * RGBA8_BYTES;
@@ -1319,6 +1340,11 @@ macro_rules! tests {
         #[test]
         fn refuses_contents_of_uncommitted_work_and_a_second_commit() {
             $crate::refuses_contents_of_uncommitted_work_and_a_second_commit($value);
+        }
+
+        #[test]
+        fn frees_a_buffer_whose_command_buffer_was_dropped() {
+            $crate::frees_a_buffer_whose_command_buffer_was_dropped($value);
         }
 
         #[test]

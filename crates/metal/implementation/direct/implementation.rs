@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::ffi::c_void;
 use std::fmt;
 use std::ptr::NonNull;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use objc2::MainThreadMarker;
 use objc2::rc::{Retained, autoreleasepool};
@@ -106,6 +106,8 @@ pub struct DirectMetal {
     /// Bound to vertex buffer slots no command filled, with length zero passed to the function.
     empty: Retained<ProtocolObject<dyn MTLBuffer>>,
     limits: DeviceLimits,
+    /// The committed command buffers not yet seen completed, which buffers that they use wait for.
+    in_flight: Vec<DirectCommandBuffer>,
 }
 
 /// What the device takes, by its GPU family.
@@ -124,7 +126,9 @@ pub struct DirectBuffer(Rc<BufferState>);
 struct BufferState {
     raw: Retained<ProtocolObject<dyn MTLBuffer>>,
     length: u64,
-    users: RefCell<Vec<DirectCommandBuffer>>,
+    /// The command buffers that use it: one dropped uncommitted never runs, and a committed one is kept until it
+    /// completes by the device's list of those in flight.
+    users: RefCell<Vec<Weak<CommandBufferState>>>,
 }
 
 /// A texture or a view of one, with what it was made as.
@@ -317,6 +321,7 @@ impl StandaloneMetal for DirectMetal {
             queue,
             empty,
             limits,
+            in_flight: Vec::new(),
         }
     }
 }
@@ -325,24 +330,27 @@ impl DirectBuffer {
     /// Waits for the committed command buffers that use the buffer; refuses when one is not committed.
     fn settle(&self) -> Result<(), ()> {
         let mut users = self.0.users.borrow_mut();
-        if users.iter().any(|user| !user.0.committed.get()) {
+        let live: Vec<Rc<CommandBufferState>> = users.iter().filter_map(Weak::upgrade).collect();
+        if live.iter().any(|user| !user.committed.get()) {
             return Err(());
         }
-        for user in users.drain(..) {
-            user.0.raw.waitUntilCompleted();
+        for user in live {
+            user.raw.waitUntilCompleted();
         }
+        users.clear();
         Ok(())
     }
 
     /// Notes that a command buffer uses the buffer.
     fn used_by(&self, command_buffer: &DirectCommandBuffer) {
         let mut users = self.0.users.borrow_mut();
-        users.retain(|user| user.0.raw.status() != MTLCommandBufferStatus::Completed);
-        if !users
-            .iter()
-            .any(|user| Rc::ptr_eq(&user.0, &command_buffer.0))
-        {
-            users.push(command_buffer.clone());
+        users.retain(|user| {
+            user.upgrade()
+                .is_some_and(|user| user.raw.status() != MTLCommandBufferStatus::Completed)
+        });
+        let weak = Rc::downgrade(&command_buffer.0);
+        if !users.iter().any(|user| user.ptr_eq(&weak)) {
+            users.push(weak);
         }
     }
 
@@ -1113,6 +1121,9 @@ impl Metal for DirectMetal {
             return Err(CommitError::AlreadyCommitted);
         }
         command_buffer.0.raw.commit();
+        self.in_flight
+            .retain(|other| other.0.raw.status() != MTLCommandBufferStatus::Completed);
+        self.in_flight.push(command_buffer.clone());
         Ok(())
     }
 
