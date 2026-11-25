@@ -227,7 +227,7 @@ impl<M: Metal> MetalGpu<M> {
             },
             ComputeCommand::SetBuffer {
                 buffer: destination.buffer.clone(),
-                offset: 0,
+                offset: u64::MIN,
                 length: destination.length,
                 index: destination_slot,
             },
@@ -235,7 +235,7 @@ impl<M: Metal> MetalGpu<M> {
         if let (Some(source), Some(index)) = (source, source_slot) {
             commands.push(ComputeCommand::SetBuffer {
                 buffer: source.buffer.clone(),
-                offset: 0,
+                offset: u64::MIN,
                 length: source.length,
                 index,
             });

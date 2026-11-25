@@ -204,17 +204,17 @@ impl<M: Metal> OpenPass<M> {
             };
             *into = Some(RenderPassColorAttachment {
                 texture: &c.view.raw,
-                level: 0,
-                slice: 0,
+                level: u32::MIN,
+                slice: u32::MIN,
                 depth_plane: c.depth_slice,
                 load_action,
                 store_action: store_action(c.store),
                 clear_color,
                 resolve: c.resolve.as_ref().map(|r| ResolveTarget {
                     texture: &r.raw,
-                    level: 0,
-                    slice: 0,
-                    depth_plane: 0,
+                    level: u32::MIN,
+                    slice: u32::MIN,
+                    depth_plane: u32::MIN,
                 }),
             });
         }
@@ -263,8 +263,8 @@ fn aspect<M: Metal>(
     };
     RenderPassDepthStencilAttachment {
         texture: &view.raw,
-        level: 0,
-        slice: 0,
+        level: u32::MIN,
+        slice: u32::MIN,
         load_action,
         store_action: store_action(store),
         clear_value,
@@ -574,8 +574,8 @@ impl<M: Metal> MetalGpu<M> {
                 }
             }
             None => ScissorRect {
-                x: 0,
-                y: 0,
+                x: u32::MIN,
+                y: u32::MIN,
                 width,
                 height,
             },
@@ -920,14 +920,14 @@ impl<M: Metal> MetalGpu<M> {
         };
         pass.colors[0] = Some(wcontainers_gpu::ColorAttachment {
             view: drawable,
-            depth_slice: 0,
+            depth_slice: u32::MIN,
             resolve: None,
             load: LoadOp::DontCare,
             store: StoreOp::Store,
         });
         let viewport = [Viewport {
-            x: 0,
-            y: 0,
+            x: u32::MIN,
+            y: u32::MIN,
             width: (drawable.width as f32).to_bits(),
             height: (drawable.height as f32).to_bits(),
             min_depth: 0,
@@ -951,9 +951,9 @@ impl<M: Metal> MetalGpu<M> {
             stencil_reference: [0; 2],
             immediates: &[],
             range: DrawRange::Vertices {
-                first: 0,
+                first: u32::MIN,
                 count: 3,
-                first_instance: 0,
+                first_instance: u32::MIN,
                 instances: 1,
             },
         });
@@ -1050,7 +1050,7 @@ impl<M: Metal> MetalGpu<M> {
         };
         pass.colors[0] = Some(wcontainers_gpu::ColorAttachment {
             view: &from,
-            depth_slice: 0,
+            depth_slice: u32::MIN,
             resolve: Some(&into),
             load: LoadOp::Load,
             store: StoreOp::Store,

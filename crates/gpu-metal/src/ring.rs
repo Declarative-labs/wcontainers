@@ -92,7 +92,7 @@ impl<M: Metal> MetalGpu<M> {
                                 raw: raw.into(),
                                 last_use: 0.into(),
                             })),
-                            head: 0,
+                            head: u64::MIN,
                         });
                         self.rings[slot].chunks.len() - 1
                     }

@@ -201,11 +201,11 @@ impl<M: Metal> MetalGpu<M> {
             caps,
             slow: wcontainers_gpu::NO_SLOW_PATHS,
             helpers: Helpers::default(),
-            next_id: 0,
+            next_id: u64::MIN,
             lost: None,
             recording: None,
             serial: 1,
-            completed: 0,
+            completed: u64::MIN,
             in_flight: VecDeque::new(),
             blits: Vec::new(),
             pass: None,
@@ -218,7 +218,7 @@ impl<M: Metal> MetalGpu<M> {
             widened_layouts: HashMap::new(),
             present: None,
             byte_programs: bytes::BytePrograms::default(),
-            encodes: 0,
+            encodes: u64::MIN,
             rings: Default::default(),
         }
     }
@@ -324,7 +324,7 @@ impl<M: Metal> MetalGpu<M> {
         Some(ByteRange {
             buffer,
             length,
-            offset: 0,
+            offset: u64::MIN,
         })
     }
 
@@ -1248,7 +1248,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 let destination = ByteRange {
                     buffer: into.clone(),
                     length,
-                    offset: 0,
+                    offset: u64::MIN,
                 };
                 self.copy_bytes(Self::range(buffer, *offset), destination, copied);
                 Ok(Shared(Rc::new(ReadbackObj {
@@ -1302,7 +1302,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 source_buffer: raw,
                 source_offset: u64::from(first) * QUERY_BYTES,
                 destination_buffer: into.clone(),
-                destination_offset: 0,
+                destination_offset: u64::MIN,
                 size: length,
             }]
         })
@@ -1388,9 +1388,9 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         let whole = |format| TextureViewDesc {
             format,
             dimension: ViewDimension::D2,
-            base_mip: 0,
+            base_mip: u32::MIN,
             mip_count: 1,
-            base_layer: 0,
+            base_layer: u32::MIN,
             layer_count: 1,
             stencil: false,
         };
