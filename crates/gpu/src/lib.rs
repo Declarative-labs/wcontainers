@@ -15,8 +15,8 @@
 //!   a state combination ahead of time, clearing a texture or rectangles of it, generating mipmaps, a ring
 //!   for per-draw data). Their defaults keep what they make in [`Helpers`].
 //! - Things with no cheap default (compute, transform feedback, big resource tables, timestamps) are
-//!   methods whose default reports [`GpuError::Absent`]; a back end that has them overrides them and
-//!   declares them in its [`Caps`]. Fronts read [`Caps`] once and choose their route.
+//!   required methods: a back end without them answers [`GpuError::Absent`], one with them declares
+//!   them in its [`Caps`]. Fronts read [`Caps`] once and choose their route.
 //! - Drawing state is a handful of immutable blocks ([`BlendDesc`], [`DepthStencilDesc`], [`RasterDesc`],
 //!   [`VertexLayoutDesc`], a [`Program`]) plus binding sets
 //!   ([`Gpu::create_binding_set`]). Every block becomes a back-end handle once; a draw names one of

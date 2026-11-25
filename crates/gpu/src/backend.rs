@@ -758,13 +758,11 @@ pub trait Gpu: Sized {
         Ok(())
     }
 
-    // ---- Present or absent: no cheap default ----
+    // ---- Present or absent: no default, since one answer is wrong for some back end; each answers
+    // `GpuError::Absent` where its caps lack the feature ----
 
     /// Runs a compute program. Outside a pass. Needs [`Features::COMPUTE`].
-    fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {
-        let _ = call;
-        Err(GpuError::Absent(Features::COMPUTE))
-    }
+    fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError>;
 
     /// Draws `call` writing the last vertex stage's outputs to `targets` in order. With `rasterize`
     /// false nothing is drawn and the call comes outside a pass; with it true the primitives are also
@@ -789,16 +787,10 @@ pub trait Gpu: Sized {
         call: &DrawCall<'_, Self>,
         targets: CaptureTargets<'_, Self>,
         rasterize: bool,
-    ) -> Result<(), GpuError> {
-        let _ = (call, targets, rasterize);
-        Err(GpuError::Absent(Features::TRANSFORM_FEEDBACK))
-    }
+    ) -> Result<(), GpuError>;
 
     /// Makes a big table of resources a program indexes. Needs [`Features::RESOURCE_TABLES`].
-    fn create_resource_table(&mut self, size: u32) -> Result<Self::ResourceTable, GpuError> {
-        let _ = size;
-        Err(GpuError::Absent(Features::RESOURCE_TABLES))
-    }
+    fn create_resource_table(&mut self, size: u32) -> Result<Self::ResourceTable, GpuError>;
 
     /// Fills slots of a resource table, from `first` on. Needs [`Features::RESOURCE_TABLES`].
     fn write_resource_table(
@@ -806,27 +798,19 @@ pub trait Gpu: Sized {
         table: &Self::ResourceTable,
         first: u32,
         entries: &[BindingEntry<'_, Self>],
-    ) -> Result<(), GpuError> {
-        let _ = (table, first, entries);
-        Err(GpuError::Absent(Features::RESOURCE_TABLES))
-    }
+    ) -> Result<(), GpuError>;
 
     /// Writes the GPU time into query `index` of a [`QueryKind::Timestamp`] set, outside a pass: back ends whose API writes timestamps only
     /// where passes begin and end attach it to the next pass, or to an empty one. A front asked for one
     /// between draws ends the pass first (slow path [`SlowPath::TimestampSplitPass`]). Needs
     /// [`Features::TIMESTAMPS`].
-    fn write_timestamp(&mut self, set: &Self::QuerySet, index: u32) -> Result<(), GpuError> {
-        let _ = (set, index);
-        Err(GpuError::Absent(Features::TIMESTAMPS))
-    }
+    fn write_timestamp(&mut self, set: &Self::QuerySet, index: u32) -> Result<(), GpuError>;
 
     /// Whether something since the last call (a clock change, a context switch) made the timestamps
     /// written in that time meaningless, clearing the condition: WebGL 2's `GPU_DISJOINT_EXT`, from which
     /// fronts answer Direct3D's disjoint query and OpenGL's `GL_GPU_DISJOINT`. A back end whose API never
     /// reports one (WebGPU) answers false. Needs [`Features::TIMESTAMPS`].
-    fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
-        Err(GpuError::Absent(Features::TIMESTAMPS))
-    }
+    fn timestamps_disjoint(&mut self) -> Result<bool, GpuError>;
 }
 
 /// The default of [`Gpu::generate_mips`], for a back end whose override takes only some cases.

@@ -5870,4 +5870,24 @@ impl Gpu for Gl {
         // SAFETY: a plain query the extension defines.
         Ok(unsafe { self.gl.get_parameter_bool(platform::GPU_DISJOINT) })
     }
+
+    fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {
+        let _ = call;
+        Err(GpuError::Absent(Features::COMPUTE))
+    }
+
+    fn create_resource_table(&mut self, size: u32) -> Result<Self::ResourceTable, GpuError> {
+        let _ = size;
+        Err(GpuError::Absent(Features::RESOURCE_TABLES))
+    }
+
+    fn write_resource_table(
+        &mut self,
+        table: &Self::ResourceTable,
+        first: u32,
+        entries: &[BindingEntry<'_, Self>],
+    ) -> Result<(), GpuError> {
+        let _ = (table, first, entries);
+        Err(GpuError::Absent(Features::RESOURCE_TABLES))
+    }
 }

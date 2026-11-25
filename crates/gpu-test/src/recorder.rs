@@ -2737,6 +2737,21 @@ impl Gpu for Recorder {
         self.log(Call::Present(*surface, made));
         made
     }
+
+    fn create_resource_table(&mut self, size: u32) -> Result<Self::ResourceTable, GpuError> {
+        let _ = size;
+        Err(GpuError::Absent(Features::RESOURCE_TABLES))
+    }
+
+    fn write_resource_table(
+        &mut self,
+        table: &Self::ResourceTable,
+        first: u32,
+        entries: &[BindingEntry<'_, Self>],
+    ) -> Result<(), GpuError> {
+        let _ = (table, first, entries);
+        Err(GpuError::Absent(Features::RESOURCE_TABLES))
+    }
 }
 
 /// A value as the scalar kind a program input asks for.

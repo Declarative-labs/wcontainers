@@ -372,4 +372,43 @@ impl Gpu for Recorder {
         self.calls.push(format!("present {}", surface.0));
         Ok(())
     }
+
+    fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {
+        let _ = call;
+        Err(GpuError::Absent(Features::COMPUTE))
+    }
+
+    fn capture_vertices(
+        &mut self,
+        call: &DrawCall<'_, Self>,
+        targets: CaptureTargets<'_, Self>,
+        rasterize: bool,
+    ) -> Result<(), GpuError> {
+        let _ = (call, targets, rasterize);
+        Err(GpuError::Absent(Features::TRANSFORM_FEEDBACK))
+    }
+
+    fn create_resource_table(&mut self, size: u32) -> Result<Self::ResourceTable, GpuError> {
+        let _ = size;
+        Err(GpuError::Absent(Features::RESOURCE_TABLES))
+    }
+
+    fn write_resource_table(
+        &mut self,
+        table: &Self::ResourceTable,
+        first: u32,
+        entries: &[BindingEntry<'_, Self>],
+    ) -> Result<(), GpuError> {
+        let _ = (table, first, entries);
+        Err(GpuError::Absent(Features::RESOURCE_TABLES))
+    }
+
+    fn write_timestamp(&mut self, set: &Self::QuerySet, index: u32) -> Result<(), GpuError> {
+        let _ = (set, index);
+        Err(GpuError::Absent(Features::TIMESTAMPS))
+    }
+
+    fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
+        Err(GpuError::Absent(Features::TIMESTAMPS))
+    }
 }
