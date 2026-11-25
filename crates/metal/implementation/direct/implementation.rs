@@ -282,8 +282,8 @@ struct Reads {
     /// What each length in the buffer of lengths is the length of, in naga's order.
     sizes: Vec<SizeOf>,
     sizes_index: u32,
-    /// The immediates slot and the bytes it must hold.
-    immediates: Option<(u32, u64)>,
+    /// The immediates slot, the bytes it must hold, and what their offset must be a multiple of.
+    immediates: Option<(u32, u64, Alignment)>,
     workgroup_size: Size,
     /// The bytes of each workgroup variable a compute function reads, in naga's order of its threadgroup arguments.
     threadgroup_lengths: Vec<u64>,
@@ -592,8 +592,9 @@ impl Metal for DirectMetal {
         } else {
             self.limits.max_side
         };
+        // A cube's six faces are six slices to copy, view and draw into, as each cube's are in a cube array.
         let layers = match d.texture_type {
-            TextureType::TypeCubeArray => d.array_length.checked_mul(CUBE_FACES),
+            TextureType::TypeCube | TextureType::TypeCubeArray => d.array_length.checked_mul(CUBE_FACES),
             _ => Some(d.array_length),
         };
         if refuses!(
@@ -807,13 +808,14 @@ impl Metal for DirectMetal {
         let type_fits = match t.texture_type {
             TextureType::Type3D => d.texture_type == TextureType::Type3D,
             TextureType::Type2DMultisample => d.texture_type == TextureType::Type2DMultisample,
-            TextureType::Type2D | TextureType::Type2DArray => {
+            TextureType::Type2D => {
                 matches!(
                     d.texture_type,
                     TextureType::Type2D | TextureType::Type2DArray
                 )
             }
-            TextureType::TypeCube | TextureType::TypeCubeArray => matches!(
+            // Six slices of an array, or of cubes, are seen as a cube (the `square` check below).
+            TextureType::Type2DArray | TextureType::TypeCube | TextureType::TypeCubeArray => matches!(
                 d.texture_type,
                 TextureType::Type2D
                     | TextureType::Type2DArray
@@ -1202,28 +1204,35 @@ impl Metal for DirectMetal {
         ) {
             return Err(MakeComputePipelineStateError::NotCompute);
         }
+        // The workgroup is checked against the device before the pipeline is made: naga writes its size as the
+        // function's most threads, so Metal makes no pipeline that runs fewer, and refuses one past the device's
+        // (MEASURED: "Specified total max threads per threadgroup (2048) exceeds ... (1024)").
+        let Size {
+            width: x,
+            height: y,
+            depth: z,
+        } = function.0.reads.workgroup_size;
+        let most = self.device.maxThreadsPerThreadgroup();
+        let threads = u64::from(x)
+            .checked_mul(u64::from(y))
+            .and_then(|n| n.checked_mul(u64::from(z)));
+        if refuses!(
+            "compute pipeline: a workgroup past the device's most",
+            threads.is_none_or(|n| n > MAX_THREADS_PER_THREADGROUP)
+                || x as usize > most.width
+                || y as usize > most.height
+                || z as usize > most.depth
+        ) {
+            return Err(MakeComputePipelineStateError::TooLarge(
+                "a workgroup larger than the pipeline runs",
+            ));
+        }
         let raw = self
             .device
             .newComputePipelineStateWithFunction_error(&function.0.raw)
             .map_err(|error| {
                 MakeComputePipelineStateError::Refused(error.localizedDescription().to_string())
             })?;
-        let Size {
-            width: x,
-            height: y,
-            depth: z,
-        } = function.0.reads.workgroup_size;
-        let threads = u64::from(x)
-            .checked_mul(u64::from(y))
-            .and_then(|n| n.checked_mul(u64::from(z)));
-        if refuses!(
-            "compute pipeline: a workgroup past the pipeline's most",
-            threads.is_none_or(|n| n > raw.maxTotalThreadsPerThreadgroup() as u64)
-        ) {
-            return Err(MakeComputePipelineStateError::TooLarge(
-                "a workgroup larger than the pipeline runs",
-            ));
-        }
         let threadgroup = function
             .0
             .reads
@@ -1569,6 +1578,11 @@ impl Metal for DirectMetal {
 /// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setvertexbytes(_:length:index:)
 const MAX_BYTES: usize = 4096;
 
+/// The most threads of one threadgroup on GPUs of the Apple7 family on.
+///
+/// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
+const MAX_THREADS_PER_THREADGROUP: u64 = 1024;
+
 /// The bytes threadgroup memory lengths are a multiple of.
 ///
 /// https://developer.apple.com/documentation/metal/mtlcomputecommandencoder/setthreadgroupmemorylength(_:index:)
@@ -1656,9 +1670,21 @@ fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str>
         "reads: immediates shorter than the function's",
         reads
             .immediates
-            .is_some_and(|(slot, least)| bytes_past(bound, slot) < least)
+            .is_some_and(|(slot, least, _)| bytes_past(bound, slot) < least)
     ) {
         return Err("immediates shorter than the function's");
+    }
+    // Metal's validation stops a draw whose immediates are at an offset off their type's alignment (MEASURED: a
+    // `vec4<f32>` at offset 4, found by the fuzzer).
+    if refuses!(
+        "reads: immediates off their alignment",
+        reads.immediates.is_some_and(|(slot, _, alignment)| {
+            bound.buffers.get(&slot).is_some_and(|(_, offset)| {
+                !u32::try_from(*offset).is_ok_and(|offset| alignment.is_aligned(offset) && Alignment::FOUR.is_aligned(offset))
+            })
+        })
+    ) {
+        return Err("immediates at an offset not a multiple of their alignment");
     }
     for (slot, read) in &reads.textures {
         let Some(texture) = found!("reads: an empty texture slot", bound.textures.get(slot)) else {
@@ -3037,6 +3063,11 @@ fn check_blit(
             let t = &texture.0;
             let facts = format_facts(t.pixel_format);
             let filters = facts.resolve && (!facts.float32 || limits.float32_resolve);
+            if refuses!("mipmaps: of a drawable's texture", t.framebuffer_only) {
+                return Err(EncodeBlitCommandsError::Invalid(
+                    "mipmaps of a drawable's texture",
+                ));
+            }
             if refuses!("mipmaps: of one level", t.levels < 2) {
                 return Err(EncodeBlitCommandsError::Invalid(
                     "mipmaps of a texture of one level, or of a format not drawn into and filtered",
@@ -3048,11 +3079,6 @@ fn check_blit(
             ) {
                 return Err(EncodeBlitCommandsError::Invalid(
                     "mipmaps of a texture of one level, or of a format not drawn into and filtered",
-                ));
-            }
-            if refuses!("mipmaps: of a drawable's texture", t.framebuffer_only) {
-                return Err(EncodeBlitCommandsError::Invalid(
-                    "mipmaps of a drawable's texture",
                 ));
             }
         }
@@ -3390,6 +3416,7 @@ fn translation(
                 reads.immediates = Some((
                     source.immediates_buffer_index,
                     u64::from(ty.size(module.to_ctx())),
+                    layouter[var.ty].alignment,
                 ));
                 continue;
             }
