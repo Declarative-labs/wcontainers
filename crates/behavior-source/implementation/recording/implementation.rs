@@ -22,6 +22,10 @@ type RecordedCase = (
     ExecutionState<'static, Arm64<User>>,
 );
 
+/// The state given to a recording is none of its states before.
+#[derive(Debug)]
+pub struct NotRecorded;
+
 /// Each listed instruction with every state it was run on and what the chip gave, in the order they were run.
 pub struct Recording {
     instructions: Vec<(Instruction<Infallible>, Vec<RecordedCase>)>,
@@ -32,11 +36,12 @@ pub struct Recording {
 }
 
 impl Recording {
-    /// Runs every listed instruction on the source from every state the generator gives for it.
-    pub fn record(
-        source: &mut impl BehaviorSource<Architecture = Arm64<User>>,
+    /// Runs every listed instruction on the source from every state the generator gives for it, stopping at the first
+    /// state the source does not run.
+    pub fn record<Source: BehaviorSource<Architecture = Arm64<User>>>(
+        source: &mut Source,
         generator: &impl DistinguishingStateGenerator<Arm64<User>>,
-    ) -> Recording {
+    ) -> Result<Recording, Source::Error> {
         let instructions = Arm64::<User>::list_instructions()
             .map(|instruction| {
                 let cases = generator
@@ -47,18 +52,18 @@ impl Recording {
                             &mut after.processor,
                             &before.memory_mutations,
                             &mut after.memory_mutations,
-                        );
-                        (before, after)
+                        )?;
+                        Ok((before, after))
                     })
-                    .collect();
-                (instruction, cases)
+                    .collect::<Result<_, _>>()?;
+                Ok((instruction, cases))
             })
-            .collect();
-        Recording {
+            .collect::<Result<_, _>>()?;
+        Ok(Recording {
             instructions,
             next: (0, 0),
             played: None,
-        }
+        })
     }
 
     /// Reads the recording of every listed instruction from the folder `write` wrote.
@@ -147,17 +152,16 @@ impl Recording {
 
 impl BehaviorSource for Recording {
     type Architecture = Arm64<User>;
+    type Error = NotRecorded;
 
-    /// Gives what the chip did from the recorded state equal to the processor and memory, and panics where none is.
+    /// Gives what the chip did from the recorded state equal to the processor and memory.
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
         memory: &[MemoryDelta<'_, Arm64<User>>],
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
-    ) {
-        let Some((instruction, case)) = self.find_case(processor, memory) else {
-            panic!("the recording holds no state equal to the one given");
-        };
+    ) -> Result<(), NotRecorded> {
+        let (instruction, case) = self.find_case(processor, memory).ok_or(NotRecorded)?;
         let cases = &self.instructions[instruction].1;
         let (before, after) = &cases[case];
         processor.clone_from(&after.processor);
@@ -170,5 +174,6 @@ impl BehaviorSource for Recording {
         } else {
             (instruction + 1, 0)
         };
+        Ok(())
     }
 }
