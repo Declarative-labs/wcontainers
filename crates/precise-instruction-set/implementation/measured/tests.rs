@@ -12,7 +12,7 @@ use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduc
 use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
-    ExecutionState, MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
+    ExecutionState, MemorySink, MemorySnapshot, ProcessorArchitecture,
 };
 use wcontainers_processor_architecture_arm64::{
     Arm64, Instruction, LoadIntoBaseWithWriteback, MisalignedStackPointer, PreciseInstruction,
@@ -228,7 +228,7 @@ fn to_states_past_the_last_addressable_byte() -> Vec<(
 )> {
     use alloc::borrow::Cow;
     use alloc::vec;
-    use wcontainers_processor_architecture::ExecutionState;
+    use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
     use wcontainers_processor_architecture_arm64::encoding::{Field, IMM7, IMM9, RN, RT, RT2};
     use wcontainers_processor_architecture_arm64::{
         DataAccess, INSTRUCTION_SIZE, InstructionFetch, PagePermission, ZERO_PROCESSOR,
