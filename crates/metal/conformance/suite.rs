@@ -1359,7 +1359,10 @@ pub fn refuses_copy_pitches_metal_does_not_take<M: Metal>(mut subject: M) {
     refuses_blit(&mut subject, copy(BEYOND_ROW, 0, 1));
     // A 3D texture's rows are as long as its own longest side at most, shorter than a 2D texture's (MEASURED: Metal's
     // validation stops 24000 bytes past 16384, found by the fuzzer).
-    let volume = made(&mut subject, described(TextureType::Type3D, PixelFormat::Rgba8Unorm));
+    let volume = made(
+        &mut subject,
+        described(TextureType::Type3D, PixelFormat::Rgba8Unorm),
+    );
     refuses_blit(
         &mut subject,
         BlitCommand::CopyFromBufferToTexture {
@@ -2218,6 +2221,326 @@ pub fn refuses_a_grid_of_more_threads_on_one_axis_than_a_u32_holds<M: Metal>(mut
     }
 }
 
+/// Returns the little-endian bytes of words.
+fn word_bytes(words: &[u32]) -> Vec<u8> {
+    words.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+/// The texels of a target the covering triangle drew green into, and of one it drew nothing into.
+fn green_and_clear() -> (Vec<u8>, Vec<u8>) {
+    let texels = (TARGET_SIDE * TARGET_SIDE) as usize;
+    (
+        [0, 255, 0, 255].repeat(texels),
+        vec![0; texels * RGBA8_BYTES as usize],
+    )
+}
+
+/// The covering triangle's three vertices as 32-bit indices.
+const COVERING_INDICES: [u32; 3] = [0, 1, 2];
+
+/// The covering triangle's vertices plus one as 32-bit indices, then its vertices.
+const SHIFTED_INDICES: [u32; 6] = [1, 2, 3, 0, 1, 2];
+
+/// Returns the commands of the covering draw in green, its draw replaced by `draw`.
+fn green_draw<M: Metal>(
+    subject: &mut M,
+    state: &M::RenderPipelineState,
+    draw: RenderCommand<M>,
+) -> Vec<RenderCommand<M>> {
+    let depth_stencil = no_depth(subject);
+    let vertices = covering(subject);
+    let color = filled(
+        subject,
+        &word_bytes(&[0, 1.0f32.to_bits(), 0, 1.0f32.to_bits()]),
+    );
+    let mut commands = covering_draw(
+        state,
+        &vertices,
+        &depth_stencil,
+        vec![RenderCommand::SetFragmentBuffer {
+            buffer: color,
+            offset: u64::MIN,
+            length: COLOR_BYTES,
+            index: u32::MIN,
+        }],
+    );
+    commands.pop();
+    commands.push(draw);
+    commands
+}
+
+/// Draws the covering triangle in green with `draw` into a new target and returns its texels.
+fn drawn_with<M: Metal>(
+    subject: &mut M,
+    state: &M::RenderPipelineState,
+    draw: RenderCommand<M>,
+) -> Vec<u8> {
+    let commands = green_draw(subject, state, draw);
+    let texture = target(subject);
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject
+        .encode_render_commands(&command_buffer, &pass(&texture), &commands)
+        .expect("Metal answers encode render commands");
+    finish(subject, &command_buffer);
+    read_texture(subject, &texture)
+}
+
+/// Checks that draws read their counts from a buffer when they run, and that one reaching past what is bound, or
+/// whose first index or instance plus its count passes the largest `u32`, draws nothing.
+pub fn draws_with_counts_the_gpu_reads<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, FLAT);
+    let (green, clear) = green_and_clear();
+    let most = u32::MAX;
+    for (arguments, drawn) in [
+        ([3, 1, 0, 0], &green),
+        ([3, 1, 0, most - 1], &green),
+        ([3, 2, 0, most - 1], &clear),
+        ([3, 1, most - 1, 0], &clear),
+        ([3, 2, 0, most], &clear),
+        ([most, most, most, most], &clear),
+        ([0, 1, 0, 0], &clear),
+        ([3, 0, 0, 0], &clear),
+    ] {
+        let buffer = filled(&mut subject, &word_bytes(&arguments));
+        let draw = RenderCommand::DrawPrimitivesIndirect {
+            primitive_type: PrimitiveType::Triangle,
+            indirect_buffer: buffer,
+            indirect_buffer_offset: u64::MIN,
+        };
+        assert_eq!(
+            &drawn_with(&mut subject, &state, draw),
+            drawn,
+            "a draw of arguments {arguments:?}"
+        );
+    }
+    // Six indices: three past the covering triangle's from 0, its own from 12 bytes on.
+    let indices = filled(&mut subject, &word_bytes(&SHIFTED_INDICES));
+    let minus_one = u32::from_le_bytes((-1i32).to_le_bytes());
+    for (arguments, index_offset, drawn) in [
+        ([3, 1, 0, 0, 0], 12, &green),
+        ([3, 1, 0, minus_one, 0], 0, &green),
+        ([3, 1, 0, 0, most - 1], 12, &green),
+        ([3, 1, 1, 0, 0], 12, &clear),
+        ([3, 1, 0, 0, 0], 16, &clear),
+        ([1, 1, 0, 0, 0], 24, &clear),
+        ([0, 1, 0, 0, 0], 24, &clear),
+        ([2, 1, most, 0, 0], 12, &clear),
+        ([3, 2, 0, 0, most - 1], 12, &clear),
+        ([most, 1, 0, 0, 0], 12, &clear),
+    ] {
+        let buffer = filled(&mut subject, &word_bytes(&arguments));
+        let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
+            primitive_type: PrimitiveType::Triangle,
+            index_type: IndexType::UInt32,
+            index_buffer: indices.clone(),
+            index_buffer_offset: index_offset,
+            indirect_buffer: buffer,
+            indirect_buffer_offset: u64::MIN,
+        };
+        assert_eq!(
+            &drawn_with(&mut subject, &state, draw),
+            drawn,
+            "an indexed draw of arguments {arguments:?} from index offset {index_offset}"
+        );
+    }
+}
+
+/// Checks that a draw reads the counts a copy before it in the command buffer wrote, and that a write to them from the
+/// CPU waits for the draw: refused while the draw is not committed, and landing after it once it is.
+pub fn draws_with_counts_written_before_them_and_waits_for_writes<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, FLAT);
+    let (green, _) = green_and_clear();
+    let written = filled(&mut subject, &word_bytes(&[3, 1, 0, 0]));
+    let arguments = filled(&mut subject, &[0; 16]);
+    let draw = RenderCommand::DrawPrimitivesIndirect {
+        primitive_type: PrimitiveType::Triangle,
+        indirect_buffer: arguments.clone(),
+        indirect_buffer_offset: u64::MIN,
+    };
+    let commands = green_draw(&mut subject, &state, draw);
+    let texture = target(&mut subject);
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    subject
+        .encode_blit_commands(
+            &command_buffer,
+            &[BlitCommand::CopyFromBufferToBuffer {
+                source_buffer: written,
+                source_offset: u64::MIN,
+                destination_buffer: arguments.clone(),
+                destination_offset: u64::MIN,
+                size: 16,
+            }],
+        )
+        .expect("Metal answers encode blit commands");
+    subject
+        .encode_render_commands(&command_buffer, &pass(&texture), &commands)
+        .expect("Metal answers encode render commands");
+    assert_eq!(
+        subject.write_contents(&arguments, 0, &[0; 16]),
+        Err(WriteContentsError::UsedByUncommittedWork)
+    );
+    subject
+        .commit(&command_buffer)
+        .expect("Metal answers commit");
+    subject
+        .write_contents(&arguments, 0, &[0; 16])
+        .expect("Metal answers write contents");
+    assert_eq!(
+        subject.status(&command_buffer),
+        CommandBufferStatus::Completed
+    );
+    assert_eq!(read_texture(&mut subject, &texture), green);
+}
+
+/// Checks that a dispatch reads its threadgroups from a buffer when it runs, and that one of more groups on an axis than
+/// its most, or of more threads on an axis than a `u32` holds, dispatches nothing.
+pub fn dispatches_threadgroups_the_gpu_reads<M: Metal>(mut subject: M) {
+    let words: Vec<u32> = (1..=WORD_COUNT as u32).collect();
+    let compute = function(&mut subject, naga::ShaderStage::Compute, DOUBLE);
+    let state = subject
+        .make_compute_pipeline_state(&compute)
+        .expect("Metal answers make compute pipeline state");
+    // The function's threadgroup is four threads wide and one high and deep.
+    let widest = u32::MAX / 4;
+    for (groups, most, doubled) in [
+        ([2, 1, 1], 2, true),
+        ([3, 1, 1], 2, false),
+        ([2, 1, 3], 2, false),
+        ([1, 1, 1], 0, false),
+        ([widest + 1, 1, 1], u32::MAX, false),
+        ([u32::MAX, 1, 1], u32::MAX, false),
+        ([2, 1, 0], 2, false),
+    ] {
+        let buffer = filled(&mut subject, &word_bytes(&words));
+        let arguments = filled(&mut subject, &word_bytes(&groups));
+        let command_buffer = subject
+            .make_command_buffer()
+            .expect("Metal answers make command buffer");
+        subject
+            .encode_compute_commands(
+                &command_buffer,
+                &[
+                    ComputeCommand::SetComputePipelineState(state.clone()),
+                    ComputeCommand::SetBuffer {
+                        buffer: buffer.clone(),
+                        offset: u64::MIN,
+                        length: WORDS_BYTES,
+                        index: WORDS_SLOT,
+                    },
+                    ComputeCommand::DispatchThreadgroupsIndirect {
+                        indirect_buffer: arguments,
+                        indirect_buffer_offset: u64::MIN,
+                        max_threadgroups: most,
+                    },
+                ],
+            )
+            .expect("Metal answers encode compute commands");
+        finish(&mut subject, &command_buffer);
+        let mut read = vec![0; WORDS_BYTES as usize];
+        subject
+            .read_contents(&buffer, 0, &mut read)
+            .expect("Metal answers read contents");
+        let expected: Vec<u32> = if doubled {
+            words.iter().map(|w| w * 2).collect()
+        } else {
+            words.clone()
+        };
+        assert_eq!(
+            read,
+            word_bytes(&expected),
+            "a dispatch of {groups:?} groups, at most {most}"
+        );
+    }
+}
+
+/// Checks that indirect arguments, and an indexed draw's index offset, outside their buffer, off their alignment, or whose
+/// end wraps, are refused before anything is encoded.
+pub fn refuses_indirect_arguments_outside_their_buffer<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, FLAT);
+    let texture = target(&mut subject);
+    let arguments = filled(&mut subject, &word_bytes(&[3, 1, 0, 0, 0, 0, 0, 0]));
+    let indices = filled(&mut subject, &word_bytes(&COVERING_INDICES));
+    let mut offsets = vec![2, 17, 20, 32, 36];
+    offsets.extend(WRAPPING_OFFSETS);
+    for offset in offsets {
+        let draw = RenderCommand::DrawPrimitivesIndirect {
+            primitive_type: PrimitiveType::Triangle,
+            indirect_buffer: arguments.clone(),
+            indirect_buffer_offset: offset,
+        };
+        refuses_draw(&mut subject, &pass(&texture), &state, vec![draw]);
+    }
+    for (offset, index_offset) in [
+        (2, 0),
+        (13, 0),
+        (16, 0),
+        (u64::MAX - 3, 0),
+        (0, 2),
+        (0, 16),
+        (0, u64::MAX - 3),
+        (0, u64::MAX),
+    ] {
+        let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
+            primitive_type: PrimitiveType::Triangle,
+            index_type: IndexType::UInt32,
+            index_buffer: indices.clone(),
+            index_buffer_offset: index_offset,
+            indirect_buffer: arguments.clone(),
+            indirect_buffer_offset: offset,
+        };
+        refuses_draw(&mut subject, &pass(&texture), &state, vec![draw]);
+    }
+    let buffer = filled(&mut subject, &pattern(WORDS_BYTES as usize));
+    let compute = function(&mut subject, naga::ShaderStage::Compute, DOUBLE);
+    let compute_state = subject
+        .make_compute_pipeline_state(&compute)
+        .expect("Metal answers make compute pipeline state");
+    for offset in [2, 21, 24, u64::MAX - 3, u64::MAX] {
+        let command_buffer = subject
+            .make_command_buffer()
+            .expect("Metal answers make command buffer");
+        assert!(matches!(
+            subject.encode_compute_commands(
+                &command_buffer,
+                &[
+                    ComputeCommand::SetComputePipelineState(compute_state.clone()),
+                    ComputeCommand::SetBuffer {
+                        buffer: buffer.clone(),
+                        offset: u64::MIN,
+                        length: WORDS_BYTES,
+                        index: WORDS_SLOT,
+                    },
+                    ComputeCommand::DispatchThreadgroupsIndirect {
+                        indirect_buffer: arguments.clone(),
+                        indirect_buffer_offset: offset,
+                        max_threadgroups: u32::MAX,
+                    },
+                ],
+            ),
+            Err(EncodeComputeCommandsError::OutOfRange(_))
+        ));
+    }
+    // With no pipeline bound the dispatch is refused too.
+    let command_buffer = subject
+        .make_command_buffer()
+        .expect("Metal answers make command buffer");
+    assert!(matches!(
+        subject.encode_compute_commands(
+            &command_buffer,
+            &[ComputeCommand::DispatchThreadgroupsIndirect {
+                indirect_buffer: arguments,
+                indirect_buffer_offset: u64::MIN,
+                max_threadgroups: u32::MAX,
+            }],
+        ),
+        Err(EncodeComputeCommandsError::Unbound(_))
+    ));
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -2255,6 +2578,26 @@ macro_rules! tests {
         #[test]
         fn has_a_name() {
             $crate::has_a_name($value);
+        }
+
+        #[test]
+        fn draws_with_counts_the_gpu_reads() {
+            $crate::draws_with_counts_the_gpu_reads($value);
+        }
+
+        #[test]
+        fn draws_with_counts_written_before_them_and_waits_for_writes() {
+            $crate::draws_with_counts_written_before_them_and_waits_for_writes($value);
+        }
+
+        #[test]
+        fn dispatches_threadgroups_the_gpu_reads() {
+            $crate::dispatches_threadgroups_the_gpu_reads($value);
+        }
+
+        #[test]
+        fn refuses_indirect_arguments_outside_their_buffer() {
+            $crate::refuses_indirect_arguments_outside_their_buffer($value);
         }
 
         #[test]

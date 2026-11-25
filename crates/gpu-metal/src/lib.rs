@@ -192,7 +192,9 @@ impl<M: Metal> MetalGpu<M> {
                 | Features::MIRROR_ONCE
                 | Features::STENCIL_PER_FACE
                 | Features::OCCLUSION_COUNT
-                | Features::POINT_SIZE,
+                | Features::POINT_SIZE
+                | Features::INDIRECT
+                | Features::INDIRECT_FIRST_INSTANCE,
             limits: LIMITS,
             formats: convert::format_caps(),
         };
@@ -1728,17 +1730,32 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     }
 
     fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {
-        let DispatchGroups::Direct(groups) = call.groups else {
-            return Err(GpuError::Absent(Features::INDIRECT));
+        // An indirect dispatch's counts are read when it runs: one past `max_dispatch` on an axis dispatches nothing.
+        let dispatch = match call.groups {
+            DispatchGroups::Direct(groups) => {
+                if groups.iter().any(|&n| n > self.caps.limits.max_dispatch) {
+                    return Err(GpuError::Invalid(
+                        "a dispatch of more groups than max_dispatch",
+                    ));
+                }
+                if groups.contains(&0) {
+                    return Ok(());
+                }
+                ComputeCommand::DispatchThreadgroups(Size {
+                    width: groups[0],
+                    height: groups[1],
+                    depth: groups[2],
+                })
+            }
+            DispatchGroups::Indirect { args, offset } => {
+                self.mark_used(args);
+                ComputeCommand::DispatchThreadgroupsIndirect {
+                    indirect_buffer: args.raw.borrow().clone(),
+                    indirect_buffer_offset: offset,
+                    max_threadgroups: self.caps.limits.max_dispatch,
+                }
+            }
         };
-        if groups.iter().any(|&n| n > self.caps.limits.max_dispatch) {
-            return Err(GpuError::Invalid(
-                "a dispatch of more groups than max_dispatch",
-            ));
-        }
-        if groups.contains(&0) {
-            return Ok(());
-        }
         let ProgramObj::Compute { id, shader } = &*call.program.0 else {
             return Err(GpuError::Invalid("dispatch of a render program"));
         };
@@ -1796,11 +1813,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 index: IMMEDIATES_SLOT,
             });
         }
-        commands.push(ComputeCommand::DispatchThreadgroups(Size {
-            width: groups[0],
-            height: groups[1],
-            depth: groups[2],
-        }));
+        commands.push(dispatch);
         self.flush_blits();
         let command_buffer = self.command_buffer().ok_or(GpuError::DeviceLost)?;
         count_up(&mut self.encodes);

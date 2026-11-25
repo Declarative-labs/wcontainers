@@ -784,7 +784,46 @@ pub enum RenderCommand<M: Metal + ?Sized> {
         base_vertex: i32,
         base_instance: u32,
     },
+    /// Draws with the `DRAW_ARGUMENTS_BYTES` the GPU reads at `indirect_buffer_offset` when the draw runs: vertex count,
+    /// instance count, first vertex and first instance; a draw whose vertices or instances pass the largest index draws
+    /// nothing.
+    DrawPrimitivesIndirect {
+        primitive_type: PrimitiveType,
+        indirect_buffer: M::Buffer,
+        indirect_buffer_offset: u64,
+    },
+    /// Draws with the `DRAW_INDEXED_ARGUMENTS_BYTES` the GPU reads at `indirect_buffer_offset` when the draw runs: index
+    /// count, instance count, first index, base vertex and first instance; a draw whose indices reach past the index
+    /// buffer's end, or whose instances pass the largest index, draws nothing.
+    DrawIndexedPrimitivesIndirect {
+        primitive_type: PrimitiveType,
+        index_type: IndexType,
+        index_buffer: M::Buffer,
+        index_buffer_offset: u64,
+        indirect_buffer: M::Buffer,
+        indirect_buffer_offset: u64,
+    },
 }
+
+/// The bytes of an indirect draw's arguments: four `u32`s.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawprimitivesindirectarguments
+pub const DRAW_ARGUMENTS_BYTES: u64 = 16;
+
+/// The bytes of an indirect indexed draw's arguments: five 32-bit integers.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
+pub const DRAW_INDEXED_ARGUMENTS_BYTES: u64 = 20;
+
+/// The bytes of an indirect dispatch's arguments: three `u32` threadgroup counts.
+///
+/// https://developer.apple.com/documentation/metal/mtldispatchthreadgroupsindirectarguments
+pub const DISPATCH_ARGUMENTS_BYTES: u64 = 12;
+
+/// What the offset of indirect arguments in their buffer is a multiple of.
+///
+/// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/drawprimitives(type:indirectbuffer:indirectbufferoffset:)
+pub const INDIRECT_ARGUMENTS_ALIGNMENT: u64 = 4;
 
 /// A viewport, in pixels and depth.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -991,6 +1030,14 @@ pub enum ComputeCommand<M: Metal + ?Sized> {
         index: u32,
     },
     DispatchThreadgroups(Size),
+    /// Dispatches the threadgroups the GPU reads as `DISPATCH_ARGUMENTS_BYTES` at `indirect_buffer_offset` when the
+    /// dispatch runs; one whose count on an axis passes `max_threadgroups`, or whose threads on an axis pass the largest
+    /// `u32`, dispatches nothing.
+    DispatchThreadgroupsIndirect {
+        indirect_buffer: M::Buffer,
+        indirect_buffer_offset: u64,
+        max_threadgroups: u32,
+    },
 }
 
 /// Why dispatches were not encoded; none of them is.

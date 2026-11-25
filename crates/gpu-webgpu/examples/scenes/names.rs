@@ -50,6 +50,7 @@ macro_rules! suite_but_present {
             every_vertex_format_reads_its_element,
             an_indexed_draw_past_a_streams_end_covers_only_what_its_stream_allows,
             a_copy_within_one_3d_or_compressed_subresource_moves_the_region,
+            indirect_draws_and_dispatches_read_their_arguments_when_they_run,
         );
     };
 }

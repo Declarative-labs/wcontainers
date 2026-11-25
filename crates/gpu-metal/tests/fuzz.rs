@@ -115,7 +115,9 @@ mod driver {
             crate::gpu::run(&mut random, calls, window)
         };
         counts.print();
-        for (site, wcontainers_metal_direct::reach::Outcomes { refused, passed }) in wcontainers_metal_direct::reach::outcomes() {
+        for (site, wcontainers_metal_direct::reach::Outcomes { refused, passed }) in
+            wcontainers_metal_direct::reach::outcomes()
+        {
             println!("{REACH_LINE} {refused} {passed} {site}");
         }
         if counts.clean() {

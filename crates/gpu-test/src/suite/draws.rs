@@ -1879,3 +1879,158 @@ pub fn the_occlusion_counter_counts_every_sample_that_passes<H: Host>() {
     }
     ok(&mut b);
 }
+
+/// Each instance draws the column of its index in a red of a quarter a column: a quad squeezed into
+/// the column's quarter of clip space.
+const COLUMNS: &str = "
+struct Out { @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) v: f32 }
+@vertex fn vs(@location(0) p: vec2<f32>, @builtin(instance_index) i: u32) -> Out {
+    let x = (p.x * 0.5 + 0.5 + f32(i)) * 0.5 - 1.0;
+    return Out(vec4<f32>(x, p.y, 0.5, 1.0), f32(i + 1u) * 0.25);
+}
+@fragment fn fs(i: Out) -> @location(0) vec4<f32> {
+    return vec4<f32>(i.v, 0.0, 0.0, 1.0);
+}
+";
+
+/// Adds one to each word a thread of the dispatch reaches.
+const ADD_ONE: &str = "
+@group(0) @binding(160) var<storage, read_write> words: array<u32>;
+@compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) id: vec3<u32>) {
+    words[id.x] = words[id.x] + 1u;
+}
+";
+
+/// Returns the little-endian bytes of words.
+fn words(values: &[u32]) -> Vec<u8> {
+    values.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+/// Draws and dispatches read their arguments from a buffer when they run, written by the CPU or by a
+/// copy recorded before them: an indirect draw of one instance, an indexed one of two whose arguments
+/// a copy wrote, an indexed one whose indices reach past its index buffer, which draws nothing, and,
+/// with `INDIRECT_FIRST_INSTANCE`, a draw from the fourth instance. With `COMPUTE`, an indirect
+/// dispatch of three groups adds one to three of four words.
+pub fn indirect_draws_and_dispatches_read_their_arguments_when_they_run<H: Host>() {
+    let mut b = H::make();
+    let has = b.caps().features;
+    if !has.contains(Features::INDIRECT) {
+        return;
+    }
+    const N: u32 = 4;
+    let (t, v) = rgba8_target(&mut b, N);
+    let quad = vertex_buffer(&mut b, &QUAD);
+    let indices = buffer(&mut b, 16, BufferUsage::INDEX | BufferUsage::COPY_DST);
+    b.write_buffer(&indices, 0, &words(&[0, 1, 2, 3]), WriteMode::Discard);
+    let arguments = |b: &mut H::Backend, values: &[u32]| {
+        let args = buffer(
+            b,
+            values.len() as u64 * 4,
+            BufferUsage::INDIRECT | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+        );
+        b.write_buffer(&args, 0, &words(values), WriteMode::Discard);
+        args
+    };
+    let one = arguments(&mut b, &[4, 1, 0, 0]);
+    // Zero instances until the copy below writes two.
+    let copied = arguments(&mut b, &[4, 0, 0, 0, 0]);
+    let two = arguments(&mut b, &[4, 2, 0, 0, 0]);
+    let past = arguments(&mut b, &[4, 4, 1, 0, 0]);
+    let fourth = arguments(&mut b, &[4, 1, 0, 3]);
+    let p = program(&mut b, COLUMNS, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &quad,
+        offset: 0,
+    })];
+    let index = IndexBinding {
+        buffer: &indices,
+        offset: 0,
+        format: IndexFormat::U32,
+    };
+    b.copy_buffer(&two, 0, &copied, 0, 20);
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+    let draw = |range| {
+        call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            range,
+        )
+    };
+    b.draw(&draw(DrawRange::Indirect {
+        args: &one,
+        offset: 0,
+    }));
+    for args in [&copied, &past] {
+        b.draw(&DrawCall {
+            index: Some(IndexBinding { ..index }),
+            ..draw(DrawRange::IndexedIndirect { args, offset: 0 })
+        });
+    }
+    let first_instance = has.contains(Features::INDIRECT_FIRST_INSTANCE);
+    if first_instance {
+        b.draw(&draw(DrawRange::Indirect {
+            args: &fourth,
+            offset: 0,
+        }));
+    }
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let reds = [64, 128, 0, if first_instance { 255 } else { 0 }];
+    let expected: Vec<u8> = (0..N * N)
+        .flat_map(|i| {
+            let red = reds[(i % N) as usize];
+            [red, 0, 0, if red == 0 { 0 } else { 255 }]
+        })
+        .collect();
+    assert_close(&got, &expected, 1, 4, N as usize);
+    if has.contains(Features::COMPUTE) {
+        let out = buffer(
+            &mut b,
+            16,
+            BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+        );
+        b.write_buffer(&out, 0, &words(&[10, 20, 30, 40]), WriteMode::Discard);
+        let groups = arguments(&mut b, &[3, 1, 1]);
+        let cs = shader(&mut b, ADD_ONE, "cs", ShaderStage::Compute);
+        let program = b
+            .create_program(&Program::Compute(&cs))
+            .expect("create_program");
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 160,
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: &out,
+                        offset: 0,
+                        size: 16,
+                    },
+                    writable: true,
+                },
+            }])
+            .expect("create_binding_set");
+        b.dispatch(&DispatchCall {
+            program: &program,
+            bindings: [Some(&set), None, None, None],
+            immediates: &[],
+            groups: DispatchGroups::Indirect {
+                args: &groups,
+                offset: 0,
+            },
+        })
+        .expect("dispatch");
+        assert_eq!(read_buffer(&mut b, &out, 0, 16), words(&[11, 21, 31, 40]));
+    }
+    ok(&mut b);
+}

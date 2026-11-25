@@ -3079,7 +3079,8 @@ impl World {
             ),
             TextureType::TypeCubeArray => (
                 0,
-                u64::from(wcontainers_gpu::CUBE_FACES).saturating_mul(1u64.saturating_add(random.below(slices / 6))),
+                u64::from(wcontainers_gpu::CUBE_FACES)
+                    .saturating_mul(1u64.saturating_add(random.below(slices / 6))),
             ),
             _ => (random.below(slices), 1),
         };
@@ -4204,6 +4205,91 @@ impl World {
         broke
     }
 
+    /// Makes a buffer of its own holding `words` of indirect arguments at an offset, with up to two words after them, and
+    /// returns it, the offset and its length.
+    fn arguments(&mut self, random: &mut Random, words: &[u32]) -> Option<(Buffer, u64, u64)> {
+        let offset = 4u64.saturating_mul(random.below(3));
+        let length = offset
+            .saturating_add(4u64.saturating_mul(words.len() as u64))
+            .saturating_add(4u64.saturating_mul(random.below(3)));
+        let made = self.metal.make_buffer(length);
+        self.counts.call(made.is_err());
+        let buffer = made.ok()?;
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        self.metal.write_contents(&buffer, offset, &bytes).ok()?;
+        Some((buffer, offset, length))
+    }
+
+    /// Returns an indirect draw of arguments of small values or values whose sums wrap, all but `bad_offset` and
+    /// `bad_index_offset` valid.
+    ///
+    /// No sum of a first element and its count that fits a `u32` is large, so that no draw the check lets through runs
+    /// for long.
+    fn indirect_draw(
+        &mut self,
+        random: &mut Random,
+        primitive_type: PrimitiveType,
+        bad_offset: bool,
+        bad_index_offset: bool,
+    ) -> Option<RenderCommand<M>> {
+        // A first element and its count: both small, or one near the largest `u32` and the other past eight, so wrapping.
+        let pair = |random: &mut Random| -> (u32, u32) {
+            let small = |random: &mut Random| random.below(8) as u32;
+            let near = |random: &mut Random| u32::MAX.saturating_sub(random.below(8) as u32);
+            match random.below(6) {
+                0 => (near(random), 8u32.saturating_add(small(random))),
+                1 => (8u32.saturating_add(small(random)), near(random)),
+                _ => (small(random), small(random).max(1)),
+            }
+        };
+        let (first, count) = pair(random);
+        let (first_instance, instances) = pair(random);
+        let indexed = bad_index_offset || (!bad_offset && random.chance(50));
+        let words: Vec<u32> = if indexed {
+            let base_vertex =
+                u32::from_le_bytes((random.below(5) as i32).saturating_sub(2).to_le_bytes());
+            vec![count, instances, first, base_vertex, first_instance]
+        } else {
+            vec![count, instances, first, first_instance]
+        };
+        let (buffer, mut offset, length) = self.arguments(random, &words)?;
+        if bad_offset {
+            offset = broken_arguments_offset(random, offset, length);
+        }
+        if !indexed {
+            return Some(RenderCommand::DrawPrimitivesIndirect {
+                primitive_type,
+                indirect_buffer: buffer,
+                indirect_buffer_offset: offset,
+            });
+        }
+        let index_type = random.pick(&[IndexType::UInt16, IndexType::UInt32]);
+        let size: u64 = if index_type == IndexType::UInt16 {
+            2
+        } else {
+            4
+        };
+        let held = self.buffer_of(random, size.saturating_mul(8))?;
+        let index_length = held.shadow.borrow().length();
+        // From the start to the end of the indices, at a multiple of their size.
+        let mut index_offset = size.saturating_mul(random.below(9)).min(index_length);
+        if bad_index_offset {
+            index_offset = match random.below(3) {
+                0 => index_offset.saturating_add(1),
+                1 => index_length.saturating_add(size),
+                _ => random.pick(&[u64::MAX, u64::MAX - 3, 1 << 63]),
+            };
+        }
+        Some(RenderCommand::DrawIndexedPrimitivesIndirect {
+            primitive_type,
+            index_type,
+            index_buffer: held.buffer,
+            index_buffer_offset: index_offset,
+            indirect_buffer: buffer,
+            indirect_buffer_offset: offset,
+        })
+    }
+
     /// Encodes a pass and a draw of a pipeline of unmangled functions, every field valid but at most one.
     fn precise_render(&mut self, random: &mut Random) {
         if self.plain_pipelines.is_empty() || random.chance(8) {
@@ -4215,7 +4301,7 @@ impl World {
         let Some(command_buffer) = self.command_buffer(random) else {
             return;
         };
-        let wrong = random.broken(31);
+        let wrong = random.broken(33);
         let w = |k| wrong == Some(k);
         let mut refuse = false;
         let samples = if w(1) {
@@ -4570,7 +4656,11 @@ impl World {
             let length = held.shadow.borrow().length();
             for at in 0..random.below(3).saturating_add(1) {
                 let offset = at.saturating_mul(wcontainers_metal::VISIBILITY_RESULT_BYTES);
-                allowed.push((held.shadow.clone(), offset, wcontainers_metal::VISIBILITY_RESULT_BYTES));
+                allowed.push((
+                    held.shadow.clone(),
+                    offset,
+                    wcontainers_metal::VISIBILITY_RESULT_BYTES,
+                ));
                 commands.push(RenderCommand::SetVisibilityResultMode {
                     mode: random.pick(&[
                         VisibilityResultMode::Boolean,
@@ -4582,7 +4672,8 @@ impl World {
             if w(17) {
                 refuse = true;
                 let offset = match random.below(4) {
-                    0 => wcontainers_metal::VISIBILITY_RESULT_BYTES.saturating_add(random.pick(&[1, 4])),
+                    0 => wcontainers_metal::VISIBILITY_RESULT_BYTES
+                        .saturating_add(random.pick(&[1, 4])),
                     1 => random.pick(&[VISIBILITY_SPAN, u64::MAX - 7, 1 << 63]),
                     2 => length.next_multiple_of(wcontainers_metal::VISIBILITY_RESULT_BYTES),
                     _ => 0,
@@ -4603,7 +4694,13 @@ impl World {
         let other_class = w(20);
         refuse |= other_class;
         let primitive_type = primitive_of(random, p.topology, other_class);
-        if random.chance(70) && !w(19) {
+        if random.chance(20) || w(31) || w(32) {
+            let Some(draw) = self.indirect_draw(random, primitive_type, w(31), w(32)) else {
+                return;
+            };
+            refuse |= w(31) || w(32);
+            commands.push(draw);
+        } else if random.chance(70) && !w(19) {
             let mut vertex_start = random.below(3) as u32;
             let vertex_count = 3u32.saturating_add(random.below(4) as u32);
             let mut instance_count = 1u32.saturating_add(random.below(2) as u32);
@@ -4793,7 +4890,7 @@ impl World {
             "cs_shared" => [8, 8, 1],
             _ => [1, 1, 1],
         };
-        let wrong = random.broken(13);
+        let wrong = random.broken(14);
         let w = |k| wrong == Some(k);
         let mut refuse = false;
         let mut commands: Vec<ComputeCommand<M>> = Vec::new();
@@ -4959,11 +5056,37 @@ impl World {
                     .saturating_add(1)
             };
         }
-        commands.push(ComputeCommand::DispatchThreadgroups(Size {
-            width: groups[0],
-            height: groups[1],
-            depth: groups[2],
-        }));
+        if (random.chance(20) || w(13)) && !w(11) {
+            // Counts the GPU reads, each small or past a most: the check copies them as they are or as zero.
+            let counts: Vec<u32> = groups
+                .iter()
+                .map(|n| {
+                    if random.chance(20) {
+                        u32::MAX.saturating_sub(random.below(3) as u32)
+                    } else {
+                        *n
+                    }
+                })
+                .collect();
+            let Some((buffer, mut offset, length)) = self.arguments(random, &counts) else {
+                return;
+            };
+            if w(13) {
+                refuse = true;
+                offset = broken_arguments_offset(random, offset, length);
+            }
+            commands.push(ComputeCommand::DispatchThreadgroupsIndirect {
+                indirect_buffer: buffer,
+                indirect_buffer_offset: offset,
+                max_threadgroups: random.pick(&[0, 2, 65_535]),
+            });
+        } else {
+            commands.push(ComputeCommand::DispatchThreadgroups(Size {
+                width: groups[0],
+                height: groups[1],
+                depth: groups[2],
+            }));
+        }
         if w(12) {
             refuse = true;
             let _ = self.metal.commit(&command_buffer);
@@ -5303,4 +5426,13 @@ fn used_globals(
 /// Returns the changed copy of the batch's module, made of `of` the first time.
 fn copy<'a>(module: &'a mut Option<naga::Module>, of: &naga::Module) -> &'a mut naga::Module {
     module.get_or_insert_with(|| of.clone())
+}
+
+/// Returns an offset of indirect arguments that is refused: off four bytes, past the buffer's end, or wrapping.
+fn broken_arguments_offset(random: &mut Random, offset: u64, length: u64) -> u64 {
+    match random.below(3) {
+        0 => offset.saturating_add(random.pick(&[1, 2, 3])),
+        1 => length.saturating_sub(4).next_multiple_of(4),
+        _ => random.pick(&[u64::MAX, u64::MAX - 3, u64::MAX - 7, 1 << 63]),
+    }
 }

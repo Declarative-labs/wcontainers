@@ -599,6 +599,7 @@ impl<M: Metal> MetalGpu<M> {
                 height,
             },
         };
+        // An indirect draw's counts are read when it runs: the GPU checks them (Metal's DrawPrimitivesIndirect).
         let (instances, empty) = match call.range {
             DrawRange::Vertices {
                 count, instances, ..
@@ -606,9 +607,7 @@ impl<M: Metal> MetalGpu<M> {
             | DrawRange::Indexed {
                 count, instances, ..
             } => (instances, count == 0),
-            DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => {
-                return Err("an indirect draw, which this implementation does not declare");
-            }
+            DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => (1, false),
         };
         if instances == 0 || empty {
             return Ok(());
@@ -814,18 +813,7 @@ impl<M: Metal> MetalGpu<M> {
                 first_instance,
                 instances,
             } => {
-                let index = call
-                    .index
-                    .as_ref()
-                    .ok_or("an indexed draw with no index buffer")?;
-                let (index_type, size) = match index.format {
-                    IndexFormat::U16 => (IndexType::UInt16, 2),
-                    IndexFormat::U32 => (IndexType::UInt32, 4),
-                    IndexFormat::U8 => {
-                        return Err("8-bit indices, which this implementation does not declare");
-                    }
-                };
-                self.mark_used(index.buffer);
+                let (index, index_type, size) = self.index_binding(call)?;
                 RenderCommand::DrawIndexedPrimitives {
                     primitive_type,
                     index_count: count,
@@ -840,14 +828,51 @@ impl<M: Metal> MetalGpu<M> {
                     base_instance: first_instance,
                 }
             }
-            DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => {
-                unreachable!("refused above")
+            DrawRange::Indirect { args, offset } => {
+                self.mark_used(args);
+                RenderCommand::DrawPrimitivesIndirect {
+                    primitive_type,
+                    indirect_buffer: args.raw.borrow().clone(),
+                    indirect_buffer_offset: offset,
+                }
+            }
+            DrawRange::IndexedIndirect { args, offset } => {
+                let (index, index_type, _) = self.index_binding(call)?;
+                self.mark_used(args);
+                RenderCommand::DrawIndexedPrimitivesIndirect {
+                    primitive_type,
+                    index_type,
+                    index_buffer: index.buffer.raw.borrow().clone(),
+                    index_buffer_offset: index.offset,
+                    indirect_buffer: args.raw.borrow().clone(),
+                    indirect_buffer_offset: offset,
+                }
             }
         });
         if let Some(pass) = &mut self.pass {
             pass.commands.extend(commands);
         }
         Ok(())
+    }
+
+    /// Returns a draw's index binding, Metal's index type and the bytes of one index, the buffer marked used.
+    fn index_binding<'a>(
+        &self,
+        call: &'a DrawCall<'_, Self>,
+    ) -> Result<(&'a wcontainers_gpu::IndexBinding<'a, Self>, IndexType, u64), &'static str> {
+        let index = call
+            .index
+            .as_ref()
+            .ok_or("an indexed draw with no index buffer")?;
+        let (index_type, size) = match index.format {
+            IndexFormat::U16 => (IndexType::UInt16, 2),
+            IndexFormat::U32 => (IndexType::UInt32, 4),
+            IndexFormat::U8 => {
+                return Err("8-bit indices, which this implementation does not declare");
+            }
+        };
+        self.mark_used(index.buffer);
+        Ok((index, index_type, size))
     }
 
     /// Draws a frame's texels into a drawable's view.

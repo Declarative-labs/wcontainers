@@ -36,10 +36,11 @@ use objc2_quartz_core::{CAMetalDrawable, CAMetalLayer};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use wcontainers_metal::{
     BlendFactor, BlendOperation, BlitCommand, BlitOption, CommandBufferStatus, CommitError,
-    CompareFunction, ComputeCommand, ConfigureLayerError, CullMode, DepthClipMode,
-    DepthStencilDescriptor, EncodeBlitCommandsError, EncodeComputeCommandsError,
-    EncodeRenderCommandsError, FunctionSource, IndexType, LayerDescriptor, LoadAction,
-    MAX_ANISOTROPY, MAX_BUFFER_SLOTS, MAX_COLOR_ATTACHMENTS, MAX_SAMPLER_SLOTS, MAX_TEXTURE_SIDE,
+    CompareFunction, ComputeCommand, ConfigureLayerError, CullMode, DISPATCH_ARGUMENTS_BYTES,
+    DRAW_ARGUMENTS_BYTES, DRAW_INDEXED_ARGUMENTS_BYTES, DepthClipMode, DepthStencilDescriptor,
+    EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError, FunctionSource,
+    INDIRECT_ARGUMENTS_ALIGNMENT, IndexType, LayerDescriptor, LoadAction, MAX_ANISOTROPY,
+    MAX_BUFFER_SLOTS, MAX_COLOR_ATTACHMENTS, MAX_SAMPLER_SLOTS, MAX_TEXTURE_SIDE,
     MAX_TEXTURE_SLOTS, MAX_VERTEX_STRIDE, MAX_VIEWPORTS, MakeBufferError, MakeCommandBufferError,
     MakeComputePipelineStateError, MakeDepthStencilStateError, MakeFunctionError, MakeLayerError,
     MakeRenderPipelineStateError, MakeSamplerStateError, MakeTextureError, MakeTextureViewError,
@@ -199,6 +200,8 @@ pub struct DirectMetal {
     limits: DeviceLimits,
     /// The committed command buffers not yet seen completed, which buffers that they use wait for.
     in_flight: Vec<DirectCommandBuffer>,
+    /// The pipeline that checks indirect arguments, made at the first indirect command.
+    argument_check: Option<Retained<ProtocolObject<dyn MTLComputePipelineState>>>,
 }
 
 /// The sample counts a texture or a pass may have, which the device is asked about.
@@ -447,6 +450,7 @@ impl StandaloneMetal for DirectMetal {
             empty,
             limits,
             in_flight: Vec::new(),
+            argument_check: None,
         }
     }
 }
@@ -1318,6 +1322,10 @@ impl Metal for DirectMetal {
         }
         let area = check_pass(pass, self.limits)?;
         check_render_commands(pass, area, commands)?;
+        let jobs = render_argument_jobs(commands);
+        let checked = self
+            .encode_argument_checks(command_buffer, &jobs)
+            .map_err(EncodeRenderCommandsError::Invalid)?;
         let descriptor = pass_descriptor(pass);
         // The encoder holds its command buffer, so it is released at once as in `make_command_buffer`.
         let encoder = autoreleasepool(|_| {
@@ -1334,8 +1342,19 @@ impl Metal for DirectMetal {
             used.push(buffer.clone());
         }
         let mut bound = RenderBindings::default();
+        let mut next = CheckedArguments {
+            buffer: checked.as_deref(),
+            next: u64::MIN,
+        };
         for command in commands {
-            encode_render_command(&encoder, &self.empty, &mut bound, command, &mut used);
+            encode_render_command(
+                &encoder,
+                &self.empty,
+                &mut bound,
+                command,
+                &mut used,
+                &mut next,
+            );
         }
         encoder.endEncoding();
         for buffer in &used {
@@ -1384,6 +1403,14 @@ impl Metal for DirectMetal {
             return Err(EncodeComputeCommandsError::Committed);
         }
         check_compute_commands(commands)?;
+        let jobs = compute_argument_jobs(commands);
+        let checked = self
+            .encode_argument_checks(command_buffer, &jobs)
+            .map_err(EncodeComputeCommandsError::Invalid)?;
+        let mut next = CheckedArguments {
+            buffer: checked.as_deref(),
+            next: u64::MIN,
+        };
         // Released at once, as in `encode_render_commands`.
         let encoder = autoreleasepool(|_| command_buffer.0.raw.computeCommandEncoder()).ok_or(
             EncodeComputeCommandsError::Invalid("Metal made no compute encoder"),
@@ -1404,17 +1431,9 @@ impl Metal for DirectMetal {
                 } => {
                     bound.buffers.insert(*index, (*length, *offset));
                     buffer.used_by(command_buffer);
-                    let at = ns_uinteger(*offset);
-                    #[expect(unsafe_code, reason = "the binding of a buffer to a compute slot")]
-                    // SAFETY: the bound range lies inside the buffer and the slot below `MAX_BUFFER_SLOTS`, both checked by
+                    // The bound range lies inside the buffer and the slot below `MAX_BUFFER_SLOTS`, both checked by
                     // `check_compute_commands`; the command buffer keeps the buffer.
-                    unsafe {
-                        encoder.setBuffer_offset_atIndex(
-                            Some(&buffer.0.raw),
-                            at,
-                            *index as NSUInteger,
-                        )
-                    };
+                    set_compute_buffer(&encoder, &buffer.0.raw, *offset, *index);
                 }
                 ComputeCommand::SetBytes { bytes, index } => {
                     bound.buffers.insert(*index, (bytes.len() as u64, u64::MIN));
@@ -1436,7 +1455,8 @@ impl Metal for DirectMetal {
                         encoder.setSamplerState_atIndex(Some(&sampler.0), *index as NSUInteger)
                     };
                 }
-                ComputeCommand::DispatchThreadgroups(groups) => {
+                ComputeCommand::DispatchThreadgroups(_)
+                | ComputeCommand::DispatchThreadgroupsIndirect { .. } => {
                     let Some(pipeline) = pipeline else {
                         unreachable!("checked by check_compute_commands")
                     };
@@ -1457,10 +1477,37 @@ impl Metal for DirectMetal {
                             encoder.setThreadgroupMemoryLength_atIndex(length, index)
                         };
                     }
-                    encoder.dispatchThreadgroups_threadsPerThreadgroup(
-                        mtl_size(*groups),
-                        mtl_size(function.reads.workgroup_size),
-                    );
+                    let threads = mtl_size(function.reads.workgroup_size);
+                    match command {
+                        ComputeCommand::DispatchThreadgroupsIndirect {
+                            indirect_buffer, ..
+                        } => {
+                            indirect_buffer.used_by(command_buffer);
+                            let Some((checked, at)) = next.take() else {
+                                unreachable!("one checked copy for each indirect command")
+                            };
+                            #[expect(
+                                unsafe_code,
+                                reason = "a dispatch of threadgroups the GPU reads"
+                            )]
+                            // SAFETY: as for a direct dispatch; and the counts are read from direct's own copy, which
+                            // `encode_argument_checks` encoded before this pass, each axis within `max_threadgroups` and
+                            // its threads within a `u32`, at an offset inside that buffer and a multiple of four.
+                            unsafe {
+                                encoder
+                                    .dispatchThreadgroupsWithIndirectBuffer_indirectBufferOffset_threadsPerThreadgroup(
+                                        checked, at, threads,
+                                    )
+                            };
+                        }
+                        ComputeCommand::DispatchThreadgroups(groups) => {
+                            encoder.dispatchThreadgroups_threadsPerThreadgroup(
+                                mtl_size(*groups),
+                                threads,
+                            );
+                        }
+                        _ => unreachable!("matched above"),
+                    }
                 }
             }
         }
@@ -2323,10 +2370,7 @@ fn check_render_commands(
                 base_instance,
                 ..
             } => {
-                let size = match index_type {
-                    IndexType::UInt16 => u64::from(bytes_of::<u16>()),
-                    IndexType::UInt32 => u64::from(bytes_of::<u32>()),
-                };
+                let size = index_bytes(*index_type);
                 let indices = u64::from(*index_count).checked_mul(size);
                 if refuses!(
                     "indexed draw: indices outside their buffer or off their size",
@@ -2354,6 +2398,46 @@ fn check_render_commands(
                         "a draw of no instances or no indices",
                     ));
                 }
+                check_attachments(depth_stencil)?;
+                check_draw(&bound, *primitive_type).map_err(unbound)?;
+            }
+            RenderCommand::DrawPrimitivesIndirect {
+                primitive_type,
+                indirect_buffer,
+                indirect_buffer_offset,
+            } => {
+                check_arguments(
+                    indirect_buffer,
+                    *indirect_buffer_offset,
+                    DRAW_ARGUMENTS_BYTES,
+                )
+                .map_err(EncodeRenderCommandsError::OutOfRange)?;
+                check_attachments(depth_stencil)?;
+                check_draw(&bound, *primitive_type).map_err(unbound)?;
+            }
+            RenderCommand::DrawIndexedPrimitivesIndirect {
+                primitive_type,
+                index_type,
+                index_buffer,
+                index_buffer_offset,
+                indirect_buffer,
+                indirect_buffer_offset,
+            } => {
+                if refuses!(
+                    "indirect indexed draw: an index offset outside its buffer or off its size",
+                    !index_buffer_offset.is_multiple_of(index_bytes(*index_type))
+                        || !index_buffer.holds(*index_buffer_offset, u64::MIN)
+                ) {
+                    return Err(EncodeRenderCommandsError::OutOfRange(
+                        "an index offset outside its buffer, or not a multiple of the index size",
+                    ));
+                }
+                check_arguments(
+                    indirect_buffer,
+                    *indirect_buffer_offset,
+                    DRAW_INDEXED_ARGUMENTS_BYTES,
+                )
+                .map_err(EncodeRenderCommandsError::OutOfRange)?;
                 check_attachments(depth_stencil)?;
                 check_draw(&bound, *primitive_type).map_err(unbound)?;
             }
@@ -2399,6 +2483,7 @@ fn encode_render_command(
     bound: &mut RenderBindings,
     command: &RenderCommand<DirectMetal>,
     used: &mut Vec<DirectBuffer>,
+    checked: &mut CheckedArguments<'_>,
 ) {
     match command {
         RenderCommand::SetRenderPipelineState(state) => {
@@ -2628,6 +2713,66 @@ fn encode_render_command(
                     )
             };
         }
+        RenderCommand::DrawPrimitivesIndirect {
+            primitive_type,
+            indirect_buffer,
+            ..
+        } => {
+            prepare_draw(encoder, empty, bound);
+            used.push(indirect_buffer.clone());
+            let Some((arguments, at)) = checked.take() else {
+                unreachable!("one checked copy for each indirect command")
+            };
+            #[expect(
+                unsafe_code,
+                reason = "a draw without indices of arguments the GPU reads"
+            )]
+            // SAFETY: as for a draw without indices, whose vertex inputs are read bounds-checked whatever the counts; and
+            // the counts are read from direct's own copy (encode_argument_checks, encoded before this pass), whose first
+            // vertex and first instance plus their counts fit a `u32`, at an offset inside it and a multiple of four.
+            unsafe {
+                encoder.drawPrimitives_indirectBuffer_indirectBufferOffset(
+                    primitive_type_of(*primitive_type),
+                    arguments,
+                    at,
+                )
+            };
+        }
+        RenderCommand::DrawIndexedPrimitivesIndirect {
+            primitive_type,
+            index_type,
+            index_buffer,
+            index_buffer_offset,
+            indirect_buffer,
+            ..
+        } => {
+            prepare_draw(encoder, empty, bound);
+            used.push(index_buffer.clone());
+            used.push(indirect_buffer.clone());
+            let Some((arguments, at)) = checked.take() else {
+                unreachable!("one checked copy for each indirect command")
+            };
+            let width = match index_type {
+                IndexType::UInt16 => MTLIndexType::UInt16,
+                IndexType::UInt32 => MTLIndexType::UInt32,
+            };
+            #[expect(unsafe_code, reason = "a draw with indices of arguments the GPU reads")]
+            // SAFETY: as for a draw with indices; and the counts are read from direct's own copy
+            // (encode_argument_checks), in which the first index plus the index count lie within the indices the buffer
+            // holds past `index_buffer_offset`, itself inside the buffer and a multiple of the index size
+            // (check_render_commands), or else are zero, at an offset inside the copy and a multiple of four.
+            unsafe {
+                encoder
+                    .drawIndexedPrimitives_indexType_indexBuffer_indexBufferOffset_indirectBuffer_indirectBufferOffset(
+                        primitive_type_of(*primitive_type),
+                        width,
+                        &index_buffer.0.raw,
+                        ns_uinteger(*index_buffer_offset),
+                        arguments,
+                        at,
+                    )
+            };
+        }
     }
 }
 
@@ -2738,6 +2883,312 @@ fn set_compute_bytes(
     };
 }
 
+/// Binds a range of a buffer from `offset` to a compute slot.
+fn set_compute_buffer(
+    encoder: &ProtocolObject<dyn MTLComputeCommandEncoder>,
+    buffer: &ProtocolObject<dyn MTLBuffer>,
+    offset: u64,
+    index: u32,
+) {
+    #[expect(unsafe_code, reason = "the binding of a buffer to a compute slot")]
+    // SAFETY: every caller has checked that the offset lies inside the buffer, a multiple of four, and the slot below
+    // `MAX_BUFFER_SLOTS`; the command buffer keeps the buffer.
+    unsafe {
+        encoder.setBuffer_offset_atIndex(Some(buffer), ns_uinteger(offset), index as NSUInteger)
+    };
+}
+
+/// Returns the bytes of one index of a type.
+fn index_bytes(index_type: IndexType) -> u64 {
+    match index_type {
+        IndexType::UInt16 => u64::from(bytes_of::<u16>()),
+        IndexType::UInt32 => u64::from(bytes_of::<u32>()),
+    }
+}
+
+/// Checks that `bytes` of indirect arguments lie inside their buffer at an offset that is a multiple of four.
+fn check_arguments(buffer: &DirectBuffer, offset: u64, bytes: u64) -> Result<(), &'static str> {
+    if refuses!(
+        "indirect: arguments outside their buffer or off four bytes",
+        !offset.is_multiple_of(INDIRECT_ARGUMENTS_ALIGNMENT) || !buffer.holds(offset, bytes)
+    ) {
+        return Err(
+            "indirect arguments outside their buffer, or at an offset not a multiple of four",
+        );
+    }
+    Ok(())
+}
+
+/// The function that copies each indirect command's arguments into direct's own buffer, each command that would reach
+/// past what it is checked against made one that does nothing.
+///
+/// It reads every argument once, through a `volatile` pointer, so that the value it checks is the value it writes,
+/// whatever else changes the arguments meanwhile. Its kinds are `ARGUMENTS_DRAW`, `ARGUMENTS_DRAW_INDEXED` and
+/// `ARGUMENTS_DISPATCH`.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawindexedprimitivesindirectarguments
+const ARGUMENT_CHECK_SOURCE: &str = r#"
+#include <metal_stdlib>
+using namespace metal;
+struct Job { uint kind; uint index_limit; uint threads[3]; uint max_groups; };
+kernel void check_arguments(volatile device const uint* arguments [[buffer(0)]],
+                            device uint* out [[buffer(1)]],
+                            constant Job& job [[buffer(2)]]) {
+    const ulong most = 0xffffffffUL;
+    if (job.kind == 2u) {
+        uint g0 = arguments[0];
+        uint g1 = arguments[1];
+        uint g2 = arguments[2];
+        bool fits = g0 <= job.max_groups && g1 <= job.max_groups && g2 <= job.max_groups
+            && ulong(g0) * ulong(job.threads[0]) <= most
+            && ulong(g1) * ulong(job.threads[1]) <= most
+            && ulong(g2) * ulong(job.threads[2]) <= most;
+        out[0] = fits ? g0 : 0u;
+        out[1] = fits ? g1 : 0u;
+        out[2] = fits ? g2 : 0u;
+        return;
+    }
+    uint count = arguments[0];
+    uint instances = arguments[1];
+    uint first = arguments[2];
+    uint fourth = arguments[3];
+    if (job.kind == 0u) {
+        bool fits = ulong(first) + ulong(count) <= most && ulong(fourth) + ulong(instances) <= most;
+        out[0] = fits ? count : 0u;
+        out[1] = fits ? instances : 0u;
+        out[2] = fits ? first : 0u;
+        out[3] = fits ? fourth : 0u;
+        return;
+    }
+    uint first_instance = arguments[4];
+    bool fits = ulong(first) + ulong(count) <= ulong(job.index_limit)
+        && ulong(first_instance) + ulong(instances) <= most;
+    out[0] = fits ? count : 0u;
+    out[1] = fits ? instances : 0u;
+    out[2] = fits ? first : 0u;
+    out[3] = fits ? fourth : 0u;
+    out[4] = fits ? first_instance : 0u;
+}
+"#;
+
+/// The kind of a draw's arguments in `ARGUMENT_CHECK_SOURCE`.
+const ARGUMENTS_DRAW: u32 = 0;
+/// The kind of an indexed draw's arguments in `ARGUMENT_CHECK_SOURCE`.
+const ARGUMENTS_DRAW_INDEXED: u32 = 1;
+/// The kind of a dispatch's arguments in `ARGUMENT_CHECK_SOURCE`.
+const ARGUMENTS_DISPATCH: u32 = 2;
+
+/// The bytes between two commands' checked arguments in direct's buffer: the longest arguments, rounded up to a
+/// multiple of 16.
+const CHECKED_ARGUMENTS_STRIDE: u64 = 32;
+
+const _: () = assert!(
+    DRAW_INDEXED_ARGUMENTS_BYTES <= CHECKED_ARGUMENTS_STRIDE
+        && DRAW_ARGUMENTS_BYTES <= CHECKED_ARGUMENTS_STRIDE
+        && DISPATCH_ARGUMENTS_BYTES <= CHECKED_ARGUMENTS_STRIDE
+        && CHECKED_ARGUMENTS_STRIDE.is_multiple_of(INDIRECT_ARGUMENTS_ALIGNMENT)
+);
+
+/// One indirect command's arguments, and what the check copies them against.
+struct ArgumentJob<'a> {
+    arguments: &'a DirectBuffer,
+    offset: u64,
+    kind: u32,
+    /// The indices the index buffer holds past its offset, for an indexed draw.
+    index_limit: u32,
+    /// The threads of a threadgroup on each axis, for a dispatch.
+    threads: [u32; 3],
+    max_groups: u32,
+}
+
+impl ArgumentJob<'_> {
+    /// Returns the job as the function's `Job` reads it: six `u32`s.
+    fn bytes(&self) -> Vec<u8> {
+        [
+            self.kind,
+            self.index_limit,
+            self.threads[0],
+            self.threads[1],
+            self.threads[2],
+            self.max_groups,
+        ]
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect()
+    }
+}
+
+/// Where the next indirect command of a pass reads its checked arguments.
+struct CheckedArguments<'a> {
+    buffer: Option<&'a ProtocolObject<dyn MTLBuffer>>,
+    next: u64,
+}
+
+impl<'a> CheckedArguments<'a> {
+    /// Returns the buffer and offset of the next command's checked arguments, and moves past them.
+    fn take(&mut self) -> Option<(&'a ProtocolObject<dyn MTLBuffer>, NSUInteger)> {
+        let buffer = self.buffer?;
+        let at = self.next.checked_mul(CHECKED_ARGUMENTS_STRIDE)?;
+        self.next = self.next.checked_add(1)?;
+        Some((buffer, ns_uinteger(at)))
+    }
+}
+
+/// Returns the argument checks of a checked pass's indirect draws, in order.
+fn render_argument_jobs(commands: &[RenderCommand<DirectMetal>]) -> Vec<ArgumentJob<'_>> {
+    commands
+        .iter()
+        .filter_map(|command| match command {
+            RenderCommand::DrawPrimitivesIndirect {
+                indirect_buffer,
+                indirect_buffer_offset,
+                ..
+            } => Some(ArgumentJob {
+                arguments: indirect_buffer,
+                offset: *indirect_buffer_offset,
+                kind: ARGUMENTS_DRAW,
+                index_limit: u32::MIN,
+                threads: [u32::MIN; 3],
+                max_groups: u32::MIN,
+            }),
+            RenderCommand::DrawIndexedPrimitivesIndirect {
+                index_type,
+                index_buffer,
+                index_buffer_offset,
+                indirect_buffer,
+                indirect_buffer_offset,
+                ..
+            } => {
+                // The offset lies inside the buffer (check_render_commands); past `u32::MAX` indices every first index
+                // and count a `u32` holds fit, so the limit saturates there.
+                let indices = index_buffer
+                    .0
+                    .length
+                    .checked_sub(*index_buffer_offset)
+                    .and_then(|bytes| bytes.checked_div(index_bytes(*index_type)))
+                    .unwrap_or(u64::MIN);
+                Some(ArgumentJob {
+                    arguments: indirect_buffer,
+                    offset: *indirect_buffer_offset,
+                    kind: ARGUMENTS_DRAW_INDEXED,
+                    index_limit: u32::try_from(indices).unwrap_or(u32::MAX),
+                    threads: [u32::MIN; 3],
+                    max_groups: u32::MIN,
+                })
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Returns the argument checks of checked compute commands' indirect dispatches, in order.
+fn compute_argument_jobs(commands: &[ComputeCommand<DirectMetal>]) -> Vec<ArgumentJob<'_>> {
+    let mut pipeline: Option<&DirectComputePipelineState> = None;
+    let mut jobs = Vec::new();
+    for command in commands {
+        match command {
+            ComputeCommand::SetComputePipelineState(state) => pipeline = Some(state),
+            ComputeCommand::DispatchThreadgroupsIndirect {
+                indirect_buffer,
+                indirect_buffer_offset,
+                max_threadgroups,
+            } => {
+                let Some(pipeline) = pipeline else {
+                    unreachable!("checked by check_compute_commands")
+                };
+                let threads = pipeline.0.function.reads.workgroup_size;
+                jobs.push(ArgumentJob {
+                    arguments: indirect_buffer,
+                    offset: *indirect_buffer_offset,
+                    kind: ARGUMENTS_DISPATCH,
+                    index_limit: u32::MIN,
+                    threads: [threads.width, threads.height, threads.depth],
+                    max_groups: *max_threadgroups,
+                });
+            }
+            _ => {}
+        }
+    }
+    jobs
+}
+
+impl DirectMetal {
+    /// Returns the pipeline that checks indirect arguments, compiled at its first use.
+    fn argument_check(
+        &mut self,
+    ) -> Result<Retained<ProtocolObject<dyn MTLComputePipelineState>>, &'static str> {
+        if let Some(pipeline) = &self.argument_check {
+            return Ok(pipeline.clone());
+        }
+        let options = MTLCompileOptions::new();
+        options.setLanguageVersion(MTLLanguageVersion::Version3_1);
+        let library = self
+            .device
+            .newLibraryWithSource_options_error(
+                &NSString::from_str(ARGUMENT_CHECK_SOURCE),
+                Some(&options),
+            )
+            .map_err(|_| "Metal compiled no argument check")?;
+        let function = library
+            .newFunctionWithName(&NSString::from_str("check_arguments"))
+            .ok_or("Metal compiled no argument check")?;
+        let pipeline = self
+            .device
+            .newComputePipelineStateWithFunction_error(&function)
+            .map_err(|_| "Metal made no argument check pipeline")?;
+        self.argument_check = Some(pipeline.clone());
+        Ok(pipeline)
+    }
+
+    /// Encodes, in a compute pass of its own, the copy of each job's arguments, checked, into a new buffer only the GPU
+    /// reaches, `CHECKED_ARGUMENTS_STRIDE` bytes a job in order, and returns that buffer; none for no jobs.
+    fn encode_argument_checks(
+        &mut self,
+        command_buffer: &DirectCommandBuffer,
+        jobs: &[ArgumentJob<'_>],
+    ) -> Result<Option<Retained<ProtocolObject<dyn MTLBuffer>>>, &'static str> {
+        if jobs.is_empty() {
+            return Ok(None);
+        }
+        let pipeline = self.argument_check()?;
+        let length = u64::try_from(jobs.len())
+            .ok()
+            .and_then(|n| n.checked_mul(CHECKED_ARGUMENTS_STRIDE))
+            .ok_or("more indirect commands than a buffer holds")?;
+        let checked = self
+            .device
+            .newBufferWithLength_options(
+                ns_uinteger(length),
+                MTLResourceOptions::StorageModePrivate,
+            )
+            .ok_or("Metal made no buffer for checked arguments")?;
+        // Released at once, as in `encode_render_commands`.
+        let encoder = autoreleasepool(|_| command_buffer.0.raw.computeCommandEncoder())
+            .ok_or("Metal made no compute encoder")?;
+        encoder.setComputePipelineState(&pipeline);
+        let one = MTLSize {
+            width: 1,
+            height: 1,
+            depth: 1,
+        };
+        let mut into = u64::MIN;
+        for job in jobs {
+            job.arguments.used_by(command_buffer);
+            // The arguments lie inside their buffer at a multiple of four (check_arguments), as many bytes as the
+            // function reads for the job's kind; the copy's place lies inside `checked`, which holds a stride a job.
+            set_compute_buffer(&encoder, &job.arguments.0.raw, job.offset, 0);
+            set_compute_buffer(&encoder, &checked, into, 1);
+            set_compute_bytes(&encoder, &job.bytes(), 2);
+            encoder.dispatchThreadgroups_threadsPerThreadgroup(one, one);
+            into = into
+                .checked_add(CHECKED_ARGUMENTS_STRIDE)
+                .ok_or("more indirect commands than a buffer holds")?;
+        }
+        encoder.endEncoding();
+        Ok(Some(checked))
+    }
+}
+
 /// Checks every compute command before any is encoded.
 fn check_compute_commands(
     commands: &[ComputeCommand<DirectMetal>],
@@ -2828,6 +3279,25 @@ fn check_compute_commands(
                         "a grid of more threads on one axis than the largest u32",
                     ));
                 }
+                check_reads(&pipeline.0.function.reads, &bound)
+                    .map_err(EncodeComputeCommandsError::Unbound)?;
+            }
+            ComputeCommand::DispatchThreadgroupsIndirect {
+                indirect_buffer,
+                indirect_buffer_offset,
+                ..
+            } => {
+                check_arguments(
+                    indirect_buffer,
+                    *indirect_buffer_offset,
+                    DISPATCH_ARGUMENTS_BYTES,
+                )
+                .map_err(EncodeComputeCommandsError::OutOfRange)?;
+                let Some(pipeline) = found!("indirect dispatch: no pipeline", pipeline) else {
+                    return Err(EncodeComputeCommandsError::Unbound(
+                        "a dispatch with no pipeline",
+                    ));
+                };
                 check_reads(&pipeline.0.function.reads, &bound)
                     .map_err(EncodeComputeCommandsError::Unbound)?;
             }
