@@ -33,8 +33,8 @@ use wcontainers_gpu::{
     CopyBufferTexture, DepthStencilDesc, DeviceStatus, Extent, FORMAT_COUNT, FORMAT_FACTS,
     Features, FillMode, Filter, Format, FormatCaps, FormatKind, FormatUse, GpuError, Helpers,
     Limits, LossReason, MAX_BINDING_SETS, MapIntent, Object, PassDesc, Program, ProvokingVertex,
-    QueryKind, RasterDesc, ReadSource, ReadState, SamplerDesc, ShaderModule, ShaderStage,
-    SlowPaths, StepMode, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
+    QueryKind, RasterDesc, ReadSource, ReadState, SLOW_PATHS, SamplerDesc, ShaderModule,
+    ShaderStage, SlowPaths, StepMode, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
     TextureViewDesc, VertexLayoutDesc, WriteMode,
 };
 
@@ -663,7 +663,7 @@ impl WebGpu {
                 line += &format!(" {name}={count}");
             }
         }
-        for path in wcontainers_gpu::SlowPath::ALL {
+        for path in SLOW_PATHS {
             let count = self.slow.count(path);
             if count > 0 {
                 line += &format!(" {path:?}={count}");

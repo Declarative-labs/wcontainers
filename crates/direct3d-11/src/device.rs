@@ -9,7 +9,7 @@ use wcontainers_gpu::{
     BufferDesc as GpuBuffer, BufferUsage, Caps, ColorWrites, CompareFn, CullMode,
     DepthStencilDesc as GpuDepthStencil, DeviceStatus, Extent, FORMAT_FACTS, Features, FillMode,
     Filter, Format, FormatKind, FormatUse, FrontFace, GpuError, LossReason, MAX_COLOR_TARGETS,
-    MapIntent, Object, Origin, ProvokingVertex, RasterDesc, RenderTargetBlend,
+    MapIntent, Object, Origin, ProvokingVertex, RasterDesc, RenderTargetBlend, SLOW_PATH_REASONS,
     SamplerDesc as GpuSampler, ScalarKind, SlowPath, StencilFace, StencilOp,
     TextureDesc as GpuTexture, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc,
     ViewDimension, WriteMode,
@@ -933,7 +933,7 @@ impl<B: Backend> Device<B> {
             .slow_paths()
             .take_warnings()
             .into_iter()
-            .map(SlowPath::reason)
+            .map(|path| SLOW_PATH_REASONS[path as usize])
             .collect()
     }
 

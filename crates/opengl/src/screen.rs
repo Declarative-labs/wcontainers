@@ -5,8 +5,8 @@ use std::ffi::{CString, c_char, c_int, c_uint};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use wcontainers_gpu::{
-    Backend, Caps, DeviceStatus, Features, Format, FormatUse, Object, SLOT_KINDS, SlotKind,
-    SlowPath, TEXEL_BUFFER_TEXTURE_WIDTH,
+    Backend, Caps, DeviceStatus, Features, Format, FormatUse, Object, SLOT_KINDS,
+    SLOW_PATH_REASONS, SLOW_PATHS, SlotKind, TEXEL_BUFFER_TEXTURE_WIDTH,
 };
 use wcontainers_shaders::stage::STREAM_BUFFERS;
 
@@ -108,7 +108,7 @@ fn warn_slow_paths<B: Backend>(backend: &mut B) {
         eprintln!(
             "{}: slow path: {}",
             DRIVER_NAME.to_string_lossy(),
-            path.reason()
+            SLOW_PATH_REASONS[path as usize]
         );
     }
 }
@@ -116,9 +116,9 @@ fn warn_slow_paths<B: Backend>(backend: &mut B) {
 /// Every slow path the screen's device took, with how many times, for the end of its life.
 fn slow_path_counts<B: Backend>(backend: &mut B) -> Vec<(&'static str, u64)> {
     let paths = backend.slow_paths();
-    SlowPath::ALL
+    SLOW_PATHS
         .iter()
-        .map(|&path| (path.reason(), paths.count(path)))
+        .map(|&path| (SLOW_PATH_REASONS[path as usize], paths.count(path)))
         .filter(|&(_, count)| count > 0)
         .collect()
 }
@@ -594,7 +594,7 @@ pub extern "C" fn wcontainers_screen_create() -> *mut pipe_screen {
 
 #[cfg(test)]
 mod tests {
-    use wcontainers_gpu::Backend;
+    use wcontainers_gpu::{Backend, SlowPath};
     use wcontainers_gpu_test::Recorder;
 
     use super::*;
@@ -711,8 +711,8 @@ mod tests {
         assert_eq!(
             slow_path_counts(&mut backend),
             [
-                (SlowPath::FanConverted.reason(), FANS),
-                (SlowPath::PointsAsQuads.reason(), 1)
+                (SLOW_PATH_REASONS[SlowPath::FanConverted as usize], FANS),
+                (SLOW_PATH_REASONS[SlowPath::PointsAsQuads as usize], 1)
             ]
         );
     }

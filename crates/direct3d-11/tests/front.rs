@@ -11,7 +11,7 @@ use wcontainers_direct3d_11::record::Recorder;
 use wcontainers_direct3d_11::{
     DOMAIN, Device, Error, GEOMETRY, HULL, PIXEL, Removal, VERTEX, level_texture_limits, shader,
 };
-use wcontainers_gpu::{Backend, LossReason, SlowPath, SourceStage};
+use wcontainers_gpu::{Backend, LossReason, SLOW_PATH_REASONS, SlowPath, SourceStage};
 
 type Dev = Device<Recorder>;
 
@@ -1636,7 +1636,10 @@ fn slow_path_warnings_are_handed_out_once() {
         dev.map(&b, 0, map::WRITE_DISCARD, 0).unwrap();
         dev.unmap(&b, 0);
     }
-    assert_eq!(dev.take_warnings(), [SlowPath::MappedUploadWhole.reason()]);
+    assert_eq!(
+        dev.take_warnings(),
+        [SLOW_PATH_REASONS[SlowPath::MappedUploadWhole as usize]]
+    );
     dev.map(&b, 0, map::WRITE_DISCARD, 0).unwrap();
     dev.unmap(&b, 0);
     assert!(dev.take_warnings().is_empty());
@@ -2898,7 +2901,7 @@ fn a_shader_reading_more_textures_than_the_back_end_has_is_refused_at_creation()
     );
     assert_eq!(
         dev.take_warnings(),
-        [SlowPath::BindingsBeyondLimit.reason()]
+        [SLOW_PATH_REASONS[SlowPath::BindingsBeyondLimit as usize]]
     );
     assert!(dev.removed.is_none());
 }

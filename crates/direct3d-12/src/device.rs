@@ -16,12 +16,12 @@ use wcontainers_gpu::{
     FormatKind, FormatUse, GpuError, HELPER_SET, HelperValue, INDEX_FORMATS, IndexBinding,
     IndexFormat, Interpolation, LinkedValues, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS,
     MapIntent, Object, OcclusionCounter, Origin, PassDesc, PassTargets, PassTracker, PrepareDesc,
-    Program, ReadSource, ReadState, STORAGE_WORD, SamplerDesc, ScissorRect, ShaderModule,
-    ShaderStage, SlowPath, StageSet, StageValue, StepMode, StoreOp, SystemValue, Target,
-    TargetInShader, TargetLayout, TexelBufferRoute, TextureDesc, TextureDimension, TextureRegion,
-    TextureUsage, TextureViewDesc, Topology, VariantFlags, VariantKey, VertexAttribute,
-    VertexBinding, VertexLayoutDesc, VertexStream, ViewComponent, ViewDimension, Viewport,
-    WriteMode,
+    Program, ReadSource, ReadState, SLOW_PATH_REASONS, STORAGE_WORD, SamplerDesc, ScissorRect,
+    ShaderModule, ShaderStage, SlowPath, StageSet, StageValue, StepMode, StoreOp, SystemValue,
+    Target, TargetInShader, TargetLayout, TexelBufferRoute, TextureDesc, TextureDimension,
+    TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantFlags, VariantKey,
+    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, ViewComponent, ViewDimension,
+    Viewport, WriteMode,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source, refusal};
 use zerocopy::FromZeros;
@@ -529,7 +529,7 @@ impl<B: Backend> Device<B> {
             .slow_paths()
             .take_warnings()
             .into_iter()
-            .map(|p| p.reason().to_string())
+            .map(|p| SLOW_PATH_REASONS[p as usize].to_string())
             .collect();
         out.append(&mut self.messages);
         out

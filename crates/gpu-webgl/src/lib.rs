@@ -754,7 +754,7 @@ impl Gl {
     /// The line printed at each power of two frames presented ([`FRAME_REPORT`]).
     pub fn frame_report(&self) -> String {
         let mut line = format!("{FRAME_REPORT}{}", self.presented);
-        for path in SlowPath::ALL {
+        for path in SLOW_PATHS {
             let count = self.slow.count(path);
             if count > 0 {
                 line += &format!(" {path:?}={count}");

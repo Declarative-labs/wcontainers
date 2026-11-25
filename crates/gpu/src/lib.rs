@@ -76,7 +76,7 @@ pub use resource::{
     ViewDimension, WriteMode,
 };
 pub use shader::{Program, ShaderModule, ShaderStage, StageSet};
-pub use slow::{SlowPath, SlowPaths};
+pub use slow::{SLOW_PATH_COUNT, SLOW_PATH_REASONS, SLOW_PATHS, SlowPath, SlowPaths};
 pub use state::{
     BlendComponent, BlendDesc, BlendFactor, BlendOp, ColorWrites, CullMode, DepthStencilDesc,
     FillMode, FrontFace, INDEX_FORMATS, IndexFormat, IndexFormatFacts, LogicOp, ProvokingVertex,
