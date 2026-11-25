@@ -8,7 +8,6 @@
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BinaryHeap};
-use std::fmt;
 use std::mem::{self, offset_of};
 use std::ops::Range;
 
@@ -191,34 +190,26 @@ struct Resolved {
     open: BinaryHeap<(usize, u64)>,
 }
 
-/// A state this source cannot run, by the rule it breaks; it is found before anything is written to the guest.
+/// Why this source did not run a state; it is found before the processor or the hook is written.
 #[derive(Debug)]
-enum Refusal {
-    /// A permission starts or ends inside a page a program can use, which no chip can give.
+pub enum Refusal {
+    /// A permission starts or ends inside a page a program can use, which no chip can give; found before the guest is
+    /// written.
     PermissionWithinAPage(Range<u64>),
-    /// The pages the state maps, with the tables that lead to them and its slot, are more than the guest has.
+    /// The pages the state maps, with the tables that lead to them and its slot, are more than the guest has; found
+    /// before the guest is written.
     MorePagesThanTheGuestHas { pages: u64, room: u64 },
-}
-
-impl fmt::Display for Refusal {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Refusal::PermissionWithinAPage(addresses) => write!(
-                formatter,
-                "a chip gives permissions to whole pages, not {addresses:#x?}"
-            ),
-            Refusal::MorePagesThanTheGuestHas { pages, room } => write!(
-                formatter,
-                "its mapped pages take {pages} pages of the guest, which has {room}"
-            ),
-        }
-    }
-}
-
-/// Stops on a state this source cannot run: the interface gives it no error to return, so this is the one place a
-/// state stops it, always before anything is written, and the machine stays as it was for the next state.
-fn refuse(refusal: Refusal) -> ! {
-    panic!("the state is refused before anything is written: {refusal}")
+    /// KVM failed a call that runs the state, in its words; the next state runs on a new machine.
+    KvmFailed(String),
+    /// The handler took an exception other than one from EL0, with ESR_EL1, ELR_EL1 and SPSR_EL1 as it saved them; the
+    /// next state runs on a new machine.
+    UnexpectedException {
+        syndrome: u64,
+        return_address: u64,
+        saved_program_status: u64,
+    },
+    /// The guest rang the doorbell without the handler ending the state's slot; the next state runs on a new machine.
+    SlotNotRun,
 }
 
 /// One KVM virtual machine with one virtual CPU, bound to the thread that made it, that runs one instruction a state.
@@ -251,6 +242,9 @@ pub struct KvmSingleStepMachine {
     /// `None` when the CPU may be anywhere else.
     parked_at: Option<u64>,
     resident: Resident,
+    /// Set while a run is under way and after one failed, when the virtual CPU may be anywhere: the next state makes a
+    /// new machine first.
+    renew_machine: bool,
 }
 
 /// What the guest holds between states when loading incrementally.
@@ -324,9 +318,19 @@ impl KvmSingleStepMachine {
                 mapped: BTreeMap::new(),
                 next_free_page: RESIDENT_TOP + PAGE_SIZE,
             },
+            renew_machine: false,
         };
         source.set_up()?;
         Ok(source)
+    }
+
+    /// Replaces the machine with a new one that loads and enters as this one does.
+    fn renew(&mut self) -> Result<(), Refusal> {
+        let mut renewed = Self::with_loading(self.loading)
+            .map_err(|MachineError(error)| Refusal::KvmFailed(error))?;
+        renewed.entry_path = self.entry_path;
+        *self = renewed;
+        Ok(())
     }
 
     /// Writes the handler, its stack and translation tables, and the system registers that stay.
@@ -488,7 +492,7 @@ impl KvmSingleStepMachine {
     ) -> (LoadedSlot, Option<Vec<MemoryDelta<'static, Arm64<User>>>>) {
         // The pages the state needs from empty resident pages bound the frames and tables it adds to these.
         let has_room = self.resident.next_free_page + resident_pages * PAGE_SIZE <= RESIDENT.end;
-        // Unknown from here on: a panic before the caller stores the next record makes the next load reset.
+        // Unknown from here on: an error or a panic before the caller stores the next record makes the next load reset.
         let mut held = match mem::replace(&mut self.resident.memory, Held::Unknown) {
             Held::Known(held) if has_room && held.len() + memory.len() <= MOST_CHANGES_PAIRED => {
                 diff_memory(&held, memory, &mut |mutation: MemoryDelta<
@@ -738,9 +742,9 @@ impl KvmSingleStepMachine {
     }
 
     /// Enters the handler at the batch's first slot and waits until it leaves after the last.
-    fn run(&mut self) {
+    fn run(&mut self) -> Result<(), Refusal> {
         let Some(first) = self.first_slot else {
-            return;
+            return Ok(());
         };
         let all = [
             (Register::HandlerThread, linear(first)),
@@ -754,18 +758,21 @@ impl KvmSingleStepMachine {
         };
         // Until the doorbell, the CPU is wherever the run took it.
         self.parked_at = None;
+        self.renew_machine = true;
         for &(register, value) in writes {
-            if let Err(error) = self.machine.set(register, value) {
-                panic!("KVM refused {register:?}: {error:?}");
-            }
+            self.machine
+                .set(register, value)
+                .map_err(|MachineError(error)| Refusal::KvmFailed(error))?;
         }
-        if let Err(error) = self.machine.run() {
-            panic!("the guest stopped other than at the handler's doorbell: {error:?}");
-        }
+        self.machine
+            .run()
+            .map_err(|MachineError(error)| Refusal::KvmFailed(error))?;
+        self.renew_machine = false;
         // With one slot the handler never moved TPIDR_EL1 on (a batch leaves it at a slot after the first).
         if self.first_slot == self.last_slot {
             self.parked_at = Some(linear(first));
         }
+        Ok(())
     }
 
     /// Gives the processor after a slot's run, and each run of bytes it changed from the state's memory, read back from
@@ -777,18 +784,20 @@ impl KvmSingleStepMachine {
         values: &[Reach],
         processor: &mut Processor<()>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
-    ) {
+    ) -> Result<(), Refusal> {
         let slot = self.read_slot(loaded.slot);
-        assert!(
-            slot.ending == Ending::ExceptionFromEl0 as u64,
-            "the handler ended the slot by {:?}: syndrome {:#x}, return address {:#x}, saved state {:#x}",
-            [Ending::NotRun, Ending::ExceptionFromEl0, Ending::Unexpected]
-                .into_iter()
-                .find(|ending| *ending as u64 == slot.ending),
-            slot.after.syndrome,
-            slot.after.program_counter,
-            slot.after.saved_program_status,
-        );
+        if slot.ending != Ending::ExceptionFromEl0 as u64 {
+            self.renew_machine = true;
+            return Err(if slot.ending == Ending::Unexpected as u64 {
+                Refusal::UnexpectedException {
+                    syndrome: slot.after.syndrome,
+                    return_address: slot.after.program_counter,
+                    saved_program_status: slot.after.saved_program_status,
+                }
+            } else {
+                Refusal::SlotNotRun
+            });
+        }
         *processor = to_processor(&slot.after);
         let mut before = mem::take(&mut self.bytes_before);
         let mut after = mem::take(&mut self.bytes_after);
@@ -821,6 +830,7 @@ impl KvmSingleStepMachine {
         }
         self.bytes_before = before;
         self.bytes_after = after;
+        Ok(())
     }
 
     /// Reads the bytes a writable run's frames hold at the addresses, which lie in it and start on a page.
@@ -906,6 +916,7 @@ impl KvmSingleStepMachine {
 
 impl BehaviorSource for KvmSingleStepMachine {
     type Architecture = Arm64<User>;
+    type Error = Refusal;
 
     /// Reports each run of bytes whose value changed: a store of the bytes already there is not reported.
     fn execute_single_instruction_in_place(
@@ -913,11 +924,28 @@ impl BehaviorSource for KvmSingleStepMachine {
         processor: &mut Processor<()>,
         memory: &[MemoryDelta<'_, Arm64<User>>],
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
-    ) {
-        let mut resolved = mem::take(&mut self.resolved);
-        if let Err(refusal) = resolve_memory(memory, &mut resolved) {
-            refuse(refusal);
+    ) -> Result<(), Refusal> {
+        if self.renew_machine {
+            self.renew()?;
         }
+        let mut resolved = mem::take(&mut self.resolved);
+        let executed = self.execute_resolved(processor, memory, &mut resolved, mutation_hook);
+        release_excess_room(&mut resolved);
+        self.resolved = resolved;
+        executed
+    }
+}
+
+impl KvmSingleStepMachine {
+    /// Runs one state with room for its resolved memory, writing the processor and the hook only once it has run.
+    fn execute_resolved(
+        &mut self,
+        processor: &mut Processor<()>,
+        memory: &[MemoryDelta<'_, Arm64<User>>],
+        resolved: &mut Resolved,
+        mutation_hook: &mut impl MemorySink<Arm64<User>>,
+    ) -> Result<(), Refusal> {
+        resolve_memory(memory, resolved)?;
         self.start_batch();
         let resident_pages = match self.loading {
             MemoryLoading::Full => None,
@@ -928,8 +956,8 @@ impl BehaviorSource for KvmSingleStepMachine {
         match resident_pages {
             None => {
                 // An empty batch has room for every state the guest can hold.
-                let Some(loaded) = self.load(processor, memory, &resolved) else {
-                    refuse(Refusal::MorePagesThanTheGuestHas {
+                let Some(loaded) = self.load(processor, memory, resolved) else {
+                    return Err(Refusal::MorePagesThanTheGuestHas {
                         pages: SLOT_PAGES + count_guest_pages(&resolved.mapped),
                         room: ARENA_PAGES,
                     });
@@ -937,18 +965,18 @@ impl BehaviorSource for KvmSingleStepMachine {
                 if self.loading != MemoryLoading::Full {
                     self.resident.memory = Held::Unknown;
                 }
-                self.run();
-                self.read_back(&loaded, memory, &resolved.values, processor, mutation_hook);
+                self.run()?;
+                self.read_back(&loaded, memory, &resolved.values, processor, mutation_hook)
             }
             Some(resident_pages) => {
-                let (loaded, mut held) = self.prepare(processor, memory, &resolved, resident_pages);
+                let (loaded, mut held) = self.prepare(processor, memory, resolved, resident_pages);
                 if self.loading == MemoryLoading::Checked {
                     assert!(
-                        self.check_guest_holds(memory, &resolved),
+                        self.check_guest_holds(memory, resolved),
                         "checked loading: the guest holds memory other than the state's"
                     );
                 }
-                self.run();
+                self.run()?;
                 // What the instruction changed is part of what the guest holds, which is known again once all is read
                 // back.
                 self.read_back(
@@ -962,12 +990,11 @@ impl BehaviorSource for KvmSingleStepMachine {
                         }
                         mutation_hook.on_memory_mutated(mutation);
                     },
-                );
+                )?;
                 self.resident.memory = held.map_or(Held::Unknown, Held::Known);
+                Ok(())
             }
         }
-        release_excess_room(&mut resolved);
-        self.resolved = resolved;
     }
 }
 

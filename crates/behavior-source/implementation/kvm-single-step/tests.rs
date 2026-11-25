@@ -1,9 +1,8 @@
 //! Every way a single step can end names its result: the decoder over every syndrome, words outside the ten
 //! instructions and addresses outside those a program can use on the live chip, and states the chip cannot run, which
-//! it refuses before it writes anything.
+//! it refuses before it writes the processor or the hook.
 
 use std::borrow::Cow;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use aarch64_cpu::registers::ESR_EL1;
 use aarch64_cpu::registers::ESR_EL1::EC::Value as Class;
@@ -17,7 +16,7 @@ use wcontainers_processor_architecture_arm64::{
 
 use crate::guest_layout::{HANDLER_HALF, linear};
 use crate::syndrome::{to_exception, to_syndrome};
-use crate::{HANDLER, KvmSingleStepMachine, MemoryLoading, WINDOW_BYTES};
+use crate::{ARENA, HANDLER, KvmSingleStepMachine, MemoryLoading, Refusal, WINDOW_BYTES};
 
 /// Class-specific bits that each name something in some class: none, a level 0 write fault, the most a BRK comment
 /// holds, and all of them.
@@ -144,7 +143,7 @@ fn words_outside_the_ten_instructions_end_in_a_named_result() {
                 MemoryDelta::ValueAssignment { bytes, .. } => Some(bytes.clone()),
                 MemoryDelta::PermissionAssignment { .. } => None,
             });
-        let after = chip.execute_single_instruction(before);
+        let after = to_after(&mut chip, before);
         println!(
             "{word:x?}: {:x?}, flags {:?}",
             after.processor.exception, after.processor.condition_flags
@@ -152,12 +151,23 @@ fn words_outside_the_ten_instructions_end_in_a_named_result() {
         assert!(after.processor.exception.is_some());
         assert_eq!(class(after.processor.exception), expected, "{word:x?}");
     }
-    let after = chip.execute_single_instruction(to_state(BREAKPOINT, DATA, every_bit));
+    let after = to_after(&mut chip, to_state(BREAKPOINT, DATA, every_bit));
     assert_eq!(after.processor.condition_flags, ConditionFlags::all());
     assert_eq!(
         after.processor.exception,
         Some(Exception::Breakpoint { comment: 0 })
     );
+}
+
+/// Gives the state after the chip ran the state before, which it must run.
+fn to_after(
+    chip: &mut KvmSingleStepMachine,
+    before: ExecutionState<'static, Arm64<User>>,
+) -> ExecutionState<'static, Arm64<User>> {
+    match chip.execute_single_instruction(before) {
+        Ok(after) => after,
+        Err(refusal) => panic!("the chip refused a state it runs: {refusal:?}"),
+    }
 }
 
 /// [STR X0, \[X1\]](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate--).
@@ -216,7 +226,7 @@ fn run_on(
     before: &ExecutionState<'static, Arm64<User>>,
 ) -> Outcome {
     let own = before.memory_mutations.len();
-    let after = chip.execute_single_instruction(before.clone());
+    let after = to_after(chip, before.clone());
     let changes = after.memory_mutations[own..]
         .iter()
         .map(|mutation| match mutation {
@@ -261,72 +271,130 @@ fn addresses_a_program_cannot_use_fault_at_level_0() {
     }
 }
 
-/// Returns the text of a panic.
-fn to_message(payload: &(dyn std::any::Any + Send)) -> String {
-    match (
-        payload.downcast_ref::<String>(),
-        payload.downcast_ref::<&str>(),
-    ) {
-        (Some(message), _) => message.clone(),
-        (None, Some(message)) => (*message).to_owned(),
-        (None, None) => String::new(),
-    }
-}
-
-/// A state the chip cannot run stops it before anything is written, saying which rule it breaks, and the states after
-/// it run as on a fresh machine in every loading mode.
-#[test]
-#[ignore = "needs KVM"]
-fn a_state_the_chip_cannot_run_is_refused_before_anything_is_written() {
-    let refused = [
-        (
-            to_store(
-                DATA,
-                vec![to_permission(DATA + 5..DATA + PAGE_SIZE, READ_WRITE)],
-            ),
-            "a chip gives permissions to whole pages",
-        ),
-        (
-            to_store(DATA, vec![to_permission(0..1 << 40, READ_WRITE)]),
-            "pages of the guest",
-        ),
-        (
-            to_store(
-                DATA,
-                vec![to_permission(0..Arm64::<User>::ADDRESSABLE.end, READ_WRITE)],
-            ),
-            "pages of the guest",
-        ),
-    ];
-    let afterwards = [
+/// The states the error tests run after each error, which must run as on a fresh machine.
+fn to_afterwards() -> [ExecutionState<'static, Arm64<User>>; 3] {
+    [
         to_store(DATA + 8, Vec::new()),
         to_state(LOAD, DATA, ConditionFlags::empty()),
         to_store(DATA + PAGE_SIZE, Vec::new()),
+    ]
+}
+
+/// Runs a state on a machine that ran a state before and was then changed by `break_machine`, and gives the error; it
+/// checks that the processor and the hook are untouched and that the states after it run as on a fresh machine.
+fn to_error(
+    loading: MemoryLoading,
+    break_machine: impl Fn(&mut KvmSingleStepMachine),
+    state: &ExecutionState<'static, Arm64<User>>,
+) -> Refusal {
+    let afterwards = to_afterwards();
+    let mut fresh = to_machine(loading);
+    let expected: Vec<_> = afterwards
+        .iter()
+        .map(|after| run_on(&mut fresh, after))
+        .collect();
+    let mut chip = to_machine(loading);
+    run_on(&mut chip, &afterwards[0]);
+    break_machine(&mut chip);
+    let mut processor = state.processor.clone();
+    let mut mutations: Vec<MemoryDelta<'static, Arm64<User>>> = Vec::new();
+    let Err(refusal) = chip.execute_single_instruction_in_place(
+        &mut processor,
+        &state.memory_mutations,
+        &mut mutations,
+    ) else {
+        panic!("{loading:?}: the chip ran a state it cannot");
+    };
+    assert!(
+        processor == state.processor,
+        "{loading:?} {refusal:?}: the processor was written"
+    );
+    assert!(
+        mutations.is_empty(),
+        "{loading:?} {refusal:?}: the hook received {} mutations",
+        mutations.len()
+    );
+    let observed: Vec<_> = afterwards
+        .iter()
+        .map(|after| run_on(&mut chip, after))
+        .collect();
+    assert_eq!(observed, expected, "{loading:?} after {refusal:?}");
+    refusal
+}
+
+/// A state the chip cannot run is refused before anything is written, saying which rule it breaks, and the states
+/// after it run as on a fresh machine in every loading mode.
+#[test]
+#[ignore = "needs KVM"]
+fn a_state_the_chip_cannot_run_is_refused_before_anything_is_written() {
+    let within_a_page = to_store(
+        DATA,
+        vec![to_permission(DATA + 5..DATA + PAGE_SIZE, READ_WRITE)],
+    );
+    let large = [
+        to_store(DATA, vec![to_permission(0..1 << 40, READ_WRITE)]),
+        to_store(
+            DATA,
+            vec![to_permission(0..Arm64::<User>::ADDRESSABLE.end, READ_WRITE)],
+        ),
     ];
     for loading in LOADINGS {
-        let mut fresh = to_machine(loading);
-        let expected: Vec<_> = afterwards
-            .iter()
-            .map(|state| run_on(&mut fresh, state))
-            .collect();
-        let mut chip = to_machine(loading);
-        for (state, rule) in &refused {
-            run_on(&mut chip, &afterwards[0]);
-            let Err(payload) = catch_unwind(AssertUnwindSafe(|| run_on(&mut chip, state))) else {
-                panic!("{loading:?}: the chip ran a state it cannot ({rule})");
-            };
-            let message = to_message(&*payload);
+        let refusal = to_error(loading, |_| {}, &within_a_page);
+        assert!(
+            matches!(refusal, Refusal::PermissionWithinAPage(_)),
+            "{loading:?}: {refusal:?}"
+        );
+        for state in &large {
+            let refusal = to_error(loading, |_| {}, state);
             assert!(
-                message.starts_with("the state is refused before anything is written")
-                    && message.contains(rule),
-                "{loading:?}: {message}"
+                matches!(refusal, Refusal::MorePagesThanTheGuestHas { .. }),
+                "{loading:?}: {refusal:?}"
             );
-            let observed: Vec<_> = afterwards
-                .iter()
-                .map(|state| run_on(&mut chip, state))
-                .collect();
-            assert_eq!(observed, expected, "{loading:?} after {rule}");
         }
+    }
+}
+
+/// PSTATE with EL2h, which KVM refuses for a CPU without nested virtualization.
+const EL2_PSTATE: u64 = 0b1001;
+
+/// [MOVZ X1, #0xFFFF, LSL #48](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MOVZ--Move-wide-with-zero-), the first address of the handler's half, then [STR XZR, \[X1\]](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate--), a store to guest-physical 0, where no device is, then a branch to itself.
+const DEVICE_STORE: [u32; 3] = [0xD2FF_FFE1, 0xF900_003F, 0x1400_0000];
+
+/// A KVM call that fails, and a slot the handler ends other than by an exception from EL0, are errors that leave the
+/// processor and the hook untouched, and the states after them run as on a fresh machine in every loading mode.
+#[test]
+#[ignore = "needs KVM"]
+fn a_failed_run_is_an_error_and_the_next_state_runs_on_a_new_machine() {
+    let state = to_store(DATA + 16, Vec::new());
+    // A page past the arena, which the guest never touches, holds the handler's code that stores to no device.
+    let device_store = ARENA.end;
+    for loading in LOADINGS {
+        let refused_register = |chip: &mut KvmSingleStepMachine| chip.entry_pstate = EL2_PSTATE;
+        let refusal = to_error(loading, refused_register, &state);
+        assert!(
+            matches!(refusal, Refusal::KvmFailed(_)),
+            "{loading:?}: {refusal:?}"
+        );
+        let undefined_entry = |chip: &mut KvmSingleStepMachine| chip.entry = linear(ARENA.end);
+        let refusal = to_error(loading, undefined_entry, &state);
+        assert!(
+            matches!(refusal, Refusal::UnexpectedException { .. }),
+            "{loading:?}: {refusal:?}"
+        );
+        let exit_for_a_device = |chip: &mut KvmSingleStepMachine| {
+            let code: Vec<u8> = DEVICE_STORE
+                .iter()
+                .flat_map(|word| word.to_le_bytes())
+                .collect();
+            chip.write_bytes(device_store + PAGE_SIZE, &code);
+            chip.entry = linear(device_store + PAGE_SIZE);
+        };
+        let refusal = to_error(loading, exit_for_a_device, &state);
+        assert!(
+            matches!(refusal, Refusal::KvmFailed(_)),
+            "{loading:?}: {refusal:?}"
+        );
+        println!("{loading:?}: {refusal:?}");
     }
 }
 
@@ -487,7 +555,7 @@ fn resolving_agrees_with_applying_each_change_in_order() {
             }
         }
         if let Err(refusal) = crate::resolve_memory(&changes, &mut resolved) {
-            panic!("seed {seed}: {refusal}");
+            panic!("seed {seed}: {refusal:?}");
         }
         let mut resolved_permissions = [PagePermission::Unmapped; MODEL_PAGES as usize];
         for range in &resolved.mapped {
@@ -515,7 +583,7 @@ fn resolving_agrees_with_applying_each_change_in_order() {
         .map(|page| to_permission(page * PAGE_SIZE..(page + 1) * PAGE_SIZE, READ_WRITE))
         .collect();
     if let Err(refusal) = crate::resolve_memory(&descending, &mut resolved) {
-        panic!("{refusal}");
+        panic!("{refusal:?}");
     }
     assert_eq!(resolved.mapped.len(), 1_000_000);
 }
