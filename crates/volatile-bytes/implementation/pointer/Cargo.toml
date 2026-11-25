@@ -1,0 +1,28 @@
+[package]
+name = "wcontainers-volatile-bytes-pointer"
+description = "Bytes at a pointer for a length that another party may change at any moment, reached only by the C library's memcpy."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
+wcontainers-volatile-bytes = { path = "../.." }
+# The C library's memcpy, which every copy calls.
+libc = { version = "0.2.191", default-features = false }
+
+[dev-dependencies]
+wcontainers-volatile-bytes-conformance = { path = "../../conformance" }
+
+# A low-level primitive: it denies unsafe code, so that each of its 4 uses is marked (README.md).
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
