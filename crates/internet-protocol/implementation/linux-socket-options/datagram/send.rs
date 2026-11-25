@@ -13,11 +13,12 @@ use wcontainers_internet_protocol::{
     RouteSelectors, SourceAddressCheck, TemporaryAddressPreference, TransmitClock,
     TransmitTimeMode,
 };
+use wcontainers_linux_socket_options::LinuxSocketOptions;
 use zerocopy::{Immutable, IntoBytes};
 
 use crate::datagram::addresses::{Ipv4PacketInformation, Ipv6PacketInformation, in6_addr};
 use crate::datagram::sticky::{Slot, Sticky};
-use crate::{set_option, uapi_mirror};
+use crate::{LINUX, uapi_mirror};
 
 uapi_mirror! {
     /// `struct so_timestamping`, as `SO_TIMESTAMPING` takes it.
@@ -455,7 +456,7 @@ fn lease_flow_label(
         flr_linger: u16::MIN,
         __flr_pad: u32::MIN,
     };
-    set_option(fd, uapi::SOL_IPV6, uapi::IPV6_FLOWLABEL_MGR, &request)
+    LINUX.set_ipv6_flowlabel_mgr(fd, &request)
 }
 
 /// The unspecified address of a destination's family, for binding before a connect or send.

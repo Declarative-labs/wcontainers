@@ -1,6 +1,5 @@
 //! Multicast group and anycast address memberships of a socket.
 
-use core::mem::{offset_of, size_of};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::os::fd::{AsFd, BorrowedFd};
 
@@ -11,10 +10,28 @@ use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     AnycastAddress, Membership, MulticastGroup, MulticastMembership, SourceFilter,
 };
-use zerocopy::IntoBytes;
+use wcontainers_linux_socket_options::{GroupFilter, LinuxSocketOptions};
 
 use crate::datagram::addresses::{StorageBytes, in6_addr, storage, storage_bytes};
-use crate::{io_host_error, set_bytes, set_option};
+use crate::{LINUX, io_host_error};
+
+/// Joins a group at the level of its IP version, `MCAST_JOIN_GROUP` of `IPPROTO_IP` or `IPPROTO_IPV6`.
+fn join_group(fd: BorrowedFd<'_>, level: u32, request: &uapi::group_req) -> Result<(), HostError> {
+    if level == uapi::SOL_IPV6 {
+        LINUX.set_ipv6_mcast_join_group(fd, request)
+    } else {
+        LINUX.set_ip_mcast_join_group(fd, request)
+    }
+}
+
+/// Leaves a group at the level of its IP version, `MCAST_LEAVE_GROUP`.
+fn leave_group(fd: BorrowedFd<'_>, level: u32, request: &uapi::group_req) -> Result<(), HostError> {
+    if level == uapi::SOL_IPV6 {
+        LINUX.set_ipv6_mcast_leave_group(fd, request)
+    } else {
+        LINUX.set_ip_mcast_leave_group(fd, request)
+    }
+}
 
 /// The anycast addresses a socket joined, which Linux counts per join and cannot be asked back.
 #[derive(Default)]
@@ -32,11 +49,11 @@ impl AnycastMemberships {
         };
         match anycast.membership {
             Membership::Joined if !joined => {
-                set_option(fd, uapi::SOL_IPV6, uapi::IPV6_JOIN_ANYCAST, &request)?;
+                LINUX.set_ipv6_join_anycast(fd, &request)?;
                 self.0.push(key);
             }
             Membership::Left if joined => {
-                set_option(fd, uapi::SOL_IPV6, uapi::IPV6_LEAVE_ANYCAST, &request)?;
+                LINUX.set_ipv6_leave_anycast(fd, &request)?;
                 self.0.retain(|joined| *joined != key);
             }
             _ => {}
@@ -57,12 +74,12 @@ fn chosen_interface(level: u32, group: IpAddr) -> Result<u32, HostError> {
         gr_interface: u32::MIN,
         gr_group: storage(group),
     };
-    set_option(probe.as_fd(), level, uapi::MCAST_JOIN_GROUP, &request)?;
+    join_group(probe.as_fd(), level, &request)?;
     let interfaces =
         nix::net::if_::if_nameindex().map_err(|error| HostError::Errno(error as i32))?;
     for interface in &interfaces {
         request.gr_interface = interface.index();
-        if set_option(probe.as_fd(), level, uapi::MCAST_LEAVE_GROUP, &request).is_ok() {
+        if leave_group(probe.as_fd(), level, &request).is_ok() {
             return Ok(interface.index());
         }
     }
@@ -85,7 +102,7 @@ pub fn set_multicast_group<A: Copy>(
     let filter = match setting.membership {
         MulticastMembership::Left => {
             request.gr_interface = setting.interface.map_or(u32::MIN, |index| index.0.get());
-            return match set_option(fd, level, uapi::MCAST_LEAVE_GROUP, &request) {
+            return match leave_group(fd, level, &request) {
                 Err(HostError::Errno(libc::EADDRNOTAVAIL)) => Ok(()),
                 other => other,
             };
@@ -97,7 +114,7 @@ pub fn set_multicast_group<A: Copy>(
         None => chosen_interface(level, group)?,
     };
     request.gr_interface = interface;
-    match set_option(fd, level, uapi::MCAST_JOIN_GROUP, &request) {
+    match join_group(fd, level, &request) {
         Ok(()) | Err(HostError::Errno(libc::EADDRINUSE)) => {}
         Err(error) => return Err(error),
     }
@@ -105,25 +122,19 @@ pub fn set_multicast_group<A: Copy>(
         SourceFilter::Include(sources) => (uapi::MCAST_INCLUDE, sources.as_slice()),
         SourceFilter::Exclude(sources) => (uapi::MCAST_EXCLUDE, sources),
     };
-    type Header = uapi::group_filter__bindgen_ty_1__bindgen_ty_2;
-    let start = offset_of!(Header, gf_slist_flex);
-    let room = size_of::<StorageBytes>();
-    let length = (start + sources.len() * room).max(size_of::<uapi::group_filter>());
-    let mut bytes = vec![u8::MIN; length];
-    let mut put = |at: usize, value: &[u8]| bytes[at..at + value.len()].copy_from_slice(value);
-    put(offset_of!(Header, gf_interface), &interface.to_ne_bytes());
-    put(
-        offset_of!(Header, gf_group),
-        storage_bytes(SocketAddr::new(group, u16::MIN)).as_bytes(),
-    );
-    put(offset_of!(Header, gf_fmode), &mode.to_ne_bytes());
-    put(
-        offset_of!(Header, gf_numsrc),
-        &(sources.len() as u32).to_ne_bytes(),
-    );
-    for (index, source) in sources.iter().enumerate() {
-        let source = storage_bytes(SocketAddr::new(address(source), u16::MIN));
-        put(start + index * room, source.as_bytes());
+    let sources: Vec<StorageBytes> = sources
+        .iter()
+        .map(|source| storage_bytes(SocketAddr::new(address(source), u16::MIN)))
+        .collect();
+    let filter = GroupFilter {
+        interface,
+        group: storage_bytes(SocketAddr::new(group, u16::MIN)),
+        mode,
+        sources: &sources,
+    };
+    if level == uapi::SOL_IPV6 {
+        LINUX.set_ipv6_mcast_msfilter(fd, &filter)
+    } else {
+        LINUX.set_ip_mcast_msfilter(fd, &filter)
     }
-    set_bytes(fd, level, uapi::MCAST_MSFILTER, &bytes)
 }

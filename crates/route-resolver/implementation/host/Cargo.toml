@@ -17,6 +17,8 @@ wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-route-resolver = { path = "../.." }
 wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
+# Linux's socket option calls for the unicast interface, which no vetted crate wraps.
+wcontainers-linux-socket-options = { path = "../../../linux-socket-options" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 etherparse.workspace = true

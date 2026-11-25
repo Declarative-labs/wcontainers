@@ -2,18 +2,18 @@
 
 use std::collections::VecDeque;
 use std::io::IoSlice;
+use std::mem::size_of;
 use std::net::SocketAddr;
 use std::os::fd::BorrowedFd;
 
 use libc::c_int;
-use linux_raw_sys::net as uapi;
 use socket2::{MsgHdr, SockAddr};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     BufferSizes, ByteCount, MaximumTransmissionUnit, Received, Report, SendError, TransmitEvent,
     TransmitReport, TransmitReportKey, TransmitReportRequest, TransmitTimeError,
 };
-use zerocopy::IntoBytes;
+use wcontainers_linux_socket_options::LinuxSocketOptions;
 
 use crate::datagram::receive::{self, Ancillary, ControlBuffer};
 use crate::{Shortfalls, io_host_error, sock};
@@ -353,9 +353,11 @@ pub fn error_entry(
 /// One count of the socket's memory information, `SO_MEMINFO`, by its `SK_MEMINFO_*` index.
 fn memory_information(fd: BorrowedFd<'_>, count: c_int) -> Result<u32, HostError> {
     const COUNTS: usize = libc::SK_MEMINFO_DROPS as usize + 1;
-    let mut words = [u32::MIN; COUNTS];
-    crate::get_bytes(fd, uapi::SOL_SOCKET, uapi::SO_MEMINFO, words.as_mut_bytes())?;
-    Ok(words[count as usize])
+    let counts = crate::LINUX.get_so_meminfo::<{ COUNTS * size_of::<u32>() }>(fd)?;
+    let at = count as usize * size_of::<u32>();
+    Ok(counts.bytes[at..at + size_of::<u32>()]
+        .try_into()
+        .map_or(u32::MIN, u32::from_ne_bytes))
 }
 
 /// Why [`unsent_bytes`] and [`buffer_sizes`] cannot fail on a socket the caller holds open.

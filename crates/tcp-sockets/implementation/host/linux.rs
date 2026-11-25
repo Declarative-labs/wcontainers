@@ -40,11 +40,12 @@ use wcontainers_internet_protocol_linux_socket_options::errno::errno_of;
 use wcontainers_internet_protocol_linux_socket_options::icmp_error::write_icmp_error;
 use wcontainers_internet_protocol_linux_socket_options::readiness::Watched;
 use wcontainers_internet_protocol_linux_socket_options::{
-    self as options, ControlBuffer, bind, family_of, get_int, host_error, open_socket, peer_for,
-    set_flag, set_int, set_option,
+    self as options, ControlBuffer, LINUX, bind, family_of, get_int, host_error, open_socket,
+    peer_for, set_flag, set_int,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno as KernelErrno;
+use wcontainers_linux_socket_options::{KEY_QUERY_LENGTH, LinuxSocketOptions};
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_tcp_sockets::authentication::{
@@ -72,7 +73,7 @@ use wcontainers_tcp_sockets::{
     TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
-use zerocopy::{FromZeros, IntoBytes};
+use zerocopy::{FromBytes, FromZeros, IntoBytes};
 
 mod state;
 
@@ -103,6 +104,9 @@ const DEFAULT_VRF_INDEX: c_int = 0;
 const SAVED_SYNCHRONIZE_ROOM: usize = etherparse::Ethernet2Header::LEN
     + etherparse::Ipv4Header::MAX_LEN
     + etherparse::TcpHeader::MAX_LEN;
+
+/// The room `TCP_SAVED_SYN` is read with when the first is too small: the longest headers a 16-bit length allows.
+const LARGEST_SAVED_SYNCHRONIZE: usize = u16::MAX as usize;
 
 /// `TCP_SAVE_SYN`'s value for saving no headers, which Linux does not name.
 ///
@@ -448,13 +452,6 @@ fn network_header_start(saved: &[u8], local: SocketAddr, peer: SocketAddr) -> Op
 const PACKET_OPTIONS_ROOM: usize =
     size_of::<libc::cmsghdr>() + size_of::<uapi::in6_pktinfo>() + size_of::<usize>();
 
-/// Control message room aligned as the messages' headers are.
-#[repr(C)]
-struct PacketOptions {
-    _aligned: [libc::cmsghdr; usize::MIN],
-    bytes: [u8; PACKET_OPTIONS_ROOM],
-}
-
 /// Gives the host error of a failed socket2 call.
 fn io_host_error(error: std::io::Error) -> HostError {
     host_error(Errno::from_io_error(&error).unwrap_or(Errno::IO))
@@ -582,7 +579,7 @@ fn hold_flow_label(
         uapi::IPV6_FL_S_PROCESS,
         uapi::IPV6_FL_F_CREATE,
     );
-    set_option(socket, uapi::SOL_IPV6, uapi::IPV6_FLOWLABEL_MGR, &request)?;
+    LINUX.set_ipv6_flowlabel_mgr(socket, &request)?;
     set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_FLOWINFO_SEND, true)
 }
 
@@ -636,7 +633,7 @@ fn set_md5_key(
         .ok_or_else(invalid)?
         .copy_from_slice(key);
     request.tcpm_keylen = key.len() as u16;
-    match set_option(socket, uapi::SOL_TCP, uapi::TCP_MD5SIG_EXT, &request) {
+    match LINUX.set_tcp_md5sig_ext(socket, &request) {
         Err(HostError::Errno(libc::ENOENT)) if key.is_empty() => Ok(()),
         other => other,
     }
@@ -693,6 +690,13 @@ options::uapi_mirror! {
         pkt_good: u64,
         pkt_bad: u64,
     }
+}
+
+/// The bytes of the `TCP_AO_GET_KEYS` query for the one key of the name.
+fn key_query_bytes(name: &AuthenticationKeyName) -> [u8; KEY_QUERY_LENGTH] {
+    let mut bytes = [u8::MIN; KEY_QUERY_LENGTH];
+    bytes.copy_from_slice(key_query(name).as_bytes());
+    bytes
 }
 
 /// Asks `TCP_AO_GET_KEYS` for the one key of the name.
@@ -779,7 +783,7 @@ fn add_authentication_key(
     };
     request.set_set_current(u32::from(current));
     request.set_set_rnext(u32::from(next));
-    match set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_ADD_KEY, &request) {
+    match LINUX.set_tcp_ao_add_key(socket, &request) {
         Err(HostError::Errno(libc::EEXIST))
             if holds_authentication_key(socket, &name, &request) =>
         {
@@ -804,15 +808,13 @@ fn holds_authentication_key(
     name: &AuthenticationKeyName,
     request: &uapi::tcp_ao_add,
 ) -> bool {
-    let mut held = key_query(name);
-    options::get_bytes(
-        socket,
-        uapi::SOL_TCP,
-        uapi::TCP_AO_GET_KEYS,
-        held.as_mut_bytes(),
-    )
-    .is_ok()
-        && held.nkeys == ONE_KEY
+    let Ok(answer) = LINUX.get_tcp_ao_get_keys(socket, &key_query_bytes(name)) else {
+        return false;
+    };
+    let Ok(held) = KeyQuery::read_from_bytes(&answer.bytes) else {
+        return false;
+    };
+    held.nkeys == ONE_KEY
         && held.alg_name == request.alg_name
         && held.maclen == request.maclen
         && held.keyflags == request.keyflags
@@ -851,7 +853,7 @@ fn remove_authentication_key(
         request.rnext = key.0;
     }
     request.set_del_async(u32::from(asynchronously));
-    match set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_DEL_KEY, &request) {
+    match LINUX.set_tcp_ao_del_key(socket, &request) {
         Err(HostError::Errno(libc::ENOENT)) => {
             if removal.current.is_none() && removal.requested_next.is_none() {
                 return Ok(());
@@ -894,7 +896,7 @@ fn change_authentication_options(
     options.set_set_rnext(u32::from(false));
     options.set_set_counters(u32::from(false));
     change(&mut options);
-    set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_INFO, &options)
+    LINUX.set_tcp_ao_info(socket, &options)
 }
 
 fn set_authentication_options(
@@ -1184,7 +1186,7 @@ impl HostTcpSockets {
                 if locks.receive == BufferTuning::Locked {
                     value |= uapi::SOCK_RCVBUF_LOCK;
                 }
-                set_option(socket, uapi::SOL_SOCKET, uapi::SO_BUF_LOCK, &value)
+                LINUX.set_so_buf_lock(socket, value)
             }
             TcpSetting::ReceiveLowWater(bytes) => {
                 set_int(socket, uapi::SOL_SOCKET, uapi::SO_RCVLOWAT, count(bytes.0)?)
@@ -1353,9 +1355,7 @@ impl HostTcpSockets {
                     TcpRepairQueue::Send => uapi::TCP_SEND_QUEUE,
                 } as c_int,
             ),
-            TcpSetting::QueueSequence(sequence) => {
-                set_option(socket, uapi::SOL_TCP, uapi::TCP_QUEUE_SEQ, &sequence.0)
-            }
+            TcpSetting::QueueSequence(sequence) => LINUX.set_tcp_queue_seq(socket, sequence.0),
             TcpSetting::RepairOptions(repair) => state::set_repair_options(socket, repair),
             TcpSetting::RepairWindow(ref window) => state::set_repair_window(socket, window),
         }
@@ -1368,14 +1368,17 @@ impl HostTcpSockets {
         room: &'b mut [u8],
         large: &'b mut Vec<u8>,
     ) -> Result<&'b [u8], HostError> {
-        match options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_SAVED_SYN, room) {
-            Ok(length) => Ok(&room[..length]),
-            // Too small a buffer: the headers stay saved and can be read with room for any.
+        match LINUX.get_tcp_saved_syn::<SAVED_SYNCHRONIZE_ROOM>(socket) {
+            Ok(saved) => {
+                room[..saved.length].copy_from_slice(&saved.bytes[..saved.length]);
+                Ok(&room[..saved.length])
+            }
+            // Too small a room: the headers stay saved and can be read with room for any.
             Err(HostError::Errno(libc::EINVAL)) => {
                 self.shortfalls.count(LONG_SAVED_SYNCHRONIZE);
-                *large = vec![u8::MIN; usize::from(u16::MAX)];
-                let length = options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_SAVED_SYN, large)?;
-                Ok(&large[..length])
+                let saved = LINUX.get_tcp_saved_syn::<LARGEST_SAVED_SYNCHRONIZE>(socket)?;
+                *large = saved.bytes[..saved.length].to_vec();
+                Ok(&large[..])
             }
             Err(error) => Err(error),
         }
@@ -1390,30 +1393,16 @@ impl HostTcpSockets {
         family: IpVersion,
         local: IpAddr,
     ) -> Option<InterfaceIndex> {
-        let mut control = PacketOptions {
-            _aligned: [],
-            bytes: [u8::MIN; PACKET_OPTIONS_ROOM],
-        };
-        let length = match local {
+        let control = match local {
             IpAddr::V4(_) => {
                 self.shortfalls.count(ARRIVAL_INTERFACE_OF_THE_HANDSHAKE);
-                options::get_bytes(
-                    socket,
-                    uapi::SOL_IP,
-                    uapi::IP_PKTOPTIONS,
-                    &mut control.bytes,
-                )
+                LINUX.get_ip_pktoptions::<PACKET_OPTIONS_ROOM>(socket)
             }
-            IpAddr::V6(_) => options::get_bytes(
-                socket,
-                uapi::SOL_IPV6,
-                uapi::IPV6_2292PKTOPTIONS,
-                &mut control.bytes,
-            ),
+            IpAddr::V6(_) => LINUX.get_ipv6_2292pktoptions::<PACKET_OPTIONS_ROOM>(socket),
         }
         .ok()?;
         match_packet_information(socket, family).ok()?;
-        Ancillary::parse(&control.bytes[..length]).interface()
+        Ancillary::parse(&control.bytes[..control.length]).interface()
     }
 
     fn synchronize_fields(
@@ -1463,16 +1452,8 @@ impl HostTcpSockets {
                 software: None,
                 hardware: None,
             },
-            mark: PacketMark(options::get_option(
-                socket,
-                uapi::SOL_SOCKET,
-                uapi::SO_MARK,
-            )?),
-            priority: PacketPriority(options::get_option(
-                socket,
-                uapi::SOL_SOCKET,
-                uapi::SO_PRIORITY,
-            )?),
+            mark: PacketMark(SockRef::from(&socket).mark().map_err(io_host_error)?),
+            priority: PacketPriority(SockRef::from(&socket).priority().map_err(io_host_error)?),
             drops_since_previous: DropCount(u32::MIN),
         })
     }
@@ -1638,18 +1619,15 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
             TcpListenerSetting::Backlog(backlog) => SockRef::from(&socket)
                 .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))
                 .map_err(io_host_error),
-            TcpListenerSetting::FastOpenQueue(queue) => set_option(
-                socket,
-                uapi::SOL_TCP,
-                uapi::TCP_FASTOPEN,
-                &queue.map_or(u32::MIN, NonZeroU32::get),
-            ),
+            TcpListenerSetting::FastOpenQueue(queue) => {
+                LINUX.set_tcp_fastopen(socket, queue.map_or(u32::MIN, NonZeroU32::get))
+            }
             TcpListenerSetting::FastOpenKeys(keys) => {
                 let mut bytes = keys.primary.0.to_vec();
                 if let Some(backup) = keys.backup {
                     bytes.extend_from_slice(&backup.0);
                 }
-                options::set_bytes(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_KEY, &bytes)
+                LINUX.set_tcp_fastopen_key(socket, &bytes)
             }
             // Every TCP listener saves its SYNs' headers from the link header, which accept gives and measures the frame
             // by; the setting decides which of them the accepted connections keep to be taken.
@@ -1692,7 +1670,7 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                     u32::MIN,
                     uapi::IPV6_FL_F_REFLECT,
                 );
-                match set_option(socket, uapi::SOL_IPV6, uapi::IPV6_FLOWLABEL_MGR, &request) {
+                match LINUX.set_ipv6_flowlabel_mgr(socket, &request) {
                     // Turning off a reflection that is off.
                     Err(HostError::Errno(libc::ESRCH)) if !on => Ok(()),
                     other => other,
@@ -2376,12 +2354,12 @@ impl HostTcpSockets {
         };
         let value = reading.value.0 & !TIMESTAMP_IN_MICROSECONDS | unit;
         if !microseconds {
-            return set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value);
+            return LINUX.set_tcp_timestamp(socket, value);
         }
-        let before: u32 = options::get_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP)?;
-        set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value)?;
+        let before = LINUX.get_tcp_timestamp(socket)?;
+        LINUX.set_tcp_timestamp(socket, value)?;
         if !state::microsecond_timestamps(socket)? {
-            set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &before)?;
+            LINUX.set_tcp_timestamp(socket, before)?;
             return Err(self.shortfalls.refuse(NO_MICROSECOND_CLOCK));
         }
         Ok(())

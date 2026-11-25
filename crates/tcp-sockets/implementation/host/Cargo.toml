@@ -35,6 +35,8 @@ nix = { version = "0.31.3", default-features = false, features = ["net"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioctl", "net", "netlink", "no_std"] }
 libc = "0.2.191"
+# Linux's socket option and ioctl calls for the options and requests no vetted crate wraps.
+wcontainers-linux-socket-options = { path = "../../../linux-socket-options" }
 # The attributes of a transmit report's statistics.
 netlink-packet-core = "0.9.0"
 # The uapi structures read from and written as bytes.
@@ -54,6 +56,5 @@ name = "allocations"
 path = "tests/allocations.rs"
 harness = false
 
-# TODO: remove this crate's 1 use of unsafe, then replace this table with `[lints]` `workspace = true`.
-[lints.rust]
-unsafe_op_in_unsafe_fn = "deny"
+[lints]
+workspace = true

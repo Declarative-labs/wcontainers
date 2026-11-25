@@ -20,6 +20,7 @@ use wcontainers_internet_protocol::{
 };
 use wcontainers_internet_protocol_linux_socket_options as shared;
 use wcontainers_kernel::UserId;
+use wcontainers_linux_socket_options::LinuxSocketOptions;
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_udp_sockets::{
@@ -576,9 +577,10 @@ impl UdpSockets for HostUdpSockets {
 
     fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
         // SO_MEMINFO gives what udp(7)'s SIOCOUTQ does, sk_wmem_alloc, and copies only the leading counts asked for.
-        let mut counts = [0_u8; size_of::<u32>() * (UNSENT_MEMINFO_INDEX + 1)];
-        shared::get_bytes(socket.fd(), uapi::SOL_SOCKET, uapi::SO_MEMINFO, &mut counts)?;
+        let counts = shared::LINUX
+            .get_so_meminfo::<{ size_of::<u32>() * (UNSENT_MEMINFO_INDEX + 1) }>(socket.fd())?;
         let unsent = counts
+            .bytes
             .last_chunk::<{ size_of::<u32>() }>()
             .copied()
             .map_or(u32::MIN, u32::from_ne_bytes);

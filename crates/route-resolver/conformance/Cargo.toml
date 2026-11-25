@@ -18,10 +18,14 @@ libc = "0.2.191"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# Linux's socket option calls for the options the checks set that no vetted crate wraps.
+wcontainers-linux-socket-options = { path = "../../linux-socket-options" }
+wcontainers-linux-socket-options-direct = { path = "../../linux-socket-options/implementation/direct" }
+# Binds a check's socket to a device.
+socket2 = { version = "0.6.5", features = ["all"] }
 rustix = { version = "1.1.6", features = ["net"] }
 # The network namespace of each check and the index of a link by its name.
 nix = { version = "0.31.3", default-features = false, features = ["net", "sched"] }
 
-# TODO: remove this crate's 2 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
-[lints.rust]
-unsafe_op_in_unsafe_fn = "deny"
+[lints]
+workspace = true

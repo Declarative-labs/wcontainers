@@ -7,7 +7,7 @@ use std::os::fd::BorrowedFd;
 use libc::c_int;
 use linux_raw_sys::net as uapi;
 use wcontainers_abi::HostError;
-use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
+use zerocopy::{FromBytes, FromZeros, IntoBytes};
 
 use crate::{io_host_error, sock, uapi_mirror};
 
@@ -53,13 +53,8 @@ uapi_mirror! {
     }
 }
 
-/// The bytes of a `__kernel_sockaddr_storage`, aligned as it is, to a pointer.
-#[repr(C)]
-#[derive(Clone, Copy, FromBytes, IntoBytes, KnownLayout, Immutable)]
-pub struct StorageBytes {
-    _aligned: [usize; 0],
-    pub bytes: [u8; size_of::<uapi::__kernel_sockaddr_storage>()],
-}
+/// The bytes of a `__kernel_sockaddr_storage`, aligned as it is, as Linux's socket option calls take them.
+pub use wcontainers_linux_socket_options::SocketStorage as StorageBytes;
 
 const _: () = assert!(align_of::<StorageBytes>() == align_of::<uapi::__kernel_sockaddr_storage>());
 
