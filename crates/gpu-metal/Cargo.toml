@@ -1,0 +1,28 @@
+[package]
+name = "wcontainers-gpu-metal"
+description = "The wcontainers graphics interface drawn with Metal, through the safe Metal trait of wcontainers-metal."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-gpu = { path = "../gpu" }
+wcontainers-metal = { path = "../metal" }
+naga.workspace = true
+
+[dev-dependencies]
+naga = { workspace = true, features = ["wgsl-in"] }
+wcontainers-gpu-test = { path = "../gpu-test" }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libtest-mimic = "0.8.1"
+wcontainers-metal-direct = { path = "../metal/implementation/direct" }
+
+[[test]]
+name = "present"
+harness = false
+
+[lints]
+workspace = true
