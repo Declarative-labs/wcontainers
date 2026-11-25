@@ -403,7 +403,18 @@ fn build_flagged<G: GuestTest>(
     flatten(&elf, &own, stem)
 }
 
-/// Build a Rust program with its standard library, statically, linked with `script`.
+/// The function a Rust program starts at, which the C library calls as `main`.
+const RUST_ENTRY: &str = "entry";
+/// The crate name a Rust program is built under, as the library its program links.
+const RUST_CRATE: &str = "program";
+/// The root of the program that links that library and holds nothing else.
+const RUST_ROOT: &str = "#![no_main]\nextern crate program;\n";
+/// The crate name the root is built under.
+const RUST_ROOT_CRATE: &str = "start";
+
+/// Build a Rust program with its standard library, statically, linked with `script`. The source is built as
+/// a library, whose public `entry` keeps a global symbol, and a root that links it is linked with that symbol
+/// as `main`, so the program needs no unmangled name of its own.
 fn rust<G: GuestTest>(
     source: &Path,
     elf: &Path,
@@ -412,11 +423,34 @@ fn rust<G: GuestTest>(
     position: Position,
 ) {
     let level = optimisation.trim_start_matches("-O");
-    let status = Command::new("rustc")
-        .args(["--edition", "2024", "--target", G::REFERENCE.rust_target])
-        .args(["-C", &format!("opt-level={level}")])
-        .args(["-C", "panic=unwind"])
-        .args(position.rust_flags())
+    let rustc = || {
+        let mut command = Command::new("rustc");
+        command
+            .args(["--edition", "2024", "--target", G::REFERENCE.rust_target])
+            .args(["-C", &format!("opt-level={level}")])
+            .args(["-C", "panic=unwind"])
+            .args(position.rust_flags());
+        command
+    };
+    let run = |command: &mut Command| {
+        let status = command.status().expect("run rustc (from the Nix shell)");
+        assert!(status.success(), "rustc {} failed", source.display());
+    };
+    // rustc takes a library only by a file name of this shape.
+    let stem = elf.file_stem().unwrap().to_str().unwrap();
+    let library = elf.with_file_name(format!("lib{stem}.rlib"));
+    run(rustc()
+        .args(["--crate-type", "rlib", "--crate-name", RUST_CRATE])
+        .arg(OUTPUT_FLAG)
+        .arg(&library)
+        .arg(source));
+    let entry = library_symbol(&library, RUST_CRATE, RUST_ENTRY);
+    let root = elf.with_extension("rs");
+    std::fs::write(&root, RUST_ROOT).unwrap();
+    run(rustc()
+        .args(["--crate-type", "bin", "--crate-name", RUST_ROOT_CRATE])
+        .arg("--extern")
+        .arg(format!("{RUST_CRATE}={}", library.display()))
         .args(["-C", "linker-flavor=ld.lld", "-C", "linker=rust-lld"])
         .args([
             "-C",
@@ -425,13 +459,39 @@ fn rust<G: GuestTest>(
             "link-arg=--build-id=none",
         ])
         .arg("-C")
+        .arg(format!("link-arg=--defsym={MAIN}={entry}"))
+        .arg("-C")
         .arg(format!("link-arg=-T{}", script.display()))
         .arg(OUTPUT_FLAG)
         .arg(elf)
-        .arg(source)
-        .status()
-        .expect("run rustc (from the Nix shell)");
-    assert!(status.success(), "rustc {} failed", source.display());
+        .arg(&root));
+}
+
+/// The global symbol of the function `name` at the root of the Rust library `crate_name` built at `library`,
+/// in Rust's own mangling (https://doc.rust-lang.org/rustc/symbol-mangling/v0.html): a path ending in the
+/// crate's name and then the function's, each after its length.
+fn library_symbol(library: &Path, crate_name: &str, name: &str) -> String {
+    use object::read::archive::ArchiveFile;
+    use object::{Object, ObjectSymbol};
+    let ending = format!("{}{crate_name}{}{name}", crate_name.len(), name.len());
+    let bytes = std::fs::read(library).unwrap();
+    let archive = ArchiveFile::parse(&*bytes).expect("an rlib");
+    let mut found = Vec::new();
+    for member in archive.members() {
+        let member = member.unwrap();
+        // The library's metadata is a member too, and is not an object file.
+        let Ok(file) = object::File::parse(member.data(&*bytes).unwrap()) else {
+            continue;
+        };
+        found.extend(
+            file.symbols()
+                .filter(|s| s.is_global() && s.is_definition())
+                .filter_map(|s| s.name().ok().map(String::from))
+                .filter(|s| s.starts_with("_R") && s.ends_with(&ending)),
+        );
+    }
+    assert_eq!(found.len(), 1, "one {name} in {}: {found:?}", library.display());
+    found.remove(0)
 }
 
 /// The symbol of a program's main function.
