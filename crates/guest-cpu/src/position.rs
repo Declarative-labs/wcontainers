@@ -27,11 +27,18 @@ pub enum InsideCall {
     Unreachable,
     /// A jump's first miss: the inside makes the target its last target, then the jump goes on.
     LastTarget,
+    /// A copied `fldcw` unmasked an x87 exception: the inside enters the unmasked x87 mode, or raises the pending
+    /// exception as the meaning does (x86).
+    X87Control,
+    /// After the instruction of a stepping piece: the meaning's debug trap of a single step (x86's process way).
+    Step,
+    /// The replay check found the thread's stop word equal to its count: the thread stops before the instruction.
+    Stop,
 }
 
 impl InsideCall {
     /// Every call.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 11] = [
         Self::Exit,
         Self::Answer,
         Self::FloatBefore,
@@ -40,6 +47,9 @@ impl InsideCall {
         Self::Misaligned,
         Self::Unreachable,
         Self::LastTarget,
+        Self::X87Control,
+        Self::Step,
+        Self::Stop,
     ];
 
     /// The code a call carries.
@@ -68,6 +78,9 @@ pub enum Side {
 pub enum Held {
     Register(u8),
     Page(u16),
+    /// The host register, by number, less the base of the guest's memory window (x86-64's in-process way, rdi
+    /// while a string runs).
+    Rebased(u8),
 }
 
 /// A guest register whose value is held elsewhere.
@@ -114,6 +127,10 @@ pub enum Fixup {
     Forget { status: u8, read: [Option<Held>; 2] },
     /// The block takes the hardware's float status.
     FloatStatus,
+    /// The register page's last x87 instruction pointer gets this guest address, not yet stored there (x86).
+    X87Pointer(u64),
+    /// The host register, by number, moves by `by` bytes (x86-64's stack pointer after a push's store).
+    Offset { register: u8, by: i32 },
 }
 
 /// What a stop at one host instruction means for the guest. A span holds from its start to the next span.
@@ -142,8 +159,11 @@ pub struct DirectExit {
     /// The guest address it goes to.
     pub target: u64,
     /// Where the word is a branch the loader points at the target's piece itself, the bits holding its offset in
-    /// instructions; otherwise a direct branch replaces the word.
+    /// instructions (x86: the byte offset of its rel32); otherwise a direct branch replaces the word.
     pub retarget: Option<u32>,
+    /// The condition under which the exit's branch is taken, as the architecture numbers it (x86: the low four
+    /// bits of a `jcc`); none for an unconditional one. A hit on a link's `int3` evaluates it (x86).
+    pub condition: Option<u8>,
 }
 
 /// The branch table of a jump through a register whose targets are known (docs/native.md section 3.2): one branch
@@ -184,8 +204,8 @@ impl BranchTable {
 pub enum Holds {
     /// The guest address itself.
     Address,
-    /// The address of the guest address's entry slot.
-    EntrySlot,
+    /// The address of the guest address's entry slot in the slot table that starts at `table`.
+    EntrySlot { table: u64 },
 }
 
 /// One word of host code that builds a guest address in a register, written again when the code is loaded for
@@ -210,16 +230,23 @@ pub enum NativeReason {
     WithheldRegisterNamed,
     /// The page test and probes in front of a load or store of more than 16 bytes.
     AccessMayCrossPage,
-    /// The page test in front of a load or store of 16 bytes or fewer, which the host's model is not relied on
-    /// to do as the meaning does.
+    /// A result the host's model is not relied on to give as the meaning does: ARM64's page test in front of a
+    /// load or store of 16 bytes or fewer, x86's form the inside answers where the start-up probe found the host
+    /// differs.
     HostModelResultRouted,
+    /// A repeated string instruction the inside runs, so that the count takes its passes as the meaning's does.
+    RepeatedStringCounted,
+    /// A piece of one instruction for a guest thread whose trap flag is set, every way on into the inside.
+    GuestSingleStep,
 }
 
 impl NativeReason {
-    pub const ALL: [Self; 3] = [
+    pub const ALL: [Self; 5] = [
         Self::WithheldRegisterNamed,
         Self::AccessMayCrossPage,
         Self::HostModelResultRouted,
+        Self::RepeatedStringCounted,
+        Self::GuestSingleStep,
     ];
 
     /// The fixed names their counters and warnings carry, in the order of [`Self::ALL`].
@@ -227,6 +254,8 @@ impl NativeReason {
         "withheld register named by the guest",
         "access that may cross a page probed",
         "host-model result routed",
+        "repeated string counted by the inside",
+        "guest single step",
     ];
 
     /// Its place in [`Self::ALL`].
@@ -282,12 +311,24 @@ pub enum Base {
 }
 
 /// How a load or store forms the address of its first byte: the base, plus the offset, plus the index
-/// register's low `bits` bits extended (signed or not) and shifted left.
+/// register's low `bits` bits extended (signed or not) and shifted left, at the address's width, plus the
+/// segment's base.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Operand {
     pub base: Base,
     pub offset: i64,
     pub index: Option<Index>,
+    /// The segment whose base the sum is added to, where it has one (x86's `fs:` and `gs:`).
+    pub segment: Option<Segment>,
+    /// The sum is taken modulo 2 to this power, before any segment base is added (x86's 0x67: 32).
+    pub address_bits: u8,
+}
+
+/// A segment register whose base an address is formed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Segment {
+    Fs,
+    Gs,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]

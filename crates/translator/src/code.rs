@@ -468,18 +468,50 @@ const THREAD_STACK_BYTES: usize = 16 << 20;
 
 /// Run `work` on the translator's own threads, each with [`THREAD_STACK_BYTES`] of stack, or where no thread
 /// can be made (a browser's WebAssembly), on this one.
+/// A copy of the process made by fork has none of its parent's threads, so each process makes its own pool; a
+/// parent's pool is left as it is in the copy, since ending it there could wait on a lock held at the fork. A
+/// new pool's threads have all started before it is used, as one starting at a fork would hold std's lock of
+/// thread records in the copy.
 fn on_translator_threads<R: Send>(work: impl FnOnce() -> R + Send) -> R {
-    static THREADS: std::sync::OnceLock<Option<rayon::ThreadPool>> = std::sync::OnceLock::new();
-    let threads = THREADS.get_or_init(|| {
-        rayon::ThreadPoolBuilder::new()
-            .stack_size(THREAD_STACK_BYTES)
-            .build()
-            .ok()
-    });
+    type Pool = &'static Option<rayon::ThreadPool>;
+    static THREADS: std::sync::Mutex<Option<(Option<u32>, Pool)>> = std::sync::Mutex::new(None);
+    let threads: Pool = {
+        let mut kept = THREADS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let process = this_process();
+        match *kept {
+            Some((made_in, pool)) if made_in == process => pool,
+            _ => {
+                let pool: Pool = Box::leak(Box::new(
+                    rayon::ThreadPoolBuilder::new()
+                        .stack_size(THREAD_STACK_BYTES)
+                        .build()
+                        .ok()
+                        .inspect(|pool| {
+                            pool.broadcast(|_| ());
+                        }),
+                ));
+                *kept = Some((process, pool));
+                pool
+            }
+        }
+    };
     match threads {
         Some(threads) => threads.install(work),
         None => work(),
     }
+}
+
+/// The process this runs in, where fork can copy one; elsewhere (a browser's WebAssembly) there is no process id.
+#[cfg(unix)]
+fn this_process() -> Option<u32> {
+    Some(std::process::id())
+}
+
+#[cfg(not(unix))]
+fn this_process() -> Option<u32> {
+    None
 }
 
 fn translate_within<G: Guest>(
