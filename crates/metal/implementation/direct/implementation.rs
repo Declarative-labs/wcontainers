@@ -57,8 +57,9 @@ use wcontainers_metal::{
 /// https://developer.apple.com/documentation/metal/mtllanguageversion/version3_1
 const LANGUAGE_VERSION: (u8, u8) = (3, 1);
 
-/// The bytes of the buffer bound to vertex buffer slots no command filled, whose length the function reads as zero: one
-/// element of the longest stride, which Metal's validation wants a vertex buffer to hold.
+/// The bytes of the buffer bound to vertex buffer slots no command filled, whose length the function reads as zero.
+///
+/// It holds one element of the longest stride, which Metal's validation wants a vertex buffer to hold.
 ///
 /// https://developer.apple.com/documentation/metal/mtldevice/makebuffer(length:options:)
 const EMPTY_BUFFER_BYTES: usize = MAX_VERTEX_STRIDE as usize;
@@ -1092,10 +1093,8 @@ impl Metal for DirectMetal {
     }
 
     fn make_command_buffer(&mut self) -> Result<DirectCommandBuffer, MakeCommandBufferError> {
-        // Metal hands the command buffer back autoreleased; a pool of its own releases that reference here, since the
-        // calling thread may never drain one, and a command buffer kept alive by it holds one of the queue's places,
-        // so that once they are all held the next one waits for ever (MEASURED in the fuzzer: 64 dropped and never
-        // committed, then a wait in `commandBuffer`).
+        // A pool of its own releases the reference Metal autoreleases, which a thread that never drains one keeps: once
+        // all the queue's places are kept so, the next command buffer waits for ever (MEASURED: 64 dropped, uncommitted).
         let raw = autoreleasepool(|_| self.queue.commandBuffer())
             .ok_or(MakeCommandBufferError::Refused)?;
         Ok(DirectCommandBuffer(Rc::new(CommandBufferState {

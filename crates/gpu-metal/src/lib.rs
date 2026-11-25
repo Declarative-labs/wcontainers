@@ -1837,9 +1837,10 @@ fn region_inside(
         && fits(slices.0, slices.1, layers)
 }
 
-/// Returns whether a texture region of `extent` lies inside its texture.
-/// Returns the width and height of a region cut to its level's texels: a region of a compressed format may reach the
-/// level's last whole block, which Metal's copies refuse past the level's own size.
+/// Returns the width and height of a region cut to its level's texels.
+///
+/// A region of a compressed format may reach the level's last whole block, which Metal's copies refuse past the
+/// level's own size.
 fn level_extent<M: Metal>(region: &TextureRegion<'_, MetalGpu<M>>, extent: Extent) -> (u32, u32) {
     let desc = &region.texture.desc;
     let side = |n: u32| n.checked_shr(region.mip).unwrap_or(u32::MIN).max(1);
@@ -1853,6 +1854,7 @@ fn level_extent<M: Metal>(region: &TextureRegion<'_, MetalGpu<M>>, extent: Exten
     )
 }
 
+/// Returns whether a texture region of `extent` lies inside its texture.
 fn texture_region_inside<M: Metal>(
     region: &TextureRegion<'_, MetalGpu<M>>,
     extent: Extent,

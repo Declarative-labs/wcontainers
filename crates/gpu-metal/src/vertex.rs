@@ -18,13 +18,15 @@ use crate::{MetalGpu, convert};
 /// https://docs.rs/naga/30.0.2/naga/back/msl/struct.AttributeMapping.html
 const ATTRIBUTE_ALIGNMENT: u32 = 4;
 
-/// The most bytes a widened copy of one stream holds, from the stream's offset to the last element a draw reads; a
-/// draw that needs more is refused rather than sizing the copy by a buffer or a count the caller chose.
+/// The most bytes a widened copy of one stream holds; a draw that needs more is refused.
 ///
-/// 64 MiB holds four million elements of 16 bytes, the widest widened element of one attribute.
+/// The copy runs from the stream's offset to the last element the draw reads, so neither a buffer nor a count the
+/// caller chose sizes it. 64 MiB holds four million elements of 16 bytes, the widest widened attribute.
+///
+/// https://docs.rs/naga/30.0.2/naga/back/msl/enum.VertexFormat.html
 const MAX_WIDENED_BYTES: u64 = 64 << 20;
 
-/// Returns the first element a draw reads of a stream and the one past its last, before the stream's buffer cuts them.
+/// Returns the range of a stream's elements a draw reads, before the stream's buffer cuts it.
 ///
 /// An indexed draw may read any element its indices name, so it reads them all.
 fn reachable<B: Gpu>(range: &DrawRange<'_, B>, step: StepMode, stride: u32) -> (u64, u64) {
@@ -32,7 +34,12 @@ fn reachable<B: Gpu>(range: &DrawRange<'_, B>, step: StepMode, stride: u32) -> (
     if stride == 0 {
         return (u64::MIN, 1);
     }
-    let span = |first: u32, count: u32| (u64::from(first), u64::from(first).saturating_add(u64::from(count)));
+    let span = |first: u32, count: u32| {
+        (
+            u64::from(first),
+            u64::from(first).saturating_add(u64::from(count)),
+        )
+    };
     match (range, step) {
         (DrawRange::Vertices { first, count, .. }, StepMode::Vertex) => span(*first, *count),
         (
@@ -234,7 +241,9 @@ impl<M: Metal> MetalGpu<M> {
             // From the first element read to the end of the last element's last attribute, within the buffer.
             let last_attribute = places
                 .iter()
-                .map(|(_, a)| u64::from(a.offset).saturating_add(u64::from(convert::vertex_bytes(a.format))))
+                .map(|(_, a)| {
+                    u64::from(a.offset).saturating_add(u64::from(convert::vertex_bytes(a.format)))
+                })
                 .max()
                 .unwrap_or(u64::MIN);
             let skipped = first.checked_mul(source_stride).ok_or(overflow)?;

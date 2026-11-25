@@ -395,7 +395,12 @@ fn declares_the_metal_features_tested_here() {
         | Features::OCCLUSION_COUNT;
     assert!(device().caps().features.contains(wanted));
     // Metal drops a constant bias's fraction, so a front adds the bias in the program.
-    assert!(!device().caps().features.contains(Features::FRACTIONAL_DEPTH_BIAS));
+    assert!(
+        !device()
+            .caps()
+            .features
+            .contains(Features::FRACTIONAL_DEPTH_BIAS)
+    );
 }
 
 /// Writes bytes, copies them on the GPU, and reads the copy back at once.
@@ -682,8 +687,7 @@ fn stencil_references_per_face_as_the_reference_does() {
     assert_eq!(right, [0, 0, 0, u8::MAX]);
 }
 
-/// Draws a triangle whose depth runs from one eighth to one half with a constant depth bias into 32-bit float depth,
-/// and returns the depth of each texel.
+/// Returns the 32-bit float depth of each texel of a triangle from depth 1/8 to 1/2, drawn with a constant bias.
 fn depth_bias_scene<B: Gpu>(b: &mut B, bias: f32) -> Vec<f32> {
     let (_, drawn_view) = target(b, Format::Rgba8Unorm, DRAWN_SIDE);
     let depth = texture(
@@ -719,8 +723,10 @@ fn depth_bias_scene<B: Gpu>(b: &mut B, bias: f32) -> Vec<f32> {
     draw(b, &red, &states, None, DRAWN_SIDE, 3, [0; 2], [0.0; 4]);
     b.end_pass();
     read_texture(b, &depth, DRAWN_SIDE, 4)
-        .chunks_exact(4)
-        .map(|word| f32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| f32::from_le_bytes(*word))
         .collect()
 }
 
@@ -747,13 +753,22 @@ fn a_whole_depth_bias_moves_depth_as_the_reference_does_and_a_fraction_is_absent
     for bias in [1.0f32, 2.0, 3.0] {
         let reference_moves = bias_moves(&mut reference(Features::empty()), bias);
         let moves = bias_moves(&mut device(), bias);
-        assert_eq!(moves.len(), product(&[DRAWN_SIDE as usize, DRAWN_SIDE as usize]));
-        assert!(reference_moves.iter().all(|m| *m == f64::from(bias)), "the reference's moves {reference_moves:?}");
+        assert_eq!(
+            moves.len(),
+            product(&[DRAWN_SIDE as usize, DRAWN_SIDE as usize])
+        );
+        assert!(
+            reference_moves.iter().all(|m| *m == f64::from(bias)),
+            "the reference's moves {reference_moves:?}"
+        );
         assert_eq!(moves, reference_moves, "a bias of {bias}");
     }
     // MEASURED on an Apple M5: a bias of 2.25, 2.5 or 2.75 moves depth by 2 units and 0.5 by none.
     let fraction = device().create_raster(&plain_raster(2.25));
-    assert!(matches!(fraction, Err(GpuError::Absent(Features::FRACTIONAL_DEPTH_BIAS))));
+    assert!(matches!(
+        fraction,
+        Err(GpuError::Absent(Features::FRACTIONAL_DEPTH_BIAS))
+    ));
 }
 
 /// Writes `rgba8Unorm` texels, loads them through a view in `rgba8Uint`, and returns what the loads wrote.
@@ -1257,12 +1272,12 @@ fn a_clear_of_a_huge_size_or_an_empty_pattern_is_refused_not_fatal() {
     assert_eq!(read, [1, 2].repeat(32));
 }
 
-
 /// The bytes of a stream of `Float11_11_10` values whose widened copy, 16 bytes an element, passes 64 MiB.
 const LONG_STREAM_BYTES: u64 = 17 << 20;
 
-/// Draws three vertices from a long stream of a format naga lacks, as a list or through three indices from
-/// `first_index`, and returns the device's status.
+/// Returns the device's status after a draw of three vertices from a long stream of a format naga lacks.
+///
+/// The vertices are a list from `first`, or three indices.
 fn long_stream_scene(indexed: bool, first: u32) -> String {
     let mut b = device();
     let (_, drawn_view) = target(&mut b, Format::Rgba8Unorm, DRAWN_SIDE);

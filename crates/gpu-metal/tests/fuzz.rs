@@ -53,8 +53,7 @@ mod driver {
     /// The line a batch prints its counts on, which the driver adds up.
     pub const RESULT_LINE: &str = "FUZZ-RESULT";
 
-    /// What a batch found: calls, refusals, canary bytes changed, command buffers the GPU ended in an error, and calls
-    /// taken that had to be refused.
+    /// What a batch found: calls, refusals, canary bytes changed, GPU errors and calls taken that had to be refused.
     #[derive(Default)]
     pub struct Counts {
         pub calls: u64,
@@ -151,10 +150,8 @@ mod driver {
             while running.len() < jobs
                 && let Some((seed, batch)) = waiting.pop_front()
             {
-                let messages = std::env::temp_dir().join(format!(
-                    "fuzz-{}-{seed}-{batch}.txt",
-                    std::process::id()
-                ));
+                let messages = std::env::temp_dir()
+                    .join(format!("fuzz-{}-{seed}-{batch}.txt", std::process::id()));
                 let file = std::fs::File::create(&messages).map_err(|e| e.to_string())?;
                 let child = Command::new(&program)
                     .env(BATCH_VARIABLE, format!("{seed}:{batch}:{per_batch}"))
@@ -224,7 +221,12 @@ mod driver {
                                 || l.contains("error")
                         })
                         .take(4)
-                        .flat_map(|(at, l)| [*l, lines.get(at.saturating_add(1)).copied().unwrap_or_default()])
+                        .flat_map(|(at, l)| {
+                            [
+                                *l,
+                                lines.get(at.saturating_add(1)).copied().unwrap_or_default(),
+                            ]
+                        })
                         .collect::<Vec<_>>()
                         .join(" | ");
                     let line = format!(

@@ -41,10 +41,19 @@ fn allow(allowed: &Allowed) {
 }
 
 /// Returns the rows of blocks a copy between a buffer and a texture region touches in the buffer: one range a row.
-fn copy_rows(format: Format, side: &CopyBufferTexture<'_, B>, extent: Extent, stencil: bool) -> Vec<(u64, u64)> {
+fn copy_rows(
+    format: Format,
+    side: &CopyBufferTexture<'_, B>,
+    extent: Extent,
+    stencil: bool,
+) -> Vec<(u64, u64)> {
     let (width, height, bytes) = wcontainers_gpu::FORMAT_FACTS[format as usize].block;
     // A stencil aspect is one byte a texel; a depth and stencil format's depth is taken at its widest.
-    let (width, height, bytes) = if stencil { (1, 1, 1) } else { (width.max(1), height.max(1), bytes) };
+    let (width, height, bytes) = if stencil {
+        (1, 1, 1)
+    } else {
+        (width.max(1), height.max(1), bytes)
+    };
     let row = u64::from(extent.width.div_ceil(width)).saturating_mul(u64::from(bytes));
     let rows = extent.height.div_ceil(height);
     let layers = extent.depth_or_layers;
@@ -518,7 +527,7 @@ impl World {
         self.keep_buffer(random, (buffer, Some(shadow)));
     }
 
-    /// Keeps a buffer, checking the one it replaces.
+    /// Adds a buffer to the pool, checking the one it replaces.
     fn keep_buffer(&mut self, random: &mut Random, held: (Buffer, Option<Tracked>)) {
         if self.buffers.len() >= POOL {
             let at = random.index(self.buffers.len());
@@ -964,7 +973,8 @@ impl World {
         // A count whose results pass `max_buffer_size` reaches the call as drawn, which must refuse it; one within it
         // but past 2^20 would make a large buffer, so it is cut after that check.
         let count = random.u32(&[1, 2, 8]);
-        let refuse = u64::from(count).saturating_mul(QUERY_BYTES) > self.b.caps().limits.max_buffer_size;
+        let refuse =
+            u64::from(count).saturating_mul(QUERY_BYTES) > self.b.caps().limits.max_buffer_size;
         let count = if refuse { count } else { count.min(1 << 20) };
         let made = self.b.create_query_set(kind, count);
         self.counts.call(made.is_err());
@@ -1691,7 +1701,11 @@ impl World {
         // Counts past `max_dispatch` reach the dispatch as drawn, which must refuse them; a dispatch within it that
         // runs a great many groups is cut after that check: the bounds, not the GPU's time, are under test.
         let most = self.b.caps().limits.max_dispatch;
-        let mut direct = [random.u32(&[1, 2, 4, 0]), random.u32(&[1, 2, 4, 0]), random.u32(&[1, 2, 0])];
+        let mut direct = [
+            random.u32(&[1, 2, 4, 0]),
+            random.u32(&[1, 2, 4, 0]),
+            random.u32(&[1, 2, 0]),
+        ];
         let refuse = direct.iter().any(|n| *n > most);
         let total = direct
             .iter()

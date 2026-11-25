@@ -4,11 +4,10 @@ use wcontainers_metal::{
     BlendFactor, BlendOperation, Blending, BlitCommand, BlitOption, ColorWriteMask,
     CommandBufferStatus, CommitError, CompareFunction, ComputeCommand, DepthStencilDescriptor,
     EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError, FunctionSource,
-    IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, MAX_TEXTURE_SIDE, MAX_VERTEX_STRIDE, MakeBufferError,
-    MakeRenderPipelineStateError,
-    MakeSamplerStateError, MakeTextureError, Metal, Origin, PixelFormat, PrimitiveTopologyClass,
-    PrimitiveType, ReadContentsError, RenderCommand, RenderPassColorAttachment,
-    RenderPassDepthStencilAttachment, RenderPassDescriptor,
+    IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, MAX_TEXTURE_SIDE, MAX_VERTEX_STRIDE,
+    MakeBufferError, MakeRenderPipelineStateError, MakeSamplerStateError, MakeTextureError, Metal,
+    Origin, PixelFormat, PrimitiveTopologyClass, PrimitiveType, ReadContentsError, RenderCommand,
+    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
     RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor, ResolveTarget, ResourceSlot,
     SamplerAddressMode, SamplerBorderColor, SamplerDescriptor, SamplerMinMagFilter,
     SamplerMipFilter, ScissorRect, Size, StencilDescriptor, StencilOperation, StoreAction,
@@ -1896,7 +1895,10 @@ const LEAST_MAX_BUFFER_LENGTH: u64 = 256 << 20;
 /// Checks that a buffer one byte longer than the device's most is refused, and that the most is at least Metal's least.
 pub fn refuses_a_buffer_past_the_max_buffer_length<M: Metal>(mut subject: M) {
     let most = subject.max_buffer_length();
-    assert!(most >= LEAST_MAX_BUFFER_LENGTH, "a max buffer length of {most}");
+    assert!(
+        most >= LEAST_MAX_BUFFER_LENGTH,
+        "a max buffer length of {most}"
+    );
     for length in [most.saturating_add(1), u64::MAX] {
         assert!(matches!(
             subject.make_buffer(length),
@@ -1971,7 +1973,11 @@ pub fn refuses_a_second_source_blend_beside_another_attachment<M: Metal>(mut sub
 /// Metal's validation stops a pipeline of such a mask.
 pub fn refuses_some_channels_of_a_shared_exponent_target<M: Metal>(mut subject: M) {
     let mut colors = [None; MAX_COLOR_ATTACHMENTS];
-    colors[0] = Some(color_of(PixelFormat::Rgb9e5Float, None, [false, true, true, true]));
+    colors[0] = Some(color_of(
+        PixelFormat::Rgb9e5Float,
+        None,
+        [false, true, true, true],
+    ));
     assert!(!makes_pipeline(&mut subject, colors));
     colors[0] = Some(color_of(PixelFormat::Rgb9e5Float, None, [true; 4]));
     assert!(makes_pipeline(&mut subject, colors));
@@ -2088,7 +2094,10 @@ pub fn refuses_a_pass_of_no_attachment_past_the_longest_side<M: Metal>(mut subje
     let texture = target(&mut subject);
     let mut empty = pass(&texture);
     empty.color_attachments = [const { None }; MAX_COLOR_ATTACHMENTS];
-    for (width, height) in [(u32::MAX - 3, TARGET_SIDE), (TARGET_SIDE, MAX_TEXTURE_SIDE + 1)] {
+    for (width, height) in [
+        (u32::MAX - 3, TARGET_SIDE),
+        (TARGET_SIDE, MAX_TEXTURE_SIDE + 1),
+    ] {
         empty.render_target_width = width;
         empty.render_target_height = height;
         refuses_draw(&mut subject, &empty, &state, Vec::new());

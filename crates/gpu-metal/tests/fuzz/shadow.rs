@@ -79,16 +79,14 @@ impl Shadow {
         self.free.fill(true);
     }
 
-    /// Returns how many bytes of `read`, the buffer's bytes read back, changed where no call was allowed to change them,
-    /// and prints the first such range.
+    /// Returns how many bytes read back changed where no call was allowed to change them.
+    ///
+    /// It prints the first and last of them, and the bytes from the first.
     pub fn changed(&self, read: &[u8]) -> u64 {
         let mut changed = 0u64;
         let mut first: Option<(usize, usize)> = None;
-        for (at, ((byte, expected), free)) in read
-            .iter()
-            .zip(&self.expected)
-            .zip(&self.free)
-            .enumerate()
+        for (at, ((byte, expected), free)) in
+            read.iter().zip(&self.expected).zip(&self.free).enumerate()
         {
             if !free && byte != expected {
                 changed = changed.saturating_add(1);

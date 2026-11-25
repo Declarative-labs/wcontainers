@@ -43,7 +43,13 @@ type Allowed = (Tracked, u64, u64);
 fn block(format: PixelFormat) -> (u32, u64) {
     use PixelFormat as P;
     match format {
-        P::A8Unorm | P::R8Unorm | P::R8UnormSrgb | P::R8Snorm | P::R8Uint | P::R8Sint | P::Stencil8 => (1, 1),
+        P::A8Unorm
+        | P::R8Unorm
+        | P::R8UnormSrgb
+        | P::R8Snorm
+        | P::R8Uint
+        | P::R8Sint
+        | P::Stencil8 => (1, 1),
         P::R16Unorm
         | P::R16Snorm
         | P::R16Uint
@@ -69,7 +75,12 @@ fn block(format: PixelFormat) -> (u32, u64) {
         | P::Depth32FloatStencil8
         | P::X32Stencil8 => (1, 8),
         P::Rgba32Uint | P::Rgba32Sint | P::Rgba32Float => (1, 16),
-        P::Bc1Rgba | P::Bc1RgbaSrgb | P::Bc4RUnorm | P::Bc4RSnorm | P::Etc2Rgb8 | P::Etc2Rgb8Srgb => (4, 8),
+        P::Bc1Rgba
+        | P::Bc1RgbaSrgb
+        | P::Bc4RUnorm
+        | P::Bc4RSnorm
+        | P::Etc2Rgb8
+        | P::Etc2Rgb8Srgb => (4, 8),
         P::Bc2Rgba
         | P::Bc2RgbaSrgb
         | P::Bc3Rgba
@@ -622,7 +633,7 @@ impl World {
         self.keep_buffer(random, held);
     }
 
-    /// Keeps a buffer, checking the one it replaces before that one is dropped.
+    /// Adds a buffer to the pool, checking the one it replaces before that one is dropped.
     fn keep_buffer(&mut self, random: &mut Random, held: Held) {
         if self.buffers.len() >= POOL {
             let at = random.index(self.buffers.len());
@@ -1128,8 +1139,7 @@ impl World {
         Some((buffer, offset, length))
     }
 
-    /// Returns random render commands that bind what the programs read, and draw.
-    /// Returns them with the ranges they may change and whether a draw among them must be refused.
+    /// Returns random commands that bind and draw, the ranges they may change, and whether one must be refused.
     fn render_commands(
         &mut self,
         random: &mut Random,
@@ -1174,16 +1184,18 @@ impl World {
                     bytes: random.bytes(&[0, 4, 16, 64, 4096, 4097]),
                     index: random.u32(&[0, 1, 2, 3]),
                 }),
-                10 => any(random, &self.textures).map(|(texture, _)| RenderCommand::SetVertexTexture {
-                    texture,
-                    index: random.u32(&[0, 1, 2, 3, 4, 5, 6, 7]),
-                }),
-                11 | 12 => {
-                    any(random, &self.textures).map(|(texture, _)| RenderCommand::SetFragmentTexture {
+                10 => any(random, &self.textures).map(|(texture, _)| {
+                    RenderCommand::SetVertexTexture {
                         texture,
                         index: random.u32(&[0, 1, 2, 3, 4, 5, 6, 7]),
-                    })
-                }
+                    }
+                }),
+                11 | 12 => any(random, &self.textures).map(|(texture, _)| {
+                    RenderCommand::SetFragmentTexture {
+                        texture,
+                        index: random.u32(&[0, 1, 2, 3, 4, 5, 6, 7]),
+                    }
+                }),
                 13 => any(random, &self.samplers).map(|sampler| {
                     RenderCommand::SetVertexSamplerState {
                         sampler,
@@ -1305,7 +1317,11 @@ impl World {
     /// Counts whose sums pass the largest `u32`, or no instances, reach the draw as drawn, and must be refused; a draw
     /// that passes those checks but would run a great many vertices is cut after them: the bounds, not the GPU's time,
     /// are under test.
-    fn draw(&mut self, random: &mut Random, pipeline: Option<&Pipeline>) -> (RenderCommand<M>, bool) {
+    fn draw(
+        &mut self,
+        random: &mut Random,
+        pipeline: Option<&Pipeline>,
+    ) -> (RenderCommand<M>, bool) {
         let vertex_start = random.u32(&[0, 1]);
         let mut vertex_count = random.u32(&[3, 4, 6]);
         let mut instance_count = random.u32(&[1, 2]);
@@ -1341,7 +1357,11 @@ impl World {
         let base_instance = random.u32(&[0]);
         let index_type = random.pick(&[IndexType::UInt16, IndexType::UInt32]);
         let index_buffer_offset = random.u64(&[0, 2, 4, 64]);
-        let size = if index_type == IndexType::UInt16 { 2 } else { 4 };
+        let size = if index_type == IndexType::UInt16 {
+            2
+        } else {
+            4
+        };
         let end = u64::from(index_count)
             .checked_mul(size)
             .and_then(|bytes| bytes.checked_add(index_buffer_offset));
@@ -1411,7 +1431,11 @@ impl World {
                 if let RenderCommand::SetVisibilityResultMode { mode, offset } = command
                     && *mode != VisibilityResultMode::Disabled
                 {
-                    allowed.push((held.shadow.clone(), *offset, wcontainers_metal::VISIBILITY_RESULT_BYTES));
+                    allowed.push((
+                        held.shadow.clone(),
+                        *offset,
+                        wcontainers_metal::VISIBILITY_RESULT_BYTES,
+                    ));
                 }
             }
         }
@@ -1714,7 +1738,11 @@ impl World {
         // Counts whose threads on one axis pass the largest `u32` reach the dispatch as drawn, and must be refused; a
         // dispatch that passes that check but runs a great many threadgroups is cut after it: the bounds, not the GPU's
         // time, are under test.
-        let mut groups = [random.u32(&[1, 2, 4]), random.u32(&[1, 2, 4]), random.u32(&[1, 2])];
+        let mut groups = [
+            random.u32(&[1, 2, 4]),
+            random.u32(&[1, 2, 4]),
+            random.u32(&[1, 2]),
+        ];
         let refuse = threads.is_some_and(|threads| {
             groups
                 .iter()
@@ -1817,7 +1845,11 @@ impl World {
                 if let Ok(drawable) = made {
                     let texture = self.metal.drawable_texture(&drawable);
                     self.counts.call(false);
-                    keep(random, &mut self.textures, (texture, PixelFormat::Bgra8Unorm));
+                    keep(
+                        random,
+                        &mut self.textures,
+                        (texture, PixelFormat::Bgra8Unorm),
+                    );
                     self.drawables.push(drawable);
                 }
             }
