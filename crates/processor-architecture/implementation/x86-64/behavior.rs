@@ -10,7 +10,10 @@ use crate::integer::{Operation, find_integer_form};
 use crate::branch::find_branch_form;
 use crate::float::find_float_form;
 use crate::vector::find_vector_form;
-use crate::{CpuidTable, Instruction, PRIVILEGED_FORMS, PreciseInstruction, XEON_PLATINUM_8488C_UNDER_KVM};
+use crate::{
+    CpuidTable, FORBIDDEN_FORMS, Instruction, PRIVILEGED_FORMS, PreciseInstruction, XEON_PLATINUM_8488C_UNDER_KVM,
+    is_optional,
+};
 
 /// What a store writes when part of it faults.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -236,15 +239,28 @@ impl PreciseInstruction {
             Self::Cpuid(_) => Instruction::Cpuid,
             Self::Vector(instruction) | Self::Float(instruction) => instruction,
             Self::Privileged(instruction) | Self::Branch(instruction) => instruction,
-            Self::Integer { instruction, .. } => instruction,
+            Self::Integer { instruction, .. } | Self::Undefined(instruction) => instruction,
         }
     }
 }
 
-/// Every behavior this crate defines for the form, the one the manuals document first; none for a form not yet
-/// modeled.
+/// Every behavior this crate defines for the form, the one the manuals document first, then for a form a chip may
+/// lack the behavior that raises #UD; for a forbidden form that behavior alone, and none for a form every chip has
+/// that is not yet modeled.
 pub(crate) fn list_behaviors(instruction: Instruction) -> vec::IntoIter<PreciseInstruction> {
-    let behaviors: Vec<PreciseInstruction> = match instruction {
+    if FORBIDDEN_FORMS.contains(&instruction) {
+        return vec![PreciseInstruction::Undefined(instruction)].into_iter();
+    }
+    let mut behaviors = list_modeled_behaviors(instruction);
+    if is_optional(instruction) {
+        behaviors.push(PreciseInstruction::Undefined(instruction));
+    }
+    behaviors.into_iter()
+}
+
+/// The behaviors of the form's model; none for a form not yet modeled.
+fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
+    match instruction {
         Instruction::PushGprv50 => ACROSS_FAULT
             .map(|across_fault| PreciseInstruction::PushGprv50 { across_fault })
             .to_vec(),
@@ -263,8 +279,7 @@ pub(crate) fn list_behaviors(instruction: Instruction) -> vec::IntoIter<PreciseI
             [PreciseInstruction::Privileged(instruction)].to_vec()
         }
         _ => list_integer_behaviors(instruction),
-    };
-    behaviors.into_iter()
+    }
 }
 
 /// Every combination of the choices the form's family leaves open; none for a form that is not an integer form.

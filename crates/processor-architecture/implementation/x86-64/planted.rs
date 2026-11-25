@@ -27,6 +27,8 @@ pub enum Origin {
     FifthCheck,
     /// The port onto the committed interfaces, for the VEX forms.
     Port,
+    /// The sync that lists every form, for the behavior that raises #UD.
+    WholeList,
 }
 
 /// The forms a bug shows on.
@@ -46,6 +48,8 @@ pub enum Family {
     Forms(&'static [Instruction]),
     /// Every VEX form of a lane operation.
     VexVector,
+    /// Every form a chip may lack.
+    Optional,
     Every,
 }
 
@@ -75,6 +79,7 @@ impl PlantedBug {
             Family::Branch => crate::branch::find_branch_form(instruction).is_some(),
             Family::Forms(forms) => forms.contains(&instruction),
             Family::VexVector => find_vector_form(instruction).is_some_and(|form| form.encoding != VectorEncoding::Legacy),
+            Family::Optional => crate::is_optional(instruction),
             Family::Every => true,
         }
     }
@@ -533,6 +538,9 @@ pub enum Bug {
     VexWideReadsSixteenBytes,
     /// The first source is the destination, as for a legacy form.
     VexFirstSourceIsDestination,
+    // The whole list.
+    /// A form the chip lacks raises #GP(0), not #UD.
+    UndefinedRaisesGeneralProtection,
     // Fifth check.
     /// SUB takes AF from bit 4 of the result.
     SubtractAuxiliaryFromResultBitFour,
@@ -694,7 +702,10 @@ const fn integer(test: fn(Operation) -> bool) -> Family {
     Family::Integer(test)
 }
 
-use Origin::{FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck, SecondPass, ThirdCheck, ThirdPass};
+use Origin::{
+    FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck, SecondPass, ThirdCheck, ThirdPass,
+    WholeList,
+};
 
 /// Every planted bug of every pass and check, with its family.
 pub static PLANTED_BUGS: &[PlantedBug] = &[
@@ -993,6 +1004,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::VexMisalignedFaults, "VEX lane operations", Family::VexVector, Port),
     row(Bug::VexWideReadsSixteenBytes, "VEX lane operations", Family::VexVector, Port),
     row(Bug::VexFirstSourceIsDestination, "VEX lane operations", Family::VexVector, Port),
+    row(Bug::UndefinedRaisesGeneralProtection, "forms a chip may lack", Family::Optional, WholeList),
 ];
 
 #[cfg(feature = "planted-bugs")]

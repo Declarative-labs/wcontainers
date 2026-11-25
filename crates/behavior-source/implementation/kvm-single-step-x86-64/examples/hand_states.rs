@@ -320,10 +320,10 @@ mod on_chip {
                 panic!("{instruction:?} shows no one known behavior on this chip");
             };
             let executed = run(&mut machine, &state);
-            let Ok(simulated) = chosen.simulate(state.clone());
+            let Ok(simulated) = chosen.simulate_state(state.clone());
             match executed {
                 Ok(executed) => {
-                    let agrees = simulated == executed;
+                    let agrees = executed.meets_expectations(&simulated);
                     println!(
                         "-- {name}: chip {:?} ip {:#x}; simulation {:?} ip {:#x}: {}",
                         executed.processor.exception,

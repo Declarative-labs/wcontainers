@@ -6,7 +6,7 @@ use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorA
 
 use crate::{
     Access, DataAccess, Exception, Flags, Instruction, InstructionFetch, PagePermission, PreciseInstruction,
-    Processor, STACK_POINTER, StoreAcrossFault, X86_64, ZERO_PROCESSOR,
+    Processor, RegisterValueExpectation, STACK_POINTER, StoreAcrossFault, X86_64, ZERO_PROCESSOR,
 };
 
 const CODE: u64 = 0x1000;
@@ -48,8 +48,23 @@ fn simulate(
     state: ExecutionState<'static, X86_64>,
 ) -> (Processor, Vec<MemoryDelta<'static, X86_64>>) {
     let start = state.memory_mutations.len();
-    let Ok(after) = behavior.simulate(state);
-    (after.processor, after.memory_mutations[start..].to_vec())
+    let Ok(after) = behavior.simulate_state(state);
+    let expected = after.processor;
+    let processor = Processor {
+        general_purpose_registers: expected.general_purpose_registers.map(|register| match register {
+            RegisterValueExpectation::Deterministic(value) => value,
+            RegisterValueExpectation::NonDeterministic => panic!("every register of these forms is decided"),
+        }),
+        instruction_pointer: expected.instruction_pointer,
+        flags: expected.flags,
+        fs_base: expected.fs_base,
+        gs_base: expected.gs_base,
+        mxcsr: expected.mxcsr,
+        vector_registers: expected.vector_registers,
+        upper_vector_halves: expected.upper_vector_halves,
+        exception: expected.exception,
+    };
+    (processor, after.memory_mutations[start..].to_vec())
 }
 
 #[test]
@@ -206,4 +221,40 @@ fn a_load_from_the_kernel_half_faults_on_a_present_page() {
             address: 0xFFFF_FFFF_FFE0_5000,
         })
     );
+}
+
+#[test]
+fn tables_of_the_list_follow_its_order() {
+    for (index, instruction) in crate::INSTRUCTIONS.iter().enumerate() {
+        assert_eq!(*instruction as usize, index, "{instruction:?}");
+    }
+    assert_eq!(crate::CPUID_REQUIREMENTS.len(), crate::INSTRUCTIONS.len());
+    assert_eq!(crate::SAMPLE_ENCODINGS.len(), crate::INSTRUCTIONS.len());
+}
+
+#[test]
+fn forms_beyond_the_baseline_are_optional_and_may_raise_invalid_opcode() {
+    for mandatory in [Instruction::AddGprvGprv01, Instruction::AddpsXmmpsXmmps] {
+        assert!(!crate::is_optional(mandatory), "{mandatory:?}");
+        assert!(!X86_64::list_known_behaviors(mandatory).any(|behavior| behavior == PreciseInstruction::Undefined(mandatory)));
+    }
+    for optional in [Instruction::VaddpsXmmdqXmmdqXmmdq, Instruction::Cmpxchg16bMemdq] {
+        assert!(crate::is_optional(optional), "{optional:?}");
+        assert_eq!(X86_64::list_known_behaviors(optional).last(), Some(PreciseInstruction::Undefined(optional)));
+    }
+    for forbidden in crate::FORBIDDEN_FORMS {
+        assert_eq!(X86_64::list_known_behaviors(forbidden).collect::<Vec<_>>(), [PreciseInstruction::Undefined(forbidden)]);
+    }
+}
+
+#[test]
+fn a_form_the_chip_lacks_raises_invalid_opcode_where_it_lies() {
+    // vaddps xmm0, xmm1, xmm2
+    let (after, written) = simulate(
+        PreciseInstruction::Undefined(Instruction::VaddpsXmmdqXmmdqXmmdq),
+        to_state(&[0xC5, 0xF0, 0x58, 0xC2], ZERO_PROCESSOR, PagePermission::Unmapped),
+    );
+    assert_eq!(after.exception, Some(Exception::InvalidOpcode));
+    assert_eq!(after.instruction_pointer, CODE);
+    assert!(written.is_empty());
 }

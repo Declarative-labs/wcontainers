@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::convert::Infallible;
 
 use iced_x86::{Code, Decoder, DecoderError, DecoderOptions, EncodingKind, Instruction as Decoded, OpKind, Register};
-use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture, Simulator};
+use wcontainers_processor_architecture::{MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture, Simulator};
 
 use crate::behavior::{CpuidReading, IntegerBehavior, StoreAcrossFault};
 use crate::branch::{Decision, find_branch_form};
@@ -19,7 +19,7 @@ use crate::float::{ORDER_FLAGS, find_float_form};
 use crate::vector::{VectorEncoding, VectorForm, find_vector_form};
 use crate::{
     Access, DataAccess, Exception, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission,
-    PreciseInstruction, Processor, STACK_POINTER, VIRTUAL_ADDRESS_BITS, X86_64,
+    PreciseInstruction, Processor, ProcessorExpectation, STACK_POINTER, VIRTUAL_ADDRESS_BITS, X86_64,
 };
 
 const MAXIMUM_INSTRUCTION_BYTES: usize = 15;
@@ -47,47 +47,59 @@ struct MemoryOperand {
 impl Simulator<X86_64> for PreciseInstruction {
     type Error = Infallible;
 
-    /// Decodes the instruction at the instruction pointer and applies this behavior to it.
-    fn simulate_in_place(
+    /// Decodes the instruction at the instruction pointer and applies this behavior to it; every register's result
+    /// is one the state before decides.
+    fn simulate(
         &self,
-        processor: &mut Processor,
-        memory: &[MemoryDelta<'_, X86_64>],
+        processor: &Processor,
+        memory: MemorySnapshot<'_, '_, X86_64>,
         mutation_hook: &mut impl MemorySink<X86_64>,
-    ) -> Result<(), Infallible> {
-        let decoded = match fetch(memory, processor.instruction_pointer) {
-            Ok(decoded) => decoded,
-            Err(exception) => {
-                processor.exception = Some(exception);
-                return Ok(());
-            }
-        };
-        let mut changed = processor.clone();
-        let on_memory_mutated = |mutation: MemoryDelta<'_, X86_64>| mutation_hook.on_memory_mutated(mutation);
-        match apply(*self, &mut changed, memory, &decoded, on_memory_mutated) {
-            Ok(()) => {
-                *processor = changed;
-                // A jump leaves the instruction pointer where it goes.
-                if !matches!(self, PreciseInstruction::Branch(_)) {
-                    processor.instruction_pointer = decoded.next_ip();
-                }
-                processor.exception = None;
-            }
-            Err(exception) => {
-                keep_planted_writes(*self, exception, processor, &changed);
-                // #XM leaves the flags of the exceptions it found in MXCSR.
-                if exception == Exception::SimdFloatingPoint
-                    && !(is_active(Bug::SubtractScalarSingleFaultLeavesFlags)
-                        && *self == PreciseInstruction::Float(Instruction::SubssXmmssMemss))
-                {
-                    processor.mxcsr = changed.mxcsr;
-                }
-                if exception.is_trap() {
-                    processor.instruction_pointer = decoded.next_ip();
-                }
-                processor.exception = Some(exception);
-            }
+    ) -> Result<ProcessorExpectation, Infallible> {
+        let mut processor = processor.clone();
+        simulate_processor(*self, &mut processor, memory.mutations, mutation_hook);
+        Ok(processor.to_expectation())
+    }
+}
+
+/// Applies the behavior to the processor, writing memory changes through the hook.
+fn simulate_processor(
+    behavior: PreciseInstruction,
+    processor: &mut Processor,
+    memory: Memory<'_, '_>,
+    mutation_hook: &mut impl MemorySink<X86_64>,
+) {
+    let decoded = match fetch(memory, processor.instruction_pointer) {
+        Ok(decoded) => decoded,
+        Err(exception) => {
+            processor.exception = Some(exception);
+            return;
         }
-        Ok(())
+    };
+    let mut changed = processor.clone();
+    let on_memory_mutated = |mutation: MemoryDelta<'_, X86_64>| mutation_hook.on_memory_mutated(mutation);
+    match apply(behavior, &mut changed, memory, &decoded, on_memory_mutated) {
+        Ok(()) => {
+            *processor = changed;
+            // A jump leaves the instruction pointer where it goes.
+            if !matches!(behavior, PreciseInstruction::Branch(_)) {
+                processor.instruction_pointer = decoded.next_ip();
+            }
+            processor.exception = None;
+        }
+        Err(exception) => {
+            keep_planted_writes(behavior, exception, processor, &changed);
+            // #XM leaves the flags of the exceptions it found in MXCSR.
+            if exception == Exception::SimdFloatingPoint
+                && !(is_active(Bug::SubtractScalarSingleFaultLeavesFlags)
+                    && behavior == PreciseInstruction::Float(Instruction::SubssXmmssMemss))
+            {
+                processor.mxcsr = changed.mxcsr;
+            }
+            if exception.is_trap() {
+                processor.instruction_pointer = decoded.next_ip();
+            }
+            processor.exception = Some(exception);
+        }
     }
 }
 
@@ -143,6 +155,10 @@ fn apply(
             expect_code(decoded, &[Code::Ud2]);
             Err(Exception::InvalidOpcode)
         }
+        PreciseInstruction::Undefined(_) if is_active(Bug::UndefinedRaisesGeneralProtection) => {
+            Err(Exception::GeneralProtection { error_code: 0 })
+        }
+        PreciseInstruction::Undefined(_) => Err(Exception::InvalidOpcode),
         PreciseInstruction::Int3 => {
             expect_code(decoded, &[Code::Int3]);
             Err(Exception::Breakpoint)
