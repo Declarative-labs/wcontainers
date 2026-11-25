@@ -52,3 +52,15 @@ name another object holds no `type Api`.
 SECURITY: no `unsafe` in the generator or its output (both `forbid`); one new tool dependency, windows-metadata 0.60.0
 (Microsoft, MIT or Apache-2.0, 17 lines with `unsafe`, no dependencies of its own), never in the product. No
 hostile-guest suite is run by this milestone.
+
+## AC2, started: the C layout the glue rests on (2026-11-25)
+
+`check-layout.sh` has the generator write one compile-time assertion per record size and per named field offset, by
+C's rules from the metadata (packing included), and compiles them with zig 0.16.0 against MinGW's headers for
+x86_64-windows-gnu. MEASURED (ARM64 job gac/20261125-222419-478254): 1,097 assertions over Direct3D 11, DXGI,
+d3dcommon and the Foundation records they name; compile status 0, 0 failing; a planted wrong size fails exactly once.
+25 records MinGW's headers do not declare are listed by the job and left out (shader tracing and reflection,
+d3dcsx, D3DMATRIX and D3DVECTOR, DXGI's JPEG tables, two newer video records).
+
+Not yet done of AC2: the calling and serving glue for the spike's 27 methods, the spike's harness ported, the
+fuzzing, the hang test and the cost table.

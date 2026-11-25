@@ -105,6 +105,8 @@ pub struct Record {
     pub attributes: Vec<Attribute>,
     /// An enum's integer type (its `value__` field).
     pub underlying: Option<Type>,
+    /// The C packing, where the header sets one (`#pragma pack`).
+    pub packing: Option<u16>,
 }
 
 /// Every interface, record, constant and function of the namespaces asked for.
@@ -192,6 +194,7 @@ fn record_of(index: &TypeIndex, def: TypeDef<'_>, kind: RecordKind) -> Record {
         nested,
         attributes: attributes_of(&def),
         underlying,
+        packing: def.class_layout().map(|layout| layout.packing_size()).filter(|packing| *packing != 0),
     }
 }
 

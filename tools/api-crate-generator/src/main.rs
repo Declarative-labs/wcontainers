@@ -2,9 +2,11 @@
 //!
 //!   api-crate-generator census <Windows.Win32.winmd> <namespace>...
 //!   api-crate-generator generate <Windows.Win32.winmd> <api> <output folder>
+//!   api-crate-generator layout-check <Windows.Win32.winmd> <api> <output.c> [C type left out]...
 
 mod api;
 mod emit;
+mod layout;
 mod mapping;
 mod metadata;
 mod names;
@@ -86,6 +88,22 @@ fn main() -> ExitCode {
             let namespaces: Vec<&str> = namespaces.iter().map(String::as_str).collect();
             census(&index, &namespaces);
             ExitCode::SUCCESS
+        }
+        ("layout-check", [name, out, left_out @ ..]) => {
+            let Some(api) = api::by_name(name) else {
+                eprintln!("api-crate-generator: no API named {name}");
+                return ExitCode::FAILURE;
+            };
+            match layout::write_check(&index, api, std::path::Path::new(out), left_out) {
+                Ok(count) => {
+                    println!("LAYOUT CHECK: {count} assertions written to {out}");
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("api-crate-generator: {error}");
+                    ExitCode::FAILURE
+                }
+            }
         }
         ("generate", [name, out]) => {
             let Some(api) = api::by_name(name) else {
