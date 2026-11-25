@@ -47,7 +47,7 @@ wgpu = { path = "third_party/wgpu" }
 # arithmetic_side_effects), as crates/metal/implementation/direct's does.
 # Bindings crates of the graphics, each one outside API and nothing else, that deny it, every use marked, and export
 # only a safe facade:
-#   crates/metal/implementation/direct (31)
+#   crates/metal/implementation/direct (36)
 #   crates/shader-converters/implementation/linked (5)
 #   crates/test-window/implementation/appkit (8)
 #   crates/test-window/implementation/win32 (4)
