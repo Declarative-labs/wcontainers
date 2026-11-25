@@ -1,5 +1,4 @@
-//! The first translations of a process, made from many threads of another pool at once as layer 2's cases make
-//! them, end: the translator's own pool is made with no lock held while its threads start.
+//! The first translations of a process, made at once from many threads of another pool as layer 2 makes them, end.
 
 use std::sync::mpsc;
 use std::time::Duration;
