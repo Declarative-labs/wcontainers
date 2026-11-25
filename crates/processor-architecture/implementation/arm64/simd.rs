@@ -39,6 +39,14 @@ pub enum VectorOperation {
     CompareEqual,
     CompareGreater(Signedness),
     CompareGreaterOrEqual(Signedness),
+    /// All ones where the first element is less than the second, as signed integers.
+    CompareLess,
+    CompareLessOrEqual,
+    /// The absolute value of the first element, as a signed integer; the most negative stays as it is.
+    Absolute,
+    Negate,
+    /// The first element shifted left by the signed low byte of the second, right and rounded where it is negative.
+    RoundingShift(Signedness),
     /// All ones where the elements share a set bit.
     TestBits,
     Maximum(Signedness),
@@ -112,6 +120,36 @@ pub const fn to_vector_operation(instruction: Instruction<Infallible>) -> Option
         I::Trn2Vector => O::Transpose(Part::Second),
         I::Zip1Vector => O::Zip(Part::First),
         I::Zip2Vector => O::Zip(Part::Second),
+        // One register, compared with zero or negated, a missing second operand reading as zero.
+        I::CmgtVectorZero => O::CompareGreater(Signed),
+        I::CmeqVectorZero => O::CompareEqual,
+        I::CmgeVectorZero => O::CompareGreaterOrEqual(Signed),
+        I::CmltVectorZero => O::CompareLess,
+        I::CmleVectorZero => O::CompareLessOrEqual,
+        I::AbsVector => O::Absolute,
+        I::NegVector => O::Negate,
+        I::SrshlVector => O::RoundingShift(Signed),
+        I::UrshlVector => O::RoundingShift(Unsigned),
+        I::CmgtScalarZero => O::CompareGreater(Signed),
+        I::CmeqScalarZero => O::CompareEqual,
+        I::CmgeScalarZero => O::CompareGreaterOrEqual(Signed),
+        I::CmltScalarZero => O::CompareLess,
+        I::CmleScalarZero => O::CompareLessOrEqual,
+        I::AbsScalar => O::Absolute,
+        I::NegScalar => O::Negate,
+        I::SrshlScalar => O::RoundingShift(Signed),
+        I::UrshlScalar => O::RoundingShift(Unsigned),
+        // The scalar forms: one doubleword element of the low 64 bits of each register.
+        I::AddScalar => O::Add,
+        I::SubScalar => O::Subtract,
+        I::CmeqScalar => O::CompareEqual,
+        I::CmgtScalar => O::CompareGreater(Signed),
+        I::CmhiScalar => O::CompareGreater(Unsigned),
+        I::CmgeScalar => O::CompareGreaterOrEqual(Signed),
+        I::CmhsScalar => O::CompareGreaterOrEqual(Unsigned),
+        I::CmtstScalar => O::TestBits,
+        I::SshlScalar => O::Shift(Signed),
+        I::UshlScalar => O::Shift(Unsigned),
         _ => return None,
     })
 }
@@ -195,6 +233,33 @@ fn apply(operation: VectorOperation, first: u128, second: u128, esize: u32) -> u
             let (first, second) = integers(signedness);
             ones_if(first >= second)
         }
+        O::CompareLess => {
+            let (first, second) = integers(Signedness::Signed);
+            ones_if(first < second)
+        }
+        O::CompareLessOrEqual => {
+            let (first, second) = integers(Signedness::Signed);
+            ones_if(first <= second)
+        }
+        O::Absolute => to_integer(first, esize, Signedness::Signed).unsigned_abs(),
+        O::Negate => first.wrapping_neg(),
+        O::RoundingShift(signedness) => {
+            // [SRSHL](https://developer.arm.com/documentation/ddi0602/latest/SIMD-FP-Instructions/SRSHL--Signed-rounding-shift-left--register--):
+            // the element plus half of the last bit shifted out, shifted by the signed low byte of the second.
+            let shift = to_integer(second & u128::from(u8::MAX), u8::BITS, Signedness::Signed);
+            let value = to_integer(first, esize, signedness);
+            if shift >= 0 {
+                value.checked_shl(shift as u32).unwrap_or(0) as u128
+            } else {
+                let right = shift.unsigned_abs() as u32;
+                // A sum below 2^65 shifted right by more than 65 is zero.
+                if right > u64::BITS + 1 {
+                    0
+                } else {
+                    ((value + (1 << (right - 1))) >> right) as u128
+                }
+            }
+        }
         O::TestBits => ones_if(first & second != 0),
         O::Maximum(signedness) => {
             let (low, high) = integers(signedness);
@@ -250,20 +315,28 @@ pub fn simulate_vector<LevelSpecific>(
     let mut sources = [0_u128; 2];
     let mut count = 0;
     let mut destination = None;
+    // A scalar form names its registers as one floating-point precision, a vector form as vectors.
+    let mut scalar = false;
     for operand in operands {
-        if let Operand::VectorRegister { number, access } = *operand {
-            match access {
-                OperandAccess::Read => {
-                    sources[count] = processor.vector_registers[number.read(word) as usize];
-                    count += 1;
-                }
-                OperandAccess::Written => destination = Some(number.read(word)),
+        let (number, access) = match *operand {
+            Operand::VectorRegister { number, access } => (number, access),
+            Operand::FloatingPointRegister { number, access, .. } => {
+                scalar = true;
+                (number, access)
             }
+            _ => continue,
+        };
+        match access {
+            OperandAccess::Read => {
+                sources[count] = processor.vector_registers[number.read(word) as usize];
+                count += 1;
+            }
+            OperandAccess::Written => destination = Some(number.read(word)),
         }
     }
     // The syntax names Rn before Rm.
     let [first, second] = sources;
-    let datasize = if Q.read(word) != 0 {
+    let datasize = if Q.read(word) != 0 && !scalar {
         VECTOR_BITS
     } else {
         HALF_VECTOR_BITS
@@ -274,6 +347,8 @@ pub fn simulate_vector<LevelSpecific>(
     );
     let esize = if bitwise {
         u8::BITS
+    } else if scalar {
+        u64::BITS
     } else {
         u8::BITS << SIZE.read(word)
     };

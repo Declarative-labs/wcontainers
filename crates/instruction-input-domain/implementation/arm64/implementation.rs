@@ -35,6 +35,7 @@ use wcontainers_processor_architecture_arm64::load_store::{AtomicOperation, Tran
 use wcontainers_processor_architecture_arm64::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Signedness,
 };
+use wcontainers_processor_architecture_arm64::simd::to_vector_operation;
 use wcontainers_processor_architecture_arm64::system_register::{
     SYSTEM_REGISTER, UNMODELED_SYSTEM_REGISTERS,
 };
@@ -1188,6 +1189,13 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
                             precision,
                             width,
                         },
+                        // An Advanced SIMD scalar takes the register's bits as an integer.
+                        None if to_vector_operation(instruction).is_some() => {
+                            OperandType::VectorValue {
+                                field: number,
+                                bytes: precision.to_bits() / u8::BITS,
+                            }
+                        }
                         None => OperandType::FloatingPointValue {
                             field: number,
                             precision,
