@@ -580,7 +580,7 @@ pub(super) fn array_length(
     };
     let kind =
         super::slot_kind(class).ok_or_else(|| ConvertError::Malformed(super::NO_CLASS.into()))?;
-    if n > kind.slots() {
+    if n > wcontainers_gpu::SLOT_KINDS[kind as usize].slots {
         return Err(ConvertError::Unsupported(
             crate::refusal::BINDINGS_BEYOND_LIMIT,
         ));
@@ -605,7 +605,7 @@ fn unbounded_length(variant: &VariantKey, class: u32, space: u32, register: u32)
         .ok_or(ConvertError::Unsupported(
             crate::refusal::UNBOUNDED_RESOURCE_ARRAY,
         ))?;
-    if length > kind.slots() {
+    if length > wcontainers_gpu::SLOT_KINDS[kind as usize].slots {
         return Err(ConvertError::Unsupported(
             crate::refusal::BINDINGS_BEYOND_LIMIT,
         ));

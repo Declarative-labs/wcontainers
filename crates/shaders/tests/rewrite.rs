@@ -5,8 +5,8 @@
 
 use naga::{Expression, Module, ShaderStage as NagaStage, TypeInner};
 use wcontainers_gpu::{
-    Format, HELPER_SET, ReflectedBinding, Reflection, SlotKind, SourceStage, StageExtras,
-    TexelBufferRoute, VariantKey, helper_binding,
+    Format, HELPER_SET, ReflectedBinding, Reflection, SLOT_KINDS, SlotKind, SourceStage,
+    StageExtras, TexelBufferRoute, VariantKey, helper_binding,
 };
 use wcontainers_shaders::{
     ConvertError, ENTRY_POINT, Source, cache, convert, refusal, rewrite, stage,
@@ -33,10 +33,30 @@ fn compute_reflection(module: &Module) -> Reflection {
 /// `source` with its slots' first bindings substituted, parsed.
 fn parse(source: &str) -> Module {
     let source = source
-        .replace("UNIFORM", &SlotKind::Uniform.first_binding().to_string())
-        .replace("SAMPLER", &SlotKind::Sampler.first_binding().to_string())
-        .replace("TEXTURE", &SlotKind::Texture.first_binding().to_string())
-        .replace("STORAGE", &SlotKind::Storage.first_binding().to_string())
+        .replace(
+            "UNIFORM",
+            &SLOT_KINDS[SlotKind::Uniform as usize]
+                .first_binding
+                .to_string(),
+        )
+        .replace(
+            "SAMPLER",
+            &SLOT_KINDS[SlotKind::Sampler as usize]
+                .first_binding
+                .to_string(),
+        )
+        .replace(
+            "TEXTURE",
+            &SLOT_KINDS[SlotKind::Texture as usize]
+                .first_binding
+                .to_string(),
+        )
+        .replace(
+            "STORAGE",
+            &SLOT_KINDS[SlotKind::Storage as usize]
+                .first_binding
+                .to_string(),
+        )
         .replace("ENTRY", ENTRY_POINT);
     naga::front::wgsl::parse_str(&source).expect("the test's WGSL parses")
 }
@@ -93,12 +113,12 @@ fn arrays_of_textures_and_samplers_split_into_a_binding_per_element() {
         .iter()
         .any(|(_, g)| matches!(m.module.types[g.ty].inner, TypeInner::BindingArray { .. }));
     assert!(!arrays, "no binding array is left");
-    let sampler = SlotKind::Sampler.first_binding();
-    let texture = SlotKind::Texture.first_binding();
-    let mut expected = vec![SlotKind::Uniform.first_binding()];
+    let sampler = SLOT_KINDS[SlotKind::Sampler as usize].first_binding;
+    let texture = SLOT_KINDS[SlotKind::Texture as usize].first_binding;
+    let mut expected = vec![SLOT_KINDS[SlotKind::Uniform as usize].first_binding];
     expected.extend(sampler..sampler + 4);
     expected.extend(texture..texture + 4);
-    expected.push(SlotKind::Storage.first_binding());
+    expected.push(SLOT_KINDS[SlotKind::Storage as usize].first_binding);
     assert_eq!(bindings(&m.module), expected);
     // The pick of both at one index pairs element k with element k; the constant texture 1 is
     // sampled with each sampler.
@@ -253,7 +273,7 @@ fn an_array_longer_than_its_kind_binds_is_refused_by_name() {
         ("texture_storage_2d<rgba8unorm, write>", SlotKind::Storage),
     ];
     for (ty, kind) in arrays {
-        for length in [kind.slots() + 1, u32::MAX >> 1] {
+        for length in [SLOT_KINDS[kind as usize].slots + 1, u32::MAX >> 1] {
             let source = ARRAYS
                 .replace(
                     "@group(0) @binding(SAMPLER) var s: binding_array<sampler, 4>;",
@@ -268,7 +288,7 @@ fn an_array_longer_than_its_kind_binds_is_refused_by_name() {
                 .replace("t[1], s[i]", "t, s")
                 + &format!(
                     "@group(1) @binding({}) var a: binding_array<{ty}, {length}>;",
-                    kind.first_binding()
+                    SLOT_KINDS[kind as usize].first_binding
                 );
             let source = source.replace("out[2] = ", "_ = a[u.i]; out[2] = ");
             let module = parse(&source);
@@ -339,7 +359,7 @@ fn a_vertex_program_writing_storage_is_rewritten_for_the_stage_helper_as_convert
 #[test]
 fn a_vertex_program_writing_storage_converts_for_the_stage_helper_under_every_view_key() {
     let own = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/own");
-    let slots = || 0..SlotKind::Storage.slots();
+    let slots = || 0..SLOT_KINDS[SlotKind::Storage as usize].slots;
     let keys = [
         VariantKey::default(),
         VariantKey {
@@ -531,7 +551,7 @@ fn the_variant_rewrites_apply_as_on_the_direct3d_routes() {
         register: 0,
         count: 1,
         set: 1,
-        binding: SlotKind::Texture.first_binding(),
+        binding: SLOT_KINDS[SlotKind::Texture as usize].first_binding,
         added: None,
         stride: 0,
     };

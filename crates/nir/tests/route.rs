@@ -3,7 +3,7 @@
 //! naga (B), each validated.
 #![cfg(all(mesa, feature = "standalone"))]
 
-use wcontainers_gpu::{ShaderStage, SlotKind};
+use wcontainers_gpu::{SLOT_KINDS, ShaderStage, SlotKind};
 use wcontainers_nir::ConvertError;
 use wcontainers_nir::bind::stage_set;
 use wcontainers_nir::mesa::{Assembled, GlslNameKind, GlslStage, Nir, PositionTransform, Stage};
@@ -59,7 +59,7 @@ fn resources_are_numbered_by_kind_in_the_stage_set() {
         .iter()
         .map(|b| (b.kind, b.space, b.register, b.set, b.binding))
         .collect();
-    let first = SlotKind::first_binding;
+    let first = |kind: SlotKind| SLOT_KINDS[kind as usize].first_binding;
     assert_eq!(
         found,
         [

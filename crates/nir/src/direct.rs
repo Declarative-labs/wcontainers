@@ -16,8 +16,8 @@ use naga::{
 use std::ffi::{CStr, c_char};
 use wcontainers_gpu::Format as GpuFormat;
 use wcontainers_gpu::{
-    CUBE_FACES, HELPER_SET, HelperSlot, HelperValue, ReflectedBinding, Reflection, ShaderModule,
-    ShaderStage as GpuStage, SlotKind, SlowPath, SourceStage, StageExtras,
+    CUBE_FACES, HELPER_SET, HelperSlot, HelperValue, ReflectedBinding, Reflection, SLOT_KINDS,
+    ShaderModule, ShaderStage as GpuStage, SlotKind, SlowPath, SourceStage, StageExtras,
     TEXEL_BUFFER_TEXTURE_WIDTH, TexelBufferRoute, VariantFlags, VariantKey, helper_binding,
 };
 use wcontainers_shaders::cache;
@@ -1573,7 +1573,7 @@ impl Builder<'_> {
         }
         let slot = var
             .binding
-            .checked_sub(SlotKind::Storage.first_binding())
+            .checked_sub(SLOT_KINDS[SlotKind::Storage as usize].first_binding)
             .ok_or_else(|| unsupported(format_args!("an image of a buffer out of its range")))?;
         self.typed.formats.push((slot, buffer_format(var.format)?));
         // Read-write in compute programs, as their storage buffers are.
@@ -1737,7 +1737,7 @@ impl Builder<'_> {
         let format = if var.format == Format::None {
             let first = var
                 .binding
-                .checked_sub(SlotKind::Storage.first_binding())
+                .checked_sub(SLOT_KINDS[SlotKind::Storage as usize].first_binding)
                 .ok_or_else(|| unsupported(format_args!("a storage image out of its range")))?;
             self.rewrites
                 .formatless
@@ -4490,7 +4490,10 @@ impl Builder<'_> {
     ) -> Result<Handle<Expression>, ConvertError> {
         let slot = self.module.global_variables[image]
             .binding
-            .and_then(|b| b.binding.checked_sub(SlotKind::Storage.first_binding()))
+            .and_then(|b| {
+                b.binding
+                    .checked_sub(SLOT_KINDS[SlotKind::Storage as usize].first_binding)
+            })
             .ok_or_else(|| unsupported(format_args!("an image out of its range")))?;
         self.helper(HelperValue::TexelLayout { slot })
     }

@@ -10,7 +10,7 @@
 use std::borrow::Cow;
 
 use naga::{Expression, Module};
-use wcontainers_gpu::{Reflection, SlotKind, SourceStage, StageExtras, VariantKey};
+use wcontainers_gpu::{Reflection, SLOT_KINDS, SlotKind, SourceStage, StageExtras, VariantKey};
 use wcontainers_shaders::{ENTRY_POINT, cache, rewrite};
 
 /// Texels on a side of each texture, a power of two so a moved coordinate is exact.
@@ -45,10 +45,30 @@ struct U { i: u32, pad: u32, o: vec2<i32>, uv: vec2<f32> }
 
 fn parse(offset: [i32; 2]) -> Module {
     let source = SOURCE
-        .replace("UNIFORM", &SlotKind::Uniform.first_binding().to_string())
-        .replace("SAMPLER", &SlotKind::Sampler.first_binding().to_string())
-        .replace("TEXTURE", &SlotKind::Texture.first_binding().to_string())
-        .replace("STORAGE", &SlotKind::Storage.first_binding().to_string())
+        .replace(
+            "UNIFORM",
+            &SLOT_KINDS[SlotKind::Uniform as usize]
+                .first_binding
+                .to_string(),
+        )
+        .replace(
+            "SAMPLER",
+            &SLOT_KINDS[SlotKind::Sampler as usize]
+                .first_binding
+                .to_string(),
+        )
+        .replace(
+            "TEXTURE",
+            &SLOT_KINDS[SlotKind::Texture as usize]
+                .first_binding
+                .to_string(),
+        )
+        .replace(
+            "STORAGE",
+            &SLOT_KINDS[SlotKind::Storage as usize]
+                .first_binding
+                .to_string(),
+        )
         .replace("ARRAY_LENGTH", &ARRAY_LENGTH.to_string())
         .replace("SIZE", &SIZE.to_string())
         .replace("OX", &offset[0].to_string())
@@ -205,7 +225,7 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
     };
     let mut layout_entries = vec![
         entry(
-            SlotKind::Uniform.first_binding(),
+            SLOT_KINDS[SlotKind::Uniform as usize].first_binding,
             wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: true },
                 has_dynamic_offset: false,
@@ -214,7 +234,7 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
             None,
         ),
         entry(
-            SlotKind::Storage.first_binding(),
+            SLOT_KINDS[SlotKind::Storage as usize].first_binding,
             wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Storage { read_only: false },
                 has_dynamic_offset: false,
@@ -231,12 +251,28 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
     };
     if arrays {
         let count = std::num::NonZeroU32::new(ARRAY_LENGTH as u32);
-        layout_entries.push(entry(SlotKind::Sampler.first_binding(), sampler, count));
-        layout_entries.push(entry(SlotKind::Texture.first_binding(), texture, count));
+        layout_entries.push(entry(
+            SLOT_KINDS[SlotKind::Sampler as usize].first_binding,
+            sampler,
+            count,
+        ));
+        layout_entries.push(entry(
+            SLOT_KINDS[SlotKind::Texture as usize].first_binding,
+            texture,
+            count,
+        ));
     } else {
         for k in 0..ARRAY_LENGTH as u32 {
-            layout_entries.push(entry(SlotKind::Sampler.first_binding() + k, sampler, None));
-            layout_entries.push(entry(SlotKind::Texture.first_binding() + k, texture, None));
+            layout_entries.push(entry(
+                SLOT_KINDS[SlotKind::Sampler as usize].first_binding + k,
+                sampler,
+                None,
+            ));
+            layout_entries.push(entry(
+                SLOT_KINDS[SlotKind::Texture as usize].first_binding + k,
+                texture,
+                None,
+            ));
         }
     }
     let group_layout = g
@@ -280,31 +316,31 @@ fn run(g: &Gpu, module: Module, arrays: bool, uniform: &[u8]) -> Vec<u32> {
     let samplers: Vec<&wgpu::Sampler> = g.samplers.iter().collect();
     let mut entries = vec![
         wgpu::BindGroupEntry {
-            binding: SlotKind::Uniform.first_binding(),
+            binding: SLOT_KINDS[SlotKind::Uniform as usize].first_binding,
             resource: constants.as_entire_binding(),
         },
         wgpu::BindGroupEntry {
-            binding: SlotKind::Storage.first_binding(),
+            binding: SLOT_KINDS[SlotKind::Storage as usize].first_binding,
             resource: out.as_entire_binding(),
         },
     ];
     if arrays {
         entries.push(wgpu::BindGroupEntry {
-            binding: SlotKind::Sampler.first_binding(),
+            binding: SLOT_KINDS[SlotKind::Sampler as usize].first_binding,
             resource: wgpu::BindingResource::SamplerArray(&samplers),
         });
         entries.push(wgpu::BindGroupEntry {
-            binding: SlotKind::Texture.first_binding(),
+            binding: SLOT_KINDS[SlotKind::Texture as usize].first_binding,
             resource: wgpu::BindingResource::TextureViewArray(&views),
         });
     } else {
         for k in 0..ARRAY_LENGTH as u32 {
             entries.push(wgpu::BindGroupEntry {
-                binding: SlotKind::Sampler.first_binding() + k,
+                binding: SLOT_KINDS[SlotKind::Sampler as usize].first_binding + k,
                 resource: wgpu::BindingResource::Sampler(samplers[k as usize]),
             });
             entries.push(wgpu::BindGroupEntry {
-                binding: SlotKind::Texture.first_binding() + k,
+                binding: SLOT_KINDS[SlotKind::Texture as usize].first_binding + k,
                 resource: wgpu::BindingResource::TextureView(views[k as usize]),
             });
         }

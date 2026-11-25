@@ -17,7 +17,7 @@ use super::*;
 use crate::dxbc::{Kind, TypedView};
 use pull::Helpers;
 use std::ops::Range;
-use wcontainers_gpu::{Filter, SlotKind, ViewComponent};
+use wcontainers_gpu::{Filter, SLOT_KINDS, SlotKind, ViewComponent};
 use wcontainers_shaders::container::DxilViews;
 
 /// A typed view's slot: a storage slot (else a texture slot) and its place in its kind's range
@@ -123,7 +123,7 @@ pub(super) fn typed_key(
             true => (&mut key.storage_formats, SlotKind::Storage),
             false => (&mut key.texel_formats, SlotKind::Texture),
         };
-        formats.extend(within(&v.slots, kind.slots()).map(|s| (s, format)));
+        formats.extend(within(&v.slots, SLOT_KINDS[kind as usize].slots).map(|s| (s, format)));
         if v.buffer {
             key.texel_buffers = route;
         }
@@ -131,7 +131,7 @@ pub(super) fn typed_key(
     key.storage_formats.sort_by_key(|f| f.0);
     key.texel_formats.sort_by_key(|f| f.0);
     // Converted reading one layer of each; the bound views' layer counts come at the draw.
-    let textures = SlotKind::Texture.slots();
+    let textures = SLOT_KINDS[SlotKind::Texture as usize].slots;
     key.texture_layers = arrays
         .iter()
         .flat_map(|a| within(a, textures))
@@ -634,7 +634,7 @@ mod tests {
         code.extend(tokens.iter().flat_map(|t| t.to_le_bytes()));
         let route = TexelBufferRoute::Storage;
         let (key, through) = typed_key(&code, route, &empty_root(), bind::ALL);
-        let storage: Vec<_> = (0..SlotKind::Storage.slots())
+        let storage: Vec<_> = (0..SLOT_KINDS[SlotKind::Storage as usize].slots)
             .map(|s| (s, Format::R32Uint))
             .collect();
         assert_eq!((key.storage_formats, through), (storage, u64::MAX));

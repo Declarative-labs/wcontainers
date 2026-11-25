@@ -12,8 +12,8 @@ use naga::{
 };
 use wcontainers_gpu::{
     AddedBinding, CLAMPED_SAMPLER_BINDING, DRAW_ARGUMENTS_BINDING, DrawBaseSource, Format,
-    HELPER_SET, HelperSlot, HelperValue, LinkedValues, Reflection, ShaderStage, SlotKind,
-    StageExtras, VariantFlags, VariantKey, helper_binding,
+    HELPER_SET, HelperSlot, HelperValue, LinkedValues, Reflection, SLOT_KINDS, ShaderStage,
+    SlotKind, StageExtras, VariantFlags, VariantKey, helper_binding,
 };
 
 use crate::ConvertError;
@@ -1681,12 +1681,15 @@ fn constants_as_storage(
         .filter(|b| b.kind == SlotKind::Storage)
         .map(|b| b.binding + b.count)
         .max()
-        .unwrap_or(SlotKind::Storage.first_binding());
+        .unwrap_or(SLOT_KINDS[SlotKind::Storage as usize].first_binding);
     for b in &mut reflection.bindings {
         if b.kind != SlotKind::Uniform || b.added.is_some() || slots & (1 << b.slot()) == 0 {
             continue;
         }
-        if next >= SlotKind::Storage.first_binding() + SlotKind::Storage.slots() {
+        if next
+            >= SLOT_KINDS[SlotKind::Storage as usize].first_binding
+                + SLOT_KINDS[SlotKind::Storage as usize].slots
+        {
             return Err(ConvertError::Unsupported(
                 crate::refusal::BINDINGS_BEYOND_LIMIT,
             ));

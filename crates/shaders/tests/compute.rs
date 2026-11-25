@@ -2,7 +2,7 @@
 //! that the written WGSL reads back. Run against real Direct3D 11 in `tests/compute_draw.rs`.
 
 use std::path::Path;
-use wcontainers_gpu::{Format, HelperValue, SlotKind, TexelBufferRoute, VariantKey};
+use wcontainers_gpu::{Format, HelperValue, SLOT_KINDS, SlotKind, TexelBufferRoute, VariantKey};
 use wcontainers_shaders::ConvertError;
 use wcontainers_shaders::{Source, convert};
 
@@ -36,7 +36,13 @@ fn atomics_and_counters_declare_their_bindings() {
                 .iter()
                 .filter(|b| b.kind == kind)
                 .map(|b| {
-                    assert_eq!(b.binding, kind.binding(b.register).unwrap(), "{file}");
+                    assert_eq!(
+                        b.binding,
+                        (b.register < SLOT_KINDS[kind as usize].slots)
+                            .then(|| SLOT_KINDS[kind as usize].first_binding + b.register)
+                            .unwrap(),
+                        "{file}"
+                    );
                     b.register
                 })
                 .collect();
@@ -290,7 +296,9 @@ fn alpha_storage_views_store_their_alpha_alone_on_both_routes() {
         ],
         ..Default::default()
     };
-    let binding = SlotKind::Storage.binding(0).unwrap();
+    let binding = (0 < SLOT_KINDS[SlotKind::Storage as usize].slots)
+        .then(|| SLOT_KINDS[SlotKind::Storage as usize].first_binding + 0)
+        .unwrap();
     for dxil in [false, true] {
         let file = format!("cs_images.{}", if dxil { "dxil" } else { "dxbc" });
         let bytes = own(&file);
@@ -400,7 +408,12 @@ fn storage_textures_convert_through_buffers() {
     layouts.sort();
     assert_eq!(layouts, [3, 4, 5, 6]);
     for b in &c.reflection.bindings {
-        assert_eq!(b.binding, SlotKind::Storage.binding(b.register).unwrap());
+        assert_eq!(
+            b.binding,
+            (b.register < SLOT_KINDS[SlotKind::Storage as usize].slots)
+                .then(|| SLOT_KINDS[SlotKind::Storage as usize].first_binding + b.register)
+                .unwrap()
+        );
     }
     reads_back("cs_through", &c.modules[0]);
     // Without the variant, the atomics are refused; without a format, the texture is.

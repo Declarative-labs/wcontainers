@@ -9,12 +9,12 @@ use wcontainers_gpu::{
     DispatchCall, DispatchGroups, DrawCall, DrawRange, EARLY_DEPTH_BINDING, EARLY_STENCIL_BINDING,
     EmptyPass, Extent, Features, Filter, Format, FormatKind, FormatUse, HELPER_SET, HelperValue,
     IndexBinding, IndexFormat, Interpolation, LoadOp, MAX_BINDING_SETS, Object, Origin, PassDesc,
-    PassOps, PassTargets, Program, ReadSource, ReadState, RingKind, SamplerDesc as GpuSampler,
-    ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath, SourceStage, StageSet, StencilOp,
-    StepMode, StoreOp, SystemValue, TEXEL_BUFFER_TEXTURE_WIDTH, Target, TargetInShader,
-    TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey, VertexAttribute,
-    VertexBinding, VertexLayoutDesc, VertexStream, ViewDimension, Viewport as GpuViewport,
-    WriteMode, helper_binding,
+    PassOps, PassTargets, Program, ReadSource, ReadState, RingKind, SLOT_KINDS,
+    SamplerDesc as GpuSampler, ScissorRect, ShaderModule, ShaderStage, SlotKind, SlowPath,
+    SourceStage, StageSet, StencilOp, StepMode, StoreOp, SystemValue, TEXEL_BUFFER_TEXTURE_WIDTH,
+    Target, TargetInShader, TextureRegion, TextureUsage, TextureViewDesc, Topology, VariantKey,
+    VertexAttribute, VertexBinding, VertexLayoutDesc, VertexStream, ViewDimension,
+    Viewport as GpuViewport, WriteMode, helper_binding,
 };
 
 use crate::desc::{
@@ -4371,8 +4371,8 @@ impl<B: Backend> Device<B> {
     /// The first element's byte in the bound range and the element count of the typed buffer view
     /// bound to `stage` at `binding`; none for an empty slot or a view of another kind.
     fn texel_view(&self, stage: usize, binding: u32) -> [u32; 2] {
-        let texture = SlotKind::Texture.first_binding();
-        let storage = SlotKind::Storage.first_binding();
+        let texture = SLOT_KINDS[SlotKind::Texture as usize].first_binding;
+        let storage = SLOT_KINDS[SlotKind::Storage as usize].first_binding;
         let view = match binding {
             b if (texture..storage).contains(&b) => {
                 self.ctx.resources[stage].get((b - texture) as usize)

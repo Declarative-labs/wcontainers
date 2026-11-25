@@ -27,36 +27,44 @@ pub enum SlotKind {
     Counter,
 }
 
-impl SlotKind {
+/// The range of binding numbers one [`SlotKind`] owns in every binding set: [`SLOT_KINDS`] holds one
+/// per kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotRange {
     /// The first binding number of the kind's range.
-    pub const fn first_binding(self) -> u32 {
-        match self {
-            SlotKind::Uniform => 0,
-            SlotKind::Sampler => 16,
-            SlotKind::Texture => 32,
-            SlotKind::Storage => 160,
-            SlotKind::Counter => 224,
-        }
-    }
-
-    /// How many slots the range holds.
-    pub const fn slots(self) -> u32 {
-        match self {
-            SlotKind::Uniform | SlotKind::Sampler => 16,
-            SlotKind::Texture => 128,
-            SlotKind::Storage | SlotKind::Counter => 64,
-        }
-    }
-
-    /// The binding number of slot `slot`, if the range holds it.
-    pub const fn binding(self, slot: u32) -> Option<u32> {
-        if slot < self.slots() {
-            Some(self.first_binding() + slot)
-        } else {
-            None
-        }
-    }
+    pub first_binding: u32,
+    /// How many slots the range holds; slot `n` of the kind binds at `first_binding + n`.
+    pub slots: u32,
 }
+
+/// The range of every slot kind, indexed by `SlotKind as usize`.
+pub const SLOT_KINDS: [SlotRange; 5] = [
+    // Uniform
+    SlotRange {
+        first_binding: 0,
+        slots: 16,
+    },
+    // Sampler
+    SlotRange {
+        first_binding: 16,
+        slots: 16,
+    },
+    // Texture
+    SlotRange {
+        first_binding: 32,
+        slots: 128,
+    },
+    // Storage
+    SlotRange {
+        first_binding: 160,
+        slots: 64,
+    },
+    // Counter
+    SlotRange {
+        first_binding: 224,
+        slots: 64,
+    },
+];
 
 /// The binding set that holds a converted program's helper constants (one uniform buffer per stage, at
 /// [`helper_binding`]) and the other bindings a variant adds.
@@ -141,7 +149,7 @@ impl ReflectedBinding {
     /// The binding's place in its kind's range, which per-slot fields of [`VariantKey`] and
     /// [`Reflection::sampled_pairs`] name: the register under Direct3D 10 and 11's numbering.
     pub const fn slot(&self) -> u32 {
-        self.binding - self.kind.first_binding()
+        self.binding - crate::SLOT_KINDS[self.kind as usize].first_binding
     }
 }
 
@@ -740,14 +748,31 @@ mod tests {
         ];
         for pair in kinds.windows(2) {
             assert_eq!(
-                pair[0].first_binding() + pair[0].slots(),
-                pair[1].first_binding()
+                crate::SLOT_KINDS[pair[0] as usize].first_binding
+                    + crate::SLOT_KINDS[pair[0] as usize].slots,
+                crate::SLOT_KINDS[pair[1] as usize].first_binding
             );
         }
-        assert_eq!(SlotKind::Texture.binding(127), Some(159));
-        assert_eq!(SlotKind::Texture.binding(128), None);
-        assert_eq!(SlotKind::Storage.binding(63), Some(223));
-        assert_eq!(SlotKind::Counter.binding(0), Some(224));
+        assert_eq!(
+            (127 < crate::SLOT_KINDS[SlotKind::Texture as usize].slots)
+                .then(|| crate::SLOT_KINDS[SlotKind::Texture as usize].first_binding + 127),
+            Some(159)
+        );
+        assert_eq!(
+            (128 < crate::SLOT_KINDS[SlotKind::Texture as usize].slots)
+                .then(|| crate::SLOT_KINDS[SlotKind::Texture as usize].first_binding + 128),
+            None
+        );
+        assert_eq!(
+            (63 < crate::SLOT_KINDS[SlotKind::Storage as usize].slots)
+                .then(|| crate::SLOT_KINDS[SlotKind::Storage as usize].first_binding + 63),
+            Some(223)
+        );
+        assert_eq!(
+            (0 < crate::SLOT_KINDS[SlotKind::Counter as usize].slots)
+                .then(|| crate::SLOT_KINDS[SlotKind::Counter as usize].first_binding),
+            Some(224)
+        );
     }
 
     #[test]
@@ -786,30 +811,42 @@ mod tests {
             SlotKind::Counter,
         ];
         for kind in kinds {
-            for slot in 0..kind.slots() {
+            for slot in 0..crate::SLOT_KINDS[kind as usize].slots {
                 let b = ReflectedBinding {
                     kind,
                     space: 0,
                     register: 0,
                     count: 1,
                     set: 1,
-                    binding: kind.binding(slot).unwrap(),
+                    binding: (slot < crate::SLOT_KINDS[kind as usize].slots)
+                        .then(|| crate::SLOT_KINDS[kind as usize].first_binding + slot)
+                        .unwrap(),
                     added: None,
                     stride: 0,
                 };
                 assert_eq!(b.slot(), slot, "{kind:?}");
             }
-            assert_eq!(kind.binding(kind.slots()), None, "{kind:?}");
+            assert_eq!(
+                ((crate::SLOT_KINDS[kind as usize].slots) < crate::SLOT_KINDS[kind as usize].slots)
+                    .then(|| crate::SLOT_KINDS[kind as usize].first_binding
+                        + (crate::SLOT_KINDS[kind as usize].slots)),
+                None,
+                "{kind:?}"
+            );
         }
         // The ranges follow one another, and a counter has the number of its storage slot.
         for pair in kinds.windows(2) {
             assert_eq!(
-                pair[0].first_binding() + pair[0].slots(),
-                pair[1].first_binding(),
+                crate::SLOT_KINDS[pair[0] as usize].first_binding
+                    + crate::SLOT_KINDS[pair[0] as usize].slots,
+                crate::SLOT_KINDS[pair[1] as usize].first_binding,
                 "{pair:?}"
             );
         }
-        assert_eq!(SlotKind::Counter.slots(), SlotKind::Storage.slots());
+        assert_eq!(
+            crate::SLOT_KINDS[SlotKind::Counter as usize].slots,
+            crate::SLOT_KINDS[SlotKind::Storage as usize].slots
+        );
     }
 
     /// A target's combine value is laid out in the helper block as its type is.

@@ -7,8 +7,8 @@ use wcontainers_gpu::{
     Backend, BindingEntry, BindingResource, BlendDesc, ColorAttachment, ColorWrites, CullMode,
     DepthStencilDesc, DrawCall, DrawRange, FillMode, Format, FormatUse, FrontFace, LoadOp,
     MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, Object, PassDesc, Program, ProvokingVertex, RasterDesc,
-    RenderTargetBlend, ScissorRect, ShaderModule, ShaderStage, SlotKind, StageSet, StoreOp,
-    TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
+    RenderTargetBlend, SLOT_KINDS, ScissorRect, ShaderModule, ShaderStage, SlotKind, StageSet,
+    StoreOp, TextureViewDesc, Topology, VertexLayoutDesc, Viewport,
 };
 
 use crate::context::Context;
@@ -43,7 +43,7 @@ const FRAGMENT_ENTRY: &str = "fs";
 
 impl<B: Backend> Copy<B> {
     fn new(backend: &mut B) -> Result<Copy<B>, wcontainers_gpu::GpuError> {
-        let picture = SlotKind::Texture.first_binding();
+        let picture = SLOT_KINDS[SlotKind::Texture as usize].first_binding;
         let source = format!(
             "@group(0) @binding({picture}) var picture: texture_2d<f32>;
 @vertex fn {VERTEX_ENTRY}(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {{
@@ -193,7 +193,7 @@ fn show<B: HostWindows>(
         .map_err(|e| format!("{e:?}"))?;
     let set = backend
         .create_binding_set(&[BindingEntry {
-            binding: SlotKind::Texture.first_binding(),
+            binding: SLOT_KINDS[SlotKind::Texture as usize].first_binding,
             stages: StageSet::FRAGMENT,
             resource: BindingResource::Texture(&picture),
         }])

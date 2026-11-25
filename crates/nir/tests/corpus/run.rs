@@ -19,7 +19,7 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use wcontainers_gpu::{Format, ReflectedBinding, SlotKind, VariantKey};
+use wcontainers_gpu::{Format, ReflectedBinding, SLOT_KINDS, SlotKind, VariantKey};
 use wcontainers_nir::direct::{Rewrites, Routed};
 use wcontainers_nir::mesa::{Nir, Stage};
 
@@ -615,7 +615,7 @@ fn bound_views(routed: &Routed) -> Vec<(u32, Format)> {
                 .binding
                 .as_ref()?
                 .binding
-                .checked_sub(SlotKind::Storage.first_binding())?;
+                .checked_sub(SLOT_KINDS[SlotKind::Storage as usize].first_binding)?;
             let (ty, count) = match module.types[g.ty].inner {
                 TypeInner::BindingArray {
                     base,

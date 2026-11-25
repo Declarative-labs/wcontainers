@@ -6,7 +6,7 @@ use crate::bind::{self, KINDS};
 use std::ffi::{CStr, CString, c_char};
 #[cfg(feature = "standalone")]
 use std::sync::Once;
-use wcontainers_gpu::{ReflectedBinding, ShaderStage};
+use wcontainers_gpu::{ReflectedBinding, SLOT_KINDS, ShaderStage};
 
 /// The program stages the routes take (`enum wc_stage`).
 #[repr(C)]
@@ -748,8 +748,8 @@ impl Nir {
     /// each resource's reflection.
     pub fn to_common_form(&mut self, stage: Stage) -> Result<Vec<ReflectedBinding>, ConvertError> {
         let ranges = KINDS.map(|k| SlotRange {
-            first: k.first_binding(),
-            slots: k.slots(),
+            first: SLOT_KINDS[k as usize].first_binding,
+            slots: SLOT_KINDS[k as usize].slots,
         });
         let set = bind::stage_set(stage.shader_stage());
         let mut out = Bindings {

@@ -3,8 +3,8 @@
 use std::path::Path;
 use wcontainers_gpu::{
     AddedBinding, DrawBaseSource, Format, HelperSlot, HelperValue, Interpolation, LinkedValues,
-    ScalarKind, SlotKind, SystemValue, TargetInShader, TexelBufferRoute, VariantFlags, VariantKey,
-    VertexFormat,
+    SLOT_KINDS, ScalarKind, SlotKind, SystemValue, TargetInShader, TexelBufferRoute, VariantFlags,
+    VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{ConvertError, Source, convert};
 
@@ -688,7 +688,10 @@ fn constants_read_as_storage_are_added_bindings() {
             .find(|b| b.added.is_some())
             .unwrap();
         assert_eq!(b.kind, SlotKind::Storage);
-        assert_eq!(b.binding, SlotKind::Storage.first_binding());
+        assert_eq!(
+            b.binding,
+            SLOT_KINDS[SlotKind::Storage as usize].first_binding
+        );
         assert_eq!(b.added, Some(AddedBinding::ConstantsAsStorage(0)));
         assert!(wgsl(&c).contains("var<storage>"), "{}", wgsl(&c));
         // Its registers are runtime-sized, so an index past the declared array reads the buffer.
@@ -1590,7 +1593,11 @@ fn typed_buffer_arrays_are_a_binding_per_element_on_both_routes() {
     let past = VariantKey {
         register_ranges: vec![
             ranges[0].clone(),
-            (SlotKind::Storage, 0, 0..SlotKind::Storage.slots() + 1),
+            (
+                SlotKind::Storage,
+                0,
+                0..SLOT_KINDS[SlotKind::Storage as usize].slots + 1,
+            ),
         ],
         ..key
     };
@@ -1666,7 +1673,7 @@ fn multisampled_array_layers_are_a_texture_each() {
             .map(|b| (b.binding, b.added))
             .collect();
         textures.sort_unstable_by_key(|t| t.0);
-        let first = SlotKind::Texture.first_binding();
+        let first = SLOT_KINDS[SlotKind::Texture as usize].first_binding;
         assert_eq!(
             textures,
             [

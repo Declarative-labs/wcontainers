@@ -7,7 +7,8 @@
 use naga::{Function, GlobalVariable, Handle, Module};
 use std::path::Path;
 use wcontainers_gpu::{
-    ReflectedBinding, Reflection, SlotKind, SourceStage, StageExtras, StageValue, VariantKey,
+    ReflectedBinding, Reflection, SLOT_KINDS, SlotKind, SourceStage, StageExtras, StageValue,
+    VariantKey,
 };
 use wcontainers_shaders::staged::{
     self, BuiltIn, DomainProgram, GeometryInput, GeometryOutput, GeometryProgram, HullProgram,
@@ -261,7 +262,9 @@ pub fn typed_texels_reflection() -> Reflection {
         register,
         count: 1,
         set: 0,
-        binding: kind.binding(register).unwrap(),
+        binding: (register < SLOT_KINDS[kind as usize].slots)
+            .then(|| SLOT_KINDS[kind as usize].first_binding + register)
+            .unwrap(),
         added: None,
         stride,
     };

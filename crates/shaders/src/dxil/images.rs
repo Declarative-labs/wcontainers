@@ -18,7 +18,7 @@ use naga::{
     TypeInner, VectorSize,
 };
 use spirv::{Decoration, Dim, ImageFormat, Op, StorageClass};
-use wcontainers_gpu::{Reflection, ShaderStage, TexelBufferRoute, VariantKey};
+use wcontainers_gpu::{Reflection, SLOT_KINDS, ShaderStage, TexelBufferRoute, VariantKey};
 
 type Result<T> = core::result::Result<T, ConvertError>;
 
@@ -59,7 +59,7 @@ impl Declared {
         let binding = module.global_variables[var]
             .binding
             .map_or(0, |b| b.binding);
-        binding.wrapping_sub(kind.first_binding())
+        binding.wrapping_sub(SLOT_KINDS[kind as usize].first_binding)
     }
 }
 

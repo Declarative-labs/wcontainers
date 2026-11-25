@@ -6,7 +6,7 @@
 
 use wcontainers_gpu::{
     BindingEntry, BindingResource, BufferRange, INDEX_FORMATS, MAX_BINDING_SETS, QueryKind,
-    RingKind, ShaderModule, SlotKind,
+    RingKind, SLOT_KINDS, ShaderModule, SlotKind,
 };
 
 use super::bind::CONSTANT_REGISTER;
@@ -62,11 +62,11 @@ const RECORD: u64 = size_of::<DrawIndexedArguments>() as u64;
 const RECORD_WORDS: u64 = RECORD / STORAGE_WORD;
 
 /// The binding of the buffer the front's own programs read: the first texture slot.
-pub(super) const OWN_SOURCE: u32 = SlotKind::Texture.first_binding();
+pub(super) const OWN_SOURCE: u32 = SLOT_KINDS[SlotKind::Texture as usize].first_binding;
 /// The binding of the buffer they write: the first storage slot.
-pub(super) const OWN_RESULT: u32 = SlotKind::Storage.first_binding();
+pub(super) const OWN_RESULT: u32 = SLOT_KINDS[SlotKind::Storage as usize].first_binding;
 /// The binding of their uniform block of parameters.
-pub(super) const OWN_PARAMETERS: u32 = SlotKind::Uniform.first_binding();
+pub(super) const OWN_PARAMETERS: u32 = SLOT_KINDS[SlotKind::Uniform as usize].first_binding;
 /// The threads of each of their workgroups.
 pub(super) const OWN_GROUP: u32 = 64;
 /// Their entry point.

@@ -16,8 +16,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use wcontainers_gpu::{
-    DrawBaseSource, Format, ShaderModule, SlotKind, SystemValue, TexelBufferRoute, VariantFlags,
-    VariantKey, VertexFormat,
+    DrawBaseSource, Format, SLOT_KINDS, ShaderModule, SlotKind, SystemValue, TexelBufferRoute,
+    VariantFlags, VariantKey, VertexFormat,
 };
 use wcontainers_shaders::{ConvertError, Converted, Source, cache, capabilities, convert, stage};
 
@@ -724,8 +724,7 @@ fn verdicts(dir: &Path, ext: &str, label: &str) -> (BTreeMap<String, usize>, Str
 /// a change either way, including invalid WGSL, fails until the record is updated.
 #[test]
 fn rig_shaders_give_their_recorded_verdicts() {
-    let dir =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphics-test/shaders/dxbc");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphics-test/shaders/dxbc");
     let counts = run(&dir, "dxbc", "rig");
     assert!(counts.values().sum::<usize>() > 0);
 }
@@ -842,8 +841,7 @@ fn only_the_readers_unsupported_refusals_are_named() {
 
 #[test]
 fn rig_dxil_shaders_give_their_recorded_verdicts() {
-    let dir =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphics-test/shaders/dxil");
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../graphics-test/shaders/dxil");
     let counts = run(&dir, "dxil", "rig-dxil");
     assert!(counts.values().sum::<usize>() > 0);
 }
@@ -1079,7 +1077,13 @@ fn dxil_bindings_and_sampled_pairs_match_dxbc() {
         let (a, b) = (&a.reflection, &b.reflection);
         assert_eq!(bindings(a), bindings(b), "{name} bindings");
         for d in &a.bindings {
-            assert_eq!(d.binding, d.kind.binding(d.register).unwrap(), "{name}");
+            assert_eq!(
+                d.binding,
+                (d.register < SLOT_KINDS[d.kind as usize].slots)
+                    .then(|| SLOT_KINDS[d.kind as usize].first_binding + d.register)
+                    .unwrap(),
+                "{name}"
+            );
         }
         for d in &b.bindings {
             let rank = b

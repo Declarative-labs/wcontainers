@@ -29,8 +29,8 @@ use naga::{
 };
 use wcontainers_gpu::{
     DrawBaseSource, HELPER_SET, HelperSlot, HelperValue, Interpolation, ReflectedBinding,
-    Reflection, ScalarKind as ValueKind, ShaderStage, SlotKind, SourceStage, StageExtras,
-    StageValue, SystemValue, VariantKey, helper_binding,
+    Reflection, SLOT_KINDS, ScalarKind as ValueKind, ShaderStage, SlotKind, SourceStage,
+    StageExtras, StageValue, SystemValue, VariantKey, helper_binding,
 };
 
 /// The reason the carried patch of dxil-spirv's reader logs for a type of LLVM outside DXIL
@@ -1717,9 +1717,11 @@ fn bindings(
         let key = (rank(kind), space, register);
         let first = order.partition_point(|o| o.0 < key.0);
         let slot = (order.partition_point(|o| *o < key) - first) as u32;
-        let number = kind.binding(slot).ok_or(ConvertError::Unsupported(
-            crate::refusal::BINDINGS_BEYOND_LIMIT,
-        ))?;
+        let number = (slot < SLOT_KINDS[kind as usize].slots)
+            .then(|| SLOT_KINDS[kind as usize].first_binding + slot)
+            .ok_or(ConvertError::Unsupported(
+                crate::refusal::BINDINGS_BEYOND_LIMIT,
+            ))?;
         module.global_variables[handle].binding = Some(naga::ResourceBinding {
             group: set,
             binding: number,

@@ -26,8 +26,8 @@ use naga::{
 use naga::{FastHashMap as HashMap, FastHashSet as HashSet};
 use wcontainers_gpu::{
     DrawBaseSource, HelperSlot, HelperValue, Interpolation, ReflectedBinding, Reflection,
-    ScalarKind as ValueKind, ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras, StageValue,
-    SystemValue, TexelBufferRoute, VariantFlags, VariantKey, helper_binding,
+    SLOT_KINDS, ScalarKind as ValueKind, ShaderStage, SlotKind, SlowPath, SourceStage, StageExtras,
+    StageValue, SystemValue, TexelBufferRoute, VariantFlags, VariantKey, helper_binding,
 };
 
 use crate::variant::texel::{TexelBuffer, TexelPlace};
@@ -1088,8 +1088,10 @@ impl<'a> Lowering<'a> {
             ));
         };
         let register = register + self.element;
-        let binding = slot
-            .binding(self.slot(slot, space_index, register)?)
+        let number = self.slot(slot, space_index, register)?;
+        let range = SLOT_KINDS[slot as usize];
+        let binding = (number < range.slots)
+            .then(|| range.first_binding + number)
             .ok_or(unsupported(crate::refusal::BINDINGS_BEYOND_LIMIT))?;
         let prefix = match slot {
             SlotKind::Uniform => register_prefix::UNIFORM,
@@ -5525,7 +5527,7 @@ fn declared_length(variant: &VariantKey, kind: SlotKind, op: &Op) -> Result<u32>
             .map(|(_, _, range)| range.end - register)
             .ok_or(unsupported(crate::refusal::UNBOUNDED_RESOURCE_ARRAY))?
     };
-    if length > kind.slots() {
+    if length > SLOT_KINDS[kind as usize].slots {
         return Err(unsupported(crate::refusal::BINDINGS_BEYOND_LIMIT));
     }
     Ok(length)

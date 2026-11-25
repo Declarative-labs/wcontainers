@@ -38,7 +38,7 @@ pub(super) fn split(
         .filter(|b| b.kind == SlotKind::Texture)
         .map(|b| b.binding + b.count)
         .max()
-        .unwrap_or(SlotKind::Texture.first_binding());
+        .unwrap_or(wcontainers_gpu::SLOT_KINDS[SlotKind::Texture as usize].first_binding);
     // Each array with its layers' variables, layer 0 first.
     let mut split = Vec::new();
     for g in arrays {
@@ -72,7 +72,10 @@ pub(super) fn split(
         module.global_variables.get_mut(g).ty = ty;
         let mut vars = alloc::vec![g];
         for layer in 1..count {
-            if next >= SlotKind::Texture.first_binding() + SlotKind::Texture.slots() {
+            if next
+                >= wcontainers_gpu::SLOT_KINDS[SlotKind::Texture as usize].first_binding
+                    + wcontainers_gpu::SLOT_KINDS[SlotKind::Texture as usize].slots
+            {
                 return Err(ConvertError::Unsupported(
                     crate::refusal::BINDINGS_BEYOND_LIMIT,
                 ));

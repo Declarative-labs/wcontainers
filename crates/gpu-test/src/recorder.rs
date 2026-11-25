@@ -1522,8 +1522,9 @@ impl Backend for Recorder {
                     "a shader naming an entry point of its stage its module lacks",
                 ));
             };
-            let textures = SlotKind::Texture.first_binding()
-                ..SlotKind::Texture.first_binding() + SlotKind::Texture.slots();
+            let textures = SLOT_KINDS[SlotKind::Texture as usize].first_binding
+                ..SLOT_KINDS[SlotKind::Texture as usize].first_binding
+                    + SLOT_KINDS[SlotKind::Texture as usize].slots;
             let outside = |image: naga::Handle<naga::GlobalVariable>| {
                 module.module.global_variables[image]
                     .binding
