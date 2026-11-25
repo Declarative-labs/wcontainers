@@ -4,7 +4,7 @@
 use iced_x86::Register;
 
 use crate::behavior::UndefinedFlags;
-use crate::evex::{EvexForm, EvexOperation, find_evex_form};
+use crate::evex::{EvexForm, EvexOperation, IntegerOperation, find_evex_form};
 use crate::float::{FloatForm, FloatOperation, Precision, find_float_form};
 use crate::integer::{
     BitChange, Condition, OperandPlace, Operation, Outcome, find_integer_form, sign_extend, subtract_with_borrow,
@@ -564,6 +564,20 @@ pub enum Bug {
     EvexBroadcastReadsVector,
     /// An element the opmask register leaves out still faults.
     EvexMaskedFaultNotSuppressed,
+    /// VPERMD and its kin take the index modulo half the element count.
+    EvexPermuteIndexHalved,
+    /// The two-table permutes always read the first table.
+    EvexTwoTablesSelectorIgnored,
+    /// The in-lane permutes and shuffles read the lowest lane for every lane.
+    EvexLanesFromTheFirst,
+    /// VPSHUFB ignores the control byte's zeroing bit.
+    EvexShuffleBytesZeroBitIgnored,
+    /// The unpacks take the second source's element first.
+    EvexUnpackSourcesSwapped,
+    /// VALIGND and VALIGNQ shift by the whole immediate, zero beyond both sources.
+    EvexAlignCountUnreduced,
+    /// The permutes and shuffles suppress a fault on an element the opmask leaves out.
+    EvexPermuteFaultsSuppressed,
     // Fifth check.
     /// SUB takes AF from bit 4 of the result.
     SubtractAuxiliaryFromResultBitFour,
@@ -1035,8 +1049,20 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexMaskIgnored, "EVEX forms", Family::Evex(|_| true), EvexSecondHalf),
     row(Bug::EvexEmbeddedRoundingIgnored, "EVEX forms with embedded rounding", Family::Evex(|form| form.code.op_code().can_use_rounding_control()), EvexSecondHalf),
     row(Bug::EvexBroadcastReadsVector, "EVEX forms that broadcast", Family::Evex(|form| form.place != OperandPlace::Register && form.code.op_code().can_broadcast()), EvexSecondHalf),
-    row(Bug::EvexMaskedFaultNotSuppressed, "EVEX forms with memory", Family::Evex(|form| form.place != OperandPlace::Register), EvexSecondHalf),
+    row(Bug::EvexMaskedFaultNotSuppressed, "EVEX forms with memory that suppress faults", Family::Evex(|form| form.place != OperandPlace::Register && form.suppresses_faults()), EvexSecondHalf),
+    row(Bug::EvexPermuteIndexHalved, "VPERMB to VPERMPD", Family::Evex(|form| is_integer(form, IntegerOperation::Permute)), EvexSecondHalf),
+    row(Bug::EvexTwoTablesSelectorIgnored, "VPERMI2 and VPERMT2", Family::Evex(|form| form.reads_destination()), EvexSecondHalf),
+    row(Bug::EvexLanesFromTheFirst, "EVEX in-lane shuffles", Family::Evex(|form| form.vector_bytes() > 16 && matches!(form.operation, EvexOperation::Integer { .. })), EvexSecondHalf),
+    row(Bug::EvexShuffleBytesZeroBitIgnored, "VPSHUFB", Family::Evex(|form| is_integer(form, IntegerOperation::ShuffleBytes)), EvexSecondHalf),
+    row(Bug::EvexUnpackSourcesSwapped, "VUNPCKH and VUNPCKL", Family::Evex(|form| is_integer(form, IntegerOperation::UnpackLow) || is_integer(form, IntegerOperation::UnpackHigh)), EvexSecondHalf),
+    row(Bug::EvexAlignCountUnreduced, "VALIGND, VALIGNQ", Family::Evex(|form| is_integer(form, IntegerOperation::AlignElements)), EvexSecondHalf),
+    row(Bug::EvexPermuteFaultsSuppressed, "EVEX permutes with memory", Family::Evex(|form| form.place != OperandPlace::Register && !form.suppresses_faults()), EvexSecondHalf),
 ];
+
+/// Whether the EVEX form is an integer form of the operation.
+fn is_integer(form: &EvexForm, operation: IntegerOperation) -> bool {
+    matches!(form.operation, EvexOperation::Integer { operation: other, .. } if other == operation)
+}
 
 /// Whether the EVEX form computes floating-point elements from registers alone.
 fn is_float_register_form(form: &EvexForm) -> bool {

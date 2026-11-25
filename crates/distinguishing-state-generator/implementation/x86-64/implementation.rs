@@ -194,7 +194,8 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::CpuidLeaf
         | OperandType::CpuidSubleaf
         | OperandType::CpuidUpperHalves
-        | OperandType::EvexFloatData(_) => true,
+        | OperandType::EvexFloatData(_)
+        | OperandType::EvexIntegerData(_) => true,
         _ => false,
     }
 }

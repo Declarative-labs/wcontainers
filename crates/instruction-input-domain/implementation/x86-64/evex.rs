@@ -24,7 +24,7 @@ use core::array;
 
 use iced_x86::{Instruction as Encoded, MemoryOperand, Register, RoundingControl};
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
-use wcontainers_processor_architecture_x86_64::evex::{EvexForm, EvexOperation, read_element, write_element};
+use wcontainers_processor_architecture_x86_64::evex::{EvexForm, EvexOperation, IntegerOperation, read_element, write_element};
 use wcontainers_processor_architecture_x86_64::float::{
     Arrangement, DENORMALS_ARE_ZEROS, FLUSH_TO_ZERO, FloatOperation, Precision, ROUNDING_SHIFT,
 };
@@ -87,18 +87,25 @@ pub struct EvexFloatData {
 
 /// The operand types of an EVEX form, in the order the build reads them.
 pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
-    let EvexOperation::Float { operation, precision, arrangement } = form.operation;
     let op_code = form.code.op_code();
     let register = form.place == OperandPlace::Register;
-    let data = OperandType::EvexFloatData(EvexFloatData {
-        operation,
-        precision,
-        arrangement,
-        vector_bytes: form.vector_bytes(),
-        register,
-        rounding: op_code.can_use_rounding_control(),
-        suppression: op_code.can_suppress_all_exceptions(),
-    });
+    let data = match form.operation {
+        EvexOperation::Float { operation, precision, arrangement } => OperandType::EvexFloatData(EvexFloatData {
+            operation,
+            precision,
+            arrangement,
+            vector_bytes: form.vector_bytes(),
+            register,
+            rounding: op_code.can_use_rounding_control(),
+            suppression: op_code.can_suppress_all_exceptions(),
+        }),
+        EvexOperation::Integer { operation, element_bytes } => OperandType::EvexIntegerData(EvexIntegerData {
+            operation,
+            element_bytes,
+            vector_bytes: form.vector_bytes(),
+            register,
+        }),
+    };
     let unread = OperandType::Flags(FlagSet::Unread);
     if register {
         return vec![OperandType::EvexEncoding, data, unread];
@@ -227,6 +234,145 @@ pub fn generate_float_data(data: EvexFloatData) -> Vec<OperandValue> {
     all
 }
 
+/// What the data of an integer EVEX form is made of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EvexIntegerData {
+    pub operation: IntegerOperation,
+    pub element_bytes: usize,
+    pub vector_bytes: usize,
+    /// A register form, whose data holds the opmask.
+    pub register: bool,
+}
+
+/// What a vector of an integer form's data plays.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Role {
+    /// Elements to be moved, each a value of its own.
+    Table,
+    /// Element numbers.
+    Index,
+}
+
+/// The immediates an integer form's data takes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Immediates {
+    None,
+    /// Selectors whose bit pairs and bits differ.
+    Selector,
+    /// Counts on each side of every element and lane edge.
+    Count,
+}
+
+/// The roles of the destination (when read), the first source and the second, and the immediates.
+fn to_roles(operation: IntegerOperation) -> (Option<Role>, Role, Role, Immediates) {
+    use IntegerOperation as I;
+    use Role::{Index, Table};
+    match operation {
+        I::Permute => (None, Index, Table, Immediates::None),
+        I::PermuteTwoTablesIndexInDestination => (Some(Index), Table, Table, Immediates::None),
+        I::PermuteTwoTablesIndexInFirst => (Some(Table), Index, Table, Immediates::None),
+        I::PermuteInLanes | I::ShuffleBytes => (None, Table, Index, Immediates::None),
+        I::PermuteQuartersByImmediate
+        | I::PermuteInLanesByImmediate
+        | I::ShuffleHighWords
+        | I::ShuffleLowWords
+        | I::ShuffleSingles
+        | I::ShuffleDoubles
+        | I::ShuffleBlocks => (None, Table, Table, Immediates::Selector),
+        I::AlignElements | I::AlignBytes => (None, Table, Table, Immediates::Count),
+        I::UnpackHigh | I::UnpackLow => (None, Table, Table, Immediates::None),
+    }
+}
+
+/// An element value of its own for each element and salt, so that every moved element is told apart.
+const fn to_table_element(index: usize, salt: u64, bytes: usize) -> u64 {
+    let mixed = (index as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15) ^ salt;
+    let value = mixed ^ (mixed >> 29);
+    if bytes >= 8 { value } else { value & ((1 << (bytes * 8)) - 1) }
+}
+
+/// The vectors of a role for elements of `bytes` in `vector_bytes`: two tables; or indexes naming each element in
+/// order, in reverse, the first, the last, the next, a scattered pattern reaching both tables, and each with bits
+/// set above those an index reads, a shuffle's zeroing bit among them.
+fn generate_role(role: Role, bytes: usize, vector_bytes: usize) -> Vec<[u128; 4]> {
+    let elements = vector_bytes / bytes;
+    let make = |value: &dyn Fn(usize) -> u64| -> [u128; 4] {
+        let mut vector = [0; 4];
+        for index in 0..elements {
+            write_element(&mut vector, index, bytes, value(index));
+        }
+        vector
+    };
+    let width_mask = if bytes >= 8 { u64::MAX } else { (1 << (bytes * 8)) - 1 };
+    let above = |value: u64| (value | (0xA5A5_A5A5_A5A5_A5A5 << (elements * 2).trailing_zeros())) & width_mask;
+    match role {
+        Role::Table => vec![make(&|index| to_table_element(index, 0, bytes)), make(&|index| to_table_element(index, 0x5A5A, bytes))],
+        Role::Index => vec![
+            make(&|index| index as u64),
+            make(&|index| (elements - 1 - index) as u64),
+            make(&|_| 0),
+            make(&|_| (elements - 1) as u64),
+            make(&|index| ((index + 1) % elements) as u64),
+            make(&|index| ((index * 7 + 3) % (2 * elements)) as u64),
+            make(&|index| above(((index * 5 + 1) % (2 * elements)) as u64)),
+            make(&|index| above((elements - 1 - index) as u64) | if index % 3 == 0 { 0x80 & width_mask } else { 0 }),
+        ],
+    }
+}
+
+/// The data of an integer form: each destination, first source and second source of their roles with the first
+/// immediate, then each immediate with the first destination and first source against each second source; for a
+/// register form also the first destination and first source against each second source with every other element
+/// selected, merging and zeroing. A memory form takes the first of each against each second source.
+pub fn generate_integer_data(data: EvexIntegerData) -> Vec<OperandValue> {
+    let EvexIntegerData { operation, element_bytes, vector_bytes, register } = data;
+    let (destination_role, first_role, second_role, immediates) = to_roles(operation);
+    let destinations = match destination_role {
+        Some(role) => generate_role(role, element_bytes, vector_bytes),
+        None => vec![[0; 4]],
+    };
+    let firsts = generate_role(first_role, element_bytes, vector_bytes);
+    let seconds = generate_role(second_role, element_bytes, vector_bytes);
+    let immediates: &[u8] = match immediates {
+        Immediates::None => &[0],
+        Immediates::Selector => &[0x1B, 0x00, 0x55, 0xAA, 0xFF, 0xE4, 0x4E, 0xB1, 0x0F, 0xF0],
+        Immediates::Count => &[1, 0, 2, 3, 7, 8, 9, 15, 16, 17, 31, 32, 63, 64, 0xFF],
+    };
+    let datum = |destination, first, second, immediate, mask| OperandValue::EvexIntegerData {
+        destination,
+        first,
+        second,
+        immediate,
+        mask,
+    };
+    if !register {
+        return seconds.iter().map(|&second| datum(destinations[0], firsts[0], second, immediates[0], NO_MASK)).collect();
+    }
+    let mut all = Vec::new();
+    for &destination in &destinations {
+        for &first in &firsts {
+            for &second in &seconds {
+                all.push(datum(destination, first, second, immediates[0], NO_MASK));
+            }
+        }
+    }
+    for &immediate in &immediates[1..] {
+        for &second in &seconds {
+            all.push(datum(destinations[0], firsts[0], second, immediate, NO_MASK));
+        }
+    }
+    let all_elements = to_all(vector_bytes / element_bytes);
+    for mask in [
+        EvexMask { register: 1, value: EVERY_OTHER & all_elements, zeroing: false },
+        EvexMask { register: 7, value: EVERY_OTHER & all_elements, zeroing: true },
+    ] {
+        for &second in &seconds {
+            all.push(datum(destinations[0], firsts[firsts.len() - 1], second, immediates[0], mask));
+        }
+    }
+    all
+}
+
 /// The register of a vector of the form's length.
 fn to_vector_register(form: &EvexForm, number: usize) -> Register {
     let first = match form.vector_bytes() {
@@ -248,6 +394,7 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
     let (mut registers, mut access, mut layout) = ([0; 3], None, CodeLayout::PageStart);
     let (mut mask, mut broadcast, mut control) = (NO_MASK, false, EmbeddedControl::None);
     let (mut first, mut second) = ([0; 4], [0; 4]);
+    let (mut destination_value, mut immediate) = (None, None);
     for (operand_type, operand) in operands {
         match (operand_type, *operand) {
             (OperandType::EvexEncoding, OperandValue::EvexEncoding(encoding)) => {
@@ -269,16 +416,30 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
                     mask = data_mask;
                 }
             }
+            (
+                OperandType::EvexIntegerData(_),
+                OperandValue::EvexIntegerData { destination: old, first: one, second: other, immediate: chosen, mask: data_mask },
+            ) => {
+                (destination_value, first, second, immediate) = (Some(old), one, other, Some(chosen));
+                if data_mask.register != 0 {
+                    mask = data_mask;
+                }
+            }
             (OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
             (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
         }
     }
     processor.opmask_registers[mask.register] = mask.value;
+    if form.reads_destination()
+        && let Some(value) = destination_value
+    {
+        processor.write_zmm(registers[0], value);
+    }
     if form.reads_first_source() {
         processor.write_zmm(registers[1], first);
     }
     let mut memory_mutations = Vec::new();
-    let memory_bytes = if broadcast { form.element_bytes() } else { form.memory_bytes() };
+    let memory_bytes = if broadcast { form.memory_element_bytes } else { form.memory_bytes() };
     let memory_operand: Option<MemoryOperand> = access.map(|access| {
         let (mut operand, address) = place_memory_operand(access, memory_bytes as u64, &mut processor, &mut memory_mutations);
         operand.is_broadcast = broadcast;
@@ -303,11 +464,17 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
     let code = form.code;
     let destination = to_vector_register(form, registers[0]);
     let first_register = to_vector_register(form, registers[1]);
-    let mut encoded = match (memory_operand, form.reads_first_source()) {
-        (Some(operand), true) => Encoded::with3(code, destination, first_register, operand),
-        (Some(operand), false) => Encoded::with2(code, destination, operand),
-        (None, true) => Encoded::with3(code, destination, first_register, to_vector_register(form, registers[2])),
-        (None, false) => Encoded::with2(code, destination, to_vector_register(form, registers[2])),
+    let second_register = to_vector_register(form, registers[2]);
+    let immediate = form.has_immediate().then(|| u32::from(immediate.unwrap_or(0)));
+    let mut encoded = match (memory_operand, form.reads_first_source(), immediate) {
+        (Some(operand), true, None) => Encoded::with3(code, destination, first_register, operand),
+        (Some(operand), false, None) => Encoded::with2(code, destination, operand),
+        (None, true, None) => Encoded::with3(code, destination, first_register, second_register),
+        (None, false, None) => Encoded::with2(code, destination, second_register),
+        (Some(operand), true, Some(value)) => Encoded::with4(code, destination, first_register, operand, value),
+        (Some(operand), false, Some(value)) => Encoded::with3(code, destination, operand, value),
+        (None, true, Some(value)) => Encoded::with4(code, destination, first_register, second_register, value),
+        (None, false, Some(value)) => Encoded::with3(code, destination, second_register, value),
     }
     .unwrap_or_else(|error| panic!("{code:?} takes its operands: {error}"));
     if mask.register != 0 {

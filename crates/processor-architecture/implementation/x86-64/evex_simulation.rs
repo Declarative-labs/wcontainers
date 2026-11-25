@@ -11,7 +11,7 @@ use iced_x86::{Instruction as Decoded, OpKind, RoundingControl};
 
 use super::{Memory, MemoryOperand, check_access, check_alignment, check_canonical, expect_code, locate};
 use crate::evex::{EvexForm, EvexOperation, find_evex_form, read_element, write_element};
-use crate::float::{Arrangement, FLAGS, MASK_SHIFT, ROUNDING_SHIFT};
+use crate::float::{Arrangement, FLAGS, FloatOperation, MASK_SHIFT, Precision, ROUNDING_SHIFT};
 use crate::memory::read_bytes;
 use crate::planted::{Bug, is_active};
 use crate::{Access, Exception, Flags, Instruction, Processor};
@@ -32,7 +32,7 @@ pub(super) fn execute_evex(
     let bytes = form.element_bytes();
     let selected = read_selection(processor, decoded, elements);
     let destination = decoded.op0_register().number();
-    let source_operand = decoded.op_count() - 1;
+    let source_operand = if form.has_immediate() { decoded.op_count() - 2 } else { decoded.op_count() - 1 };
     let second = match decoded.op_kind(source_operand) {
         OpKind::Register => processor.read_zmm(decoded.op_register(source_operand).number()),
         _ => read_memory_source(&form, processor, memory, decoded, selected)?,
@@ -41,24 +41,58 @@ pub(super) fn execute_evex(
         true => processor.read_zmm(decoded.op1_register().number()),
         false => second,
     };
-    let EvexOperation::Float { operation, precision, arrangement } = form.operation;
-    let (mxcsr, suppressed) = to_control(processor.mxcsr, decoded);
-    let mut result = processor.read_zmm(destination);
-    let (mut before, mut after) = (0, 0);
-    for index in 0..elements {
-        if selected & (1 << index) == 0 {
-            if decoded.zeroing_masking() && !is_active(Bug::EvexZeroingMerges) {
-                write_element(&mut result, index, bytes, 0);
-            }
-            continue;
+    let old = processor.read_zmm(destination);
+    let mut result = old;
+    let computed = match form.operation {
+        EvexOperation::Float { operation, precision, arrangement } => {
+            compute_float(processor, decoded, (operation, precision, arrangement), &first, &second, selected, elements)?
         }
-        let outcome = operation.compute(
-            read_element(&first, index, bytes),
-            read_element(&second, index, bytes),
-            precision,
-            mxcsr,
-            0,
-        );
+        EvexOperation::Integer { operation, .. } => {
+            let immediate = if form.has_immediate() { decoded.immediate8() } else { 0 };
+            operation.compute(&old, &first, &second, immediate, form.vector_bytes(), bytes)
+        }
+    };
+    for index in 0..elements {
+        if selected & (1 << index) != 0 {
+            write_element(&mut result, index, bytes, read_element(&computed, index, bytes));
+        } else if decoded.zeroing_masking() && !is_active(Bug::EvexZeroingMerges) {
+            write_element(&mut result, index, bytes, 0);
+        }
+    }
+    let written = elements * bytes;
+    if matches!(form.operation, EvexOperation::Float { arrangement: Arrangement::Scalar, .. }) {
+        // The elements above the first come from the first source; the bits beyond 128 are zeroed.
+        let low = first[0] & !((1u128 << (written * 8)) - 1);
+        result = [(result[0] & ((1u128 << (written * 8)) - 1)) | low, 0, 0, 0];
+        if is_active(Bug::EvexScalarKeepsUpperBits) {
+            result[1..].copy_from_slice(&old[1..]);
+        }
+    } else {
+        result.iter_mut().skip(written * 8 / 128).for_each(|part| *part = 0);
+    }
+    let target = if is_active(Bug::EvexHighRegistersAliasLow) { destination % 16 } else { destination };
+    processor.write_zmm(target, result);
+    Ok(())
+}
+
+/// Each selected element of a floating-point form computed under MXCSR or the embedded control; the flags found are
+/// added to MXCSR unless suppressed, and an unmasked one raises #XM.
+fn compute_float(
+    processor: &mut Processor,
+    decoded: &Decoded,
+    (operation, precision, _): (FloatOperation, Precision, Arrangement),
+    first: &[u128; 4],
+    second: &[u128; 4],
+    selected: u64,
+    elements: usize,
+) -> Result<[u128; 4], Exception> {
+    let bytes = (precision.to_bits() / u8::BITS) as usize;
+    let (mxcsr, suppressed) = to_control(processor.mxcsr, decoded);
+    let mut result = [0; 4];
+    let (mut before, mut after) = (0, 0);
+    for index in (0..elements).filter(|index| selected & (1 << index) != 0) {
+        let outcome =
+            operation.compute(read_element(first, index, bytes), read_element(second, index, bytes), precision, mxcsr, 0);
         before |= outcome.before;
         after |= outcome.after;
         write_element(&mut result, index, bytes, outcome.bits);
@@ -75,21 +109,7 @@ pub(super) fn execute_evex(
         }
         processor.mxcsr |= before | after;
     }
-    let written = elements * bytes;
-    if arrangement == Arrangement::Scalar {
-        // The elements above the first come from the first source; the bits beyond 128 are zeroed.
-        let low = first[0] & !((1u128 << (written * 8)) - 1);
-        result = [(result[0] & ((1u128 << (written * 8)) - 1)) | low, 0, 0, 0];
-        if is_active(Bug::EvexScalarKeepsUpperBits) {
-            let old = processor.read_zmm(destination);
-            result[1..].copy_from_slice(&old[1..]);
-        }
-    } else {
-        result.iter_mut().skip(written * 8 / 128).for_each(|part| *part = 0);
-    }
-    let target = if is_active(Bug::EvexHighRegistersAliasLow) { destination % 16 } else { destination };
-    processor.write_zmm(target, result);
-    Ok(())
+    Ok(result)
 }
 
 /// The elements the opmask register selects, bit by bit from the lowest; every element without one.
@@ -120,7 +140,8 @@ fn to_control(mxcsr: u32, decoded: &Decoded) -> (u32, bool) {
     }
 }
 
-/// The memory source as a vector: the selected elements read, or the broadcast element in every element.
+/// The memory source as a vector: the selected elements read, or the broadcast element in every element; a form
+/// that does not suppress faults reads the whole reference whatever the opmask selects.
 fn read_memory_source(
     form: &EvexForm,
     processor: &Processor,
@@ -129,29 +150,31 @@ fn read_memory_source(
     selected: u64,
 ) -> Result<[u128; 4], Exception> {
     let operand = locate(processor, decoded);
-    let bytes = form.element_bytes();
     let broadcast = decoded.is_broadcast() && !is_active(Bug::EvexBroadcastReadsVector);
+    let bytes = if broadcast { form.memory_element_bytes } else { form.element_bytes() };
+    let elements = if broadcast { form.vector_bytes() / bytes } else { form.elements() };
     let reference = if broadcast { bytes } else { form.memory_bytes() };
     let unchecked = processor.flags.difference(Flags::ALIGNMENT_CHECK);
+    let suppresses = form.suppresses_faults() || is_active(Bug::EvexPermuteFaultsSuppressed);
+    let whole = !suppresses || is_active(Bug::EvexMaskedFaultNotSuppressed);
+    let selected = if whole || (broadcast && selected != 0) { u64::MAX } else { selected };
     let mut vector = [0; 4];
-    let read = |index: usize| selected & (1 << index) != 0 || is_active(Bug::EvexMaskedFaultNotSuppressed);
+    let read = |index: usize| selected & (1 << index) != 0;
     let to_element = |index: usize| {
         let at = if broadcast { 0 } else { index * bytes };
         MemoryOperand { address: operand.address.wrapping_add(at as u64), stack: operand.stack }
     };
-    if decoded.op_mask() == iced_x86::Register::None {
+    if decoded.op_mask() == iced_x86::Register::None || whole {
         // Unmasked, the reference is checked as a legacy form's access is.
         check_access(processor.flags, memory, operand, reference as u64, Access::Read)?;
-    } else {
+    } else if (0..elements).any(read) {
         // Masked, the selected elements' bytes must be canonical before the reference's alignment is checked.
-        if (0..form.elements()).any(read) {
-            for index in (0..form.elements()).filter(|index| read(*index)) {
-                check_canonical(to_element(index), bytes as u64)?;
-            }
-            check_alignment(processor.flags, operand, reference as u64)?;
+        for index in (0..elements).filter(|index| read(*index)) {
+            check_canonical(to_element(index), bytes as u64)?;
         }
+        check_alignment(processor.flags, operand, reference as u64)?;
     }
-    for index in (0..form.elements()).filter(|index| read(*index)) {
+    for index in (0..elements).filter(|index| read(*index)) {
         let element = to_element(index);
         check_access(unchecked, memory, element, bytes as u64, Access::Read)?;
         let value: [u8; 8] = read_bytes(memory, element.address);

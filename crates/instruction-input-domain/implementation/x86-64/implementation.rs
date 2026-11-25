@@ -162,6 +162,9 @@ pub enum OperandType {
     /// The two sources of a floating-point EVEX form and MXCSR; for a register form also the opmask and the
     /// embedded rounding or exception suppression.
     EvexFloatData(evex::EvexFloatData),
+    /// The destination's old value, the two sources and the immediate of an integer EVEX form; for a register form
+    /// also the opmask.
+    EvexIntegerData(evex::EvexIntegerData),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -286,6 +289,15 @@ pub enum OperandValue {
         mask: evex::EvexMask,
         control: evex::EmbeddedControl,
         mxcsr: u32,
+    },
+    /// Three ZMM values, an immediate (0 for a form without one) and an opmask (k0 where the form's own operand
+    /// gives it).
+    EvexIntegerData {
+        destination: [u128; 4],
+        first: [u128; 4],
+        second: [u128; 4],
+        immediate: u8,
+        mask: evex::EvexMask,
     },
 }
 
@@ -487,6 +499,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::EvexMask(set) => evex::generate_masks(set),
             OperandType::EvexBroadcast => vec![OperandValue::Broadcast(false), OperandValue::Broadcast(true)],
             OperandType::EvexFloatData(data) => evex::generate_float_data(data),
+            OperandType::EvexIntegerData(data) => evex::generate_integer_data(data),
         };
         values.into_iter()
     }
