@@ -1,5 +1,6 @@
 //! The tests every implementation of wcontainers-executor runs, written against its traits alone.
 
+use std::convert::Infallible;
 use std::fmt::{Debug, Write};
 
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
@@ -8,7 +9,6 @@ use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
     ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator,
 };
-use wcontainers_processor_architecture_conformance::leave_same_memory;
 
 /// On every state the generator makes for every instruction, the executor ends where the precise instruction set
 /// says.
@@ -21,7 +21,9 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
     generator: Generator,
 ) where
     Chip: Executor,
-    Chip::Architecture: Clone + Eq,
+    Chip::Architecture: Clone,
+    <Chip::Architecture as ProcessorArchitecture>::PreciseInstruction:
+        Simulator<Chip::Architecture, Error = Infallible>,
     <Chip::Architecture as ProcessorArchitecture>::ProcessorState: Debug,
     <Chip::Architecture as ProcessorArchitecture>::Instruction: Debug,
     <Chip::Architecture as ProcessorArchitecture>::PagePermission: Debug,
@@ -38,14 +40,7 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
             states += 1;
             let Ok(simulated) = precise.simulate(before.clone());
             let executed = executor.execute_single_instruction(before.clone());
-            let start = before.memory_mutations.len();
-            let agree = simulated.processor == executed.processor
-                && leave_same_memory(
-                    &before.memory_mutations,
-                    &simulated.memory_mutations[start..],
-                    &executed.memory_mutations[start..],
-                );
-            if !agree {
+            if simulated != executed {
                 disagreeing += 1;
                 first.get_or_insert_with(|| describe(&before, &simulated, &executed));
             }
