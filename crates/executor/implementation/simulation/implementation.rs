@@ -70,6 +70,13 @@ impl ExecutionInterrupter for SimulationInterrupter {
     }
 }
 
+/// The hook of a run whose memory changes are not kept.
+struct DroppedChanges;
+
+impl MemorySink<Arm64<User>> for DroppedChanges {
+    fn on_memory_mutated(&mut self, _: MemoryDelta<'_, Arm64<User>>) {}
+}
+
 /// What the executor does when an instruction raised its exception.
 ///
 /// No listed instruction makes a system call, so the simulation never gives the handler one.
@@ -84,6 +91,7 @@ enum Trap {
 
 impl<Set: PreciseInstructionSet<Arm64<User>>> BehaviorSource for Simulation<Set> {
     type Architecture = Arm64<User>;
+    type Error = Infallible;
 
     /// Runs the instruction at the program counter, taking a word none of the listed instructions match as undefined.
     fn execute_single_instruction_in_place(
@@ -91,7 +99,7 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> BehaviorSource for Simulation<Set>
         processor: &mut Processor<()>,
         memory: &[MemoryDelta<'_, Arm64<User>>],
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
-    ) {
+    ) -> Result<(), Infallible> {
         let word = u32::from_le_bytes(read_bytes(memory, processor.program_counter));
         let listed = Arm64::<User>::list_instructions().find(|instruction| {
             let fixed = instruction.to_fixed_bits();
@@ -103,19 +111,17 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> BehaviorSource for Simulation<Set>
                 memory,
                 mutation_hook,
             );
-            return;
+            return Ok(());
         }
         // A breakpoint changes nothing but the exception, so on a copy it gives the fault of the fetch, if any.
         let mut fetched = processor.clone();
-        let Ok(()) = PreciseInstruction::Brk.simulate_in_place(
-            &mut fetched,
-            memory,
-            &mut |_: MemoryDelta<'_, Arm64<User>>| {},
-        );
+        let Ok(()) =
+            PreciseInstruction::Brk.simulate_in_place(&mut fetched, memory, &mut DroppedChanges);
         let fetch_fault = fetched
             .exception
             .filter(|exception| !matches!(exception, Exception::Breakpoint { .. }));
         processor.exception = Some(fetch_fault.unwrap_or(Exception::UndefinedInstruction));
+        Ok(())
     }
 }
 
@@ -157,7 +163,7 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> Executor for Simulation<Set> {
                 }
                 let before = processor.clone();
                 refresh(memory, &mut copy);
-                self.execute_single_instruction_in_place(
+                let Ok(()) = self.execute_single_instruction_in_place(
                     &mut processor,
                     copy.deltas(),
                     &mut changes,

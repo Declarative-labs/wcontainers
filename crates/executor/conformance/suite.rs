@@ -1120,10 +1120,11 @@ fn length(addresses: &Range<u64>) -> usize {
 
 /// Runs each suite function above as its own test on its values, made anew for every test, and the behavior source's.
 ///
-/// The values are an executor, the precise instruction set it should agree with and the generator of the states.
+/// The values are an executor, the precise instruction set it should agree with, the generator of the states and the
+/// states the executor cannot execute, none for an executor whose error is `Infallible`.
 #[macro_export]
 macro_rules! tests {
-    ($executor:expr, $set:expr, $generator:expr) => {
+    ($executor:expr, $set:expr, $generator:expr, $unexecutable:expr) => {
         #[test]
         fn agrees_with_precise_instruction_set() {
             $crate::agrees_with_precise_instruction_set($executor, $set, $generator);
@@ -1237,7 +1238,11 @@ macro_rules! tests {
         mod behavior_source {
             use super::*;
 
-            $crate::wcontainers_behavior_source_conformance::tests!($executor, $generator);
+            $crate::wcontainers_behavior_source_conformance::tests!(
+                $executor,
+                $generator,
+                $unexecutable
+            );
         }
     };
 }

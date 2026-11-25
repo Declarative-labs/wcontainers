@@ -46,16 +46,16 @@ const RECORDINGS: &str = concat!(
     "/../../../behavior-source/implementation/recording/recordings/apple-m5"
 );
 
-type AppleM5 = MeasuredInstructionSet<Recording, CriticalValueProduct<Arm64InputDomain>>;
+type AppleM5 = MeasuredInstructionSet<Arm64<User>>;
 
 /// Returns a chip that runs each instruction as the Apple M5 recording shows it.
 fn simulate_apple_m5() -> Simulation<AppleM5> {
-    let recording = match Recording::read(Path::new(RECORDINGS)) {
+    let mut recording = match Recording::read(Path::new(RECORDINGS)) {
         Ok(recording) => recording,
         Err(error) => panic!("reading {RECORDINGS}: {error}"),
     };
-    match AppleM5::measure(recording) {
-        Ok(set) => Simulation::new(set),
+    match recording.measure_instructions(&CriticalValueProduct::new(Arm64InputDomain)) {
+        Ok(measurements) => Simulation::new(AppleM5::from_measurements(&measurements)),
         Err(_) => panic!("the recording shows no one known behavior for some instruction"),
     }
 }
@@ -76,10 +76,8 @@ fn word_no_listed_instruction_matches_is_undefined() {
     let mut copy = SpaceCopy::default();
     refresh(&memory, &mut copy);
     let mut stopped = start.clone();
-    chip.execute_single_instruction_in_place(&mut stopped, copy.deltas(), &mut |_: MemoryDelta<
-        '_,
-        Arm64<User>,
-    >| {});
+    let Ok(()) =
+        chip.execute_single_instruction_in_place(&mut stopped, copy.deltas(), &mut Vec::new());
     assert_eq!(
         stopped,
         Processor {

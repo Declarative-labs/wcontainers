@@ -1,11 +1,13 @@
 use std::path::Path;
 
+use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_behavior_source_recording::Recording;
 use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
 use wcontainers_executor_simulation::Simulation;
 use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
+use wcontainers_processor_architecture_arm64::{Arm64, User};
 
 /// What an Apple M5 did with each listed instruction, written by the record tool.
 const RECORDINGS: &str = concat!(
@@ -14,16 +16,16 @@ const RECORDINGS: &str = concat!(
 );
 
 type Generator = CriticalValueProduct<Arm64InputDomain>;
-type AppleM5 = MeasuredInstructionSet<Recording, Generator>;
+type AppleM5 = MeasuredInstructionSet<Arm64<User>>;
 
 /// Returns the behaviors the Apple M5 showed, measured from its recording.
 fn measure_apple_m5() -> AppleM5 {
-    let recording = match Recording::read(Path::new(RECORDINGS)) {
+    let mut recording = match Recording::read(Path::new(RECORDINGS)) {
         Ok(recording) => recording,
         Err(error) => panic!("reading {RECORDINGS}: {error}"),
     };
-    match AppleM5::measure(recording) {
-        Ok(set) => set,
+    match recording.measure_instructions(&Generator::new(Arm64InputDomain)) {
+        Ok(measurements) => AppleM5::from_measurements(&measurements),
         Err(_) => panic!("the recording shows no one known behavior for some instruction"),
     }
 }
@@ -31,5 +33,6 @@ fn measure_apple_m5() -> AppleM5 {
 wcontainers_executor_conformance::tests!(
     Simulation::new(measure_apple_m5()),
     measure_apple_m5(),
-    Generator::new(Arm64InputDomain)
+    Generator::new(Arm64InputDomain),
+    []
 );
