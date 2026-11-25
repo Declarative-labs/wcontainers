@@ -42,6 +42,9 @@ rustc-hash = "2.1.3"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["errno", "general", "no_std"] }
 # Bounds each zig build (src/programs.rs).
 wait-timeout = "0.2.1"
+# Names the browser translator's wasm-bindgen exports, as its command-line tool does; the same version as
+# browser/Cargo.toml's wasm-bindgen (MIT OR Apache-2.0).
+wasm-bindgen-cli-support = "=0.2.130"
 
 # The stop frame's layout and the system calls of the native output's layer 1 blob (MIT OR Apache-2.0).
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
@@ -50,6 +53,9 @@ libc = "0.2.191"
 [dev-dependencies]
 flate2 = "1.1"
 
-# TODO: remove this crate's 16 uses of unsafe, then replace this table with `[lints]` `workspace = true`.
-[lints.rust]
-unsafe_op_in_unsafe_fn = "deny"
+# The CPU's own reciprocal estimates for tests/reciprocals.rs, through safe calls (Zlib OR Apache-2.0 OR MIT).
+[target.'cfg(target_arch = "x86_64")'.dev-dependencies]
+safe_arch = "1.2.0"
+
+[lints]
+workspace = true
