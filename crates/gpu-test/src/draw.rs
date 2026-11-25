@@ -2,7 +2,7 @@
 //! by Direct3D's rules (vertices snapped to 1/256 pixel, pixel centres, the top-left rule), depth and
 //! stencil tests, and blending. Sampling and loads of textures are here too.
 
-use crate::program::{self, Error, Level, Resources, StorageWrite, Value};
+use crate::program::{self, Error, Level, StorageWrite, Value};
 use crate::recorder::{
     Bound, DepthOps, Entries, Obj, Recorder, StageCounts, TextureObj, as_kind, level_size,
     subresource,
@@ -81,8 +81,9 @@ impl Bindings<'_> {
     }
 }
 
-impl Resources for Bindings<'_> {
-    fn buffer(&self, group: u32, binding: u32) -> Result<&[u8], Error> {
+impl Bindings<'_> {
+    /// The bytes of the buffer range bound at (group, binding).
+    pub fn buffer(&self, group: u32, binding: u32) -> Result<&[u8], Error> {
         let Bound::Buffer {
             buffer,
             offset,
@@ -99,7 +100,8 @@ impl Resources for Bindings<'_> {
             .ok_or_else(|| "a bound range past the buffer's end".into())
     }
 
-    fn sample(
+    /// Samples the texture at `image` with the sampler at `sampler`; `compare` is a depth reference.
+    pub fn sample(
         &self,
         image: (u32, u32),
         sampler: (u32, u32),
@@ -118,7 +120,8 @@ impl Resources for Bindings<'_> {
         sample_view(self.rec, view, &s, coord, layer, level, compare)
     }
 
-    fn load(
+    /// Loads one texel, or one sample of a multisampled texel.
+    pub fn load(
         &self,
         image: (u32, u32),
         coord: [i64; 3],
@@ -159,7 +162,8 @@ impl Resources for Bindings<'_> {
         ))
     }
 
-    fn size(&self, image: (u32, u32), level: i64) -> Result<[u32; 3], Error> {
+    /// The size of a level of the texture.
+    pub fn size(&self, image: (u32, u32), level: i64) -> Result<[u32; 3], Error> {
         let v = self.rec.view(self.texture(image)?)?;
         let t = self.rec.texture(v.texture)?;
         let (w, h, d) = level_size(&t.desc, v.desc.base_mip + level as u32);
