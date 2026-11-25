@@ -60,6 +60,7 @@ use wcontainers_processor_architecture_arm64::floating_point::{
 use wcontainers_processor_architecture_arm64::integer::IntegerOperation;
 use wcontainers_processor_architecture_arm64::load_store::Transfer;
 use wcontainers_processor_architecture_arm64::operand::Operand;
+use wcontainers_processor_architecture_arm64::system_instruction::to_system_instruction_bytes;
 use wcontainers_processor_architecture_arm64::system_register::{
     HeldRegister, SystemRegisterAccess, to_system_register_access,
 };
@@ -187,9 +188,10 @@ enum Allowed {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 enum Group {
     Register,
-    Placement,
-    /// The field that names the system register an MRS or MSR reaches, which decides what else it reads.
+    /// The field that names the system register an MRS or MSR reaches, or the operation SYS does, which decides what
+    /// else it reads.
     Selector,
+    Placement,
     /// The field that names a condition, which with the flags decides what the instruction reads.
     Condition,
     Flags,
@@ -201,8 +203,8 @@ enum Group {
 
 const GROUPS: [Group; 9] = [
     Group::Register,
-    Group::Placement,
     Group::Selector,
+    Group::Placement,
     Group::Condition,
     Group::Flags,
     Group::Field,
@@ -583,7 +585,16 @@ impl Cut {
                 Group::Selector => {
                     if let Some(OperandValue::Bits(field)) = self.find(chosen, |operand_type| {
                         matches!(operand_type, OperandType::SystemRegister(_))
-                    }) {
+                    }) && matches!(self.instruction, Instruction::Sys | Instruction::Sysl)
+                    {
+                        // A SYS encoding that reaches no memory, and every SYSL one, decides the outcome alone.
+                        facts.undefined |= self.instruction == Instruction::Sysl
+                            || to_system_instruction_bytes(field as u32).is_none();
+                    } else if let Some(OperandValue::Bits(field)) = self
+                        .find(chosen, |operand_type| {
+                            matches!(operand_type, OperandType::SystemRegister(_))
+                        })
+                    {
                         let write = self.instruction == Instruction::MsrRegister;
                         facts.undefined |= match to_system_register_access(field as u32) {
                             SystemRegisterAccess::Undefined | SystemRegisterAccess::Trapped => true,
@@ -797,6 +808,8 @@ impl Cut {
                     Some(OperandValue::Bits(high)) if high & !(u64::MAX << ADDRESS_TAG_BITS_SHIFT) != 0
                 );
                 match operand_type {
+                    // A SYS encoding that reaches no memory.
+                    _ if facts.undefined => one,
                     OperandType::DataPagePermission(_) if past_addressable => one,
                     OperandType::DataPagePermission(DataPage::Lower) if !reaches_lower => one,
                     OperandType::DataPagePermission(DataPage::Upper) if !reaches_upper => one,

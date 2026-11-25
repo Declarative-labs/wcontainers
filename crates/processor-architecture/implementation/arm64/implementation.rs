@@ -35,6 +35,7 @@ mod registers;
 pub mod simd;
 mod simulation;
 mod structure;
+pub mod system_instruction;
 pub mod system_register;
 #[cfg(test)]
 mod tests;
@@ -306,6 +307,8 @@ pub enum PreciseInstruction<LevelSpecific> {
     MrsCtrEl0 {
         cache_type: u64,
     },
+    /// HINT, MSR (immediate), SYS or SYSL.
+    SystemInstruction(system_instruction::SystemInstructionBehavior),
     /// LDG, a tag store or STGP.
     TagAccess {
         instruction: memory_tagging::TagAccessInstruction,
