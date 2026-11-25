@@ -4,7 +4,7 @@ use wcontainers_metal::{
     BlendFactor, BlendOperation, Blending, BlitCommand, BlitOption, ColorWriteMask,
     CommandBufferStatus, CommitError, CompareFunction, ComputeCommand, DepthStencilDescriptor,
     EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError, FunctionSource,
-    IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, MAX_TEXTURE_SIDE, MakeBufferError,
+    IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, MAX_TEXTURE_SIDE, MAX_VERTEX_STRIDE, MakeBufferError,
     MakeRenderPipelineStateError,
     MakeSamplerStateError, MakeTextureError, Metal, Origin, PixelFormat, PrimitiveTopologyClass,
     PrimitiveType, ReadContentsError, RenderCommand, RenderPassColorAttachment,
@@ -1905,6 +1905,241 @@ pub fn refuses_a_buffer_past_the_max_buffer_length<M: Metal>(mut subject: M) {
     }
 }
 
+/// Checks that a cube of an array length other than one is refused, which Metal's validation stops.
+pub fn refuses_a_cube_of_more_than_one_slice<M: Metal>(mut subject: M) {
+    let mut descriptor = described(TextureType::TypeCube, PixelFormat::Rgba8Unorm);
+    descriptor.array_length = 5;
+    refuses_texture(&mut subject, descriptor);
+    descriptor.array_length = SINGLE;
+    made(&mut subject, descriptor);
+}
+
+/// Returns a color attachment of a pipeline of `format`, blending by `factor` and writing the channels of `mask`.
+fn color_of(
+    format: PixelFormat,
+    factor: Option<BlendFactor>,
+    mask: [bool; 4],
+) -> RenderPipelineColorAttachmentDescriptor {
+    RenderPipelineColorAttachmentDescriptor {
+        pixel_format: format,
+        blending: factor.map(|factor| Blending {
+            rgb_blend_operation: BlendOperation::Add,
+            alpha_blend_operation: BlendOperation::Add,
+            source_rgb_blend_factor: factor,
+            destination_rgb_blend_factor: BlendFactor::Zero,
+            source_alpha_blend_factor: BlendFactor::One,
+            destination_alpha_blend_factor: BlendFactor::Zero,
+        }),
+        write_mask: ColorWriteMask {
+            red: mask[0],
+            green: mask[1],
+            blue: mask[2],
+            alpha: mask[3],
+        },
+    }
+}
+
+/// Returns whether a pipeline drawing the uniform's color into `colors` is made.
+fn makes_pipeline<M: Metal>(
+    subject: &mut M,
+    colors: [Option<RenderPipelineColorAttachmentDescriptor>; MAX_COLOR_ATTACHMENTS],
+) -> bool {
+    let vertex = function(subject, naga::ShaderStage::Vertex, VERTEX);
+    let fragment = function(subject, naga::ShaderStage::Fragment, FLAT);
+    let mut descriptor = pipeline_descriptor::<M>(&vertex, &fragment, None, None, None);
+    descriptor.color_attachments = colors;
+    subject.make_render_pipeline_state(&descriptor).is_ok()
+}
+
+/// Checks that blending by the second source in a pipeline of more than its first color attachment is refused.
+///
+/// Metal's validation stops such a pipeline.
+pub fn refuses_a_second_source_blend_beside_another_attachment<M: Metal>(mut subject: M) {
+    let all = [true; 4];
+    let second = Some(BlendFactor::Source1Alpha);
+    let mut colors = [None; MAX_COLOR_ATTACHMENTS];
+    colors[0] = Some(color_of(PixelFormat::Rgba8Unorm, second, all));
+    colors[1] = Some(color_of(PixelFormat::Rgba8Unorm, None, all));
+    assert!(!makes_pipeline(&mut subject, colors));
+    colors[0] = Some(color_of(PixelFormat::Rgba8Unorm, None, all));
+    colors[3] = Some(color_of(PixelFormat::Rgba8Unorm, second, all));
+    assert!(!makes_pipeline(&mut subject, colors));
+}
+
+/// Checks that writing some channels of a shared-exponent target is refused, and all of them is not.
+///
+/// Metal's validation stops a pipeline of such a mask.
+pub fn refuses_some_channels_of_a_shared_exponent_target<M: Metal>(mut subject: M) {
+    let mut colors = [None; MAX_COLOR_ATTACHMENTS];
+    colors[0] = Some(color_of(PixelFormat::Rgb9e5Float, None, [false, true, true, true]));
+    assert!(!makes_pipeline(&mut subject, colors));
+    colors[0] = Some(color_of(PixelFormat::Rgb9e5Float, None, [true; 4]));
+    assert!(makes_pipeline(&mut subject, colors));
+}
+
+/// Checks that bytes at a slot the function writes are refused, which Metal's validation stops.
+pub fn refuses_bytes_at_a_slot_the_function_writes<M: Metal>(mut subject: M) {
+    refuses_dispatch(
+        &mut subject,
+        vec![ComputeCommand::SetBytes {
+            bytes: pattern(WORDS_BYTES as usize),
+            index: WORDS_SLOT,
+        }],
+    );
+}
+
+/// Checks that a vertex buffer of a stride past `MAX_VERTEX_STRIDE` is refused, and one of that stride is not.
+pub fn refuses_a_vertex_stride_past_the_most<M: Metal>(mut subject: M) {
+    let (module, info) = programs();
+    for (stride, made) in [
+        (MAX_VERTEX_STRIDE.saturating_add(4), false),
+        (u32::MAX, false),
+        (MAX_VERTEX_STRIDE, true),
+    ] {
+        let vertex_buffers = [VertexBufferLayout {
+            buffer_index: VERTICES,
+            stride,
+            step_function: VertexStepFunction::PerVertex,
+            attributes: vec![VertexAttribute {
+                location: u32::MIN,
+                offset: u32::MIN,
+                format: VertexFormat::Float2,
+            }],
+        }];
+        let function = subject.make_function(&FunctionSource {
+            module: &module,
+            info: &info,
+            stage: naga::ShaderStage::Vertex,
+            entry_point: VERTEX,
+            resources: SLOTS,
+            immediates_buffer_index: IMMEDIATES,
+            sizes_buffer_index: SIZES,
+            vertex_buffers: &vertex_buffers,
+            point_size: false,
+        });
+        assert_eq!(function.is_ok(), made, "a stride of {stride}");
+    }
+}
+
+/// Checks that a visibility offset Metal's validation stops is refused with counting off and no buffer too.
+pub fn refuses_a_visibility_offset_with_no_buffer<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, FLAT);
+    let texture = target(&mut subject);
+    for offset in [15, 1 << 63, BEYOND_VISIBILITY_SPAN] {
+        let off = RenderCommand::SetVisibilityResultMode {
+            mode: VisibilityResultMode::Disabled,
+            offset,
+        };
+        refuses_draw(&mut subject, &pass(&texture), &state, vec![off]);
+    }
+}
+
+/// Checks that a copy into a compressed level past its texels, into the rest of its last block, is refused.
+///
+/// Metal's validation stops such a copy; one that ends at the level's texels is taken.
+pub fn refuses_a_copy_past_a_compressed_levels_texels<M: Metal>(mut subject: M) {
+    let mut descriptor = described(TextureType::Type2D, PixelFormat::Bc1Rgba);
+    // Its second level is four texels wide and one high, inside one block.
+    descriptor.width = TARGET_SIDE * 2;
+    descriptor.height = 2;
+    descriptor.mipmap_level_count = 2;
+    descriptor.usage.render_target = false;
+    let texture = made(&mut subject, descriptor);
+    let buffer = filled(&mut subject, &pattern(256));
+    for (height, taken) in [(TARGET_SIDE, false), (SINGLE, true)] {
+        let command_buffer = subject
+            .make_command_buffer()
+            .expect("Metal answers make command buffer");
+        let copied = subject.encode_blit_commands(
+            &command_buffer,
+            &[BlitCommand::CopyFromBufferToTexture {
+                source_buffer: buffer.clone(),
+                source_offset: u64::MIN,
+                source_bytes_per_row: 8,
+                source_bytes_per_image: 8,
+                source_size: Size {
+                    width: TARGET_SIDE,
+                    height,
+                    depth: SINGLE,
+                },
+                destination_texture: texture.clone(),
+                destination_slice: u32::MIN,
+                destination_level: 1,
+                destination_origin: Origin {
+                    x: u32::MIN,
+                    y: u32::MIN,
+                    z: u32::MIN,
+                },
+                options: BlitOption::None,
+            }],
+        );
+        assert_eq!(copied.is_ok(), taken, "{height} rows: {copied:?}");
+        if taken {
+            finish(&mut subject, &command_buffer);
+        }
+    }
+}
+
+/// Checks that a pass of no attachment wider or higher than a target's longest side is refused.
+///
+/// The GPU ends such a pass's work in an error.
+pub fn refuses_a_pass_of_no_attachment_past_the_longest_side<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, FLAT);
+    let texture = target(&mut subject);
+    let mut empty = pass(&texture);
+    empty.color_attachments = [const { None }; MAX_COLOR_ATTACHMENTS];
+    for (width, height) in [(u32::MAX - 3, TARGET_SIDE), (TARGET_SIDE, MAX_TEXTURE_SIDE + 1)] {
+        empty.render_target_width = width;
+        empty.render_target_height = height;
+        refuses_draw(&mut subject, &empty, &state, Vec::new());
+    }
+}
+
+/// Checks that a draw whose vertex buffer holds less than one element, as a buffer or as bytes, completes.
+///
+/// Metal's validation stops such a draw unless what Metal binds holds one element; the function reads none of it.
+pub fn draws_from_a_vertex_buffer_shorter_than_one_element<M: Metal>(mut subject: M) {
+    let state = pipeline(&mut subject, FLAT);
+    let texture = target(&mut subject);
+    let depth_stencil = no_depth(&mut subject);
+    let short = filled(&mut subject, &pattern(4));
+    let vertices = covering(&mut subject);
+    let color = filled(&mut subject, &[0; COLOR_BYTES as usize]);
+    for bytes in [false, true] {
+        let shorter = if bytes {
+            RenderCommand::SetVertexBytes {
+                bytes: pattern(4),
+                index: VERTICES,
+            }
+        } else {
+            RenderCommand::SetVertexBuffer {
+                buffer: short.clone(),
+                offset: u64::MIN,
+                length: 4,
+                index: VERTICES,
+            }
+        };
+        let bindings = vec![
+            RenderCommand::SetFragmentBuffer {
+                buffer: color.clone(),
+                offset: u64::MIN,
+                length: COLOR_BYTES,
+                index: u32::MIN,
+            },
+            shorter,
+        ];
+        // The covering triangle's binding comes first, and the shorter one replaces it.
+        let commands = covering_draw(&state, &vertices, &depth_stencil, bindings);
+        let command_buffer = subject
+            .make_command_buffer()
+            .expect("Metal answers make command buffer");
+        subject
+            .encode_render_commands(&command_buffer, &pass(&texture), &commands)
+            .expect("Metal answers encode render commands");
+        finish(&mut subject, &command_buffer);
+    }
+}
+
 /// Checks that a grid whose threads on one axis pass the largest `u32` is refused, and one of exactly that many is not.
 ///
 /// Metal's validation stops such a grid, whose thread positions would not fit the `u32` a function reads them as.
@@ -2194,6 +2429,51 @@ macro_rules! tests {
         #[test]
         fn refuses_a_grid_of_more_threads_on_one_axis_than_a_u32_holds() {
             $crate::refuses_a_grid_of_more_threads_on_one_axis_than_a_u32_holds($value);
+        }
+
+        #[test]
+        fn refuses_a_cube_of_more_than_one_slice() {
+            $crate::refuses_a_cube_of_more_than_one_slice($value);
+        }
+
+        #[test]
+        fn refuses_a_second_source_blend_beside_another_attachment() {
+            $crate::refuses_a_second_source_blend_beside_another_attachment($value);
+        }
+
+        #[test]
+        fn refuses_some_channels_of_a_shared_exponent_target() {
+            $crate::refuses_some_channels_of_a_shared_exponent_target($value);
+        }
+
+        #[test]
+        fn refuses_bytes_at_a_slot_the_function_writes() {
+            $crate::refuses_bytes_at_a_slot_the_function_writes($value);
+        }
+
+        #[test]
+        fn refuses_a_vertex_stride_past_the_most() {
+            $crate::refuses_a_vertex_stride_past_the_most($value);
+        }
+
+        #[test]
+        fn refuses_a_visibility_offset_with_no_buffer() {
+            $crate::refuses_a_visibility_offset_with_no_buffer($value);
+        }
+
+        #[test]
+        fn refuses_a_copy_past_a_compressed_levels_texels() {
+            $crate::refuses_a_copy_past_a_compressed_levels_texels($value);
+        }
+
+        #[test]
+        fn refuses_a_pass_of_no_attachment_past_the_longest_side() {
+            $crate::refuses_a_pass_of_no_attachment_past_the_longest_side($value);
+        }
+
+        #[test]
+        fn draws_from_a_vertex_buffer_shorter_than_one_element() {
+            $crate::draws_from_a_vertex_buffer_shorter_than_one_element($value);
         }
         $crate::tests!(@StandaloneMetal $standalone_metal ($value) $(($standalone_metal_value))?);
     };
