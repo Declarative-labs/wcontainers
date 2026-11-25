@@ -103,3 +103,27 @@ pub trait DomainNameResolver {
     // ...
 }
 ```
+
+## 2026-11-25, evening: his main `95bceadf0`, and the embedder calls built
+
+- Merge `64013e048` of his main: no conflict in the kernel. Four conflicts outside it (two suite
+  manifests, the architecture suite's manifest, the vector sink's file) were taken as the port has
+  them, the vector file as his main has it; his `processor-architecture/interface.rs` is restored to
+  his main's bytes (the merge had put his `foreign_implementation` module in twice).
+- The library does not build on his main yet: `wcontainers-processor-architecture-arm64` (the
+  port's) has no `ProcessorStateExpectation`, `meets_expectations` or `Simulator::simulate` (6
+  errors, MEASURED). The kernel waits on the port for that; its own code was checked in a copy at
+  the pre-merge commit `190b9e1e3`, whose interfaces the library uses unchanged.
+- The unit-test executor `Plain` takes the `MemorySnapshot` view.
+- `Process::watch_thread_memory` is built (it was `unimplemented!`): each memory's watches keep,
+  beside those of every thread, each thread's own; the CPU side holds the own watches of the thread
+  readied for its turn last (the runner readies each turn), and the kernel's copies, the touches
+  of a call and the faults meet the watches of the thread they are for. A thread's own watches go
+  with their pages on `mremap`, end on unmap and with the thread, and a fork's child has none.
+- `on_inspection_starting` and `on_inspection_ended` are announced (they were never fired): when
+  the kernel settles, the processes another process holds open through `/proc/<pid>/mem` are
+  compared with those last told, once such a file has been opened.
+- Measured in the copy (ARM64 and x86-64): library clippy `--no-deps -D warnings` exit 0, rustfmt
+  clean, unit tests 30 passed (26 before, 4 new on the per-thread watches).
+- Every other call of `Kernel` and `Process` was already built; `KernelWithExecutor` is shared
+  across threads through one `spin::Mutex` and `atomic_refcell` records, with no `unsafe`.
