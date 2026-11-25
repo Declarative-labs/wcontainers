@@ -5174,8 +5174,12 @@ name = "wcontainers-system-conformance"
 version = "0.1.0"
 dependencies = [
  "domain",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-kernel",
+ "wcontainers-readiness",
  "wcontainers-system",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
