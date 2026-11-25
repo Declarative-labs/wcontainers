@@ -1,6 +1,6 @@
-//! Runs the independent check's hand-made states: those the source must refuse, each followed on the same machine
-//! by a reference state that must give what a fresh machine gives, and those whose simulation disagreed with the
-//! chip, each against this chip's set.
+//! Runs the independent check's hand-made states: those the source must refuse with an error, each followed on the
+//! same machine by a reference state that must give what a fresh machine gives, and those whose simulation disagreed
+//! with the chip, each against this chip's set.
 //!
 //! `cargo run --release -p wcontainers-behavior-source-kvm-single-step-x86-64 --example hand_states`.
 
@@ -69,14 +69,20 @@ mod on_chip {
         ExecutionState { processor, memory_mutations: memory }
     }
 
+    /// The state after; else the refusal, or the text of a panic, which no state should cause.
     fn run(machine: &mut SingleStepMachine, state: &State) -> Result<State, String> {
-        catch_unwind(AssertUnwindSafe(|| machine.execute_single_instruction(state.clone()))).map_err(|panic| {
-            panic
-                .downcast_ref::<String>()
-                .cloned()
-                .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()))
-                .unwrap_or_default()
-        })
+        match catch_unwind(AssertUnwindSafe(|| machine.execute_single_instruction(state.clone()))) {
+            Ok(Ok(after)) => Ok(after),
+            Ok(Err(refusal)) => Err(format!("{refusal:?}")),
+            Err(panic) => Err(format!(
+                "PANIC {}",
+                panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .or_else(|| panic.downcast_ref::<&str>().map(|text| text.to_string()))
+                    .unwrap_or_default()
+            )),
+        }
     }
 
     fn is_same(first: &State, second: &State) -> bool {
@@ -144,6 +150,7 @@ mod on_chip {
             ("SMSW EAX", make(0x1000, &[0x0F, 0x01, 0xE0], &[], |_| {})),
             ("INT 0x80", make(0x1000, &[0xCD, 0x80], &[], |_| {})),
             ("LDTILECFG [RBX]", make(0x1000, &[0xC4, 0xE2, 0x78, 0x49, 0x03], &[(0x2000, WRITABLE)], |processor| processor.general_purpose_registers[3] = 0x2000)),
+            ("FLD1, which runs and changes the x87 state", make(0x1000, &[0xD9, 0xE8], &[], |_| {})),
             ("too many pages for the arena", {
                 let mut state = make(0x1000, &[0x48, 0x01, 0xD8], &[], |_| {});
                 state.memory_mutations.push(MemoryDelta::PermissionAssignment {
@@ -283,9 +290,10 @@ mod on_chip {
         let reference = make(0x1000, &[0x48, 0x01, 0x03], &[(0x2000, WRITABLE)], |processor| {
             processor.general_purpose_registers[3] = 0x2008;
         });
-        let fresh = SingleStepMachine::with_options(OPTION_SETS[0].1)
-            .unwrap_or_else(|error| panic!("{error:?}"))
-            .execute_single_instruction(reference.clone());
+        let mut fresh_machine = SingleStepMachine::with_options(OPTION_SETS[0].1).unwrap_or_else(|error| panic!("{error:?}"));
+        let Ok(fresh) = run(&mut fresh_machine, &reference) else {
+            panic!("a fresh machine refuses the reference state");
+        };
         for (name, state) in list_refused() {
             println!("-- refused? {name}");
             for (label, options) in OPTION_SETS {
@@ -299,7 +307,7 @@ mod on_chip {
                 let next = match run(&mut machine, &reference) {
                     Ok(after) if is_same(&after, &fresh) => "the next state as on a fresh machine".to_string(),
                     Ok(_) => "the next state DIFFERS".to_string(),
-                    Err(message) => format!("the next state PANICS: {message}"),
+                    Err(message) => format!("the next state FAILS: {message}"),
                 };
                 println!("   {label}: first {first:?}; {outcome}; {next}");
             }
@@ -325,7 +333,7 @@ mod on_chip {
                         if agrees { "AGREES" } else { "DISAGREES" }
                     );
                 }
-                Err(message) => println!("-- {name}: PANIC {message}"),
+                Err(message) => println!("-- {name}: FAILS {message}"),
             }
         }
     }

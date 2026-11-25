@@ -23,7 +23,10 @@ fn main() {
             OperandValue::Bits(0),
         ];
         let before = X86_64InputDomain.build_state(Instruction::Cpuid, &operands);
-        let after = machine.execute_single_instruction(before);
+        let after = match machine.execute_single_instruction(before) {
+            Ok(after) => after,
+            Err(refusal) => panic!("the chip refuses CPUID: {refusal:?}"),
+        };
         assert!(after.processor.exception.is_none(), "CPUID completes");
         let registers = after.processor.general_purpose_registers;
         [registers[0], registers[3], registers[1], registers[2]].map(|value| value as u32)

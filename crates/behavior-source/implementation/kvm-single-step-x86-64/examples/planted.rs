@@ -197,7 +197,13 @@ mod on_chip {
             let Ok(chosen) = machine.measure_instruction(instruction, &GENERATOR) else {
                 panic!("{instruction:?} shows no one known behavior on this chip");
             };
-            let executed: Vec<State> = states.iter().map(|state| machine.execute_single_instruction(state.clone())).collect();
+            let executed: Vec<State> = states
+                .iter()
+                .map(|state| match machine.execute_single_instruction(state.clone()) {
+                    Ok(after) => after,
+                    Err(refusal) => panic!("the chip refuses a state of {instruction:?}: {refusal:?}"),
+                })
+                .collect();
             let clean = find_disagreements(chosen, &states, &executed).len();
             let behaviors: Vec<PreciseInstruction> = X86_64::list_known_behaviors(instruction).collect();
             let groups = partition(&behaviors, &states);

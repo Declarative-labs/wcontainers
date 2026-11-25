@@ -1,6 +1,7 @@
 //! Measures every modeled form on the chip with the provided `measure_instruction`, form by form, and prints for each
 //! form its states, its known behaviors and the one measured; where none agrees, the first states on which the closest
-//! behavior disagrees. Then it measures the whole set with `MeasuredInstructionSet` and prints each form's behavior.
+//! behavior disagrees. Then it measures every form with the provided `measure_instructions`, builds the set from the
+//! measurements and prints each form's behavior.
 //!
 //! `cargo run --release -p wcontainers-behavior-source-kvm-single-step-x86-64 --example probe`. With `X86_PROBE_FORMS`
 //! set to a comma-separated list of form names it runs those alone; with `X86_PROBE_TIMING` set to a number of passes it
@@ -67,6 +68,11 @@ mod on_chip {
         SingleStepMachine::with_options(options).unwrap_or_else(|error| panic!("no single step machine: {error:?}"))
     }
 
+    /// The state after, or the refusal's text in its place.
+    fn execute(machine: &mut SingleStepMachine, before: &State) -> Result<State, String> {
+        machine.execute_single_instruction(before.clone()).map_err(|refusal| format!("{refusal:?}"))
+    }
+
     fn simulate(behavior: PreciseInstruction, before: &State) -> State {
         let Ok(simulated) = behavior.simulate(before.clone());
         simulated
@@ -108,21 +114,27 @@ mod on_chip {
             .collect()
     }
 
-    fn describe(behavior: PreciseInstruction, before: &State, executed: &State) -> String {
+    fn describe(behavior: PreciseInstruction, before: &State, executed: &Result<State, String>) -> String {
         let simulated = simulate(behavior, before);
         let start = before.memory_mutations.len();
         let code = match before.memory_mutations.get(1) {
             Some(MemoryDelta::ValueAssignment { bytes, .. }) => format!("{:02x?}", &bytes[..]),
             _ => String::new(),
         };
+        let executed = match executed {
+            Ok(executed) => format!(
+                "{}\n      {:x?}",
+                render(&executed.processor),
+                summarize(&executed.memory_mutations[start..])
+            ),
+            Err(refusal) => format!("refused: {refusal}"),
+        };
         format!(
-            "    code {code}\n    before:    {}\n      {:x?}\n    simulated: {}\n      {:x?}\n    executed:  {}\n      {:x?}",
+            "    code {code}\n    before:    {}\n      {:x?}\n    simulated: {}\n      {:x?}\n    executed:  {executed}",
             render(&before.processor),
             summarize(&before.memory_mutations[2.min(start)..]),
             render(&simulated.processor),
             summarize(&simulated.memory_mutations[start..]),
-            render(&executed.processor),
-            summarize(&executed.memory_mutations[start..]),
         )
     }
 
@@ -147,19 +159,20 @@ mod on_chip {
     /// Prints, for a form no behavior agrees with, each behavior's disagreements and the first states of the closest.
     fn explain(machine: &mut SingleStepMachine, instruction: Instruction, behaviors: &[PreciseInstruction]) {
         let states: Vec<State> = GENERATOR.generate_states(instruction).collect();
-        let executed: Vec<State> = states.iter().map(|state| machine.execute_single_instruction(state.clone())).collect();
+        let executed: Vec<Result<State, String>> = states.iter().map(|state| execute(machine, state)).collect();
+        let differs = |behavior: PreciseInstruction, before: &State, after: &Result<State, String>| {
+            !after.as_ref().is_ok_and(|after| simulate(behavior, before) == *after)
+        };
         let disagreements: Vec<usize> = behaviors
             .iter()
-            .map(|behavior| {
-                states.iter().zip(&executed).filter(|(before, after)| simulate(*behavior, before) != **after).count()
-            })
+            .map(|behavior| states.iter().zip(&executed).filter(|(before, after)| differs(*behavior, before, after)).count())
             .collect();
         println!("  DISAGREEING {disagreements:?} of {} states", states.len());
         let Some((closest, _)) = behaviors.iter().zip(&disagreements).min_by_key(|(_, count)| **count) else {
             return;
         };
         for (before, after) in
-            states.iter().zip(&executed).filter(|(before, after)| simulate(*closest, before) != **after).take(4)
+            states.iter().zip(&executed).filter(|(before, after)| differs(*closest, before, after)).take(4)
         {
             println!("{}", describe(*closest, before, after));
         }
@@ -189,6 +202,7 @@ mod on_chip {
                 }
                 Err(MeasureInstructionError::NoBehaviorAgrees { .. }) => "no behavior agrees".to_owned(),
                 Err(MeasureInstructionError::NoKnownBehavior { .. }) => "no known behavior".to_owned(),
+                Err(MeasureInstructionError::ExecutionFailed { error, .. }) => format!("refused: {error:?}"),
                 Err(MeasureInstructionError::IndistinguishableBehaviors { behaviors, .. }) => {
                     format!("{} behaviors indistinguishable", behaviors.len())
                 }
@@ -221,13 +235,14 @@ mod on_chip {
         println!("load at end: {}", read_load());
     }
 
-    /// Measures the whole set with `MeasuredInstructionSet` and prints each form's behavior.
+    /// Measures every form with the provided `measure_instructions`, builds the set from the measurements and prints
+    /// each form's behavior.
     fn measure_set() {
         let started = Instant::now();
-        let measured = <MeasuredInstructionSet<SingleStepMachine, CriticalValueCut>>::measure(make_machine(PARKED));
-        let Ok(set) = measured else {
-            panic!("the measured set fails on this chip");
+        let Ok(measurements) = make_machine(PARKED).measure_instructions(&GENERATOR) else {
+            panic!("measuring every form fails on this chip");
         };
+        let set = MeasuredInstructionSet::<X86_64>::from_measurements(&measurements);
         println!("SET measured in {:.3} s", started.elapsed().as_secs_f64());
         for instruction in X86_64::list_instructions() {
             println!("CHOSEN {instruction:?} {:?}", set.to_precise(instruction));
@@ -240,7 +255,7 @@ mod on_chip {
         let mut machines = [("parked", make_machine(PARKED)), ("plain", make_machine(Options::PLAIN))];
         let mut times: Vec<Vec<Duration>> = vec![Vec::new(); machines.len()];
         let mut form_times: Vec<Vec<Duration>> = vec![Vec::new(); forms.len()];
-        let mut count = 0;
+        let (mut count, mut refused) = (0, 0);
         for pass in 0..passes {
             let mut pass_times = vec![Duration::ZERO; machines.len()];
             count = 0;
@@ -250,7 +265,7 @@ mod on_chip {
                 for (index, ((_, machine), time)) in machines.iter_mut().zip(&mut pass_times).enumerate() {
                     let started = Instant::now();
                     for state in &states {
-                        machine.execute_single_instruction(state.clone());
+                        refused += usize::from(machine.execute_single_instruction(state.clone()).is_err());
                     }
                     let elapsed = started.elapsed();
                     *time += elapsed;
@@ -262,7 +277,7 @@ mod on_chip {
             for (all, time) in times.iter_mut().zip(pass_times) {
                 all.push(time);
             }
-            println!("timing pass {pass}: load {}", read_load());
+            println!("timing pass {pass}: load {}; refused so far {refused}", read_load());
         }
         for (instruction, mut all) in forms.iter().zip(form_times) {
             all.sort();
@@ -289,13 +304,14 @@ mod on_chip {
     fn split_time(forms: &[Instruction]) {
         let mut machine = make_machine(PARKED);
         let states: Vec<State> = forms.iter().flat_map(|instruction| GENERATOR.generate_states(*instruction)).collect();
+        let mut refused = 0;
         for state in &states {
-            machine.execute_single_instruction(state.clone());
+            refused += usize::from(machine.execute_single_instruction(state.clone()).is_err());
         }
         machine.reset_times();
         let started = Instant::now();
         for state in &states {
-            machine.execute_single_instruction(state.clone());
+            refused += usize::from(machine.execute_single_instruction(state.clone()).is_err());
         }
         let whole = started.elapsed();
         let count = states.len() as f64;
@@ -311,7 +327,7 @@ mod on_chip {
             println!("SPLIT {label}: {:.0} ns", per_state(time));
         }
         println!("SPLIT the rest (checks, decoding, cloning, the hook): {:.0} ns", per_state(whole - accounted));
-        println!("SPLIT whole: {:.0} ns per state over {} states", per_state(whole), states.len());
+        println!("SPLIT whole: {:.0} ns per state over {} states, {refused} refused", per_state(whole), states.len());
         let runs = 200_000;
         let bare = machine.time_bare_runs(runs);
         println!("SPLIT a bare halt's KVM_RUN: {:.0} ns", bare.as_nanos() as f64 / f64::from(runs));

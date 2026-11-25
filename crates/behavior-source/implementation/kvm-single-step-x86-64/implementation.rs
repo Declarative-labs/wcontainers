@@ -9,10 +9,10 @@
 //! leaves its memory to the next machine made, zeroed first, so that making machines does not grow the process. Every
 //! read and write of it here goes through `VolatileBytes`, never a slice.
 //!
-//! A state the source cannot hold is refused, with a panic that names why, before anything of it is written, so
-//! that the machine runs every later state as a fresh one would: memory outside the program's addresses (where the
-//! source keeps its own pages), RFLAGS bits a program cannot set, and the instructions it cannot step (see
-//! [`check_steppable`]).
+//! A state the source cannot hold is refused, with a [`Refusal`] that names why, before anything of it is written:
+//! memory outside the program's addresses (where the source keeps its own pages), RFLAGS bits a program cannot set,
+//! and the instructions it cannot step (see [`check_steppable`]). A run that ends otherwise than the model has it is
+//! refused too, and the next state runs on a new machine.
 
 #![cfg(all(target_os = "linux", target_arch = "x86_64"))]
 
@@ -32,9 +32,7 @@ use kvm_ioctls::{Kvm as KvmSystem, VcpuExit, VcpuFd, VmFd};
 use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_kvm::Kvm;
 use wcontainers_kvm_direct::DirectKvm;
-use wcontainers_processor_architecture::{
-    MemoryDelta, MemorySink, ProcessorArchitecture, diff_memory,
-};
+use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
 use wcontainers_processor_architecture_x86_64::memory::{read_bytes, read_permission, report_changed_bytes};
 use wcontainers_processor_architecture_x86_64::{
     Access, DataAccess, Exception, Flags, GENERAL_PURPOSE_REGISTERS, InstructionFetch, MXCSR_DEFAULT,
@@ -155,6 +153,51 @@ impl Options {
 #[derive(Debug)]
 pub struct SetUpError(pub String);
 
+/// Why this source did not run a state.
+///
+/// Those up to `NotSteppable` are found before anything is written; after any other, the next state runs on a new
+/// machine.
+#[derive(Debug)]
+pub enum Refusal {
+    /// A permission starts or ends inside a page, which no chip can give.
+    PermissionWithinAPage(Range<u64>),
+    /// Memory outside the program's addresses, where the source keeps its own pages.
+    OutsideTheProgramsAddresses(Range<u64>),
+    /// RFLAGS sets a bit a program at ring 3 cannot set: TF, RF or a reserved bit.
+    FlagsAProgramCannotSet(u64),
+    /// The instruction pointer or a segment base is not canonical.
+    NotCanonical(u64),
+    /// MXCSR sets a reserved bit.
+    MxcsrReservedBits(u32),
+    /// The pages the state maps, each with its tables, are more than the arena has.
+    MorePagesThanTheArenaHas { pages: u64, room: u64 },
+    /// The instruction the source cannot step from ring 3, or whose result under Linux differs from the guest's.
+    NotSteppable {
+        instruction: String,
+        address: u64,
+        reason: &'static str,
+    },
+    /// A call to KVM failed, in KVM's words.
+    KvmFailed(String),
+    /// The guest stopped other than at the handler's halt.
+    UnexpectedExit(String),
+    /// The handler halted without saving the slot.
+    SlotNotRun,
+    /// The exception that ended the run did not come from ring 3, as the handler saved it.
+    NotFromRing3 {
+        vector: u64,
+        error_code: u64,
+        code_segment: u64,
+        instruction_pointer: u64,
+    },
+    /// The run changed state the processor does not model: the x87 state, IF, IOPL or VM.
+    NotModeled(&'static str),
+    /// A vector that does not end an instruction at ring 3.
+    UnexpectedVector(u64),
+    /// A page fault with a reserved bit, a key or a shadow stack in its error code.
+    UnexpectedPageFault(u32),
+}
+
 /// A page of zeros, which clears guest memory.
 static ZERO_PAGE: [u8; PAGE_BYTES as usize] = [0; PAGE_BYTES as usize];
 
@@ -216,6 +259,8 @@ pub struct SingleStepMachine {
     pub runs: u64,
     /// INCREMENTAL MEMORY: the states whose prepared memory differed from the state's, in checked loading.
     pub check_mismatches: u64,
+    /// Set during a run and after a failed one, when the CPU may be anywhere: the next state makes a new machine.
+    renew_machine: bool,
 }
 
 /// INCREMENTAL MEMORY: what the guest holds between states when loading incrementally.
@@ -286,9 +331,16 @@ impl SingleStepMachine {
             time_reading_back: Duration::ZERO,
             runs: 0,
             check_mismatches: 0,
+            renew_machine: false,
         };
         executor.set_up()?;
         Ok(executor)
+    }
+
+    /// Replaces the machine with a new one of the same options.
+    fn renew(&mut self) -> Result<(), Refusal> {
+        *self = Self::with_options(self.options).map_err(|SetUpError(error)| Refusal::KvmFailed(error))?;
+        Ok(())
     }
 
     /// PROBE-COST TIMING: sets every time and count kept so far to zero.
@@ -502,12 +554,7 @@ impl SingleStepMachine {
                 Vec::new()
             }
         };
-        diff_memory(&held, memory, &mut |mutation: MemoryDelta<'_, X86_64>| match mutation {
-            MemoryDelta::ValueAssignment { start, bytes } => self.write_resident_bytes(start, &bytes),
-            MemoryDelta::PermissionAssignment { addresses, permission } => {
-                self.write_resident_permission(&addresses, permission)
-            }
-        });
+        MemoryDelta::diff_snapshots(&held, memory, &mut ResidentWriter(self));
         for (page, permission) in to_page_permissions(memory) {
             if let PagePermission::Mapped {
                 data_access: DataAccess::ReadWrite,
@@ -642,10 +689,12 @@ impl SingleStepMachine {
     }
 
     /// Runs the loaded slot to the handler's halt.
-    fn run(&mut self) {
+    fn run(&mut self) -> Result<(), Refusal> {
         let setting = Instant::now();
+        // Until the halt, the CPU is wherever the run took it.
+        self.renew_machine = true;
         if !(self.options.entry == EntryPath::Parked && self.parked) {
-            self.enter_handler();
+            self.enter_handler()?;
         }
         self.parked = false;
         self.time_setting_registers += setting.elapsed();
@@ -654,16 +703,18 @@ impl SingleStepMachine {
         loop {
             match self.cpu.run() {
                 Ok(VcpuExit::Hlt) => self.parked = true,
-                Ok(other) => panic!("the guest stopped other than at the handler's halt: {other:?}"),
+                Ok(other) => return Err(Refusal::UnexpectedExit(format!("{other:?}"))),
                 // A signal ends a run too: then the CPU runs on.
                 Err(error) if io::Error::from_raw_os_error(error.errno()).kind() == io::ErrorKind::Interrupted => {
                     continue;
                 }
-                Err(error) => panic!("KVM_RUN failed: {error}"),
+                Err(error) => return Err(Refusal::KvmFailed(format!("KVM_RUN: {error}"))),
             }
             break;
         }
+        self.renew_machine = false;
         self.time_in_guest += started.elapsed();
+        Ok(())
     }
 
     /// PROBE-COST TIMING: runs a bare halt at ring 0 `count` times, one KVM_RUN and exit each, and gives their time.
@@ -692,7 +743,7 @@ impl SingleStepMachine {
         elapsed
     }
 
-    fn enter_handler(&mut self) {
+    fn enter_handler(&mut self) -> Result<(), Refusal> {
         let regs = kvm_regs {
             rip: self.handler.entry,
             rsp: to_kernel(STACK_TOP),
@@ -701,14 +752,18 @@ impl SingleStepMachine {
         };
         self.cpu
             .set_regs(&regs)
-            .unwrap_or_else(|error| panic!("KVM refused the handler's entry: {error}"));
+            .map_err(|error| Refusal::KvmFailed(format!("the handler's entry: {error}")))
     }
 
-    /// Gives the processor after the run, and each run of bytes it changed.
-    fn read_back(&mut self, processor: &mut Processor, mut on_memory_mutated: impl FnMut(MemoryDelta<'_, X86_64>)) {
+    /// Gives the processor after the run, and each run of bytes it changed; writes neither when the run is refused.
+    fn read_back(
+        &mut self,
+        processor: &mut Processor,
+        mut on_memory_mutated: impl FnMut(MemoryDelta<'_, X86_64>),
+    ) -> Result<(), Refusal> {
         let started = Instant::now();
         let slot = self.read_slot();
-        *processor = to_processor(&slot);
+        *processor = to_processor(&slot).inspect_err(|_| self.renew_machine = true)?;
         let mut after = std::mem::take(&mut self.page);
         for writable in &self.writable {
             let before = &self.bytes_before[writable.before.clone()];
@@ -717,6 +772,7 @@ impl SingleStepMachine {
         }
         self.page = after;
         self.time_reading_back += started.elapsed();
+        Ok(())
     }
 
     /// The address of the last-level entry of a page under a top-level table, making the tables that lead to it.
@@ -782,8 +838,23 @@ impl SingleStepMachine {
     }
 }
 
+/// The hook that writes each change it receives into the resident pages, which then hold the memory it leads to.
+struct ResidentWriter<'machine>(&'machine mut SingleStepMachine);
+
+impl MemorySink<X86_64> for ResidentWriter<'_> {
+    fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, X86_64>) {
+        match mutation {
+            MemoryDelta::ValueAssignment { start, bytes } => self.0.write_resident_bytes(start, &bytes),
+            MemoryDelta::PermissionAssignment { addresses, permission } => {
+                self.0.write_resident_permission(&addresses, permission)
+            }
+        }
+    }
+}
+
 impl BehaviorSource for SingleStepMachine {
     type Architecture = X86_64;
+    type Error = Refusal;
 
     /// Reports each run of bytes whose value changed: a store of the bytes already there is not reported.
     fn execute_single_instruction_in_place(
@@ -791,24 +862,27 @@ impl BehaviorSource for SingleStepMachine {
         processor: &mut Processor,
         memory: &[MemoryDelta<'_, X86_64>],
         mutation_hook: &mut impl MemorySink<X86_64>,
-    ) {
-        check_holdable(processor, memory);
-        check_steppable(processor, memory);
+    ) -> Result<(), Refusal> {
+        if self.renew_machine {
+            self.renew()?;
+        }
+        check_holdable(processor, memory)?;
+        check_steppable(processor, memory)?;
         let held = self.load(processor, memory);
         let Some(mut held) = held else {
-            self.run();
-            self.read_back(processor, |mutation| mutation_hook.on_memory_mutated(mutation));
-            return;
+            self.run()?;
+            return self.read_back(processor, |mutation| mutation_hook.on_memory_mutated(mutation));
         };
         if self.options.loading == MemoryLoading::Checked && !self.check_guest_holds(memory) {
             self.check_mismatches += 1;
         }
-        self.run();
+        self.run()?;
         self.read_back(processor, |mutation| {
             held.push(mutation.clone().into_owned());
             mutation_hook.on_memory_mutated(mutation);
-        });
+        })?;
         self.resident.memory = Held::Known(held);
+        Ok(())
     }
 }
 
@@ -852,20 +926,19 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
 
 /// Refuses, before anything is written, a state the architecture does not have or the source cannot hold.
 ///
-/// # Panics
+/// # Errors
 ///
 /// When the state gives a permission or bytes outside the program's addresses, where the source keeps its own
 /// pages, or a permission to part of a page; when its RFLAGS sets a bit a program at ring 3 cannot set (TF, RF, a
 /// reserved bit); when its instruction pointer or a segment base is not canonical or its MXCSR sets a reserved bit;
 /// or when its pages do not fit the arena.
-fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
+fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
     for delta in memory {
         let addresses = match delta {
             MemoryDelta::PermissionAssignment { addresses, .. } => {
-                assert!(
-                    addresses.start.is_multiple_of(PAGE_BYTES) && addresses.end.is_multiple_of(PAGE_BYTES),
-                    "a chip gives permissions to whole pages, not {addresses:#x?}"
-                );
+                if !(addresses.start.is_multiple_of(PAGE_BYTES) && addresses.end.is_multiple_of(PAGE_BYTES)) {
+                    return Err(Refusal::PermissionWithinAPage(addresses.clone()));
+                }
                 addresses.clone()
             }
             MemoryDelta::ValueAssignment { start, bytes } => {
@@ -873,37 +946,39 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
             }
         };
         let addressable = X86_64::ADDRESSABLE;
-        assert!(
-            addresses.is_empty() || (addressable.start <= addresses.start && addresses.end <= addressable.end),
-            "a state's memory lies in the program's addresses {addressable:#x?}, not at {addresses:#x?}"
-        );
+        if !(addresses.is_empty() || (addressable.start <= addresses.start && addresses.end <= addressable.end)) {
+            return Err(Refusal::OutsideTheProgramsAddresses(addresses));
+        }
     }
-    assert!(
-        Flags::all().contains(processor.flags),
-        "a state's RFLAGS {:#x} sets only bits a program at ring 3 can set, {:#x}",
-        processor.flags.bits(),
-        Flags::all().bits()
-    );
-    assert!(is_canonical(processor.instruction_pointer), "a state's instruction pointer is canonical");
-    assert!(
-        is_canonical(processor.fs_base) && is_canonical(processor.gs_base),
-        "a state's segment bases are canonical"
-    );
-    assert!(processor.mxcsr <= u32::from(u16::MAX), "a state's MXCSR has no reserved bit set");
+    if !Flags::all().contains(processor.flags) {
+        return Err(Refusal::FlagsAProgramCannotSet(processor.flags.bits()));
+    }
+    for address in [processor.instruction_pointer, processor.fs_base, processor.gs_base] {
+        if !is_canonical(address) {
+            return Err(Refusal::NotCanonical(address));
+        }
+    }
+    if processor.mxcsr > u32::from(u16::MAX) {
+        return Err(Refusal::MxcsrReservedBits(processor.mxcsr));
+    }
     let mapped = to_page_permissions(memory)
         .values()
         .filter(|permission| **permission != PagePermission::Unmapped)
         .count() as u64;
     // The top-level table, and per page a frame and at most one table of each lower level.
-    assert!(
-        mapped * u64::from(LEVELS) < (ARENA.end - ARENA.start) / PAGE_BYTES,
-        "a state's {mapped} mapped pages fit the arena"
-    );
+    let room = (ARENA.end - ARENA.start) / PAGE_BYTES;
+    if mapped * u64::from(LEVELS) >= room {
+        return Err(Refusal::MorePagesThanTheArenaHas {
+            pages: mapped * u64::from(LEVELS),
+            room,
+        });
+    }
+    Ok(())
 }
 
 /// Refuses, before anything is written, the instructions the source cannot step from ring 3 with the trap flag.
 ///
-/// # Panics
+/// # Errors
 ///
 /// For MOV SS (it steps two instructions), a REP string form (it steps one iteration), POPF and IRET (they can
 /// change TF), PUSHF (it pushes the source's TF), SYSCALL and SYSENTER (they enter ring 0 at MSRs the source does
@@ -912,7 +987,7 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
 /// not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
 /// on the page says why: an EVEX one, RDTSC, RDTSCP, RDPID, UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
 /// XSAVE family, LAR, LSL, VERR and VERW, SGDT, SIDT and SMSW, INT 0x80, and AMX's.
-fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
+fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
     let address = processor.instruction_pointer;
     let bytes: [u8; 15] = read_bytes(memory, address);
     let decoded = Decoder::with_ip(64, &bytes, address, DecoderOptions::NONE).decode();
@@ -926,7 +1001,7 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
             )
     });
     if decoded.is_invalid() || !fetchable {
-        return;
+        return Ok(());
     }
     let is_string = (0..decoded.op_count()).any(|operand| {
         matches!(
@@ -994,39 +1069,45 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
         }
         _ => None,
     };
-    if let Some(reason) = reason {
-        panic!("the chip source refuses {:?} at {address:#x}: {reason}", decoded.code());
+    match reason {
+        Some(reason) => Err(Refusal::NotSteppable {
+            instruction: format!("{:?}", decoded.code()),
+            address,
+            reason,
+        }),
+        None => Ok(()),
     }
 }
 
 
 /// The processor a run left in the slot.
 ///
-/// # Panics
+/// # Errors
 ///
-/// When the run changed state the processor does not model: the x87 state, the selectors, IF, IOPL or VM.
-fn to_processor(slot: &Slot) -> Processor {
+/// When the handler did not save the slot, the exception did not come from ring 3, or the run changed state the
+/// processor does not model: the x87 state, the selectors, IF, IOPL or VM.
+fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
     let after = &slot.after;
-    assert!(slot.vector != NOT_RUN, "the handler saved the slot");
-    assert!(
-        after.code_segment == u64::from(USER_CODE) && after.stack_segment == u64::from(USER_DATA),
-        "the exception came from ring 3: vector {}, error code {:#x}, from {:#x} at {:#x}",
-        slot.vector,
-        slot.error_code,
-        after.code_segment,
-        after.instruction_pointer,
-    );
-    assert!(
-        after.flags & (INTERRUPT_ENABLE | IO_PRIVILEGE | VIRTUAL_8086) == INTERRUPT_ENABLE,
-        "RFLAGS {:#x} keeps IF set and IOPL and VM clear",
-        after.flags
-    );
+    if slot.vector == NOT_RUN {
+        return Err(Refusal::SlotNotRun);
+    }
+    if !(after.code_segment == u64::from(USER_CODE) && after.stack_segment == u64::from(USER_DATA)) {
+        return Err(Refusal::NotFromRing3 {
+            vector: slot.vector,
+            error_code: slot.error_code,
+            code_segment: after.code_segment,
+            instruction_pointer: after.instruction_pointer,
+        });
+    }
+    if after.flags & (INTERRUPT_ENABLE | IO_PRIVILEGE | VIRTUAL_8086) != INTERRUPT_ENABLE {
+        return Err(Refusal::NotModeled("RFLAGS changed IF, IOPL or VM"));
+    }
     let (before_x87, after_x87) = (&slot.before_xsave.bytes, &slot.after_xsave.bytes);
-    assert!(
-        before_x87[..FX_MXCSR] == after_x87[..FX_MXCSR]
-            && before_x87[FX_X87_REGISTERS..FX_VECTOR_REGISTERS] == after_x87[FX_X87_REGISTERS..FX_VECTOR_REGISTERS],
-        "the instruction changed the x87 state, which is not modeled yet"
-    );
+    if !(before_x87[..FX_MXCSR] == after_x87[..FX_MXCSR]
+        && before_x87[FX_X87_REGISTERS..FX_VECTOR_REGISTERS] == after_x87[FX_X87_REGISTERS..FX_VECTOR_REGISTERS])
+    {
+        return Err(Refusal::NotModeled("the instruction changed the x87 state"));
+    }
     let mxcsr = u32::from_le_bytes(after_x87[FX_MXCSR..FX_MXCSR + 4].try_into().expect("four bytes"));
     let saved = u64::from_le_bytes(after_x87[XSAVE_HEADER..XSAVE_HEADER + 8].try_into().expect("eight bytes"));
     // A component XSAVE marks as in its initial state holds zeros, whatever its area of the image holds.
@@ -1040,9 +1121,9 @@ fn to_processor(slot: &Slot) -> Processor {
     let vector_registers = read_halves(SSE_COMPONENT, FX_VECTOR_REGISTERS);
     let upper_vector_halves = read_halves(AVX_COMPONENT, XSAVE_AVX);
     let completed = slot.vector == DEBUG_VECTOR && slot.debug_status & SINGLE_STEP != 0;
-    let exception = if completed { None } else { Some(to_exception(slot)) };
+    let exception = if completed { None } else { Some(to_exception(slot)?) };
     let general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS] = after.general;
-    Processor {
+    Ok(Processor {
         general_purpose_registers,
         instruction_pointer: after.instruction_pointer,
         flags: Flags::from_bits_truncate(after.flags & !(TRAP | RESUME)),
@@ -1052,15 +1133,15 @@ fn to_processor(slot: &Slot) -> Processor {
         vector_registers,
         upper_vector_halves,
         exception,
-    }
+    })
 }
 
 /// Bytes of a half of a YMM register, as the image holds each.
 const VECTOR_HALF_BYTES: usize = size_of::<u128>();
 
-fn to_exception(slot: &Slot) -> Exception {
+fn to_exception(slot: &Slot) -> Result<Exception, Refusal> {
     let error_code = slot.error_code as u32;
-    match slot.vector {
+    Ok(match slot.vector {
         0 => Exception::DivideError,
         DEBUG_VECTOR => Exception::Debug {
             status: slot.debug_status & !DEBUG_STATUS_RESET,
@@ -1076,10 +1157,9 @@ fn to_exception(slot: &Slot) -> Exception {
         13 => Exception::GeneralProtection { error_code },
         PAGE_FAULT_VECTOR => {
             let known = FAULT_PRESENT | FAULT_WRITE | FAULT_USER | FAULT_INSTRUCTION_FETCH;
-            assert!(
-                error_code & FAULT_USER != 0 && error_code & !known == 0,
-                "a page fault at ring 3 with no reserved bit, key or shadow stack: {error_code:#x}"
-            );
+            if !(error_code & FAULT_USER != 0 && error_code & !known == 0) {
+                return Err(Refusal::UnexpectedPageFault(error_code));
+            }
             let access = if error_code & FAULT_INSTRUCTION_FETCH != 0 {
                 Access::InstructionFetch
             } else if error_code & FAULT_WRITE != 0 {
@@ -1100,8 +1180,8 @@ fn to_exception(slot: &Slot) -> Exception {
         20 => Exception::Virtualization,
         21 => Exception::ControlProtection { error_code },
         vector @ 32..=255 => Exception::SoftwareInterrupt { vector: vector as u8 },
-        vector => panic!("vector {vector} does not end an instruction at ring 3"),
-    }
+        vector => return Err(Refusal::UnexpectedVector(vector)),
+    })
 }
 
 /// The vector Linux gives ring 3 for 32-bit system calls.
