@@ -93,7 +93,7 @@ fn signing_again_gives_the_compilers_checksum() {
     any(target_os = "wasi", not(feature = "contained-converters")),
     ignore = "a known failure where the converters are linked in (the default natively, and the crate's \
               own WebAssembly build): malformed DXIL can end the process or module inside the DXIL \
-              converter (gap A11); natively with `--no-default-features --features contained-converters` the converters run \
+              converter (gap A11); natively with `--features contained-converters` the converters run \
               in a module of their own and it passes"
 )]
 fn mutated_bytecode_converts_or_fails_without_ending_the_process() {

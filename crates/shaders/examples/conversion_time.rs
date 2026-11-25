@@ -2,8 +2,8 @@
 //! conversion (which loads the converters), then each converted shader's first conversion (what a
 //! program pays, conversions being cached) and its best of `rounds` more, with the median, 95th
 //! percentile and worst per shader for each kind of bytecode. Natively the converters are linked in;
-//! with `--no-default-features --features contained-converters` they run as their own module.
-//!   cargo run --release --example conversion_time [--no-default-features --features contained-converters] -- <rounds> <dir>...
+//! with `--features contained-converters` they run as their own module.
+//!   cargo run --release --example conversion_time [--features contained-converters] -- <rounds> <dir>...
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

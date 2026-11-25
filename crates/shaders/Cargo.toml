@@ -18,27 +18,19 @@ spirv = "0.4"
 rspirv = "0.13"
 md-5 = { version = "0.11", default-features = false }
 zerocopy.workspace = true
-# The C++ converters, linked in natively with `linked-converters` (src/converters.rs).
+# The C++ converters, linked in (src/converters.rs).
 wcontainers-shader-converters = { path = "../shader-converters" }
-wcontainers-shader-converters-linked = { path = "../shader-converters/implementation/linked", optional = true }
+wcontainers-shader-converters-linked = { path = "../shader-converters/implementation/linked" }
 
 # The converters' module, run under wasmtime natively with `contained-converters` (src/converters.rs).
 [target.'cfg(not(target_os = "wasi"))'.dependencies]
 wcontainers-shader-converters-contained = { path = "../shader-converters/implementation/contained", optional = true }
 
-# The crate's own WebAssembly build always links the C++ converters in.
-[target.'cfg(target_os = "wasi")'.dependencies]
-wcontainers-shader-converters-linked = { path = "../shader-converters/implementation/linked" }
-
 [features]
-default = ["linked-converters"]
-# Natively, links the converters' C++ into the process, built by the host's C++ compiler.
-linked-converters = ["dep:wcontainers-shader-converters-linked"]
 # Natively, runs the converters as their own WebAssembly module under wasmtime instead of linking
 # their C++ into the process: what a shader makes them do ends in a trap or a bound of their instance,
 # refused by name, instead of ending, exhausting or stalling the host; at the cost measured in
-# docs/status-graphics-shaders.md. Chosen alone, with `--no-default-features`, no C++ is built
-# natively. No effect in the crate's own WebAssembly build.
+# docs/status-graphics-shaders.md. No effect in the crate's own WebAssembly build.
 contained-converters = ["dep:wcontainers-shader-converters-contained"]
 
 [build-dependencies]
