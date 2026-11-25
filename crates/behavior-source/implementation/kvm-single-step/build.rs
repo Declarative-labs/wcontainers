@@ -1,21 +1,18 @@
 //! Assembles the handler and writes its bytes and the offset of its entry for the machine to include.
 
+#![allow(
+    dead_code,
+    reason = "the build script shares the machine's layout modules and reads only what the handler is assembled with"
+)]
+
 use std::mem::offset_of;
 use std::path::PathBuf;
 use std::{env, fs};
 
 use object::{Object, ObjectSection, ObjectSymbol};
 
-#[allow(
-    dead_code,
-    reason = "the build script reads only the constants the handler is assembled with"
-)]
 #[path = "guest_layout.rs"]
 mod guest_layout;
-#[allow(
-    dead_code,
-    reason = "the build script reads only the layout of the slot"
-)]
 #[path = "slot.rs"]
 mod slot;
 
