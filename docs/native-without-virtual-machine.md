@@ -152,7 +152,7 @@ One layout (ARM64 here; x86-64 in 3.10), every figure a named constant derived f
 
 The native output stays one emitter (native.md section 3); a form is a value the executor gives the translator,
 part of the translation's cache key, with three variants (`Vm`, `HostProcess`, `InProcess`). It changes exactly:
-1. **`access`** (crates/wcontainers-arm64/src/carry.rs, the single place a guest access is emitted) and the
+1. **`access`** (crates/arm64/src/carry.rs, the single place a guest access is emitted) and the
    instructions that read or write sp. `Vm` and `HostProcess` emit them as today. `InProcess`:
    - An access through any register but sp: the check `ubfx u, a, #32, #24; cbnz u, fault`, then the access cut to
      the window: `<access> [base, wA, uxtw]` for the forms that have a register offset (plain loads and stores of
@@ -1451,7 +1451,7 @@ system's answer today); listed for the owner in section 12 instead.
 
 - Translator and ARM64 crates: the form value of 3.2 with its four places (the stack pointer's rules and the
   displaced one-instruction pieces inside the first), keyed in the translation cache; `REACH_BITS` and `MIRROR`
-  (crates/wcontainers-arm64/src/mirror.rs) made per form; two more withheld registers for I.
+  (crates/arm64/src/mirror.rs) made per form; two more withheld registers for I.
 - Native (VM) track: `stop::resolve`, `stop::guest_state` and the slot arithmetic taking the slot table's base as a
   parameter instead of `mirror::MIRROR`, and `stop` and `translation` in a crate that does not pull the hypervisor,
   kernel or runtime crates; the monitor's kept translations (`Translator` in hardware-virtualization's

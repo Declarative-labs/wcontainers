@@ -55,7 +55,7 @@ and the exact occlusion count is reported but not built. Each finding:
   wcontainers-opengl 11 pass, rustfmt (x86-64 machine, `logs/r6e/check1.log`); the Windows build in
   the alone run's job and again for the module pin's warning (`logs/r6e/winbuild.log`).
 - Next, in order: the 32nd passed value (the stage helper's pass-through reading its records from
-  storage by vertex index, 28 to 31, in `crates/wcontainers-shaders` under round 6's permission;
+  storage by vertex index, 28 to 31, in `crates/shaders` under round 6's permission;
   then the 32nd value fetched by the fragment program) and KHR-GL33's run; the exact occlusion
   count (above); the 8 device losses (gap list); the evaluation point size (72 cases); the stage
   helper's buffer sizes for `primitive_bounding_box` (28); the rest of the gap list.
@@ -520,7 +520,7 @@ G9 round 5 run 3 (2026-11-24). G9'S FIRST PART IS STILL NOT COMPLETE: its bar as
 and Godot's OpenGL renderers match the RTX 3080's OpenGL or llvmpipe, and neither starts on this
 driver, because each asks for a version the driver does not report there (below; For the owner).
 Done this run, from the check's two blocking findings:
-- The programs' comparison is built: `crates/wcontainers-opengl/cts/programs-windows.ps1` (one GPU
+- The programs' comparison is built: `crates/opengl/cts/programs-windows.ps1` (one GPU
   job; How to run) runs each program live on the driver (its error output and Mesa's own frame
   counter, `GALLIUM_HUD=fps` written to files), records it on the RTX 3080's OpenGL with apitrace
   14.0, cuts the recording to its first 150 frames, replays it on the RTX 3080's OpenGL, llvmpipe
@@ -1390,7 +1390,7 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 ## For the owner
 
 - Round 6 run 5: the literal check keeps one finding in this track's files, `"/gallium.rs"` in
-  `crates/wcontainers-opengl/src/gallium.rs` (`include!(concat!(env!("OUT_DIR"), "/gallium.rs"))`):
+  `crates/opengl/src/gallium.rs` (`include!(concat!(env!("OUT_DIR"), "/gallium.rs"))`):
   `include!` takes only literals, so the generated file's name cannot be a constant there. Its
   earlier form, `include!(env!("WCONTAINERS_GALLIUM_BINDINGS"))`, was a finding too. The same line
   is accepted in `literals.baseline` for three other crates; this one is not added to it. Either the
@@ -1472,7 +1472,7 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   <case> [<lines>]` (copied to `C:\wc\graphics-nir`) prints the process log from a case on and
   the log's first refusals; `scripts/batch-events.ps1 <list> <log>` the refusals, losses and
   failures of one batch's log in order. glcts is rebuilt with `remote powershell -File
-  crates\wcontainers-opengl\cts\build-windows.ps1` whenever a patch in `cts/patches` changes.
+  crates\opengl\cts\build-windows.ps1` whenever a patch in `cts/patches` changes.
 - G9 round 6 run 2: scratch `scripts/g9r6b-run.sh <absolute log> [<lists> [<regexes>]]` is round
   5 run 6's run as a GPU job alone (`gpu-job --alone`); `scripts/g9r6b-lint.sh` is run 1's lint
   under its name; `scripts/g9r6b-quick.sh <route test filter> <log>` runs the nir route test,
@@ -1493,13 +1493,13 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 
 - G9 round 5 run 5: `scripts/g9c5-run.sh` and `scripts/g9c5-lint.sh` are round 5 run 3's under
   their names. The shaders overlay for `SHADERS_AT_HEAD=1` is now made with `git archive HEAD
-  crates/wcontainers-shaders/Cargo.toml crates/wcontainers-shaders/build.rs
-  crates/wcontainers-shaders/cpp crates/wcontainers-shaders/src crates/wcontainers-shaders/tests`
+  crates/shaders/Cargo.toml crates/shaders/build.rs
+  crates/shaders/cpp crates/shaders/src crates/shaders/tests`
   (scratch `overlay/shaders-head.tar`, scp'd to `C:/wc/graphics-nir/overlay/shaders-head.tar`), so
   that another track's uncommitted build script and C++ do not mix with the committed sources.
 
 - The programs' comparison (G9 round 5 run 3): scratch `scripts/g9c3-programs.sh <log>
-  [<programs>]` builds Mesa with the driver and runs `crates/wcontainers-opengl/cts/programs-windows.ps1`
+  [<programs>]` builds Mesa with the driver and runs `crates/opengl/cts/programs-windows.ps1`
   as one GPU job; `scripts/g9c3-programs-nobuild.sh` the same with the desktop's install as it is.
   Programs: `bgfx-01-cubes`, `-24-nbody`, `-26-occlusion`, `-35-dynamic`, `-37-gpudrivenrendering`,
   `-38-bloom`, `godot-platformer-3d-gl`, `godot-platformer-2d-gl` (all when none is named). It
@@ -1522,10 +1522,10 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   takes (its patterns are the gap list's items: change both together);
   `../scripts/g9c1-coarse.py <run>/full <earlier run>/full` the failing groups beside an earlier
   run's; `../scripts/g9c1-notes.py <runner log>` each failing case's driver notes from the log.
-- The corpus: `crates/wcontainers-nir/corpus/fetch` (into `$CARGO_TARGET_DIR/nir-corpus`), then with
+- The corpus: `crates/nir/corpus/fetch` (into `$CARGO_TARGET_DIR/nir-corpus`), then with
   `WCONTAINERS_MESA` set: `WC_NIR_CORPUS=$CARGO_TARGET_DIR/nir-corpus WC_NIR_RESULTS=<file> cargo
   test -p wcontainers-nir --test corpus`. From the Mac: `orchestrator/cloud/x86-run <checkout> --name
-  graphics-nir --jobs 64 -- 'crates/wcontainers-nir/corpus/fetch && export
+  graphics-nir --jobs 64 -- 'crates/nir/corpus/fetch && export
   WCONTAINERS_MESA=$CARGO_TARGET_DIR/mesa/build && WC_NIR_CORPUS=$CARGO_TARGET_DIR/nir-corpus
   WC_NIR_RESULTS=$CARGO_TARGET_DIR/nir-results-a.jsonl cargo test -p wcontainers-nir --test corpus'`,
   then `x86-run --fetch graphics-nir target/nir-results-a.jsonl <scratch>`. 1005 shaders take about
@@ -1533,23 +1533,23 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   `pyro-parked/wcontainers-scratch/graphics-nir/results/run3/nir-results-a.jsonl` (run 2's, conversion
   only, one folder up); run 4's in `results/run4/` (`nir-results-r4b.jsonl` the last, with the
   patch; `nir-choice-r4.jsonl` the timed one); `scripts/reasons.py <results> [n]` counts the reasons.
-- The choice between the candidates, one command: `crates/wcontainers-nir/corpus/choose [results]`
+- The choice between the candidates, one command: `crates/nir/corpus/choose [results]`
   (fetches the corpus, builds optimised, runs one shader and route at a time on ten cores; its last
   lines give each route's counts and its median and mean time on the shaders every route matches).
   From the Mac: `x86-run <checkout> --name graphics-nir -- 'WC_NIR_TIMING_CORES=0-9
-  crates/wcontainers-nir/corpus/choose $CARGO_TARGET_DIR/nir-choice.jsonl'` (the whole corpus of 18,222 items took 4 h 38 min in run 11; most of it is Zink's compiler
+  crates/nir/corpus/choose $CARGO_TARGET_DIR/nir-choice.jsonl'` (the whole corpus of 18,222 items took 4 h 38 min in run 11; most of it is Zink's compiler
   aborting on GLSL in route A, each abort a core dump the machine's `apport` writes).
   `WC_NIR_SHADERS=<n>` takes a seeded sample: for the independent check,
-  `WC_NIR_TIMING_CORES=0-9 WC_NIR_SHADERS=2000 crates/wcontainers-nir/corpus/choose
+  `WC_NIR_TIMING_CORES=0-9 WC_NIR_SHADERS=2000 crates/nir/corpus/choose
   $CARGO_TARGET_DIR/nir-choice-check.jsonl` (run 15: about 1,850 s at load 54 to 98; B 1,288 match,
   A 119; run `corpus/cts-programs` first, or the sample is drawn from fewer items). A reference
   that does not end on the seeded inputs is held on up to four seeds, two minutes each, so a
   sample with such programs takes longer.
-- The licence of every linked Mesa file: `crates/wcontainers-nir/mesa/linked-licences [file]` (after
+- The licence of every linked Mesa file: `crates/nir/mesa/linked-licences [file]` (after
   the Mesa build; the route test linked with a map, each kept object traced to its source).
   For the Windows driver, after its build on the desktop: `tools/graphics-rig/remote
   'C:\wc\graphics-nir\tools\python-3.13.1\tools\python.exe
-  crates\wcontainers-nir\mesa\linked-licences-windows.py C:\wc\graphics-nir\mesa\build . 60
+  crates\nir\mesa\linked-licences-windows.py C:\wc\graphics-nir\mesa\build . 60
   C:\wc\graphics-nir\linked-licences-windows.txt'` (60: the lines at the top of a file searched
   for its licence, round 6 run 1's third argument), then scp the file back (about a minute).
 
@@ -1565,8 +1565,8 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   `run-case-windows.ps1 ... -Seconds 400` (KHR `vertex_ordering` passes in 61.8 s that way).
 - G9 run 30: `scripts/g9r30-run.sh <log> [<lists> [<regexes>]]` and `scripts/g9r30-lint.sh [<test
   args>]` are run 29's and run 25's, with `SHADERS_AT_HEAD=1` taking the shaders crate as committed
-  (scratch `overlay/shaders-head.tar`, made with `git archive HEAD crates/wcontainers-shaders/Cargo.toml
-  crates/wcontainers-shaders/src`, sent to the desktop's `C:\wc\graphics-nir\overlay` and the x86-64
+  (scratch `overlay/shaders-head.tar`, made with `git archive HEAD crates/shaders/Cargo.toml
+  crates/shaders/src`, sent to the desktop's `C:\wc\graphics-nir\overlay` and the x86-64
   machine's `/work/probes/graphics-nir-shaders-head.tar`), for while another track's uncommitted
   edits break that crate in this shared worktree. `run-windows.ps1` now removes a list's earlier
   results through the long-path prefix: run 30's first whole run stopped after five lists on a
@@ -1639,7 +1639,7 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   refusals in its process's log (a process runs many cases: a refusal is the crash's own, a
   validation error may be an earlier case's).
 - Build Mesa for Windows (G9) on the desktop, from a checkout on the Mac: `tools/graphics-rig/remote
-  'powershell -NoProfile -ExecutionPolicy Bypass -File crates\wcontainers-nir\mesa\build-windows.ps1'`.
+  'powershell -NoProfile -ExecutionPolicy Bypass -File crates\nir\mesa\build-windows.ps1'`.
   Tools, source, build and install under `C:\wc\graphics-nir` (kept between runs; the tools'
   downloads with their SHA-256 printed); `opengl32.dll` and `libgallium_wgl.dll` in
   `C:\wc\graphics-nir\mesa\install\bin`. Uses half the desktop's threads. The first build
@@ -1651,17 +1651,17 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   Mesa source, build and install); the downloaded archives were deleted (fetched again only if a
   tool is missing).
 - The conformance suite on the desktop (G9): build once with `tools/graphics-rig/remote
-  'powershell -NoProfile -ExecutionPolicy Bypass -File crates\wcontainers-opengl\cts\build-windows.ps1'`
+  'powershell -NoProfile -ExecutionPolicy Bypass -File crates\opengl\cts\build-windows.ps1'`
   (glcts and deqp-runner; about 40 minutes the first time, at 8 jobs beside other tracks'
   builds). Run lists as a GPU job: `tools/graphics-rig/gpu-job --desktop --build 'if not exist
   "%CARGO_TARGET_DIR%" mkdir "%CARGO_TARGET_DIR%"' -- 'powershell -NoProfile -ExecutionPolicy
-  Bypass -File crates\wcontainers-opengl\cts\run-windows.ps1 -Driver <wcontainers|llvmpipe|system>
+  Bypass -File crates\opengl\cts\run-windows.ps1 -Driver <wcontainers|llvmpipe|system>
   [-Lists gles2-main,gl46-main] [-Fraction 100 -FractionStart 1]'` (a list's name is its file's
   name without `.txt`). It prints each list's counts and share; deqp-runner's `results.csv`,
   `failures.csv` and logs are in `C:\wc\graphics-nir\cts\results\<driver>\<list>`. One case
   alone, for a hang or a crash: `tools/graphics-rig/gpu-job --desktop --build 'echo sent' --
   'powershell -NoProfile -ExecutionPolicy Bypass -File
-  crates\wcontainers-opengl\cts\run-case-windows.ps1 -Driver wcontainers -List gles2-khr-main
+  crates\opengl\cts\run-case-windows.ps1 -Driver wcontainers -List gles2-khr-main
   -Case <case> [-Seconds 40]'` (glcts's output, exit code and log printed; killed and reported
   as hung after the limit). Add `-Debugger` to run it under the LLVM release's lldb (with Python
   3.10 from NuGet, fetched once): every thread's stack and the stopped thread's stack words as
@@ -1680,8 +1680,8 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   3.8 GB (the suite's source and build), `tools` 3.9 GB (with deqp-runner), `mesa` 0.8 GB,
   `opengl-target` 0.8 GB (the driver's cargo output, reused by each Mesa build).
 - Build Mesa, from the Mac: `orchestrator/cloud/x86-run <checkout> --name graphics-nir --jobs 64 --
-  'crates/wcontainers-nir/mesa/build path:/work/flake/graphics-nir'`. On any Linux machine with Nix:
-  `crates/wcontainers-nir/mesa/build` (its argument, the flake, defaults to the checkout). The tools
+  'crates/nir/mesa/build path:/work/flake/graphics-nir'`. On any Linux machine with Nix:
+  `crates/nir/mesa/build` (its argument, the flake, defaults to the checkout). The tools
   come from Nixpkgs' own `mesa` package (`nix print-dev-env --inputs-from <flake> nixpkgs#mesa`), so the
   repository's flake is unchanged and the tools are those of its locked nixpkgs. Output in
   `$CARGO_TARGET_DIR/mesa/{src,build,install}` (target/mesa without it). The script refuses a tag whose
@@ -1702,8 +1702,8 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   in the same corpus run: 13,630 items take about 35 s alone (`WC_NIR_CORPUS` at
   `nir-corpus/vk-gl-cts`). `scripts/deqp_differences.py <results>` (scratch) groups route B's
   differences by file and message.
-- The Vulkan CTS's programs: `crates/wcontainers-nir/corpus/cts-programs [flake]` (from the Mac:
-  `x86-run <checkout> --name graphics-nir --jobs 96 -- 'crates/wcontainers-nir/corpus/cts-programs
+- The Vulkan CTS's programs: `crates/nir/corpus/cts-programs [flake]` (from the Mac:
+  `x86-run <checkout> --name graphics-nir --jobs 96 -- 'crates/nir/corpus/cts-programs
   path:/work/flake/graphics-nir'`); the corpus run takes them from `nir-corpus` like the rest.
 - The literal check needs the git history, which the rented machine's copy lacks. Run 6 ran it on
   the x86 machine from a git bundle of the branch (`git bundle create <scratch>/nir.bundle
@@ -1711,7 +1711,7 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   cloned there, `cargo fetch`, then the check in `nix develop`; the clone and its build deleted
   after). Runs 1 to 5 ran it on the Mac (`RAYON_NUM_THREADS=3 cargo run -j 4 -q -p
   wcontainers-literals -- check`). With
-  `crates/wcontainers-shaders/dxbc-spirv`'s own submodule checked out the check fails on its Python
+  `crates/shaders/dxbc-spirv`'s own submodule checked out the check fails on its Python
   scripts (the baseline holds it not checked out): fetch only the shaders crate's two submodules and
   dxil-spirv's `third_party/spirv-headers`, which the shaders crate's build needs.
 
@@ -1733,9 +1733,9 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   C++ users (`pyro-parked/wcontainers-scratch/graphics-nir/downloads/godot`, 12 MB, blobs fetched
   on demand: never `git grep` its history there, which fetches every blob; add paths with `git
   sparse-checkout add /<path>`).
-- Godot's RenderingDevice shaders, one command after the fetch's sources: `crates/wcontainers-nir/corpus/godot-forward-plus [flake]`
+- Godot's RenderingDevice shaders, one command after the fetch's sources: `crates/nir/corpus/godot-forward-plus [flake]`
   (from the Mac: `x86-run <checkout> --name graphics-nir --jobs 64 --
-  'crates/wcontainers-nir/corpus/godot-forward-plus path:/work/flake/graphics-nir'`; 9 s). It
+  'crates/nir/corpus/godot-forward-plus path:/work/flake/graphics-nir'`; 9 s). It
   fetches, writes the variants' sources (the corpus binary's `--godot-rd`, no Mesa needed) and
   compiles them with Nixpkgs' glslang into `nir-corpus/godot-forward-plus`, listing what glslang
   refuses in `glslang-refused`. Run it (and `corpus/cts-programs`) before `corpus/choose`, which
@@ -1959,7 +1959,7 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   compare frames; py7zr 1.0.0 (LGPL-2.1-or-later), only to unpack apitrace's 7z archive, which
   Windows' tar cannot. All under `C:\wc\graphics-nir\tools`.
 - G9 round 5 run 2: the Windows driver's linked files, listed from the build's own dependency
-  lists by `crates/wcontainers-nir/mesa/linked-licences-windows.py` (run on the desktop through
+  lists by `crates/nir/mesa/linked-licences-windows.py` (run on the desktop through
   `tools/graphics-rig/remote`; How to run), over the build of run 31's driver; the listing is in
   scratch `results/g9c2/linked-licences-windows.txt` (1,392 lines). No GPL, LGPL or SGI file is
   among them.
@@ -2054,7 +2054,7 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   declared sizes). The driver now also calls Mesa's `u_upload_mgr.c`, `u_blitter.c`,
   `u_framebuffer.c` and `util/format/u_format.c` (each MIT by its header) from Mesa's own
   library, which the WGL target links anyway; no new file of Mesa's is built.
-- Testing only, on the Windows desktop (`crates/wcontainers-opengl/cts`, never linked into
+- Testing only, on the Windows desktop (`crates/opengl/cts`, never linked into
   anything of ours): VK-GL-CTS `opengl-cts-4.6.8.1` (Apache-2.0, its `LICENSE`) with what its
   `fetch_sources.py` pins (glslang BSD-3-Clause and others, SPIRV-Tools and SPIRV-Headers
   Apache-2.0 and MIT, Amber Apache-2.0, jsoncpp MIT, zlib Zlib, libpng libpng-2.0, Vulkan-Docs and
@@ -2115,7 +2115,7 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
 ## Departures from the plan
 
 - G9 round 6 run 3: glcts is patched for the conformance runs (testing only;
-  `crates/wcontainers-opengl/cts/patches/case-ends-on-reset.patch`, applied by
+  `crates/opengl/cts/patches/case-ends-on-reset.patch`, applied by
   `cts/build-windows.ps1` from the pinned commit). Its WGL contexts made with no stated reset
   strategy are made `LOSE_CONTEXT_ON_RESET`, and after each iteration of every case glcts asks
   `glGetGraphicsResetStatus` and ends a reset case as a resource error, which ends its process
@@ -2218,7 +2218,7 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   speed is not what G9 measures.
 
 - G9 run 1: the Windows build of Mesa is a script beside the Linux one
-  (`crates/wcontainers-nir/mesa/build-windows.ps1`), sharing its pin and patches, not a step of
+  (`crates/nir/mesa/build-windows.ps1`), sharing its pin and patches, not a step of
   the rig's setup (the rig's scripts are another track's). It fetches its own tools into
   `C:\wc\graphics-nir\tools` rather than installing them system-wide. llvmpipe is built with
   LLVM's own Windows release (static runtime), not an LLVM built here.
@@ -2246,11 +2246,11 @@ the owner), or "for want of work" (the interface gives a way: this track's, or t
   pinned by commit), not kept in the Mac's scratch (15.8): the runs happen there, and the pins make
   it the same corpus everywhere.
 - Mesa is not a git submodule at `third_party/mesa` (15.2). It is pinned by commit in
-  `crates/wcontainers-nir/mesa/pin.toml` and fetched by the build script. Reasons: the literal check
+  `crates/nir/mesa/pin.toml` and fetched by the build script. Reasons: the literal check
   scans every Rust file and script of a submodule (Mesa has hundreds of Python scripts and Rust files),
   any new baseline or policy line is refused as growth, and an unchecked-out submodule is itself a
   finding; and where the fork 15.2 describes is kept is the owner's decision (15.9). Until then the
-  patches live as files in `crates/wcontainers-nir/mesa/patches/` (one so far, Zink's), applied by
+  patches live as files in `crates/nir/mesa/patches/` (one so far, Zink's), applied by
   the build script; they move into the fork when there is one.
 - The Mesa build runs on the rented x86-64 machine, not the laptop (15.8 says laptop): the brief of
   2026-11-19 makes the rented machines the default. The choice's times (15.3: "measured on the
@@ -2798,7 +2798,7 @@ baseline lines.
 
 G9 run 5: run at 99e5ff55 (x86-64 machine, from a git bundle; marks 0; the clone and
 its build deleted after). Findings shown: `CUBE_FACES` twice (Waiting on others) and
-`COMPONENTS` in `wcontainers-nir/src/mesa.rs` ("a second name for MAX"), now gone: the swizzle's
+`COMPONENTS` in `nir/src/mesa.rs` ("a second name for MAX"), now gone: the swizzle's
 length is `naga::VectorSize::MAX` itself (d287ead9). Only the summary's last lines were kept, so
 whether the two `OUT_DIR` findings of run 3 are still reported was not seen; the next run runs
 it again whole. wcontainers-nir and wcontainers-opengl have no baseline lines.
@@ -2826,7 +2826,7 @@ baseline lines; this run added no literal (the PowerShell script names its versi
 at its top; the check does not scan PowerShell).
 
 Run 15: exit 1 at 52c083b9 (x86-64 machine, from a git bundle; marks 0), for one finding outside
-this track's reach: `CUBE_FACES` in `wcontainers-nir/src/lib.rs` (since run 9) is reported as a
+this track's reach: `CUBE_FACES` in `nir/src/lib.rs` (since run 9) is reported as a
 redefinition of the Direct3D 11 device's, added on that branch at 7e4d8df6 and merged here this
 run (Requests: the interface's one constant). Every other finding is the shaders crate's
 submodules, not checked out in the bundle's clone (as run 6 found); this run added no literal.

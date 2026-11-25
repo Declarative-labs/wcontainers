@@ -30,7 +30,7 @@ aarch64-cpu = "12.0.0"
 [dev-dependencies]
 wcontainers-executor-conformance = { path = "../../conformance" }
 # The encoder of the guest the interrupt tests run.
-wcontainers-arm64 = { path = "../../../wcontainers-arm64" }
+wcontainers-arm64 = { path = "../../../arm64" }
 wcontainers-precise-instruction-set-apple-m5 = { path = "../../../precise-instruction-set/implementation/apple-m5" }
 wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }

@@ -9,7 +9,7 @@ use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{C_DRIVER, OUTPUT_FLAG, ZIG_TARGET_FLAG};
 
 /// The translator's test programs, whose guest folder holds headers the virtual-machine executor's programs include.
-pub const PROGRAMS: &str = "../../../wcontainers-translator-test/programs";
+pub const PROGRAMS: &str = "../../../translator-test/programs";
 
 /// A freestanding program's compiler flags beside the target and its defines.
 const FREESTANDING_FLAGS: [&str; 2] = ["-O2", "-ffreestanding"];

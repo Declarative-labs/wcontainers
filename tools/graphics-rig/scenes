@@ -32,7 +32,7 @@ if [ -z "$record" ]; then
 fi
 [ ${#args[@]} -eq 0 ] || { echo "scenes: --record takes no other arguments" >&2; exit 2; }
 "$here/gpu-job" --desktop --build "$build" -- "%CARGO_TARGET_DIR%\\debug\\gt-run record $out\\record"
-crate=$root/crates/wcontainers-graphics-test
+crate=$root/crates/graphics-test
 for dir in references/d3d11 references/d3d12 shaders/dxbc shaders/dxil; do
     rm -rf "${crate:?}/$dir"
     mkdir -p "$crate/$dir"

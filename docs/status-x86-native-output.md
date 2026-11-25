@@ -209,7 +209,7 @@ Results (rented x86 machine, Xeon 8488C):
 
 ## XN2 run 3 (2026-11-24)
 
-Built (crates/wcontainers-translator-test, commits 2a0c32b09 and 109720a14):
+Built (crates/translator-test, commits 2a0c32b09 and 109720a14):
 - Native layer 2's blob (native_programs.rs) runs in any way: `compare`, `run` and `run_timed` take `(Way,
   LookAhead)`. In I the program is at B + its address, the reference's stack copied to B + its address and then
   unmapped (so only the window holds guest memory), the probe's page at B - 2 pages, FS on the area (the guest's FS
@@ -283,7 +283,7 @@ Built:
   stop crate of arm64 has one `unreachable!` arm for each, commits 6d9ee13bc and fe6c66c38).
 - The fixes layer 1 in I found, listed under "Departures from the plan (XN2)": pushes and pops to memory commit at
   their store; a call's lookup before its push; withheld registers' pushes and pops; the high-byte slot.
-- Native layer 1 in I (crates/wcontainers-translator-test, `native::compare_in_process`): the blob maps the case's
+- Native layer 1 in I (crates/translator-test, `native::compare_in_process`): the blob maps the case's
   data and code at B + their addresses (B = 2^41), the probe's page at B - 2 pages and nothing else within 2^35
   bytes below, FS on the thread area, GS on B, the guest's FS base in the area; a fault's address in the window
   less B; a probe's fault is `Ended::Refused`, the guest as it started, answered by the meaning. Each case runs
@@ -339,7 +339,7 @@ built); 2. layers 2 and 3 in I, done (run 3; the link and stop tests in I can us
 
 ## XN2 (run 1, 2026-11-24)
 
-Built (crates/wcontainers-x86/src/carry/window.rs, reached only through `carry::access`, the one place):
+Built (crates/x86/src/carry/window.rs, reached only through `carry::access`, the one place):
 - Every guest access in I is on GS (the window's base B) at a 32-bit address, in both forms. Wrapping: the
   instruction re-encoded with the address-size prefix and `gs:`, no instruction added. Exact: the flag-free probe
   of plan 4 (`rorx u, x, 32; mov u32, u32; lea u, [u*8]; not u; mov u, gs:[u + 1 - 2 pages]`, `area::PROBE_PAGE`)
@@ -370,7 +370,7 @@ Built (crates/wcontainers-x86/src/carry/window.rs, reached only through `carry::
 - Routes in I: `enter` and `pushf` go to the inside (Kernel; their questions exist), with the 0x67 strings,
   segment-prefixed implicit forms and exact gathers as before.
 
-Tests (crates/wcontainers-x86/tests/native_window.rs, rented ARM64 machine, the x86 machine unreachable all run:
+Tests (crates/x86/tests/native_window.rs, rented ARM64 machine, the x86 machine unreachable all run:
 SSH banner timeouts at 08:35 and 08:40 UTC): `every_guest_access_is_cut_to_the_window`, a seeded sweep of
 instruction mixes in both forms, counted and not, decoding every piece and failing any host access to memory that
 is not the area on FS, the lookup's second level, the probe, or a GS access at a 32-bit address (strings and direct
@@ -410,7 +410,7 @@ Not built yet, in order (as run 1 left it; items 1 to 3 are done in run 2):
 
 ## What XN1 built
 
-- Routing (crates/wcontainers-x86/src/native.rs): `route` of every decoded form for each way (the machine, P, I
+- Routing (crates/x86/src/native.rs): `route` of every decoded form for each way (the machine, P, I
   with its check) and host (`HostMatches`: paging depth, partial writes, undefined results) and the process's
   `Offer`; the shared `Route::Area`; `native::host_differs` with the counted reason `HostModelResultRouted`;
   `native::question` turns every Kernel-routed form but `syscall` into a `Question` for `answer`. Tests:
@@ -434,7 +434,7 @@ Not built yet, in order (as run 1 left it; items 1 to 3 are done in run 2):
   and `call` through memory, `xsave`/`xrstor`, `enter`, the x87 stores of ST(0), a direct transfer past user space
   and a first-level fault of a transfer through a register or memory (`near_transfer`); `float_status_after` (the
   Float status route's second call); `native::trap` (the Trap route's trap).
-- The test crate (crates/wcontainers-translator-test): native layer 1 (src/guest/x86_64/native.rs: each case's
+- The test crate (crates/translator-test): native layer 1 (src/guest/x86_64/native.rs: each case's
   piece in a reference blob, run five ways: plain, counted with the trap flag stopping it after every host
   instruction, on a stepping piece, on a counted stepping piece behind a replay check that goes on, and behind one
   that stops); native layers 2 and 3 and the benchmark set (native_programs.rs: a program's pieces linked and run
@@ -594,7 +594,7 @@ run:
    count with the WebAssembly output's over many runs in one process: native layer 2 past about 10,000 programs,
    and the repeated string count test (layer2.rs `repeated_strings_count_as_the_webassembly_output_natively_x86_64`)
    at 12,000 cases (the thirteenth check: seed 1414, 48 at once, the same panic at runner.rs 461; 9,000 cases at the
-   same seed pass). Owner: the shared runner's owner (crates/wcontainers-translator-test runner.rs), with this
+   same seed pass). Owner: the shared runner's owner (crates/translator-test runner.rs), with this
    track; the recorded ceilings meanwhile are 10,000 programs for layer 2 and 9,000 cases for the string count test,
    nothing above them is tested.
 7. The meaning's differences from the CPU. Owner: the x86 track (its meaning, which the inside's answers are; the

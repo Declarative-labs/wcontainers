@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Builds VK-GL-CTS's vk-build-programs at the commit `sources` pins for vk-gl-cts, and writes the
+# SPIR-V of the Vulkan CTS case groups below into the corpus (test data only, never shipped).
+#
+#   crates/nir/corpus/cts-programs [flake]
+#
+# flake: as mesa/build's (the repository's flake, whose locked nixpkgs gives the tools). Output:
+# $CARGO_TARGET_DIR/vk-gl-cts/{src,build} (else under target/), kept between runs, and each group's
+# programs (vk-build-programs' registry: one <index>.spv a distinct program) in
+# $CARGO_TARGET_DIR/nir-corpus/vk-gl-cts-programs/<group>. Ninja runs $CARGO_BUILD_JOBS jobs when set.
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+repository=$(cd "$here/../../.." && pwd)
+target=${CARGO_TARGET_DIR:-$repository/target}
+cts_dir=$target/vk-gl-cts
+programs_dir=$target/nir-corpus/vk-gl-cts-programs
+flake=${1:-$repository}
+# The case groups whose programs the corpus takes, each into the folder of its last name:
+# alpha_to_one's fragment programs go through Nir::alpha_to_one before the routes (run.rs, by that
+# folder's name); without_format's read and write storage images without a format; buffer_access's
+# reach past their buffers' ends, which robustBufferAccess (15.4) defines.
+groups=(
+    dEQP-VK.pipeline.monolithic.multisample.alpha_to_one
+    dEQP-VK.image.load_store.without_format
+    dEQP-VK.robustness.buffer_access
+)
+
+read -r _ url commit _ < <(grep '^vk-gl-cts ' "$here/sources")
+if [ "$(git -C "$cts_dir/src" rev-parse HEAD 2>/dev/null)" != "$commit" ]; then
+    rm -rf "$cts_dir/src" "$cts_dir/build"
+    git init -q "$cts_dir/src"
+    git -C "$cts_dir/src" fetch -q --depth 1 "$url" "$commit"
+    git -C "$cts_dir/src" checkout -q FETCH_HEAD
+fi
+
+jobs=()
+[ -z "${CARGO_BUILD_JOBS:-}" ] || jobs=(-j "$CARGO_BUILD_JOBS")
+# The CTS's own pinned dependencies (glslang, SPIRV-Tools, SPIRV-Headers and the rest), then the tool
+# alone; the null target needs no window system.
+nix shell --inputs-from "$flake" nixpkgs#cmake nixpkgs#ninja nixpkgs#python3 nixpkgs#gcc nixpkgs#git \
+    nixpkgs#pkg-config -c bash -euo pipefail -c '
+    cd "$1/src"
+    python3 external/fetch_sources.py
+    cmake -S . -B "$1/build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DDEQP_TARGET=null
+    ninja -C "$1/build" "${@:2}" vk-build-programs
+' cts "$cts_dir" "${jobs[@]}"
+
+tool=$cts_dir/build/external/vulkancts/modules/vulkan/vk-build-programs
+for group in "${groups[@]}"; do
+    out=$programs_dir/${group##*.}
+    rm -rf "$out"
+    mkdir -p "$out"
+    # The tool's log and shader cache go beside the build, not into the working folder.
+    (cd "$cts_dir" && "$tool" --dst-path "$out" --deqp-case "$group.*" --target-vulkan-version 1.1)
+    echo "cts-programs: $group, $(find "$out" -name '*.spv' | wc -l) programs"
+done
+echo "cts-programs: done, $programs_dir"

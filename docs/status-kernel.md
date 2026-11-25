@@ -1449,7 +1449,7 @@ side of each is worked around without changing the interface.
   2ca8530e) and the whole workspace's check passes on both machines; the item is settled.
 - KC, eighth run: KC's whole-workspace check fails only in other tracks' files, unchanged since
   the owner's merges of 2026-11-23: crates/precise-instruction-set/implementation/measured/tests.rs:59
-  (both machines; the instruction design track's), crates/wcontainers-translator-test/tests/layer1.rs
+  (both machines; the instruction design track's), crates/translator-test/tests/layer1.rs
   lines 499, 690 and 715 (ARM64 only: they import `guest::x86_64::native` without the x86-64 cfg
   that module has; the native track's) and
   crates/executor/implementation/hardware-virtualization/tests/guest_memory.rs:222 (ARM64 only, type

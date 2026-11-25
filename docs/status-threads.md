@@ -683,7 +683,7 @@ Everything is under wcontainers-scratch/threads. Build output was deleted afterw
 
 **1. A shared guest memory against an unshared one, single-threaded.** `shared-cost.sh`, run inside `nix
 develop <this checkout> -c`. It runs the translator's benchmark test (`measure_benchmarks`,
-crates/wcontainers-translator-test/tests/benchmarks.rs, `programs/bench.c` at -O2, full look-ahead, every
+crates/translator-test/tests/benchmarks.rs, `programs/bench.c` at -O2, full look-ahead, every
 check, wasmtime 50.0.1 only) once per workload per setting under `/usr/bin/time -l`, alternating the two
 settings. Every run checked the program's output against the native run's.
 - Three rounds with one run in each process: logs/shared-cost.log, load 49 to 64.

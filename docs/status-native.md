@@ -326,7 +326,7 @@ logs/, suite/, arm/, ab/).
   inside Docker Desktop's virtual machine; they join with N10.
 - The headroom (minor): as above, by both methods.
 - `ldapr` raises SIGILL natively while the reference on the M5 runs it (minor): the presented CPU's features are the
-  `AT_HWCAP` bits the kernel reports (crates/wcontainers-arm64/src/forms.rs, `wcontainers_abi::HWCAP`), and LRCPC is
+  `AT_HWCAP` bits the kernel reports (crates/arm64/src/forms.rs, `wcontainers_abi::HWCAP`), and LRCPC is
   not among them, so this is the defined machine, on both outputs. Whether to present LRCPC is a change to the shared
   CPU crates and the ABI, not this track's: put to the orchestrator (For the orchestrator).
 
@@ -564,10 +564,10 @@ three scans for each of two registers, the first decode also building the decode
 Built (no knob, nothing a guest or replay sees changes): the moves are found in one pass over `msr`'s system registers
 through that form's own decode (`decode_forms::decode`), the two routed writes told apart by the stops, each read the
 `mrs` of its write's register, checked presented and routed; found once a process with x0 and the register set per call
-(crates/wcontainers-arm64/src/encode.rs, `moves_of_x0`, this track's code). The routines answer now costs about 16
+(crates/arm64/src/encode.rs, `moves_of_x0`, this track's code). The routines answer now costs about 16
 million cycles (most of it reading the forms table, which the first translation needs anyway); the index of forms is
 built at the first translation instead, about 78 million cycles. That index is the shared decoder's
-(crates/wcontainers-arm64/src/forms.rs, `candidates`, the translator track's): built form by form, each form pushed into
+(crates/arm64/src/forms.rs, `candidates`, the translator track's): built form by form, each form pushed into
 the buckets its fixed key bits allow, it is the same index (checked bucket by bucket against the filter, all 2048, on
 the rented ARM64 machine) for about 0.1 million cycles; the native start then measured 45 million cycles. Not committed:
 it is not this track's file (For the orchestrator).
@@ -1816,7 +1816,7 @@ Results (M5 Max; scratch native/n4r1; all on the Mac):
 
 What N4 still needs, in order:
 1. The mappings failure at look-ahead none, above.
-2. The speed method of section 8 and its bar: a test that builds bench.c (crates/wcontainers-translator-test/programs)
+2. The speed method of section 8 and its bar: a test that builds bench.c (crates/translator-test/programs)
    per workload as a static Linux program, runs it in native-kernel and measures the process's cycles and instructions
    (`proc_pid_rusage`) as alternating pairs with a plain run on the host. The plain run cannot be the same file on macOS
    (it calls `svc #0` with Linux's numbers and is linked under 4 GiB, which macOS keeps unmapped); round 3's `hvfrun
@@ -1861,7 +1861,7 @@ New test program, `tests/guest/blocks.c` in the kernel test: `dc zva`, `cvac`, `
 block, on a page never touched, touched, read-only (fresh and touched), allowing nothing and unmapped, each with its
 fault's offset, and the zeroed block checked against its neighbours. Natively it gives the reference's output and exit
 code (Docker alpine:3.22: a zeroing's fault is reported at the register's address, +0x68 into its block). The
-WebAssembly side reports a zeroing's fault at the block's start (+0x40): its meaning of `dc zva` (crates/wcontainers-arm64
+WebAssembly side reports a zeroing's fault at the block's start (+0x40): its meaning of `dc zva` (crates/arm64
 memory.rs, not this track's) checks the aligned block. That one difference is a known failure the test prints ("KNOWN
 FAILURE"), with the other comparisons (wait status, files, memory fault count) still asserted; it is passed to the
 translator track (For the orchestrator). The bar gains one command of this track's, `bzip2 -c /etc/passwd | bzip2 -dc |
@@ -2561,7 +2561,7 @@ Run 2 (2026-11-18; merged phase-1-literals ace0433d, docs only, in 4eaf24a9; mai
 
 Run 2's list of what was not done (kept as written then; run 3 built the runner, run 4 finished it, below):
 1. A runner on the floor: a program in the inside package (as floor-cases is; `src/bin/native-cases`
-   suggested) that maps layer 1's data area (crates/wcontainers-translator-test/src/layer1.rs: `DATA`,
+   suggested) that maps layer 1's data area (crates/translator-test/src/layer1.rs: `DATA`,
    `DATA_WRITABLE` read-write, the rest read-only) and the code region readable (literal loads read it) at
    their guest addresses, the piece's host code execute-only in the code area, a register page, then loads a
    case's registers, flags, vectors, FPSR/FPCR and runs the piece at EL0. It reports the exception (ESR, FAR,
@@ -3369,7 +3369,7 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   finder (T1, asked of the orchestrator since N4 run 1 with no answer). The shared finder's functions hold what a native
   piece cannot enter (code after a call, which the return reaches through its slot; jump tables' targets) and are cut for
   WebAssembly's structured control, and the count is E, so how pieces are cut changes nothing the guest or replay sees.
-  The walk is about 40 lines in crates/wcontainers-translator/src/native.rs. Full look-ahead is everything the start
+  The walk is about 40 lines in crates/translator/src/native.rs. Full look-ahead is everything the start
   reaches on its own guest page. Plan 3.1, 3.2, 6.2 and N4 say so now.
 - N4 run 7: until T1, a piece runs on past forward conditional branches by the emitter's own rule (plan 3.2 says pieces are
   what the shared finder gives); it is the straight-line runs of N2 with side exits, no second finder, and goes when T1
@@ -3578,7 +3578,7 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   guest can see changes and nothing is traded. The bar's command gives +11.08% [+10.42 .. +11.52] against +21.2%, and
   by alternating pairs +12.51% (run 17's build +18.68% in the same runs): headroom 8.7 points by pairs, more than twice
   the largest layout spread measured (3.4). Please rule whether the bar passes. (2) For the translator track: the
-  decoder's index of forms (crates/wcontainers-arm64/src/forms.rs, `candidates`) costs about 78 million cycles at every
+  decoder's index of forms (crates/arm64/src/forms.rs, `candidates`) costs about 78 million cycles at every
   process's first decode, native and WebAssembly alike; building it form by form (each form pushed into the 2^k
   buckets its free key bits allow, in form order) gives the same index, checked bucket by bucket, for about 0.1
   million (patch in scratch native/n4r19/forms-index.patch). It would take a native run's start from about 123 to 45
@@ -3730,7 +3730,7 @@ in n0r4; `clang -O1 -march=armv8.1-a -o stadd stadd.c && ./stadd` and `clang -O1
   or rule (decision 10 is still the owner's). N4's full look-ahead and the finder's stretches need T1 in the translator
   track's crate: may this track make it, or will that track? R1 and the first R3 still wait for a ruling.
 
-- N3 run 10: for the translator track (crates/wcontainers-arm64/src/memory.rs, `ZeroBlock`): the WebAssembly output
+- N3 run 10: for the translator track (crates/arm64/src/memory.rs, `ZeroBlock`): the WebAssembly output
   reports a `dc zva` fault at the 64-byte block's start; Linux reports the address in the register (si_addr, measured in
   Docker on this Mac with tests/guest/blocks.c: +0x3068, the WebAssembly side +0x3040). The native output gives Linux's
   answer. The kernel test prints this as a known failure until that meaning reports the register's address.

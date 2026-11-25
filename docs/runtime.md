@@ -4,7 +4,7 @@ Status: plan, 2026-11-17; J1 to J4a built (2026-11-18); J4b waits for the progre
 
 Words used here:
 - **kernel**: crates/wcontainers-kernel, driven from outside through `wcontainers-abi`.
-- **translator**: crates/wcontainers-translator and its guest CPU crates.
+- **translator**: crates/translator and its guest CPU crates.
 - **back end**: what runs the guest's instructions behind the kernel's `Cpu` side. The first one is the
   translator's WebAssembly run by wasmtime; the kernel tests' stand-in (Unicorn) is another.
 - **outside**: what surrounds the kernel: its `Host` (clocks, randomness, output, files, network) and the
@@ -99,9 +99,9 @@ nothing else in the runtime changes. The program that ships names the one guest 
 
 Kernel side lines are at 36d20013 (this branch); translator side lines are at 84e9a937 (`git show
 84e9a937:<path>`). Paths are shortened: `abi/` is crates/wcontainers-abi/src, `contract.rs`, `code.rs` and
-`thread.rs` are in crates/wcontainers-translator/src, `runner.rs` is
-crates/wcontainers-translator-test/src/runner.rs, `gcpu/` is crates/wcontainers-guest-cpu/src, `arm64/` is
-crates/wcontainers-arm64/src, `driver.rs` is crates/wcontainers-kernel-test/src/driver.rs. "Fits as is": the
+`thread.rs` are in crates/translator/src, `runner.rs` is
+crates/translator-test/src/runner.rs, `gcpu/` is crates/guest-cpu/src, `arm64/` is
+crates/arm64/src, `driver.rs` is crates/wcontainers-kernel-test/src/driver.rs. "Fits as is": the
 runtime uses it unchanged. "Fits with a named change": it works once the runtime does the change named, and
 no translator or kernel code changes unless the row says so. "Missing": nothing on the translator side does
 it; the runtime builds it.
@@ -265,7 +265,7 @@ range is translated at the container's look-ahead, from its starts, and the tran
 can (call targets, built addresses). The starts are:
 - the notice's own (the program's entry at exec, the vDSO's return path);
 - when the range is the code segment of an ELF image in memory, the starts the translator's M5 takes from
-  a file (translator plan 5; crates/wcontainers-translator-test/src/binaries.rs:225-330 at 84e9a937), read
+  a file (translator plan 5; crates/translator-test/src/binaries.rs:225-330 at 84e9a937), read
   from the image as it is in memory: its entry and `DT_INIT`/`DT_FINI`; the functions of its dynamic symbol
   table; every function in its unwind table index (`PT_GNU_EH_FRAME`); every address into the range that its
   relocations leave in data (`RELA` from each entry's addend; `RELR` from the word at each place); the init,
@@ -680,7 +680,7 @@ from the saved memories and threads. That save happens in the test outside's `st
   engine always uses Unix signal handling instead (`macos_use_mach_ports(false)`), which a copy inherits.
   Traps are rare (an access beyond the memory), so this costs nothing on the paths that matter.
 - **Translating and compiling.** Both run on rayon: the translator plans and emits on its pool
-  (crates/wcontainers-translator/Cargo.toml, rayon 1.12), and wasmtime's parallel compiling does too. The
+  (crates/translator/Cargo.toml, rayon 1.12), and wasmtime's parallel compiling does too. The
   global pool's threads are not in the copy, so any work first reached after the restore would wait for
   them forever. So the back end owns its own rayon pool, made when the back end is made, and runs every
   translation and compile inside that pool's `install`, which sends rayon work started inside it to that

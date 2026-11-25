@@ -1,0 +1,30 @@
+# The translator for the browser runner, built for wasm32 so the page translates at run time just as the
+# wasmtime runner does. It is its own workspace because it builds for another target.
+[package]
+name = "wcontainers-browser"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+wcontainers-abi = { path = "../../abi" }
+wcontainers-arm64 = { path = "../../arm64", optional = true }
+wcontainers-x86 = { path = "../../x86", optional = true }
+wcontainers-guest-cpu = { path = "../../guest-cpu" }
+wcontainers-translator = { path = "../../translator", features = ["measure"] }
+serde_json = "1"
+zerocopy = { version = "0.8", default-features = false }
+
+[features]
+# The guest the translator is built for; exactly one.
+arm64 = ["dep:wcontainers-arm64"]
+x86_64 = ["dep:wcontainers-x86"]
+
+[profile.release]
+panic = "abort"
+
+[workspace]

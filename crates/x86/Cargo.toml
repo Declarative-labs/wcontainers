@@ -1,0 +1,46 @@
+[package]
+name = "wcontainers-x86"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-guest-cpu = { path = "../guest-cpu", default-features = false }
+wcontainers-abi.workspace = true
+# The processor features a program is told of: the kernel interface's list.
+wcontainers-kernel = { path = "../kernel" }
+zerocopy.workspace = true
+iced-x86 = { version = "1.22.0", default-features = false, features = ["no_std", "decoder", "encoder", "instr_info", "op_code_info"], optional = true }
+wasm-encoder = { version = "0.263.0", optional = true }
+rustc_apfloat = "0.2.3"
+# x87's square root and transcendental instructions (MIT).
+astro-float-num = { version = "0.3.7", default-features = false }
+# The reciprocal estimates' square root and rounding, correctly rounded as WebAssembly's (MIT).
+libm = "0.2.16"
+# Only for astro-float-num's lazy_static, which builds without std only with this feature.
+lazy_static = { version = "1.5", features = ["spin_no_std"] }
+
+[build-dependencies]
+# Each `Code`'s claim group comes from iced's own tables, read at build time.
+iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "instr_info"] }
+
+[dev-dependencies]
+raw-cpuid = "11.6.0"
+fastrand = "2.5.0"
+iced-x86 = { version = "1.22.0", default-features = false, features = ["std", "decoder", "instr_info", "intel"] }
+# The native output's pieces, read back in tests/native_output.rs.
+wcontainers-translator = { path = "../translator", features = ["native"] }
+
+[features]
+default = ["translate"]
+# The translation half: the decoder and the meanings. The kernel depends on the core alone, with this off.
+translate = [
+    "dep:iced-x86",
+    "dep:wasm-encoder",
+    "wcontainers-guest-cpu/translate",
+]
+
+[lints]
+workspace = true

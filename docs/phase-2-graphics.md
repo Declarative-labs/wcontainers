@@ -124,7 +124,7 @@ only (section 10): BSD-3-Clause (its `LICENSE`). `wgpu` is confirmed by the mile
 
 ## 4. The interface
 
-The real Rust is `crates/wcontainers-gpu`. This section gives its shape and the reasons; the crate's doc
+The real Rust is `crates/gpu`. This section gives its shape and the reasons; the crate's doc
 comments give each item's purpose.
 
 ### 4.1 Three kinds of operation
@@ -340,7 +340,7 @@ Fast paths, all in the crate with their defaults:
   (`QUERY_RESOLVE` usage, 256-byte aligned offsets) and a `copyBufferToBuffer` into `dst`, so nothing
   waits. WebGL 2 keeps the default: GLES 3.0 gives query results only to the host.
 
-The built-in programs are WGSL read through naga's WGSL reader (`wcontainers-gpu/src/helpers.rs`), so
+The built-in programs are WGSL read through naga's WGSL reader (`gpu/src/helpers.rs`), so
 every back end gets them in the common form like any other shader. Each program is its own module,
 holding only its own bindings and types and validated with only the abilities it needs, and is made when
 a default first draws with it. That matters because naga's GLSL writer asks for every type a module
@@ -3454,7 +3454,7 @@ its load, as everywhere.
 
 - **G1d, the interface for the second batch.** The changes of 15.7, each with a rule test and a
   suite test; the shared line kept as in the first batch. Pass bar: each change is in commits that
-  touch only `crates/wcontainers-gpu` (and this plan's text), whose messages start "interface:",
+  touch only `crates/gpu` (and this plan's text), whose messages start "interface:",
   in the interface's style (section 12's rule: a base primitive, a fast path with a default, or a
   capability); every rule a caller can break with it is refused by the recording back end and
   broken once in a test; every new behaviour has a suite test, listed in `suite!`, that passes on

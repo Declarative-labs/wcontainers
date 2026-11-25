@@ -128,7 +128,7 @@ the other was never found because the Security log had been overwritten. Now:
   its pid, workstation and source address, and the process's command line and parent while it still
   runs. It only reads the Security log; no security or audit setting was changed (the lockout
   threshold stays at 10).
-- desktop/install-chrome.ps1 puts the Chrome wrapper (gt-chrome, crates/wcontainers-graphics-test/
+- desktop/install-chrome.ps1 puts the Chrome wrapper (gt-chrome, crates/graphics-test/
   src/bin/gt-chrome.rs, the source from C:\wc\sshdiag\chrome-wrapper) in front of Chrome whenever it
   installs or updates Chrome, and whenever the wrapper there is not the current build.
 - Every Mac script reaches the desktop through one long-lived SSH connection per branch (control
@@ -218,7 +218,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   gt-d3d12.exe into C:\wc\out\<branch>\scenes\bin with each `--dll` beside them under its name
   (paths on the desktop, relative to its checkout; `%CARGO_TARGET_DIR%` works), runs every scene (or
   the named ones) in its own process with a 120 s limit, and checks every output against
-  crates/wcontainers-graphics-test/references/<api>. Prints `pass`, `FAIL` or `absent` and the
+  crates/graphics-test/references/<api>. Prints `pass`, `FAIL` or `absent` and the
   numbers for each output (absent: the scene program wrote `<scene>[-<part>].absent` saying what
   the device lacks, from the device's own answers; a note for a part with no reference is a FAIL), a FAIL for a scene that crashed, hung or has no references, for a scene whose program
   loaded d3d11.dll, d3d12.dll or dxgi.dll from anywhere but that directory when a replacement of
@@ -265,14 +265,14 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   messages are printed with the error. The lowest level of each Direct3D 11 scene is in
   src/d3d11/scenes/mod.rs (SCENES); parts needing more check `Gpu::lacks_level`,
   `lacks_samples` or the device's options and write an absent note.
-  The scene sources are crates/wcontainers-graphics-test/src/d3d11/scenes/*.rs and
+  The scene sources are crates/graphics-test/src/d3d11/scenes/*.rs and
   src/d3d12/*.rs; each file's first comment says what it covers. src/d3d12/states.rs,
   textures.rs, raster.rs, primitives.rs and draws.rs draw Direct3D 11's blend, depth, stencil,
   formats, samplers, textures, raster, msaa, targets, topology, geometry, tessellation, streamout
   and draws scenes (the same cells, from the same tables and lists of steps: the stencil scene's
   draws are `stencil::steps()`) through Direct3D 12, each state combination made into its
   own pipeline state object (states.rs's `Immediate`; streamout builds its two directly).
-- Shaders: crates/wcontainers-graphics-test/shaders/*.hlsl, each naming its entry points in header
+- Shaders: crates/graphics-test/shaders/*.hlsl, each naming its entry points in header
   lines `// fxc: <target> <entry>, ...` (DXBC for Direct3D 11) and `// dxc: ...` (DXIL, shader model
   6.0, for Direct3D 12). build.rs compiles them with the newest Windows SDK's fxc.exe and dxc.exe
   (10.0.26100.0; dxc 1.9.2602.17) when building for Windows; the programs embed the bytecode. Each
@@ -407,7 +407,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   gets APPDATA and LOCALAPPDATA in its output directory, so Godot's settings, logs and shader
   caches stay under C:\wc. The whole directory of each program's executable is copied (SDL and
   Godot's console wrapper load files beside it).
-- The frame clock (crates/wcontainers-graphics-test-forward/src/clock.rs), on when WC_CAPTURE is
+- The frame clock (crates/graphics-test-forward/src/clock.rs), on when WC_CAPTURE is
   set, started in the forwarding library's DllMain: it starts at the next whole second of the real
   clocks and moves by 1/60 s at each presented frame and by the time asked at each Sleep or
   SleepEx (which still sleep for real). ntdll's RtlQueryPerformanceCounter, GetTickCount,
@@ -449,7 +449,7 @@ All from the root of a checkout on the Mac. The desktop is tom@192.168.2.183 (ke
   <calls>"), must be in census.txt as it is, or the program fails ("census has ... where the
   program makes ..."). The two Microsoft samples have one, from their source; it holds through a
   replacement library too, as the forwarding library counts in front of it.
-- The census (crates/wcontainers-graphics-test-forward/src/census.rs), on when WC_OUT names a
+- The census (crates/graphics-test-forward/src/census.rs), on when WC_OUT names a
   directory: the typed D3D11CreateDevice and D3D11CreateDeviceAndSwapChain exports patch the method
   tables of the device, swap chain and DXGI factory with counting thunks (names read from the
   SDK's C headers at build time) and hand the program a wrapper for each immediate and deferred
@@ -1352,7 +1352,7 @@ ours; Mac load average about 60 to 65):
 
 ## Loading a replacement Direct3D library
 
-How the forwarding works (crates/wcontainers-graphics-test-forward): build.rs reads the export table
+How the forwarding works (crates/graphics-test-forward): build.rs reads the export table
 of the build machine's C:\Windows\System32\d3d11.dll (with the object crate) and makes, for each of
 its 51 exports, an x86-64 thunk exported under the same name and ordinal (link argument
 `/EXPORT:name=thunk,@ordinal`; checked with dumpbin: same 51 names and ordinals). A thunk saves the
@@ -1425,7 +1425,7 @@ There is no plan document in this checkout; these depart from the task or brief 
   A scheduled task passes -c C:\wc\pueue\pueue.yml, keeping it under C:\wc.
 - Jobs run in session 0, not on the owner's desktop: Direct3D 11 and 12 hardware devices, wgpu and
   headless Chrome all reached the RTX 3080 there, and nothing can appear on the owner's screen.
-- The forwarding DLL is a second crate, crates/wcontainers-graphics-test-forward, since a crate has one
+- The forwarding DLL is a second crate, crates/graphics-test-forward, since a crate has one
   library and this one must be a cdylib with its own exports.
 - The references are drawn with the Direct3D debug layer on, and any error it reports fails the run.
 - The scenes' reference pictures are kept in the repository (255 outputs of both APIs) so a change

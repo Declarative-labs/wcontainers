@@ -155,7 +155,7 @@ at 2077a64d records, finding by finding with the sources checked; all stand.
 ## Interface changes
 
 Each entry: the change, whether it fits the interface's style, its rule check and test (recording
-back end, `crates/wcontainers-gpu-test/tests/` unless named) and its suite test (`src/suite*`, run
+back end, `crates/gpu-test/tests/` unless named) and its suite test (`src/suite*`, run
 by every back end through `suite!`). Changes up to G1b, with their tests, are listed in this file at
 f639e27d; all are kept.
 
@@ -404,7 +404,7 @@ outside its bound range (which the interface allows; stopped so tests find each 
     `g1c6/features.py`; `vk.xml` is in scratch `check-g1c-4/dl/vk`). Earlier runs' scripts are in scratch
     `g1r2` to `g1b2`.
 - A back end runs the suite with a test file holding a `Host` implementation and
-  `wcontainers_gpu_test::suite!(MyHost);` (see `crates/wcontainers-gpu-test/tests/recorder.rs`).
+  `wcontainers_gpu_test::suite!(MyHost);` (see `crates/gpu-test/tests/recorder.rs`).
 - On the Mac only formatting: `nix develop -c cargo fmt -p wcontainers-gpu -p wcontainers-gpu-test`.
 
 ## Measurements
@@ -553,7 +553,7 @@ outside its bound range (which the interface allows; stopped so tests find each 
   named there and in 15.9: consumed arguments are copied into the call streams (the brief says
   data is read in place; 15.1 gives why), and the back end becomes its own WebAssembly module that
   every front module calls (section 10 had one module per front and back end; 15.2).
-- G1c: `crates/wcontainers-direct3d-11/src/format.rs` (another track's crate) changed: its
+- G1c: `crates/direct3d-11/src/format.rs` (another track's crate) changed: its
   `components` returns `Format::components`, so the two tables cannot drift (G1b's check, finding
   6). One function body; the track can drop the function.
 - G1c: the plan's second batch (section 15) departs from sections 4.8 and 10 where the first batch's
@@ -566,7 +566,7 @@ outside its bound range (which the interface allows; stopped so tests find each 
 - G1 run 10: resource tables stay absent on the recording back end; their one stated rule is tested
   (`resource_tables_are_absent`). The recorder declares `compute_workgroup_storage` 0.
 - G1 run 9: only one binding number rule is checked (paired textures at 32 to 159).
-- G1 run 5: a one-statement fix in `crates/wcontainers-gpu-webgl/examples/webgl-scenes.rs` (7a0feba).
+- G1 run 5: a one-statement fix in `crates/gpu-webgl/examples/webgl-scenes.rs` (7a0feba).
 - G1 run 1: a split pass names its resolve target in every part; the occlusion counter sums by
   `read_back_now` where the back end does not compute (since 07985aaa); random sequences use
   proptest with a fixed ChaCha seed.
@@ -636,7 +636,7 @@ outside its bound range (which the interface allows; stopped so tests find each 
 
 Run 1:
 
-- End merges: direct3d-11 conflicted in `crates/wcontainers-gpu/src/slow.rs` only: the line had
+- End merges: direct3d-11 conflicted in `crates/gpu/src/slow.rs` only: the line had
   `SequentialBuffersCopied` before `SwizzleInShader` and `AtomicExchangeLoop`, the direct3d-11 and
   shaders branches after them. `SlowPath` is `repr(u8)` and serialised in the shaders crate's cache
   (`Reflection::slow_paths`), so one order must hold everywhere: the shaders and direct3d-11

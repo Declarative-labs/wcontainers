@@ -14,10 +14,10 @@ path = "implementation.rs"
 wcontainers-abi.workspace = true
 wcontainers-executor-hardware-virtualization-inside = { path = "../hardware-virtualization-inside" }
 # What the guest's architecture says the floor sets up (stack pointer alignment).
-wcontainers-arm64 = { path = "../../../wcontainers-arm64" }
-wcontainers-guest-cpu = { path = "../../../wcontainers-guest-cpu" }
+wcontainers-arm64 = { path = "../../../arm64" }
+wcontainers-guest-cpu = { path = "../../../guest-cpu" }
 # The inside's translations, made by the monitor.
-wcontainers-translator = { path = "../../../wcontainers-translator", features = ["native"] }
+wcontainers-translator = { path = "../../../translator", features = ["native"] }
 # Reading the inside's ELF image.
 object = { version = "0.37.3", default-features = false, features = ["read_core", "elf"] }
 libc = "0.2.178"
@@ -68,7 +68,7 @@ fastrand = "2.5.0"
 # The host's page size.
 rustix = { version = "1.1.6", features = ["param"] }
 # Layer 1's cases and the WebAssembly output's outcomes, which the differential test compares with.
-wcontainers-translator-test = { path = "../../../wcontainers-translator-test" }
+wcontainers-translator-test = { path = "../../../translator-test" }
 proptest = "1.12.0"
 # The exits test's other side: the WebAssembly output's CPU side, run as the runtime's loop runs it.
 wcontainers-executor-wasmtime = { path = "../wasmtime" }

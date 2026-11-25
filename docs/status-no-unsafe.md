@@ -9,7 +9,7 @@ Free of unsafe and inheriting the workspace's lints (their lines are gone from t
   get_bytes; the receive's tail is an initialized per-thread buffer (`receive::with_tail`, shared); the allocation
   checks moved to tests/allocations.rs, a binary without the test harness (whose threads allocate beside a check)
   counting the whole process with stats_alloc (helpers in tests/support/mod.rs). 30 of 30 runs passed.
-- crates/wcontainers-arm64: the register page's word is read through its fields.
+- crates/arm64: the register page's word is read through its fields.
 - crates/route-resolver/implementation/host: its counter test enters its namespace and finds its link through nix.
 - crates/tcp-sockets/conformance: unshare through nix; the check's own loopback is brought up through netlink
   (netlink-packet-route, netlink-sys) instead of the SIOCSIFFLAGS ioctl.

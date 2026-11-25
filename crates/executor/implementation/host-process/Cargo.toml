@@ -40,10 +40,10 @@ nix = { version = "0.31.3", default-features = false, features = ["process", "pt
 
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
 # Where translated code finds its slots, its floor entries and its register page, and the words a loader fills.
-wcontainers-arm64 = { path = "../../../wcontainers-arm64" }
+wcontainers-arm64 = { path = "../../../arm64" }
 # Guest code translated for the process way, its position map, and its stops resolved to the guest's state.
-wcontainers-translator = { path = "../../../wcontainers-translator", features = ["native"] }
-wcontainers-guest-cpu = { path = "../../../wcontainers-guest-cpu" }
+wcontainers-translator = { path = "../../../translator", features = ["native"] }
+wcontainers-guest-cpu = { path = "../../../guest-cpu" }
 wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
 # The kernel's loop, which runs threads through `Execution`.
 wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel", default-features = false }
@@ -60,10 +60,10 @@ rustc-hash = { version = "2.1.3", default-features = false }
 
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dev-dependencies]
 # The floor test's pieces, standing in for translated code, in the native output's own encodings.
-wcontainers-arm64 = { path = "../../../wcontainers-arm64" }
+wcontainers-arm64 = { path = "../../../arm64" }
 # Translated code of the process way, its position map, and its stops resolved, in the translated test.
-wcontainers-translator = { path = "../../../wcontainers-translator", features = ["native"] }
-wcontainers-guest-cpu = { path = "../../../wcontainers-guest-cpu" }
+wcontainers-translator = { path = "../../../translator", features = ["native"] }
+wcontainers-guest-cpu = { path = "../../../guest-cpu" }
 wcontainers-executor-arm64-stop = { path = "../arm64-stop" }
 # The kernel test: the kernel, its loop with containers, the seeded policy, the host's services it calls, the
 # WebAssembly output to compare with, and the C target of the guest programs.
@@ -75,7 +75,7 @@ wcontainers-clock = { path = "../../../clock" }
 wcontainers-random-source = { path = "../../../random-source" }
 wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-executor-wasmtime = { path = "../wasmtime" }
-wcontainers-translator-test = { path = "../../../wcontainers-translator-test" }
+wcontainers-translator-test = { path = "../../../translator-test" }
 # The busybox test: the reference image, its commands, and the reference's outcome in Docker on this machine.
 wcontainers-executor-unicorn = { path = "../unicorn" }
 # The executor interface's suite, the translator's precise instruction set and the states it is checked on, and the

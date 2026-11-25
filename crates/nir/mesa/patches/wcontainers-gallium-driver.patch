@@ -1,0 +1,170 @@
+diff --git a/meson.build b/meson.build
+index 59d30c8..9c3c232 100644
+--- a/meson.build
++++ b/meson.build
+@@ -231,6 +231,7 @@ with_gallium_svga = gallium_drivers.contains('svga')
+ with_gallium_virgl = gallium_drivers.contains('virgl')
+ with_gallium_lima = gallium_drivers.contains('lima')
+ with_gallium_zink = gallium_drivers.contains('zink')
++with_gallium_wcontainers = gallium_drivers.contains('wcontainers')
+ with_gallium_d3d12 = gallium_drivers.contains('d3d12')
+ with_gallium_asahi = gallium_drivers.contains('asahi')
+ with_gallium_rocket = gallium_drivers.contains('rocket')
+diff --git a/meson.options b/meson.options
+index beb2837..83d8d8c 100644
+--- a/meson.options
++++ b/meson.options
+@@ -87,7 +87,8 @@ option(
+     'all', 'auto',
+     'asahi', 'crocus', 'd3d12', 'ethosu', 'etnaviv', 'freedreno', 'i915', 'iris',
+     'lima', 'llvmpipe', 'nouveau', 'panfrost', 'r300', 'r600', 'radeonsi',
+-    'rocket', 'softpipe', 'svga', 'tegra', 'v3d', 'vc4', 'virgl', 'zink',
++    'rocket', 'softpipe', 'svga', 'tegra', 'v3d', 'vc4', 'virgl', 'wcontainers',
++    'zink',
+   ],
+   description : 'List of gallium drivers to build. If this is set to auto ' +
+                 'all drivers applicable to the target OS/architecture ' +
+@@ -145,6 +146,14 @@ option(
+                 'by default',
+ )
+ 
++option(
++  'wcontainers-link-args',
++  type : 'array',
++  value : [],
++  description : 'the linker arguments of the wcontainers Gallium driver: its static library, ' +
++                'built by cargo, and the native libraries rustc printed for it'
++)
++
+ option(
+   'gallium-wgl-dll-name',
+   type : 'string',
+diff --git a/src/gallium/drivers/wcontainers/meson.build b/src/gallium/drivers/wcontainers/meson.build
+new file mode 100644
+index 0000000..65ad0ec
+--- /dev/null
++++ b/src/gallium/drivers/wcontainers/meson.build
+@@ -0,0 +1,7 @@
++# SPDX-License-Identifier: MIT
++# The wcontainers Gallium driver is a static library cargo builds (crates/opengl of
++# wcontainers), linked with the native libraries rustc printed for it: both in -Dwcontainers-link-args.
++driver_wcontainers = declare_dependency(
++  compile_args : '-DGALLIUM_WCONTAINERS',
++  link_args : get_option('wcontainers-link-args'),
++)
+diff --git a/src/gallium/drivers/wcontainers/wcontainers_public.h b/src/gallium/drivers/wcontainers/wcontainers_public.h
+new file mode 100644
+index 0000000..5c572c6
+--- /dev/null
++++ b/src/gallium/drivers/wcontainers/wcontainers_public.h
+@@ -0,0 +1,18 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef WCONTAINERS_PUBLIC_H
++#define WCONTAINERS_PUBLIC_H
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++struct pipe_screen;
++
++/* The wcontainers driver's screen on the first GPU wcontainers-gpu finds, or NULL without one. */
++struct pipe_screen *wcontainers_screen_create(void);
++
++#ifdef __cplusplus
++}
++#endif
++
++#endif
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index 25e9511..9ae105e 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -196,6 +196,11 @@ if with_gallium_ethosu
+ else
+   driver_ethosu = declare_dependency()
+ endif
++if with_gallium_wcontainers
++  subdir('drivers/wcontainers')
++else
++  driver_wcontainers = declare_dependency()
++endif
+ if with_gallium_zink
+   if not with_platform_windows
+     subdir('winsys/zink/drm')
+diff --git a/src/gallium/targets/wgl/meson.build b/src/gallium/targets/wgl/meson.build
+index 3a194b3..171c39d 100644
+--- a/src/gallium/targets/wgl/meson.build
++++ b/src/gallium/targets/wgl/meson.build
+@@ -24,7 +24,7 @@ libgallium_wgl = shared_library(
+   ],
+   dependencies : [
+     dep_ws2_32, idep_nir, idep_mesautil, driver_swrast,
+-    driver_d3d12, driver_zink, winsys_d3d12_wgl
++    driver_d3d12, driver_zink, driver_wcontainers, winsys_d3d12_wgl
+   ],
+   link_args : gallium_wgl_link_args,
+   name_prefix : '',
+diff --git a/src/gallium/targets/wgl/wgl.c b/src/gallium/targets/wgl/wgl.c
+index ade8397..7ed8501 100644
+--- a/src/gallium/targets/wgl/wgl.c
++++ b/src/gallium/targets/wgl/wgl.c
+@@ -63,6 +63,10 @@
+ #include "zink/zink_public.h"
+ #endif
+ 
++#ifdef GALLIUM_WCONTAINERS
++#include "wcontainers/wcontainers_public.h"
++#endif
++
+ #ifdef GALLIUM_LLVMPIPE
+ static bool use_llvmpipe = false;
+ #endif
+@@ -72,6 +76,9 @@ static bool use_d3d12 = false;
+ #ifdef GALLIUM_ZINK
+ static bool use_zink = false;
+ #endif
++#ifdef GALLIUM_WCONTAINERS
++static bool use_wcontainers = false;
++#endif
+ 
+ static const char *created_driver_name = NULL;
+ 
+@@ -104,6 +111,13 @@ wgl_screen_create_by_name(HDC hDC, const char* driver, struct sw_winsys *winsys)
+          use_zink = true;
+    }
+ #endif
++#ifdef GALLIUM_WCONTAINERS
++   if (strcmp(driver, "wcontainers") == 0) {
++      screen = wcontainers_screen_create();
++      if (screen)
++         use_wcontainers = true;
++   }
++#endif
+ #ifdef GALLIUM_SOFTPIPE
+    if (strcmp(driver, "softpipe") == 0) {
+       screen = softpipe_create_screen(winsys);
+@@ -125,6 +139,9 @@ wgl_screen_create(HDC hDC)
+ 
+    const char *const drivers[] = {
+       debug_get_option_gallium_driver(),
++#ifdef GALLIUM_WCONTAINERS
++      sw_only ? "" : "wcontainers",
++#endif
+ #ifdef GALLIUM_D3D12
+       sw_only ? "" : "d3d12",
+ #endif
+@@ -201,6 +218,13 @@ wgl_present(struct pipe_screen *screen,
+    }
+ #endif
+ 
++#ifdef GALLIUM_WCONTAINERS
++   if (use_wcontainers) {
++      screen->flush_frontbuffer(screen, ctx, res, 0, 0, hDC, 0, NULL);
++      return;
++   }
++#endif
++
+ #ifdef GALLIUM_SOFTPIPE
+    winsys = softpipe_screen(screen)->winsys,
+    dt = softpipe_resource(res)->dt,

@@ -11,7 +11,7 @@
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
 #[allow(dead_code)]
-#[path = "../../../../wcontainers-arm64/tests/common/mod.rs"]
+#[path = "../../../../arm64/tests/common/mod.rs"]
 mod words;
 
 use std::sync::Arc;

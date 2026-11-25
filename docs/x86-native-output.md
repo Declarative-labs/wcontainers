@@ -9,8 +9,8 @@ process ("P"), and the kernel in process with inline memory checks ("I"; both fr
 the ways is named in section 2 and lives in three places of the emitter (the thread area's segment, the access, the
 call into the inside).
 
-Paths: `x86/` is crates/wcontainers-x86/src, `gcpu/` crates/wcontainers-guest-cpu/src, `tr/`
-crates/wcontainers-translator/src, `x86 plan` docs/phase-2-guest-cpu-and-x86.md. Measurements are in
+Paths: `x86/` is crates/x86/src, `gcpu/` crates/guest-cpu/src, `tr/`
+crates/translator/src, `x86 plan` docs/phase-2-guest-cpu-and-x86.md. Measurements are in
 pyro-parked/wcontainers-scratch/x86-native-output (probes/ and results/), taken on the rented x86 machine (Xeon
 Platinum 8488C, Sapphire Rapids, 96 processors, Linux 7.0.0-1018-aws, 5-level paging, user FSGSBASE, vsyscall
 execute-only), load given beside each.

@@ -242,7 +242,7 @@ Not measured beyond 8,000 cases (run 2's 20,000 had no per-case record).
 ## Departures from the plan and the brief
 
 - C2 has two parts the plan did not name, without which the speed bar fails: the cache file's third
-  entry kind (crates/wcontainers-shaders/src/cache.rs, the shaders track's file, 32 lines added,
+  entry kind (crates/shaders/src/cache.rs, the shaders track's file, 32 lines added,
   nothing of it changed; its git status was clean before the edit), and the per-thread record of the
   last parsed modules in cpp/dxil.cpp. The record holds up to five modules (one per stage of a
   graphics pipeline) and their containers' bytes per thread that read one; a sixth module evicts
@@ -255,7 +255,7 @@ Not measured beyond 8,000 cases (run 2's 20,000 had no per-case record).
   deleted.
 - 4043e0cd took two lines of other tracks' uncommitted lock changes; 537e3bf7 took them back out
   (Where things stand). History is not rewritten.
-- C1's check fixes touched crates/wcontainers-shaders/build.rs (two lines in its list of dxbc-spirv
+- C1's check fixes touched crates/shaders/build.rs (two lines in its list of dxbc-spirv
   enums); C2 added four more lines there (the boundary's view enums, run 4's `ViewRange`), and
   the enums themselves in cpp/boundary.h.
 - Run 4, outside the track's files: the shaders crate's cache.rs again (`dxil_views_cached` now
@@ -289,7 +289,7 @@ dependencies of wcontainers-shaders.
 - Behaviour on malformed containers changed with C1 as listed under "Behaviour"; each kind now has
   a test. Example: a pixel shader whose container is cut inside its input signature chunk is
   refused with E_INVALIDARG by the Direct3D 11 front, where it was accepted.
-- crates/wcontainers-shaders/examples/containers.rs (the shaders track's corpus tool) still walks
+- crates/shaders/examples/containers.rs (the shaders track's corpus tool) still walks
   a container's header and chunks itself, with its own plausibility rules (at most 64 chunks,
   alphanumeric tags). Not this track's file; it could use `container::chunk_list`. With it, "one
   reader in the tree" holds for shipped code and the tests, not for that example.
@@ -319,7 +319,7 @@ it. Nothing changed in this run.
 
 ## Requests to other tracks
 
-- Shaders track (crates/wcontainers-shaders/src/container.rs `signature`): where one element of a
+- Shaders track (crates/shaders/src/container.rs `signature`): where one element of a
   signature chunk is malformed, the converters' list keeps the elements before it. The reference
   (dxbc-spirv `Signature`, `resetOnError`) drops the whole signature then. Only malformed
   containers differ, and dxbc-spirv refuses their conversion itself, so this is not clearly

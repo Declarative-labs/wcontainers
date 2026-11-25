@@ -64,7 +64,7 @@ G4h round 7 run 2 (2026-11-24, from about 10:50 Pacific), the check of round 7 r
 G4h round 7 run 1 (2026-11-24, from about 06:10 Pacific):
 - Round 6 run 6's queued desktop run never started (another track's shader fuzz job held the
   desktop's GPU slot from 04:55 to past 07:00); it was withdrawn and run here at the tip instead.
-- r9/div.patch applied to crates/wcontainers-shaders/src/lower.rs (48f3959d; the file had no
+- r9/div.patch applied to crates/shaders/src/lower.rs (48f3959d; the file had no
   uncommitted change and its last commit was b9edb814 of 2026-11-23);
   `colour_inside_the_set_of_atg_simplecomputepcs_dispatch_as_warp_gives_it` un-ignored (4da02921).
 - Unsafe: the front is free of it (10 uses gone; mapped bytes are `Rc<[Cell<u8>]>`, Unsafe
@@ -141,7 +141,7 @@ G4h round 6 run 5 (2026-11-24, from about 03:40 Pacific), the eighth round's che
   examples, and their cases above were run; the last whole suite is run 4's (40094011).
 - Literals: own_cases' 300.0 is named (`INSIDE_LOOPS / 4.0`); the check on the rented x86 machine
   at 6096d419 finds nothing in this track's files but a file it lists that 6572e2e9 deleted
-  (`crates/wcontainers-direct3d-11/src/required.rs` "unparsed", the tool's, not a literal).
+  (`crates/direct3d-11/src/required.rs` "unparsed", the tool's, not a literal).
 - Unsafe: unchanged (the new case's block offset by joining a8_storage's two).
 
 G4h round 6 run 4 (2026-11-24, from about 02:20 Pacific):
@@ -387,7 +387,7 @@ G4h run 6 (2026-11-22, from about 14:00 Pacific), the sixth check's findings:
   lines corrected.
 
 G4h run 5 (2026-11-22, from about 11:50 Pacific):
-- The WebGL 2 back end (crates/wcontainers-gpu-webgl, the task allows it for this) holds the five
+- The WebGL 2 back end (crates/gpu-webgl, the task allows it for this) holds the five
   formats 10_0 required of it: `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM` natively as GL's `RGB5_A1`
   and `RGBA4` (alpha moved from the top bits to the bottom on upload, a 16-bit rotation; read back
   as RGBA bytes packed again into Direct3D's fields, `format::packed_fields`, which B5G6R5 now
@@ -1141,7 +1141,7 @@ job on the desktop. Before a run, look at the queue with `ssh tom@192.168.2.183
   WebGPU features on the WebGPU build.
 - Load time and release sizes of both builds and of the Direct3D 12 track's module:
   `run-r8-sizes.sh <label>` (example `load_time`).
-- src/com/generated.rs: `python3 crates/wcontainers-directx/generate.py <windows-0.62.2 crate dir>`,
+- src/com/generated.rs: `python3 crates/directx/generate.py <windows-0.62.2 crate dir>`,
   then `cargo fmt -p wcontainers-directx`. A method named in its `hand` table calls the hand-written
   one.
 - If a run on the desktop does not reflect a change (its clock once moved back), run
@@ -1512,7 +1512,7 @@ wine10gl, logs/r6g-*), 17:06 to 21:45:
 - The library with `--ignored` (r6d/final.sh, 21:45 to 22:21, logs/r6g-ignored.log): com 1 and
   programs 9 fail, exactly the ten known failures.
 - The front's tests (front 60, unit, cache) were not rerun: no commit of this run touches
-  crates/wcontainers-direct3d-11 (last tested at 3fe49ed3, round 6 run 1).
+  crates/direct3d-11 (last tested at 3fe49ed3, round 6 run 1).
 - Sizes, load times and building ahead were not rerun: no code of this run is in the shipped
   library (own cases and tests only).
 
@@ -1794,7 +1794,7 @@ Earlier runs' measurements are in this file's git history.
 - Shaders track: blending into integer twins (`TargetInShader::combine`, built in its run 80 for
   single-sample targets; not yet used here); the geometry replay's streams past
   the first; an aliased-line route for multisampled targets (with the interface track).
-- NIR track: import `wcontainers_gpu::CUBE_FACES` in crates/wcontainers-nir/src/lib.rs in place of
+- NIR track: import `wcontainers_gpu::CUBE_FACES` in crates/nir/src/lib.rs in place of
   its own copy; until then the literal check reports that copy as a redefinition (its one finding
   outside the shaders and OpenGL crates' new code that touches this track).
 - Shaders track: `stage::capture_program` accepting a geometry shader that reads fewer clip or
@@ -1895,13 +1895,13 @@ of the fix list (orchestrator magic-literals/fix-graphics.md), a part per run.
 
 ## Unsafe
 
-- crates/wcontainers-direct3d-11: none since round 7 run 1 (b22d18cc); `[lints] workspace = true`,
+- crates/direct3d-11: none since round 7 run 1 (b22d18cc); `[lints] workspace = true`,
   so `unsafe_code` is forbidden there. A map hands out `Mapped { data: Shadow }`, `Shadow` being
   `Rc<[Cell<u8>]>` (object.rs): the Windows library gives the program `data.as_ptr()`, tests
   read and write with `Cell::get`/`set`, and the device reads or fills the bytes through
   `shadow_bytes` (`Rc::make_mut` and zerocopy's `as_mut_bytes`, no copy while no `Mapped` is
   kept; one kept past its unmap keeps its old bytes and the device goes on with a copy).
-- crates/wcontainers-directx: 1060 lines (1076 at round 7's start). Round 7 run 1: the four reads
+- crates/directx: 1060 lines (1076 at round 7's start). Round 7 run 1: the four reads
   and writes of mapped bytes (sharing.rs two, objects.rs, the deferred context's unmap), `Locked`'s
   `ManuallyDrop` (now an `Option` taken at drop), `as_one`'s transmuted null `OutRef` (now
   `OutRef::default()`) and a test's write (com.rs). Run 2: nine callers of `same_fields` (the 11.3

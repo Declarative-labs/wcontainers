@@ -7,7 +7,7 @@
   "rust-analyzer.vfs.extraIncludes": [
     "${workspaceFolder}"
   ],
-  "cmake.sourceDirectory": "/Users/thomaseaton/Documents/GitHub/wcontainers/crates/wcontainers-shaders/dxil-spirv",
+  "cmake.sourceDirectory": "/Users/thomaseaton/Documents/GitHub/wcontainers/crates/shaders/dxil-spirv",
   "rust-analyzer.rustfmt.overrideCommand": ["cargo", "reviewable", "format"],
   "rust-analyzer.check.overrideCommand": ["cargo", "reviewable", "check", "--message-format", "json"]
 }

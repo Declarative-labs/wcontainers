@@ -2487,7 +2487,7 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   rename a withheld register a hot piece names to a host register the piece leaves free, at the piece's entry and
   exits. For the native track to rule, since it changes the machine way as well.
 - 89a6818e: `Native::Way` for ARM64 is `wcontainers_arm64::Way` (`Machine`, the default, as before; `Process`).
-  `translate_native` keeps making the machine way's code. `Holds::EntrySlot` (crates/wcontainers-guest-cpu) carries
+  `translate_native` keeps making the machine way's code. `Holds::EntrySlot` (crates/guest-cpu) carries
   its slot table's base, so `write_place` needs no way; x86 never uses it. `RegisterPage` has a `link` word
   between `saved` and the exclusive monitor (`word` reads it). `encode::form::SVC` is new. The VM executor's tests
   name `Way::Machine` where they called `route(&(), ..)`, and the runner's page sets `link: 0`; nothing else of
@@ -2519,7 +2519,7 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   as a write whatever the probe's syndrome says), unless it already takes write from the guest instruction; the
   machine way's `brk` syndrome comes from the hardware, so the second fix (P reading a SIGTRAP's call from the loaded
   word) does not concern it.
-- 9d7c1d79 (W1 round 7 run 2), crates/wcontainers-arm64/src/carry.rs, the process way only: its call into the floor
+- 9d7c1d79 (W1 round 7 run 2), crates/arm64/src/carry.rs, the process way only: its call into the floor
   (`process_call`) now also moves a resume held in x30 (`Resume::Through` or `Slot` of `Held::Register(30)`) to the
   page's `link` word after storing x30 there, and does not relocate the guest's x30 to that word where the span's
   fix-ups give x30 its whole value (`Constant`, `Address` or `Move`), so the fix-up's value stands. Found by
@@ -2527,7 +2527,7 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   translator, guest-cpu and stop crate tests pass; the VM executor's exits, native (32,562 cases, 0 failing), floor,
   registers, host_branches, interrupts and probe tests pass with KVM; host-process's differential, floor, step,
   translated, run and kernel tests pass with /dev/kvm denied. The machine way is unchanged (its call is one `brk`).
-- W2 run 2, crates/wcontainers-arm64 (way.rs, carry.rs, encode.rs, native.rs): `Way::InProcess { slot }` with its
+- W2 run 2, crates/arm64 (way.rs, carry.rs, encode.rs, native.rs): `Way::InProcess { slot }` with its
   constants (`WINDOW_BITS`, `SLOT_BITS`, `IN_PROCESS_SLOTS`, `IN_PROCESS_ENTRIES`, `OUTSIDE`, `CHECK` x15, `BASE` x24,
   `IN_PROCESS_WITHHELD_AT`) and `Way::window_base`, `Way::withheld`; carry.rs's withheld registers now come from the
   way (`free`, `free_pair`, `withheld_slot`, `known_targets`, `test_aligned_bases` take it; `Native::test_loop_invariant`
@@ -2542,25 +2542,25 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   Verified on Graviton4 (W2 run 3 above): the arm64 and stop crates' tests, host-process's translated, differential,
   floor, step, run and kernel tests, and the VM executor's exits, native, floor, registers, host_branches,
   interrupts and probe tests pass; nothing of the VM executor changed.
-- 88fd8d184 (W2 run 3), crates/wcontainers-arm64 (carry.rs, encode.rs), the in-process way only: a register-offset
+- 88fd8d184 (W2 run 3), crates/arm64 (carry.rs, encode.rs), the in-process way only: a register-offset
   access is cut by `[base, wT, uxtw]` where no page probe needs the host address; `encode::register_offset_uxtw`,
   `field::S` and `form::LDR_64_REGISTER` are new. The machine and process ways' output is unchanged. Verified on
   Graviton4 (W2 run 3 above): the arm64, translator, guest-cpu and stop crates' tests and the VM executor's seven
   tests pass.
-- fa9cc61d2 (W2 run 4), crates/wcontainers-arm64 (carry.rs, encode.rs), the in-process way only: an access at its
+- fa9cc61d2 (W2 run 4), crates/arm64 (carry.rs, encode.rs), the in-process way only: an access at its
   base with no offset (an immediate of 0) is cut by `[base, wA, uxtw]` by the register-offset form of the same
   access, found in Arm's table by its `size`, `VR` and `opc` fields (`encode::register_offset_at_base`;
   `field::SIZE`, `VR`, `OPC` are new); a prefetch whose operation the register-offset form gives to another
   instruction (RPRFM) is refused, and prefetches are dropped by the native output anyway. The machine and process
   ways' output is unchanged. Verified on Graviton4 (W2 run 4 below): the arm64, translator, guest-cpu and stop
   crates' tests and the VM executor's seven tests pass.
-- W2 run 4, crates/wcontainers-arm64 (way.rs, carry.rs) and crates/executor/implementation/arm64-stop: `Way::InProcess`
+- W2 run 4, crates/arm64 (way.rs, carry.rs) and crates/executor/implementation/arm64-stop: `Way::InProcess`
   has a second field, `displaced: bool` (rule e's code: the hardware sp holds the guest's own; every access through
   it checked and cut; exits to `way::DISPLACED_SLOTS`, slot 0's never-mapped table); `Way::stack_base` is new. The
   stop crate's `in_process::{resolve, interrupted, rejoin, set_register}` take the `Way` instead of a slot, and
   the guest sp is the host's less `stack_base`. The machine and process ways' output and the stop crate's answers
   for them are unchanged. Verified on Graviton4 (W2 run 4 below).
-- W2 run 8, crates/wcontainers-guest-cpu (native.rs), crates/wcontainers-translator (native.rs), crates/wcontainers-arm64
+- W2 run 8, crates/guest-cpu (native.rs), crates/translator (native.rs), crates/arm64
   (way.rs, carry.rs, native.rs) and crates/executor/implementation/arm64-stop, the in-process way only in effect:
   `Native` has two provided methods, `piece_way` (the way one piece is written for, given its instructions; the
   way itself by default) and `enter` (code a piece starts with when entered from outside it; none by default),
@@ -2575,8 +2575,8 @@ the VM executor's tests passing on Graviton4 (verdicts under round 3 run 1 above
   highest register it does not name (section 3.2 of the plan). The stop crate's `AFTER_PAGE` is 4 words and
   `in_process::set_register` takes the span (a relocation decides where the value goes). The machine and process
   ways' output and every answer for them are unchanged; the x86 native output keeps the defaults.
-- 9d86db8b3 and e8f158ec4 (W2 run 9), crates/wcontainers-guest-cpu (native.rs, lib.rs), crates/wcontainers-translator (native.rs),
-  crates/wcontainers-arm64 (way.rs, carry.rs, native.rs), the in-process way only in effect: `Native::piece_way` is
+- 9d86db8b3 and e8f158ec4 (W2 run 9), crates/guest-cpu (native.rs, lib.rs), crates/translator (native.rs),
+  crates/arm64 (way.rs, carry.rs, native.rs), the in-process way only in effect: `Native::piece_way` is
   gone; `Native::part_ways` (the way of each straight-line part, given the parts and the piece's loops as ranges of
   parts; every part `way` by default), `Native::entered` (the position map's kept values for a part of a way,
   writing nothing) and `Native::enter_at` (the entry of a part reached from a part of another way, placed after the

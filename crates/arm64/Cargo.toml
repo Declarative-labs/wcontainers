@@ -1,0 +1,37 @@
+[package]
+name = "wcontainers-arm64"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-guest-cpu = { path = "../guest-cpu", default-features = false }
+rustc_apfloat = { version = "0.2.3", optional = true }
+strum = { version = "0.27.2", features = ["derive"], optional = true }
+wasm-encoder = { version = "0.263.0", optional = true }
+yaxpeax-arch = { version = "0.3.3", default-features = false, optional = true }
+yaxpeax-arm = { version = "0.5.0", optional = true }
+
+[dev-dependencies]
+# The native routing test: the float hook's operation read from the meaning's code, and its seeded words.
+wasmparser = "0.263.0"
+fastrand = "2.5.0"
+
+[features]
+default = ["translate"]
+# The translation half: the decoder, the meanings and the software floating point. The kernel depends on the
+# core alone, with this off.
+translate = [
+    "dep:rustc_apfloat",
+    "dep:strum",
+    "dep:wasm-encoder",
+    "dep:yaxpeax-arch",
+    "dep:yaxpeax-arm",
+    "wcontainers-guest-cpu/translate",
+]
+
+[lints]
+workspace = true

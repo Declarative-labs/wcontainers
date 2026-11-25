@@ -21,7 +21,7 @@ wcontainers-processor-architecture-conformance = { path = "../../processor-archi
 # The ARM64 guests: the architecture's processor state and exceptions, the encoder of its instructions, and the
 # exception classes of ESR_EL1 the architecture crate builds its syndromes from (the version it uses).
 wcontainers-processor-architecture-arm64 = { path = "../../processor-architecture/implementation/arm64" }
-wcontainers-arm64 = { path = "../../wcontainers-arm64" }
+wcontainers-arm64 = { path = "../../arm64" }
 aarch64-cpu = "12.0.0"
 
 [lints]

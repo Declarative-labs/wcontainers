@@ -338,7 +338,7 @@ Probe crate on the desktop (scratch probe/, Rust as the rig's env, windows 0.62.
 5. declared.expected must be recorded again each time the shaders track or the rig adds containers
    (the test fails at the first new one). Record it on any machine, then check with `diff` that
    lines were only added before committing.
-6. Removing the extra upload pass needs a fast path in crates/wcontainers-gpu (the front filling
+6. Removing the extra upload pass needs a fast path in crates/gpu (the front filling
    the back end's staging bytes, wgpu's `Queue::write_buffer_with`); not this track's crate.
 
 ## How to run
@@ -370,7 +370,7 @@ Probe crate on the desktop (scratch probe/, Rust as the rig's env, windows 0.62.
   64 MiB 7455 us and 9383 us. So the cells read at memcpy speed; the cost is one more pass over
   each uploaded range (about 143 us a frame for 4 MiB of upload memory). Removing that pass needs
   the interface to let the front fill the back end's staging bytes directly (wgpu's
-  `Queue::write_buffer_with`): a fast path with a default in crates/wcontainers-gpu, not made.
+  `Queue::write_buffer_with`): a fast path with a default in crates/gpu, not made.
 
 ## Departures from the plan
 
