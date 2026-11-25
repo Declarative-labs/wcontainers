@@ -2303,7 +2303,11 @@ fn set_vertex_bytes(
     bytes: &[u8],
     index: u32,
 ) {
-    let bytes = bytes_or_padding(bytes);
+    // Bytes shorter than the longest stride are copied with zeros after them, unread: Metal's validation stops a draw
+    // whose vertex buffer holds less than one element (MEASURED: 4 bytes at a stride of 24), as for `make_buffer`.
+    let mut padded = bytes.to_vec();
+    padded.resize(padded.len().max(EMPTY_BUFFER_BYTES), u8::MIN);
+    let bytes = padded.as_slice();
     let Some(first) = NonNull::new(bytes.as_ptr().cast_mut().cast::<c_void>()) else {
         return;
     };
