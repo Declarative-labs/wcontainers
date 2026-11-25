@@ -27,6 +27,8 @@ pub trait Metal {
 
     /// Returns the GPU's name, as Metal gives it.
     fn name(&self) -> String;
+    /// Returns the most bytes one buffer may hold, past which `make_buffer` refuses.
+    fn max_buffer_length(&self) -> u64;
     /// Makes a buffer of `length` bytes, all zero.
     fn make_buffer(&mut self, length: u64) -> Result<Self::Buffer, MakeBufferError>;
     /// Copies `bytes` into the buffer at `offset`, after every committed command buffer that uses it has completed.

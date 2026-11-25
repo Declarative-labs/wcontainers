@@ -4,7 +4,8 @@ use wcontainers_metal::{
     BlendFactor, BlendOperation, Blending, BlitCommand, BlitOption, ColorWriteMask,
     CommandBufferStatus, CommitError, CompareFunction, ComputeCommand, DepthStencilDescriptor,
     EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError, FunctionSource,
-    IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, MAX_TEXTURE_SIDE, MakeRenderPipelineStateError,
+    IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, MAX_TEXTURE_SIDE, MakeBufferError,
+    MakeRenderPipelineStateError,
     MakeSamplerStateError, MakeTextureError, Metal, Origin, PixelFormat, PrimitiveTopologyClass,
     PrimitiveType, ReadContentsError, RenderCommand, RenderPassColorAttachment,
     RenderPassDepthStencilAttachment, RenderPassDescriptor,
@@ -1887,6 +1888,70 @@ pub fn refuses_a_runtime_array_shorter_than_one_element<M: Metal>(mut subject: M
     assert_ne!(read[bound.clone()], bytes[bound]);
 }
 
+/// The least bytes of one buffer Metal allows on every device.
+///
+/// https://developer.apple.com/documentation/metal/mtldevice/maxbufferlength
+const LEAST_MAX_BUFFER_LENGTH: u64 = 256 << 20;
+
+/// Checks that a buffer one byte longer than the device's most is refused, and that the most is at least Metal's least.
+pub fn refuses_a_buffer_past_the_max_buffer_length<M: Metal>(mut subject: M) {
+    let most = subject.max_buffer_length();
+    assert!(most >= LEAST_MAX_BUFFER_LENGTH, "a max buffer length of {most}");
+    for length in [most.saturating_add(1), u64::MAX] {
+        assert!(matches!(
+            subject.make_buffer(length),
+            Err(MakeBufferError::TooLong)
+        ));
+    }
+}
+
+/// Checks that a grid whose threads on one axis pass the largest `u32` is refused, and one of exactly that many is not.
+///
+/// Metal's validation stops such a grid, whose thread positions would not fit the `u32` a function reads them as.
+pub fn refuses_a_grid_of_more_threads_on_one_axis_than_a_u32_holds<M: Metal>(mut subject: M) {
+    let buffer = filled(&mut subject, &pattern(WORDS_BYTES as usize));
+    let compute = function(&mut subject, naga::ShaderStage::Compute, DOUBLE);
+    let state = subject
+        .make_compute_pipeline_state(&compute)
+        .expect("Metal answers make compute pipeline state");
+    // The function's threadgroup is four threads wide and one high and deep.
+    let widest = u32::MAX / 4;
+    for (groups, refused) in [
+        ((widest.saturating_add(1), SINGLE, SINGLE), true),
+        ((u32::MAX, SINGLE, SINGLE), true),
+        ((widest, SINGLE, SINGLE), false),
+        ((SINGLE, u32::MAX, SINGLE), false),
+        ((SINGLE, SINGLE, u32::MAX), false),
+    ] {
+        let command_buffer = subject
+            .make_command_buffer()
+            .expect("Metal answers make command buffer");
+        // A grid that is not refused is encoded and never committed, so the GPU runs none of it.
+        let encoded = subject.encode_compute_commands(
+            &command_buffer,
+            &[
+                ComputeCommand::SetComputePipelineState(state.clone()),
+                ComputeCommand::SetBuffer {
+                    buffer: buffer.clone(),
+                    offset: u64::MIN,
+                    length: WORDS_BYTES,
+                    index: WORDS_SLOT,
+                },
+                ComputeCommand::DispatchThreadgroups(Size {
+                    width: groups.0,
+                    height: groups.1,
+                    depth: groups.2,
+                }),
+            ],
+        );
+        assert_eq!(
+            encoded.is_err(),
+            refused,
+            "a grid of {groups:?} groups: {encoded:?}"
+        );
+    }
+}
+
 /// Runs each suite function above as its own test on a value made anew for every test.
 #[macro_export]
 macro_rules! tests {
@@ -2119,6 +2184,16 @@ macro_rules! tests {
         #[test]
         fn refuses_a_runtime_array_shorter_than_one_element() {
             $crate::refuses_a_runtime_array_shorter_than_one_element($value);
+        }
+
+        #[test]
+        fn refuses_a_buffer_past_the_max_buffer_length() {
+            $crate::refuses_a_buffer_past_the_max_buffer_length($value);
+        }
+
+        #[test]
+        fn refuses_a_grid_of_more_threads_on_one_axis_than_a_u32_holds() {
+            $crate::refuses_a_grid_of_more_threads_on_one_axis_than_a_u32_holds($value);
         }
         $crate::tests!(@StandaloneMetal $standalone_metal ($value) $(($standalone_metal_value))?);
     };

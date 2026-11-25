@@ -416,8 +416,12 @@ impl Metal for DirectMetal {
         self.device.name().to_string()
     }
 
+    fn max_buffer_length(&self) -> u64 {
+        self.device.maxBufferLength() as u64
+    }
+
     fn make_buffer(&mut self, length: u64) -> Result<DirectBuffer, MakeBufferError> {
-        if length > self.device.maxBufferLength() as u64 {
+        if length > self.max_buffer_length() {
             return Err(MakeBufferError::TooLong);
         }
         // Metal makes no buffer of no bytes, so such a buffer holds one unread byte.
@@ -2342,6 +2346,21 @@ fn check_compute_commands(
                         "a dispatch with no pipeline",
                     ));
                 };
+                let threads = pipeline.0.function.reads.workgroup_size;
+                let axes = [
+                    (groups.width, threads.width),
+                    (groups.height, threads.height),
+                    (groups.depth, threads.depth),
+                ];
+                // Metal's validation stops a grid whose threads on one axis pass the largest `u32`, which a thread's
+                // position in the grid holds (MEASURED: 2^26 groups of 64 threads).
+                if axes.iter().any(|(groups, threads)| {
+                    u32::try_from(u64::from(*groups).saturating_mul(u64::from(*threads))).is_err()
+                }) {
+                    return Err(EncodeComputeCommandsError::OutOfRange(
+                        "a grid of more threads on one axis than the largest u32",
+                    ));
+                }
                 check_reads(&pipeline.0.function.reads, &bound)
                     .map_err(EncodeComputeCommandsError::Unbound)?;
             }
