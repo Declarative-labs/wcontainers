@@ -33,6 +33,7 @@ pub mod pointer_authentication;
 mod registers;
 pub mod simd;
 mod simulation;
+mod structure;
 pub mod system_register;
 #[cfg(test)]
 mod tests;
@@ -54,6 +55,7 @@ pub use listing::{
     Instruction, InstructionClass, InstructionRecord, LISTED_INSTRUCTIONS, PrivilegeBehavior,
 };
 pub use load_store::{LoadStoreChoices, LoadStoreInstruction};
+pub use structure::{StructureChoices, StructureInstruction};
 pub use wcontainers_privilege_level_arm64_user::User;
 
 /// The number of bits of a virtual address under a 4 KiB granule without [FEAT_LVA](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-2-architecture-extension#:~:text=FEAT_LVA%2C%20Large%20VA%20support).
@@ -302,6 +304,11 @@ pub enum PreciseInstruction<LevelSpecific> {
     },
     MrsCtrEl0 {
         cache_type: u64,
+    },
+    /// A load or store of Advanced SIMD structures.
+    Structure {
+        instruction: StructureInstruction,
+        choices: StructureChoices,
     },
     /// What a chip without the instruction's feature does with its word.
     Unimplemented(Instruction<Infallible>),

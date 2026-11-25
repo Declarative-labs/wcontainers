@@ -307,6 +307,23 @@ fn render_operands(fields: &[ListField], syntax: &str) -> Vec<String> {
                 &fields[extend],
                 doubleword.map(|index| &fields[index]),
             ));
+            // A quadword's selector covers the whole option: option<1>, which neither the extension nor option<0>
+            // holds, is an immediate of its own, unallocated at zero.
+            if let Some(index) = doubleword
+                && let [run] = fields[index].runs.as_slice()
+            {
+                let covered: Vec<u32> = fields[extend].runs.iter().map(|run| run.low).collect();
+                for bit in (run.low + 1..=run.high).filter(|bit| !covered.contains(bit)) {
+                    operands.push(format!(
+                        "Operand::UnsignedImmediate({})",
+                        Run {
+                            high: bit,
+                            low: bit
+                        }
+                        .render()
+                    ));
+                }
+            }
             continue;
         }
         if token == BASE_REGISTER
@@ -364,8 +381,16 @@ fn render_register_offset(
         [shift] => ("None".to_owned(), shift.render()),
         _ => return "Operand::Unmodeled".to_owned(),
     };
+    // A quadword's selector covers the whole option, whose lowest bit is option<0>.
     let doubleword = match doubleword.map(|field| field.runs.as_slice()) {
-        Some([run]) => format!("Some({})", run.render()),
+        Some([run]) => format!(
+            "Some({})",
+            Run {
+                high: run.low,
+                low: run.low
+            }
+            .render()
+        ),
         _ => "None".to_owned(),
     };
     format!(

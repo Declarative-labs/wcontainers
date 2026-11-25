@@ -32,7 +32,9 @@ use wcontainers_processor_architecture_arm64::floating_point::{
     FloatingPointOperation, INEXACT, INPUT_DENORMAL, INVALID_OPERATION, OVERFLOW, Precision,
     ROUNDING_MODE_BITS, ROUNDING_MODE_SHIFT, UNDERFLOW, to_floating_point_operation,
 };
-use wcontainers_processor_architecture_arm64::load_store::{AtomicOperation, Transfer};
+use wcontainers_processor_architecture_arm64::load_store::{
+    AccessLayout, AtomicOperation, Transfer,
+};
 use wcontainers_processor_architecture_arm64::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Signedness,
 };
@@ -42,10 +44,11 @@ use wcontainers_processor_architecture_arm64::system_register::SYSTEM_REGISTER;
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, DocumentedInstruction, GENERAL_PURPOSE_REGISTERS,
     INSTRUCTION_SIZE, Instruction, InstructionClass, InstructionFetch, LoadStoreInstruction,
-    PagePermission, Processor, User, VIRTUAL_ADDRESS_BITS, ZERO_PROCESSOR, to_implicit_inputs,
-    writes_condition_flags,
+    PagePermission, Processor, StructureInstruction, User, VECTOR_REGISTERS, VIRTUAL_ADDRESS_BITS,
+    ZERO_PROCESSOR, to_implicit_inputs, writes_condition_flags,
 };
 
+mod structure;
 #[cfg(test)]
 mod tests;
 
@@ -168,6 +171,8 @@ pub enum OperandType {
     ConditionFlags,
     /// A SIMD and floating-point register an encoding field names, none of which has a special role.
     VectorRegisterNumber(Field),
+    /// The first register of a list of consecutive SIMD and floating-point registers, which wraps after V31.
+    VectorListNumber(Field),
     /// The low `precision` bits of the SIMD and floating-point register an encoding field names.
     FloatingPointValue {
         field: Field,
@@ -209,6 +214,12 @@ pub enum OperandType {
     /// The low `bytes` bytes of the SIMD and floating-point register a store moves.
     VectorValue {
         field: Field,
+        bytes: u32,
+    },
+    /// The low `bytes` bytes of the register `place` after the first of a list a store moves.
+    ListedVectorValue {
+        field: Field,
+        place: u32,
         bytes: u32,
     },
     /// The whole word of an instruction whose operands no model reads: a word LLVM decodes as the instruction, or its
@@ -300,9 +311,9 @@ impl Arm64InputDomain {
         operand_type: OperandType,
     ) -> impl Iterator<Item = OperandValue> {
         let numbers: &[u32] = match operand_type {
-            OperandType::RegisterNumber(_) | OperandType::VectorRegisterNumber(_) => {
-                &DISTINCT_REGISTER_NUMBERS
-            }
+            OperandType::RegisterNumber(_)
+            | OperandType::VectorRegisterNumber(_)
+            | OperandType::VectorListNumber(_) => &DISTINCT_REGISTER_NUMBERS,
             _ => &[],
         };
         numbers.iter().copied().map(OperandValue::RegisterNumber)
@@ -322,6 +333,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         instruction: Instruction<Infallible>,
     ) -> vec::IntoIter<OperandType> {
         use OperandType::{RegisterNumber, SignedImmediate, UnsignedImmediate};
+        if let Some(structure) = StructureInstruction::new(instruction) {
+            return structure::to_structure_operand_types(structure).into_iter();
+        }
         if DocumentedInstruction::new(instruction).is_some()
             || LoadStoreInstruction::new(instruction).is_some()
         {
@@ -370,7 +384,12 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 .collect(),
             OperandType::Word(word) => [OperandValue::Bits(u64::from(word))].to_vec(),
             OperandType::SoftwareThreadId => to_register_values(RegisterWidth::Bits64),
-            OperandType::VectorValue { bytes, .. } => to_vector_values(bytes),
+            OperandType::VectorValue { bytes, .. }
+            | OperandType::ListedVectorValue { bytes, .. } => to_vector_values(bytes),
+            // The register holding zero, and the last, after which the list wraps.
+            OperandType::VectorListNumber(_) => [0, 1, (VECTOR_REGISTERS - 1) as u32]
+                .map(OperandValue::RegisterNumber)
+                .to_vec(),
             OperandType::WrittenConditionFlags => [ConditionFlags::empty(), ConditionFlags::all()]
                 .map(OperandValue::ConditionFlags)
                 .to_vec(),
@@ -558,6 +577,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         };
         let mut floating_point_values = Vec::new();
         let mut vector_values = Vec::new();
+        let mut listed_vector_values = Vec::new();
         let mut placement = None;
         let mut tag = 0;
         let mut comparand = None;
@@ -606,9 +626,20 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                     };
                     vector_values.push((field, bytes, value));
                 }
+                OperandType::ListedVectorValue {
+                    field,
+                    place,
+                    bytes,
+                } => {
+                    let OperandValue::Vector(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    listed_vector_values.push((field, place, bytes, value));
+                }
                 // `encode_word` has put them in the word.
                 OperandType::RegisterNumber(_)
                 | OperandType::VectorRegisterNumber(_)
+                | OperandType::VectorListNumber(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)
                 | OperandType::ShiftAmount { .. }
@@ -694,6 +725,12 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             let mask = u128::MAX >> (u128::BITS - bytes * u8::BITS);
             *register = (*register & !mask) | (value & mask);
         }
+        for (field, place, bytes, value) in listed_vector_values {
+            let number = (field.read(word) + place) as usize % VECTOR_REGISTERS;
+            let mask = u128::MAX >> (u128::BITS - bytes * u8::BITS);
+            let register = &mut processor.vector_registers[number];
+            *register = (*register & !mask) | (value & mask);
+        }
         for (field, thirty_one, value) in register_values {
             match processor
                 .general_purpose_registers
@@ -716,7 +753,11 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             permission: readable_and_executable,
         }];
         let layout = LoadStoreInstruction::new(instruction)
-            .and_then(|load_store| load_store.to_access_layout(word, &processor));
+            .and_then(|load_store| load_store.to_access_layout(word, &processor))
+            .or_else(|| {
+                let bytes = StructureInstruction::new(instruction)?.to_access_bytes(word)?;
+                Some(AccessLayout { bytes, offset: 0 })
+            });
         if let (Some(placement), Some(layout)) = (placement, layout) {
             let address = to_access_address(placement, layout.bytes);
             let base = address.wrapping_sub(layout.offset).wrapping_add(tag);
@@ -809,7 +850,9 @@ pub fn encode_word(
     for (operand_type, operand) in operands {
         match (operand_type, operand) {
             (
-                OperandType::RegisterNumber(field) | OperandType::VectorRegisterNumber(field),
+                OperandType::RegisterNumber(field)
+                | OperandType::VectorRegisterNumber(field)
+                | OperandType::VectorListNumber(field),
                 OperandValue::RegisterNumber(number),
             ) => word |= field.to_bits(number),
             (
@@ -834,6 +877,7 @@ pub fn encode_word(
             (
                 OperandType::RegisterNumber(_)
                 | OperandType::VectorRegisterNumber(_)
+                | OperandType::VectorListNumber(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)
                 | OperandType::ShiftAmount { .. }

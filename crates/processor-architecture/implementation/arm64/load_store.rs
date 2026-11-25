@@ -532,7 +532,8 @@ const fn to_plain_operation(instruction: Instruction<Infallible>) -> Option<(Tra
         | I::LdpSimdFpSignedOffset128
         | I::LdpSimdFpPreIndex128
         | I::LdpSimdFpPostIndex128
-        | I::LdnpSimdFpSignedOffset128 => (Transfer::Load(Unsigned), QUADWORD),
+        | I::LdnpSimdFpSignedOffset128
+        | I::LdrQLdstRegoff => (Transfer::Load(Unsigned), QUADWORD),
         I::StrSimdFpImmediateUnsignedOffset8
         | I::StrSimdFpImmediatePreIndex8
         | I::StrSimdFpImmediatePostIndex8
@@ -569,7 +570,8 @@ const fn to_plain_operation(instruction: Instruction<Infallible>) -> Option<(Tra
         | I::StpSimdFpSignedOffset128
         | I::StpSimdFpPreIndex128
         | I::StpSimdFpPostIndex128
-        | I::StnpSimdFpSignedOffset128 => (Transfer::Store, QUADWORD),
+        | I::StnpSimdFpSignedOffset128
+        | I::StrQLdstRegoff => (Transfer::Store, QUADWORD),
         _ => return None,
     })
 }
@@ -881,7 +883,10 @@ fn read_addressed<LevelSpecific>(
                     field.map_or(fixed, |field| field.read(word) != 0)
                 };
                 // Where option<0> is absent the option is LSL, which takes the register whole.
-                let bits = if is_set(doubleword, true) || crate::planted::is(286) {
+                let bits = if is_set(doubleword, true)
+                    || crate::planted::is(286)
+                    || (crate::planted::is(718) && operation.bytes == QUADWORD)
+                {
                     u64::BITS
                 } else {
                     u32::BITS
@@ -1593,7 +1598,7 @@ fn write_back<LevelSpecific>(
 }
 
 /// Writes the bytes at the address, or, where a byte faults, what the behavior across a fault writes.
-fn store<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+pub(crate) fn store<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     memory: &[MemoryDelta<'_, Architecture>],
     address: u64,
     location: u64,
@@ -1631,7 +1636,7 @@ fn store<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     Ok(())
 }
 
-fn load<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+pub(crate) fn load<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
     memory: &[MemoryDelta<'_, Architecture>],
     address: u64,
     location: u64,

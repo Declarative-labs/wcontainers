@@ -60,9 +60,19 @@ fn read_operand(
 ) -> Option<OperandValue> {
     let registers = &state.processor.general_purpose_registers;
     match operand_type {
-        OperandType::RegisterNumber(field) | OperandType::VectorRegisterNumber(field) => {
+        OperandType::RegisterNumber(field)
+        | OperandType::VectorRegisterNumber(field)
+        | OperandType::VectorListNumber(field) => {
             Some(OperandValue::RegisterNumber(field.read(word)))
         }
+        OperandType::ListedVectorValue {
+            field,
+            place,
+            bytes,
+        } => Some(OperandValue::Vector(
+            state.processor.vector_registers[(field.read(word) + place) as usize % 32]
+                & (u128::MAX >> (u128::BITS - bytes * u8::BITS)),
+        )),
         OperandType::FloatingPointValue { field, precision }
         | OperandType::ConvertedFloatingPoint {
             field, precision, ..

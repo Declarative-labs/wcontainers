@@ -65,7 +65,8 @@ use wcontainers_processor_architecture_arm64::system_register::{
 };
 use wcontainers_processor_architecture_arm64::{
     Arm64, CONDITIONS, DataAccess, DocumentedOperation, Instruction, InstructionFetch,
-    LoadStoreInstruction, PagePermission, Processor, User, to_documented_operation,
+    LoadStoreInstruction, PagePermission, Processor, StructureInstruction, User,
+    to_documented_operation,
 };
 
 /// The bits of FPCR a Neoverse V2 holds, the fewest of the known chips: AHP, DN, FZ, RMode and FZ16. It has no FEAT_AFP
@@ -213,7 +214,9 @@ const GROUPS: [Group; 9] = [
 /// The group of an operand, the field naming a condition aside.
 const fn to_group(operand_type: OperandType) -> Group {
     match operand_type {
-        OperandType::RegisterNumber(_) | OperandType::VectorRegisterNumber(_) => Group::Register,
+        OperandType::RegisterNumber(_)
+        | OperandType::VectorRegisterNumber(_)
+        | OperandType::VectorListNumber(_) => Group::Register,
         OperandType::AccessPlacement
         | OperandType::AddressTag
         | OperandType::DataPagePermission(_)
@@ -234,7 +237,8 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::ConvertedFloatingPoint { .. }
         | OperandType::Comparand { .. }
         | OperandType::SoftwareThreadId
-        | OperandType::VectorValue { .. } => Group::Data,
+        | OperandType::VectorValue { .. }
+        | OperandType::ListedVectorValue { .. } => Group::Data,
         OperandType::SystemRegister(_) => Group::Selector,
         OperandType::FloatingPointControl(_) => Group::Control,
         OperandType::StatusFlags | OperandType::WrittenConditionFlags | OperandType::MemoryFill => {
@@ -388,6 +392,7 @@ impl Cut {
                 })
             })
             .collect();
+        let structure = StructureInstruction::new(instruction);
         let writes_memory = LoadStoreInstruction::new(instruction).is_some_and(|load_store| {
             matches!(
                 load_store.to_operation().transfer,
@@ -396,7 +401,11 @@ impl Cut {
                     | Transfer::Atomic(_)
                     | Transfer::CompareAndSwapPair
             )
-        });
+        }) || structure.is_some_and(StructureInstruction::is_store);
+        // A structure's register post-index is the offset it writes back.
+        let structure_offset = structure
+            .filter(|structure| structure.has_register_offset())
+            .map(|_| wcontainers_processor_architecture_arm64::encoding::RM);
         let addressing = record.map_or(Vec::new(), |record| {
             record
                 .operands
@@ -415,6 +424,7 @@ impl Cut {
                         .collect(),
                     _ => Vec::new(),
                 })
+                .chain(structure_offset)
                 .collect()
         });
         let register_operands = groups
@@ -712,8 +722,11 @@ impl Cut {
             return Allowed::Every(every);
         }
         let values = self.allow_values(index, chosen, facts);
-        if !facts.register_representative
-            && matches!(group, Group::Data | Group::Control | Group::Written)
+        // Each register a structure store moves goes to bytes of its own, so the registers' combinations do not matter.
+        let listed = matches!(self.types[index], OperandType::ListedVectorValue { .. });
+        if listed
+            || (!facts.register_representative
+                && matches!(group, Group::Data | Group::Control | Group::Written))
         {
             Allowed::EachOnce(values)
         } else {
@@ -880,7 +893,9 @@ fn to_register_assignments(
 ) -> Vec<Vec<(usize, usize)>> {
     let field = |operand_type: OperandType| match operand_type {
         OperandType::RegisterNumber(field) => Some((field, false)),
-        OperandType::VectorRegisterNumber(field) => Some((field, true)),
+        OperandType::VectorRegisterNumber(field) | OperandType::VectorListNumber(field) => {
+            Some((field, true))
+        }
         _ => None,
     };
     // The first operand of each field, with its kind.

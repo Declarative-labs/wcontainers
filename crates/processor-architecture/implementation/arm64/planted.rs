@@ -60,7 +60,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 394] = [
+pub const PLANTED_BUGS: [PlantedBug; 399] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2424,5 +2424,35 @@ pub const PLANTED_BUGS: [PlantedBug; 394] = [
         instruction: Instruction::Xpaclri,
         planted_by: PlantedBy::RestOfTheSet,
         what: "X30 is not stripped",
+    },
+    PlantedBug {
+        number: 714,
+        instruction: Instruction::St2I8,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "a byte lane's index leaves out Q",
+    },
+    PlantedBug {
+        number: 715,
+        instruction: Instruction::Ld1TwoImmediatePostIndex,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "writes back half the access",
+    },
+    PlantedBug {
+        number: 716,
+        instruction: Instruction::Ld1Four,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "every repeat starts at Rt",
+    },
+    PlantedBug {
+        number: 717,
+        instruction: Instruction::Ld3r,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "a 64-bit replicate fills the whole register",
+    },
+    PlantedBug {
+        number: 718,
+        instruction: Instruction::LdrQLdstRegoff,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "a 32-bit offset is taken whole",
     },
 ];

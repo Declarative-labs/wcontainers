@@ -143,6 +143,13 @@ impl PreciseInstruction<Infallible> {
                 PreciseInstruction::SystemRegisterMove { direction, choices }
             }
             Self::MrsCtrEl0 { cache_type } => PreciseInstruction::MrsCtrEl0 { cache_type },
+            Self::Structure {
+                instruction,
+                choices,
+            } => PreciseInstruction::Structure {
+                instruction,
+                choices,
+            },
             Self::Unimplemented(instruction) => PreciseInstruction::Unimplemented(instruction),
             Self::LevelSpecific(never) => match never {},
         }
@@ -164,6 +171,7 @@ impl PreciseInstruction<Infallible> {
                 ..
             } => Instruction::MsrRegister,
             Self::MrsCtrEl0 { .. } => Instruction::MrsCtrEl0,
+            Self::Structure { instruction, .. } => instruction.instruction(),
             Self::Unimplemented(instruction) => instruction,
         }
     }
@@ -256,6 +264,9 @@ fn list_modeled_behaviors(
     }
     if let Some(load_store) = LoadStoreInstruction::new(instruction) {
         return list_load_store_behaviors(load_store);
+    }
+    if let Some(structure) = crate::StructureInstruction::new(instruction) {
+        return crate::structure::list_structure_behaviors(structure).collect();
     }
     match instruction {
         Instruction::Brk => [PreciseInstruction::Brk].to_vec(),
