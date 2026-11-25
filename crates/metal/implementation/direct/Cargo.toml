@@ -33,3 +33,11 @@ wcontainers-metal-conformance = { path = "../../conformance" }
 [lints.rust]
 unsafe_code = "deny"
 unsafe_op_in_unsafe_fn = "deny"
+
+# Every size, count, offset and length a caller gives reaches Metal's calls here, so no operation on one may wrap or
+# panic: each is a checked operation that refuses on overflow, and no conversion between integer types may cut one.
+[lints.clippy]
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"

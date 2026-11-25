@@ -43,6 +43,8 @@ wgpu = { path = "third_party/wgpu" }
 #   crates/executor/implementation/unicorn (13: 2 are text in strings, 1 is in its separate test backend, which denies it too)
 #   crates/executor/implementation/host-process (9)
 #   crates/executor/implementation/wasmtime (29)
+# crates/gpu-metal forbids it in a table of its own, which also denies unchecked arithmetic (clippy's
+# arithmetic_side_effects), as crates/metal/implementation/direct's does.
 # Bindings crates of the graphics, each one outside API and nothing else, that deny it, every use marked, and export
 # only a safe facade:
 #   crates/metal/implementation/direct (31)
@@ -75,3 +77,11 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# The two crates that pass every size a guest gives on to Metal stop on an overflow the lints do not see (a shift, an
+# iterator's `sum`, `next_multiple_of`) in every profile, rather than wrap in a release build.
+[profile.release.package.wcontainers-metal-direct]
+overflow-checks = true
+
+[profile.release.package.wcontainers-gpu-metal]
+overflow-checks = true

@@ -87,6 +87,24 @@ const VISIBILITY_RESULT_SPAN: u64 = 262_144;
 /// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/fill(buffer:range:value:)
 const BUFFER_COPY_GRANULE: u64 = 4;
 
+// Metal's unsigned integer is as wide as `u64` on every Mac, so `ns_uinteger` never saturates.
+const _: () = assert!(NSUInteger::BITS == u64::BITS);
+
+/// Returns a number as Metal's unsigned integer.
+fn ns_uinteger(number: u64) -> NSUInteger {
+    NSUInteger::try_from(number).unwrap_or(NSUInteger::MAX)
+}
+
+/// Returns the side of a texture's level: the side halved once a level, and never less than one.
+fn level_side(side: u32, level: u32) -> u32 {
+    side.checked_shr(level).unwrap_or(u32::MIN).max(1)
+}
+
+/// Returns a count Metal gives as its unsigned integer, saturated at `u32::MAX`; every count of a texture is far below.
+fn count_of(number: NSUInteger) -> u32 {
+    u32::try_from(number).unwrap_or(u32::MAX)
+}
+
 /// The system's default GPU and one command queue on it.
 pub struct DirectMetal {
     device: Retained<ProtocolObject<dyn MTLDevice>>,
@@ -202,6 +220,17 @@ struct Reads {
 struct TextureRead {
     texture_type: TextureType,
     depth: bool,
+    texel: TexelKind,
+}
+
+/// The number type texels are read as, which a texture's format and the function's texture type must agree on.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TexelKind {
+    Float,
+    Sint,
+    Uint,
 }
 
 /// One length the bounds checks read.
@@ -291,7 +320,8 @@ opaque_debug!(
 impl DeviceLimits {
     /// Returns whether the device takes a sample count.
     fn takes_samples(&self, count: u32) -> bool {
-        count < u32::BITS && self.sample_counts & 1 << count != 0
+        1u32.checked_shl(count)
+            .is_some_and(|bit| self.sample_counts & bit != 0)
     }
 }
 
@@ -308,7 +338,9 @@ impl StandaloneMetal for DirectMetal {
         let sample_counts = SAMPLE_COUNTS
             .iter()
             .filter(|count| device.supportsTextureSampleCount(**count as NSUInteger))
-            .fold(u32::MIN, |counts, count| counts | 1 << count);
+            .fold(u32::MIN, |counts, count| {
+                counts | 1u32.checked_shl(*count).unwrap_or(u32::MIN)
+            });
         let limits = DeviceLimits {
             sample_counts,
             max_side: if device.supportsFamily(MTLGPUFamily::Apple10) {
@@ -392,7 +424,7 @@ impl Metal for DirectMetal {
         let raw = self
             .device
             .newBufferWithLength_options(
-                (length as NSUInteger).max(1),
+                ns_uinteger(length).max(1),
                 MTLResourceOptions::StorageModeShared,
             )
             .ok_or(MakeBufferError::Refused)?;
@@ -416,15 +448,13 @@ impl Metal for DirectMetal {
             .settle()
             .map_err(|()| WriteContentsError::UsedByUncommittedWork)?;
         let contents = buffer.0.raw.contents().cast::<u8>();
+        let at = ns_uinteger(offset);
         #[expect(unsafe_code, reason = "the copy into a buffer's shared memory")]
-        // SAFETY: the range lies inside the buffer, which is at least as long; no GPU work uses it, since every command
-        // buffer that did has completed and none other was encoded since; the CPU touches it only in these copies.
+        // SAFETY: `holds` checked, without overflow, that the range lies inside the buffer, which is at least as long; no
+        // GPU work uses it, since every command buffer that did has completed and none other was encoded since; the CPU
+        // touches it only in these copies.
         unsafe {
-            std::ptr::copy_nonoverlapping(
-                bytes.as_ptr(),
-                contents.as_ptr().add(offset as usize),
-                bytes.len(),
-            )
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), contents.as_ptr().add(at), bytes.len())
         };
         Ok(())
     }
@@ -442,11 +472,12 @@ impl Metal for DirectMetal {
             .settle()
             .map_err(|()| ReadContentsError::UsedByUncommittedWork)?;
         let contents = buffer.0.raw.contents().cast::<u8>();
+        let at = ns_uinteger(offset);
         #[expect(unsafe_code, reason = "the copy out of a buffer's shared memory")]
         // SAFETY: as for `write_contents`: inside the buffer, and no GPU work uses it.
         unsafe {
             std::ptr::copy_nonoverlapping(
-                contents.as_ptr().add(offset as usize),
+                contents.as_ptr().add(at),
                 bytes.as_mut_ptr(),
                 bytes.len(),
             )
@@ -547,17 +578,38 @@ impl Metal for DirectMetal {
             }
         }
         raw_descriptor.setUsage(usage);
-        #[expect(unsafe_code, reason = "the sizes of a texture to make")]
-        // SAFETY: each side, level count, sample count and layer count was checked above against the type, the format
-        // and this device's limits from Apple's feature set tables, past which Metal stops the process.
+        // Each size below was checked above against the type, the format and this device's limits from Apple's feature
+        // set tables, past which Metal stops the process.
+        #[expect(unsafe_code, reason = "the width of a texture to make")]
+        // SAFETY: at most the device's longest side for the type, checked above.
         unsafe {
-            raw_descriptor.setWidth(d.width as NSUInteger);
-            raw_descriptor.setHeight(d.height as NSUInteger);
-            raw_descriptor.setDepth(d.depth as NSUInteger);
-            raw_descriptor.setMipmapLevelCount(d.mipmap_level_count as NSUInteger);
-            raw_descriptor.setSampleCount(d.sample_count as NSUInteger);
-            raw_descriptor.setArrayLength(d.array_length as NSUInteger);
-        }
+            raw_descriptor.setWidth(d.width as NSUInteger)
+        };
+        #[expect(unsafe_code, reason = "the height of a texture to make")]
+        // SAFETY: at most the device's longest side for the type, checked above.
+        unsafe {
+            raw_descriptor.setHeight(d.height as NSUInteger)
+        };
+        #[expect(unsafe_code, reason = "the depth of a texture to make")]
+        // SAFETY: one outside a volume texture, and at most the longest volume side in one, checked above.
+        unsafe {
+            raw_descriptor.setDepth(d.depth as NSUInteger)
+        };
+        #[expect(unsafe_code, reason = "the level count of a texture to make")]
+        // SAFETY: one to the levels of the full chain of the longest side, one if multisampled, checked above.
+        unsafe {
+            raw_descriptor.setMipmapLevelCount(d.mipmap_level_count as NSUInteger)
+        };
+        #[expect(unsafe_code, reason = "the sample count of a texture to make")]
+        // SAFETY: a count the device takes, above one only for a multisampled type, checked above.
+        unsafe {
+            raw_descriptor.setSampleCount(d.sample_count as NSUInteger)
+        };
+        #[expect(unsafe_code, reason = "the array length of a texture to make")]
+        // SAFETY: one for a type of one slice, and its layers within the device's most otherwise, checked above.
+        unsafe {
+            raw_descriptor.setArrayLength(d.array_length as NSUInteger)
+        };
         let raw = self
             .device
             .newTextureWithDescriptor(&raw_descriptor)
@@ -648,6 +700,14 @@ impl Metal for DirectMetal {
         if !(same_format || reinterpreted || stencil_of) || !slices_fit || !type_fits || !square {
             return Err(MakeTextureViewError::Incompatible);
         }
+        let (Some(base_level), Some(base_slice)) = (
+            t.base_level.checked_add(d.first_level),
+            t.base_slice.checked_add(d.first_slice),
+        ) else {
+            return Err(MakeTextureViewError::OutOfRange);
+        };
+        let levels = NSRange::new(d.first_level as usize, d.level_count as usize);
+        let slices = NSRange::new(d.first_slice as usize, d.slice_count as usize);
         #[expect(unsafe_code, reason = "the call that makes a texture view")]
         // SAFETY: the levels and slices lie inside the texture, the format is the texture's, its sRGB twin, or, where
         // the texture was made for such views, the stencil of its depth and stencil or one of the same size, and the
@@ -657,12 +717,12 @@ impl Metal for DirectMetal {
                 .newTextureViewWithPixelFormat_textureType_levels_slices(
                     pixel_format(d.pixel_format),
                     texture_type(d.texture_type),
-                    NSRange::new(d.first_level as usize, d.level_count as usize),
-                    NSRange::new(d.first_slice as usize, d.slice_count as usize),
+                    levels,
+                    slices,
                 )
         }
         .ok_or(MakeTextureViewError::Refused)?;
-        let size = |n: u32| (n >> d.first_level).max(1);
+        let size = |n: u32| level_side(n, d.first_level);
         Ok(DirectTexture(Rc::new(TextureState {
             raw,
             texture_type: d.texture_type,
@@ -679,8 +739,8 @@ impl Metal for DirectMetal {
             pixel_format_view: false,
             framebuffer_only: false,
             storage: t.storage,
-            base_level: t.base_level + d.first_level,
-            base_slice: t.base_slice + d.first_slice,
+            base_level,
+            base_slice,
         })))
     }
 
@@ -698,6 +758,15 @@ impl Metal for DirectMetal {
         {
             return Err(MakeSamplerStateError::Invalid(
                 "a level range that is empty",
+            ));
+        }
+        let modes = [d.s_address_mode, d.t_address_mode, d.r_address_mode];
+        if modes.contains(&SamplerAddressMode::ClampToZero)
+            && modes.contains(&SamplerAddressMode::ClampToBorderColor)
+        {
+            // Metal's validation stops the process: the modes take one of the two, not both.
+            return Err(MakeSamplerStateError::Invalid(
+                "address modes that clamp both to zero and to the border color",
             ));
         }
         let raw_descriptor = MTLSamplerDescriptor::new();
@@ -853,6 +922,15 @@ impl Metal for DirectMetal {
                 ));
             }
         }
+        // Metal stops the process when the first color attachment of a pipeline with alpha to coverage is not of a
+        // format that blends, a float or normalized one.
+        if d.alpha_to_coverage_enabled
+            && !d.color_attachments[0].is_some_and(|a| format_facts(a.pixel_format).blend)
+        {
+            return Err(MakeRenderPipelineStateError::Invalid(
+                "alpha to coverage without a first color attachment of a float or normalized format",
+            ));
+        }
         let raw_descriptor = MTLRenderPipelineDescriptor::new();
         raw_descriptor.setVertexFunction(Some(&d.vertex_function.0.raw));
         raw_descriptor.setFragmentFunction(d.fragment_function.map(|f| &*f.0.raw));
@@ -935,13 +1013,21 @@ impl Metal for DirectMetal {
             height: y,
             depth: z,
         } = function.0.reads.workgroup_size;
-        if u64::from(x) * u64::from(y) * u64::from(z) > raw.maxTotalThreadsPerThreadgroup() as u64 {
+        let threads = u64::from(x)
+            .checked_mul(u64::from(y))
+            .and_then(|n| n.checked_mul(u64::from(z)));
+        if threads.is_none_or(|n| n > raw.maxTotalThreadsPerThreadgroup() as u64) {
             return Err(MakeComputePipelineStateError::TooLarge(
                 "a workgroup larger than the pipeline runs",
             ));
         }
-        let threadgroup: u64 = function.0.reads.threadgroup_lengths.iter().sum();
-        if threadgroup > self.device.maxThreadgroupMemoryLength() as u64 {
+        let threadgroup = function
+            .0
+            .reads
+            .threadgroup_lengths
+            .iter()
+            .try_fold(u64::MIN, |total, length| total.checked_add(*length));
+        if threadgroup.is_none_or(|n| n > self.device.maxThreadgroupMemoryLength() as u64) {
             return Err(MakeComputePipelineStateError::TooLarge(
                 "workgroup variables larger than the device's threadgroup memory",
             ));
@@ -1054,13 +1140,14 @@ impl Metal for DirectMetal {
                 } => {
                     bound.buffers.insert(*index, (*length, *offset));
                     buffer.used_by(command_buffer);
+                    let at = ns_uinteger(*offset);
                     #[expect(unsafe_code, reason = "the binding of a buffer to a compute slot")]
                     // SAFETY: the bound range lies inside the buffer and the slot below `MAX_BUFFER_SLOTS`, both checked by
                     // `check_compute_commands`; the command buffer keeps the buffer.
                     unsafe {
                         encoder.setBuffer_offset_atIndex(
                             Some(&buffer.0.raw),
-                            *offset as NSUInteger,
+                            at,
                             *index as NSUInteger,
                         )
                     };
@@ -1095,6 +1182,7 @@ impl Metal for DirectMetal {
                         set_compute_bytes(&encoder, &sizes, function.reads.sizes_index);
                     }
                     for (index, length) in function.reads.threadgroup_lengths.iter().enumerate() {
+                        let length = ns_uinteger(*length);
                         #[expect(
                             unsafe_code,
                             reason = "the length of one workgroup variable's threadgroup memory"
@@ -1102,10 +1190,7 @@ impl Metal for DirectMetal {
                         // SAFETY: the length is the variable's size rounded up to 16 bytes, all of them together within the
                         // device's threadgroup memory (make_compute_pipeline_state), at the index naga gives the variable.
                         unsafe {
-                            encoder.setThreadgroupMemoryLength_atIndex(
-                                *length as NSUInteger,
-                                index as NSUInteger,
-                            )
+                            encoder.setThreadgroupMemoryLength_atIndex(length, index)
                         };
                     }
                     encoder.dispatchThreadgroups_threadsPerThreadgroup(
@@ -1165,13 +1250,13 @@ impl Metal for DirectMetal {
         #[expect(unsafe_code, reason = "the layer of the view a window handle names")]
         // SAFETY: the handle borrows its view, so the pointer is a live NSView during the call, which is on the main thread.
         let layer = unsafe { raw_window_metal::Layer::from_ns_view(appkit.ns_view) };
+        let pointer = layer.into_raw().cast::<CAMetalLayer>().as_ptr();
         #[expect(
             unsafe_code,
             reason = "the move of the layer's retain into a typed handle"
         )]
-        // SAFETY: `into_raw` gives a retained `CAMetalLayer`, whose one retain the handle takes over.
-        let raw = unsafe { Retained::from_raw(layer.into_raw().cast::<CAMetalLayer>().as_ptr()) }
-            .ok_or(MakeLayerError::NotAppKit)?;
+        // SAFETY: `into_raw` gave a retained `CAMetalLayer`, whose one retain the handle takes over.
+        let raw = unsafe { Retained::from_raw(pointer) }.ok_or(MakeLayerError::NotAppKit)?;
         raw.setDevice(Some(&self.device));
         Ok(DirectLayer(Rc::new(LayerState {
             raw,
@@ -1224,14 +1309,14 @@ impl Metal for DirectMetal {
         let storage = Retained::as_ptr(&texture).cast::<c_void>() as usize;
         let state = TextureState {
             raw: texture.clone(),
-            width: texture.width() as u32,
-            height: texture.height() as u32,
+            width: count_of(texture.width()),
+            height: count_of(texture.height()),
             texture_type: TextureType::Type2D,
             pixel_format: descriptor.pixel_format,
-            depth: texture.depth() as u32,
-            levels: texture.mipmapLevelCount() as u32,
-            slices: texture.arrayLength() as u32,
-            sample_count: texture.sampleCount() as u32,
+            depth: count_of(texture.depth()),
+            levels: count_of(texture.mipmapLevelCount()),
+            slices: count_of(texture.arrayLength()),
+            sample_count: count_of(texture.sampleCount()),
             shader_read: false,
             render_target: true,
             pixel_format_view: false,
@@ -1285,7 +1370,7 @@ const CUBE_FACES: u32 = 6;
 
 /// Returns the levels of a full mipmap chain for a largest side.
 fn full_chain(side: u32) -> u32 {
-    u32::BITS - side.leading_zeros()
+    u32::BITS.saturating_sub(side.leading_zeros())
 }
 
 /// What one stage has bound, by slot.
@@ -1361,10 +1446,15 @@ fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str>
         if !texture.0.shader_read || texture.0.framebuffer_only {
             return Err("a texture not made to be read by functions");
         }
-        if texture.0.texture_type != read.texture_type
-            || read.depth && !format_facts(texture.0.pixel_format).depth
-        {
+        let facts = format_facts(texture.0.pixel_format);
+        if texture.0.texture_type != read.texture_type || read.depth && !facts.depth {
             return Err("a texture of another type than the function reads at its slot");
+        }
+        // Metal's validation stops the process at a draw reading, say, an integer texture as floats.
+        if facts.texel != read.texel {
+            return Err(
+                "a texture whose texels are of another number type than the function reads",
+            );
         }
     }
     if reads
@@ -1390,14 +1480,14 @@ fn check_pass(
                 "an attachment not made to draw into",
             ));
         }
-        if level >= t.levels || slice >= t.slices || depth_plane >= (t.depth >> level).max(1) {
+        if level >= t.levels || slice >= t.slices || depth_plane >= level_side(t.depth, level) {
             return Err(EncodeRenderCommandsError::OutOfRange(
                 "an attachment's level, slice or plane",
             ));
         }
         let size = (
-            (t.width >> level).max(1),
-            (t.height >> level).max(1),
+            level_side(t.width, level),
+            level_side(t.height, level),
             t.sample_count,
         );
         match area {
@@ -1480,16 +1570,16 @@ fn check_pass(
             let level = resolve.level;
             if level >= r.levels
                 || resolve.slice >= r.slices
-                || resolve.depth_plane >= (r.depth >> level).max(1)
+                || resolve.depth_plane >= level_side(r.depth, level)
             {
                 return Err(EncodeRenderCommandsError::OutOfRange(
                     "a resolve target's level, slice or plane",
                 ));
             }
-            if ((r.width >> level).max(1), (r.height >> level).max(1))
+            if (level_side(r.width, level), level_side(r.height, level))
                 != (
-                    (t.width >> attachment.level).max(1),
-                    (t.height >> attachment.level).max(1),
+                    level_side(t.width, attachment.level),
+                    level_side(t.height, attachment.level),
                 )
             {
                 return Err(EncodeRenderCommandsError::Invalid(
@@ -1497,6 +1587,14 @@ fn check_pass(
                 ));
             }
         }
+    }
+    check_attachments_apart(pass)?;
+    if let Some(stencil) = &pass.stencil_attachment
+        && stencil_value(stencil.clear_value).is_none()
+    {
+        return Err(EncodeRenderCommandsError::Invalid(
+            "a stencil to clear to that is not a whole number from 0 to 255",
+        ));
     }
     if let Some(buffer) = pass.visibility_result_buffer
         && buffer.0.length < VISIBILITY_RESULT_BYTES
@@ -1521,6 +1619,58 @@ fn check_pass(
             "a pass with no attachment and no area",
         )),
     }
+}
+
+/// Returns a stencil value to clear to as Metal's stencil, if it is a whole number a stencil holds.
+fn stencil_value(value: f64) -> Option<u32> {
+    (u8::MIN..=u8::MAX)
+        .find(|n| f64::from(*n) == value)
+        .map(u32::from)
+}
+
+/// Checks that no two color attachments or resolve targets of a pass are one plane of one texture's storage.
+///
+/// Metal's validation stops the process at a pass whose attachments overlap.
+fn check_attachments_apart(
+    pass: &RenderPassDescriptor<'_, DirectMetal>,
+) -> Result<(), EncodeRenderCommandsError> {
+    let mut planes = Vec::new();
+    let plane = |texture: &DirectTexture, level: u32, slice: u32, depth_plane: u32| {
+        let t = &texture.0;
+        match (
+            t.base_level.checked_add(level),
+            t.base_slice.checked_add(slice),
+        ) {
+            (Some(level), Some(slice)) => Ok((t.storage, level, slice, depth_plane)),
+            _ => Err(EncodeRenderCommandsError::OutOfRange(
+                "an attachment's level or slice",
+            )),
+        }
+    };
+    for attachment in pass.color_attachments.iter().flatten() {
+        planes.push(plane(
+            attachment.texture,
+            attachment.level,
+            attachment.slice,
+            attachment.depth_plane,
+        )?);
+        if let Some(resolve) = &attachment.resolve {
+            planes.push(plane(
+                resolve.texture,
+                resolve.level,
+                resolve.slice,
+                resolve.depth_plane,
+            )?);
+        }
+    }
+    for (index, seen) in planes.iter().enumerate() {
+        if planes.iter().skip(index).skip(1).any(|other| other == seen) {
+            return Err(EncodeRenderCommandsError::Invalid(
+                "two attachments of one plane of one texture",
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Checks every command of a pass, as it will be encoded, before any is.
@@ -1686,7 +1836,9 @@ fn check_render_commands(
                 };
                 if !offset.is_multiple_of(VISIBILITY_RESULT_BYTES)
                     || !buffer.holds(*offset, VISIBILITY_RESULT_BYTES)
-                    || offset + VISIBILITY_RESULT_BYTES > VISIBILITY_RESULT_SPAN
+                    || offset
+                        .checked_add(VISIBILITY_RESULT_BYTES)
+                        .is_none_or(|end| end > VISIBILITY_RESULT_SPAN)
                 {
                     return Err(EncodeRenderCommandsError::OutOfRange(
                         "a visibility result offset",
@@ -1735,8 +1887,9 @@ fn check_render_commands(
                     IndexType::UInt16 => u64::from(bytes_of::<u16>()),
                     IndexType::UInt32 => u64::from(bytes_of::<u32>()),
                 };
+                let indices = u64::from(*index_count).checked_mul(size);
                 if !index_buffer_offset.is_multiple_of(size)
-                    || !index_buffer.holds(*index_buffer_offset, u64::from(*index_count) * size)
+                    || indices.is_none_or(|bytes| !index_buffer.holds(*index_buffer_offset, bytes))
                 {
                     return Err(EncodeRenderCommandsError::OutOfRange(
                         "indices outside their buffer, or at an offset not a multiple of their size",
@@ -1811,13 +1964,14 @@ fn encode_render_command(
         } => {
             bound.vertex.buffers.insert(*index, (*length, *offset));
             used.push(buffer.clone());
+            let at = ns_uinteger(*offset);
             #[expect(unsafe_code, reason = "the binding of a buffer to a vertex slot")]
             // SAFETY: the bound range lies inside the buffer and the slot below `MAX_BUFFER_SLOTS` (check_render_commands);
             // the command buffer keeps the buffer.
             unsafe {
                 encoder.setVertexBuffer_offset_atIndex(
                     Some(&buffer.0.raw),
-                    *offset as NSUInteger,
+                    at,
                     *index as NSUInteger,
                 )
             };
@@ -1830,12 +1984,13 @@ fn encode_render_command(
         } => {
             bound.fragment.buffers.insert(*index, (*length, *offset));
             used.push(buffer.clone());
+            let at = ns_uinteger(*offset);
             #[expect(unsafe_code, reason = "the binding of a buffer to a fragment slot")]
             // SAFETY: as for the vertex slot.
             unsafe {
                 encoder.setFragmentBuffer_offset_atIndex(
                     Some(&buffer.0.raw),
-                    *offset as NSUInteger,
+                    at,
                     *index as NSUInteger,
                 )
             };
@@ -1960,7 +2115,7 @@ fn encode_render_command(
                     VisibilityResultMode::Boolean => MTLVisibilityResultMode::Boolean,
                     VisibilityResultMode::Counting => MTLVisibilityResultMode::Counting,
                 },
-                *offset as NSUInteger,
+                ns_uinteger(*offset),
             ),
         RenderCommand::DrawPrimitives {
             primitive_type,
@@ -1970,13 +2125,15 @@ fn encode_render_command(
             base_instance,
         } => {
             prepare_draw(encoder, empty, bound);
+            let primitives = primitive_type_of(*primitive_type);
             #[expect(unsafe_code, reason = "a draw without indices")]
-            // SAFETY: every slot the pipeline's functions read holds a resource of the kind and size they read, and they
-            // read their vertex inputs, and everything else, bounds-checked against the lengths just bound
-            // (check_render_commands, prepare_draw).
+            // SAFETY: every slot the pipeline's functions read holds a resource of the kind, number type and size they
+            // read, a runtime-sized array at least one element so that naga's bound does not wrap, and they read their
+            // vertex inputs, and everything else, bounds-checked against the lengths just bound (check_render_commands,
+            // prepare_draw).
             unsafe {
                 encoder.drawPrimitives_vertexStart_vertexCount_instanceCount_baseInstance(
-                    primitive_type_of(*primitive_type),
+                    primitives,
                     *vertex_start as NSUInteger,
                     *vertex_count as NSUInteger,
                     *instance_count as NSUInteger,
@@ -1996,20 +2153,23 @@ fn encode_render_command(
         } => {
             prepare_draw(encoder, empty, bound);
             used.push(index_buffer.clone());
+            let at = ns_uinteger(*index_buffer_offset);
+            let primitives = primitive_type_of(*primitive_type);
+            let width = match index_type {
+                IndexType::UInt16 => MTLIndexType::UInt16,
+                IndexType::UInt32 => MTLIndexType::UInt32,
+            };
             #[expect(unsafe_code, reason = "a draw with indices")]
             // SAFETY: as for a draw without indices; and the indices lie inside their buffer at an offset that is a
             // multiple of their size (check_render_commands), while the vertices they name are read bounds-checked.
             unsafe {
                 encoder
                     .drawIndexedPrimitives_indexCount_indexType_indexBuffer_indexBufferOffset_instanceCount_baseVertex_baseInstance(
-                        primitive_type_of(*primitive_type),
+                        primitives,
                         *index_count as NSUInteger,
-                        match index_type {
-                            IndexType::UInt16 => MTLIndexType::UInt16,
-                            IndexType::UInt32 => MTLIndexType::UInt32,
-                        },
+                        width,
                         &index_buffer.0.raw,
-                        *index_buffer_offset as NSUInteger,
+                        at,
                         *instance_count as NSUInteger,
                         *base_vertex as isize,
                         *base_instance as NSUInteger,
@@ -2057,15 +2217,24 @@ fn prepare_draw(
     }
 }
 
+/// The bytes bound for an empty byte write, whose bounds checks still see none: a slot left empty stops the process.
+///
+/// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setvertexbytes(_:length:index:)
+const PADDING: [u8; 4] = [u8::MIN; 4];
+
+/// Returns the bytes, or the padding for none.
+fn bytes_or_padding(bytes: &[u8]) -> &[u8] {
+    if bytes.is_empty() { &PADDING } else { bytes }
+}
+
 /// Copies bytes into the command buffer for a vertex slot.
 fn set_vertex_bytes(
     encoder: &ProtocolObject<dyn MTLRenderCommandEncoder>,
     bytes: &[u8],
     index: u32,
 ) {
-    let Some(first) =
-        NonNull::new(bytes.as_ptr().cast_mut().cast::<c_void>()).filter(|_| !bytes.is_empty())
-    else {
+    let bytes = bytes_or_padding(bytes);
+    let Some(first) = NonNull::new(bytes.as_ptr().cast_mut().cast::<c_void>()) else {
         return;
     };
     #[expect(unsafe_code, reason = "the copy of bytes into a vertex slot")]
@@ -2081,9 +2250,8 @@ fn set_fragment_bytes(
     bytes: &[u8],
     index: u32,
 ) {
-    let Some(first) =
-        NonNull::new(bytes.as_ptr().cast_mut().cast::<c_void>()).filter(|_| !bytes.is_empty())
-    else {
+    let bytes = bytes_or_padding(bytes);
+    let Some(first) = NonNull::new(bytes.as_ptr().cast_mut().cast::<c_void>()) else {
         return;
     };
     #[expect(unsafe_code, reason = "the copy of bytes into a fragment slot")]
@@ -2103,9 +2271,8 @@ fn set_compute_bytes(
     bytes: &[u8],
     index: u32,
 ) {
-    let Some(first) =
-        NonNull::new(bytes.as_ptr().cast_mut().cast::<c_void>()).filter(|_| !bytes.is_empty())
-    else {
+    let bytes = bytes_or_padding(bytes);
+    let Some(first) = NonNull::new(bytes.as_ptr().cast_mut().cast::<c_void>()) else {
         return;
     };
     #[expect(unsafe_code, reason = "the copy of bytes into a compute slot")]
@@ -2234,22 +2401,24 @@ fn check_region(
     }
     // Only a 3D texture is deeper than one.
     let (w, h, d) = (
-        (t.width >> level).max(1),
-        (t.height >> level).max(1),
-        (t.depth >> level).max(1),
+        level_side(t.width, level),
+        level_side(t.height, level),
+        level_side(t.depth, level),
     );
-    let fits = |at: u32, n: u32, most: u32| at.checked_add(n).is_some_and(|end| end <= most);
+    let fits = |at: u32, n: u32, most: Option<u32>| {
+        at.checked_add(n)
+            .is_some_and(|end| most.is_some_and(|most| end <= most))
+    };
     // A region may end at the level's edge inside a block, which counts as whole.
     let (bw, bh) = block;
-    let rounded = |n: u32, b: u32| n.next_multiple_of(b);
-    if !fits(origin.x, size.width, rounded(w, bw))
-        || !fits(origin.y, size.height, rounded(h, bh))
-        || !fits(origin.z, size.depth, d)
+    if !fits(origin.x, size.width, w.checked_next_multiple_of(bw))
+        || !fits(origin.y, size.height, h.checked_next_multiple_of(bh))
+        || !fits(origin.z, size.depth, Some(d))
     {
         return Err("a region outside the level");
     }
     let edge = |at: u32, n: u32, most: u32, b: u32| {
-        at.is_multiple_of(b) && (n.is_multiple_of(b) || at + n == most)
+        at.is_multiple_of(b) && (n.is_multiple_of(b) || at.checked_add(n) == Some(most))
     };
     if !edge(origin.x, size.width, w, bw) || !edge(origin.y, size.height, h, bh) {
         return Err("a region of partial blocks");
@@ -2291,9 +2460,11 @@ fn check_blit(
                     "a copy outside its buffer",
                 ));
             }
+            // Both ends are inside their buffers, so neither sum overflows; one that did would count as overlapping.
+            let before = |a: u64, b: u64| b.checked_add(*size).is_none_or(|end| a < end);
             if Rc::ptr_eq(&source_buffer.0, &destination_buffer.0)
-                && source_offset < &(destination_offset + size)
-                && destination_offset < &(source_offset + size)
+                && before(*source_offset, *destination_offset)
+                && before(*destination_offset, *source_offset)
             {
                 return Err(EncodeBlitCommandsError::Invalid(
                     "a copy between overlapping ranges",
@@ -2335,10 +2506,17 @@ fn check_blit(
                 ));
             };
             check_region(texture, *slice, *level, *origin, *source_size, block).map_err(out)?;
+            // Every product and sum below is checked: one that overflows refuses the copy, since its bytes could not
+            // lie inside any buffer.
+            let overflow = EncodeBlitCommandsError::OutOfRange("a copy whose length overflows");
             let blocks_wide = u64::from(source_size.width.div_ceil(block.0));
             let rows = u64::from(source_size.height.div_ceil(block.1));
-            let row = blocks_wide * bytes;
-            let longest_row = u64::from(limits.max_side / block.0) * bytes;
+            let row = blocks_wide.checked_mul(bytes).ok_or(overflow.clone())?;
+            let longest_row = limits
+                .max_side
+                .checked_div(block.0)
+                .and_then(|blocks| u64::from(blocks).checked_mul(bytes))
+                .ok_or(overflow.clone())?;
             if *source_bytes_per_row < row
                 || !source_bytes_per_row.is_multiple_of(bytes)
                 || *source_bytes_per_row > longest_row
@@ -2347,10 +2525,18 @@ fn check_blit(
                     "a row pitch shorter than a row, longer than the longest, or not a multiple of a block",
                 ));
             }
-            let image = (rows - 1) * source_bytes_per_row + row;
+            // The bytes of one image: every row but the last at its pitch, and the last row.
+            let image = rows
+                .checked_sub(1)
+                .and_then(|rows| rows.checked_mul(*source_bytes_per_row))
+                .and_then(|n| n.checked_add(row))
+                .ok_or(overflow.clone())?;
+            let pitched_image = rows
+                .checked_mul(*source_bytes_per_row)
+                .ok_or(overflow.clone())?;
             let depth = u64::from(source_size.depth);
             let flat = depth == 1 && *source_bytes_per_image == 0;
-            if !flat && *source_bytes_per_image < rows * source_bytes_per_row {
+            if !flat && *source_bytes_per_image < pitched_image {
                 return Err(EncodeBlitCommandsError::Invalid(
                     "an image pitch shorter than an image",
                 ));
@@ -2360,7 +2546,12 @@ fn check_blit(
                     "a buffer offset not a multiple of a block",
                 ));
             }
-            let length = (depth - 1) * source_bytes_per_image + image;
+            // The bytes of the copy: every image but the last at its pitch, and the last image.
+            let length = depth
+                .checked_sub(1)
+                .and_then(|images| images.checked_mul(*source_bytes_per_image))
+                .and_then(|n| n.checked_add(image))
+                .ok_or(overflow)?;
             if !source_buffer.holds(*source_offset, length) {
                 return Err(EncodeBlitCommandsError::OutOfRange(
                     "a copy outside its buffer",
@@ -2408,10 +2599,28 @@ fn check_blit(
                 df.block,
             )
             .map_err(out)?;
-            let apart = |a: u32, b: u32, n: u32| a + n <= b || b + n <= a;
+            // Both regions are inside their levels, so no sum overflows; one that did would count as not apart.
+            let apart = |a: u32, b: u32, n: u32| {
+                a.checked_add(n).is_some_and(|end| end <= b)
+                    || b.checked_add(n).is_some_and(|end| end <= a)
+            };
+            let same = |a: u32, b: u32, c: u32, e: u32| match (a.checked_add(b), c.checked_add(e)) {
+                (Some(x), Some(y)) => x == y,
+                _ => true,
+            };
             if s.storage == d.storage
-                && s.base_level + source_level == d.base_level + destination_level
-                && s.base_slice + source_slice == d.base_slice + destination_slice
+                && same(
+                    s.base_level,
+                    *source_level,
+                    d.base_level,
+                    *destination_level,
+                )
+                && same(
+                    s.base_slice,
+                    *source_slice,
+                    d.base_slice,
+                    *destination_slice,
+                )
                 && !(apart(source_origin.x, destination_origin.x, source_size.width)
                     || apart(source_origin.y, destination_origin.y, source_size.height)
                     || apart(source_origin.z, destination_origin.z, source_size.depth))
@@ -2497,15 +2706,20 @@ fn encode_blit(
             destination_offset,
             size,
         } => {
+            let (from, to, size) = (
+                ns_uinteger(*source_offset),
+                ns_uinteger(*destination_offset),
+                ns_uinteger(*size),
+            );
             #[expect(unsafe_code, reason = "a copy between buffers")]
             // SAFETY: both ranges lie inside their buffers and do not overlap (check_blit).
             unsafe {
                 encoder.copyFromBuffer_sourceOffset_toBuffer_destinationOffset_size(
                     &source_buffer.0.raw,
-                    *source_offset as NSUInteger,
+                    from,
                     &destination_buffer.0.raw,
-                    *destination_offset as NSUInteger,
-                    *size as NSUInteger,
+                    to,
+                    size,
                 )
             };
         }
@@ -2521,15 +2735,26 @@ fn encode_blit(
             destination_origin,
             options,
         } => {
+            let (from, row, image) = (
+                ns_uinteger(*source_offset),
+                ns_uinteger(*source_bytes_per_row),
+                ns_uinteger(*source_bytes_per_image),
+            );
+            let (size, slice, level, origin, option) = (
+                mtl_size(*source_size),
+                *destination_slice as NSUInteger,
+                *destination_level as NSUInteger,
+                mtl_origin(*destination_origin),
+                blit_option(*options),
+            );
             #[expect(unsafe_code, reason = "a copy from a buffer into a texture")]
             // SAFETY: the region lies inside the level in whole blocks, the bytes inside the buffer at pitches of whole
-            // blocks, and the option names an aspect the format has (check_blit).
+            // blocks, their length computed without overflow, and the option names an aspect the format has
+            // (check_blit).
             unsafe {
                 encoder.copyFromBuffer_sourceOffset_sourceBytesPerRow_sourceBytesPerImage_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin_options(
-                    &source_buffer.0.raw, *source_offset as NSUInteger, *source_bytes_per_row as NSUInteger,
-                    *source_bytes_per_image as NSUInteger, mtl_size(*source_size), &destination_texture.0.raw,
-                    *destination_slice as NSUInteger, *destination_level as NSUInteger, mtl_origin(*destination_origin),
-                    blit_option(*options),
+                    &source_buffer.0.raw, from, row, image, size, &destination_texture.0.raw, slice, level, origin,
+                    option,
                 )
             };
         }
@@ -2545,14 +2770,24 @@ fn encode_blit(
             destination_bytes_per_image,
             options,
         } => {
+            let (slice, level, origin, size) = (
+                *source_slice as NSUInteger,
+                *source_level as NSUInteger,
+                mtl_origin(*source_origin),
+                mtl_size(*source_size),
+            );
+            let (to, row, image, option) = (
+                ns_uinteger(*destination_offset),
+                ns_uinteger(*destination_bytes_per_row),
+                ns_uinteger(*destination_bytes_per_image),
+                blit_option(*options),
+            );
             #[expect(unsafe_code, reason = "a copy from a texture into a buffer")]
             // SAFETY: as for a copy into a texture (check_blit).
             unsafe {
                 encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toBuffer_destinationOffset_destinationBytesPerRow_destinationBytesPerImage_options(
-                    &source_texture.0.raw, *source_slice as NSUInteger, *source_level as NSUInteger,
-                    mtl_origin(*source_origin), mtl_size(*source_size), &destination_buffer.0.raw,
-                    *destination_offset as NSUInteger, *destination_bytes_per_row as NSUInteger,
-                    *destination_bytes_per_image as NSUInteger, blit_option(*options),
+                    &source_texture.0.raw, slice, level, origin, size, &destination_buffer.0.raw, to, row, image,
+                    option,
                 )
             };
         }
@@ -2567,14 +2802,24 @@ fn encode_blit(
             destination_level,
             destination_origin,
         } => {
+            let (from_slice, from_level, from_origin, size) = (
+                *source_slice as NSUInteger,
+                *source_level as NSUInteger,
+                mtl_origin(*source_origin),
+                mtl_size(*source_size),
+            );
+            let (to_slice, to_level, to_origin) = (
+                *destination_slice as NSUInteger,
+                *destination_level as NSUInteger,
+                mtl_origin(*destination_origin),
+            );
             #[expect(unsafe_code, reason = "a copy between textures")]
             // SAFETY: both regions lie inside their levels in whole blocks, of formats and sample counts that agree, and
             // do not overlap (check_blit).
             unsafe {
                 encoder.copyFromTexture_sourceSlice_sourceLevel_sourceOrigin_sourceSize_toTexture_destinationSlice_destinationLevel_destinationOrigin(
-                    &source_texture.0.raw, *source_slice as NSUInteger, *source_level as NSUInteger,
-                    mtl_origin(*source_origin), mtl_size(*source_size), &destination_texture.0.raw,
-                    *destination_slice as NSUInteger, *destination_level as NSUInteger, mtl_origin(*destination_origin),
+                    &source_texture.0.raw, from_slice, from_level, from_origin, size, &destination_texture.0.raw,
+                    to_slice, to_level, to_origin,
                 )
             };
         }
@@ -2586,7 +2831,7 @@ fn encode_blit(
         } => {
             encoder.fillBuffer_range_value(
                 &buffer.0.raw,
-                NSRange::new(*offset as usize, *length as usize),
+                NSRange::new(ns_uinteger(*offset), ns_uinteger(*length)),
                 *value,
             );
         }
@@ -2651,7 +2896,7 @@ fn pass_descriptor(
         r.setSlice(a.slice as NSUInteger);
         r.setLoadAction(load_action(a.load_action));
         r.setStoreAction(store_action(a.store_action));
-        r.setClearStencil(a.clear_value as u32);
+        r.setClearStencil(stencil_value(a.clear_value).unwrap_or(u32::MIN));
     }
     if let Some(buffer) = pass.visibility_result_buffer {
         raw.setVisibilityResultBuffer(Some(&buffer.0.raw));
@@ -2786,16 +3031,20 @@ fn translation(
                         "a buffer slot past the last or taken",
                     ));
                 }
+                // A runtime-sized array must hold one element: naga's bound subtracts one element's bytes from the
+                // length in 32 bits and wraps on a shorter one (third_party/naga/src/back/msl/writer.rs:1759-1799).
                 let least = match *ty {
                     naga::TypeInner::Struct { ref members, .. }
                         if ty.needs_host_buffer_byte_size(&module.types) =>
                     {
-                        u64::from(members.last().map_or(u32::MIN, |m| m.offset))
+                        members.last().map_or(u64::MIN, |m| {
+                            u64::from(m.offset).saturating_add(one_element(module, m.ty))
+                        })
                     }
                     naga::TypeInner::Array {
                         size: naga::ArraySize::Dynamic,
                         ..
-                    } => u64::MIN,
+                    } => one_element(module, var.ty),
                     naga::TypeInner::BindingArray { .. } => {
                         return Err(MakeFunctionError::Unchecked("an array of bindings"));
                     }
@@ -2821,10 +3070,10 @@ fn translation(
                 if index >= MAX_TEXTURE_SLOTS {
                     return Err(MakeFunctionError::Unchecked("a texture slot past the last"));
                 }
-                let (multisampled, depth) = match *class {
-                    naga::ImageClass::Sampled { multi, .. } => (multi, false),
-                    naga::ImageClass::Depth { multi } => (multi, true),
-                    naga::ImageClass::Storage { access, .. } => {
+                let (multisampled, depth, texel) = match *class {
+                    naga::ImageClass::Sampled { multi, kind } => (multi, false, texel_kind(kind)?),
+                    naga::ImageClass::Depth { multi } => (multi, true, TexelKind::Float),
+                    naga::ImageClass::Storage { access, format } => {
                         if access.contains(naga::StorageAccess::STORE)
                             || access.contains(naga::StorageAccess::ATOMIC)
                         {
@@ -2832,7 +3081,7 @@ fn translation(
                                 "a texture the function writes, whose writes naga does not bound",
                             ));
                         }
-                        (false, false)
+                        (false, false, storage_texel_kind(format))
                     }
                     _ => return Err(MakeFunctionError::Unchecked("an external texture")),
                 };
@@ -2855,6 +3104,7 @@ fn translation(
                     TextureRead {
                         texture_type,
                         depth,
+                        texel,
                     },
                 ));
             }
@@ -2894,7 +3144,7 @@ fn translation(
             let mut attributes = Vec::new();
             for attribute in &layout.attributes {
                 let format = vertex_format(attribute.format);
-                let bytes = format.size() as u32;
+                let bytes = u32::try_from(format.size()).unwrap_or(u32::MAX);
                 if attribute
                     .offset
                     .checked_add(bytes)
@@ -2963,6 +3213,56 @@ fn translation(
         binding_array_length_map: Default::default(),
     };
     Ok((options, pipeline, reads))
+}
+
+/// Returns the bytes of one element of an array type, none for another type.
+fn one_element(module: &naga::Module, array: naga::Handle<naga::Type>) -> u64 {
+    match module.types[array].inner {
+        naga::TypeInner::Array { base, .. } => {
+            u64::from(module.types[base].inner.size(module.to_ctx()))
+        }
+        _ => u64::MIN,
+    }
+}
+
+/// Returns the number type a function reads a sampled texture's texels as.
+fn texel_kind(kind: naga::ScalarKind) -> Result<TexelKind, MakeFunctionError> {
+    match kind {
+        naga::ScalarKind::Float => Ok(TexelKind::Float),
+        naga::ScalarKind::Sint => Ok(TexelKind::Sint),
+        naga::ScalarKind::Uint => Ok(TexelKind::Uint),
+        _ => Err(MakeFunctionError::Unchecked(
+            "a texture of texels neither float nor integer",
+        )),
+    }
+}
+
+/// Returns the number type a function reads a storage texture's texels as.
+fn storage_texel_kind(format: naga::StorageFormat) -> TexelKind {
+    use naga::StorageFormat as S;
+    match format {
+        S::R8Uint
+        | S::R16Uint
+        | S::Rg8Uint
+        | S::R32Uint
+        | S::Rg16Uint
+        | S::Rgba8Uint
+        | S::Rgb10a2Uint
+        | S::R64Uint
+        | S::Rg32Uint
+        | S::Rgba16Uint
+        | S::Rgba32Uint => TexelKind::Uint,
+        S::R8Sint
+        | S::R16Sint
+        | S::Rg8Sint
+        | S::R32Sint
+        | S::Rg16Sint
+        | S::Rgba8Sint
+        | S::Rg32Sint
+        | S::Rgba16Sint
+        | S::Rgba32Sint => TexelKind::Sint,
+        _ => TexelKind::Float,
+    }
 }
 
 /// Returns a slot as naga's slot type; every slot is below 128, checked before.
@@ -3039,6 +3339,8 @@ struct FormatFacts {
     resolve: bool,
     /// Its channels are 32-bit floats, which resolve only from the Apple9 family on.
     float32: bool,
+    /// The number type functions read its texels as.
+    texel: TexelKind,
 }
 
 /// The block of a format that is not compressed: one texel.
@@ -3052,8 +3354,8 @@ const TEXEL_BLOCK: (u32, u32) = (1, 1);
 const BLOCK_4X4: (u32, u32) = (4, 4);
 
 /// Returns the bytes of a type, the size of a texel or block that holds one.
-const fn bytes_of<T>() -> u32 {
-    size_of::<T>() as u32
+fn bytes_of<T>() -> u32 {
+    u32::try_from(size_of::<T>()).unwrap_or(u32::MAX)
 }
 
 impl FormatFacts {
@@ -3077,12 +3379,15 @@ fn format_facts(format: PixelFormat) -> FormatFacts {
         blend: true,
         resolve: true,
         float32: false,
+        texel: TexelKind::Float,
     };
-    let integer = |bytes| FormatFacts {
+    let integer = |bytes, texel| FormatFacts {
         blend: false,
         resolve: false,
+        texel,
         ..plain(bytes)
     };
+    let (sint, uint) = (TexelKind::Sint, TexelKind::Uint);
     let float32 = |bytes| FormatFacts {
         float32: true,
         ..plain(bytes)
@@ -3110,33 +3415,42 @@ fn format_facts(format: PixelFormat) -> FormatFacts {
     };
     match format {
         P::A8Unorm | P::R8Snorm => plain(bytes_of::<u8>()),
-        P::R8Uint | P::R8Sint => integer(bytes_of::<u8>()),
+        P::R8Uint => integer(bytes_of::<u8>(), uint),
+        P::R8Sint => integer(bytes_of::<u8>(), sint),
         P::R8Unorm => twin(bytes_of::<u8>(), P::R8UnormSrgb),
         P::R8UnormSrgb => twin(bytes_of::<u8>(), P::R8Unorm),
         P::R16Unorm | P::R16Snorm | P::R16Float => plain(bytes_of::<u16>()),
-        P::R16Uint | P::R16Sint => integer(bytes_of::<u16>()),
+        P::R16Uint => integer(bytes_of::<u16>(), uint),
+        P::R16Sint => integer(bytes_of::<u16>(), sint),
         P::Rg8Unorm | P::Rg8Snorm => plain(bytes_of::<u16>()),
-        P::Rg8Uint | P::Rg8Sint => integer(bytes_of::<u16>()),
+        P::Rg8Uint => integer(bytes_of::<u16>(), uint),
+        P::Rg8Sint => integer(bytes_of::<u16>(), sint),
         P::B5g6r5Unorm | P::A1bgr5Unorm | P::Abgr4Unorm | P::Bgr5a1Unorm => {
             plain(bytes_of::<u16>())
         }
-        P::R32Uint | P::R32Sint => integer(bytes_of::<u32>()),
+        P::R32Uint => integer(bytes_of::<u32>(), uint),
+        P::R32Sint => integer(bytes_of::<u32>(), sint),
         P::R32Float => float32(bytes_of::<u32>()),
         P::Rg16Unorm | P::Rg16Snorm | P::Rg16Float => plain(bytes_of::<u32>()),
-        P::Rg16Uint | P::Rg16Sint => integer(bytes_of::<u32>()),
+        P::Rg16Uint => integer(bytes_of::<u32>(), uint),
+        P::Rg16Sint => integer(bytes_of::<u32>(), sint),
         P::Rgba8Unorm => twin(bytes_of::<u32>(), P::Rgba8UnormSrgb),
         P::Rgba8UnormSrgb => twin(bytes_of::<u32>(), P::Rgba8Unorm),
         P::Bgra8Unorm => twin(bytes_of::<u32>(), P::Bgra8UnormSrgb),
         P::Bgra8UnormSrgb => twin(bytes_of::<u32>(), P::Bgra8Unorm),
         P::Rgba8Snorm => plain(bytes_of::<u32>()),
-        P::Rgba8Uint | P::Rgba8Sint => integer(bytes_of::<u32>()),
+        P::Rgba8Uint => integer(bytes_of::<u32>(), uint),
+        P::Rgba8Sint => integer(bytes_of::<u32>(), sint),
         P::Rgb10a2Unorm | P::Rg11b10Float | P::Rgb9e5Float => plain(bytes_of::<u32>()),
-        P::Rgb10a2Uint => integer(bytes_of::<u32>()),
-        P::Rg32Uint | P::Rg32Sint => integer(bytes_of::<u64>()),
+        P::Rgb10a2Uint => integer(bytes_of::<u32>(), uint),
+        P::Rg32Uint => integer(bytes_of::<u64>(), uint),
+        P::Rg32Sint => integer(bytes_of::<u64>(), sint),
         P::Rg32Float => float32(bytes_of::<u64>()),
         P::Rgba16Unorm | P::Rgba16Snorm | P::Rgba16Float => plain(bytes_of::<u64>()),
-        P::Rgba16Uint | P::Rgba16Sint => integer(bytes_of::<u64>()),
-        P::Rgba32Uint | P::Rgba32Sint => integer(bytes_of::<u128>()),
+        P::Rgba16Uint => integer(bytes_of::<u64>(), uint),
+        P::Rgba16Sint => integer(bytes_of::<u64>(), sint),
+        P::Rgba32Uint => integer(bytes_of::<u128>(), uint),
+        P::Rgba32Sint => integer(bytes_of::<u128>(), sint),
         P::Rgba32Float => float32(bytes_of::<u128>()),
         P::Bc1Rgba => blocks(bytes_of::<u64>(), BLOCK_4X4, Some(P::Bc1RgbaSrgb)),
         P::Bc1RgbaSrgb => blocks(bytes_of::<u64>(), BLOCK_4X4, Some(P::Bc1Rgba)),
@@ -3158,9 +3472,16 @@ fn format_facts(format: PixelFormat) -> FormatFacts {
         P::Astc4x4Srgb => blocks(bytes_of::<u128>(), BLOCK_4X4, Some(P::Astc4x4Ldr)),
         P::Depth16Unorm => aspects(bytes_of::<u16>(), true, false),
         P::Depth32Float => aspects(bytes_of::<u32>(), true, false),
-        P::Stencil8 => aspects(bytes_of::<u8>(), false, true),
+        // Functions read stencil as unsigned integers, and depth, of a combined format too, as floats.
+        P::Stencil8 => FormatFacts {
+            texel: uint,
+            ..aspects(bytes_of::<u8>(), false, true)
+        },
         P::Depth32FloatStencil8 => aspects(bytes_of::<u64>(), true, true),
-        P::X32Stencil8 => aspects(bytes_of::<u64>(), false, true),
+        P::X32Stencil8 => FormatFacts {
+            texel: uint,
+            ..aspects(bytes_of::<u64>(), false, true)
+        },
     }
 }
 
