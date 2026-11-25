@@ -23,8 +23,8 @@ Words used here:
 - **reference**: real Linux of the guest's architecture, as in runtime.md.
 - **slot address**: where the entry mirror (section 3.2) holds the slot of a guest address.
 
-Paths are shortened: `gcpu/` is crates/wcontainers-guest-cpu/src, `arm64/` crates/wcontainers-arm64/src,
-`tr/` crates/wcontainers-translator/src, `rt/` crates/wcontainers-runtime/src, `abi/` crates/wcontainers-abi/src,
+Paths are shortened: `gcpu/` is crates/guest-cpu/src, `arm64/` crates/arm64/src,
+`tr/` crates/translator/src, `rt/` crates/wcontainers-runtime/src, `abi/` crates/wcontainers-abi/src,
 `kernel/` crates/wcontainers-kernel/src, `ktest/` crates/wcontainers-kernel-test/src, `x86 plan` docs/
 phase-2-guest-cpu-and-x86.md on origin/phase-2-x86 at 96c49dbb. Lines are at 68013b31 (this branch).
 Experiments are under pyro-parked/wcontainers-scratch/native (`experiments/` mine, `check-n0/` the
@@ -88,7 +88,7 @@ The translator today is one crate whose finding and emitting are both in it:
 - The finder is not free of WebAssembly, and stays so: `Code::decode` gives every instruction its `effects`
   (tr/code.rs:543-548), which `wcontainers_guest_cpu::effects` finds by running the instruction's meaning
   into a recording emitter (gcpu/effects.rs:43-64, `G::emit` at :62). So a native build carries the meanings
-  and wasm-encoder (the guest crate's `translate` feature, crates/wcontainers-guest-cpu/Cargo.toml:18), at
+  and wasm-encoder (the guest crate's `translate` feature, crates/guest-cpu/Cargo.toml:18), at
   build time only: no WebAssembly is made or run on the native path. Rejected: a second, native description
   of what each instruction reads and writes (two definitions of one fact, which would drift apart).
 - `effects` takes `G::Host`, the probed behaviour of the WebAssembly engine (gcpu/translate.rs:124-131;
@@ -119,7 +119,7 @@ code that is already the host's own; slower to translate, and the guest's exact 
 the compiler's choices).
 
 The place where a guest memory access is emitted is one function of the native output (`access`; for ARM64 in
-the guest crate's carrying code, crates/wcontainers-arm64/src/carry.rs, since the translator knows no one
+the guest crate's carrying code, crates/arm64/src/carry.rs, since the translator knows no one
 CPU: the translator's native module is the generic part, the piece, the count's add and the exits), which
 today copies the instruction as it is (or puts the alignment test of section 3.4 in front), because the
 virtual machine's page tables enforce the guest's permissions. Every route that emits a guest access emits it
@@ -1148,7 +1148,7 @@ path it lies on and what changes how many run:
    and a load exclusive through sp's own SA0 test (`cbnz` in `exclusive`): hot, constant per instruction.
 8. A loop's aligned bases tested before it (`test_aligned_bases`: a `cbnz` for each base but the last, then a
    `cbz` for the last, taken when every base is aligned). The test is written at the start of the looping part,
-   and the part's own back branch is linked to that start, before the test (crates/wcontainers-translator/src/
+   and the part's own back branch is linked to that start, before the test (crates/translator/src/
    native.rs, `translate`: the part's entry is recorded before the test is written). When every base is aligned,
    the `cbz` goes to the part's copy made with the bases settled, which loops to itself: the test runs once per
    entry into the loop (+1 per base), and its turns run no page test. When a base is misaligned, the plain part
@@ -1169,7 +1169,7 @@ No other place writes a branch into translated code. The inside's loader writes 
 and 5 (`link_word`, which leaves an exit unlinked when the target is out of the branch's reach), a slot's moves and
 `br`, the last target's test `cbnz`, pointed at the miss way once the target is made (`make_last_target`, item 4),
 and `udf` into a dropped piece's slot (`drop_piece`, the empty slot of item 3); none adds a branch the items do
-not count. The translator's own `link` (crates/wcontainers-arm64/src/native.rs) points a guest branch or exit at a
+not count. The translator's own `link` (crates/arm64/src/native.rs) points a guest branch or exit at a
 target inside its piece, which item 1 and 2's internal cases count. `routines.rs`' `ret` runs at the inside's
 level, which a guest-level event does not count; the `bl` in translate.rs is in a unit test. The check of this
 list: every `compare_branch`, `test_branch_nonzero`, `branch`, `branch_register` and `retarget` in carry.rs,
@@ -2124,7 +2124,7 @@ Handled, and proven by tests rather than assumed:
   decoder's index of forms. As built since then, the moves are found in one pass over `msr`'s
   system registers through that form's own decode, once a process (about 16 million cycles, most of it the
   forms table read once), and the index is built at the first translation instead (about 78 million cycles, a
-  cost of the shared decoder, crates/wcontainers-arm64/src/forms.rs, which the WebAssembly output pays too;
+  cost of the shared decoder, crates/arm64/src/forms.rs, which the WebAssembly output pays too;
   building it form by form instead of bucket by bucket gives the same index for about 0.1 million, measured
   with a scratch patch: put to the translator track).
   The result (N4 run 25, the native code of commit 1736f6a1, with the plain run's breakpoints put before the run

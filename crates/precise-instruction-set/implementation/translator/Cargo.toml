@@ -15,7 +15,7 @@ path = "implementation.rs"
 wcontainers-precise-instruction-set = { path = "../.." }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
 # The CTR_EL0 value the translator presents.
-wcontainers-arm64 = { path = "../../../wcontainers-arm64", default-features = false }
+wcontainers-arm64 = { path = "../../../arm64", default-features = false }
 
 [lints]
 workspace = true

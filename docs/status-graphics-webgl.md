@@ -1,6 +1,6 @@
 # Graphics WebGL 2 back end status (G3, G3b)
 
-Track: `crates/wcontainers-gpu-webgl`, the WebGL 2 back end on glow, branch `phase-2-graphics-webgl`.
+Track: `crates/gpu-webgl`, the WebGL 2 back end on glow, branch `phase-2-graphics-webgl`.
 Plan: docs/phase-2-graphics.md, sections 4, 5.8, 6.5, 10 and 12 (G3).
 
 ## Where things stand
@@ -95,7 +95,7 @@ change among them needed anything here), and, as the brief now asks, origin/phas
 (the literal check; see "Magic literals"). Fixed what the check of run 5 found:
 - The frame-time measurement now has the front's share: the WebGPU track's breakdown (Windows'
   recorder, samply, its frames example) run on real programs drawing through the Direct3D 11
-  front on this back end over ANGLE (new crates/wcontainers-gpu-webgl/frames/run). Results and
+  front on this back end over ANGLE (new crates/gpu-webgl/frames/run). Results and
   method under "Measurements, run G3b-6"; the departures it needed are listed there.
 - `SAMPLE_MASK` and `SAMPLE_SHADING`: the reason was wrong. `SAMPLE_MASK` stays absent (no
   `sampleMaski` in WebGL 2); `SAMPLE_SHADING` is now built in Chrome with OES_sample_variables and
@@ -582,7 +582,7 @@ tests/against_webgpu.rs and in Chrome by browser/against.mjs.
   `a_fractional_viewport_in_the_program_equals_webgpu_native` draws as a Direct3D front does
   without `FRACTIONAL_VIEWPORT` (whole-pixel viewport, adjusted positions, Direct3D's implicit
   scissor), clipped at the viewport's edges, written in WGSL here; equal on both routes natively
-  and in Chrome since run 15; G6's crates/wcontainers-shaders/tests/variant_draw.rs runs
+  and in Chrome since run 15; G6's crates/shaders/tests/variant_draw.rs runs
   the real `VIEWPORT_ADJUST` variant on this back end. `FRACTIONAL_VIEWPORT` absent here, check
   `fractional_viewports_are_refused`.
 - A buffer used as indices and vertices, written by host, copy and transform feedback, drawn both
@@ -1202,13 +1202,13 @@ All from the checkout root on the Mac.
   without the BC extensions); the comparisons with the WebGPU back end natively and in Chrome),
   one GPU job after the build; exit 1 on any failure, so today it exits 1 for the known failures. The
   Chrome suite verdicts land in `<out>\suite-chrome*.txt`:
-  `tools/graphics-rig/gpu-job --desktop --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "crates\wcontainers-gpu-webgl\browser\all.cmd C:\wc\out\webgl\<name>"`.
+  `tools/graphics-rig/gpu-job --desktop --build "crates\gpu-webgl\browser\build.cmd" -- "crates\gpu-webgl\browser\all.cmd C:\wc\out\webgl\<name>"`.
   About 60 s as a job once built. Lint as part of the build:
-  `tools/graphics-rig/gpu-job --desktop --build "crates\wcontainers-gpu-webgl\browser\build.cmd && cargo clippy -j 3 -p wcontainers-gpu-webgl --all-targets -- -D warnings && cargo clippy -j 3 -p wcontainers-gpu-webgl --lib --example browser --example draw-cost --target wasm32-unknown-unknown -- -D warnings" -- "cargo test -j 3 -p wcontainers-gpu-webgl --lib && crates\wcontainers-gpu-webgl\browser\all.cmd C:\wc\out\webgl\<name>"`
+  `tools/graphics-rig/gpu-job --desktop --build "crates\gpu-webgl\browser\build.cmd && cargo clippy -j 3 -p wcontainers-gpu-webgl --all-targets -- -D warnings && cargo clippy -j 3 -p wcontainers-gpu-webgl --lib --example browser --example draw-cost --target wasm32-unknown-unknown -- -D warnings" -- "cargo test -j 3 -p wcontainers-gpu-webgl --lib && crates\gpu-webgl\browser\all.cmd C:\wc\out\webgl\<name>"`
   (`--lib` runs the unit tests of src/capture.rs and src/restart.rs).
 - The per-draw cost of both back ends in Chrome, as an exclusive job (build.cmd builds the
   example, in release, into `%CARGO_TARGET_DIR%\webgl-cost-pkg`):
-  `tools/graphics-rig/gpu-job --alone --desktop --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "node crates\wcontainers-gpu-webgl\browser\cost.mjs %CARGO_TARGET_DIR%\webgl-cost-pkg C:\wc\out\webgl\cost.txt 30 \"10000 50000\""`
+  `tools/graphics-rig/gpu-job --alone --desktop --build "crates\gpu-webgl\browser\build.cmd" -- "node crates\gpu-webgl\browser\cost.mjs %CARGO_TARGET_DIR%\webgl-cost-pkg C:\wc\out\webgl\cost.txt 30 \"10000 50000\""`
   (frames timed per case, then the draw counts). About 15 s. Without `--desktop` Chrome kept no
   WebGL 2 context in G3's check (run 18's measurements had it from all.cmd's desktop session).
 - A real program's frames, recorded and replayed (G3b run 2; src/trace.rs). The `trace` feature
@@ -1230,7 +1230,7 @@ All from the checkout root on the Mac.
   The stream lands in C:\wc\out\webgl\trace\<name>.bin; the library's first device is a probe
   that draws nothing, so the program's frames are in `<name>.bin.1`. Replay in Chrome on both
   back ends (build.cmd builds the example `replay` into `%CARGO_TARGET_DIR%\webgl-replay-pkg`):
-  `tools/graphics-rig/gpu-job --alone --desktop --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "node crates\wcontainers-gpu-webgl\browser\replay.mjs %CARGO_TARGET_DIR%\webgl-replay-pkg C:\wc\out\webgl\trace\<program>.bin C:\wc\out\webgl\trace\<program>-replay.txt"`.
+  `tools/graphics-rig/gpu-job --alone --desktop --build "crates\gpu-webgl\browser\build.cmd" -- "node crates\gpu-webgl\browser\replay.mjs %CARGO_TARGET_DIR%\webgl-replay-pkg C:\wc\out\webgl\trace\<program>.bin C:\wc\out\webgl\trace\<program>-replay.txt"`.
   Each back end replays the stream twice, on a new device each time (the last one dropped first):
   once with each call timed inside the back end, once timing whole frames only; frames before the
   tenth are left out. The page logs each replay's start, every hundredth frame and its end; the
@@ -1248,20 +1248,20 @@ All from the checkout root on the Mac.
 - The comparisons with the WebGPU back end alone (build.cmd builds them), natively:
   `tools/graphics-rig/gpu-job -- "cargo test -j 3 -p wcontainers-gpu-webgl --test against_webgpu -- --test-threads=1"`;
   in Chrome (the output's directory must exist; all.cmd writes `<out>\against-chrome.txt`):
-  `tools/graphics-rig/gpu-job --desktop -- "node crates\wcontainers-gpu-webgl\browser\against.mjs %CARGO_TARGET_DIR%\webgl-pkg <out-file>"`.
+  `tools/graphics-rig/gpu-job --desktop -- "node crates\gpu-webgl\browser\against.mjs %CARGO_TARGET_DIR%\webgl-pkg <out-file>"`.
   A comparison of examples/common/against.rs names its routes and its WebGPU device; both hosts
   take the list from there (natively a test per name, checked by `every_comparison_is_a_test`).
 - The suite in Chrome alone (after build.cmd and a `--list` into a file, as all.cmd does):
-  `node crates\wcontainers-gpu-webgl\browser\suite.mjs "%CARGO_TARGET_DIR%\webgl-pkg" <out-file> <list-file> [<extensions off>]`.
+  `node crates\gpu-webgl\browser\suite.mjs "%CARGO_TARGET_DIR%\webgl-pkg" <out-file> <list-file> [<extensions off>]`.
 - Once per desktop, and again whenever angle/ changes (done in run 5, 4 m 30 s of compiling; done
   again in run 11 for the second patch):
-  `tools/graphics-rig/remote "crates\wcontainers-gpu-webgl\angle\build.cmd"` builds ANGLE's
+  `tools/graphics-rig/remote "crates\gpu-webgl\angle\build.cmd"` builds ANGLE's
   libEGL.dll and libGLESv2.dll from the patched mozangle crate into C:\wc\tools\angle-mozangle-0.7.1.
   It downloads the crate from static.crates.io with curl.exe, unpacks it with tar.exe and applies
   both patches in angle/ with `git apply`. Other tracks loading these DLLs get the rebuilt ones.
 - The scenes, natively through ANGLE and in Chrome's WebGL 2, each checked against the rig's stored
-  Direct3D 11 pictures (crates/wcontainers-graphics-test/references/d3d11, with their tolerances):
-  `tools/graphics-rig/gpu-job --build "crates\wcontainers-gpu-webgl\browser\build.cmd" -- "crates\wcontainers-gpu-webgl\browser\run.cmd C:\wc\out\webgl\g3a"`
+  Direct3D 11 pictures (crates/graphics-test/references/d3d11, with their tolerances):
+  `tools/graphics-rig/gpu-job --build "crates\gpu-webgl\browser\build.cmd" -- "crates\gpu-webgl\browser\run.cmd C:\wc\out\webgl\g3a"`
   Add a second argument to run.cmd to switch extensions off, for example
   `run.cmd C:\wc\out\webgl\g3a-noclip "EXT_clip_control WEBGL_provoking_vertex"`. Exit 1 on any unexpected verdict. About 4
   s as a job once built.
@@ -1272,12 +1272,12 @@ All from the checkout root on the Mac.
   - build.cmd: installs the rig's browser packages, builds the native example `webgl-scenes` and the
     WebAssembly example `browser`, and runs wasm-bindgen into `%CARGO_TARGET_DIR%\webgl-pkg`.
   - run.cmd: `webgl-scenes angle <dir> <out>\angle` draws on ANGLE and checks (pictures and
-    caps-angle.txt there); `node crates\wcontainers-gpu-webgl\browser\run.mjs` draws in the rig's
+    caps-angle.txt there); `node crates\gpu-webgl\browser\run.mjs` draws in the rig's
     headless Chrome and writes `.rgba` texels and caps-chrome.txt; `webgl-scenes check` checks those.
 - Seeds and case counts (run 14): every pattern of examples/common/checks.rs is mixed with a seed.
   `WEBGL_SEED` (default 0, the patterns as written) and `WEBGL_CASES` (default 1) set it and how many
   seeds from it each check runs, natively (tests/suite.rs) and in Chrome (suite.mjs passes both to the
-  page). For example `set WEBGL_CASES=20 && crates\wcontainers-gpu-webgl\browser\some.cmd <out> copies_`.
+  page). For example `set WEBGL_CASES=20 && crates\gpu-webgl\browser\some.cmd <out> copies_`.
   Natively each seed is printed before its run (shown with `--nocapture`).
 - Checks whose feature the back end declares absent run nothing beyond the refusal that
   `absent_features_are_refused` checks and call `not_run`; checks whose format lacks a use call
@@ -1292,8 +1292,8 @@ All from the checkout root on the Mac.
   (scratch g3b6/lit-check.sh does exactly this at HEAD). It must print no `+`, `-`, `~`, `>` or
   `!` line.
 - The frame-time breakdown of a real program through the Direct3D 11 front on this back end (G3b
-  run 6; crates/wcontainers-gpu-webgl/frames/run, from the Mac):
-  `crates/wcontainers-gpu-webgl/frames/run 3 10 30 atg-simplelightingpc simplelightingpc 'xbox-atg-samples\PCSamples\IntroGraphics\SimpleLightingPC\x64\Release\SimpleLightingPC.exe' xbox-atg-samples`
+  run 6; crates/gpu-webgl/frames/run, from the Mac):
+  `crates/gpu-webgl/frames/run 3 10 30 atg-simplelightingpc simplelightingpc 'xbox-atg-samples\PCSamples\IntroGraphics\SimpleLightingPC\x64\Release\SimpleLightingPC.exe' xbox-atg-samples`
   (cargo jobs, short and long seconds, a name, the process name to count, the program and its
   working directory under C:\wc\programs\src, then its arguments and `NAME=value;...`
   variables). It prints each part's CPU milliseconds per second of the run; divide by the frames
@@ -1809,7 +1809,7 @@ Chrome has here and mozangle lacks, else by `StencilCopiedByDraw`).
   threads, RTX 3080, driver 32.0.16.2101), each program run alone in the queue's hazard group
   with other tracks' builds and remote commands beside. Load: the whole machine's
   `\Processor(_Total)\% Processor Time` sampled every 2 s by `typeperf` over SSH, averaged over
-  each recorded run's job. Method: crates/wcontainers-gpu-webgl/frames/run (How to run), 10 s
+  each recorded run's job. Method: crates/gpu-webgl/frames/run (How to run), 10 s
   and 30 s runs, per second from their difference, divided by the frames a second between the
   last two `webgl: frames=` reports of a long run. The front's libraries are the release
   Direct3D 11 build on this back end over mozangle's ANGLE (feature level 10_0), so "front"
@@ -2487,7 +2487,7 @@ const, 499 unit-test and 4,736 test findings, 2 redefinitions, 15 "restated").
   limit tells the front.
 - (G3b run 6) The frame-time breakdown runs the WebGPU track's analysis (its examples/frames.rs),
   which this run taught the WebGL 2 back end's crates (as "back end") and ANGLE's libraries (as a
-  part "angle"): five lines in crates/wcontainers-gpu-webgpu, which this track does not own,
+  part "angle"): five lines in crates/gpu-webgpu, which this track does not own,
   committed alone (071cbbfc) so that track can see it; its WebGPU numbers are unchanged by it.
   The programs run with the front's libraries beside them, not through the rig's forwarder (the
   front hands ANGLE's own Direct3D 11 calls to the system's library by their caller's module,

@@ -244,7 +244,7 @@ pub const BENCH: &str = "bench";
 pub const CALLS: &str = "calls";
 
 /// Where the benchmark programs' sources are, from this package.
-pub const PROGRAMS_DIRECTORY: &str = "../../../wcontainers-translator-test/programs";
+pub const PROGRAMS_DIRECTORY: &str = "../../../translator-test/programs";
 
 /// The include flag of the guest's own folder of those programs (`programs/arm64`), whose headers the shared
 /// programs include, as the translator's test harness builds them.

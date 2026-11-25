@@ -1234,14 +1234,14 @@ j3/m-warnings-full.txt from j3/m-bar-full.log by j2/scripts/warnings.py --target
 ## Findings of J2 run 4's check, and how each was settled (J2 run 5)
 
 - The build identity left out the ARM64 decoder's forms table (blocking): fixed (01ca6858). build.rs hashed
-  and watched only each workspace crate's manifest and `src/`, and wcontainers-arm64/src/forms.rs includes
+  and watched only each workspace crate's manifest and `src/`, and arm64/src/forms.rs includes
   `../arm/a64-forms.txt`, which decides which instructions are undefined. Now each hashed workspace crate
   gives every file of its package directory (cargo's own bound of what a package is built from: a crate
   cannot be packaged with an include from outside it), but the directories never built into a dependent
   (`tests`, `benches`, `examples`, `target`); each top-level entry is watched, a directory with every file
   in it. Checked (scratch j2run5/identity.sh, identity.log; load 57.5 to 52.1): a comment line appended to
   the forms table reran the script and changed the identity (4b9be68c... to 832345c4...); removing it gave
-  4b9be68c... back; touching wcontainers-arm64/tests/exact.rs reran nothing; touching src/decode.rs reran
+  4b9be68c... back; touching arm64/tests/exact.rs reran nothing; touching src/decode.rs reran
   the script with the identity unchanged. The output names arm/ once and no tests directory. The identity
   differs from run 4's (b09d7e24...), since the table is now in it, so every translation in a cache
   directory is made again once. Plan section 7 corrected. The back end's tests: 24 passed
@@ -1379,7 +1379,7 @@ j2run4/all.sh at 27ff0eac with the docs uncommitted.
 - The build script watched the whole crates tree (minor): it now watches the lock file (a crate added to or
   removed from the workspace changes it), each crate's manifest, and the hashed crates' sources (6270d0f0).
   Checked: adding a file under crates/wcontainers-kernel-test/tests and guest/ rebuilt nothing; a line added
-  to crates/wcontainers-arm64/src/lib.rs reran the script and rebuilt the back end.
+  to crates/arm64/src/lib.rs reran the script and rebuilt the back end.
 - The status file's stale parenthesis about origin/phase-1 (minor): corrected above.
 - A cache file refused was not counted (minor): a file that exists but cannot be read, is not whole, or that
   wasmtime refuses is now a counted, warned slow path, "translation in the cache's directory refused", with
@@ -1865,8 +1865,8 @@ run). Scratch is pyro-parked/wcontainers-scratch/runtime; J1's logs are in its `
   counters, turn counts.
 - J0's measurements (scratch, not in the repository) are in pyro-parked/wcontainers-scratch/runtime:
   - `base/` is the trial merge's tree (main 36d20013 with 84e9a937) plus three scratch files:
-    `base/crates/wcontainers-translator-test/programs/syscall_loop.S`,
-    `base/crates/wcontainers-translator-test/tests/runtime_measure.rs` (tests a to g) and
+    `base/crates/translator-test/programs/syscall_loop.S`,
+    `base/crates/translator-test/tests/runtime_measure.rs` (tests a to g) and
     `base/crates/wcontainers-kernel-test/tests/runtime_measure.rs` (the kernel's own share). Its target
     directory is deleted; a rerun rebuilds it.
   - `measure.sh`, `measure2.sh` and `measure3.sh` run them; logs `measure-*.log`, `forksize/sizes.txt`,

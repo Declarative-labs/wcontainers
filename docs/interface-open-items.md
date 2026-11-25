@@ -601,7 +601,7 @@ My reading, which the ruling does not state
   getter was added for it. Open with you.
 - Today's fixed claim becomes what an executor reports as `supported`: abi machine.rs's `HWCAP` and
   `HWCAP2` on ARM64, and on x86-64 the claim lists of origin/phase-2-x86
-  (crates/wcontainers-x86/src/claims.rs).
+  (crates/x86/src/claims.rs).
 - No getter of the chosen list on `Process`: the embedder already has it, as what its own
   `choose_processor_features` returned, and can keep it in its `ProcessState`. The other way is a getter
   `Process::processor_features(&self) -> &ProcessorFeatures`, which a receiving embedder could read

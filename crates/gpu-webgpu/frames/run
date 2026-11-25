@@ -1,0 +1,96 @@
+#!/bin/bash
+# From the Mac: where real programs' CPU time goes when they draw through the Direct3D fronts on
+# the WebGPU back end. Builds the fronts' libraries in release with line tables; then for each
+# program, twice (to --short and to --long frames, default 60 and 360): Windows' recorder (wpr's
+# CPU profile, a sample with stacks every millisecond, the whole machine) is started over SSH,
+# whose session may profile the system (the queue's desktop session may not), the program runs as
+# one GPU job alone through the rig's programs.ps1, the recorder stops, and samply converts the trace.
+# Then examples/frames.rs prints the breakdown of a frame's CPU time and the back end's counts a
+# frame from the long run's log, and the whole machine's load during each recorded run (typeperf's
+# Processor(_Total) each second, our program included). Profiles stay on the desktop in
+# C:\wc\out\phase-2-graphics-webgpu\frames, the load samples in the scratch directory's
+# frames-load.
+# With --real, the programs draw through real Direct3D instead, for comparison.
+#   crates/gpu-webgpu/frames/run [--real] [--short n] [--long n] <program>...
+set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)
+rig=$here/../../../tools/graphics-rig
+# shellcheck source=tools/graphics-rig/common.sh
+. "$rig/common.sh"
+short=60
+long=360
+real=
+programs=()
+while [ $# -gt 0 ]; do
+    case $1 in
+        --real) real=1; shift ;;
+        --short) short=$2; shift 2 ;;
+        --long) long=$2; shift 2 ;;
+        *) programs+=("$1"); shift ;;
+    esac
+done
+[ ${#programs[@]} -gt 0 ] || { echo "usage: run [--short n] [--long n] <program>..." >&2; exit 2; }
+T='%CARGO_TARGET_DIR%'
+R="$T\\release"
+O='C:\wc\out\phase-2-graphics-webgpu\frames'
+nonvapi='C:\wc\out\phase-2-graphics-webgpu\nonvapi'
+loads=$HOME/Documents/GitHub/pyro-parked/wcontainers-scratch/graphics-webgpu/frames-load
+# The sampler's longest life in seconds, should the session's end not stop it: past any one run.
+load_limit=1800
+load_counter='\Processor(_Total)\% Processor Time'
+mkdir -p "$loads"
+build="git submodule update --init --recursive -q && set CARGO_PROFILE_RELEASE_DEBUG=line-tables-only&& cargo build --locked --release -j 3 -p wcontainers-directx && cargo build --locked --release -j 3 -p wcontainers-direct3d-12 --examples && cargo build --locked --release -j 3 -p wcontainers-gpu-webgpu --example frames && cargo build --locked -q -j 3 -p wcontainers-graphics-test -p wcontainers-graphics-test-forward && (if not exist $nonvapi mkdir $nonvapi) && (if not exist $O mkdir $O) && type nul > $nonvapi\\nvapi64.dll"
+"$rig/remote" "$build"
+code=0
+for program in "${programs[@]}"; do
+    # The process to count, and the libraries of the program's API (an empty NVAPI for bgfx,
+    # which otherwise takes our device for its driver's).
+    case $program in
+        sdk-tutorial*) process=${program#sdk-} ;;
+        bgfx-*) process=example- ;;
+        atg-*) process=${program#atg-} ;;
+        d3d12-hello-*) process=d3d12hello ;;
+        godot-*) process=godot ;;
+        *) process=$program ;;
+    esac
+    case $program in
+        *-d3d12|d3d12-*) dlls="wcontainers_d3d12.dll=$R\\examples\\wcontainers_d3d12.dll;d3d12.dll=$R\\examples\\d3d12.dll;dxgi.dll=$R\\examples\\dxgi.dll" ;;
+        *) dlls="d3d11.dll=$R\\d3d11.dll;dxgi.dll=$R\\dxgi.dll;wcontainers_directx.dll=$R\\wcontainers_directx.dll" ;;
+    esac
+    case $program in bgfx-*) dlls+=";nvapi64.dll=$nonvapi\\nvapi64.dll" ;; esac
+    # Real Direct3D, for comparison: no libraries of ours.
+    [ -z "$real" ] || dlls=
+    tag=$program${real:+-real}
+    # A failing frame comparison (frames without references) does not matter here.
+    run() {
+        "$rig/gpu-job" --alone --desktop -- "powershell -NoProfile -ExecutionPolicy Bypass -File tools\\graphics-rig\\desktop\\programs.ps1 -Mode run -Out $O\\$tag-$1 -Forward $T\\debug\\wcontainers_graphics_test_forward.dll -Check $T\\debug\\gt-run.exe -Launch $T\\debug\\gt-launch.exe -Programs $program -Dlls \"$dlls\" -Capture $1" | grep -E "^gpu-job|^job: alone from|: FAIL|: pass" || true
+    }
+    # A first run unrecorded, so both recorded runs start with the caches it filled.
+    run "$short"
+    for frames in "$short" "$long"; do
+        out="$O\\$tag-$frames"
+        rig_ssh "wpr -start CPU -filemode"
+        samples="$loads/$tag-$frames.csv"
+        rig_ssh "typeperf \"$load_counter\" -si 1 -sc $load_limit" >"$samples" 2>/dev/null &
+        sampler=$!
+        said=$(run "$frames" 2>&1)
+        echo "$said"
+        kill "$sampler" 2>/dev/null || true
+        wait "$sampler" 2>/dev/null || true
+        # The program's own span (from the job's "alone from hh:mm:ss.fff", when it held the GPU alone,
+        # to gpu-job's "ended hh:mm:ss.fff"), not its wait in the queue or for the alone slot;
+        # typeperf's rows are "date time","percent", the first without a value.
+        started=$(sed -n 's/^job: alone from \([[:digit:]:.]*\).*/\1/p' <<<"$said" | tail -1)
+        ended=$(sed -n 's/.*, ended \([[:digit:]:.]*\):.*/\1/p' <<<"$said" | tail -1)
+        awk -F'"' -v run="$tag-$frames" -v from="$started" -v to="$ended" '
+            $4 ~ /^[[:digit:].]+$/ { split($2, at, " "); t = at[2]
+                if (t >= from && t <= to) { n++; s += $4; if (n == 1 || $4 < lo) lo = $4; if ($4 > hi) hi = $4 } }
+            END { if (n) printf "load during %s (%s to %s): mean %.1f %% (%.1f to %.1f) over %d s\n", run, from, to, s / n, lo, hi, n
+                  else print "load during " run ": no samples within the job" }' "$samples"
+        rig_ssh "wpr -stop $out.etl"
+        rig_ssh "C:\\wc\\tools\\samply-0.13.1\\samply.exe import --save-only -o $out.json $out.etl && del $out.etl"
+    done
+    E="C:\\wc\\target\\$name\\release"
+    rig_ssh "$E\\examples\\frames.exe --log $O\\$tag-$long\\$program\\output.log $process $O\\$tag-$short.json $short $O\\$tag-$long.json $long $E $E\\examples" || code=$?
+done
+exit $code

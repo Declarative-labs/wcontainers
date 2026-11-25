@@ -28,7 +28,7 @@ mod runner;
 
 #[cfg(host_hypervisor)]
 #[allow(dead_code)]
-#[path = "../../../../wcontainers-arm64/tests/common/mod.rs"]
+#[path = "../../../../arm64/tests/common/mod.rs"]
 mod words;
 
 #[cfg(host_hypervisor)]

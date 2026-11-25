@@ -20,7 +20,7 @@ Direct3D: the Gap list's absent features, and atg-simplecomputepc, a real differ
 the shaders track's division (Asked).
 
 G4h run 5 (2026-11-22, from about 11:50 Pacific):
-- The WebGL 2 back end (crates/wcontainers-gpu-webgl, the task allows it for this) holds the five
+- The WebGL 2 back end (crates/gpu-webgl, the task allows it for this) holds the five
   formats 10_0 required of it: `B5G5R5A1_UNORM` and `B4G4R4A4_UNORM` natively as GL's `RGB5_A1`
   and `RGBA4` (alpha moved from the top bits to the bottom on upload, a 16-bit rotation; read back
   as RGBA bytes packed again into Direct3D's fields, `format::packed_fields`, which B5G6R5 now
@@ -614,7 +614,7 @@ command). The desktop's checkout needs the shaders crate's submodules, so comman
   WebGPU features on the WebGPU build.
 - Load time and release sizes of both builds and of the Direct3D 12 track's module:
   `run-r8-sizes.sh <label>` (example `load_time`).
-- src/com/generated.rs: `python3 crates/wcontainers-directx/generate.py <windows-0.62.2 crate dir>`,
+- src/com/generated.rs: `python3 crates/directx/generate.py <windows-0.62.2 crate dir>`,
   then `cargo fmt -p wcontainers-directx`. A method named in its `hand` table calls the hand-written
   one.
 - If a run on the desktop does not reflect a change (its clock once moved back), run
@@ -1045,7 +1045,7 @@ Earlier runs' measurements are in this file's git history.
 - Shaders track: blending into integer twins (`TargetInShader::combine`, built in its run 80 for
   single-sample targets; not yet used here); atg-simplecomputepc's division; the geometry replay's streams past
   the first; an aliased-line route for multisampled targets (with the interface track).
-- NIR track: import `wcontainers_gpu::CUBE_FACES` in crates/wcontainers-nir/src/lib.rs in place of
+- NIR track: import `wcontainers_gpu::CUBE_FACES` in crates/nir/src/lib.rs in place of
   its own copy; until then the literal check reports that copy as a redefinition (its one finding
   outside the shaders and OpenGL crates' new code that touches this track).
 - Rig track: the rig names the desktop's folder by the branch, which is `main` for every track now

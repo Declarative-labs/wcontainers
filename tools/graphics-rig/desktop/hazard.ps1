@@ -181,7 +181,7 @@ function Test-RigRun([string]$Text) {
 # The rig's code in a tree: the trees of its crates and scripts, comma-separated (a job's arguments
 # cannot hold spaces), empty where one is missing.
 function Get-RigKey([string]$Checkout, [string]$Tree) {
-    $ids = foreach ($path in 'crates/wcontainers-graphics-test', 'crates/wcontainers-graphics-test-forward', 'tools/graphics-rig') {
+    $ids = foreach ($path in 'crates/graphics-test', 'crates/graphics-test-forward', 'tools/graphics-rig') {
         (& git -C $Checkout rev-parse -q --verify "${Tree}:$path" | Out-String).Trim()
     }
     $ids -join ','

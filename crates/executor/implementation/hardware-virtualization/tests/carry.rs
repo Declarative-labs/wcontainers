@@ -18,7 +18,7 @@ use wcontainers_guest_cpu::{
 };
 use wcontainers_translator::{LookAhead, translate_native};
 
-#[path = "../../../../wcontainers-arm64/tests/common/mod.rs"]
+#[path = "../../../../arm64/tests/common/mod.rs"]
 mod common;
 use common::{WORDS_PER_FORM, knob, words_of};
 const SEED: u64 = 0x9fb2_1c65_1e98_df25;

@@ -283,7 +283,7 @@ wcontainers-translator-test --test progress_count measure_progress_count -- --ig
   - `reference/`: native reference runner (own small package, built with rust-lld for
     aarch64-unknown-linux-musl, run in Docker as `alpine:latest`). Enters a case through a rewritten signal
     frame, so every register is exact; catches system calls from the test page with seccomp.
-  - `crates/wcontainers-arm64/arm/a64-forms.txt`: all 4429 A64 encodings from Arm's specification
+  - `crates/arm64/arm/a64-forms.txt`: all 4429 A64 encodings from Arm's specification
     (2026-09 release), made by `cargo run -p wcontainers-translator-test --bin arm-forms -- <Instructions.json> <out>`.
   - Layer 1: `tests/layer1.rs`. 266 forms: every base integer form M0 covers, including the five whose
     condition only limits fields (LDRB/STRB/LDRSB register, PRFM register). SP is misaligned in a quarter of
@@ -318,7 +318,7 @@ wcontainers-translator-test --test progress_count measure_progress_count -- --ig
   - The C library reaches SIMD and floating point loads and stores and some vector data processing
     (54 forms: MOVI, FMOV, ORR, DUP, CMEQ, UMAXV, EXT, CNT and others; the list is `VECTOR_FORMS` in
     `src/layer1.rs`). These, and every SIMD and floating point load and store form in the load/store groups
-    layer 1 covers, are translated now (`wcontainers-arm64/src/vector.rs`), and layer 1 carries v0 to v31
+    layer 1 covers, are translated now (`arm64/src/vector.rs`), and layer 1 carries v0 to v31
     both ways. Layer 1 covers 399 forms in all.
   - Hello uses exactly these system calls: set_tid_address and ioctl (answered "not implemented", counted
     and warned, as the plan says; musl carries on), writev, exit_group.
@@ -349,7 +349,7 @@ exit as a stop and always made the thread leave. The description section had a h
 encoder (now wasm-encoder's `Encode`). The permission byte was built with a fixed shift (now from the
 contract's bits, in both runners).
 
-- M2, full look-ahead (`wcontainers-translator/src/full.rs`, `LookAhead::Full`):
+- M2, full look-ahead (`translator/src/full.rs`, `LookAhead::Full`):
   - Finding functions: the starts, targets of `bl`, addresses built by `adr` or by `adrp` with the `add`
     right after it (except those a jump table of the same function goes to), and extra entries that keep
     every function's control flow reducible (a block entered by a jump back from outside its loop becomes
@@ -374,7 +374,7 @@ contract's bits, in both runners).
   - Direct calls are WebAssembly calls; calls through a register and calls to code with no piece go through
     the dispatcher (the lookup). Jumps that leave the piece are tail calls, direct or through the lookup.
     Returns keep the check of M0.
-  - Jump tables (`wcontainers-arm64/src/habits.rs`): a `br` whose target is a base built by `adr` plus a
+  - Jump tables (`arm64/src/habits.rs`): a `br` whose target is a base built by `adr` plus a
     shifted entry loaded from a table built by `adr`/`adrp`, with the bound from the nearest flag setting
     subtraction of an immediate and `b.hi`/`b.hs` before it (looking up to 64 instructions back). The
     targets are read from the blob and become blocks of the function; the jump is a `br_table` on the
@@ -462,18 +462,18 @@ contract's bits, in both runners).
 ## How to run
 
 - The long runs to the plan's pass bars, resumable, one command (from the repository root, detached; it runs
-  for days): `WC_LONG_DIR=<scratch directory> nohup nix develop -c crates/wcontainers-translator-test/long-runs.sh > <log> 2>&1 &`.
+  for days): `WC_LONG_DIR=<scratch directory> nohup nix develop -c crates/translator-test/long-runs.sh > <log> 2>&1 &`.
   Knobs (`WC_LONG_PERCENT`, `WC_LONG_LAYERS`, `WC_LONG_SEED`, `WC_LONG_ACCEPT`, `WC_LONG_JOBS`,
   `WC_LONG_LIMIT`) and the ledger's fields are described at the top of the script and under "P1, the long-run
   driver" and "P2". To carry on after a stop, run the same command again; to keep chunks that passed on an
   older commit, set `WC_LONG_ACCEPT=<that commit>`. It refuses uncommitted changes and runs its own copy of
   the commit. The run under way and its exact command are under "P2".
-- The benchmark set against elfconv: `nix develop -c crates/wcontainers-translator-test/elfconv.sh` (needs
+- The benchmark set against elfconv: `nix develop -c crates/translator-test/elfconv.sh` (needs
   Docker and the image `ghcr.io/yomaytk/elfconv:arm64`; converted programs kept in `target/elfconv`;
   `WC_BENCH_RUNS` best of, default 3).
 - Everything: `nix develop -c cargo test -p wcontainers-arm64 -p wcontainers-translator -p wcontainers-translator-test`
   (includes the Chrome test; it needs Google Chrome installed and Docker running).
-- Lint the two side packages too: from `crates/wcontainers-translator-test/browser`,
+- Lint the two side packages too: from `crates/translator-test/browser`,
   `nix develop ../../.. -c cargo clippy --target wasm32-unknown-unknown --target-dir ../../../target/browser -- -D warnings`;
   from `.../reference`, `nix develop ../../.. -c cargo clippy --release --target-dir ../../../target/reference -- -D warnings`.
 - Layer 3: `WC_LAYER3_CASES=100000 WC_LAYER3_SEED=<n> WC_LAYER3_CHROME=100 WC_LAYER3_JOBS=6 nix develop -c cargo test --release -p wcontainers-translator-test --test layer3 -- --nocapture 2>&1 | grep -v "wcontainers warning"`

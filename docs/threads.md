@@ -256,7 +256,7 @@ Words used here:
 
 Paths are shortened: `kernel/` is crates/wcontainers-kernel/src, `abi/` crates/wcontainers-abi/src, `rt/`
 crates/wcontainers-runtime/src, `wt/` crates/wcontainers-wasmtime/src, `tr/`
-crates/wcontainers-translator/src, `arm64/` crates/wcontainers-arm64/src. Lines are at 77e50ddc (this
+crates/translator/src, `arm64/` crates/arm64/src. Lines are at 77e50ddc (this
 branch's base). `native.md` and `x86 plan` are docs/native.md at origin/phase-2-native ab448e58 and
 docs/phase-2-guest-cpu-and-x86.md at origin/phase-2-x86 0de30f18. Where section 10 cites native.md "at
 its head", that is a7099033, which has the owner's later word on where the embedder's system runs.
@@ -1169,7 +1169,7 @@ and an atomic and, never a plain store of the whole word:
 Translated code still tests the word against zero (tr/code.rs:1300). One place in it writes the word,
 and that changes: `raise_stop` stores 1 over the whole word with a plain store (tr/code.rs:693-699,
 tr/full.rs:2746-2750). Only the translator's test guest uses it
-(wcontainers-translator-test/tests/test_guest.rs:361), but it would wipe a bit that another host thread
+(translator-test/tests/test_guest.rs:361), but it would wipe a bit that another host thread
 had set. It becomes an atomic or of the thread's own bit. The stop hook looks at each bit. Held: it waits
 for the stop lock. Asked in: it makes an entry that hands the kernel `Exit::Stop`. Counted: it counts.
 

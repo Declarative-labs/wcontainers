@@ -1,7 +1,7 @@
 # Status: graphics, shaders track (G6)
 
 On branch `agents` in the agents' shared worktree (`wcontainers-agents`) since the evening of
-2026-11-21 (this crate stays at `crates/wcontainers-shaders`; no track branches). Plan:
+2026-11-21 (this crate stays at `crates/shaders`; no track branches). Plan:
 `docs/phase-2-graphics.md`, sections 6, 7, 8 and G6 in 12. The run-by-run record of runs 1 to 77
 is in `docs/status-graphics-shaders-history.md` (history; where it disagrees with this file, this
 file holds).
@@ -1512,7 +1512,7 @@ The pass bar, item by item:
    flag but three, for `swizzled` but the comparisons the devices disagree on, and for `targets_in_shader`'s `combine` but
    multisampled targets (gap A4; `combine` drawn since run 80; multisampled integer twins are
    absent by plan 4.12, a logic operation into a multisampled target is the open part). Where each is tested (drawn on the RTX 3080; test binaries of
-   `crates/wcontainers-shaders/tests`):
+   `crates/shaders/tests`):
    - `variant_draw` (`variants_draw_as_the_native_feature_does` unless named): `CLIP_DEPTH_REWRITE`
      (WebGL 2 with and without EXT_clip_control against WebGPU), `VIEWPORT_DEPTH_FLIP`,
      `DEPTH_BIAS` (24-bit step against real Direct3D 11), `COUNTING`, `DUAL_SOURCE` (native on
@@ -2328,7 +2328,7 @@ The gap list (every item of the pass bar not met):
   naming this gap. Cause, measured in run 77 from the check's pictures (scratch
   `graphics-shaders/g6a-r77/snap.py`): the WebGL 2 back end writes a gather as four samples at the
   texel centres of the footprint whose corner is `floor(p * size - 0.5)` at full float precision
-  (`gathers_by_samples`, crates/wcontainers-gpu-webgl/src/shader.rs), where Direct3D, and the GPU's
+  (`gathers_by_samples`, crates/gpu-webgl/src/shader.rs), where Direct3D, and the GPU's
   own gather that WebGPU uses, round the position to 8 bits of subtexel first. Each of
   `ps_c3_gather`'s 6 texels lies where `v * 8 - 0.5` is 0.14 to 0.45 of a 1/256 step below a whole
   number (Direct3D rounds up to it, the back end floors below it, so the footprint is a row lower);
@@ -3855,7 +3855,7 @@ Direct route (this crate) on the plan's 191-shader DXBC corpus (`WCONTAINERS_SHA
   and 100 to GLSL ES against 95, with every failure named, and none of the reader's gaps (compute
   shaders, typed buffers' and storage images' formats read wrongly, built-ins WGSL cannot express).
 
-The rig's 79 compiled DXBC shaders (`crates/wcontainers-graphics-test/shaders/dxbc`): 56 convert to
+The rig's 79 compiled DXBC shaders (`crates/graphics-test/shaders/dxbc`): 56 convert to
 valid WGSL (45 also compile as GLSL ES in glslang); 23 named: GeometryShader 6, HullShader 6,
 DomainShader 3, StorageCounter 3, StorageImage 2, Atomics 1, PrimitiveId 1, VertexWithoutPosition 1.
 
@@ -3996,7 +3996,7 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `numbered.cmd` (compile.cmd's first lines and the new entry points) in the clone, run by
   `tools/graphics-rig/remote`, then fetched with `rig_scp` and deleted. The WGSL files that changed
   since the last run's out were collected on the laptop (`diff -rq out-r96 out-r97b`) into
-  `chrome-in/` and compiled with `crates/wcontainers-shaders/web/check ../chrome-in` from the clone.
+  `chrome-in/` and compiled with `crates/shaders/web/check ../chrome-in` from the clone.
 - Run 96's scripts in scratch `graphics-shaders/g6-r96` are run 95's with its folder; `tree-tar.sh`
   now lists the clone's files (it listed the checkout's). A SPIR-V probe: write dxil-spirv's words to
   `/work/src/graphics-shaders/target/<name>.spv` from a trial edit in the clone, run through
@@ -4012,7 +4012,7 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
 - Run 94's scripts in scratch `graphics-shaders/g6-r94` are run 93's with its folder, plus
   `gpu-noclippy.sh` (one GPU job without Windows clippy, for a mutant in the clone). Own shaders
   compiled one at a time on the desktop from the clone: `tools/graphics-rig/remote "cd
-  crates\wcontainers-shaders\tests\own && <fxc or dxc command>"`, then `rig_scp` of the file back.
+  crates\shaders\tests\own && <fxc or dxc command>"`, then `rig_scp` of the file back.
 - Run 88's scripts in scratch `graphics-shaders/g6-r88` are run 87's with its folder and the clone
   `tip` (updated with `git fetch <checkout> agents && git reset --hard FETCH_HEAD` inside it):
   `gpu.sh`, `tree-tar.sh`, `suite-laptop.sh` (copied to `~/wcontainers-graphics/suite-r88.sh`,
@@ -4026,13 +4026,13 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `out-r79`, plus `scenes.sh <n> [scenes]` (the Direct3D 12 rig scenes through the Direct3D 12
   front built from the clone `tip`), `gpu-noclippy.sh` (one GPU job of `geometry_draw` and
   `tessellation_draw` without clippy, for a mutant applied with `git -C tip apply
-  ../mutant-<name>.diff`, then `git -C tip checkout -- crates/wcontainers-shaders`) and
+  ../mutant-<name>.diff`, then `git -C tip checkout -- crates/shaders`) and
   `x86-mutants2.sh` (each mutant alone against tests/geometry.rs on the x86 machine, from a bundle
   of the checkout's HEAD sent as `/work/probes/shaders-tip2.bundle`, the patches as
   `/work/probes/shaders-mutant-<name>.diff`).
 - Run 78's scripts in scratch `graphics-shaders/g6a-r78` are run 77's with its folder, `out-r78`
   and `outw-r78`, the clone `tip` (`tree-tar.sh`, and `x86-checks2.sh` on a bundle of its branch
-  `x86tip`); Chrome ran as `crates/wcontainers-shaders/web/check ../out` from that clone after
+  `x86tip`); Chrome ran as `crates/shaders/web/check ../out` from that clone after
   copying the laptop's `out-r78` into `out`.
 - Run 77's scripts in scratch `graphics-shaders/g6a-r77` are run 76's with its folder, `out-r77`
   and `outw-r77`; `tree-tar2.sh` tars the clone `tip2`, and `x86-checks2.sh` fetches the bundle's
@@ -4068,8 +4068,8 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   submodules for the laptop, where `suite-laptop.sh` (copied to
   `~/wcontainers-graphics/suite-g6b6.sh`, writing `out-g6b6`) runs the suite as run 72's did;
   `x86-checks.sh` as below, from a bundle of the checkout's `HEAD`. Compiling the own shaders:
-  `tools/graphics-rig/remote "crates\wcontainers-shaders\tests\own\compile.cmd"` from the
-  clone, then copy the new files back from `C:\wc\src\shaders-tip\crates\wcontainers-shaders\tests\own`
+  `tools/graphics-rig/remote "crates\shaders\tests\own\compile.cmd"` from the
+  clone, then copy the new files back from `C:\wc\src\shaders-tip\crates\shaders\tests\own`
   with `rig_scp` (tools/graphics-rig/common.sh).
 - At the committed tip, not the shared tree (since run 70; other tracks' uncommitted edits are in
   the one checkout, this crate's among them). Scripts in scratch `graphics-shaders/g6a-r72`:
@@ -4092,7 +4092,7 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   <checkout> refs/heads/main && git checkout -B shaders-tip <commit>`; make it, as each run's
   clean-up deletes it, with `git clone -q --no-checkout <checkout> tip`, `git checkout -q -B
   shaders-tip <commit>` and `git remote remove origin`);
-  `crates/wcontainers-shaders/web/check <dir>` run from that clone compiles the laptop's `out-r72`
+  `crates/shaders/web/check <dir>` run from that clone compiles the laptop's `out-r72`
   in Chrome.
 - The literal check on the x86 machine (since run 66, as the desktop's copy must not change while a
   GPU job waits): send the tip as a bundle (`git bundle create <scratch>/tip.bundle HEAD`), then
@@ -4101,7 +4101,7 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   nix develop /work/src/graphics-shaders -c cargo run -q -j 32 -p wcontainers-literals -- check' <
   <scratch>/tip.bundle`. A new machine needs the clone first (`git clone /work/shaders-lit.bundle
   /work/shaders-lit`, then `git submodule update --init` of both converters and
-  `git -C crates/wcontainers-shaders/dxil-spirv submodule update --init third_party/spirv-headers`:
+  `git -C crates/shaders/dxil-spirv submodule update --init third_party/spirv-headers`:
   the baseline holds their scripts' lines).
 - The Direct3D 12 rig scenes through this branch's Direct3D 12 front: scratch
   `graphics-shaders/g6b2/scenes.sh <n> [scenes]` (log `scenes<n>.log`); `draw.sh <n>` runs
@@ -4137,7 +4137,7 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   `~/wcontainers-graphics/target/<branch>`, with 5 cargo jobs (2 when the laptop's load is 8 or more).
 - Chrome's compile of the written files: copy `~/wcontainers-graphics/out` from the laptop to a
   directory here (`rsync -a tom@192.168.2.240:wcontainers-graphics/out/ <dir>/`), then
-  `crates/wcontainers-shaders/web/check <dir>`: one GPU job on the desktop, `chrome.txt` comes back
+  `crates/shaders/web/check <dir>`: one GPU job on the desktop, `chrome.txt` comes back
   into each corpus directory, exit 1 if any file fails.
 - When the desktop refuses new SSH connections (reset after the key exchange; run 6 lost an hour to
   it, run 7 half an hour, it did so all through run 8, and again in run 9), already open shared connections keep working. Runs 7 and 9 pointed this
@@ -4152,12 +4152,12 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   independent checks' directories `~/wcontainers-graphics/check-g6a*` hold about 29 GB and were left
   alone.
 - Building on the desktop: the rig's `remote` does not fetch submodules, so a build command that
-  needs this crate starts with `git submodule update --init crates/wcontainers-shaders/dxbc-spirv
-  crates/wcontainers-shaders/dxil-spirv && git -C crates/wcontainers-shaders/dxil-spirv submodule
+  needs this crate starts with `git submodule update --init crates/shaders/dxbc-spirv
+  crates/shaders/dxil-spirv && git -C crates/shaders/dxil-spirv submodule
   update --init third_party/spirv-headers && cargo build ...` (they stay checked out afterwards).
 - Drawing (Windows, needs the GPU and ANGLE at C:\wc\tools\angle-mozangle-0.7.1, which the WebGL
   track's `angle\build.cmd` makes; `WCONTAINERS_ANGLE` names another):
-  `S="git submodule update --init -q crates/wcontainers-shaders/dxbc-spirv crates/wcontainers-shaders/dxil-spirv && git -C crates/wcontainers-shaders/dxil-spirv submodule update --init -q third_party/spirv-headers"; tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test draw --no-run" -- "cargo test -j 3 -p wcontainers-shaders --test draw -- --nocapture --test-threads 1"`.
+  `S="git submodule update --init -q crates/shaders/dxbc-spirv crates/shaders/dxil-spirv && git -C crates/shaders/dxil-spirv submodule update --init -q third_party/spirv-headers"; tools/graphics-rig/gpu-job --build "$S && cargo test -j 3 -p wcontainers-shaders --test draw --no-run" -- "cargo test -j 3 -p wcontainers-shaders --test draw -- --nocapture --test-threads 1"`.
   With `WCONTAINERS_SHADERS_OUT` set in the job the pictures are kept as raw texels under `draw`.
 - Windows lint (the draw test is Windows only): `tools/graphics-rig/remote "$S && cargo clippy -j 3
   -p wcontainers-shaders --all-targets -- -D warnings"`.
@@ -4255,8 +4255,8 @@ stands (`git diff d380816 HEAD -- third_party/naga`).
   --dir corpus/dxbc::/corpus --env WCONTAINERS_SHADER_CORPUS=/corpus <test>.wasm --include-ignored`,
   where `$S` is the source copy (`~/wcontainers-graphics/src/phase-2-graphics-shaders`), which the
   tests read at their build path.
-- After cloning: `git submodule update --init crates/wcontainers-shaders/dxbc-spirv
-  crates/wcontainers-shaders/dxil-spirv` and `git -C crates/wcontainers-shaders/dxil-spirv submodule
+- After cloning: `git submodule update --init crates/shaders/dxbc-spirv
+  crates/shaders/dxil-spirv` and `git -C crates/shaders/dxil-spirv submodule
   update --init third_party/spirv-headers`. dxbc-spirv's own SPIRV-Headers and dxil-spirv's other
   submodules (SPIRV-Tools, SPIRV-Cross, its copy of dxbc-spirv) are not needed. The rig's `remote`
   sends a git bundle, which carries no submodules: building this crate on the desktop needs the
@@ -4666,7 +4666,7 @@ were already there.
   named, which the literal check asked for. No layout change.
 
 - The paused commit 1efc1d61 (2026-11-20, recorded in run 70), `TargetCombineValue` and
-  `HelperValue::TargetCombine`'s doc (crates/wcontainers-gpu/src/reflect.rs; the commit is not an
+  `HelperValue::TargetCombine`'s doc (crates/gpu/src/reflect.rs; the commit is not an
   "interface:" one, as it was committed whole at the pause): the helper value's layout as a
   `#[repr(C)]` struct with `new` (from a target's blend, the logic operation and the blend
   constant) and `bytes`, where the doc gave it in words (eight u32 codes, then four f32). Same
@@ -4787,7 +4787,7 @@ were already there.
   text in 4.12. And `HelperValue::SamplerState`'s codes numbered as the variants' order of `Filter`
   and `AddressMode` (doc only).
 
-- Run 9, two commits touching only `crates/wcontainers-gpu` (and the lock): serde `Serialize` and
+- Run 9, two commits touching only `crates/gpu` (and the lock): serde `Serialize` and
   `Deserialize` derives on the variant key, the reflection and every type they hold (`Format`,
   `VertexFormat`, `ShaderStage` included), and on the state blocks of `state.rs` and `CompareFn`, as
   section 8 plans for the cache's postcard records.
