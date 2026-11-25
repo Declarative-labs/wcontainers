@@ -492,18 +492,7 @@ impl KvmSingleStepMachine {
         // Unknown from here on: an error or a panic before the caller stores the next record makes the next load reset.
         let mut held = match mem::replace(&mut self.resident.memory, Held::Unknown) {
             Held::Known(held) if has_room && held.len() + memory.len() <= MOST_CHANGES_PAIRED => {
-                MemoryDelta::diff_snapshots(&held, memory, &mut |mutation: MemoryDelta<
-                    '_,
-                    Arm64<User>,
-                >| match mutation {
-                    MemoryDelta::ValueAssignment { start, bytes } => {
-                        self.write_resident_bytes(start, &bytes)
-                    }
-                    MemoryDelta::PermissionAssignment {
-                        addresses,
-                        permission,
-                    } => self.write_resident_permission(&addresses, permission),
-                });
+                MemoryDelta::diff_snapshots(&held, memory, &mut ResidentWriter(self));
                 held
             }
             Held::Known(_) | Held::Unknown => {
@@ -817,8 +806,10 @@ impl KvmSingleStepMachine {
                         window.start,
                         &before,
                         &after,
-                        &mut |mutation: MemoryDelta<'_, Arm64<User>>| {
-                            join_across_windows(&mut pending, mutation, window.end, mutation_hook);
+                        &mut WindowJoiner {
+                            pending: &mut pending,
+                            window_end: window.end,
+                            mutation_hook: &mut *mutation_hook,
                         },
                     );
                 }
@@ -957,11 +948,9 @@ impl KvmSingleStepMachine {
                     memory,
                     &resolved.values,
                     processor,
-                    &mut |mutation: MemoryDelta<'_, Arm64<User>>| {
-                        if let Some(held) = &mut held {
-                            held.push(mutation.clone().into_owned());
-                        }
-                        mutation_hook.on_memory_mutated(mutation);
+                    &mut HeldRecorder {
+                        held: &mut held,
+                        mutation_hook,
                     },
                 )?;
                 self.resident.memory = held.map_or(Held::Unknown, Held::Known);
@@ -1193,6 +1182,52 @@ fn count_resident_pages(
         }
     }
     (pages <= RESIDENT_ROOM).then_some(pages)
+}
+
+/// The hook that writes each change it receives into the resident pages, which then hold the memory it leads to.
+struct ResidentWriter<'machine>(&'machine mut KvmSingleStepMachine);
+
+impl MemorySink<Arm64<User>> for ResidentWriter<'_> {
+    fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, Arm64<User>>) {
+        match mutation {
+            MemoryDelta::ValueAssignment { start, bytes } => {
+                self.0.write_resident_bytes(start, &bytes)
+            }
+            MemoryDelta::PermissionAssignment {
+                addresses,
+                permission,
+            } => self.0.write_resident_permission(&addresses, permission),
+        }
+    }
+}
+
+/// The hook of a run whose memory the guest keeps: passes each change on to the caller's hook and, while what the
+/// guest holds is known, adds it there too.
+struct HeldRecorder<'run, Hook> {
+    held: &'run mut Option<Vec<MemoryDelta<'static, Arm64<User>>>>,
+    mutation_hook: &'run mut Hook,
+}
+
+impl<Hook: MemorySink<Arm64<User>>> MemorySink<Arm64<User>> for HeldRecorder<'_, Hook> {
+    fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, Arm64<User>>) {
+        if let Some(held) = self.held {
+            held.push(mutation.clone().into_owned());
+        }
+        self.mutation_hook.on_memory_mutated(mutation);
+    }
+}
+
+/// The hook of one window of a writable run, which passes each change on through `join_across_windows`.
+struct WindowJoiner<'run, Hook> {
+    pending: &'run mut Option<(u64, Vec<u8>)>,
+    window_end: u64,
+    mutation_hook: &'run mut Hook,
+}
+
+impl<Hook: MemorySink<Arm64<User>>> MemorySink<Arm64<User>> for WindowJoiner<'_, Hook> {
+    fn on_memory_mutated(&mut self, mutation: MemoryDelta<'_, Arm64<User>>) {
+        join_across_windows(self.pending, mutation, self.window_end, self.mutation_hook);
+    }
 }
 
 /// Passes a change of a window on to the hook, joined to the one before it where that one ran to the end of the last

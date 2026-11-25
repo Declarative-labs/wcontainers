@@ -1,9 +1,13 @@
 //! The tests every implementation of wcontainers-processor-architecture runs, written against its traits alone.
 //!
-//! Each function takes the cases to simulate: a simulator and a state before. `Clone + Eq` on the architecture is
-//! what the derives of `ExecutionState` require of it.
+//! Each function of an architecture takes the cases to simulate: a simulator and a state before. `Clone + Eq` on the
+//! architecture is what the derives of `ExecutionState` require of it. The function of a memory sink takes the sink.
 
-use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture, Simulator};
+use std::borrow::Cow;
+
+use wcontainers_processor_architecture::{
+    ExecutionState, MemoryDelta, MemorySink, ProcessorArchitecture, Simulator,
+};
 
 /// Lists each instruction once, and each behavior known for an instruction once.
 pub fn lists_each_instruction_and_known_behavior_once<Architecture: ProcessorArchitecture>() {
@@ -70,7 +74,43 @@ pub fn simulation_is_deterministic<Architecture, S>(
     }
 }
 
-/// Runs each suite function above as its own test on the architecture and on the cases made anew for every test.
+/// Accepts every kind of mutation: value assignments empty, borrowed, and owned running past the last address, and
+/// permission assignments empty and over every address a program can use.
+pub fn accepts_every_kind_of_mutation<Architecture, Sink>(mut sink: Sink)
+where
+    Architecture: ProcessorArchitecture,
+    Sink: MemorySink<Architecture>,
+{
+    let bytes = [u8::MAX; size_of::<u64>()];
+    let mutations: [MemoryDelta<'_, Architecture>; 5] = [
+        MemoryDelta::ValueAssignment {
+            start: u64::MIN,
+            bytes: Cow::Borrowed(&[]),
+        },
+        MemoryDelta::ValueAssignment {
+            start: u64::MIN,
+            bytes: Cow::Borrowed(&bytes),
+        },
+        MemoryDelta::ValueAssignment {
+            start: u64::MAX,
+            bytes: Cow::Owned(bytes.to_vec()),
+        },
+        MemoryDelta::PermissionAssignment {
+            addresses: u64::MIN..u64::MIN,
+            permission: Architecture::DEFAULT_PERMISSION,
+        },
+        MemoryDelta::PermissionAssignment {
+            addresses: Architecture::ADDRESSABLE,
+            permission: Architecture::DEFAULT_PERMISSION,
+        },
+    ];
+    for mutation in mutations {
+        sink.on_memory_mutated(mutation);
+    }
+}
+
+/// Runs each suite function above as its own test: those of an architecture on it and on the cases, or that of a
+/// memory sink on the sink, each made anew for every test.
 #[macro_export]
 macro_rules! tests {
     ($architecture:ty, $cases:expr) => {
@@ -87,6 +127,12 @@ macro_rules! tests {
         #[test]
         fn simulation_is_deterministic() {
             $crate::simulation_is_deterministic($cases);
+        }
+    };
+    ($sink:expr) => {
+        #[test]
+        fn accepts_every_kind_of_mutation() {
+            $crate::accepts_every_kind_of_mutation($sink);
         }
     };
 }

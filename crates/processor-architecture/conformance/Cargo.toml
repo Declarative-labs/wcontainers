@@ -7,8 +7,16 @@ publish = false
 [lib]
 path = "suite.rs"
 
+[[test]]
+name = "vector"
+path = "../foreign_implementation/vector/conformance_run.rs"
+
 [dependencies]
 wcontainers-processor-architecture = { path = ".." }
+
+# The architecture whose list of changes the foreign implementation's run gives the suite.
+[dev-dependencies]
+wcontainers-processor-architecture-arm64 = { path = "../implementation/arm64" }
 
 [lints]
 workspace = true
