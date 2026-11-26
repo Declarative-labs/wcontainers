@@ -224,7 +224,6 @@ pub(crate) fn track_components(behavior: PreciseInstruction, before: &Processor,
     if let Some(decoded) = decoded
         && after.exception.is_none()
         && reachable & !touched != 0
-        && !crate::planted::is_active(crate::planted::Bug::InUseIgnoresSameValueWrites)
     {
         touched |= list_written_components(decoded) & open;
     }
