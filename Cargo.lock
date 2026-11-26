@@ -4608,6 +4608,7 @@ dependencies = [
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
+ "wcontainers-random-source-seeded",
  "wcontainers-volatile-bytes",
 ]
 
@@ -4616,7 +4617,6 @@ name = "wcontainers-executor-unicorn"
 version = "0.1.0"
 dependencies = [
  "aarch64-cpu",
- "atomic_refcell",
  "cargo_metadata",
  "coarsetime",
  "domain",
@@ -4636,21 +4636,22 @@ dependencies = [
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-behavior-source",
  "wcontainers-byte-sink",
  "wcontainers-byte-source",
  "wcontainers-clock",
  "wcontainers-configurable",
- "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-docker",
  "wcontainers-executor",
  "wcontainers-executor-conformance",
  "wcontainers-executor-wasmtime",
- "wcontainers-instruction-input-domain-arm64",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
  "wcontainers-negative-route-advisable",
- "wcontainers-precise-instruction-set-unicorn",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-measured",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
@@ -5218,6 +5219,7 @@ name = "wcontainers-random-source-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-random-source",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5226,8 +5228,10 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "wcontainers-abi",
+ "wcontainers-byte-source",
  "wcontainers-random-source",
  "wcontainers-random-source-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5237,8 +5241,10 @@ dependencies = [
  "rand 0.9.5",
  "rand_chacha",
  "wcontainers-abi",
+ "wcontainers-byte-source",
  "wcontainers-random-source",
  "wcontainers-random-source-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]

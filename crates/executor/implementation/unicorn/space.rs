@@ -1,57 +1,33 @@
-//! The stand-in's guest memory: one unicorn instance for each space, its bytes in host pages spaces share.
+//! The stand-in's guest memory: one unicorn instance for each space, and its page table.
 //!
-//! Each address shows host pages through a view: its own, another space's for a mapping, or new ones holding
-//! the bytes of a copy. Unicorn maps the pages that allow something, and one allowing nothing, without access,
-//! while the kernel reaches it.
+//! A mapping from another space makes that space's own pages shared pages both show; a copy copies a space's own bytes
+//! and shows what it mapped.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::ops::Range;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use atomic_refcell::AtomicRefCell;
-use memmap2::MmapMut;
 use wcontainers_abi::{CpuError, Exit, PAGE_SIZE, Permissions, RegisterBlock};
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_executor::memory_space::{
-    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
+    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, PageTable,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
-use crate::standin::{Memory, Unsupported};
-
-/// The pages one bit of a touched-page word stands for.
-const PAGES_PER_WORD: u64 = u64::BITS as u64;
+use crate::memory::{Memory, Part};
+use crate::standin::Unsupported;
 
 /// An address space of the stand-in, held with full authority.
 pub struct UnicornSpace {
-    space: RefCell<Space>,
+    memory: Rc<RefCell<Memory>>,
 }
 
-struct Space {
-    /// Dropped before the views, so unicorn stops showing host pages before they can go.
-    memory: Memory,
-    /// What each address shows: start to the view of the addresses from it.
-    views: BTreeMap<u64, View>,
-}
-
-#[derive(Clone)]
-struct View {
-    end: u64,
-    pages: Arc<HostPages>,
-    /// Where in the host pages the view's start lies.
-    offset: u64,
-    /// Whether the view came from another space's pages, so a copy shows them too instead of their bytes.
-    mapping: bool,
-}
-
-/// The host memory of pages, which lives while any view shows it.
-struct HostPages {
-    bytes: MmapMut,
-    /// Pages that may hold something other than zeros, one bit each, so a copy copies only those.
-    touched: AtomicRefCell<Vec<u64>>,
+/// The one page table of a [`UnicornSpace`], made with it, which refuses every change once the space is gone.
+pub struct UnicornPageTable {
+    memory: Weak<RefCell<Memory>>,
 }
 
 /// Addresses of a space, borrowed.
@@ -60,169 +36,14 @@ pub struct UnicornBytes<'space> {
     addresses: Range<u64>,
 }
 
-impl HostPages {
-    /// Returns new zeroed host pages for the number of bytes.
-    fn new(length: u64) -> Result<Self, CpuError> {
-        let bytes = MmapMut::map_anon(usize::try_from(length).map_err(|_| CpuError::OutOfMemory)?)
-            .map_err(|_| CpuError::OutOfMemory)?;
-        let words = length.div_ceil(PAGE_SIZE).div_ceil(PAGES_PER_WORD);
-        Ok(Self {
-            bytes,
-            touched: AtomicRefCell::new(vec![
-                u64::MIN;
-                usize::try_from(words).unwrap_or(usize::MAX)
-            ]),
-        })
-    }
-
-    /// Returns the host address of the byte at the offset, for unicorn to map.
-    fn host_address(&self, offset: u64) -> *mut u8 {
-        let offset =
-            usize::try_from(offset).expect("an offset inside host pages fits in host memory");
-        self.bytes.as_ptr().cast_mut().wrapping_add(offset)
-    }
-
-    /// Notes that the pages over the offsets may hold bytes.
-    fn touch(&self, offsets: Range<u64>) {
-        let mut touched = self.touched.borrow_mut();
-        for page in offsets.start / PAGE_SIZE..offsets.end.div_ceil(PAGE_SIZE) {
-            touched[to_index(page / PAGES_PER_WORD)] |= 1 << (page % PAGES_PER_WORD);
-        }
-    }
-
-    /// Returns the pages among the offsets that may hold bytes, as offsets of their starts.
-    fn list_touched(&self, offsets: Range<u64>) -> Vec<u64> {
-        let touched = self.touched.borrow();
-        (offsets.start / PAGE_SIZE..offsets.end / PAGE_SIZE)
-            .filter(|page| {
-                touched[to_index(page / PAGES_PER_WORD)] & (1 << (page % PAGES_PER_WORD)) != 0
-            })
-            .map(|page| page * PAGE_SIZE)
-            .collect()
-    }
-}
-
-impl Space {
-    /// Returns the views over the addresses, each cut to them.
-    fn list_views(&self, addresses: Range<u64>) -> Vec<(u64, View)> {
-        let first = self
-            .views
-            .range(..=addresses.start)
-            .next_back()
-            .map_or(addresses.start, |(start, _)| *start);
-        self.views
-            .range(first..addresses.end)
-            .filter(|(_, view)| view.end > addresses.start)
-            .map(|(start, view)| {
-                let cut_start = (*start).max(addresses.start);
-                let cut = View {
-                    end: view.end.min(addresses.end),
-                    offset: view.offset + (cut_start - start),
-                    ..view.clone()
-                };
-                (cut_start, cut)
-            })
-            .collect()
-    }
-
-    /// Makes the addresses show the views given, which cover them.
-    fn show(&mut self, addresses: Range<u64>, views: Vec<(u64, View)>) {
-        let overlapping: Vec<u64> = self
-            .list_views(addresses.clone())
-            .into_iter()
-            .map(|(start, _)| start)
-            .collect();
-        // The views replaced keep their host pages until unicorn has stopped showing them, at the end.
-        let mut replaced = Vec::new();
-        for cut_start in overlapping {
-            let (start, view) = self
-                .views
-                .range(..=cut_start)
-                .next_back()
-                .map(|(start, view)| (*start, view.clone()))
-                .expect("every address shows a view");
-            self.views.remove(&start);
-            if start < addresses.start {
-                self.views.insert(
-                    start,
-                    View {
-                        end: addresses.start,
-                        ..view.clone()
-                    },
-                );
-            }
-            if view.end > addresses.end {
-                self.views.insert(
-                    addresses.end,
-                    View {
-                        offset: view.offset + (addresses.end - start),
-                        ..view.clone()
-                    },
-                );
-            }
-            replaced.push(view);
-        }
-        self.memory.unshare(addresses.start, addresses.end);
-        for (start, view) in views {
-            self.memory
-                .shared
-                .insert(start, (view.end, view.pages.host_address(view.offset)));
-            self.views.insert(start, view);
-        }
-        self.memory.remap(addresses.start, addresses.end);
-        // Its guest may write the new pages where the addresses allow it.
-        self.touch_writable(addresses);
-        drop(replaced);
-    }
-
-    /// Notes that the host pages the addresses show may hold bytes.
-    fn touch(&self, addresses: Range<u64>) {
-        for (start, view) in self.list_views(addresses) {
-            view.pages
-                .touch(view.offset..view.offset + (view.end - start));
-        }
-    }
-
-    /// Notes that the host pages shown where the addresses allow writing may hold bytes.
-    fn touch_writable(&self, addresses: Range<u64>) {
-        let writable = |page: u64| self.memory.pages[to_index(page)].contains(Permissions::WRITE);
-        let last = addresses.end / PAGE_SIZE;
-        let mut page = addresses.start / PAGE_SIZE;
-        while page < last {
-            let run_start = page;
-            while page < last && writable(page) {
-                page += 1;
-            }
-            if page > run_start {
-                self.touch(run_start * PAGE_SIZE..page * PAGE_SIZE);
-            } else {
-                page += 1;
-            }
-        }
-    }
-}
-
 impl UnicornSpace {
-    /// Returns a space of all zeros allowing nothing, whose addresses end at the end given.
-    pub(crate) fn new(end: u64) -> Result<Self, CpuError> {
-        let mut memory = Memory::new(end)?;
-        let words = end.div_ceil(PAGE_SIZE).div_ceil(PAGES_PER_WORD);
-        memory.reachable = Some(vec![u64::MIN; to_index(words)]);
-        let pages = Arc::new(HostPages::new(end)?);
-        let mut space = Space {
-            memory,
-            views: BTreeMap::new(),
+    /// Returns a space of all zeros allowing nothing, whose addresses end at the end given, and its page table.
+    pub(crate) fn new(end: u64) -> Result<(Self, UnicornPageTable), CpuError> {
+        let memory = Rc::new(RefCell::new(Memory::new(end)?));
+        let table = UnicornPageTable {
+            memory: Rc::downgrade(&memory),
         };
-        let own = View {
-            end,
-            pages,
-            offset: u64::MIN,
-            mapping: false,
-        };
-        space.show(u64::MIN..end, vec![(u64::MIN, own)]);
-        Ok(Self {
-            space: RefCell::new(space),
-        })
+        Ok((Self { memory }, table))
     }
 
     /// Runs the registers on this space as [`Memory::run_turn`] does.
@@ -233,197 +54,171 @@ impl UnicornSpace {
         deadline: Option<coarsetime::Instant>,
         interrupt: Option<Arc<AtomicBool>>,
     ) -> (Result<Exit, Unsupported>, u64) {
-        self.space
+        self.memory
             .borrow_mut()
-            .memory
             .run_turn(registers, slice_nanoseconds, deadline, interrupt)
     }
 
     /// Returns what the page at the address allows, nothing past the end of the space.
     pub(crate) fn read_permissions(&self, address: u64) -> Permissions {
-        usize::try_from(address / PAGE_SIZE)
-            .ok()
-            .and_then(|page| self.space.borrow().memory.pages.get(page).copied())
-            .unwrap_or_else(Permissions::empty)
+        self.memory.borrow().read_permissions(address)
     }
+}
 
-    /// Returns the addresses if they lie inside the space, and whole pages where `whole_pages` asks it.
-    fn check(&self, addresses: &Range<u64>, whole_pages: bool) -> Result<(), InvalidAddressError> {
-        let length = addresses
-            .end
-            .checked_sub(addresses.start)
-            .ok_or(InvalidAddressError)?;
-        self.space
-            .borrow()
-            .memory
-            .range(addresses.start, length)
-            .map_err(|_| InvalidAddressError)?;
-        if whole_pages
-            && !(addresses.start.is_multiple_of(PAGE_SIZE)
-                && addresses.end.is_multiple_of(PAGE_SIZE))
-        {
-            return Err(InvalidAddressError);
-        }
-        Ok(())
-    }
+/// Returns the space the table changes, refused once the space is gone.
+fn reach(table: &UnicornPageTable) -> Result<Rc<RefCell<Memory>>, InvalidAddressError> {
+    table.memory.upgrade().ok_or(InvalidAddressError)
+}
 
-    /// Returns the other space's addresses that line up with these, if they lie inside it.
-    fn line_up(
-        &self,
-        addresses: &Range<u64>,
-        other: &Self,
-        other_start: u64,
-    ) -> Result<Range<u64>, InvalidAddressError> {
-        self.check(addresses, true)?;
-        let other_end = other_start
-            .checked_add(addresses.end - addresses.start)
-            .ok_or(InvalidAddressError)?;
-        let lined_up = other_start..other_end;
-        other.check(&lined_up, true)?;
-        Ok(lined_up)
+/// Returns the addresses if they lie inside the space, and whole pages where `whole_pages` asks it.
+fn check(
+    memory: &Memory,
+    addresses: &Range<u64>,
+    whole_pages: bool,
+) -> Result<(), InvalidAddressError> {
+    let length = addresses
+        .end
+        .checked_sub(addresses.start)
+        .ok_or(InvalidAddressError)?;
+    memory
+        .range(addresses.start, length)
+        .map_err(|_| InvalidAddressError)?;
+    if whole_pages
+        && !(addresses.start.is_multiple_of(PAGE_SIZE) && addresses.end.is_multiple_of(PAGE_SIZE))
+    {
+        return Err(InvalidAddressError);
     }
+    Ok(())
+}
+
+/// Returns the other space's addresses that line up with these, if both lie inside their spaces as whole pages.
+fn line_up(
+    memory: &Memory,
+    addresses: &Range<u64>,
+    other: &Memory,
+    other_start: u64,
+) -> Result<Range<u64>, InvalidAddressError> {
+    check(memory, addresses, true)?;
+    let other_end = other_start
+        .checked_add(addresses.end - addresses.start)
+        .ok_or(InvalidAddressError)?;
+    let lined_up = other_start..other_end;
+    check(other, &lined_up, true)?;
+    Ok(lined_up)
 }
 
 impl MemorySpace for UnicornSpace {
     type Bytes<'space> = UnicornBytes<'space>;
+    type PageTable = UnicornPageTable;
 
     fn borrow(&self, addresses: Range<u64>) -> Result<UnicornBytes<'_>, InvalidAddressError> {
-        self.check(&addresses, false)?;
+        check(&self.memory.borrow(), &addresses, false)?;
         Ok(UnicornBytes {
             space: self,
             addresses,
         })
     }
+}
 
+impl PageTable for UnicornPageTable {
     fn set_permissions(
-        &self,
+        &mut self,
         addresses: Range<u64>,
         allowed: Permissions,
     ) -> Result<(), InvalidAddressError> {
-        self.check(&addresses, true)?;
-        let mut space = self.space.borrow_mut();
-        let pages = to_index(addresses.start / PAGE_SIZE)..to_index(addresses.end / PAGE_SIZE);
-        space.memory.pages[pages].fill(allowed);
-        space.touch_writable(addresses.clone());
-        space.memory.remap(addresses.start, addresses.end);
+        let memory = reach(self)?;
+        let mut memory = memory.borrow_mut();
+        check(&memory, &addresses, true)?;
+        memory.set_permissions(addresses, allowed);
         Ok(())
     }
 
     fn map_from(
-        &self,
+        &mut self,
         addresses: Range<u64>,
         other: &Self,
         other_start: u64,
     ) -> Result<(), MapMemoryError> {
-        let lined_up = self
-            .line_up(&addresses, other, other_start)
+        let memory = reach(self).map_err(MapMemoryError::InvalidAddress)?;
+        let other = reach(other).map_err(MapMemoryError::InvalidAddress)?;
+        let lined_up = line_up(&memory.borrow(), &addresses, &other.borrow(), other_start)
             .map_err(MapMemoryError::InvalidAddress)?;
         if addresses.is_empty() {
             return Ok(());
         }
-        let views: Vec<(u64, View)> = other
-            .space
-            .borrow()
-            .list_views(lined_up)
-            .into_iter()
-            .map(|(start, view)| {
-                let moved = addresses.start + (start - other_start);
-                let view = View {
-                    end: addresses.start + (view.end - other_start),
-                    mapping: true,
-                    ..view
-                };
-                (moved, view)
-            })
-            .collect();
-        self.space.borrow_mut().show(addresses, views);
+        let parts = other
+            .borrow_mut()
+            .share_out(lined_up)
+            .map_err(|_| MapMemoryError::OutOfMemory)?;
+        let mut memory = memory.borrow_mut();
+        for (range, pages, offset) in parts {
+            let moved = addresses.start + (range.start - other_start)
+                ..addresses.start + (range.end - other_start);
+            memory.show_unmapped(moved, pages, offset, true);
+        }
+        memory.remap(addresses);
         Ok(())
     }
 
-    fn unmap_from(&self, addresses: Range<u64>) -> Result<(), InvalidAddressError> {
-        self.check(&addresses, true)?;
-        if addresses.is_empty() {
-            return Ok(());
-        }
-        // The interface gives this call no error for want of host memory.
-        let pages = HostPages::new(addresses.end - addresses.start)
-            .unwrap_or_else(|error| panic!("no host memory for zeroed pages: {error:?}"));
-        let zeroed = View {
-            end: addresses.end,
-            pages: Arc::new(pages),
-            offset: u64::MIN,
-            mapping: false,
-        };
-        self.space
-            .borrow_mut()
-            .show(addresses.clone(), vec![(addresses.start, zeroed)]);
+    fn unmap_from(&mut self, addresses: Range<u64>) -> Result<(), InvalidAddressError> {
+        let memory = reach(self)?;
+        let mut memory = memory.borrow_mut();
+        check(&memory, &addresses, true)?;
+        memory.drop_mappings(addresses);
         Ok(())
     }
 
     fn copy_from(
-        &self,
+        &mut self,
         addresses: Range<u64>,
         other: &Self,
         other_start: u64,
     ) -> Result<(), CopyMemoryError> {
-        let lined_up = self
-            .line_up(&addresses, other, other_start)
+        let memory = reach(self).map_err(CopyMemoryError::InvalidAddress)?;
+        let other = reach(other).map_err(CopyMemoryError::InvalidAddress)?;
+        let lined_up = line_up(&memory.borrow(), &addresses, &other.borrow(), other_start)
             .map_err(CopyMemoryError::InvalidAddress)?;
         if addresses.is_empty() {
             return Ok(());
         }
-        let mut copied = HostPages::new(addresses.end - addresses.start)
-            .map_err(|_| CopyMemoryError::OutOfMemory)?;
-        let mut touched = Vec::new();
-        let (views, permissions) = {
-            let mut source = other.space.borrow_mut();
-            let views = source.list_views(lined_up.clone());
-            for (start, view) in &views {
-                if view.mapping {
-                    continue;
+        let source = other.borrow();
+        let mut memory = memory.borrow_mut();
+        let moved = |address: u64| addresses.start + (address - other_start);
+        let zeros = [u8::MIN; PAGE_SIZE as usize];
+        let mut bytes = [u8::MIN; PAGE_SIZE as usize];
+        for (range, part) in source.list_parts(lined_up.clone()) {
+            match part {
+                Part::Shown {
+                    pages,
+                    offset,
+                    mapped: true,
+                } => {
+                    memory.show_unmapped(moved(range.start)..moved(range.end), pages, offset, true)
                 }
-                let at = view.offset;
-                for page_offset in view.pages.list_touched(at..at + (view.end - start)) {
-                    let address = start + (page_offset - at);
-                    let into = to_index(address - other_start);
-                    source.memory.reach(address, address + PAGE_SIZE);
-                    source
-                        .memory
-                        .unicorn
-                        .mem_read(address, &mut copied.bytes[into..into + to_index(PAGE_SIZE)])
-                        .expect("the pages reached are mapped in unicorn");
-                    touched.push(address - other_start);
+                Part::Own | Part::Shown { mapped: false, .. } => {
+                    memory.unshare(moved(range.start)..moved(range.end));
+                    for page in range.start / PAGE_SIZE..range.end / PAGE_SIZE {
+                        let at = page * PAGE_SIZE;
+                        let into = moved(at);
+                        if source.is_touched(page) {
+                            source.read(at, &mut bytes).map_err(|_| {
+                                CopyMemoryError::InvalidAddress(InvalidAddressError)
+                            })?;
+                            memory.write(into, &bytes).map_err(|_| {
+                                CopyMemoryError::InvalidAddress(InvalidAddressError)
+                            })?;
+                        } else if memory.is_touched(into / PAGE_SIZE) {
+                            memory.write(into, &zeros).map_err(|_| {
+                                CopyMemoryError::InvalidAddress(InvalidAddressError)
+                            })?;
+                        }
+                    }
                 }
             }
-            let pages = to_index(lined_up.start / PAGE_SIZE)..to_index(lined_up.end / PAGE_SIZE);
-            (views, source.memory.pages[pages].to_vec())
-        };
-        for offset in touched {
-            copied.touch(offset..offset + PAGE_SIZE);
         }
-        let copied = Arc::new(copied);
-        let views = views
-            .into_iter()
-            .map(|(start, view)| {
-                let moved = addresses.start + (start - other_start);
-                let end = addresses.start + (view.end - other_start);
-                let view = if view.mapping {
-                    View { end, ..view }
-                } else {
-                    View {
-                        end,
-                        pages: Arc::clone(&copied),
-                        offset: start - other_start,
-                        mapping: false,
-                    }
-                };
-                (moved, view)
-            })
-            .collect();
-        let mut space = self.space.borrow_mut();
-        let pages = to_index(addresses.start / PAGE_SIZE)..to_index(addresses.end / PAGE_SIZE);
-        space.memory.pages[pages].copy_from_slice(&permissions);
-        space.show(addresses, views);
+        let permissions = source.list_permissions(lined_up);
+        memory.copy_permissions(addresses.start, &permissions);
+        memory.remap(addresses);
         Ok(())
     }
 }
@@ -434,61 +229,41 @@ impl VolatileBytes for UnicornBytes<'_> {
     }
 
     fn read(&self, into: &mut [u8]) -> usize {
-        let count = to_index(self.len()).min(into.len());
-        if count > usize::MIN {
-            let mut space = self.space.space.borrow_mut();
-            let end = self.addresses.start
-                + u64::try_from(count).expect("a count of bytes fits in an address");
-            space.memory.reach(self.addresses.start, end);
-            space
-                .memory
-                .unicorn
-                .mem_read(self.addresses.start, &mut into[..count])
-                .expect("the pages reached are mapped in unicorn");
-        }
+        let count = to_count(self.len()).min(into.len());
+        self.space
+            .memory
+            .borrow()
+            .read(self.addresses.start, &mut into[..count])
+            .expect("borrowed addresses lie inside the space");
         count
     }
 
     fn write(&self, bytes: &[u8]) -> usize {
-        let count = to_index(self.len()).min(bytes.len());
-        if count > usize::MIN {
-            let mut space = self.space.space.borrow_mut();
-            let end = self.addresses.start
-                + u64::try_from(count).expect("a count of bytes fits in an address");
-            space.memory.reach(self.addresses.start, end);
-            space
-                .memory
-                .unicorn
-                .mem_write(self.addresses.start, &bytes[..count])
-                .expect("the pages reached are mapped in unicorn");
-            space.touch(self.addresses.start..end);
-        }
+        let count = to_count(self.len()).min(bytes.len());
+        self.space
+            .memory
+            .borrow_mut()
+            .write(self.addresses.start, &bytes[..count])
+            .expect("borrowed addresses lie inside the space");
         count
     }
 
     /// Hands the sink a copy, since a slice of the guest's bytes may not be lent.
     fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
-        sink.write(&self.copy_out())
+        let mut copied = vec![u8::MIN; to_count(self.len())];
+        self.read(&mut copied);
+        sink.write(&copied)
     }
 
     /// Has the source fill a buffer and writes what it gave, since a slice of the guest's bytes may not be lent.
     fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
-        let mut buffer = vec![u8::MIN; to_index(self.len())];
+        let mut buffer = vec![u8::MIN; to_count(self.len())];
         let count = source.read(&mut buffer)?;
         Ok(self.write(&buffer[..count]))
     }
 }
 
-impl UnicornBytes<'_> {
-    /// Returns a copy of all the bytes, which unicorn reads in one call.
-    fn copy_out(&self) -> Vec<u8> {
-        let mut copied = vec![u8::MIN; to_index(self.len())];
-        self.read(&mut copied);
-        copied
-    }
-}
-
-/// Returns the number as an index into host memory.
-fn to_index(number: u64) -> usize {
-    usize::try_from(number).expect("an address of a space fits in host memory")
+/// Returns the length as a count of host bytes, at most the most the host can count.
+fn to_count(length: u64) -> usize {
+    usize::try_from(length).unwrap_or(usize::MAX)
 }
