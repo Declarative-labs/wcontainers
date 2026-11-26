@@ -36,12 +36,15 @@ use wcontainers_processor_architecture_arm64::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Signedness,
 };
 use wcontainers_processor_architecture_arm64::simd::to_vector_operation;
+use wcontainers_processor_architecture_arm64::sve::{
+    GeneralValues, PredicateValues, ScalableOperand, VectorValues, to_scalable_instruction,
+};
 use wcontainers_processor_architecture_arm64::system_register::SYSTEM_REGISTER;
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, DocumentedInstruction, GENERAL_PURPOSE_REGISTERS,
     INSTRUCTION_SIZE, Instruction, InstructionClass, InstructionFetch, LoadStoreInstruction,
-    PagePermission, Processor, User, VIRTUAL_ADDRESS_BITS, ZERO_PROCESSOR, to_implicit_inputs,
-    writes_condition_flags,
+    PagePermission, Processor, User, VECTOR_REGISTERS, VIRTUAL_ADDRESS_BITS, ZERO_PROCESSOR,
+    to_implicit_inputs, writes_condition_flags,
 };
 
 pub mod advanced_simd;
@@ -98,6 +101,29 @@ const DOUBLEWORD_BYTES: u64 = u64::BITS as u64 / u8::BITS as u64;
 /// Ordinary registers, as many as an instruction names, so that every register operand can name one of its own: even
 /// numbers, so that a pair's second register, the next number, is none of them.
 const DISTINCT_REGISTER_NUMBERS: [u32; 4] = [0, 2, 4, 6];
+/// The predicate beside P0, which holds zero where no operand names it, as V1 does.
+const SECOND_PREDICATE_REGISTER: usize = 1;
+/// A governing predicate of an SVE instruction on vectors: none, all and alternate elements of each size, the first
+/// alone, the bits of no element wider than a byte, the top byte's bit, and the upper half.
+const GOVERNING_PREDICATES: [u16; 9] = [
+    0x0000, 0xFFFF, 0x5555, 0x1111, 0x0101, 0xAAAA, 0x0001, 0x8000, 0xFF00,
+];
+/// A predicate a predicate instruction reads: besides the governing ones, the last element of each size alone, the
+/// bits of no element wider than a halfword or a word, each half, and the middle elements.
+const OPERAND_PREDICATES: [u16; 16] = [
+    0x0000, 0xFFFF, 0x0001, 0x8000, 0x0100, 0x1000, 0x4000, 0x5555, 0xAAAA, 0x1111, 0x0101, 0xEEEE,
+    0xFEFE, 0x00FF, 0xFF00, 0x0FF0,
+];
+/// FFR before an instruction that reads it: [monotonic](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/WRFFR--Write-the-first-fault-register-#:~:text=monotonic) values, the only ones a state can hold, since
+/// writing any other leaves FFR unpredictable.
+const FIRST_FAULT_VALUES: [u16; 6] = [0x0000, 0x0001, 0x0003, 0x00FF, 0x7FFF, 0xFFFF];
+/// The small values a WHILE's counter and limit take, so that two of them lie each element count apart and one more or
+/// less.
+const SMALL_BOUNDS: [u64; 11] = [0, 1, 2, 3, 4, 5, 8, 9, 15, 16, 17];
+/// What lies above the low word of a 32-bit value a WHILE or a saturating step reads, which it must leave out.
+const UPPER_WORD_ONES: u64 = 0xFFFF_FFFF << u32::BITS;
+/// How far inside a range's end a saturating step's register lies: at it, one, a vector's bytes and a large count in.
+const SATURATION_DISTANCES: [u64; 4] = [0, 1, 16, 256];
 
 /// An MRS reaches one of the registers its field names: each the state holds is an operand.
 const SYSTEM_REGISTER_READ: [OperandType; 6] = [
@@ -213,6 +239,26 @@ pub enum OperandType {
     Word(u32),
     /// An operand of an Advanced SIMD instruction of the architecture's `advanced_simd` module.
     AdvancedSimd(advanced_simd::SimdOperand),
+    /// The SVE predicate register an encoding field names.
+    PredicateRegisterNumber(Field),
+    /// The predicate that chooses the elements an SVE operation on vectors acts on.
+    GoverningPredicate(Field),
+    /// A predicate a predicate instruction reads.
+    PredicateValue(Field),
+    /// The Z register after the one an encoding field names, the second of a pair.
+    NextVectorValue(Field),
+    /// A Z register whose elements are shift amounts or indices.
+    ShiftAmountVector(Field),
+    /// The pattern of an SVE count, each of whose values names its own case.
+    Pattern(Field),
+    /// The value of a register a WHILE compares.
+    RegisterBound(Field),
+    /// The value of a register a saturating count steps.
+    RegisterNearSaturation(Field),
+    /// FFR before an instruction that reads it.
+    FirstFaultValue,
+    /// FFR before an instruction that writes it without reading it.
+    WrittenFirstFault,
 }
 
 /// What every byte of the data pages holds before the instruction.
@@ -288,6 +334,7 @@ pub enum OperandValue {
     MemoryFill(MemoryFill),
     /// The low bytes of a SIMD and floating-point register.
     Vector(u128),
+    Predicate(u16),
 }
 
 impl Arm64InputDomain {
@@ -299,9 +346,9 @@ impl Arm64InputDomain {
         operand_type: OperandType,
     ) -> impl Iterator<Item = OperandValue> {
         let numbers: &[u32] = match operand_type {
-            OperandType::RegisterNumber(_) | OperandType::VectorRegisterNumber(_) => {
-                &DISTINCT_REGISTER_NUMBERS
-            }
+            OperandType::RegisterNumber(_)
+            | OperandType::VectorRegisterNumber(_)
+            | OperandType::PredicateRegisterNumber(_) => &DISTINCT_REGISTER_NUMBERS,
             _ => &[],
         };
         numbers.iter().copied().map(OperandValue::RegisterNumber)
@@ -323,6 +370,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         use OperandType::{RegisterNumber, SignedImmediate, UnsignedImmediate};
         if let Some(operand_types) = advanced_simd::list_operand_types(instruction) {
             return operand_types.into_iter();
+        }
+        if let Some(scalable) = to_scalable_instruction(instruction) {
+            return to_scalable_operand_types(scalable.operands).into_iter();
         }
         if DocumentedInstruction::new(instruction).is_some()
             || LoadStoreInstruction::new(instruction).is_some()
@@ -386,9 +436,34 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             OperandType::MemoryFill => [MemoryFill::Pattern, MemoryFill::Zeros, MemoryFill::Ones]
                 .map(OperandValue::MemoryFill)
                 .to_vec(),
-            OperandType::VectorRegisterNumber(_) => {
+            OperandType::VectorRegisterNumber(_) | OperandType::PredicateRegisterNumber(_) => {
                 [0, 1].map(OperandValue::RegisterNumber).to_vec()
             }
+            OperandType::GoverningPredicate(_) => {
+                GOVERNING_PREDICATES.map(OperandValue::Predicate).to_vec()
+            }
+            OperandType::PredicateValue(_) => {
+                OPERAND_PREDICATES.map(OperandValue::Predicate).to_vec()
+            }
+            OperandType::FirstFaultValue => {
+                FIRST_FAULT_VALUES.map(OperandValue::Predicate).to_vec()
+            }
+            OperandType::WrittenFirstFault => {
+                [u16::MIN, u16::MAX].map(OperandValue::Predicate).to_vec()
+            }
+            OperandType::NextVectorValue(_) => to_vector_values(size_of::<u128>() as u32),
+            OperandType::ShiftAmountVector(_) => {
+                let mut values = to_vector_values(size_of::<u128>() as u32);
+                values.extend(
+                    to_shift_amount_vectors()
+                        .into_iter()
+                        .map(OperandValue::Vector),
+                );
+                values
+            }
+            OperandType::Pattern(field) => (0..1 << field.width).map(OperandValue::Bits).collect(),
+            OperandType::RegisterBound(_) => to_bound_values(),
+            OperandType::RegisterNearSaturation(_) => to_saturation_values(),
             OperandType::FloatingPointValue { precision, .. } => {
                 to_floating_point_values(precision)
             }
@@ -559,6 +634,16 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             floating_point_status: SATURATION,
             ..ZERO_PROCESSOR
         };
+        // The predicates no operand names of an SVE instruction hold as the vector registers do.
+        if to_scalable_instruction(instruction).is_some() {
+            processor.predicate_registers = array::from_fn(|number| {
+                if number == SECOND_PREDICATE_REGISTER {
+                    0
+                } else {
+                    !(number as u16)
+                }
+            });
+        }
         let mut floating_point_values = Vec::new();
         let mut vector_values = Vec::new();
         let mut placement = None;
@@ -569,8 +654,40 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         let mut upper = PagePermission::Unmapped;
         let mut register_values = Vec::new();
         let mut simd_values = Vec::new();
+        let mut predicate_values = Vec::new();
+        let mut next_vector_values = Vec::new();
         for (operand_type, operand) in typed {
             match operand_type {
+                OperandType::GoverningPredicate(field) | OperandType::PredicateValue(field) => {
+                    let OperandValue::Predicate(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    predicate_values.push((field, value));
+                }
+                OperandType::FirstFaultValue | OperandType::WrittenFirstFault => {
+                    let OperandValue::Predicate(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    processor.first_fault_register = value;
+                }
+                OperandType::NextVectorValue(field) => {
+                    let OperandValue::Vector(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    next_vector_values.push((field, value));
+                }
+                OperandType::ShiftAmountVector(field) => {
+                    let OperandValue::Vector(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    vector_values.push((field, size_of::<u128>() as u32, value));
+                }
+                OperandType::RegisterBound(field) | OperandType::RegisterNearSaturation(field) => {
+                    let OperandValue::Bits(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    register_values.push((field, RegisterThirtyOne::ZeroRegister, value));
+                }
                 OperandType::FloatingPointValue { field, precision }
                 | OperandType::ConvertedFloatingPoint {
                     field, precision, ..
@@ -616,6 +733,8 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 // `encode_word` has put them in the word.
                 OperandType::RegisterNumber(_)
                 | OperandType::VectorRegisterNumber(_)
+                | OperandType::PredicateRegisterNumber(_)
+                | OperandType::Pattern(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)
                 | OperandType::ShiftAmount { .. }
@@ -697,6 +816,18 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         }
         for (simd_operand, value) in simd_values {
             advanced_simd::apply(simd_operand, value, word, &mut processor);
+        }
+        for (field, value) in next_vector_values {
+            let number = (field.read(word) as usize + 1) % VECTOR_REGISTERS;
+            processor.vector_registers[number] = value;
+        }
+        for (field, value) in predicate_values {
+            if let Some(register) = processor
+                .predicate_registers
+                .get_mut(field.read(word) as usize)
+            {
+                *register = value;
+            }
         }
         for (field, thirty_one, value) in register_values {
             match processor
@@ -815,9 +946,14 @@ pub fn encode_word(
     for (operand_type, operand) in operands {
         match (operand_type, operand) {
             (
-                OperandType::RegisterNumber(field) | OperandType::VectorRegisterNumber(field),
+                OperandType::RegisterNumber(field)
+                | OperandType::VectorRegisterNumber(field)
+                | OperandType::PredicateRegisterNumber(field),
                 OperandValue::RegisterNumber(number),
             ) => word |= field.to_bits(number),
+            (OperandType::Pattern(field), OperandValue::Bits(bits)) => {
+                word |= field.to_bits(bits as u32)
+            }
             (
                 OperandType::UnsignedImmediate(field)
                 | OperandType::SignedImmediate(field)
@@ -841,6 +977,8 @@ pub fn encode_word(
             (
                 OperandType::RegisterNumber(_)
                 | OperandType::VectorRegisterNumber(_)
+                | OperandType::PredicateRegisterNumber(_)
+                | OperandType::Pattern(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)
                 | OperandType::ShiftAmount { .. }
@@ -1461,4 +1599,169 @@ fn to_access_address(placement: AccessPlacement, access_bytes: u64) -> u64 {
         AccessPlacement::StraddlesBoundary => UPPER_DATA_ADDRESS - access_bytes / 2,
         AccessPlacement::UpperPageStart => UPPER_DATA_ADDRESS,
     }
+}
+
+/// The operand types of an SVE instruction's operands, each register followed by its value where it is read.
+fn to_scalable_operand_types(operands: &[ScalableOperand]) -> Vec<OperandType> {
+    let mut operand_types = Vec::new();
+    for operand in operands {
+        match *operand {
+            ScalableOperand::ElementSize(field)
+            | ScalableOperand::Selector(field)
+            | ScalableOperand::UnsignedImmediate(field) => {
+                operand_types.push(OperandType::UnsignedImmediate(field));
+            }
+            ScalableOperand::SignedImmediate(field) => {
+                operand_types.push(OperandType::SignedImmediate(field));
+            }
+            ScalableOperand::SplitImmediate(fields) => {
+                operand_types.push(OperandType::SplitImmediate(fields));
+            }
+            ScalableOperand::Pattern(field) => operand_types.push(OperandType::Pattern(field)),
+            ScalableOperand::Bitmask(field) => {
+                operand_types.push(OperandType::BitmaskImmediate(field));
+            }
+            ScalableOperand::Vector {
+                field,
+                values,
+                pair,
+            } => {
+                operand_types.push(OperandType::VectorRegisterNumber(field));
+                match values {
+                    VectorValues::Written => {}
+                    VectorValues::Data => operand_types.push(OperandType::VectorValue {
+                        field,
+                        bytes: size_of::<u128>() as u32,
+                    }),
+                    VectorValues::ShiftAmounts => {
+                        operand_types.push(OperandType::ShiftAmountVector(field));
+                    }
+                }
+                if pair {
+                    operand_types.push(OperandType::NextVectorValue(field));
+                }
+            }
+            ScalableOperand::Predicate { field, values } => {
+                operand_types.push(OperandType::PredicateRegisterNumber(field));
+                match values {
+                    PredicateValues::Written => {}
+                    PredicateValues::Governing => {
+                        operand_types.push(OperandType::GoverningPredicate(field));
+                    }
+                    PredicateValues::Operand => {
+                        operand_types.push(OperandType::PredicateValue(field));
+                    }
+                }
+            }
+            ScalableOperand::General {
+                field,
+                thirty_one,
+                values,
+            } => {
+                operand_types.push(OperandType::RegisterNumber(field));
+                match values {
+                    None => {}
+                    Some(GeneralValues::Plain) => operand_types.push(OperandType::RegisterValue {
+                        field,
+                        width: RegisterWidth::Bits64,
+                        thirty_one,
+                    }),
+                    Some(GeneralValues::Bound) => {
+                        operand_types.push(OperandType::RegisterBound(field));
+                    }
+                    Some(GeneralValues::Saturating) => {
+                        operand_types.push(OperandType::RegisterNearSaturation(field));
+                    }
+                }
+            }
+            ScalableOperand::ConditionFlags => operand_types.push(OperandType::ConditionFlags),
+            ScalableOperand::WrittenConditionFlags => {
+                operand_types.push(OperandType::WrittenConditionFlags);
+            }
+            ScalableOperand::FirstFault => operand_types.push(OperandType::FirstFaultValue),
+            ScalableOperand::WrittenFirstFault => {
+                operand_types.push(OperandType::WrittenFirstFault);
+            }
+        }
+    }
+    operand_types
+}
+
+/// Of each element size, lanes of shift amounts and indices: zero, one, each side of the size, twice it, the same
+/// negative, and the ends of a signed byte; as many lanes to a register as the size has, the amounts taking turns.
+fn to_shift_amount_vectors() -> Vec<u128> {
+    let mut vectors = Vec::new();
+    for top in ELEMENT_TOP_BITS {
+        let bits = top + 1;
+        let size = i128::from(bits);
+        let amounts = [
+            0,
+            1,
+            size - 1,
+            size,
+            size + 1,
+            2 * size,
+            -1,
+            -(size - 1),
+            -size,
+            -(size + 1),
+            i128::from(i8::MAX),
+            i128::from(i8::MIN),
+        ];
+        let lanes = (u128::BITS / bits) as usize;
+        let mask = u128::MAX >> (u128::BITS - bits);
+        for chunk in 0..amounts.len().div_ceil(lanes) {
+            let vector = (0..lanes).fold(0_u128, |vector, lane| {
+                let amount = amounts[(chunk * lanes + lane) % amounts.len()];
+                vector | ((amount as u128 & mask) << (lane as u32 * bits))
+            });
+            vectors.push(vector);
+        }
+    }
+    vectors
+}
+
+/// The values a WHILE compares: small ones, each side of the ends of the signed and unsigned 64-bit ranges, and the
+/// same of 32 bits with ones above the word.
+fn to_bound_values() -> Vec<OperandValue> {
+    let near_ends = |signed_max: u64, signed_min: u64, unsigned_max: u64| {
+        [
+            signed_max - 16,
+            signed_max - 1,
+            signed_max,
+            signed_min,
+            signed_min + 1,
+            unsigned_max - 16,
+            unsigned_max - 1,
+            unsigned_max,
+        ]
+    };
+    let doubleword =
+        SMALL_BOUNDS
+            .into_iter()
+            .chain(near_ends(i64::MAX as u64, i64::MIN as u64, u64::MAX));
+    let word = SMALL_BOUNDS
+        .into_iter()
+        .chain(near_ends(
+            u64::from(i32::MAX as u32),
+            u64::from(i32::MIN as u32),
+            u64::from(u32::MAX),
+        ))
+        .map(|value| value | UPPER_WORD_ONES);
+    to_distinct_bits(doubleword.chain(word).collect())
+}
+
+/// The values a saturating count steps: at and a little inside each end of the signed and unsigned 64-bit ranges, and
+/// the same of 32 bits with ones above the word.
+fn to_saturation_values() -> Vec<OperandValue> {
+    let inside = |high: u64, low: u64| {
+        SATURATION_DISTANCES
+            .into_iter()
+            .flat_map(move |distance| [high - distance, low + distance])
+    };
+    let doubleword = inside(i64::MAX as u64, i64::MIN as u64).chain(inside(u64::MAX, 0));
+    let word = inside(u64::from(i32::MAX as u32), u64::from(i32::MIN as u32))
+        .chain(inside(u64::from(u32::MAX), 0))
+        .map(|value| value | UPPER_WORD_ONES);
+    to_distinct_bits(doubleword.chain(word).collect())
 }

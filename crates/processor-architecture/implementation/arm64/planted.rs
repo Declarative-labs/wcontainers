@@ -8,7 +8,8 @@ use core::convert::Infallible;
 use crate::Instruction;
 
 /// Which check planted a bug: the first and second passes' checks, the check of the cut, the fourth check and the sync
-/// with the expectations, which added the random number registers and the behavior of a chip without a feature.
+/// with the expectations, which added the random number registers and the behavior of a chip without a feature; and
+/// the models of the first half of SVE.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum PlantedBy {
     First,
@@ -18,6 +19,7 @@ pub enum PlantedBy {
     Sync,
     /// The Advanced SIMD instructions beyond `simd.rs`.
     AdvancedSimd,
+    ScalableFirstHalf,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.
@@ -59,7 +61,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 381] = [
+pub const PLANTED_BUGS: [PlantedBug; 439] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2345,5 +2347,353 @@ pub const PLANTED_BUGS: [PlantedBug; 381] = [
         instruction: Instruction::Ld64b,
         planted_by: PlantedBy::Sync,
         what: "an instruction a chip lacks completes as NOP, not undefined",
+    },
+    PlantedBug {
+        number: 1000,
+        instruction: Instruction::AddZPmZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "an addition drops the lowest bit of each element",
+    },
+    PlantedBug {
+        number: 1001,
+        instruction: Instruction::Ptrue,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "the pattern VL7 counts eight elements",
+    },
+    PlantedBug {
+        number: 1002,
+        instruction: Instruction::Ptest,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "C is set where the last active element is true, not where it is false",
+    },
+    PlantedBug {
+        number: 1003,
+        instruction: Instruction::BrkbPPP,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "BRKB breaks after the first true element, as BRKA does",
+    },
+    PlantedBug {
+        number: 1004,
+        instruction: Instruction::Brkpa,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "BRKPA propagates from the first active element of its first operand, not the last",
+    },
+    PlantedBug {
+        number: 1005,
+        instruction: Instruction::Pnext,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "PNEXT searches from the last active element itself, not the one after it",
+    },
+    PlantedBug {
+        number: 1006,
+        instruction: Instruction::Zip2PPP,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "ZIP2 of predicates starts one element below the upper half",
+    },
+    PlantedBug {
+        number: 1007,
+        instruction: Instruction::Punpkhi,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "PUNPKHI widens the lower half",
+    },
+    PlantedBug {
+        number: 1008,
+        instruction: Instruction::WhilelePPRr,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "the WHILE counter goes on past the register's range instead of wrapping",
+    },
+    PlantedBug {
+        number: 1009,
+        instruction: Instruction::Whilewr,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "WHILEWR takes the addresses' difference modulo 2^64 as a signed number",
+    },
+    PlantedBug {
+        number: 1010,
+        instruction: Instruction::CtermeqRr,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "CTERM sets V to C, not its complement, where it does not terminate",
+    },
+    PlantedBug {
+        number: 1011,
+        instruction: Instruction::Rdffrs,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "RDFFRS sets the flags over every element, not the governed ones",
+    },
+    PlantedBug {
+        number: 1012,
+        instruction: Instruction::CntpXPP,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "CNTP counts elements the governing predicate leaves out",
+    },
+    PlantedBug {
+        number: 1013,
+        instruction: Instruction::CmphiPPzZZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "CMPHI compares signed",
+    },
+    PlantedBug {
+        number: 1014,
+        instruction: Instruction::CmpgtWIDEPPzZZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "a wide compare takes the doubleword at the element's index modulo two, not the one holding it",
+    },
+    PlantedBug {
+        number: 1015,
+        instruction: Instruction::CmploPPzZI,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "CMPLO reads six bits of its seven-bit immediate",
+    },
+    PlantedBug {
+        number: 1016,
+        instruction: Instruction::SdivZPmZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SDIV of the most negative by -1 saturates instead of wrapping",
+    },
+    PlantedBug {
+        number: 1017,
+        instruction: Instruction::UmulhZPmZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "UMULH multiplies signed",
+    },
+    PlantedBug {
+        number: 1018,
+        instruction: Instruction::AsrZPmZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "ASR by the element size or more gives zero instead of the sign",
+    },
+    PlantedBug {
+        number: 1019,
+        instruction: Instruction::SrshlZPmZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SRSHL shifts by the second element's low byte, not all of it",
+    },
+    PlantedBug {
+        number: 1020,
+        instruction: Instruction::SqshlZPmZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SQSHL rounds where it shifts right",
+    },
+    PlantedBug {
+        number: 1021,
+        instruction: Instruction::SqdmulhZZZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SQDMULH does not saturate the most negative squared",
+    },
+    PlantedBug {
+        number: 1022,
+        instruction: Instruction::UqsubZI,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "UQSUB (immediate) wraps instead of saturating at zero",
+    },
+    PlantedBug {
+        number: 1023,
+        instruction: Instruction::Asrd,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "ASRD rounds a negative element toward minus infinity, without its bias",
+    },
+    PlantedBug {
+        number: 1024,
+        instruction: Instruction::SqshluZPmI,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SQSHLU saturates as signed",
+    },
+    PlantedBug {
+        number: 1025,
+        instruction: Instruction::Bsl2n,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "BSL2N inverts the first operand instead of the second",
+    },
+    PlantedBug {
+        number: 1026,
+        instruction: Instruction::XarZZZI,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "XAR rotates left",
+    },
+    PlantedBug {
+        number: 1027,
+        instruction: Instruction::AndZI,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "a bitmask immediate leaves out N",
+    },
+    PlantedBug {
+        number: 1028,
+        instruction: Instruction::CpyZPmI,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "CPY (immediate, merging) clears inactive elements",
+    },
+    PlantedBug {
+        number: 1029,
+        instruction: Instruction::MovprfxZPZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "MOVPRFX (predicated) clears inactive elements where it merges",
+    },
+    PlantedBug {
+        number: 1030,
+        instruction: Instruction::ClsZPmZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "CLS counts the sign bit",
+    },
+    PlantedBug {
+        number: 1031,
+        instruction: Instruction::RevbZPmZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "REVB reverses halfwords",
+    },
+    PlantedBug {
+        number: 1032,
+        instruction: Instruction::UrecpeZPmZ32,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "URECPE's estimate leaves out the half step",
+    },
+    PlantedBug {
+        number: 1033,
+        instruction: Instruction::SadalpZPmZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SADALP adds its source unsigned",
+    },
+    PlantedBug {
+        number: 1034,
+        instruction: Instruction::AddpZPmZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "ADDP takes an odd element's pair from the first operand",
+    },
+    PlantedBug {
+        number: 1035,
+        instruction: Instruction::SriZZI,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SRI clears the bits it does not shift in",
+    },
+    PlantedBug {
+        number: 1036,
+        instruction: Instruction::SabaZZZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SABA takes the difference unsigned",
+    },
+    PlantedBug {
+        number: 1037,
+        instruction: Instruction::Eortb,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "EORTB writes the even elements",
+    },
+    PlantedBug {
+        number: 1038,
+        instruction: Instruction::MlaZPmZZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "MLA clears inactive elements",
+    },
+    PlantedBug {
+        number: 1039,
+        instruction: Instruction::Match,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "MATCH compares each element only with the one at its own index",
+    },
+    PlantedBug {
+        number: 1040,
+        instruction: Instruction::SqincwXPiI,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SQINCW (64-bit) saturates at 32 bits",
+    },
+    PlantedBug {
+        number: 1041,
+        instruction: Instruction::UqdecpWP,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "UQDECP (32-bit) sign-extends its result",
+    },
+    PlantedBug {
+        number: 1042,
+        instruction: Instruction::IndexRR,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "INDEX reads its base register as 32 bits",
+    },
+    PlantedBug {
+        number: 1043,
+        instruction: Instruction::Addpl,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "ADDPL adds multiples of the vector's bytes",
+    },
+    PlantedBug {
+        number: 1044,
+        instruction: Instruction::Cntb,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "the pattern MUL3 counts a multiple of four",
+    },
+    PlantedBug {
+        number: 1045,
+        instruction: Instruction::InchZPiI,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "INCH of a vector counts bytes",
+    },
+    PlantedBug {
+        number: 1046,
+        instruction: Instruction::LastaRPZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "LASTA with no active element takes the last instead of the first",
+    },
+    PlantedBug {
+        number: 1047,
+        instruction: Instruction::ClastaVPZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "CLASTA (scalar) with no active element keeps the upper bits of its register",
+    },
+    PlantedBug {
+        number: 1048,
+        instruction: Instruction::SpliceZPZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SPLICE copies from the first element, not the first active one",
+    },
+    PlantedBug {
+        number: 1049,
+        instruction: Instruction::ExtZZI,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "EXT does not take a position past the vector as zero",
+    },
+    PlantedBug {
+        number: 1050,
+        instruction: Instruction::DupZZI,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "DUP (indexed) past the last element duplicates the first instead of zero",
+    },
+    PlantedBug {
+        number: 1051,
+        instruction: Instruction::TblZZZZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "TBL of a pair reads zero from its second register",
+    },
+    PlantedBug {
+        number: 1052,
+        instruction: Instruction::TbxZZZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "TBX clears an element whose index is out of range",
+    },
+    PlantedBug {
+        number: 1053,
+        instruction: Instruction::InsrZV,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "INSR (SIMD and floating-point) inserts the second element",
+    },
+    PlantedBug {
+        number: 1054,
+        instruction: Instruction::Sunpkhi,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SUNPKHI zero-extends",
+    },
+    PlantedBug {
+        number: 1055,
+        instruction: Instruction::Saddv,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SADDV adds inactive elements",
+    },
+    PlantedBug {
+        number: 1056,
+        instruction: Instruction::UminvVPZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "UMINV of no active element gives zero",
+    },
+    PlantedBug {
+        number: 1057,
+        instruction: Instruction::SelZPZZ,
+        planted_by: PlantedBy::ScalableFirstHalf,
+        what: "SEL takes the second vector where the predicate is set",
     },
 ];

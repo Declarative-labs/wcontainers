@@ -613,13 +613,13 @@ const EXTEND_TYPES: [(Signedness, u32); 8] = [
 
 /// Whether [DecodeBitMasks](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-bitmasks#impl-aarch64.DecodeBitMasks.5) decodes a logical immediate, which may not be all ones, or a bitfield.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum BitmaskUse {
+pub(crate) enum BitmaskUse {
     Immediate,
     Bitfield,
 }
 
 /// The wmask and tmask of DecodeBitMasks, or none where the encoding is reserved.
-fn decode_bit_masks(
+pub(crate) fn decode_bit_masks(
     n: bool,
     imms: u32,
     immr: u32,
