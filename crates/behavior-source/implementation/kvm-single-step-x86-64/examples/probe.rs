@@ -1,12 +1,14 @@
-//! Measures every modeled form on the chip with the provided `measure_instruction`, form by form, and prints for each
-//! form its states, its known behaviors and the one measured; where none agrees, the first states on which the closest
-//! behavior disagrees. Then it measures every form with the provided `measure_instructions`, builds the set from the
-//! measurements and prints each form's behavior.
+//! Measures every listed form on the chip with the provided `measure_instruction`, form by form, and prints for each
+//! form its states, its known behaviors and the outcome; where no behavior agrees on a modeled form, the first states
+//! on which the closest disagrees, and on a form whose one behavior is #UD, what the chip did. Then it counts the
+//! outcomes. With `X86_PROBE_SET` set it measures every form with the provided `measure_instructions`, prints where
+//! that stops, builds the set from the forms measured one by one and prints the modeled forms' behaviors.
 //!
 //! `cargo run --release -p wcontainers-behavior-source-kvm-single-step-x86-64 --example probe`. With `X86_PROBE_FORMS`
-//! set to a comma-separated list of form names it runs those alone; with `X86_PROBE_TIMING` set to a number of passes it
-//! then times every state on the parked machine and on the plain one, the two interleaved; with `X86_PROBE_SPLIT` set
-//! it prints where the parked machine spends its time.
+//! set to a comma-separated list of form names it runs those alone, and with `X86_PROBE_MODELED` set the modeled forms
+//! alone; with `X86_PROBE_TIMING` set to a number of passes it then times every state on the parked machine, the
+//! parked machine with incremental loading and the plain one, interleaved; with `X86_PROBE_SPLIT` set it prints where
+//! the parked machine spends its time.
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() {
@@ -25,16 +27,21 @@ mod on_chip {
 
     use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
     use wcontainers_behavior_source_kvm_single_step_x86_64::{
-        EntryPath, MemoryLoading, Options, SingleStepMachine,
+        EntryPath, MemoryLoading, Options, Refusal, SingleStepMachine,
     };
     use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
     use wcontainers_distinguishing_state_generator_x86_64::CriticalValueCut;
     use wcontainers_instruction_input_domain_x86_64::X86_64InputDomain;
     use wcontainers_precise_instruction_set::PreciseInstructionSet;
     use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
-    use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture, Simulator};
+    use wcontainers_processor_architecture::{
+        ExecutionState, ExecutionStateExpectation, MemoryDelta, ProcessorArchitecture, Simulator,
+    };
     use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
-    use wcontainers_processor_architecture_x86_64::{Instruction, PreciseInstruction, Processor, X86_64};
+    use wcontainers_processor_architecture_x86_64::{
+        Instruction, PreciseInstruction, Processor, ProcessorExpectation, RegisterValueExpectation, X86_64,
+        list_modeled_forms,
+    };
 
     const GENERATOR: CriticalValueCut = CriticalValueCut::new(X86_64InputDomain);
     /// The chosen path: full loading, the CPU parked between states, the trap flag.
@@ -42,8 +49,14 @@ mod on_chip {
         loading: MemoryLoading::Full,
         entry: EntryPath::Parked,
     };
+    /// The chosen path with incremental loading.
+    const PARKED_INCREMENTAL: Options = Options {
+        loading: MemoryLoading::Incremental,
+        entry: EntryPath::Parked,
+    };
 
     type State = ExecutionState<'static, X86_64>;
+    type Expectation = ExecutionStateExpectation<'static, X86_64>;
 
     /// The generator, counting the states it gives.
     struct Counted {
@@ -73,12 +86,9 @@ mod on_chip {
         machine.execute_single_instruction(before.clone()).map_err(|refusal| format!("{refusal:?}"))
     }
 
-    fn simulate(behavior: PreciseInstruction, before: &State) -> State {
+    fn simulate(behavior: PreciseInstruction, before: &State) -> Expectation {
         let Ok(simulated) = behavior.simulate_state(before.clone());
-        State {
-            processor: simulated.processor,
-            memory_mutations: simulated.memory_mutations,
-        }
+        simulated
     }
 
     /// The registers, and of the vector registers those that hold other than the complement of their number.
@@ -93,6 +103,36 @@ mod on_chip {
         format!(
             "{:x?} ip {:#x} {:?} {:?} fs {:#x} gs {:#x} mxcsr {:#x} {}",
             processor.general_purpose_registers,
+            processor.instruction_pointer,
+            processor.flags,
+            processor.exception,
+            processor.fs_base,
+            processor.gs_base,
+            processor.mxcsr,
+            vectors.join(" "),
+        )
+    }
+
+    /// The expected registers as `render` prints a processor, a register not compared as `?`.
+    fn render_expected(processor: &ProcessorExpectation) -> String {
+        let registers: Vec<String> = processor
+            .general_purpose_registers
+            .iter()
+            .map(|register| match register {
+                RegisterValueExpectation::Deterministic(value) => format!("{value:x}"),
+                RegisterValueExpectation::NonDeterministic => "?".to_owned(),
+            })
+            .collect();
+        let vectors: Vec<String> = processor
+            .vector_registers
+            .iter()
+            .enumerate()
+            .filter(|(number, value)| **value != !(*number as u128))
+            .map(|(number, value)| format!("xmm{number} {value:032x}"))
+            .collect();
+        format!(
+            "[{}] ip {:#x} {:?} {:?} fs {:#x} gs {:#x} mxcsr {:#x} {}",
+            registers.join(", "),
             processor.instruction_pointer,
             processor.flags,
             processor.exception,
@@ -136,14 +176,19 @@ mod on_chip {
             "    code {code}\n    before:    {}\n      {:x?}\n    simulated: {}\n      {:x?}\n    executed:  {executed}",
             render(&before.processor),
             summarize(&before.memory_mutations[2.min(start)..]),
-            render(&simulated.processor),
+            render_expected(&simulated.processor),
             summarize(&simulated.memory_mutations[start..]),
         )
     }
 
     fn list_forms() -> Vec<Instruction> {
         let chosen = std::env::var("X86_PROBE_FORMS").ok();
-        X86_64::list_instructions()
+        let all: Vec<Instruction> = if std::env::var("X86_PROBE_MODELED").is_ok() {
+            list_modeled_forms()
+        } else {
+            X86_64::list_instructions().collect()
+        };
+        all.into_iter()
             .filter(|instruction| {
                 chosen
                     .as_deref()
@@ -164,7 +209,7 @@ mod on_chip {
         let states: Vec<State> = GENERATOR.generate_states(instruction).collect();
         let executed: Vec<Result<State, String>> = states.iter().map(|state| execute(machine, state)).collect();
         let differs = |behavior: PreciseInstruction, before: &State, after: &Result<State, String>| {
-            !after.as_ref().is_ok_and(|after| simulate(behavior, before) == *after)
+            !after.as_ref().is_ok_and(|after| after.meets_expectations(&simulate(behavior, before)))
         };
         let disagreements: Vec<usize> = behaviors
             .iter()
@@ -181,12 +226,33 @@ mod on_chip {
         }
     }
 
+    /// The outcome of measuring one form, as the counts group them.
+    fn to_outcome(measured: &Result<PreciseInstruction, MeasureInstructionError<X86_64, Refusal>>) -> &'static str {
+        match measured {
+            Ok(PreciseInstruction::Undefined(_)) => "behavior: undefined instruction",
+            Ok(_) => "behavior: modeled",
+            Err(MeasureInstructionError::NoKnownBehavior { .. }) => "no known behavior",
+            Err(MeasureInstructionError::NoBehaviorAgrees { .. }) => "no behavior agrees",
+            Err(MeasureInstructionError::ExecutionFailed { .. }) => "refused by the chip source",
+            Err(MeasureInstructionError::IndistinguishableBehaviors { .. }) => "behaviors indistinguishable",
+        }
+    }
+
+    /// Prints what the chip did on the one state of a form whose one known behavior is #UD and that the chip runs.
+    fn report_chip_runs(instruction: Instruction, observed: &State) {
+        println!(
+            "  CHIP RUNS {instruction:?}: exception {:?} ip {:#x}",
+            observed.processor.exception, observed.processor.instruction_pointer
+        );
+    }
+
     pub fn main() {
         println!("load at start: {}", read_load());
         let forms = list_forms();
         let mut machine = make_machine(PARKED);
         let counted = Counted { states: Cell::new(0) };
         let (mut total_states, mut agreeing, mut several, mut time_measuring) = (0, 0, 0, Duration::ZERO);
+        let mut outcomes: std::collections::BTreeMap<&'static str, usize> = std::collections::BTreeMap::new();
         for instruction in &forms {
             counted.states.set(0);
             let behaviors: Vec<PreciseInstruction> = X86_64::list_known_behaviors(*instruction).collect();
@@ -197,6 +263,7 @@ mod on_chip {
             let states = counted.states.get();
             total_states += states;
             several += usize::from(behaviors.len() > 1);
+            *outcomes.entry(to_outcome(&measured)).or_default() += 1;
             let verdict = match &measured {
                 Ok(behavior) => {
                     agreeing += 1;
@@ -216,8 +283,15 @@ mod on_chip {
                 behaviors.len(),
                 elapsed.as_nanos(),
             );
-            if measured.is_err() {
-                explain(&mut machine, *instruction, &behaviors);
+            let only_undefined = behaviors == [PreciseInstruction::Undefined(*instruction)];
+            match &measured {
+                Err(MeasureInstructionError::NoBehaviorAgrees { observed, .. }) if only_undefined => {
+                    report_chip_runs(*instruction, observed);
+                }
+                Err(MeasureInstructionError::NoBehaviorAgrees { .. } | MeasureInstructionError::IndistinguishableBehaviors { .. }) => {
+                    explain(&mut machine, *instruction, &behaviors);
+                }
+                _ => {}
             }
         }
         println!(
@@ -226,6 +300,9 @@ mod on_chip {
             time_measuring.as_secs_f64(),
             time_measuring.as_nanos() as f64 / total_states as f64
         );
+        for (outcome, count) in &outcomes {
+            println!("OUTCOME {outcome}: {count}");
+        }
         if std::env::var("X86_PROBE_SET").is_ok() {
             measure_set();
         }
@@ -238,16 +315,33 @@ mod on_chip {
         println!("load at end: {}", read_load());
     }
 
-    /// Measures every form with the provided `measure_instructions`, builds the set from the measurements and prints
-    /// each form's behavior.
+    /// Measures every form with the provided `measure_instructions` and prints where it stops; then builds the set
+    /// from the forms that measure one by one and prints each modeled form's behavior.
     fn measure_set() {
         let started = Instant::now();
-        let Ok(measurements) = make_machine(PARKED).measure_instructions(&GENERATOR) else {
-            panic!("measuring every form fails on this chip");
-        };
+        match make_machine(PARKED).measure_instructions(&GENERATOR) {
+            Ok(measurements) => println!("SET measure_instructions: every one of {} forms", measurements.len()),
+            Err(error) => {
+                let (kind, instruction) = match &error {
+                    MeasureInstructionError::NoKnownBehavior { instruction } => ("no known behavior", instruction),
+                    MeasureInstructionError::ExecutionFailed { instruction, .. } => ("refused by the chip source", instruction),
+                    MeasureInstructionError::NoBehaviorAgrees { instruction, .. } => ("no behavior agrees", instruction),
+                    MeasureInstructionError::IndistinguishableBehaviors { instruction, .. } => {
+                        ("behaviors indistinguishable", instruction)
+                    }
+                };
+                let position = X86_64::list_instructions().position(|listed| listed == *instruction).unwrap_or(usize::MAX);
+                println!("SET measure_instructions: stops at listed form {position}, {instruction:?}: {kind}");
+            }
+        }
+        println!("SET measure_instructions took {:.3} s", started.elapsed().as_secs_f64());
+        let mut machine = make_machine(PARKED);
+        let measurements: Vec<(Instruction, PreciseInstruction)> = X86_64::list_instructions()
+            .filter_map(|instruction| machine.measure_instruction(instruction, &GENERATOR).ok().map(|precise| (instruction, precise)))
+            .collect();
         let set = MeasuredInstructionSet::<X86_64>::from_measurements(&measurements);
-        println!("SET measured in {:.3} s", started.elapsed().as_secs_f64());
-        for instruction in X86_64::list_instructions() {
+        println!("SET built from {} measurements in {:.3} s", measurements.len(), started.elapsed().as_secs_f64());
+        for instruction in list_modeled_forms() {
             println!("CHOSEN {instruction:?} {:?}", set.to_precise(instruction));
         }
     }
@@ -255,7 +349,11 @@ mod on_chip {
     /// Times every state on the parked and the plain machine, the two interleaved pass by pass, generating each
     /// form's states outside the timing; prints each form's median on the parked machine, then the totals.
     fn time_paths(forms: &[Instruction], passes: usize) {
-        let mut machines = [("parked", make_machine(PARKED)), ("plain", make_machine(Options::PLAIN))];
+        let mut machines = [
+            ("parked", make_machine(PARKED)),
+            ("parked incremental", make_machine(PARKED_INCREMENTAL)),
+            ("plain", make_machine(Options::PLAIN)),
+        ];
         let mut times: Vec<Vec<Duration>> = vec![Vec::new(); machines.len()];
         let mut form_times: Vec<Vec<Duration>> = vec![Vec::new(); forms.len()];
         let (mut count, mut refused) = (0, 0);

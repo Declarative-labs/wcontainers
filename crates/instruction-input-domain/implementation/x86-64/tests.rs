@@ -4,18 +4,18 @@ use iced_x86::{Decoder, DecoderOptions};
 
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture};
-use wcontainers_processor_architecture_x86_64::{Flags, X86_64};
+use wcontainers_processor_architecture_x86_64::{Flags, SAMPLE_ENCODINGS, X86_64, list_modeled_forms};
 
 use crate::{BITNESS, X86_64InputDomain};
 
 /// The longest instruction; the generator pads some to one byte more.
 const MAXIMUM_INSTRUCTION_BYTES: usize = 15;
 
-/// Every state holds one instruction at its instruction pointer, all of it but where it is too long or runs past
-/// the program's addresses.
+/// Every state of a modeled form holds one instruction at its instruction pointer, all of it but where it is too long
+/// or runs past the program's addresses.
 #[test]
 fn every_state_holds_one_instruction_at_its_instruction_pointer() {
-    for instruction in X86_64::list_instructions() {
+    for instruction in list_modeled_forms() {
         for state in X86_64InputDomain.generate_critical_states(instruction) {
             let Some(MemoryDelta::ValueAssignment { start, bytes }) = state.memory_mutations.get(1) else {
                 panic!("the code comes second");
@@ -28,6 +28,22 @@ fn every_state_holds_one_instruction_at_its_instruction_pointer() {
                 too_long || past_the_edge || (!decoded.is_invalid() && decoded.len() == bytes.len()),
                 "{instruction:?}: {bytes:02x?}"
             );
+        }
+    }
+}
+
+/// Every state of a form not yet modeled holds the form's sample at its instruction pointer, which `forms_source`
+/// decodes with XED.
+#[test]
+fn every_other_state_holds_its_sample_at_its_instruction_pointer() {
+    let modeled = list_modeled_forms();
+    for instruction in X86_64::list_instructions().filter(|instruction| !modeled.contains(instruction)) {
+        for state in X86_64InputDomain.generate_critical_states(instruction) {
+            let Some(MemoryDelta::ValueAssignment { start, bytes }) = state.memory_mutations.get(1) else {
+                panic!("the code comes second");
+            };
+            assert_eq!(*start, state.processor.instruction_pointer);
+            assert_eq!(&bytes[..], SAMPLE_ENCODINGS[instruction as usize], "{instruction:?}");
         }
     }
 }

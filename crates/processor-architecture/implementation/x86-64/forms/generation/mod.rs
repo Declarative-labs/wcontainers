@@ -4,6 +4,7 @@ pub mod amd_cpuid;
 pub mod form;
 pub mod privilege;
 pub mod render;
+pub mod sample;
 pub mod xed;
 
 use std::path::{Path, PathBuf};

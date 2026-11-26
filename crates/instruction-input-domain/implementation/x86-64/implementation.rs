@@ -1,4 +1,5 @@
-//! The inputs of the modeled x86-64 forms.
+//! The inputs of the modeled x86-64 forms, and one state for each form not yet modeled: its sample encoding at the
+//! start of a page.
 //!
 //! Every state holds the instruction on a page of its own and, for a form that reads or writes memory, the pages its
 //! access reaches with permissions that are operands. Each data byte holds the complement of its address's low byte,
@@ -28,8 +29,8 @@ use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
-    DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, STACK_POINTER,
-    VECTOR_REGISTERS, X86_64, ZERO_PROCESSOR,
+    DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
+    STACK_POINTER, VECTOR_REGISTERS, X86_64, ZERO_PROCESSOR,
 };
 
 pub mod branch;
@@ -145,6 +146,8 @@ pub enum OperandType {
     Immediate(ImmediateClass),
     /// The address size of a jump that counts with RCX, or with ECX under the 0x67 prefix.
     AddressSize,
+    /// The sample encoding of a form not yet modeled, at its page's start with every register as the domain fills it.
+    SampleEncoding,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -257,6 +260,7 @@ pub enum OperandValue {
     Access(Access),
     Mxcsr(u32),
     AddressSize(AddressSize),
+    SampleEncoding,
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -265,8 +269,8 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
     type OperandTypes<'domain> = vec::IntoIter<OperandType>;
     type CriticalValues<'domain> = vec::IntoIter<OperandValue>;
 
-    /// The operands of the form in Intel's order, then the state it reads besides them; none for a form not yet
-    /// modeled.
+    /// The operands of the form in Intel's order, then the state it reads besides them; for a form not yet modeled
+    /// its sample encoding, and nothing for JCXZ, which no byte string encodes in 64-bit mode.
     fn list_operand_types(&self, instruction: Instruction) -> vec::IntoIter<OperandType> {
         use OperandType::{
             AccessPlacement, CpuidLeaf, CpuidSubleaf, CpuidUpperHalves, DataPagePermission, OperandSize, Register,
@@ -301,7 +305,8 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             ],
             Instruction::Ud2 | Instruction::Int3 => &[UNREAD],
             Instruction::Cpuid => &[CpuidLeaf, CpuidSubleaf, CpuidUpperHalves],
-            _ => &[],
+            _ if SAMPLE_ENCODINGS[instruction as usize].is_empty() => &[],
+            _ => &[OperandType::SampleEncoding],
         };
         Vec::from(operand_types).into_iter()
     }
@@ -447,6 +452,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::Memory { splits, offset } => integer::generate_accesses(splits, offset),
             OperandType::Immediate(class) => integer::generate_immediates(class),
             OperandType::AddressSize => [AddressSize::Bits64, AddressSize::Bits32].map(OperandValue::AddressSize).to_vec(),
+            OperandType::SampleEncoding => vec![OperandValue::SampleEncoding],
         };
         values.into_iter()
     }
@@ -458,13 +464,16 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
     ///
     /// # Panics
     ///
-    /// When the operands are not one value of each operand type the form lists, in its order, or the form is not
-    /// modeled yet.
+    /// When the operands are not one value of each operand type the form lists, in its order.
     fn build_state(&self, instruction: Instruction, operands: &[OperandValue]) -> ExecutionState<'static, X86_64> {
         let typed: Vec<(OperandType, OperandValue)> = self
             .list_operand_types(instruction)
             .zip(operands.iter().copied())
             .collect();
+        if !is_modeled(instruction) {
+            assert!(typed.len() == operands.len(), "one value for each operand of {instruction:?}");
+            return build_sample_state(instruction);
+        }
         assert!(
             !typed.is_empty() && typed.len() == operands.len(),
             "one value for each operand of {instruction:?}, a modeled form"
@@ -637,6 +646,45 @@ fn encode(instruction: Instruction, choice: &Choice) -> Vec<u8> {
     };
     let encoded = encoded.unwrap_or_else(|error| panic!("{instruction:?} takes its operands: {error}"));
     integer::encode_at_code_address(&encoded)
+}
+
+/// Whether the domain models the form's operands.
+fn is_modeled(instruction: Instruction) -> bool {
+    find_integer_form(instruction).is_some()
+        || find_vector_form(instruction).is_some()
+        || find_float_form(instruction).is_some()
+        || find_branch_form(instruction).is_some()
+        || find_privileged_codes(instruction).is_some()
+        || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
+}
+
+/// The state of a form not yet modeled: its sample encoding at the code page's start, executable, and every register
+/// as a modeled form's state fills those it does not name; JCXZ, which has no encoding, gets an empty code page.
+fn build_sample_state(instruction: Instruction) -> ExecutionState<'static, X86_64> {
+    let processor = Processor {
+        general_purpose_registers: array::from_fn(|number| !(number as u64)),
+        instruction_pointer: CODE_ADDRESS,
+        vector_registers: array::from_fn(|number| !(number as u128)),
+        upper_vector_halves: fill_upper_vector_halves(),
+        ..ZERO_PROCESSOR
+    };
+    let readable_and_executable = PagePermission::Mapped {
+        data_access: DataAccess::ReadOnly,
+        instruction_fetch: InstructionFetch::Allowed,
+    };
+    ExecutionState {
+        processor,
+        memory_mutations: vec![
+            MemoryDelta::PermissionAssignment {
+                addresses: CODE_ADDRESS..CODE_ADDRESS + PAGE_BYTES,
+                permission: readable_and_executable,
+            },
+            MemoryDelta::ValueAssignment {
+                start: CODE_ADDRESS,
+                bytes: Cow::Borrowed(SAMPLE_ENCODINGS[instruction as usize]),
+            },
+        ],
+    }
 }
 
 /// The codes of a form of `PRIVILEGED_FORMS`, 32 bits first.

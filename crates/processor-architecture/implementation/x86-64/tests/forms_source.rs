@@ -6,9 +6,11 @@ mod generation;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::process::Command;
 use std::{env, fs};
 
 use generation::form::{LONG_MODE, convert_database, parse_data_file, render_data_file};
+use generation::sample::encode_sample;
 use generation::xed::Database;
 use generation::{DATA_FILE, DATABASE_FILE, IFORM_TABLE_FILE, locate_in_crate};
 use wcontainers_processor_architecture_x86_64::XED_VERSION;
@@ -23,6 +25,10 @@ const TABLE_PREFIXES: [&str; 4] = [
     "XED_ISA_SET_",
 ];
 const INVALID_IFORM: &str = "INVALID";
+/// XED's command-line decoder, in its build folder.
+const XED_COMMAND: &str = "wkit/bin/xed";
+/// The line of the decoder's output that names the iform.
+const IFORM_LINE: &str = "IFORM:";
 
 fn locate_xed_build() -> PathBuf {
     env::var_os(XED_BUILD_VARIABLE)
@@ -127,4 +133,35 @@ fn forms_are_the_iforms_of_xed_decoder_valid_in_64_bit_mode() {
         listed.len(),
         legacy_mode_only.len()
     );
+}
+
+#[test]
+#[ignore = "needs a built XED: set XED_BUILD to its obj folder"]
+fn samples_decode_to_their_forms() {
+    let decoder = locate_xed_build().join(XED_COMMAND);
+    let text = fs::read_to_string(locate_in_crate(DATA_FILE)).expect("the data file is readable");
+    let forms = parse_data_file(&text).expect("every line of the data file is a record");
+    let mut unencoded = Vec::new();
+    for form in &forms {
+        let Some((bytes, settings)) = encode_sample(form) else {
+            unencoded.push(form.iform.as_str());
+            continue;
+        };
+        let mut command = Command::new(&decoder);
+        command.arg("-64");
+        for (name, value) in &settings {
+            command.args(["-set", name, &value.to_string()]);
+        }
+        let hexadecimal: String = bytes.iter().map(|byte| format!("{byte:02X}")).collect();
+        let output = command.args(["-d", &hexadecimal]).output().expect("XED's decoder runs");
+        let decoded = String::from_utf8_lossy(&output.stdout);
+        let iform = decoded
+            .lines()
+            .find_map(|line| line.strip_prefix(IFORM_LINE))
+            .map(str::trim);
+        assert_eq!(iform, Some(form.iform.as_str()), "the sample {hexadecimal} of {}", form.iform);
+    }
+    // JCXZ's one pattern needs 16-bit addressing, which 64-bit mode does not have.
+    assert_eq!(unencoded, ["JCXZ_RELBRb"]);
+    println!("{} samples decode to their forms; {unencoded:?} has none", forms.len() - unencoded.len());
 }

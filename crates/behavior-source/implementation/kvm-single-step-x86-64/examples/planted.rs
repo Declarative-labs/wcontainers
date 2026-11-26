@@ -1,5 +1,5 @@
-//! Runs every planted bug of the architecture's `planted::PLANTED_BUGS` against the chip: each modeled form's
-//! generated states run on the chip once, then each bug's simulation of this chip's behavior is compared with the
+//! Runs every planted bug of the architecture's `planted::PLANTED_BUGS` against the chip: the generated states of each
+//! form that measures to one known behavior on this chip run on the chip once, then each bug's simulation of this chip's behavior is compared with the
 //! chip on every state of every form of the bug's family. Prints the states and forms that catch each bug, the bugs
 //! no state catches, and a greedy cover: form by form, the fewest states that keep every pair of known behaviors
 //! the form's states tell apart told apart and every bug they catch caught.
@@ -30,11 +30,14 @@ mod on_chip {
     use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
     use wcontainers_distinguishing_state_generator_x86_64::CriticalValueCut;
     use wcontainers_instruction_input_domain_x86_64::X86_64InputDomain;
-    use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture, Simulator};
+    use wcontainers_processor_architecture::{
+        ExecutionState, ExecutionStateExpectation, ProcessorArchitecture, Simulator,
+    };
     use wcontainers_processor_architecture_x86_64::planted::{PLANTED_BUGS, PlantedBug, activate};
     use wcontainers_processor_architecture_x86_64::{Instruction, PreciseInstruction, X86_64};
 
     type State = ExecutionState<'static, X86_64>;
+    type Expectation = ExecutionStateExpectation<'static, X86_64>;
 
     const GENERATOR: CriticalValueCut = CriticalValueCut::new(X86_64InputDomain);
     const PARKED: Options = Options {
@@ -49,18 +52,11 @@ mod on_chip {
             .unwrap_or_default()
     }
 
-    fn is_same(_before: &State, first: &State, second: &State) -> bool {
-        first == second
-    }
-
-    /// The behavior's result, or `None` where its simulation panics, as a planted bug's may.
-    fn simulate(behavior: PreciseInstruction, before: &State) -> Option<State> {
+    /// The behavior's expectation, or `None` where its simulation panics, as a planted bug's may.
+    fn simulate(behavior: PreciseInstruction, before: &State) -> Option<Expectation> {
         catch_unwind(AssertUnwindSafe(|| {
             let Ok(simulated) = behavior.simulate_state(before.clone());
-            State {
-                processor: simulated.processor,
-                memory_mutations: simulated.memory_mutations,
-            }
+            simulated
         }))
         .ok()
     }
@@ -80,7 +76,7 @@ mod on_chip {
                             .zip(afters)
                             .enumerate()
                             .filter(|(_, (before, after))| {
-                                simulate(behavior, before).is_none_or(|simulated| !is_same(before, &simulated, after))
+                                simulate(behavior, before).is_none_or(|simulated| !after.meets_expectations(&simulated))
                             })
                             .map(|(index, _)| part * chunk + index)
                             .collect::<Vec<usize>>()
@@ -101,12 +97,12 @@ mod on_chip {
                     scope.spawn(move || {
                         part.iter()
                             .map(|before| {
-                                let mut representatives: Vec<State> = Vec::new();
+                                let mut representatives: Vec<Expectation> = Vec::new();
                                 behaviors
                                     .iter()
                                     .map(|behavior| {
                                         let after = simulate(*behavior, before).expect("a known behavior simulates");
-                                        let group = representatives.iter().position(|other| is_same(before, other, &after));
+                                        let group = representatives.iter().position(|other| *other == after);
                                         group.unwrap_or_else(|| {
                                             representatives.push(after);
                                             representatives.len() - 1
@@ -195,10 +191,12 @@ mod on_chip {
         let mut machine = SingleStepMachine::with_options(PARKED).unwrap_or_else(|error| panic!("no machine: {error:?}"));
         let mut catches: BTreeMap<usize, Catches> = BTreeMap::new();
         let (mut total_states, mut clean_disagreements, mut total_cover, mut total_requirements) = (0, 0, 0, 0);
+        let mut skipped = 0;
         for &instruction in &forms {
             let states: Vec<State> = GENERATOR.generate_states(instruction).collect();
             let Ok(chosen) = machine.measure_instruction(instruction, &GENERATOR) else {
-                panic!("{instruction:?} shows no one known behavior on this chip");
+                skipped += 1;
+                continue;
             };
             let executed: Vec<State> = states
                 .iter()
@@ -265,8 +263,8 @@ mod on_chip {
             );
         }
         println!(
-            "TOTAL forms {} | states {total_states} | chosen disagreements {clean_disagreements} | bugs caught {} of {} | missed {missed:?} | requirements {total_requirements} | cover {total_cover}",
-            forms.len(),
+            "TOTAL forms {} | skipped as showing no one known behavior {skipped} | states {total_states} | chosen disagreements {clean_disagreements} | bugs caught {} of {} | missed {missed:?} | requirements {total_requirements} | cover {total_cover}",
+            forms.len() - skipped,
             bugs.len() - missed.len(),
             bugs.len(),
         );

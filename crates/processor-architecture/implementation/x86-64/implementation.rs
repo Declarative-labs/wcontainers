@@ -18,6 +18,7 @@ extern crate alloc;
 
 use alloc::vec::{self, Vec};
 use core::ops::Range;
+use core::{iter, slice};
 
 use iced_x86::Code;
 use wcontainers_processor_architecture::ProcessorArchitecture;
@@ -50,7 +51,10 @@ pub use core_identity::CoreIdentity;
 pub use cpuid::{CpuidLeaf, CpuidTable, XEON_PLATINUM_8488C_UNDER_KVM};
 pub use exception::{Access, Exception};
 pub use flags::Flags;
-pub use forms::{INSTRUCTIONS, Instruction, XED_VERSION, list_instructions as list_forms};
+pub use forms::{
+    CPUID_REQUIREMENTS, CpuidRegister, CpuidRequirement, INSTRUCTIONS, Instruction, SAMPLE_ENCODINGS, XED_VERSION,
+    list_instructions as list_forms,
+};
 
 /// The bits of a linear address under 4-level paging; LA57 is not modeled.
 pub const VIRTUAL_ADDRESS_BITS: u32 = 48;
@@ -94,44 +98,88 @@ pub const PRIVILEGED_FORMS: [(Instruction, &[Code]); 13] = [
     (Instruction::Rdpmc, &[Code::Rdpmc]),
 ];
 
+/// The CPUID features every x86-64 chip has: long mode, and the x87, CMOV, MMX, FXSAVE, SSE and SSE2 that AMD's
+/// [AMD64 Architecture Programmer's Manual](https://docs.amd.com/v/u/en-US/24592_3.24) vol. 3 appendix D and the
+/// [x86-64 psABI](https://gitlab.com/x86-psABIs/x86-64-ABI) baseline give it.
+const BASELINE_FEATURES: [CpuidRequirement; 7] = [
+    forms::REQUIRES_INTEL64,
+    forms::REQUIRES_FPU,
+    forms::REQUIRES_CMOV,
+    forms::REQUIRES_MMX,
+    forms::REQUIRES_FXSAVE,
+    forms::REQUIRES_SSE,
+    forms::REQUIRES_SSE2,
+];
+
+/// The forms that take input from outside the processor and memory, the bytes a device gives: VIA's XSTORE.
+pub const FORBIDDEN_FORMS: [Instruction; 2] = [Instruction::Xstore, Instruction::RepXstore];
+
+/// Returns whether a chip may lack the form: it needs a CPUID feature beyond [`BASELINE_FEATURES`].
+pub fn is_optional(instruction: Instruction) -> bool {
+    let alternatives = CPUID_REQUIREMENTS[instruction as usize];
+    !alternatives.is_empty()
+        && !alternatives
+            .iter()
+            .any(|requirements| requirements.iter().all(|requirement| BASELINE_FEATURES.contains(requirement)))
+}
+
+/// Returns the modeled forms, in the order the earlier lists gave them.
+pub fn list_modeled_forms() -> Vec<Instruction> {
+    FIRST_SLICE
+        .into_iter()
+        .chain(PRIVILEGED_FORMS.map(|(instruction, _)| instruction))
+        .chain(integer::INTEGER_FORMS.iter().map(|form| form.instruction))
+        .chain(vector::VECTOR_FORMS.iter().map(|form| form.instruction))
+        .chain(float::FLOAT_FORMS.iter().map(|form| form.instruction))
+        .chain(branch::BRANCH_FORMS.iter().map(|form| form.instruction))
+        .chain(vector::VEX_FORMS.iter().map(|form| form.instruction))
+        .collect()
+}
+
 /// A 64-bit program at ring 3.
 #[derive(Clone, Default, PartialEq, Eq, Debug)]
 pub struct X86_64;
 
 impl ProcessorArchitecture for X86_64 {
     type ProcessorState = Processor;
-    /// A behavior expects every value of the processor.
-    type ProcessorStateExpectation = Processor;
+    type ProcessorStateExpectation = ProcessorExpectation;
     type PagePermission = PagePermission;
     type Instruction = Instruction;
     type PreciseInstruction = PreciseInstruction;
-    type Instructions = vec::IntoIter<Instruction>;
+    type Instructions = iter::Copied<slice::Iter<'static, Instruction>>;
     type KnownBehaviors = vec::IntoIter<PreciseInstruction>;
 
     /// The lower canonical half, which Linux gives a program.
     const ADDRESSABLE: Range<u64> = 0..1 << (VIRTUAL_ADDRESS_BITS - 1);
     const DEFAULT_PERMISSION: PagePermission = PagePermission::Unmapped;
 
-    /// Lists the modeled forms, a subset of [`INSTRUCTIONS`].
-    fn list_instructions() -> vec::IntoIter<Instruction> {
-        let modeled: Vec<Instruction> = FIRST_SLICE
-            .into_iter()
-            .chain(PRIVILEGED_FORMS.map(|(instruction, _)| instruction))
-            .chain(integer::INTEGER_FORMS.iter().map(|form| form.instruction))
-            .chain(vector::VECTOR_FORMS.iter().map(|form| form.instruction))
-            .chain(float::FLOAT_FORMS.iter().map(|form| form.instruction))
-            .chain(branch::BRANCH_FORMS.iter().map(|form| form.instruction))
-            .chain(vector::VEX_FORMS.iter().map(|form| form.instruction))
-            .collect();
-        modeled.into_iter()
+    /// Lists every form of [`INSTRUCTIONS`].
+    fn list_instructions() -> iter::Copied<slice::Iter<'static, Instruction>> {
+        INSTRUCTIONS.iter().copied()
     }
 
     fn list_known_behaviors(instruction: Instruction) -> vec::IntoIter<PreciseInstruction> {
         behavior::list_behaviors(instruction)
     }
 
-    fn meets_expectations(observed: &Processor, expectation: &Processor) -> bool {
-        observed == expectation
+    fn meets_expectations(observed: &Processor, expectation: &ProcessorExpectation) -> bool {
+        let registers_meet = observed
+            .general_purpose_registers
+            .iter()
+            .zip(&expectation.general_purpose_registers)
+            .all(|(value, expected)| match expected {
+                RegisterValueExpectation::Deterministic(expected) => value == expected,
+                RegisterValueExpectation::NonDeterministic => true,
+            });
+        registers_meet
+            && observed.instruction_pointer == expectation.instruction_pointer
+            && observed.flags == expectation.flags
+            && observed.fs_base == expectation.fs_base
+            && observed.gs_base == expectation.gs_base
+            && observed.mxcsr == expectation.mxcsr
+            && observed.vector_registers == expectation.vector_registers
+            && observed.upper_vector_halves == expectation.upper_vector_halves
+            && observed.exception == expectation.exception
     }
 }
 
@@ -161,6 +209,46 @@ pub struct Processor {
     pub upper_vector_halves: [u128; VECTOR_REGISTERS],
     /// None when the last instruction completed.
     pub exception: Option<Exception>,
+}
+
+/// What a behavior expects one register to hold after an instruction.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RegisterValueExpectation {
+    Deterministic(u64),
+    /// The state before does not decide it, as for RDTSC, RDTSCP, RDRAND and RDSEED, so it is not compared.
+    NonDeterministic,
+}
+
+/// What a behavior expects the processor to hold after an instruction: [`Processor`] with each general register's
+/// value an expectation.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct ProcessorExpectation {
+    pub general_purpose_registers: [RegisterValueExpectation; GENERAL_PURPOSE_REGISTERS],
+    pub instruction_pointer: u64,
+    pub flags: Flags,
+    pub fs_base: u64,
+    pub gs_base: u64,
+    pub mxcsr: u32,
+    pub vector_registers: [u128; VECTOR_REGISTERS],
+    pub upper_vector_halves: [u128; VECTOR_REGISTERS],
+    pub exception: Option<Exception>,
+}
+
+impl Processor {
+    /// Returns the expectation that the processor holds exactly these values.
+    pub fn to_expectation(&self) -> ProcessorExpectation {
+        ProcessorExpectation {
+            general_purpose_registers: self.general_purpose_registers.map(RegisterValueExpectation::Deterministic),
+            instruction_pointer: self.instruction_pointer,
+            flags: self.flags,
+            fs_base: self.fs_base,
+            gs_base: self.gs_base,
+            mxcsr: self.mxcsr,
+            vector_registers: self.vector_registers,
+            upper_vector_halves: self.upper_vector_halves,
+            exception: self.exception,
+        }
+    }
 }
 
 /// Every register zero, the flags clear, MXCSR at its default and no exception.
@@ -225,4 +313,6 @@ pub enum PreciseInstruction {
         instruction: Instruction,
         behavior: IntegerBehavior,
     },
+    /// The form raises #UD once it is fetched: the chip lacks its feature, or the form is one of [`FORBIDDEN_FORMS`].
+    Undefined(Instruction),
 }

@@ -22,6 +22,9 @@
 //! and AC decides nothing, so they only pass through. Where the form has another data operand they take their
 //! values in turn instead of in the product, the sum of every other operand's index choosing, so that each meets
 //! every value of every other operand.
+//!
+//! A form not yet modeled has one state, its sample encoding: a chip that lacks the form raises #UD whatever the
+//! state holds.
 
 #![no_std]
 
@@ -72,6 +75,10 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
 
     fn generate_states(&self, instruction: Instruction) -> vec::IntoIter<ExecutionState<'static, X86_64>> {
         let types: Vec<OperandType> = self.domain.list_operand_types(instruction).collect();
+        // Only JCXZ, which no byte string encodes in 64-bit mode, has no operand.
+        if types.is_empty() {
+            return Vec::new().into_iter();
+        }
         let values: Vec<Vec<OperandValue>> =
             types.iter().map(|operand_type| self.domain.generate_critical_values(*operand_type).collect()).collect();
         let data: Vec<bool> = types.iter().map(|operand_type| is_data(*operand_type)).collect();
