@@ -2434,7 +2434,9 @@ checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
 dependencies = [
  "bitflags 2.13.2",
  "block2",
+ "dispatch2",
  "objc2",
+ "objc2-core-foundation",
  "objc2-foundation",
 ]
 
@@ -4518,6 +4520,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-gpu-metal"
+version = "0.1.0"
+dependencies = [
+ "libtest-mimic",
+ "naga",
+ "raw-window-handle",
+ "wcontainers-gpu",
+ "wcontainers-gpu-conformance",
+ "wcontainers-gpu-recording",
+ "wcontainers-metal",
+ "wcontainers-metal-conformance",
+ "wcontainers-metal-direct",
+ "wcontainers-test-window",
+ "wcontainers-test-window-appkit",
+]
+
+[[package]]
 name = "wcontainers-gpu-recording"
 version = "0.1.0"
 dependencies = [
@@ -4801,6 +4820,39 @@ dependencies = [
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
  "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-metal"
+version = "0.1.0"
+dependencies = [
+ "naga",
+ "raw-window-handle",
+]
+
+[[package]]
+name = "wcontainers-metal-conformance"
+version = "0.1.0"
+dependencies = [
+ "naga",
+ "wcontainers-metal",
+]
+
+[[package]]
+name = "wcontainers-metal-direct"
+version = "0.1.0"
+dependencies = [
+ "naga",
+ "naga-types",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-foundation",
+ "objc2-metal",
+ "objc2-quartz-core",
+ "raw-window-handle",
+ "raw-window-metal",
+ "wcontainers-metal",
+ "wcontainers-metal-conformance",
 ]
 
 [[package]]

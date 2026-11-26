@@ -1,0 +1,49 @@
+[package]
+name = "wcontainers-metal-direct"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-metal = { path = "../.." }
+raw-window-handle = "0.6.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+naga = { workspace = true, features = ["msl-out"] }
+# The vertex formats naga's Metal writer takes.
+naga-types = { version = "30.0.2", default-features = false }
+objc2 = "0.6.5"
+objc2-foundation = "0.3.2"
+objc2-metal = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-quartz-core = "0.3.2"
+# The Metal layer of a window's view, as wgpu finds it.
+raw-window-metal = "1.1.0"
+
+[features]
+# Counts how often each check refuses and passes its calls, for the fuzzer's measure of reach; never in a product.
+reach = []
+
+[dev-dependencies]
+wcontainers-metal-conformance = { path = "../../conformance" }
+
+# The crate that makes Metal's own calls: it denies unsafe code, so that each use is marked with its reason.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+# Every size, count, offset and length a caller gives reaches Metal's calls here, so no operation on one may wrap or
+# panic: each is a checked operation that refuses on overflow, and no conversion between integer types may cut one.
+[lints.clippy]
+# As the workspace allows it.
+type_complexity = "allow"
+arithmetic_side_effects = "deny"
+cast_possible_truncation = "deny"
+cast_possible_wrap = "deny"
+cast_sign_loss = "deny"

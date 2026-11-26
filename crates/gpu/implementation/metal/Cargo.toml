@@ -1,0 +1,56 @@
+[package]
+name = "wcontainers-gpu-metal"
+description = "The wcontainers graphics interface drawn with Metal, through the safe Metal trait of wcontainers-metal."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+path = "implementation.rs"
+
+[dependencies]
+wcontainers-gpu = { path = "../.." }
+wcontainers-metal = { path = "../../../metal" }
+naga.workspace = true
+raw-window-handle = "0.6.2"
+
+[dev-dependencies]
+naga = { workspace = true, features = ["wgsl-in"] }
+# The Metal trait's suite, for the constants its timing programs share with these tests.
+wcontainers-metal-conformance = { path = "../../../metal/conformance" }
+wcontainers-gpu-conformance = { path = "../../conformance" }
+# The reference the native and hostile tests compare Metal's answers with.
+wcontainers-gpu-recording = { path = "../recording" }
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+libtest-mimic = "0.8.1"
+wcontainers-metal-direct = { path = "../../../metal/implementation/direct", features = ["reach"] }
+# The window the present tests show in, and reading what it shows: made on the main thread (tests/present.rs).
+wcontainers-test-window = { path = "../../../test-window" }
+wcontainers-test-window-appkit = { path = "../../../test-window/implementation/appkit" }
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[[test]]
+name = "present"
+harness = false
+
+# The fuzzer runs each batch in a process of its own, as the main thread, where its window is made; it counts how
+# often each place that ends a pass or refuses inside one is reached.
+[[test]]
+name = "fuzz"
+harness = false
+required-features = ["reach"]
+
+[features]
+# Counts how often each place that would wait, commit or nest work inside a pass finds one open, for the fuzzer's
+# measure of reach; never in a product.
+reach = []
+
+# The workspace's lints; implementation.rs denies unchecked arithmetic on top of them.
+[lints]
+workspace = true

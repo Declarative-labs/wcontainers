@@ -6927,6 +6927,9 @@ template <typename A>
 
         let mut needs_instance_id = false;
         let i_id = self.namer.call("i_id");
+
+        let mut needs_base_instance = false;
+        let b_id = self.namer.call("b_id");
         if pipeline_options.vertex_pulling_transform {
             for vbm in &pipeline_options.vertex_buffer_mappings {
                 let buffer_id = vbm.id;
@@ -6944,6 +6947,10 @@ template <typename A>
                     }
                     back::msl::VertexBufferStepMode::ByInstance => {
                         needs_instance_id = true;
+                    }
+                    back::msl::VertexBufferStepMode::ByInstanceRate(_) => {
+                        needs_instance_id = true;
+                        needs_base_instance = true;
                     }
                 }
 
@@ -7132,6 +7139,7 @@ template <typename A>
             // existing @builtin param, if we find one.
             let mut v_existing_id = None;
             let mut i_existing_id = None;
+            let mut b_existing_id = None;
 
             log::trace!(
                 "entry point {:?}, index {:?}",
@@ -7596,6 +7604,9 @@ template <typename A>
                     crate::Binding::BuiltIn(crate::BuiltIn::InstanceIndex) => {
                         i_existing_id = Some(name.clone());
                     }
+                    crate::Binding::BuiltIn(crate::BuiltIn::BaseInstance) => {
+                        b_existing_id = Some(name.clone());
+                    }
                     _ => {}
                 };
 
@@ -7876,6 +7887,15 @@ template <typename A>
                     });
                 }
 
+                if needs_base_instance && b_existing_id.is_none() {
+                    args.push(EntryPointArgument {
+                        ty_name: "uint".to_string(),
+                        name: b_id.clone(),
+                        binding: " [[base_instance]]".to_string(),
+                        init: None,
+                    });
+                }
+
                 // Iterate vbm_resolved, output one argument for every vertex buffer,
                 // using the names we generated earlier.
                 for vbm in &vbm_resolved {
@@ -7987,21 +8007,17 @@ template <typename A>
 
                     let idx = &vbm.id;
                     let stride = &vbm.stride;
+                    let i_name = i_existing_id.as_ref().unwrap_or(&i_id);
+                    let b_name = b_existing_id.as_ref().unwrap_or(&b_id);
                     let index_name = match vbm.step_mode {
-                        back::msl::VertexBufferStepMode::Constant => "0",
+                        back::msl::VertexBufferStepMode::Constant => "0".to_string(),
                         back::msl::VertexBufferStepMode::ByVertex => {
-                            if let Some(ref name) = v_existing_id {
-                                name
-                            } else {
-                                &v_id
-                            }
+                            v_existing_id.as_ref().unwrap_or(&v_id).clone()
                         }
-                        back::msl::VertexBufferStepMode::ByInstance => {
-                            if let Some(ref name) = i_existing_id {
-                                name
-                            } else {
-                                &i_id
-                            }
+                        back::msl::VertexBufferStepMode::ByInstance => i_name.clone(),
+                        back::msl::VertexBufferStepMode::ByInstanceRate(0) => b_name.clone(),
+                        back::msl::VertexBufferStepMode::ByInstanceRate(rate) => {
+                            format!("({b_name} + ({i_name} - {b_name}) / {rate}u)")
                         }
                     };
                     write!(

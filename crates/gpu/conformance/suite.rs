@@ -5302,6 +5302,1790 @@ pub fn read_backs_finish_into_changing_bytes<B: Gpu>(mut b: B) {
     ok(&mut b);
 }
 
+/// Each instance draws the column of its index in a red of a quarter a column: a quad squeezed into
+/// the column's quarter of clip space.
+const COLUMNS: &str = "
+struct Out { @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) v: f32 }
+@vertex fn vs(@location(0) p: vec2<f32>, @builtin(instance_index) i: u32) -> Out {
+    let x = (p.x * 0.5 + 0.5 + f32(i)) * 0.5 - 1.0;
+    return Out(vec4<f32>(x, p.y, 0.5, 1.0), f32(i + 1u) * 0.25);
+}
+@fragment fn fs(i: Out) -> @location(0) vec4<f32> {
+    return vec4<f32>(i.v, 0.0, 0.0, 1.0);
+}
+";
+
+/// Adds one to each word a thread of the dispatch reaches.
+const ADD_ONE: &str = "
+@group(0) @binding(160) var<storage, read_write> words: array<u32>;
+@compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) id: vec3<u32>) {
+    words[id.x] = words[id.x] + 1u;
+}
+";
+
+/// Returns the little-endian bytes of words.
+fn words(values: &[u32]) -> Vec<u8> {
+    values.iter().flat_map(|w| w.to_le_bytes()).collect()
+}
+
+/// Draws and dispatches read their arguments from a buffer when they run, written by the CPU or by a
+/// copy recorded before them: an indirect draw of one instance, an indexed one of two whose arguments
+/// a copy wrote, an indexed one whose indices reach past its index buffer, which draws nothing, and,
+/// with `INDIRECT_FIRST_INSTANCE`, a draw from the fourth instance. With `COMPUTE`, an indirect
+/// dispatch of three groups adds one to three of four words.
+pub fn indirect_draws_and_dispatches_read_their_arguments_when_they_run<B: Gpu>(mut b: B) {
+    let has = b.caps().features;
+    if !has.contains(Features::INDIRECT) {
+        return;
+    }
+    const N: u32 = 4;
+    let (t, v) = rgba8_target(&mut b, N);
+    let quad = vertex_buffer(&mut b, &QUAD);
+    let indices = buffer(&mut b, 16, BufferUsage::INDEX | BufferUsage::COPY_DST);
+    b.write_buffer(&indices, 0, &words(&[0, 1, 2, 3]), WriteMode::Discard);
+    let arguments = |b: &mut B, values: &[u32]| {
+        let args = buffer(
+            b,
+            values.len() as u64 * 4,
+            BufferUsage::INDIRECT | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+        );
+        b.write_buffer(&args, 0, &words(values), WriteMode::Discard);
+        args
+    };
+    let one = arguments(&mut b, &[4, 1, 0, 0]);
+    // Zero instances until the copy below writes two.
+    let copied = arguments(&mut b, &[4, 0, 0, 0, 0]);
+    let two = arguments(&mut b, &[4, 2, 0, 0, 0]);
+    let past = arguments(&mut b, &[4, 4, 1, 0, 0]);
+    let fourth = arguments(&mut b, &[4, 1, 0, 3]);
+    let p = program(&mut b, COLUMNS, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &quad,
+        offset: 0,
+    })];
+    let index = IndexBinding {
+        buffer: &indices,
+        offset: 0,
+        format: IndexFormat::U32,
+    };
+    b.copy_buffer(&two, 0, &copied, 0, 20);
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    let draw = |range| {
+        call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            range,
+        )
+    };
+    b.draw(&draw(DrawRange::Indirect {
+        args: &one,
+        offset: 0,
+    }));
+    for args in [&copied, &past] {
+        b.draw(&DrawCall {
+            index: Some(IndexBinding { ..index }),
+            ..draw(DrawRange::IndexedIndirect { args, offset: 0 })
+        });
+    }
+    let first_instance = has.contains(Features::INDIRECT_FIRST_INSTANCE);
+    if first_instance {
+        b.draw(&draw(DrawRange::Indirect {
+            args: &fourth,
+            offset: 0,
+        }));
+    }
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let reds = [64, 128, 0, if first_instance { 255 } else { 0 }];
+    let expected: Vec<u8> = (0..N * N)
+        .flat_map(|i| {
+            let red = reds[(i % N) as usize];
+            [red, 0, 0, if red == 0 { 0 } else { 255 }]
+        })
+        .collect();
+    assert_close(&got, &expected, 1, 4, N as usize);
+    if has.contains(Features::COMPUTE) {
+        let out = buffer(
+            &mut b,
+            16,
+            BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+        );
+        b.write_buffer(&out, 0, &words(&[10, 20, 30, 40]), WriteMode::Discard);
+        let groups = arguments(&mut b, &[3, 1, 1]);
+        let cs = shader(&mut b, ADD_ONE, "cs", ShaderStage::Compute);
+        let program = b
+            .create_program(&Program::Compute(&cs))
+            .expect("create_program");
+        let set = b
+            .create_binding_set(&[BindingEntry {
+                binding: 160,
+                stages: StageSet::COMPUTE,
+                resource: BindingResource::StorageBuffer {
+                    range: BufferRange {
+                        buffer: &out,
+                        offset: 0,
+                        size: 16,
+                    },
+                    writable: true,
+                },
+            }])
+            .expect("create_binding_set");
+        b.dispatch(&DispatchCall {
+            program: &program,
+            bindings: [Some(&set), None, None, None],
+            immediates: &[],
+            groups: DispatchGroups::Indirect {
+                args: &groups,
+                offset: 0,
+            },
+        })
+        .expect("dispatch");
+        assert_eq!(read_buffer(&mut b, &out, 0, 16), words(&[11, 21, 31, 40]));
+    }
+    ok(&mut b);
+}
+
+/// Returns the `u64`s of little-endian bytes.
+fn u64s(bytes: &[u8]) -> Vec<u64> {
+    bytes
+        .chunks(8)
+        .map(|c| u64::from_le_bytes(c.try_into().expect("eight bytes")))
+        .collect()
+}
+
+/// Timestamps written between passes and copies read back in the order they were written, through
+/// `read_queries` and through `resolve_queries` alike, and a second read of the same queries gives
+/// the same values; `timestamps_disjoint` answers. Where `TIMESTAMPS` is declared.
+pub fn timestamps_between_passes_read_back_in_order<B: Gpu>(mut b: B) {
+    if !b.caps().features.contains(Features::TIMESTAMPS) {
+        return;
+    }
+    const N: u32 = 4;
+    let set = b
+        .create_query_set(QueryKind::Timestamp, 4)
+        .expect("create_query_set");
+    let (_t, v) = rgba8_target(&mut b, N);
+    let scratch = buffer(&mut b, 64, BufferUsage::COPY_DST | BufferUsage::COPY_SRC);
+    b.write_timestamp(&set, 0).expect("write_timestamp");
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    b.end_pass();
+    b.write_timestamp(&set, 1).expect("write_timestamp");
+    b.clear_buffer(&scratch, 0, 64, &[7]);
+    b.write_timestamp(&set, 2).expect("write_timestamp");
+    let rb = b.read_queries(&set, 0, 3).expect("read_queries");
+    b.submit();
+    b.wait_read(&rb);
+    let mut bytes = vec![0; 24];
+    b.finish_read(rb, &mut bytes);
+    let read = u64s(&bytes);
+    assert!(
+        read[0] <= read[1] && read[1] <= read[2],
+        "timestamps out of the order written: {read:?}"
+    );
+    let resolved = buffer(&mut b, 32, BufferUsage::COPY_DST | BufferUsage::COPY_SRC);
+    b.resolve_queries(&set, 0, 3, &resolved, 8)
+        .expect("resolve_queries");
+    assert_eq!(u64s(&read_buffer(&mut b, &resolved, 8, 24)), read);
+    let rb = b.read_queries(&set, 1, 2).expect("read_queries");
+    b.submit();
+    b.wait_read(&rb);
+    let mut again = vec![0; 16];
+    b.finish_read(rb, &mut again);
+    assert_eq!(u64s(&again), read[1..]);
+    b.timestamps_disjoint().expect("timestamps_disjoint");
+    ok(&mut b);
+}
+
+/// Writes the level count of the texture at binding 32, as a count of 255ths of red.
+const LEVEL_COUNT: &str = "
+@group(0) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(textureNumLevels(t)) / 255.0, 0.0, 0.0, 1.0);
+}
+";
+
+/// Writes the sample count of the multisampled texture at binding 32, as a count of 255ths of red.
+const SAMPLE_COUNT: &str = "
+@group(0) @binding(32) var t: texture_multisampled_2d<f32>;
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(textureNumSamples(t)) / 255.0, 0.0, 0.0, 1.0);
+}
+";
+
+/// Draws one texel with `source` reading `view` at binding 32 and returns its red.
+fn asked<B: Gpu>(b: &mut B, source: &str, view: &B::TextureView) -> u8 {
+    let (t, v) = rgba8_target(b, 1);
+    let quad = vertex_buffer(b, &QUAD);
+    let p = program(b, source, "vs", "fs");
+    let bl = blend(b, opaque());
+    let ds = depth_test(b, None, false);
+    let rs = raster(b, CullMode::None);
+    let vl = positions(b);
+    let vp = viewport(1, 1);
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(view),
+        }])
+        .expect("create_binding_set");
+    let streams = [Some(VertexBinding {
+        buffer: &quad,
+        offset: 0,
+    })];
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        bindings: [Some(&set), None, None, None],
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+        )
+    });
+    b.end_pass();
+    read_texture(b, region(&t, 0, 0, 0, 0), extent(1, 1, 1), 4)[0]
+}
+
+/// Programs ask a texture its level count, a view counting its own levels, and, where
+/// `MULTISAMPLE_READ` is declared too, a four-sample texture its sample count. Where
+/// `TEXTURE_LEVEL_QUERY` is declared.
+pub fn programs_ask_a_texture_its_levels_and_samples<B: Gpu>(mut b: B) {
+    let has = b.caps().features;
+    if !has.contains(Features::TEXTURE_LEVEL_QUERY) {
+        return;
+    }
+    let tex = texture(
+        &mut b,
+        Format::Rgba8Unorm,
+        (4, 4),
+        1,
+        3,
+        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
+    );
+    for (base_mip, mip_count) in [(0, 3), (1, 2)] {
+        let levels = b
+            .create_view(
+                &tex,
+                &TextureViewDesc {
+                    format: Format::Rgba8Unorm,
+                    dimension: ViewDimension::D2,
+                    base_mip,
+                    mip_count,
+                    base_layer: 0,
+                    layer_count: 1,
+                    stencil: false,
+                },
+            )
+            .expect("create_view");
+        assert_eq!(
+            u32::from(asked(&mut b, LEVEL_COUNT, &levels)),
+            mip_count,
+            "the levels of a view from level {base_mip}"
+        );
+    }
+    if has.contains(Features::MULTISAMPLE_READ)
+        && let Some((_ms, view)) = four_sample_target(&mut b, 1)
+    {
+        assert_eq!(asked(&mut b, SAMPLE_COUNT, &view), 4);
+    }
+    ok(&mut b);
+}
+
+/// Draws, at each pixel of a row, the texel of the same column of row 0 of the texture at binding 32.
+const LOADED_ROW: &str = "
+@group(0) @binding(32) var t: texture_2d<f32>;
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs(@builtin(position) at: vec4<f32>) -> @location(0) vec4<f32> {
+    return textureLoad(t, vec2<i32>(i32(at.x), 0), 0);
+}
+";
+
+/// The `Bgra4Unorm` texels [`bgra4_texels_sample_and_copy_in_direct3d_bit_order`] writes, as red, green, blue and alpha
+/// of 0 to 15 each.
+const BGRA4_TEXELS: [[u16; 4]; 4] = [[3, 2, 1, 4], [0, 0, 0, 15], [15, 0, 15, 0], [12, 5, 10, 8]];
+
+/// The bits of a `Bgra4Unorm` texel: blue in the low four, then green, red and alpha (Direct3D's `B4G4R4A4_UNORM`).
+fn bgra4(rgba: [u16; 4]) -> u16 {
+    let [r, g, b, a] = rgba;
+    (a << 12) | (r << 8) | (g << 4) | b
+}
+
+/// `Bgra4Unorm` texels sample with each channel from its Direct3D bits (blue in the low four, alpha in the high), and
+/// copy between buffers and textures as their bytes, at a buffer offset of one texel and a row pitch past the row.
+/// Where the format is sampled.
+pub fn bgra4_texels_sample_and_copy_in_direct3d_bit_order<B: Gpu>(mut b: B) {
+    let format = Format::Bgra4Unorm;
+    if !b.caps().formats.uses[format as usize].contains(FormatUse::SAMPLE) {
+        return;
+    }
+    const N: u32 = 4;
+    let bytes: Vec<u8> = BGRA4_TEXELS
+        .iter()
+        .flat_map(|t| bgra4(*t).to_le_bytes())
+        .collect();
+    let copied = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let tex = texture(&mut b, format, (N, 1), 1, 1, copied);
+    b.write_texture(
+        &region(&tex, 0, 0, 0, 0),
+        extent(N, 1, 1),
+        &bytes,
+        N * 2,
+        1,
+        WriteMode::Ordered,
+    );
+    let sampled = view(&mut b, &tex, format);
+    let (t, v) = rgba8_target(&mut b, N);
+    let quad = vertex_buffer(&mut b, &QUAD);
+    let p = program(&mut b, LOADED_ROW, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 32,
+            stages: StageSet::FRAGMENT,
+            resource: BindingResource::Texture(&sampled),
+        }])
+        .expect("create_binding_set");
+    let streams = [Some(VertexBinding {
+        buffer: &quad,
+        offset: 0,
+    })];
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        bindings: [Some(&set), None, None, None],
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+        )
+    });
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    // A 4-bit channel n is n / 15, which an 8-bit target holds as n * 17.
+    let row: Vec<u8> = BGRA4_TEXELS
+        .iter()
+        .flat_map(|t| t.map(|n| (n * 17) as u8))
+        .collect();
+    assert_close(&got, &row.repeat(N as usize), 1, 4, N as usize);
+    // The bytes copy out at an offset of one texel and a pitch of six texels, and back into a second texture.
+    let (offset, pitch) = (2u32, 12u32);
+    let size = u64::from(offset + pitch);
+    let out = buffer(&mut b, size, BufferUsage::COPY_SRC | BufferUsage::COPY_DST);
+    let before = pattern(size as usize, 5);
+    b.write_buffer(&out, 0, &before, WriteMode::Ordered);
+    let side = CopyBufferTexture {
+        buffer: &out,
+        offset: u64::from(offset),
+        row_pitch: pitch,
+        rows_per_layer: 1,
+    };
+    b.copy_texture_to_buffer(&region(&tex, 0, 0, 0, 0), &side, extent(N, 1, 1));
+    let mut expected = before;
+    expected[offset as usize..offset as usize + bytes.len()].copy_from_slice(&bytes);
+    assert_eq!(read_buffer(&mut b, &out, 0, size), expected, "copied out");
+    let second = texture(&mut b, format, (N, 1), 1, 1, copied);
+    b.copy_buffer_to_texture(&side, &region(&second, 0, 0, 0, 0), extent(N, 1, 1));
+    assert_eq!(
+        read_texture(&mut b, region(&second, 0, 0, 0, 0), extent(N, 1, 1), 2),
+        bytes,
+        "copied in"
+    );
+    ok(&mut b);
+}
+
+/// A depth that rises from 0 at the left edge to 1 at the right, and constant colours.
+const BOUNDED: &str = "
+@vertex fn ramp(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, (p.x + 1.0) * 0.5, 1.0);
+}
+@vertex fn level(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn green() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+@fragment fn red() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+}
+@fragment fn blue() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 0.0, 1.0, 1.0);
+}
+";
+
+/// The depth bounds test keeps the fragments whose stored depth lies within the bounds, whatever
+/// their own depth: over a stored depth of 1/8, 3/8, 5/8 and 7/8 in the four columns, a draw
+/// bounded to 1/4 to 3/4 colours the middle two columns, one bounded to 0 to 1/2 the left two, and
+/// a draw of a block without bounds after them every column. Where `DEPTH_BOUNDS` is declared;
+/// bounds outside zero to one, or the low above the high, are refused there.
+pub fn depth_bounds_keep_fragments_whose_stored_depth_lies_within<B: Gpu>(mut b: B) {
+    if !b.caps().features.contains(Features::DEPTH_BOUNDS) {
+        return;
+    }
+    const N: u32 = 4;
+    let (t, v) = rgba8_target(&mut b, N);
+    let (_, d) = depth_target(&mut b, N);
+    let quad = vertex_buffer(&mut b, &QUAD);
+    let bl = blend(&mut b, opaque());
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let vp = viewport(N, N);
+    let streams = [Some(VertexBinding {
+        buffer: &quad,
+        offset: 0,
+    })];
+    let bounded = |b: &mut B, bounds: Option<[f32; 2]>| {
+        b.create_depth_stencil(&DepthStencilDesc {
+            depth_compare: Some(CompareFn::Always),
+            depth_write: bounds.is_none(),
+            stencil: None,
+            stencil_read_mask: [0xff; 2],
+            stencil_write_mask: [0xff; 2],
+            depth_bounds: bounds.map(|pair| pair.map(f32::to_bits)),
+        })
+    };
+    for refused in [[-0.25, 0.5], [0.5, 1.5], [0.75, 0.25], [f32::NAN, 1.0]] {
+        assert!(
+            bounded(&mut b, Some(refused)).is_err(),
+            "bounds {refused:?} taken"
+        );
+    }
+    let writes = bounded(&mut b, None).expect("create_depth_stencil");
+    let middle = bounded(&mut b, Some([0.25, 0.75])).expect("create_depth_stencil");
+    let left = bounded(&mut b, Some([0.0, 0.5])).expect("create_depth_stencil");
+    let ramp_green = program(&mut b, BOUNDED, "ramp", "green");
+    let red = program(&mut b, BOUNDED, "level", "red");
+    let blue = program(&mut b, BOUNDED, "level", "blue");
+    let pass = |load: bool| {
+        let mut pass = color_pass::<B>(
+            &v,
+            if load {
+                LoadOp::Load
+            } else {
+                LoadOp::Clear([0; 4])
+            },
+        );
+        pass.depth = Some(DepthAttachment {
+            view: &d,
+            depth: Some(AspectOps {
+                load: if load {
+                    LoadOp::Load
+                } else {
+                    LoadOp::Clear(1.0f32.to_bits())
+                },
+                store: StoreOp::Store,
+                read_only: false,
+            }),
+            stencil: None,
+        });
+        pass
+    };
+    let draw = |b: &mut B, p: &<B as Gpu>::Program, ds| {
+        b.draw(&call(
+            p,
+            &bl,
+            ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+        ));
+    };
+    let (g, r, bu) = ([0, 255, 0, 255], [255, 0, 0, 255], [0, 0, 255, 255]);
+    let rows = |columns: [[u8; 4]; 4]| columns.concat().repeat(N as usize);
+    b.begin_pass(&pass(false));
+    draw(&mut b, &ramp_green, &writes);
+    draw(&mut b, &red, &middle);
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    assert_eq!(got, rows([g, r, r, g]), "bounded to 1/4 to 3/4");
+    b.begin_pass(&pass(true));
+    draw(&mut b, &blue, &left);
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    assert_eq!(got, rows([bu, bu, r, g]), "bounded to 0 to 1/2");
+    b.begin_pass(&pass(true));
+    draw(&mut b, &blue, &left);
+    draw(&mut b, &red, &writes);
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    assert_eq!(got, rows([r, r, r, r]), "no bounds after bounds");
+    ok(&mut b);
+}
+
+/// Makes one entry point of `source`, validated with `capabilities` beyond what [`shader`] takes.
+fn shader_with<B: Gpu>(
+    b: &mut B,
+    source: &str,
+    entry: &str,
+    stage: ShaderStage,
+    capabilities: naga::valid::Capabilities,
+) -> B::Shader {
+    let module = naga::front::wgsl::parse_str(source).expect("test program parses");
+    let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), capabilities)
+        .validate(&module)
+        .expect("test program validates");
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(source.as_bytes());
+    hasher.update(entry.as_bytes());
+    b.create_shader(&ShaderModule {
+        module,
+        info,
+        entry_point: entry.into(),
+        stage,
+        key: *hasher.finalize().as_bytes(),
+    })
+    .expect("create_shader")
+}
+
+/// Makes a render program of two entry points of `source`, validated with `capabilities`.
+fn program_with<B: Gpu>(
+    b: &mut B,
+    source: &str,
+    vs: &str,
+    fs: &str,
+    capabilities: naga::valid::Capabilities,
+) -> B::Program {
+    let v = shader_with(b, source, vs, ShaderStage::Vertex, capabilities);
+    let f = shader_with(b, source, fs, ShaderStage::Fragment, capabilities);
+    b.create_program(&Program::Render {
+        vertex: &v,
+        fragment: Some(&f),
+    })
+    .expect("create_program")
+}
+
+/// The fixed states of these tests' draws into an `rgba8unorm` target: opaque or adding, no depth, no culling, and one
+/// stream of positions.
+struct Fixed<B: Gpu> {
+    blend: B::Blend,
+    depth: B::DepthStencil,
+    raster: B::Raster,
+    layout: B::VertexLayout,
+}
+
+fn fixed<B: Gpu>(b: &mut B, adding: bool) -> Fixed<B> {
+    let target = if adding {
+        let add = BlendComponent {
+            src: BlendFactor::One,
+            dst: BlendFactor::One,
+            op: BlendOp::Add,
+        };
+        RenderTargetBlend {
+            blend: Some((add, add)),
+            writes: ColorWrites::all(),
+        }
+    } else {
+        opaque()
+    };
+    Fixed {
+        blend: blend(b, target),
+        depth: depth_test(b, None, false),
+        raster: raster(b, CullMode::None),
+        layout: positions(b),
+    }
+}
+
+/// Draws `range` of the positions `points` as `topology` with `program` into a new `n` by `n` target cleared to zero,
+/// with `bindings` and `viewports`, and returns the target's texels.
+#[allow(clippy::too_many_arguments)]
+fn drawn<B: Gpu>(
+    b: &mut B,
+    n: u32,
+    program: &B::Program,
+    fixed: &Fixed<B>,
+    points: &[f32],
+    topology: Topology,
+    range: DrawRange<'_, B>,
+    bindings: Option<&B::BindingSet>,
+    viewports: &[Viewport],
+) -> Vec<u8> {
+    let (t, v) = rgba8_target(b, n);
+    let stream = vertex_buffer(b, points);
+    let streams = [Some(VertexBinding {
+        buffer: &stream,
+        offset: 0,
+    })];
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        bindings: [bindings, None, None, None],
+        ..call(
+            program,
+            &fixed.blend,
+            &fixed.depth,
+            &fixed.raster,
+            &fixed.layout,
+            &streams,
+            viewports,
+            topology,
+            range,
+        )
+    });
+    b.end_pass();
+    read_texture(b, region(&t, 0, 0, 0, 0), extent(n, n, 1), 4)
+}
+
+/// Returns `n` by `n` texels of which those `inside` hold `texel` and the others zero.
+fn texels_where(n: u32, texel: [u8; 4], inside: impl Fn(u32, u32) -> bool) -> Vec<u8> {
+    (0..n)
+        .flat_map(|y| (0..n).map(move |x| (x, y)))
+        .flat_map(|(x, y)| if inside(x, y) { texel } else { [0; 4] })
+        .collect()
+}
+
+/// Three triangles that each cover the whole target, as a list.
+const COVERING_THRICE: [f32; 18] = [
+    -1.0, -1.0, 3.0, -1.0, -1.0, 3.0, -1.0, -1.0, 3.0, -1.0, -1.0, 3.0, -1.0, -1.0, 3.0, -1.0,
+    -1.0, 3.0,
+];
+
+/// Writes the primitive's index plus one, in steps of 20/255 of red.
+const PRIMITIVE_NUMBERED: &str = "
+enable primitive_index;
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs(@builtin(primitive_index) i: u32) -> @location(0) vec4<f32> {
+    return vec4<f32>(f32(i + 1u) * 20.0 / 255.0, 0.0, 0.0, 1.0);
+}
+";
+
+/// Fragment programs read the index of their primitive within the draw, counted from zero whatever the draw's first
+/// vertex: of three triangles covering the target, the last drawn (index 2) is what an opaque draw leaves, the three
+/// add up to 1 + 2 + 3 steps, and a draw of the last two from its fourth vertex leaves index 1. Where
+/// `PRIMITIVE_INDEX` is declared.
+pub fn fragments_read_the_index_of_their_primitive<B: Gpu>(mut b: B) {
+    if !b.caps().features.contains(Features::PRIMITIVE_INDEX) {
+        return;
+    }
+    const N: u32 = 4;
+    let capabilities = naga::valid::Capabilities::PRIMITIVE_INDEX;
+    let p = program_with(&mut b, PRIMITIVE_NUMBERED, "vs", "fs", capabilities);
+    let vp = viewport(N, N);
+    let red = |steps: u8| [steps * 20, 0, 0, 255];
+    for (adding, first, count, wanted) in [
+        (false, 0, 9, red(3)),
+        (true, 0, 9, [120, 0, 0, 255]),
+        (false, 3, 6, red(2)),
+    ] {
+        let states = fixed(&mut b, adding);
+        let got = drawn(
+            &mut b,
+            N,
+            &p,
+            &states,
+            &COVERING_THRICE,
+            Topology::TriangleList,
+            vertices(first, count),
+            None,
+            &vp,
+        );
+        // Adding three opaque alphas saturates alpha at one.
+        assert_close(
+            &got,
+            &texels_where(N, wanted, |_, _| true),
+            1,
+            4,
+            N as usize,
+        );
+    }
+    ok(&mut b);
+}
+
+/// Converts each word's float to a 16-bit float and back, and adds 1 to 2048 in 16-bit floats.
+const HALVES: &str = "
+enable f16;
+@group(0) @binding(160) var<storage, read_write> words: array<f32>;
+@compute @workgroup_size(1) fn cs(@builtin(global_invocation_id) id: vec3<u32>) {
+    let h = f16(words[id.x]);
+    words[id.x] = f32(h);
+    if id.x == 0u {
+        let sum = f16(2048.0) + f16(words[4] * 0.0 + 1.0);
+        words[5] = f32(sum);
+    }
+}
+";
+
+/// Programs compute in 16-bit floats: a third, 2049 and 65504 converted to 16 bits and back are one of the two
+/// nearest 16-bit floats (and not the 32-bit value), the smallest 16-bit subnormal stays, and 2048 + 1 in 16 bits is
+/// 2048 or 2050. Where `SHADER_F16` and `COMPUTE` are declared.
+pub fn programs_compute_in_16_bit_floats<B: Gpu>(mut b: B) {
+    let has = b.caps().features;
+    if !has.contains(Features::SHADER_F16 | Features::COMPUTE) {
+        return;
+    }
+    let third = 1.0f32 / 3.0;
+    let smallest = 2.0f32.powi(-24);
+    let inputs = [third, 2049.0, 65504.0, smallest, 0.0, 0.0];
+    let size = (inputs.len() * 4) as u64;
+    let words = buffer(
+        &mut b,
+        size,
+        BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&words, 0, &floats(&inputs), WriteMode::Ordered);
+    let cs = shader_with(
+        &mut b,
+        HALVES,
+        "cs",
+        ShaderStage::Compute,
+        naga::valid::Capabilities::SHADER_FLOAT16,
+    );
+    let program = b
+        .create_program(&Program::Compute(&cs))
+        .expect("create_program");
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 160,
+            stages: StageSet::COMPUTE,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer: &words,
+                    offset: 0,
+                    size,
+                },
+                writable: true,
+            },
+        }])
+        .expect("create_binding_set");
+    b.dispatch(&DispatchCall {
+        program: &program,
+        bindings: [Some(&set), None, None, None],
+        immediates: &[],
+        groups: DispatchGroups::Direct([4, 1, 1]),
+    })
+    .expect("dispatch");
+    let got: Vec<f32> = read_buffer(&mut b, &words, 0, size)
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|w| f32::from_le_bytes(*w))
+        .collect();
+    // The 16-bit floats either side of a third: 0x3555 and 0x3556.
+    let nearest_third = [0.333_251_95f32, 0.333_496_1];
+    assert!(
+        nearest_third.contains(&got[0]),
+        "a third in 16 bits: {}",
+        got[0]
+    );
+    assert!(
+        [2048.0, 2050.0].contains(&got[1]),
+        "2049 in 16 bits: {}",
+        got[1]
+    );
+    assert_eq!(got[2], 65504.0, "the largest 16-bit float");
+    assert_eq!(got[3], smallest, "the smallest 16-bit subnormal");
+    assert!(
+        [2048.0, 2050.0].contains(&got[5]),
+        "2048 + 1 in 16 bits: {}",
+        got[5]
+    );
+    ok(&mut b);
+}
+
+/// A vertex program that writes a word for each vertex it runs.
+const VERTEX_WRITES: &str = "
+@group(0) @binding(160) var<storage, read_write> words: array<u32>;
+@vertex fn vs(@builtin(vertex_index) i: u32, @location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    words[i] = i * 10u + 7u;
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+";
+
+/// Vertex programs write storage buffers: each of a strip's four vertices writes its word, from the draw's first
+/// vertex on, leaving the words before it, and the strip still draws; bound to fewer words than the vertices write, no
+/// write lands past the bound range. Where `VERTEX_STORAGE_WRITE` is declared.
+pub fn vertex_programs_write_storage_buffers<B: Gpu>(mut b: B) {
+    if !b.caps().features.contains(Features::VERTEX_STORAGE_WRITE) {
+        return;
+    }
+    const N: u32 = 4;
+    let size = 6 * 4;
+    let words = buffer(
+        &mut b,
+        size,
+        BufferUsage::STORAGE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&words, 0, &[0xee; 24], WriteMode::Ordered);
+    let p = program_with(
+        &mut b,
+        VERTEX_WRITES,
+        "vs",
+        "fs",
+        naga::valid::Capabilities::empty(),
+    );
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 160,
+            stages: StageSet::VERTEX,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer: &words,
+                    offset: 0,
+                    size,
+                },
+                writable: true,
+            },
+        }])
+        .expect("create_binding_set");
+    let states = fixed(&mut b, false);
+    let mut points = vec![0.0; 4];
+    points.extend(QUAD);
+    let got = drawn(
+        &mut b,
+        N,
+        &p,
+        &states,
+        &points,
+        Topology::TriangleStrip,
+        vertices(2, 4),
+        Some(&set),
+        &viewport(N, N),
+    );
+    assert_eq!(got, texels_where(N, [0, 255, 0, 255], |_, _| true));
+    let mut expected = vec![0xee; 8];
+    for i in 2..6u32 {
+        expected.extend((i * 10 + 7).to_le_bytes());
+    }
+    assert_eq!(read_buffer(&mut b, &words, 0, size), expected);
+    // Bound to its first four words only, the writes of vertices 4 and 5 stay inside those four.
+    b.write_buffer(&words, 0, &[0xee; 24], WriteMode::Ordered);
+    let short = b
+        .create_binding_set(&[BindingEntry {
+            binding: 160,
+            stages: StageSet::VERTEX,
+            resource: BindingResource::StorageBuffer {
+                range: BufferRange {
+                    buffer: &words,
+                    offset: 0,
+                    size: 16,
+                },
+                writable: true,
+            },
+        }])
+        .expect("create_binding_set");
+    drawn(
+        &mut b,
+        N,
+        &p,
+        &states,
+        &points,
+        Topology::TriangleStrip,
+        vertices(2, 4),
+        Some(&short),
+        &viewport(N, N),
+    );
+    let got = read_buffer(&mut b, &words, 0, size);
+    assert_eq!(&got[..8], &[0xee; 8], "the words before the first vertex's");
+    assert_eq!(&got[8..12], &27u32.to_le_bytes(), "the first vertex's word");
+    assert_eq!(&got[16..], &[0xee; 8], "the words past the bound range");
+    ok(&mut b);
+}
+
+/// Clips the quad by two distances: its x, and minus its y.
+const CLIPPED: &str = "
+enable clip_distances;
+struct Out { @builtin(position) p: vec4<f32>, @builtin(clip_distances) d: array<f32, 2> }
+@vertex fn vs(@location(0) p: vec2<f32>) -> Out {
+    return Out(vec4<f32>(p, 0.5, 1.0), array<f32, 2>(p.x, -p.y));
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+";
+
+/// The last vertex stage's clip distances clip what they make negative: with distances x and -y over the full quad,
+/// only the quarter of positive x and negative y (the right half's lower rows, y down) is drawn. Where
+/// `CLIP_DISTANCE` is declared.
+pub fn clip_distances_clip_where_they_are_negative<B: Gpu>(mut b: B) {
+    if !b.caps().features.contains(Features::CLIP_DISTANCE) {
+        return;
+    }
+    const N: u32 = 4;
+    let p = program_with(
+        &mut b,
+        CLIPPED,
+        "vs",
+        "fs",
+        naga::valid::Capabilities::CLIP_DISTANCES,
+    );
+    let states = fixed(&mut b, false);
+    let got = drawn(
+        &mut b,
+        N,
+        &p,
+        &states,
+        &QUAD,
+        Topology::TriangleStrip,
+        vertices(0, 4),
+        None,
+        &viewport(N, N),
+    );
+    assert_eq!(
+        got,
+        texels_where(N, [0, 255, 0, 255], |x, y| x >= N / 2 && y >= N / 2)
+    );
+    ok(&mut b);
+}
+
+/// Viewports at fractions of a pixel map positions to sub-pixel precision: the full quad through a viewport from
+/// (0.75, 0.25), 1.5 wide and 2.5 high, covers the pixel centres within it, column 1 of rows 0 to 2; rounding the
+/// viewport to whole pixels covers others. Where `FRACTIONAL_VIEWPORT` is declared.
+pub fn fractional_viewports_cover_the_centres_within_them<B: Gpu>(mut b: B) {
+    if !b.caps().features.contains(Features::FRACTIONAL_VIEWPORT) {
+        return;
+    }
+    const N: u32 = 4;
+    let p = program(&mut b, CONSTANT_GREEN, "vs", "fs");
+    let states = fixed(&mut b, false);
+    let viewports = [Viewport {
+        x: 0.75f32.to_bits(),
+        y: 0.25f32.to_bits(),
+        width: 1.5f32.to_bits(),
+        height: 2.5f32.to_bits(),
+        min_depth: 0.0f32.to_bits(),
+        max_depth: 1.0f32.to_bits(),
+    }];
+    let got = drawn(
+        &mut b,
+        N,
+        &p,
+        &states,
+        &QUAD,
+        Topology::TriangleStrip,
+        vertices(0, 4),
+        None,
+        &viewports,
+    );
+    assert_eq!(
+        got,
+        texels_where(N, [0, 255, 0, 255], |x, y| x == 1 && y <= 2)
+    );
+    ok(&mut b);
+}
+
+/// The full quad in green.
+const CONSTANT_GREEN: &str = "
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
+    return vec4<f32>(p, 0.5, 1.0);
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(0.0, 1.0, 0.0, 1.0);
+}
+";
+
+/// Combinations prepared ahead of their draws draw as those built at the draw: two programs prepared, one of them
+/// twice, and a third whose program is destroyed once prepared, before the others draw. Where `BACKGROUND_PREPARE` is
+/// declared.
+pub fn prepared_combinations_draw_as_those_built_at_the_draw<B: Gpu>(mut b: B) {
+    if !b.caps().features.contains(Features::BACKGROUND_PREPARE) {
+        return;
+    }
+    const N: u32 = 4;
+    let constant = program(&mut b, CONSTANT, "vs", "fs");
+    let green = program(&mut b, CONSTANT_GREEN, "vs", "fs");
+    let dropped = program(&mut b, CONSTANT_GREEN, "vs", "fs");
+    let states = fixed(&mut b, false);
+    let mut colors = [None; MAX_COLOR_TARGETS];
+    colors[0] = Some(Format::Rgba8Unorm);
+    let targets = TargetLayout {
+        colors,
+        depth_stencil: None,
+        samples: 1,
+    };
+    for program in [&constant, &green, &constant, &dropped] {
+        b.prepare(&PrepareDesc {
+            program,
+            blend: &states.blend,
+            depth_stencil: &states.depth,
+            raster: &states.raster,
+            vertex_layout: &states.layout,
+            targets,
+            topology: Topology::TriangleStrip,
+            layouts: Default::default(),
+        });
+    }
+    b.destroy(Object::Program(dropped));
+    for (program, texel) in [(&constant, ROUNDED_BYTES), (&green, [0, 255, 0, 255])] {
+        let got = drawn(
+            &mut b,
+            N,
+            program,
+            &states,
+            &QUAD,
+            Topology::TriangleStrip,
+            vertices(0, 4),
+            None,
+            &viewport(N, N),
+        );
+        assert_eq!(got, texels_where(N, texel, |_, _| true));
+    }
+    ok(&mut b);
+}
+
+/// Per-instance streams of rates other than one advance once every that many instances from the draw's first instance,
+/// and a rate of zero gives every instance the first instance's element: eight instances, each drawn into its own
+/// column, take red, green and blue from streams of rates 0, 2 and 3. Where [`Features::INSTANCE_STEP_RATE`] is
+/// declared; the first instance is 0 where [`Features::BASE_VERTEX_INSTANCE`] is not.
+pub fn instances_step_through_their_streams_at_each_streams_rate<B: Gpu>(mut b: B) {
+    if !b.caps().features.contains(Features::INSTANCE_STEP_RATE) {
+        return;
+    }
+    const N: u32 = 8;
+    let first = if b.caps().features.contains(Features::BASE_VERTEX_INSTANCE) {
+        2
+    } else {
+        0
+    };
+    const STEPPED: &str = "
+    struct Out { @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) c: vec4<f32> }
+    struct Params { first: f32 }
+    @group(0) @binding(0) var<uniform> params: Params;
+    @vertex fn vs(@location(0) p: vec2<f32>, @location(1) never: f32, @location(2) halves: f32,
+                  @location(3) thirds: f32, @builtin(instance_index) i: u32) -> Out {
+        let x = (p.x + 1.0 + 2.0 * (f32(i) - params.first)) / 8.0 - 1.0;
+        return Out(vec4<f32>(x, p.y, 0.5, 1.0), vec4<f32>(never, halves, thirds, 1.0));
+    }
+    @fragment fn fs(i: Out) -> @location(0) vec4<f32> {
+        return i.c;
+    }
+    ";
+    let rates = [0u32, 2, 3];
+    // Element `k` of stream `s` holds `(40 s + 10 (k + 1)) / 255`; each stream holds exactly the elements it reads.
+    let value = |s: usize, k: u32| (40 * s as u32 + 10 * (k + 1)) as f32 / 255.0;
+    let element = |rate: u32, column: u32| first + column.checked_div(rate).unwrap_or(0);
+    let (t, v) = rgba8_target(&mut b, N);
+    let quad = vertex_buffer(&mut b, &QUAD);
+    let streams_of: Vec<_> = rates
+        .iter()
+        .enumerate()
+        .map(|(s, &rate)| {
+            let elements = element(rate, N - 1) + 1;
+            let values: Vec<f32> = (0..elements).map(|k| value(s, k)).collect();
+            vertex_buffer(&mut b, &values)
+        })
+        .collect();
+    let uniforms = buffer(&mut b, 16, BufferUsage::UNIFORM | BufferUsage::COPY_DST);
+    b.write_buffer(
+        &uniforms,
+        0,
+        &floats(&[first as f32, 0.0, 0.0, 0.0]),
+        WriteMode::Discard,
+    );
+    let set = b
+        .create_binding_set(&[BindingEntry {
+            binding: 0,
+            stages: StageSet::VERTEX,
+            resource: BindingResource::UniformBuffer(BufferRange {
+                buffer: &uniforms,
+                offset: 0,
+                size: 16,
+            }),
+        }])
+        .expect("create_binding_set");
+    let p = program(&mut b, STEPPED, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let mut desc = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    desc.streams[0] = Some(VertexStream {
+        stride: 8,
+        step: StepMode::Vertex,
+    });
+    desc.attributes[0] = Some(VertexAttribute {
+        location: 0,
+        stream: 0,
+        offset: 0,
+        format: VertexFormat::Float32x2,
+    });
+    for (s, &rate) in rates.iter().enumerate() {
+        desc.streams[s + 1] = Some(VertexStream {
+            stride: 4,
+            step: StepMode::Instance(rate),
+        });
+        desc.attributes[s + 1] = Some(VertexAttribute {
+            location: s as u32 + 1,
+            stream: s as u8 + 1,
+            offset: 0,
+            format: VertexFormat::Float32x1,
+        });
+    }
+    let vl = b.create_vertex_layout(&desc).expect("create_vertex_layout");
+    let vp = viewport(N, N);
+    let mut streams = vec![Some(VertexBinding {
+        buffer: &quad,
+        offset: 0,
+    })];
+    streams.extend(
+        streams_of
+            .iter()
+            .map(|buffer| Some(VertexBinding { buffer, offset: 0 })),
+    );
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    b.draw(&DrawCall {
+        bindings: [Some(&set), None, None, None],
+        ..call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            DrawRange::Vertices {
+                first: 0,
+                count: 4,
+                first_instance: first,
+                instances: N,
+            },
+        )
+    });
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let mut expected = Vec::new();
+    for _ in 0..N {
+        for column in 0..N {
+            for (s, &rate) in rates.iter().enumerate() {
+                expected.push((value(s, element(rate, column)) * 255.0).round() as u8);
+            }
+            expected.push(255);
+        }
+    }
+    assert_close(&got, &expected, 1, 4, N as usize);
+    ok(&mut b);
+}
+
+/// A stream of a format some APIs lack (`unorm8x3`, which a back end may widen on the host before the draw), drawn
+/// twice from one buffer: the left half of the target from vertices 0 to 3, then the right half from vertices 4 to 7,
+/// the second draw in the first's pass. Each half takes its vertices' color.
+pub fn a_stream_widened_on_the_host_drawn_again_in_one_pass_reads_its_elements<B: Gpu>(b: B) {
+    stream_drawn_twice(b, false);
+}
+
+/// The same, the second draw in a pass after the first's, which is not yet submitted.
+pub fn a_stream_widened_on_the_host_drawn_again_in_a_later_pass_reads_its_elements<B: Gpu>(b: B) {
+    stream_drawn_twice(b, true);
+}
+
+/// Draws the left and the right half of a 2 by 2 target, each a strip of four vertices whose `unorm8x3` color the
+/// fragments take flat, in one pass or (`later`) the second in a pass of its own.
+fn stream_drawn_twice<B: Gpu>(mut b: B, later: bool) {
+    const N: u32 = 2;
+    const COLORED: &str = "
+    struct Out { @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) c: vec4<f32> }
+    @vertex fn vs(@location(0) p: vec2<f32>, @location(1) c: vec3<f32>) -> Out {
+        return Out(vec4<f32>(p, 0.5, 1.0), vec4<f32>(c, 1.0));
+    }
+    @fragment fn fs(i: Out) -> @location(0) vec4<f32> {
+        return i.c;
+    }
+    ";
+    const HALVES: [f32; 16] = [
+        -1.0, -1.0, -1.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0,
+    ];
+    let colors: [[u8; 3]; 2] = [[200, 40, 120], [30, 220, 90]];
+    // Four elements of each half's color, each three bytes and one of padding.
+    let elements: Vec<u8> = colors
+        .iter()
+        .flat_map(|c| [c[0], c[1], c[2], 0].repeat(4))
+        .collect();
+    let (t, v) = rgba8_target(&mut b, N);
+    let positions_buffer = vertex_buffer(&mut b, &HALVES);
+    let colors_buffer = buffer(
+        &mut b,
+        elements.len() as u64,
+        BufferUsage::VERTEX | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&colors_buffer, 0, &elements, WriteMode::Discard);
+    let p = program(&mut b, COLORED, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let mut desc = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    desc.streams[0] = Some(VertexStream {
+        stride: 8,
+        step: StepMode::Vertex,
+    });
+    desc.attributes[0] = Some(VertexAttribute {
+        location: 0,
+        stream: 0,
+        offset: 0,
+        format: VertexFormat::Float32x2,
+    });
+    desc.streams[1] = Some(VertexStream {
+        stride: 4,
+        step: StepMode::Vertex,
+    });
+    desc.attributes[1] = Some(VertexAttribute {
+        location: 1,
+        stream: 1,
+        offset: 0,
+        format: VertexFormat::Unorm8x3,
+    });
+    let vl = b.create_vertex_layout(&desc).expect("create_vertex_layout");
+    let vp = viewport(N, N);
+    let streams = [
+        Some(VertexBinding {
+            buffer: &positions_buffer,
+            offset: 0,
+        }),
+        Some(VertexBinding {
+            buffer: &colors_buffer,
+            offset: 0,
+        }),
+    ];
+    b.begin_pass(&color_pass::<B>(&v, LoadOp::Clear([0; 4])));
+    for half in 0..2 {
+        if later && half == 1 {
+            b.end_pass();
+            b.begin_pass(&color_pass::<B>(&v, LoadOp::Load));
+        }
+        b.draw(&call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(half * 4, 4),
+        ));
+    }
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let row: Vec<u8> = colors
+        .iter()
+        .flat_map(|c| [c[0], c[1], c[2], 255])
+        .collect();
+    assert_close(&got, &row.repeat(N as usize), 1, 4, N as usize);
+    ok(&mut b);
+}
+
+/// Where the back end captures (`TRANSFORM_FEEDBACK`), a capture that also draws, inside a pass: an indexed strip of
+/// 16-bit indices with a restart and a base vertex of one, two instances from the first instance (2 where
+/// `BASE_VERTEX_INSTANCE` is declared, else 0), writes each whole triangle's vertex number, instance number and x in
+/// draw order, instance after instance, and draws the triangles, which cover the target.
+pub fn captures_while_drawing_write_indexed_instances_in_draw_order<B: Gpu>(mut b: B) {
+    if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
+        return;
+    }
+    const CAPTURED: &str = "
+    struct V {
+        @builtin(position) p: vec4<f32>,
+        @location(0) @interpolate(flat) numbers: vec2<u32>,
+        @location(1) x: f32,
+    }
+    @vertex fn vs(@location(0) p: vec2<f32>, @builtin(vertex_index) v: u32,
+                  @builtin(instance_index) i: u32) -> V {
+        return V(vec4<f32>(p, 0.5, 1.0), vec2<u32>(v, i), p.x);
+    }
+    @fragment fn fs() -> @location(0) vec4<f32> {
+        return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    }
+    ";
+    let first = if b.caps().features.contains(Features::BASE_VERTEX_INSTANCE) {
+        2
+    } else {
+        0
+    };
+    // Vertex 0 is never drawn; 1 to 4 are the target's corners.
+    const CORNERS: [f32; 10] = [9.0, 9.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
+    let vb = buffer(&mut b, 40, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    b.write_buffer(&vb, 0, &floats(&CORNERS), WriteMode::Discard);
+    // Two strips of one triangle each, (0, 1, 2) and (1, 2, 3) before the base vertex.
+    let indices: [u16; 7] = [0, 1, 2, 0xffff, 1, 2, 3];
+    let ib = buffer(&mut b, 16, BufferUsage::INDEX | BufferUsage::COPY_DST);
+    let index_bytes: Vec<u8> = indices
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .chain([0, 0])
+        .collect();
+    b.write_buffer(&ib, 0, &index_bytes, WriteMode::Discard);
+    let v = shader(&mut b, CAPTURED, "vs", ShaderStage::Vertex);
+    let f = shader(&mut b, CAPTURED, "fs", ShaderStage::Fragment);
+    let p = b
+        .create_program(&Program::Render {
+            vertex: &v,
+            fragment: Some(&f),
+        })
+        .expect("create_program");
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let vp = viewport(2, 2);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let call = DrawCall {
+        program: &p,
+        blend: &bl,
+        depth_stencil: &ds,
+        raster: &rs,
+        vertex_layout: &vl,
+        bindings: [None; MAX_BINDING_SETS],
+        vertex_buffers: &streams,
+        index: Some(IndexBinding {
+            buffer: &ib,
+            offset: 0,
+            format: IndexFormat::U16,
+        }),
+        topology: Topology::TriangleStrip,
+        restart: true,
+        viewports: &vp,
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Indexed {
+            first: 0,
+            count: 7,
+            base_vertex: 1,
+            first_instance: first,
+            instances: 2,
+        },
+    };
+    let mut expected = Vec::new();
+    for instance in first..first + 2 {
+        for number in [1u32, 2, 3, 2, 3, 4] {
+            expected.extend(number.to_le_bytes());
+            expected.extend(instance.to_le_bytes());
+            expected.extend(CORNERS[number as usize * 2].to_le_bytes());
+        }
+    }
+    let size = expected.len() as u64;
+    let target = buffer(
+        &mut b,
+        size + 8,
+        BufferUsage::CAPTURE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(
+        &target,
+        0,
+        &pattern(size as usize + 8, 3),
+        WriteMode::Ordered,
+    );
+    let (t, view) = rgba8_target(&mut b, 2);
+    b.begin_pass(&color_pass::<B>(&view, LoadOp::Clear([0; 4])));
+    b.capture_vertices(
+        &call,
+        &[BufferRange {
+            buffer: &target,
+            offset: 0,
+            size,
+        }],
+        true,
+    )
+    .expect("capture_vertices");
+    b.end_pass();
+    let got = read_buffer(&mut b, &target, 0, size + 8);
+    assert_eq!(
+        &got[..size as usize],
+        &expected[..],
+        "the captured vertices"
+    );
+    assert_eq!(
+        &got[size as usize..],
+        &pattern(size as usize + 8, 3)[size as usize..],
+        "the bytes after"
+    );
+    let drawn = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(2, 2, 1), 4);
+    assert_eq!(drawn, [255, 0, 0, 255].repeat(4), "the drawn triangles");
+    ok(&mut b);
+}
+
+/// Where the back end captures (`TRANSFORM_FEEDBACK`), a draw of the same stream inside the capture's pass, then a
+/// capture that also draws: a list of one triangle from vertex 1, two instances.
+pub fn a_capture_after_a_draw_of_its_stream_in_one_pass_writes_its_vertices<B: Gpu>(b: B) {
+    capture_after_a_draw(b, false, false);
+}
+
+/// The same with an indexed strip, its restart and base vertex, the draw of the same stream and indices inside the
+/// capture's pass.
+pub fn a_capture_after_an_indexed_draw_of_its_buffers_in_one_pass_writes_its_vertices<B: Gpu>(
+    b: B,
+) {
+    capture_after_a_draw(b, true, false);
+}
+
+/// The same list, the draw in a pass before the capture's that is not yet submitted.
+pub fn a_capture_after_a_draw_of_its_stream_in_an_earlier_pass_writes_its_vertices<B: Gpu>(b: B) {
+    capture_after_a_draw(b, false, true);
+}
+
+/// The same indexed strip, the draw in a pass before the capture's that is not yet submitted.
+pub fn a_capture_after_an_indexed_draw_of_its_buffers_in_an_earlier_pass_writes_its_vertices<
+    B: Gpu,
+>(
+    b: B,
+) {
+    capture_after_a_draw(b, true, true);
+}
+
+/// Draws a call, then captures the same call while drawing it, as a program that captures what it drew a moment ago
+/// does: the draw in the capture's pass, or (`earlier`) in a pass before it, not yet submitted. The capture writes each
+/// whole triangle's vertex number, instance number and x in draw order and nothing after them, the draws cover what
+/// they cover, and the device stays. Indexed, the call is the indexed strip of
+/// [`captures_while_drawing_write_indexed_instances_in_draw_order`]; else a list of one triangle from vertex 1.
+fn capture_after_a_draw<B: Gpu>(mut b: B, indexed: bool, earlier: bool) {
+    if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
+        return;
+    }
+    const CAPTURED: &str = "
+    struct V {
+        @builtin(position) p: vec4<f32>,
+        @location(0) @interpolate(flat) numbers: vec2<u32>,
+        @location(1) x: f32,
+    }
+    @vertex fn vs(@location(0) p: vec2<f32>, @builtin(vertex_index) v: u32,
+                  @builtin(instance_index) i: u32) -> V {
+        return V(vec4<f32>(p, 0.5, 1.0), vec2<u32>(v, i), p.x);
+    }
+    @fragment fn fs() -> @location(0) vec4<f32> {
+        return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    }
+    ";
+    let first = if b.caps().features.contains(Features::BASE_VERTEX_INSTANCE) {
+        2
+    } else {
+        0
+    };
+    // Vertex 0 is never drawn; 1 to 4 are the target's corners.
+    const CORNERS: [f32; 10] = [9.0, 9.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
+    let vb = buffer(&mut b, 40, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    b.write_buffer(&vb, 0, &floats(&CORNERS), WriteMode::Discard);
+    let indices: [u16; 7] = [0, 1, 2, 0xffff, 1, 2, 3];
+    let ib = buffer(&mut b, 16, BufferUsage::INDEX | BufferUsage::COPY_DST);
+    let index_bytes: Vec<u8> = indices
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .chain([0, 0])
+        .collect();
+    b.write_buffer(&ib, 0, &index_bytes, WriteMode::Discard);
+    let p = program(&mut b, CAPTURED, "vs", "fs");
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let vp = viewport(2, 2);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let (index, topology, restart, range, numbers): (_, _, _, _, &[u32]) = if indexed {
+        (
+            Some(IndexBinding {
+                buffer: &ib,
+                offset: 0,
+                format: IndexFormat::U16,
+            }),
+            Topology::TriangleStrip,
+            true,
+            DrawRange::Indexed {
+                first: 0,
+                count: 7,
+                base_vertex: 1,
+                first_instance: first,
+                instances: 2,
+            },
+            &[1, 2, 3, 2, 3, 4],
+        )
+    } else {
+        (
+            None,
+            Topology::TriangleList,
+            false,
+            DrawRange::Vertices {
+                first: 1,
+                count: 3,
+                first_instance: first,
+                instances: 2,
+            },
+            &[1, 2, 3],
+        )
+    };
+    let call = DrawCall {
+        program: &p,
+        blend: &bl,
+        depth_stencil: &ds,
+        raster: &rs,
+        vertex_layout: &vl,
+        bindings: [None; MAX_BINDING_SETS],
+        vertex_buffers: &streams,
+        index,
+        topology,
+        restart,
+        viewports: &vp,
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range,
+    };
+    let mut expected = Vec::new();
+    for instance in first..first + 2 {
+        for &number in numbers {
+            expected.extend(number.to_le_bytes());
+            expected.extend(instance.to_le_bytes());
+            expected.extend(CORNERS[number as usize * 2].to_le_bytes());
+        }
+    }
+    let size = expected.len() as u64;
+    let target = buffer(
+        &mut b,
+        size + 8,
+        BufferUsage::CAPTURE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(
+        &target,
+        0,
+        &pattern(size as usize + 8, 5),
+        WriteMode::Ordered,
+    );
+    let (t, view) = rgba8_target(&mut b, 2);
+    b.begin_pass(&color_pass::<B>(&view, LoadOp::Clear([0; 4])));
+    b.draw(&call);
+    if earlier {
+        b.end_pass();
+        b.begin_pass(&color_pass::<B>(&view, LoadOp::Load));
+    }
+    b.capture_vertices(
+        &call,
+        &[BufferRange {
+            buffer: &target,
+            offset: 0,
+            size,
+        }],
+        true,
+    )
+    .expect("capture_vertices");
+    b.end_pass();
+    ok(&mut b);
+    let got = read_buffer(&mut b, &target, 0, size + 8);
+    assert_eq!(
+        &got[..size as usize],
+        &expected[..],
+        "the captured vertices"
+    );
+    assert_eq!(
+        &got[size as usize..],
+        &pattern(size as usize + 8, 5)[size as usize..],
+        "the bytes after"
+    );
+    if indexed {
+        let drawn = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(2, 2, 1), 4);
+        assert_eq!(drawn, [255, 0, 0, 255].repeat(4), "the drawn triangles");
+    }
+    ok(&mut b);
+}
+
+/// The 24-bit depth words [`depth_copies_through_buffers_keep_their_pitches_and_values`] copies: the ends, the steps
+/// around one half, and others spread between.
+const DEPTH24_WORDS: [u32; 18] = [
+    0, 1, 2, 0x7f_fffe, 0x7f_ffff, 0x80_0000, 0x80_0001, 0xff_fffe, 0xff_ffff, 0x12_3456,
+    0xab_cdef, 0x55_5555, 0xaa_aaaa, 0x00_ff00, 0x3f_ffff, 0xc0_0000, 0x01_0000, 0x00_8001,
+];
+
+/// Copies 24-bit depth words from a buffer into a region of a two-layer texture and back out into another buffer,
+/// each at an offset and a row pitch past the region's rows, with rows between the layers: for `Depth24Plus` and for
+/// the depth of `Depth24PlusStencil8`, every word comes back within one step of 2^-24, the bytes between rows and
+/// layers are kept, the texels around the region keep their depth, and the stencil keeps its bytes. Where the format
+/// copies out.
+pub fn depth_copies_through_buffers_keep_their_pitches_and_values<B: Gpu>(mut b: B) {
+    for format in [Format::Depth24Plus, Format::Depth24PlusStencil8] {
+        if b.caps().formats.uses[format as usize].contains(FormatUse::COPY_OUT) {
+            depth_copies_through_buffers(&mut b, format);
+        }
+    }
+}
+
+/// [`depth_copies_through_buffers_keep_their_pitches_and_values`] for one format.
+fn depth_copies_through_buffers<B: Gpu>(b: &mut B, format: Format) {
+    let has_stencil = format == Format::Depth24PlusStencil8;
+    // A 5 by 4 texture of two layers; the region is 3 by 3 from (1, 1) in both.
+    let (width, height, layers) = (5u32, 4u32, 2u32);
+    let (rx, ry, rw, rh) = (1u32, 1u32, 3u32, 3u32);
+    let t = texture(
+        b,
+        format,
+        (width, height),
+        layers,
+        1,
+        TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
+    );
+    let whole = |layer, stencil| TextureRegion {
+        stencil,
+        ..region(&t, 0, layer, 0, 0)
+    };
+    let texels = (width * height) as usize;
+    // The background: depth one quarter everywhere, and a stencil pattern.
+    let quarter = 0x40_0000u32;
+    let background: Vec<u8> = (0..texels * layers as usize)
+        .flat_map(|_| quarter.to_le_bytes())
+        .collect();
+    b.write_texture(
+        &whole(0, false),
+        extent(width, height, layers),
+        &background,
+        width * 4,
+        height,
+        WriteMode::Ordered,
+    );
+    let stencil = pattern(texels * layers as usize, 9);
+    if has_stencil {
+        b.write_texture(
+            &whole(0, true),
+            extent(width, height, layers),
+            &stencil,
+            width,
+            height,
+            WriteMode::Ordered,
+        );
+    }
+    // The source: from byte 12, rows 20 bytes apart (12 of words, 8 between), layers 4 rows apart.
+    let (in_offset, in_pitch, in_rows) = (12u32, 20u32, 4u32);
+    let word_of = |layer: u32, y: u32, x: u32| {
+        DEPTH24_WORDS[((layer * rh + y) * rw + x) as usize % DEPTH24_WORDS.len()]
+    };
+    let in_size = in_offset + layers * in_rows * in_pitch;
+    let mut source = pattern(in_size as usize, 3);
+    for layer in 0..layers {
+        for y in 0..rh {
+            for x in 0..rw {
+                let at = (in_offset + (layer * in_rows + y) * in_pitch + x * 4) as usize;
+                source[at..at + 4].copy_from_slice(&word_of(layer, y, x).to_le_bytes());
+            }
+        }
+    }
+    let src = buffer(
+        b,
+        u64::from(in_size),
+        BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&src, 0, &source, WriteMode::Ordered);
+    b.copy_buffer_to_texture(
+        &CopyBufferTexture {
+            buffer: &src,
+            offset: u64::from(in_offset),
+            row_pitch: in_pitch,
+            rows_per_layer: in_rows,
+        },
+        &region(&t, 0, 0, rx, ry),
+        extent(rw, rh, layers),
+    );
+    // The destination: from byte 8, rows 16 bytes apart (12 of words, 4 between), layers 3 rows apart.
+    let (out_offset, out_pitch, out_rows) = (8u32, 16u32, 3u32);
+    let out_size = out_offset + layers * out_rows * out_pitch + 4;
+    let before = pattern(out_size as usize, 7);
+    let dst = buffer(
+        b,
+        u64::from(out_size),
+        BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&dst, 0, &before, WriteMode::Ordered);
+    b.copy_texture_to_buffer(
+        &region(&t, 0, 0, rx, ry),
+        &CopyBufferTexture {
+            buffer: &dst,
+            offset: u64::from(out_offset),
+            row_pitch: out_pitch,
+            rows_per_layer: out_rows,
+        },
+        extent(rw, rh, layers),
+    );
+    let got = read_buffer(b, &dst, 0, u64::from(out_size));
+    let near = |got: u32, expected: u32| (got & 0xff_ffff).abs_diff(expected) <= 1;
+    let mut expected = before;
+    for layer in 0..layers {
+        for y in 0..rh {
+            for x in 0..rw {
+                let at = (out_offset + (layer * out_rows + y) * out_pitch + x * 4) as usize;
+                let word = u32::from_le_bytes(got[at..at + 4].try_into().expect("a word"));
+                let wanted = word_of(layer, y, x);
+                assert!(
+                    near(word, wanted),
+                    "{format:?} word of layer {layer} row {y} column {x}: {word:#x}, not {wanted:#x}"
+                );
+                // The word's own bytes are checked above; every other byte is as it was.
+                expected[at..at + 4].copy_from_slice(&got[at..at + 4]);
+            }
+        }
+    }
+    assert_eq!(got, expected, "{format:?}: bytes outside the words");
+    // The texture: the region holds the words, the texels around it a quarter.
+    let depth = read_texture(b, whole(0, false), extent(width, height, layers), 4);
+    for layer in 0..layers {
+        for y in 0..height {
+            for x in 0..width {
+                let at = (((layer * height + y) * width + x) * 4) as usize;
+                let word = u32::from_le_bytes(depth[at..at + 4].try_into().expect("a word"));
+                let inside = (rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y);
+                let wanted = if inside {
+                    word_of(layer, y - ry, x - rx)
+                } else {
+                    quarter
+                };
+                assert!(
+                    near(word, wanted),
+                    "{format:?} texel of layer {layer} at ({x}, {y}): {word:#x}, not {wanted:#x}"
+                );
+            }
+        }
+    }
+    if has_stencil {
+        let got = read_texture(b, whole(0, true), extent(width, height, layers), 1);
+        assert_eq!(got, stencil, "{format:?} stencil");
+    }
+    ok(b);
+}
+
 /// Runs each suite function as its own test on a back end made anew for every test.
 ///
 /// A back end is built alone through [`StandaloneGpu`], so every implementation says `StandaloneGpu: yes`.
@@ -5606,6 +7390,106 @@ macro_rules! tests {
         #[test]
         fn read_backs_finish_into_changing_bytes() {
             $crate::read_backs_finish_into_changing_bytes($value);
+        }
+
+        #[test]
+        fn indirect_draws_and_dispatches_read_their_arguments_when_they_run() {
+            $crate::indirect_draws_and_dispatches_read_their_arguments_when_they_run($value);
+        }
+
+        #[test]
+        fn timestamps_between_passes_read_back_in_order() {
+            $crate::timestamps_between_passes_read_back_in_order($value);
+        }
+
+        #[test]
+        fn programs_ask_a_texture_its_levels_and_samples() {
+            $crate::programs_ask_a_texture_its_levels_and_samples($value);
+        }
+
+        #[test]
+        fn bgra4_texels_sample_and_copy_in_direct3d_bit_order() {
+            $crate::bgra4_texels_sample_and_copy_in_direct3d_bit_order($value);
+        }
+
+        #[test]
+        fn depth_bounds_keep_fragments_whose_stored_depth_lies_within() {
+            $crate::depth_bounds_keep_fragments_whose_stored_depth_lies_within($value);
+        }
+
+        #[test]
+        fn fragments_read_the_index_of_their_primitive() {
+            $crate::fragments_read_the_index_of_their_primitive($value);
+        }
+
+        #[test]
+        fn programs_compute_in_16_bit_floats() {
+            $crate::programs_compute_in_16_bit_floats($value);
+        }
+
+        #[test]
+        fn vertex_programs_write_storage_buffers() {
+            $crate::vertex_programs_write_storage_buffers($value);
+        }
+
+        #[test]
+        fn clip_distances_clip_where_they_are_negative() {
+            $crate::clip_distances_clip_where_they_are_negative($value);
+        }
+
+        #[test]
+        fn fractional_viewports_cover_the_centres_within_them() {
+            $crate::fractional_viewports_cover_the_centres_within_them($value);
+        }
+
+        #[test]
+        fn prepared_combinations_draw_as_those_built_at_the_draw() {
+            $crate::prepared_combinations_draw_as_those_built_at_the_draw($value);
+        }
+
+        #[test]
+        fn instances_step_through_their_streams_at_each_streams_rate() {
+            $crate::instances_step_through_their_streams_at_each_streams_rate($value);
+        }
+
+        #[test]
+        fn a_stream_widened_on_the_host_drawn_again_in_one_pass_reads_its_elements() {
+            $crate::a_stream_widened_on_the_host_drawn_again_in_one_pass_reads_its_elements($value);
+        }
+
+        #[test]
+        fn a_stream_widened_on_the_host_drawn_again_in_a_later_pass_reads_its_elements() {
+            $crate::a_stream_widened_on_the_host_drawn_again_in_a_later_pass_reads_its_elements($value);
+        }
+
+        #[test]
+        fn captures_while_drawing_write_indexed_instances_in_draw_order() {
+            $crate::captures_while_drawing_write_indexed_instances_in_draw_order($value);
+        }
+
+        #[test]
+        fn a_capture_after_a_draw_of_its_stream_in_one_pass_writes_its_vertices() {
+            $crate::a_capture_after_a_draw_of_its_stream_in_one_pass_writes_its_vertices($value);
+        }
+
+        #[test]
+        fn a_capture_after_an_indexed_draw_of_its_buffers_in_one_pass_writes_its_vertices() {
+            $crate::a_capture_after_an_indexed_draw_of_its_buffers_in_one_pass_writes_its_vertices($value);
+        }
+
+        #[test]
+        fn a_capture_after_a_draw_of_its_stream_in_an_earlier_pass_writes_its_vertices() {
+            $crate::a_capture_after_a_draw_of_its_stream_in_an_earlier_pass_writes_its_vertices($value);
+        }
+
+        #[test]
+        fn a_capture_after_an_indexed_draw_of_its_buffers_in_an_earlier_pass_writes_its_vertices() {
+            $crate::a_capture_after_an_indexed_draw_of_its_buffers_in_an_earlier_pass_writes_its_vertices($value);
+        }
+
+        #[test]
+        fn depth_copies_through_buffers_keep_their_pitches_and_values() {
+            $crate::depth_copies_through_buffers_keep_their_pitches_and_values($value);
         }
 
         $crate::tests!(@StandaloneGpu $standalone_gpu ($value) $(($standalone_gpu_value))?);

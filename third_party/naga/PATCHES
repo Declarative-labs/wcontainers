@@ -1,0 +1,22 @@
+Patches to this copy of naga 30.0.2 made by the Metal track (branch graphics-metal). None is sent upstream.
+The other tracks' changes to this copy are listed in docs/status-graphics-shaders.md.
+
+1. Instance step rates in the MSL writer's vertex pulling (2026-11-25).
+
+   What it changes:
+   - src/back/msl/mod.rs: `VertexBufferStepMode` gains `ByInstanceRate(u32)`. A new variant, not a field on
+     `ByInstance`, so that wgpu-hal 30.0.2, which names `ByInstance` and is built against this copy, builds unchanged.
+   - src/back/msl/writer.rs: a vertex function that pulls a buffer of `ByInstanceRate(n)` also takes
+     `[[base_instance]]` (or the entry point's own `BaseInstance` input, where it has one) beside `[[instance_id]]`,
+     and reads element `base + (instance - base) / n`, or `base` for a rate of zero. The other step modes write
+     the same MSL as before; their index names are now held as `String`.
+
+   Why: Direct3D's per-instance step rate (`D3D11_INPUT_ELEMENT_DESC::InstanceDataStepRate`), which the interface's
+   `StepMode::Instance(n)` carries (crates/gpu/src/state.rs) and `Features::INSTANCE_STEP_RATE` declares. The Metal
+   implementation reads vertex buffers through this writer's vertex pulling, which stepped by one instance only.
+   Metal's `[[instance_id]]` counts from the base instance, so the step is taken from the base.
+
+   Tests in our own crates that fail without it (measured: with the rate's index written as the instance's, both
+   fail): crates/metal/conformance/suite.rs `steps_instance_buffers_by_their_rate` (rates 1, 2, 3 and 0 from base
+   instance 2) and the shared suite's `instances_step_through_their_streams_at_each_streams_rate`
+   (crates/gpu-test/src/suite/draws.rs).
