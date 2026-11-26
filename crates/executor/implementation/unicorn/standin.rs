@@ -5,6 +5,7 @@
 //! are handles that may move between threads, and its memories, threads and blocks are its [`Machine`] there.
 
 use std::collections::{BTreeMap, HashMap};
+use std::convert::Infallible;
 use std::future::Ready;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -28,7 +29,8 @@ use wcontainers_processor_architecture_arm64::encoding::{IMM16, RN};
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, ExclusiveMonitor, FaultStatus,
-    INSTRUCTION_SIZE, InstructionFetch, PagePermission, Processor, User, WaitInstruction,
+    INSTRUCTION_SIZE, Instruction, InstructionFetch, PagePermission, Processor, User,
+    WaitInstruction,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -68,11 +70,6 @@ pub enum Unsupported {
     TrapOrUndefined { pc: u64, word: u32 },
     /// The state names memory past the end of the stand-in's spaces.
     BeyondSpace { end: u64 },
-    /// A data access to a tagged address whose untagged page allows it: Linux ignores the top byte of a data address
-    /// (TCR_EL1.TBI0) and unicorn does not, so the access faulted where Linux's does not.
-    TaggedAccess { pc: u64, address: u64 },
-    /// A branch to a tagged address, whose top byte Linux's branch handles and unicorn's keeps.
-    TaggedBranch { pc: u64, target: u64 },
 }
 
 /// The bits of an address below its tag, the top byte a program's data addresses carry on Linux.
@@ -532,21 +529,6 @@ fn execute_in_place(
             .unwrap_or(PagePermission::Unmapped)
     };
     let exception = match exit {
-        Ok(
-            Exit::MemoryFault {
-                address,
-                access: Access::Execute,
-            }
-            | Exit::AlignmentFault { address },
-        ) if address != pc && address & UNTAGGED != address => {
-            return (
-                Err(Unsupported::TaggedBranch {
-                    pc,
-                    target: address,
-                }),
-                instructions,
-            );
-        }
         // Unicorn stops a counted turn as it fetches the next instruction, so a fetch fault anywhere but at the
         // instruction run belongs to the next one: the instruction completed.
         Ok(
@@ -556,15 +538,6 @@ fn execute_in_place(
             }
             | Exit::AlignmentFault { address },
         ) if address != pc => None,
-        Ok(Exit::MemoryFault { address, access })
-            if address & UNTAGGED != address
-                && to_permissions(permission_at(address & UNTAGGED)).contains(match access {
-                    Access::Write => Permissions::WRITE,
-                    Access::Read | Access::Execute => Permissions::READ,
-                }) =>
-        {
-            return (Err(Unsupported::TaggedAccess { pc, address }), instructions);
-        }
         Ok(Exit::IllegalInstruction) => match to_undefined_exception(word, pc) {
             Ok(exception) => Some(exception),
             Err(unsupported) => return (Err(unsupported), instructions),
@@ -995,9 +968,49 @@ const THREE_SAME_HALF_UNALLOCATED: [u32; 8] = [
     0b00101, 0b01011, 0b01100, 0b01101, 0b10001, 0b11001, 0b11011, 0b11111,
 ];
 
+/// The first-fault gathers of elements wider than a byte, on some state of each of which unicorn ends the host process
+/// with SIGSEGV (MEASURED: each instruction alone in a probe over its generated states, 2026-11-26; the byte gathers, the
+/// contiguous first-fault and the non-fault loads ran to the end).
+const CRASHING_GATHERS: [Instruction<Infallible>; 27] = [
+    Instruction::Ldff1wGatherExtendedOffset,
+    Instruction::Ldff1shGatherSCALEDExtendedOffset32,
+    Instruction::Ldff1hGatherSCALEDExtendedOffset32,
+    Instruction::Ldff1wGatherSCALEDExtendedOffset,
+    Instruction::Ldff1shGatherImmediate32,
+    Instruction::Ldff1wGatherImmediate,
+    Instruction::Ldff1hGatherImmediate32,
+    Instruction::Ldff1shGatherExtendedOffset64,
+    Instruction::Ldff1swGatherExtendedOffset64,
+    Instruction::Ldff1dGatherExtendedOffset,
+    Instruction::Ldff1hGatherExtendedOffset64,
+    Instruction::Ldff1wGatherExtendedOffset64,
+    Instruction::Ldff1shGatherSCALEDExtendedOffset64,
+    Instruction::Ldff1swGatherSCALEDExtendedOffset64,
+    Instruction::Ldff1dGatherSCALEDExtendedOffset,
+    Instruction::Ldff1hGatherSCALEDExtendedOffset64,
+    Instruction::Ldff1wGatherSCALEDExtendedOffset64,
+    Instruction::Ldff1shGatherImmediate64,
+    Instruction::Ldff1swGatherImmediate64,
+    Instruction::Ldff1dGatherImmediate,
+    Instruction::Ldff1hGatherImmediate64,
+    Instruction::Ldff1wGatherImmediate64,
+    Instruction::Ldff1shGatherSCALED64,
+    Instruction::Ldff1swGatherSCALED64,
+    Instruction::Ldff1dGatherSCALED,
+    Instruction::Ldff1hGatherSCALED64,
+    Instruction::Ldff1wGatherSCALED64,
+];
+
 /// Returns whether the emulator ends the host process on the word: an unallocated Advanced SIMD three same (FP16)
-/// encoding, which its decoder reaches an assertion on instead of raising an undefined instruction.
+/// encoding, which its decoder reaches an assertion on instead of raising an undefined instruction, or one of
+/// [`CRASHING_GATHERS`].
 fn aborts_emulator(word: u32) -> bool {
+    if CRASHING_GATHERS
+        .iter()
+        .any(|gather| gather.to_fixed_bits().is_matching(word))
+    {
+        return true;
+    }
     if word & THREE_SAME_HALF_MASK != THREE_SAME_HALF_VALUE {
         return false;
     }
