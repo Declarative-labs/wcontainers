@@ -5,7 +5,7 @@
 
 use std::rc::Rc;
 
-use wcontainers_gpu::{GpuError, RingKind};
+use wcontainers_gpu::{BufferUsage, GpuError, RingKind};
 use wcontainers_metal::Metal;
 
 use crate::MetalGpu;
@@ -104,6 +104,11 @@ impl<M: Metal> MetalGpu<M> {
                         self.rings[slot].chunks.push(Chunk {
                             buffer: Shared(Rc::new(BufferObj {
                                 size,
+                                // The uses the trait's default ring is made for.
+                                usage: match kind {
+                                    RingKind::Indices => BufferUsage::INDEX,
+                                    RingKind::Data => BufferUsage::VERTEX | BufferUsage::UNIFORM,
+                                } | BufferUsage::COPY_DST,
                                 raw: raw.into(),
                                 last_use: 0.into(),
                             })),

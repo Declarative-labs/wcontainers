@@ -11,7 +11,7 @@ use wcontainers_gpu::{
 use wcontainers_metal::Metal;
 
 use crate::objects::{Shared, VertexLayoutBlock};
-use crate::{MetalGpu, convert};
+use crate::{MetalGpu, convert, place};
 
 /// The bytes widened attributes start at multiples of, the alignment of naga's vertex reads.
 ///
@@ -288,17 +288,17 @@ impl<M: Metal> MetalGpu<M> {
             let (packed, reads) =
                 find_element_reads(first, end, source_stride, last_attribute, length)
                     .ok_or(overflow)?;
-            let resumed = self.end_open_pass();
+            // The reads wait for the work that writes the stream, which an open pass is ended for and resumed after.
             let mut bytes = Vec::new();
             for (at, size) in reads {
                 let offset = binding.offset.checked_add(at).ok_or(overflow)?;
-                let mut element = self.read_buffer_now(&raw, offset, size);
+                let mut element = vec![0; usize::try_from(size).map_err(|_| overflow)?];
+                self.read_after_use(binding.buffer, offset, &mut element, place::WIDENED_READS)?;
                 if packed != source_stride {
                     element.resize(usize::try_from(packed).map_err(|_| overflow)?, 0);
                 }
                 bytes.extend_from_slice(&element);
             }
-            self.pass = resumed;
             let size = |n: u64| usize::try_from(n).map_err(|_| overflow);
             // The elements before the first the draw reads stay zero.
             let mut out = vec![0; size(first.checked_mul(u64::from(stride)).ok_or(overflow)?)?];

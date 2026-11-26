@@ -24,7 +24,7 @@ use crate::objects::{
     BufferObj, DepthStencilBlock, ProgramObj, SetResource, ShaderObj, Shared, SlotKind,
     VertexLayoutBlock,
 };
-use crate::{MetalGpu, VERTEX_STREAMS};
+use crate::{MetalGpu, VERTEX_STREAMS, place};
 
 /// The bind group of a capture variant's own buffers: one past the last group a draw binds, so no binding set meets it.
 const CAPTURE_GROUP: u32 = MAX_BINDING_SETS as u32;
@@ -601,6 +601,8 @@ fn as_list(topology: Topology) -> Topology {
 
 impl<M: Metal> MetalGpu<M> {
     /// Returns the bytes `size` long from `offset` of a buffer, after the work that uses it.
+    ///
+    /// That work is committed first if it is being recorded, with the open pass ended for it and resumed after.
     fn bytes_of(
         &mut self,
         buffer: &Shared<BufferObj<M>>,
@@ -608,14 +610,7 @@ impl<M: Metal> MetalGpu<M> {
         size: u64,
     ) -> Result<Vec<u8>, GpuError> {
         let mut bytes = vec![u8::MIN; usize::try_from(size).map_err(|_| GpuError::OutOfMemory)?];
-        self.read_back_now(
-            &wcontainers_gpu::ReadSource::Buffer {
-                buffer,
-                offset,
-                size,
-            },
-            &mut bytes,
-        )?;
+        self.read_after_use(buffer, offset, &mut bytes, place::CAPTURE_READS)?;
         Ok(bytes)
     }
 
@@ -827,6 +822,11 @@ impl<M: Metal> MetalGpu<M> {
             if !inside || !t.offset.is_multiple_of(u64::from(COMPONENT_BYTES)) {
                 return Err(GpuError::Invalid(
                     "a capture target past its buffer's end or off a word",
+                ));
+            }
+            if !t.buffer.usage.contains(BufferUsage::CAPTURE) {
+                return Err(GpuError::Invalid(
+                    "a capture target of a buffer made without CAPTURE",
                 ));
             }
             if reads(t.buffer) {

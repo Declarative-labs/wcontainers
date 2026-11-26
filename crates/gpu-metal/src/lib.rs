@@ -17,6 +17,98 @@ mod record;
 mod ring;
 mod vertex;
 
+/// Returns whether a pass is open at a place that would wait for, commit or nest work inside it; with the `reach`
+/// feature it counts the outcome at the place.
+macro_rules! inside_pass {
+    ($place:expr, $open:expr) => {{
+        let open: bool = $open;
+        #[cfg(feature = "reach")]
+        crate::reach::add_outcome($place, open);
+        open
+    }};
+}
+
+/// The places that would wait for, commit or nest work while a pass is open: each ends the pass and opens it again
+/// after, or refuses.
+pub mod place {
+    /// `submit`, which commits.
+    pub const SUBMIT: &str = "submit: commits";
+    /// `wait_read` of work not yet committed.
+    pub const WAIT_READ: &str = "wait_read: commits the work it waits for";
+    /// `finish_read` of work not yet committed.
+    pub const FINISH_READ: &str = "finish_read: commits the work it waits for";
+    /// `read_back_now`, which waits for the work before it.
+    pub const READ_BACK_NOW: &str = "read_back_now: commits the work it waits for";
+    /// `resolve_queries` of timestamps, which waits for the work that writes them.
+    pub const RESOLVE_QUERIES: &str = "resolve_queries: commits the work it waits for";
+    /// A capture, which reads its indices and streams on the host after the work that writes them.
+    pub const CAPTURE_READS: &str = "capture: commits the work its reads wait for";
+    /// A draw of a stream widened on the host, which reads it after the work that writes it.
+    pub const WIDENED_READS: &str = "widened stream: commits the work its reads wait for";
+    /// `present`, which draws the frame in a pass of its own and commits: refused.
+    pub const PRESENT: &str = "present: refused inside a pass";
+    /// `dispatch`, which Metal would run before the pass's draws: refused.
+    pub const DISPATCH: &str = "dispatch: refused inside a pass";
+    /// `generate_mips`, which may draw each level in a pass of its own: refused.
+    pub const GENERATE_MIPS: &str = "generate_mips: refused inside a pass";
+    /// `resolve`, a pass of its own: refused.
+    pub const RESOLVE: &str = "resolve: refused inside a pass";
+    /// `begin_pass`, which would drop the open pass's draws: refused.
+    pub const BEGIN_PASS: &str = "begin_pass: refused inside a pass";
+
+    /// Every place, which the fuzzer's reach table lists.
+    pub const ALL: &[&str] = &[
+        SUBMIT,
+        WAIT_READ,
+        FINISH_READ,
+        READ_BACK_NOW,
+        RESOLVE_QUERIES,
+        CAPTURE_READS,
+        WIDENED_READS,
+        PRESENT,
+        DISPATCH,
+        GENERATE_MIPS,
+        RESOLVE,
+        BEGIN_PASS,
+    ];
+}
+
+/// How often each place found a pass open and found none, for the fuzzer's measure of how far it reaches.
+#[cfg(feature = "reach")]
+pub mod reach {
+    use std::collections::BTreeMap;
+    use std::sync::{Mutex, PoisonError};
+
+    /// How often one place found a pass open, and found none.
+    #[derive(Clone, Copy, Default)]
+    pub struct Outcomes {
+        pub inside: u64,
+        pub outside: u64,
+    }
+
+    /// The outcomes counted at each place.
+    static OUTCOMES: Mutex<BTreeMap<&'static str, Outcomes>> = Mutex::new(BTreeMap::new());
+
+    /// Adds one to the outcomes of a place inside a pass or outside one.
+    pub(crate) fn add_outcome(place: &'static str, inside: bool) {
+        let mut outcomes = OUTCOMES.lock().unwrap_or_else(PoisonError::into_inner);
+        let counts = outcomes.entry(place).or_default();
+        if inside {
+            counts.inside = counts.inside.saturating_add(1);
+        } else {
+            counts.outside = counts.outside.saturating_add(1);
+        }
+    }
+
+    /// Returns the outcomes counted at each place so far.
+    pub fn outcomes() -> BTreeMap<&'static str, Outcomes> {
+        OUTCOMES
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+}
+
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
@@ -315,7 +407,7 @@ impl<M: Metal> MetalGpu<M> {
     fn queue_blit(&mut self, command: BlitCommand<M>) {
         if self.pass.is_some() {
             self.record_slow_path(wcontainers_gpu::SlowPath::WriteSplitPass);
-            let resumed = self.end_open_pass();
+            let resumed = self.end_open_pass_early();
             self.blits.push(command);
             self.flush_blits();
             self.pass = resumed;
@@ -386,10 +478,25 @@ impl<M: Metal> MetalGpu<M> {
         }
     }
 
-    /// Commits the command buffer being recorded, and returns its serial.
+    /// Commits the command buffer being recorded, and returns its serial; an open pass is ended for it and opened again
+    /// after, in the next command buffer.
+    fn commit_around_pass(&mut self) -> u64 {
+        let resumed = if self.pass.is_some() {
+            self.end_open_pass_early()
+        } else {
+            None
+        };
+        let serial = self.commit();
+        if resumed.is_some() {
+            self.pass = resumed;
+        }
+        serial
+    }
+
+    /// Commits the command buffer being recorded, with no pass open, and returns its serial.
     fn commit(&mut self) -> u64 {
         if self.pass.is_some() {
-            self.fail(format_args!("submit inside a pass"));
+            self.fail(format_args!("a commit inside a pass"));
             self.pass = None;
         }
         self.flush_blits();
@@ -405,10 +512,15 @@ impl<M: Metal> MetalGpu<M> {
         serial
     }
 
-    /// Blocks until the command buffer of `serial` has completed, committing it first if it is being recorded.
-    fn wait_serial(&mut self, serial: u64) {
-        if serial >= self.serial {
-            self.commit();
+    /// Blocks until the command buffer of `serial` has completed, committing it first if it is being recorded; `place`
+    /// counts whether that commit found a pass open.
+    fn wait_serial(&mut self, serial: u64, place: Option<&'static str>) {
+        let commits = serial >= self.serial;
+        if let Some(place) = place {
+            inside_pass!(place, commits && self.pass.is_some());
+        }
+        if commits {
+            self.commit_around_pass();
         }
         while self.completed < serial {
             let Some((_, command_buffer)) = self.in_flight.front().cloned() else {
@@ -575,16 +687,30 @@ impl<M: Metal> MetalGpu<M> {
         }
     }
 
-    /// Reads bytes of a buffer now, waiting for the work before.
-    fn read_buffer_now(&mut self, buffer: &M::Buffer, offset: u64, length: u64) -> Vec<u8> {
-        let serial = self.serial;
-        self.wait_serial(serial);
-        // Every caller's length is within the buffer, checked before.
-        let mut bytes = vec![0; usize::try_from(length).unwrap_or(usize::MIN)];
-        if let Err(error) = self.metal.read_contents(buffer, offset, &mut bytes) {
+    /// Reads a buffer's bytes from `offset` into `dst` once the work that uses it is done, committing that work at
+    /// `place` if it is being recorded.
+    fn read_after_use(
+        &mut self,
+        buffer: &BufferObj<M>,
+        offset: u64,
+        dst: &mut [u8],
+        place: &'static str,
+    ) -> Result<(), GpuError> {
+        if u64::try_from(dst.len())
+            .ok()
+            .and_then(|length| offset.checked_add(length))
+            .is_none_or(|end| end > buffer.size)
+        {
+            return Err(GpuError::Invalid("a read past its buffer's end"));
+        }
+        if self.busy(buffer) {
+            self.wait_serial(buffer.last_use.get(), Some(place));
+        }
+        let raw = buffer.raw.borrow().clone();
+        if let Err(error) = self.metal.read_contents(&raw, offset, dst) {
             self.fail(format_args!("read refused: {error:?}"));
         }
-        bytes
+        Ok(())
     }
 
     /// Returns the Metal slots of every resource binding a shader's entry point reads.
@@ -687,6 +813,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             .map_err(|_| GpuError::OutOfMemory)?;
         Ok(Shared(Rc::new(BufferObj {
             size: desc.size,
+            usage: desc.usage,
             raw: raw.into(),
             last_use: 0.into(),
         })))
@@ -1142,6 +1269,10 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     }
 
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
+        if inside_pass!(place::BEGIN_PASS, self.pass.is_some()) {
+            self.fail(format_args!("a pass begun inside a pass"));
+            return;
+        }
         self.flush_blits();
         self.pass = Some(OpenPass::new(pass));
     }
@@ -1346,13 +1477,18 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         dst: &TextureRegion<'_, Self>,
         format: Format,
     ) {
+        if inside_pass!(place::RESOLVE, self.pass.is_some()) {
+            self.fail(format_args!("a resolve inside a pass"));
+            return;
+        }
         if let Err(why) = self.record_resolve(src, dst, format) {
             self.fail(format_args!("{why}"));
         }
     }
 
     fn submit(&mut self) -> Self::Fence {
-        MetalFence(self.commit())
+        inside_pass!(place::SUBMIT, self.pass.is_some());
+        MetalFence(self.commit_around_pass())
     }
 
     fn fence_done(&mut self, fence: &Self::Fence) -> bool {
@@ -1361,7 +1497,11 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     }
 
     fn wait_fence(&mut self, fence: &Self::Fence) {
-        self.wait_serial(fence.0);
+        // A fence this device gave names committed work, so the wait commits nothing; one of a later serial is another
+        // device's, with none here.
+        if fence.0 < self.serial {
+            self.wait_serial(fence.0, None);
+        }
     }
 
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<Self::Readback, GpuError> {
@@ -1482,11 +1622,11 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     }
 
     fn wait_read(&mut self, readback: &Self::Readback) {
-        self.wait_serial(readback.serial);
+        self.wait_serial(readback.serial, Some(place::WAIT_READ));
     }
 
     fn finish_read(&mut self, readback: Self::Readback, dst: &mut [u8]) {
-        self.wait_serial(readback.serial);
+        self.wait_serial(readback.serial, Some(place::FINISH_READ));
         if let Some((timestamps, first)) = &readback.timestamps {
             // The length is the queries' bytes, checked against the set when the read began.
             let count = usize::try_from(readback.length / QUERY_BYTES).unwrap_or(usize::MIN);
@@ -1592,6 +1732,9 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     }
 
     fn present(&mut self, surface: &Self::Surface) -> Result<(), GpuError> {
+        if inside_pass!(place::PRESENT, self.pass.is_some()) {
+            return Err(GpuError::Invalid("a present inside a pass"));
+        }
         let (format, read) = match &*surface.frame.borrow() {
             Some(frame) => (frame.format, frame.read.clone()),
             None => return Err(GpuError::Invalid("a surface not configured")),
@@ -1637,6 +1780,9 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 "mipmaps of an integer, depth or stencil format, which the default draws as floats",
             ));
         }
+        if inside_pass!(place::GENERATE_MIPS, self.pass.is_some()) {
+            return Err(GpuError::Invalid("mipmaps generated inside a pass"));
+        }
         // Metal fills every level of every layer at once, in the texture's own format.
         let whole = mips == (1..desc.mip_levels) && layers == (0..desc.depth_or_layers);
         let filtered = self.caps.formats.uses[values as usize]
@@ -1678,19 +1824,14 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             }
             if self.busy(buffer) {
                 self.record_slow_path(wcontainers_gpu::SlowPath::ReadBackWait);
-                self.wait_serial(buffer.last_use.get());
             }
-            let raw = buffer.raw.borrow().clone();
             let length = usize::try_from(*size).unwrap_or(usize::MAX).min(dst.len());
-            if let Err(error) = self.metal.read_contents(&raw, *offset, &mut dst[..length]) {
-                self.fail(format_args!("read refused: {error:?}"));
-            }
-            return Ok(());
+            return self.read_after_use(buffer, *offset, &mut dst[..length], place::READ_BACK_NOW);
         }
         let readback = self.read_back(src)?;
         if self.read_state(&readback) == ReadState::Pending {
             self.record_slow_path(wcontainers_gpu::SlowPath::ReadBackWait);
-            self.wait_read(&readback);
+            self.wait_serial(readback.serial, Some(place::READ_BACK_NOW));
         }
         self.finish_read(readback, dst);
         Ok(())
@@ -1727,7 +1868,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             let readback = self.read_queries(set, first, count)?;
             if self.read_state(&readback) == ReadState::Pending {
                 self.record_slow_path(wcontainers_gpu::SlowPath::QueryResolveWait);
-                self.wait_read(&readback);
+                self.wait_serial(readback.serial, Some(place::RESOLVE_QUERIES));
             }
             let mut bytes = vec![0; usize::try_from(query_bytes(count)).unwrap_or(usize::MIN)];
             self.finish_read(readback, &mut bytes);
@@ -1788,6 +1929,9 @@ impl<M: Metal> Gpu for MetalGpu<M> {
     }
 
     fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {
+        if inside_pass!(place::DISPATCH, self.pass.is_some()) {
+            return Err(GpuError::Invalid("a dispatch inside a pass"));
+        }
         // An indirect dispatch's counts are read when it runs: one past `max_dispatch` on an axis dispatches nothing.
         let dispatch = match call.groups {
             DispatchGroups::Direct(groups) => {

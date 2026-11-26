@@ -6,7 +6,8 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use wcontainers_gpu::{
-    BlendDesc, DepthStencilDesc, Format, RasterDesc, ShaderStage, TextureDesc, VertexLayoutDesc,
+    BlendDesc, BufferUsage, DepthStencilDesc, Format, RasterDesc, ShaderStage, TextureDesc,
+    VertexLayoutDesc,
 };
 use wcontainers_metal::{Metal, PixelFormat};
 
@@ -36,6 +37,8 @@ impl<T> core::ops::Deref for Shared<T> {
 /// A buffer, renamed by writes that drop its contents while GPU work still uses the old storage.
 pub struct BufferObj<M: Metal> {
     pub(crate) size: u64,
+    /// The uses it was made for.
+    pub(crate) usage: BufferUsage,
     pub(crate) raw: RefCell<M::Buffer>,
     /// The serial of the last command buffer that uses the current storage.
     pub(crate) last_use: Cell<u64>,

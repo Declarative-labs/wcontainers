@@ -28,10 +28,17 @@ wcontainers-test-window-appkit = { path = "../test-window/implementation/appkit"
 name = "present"
 harness = false
 
-# The fuzzer runs each batch in a process of its own, as the main thread, where its window is made.
+# The fuzzer runs each batch in a process of its own, as the main thread, where its window is made; it counts how
+# often each place that ends a pass or refuses inside one is reached.
 [[test]]
 name = "fuzz"
 harness = false
+required-features = ["reach"]
+
+[features]
+# Counts how often each place that would wait, commit or nest work inside a pass finds one open, for the fuzzer's
+# measure of reach; never in a product.
+reach = []
 
 # The workspace's lints; src/lib.rs denies unchecked arithmetic on top of them.
 [lints]

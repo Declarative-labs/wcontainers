@@ -87,6 +87,12 @@ macro_rules! suite {
             prepared_combinations_draw_as_those_built_at_the_draw,
             instances_step_through_their_streams_at_each_streams_rate,
             captures_while_drawing_write_indexed_instances_in_draw_order,
+            a_capture_after_a_draw_of_its_stream_in_one_pass_writes_its_vertices,
+            a_capture_after_an_indexed_draw_of_its_buffers_in_one_pass_writes_its_vertices,
+            a_capture_after_a_draw_of_its_stream_in_an_earlier_pass_writes_its_vertices,
+            a_capture_after_an_indexed_draw_of_its_buffers_in_an_earlier_pass_writes_its_vertices,
+            a_stream_widened_on_the_host_drawn_again_in_one_pass_reads_its_elements,
+            a_stream_widened_on_the_host_drawn_again_in_a_later_pass_reads_its_elements,
             present_shows_the_frame,
         );
     };

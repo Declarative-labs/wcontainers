@@ -272,7 +272,7 @@ impl<M: Metal> MetalGpu<M> {
     ) -> Result<(), &'static str> {
         let resumed = if self.pass.is_some() {
             self.record_slow_path(SlowPath::WriteSplitPass);
-            self.end_open_pass()
+            self.end_open_pass_early()
         } else {
             None
         };

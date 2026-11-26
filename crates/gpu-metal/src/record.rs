@@ -1137,6 +1137,28 @@ impl<M: Metal> MetalGpu<M> {
         pass.commands.push(command);
     }
 
+    /// Ends the open pass before the caller's end, storing what it drew for the pass that goes on after it, which it
+    /// returns.
+    pub(crate) fn end_open_pass_early(&mut self) -> Option<OpenPass<M>> {
+        let mut pass = self.pass.take()?;
+        let resumed = pass.resumed();
+        // What the caller lets the end of the pass discard is still read by the pass that goes on.
+        for color in pass.colors.iter_mut().flatten() {
+            color.store = StoreOp::Store;
+        }
+        if let Some(depth) = &mut pass.depth {
+            if let Some(aspect) = &mut depth.depth {
+                aspect.store = StoreOp::Store;
+            }
+            if let Some(stencil) = &mut depth.stencil {
+                stencil.store = StoreOp::Store;
+            }
+        }
+        self.pass = Some(pass);
+        self.end_open_pass();
+        Some(resumed)
+    }
+
     /// Ends the open pass, encoding it, and returns the pass that would go on after it.
     pub(crate) fn end_open_pass(&mut self) -> Option<OpenPass<M>> {
         let pass = self.pass.take()?;

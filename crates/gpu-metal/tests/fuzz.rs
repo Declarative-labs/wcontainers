@@ -56,6 +56,10 @@ mod driver {
     /// The lines a batch prints its checks' outcomes on, one a site: refused, passed, then the site.
     pub const REACH_LINE: &str = "FUZZ-REACH";
 
+    /// The lines a batch prints the outcomes of gpu-metal's places on, one a place: with a pass open that the place
+    /// ended or refused for, otherwise, then the place.
+    pub const PLACE_LINE: &str = "FUZZ-PLACE";
+
     /// What a batch found, and how many of the bytes it read back to check were free to change.
     ///
     /// Its counts: calls, refusals, canary bytes changed, GPU errors, calls taken that had to be refused, bytes free and
@@ -120,6 +124,11 @@ mod driver {
         {
             println!("{REACH_LINE} {refused} {passed} {site}");
         }
+        for (place, wcontainers_gpu_metal::reach::Outcomes { inside, outside }) in
+            wcontainers_gpu_metal::reach::outcomes()
+        {
+            println!("{PLACE_LINE} {inside} {outside} {place}");
+        }
         if counts.clean() {
             std::process::ExitCode::SUCCESS
         } else {
@@ -167,6 +176,8 @@ mod driver {
         let mut batches = 0u64;
         let mut reach: std::collections::BTreeMap<String, [u64; 2]> =
             std::collections::BTreeMap::new();
+        let mut places: std::collections::BTreeMap<String, [u64; 2]> =
+            std::collections::BTreeMap::new();
         // The free and checked bytes of the batches of the Metal trait, then of `Gpu`.
         let mut canaries = [[0u64; 2]; 2];
         while !waiting.is_empty() || !running.is_empty() {
@@ -210,16 +221,20 @@ mod driver {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let mut counted = false;
                 for line in stdout.lines() {
-                    if let Some(rest) = line.strip_prefix(REACH_LINE) {
+                    let tables = [(REACH_LINE, &mut reach), (PLACE_LINE, &mut places)];
+                    if let Some((rest, table)) = tables
+                        .into_iter()
+                        .find_map(|(prefix, table)| Some((line.strip_prefix(prefix)?, table)))
+                    {
                         let mut words = rest.trim_start().splitn(3, ' ');
-                        let (Some(refused), Some(passed), Some(site)) =
+                        let (Some(first), Some(second), Some(name)) =
                             (words.next(), words.next(), words.next())
                         else {
                             continue;
                         };
-                        let counts = reach.entry(site.to_owned()).or_default();
-                        counts[0] = counts[0].saturating_add(refused.parse().unwrap_or(0));
-                        counts[1] = counts[1].saturating_add(passed.parse().unwrap_or(0));
+                        let counts = table.entry(name.to_owned()).or_default();
+                        counts[0] = counts[0].saturating_add(first.parse().unwrap_or(0));
+                        counts[1] = counts[1].saturating_add(second.parse().unwrap_or(0));
                         continue;
                     }
                     let words: Vec<u64> = line
@@ -304,7 +319,7 @@ mod driver {
             canaries[1][0],
             canaries[1][1]
         );
-        let holes = report_reach(&reach);
+        let holes = report_reach(&reach).saturating_add(report_places(&places));
         if holes > 0 && variable("FUZZ_REACH_REQUIRED", "0") == "1" {
             failures.push(format!("{holes} check sites without both outcomes"));
         }
@@ -313,6 +328,35 @@ mod driver {
         } else {
             Err(failures.join("\n").into())
         }
+    }
+
+    /// Prints how often each of gpu-metal's places found a pass open and found none, and returns how many places lack an
+    /// outcome; the table goes to `FUZZ_PLACE_TABLE` too, if it is set.
+    fn report_places(places: &std::collections::BTreeMap<String, [u64; 2]>) -> usize {
+        let known = wcontainers_gpu_metal::place::ALL;
+        let mut table = String::from("| Place | With a pass open | Otherwise |\n|---|---|---|\n");
+        let mut holes = 0usize;
+        for place in known {
+            let [inside, outside] = places.get(*place).copied().unwrap_or_default();
+            table.push_str(&format!("| {place} | {inside} | {outside} |\n"));
+            if inside == 0 || outside == 0 {
+                holes = holes.saturating_add(1);
+                println!("PLACE HOLE {place} ({inside} with a pass open, {outside} otherwise)");
+            }
+        }
+        let unknown: Vec<&String> = places
+            .keys()
+            .filter(|place| !known.contains(&place.as_str()))
+            .collect();
+        println!(
+            "places: {} places, {} with both outcomes, {holes} holes; unknown places {unknown:?}",
+            known.len(),
+            known.len().saturating_sub(holes)
+        );
+        if let Ok(path) = std::env::var("FUZZ_PLACE_TABLE") {
+            let _ = std::fs::write(path, table);
+        }
+        holes.saturating_add(unknown.len())
     }
 
     /// Prints how often each check site of `direct` refused and passed, and returns how many sites lack an outcome.

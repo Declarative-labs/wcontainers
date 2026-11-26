@@ -3086,3 +3086,114 @@ pub fn instances_step_through_their_streams_at_each_streams_rate<H: Host>() {
     assert_close(&got, &expected, 1, 4, N as usize);
     ok(&mut b);
 }
+
+/// A stream of a format some APIs lack (`unorm8x3`, which a back end may widen on the host before the draw), drawn
+/// twice from one buffer: the left half of the target from vertices 0 to 3, then the right half from vertices 4 to 7,
+/// the second draw in the first's pass. Each half takes its vertices' color.
+pub fn a_stream_widened_on_the_host_drawn_again_in_one_pass_reads_its_elements<H: Host>() {
+    stream_drawn_twice::<H>(false);
+}
+
+/// The same, the second draw in a pass after the first's, which is not yet submitted.
+pub fn a_stream_widened_on_the_host_drawn_again_in_a_later_pass_reads_its_elements<H: Host>() {
+    stream_drawn_twice::<H>(true);
+}
+
+/// Draws the left and the right half of a 2 by 2 target, each a strip of four vertices whose `unorm8x3` color the
+/// fragments take flat, in one pass or (`later`) the second in a pass of its own.
+fn stream_drawn_twice<H: Host>(later: bool) {
+    let mut b = H::make();
+    const N: u32 = 2;
+    const COLORED: &str = "
+    struct Out { @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) c: vec4<f32> }
+    @vertex fn vs(@location(0) p: vec2<f32>, @location(1) c: vec3<f32>) -> Out {
+        return Out(vec4<f32>(p, 0.5, 1.0), vec4<f32>(c, 1.0));
+    }
+    @fragment fn fs(i: Out) -> @location(0) vec4<f32> {
+        return i.c;
+    }
+    ";
+    const HALVES: [f32; 16] = [
+        -1.0, -1.0, -1.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0, 0.0, 1.0, 1.0, -1.0, 1.0, 1.0,
+    ];
+    let colors: [[u8; 3]; 2] = [[200, 40, 120], [30, 220, 90]];
+    // Four elements of each half's color, each three bytes and one of padding.
+    let elements: Vec<u8> = colors
+        .iter()
+        .flat_map(|c| [c[0], c[1], c[2], 0].repeat(4))
+        .collect();
+    let (t, v) = rgba8_target(&mut b, N);
+    let positions_buffer = vertex_buffer(&mut b, &HALVES);
+    let colors_buffer = buffer(
+        &mut b,
+        elements.len() as u64,
+        BufferUsage::VERTEX | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(&colors_buffer, 0, &elements, WriteMode::Discard);
+    let p = program(&mut b, COLORED, "vs", "fs");
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let rs = raster(&mut b, CullMode::None);
+    let mut desc = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    desc.streams[0] = Some(VertexStream {
+        stride: 8,
+        step: StepMode::Vertex,
+    });
+    desc.attributes[0] = Some(VertexAttribute {
+        location: 0,
+        stream: 0,
+        offset: 0,
+        format: VertexFormat::Float32x2,
+    });
+    desc.streams[1] = Some(VertexStream {
+        stride: 4,
+        step: StepMode::Vertex,
+    });
+    desc.attributes[1] = Some(VertexAttribute {
+        location: 1,
+        stream: 1,
+        offset: 0,
+        format: VertexFormat::Unorm8x3,
+    });
+    let vl = b.create_vertex_layout(&desc).expect("create_vertex_layout");
+    let vp = viewport(N, N);
+    let streams = [
+        Some(VertexBinding {
+            buffer: &positions_buffer,
+            offset: 0,
+        }),
+        Some(VertexBinding {
+            buffer: &colors_buffer,
+            offset: 0,
+        }),
+    ];
+    b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Clear([0; 4])));
+    for half in 0..2 {
+        if later && half == 1 {
+            b.end_pass();
+            b.begin_pass(&color_pass::<H::Backend>(&v, LoadOp::Load));
+        }
+        b.draw(&call(
+            &p,
+            &bl,
+            &ds,
+            &rs,
+            &vl,
+            &streams,
+            &vp,
+            Topology::TriangleStrip,
+            vertices(half * 4, 4),
+        ));
+    }
+    b.end_pass();
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    let row: Vec<u8> = colors
+        .iter()
+        .flat_map(|c| [c[0], c[1], c[2], 255])
+        .collect();
+    assert_close(&got, &row.repeat(N as usize), 1, 4, N as usize);
+    ok(&mut b);
+}

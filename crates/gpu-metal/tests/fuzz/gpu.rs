@@ -93,6 +93,10 @@ struct Color { value: vec4<f32> }
     var p = array(vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
     return vec4<f32>(p[i % 3u], 0.5, 1.0);
 }
+struct Captured { @builtin(position) p: vec4<f32>, @location(0) at: vec2<f32>, @location(1) @interpolate(flat) i: u32 }
+@vertex fn vs_captured(@location(0) p: vec2<f32>, @builtin(vertex_index) i: u32) -> Captured {
+    return Captured(vec4<f32>(p, 0.5, 1.0), p, i);
+}
 @vertex fn vs_pulled(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
     let w = source[i];
     return vec4<f32>(f32(w & 3u) - 1.0, f32((w >> 2u) & 3u) - 1.0, 0.5, 1.0);
@@ -123,6 +127,7 @@ const ENTRIES: &[(&str, ShaderStage)] = &[
     ("vs_input", ShaderStage::Vertex),
     ("vs_index", ShaderStage::Vertex),
     ("vs_pulled", ShaderStage::Vertex),
+    ("vs_captured", ShaderStage::Vertex),
     ("fs_color", ShaderStage::Fragment),
     ("fs_texture", ShaderStage::Fragment),
     ("fs_uint", ShaderStage::Fragment),
@@ -319,10 +324,99 @@ struct World {
     readbacks: Vec<<B as Gpu>::Readback>,
     fences: Vec<<B as Gpu>::Fence>,
     surfaces: Vec<<B as Gpu>::Surface>,
+    /// What a capture after a draw of its own buffers draws with: a program that writes location outputs, its vertex
+    /// layout, and a target to draw into.
+    capture: Option<CaptureScene>,
     in_pass: bool,
     /// Whether the device was lost: once it is, a write may be dropped, so it no longer makes its bytes known.
     lost: bool,
     counts: Counts,
+}
+
+/// How often, in percent, a call the interface makes outside a pass comes after the open pass is ended.
+const LEAVES_PASS: u64 = 80;
+
+/// How often, in percent, a call whose refusal inside a pass loses the device comes after the open pass is ended.
+const LEAVES_PASS_BEFORE_A_LOSS: u64 = 98;
+
+/// What a capture after a draw of its own buffers draws with.
+#[derive(Clone)]
+struct CaptureScene {
+    program: <B as Gpu>::Program,
+    layout: <B as Gpu>::VertexLayout,
+    target: <B as Gpu>::TextureView,
+}
+
+/// The side of the texture a capture after a draw draws into, and of its viewport.
+const CAPTURE_SIDE: u32 = 4;
+
+/// The side of the frame of a surface a present makes when the batch holds none.
+const FRAME_SIDE: u32 = 4;
+
+/// The bytes of a capture's target, which hold every vertex such a capture makes.
+const CAPTURE_TARGET_BYTES: u64 = 4096;
+
+/// Makes what a capture after a draw of its own buffers draws with.
+fn capture_scene(b: &mut B) -> Option<CaptureScene> {
+    let module = ShaderModule::from_wgsl(PROGRAMS, "vs_captured", ShaderStage::Vertex).ok()?;
+    let shader = b.create_shader(&module).ok()?;
+    let program = b
+        .create_program(&Program::Render {
+            vertex: &shader,
+            fragment: None,
+        })
+        .ok()?;
+    let mut streams = [None; MAX_VERTEX_STREAMS];
+    let mut attributes = [None; MAX_VERTEX_STREAMS];
+    streams[0] = Some(VertexStream {
+        stride: size_of::<[f32; 2]>() as u32,
+        step: StepMode::Vertex,
+    });
+    attributes[0] = Some(VertexAttribute {
+        location: 0,
+        stream: 0,
+        offset: 0,
+        format: VertexFormat::Float32x2,
+    });
+    let layout = b
+        .create_vertex_layout(&VertexLayoutDesc {
+            streams,
+            attributes,
+        })
+        .ok()?;
+    let texture = b
+        .create_texture(&TextureDesc {
+            dimension: TextureDimension::D2,
+            format: Format::Rgba8Unorm,
+            width: CAPTURE_SIDE,
+            height: CAPTURE_SIDE,
+            depth_or_layers: 1,
+            mip_levels: 1,
+            samples: 1,
+            usage: TextureUsage::RENDER,
+            cube: false,
+            reinterpret: false,
+        })
+        .ok()?;
+    let target = b
+        .create_view(
+            &texture,
+            &TextureViewDesc {
+                format: Format::Rgba8Unorm,
+                dimension: ViewDimension::D2,
+                base_mip: 0,
+                mip_count: 1,
+                base_layer: 0,
+                layer_count: 1,
+                stencil: false,
+            },
+        )
+        .ok()?;
+    Some(CaptureScene {
+        program,
+        layout,
+        target,
+    })
 }
 
 /// Keeps at most `POOL` objects, dropping a random old one to make room.
@@ -390,6 +484,7 @@ pub fn run(random: &mut Random, calls: u64, window: bool) -> Counts {
         readbacks: Vec::new(),
         fences: Vec::new(),
         surfaces: Vec::new(),
+        capture: None,
         in_pass: false,
         lost: false,
         counts: Counts::default(),
@@ -403,6 +498,7 @@ pub fn run(random: &mut Random, calls: u64, window: bool) -> Counts {
     for index in 0..ENTRIES.len() {
         world.create_shader(random, index);
     }
+    world.capture = capture_scene(&mut world.b);
     for _ in 0..6 {
         world.create_buffer(random);
         world.create_texture(random);
@@ -436,7 +532,8 @@ impl World {
             23 => self.create_query_set(random),
             24..=26 => self.write(random),
             27..=29 => self.pass(random),
-            30..=41 => self.draw(random),
+            30..=39 => self.draw(random),
+            40..=41 => self.capture_after_draw(random),
             42..=43 => self.query(random),
             44..=51 => self.copy(random),
             52..=53 => self.clear_buffer(random),
@@ -483,6 +580,22 @@ impl World {
         if self.in_pass {
             self.b.end_pass();
             self.in_pass = false;
+        }
+    }
+
+    /// Ends the open pass most times, before calls the interface makes outside one: the rest reach the places that end
+    /// the pass and open it again after, or refuse inside one.
+    fn mostly_leave_pass(&mut self, random: &mut Random) {
+        if random.chance(LEAVES_PASS) {
+            self.leave_pass();
+        }
+    }
+
+    /// Ends the open pass nearly every time, before calls whose refusal inside one loses the device, which drops the
+    /// batch's checks of later writes.
+    fn nearly_always_leave_pass(&mut self, random: &mut Random) {
+        if random.chance(LEAVES_PASS_BEFORE_A_LOSS) {
+            self.leave_pass();
         }
     }
 
@@ -1363,6 +1476,127 @@ impl World {
         }
     }
 
+    /// Draws a call and then captures the same call, as a program that captures what it drew a moment ago does: in one
+    /// pass, the draw in a pass before the capture's not yet submitted, or the capture not rasterising after the pass;
+    /// the call's stream and indices are buffers of the batch, the target a buffer of its own.
+    fn capture_after_draw(&mut self, random: &mut Random) {
+        let (Some(scene), Some(blend), Some(depth_stencil), Some(raster)) = (
+            self.capture.clone(),
+            any(random, &self.blends),
+            any(random, &self.depth_stencils),
+            any(random, &self.rasters),
+        ) else {
+            return;
+        };
+        let (Some((stream, _)), Some((index, _))) =
+            (any(random, &self.buffers), any(random, &self.buffers))
+        else {
+            return;
+        };
+        let target = self.b.create_buffer(&BufferDesc {
+            size: CAPTURE_TARGET_BYTES,
+            usage: BufferUsage::CAPTURE | BufferUsage::COPY_SRC,
+            intent: MapIntent::Rarely,
+        });
+        self.counts.call(target.is_err());
+        let Ok(target) = target else {
+            return;
+        };
+        let streams = [Some(VertexBinding {
+            buffer: &stream,
+            offset: 0,
+        })];
+        let viewports = [Viewport {
+            x: 0,
+            y: 0,
+            width: (CAPTURE_SIDE as f32).to_bits(),
+            height: (CAPTURE_SIDE as f32).to_bits(),
+            min_depth: 0,
+            max_depth: 1.0f32.to_bits(),
+        }];
+        let count = random.pick(&[3, 6]);
+        let instances = random.pick(&[1, 2]);
+        let indexed = random.chance(50);
+        let call = DrawCall {
+            program: &scene.program,
+            blend: &blend,
+            depth_stencil: &depth_stencil,
+            raster: &raster,
+            vertex_layout: &scene.layout,
+            bindings: [None; 4],
+            vertex_buffers: &streams,
+            index: indexed.then_some(IndexBinding {
+                buffer: &index,
+                offset: 0,
+                format: random.pick(&[IndexFormat::U16, IndexFormat::U32]),
+            }),
+            topology: random.pick(&[
+                Topology::PointList,
+                Topology::LineList,
+                Topology::TriangleList,
+                Topology::TriangleStrip,
+            ]),
+            restart: random.chance(20),
+            viewports: &viewports,
+            scissors: &[],
+            blend_constant: [0; 4],
+            stencil_reference: [0; 2],
+            immediates: &[],
+            range: if indexed {
+                DrawRange::Indexed {
+                    first: 0,
+                    count,
+                    base_vertex: 0,
+                    first_instance: 0,
+                    instances,
+                }
+            } else {
+                DrawRange::Vertices {
+                    first: 0,
+                    count,
+                    first_instance: 0,
+                    instances,
+                }
+            },
+        };
+        let mut pass = PassDesc {
+            colors: Default::default(),
+            depth: None,
+            empty: None,
+            occlusion: None,
+        };
+        pass.colors[0] = Some(ColorAttachment {
+            view: &scene.target,
+            depth_slice: 0,
+            resolve: None,
+            load: LoadOp::Load,
+            store: StoreOp::Store,
+        });
+        let how = random.below(3);
+        self.leave_pass();
+        self.b.begin_pass(&pass);
+        self.in_pass = true;
+        self.b.draw(&call);
+        self.counts.call(false);
+        if how > 0 {
+            self.leave_pass();
+        }
+        if how == 1 {
+            self.b.begin_pass(&pass);
+            self.in_pass = true;
+        }
+        let captured = self.b.capture_vertices(
+            &call,
+            &[BufferRange {
+                buffer: &target,
+                offset: 0,
+                size: CAPTURE_TARGET_BYTES,
+            }],
+            how < 2,
+        );
+        self.counts.call(captured.is_err());
+    }
+
     /// Begins or ends a query.
     fn query(&mut self, random: &mut Random) {
         if random.chance(50) {
@@ -1454,6 +1688,7 @@ impl World {
         } else {
             random.pick(FORMATS)
         };
+        self.nearly_always_leave_pass(random);
         self.b.resolve(
             &region(&src, sm, sl, so, false),
             &region(&dst, dm, dl, d_o, false),
@@ -1466,7 +1701,7 @@ impl World {
     fn submit_or_wait(&mut self, random: &mut Random) {
         match random.below(3) {
             0 => {
-                self.leave_pass();
+                self.mostly_leave_pass(random);
                 let fence = self.b.submit();
                 self.submitted();
                 keep(random, &mut self.fences, fence);
@@ -1478,7 +1713,7 @@ impl World {
             }
             _ => {
                 if let Some(fence) = any(random, &self.fences) {
-                    self.leave_pass();
+                    self.mostly_leave_pass(random);
                     self.b.wait_fence(&fence);
                 }
             }
@@ -1505,7 +1740,7 @@ impl World {
                         keep(random, &mut self.readbacks, readback);
                     }
                 } else {
-                    self.leave_pass();
+                    self.mostly_leave_pass(random);
                     let mut out = vec![0; random.pick(&[0, 4, 64, 256])];
                     let read = self.b.read_back_now(&source, &mut out);
                     self.counts.call(read.is_err());
@@ -1546,7 +1781,7 @@ impl World {
                 if let Some(readback) = any(random, &self.readbacks) {
                     let _ = self.b.read_state(&readback);
                     if random.chance(30) {
-                        self.leave_pass();
+                        self.mostly_leave_pass(random);
                         self.b.wait_read(&readback);
                     }
                     self.counts.call(false);
@@ -1554,7 +1789,7 @@ impl World {
             }
             _ => {
                 if !self.readbacks.is_empty() {
-                    self.leave_pass();
+                    self.mostly_leave_pass(random);
                     let readback = self
                         .readbacks
                         .swap_remove(random.index(self.readbacks.len()));
@@ -1609,10 +1844,24 @@ impl World {
                 }
             }
             _ => {
+                // Destroys drop surfaces often: with none, one of the batch's window is made and configured first.
+                if self.surfaces.is_empty()
+                    && let Ok(surface) = self.b.create_surface(FUZZ_WINDOW)
+                {
+                    let configured = self.b.configure_surface(
+                        &surface,
+                        Format::Bgra8Unorm,
+                        FRAME_SIDE,
+                        FRAME_SIDE,
+                        false,
+                    );
+                    self.counts.call(configured.is_err());
+                    keep(random, &mut self.surfaces, surface);
+                }
                 let Some(surface) = any(random, &self.surfaces) else {
                     return;
                 };
-                self.leave_pass();
+                self.mostly_leave_pass(random);
                 let presented = self.b.present(&surface);
                 self.counts.call(presented.is_err());
             }
@@ -1663,7 +1912,7 @@ impl World {
             let Some(made) = any(random, &self.textures) else {
                 return;
             };
-            self.leave_pass();
+            self.mostly_leave_pass(random);
             let mips = random.u32(&[0])..random.u32(&[1, made.desc.mip_levels]);
             let layers = random.u32(&[0])..random.u32(&[1, made.desc.depth_or_layers]);
             let value = if random.chance(50) {
@@ -1696,6 +1945,7 @@ impl World {
                 })
                 .collect();
             let format = random.pick(DRAWN_FORMATS);
+            self.nearly_always_leave_pass(random);
             let cleared = self
                 .b
                 .clear_rects(&view, format, ClearValue::Color([0; 4]), &rects);
@@ -1710,7 +1960,7 @@ impl World {
         };
         let mips = random.u32(&[1])..random.u32(&[made.desc.mip_levels, 2]);
         let layers = random.u32(&[0])..random.u32(&[made.desc.depth_or_layers, 1]);
-        self.leave_pass();
+        self.mostly_leave_pass(random);
         let values = if random.chance(80) {
             made.desc.format
         } else {
@@ -1748,7 +1998,7 @@ impl World {
         else {
             return;
         };
-        self.leave_pass();
+        self.mostly_leave_pass(random);
         let (first, count) = (random.u32(&[0, 1]), random.u32(&[0, 1, 2]));
         let resolved = self.b.resolve_queries(&set, first, count, &buffer, offset);
         self.counts.call(resolved.is_err());
