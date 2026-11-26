@@ -69,15 +69,65 @@ mod local {
 
 /// A value whose bytes the kernel takes as an option's value: it holds no address the kernel follows.
 ///
-/// Implemented only for numbers, runs of them, and the uapi structures `options.table` lists for sets; whether the
+/// Implemented only for bytes, runs of values, and the uapi structures `options.table` lists for sets; whether the
 /// kernel may also write into it is the table's kernel column, which picks `set_value` or `set_value_written`.
 trait Plain {}
 
-impl Plain for c_int {}
-impl Plain for u32 {}
-impl Plain for u64 {}
 impl Plain for u8 {}
 impl<T: Plain> Plain for [T] {}
+
+/// The canary bytes kept after every value or room of the implementation's own that the kernel is told of.
+///
+/// A kernel that wrote past the length it was told would change one, and the check after the call stops the program,
+/// as a stack protector does, so that a wrong kernel column in `options.table` cannot go unseen.
+const GUARD: usize = 64;
+
+/// The first canary byte; each next one adds one, so no canary is zero and no two neighbors are equal.
+const FIRST_CANARY: u8 = 0xa5;
+
+/// The canaries of a guard, in order.
+const CANARIES: [u8; GUARD] = canaries();
+
+const fn canaries() -> [u8; GUARD] {
+    let mut bytes = [FIRST_CANARY; GUARD];
+    let mut index = 0;
+    while index < GUARD {
+        bytes[index] = FIRST_CANARY.wrapping_add(index as u8);
+        index += 1;
+    }
+    bytes
+}
+
+/// A room of `ROOM` bytes the kernel is told of, followed by its guard.
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+struct Guarded<const ROOM: usize> {
+    room: [u8; ROOM],
+    guard: [u8; GUARD],
+}
+
+/// The room of a number option, the widest number a row reads or writes.
+const NUMBER_ROOM: usize = size_of::<u64>();
+
+/// Writes the canaries into `guard`, repeating them past the first `GUARD` bytes.
+fn fill_canaries(guard: &mut [u8]) {
+    for (byte, canary) in guard.iter_mut().zip(CANARIES.iter().cycle()) {
+        *byte = *canary;
+    }
+}
+
+/// Stops the program when a byte of `guard` lost its canary: the kernel wrote past what it was told.
+fn check_canaries(guard: &[u8], told: usize, name: u32) {
+    let held = guard
+        .iter()
+        .zip(CANARIES.iter().cycle())
+        .all(|(byte, canary)| byte == canary);
+    assert!(
+        held,
+        "canary changed: the kernel wrote past the {told} bytes it was told for option or request {name}, so its \
+         kernel column in options.table is wrong"
+    );
+}
 
 /// What a successful call answers.
 ///
@@ -120,8 +170,8 @@ fn set_bytes_at(
         unsafe_code,
         reason = "every caller gives `length` bytes at `value` that it owns or borrows for the call, from an exclusive \
                   borrow wherever options.table says the kernel writes into the value (the probe checks each row on the \
-                  running kernel), and holding no address the kernel follows except a `sock_fprog` (`set_program`'s or \
-                  the probe's), which points at `len` instructions held for the call; the descriptor is borrowed, so open"
+                  running kernel), and holding no address the kernel follows except `set_program`'s `sock_fprog`, which \
+                  points at `len` instructions held for the call; the descriptor is borrowed, so open"
     )]
     let result = unsafe {
         libc::setsockopt(
@@ -137,6 +187,45 @@ fn set_bytes_at(
     } else {
         Err(last_error())
     }
+}
+
+/// Sets an option to `given`, copied to the start of `buffer` with canaries after it, and checks the kernel changed none.
+fn set_guarded(
+    socket: BorrowedFd<'_>,
+    level: u32,
+    name: u32,
+    given: &[u8],
+    buffer: &mut [u8],
+) -> Result<(), HostError> {
+    let told = given.len();
+    let (value, guard) = buffer.split_at_mut_checked(told).ok_or_else(invalid)?;
+    value.copy_from_slice(given);
+    fill_canaries(guard);
+    let length = length_of(told)?;
+    let result = set_bytes_at(
+        socket,
+        level,
+        name,
+        buffer.as_mut_ptr().cast_const().cast(),
+        length,
+    );
+    assert!(
+        buffer[..told] == *given,
+        "the kernel wrote into the value of option {name}, which options.table says it only reads"
+    );
+    check_canaries(&buffer[told..], told, name);
+    result
+}
+
+/// Sets an option whose value is a number or flag, copied into a guarded room of the implementation's own.
+fn set_number<T: IntoBytes + Immutable>(
+    socket: BorrowedFd<'_>,
+    level: u32,
+    name: u32,
+    value: &T,
+) -> Result<(), HostError> {
+    let mut buffer = Guarded::<NUMBER_ROOM>::new_zeroed();
+    set_guarded(socket, level, name, value.as_bytes(), buffer.as_mut_bytes())
 }
 
 /// Sets an option to the bytes of a plain value, all of them, for an option whose value the kernel only reads.
@@ -180,18 +269,33 @@ fn set_program(
     name: u32,
     program: &[libc::sock_filter],
 ) -> Result<(), HostError> {
-    let header = libc::sock_fprog {
-        len: u16::try_from(program.len()).map_err(|_| invalid())?,
-        filter: program.as_ptr().cast_mut(),
+    let len = u16::try_from(program.len()).map_err(|_| invalid())?;
+    let filter = program.as_ptr().cast_mut();
+    let mut guarded = GuardedProgram {
+        header: libc::sock_fprog { len, filter },
+        guard: CANARIES,
     };
-    let length = length_of(size_of::<libc::sock_fprog>())?;
-    set_bytes_at(
+    let told = size_of::<libc::sock_fprog>();
+    let result = set_bytes_at(
         socket,
         level,
         name,
-        std::ptr::from_ref(&header).cast(),
-        length,
-    )
+        std::ptr::from_mut(&mut guarded).cast_const().cast(),
+        length_of(told)?,
+    );
+    assert!(
+        guarded.header.len == len && guarded.header.filter == filter,
+        "the kernel wrote into the program header of option {name}, which options.table says it only reads"
+    );
+    check_canaries(&guarded.guard, told, name);
+    result
+}
+
+/// A `struct sock_fprog` the kernel is told of, followed by its guard.
+#[repr(C)]
+struct GuardedProgram {
+    header: libc::sock_fprog,
+    guard: [u8; GUARD],
 }
 
 /// The start of `struct group_filter` before its sources, as linux-raw-sys names it.
@@ -204,7 +308,9 @@ fn set_group_filter(
     name: u32,
     filter: &GroupFilter<'_>,
 ) -> Result<(), HostError> {
-    set_value(socket, level, name, group_filter_bytes(filter)?.as_slice())
+    let given = group_filter_bytes(filter)?;
+    let mut buffer = vec![u8::MIN; given.len() + GUARD];
+    set_guarded(socket, level, name, &given, &mut buffer)
 }
 
 /// Writes a source filter as `struct group_filter` bytes, at least the structure's length.
@@ -242,15 +348,20 @@ fn group_filter_bytes(filter: &GroupFilter<'_>) -> Result<Vec<u8>, HostError> {
     Ok(bytes)
 }
 
-/// Calls `getsockopt` into `into`, giving the length the kernel wrote, never more than `into` holds.
-fn get_into(
+/// Calls `getsockopt` into the start of `buffer`, telling the kernel `told` bytes, every byte after them a canary.
+///
+/// Gives the length the kernel wrote, never more than `told`, and stops the program when a canary changed.
+fn get_guarded(
     socket: BorrowedFd<'_>,
     level: u32,
     name: u32,
-    into: &mut [u8],
+    buffer: &mut [u8],
+    told: usize,
 ) -> Result<usize, HostError> {
-    let told = into.len();
-    let written = get_within(socket, level, name, into, told)?;
+    fill_canaries(buffer.get_mut(told..).ok_or_else(invalid)?);
+    let result = get_within(socket, level, name, buffer, told);
+    check_canaries(&buffer[told..], told, name);
+    let written = result?;
     Ok(usize::try_from(written).map_or(told, |written| written.min(told)))
 }
 
@@ -270,8 +381,9 @@ fn get_within(
         unsafe_code,
         reason = "the kernel writes only inside `into`: options.table marks every option read through here `within` \
                   (at most the `told` bytes, no more than `into` holds, as the probe checks each row on the running \
-                  kernel) except `TCP_AO_GET_KEYS`, marked `past`, which writes `told` bytes per key asked, and \
-                  `get_keys` asks one, the probe as many as `into` holds; none reads an address from the value; the descriptor is borrowed, so open"
+                  kernel and the canaries after `told` check on every call) except `TCP_AO_GET_KEYS`, marked `past`, \
+                  which writes `told` bytes per key asked, and `get_keys` asks at most one; the generator refuses any \
+                  other form for these columns; none reads an address from the value; the descriptor is borrowed, so open"
     )]
     let result = unsafe {
         libc::getsockopt(
@@ -294,9 +406,15 @@ fn get_value<T: FromBytes + IntoBytes>(
     level: u32,
     name: u32,
 ) -> Result<T, HostError> {
-    let mut value = T::new_zeroed();
-    get_into(socket, level, name, value.as_mut_bytes())?;
-    Ok(value)
+    let told = size_of::<T>();
+    if told > NUMBER_ROOM {
+        return Err(invalid());
+    }
+    let mut buffer = Guarded::<NUMBER_ROOM>::new_zeroed();
+    get_guarded(socket, level, name, buffer.as_mut_bytes(), told)?;
+    T::read_from_prefix(&buffer.room)
+        .map(|(value, _)| value)
+        .map_err(|_| invalid())
 }
 
 /// Reads an option into a room of `ROOM` zero bytes.
@@ -305,9 +423,12 @@ fn get_written<const ROOM: usize>(
     level: u32,
     name: u32,
 ) -> Result<Written<ROOM>, HostError> {
-    let mut bytes = [u8::MIN; ROOM];
-    let length = get_into(socket, level, name, &mut bytes)?;
-    Ok(Written { bytes, length })
+    let mut buffer = Guarded::<ROOM>::new_zeroed();
+    let length = get_guarded(socket, level, name, buffer.as_mut_bytes(), ROOM)?;
+    Ok(Written {
+        bytes: buffer.room,
+        length,
+    })
 }
 
 /// Asks `TCP_AO_GET_KEYS` the query in place, refusing one that asks for more answers than the room holds.
@@ -326,10 +447,17 @@ fn get_keys(
     if asked > KEYS_IN_ONE_ANSWER {
         return Err(invalid());
     }
+    let mut buffer = Guarded::<KEY_ROOM>::new_zeroed();
+    buffer.room[..KEY_QUERY_LENGTH].copy_from_slice(query);
+    let length = get_guarded(socket, level, name, buffer.as_mut_bytes(), KEY_QUERY_LENGTH)?;
     let mut bytes = *query;
-    let length = get_into(socket, level, name, &mut bytes)?;
+    bytes.copy_from_slice(&buffer.room[..KEY_QUERY_LENGTH]);
     Ok(Written { bytes, length })
 }
+
+/// The room of a key query: its answer, then a second answer's worth of canaries before the guard, so that a second
+/// answer the kernel writes is caught whole rather than written past the guard.
+const KEY_ROOM: usize = KEY_QUERY_LENGTH + KEY_QUERY_LENGTH;
 
 /// `struct mptcp_full_info` with the connection's `struct mptcp_info` as Linux 6.18 defines it.
 ///
@@ -355,24 +483,35 @@ fn get_full_info<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize>(
     name: u32,
     subflows: usize,
 ) -> Result<MptcpFullInformation<SUBFLOW_ROOM, INFORMATION_ROOM>, HostError> {
+    // One room more in each run, holding canaries, past the `subflows` the kernel is told of.
+    let rooms = subflows.checked_add(1).ok_or_else(invalid)?;
     let mut answer = MptcpFullInformation {
         tcp_information_length: u32::MIN,
         subflow_information_length: u32::MIN,
         subflows: u32::MIN,
         connection: [u8::MIN; MPTCP_INFO_LENGTH],
-        subflow_information: vec![[u8::MIN; SUBFLOW_ROOM]; subflows],
-        tcp_information: vec![[u8::MIN; INFORMATION_ROOM]; subflows],
+        subflow_information: vec![[u8::MIN; SUBFLOW_ROOM]; rooms],
+        tcp_information: vec![[u8::MIN; INFORMATION_ROOM]; rooms],
     };
-    let mut header = FullInformationHeader::new_zeroed();
-    full_info_into(
+    fill_canaries(&mut answer.subflow_information[subflows]);
+    fill_canaries(&mut answer.tcp_information[subflows]);
+    let mut guarded = GuardedHeader::new_zeroed();
+    let result = full_info_into(
         socket,
         level,
         name,
-        &mut header,
+        &mut guarded,
         &mut answer.subflow_information,
         &mut answer.tcp_information,
         subflows,
-    )?;
+    );
+    check_canaries(&guarded.guard, size_of::<FullInformationHeader>(), name);
+    check_canaries(&answer.subflow_information[subflows], subflows, name);
+    check_canaries(&answer.tcp_information[subflows], subflows, name);
+    result?;
+    answer.subflow_information.truncate(subflows);
+    answer.tcp_information.truncate(subflows);
+    let header = guarded.header;
     answer.tcp_information_length = header.size_tcpinfo_kernel;
     answer.subflow_information_length = header.size_sfinfo_kernel;
     answer.subflows = header.num_subflows;
@@ -380,12 +519,20 @@ fn get_full_info<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize>(
     Ok(answer)
 }
 
+/// `MPTCP_FULL_INFO`'s header, followed by its guard.
+#[repr(C)]
+#[derive(FromBytes, IntoBytes, KnownLayout, Immutable)]
+struct GuardedHeader {
+    header: FullInformationHeader,
+    guard: [u8; GUARD],
+}
+
 /// Reads `MPTCP_FULL_INFO` into the header, telling the kernel it has `told` entries at the start of each run of rooms.
 fn full_info_into<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize>(
     socket: BorrowedFd<'_>,
     level: u32,
     name: u32,
-    header: &mut FullInformationHeader,
+    guarded: &mut GuardedHeader,
     subflow_rooms: &mut [[u8; SUBFLOW_ROOM]],
     information_rooms: &mut [[u8; INFORMATION_ROOM]],
     told: usize,
@@ -396,7 +543,7 @@ fn full_info_into<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize>(
     let narrow = |count: usize| u32::try_from(count).map_err(|_| invalid());
     let address =
         |pointer: *mut u8| u64::try_from(pointer.expose_provenance()).map_err(|_| invalid());
-    *header = FullInformationHeader {
+    guarded.header = FullInformationHeader {
         size_tcpinfo_user: narrow(INFORMATION_ROOM)?,
         size_sfinfo_user: narrow(SUBFLOW_ROOM)?,
         size_arrays_user: narrow(told)?,
@@ -404,21 +551,22 @@ fn full_info_into<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize>(
         tcp_info: address(information_rooms.as_mut_ptr().cast())?,
         ..FullInformationHeader::new_zeroed()
     };
+    fill_canaries(&mut guarded.guard);
     let mut length = length_of(size_of::<FullInformationHeader>())?;
     #[expect(
         unsafe_code,
         reason = "the kernel writes at most `length` bytes of the header, and at most `size_arrays_user` entries of \
                   `size_sfinfo_user` and of `size_tcpinfo_user` bytes at `subflow_info` and `tcp_info`, which are two \
                   runs of rooms of exactly those sizes holding at least that many, alive and not moved during the call \
-                  (options.table marks the option `through`, and the probe checks it on the running kernel); the \
-                  descriptor is borrowed"
+                  (options.table marks the option `through`, the probe checks it on the running kernel, and canaries \
+                  after the header and after each run check every call); the descriptor is borrowed"
     )]
     let result = unsafe {
         libc::getsockopt(
             socket.as_raw_fd(),
             level.cast_signed(),
             name.cast_signed(),
-            header.as_mut_bytes().as_mut_ptr().cast(),
+            guarded.as_mut_bytes().as_mut_ptr().cast(),
             &raw mut length,
         )
     };
@@ -430,9 +578,12 @@ fn full_info_into<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize>(
 
 /// Makes an ioctl request on the socket that writes one int.
 fn ioctl_int(socket: BorrowedFd<'_>, request: u32) -> Result<c_int, HostError> {
-    let mut value = [u8::MIN; size_of::<c_int>()];
-    ioctl_within(socket, request, &mut value)?;
-    Ok(c_int::from_ne_bytes(value))
+    let mut buffer = Guarded::<{ size_of::<c_int>() }>::new_zeroed();
+    fill_canaries(&mut buffer.guard);
+    let result = ioctl_within(socket, request, buffer.as_mut_bytes());
+    check_canaries(&buffer.guard, size_of::<c_int>(), request);
+    result?;
+    Ok(c_int::from_ne_bytes(buffer.room))
 }
 
 /// Makes an ioctl request on the socket that writes one int at the start of `into`.

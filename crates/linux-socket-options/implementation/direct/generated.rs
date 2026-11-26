@@ -11,7 +11,7 @@ use wcontainers_linux_socket_options::{
 
 use crate::{
     DirectLinuxSocketOptions, Plain, get_full_info, get_keys, get_value, get_written, ioctl_int,
-    local, set_group_filter, set_program, set_value, set_value_written,
+    local, set_group_filter, set_number, set_program, set_value, set_value_written,
 };
 
 impl Plain for uapi::group_req {}
@@ -28,11 +28,11 @@ impl Plain for uapi::tcp_repair_window {}
 
 impl LinuxSocketOptions for DirectLinuxSocketOptions {
     fn set_so_rcvmark(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_SOCKET, uapi::SO_RCVMARK, &c_int::from(on))
+        set_number(socket, uapi::SOL_SOCKET, uapi::SO_RCVMARK, &c_int::from(on))
     }
 
     fn set_so_rcvpriority(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_SOCKET,
             uapi::SO_RCVPRIORITY,
@@ -58,7 +58,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
         socket: BorrowedFd<'_>,
         value: c_int,
     ) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_SOCKET,
             uapi::SO_DETACH_REUSEPORT_BPF,
@@ -67,11 +67,11 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_so_max_pacing_rate(&self, socket: BorrowedFd<'_>, value: u64) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_SOCKET, uapi::SO_MAX_PACING_RATE, &value)
+        set_number(socket, uapi::SOL_SOCKET, uapi::SO_MAX_PACING_RATE, &value)
     }
 
     fn set_so_rcvlowat(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_SOCKET, uapi::SO_RCVLOWAT, &value)
+        set_number(socket, uapi::SOL_SOCKET, uapi::SO_RCVLOWAT, &value)
     }
 
     fn get_so_rcvlowat(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError> {
@@ -79,15 +79,15 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_so_buf_lock(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_SOCKET, uapi::SO_BUF_LOCK, &value)
+        set_number(socket, uapi::SOL_SOCKET, uapi::SO_BUF_LOCK, &value)
     }
 
     fn set_so_txrehash(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_SOCKET, uapi::SO_TXREHASH, &value)
+        set_number(socket, uapi::SOL_SOCKET, uapi::SO_TXREHASH, &value)
     }
 
     fn set_so_cnx_advice(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_SOCKET,
             uapi::SO_CNX_ADVICE,
@@ -96,7 +96,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_so_wifi_status(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_SOCKET,
             uapi::SO_WIFI_STATUS,
@@ -105,7 +105,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_so_peek_off(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_SOCKET, uapi::SO_PEEK_OFF, &value)
+        set_number(socket, uapi::SOL_SOCKET, uapi::SO_PEEK_OFF, &value)
     }
 
     fn get_so_meminfo<const ROOM: usize>(
@@ -116,7 +116,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_so_no_check(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_SOCKET,
             uapi::SO_NO_CHECK,
@@ -137,15 +137,15 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ip_unicast_if(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_IP, uapi::IP_UNICAST_IF, &value)
+        set_number(socket, uapi::SOL_IP, uapi::IP_UNICAST_IF, &value)
     }
 
     fn set_ip_local_port_range(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_IP, uapi::IP_LOCAL_PORT_RANGE, &value)
+        set_number(socket, uapi::SOL_IP, uapi::IP_LOCAL_PORT_RANGE, &value)
     }
 
     fn set_ip_router_alert(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_IP,
             uapi::IP_ROUTER_ALERT,
@@ -154,15 +154,15 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ip_nodefrag(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_IP, uapi::IP_NODEFRAG, &c_int::from(on))
+        set_number(socket, uapi::SOL_IP, uapi::IP_NODEFRAG, &c_int::from(on))
     }
 
     fn set_ip_recvopts(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_IP, uapi::IP_RECVOPTS, &c_int::from(on))
+        set_number(socket, uapi::SOL_IP, uapi::IP_RECVOPTS, &c_int::from(on))
     }
 
     fn set_ip_recvfragsize(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_IP,
             uapi::IP_RECVFRAGSIZE,
@@ -171,7 +171,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ip_minttl(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_IP, uapi::IP_MINTTL, &value)
+        set_number(socket, uapi::SOL_IP, uapi::IP_MINTTL, &value)
     }
 
     fn get_ip_pktoptions<const ROOM: usize>(
@@ -222,7 +222,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ipv6_flowinfo_send(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_IPV6,
             uapi::IPV6_FLOWINFO_SEND,
@@ -231,7 +231,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ipv6_autoflowlabel(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_IPV6,
             uapi::IPV6_AUTOFLOWLABEL,
@@ -252,7 +252,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
         socket: BorrowedFd<'_>,
         value: u32,
     ) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_IPV6, uapi::IPV6_ADDR_PREFERENCES, &value)
+        set_number(socket, uapi::SOL_IPV6, uapi::IPV6_ADDR_PREFERENCES, &value)
     }
 
     fn set_ipv6_join_anycast(
@@ -272,15 +272,15 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ipv6_mtu(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_IPV6, uapi::IPV6_MTU, &value)
+        set_number(socket, uapi::SOL_IPV6, uapi::IPV6_MTU, &value)
     }
 
     fn set_ipv6_unicast_if(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_IPV6, uapi::IPV6_UNICAST_IF, &value)
+        set_number(socket, uapi::SOL_IPV6, uapi::IPV6_UNICAST_IF, &value)
     }
 
     fn set_ipv6_router_alert(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_IPV6, uapi::IPV6_ROUTER_ALERT, &value)
+        set_number(socket, uapi::SOL_IPV6, uapi::IPV6_ROUTER_ALERT, &value)
     }
 
     fn set_ipv6_router_alert_isolate(
@@ -288,7 +288,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
         socket: BorrowedFd<'_>,
         on: bool,
     ) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_IPV6,
             uapi::IPV6_ROUTER_ALERT_ISOLATE,
@@ -297,11 +297,11 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ipv6_checksum(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_IPV6, uapi::IPV6_CHECKSUM, &value)
+        set_number(socket, uapi::SOL_IPV6, uapi::IPV6_CHECKSUM, &value)
     }
 
     fn set_ipv6_recvhopopts(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_IPV6,
             uapi::IPV6_RECVHOPOPTS,
@@ -310,7 +310,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ipv6_recvdstopts(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_IPV6,
             uapi::IPV6_RECVDSTOPTS,
@@ -319,7 +319,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ipv6_recvrthdr(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_IPV6,
             uapi::IPV6_RECVRTHDR,
@@ -328,7 +328,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ipv6_flowinfo(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_IPV6,
             uapi::IPV6_FLOWINFO,
@@ -337,7 +337,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ipv6_recvfragsize(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_IPV6,
             uapi::IPV6_RECVFRAGSIZE,
@@ -346,7 +346,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_ipv6_minhopcount(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_IPV6, uapi::IPV6_MINHOPCOUNT, &value)
+        set_number(socket, uapi::SOL_IPV6, uapi::IPV6_MINHOPCOUNT, &value)
     }
 
     fn get_ipv6_2292pktoptions<const ROOM: usize>(
@@ -443,7 +443,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_tcp_window_clamp(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_WINDOW_CLAMP, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_WINDOW_CLAMP, &value)
     }
 
     fn get_tcp_window_clamp(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError> {
@@ -451,31 +451,31 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_tcp_syncnt(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_SYNCNT, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_SYNCNT, &value)
     }
 
     fn set_tcp_defer_accept(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_DEFER_ACCEPT, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_DEFER_ACCEPT, &value)
     }
 
     fn set_tcp_linger2(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_LINGER2, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_LINGER2, &value)
     }
 
     fn set_tcp_rto_min_us(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_RTO_MIN_US, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_RTO_MIN_US, &value)
     }
 
     fn set_tcp_rto_max_ms(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_RTO_MAX_MS, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_RTO_MAX_MS, &value)
     }
 
     fn set_tcp_delack_max_us(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_DELACK_MAX_US, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_DELACK_MAX_US, &value)
     }
 
     fn set_tcp_tx_delay(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_TX_DELAY, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_TX_DELAY, &value)
     }
 
     fn set_tcp_fastopen_no_cookie(
@@ -483,7 +483,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
         socket: BorrowedFd<'_>,
         on: bool,
     ) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_TCP,
             uapi::TCP_FASTOPEN_NO_COOKIE,
@@ -492,11 +492,11 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_tcp_inq(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_INQ, &c_int::from(on))
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_INQ, &c_int::from(on))
     }
 
     fn set_tcp_queue_seq(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_QUEUE_SEQ, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_QUEUE_SEQ, &value)
     }
 
     fn get_tcp_queue_seq(&self, socket: BorrowedFd<'_>) -> Result<u32, HostError> {
@@ -511,7 +511,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_tcp_fastopen(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN, &value)
     }
 
     fn set_tcp_fastopen_key(&self, socket: BorrowedFd<'_>, value: &[u8]) -> Result<(), HostError> {
@@ -519,11 +519,11 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_tcp_save_syn(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_SAVE_SYN, &value)
     }
 
     fn set_tcp_repair_queue(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_QUEUE, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_REPAIR_QUEUE, &value)
     }
 
     fn get_tcp_repair_queue(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError> {
@@ -531,7 +531,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_tcp_timestamp(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value)
     }
 
     fn get_tcp_timestamp(&self, socket: BorrowedFd<'_>) -> Result<u32, HostError> {
@@ -539,7 +539,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_tcp_quickack(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError> {
-        set_value(socket, uapi::SOL_TCP, uapi::TCP_QUICKACK, &value)
+        set_number(socket, uapi::SOL_TCP, uapi::TCP_QUICKACK, &value)
     }
 
     fn get_tcp_info<const ROOM: usize>(
@@ -595,7 +595,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_udp_no_check6_rx(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_UDP,
             local::UDP_NO_CHECK6_RX,
@@ -604,7 +604,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
     }
 
     fn set_udp_no_check6_tx(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             uapi::SOL_UDP,
             local::UDP_NO_CHECK6_TX,
@@ -617,7 +617,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
         socket: BorrowedFd<'_>,
         value: c_int,
     ) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             local::SOL_UDPLITE,
             local::UDPLITE_RECV_CSCOV,
@@ -630,7 +630,7 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
         socket: BorrowedFd<'_>,
         value: c_int,
     ) -> Result<(), HostError> {
-        set_value(
+        set_number(
             socket,
             local::SOL_UDPLITE,
             local::UDPLITE_SEND_CSCOV,
@@ -656,673 +656,481 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
 pub(crate) const ROWS: [crate::probe::Row; 96] = [
     crate::probe::Row {
         method: "set_so_rcvmark",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_RCVMARK,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_so_rcvpriority",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_RCVPRIORITY,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_so_attach_reuseport_cbpf",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_ATTACH_REUSEPORT_CBPF,
         value: "program",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_so_detach_reuseport_bpf",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_DETACH_REUSEPORT_BPF,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_so_max_pacing_rate",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_MAX_PACING_RATE,
         value: "u64",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_so_rcvlowat",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_RCVLOWAT,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_so_rcvlowat",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_RCVLOWAT,
         value: "c_int",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_so_buf_lock",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_BUF_LOCK,
         value: "u32",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_so_txrehash",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_TXREHASH,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_so_cnx_advice",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_CNX_ADVICE,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_so_wifi_status",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_WIFI_STATUS,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_so_peek_off",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_PEEK_OFF,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_so_meminfo",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_MEMINFO,
         value: "room",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_so_no_check",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_NO_CHECK,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_so_timestamping",
-        level: Some(uapi::SOL_SOCKET),
-        option: uapi::SO_TIMESTAMPING,
         value: "struct:uapi::so_timestamping",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ip_options",
-        level: Some(uapi::SOL_IP),
-        option: uapi::IP_OPTIONS,
         value: "bytes",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ip_unicast_if",
-        level: Some(uapi::SOL_IP),
-        option: uapi::IP_UNICAST_IF,
         value: "u32",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ip_local_port_range",
-        level: Some(uapi::SOL_IP),
-        option: uapi::IP_LOCAL_PORT_RANGE,
         value: "u32",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ip_router_alert",
-        level: Some(uapi::SOL_IP),
-        option: uapi::IP_ROUTER_ALERT,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ip_nodefrag",
-        level: Some(uapi::SOL_IP),
-        option: uapi::IP_NODEFRAG,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ip_recvopts",
-        level: Some(uapi::SOL_IP),
-        option: uapi::IP_RECVOPTS,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ip_recvfragsize",
-        level: Some(uapi::SOL_IP),
-        option: uapi::IP_RECVFRAGSIZE,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ip_minttl",
-        level: Some(uapi::SOL_IP),
-        option: uapi::IP_MINTTL,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_ip_pktoptions",
-        level: Some(uapi::SOL_IP),
-        option: uapi::IP_PKTOPTIONS,
         value: "room",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_ip_mcast_join_group",
-        level: Some(uapi::SOL_IP),
-        option: uapi::MCAST_JOIN_GROUP,
         value: "struct:uapi::group_req",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ip_mcast_leave_group",
-        level: Some(uapi::SOL_IP),
-        option: uapi::MCAST_LEAVE_GROUP,
         value: "struct:uapi::group_req",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ip_mcast_msfilter",
-        level: Some(uapi::SOL_IP),
-        option: uapi::MCAST_MSFILTER,
         value: "group_filter",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_hopopts",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_HOPOPTS,
         value: "bytes",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_rthdrdstopts",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_RTHDRDSTOPTS,
         value: "bytes",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_rthdr",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_RTHDR,
         value: "bytes",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_dstopts",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_DSTOPTS,
         value: "bytes",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_flowinfo_send",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_FLOWINFO_SEND,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_autoflowlabel",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_AUTOFLOWLABEL,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_flowlabel_mgr",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_FLOWLABEL_MGR,
         value: "struct:uapi::in6_flowlabel_req",
         kernel: crate::probe::Kernel::WritesBack,
     },
     crate::probe::Row {
         method: "set_ipv6_addr_preferences",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_ADDR_PREFERENCES,
         value: "u32",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_join_anycast",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_JOIN_ANYCAST,
         value: "struct:uapi::ipv6_mreq",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_leave_anycast",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_LEAVE_ANYCAST,
         value: "struct:uapi::ipv6_mreq",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_mtu",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_MTU,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_unicast_if",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_UNICAST_IF,
         value: "u32",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_router_alert",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_ROUTER_ALERT,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_router_alert_isolate",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_ROUTER_ALERT_ISOLATE,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_checksum",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_CHECKSUM,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_recvhopopts",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_RECVHOPOPTS,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_recvdstopts",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_RECVDSTOPTS,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_recvrthdr",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_RECVRTHDR,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_flowinfo",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_FLOWINFO,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_recvfragsize",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_RECVFRAGSIZE,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_minhopcount",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_MINHOPCOUNT,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_ipv6_2292pktoptions",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::IPV6_2292PKTOPTIONS,
         value: "room",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_ipv6_mcast_join_group",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::MCAST_JOIN_GROUP,
         value: "struct:uapi::group_req",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_mcast_leave_group",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::MCAST_LEAVE_GROUP,
         value: "struct:uapi::group_req",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_ipv6_mcast_msfilter",
-        level: Some(uapi::SOL_IPV6),
-        option: uapi::MCAST_MSFILTER,
         value: "group_filter",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_md5sig_ext",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_MD5SIG_EXT,
         value: "struct:uapi::tcp_md5sig",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_ao_add_key",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_AO_ADD_KEY,
         value: "struct:uapi::tcp_ao_add",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_tcp_ao_get_keys",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_AO_GET_KEYS,
         value: "keys",
         kernel: crate::probe::Kernel::Past,
     },
     crate::probe::Row {
         method: "set_tcp_ao_del_key",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_AO_DEL_KEY,
         value: "struct:uapi::tcp_ao_del",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_ao_info",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_AO_INFO,
         value: "struct:uapi::tcp_ao_info_opt",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_tcp_ao_info",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_AO_INFO,
         value: "room",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_tcp_ao_repair",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_AO_REPAIR,
         value: "struct:uapi::tcp_ao_repair",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_tcp_ao_repair",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_AO_REPAIR,
         value: "room",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_tcp_window_clamp",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_WINDOW_CLAMP,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_tcp_window_clamp",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_WINDOW_CLAMP,
         value: "c_int",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_tcp_syncnt",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_SYNCNT,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_defer_accept",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_DEFER_ACCEPT,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_linger2",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_LINGER2,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_rto_min_us",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_RTO_MIN_US,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_rto_max_ms",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_RTO_MAX_MS,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_delack_max_us",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_DELACK_MAX_US,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_tx_delay",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_TX_DELAY,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_fastopen_no_cookie",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_FASTOPEN_NO_COOKIE,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_inq",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_INQ,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_queue_seq",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_QUEUE_SEQ,
         value: "u32",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_tcp_queue_seq",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_QUEUE_SEQ,
         value: "u32",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "get_tcp_saved_syn",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_SAVED_SYN,
         value: "room",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_tcp_fastopen",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_FASTOPEN,
         value: "u32",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_fastopen_key",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_FASTOPEN_KEY,
         value: "bytes",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_save_syn",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_SAVE_SYN,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_tcp_repair_queue",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_REPAIR_QUEUE,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_tcp_repair_queue",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_REPAIR_QUEUE,
         value: "c_int",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_tcp_timestamp",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_TIMESTAMP,
         value: "u32",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_tcp_timestamp",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_TIMESTAMP,
         value: "u32",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_tcp_quickack",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_QUICKACK,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_tcp_info",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_INFO,
         value: "room",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "get_tcp_cc_info",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_CC_INFO,
         value: "room",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_tcp_repair_window",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_REPAIR_WINDOW,
         value: "struct:uapi::tcp_repair_window",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_tcp_repair_window",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_REPAIR_WINDOW,
         value: "room",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "set_tcp_repair_options",
-        level: Some(uapi::SOL_TCP),
-        option: uapi::TCP_REPAIR_OPTIONS,
         value: "slice:uapi::tcp_repair_opt",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_mptcp_info",
-        level: Some(uapi::SOL_MPTCP),
-        option: local::MPTCP_INFO,
         value: "room",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "get_mptcp_full_info",
-        level: Some(uapi::SOL_MPTCP),
-        option: local::MPTCP_FULL_INFO,
         value: "full_info",
         kernel: crate::probe::Kernel::Through,
     },
     crate::probe::Row {
         method: "set_udp_no_check6_rx",
-        level: Some(uapi::SOL_UDP),
-        option: local::UDP_NO_CHECK6_RX,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_udp_no_check6_tx",
-        level: Some(uapi::SOL_UDP),
-        option: local::UDP_NO_CHECK6_TX,
         value: "bool",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_udplite_recv_cscov",
-        level: Some(local::SOL_UDPLITE),
-        option: local::UDPLITE_RECV_CSCOV,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "set_udplite_send_cscov",
-        level: Some(local::SOL_UDPLITE),
-        option: local::UDPLITE_SEND_CSCOV,
         value: "c_int",
         kernel: crate::probe::Kernel::Reads,
     },
     crate::probe::Row {
         method: "get_siocoutq",
-        level: None,
-        option: local::SIOCOUTQ,
         value: "ioctl",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "get_siocoutqnsd",
-        level: None,
-        option: local::SIOCOUTQNSD,
         value: "ioctl",
         kernel: crate::probe::Kernel::Within,
     },
     crate::probe::Row {
         method: "get_siocatmark",
-        level: None,
-        option: local::SIOCATMARK,
         value: "ioctl",
         kernel: crate::probe::Kernel::Within,
     },

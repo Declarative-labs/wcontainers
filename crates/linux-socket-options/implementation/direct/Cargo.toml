@@ -24,7 +24,8 @@ zerocopy.workspace = true
 wcontainers-linux-socket-options-conformance = { path = "../../conformance" }
 # The sockets the probe calls each option on, and the loopback's index.
 socket2 = { version = "0.6.5", features = ["all"] }
-nix = { version = "0.31.3", default-features = false, features = ["net"] }
+# Also the probe's read of a lent structure's bytes, by process_vm_readv(2) on its own process.
+nix = { version = "0.31.3", default-features = false, features = ["net", "process", "uio"] }
 
 [[test]]
 name = "conformance"
