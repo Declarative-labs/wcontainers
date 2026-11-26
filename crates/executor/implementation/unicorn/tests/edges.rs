@@ -9,17 +9,17 @@ use std::ops::{ControlFlow, Range};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use wcontainers_abi::{Cpu, MemoryId, PAGE_SIZE, SystemCallRequest};
+use wcontainers_abi::{MemoryId, PAGE_SIZE, SystemCallRequest};
 use wcontainers_executor_unicorn::driver::{self, Run};
 use wcontainers_executor_unicorn::guest_directory_entry;
-use wcontainers_executor_unicorn::hooks::Hooks;
+use wcontainers_executor_unicorn::hooks::{Hooks, Process};
 use wcontainers_executor_unicorn::reference::{self, ROOT_DIRECTORY, in_guest_directory};
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::{ProcessIdentity, QueueCode, SignalValue};
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
-    AccessKind, Kernel, MemoryObject, Process, ProcessContext, SignalInformation, SuspendedTask,
+    AccessKind, Kernel, MemoryObject, ProcessContext, SignalInformation, SuspendedTask,
     SystemCallResponse, TaskId, WatchesFor,
 };
 
@@ -224,7 +224,11 @@ impl Hooks for TakenWhileWaiting {
         self.log.lock().unwrap().push("accessed".to_owned());
     }
 
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn between_steps(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) -> bool {
         // The worker waits on the watch before it is taken, and again once it is back.
         let waiting = if self.stage < 2 { 1 } else { 2 };
         if self.accesses < waiting {
@@ -479,7 +483,11 @@ impl Hooks for SharingRecorder {
             .end(process.id(), source, offset, range);
     }
 
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn between_steps(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) -> bool {
         match self.plan {
             Writer::Waiting if self.child_sleeping => {
                 let parent = self.processes[0];

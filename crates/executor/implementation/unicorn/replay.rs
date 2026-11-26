@@ -7,10 +7,9 @@
 use std::collections::VecDeque;
 use std::hash::{DefaultHasher, Hasher};
 
-use wcontainers_abi::{Event, HostError, MemoryId};
+use wcontainers_abi::{HostError, MemoryId};
 
 use crate::streams::End;
-use wcontainers_runtime_single_kernel::Turn;
 
 /// One thing the host gave, in the order the kernel took it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,11 +23,8 @@ pub enum Entry {
     Received(Result<usize, HostError>, Vec<u8>),
     Listened(Result<(), HostError>),
     Accepted(Result<(), HostError>),
-    /// Whether the backend owed an answer, where the driver asked.
-    BackendWaiting(bool),
-    Turn(Turn),
-    /// An event the outside handed in.
-    Event(Event),
+    /// The size the first process's terminal was given from outside.
+    Resized(u16, u16),
     /// The backend's reply to a request a call of the kernel's waits on, by its number.
     BackendAnswered(u64, Vec<u8>),
     /// A notice the backend sent, for the kernel's wait on its notices.
@@ -47,9 +43,11 @@ pub enum Entry {
     Kill(wcontainers_kernel::signal::Signal),
     /// The ends of what the outside did at a point of the driver loop, with what it answered.
     Begun,
-    Arrived(bool),
+    Arrived,
     Idled,
     Delivered,
+    /// The kernel settled after a step of the client's after the container's end.
+    Settled,
     Finished(bool),
 }
 

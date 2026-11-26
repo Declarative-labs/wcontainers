@@ -9,9 +9,9 @@ use std::time::Duration;
 
 use std::ops::ControlFlow;
 
-use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
+use wcontainers_abi::{PAGE_SIZE, SystemCallRequest};
 use wcontainers_executor_unicorn::driver::{self, Run};
-use wcontainers_executor_unicorn::hooks::{EMBEDDER_SENDS, Hooks};
+use wcontainers_executor_unicorn::hooks::{EMBEDDER_SENDS, Hooks, Process};
 use wcontainers_executor_unicorn::reference::{self, ROOT_DIRECTORY, in_guest_directory};
 use wcontainers_executor_unicorn::{busybox, guest_directory_entry};
 use wcontainers_kernel::UserId;
@@ -21,8 +21,8 @@ use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::{ProcessIdentity, QueueCode, SignalValue};
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
-    AccessKind, ContextOrigin, Kernel, MemoryError, MemoryObject, Process, SignalInformation,
-    SuspendedTask, SystemCallResponse, SystemVSegmentId, TaskId, WatchesFor, reason, task_id_after,
+    AccessKind, ContextOrigin, Kernel, MemoryError, MemoryObject, SignalInformation, SuspendedTask,
+    SystemCallResponse, SystemVSegmentId, TaskId, WatchesFor, reason, task_id_after,
 };
 
 fn out() -> PathBuf {
@@ -864,7 +864,11 @@ impl Hooks for Watcher {
         }
     }
 
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn between_steps(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) -> bool {
         let pending = std::mem::take(&mut self.pending);
         for (id, address) in &pending {
             let mut process = kernel.process(cpu, *id).expect("the process waits");
@@ -1132,7 +1136,11 @@ impl Hooks for Lazy {
         }
     }
 
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn between_steps(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) -> bool {
         let pending = std::mem::take(&mut self.pending);
         for ((_, page), id) in &pending {
             let mut process = kernel.process(cpu, *id).expect("the process waits");
@@ -1673,7 +1681,11 @@ impl Hooks for Chaser {
         }
     }
 
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn between_steps(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) -> bool {
         let pending = std::mem::take(&mut self.pending);
         for (id, address) in &pending {
             let mut process = kernel.process(cpu, *id).expect("the process waits");
@@ -2116,7 +2128,11 @@ impl Hooks for SignalSender {
             .push((thread, number, code, value));
     }
 
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn between_steps(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) -> bool {
         let Some((id, thread)) = self.reader else {
             return false;
         };
@@ -2527,7 +2543,11 @@ impl Suspender {
     }
 
     /// Takes `tasks` and puts them back in this test's order, checking each step.
-    fn one_by_one(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+    fn one_by_one(
+        &self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) {
         let mut taken = Vec::new();
         for &at in &self.order {
             let thread = self.threads[at];
@@ -2549,7 +2569,11 @@ impl Suspender {
     }
 
     /// Takes the whole process and puts it back, its tasks first without the context.
-    fn whole_process(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+    fn whole_process(
+        &self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) {
         let process = self.process.expect("the process");
         let copy = kernel.copy_process_context(process).expect("a copy");
         let every = self.every_thread();
@@ -2589,7 +2613,11 @@ impl Suspender {
     }
 
     /// Moves the process to a second kernel, checks it is there as it was, and brings it back.
-    fn second_kernel(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+    fn second_kernel(
+        &self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) {
         let process = self.process.expect("the process");
         let memory = kernel.process(cpu, process).expect("here").memory_id();
         let mapped = kernel
@@ -2650,7 +2678,12 @@ impl Suspender {
     }
 
     /// Puts back what the hooks took of the main thread (`main`) or of the others.
-    fn put_back(&self, kernel: &mut Kernel, cpu: &mut dyn Cpu, main: bool) {
+    fn put_back(
+        &self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+        main: bool,
+    ) {
         let tasks: Vec<SuspendedTask> = SUSPENDED.with_borrow_mut(|stash| {
             let (chosen, kept) = std::mem::take(stash)
                 .into_iter()
@@ -2739,7 +2772,11 @@ impl Hooks for Suspender {
         response
     }
 
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn between_steps(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) -> bool {
         match self.stage {
             SuspendStage::MainAway => {
                 self.put_back(kernel, cpu, true);
@@ -2912,7 +2949,11 @@ impl Hooks for Stopper {
         }
     }
 
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn between_steps(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) -> bool {
         match self.stage {
             StopStage::ParentAway => {
                 let parent = SUSPENDED.take();

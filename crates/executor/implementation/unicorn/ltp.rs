@@ -275,15 +275,18 @@ pub fn run_reference(test: &Test, limit: Duration, logs: &Path) -> Line {
     }
 }
 
-/// Runs tests on our kernel, `jobs` at a time, each under `seed` in a process of its own forked
-/// from one that holds the image's files in a prepared kernel, so the files are loaded once. A
-/// test that runs past `limit` is killed and reported as a timeout; one whose kernel ends no turn
-/// and takes no backend answer for [`STUCK`] once it has begun, or whose processes all wait with
-/// nothing to wake them, is a hang; one whose kernel fails is a crash, and one the stand-in CPU
-/// cannot run is unsupported. Each finished test's line goes to `report` as it ends.
+/// The argument that makes the `ltp` program run one test of [`run_ours`] in a process of its own
+/// ([`run_one_test`]), followed by the test's id and its log's path.
+pub const ONE_TEST: &str = "one";
+
+/// Runs tests on our kernel, `jobs` at a time, each under `seed` in a process of its own: this
+/// program again, started with [`ONE_TEST`], which loads the image's files and runs the test. A
+/// test that runs past `limit` is killed and reported as a timeout; one whose kernel's runner
+/// comes back no more and takes no backend answer for [`STUCK`] once it has begun, or whose
+/// processes all wait with nothing to wake them, is a hang; one whose kernel fails is a crash.
+/// Each finished test's line goes to `report` as it ends.
 pub fn run_ours(
     tests: &[Test],
-    tar: &Path,
     seed: u64,
     jobs: usize,
     limit: Duration,
@@ -291,8 +294,6 @@ pub fn run_ours(
     mut report: impl FnMut(&Line),
 ) -> Vec<Line> {
     let served = served_image_name();
-    let environment = environment_on_ours(limit);
-    let environment: Vec<&str> = environment.iter().map(String::as_str).collect();
     let found = Command::new("docker")
         .args(["image", "inspect", &served])
         .stdout(Stdio::null())
@@ -300,20 +301,9 @@ pub fn run_ours(
         .status()
         .expect("running docker");
     assert!(found.success(), "no image {served}: run ltp/build.sh");
-    let mut prepared = {
-        let bytes =
-            std::fs::read(tar).unwrap_or_else(|error| panic!("reading {}: {error}", tar.display()));
-        let files = image::from_tar(&bytes);
-        drop(bytes);
-        Some(driver::prepare(&container(
-            &files,
-            &[],
-            &environment,
-            &served,
-        )))
-    };
+    let program = std::env::current_exe().expect("this program's path");
     let mut lines: Vec<Option<Line>> = vec![None; tests.len()];
-    let mut running: BTreeMap<libc::pid_t, (usize, Instant)> = BTreeMap::new();
+    let mut running: BTreeMap<usize, (std::process::Child, Instant)> = BTreeMap::new();
     let mut next = 0;
     while next < tests.len() || !running.is_empty() {
         while next < tests.len() && running.len() < jobs.max(1) {
@@ -321,51 +311,41 @@ pub fn run_ours(
             let log = log_path(logs, test);
             std::fs::create_dir_all(log.parent().expect("a directory")).expect("the log directory");
             let _ = std::fs::remove_file(result_path(&log));
-            // SAFETY: trusted, not checked: this process has one thread; the child runs the test alone
-            // and ends with `_exit`.
-            #[expect(
-                unsafe_code,
-                reason = "UNEXPLAINED: forks one child per test case on the claim that this process has one thread, which nothing checks; no primitive replaces it, step one re-runs the binary with Command instead"
-            )]
-            match unsafe { libc::fork() } {
-                -1 => panic!("fork failed"),
-                0 => run_one(
-                    prepared.take().expect("a prepared kernel"),
-                    test,
-                    seed,
-                    &log,
-                    &environment,
-                    &served,
-                ),
-                child => {
-                    running.insert(child, (next, Instant::now()));
-                }
-            }
+            let child = Command::new(&program)
+                .arg(ONE_TEST)
+                .arg(test.id())
+                .arg(&log)
+                .env(SEED_VARIABLE, seed.to_string())
+                .env(LIMIT_VARIABLE, limit.as_secs().to_string())
+                .stdin(Stdio::null())
+                .spawn()
+                .expect("starting a test's process");
+            running.insert(next, (child, Instant::now()));
             next += 1;
         }
         // Any child that has ended, not waiting for one.
-        let ended = rustix::process::waitpid(None, rustix::process::WaitOptions::NOHANG)
-            .ok()
-            .flatten();
-        if let Some((ended, _)) = ended {
-            if let Some((index, started)) = running.remove(&ended.as_raw_pid()) {
-                let line = ended_line(&tests[index], &log_path(logs, &tests[index]), started);
-                report(&line);
-                lines[index] = Some(line);
-            }
+        let ended: Vec<usize> = running
+            .iter_mut()
+            .filter_map(|(index, (child, _))| child.try_wait().ok().flatten().map(|_| *index))
+            .collect();
+        for index in &ended {
+            let (_, started) = running.remove(index).expect("a running test");
+            let line = ended_line(&tests[*index], &log_path(logs, &tests[*index]), started);
+            report(&line);
+            lines[*index] = Some(line);
+        }
+        if !ended.is_empty() {
             continue;
         }
-        let late: Vec<libc::pid_t> = running
+        let late: Vec<usize> = running
             .iter()
             .filter(|(_, (_, started))| started.elapsed() > limit)
-            .map(|(pid, _)| *pid)
+            .map(|(index, _)| *index)
             .collect();
-        for pid in late {
-            // The child is ours and not yet reaped, so its id is still its own.
-            let child = rustix::process::Pid::from_raw(pid).expect("a child's id");
-            let _ = rustix::process::kill_process(child, rustix::process::Signal::KILL);
-            let _ = rustix::process::waitpid(Some(child), rustix::process::WaitOptions::empty());
-            let (index, started) = running.remove(&pid).expect("a running test");
+        for index in late {
+            let (mut child, started) = running.remove(&index).expect("a running test");
+            let _ = child.kill();
+            let _ = child.wait();
             let line = Line {
                 id: tests[index].id(),
                 verdict: "timeout".into(),
@@ -382,6 +362,29 @@ pub fn run_ours(
         .into_iter()
         .map(|line| line.expect("every test ran"))
         .collect()
+}
+
+/// The variables [`run_ours`] hands each test's process its seed and its limit in seconds by.
+pub const SEED_VARIABLE: &str = "LTP_SEED";
+pub const LIMIT_VARIABLE: &str = "LTP_LIMIT";
+
+/// Runs the test `id` of the image's files in `tar` on our kernel, in this process, which
+/// [`run_ours`] started with [`ONE_TEST`] for it alone: its output goes to `log`, its line beside
+/// it, and the process ends.
+pub fn run_one_test(tar: &Path, id: &str, log: &Path, seed: u64, limit: Duration) -> ! {
+    let served = served_image_name();
+    let environment = environment_on_ours(limit);
+    let environment: Vec<&str> = environment.iter().map(String::as_str).collect();
+    let test = select(&groups(tar), &[id.to_owned()])
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("no test {id}"));
+    let bytes =
+        std::fs::read(tar).unwrap_or_else(|error| panic!("reading {}: {error}", tar.display()));
+    let files = image::from_tar(&bytes);
+    drop(bytes);
+    let prepared = driver::prepare(&container(&files, &[], &environment, &served));
+    run_one(prepared, &test, seed, log, &environment, &served)
 }
 
 /// A test's container: its root on the backend, served from `root_image`, as the reference's
@@ -416,7 +419,7 @@ fn result_path(log: &Path) -> PathBuf {
     log.with_extension("result")
 }
 
-/// In the forked process: runs the test with its output to its log, leaves its line and ends.
+/// In the test's own process: runs the test with its output to its log, leaves its line and ends.
 fn run_one(
     mut prepared: driver::Prepared,
     test: &Test,
@@ -459,14 +462,8 @@ fn run_one(
                         warnings: "-".into(),
                     };
                     let _ = std::fs::write(result_path(&log), line.to_text());
-                    // SAFETY: ends this process at once, its run abandoned.
-                    #[expect(
-                        unsafe_code,
-                        reason = "ends the hung child at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
-                    )]
-                    unsafe {
-                        libc::_exit(0)
-                    };
+                    // The process holds only this test's run, which is abandoned.
+                    std::process::exit(0);
                 }
             }
         });
@@ -511,14 +508,7 @@ fn run_one(
         }
     };
     std::fs::write(result_path(log), line.to_text()).expect("the result");
-    // SAFETY: ends the forked process without running the parent's exit handlers.
-    #[expect(
-        unsafe_code,
-        reason = "ends the forked child at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
-    )]
-    unsafe {
-        libc::_exit(0)
-    };
+    std::process::exit(0);
 }
 
 fn crash_line(test: &Test, seconds: f64) -> Line {

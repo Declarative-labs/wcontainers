@@ -8,15 +8,13 @@ use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use wcontainers_abi::{Cpu, SystemCallRequest};
+use wcontainers_abi::SystemCallRequest;
 use wcontainers_executor_unicorn::driver::{self, Run};
 use wcontainers_executor_unicorn::guest_directory_entry;
-use wcontainers_executor_unicorn::hooks::Hooks;
+use wcontainers_executor_unicorn::hooks::{Hooks, Process};
 use wcontainers_executor_unicorn::reference::{self, ROOT_DIRECTORY, in_guest_directory};
 use wcontainers_kernel_linux::linux::general;
-use wcontainers_kernel_linux::{
-    Kernel, Process, ProcessContext, SuspendedTask, SystemCallResponse, TaskId,
-};
+use wcontainers_kernel_linux::{Kernel, ProcessContext, SuspendedTask, SystemCallResponse, TaskId};
 
 const PROGRAM: &str = "taskend";
 
@@ -146,7 +144,11 @@ impl Hooks for Script {
         ControlFlow::Continue(request)
     }
 
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn between_steps(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) -> bool {
         if !self.changed || TAKEN.with_borrow(Vec::is_empty) {
             return false;
         }
@@ -259,7 +261,11 @@ impl Hooks for CopyEnds {
         ControlFlow::Continue(request)
     }
 
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn between_steps(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) -> bool {
         let Some(copy) = COPY.take() else {
             return false;
         };

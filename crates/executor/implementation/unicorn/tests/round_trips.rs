@@ -181,7 +181,7 @@ fn a_copy_let_go_of_under_a_handle_is_dropped_later() {
 /// how.
 fn run_until_stopped(runner: &mut InterfaceRunner<u64>, executor: &mut StandIn) -> StopReason {
     loop {
-        match runner.run(executor) {
+        match runner.run_on(executor) {
             StopReason::Interrupted => {}
             stopped => return stopped,
         }
