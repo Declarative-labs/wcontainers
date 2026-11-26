@@ -249,6 +249,24 @@ gac-r/20261126-1129xx, `.gactip.sh`, log tip-ab721bebf.log and the folder tip-ab
   spread of the same binary on this shared machine is 10 to 20% (the front alone, which no change touched, measured 120
   and 147 ns for Map in two builds).
 
+## AC3, started (2026-11-26, commit 47e9f83bb)
+
+The set `direct3d-11-glue` (src/api.rs; the trait-layer set `direct3d-11` is unchanged and writes no glue) writes both
+glues for the whole of Direct3D 11, DXGI and d3dcommon. MEASURED (x86-64 jobs gac-r 2026-11-26 11:4x, report
+ac2r/ac3-report.txt): written twice IDENTICAL; `cargo check` and `cargo clippy -- -D warnings` status 0; type-checked for
+x86_64-pc-windows-gnu (the spike's toolchain, which carries that target; this repository's does not), status 0, and the
+slice too; GLUED 461 of 643, NOT GLUED 182, each with its reason (most: 36 DXGI info-queue methods taking a GUID by value,
+32 arrays of objects out, 7 shader bytecodes, structures holding a pointer the glue cannot copy as bytes); 2,359 marks,
+all matched to their reliances, 85 pins, 0 failures; 0 lines with `unsafe` outside the direct crates. Fixed on the way:
+a required `IUnknown*` in the calling glue, a face's trait impl written once per type, a face's methods typed by its own
+API, the other library's exports in the supertrait's impl (answered E_NOTIMPL: its own API's System loads it), a
+parameter named `status`, a reborrowed array element, `index * 1`, and an enum's interface picked by a hash map's order
+(two APIs each have a `Resource` trait: the whole set wrote differently on each run).
+Left of AC3: the 182 methods; a generated hostile C caller over every table and a generated lying implementation; the
+generated conformance suite; fuzzing 3 seeds x 10M over every table under AddressSanitizer; the linter per rule; the
+hostile tests the pins of the whole set owe (SetExceptionMode, the info queues' breaks, CreateDeviceContextState, the
+calls never made), which the generated caller is to try.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
