@@ -1105,6 +1105,24 @@ pub enum Bug {
     ReciprocalTableNeighbor,
     /// RSQRT reads an odd exponent's entries for an even exponent and the other way round.
     RootParitySwapped,
+    /// IRET runs with NT set.
+    InterruptReturnIgnoresNestedTask,
+    /// Loading FS or GS keeps its base.
+    SegmentLoadKeepsBase,
+    /// Loading a null selector into FS or GS keeps its base.
+    NullLoadKeepsBase,
+    /// A far RET or IRET takes a CS whose RPL is below 3.
+    ReturnToInnerPrivilegeAllowed,
+    /// A far transfer takes a target outside its code segment.
+    FarTargetUnchecked,
+    /// POP FS and POP GS read their whole slot.
+    SelectorPopReadsWholeSlot,
+    /// A transfer into compatibility mode keeps RSP whole.
+    CompatibilityKeepsWholeStackPointer,
+    /// A far return and IRET read their slots from the lowest.
+    StackSlotsReadInOrder,
+    /// The far CALL checks its target before it pushes.
+    CallFarChecksTargetFirst,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1610,7 +1628,25 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::VerifyWriteTakesCode, "VERW", Family::Forms(&[Instruction::VerwGpr16, Instruction::VerwMemw]), Origin::Mandatory),
     row(Bug::SystemCallReturnsToItself, "SYSCALL", Family::Forms(&[Instruction::Syscall]), Origin::Mandatory),
     row(Bug::ReciprocalTableNeighbor, "RCPPS, RCPSS", Family::Forms(&[Instruction::RcppsXmmpsXmmps, Instruction::RcppsXmmpsMemps, Instruction::RcpssXmmssXmmss, Instruction::RcpssXmmssMemss]), Origin::Mandatory),
+    row(Bug::InterruptReturnIgnoresNestedTask, "IRET", Family::Forms(&[Instruction::Iret, Instruction::Iretd, Instruction::Iretq]), Origin::Mandatory),
+    row(Bug::SegmentLoadKeepsBase, "MOV to FS and GS, POP FS, POP GS, LFS, LGS", Family::Forms(SEGMENT_LOADS), Origin::Mandatory),
+    row(Bug::NullLoadKeepsBase, "MOV to FS and GS, POP FS, POP GS, LFS, LGS", Family::Forms(SEGMENT_LOADS), Origin::Mandatory),
+    row(Bug::ReturnToInnerPrivilegeAllowed, "RET far, IRET", Family::Forms(&[Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iret, Instruction::Iretd, Instruction::Iretq]), Origin::Mandatory),
+    row(Bug::SelectorPopReadsWholeSlot, "POP FS, POP GS", Family::Forms(&[Instruction::PopFs, Instruction::PopGs]), Origin::Mandatory),
+    row(Bug::CompatibilityKeepsWholeStackPointer, "CALL far, JMP far, RET far, IRET", Family::Forms(&[Instruction::CallFarMemp2, Instruction::JmpFarMemp2, Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iretq]), Origin::Mandatory),
+    row(Bug::StackSlotsReadInOrder, "RET far, IRET", Family::Forms(&[Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iret, Instruction::Iretd, Instruction::Iretq]), Origin::Mandatory),
+    row(Bug::CallFarChecksTargetFirst, "CALL far", Family::Forms(&[Instruction::CallFarMemp2]), Origin::Mandatory),
+    row(Bug::FarTargetUnchecked, "CALL far, JMP far, RET far, IRET", Family::Forms(&[Instruction::CallFarMemp2, Instruction::JmpFarMemp2, Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iretq]), Origin::Mandatory),
     row(Bug::RootParitySwapped, "RSQRTPS, RSQRTSS", Family::Forms(&[Instruction::RsqrtpsXmmpsXmmps, Instruction::RsqrtpsXmmpsMemps, Instruction::RsqrtssXmmssXmmss, Instruction::RsqrtssXmmssMemss]), Origin::Mandatory),
+];
+
+const SEGMENT_LOADS: &[Instruction] = &[
+    Instruction::MovSegGpr16,
+    Instruction::MovSegMemw,
+    Instruction::PopFs,
+    Instruction::PopGs,
+    Instruction::LfsGprvMemp2,
+    Instruction::LgsGprvMemp2,
 ];
 
 const DESCRIPTOR_QUERIES: &[Instruction] = &[

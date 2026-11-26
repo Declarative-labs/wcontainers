@@ -47,6 +47,7 @@ pub mod opmask;
 pub mod planted;
 pub mod reciprocal;
 mod reciprocal_recording;
+pub mod segment;
 mod simulation;
 pub mod sse;
 pub mod stack;
@@ -184,6 +185,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(mmx_convert::MMX_CONVERT_FORMS.iter().map(|form| form.instruction))
         .chain(descriptor::DESCRIPTOR_FORMS.iter().map(|form| form.instruction))
         .chain(reciprocal::RECIPROCAL_FORMS.iter().map(|form| form.instruction))
+        .chain(segment::SEGMENT_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -235,14 +237,15 @@ impl ProcessorArchitecture for X86_64 {
             && observed.high_vector_registers == expectation.high_vector_registers
             && observed.opmask_registers == expectation.opmask_registers
             && observed.exception == expectation.exception
+            && observed.data_segments == expectation.data_segments
+            && observed.code_segment == expectation.code_segment
     }
 }
 
 /// The registers a program at ring 3 reads and writes, and the exception its last instruction raised.
 ///
 /// TODO: temporary placeholder until the rest of the state is designed: APX's R16 to R31; AMX's tile
-/// configuration and tiles; PKRU; CET's shadow stack pointer; the segment selectors; the trap flag. The chip source
-/// checks that an instruction leaves the selectors as they were.
+/// configuration and tiles; PKRU; CET's shadow stack pointer; the trap flag.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Processor {
     /// In the order of their encodings, RSP at [`STACK_POINTER`].
@@ -270,7 +273,17 @@ pub struct Processor {
     pub opmask_registers: [u64; OPMASK_REGISTERS],
     /// None when the last instruction completed.
     pub exception: Option<Exception>,
+    /// ES, DS, FS and GS's selectors, null as Linux starts a program; SS is always Linux's 0x2B at ring 3.
+    pub data_segments: [u16; DATA_SEGMENTS],
+    /// CS: Linux's 64-bit code segment, 0x33, in every state of this architecture; a far transfer to Linux's 32-bit
+    /// code segment, 0x23, leaves one in compatibility mode, which no state starts in.
+    pub code_segment: u16,
 }
+
+/// ES, DS, FS and GS.
+pub const DATA_SEGMENTS: usize = 4;
+/// Linux's 64-bit code segment, CS in every state.
+pub const CODE_SEGMENT: u16 = 0x33;
 
 /// The x87 registers MMX shares, FXSAVE64's view of the x87 state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -330,6 +343,8 @@ pub struct ProcessorExpectation {
     pub high_vector_registers: [[u128; 4]; VECTOR_REGISTERS],
     pub opmask_registers: [u64; OPMASK_REGISTERS],
     pub exception: Option<Exception>,
+    pub data_segments: [u16; DATA_SEGMENTS],
+    pub code_segment: u16,
 }
 
 impl Processor {
@@ -349,11 +364,13 @@ impl Processor {
             high_vector_registers: self.high_vector_registers,
             opmask_registers: self.opmask_registers,
             exception: self.exception,
+            data_segments: self.data_segments,
+            code_segment: self.code_segment,
         }
     }
 }
 
-/// Every register zero, the flags clear, MXCSR at its default and no exception.
+/// Every register zero, the flags clear, MXCSR at its default, no exception, the data segments null and CS Linux's.
 pub const ZERO_PROCESSOR: Processor = Processor {
     general_purpose_registers: [0; GENERAL_PURPOSE_REGISTERS],
     instruction_pointer: 0,
@@ -368,6 +385,8 @@ pub const ZERO_PROCESSOR: Processor = Processor {
     high_vector_registers: [[0; 4]; VECTOR_REGISTERS],
     opmask_registers: [0; OPMASK_REGISTERS],
     exception: None,
+    data_segments: [0; DATA_SEGMENTS],
+    code_segment: CODE_SEGMENT,
 };
 
 /// What the running program may do with a page; memory that was never given a permission is unmapped.
@@ -483,5 +502,10 @@ pub enum PreciseInstruction {
     Reciprocal {
         instruction: Instruction,
         table: &'static reciprocal::ReciprocalTable,
+    },
+    /// A form of [`segment::SEGMENT_FORMS`].
+    Segment {
+        instruction: Instruction,
+        behavior: segment::SegmentBehavior,
     },
 }

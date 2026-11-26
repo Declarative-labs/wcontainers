@@ -90,6 +90,8 @@ mod on_chip {
             opmask_registers: expected.opmask_registers,
             x87: expected.x87,
             exception: expected.exception,
+            data_segments: expected.data_segments,
+            code_segment: expected.code_segment,
         }
     }
 

@@ -12,8 +12,7 @@ use crate::planted::{Bug, is_active};
 use crate::stack::{SegmentPush, StackBehavior, StackForm, StackOperation, find_stack_form};
 use crate::{Access, Exception, Instruction, Processor, STACK_POINTER, X86_64};
 
-/// The selectors Linux gives a 64-bit program: CS and SS; the others are null.
-const CODE_SELECTOR: u64 = 0x33;
+/// The selector of SS, which Linux gives a 64-bit program and ring 3 cannot change.
 const STACK_SELECTOR: u64 = 0x2B;
 const RETURN_ADDRESS_BYTES: u64 = 8;
 const SELECTOR_BYTES: usize = 2;
@@ -60,7 +59,8 @@ pub(super) fn execute_stack(
             } else {
                 size as usize
             };
-            store(processor.flags, memory, at_stack(address), &[0; 8][..written], behavior.across_fault, &mut on_memory_mutated)?;
+            let selector = u64::from(read_selector(processor, decoded.op0_register()));
+            store(processor.flags, memory, at_stack(address), &selector.to_le_bytes()[..written], behavior.across_fault, &mut on_memory_mutated)?;
             processor.general_purpose_registers[STACK_POINTER] = address;
         }
         StackOperation::Pop => {
@@ -109,11 +109,7 @@ pub(super) fn execute_stack(
             write_register(processor, Register::AL, read_value(memory, operand.address, 1));
         }
         StackOperation::MoveSegment => {
-            let selector = match decoded.op1_register() {
-                Register::CS => CODE_SELECTOR,
-                Register::SS => STACK_SELECTOR,
-                _ => 0,
-            };
+            let selector = u64::from(read_selector(processor, decoded.op1_register()));
             if decoded.op0_kind() == OpKind::Memory {
                 let operand = locate(processor, decoded);
                 store(processor.flags, memory, operand, &selector.to_le_bytes()[..SELECTOR_BYTES], behavior.across_fault, &mut on_memory_mutated)?;
@@ -124,6 +120,18 @@ pub(super) fn execute_stack(
     }
     processor.instruction_pointer = next;
     Ok(())
+}
+
+/// The selector a segment register holds: CS's and the data segments' from the state, SS Linux's.
+pub(super) fn read_selector(processor: &Processor, register: Register) -> u16 {
+    match register {
+        Register::CS => processor.code_segment,
+        Register::SS => STACK_SELECTOR as u16,
+        Register::ES => processor.data_segments[0],
+        Register::DS => processor.data_segments[1],
+        Register::FS => processor.data_segments[2],
+        _ => processor.data_segments[3],
+    }
 }
 
 /// Writes the value's `size` bytes below RSP, then lowers RSP.

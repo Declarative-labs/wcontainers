@@ -8,8 +8,8 @@ use std::mem::offset_of;
 
 use iced_x86::BlockEncoderOptions;
 use iced_x86::code_asm::{
-    AsmRegister64, CodeAssembler, CodeLabel, cr2, cr3, dr6, eax, edx, ptr, qword_ptr, r8, r9, r10, r11, r12, r13,
-    r14, r15, rax, rbp, rbx, rcx, rdi, rdx, rsi, rsp,
+    AsmRegister64, AsmRegisterSegment, CodeAssembler, CodeLabel, ax, cr2, cr3, dr6, ds, eax, edx, es, fs, gs, ptr,
+    qword_ptr, r8, r9, r10, r11, r12, r13, r14, r15, rax, rbp, rbx, rcx, rdi, rdx, rsi, rsp,
 };
 
 use crate::layout::{
@@ -35,6 +35,8 @@ const LOADED: [(usize, AsmRegister64); 15] = [
     (15, r15),
 ];
 const STACK_POINTER: usize = 4;
+/// ES, DS, FS and GS, in the slot's order.
+const DATA_SEGMENTS: [AsmRegisterSegment; 4] = [es, ds, fs, gs];
 /// DR6 as reset: no condition recorded.
 const DEBUG_STATUS_RESET: u32 = 0xFFFF_0FF0;
 pub const VECTORS: usize = 256;
@@ -96,6 +98,11 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
     a.mov(eax, SAVED_COMPONENTS as u32)?;
     a.xor(edx, edx)?;
     a.xrstor64(ptr(to_slot(offset_of!(Slot, before_xsave))))?;
+    // The selectors first, as loading FS and GS replaces their bases.
+    for (index, segment) in DATA_SEGMENTS.into_iter().enumerate() {
+        a.mov(rax, qword_ptr(to_before(offset_of!(Registers, data_segments) + index * size_of::<u64>())))?;
+        a.mov(segment, ax)?;
+    }
     a.mov(rax, qword_ptr(to_before(offset_of!(Registers, fs_base))))?;
     a.wrfsbase(rax)?;
     a.mov(rax, qword_ptr(to_before(offset_of!(Registers, gs_base))))?;
@@ -165,6 +172,10 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
     a.mov(qword_ptr(to_after(offset_of!(Registers, fs_base))), rax)?;
     a.rdgsbase(rax)?;
     a.mov(qword_ptr(to_after(offset_of!(Registers, gs_base))), rax)?;
+    for (index, segment) in DATA_SEGMENTS.into_iter().enumerate() {
+        a.mov(eax, segment)?;
+        a.mov(qword_ptr(to_after(offset_of!(Registers, data_segments) + index * size_of::<u64>())), rax)?;
+    }
     a.mov(eax, SAVED_COMPONENTS as u32)?;
     a.xor(edx, edx)?;
     a.xsave64(ptr(to_slot(offset_of!(Slot, after_xsave))))?;

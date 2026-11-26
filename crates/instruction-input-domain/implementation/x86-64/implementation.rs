@@ -42,6 +42,7 @@ use wcontainers_processor_architecture_x86_64::system::find_system_form;
 use wcontainers_processor_architecture_x86_64::mmx_convert::find_mmx_convert_form;
 use wcontainers_processor_architecture_x86_64::descriptor::find_descriptor_form;
 use wcontainers_processor_architecture_x86_64::reciprocal::find_reciprocal_form;
+use wcontainers_processor_architecture_x86_64::segment::find_segment_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
@@ -61,6 +62,7 @@ pub mod mmx;
 pub mod mmx_convert;
 pub mod opmask;
 pub mod reciprocal;
+pub mod segment;
 pub mod sse;
 pub mod stack;
 pub mod string;
@@ -258,6 +260,18 @@ pub enum OperandType {
     Selector,
     /// The four lanes RCPPS to RSQRTSS read.
     ReciprocalSource,
+    /// The segment register MOV writes and the selector together.
+    SegmentLoad,
+    /// The selector a segment load takes.
+    SegmentSelector,
+    /// The far pointer a far CALL, JMP or RET takes.
+    FarPointer,
+    /// The slots IRET pops.
+    IretFrame,
+    /// Where the far CALL pushes.
+    CallStack,
+    /// Where IRET's stack access of `bytes` lies.
+    FrameLayout { bytes: u64 },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -445,6 +459,10 @@ pub enum OperandValue {
     SystemLayout(system::SystemLayout),
     EnterOperands { allocation: u16, level: u8 },
     X87Case(x87_arithmetic::X87Case),
+    FarPointer { offset: u64, selector: u16 },
+    SegmentLoad { segment: usize, selector: u16 },
+    IretFrame(segment::IretFrame),
+    CallStack(segment::CallStack),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -518,6 +536,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_reciprocal_form(instruction) {
             return reciprocal::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_segment_form(instruction) {
+            return segment::list_operand_types(form).into_iter();
         }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
@@ -755,6 +776,12 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::X87Case(set) => x87_arithmetic::generate_cases(set),
             OperandType::Selector => descriptor::generate_selectors(),
             OperandType::ReciprocalSource => reciprocal::generate_sources(),
+            OperandType::SegmentLoad => segment::generate_segment_loads(),
+            OperandType::SegmentSelector => segment::generate_selectors(),
+            OperandType::FarPointer => segment::generate_far_pointers(),
+            OperandType::IretFrame => segment::generate_frames(),
+            OperandType::CallStack => segment::generate_call_stacks(),
+            OperandType::FrameLayout { bytes } => segment::generate_frame_layouts(bytes),
         };
         values.into_iter()
     }
@@ -836,6 +863,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_reciprocal_form(instruction) {
             return reciprocal::build_state(form, &typed);
+        }
+        if let Some(form) = find_segment_form(instruction) {
+            return segment::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -1017,6 +1047,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_mmx_convert_form(instruction).is_some()
         || find_descriptor_form(instruction).is_some()
         || find_reciprocal_form(instruction).is_some()
+        || find_segment_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 

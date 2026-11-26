@@ -76,6 +76,8 @@ pub struct Registers {
     pub stack_segment: u64,
     pub fs_base: u64,
     pub gs_base: u64,
+    /// ES, DS, FS and GS's selectors.
+    pub data_segments: [u64; 4],
 }
 
 /// The image XSAVE64 writes and XRSTOR64 reads in the standard form, of the components [`SAVED_COMPONENTS`] names.

@@ -38,7 +38,7 @@ use wcontainers_processor_architecture::{MemoryDelta, MemorySink, MemorySnapshot
 use wcontainers_processor_architecture_x86_64::memory::{read_bytes, read_permission, report_changed_bytes};
 use wcontainers_processor_architecture_x86_64::{
     Access, DataAccess, Exception, Flags, GENERAL_PURPOSE_REGISTERS, InstructionFetch, MXCSR_DEFAULT,
-    PagePermission, Processor, STACK_POINTER, VECTOR_REGISTERS, X86_64,
+    CODE_SEGMENT, PagePermission, Processor, STACK_POINTER, VECTOR_REGISTERS, X86_64,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 use zerocopy::{FromZeros, IntoBytes};
@@ -971,6 +971,7 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
         stack_segment: u64::from(USER_DATA),
         fs_base: processor.fs_base,
         gs_base: processor.gs_base,
+        data_segments: processor.data_segments.map(u64::from),
     };
     let mut image = XsaveImage { bytes: [0; XSAVE_IMAGE_BYTES] };
     x87_image::write_x87(&mut image.bytes, &processor.x87);
@@ -1066,6 +1067,12 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
     if processor.mxcsr > u32::from(u16::MAX) {
         return Err(Refusal::MxcsrReservedBits(processor.mxcsr));
     }
+    if processor.code_segment != CODE_SEGMENT {
+        return Err(Refusal::NotModeled("CS other than Linux's 64-bit code segment, which every state holds"));
+    }
+    if !processor.data_segments.iter().all(|selector| is_loadable(*selector)) {
+        return Err(Refusal::NotModeled("a data segment selector no program can load under Linux"));
+    }
     if !x87_image::is_holdable(&processor.x87) {
         return Err(Refusal::NotModeled(
             "an x87 register wider than 80 bits, an opcode wider than 11 bits, a reserved bit of FCW, or FSW's ES or B not an unmasked flag",
@@ -1090,11 +1097,8 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 ///
 /// # Errors
 ///
-/// For MOV SS (it steps two instructions), IRET (it can change TF),
-/// SYSENTER (it enters ring 0 at MSRs the source does
-/// not set as Linux does), a far CALL, JMP or RET (it changes CS), any other write of a segment register (the
-/// selectors are not modeled), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does
-/// not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
+/// For a MOV SS that loads SS (it steps two instructions), SYSENTER (it enters ring 0 at MSRs the source does not set
+/// as Linux does), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
 /// on the page says why: UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
 /// XSAVE family, INT 0x80, and AMX's. LAR, LSL, VERR and VERW run: the guest's descriptor table is Linux's. SGDT, SIDT and SMSW run: the chip's #GP under
 /// UMIP is the program's outcome at this level, as every other exception is, whatever Linux then does with it.
@@ -1114,26 +1118,15 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
     if decoded.is_invalid() || !fetchable {
         return Ok(());
     }
-    // PUSH FS and PUSH GS name the register they read first.
-    let writes_segment = decoded.op_count() > 0
-        && decoded.mnemonic() != Mnemonic::Push
-        && decoded.op0_kind() == OpKind::Register
-        && decoded.op0_register().is_segment_register();
-    let far = matches!(
-        decoded.code(),
-        Code::Call_m1616 | Code::Call_m1632 | Code::Call_m1664 | Code::Jmp_m1616 | Code::Jmp_m1632 | Code::Jmp_m1664
-    );
+    // MOV SS and POP SS hold off the trap until after the next instruction once they load SS, which only Linux's own
+    // 0x2B does at ring 3.
+    let loads_stack_segment = matches!(decoded.code(), Code::Mov_Sreg_r32m16 | Code::Mov_Sreg_r64m16)
+        && decoded.op0_register() == Register::SS
+        && read_source_selector(processor, memory, &decoded) == Some(STACK_SEGMENT_SELECTOR);
     let reason = match decoded.mnemonic() {
-        Mnemonic::Mov if writes_segment && decoded.op0_register() == Register::SS => {
-            Some("it steps two instructions")
-        }
-        Mnemonic::Iret | Mnemonic::Iretd | Mnemonic::Iretq => Some("it can change TF, which steps it"),
+        _ if loads_stack_segment => Some("it loads SS, which holds off the trap until after the next instruction"),
         // Linux sets IA32_SYSENTER_CS, so a 64-bit SYSENTER enters its kernel; the source leaves it 0, where it faults.
         Mnemonic::Sysenter => Some("it enters ring 0 at SYSENTER MSRs the source does not set as Linux does"),
-        Mnemonic::Retf => Some("it changes CS"),
-        _ if far => Some("it changes CS"),
-        Mnemonic::Lss | Mnemonic::Lfs | Mnemonic::Lgs => Some("it writes a selector, which is not modeled"),
-        _ if writes_segment => Some("it writes a selector, which is not modeled"),
         Mnemonic::Vmcall | Mnemonic::Vmmcall => Some("KVM answers it as a hypercall"),
         // RDTSC, RDTSCP, RDPID, RDRAND and RDSEED run: their behaviors do not compare the registers the time,
         // IA32_TSC_AUX and the random source decide.
@@ -1178,7 +1171,9 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
     if slot.vector == NOT_RUN {
         return Err(Refusal::SlotNotRun);
     }
-    if !(after.code_segment == u64::from(USER_CODE) && after.stack_segment == u64::from(USER_DATA)) {
+    // A far transfer may leave Linux's 32-bit code segment in CS, at ring 3 too.
+    let at_ring_3 = after.code_segment == u64::from(USER_CODE) || after.code_segment == USER_32_BIT_CODE;
+    if !(at_ring_3 && after.stack_segment == u64::from(USER_DATA)) {
         return Err(Refusal::NotFromRing3 {
             vector: slot.vector,
             error_code: slot.error_code,
@@ -1238,6 +1233,8 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
         high_vector_registers,
         opmask_registers,
         exception,
+        data_segments: after.data_segments.map(|selector| selector as u16),
+        code_segment: after.code_segment as u16,
     })
 }
 
@@ -1288,6 +1285,41 @@ fn to_exception(slot: &Slot) -> Result<Exception, Refusal> {
         SYSTEM_CALL_VECTOR => Exception::SystemCall,
         vector => return Err(Refusal::UnexpectedVector(vector)),
     })
+}
+
+/// The only selector ring 3 can load into SS: Linux's 0x2B.
+const STACK_SEGMENT_SELECTOR: u16 = 0x2B;
+
+/// The selector MOV to a segment register reads: its register's low 16 bits, or two bytes of the state's memory.
+fn read_source_selector(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>], decoded: &iced_x86::Instruction) -> Option<u16> {
+    if decoded.op1_kind() == OpKind::Register {
+        let number = decoded.op1_register().full_register().number();
+        return Some(processor.general_purpose_registers[number] as u16);
+    }
+    let address = decoded.virtual_address(1, 0, |register, _, _| {
+        let value = match register {
+            Register::FS => processor.fs_base,
+            Register::GS => processor.gs_base,
+            Register::ES | Register::CS | Register::SS | Register::DS => 0,
+            register if register.is_gpr64() => processor.general_purpose_registers[register.number()],
+            register if register.is_gpr32() => processor.general_purpose_registers[register.full_register().number()] & u64::from(u32::MAX),
+            Register::RIP => processor.instruction_pointer,
+            _ => return None,
+        };
+        Some(value)
+    })?;
+    let bytes: [u8; 2] = read_bytes(memory, address);
+    Some(u16::from_le_bytes(bytes))
+}
+
+/// Linux's 32-bit code segment, which a far transfer may leave in CS.
+const USER_32_BIT_CODE: u64 = 0x23;
+
+/// Whether a program can hold the selector in a data segment register under Linux: null, or naming one of the
+/// segments of Linux's descriptor table that ring 3 reaches.
+fn is_loadable(selector: u16) -> bool {
+    const TABLE_INDICATOR: u16 = 1 << 2;
+    selector & !3 == 0 || (selector & TABLE_INDICATOR == 0 && matches!(selector >> 3, 4 | 5 | 6 | 15))
 }
 
 /// The vector Linux gives ring 3 for 32-bit system calls.

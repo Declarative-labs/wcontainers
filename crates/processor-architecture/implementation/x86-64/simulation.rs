@@ -73,6 +73,8 @@ mod mmx_convert_simulation;
 mod descriptor_simulation;
 #[path = "reciprocal_simulation.rs"]
 mod reciprocal_simulation;
+#[path = "segment_simulation.rs"]
+mod segment_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -135,7 +137,7 @@ fn simulate_processor(
         Ok(()) => {
             *processor = changed;
             // A jump leaves the instruction pointer where it goes, as the stack forms leave it themselves.
-            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. } | PreciseInstruction::String { .. } | PreciseInstruction::System { .. }) {
+            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. } | PreciseInstruction::String { .. } | PreciseInstruction::System { .. } | PreciseInstruction::Segment { .. }) {
                 processor.instruction_pointer = decoded.next_ip();
             }
             processor.exception = None;
@@ -296,6 +298,9 @@ fn apply(
             system_simulation::execute_system(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Descriptor(instruction) => descriptor_simulation::execute_descriptor(instruction, processor, memory, decoded),
+        PreciseInstruction::Segment { instruction, behavior } => {
+            segment_simulation::execute_segment(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
         PreciseInstruction::Reciprocal { instruction, table } => {
             reciprocal_simulation::execute_reciprocal(instruction, table, processor, memory, decoded)
         }

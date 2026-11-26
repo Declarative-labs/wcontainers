@@ -251,7 +251,7 @@ impl PreciseInstruction {
             Self::Opmask { instruction, .. } | Self::EvexInteger { instruction, .. } => instruction,
             Self::String { instruction, .. } | Self::System { instruction, .. } => instruction,
             Self::MmxConvert { instruction, .. } | Self::Descriptor(instruction) => instruction,
-            Self::Reciprocal { instruction, .. } => instruction,
+            Self::Reciprocal { instruction, .. } | Self::Segment { instruction, .. } => instruction,
         }
     }
 }
@@ -322,6 +322,7 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
         _ if crate::string::find_string_form(instruction).is_some() => crate::string::list_string_behaviors(instruction),
         _ if crate::system::find_system_form(instruction).is_some() => crate::system::list_system_behaviors(instruction),
         _ if crate::descriptor::find_descriptor_form(instruction).is_some() => [PreciseInstruction::Descriptor(instruction)].to_vec(),
+        _ if crate::segment::find_segment_form(instruction).is_some() => crate::segment::list_segment_behaviors(instruction),
         _ if crate::reciprocal::find_reciprocal_form(instruction).is_some() => {
             [PreciseInstruction::Reciprocal { instruction, table: &crate::reciprocal::XEON_PLATINUM_8488C_RECIPROCALS }].to_vec()
         }
