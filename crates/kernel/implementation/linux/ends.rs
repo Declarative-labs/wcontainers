@@ -521,6 +521,9 @@ impl Kernel {
                 moved |= self.receive_held(cx, end, &file, side);
             }
             if self.finished(end, &file, side) {
+                // The release that follows wakes the pipe's other side only if it holds the
+                // last reference to the end's file (`released`), so this one goes first.
+                drop(file);
                 self.let_go_of_end(cx, end);
                 moved = true;
                 continue;
