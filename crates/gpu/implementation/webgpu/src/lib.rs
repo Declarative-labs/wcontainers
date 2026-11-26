@@ -27,6 +27,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use wcontainers_gpu::{
     Gpu, MAX_BINDING_SETS, Object, StandaloneGpu, caps::Caps, caps::Features, caps::FormatCaps,
@@ -1705,6 +1706,17 @@ impl Gpu for WebGpu {
         self.write_buffer_impl(buffer, offset, data, mode);
     }
 
+    fn write_buffer_from(
+        &mut self,
+        buffer: &Buffer,
+        offset: u64,
+        data: &impl VolatileBytes,
+        mode: WriteMode,
+    ) {
+        self.counters.buffer_bytes += data.len();
+        self.write_buffer_from_impl(buffer, offset, data, mode);
+    }
+
     fn write_texture(
         &mut self,
         region: &TextureRegion<'_, Self>,
@@ -1929,6 +1941,10 @@ impl Gpu for WebGpu {
 
     fn finish_read(&mut self, readback: Readback, dst: &mut [u8]) {
         self.finish_read_impl(readback, dst);
+    }
+
+    fn finish_read_into(&mut self, readback: Readback, dst: &impl VolatileBytes) {
+        self.finish_read_into_impl(readback, dst);
     }
 
     fn create_surface(&mut self, window: u32) -> Result<Surface, GpuError> {

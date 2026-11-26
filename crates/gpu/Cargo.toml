@@ -16,6 +16,7 @@ blake3 = { version = "1", default-features = false }
 half = { version = "2", default-features = false }
 naga = { workspace = true, features = ["wgsl-in"] }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+wcontainers-volatile-bytes = { path = "../volatile-bytes" }
 
 [dev-dependencies]
 naga = { workspace = true, features = ["wgsl-in", "glsl-out", "wgsl-out"] }

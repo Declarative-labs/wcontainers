@@ -77,6 +77,7 @@ use crate::state::{
 use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::ops::Range;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 /// Where the vertices of a fan or loop come from.
 #[derive(Clone, Copy, Debug)]
@@ -266,6 +267,39 @@ pub trait Gpu: Sized {
         rows_per_layer: u32,
         mode: WriteMode,
     );
+    /// Writes bytes another party holds and may change during the call into a buffer, as
+    /// [`Gpu::write_buffer`] writes `data`: what lands of each byte is a value it held during the
+    /// call. The default copies them out once and writes the copy; a back end that can read them
+    /// straight into its staging memory overrides it to copy once.
+    fn write_buffer_from(
+        &mut self,
+        buffer: &Self::Buffer,
+        offset: u64,
+        data: &impl VolatileBytes,
+        mode: WriteMode,
+    ) {
+        let mut bytes = alloc::vec![0; usize::try_from(data.len()).unwrap_or(usize::MAX)];
+        let read = data.read(&mut bytes);
+        bytes.truncate(read);
+        self.write_buffer(buffer, offset, &bytes, mode);
+    }
+    /// Writes texels another party holds and may change during the call into one region of a
+    /// texture, as [`Gpu::write_texture`] writes `data`: what lands of each byte is a value it held
+    /// during the call. The default copies them out once and writes the copy.
+    fn write_texture_from(
+        &mut self,
+        region: &TextureRegion<'_, Self>,
+        extent: Extent,
+        data: &impl VolatileBytes,
+        row_pitch: u32,
+        rows_per_layer: u32,
+        mode: WriteMode,
+    ) {
+        let mut bytes = alloc::vec![0; usize::try_from(data.len()).unwrap_or(usize::MAX)];
+        let read = data.read(&mut bytes);
+        bytes.truncate(read);
+        self.write_texture(region, extent, &bytes, row_pitch, rows_per_layer, mode);
+    }
 
     // ---- Recording ----
 
@@ -367,6 +401,14 @@ pub trait Gpu: Sized {
     fn wait_read(&mut self, readback: &Self::Readback);
     /// Copies a ready read back into guest memory. Rows of textures arrive tightly packed.
     fn finish_read(&mut self, readback: Self::Readback, dst: &mut [u8]);
+    /// Copies a ready read back into bytes another party holds and may change during the call, as
+    /// [`Gpu::finish_read`] copies into `dst`. The default finishes into a copy of `dst`'s length and
+    /// writes the copy; a back end whose read back is already mapped overrides it to copy once.
+    fn finish_read_into(&mut self, readback: Self::Readback, dst: &impl VolatileBytes) {
+        let mut bytes = alloc::vec![0; usize::try_from(dst.len()).unwrap_or(usize::MAX)];
+        self.finish_read(readback, &mut bytes);
+        dst.write(&bytes);
+    }
 
     // ---- Frames ----
 

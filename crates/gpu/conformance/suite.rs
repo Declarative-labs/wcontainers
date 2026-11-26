@@ -5126,6 +5126,147 @@ pub fn absent_abilities_answer_absent<B: Gpu>(mut b: B) {
     ok(&mut b);
 }
 
+/// Bytes another party changes while the back end holds them: each byte goes up by one after every
+/// time they are read, and before they are written over.
+struct Drifting {
+    bytes: core::cell::RefCell<Vec<u8>>,
+}
+
+impl Drifting {
+    fn new(bytes: Vec<u8>) -> Self {
+        Drifting {
+            bytes: core::cell::RefCell::new(bytes),
+        }
+    }
+
+    fn drift(&self) {
+        for byte in self.bytes.borrow_mut().iter_mut() {
+            *byte = byte.wrapping_add(1);
+        }
+    }
+
+    /// Checks that each byte of `got` is a value byte `i` of `first` held during the call.
+    fn held(first: &[u8], got: &[u8]) {
+        assert_eq!(first.len(), got.len());
+        for (i, (f, g)) in first.iter().zip(got).enumerate() {
+            assert!(
+                *g == *f || *g == f.wrapping_add(1),
+                "byte {i}: {g}, which it never held ({f} or the next)"
+            );
+        }
+    }
+}
+
+impl wcontainers_volatile_bytes::VolatileBytes for Drifting {
+    fn len(&self) -> u64 {
+        self.bytes.borrow().len() as u64
+    }
+
+    fn read(&self, into: &mut [u8]) -> usize {
+        let count = {
+            let held = self.bytes.borrow();
+            let count = into.len().min(held.len());
+            into[..count].copy_from_slice(&held[..count]);
+            count
+        };
+        self.drift();
+        count
+    }
+
+    fn write(&self, bytes: &[u8]) -> usize {
+        self.drift();
+        let mut held = self.bytes.borrow_mut();
+        let count = bytes.len().min(held.len());
+        held[..count].copy_from_slice(&bytes[..count]);
+        count
+    }
+
+    fn read_to<Sink: wcontainers_byte_sink::ByteSink>(
+        &self,
+        sink: &mut Sink,
+    ) -> Result<usize, Sink::Error> {
+        let written = sink.write(&self.bytes.borrow());
+        self.drift();
+        written
+    }
+
+    fn write_from<Source: wcontainers_byte_source::ByteSource>(
+        &self,
+        source: &mut Source,
+    ) -> Result<usize, Source::Error> {
+        self.drift();
+        source.read(&mut self.bytes.borrow_mut())
+    }
+}
+
+/// A buffer written from bytes another party changes during the call holds, of each byte, a value
+/// it held then.
+pub fn buffer_writes_from_changing_bytes_land_as_held<B: Gpu>(mut b: B) {
+    let first = pattern(256, 11);
+    let guest = Drifting::new(first.clone());
+    let dst = buffer(&mut b, 256, BufferUsage::COPY_DST | BufferUsage::COPY_SRC);
+    b.write_buffer_from(&dst, 0, &guest, WriteMode::Ordered);
+    assert_ne!(
+        guest.bytes.borrow()[0],
+        first[0],
+        "the bytes were read during the call"
+    );
+    Drifting::held(&first, &read_buffer(&mut b, &dst, 0, 256));
+    ok(&mut b);
+}
+
+/// A texture written from texels another party changes during the call holds, of each byte, a value
+/// it held then.
+pub fn texture_writes_from_changing_bytes_land_as_held<B: Gpu>(mut b: B) {
+    const N: u32 = 4;
+    needs(
+        &b,
+        Format::Rgba8Unorm,
+        FormatUse::SAMPLE | FormatUse::COPY_OUT,
+    );
+    let usage = TextureUsage::SAMPLE | TextureUsage::COPY_SRC | TextureUsage::COPY_DST;
+    let t = texture(&mut b, Format::Rgba8Unorm, (N, N), 1, 1, usage);
+    let first = pattern((N * N * 4) as usize, 23);
+    let guest = Drifting::new(first.clone());
+    b.write_texture_from(
+        &region(&t, 0, 0, 0, 0),
+        extent(N, N, 1),
+        &guest,
+        N * 4,
+        N,
+        WriteMode::Ordered,
+    );
+    assert_ne!(
+        guest.bytes.borrow()[0],
+        first[0],
+        "the texels were read during the call"
+    );
+    let got = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(N, N, 1), 4);
+    Drifting::held(&first, &got);
+    ok(&mut b);
+}
+
+/// A read back finished into bytes another party changes during the call leaves them holding what
+/// was read back.
+pub fn read_backs_finish_into_changing_bytes<B: Gpu>(mut b: B) {
+    let data = pattern(256, 31);
+    let src = buffer(&mut b, 256, BufferUsage::COPY_DST | BufferUsage::COPY_SRC);
+    b.write_buffer(&src, 0, &data, WriteMode::Ordered);
+    let rb = b
+        .read_back(&ReadSource::Buffer {
+            buffer: &src,
+            offset: 0,
+            size: 256,
+        })
+        .expect("read_back");
+    b.submit();
+    b.wait_read(&rb);
+    let guest = Drifting::new(vec![0; 256]);
+    b.finish_read_into(rb, &guest);
+    assert_eq!(*guest.bytes.borrow(), data);
+    ok(&mut b);
+}
+
 /// Runs each suite function as its own test on a back end made anew for every test.
 ///
 /// A back end is built alone through [`StandaloneGpu`], so every implementation says `StandaloneGpu: yes`.
@@ -5415,6 +5556,21 @@ macro_rules! tests {
         #[test]
         fn absent_abilities_answer_absent() {
             $crate::absent_abilities_answer_absent($value);
+        }
+
+        #[test]
+        fn buffer_writes_from_changing_bytes_land_as_held() {
+            $crate::buffer_writes_from_changing_bytes_land_as_held($value);
+        }
+
+        #[test]
+        fn texture_writes_from_changing_bytes_land_as_held() {
+            $crate::texture_writes_from_changing_bytes_land_as_held($value);
+        }
+
+        #[test]
+        fn read_backs_finish_into_changing_bytes() {
+            $crate::read_backs_finish_into_changing_bytes($value);
         }
 
         $crate::tests!(@StandaloneGpu $standalone_gpu ($value) $(($standalone_gpu_value))?);

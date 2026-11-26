@@ -8,6 +8,9 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
 
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_volatile_bytes::VolatileBytes;
+
 use wcontainers_gpu::{
     Gpu, error::GpuError, format::FORMAT_FACTS, format::Format, format::FormatKind,
     resource::CopyBufferTexture, resource::Extent, resource::Origin, resource::QueryKind,
@@ -588,6 +591,44 @@ impl WebGpu {
             _ => {}
         }
         self.write_now(b, offset, data);
+    }
+
+    /// As [`Self::write_buffer_impl`], for bytes another party holds: a write the queue takes now goes
+    /// from those bytes into the queue's staging memory in one copy; any other is copied out first.
+    pub(crate) fn write_buffer_from_impl(
+        &mut self,
+        buffer: &Buffer,
+        offset: u64,
+        data: &impl VolatileBytes,
+        mode: WriteMode,
+    ) {
+        let len = data.len();
+        let b = &buffer.0;
+        let at = b.base.get() + offset;
+        let ordered = matches!(mode, WriteMode::Ordered | WriteMode::Discard);
+        let now = len > 0
+            && offset
+                .checked_add(len)
+                .is_some_and(|end| end <= b.desc.size)
+            && !(ordered && self.pending(b.used_in.get()))
+            && at.is_multiple_of(ALIGN)
+            && len.is_multiple_of(ALIGN)
+            && !self.lead_pending(b);
+        if now {
+            b.wrote();
+            let raw = b.raw.borrow();
+            let mut sink = QueueWrite {
+                queue: &self.queue,
+                buffer: &raw,
+                at,
+            };
+            let Ok(_) = data.read_to(&mut sink);
+            return;
+        }
+        let mut bytes = vec![0; usize::try_from(len).unwrap_or(usize::MAX)];
+        let read = data.read(&mut bytes);
+        bytes.truncate(read);
+        self.write_buffer_impl(buffer, offset, &bytes, mode);
     }
 
     /// Writes ahead of every command recorded so far: from the queue, or, for bytes not in whole words
@@ -1848,6 +1889,33 @@ impl WebGpu {
         Ok(())
     }
 
+    /// As [`Self::finish_read_impl`], into bytes another party holds: a read back of one run of bytes
+    /// goes from its mapping into them in one copy; any other is finished into a copy first.
+    pub(crate) fn finish_read_into_impl(&mut self, readback: Readback, dst: &impl VolatileBytes) {
+        let o = &readback.0;
+        let whole = o.state.load(Ordering::Acquire) == MAP_READY
+            && o.packed.is_none()
+            && (o.rows <= 1 || o.pitch == o.row)
+            && dst.len() >= o.row * o.rows;
+        if let (true, Some(buffer)) = (whole, &o.buffer) {
+            let from = o.skip as usize;
+            let to = from + (o.row * o.rows) as usize;
+            {
+                let Ok(data) = buffer.slice(..).get_mapped_range() else {
+                    self.fail("a ready read back could not be mapped");
+                    return;
+                };
+                dst.write(&data[from..to]);
+            }
+            buffer.unmap();
+            buffer.destroy();
+            return;
+        }
+        let mut bytes = vec![0; usize::try_from(dst.len()).unwrap_or(usize::MAX)];
+        self.finish_read_impl(readback, &mut bytes);
+        dst.write(&bytes);
+    }
+
     pub(crate) fn finish_read_impl(&mut self, readback: Readback, dst: &mut [u8]) {
         let o = &readback.0;
         if o.state.load(Ordering::Acquire) != MAP_READY {
@@ -1905,5 +1973,21 @@ mod tests {
             super::DX12_PLACEMENT_ALIGNMENT,
             u64::from(D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT)
         );
+    }
+}
+
+/// One write of the queue at a place of a buffer, which takes the bytes it is given in one copy.
+struct QueueWrite<'a> {
+    queue: &'a wgpu::Queue,
+    buffer: &'a wgpu::Buffer,
+    at: u64,
+}
+
+impl ByteSink for QueueWrite<'_> {
+    type Error = core::convert::Infallible;
+
+    fn write(&mut self, bytes: &[u8]) -> Result<usize, Self::Error> {
+        self.queue.write_buffer(self.buffer, self.at, bytes);
+        Ok(bytes.len())
     }
 }

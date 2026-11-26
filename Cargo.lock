@@ -4501,6 +4501,7 @@ dependencies = [
  "half",
  "naga",
  "serde",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4510,7 +4511,10 @@ dependencies = [
  "blake3",
  "half",
  "naga",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-gpu",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4576,6 +4580,7 @@ dependencies = [
  "serde",
  "serde_json",
  "wasm-bindgen",
+ "wcontainers-byte-sink",
  "wcontainers-gpu",
  "wcontainers-gpu-conformance",
  "wcontainers-graphics-test",
@@ -4583,6 +4588,7 @@ dependencies = [
  "wcontainers-test-window",
  "wcontainers-test-window-appkit",
  "wcontainers-test-window-win32",
+ "wcontainers-volatile-bytes",
  "web-sys",
  "wgpu",
  "wgpu-naga-bridge",

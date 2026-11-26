@@ -13,6 +13,9 @@ path = "suite.rs"
 
 [dependencies]
 wcontainers-gpu = { path = ".." }
+wcontainers-byte-sink = { path = "../../byte-sink" }
+wcontainers-byte-source = { path = "../../byte-source" }
+wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
 blake3 = { version = "1", default-features = false }
 half = { version = "2", default-features = false }
 naga = { workspace = true, features = ["wgsl-in"] }
