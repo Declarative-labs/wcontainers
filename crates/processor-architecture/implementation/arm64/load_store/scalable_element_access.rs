@@ -99,6 +99,11 @@ pub struct ElementAccess {
 /// value of an inactive element at or after one whose FFR bit is clear, after a first-fault or non-fault load that
 /// suppresses no access: zero, which the choice of what it read gives too, or what the register held.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::load_store::scalable_element_access)
+)]
 pub enum UnknownElement {
     Zero,
     Merge,
@@ -106,6 +111,11 @@ pub enum UnknownElement {
 
 /// The choices a chip makes for an access of elements.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::load_store::scalable_element_access)
+)]
 pub struct ElementAccessChoices {
     pub misaligned_stack_pointer: MisalignedStackPointer,
     pub across_fault: Option<ScalableStoreAcrossFault>,

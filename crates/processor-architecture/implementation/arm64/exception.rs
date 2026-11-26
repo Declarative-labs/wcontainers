@@ -75,6 +75,11 @@ pub enum FaultStatus {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum AccessDirection {
     Read,
     Write,
@@ -82,6 +87,11 @@ pub enum AccessDirection {
 
 /// The [SMTC](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=SMTC%2C%20bits%20%5B2%3A0%5D) of a trapped SME instruction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum SmeTrapCode {
     /// SME is turned off where the instruction runs.
     Disabled,

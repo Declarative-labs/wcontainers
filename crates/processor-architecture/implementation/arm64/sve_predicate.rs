@@ -29,6 +29,11 @@ const UNSIGNED_IMMEDIATE: Field = Field::new(14, 7);
 const BYTE: u32 = u8::BITS;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum PredicateLogic {
     And,
     /// BIC: the first and the second's complement.
@@ -43,6 +48,11 @@ pub enum PredicateLogic {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum BreakKind {
     /// BRKA: active elements up to and including the first true one.
     After,
@@ -56,6 +66,11 @@ pub enum BreakKind {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum PredicatePermutation {
     Zip(Part),
     Unzip(Part),
@@ -67,6 +82,11 @@ pub enum PredicatePermutation {
 
 /// The test of WHILE between its counter and its limit; a decreasing WHILE fills from the last element down.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum WhileCondition {
     Less(Signedness),
     LessOrEqual(Signedness),
@@ -75,6 +95,11 @@ pub enum WhileCondition {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum Comparison {
     Equal,
     NotEqual,
@@ -86,6 +111,11 @@ pub enum Comparison {
 
 /// What an integer compare compares each element with.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum CompareWith {
     Vector,
     /// The doubleword element of the second vector that holds the element.
@@ -94,6 +124,11 @@ pub enum CompareWith {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::sve)
+)]
 pub enum PredicateOperation {
     True {
         sets_flags: bool,
