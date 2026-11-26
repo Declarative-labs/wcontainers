@@ -252,6 +252,15 @@ fn to_vector_register(length: EvexVectorLength, number: usize) -> Register {
     Register::try_from(first as usize + number).unwrap_or_else(|_| panic!("vector register {number}"))
 }
 
+/// The vector length of this many 128-bit quarters.
+const fn to_length(quarters: usize) -> EvexVectorLength {
+    match quarters {
+        1 => EvexVectorLength::L128,
+        2 => EvexVectorLength::L256,
+        _ => EvexVectorLength::L512,
+    }
+}
+
 fn to_opmask_register(number: usize) -> Register {
     Register::try_from(Register::K0 as usize + number % 8).unwrap_or_else(|_| panic!("opmask register {number}"))
 }
@@ -336,6 +345,7 @@ pub fn build_state(form: &EvexIntegerForm, operands: &[(OperandType, OperandValu
     let target = match form.operation {
         _ if form.writes_mask() => to_opmask_register(destination_number),
         EvexIntegerOperation::Narrow { from, .. } => to_vector_register(length.scale(from, form.lane), destination_number),
+        EvexIntegerOperation::Extract { quarters } => to_vector_register(to_length(quarters), destination_number),
         _ => vector(destination_number),
     };
     let last_register = match form.operation {
@@ -344,6 +354,7 @@ pub fn build_state(form: &EvexIntegerForm, operands: &[(OperandType, OperandValu
             Register::try_from(general as usize + last_number % 16).unwrap_or_else(|_| panic!("general register {last_number}"))
         }
         EvexIntegerOperation::FromMask => to_opmask_register(last_number),
+        EvexIntegerOperation::Insert { quarters } => to_vector_register(to_length(quarters), last_number),
         EvexIntegerOperation::Extend { from, .. } => to_vector_register(length.scale(form.lane, from), last_number),
         EvexIntegerOperation::ShiftByCount(_) | EvexIntegerOperation::Broadcast | EvexIntegerOperation::BroadcastTuple(_) => {
             narrow(last_number)
@@ -352,7 +363,8 @@ pub fn build_state(form: &EvexIntegerForm, operands: &[(OperandType, OperandValu
     };
     let immediate = immediate.map(|value| value as u8 as u32);
     let mut encoded = match (form.place, memory_operand, form.has_first_source(), immediate) {
-        (EvexIntegerPlace::Store, Some(operand), _, _) => Encoded::with2(code, operand, vector(first_number)),
+        (EvexIntegerPlace::Store, Some(operand), _, Some(immediate)) => Encoded::with3(code, operand, vector(first_number), immediate),
+        (EvexIntegerPlace::Store, Some(operand), _, None) => Encoded::with2(code, operand, vector(first_number)),
         (_, Some(operand), true, Some(immediate)) => Encoded::with4(code, target, vector(first_number), operand, immediate),
         (_, Some(operand), true, None) => Encoded::with3(code, target, vector(first_number), operand),
         (_, Some(operand), false, Some(immediate)) => Encoded::with3(code, target, operand, immediate),

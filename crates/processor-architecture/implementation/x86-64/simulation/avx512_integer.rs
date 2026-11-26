@@ -221,18 +221,27 @@ fn store_vector(
 ) -> Result<(), Exception> {
     let register = read_vector(processor, decoded.op1_register());
     let source = match form.operation {
-        EvexIntegerOperation::Narrow { .. } => form.compute(&[0; 4], &[0; 4], &register, 0),
+        EvexIntegerOperation::Narrow { .. } | EvexIntegerOperation::Extract { .. } => {
+            let immediate = if form.has_immediate() { decoded.immediate8() } else { 0 };
+            form.compute(&[0; 4], &[0; 4], &register, immediate)
+        }
         _ => register,
     };
     let operand = locate(processor, decoded);
     let runs = list_accessed(form, false, active);
+    // A store that does not suppress faults checks every byte but writes only the lanes let through.
+    let lane_bytes = u64::from(form.memory_lane().to_bits() / 8);
+    let written: Vec<(u64, u64)> = (0..form.count_lanes() as u64)
+        .filter(|lane| active >> lane & 1 != 0)
+        .map(|lane| (lane * lane_bytes, lane_bytes))
+        .collect();
     let mut bytes = [0u8; ZMM_BYTES];
     for (quarter, value) in source.iter().enumerate() {
         bytes[16 * quarter..16 * quarter + 16].copy_from_slice(&value.to_le_bytes());
     }
     let masked = decoded.op_mask() != Register::None;
     let fault = check_small_access(form, processor, operand, &runs, form.memory_bytes(false), masked)
-        .and_then(|()| check_runs(form, memory, operand, &runs, Access::Write, masked))
+        .and_then(|()| check_runs(form, memory, operand, &runs, Access::Write, masked && form.is_element_wise()))
         .err();
     let below = match fault {
         Some(Exception::PageFault { address, .. }) if across_fault == StoreAcrossFault::WritesBytesBelowFault => address,
@@ -241,7 +250,7 @@ fn store_vector(
     };
     // Adjacent lanes are one run of bytes.
     let mut merged: Vec<(u64, u64)> = Vec::new();
-    for &(offset, length) in &runs {
+    for &(offset, length) in &written {
         match merged.last_mut() {
             Some((start, run)) if *start + *run == offset => *run += length,
             _ => merged.push((offset, length)),

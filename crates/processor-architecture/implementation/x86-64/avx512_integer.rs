@@ -84,6 +84,12 @@ pub enum EvexIntegerOperation {
     /// each quadword four sums of absolute byte differences between the first source's doublewords and windows of
     /// the chosen bytes.
     DoubleBlockDifferences,
+    /// VINSERTI32X4 to VINSERTF64X4: the first source with the part of this many 128-bit quarters the immediate's low
+    /// bits number replaced by the second source's low part.
+    Insert { quarters: usize },
+    /// VEXTRACTI32X4 to VEXTRACTF64X4: the source's part of this many 128-bit quarters the immediate's low bits
+    /// number; the vector length is the source's.
+    Extract { quarters: usize },
 }
 
 /// Where an EVEX form's last source lies.
@@ -146,6 +152,7 @@ impl EvexIntegerForm {
     pub const fn count_lanes(&self) -> usize {
         match self.operation {
             EvexIntegerOperation::Narrow { from, .. } => (self.length.to_bits() / from.to_bits()) as usize,
+            EvexIntegerOperation::Extract { quarters } => quarters * 128 / self.lane.to_bits() as usize,
             _ => (self.length.to_bits() / self.lane.to_bits()) as usize,
         }
     }
@@ -175,7 +182,7 @@ impl EvexIntegerForm {
     /// else the source's.
     pub const fn memory_lane(&self) -> Lane {
         match self.operation {
-            EvexIntegerOperation::Narrow { .. } => self.lane,
+            EvexIntegerOperation::Narrow { .. } | EvexIntegerOperation::Extract { .. } => self.lane,
             _ => self.source_lane(),
         }
     }
@@ -213,7 +220,10 @@ impl EvexIntegerForm {
                     | LaneOperation::DuplicateOddSingles
                     | LaneOperation::DuplicateLowDouble
             ),
-            EvexIntegerOperation::ShiftByCount(_) | EvexIntegerOperation::DoubleBlockDifferences => false,
+            EvexIntegerOperation::ShiftByCount(_)
+            | EvexIntegerOperation::DoubleBlockDifferences
+            | EvexIntegerOperation::Insert { .. }
+            | EvexIntegerOperation::Extract { .. } => false,
             _ => true,
         }
     }
@@ -258,6 +268,7 @@ impl EvexIntegerForm {
                 | EvexIntegerOperation::ToMask
                 | EvexIntegerOperation::Extend { .. }
                 | EvexIntegerOperation::Narrow { .. }
+                | EvexIntegerOperation::Extract { .. }
         )
     }
 
@@ -449,6 +460,14 @@ impl EvexIntegerForm {
                 });
                 from_lanes(lane, &narrowed.collect::<Vec<_>>())
             }
+            EvexIntegerOperation::Insert { quarters: part } => {
+                let index = usize::from(immediate) & (quarters / part - 1);
+                per_quarter(&|quarter| if quarter / part == index { second[quarter % part] } else { first[quarter] })
+            }
+            EvexIntegerOperation::Extract { quarters: part } => {
+                let index = usize::from(immediate) & (quarters / part - 1);
+                core::array::from_fn(|quarter| if quarter < part { second[index * part + quarter] } else { 0 })
+            }
             EvexIntegerOperation::DoubleBlockDifferences => per_quarter(&|quarter| {
                 let chosen = split(Lane::Doubleword, second[quarter]);
                 let window: Vec<u64> = (0..4)
@@ -507,8 +526,8 @@ pub fn find_evex_integer_form(instruction: Instruction) -> Option<&'static EvexI
 }
 
 use EvexIntegerOperation::{
-    Blend, Broadcast, BroadcastTuple, CompareIntoMask, DoubleBlockDifferences, Extend, FromMask, Lanes, Move, Narrow, Rotate,
-    ShiftByCount, ShiftByImmediate, ShiftByLane, TernaryLogic, TestIntoMask, ToMask,
+    Blend, Broadcast, BroadcastTuple, CompareIntoMask, DoubleBlockDifferences, Extend, Extract, FromMask, Insert, Lanes, Move,
+    Narrow, Rotate, ShiftByCount, ShiftByImmediate, ShiftByLane, TernaryLogic, TestIntoMask, ToMask,
 };
 use EvexIntegerPlace::{General, Memory, Register, Store};
 use Lane::{Byte, Doubleword, Quadword, Word};
@@ -1811,4 +1830,53 @@ pub static EVEX_INTEGER_FORMS: &[EvexIntegerForm] = evex_forms! {
     VdbpsadbwYmmu16MaskmskwYmmu8Ymmu8Imm8Avx512, DoubleBlockDifferences, Word, Register, L256, [EVEX_Vdbpsadbw_ymm_k1z_ymm_ymmm256_imm8];
     VdbpsadbwZmmu16MaskmskwZmmu8Memu8Imm8Avx512, DoubleBlockDifferences, Word, Memory, L512, [EVEX_Vdbpsadbw_zmm_k1z_zmm_zmmm512_imm8];
     VdbpsadbwZmmu16MaskmskwZmmu8Zmmu8Imm8Avx512, DoubleBlockDifferences, Word, Register, L512, [EVEX_Vdbpsadbw_zmm_k1z_zmm_zmmm512_imm8];
+    // Inserts and extracts of 128 and 256 bits.
+    Vextractf32x4Memf32MaskmskwYmmf32Imm8Avx512, Extract { quarters: 1 }, Doubleword, Store, L256, [EVEX_Vextractf32x4_xmmm128_k1z_ymm_imm8];
+    Vextractf32x4Memf32MaskmskwZmmf32Imm8Avx512, Extract { quarters: 1 }, Doubleword, Store, L512, [EVEX_Vextractf32x4_xmmm128_k1z_zmm_imm8];
+    Vextractf32x4Xmmf32MaskmskwYmmf32Imm8Avx512, Extract { quarters: 1 }, Doubleword, Register, L256, [EVEX_Vextractf32x4_xmmm128_k1z_ymm_imm8];
+    Vextractf32x4Xmmf32MaskmskwZmmf32Imm8Avx512, Extract { quarters: 1 }, Doubleword, Register, L512, [EVEX_Vextractf32x4_xmmm128_k1z_zmm_imm8];
+    Vextractf32x8Memf32MaskmskwZmmf32Imm8Avx512, Extract { quarters: 2 }, Doubleword, Store, L512, [EVEX_Vextractf32x8_ymmm256_k1z_zmm_imm8];
+    Vextractf32x8Ymmf32MaskmskwZmmf32Imm8Avx512, Extract { quarters: 2 }, Doubleword, Register, L512, [EVEX_Vextractf32x8_ymmm256_k1z_zmm_imm8];
+    Vextractf64x2Memf64MaskmskwYmmf64Imm8Avx512, Extract { quarters: 1 }, Quadword, Store, L256, [EVEX_Vextractf64x2_xmmm128_k1z_ymm_imm8];
+    Vextractf64x2Memf64MaskmskwZmmf64Imm8Avx512, Extract { quarters: 1 }, Quadword, Store, L512, [EVEX_Vextractf64x2_xmmm128_k1z_zmm_imm8];
+    Vextractf64x2Xmmf64MaskmskwYmmf64Imm8Avx512, Extract { quarters: 1 }, Quadword, Register, L256, [EVEX_Vextractf64x2_xmmm128_k1z_ymm_imm8];
+    Vextractf64x2Xmmf64MaskmskwZmmf64Imm8Avx512, Extract { quarters: 1 }, Quadword, Register, L512, [EVEX_Vextractf64x2_xmmm128_k1z_zmm_imm8];
+    Vextractf64x4Memf64MaskmskwZmmf64Imm8Avx512, Extract { quarters: 2 }, Quadword, Store, L512, [EVEX_Vextractf64x4_ymmm256_k1z_zmm_imm8];
+    Vextractf64x4Ymmf64MaskmskwZmmf64Imm8Avx512, Extract { quarters: 2 }, Quadword, Register, L512, [EVEX_Vextractf64x4_ymmm256_k1z_zmm_imm8];
+    Vextracti32x4Memu32MaskmskwYmmu32Imm8Avx512, Extract { quarters: 1 }, Doubleword, Store, L256, [EVEX_Vextracti32x4_xmmm128_k1z_ymm_imm8];
+    Vextracti32x4Memu32MaskmskwZmmu32Imm8Avx512, Extract { quarters: 1 }, Doubleword, Store, L512, [EVEX_Vextracti32x4_xmmm128_k1z_zmm_imm8];
+    Vextracti32x4Xmmu32MaskmskwYmmu32Imm8Avx512, Extract { quarters: 1 }, Doubleword, Register, L256, [EVEX_Vextracti32x4_xmmm128_k1z_ymm_imm8];
+    Vextracti32x4Xmmu32MaskmskwZmmu32Imm8Avx512, Extract { quarters: 1 }, Doubleword, Register, L512, [EVEX_Vextracti32x4_xmmm128_k1z_zmm_imm8];
+    Vextracti32x8Memu32MaskmskwZmmu32Imm8Avx512, Extract { quarters: 2 }, Doubleword, Store, L512, [EVEX_Vextracti32x8_ymmm256_k1z_zmm_imm8];
+    Vextracti32x8Ymmu32MaskmskwZmmu32Imm8Avx512, Extract { quarters: 2 }, Doubleword, Register, L512, [EVEX_Vextracti32x8_ymmm256_k1z_zmm_imm8];
+    Vextracti64x2Memu64MaskmskwYmmu64Imm8Avx512, Extract { quarters: 1 }, Quadword, Store, L256, [EVEX_Vextracti64x2_xmmm128_k1z_ymm_imm8];
+    Vextracti64x2Memu64MaskmskwZmmu64Imm8Avx512, Extract { quarters: 1 }, Quadword, Store, L512, [EVEX_Vextracti64x2_xmmm128_k1z_zmm_imm8];
+    Vextracti64x2Xmmu64MaskmskwYmmu64Imm8Avx512, Extract { quarters: 1 }, Quadword, Register, L256, [EVEX_Vextracti64x2_xmmm128_k1z_ymm_imm8];
+    Vextracti64x2Xmmu64MaskmskwZmmu64Imm8Avx512, Extract { quarters: 1 }, Quadword, Register, L512, [EVEX_Vextracti64x2_xmmm128_k1z_zmm_imm8];
+    Vextracti64x4Memu64MaskmskwZmmu64Imm8Avx512, Extract { quarters: 2 }, Quadword, Store, L512, [EVEX_Vextracti64x4_ymmm256_k1z_zmm_imm8];
+    Vextracti64x4Ymmu64MaskmskwZmmu64Imm8Avx512, Extract { quarters: 2 }, Quadword, Register, L512, [EVEX_Vextracti64x4_ymmm256_k1z_zmm_imm8];
+    Vinsertf32x4Ymmf32MaskmskwYmmf32Memf32Imm8Avx512, Insert { quarters: 1 }, Doubleword, Memory, L256, [EVEX_Vinsertf32x4_ymm_k1z_ymm_xmmm128_imm8];
+    Vinsertf32x4Ymmf32MaskmskwYmmf32Xmmf32Imm8Avx512, Insert { quarters: 1 }, Doubleword, Register, L256, [EVEX_Vinsertf32x4_ymm_k1z_ymm_xmmm128_imm8];
+    Vinsertf32x4Zmmf32MaskmskwZmmf32Memf32Imm8Avx512, Insert { quarters: 1 }, Doubleword, Memory, L512, [EVEX_Vinsertf32x4_zmm_k1z_zmm_xmmm128_imm8];
+    Vinsertf32x4Zmmf32MaskmskwZmmf32Xmmf32Imm8Avx512, Insert { quarters: 1 }, Doubleword, Register, L512, [EVEX_Vinsertf32x4_zmm_k1z_zmm_xmmm128_imm8];
+    Vinsertf32x8Zmmf32MaskmskwZmmf32Memf32Imm8Avx512, Insert { quarters: 2 }, Doubleword, Memory, L512, [EVEX_Vinsertf32x8_zmm_k1z_zmm_ymmm256_imm8];
+    Vinsertf32x8Zmmf32MaskmskwZmmf32Ymmf32Imm8Avx512, Insert { quarters: 2 }, Doubleword, Register, L512, [EVEX_Vinsertf32x8_zmm_k1z_zmm_ymmm256_imm8];
+    Vinsertf64x2Ymmf64MaskmskwYmmf64Memf64Imm8Avx512, Insert { quarters: 1 }, Quadword, Memory, L256, [EVEX_Vinsertf64x2_ymm_k1z_ymm_xmmm128_imm8];
+    Vinsertf64x2Ymmf64MaskmskwYmmf64Xmmf64Imm8Avx512, Insert { quarters: 1 }, Quadword, Register, L256, [EVEX_Vinsertf64x2_ymm_k1z_ymm_xmmm128_imm8];
+    Vinsertf64x2Zmmf64MaskmskwZmmf64Memf64Imm8Avx512, Insert { quarters: 1 }, Quadword, Memory, L512, [EVEX_Vinsertf64x2_zmm_k1z_zmm_xmmm128_imm8];
+    Vinsertf64x2Zmmf64MaskmskwZmmf64Xmmf64Imm8Avx512, Insert { quarters: 1 }, Quadword, Register, L512, [EVEX_Vinsertf64x2_zmm_k1z_zmm_xmmm128_imm8];
+    Vinsertf64x4Zmmf64MaskmskwZmmf64Memf64Imm8Avx512, Insert { quarters: 2 }, Quadword, Memory, L512, [EVEX_Vinsertf64x4_zmm_k1z_zmm_ymmm256_imm8];
+    Vinsertf64x4Zmmf64MaskmskwZmmf64Ymmf64Imm8Avx512, Insert { quarters: 2 }, Quadword, Register, L512, [EVEX_Vinsertf64x4_zmm_k1z_zmm_ymmm256_imm8];
+    Vinserti32x4Ymmu32MaskmskwYmmu32Memu32Imm8Avx512, Insert { quarters: 1 }, Doubleword, Memory, L256, [EVEX_Vinserti32x4_ymm_k1z_ymm_xmmm128_imm8];
+    Vinserti32x4Ymmu32MaskmskwYmmu32Xmmu32Imm8Avx512, Insert { quarters: 1 }, Doubleword, Register, L256, [EVEX_Vinserti32x4_ymm_k1z_ymm_xmmm128_imm8];
+    Vinserti32x4Zmmu32MaskmskwZmmu32Memu32Imm8Avx512, Insert { quarters: 1 }, Doubleword, Memory, L512, [EVEX_Vinserti32x4_zmm_k1z_zmm_xmmm128_imm8];
+    Vinserti32x4Zmmu32MaskmskwZmmu32Xmmu32Imm8Avx512, Insert { quarters: 1 }, Doubleword, Register, L512, [EVEX_Vinserti32x4_zmm_k1z_zmm_xmmm128_imm8];
+    Vinserti32x8Zmmu32MaskmskwZmmu32Memu32Imm8Avx512, Insert { quarters: 2 }, Doubleword, Memory, L512, [EVEX_Vinserti32x8_zmm_k1z_zmm_ymmm256_imm8];
+    Vinserti32x8Zmmu32MaskmskwZmmu32Ymmu32Imm8Avx512, Insert { quarters: 2 }, Doubleword, Register, L512, [EVEX_Vinserti32x8_zmm_k1z_zmm_ymmm256_imm8];
+    Vinserti64x2Ymmu64MaskmskwYmmu64Memu64Imm8Avx512, Insert { quarters: 1 }, Quadword, Memory, L256, [EVEX_Vinserti64x2_ymm_k1z_ymm_xmmm128_imm8];
+    Vinserti64x2Ymmu64MaskmskwYmmu64Xmmu64Imm8Avx512, Insert { quarters: 1 }, Quadword, Register, L256, [EVEX_Vinserti64x2_ymm_k1z_ymm_xmmm128_imm8];
+    Vinserti64x2Zmmu64MaskmskwZmmu64Memu64Imm8Avx512, Insert { quarters: 1 }, Quadword, Memory, L512, [EVEX_Vinserti64x2_zmm_k1z_zmm_xmmm128_imm8];
+    Vinserti64x2Zmmu64MaskmskwZmmu64Xmmu64Imm8Avx512, Insert { quarters: 1 }, Quadword, Register, L512, [EVEX_Vinserti64x2_zmm_k1z_zmm_xmmm128_imm8];
+    Vinserti64x4Zmmu64MaskmskwZmmu64Memu64Imm8Avx512, Insert { quarters: 2 }, Quadword, Memory, L512, [EVEX_Vinserti64x4_zmm_k1z_zmm_ymmm256_imm8];
+    Vinserti64x4Zmmu64MaskmskwZmmu64Ymmu64Imm8Avx512, Insert { quarters: 2 }, Quadword, Register, L512, [EVEX_Vinserti64x4_zmm_k1z_zmm_ymmm256_imm8];
 };

@@ -1056,6 +1056,10 @@ pub enum Bug {
     EvexNarrowTruncates,
     /// VDBPSADBW ignores its immediate, taking the second source's doublewords in order.
     EvexBlockDifferencesInOrder,
+    /// VINSERTI32X4 to VINSERTF64X4 replace the lowest part whatever the immediate.
+    EvexInsertLowestPart,
+    /// VEXTRACTI32X4 to VEXTRACTF64X4 read the immediate's every bit, past the parts there are.
+    EvexExtractIndexUnreduced,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1538,6 +1542,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexExtendSignedWithZeros, "VPMOVSX", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Extend { signedness: Signedness::Signed, .. })), Origin::EvexFirstHalf),
     row(Bug::EvexNarrowTruncates, "VPMOVSDB, VPMOVUSQW", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Narrow { saturation: Some(_), .. })), Origin::EvexFirstHalf),
     row(Bug::EvexBlockDifferencesInOrder, "VDBPSADBW", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::DoubleBlockDifferences), Origin::EvexFirstHalf),
+    row(Bug::EvexInsertLowestPart, "VINSERTI32X4 to VINSERTF64X4", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Insert { .. })), Origin::EvexFirstHalf),
+    row(Bug::EvexExtractIndexUnreduced, "VEXTRACTI32X4 to VEXTRACTF64X4", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Extract { .. })), Origin::EvexFirstHalf),
     row(Bug::EvexAndNotComplementsSecond, "VANDNPS, VPANDND", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::Lanes(LaneOperation::AndNot)), Origin::EvexFirstHalf),
 ];
 
@@ -1734,6 +1740,11 @@ pub(crate) fn mutate_evex(form: &EvexIntegerForm, destination: &Zmm, first: &Zmm
             recompute(EvexIntegerOperation::Narrow { from, saturation: None }, first, second, immediate)
         }
         (Some(Bug::EvexBlockDifferencesInOrder), EvexIntegerOperation::DoubleBlockDifferences) => recompute(form.operation, first, second, 0xE4),
+        (Some(Bug::EvexInsertLowestPart), EvexIntegerOperation::Insert { .. }) => recompute(form.operation, first, second, 0),
+        (Some(Bug::EvexExtractIndexUnreduced), EvexIntegerOperation::Extract { quarters }) => {
+            let index = usize::from(immediate) * quarters;
+            core::array::from_fn(|quarter| if quarter < quarters && index + quarter < 4 { second[index + quarter] } else { 0 })
+        }
         _ => result,
     }
 }
