@@ -630,7 +630,10 @@ macro_rules! stream_tests {
         );
 
         mod readiness {
-            #[allow(unused_imports)]
+            #[allow(
+                unused_imports,
+                reason = "the values an implementation gives may name items of the module that runs the suite, or none"
+            )]
             use super::*;
 
             $crate::wcontainers_readiness_conformance::tests!(
