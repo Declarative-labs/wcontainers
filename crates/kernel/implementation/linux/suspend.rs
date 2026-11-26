@@ -396,7 +396,7 @@ impl Kernel {
     /// now. A thread taken before its call began makes the call again.
     fn take_task<C: Executor>(&mut self, cpu: &mut GuestMachine<C>, tid: Tid) -> SuspendedTask {
         let mut registers = RegisterBlock::ZERO;
-        cpu.registers(self.threads[&tid].cpu, &mut registers);
+        cpu.read_registers(self.threads[&tid].cpu, &mut registers);
         let wait = self.threads[&tid].call.wait;
         let mut place = if wait.is_some() {
             Place::Waiting
@@ -430,7 +430,7 @@ impl Kernel {
             self.thread_mut(tid).suspended_in_call = true;
         }
         let thread = self.threads.remove(&tid).expect("thread exists");
-        cpu.thread_drop(thread.cpu);
+        cpu.drop_thread(thread.cpu);
         let process = self
             .processes
             .get_mut(&thread.process)
@@ -468,7 +468,7 @@ impl Kernel {
         if self.threads.contains_key(&tid) {
             return Err(task);
         }
-        let cpu_thread = match cpu.thread_new(process.memory) {
+        let cpu_thread = match cpu.make_thread(process.memory) {
             Ok(thread) => thread,
             Err(error) => {
                 if error == wcontainers_abi::CpuError::NotSupported {

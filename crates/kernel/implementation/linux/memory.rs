@@ -1482,7 +1482,7 @@ impl AddressMap {
         self.clear_used(cpu, memory, mapping.start, mapping.end)?;
         self.apply(cpu, memory, &mapping)?;
         if had_code && !mapping.permissions.contains(Permissions::EXECUTE) {
-            cpu.code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
+            cpu.note_changed_code(memory, mapping.start, mapping.end - mapping.start, &[]);
         }
         if mapping.shared {
             self.note(|notes| notes.sharing_changed.store(true));
@@ -1506,11 +1506,11 @@ impl AddressMap {
             cpu.set_permissions(memory, old.start, old.end - old.start, Permissions::empty())
                 .map_err(errno::from_cpu)?;
             if matches!(old.backing, Backing::File { .. }) {
-                cpu.shared_unmap(memory, old.start, old.end - old.start)
+                cpu.unmap_shared(memory, old.start, old.end - old.start)
                     .map_err(errno::from_cpu)?;
             }
             if old.permissions.contains(Permissions::EXECUTE) {
-                cpu.code_changed(memory, old.start, old.end - old.start, &[]);
+                cpu.note_changed_code(memory, old.start, old.end - old.start, &[]);
             }
         }
         Ok(())
@@ -1531,7 +1531,7 @@ impl AddressMap {
             mapping.permissions = permissions;
             self.apply(cpu, memory, &mapping)?;
             if had_code && !permissions.contains(Permissions::EXECUTE) {
-                cpu.code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
+                cpu.note_changed_code(memory, mapping.start, mapping.end - mapping.start, &[]);
             }
             self.mappings.insert(mapping.start, mapping);
         }
@@ -1634,7 +1634,7 @@ impl AddressMap {
                 }
             }
             for (from, to) in &copies {
-                cpu.shared_unmap(memory, *from, to - from)
+                cpu.unmap_shared(memory, *from, to - from)
                     .map_err(errno::from_cpu)?;
             }
             if !copies.is_empty() {
@@ -1742,7 +1742,7 @@ impl AddressMap {
     ) -> Result<(), Errno> {
         self.apply_permissions(cpu, memory, mapping)?;
         if mapping.permissions.contains(Permissions::EXECUTE) {
-            cpu.code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
+            cpu.note_changed_code(memory, mapping.start, mapping.end - mapping.start, &[]);
         }
         Ok(())
     }
@@ -1978,7 +1978,7 @@ fn drop_copies<C: Executor>(
         .expect("a mapped file has a block");
     for page in dropped {
         copied.remove(&page);
-        cpu.shared_map(
+        cpu.map_shared(
             block.id,
             page * PAGE_SIZE,
             memory,

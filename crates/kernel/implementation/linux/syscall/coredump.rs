@@ -383,7 +383,7 @@ fn notes<S: crate::System, C: Executor>(
     for (index, &thread) in threads.iter().enumerate() {
         let mut registers = RegisterBlock::ZERO;
         cx.cpu
-            .registers(kernel.threads[&thread].cpu, &mut registers);
+            .read_registers(kernel.threads[&thread].cpu, &mut registers);
         notes.push(Note::core(
             NT_PRSTATUS,
             status(kernel, pid, thread, signal, &registers),

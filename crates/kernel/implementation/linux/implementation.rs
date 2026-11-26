@@ -1,10 +1,9 @@
 //! A Linux kernel for ARM64 guests.
 //!
-//! The kernel is a state machine driven from outside through `wcontainers-abi`. It never waits on its own
-//! stack: the driver asks [`Kernel::next`] what to do, runs that thread on the CPU side until it comes
-//! back, and hands the [`Exit`] to [`Kernel::exit`]. Answers from outside arrive through
-//! [`Kernel::event`]. The kernel reaches the CPU side only through [`Cpu`] and everything else through
-//! [`Host`].
+//! The kernel implements the kernel interface ([`KernelWithExecutor`]). It never waits on its own
+//! stack: its runner asks what to do next, runs that thread's turn on the executor until it traps,
+//! and hands the trap back to the kernel. The guests' memories and registers are the kernel's own
+//! [`GuestMachine`] on the executor's spaces; everything else comes from the [`System`].
 
 #![no_std]
 // The kernel keeps the system's waiting calls and is used from any host thread, so it asks each
@@ -56,7 +55,10 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use wcontainers_executor::Executor;
 
-use wcontainers_abi::{CounterReading, Event, Exit, Next};
+use wcontainers_abi::CounterReading;
+
+use running::Exit;
+use task::Next;
 
 pub use cgroup::MOUNT as CGROUP_MOUNT;
 pub use container::{
@@ -105,7 +107,19 @@ pub(crate) struct Context<'a, S, C: Executor> {
     refused: u32,
 }
 
-impl<S: System, C: Executor> Context<'_, S, C> {
+impl<'a, S: System, C: Executor> Context<'a, S, C> {
+    /// Makes the context of one call into the kernel, whose monotonic clock runs ahead of the
+    /// system's by `monotonic_offset`.
+    fn new(cpu: &'a mut GuestMachine<C>, system: &'a Arc<S>, monotonic_offset: u64) -> Self {
+        Self {
+            cpu,
+            host: &**system,
+            system,
+            monotonic_offset,
+            refused: 0,
+        }
+    }
+
     /// What a refused request to make a memory, thread or shared block means to the guest; a host
     /// that cannot do it at all is counted.
     pub(crate) fn cpu_error(&mut self, error: wcontainers_abi::CpuError) -> Errno {
@@ -505,12 +519,12 @@ impl Kernel {
         }
     }
 
-    /// What the driver should do next.
+    /// Returns what the runner does next.
     #[allow(
         clippy::should_implement_trait,
-        reason = "named after the abi's `Next`"
+        reason = "the runner's next step, not an iterator's"
     )]
-    pub fn next(&mut self) -> Next {
+    pub(crate) fn next(&mut self) -> Next {
         assert!(
             self.running.is_none(),
             "next asked while a thread is running; hand its exit back first"
@@ -518,8 +532,8 @@ impl Kernel {
         if let Some(status) = self.finished {
             return Next::Finished { status };
         }
-        // Come back at once ([`Event::Timer`]), so the woken threads, and the answers of the calls
-        // the kernel waits on, are settled first.
+        // Come back at once ([`Kernel::fire_timers`]), so the woken threads, and the answers of the
+        // calls the kernel waits on, are settled first.
         if self.unsettled || self.waiting.woken() {
             return Next::Idle {
                 until_nanoseconds: Some(0),
@@ -529,7 +543,7 @@ impl Kernel {
     }
 
     /// The thread from the last [`Next::Run`] has come back.
-    pub fn exit<S: System, C: Executor>(
+    pub(crate) fn exit<S: System, C: Executor>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
@@ -539,13 +553,7 @@ impl Kernel {
             .running
             .take()
             .expect("an exit was handed back with no thread running");
-        let mut cx = Context {
-            cpu,
-            host: &**system,
-            system,
-            monotonic_offset: self.monotonic_offset,
-            refused: 0,
-        };
+        let mut cx = Context::new(cpu, system, self.monotonic_offset);
         self.account(&mut cx, tid);
         let entered = self.entry_now;
         self.tick(tid);
@@ -572,36 +580,30 @@ impl Kernel {
         }
     }
 
-    /// Something happened outside.
-    pub fn event<S: System, C: Executor>(
+    /// Wakes the waits that are due and fires the timers, as the time waited for may have come.
+    pub(crate) fn fire_timers<S: System, C: Executor>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
-        event: Event,
     ) {
-        let mut cx = Context {
-            cpu,
-            host: &**system,
-            system,
-            monotonic_offset: self.monotonic_offset,
-            refused: 0,
-        };
+        let mut cx = Context::new(cpu, system, self.monotonic_offset);
         self.entry_now = cx.monotonic();
-        match event {
-            Event::Timer => {
-                self.wake_due();
-                syscall::timer::fire_due(self, &mut cx);
-            }
-            // A driver on the abi as it stands on main hands a notice here; the kernel waits for
-            // them itself, so none comes this way from the system it waits on, and the event
-            // has no way to tell the driver how it went.
-            Event::BackendNotice { notice } => {
-                let _ = self.backend_notice(&mut cx, notice);
-            }
-            Event::TerminalResized { columns, rows } => {
-                self.terminal_resized(&mut cx, columns, rows);
-            }
-        }
+        self.wake_due();
+        syscall::timer::fire_due(self, &mut cx);
+        self.settle(&mut cx);
+    }
+
+    /// Resizes the first process's terminal, as its end outside changed size.
+    pub fn resize_terminal<S: System, C: Executor>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        system: &alloc::sync::Arc<S>,
+        columns: u16,
+        rows: u16,
+    ) {
+        let mut cx = Context::new(cpu, system, self.monotonic_offset);
+        self.entry_now = cx.monotonic();
+        self.terminal_resized(&mut cx, columns, rows);
         self.settle(&mut cx);
     }
 
@@ -616,13 +618,7 @@ impl Kernel {
     ) {
         let signal = signal as u32;
         assert!(self.running.is_none(), "a signal sent while a thread runs");
-        let mut cx = Context {
-            cpu,
-            host: &**system,
-            system,
-            monotonic_offset: self.monotonic_offset,
-            refused: 0,
-        };
+        let mut cx = Context::new(cpu, system, self.monotonic_offset);
         self.entry_now = cx.monotonic();
         if let Some(pid) = self.init.filter(|_| self.finished.is_none()) {
             if signal == linux::general::SIGKILL {
@@ -647,13 +643,7 @@ impl Kernel {
     ) {
         assert!(self.running.is_none(), "restored while a thread runs");
         self.monotonic_offset = self.last_now.wrapping_sub(system.monotonic_nanoseconds());
-        let mut cx = Context {
-            cpu,
-            host: &**system,
-            system,
-            monotonic_offset: self.monotonic_offset,
-            refused: 0,
-        };
+        let mut cx = Context::new(cpu, system, self.monotonic_offset);
         self.entry_now = cx.monotonic();
         self.backend_restored(&mut cx);
         // The wall clock moved against the monotonic clock while saved, as across a suspend, which
@@ -676,7 +666,7 @@ impl Kernel {
                     continue;
                 }
                 let mut registers = wcontainers_abi::RegisterBlock::ZERO;
-                cx.cpu.registers(thread.cpu, &mut registers);
+                cx.cpu.read_registers(thread.cpu, &mut registers);
                 registers.x[0] = value;
                 cx.cpu.set_registers(thread.cpu, &registers);
             }

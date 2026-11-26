@@ -6,16 +6,33 @@
 //! from the thread's saved registers; nothing ever waits on the kernel's own stack.
 
 use wcontainers_abi::{
-    Next, RegisterBlock, Resume, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER,
-    SystemCallNumber, SystemCallRequest,
+    RegisterBlock, Resume, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER,
+    SystemCallNumber, SystemCallRequest, ThreadId,
 };
 use wcontainers_executor::Executor;
 
 use crate::counters::reason;
 use crate::linux::general::*;
 use crate::process::{Call, Channel, Leader, Pid, Report, Tid};
+use crate::running::Exit;
 use crate::schedule;
 use crate::{Context, Errno, Kernel, syscall};
+
+/// What the kernel's runner does next.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Next {
+    /// Runs this thread until its turn ends, carrying on as `resume` says.
+    Run {
+        thread: ThreadId,
+        resume: Resume,
+        /// The longest the kernel lets the turn last, if another thread or a deadline waits.
+        slice_nanoseconds: Option<u64>,
+    },
+    /// Waits until this time on the host's monotonic clock (0: at once), or with none until woken.
+    Idle { until_nanoseconds: Option<u64> },
+    /// The container's first process has ended with this wait status.
+    Finished { status: i32 },
+}
 
 impl Kernel {
     /// Chooses the thread to run, or says why none can run.
@@ -146,9 +163,8 @@ impl Kernel {
         &mut self,
         cx: &mut Context<'_, S, C>,
         tid: Tid,
-        exit: wcontainers_abi::Exit,
+        exit: Exit,
     ) {
-        use wcontainers_abi::Exit;
         match exit {
             Exit::Syscall(call) => self.system_call(cx, tid, call, false),
             // The slice timer, or a signal or event that needed the thread back; one that gives
@@ -160,7 +176,6 @@ impl Kernel {
                 self.return_to_user(cx, tid, Resume::Continue);
             }
             Exit::MemoryFault { address, access } => self.memory_fault(cx, tid, address, access),
-            Exit::MemoryFaultWithoutRegisters => self.fatal_fault(cx, tid, SIGSEGV),
             Exit::AlignmentFault { address } => {
                 self.force_fault(cx, tid, SIGBUS, BUS_ADRALN as i32, address)
             }
@@ -181,7 +196,8 @@ impl Kernel {
         tid: Tid,
     ) -> u64 {
         let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+        cx.cpu
+            .read_registers(self.threads[&tid].cpu, &mut registers);
         registers.pc
     }
 
@@ -222,7 +238,8 @@ impl Kernel {
                 core::ops::ControlFlow::Continue(request) => {
                     if request != call {
                         let mut registers = RegisterBlock::ZERO;
-                        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+                        cx.cpu
+                            .read_registers(self.threads[&tid].cpu, &mut registers);
                         registers.x[SYSTEM_CALL_NUMBER_REGISTER] = request.number.0;
                         registers.x[..request.arguments.len()].copy_from_slice(&request.arguments);
                         cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
@@ -323,7 +340,8 @@ impl Kernel {
                     if met {
                         // The thread runs its system call instruction again.
                         let mut registers = RegisterBlock::ZERO;
-                        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+                        cx.cpu
+                            .read_registers(self.threads[&tid].cpu, &mut registers);
                         registers.pc -= size_of::<u32>() as u64;
                         cx.cpu.set_registers(self.threads[&tid].cpu, &registers);
                         outcome = syscall::Outcome::Restart;
@@ -409,7 +427,7 @@ impl Kernel {
         };
         let (pid, cpu) = (thread.process, thread.cpu);
         let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(cpu, &mut registers);
+        cx.cpu.read_registers(cpu, &mut registers);
         let given = crate::system::response_of(registers.x[0]);
         let mut response = given;
         let thread = crate::system::task_id(tid);
@@ -604,7 +622,7 @@ impl Kernel {
                 }
                 let thread = &self.threads[&tid];
                 let mut registers = RegisterBlock::ZERO;
-                cx.cpu.registers(thread.cpu, &mut registers);
+                cx.cpu.read_registers(thread.cpu, &mut registers);
                 let x = &registers.x;
                 let mut arguments = [0; SYSTEM_CALL_ARGUMENT_COUNT];
                 arguments.copy_from_slice(&x[..SYSTEM_CALL_ARGUMENT_COUNT]);
@@ -951,7 +969,7 @@ impl Kernel {
         syscall::mqueue::forget(self, tid);
         let thread = self.threads.remove(&tid).expect("thread exists");
         self.ids_let_go.push(tid);
-        cx.cpu.thread_drop(thread.cpu);
+        cx.cpu.drop_thread(thread.cpu);
         self.end_thread_watches(&mut *cx.cpu, thread.process, tid);
         if let Some(node) = &thread.pidfd {
             self.wake(syscall::pidfd::channel(node));
@@ -1116,7 +1134,7 @@ impl Kernel {
             syscall::sem::exit_sem(self, cx, pid, tid);
             syscall::mqueue::forget(self, tid);
             let thread = self.threads.remove(&tid).expect("thread exists");
-            cx.cpu.thread_drop(thread.cpu);
+            cx.cpu.drop_thread(thread.cpu);
             self.end_thread_watches(&mut *cx.cpu, pid, tid);
             if let Some(node) = &thread.pidfd {
                 self.wake(syscall::pidfd::channel(node));
@@ -1155,7 +1173,7 @@ impl Kernel {
             .map(|mapping| mapping.end - mapping.start)
             .sum();
         if !self.memory_in_use_elsewhere(pid, memory) {
-            cx.cpu.memory_drop(memory);
+            cx.cpu.drop_memory(memory);
         }
         // A reader of this process's memory that waits on a watch finds it gone.
         self.wake(Channel::Watch(memory.0));

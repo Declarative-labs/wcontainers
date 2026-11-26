@@ -84,7 +84,7 @@ fn backend_grow<S: crate::System, C: Executor>(
 ) -> Result<(), Errno> {
     let id = cx
         .cpu
-        .shared_new(length)
+        .make_shared(length)
         .map_err(|error| cx.cpu_error(error))?;
     let new = Block { id, length };
     if let Content::Backend(remote) = &mut node.borrow_mut().content {
@@ -93,10 +93,10 @@ fn backend_grow<S: crate::System, C: Executor>(
                 for run in pages.filled.iter() {
                     let mut held = vec![0; ((run.end - run.start) * PAGE_SIZE) as usize];
                     cx.cpu
-                        .shared_read(pages.block.id, run.start * PAGE_SIZE, &mut held)
+                        .read_shared(pages.block.id, run.start * PAGE_SIZE, &mut held)
                         .map_err(errno::from_cpu)?;
                     cx.cpu
-                        .shared_write(id, run.start * PAGE_SIZE, &held)
+                        .write_shared(id, run.start * PAGE_SIZE, &held)
                         .map_err(errno::from_cpu)?;
                 }
                 pages.block = new;
@@ -224,7 +224,7 @@ pub(crate) fn pages_came<S: crate::System, C: Executor>(
             chunk[..came.len()].copy_from_slice(came);
         }
         cx.cpu
-            .shared_write(held.block.id, gap.start * PAGE_SIZE, &chunk)
+            .write_shared(held.block.id, gap.start * PAGE_SIZE, &chunk)
             .expect("the block holds the file's first pages");
         held.filled.insert(gap);
     }
@@ -272,7 +272,7 @@ fn block_bytes<S: crate::System, C: Executor>(
 ) -> Vec<u8> {
     let mut bytes = vec![0; (to - from) as usize];
     cx.cpu
-        .shared_read(block.id, from, &mut bytes)
+        .read_shared(block.id, from, &mut bytes)
         .expect("the block holds the file's first pages");
     bytes
 }
@@ -332,7 +332,7 @@ pub(crate) fn backend_written<S: crate::System, C: Executor>(
     for (from, to, held) in runs {
         if held {
             cx.cpu
-                .shared_write(
+                .write_shared(
                     block.id,
                     from,
                     &bytes[(from - offset) as usize..(to - offset) as usize],
@@ -364,7 +364,7 @@ pub(crate) fn backend_stored<S: crate::System, C: Executor>(
         return;
     }
     cx.cpu
-        .shared_write(held.block.id, offset, &bytes[..(end - offset) as usize])
+        .write_shared(held.block.id, offset, &bytes[..(end - offset) as usize])
         .expect("the block holds the file's first pages");
     let first = page_up(offset) / PAGE_SIZE;
     let last = if end >= size { page_up(end) } else { end } / PAGE_SIZE;
@@ -480,7 +480,7 @@ pub(crate) fn backend_cut<S: crate::System, C: Executor>(
     {
         let zeros = vec![0; (to.min(block.length) - from) as usize];
         cx.cpu
-            .shared_write(block.id, from, &zeros)
+            .write_shared(block.id, from, &zeros)
             .expect("the block holds the file's first pages");
     }
     changed_bytes(node);
@@ -570,7 +570,7 @@ fn map_shown<S: crate::System, C: Executor>(
     for (from, to, own) in mapping.runs() {
         if mapping.shared || !own {
             cx.cpu
-                .shared_map(
+                .map_shared(
                     block.id,
                     offset + (from - mapping.start),
                     memory,
@@ -594,7 +594,7 @@ fn grow<S: crate::System, C: Executor>(
 ) -> Result<(), Errno> {
     let id = cx
         .cpu
-        .shared_new(length)
+        .make_shared(length)
         .map_err(|error| cx.cpu_error(error))?;
     let new = Block { id, length };
     {
@@ -605,7 +605,7 @@ fn grow<S: crate::System, C: Executor>(
         regular.take_block(cx.cpu);
         let bytes = regular.read(cx.cpu, 0, length);
         cx.cpu
-            .shared_write(id, 0, &bytes)
+            .write_shared(id, 0, &bytes)
             .map_err(errno::from_cpu)?;
         regular.block = Some(new);
     }
@@ -635,7 +635,7 @@ fn moved<S: crate::System, C: Executor>(
                     }
                 }
             }
-            cx.cpu.shared_drop(old.id);
+            cx.cpu.drop_shared(old.id);
         }
         None => kernel.files.shared.push(node.clone()),
     }
@@ -696,7 +696,7 @@ pub(crate) fn changed<S: crate::System, C: Executor>(
                 && mapped_offset(&mapping.backing, node).is_some()
             {
                 cx.cpu
-                    .code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
+                    .note_changed_code(memory, mapping.start, mapping.end - mapping.start, &[]);
             }
         }
     }
@@ -734,7 +734,7 @@ pub(crate) fn release<S: crate::System, C: Executor>(
             _ => None,
         };
         if let Some(block) = block {
-            cx.cpu.shared_drop(block.id);
+            cx.cpu.drop_shared(block.id);
         }
     }
 }

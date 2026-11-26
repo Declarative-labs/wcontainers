@@ -150,7 +150,8 @@ impl<C: Executor> Guest<'_, C> {
                 .collect::<Vec<_>>()
         };
         for (start, end) in runs {
-            self.cpu.code_changed(self.memory, start, end - start, &[]);
+            self.cpu
+                .note_changed_code(self.memory, start, end - start, &[]);
         }
         reach
     }

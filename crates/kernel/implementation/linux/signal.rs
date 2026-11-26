@@ -795,7 +795,8 @@ impl Kernel {
                         // another call's answer is in x0.
                         if let Resume::Return(value) = resume {
                             let mut registers = RegisterBlock::ZERO;
-                            cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+                            cx.cpu
+                                .read_registers(self.threads[&tid].cpu, &mut registers);
                             if restart.is_some() {
                                 registers.pc -= 4;
                             } else {
@@ -810,7 +811,8 @@ impl Kernel {
             }
             // A handler runs: the interrupted call answers EINTR or is set to run again after it.
             let mut registers = RegisterBlock::ZERO;
-            cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+            cx.cpu
+                .read_registers(self.threads[&tid].cpu, &mut registers);
             if let Resume::Return(value) = resume {
                 let original = registers.x[0];
                 registers.x[0] = value;
@@ -847,7 +849,8 @@ impl Kernel {
         if let Some(code) = restart {
             // No handler ran: the call runs again, from `restart_syscall` for one that keeps state.
             let mut registers = RegisterBlock::ZERO;
-            cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+            cx.cpu
+                .read_registers(self.threads[&tid].cpu, &mut registers);
             registers.pc -= 4;
             if code == Errno::ERESTART_RESTARTBLOCK {
                 registers.x[wcontainers_abi::SYSTEM_CALL_NUMBER_REGISTER] =
@@ -874,7 +877,8 @@ impl Kernel {
             return Some(Resume::Continue);
         }
         let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+        cx.cpu
+            .read_registers(self.threads[&tid].cpu, &mut registers);
         let before = registers.pc;
         if self.rseq_fixup(cx, tid, &mut registers).is_err() {
             self.die_with(cx, tid, SIGSEGV, kernel_info(SIGSEGV));
@@ -1138,7 +1142,7 @@ impl Kernel {
     ) -> Outcome {
         let cpu = self.threads[&tid].cpu;
         let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(cpu, &mut registers);
+        cx.cpu.read_registers(cpu, &mut registers);
         let at = registers.sp;
         match self.restore_frame(cx, tid, at, &mut registers) {
             Ok(()) => {
@@ -1321,19 +1325,9 @@ impl Kernel {
         tid: Tid,
     ) -> u64 {
         let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+        cx.cpu
+            .read_registers(self.threads[&tid].cpu, &mut registers);
         registers.pc
-    }
-
-    /// A fault after which the thread's registers are lost: the process dies of the signal.
-    pub(crate) fn fatal_fault<S: crate::System, C: Executor>(
-        &mut self,
-        cx: &mut Context<'_, S, C>,
-        tid: Tid,
-        signal: u32,
-    ) {
-        let pid = self.threads[&tid].process;
-        self.die_of(cx, pid, signal);
     }
 
     /// SIGSEGV at an address, as `arm64_notify_segfault` sends it for a bad frame.
@@ -1364,7 +1358,7 @@ impl Kernel {
             return !fatal || self.ends_touched(cx, tid);
         }
         let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(thread.cpu, &mut registers);
+        cx.cpu.read_registers(thread.cpu, &mut registers);
         let (at, _, top) = frame_bounds(thread.alternate_stack, action.sa_flags, registers.sp);
         if crate::user::access_ok(at, top.wrapping_sub(at)) {
             let mut memory = crate::system::CallMemory::new(self, cx, tid);
@@ -1398,7 +1392,8 @@ impl Kernel {
             return true;
         };
         let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+        cx.cpu
+            .read_registers(self.threads[&tid].cpu, &mut registers);
         let mut memory = crate::system::CallMemory::new(self, cx, tid);
         let field = area + RSEQ_CS_FIELD;
         let mut sequence = [0; size_of::<u64>()];

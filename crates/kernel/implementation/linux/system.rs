@@ -1,5 +1,5 @@
-//! The embedder's side of the kernel beyond the abi's `Host`: the task ids it hands out, the hooks
-//! the kernel announces to it, and the handle to one process that every hook is given.
+//! The embedder's side of the kernel: the task ids it hands out, the fallbacks it is told of, the
+//! hooks the kernel announces to it, and the handle to one process that every hook is given.
 
 use crate::guest_machine::GuestMachine;
 use alloc::collections::BTreeSet;
@@ -8,7 +8,7 @@ use core::ops::{ControlFlow, Range};
 use core::time::Duration;
 use wcontainers_executor::Executor;
 
-use wcontainers_abi::{Host, MemoryId, SystemCallRequest};
+use wcontainers_abi::{MemoryId, SystemCallRequest};
 
 use crate::memory::{page_down, page_up};
 use crate::process::{Channel, Pid};
@@ -45,7 +45,7 @@ pub use wcontainers_kernel::signal_information::SignalInformation;
 /// backend, the name resolver, TCP and UDP sockets, the stream endpoints, and the hooks. Every
 /// hook is synchronous, fires only when every operation on its process is legal, and never nests.
 pub trait System:
-    Host
+    wcontainers_system::FallbackObserver<wcontainers_abi::Warning<'static>>
     + wcontainers_clock::Clock
     + wcontainers_random_source::RandomSource
     + wcontainers_system::TaskIdAllocator
@@ -783,7 +783,7 @@ impl<S: crate::System, C: Executor> CallMemory<'_, '_, '_, S, C> {
         let mut registers = wcontainers_abi::RegisterBlock::ZERO;
         self.cx
             .cpu
-            .registers(self.kernel.threads[&self.tid].cpu, &mut registers);
+            .read_registers(self.kernel.threads[&self.tid].cpu, &mut registers);
         registers.sp
     }
 

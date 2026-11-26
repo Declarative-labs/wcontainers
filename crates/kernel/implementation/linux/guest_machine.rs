@@ -1,5 +1,4 @@
-//! The guests' memories and registers, which the kernel keeps itself on the executor's memory
-//! spaces, and the calls the rest of the kernel makes on them.
+//! The guests' memories and registers, which the kernel keeps on the executor's memory spaces.
 
 use alloc::collections::BTreeMap;
 use alloc::vec;
@@ -174,7 +173,7 @@ impl<C: Executor> GuestMachine<C> {
         self.address_space
     }
 
-    pub(crate) fn memory_new(&mut self) -> Result<MemoryId, CpuError> {
+    pub(crate) fn make_memory(&mut self) -> Result<MemoryId, CpuError> {
         let space = self.create()?;
         self.last_memory += 1;
         let id = MemoryId(self.last_memory);
@@ -183,7 +182,7 @@ impl<C: Executor> GuestMachine<C> {
     }
 
     /// The copy is made by the space, which may share pages until they are written.
-    pub(crate) fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
+    pub(crate) fn duplicate_memory(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
         let mut copy = self.create()?;
         let whole = self.whole_space();
         let start = whole.start;
@@ -196,7 +195,7 @@ impl<C: Executor> GuestMachine<C> {
         Ok(id)
     }
 
-    pub(crate) fn memory_drop(&mut self, memory: MemoryId) {
+    pub(crate) fn drop_memory(&mut self, memory: MemoryId) {
         self.memories.remove(&memory);
     }
 
@@ -244,7 +243,7 @@ impl<C: Executor> GuestMachine<C> {
 
     /// Nothing to do: a memory space's executor sees every write made through the space, the
     /// kernel's too.
-    pub(crate) fn code_changed(
+    pub(crate) fn note_changed_code(
         &mut self,
         _memory: MemoryId,
         _address: u64,
@@ -253,7 +252,7 @@ impl<C: Executor> GuestMachine<C> {
     ) {
     }
 
-    pub(crate) fn shared_new(&mut self, length: u64) -> Result<SharedId, CpuError> {
+    pub(crate) fn make_shared(&mut self, length: u64) -> Result<SharedId, CpuError> {
         if length > self.whole_space().end {
             return Err(CpuError::OutOfMemory);
         }
@@ -264,7 +263,7 @@ impl<C: Executor> GuestMachine<C> {
         Ok(id)
     }
 
-    pub(crate) fn shared_map(
+    pub(crate) fn map_shared(
         &mut self,
         shared: SharedId,
         offset: u64,
@@ -281,7 +280,7 @@ impl<C: Executor> GuestMachine<C> {
     }
 
     /// The space zeroes what it unmaps, so the bytes are copied out and written back in pieces.
-    pub(crate) fn shared_unmap(
+    pub(crate) fn unmap_shared(
         &mut self,
         memory: MemoryId,
         address: u64,
@@ -302,7 +301,7 @@ impl<C: Executor> GuestMachine<C> {
         Ok(())
     }
 
-    pub(crate) fn shared_read(
+    pub(crate) fn read_shared(
         &mut self,
         shared: SharedId,
         offset: u64,
@@ -311,7 +310,7 @@ impl<C: Executor> GuestMachine<C> {
         read_space(&self.block(shared)?.memory, offset, into)
     }
 
-    pub(crate) fn shared_write(
+    pub(crate) fn write_shared(
         &mut self,
         shared: SharedId,
         offset: u64,
@@ -320,11 +319,11 @@ impl<C: Executor> GuestMachine<C> {
         write_space(&self.block(shared)?.memory, offset, from)
     }
 
-    pub(crate) fn shared_drop(&mut self, shared: SharedId) {
+    pub(crate) fn drop_shared(&mut self, shared: SharedId) {
         self.blocks.remove(&shared);
     }
 
-    pub(crate) fn thread_new(&mut self, memory: MemoryId) -> Result<ThreadId, CpuError> {
+    pub(crate) fn make_thread(&mut self, memory: MemoryId) -> Result<ThreadId, CpuError> {
         self.memory(memory)?;
         self.last_thread += 1;
         let id = ThreadId(self.last_thread);
@@ -338,11 +337,11 @@ impl<C: Executor> GuestMachine<C> {
         Ok(id)
     }
 
-    pub(crate) fn thread_drop(&mut self, thread: ThreadId) {
+    pub(crate) fn drop_thread(&mut self, thread: ThreadId) {
         self.threads.remove(&thread);
     }
 
-    pub(crate) fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
+    pub(crate) fn read_registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
         *into = self.threads[&thread].registers;
     }
 

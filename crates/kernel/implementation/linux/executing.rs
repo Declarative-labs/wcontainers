@@ -11,7 +11,7 @@ use core::ops::Range;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::time::Duration;
 
-use wcontainers_abi::{Cpu, Event, Exit, MemoryId, Next};
+use wcontainers_abi::{Cpu, MemoryId};
 use wcontainers_executor::memory_space::MemorySpace;
 use wcontainers_executor::{ExecutionInterrupter, Executor, PerThreadWatch};
 use wcontainers_kernel as interface;
@@ -20,9 +20,10 @@ use wcontainers_kernel::{MemoryError, TaskId, WatchesFor, WriteMemoryError};
 
 use crate::guest_machine::GuestMachine;
 use crate::process::Pid;
-use crate::running;
+use crate::running::{self, Exit};
 use crate::suspend::{ProcessContext, SuspendedTask};
 use crate::system::{Unsupported, pid_of};
+use crate::task::Next;
 
 /// What the embedder keeps of one process: its state, and how it asked for the process to run,
 /// shared by the processes a fork made from it.
@@ -475,8 +476,7 @@ pub struct KernelRunner<C: Executor, State, S> {
 
 impl<C, State, S> interface::Runner<C> for KernelRunner<C, State, S>
 where
-    C: Cpu
-        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+    C: Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
         + Send
         + 'static,
     State: Send,
@@ -520,12 +520,12 @@ where
                 // The kernel's waits to settle, or the time it waits for may have come.
                 Next::Idle {
                     until_nanoseconds: Some(0),
-                } => kernel.event(machine, &self.system, Event::Timer),
+                } => kernel.fire_timers(machine, &self.system),
                 Next::Idle {
                     until_nanoseconds: Some(_),
                 } if !timer_told => {
                     timer_told = true;
-                    kernel.event(machine, &self.system, Event::Timer);
+                    kernel.fire_timers(machine, &self.system);
                 }
                 Next::Idle { until_nanoseconds } => {
                     return interface::StopReason::Idle {
@@ -577,7 +577,7 @@ pub struct KernelProcess<'a, C: Executor, State, S> {
     types: PhantomData<fn() -> (State, S)>,
 }
 
-impl<C: Cpu + Executor + 'static, State: Clone + 'static, S> KernelProcess<'_, C, State, S> {
+impl<C: Executor + 'static, State: Clone + 'static, S> KernelProcess<'_, C, State, S> {
     fn handle(&mut self) -> crate::Process<'_, C> {
         let inner = &mut *self.inner;
         crate::Process {
@@ -604,7 +604,7 @@ impl<C: Cpu + Executor + 'static, State: Clone + 'static, S> KernelProcess<'_, C
     }
 }
 
-impl<C: Cpu + Executor + 'static, State: Clone + 'static, S> interface::ProcessInfo
+impl<C: Executor + 'static, State: Clone + 'static, S> interface::ProcessInfo
     for KernelProcess<'_, C, State, S>
 {
     fn mapped_memory(&self) -> u64 {

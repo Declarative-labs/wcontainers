@@ -986,13 +986,7 @@ impl Kernel {
         start: Start<'_, <S as wcontainers_system::StreamTransport>::Endpoint>,
     ) {
         assert!(self.init.is_none(), "the container has already started");
-        let mut cx = Context {
-            cpu,
-            host: &**system,
-            system,
-            monotonic_offset: self.monotonic_offset,
-            refused: 0,
-        };
+        let mut cx = Context::new(cpu, system, self.monotonic_offset);
         let wall = cx.host.realtime_nanoseconds();
         self.boot = Time::from_nanoseconds(wall);
         self.boot_monotonic = cx.monotonic();
@@ -1349,13 +1343,13 @@ impl Kernel {
         // A start that waits for its ends loads its program again, and one that cannot make them
         // ends: either way the memory the program was loaded into goes, with the blocks it shows.
         if let Err(error) = self.standard_descriptors(cx, pid, starting.standard, null) {
-            cx.cpu.memory_drop(image.memory);
+            cx.cpu.drop_memory(image.memory);
             return Err(error);
         }
-        let thread = match cx.cpu.thread_new(image.memory) {
+        let thread = match cx.cpu.make_thread(image.memory) {
             Ok(thread) => thread,
             Err(error) => {
-                cx.cpu.memory_drop(image.memory);
+                cx.cpu.drop_memory(image.memory);
                 return Err(cx.cpu_error(error));
             }
         };
@@ -1523,10 +1517,10 @@ impl Kernel {
             thread.parent_death_signal = 0;
         }
         if !first {
-            cx.cpu.thread_drop(thread.cpu);
+            cx.cpu.drop_thread(thread.cpu);
             thread.cpu = cx
                 .cpu
-                .thread_new(image.memory)
+                .make_thread(image.memory)
                 .expect("a thread on the new memory");
         }
         thread.clear_child_tid = 0;
@@ -1537,7 +1531,7 @@ impl Kernel {
         // A `vfork` child gives its parent's memory back; any other old memory goes.
         self.release_vfork(tid);
         if !first && !self.memory_in_use_elsewhere(pid, old_memory) {
-            cx.cpu.memory_drop(old_memory);
+            cx.cpu.drop_memory(old_memory);
         }
         // A reader of the old program's memory that waits on a watch reads the new one.
         if !first {

@@ -204,7 +204,7 @@ pub(super) fn filter_call<S: crate::System, C: Executor>(
     data[1] = AUDIT_ARCH_AARCH64;
     if thread.filters.iter().any(|filter| filter.reads_pointer) {
         let mut registers = RegisterBlock::new_zeroed();
-        cx.cpu.registers(thread.cpu, &mut registers);
+        cx.cpu.read_registers(thread.cpu, &mut registers);
         (data[2], data[3]) = (registers.pc as u32, (registers.pc >> u32::BITS) as u32);
     }
     for (index, argument) in call.arguments.iter().enumerate() {
@@ -265,7 +265,8 @@ fn sigsys_info<S: crate::System, C: Executor>(
     value: u32,
 ) -> [u8; 128] {
     let mut registers = wcontainers_abi::RegisterBlock::ZERO;
-    cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
+    cx.cpu
+        .read_registers(kernel.threads[&tid].cpu, &mut registers);
     let mut info = [0u8; 128];
     info[0..4].copy_from_slice(&SIGSYS.to_le_bytes());
     info[4..8].copy_from_slice(&value.to_le_bytes());

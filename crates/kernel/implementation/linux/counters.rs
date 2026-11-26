@@ -4,7 +4,8 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use atomic_refcell::AtomicRefCell;
 
-use wcontainers_abi::{CounterReading, Host, Warning};
+use wcontainers_abi::{CounterReading, Warning};
+use wcontainers_system::FallbackObserver;
 
 /// The fixed reasons the kernel counts.
 pub mod reason {
@@ -270,11 +271,16 @@ pub(crate) struct Counters {
 }
 
 impl Counters {
-    /// Counts one occurrence and warns the host.
-    pub(crate) fn count<H: Host>(&mut self, host: &H, reason: &'static str, detail: u64) {
+    /// Counts one occurrence and tells the host the fallback was used.
+    pub(crate) fn count<H: FallbackObserver<Warning<'static>>>(
+        &mut self,
+        host: &H,
+        reason: &'static str,
+        detail: u64,
+    ) {
         let count = self.counts.entry((reason, detail)).or_insert(0);
         *count += 1;
-        host.warn(Warning {
+        host.on_fallback_used(&Warning {
             reason,
             count: *count,
             detail,
@@ -284,7 +290,7 @@ impl Counters {
     /// The one path for something Linux has that is not built here: counts it under one of
     /// [`reason::NOT_BUILT`], warns, and gives back the error Linux answers when it lacks the
     /// feature.
-    pub(crate) fn refuse<H: Host>(
+    pub(crate) fn refuse<H: FallbackObserver<Warning<'static>>>(
         &mut self,
         host: &H,
         reason: &'static str,
@@ -297,7 +303,7 @@ impl Counters {
     }
 
     /// A flag or form of call `number` that is not built, as [`Counters::refuse`] counts it.
-    pub(crate) fn refuse_flag<H: Host>(
+    pub(crate) fn refuse_flag<H: FallbackObserver<Warning<'static>>>(
         &mut self,
         host: &H,
         number: u32,
@@ -325,7 +331,7 @@ impl Counters {
     }
 
     /// Counts and warns of every noted occurrence.
-    pub(crate) fn flush<H: Host>(&mut self, host: &H) {
+    pub(crate) fn flush<H: FallbackObserver<Warning<'static>>>(&mut self, host: &H) {
         for (reason, detail) in core::mem::take(self.noted.get_mut()) {
             self.count(host, reason, detail);
         }

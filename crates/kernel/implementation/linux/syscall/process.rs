@@ -1012,7 +1012,8 @@ pub(super) fn sigaltstack<S: crate::System, C: Executor>(
     // Linux's `on_sig_stack`: whether the caller runs on its alternate stack now, unless the stack is
     // given up on entry to a handler (`SS_AUTODISARM`).
     let mut registers = wcontainers_abi::RegisterBlock::ZERO;
-    cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
+    cx.cpu
+        .read_registers(kernel.threads[&tid].cpu, &mut registers);
     let on_stack = current.2 & SS_AUTODISARM as i32 == 0
         && registers.sp > current.0
         && registers.sp - current.0 <= current.1;

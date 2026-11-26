@@ -628,7 +628,7 @@ impl Regular {
             && start < block.length
         {
             let shared_end = end.min(block.length);
-            cpu.shared_read(block.id, start, &mut bytes[..(shared_end - start) as usize])
+            cpu.read_shared(block.id, start, &mut bytes[..(shared_end - start) as usize])
                 .expect("the block holds the file's first pages");
         }
         bytes
@@ -655,7 +655,7 @@ impl Regular {
             && offset < block.length
         {
             let shared_end = end.min(block.length);
-            cpu.shared_write(block.id, offset, &bytes[..(shared_end - offset) as usize])
+            cpu.write_shared(block.id, offset, &bytes[..(shared_end - offset) as usize])
                 .expect("the block holds the file's first pages");
         }
         self.mark_written(offset, bytes.len() as u64);
@@ -701,7 +701,7 @@ impl Regular {
             && from < block.length
         {
             let zeros = vec![0; (to.min(block.length) - from) as usize];
-            cpu.shared_write(block.id, from, &zeros)
+            cpu.write_shared(block.id, from, &zeros)
                 .expect("the block holds the file's first pages");
         }
     }
@@ -727,7 +727,7 @@ impl Regular {
         if (self.data.len() as u64) < end {
             self.data.resize(end as usize, 0);
         }
-        cpu.shared_read(block.id, 0, &mut self.data[..end as usize])
+        cpu.read_shared(block.id, 0, &mut self.data[..end as usize])
             .expect("the block holds the file's first pages");
         Some(block)
     }

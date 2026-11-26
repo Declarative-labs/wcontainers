@@ -1,5 +1,5 @@
 //! One turn of a guest thread on the executor's [`Executor::execute`]: the thread's registers as
-//! the processor's state and back, and the trap that ended the turn as the abi's [`Exit`], which
+//! the processor's state and back, and the trap that ended the turn as the [`Exit`] it is, which
 //! the kernel answers outside the execution.
 
 use core::any::Any;
@@ -8,7 +8,7 @@ use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 
 use aarch64_cpu::registers::ESR_EL1;
-use wcontainers_abi::{Access, Exit, RegisterBlock, Resume, SystemCallRequest};
+use wcontainers_abi::{Access, RegisterBlock, Resume, SystemCallRequest};
 use wcontainers_executor::{
     Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf, SystemCallResponse,
     TrapHandler,
@@ -20,6 +20,23 @@ use wcontainers_processor_architecture_arm64::{
 /// The register a system call's value is returned in on arm64, x0
 /// (<https://man7.org/linux/man-pages/man2/syscall.2.html#:~:text=arm64%20%20%20%20%20%20%20%20%20%20svc%20%230>).
 const RESULT_REGISTER: usize = 0;
+
+/// Why a thread's turn ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Exit {
+    /// A system call, with the program counter after its instruction.
+    Syscall(SystemCallRequest),
+    /// An interrupt, which changed nothing of the thread.
+    Stop,
+    /// An access the page does not allow, with the program counter at its instruction.
+    MemoryFault { address: u64, access: Access },
+    /// A misaligned stack pointer or jump, for which Linux sends SIGBUS, BUS_ADRALN.
+    AlignmentFault { address: u64 },
+    /// An instruction the processor presented does not have.
+    IllegalInstruction,
+    /// A breakpoint instruction (`brk`), with its 16-bit comment.
+    Breakpoint { comment: u16 },
+}
 
 /// The processor's state of a thread at EL0, which adds no state to what every level has.
 type Processor = wcontainers_processor_architecture_arm64::Processor<()>;
@@ -49,7 +66,7 @@ impl TrapHandler for FirstTrap {
 
 /// Runs the thread whose registers are `registers` on `memory` with `executor`, carrying on as
 /// `resume` says, until its first trap, and returns that trap as the exit it is, with `registers`
-/// as the abi leaves them for it. `started` is given the turn's interrupter before it runs.
+/// as the thread left them. `started` is given the turn's interrupter before it runs.
 ///
 /// # Panics
 ///
@@ -75,8 +92,8 @@ pub(crate) fn turn<C: Executor + 'static>(
         .expect("the executor's processor is the one it was given");
     *registers = to_registers(processor);
     match trap.exit {
-        // The processor's state keeps the call's instruction at the program counter; the abi
-        // leaves it after the call.
+        // The processor's state keeps the call's instruction at the program counter; the kernel
+        // takes it after the call.
         Some(exit @ Exit::Syscall(_)) => {
             registers.pc = registers.pc.wrapping_add(INSTRUCTION_SIZE);
             exit
@@ -86,8 +103,7 @@ pub(crate) fn turn<C: Executor + 'static>(
     }
 }
 
-/// `processor` as the executor's own processor's state `P`, if that is arm64's. Which it is is
-/// known as the kernel is compiled, so this costs nothing as it runs.
+/// `processor` as the executor's own processor's state `P`, if that is arm64's.
 fn executors_own<P: 'static>(processor: Processor) -> Option<P> {
     let mut processor = Some(processor);
     (&mut processor as &mut dyn Any)
@@ -161,8 +177,7 @@ fn exit_of_syndrome(syndrome: u64, fault_address: u64, registers: &RegisterBlock
         Some(Class::SPAlignmentFault) => Exit::AlignmentFault {
             address: registers.sp,
         },
-        // A page's fault goes to the handler first, so a data abort it was not told of is an
-        // access the processor requires to be aligned.
+        // As in `exit_of`: a data abort no handler was told of is a misaligned access.
         Some(Class::DataAbortLowerEL) => Exit::AlignmentFault {
             address: fault_address,
         },

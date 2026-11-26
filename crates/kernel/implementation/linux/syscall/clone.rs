@@ -175,7 +175,7 @@ fn make_child<S: crate::System, C: Executor>(
     } else {
         let memory = cx
             .cpu
-            .memory_duplicate(parent.memory)
+            .duplicate_memory(parent.memory)
             .map_err(|error| cx.cpu_error(error))?;
         match copy_map(cx.cpu, &parent.map.borrow(), memory) {
             Ok(map) => (
@@ -183,17 +183,17 @@ fn make_child<S: crate::System, C: Executor>(
                 alloc::sync::Arc::new(atomic_refcell::AtomicRefCell::new(map)),
             ),
             Err(error) => {
-                cx.cpu.memory_drop(memory);
+                cx.cpu.drop_memory(memory);
                 return Err(error);
             }
         }
     };
     // As `copy_process`, the number is taken last, so no failure before it holds one.
-    let made = match cx.cpu.thread_new(memory) {
+    let made = match cx.cpu.make_thread(memory) {
         Ok(thread_cpu) => match kernel.allocate_id(cx) {
             Ok(child) => Ok((thread_cpu, child)),
             Err(error) => {
-                cx.cpu.thread_drop(thread_cpu);
+                cx.cpu.drop_thread(thread_cpu);
                 Err(error)
             }
         },
@@ -203,7 +203,7 @@ fn make_child<S: crate::System, C: Executor>(
         Ok(made) => made,
         Err(error) => {
             if !borrow {
-                cx.cpu.memory_drop(memory);
+                cx.cpu.drop_memory(memory);
             }
             return Err(error);
         }
@@ -247,7 +247,8 @@ fn make_child<S: crate::System, C: Executor>(
         process.exit_signal = exit_signal;
     }
     let mut registers = RegisterBlock::ZERO;
-    cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
+    cx.cpu
+        .read_registers(kernel.threads[&tid].cpu, &mut registers);
     registers.x[0] = 0;
     if stack != 0 {
         registers.sp = stack;
@@ -372,17 +373,18 @@ fn make_thread<S: crate::System, C: Executor>(
     let memory = kernel.processes[&pid].memory;
     let thread_cpu = cx
         .cpu
-        .thread_new(memory)
+        .make_thread(memory)
         .map_err(|error| cx.cpu_error(error))?;
     let child = match kernel.allocate_id(cx) {
         Ok(child) => child,
         Err(error) => {
-            cx.cpu.thread_drop(thread_cpu);
+            cx.cpu.drop_thread(thread_cpu);
             return Err(error);
         }
     };
     let mut registers = RegisterBlock::ZERO;
-    cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
+    cx.cpu
+        .read_registers(kernel.threads[&tid].cpu, &mut registers);
     registers.x[0] = 0;
     if stack != 0 {
         registers.sp = stack;

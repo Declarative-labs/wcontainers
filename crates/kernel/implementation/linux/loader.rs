@@ -300,7 +300,7 @@ pub(crate) fn load<S: crate::System, C: Executor>(
         readable &= program.readable;
         file_name = interpreter;
     }
-    let memory = cx.cpu.memory_new().map_err(|error| cx.cpu_error(error))?;
+    let memory = cx.cpu.make_memory().map_err(|error| cx.cpu_error(error))?;
     let result = place(
         kernel,
         cx,
@@ -313,7 +313,7 @@ pub(crate) fn load<S: crate::System, C: Executor>(
         readable,
     );
     if result.is_err() {
-        cx.cpu.memory_drop(memory);
+        cx.cpu.drop_memory(memory);
     }
     result
 }
@@ -823,7 +823,7 @@ fn place_vdso<S: crate::System, C: Executor>(
     cx.cpu
         .write(memory, code, &image)
         .map_err(errno::from_cpu)?;
-    cx.cpu.code_changed(
+    cx.cpu.note_changed_code(
         memory,
         code,
         CODE_PAGES * PAGE_SIZE,
@@ -1072,7 +1072,8 @@ fn place_elf<S: crate::System, C: Executor>(
         } else {
             &[]
         };
-        cx.cpu.code_changed(memory, start, stop - start, starts);
+        cx.cpu
+            .note_changed_code(memory, start, stop - start, starts);
     }
     Ok(Placed {
         base: bias + lowest,
