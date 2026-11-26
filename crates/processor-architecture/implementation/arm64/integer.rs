@@ -17,7 +17,8 @@ use crate::operand::{
 #[cfg(verus_keep_ghost)]
 use crate::pseudocode::{
     arithmetic_immediate_value, arithmetic_or_logical, conditional_compare, extended_register,
-    is_zero, logical_result, nzcv_immediate, ones, ror, shifted_register, sint, uint, written,
+    is_zero, logical_result, multiply_long_value, nzcv_immediate, ones, ror, shifted_register, sint,
+    uint, written,
 };
 use crate::registers::{read_register, write_register};
 use crate::{Exception, Instruction, Processor};
@@ -1681,15 +1682,45 @@ fn apply(
     })
 }
 
+verus! {
+
 /// The 64-bit product of the low words of two values.
-fn multiply_long(first: u64, second: u64, signedness: Signedness) -> u64 {
+fn multiply_long(first: u64, second: u64, signedness: Signedness) -> (product: u64)
+    ensures
+        product as int == multiply_long_value(first, second, signedness),
+{
+    proof {
+        crate::lemmas::lemma_mask(first, 32);
+        crate::lemmas::lemma_mask(second, 32);
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+    }
     match signedness {
         Signedness::Unsigned => {
+            proof {
+                let (low, high) = ((first & 0xffff_ffff) as int, (second & 0xffff_ffff) as int);
+                assert(0 <= low * high < pow2(64)) by (nonlinear_arith)
+                    requires
+                        0 <= low < pow2(32),
+                        0 <= high < pow2(32),
+                        pow2(64) == pow2(32) * pow2(32);
+                vstd::arithmetic::div_mod::lemma_small_mod((low * high) as nat, pow2(64));
+            }
             (first & RegisterWidth::Bits32.to_mask()) * (second & RegisterWidth::Bits32.to_mask())
-        }
+        },
         Signedness::Signed => {
-            (sign_extend(first, RegisterWidth::Bits32)
-                .wrapping_mul(sign_extend(second, RegisterWidth::Bits32))) as u64
-        }
+            let (low, high) = (sign_extend(first, RegisterWidth::Bits32), sign_extend(second, RegisterWidth::Bits32));
+            proof {
+                assert(-0x8000_0000_0000_0000 < low * high < 0x8000_0000_0000_0000) by (nonlinear_arith)
+                    requires
+                        -0x8000_0000 <= low < 0x8000_0000,
+                        -0x8000_0000 <= high < 0x8000_0000;
+                crate::lemmas::lemma_signed_mask((low * high) as i64, 64);
+                assert(((low * high) as i64 as u64) & u64::MAX == (low * high) as i64 as u64) by (bit_vector);
+            }
+            (low.wrapping_mul(high)) as u64
+        },
     }
 }
+
+} // verus!

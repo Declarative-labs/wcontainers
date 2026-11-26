@@ -14,7 +14,7 @@ use crate::condition_flags::{
 #[cfg(verus_keep_ghost)]
 use crate::integer::{Comparison, FlagSetting, IntegerOperation};
 #[cfg(verus_keep_ghost)]
-use crate::operand::Rotation;
+use crate::operand::{Rotation, Signedness};
 
 verus! {
 
@@ -132,6 +132,15 @@ pub open spec fn condition_holds(cond: nat, nzcv: Nzcv) -> bool {
 /// and SUB, ADDS and SUBS (immediate), as their decode gives it: imm12, or imm12:Zeros(12) where sh is set.
 pub open spec fn arithmetic_immediate_value(imm12: nat, sh: nat) -> int {
     if sh == 0 { imm12 as int } else { (imm12 * pow2(12)) as int }
+}
+
+/// The product of [SMADDL, UMADDL, SMSUBL and UMSUBL](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SMADDL--Signed-multiply-add-long-):
+/// `Int(operand1, unsigned) * Int(operand2, unsigned)` of the low 32 bits of each operand, as 64 bits.
+pub open spec fn multiply_long_value(operand1: u64, operand2: u64, signedness: Signedness) -> int {
+    match signedness {
+        Signedness::Unsigned => uint(uint(operand1 as int, 32) * uint(operand2 as int, 32), 64),
+        Signedness::Signed => uint(sint(operand1 as int, 32) * sint(operand2 as int, 32), 64),
+    }
 }
 
 /// The NZCV an immediate gives, its bits N, Z, C and V from the most significant.
