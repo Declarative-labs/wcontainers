@@ -36,11 +36,12 @@ pub enum Row {
     ObjectField,
     UnionField,
     LargeInteger,
+    ExceptionLine,
     Unmapped,
 }
 
 impl Row {
-    pub const ALL: [Row; 34] = [
+    pub const ALL: [Row; 35] = [
         Row::Scalar,
         Row::Bool,
         Row::Enumeration,
@@ -74,6 +75,7 @@ impl Row {
         Row::ObjectField,
         Row::UnionField,
         Row::LargeInteger,
+        Row::ExceptionLine,
         Row::Unmapped,
     ];
 
@@ -91,7 +93,7 @@ impl Row {
             Row::ValueOut => "_Out_ pointer to a value -> the value, returned",
             Row::ObjectIn => "interface pointer in -> &the object kind's associated type (Option for _opt_)",
             Row::BaseObjectIn => "pointer to an interface several kinds derive from -> <Interface>Ref enum of those kinds",
-            Row::UnknownIn => "IUnknown pointer in -> UnknownRef enum: the API's kinds, or Unknown",
+            Row::UnknownIn => "IUnknown pointer in -> UnknownRef enum: the API's kinds, or a Foreign (any other COM object)",
             Row::ObjectOut => "_COM_Outptr_ -> the owned object kind, returned; an _Out_ of an object not made -> Option",
             Row::BaseObjectOut => "out pointer to a base interface -> <Interface>Object enum of the kinds, returned",
             Row::InterfaceById => "REFIID riid + void** ppv -> &Guid in, the API's Object enum returned",
@@ -113,6 +115,7 @@ impl Row {
             Row::ObjectField => "interface pointer field -> Option<owned object kind>, the struct generic over the API",
             Row::UnionField => "C union -> a struct of every member, each read from the same bytes",
             Row::LargeInteger => "LARGE_INTEGER -> i64",
+            Row::ExceptionLine => "a form the metadata alone does not describe -> as its exception line in src/api.rs says",
             Row::Unmapped => "no row: written as &impl VolatileBytes (caller bytes) or Vec<u8>, and listed",
         }
     }

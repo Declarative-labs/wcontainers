@@ -16,6 +16,7 @@ use std::fmt::Write as _;
 use windows_metadata::Type;
 
 use super::{FOUNDATION, GUID, Generator, Key, Module, Typedef, UNKNOWN, alias, key, named, nested_name, pointee, primitive};
+use crate::api::{Exception, Shape};
 use crate::layout::Layouts;
 use crate::metadata::{Method, Param, Record, RecordKind, attribute_named};
 use crate::names;
@@ -81,6 +82,18 @@ enum Part {
     StructOut { coded: Coded },
     /// `void*` written by the callee, with the index of its byte count; the trait passes `&impl VolatileBytes`.
     BytesOut { count: usize, optional: bool },
+    /// Initial data (an exception line): one record, or one per subresource, of the description at index `desc`;
+    /// each record's bytes field is read-only, of the length the shape's rule gives.
+    InitialData { desc: usize, shape: Shape, per_subresource: bool, size: u64, bytes_at: u64, pitch_at: u64, slice_at: u64, path: String, fields: [String; 3] },
+    /// Memory lent until a later call (an exception line): Map's record out, with the indices of the resource and the
+    /// subresource, and the names of the record's three fields.
+    LentOut { coded: Coded, resource: usize, subresource: usize, fields: [String; 3] },
+    /// An `IUnknown*` in: one of the API's kinds, or any other COM object.
+    UnknownIn { optional: bool },
+    /// The interface id a bound object is asked for (an exception line).
+    Riid,
+    /// A bound object out (an exception line), of the top trait's associated type `name`.
+    BoundOut { name: String },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -179,12 +192,22 @@ impl<'g, 'a> Writer<'g, 'a> {
         let mut encode = String::new();
         let mut decode_only = record.kind == RecordKind::Union;
         let mut used = BTreeSet::new();
+        // A lent record crosses with its memory's address: `Record<usize>`.
+        let lent_field = match self.g.lent_record(&record.name) {
+            Some(Exception::Lent { field, .. }) => Some(*field),
+            _ => None,
+        };
         for (field, (offset, _)) in record.fields.iter().zip(&places) {
             let mut name = names::value_name(&field.name);
             while !used.insert(name.clone()) {
                 name.push('_');
             }
             let at = offset.to_string();
+            if lent_field == Some(field.name.as_str()) {
+                let _ = writeln!(decode, "        {name}: get_usize(bytes, {at}),");
+                let _ = writeln!(encode, "    put_usize(bytes, {at}, value.{name});");
+                continue;
+            }
             let (read, only) = self.read_value(&field.ty, record, rust_name, &at)?;
             decode_only |= only;
             let _ = writeln!(decode, "        {name}: {read},");
@@ -193,8 +216,11 @@ impl<'g, 'a> Writer<'g, 'a> {
             }
         }
         let mut text = String::new();
+        let path = if lent_field.is_some() { format!("{path}<usize>") } else { path.to_string() };
+        let path = path.as_str();
+        let expression = path.replace('<', "::<");
         let _ = writeln!(text, "/// Reads `{}` from the {size} bytes C lays it out in.", record.name);
-        let _ = writeln!(text, "pub fn decode_{ident}(bytes: &[u8]) -> {path} {{\n    {path} {{\n{decode}    }}\n}}\n");
+        let _ = writeln!(text, "pub fn decode_{ident}(bytes: &[u8]) -> {path} {{\n    {expression} {{\n{decode}    }}\n}}\n");
         if !decode_only {
             let _ = writeln!(text, "/// Writes `{}` as the {size} bytes C lays it out in.", record.name);
             let _ = writeln!(text, "pub fn encode_{ident}(value: &{path}, bytes: &mut [u8]) {{\n{encode}}}\n");
@@ -362,7 +388,7 @@ impl<'g, 'a> Writer<'g, 'a> {
         (kinds, enum_path)
     }
 
-    fn glue_of(&self, method: &Method) -> Result<Glued, String> {
+    fn glue_of(&self, method: &Method, place: &str) -> Result<Glued, String> {
         let mut counts: BTreeSet<usize> = BTreeSet::new();
         for param in &method.params {
             for (attribute, argument) in [("NativeArrayInfo", "CountParamIndex"), ("MemorySize", "BytesParamIndex")] {
@@ -383,6 +409,8 @@ impl<'g, 'a> Writer<'g, 'a> {
                     return Err(format!("{}: a count passed by pointer", param.name));
                 }
                 Part::Count
+            } else if let Some(part) = self.exception_part(place, method, param).map_err(|why| format!("{}: {why}", param.name))? {
+                part
             } else {
                 self.part(param).map_err(|why| format!("{}: {why}", param.name))?
             };
@@ -397,6 +425,50 @@ impl<'g, 'a> Writer<'g, 'a> {
         Ok(Glued { parts, status, returned })
     }
 
+    /// A parameter an exception line of src/api.rs maps, if any.
+    fn exception_part(&self, place: &str, method: &Method, param: &Param) -> Result<Option<Part>, String> {
+        let position = |name: &str| method.params.iter().position(|p| p.name == name).ok_or_else(|| format!("no parameter {name}"));
+        if let Some(Exception::InitialData { desc, shape, per_subresource, record, bytes, pitch, slice_pitch, .. }) = self.g.initial_data(place, &param.name) {
+            let record_key = self.g.read.records.keys().find(|k| k.1 == *record).cloned().ok_or("the record of an exception line")?;
+            let read = &self.g.read.records[&record_key];
+            let places = self.layouts.field_places(read).ok_or("the record's layout")?;
+            let (size, _) = self.layouts.of_record(read).ok_or("the record's size")?;
+            if size % 8 != 0 {
+                return Err("a record of initial data whose size is not a whole number of words".to_string());
+            }
+            let at = |field: &str| read.fields.iter().position(|f| f.name == field).map(|index| places[index].0).ok_or_else(|| format!("no field {field}"));
+            return Ok(Some(Part::InitialData {
+                desc: position(desc)?,
+                shape: *shape,
+                per_subresource: *per_subresource,
+                size,
+                bytes_at: at(bytes)?,
+                pitch_at: at(pitch)?,
+                slice_at: at(slice_pitch)?,
+                path: self.record_path(&record_key),
+                fields: [names::value_name(bytes), names::value_name(pitch), names::value_name(slice_pitch)],
+            }));
+        }
+        if let Some(Exception::Lent { record, resource, subresource, field, row_pitch, depth_pitch, .. }) = self.g.lent_of(place)
+            && let Some((inner, 1, _)) = pointee(&param.ty)
+            && named(inner).is_some_and(|k| k.1 == *record)
+        {
+            let record_key = named(inner).unwrap_or_default();
+            let coded = self.codec_of(&record_key).ok_or("a lent record the glue cannot copy as bytes")?;
+            let fields = [names::value_name(field), names::value_name(row_pitch), names::value_name(depth_pitch)];
+            return Ok(Some(Part::LentOut { coded, resource: position(resource)?, subresource: position(subresource)?, fields }));
+        }
+        if let Some(Exception::BoundObject { name, .. }) = self.g.bound_object(place) {
+            if param.name == "riid" {
+                return Ok(Some(Part::Riid));
+            }
+            if attribute_named(&param.attributes, "ComOutPtr").is_some() {
+                return Ok(Some(Part::BoundOut { name: (*name).to_string() }));
+            }
+        }
+        Ok(None)
+    }
+
     fn part(&self, param: &Param) -> Result<Part, String> {
         let is_out = param.is_out && !param.is_in;
         let array = attribute_named(&param.attributes, "NativeArrayInfo");
@@ -404,7 +476,7 @@ impl<'g, 'a> Writer<'g, 'a> {
         let Some((inner, depth, is_const)) = pointee(&param.ty) else {
             if let Some(interface_key) = named(&param.ty).filter(|k| self.is_object(k)) {
                 if interface_key == key(UNKNOWN.0, UNKNOWN.1) {
-                    return Err("an IUnknown in".to_string());
+                    return Ok(Part::UnknownIn { optional: param.is_optional });
                 }
                 let (kinds, enum_path) = self.object_kinds(&interface_key);
                 if kinds.is_empty() {

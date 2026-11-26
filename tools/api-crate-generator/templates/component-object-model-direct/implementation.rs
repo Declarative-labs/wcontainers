@@ -84,33 +84,120 @@ impl<const N: usize> Default for Aligned<N> {
     }
 }
 
-/// What the glue recorded about the objects one object is related to: the one that made it, and those made with it
-/// in the same call, each by its type, held without a reference (so that two related objects do not keep each other
-/// alive). An object handed out again (a child's device, the immediate context) is answered from here.
+/// What the glue recorded about the objects one object is related to: the one that made it, those made with it in the
+/// same call, and those it handed out by index (a swap chain's buffers), each by the role it plays (its kind's name, or
+/// the name of what it was handed out as) and index, held without a reference (so that two related objects do not keep
+/// each other alive). An object handed out again (a child's device, the immediate context, a back buffer) is answered
+/// from here. Roles, not Rust types: one implementation type may serve several kinds.
 #[derive(Default)]
-pub struct Relations(std::sync::Mutex<Vec<(core::any::TypeId, Weak)>>);
+pub struct Relations(std::sync::Mutex<Vec<(&'static str, u32, Weak)>>);
 
-/// Records that our object of type `V` at `address` is related to `related`, an object of type `R`.
-pub fn relate<V: Send + Sync + 'static, R: 'static>(key: GlueKey, address: usize, related: Weak) {
+/// Records that our object of type `V` at `address` is related to `related`, which plays `role` for it.
+pub fn relate<V: Send + Sync + 'static>(key: GlueKey, address: usize, role: &'static str, related: Weak) {
+    relate_at::<V>(key, address, role, 0, related);
+}
+
+/// Records that our object of type `V` at `address` handed out `related` as its `index`th `role`.
+pub fn relate_at<V: Send + Sync + 'static>(key: GlueKey, address: usize, role: &'static str, index: u32, related: Weak) {
     let Some(found) = object::<V>(key, address) else { return };
     if let Some(relations) = found.part::<Relations>() {
-        relations.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((core::any::TypeId::of::<R>(), related));
+        let mut held = relations.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.retain(|(other, at, _)| !(*other == role && *at == index));
+        held.push((role, index, related));
     }
 }
 
-/// Returns a reference to the object of type `R` that our object of type `V` at `address` is related to, while it
-/// lives.
-pub fn related<V: Send + Sync + 'static, R: 'static>(key: GlueKey, address: usize) -> Option<Counted> {
+/// Returns a reference to the object that plays `role` for our object of type `V` at `address`, while it lives.
+pub fn related<V: Send + Sync + 'static>(key: GlueKey, address: usize, role: &'static str) -> Option<Counted> {
+    related_at::<V>(key, address, role, 0)
+}
+
+/// Returns a reference to the `index`th `role` our object of type `V` at `address` handed out, while it lives.
+pub fn related_at<V: Send + Sync + 'static>(key: GlueKey, address: usize, role: &'static str, index: u32) -> Option<Counted> {
     let found = object::<V>(key, address)?;
     let relations = found.part::<Relations>()?;
     let weak = {
         let held = relations.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        held.iter().find(|(kind, _)| *kind == core::any::TypeId::of::<R>()).map(|(_, weak)| *weak)
+        held.iter().find(|(other, at, _)| *other == role && *at == index).map(|(_, _, weak)| *weak)
     };
     weak?.upgrade()
 }
 
-/// A new record holding empty relations.
+/// What the serving glue lends the C side across a call pair (Map to Unmap), per subresource of one of our objects;
+/// kept in the object's record, so that it dies with the object. A subresource is busy (none) while a Map or an Unmap of
+/// it is under way, so that no second one comes between; no code of either side runs under its lock.
+#[derive(Default)]
+pub struct Lendings(std::sync::Mutex<Vec<(u32, Option<Box<dyn core::any::Any + Send + Sync>>)>>);
+
+impl Lendings {
+    /// Marks the subresource busy, or returns none when it is lent or busy.
+    pub fn reserve(&self, subresource: u32) -> Option<Reservation<'_>> {
+        let mut held = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.iter().any(|(other, _)| *other == subresource) {
+            return None;
+        }
+        held.push((subresource, None));
+        Some(Reservation { lendings: self, subresource })
+    }
+
+    /// Takes what is lent for the subresource, leaving it busy until the reservation drops; none when nothing is.
+    pub fn begin_end(&self, subresource: u32) -> Option<(Box<dyn core::any::Any + Send + Sync>, Reservation<'_>)> {
+        let mut held = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lent = held.iter_mut().find(|(other, lent)| *other == subresource && lent.is_some())?.1.take()?;
+        Some((lent, Reservation { lendings: self, subresource }))
+    }
+}
+
+/// A subresource held busy, freed when this drops (also on a panic) unless settled as lent.
+pub struct Reservation<'a> {
+    lendings: &'a Lendings,
+    subresource: u32,
+}
+
+impl Reservation<'_> {
+    /// Records what is lent for the subresource, until a call that ends the lending takes it.
+    pub fn settle(self, lent: Box<dyn core::any::Any + Send + Sync>) {
+        let refused = {
+            let mut held = self.lendings.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            match held.iter_mut().find(|(other, _)| *other == self.subresource) {
+                Some(entry) => {
+                    entry.1 = Some(lent);
+                    None
+                }
+                None => Some(lent),
+            }
+        };
+        core::mem::forget(self);
+        // An implementation's value, dropped after the lock.
+        guarded((), move || drop(refused));
+    }
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        let removed = {
+            let mut held = self.lendings.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            held.iter().position(|(other, _)| *other == self.subresource).map(|at| held.swap_remove(at))
+        };
+        guarded((), move || drop(removed));
+    }
+}
+
+/// A new record holding empty relations and lendings.
 pub fn record() -> Record {
-    vec![Box::new(Relations::default())]
+    vec![Box::new(Relations::default()), Box::new(Lendings::default())]
+}
+
+/// An object type of a calling glue: adopted from a reference to an object of the C side's of the interface
+/// `INTERFACE` names, which a call of another API's glue returns (a swap chain's buffer).
+pub trait Adopt: Sized {
+    /// The interface the object is asked for.
+    const INTERFACE: Guid;
+
+    /// Takes over a reference to an object of `INTERFACE`'s interface, or returns none for null.
+    ///
+    /// # Safety
+    /// `raw` is null or a live object of `INTERFACE`'s interface, one of whose references the caller gives up.
+    #[expect(unsafe_code, reason = "the promise that a pointer is a live object of an interface")]
+    unsafe fn adopt(raw: Raw) -> Option<Self>;
 }

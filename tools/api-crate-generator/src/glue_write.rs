@@ -5,12 +5,13 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use super::{BYTES_HELPERS, Glued, MOST_ELEMENTS, NOWHERE, Part, ValueForm, Writer, direct_alias, snake, upper};
+use crate::api::Exception;
 use crate::emit::{HEADER, Key, alias, package};
 use crate::metadata::Method;
 use crate::names;
 
 /// The unit of the C side's failures the glue answers with.
-const STATUS_IMPORTS: &str = "use wcontainers_component_object_model::constants::{E_FAIL, E_INVALIDARG, E_NOTIMPL, E_OUTOFMEMORY, E_POINTER};";
+const STATUS_IMPORTS: &str = "use wcontainers_component_object_model::constants::{E_FAIL, E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL, E_OUTOFMEMORY, E_POINTER};";
 
 /// One entry of a C table: the slot's name and its glue, if glued.
 pub(super) struct Slot<'m> {
@@ -48,7 +49,7 @@ impl Writer<'_, '_> {
                     name.push('_');
                 }
                 let glued = if kept.contains(method.name.as_str()) {
-                    match self.glue_of(method) {
+                    match self.glue_of(method, &format!("{}::{}", member.1, method.name)) {
                         Ok(glued) => Some(glued),
                         Err(why) => {
                             self.not_glued.borrow_mut().push(format!("{}::{}: {why}", member.1, method.name));
@@ -71,11 +72,11 @@ impl Writer<'_, '_> {
             let c = match part {
                 Part::Value { c, .. } => c.clone(),
                 Part::Count => self.count_c_type(&param.ty),
-                Part::StructIn { .. } | Part::ValuesIn { .. } => "*const u8".to_string(),
-                Part::ObjectIn { .. } => "Raw".to_string(),
+                Part::StructIn { .. } | Part::ValuesIn { .. } | Part::InitialData { .. } | Part::Riid => "*const u8".to_string(),
+                Part::ObjectIn { .. } | Part::UnknownIn { .. } => "Raw".to_string(),
                 Part::ObjectsIn { .. } => "*const Raw".to_string(),
-                Part::ObjectOut { .. } => "*mut Raw".to_string(),
-                Part::ValueOut { .. } | Part::StructOut { .. } | Part::BytesOut { .. } => "*mut u8".to_string(),
+                Part::ObjectOut { .. } | Part::BoundOut { .. } => "*mut Raw".to_string(),
+                Part::ValueOut { .. } | Part::StructOut { .. } | Part::BytesOut { .. } | Part::LentOut { .. } => "*mut u8".to_string(),
             };
             parameters.push((name.clone(), c));
         }
@@ -132,6 +133,9 @@ impl Writer<'_, '_> {
     fn serving_entry(&self, fn_name: &str, method: &Method, glued: &Glued, bound: Option<&str>, top: &str, place: &str) -> String {
         let (parameters, returned) = self.c_signature(glued, method);
         let api_type = if bound.is_some() { "V::Api" } else { "M" };
+        let top_of_api = self.g.top_path(self.current.get(), NOWHERE);
+        // The role `this` plays for an object it relates to: its kind's name (none for an abstract base, a child).
+        let this_role = place.split("::").next().and_then(|interface| self.g.kind_of.iter().find(|(k, _)| k.1 == interface)).map(|(_, &kind)| self.g.kinds[kind].name.clone());
         let status = glued.status;
         let fail = |expression: &str, code: &str| if status { format!("{expression}.ok_or({code})?") } else { format!("{expression}?") };
         let mut c_list: Vec<String> = Vec::new();
@@ -152,7 +156,7 @@ impl Writer<'_, '_> {
         let mut inner = String::new();
         // Required out-parameters must be writable before anything is made.
         for ((name, part), param) in glued.parts.iter().zip(&method.params) {
-            if matches!(part, Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. }) && !param.is_optional && status {
+            if matches!(part, Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::BoundOut { .. }) && !param.is_optional && status {
                 let _ = writeln!(inner, "            if {name}.is_null() {{ return Err(E_POINTER); }}");
             }
         }
@@ -249,10 +253,81 @@ impl Writer<'_, '_> {
                         args.push(format!("&{name}"));
                     }
                 }
-                Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } => {
+                Part::InitialData { desc, shape, per_subresource, size, bytes_at, pitch_at, slice_at, path, fields } => {
+                    let desc_name = &glued.parts[*desc].0;
+                    let suffix = shape.suffix();
+                    let [bytes_field, pitch_field, slice_field] = fields;
+                    let _ = writeln!(inner, "            let {name}_records: Vec<{path}> = if {name}.is_null() {{ Vec::new() }} else {{");
+                    if *per_subresource {
+                        let _ = writeln!(inner, "                let count = {};", fail(&format!("crate::lengths::subresources_{suffix}(&{desc_name}).filter(|count| *count <= {MOST_ELEMENTS})"), "E_INVALIDARG"));
+                    } else {
+                        let _ = writeln!(inner, "                let count = 1;");
+                    }
+                    let _ = writeln!(inner, "                #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
+                    let _ = writeln!(inner, "                // SAFETY: `{metadata}`'s exception line (src/api.rs): {}, each of {size} bytes, readable for the call.", if *per_subresource { "one record per subresource of the description" } else { "one record" });
+                    let _ = writeln!(inner, "                let records = unsafe {{ read_only_at({name}, count * {size}) }};");
+                    let _ = writeln!(inner, "                let records = {};", fail("records", "E_INVALIDARG"));
+                    let _ = writeln!(inner, "                let mut read = Vec::new();");
+                    let _ = writeln!(inner, "                for (index, record) in records.as_chunks::<{size}>().0.iter().enumerate() {{");
+                    let _ = writeln!(inner, "                    let {pitch_field} = get_u32(record, {pitch_at});\n                    let {slice_field} = get_u32(record, {slice_at});");
+                    let _ = writeln!(inner, "                    let length = {};", fail(&format!("crate::lengths::initial_length_{suffix}(&{desc_name}, index, {pitch_field}, {slice_field})"), "E_INVALIDARG"));
+                    let _ = writeln!(inner, "                    let address = core::ptr::with_exposed_provenance::<u8>(get_usize(record, {bytes_at}));");
+                    let _ = writeln!(inner, "                    #[expect(unsafe_code, reason = \"{place}: {metadata}'s bytes\")]");
+                    let _ = writeln!(inner, "                    // SAFETY: `{metadata}`'s exception line (src/api.rs): each record's bytes hold the length its shape's rule gives from the description and the pitches, readable for the call.");
+                    let _ = writeln!(inner, "                    let {bytes_field} = unsafe {{ read_only_at(address, length) }};");
+                    let _ = writeln!(inner, "                    let {bytes_field} = {};", fail(bytes_field, "E_INVALIDARG"));
+                    let _ = writeln!(inner, "                    read.push({path} {{ {bytes_field}, {pitch_field}, {slice_field} }});\n                }}\n                read\n            }};");
+                    if *per_subresource {
+                        args.push(format!("&{name}_records"));
+                    } else {
+                        args.push(format!("{name}_records.first()"));
+                    }
+                }
+                Part::UnknownIn { optional } => {
+                    let found = format!("UnknownFound::<{api_type}>");
+                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
+                    let _ = writeln!(inner, "            // SAFETY: the metadata's `{metadata}` is an `IUnknown*`: null or a live COM object, for the call.");
+                    let _ = writeln!(inner, "            let {name}_found = unsafe {{ {found}::find({name}) }};");
+                    if *optional {
+                        let _ = writeln!(inner, "            if {name}_found.is_none() && !{name}.is_null() {{ return {}; }}", if status { "Err(E_INVALIDARG)" } else { "None" });
+                        args.push(format!("{name}_found.as_ref().map(|held| held.get())"));
+                    } else {
+                        let _ = writeln!(inner, "            let {name}_found = {};", fail(&format!("{name}_found"), "E_INVALIDARG"));
+                        args.push(format!("{name}_found.get()"));
+                    }
+                }
+                Part::Riid => {
+                    let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; 16];");
+                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
+                    let _ = writeln!(inner, "            // SAFETY: the metadata's `{metadata}` is `In` and `Const`: one GUID, readable for the call.");
+                    let _ = writeln!(inner, "            let {name}_read = unsafe {{ read_bytes({name}, &mut {name}_bytes) }};");
+                    let _ = writeln!(inner, "            if !{name}_read {{ return {}; }}", if status { "Err(E_INVALIDARG)" } else { "None" });
+                    let _ = writeln!(inner, "            let {name} = decode_guid(&{name}_bytes);");
+                }
+                Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::LentOut { .. } | Part::BoundOut { .. } => {
                     outs.push((name.clone(), part, metadata.clone()));
                 }
             }
+        }
+        // Memory lent until a later call: the subresource is held busy before the implementation is asked, so that no
+        // second Map of it comes between; a call that ends the lending writes our copy back first.
+        let lent_out = outs.iter().find_map(|(_, part, _)| match part {
+            Part::LentOut { resource, subresource, .. } => Some((glued.parts[*resource].0.clone(), glued.parts[*subresource].0.clone())),
+            _ => None,
+        });
+        if let Some((resource, subresource)) = &lent_out {
+            let _ = writeln!(inner, "            let lendings = {};", fail(&format!("{resource}_found.part::<Lendings>()"), "E_INVALIDARG"));
+            let _ = writeln!(inner, "            let reservation = {};", fail(&format!("lendings.reserve({subresource})"), "E_INVALIDARG"));
+        }
+        let ending = self.g.exceptions().find_map(|exception| match exception {
+            Exception::Lent { until, resource, subresource, .. } if *until == place => Some((names::value_name(resource), names::value_name(subresource))),
+            _ => None,
+        });
+        if let Some((resource, subresource)) = &ending {
+            let _ = writeln!(inner, "            let ending = {resource}_found.part::<Lendings>().and_then(|lendings| lendings.begin_end({subresource}));");
+            let _ = writeln!(inner, "            let Some((lent, busy)) = ending else {{ return {}; }};", if status { "Ok(())" } else { "Some(())" });
+            let _ = writeln!(inner, "            if let Some((shadow, data)) = lent.downcast_ref::<(Shadow, <{api_type} as {top_of_api}>::Mapped)>()");
+            let _ = writeln!(inner, "                && let Some(contents) = shadow.contents()\n            {{\n                let _ = wcontainers_volatile_bytes::VolatileBytes::write(data, &contents);\n            }}");
         }
         // An object handed out again: from what the glue recorded, before asking the implementation.
         let again = !status && outs.len() == 1 && glued.returned.is_none() && matches!(outs[0].1, Part::ObjectOut { made: false, .. }) && bound.is_some();
@@ -261,15 +336,18 @@ impl Writer<'_, '_> {
         if again {
             if let (name, Part::ObjectOut { kinds, .. }, _) = &outs[0] {
                 let kind_type = self.kind_type(kinds[0], api_type);
-                let _ = writeln!(inner, "            if let Some(recorded) = related::<V, {kind_type}>(KEY, this.addr()) {{");
+                let role = &self.g.kinds[kinds[0]].name;
+                let _ = writeln!(inner, "            if let Some(recorded) = related::<V>(KEY, this.addr(), \"{role}\") {{");
                 let _ = writeln!(inner, "                return Some((recorded.into_address().get().to_ne_bytes(),));\n            }}");
                 let _ = writeln!(inner, "            let made = {call};");
                 let _ = writeln!(inner, "            let Some(made) = made else {{ return Some((0_usize.to_ne_bytes(),)); }};");
                 let _ = writeln!(inner, "            drop(found);");
                 let _ = writeln!(inner, "            let {name} = serve(KEY, made, record(), {}::<{kind_type}>)?;", self.interfaces_fn(kinds[0], self.current.get()));
                 let _ = writeln!(inner, "            if let Some(this_counted) = counted::<V>(KEY, this.addr()) {{");
-                let _ = writeln!(inner, "                relate::<{kind_type}, V>(KEY, {name}.address(), this_counted.weak());");
-                let _ = writeln!(inner, "                relate::<V, {kind_type}>(KEY, this.addr(), {name}.weak());\n            }}");
+                if let Some(this_role) = &this_role {
+                    let _ = writeln!(inner, "                relate::<{kind_type}>(KEY, {name}.address(), \"{this_role}\", this_counted.weak());");
+                }
+                let _ = writeln!(inner, "                relate::<V>(KEY, this.addr(), \"{role}\", {name}.weak());\n            }}");
                 let _ = writeln!(inner, "            Some(({name}.into_address().get().to_ne_bytes(),))");
             }
         } else {
@@ -283,21 +361,68 @@ impl Writer<'_, '_> {
                 1 => names_out[0].clone(),
                 _ => format!("({})", names_out.join(", ")),
             };
+            // A bound object found again: the one served for this index while it lives, asked for the interface.
+            let bound_index = glued.parts.iter().find(|(_, part)| matches!(part, Part::Value { .. })).map(|(name, _)| name.clone());
+            let riid = glued.parts.iter().find(|(_, part)| matches!(part, Part::Riid)).map(|(name, _)| name.clone());
+            for (_, part, _) in &outs {
+                if let (Part::BoundOut { name: bound_name }, Some(index), Some(riid)) = (part, &bound_index, &riid) {
+                    let bound_type = format!("<{api_type} as {top_of_api}>::{bound_name}");
+                    let _ = writeln!(inner, "            if let Some(recorded) = related_at::<V>(KEY, this.addr(), \"{bound_name}\", {index}) {{");
+                    let _ = writeln!(inner, "                let answered = {};", fail(&format!("query::<{bound_type}>(KEY, recorded.address(), &{riid})"), "E_NOINTERFACE"));
+                    let _ = writeln!(inner, "                return Ok((answered.into_address().get().to_ne_bytes(),));\n            }}");
+                }
+            }
             let _ = writeln!(inner, "            let {pattern} = {call}{};", if status { "?" } else { "" });
-            let _ = writeln!(inner, "            drop(found);");
             let mut written = Vec::new();
             let mut served = Vec::new();
             for (name, part, _) in &outs {
+                if let Part::LentOut { coded, fields: [data, row, depth], .. } = part
+                    && let Some((resource, subresource)) = &lent_out
+                {
+                    let until = self.g.lent_of(place).and_then(|exception| match exception {
+                        Exception::Lent { until, .. } => until.split("::").nth(1).map(|method| names::escaped(snake(method))),
+                        _ => None,
+                    }).unwrap_or_default();
+                    let expression = coded.path.replace('<', "::<");
+                    let _ = writeln!(inner, "            let lent_length = mapped_length(&{resource}_found.get(), {subresource}, {name}_value.{row}, {name}_value.{depth});");
+                    let _ = writeln!(inner, "            let lent_shadow = lent_length.and_then(Shadow::allocate);");
+                    let _ = writeln!(inner, "            let lent_copy = lent_length.and_then(|length| {{ let mut copy = Vec::new(); copy.try_reserve_exact(length).ok()?; copy.resize(length, 0_u8); Some(copy) }});");
+                    let _ = writeln!(inner, "            let (Some(shadow), Some(mut copy)) = (lent_shadow, lent_copy) else {{");
+                    let _ = writeln!(inner, "                found.value().{until}({resource}_found.get(), {subresource});\n                return Err(E_FAIL);\n            }};");
+                    let _ = writeln!(inner, "            let _ = wcontainers_volatile_bytes::VolatileBytes::read(&{name}_value.{data}, &mut copy);");
+                    let _ = writeln!(inner, "            let _ = shadow.fill(&copy);");
+                    let _ = writeln!(inner, "            let {name}_record = {expression} {{ {data}: shadow.address(), {row}: {name}_value.{row}, {depth}: {name}_value.{depth} }};");
+                    let _ = writeln!(inner, "            reservation.settle(Box::new((shadow, {name}_value.{data})));");
+                    let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; {}];", coded.size);
+                    let _ = writeln!(inner, "            encode_{}(&{name}_record, &mut {name}_bytes);", coded.ident);
+                    written.push(format!("{name}_bytes"));
+                }
+            }
+            let _ = writeln!(inner, "            drop(found);");
+            for (name, part, _) in &outs {
                 match part {
+                    Part::LentOut { .. } => {}
+                    Part::BoundOut { name: bound_name } => {
+                        let bound_type = format!("<{api_type} as {top_of_api}>::{bound_name}");
+                        let index = bound_index.clone().unwrap_or_default();
+                        let riid = riid.clone().unwrap_or_default();
+                        let _ = writeln!(inner, "            let {name}_interfaces = {};", fail(&format!("bound_{}::<{bound_type}>()", snake(bound_name)), "E_NOINTERFACE"));
+                        let _ = writeln!(inner, "            let {name}_served = {};", fail(&format!("serve(KEY, {name}_value, record(), {name}_interfaces)"), "E_OUTOFMEMORY"));
+                        let _ = writeln!(inner, "            relate_at::<V>(KEY, this.addr(), \"{bound_name}\", {index}, {name}_served.weak());");
+                        let _ = writeln!(inner, "            let {name}_answer = {};", fail(&format!("query::<{bound_type}>(KEY, {name}_served.address(), &{riid})"), "E_NOINTERFACE"));
+                        written.push(format!("{name}_answer"));
+                    }
                     Part::ObjectOut { kinds, made, .. } => {
                         let kind_type = self.kind_type(kinds[0], api_type);
                         let interfaces = self.interfaces_fn(kinds[0], self.current.get());
                         if *made {
                             let _ = writeln!(inner, "            let {name}_served = {};", fail(&format!("serve(KEY, {name}_value, record(), {interfaces}::<{kind_type}>)"), "E_OUTOFMEMORY"));
-                            if bound.is_some() {
-                                let _ = writeln!(inner, "            if let Some(this_counted) = counted::<V>(KEY, this.addr()) {{ relate::<{kind_type}, V>(KEY, {name}_served.address(), this_counted.weak()); }}");
+                            if bound.is_some()
+                                && let Some(this_role) = &this_role
+                            {
+                                let _ = writeln!(inner, "            if let Some(this_counted) = counted::<V>(KEY, this.addr()) {{ relate::<{kind_type}>(KEY, {name}_served.address(), \"{this_role}\", this_counted.weak()); }}");
                             }
-                            served.push((name.clone(), kind_type));
+                            served.push((name.clone(), kind_type, self.g.kinds[kinds[0]].name.clone()));
                             written.push(format!("{name}_served"));
                         } else {
                             let _ = writeln!(inner, "            let {name}_served = match {name}_value {{ Some(value) => Some({}), None => None }};", fail(&format!("serve(KEY, value, record(), {interfaces}::<{kind_type}>)"), "E_OUTOFMEMORY"));
@@ -322,17 +447,17 @@ impl Writer<'_, '_> {
                 }
             }
             // Objects made together know each other: the immediate context is the device's, and the device the context's.
-            for (left, left_type) in &served {
-                for (right, right_type) in &served {
+            for (left, left_type, _) in &served {
+                for (right, _, right_role) in &served {
                     if left != right {
-                        let _ = writeln!(inner, "            relate::<{left_type}, {right_type}>(KEY, {left}_served.address(), {right}_served.weak());");
+                        let _ = writeln!(inner, "            relate::<{left_type}>(KEY, {left}_served.address(), \"{right_role}\", {right}_served.weak());");
                     }
                 }
             }
             let mut finals = Vec::new();
             for ((name, part, _), value) in outs.iter().zip(&written) {
                 match part {
-                    Part::ObjectOut { made: true, .. } => finals.push(format!("{value}.into_address().get().to_ne_bytes()")),
+                    Part::ObjectOut { made: true, .. } | Part::BoundOut { .. } => finals.push(format!("{value}.into_address().get().to_ne_bytes()")),
                     Part::ObjectOut { made: false, .. } => finals.push(format!("{value}.map_or(0, |served| served.into_address().get()).to_ne_bytes()")),
                     _ => finals.push(value.clone()),
                 }
@@ -354,7 +479,8 @@ impl Writer<'_, '_> {
         let offset = usize::from(glued.returned.is_some());
         for (position, (name, part, metadata)) in outs.iter().enumerate() {
             let size = match part {
-                Part::ObjectOut { .. } => "size_of::<usize>()".to_string(),
+                Part::ObjectOut { .. } | Part::BoundOut { .. } => "size_of::<usize>()".to_string(),
+                Part::LentOut { coded, .. } => coded.size.to_string(),
                 Part::ValueOut { size, .. } => size.to_string(),
                 Part::StructOut { coded } => coded.size.to_string(),
                 _ => "0".to_string(),
@@ -362,7 +488,7 @@ impl Writer<'_, '_> {
             let index = position + offset;
             let _ = writeln!(text, "        let {name}_written = answer.as_ref().{}.map_or([0_u8; {size}], |written| written.{index});", if status { "ok()" } else { "as_ref()" }.replace(".as_ref().as_ref()", ".as_ref()"));
             let promise = match part {
-                Part::ObjectOut { made: true, .. } => "`Out` and `ComOutPtr`: one interface pointer to write",
+                Part::ObjectOut { made: true, .. } | Part::BoundOut { .. } => "`Out` and `ComOutPtr`: one interface pointer to write",
                 Part::ObjectOut { .. } => "`Out`: one interface pointer to write",
                 _ => "`Out`: one value of this size to write",
             };
@@ -477,7 +603,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         for face in &faces {
             let face_api = g.interface_api[face];
             let ancestors: Vec<String> = g.bases_of(face).iter().filter(|k| g.interface_api.contains_key(*k)).map(|k| writer.iid(k)).collect();
-            let table_const = format!("{}::Tables::<V>::{}", direct_alias(g.apis[face_api].folder), upper(&g.trait_names[face]));
+            let table_const = if face_api == api { format!("Tables::<V>::{}", upper(&g.trait_names[face])) } else { format!("{}::Tables::<V>::{}", direct_alias(g.apis[face_api].folder), upper(&g.trait_names[face])) };
             let _ = writeln!(kinds_text, "    if [{}].contains(interface) {{", ancestors.join(", "));
             let _ = writeln!(kinds_text, "        #[expect(unsafe_code, reason = \"a table of entry points the C side calls\")]");
             let _ = writeln!(kinds_text, "        // SAFETY: `{}Table` lays out `{}`, and each of its entries checks the type of the object it finds.", g.trait_names[face], face.1);
@@ -504,7 +630,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     let mut exports_fn = String::new();
     let mut export_fields = Vec::new();
     for function in &functions {
-        match writer.glue_of(function) {
+        match writer.glue_of(function, &function.name) {
             Ok(glued) => {
                 let name = snake(&function.name);
                 let entry = format!("export_{name}");
@@ -528,7 +654,21 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         let _ = writeln!(exports_fn, "    held.and_then(|module| module.downcast::<M>().ok())\n}}\n");
         let _ = writeln!(exports_fn, "/// Serves `module` as the library: the exports C calls, which call it. A module of a type already served");
         let _ = writeln!(exports_fn, "/// is not replaced.");
-        let _ = writeln!(exports_fn, "pub fn exports<M: {top}>(module: M) -> Library {{");
+        let mut wheres = Vec::new();
+        let mut binds = Vec::new();
+        for exception in spec.exceptions {
+            let Exception::Binds { api: other_folder, name, kind } = exception else { continue };
+            let Some(other) = g.apis.iter().position(|a| a.folder == *other_folder) else { continue };
+            let Some(kind_index) = g.interface_api.keys().find(|k| k.1 == *kind).and_then(|k| g.kind_of.get(k)).copied() else { continue };
+            let kind_type = writer.kind_type(kind_index, "M");
+            wheres.push(format!("M: {}<{name} = {kind_type}>", g.top_path(other, NOWHERE)));
+            binds.push(format!("    {}::bind_{}::<{kind_type}>({}::<{kind_type}>);", direct_alias(other_folder), snake(name), writer.interfaces_fn(kind_index, api)));
+        }
+        let signature = if wheres.is_empty() { format!("pub fn exports<M: {top}>(module: M) -> Library") } else { format!("pub fn exports<M>(module: M) -> Library\nwhere\n    M: {top},\n    {},", wheres.join(",\n    ")) };
+        let _ = writeln!(exports_fn, "{signature} {{");
+        for bind in &binds {
+            let _ = writeln!(exports_fn, "{bind}");
+        }
         let _ = writeln!(exports_fn, "    {{\n        let mut modules = MODULES.lock().unwrap_or_else(PoisonError::into_inner);");
         let _ = writeln!(exports_fn, "        if !modules.iter().any(|held| held.is::<M>()) {{ modules.push(Arc::new(module)); }}\n    }}");
         let fields: Vec<String> = export_fields.iter().map(|(name, _, entry, _)| format!("{name}: {entry}::<M>")).collect();
@@ -555,7 +695,69 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         for &kind in &kinds {
             let _ = writeln!(found_enums, "            {held}::{0}(found) => {path}::{0}(found.value()),", g.kinds[kind].name);
         }
+        let _ = writeln!(found_enums, "        }}\n    }}\n\n    /// The part of what the glue recorded about the object that is of type `R`, if any.\n    pub fn part<R: Any>(&self) -> Option<&R> {{\n        match self {{");
+        for &kind in &kinds {
+            let _ = writeln!(found_enums, "            {held}::{}(found) => found.part::<R>(),", g.kinds[kind].name);
+        }
         let _ = writeln!(found_enums, "        }}\n    }}\n}}\n");
+    }
+    // An `IUnknown*` the C side passed: one of our objects of the API's kinds, or any other COM object.
+    if g.needs_unknown.borrow().contains(&api) {
+        let path = format!("{}::UnknownRef", alias(spec));
+        let _ = writeln!(found_enums, "/// An `IUnknown*` the C side passed: one of our objects of a kind of this API, held for the call, or any other.");
+        let _ = writeln!(found_enums, "pub enum UnknownFound<A: {top}> {{");
+        let own: Vec<usize> = (0..g.kinds.len()).filter(|&k| g.kinds[k].api == api).collect();
+        for &kind in &own {
+            let _ = writeln!(found_enums, "    {}(Found<{}>),", g.kinds[kind].name, writer.kind_type(kind, "A"));
+        }
+        let _ = writeln!(found_enums, "    Unknown(Foreign),\n}}\n\nimpl<A: {top}> UnknownFound<A> {{");
+        let _ = writeln!(found_enums, "    /// Finds the object at this address: one of ours, else the C side's, of which it takes a reference; none for null.\n    ///\n    /// # Safety\n    /// `raw` is null or a live COM object, for the call.");
+        let _ = writeln!(found_enums, "    #[expect(unsafe_code, reason = \"an IUnknown* the C side passes in\")]\n    pub unsafe fn find(raw: Raw) -> Option<UnknownFound<A>> {{\n        #[deny(unsafe_code)]\n        let body = move || {{\n            let address = raw.addr();");
+        for &kind in &own {
+            let _ = writeln!(found_enums, "            if let Some(found) = object::<{}>(KEY, address) {{ return Some(UnknownFound::{}(found)); }}", writer.kind_type(kind, "A"), g.kinds[kind].name);
+        }
+        let _ = writeln!(found_enums, "            #[expect(unsafe_code, reason = \"an IUnknown* the C side passes in\")]\n            // SAFETY: the caller's promise.\n            let foreign = unsafe {{ ForeignUnknown::from_borrowed(raw) }}?;");
+        let _ = writeln!(found_enums, "            Some(UnknownFound::Unknown(Foreign::new(address, Arc::new(foreign))))\n        }};\n        body()\n    }}\n");
+        let _ = writeln!(found_enums, "    /// The object as the trait takes it.\n    pub fn get(&self) -> {path}<'_, A> {{\n        match self {{");
+        for &kind in &own {
+            let _ = writeln!(found_enums, "            UnknownFound::{0}(found) => {path}::{0}(found.value()),", g.kinds[kind].name);
+        }
+        let _ = writeln!(found_enums, "            UnknownFound::Unknown(foreign) => {path}::Unknown(foreign),\n        }}\n    }}\n}}\n");
+    }
+    // The length of memory lent by Map, by the resource's shape: the same rule in both glues.
+    for exception in spec.exceptions {
+        let Exception::Lent { method, resource, .. } = exception else { continue };
+        let Some((interface, method_name)) = method.split_once("::") else { continue };
+        let Some(method) = g.read.interfaces.iter().find(|(k, _)| k.1 == interface).and_then(|(_, i)| i.methods.iter().find(|m| m.name == method_name)) else { continue };
+        let Some(resource_key) = method.params.iter().find(|p| p.name == *resource).and_then(|p| crate::emit::named(&p.ty)) else { continue };
+        let path = format!("{}::{}Ref", alias(spec), g.trait_names[&resource_key]);
+        let _ = writeln!(found_enums, "/// The bytes the C side may touch in memory Map lends for a subresource of `resource` whose rows start `row_pitch`\n/// apart and slices `depth_pitch` apart, by the shape's rule from its description; none for a shape no rule covers.");
+        let _ = writeln!(found_enums, "pub fn mapped_length<A: {top}>(resource: &{path}<'_, A>, subresource: u32, row_pitch: u32, depth_pitch: u32) -> Option<usize> {{\n    match resource {{");
+        for kind in g.kinds_deriving(&resource_key) {
+            let kind_name = &g.kinds[kind].name;
+            let shape = [crate::api::Shape::Buffer, crate::api::Shape::Texture1D, crate::api::Shape::Texture2D, crate::api::Shape::Texture3D].into_iter().find(|shape| shape.kind() == kind_name);
+            match shape {
+                Some(shape) => {
+                    let trait_path = writer.trait_path(&g.kinds[kind].root);
+                    let _ = writeln!(found_enums, "        {path}::{kind_name}(object) => crate::lengths::mapped_length_{}(&{trait_path}::get_desc(*object), subresource, row_pitch, depth_pitch),", shape.suffix());
+                }
+                None => {
+                    let _ = writeln!(found_enums, "        {path}::{kind_name}(_) => None,");
+                }
+            }
+        }
+        let _ = writeln!(found_enums, "    }}\n}}\n");
+    }
+    // A bound object: the tables of the type an API built on this one binds, which that API's glue registers.
+    for exception in spec.exceptions {
+        let Exception::BoundObject { name, .. } = exception else { continue };
+        let snake_name = snake(name);
+        let upper_name = snake_name.to_ascii_uppercase();
+        let _ = writeln!(found_enums, "/// The tables of each type served as a `{name}`, by the glue of the API that binds it.\nstatic BOUND_{upper_name}: Mutex<Vec<(core::any::TypeId, Interfaces)>> = Mutex::new(Vec::new());\n");
+        let _ = writeln!(found_enums, "/// Registers the tables of `B`, the type an API built on this one binds as its `{name}`.\npub fn bind_{snake_name}<B: 'static>(interfaces: Interfaces) {{");
+        let _ = writeln!(found_enums, "    let mut bound = BOUND_{upper_name}.lock().unwrap_or_else(PoisonError::into_inner);\n    if !bound.iter().any(|(kind, _)| *kind == core::any::TypeId::of::<B>()) {{ bound.push((core::any::TypeId::of::<B>(), interfaces)); }}\n}}\n");
+        let _ = writeln!(found_enums, "/// Returns the tables registered for `B`, if any.\npub fn bound_{snake_name}<B: 'static>() -> Option<Interfaces> {{");
+        let _ = writeln!(found_enums, "    let bound = BOUND_{upper_name}.lock().unwrap_or_else(PoisonError::into_inner);\n    bound.iter().find(|(kind, _)| *kind == core::any::TypeId::of::<B>()).map(|(_, interfaces)| *interfaces)\n}}\n");
     }
     let calling = writer.calling(api, &interfaces, &export_fields.iter().map(|(n, _, _, gl)| (n.clone(), gl)).collect::<Vec<_>>(), &functions);
     // The crate's files.
@@ -570,7 +772,8 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     let _ = writeln!(serving, "use wcontainers_component_object_model::structures::Guid;");
     serving.push_str(STATUS_IMPORTS);
     serving.push('\n');
-    let _ = writeln!(serving, "use wcontainers_component_object_model_direct::{{IID_IUNKNOWN, Found, Raw, Table, counted, guarded, object, read_bytes, read_only_at, record, relate, related, serve, status, unknown_table, writable_at, write_bytes}};\n");
+    let _ = writeln!(serving, "use wcontainers_component_object_model::structures::Foreign;");
+    let _ = writeln!(serving, "use wcontainers_component_object_model_direct::{{IID_IUNKNOWN, ForeignUnknown, Found, Interfaces, Lendings, Raw, Shadow, Table, counted, guarded, object, query, read_bytes, read_only_at, record, relate, relate_at, related, related_at, serve, status, unknown_table, writable_at, write_bytes}};\n");
     let _ = writeln!(serving, "use crate::KEY;\nuse crate::abi::*;\nuse crate::data::*;\n");
     let _ = writeln!(serving, "/// The tables of this API's interfaces, for objects of type `V`.\npub struct Tables<V>(PhantomData<V>);\n");
     serving.push_str(&tables);
@@ -579,11 +782,34 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     serving.push_str(&exports_fn);
     serving.push_str(&serve);
     let abi_text = format!("//! {HEADER}\n//!\n//! The C tables of this API's interfaces, and its library's exports.\n\nuse wcontainers_component_object_model_direct::{{Absent, Interface, Raw, UnknownTable}};\n\n{abi}{library}");
+    let has_lengths = spec.exceptions.iter().any(|e| matches!(e, Exception::InitialData { .. } | Exception::Lent { .. }));
+    let lengths_module = if has_lengths { "#[path = \"lengths.rs\"]\nmod lengths;\n" } else { "" };
     let lib = format!(
-        "//! {HEADER}\n//!\n//! {} through its C ABI: the serving glue (raw C calls in, any implementation of the traits out) and the\n//! calling glue (the C side's objects as an implementation of the traits). Every `unsafe` of the API is here, each marked.\n\n#[path = \"abi.rs\"]\npub mod abi;\n#[path = \"call.rs\"]\nmod call;\n#[path = \"data.rs\"]\nmod data;\n#[path = \"serve.rs\"]\nmod serve;\n\npub use abi::*;\npub use call::*;\npub use serve::*;\n\nuse wcontainers_component_object_model_direct::GlueKey;\n\n#[expect(unsafe_code, reason = \"the glue's key, which only this crate's glue holds\")]\n// SAFETY: kept in this private static and passed only to the COM crate's glue functions.\nstatic KEY: GlueKey = unsafe {{ GlueKey::new() }};\n",
+        "//! {HEADER}\n//!\n//! {} through its C ABI: the serving glue (raw C calls in, any implementation of the traits out) and the\n//! calling glue (the C side's objects as an implementation of the traits). Every `unsafe` of the API is here, each marked.\n\n#[path = \"abi.rs\"]\npub mod abi;\n#[path = \"call.rs\"]\nmod call;\n#[path = \"data.rs\"]\nmod data;\n{lengths_module}#[path = \"serve.rs\"]\nmod serve;\n\npub use abi::*;\npub use call::*;\npub use serve::*;\n\nuse wcontainers_component_object_model_direct::GlueKey;\n\n#[expect(unsafe_code, reason = \"the glue's key, which only this crate's glue holds\")]\n// SAFETY: kept in this private static and passed only to the COM crate's glue functions.\nstatic KEY: GlueKey = unsafe {{ GlueKey::new() }};\n",
         spec.summary.trim_end_matches('.')
     );
-    let files = [("implementation.rs", lib), ("abi.rs", abi_text), ("serve.rs", serving), ("call.rs", calling), ("data.rs", data)];
+    let mut files = vec![("implementation.rs", lib), ("abi.rs", abi_text), ("serve.rs", serving), ("call.rs", calling), ("data.rs", data)];
+    if has_lengths {
+        // Only the rules of the shapes this set has: a slice's interface crate holds only the descriptions it names.
+        let mut kept = String::new();
+        let mut keep = true;
+        for line in include_str!("../templates/direct3d-11-direct/lengths.rs").lines() {
+            if let Some(shape) = line.strip_prefix("// shape: ") {
+                let kind = [crate::api::Shape::Buffer, crate::api::Shape::Texture1D, crate::api::Shape::Texture2D, crate::api::Shape::Texture3D].into_iter().find(|s| s.suffix() == shape).map(|s| s.kind());
+                keep = kind.is_some_and(|kind| g.kinds.iter().any(|k| k.api == api && k.name == kind));
+                continue;
+            }
+            if line == "// end of shape" {
+                keep = true;
+                continue;
+            }
+            if keep {
+                kept.push_str(line);
+                kept.push('\n');
+            }
+        }
+        files.push(("lengths.rs", format!("//! {HEADER}\n//!\n{kept}")));
+    }
     let mut all = String::new();
     for (name, text) in &files {
         let text = with_direct_imports(g, api, text);

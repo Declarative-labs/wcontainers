@@ -8,7 +8,7 @@ use std::path::Path;
 use windows_metadata::Type;
 use windows_metadata::reader::TypeIndex;
 
-use crate::api::Api;
+use crate::api::{Api, Exception};
 use crate::mapping::Row;
 use crate::metadata::{self, Field, Interface, Literal, Method, Param, Record, RecordKind, attribute_named};
 use crate::names;
@@ -417,8 +417,39 @@ impl<'a> Generator<'a> {
         format!("<{} as {}>::{}", at.api_type, self.top_path(kind.api, at.api), kind.name)
     }
 
-    fn unknown_type(&self, api: usize, at: At<'_>) -> String {
-        format!("<{} as {}>::Unknown", at.api_type, self.top_path(api, at.api))
+    /// The type of an `IUnknown*` of no kind of the set: COM's `Foreign`.
+    fn unknown_type(&self, at: At<'_>) -> String {
+        self.data_path(0, Module::Structures, "Foreign", at.api)
+    }
+
+    /// Every exception line of the set's APIs.
+    fn exceptions(&self) -> impl Iterator<Item = &'static Exception> + '_ {
+        self.apis.iter().flat_map(|api| api.exceptions.iter())
+    }
+
+    /// The initial-data exception line of a method's parameter, if any.
+    fn initial_data(&self, method: &str, param: &str) -> Option<&'static Exception> {
+        self.exceptions().find(|e| matches!(e, Exception::InitialData { method: m, param: p, .. } if *m == method && *p == param))
+    }
+
+    /// The lent-memory exception line of a method, if any.
+    fn lent_of(&self, method: &str) -> Option<&'static Exception> {
+        self.exceptions().find(|e| matches!(e, Exception::Lent { method: m, .. } if *m == method))
+    }
+
+    /// The lent-memory exception line whose record is this one, if any.
+    fn lent_record(&self, record: &str) -> Option<&'static Exception> {
+        self.exceptions().find(|e| matches!(e, Exception::Lent { record: r, .. } if *r == record))
+    }
+
+    /// Whether `record.field` is the read-only bytes of an initial-data exception line.
+    fn initial_bytes_field(&self, record: &str, field: &str) -> bool {
+        self.exceptions().any(|e| matches!(e, Exception::InitialData { record: r, bytes, .. } if *r == record && *bytes == field))
+    }
+
+    /// The bound-object exception line of a method, if any.
+    fn bound_object(&self, method: &str) -> Option<&'static Exception> {
+        self.exceptions().find(|e| matches!(e, Exception::BoundObject { method: m, .. } if *m == method))
     }
 
     /// The kinds an interface pointer of this type may point at.
@@ -474,7 +505,7 @@ impl<'a> Generator<'a> {
                     .borrow()
                     .iter()
                     .any(|(other, other_name)| other != record_key && other_name == candidate && self.record_api.borrow().get(other) == Some(&owner))
-                || matches!(candidate, "Guid" | "HResult")
+                || matches!(candidate, "Guid" | "HResult" | "Foreign")
         };
         if clashes(&name) {
             name.push_str(if record_kind == Some(RecordKind::Enum) { "Kind" } else { "Data" });
@@ -726,10 +757,29 @@ impl<'a> Generator<'a> {
         let mut inputs: Vec<(String, String)> = Vec::new();
         let mut outputs: Vec<String> = Vec::new();
         let mut used_names: HashSet<String> = HashSet::new();
+        let bound = self.bound_object(place);
         for (position, param) in method.params.iter().enumerate() {
+            let method_place = place;
             let place = format!("{place}({})", param.name);
             if dropped.contains(&position) {
                 self.count(Row::CountDropped);
+                continue;
+            }
+            if bound.is_some() && param.name == "riid" {
+                // The glue asks the object for the interface itself.
+                self.count(Row::ExceptionLine);
+                continue;
+            }
+            if let Some(passed) = self.exception_parameter(method_place, param, at) {
+                self.count(Row::ExceptionLine);
+                match passed {
+                    Passed::In(rust) => inputs.push((names::value_name(&param.name), rust)),
+                    Passed::Out(rust) => outputs.push(rust),
+                    Passed::InAndOut(rust_in, rust_out) => {
+                        inputs.push((names::value_name(&param.name), rust_in));
+                        outputs.push(rust_out);
+                    }
+                }
                 continue;
             }
             let mut name = names::value_name(&param.name);
@@ -763,6 +813,27 @@ impl<'a> Generator<'a> {
             value
         };
         (inputs, result)
+    }
+
+    /// A parameter an exception line of src/api.rs maps, if any.
+    fn exception_parameter(&self, method: &str, param: &Param, at: At<'_>) -> Option<Passed> {
+        if let Some(Exception::InitialData { per_subresource: true, record, .. }) = self.initial_data(method, &param.name) {
+            let record_key = self.read.records.keys().find(|k| k.1 == *record)?.clone();
+            let path = self.data_path(self.record_owner(&record_key), Module::Structures, &self.record_name(&record_key), at.api);
+            return Some(Passed::In(format!("&[{path}]")));
+        }
+        if let Some(Exception::Lent { record, .. }) = self.lent_of(method) {
+            let (inner, _, _) = pointee(&param.ty)?;
+            let record_key = named(inner).filter(|k| k.1 == *record)?;
+            let path = self.data_path(self.record_owner(&record_key), Module::Structures, &self.record_name(&record_key), at.api);
+            return Some(Passed::Out(format!("{path}<<{} as {}>::Mapped>", at.api_type, self.top_path(at.api, at.api))));
+        }
+        if let Some(Exception::BoundObject { name, .. }) = self.bound_object(method)
+            && attribute_named(&param.attributes, "ComOutPtr").is_some()
+        {
+            return Some(Passed::Out(format!("<{} as {}>::{name}", at.api_type, self.top_path(at.api, at.api))));
+        }
+        None
     }
 
     fn parameter(&self, method: &Method, param: &Param, at: At<'_>, place: &str, returned_counts: &HashSet<usize>) -> Passed {
@@ -993,9 +1064,19 @@ impl<'a> Generator<'a> {
             }
             let _ = writeln!(out, "    type {}: {};", kind.name, bounds.join(" + "));
         }
-        if self.needs_unknown.borrow().contains(&api) {
-            let _ = writeln!(out, "    /// An object the caller passed that is of no kind of this API.");
-            let _ = writeln!(out, "    type Unknown: Clone + Eq + core::hash::Hash + Send + Sync + 'static;");
+        for exception in spec.exceptions {
+            if let Exception::BoundObject { name, kind, .. } = exception
+                && let Some(kind_key) = self.interface_api.keys().find(|k| k.1 == *kind)
+            {
+                let newest = self.kind_of.get(kind_key).and_then(|&k| self.kinds[k].newest.first().cloned()).unwrap_or_else(|| kind_key.clone());
+                let _ = writeln!(out, "    /// The object an API built on this one hands out as a `{kind}` (an exception line of src/api.rs).");
+                let _ = writeln!(out, "    type {name}: {}{};", self.trait_path(&newest, api).trim_start_matches("crate::"), self.api_binding(&newest));
+            }
+        }
+        if spec.exceptions.iter().any(|e| matches!(e, Exception::Lent { .. })) {
+            let _ = writeln!(out, "    /// Memory a Map lends until its Unmap, which the caller may read and write meanwhile (an exception line of");
+            let _ = writeln!(out, "    /// src/api.rs).");
+            let _ = writeln!(out, "    type Mapped: wcontainers_volatile_bytes::VolatileBytes + Send + Sync + 'static;");
         }
         let at = At { api, api_type: "Self" };
         let mut first = true;
@@ -1060,7 +1141,7 @@ impl<'a> Generator<'a> {
                         let _ = writeln!(out, "    {}({kind_type}),", kind.name);
                     }
                 }
-                let unknown = self.unknown_type(api, at);
+                let unknown = self.unknown_type(at);
                 if borrowed {
                     let _ = writeln!(out, "    Unknown(&'a {unknown}),");
                 } else {
@@ -1111,10 +1192,21 @@ impl<'a> Generator<'a> {
             out.push_str(&doc_line("", &record.name, Some(&link)));
         }
         let generic = self.record_is_generic(&record_key);
+        let lent = self.lent_record(&record.name);
         let mut fields: Vec<(String, String)> = Vec::new();
         let mut used: HashSet<String> = HashSet::new();
         for field in &record.fields {
-            let rust = self.field(field, record, name, at, &place);
+            let rust = match lent {
+                Some(Exception::Lent { field: lent_field, .. }) if *lent_field == field.name => {
+                    self.count(Row::ExceptionLine);
+                    "Bytes".to_string()
+                }
+                _ if self.initial_bytes_field(&record.name, &field.name) => {
+                    self.count(Row::ExceptionLine);
+                    "Vec<u8>".to_string()
+                }
+                _ => self.field(field, record, name, at, &place),
+            };
             let mut field_name = names::value_name(&field.name);
             while !used.insert(field_name.clone()) {
                 field_name.push('_');
@@ -1122,10 +1214,13 @@ impl<'a> Generator<'a> {
             fields.push((field_name, rust));
         }
         let top = self.top_path(api, api);
-        if generic {
+        if lent.is_some() {
+            let _ = writeln!(out, "#[derive(Clone, Debug, PartialEq)]");
+            let _ = writeln!(out, "pub struct {name}<Bytes> {{");
+        } else if generic {
             let _ = writeln!(out, "pub struct {name}<A: {top}> {{");
         } else {
-            let copy = self.fields_copy(record);
+            let copy = self.fields_copy(record) && !record.fields.iter().any(|field| self.initial_bytes_field(&record.name, &field.name));
             let _ = writeln!(out, "#[derive(Clone, {}Debug, PartialEq)]", if copy { "Copy, " } else { "" });
             let _ = writeln!(out, "pub struct {name} {{");
         }
@@ -1454,7 +1549,7 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path) -> Result<String, 
     // The COM crate's own two types.
     structures[0].insert_str(
         0,
-        "/// The header's `GUID`, [as Microsoft documents it](https://learn.microsoft.com/windows/win32/api/guiddef/ns-guiddef-guid).\n#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]\npub struct Guid {\n    pub data1: u32,\n    pub data2: u16,\n    pub data3: u16,\n    pub data4: [u8; crate::constants::GUID_DATA4_LENGTH],\n}\n\n/// The header's `HRESULT`, [as Microsoft documents it](https://learn.microsoft.com/windows/win32/com/structure-of-com-error-codes).\n#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]\npub struct HResult(pub i32);\n\n",
+        "/// The header's `GUID`, [as Microsoft documents it](https://learn.microsoft.com/windows/win32/api/guiddef/ns-guiddef-guid).\n#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]\npub struct Guid {\n    pub data1: u32,\n    pub data2: u16,\n    pub data3: u16,\n    pub data4: [u8; crate::constants::GUID_DATA4_LENGTH],\n}\n\n/// The header's `HRESULT`, [as Microsoft documents it](https://learn.microsoft.com/windows/win32/com/structure-of-com-error-codes).\n#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]\npub struct HResult(pub i32);\n\n/// A COM object of no kind of these APIs, held by one counted reference while any clone lives; equal to another\n/// holding the same object (COM's identity, its `IUnknown` address).\n#[derive(Clone)]\npub struct Foreign {\n    identity: usize,\n    object: std::sync::Arc<dyn core::any::Any + Send + Sync>,\n}\n\nimpl Foreign {\n    /// Wraps the glue's own holder of an object, told apart by `identity`.\n    pub fn new(identity: usize, object: std::sync::Arc<dyn core::any::Any + Send + Sync>) -> Foreign {\n        Foreign { identity, object }\n    }\n\n    /// Returns the holder, which only the glue that made it can read back.\n    pub fn object(&self) -> &(dyn core::any::Any + Send + Sync) {\n        &*self.object\n    }\n\n    /// Returns the object's identity.\n    pub fn identity(&self) -> usize {\n        self.identity\n    }\n}\n\nimpl PartialEq for Foreign {\n    fn eq(&self, other: &Foreign) -> bool {\n        self.identity == other.identity\n    }\n}\n\nimpl Eq for Foreign {}\n\nimpl core::hash::Hash for Foreign {\n    fn hash<H: core::hash::Hasher>(&self, state: &mut H) {\n        self.identity.hash(state);\n    }\n}\n\nimpl core::fmt::Debug for Foreign {\n    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {\n        formatter.debug_struct(\"Foreign\").field(\"identity\", &self.identity).finish_non_exhaustive()\n    }\n}\n\n",
     );
     constants[0].insert_str(
         0,

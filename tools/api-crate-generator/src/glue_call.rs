@@ -4,6 +4,7 @@
 use std::fmt::Write as _;
 
 use super::{Glued, Part, Writer, direct_alias, snake, upper};
+use crate::api::Exception;
 use crate::emit::{At, HEADER, Key, alias};
 use crate::metadata::Method;
 
@@ -65,6 +66,30 @@ impl Writer<'_, '_> {
         let mut args: Vec<String> = Vec::new();
         let mut after = String::new();
         let mut outs: Vec<String> = Vec::new();
+        for exception in self.g.exceptions() {
+            if let Exception::NullHandle { function, param } = exception
+                && *function == place
+            {
+                let _ = writeln!(body, "        // `{param}` names a module the system would load and run: refused (an exception line of src/api.rs).");
+                let _ = writeln!(body, "        if {}.0 != 0 {{ {fail} }}", crate::names::value_name(param));
+            }
+            if let Exception::Lent { until, resource, subresource, .. } = exception
+                && *until == place
+            {
+                let resource = crate::names::value_name(resource);
+                let subresource = crate::names::value_name(subresource);
+                let enum_path = glued.parts.iter().find(|(n, _)| *n == resource).and_then(|(_, part)| match part {
+                    Part::ObjectIn { enum_path: Some(path), .. } => Some(path.clone()),
+                    _ => None,
+                });
+                if let Some(enum_path) = enum_path {
+                    let (raw, _) = self.ref_raw_and_keep(&enum_path, &resource);
+                    let _ = writeln!(body, "        // The system's memory lent by Map goes first: every view of it is emptied before its Unmap.");
+                    let _ = writeln!(body, "        let lent_resource: Raw = {raw};");
+                    let _ = writeln!(body, "        if let Some(lent) = end_foreign_lent((self.object.raw().addr(), lent_resource.addr(), {subresource})) {{ lent.revoke(crate::KEY); }}");
+                }
+            }
+        }
         if let Some((face_table, face_iid)) = face {
             let _ = writeln!(body, "        #[expect(unsafe_code, reason = \"QueryInterface for another interface the object answers\")]");
             let _ = writeln!(body, "        // SAFETY: `{face_iid}` names the interface `{face_table}` lays out.");
@@ -97,6 +122,12 @@ impl Writer<'_, '_> {
                     }
                     args.push(name.clone());
                 }
+                Part::StructIn { optional: true, coded } if coded.decode_only => {
+                    // A structure holding a union, which the glue only reads: passed when absent, refused when given.
+                    let not_glued = if result.starts_with("Result<") { "return Err(E_NOTIMPL);".to_string() } else { fail.clone() };
+                    let _ = writeln!(body, "        if {name}.is_some() {{ {not_glued} }}");
+                    args.push("null()".to_string());
+                }
                 Part::StructIn { optional, coded } => {
                     if coded.decode_only {
                         for (input, _) in inputs {
@@ -125,6 +156,8 @@ impl Writer<'_, '_> {
                     };
                     if *optional {
                         args.push(format!("{name}.map_or(null_mut(), |held| {raw})"));
+                    } else if enum_path.is_some() {
+                        args.push(format!("{{ let held = &{name}; {raw} }}"));
                     } else {
                         args.push(format!("{{ let held = {name}; {raw} }}"));
                     }
@@ -162,6 +195,87 @@ impl Writer<'_, '_> {
                         let _ = writeln!(after, "        {name}.write(&{name}_buffer);");
                     }
                 }
+                Part::InitialData { desc, shape, per_subresource, size, bytes_at, pitch_at, slice_at, path, fields: [bytes_field, pitch_field, slice_field] } => {
+                    let desc_name = &glued.parts[*desc].0;
+                    let suffix = shape.suffix();
+                    if *per_subresource {
+                        let _ = writeln!(body, "        let {name}_list: &[{path}] = {name};");
+                        let _ = writeln!(body, "        if !{name}_list.is_empty() && crate::lengths::subresources_{suffix}({desc_name}) != Some({name}_list.len()) {{ {fail} }}");
+                    } else {
+                        let _ = writeln!(body, "        let {name}_list: &[{path}] = {name}.map_or(&[], core::slice::from_ref);");
+                    }
+                    let _ = writeln!(body, "        let mut {name}_words: Vec<u64> = Vec::new();");
+                    let _ = writeln!(body, "        for (index, record) in {name}_list.iter().enumerate() {{");
+                    let _ = writeln!(body, "            // The system reads the length the shape's rule gives (an exception line of src/api.rs): no fewer bytes are passed.");
+                    let _ = writeln!(body, "            let Some(needed) = crate::lengths::initial_length_{suffix}({desc_name}, index, record.{pitch_field}, record.{slice_field}) else {{ {fail} }};");
+                    let _ = writeln!(body, "            if record.{bytes_field}.len() < needed {{ {fail} }}");
+                    let _ = writeln!(body, "            let mut bytes = [0_u8; {size}];");
+                    let _ = writeln!(body, "            put_usize(&mut bytes, {bytes_at}, record.{bytes_field}.as_ptr().expose_provenance());");
+                    let _ = writeln!(body, "            put_u32(&mut bytes, {pitch_at}, record.{pitch_field});\n            put_u32(&mut bytes, {slice_at}, record.{slice_field});");
+                    let _ = writeln!(body, "            {name}_words.extend(bytes.as_chunks::<8>().0.iter().map(|word| u64::from_ne_bytes(*word)));\n        }}");
+                    args.push(format!("if {name}_list.is_empty() {{ null() }} else {{ {name}_words.as_ptr().cast::<u8>() }}"));
+                }
+                Part::UnknownIn { .. } => {
+                    let kinds: Vec<usize> = (0..self.g.kinds.len()).filter(|&k| self.g.kinds[k].api == self.current.get()).collect();
+                    let path = format!("{}::UnknownRef", alias(self.g.apis[self.current.get()]));
+                    let mut arms: Vec<String> = kinds.iter().map(|&k| format!("Some({path}::{}(object)) => object.raw()", self.g.kinds[k].name)).collect();
+                    arms.push(format!("Some({path}::Unknown(foreign)) => match foreign.object().downcast_ref::<ForeignUnknown>() {{ Some(held) => held.raw(), None => {{ {fail} }} }}"));
+                    arms.push("None => null_mut()".to_string());
+                    let _ = writeln!(body, "        let {name}_raw: Raw = match {name} {{ {} }};", arms.join(", "));
+                    args.push(format!("{name}_raw"));
+                }
+                Part::Riid => {
+                    let bound = glued.parts.iter().find_map(|(_, part)| match part {
+                        Part::BoundOut { name } => Some(name.clone()),
+                        _ => None,
+                    }).unwrap_or_default();
+                    let top = self.g.top_path(self.current.get(), usize::MAX);
+                    let _ = writeln!(body, "        let {name} = guid_bytes(&<<{api_type} as {top}>::{bound} as Adopt>::INTERFACE);");
+                    args.push(format!("{name}.as_ptr()"));
+                }
+                Part::BoundOut { name: bound } => {
+                    let top = self.g.top_path(self.current.get(), usize::MAX);
+                    let _ = writeln!(body, "        let mut {name}: Raw = null_mut();");
+                    args.push(format!("&raw mut {name}"));
+                    let _ = writeln!(after, "        #[expect(unsafe_code, reason = \"{place}: {}\")]", param.name);
+                    let _ = writeln!(after, "        // SAFETY: the metadata's `{}` is `Out` and `ComOutPtr`: after a success, null or one reference to an object of the interface `riid` named, which is `Adopt::INTERFACE`.", param.name);
+                    let _ = writeln!(after, "        let Some({name}) = (unsafe {{ <<{api_type} as {top}>::{bound} as Adopt>::adopt({name}) }}) else {{ return Err(E_FAIL); }};");
+                    outs.push(name.clone());
+                }
+                Part::LentOut { coded, resource, subresource, fields: [data, row, depth] } => {
+                    let resource_name = &glued.parts[*resource].0;
+                    let subresource_name = &glued.parts[*subresource].0;
+                    let Some(Part::ObjectIn { enum_path: Some(enum_path), .. }) = glued.parts.get(*resource).map(|(_, part)| part) else { continue };
+                    let (raw, keep) = self.ref_raw_and_keep(enum_path, resource_name);
+                    let until_slot = self.g.lent_of(place).and_then(|exception| match exception {
+                        Exception::Lent { until, .. } => until.split_once("::"),
+                        _ => None,
+                    }).and_then(|(interface, method)| {
+                        let trait_name = self.g.trait_names.iter().find(|(k, _)| k.1 == interface).map(|(_, name)| name.clone())?;
+                        Some(format!("{}_{}", snake(&trait_name), snake(method)))
+                    }).unwrap_or_default();
+                    let _ = writeln!(body, "        let lent_resource: Raw = {raw};");
+                    let _ = writeln!(body, "        let lent_key = (self.object.raw().addr(), lent_resource.addr(), {subresource_name});");
+                    let _ = writeln!(body, "        // A subresource mapped through us is not mapped again: the first one's memory would die under its view.");
+                    let _ = writeln!(body, "        let Some(pending) = PendingLent::reserve(lent_key) else {{ {fail} }};");
+                    let _ = writeln!(body, "        let mut {name} = Aligned::<{}>::default();", coded.size);
+                    args.push(format!("{name}.0.as_mut_ptr()"));
+                    let _ = writeln!(after, "        let {name}_record = decode_{}(&{name}.0);", coded.ident);
+                    let _ = writeln!(after, "        let lent_length = mapped_length(&{resource_name}, {subresource_name}, {name}_record.{row}, {name}_record.{depth});");
+                    let _ = writeln!(after, "        let Some(lent_length) = lent_length.filter(|_| {name}_record.{data} != 0) else {{");
+                    let _ = writeln!(after, "            #[expect(unsafe_code, reason = \"{place}: the system's Unmap of memory no view holds\")]");
+                    let _ = writeln!(after, "            // SAFETY: a live object whose table holds Unmap where the metadata orders it; the resource lives while `{resource_name}` does.");
+                    let _ = writeln!(after, "            unsafe {{ (self.object.entry_points().{until_slot})(self.object.raw(), lent_resource, {subresource_name}) }};");
+                    let _ = writeln!(after, "            return Err(E_FAIL);\n        }};");
+                    let _ = writeln!(after, "        let lent_keep: Vec<Box<dyn Send + Sync>> = vec![Box::new(self.clone()), {keep}];");
+                    let _ = writeln!(after, "        #[expect(unsafe_code, reason = \"{place}: {}\")]", param.name);
+                    let _ = writeln!(after, "        // SAFETY: `{}`'s exception line (src/api.rs): after a success the system lends `lent_length` bytes at `{data}` (the shape's rule from the description and the pitches it returned) until its Unmap of this resource and subresource, which this glue calls only after revoking the view; `lent_keep` holds the context and the resource.", param.name);
+                    let _ = writeln!(after, "        let lent = unsafe {{ ForeignLent::new({name}_record.{data}, lent_length, lent_keep) }};");
+                    let _ = writeln!(after, "        pending.settle(lent.clone());");
+                    let record_path = coded.path.trim_end_matches("<usize>").to_string();
+                    let _ = writeln!(after, "        let {name} = {record_path} {{ {data}: lent, {row}: {name}_record.{row}, {depth}: {name}_record.{depth} }};");
+                    outs.push(name.clone());
+                }
                 Part::ObjectOut { kinds, made, .. } => {
                     let _ = writeln!(body, "        let mut {name}: Raw = null_mut();");
                     args.push(format!("&raw mut {name}"));
@@ -173,6 +287,10 @@ impl Writer<'_, '_> {
                     let _ = writeln!(after, "        // SAFETY: the metadata's `{}` is `Out`{}: after a success, null or one reference to an object of `{}`.", param.name, if *made { " and `ComOutPtr`" } else { "" }, interface_key.as_ref().map_or("", |k| k.1.as_str()));
                     if *made {
                         let _ = writeln!(after, "        let Some({name}) = (unsafe {{ {system}::{adopt}({name}) }}) else {{ return Err(E_FAIL); }};");
+                        let protected = self.g.exceptions().any(|exception| matches!(exception, Exception::ProtectThreads { kind, .. } if self.g.kinds[kinds[0]].root.1 == *kind));
+                        if protected && !this {
+                            let _ = writeln!(after, "        protect_threads(&{name})?;");
+                        }
                     } else {
                         let _ = writeln!(after, "        let {name} = unsafe {{ {system}::{adopt}({name}) }};");
                     }
@@ -231,6 +349,14 @@ impl Writer<'_, '_> {
         text
     }
 
+    /// The raw pointer of a `<Interface>Ref` of the calling glue's objects, and a clone of the object, boxed.
+    fn ref_raw_and_keep(&self, enum_path: &str, value: &str) -> (String, String) {
+        let kinds = self.g.kinds_deriving(&self.enum_interface(enum_path));
+        let raw: Vec<String> = kinds.iter().map(|&k| format!("{enum_path}::{}(object) => object.raw()", self.g.kinds[k].name)).collect();
+        let keep: Vec<String> = kinds.iter().map(|&k| format!("{enum_path}::{}(object) => Box::new((*object).clone())", self.g.kinds[k].name)).collect();
+        (format!("match &{value} {{ {} }}", raw.join(", ")), format!("match &{value} {{ {} }}", keep.join(", ")))
+    }
+
     fn enum_interface(&self, enum_path: &str) -> Key {
         let name = enum_path.rsplit("::").next().unwrap_or("").trim_end_matches("Ref");
         self.g.trait_names.iter().find(|(_, trait_name)| *trait_name == name).map(|(k, _)| k.clone()).unwrap_or_default()
@@ -250,8 +376,31 @@ impl Writer<'_, '_> {
         text.push_str("#![allow(unused_variables, unused_imports, non_snake_case, clippy::let_unit_value, clippy::unit_arg, clippy::needless_return, reason = \"generated: every method has the same shape\")]\n\n");
         text.push_str("use core::hash::{Hash, Hasher};\nuse core::marker::PhantomData;\nuse core::ptr::{null, null_mut};\n\n");
         text.push_str("use wcontainers_component_object_model::constants::{E_FAIL, E_INVALIDARG, E_NOINTERFACE, E_NOTIMPL, E_OUTOFMEMORY};\n");
-        text.push_str("use wcontainers_component_object_model_direct::{Aligned, ForeignObject, ForeignUnknown, Raw, UnknownTable, succeeded};\n");
-        text.push_str("use wcontainers_volatile_bytes::VolatileBytes;\n\nuse crate::abi::*;\nuse crate::data::*;\n\n");
+        text.push_str("use wcontainers_component_object_model::structures::{Guid, HResult};\n");
+        text.push_str("use wcontainers_component_object_model_direct::{Adopt, Aligned, ForeignLent, ForeignObject, ForeignUnknown, Raw, UnknownTable, guid_bytes, succeeded};\n");
+        text.push_str("use wcontainers_volatile_bytes::VolatileBytes;\n\nuse crate::abi::*;\nuse crate::data::*;\nuse crate::serve::*;\n\n");
+        // Memory the system lends from Map to Unmap, by context, resource and subresource.
+        if spec.exceptions.iter().any(|e| matches!(e, Exception::Lent { .. })) {
+            text.push_str(LENT_BOOKKEEPING);
+        }
+        // Multithread protection, turned on for each new object of a kind that needs it.
+        for exception in spec.exceptions {
+            let Exception::ProtectThreads { kind, interface, method } = exception else { continue };
+            let Some(kind_index) = g.interface_api.keys().find(|k| k.1 == *kind).and_then(|k| g.kind_of.get(k)).copied() else { continue };
+            let Some(interface_key) = g.interface_api.keys().find(|k| k.1 == *interface).cloned() else { continue };
+            let trait_name = &g.trait_names[&interface_key];
+            let table = format!("{trait_name}Table");
+            let slot = format!("{}_{}", snake(trait_name), snake(method));
+            let system = format!("System{}", g.kinds[kind_index].name);
+            let iid = self.iid(&interface_key);
+            let _ = writeln!(text, "/// Turns on the system's multithread protection of a new object (an exception line of src/api.rs), under which it and the");
+            let _ = writeln!(text, "/// context made with it are free threaded, as their `Send` and `Sync` promise; refuses the object when it cannot.");
+            let _ = writeln!(text, "fn protect_threads<A>(object: &{system}<A>) -> Result<(), HResult> {{");
+            let _ = writeln!(text, "    #[expect(unsafe_code, reason = \"QueryInterface for {interface}\")]\n    // SAFETY: `{iid}` names the interface `{table}` lays out.");
+            let _ = writeln!(text, "    let Some(protection) = (unsafe {{ object.object.query::<{table}>(&{iid}) }}) else {{ return Err(E_NOINTERFACE); }};");
+            let _ = writeln!(text, "    #[expect(unsafe_code, reason = \"{interface}::{method}, called out\")]\n    // SAFETY: a live object whose table holds `{method}` where the metadata orders it; TRUE is a BOOL.");
+            let _ = writeln!(text, "    let _ = unsafe {{ (protection.entry_points().{slot})(protection.raw(), 1) }};\n    Ok(())\n}}\n");
+        }
         let _ = interfaces;
         // The object types, one per kind.
         let own_kinds: Vec<usize> = (0..g.kinds.len()).filter(|&k| g.kinds[k].api == api).collect();
@@ -277,14 +426,22 @@ impl Writer<'_, '_> {
             let _ = writeln!(text, "            let unknown = unsafe {{ ForeignObject::<UnknownTable>::from_owned(raw) }}?;");
             let _ = writeln!(text, "            #[expect(unsafe_code, reason = \"QueryInterface for the newest interface of the kind\")]\n            // SAFETY: `{iid}` names the interface `{table}` lays out.");
             let _ = writeln!(text, "            let object = unsafe {{ unknown.query::<{table}>(&{iid}) }}?;\n            Some({name} {{ object, api: PhantomData }})\n        }};\n        body()\n    }}\n}}\n");
+            let _ = writeln!(text, "impl<A> Adopt for {name}<A> {{\n    const INTERFACE: Guid = {iid};\n");
+            let _ = writeln!(text, "    #[expect(unsafe_code, reason = \"the promise that a pointer is a live object of an interface\")]\n    unsafe fn adopt(raw: Raw) -> Option<{name}<A>> {{\n        #[deny(unsafe_code)]\n        let body = move || {{");
+            let _ = writeln!(text, "            #[expect(unsafe_code, reason = \"the caller's live object\")]\n            // SAFETY: the caller's promise, for `INTERFACE`'s interface, the newest of the kind.");
+            let _ = writeln!(text, "            unsafe {{ {name}::from_owned(raw) }}\n        }};\n        body()\n    }}\n}}\n");
             let _ = writeln!(text, "impl<A> Clone for {name}<A> {{\n    fn clone(&self) -> {name}<A> {{\n        {name} {{ object: self.object.clone(), api: PhantomData }}\n    }}\n}}\n");
             let _ = writeln!(text, "impl<A> PartialEq for {name}<A> {{\n    fn eq(&self, other: &{name}<A>) -> bool {{\n        self.object == other.object\n    }}\n}}\n\nimpl<A> Eq for {name}<A> {{}}\n");
             let _ = writeln!(text, "impl<A> Hash for {name}<A> {{\n    fn hash<H: Hasher>(&self, state: &mut H) {{\n        self.object.hash(state);\n    }}\n}}\n");
         }
         // The trait every API value of the calling glue meets: its kinds are this crate's object types.
         let mut bindings: Vec<String> = own_kinds.iter().map(|&k| format!("{} = System{}<Self>", g.kinds[k].name, g.kinds[k].name)).collect();
-        if g.needs_unknown.borrow().contains(&api) {
-            bindings.push("Unknown = ForeignUnknown".to_string());
+        for exception in spec.exceptions {
+            match exception {
+                Exception::BoundObject { name, .. } => bindings.push(format!("{name}: Adopt")),
+                Exception::Lent { .. } if !bindings.iter().any(|b| b.starts_with("Mapped")) => bindings.push("Mapped = ForeignLent".to_string()),
+                _ => {}
+            }
         }
         let supers: Vec<String> = spec
             .supertraits
@@ -336,7 +493,7 @@ impl Writer<'_, '_> {
                 .collect();
             for face in &faces {
                 let face_api = g.interface_api[face];
-                let face_table = format!("{}::{}Table", direct_alias(g.apis[face_api].folder), g.trait_names[face]);
+                let face_table = if face_api == api { format!("{}Table", g.trait_names[face]) } else { format!("{}::{}Table", direct_alias(g.apis[face_api].folder), g.trait_names[face]) };
                 let face_iid = self.iid(face);
                 for interface_key in self.chain(face) {
                     let root_has_api = !g.apiless.borrow().contains(&g.chain_root(&interface_key));
@@ -382,8 +539,16 @@ impl Writer<'_, '_> {
                 let _ = writeln!(text, "    pub unsafe fn new({}) -> {name} {{\n        {name} {{ {} }}\n    }}\n}}\n", parameters.join(", "), names_list.join(", "));
             }
             let mut top_bindings: Vec<String> = own_kinds.iter().map(|&k| format!("    type {} = System{}<Self>;", g.kinds[k].name, g.kinds[k].name)).collect();
-            if g.needs_unknown.borrow().contains(&api) {
-                top_bindings.push("    type Unknown = ForeignUnknown;".to_string());
+            for exception in spec.exceptions {
+                match exception {
+                    Exception::BoundObject { name, kind, .. } => {
+                        if let Some(&kind_index) = g.interface_api.keys().find(|k| k.1 == *kind).and_then(|k| g.kind_of.get(k)) {
+                            top_bindings.push(format!("    type {name} = System{}<Self>;", g.kinds[kind_index].name));
+                        }
+                    }
+                    Exception::Lent { .. } if !top_bindings.iter().any(|b| b.contains("type Mapped")) => top_bindings.push("    type Mapped = ForeignLent;".to_string()),
+                    _ => {}
+                }
             }
             let _ = writeln!(text, "impl {top} for {name} {{\n{}\n", top_bindings.join("\n"));
             for function in functions {
@@ -401,8 +566,13 @@ impl Writer<'_, '_> {
                 let other_top = g.top_path(other, usize::MAX);
                 let other_direct = direct_alias(folder);
                 let mut lines: Vec<String> = (0..g.kinds.len()).filter(|&k| g.kinds[k].api == other).map(|k| format!("    type {} = {other_direct}::System{}<Self>;", g.kinds[k].name, g.kinds[k].name)).collect();
-                if g.needs_unknown.borrow().contains(&other) {
-                    lines.push("    type Unknown = ForeignUnknown;".to_string());
+                for exception in spec.exceptions {
+                    if let Exception::Binds { api: bound_api, name, kind } = exception
+                        && bound_api == folder
+                        && let Some(&kind_index) = g.interface_api.keys().find(|k| k.1 == *kind).and_then(|k| g.kind_of.get(k))
+                    {
+                        lines.push(format!("    type {name} = System{}<Self>;", g.kinds[kind_index].name));
+                    }
                 }
                 let _ = writeln!(text, "impl {other_top} for {name} {{\n{}\n}}\n", lines.join("\n"));
                 let _ = writeln!(text, "impl {other_direct}::System for {name} {{}}\n");
@@ -415,3 +585,52 @@ impl Writer<'_, '_> {
 }
 
 use crate::names;
+
+/// The calling glue's record of the system's memory lent by Map, until its Unmap: by context, resource and subresource.
+const LENT_BOOKKEEPING: &str = r#"/// The system's memory each Map lent and no Unmap has ended, by context, resource and subresource; none while a Map of
+/// it is under way.
+static FOREIGN_LENT: std::sync::Mutex<Vec<((usize, usize, u32), Option<ForeignLent>)>> = std::sync::Mutex::new(Vec::new());
+
+/// A subresource held busy while the system's Map runs, freed when this drops unless settled.
+struct PendingLent((usize, usize, u32));
+
+impl PendingLent {
+    /// Marks the subresource busy, or returns none when it is lent or busy.
+    fn reserve(key: (usize, usize, u32)) -> Option<PendingLent> {
+        let mut held = FOREIGN_LENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.iter().any(|(other, _)| *other == key) {
+            return None;
+        }
+        held.push((key, None));
+        Some(PendingLent(key))
+    }
+
+    /// Records the memory lent, until the Unmap that ends it.
+    fn settle(self, lent: ForeignLent) {
+        let mut held = FOREIGN_LENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = held.iter_mut().find(|(other, _)| *other == self.0) {
+            entry.1 = Some(lent);
+        }
+        drop(held);
+        core::mem::forget(self);
+    }
+}
+
+impl Drop for PendingLent {
+    fn drop(&mut self) {
+        let removed = {
+            let mut held = FOREIGN_LENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            held.iter().position(|(other, _)| *other == self.0).map(|at| held.swap_remove(at))
+        };
+        drop(removed);
+    }
+}
+
+/// Takes the memory lent for the subresource, which the caller revokes before the system's Unmap.
+fn end_foreign_lent(key: (usize, usize, u32)) -> Option<ForeignLent> {
+    let mut held = FOREIGN_LENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let at = held.iter().position(|(other, lent)| *other == key && lent.is_some())?;
+    held.swap_remove(at).1
+}
+
+"#;
