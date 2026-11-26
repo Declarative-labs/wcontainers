@@ -342,4 +342,91 @@ pub proof fn lemma_replicate_low(x: int, e: nat, count: nat, k: nat)
     }
 }
 
+/// `u64::leading_zeros` as vstd states it is 63 less HighestSetBit.
+pub proof fn lemma_leading_zeros(x: u64)
+    ensures
+        vstd::std_specs::bits::u64_leading_zeros(x) == 63 - highest_set_bit(x as nat),
+    decreases x,
+{
+    reveal(vstd::std_specs::bits::u64_leading_zeros);
+    if x != 0 {
+        lemma_leading_zeros(x / 2);
+    }
+}
+
+/// An arithmetic shift right of a signed 128-bit value is its division by 2^s, rounded down.
+pub proof fn lemma_arithmetic_shift_right_128(x: i128, s: u32)
+    requires
+        s < 128,
+    ensures
+        (x >> s) as int == x as int / (pow2(s as nat) as int),
+{
+    let shifted = x >> s;
+    assert(
+        (x >= 0 ==> shifted >= 0 && shifted as u128 == (x as u128) >> s)
+        && (x < 0 ==> shifted < 0 && (!shifted) as u128 == ((!x) as u128) >> s)
+    ) by (bit_vector)
+        requires
+            shifted == x >> s,
+    ;
+    let unsigned = if x >= 0 { x as u128 } else { (!x) as u128 };
+    vstd::bits::lemma_u128_shr_is_div(unsigned, s as u128);
+    assert(unsigned >> s == unsigned >> (s as u128)) by (bit_vector);
+    lemma_pow2_pos(s as nat);
+    let d = pow2(s as nat) as int;
+    if x < 0 {
+        // -x - 1 = q d + r, so x = (-q - 1) d + (d - r - 1).
+        assert((!x) as int == -x - 1);
+        assert((!shifted) as int == -shifted - 1);
+        lemma_fundamental_div_mod(-x - 1, d);
+        let (q, r) = ((-x - 1) / d, (-x - 1) % d);
+        assert(x == d * (-q - 1) + (d - r - 1)) by (nonlinear_arith)
+            requires
+                -x - 1 == d * q + r;
+        lemma_fundamental_div_mod_converse(x as int, d, -q - 1, d - r - 1);
+    }
+}
+
+/// A value modulo 2^64, then modulo 2^n for n up to 64, is the value modulo 2^n.
+pub proof fn lemma_wrapped_mod(x: int, n: nat)
+    requires
+        n <= 64,
+    ensures
+        (x % (pow2(64) as int)) % (pow2(n) as int) == x % (pow2(n) as int),
+{
+    lemma_pow2_pos(n);
+    lemma_pow2_pos((64 - n) as nat);
+    lemma_pow2_adds(n, (64 - n) as nat);
+    vstd::arithmetic::div_mod::lemma_mod_mod(x, pow2(n) as int, pow2((64 - n) as nat) as int);
+}
+
+/// A width's count of bits divides 2^width, so UInt of a register's low bits modulo the width is the register modulo
+/// the width.
+pub proof fn lemma_modulo_width(x: int, n: nat)
+    requires
+        n == 32 || n == 64,
+    ensures
+        uint(x, n) % (n as int) == x % (n as int),
+{
+    vstd::arithmetic::power2::lemma2_to64();
+    vstd::arithmetic::power2::lemma2_to64_rest();
+    if n == 32 {
+        assert(pow2(32) == 32 * 0x800_0000);
+        vstd::arithmetic::div_mod::lemma_mod_mod(x, 32, 0x800_0000);
+    } else {
+        assert(pow2(64) == 64 * 0x400_0000_0000_0000);
+        vstd::arithmetic::div_mod::lemma_mod_mod(x, 64, 0x400_0000_0000_0000);
+    }
+}
+
+/// A signed value's 64-bit pattern, as `as u64` gives it, is its value modulo 2^64.
+pub proof fn lemma_signed_pattern(x: i64)
+    ensures
+        (x as u64) as int == x as int % (pow2(64) as int),
+{
+    lemma_signed_mask(x, 64);
+    assert((x as u64) & (0xffff_ffff_ffff_ffffu64) == x as u64) by (bit_vector);
+    vstd::arithmetic::power2::lemma2_to64();
+}
+
 } // verus!

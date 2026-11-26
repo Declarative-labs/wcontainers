@@ -8,7 +8,7 @@ use vstd::prelude::*;
 
 use crate::Instruction;
 #[cfg(verus_keep_ghost)]
-use crate::pseudocode::{ones, uint};
+use crate::pseudocode::{ones, sint, uint};
 
 verus! {
 
@@ -65,17 +65,35 @@ impl Field {
         }
         (word & mask) >> self.lowest_bit
     }
+
+    /// Reads the field as a two's complement number.
+    pub const fn read_signed(self, word: u32) -> (value: i64)
+        requires
+            self.fits(),
+            0 < self.width,
+        ensures
+            value as int == sint(word as int / (pow2(self.lowest_bit as nat) as int), self.width as nat),
+    {
+        let bits_above = i64::BITS - self.width;
+        let unsigned = self.read(word);
+        proof {
+            let wide = unsigned as u64;
+            assert((unsigned as i64) << bits_above == (wide << bits_above) as i64) by (bit_vector)
+                requires
+                    bits_above < 64,
+                    wide == unsigned as u64;
+            crate::lemmas::lemma_sign_extension(wide, bits_above);
+            let field = word as int / (pow2(self.lowest_bit as nat) as int);
+            vstd::arithmetic::power2::lemma_pow2_pos(self.width as nat);
+            vstd::arithmetic::div_mod::lemma_mod_twice(field, pow2(self.width as nat) as int);
+        }
+        ((unsigned as i64) << bits_above) >> bits_above
+    }
 }
 
 } // verus!
 
 impl Field {
-    /// Reads the field as a two's complement number.
-    pub const fn read_signed(self, word: u32) -> i64 {
-        let bits_above = i64::BITS - self.width;
-        ((self.read(word) as i64) << bits_above) >> bits_above
-    }
-
     /// Places the low bits of the value in the field, dropping the rest.
     pub const fn to_bits(self, value: u32) -> u32 {
         (value << self.lowest_bit) & self.to_mask()

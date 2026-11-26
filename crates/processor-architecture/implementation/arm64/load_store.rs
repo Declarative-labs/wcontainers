@@ -5,6 +5,10 @@
 use alloc::borrow::Cow;
 use core::convert::Infallible;
 
+#[cfg(verus_keep_ghost)]
+use vstd::arithmetic::power2::pow2;
+use vstd::prelude::*;
+
 pub mod scalable_access;
 pub mod scalable_element_access;
 
@@ -16,9 +20,12 @@ use crate::behavior::{
     StoreOfBaseWithWriteback,
 };
 use crate::branch::{is_outside_lower_addresses, to_untagged_address};
+use crate::encoding::Field;
 use crate::integer::{low_ones, read_source};
 use crate::memory::{read_bytes_into, read_permission};
 use crate::operand::{Indexing, Operand, RegisterThirtyOne, RegisterWidth, Signedness};
+#[cfg(verus_keep_ghost)]
+use crate::pseudocode::{sint, uint};
 use crate::registers::{is_general_purpose, read_register, write_register};
 use crate::{
     AccessDirection, DataAccess, Exception, ExclusiveMonitor, FaultStatus, Instruction,
@@ -793,6 +800,209 @@ impl Addressed {
     }
 }
 
+verus! {
+
+/// What an immediate offset of a load or store adds to its base: the field zero- or sign-extended to 64 bits, shifted
+/// left by the scale.
+fn to_immediate_offset(field: Field, word: u32, signedness: Signedness, scale: u32) -> (offset: u64)
+    requires
+        field.fits(),
+        0 < field.width,
+        scale <= 4,
+    ensures
+        offset as int == crate::pseudocode::immediate_offset(
+            word as int / (pow2(field.lowest_bit as nat) as int),
+            field.width as nat,
+            signedness,
+            scale as nat,
+        ),
+{
+    // VERUS: `planted::any` has no specification, so it is two `is`.
+    let value = match signedness {
+        Signedness::Signed if crate::planted::is(438) || crate::planted::is(54) => {
+            u64::from(field.read(word))
+        }
+        Signedness::Unsigned => u64::from(field.read(word)),
+        Signedness::Signed => {
+            let signed_value = field.read_signed(word);
+            proof {
+                crate::lemmas::lemma_signed_pattern(signed_value);
+            }
+            signed_value as u64
+        },
+    };
+    let scale = if crate::planted::is(448) {
+        scale - 1
+    } else {
+        scale
+    };
+    // VERUS: no specification of `From<bool>`, so the bit is cast.
+    let scale = match scale {
+        1 if crate::planted::is(53) => 2,
+        3 if crate::planted::is(56) => 2,
+        0 if crate::planted::is(57) => 3,
+        other => other,
+    } + crate::planted::is(152) as u32;
+    let scale = if crate::planted::is(279) || crate::planted::is(280) {
+        3
+    } else if crate::planted::is(281) || crate::planted::is(291) || crate::planted::is(294) {
+        scale + 1
+    } else {
+        scale
+    };
+    proof {
+        let field_value = word as int / (pow2(field.lowest_bit as nat) as int);
+        let extended = match signedness {
+            Signedness::Unsigned => uint(field_value, field.width as nat),
+            Signedness::Signed => sint(field_value, field.width as nat),
+        };
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+        crate::lemmas::lemma_shift_left(value, scale, 64);
+        assert(value << scale == (value << scale) & 0xffff_ffff_ffff_ffffu64) by (bit_vector);
+        // The value is the extended field modulo 2^64, and so is its product with 2^scale.
+        if signedness is Unsigned {
+            vstd::arithmetic::div_mod::lemma_small_mod(value as nat, pow2(64));
+        }
+        assert(value as int == extended % (pow2(64) as int));
+        vstd::arithmetic::div_mod::lemma_mul_mod_noop_left(extended, pow2(scale as nat) as int, pow2(64) as int);
+    }
+    value << scale
+}
+
+/// What a register offset of a load or store adds to its base: the register's low word or the whole register, zero- or
+/// sign-extended, shifted left by the access size's scale where S is set.
+fn to_register_offset(value: u64, signed: bool, doubleword: bool, scaled: bool, bytes: u32) -> (offset: u64)
+    requires
+        bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8 || bytes == 16,
+    ensures
+        offset as int == crate::pseudocode::register_offset(value, signed, doubleword, scaled, bytes as nat),
+{
+    // VERUS: `QUADWORD` and `DOUBLEWORD` are outside `verus!` (`size_of` has no specification here), so their sizes
+    // are written out; `From<bool>` and `planted::any` have no specification, so bits are cast and bugs are `is`.
+    let bits = if doubleword || crate::planted::is(286) || (crate::planted::is(718) && bytes == 16) {
+        u64::BITS
+    } else {
+        u32::BITS
+    };
+    let shift_bits = u64::BITS - bits;
+    let extended = if (signed && !(crate::planted::is(445) || crate::planted::is(455) || crate::planted::is(37)))
+        || (crate::planted::is(285) && !doubleword)
+    {
+        (((value << shift_bits) as i64) >> shift_bits) as u64
+    } else {
+        (value << shift_bits) >> shift_bits
+    };
+    proof {
+        vstd::std_specs::bits::axiom_u32_trailing_zeros(bytes);
+        let zeros = vstd::std_specs::bits::u32_trailing_zeros(bytes);
+        assert(zeros == if bytes == 1 { 0u32 } else if bytes == 2 { 1u32 } else if bytes == 4 { 2u32 } else if bytes == 8 { 3u32 } else { 4u32 }) by (bit_vector)
+            requires
+                bytes == 1u32 || bytes == 2u32 || bytes == 4u32 || bytes == 8u32 || bytes == 16u32,
+                zeros < 32u32,
+                (bytes >> zeros) & 1u32 == 1u32;
+    }
+    let amount = if scaled {
+        bytes.trailing_zeros() + (crate::planted::is(444) || crate::planted::is(454)) as u32
+            - (crate::planted::is(38) && bytes == 8) as u32 - crate::planted::is(153) as u32
+    } else {
+        0
+    };
+    proof {
+        let (n, a) = (64nat, amount as nat);
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+        assert(a <= 4 && pow2(a) <= 16);
+        assert(a == if scaled { crate::pseudocode::access_scale(bytes as nat) } else { 0 }) by {
+            assert(crate::pseudocode::highest_set_bit(0) == -1);
+            assert(crate::pseudocode::highest_set_bit(1) == 0);
+            assert(crate::pseudocode::highest_set_bit(2) == 1);
+            assert(crate::pseudocode::highest_set_bit(4) == 2);
+            assert(crate::pseudocode::highest_set_bit(8) == 3);
+            assert(crate::pseudocode::highest_set_bit(16) == 4);
+        }
+        crate::lemmas::lemma_shift_left(extended, amount, n);
+        assert(extended << amount == (extended << amount) & 0xffff_ffff_ffff_ffffu64) by (bit_vector);
+        crate::lemmas::lemma_mul_pow2_mod(value as int, a, n);
+        if bits == 64 {
+            // The whole register: the extension changes nothing, and the shift drops its top `amount` bits.
+            assert(((value << 0u32) as i64 >> 0u32) as u64 == value && (value << 0u32) >> 0u32 == value) by (bit_vector);
+            vstd::arithmetic::div_mod::lemma_small_mod(value as nat, pow2(64));
+            let field = uint(value as int, (64 - a) as nat) * pow2(a);
+            vstd::arithmetic::div_mod::lemma_small_mod(field as nat, pow2(64));
+            vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(-1, field, pow2(64) as int);
+            assert(uint(sint(field, 64), 64) == field);
+        } else {
+            // The low word: zero-extended, or sign-extended to SInt of it, then scaled within 64 bits.
+            crate::lemmas::lemma_mask(value, 32);
+            vstd::arithmetic::div_mod::lemma_mod_bound(value as int, pow2(32) as int);
+            if signed {
+                let signed_value = ((value << shift_bits) as i64) >> shift_bits;
+                crate::lemmas::lemma_sign_extension(value, shift_bits);
+                crate::lemmas::lemma_signed_pattern(signed_value);
+                vstd::arithmetic::div_mod::lemma_mul_mod_noop_left(signed_value as int, pow2(a) as int, pow2(64) as int);
+                crate::lemmas::lemma_sint_shift(value as int, 32, a);
+            } else {
+                assert((value << 32u32) >> 32u32 == value & 0xffff_ffffu64) by (bit_vector);
+                assert(extended * pow2(a) < pow2(64)) by (nonlinear_arith)
+                    requires
+                        extended < 0x1_0000_0000,
+                        pow2(a) <= 16,
+                        pow2(64) == 0x1_0000_0000_0000_0000;
+                vstd::arithmetic::div_mod::lemma_small_mod((extended * pow2(a)) as nat, pow2(64));
+            }
+        }
+    }
+    extended << amount
+}
+
+/// The address a load or store accesses: its base plus its offset, or for post-indexing its base alone.
+fn to_accessed_address(base: u64, offset: u64, indexing: Indexing) -> (address: u64)
+    ensures
+        address as int == crate::pseudocode::accessed_address(base, offset, indexing),
+{
+    proof {
+        vstd::arithmetic::power2::lemma2_to64();
+        let sum = base + offset;
+        if sum >= pow2(64) {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(sum, pow2(64) as int, 1, sum - pow2(64));
+        } else {
+            vstd::arithmetic::div_mod::lemma_small_mod(sum as nat, pow2(64));
+        }
+    }
+    match indexing {
+        Indexing::PostIndex if crate::planted::is(278) => base.wrapping_add(offset),
+        Indexing::PostIndex => base,
+        Indexing::PreIndex if crate::planted::is(150) => base,
+        Indexing::Offset | Indexing::PreIndex => base.wrapping_add(offset),
+    }
+}
+
+/// What a load or store with writeback writes to its base: the base plus the offset, which is the accessed address
+/// unless it is post-indexed.
+fn to_written_back_address(base: u64, offset: u64, address: u64, indexing: Indexing) -> (written_back: u64)
+    requires
+        address as int == crate::pseudocode::accessed_address(base, offset, indexing),
+    ensures
+        written_back as int == crate::pseudocode::written_back_address(base, offset),
+{
+    proof {
+        vstd::arithmetic::power2::lemma2_to64();
+        let sum = base + offset;
+        if sum >= pow2(64) {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(sum, pow2(64) as int, 1, sum - pow2(64));
+        } else {
+            vstd::arithmetic::div_mod::lemma_small_mod(sum as nat, pow2(64));
+        }
+    }
+    match indexing {
+        Indexing::PostIndex => base.wrapping_add(offset),
+        Indexing::Offset | Indexing::PreIndex => address,
+    }
+}
+
+} // verus!
+
 fn read_addressed<LevelSpecific>(
     processor: &Processor<LevelSpecific>,
     word: u32,
@@ -831,32 +1041,7 @@ fn read_addressed<LevelSpecific>(
                 signedness,
                 scale,
             } => {
-                let value = match signedness {
-                    Signedness::Signed if crate::planted::any(&[438, 54]) => {
-                        u64::from(field.read(word))
-                    }
-                    Signedness::Unsigned => u64::from(field.read(word)),
-                    Signedness::Signed => field.read_signed(word) as u64,
-                };
-                let scale = if crate::planted::is(448) {
-                    scale - 1
-                } else {
-                    scale
-                };
-                let scale = match scale {
-                    1 if crate::planted::is(53) => 2,
-                    3 if crate::planted::is(56) => 2,
-                    0 if crate::planted::is(57) => 3,
-                    other => other,
-                } + u32::from(crate::planted::is(152));
-                let scale = if crate::planted::is(279) || crate::planted::is(280) {
-                    3
-                } else if crate::planted::any(&[281, 291, 294]) {
-                    scale + 1
-                } else {
-                    scale
-                };
-                addressed.offset = value << scale;
+                addressed.offset = to_immediate_offset(field, word, signedness, scale);
             }
             Operand::SplitAddressOffset { fields, scale } => {
                 let width: u32 = fields.iter().map(|field| field.width).sum();
@@ -886,34 +1071,17 @@ fn read_addressed<LevelSpecific>(
                         RegisterThirtyOne::ZeroRegister
                     },
                 );
-                let is_set = |field: Option<crate::encoding::Field>, fixed: bool| {
+                let is_set = |field: Option<Field>, fixed: bool| {
                     field.map_or(fixed, |field| field.read(word) != 0)
                 };
                 // Where option<0> is absent the option is LSL, which takes the register whole.
-                let bits = if is_set(doubleword, true)
-                    || crate::planted::is(286)
-                    || (crate::planted::is(718) && operation.bytes == QUADWORD)
-                {
-                    u64::BITS
-                } else {
-                    u32::BITS
-                };
-                let shift_bits = u64::BITS - bits;
-                let extended = if (is_set(signed, false) && !crate::planted::any(&[445, 455, 37]))
-                    || (crate::planted::is(285) && !is_set(doubleword, true))
-                {
-                    (((value << shift_bits) as i64) >> shift_bits) as u64
-                } else {
-                    (value << shift_bits) >> shift_bits
-                };
-                let amount = if shift.read(word) != 0 {
-                    operation.bytes.trailing_zeros() + u32::from(crate::planted::any(&[444, 454]))
-                        - u32::from(crate::planted::is(38) && operation.bytes == DOUBLEWORD)
-                        - u32::from(crate::planted::is(153))
-                } else {
-                    0
-                };
-                addressed.offset = extended << amount;
+                addressed.offset = to_register_offset(
+                    value,
+                    is_set(signed, false),
+                    is_set(doubleword, true),
+                    shift.read(word) != 0,
+                    operation.bytes,
+                );
             }
             Operand::ProgramCounterOffset { .. } => {
                 addressed.offset = read_source(processor, word, operand)?;
@@ -1029,10 +1197,7 @@ where
     let registers = &addressed.registers[..addressed.count];
     let planted_writeback = |processor: &mut Processor<LevelSpecific>, base: u64, address: u64| {
         if writeback && let Some((number, indexing)) = addressed.base {
-            let written_back = match indexing {
-                Indexing::PostIndex => base.wrapping_add(addressed.offset),
-                Indexing::Offset | Indexing::PreIndex => address,
-            };
+            let written_back = to_written_back_address(base, addressed.offset, address, indexing);
             write_register(
                 processor,
                 number,
@@ -1042,7 +1207,14 @@ where
         }
     };
     let (base, address) = match addressed.base {
-        None => (0, processor.program_counter.wrapping_add(addressed.offset)),
+        None => (
+            0,
+            to_accessed_address(
+                processor.program_counter,
+                addressed.offset,
+                Indexing::Offset,
+            ),
+        ),
         Some((number, indexing)) => {
             let base = read_register(processor, number, RegisterThirtyOne::StackPointer);
             let checked = if crate::planted::is(60) && indexing == Indexing::PostIndex {
@@ -1063,16 +1235,7 @@ where
             {
                 return Err(Exception::StackPointerAlignmentFault);
             }
-            match indexing {
-                Indexing::PostIndex if crate::planted::is(278) => {
-                    (base, base.wrapping_add(addressed.offset))
-                }
-                Indexing::PostIndex => (base, base),
-                Indexing::PreIndex if crate::planted::is(150) => (base, base),
-                Indexing::Offset | Indexing::PreIndex => {
-                    (base, base.wrapping_add(addressed.offset))
-                }
-            }
+            (base, to_accessed_address(base, addressed.offset, indexing))
         }
     };
     let bytes = operation.bytes as usize;
@@ -1594,10 +1757,7 @@ fn write_back<LevelSpecific>(
     address: u64,
 ) {
     if let Some((number, indexing)) = addressed.base {
-        let written_back = match indexing {
-            Indexing::PostIndex => base.wrapping_add(addressed.offset),
-            Indexing::Offset | Indexing::PreIndex => address,
-        };
+        let written_back = to_written_back_address(base, addressed.offset, address, indexing);
         write_register(
             processor,
             number,

@@ -12,9 +12,11 @@ use crate::condition_flags::{
     IMMEDIATE_CARRY, IMMEDIATE_NEGATIVE, IMMEDIATE_OVERFLOW, IMMEDIATE_ZERO, Nzcv,
 };
 #[cfg(verus_keep_ghost)]
-use crate::integer::{BitfieldFill, Comparison, FlagSetting, IntegerOperation, SelectAlternative};
+use crate::integer::{
+    BitfieldFill, Comparison, CrcPolynomial, FlagSetting, IntegerOperation, SelectAlternative,
+};
 #[cfg(verus_keep_ghost)]
-use crate::operand::{Rotation, Signedness};
+use crate::operand::{Indexing, Rotation, Signedness};
 
 verus! {
 
@@ -364,6 +366,244 @@ pub open spec fn arithmetic_or_logical(
         IntegerOperation::ExclusiveOrNot => (uint((operand1 ^ !operand2) as int, n), None),
         _ => (0, None),
     }
+}
+
+/// The assignment `x<lowest + width - 1:lowest> = value` to a bit string held in a `u64`, `mask` being Ones(width):
+/// the bits of the slice replaced by the low bits of `value`, every other bit kept.
+pub open spec fn set_bits(x: u64, lowest: u32, mask: u64, value: u64) -> u64 {
+    (x & !(mask << lowest)) | ((value & mask) << lowest)
+}
+
+/// The Operation of [RBIT](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/RBIT--Reverse-bits-)
+/// on `n` bits after its first `steps` steps, on a result whose bits are all zeros before the first:
+/// `for i = 0 to datasize-1: result<datasize-1-i> = operand<i>`.
+pub open spec fn reverse_bits_steps(operand: u64, n: nat, steps: nat) -> u64
+    decreases steps,
+{
+    if steps == 0 {
+        0
+    } else {
+        let i = (steps - 1) as nat;
+        set_bits(reverse_bits_steps(operand, n, i), (n - 1 - i) as u32, 1, operand >> (i as u32))
+    }
+}
+
+/// The result of [RBIT](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/RBIT--Reverse-bits-)
+/// on `n` bits: every step of its loop.
+pub open spec fn reverse_bits_value(operand: u64, n: nat) -> u64 {
+    reverse_bits_steps(operand, n, n)
+}
+
+/// The byte `operand<index+7:index>` goes to in the Operation of [REV16](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/REV16--Reverse-bytes-in-16-bit-halfwords-),
+/// [REV32](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/REV32--Reverse-bytes-in-32-bit-words-)
+/// and [REV](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/REV--Reverse-bytes-), for the
+/// byte `byte = index DIV 8`: its loop sets `rev_index = index + ((elements_per_container - 1) * 8)` at the start of
+/// each container and lowers it by 8 for each byte after, so the byte lands at the same container's other end.
+pub open spec fn reversed_byte(byte: nat, elements_per_container: nat) -> nat {
+    (byte / elements_per_container) * elements_per_container + (elements_per_container - 1 - byte % elements_per_container) as nat
+}
+
+/// The Operation of REV16, REV32 and REV after the bytes before `byte` in the order of its two loops (containers, then
+/// the bytes of each), on a result whose bits are all zeros before the first:
+/// `result<rev_index+7:rev_index> = operand<index+7:index>`.
+pub open spec fn reverse_bytes_steps(operand: u64, elements_per_container: nat, byte: nat) -> u64
+    decreases byte,
+{
+    if byte == 0 {
+        0
+    } else {
+        let index = (byte - 1) as nat;
+        set_bits(
+            reverse_bytes_steps(operand, elements_per_container, index),
+            (8 * reversed_byte(index, elements_per_container)) as u32,
+            0xff,
+            operand >> ((8 * index) as u32),
+        )
+    }
+}
+
+/// The result of REV16, REV32 and REV on `n` bits, with containers of `container_size` bits: every step of their
+/// loops, `containers = datasize DIV container_size` containers of `elements_per_container = container_size DIV 8`
+/// bytes.
+pub open spec fn reverse_bytes_value(operand: u64, n: nat, container_size: nat) -> u64 {
+    reverse_bytes_steps(operand, container_size / 8, (n / container_size) * (container_size / 8))
+}
+
+/// [CountLeadingZeroBits](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-integer#impl-shared.CountLeadingZeroBits.1)
+/// of an `n`-bit value: `N - (HighestSetBit(x) + 1)`, the Operation of [CLZ](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CLZ--Count-leading-zeros-).
+pub open spec fn count_leading_zero_bits(x: nat, n: nat) -> int {
+    n - (highest_set_bit(x) + 1)
+}
+
+/// [CountLeadingSignBits](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-integer#impl-shared.CountLeadingSignBits.1)
+/// of the low `n` bits of `x`, the Operation of [CLS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CLS--Count-leading-sign-bits-):
+/// `CountLeadingZeroBits(x<N-1:1> EOR x<N-2:0>)`, both slices of `n - 1` bits.
+pub open spec fn count_leading_sign_bits(x: u64, n: nat) -> int {
+    count_leading_zero_bits((((x >> 1u32) ^ x) & (ones((n - 1) as nat) as u64)) as nat, (n - 1) as nat)
+}
+
+/// The shift type of [LSLV](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LSLV--Logical-shift-left-variable-),
+/// [LSRV](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LSRV--Logical-shift-right-variable-),
+/// [ASRV](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ASRV--Arithmetic-shift-right-variable-)
+/// and [RORV](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/RORV--Rotate-right-variable-),
+/// as their decode gives it from op2: `DecodeShift(op2)`, in the order of the shift types' encodings.
+pub open spec fn variable_shift_type(operation: IntegerOperation) -> nat {
+    match operation {
+        IntegerOperation::ShiftLeftVariable => 0,
+        IntegerOperation::ShiftRightLogicalVariable => 1,
+        IntegerOperation::ShiftRightArithmeticVariable => 2,
+        _ => 3,
+    }
+}
+
+/// The Operation of LSLV, LSRV, ASRV and RORV on `n` bits:
+/// `ShiftReg(n, shift_type, UInt(operand2) MOD datasize, datasize)`.
+pub open spec fn variable_shift(operation: IntegerOperation, operand1: u64, operand2: u64, n: nat) -> int {
+    shift_reg(uint(operand1 as int, n), variable_shift_type(operation), (uint(operand2 as int, n) % (n as int)) as nat, n)
+}
+
+/// [RoundTowardsZero](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-integer#impl-shared.RoundTowardsZero.1)
+/// of the quotient of two integers, the second not zero: the quotient of their magnitudes, negated where their signs
+/// differ.
+pub open spec fn round_towards_zero(dividend: int, divisor: int) -> int {
+    let magnitude = (if dividend < 0 { -dividend } else { dividend }) / (if divisor < 0 { -divisor } else { divisor });
+    if (dividend < 0) == (divisor < 0) { magnitude } else { -magnitude }
+}
+
+/// The Operation of [UDIV](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/UDIV--Unsigned-divide-)
+/// and [SDIV](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SDIV--Signed-divide-) on `n`
+/// bits: zero where operand2 is zero, else `RoundTowardsZero(Real(Int(operand1, unsigned)) / Real(Int(operand2,
+/// unsigned)))`, of which the destination takes the low `n` bits.
+pub open spec fn divide(signedness: Signedness, operand1: u64, operand2: u64, n: nat) -> int {
+    let (dividend, divisor) = match signedness {
+        Signedness::Unsigned => (uint(operand1 as int, n), uint(operand2 as int, n)),
+        Signedness::Signed => (sint(operand1 as int, n), sint(operand2 as int, n)),
+    };
+    if is_zero(operand2 as int, n) { 0 } else { uint(round_towards_zero(dividend, divisor), n) }
+}
+
+/// The Operation of [MADD](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MADD--Multiply-add-)
+/// and [MSUB](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MSUB--Multiply-subtract-) on
+/// `n` bits: `UInt(operand3) + (UInt(operand1) * UInt(operand2))`, or its difference, of which the destination takes
+/// the low `n` bits.
+pub open spec fn multiply_add(subtract: bool, operand1: u64, operand2: u64, operand3: u64, n: nat) -> int {
+    let product = uint(operand1 as int, n) * uint(operand2 as int, n);
+    uint(if subtract { uint(operand3 as int, n) - product } else { uint(operand3 as int, n) + product }, n)
+}
+
+/// The product of [SMADDL, UMADDL, SMSUBL and UMSUBL](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SMADDL--Signed-multiply-add-long-)
+/// before any bits are dropped: `Int(operand1, unsigned) * Int(operand2, unsigned)` of the 32-bit operands.
+pub open spec fn long_product(operand1: u64, operand2: u64, signedness: Signedness) -> int {
+    match signedness {
+        Signedness::Unsigned => uint(operand1 as int, 32) * uint(operand2 as int, 32),
+        Signedness::Signed => sint(operand1 as int, 32) * sint(operand2 as int, 32),
+    }
+}
+
+/// The Operation of SMADDL, UMADDL, SMSUBL and UMSUBL: `Int(operand3, unsigned) + (Int(operand1, unsigned) *
+/// Int(operand2, unsigned))`, or its difference, of which the destination takes the low 64 bits (the 64-bit operand3's
+/// sign does not change them).
+pub open spec fn multiply_add_long(subtract: bool, operand1: u64, operand2: u64, operand3: u64, signedness: Signedness) -> int {
+    let product = long_product(operand1, operand2, signedness);
+    uint(if subtract { operand3 - product } else { operand3 + product }, 64)
+}
+
+/// The Operation of [UMULH](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/UMULH--Unsigned-multiply-high-)
+/// and [SMULH](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/SMULH--Signed-multiply-high-):
+/// `result = Int(operand1, unsigned) * Int(operand2, unsigned); X[d, 64] = result<127:64>`, bits 127 to 64 of the
+/// product's two's complement, which is the product divided by 2^64 rounded down.
+pub open spec fn multiply_high(operand1: u64, operand2: u64, signedness: Signedness) -> int {
+    let product = match signedness {
+        Signedness::Unsigned => uint(operand1 as int, 64) * uint(operand2 as int, 64),
+        Signedness::Signed => sint(operand1 as int, 64) * sint(operand2 as int, 64),
+    };
+    uint(product / (pow2(64) as int), 64)
+}
+
+/// The offset of a load or store with an immediate, the `width`-bit `imm` [ZeroExtend](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate--)ed
+/// or SignExtended to 64 bits and shifted left by the scale, as their decodes give it: `offset = LSL(ZeroExtend(imm12,
+/// 64), scale)` for an unsigned offset, `offset = SignExtend(imm9, 64)` for a signed byte offset and `offset =
+/// LSL(SignExtend(imm7, 64), scale)` for a pair.
+pub open spec fn immediate_offset(imm: int, width: nat, signedness: Signedness, scale: nat) -> int {
+    let extended = match signedness {
+        Signedness::Unsigned => uint(imm, width),
+        Signedness::Signed => sint(imm, width),
+    };
+    lsl(extended, scale, 64)
+}
+
+/// The scale of a load or store of `bytes` bytes, the logarithm of its size: `scale = UInt(size)`, or 4 for 16 bytes.
+pub open spec fn access_scale(bytes: nat) -> nat {
+    highest_set_bit(bytes) as nat
+}
+
+/// The offset of [LDR (register)](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--register---Load-register--register--)
+/// and the other loads and stores with a register offset: `ExtendReg(m, extend_type, shift, 64)` with `shift = if S ==
+/// '1' then scale else 0`, the extend type UXTW, LSL (UXTX), SXTW or SXTX from option: option<2> unsigned where clear,
+/// option<0> the doubleword where set.
+pub open spec fn register_offset(x: u64, signed: bool, doubleword: bool, scaled: bool, bytes: nat) -> int {
+    extend_reg(x as int, !signed, if doubleword { 64 } else { 32 }, if scaled { access_scale(bytes) } else { 0 }, 64)
+}
+
+/// The address a load or store accesses from its base: `if !postindex then address = address + offset`, a 64-bit
+/// sum, and for a literal, whose base is its own address, always the sum.
+pub open spec fn accessed_address(base: u64, offset: u64, indexing: Indexing) -> int {
+    match indexing {
+        Indexing::PostIndex => base as int,
+        _ => uint(base + offset, 64),
+    }
+}
+
+/// What a load or store with writeback writes to its base: `if postindex then address = address + offset; ...
+/// X[n, 64] = address`, the base plus the offset however it is indexed.
+pub open spec fn written_back_address(base: u64, offset: u64) -> int {
+    uint(base + offset, 64)
+}
+
+/// The assignment `x<width-1:0> = value<width-1:0>` to a bit string of up to 128 bits held in a `u128`, `mask` being
+/// Ones(width).
+pub open spec fn set_low_bits_128(x: u128, mask: u128, value: u128) -> u128 {
+    (x & !mask) | (value & mask)
+}
+
+/// [Poly32Mod2](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-crc#impl-shared.Poly32Mod2.2)
+/// of an `n`-bit `data_in` after the first `steps` steps of its loop:
+/// `for i = N-1 downto 32: if data<i> == '1' then data<i-1:0> = data<i-1:0> EOR (poly:Zeros(i-32))`.
+pub open spec fn poly32_mod2_steps(data_in: u128, poly: u32, n: nat, steps: nat) -> u128
+    decreases steps,
+{
+    if steps == 0 {
+        data_in
+    } else {
+        let data = poly32_mod2_steps(data_in, poly, n, (steps - 1) as nat);
+        let i = (n - steps) as nat;
+        if (data >> (i as u32)) & 1 == 1 {
+            set_low_bits_128(data, ones(i) as u128, data ^ ((poly as u128) << ((i - 32) as u32)))
+        } else {
+            data
+        }
+    }
+}
+
+/// The polynomial of [CRC32B, CRC32H, CRC32W and CRC32X](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CRC32B--CRC32H--CRC32W--CRC32X--CRC32-checksum-),
+/// 0x04C11DB7, and of [CRC32CB, CRC32CH, CRC32CW and CRC32CX](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CRC32CB--CRC32CH--CRC32CW--CRC32CX--CRC32C-checksum-),
+/// 0x1EDC6F41.
+pub open spec fn crc_polynomial(polynomial: CrcPolynomial) -> u32 {
+    match polynomial {
+        CrcPolynomial::Crc32 => 0x04C1_1DB7,
+        CrcPolynomial::Crc32C => 0x1EDC_6F41,
+    }
+}
+
+/// The Operation of the CRC32 and CRC32C instructions on an accumulator and a `size`-bit value:
+/// `tempacc = BitReverse(acc):Zeros(size); tempval = BitReverse(val):Zeros(32);
+/// X[d, 32] = BitReverse(Poly32Mod2(tempacc EOR tempval, poly))`, Poly32Mod2 returning `data<31:0>`.
+pub open spec fn crc32(acc: u64, val: u64, size: nat, polynomial: CrcPolynomial) -> u64 {
+    let tempacc = (reverse_bits_value(acc, 32) as u128) << (size as u32);
+    let tempval = (reverse_bits_value(val, size) as u128) << 32u32;
+    let n = 32 + size;
+    let data = poly32_mod2_steps(tempacc ^ tempval, crc_polynomial(polynomial), n, (n - 32) as nat);
+    reverse_bits_value((data & 0xffff_ffff) as u64, 32)
 }
 
 } // verus!

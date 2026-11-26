@@ -107,6 +107,8 @@ pub enum Operand {
     Unmodeled,
 }
 
+verus! {
+
 /// Where a load or store's address is, and what it writes back to its base.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Indexing {
@@ -117,8 +119,6 @@ pub enum Indexing {
     /// At the base, after which it writes the base plus the offset back.
     PostIndex,
 }
-
-verus! {
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Signedness {

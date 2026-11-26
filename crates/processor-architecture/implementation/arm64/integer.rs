@@ -17,8 +17,11 @@ use crate::operand::{
 #[cfg(verus_keep_ghost)]
 use crate::pseudocode::{
     arithmetic_immediate_value, arithmetic_or_logical, bitfield_move, bitmask_immediate_value,
-    conditional_compare, conditional_select, extended_register, extract, is_zero, logical_result,
-    move_wide, multiply_long_value, nzcv_immediate, ones, ror, shifted_register, sint, uint,
+    conditional_compare, conditional_select, count_leading_sign_bits, count_leading_zero_bits,
+    crc32, divide, extended_register, extract, is_zero, logical_result, long_product, move_wide,
+    multiply_add, multiply_add_long, multiply_high, multiply_long_value, nzcv_immediate, ones,
+    reverse_bits_steps, reverse_bits_value, reverse_bytes_steps, reverse_bytes_value,
+    reversed_byte, ror, set_bits, shifted_register, sint, uint, variable_shift,
     wide_immediate_position, written,
 };
 use crate::registers::{read_register, write_register};
@@ -46,11 +49,12 @@ verus! {
 /// The width of immr and imms, whose values above a 32-bit element's are unused.
 const BITMASK_FIELD_BITS: u32 = 6;
 
-} // verus!
-/// [CRC-32](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CRC32B--CRC32H--CRC32W--CRC32X--CRC32-checksum-#:~:text=0x04C11DB7)'s polynomial, before its bits are reversed.
+/// [CRC-32](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CRC32B--CRC32H--CRC32W--CRC32X--CRC32-checksum-#:~:text=0x04C11DB7)'s polynomial.
 const CRC32_POLYNOMIAL: u32 = 0x04C1_1DB7;
-/// [CRC-32C](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CRC32CB--CRC32CH--CRC32CW--CRC32CX--CRC32C-checksum-#:~:text=0x1EDC6F41)'s polynomial, before its bits are reversed.
+/// [CRC-32C](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CRC32CB--CRC32CH--CRC32CW--CRC32CX--CRC32C-checksum-#:~:text=0x1EDC6F41)'s polynomial.
 const CRC32C_POLYNOMIAL: u32 = 0x1EDC_6F41;
+
+} // verus!
 
 verus! {
 
@@ -1085,6 +1089,7 @@ proof fn lemma_width_mask(x: u64, width: RegisterWidth)
 fn sign_extend(value: u64, width: RegisterWidth) -> (extended: i64)
     ensures
         extended as int == sint(value as int, width.bits()),
+        extended == ((value << ((64 - width.bits()) as u32)) as i64) >> ((64 - width.bits()) as u32),
 {
     let shift = u64::BITS - width.to_bits();
     let extended = ((value << shift) as i64) >> shift;
@@ -1811,52 +1816,635 @@ fn extend_register(value: u64, extend_type: u32, amount: u32, width: RegisterWid
 
 } // verus!
 
-fn reverse_bytes(value: u64, container_bits: u32, width: RegisterWidth) -> u64 {
+verus! {
+
+/// `x<lowest + width - 1:lowest> = value`, `mask` being Ones(width).
+fn assign_bits(x: u64, lowest: u32, mask: u64, value: u64) -> (assigned: u64)
+    requires
+        lowest < u64::BITS,
+    ensures
+        assigned == set_bits(x, lowest, mask, value),
+{
+    (x & !(mask << lowest)) | ((value & mask) << lowest)
+}
+
+/// The low `bits` bits of a value in reverse order.
+// VERUS: no specification of `u64::reverse_bits`, so the bits are placed one at a time, in the order of RBIT's loop.
+fn reverse_low_bits(value: u64, bits: u32) -> (reversed: u64)
+    requires
+        0 < bits <= u64::BITS,
+    ensures
+        reversed == reverse_bits_value(value, bits as nat),
+{
+    let mut reversed = 0;
+    let mut index = 0;
+    while index < bits
+        invariant
+            0 < bits <= u64::BITS,
+            index <= bits,
+            reversed == reverse_bits_steps(value, bits as nat, index as nat),
+        decreases bits - index,
+    {
+        reversed = assign_bits(reversed, bits - 1 - index, 1, value >> index);
+        index += 1;
+    }
+    reversed
+}
+
+/// The result of RBIT: the width's low bits of the source in reverse order.
+fn compute_reverse_bits(width: RegisterWidth, source: u64) -> (result: u64)
+    ensures
+        result == reverse_bits_value(source, width.bits()),
+{
+    if crate::planted::is(237) {
+        u64::from((source as u32).reverse_bits()) | (u64::from(((source >> 32u32) as u32).reverse_bits()) << 32u32)
+    } else if crate::planted::is(130) {
+        reverse_low_bits(source, u64::BITS)
+    } else {
+        reverse_low_bits(source, width.to_bits())
+    }
+}
+
+/// The result of REV16, REV32 and REV: the bytes of each container of `container_bits` bits in reverse order.
+// VERUS: no specification of `swap_bytes` or of `fold` over a range, so the bytes are placed one at a time, in the
+// order of Arm's loops.
+fn reverse_bytes(value: u64, container_bits: u32, width: RegisterWidth) -> (reversed: u64)
+    requires
+        container_bits == 16 || container_bits == 32 || container_bits == 64,
+        container_bits <= width.bits(),
+    ensures
+        reversed == reverse_bytes_value(value, width.bits(), container_bits as nat),
+{
     let containers = if crate::planted::is(131) {
         1
     } else {
         width.to_bits() / container_bits
     };
-    (0..containers).fold(0, |reversed, index| {
-        let shift = index * container_bits;
-        let container = (value >> shift) & low_ones(container_bits);
-        let swapped = container.swap_bytes() >> (u64::BITS - container_bits);
-        reversed | (swapped << shift)
-    })
+    let elements_per_container = container_bits / u8::BITS;
+    let bytes = containers * elements_per_container;
+    proof {
+        // Every container size and width, one at a time.
+        assert(container_bits == 16 && width.bits() == 32 ==> containers == 2 && bytes == 4);
+        assert(container_bits == 16 && width.bits() == 64 ==> containers == 4 && bytes == 8);
+        assert(container_bits == 32 && width.bits() == 32 ==> containers == 1 && bytes == 4);
+        assert(container_bits == 32 && width.bits() == 64 ==> containers == 2 && bytes == 8);
+        assert(container_bits == 64 ==> containers == 1 && bytes == 8);
+    }
+    let mut reversed = 0;
+    let mut index = 0;
+    while index < bytes
+        invariant
+            elements_per_container == container_bits / 8,
+            elements_per_container == 2 || elements_per_container == 4 || elements_per_container == 8,
+            bytes == (width.bits() / (container_bits as nat)) * ((container_bits as nat) / 8),
+            bytes <= 8,
+            bytes % elements_per_container == 0,
+            index <= bytes,
+            reversed == reverse_bytes_steps(value, elements_per_container as nat, index as nat),
+        decreases bytes - index,
+    {
+        let reversed_index = (index / elements_per_container) * elements_per_container
+            + (elements_per_container - 1 - index % elements_per_container);
+        proof {
+            assert(reversed_index < 8) by (bit_vector)
+                requires
+                    elements_per_container == 2u32 || elements_per_container == 4u32 || elements_per_container == 8u32,
+                    bytes <= 8u32,
+                    bytes % elements_per_container == 0u32,
+                    index < bytes,
+                    reversed_index == (index / elements_per_container) * elements_per_container
+                        + (elements_per_container - 1u32 - index % elements_per_container);
+            assert(reversed_index == reversed_byte(index as nat, elements_per_container as nat));
+        }
+        reversed = assign_bits(reversed, u8::BITS * reversed_index, 0xff, value >> (u8::BITS * index));
+        index += 1;
+    }
+    reversed
 }
 
-/// Accumulates the low bits of `value` into the checksum the way [CRC32](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CRC32B--CRC32H--CRC32W--CRC32X--CRC32-checksum-) does: on reversed bits, so its least significant bit first.
-fn accumulate_crc(checksum: u64, value: u64, bytes: u32, polynomial: CrcPolynomial) -> u64 {
-    let polynomial = if crate::planted::any(&[411, 132]) {
+/// The result of CLZ on the width's bits of the source.
+fn compute_count_leading_zeros(width: RegisterWidth, source: u64) -> (result: u64)
+    requires
+        source < pow2(width.bits()),
+    ensures
+        result as int == count_leading_zero_bits(uint(source as int, width.bits()) as nat, width.bits()),
+{
+    proof {
+        crate::lemmas::lemma_leading_zeros(source);
+        crate::lemmas::lemma_highest_set_bit_bounds(source as nat, width.bits());
+        vstd::arithmetic::div_mod::lemma_small_mod(source as nat, pow2(width.bits()));
+    }
+    if crate::planted::is(410) && source == 0 {
+        63
+    } else if crate::planted::is(128) {
+        u64::from(source.leading_zeros())
+    } else {
+        u64::from(source.leading_zeros() - (u64::BITS - width.to_bits()))
+    }
+}
+
+/// The result of CLS on the width's bits of the source.
+fn compute_count_leading_sign_bits(width: RegisterWidth, source: u64) -> (result: u64)
+    requires
+        source < pow2(width.bits()),
+    ensures
+        result as int == count_leading_sign_bits(source, width.bits()),
+{
+    let extended = sign_extend(
+        source,
+        if crate::planted::is(9) {
+            RegisterWidth::Bits64
+        } else {
+            width
+        },
+    );
+    let differing = (extended ^ (extended >> 1u32)) as u64;
+    proof {
+        let n = width.bits();
+        let shift = (64 - n) as u32;
+        let mask = ones((n - 1) as nat) as u64;
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+        assert(differing == ((source >> 1u32) ^ source) & mask && differing <= mask) by (bit_vector)
+            requires
+                extended == ((source << shift) as i64) >> shift,
+                differing == (extended ^ (extended >> 1u32)) as u64,
+                shift == 32u32 && source < 0x1_0000_0000u64 && mask == 0x7fff_ffffu64
+                    || shift == 0u32 && mask == 0x7fff_ffff_ffff_ffffu64;
+        crate::lemmas::lemma_leading_zeros(differing);
+        crate::lemmas::lemma_highest_set_bit_bounds(differing as nat, (n - 1) as nat);
+    }
+    // VERUS: no specification of `From<bool>`, so the bit is cast.
+    u64::from(differing.leading_zeros() - (!crate::planted::is(129)) as u32 - (u64::BITS - width.to_bits()))
+}
+
+/// The result of LSLV, LSRV, ASRV and RORV, the width's low bits.
+fn compute_variable_shift(operation: IntegerOperation, width: RegisterWidth, first: u64, second: u64) -> (result: u64)
+    requires
+        operation is ShiftLeftVariable || operation is ShiftRightLogicalVariable
+            || operation is ShiftRightArithmeticVariable || operation is RotateRightVariable,
+        first < pow2(width.bits()),
+    ensures
+        result as int == variable_shift(operation, first, second, width.bits()),
+{
+    use IntegerOperation as O;
+    let mask = width.to_mask();
+    let bits = u64::from(width.to_bits());
+    let amount = second % bits;
+    let ghost n = width.bits();
+    proof {
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+        vstd::arithmetic::power2::lemma_pow2_pos(n);
+        vstd::arithmetic::div_mod::lemma_small_mod(first as nat, pow2(n));
+        crate::lemmas::lemma_modulo_width(second as int, n);
+        assert(amount < n);
+    }
+    let result = match operation {
+        O::ShiftLeftVariable => if crate::planted::is(227) {
+            // VERUS: no specification of `min`, so the smaller amount is chosen by a comparison.
+            first << if second < bits - 1 {
+                second
+            } else {
+                bits - 1
+            }
+        } else if crate::planted::is(121) {
+            first << (second % 64)
+        } else {
+            proof {
+                crate::lemmas::lemma_shift_left(first, amount as u32, n);
+                assert(first << amount == first << (amount as u32)) by (bit_vector)
+                    requires
+                        amount < 64;
+            }
+            first << amount
+        },
+        O::ShiftRightLogicalVariable => if crate::planted::is(229) {
+            first >> (second % 32)
+        } else {
+            proof {
+                vstd::bits::lemma_u64_shr_is_div(first, amount);
+                vstd::arithmetic::power2::lemma_pow2_pos(amount as nat);
+                vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(first as int, 1, pow2(amount as nat) as int);
+                crate::lemmas::lemma_mask(first >> amount, n);
+                vstd::arithmetic::div_mod::lemma_small_mod((first >> amount) as nat, pow2(n));
+            }
+            first >> amount
+        },
+        O::ShiftRightArithmeticVariable => if crate::planted::is(122) {
+            first >> amount
+        } else {
+            let signed = if crate::planted::is(414) {
+                first as i64
+            } else {
+                sign_extend(first, width)
+            };
+            proof {
+                crate::lemmas::lemma_arithmetic_shift_right(signed, amount as u32);
+                assert(signed >> amount == signed >> (amount as u32)) by (bit_vector)
+                    requires
+                        amount < 64;
+                crate::lemmas::lemma_signed_mask(signed >> amount, n);
+            }
+            (signed >> amount) as u64
+        },
+        _ => if crate::planted::is(123) {
+            rotate_right(first, amount as u32, RegisterWidth::Bits64)
+        } else {
+            let rotation = if crate::planted::is(10) {
+                ((bits - amount) % bits) as u32
+            } else {
+                amount as u32
+            };
+            let rotated = rotate_right(first, rotation, width);
+            proof {
+                crate::lemmas::lemma_mask(rotated, n);
+                vstd::arithmetic::div_mod::lemma_small_mod(rotated as nat, pow2(n));
+            }
+            rotated
+        },
+    };
+    if crate::planted::is(104) {
+        result
+    } else {
+        result & mask
+    }
+}
+
+/// The magnitude of a signed value, as 64 bits: 2^63 for the most negative.
+// VERUS: no specification of `unsigned_abs` or `wrapping_neg`, so the negation is a subtraction from zero.
+fn magnitude(value: i64) -> (unsigned: u64)
+    ensures
+        unsigned as int == if value < 0 { -value } else { value as int },
+{
+    proof {
+        crate::lemmas::lemma_signed_pattern(value);
+        vstd::arithmetic::power2::lemma2_to64();
+        if value < 0 {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(value as int, pow2(64) as int, -1, value + pow2(64));
+        } else {
+            vstd::arithmetic::div_mod::lemma_small_mod(value as nat, pow2(64));
+        }
+    }
+    if value < 0 {
+        0u64.wrapping_sub(value as u64)
+    } else {
+        value as u64
+    }
+}
+
+/// The result of UDIV and SDIV, the width's low bits.
+fn compute_divide(signedness: Signedness, width: RegisterWidth, first: u64, second: u64) -> (result: u64)
+    requires
+        first < pow2(width.bits()),
+        second < pow2(width.bits()),
+    ensures
+        result as int == divide(signedness, first, second, width.bits()),
+{
+    let mask = width.to_mask();
+    let bits = width.to_bits();
+    let ghost n = width.bits();
+    proof {
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+        vstd::arithmetic::power2::lemma_pow2_pos(n);
+        vstd::arithmetic::div_mod::lemma_small_mod(first as nat, pow2(n));
+        vstd::arithmetic::div_mod::lemma_small_mod(second as nat, pow2(n));
+    }
+    // The unsigned quotient, none where the divisor is zero.
+    let result = match first.checked_div(second) {
+        None => if crate::planted::is(235) {
+            first
+        } else if crate::planted::is(124) {
+            u64::MAX
+        } else {
+            0
+        },
+        Some(quotient) => match signedness {
+            Signedness::Unsigned => {
+                proof {
+                    vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(first as int, 1, second as int);
+                    crate::lemmas::lemma_mask(quotient, n);
+                    vstd::arithmetic::div_mod::lemma_small_mod(quotient as nat, pow2(n));
+                }
+                quotient
+            },
+            Signedness::Signed => if crate::planted::is(21) && first == 1 << (bits - 1) && second == mask {
+                0
+            } else {
+                let (dividend, divisor) = (sign_extend(first, width), sign_extend(second, width));
+                if crate::planted::is(125) {
+                    // VERUS: no specification of `wrapping_div_euclid`; `checked_div_euclid` fails only where it
+                    // wraps, to the dividend.
+                    match dividend.checked_div_euclid(divisor) {
+                        Some(quotient) => quotient as u64,
+                        None => dividend as u64,
+                    }
+                } else {
+                    // VERUS: no specification of `wrapping_div`, so the quotient of the magnitudes is negated where
+                    // the signs differ, which is the truncating division it computes, wrapping only for the most
+                    // negative value divided by -1.
+                    let quotient = magnitude(dividend) / magnitude(divisor);
+                    proof {
+                        let (a, b) = (dividend as int, divisor as int);
+                        assert(b != 0);
+                        let (x, d) = (if a < 0 { -a } else { a }, if b < 0 { -b } else { b });
+                        vstd::arithmetic::div_mod::lemma_div_is_ordered_by_denominator(x, 1, d);
+                        assert(quotient as int == x / d);
+                        if (a < 0) != (b < 0) {
+                            crate::lemmas::lemma_mask(0u64.wrapping_sub(quotient), n);
+                            crate::lemmas::lemma_wrapped_mod(-(quotient as int), n);
+                            vstd::arithmetic::div_mod::lemma_mod_multiples_vanish(1, -(quotient as int), pow2(64) as int);
+                            if quotient == 0 {
+                                vstd::arithmetic::div_mod::lemma_small_mod(0, pow2(n));
+                            } else {
+                                vstd::arithmetic::div_mod::lemma_small_mod((pow2(64) - quotient) as nat, pow2(64));
+                            }
+                        } else {
+                            crate::lemmas::lemma_mask(quotient, n);
+                        }
+                    }
+                    if (dividend < 0) != (divisor < 0) {
+                        0u64.wrapping_sub(quotient)
+                    } else {
+                        quotient
+                    }
+                }
+            },
+        },
+    };
+    proof {
+        crate::lemmas::lemma_mask(result, n);
+        vstd::arithmetic::div_mod::lemma_small_mod(0, pow2(n));
+    }
+    if crate::planted::is(104) {
+        result
+    } else {
+        result & mask
+    }
+}
+
+/// The result of MADD and MSUB, the width's low bits.
+fn compute_multiply_add(operation: IntegerOperation, width: RegisterWidth, first: u64, second: u64, third: u64) -> (result: u64)
+    requires
+        operation is MultiplyAdd || operation is MultiplySubtract,
+    ensures
+        result as int == multiply_add(operation is MultiplySubtract, first, second, third, width.bits()),
+{
+    let mask = width.to_mask();
+    let product = first.wrapping_mul(second);
+    let result = match operation {
+        IntegerOperation::MultiplyAdd => third.wrapping_add(product),
+        _ => if crate::planted::is(140) {
+            product.wrapping_sub(third)
+        } else {
+            third.wrapping_sub(product)
+        },
+    };
+    proof {
+        let n = width.bits();
+        let (m, wide) = (pow2(n) as int, pow2(64) as int);
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+        vstd::arithmetic::power2::lemma_pow2_pos(n);
+        let exact = first as int * second as int;
+        assert(product as int == exact % wide);
+        let sum = if operation is MultiplySubtract { third - product } else { third + product };
+        // The wrapped sum or difference is the sum or difference modulo 2^64.
+        if sum < 0 {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(sum, wide, -1, sum + wide);
+        } else if sum >= wide {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(sum, wide, 1, sum - wide);
+        } else {
+            vstd::arithmetic::div_mod::lemma_small_mod(sum as nat, wide as nat);
+        }
+        assert(result as int == sum % wide);
+        // The low n bits of the wrapped value are those of the exact sum or difference, and the product's low n bits
+        // are those of the product of the operands' low n bits.
+        crate::lemmas::lemma_mask(result, n);
+        crate::lemmas::lemma_wrapped_mod(sum, n);
+        crate::lemmas::lemma_wrapped_mod(exact, n);
+        let low_product = uint(first as int, n) * uint(second as int, n);
+        vstd::arithmetic::div_mod::lemma_mul_mod_noop(first as int, second as int, m);
+        vstd::arithmetic::div_mod::lemma_mod_twice(third as int, m);
+        if operation is MultiplySubtract {
+            vstd::arithmetic::div_mod::lemma_sub_mod_noop(third as int, product as int, m);
+            vstd::arithmetic::div_mod::lemma_sub_mod_noop(uint(third as int, n), low_product, m);
+        } else {
+            vstd::arithmetic::div_mod::lemma_add_mod_noop(third as int, product as int, m);
+            vstd::arithmetic::div_mod::lemma_add_mod_noop(uint(third as int, n), low_product, m);
+        }
+    }
+    if crate::planted::is(104) {
+        result
+    } else {
+        result & mask
+    }
+}
+
+/// The result of SMADDL, UMADDL, SMSUBL and UMSUBL.
+fn compute_multiply_add_long(operation: IntegerOperation, first: u64, second: u64, third: u64) -> (result: u64)
+    requires
+        operation is MultiplyAddLong || operation is MultiplySubtractLong,
+    ensures
+        result as int == match operation {
+            IntegerOperation::MultiplyAddLong(signedness) => multiply_add_long(false, first, second, third, signedness),
+            IntegerOperation::MultiplySubtractLong(signedness) => multiply_add_long(true, first, second, third, signedness),
+            _ => 0,
+        },
+{
+    let result = match operation {
+        IntegerOperation::MultiplyAddLong(signedness) => {
+            let signedness = if crate::planted::is(7) {
+                Signedness::Signed
+            } else {
+                signedness
+            };
+            let signedness = if crate::planted::is(126) {
+                Signedness::Unsigned
+            } else {
+                signedness
+            };
+            third.wrapping_add(multiply_long(first, second, signedness))
+        },
+        IntegerOperation::MultiplySubtractLong(signedness) => if crate::planted::is(406) {
+            first.wrapping_sub(multiply_long(first, second, signedness))
+        } else if crate::planted::is(233) {
+            third.wrapping_sub(first.wrapping_mul(second))
+        } else {
+            third.wrapping_sub(multiply_long(first, second, signedness))
+        },
+        _ => 0,
+    };
+    proof {
+        let wide = pow2(64) as int;
+        vstd::arithmetic::power2::lemma2_to64();
+        let (subtract, signedness) = match operation {
+            IntegerOperation::MultiplyAddLong(signedness) => (false, signedness),
+            IntegerOperation::MultiplySubtractLong(signedness) => (true, signedness),
+            _ => (false, Signedness::Unsigned),
+        };
+        let exact = long_product(first, second, signedness);
+        let product = multiply_long_value(first, second, signedness);
+        assert(product == exact % wide);
+        let sum = if subtract { third - product } else { third + product };
+        if sum < 0 {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(sum, wide, -1, sum + wide);
+        } else if sum >= wide {
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(sum, wide, 1, sum - wide);
+        } else {
+            vstd::arithmetic::div_mod::lemma_small_mod(sum as nat, wide as nat);
+        }
+        assert(result as int == sum % wide);
+        if subtract {
+            vstd::arithmetic::div_mod::lemma_sub_mod_noop(third as int, exact, wide);
+            vstd::arithmetic::div_mod::lemma_sub_mod_noop(third as int, product, wide);
+        } else {
+            vstd::arithmetic::div_mod::lemma_add_mod_noop(third as int, exact, wide);
+            vstd::arithmetic::div_mod::lemma_add_mod_noop(third as int, product, wide);
+        }
+        vstd::arithmetic::div_mod::lemma_mod_twice(exact, wide);
+        vstd::arithmetic::div_mod::lemma_small_mod(third as nat, wide as nat);
+    }
+    result
+}
+
+/// The result of UMULH and SMULH: the high 64 bits of the 128-bit product.
+fn compute_multiply_high(signedness: Signedness, first: u64, second: u64) -> (result: u64)
+    ensures
+        result as int == multiply_high(first, second, signedness),
+{
+    proof {
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::arithmetic::power2::lemma2_to64_rest();
+        vstd::arithmetic::div_mod::lemma_small_mod(first as nat, pow2(64));
+        vstd::arithmetic::div_mod::lemma_small_mod(second as nat, pow2(64));
+        assert(0 <= first as int * second as int <= u128::MAX) by (nonlinear_arith)
+            requires
+                first <= u64::MAX,
+                second <= u64::MAX;
+    }
+    // VERUS: no specification of `u128::from` or `i128::from`, so the registers are cast.
+    match signedness {
+        Signedness::Unsigned => if crate::planted::is(127) {
+            first.wrapping_mul(second)
+        } else {
+            let product = (first as u128) * (second as u128);
+            proof {
+                vstd::bits::lemma_u128_shr_is_div(product, 64);
+                let bits = u64::BITS;
+                assert(product >> bits == product >> 64u128) by (bit_vector)
+                    requires
+                        bits == 64u32;
+                assert(product as int / 0x1_0000_0000_0000_0000 <= u64::MAX) by (nonlinear_arith)
+                    requires
+                        product as int <= u128::MAX;
+                vstd::arithmetic::div_mod::lemma_small_mod((product as int / 0x1_0000_0000_0000_0000) as nat, pow2(64));
+            }
+            (product >> u64::BITS) as u64
+        },
+        Signedness::Signed => if crate::planted::is(6) {
+            (((first as u128) * (second as u128)) >> u64::BITS) as u64
+        } else {
+            let (low, high) = (first as i64, second as i64);
+            proof {
+                crate::lemmas::lemma_sign_extension(first, 0);
+                crate::lemmas::lemma_sign_extension(second, 0);
+                assert(((first << 0u32) as i64) >> 0u32 == first as i64 && ((second << 0u32) as i64) >> 0u32 == second as i64) by (bit_vector);
+                assert(-0x4000_0000_0000_0000_0000_0000_0000_0000 <= low as int * high as int <= 0x4000_0000_0000_0000_0000_0000_0000_0000) by (nonlinear_arith)
+                    requires
+                        -0x8000_0000_0000_0000 <= low <= 0x7fff_ffff_ffff_ffff,
+                        -0x8000_0000_0000_0000 <= high <= 0x7fff_ffff_ffff_ffff;
+            }
+            let product = (low as i128) * (high as i128);
+            let shifted = product >> u64::BITS;
+            proof {
+                crate::lemmas::lemma_arithmetic_shift_right_128(product, 64);
+                assert(-0x4000_0000_0000_0000 <= shifted <= 0x4000_0000_0000_0000) by (nonlinear_arith)
+                    requires
+                        shifted as int == product as int / 0x1_0000_0000_0000_0000,
+                        -0x4000_0000_0000_0000_0000_0000_0000_0000 <= product <= 0x4000_0000_0000_0000_0000_0000_0000_0000;
+                assert(shifted as u64 == (shifted as i64) as u64) by (bit_vector);
+                crate::lemmas::lemma_signed_pattern(shifted as i64);
+            }
+            shifted as u64
+        },
+    }
+}
+
+} // verus!
+
+verus! {
+
+/// Accumulates the low `bytes` bytes of `value` into the checksum the way [CRC32](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CRC32B--CRC32H--CRC32W--CRC32X--CRC32-checksum-) does.
+// VERUS: the checksum is computed as Arm's pseudocode computes it, Poly32Mod2 on the reversed bits in a `u128`, so that
+// its loop is the pseudocode's; the shift register on reflected bits it replaces computed the same, unproven. Its
+// planted bug 241, which took the value's bits from the most significant, is the value not reversed here, the same
+// order; `min` and `planted::any` have no specification, so they are a comparison and two `is`.
+fn accumulate_crc(checksum: u64, value: u64, bytes: u32, polynomial: CrcPolynomial) -> (accumulated: u64)
+    requires
+        bytes == 1 || bytes == 2 || bytes == 4 || bytes == 8,
+    ensures
+        accumulated == crc32(checksum, value, (bytes * 8) as nat, polynomial),
+{
+    let polynomial = if crate::planted::is(411) || crate::planted::is(132) {
         CrcPolynomial::Crc32
     } else {
         polynomial
     };
     let bytes = if crate::planted::is(133) {
-        bytes.min(4)
+        if bytes < 4 {
+            bytes
+        } else {
+            4
+        }
     } else {
         bytes
     };
-    let reversed = match polynomial {
+    let size = bytes * u8::BITS;
+    let poly = match polynomial {
         CrcPolynomial::Crc32 => CRC32_POLYNOMIAL,
         CrcPolynomial::Crc32C => CRC32C_POLYNOMIAL,
-    }
-    .reverse_bits();
-    let mut checksum = checksum as u32;
-    for step in 0..bytes * u8::BITS {
-        let bit = if crate::planted::is(241) {
-            bytes * u8::BITS - 1 - step
-        } else {
-            step
-        };
-        let feedback = (checksum ^ (value >> bit) as u32) & 1 != 0;
-        checksum >>= 1;
-        if feedback {
-            checksum ^= reversed;
+    };
+    let accumulator = reverse_low_bits(checksum, u32::BITS);
+    let input = if crate::planted::is(241) {
+        value & low_ones(size)
+    } else {
+        reverse_low_bits(value, size)
+    };
+    let data_in = ((accumulator as u128) << size) ^ ((input as u128) << u32::BITS);
+    let ghost n = (size + 32) as nat;
+    let mut data = data_in;
+    let mut index = size + u32::BITS - 1;
+    while index >= u32::BITS
+        invariant
+            8 <= size <= 64,
+            n == size + 32,
+            31 <= index <= n - 1,
+            data == crate::pseudocode::poly32_mod2_steps(data_in, poly, n, (n - 1 - index) as nat),
+        decreases index,
+    {
+        if (data >> index) & 1 == 1 {
+            proof {
+                vstd::bits::lemma_u128_pow2_no_overflow(index as nat);
+                vstd::bits::lemma_u128_shl_is_mul(1, index as u128);
+                assert(1u128 << index == 1u128 << (index as u128)) by (bit_vector);
+            }
+            let mask = (1u128 << index) - 1;
+            proof {
+                assert(mask == ones(index as nat) as u128);
+            }
+            data = (data & !mask) | ((data ^ ((poly as u128) << (index - u32::BITS))) & mask);
         }
+        index -= 1;
     }
-    u64::from(checksum)
+    proof {
+        assert(data & 0xffff_ffff <= 0xffff_ffff) by (bit_vector);
+    }
+    reverse_low_bits((data & 0xffff_ffff) as u64, u32::BITS)
 }
+
+} // verus!
 
 fn apply(
     operation: IntegerOperation,
@@ -1867,7 +2455,6 @@ fn apply(
 ) -> Result<Outcome, Exception> {
     use IntegerOperation as O;
     let mask = width.to_mask();
-    let bits = width.to_bits();
     let written = |result: u64| Outcome {
         result: Some(if crate::planted::is(104) {
             result
@@ -1937,12 +2524,7 @@ fn apply(
                 Nzcv::from(flags),
             ))),
         },
-        (O::ReverseBits, &[source]) if crate::planted::is(237) => written(
-            u64::from((source as u32).reverse_bits())
-                | (u64::from(((source >> 32) as u32).reverse_bits()) << 32),
-        ),
-        (O::ReverseBits, &[source]) if crate::planted::is(130) => written(source.reverse_bits()),
-        (O::ReverseBits, &[source]) => written(source.reverse_bits() >> (u64::BITS - bits)),
+        (O::ReverseBits, &[source]) => written(compute_reverse_bits(width, source)),
         (O::ReverseBytes { container_bits }, &[source]) => {
             let container_bits = if crate::planted::is(239) {
                 u32::BITS
@@ -1961,129 +2543,33 @@ fn apply(
             };
             written(reverse_bytes(source, container_bits, width))
         }
-        (O::CountLeadingZeros, &[0]) if crate::planted::is(410) => written(63),
-        (O::CountLeadingZeros, &[source]) if crate::planted::is(128) => {
-            written(u64::from(source.leading_zeros()))
-        }
-        (O::CountLeadingZeros, &[source]) => {
-            written(u64::from(source.leading_zeros() - (u64::BITS - bits)))
-        }
+        (O::CountLeadingZeros, &[source]) => written(compute_count_leading_zeros(width, source)),
         (O::CountLeadingSignBits, &[source]) => {
-            let extended = sign_extend(
-                source,
-                if crate::planted::is(9) {
-                    RegisterWidth::Bits64
-                } else {
-                    width
-                },
-            );
-            let differing = (extended ^ (extended >> 1)) as u64;
-            written(u64::from(
-                differing.leading_zeros()
-                    - u32::from(!crate::planted::is(129))
-                    - (u64::BITS - bits),
-            ))
+            written(compute_count_leading_sign_bits(width, source))
         }
-        (O::ShiftLeftVariable, &[first, second]) if crate::planted::is(227) => {
-            written(first << second.min(u64::from(bits) - 1))
+        (
+            O::ShiftLeftVariable
+            | O::ShiftRightLogicalVariable
+            | O::ShiftRightArithmeticVariable
+            | O::RotateRightVariable,
+            &[first, second],
+        ) => Outcome {
+            result: Some(compute_variable_shift(operation, width, first, second)),
+            flags: None,
+        },
+        (O::Divide(signedness), &[first, second]) => Outcome {
+            result: Some(compute_divide(signedness, width, first, second)),
+            flags: None,
+        },
+        (O::MultiplyAdd | O::MultiplySubtract, &[first, second, third]) => Outcome {
+            result: Some(compute_multiply_add(operation, width, first, second, third)),
+            flags: None,
+        },
+        (O::MultiplyAddLong(_) | O::MultiplySubtractLong(_), &[first, second, third]) => {
+            written(compute_multiply_add_long(operation, first, second, third))
         }
-        (O::ShiftLeftVariable, &[first, second]) if crate::planted::is(121) => {
-            written(first << (second % 64))
-        }
-        (O::ShiftLeftVariable, &[first, second]) => written(first << (second % u64::from(bits))),
-        (O::ShiftRightLogicalVariable, &[first, second]) if crate::planted::is(229) => {
-            written(first >> (second % 32))
-        }
-        (O::ShiftRightLogicalVariable, &[first, second]) => {
-            written(first >> (second % u64::from(bits)))
-        }
-        (O::ShiftRightArithmeticVariable, &[first, second]) if crate::planted::is(122) => {
-            written(first >> (second % u64::from(bits)))
-        }
-        (O::ShiftRightArithmeticVariable, &[first, second]) => {
-            let signed = if crate::planted::is(414) {
-                first as i64
-            } else {
-                sign_extend(first, width)
-            };
-            written((signed >> (second % u64::from(bits))) as u64)
-        }
-        (O::RotateRightVariable, &[first, second]) if crate::planted::is(123) => {
-            written(rotate_right(
-                first,
-                (second % u64::from(bits)) as u32,
-                RegisterWidth::Bits64,
-            ))
-        }
-        (O::RotateRightVariable, &[first, second]) => written(rotate_right(
-            first,
-            if crate::planted::is(10) {
-                ((u64::from(bits) - second % u64::from(bits)) % u64::from(bits)) as u32
-            } else {
-                (second % u64::from(bits)) as u32
-            },
-            width,
-        )),
-        (O::Divide(_), &[first, 0]) if crate::planted::is(235) => written(first),
-        (O::Divide(_), &[_, 0]) => written(if crate::planted::is(124) { u64::MAX } else { 0 }),
-        (O::Divide(Signedness::Unsigned), &[first, second]) => written(first / second),
-        (O::Divide(Signedness::Signed), &[first, second])
-            if crate::planted::is(21) && first == 1 << (bits - 1) && second == mask =>
-        {
-            written(0)
-        }
-        (O::Divide(Signedness::Signed), &[first, second]) => {
-            if crate::planted::is(125) {
-                return Ok(written(
-                    sign_extend(first, width).wrapping_div_euclid(sign_extend(second, width))
-                        as u64,
-                ));
-            }
-            written(sign_extend(first, width).wrapping_div(sign_extend(second, width)) as u64)
-        }
-        (O::MultiplyAdd, &[first, second, addend]) => {
-            written(addend.wrapping_add(first.wrapping_mul(second)))
-        }
-        (O::MultiplySubtract, &[first, second, minuend]) => {
-            if crate::planted::is(140) {
-                return Ok(written(first.wrapping_mul(second).wrapping_sub(minuend)));
-            }
-            written(minuend.wrapping_sub(first.wrapping_mul(second)))
-        }
-        (O::MultiplyAddLong(signedness), &[first, second, addend]) => {
-            let signedness = if crate::planted::is(7) {
-                Signedness::Signed
-            } else {
-                signedness
-            };
-            let signedness = if crate::planted::is(126) {
-                Signedness::Unsigned
-            } else {
-                signedness
-            };
-            written(addend.wrapping_add(multiply_long(first, second, signedness)))
-        }
-        (O::MultiplySubtractLong(signedness), &[first, second, _]) if crate::planted::is(406) => {
-            written(first.wrapping_sub(multiply_long(first, second, signedness)))
-        }
-        (O::MultiplySubtractLong(_), &[first, second, minuend]) if crate::planted::is(233) => {
-            written(minuend.wrapping_sub(first.wrapping_mul(second)))
-        }
-        (O::MultiplySubtractLong(signedness), &[first, second, minuend]) => {
-            written(minuend.wrapping_sub(multiply_long(first, second, signedness)))
-        }
-        (O::MultiplyHigh(Signedness::Unsigned), &[first, second]) => {
-            if crate::planted::is(127) {
-                return Ok(written(first.wrapping_mul(second)));
-            }
-            written(((u128::from(first) * u128::from(second)) >> u64::BITS) as u64)
-        }
-        (O::MultiplyHigh(Signedness::Signed), &[first, second]) if crate::planted::is(6) => {
-            written(((u128::from(first) * u128::from(second)) >> u64::BITS) as u64)
-        }
-        (O::MultiplyHigh(Signedness::Signed), &[first, second]) => {
-            let product = i128::from(first as i64) * i128::from(second as i64);
-            written((product >> u64::BITS) as u64)
+        (O::MultiplyHigh(signedness), &[first, second]) => {
+            written(compute_multiply_high(signedness, first, second))
         }
         (O::Crc32 { polynomial, bytes }, &[checksum, value]) if crate::planted::is(412) => {
             written(accumulate_crc(checksum, value >> 8, bytes, polynomial))
