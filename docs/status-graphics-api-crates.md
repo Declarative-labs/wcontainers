@@ -44,7 +44,11 @@ Linter findings left, and why (each with its smallest example in the job's linte
 - conformance_missing: the generated suites are AC3.
 - summary_too_long: one DXGI message name is longer than the summary limit.
 
-Decided here (also in the brief): the generator is a tool in its own workspace; a C keyword name gets a trailing
+Decided here (also in the brief): the generator is a tool in its own workspace, so the repository's cargo commands
+never build it. CORRECTED 2026-11-25: an earlier line here and in the brief said the linter never builds it either;
+that is false. The linter walks every folder outside crates/ and reports a folder with a Cargo.toml that is not a
+workspace member, so the generator's findings are reported and counted, with no exclusion and no change to the root
+manifest. Where a standalone program lives is asked of the owner for all such programs together. A C keyword name gets a trailing
 underscore (the linter does not read raw identifiers); the reasoned `explicit_shared_error` allow sits on each trait
 with two or more HRESULT methods and names `HResult`, which interface.rs imports; a root interface whose methods never
 name another object holds no `type Api`.
@@ -64,3 +68,10 @@ d3dcsx, D3DMATRIX and D3DVECTOR, DXGI's JPEG tables, two newer video records).
 
 Not yet done of AC2: the calling and serving glue for the spike's 27 methods, the spike's harness ported, the
 fuzzing, the hang test and the cost table.
+
+## Scope added 2026-11-25 (the orchestrator's ruling)
+
+This track owns every outside graphics API crate, including the OpenGL ES and EGL calls of the WebGL native route
+(glow over ANGLE, crates/gpu-webgl) and the Mesa compiler calls of the shader path (crates/nir's bridge). They are
+milestones AC10 (OpenGL ES and EGL) and AC11 (the Mesa compiler), after Direct3D 12. The implementations track uses
+these traits and writes no glue.

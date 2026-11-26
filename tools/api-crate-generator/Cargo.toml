@@ -7,7 +7,9 @@ license = "MIT OR Apache-2.0"
 publish = false
 description = "Writes an outside API's crate (its safe trait, calling glue and serving glue) from the API's own description."
 
-# A tool, not part of the product: its own workspace, so the repository's workspace and linter never build it.
+# A tool, not part of the product: its own workspace, so the repository's cargo commands never build it. The
+# linter still reports this folder (a Cargo.toml outside the workspace members); where such a program lives is the
+# owner's question.
 [workspace]
 
 [dependencies]
