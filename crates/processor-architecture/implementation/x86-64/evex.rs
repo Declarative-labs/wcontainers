@@ -72,6 +72,9 @@ pub enum EvexOperation {
     /// VDPBF16PS: each single of the destination plus the products of the sources' bfloat16 pairs, the upper pair's
     /// first, each sum rounded to nearest with denormals read and written as zeros, MXCSR neither read nor written.
     DotBfloat16,
+    /// VMOVSH and VMOVW: the low word moved; a load or a move from a general-purpose register zeroes the bits above
+    /// it, VMOVSH between registers takes them from the first source.
+    MoveScalar,
     /// VCOMPRESSPS to VPCOMPRESSQ: the selected elements packed into the lowest, in order.
     Compress { element_bytes: usize },
     /// VEXPANDPS to VPEXPANDQ: the lowest elements, in order, into the selected ones.
@@ -453,6 +456,8 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vpexpandw, Any, EvexOperation::Expand { element_bytes: 2 }),
         (Mnemonic::Vpexpandd, Any, EvexOperation::Expand { element_bytes: 4 }),
         (Mnemonic::Vpexpandq, Any, EvexOperation::Expand { element_bytes: 8 }),
+        (Mnemonic::Vmovsh, Any, EvexOperation::MoveScalar),
+        (Mnemonic::Vmovw, Any, EvexOperation::MoveScalar),
         (Mnemonic::Vdpbf16ps, Any, EvexOperation::DotBfloat16),
         (Mnemonic::Vrangeps, Any, special(SpecialOperation::Range, Single, Packed)),
         (Mnemonic::Vrangepd, Any, special(SpecialOperation::Range, Double, Packed)),
@@ -556,6 +561,7 @@ impl EvexForm {
             EvexOperation::Convert(conversion) => conversion.to.to_bytes(),
             EvexOperation::ToBfloat16 { .. } => 2,
             EvexOperation::DotBfloat16 => 4,
+            EvexOperation::MoveScalar => 2,
         }
     }
 
@@ -575,6 +581,7 @@ impl EvexForm {
             | EvexOperation::Fused { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::Compare { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::Special { arrangement: Arrangement::Scalar, .. }
+            | EvexOperation::MoveScalar
             | EvexOperation::OrderedCompare { .. } => 1,
             EvexOperation::Convert(Conversion { scalar: true, .. }) => 1,
             EvexOperation::ToBfloat16 { pair: true } => self.vector_bytes() / 2,
@@ -592,7 +599,13 @@ impl EvexForm {
 
     /// Whether the form stores to memory: VCOMPRESS with a memory destination.
     pub fn stores(&self) -> bool {
-        matches!(self.operation, EvexOperation::Compress { .. }) && self.place == OperandPlace::Memory
+        let to_memory = matches!(
+            self.code.op_code().op_kinds().first(),
+            Some(OpCodeOperandKind::mem | OpCodeOperandKind::r32_or_mem | OpCodeOperandKind::xmm_or_mem)
+        );
+        matches!(self.operation, EvexOperation::Compress { .. } | EvexOperation::MoveScalar)
+            && self.place == OperandPlace::Memory
+            && to_memory
     }
 
     /// Whether a denormal source is reported: not by VCVTPH2PS, which converts halves as F16C does.
@@ -620,6 +633,7 @@ impl EvexForm {
             EvexOperation::Integer { .. }
             | EvexOperation::ToBfloat16 { .. }
             | EvexOperation::DotBfloat16
+            | EvexOperation::MoveScalar
             | EvexOperation::Compress { .. }
             | EvexOperation::Expand { .. } => false,
         }
@@ -655,6 +669,7 @@ impl EvexForm {
             | EvexOperation::ToBfloat16 { .. }
             | EvexOperation::Compare { .. }
             | EvexOperation::Special { .. }
+            | EvexOperation::MoveScalar
             | EvexOperation::OrderedCompare { .. } => false,
             EvexOperation::Fused { .. } | EvexOperation::DotBfloat16 => true,
             EvexOperation::Integer { operation, .. } => operation.reads_destination(),
@@ -672,6 +687,7 @@ impl EvexForm {
             | EvexOperation::Compare { .. }
             | EvexOperation::Special { .. }
             | EvexOperation::DotBfloat16
+            | EvexOperation::MoveScalar
             | EvexOperation::OrderedCompare { .. } => true,
             EvexOperation::ToBfloat16 { pair } => !pair,
             EvexOperation::Integer { operation, .. } => operation.is_element_wise(),
@@ -740,7 +756,12 @@ fn widen_to_register(number: Number, decoded: &iced_x86::Instruction) -> Number 
 
 /// Whether the form's destination is a general-purpose register.
 pub fn writes_register(form: &EvexForm) -> bool {
-    matches!(form.code.op_code().op_kinds().first(), Some(OpCodeOperandKind::r32_reg | OpCodeOperandKind::r64_reg))
+    match form.code.op_code().op_kinds().first() {
+        Some(OpCodeOperandKind::r32_reg | OpCodeOperandKind::r64_reg) => true,
+        // VMOVW's destination is a register or memory.
+        Some(OpCodeOperandKind::r32_or_mem) => form.place == OperandPlace::Register,
+        _ => false,
+    }
 }
 
 /// The bytes of the element the form's broadcast reads, which may differ from its vector's element.

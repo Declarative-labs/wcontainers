@@ -10,7 +10,7 @@ use iced_x86::{Instruction as Decoded, OpKind};
 use wcontainers_processor_architecture::MemoryDelta;
 
 use super::evex_simulation::read_selection;
-use super::{Memory, check_access, check_canonical, expect_code, find_fault, locate};
+use super::{Memory, check_access, check_alignment, check_canonical, expect_code, find_fault, locate};
 use crate::behavior::StoreAcrossFault;
 use crate::evex::{EvexForm, EvexOperation, find_evex_form, read_element, write_element};
 use crate::memory::read_bytes;
@@ -93,7 +93,7 @@ fn read_contiguous(
 }
 
 /// VCOMPRESS into memory: the selected elements, packed, written from the operand's address; where a byte of them
-/// faults, what the behavior across a fault writes below it.
+/// faults, what the behavior across a fault writes below it. VMOVSH's and VMOVW's stores are those of one element.
 pub(super) fn store_compressed(
     instruction: Instruction,
     across_fault: StoreAcrossFault,
@@ -116,7 +116,12 @@ pub(super) fn store_compressed(
     }
     let operand = locate(processor, decoded);
     let length = if is_active(Bug::EvexCompressReachesWholeVector) { 64 } else { packed.len() as u64 };
-    // The canonical check comes before any byte is written; alignment is not checked.
+    // The canonical check comes before any byte is written; alignment is checked for VMOVSH's and VMOVW's word
+    // alone, as the chip shows.
+    check_canonical(operand, 1)?;
+    if form.operation == EvexOperation::MoveScalar {
+        check_alignment(processor.flags, operand, length)?;
+    }
     check_canonical(operand, length)?;
     let Some((address, page_present)) = find_fault(memory, operand.address, length, Access::Write) else {
         on_memory_mutated(MemoryDelta::ValueAssignment { start: operand.address, bytes: Cow::Owned(packed) });

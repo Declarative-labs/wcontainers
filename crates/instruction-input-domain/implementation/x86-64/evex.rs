@@ -153,8 +153,14 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
             register,
             rounding: false,
         }),
+        EvexOperation::MoveScalar => OperandType::EvexMoveData(EvexMoveData {
+            element_bytes: 2,
+            vector_bytes: 16,
+            register,
+            maskable: op_code.can_use_op_mask_register(),
+        }),
         EvexOperation::Compress { element_bytes } | EvexOperation::Expand { element_bytes } => {
-            OperandType::EvexMoveData(EvexMoveData { element_bytes, vector_bytes: form.vector_bytes(), register })
+            OperandType::EvexMoveData(EvexMoveData { element_bytes, vector_bytes: form.vector_bytes(), register, maskable: true })
         }
         EvexOperation::Integer { operation, element_bytes } => OperandType::EvexIntegerData(EvexIntegerData {
             operation,
@@ -1046,13 +1052,15 @@ pub struct EvexMoveData {
     pub vector_bytes: usize,
     /// A register form, whose data holds the opmask.
     pub register: bool,
+    /// Whether the form takes an opmask.
+    pub maskable: bool,
 }
 
 /// The data of VCOMPRESS and VEXPAND: a table of elements each its own value as the vector moved, and the other
 /// table in memory before; a register form takes each table with every opmask of [`list_move_masks`], merging and
 /// zeroing. A memory form's opmask is an operand of its own.
 pub fn generate_move_data(data: EvexMoveData) -> Vec<OperandValue> {
-    let EvexMoveData { element_bytes, vector_bytes, register } = data;
+    let EvexMoveData { element_bytes, vector_bytes, register, maskable } = data;
     let tables = generate_role(Role::Table, element_bytes, vector_bytes, false);
     let datum = |source: [u128; 4], held: [u128; 4], mask| OperandValue::EvexIntegerData {
         destination: [0; 4],
@@ -1064,7 +1072,7 @@ pub fn generate_move_data(data: EvexMoveData) -> Vec<OperandValue> {
     if !register {
         return vec![datum(tables[0], tables[1], NO_MASK)];
     }
-    let masks = list_move_masks(vector_bytes / element_bytes);
+    let masks = if maskable { list_move_masks(vector_bytes / element_bytes) } else { vec![NO_MASK] };
     tables.iter().zip(tables.iter().rev()).flat_map(|(&source, &held)| masks.iter().map(move |&mask| datum(source, held, mask))).collect()
 }
 

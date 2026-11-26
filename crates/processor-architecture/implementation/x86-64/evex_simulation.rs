@@ -116,6 +116,7 @@ pub(super) fn execute_evex(
             })?
         }
         EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => unreachable!("moved above"),
+        EvexOperation::MoveScalar => second,
         EvexOperation::DotBfloat16 => {
             let mut sums = [0; 4];
             for index in (0..elements).filter(|index| selected & (1 << index) != 0) {
@@ -163,7 +164,13 @@ pub(super) fn execute_evex(
     if form.elements() == 1 && !matches!(form.operation, EvexOperation::Integer { .. }) {
         // The elements above the first come from the first source (a fused form's from its destination); the bits
         // beyond 128 are zeroed.
-        let upper = if matches!(form.operation, EvexOperation::Fused { .. }) { old[0] } else { first[0] };
+        let upper = match form.operation {
+            EvexOperation::Fused { .. } => old[0],
+            // A VMOVSH load and VMOVW zero the bits above the word.
+            EvexOperation::MoveScalar if !form.reads_first_source() && !is_active(Bug::MoveWordKeepsUpperBits) => 0,
+            EvexOperation::MoveScalar if !form.reads_first_source() => old[0],
+            _ => first[0],
+        };
         let low = upper & !((1u128 << (written * 8)) - 1);
         result = [(result[0] & ((1u128 << (written * 8)) - 1)) | low, 0, 0, 0];
         if is_active(Bug::EvexScalarKeepsUpperBits) {
