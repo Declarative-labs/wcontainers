@@ -489,7 +489,7 @@ where
     /// `Idle` with no time.
     ///
     /// A turn runs until its thread traps: a time slice the kernel asks for is not kept, as
-    /// `execute` takes none.
+    /// an execution takes none.
     fn run(&mut self, executor: &mut C) -> interface::StopReason {
         let mut timer_told = false;
         loop {
@@ -759,7 +759,7 @@ mod tests {
     /// An executor with nothing to configure, which has no memory to run on.
     struct Plain;
 
-    /// What `Plain` has no instance of: its memory, that memory's bytes and pages, and an interrupter.
+    /// What `Plain` has no instance of: its memory, bytes, pages, execution and interrupter.
     enum Absent {}
 
     impl Absent {
@@ -835,6 +835,18 @@ mod tests {
         }
     }
 
+    impl wcontainers_executor::Execution for Absent {
+        type ProcessorState = Processor;
+        type Wait = core::future::Ready<()>;
+
+        fn run(
+            self,
+            _handler: &mut impl wcontainers_executor::TrapHandler,
+        ) -> wcontainers_executor::ExecutionStop<Processor, Self::Wait> {
+            match self {}
+        }
+    }
+
     impl wcontainers_executor::ExecutionInterrupter for Absent {
         fn interrupt(&self) {
             match *self {}
@@ -864,19 +876,18 @@ mod tests {
         type GuestMemory = Absent;
         type Interrupter = Absent;
         type CreateGuestMemoryError = NoMemory;
-        type Execution<'execution> = core::future::Ready<Processor>;
+        type Execution<'execution> = Absent;
 
         fn create_guest_memory(&self) -> Result<(Absent, Absent), NoMemory> {
             Err(NoMemory)
         }
 
-        fn execute<'execution>(
+        fn prepare_execution<'execution>(
             &'execution mut self,
             _processor: Processor,
             memory: &'execution Absent,
-            _handler: &'execution mut impl wcontainers_executor::TrapHandler,
-        ) -> (core::future::Ready<Processor>, Absent) {
-            (core::future::ready(memory.anything()), memory.anything())
+        ) -> (Absent, Absent) {
+            (memory.anything(), memory.anything())
         }
     }
 

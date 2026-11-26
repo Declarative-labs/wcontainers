@@ -1,17 +1,17 @@
-//! One turn of a guest thread on the executor's [`Executor::execute`]: the thread's registers as
+//! One turn of a guest thread on the executor's [`Execution::run`]: the thread's registers as
 //! the processor's state and back, and the trap that ended the turn as the [`Exit`] it is, which
 //! the kernel answers outside the execution.
 
 use core::any::Any;
 use core::future::Future;
 use core::pin::pin;
-use core::task::{Context, Poll, Waker};
+use core::task::{Context, Waker};
 
 use aarch64_cpu::registers::ESR_EL1;
 use wcontainers_abi::{Access, RegisterBlock, Resume, SystemCallRequest};
 use wcontainers_executor::{
-    Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf, SystemCallResponse,
-    TrapHandler,
+    Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf,
+    SystemCallResponse, TrapHandler,
 };
 use wcontainers_processor_architecture_arm64::{
     ConditionFlags, Exception, ExclusiveMonitor, INSTRUCTION_SIZE,
@@ -66,7 +66,7 @@ impl TrapHandler for FirstTrap {
 
 /// Runs the thread whose registers are `registers` on `memory` with `executor`, carrying on as
 /// `resume` says, until its first trap, and returns that trap as the exit it is, with `registers`
-/// as the thread left them. `started` is given the turn's interrupter before it runs.
+/// as the thread left them. `started` is given each execution's interrupter before it runs.
 ///
 /// # Panics
 ///
@@ -76,17 +76,30 @@ pub(crate) fn turn<C: Executor + 'static>(
     registers: &mut RegisterBlock,
     memory: &C::GuestMemory,
     resume: Resume,
-    started: impl FnOnce(C::Interrupter),
+    mut started: impl FnMut(C::Interrupter),
 ) -> Exit {
     if let Resume::Return(value) = resume {
         registers.x[RESULT_REGISTER] = value;
     }
     let mut trap = FirstTrap::default();
-    let processor = executors_own::<ProcessorStateOf<C>>(to_processor(registers))
+    let mut processor = executors_own::<ProcessorStateOf<C>>(to_processor(registers))
         .expect("the kernel runs arm64 threads only");
-    let (execution, interrupter) = executor.execute(processor, memory, &mut trap);
-    started(interrupter);
-    let processor = finished(execution);
+    // Runs until the next trap, which the handler ends the execution at; an execution that must
+    // wait is waited out and prepared again from where it stopped.
+    let processor = loop {
+        let (execution, interrupter) = executor.prepare_execution(processor, memory);
+        started(interrupter);
+        match execution.run(&mut trap) {
+            ExecutionStop::Terminated(stopped) => break stopped,
+            ExecutionStop::Waiting {
+                processor: stopped,
+                wait,
+            } => {
+                waited(wait);
+                processor = stopped;
+            }
+        }
+    };
     let processor: &Processor = (&processor as &dyn Any)
         .downcast_ref()
         .expect("the executor's processor is the one it was given");
@@ -111,15 +124,12 @@ fn executors_own<P: 'static>(processor: Processor) -> Option<P> {
         .and_then(Option::take)
 }
 
-/// Polls `execution` until it completes. An executor that blocks completes at the first poll; one
-/// that does not is polled again at once, as the kernel's runner has nothing else to do.
-fn finished<F: Future>(execution: F) -> F::Output {
-    let mut execution = pin!(execution);
+/// Polls an executor's `wait` until it completes, again at once each time, as the kernel's runner
+/// has nothing else to do.
+fn waited<F: Future<Output = ()>>(wait: F) {
+    let mut wait = pin!(wait);
     let mut context = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(output) = execution.as_mut().poll(&mut context) {
-            return output;
-        }
+    while wait.as_mut().poll(&mut context).is_pending() {
         core::hint::spin_loop();
     }
 }
