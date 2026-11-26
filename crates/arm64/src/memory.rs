@@ -377,15 +377,20 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
                 .i64_const(64)
                 .memory_fill(0);
         }
-        I::CleanCache { rn } | I::CodeChanged { rn } => {
+        I::CleanCache { rn } => {
             let at = e.local(ValType::I64);
             e.get(rn);
             e.sink().local_set(at);
             e.check(at, 1, Access::Read, 0);
-            if let I::CodeChanged { .. } = instruction {
-                e.sink().local_get(at);
-                e.hook(Hook::CodeChanged);
-            }
+        }
+        I::CodeChanged { rn } => {
+            // IC IVAU never faults at EL0: the hook is given the untagged address, whatever its page allows.
+            let at = e.local(ValType::I64);
+            e.get(rn);
+            let mut s = e.sink();
+            s.local_set(at);
+            untag(&mut s, at);
+            e.hook(Hook::CodeChanged);
         }
         I::SimdMemory { .. } => structures(e, instruction),
         _ => unreachable!("not a memory instruction: {instruction:?}"),
