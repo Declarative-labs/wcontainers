@@ -1008,11 +1008,9 @@ impl Kernel {
             );
         }
         self.machine.address_space_bytes = space;
-        self.ceiling = start
-            .ceiling
-            .unwrap_or(space)
-            .min(cx.cpu.address_space().end)
-            .min(space);
+        // The ceiling is the highest address the executor can give, so it bounds its spaces.
+        self.ceiling = start.ceiling.unwrap_or(space).min(space);
+        cx.cpu.bound_spaces(self.ceiling);
         self.machine.lowest_tier_top = crate::memory::first_tier_top(self.ceiling);
         self.hostname = start.hostname.to_vec();
         self.domainname = start.options.domain_name.to_vec();

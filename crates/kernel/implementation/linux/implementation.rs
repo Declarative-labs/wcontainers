@@ -636,13 +636,20 @@ impl Kernel {
     /// and thread's registers under the same handles, nothing else) and a host whose clocks may read
     /// anything: the kernel's monotonic clock goes on from where it was saved, every thread starts
     /// again from its saved registers, and every parked call runs again, its deadline on the clock
-    /// it had.
+    /// it had. Each memory is copied into a new space of the executor first, so nothing the executor
+    /// made of the old ones is kept, as on a host that brought the memories back.
+    ///
+    /// # Panics
+    ///
+    /// If a thread is running, or the executor cannot make or fill a space as large as the old.
     pub fn restore<S: System, C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
     ) {
         assert!(self.running.is_none(), "restored while a thread runs");
+        cpu.renew_memories()
+            .expect("the executor holds a copy of each memory it held");
         self.monotonic_offset = self.last_now.wrapping_sub(system.monotonic_nanoseconds());
         let mut cx = Context::new(cpu, system, self.monotonic_offset);
         self.entry_now = cx.monotonic();
