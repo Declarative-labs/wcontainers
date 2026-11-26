@@ -120,6 +120,14 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                     ),
                     None => unreachable!("an SVE access behavior is listed only for an SVE access"),
                 },
+                Self::Structure {
+                    instruction,
+                    choices,
+                } => instruction.simulate(choices, processor, memory, word, mutation_hook),
+                Self::TagAccess {
+                    instruction,
+                    choices,
+                } => instruction.simulate(choices, processor, memory, word, mutation_hook),
                 Self::MrsCtrEl0 { cache_type } => {
                     write_register(
                         processor,
@@ -188,6 +196,8 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
             Self::Scalable { instruction, .. }
             | Self::ScalableAccess { instruction, .. }
             | Self::Unimplemented(instruction) => instruction,
+            Self::Structure { instruction, .. } => instruction.instruction(),
+            Self::TagAccess { instruction, .. } => instruction.instruction(),
             Self::MrsCtrEl0 { .. } | Self::LevelSpecific(_) => return false,
         };
         instruction.to_record().is_some_and(|record| {

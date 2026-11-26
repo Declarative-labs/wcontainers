@@ -22,6 +22,9 @@ pub enum PlantedBy {
     ScalableFirstHalf,
     /// The second half of the SVE work list, whose bugs are numbered from 2001.
     ScalableSecondHalf,
+    /// The modeling of the cryptography, pointer authentication, memory tagging, structure loads and stores and the
+    /// system instructions left after the sync.
+    RestOfTheSet,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.
@@ -63,7 +66,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 474] = [
+pub const PLANTED_BUGS: [PlantedBug; 496] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2907,5 +2910,137 @@ pub const PLANTED_BUGS: [PlantedBug; 474] = [
         instruction: Instruction::Addhnb,
         planted_by: PlantedBy::ScalableSecondHalf,
         what: "the top halves kept, not zero",
+    },
+    PlantedBug {
+        number: 701,
+        instruction: Instruction::AeseVectorRr,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the round key is not added",
+    },
+    PlantedBug {
+        number: 702,
+        instruction: Instruction::AeseVectorRr,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the rows are not shifted",
+    },
+    PlantedBug {
+        number: 703,
+        instruction: Instruction::AesdVectorRr,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the forward S-box",
+    },
+    PlantedBug {
+        number: 704,
+        instruction: Instruction::Sha1c,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "parity instead of choose",
+    },
+    PlantedBug {
+        number: 705,
+        instruction: Instruction::Sha512su1,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "sigma1 shifts by 7",
+    },
+    PlantedBug {
+        number: 706,
+        instruction: Instruction::Eor3Vector,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the third source is left out",
+    },
+    PlantedBug {
+        number: 707,
+        instruction: Instruction::XarVector,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "rotates left",
+    },
+    PlantedBug {
+        number: 708,
+        instruction: Instruction::FmovXDHighr,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the lower doubleword is cleared",
+    },
+    PlantedBug {
+        number: 709,
+        instruction: Instruction::Fjcvtzs,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "an integer out of range is exact",
+    },
+    PlantedBug {
+        number: 710,
+        instruction: Instruction::BfcvtSingleToHalf,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "rounds toward zero whatever FPCR",
+    },
+    PlantedBug {
+        number: 711,
+        instruction: Instruction::LdraaWriteback64,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "the offset counts words",
+    },
+    PlantedBug {
+        number: 712,
+        instruction: Instruction::Retaa,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "returns to zero, not X30",
+    },
+    PlantedBug {
+        number: 713,
+        instruction: Instruction::Xpaclri,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "X30 is not stripped",
+    },
+    PlantedBug {
+        number: 714,
+        instruction: Instruction::St2I8,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "a byte lane's index leaves out Q",
+    },
+    PlantedBug {
+        number: 715,
+        instruction: Instruction::Ld1TwoImmediatePostIndex,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "writes back half the access",
+    },
+    PlantedBug {
+        number: 716,
+        instruction: Instruction::Ld1Four,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "every repeat starts at Rt",
+    },
+    PlantedBug {
+        number: 717,
+        instruction: Instruction::Ld3r,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "a 64-bit replicate fills the whole register",
+    },
+    PlantedBug {
+        number: 718,
+        instruction: Instruction::LdrQLdstRegoff,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "a 32-bit offset is taken whole",
+    },
+    PlantedBug {
+        number: 719,
+        instruction: Instruction::Addg,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "keeps the tag",
+    },
+    PlantedBug {
+        number: 720,
+        instruction: Instruction::Gmi,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "sets the bit above the tag's",
+    },
+    PlantedBug {
+        number: 721,
+        instruction: Instruction::Ldg,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "reads the tag of the unaligned address",
+    },
+    PlantedBug {
+        number: 722,
+        instruction: Instruction::StgImmediate64,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "an unaligned tag store does not fault",
     },
 ];

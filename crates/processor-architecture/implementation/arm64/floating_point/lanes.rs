@@ -116,7 +116,9 @@ fn compute(
                 context,
             ) {
                 Outcome::Value(bits) => bits,
-                Outcome::Flags(_) => unreachable!("a lane's formula gives a value"),
+                Outcome::Flags(_) | Outcome::ValueAndFlags(..) => {
+                    unreachable!("a lane's formula gives only a value")
+                }
             }
         }
         LaneOperation::MultiplyExtended => {

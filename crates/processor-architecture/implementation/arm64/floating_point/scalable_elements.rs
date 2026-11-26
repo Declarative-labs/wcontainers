@@ -101,7 +101,9 @@ fn apply_scalar(
         context,
     ) {
         Outcome::Value(bits) => bits,
-        Outcome::Flags(_) => unreachable!("an element operation gives a value"),
+        Outcome::Flags(_) | Outcome::ValueAndFlags(..) => {
+            unreachable!("an element operation gives only a value")
+        }
     }
 }
 

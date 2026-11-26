@@ -19,6 +19,7 @@ pub mod advanced_simd;
 mod behavior;
 pub mod branch;
 mod condition_flags;
+pub mod cryptography;
 mod documented;
 pub mod encoding;
 mod exception;
@@ -27,6 +28,7 @@ pub mod integer;
 mod listing;
 pub mod load_store;
 pub mod memory;
+pub mod memory_tagging;
 pub mod operand;
 pub mod planted;
 pub mod pointer_authentication;
@@ -43,6 +45,7 @@ mod sve_move;
 mod sve_predicate;
 #[cfg(test)]
 mod sve_tests;
+mod structure;
 pub mod system_register;
 #[cfg(test)]
 mod tests;
@@ -64,6 +67,7 @@ pub use listing::{
     Instruction, InstructionClass, InstructionRecord, LISTED_INSTRUCTIONS, PrivilegeBehavior,
 };
 pub use load_store::{LoadStoreChoices, LoadStoreInstruction};
+pub use structure::{StructureChoices, StructureInstruction};
 pub use wcontainers_privilege_level_arm64_user::User;
 
 /// The number of bits of a virtual address under a 4 KiB granule without [FEAT_LVA](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-2-architecture-extension#:~:text=FEAT_LVA%2C%20Large%20VA%20support).
@@ -338,6 +342,16 @@ pub enum PreciseInstruction<LevelSpecific> {
     ScalableAccess {
         instruction: Instruction<Infallible>,
         choices: load_store::scalable_access::ScalableAccessChoices,
+    },
+    /// LDG, a tag store or STGP.
+    TagAccess {
+        instruction: memory_tagging::TagAccessInstruction,
+        choices: memory_tagging::TagAccessChoices,
+    },
+    /// A load or store of Advanced SIMD structures.
+    Structure {
+        instruction: StructureInstruction,
+        choices: StructureChoices,
     },
     /// What a chip without the instruction's feature does with its word.
     Unimplemented(Instruction<Infallible>),

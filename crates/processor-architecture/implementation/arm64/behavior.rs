@@ -163,6 +163,20 @@ impl PreciseInstruction<Infallible> {
                 instruction,
                 choices,
             },
+            Self::Structure {
+                instruction,
+                choices,
+            } => PreciseInstruction::Structure {
+                instruction,
+                choices,
+            },
+            Self::TagAccess {
+                instruction,
+                choices,
+            } => PreciseInstruction::TagAccess {
+                instruction,
+                choices,
+            },
             Self::Unimplemented(instruction) => PreciseInstruction::Unimplemented(instruction),
             Self::LevelSpecific(never) => match never {},
         }
@@ -187,6 +201,8 @@ impl PreciseInstruction<Infallible> {
             Self::Scalable { instruction, .. }
             | Self::ScalableAccess { instruction, .. }
             | Self::Unimplemented(instruction) => instruction,
+            Self::Structure { instruction, .. } => instruction.instruction(),
+            Self::TagAccess { instruction, .. } => instruction.instruction(),
         }
     }
 }
@@ -284,6 +300,12 @@ fn list_modeled_behaviors(
     }
     if let Some(access) = to_scalable_access(instruction) {
         return list_scalable_access_behaviors(instruction, access);
+    }
+    if let Some(access) = crate::memory_tagging::TagAccessInstruction::new(instruction) {
+        return crate::memory_tagging::list_tag_access_behaviors(access);
+    }
+    if let Some(structure) = crate::StructureInstruction::new(instruction) {
+        return crate::structure::list_structure_behaviors(structure).collect();
     }
     match instruction {
         Instruction::Brk => [PreciseInstruction::Brk].to_vec(),

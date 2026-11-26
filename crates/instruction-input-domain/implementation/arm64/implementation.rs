@@ -25,6 +25,7 @@ use itertools::Itertools;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_arm64::branch::{BranchOperation, to_branch_operation};
+use wcontainers_processor_architecture_arm64::cryptography::to_cryptography_operation;
 use wcontainers_processor_architecture_arm64::encoding::{Field, IMM16, RD, RDVL_IMM6, RN, RT};
 use wcontainers_processor_architecture_arm64::floating_point::scalable_elements::Conversion;
 use wcontainers_processor_architecture_arm64::floating_point::{
@@ -33,10 +34,14 @@ use wcontainers_processor_architecture_arm64::floating_point::{
     ROUNDING_MODE_BITS, ROUNDING_MODE_SHIFT, UNDERFLOW, to_floating_point_operation,
 };
 use wcontainers_processor_architecture_arm64::load_store::scalable_access::to_scalable_access;
-use wcontainers_processor_architecture_arm64::load_store::{AtomicOperation, Transfer};
+use wcontainers_processor_architecture_arm64::load_store::{
+    AccessLayout, AtomicOperation, Transfer,
+};
+use wcontainers_processor_architecture_arm64::memory_tagging::TagAccessInstruction;
 use wcontainers_processor_architecture_arm64::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Signedness,
 };
+use wcontainers_processor_architecture_arm64::pointer_authentication::reads_link_register;
 use wcontainers_processor_architecture_arm64::scalable_floating_point::{Lanes, VectorRole};
 use wcontainers_processor_architecture_arm64::simd::to_vector_operation;
 use wcontainers_processor_architecture_arm64::sve::{
@@ -46,12 +51,14 @@ use wcontainers_processor_architecture_arm64::system_register::SYSTEM_REGISTER;
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, DocumentedInstruction, GENERAL_PURPOSE_REGISTERS,
     INSTRUCTION_SIZE, Instruction, InstructionClass, InstructionFetch, LoadStoreInstruction,
-    PagePermission, Processor, User, VECTOR_REGISTERS, VIRTUAL_ADDRESS_BITS, ZERO_PROCESSOR,
-    to_implicit_inputs, writes_condition_flags,
+    PagePermission, Processor, StructureInstruction, User, VECTOR_REGISTERS, VIRTUAL_ADDRESS_BITS,
+    ZERO_PROCESSOR, to_implicit_inputs, writes_condition_flags,
 };
 
 pub mod advanced_simd;
+mod memory_tagging;
 mod scalable;
+mod structure;
 #[cfg(test)]
 mod tests;
 
@@ -172,6 +179,8 @@ pub enum OperandType {
         field: Field,
         thirty_one: RegisterThirtyOne,
     },
+    /// The value of a register an instruction takes as an address without naming it: X30 of RETAA and XPACLRI.
+    ImplicitAddress(u32),
     UnsignedImmediate(Field),
     SignedImmediate(Field),
     /// The amount of a shifted register, which is unallocated from the register's width up.
@@ -195,6 +204,8 @@ pub enum OperandType {
     ConditionFlags,
     /// A SIMD and floating-point register an encoding field names, none of which has a special role.
     VectorRegisterNumber(Field),
+    /// The first register of a list of consecutive SIMD and floating-point registers, which wraps after V31.
+    VectorListNumber(Field),
     /// The low `precision` bits of the SIMD and floating-point register an encoding field names.
     FloatingPointValue {
         field: Field,
@@ -236,6 +247,12 @@ pub enum OperandType {
     /// The low `bytes` bytes of the SIMD and floating-point register a store moves.
     VectorValue {
         field: Field,
+        bytes: u32,
+    },
+    /// The low `bytes` bytes of the register `place` after the first of a list a store moves.
+    ListedVectorValue {
+        field: Field,
+        place: u32,
         bytes: u32,
     },
     /// The whole word of an instruction whose operands no model reads: a word LLVM decodes as the instruction, or its
@@ -409,7 +426,8 @@ impl Arm64InputDomain {
             | OperandType::VectorRegisterNumber(_)
             | OperandType::PredicateRegisterNumber(_)
             | OperandType::ScalableVectorNumber { .. }
-            | OperandType::PredicateNumber(_) => &DISTINCT_REGISTER_NUMBERS,
+            | OperandType::PredicateNumber(_)
+            | OperandType::VectorListNumber(_) => &DISTINCT_REGISTER_NUMBERS,
             _ => &[],
         };
         numbers.iter().copied().map(OperandValue::RegisterNumber)
@@ -438,6 +456,12 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         if let Some(operand_types) = scalable::list_scalable_operand_types(instruction) {
             return operand_types.into_iter();
         }
+        if let Some(structure) = StructureInstruction::new(instruction) {
+            return structure::to_structure_operand_types(structure).into_iter();
+        }
+        if let Some(access) = TagAccessInstruction::new(instruction) {
+            return memory_tagging::to_tag_access_operand_types(access).into_iter();
+        }
         if DocumentedInstruction::new(instruction).is_some()
             || LoadStoreInstruction::new(instruction).is_some()
         {
@@ -462,7 +486,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 .map(OperandValue::RegisterNumber)
                 .to_vec(),
             OperandType::RegisterValue { width, .. } => to_register_values(width),
-            OperandType::Address { .. } => {
+            OperandType::Address { .. } | OperandType::ImplicitAddress(_) => {
                 let mut values = to_register_values(RegisterWidth::Bits64);
                 // The lowest bit past the addressable ones alone, besides the high bits a data address takes.
                 let lowest_past = 1 << VIRTUAL_ADDRESS_BITS;
@@ -487,7 +511,12 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             OperandType::Word(word) => [OperandValue::Bits(u64::from(word))].to_vec(),
             OperandType::AdvancedSimd(operand) => advanced_simd::generate_critical_values(operand),
             OperandType::SoftwareThreadId => to_register_values(RegisterWidth::Bits64),
-            OperandType::VectorValue { bytes, .. } => to_vector_values(bytes),
+            OperandType::VectorValue { bytes, .. }
+            | OperandType::ListedVectorValue { bytes, .. } => to_vector_values(bytes),
+            // The register holding zero, and the last, after which the list wraps.
+            OperandType::VectorListNumber(_) => [0, 1, (VECTOR_REGISTERS - 1) as u32]
+                .map(OperandValue::RegisterNumber)
+                .to_vec(),
             OperandType::WrittenConditionFlags => [ConditionFlags::empty(), ConditionFlags::all()]
                 .map(OperandValue::ConditionFlags)
                 .to_vec(),
@@ -732,6 +761,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         let mut vector_values = Vec::new();
         let mut scalable_values = Vec::new();
         let mut predicate_values = Vec::new();
+        let mut listed_vector_values = Vec::new();
         let mut placement = None;
         let mut tag = 0;
         let mut comparand = None;
@@ -829,6 +859,16 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                     };
                     predicate_values.push((field, value as u16));
                 }
+                OperandType::ListedVectorValue {
+                    field,
+                    place,
+                    bytes,
+                } => {
+                    let OperandValue::Vector(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    listed_vector_values.push((field, place, bytes, value));
+                }
                 // `encode_word` has put them in the word.
                 OperandType::ScalableVectorNumber { .. }
                 | OperandType::PredicateNumber(_)
@@ -838,6 +878,7 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 | OperandType::VectorRegisterNumber(_)
                 | OperandType::PredicateRegisterNumber(_)
                 | OperandType::Pattern(_)
+                | OperandType::VectorListNumber(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)
                 | OperandType::ShiftAmount { .. }
@@ -860,6 +901,12 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                         reject_mismatch(operand_type, operand)
                     };
                     register_values.push((field, RegisterThirtyOne::ZeroRegister, value));
+                }
+                OperandType::ImplicitAddress(number) => {
+                    let OperandValue::Bits(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    processor.general_purpose_registers[number as usize] = value;
                 }
                 OperandType::ConditionFlags | OperandType::WrittenConditionFlags => {
                     let OperandValue::ConditionFlags(flags) = operand else {
@@ -936,6 +983,12 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             let number = (field.read(word) + offset) as usize % VECTOR_REGISTERS;
             processor.vector_registers[number] = value;
         }
+        for (field, place, bytes, value) in listed_vector_values {
+            let number = (field.read(word) + place) as usize % VECTOR_REGISTERS;
+            let mask = u128::MAX >> (u128::BITS - bytes * u8::BITS);
+            let register = &mut processor.vector_registers[number];
+            *register = (*register & !mask) | (value & mask);
+        }
         for (field, thirty_one, value) in register_values {
             match processor
                 .general_purpose_registers
@@ -962,7 +1015,12 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             .or_else(|| {
                 to_scalable_access(instruction)
                     .and_then(|access| access.to_access_layout(word, &processor))
-            });
+            })
+            .or_else(|| {
+                let bytes = StructureInstruction::new(instruction)?.to_access_bytes(word)?;
+                Some(AccessLayout { bytes, offset: 0 })
+            })
+            .or_else(|| Some(TagAccessInstruction::new(instruction)?.to_access_layout(word)));
         if let (Some(placement), Some(layout)) = (placement, layout) {
             let address = to_access_address(placement, layout.bytes);
             let base = address.wrapping_sub(layout.offset).wrapping_add(tag);
@@ -1061,7 +1119,8 @@ pub fn encode_word(
                 | OperandType::VectorRegisterNumber(field)
                 | OperandType::PredicateRegisterNumber(field)
                 | OperandType::ScalableVectorNumber { field, .. }
-                | OperandType::PredicateNumber(field),
+                | OperandType::PredicateNumber(field)
+                | OperandType::VectorListNumber(field),
                 OperandValue::RegisterNumber(number),
             ) => word |= field.to_bits(number),
             (OperandType::Pattern(field), OperandValue::Bits(bits)) => {
@@ -1099,6 +1158,7 @@ pub fn encode_word(
                 | OperandType::PredicateNumber(_)
                 | OperandType::EveryValue(_)
                 | OperandType::BytePosition(_)
+                | OperandType::VectorListNumber(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)
                 | OperandType::ShiftAmount { .. }
@@ -1304,18 +1364,23 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
         _ => None,
     });
     // A branch to a register's value, and pointer authentication, take a register as an address.
-    let takes_address = record.class == InstructionClass::PointerAuthentication
-        || matches!(
-            to_branch_operation(instruction),
-            Some(
-                BranchOperation::BranchToRegister
-                    | BranchOperation::BranchWithLinkToRegister
-                    | BranchOperation::Return
-            )
-        );
+    let takes_address = matches!(
+        record.class,
+        InstructionClass::PointerAuthentication | InstructionClass::MemoryTagging
+    ) || matches!(
+        to_branch_operation(instruction),
+        Some(
+            BranchOperation::BranchToRegister
+                | BranchOperation::BranchWithLinkToRegister
+                | BranchOperation::Return
+        )
+    );
     let (from_integer, to_integer) = match to_floating_point_operation(instruction) {
         Some(FloatingPointOperation::ConvertFromInteger { .. }) => (converted_precision, None),
-        Some(FloatingPointOperation::ConvertToInteger { .. }) => (None, converted_width),
+        Some(
+            FloatingPointOperation::ConvertToInteger { .. }
+            | FloatingPointOperation::ConvertToJavaScriptInteger,
+        ) => (None, converted_width),
         _ => (None, None),
     };
     for operand in record.operands {
@@ -1436,6 +1501,9 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
                 // Only a modeled load or store places its access; a hint that names a base reads nothing there.
                 addresses_data = load_store.is_some();
             }
+            Operand::SplitAddressOffset { fields, .. } => {
+                operand_types.push(OperandType::ProgramCounterOffset(fields));
+            }
             Operand::AddressOffset {
                 field, signedness, ..
             } => operand_types.push(match signedness {
@@ -1476,7 +1544,9 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
                             width,
                         },
                         // An Advanced SIMD scalar takes the register's bits as an integer.
-                        None if to_vector_operation(instruction).is_some() => {
+                        None if to_vector_operation(instruction).is_some()
+                            || to_cryptography_operation(instruction).is_some() =>
+                        {
                             OperandType::VectorValue {
                                 field: number,
                                 bytes: precision.to_bits() / u8::BITS,
@@ -1544,6 +1614,9 @@ fn to_listed_operand_types(instruction: Instruction<Infallible>) -> Vec<OperandT
     }
     if reads_own_address || implicit.program_counter {
         operand_types.push(OperandType::CodePlacement);
+    }
+    if reads_link_register(instruction) {
+        operand_types.push(OperandType::ImplicitAddress(LINK_REGISTER));
     }
     operand_types
 }

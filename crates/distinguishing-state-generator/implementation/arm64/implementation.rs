@@ -81,7 +81,8 @@ use wcontainers_processor_architecture_arm64::system_register::{
 };
 use wcontainers_processor_architecture_arm64::{
     Arm64, CONDITIONS, DataAccess, DocumentedOperation, Instruction, InstructionFetch,
-    LoadStoreInstruction, PagePermission, Processor, User, to_documented_operation,
+    LoadStoreInstruction, PagePermission, Processor, StructureInstruction, User,
+    to_documented_operation,
 };
 
 /// The bits of FPCR a Neoverse V2 holds, the fewest of the known chips: AHP, DN, FZ, RMode and FZ16. It has no FEAT_AFP
@@ -236,7 +237,8 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::VectorRegisterNumber(_)
         | OperandType::PredicateRegisterNumber(_)
         | OperandType::ScalableVectorNumber { .. }
-        | OperandType::PredicateNumber(_) => Group::Register,
+        | OperandType::PredicateNumber(_)
+        | OperandType::VectorListNumber(_) => Group::Register,
         OperandType::ScalablePredicateValue(_) => Group::Predicate,
         OperandType::AccessPlacement
         | OperandType::AddressTag
@@ -255,6 +257,7 @@ const fn to_group(operand_type: OperandType) -> Group {
         OperandType::ConditionFlags => Group::Flags,
         OperandType::RegisterValue { .. }
         | OperandType::Address { .. }
+        | OperandType::ImplicitAddress(_)
         | OperandType::FloatingPointValue { .. }
         | OperandType::ConvertedInteger { .. }
         | OperandType::ConvertedFloatingPoint { .. }
@@ -268,7 +271,8 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::RegisterBound(_)
         | OperandType::RegisterNearSaturation(_)
         | OperandType::FirstFaultValue
-        | OperandType::ScalableVectorValue { .. } => Group::Data,
+        | OperandType::ScalableVectorValue { .. }
+        | OperandType::ListedVectorValue { .. } => Group::Data,
         OperandType::SystemRegister(_) => Group::Selector,
         OperandType::FloatingPointControl(_) => Group::Control,
         OperandType::StatusFlags
@@ -431,6 +435,7 @@ impl Cut {
                 })
             })
             .collect();
+        let structure = StructureInstruction::new(instruction);
         let writes_memory = LoadStoreInstruction::new(instruction).is_some_and(|load_store| {
             matches!(
                 load_store.to_operation().transfer,
@@ -440,13 +445,23 @@ impl Cut {
                     | Transfer::CompareAndSwapPair
             )
         }) || to_scalable_access(instruction)
-            .is_some_and(|access| access.kind == AccessKind::Store);
+            .is_some_and(|access| access.kind == AccessKind::Store)
+            || structure.is_some_and(StructureInstruction::is_store)
+            || wcontainers_processor_architecture_arm64::memory_tagging::TagAccessInstruction::new(
+                instruction,
+            )
+            .is_some_and(|access| access.writes_data());
+        // A structure's register post-index is the offset it writes back.
+        let structure_offset = structure
+            .filter(|structure| structure.has_register_offset())
+            .map(|_| wcontainers_processor_architecture_arm64::encoding::RM);
         let mut addressing = record.map_or(Vec::new(), |record| {
             record
                 .operands
                 .iter()
                 .flat_map(|operand| match *operand {
                     Operand::AddressOffset { field, .. } => vec![field],
+                    Operand::SplitAddressOffset { fields, .. } => fields.to_vec(),
                     Operand::RegisterOffset {
                         number,
                         signed,
@@ -458,6 +473,7 @@ impl Cut {
                         .collect(),
                     _ => Vec::new(),
                 })
+                .chain(structure_offset)
                 .collect()
         });
         // An SVE access's offset: its register or its immediate's fields.
@@ -791,7 +807,9 @@ impl Cut {
         let moved_access = facts.moved
             && to_scalable_access(self.instruction).is_some()
             && (group == Group::Predicate || self.is_addressing(self.types[index]));
-        if each_beside_the_rest || moved_access {
+        // Each register a structure store moves goes to bytes of its own, so the registers' combinations do not matter.
+        let listed = matches!(self.types[index], OperandType::ListedVectorValue { .. });
+        if listed || each_beside_the_rest || moved_access {
             Allowed::EachOnce(values)
         } else {
             Allowed::Every(values)
@@ -955,7 +973,7 @@ impl Cut {
             OperandType::UnsignedImmediate(field)
             | OperandType::SignedImmediate(field)
             | OperandType::RegisterValue { field, .. } => self.addressing.contains(&field),
-            OperandType::SplitImmediate(fields) => {
+            OperandType::SplitImmediate(fields) | OperandType::ProgramCounterOffset(fields) => {
                 fields.iter().all(|field| self.addressing.contains(field))
             }
             _ => false,
@@ -979,7 +997,8 @@ fn to_register_assignments(
     let field = |operand_type: OperandType| match operand_type {
         OperandType::RegisterNumber(field) => Some((field, RegisterKind::General)),
         OperandType::VectorRegisterNumber(field)
-        | OperandType::ScalableVectorNumber { field, .. } => Some((field, RegisterKind::Vector)),
+        | OperandType::ScalableVectorNumber { field, .. }
+        | OperandType::VectorListNumber(field) => Some((field, RegisterKind::Vector)),
         OperandType::PredicateRegisterNumber(field) | OperandType::PredicateNumber(field) => {
             Some((field, RegisterKind::Predicate))
         }
