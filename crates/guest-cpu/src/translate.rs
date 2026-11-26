@@ -51,7 +51,7 @@ impl AccessOrdering {
         }
     }
 
-    /// Whether code of this form imports the guest's memory shared, so that threads run it at once on one memory.
+    /// Tells whether code of this form imports the guest's memory shared, for threads that run it at once.
     pub fn shares_memory(self) -> bool {
         matches!(self, AccessOrdering::Ordered(_))
     }

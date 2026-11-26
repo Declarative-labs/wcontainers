@@ -2165,6 +2165,17 @@ fn with_drawn_prefixes(draw: &mut Draw, bytes: Vec<u8>) -> Vec<u8> {
 /// offset's sign-extended value. Zero for every other instruction, and where the offset's register is also
 /// in the address, so that it cannot be aimed apart from it.
 fn bit_offset_move(instruction: &Instruction, state: &[u128]) -> u64 {
+    let in_address = [instruction.memory_base(), instruction.memory_index()]
+        .iter()
+        .any(|&r| field_of(r).is_some() && field_of(r) == field_of(instruction.op1_register()));
+    if in_address {
+        return 0;
+    }
+    bit_offset_move_made(instruction, state)
+}
+
+/// How far a bit offset in a register moves the address the CPU reaches, its register in the address or not.
+fn bit_offset_move_made(instruction: &Instruction, state: &[u128]) -> u64 {
     if !matches!(
         instruction.mnemonic(),
         Mnemonic::Bt | Mnemonic::Bts | Mnemonic::Btr | Mnemonic::Btc
@@ -2174,12 +2185,7 @@ fn bit_offset_move(instruction: &Instruction, state: &[u128]) -> u64 {
         return 0;
     }
     let offset = instruction.op1_register();
-    let field = field_of(offset);
-    if field.is_none()
-        || [instruction.memory_base(), instruction.memory_index()]
-            .iter()
-            .any(|&r| field_of(r) == field)
-    {
+    if field_of(offset).is_none() {
         return 0;
     }
     let bits = offset.size() as u32 * 8;
@@ -2214,11 +2220,13 @@ fn register_value(r: Register, state: &[u128]) -> Option<u64> {
 /// How many bits of a linear address a chip translates, which decides what an access above bit 47 meets there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinearAddressWidth {
-    /// 4-level paging, 48 bits: an access not canonical in 48 bits raises #GP, or #SS through the stack segment,
-    /// before any page is looked at, and so does a branch to such an address, at the branch.
+    /// Four levels, 48 bits: an access past bit 47 raises #GP, or #SS through the stack, before paging.
+    ///
+    /// So does a branch to such an address, at the branch.
     FourLevelPaging,
-    /// 5-level paging (LA57), 57 bits, which Linux turns on where the chip has it: the same accesses are canonical
-    /// and meet a page Linux never maps for the program (#PF), and a branch there faults at its target.
+    /// Five levels (LA57), 57 bits, which Linux turns on where the chip has it: such an access meets an unmapped page.
+    ///
+    /// That is a page fault, and a branch there faults at its target.
     FiveLevelPaging,
 }
 
@@ -2245,8 +2253,10 @@ pub const KNOWN_CHIPS: &[ChipBehaviors] = &[ChipBehaviors {
 const FIVE_LEVEL_PAGING_FLAG: &str = "la57";
 const CPU_INFORMATION: &str = "/proc/cpuinfo";
 
-/// The linear address width of the chip the reference runs on, found once: a local reference runs on this host's
-/// chip, read from `/proc/cpuinfo`; one over SSH is taken to have 48 bits, as every such machine used so far.
+/// Finds once the linear address width of the chip the reference runs on.
+///
+/// A local reference runs on this host's chip, read from `/proc/cpuinfo`; one over SSH is taken to have 48 bits, as
+/// every such machine used so far.
 pub fn reference_linear_addresses() -> LinearAddressWidth {
     static FOUND: OnceLock<LinearAddressWidth> = OnceLock::new();
     *FOUND.get_or_init(|| {
@@ -2257,7 +2267,7 @@ pub fn reference_linear_addresses() -> LinearAddressWidth {
     })
 }
 
-/// The linear address width `/proc/cpuinfo`'s text shows.
+/// Returns the linear address width `/proc/cpuinfo`'s text shows.
 pub fn linear_addresses_of(cpu_information: &str) -> LinearAddressWidth {
     let five_levels = cpu_information
         .lines()
@@ -2273,8 +2283,9 @@ pub fn linear_addresses_of(cpu_information: &str) -> LinearAddressWidth {
     }
 }
 
-/// Whether every byte from `start` for `bytes`, wrapping at the top of the address space as the CPU does, is
-/// canonical with 48 bits of linear address: none lies in the hole from [`USER_END`] to its negation.
+/// Tells whether no byte from `start` for `bytes` lies in the 48-bit hole from [`USER_END`] to its negation.
+///
+/// The bytes wrap at the top of the address space, as the CPU's do.
 fn canonical_with_four_levels(start: u64, bytes: u64) -> bool {
     let hole = USER_END.wrapping_neg() - USER_END;
     let in_hole = start.wrapping_sub(USER_END) < hole;
@@ -2282,10 +2293,10 @@ fn canonical_with_four_levels(start: u64, bytes: u64) -> bool {
     !in_hole && !runs_into_hole
 }
 
-/// Turns what the reference saw on a chip with 5-level paging into what a chip with 4-level paging gives: a page
-/// fault in an access that is not canonical in 48 bits is that access's #GP, or #SS through the stack segment, with
-/// the state as it was; a fault at a branch's target that is not canonical in 48 bits is #GP at the branch, which
-/// then changes nothing.
+/// Turns what the reference saw with 5-level paging into what a chip with 4-level paging gives.
+///
+/// A page fault in an access past bit 47 is its #GP, or #SS through the stack, with the state as it was. A fault at
+/// a branch target past bit 47 is #GP at the branch, which then changes nothing.
 fn as_with_four_level_paging(case: &Case, instruction: &Instruction, expected: &mut Outcome) {
     let Stop::MemoryFault(at) = expected.stop else {
         return;
@@ -2311,7 +2322,8 @@ fn as_with_four_level_paging(case: &Case, instruction: &Instruction, expected: &
         return;
     }
     let (in_parts, by_mask) = (made_in_parts(instruction), masked(instruction));
-    let Some(found) = accesses(instruction, &case.state.0) else {
+    let moved = bit_offset_move_made(instruction, &case.state.0);
+    let Some(found) = accesses(instruction, &case.state.0, moved) else {
         return;
     };
     let faulted = found.iter().find(|&&(start, bytes, _)| {
@@ -2333,8 +2345,9 @@ fn as_with_four_level_paging(case: &Case, instruction: &Instruction, expected: &
     }
 }
 
-/// Whether the processor makes the instruction's memory access in parts (an x87 or saved state, a far pointer): it
-/// is known to reach only the byte that faulted, as which part a 48-bit chip meets first was not seen.
+/// Tells whether the processor makes the access in parts (an x87 or saved state, a far pointer).
+///
+/// Such an access is known to reach only the byte that faulted: which part a 48-bit chip meets first was not seen.
 fn made_in_parts(instruction: &Instruction) -> bool {
     matches!(
         instruction.memory_size(),
@@ -2352,7 +2365,8 @@ fn made_in_parts(instruction: &Instruction) -> bool {
     )
 }
 
-/// Whether a mask may leave out elements of the instruction's access, which then reaches the element that faulted:
+/// Tells whether a mask may leave out elements of the access, which then reaches the element that faulted.
+///
 /// Intel's manual says a masked-off element never faults (VMASKMOV, gathers, AVX-512's masks).
 fn masked(instruction: &Instruction) -> bool {
     instruction.op_mask() != Register::None
@@ -2366,9 +2380,10 @@ fn masked(instruction: &Instruction) -> bool {
         )
 }
 
-/// Whether the reference, on a chip with 5-level paging, faulted in a canonical part of an access made in parts or
-/// masked while another part runs past bit 47, and the translation gave the #GP or #SS of that part: which of the
-/// two faults a 48-bit chip raises was not measured, as no such chip ran the reference here.
+/// Tells whether the case's answer on a 48-bit chip turns on which of two faults it raises, never measured here.
+///
+/// The reference, with 5-level paging, faulted in a canonical part of an access made in parts or masked while another
+/// part runs past bit 47, and the translation gave that part's #GP or #SS.
 fn fault_order_unmeasured(case: &Case, expected: &Outcome, actual: &Outcome) -> bool {
     let instruction = Decoder::with_ip(
         wcontainers_x86::MODE_BITS,
@@ -2385,17 +2400,26 @@ fn fault_order_unmeasured(case: &Case, expected: &Outcome, actual: &Outcome) -> 
         && matches!(actual.stop, Stop::GeneralProtection | Stop::StackFault)
         && expected.state == actual.state
         && expected.changed == actual.changed
-        && accesses(&instruction, &case.state.0).is_some_and(|found| {
+        && accesses(
+            &instruction,
+            &case.state.0,
+            bit_offset_move_made(&instruction, &case.state.0),
+        )
+        .is_some_and(|found| {
             found.iter().any(|&(start, bytes, _)| {
                 at.wrapping_sub(start) < bytes && !canonical_with_four_levels(start, bytes)
             })
         })
 }
 
-/// Every access the instruction makes from `state` (its operands, the stack, the string registers, a bit offset's
-/// move): its first byte, its bytes and its segment; `None` where a register it is made of has no value here.
-fn accesses(instruction: &Instruction, state: &[u128]) -> Option<Vec<(u64, u64, Register)>> {
-    let moved = bit_offset_move(instruction, state);
+/// Lists each access the instruction makes from `state`: first byte, bytes and segment, `None` if a value is missing.
+///
+/// The accesses are its operands, the stack, the string registers, moved by `moved` (a bit offset's move).
+fn accesses(
+    instruction: &Instruction,
+    state: &[u128],
+    moved: u64,
+) -> Option<Vec<(u64, u64, Register)>> {
     let mut factory = InstructionInfoFactory::new();
     let mut found = Vec::new();
     for m in factory
@@ -2435,8 +2459,9 @@ fn accesses(instruction: &Instruction, state: &[u128]) -> Option<Vec<(u64, u64, 
     Some(found)
 }
 
-/// Whether any memory the instruction reaches from `state` is the reference runner's own, where the CPU would
-/// read or write the runner itself where a clean process faults.
+/// Tells whether any memory the instruction reaches from `state` is the reference runner's own.
+///
+/// There the CPU would read or write the runner itself where a clean process faults.
 fn reaches_runner(bytes: &[u8], state: &[u128]) -> bool {
     let runner = crate::layout::x86_64::RUNNER;
     let instruction = Decoder::with_ip(
@@ -2449,7 +2474,7 @@ fn reaches_runner(bytes: &[u8], state: &[u128]) -> bool {
     if instruction.is_invalid() {
         return false;
     }
-    accesses(&instruction, state).is_none_or(|found| {
+    accesses(&instruction, state, bit_offset_move(&instruction, state)).is_none_or(|found| {
         found.iter().any(|&(start, bytes, _)| {
             let end = start.saturating_add(bytes);
             start < runner.end && end > runner.start
@@ -3126,8 +3151,7 @@ fn cpuid_cases() -> Vec<Designed> {
 mod tests {
     use super::*;
 
-    /// The flag decides the width, and an access is canonical in 48 bits only with both ends below the hole or
-    /// both above it.
+    /// Checks that the flag decides the width, and which accesses are canonical in 48 bits.
     #[test]
     fn linear_address_width_and_canonical_accesses() {
         let flags = |rest: &str| format!("model name\t: a chip\nflags\t\t: fpu vme {rest}\n");
@@ -3148,7 +3172,7 @@ mod tests {
         assert!(canonical_with_four_levels(u64::MAX - 3, 8));
     }
 
-    /// On a chip of the record, this host's `/proc/cpuinfo` shows the width the record holds.
+    /// Checks that on a chip of the record this host's `/proc/cpuinfo` shows the width the record holds.
     #[test]
     fn a_known_chip_shows_its_recorded_width() {
         let Ok(text) = std::fs::read_to_string(CPU_INFORMATION) else {

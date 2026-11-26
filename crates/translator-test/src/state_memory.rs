@@ -36,10 +36,10 @@ struct Access {
 }
 
 /// The module's exports, in the order of its functions.
-const LOAD_WORDS: &str = "load_words";
-const STORE_WORDS: &str = "store_words";
-const LOAD_BYTE: &str = "load_byte";
-const STORE_BYTE: &str = "store_byte";
+pub(crate) const LOAD_WORDS: &str = "load_words";
+pub(crate) const STORE_WORDS: &str = "store_words";
+pub(crate) const LOAD_BYTE: &str = "load_byte";
+pub(crate) const STORE_BYTE: &str = "store_byte";
 const FILL: &str = "fill";
 const STORE_U32: &str = "store_u32";
 const STORE_U64: &str = "store_u64";
@@ -53,7 +53,7 @@ const MOST_PAGES: u64 = (u32::MAX as u64 + 1) / WASM_PAGE_BYTES;
 const STATE_INDEX: u32 = u32::MIN;
 /// The parameters of each function: an offset in the state memory, then the values.
 const OFFSET_PARAMETER: u32 = u32::MIN;
-const FIRST_VALUE_PARAMETER: u32 = OFFSET_PARAMETER + 1;
+pub(crate) const FIRST_VALUE_PARAMETER: u32 = OFFSET_PARAMETER + 1;
 
 impl StateMemory {
     /// Makes a state memory of `pages` WebAssembly pages, all zero.

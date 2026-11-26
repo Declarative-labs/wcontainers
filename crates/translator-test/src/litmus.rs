@@ -1,10 +1,11 @@
-//! x86-64 litmus programs run translated by two or four host threads on one shared guest memory (XF3): each named
-//! shape, its outcomes counted, and the outcomes x86 forbids picked out. Not a fuzzing suite: the shapes and their
-//! rounds are fixed.
+//! x86-64 litmus shapes, translated and run by two or four host threads on one shared guest memory (XF3).
 //!
-//! Each round the threads meet at a system call the stand-in answers by waiting for all of them, each waits a
-//! number of empty turns that changes from round to round so that the threads' parts overlap in many ways, and runs
-//! its part; they meet again, and thread 0 counts the outcome and sets the shared words back to 0.
+//! Each shape's outcomes are counted and those x86 forbids picked out; shapes and rounds are fixed, so this is no
+//! fuzzing suite.
+//!
+//! Each round the threads meet at a system call the stand-in answers by waiting for all of them. Each then waits
+//! empty turns that change from round to round, so that their parts overlap in many ways, and runs its part.
+//! They meet again, and thread 0 counts the outcome and sets the shared words back to 0.
 
 use crate::guest::GuestTest;
 use crate::guest_memory::SharedGuestMemory;
@@ -65,8 +66,7 @@ pub struct Litmus {
     pub name: &'static str,
     /// Each thread's part, thread 0 first.
     pub parts: &'static [Part],
-    /// What thread 0 reads after a round, each value's place from [`DATA`] and the bits it takes, highest first in
-    /// the outcome's number.
+    /// What thread 0 reads after a round: each value's name, place from [`DATA`] and bits, highest first.
     pub observed: &'static [(&'static str, i32, u32)],
     /// The shared words set back to 0 after each round.
     pub reset: &'static [i32],
@@ -79,7 +79,7 @@ impl Litmus {
         self.parts.len()
     }
 
-    /// The observed values of an outcome's number.
+    /// Returns the observed values of an outcome's number.
     pub fn values(&self, outcome: usize) -> Vec<u64> {
         let mut rest = outcome as u64;
         let mut values: Vec<u64> = self
@@ -107,7 +107,7 @@ impl Litmus {
     }
 }
 
-/// Where thread `k`'s `n`th result goes.
+/// Returns where thread `k`'s `n`th result goes.
 const fn result(k: i32, n: i32) -> i32 {
     RESULTS + k * LINE + n * WORD
 }
@@ -116,7 +116,7 @@ fn store(a: &mut CodeAssembler, at: i32) -> Asm {
     a.mov(qword_ptr(rbp + at), 1)
 }
 
-/// Store buffering: each thread stores to its word and loads the other's. x86 allows both loads to see 0.
+/// Each thread stores to its word and loads the other's; x86 allows both loads to see 0.
 pub const STORE_BUFFERING: Litmus = Litmus {
     name: "store buffering",
     parts: &[
@@ -136,7 +136,7 @@ pub const STORE_BUFFERING: Litmus = Litmus {
     forbidden: |_| false,
 };
 
-/// Whether both loads saw 0, which no interleaving gives: the outcome store buffering shows.
+/// Tells whether both loads saw 0, which no interleaving gives: the outcome store buffering shows.
 pub fn both_saw_zero(values: &[u64]) -> bool {
     values == [0, 0]
 }
@@ -163,7 +163,7 @@ pub const STORE_BUFFERING_FENCED: Litmus = Litmus {
     forbidden: both_saw_zero,
 };
 
-/// Message passing: data then flag; the reader loads the flag then the data. x86 forbids flag 1 with data 0.
+/// One thread stores data then a flag, the other loads the flag then the data; x86 forbids flag 1 with data 0.
 pub const MESSAGE_PASSING: Litmus = Litmus {
     name: "message passing",
     parts: &[
@@ -183,7 +183,7 @@ pub const MESSAGE_PASSING: Litmus = Litmus {
     forbidden: |v| v == [1, 0],
 };
 
-/// Load buffering: each thread loads one word, then stores to the other. x86 forbids both loads seeing 1.
+/// Each thread loads one word, then stores to the other; x86 forbids both loads seeing 1.
 pub const LOAD_BUFFERING: Litmus = Litmus {
     name: "load buffering",
     parts: &[
@@ -203,8 +203,10 @@ pub const LOAD_BUFFERING: Litmus = Litmus {
     forbidden: |v| v == [1, 1],
 };
 
-/// The sequence lock: the writer makes the count odd, writes two words, makes it even; the reader loads the count,
-/// the two words and the count again. x86 forbids an even, unchanged count with words other than the count's.
+/// A writer and a reader of a sequence lock; x86 forbids an even, unchanged count with words other than its own.
+///
+/// The writer makes the count odd, writes two words, makes it even; the reader loads the count, the two words and
+/// the count again.
 pub const SEQUENCE_LOCK: Litmus = Litmus {
     name: "sequence lock",
     parts: &[
@@ -238,8 +240,10 @@ pub const SEQUENCE_LOCK: Litmus = Litmus {
     },
 };
 
-/// The store-back: one thread loads x, waits, loads the flag and, if it is set, stores back what it loaded; the
-/// other stores x, `mfence`, then the flag. x86 forbids the loads seeing 0 and 1 with x ending 1.
+/// A store of what was loaded, after a flag; x86 forbids the loads seeing 0 and 1 with x ending 1.
+///
+/// One thread loads x, waits, loads the flag and, if it is set, stores back what it loaded; the other stores x,
+/// `mfence`, then the flag.
 pub const STORE_BACK: Litmus = Litmus {
     name: "store-back",
     parts: &[
@@ -274,8 +278,7 @@ pub const STORE_BACK: Litmus = Litmus {
     forbidden: |v| v == [0, 1, 1],
 };
 
-/// Independent reads of independent writes: two threads each store a word, two others load both in opposite
-/// orders. x86 forbids the readers seeing the two stores in different orders.
+/// Two threads each store a word, two others load both in opposite orders; x86 forbids them disagreeing on the order.
 pub const INDEPENDENT_READS: Litmus = Litmus {
     name: "independent reads of independent writes",
     parts: &[
@@ -328,7 +331,7 @@ fn exit(a: &mut CodeAssembler) -> Asm {
     a.syscall()
 }
 
-/// Thread `k`'s program for `rounds` rounds of a shape, assembled at its address.
+/// Assembles thread `k`'s program for `rounds` rounds of a shape at its address.
 fn program(litmus: &Litmus, k: usize, rounds: u64) -> Result<Vec<u8>, IcedError> {
     let mut a = CodeAssembler::new(u64::BITS)?;
     let mut top = a.create_label();
@@ -366,7 +369,7 @@ fn program(litmus: &Litmus, k: usize, rounds: u64) -> Result<Vec<u8>, IcedError>
     a.assemble(code_address(k))
 }
 
-/// The lock xadd counter's program for each thread: they meet, add 1 `rounds` times with `lock xadd`, and end.
+/// Assembles a counter thread's program: it meets the others, adds 1 `rounds` times with `lock xadd`, and ends.
 fn counter_program(k: usize, rounds: u64) -> Result<Vec<u8>, IcedError> {
     let mut a = CodeAssembler::new(u64::BITS)?;
     let mut top = a.create_label();
@@ -386,8 +389,9 @@ fn code_address(k: usize) -> u64 {
     CODE + k as u64 * PAGE_SIZE
 }
 
-/// Runs each thread's program on its own host thread and machine, all on one fresh shared memory, translated in
-/// `form` at full look-ahead; returns the memory once every thread has ended.
+/// Runs each program on its own host thread and machine, on one fresh shared memory; returns it once all have ended.
+///
+/// Each is translated in `form` at full look-ahead.
 fn run(programs: &[Vec<u8>], form: AccessOrdering) -> SharedGuestMemory {
     let memory = SharedGuestMemory::new(&crate::runner::engine(), MEMORY_BYTES);
     let meeting = Arc::new(Meeting::new(programs.len() as u64));

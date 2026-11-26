@@ -1,6 +1,7 @@
-//! The guest's memory as the runner holds it: its own, or shared between threads in the form that shares it
-//! (`AccessOrdering::shares_memory`), which the runner then reaches only through WebAssembly's own loads and
-//! stores.
+//! The guest's memory as the runner holds it: its own, or shared between threads.
+//!
+//! A shared one, for the form that shares it (`AccessOrdering::shares_memory`), the runner reaches only through
+//! WebAssembly's own loads and stores.
 
 use std::sync::{Arc, Mutex};
 use wasm_encoder::{
@@ -12,6 +13,9 @@ use wasmtime::{
     SharedMemory, Store, TypedFunc,
 };
 use wcontainers_translator::contract::{ENV, MEMORY, SHARED_MEMORY_MOST_PAGES, WASM_PAGE_BYTES};
+
+// The module's exports, in the order of its functions, and where a function's values start, as the state memory's.
+use crate::state_memory::{FIRST_VALUE_PARAMETER, LOAD_BYTE, LOAD_WORDS, STORE_BYTE, STORE_WORDS};
 
 /// The guest's memory, as code of the runner's form imports it.
 #[derive(Clone)]
@@ -99,17 +103,10 @@ struct Access {
     store_byte: TypedFunc<(u64, u32), ()>,
 }
 
-/// The module's exports, in the order of its functions.
-const LOAD_WORDS: &str = "load_words";
-const STORE_WORDS: &str = "store_words";
-const LOAD_BYTE: &str = "load_byte";
-const STORE_BYTE: &str = "store_byte";
-
 /// The guest memory's index, the module's only memory.
 const MEMORY_INDEX: u32 = u32::MIN;
 /// The parameters of each function: an address in the guest memory, then the values.
 const ADDRESS_PARAMETER: u32 = u32::MIN;
-const FIRST_VALUE_PARAMETER: u32 = ADDRESS_PARAMETER + 1;
 
 impl SharedGuestMemory {
     /// Makes a shared guest memory of `bytes`, rounded up to whole WebAssembly pages, all zero.
@@ -322,17 +319,17 @@ const IMPORT_SECTION: u8 = 2;
 ///
 /// https://webassembly.github.io/spec/core/binary/modules.html#binary-module
 const PREAMBLE_BYTES: usize = 8;
-/// The import of the guest memory as code of a form that does not share it writes it: the names, the memory kind,
-/// then limits with only the 64 bit flag set and a minimum of 0.
+/// The guest memory's import in code that does not share it: names, memory kind, limits with the 64 bit flag, minimum 0.
 ///
 /// https://webassembly.github.io/spec/core/binary/types.html#limits
 const OWN_MEMORY_IMPORT: &[u8] = b"\x03env\x06memory\x02\x04\x00";
 /// The same import shared: the 64 bit, shared and maximum flags, the minimum of 0, then the maximum.
 const SHARED_MEMORY_IMPORT: &[u8] = b"\x03env\x06memory\x02\x07\x00";
 
-/// Returns a code module of a form that does not share the guest memory with its import of it made shared, as code
-/// of the form that shares it declares it, so that its plain accesses run on a shared memory: the control of the
-/// parallel tests, which shows what code without ordered accesses does there.
+/// Returns a code module with its import of the guest memory made shared, as the form that shares it declares it.
+///
+/// Its plain accesses then run on a shared memory: the control of the parallel tests, which shows what code without
+/// ordered accesses does there.
 pub fn import_shared(module: &[u8]) -> Vec<u8> {
     let mut out = module[..PREAMBLE_BYTES].to_vec();
     let mut at = PREAMBLE_BYTES;
@@ -369,6 +366,7 @@ pub fn import_shared(module: &[u8]) -> Vec<u8> {
 ///
 /// https://webassembly.github.io/spec/core/binary/values.html#integers
 const LEB_BITS: u32 = 7;
+/// https://webassembly.github.io/spec/core/binary/values.html#integers
 const LEB_MORE: u8 = 0x80;
 
 /// Returns the unsigned LEB128 number at the start of `bytes` and how many bytes it takes.

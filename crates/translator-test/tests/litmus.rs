@@ -1,5 +1,4 @@
-//! XF3: the x86 litmus shapes translated and run by two or four host threads on one shared memory, in the ordered
-//! form and in the default form as the control. Meant for a host that orders memory more weakly than x86 (ARM64).
+//! XF3's x86 litmus shapes in the ordered form, with the default form as the control, on a weaker host (ARM64).
 //!
 //! Each test runs `WC_LITMUS_ROUNDS` rounds (default 10,000,000) in each form, prints every outcome's count, and
 //! fails if the ordered form shows an outcome x86 forbids. The control's counts are printed, not checked: whether a
@@ -19,8 +18,7 @@ fn rounds() -> u64 {
 const ORDERED: AccessOrdering = AccessOrdering::Ordered(OrderedAccess::SequentiallyConsistent);
 const FORMS: [AccessOrdering; 2] = [ORDERED, AccessOrdering::Unordered];
 
-/// Runs a shape in both forms; returns, by form, the rounds with an outcome x86 forbids and with both loads 0 where
-/// the shape is store buffering.
+/// Runs a shape in both forms; returns by form the rounds x86 forbids and, for two threads, those with both loads 0.
 fn shape(litmus: &Litmus) -> Vec<(u64, u64)> {
     let rounds = rounds();
     FORMS
@@ -103,7 +101,7 @@ fn independent_reads_of_independent_writes() {
     assert_eq!(shape(&litmus::INDEPENDENT_READS)[0].0, 0);
 }
 
-/// The lock xadd counter on `threads` threads: the ordered form loses no addition.
+/// Checks that the ordered form loses no addition of the lock xadd counter on `threads` threads.
 fn counter(threads: usize) {
     let rounds = rounds();
     let expected = threads as u64 * rounds;
@@ -133,7 +131,7 @@ fn lock_xadd_counter_four_threads() {
     counter(4);
 }
 
-/// A few rounds of every shape in both forms, so that a plain test run sees the programs translate and end.
+/// Runs a few rounds of every shape in both forms, so that a plain test run sees the programs translate and end.
 #[test]
 fn every_shape_runs_a_few_rounds() {
     const FEW: u64 = 100;

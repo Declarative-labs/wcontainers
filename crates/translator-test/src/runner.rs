@@ -288,7 +288,7 @@ pub struct Machine<G: GuestTest> {
     run: TypedFunc<(), ()>,
 }
 
-/// A guest memory of `bytes`, rounded up to whole WebAssembly pages, of the kind the store's form imports.
+/// Makes a guest memory of `bytes`, rounded up to whole pages, of the kind the store's form imports.
 fn guest_memory<G: GuestTest>(store: &mut Store<Host<G>>, bytes: u64) -> GuestMemory {
     if store.data().ordering.shares_memory() {
         return GuestMemory::Shared(SharedGuestMemory::new(store.engine(), bytes));
@@ -462,8 +462,9 @@ impl<G: GuestTest> Machine<G> {
         Self::new_on(memory_bytes, table_base, slots, syscalls, None)
     }
 
-    /// A machine as [`Machine::new`] makes, a thread on `memory`, which other machines' threads share. Code of a
-    /// form that does not share the memory runs on it with its import made shared (`import_shared`).
+    /// Makes a machine as [`Machine::new`] does, a thread on `memory`, which other machines' threads share.
+    ///
+    /// Code of a form that does not share the memory runs on it with its import made shared (`import_shared`).
     pub fn new_sharing(
         memory: &SharedGuestMemory,
         memory_bytes: u64,
@@ -651,8 +652,7 @@ impl<G: GuestTest> Machine<G> {
             .expect("read inside guest memory");
     }
 
-    /// From now on the thread's system call `number` waits, in the stand-in, until every thread of `meeting` has
-    /// made it, then returns 0.
+    /// Makes the stand-in answer system call `number` by waiting for every thread of `meeting`, then returning 0.
     pub fn meet_at(&mut self, number: u64, meeting: Arc<Meeting>) {
         self.store.data_mut().meeting = Some((number, meeting));
     }
@@ -790,11 +790,10 @@ impl<G: GuestTest> Machine<G> {
         self.store.data_mut().optimise = optimise;
     }
 
-    /// Makes translations from now on order the guest's accesses as `ordering` says: call before any load or
-    /// write, as the guest's memory is made again, empty, when the form shares it and the last did not, or the
-    /// other way round.
+    /// Makes translations from now on order the guest's accesses as `ordering` says; call before any load or write.
     ///
-    /// By default they order them as the runners' setting asks.
+    /// The guest's memory is made again, empty, when one form shares it and the other does not. By default they order
+    /// them as the runners' setting asks.
     pub fn order_accesses(&mut self, ordering: AccessOrdering) {
         let host = self.store.data_mut();
         let remade =
@@ -1779,13 +1778,12 @@ fn translate_load<G: GuestTest>(
     )
 }
 
-/// Whether code of the host's form must have its import of the guest memory made shared: the memory is shared
-/// and the form does not share it.
+/// Tells whether code must have its guest memory import made shared: the memory is, and the host's form does not.
 fn imports_shared<G: GuestTest>(host: &Host<G>) -> bool {
     matches!(host.memory, Some(GuestMemory::Shared(_))) && !host.ordering.shares_memory()
 }
 
-/// Compile a translation's code modules, with `share`, each with its import of the guest memory made shared.
+/// Compiles a translation's code modules, with `share` each with its guest memory import made shared.
 fn compile(engine: &Engine, load_address: u64, translation: Translation, share: bool) -> Load {
     Load {
         load_address,
