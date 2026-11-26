@@ -1214,7 +1214,7 @@ fn shift_signed(value: i128, shift: i32, rounding: bool) -> i128 {
             return 0;
         }
         // An element of up to 64 bits shifted 64 or more saturates whatever its value, as this far beyond does.
-        if shift >= u64::BITS as i32 && !crate::planted::is(1003) {
+        if shift >= u64::BITS as i32 && !crate::planted::is(3003) {
             return value.signum() << (u64::BITS + u8::BITS);
         }
         if shift >= u64::BITS as i32 {
@@ -1305,7 +1305,7 @@ fn write_part<LevelSpecific>(
     upper: bool,
 ) {
     let value = value & ones(HALF_VECTOR_BITS);
-    processor.vector_registers[number] = if upper && crate::planted::is(1010) {
+    processor.vector_registers[number] = if upper && crate::planted::is(3010) {
         value << HALF_VECTOR_BITS
     } else if upper {
         (processor.vector_registers[number] & ones(HALF_VECTOR_BITS)) | (value << HALF_VECTOR_BITS)
@@ -1359,11 +1359,11 @@ pub fn simulate_advanced_simd<LevelSpecific>(
             };
             for byte in 0..decoded.datasize() / u8::BITS {
                 let index = element(indices, byte, u8::BITS) as u32;
-                if index >= registers * VECTOR_BITS / u8::BITS && crate::planted::is(1022) {
+                if index >= registers * VECTOR_BITS / u8::BITS && crate::planted::is(3022) {
                     result = with_element(result, byte, u8::BITS, 0);
                 }
                 if index < registers * VECTOR_BITS / u8::BITS {
-                    let register_offset = if crate::planted::is(1021) {
+                    let register_offset = if crate::planted::is(3021) {
                         0
                     } else {
                         index / (VECTOR_BITS / u8::BITS)
@@ -1388,7 +1388,7 @@ pub fn simulate_advanced_simd<LevelSpecific>(
             let datasize = decoded.datasize();
             let low = processor.vector_registers[decoded.n] & ones(datasize);
             let high = processor.vector_registers[decoded.m] & ones(datasize);
-            let position = if crate::planted::is(1023) && (position + 1) * u8::BITS < datasize {
+            let position = if crate::planted::is(3023) && (position + 1) * u8::BITS < datasize {
                 position + 1
             } else {
                 position
@@ -1411,7 +1411,7 @@ pub fn simulate_advanced_simd<LevelSpecific>(
             };
             match operation {
                 AdvancedSimdOperation::InsertElement => {
-                    let source_index = if crate::planted::is(1026) {
+                    let source_index = if crate::planted::is(3026) {
                         IMM4.read(word) % (VECTOR_BITS / esize)
                     } else {
                         IMM4.read(word) >> esize.trailing_zeros().saturating_sub(3)
@@ -1429,7 +1429,7 @@ pub fn simulate_advanced_simd<LevelSpecific>(
                     if esize == u64::BITS && !decoded.q {
                         return undefined();
                     }
-                    let index = if crate::planted::is(1024) {
+                    let index = if crate::planted::is(3024) {
                         index.saturating_sub(1)
                     } else {
                         index
@@ -1480,7 +1480,7 @@ pub fn simulate_advanced_simd<LevelSpecific>(
                 return undefined();
             }
             let value = element(processor.vector_registers[decoded.n], index, esize);
-            let value = if signed && !crate::planted::is(1025) {
+            let value = if signed && !crate::planted::is(3025) {
                 to_integer(value, esize, false) as u128 & ones(width)
             } else {
                 value
@@ -1529,7 +1529,7 @@ pub fn simulate_advanced_simd<LevelSpecific>(
                             * to_integer(
                                 element(m, 8 * column + k, u8::BITS),
                                 u8::BITS,
-                                second || crate::planted::is(1050),
+                                second || crate::planted::is(3050),
                             );
                     }
                     result = with_element(result, 2 * row + column, u32::BITS, sum as u128);
@@ -1551,7 +1551,7 @@ pub fn simulate_advanced_simd<LevelSpecific>(
             } else {
                 (Precision::Single, Precision::Double)
             };
-            let source = if crate::planted::is(1039) {
+            let source = if crate::planted::is(3039) {
                 processor.vector_registers[decoded.n] >> HALF_VECTOR_BITS
             } else {
                 decoded.part(processor.vector_registers[decoded.n])
@@ -1604,7 +1604,7 @@ pub fn simulate_advanced_simd<LevelSpecific>(
                     processor,
                     decoded.d,
                     result,
-                    decoded.q && !crate::planted::is(1046),
+                    decoded.q && !crate::planted::is(3046),
                 );
             }
             Ok(())
@@ -1662,7 +1662,7 @@ pub fn simulate_advanced_simd<LevelSpecific>(
         } => {
             let n = processor.vector_registers[decoded.n];
             let d = processor.vector_registers[decoded.d];
-            let odd = u32::from(decoded.q && !crate::planted::is(1062));
+            let odd = u32::from(decoded.q && !crate::planted::is(3062));
             let second_element = by_element.then(|| {
                 let index = (ELEMENT_H.read(word) << 2)
                     | (ELEMENT_L.read(word) << 1)
@@ -1733,7 +1733,7 @@ pub fn simulate_advanced_simd<LevelSpecific>(
         ),
     };
     if outcome.is_ok() {
-        if saturated && !crate::planted::is(1001) {
+        if saturated && !crate::planted::is(3001) {
             processor.floating_point_status |= SATURATION;
         }
         processor.floating_point_status |= flags;
@@ -1743,7 +1743,7 @@ pub fn simulate_advanced_simd<LevelSpecific>(
 
 /// The first BFloat16 lane of row `row`, pair `pair` of BFMMLA's second matrix.
 fn to_matrix_lane(row: u32, pair: u32) -> u32 {
-    if crate::planted::is(1063) {
+    if crate::planted::is(3063) {
         2 * row + 4 * pair
     } else {
         4 * row + 2 * pair
@@ -1773,11 +1773,11 @@ fn dot(
             to_integer(
                 element(n, DOT_GROUP * first_lane + byte, u8::BITS),
                 u8::BITS,
-                first || crate::planted::is(1049),
+                first || crate::planted::is(3049),
             ) * to_integer(
                 element(m, DOT_GROUP * second_lane + byte, u8::BITS),
                 u8::BITS,
-                second || crate::planted::is(1049),
+                second || crate::planted::is(3049),
             )
         })
         .sum()
@@ -1808,7 +1808,7 @@ fn simulate_same<LevelSpecific>(
         let result = match select {
             Select::ByDestination => m ^ ((m ^ n) & d),
             Select::WhereSecond => d ^ ((d ^ n) & m),
-            Select::WhereNotSecond if crate::planted::is(1051) => d ^ ((d ^ n) & m),
+            Select::WhereNotSecond if crate::planted::is(3051) => d ^ ((d ^ n) & m),
             Select::WhereNotSecond => d ^ ((d ^ n) & !m),
         };
         write(processor, decoded.d, result, datasize);
@@ -1848,7 +1848,7 @@ fn simulate_same<LevelSpecific>(
                 } else {
                     a - b
                 };
-                let (value, sat) = if crate::planted::is(1002) {
+                let (value, sat) = if crate::planted::is(3002) {
                     (sum as u128 & ones(esize), false)
                 } else {
                     saturate(sum, esize, unsigned)
@@ -1899,7 +1899,7 @@ fn simulate_same<LevelSpecific>(
 /// SQDMULH and SQRDMULH of one element: twice the product's high half, rounded where asked.
 fn doubling_multiply_high(first: u128, second: u128, esize: u32, rounding: bool) -> (u128, bool) {
     let product = 2 * to_integer(first, esize, false) * to_integer(second, esize, false);
-    let rounded = if rounding && !crate::planted::is(1004) {
+    let rounded = if rounding && !crate::planted::is(3004) {
         product + (1 << (esize - 1))
     } else {
         product
@@ -1922,7 +1922,7 @@ fn rounding_doubling_multiply_accumulate(
     } else {
         accumulator + product
     };
-    let rounding = if crate::planted::is(1057) {
+    let rounding = if crate::planted::is(3057) {
         0
     } else {
         1 << (esize - 1)
@@ -1939,7 +1939,7 @@ fn saturating_doubling_multiply_long(
     accumulate: Accumulate,
 ) -> (u128, bool) {
     let product = 2 * to_integer(first, esize, false) * to_integer(second, esize, false);
-    let (product, first_saturated) = if crate::planted::is(1005) {
+    let (product, first_saturated) = if crate::planted::is(3005) {
         (product as u128 & ones(2 * esize), false)
     } else {
         saturate(product, 2 * esize, false)
@@ -2001,7 +2001,7 @@ fn simulate_different<LevelSpecific>(
                     element(second, index, esize),
                     esize,
                 );
-                let product = if crate::planted::is(1056) && esize == u64::BITS {
+                let product = if crate::planted::is(3056) && esize == u64::BITS {
                     product & ones(u64::BITS)
                 } else {
                     product
@@ -2024,12 +2024,12 @@ fn simulate_different<LevelSpecific>(
                 } else {
                     first.wrapping_add(second)
                 };
-                let rounded = if rounding && !crate::planted::is(1007) {
+                let rounded = if rounding && !crate::planted::is(3007) {
                     sum.wrapping_add(1 << (esize - 1))
                 } else {
                     sum
                 };
-                let high = if crate::planted::is(1006) {
+                let high = if crate::planted::is(3006) {
                     rounded & ones(esize)
                 } else {
                     (rounded & ones(2 * esize)) >> esize
@@ -2058,7 +2058,7 @@ fn simulate_different<LevelSpecific>(
                 (n, m, 1)
             } else {
                 let first = if wide { n } else { decoded.part(n) };
-                let second = if crate::planted::is(1008) {
+                let second = if crate::planted::is(3008) {
                     m & ones(HALF_VECTOR_BITS)
                 } else {
                     decoded.part(m)
@@ -2144,7 +2144,7 @@ fn simulate_misc<LevelSpecific>(
     let d = processor.vector_registers[decoded.d];
     match operation {
         MiscOperation::Reverse(container) => {
-            let container = if crate::planted::is(1018) {
+            let container = if crate::planted::is(3018) {
                 u64::BITS
             } else {
                 container
@@ -2173,7 +2173,7 @@ fn simulate_misc<LevelSpecific>(
             let result = (0..datasize / (2 * esize)).fold(0, |result, index| {
                 let sum = to_integer(element(n, 2 * index, esize), esize, unsigned)
                     + to_integer(element(n, 2 * index + 1, esize), esize, unsigned);
-                let sum = if accumulate && !crate::planted::is(1054) {
+                let sum = if accumulate && !crate::planted::is(3054) {
                     element(d, index, 2 * esize).wrapping_add(sum as u128)
                 } else {
                     sum as u128
@@ -2215,7 +2215,7 @@ fn simulate_misc<LevelSpecific>(
             }
             let source = decoded.part(n);
             let result = (0..HALF_VECTOR_BITS / esize).fold(0, |result, index| {
-                let shift = esize - u32::from(crate::planted::is(1058));
+                let shift = esize - u32::from(crate::planted::is(3058));
                 with_element(
                     result,
                     index,
@@ -2235,14 +2235,14 @@ fn simulate_misc<LevelSpecific>(
             let result = (0..datasize / u32::BITS).fold(0, |result, index| {
                 let value = element(n, index, u32::BITS) as u64;
                 let estimate = if operation == MiscOperation::UnsignedReciprocalEstimate {
-                    if value >> 31 == 0 && !(crate::planted::is(1047) && value == 0x7FFF_FFFF) {
+                    if value >> 31 == 0 && !(crate::planted::is(3047) && value == 0x7FFF_FFFF) {
                         u64::from(u32::MAX)
                     } else {
                         crate::floating_point::lanes::estimate_reciprocal_fraction(
                             (value >> 23) & 0x1FF,
                         ) << 23
                     }
-                } else if value >> 30 == 0 && !(crate::planted::is(1048) && value == 0x3FFF_FFFF) {
+                } else if value >> 30 == 0 && !(crate::planted::is(3048) && value == 0x3FFF_FFFF) {
                     u64::from(u32::MAX)
                 } else {
                     crate::floating_point::lanes::estimate_reciprocal_square_root_fraction(
@@ -2272,7 +2272,7 @@ fn simulate_misc<LevelSpecific>(
                 let lane = match operation {
                     MiscOperation::SaturatingAccumulate(unsigned) => {
                         let source =
-                            to_integer(value, esize, !unsigned && !crate::planted::is(1053));
+                            to_integer(value, esize, !unsigned && !crate::planted::is(3053));
                         let accumulator = to_integer(element(d, index, esize), esize, unsigned);
                         let (value, sat) = saturate(source + accumulator, esize, unsigned);
                         *saturated |= sat;
@@ -2285,7 +2285,7 @@ fn simulate_misc<LevelSpecific>(
                             value
                         };
                         let count = u128::from(leading.leading_zeros() - (u128::BITS - esize));
-                        if crate::planted::is(1017) {
+                        if crate::planted::is(3017) {
                             count
                         } else {
                             count.saturating_sub(1)
@@ -2294,7 +2294,7 @@ fn simulate_misc<LevelSpecific>(
                     MiscOperation::CountLeadingZeros => {
                         u128::from(value.leading_zeros() - (u128::BITS - esize))
                     }
-                    MiscOperation::CountBits if crate::planted::is(1055) => {
+                    MiscOperation::CountBits if crate::planted::is(3055) => {
                         u128::from(u8::BITS - value.count_ones())
                     }
                     MiscOperation::CountBits => u128::from(value.count_ones()),
@@ -2306,7 +2306,7 @@ fn simulate_misc<LevelSpecific>(
                         } else {
                             -signed
                         };
-                        let (value, sat) = if crate::planted::is(1052) {
+                        let (value, sat) = if crate::planted::is(3052) {
                             (changed as u128 & ones(esize), false)
                         } else {
                             saturate(changed, esize, false)
@@ -2330,7 +2330,7 @@ fn narrow(value: i128, from: u32, to: u32, narrowing: Narrowing) -> (u128, bool)
     match narrowing {
         Narrowing::Truncate => (value & ones(to), false),
         Narrowing::Signed => saturate(to_integer(value, from, false), to, false),
-        Narrowing::SignedToUnsigned if crate::planted::is(1011) => {
+        Narrowing::SignedToUnsigned if crate::planted::is(3011) => {
             saturate(to_integer(value, from, false).abs(), to, true)
         }
         Narrowing::SignedToUnsigned => saturate(to_integer(value, from, false), to, true),
@@ -2355,7 +2355,7 @@ fn simulate_across<LevelSpecific>(
             values
                 .map(|value| to_integer(value, esize, unsigned))
                 .sum::<i128>() as u128,
-            if crate::planted::is(1019) {
+            if crate::planted::is(3019) {
                 esize
             } else {
                 2 * esize
@@ -2364,7 +2364,7 @@ fn simulate_across<LevelSpecific>(
         AcrossOperation::Add => (values.fold(0_u128, u128::wrapping_add), esize),
         AcrossOperation::Maximum(unsigned) => (
             values
-                .map(|value| to_integer(value, esize, unsigned || crate::planted::is(1020)))
+                .map(|value| to_integer(value, esize, unsigned || crate::planted::is(3020)))
                 .max()
                 .unwrap_or(0) as u128,
             esize,
@@ -2391,9 +2391,9 @@ fn to_element_operand(word: u32, esize: u32) -> (usize, u32) {
     );
     let rm = ELEMENT_RM.read(word) as usize;
     match esize {
-        16 if crate::planted::is(1009) => (rm, (l << 1) | m),
+        16 if crate::planted::is(3009) => (rm, (l << 1) | m),
         16 => (rm, (h << 2) | (l << 1) | m),
-        32 if crate::planted::is(1041) => (rm | ((m as usize) << 4), h << 1),
+        32 if crate::planted::is(3041) => (rm | ((m as usize) << 4), h << 1),
         32 => (rm | ((m as usize) << 4), (h << 1) | l),
         _ => (rm | ((m as usize) << 4), h),
     }
@@ -2551,7 +2551,7 @@ fn simulate_shift<LevelSpecific>(
                 let shifted = shift_signed(
                     wide,
                     -(right_shift as i32),
-                    rounding || crate::planted::is(1015),
+                    rounding || crate::planted::is(3015),
                 );
                 let (value, sat) = match narrowing {
                     Narrowing::Truncate => (shifted as u128 & ones(esize), false),
@@ -2576,7 +2576,7 @@ fn simulate_shift<LevelSpecific>(
                 let value = to_integer(
                     element(source, index, esize),
                     esize,
-                    unsigned || crate::planted::is(1016),
+                    unsigned || crate::planted::is(3016),
                 ) << left_shift;
                 with_element(result, index, 2 * esize, value as u128)
             });
@@ -2596,7 +2596,7 @@ fn simulate_shift<LevelSpecific>(
                 LaneOperation::ToInteger {
                     rounding: Some(Rounding::TowardZero),
                     unsigned,
-                    fraction_bits: if crate::planted::is(1059) {
+                    fraction_bits: if crate::planted::is(3059) {
                         left_shift
                     } else {
                         right_shift
@@ -2630,7 +2630,7 @@ fn simulate_shift<LevelSpecific>(
                         rounding,
                         accumulate,
                     } => {
-                        let shifted = if crate::planted::is(1012) && right_shift == esize {
+                        let shifted = if crate::planted::is(3012) && right_shift == esize {
                             0
                         } else {
                             shift_signed(
@@ -2639,7 +2639,7 @@ fn simulate_shift<LevelSpecific>(
                                 rounding,
                             )
                         } as u128;
-                        if accumulate && !crate::planted::is(1013) {
+                        if accumulate && !crate::planted::is(3013) {
                             accumulator.wrapping_add(shifted)
                         } else {
                             shifted
@@ -2658,7 +2658,7 @@ fn simulate_shift<LevelSpecific>(
                     ShiftOperation::Insert { left } => {
                         let (mask, shifted) = if left {
                             (ones(esize) << left_shift, value << left_shift)
-                        } else if right_shift >= esize && crate::planted::is(1014) {
+                        } else if right_shift >= esize && crate::planted::is(3014) {
                             (ones(esize), 0)
                         } else if right_shift >= esize {
                             (0, 0)
@@ -2697,7 +2697,7 @@ fn simulate_modified_immediate<LevelSpecific>(
         0b011 => replicate(imm8 << 24, 32),
         0b100 => replicate(imm8, 16),
         0b101 => replicate(imm8 << 8, 16),
-        0b110 if cmode & 1 == 0 && crate::planted::is(1027) => replicate(imm8 << 8, 32),
+        0b110 if cmode & 1 == 0 && crate::planted::is(3027) => replicate(imm8 << 8, 32),
         0b110 if cmode & 1 == 0 => replicate((imm8 << 8) | 0xFF, 32),
         0b110 => replicate((imm8 << 16) | 0xFFFF, 32),
         _ => match (cmode & 1, op) {
@@ -2738,7 +2738,7 @@ fn simulate_modified_immediate<LevelSpecific>(
     let d = processor.vector_registers[decoded.d];
     let result = match (logical, op) {
         (true, 0) => d | imm,
-        (true, _) if crate::planted::is(1028) => d | imm,
+        (true, _) if crate::planted::is(3028) => d | imm,
         (true, _) => d & !imm,
         (false, 1) if cmode != 0b1110 && cmode != 0b1111 => !imm,
         _ => imm,
@@ -2785,7 +2785,7 @@ fn simulate_floating_point_lanes<LevelSpecific>(
     let vector_double = !decoded.scalar && !decoded.q && esize == u64::BITS;
     match shape {
         FloatingPointShape::ScalarPairwise => {
-            let second = if crate::planted::is(1064) { 2 } else { 1 };
+            let second = if crate::planted::is(3064) { 2 } else { 1 };
             let value = lane(&[element(n, 0, esize), element(n, second, esize)]);
             write(processor, decoded.d, value, esize);
             Ok(())
@@ -2797,7 +2797,7 @@ fn simulate_floating_point_lanes<LevelSpecific>(
             let elements = decoded.datasize() / esize;
             let mut values: [u128; 8] =
                 core::array::from_fn(|index| element(n, index as u32, esize));
-            let mut count = if crate::planted::is(1030) {
+            let mut count = if crate::planted::is(3030) {
                 elements as usize / 2
             } else {
                 elements as usize
@@ -2819,7 +2819,7 @@ fn simulate_floating_point_lanes<LevelSpecific>(
             let datasize = decoded.datasize();
             let elements = datasize / esize;
             let joined = |index: u32| {
-                if crate::planted::is(1029) {
+                if crate::planted::is(3029) {
                     element(n, index % elements, esize)
                 } else if index < elements {
                     element(n, index, esize)
@@ -2861,7 +2861,7 @@ fn simulate_floating_point_lanes<LevelSpecific>(
                     | FloatingPointShape::Element {
                         accumulating: false,
                     } => lane(&[first, second]),
-                    _ if crate::planted::is(1042) => {
+                    _ if crate::planted::is(3042) => {
                         let sign = 1 << (esize - 1);
                         lane(&[first ^ sign, second, addend ^ sign])
                     }
@@ -2940,7 +2940,7 @@ fn simulate_complex_multiply_accumulate<LevelSpecific>(
         let first_imaginary = element(n, 2 * pair + 1, esize);
         let (element1, element2, element3, element4) = match rotation {
             0 => (second_real, first_real, second_imaginary, first_real),
-            1 if crate::planted::is(1043) => (
+            1 if crate::planted::is(3043) => (
                 negate(second_imaginary),
                 first_real,
                 second_real,
@@ -3003,7 +3003,7 @@ fn simulate_complex_add<LevelSpecific>(
         return undefined();
     }
     let datasize = decoded.datasize();
-    let rotate_270 = FCADD_ROTATION.read(decoded.word) == 1 && !crate::planted::is(1044);
+    let rotate_270 = FCADD_ROTATION.read(decoded.word) == 1 && !crate::planted::is(3044);
     let n = processor.vector_registers[decoded.n];
     let m = processor.vector_registers[decoded.m];
     let fpcr = processor.floating_point_control;
@@ -3051,7 +3051,7 @@ fn simulate_widening_multiply_accumulate<LevelSpecific>(
     let n = processor.vector_registers[decoded.n];
     let m = processor.vector_registers[decoded.m];
     let d = processor.vector_registers[decoded.d];
-    let offset = if upper || crate::planted::is(1045) {
+    let offset = if upper || crate::planted::is(3045) {
         elements
     } else {
         0
@@ -3089,391 +3089,391 @@ fn simulate_widening_multiply_accumulate<LevelSpecific>(
 /// The bugs planted in this module's models, each caught where no state of its instruction agrees with the chip.
 pub const ADVANCED_SIMD_PLANTED_BUGS: [crate::planted::PlantedBug; 65] = [
     crate::planted::PlantedBug {
-        number: 1001,
+        number: 3001,
         instruction: Instruction::SqaddVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "a saturated element leaves QC clear",
     },
     crate::planted::PlantedBug {
-        number: 1002,
+        number: 3002,
         instruction: Instruction::UqsubVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "a difference below zero wraps instead of saturating",
     },
     crate::planted::PlantedBug {
-        number: 1003,
+        number: 3003,
         instruction: Instruction::SqshlVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "a left shift of 64 or more wraps instead of saturating",
     },
     crate::planted::PlantedBug {
-        number: 1004,
+        number: 3004,
         instruction: Instruction::SqrdmulhVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "no rounding constant",
     },
     crate::planted::PlantedBug {
-        number: 1005,
+        number: 3005,
         instruction: Instruction::SqdmlalVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the doubled product is not saturated before it is added",
     },
     crate::planted::PlantedBug {
-        number: 1006,
+        number: 3006,
         instruction: Instruction::Addhn,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the low half of each sum",
     },
     crate::planted::PlantedBug {
-        number: 1007,
+        number: 3007,
         instruction: Instruction::Raddhn,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "no rounding constant",
     },
     crate::planted::PlantedBug {
-        number: 1008,
+        number: 3008,
         instruction: Instruction::Saddw,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the 2 form reads the lower half of the second source",
     },
     crate::planted::PlantedBug {
-        number: 1009,
+        number: 3009,
         instruction: Instruction::SmlalAsimdelemL,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "a halfword element's index leaves out H",
     },
     crate::planted::PlantedBug {
-        number: 1010,
+        number: 3010,
         instruction: Instruction::Xtn,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the 2 form clears the lower half",
     },
     crate::planted::PlantedBug {
-        number: 1011,
+        number: 3011,
         instruction: Instruction::SqxtunVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "a negative element saturates as its absolute value",
     },
     crate::planted::PlantedBug {
-        number: 1012,
+        number: 3012,
         instruction: Instruction::SshrVectorImmediate,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "a shift by the element size gives zero for a negative element",
     },
     crate::planted::PlantedBug {
-        number: 1013,
+        number: 3013,
         instruction: Instruction::UrsraVectorImmediate,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the destination is not added",
     },
     crate::planted::PlantedBug {
-        number: 1014,
+        number: 3014,
         instruction: Instruction::SriVectorImmediate,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "a shift by the element size clears the destination",
     },
     crate::planted::PlantedBug {
-        number: 1015,
+        number: 3015,
         instruction: Instruction::SqshrnVectorImmediate,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "rounds as SQRSHRN",
     },
     crate::planted::PlantedBug {
-        number: 1016,
+        number: 3016,
         instruction: Instruction::Sshll,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the element is extended with zeros",
     },
     crate::planted::PlantedBug {
-        number: 1017,
+        number: 3017,
         instruction: Instruction::ClsVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the sign bit is counted too",
     },
     crate::planted::PlantedBug {
-        number: 1018,
+        number: 3018,
         instruction: Instruction::Rev32Vector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "reverses inside doublewords",
     },
     crate::planted::PlantedBug {
-        number: 1019,
+        number: 3019,
         instruction: Instruction::Uaddlv,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the sum wraps at the element size",
     },
     crate::planted::PlantedBug {
-        number: 1020,
+        number: 3020,
         instruction: Instruction::SmaxvScalarV,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "compares the elements unsigned",
     },
     crate::planted::PlantedBug {
-        number: 1021,
+        number: 3021,
         instruction: Instruction::TblVectorTwo,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "an index into the second register reads the first",
     },
     crate::planted::PlantedBug {
-        number: 1022,
+        number: 3022,
         instruction: Instruction::TbxVectorOne,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "an index past the table writes zero",
     },
     crate::planted::PlantedBug {
-        number: 1023,
+        number: 3023,
         instruction: Instruction::ExtVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the position is one byte further",
     },
     crate::planted::PlantedBug {
-        number: 1024,
+        number: 3024,
         instruction: Instruction::DupVectorElement,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the element one below the index",
     },
     crate::planted::PlantedBug {
-        number: 1025,
+        number: 3025,
         instruction: Instruction::SmovScalar32,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the element is extended with zeros",
     },
     crate::planted::PlantedBug {
-        number: 1026,
+        number: 3026,
         instruction: Instruction::InsVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the source index is imm4 whatever the element size",
     },
     crate::planted::PlantedBug {
-        number: 1027,
+        number: 3027,
         instruction: Instruction::MoviVectorSMsl,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the bits shifted in are zeros",
     },
     crate::planted::PlantedBug {
-        number: 1028,
+        number: 3028,
         instruction: Instruction::BicVectorImmediate32,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "sets the immediate's bits as ORR does",
     },
     crate::planted::PlantedBug {
-        number: 1029,
+        number: 3029,
         instruction: Instruction::FaddpVectorRegister,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "every pair is taken from the first source",
     },
     crate::planted::PlantedBug {
-        number: 1030,
+        number: 3030,
         instruction: Instruction::FmaxnmvScalarRegisterV32,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "only the lower half is reduced",
     },
     crate::planted::PlantedBug {
-        number: 1031,
+        number: 3031,
         instruction: Instruction::FmulxVectorRegister,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "an infinity times a zero is the default NaN",
     },
     crate::planted::PlantedBug {
-        number: 1032,
+        number: 3032,
         instruction: Instruction::FrecpsVectorRegister,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the first source is not negated",
     },
     crate::planted::PlantedBug {
-        number: 1033,
+        number: 3033,
         instruction: Instruction::FcmgeVectorRegisterZero,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "a quiet NaN raises no Invalid Operation",
     },
     crate::planted::PlantedBug {
-        number: 1034,
+        number: 3034,
         instruction: Instruction::FacgtVectorRegister,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "compares the signed values",
     },
     crate::planted::PlantedBug {
-        number: 1035,
+        number: 3035,
         instruction: Instruction::FrecpeVectorRegister,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the estimate is not rounded",
     },
     crate::planted::PlantedBug {
-        number: 1036,
+        number: 3036,
         instruction: Instruction::FrsqrteVectorRegister,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the exponent's parity is taken the other way round",
     },
     crate::planted::PlantedBug {
-        number: 1037,
+        number: 3037,
         instruction: Instruction::FcvtzsVectorRegister,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "an out-of-range value raises no Invalid Operation",
     },
     crate::planted::PlantedBug {
-        number: 1038,
+        number: 3038,
         instruction: Instruction::ScvtfVectorRegister16,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the integer is read unsigned",
     },
     crate::planted::PlantedBug {
-        number: 1039,
+        number: 3039,
         instruction: Instruction::FcvtlVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the lower form reads the upper half",
     },
     crate::planted::PlantedBug {
-        number: 1040,
+        number: 3040,
         instruction: Instruction::FcvtxnVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "rounds to nearest instead of to odd",
     },
     crate::planted::PlantedBug {
-        number: 1041,
+        number: 3041,
         instruction: Instruction::FmlaVectorRegisterElement,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "a single element's index leaves out L",
     },
     crate::planted::PlantedBug {
-        number: 1042,
+        number: 3042,
         instruction: Instruction::FmlsVectorRegister,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "negates the addend instead of the first source",
     },
     crate::planted::PlantedBug {
-        number: 1043,
+        number: 3043,
         instruction: Instruction::FcmlaAsimdsame2C,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "a rotation of 90 degrees multiplies the real part of the first source",
     },
     crate::planted::PlantedBug {
-        number: 1044,
+        number: 3044,
         instruction: Instruction::FcaddAsimdsame2C,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the rotation is always 90 degrees",
     },
     crate::planted::PlantedBug {
-        number: 1045,
+        number: 3045,
         instruction: Instruction::FmlalVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "every form takes the upper lanes",
     },
     crate::planted::PlantedBug {
-        number: 1046,
+        number: 3046,
         instruction: Instruction::FcvtnVectorRegister,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the 2 form writes the lower half",
     },
     crate::planted::PlantedBug {
-        number: 1047,
+        number: 3047,
         instruction: Instruction::UrecpeVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "an element of 0x7FFFFFFF takes an estimate",
     },
     crate::planted::PlantedBug {
-        number: 1048,
+        number: 3048,
         instruction: Instruction::UrsqrteVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "an element of 0x3FFFFFFF takes an estimate",
     },
     crate::planted::PlantedBug {
-        number: 1049,
+        number: 3049,
         instruction: Instruction::SdotVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the products are unsigned",
     },
     crate::planted::PlantedBug {
-        number: 1050,
+        number: 3050,
         instruction: Instruction::UsmmlaVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the second matrix is read unsigned",
     },
     crate::planted::PlantedBug {
-        number: 1051,
+        number: 3051,
         instruction: Instruction::Bif,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "selects as BIT does",
     },
     crate::planted::PlantedBug {
-        number: 1052,
+        number: 3052,
         instruction: Instruction::SqabsVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the most negative element wraps",
     },
     crate::planted::PlantedBug {
-        number: 1053,
+        number: 3053,
         instruction: Instruction::SuqaddVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the source is read signed",
     },
     crate::planted::PlantedBug {
-        number: 1054,
+        number: 3054,
         instruction: Instruction::SadalpVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the destination is not added",
     },
     crate::planted::PlantedBug {
-        number: 1055,
+        number: 3055,
         instruction: Instruction::CntVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "counts the clear bits",
     },
     crate::planted::PlantedBug {
-        number: 1056,
+        number: 3056,
         instruction: Instruction::PmullAsimddiffL,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the 128-bit product keeps its low half",
     },
     crate::planted::PlantedBug {
-        number: 1057,
+        number: 3057,
         instruction: Instruction::SqrdmlahVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "no rounding constant",
     },
     crate::planted::PlantedBug {
-        number: 1058,
+        number: 3058,
         instruction: Instruction::ShllAsimdmiscS,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "shifts by one less than the element size",
     },
     crate::planted::PlantedBug {
-        number: 1059,
+        number: 3059,
         instruction: Instruction::FcvtzsVectorImmediateImmediate,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the fraction bits are immh:immb less the element size",
     },
     crate::planted::PlantedBug {
-        number: 1060,
+        number: 3060,
         instruction: Instruction::BfdotVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the sums round toward zero, not to odd",
     },
     crate::planted::PlantedBug {
-        number: 1061,
+        number: 3061,
         instruction: Instruction::BfcvtnVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "rounds toward zero whatever FPCR says",
     },
     crate::planted::PlantedBug {
-        number: 1062,
+        number: 3062,
         instruction: Instruction::BfmlalAsimdsame2F,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "BFMLALT takes the even lanes",
     },
     crate::planted::PlantedBug {
-        number: 1063,
+        number: 3063,
         instruction: Instruction::BfmmlaVector,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the second matrix is read by columns",
     },
     crate::planted::PlantedBug {
-        number: 1064,
+        number: 3064,
         instruction: Instruction::FmaxpScalarRegisterP16,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "the second lane is lane 2",
     },
     crate::planted::PlantedBug {
-        number: 1065,
+        number: 3065,
         instruction: Instruction::FabdVectorRegister,
         planted_by: crate::planted::PlantedBy::AdvancedSimd,
         what: "a NaN result keeps its sign",

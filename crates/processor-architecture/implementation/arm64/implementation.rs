@@ -44,8 +44,13 @@ mod sve_count;
 mod sve_element;
 mod sve_move;
 mod sve_predicate;
+pub mod sve_remaining;
+pub mod sve_remaining_floating_point;
+pub mod sve_remaining_integer;
+mod sve_remaining_planted;
 #[cfg(test)]
 mod sve_tests;
+pub mod system_instruction;
 pub mod system_register;
 #[cfg(test)]
 mod tests;
@@ -366,6 +371,14 @@ pub enum PreciseInstruction<LevelSpecific> {
     ScalableAccess {
         instruction: Instruction<Infallible>,
         choices: load_store::scalable_access::ScalableAccessChoices,
+    },
+    /// HINT, MSR (immediate), SYS or SYSL.
+    SystemInstruction(system_instruction::SystemInstructionBehavior),
+    /// An SVE gather, scatter, prefetch of vector addresses, or first-fault or non-fault load, with what the chip fixes
+    /// about its access.
+    ElementAccess {
+        instruction: Instruction<Infallible>,
+        choices: load_store::scalable_element_access::ElementAccessChoices,
     },
     /// LDG, a tag store or STGP.
     TagAccess {

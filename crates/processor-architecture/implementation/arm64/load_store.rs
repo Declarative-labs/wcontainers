@@ -6,6 +6,7 @@ use alloc::borrow::Cow;
 use core::convert::Infallible;
 
 pub mod scalable_access;
+pub mod scalable_element_access;
 
 use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
 
@@ -36,9 +37,6 @@ const SINGLE_COPY_ATOMIC_BYTES: u64 = 16;
 const UNKNOWN_TAG_BITS_SHIFT: u32 = u64::BITS - u8::BITS / 2;
 /// What a failed store exclusive writes to its status register.
 const STORE_EXCLUSIVE_FAILED: u64 = 1;
-/// The bytes of the reservation granule a load exclusive marks: CTR_EL0.ERG is 4 on a Neoverse V2, and a store
-/// exclusive anywhere in the 64 bytes stores (MEASURED: `hidden-state-loading/arm64/RESULT.md`, question 5).
-const RESERVATION_GRANULE_BYTES: u64 = 64;
 
 /// The bytes of each access size.
 const BYTE: u32 = size_of::<u8>() as u32;
@@ -594,6 +592,8 @@ pub struct LoadStoreChoices {
     pub store_exclusive_overlap: Option<StoreExclusiveOverlap>,
     pub misaligned_exclusive: Option<MisalignedExclusive>,
     pub fault_address_tag: Option<FaultAddressTag>,
+    /// The bytes of the reservation granule the exclusive monitor marks, which CTR_EL0.ERG gives.
+    pub reservation_granule_bytes: Option<u64>,
 }
 
 impl LoadStoreChoices {
@@ -620,6 +620,9 @@ impl LoadStoreChoices {
                 .misaligned_exclusive
                 .filter(|_| open.misaligned_exclusive),
             fault_address_tag: self.fault_address_tag.filter(|_| open.fault_address_tag),
+            reservation_granule_bytes: self
+                .reservation_granule_bytes
+                .filter(|_| open.reservation_granule),
         }
     }
 }
@@ -636,6 +639,7 @@ pub struct OpenCases {
     pub store_exclusive_overlap: bool,
     pub misaligned_exclusive: bool,
     pub fault_address_tag: bool,
+    pub reservation_granule: bool,
 }
 
 /// The registers, base and offset an encoding of a load or store names.
@@ -723,6 +727,7 @@ impl LoadStoreInstruction {
                 )),
             // A prefetch never faults; a literal's address is the instruction's own, which is never tagged.
             fault_address_tag: base.is_some() && operation.transfer != Transfer::Prefetch,
+            reservation_granule: stores_exclusive,
         }
     }
 
@@ -1164,8 +1169,11 @@ where
                 );
             }
             let (status, width) = registers[0];
+            let granule = choices
+                .reservation_granule_bytes
+                .expect("a store exclusive has a reservation granule");
             if let ExclusiveMonitor::Exclusive { address: marked } = processor.exclusive_monitor
-                && marked / RESERVATION_GRANULE_BYTES == location / RESERVATION_GRANULE_BYTES
+                && marked / granule == location / granule
             {
                 let mut data = [0; MAXIMUM_BYTES];
                 for (index, (number, _)) in registers[1..].iter().enumerate() {
