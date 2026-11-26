@@ -167,3 +167,33 @@ pub trait MemorySpace: Sized {
     // ...
 }
 ```
+
+## 2026-11-26: KP1 on his main `e6672b3eb` (named iterators, `MemoryReader`, `Execution`)
+
+- Merge `5146e48b3` of his main: no conflict. Every `interface.rs` of his main and every file beside
+  one is byte-identical to his main (MEASURED, 100 files in the 29 interface folders). His main's
+  lock has no entry for the two observation-collector crates; the branch's lock adds just those two
+  (`cargo metadata --offline`).
+- Fit (`67c7225a4`): `Kernel::Runners`, `SuspendedTasks<'_>`, `UnresumedTasks<'_>` and
+  `Process::SuspendedTasks` are `vec::IntoIter`s of what was collected before; `read_memory` hands
+  the range to the reader as one part; the unit-test executor's `Execution` is `Ready<Processor>`.
+  The suite reads through a `MemoryReader` that joins the parts. The turn (running.rs) was already
+  one "run until the next trap, then the kernel answers" step: `execute` with a handler that ends
+  at the first trap, polled to its end, then the trap answered outside the execution.
+- MEASURED, ARM64 and x86-64, `--jobs 12`: `cargo metadata --locked`, rustfmt `--check`, and
+  `cargo check` and `cargo clippy --no-deps -- -D warnings` of `--lib` of both kernel crates exit 0;
+  0 `.rs` lines with `unsafe` in crates/kernel; unit tests in the copy without the stand-in: 30
+  passed on both. Logs: SCRATCH/kernel-port/kp1-main-1125/.
+- Linter: the kernel's own crates 31,316 findings (crates/kernel with its interface 31,326; 31,321
+  at the last run). New in this run's lines: one `summary_unanswered` (suite.rs, the reader that
+  joins the parts), which needs the model's key.
+
+## For the owner (one line each)
+
+3. The kernel calls the legacy abi's `Cpu` on its executor only for `address_space()` (the size of a
+   space: copy a whole space on fork, bound a shared block, cap the ceiling), and no interface of
+   his gives it: `MemorySpace` would return the addresses the space holds
+   (`fn addresses(&self) -> Range<u64>;`).
+4. The suite cases with a `PerThreadWatch` bound (`thread_watched_memory_is_read_and_written`,
+   `thread_watch_leaves_the_process`) must sit in the one `tests!` macro the linter fixes, so every
+   kernel that runs the suite needs an executor with per-thread watches.
