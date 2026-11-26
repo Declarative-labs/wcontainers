@@ -525,3 +525,153 @@ memory drop (1240-1272): a stub not seen to end is only marked `unstopped` or co
 The fix and its failing-first test need the crate to compile, so they wait with the build. Form I (the kernel
 in process with our own memory checks) is R5, after R4, and waits on the owner's answers to brief question 4.
 R4 (the inside) waits on question 3 for its unsafe lines with no outside API.
+
+## Merges, R2 and form I's milestone (run of 2026-11-26)
+
+### Merges (MEASURED: `git merge-base --is-ancestor`, and `git diff --quiet` per file)
+
+- origin/kernel-port at e177511f5: 47272ad81, a normal merge, no conflict.
+- origin/translator-port at its tip 15968cb89: 978b44497, a normal merge, no conflict.
+- The owner's main (his checkout, fetched: ac696ea19) was already inside after the kernel port's merge; fetched
+  again at the end of the run, still ac696ea19 and inside.
+- Every file beside an `interface.rs` in the 29 interface folders of his main (91 files, the folder's own files, not
+  its subfolders) is byte-identical to his main: 0 differ. This branch adds two interface folders of its own,
+  `crates/kvm` and `crates/hypervisor-framework` (R1).
+
+### What builds now (MEASURED, rented Graviton4, `cargo check --keep-going -p <crate> --lib` and `--all-targets`, tree 978b44497)
+
+| Crate | `--lib` | `--all-targets` | What fails |
+|---|---|---|---|
+| kernel-linux | 0 errors | 22 | runtime-single-kernel (dev-dependency) |
+| runtime-single-kernel | 22 | 23 | its own: `unsafe` under `forbid` (7), trait mismatches with the system interface (E0049 and more): RT1 |
+| translator, arm64, guest-cpu, processor-architecture-arm64, executor-conformance, translator-test | 0 | 0 | |
+| arm64-stop | 0 | 0 | |
+| host-process | 4 | 33 | runtime-single-kernel; all targets also precise-instruction-set-translator (10: E0107 `Arm64` without its level, E0599 old variant names), the instruction track's |
+| hardware-virtualization (monitor) | 5 | 23 | runtime-single-kernel, through the inside |
+| hardware-virtualization-inside | 4 | 4 | runtime-single-kernel (`container.rs` on every target; `native.rs`'s `Execution` on the inside's own target) |
+| executor-wasmtime, executor-unicorn | 22 | 33 | runtime-single-kernel; all targets also the two precise instruction sets |
+
+### R2: form P on the owner's interfaces (built as far as it goes without RT1, X2, X3)
+
+Commits: 37ba12d47 (the interfaces), ac9ac56ff (the security fixes and their tests).
+
+Built (READ in the code; each measured below):
+- `HostProcess` implements his `BehaviorSource` (`Architecture = Arm64<User>`, error `SingleInstructionRefusal`:
+  an exclusive monitor that holds an address, which no host call can set in a stub's thread, or a host refusal,
+  where it used to panic) and `Executor` (`create_guest_memory` gives the space and its page table,
+  `prepare_execution` gives `HostProcessExecution` and its interrupter). `HostProcessMemory` implements
+  `MemorySpace` (`borrow`, `zero`), `HostProcessPageTable` implements `PageTable` (`set_permissions`, `map_from`,
+  `unmap_from`, `copy_from`); the space and its table share one handle, and the stub ends when both are dropped.
+  `HostProcessExecution::run` is the loop "run until the next trap (`run_until_trap`), then ask the handler
+  (`ask_handler`)", so a synchronous `run_until_trap` with one free function calling the handler is a small change.
+  `Wait` is `core::future::Pending<()>`, never made: form P runs every execution to its end.
+- Exceptions are his typed `Exception`: a system call is `SupervisorCall` with the pc after it (the legacy shape had
+  the pc at it), an abort is `DataAbort` or `InstructionAbort` with `TranslationFaultLevel0` above the 48 bits,
+  level 3 otherwise, a stub that ended is `Undecoded` with an SError syndrome.
+- The legacy `Cpu` impl is gone: its methods are the executor's own (`impl HostProcessExecutor`), and the runtime's
+  `Execution` impl is gone with the library's dependency on the runtime. `run_translated` is public, so the forged
+  exits test runs its guest without the runtime's loop.
+- Tests moved to the interface: tests/copy.rs and tests/interrupt.rs. Removed: the copy within one space
+  (`a_copy_within_one_space_reads_its_bytes_as_they_were_before_it`): `PageTable::copy_from(&mut self, .., other:
+  &Self, ..)` cannot name one table twice, so the interface rules it out.
+- `autotests = false`; the six test targets that need other tracks build only with the new feature
+  `tests-on-other-tracks` (`required-features`), whose optional dependencies are the old dev-dependencies:
+  kernel, run, busybox, speed, differential (RT1; kernel also X2's wasmtime executor, busybox X3's unicorn
+  executor, speed both) and conformance (the instruction track's precise-instruction-set-translator, which does not
+  compile on this base).
+
+Security fixes, each with a test that fails without it (MEASURED: the tests run on 37ba12d47 with ac9ac56ff's
+tests/memory.rs and Cargo.toml, job native-r2-before, then on ac9ac56ff):
+
+| Fault | Fix | Test | Without the fix | With it |
+|---|---|---|---|---|
+| A stub not seen to end keeps every shared block it was given (DESIGN-4 change 2) | a stub is killed by its own process pidfd (`Stub::kill`, rustix's safe `pidfd_send_signal`), not by asking the zygote, which may answer nothing (DESIGN-4 change 3) | `a_stub_whose_turn_failed_while_the_zygote_answers_nothing_keeps_no_shared_block` (zygote stopped, its sockets shut; B's turn refused; B unmaps the block; B's stub must map no "wcontainers shared block") | FAILED (memory.rs:792: the stub still maps it) | ok |
+| The same kill, after a refused command | as above | `a_kill_the_zygote_cannot_answer_after_a_refused_command_never_leaves_a_narrowed_page_writable` (was `a_failed_kill_...`: its "the stub lives on" becomes "the stub is killed, a zombie") | FAILED (memory.rs:744) | ok |
+| pidfd: "seen to end" rested on the stub's socket hanging up, which any holder of a copy of the socket keeps off | `Stub::wait_ended` polls the stub's process pidfd, readable once every thread has ended; the pidfd is opened when the zygote reports the fork, before anyone may reap | `a_dropped_memory_s_stub_whose_socket_is_held_open_is_still_seen_to_end` (was `..._not_seen_to_end_is_not_waited_for`) | FAILED (memory.rs:817: left unreaped) | ok |
+| EINTR: a signal to the embedder's thread made `wait_hung_up` and `end` fail, so a live stub counted as not seen to end and its memory was lost | every wait retries `EINTR`: `wait_ended`, `hung_up`, the zygote's `sendmsg` and `recv`, `waitpid` of the zygote | `signals_at_the_embedder_s_thread_leave_no_stub_unreaped` (SIGUSR2 with a signal-hook handler sent without pause at the test's thread through 200 memories) | FAILED (8 stubs "not seen to end, left unreaped" in the first rounds) | ok |
+
+The pidfd path for a stub that truly survives its kill (D state for 10 s) still marks it unstopped and leaves it to
+the zygote's end; no test reaches it (INFERRED: no unprivileged way to hold a process off SIGKILL).
+
+Measured (rented Graviton4, Linux 7.0.0-1018-aws, rustc 1.99.0, load 5 to 18; rented Xeon, load 17 to 22):
+- `cargo check -p wcontainers-executor-host-process --all-targets`: exit 0, 0 warnings. `cargo clippy --all-targets
+  -- -D warnings`: exit 0 on both machines.
+- `cargo test -p wcontainers-executor-host-process --no-fail-fast` on Graviton4: exit 0; 21 test binaries plus the
+  library's: 96 passed, 0 failed, 5 ignored (measurements). tests/memory.rs five more times: 17 passed each.
+  On the Xeon: exit 0 (copy, floor, forged, interrupt, in_process_* and translated hold no test there).
+- Form P's own 25 test binaries: 19 build and pass here (zygote, stub, files, host, threads, stop, touch, memory,
+  slice, placement, embedder, floor, step, translated, interrupt, copy, forged, in_process_attacks,
+  in_process_way; in_process_cost and in_process_speculation are measurements, run below); kernel, run, busybox,
+  speed, differential and conformance wait as listed above.
+
+What R2's bar still lacks, and what each waits on:
+- The executor conformance suite: precise-instruction-set-translator (instruction track: `Arm64` now takes its
+  privilege level, and the variant names changed).
+- kernel, run, busybox, speed, differential: RT1; kernel and speed also X2 (wasmtime executor), busybox and speed
+  X3 (unicorn executor). tests/run.rs and tests/differential.rs still drive the runtime's `Execution`; they move to
+  `HostProcess` or `run_translated` once the runtime's loop on the owner's interfaces is known.
+- Zero unsafe in the crate: 9 lines left (unchanged), none with a safe route found this run:
+  - code.rs:235, 244 `dc cvau`, `ic ivau` (no crate wraps cache maintenance by address);
+  - probe.rs:167 `mrs ctr_el0` (aarch64-cpu 12 has no CTR_EL0), :199 the SVE probe's assembly, :254 and :261 the
+    fixed `mmap` (`FIXED_NOREPLACE`) and `munmap` of the user-space search (rustix keeps fixed mappings unsafe;
+    region 3.0.2's safe `alloc_at` maps with `MAP_FIXED`, which replaces, so it is no route);
+  - pages.rs:368, 383 the atomic views of the thread pages the stub writes (VolatileBytes has no atomics; this is
+    the guest-memory views design owed to the owner with the thread-test review, brief rule 9: stopped);
+  - stub.rs:871 `tgkill` (a thread pidfd needs Linux 6.9 and an id the stub cannot forge: enforcement decision 7);
+  - and outside the count, the zygote's two assembly modules under `expect(unsafe_code)`.
+  These are the orchestrator's questions (brief: unsafe that fits neither an API crate nor VolatileBytes).
+- The crate keeps its own `deny` lint table while those lines stay.
+
+Linter (MEASURED: reviewable-rust da55b9d7 built on the machine, no model key, whole workspace exit 1, 97,078
+findings, 302 s; tools/findings.py): host-process 3,899 (R0: 3,564; the compiler view now runs, adding
+`public_outside_interface` 294, `implementation_folder` 10, `trait_not_implemented` 1); magic_literal 2,073 and the
+comment rules are the old code's. New since R0 and for the orchestrator: `implementation_folder` on
+`impl VolatileBytes for HostProcessBytes` (execution.rs:351) and `impl BehaviorSource for HostProcess` (:493),
+and `trait_not_implemented` on `impl MemorySpace for HostProcessMemory` (:397): the linter wants each under its own
+interface's folder, where the executor interface makes `Executor: BehaviorSource` and names `MemorySpace`.
+arm64-stop 176, crates/kvm 179, crates/hypervisor-framework 64 (as R1).
+
+### R3: the VM monitor (does not build without RT1)
+
+MEASURED above: the monitor's library stops in runtime-single-kernel, through the inside, whose `container.rs`
+runs the runtime's loop beside the kernel in the virtual machine, on every target; and every monitor test boots an
+inside image built from the same crate for `aarch64-unknown-none-softfloat`. So nothing of R3 compiles until RT1,
+and its tests need X2 (exits, container) and X3 (busybox, kernel, speed) too. Ready for it: R1's `crates/kvm` and
+`crates/hypervisor-framework` (the monitor's switch onto them, `Stopper` to `ExecutionInterrupter`, guest memory as
+the slot's `SharedMapping` as the chip source does since R1's repair).
+
+### RI: form I, the kernel in process with our own inline memory checks (new milestone, after R2)
+
+The owner ruled on 2026-11-23 that where no virtual machine is available both native forms are built. Form I's
+milestone, from the plan's W2 (docs/native-without-virtual-machine.md section 13) on the owner's interfaces:
+
+Builds: an in-process executor implementing `Executor`, `BehaviorSource`, `MemorySpace` + `PageTable` and
+`ExecutionInterrupter` over windows of one pool in the embedder's process, running the translator's
+`Way::InProcess` code. Pass bar (each MEASURED on Graviton4, then on the Xeon at W3):
+1. Exactness: in_process_way's four seeded tests and the window-edge test (every access form at, inside and
+   outside each edge, sp moved out by every form) with 0 disagreements against the reference, cases counted.
+2. Isolation: in_process_attacks passes; two I memories and a P memory in one embedder each read and write every
+   edge of its window, and none sees another's bytes.
+3. Speculation: in_process_speculation, every shape: under I the secret's line is cached no more often than an
+   untouched line; under the uncut way at least half the rounds, which shows the test sees a leak.
+4. Cost: the check's cost per access shape no higher than today's (below); the translator's benchmark set within
+   the sound form's figure plus 3 points; a `getppid` entry under 100 ns median.
+5. The executor conformance suite and form P's kernel, busybox and differential tests run on the I executor.
+6. The crossover: busybox `sh` starting 1,000 programs, a Python start and the compute benchmark in both forms,
+   with the kernel entries per second at which they cost the same.
+7. Unsafe only in the places the owner rules for form I's primitives (brief question 4: entering translated code,
+   the signal stack and handlers, the raw mask, fixed windows, cache maintenance), each marked; 0 elsewhere.
+
+Started (MEASURED, job native-r2-formi, Graviton4, release, pinned to CPU 63, load 31 to 34):
+- Item 3: every shape under the in-process way cached the secret's line 0.000 of rounds (an untouched line 0.000);
+  under the uncut process way 1.000 for pair, acquire, vector, structure and stack pointer, 0.670 to 0.789 with
+  the address loaded first. Holds.
+- Item 4's per-shape baseline (20,000,000 iterations, 15 pairs a shape, medians of the pairs' ratios): no access
+  -0.0%, register offset +16.6%, at base +14.6%, immediate offset +14.6%, byte +10.2%, pair +13.7%, load and store
+  +24.3%, stack -0.0%.
+- Items 1 and 2 on translated code in the emulator and in a P stub: in_process_way 4 passed, in_process_attacks 2
+  passed.
+
+What RI waits on: the executor itself needs the owner's answers to brief question 4 (its primitives, all
+inherently unsafe and with no outside API) and enforcement decision 2 (its own process or ours behind a lock);
+items 5 and 6 also need RT1, X2 and X3.
