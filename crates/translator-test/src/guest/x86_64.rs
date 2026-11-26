@@ -2277,7 +2277,9 @@ pub fn reference_linear_addresses() -> LinearAddressWidth {
 ///
 /// The load takes a page fault with 5-level paging and raises #GP with 4-level paging.
 pub fn measure_linear_addresses(reference: &mut crate::reference::Reference) -> LinearAddressWidth {
-    /// `mov rax, [rbx]`.
+    /// `mov rax, [rbx]`: REX.W, 8B /r, ModRM 03.
+    ///
+    /// https://www.felixcloutier.com/x86/mov
     const LOAD_THROUGH_RBX: &[u8] = &[0x48, 0x8b, 0x03];
     let mut probe = plain(LOAD_THROUGH_RBX);
     probe.state.0[wcontainers_x86::RBX as usize] = USER_END.into();

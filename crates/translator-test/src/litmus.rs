@@ -1,12 +1,8 @@
 //! The x86-64 litmus shapes, translated and run by two or four host threads on one shared guest memory (XF3).
 //!
 //! Shapes and rounds are fixed: no fuzzing suite. Each round the threads meet at a system call, wait empty turns
-//! that change by round, and run their parts; they meet again and thread 0 counts the outcome.
-//!
-//! The same parts also run on the simulated weaker engine (`crate::simulated`, [`simulate_shape`]).
-//!
-//! It tries every value each load of a shared word can see and every execution a memory model allows: the control
-//! for a shape the host chip does not show.
+//! that change by round, run their parts and meet again; thread 0 counts the outcome. [`simulate_shape`] runs the
+//! same parts on the simulated weaker engine.
 
 use crate::guest::GuestTest;
 use crate::guest_memory::SharedGuestMemory;
@@ -710,13 +706,10 @@ fn acyclic(nodes: usize, edges: &[(usize, usize)]) -> bool {
 
 /// Returns what every execution of the threads' traces leaves in which accesses keep only coherence.
 ///
-/// An execution is one order of each word's writes and, for each read, a write of its value (or the initial 0),
-/// such that no word's accesses in each thread's order, its write order, what each read saw and what it did not see
-/// make a cycle.
+/// An execution is one order of each word's writes and a source for each read, with no cycle among one word's
+/// accesses in thread order, its write order, what each read saw and what it did not see.
 ///
-/// Accesses to different words are not ordered at all, within a thread or between threads. Store buffering, load
-/// buffering (a read seeing a write later in another thread's order) and every other reordering the ARM64 model
-/// allows plain accesses are in it, and the ones it forbids through dependencies too.
+/// Different words are not ordered at all, so every reordering ARM64 allows plain accesses is in it, and more.
 fn coherent(traces: &[&Trace]) -> BTreeSet<Last> {
     // Each event on a word: its thread, its place in the thread's order, and the event.
     let mut nodes = Vec::new();
@@ -853,13 +846,10 @@ pub struct Simulated {
 
 /// Runs a shape on the simulated engine exhaustively, checking every combination of runs against the form's model.
 ///
-/// Every thread's part runs once for each choice of what its reads of shared words see, among 0 and every value
-/// written to them; then every combination of the runs, one of each thread, is checked.
+/// Each part runs once for each choice of what its reads of shared words see, among 0 and every value written.
 ///
-/// The ordered form's accesses must all be atomic, and its executions are the interleavings: WebAssembly's model
-/// gives code whose every shared access is sequentially consistent nothing else.
-///
-/// The default form's must all be plain, and its executions are those that keep coherence alone ([`coherent`]).
+/// The ordered form's accesses must all be atomic, its executions the interleavings; the default form's must all be
+/// plain, its executions those that keep coherence alone ([`coherent`]).
 pub fn simulate_shape(litmus: &Litmus, form: AccessOrdering) -> Simulated {
     let kind = match form {
         AccessOrdering::Ordered(_) => Kind::Atomic,

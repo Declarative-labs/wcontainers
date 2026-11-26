@@ -82,12 +82,8 @@ impl HostOrdering {
 impl AccessOrdering {
     /// Chooses the form of `guest`'s code on a host that orders memory as `host` says (docs/threads.md 9, XF4).
     ///
-    /// `parallel` is whether its threads may run at once (the kernel's `ThreadOrdering::Parallel`).
-    ///
-    /// Only an x86-64 guest run in parallel gets an ordered form: `Ordered` on a weaker host, `LoadsOrdered` on an
-    /// x86 host, where a sequentially consistent store costs an exchange. Everything else gets `Unordered`.
-    ///
-    /// The executor makes [`AccessOrdering::code`] part of its cache key.
+    /// `parallel` is the kernel's `ThreadOrdering::Parallel`. Only an x86-64 guest in parallel gets an ordered form:
+    /// `Ordered` on a weaker host, `LoadsOrdered` on an x86 host. [`AccessOrdering::code`] goes in the cache key.
     pub fn chosen(guest: GuestId, parallel: bool, host: HostOrdering) -> AccessOrdering {
         const KIND: OrderedAccess = OrderedAccess::SequentiallyConsistent;
         match (guest, parallel, host) {

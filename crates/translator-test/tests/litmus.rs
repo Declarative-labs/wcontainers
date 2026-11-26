@@ -1,7 +1,7 @@
-//! XF3's x86 litmus shapes in the ordered form, with the default form as the control, on a weaker host (ARM64).
+//! XF3: each test checks one shape's ordered form against its control, simulated first, then on the chip.
 //!
-//! Each test first runs its shape on the simulated weaker engine, exhaustively, and asserts that the control shows
-//! every outcome no interleaving gives and the ordered form none.
+//! The simulated weaker engine runs the shape exhaustively; the control must show every outcome no interleaving
+//! gives and the ordered form none.
 //!
 //! On the chip it then runs `WC_LITMUS_ROUNDS` rounds (default 10,000,000) in each form, prints every outcome's
 //! count, and fails if the ordered form shows such an outcome; where the ARM64 chip shows the shape

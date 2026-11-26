@@ -1,12 +1,7 @@
 //! A simulated weaker engine for the litmus shapes (XF3): every guest access of translated code calls the runner.
 //!
-//! A script chooses the value each load of a shared word sees and records what each thread did.
-//!
-//! `instrument` rewrites a code module so that each load, store, compare and exchange and fence on the guest memory
-//! calls one of this module's imports, with the access's kind (plain or atomic), width and sign.
-//!
-//! The code is otherwise the translation's own. The litmus module enumerates the scripts and checks the recorded
-//! accesses against a memory model.
+//! `instrument` makes each guest load, store, compare and exchange and fence a call carrying its kind, width and
+//! sign; the rest of the code is the translation's own. A [`Script`] chooses what each load of a shared word sees.
 
 use wasm_encoder::reencode::{Error, Reencode, utils};
 use wasm_encoder::{CodeSection, EntityType, ImportSection, Instruction, TypeSection, ValType};
@@ -200,7 +195,7 @@ pub enum Event {
 /// The bytes of a shared word.
 pub const WORD_BYTES: u8 = size_of::<u64>() as u8;
 /// The widths of the other accesses.
-const BYTE: u8 = size_of::<u8>() as u8;
+const BYTE_ACCESS: u8 = size_of::<u8>() as u8;
 const HALF_WORD: u8 = size_of::<u16>() as u8;
 const SINGLE_WORD: u8 = size_of::<u32>() as u8;
 
@@ -311,12 +306,24 @@ fn replacement(operator: &Operator<'_>) -> Option<Replacement> {
         I64Load { memarg } | F64Load { memarg } => {
             (Import::Load64, Kind::Plain, load(false), WORD_BYTES, memarg)
         }
-        I32Load8S { memarg } => (Import::Load32, Kind::Plain, load(true), BYTE, memarg),
-        I32Load8U { memarg } => (Import::Load32, Kind::Plain, load(false), BYTE, memarg),
+        I32Load8S { memarg } => (Import::Load32, Kind::Plain, load(true), BYTE_ACCESS, memarg),
+        I32Load8U { memarg } => (
+            Import::Load32,
+            Kind::Plain,
+            load(false),
+            BYTE_ACCESS,
+            memarg,
+        ),
         I32Load16S { memarg } => (Import::Load32, Kind::Plain, load(true), HALF_WORD, memarg),
         I32Load16U { memarg } => (Import::Load32, Kind::Plain, load(false), HALF_WORD, memarg),
-        I64Load8S { memarg } => (Import::Load64, Kind::Plain, load(true), BYTE, memarg),
-        I64Load8U { memarg } => (Import::Load64, Kind::Plain, load(false), BYTE, memarg),
+        I64Load8S { memarg } => (Import::Load64, Kind::Plain, load(true), BYTE_ACCESS, memarg),
+        I64Load8U { memarg } => (
+            Import::Load64,
+            Kind::Plain,
+            load(false),
+            BYTE_ACCESS,
+            memarg,
+        ),
         I64Load16S { memarg } => (Import::Load64, Kind::Plain, load(true), HALF_WORD, memarg),
         I64Load16U { memarg } => (Import::Load64, Kind::Plain, load(false), HALF_WORD, memarg),
         I64Load32S { memarg } => (Import::Load64, Kind::Plain, load(true), SINGLE_WORD, memarg),
@@ -341,7 +348,13 @@ fn replacement(operator: &Operator<'_>) -> Option<Replacement> {
             WORD_BYTES,
             memarg,
         ),
-        I32Store8 { memarg } => (Import::Store32, Kind::Plain, Operation::Store, BYTE, memarg),
+        I32Store8 { memarg } => (
+            Import::Store32,
+            Kind::Plain,
+            Operation::Store,
+            BYTE_ACCESS,
+            memarg,
+        ),
         I32Store16 { memarg } => (
             Import::Store32,
             Kind::Plain,
@@ -349,7 +362,13 @@ fn replacement(operator: &Operator<'_>) -> Option<Replacement> {
             HALF_WORD,
             memarg,
         ),
-        I64Store8 { memarg } => (Import::Store64, Kind::Plain, Operation::Store, BYTE, memarg),
+        I64Store8 { memarg } => (
+            Import::Store64,
+            Kind::Plain,
+            Operation::Store,
+            BYTE_ACCESS,
+            memarg,
+        ),
         I64Store16 { memarg } => (
             Import::Store64,
             Kind::Plain,
@@ -371,7 +390,13 @@ fn replacement(operator: &Operator<'_>) -> Option<Replacement> {
             SINGLE_WORD,
             memarg,
         ),
-        I32AtomicLoad8U { memarg } => (Import::Load32, Kind::Atomic, load(false), BYTE, memarg),
+        I32AtomicLoad8U { memarg } => (
+            Import::Load32,
+            Kind::Atomic,
+            load(false),
+            BYTE_ACCESS,
+            memarg,
+        ),
         I32AtomicLoad16U { memarg } => {
             (Import::Load32, Kind::Atomic, load(false), HALF_WORD, memarg)
         }
@@ -382,7 +407,13 @@ fn replacement(operator: &Operator<'_>) -> Option<Replacement> {
             WORD_BYTES,
             memarg,
         ),
-        I64AtomicLoad8U { memarg } => (Import::Load64, Kind::Atomic, load(false), BYTE, memarg),
+        I64AtomicLoad8U { memarg } => (
+            Import::Load64,
+            Kind::Atomic,
+            load(false),
+            BYTE_ACCESS,
+            memarg,
+        ),
         I64AtomicLoad16U { memarg } => {
             (Import::Load64, Kind::Atomic, load(false), HALF_WORD, memarg)
         }
@@ -404,7 +435,7 @@ fn replacement(operator: &Operator<'_>) -> Option<Replacement> {
             Import::Store32,
             Kind::Atomic,
             Operation::Store,
-            BYTE,
+            BYTE_ACCESS,
             memarg,
         ),
         I32AtomicStore16 { memarg } => (
@@ -425,7 +456,7 @@ fn replacement(operator: &Operator<'_>) -> Option<Replacement> {
             Import::Store64,
             Kind::Atomic,
             Operation::Store,
-            BYTE,
+            BYTE_ACCESS,
             memarg,
         ),
         I64AtomicStore16 { memarg } => (
@@ -453,7 +484,7 @@ fn replacement(operator: &Operator<'_>) -> Option<Replacement> {
             Import::Exchange32,
             Kind::Atomic,
             Operation::Exchange,
-            BYTE,
+            BYTE_ACCESS,
             memarg,
         ),
         I32AtomicRmw16CmpxchgU { memarg } => (
@@ -474,7 +505,7 @@ fn replacement(operator: &Operator<'_>) -> Option<Replacement> {
             Import::Exchange64,
             Kind::Atomic,
             Operation::Exchange,
-            BYTE,
+            BYTE_ACCESS,
             memarg,
         ),
         I64AtomicRmw16CmpxchgU { memarg } => (
@@ -665,7 +696,7 @@ mod tests {
                 Operation::Store,
                 Operation::Exchange,
             ] {
-                for bytes in [BYTE, HALF_WORD, SINGLE_WORD, WORD_BYTES] {
+                for bytes in [BYTE_ACCESS, HALF_WORD, SINGLE_WORD, WORD_BYTES] {
                     let access = Access {
                         kind,
                         operation,
