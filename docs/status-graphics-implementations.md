@@ -341,6 +341,107 @@ run named here are in the scratch folder graphics-implementations/.
 - GI6's tessellation hunk: its draw tests are all Windows-only against real Direct3D 11; a test that shows the hunk on
   lavapipe needs the domain records past the tessellator's total read back, which no test does yet. Next.
 
+## The fifth run (2026-11-26): GI4's last two findings, the present test, GI6's tessellation hunk
+
+### His main
+
+- `git fetch` of his checkout's main gives ac696ea19, already in this branch (`git merge-base --is-ancestor` exit 0),
+  so there was nothing to merge. The instruction-interface changes named for today are not on that main yet; no
+  graphics crate names those interfaces.
+
+### GI4: the config as the group's value does not compile, so GI4 is not reached
+
+- The ruling's shape, measured (patch in the scratch folder, gi5r/config-as-value.patch): the suite function
+  `opens_from_its_config<B: StandaloneGpu>(config: B::Config)`, the group arm `$crate::opens_from_its_config($value);`,
+  every run giving its config as the group's value (`StandaloneGpu: yes(wcontainers_gpu_recording::RecorderConfig {
+  caps: None })`). `cargo check --all-targets`, x86-64: all four conformance targets fail with
+  `error[E0284]: type annotations needed ... cannot satisfy <_ as StandaloneGpu>::Config == _`. A projection never
+  fixes its `Self` type, and the tool's test body is exactly `$crate::f($value);`, so nothing can name `B`. With no
+  build, the linter has no compiler view of those targets. The change was taken out again.
+- So the two findings stay counted: conformance_untested_method 1 (`StandaloneGpu::new`) and conformance_not_run 1
+  (the trace run names `wcontainers_gpu_recording::RecorderConfig` outside a type argument). No `Default` was added to a
+  config, and his interface did not change.
+
+**The one question for the owner.** How should the suite open a back end from a config without inventing one
+(`conformance_untested_method` on `StandaloneGpu::new`, which his shader-converters, test-window and win32 interfaces
+have too)? The smallest example, the two shapes side by side:
+
+```rust
+// A: the check's shape. It reaches 0, but four configs gain `Default`
+//    (four new public_outside_interface findings).
+pub fn opens_from_a_default_config<B: StandaloneGpu>(b: B)
+where
+    B::Config: Default,
+{
+    let second = B::new(B::Config::default()).expect("a second back end");
+    drop((second, b));
+}
+// arm: $crate::opens_from_a_default_config($value);       run: `StandaloneGpu: yes`
+// trace run: TracedConfig { inner: Default::default(), file: .. }
+
+// B: the config as the group's value. It never builds (E0284: nothing names `B`).
+pub fn opens_from_its_config<B: StandaloneGpu>(config: B::Config) {
+    let mut b = B::new(config).expect("a back end from its config");
+    drop(b.submit());
+}
+// arm: $crate::opens_from_its_config($value);              run: `StandaloneGpu: yes(RecorderConfig { caps: None })`
+// B builds only if the tool's group arm may write the type: `$crate::opens_from_its_config::<$type>($value);`
+// (a change to the linter's fixed shape), and the trace run would still name RecorderConfig.
+```
+
+Around it, until he answers: both findings stay listed and GI4 is not claimed.
+
+### The present test now tells a missing window from a refusal
+
+- `presents_cleared_frames` passes on a refusal only if it is `GpuError::Invalid`, which is the interface's answer when
+  the front asks for a window its host never named, and only if asking again gives the same refusal with the device
+  still working. A refusal of any other kind (`Absent`, `OutOfMemory`, `DeviceLost`) fails as "the back end refused to
+  present". Recorder: it presents (any window number). WebGPU: "no window of that number was registered". WebGL:
+  "webgl: the host has no such window". Both are `Invalid`.
+- What it still cannot catch: a back end that answers `Invalid` for every window. Only a host that has a window can show
+  that, and the interface has no call that gives a back end one, so no value given to `tests!` has a window. Each
+  implementation's own window test covers it: the recorder's unit test, webgpu's tests/present.rs (macOS) and
+  tests/surface.rs (Windows), webgl's tests/suite.rs (ANGLE, Windows). None of those run on the build machines. Closing
+  it inside the suite needs an interface change, for example a `Caps` field naming the windows the host gave. That is
+  his file, so this part stopped here.
+
+### The shared suite and Chrome
+
+- Since the fourth run the shared suite no longer runs in Chrome. webgpu's suite page (web/suite.html, suite.mjs and
+  its steps in web/check) went with the browser pages' direct suite calls, and webgl's browser page keeps only its own
+  checks.
+- Bringing it back needs two things. First, a runner that builds each conformance_run.rs test target for wasm32 and
+  runs its plain `#[test]` functions in a page. The tool's `tests!` shape writes `#[test]`, which wasm-bindgen-test does
+  not run. Second, a `StandaloneGpu::new` that can open a device in the browser without waiting: WebGPU's
+  `requestAdapter` and `requestDevice` only answer asynchronously, and WebGL's context needs a canvas from the page.
+  A dedicated worker could block on them with `Atomics.wait`. Neither exists yet.
+
+### GI6: the tessellation hunk brought, with its test (758f63f57)
+
+- From the saved hunks: the domain stage's dispatch reads the tessellator's point total (`tess::POINT_TOTAL`, copied
+  from the counts buffer into a word buffer at `INDICES_BINDING`) and sets `word::LISTED_TOTAL` to 1. Invocations past
+  the total now write a record outside every clip volume instead of running the guest's domain program on points the
+  tessellator never made. The buffer is freed with the stage helper.
+- Its test, crates/shaders/src/stage/helper/tests.rs: on a WebGPU device (lavapipe), 8 patches of `hs_tri_integer_ccw`
+  and `ds_tri` at factor 3 with stream output, so the dispatch's bound is far above the point total. It reads back the
+  domain records: every point below the total is drawn, and every record past it is `[0, 0, 0, OUTSIDE_W]`. MEASURED
+  on x86-64 in the scratch copy: it passes with the hunk, and with the hunk's one line taken out it fails
+  ("invocation 96, past the 96 points, wrote no point").
+- It needs shaders to dev-depend on wcontainers-gpu-webgpu and wgpu on every native target. Before, only Windows did,
+  and both were already in the lock. That adds one depends_on_implementation finding in shaders, of the same kind as its
+  webgl dev-dependency.
+
+### For the Metal track (two lines)
+
+- gpu-metal goes to `crates/gpu/implementation/metal` (package name kept, `[lib] path = "implementation.rs"`,
+  exporting only `MetalGpu` and its config), and its conformance_run.rs is the one line
+  `wcontainers_gpu_conformance::tests!(<wcontainers_gpu_metal::MetalGpu<..> as wcontainers_gpu::StandaloneGpu>::new(..config..).expect(".."); StandaloneGpu: yes);`.
+- It implements `wcontainers_gpu::Gpu` with the six required methods (`dispatch`, `capture_vertices`,
+  `create_resource_table`, `write_resource_table`, `write_timestamp`, `timestamps_disjoint`, answering
+  `GpuError::Absent` where it lacks one; a window its host never named is `GpuError::Invalid`) and
+  `wcontainers_gpu::StandaloneGpu` (a plain-data `Config` with pub fields and no `Default`, `NewError`, `new`), taking
+  its data types from `wcontainers_gpu::{caps, error, format, resource, ..}`.
+
 ## SECURITY
 
 - Lines with unsafe, unchanged from graphics-layout: gpu-webgl 160, opengl 353, nir 113, shaders 71, gpu-webgpu 19,
