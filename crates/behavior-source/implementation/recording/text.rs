@@ -148,10 +148,14 @@ pub(crate) fn from_text(
 fn to_differing_fields(earlier: Option<&Processor<()>>, processor: &Processor<()>) -> String {
     let fields = to_fields(processor);
     let earlier_fields = earlier.map(to_fields);
+    // The first state writes the predicates and FFR only where they are set, so that a recording of an instruction
+    // without SVE operands reads as it did before they were held.
+    let zero_fields = to_fields(&ZERO_PROCESSOR);
     let differing = fields.iter().enumerate().filter(|(index, field)| {
-        earlier_fields
-            .as_ref()
-            .is_none_or(|earlier| earlier[*index] != **field)
+        earlier_fields.as_ref().map_or_else(
+            || !is_scalable_field(&field.0) || zero_fields[*index] != **field,
+            |earlier| earlier[*index] != **field,
+        )
     });
     let written: Vec<String> = differing
         .map(|(_, (name, value))| format!("{name}={value}"))
@@ -160,8 +164,7 @@ fn to_differing_fields(earlier: Option<&Processor<()>>, processor: &Processor<()
 }
 
 /// Leaves out the exclusive monitor, which is open in every recorded state: a chip source refuses a state that holds
-/// it, and a single step opens it. Leaves out the SVE predicates and FFR too, which every recorded state holds zero
-/// and no recorded instruction reads or writes.
+/// it, and a single step opens it.
 fn to_fields(processor: &Processor<()>) -> Vec<(String, String)> {
     let Processor {
         general_purpose_registers,
@@ -169,8 +172,8 @@ fn to_fields(processor: &Processor<()>) -> Vec<(String, String)> {
         program_counter,
         condition_flags,
         vector_registers,
-        predicate_registers: _,
-        first_fault_register: _,
+        predicate_registers,
+        first_fault_register: first_fault,
         floating_point_control,
         floating_point_status,
         software_thread_id,
@@ -195,10 +198,27 @@ fn to_fields(processor: &Processor<()>) -> Vec<(String, String)> {
         ("tpidr_el0", format!("{software_thread_id:#x}")),
         ("exception", to_exception_text(*exception)),
     ];
+    let predicate = predicate_registers
+        .iter()
+        .enumerate()
+        .map(|(number, value)| (format!("p{number}"), format!("{value:#x}")));
     general
         .chain(named.map(|(name, value)| (name.to_owned(), value)))
         .chain(vector)
+        .chain(predicate)
+        .chain([(FIRST_FAULT_FIELD.to_owned(), format!("{first_fault:#x}"))])
         .collect()
+}
+
+/// The name of FFR's field.
+const FIRST_FAULT_FIELD: &str = "ffr";
+
+/// Whether the field is a predicate's or FFR's.
+fn is_scalable_field(name: &str) -> bool {
+    name == FIRST_FAULT_FIELD
+        || name
+            .strip_prefix('p')
+            .is_some_and(|number| number.parse::<usize>().is_ok())
 }
 
 fn from_fields(mut processor: Processor<()>, fields: &str) -> Option<Processor<()>> {
@@ -214,6 +234,7 @@ fn from_fields(mut processor: Processor<()>, fields: &str) -> Option<Processor<(
             "fpsr" => processor.floating_point_status = from_hex_number(value)?,
             "tpidr_el0" => processor.software_thread_id = from_hex_number(value)?,
             "exception" => processor.exception = from_exception_text(value)?,
+            FIRST_FAULT_FIELD => processor.first_fault_register = from_hex_number(value)?,
             _ => match (name.strip_prefix('x'), name.strip_prefix('v')) {
                 (Some(number), None) => {
                     *processor
@@ -223,6 +244,11 @@ fn from_fields(mut processor: Processor<()>, fields: &str) -> Option<Processor<(
                 (None, Some(number)) => {
                     *processor
                         .vector_registers
+                        .get_mut(number.parse::<usize>().ok()?)? = from_hex_number(value)?
+                }
+                (None, None) if let Some(number) = name.strip_prefix('p') => {
+                    *processor
+                        .predicate_registers
                         .get_mut(number.parse::<usize>().ok()?)? = from_hex_number(value)?
                 }
                 (None, None) | (Some(_), Some(_)) => return None,

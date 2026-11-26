@@ -5,6 +5,8 @@
 use alloc::borrow::Cow;
 use core::convert::Infallible;
 
+pub mod scalable_access;
+
 use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
 
 use crate::behavior::{

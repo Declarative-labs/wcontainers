@@ -31,6 +31,9 @@ pub mod operand;
 pub mod planted;
 pub mod pointer_authentication;
 mod registers;
+pub mod scalable;
+pub mod scalable_floating_point;
+pub mod scalable_integer;
 pub mod simd;
 mod simulation;
 pub mod sve;
@@ -246,6 +249,7 @@ pub struct Processor<LevelSpecific> {
     pub stack_pointer: u64,
     pub program_counter: u64,
     pub condition_flags: ConditionFlags,
+    /// V0 to V31, which are Z0 to Z31 at a 128-bit vector length.
     pub vector_registers: [u128; VECTOR_REGISTERS],
     /// P0 to P15.
     pub predicate_registers: [u16; PREDICATE_REGISTERS],
@@ -329,6 +333,11 @@ pub enum PreciseInstruction<LevelSpecific> {
         instruction: Instruction<Infallible>,
         operation: sve::ScalableOperation,
         trapped: Option<SmeTrapCode>,
+    },
+    /// An SVE contiguous load, store or prefetch, with what the chip fixes about its access.
+    ScalableAccess {
+        instruction: Instruction<Infallible>,
+        choices: load_store::scalable_access::ScalableAccessChoices,
     },
     /// What a chip without the instruction's feature does with its word.
     Unimplemented(Instruction<Infallible>),

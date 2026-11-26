@@ -26,6 +26,16 @@
 //!   subnormal source nothing is flushed, so the flush controls do too;
 //! - a page the access does not reach: its permission takes one value.
 //!
+//! A floating-point source of an SVE instruction whose size field sizes its elements takes only the values of that size:
+//! the domain gives each size's values, and those of another size are bits the instruction does not read as its own.
+//!
+//! Where an SVE access is moved, its predicate chooses which elements reach which page and its offset only where the
+//! base lies, so the two take each of their values once beside each other.
+//!
+//! A predicate of an SVE instruction that leaves some element inactive only chooses which elements it computes: only
+//! where every element is active do the values, controls and written state take every combination; under any other
+//! predicate they take each of their values once.
+//!
 //! A source the instruction is documented not to read on a path (the register a conditional select does not select,
 //! what a conditional compare compares where its condition fails, with FPCR) is not decided by that: a wrong model
 //! could read it, and raise a flag on a signaling NaN or fault on an address, so on that path's first condition and
@@ -61,7 +71,11 @@ use wcontainers_processor_architecture_arm64::floating_point::{
 };
 use wcontainers_processor_architecture_arm64::integer::IntegerOperation;
 use wcontainers_processor_architecture_arm64::load_store::Transfer;
+use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
+    AccessKind, Offset, RM, to_scalable_access,
+};
 use wcontainers_processor_architecture_arm64::operand::Operand;
+use wcontainers_processor_architecture_arm64::scalable::is_unallocated;
 use wcontainers_processor_architecture_arm64::system_register::{
     HeldRegister, SystemRegisterAccess, to_system_register_access,
 };
@@ -195,18 +209,21 @@ enum Group {
     Condition,
     Flags,
     Field,
+    /// The value of an SVE predicate, which decides which elements the instruction computes.
+    Predicate,
     Data,
     Control,
     Written,
 }
 
-const GROUPS: [Group; 9] = [
+const GROUPS: [Group; 10] = [
     Group::Register,
     Group::Placement,
     Group::Selector,
     Group::Condition,
     Group::Flags,
     Group::Field,
+    Group::Predicate,
     Group::Data,
     Group::Control,
     Group::Written,
@@ -217,7 +234,10 @@ const fn to_group(operand_type: OperandType) -> Group {
     match operand_type {
         OperandType::RegisterNumber(_)
         | OperandType::VectorRegisterNumber(_)
-        | OperandType::PredicateRegisterNumber(_) => Group::Register,
+        | OperandType::PredicateRegisterNumber(_)
+        | OperandType::ScalableVectorNumber { .. }
+        | OperandType::PredicateNumber(_) => Group::Register,
+        OperandType::ScalablePredicateValue(_) => Group::Predicate,
         OperandType::AccessPlacement
         | OperandType::AddressTag
         | OperandType::DataPagePermission(_)
@@ -229,6 +249,8 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::ProgramCounterOffset(_)
         | OperandType::SplitImmediate(_)
         | OperandType::Pattern(_)
+        | OperandType::EveryValue(_)
+        | OperandType::BytePosition(_)
         | OperandType::Word(_) => Group::Field,
         OperandType::ConditionFlags => Group::Flags,
         OperandType::RegisterValue { .. }
@@ -245,7 +267,8 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::ShiftAmountVector(_)
         | OperandType::RegisterBound(_)
         | OperandType::RegisterNearSaturation(_)
-        | OperandType::FirstFaultValue => Group::Data,
+        | OperandType::FirstFaultValue
+        | OperandType::ScalableVectorValue { .. } => Group::Data,
         OperandType::SystemRegister(_) => Group::Selector,
         OperandType::FloatingPointControl(_) => Group::Control,
         OperandType::StatusFlags
@@ -293,6 +316,8 @@ struct Facts {
     /// Whether every register operand names a register of its own, the one choice of register numbers under which the
     /// other operands take every combination.
     register_representative: bool,
+    /// Whether some predicate the state holds leaves an element of the instruction inactive.
+    partial_predicate: bool,
 }
 
 impl Facts {
@@ -308,6 +333,7 @@ impl Facts {
         subnormal_source: false,
         first_control: true,
         register_representative: true,
+        partial_predicate: false,
     };
 }
 
@@ -413,8 +439,9 @@ impl Cut {
                     | Transfer::Atomic(_)
                     | Transfer::CompareAndSwapPair
             )
-        });
-        let addressing = record.map_or(Vec::new(), |record| {
+        }) || to_scalable_access(instruction)
+            .is_some_and(|access| access.kind == AccessKind::Store);
+        let mut addressing = record.map_or(Vec::new(), |record| {
             record
                 .operands
                 .iter()
@@ -433,6 +460,13 @@ impl Cut {
                 })
                 .collect()
         });
+        // An SVE access's offset: its register or its immediate's fields.
+        if let Some(access) = to_scalable_access(instruction) {
+            match access.offset {
+                Offset::Register => addressing.push(RM),
+                Offset::Immediate { fields, .. } => addressing.extend(fields.iter().copied()),
+            }
+        }
         let register_operands = groups
             .iter()
             .filter(|group| **group == Group::Register)
@@ -578,7 +612,8 @@ impl Cut {
                     facts.undefined |= self
                         .reserved
                         .iter()
-                        .any(|pattern| pattern.is_matching(facts.word));
+                        .any(|pattern| pattern.is_matching(facts.word))
+                        || is_unallocated(self.instruction, facts.word);
                 }
                 Group::Condition => {}
                 // An encoding that is undefined or that EL1 traps decides the outcome whatever the state holds.
@@ -655,6 +690,15 @@ impl Cut {
                         facts.subnormal_source |=
                             advanced_simd::is_subnormal(operand, value, facts.word);
                     }
+                }
+                Group::Predicate => {
+                    facts.partial_predicate =
+                        self.types.iter().enumerate().any(|(index, operand_type)| {
+                            matches!(operand_type, OperandType::ScalablePredicateValue(_))
+                                && facts.held & (1 << index) != 0
+                                && self.values[index][chosen[index]]
+                                    != OperandValue::Bits(u64::from(u16::MAX))
+                        });
                 }
                 Group::Control => {
                     facts.first_control = self
@@ -742,9 +786,12 @@ impl Cut {
             return Allowed::Every(every);
         }
         let values = self.allow_values(index, chosen, facts);
-        if !facts.register_representative
-            && matches!(group, Group::Data | Group::Control | Group::Written)
-        {
+        let each_beside_the_rest = (!facts.register_representative || facts.partial_predicate)
+            && matches!(group, Group::Data | Group::Control | Group::Written);
+        let moved_access = facts.moved
+            && to_scalable_access(self.instruction).is_some()
+            && (group == Group::Predicate || self.is_addressing(self.types[index]));
+        if each_beside_the_rest || moved_access {
             Allowed::EachOnce(values)
         } else {
             Allowed::Every(values)
@@ -790,6 +837,8 @@ impl Cut {
         let compares = self.compares(facts);
         match self.groups[index] {
             Group::Register | Group::Condition | Group::Selector => all,
+            Group::Predicate if facts.undefined => one,
+            Group::Predicate => all,
             Group::Placement => {
                 let placement = self.find(chosen, |operand_type| {
                     operand_type == OperandType::AccessPlacement
@@ -826,7 +875,18 @@ impl Cut {
                 if decided || facts.held & (1 << index) == 0 || !read {
                     one
                 } else {
-                    all
+                    // Only the values whose lanes are those the word gives the operand.
+                    let own: Vec<usize> = (0..count)
+                        .filter(|value| {
+                            self.domain.is_value_of_word(
+                                self.instruction,
+                                operand_type,
+                                self.values[index][*value],
+                                facts.word,
+                            )
+                        })
+                        .collect();
+                    if own.is_empty() { one } else { own }
                 }
             }
             Group::Control if facts.undefined || !compares => one,
@@ -838,7 +898,14 @@ impl Cut {
                     let mode = (control >> ROUNDING_MODE_SHIFT) & ((1 << ROUNDING_MODE_BITS) - 1);
                     let flush = control & (FLUSH_TO_ZERO | FLUSH_HALF_TO_ZERO);
                     let flushes_nothing = facts.nonfinite_source && !facts.subnormal_source;
-                    (!facts.nonfinite_source || mode == 0) && (!flushes_nothing || flush == 0)
+                    (!facts.nonfinite_source || mode == 0)
+                        && (!flushes_nothing || flush == 0)
+                        && self.domain.is_value_of_word(
+                            self.instruction,
+                            operand_type,
+                            self.values[index][*value],
+                            facts.word,
+                        )
                 })
                 .collect(),
             Group::Written => match operand_type {
@@ -888,6 +955,9 @@ impl Cut {
             OperandType::UnsignedImmediate(field)
             | OperandType::SignedImmediate(field)
             | OperandType::RegisterValue { field, .. } => self.addressing.contains(&field),
+            OperandType::SplitImmediate(fields) => {
+                fields.iter().all(|field| self.addressing.contains(field))
+            }
             _ => false,
         }
     }
@@ -908,8 +978,11 @@ fn to_register_assignments(
 ) -> Vec<Vec<(usize, usize)>> {
     let field = |operand_type: OperandType| match operand_type {
         OperandType::RegisterNumber(field) => Some((field, RegisterKind::General)),
-        OperandType::VectorRegisterNumber(field) => Some((field, RegisterKind::Vector)),
-        OperandType::PredicateRegisterNumber(field) => Some((field, RegisterKind::Predicate)),
+        OperandType::VectorRegisterNumber(field)
+        | OperandType::ScalableVectorNumber { field, .. } => Some((field, RegisterKind::Vector)),
+        OperandType::PredicateRegisterNumber(field) | OperandType::PredicateNumber(field) => {
+            Some((field, RegisterKind::Predicate))
+        }
         _ => None,
     };
     // The first operand of each field, with its kind.

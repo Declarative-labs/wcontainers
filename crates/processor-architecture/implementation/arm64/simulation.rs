@@ -9,6 +9,7 @@ use wcontainers_processor_architecture::{
 
 use crate::branch::is_outside_lower_addresses;
 use crate::encoding::{IMM16, RD, RDVL_IMM6, RT};
+use crate::load_store::scalable_access::{simulate_scalable_access, to_scalable_access};
 use crate::memory::{read_bytes, read_permission};
 use crate::operand::RegisterThirtyOne;
 use crate::registers::write_register;
@@ -105,6 +106,20 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                     );
                     Ok(())
                 }
+                Self::ScalableAccess {
+                    instruction,
+                    choices,
+                } => match to_scalable_access(instruction) {
+                    Some(access) => simulate_scalable_access(
+                        access,
+                        choices,
+                        processor,
+                        memory,
+                        word,
+                        mutation_hook,
+                    ),
+                    None => unreachable!("an SVE access behavior is listed only for an SVE access"),
+                },
                 Self::MrsCtrEl0 { cache_type } => {
                     write_register(
                         processor,
@@ -170,7 +185,9 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                 ..
             } => Instruction::Mrs,
             Self::SystemRegisterMove { .. } => Instruction::MsrRegister,
-            Self::Scalable { instruction, .. } | Self::Unimplemented(instruction) => instruction,
+            Self::Scalable { instruction, .. }
+            | Self::ScalableAccess { instruction, .. }
+            | Self::Unimplemented(instruction) => instruction,
             Self::MrsCtrEl0 { .. } | Self::LevelSpecific(_) => return false,
         };
         instruction.to_record().is_some_and(|record| {

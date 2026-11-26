@@ -26,15 +26,18 @@ use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_arm64::branch::{BranchOperation, to_branch_operation};
 use wcontainers_processor_architecture_arm64::encoding::{Field, IMM16, RD, RDVL_IMM6, RN, RT};
+use wcontainers_processor_architecture_arm64::floating_point::scalable_elements::Conversion;
 use wcontainers_processor_architecture_arm64::floating_point::{
     ALTERNATIVE_HALF, DEFAULT_NAN, DIVIDE_BY_ZERO, FLUSH_HALF_TO_ZERO, FLUSH_TO_ZERO,
     FloatingPointOperation, INEXACT, INPUT_DENORMAL, INVALID_OPERATION, OVERFLOW, Precision,
     ROUNDING_MODE_BITS, ROUNDING_MODE_SHIFT, UNDERFLOW, to_floating_point_operation,
 };
+use wcontainers_processor_architecture_arm64::load_store::scalable_access::to_scalable_access;
 use wcontainers_processor_architecture_arm64::load_store::{AtomicOperation, Transfer};
 use wcontainers_processor_architecture_arm64::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Signedness,
 };
+use wcontainers_processor_architecture_arm64::scalable_floating_point::{Lanes, VectorRole};
 use wcontainers_processor_architecture_arm64::simd::to_vector_operation;
 use wcontainers_processor_architecture_arm64::sve::{
     GeneralValues, PredicateValues, ScalableOperand, VectorValues, to_scalable_instruction,
@@ -48,6 +51,7 @@ use wcontainers_processor_architecture_arm64::{
 };
 
 pub mod advanced_simd;
+mod scalable;
 #[cfg(test)]
 mod tests;
 
@@ -94,6 +98,8 @@ const STICKY_FLAGS: [u64; 7] = [
 ];
 /// The vector register beside V0, which holds zero where no operand names it, as X30 does.
 const SECOND_VECTOR_REGISTER: usize = 1;
+/// The predicate beside P0, which holds zero in the state of an SVE instruction, as V1 does.
+const SECOND_PREDICATE_REGISTER: usize = 1;
 /// The bytes FEAT_LSE2 lets an unaligned ordered or atomic access lie anywhere inside.
 const SINGLE_COPY_ATOMIC_BYTES: u64 = 16;
 /// A doubleword's bytes: a boundary the alignment rules name besides an access's own size and 16 bytes.
@@ -101,8 +107,6 @@ const DOUBLEWORD_BYTES: u64 = u64::BITS as u64 / u8::BITS as u64;
 /// Ordinary registers, as many as an instruction names, so that every register operand can name one of its own: even
 /// numbers, so that a pair's second register, the next number, is none of them.
 const DISTINCT_REGISTER_NUMBERS: [u32; 4] = [0, 2, 4, 6];
-/// The predicate beside P0, which holds zero where no operand names it, as V1 does.
-const SECOND_PREDICATE_REGISTER: usize = 1;
 /// A governing predicate of an SVE instruction on vectors: none, all and alternate elements of each size, the first
 /// alone, the bits of no element wider than a byte, the top byte's bit, and the upper half.
 const GOVERNING_PREDICATES: [u16; 9] = [
@@ -259,6 +263,44 @@ pub enum OperandType {
     FirstFaultValue,
     /// FFR before an instruction that writes it without reading it.
     WrittenFirstFault,
+    /// The Z registers an SVE operand names, `registers` consecutive ones from the field's.
+    ScalableVectorNumber {
+        field: Field,
+        registers: u32,
+    },
+    /// The whole Z register `offset` registers after the one the field names, wrapping after Z31.
+    ScalableVectorValue {
+        field: Field,
+        offset: u32,
+        values: ScalableValues,
+    },
+    /// The P register an SVE operand names.
+    PredicateNumber(Field),
+    /// The value of the P register the field names.
+    ScalablePredicateValue(Field),
+    /// An immediate split over fields, the most significant first, which takes every value it can hold.
+    EveryValue(&'static [Field]),
+    /// A byte position in a Z register, split over fields, the most significant first.
+    BytePosition(&'static [Field]),
+}
+
+/// What the elements of a Z register an SVE instruction reads hold.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ScalableValues {
+    /// Bits, as a vector register's.
+    Integer,
+    /// Indices into a table, besides bits.
+    TableIndices,
+    /// The bits of one register of a structure store: fewer than `Integer`, since each register stores its own bytes.
+    Structure,
+    /// Floating-point values in the lanes given, or where none, in the lanes of every element size, of which an
+    /// instruction takes those of the size its size field gives.
+    FloatingPoint {
+        lanes: Option<Lanes>,
+        role: VectorRole,
+    },
+    /// What a conversion reads, with the bounds and roundings of what it converts to.
+    Converted(Conversion),
 }
 
 /// What every byte of the data pages holds before the instruction.
@@ -335,9 +377,26 @@ pub enum OperandValue {
     /// The low bytes of a SIMD and floating-point register.
     Vector(u128),
     Predicate(u16),
+    /// A whole Z register, the lanes its values lie in.
+    ScalableVector {
+        bits: u128,
+        lanes: Lanes,
+    },
 }
 
 impl Arm64InputDomain {
+    /// Whether an operand's critical value is one the word gives its operand: a floating-point source of an SVE
+    /// instruction whose size field sizes its elements takes only the values of that size.
+    pub fn is_value_of_word(
+        &self,
+        instruction: Instruction<Infallible>,
+        operand_type: OperandType,
+        value: OperandValue,
+        word: u32,
+    ) -> bool {
+        scalable::is_value_of_word(instruction, operand_type, value, word)
+    }
+
     /// The numbers of ordinary registers of the operand's kind enough for every register operand of an instruction to
     /// name its own, which the critical values alone do not give: one register's value is a critical value only
     /// beside the others'. None for an operand that names no register.
@@ -348,7 +407,9 @@ impl Arm64InputDomain {
         let numbers: &[u32] = match operand_type {
             OperandType::RegisterNumber(_)
             | OperandType::VectorRegisterNumber(_)
-            | OperandType::PredicateRegisterNumber(_) => &DISTINCT_REGISTER_NUMBERS,
+            | OperandType::PredicateRegisterNumber(_)
+            | OperandType::ScalableVectorNumber { .. }
+            | OperandType::PredicateNumber(_) => &DISTINCT_REGISTER_NUMBERS,
             _ => &[],
         };
         numbers.iter().copied().map(OperandValue::RegisterNumber)
@@ -373,6 +434,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         }
         if let Some(scalable) = to_scalable_instruction(instruction) {
             return to_scalable_operand_types(scalable.operands).into_iter();
+        }
+        if let Some(operand_types) = scalable::list_scalable_operand_types(instruction) {
+            return operand_types.into_iter();
         }
         if DocumentedInstruction::new(instruction).is_some()
             || LoadStoreInstruction::new(instruction).is_some()
@@ -572,6 +636,22 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             OperandType::CodePlacement => [CodePlacement::PageStart, CodePlacement::PageEnd]
                 .map(OperandValue::CodePlacement)
                 .to_vec(),
+            // Two registers, the second holding zero, as the vector registers; and for a list, the last, whose next is Z0.
+            OperandType::ScalableVectorNumber { registers, .. } => [0, 1]
+                .into_iter()
+                .chain((registers > 1).then_some(VECTOR_REGISTERS as u32 - 1))
+                .map(OperandValue::RegisterNumber)
+                .collect(),
+            OperandType::ScalableVectorValue { values, .. } => {
+                scalable::to_scalable_vector_values(values)
+            }
+            OperandType::PredicateNumber(_) => [0, 1].map(OperandValue::RegisterNumber).to_vec(),
+            OperandType::ScalablePredicateValue(_) => scalable::to_predicate_values(),
+            OperandType::EveryValue(fields) => {
+                let width: u32 = fields.iter().map(|field| field.width).sum();
+                (0..1 << width).map(OperandValue::Bits).collect()
+            }
+            OperandType::BytePosition(fields) => scalable::to_byte_positions(fields),
             OperandType::DataPagePermission(_) => {
                 let mapped = |data_access| PagePermission::Mapped {
                     data_access,
@@ -634,8 +714,12 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             floating_point_status: SATURATION,
             ..ZERO_PROCESSOR
         };
-        // The predicates no operand names of an SVE instruction hold as the vector registers do.
-        if to_scalable_instruction(instruction).is_some() {
+        // The P registers of an SVE instruction as its Z registers are: each the complement of its number, but P1 zero.
+        if to_scalable_instruction(instruction).is_some()
+            || typed
+                .iter()
+                .any(|(operand_type, _)| matches!(operand_type, OperandType::PredicateNumber(_)))
+        {
             processor.predicate_registers = array::from_fn(|number| {
                 if number == SECOND_PREDICATE_REGISTER {
                     0
@@ -646,6 +730,8 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         }
         let mut floating_point_values = Vec::new();
         let mut vector_values = Vec::new();
+        let mut scalable_values = Vec::new();
+        let mut predicate_values = Vec::new();
         let mut placement = None;
         let mut tag = 0;
         let mut comparand = None;
@@ -654,7 +740,6 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         let mut upper = PagePermission::Unmapped;
         let mut register_values = Vec::new();
         let mut simd_values = Vec::new();
-        let mut predicate_values = Vec::new();
         let mut next_vector_values = Vec::new();
         for (operand_type, operand) in typed {
             match operand_type {
@@ -730,8 +815,26 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 OperandType::AdvancedSimd(simd_operand) => {
                     simd_values.push((simd_operand, operand))
                 }
+                OperandType::ScalableVectorValue { field, offset, .. } => {
+                    let (OperandValue::Vector(value)
+                    | OperandValue::ScalableVector { bits: value, .. }) = operand
+                    else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    scalable_values.push((field, offset, value));
+                }
+                OperandType::ScalablePredicateValue(field) => {
+                    let OperandValue::Bits(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    predicate_values.push((field, value as u16));
+                }
                 // `encode_word` has put them in the word.
-                OperandType::RegisterNumber(_)
+                OperandType::ScalableVectorNumber { .. }
+                | OperandType::PredicateNumber(_)
+                | OperandType::EveryValue(_)
+                | OperandType::BytePosition(_)
+                | OperandType::RegisterNumber(_)
                 | OperandType::VectorRegisterNumber(_)
                 | OperandType::PredicateRegisterNumber(_)
                 | OperandType::Pattern(_)
@@ -829,6 +932,10 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 *register = value;
             }
         }
+        for (field, offset, value) in scalable_values {
+            let number = (field.read(word) + offset) as usize % VECTOR_REGISTERS;
+            processor.vector_registers[number] = value;
+        }
         for (field, thirty_one, value) in register_values {
             match processor
                 .general_purpose_registers
@@ -851,7 +958,11 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             permission: readable_and_executable,
         }];
         let layout = LoadStoreInstruction::new(instruction)
-            .and_then(|load_store| load_store.to_access_layout(word, &processor));
+            .and_then(|load_store| load_store.to_access_layout(word, &processor))
+            .or_else(|| {
+                to_scalable_access(instruction)
+                    .and_then(|access| access.to_access_layout(word, &processor))
+            });
         if let (Some(placement), Some(layout)) = (placement, layout) {
             let address = to_access_address(placement, layout.bytes);
             let base = address.wrapping_sub(layout.offset).wrapping_add(tag);
@@ -948,7 +1059,9 @@ pub fn encode_word(
             (
                 OperandType::RegisterNumber(field)
                 | OperandType::VectorRegisterNumber(field)
-                | OperandType::PredicateRegisterNumber(field),
+                | OperandType::PredicateRegisterNumber(field)
+                | OperandType::ScalableVectorNumber { field, .. }
+                | OperandType::PredicateNumber(field),
                 OperandValue::RegisterNumber(number),
             ) => word |= field.to_bits(number),
             (OperandType::Pattern(field), OperandValue::Bits(bits)) => {
@@ -965,7 +1078,10 @@ pub fn encode_word(
             (OperandType::Word(_), OperandValue::Bits(bits)) => word = bits as u32,
             (OperandType::AdvancedSimd(simd_operand), _) => deferred.push((simd_operand, operand)),
             (
-                OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields),
+                OperandType::ProgramCounterOffset(fields)
+                | OperandType::SplitImmediate(fields)
+                | OperandType::EveryValue(fields)
+                | OperandType::BytePosition(fields),
                 OperandValue::Bits(bits),
             ) => {
                 let mut remaining = bits;
@@ -979,6 +1095,10 @@ pub fn encode_word(
                 | OperandType::VectorRegisterNumber(_)
                 | OperandType::PredicateRegisterNumber(_)
                 | OperandType::Pattern(_)
+                | OperandType::ScalableVectorNumber { .. }
+                | OperandType::PredicateNumber(_)
+                | OperandType::EveryValue(_)
+                | OperandType::BytePosition(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)
                 | OperandType::ShiftAmount { .. }

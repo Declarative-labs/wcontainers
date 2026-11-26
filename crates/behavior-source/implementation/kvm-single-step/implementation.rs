@@ -215,6 +215,8 @@ pub enum Refusal {
     },
     /// The guest rang the doorbell without the handler ending the state's slot.
     SlotNotRun,
+    /// A predicate or FFR holds a set bit on a chip without SVE, which has neither.
+    PredicatesWithoutScalableVectors,
 }
 
 /// One KVM virtual machine with one virtual CPU, bound to the thread that made it, that runs one instruction a state.
@@ -226,6 +228,8 @@ pub struct KvmSingleStepMachine {
     entry: u64,
     /// PSTATE as the host enters the handler.
     entry_pstate: u64,
+    /// Whether the chip has SVE, so that the handler moves the predicates and FFR.
+    scalable_vectors: bool,
     next_free_page: u64,
     /// How many ASIDs the chip has, and so how many slots a batch holds at most.
     asid_count: u64,
@@ -249,8 +253,6 @@ pub struct KvmSingleStepMachine {
     resident: Resident,
     /// Set during a run and after a failed one, when the CPU may be anywhere: the next state makes a new machine.
     renew_machine: bool,
-    /// Whether the chip has SVE, whose predicates and FFR the handler then loads and saves.
-    scalable_vectors: bool,
 }
 
 /// What the guest holds between states when loading incrementally.
@@ -306,6 +308,7 @@ impl KvmSingleStepMachine {
             memory,
             entry: 0,
             entry_pstate: 0,
+            scalable_vectors: false,
             next_free_page: ARENA.start,
             asid_count: 0,
             slot_count: 0,
@@ -325,7 +328,6 @@ impl KvmSingleStepMachine {
                 next_free_page: RESIDENT_TOP + PAGE_SIZE,
             },
             renew_machine: false,
-            scalable_vectors: false,
         };
         source.set_up()?;
         Ok(source)
@@ -381,6 +383,10 @@ impl KvmSingleStepMachine {
         } else {
             cpacr
         };
+        // The shortest vector length, 128 bits, which every chip with SVE has and the state holds.
+        if has_sve {
+            self.machine.set(Register::SveControl, 0)?;
+        }
         let has_sme = self.machine.get(Register::ProcessorFeatures1)? & SME_IMPLEMENTED != 0;
         let cpacr = if has_sme {
             cpacr | SME_TRAPS_NOTHING
@@ -987,6 +993,11 @@ impl BehaviorSource for KvmSingleStepMachine {
     ) -> Result<(), Refusal> {
         if processor.exclusive_monitor != ExclusiveMonitor::Open {
             return Err(Refusal::ExclusiveMonitorHeld(processor.exclusive_monitor));
+        }
+        if !self.scalable_vectors
+            && (processor.first_fault_register != 0 || processor.predicate_registers.iter().any(|p| *p != 0))
+        {
+            return Err(Refusal::PredicatesWithoutScalableVectors);
         }
         let memory = memory.mutations;
         if self.renew_machine {

@@ -15,6 +15,7 @@ use crate::pointer_authentication::{
     PointerAuthenticationOperation, simulate_pointer_authentication,
     to_pointer_authentication_operation,
 };
+use crate::scalable::{ScalableOperation, simulate_scalable, to_scalable_operation};
 use crate::simd::{VectorOperation, simulate_vector, to_vector_operation};
 use crate::{Exception, ExclusiveMonitor, Instruction, Processor};
 
@@ -31,6 +32,8 @@ pub enum DocumentedOperation {
     Vector(VectorOperation),
     PointerAuthentication(PointerAuthenticationOperation),
     AdvancedSimd(AdvancedSimdOperation),
+    /// An SVE instruction of `scalable`.
+    Scalable(ScalableOperation),
     /// A hint or barrier, which changes nothing a single instruction's state shows.
     NoOperation,
     /// Undefined at EL0 whatever its operands.
@@ -100,6 +103,9 @@ pub const fn to_documented_operation(
     if let Some(operation) = to_advanced_simd_operation(instruction) {
         return Some(DocumentedOperation::AdvancedSimd(operation));
     }
+    if let Some(operation) = to_scalable_operation(instruction) {
+        return Some(DocumentedOperation::Scalable(operation));
+    }
     to_system_operation(instruction)
 }
 
@@ -134,6 +140,7 @@ pub const fn to_implicit_inputs(instruction: Instruction<Infallible>) -> Implici
         },
         Some(
             DocumentedOperation::Vector(_)
+            | DocumentedOperation::Scalable(_)
             | DocumentedOperation::NoOperation
             | DocumentedOperation::Undefined
             | DocumentedOperation::SupervisorCall,
@@ -218,6 +225,9 @@ impl DocumentedInstruction {
             }
             DocumentedOperation::AdvancedSimd(operation) => {
                 simulate_advanced_simd(processor, word, operation).map(|()| None)
+            }
+            DocumentedOperation::Scalable(operation) => {
+                simulate_scalable(processor, word, operation).map(|()| None)
             }
             DocumentedOperation::NoOperation if crate::planted::is(257) => {
                 Err(Exception::UndefinedInstruction)

@@ -20,6 +20,8 @@ pub enum PlantedBy {
     /// The Advanced SIMD instructions beyond `simd.rs`.
     AdvancedSimd,
     ScalableFirstHalf,
+    /// The second half of the SVE work list, whose bugs are numbered from 2001.
+    ScalableSecondHalf,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.
@@ -61,7 +63,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 439] = [
+pub const PLANTED_BUGS: [PlantedBug; 489] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2695,5 +2697,305 @@ pub const PLANTED_BUGS: [PlantedBug; 439] = [
         instruction: Instruction::SelZPZZ,
         planted_by: PlantedBy::ScalableFirstHalf,
         what: "SEL takes the second vector where the predicate is set",
+    },
+    PlantedBug {
+        number: 2001,
+        instruction: Instruction::Zip2ZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the high half starts one element early",
+    },
+    PlantedBug {
+        number: 2002,
+        instruction: Instruction::Uzp1ZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the second source below the first",
+    },
+    PlantedBug {
+        number: 2003,
+        instruction: Instruction::Trn2ZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the second source's element one past the first's",
+    },
+    PlantedBug {
+        number: 2004,
+        instruction: Instruction::TblZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "an index one past the table reads its first element",
+    },
+    PlantedBug {
+        number: 2005,
+        instruction: Instruction::TblZZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "an index into the second table gives zero",
+    },
+    PlantedBug {
+        number: 2006,
+        instruction: Instruction::TblZZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the second table after Z31 is Z31, not Z0",
+    },
+    PlantedBug {
+        number: 2007,
+        instruction: Instruction::TbxZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "an index past the table gives zero",
+    },
+    PlantedBug {
+        number: 2008,
+        instruction: Instruction::ExtZZI,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "a position past the vector wraps instead of being zero",
+    },
+    PlantedBug {
+        number: 2009,
+        instruction: Instruction::DupZZI,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "an index past the vector wraps instead of giving zero",
+    },
+    PlantedBug {
+        number: 2010,
+        instruction: Instruction::RevZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "doublewords left in place",
+    },
+    PlantedBug {
+        number: 2011,
+        instruction: Instruction::SpliceZPZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "no active element leaves the result zero",
+    },
+    PlantedBug {
+        number: 2012,
+        instruction: Instruction::SpliceZPZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the predicate read one bit per element",
+    },
+    PlantedBug {
+        number: 2013,
+        instruction: Instruction::Sunpkhi,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "words taken from the low half",
+    },
+    PlantedBug {
+        number: 2014,
+        instruction: Instruction::CompactZPZ64,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the elements above the active ones kept, not zero",
+    },
+    PlantedBug {
+        number: 2015,
+        instruction: Instruction::FaddZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "inactive elements computed too",
+    },
+    PlantedBug {
+        number: 2016,
+        instruction: Instruction::FsubrZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the sources not swapped",
+    },
+    PlantedBug {
+        number: 2017,
+        instruction: Instruction::FmulxZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "an infinity times a zero is the default NaN, as FMUL",
+    },
+    PlantedBug {
+        number: 2018,
+        instruction: Instruction::FrecpsZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the first source not negated",
+    },
+    PlantedBug {
+        number: 2019,
+        instruction: Instruction::FrsqrtsZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the sum not halved",
+    },
+    PlantedBug {
+        number: 2020,
+        instruction: Instruction::FscaleZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the scale read unsigned",
+    },
+    PlantedBug {
+        number: 2021,
+        instruction: Instruction::FabdZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "a NaN keeps its sign",
+    },
+    PlantedBug {
+        number: 2022,
+        instruction: Instruction::FcmnePPzZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "a NaN compares equal",
+    },
+    PlantedBug {
+        number: 2023,
+        instruction: Instruction::FcmgePPzZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "a quiet NaN raises no Invalid Operation",
+    },
+    PlantedBug {
+        number: 2024,
+        instruction: Instruction::FcmltPPzZ0,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the source compared greater than zero",
+    },
+    PlantedBug {
+        number: 2025,
+        instruction: Instruction::Fmad,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the addend and the multiplier swapped",
+    },
+    PlantedBug {
+        number: 2026,
+        instruction: Instruction::Fnmla,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the addend not negated",
+    },
+    PlantedBug {
+        number: 2027,
+        instruction: Instruction::FcvtZPmZStoH,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "FPCR.AHP read",
+    },
+    PlantedBug {
+        number: 2028,
+        instruction: Instruction::FcvtzsZPmZDtoS,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the word zero-extended",
+    },
+    PlantedBug {
+        number: 2029,
+        instruction: Instruction::ScvtfZPmZStoD,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the whole doubleword converted",
+    },
+    PlantedBug {
+        number: 2030,
+        instruction: Instruction::FrecpxZPmZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "a zero exponent complemented",
+    },
+    PlantedBug {
+        number: 2031,
+        instruction: Instruction::FmaxnmZPmI,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the immediate's two constants swapped",
+    },
+    PlantedBug {
+        number: 2033,
+        instruction: Instruction::FcmeqPPzZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "inactive elements keep the destination's bits",
+    },
+    PlantedBug {
+        number: 2034,
+        instruction: Instruction::FaddZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "only the last element's flags raised",
+    },
+    PlantedBug {
+        number: 2035,
+        instruction: Instruction::Ld1w,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "inactive elements keep the register's value, not zero",
+    },
+    PlantedBug {
+        number: 2037,
+        instruction: Instruction::Ld1bImmediate32,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the immediate scaled by the vector's length",
+    },
+    PlantedBug {
+        number: 2038,
+        instruction: Instruction::Ld3w,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the registers one after another in memory, not interleaved",
+    },
+    PlantedBug {
+        number: 2039,
+        instruction: Instruction::St1hZPBr,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "inactive elements stored too",
+    },
+    PlantedBug {
+        number: 2040,
+        instruction: Instruction::St2d,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "every register's elements from the first",
+    },
+    PlantedBug {
+        number: 2041,
+        instruction: Instruction::Ld1rwImmediate,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the element read with no element active",
+    },
+    PlantedBug {
+        number: 2042,
+        instruction: Instruction::Ld1rqwW,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the offset register scaled by sixteen bytes",
+    },
+    PlantedBug {
+        number: 2043,
+        instruction: Instruction::LdrZXI,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the immediate read unsigned",
+    },
+    PlantedBug {
+        number: 2044,
+        instruction: Instruction::StrPXI,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "only the first byte stored",
+    },
+    PlantedBug {
+        number: 2045,
+        instruction: Instruction::Ld1d,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "inactive elements fault",
+    },
+    PlantedBug {
+        number: 2046,
+        instruction: Instruction::PrfbPRR,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the prefetch faults as a load",
+    },
+    PlantedBug {
+        number: 2047,
+        instruction: Instruction::Saddlb,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the top elements taken, not the bottom",
+    },
+    PlantedBug {
+        number: 2048,
+        instruction: Instruction::SqdmlalbZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the accumulation not saturated",
+    },
+    PlantedBug {
+        number: 2049,
+        instruction: Instruction::SqrdmulhZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the product not rounded",
+    },
+    PlantedBug {
+        number: 2050,
+        instruction: Instruction::Sabalb,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the difference not made absolute",
+    },
+    PlantedBug {
+        number: 2051,
+        instruction: Instruction::Addhnb,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the top halves kept, not zero",
+    },
+    PlantedBug {
+        number: 2052,
+        instruction: Instruction::BcaxZZZZ,
+        planted_by: PlantedBy::ScalableSecondHalf,
+        what: "the second and third sources swapped",
     },
 ];

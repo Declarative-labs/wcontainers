@@ -33,6 +33,8 @@ pub const UNDERFLOW: u64 = 1 << 3;
 pub const INEXACT: u64 = 1 << 4;
 pub const INPUT_DENORMAL: u64 = 1 << 7;
 
+pub mod scalable_elements;
+
 /// The bits of the fraction of a half-precision value, which Rust's stable types do not name.
 const HALF_FRACTION_BITS: u32 = 10;
 /// The bits a shift of a value from a fixed-point register leaves for its fraction: FBITS is 64 less the scale.
