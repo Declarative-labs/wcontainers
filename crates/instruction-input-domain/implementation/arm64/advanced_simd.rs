@@ -730,15 +730,25 @@ pub fn read_back(
             Some(OperandValue::Bits(u64::from(IMMH_IMMB.read(word))))
         }
         SimdOperand::SaturationStatus => Some(OperandValue::Bits(processor.floating_point_status)),
-        SimdOperand::Lanes { kind, .. } | SimdOperand::Element { kind, .. } => (0
-            ..to_pattern_count(kind))
-            .map(|k| OperandValue::Bits(k as u64))
-            .find(|value| {
-                let mut built = processor.clone();
-                apply(operand, *value, word, &mut built);
-                built.vector_registers == processor.vector_registers
-                    && encode(operand, *value, word) == encode(operand, *value, word) & word
-            }),
+        SimdOperand::Lanes { kind, .. } | SimdOperand::Element { kind, .. } => {
+            let values = || (0..to_pattern_count(kind)).map(|k| OperandValue::Bits(k as u64));
+            // An element's index and M are exactly the word's; lanes put nothing in it.
+            let fields = match operand {
+                SimdOperand::Element { .. } => {
+                    ELEMENT_H.to_mask() | ELEMENT_L.to_mask() | ELEMENT_M.to_mask()
+                }
+                _ => 0,
+            };
+            let encoded = |value: &OperandValue| encode(operand, *value, word) == word & fields;
+            // A register a later operand names again holds that operand's value: any value the word allows.
+            values()
+                .find(|value| {
+                    let mut built = processor.clone();
+                    apply(operand, *value, word, &mut built);
+                    built.vector_registers == processor.vector_registers && encoded(value)
+                })
+                .or_else(|| values().find(encoded))
+        }
     }
 }
 

@@ -809,8 +809,10 @@ fn every_modeled_instruction_has_its_operands_in_fields_beside_its_fixed_bits() 
         let Some(record) = instruction.to_record() else {
             continue;
         };
-        if DocumentedInstruction::new(instruction).is_none()
-            && LoadStoreInstruction::new(instruction).is_none()
+        // An Advanced SIMD instruction of `advanced_simd` reads its fields from the word by its encoding class.
+        if (DocumentedInstruction::new(instruction).is_none()
+            && LoadStoreInstruction::new(instruction).is_none())
+            || crate::advanced_simd::to_advanced_simd_operation(instruction).is_some()
         {
             continue;
         }
