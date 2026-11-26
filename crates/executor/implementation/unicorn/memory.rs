@@ -193,10 +193,15 @@ enum FaultRun {
 /// The most bytes one guest store moves, which QEMU hands its store hook as one value.
 const LARGEST_STORE: usize = size_of::<u64>();
 
-/// Copies the bytes a guest store is about to write through one view to every other view of the same shared bytes.
+/// Copies the bytes a guest store is about to write through one view to every other view of the same shared bytes that
+/// the guest may store to.
 ///
 /// Unicorn calls its store hook before the store, with the value, and a write through its interface also drops what it
-/// translated from the bytes written, so code run through another view is the code stored.
+/// translated from the bytes written, so code run through another view is the code stored. A view the guest may not store
+/// to is left as it is until the turn ends, when the shared pages take the store and the view takes them before the next
+/// turn: unicorn's write to a region that refuses stores makes the region writable and back, which empties its TLB while
+/// the store holds an entry of it (MEASURED: the host process ended with SIGSEGV storing a byte one below the page stored
+/// to), and rebuilds its memory map, too slow to do at each store (MEASURED: a test spent minutes in it).
 fn copy_store_to_other_views(
     unicorn: &mut Unicorn<'_, Stopped>,
     address: u64,
@@ -215,10 +220,9 @@ fn copy_store_to_other_views(
         }
         let shared = source.offset + (cut.start - source.addresses.start)
             ..source.offset + (cut.end - source.addresses.start);
-        for target in views
-            .iter()
-            .filter(|view| view.pages == source.pages && view.addresses != source.addresses)
-        {
+        for target in views.iter().filter(|view| {
+            view.pages == source.pages && view.addresses != source.addresses && view.writable
+        }) {
             let shown =
                 target.offset..target.offset + (target.addresses.end - target.addresses.start);
             let both = shared.start.max(shown.start)..shared.end.min(shown.end);
@@ -597,9 +601,7 @@ impl Memory {
                 Some((start, shown)) => shown.pages.write(shown.offset + (at - start), piece),
                 None => {
                     if self.is_mapped(at / PAGE_SIZE) {
-                        self.unicorn
-                            .mem_write(at, piece)
-                            .expect("unicorn maps the pages that allow something");
+                        self.write_unicorn(at, piece);
                     } else {
                         self.hidden[to_index(at)..to_index(at) + count].copy_from_slice(piece);
                     }
@@ -1000,13 +1002,18 @@ impl Memory {
                 continue;
             }
             let bytes = page_bytes(page, self.end);
-            self.unicorn
-                .mem_write(
-                    bytes.start,
-                    &self.hidden[to_index(bytes.start)..to_index(bytes.end)],
-                )
-                .expect("the region is mapped in unicorn");
+            let own = self.hidden[to_index(bytes.start)..to_index(bytes.end)].to_vec();
+            self.write_unicorn(bytes.start, &own);
         }
+    }
+
+    /// Writes the bytes into unicorn's mapped pages and drops what unicorn translated from them: unicorn's own writes
+    /// leave its translations as they were, so code written over would not be what runs next.
+    fn write_unicorn(&mut self, address: u64, bytes: &[u8]) {
+        self.unicorn
+            .mem_write(address, bytes)
+            .expect("unicorn maps the pages that allow something");
+        self.forget_code(address..address + bytes.len() as u64);
     }
 
     /// Gives unicorn a copy of every shared range's pages it maps whose copy is not current.
@@ -1031,9 +1038,7 @@ impl Memory {
                     continue;
                 }
                 shown.pages.read(offset, &mut bytes[..count]);
-                self.unicorn
-                    .mem_write(at, &bytes[..count])
-                    .expect("unicorn maps the pages that allow something");
+                self.write_unicorn(at, &bytes[..count]);
             }
             if let Some(kept) = self.shared.get_mut(&start) {
                 kept.synced = Some(version);
