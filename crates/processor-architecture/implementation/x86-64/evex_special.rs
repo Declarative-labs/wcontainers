@@ -3,7 +3,7 @@
 //! volume 2 describes them, for single, double and half precision.
 
 use crate::float::{
-    Class, DENORMAL, DENORMALS_ARE_ZEROS, Exact, INEXACT, INVALID, LaneOutcome, MASK_SHIFT, Operand, Precision, Rounding,
+    Class, DENORMAL, DENORMALS_ARE_ZEROS, DIVIDE_BY_ZERO, Exact, INEXACT, INVALID, LaneOutcome, MASK_SHIFT, Operand, Precision, Rounding,
     UNDERFLOW, compare_less, read_rounding, round, round_to_integer,
 };
 use crate::planted::{Bug, is_active};
@@ -26,12 +26,16 @@ pub enum SpecialOperation {
     /// The lesser or greater of the two elements, or of their magnitudes (the immediate's bits 1:0), signed as its
     /// bits 3:2 say.
     Range,
+    /// VFIXUPIMM: the first element's class picks a 4-bit response from the second element, which fixes the result
+    /// up (the destination kept, the element, a NaN, an infinity, a zero, one or a constant); the immediate's bits
+    /// raise divide-by-zero or invalid for classes.
+    Fixup,
 }
 
 impl SpecialOperation {
     /// Whether the operation reads two elements.
     pub const fn is_binary(self) -> bool {
-        matches!(self, Self::Scale | Self::Range)
+        matches!(self, Self::Scale | Self::Range | Self::Fixup)
     }
 }
 
@@ -62,6 +66,7 @@ impl Layout {
 /// Computes one element under MXCSR (its rounding, DAZ and masks; an embedded control already applied).
 pub(crate) fn compute_special(
     operation: SpecialOperation,
+    destination: u64,
     first: u64,
     second: u64,
     precision: Precision,
@@ -180,7 +185,68 @@ pub(crate) fn compute_special(
         }
         SpecialOperation::Scale => scale(Operand::read(first, precision, daz), x, precision, mxcsr),
         SpecialOperation::Range => range(Operand::read(first, precision, daz), x, precision, immediate),
+        SpecialOperation::Fixup => fix_up(destination, Operand::read(first, precision, daz), second, precision, immediate),
     }
+}
+
+/// VFIXUPIMM of one element: the token of the first element's class (a denormal under DAZ is +0) picks the response
+/// from the table's low 32 bits.
+fn fix_up(destination: u64, value: Operand, table: u64, precision: Precision, immediate: u8) -> LaneOutcome {
+    let layout = Layout::of(precision);
+    // A denormal DAZ reads as zero becomes +0, its sign dropped.
+    let flushed = value.class == Class::Zero && value.bits & !layout.sign != 0;
+    let value_bits = if flushed { 0 } else { value.bits };
+    let negative = value.negative && !flushed;
+    let one = layout.normal(false, 0, 0);
+    let token = match value.class {
+        Class::Nan { signaling: false } => 0,
+        Class::Nan { signaling: true } => 1,
+        Class::Zero => 2,
+        Class::Finite { .. } if value.bits == one || (is_active(Bug::FixupOneIgnoresSign) && value.bits == one | layout.sign) => 3,
+        Class::Infinity if negative => 4,
+        Class::Infinity => 5,
+        _ if negative => 6,
+        _ => 7,
+    };
+    let response = (table >> (4 * token)) & 0xF;
+    let largest = precision.to_infinity() - 1;
+    let constant = |single: u64, double: u64, half: u64| match precision {
+        Precision::Single => single,
+        Precision::Double => double,
+        Precision::Half => half,
+    };
+    let bits = match response {
+        0 => destination,
+        1 => value_bits,
+        // The element with every exponent bit and the quiet bit set.
+        2 => value_bits | precision.to_infinity() | precision.to_quiet_bit(),
+        3 => precision.to_default_nan(),
+        4 => layout.sign | precision.to_infinity(),
+        5 => precision.to_infinity(),
+        6 if negative => layout.sign | precision.to_infinity(),
+        6 => precision.to_infinity(),
+        7 => layout.sign,
+        8 => 0,
+        9 => layout.normal(true, 0, 0),
+        10 => one,
+        11 => layout.normal(false, -1, 0),
+        12 => constant(0x42B4_0000, 0x4056_8000_0000_0000, 0x55A0),
+        13 => constant(0x3FC9_0FDB, 0x3FF9_21FB_5444_2D18, 0x3E48),
+        14 => largest,
+        _ => layout.sign | largest,
+    };
+    // The immediate's bits by class: zero (#ZE, #IE), one (#ZE, #IE), signaling NaN, -infinity, negative, +infinity.
+    let (zero_divide, invalid) = match token {
+        2 => (immediate & 1 != 0, immediate & 2 != 0),
+        3 => (immediate & 4 != 0, immediate & 8 != 0),
+        1 => (false, immediate & 0x10 != 0),
+        4 => (false, immediate & 0x20 != 0),
+        6 => (false, immediate & 0x40 != 0),
+        5 => (false, immediate & 0x80 != 0),
+        _ => (false, false),
+    };
+    let flags = if invalid { INVALID } else { 0 } | if zero_divide { DIVIDE_BY_ZERO } else { 0 };
+    LaneOutcome { bits, before: flags, after: 0 }
 }
 
 /// VRANGE of one element pair: a signaling NaN quieted (the first's first) with invalid, else a quiet NaN as it is,

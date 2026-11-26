@@ -459,6 +459,10 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vmovsh, Any, EvexOperation::MoveScalar),
         (Mnemonic::Vmovw, Any, EvexOperation::MoveScalar),
         (Mnemonic::Vdpbf16ps, Any, EvexOperation::DotBfloat16),
+        (Mnemonic::Vfixupimmps, Any, special(SpecialOperation::Fixup, Single, Packed)),
+        (Mnemonic::Vfixupimmpd, Any, special(SpecialOperation::Fixup, Double, Packed)),
+        (Mnemonic::Vfixupimmss, Any, special(SpecialOperation::Fixup, Single, Scalar)),
+        (Mnemonic::Vfixupimmsd, Any, special(SpecialOperation::Fixup, Double, Scalar)),
         (Mnemonic::Vrangeps, Any, special(SpecialOperation::Range, Single, Packed)),
         (Mnemonic::Vrangepd, Any, special(SpecialOperation::Range, Double, Packed)),
         (Mnemonic::Vrangess, Any, special(SpecialOperation::Range, Single, Scalar)),
@@ -668,9 +672,9 @@ impl EvexForm {
             | EvexOperation::Convert(_)
             | EvexOperation::ToBfloat16 { .. }
             | EvexOperation::Compare { .. }
-            | EvexOperation::Special { .. }
             | EvexOperation::MoveScalar
             | EvexOperation::OrderedCompare { .. } => false,
+            EvexOperation::Special { operation, .. } => matches!(operation, SpecialOperation::Fixup),
             EvexOperation::Fused { .. } | EvexOperation::DotBfloat16 => true,
             EvexOperation::Integer { operation, .. } => operation.reads_destination(),
             EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => false,

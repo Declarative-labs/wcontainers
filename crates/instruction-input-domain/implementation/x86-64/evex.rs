@@ -945,7 +945,7 @@ fn list_special_values(operation: SpecialOperation, precision: Precision) -> Vec
             normal(9, 0) | sign,
             normal(11, 0) | sign,
         ],
-        SpecialOperation::Range => vec![normal(0, 0) | sign, normal(0, half), normal(0, half) | sign, 1 | sign],
+        SpecialOperation::Range | SpecialOperation::Fixup => vec![normal(0, 0) | sign, normal(0, half), normal(0, half) | sign, 1 | sign],
         SpecialOperation::GetMantissa | SpecialOperation::GetExponent | SpecialOperation::Class => {
             vec![normal(0, half), normal(1, half) | sign, normal(-1, 1) | sign, 1 | sign]
         }
@@ -961,6 +961,7 @@ fn list_special_immediates(operation: SpecialOperation) -> Vec<u8> {
         SpecialOperation::GetMantissa | SpecialOperation::Range => (0..16).collect(),
         SpecialOperation::Class => vec![0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0xFF, 0x00, 0x81],
         SpecialOperation::RoundScale | SpecialOperation::Reduce => vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x08, 0x10, 0x11, 0x41, 0x4A, 0xF0, 0xF3],
+        SpecialOperation::Fixup => vec![0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0xFF],
         SpecialOperation::GetExponent | SpecialOperation::Scale => vec![0],
     }
 }
@@ -987,9 +988,31 @@ pub fn generate_special_data(data: EvexSpecialData) -> Vec<OperandValue> {
         (true, true) => (0..values.len()).collect(),
         (true, false) => (0..values.len()).step_by(elements).collect(),
     };
+    // VFIXUPIMM's second source is a table of responses: each response at each class's place over the rotations,
+    // the bits above the low 32 of a double's element a pattern.
+    let tables: Vec<u64> = (0..8u32)
+        .flat_map(|step| [0x7654_3210u32.rotate_left(4 * step), 0xFEDC_BA98u32.rotate_left(4 * step)])
+        .map(|table| u64::from(table) | 0xA5C3_0000_0000_0000)
+        .collect();
+    let rotate_table = |rotation: usize| {
+        let mut vector = [0; 4];
+        for index in 0..elements {
+            write_element(&mut vector, index, bytes, tables[(index + rotation) % tables.len()]);
+        }
+        vector
+    };
+    let (seconds, second_of): (usize, &dyn Fn(usize) -> [u128; 4]) = match operation {
+        SpecialOperation::Fixup => (tables.len(), &rotate_table),
+        _ => (values.len(), &rotate),
+    };
+    let firsts: Vec<usize> = match operation {
+        SpecialOperation::Fixup if !scalar => (0..values.len()).step_by(elements.min(values.len())).collect(),
+        SpecialOperation::Fixup => (0..values.len()).collect(),
+        _ => firsts,
+    };
     let pairs: Vec<([u128; 4], [u128; 4])> =
-        firsts.iter().flat_map(|&first| (0..values.len()).map(move |second| (rotate(first), rotate(second)))).collect();
-    let some: Vec<([u128; 4], [u128; 4])> = (0..values.len()).map(|second| (rotate(firsts[0]), rotate(second))).collect();
+        firsts.iter().flat_map(|&first| (0..seconds).map(move |second| (rotate(first), second_of(second)))).collect();
+    let some: Vec<([u128; 4], [u128; 4])> = (0..seconds).map(|second| (rotate(firsts[0]), second_of(second))).collect();
     let immediates = list_special_immediates(operation);
     let datum = |(first, second): ([u128; 4], [u128; 4]), immediate: u8, mask, control, mxcsr| {
         OperandValue::EvexCompareData { first, second, immediate, mask, control, mxcsr }

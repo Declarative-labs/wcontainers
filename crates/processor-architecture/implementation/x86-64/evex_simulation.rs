@@ -129,7 +129,8 @@ pub(super) fn execute_evex(
         EvexOperation::Special { operation, precision, .. } => {
             let immediate = if form.has_immediate() { decoded.immediate8() } else { 0 };
             let lanes = compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, bytes| {
-                compute_special(operation, read_element(&first, index, bytes), read_element(&second, index, bytes), precision, mxcsr, immediate)
+                let (destination, first, second) = (read_element(&old, index, bytes), read_element(&first, index, bytes), read_element(&second, index, bytes));
+                compute_special(operation, destination, first, second, precision, mxcsr, immediate)
             })?;
             if operation == SpecialOperation::Class {
                 let bits = (0..elements).fold(0u64, |mask, index| mask | ((read_element(&lanes, index, bytes) & 1) << index));
