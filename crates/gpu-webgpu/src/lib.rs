@@ -33,9 +33,9 @@ use wcontainers_gpu::{
     DepthStencilDesc, DeviceStatus, Extent, FORMAT_COUNT, FORMAT_FACTS, Features, FillMode, Filter,
     Format, FormatCaps, FormatKind, FormatUse, Gpu, GpuError, Helpers, Limits, LossReason,
     MAX_BINDING_SETS, MapIntent, Object, PassDesc, Program, ProvokingVertex, QueryKind, RasterDesc,
-    ReadSource, ReadState, SLOW_PATHS, SamplerDesc, ShaderModule, ShaderStage, SlowPaths, StepMode,
-    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, VertexLayoutDesc,
-    WriteMode,
+    ReadSource, ReadState, SLOW_PATHS, SamplerDesc, ShaderModule, ShaderStage, SlowPaths,
+    StandaloneGpu, StepMode, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
+    TextureViewDesc, VertexLayoutDesc, WriteMode,
 };
 
 pub use draw::Counters;
@@ -518,6 +518,23 @@ const MAX_ANISOTROPY: u16 = 16;
 /// presented: the frames, then every counter ([`Counters`]) and every slow path taken, each as
 /// `name=count`, so any program's log gives what a frame costs between two reports.
 pub const FRAME_REPORT: &str = "webgpu: frames=";
+
+/// What a WebGPU back end is made from: an adapter and the device and queue made on it.
+#[derive(Debug)]
+pub struct WebGpuConfig {
+    pub adapter: wgpu::Adapter,
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+}
+
+impl StandaloneGpu for WebGpu {
+    type Config = WebGpuConfig;
+    type NewError = core::convert::Infallible;
+
+    fn new(config: WebGpuConfig) -> Result<Self, Self::NewError> {
+        Ok(WebGpu::new(&config.adapter, config.device, config.queue))
+    }
+}
 
 impl WebGpu {
     /// Flags the host adds to its wgpu instance: timestamps resolved in nanoseconds natively, which

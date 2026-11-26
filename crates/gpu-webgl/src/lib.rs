@@ -333,6 +333,36 @@ pub type WebGl = trace::Traced<Gl>;
 /// what a frame costs between two reports.
 pub const FRAME_REPORT: &str = "webgl: frames=";
 
+/// What a WebGL 2 back end is made from natively: ANGLE's folder and the extensions to leave unused.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Clone, Debug)]
+pub struct GlConfig {
+    pub angle: std::path::PathBuf,
+    pub off: Vec<String>,
+}
+
+/// What a WebGL 2 back end is made from in a browser: a canvas's context and extensions left unused.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Debug)]
+pub struct GlConfig {
+    pub context: web_sys::WebGl2RenderingContext,
+    pub off: Vec<String>,
+}
+
+impl StandaloneGpu for Gl {
+    type Config = GlConfig;
+    /// Why ANGLE gave no context, as its loader or EGL said.
+    type NewError = String;
+
+    fn new(config: GlConfig) -> Result<Self, String> {
+        let off: Vec<&str> = config.off.iter().map(String::as_str).collect();
+        #[cfg(not(target_arch = "wasm32"))]
+        return Gl::on_angle(&config.angle, &off);
+        #[cfg(target_arch = "wasm32")]
+        return Ok(Gl::on_canvas(config.context, &off));
+    }
+}
+
 /// The WebGL 2 back end. Made on the device thread, which owns the GL context.
 pub struct Gl {
     gl: glow::Context,

@@ -45,7 +45,8 @@ mod slow;
 mod state;
 
 pub use backend::{
-    ClearValue, FanOrLoop, Gpu, IndexSource, Object, PrepareDesc, RingKind, generate_mips_by_draws,
+    ClearValue, FanOrLoop, Gpu, IndexSource, Object, PrepareDesc, RingKind, StandaloneGpu,
+    generate_mips_by_draws,
 };
 pub use caps::{AdapterInfo, Caps, Features, FormatCaps, FormatUse, Limits};
 pub use draw::{

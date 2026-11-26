@@ -172,98 +172,129 @@ impl Default for Recorder {
     }
 }
 
-impl Recorder {
-    pub fn new() -> Self {
-        let mut uses = [FormatUse::empty(); FORMAT_COUNT];
-        let mut samples = [0u8; FORMAT_COUNT];
-        // Positions without a format the back end holds keep no uses and no sample counts.
-        for ((u, n), f) in uses.iter_mut().zip(&mut samples).zip(every_format()) {
-            if !texel::held(f) {
-                continue;
-            }
-            // One sample, and four for every format drawn into (bit n for 2^n samples).
-            *n = 0b101;
-            *u = FormatUse::SAMPLE | FormatUse::COPY_OUT;
-            if FORMAT_FACTS[f as usize].depth_stencil {
-                *u |= FormatUse::DEPTH_STENCIL;
-            } else {
-                *u |= FormatUse::RENDER;
-                if !texel::integer(f) {
-                    *u |= FormatUse::FILTER | FormatUse::BLEND | FormatUse::RESOLVE;
-                }
-            }
-            if matches!(f, Format::Rgba8Unorm | Format::Bgra8Unorm) {
-                *u |= FormatUse::PRESENT;
+/// What a recording back end is made from.
+#[derive(Clone, Debug)]
+pub struct RecorderConfig {
+    /// What it declares; the default holds every feature it records and every format it holds.
+    pub caps: Caps,
+}
+
+impl Default for RecorderConfig {
+    fn default() -> Self {
+        RecorderConfig { caps: full_caps() }
+    }
+}
+
+impl StandaloneGpu for Recorder {
+    type Config = RecorderConfig;
+    type NewError = core::convert::Infallible;
+
+    fn new(config: RecorderConfig) -> Result<Self, Self::NewError> {
+        Ok(Recorder::from_caps(config.caps))
+    }
+}
+
+/// Returns the recording back end's capabilities with nothing taken away.
+fn full_caps() -> Caps {
+    let mut uses = [FormatUse::empty(); FORMAT_COUNT];
+    let mut samples = [0u8; FORMAT_COUNT];
+    // Positions without a format the back end holds keep no uses and no sample counts.
+    for ((u, n), f) in uses.iter_mut().zip(&mut samples).zip(every_format()) {
+        if !texel::held(f) {
+            continue;
+        }
+        // One sample, and four for every format drawn into (bit n for 2^n samples).
+        *n = 0b101;
+        *u = FormatUse::SAMPLE | FormatUse::COPY_OUT;
+        if FORMAT_FACTS[f as usize].depth_stencil {
+            *u |= FormatUse::DEPTH_STENCIL;
+        } else {
+            *u |= FormatUse::RENDER;
+            if !texel::integer(f) {
+                *u |= FormatUse::FILTER | FormatUse::BLEND | FormatUse::RESOLVE;
             }
         }
-        let limits = Limits {
-            max_texture_2d: 16384,
-            max_texture_cube: 16384,
-            max_texture_3d: 2048,
-            max_texture_layers: 2048,
-            max_buffer_size: 1 << 30,
-            max_uniform_buffer_size: 1 << 16,
-            max_storage_buffer_size: 1 << 27,
-            uniform_buffers_per_stage: 14,
-            textures_per_stage: 128,
-            samplers_per_stage: 16,
-            storage_buffers_per_stage: 8,
-            storage_textures_per_stage: 8,
-            vertex_streams: 32,
-            vertex_attributes: 32,
-            max_vertex_stride: 2048,
-            color_targets: 8,
-            color_bytes_per_sample: 128,
-            inter_stage_slots: 32,
-            min_uniform_offset_alignment: 256,
-            min_storage_offset_alignment: 256,
-            buffer_copy_alignment: 1,
-            immediate_bytes: 0,
-            // Workgroup variables are not run: programs run one invocation at a time.
-            compute_workgroup_storage: 0,
-            compute_invocations: 256,
-            compute_size: [256, 256, 64],
-            max_dispatch: 65535,
-            max_point_size: 1.0,
-            max_line_width: 1.0,
-            max_anisotropy: 1,
-            capture_buffers: 4,
-            capture_components: 64,
-        };
+        if matches!(f, Format::Rgba8Unorm | Format::Bgra8Unorm) {
+            *u |= FormatUse::PRESENT;
+        }
+    }
+    let limits = Limits {
+        max_texture_2d: 16384,
+        max_texture_cube: 16384,
+        max_texture_3d: 2048,
+        max_texture_layers: 2048,
+        max_buffer_size: 1 << 30,
+        max_uniform_buffer_size: 1 << 16,
+        max_storage_buffer_size: 1 << 27,
+        uniform_buffers_per_stage: 14,
+        textures_per_stage: 128,
+        samplers_per_stage: 16,
+        storage_buffers_per_stage: 8,
+        storage_textures_per_stage: 8,
+        vertex_streams: 32,
+        vertex_attributes: 32,
+        max_vertex_stride: 2048,
+        color_targets: 8,
+        color_bytes_per_sample: 128,
+        inter_stage_slots: 32,
+        min_uniform_offset_alignment: 256,
+        min_storage_offset_alignment: 256,
+        buffer_copy_alignment: 1,
+        immediate_bytes: 0,
+        // Workgroup variables are not run: programs run one invocation at a time.
+        compute_workgroup_storage: 0,
+        compute_invocations: 256,
+        compute_size: [256, 256, 64],
+        max_dispatch: 65535,
+        max_point_size: 1.0,
+        max_line_width: 1.0,
+        max_anisotropy: 1,
+        capture_buffers: 4,
+        capture_components: 64,
+    };
+    Caps {
+        adapter: AdapterInfo {
+            name: "wcontainers recording back end".into(),
+            vendor: 0,
+            device: 0,
+            software: true,
+        },
+        features: Features::INDEPENDENT_BLEND
+            | Features::PROVOKING_VERTEX_FIRST
+            | Features::PROVOKING_VERTEX_LAST
+            | Features::SAMPLE_SHADING
+            | Features::SAMPLE_MASK
+            | Features::MULTISAMPLE_READ
+            | Features::TEXTURE_VIEWS
+            | Features::FORMAT_REINTERPRET
+            | Features::SEPARATE_SAMPLERS
+            | Features::FRACTIONAL_VIEWPORT
+            | Features::FRACTIONAL_DEPTH_BIAS
+            | Features::DEPTH_BIAS_CLAMP
+            | Features::BLEND_CONSTANT_ALPHA
+            | Features::INDEX_U8
+            | Features::DEPTH24_UNORM
+            | Features::BASE_VERTEX_INSTANCE
+            | Features::INSTANCE_STEP_RATE
+            | Features::CLIP_DEPTH_ZERO_ONE
+            | Features::FRAGMENT_STORAGE_WRITE
+            | Features::VERTEX_STORAGE_READ
+            | Features::COMPUTE
+            | Features::TRANSFORM_FEEDBACK
+            | Features::TIMESTAMPS,
+        limits,
+        formats: FormatCaps { uses, samples },
+    }
+}
+
+impl Recorder {
+    pub fn new() -> Self {
+        Self::from_caps(full_caps())
+    }
+
+    fn from_caps(caps: Caps) -> Self {
         Recorder {
-            caps: Caps {
-                adapter: AdapterInfo {
-                    name: "wcontainers recording back end".into(),
-                    vendor: 0,
-                    device: 0,
-                    software: true,
-                },
-                features: Features::INDEPENDENT_BLEND
-                    | Features::PROVOKING_VERTEX_FIRST
-                    | Features::PROVOKING_VERTEX_LAST
-                    | Features::SAMPLE_SHADING
-                    | Features::SAMPLE_MASK
-                    | Features::MULTISAMPLE_READ
-                    | Features::TEXTURE_VIEWS
-                    | Features::FORMAT_REINTERPRET
-                    | Features::SEPARATE_SAMPLERS
-                    | Features::FRACTIONAL_VIEWPORT
-                    | Features::FRACTIONAL_DEPTH_BIAS
-                    | Features::DEPTH_BIAS_CLAMP
-                    | Features::BLEND_CONSTANT_ALPHA
-                    | Features::INDEX_U8
-                    | Features::DEPTH24_UNORM
-                    | Features::BASE_VERTEX_INSTANCE
-                    | Features::INSTANCE_STEP_RATE
-                    | Features::CLIP_DEPTH_ZERO_ONE
-                    | Features::FRAGMENT_STORAGE_WRITE
-                    | Features::VERTEX_STORAGE_READ
-                    | Features::COMPUTE
-                    | Features::TRANSFORM_FEEDBACK
-                    | Features::TIMESTAMPS,
-                limits,
-                formats: FormatCaps { uses, samples },
-            },
+            caps,
             slow: wcontainers_gpu::NO_SLOW_PATHS,
             helpers: Helpers::default(),
             lost: None,

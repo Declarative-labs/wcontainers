@@ -813,6 +813,17 @@ pub trait Gpu: Sized {
     fn timestamps_disjoint(&mut self) -> Result<bool, GpuError>;
 }
 
+/// A back end that is built alone, from plain data naming the host device it drives.
+pub trait StandaloneGpu: Gpu {
+    /// What a back end is made from: plain data with public fields.
+    type Config;
+    /// Why the host device could not be opened.
+    type NewError: Debug;
+
+    /// Opens the device `config` names and reads what it can do into [`Gpu::caps`].
+    fn new(config: Self::Config) -> Result<Self, Self::NewError>;
+}
+
 /// The default of [`Gpu::generate_mips`], for a back end whose override takes only some cases.
 pub fn generate_mips_by_draws<B: Gpu>(
     b: &mut B,
