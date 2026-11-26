@@ -1055,6 +1055,18 @@ pub enum Bug {
     EnterNestingUnreduced,
     /// ENTER does not check the stack at its final RSP.
     EnterProbeSkipped,
+    /// The conversions between MMX and XMM registers and MASKMOVQ run while an x87 exception is pending.
+    MmxConvertIgnoresPendingException,
+    /// CVTPD2PI and CVTTPD2PI from memory take a misaligned operand.
+    MmxConvertMisalignedNoFault,
+    /// CVTPI2PS zeroes the destination's upper quadword.
+    ConvertToSinglesZeroesUpperHalf,
+    /// CVTPI2PS and CVTPI2PD from memory put the x87 state in MMX's use.
+    ConvertFromMemoryEntersMmx,
+    /// MASKMOVQ writes every byte whatever its mask holds.
+    MaskedQuadwordWritesEveryByte,
+    /// The conversions that name an MMX register put the x87 state in MMX's use only once #XM cannot stop them.
+    MmxConvertEntersMmxLast,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1536,6 +1548,23 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::PopFlagsKeepsAlignmentCheck, "POPF", Family::Forms(&[Instruction::Popf, Instruction::Popfq]), Origin::Mandatory),
     row(Bug::EnterNestingUnreduced, "ENTER", Family::Forms(&[Instruction::EnterImmwImmb]), Origin::Mandatory),
     row(Bug::EnterProbeSkipped, "ENTER", Family::Forms(&[Instruction::EnterImmwImmb]), Origin::Mandatory),
+    row(Bug::MmxConvertIgnoresPendingException, "CVTPI2PS to CVTTPD2PI, MASKMOVQ", Family::Forms(MMX_CONVERTS), Origin::Mandatory),
+    row(Bug::MmxConvertMisalignedNoFault, "CVTPD2PI, CVTTPD2PI", Family::Forms(&[Instruction::Cvtpd2piMmxqMempd, Instruction::Cvttpd2piMmxqMempd]), Origin::Mandatory),
+    row(Bug::ConvertToSinglesZeroesUpperHalf, "CVTPI2PS", Family::Forms(&[Instruction::Cvtpi2psXmmqMmxq, Instruction::Cvtpi2psXmmqMemq]), Origin::Mandatory),
+    row(Bug::ConvertFromMemoryEntersMmx, "CVTPI2PS, CVTPI2PD", Family::Forms(&[Instruction::Cvtpi2psXmmqMemq, Instruction::Cvtpi2pdXmmpdMemq]), Origin::Mandatory),
+    row(Bug::MaskedQuadwordWritesEveryByte, "MASKMOVQ", Family::Forms(&[Instruction::MaskmovqMmxqMmxq]), Origin::Mandatory),
+    row(Bug::MmxConvertEntersMmxLast, "CVTPI2PS to CVTTPD2PI, MASKMOVQ", Family::Forms(MMX_CONVERTS), Origin::Mandatory),
+];
+
+const MMX_CONVERTS: &[Instruction] = &[
+    Instruction::Cvtpi2psXmmqMmxq,
+    Instruction::Cvtpi2pdXmmpdMmxq,
+    Instruction::Cvtps2piMmxqXmmq,
+    Instruction::Cvtps2piMmxqMemq,
+    Instruction::Cvttps2piMmxqXmmq,
+    Instruction::Cvtpd2piMmxqXmmpd,
+    Instruction::Cvtpd2piMmxqMempd,
+    Instruction::MaskmovqMmxqMmxq,
 ];
 
 const RANDOM: &[Instruction] = &[Instruction::RdrandGprv, Instruction::RdseedGprv];

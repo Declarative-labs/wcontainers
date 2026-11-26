@@ -39,6 +39,7 @@ use wcontainers_processor_architecture_x86_64::avx512_integer::find_evex_integer
 use wcontainers_processor_architecture_x86_64::opmask::find_opmask_form;
 use wcontainers_processor_architecture_x86_64::string::find_string_form;
 use wcontainers_processor_architecture_x86_64::system::find_system_form;
+use wcontainers_processor_architecture_x86_64::mmx_convert::find_mmx_convert_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
@@ -54,6 +55,7 @@ pub mod fixed;
 pub mod float;
 pub mod integer;
 pub mod mmx;
+pub mod mmx_convert;
 pub mod opmask;
 pub mod sse;
 pub mod stack;
@@ -243,6 +245,8 @@ pub enum OperandType {
     PoppedFlags,
     /// ENTER's frame size and nesting level.
     EnterOperands,
+    /// The source lanes of a conversion between MMX and XMM registers, or MASKMOVQ's mask.
+    ConvertSource(mmx_convert::ConvertSet),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -494,6 +498,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         if let Some(form) = find_system_form(instruction) {
             return system::list_operand_types(form).into_iter();
         }
+        if let Some(form) = find_mmx_convert_form(instruction) {
+            return mmx_convert::list_operand_types(form).into_iter();
+        }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
             return sizes.into_iter().chain([OperandType::Encoding(0), UNREAD]).collect::<Vec<_>>().into_iter();
@@ -726,6 +733,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::SystemFlags => system::generate_flags(),
             OperandType::PoppedFlags => system::generate_popped(),
             OperandType::EnterOperands => system::generate_enter_operands(),
+            OperandType::ConvertSource(set) => mmx_convert::generate_sources(set),
         };
         values.into_iter()
     }
@@ -798,6 +806,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_system_form(instruction) {
             return system::build_state(form, &typed);
+        }
+        if let Some(form) = find_mmx_convert_form(instruction) {
+            return mmx_convert::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -976,6 +987,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_evex_integer_form(instruction).is_some()
         || find_string_form(instruction).is_some()
         || find_system_form(instruction).is_some()
+        || find_mmx_convert_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 

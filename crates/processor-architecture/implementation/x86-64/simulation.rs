@@ -67,6 +67,8 @@ mod stack_simulation;
 mod string_simulation;
 #[path = "system_simulation.rs"]
 mod system_simulation;
+#[path = "mmx_convert_simulation.rs"]
+mod mmx_convert_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -145,6 +147,10 @@ fn simulate_processor(
             // An MMX store that faults leaves the TOP it cleared first.
             if matches!(behavior, PreciseInstruction::Mmx { .. }) {
                 processor.x87.status = changed.x87.status;
+            }
+            // A form that names an MMX register leaves the x87 state in MMX's use when it then faults.
+            if matches!(behavior, PreciseInstruction::MmxConvert { .. }) {
+                processor.x87 = changed.x87;
             }
             // A repeated string form that faults leaves the registers it wrote as 32-bit ones first.
             if matches!(behavior, PreciseInstruction::String { .. }) {
@@ -273,6 +279,9 @@ fn apply(
         }
         PreciseInstruction::System { instruction, behavior } => {
             system_simulation::execute_system(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::MmxConvert { instruction, behavior } => {
+            mmx_convert_simulation::execute_mmx_convert(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS

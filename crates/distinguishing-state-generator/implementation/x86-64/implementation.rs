@@ -231,7 +231,8 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::OpmaskValue { .. }
         | OperandType::ZmmValue(..)
         | OperandType::StringData(_)
-        | OperandType::PoppedFlags => true,
+        | OperandType::PoppedFlags
+        | OperandType::ConvertSource(_) => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }

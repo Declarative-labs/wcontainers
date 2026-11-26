@@ -41,6 +41,7 @@ mod forms;
 pub mod integer;
 pub mod memory;
 pub mod mmx;
+pub mod mmx_convert;
 pub mod opmask;
 pub mod planted;
 mod simulation;
@@ -175,6 +176,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(avx512_integer::EVEX_INTEGER_FORMS.iter().map(|form| form.instruction))
         .chain(string::STRING_FORMS.iter().map(|form| form.instruction))
         .chain(system::SYSTEM_FORMS.iter().map(|form| form.instruction))
+        .chain(mmx_convert::MMX_CONVERT_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -462,5 +464,10 @@ pub enum PreciseInstruction {
     System {
         instruction: Instruction,
         behavior: system::SystemBehavior,
+    },
+    /// A form of [`mmx_convert::MMX_CONVERT_FORMS`].
+    MmxConvert {
+        instruction: Instruction,
+        behavior: mmx_convert::MmxConvertBehavior,
     },
 }
