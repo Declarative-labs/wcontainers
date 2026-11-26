@@ -11,7 +11,7 @@ use wcontainers_processor_architecture_arm64::{Arm64, Instruction, User};
 #[path = "testing.rs"]
 mod testing;
 
-use testing::{SEED, SeededRandom, list_first_behaviors};
+use testing::{SEED, list_first_behaviors, seed_random};
 
 /// Returns the generated states whose word, read as the encoding fixing most bits, has no known behavior.
 fn list_states_without_behavior() -> Vec<ExecutionState<'static, Arm64<User>>> {
@@ -42,7 +42,7 @@ fn has_no_behavior(instruction: Instruction<Infallible>) -> bool {
 }
 
 wcontainers_executor_conformance::tests!(
-    Simulation::new(list_first_behaviors(), SeededRandom::new(SEED)),
+    Simulation::new(list_first_behaviors(), seed_random(SEED)),
     list_first_behaviors(),
     CriticalValueCut::default(),
     list_states_without_behavior()

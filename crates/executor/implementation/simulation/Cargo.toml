@@ -33,6 +33,8 @@ wcontainers-executor-conformance = { path = "../../conformance" }
 wcontainers-precise-instruction-set-measured = { path = "../../../precise-instruction-set/implementation/measured" }
 wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
 wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
+# The values the tests' simulation chooses where a behavior leaves them undecided: ChaCha from a seed.
+wcontainers-random-source-seeded = { path = "../../../random-source/implementation/seeded" }
 
 [lints]
 workspace = true

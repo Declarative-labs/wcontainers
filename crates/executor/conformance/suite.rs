@@ -8,8 +8,8 @@ use std::convert::Infallible;
 use std::fmt::{Debug, Write};
 use std::ops::Range;
 use std::pin::pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
 use std::time::Duration;
@@ -26,8 +26,8 @@ use wcontainers_executor::memory_space::{
     CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, PageTable,
 };
 use wcontainers_executor::{
-    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, PageTableOf,
-    ProcessorStateOf, SystemCallResponse, TrapHandler,
+    Execution, ExecutionInterrupter, ExecutionStop, Executor, InterruptResponse,
+    MemoryFaultResponse, PageTableOf, ProcessorStateOf, SystemCallResponse, TrapHandler,
 };
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
@@ -308,8 +308,8 @@ where
     );
 }
 
-/// Checks that an interrupt raised before the execution is first polled is answered at its start, before the guest runs.
-pub fn interrupt_before_the_first_poll_is_answered_at_the_start<Chip>(mut executor: Chip)
+/// Checks that an interrupt raised before the execution runs is answered at its start, before the guest runs.
+pub fn interrupt_before_the_run_is_answered_at_the_start<Chip>(mut executor: Chip)
 where
     Chip: Executor<Architecture = arm64::Chip>,
 {
@@ -318,9 +318,18 @@ where
     place(&memory, &mut table, &guest);
     let mut handler =
         Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>).terminating_at_interrupts();
-    let (execution, interrupter) = executor.execute(guest.start.clone(), &memory, &mut handler);
-    interrupter.interrupt();
-    let stopped = block_on(execution);
+    let mut first = true;
+    let stopped = run_to_the_end(
+        &mut executor,
+        guest.start.clone(),
+        &memory,
+        &mut handler,
+        |interrupter| {
+            if std::mem::take(&mut first) {
+                interrupter.interrupt();
+            }
+        },
+    );
     handler.assert_no_trap();
     assert_eq!(
         handler.interrupts, 1,
@@ -338,9 +347,15 @@ where
     let guest = arm64::build_count_down(CODE, COUNT);
     place(&memory, &mut table, &guest);
     let mut first = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
-    let (execution, interrupter) = executor.execute(guest.start.clone(), &memory, &mut first);
-    let stopped = block_on(execution);
-    interrupter.interrupt();
+    let mut last = None;
+    let stopped = run_to_the_end(
+        &mut executor,
+        guest.start.clone(),
+        &memory,
+        &mut first,
+        |interrupter| last = Some(interrupter),
+    );
+    last.expect("the execution was prepared").interrupt();
     assert_eq!(
         stopped, guest.finished,
         "the state the first execution returned"
@@ -958,8 +973,33 @@ fn execute<Chip: Executor>(
     memory: &Chip::GuestMemory,
     handler: &mut impl TrapHandler,
 ) -> ProcessorStateOf<Chip> {
-    let (execution, _interrupter) = executor.execute(processor, memory, handler);
-    block_on(execution)
+    run_to_the_end(executor, processor, memory, handler, drop)
+}
+
+/// Runs an execution until a trap terminates it, preparing it again after each wait, and returns the state it ended at.
+///
+/// Each interrupter is handed over as its execution is prepared.
+fn run_to_the_end<Chip: Executor>(
+    executor: &mut Chip,
+    mut processor: ProcessorStateOf<Chip>,
+    memory: &Chip::GuestMemory,
+    handler: &mut impl TrapHandler,
+    mut on_prepared: impl FnMut(Chip::Interrupter),
+) -> ProcessorStateOf<Chip> {
+    loop {
+        let (execution, interrupter) = executor.prepare_execution(processor, memory);
+        on_prepared(interrupter);
+        match execution.run(handler) {
+            ExecutionStop::Terminated(stopped) => return stopped,
+            ExecutionStop::Waiting {
+                processor: waited,
+                wait,
+            } => {
+                block_on(wait);
+                processor = waited;
+            }
+        }
+    }
 }
 
 /// Runs an execution to its end while another thread interrupts it, and returns the processor state it completed with.
@@ -969,7 +1009,7 @@ fn execute_interrupted<Chip: Executor>(
     memory: &Chip::GuestMemory,
     handler: &mut impl TrapHandler,
 ) -> ProcessorStateOf<Chip> {
-    let (execution, interrupter) = executor.execute(processor, memory, handler);
+    let current: Mutex<Option<Chip::Interrupter>> = Mutex::new(None);
     let ended = AtomicBool::new(false);
     thread::scope(|scope| {
         scope.spawn(|| {
@@ -978,11 +1018,16 @@ fn execute_interrupted<Chip: Executor>(
                 if ended.load(Ordering::Acquire) {
                     break;
                 }
-                interrupter.interrupt();
+                if let Some(interrupter) = &*current.lock().unwrap_or_else(PoisonError::into_inner)
+                {
+                    interrupter.interrupt();
+                }
             }
         });
         let _ending = SetOnDrop(&ended);
-        block_on(execution)
+        run_to_the_end(executor, processor, memory, handler, |interrupter| {
+            *current.lock().unwrap_or_else(PoisonError::into_inner) = Some(interrupter);
+        })
     })
 }
 
@@ -1174,8 +1219,8 @@ macro_rules! tests {
         }
 
         #[test]
-        fn interrupt_before_the_first_poll_is_answered_at_the_start() {
-            $crate::interrupt_before_the_first_poll_is_answered_at_the_start($executor);
+        fn interrupt_before_the_run_is_answered_at_the_start() {
+            $crate::interrupt_before_the_run_is_answered_at_the_start($executor);
         }
 
         #[test]

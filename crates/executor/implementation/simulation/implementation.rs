@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::cmp::Reverse;
 use std::convert::Infallible;
+use std::future::Ready;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
@@ -13,8 +14,8 @@ use wcontainers_abi::{
 };
 use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_executor::{
-    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
-    TrapHandler,
+    Execution, ExecutionInterrupter, ExecutionStop, Executor, InterruptResponse,
+    MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
@@ -216,76 +217,129 @@ impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource> Executor
     type GuestMemory = SimulatedMemory;
     type Interrupter = SimulationInterrupter;
     type CreateGuestMemoryError = Infallible;
+    type Execution<'execution>
+        = SimulationExecution<'execution, Set, Random>
+    where
+        Self: 'execution;
 
     fn create_guest_memory(&self) -> Result<(SimulatedMemory, SimulatedPageTable), Infallible> {
         Ok(create_space())
     }
 
-    /// Runs one instruction at a time on a copy of the memory, which sees what other threads wrote.
-    ///
-    /// The copy is taken anew whenever anything but the instruction before changed a space. The execution blocks: it runs to its end in its first poll, answering an interrupt between two instructions.
-    fn execute<'execution>(
+    /// Returns the execution, which runs one instruction at a time on a copy of the memory that sees what other threads wrote.
+    fn prepare_execution<'execution>(
         &'execution mut self,
-        mut processor: Processor<()>,
+        processor: Processor<()>,
         memory: &'execution SimulatedMemory,
-        handler: &'execution mut impl TrapHandler,
     ) -> (
-        impl Future<Output = Processor<()>> + 'execution,
+        SimulationExecution<'execution, Set, Random>,
         SimulationInterrupter,
     ) {
         let interrupter = SimulationInterrupter {
             raised: Arc::default(),
         };
-        let raised = Arc::clone(&interrupter.raised);
-        let execution = async move {
-            let mut copy = SpaceCopy::default();
-            let mut changes: Vec<MemoryDelta<'static, Arm64<User>>> = Vec::new();
-            loop {
-                if raised.swap(false, Ordering::Acquire) {
-                    match handler.handle_interrupt() {
-                        InterruptResponse::Continue => {}
-                        InterruptResponse::Terminate => return processor,
-                    }
-                }
-                let before = processor.clone();
-                refresh(memory, &mut copy);
-                let executed = self.execute_single_instruction_in_place(
-                    &mut processor,
-                    MemorySnapshot {
-                        mutations: copy.deltas(),
-                    },
-                    &mut changes,
-                );
-                // The trap handler has no answer for either error, and a chip cannot go on past the instruction.
-                if let Err(error) = executed {
-                    panic!("the simulation cannot execute the instruction: {error:?}");
-                }
-                for delta in changes.drain(..) {
-                    apply(memory, delta, &mut copy);
-                }
-                let Some(exception) = processor.exception else {
-                    continue;
-                };
-                match to_trap(exception) {
-                    Trap::SystemCall => match handler.handle_system_call(to_request(&processor)) {
-                        SystemCallResponse::Return(value) => {
-                            let [result, ..] = &mut processor.general_purpose_registers;
-                            *result = value;
-                            processor.exception = None;
-                        }
-                        SystemCallResponse::Terminate => return processor,
-                    },
-                    Trap::MemoryFault { address, access } => {
-                        match handler.handle_memory_fault(address, access) {
-                            MemoryFaultResponse::Retry => processor = before,
-                            MemoryFaultResponse::Terminate => return processor,
-                        }
-                    }
-                    Trap::Final => return processor,
-                }
-            }
+        let execution = SimulationExecution {
+            simulation: self,
+            processor,
+            memory,
+            raised: Arc::clone(&interrupter.raised),
         };
         (execution, interrupter)
+    }
+}
+
+/// One execution of the simulation, not yet run.
+pub struct SimulationExecution<'execution, Set, Random> {
+    simulation: &'execution mut Simulation<Set, Random>,
+    processor: Processor<()>,
+    memory: &'execution SimulatedMemory,
+    raised: Arc<AtomicBool>,
+}
+
+/// Why the simulation stopped running instructions.
+enum Stop {
+    Interrupted,
+    /// An instruction raised its exception.
+    Raised(Exception),
+}
+
+impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource> Execution
+    for SimulationExecution<'_, Set, Random>
+{
+    type ProcessorState = Processor<()>;
+    /// Never made, since the simulation never waits.
+    type Wait = Ready<()>;
+
+    /// Runs until the next trap, then asks the handler, until the handler ends the execution.
+    ///
+    /// The copy of the memory is taken anew whenever anything but the instruction before changed a space.
+    fn run(mut self, handler: &mut impl TrapHandler) -> ExecutionStop<Processor<()>, Ready<()>> {
+        let mut copy = SpaceCopy::default();
+        // The processor before the last instruction run, which a retry goes back to.
+        let mut before = self.processor.clone();
+        loop {
+            match self.run_until_trap(&mut copy, &mut before) {
+                Stop::Interrupted => match handler.handle_interrupt() {
+                    InterruptResponse::Continue => {}
+                    InterruptResponse::Terminate => break,
+                },
+                Stop::Raised(exception) => match to_trap(exception) {
+                    Trap::SystemCall => {
+                        match handler.handle_system_call(to_request(&self.processor)) {
+                            SystemCallResponse::Return(value) => {
+                                let [result, ..] = &mut self.processor.general_purpose_registers;
+                                *result = value;
+                                self.processor.exception = None;
+                            }
+                            SystemCallResponse::Terminate => break,
+                        }
+                    }
+                    Trap::MemoryFault { address, access } => {
+                        match handler.handle_memory_fault(address, access) {
+                            MemoryFaultResponse::Retry => self.processor = before.clone(),
+                            MemoryFaultResponse::Terminate => break,
+                        }
+                    }
+                    Trap::Final => break,
+                },
+            }
+        }
+        ExecutionStop::Terminated(self.processor)
+    }
+}
+
+impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource>
+    SimulationExecution<'_, Set, Random>
+{
+    /// Runs instructions until one raises its exception or an interrupt is raised, which is answered between two instructions.
+    ///
+    /// Before each instruction the processor is kept in `before`.
+    fn run_until_trap(&mut self, copy: &mut SpaceCopy, before: &mut Processor<()>) -> Stop {
+        let mut changes: Vec<MemoryDelta<'static, Arm64<User>>> = Vec::new();
+        loop {
+            if self.raised.swap(false, Ordering::Acquire) {
+                return Stop::Interrupted;
+            }
+            before.clone_from(&self.processor);
+            refresh(self.memory, copy);
+            let executed = self.simulation.execute_single_instruction_in_place(
+                &mut self.processor,
+                MemorySnapshot {
+                    mutations: copy.deltas(),
+                },
+                &mut changes,
+            );
+            // The trap handler has no answer for either error, and a chip cannot go on past the instruction.
+            if let Err(error) = executed {
+                panic!("the simulation cannot execute the instruction: {error:?}");
+            }
+            for delta in changes.drain(..) {
+                apply(self.memory, delta, copy);
+            }
+            if let Some(exception) = self.processor.exception {
+                return Stop::Raised(exception);
+            }
+        }
     }
 }
 

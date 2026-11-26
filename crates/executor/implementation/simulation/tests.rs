@@ -1,9 +1,6 @@
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::future::Future;
-use std::pin::pin;
 use std::sync::OnceLock;
-use std::task::{Context, Poll, Waker};
 use std::thread;
 
 use wcontainers_abi::{Access, LOWEST_ADDRESS, PAGE_SIZE, Permissions, SystemCallRequest, WORD};
@@ -12,8 +9,8 @@ use wcontainers_executor::memory_space::{
     CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, PageTable,
 };
 use wcontainers_executor::{
-    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
-    TrapHandler,
+    Execution, ExecutionInterrupter, ExecutionStop, Executor, InterruptResponse,
+    MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
 use wcontainers_processor_architecture::{MemoryDelta, MemorySnapshot};
 use wcontainers_processor_architecture_arm64::encoding::{RN, RT};
@@ -23,10 +20,11 @@ use wcontainers_processor_architecture_arm64::{
     ProcessorExpectation, RegisterValueExpectation, User, ZERO_PROCESSOR,
 };
 use wcontainers_random_source::RandomSource;
+use wcontainers_random_source_seeded::SeededRandomSource;
 use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::memory::{SpaceCopy, apply, create_space, refresh};
-use crate::testing::{FirstBehaviors, SEED, SeededRandom, list_first_behaviors};
+use crate::testing::{FirstBehaviors, SEED, list_first_behaviors, seed_random};
 use crate::{SimulatedMemory, SimulatedPageTable};
 use crate::{Simulation, SimulationInterrupter};
 
@@ -40,8 +38,8 @@ const STORED: u64 = u64::MAX;
 const SHORT: u64 = size_of::<u32>() as u64;
 
 /// Returns a chip that runs the first known behavior of each instruction.
-fn simulate_first_behaviors() -> Simulation<FirstBehaviors, SeededRandom> {
-    Simulation::new(list_first_behaviors(), SeededRandom::new(SEED))
+fn simulate_first_behaviors() -> Simulation<FirstBehaviors, SeededRandomSource> {
+    Simulation::new(list_first_behaviors(), seed_random(SEED))
 }
 
 #[test]
@@ -84,7 +82,7 @@ fn undecided_values_come_from_the_random_source() {
     let mut expectation = ProcessorExpectation::new(ZERO_PROCESSOR);
     expectation.general_purpose_registers[undecided] = RegisterValueExpectation::NonDeterministic;
     expectation.condition_flags = RegisterValueExpectation::NonDeterministic;
-    let same_seed = SeededRandom::new(SEED);
+    let same_seed = seed_random(SEED);
     let mut expected = ZERO_PROCESSOR;
     expected.general_purpose_registers[undecided] = read_random_word(&same_seed);
     let [_, _, _, _, high @ ..] = read_random_word(&same_seed).to_le_bytes();
@@ -93,7 +91,7 @@ fn undecided_values_come_from_the_random_source() {
         panic!("the seeded source gives every word");
     };
     assert_eq!(chosen, expected, "the values the seed's words give");
-    let other = Simulation::new(chip.set, SeededRandom::new(SEED + 1));
+    let other = Simulation::new(chip.set, seed_random(SEED + 1));
     assert_ne!(
         other.choose_processor(expectation).ok(),
         Some(chosen),
@@ -102,7 +100,7 @@ fn undecided_values_come_from_the_random_source() {
 }
 
 /// Returns the source's next word.
-fn read_random_word(source: &SeededRandom) -> u64 {
+fn read_random_word(source: &SeededRandomSource) -> u64 {
     let mut word = [0; size_of::<u64>()];
     assert_eq!(
         source.fill_random_bytes(&RefCell::new(word.as_mut_slice())),
@@ -222,12 +220,12 @@ fn interrupt_raised_while_running_answered_terminate_stops_before_the_next_instr
     let raised = OnceLock::new();
     let mut handler = InterruptingAtFault::new(&mut table, &raised, true);
     let mut chip = simulate_first_behaviors();
-    let (execution, interrupter) = chip.execute(start.clone(), &memory, &mut handler);
+    let (execution, interrupter) = chip.prepare_execution(start.clone(), &memory);
     assert!(
         raised.set(interrupter).is_ok(),
         "the interrupter is set once"
     );
-    let stopped = poll_once(execution);
+    let stopped = run_to_the_end(execution, &mut handler);
     assert_eq!(
         (handler.faults, handler.interrupts),
         (1, 1),
@@ -248,12 +246,12 @@ fn interrupt_raised_while_running_answered_continue_changes_nothing() {
     let raised = OnceLock::new();
     let mut handler = InterruptingAtFault::new(&mut table, &raised, false);
     let mut chip = simulate_first_behaviors();
-    let (execution, interrupter) = chip.execute(start.clone(), &memory, &mut handler);
+    let (execution, interrupter) = chip.prepare_execution(start.clone(), &memory);
     assert!(
         raised.set(interrupter).is_ok(),
         "the interrupter is set once"
     );
-    let stopped = poll_once(execution);
+    let stopped = run_to_the_end(execution, &mut handler);
     assert_eq!(
         (handler.faults, handler.interrupts),
         (1, 1),
@@ -310,7 +308,7 @@ impl TrapHandler for InterruptingAtFault<'_> {
         let interrupter = self
             .raised
             .get()
-            .expect("the interrupter is set before the first poll");
+            .expect("the interrupter is set before the execution runs");
         thread::scope(|scope| {
             scope.spawn(|| interrupter.interrupt());
         });
@@ -371,11 +369,13 @@ fn read_word(memory: &SimulatedMemory, start: u64) -> [u8; WORD as usize] {
     read
 }
 
-/// Polls the execution once, which for the simulation runs it to its end.
-fn poll_once<Execution: Future>(execution: Execution) -> Execution::Output {
-    let mut context = Context::from_waker(Waker::noop());
-    match pin!(execution).poll(&mut context) {
-        Poll::Ready(output) => output,
-        Poll::Pending => panic!("the simulation's execution ran to its end in its first poll"),
+/// Runs the execution, which for the simulation ends without waiting, and returns the state it ended at.
+fn run_to_the_end(
+    execution: impl Execution<ProcessorState = Processor<()>>,
+    handler: &mut impl TrapHandler,
+) -> Processor<()> {
+    match execution.run(handler) {
+        ExecutionStop::Terminated(processor) => processor,
+        ExecutionStop::Waiting { .. } => panic!("the simulation's execution waited"),
     }
 }
