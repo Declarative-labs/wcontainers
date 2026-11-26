@@ -8,6 +8,11 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use kernel::{Does, Entry};
+
+#[path = "generated/kernel.rs"]
+mod kernel;
+
 /// The variable that makes the test write the files instead of comparing them.
 const REGENERATE: &str = "REGENERATE";
 
@@ -67,51 +72,24 @@ const GET_PREFIX: &str = "get_";
 const STRUCT_FORM: &str = "struct:";
 const SLICE_FORM: &str = "slice:";
 
-/// Each form and the kernel columns its generated code honors, for a set and for a get.
-///
-/// A set of a number or flag copies the value, so only `reads` fits; a structure is borrowed shared or exclusive as the
-/// column says; bytes and runs are borrowed shared, as no option the kernel writes back takes them and the probe has no
-/// exclusive form for them; `program` and `group_filter` are written into memory the method owns and only read.
-/// A get of a number, a room or an ioctl tells the kernel exactly the room it owns, so only `within` fits; `keys` limits
-/// the answers asked to the one its room holds, so only `past` needs it; `full_info` hands the kernel the addresses of
-/// rooms it owns, so only `through` needs it. Every pair not listed is refused.
-const SET_FORMS: [(&str, &[&str]); 9] = [
-    ("bool", &[READS]),
-    ("c_int", &[READS]),
-    ("u32", &[READS]),
-    ("u64", &[READS]),
-    ("bytes", &[READS]),
-    (STRUCT_FORM, &[READS, WRITES_BACK]),
-    (SLICE_FORM, &[READS]),
-    ("program", &[READS]),
-    ("group_filter", &[READS]),
+/// The forms a set may take, and those a get may take, as the table's comment lists them.
+const SET_FORMS: [&str; 9] = [
+    "bool",
+    "c_int",
+    "u32",
+    "u64",
+    "bytes",
+    STRUCT_FORM,
+    SLICE_FORM,
+    "program",
+    "group_filter",
 ];
-const GET_FORMS: [(&str, &[&str]); 7] = [
-    ("c_int", &[WITHIN]),
-    ("u32", &[WITHIN]),
-    ("u64", &[WITHIN]),
-    ("room", &[WITHIN]),
-    ("ioctl", &[WITHIN]),
-    ("keys", &[PAST]),
-    ("full_info", &[THROUGH]),
-];
-
-/// The forms whose generated code knows the layout of one option's value, and the only options each may carry.
-///
-/// Each of these options, in turn, may take no other form: given as bytes or as another structure, its value would
-/// let the caller hand the kernel an address (`sock_fprog`, `mptcp_full_info`) or ask past the room (`TCP_AO_GET_KEYS`).
-const BOUND_FORMS: [(&str, &[&str]); 5] = [
-    ("program", &["SO_ATTACH_FILTER", "SO_ATTACH_REUSEPORT_CBPF"]),
-    ("group_filter", &["MCAST_MSFILTER"]),
-    ("keys", &["TCP_AO_GET_KEYS"]),
-    ("full_info", &["MPTCP_FULL_INFO"]),
-    ("ioctl", &["SIOCOUTQ", "SIOCOUTQNSD", "SIOCATMARK"]),
-];
+const GET_FORMS: [&str; 7] = ["c_int", "u32", "u64", "room", "ioctl", "keys", "full_info"];
 
 /// The uapi structures a `struct:` or `slice:` value may name, so that each may be marked `Plain`.
 ///
 /// Each holds numbers, bytes and addresses of the network only, no address of the caller's memory the kernel would
-/// follow.
+/// follow; which of them the kernel reads at a pair is the kernel table's.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tcp.h
 const PLAIN_STRUCTURES: [&str; 11] = [
@@ -128,18 +106,6 @@ const PLAIN_STRUCTURES: [&str; 11] = [
     "uapi::tcp_repair_opt",
 ];
 
-/// The options a `bytes` value may set, each taking an opaque run of bytes it reads no address from.
-///
-/// They are IP options, IPv6 extension headers and a key.
-const BYTE_OPTIONS: [&str; 6] = [
-    "IP_OPTIONS",
-    "IPV6_HOPOPTS",
-    "IPV6_RTHDRDSTOPTS",
-    "IPV6_RTHDR",
-    "IPV6_DSTOPTS",
-    "TCP_FASTOPEN_KEY",
-];
-
 /// Gives the form of a value, `struct:` or `slice:` without its type.
 fn form(value: &str) -> &str {
     [STRUCT_FORM, SLICE_FORM]
@@ -148,31 +114,97 @@ fn form(value: &str) -> &str {
         .unwrap_or(value)
 }
 
-/// Gives why the generator refuses a row, or nothing when its form, column, level and option fit together.
+/// Gives the uapi type a `struct:` or `slice:` value names.
+fn named_type(value: &str) -> Option<&str> {
+    value
+        .strip_prefix(STRUCT_FORM)
+        .or_else(|| value.strip_prefix(SLICE_FORM))
+}
+
+/// Tells whether a name is a Rust identifier of lower-case letters, digits and underscores, as a method's must be.
+fn identifier(name: &str) -> bool {
+    !name.is_empty()
+        && name.chars().all(|character| {
+            character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+        })
+}
+
+/// Gives the entry of the kernel table the row's level and option names resolve to, by their numbers.
+fn entry(row: &Row<'_>) -> Result<&'static Entry, String> {
+    let level = (row.level != NO_LEVEL).then_some(row.level);
+    kernel::resolve(level, row.option).map_err(|reason| format!("{}: {reason}", row.method))
+}
+
+/// Gives what the kernel does at the row's pair in the row's direction.
+fn does(row: &Row<'_>, entry: &Entry) -> Does {
+    if row.sets() { entry.set } else { entry.get }
+}
+
+/// Tells whether the code the generator makes for the row's form is sound where the kernel does `does`.
+///
+/// A number is copied whole into a room of the method's own; bytes, a structure and a run are lent whole, and only
+/// where the kernel reads exactly that type; a structure the kernel writes into is lent from an exclusive borrow; a
+/// program and a source filter are written by the method in the layout the kernel reads; a get's room is the length
+/// told; a key query asks at most the answers its room holds; the full information rooms are the method's own; an
+/// ioctl's room holds one int.
+fn fits(row: &Row<'_>, does: Does) -> bool {
+    let value = row.value;
+    match (row.sets(), form(value), does) {
+        (true, "bool" | "c_int" | "u32" | "u64", Does::ReadsNumber)
+        | (true, "bytes", Does::ReadsBytes)
+        | (true, "program", Does::FollowsProgram)
+        | (true, "group_filter", Does::ReadsGroupFilter)
+        | (false, "c_int" | "u32" | "u64" | "room", Does::WritesWithin)
+        | (false, "keys", Does::WritesPerKey)
+        | (false, "full_info", Does::WritesThroughFullInfo)
+        | (false, "ioctl", Does::WritesInt) => true,
+        (true, STRUCT_FORM, Does::ReadsStructure(read)) => {
+            row.kernel == READS && named_type(value) == Some(read)
+        }
+        (true, STRUCT_FORM, Does::WritesBack(written)) => {
+            row.kernel == WRITES_BACK && named_type(value) == Some(written)
+        }
+        (true, SLICE_FORM, Does::ReadsRun(read)) => named_type(value) == Some(read),
+        _ => false,
+    }
+}
+
+/// Gives the kernel column that names what the kernel does, or nothing for what no row may take.
+fn column(does: Does) -> Option<&'static str> {
+    match does {
+        Does::ReadsNumber
+        | Does::ReadsBytes
+        | Does::ReadsStructure(_)
+        | Does::ReadsRun(_)
+        | Does::ReadsGroupFilter
+        | Does::FollowsProgram => Some(READS),
+        Does::WritesBack(_) => Some(WRITES_BACK),
+        Does::WritesWithin | Does::WritesInt => Some(WITHIN),
+        Does::WritesPerKey => Some(PAST),
+        Does::WritesThroughFullInfo => Some(THROUGH),
+        Does::Unknown | Does::Follows | Does::WritesPast | Does::WritesStructure(_) => None,
+    }
+}
+
+/// Gives why the generator refuses a row, or nothing when its names resolve and its form fits what the kernel does.
 fn refusal(row: &Row<'_>) -> Option<String> {
     let method = row.method;
     let sets = row.method.starts_with(SET_PREFIX);
-    if !sets && !row.method.starts_with(GET_PREFIX) {
+    if !identifier(method) || !(sets || row.method.starts_with(GET_PREFIX)) {
         return Some(format!(
-            "{method}: a method is named {SET_PREFIX}* or {GET_PREFIX}*"
+            "{method}: a method is an identifier named {SET_PREFIX}* or {GET_PREFIX}*"
         ));
     }
     if !KERNELS.contains(&row.kernel) {
         return Some(format!("{method}: no kernel column {}", row.kernel));
     }
     let shape = form(row.value);
-    let forms: &[(&str, &[&str])] = if sets { &SET_FORMS } else { &GET_FORMS };
-    let Some((_, columns)) = forms.iter().find(|(name, _)| *name == shape) else {
+    let forms: &[&str] = if sets { &SET_FORMS } else { &GET_FORMS };
+    if !forms.contains(&shape) {
         let direction = if sets { "set" } else { "get" };
         return Some(format!(
             "{method}: no form for a {direction} of {}",
             row.value
-        ));
-    };
-    if !columns.contains(&row.kernel) {
-        return Some(format!(
-            "{method}: a {shape} value cannot be {}",
-            row.kernel
         ));
     }
     if (row.level == NO_LEVEL) != (shape == "ioctl") {
@@ -180,25 +212,28 @@ fn refusal(row: &Row<'_>) -> Option<String> {
             "{method}: an ioctl request has level {NO_LEVEL}, and only it"
         ));
     }
-    let option = bare(row.option);
-    for (bound, options) in BOUND_FORMS {
-        if (shape == bound) != options.contains(&option) {
-            return Some(format!(
-                "{method}: the {bound} form carries only {options:?}, and they no other form"
-            ));
-        }
-    }
-    if matches!(shape, STRUCT_FORM | SLICE_FORM) {
-        let structure = &row.value[shape.len()..];
-        if !PLAIN_STRUCTURES.contains(&structure) {
-            return Some(format!(
-                "{method}: {structure} is not a structure known to hold no address"
-            ));
-        }
-    }
-    if shape == "bytes" && !BYTE_OPTIONS.contains(&option) {
+    if let Some(structure) = named_type(row.value)
+        && !PLAIN_STRUCTURES.contains(&structure)
+    {
         return Some(format!(
-            "{method}: {option} is not an option known to read an opaque run of bytes"
+            "{method}: {structure} is not a structure known to hold no address"
+        ));
+    }
+    let entry = match entry(row) {
+        Ok(entry) => entry,
+        Err(reason) => return Some(reason),
+    };
+    let does = does(row, entry);
+    if column(does) != Some(row.kernel) {
+        return Some(format!(
+            "{method}: the kernel table says {does:?} at this pair, which is not the column {}",
+            row.kernel
+        ));
+    }
+    if !fits(row, does) {
+        return Some(format!(
+            "{method}: a {} value does not fit what the kernel does at this pair, {does:?}",
+            row.value
         ));
     }
     None
@@ -685,7 +720,7 @@ fn planted<'a>(
 }
 
 /// One value of each form, with the level and option it is generated for when it fits its column.
-const PLANTED_VALUES: [(&str, &str, &str); 13] = [
+const PLANTED_VALUES: [(&str, &str, &str); 14] = [
     ("bool", "uapi::SOL_SOCKET", "uapi::SO_RCVMARK"),
     ("c_int", "uapi::SOL_SOCKET", "uapi::SO_RCVLOWAT"),
     ("u32", "uapi::SOL_TCP", "uapi::TCP_QUEUE_SEQ"),
@@ -696,6 +731,11 @@ const PLANTED_VALUES: [(&str, &str, &str); 13] = [
         "struct:uapi::group_req",
         "uapi::SOL_IP",
         "uapi::MCAST_JOIN_GROUP",
+    ),
+    (
+        "struct:uapi::in6_flowlabel_req",
+        "uapi::SOL_IPV6",
+        "uapi::IPV6_FLOWLABEL_MGR",
     ),
     (
         "slice:uapi::tcp_repair_opt",
@@ -713,7 +753,7 @@ const PLANTED_VALUES: [(&str, &str, &str); 13] = [
     ("ioctl", NO_LEVEL, "local::SIOCOUTQ"),
 ];
 
-/// Every (direction, form, column) the generator takes, written out apart from the code it checks.
+/// Every (direction, form, column) the generator takes at those pairs, written out apart from the code it checks.
 const TAKEN: [(&str, &str, &str); 17] = [
     (GET_PREFIX, "ioctl", WITHIN),
     (SET_PREFIX, "bool", READS),
@@ -722,7 +762,7 @@ const TAKEN: [(&str, &str, &str); 17] = [
     (SET_PREFIX, "u64", READS),
     (SET_PREFIX, "bytes", READS),
     (SET_PREFIX, "struct:uapi::group_req", READS),
-    (SET_PREFIX, "struct:uapi::group_req", WRITES_BACK),
+    (SET_PREFIX, "struct:uapi::in6_flowlabel_req", WRITES_BACK),
     (SET_PREFIX, "slice:uapi::tcp_repair_opt", READS),
     (SET_PREFIX, "program", READS),
     (SET_PREFIX, "group_filter", READS),
@@ -758,170 +798,6 @@ fn every_pair_of_form_and_column_outside_the_list_is_refused() {
 }
 
 #[test]
-fn the_planted_room_read_marked_past_is_refused() {
-    let row = planted(
-        "get_tcp_ao_keys_room",
-        "uapi::SOL_TCP",
-        "uapi::TCP_AO_GET_KEYS",
-        "room",
-        PAST,
-    );
-    assert!(refusal(&row).is_some());
-}
-
-#[test]
-fn a_level_and_a_request_that_do_not_fit_are_refused() {
-    // An ioctl form given a level, and a request without one in another form, would ignore or misplace it.
-    let rows = [
-        planted(
-            "get_planted",
-            "uapi::SOL_TCP",
-            "local::SIOCOUTQ",
-            "ioctl",
-            WITHIN,
-        ),
-        planted("get_planted", NO_LEVEL, "uapi::TCP_INFO", "room", WITHIN),
-        planted("set_planted", NO_LEVEL, "uapi::SO_RCVMARK", "bool", READS),
-        planted(
-            "planted",
-            "uapi::SOL_SOCKET",
-            "uapi::SO_RCVMARK",
-            "bool",
-            READS,
-        ),
-        planted(
-            "set_planted",
-            "uapi::SOL_SOCKET",
-            "uapi::SO_RCVMARK",
-            "bool",
-            "copies",
-        ),
-    ];
-    for row in rows {
-        assert!(
-            refusal(&row).is_some(),
-            "{} {} {}",
-            row.level,
-            row.option,
-            row.value
-        );
-    }
-}
-
-#[test]
-fn an_option_bound_to_a_form_takes_no_other_and_the_form_no_other_option() {
-    let rows = [
-        // A program given as bytes or as a structure: the caller would write the address `sock_fprog` holds.
-        planted(
-            "set_planted",
-            "uapi::SOL_SOCKET",
-            "uapi::SO_ATTACH_REUSEPORT_CBPF",
-            "bytes",
-            READS,
-        ),
-        planted(
-            "set_planted",
-            "uapi::SOL_SOCKET",
-            "uapi::SO_ATTACH_FILTER",
-            "struct:uapi::group_req",
-            READS,
-        ),
-        // The full information read as a room: the kernel would follow the addresses in the room's bytes.
-        planted(
-            "get_planted",
-            "uapi::SOL_MPTCP",
-            "local::MPTCP_FULL_INFO",
-            "room",
-            WITHIN,
-        ),
-        // The key query read as a number, and the full information form on the key option.
-        planted(
-            "get_planted",
-            "uapi::SOL_TCP",
-            "uapi::TCP_AO_GET_KEYS",
-            "c_int",
-            WITHIN,
-        ),
-        planted(
-            "get_planted",
-            "uapi::SOL_TCP",
-            "uapi::TCP_AO_GET_KEYS",
-            "full_info",
-            THROUGH,
-        ),
-        // Each bound form on an option whose layout it does not know.
-        planted(
-            "set_planted",
-            "uapi::SOL_SOCKET",
-            "uapi::SO_RCVMARK",
-            "program",
-            READS,
-        ),
-        planted(
-            "set_planted",
-            "uapi::SOL_IP",
-            "uapi::MCAST_JOIN_GROUP",
-            "group_filter",
-            READS,
-        ),
-        planted(
-            "get_planted",
-            "uapi::SOL_TCP",
-            "uapi::TCP_INFO",
-            "keys",
-            PAST,
-        ),
-        planted(
-            "get_planted",
-            "uapi::SOL_MPTCP",
-            "local::MPTCP_INFO",
-            "full_info",
-            THROUGH,
-        ),
-        planted(
-            "get_planted",
-            NO_LEVEL,
-            "local::SIOCGSTAMP",
-            "ioctl",
-            WITHIN,
-        ),
-    ];
-    for row in rows {
-        assert!(refusal(&row).is_some(), "{} {}", row.option, row.value);
-    }
-}
-
-#[test]
-fn a_structure_or_bytes_not_known_to_hold_no_address_is_refused() {
-    let rows = [
-        planted(
-            "set_planted",
-            "uapi::SOL_SOCKET",
-            "uapi::SO_RCVMARK",
-            "struct:libc::sock_fprog",
-            READS,
-        ),
-        planted(
-            "set_planted",
-            "uapi::SOL_TCP",
-            "uapi::TCP_REPAIR_OPTIONS",
-            "slice:libc::iovec",
-            READS,
-        ),
-        planted(
-            "set_planted",
-            "uapi::SOL_SOCKET",
-            "uapi::SO_BINDTODEVICE",
-            "bytes",
-            READS,
-        ),
-    ];
-    for row in rows {
-        assert!(refusal(&row).is_some(), "{} {}", row.option, row.value);
-    }
-}
-
-#[test]
 fn every_row_of_the_table_is_taken() {
     let table =
         fs::read_to_string(crate_folder().join("options.table")).expect("the table is there");
@@ -937,4 +813,581 @@ fn every_row_of_the_table_is_taken() {
         })
         .collect();
     assert!(refused.is_empty(), "{refused:?}");
+}
+
+// The kernel table.
+
+#[test]
+fn the_kernel_table_holds_each_pair_once_and_every_name_resolves_to_an_entry() {
+    let mut pairs: Vec<(Option<u32>, u32)> = kernel::ENTRIES
+        .iter()
+        .map(|entry| (entry.level, entry.option))
+        .collect();
+    let listed = pairs.len();
+    pairs.sort_unstable();
+    pairs.dedup();
+    assert_eq!(pairs.len(), listed, "a pair of numbers with two entries");
+    for level in &kernel::LEVELS {
+        for name in level.options {
+            assert!(
+                kernel::resolve(Some(level.name.path), name.path).is_ok(),
+                "{} at {}",
+                name.path,
+                level.name.path
+            );
+        }
+    }
+    for name in &kernel::REQUESTS {
+        assert!(kernel::resolve(None, name.path).is_ok(), "{}", name.path);
+    }
+}
+
+#[test]
+fn two_names_of_one_pair_are_one_entry() {
+    for (first, second) in [
+        ("uapi::SO_ATTACH_FILTER", "uapi::SO_GET_FILTER"),
+        ("uapi::SO_TIMESTAMPING", "uapi::SO_TIMESTAMPING_OLD"),
+    ] {
+        let one =
+            kernel::resolve(Some("uapi::SOL_SOCKET"), first).expect("the first name resolves");
+        let other =
+            kernel::resolve(Some("uapi::SOL_SOCKET"), second).expect("the second name resolves");
+        assert!(std::ptr::eq(one, other), "{first} and {second}");
+    }
+}
+
+#[test]
+fn a_name_resolves_only_in_its_own_levels_number_space() {
+    // TCP_CC_INFO is 26 at SOL_TCP, the number of SO_ATTACH_FILTER at SOL_SOCKET; MCAST_JOIN_GROUP is 42, the
+    // number of TCP_AO_REPAIR at SOL_TCP.
+    for (level, option) in [
+        ("uapi::SOL_SOCKET", "uapi::TCP_CC_INFO"),
+        ("uapi::SOL_TCP", "uapi::MCAST_JOIN_GROUP"),
+        ("uapi::SOL_TCP", "uapi::SO_ATTACH_FILTER"),
+        ("uapi::SOL_IP", "uapi::IPV6_FLOWLABEL_MGR"),
+    ] {
+        assert!(
+            kernel::resolve(Some(level), option).is_err(),
+            "{option} at {level}"
+        );
+    }
+    assert!(kernel::resolve(None, "uapi::SO_RCVMARK").is_err());
+    assert!(kernel::resolve(Some("uapi::SOL_TCP"), "local::SIOCOUTQ").is_err());
+}
+
+// One property per marked reason of the direct crate, each over the code the generator makes for a row.
+
+/// Gives the private function a generated method calls.
+fn routed(row: &Row<'_>) -> String {
+    body(row)
+        .split('(')
+        .next()
+        .unwrap_or_default()
+        .split("::")
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// `set_bytes_at`: the value lent is exactly what the kernel reads at the pair, from an exclusive borrow where the
+/// kernel writes into it, and holds no address the kernel follows except the program header `set_program` writes.
+fn set_reason(row: &Row<'_>, entry: &Entry) -> Result<(), String> {
+    let route = routed(row);
+    if !route.starts_with(SET_PREFIX) {
+        return Ok(());
+    }
+    let does = entry.set;
+    let (_, parameters, _) = signature(row);
+    let value = row.value;
+    let sound = match (route.as_str(), does) {
+        ("set_number", Does::ReadsNumber)
+        | ("set_program", Does::FollowsProgram)
+        | ("set_group_filter", Does::ReadsGroupFilter) => true,
+        ("set_value", Does::ReadsBytes) => value == "bytes" && parameters.contains("&[u8]"),
+        ("set_value", Does::ReadsStructure(read)) => {
+            value.strip_prefix(STRUCT_FORM) == Some(read) && !parameters.contains("&mut")
+        }
+        ("set_value", Does::ReadsRun(read)) => value.strip_prefix(SLICE_FORM) == Some(read),
+        ("set_value_written", Does::WritesBack(written)) => {
+            value.strip_prefix(STRUCT_FORM) == Some(written) && parameters.contains("&mut")
+        }
+        _ => false,
+    };
+    if sound {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}: routed to {route} with a {value} value where the kernel does {does:?}",
+            row.method
+        ))
+    }
+}
+
+/// `get_within`: a get reaches it only where the kernel writes at most the length told and follows no address in it,
+/// or through `get_keys` where the kernel writes one answer per key asked.
+fn get_within_reason(row: &Row<'_>, entry: &Entry) -> Result<(), String> {
+    let route = routed(row);
+    let sound = match route.as_str() {
+        "get_value" | "get_written" => entry.get == Does::WritesWithin,
+        "get_keys" => entry.get == Does::WritesPerKey,
+        _ => true,
+    };
+    if sound {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}: routed to {route} where the kernel does {:?}",
+            row.method, entry.get
+        ))
+    }
+}
+
+/// `full_info_into`: only the pair whose kernel reads `struct mptcp_full_info` and writes its two runs reaches it.
+fn full_info_reason(row: &Row<'_>, entry: &Entry) -> Result<(), String> {
+    let routed_here = routed(row) == "get_full_info";
+    if routed_here == (!row.sets() && entry.get == Does::WritesThroughFullInfo) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}: get_full_info {routed_here} where the kernel does {:?}",
+            row.method, entry.get
+        ))
+    }
+}
+
+/// `ioctl_within`: only a request whose kernel writes one int reaches it, with no level.
+fn ioctl_reason(row: &Row<'_>, entry: &Entry) -> Result<(), String> {
+    let routed_here = routed(row) == "ioctl_int";
+    let request = entry.level.is_none() && row.level == NO_LEVEL;
+    if routed_here == (request && entry.get == Does::WritesInt) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}: ioctl_int {routed_here} where the kernel does {:?}",
+            row.method, entry.get
+        ))
+    }
+}
+
+/// Every reason's descriptor: the method is an identifier, so its only descriptor is the borrowed `socket`.
+fn descriptor_reason(row: &Row<'_>, _: &Entry) -> Result<(), String> {
+    if identifier(row.method) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{}: not an identifier, so the method's text is not the one the generator writes",
+            row.method
+        ))
+    }
+}
+
+/// A property of a marked reason, over one row and the entry its names resolve to.
+type Reason = fn(&Row<'_>, &Entry) -> Result<(), String>;
+
+/// Every marked reason's property, by the function whose `unsafe` it lets stand.
+const REASONS: [(&str, Reason); 5] = [
+    ("set_bytes_at", set_reason),
+    ("get_within", get_within_reason),
+    ("full_info_into", full_info_reason),
+    ("ioctl_within", ioctl_reason),
+    ("every call's descriptor", descriptor_reason),
+];
+
+#[test]
+fn every_row_of_the_table_meets_every_marked_reason() {
+    let table =
+        fs::read_to_string(crate_folder().join("options.table")).expect("the table is there");
+    for row in rows(&table) {
+        let entry = entry(&row).expect("every row resolves");
+        for (reason, property) in REASONS {
+            if let Err(fault) = property(&row, entry) {
+                panic!("{reason}: {fault}");
+            }
+        }
+    }
+}
+
+/// A planted row for each marked reason that breaks its property, which the generator must also refuse.
+///
+/// The entry is resolved apart from the refusal, so the property is measured on the code the row would make.
+#[test]
+fn a_planted_row_breaking_each_marked_reason_is_seen_by_its_property_and_refused() {
+    let planted_rows = [
+        // The kernel writes the chosen label into the request: lent shared, the kernel would write behind `&`.
+        (
+            "set_bytes_at",
+            planted(
+                "set_planted",
+                "uapi::SOL_IPV6",
+                "uapi::IPV6_FLOWLABEL_MGR",
+                "struct:uapi::in6_flowlabel_req",
+                READS,
+            ),
+        ),
+        // SO_GET_FILTER is SO_ATTACH_FILTER: two plain values spelling a program header the kernel follows.
+        (
+            "set_bytes_at",
+            planted(
+                "set_planted",
+                "uapi::SOL_SOCKET",
+                "uapi::SO_GET_FILTER",
+                "slice:uapi::tcp_repair_opt",
+                READS,
+            ),
+        ),
+        // The kernel reads a run of repair options, given one group request.
+        (
+            "set_bytes_at",
+            planted(
+                "set_planted",
+                "uapi::SOL_TCP",
+                "uapi::TCP_REPAIR_OPTIONS",
+                "struct:uapi::group_req",
+                READS,
+            ),
+        ),
+        // A room for the key query, whose kernel writes one answer per key asked.
+        (
+            "get_within",
+            planted(
+                "get_planted",
+                "uapi::SOL_TCP",
+                "uapi::TCP_AO_GET_KEYS",
+                "room",
+                PAST,
+            ),
+        ),
+        // A room for SO_GET_FILTER, whose kernel counts the length told in instructions of eight bytes.
+        (
+            "get_within",
+            planted(
+                "get_planted",
+                "uapi::SOL_SOCKET",
+                "uapi::SO_GET_FILTER",
+                "room",
+                WITHIN,
+            ),
+        ),
+        // A room for TCP_ZEROCOPY_RECEIVE, whose value holds the address the kernel maps pages at.
+        (
+            "get_within",
+            planted(
+                "get_planted",
+                "uapi::SOL_TCP",
+                "uapi::TCP_ZEROCOPY_RECEIVE",
+                "room",
+                WITHIN,
+            ),
+        ),
+        // The full information form on MPTCP_INFO, whose kernel follows no address the header would hold.
+        (
+            "full_info_into",
+            planted(
+                "get_planted",
+                "uapi::SOL_MPTCP",
+                "local::MPTCP_INFO",
+                "full_info",
+                THROUGH,
+            ),
+        ),
+        // MPTCP_FULL_INFO read as a room: the kernel would follow the addresses in the room's bytes.
+        (
+            "full_info_into",
+            planted(
+                "get_planted",
+                "uapi::SOL_MPTCP",
+                "local::MPTCP_FULL_INFO",
+                "room",
+                WITHIN,
+            ),
+        ),
+        // SIOCGSTAMP writes sixteen bytes into the room of one int.
+        (
+            "ioctl_within",
+            planted(
+                "get_planted",
+                NO_LEVEL,
+                "uapi::SIOCGSTAMP_OLD",
+                "ioctl",
+                WITHIN,
+            ),
+        ),
+        // A method name that writes a method of its own, taking a raw descriptor.
+        (
+            "every call's descriptor",
+            planted(
+                "set_x(&self,fd:i32)->Result<(),HostError>;fn set_y",
+                "uapi::SOL_SOCKET",
+                "uapi::SO_RCVMARK",
+                "bool",
+                READS,
+            ),
+        ),
+    ];
+    for (name, row) in planted_rows {
+        let (_, property) = REASONS
+            .iter()
+            .find(|(reason, _)| *reason == name)
+            .expect("a reason of that name");
+        let entry = entry(&row).expect("the planted row resolves, so its property is measured");
+        assert!(
+            property(&row, entry).is_err(),
+            "{name}'s property misses {} {} {}",
+            row.option,
+            row.value,
+            row.kernel
+        );
+        assert!(
+            refusal(&row).is_some(),
+            "the generator takes {} {} {}",
+            row.option,
+            row.value,
+            row.kernel
+        );
+    }
+}
+
+// Rows an attacker writes into the table, each of which must be refused.
+
+/// Thirty hostile rows: the same number under another name, another level, a structure that holds an address, a
+/// length the kernel trusts, an option that changes how a later one reads, an ioctl number that aliases, and text that
+/// would write code.
+const HOSTILE: [(&str, &str, &str, &str, &str); 30] = [
+    // 1-4: SO_GET_FILTER is SO_ATTACH_FILTER's number 26.
+    (
+        "set_so_get_filter",
+        "uapi::SOL_SOCKET",
+        "uapi::SO_GET_FILTER",
+        "slice:uapi::tcp_repair_opt",
+        READS,
+    ),
+    (
+        "get_so_get_filter",
+        "uapi::SOL_SOCKET",
+        "uapi::SO_GET_FILTER",
+        "room",
+        WITHIN,
+    ),
+    (
+        "get_so_get_filter_count",
+        "uapi::SOL_SOCKET",
+        "uapi::SO_GET_FILTER",
+        "c_int",
+        WITHIN,
+    ),
+    (
+        "set_so_attach_filter_bytes",
+        "uapi::SOL_SOCKET",
+        "uapi::SO_ATTACH_FILTER",
+        "bytes",
+        READS,
+    ),
+    // 5-8: another level's name for the same number.
+    (
+        "set_planted_cross",
+        "uapi::SOL_SOCKET",
+        "uapi::TCP_CC_INFO",
+        "slice:uapi::tcp_repair_opt",
+        READS,
+    ),
+    (
+        "set_mcast_at_tcp",
+        "uapi::SOL_TCP",
+        "uapi::MCAST_JOIN_GROUP",
+        "struct:uapi::group_req",
+        READS,
+    ),
+    (
+        "set_filter_at_tcp",
+        "uapi::SOL_TCP",
+        "uapi::SO_ATTACH_FILTER",
+        "program",
+        READS,
+    ),
+    (
+        "get_ioctl_as_option",
+        "uapi::SOL_TCP",
+        "local::SIOCOUTQ",
+        "c_int",
+        WITHIN,
+    ),
+    // 9-10: the right name at its level, given another structure of the right size.
+    (
+        "set_ao_repair_as_group",
+        "uapi::SOL_TCP",
+        "uapi::TCP_AO_REPAIR",
+        "struct:uapi::group_req",
+        READS,
+    ),
+    (
+        "set_repair_options_as_one",
+        "uapi::SOL_TCP",
+        "uapi::TCP_REPAIR_OPTIONS",
+        "struct:uapi::tcp_repair_opt",
+        READS,
+    ),
+    // 11-14: a structure that holds an address the kernel follows.
+    (
+        "set_fprog",
+        "uapi::SOL_SOCKET",
+        "uapi::SO_ATTACH_FILTER",
+        "struct:libc::sock_fprog",
+        READS,
+    ),
+    (
+        "set_iovecs",
+        "uapi::SOL_TCP",
+        "uapi::TCP_REPAIR_OPTIONS",
+        "slice:libc::iovec",
+        READS,
+    ),
+    (
+        "get_zerocopy",
+        "uapi::SOL_TCP",
+        "uapi::TCP_ZEROCOPY_RECEIVE",
+        "room",
+        WITHIN,
+    ),
+    (
+        "get_full_as_room",
+        "uapi::SOL_MPTCP",
+        "local::MPTCP_FULL_INFO",
+        "room",
+        WITHIN,
+    ),
+    // 15-18: a length or count inside the value that the kernel trusts.
+    (
+        "get_keys_room",
+        "uapi::SOL_TCP",
+        "uapi::TCP_AO_GET_KEYS",
+        "room",
+        PAST,
+    ),
+    (
+        "get_keys_within",
+        "uapi::SOL_TCP",
+        "uapi::TCP_AO_GET_KEYS",
+        "room",
+        WITHIN,
+    ),
+    (
+        "get_info_full",
+        "uapi::SOL_MPTCP",
+        "local::MPTCP_INFO",
+        "full_info",
+        THROUGH,
+    ),
+    (
+        "get_syn_keys",
+        "uapi::SOL_TCP",
+        "uapi::TCP_SAVED_SYN",
+        "keys",
+        PAST,
+    ),
+    // 19-21: a value the kernel writes into, lent shared; or a number marked written back.
+    (
+        "set_flowlabel_shared",
+        "uapi::SOL_IPV6",
+        "uapi::IPV6_FLOWLABEL_MGR",
+        "struct:uapi::in6_flowlabel_req",
+        READS,
+    ),
+    (
+        "set_flowlabel_number",
+        "uapi::SOL_IPV6",
+        "uapi::IPV6_FLOWLABEL_MGR",
+        "u64",
+        WRITES_BACK,
+    ),
+    (
+        "set_options_written",
+        "uapi::SOL_IP",
+        "uapi::IP_OPTIONS",
+        "bytes",
+        WRITES_BACK,
+    ),
+    // 22-23: an option that changes how a later one reads its value: TCP_ULP and the SOL_TLS level it opens.
+    (
+        "set_tcp_ulp",
+        "uapi::SOL_TCP",
+        "uapi::TCP_ULP",
+        "bytes",
+        READS,
+    ),
+    (
+        "set_tls_tx",
+        "uapi::SOL_TLS",
+        "uapi::TLS_TX",
+        "bytes",
+        READS,
+    ),
+    // 24-26: an ioctl number that aliases, or a request given as an option.
+    (
+        "get_siocgstamp",
+        NO_LEVEL,
+        "uapi::SIOCGSTAMP_OLD",
+        "ioctl",
+        WITHIN,
+    ),
+    (
+        "get_siocoutq_at_level",
+        "uapi::SOL_SOCKET",
+        "local::SIOCOUTQ",
+        "ioctl",
+        WITHIN,
+    ),
+    (
+        "get_option_as_request",
+        NO_LEVEL,
+        "uapi::SO_RCVMARK",
+        "ioctl",
+        WITHIN,
+    ),
+    // 27-30: names that resolve nowhere, or text that writes code.
+    (
+        "set_number_name",
+        "uapi::SOL_SOCKET",
+        "26",
+        "program",
+        READS,
+    ),
+    (
+        "set_libc_path",
+        "uapi::SOL_SOCKET",
+        "libc::SO_ATTACH_FILTER",
+        "program",
+        READS,
+    ),
+    (
+        "set_x(&self,fd:i32)->Result<(),HostError>;fn_set_y",
+        "uapi::SOL_SOCKET",
+        "uapi::SO_RCVMARK",
+        "bool",
+        READS,
+    ),
+    (
+        "get_meminfo_past",
+        "uapi::SOL_SOCKET",
+        "uapi::SO_MEMINFO",
+        "room",
+        PAST,
+    ),
+];
+
+#[test]
+fn every_hostile_row_is_refused() {
+    let taken: Vec<String> = HOSTILE
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (method, level, option, value, kernel))| {
+            let row = planted(method, level, option, value, kernel);
+            let reason = refusal(&row);
+            println!(
+                "HOSTILE {} {method} {option} {value} {kernel}: {reason:?}",
+                index + 1
+            );
+            reason.is_none().then(|| format!("{} {method}", index + 1))
+        })
+        .collect();
+    assert!(taken.is_empty(), "hostile rows taken: {taken:?}");
 }

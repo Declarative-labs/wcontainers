@@ -5,8 +5,9 @@
 # Columns: the method; the level (`-` for an ioctl request); the option or request; its value; the manual page that
 # defines it; what the kernel does with the caller's memory. A method named set_* writes the option, get_* reads it.
 #
-# Kernel (from the manual page and the kernel's handler, and checked on the running kernel for every row by the
-# direct implementation's probe, which surrounds the value with canary bytes and compares them after each call):
+# Kernel (the generator takes a row only where the kernel table in implementation/direct/tests/generated/kernel.rs,
+# keyed by the level and option numbers the names resolve to, says the kernel does this with a value of that form;
+# the direct implementation's probe checks every row on the running kernel):
 #   reads         a set: the kernel only reads the value, so the method takes it by shared reference or by copy
 #   writes-back   a set: the kernel may write into the value, so the method takes it by exclusive reference
 #   within        a get: the kernel writes at most the length it is told, often less, and never before the value

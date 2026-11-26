@@ -194,6 +194,8 @@ const SUBFLOW_ROOM: usize = 264;
 ///
 /// https://man7.org/linux/man-pages/man7/mptcp.7.html
 const INFORMATION_ROOM: usize = 256;
+/// A room of a mebibyte, so that the most subflows a count names take more memory than any machine has.
+const MEBIBYTE_ENTRY: usize = 1 << 20;
 
 /// The error a call gives.
 fn errno<T>(result: Result<T, HostError>) -> Option<c_int> {
@@ -935,6 +937,19 @@ pub fn tcp_keys_are_named_or_refused<T: LinuxSocketOptions>(options: T) {
 /// A multipath socket gives its information, its subflows only into the rooms asked for.
 pub fn multipath_information_fits_its_rooms<T: LinuxSocketOptions>(options: T) {
     own_network();
+    // A count the kernel cannot be told is refused, and rooms no memory holds are an error, not a stop.
+    let tcp = tcp4();
+    assert_eq!(
+        errno(
+            options.get_mptcp_full_info::<SUBFLOW_ROOM, INFORMATION_ROOM>(tcp.as_fd(), usize::MAX)
+        ),
+        Some(libc::EINVAL)
+    );
+    let most = usize::try_from(u32::MAX).expect("a 64-bit machine");
+    assert_eq!(
+        errno(options.get_mptcp_full_info::<MEBIBYTE_ENTRY, MEBIBYTE_ENTRY>(tcp.as_fd(), most)),
+        Some(libc::ENOMEM)
+    );
     let Ok(multipath) = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::MPTCP)) else {
         // A kernel without MPTCP refuses the socket; the TCP socket's refusal is still checked.
         assert!(

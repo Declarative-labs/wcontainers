@@ -4651,7 +4651,6 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-linux-socket-options",
- "wcontainers-linux-socket-options-direct",
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
  "wcontainers-volatile-bytes",
@@ -4676,6 +4675,7 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
+ "wcontainers-linux-socket-options-direct",
  "wcontainers-readiness",
  "wcontainers-route-resolver",
  "wcontainers-route-resolver-host",
@@ -5089,6 +5089,7 @@ dependencies = [
  "wcontainers-configurable-conformance",
  "wcontainers-icmp-sockets-conformance",
  "wcontainers-internet-protocol",
+ "wcontainers-linux-socket-options",
  "wcontainers-raw-sockets",
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
@@ -5111,6 +5112,7 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
+ "wcontainers-linux-socket-options-direct",
  "wcontainers-raw-sockets",
  "wcontainers-raw-sockets-conformance",
  "wcontainers-readiness",
@@ -5159,7 +5161,6 @@ dependencies = [
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-linux-socket-options",
- "wcontainers-linux-socket-options-direct",
  "wcontainers-route-resolver",
 ]
 
@@ -5181,6 +5182,7 @@ dependencies = [
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
  "wcontainers-linux-socket-options",
+ "wcontainers-linux-socket-options-direct",
  "wcontainers-route-resolver",
  "wcontainers-route-resolver-conformance",
 ]

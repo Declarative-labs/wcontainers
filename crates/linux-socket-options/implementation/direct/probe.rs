@@ -6,12 +6,17 @@
 //! it. Memory the method owns (the room of a read, the copy of a number, a program's header) carries the
 //! implementation's own canaries, which stop the call when the kernel writes past what it was told; the probe counts
 //! each such stop. A get marked `within` must answer no longer a length than its room, `past` must refuse every query
-//! asking more answers than its room holds, and `through` must be seen writing into the rooms its value names. Runs as
-//! root, in a network namespace of its own, as the conformance suite does.
+//! asking more answers than its room holds, and `through` must be seen writing into the rooms its value names.
+//!
+//! Canaries see only what the kernel writes, so two checks see what it reads. Every value a caller lends is also lent
+//! once with each of its words set to an address no process maps: a kernel that followed an address the value holds
+//! answers `EFAULT`, and any `EFAULT` fails the row. And a `within` room must be seen given less than the kernel had
+//! to write, so that a socket left with nothing to write does not pass for one that stops at its room. Runs as root, in
+//! a network namespace of its own, as the conformance suite does.
 
 use std::ffi::c_int;
 use std::fmt;
-use std::io::IoSliceMut;
+use std::io::{IoSlice, IoSliceMut};
 use std::mem::{offset_of, size_of, size_of_val};
 use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr, TcpListener, TcpStream};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -19,7 +24,7 @@ use std::panic::AssertUnwindSafe;
 
 use linux_raw_sys::net as uapi;
 use nix::sys::socket::{setsockopt, sockopt};
-use nix::sys::uio::{RemoteIoVec, process_vm_readv};
+use nix::sys::uio::{RemoteIoVec, process_vm_readv, process_vm_writev};
 use nix::unistd::Pid;
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use wcontainers_abi::HostError;
@@ -63,6 +68,19 @@ const CANARIES: [u8; 2] = [0xa5, 0x5a];
 
 /// The empty room, the first of those a read of varying length is read into.
 const NO_ROOM: usize = 0;
+
+/// The words a lent value is filled with to see whether the kernel follows an address in it.
+///
+/// Each is an address below the lowest any process may map (`vm.mmap_min_addr`) and a count small enough for the
+/// kernel to go on and use the address beside it.
+///
+/// https://docs.kernel.org/admin-guide/sysctl/vm.html#mmap-min-addr
+const UNMAPPED_WORDS: [u64; 2] = [1, 16];
+
+/// A room longer than a control message's header and shorter than the message, which the kernel fills and cuts.
+///
+/// https://man7.org/linux/man-pages/man3/cmsg.3.html
+const PART_OF_A_RECORD: usize = 20;
 
 /// The forwarding setting of the namespace's loopback, which lets it join any anycast address.
 ///
@@ -212,6 +230,12 @@ struct Seen {
     beyond_taken: usize,
     /// Key queries asking more answers than the room holds that the method refused.
     beyond_refused: usize,
+    /// Calls the kernel answered `EFAULT`: it followed an address the value holds.
+    followed: usize,
+    /// Calls lent a value whose words are all unmapped addresses.
+    poisoned: usize,
+    /// Each room read's room and the length answered, or none when the read failed.
+    rooms: Vec<(usize, Option<usize>)>,
     /// What stopped a call or a preparation: an implementation's canary, or a socket that could not be made.
     stops: Vec<String>,
     errors: Vec<c_int>,
@@ -223,6 +247,7 @@ impl Seen {
         match result {
             Ok(_) => self.succeeded += 1,
             Err(HostError::Errno(number)) => {
+                self.followed += usize::from(*number == libc::EFAULT);
                 if !self.errors.contains(number) {
                     self.errors.push(*number);
                 }
@@ -231,12 +256,29 @@ impl Seen {
         }
     }
 
+    /// Tells whether some room was given less than the kernel had to write, and the kernel stopped at it or refused.
+    ///
+    /// The longest answer is what the kernel had; a room above zero and below it must be answered whole or refused.
+    fn pressed(&self) -> bool {
+        let longest = self
+            .rooms
+            .iter()
+            .filter_map(|(_, answered)| *answered)
+            .max()
+            .unwrap_or(NO_ROOM);
+        self.rooms.iter().any(|(room, answered)| {
+            *room > NO_ROOM && *room < longest && answered.is_none_or(|length| length == *room)
+        })
+    }
+
     /// Gives what the calls did that the row's kernel column does not allow, if anything.
-    fn against(&self, kernel: Kernel) -> Option<String> {
+    fn against(&self, kernel: Kernel, value: &str) -> Option<String> {
         if let Some(stop) = self.stops.first() {
             return Some(format!("a call or its socket stopped: {stop}"));
         }
-        let fault = if self.before > 0 {
+        let fault = if self.followed > 0 {
+            "was answered EFAULT: the kernel followed an address the value holds"
+        } else if self.before > 0 {
             "wrote before a value it was lent"
         } else if self.succeeded == 0 {
             "never succeeded, so its column is not measured"
@@ -265,6 +307,9 @@ impl Seen {
                     "was never asked for more answers than its room holds"
                 }
                 Kernel::Through if self.through == 0 => "was never seen writing into its rooms",
+                Kernel::Within if value == "room" && !self.pressed() => {
+                    "was never given less room than the kernel had to write, so `within` is not measured"
+                }
                 _ => return None,
             }
         };
@@ -277,7 +322,7 @@ impl fmt::Display for Seen {
         write!(
             formatter,
             "calls {} ok {} inside {} past {} before {} shorter {} longer {} written {} through {} beyond taken {} \
-             refused {} stops {} errors {:?}",
+             refused {} poisoned {} followed {} pressed {} stops {} errors {:?}",
             self.calls,
             self.succeeded,
             self.inside,
@@ -289,6 +334,9 @@ impl fmt::Display for Seen {
             self.through,
             self.beyond_taken,
             self.beyond_refused,
+            self.poisoned,
+            self.followed,
+            self.pressed(),
             self.stops.len(),
             self.errors
         )
@@ -308,6 +356,34 @@ fn bytes_of<T: ?Sized>(value: &T) -> Vec<u8> {
         .expect("the probe reads its own memory, as root");
     assert_eq!(read, bytes.len(), "the whole value read");
     bytes
+}
+
+/// Gives `value` in a box of its own with every word of it, and every byte past the last whole word, set from `word`.
+///
+/// The bytes are written through the kernel's copy into this process's own memory, at the box's exposed address, as
+/// linux-raw-sys's structures give no byte view; every structure lent here is made of numbers, so any bytes are one.
+fn unmapped<T>(value: T, word: u64) -> Box<T> {
+    let mut boxed = Box::new(value);
+    let bytes = unmapped_bytes(size_of::<T>(), word);
+    let remote = [RemoteIoVec {
+        base: std::ptr::from_mut(&mut *boxed)
+            .cast::<u8>()
+            .expose_provenance(),
+        len: bytes.len(),
+    }];
+    let written = process_vm_writev(Pid::this(), &[IoSlice::new(&bytes)], &remote)
+        .expect("the probe writes its own memory, as root");
+    assert_eq!(written, bytes.len(), "the whole value written");
+    boxed
+}
+
+/// Gives `length` bytes of `word` repeated in the machine's order.
+fn unmapped_bytes(length: usize, word: u64) -> Vec<u8> {
+    word.to_ne_bytes()
+        .into_iter()
+        .cycle()
+        .take(length)
+        .collect()
 }
 
 /// A value a caller lends, between canary bytes.
@@ -359,6 +435,10 @@ fn structures<T: Copy + 'static>(
             seen.record(&method(socket, &fenced.value));
             fenced.compare(seen, canary, &given);
         }
+        for word in UNMAPPED_WORDS {
+            seen.poisoned += 1;
+            seen.record(&method(socket, &unmapped(value, word)));
+        }
     })
 }
 
@@ -374,6 +454,10 @@ fn structures_written<T: Copy + 'static>(
             let given = bytes_of(&fenced.value);
             seen.record(&method(socket, &mut fenced.value));
             fenced.compare(seen, canary, &given);
+        }
+        for word in UNMAPPED_WORDS {
+            seen.poisoned += 1;
+            seen.record(&method(socket, &mut unmapped(value, word)));
         }
     })
 }
@@ -396,6 +480,10 @@ fn byte_strings(
             seen.inside += usize::from(*inside != *value);
             seen.past += usize::from(past.iter().any(|byte| *byte != canary));
         }
+        for word in UNMAPPED_WORDS {
+            seen.poisoned += 1;
+            seen.record(&method(socket, &unmapped_bytes(value.len(), word)));
+        }
     })
 }
 
@@ -411,6 +499,10 @@ fn runs<T: Copy + 'static, const N: usize>(
             let given = bytes_of(&fenced.value);
             seen.record(&method(socket, &fenced.value[..]));
             fenced.compare(seen, canary, &given);
+        }
+        for word in UNMAPPED_WORDS {
+            seen.poisoned += 1;
+            seen.record(&method(socket, &unmapped(value, word)[..]));
         }
     })
 }
@@ -477,8 +569,8 @@ fn room_read(read: RoomRead) -> RoomRead {
     read
 }
 
-/// Reads of varying length, one per room.
-fn room_reads(prepare: fn() -> Prepared, reads: Vec<RoomRead>) -> Case {
+/// Reads of varying length, one per room, with the size of each room.
+fn room_reads(prepare: fn() -> Prepared, reads: Vec<RoomRead>, room_sizes: Vec<usize>) -> Case {
     Case {
         prepare,
         count: Box::new({
@@ -488,6 +580,10 @@ fn room_reads(prepare: fn() -> Prepared, reads: Vec<RoomRead>) -> Case {
         call: Box::new(move |seen, socket, index| {
             let result = reads[index](socket);
             seen.record(&result);
+            seen.rooms.push((
+                room_sizes[index],
+                result.as_ref().ok().map(|answer| answer.length),
+            ));
             if let Ok(answer) = result {
                 seen.shorter += usize::from(answer.length < answer.room);
                 seen.longer += usize::from(answer.length > answer.room);
@@ -539,6 +635,10 @@ fn key_reads(
                 }
                 Err(_) => {}
             }
+        }
+        for word in UNMAPPED_WORDS {
+            seen.poisoned += 1;
+            seen.record(&method(socket, &unmapped(every_key_query(keys), word)));
         }
     })
 }
@@ -602,6 +702,7 @@ macro_rules! row {
             vec![room_reads(
                 $prepare,
                 vec![$(room_read(|socket| OPTIONS.$method::<{ $room }>(socket).map(answer))),+],
+                vec![$($room),+],
             )],
         )
     };
@@ -1101,7 +1202,7 @@ fn cases() -> Vec<(&'static str, Vec<Case>)> {
         row!(set_ip_recvopts, numbers(udp4, both)),
         row!(set_ip_recvfragsize, numbers(udp4, both)),
         row!(set_ip_minttl, numbers(tcp4, small)),
-        row!(get_ip_pktoptions, rooms(pktinfo_pair; NO_ROOM, ONE_BYTE, EIGHT_BYTES, LARGE_ROOM)),
+        row!(get_ip_pktoptions, rooms(pktinfo_pair; NO_ROOM, ONE_BYTE, EIGHT_BYTES, PART_OF_A_RECORD, LARGE_ROOM)),
         row!(
             set_ip_mcast_join_group,
             structures(udp4, |_| vec![group_request(group_v4())])
@@ -1175,7 +1276,7 @@ fn cases() -> Vec<(&'static str, Vec<Case>)> {
         row!(set_ipv6_minhopcount, numbers(tcp6, small)),
         row!(
             get_ipv6_2292pktoptions,
-            rooms(pktinfo6_pair; NO_ROOM, ONE_BYTE, EIGHT_BYTES, LARGE_ROOM)
+            rooms(pktinfo6_pair; NO_ROOM, ONE_BYTE, EIGHT_BYTES, PART_OF_A_RECORD, LARGE_ROOM)
         ),
         row!(
             set_ipv6_mcast_join_group,
@@ -1369,7 +1470,7 @@ fn every_row_is_probed_through_its_method_and_the_kernel_does_what_its_column_sa
             run(&mut seen, case);
         }
         println!("PROBE {} {:?} {} {seen}", row.method, row.kernel, row.value);
-        if let Some(fault) = seen.against(row.kernel) {
+        if let Some(fault) = seen.against(row.kernel, row.value) {
             faults.push(format!("{}: {fault} ({seen})", row.method));
         }
     }

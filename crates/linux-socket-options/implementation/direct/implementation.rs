@@ -4,6 +4,7 @@
 #![cfg(target_os = "linux")]
 
 mod generated;
+mod local;
 #[cfg(test)]
 mod probe;
 
@@ -22,50 +23,6 @@ use zerocopy::{FromBytes, FromZeros, Immutable, IntoBytes, KnownLayout};
 /// The socket option and ioctl calls of the kernel the program runs on.
 #[derive(Debug)]
 pub struct DirectLinuxSocketOptions;
-
-/// The options and requests that neither linux-raw-sys nor the uapi names, with where Linux defines each.
-mod local {
-    /// The multipath TCP option that reads the connection's `struct mptcp_info`.
-    ///
-    /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/mptcp.h
-    pub(crate) const MPTCP_INFO: u32 = 1;
-    /// The multipath TCP option that reads the connection's and its subflows' information at once.
-    ///
-    /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/mptcp.h
-    pub(crate) const MPTCP_FULL_INFO: u32 = 4;
-    /// The UDP option that sends IPv6 datagrams with a zero checksum.
-    ///
-    /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
-    pub(crate) const UDP_NO_CHECK6_TX: u32 = libc::UDP_NO_CHECK6_TX as u32;
-    /// The UDP option that takes IPv6 datagrams with a zero checksum.
-    ///
-    /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
-    pub(crate) const UDP_NO_CHECK6_RX: u32 = libc::UDP_NO_CHECK6_RX as u32;
-    /// The level of UDP-Lite's own options, its protocol number.
-    ///
-    /// https://man7.org/linux/man-pages/man7/udplite.7.html
-    pub(crate) const SOL_UDPLITE: u32 = super::uapi::IPPROTO_UDPLITE as u32;
-    /// The UDP-Lite option that sets how much of each datagram sent the checksum covers.
-    ///
-    /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
-    pub(crate) const UDPLITE_SEND_CSCOV: u32 = 10;
-    /// The UDP-Lite option that sets how much of each datagram taken the checksum must cover.
-    ///
-    /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
-    pub(crate) const UDPLITE_RECV_CSCOV: u32 = 11;
-    /// The request for the bytes sent and not yet acknowledged, which Linux defines as `TIOCOUTQ`.
-    ///
-    /// https://man7.org/linux/man-pages/man7/tcp.7.html
-    pub(crate) const SIOCOUTQ: u32 = linux_raw_sys::ioctl::TIOCOUTQ;
-    /// The request for the bytes not yet sent.
-    ///
-    /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/sockios.h
-    pub(crate) const SIOCOUTQNSD: u32 = libc::SIOCOUTQNSD as u32;
-    /// The request for whether the urgent mark is next to read.
-    ///
-    /// https://man7.org/linux/man-pages/man7/tcp.7.html
-    pub(crate) const SIOCATMARK: u32 = linux_raw_sys::ioctl::SIOCATMARK;
-}
 
 /// A value whose bytes the kernel takes as an option's value: it holds no address the kernel follows.
 ///
@@ -162,20 +119,35 @@ fn length_of(bytes: usize) -> Result<libc::socklen_t, HostError> {
     libc::socklen_t::try_from(bytes).map_err(|_| invalid())
 }
 
-/// Calls `setsockopt` with the bytes at `value`, `length` of them.
-fn set_bytes_at(
+/// A value lent to the kernel for one `setsockopt`: shared where it only reads it, exclusive where it may write into it.
+enum Lent<'a, T: ?Sized> {
+    Shared(&'a T),
+    Exclusive(&'a mut T),
+}
+
+/// Calls `setsockopt` with every byte of the value lent, and no other.
+fn set_bytes_at<T: ?Sized>(
     socket: BorrowedFd<'_>,
     level: u32,
     name: u32,
-    value: *const c_void,
-    length: libc::socklen_t,
+    lent: Lent<'_, T>,
 ) -> Result<(), HostError> {
+    let (value, length): (*const c_void, _) = match lent {
+        Lent::Shared(value) => (std::ptr::from_ref(value).cast(), size_of_val(value)),
+        Lent::Exclusive(value) => (
+            std::ptr::from_mut(value).cast_const().cast(),
+            size_of_val(value),
+        ),
+    };
+    let length = length_of(length)?;
     #[expect(
         unsafe_code,
-        reason = "every caller gives `length` bytes at `value` that it owns or borrows for the call, from an exclusive \
-                  borrow wherever options.table says the kernel writes into the value (the probe checks each row on the \
-                  running kernel), and holding no address the kernel follows except `set_program`'s `sock_fprog`, which \
-                  points at `len` instructions held for the call; the descriptor is borrowed, so open"
+        reason = "`value` and `length` are the address and size of one borrowed value, alive for the call, so the kernel \
+                  is told only memory the caller lent; the borrow is exclusive wherever the kernel may write into it, \
+                  and the value holds no address the kernel follows except `set_program`'s `sock_fprog`, which points \
+                  at `len` instructions borrowed for the call: the generator takes a set only where the kernel table, \
+                  keyed by the level and option numbers, says the kernel does exactly that with a value of that form \
+                  (tests/generated.rs `set_reason`); the descriptor is borrowed, so open"
     )]
     let result = unsafe {
         libc::setsockopt(
@@ -205,14 +177,7 @@ fn set_guarded(
     let (value, guard) = buffer.split_at_mut_checked(told).ok_or_else(invalid)?;
     value.copy_from_slice(given);
     fill_canaries(guard);
-    let length = length_of(told)?;
-    let result = set_bytes_at(
-        socket,
-        level,
-        name,
-        buffer.as_mut_ptr().cast_const().cast(),
-        length,
-    );
+    let result = set_bytes_at(socket, level, name, Lent::Shared(&buffer[..told]));
     assert!(
         buffer[..told] == *given,
         "the kernel wrote into the value of option {name}, which options.table says it only reads"
@@ -239,14 +204,7 @@ fn set_value<T: Plain + ?Sized>(
     name: u32,
     value: &T,
 ) -> Result<(), HostError> {
-    let length = length_of(size_of_val(value))?;
-    set_bytes_at(
-        socket,
-        level,
-        name,
-        std::ptr::from_ref(value).cast(),
-        length,
-    )
+    set_bytes_at(socket, level, name, Lent::Shared(value))
 }
 
 /// Sets an option to the bytes of a plain value, all of them, for an option whose value the kernel may write into.
@@ -256,14 +214,7 @@ fn set_value_written<T: Plain + ?Sized>(
     name: u32,
     value: &mut T,
 ) -> Result<(), HostError> {
-    let length = length_of(size_of_val(value))?;
-    set_bytes_at(
-        socket,
-        level,
-        name,
-        std::ptr::from_mut(value).cast_const().cast(),
-        length,
-    )
+    set_bytes_at(socket, level, name, Lent::Exclusive(value))
 }
 
 /// Sets an option that takes a classic BPF program, through the `struct sock_fprog` that points at it.
@@ -275,18 +226,12 @@ fn set_program(
 ) -> Result<(), HostError> {
     let len = u16::try_from(program.len()).map_err(|_| invalid())?;
     let filter = program.as_ptr().cast_mut();
-    let mut guarded = GuardedProgram {
+    let guarded = GuardedProgram {
         header: libc::sock_fprog { len, filter },
         guard: CANARIES,
     };
     let told = size_of::<libc::sock_fprog>();
-    let result = set_bytes_at(
-        socket,
-        level,
-        name,
-        std::ptr::from_mut(&mut guarded).cast_const().cast(),
-        length_of(told)?,
-    );
+    let result = set_bytes_at(socket, level, name, Lent::Shared(&guarded.header));
     assert!(
         guarded.header.len == len && guarded.header.filter == filter,
         "the kernel wrote into the program header of option {name}, which options.table says it only reads"
@@ -383,11 +328,11 @@ fn get_within(
     let mut length = length_of(told)?;
     #[expect(
         unsafe_code,
-        reason = "the kernel writes only inside `into`: options.table marks every option read through here `within` \
-                  (at most the `told` bytes, no more than `into` holds, as the probe checks each row on the running \
-                  kernel and the canaries after `told` check on every call) except `TCP_AO_GET_KEYS`, marked `past`, \
-                  which writes `told` bytes per key asked, and `get_keys` asks at most one; the generator refuses any \
-                  other form for these columns; none reads an address from the value; the descriptor is borrowed, so open"
+        reason = "the kernel writes only inside `into`: the generator routes a get here only where the kernel table, \
+                  keyed by the level and option numbers, says the kernel writes at most the `told` bytes, no more than \
+                  `into` holds, and follows no address in them, except the one pair whose kernel writes `told` bytes \
+                  per key asked, routed only through `get_keys`, which asks at most one (tests/generated.rs \
+                  `get_within_reason`; the canaries after `told` check every call); the descriptor is borrowed, so open"
     )]
     let result = unsafe {
         libc::getsockopt(
@@ -488,15 +433,16 @@ fn get_full_info<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize>(
     name: u32,
     subflows: usize,
 ) -> Result<MptcpFullInformation<SUBFLOW_ROOM, INFORMATION_ROOM>, HostError> {
-    // One room more in each run, holding canaries, past the `subflows` the kernel is told of.
+    // The kernel takes the count as 32 bits; one room more in each run, holding canaries, past the `subflows` it is told.
+    u32::try_from(subflows).map_err(|_| invalid())?;
     let rooms = subflows.checked_add(1).ok_or_else(invalid)?;
     let mut answer = MptcpFullInformation {
         tcp_information_length: u32::MIN,
         subflow_information_length: u32::MIN,
         subflows: u32::MIN,
         connection: [u8::MIN; MPTCP_INFO_LENGTH],
-        subflow_information: vec![[u8::MIN; SUBFLOW_ROOM]; rooms],
-        tcp_information: vec![[u8::MIN; INFORMATION_ROOM]; rooms],
+        subflow_information: zeroed_rooms(rooms)?,
+        tcp_information: zeroed_rooms(rooms)?,
     };
     fill_canaries(&mut answer.subflow_information[subflows]);
     fill_canaries(&mut answer.tcp_information[subflows]);
@@ -522,6 +468,16 @@ fn get_full_info<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize>(
     answer.subflows = header.num_subflows;
     answer.connection = header.mptcp_info;
     Ok(answer)
+}
+
+/// Gives `count` rooms of zero bytes, or `ENOMEM` when the memory cannot be had, instead of stopping the program.
+fn zeroed_rooms<const ROOM: usize>(count: usize) -> Result<Vec<[u8; ROOM]>, HostError> {
+    let mut rooms = Vec::new();
+    rooms
+        .try_reserve_exact(count)
+        .map_err(|_| HostError::Errno(libc::ENOMEM))?;
+    rooms.resize(count, [u8::MIN; ROOM]);
+    Ok(rooms)
 }
 
 /// `MPTCP_FULL_INFO`'s header, followed by its guard.
@@ -562,9 +518,10 @@ fn full_info_into<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize>(
         unsafe_code,
         reason = "the kernel writes at most `length` bytes of the header, and at most `size_arrays_user` entries of \
                   `size_sfinfo_user` and of `size_tcpinfo_user` bytes at `subflow_info` and `tcp_info`, which are two \
-                  runs of rooms of exactly those sizes holding at least that many, alive and not moved during the call \
-                  (options.table marks the option `through`, the probe checks it on the running kernel, and canaries \
-                  after the header and after each run check every call); the descriptor is borrowed"
+                  runs of rooms of exactly those sizes holding at least that many, alive and not moved during the call; \
+                  the generator routes here only the pair whose kernel entry reads this header and writes those runs \
+                  (tests/generated.rs `full_info_reason`; canaries after the header and after each run check every \
+                  call); the descriptor is borrowed"
     )]
     let result = unsafe {
         libc::getsockopt(
@@ -598,8 +555,8 @@ fn ioctl_within(socket: BorrowedFd<'_>, request: u32, into: &mut [u8]) -> Result
     }
     #[expect(
         unsafe_code,
-        reason = "every request made through here (SIOCOUTQ, SIOCOUTQNSD, SIOCATMARK, marked `within` in \
-                  options.table and checked by the probe) writes one int at the pointer, and `into` holds at least one; \
+        reason = "the generator routes a request here only where the kernel table, keyed by the request number, says \
+                  it writes one int at the pointer (tests/generated.rs `ioctl_reason`), and `into` holds at least one; \
                   the descriptor is borrowed, so open"
     )]
     let result = unsafe {
