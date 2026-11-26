@@ -16,6 +16,7 @@ use crate::{
     MXCSR_WRITABLE, NT, Offer, QUIET32, RAX, RBP, RBX, RCX, RDX, RSP, SegmentRegister, TF,
     X86Block, XMM_BYTES, ZF, is_canonical,
 };
+use wcontainers_clock::Clock;
 use wcontainers_guest_cpu::position::{Base, Operand, Segment};
 use zerocopy::IntoBytes;
 
@@ -61,11 +62,6 @@ pub(crate) const XSTATE_BYTES: usize =
 /// The x87 header's bits an image keeps: all but the reserved byte after the abridged tag word.
 pub(crate) const HEADER_KEPT: u64 =
     !((u8::MAX as u64) << (core::mem::offset_of!(Fxsave, reserved0) as u32 * u8::BITS));
-
-/// The clock `rdtsc` reads: nanoseconds, which the guest sees as a 1 GHz counter.
-pub trait Clock {
-    fn nanoseconds(&mut self) -> u64;
-}
 
 /// The slots of a far transfer's frame from its lowest, each of the operand size.
 #[derive(Clone, Copy)]
@@ -581,7 +577,8 @@ pub fn answer(
             set_general(block, number, offset_bytes * u8::BITS as u8, offset);
         }
         Question::TimeStamp { processor } => {
-            let ticks = memory.nanoseconds();
+            // The guest sees the monotonic clock's nanoseconds as a 1 GHz counter.
+            let ticks = memory.monotonic_nanoseconds();
             let half = u32::BITS as u8;
             set_general(block, RAX, half, ticks);
             set_general(block, RDX, half, ticks >> half);

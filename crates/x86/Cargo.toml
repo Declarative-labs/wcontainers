@@ -11,6 +11,8 @@ wcontainers-guest-cpu = { path = "../guest-cpu", default-features = false }
 wcontainers-abi.workspace = true
 # The processor features a program is told of: the kernel interface's list.
 wcontainers-kernel = { path = "../kernel" }
+# The clock `rdtsc` reads: the owner's clock interface.
+wcontainers-clock = { path = "../clock" }
 zerocopy.workspace = true
 iced-x86 = { version = "1.22.0", default-features = false, features = ["no_std", "decoder", "encoder", "instr_info", "op_code_info"], optional = true }
 wasm-encoder = { version = "0.263.0", optional = true }

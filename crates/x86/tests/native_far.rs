@@ -50,9 +50,13 @@ impl Memory for Stack {
     }
 }
 
-impl wcontainers_x86::answer::Clock for Stack {
-    fn nanoseconds(&mut self) -> u64 {
-        0
+impl wcontainers_clock::Clock for Stack {
+    fn monotonic_nanoseconds(&self) -> u64 {
+        u64::MIN
+    }
+
+    fn realtime_nanoseconds(&self) -> u64 {
+        u64::MIN
     }
 }
 
