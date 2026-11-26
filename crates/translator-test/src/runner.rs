@@ -3,12 +3,13 @@
 
 use crate::guest::GuestTest;
 use crate::guest_memory::{GuestMemory, SharedGuestMemory};
+use crate::simulated::{Access as SimulatedAccess, SIMULATED, Script};
 use crate::state_memory::StateMemory;
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use wasmtime::{
     Caller, Config, Engine, Extern, Global, Instance, Linker, Memory, MemoryType, Module, Store,
@@ -252,6 +253,8 @@ pub struct Host<G: GuestTest> {
     limit: u64,
     /// The system call number at which the thread meets the other threads on its memory, and where they meet.
     meeting: Option<(u64, Arc<Meeting>)>,
+    /// The script of the simulated weaker engine, when the code's guest accesses are calls to it.
+    simulated: Option<Arc<Mutex<Script>>>,
 }
 
 /// Where threads on one memory wait for each other: each arrival waits, spinning, until all have arrived.
@@ -324,7 +327,6 @@ struct CountKept;
 /// instances, so each guest's is kept by its type.
 fn per_guest<G: 'static, T: Clone + Send + Sync + 'static>(make: impl FnOnce() -> T) -> T {
     use std::any::{Any, TypeId};
-    use std::sync::Mutex;
     type Made = HashMap<(TypeId, TypeId), Box<dyn Any + Send + Sync>>;
     static MADE: OnceLock<Mutex<Made>> = OnceLock::new();
     let key = (TypeId::of::<G>(), TypeId::of::<T>());
@@ -537,6 +539,7 @@ impl<G: GuestTest> Machine<G> {
                 progress: ProgressCount::Absent,
                 limit: u64::MAX,
                 meeting: None,
+                simulated: None,
             },
         );
         store.limiter(|host| &mut host.limits);
@@ -652,6 +655,18 @@ impl<G: GuestTest> Machine<G> {
             .expect("read inside guest memory");
     }
 
+    /// Makes code loaded from now on reach the guest memory through the simulated weaker engine's `script`.
+    ///
+    /// The script schedules the accesses to its shared words; every other access is this machine's own.
+    pub fn simulate_accesses(&mut self, script: Arc<Mutex<Script>>) {
+        let host = self.store.data_mut();
+        assert!(
+            host.loads.is_empty(),
+            "the accesses are simulated before any load"
+        );
+        host.simulated = Some(script);
+    }
+
     /// Makes the stand-in answer system call `number` by waiting for every thread of `meeting`, then returning 0.
     pub fn meet_at(&mut self, number: u64, meeting: Arc<Meeting>) {
         self.store.data_mut().meeting = Some((number, meeting));
@@ -739,12 +754,7 @@ impl<G: GuestTest> Machine<G> {
             module_bytes,
         )
         .expect("translate");
-        let load = compile(
-            &host.engine,
-            load_address,
-            translation,
-            imports_shared(host),
-        );
+        let load = compile(&host.engine, load_address, translation, code_rewrites(host));
         instantiate(&mut self.store, &load, false);
         self.store.data_mut().loads.push(load);
     }
@@ -760,8 +770,8 @@ impl<G: GuestTest> Machine<G> {
     ) -> (Duration, Duration, usize) {
         self.place(bytes, code, load_address);
         let started = Instant::now();
-        let share = imports_shared(self.store.data());
-        let load = compile(self.store.engine(), load_address, translation, share);
+        let rewrites = code_rewrites(self.store.data());
+        let load = compile(self.store.engine(), load_address, translation, rewrites);
         let compiled = started.elapsed();
         let machine_code = load
             .modules
@@ -1351,6 +1361,131 @@ fn read_u64<G: GuestTest>(caller: &Caller<'_, Host<G>>, offset: usize) -> u64 {
     u64::from_le_bytes(value)
 }
 
+/// Makes one guest access of instrumented code and returns what it gives the code.
+///
+/// An access to a shared word goes through the script, any other to this machine's own guest memory.
+fn simulated_access<G: GuestTest>(
+    caller: &mut Caller<'_, Host<G>>,
+    (address, offset): (u64, u64),
+    access: u32,
+    operands: &[u64],
+) -> u64 {
+    let access = SimulatedAccess::decode(access);
+    let address = address.wrapping_add(offset);
+    let host = caller.data();
+    let script = host.simulated.clone().expect("a simulated machine");
+    let memory = host.memory.clone().expect("a guest memory");
+    let mut script = script.lock().unwrap();
+    if script.is_shared(address, access) {
+        return script.shared_access(address, access, operands);
+    }
+    let mut bytes = [u8::MIN; size_of::<u64>()];
+    let reached = &mut bytes[..usize::from(access.bytes)];
+    memory
+        .read(&*caller, address, reached)
+        .expect("an access inside the guest memory");
+    let (given, written) = access.apply(u64::from_le_bytes(bytes), operands);
+    if let Some(value) = written {
+        memory
+            .write(
+                &mut *caller,
+                address,
+                &value.to_le_bytes()[..usize::from(access.bytes)],
+            )
+            .expect("an access inside the guest memory");
+    }
+    given
+}
+
+/// Defines the simulated weaker engine's imports, which instrumented code calls for each guest access.
+fn simulated_imports<G: GuestTest>(linker: &mut Linker<Host<G>>) {
+    use crate::simulated::{EXCHANGE_32, EXCHANGE_64, FENCE, LOAD_32, LOAD_64, STORE_32, STORE_64};
+    linker
+        .func_wrap(
+            SIMULATED,
+            LOAD_32,
+            |mut caller: Caller<'_, Host<G>>, address: u64, offset: u64, access: u32| -> u32 {
+                simulated_access(&mut caller, (address, offset), access, &[]) as u32
+            },
+        )
+        .unwrap()
+        .func_wrap(
+            SIMULATED,
+            LOAD_64,
+            |mut caller: Caller<'_, Host<G>>, address: u64, offset: u64, access: u32| -> u64 {
+                simulated_access(&mut caller, (address, offset), access, &[])
+            },
+        )
+        .unwrap()
+        .func_wrap(
+            SIMULATED,
+            STORE_32,
+            |mut caller: Caller<'_, Host<G>>,
+             address: u64,
+             value: u32,
+             offset: u64,
+             access: u32| {
+                simulated_access(&mut caller, (address, offset), access, &[value.into()]);
+            },
+        )
+        .unwrap()
+        .func_wrap(
+            SIMULATED,
+            STORE_64,
+            |mut caller: Caller<'_, Host<G>>,
+             address: u64,
+             value: u64,
+             offset: u64,
+             access: u32| {
+                simulated_access(&mut caller, (address, offset), access, &[value]);
+            },
+        )
+        .unwrap()
+        .func_wrap(
+            SIMULATED,
+            EXCHANGE_32,
+            |mut caller: Caller<'_, Host<G>>,
+             address: u64,
+             expected: u32,
+             replacement: u32,
+             offset: u64,
+             access: u32|
+             -> u32 {
+                let operands = [expected.into(), replacement.into()];
+                simulated_access(&mut caller, (address, offset), access, &operands) as u32
+            },
+        )
+        .unwrap()
+        .func_wrap(
+            SIMULATED,
+            EXCHANGE_64,
+            |mut caller: Caller<'_, Host<G>>,
+             address: u64,
+             expected: u64,
+             replacement: u64,
+             offset: u64,
+             access: u32|
+             -> u64 {
+                simulated_access(
+                    &mut caller,
+                    (address, offset),
+                    access,
+                    &[expected, replacement],
+                )
+            },
+        )
+        .unwrap()
+        .func_wrap(SIMULATED, FENCE, |caller: Caller<'_, Host<G>>| {
+            let script = caller
+                .data()
+                .simulated
+                .clone()
+                .expect("a simulated machine");
+            script.lock().unwrap().fence();
+        })
+        .unwrap();
+}
+
 fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
     use contract::*;
     linker
@@ -1770,12 +1905,7 @@ fn translate_load<G: GuestTest>(
         omit,
     )
     .expect("translate");
-    compile(
-        &host.engine,
-        load_address,
-        translation,
-        imports_shared(host),
-    )
+    compile(&host.engine, load_address, translation, code_rewrites(host))
 }
 
 /// Tells whether code must have its guest memory import made shared: the memory is, and the host's form does not.
@@ -1783,8 +1913,23 @@ fn imports_shared<G: GuestTest>(host: &Host<G>) -> bool {
     matches!(host.memory, Some(GuestMemory::Shared(_))) && !host.ordering.shares_memory()
 }
 
-/// Compiles a translation's code modules, with `share` each with its guest memory import made shared.
-fn compile(engine: &Engine, load_address: u64, translation: Translation, share: bool) -> Load {
+/// Tells how code is changed before it is compiled: its memory import made shared, its accesses made calls.
+///
+/// The calls go to the simulated weaker engine (`crate::simulated`).
+fn code_rewrites<G: GuestTest>(host: &Host<G>) -> (bool, bool) {
+    (imports_shared(host), host.simulated.is_some())
+}
+
+/// Compiles a translation's code modules, changed as [`code_rewrites`] says.
+///
+/// With `share` each has its guest memory import made shared, with `simulate` its guest accesses made calls to the
+/// simulated weaker engine.
+fn compile(
+    engine: &Engine,
+    load_address: u64,
+    translation: Translation,
+    (share, simulate): (bool, bool),
+) -> Load {
     Load {
         load_address,
         read: translation
@@ -1803,11 +1948,14 @@ fn compile(engine: &Engine, load_address: u64, translation: Translation, share: 
             .modules
             .iter()
             .map(|m| {
-                let wasm = if share {
+                let mut wasm = if share {
                     crate::guest_memory::import_shared(&m.wasm)
                 } else {
                     m.wasm.clone()
                 };
+                if simulate {
+                    wasm = crate::simulated::instrument(&wasm);
+                }
                 Module::new(engine, &wasm).expect("code module")
             })
             .collect(),
@@ -1890,6 +2038,9 @@ fn instantiate<G: GuestTest>(
     let mut linker = Linker::new(store.engine());
     linker.allow_shadowing(true);
     hooks(&mut linker);
+    if store.data().simulated.is_some() {
+        simulated_imports(&mut linker);
+    }
     linker
         .define(&store, contract::ENV, contract::MEMORY, memory.to_extern())
         .unwrap();
