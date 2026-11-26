@@ -878,6 +878,8 @@ fn to_processor(
             .map(|[low, high]| u128::from(low) | u128::from(high) << u64::BITS),
         predicate_registers: predicates.registers,
         first_fault_register: predicates.first_fault,
+        // TODO: temporary placeholder until the stand-in carries SSBS, DIT and TCO: it reports them clear.
+        process_state_controls: u64::MIN,
         floating_point_control: u64::from(registers.fpcr),
         floating_point_status: u64::from(registers.fpsr),
         software_thread_id: registers.tpidr_el0,
