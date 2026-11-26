@@ -590,6 +590,8 @@ pub enum Bug {
     EvexCarryLessIgnoresBitFour,
     /// A form that writes an opmask register keeps the bits its opmask leaves out.
     EvexMaskDestinationMerges,
+    /// The fused sum drops the bits of the addend or product it shifts out.
+    EvexFusedStickyIgnored,
     // Fifth check.
     /// SUB takes AF from bit 4 of the result.
     SubtractAuxiliaryFromResultBitFour,
@@ -1074,6 +1076,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexAesSkipsMixColumns, "VAESENC, VAESDEC", Family::Evex(|form| matches!(form.operation, EvexOperation::Integer { operation: IntegerOperation::Aes { last: false, .. }, .. })), EvexSecondHalf),
     row(Bug::EvexCarryLessIgnoresBitFour, "VPCLMULQDQ", Family::Evex(|form| is_integer(form, IntegerOperation::CarryLessMultiply)), EvexSecondHalf),
     row(Bug::EvexMaskDestinationMerges, "VPSHUFBITQMB", Family::Evex(EvexForm::writes_opmask), EvexSecondHalf),
+    row(Bug::EvexFusedStickyIgnored, "EVEX fused multiply-add", Family::Evex(|form| matches!(form.operation, EvexOperation::Fused { .. })), EvexSecondHalf),
     row(Bug::EvexPermuteFaultsSuppressed, "EVEX permutes with memory", Family::Evex(|form| form.place != OperandPlace::Register && !form.suppresses_faults()), EvexSecondHalf),
 ];
 
@@ -1084,7 +1087,7 @@ fn is_integer(form: &EvexForm, operation: IntegerOperation) -> bool {
 
 /// Whether the EVEX form computes floating-point elements from registers alone.
 fn is_float_register_form(form: &EvexForm) -> bool {
-    matches!(form.operation, EvexOperation::Float { .. }) && form.place == OperandPlace::Register
+    matches!(form.operation, EvexOperation::Float { .. } | EvexOperation::Fused { .. }) && form.place == OperandPlace::Register
 }
 
 #[cfg(feature = "planted-bugs")]

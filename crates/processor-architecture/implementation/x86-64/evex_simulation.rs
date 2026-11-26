@@ -11,7 +11,11 @@ use iced_x86::{Instruction as Decoded, OpKind, RoundingControl};
 
 use super::{Memory, MemoryOperand, check_access, check_alignment, check_canonical, expect_code, locate};
 use crate::evex::{EvexForm, EvexOperation, find_evex_form, read_element, write_element};
-use crate::float::{Arrangement, FLAGS, FloatOperation, MASK_SHIFT, Precision, ROUNDING_SHIFT};
+use crate::evex::fused::multiply_add;
+use crate::float::{FLAGS, LaneOutcome, MASK_SHIFT, Precision, ROUNDING_SHIFT};
+
+/// The order a fused form takes NaNs in: the first multiplicand's, the second's, the addend's.
+const NAN_ORDER: [usize; 3] = [0, 1, 2];
 use crate::memory::read_bytes;
 use crate::planted::{Bug, is_active};
 use crate::{Access, Exception, Flags, Instruction, Processor};
@@ -47,8 +51,17 @@ pub(super) fn execute_evex(
     let old = if form.writes_opmask() { [0; 4] } else { processor.read_zmm(destination) };
     let mut result = old;
     let computed = match form.operation {
-        EvexOperation::Float { operation, precision, arrangement } => {
-            compute_float(processor, decoded, (operation, precision, arrangement), &first, &second, selected, elements)?
+        EvexOperation::Float { operation, precision, .. } => {
+            compute_float(processor, decoded, precision, selected, elements, |index, mxcsr, bytes| {
+                operation.compute(read_element(&first, index, bytes), read_element(&second, index, bytes), precision, mxcsr, 0)
+            })?
+        }
+        EvexOperation::Fused { kind, order, precision, .. } => {
+            compute_float(processor, decoded, precision, selected, elements, |index, mxcsr, bytes| {
+                let [a, b, c] = order.arrange(&old, &first, &second).map(|vector| read_element(vector, index, bytes));
+                let (negate_product, negate_addend) = kind.to_signs(index);
+                multiply_add(a, b, c, negate_product, negate_addend, precision, mxcsr, NAN_ORDER)
+            })?
         }
         EvexOperation::Integer { operation, .. } => {
             let immediate = if form.has_immediate() { decoded.immediate8() } else { 0 };
@@ -69,9 +82,11 @@ pub(super) fn execute_evex(
         }
     }
     let written = elements * bytes;
-    if matches!(form.operation, EvexOperation::Float { arrangement: Arrangement::Scalar, .. }) {
-        // The elements above the first come from the first source; the bits beyond 128 are zeroed.
-        let low = first[0] & !((1u128 << (written * 8)) - 1);
+    if form.elements() == 1 && !matches!(form.operation, EvexOperation::Integer { .. }) {
+        // The elements above the first come from the first source (a fused form's from its destination); the bits
+        // beyond 128 are zeroed.
+        let upper = if matches!(form.operation, EvexOperation::Fused { .. }) { old[0] } else { first[0] };
+        let low = upper & !((1u128 << (written * 8)) - 1);
         result = [(result[0] & ((1u128 << (written * 8)) - 1)) | low, 0, 0, 0];
         if is_active(Bug::EvexScalarKeepsUpperBits) {
             result[1..].copy_from_slice(&old[1..]);
@@ -89,19 +104,17 @@ pub(super) fn execute_evex(
 fn compute_float(
     processor: &mut Processor,
     decoded: &Decoded,
-    (operation, precision, _): (FloatOperation, Precision, Arrangement),
-    first: &[u128; 4],
-    second: &[u128; 4],
+    precision: Precision,
     selected: u64,
     elements: usize,
+    compute: impl Fn(usize, u32, usize) -> LaneOutcome,
 ) -> Result<[u128; 4], Exception> {
     let bytes = (precision.to_bits() / u8::BITS) as usize;
     let (mxcsr, suppressed) = to_control(processor.mxcsr, decoded);
     let mut result = [0; 4];
     let (mut before, mut after) = (0, 0);
     for index in (0..elements).filter(|index| selected & (1 << index) != 0) {
-        let outcome =
-            operation.compute(read_element(first, index, bytes), read_element(second, index, bytes), precision, mxcsr, 0);
+        let outcome = compute(index, mxcsr, bytes);
         before |= outcome.before;
         after |= outcome.after;
         write_element(&mut result, index, bytes, outcome.bits);

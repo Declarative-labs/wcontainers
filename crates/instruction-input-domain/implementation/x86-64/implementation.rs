@@ -165,6 +165,9 @@ pub enum OperandType {
     /// The destination's old value, the two sources and the immediate of an integer EVEX form; for a register form
     /// also the opmask.
     EvexIntegerData(evex::EvexIntegerData),
+    /// The destination's old value and the two sources of a fused EVEX form and MXCSR; for a register form also
+    /// the opmask and the embedded rounding.
+    EvexFusedData(evex::EvexFusedData),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -298,6 +301,15 @@ pub enum OperandValue {
         second: [u128; 4],
         immediate: u8,
         mask: evex::EvexMask,
+    },
+    /// Three ZMM values, an opmask, an embedded control and MXCSR.
+    EvexFusedData {
+        destination: [u128; 4],
+        first: [u128; 4],
+        second: [u128; 4],
+        mask: evex::EvexMask,
+        control: evex::EmbeddedControl,
+        mxcsr: u32,
     },
 }
 
@@ -500,6 +512,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::EvexBroadcast => vec![OperandValue::Broadcast(false), OperandValue::Broadcast(true)],
             OperandType::EvexFloatData(data) => evex::generate_float_data(data),
             OperandType::EvexIntegerData(data) => evex::generate_integer_data(data),
+            OperandType::EvexFusedData(data) => evex::generate_fused_data(data),
         };
         values.into_iter()
     }

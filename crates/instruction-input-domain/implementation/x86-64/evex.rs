@@ -24,7 +24,9 @@ use core::array;
 
 use iced_x86::{Instruction as Encoded, MemoryOperand, Register, RoundingControl};
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
-use wcontainers_processor_architecture_x86_64::evex::{EvexForm, EvexOperation, IntegerOperation, read_element, write_element};
+use wcontainers_processor_architecture_x86_64::evex::{
+    EvexForm, EvexOperation, FusedOrder, IntegerOperation, read_element, write_element,
+};
 use wcontainers_processor_architecture_x86_64::float::{
     Arrangement, DENORMALS_ARE_ZEROS, FLUSH_TO_ZERO, FloatOperation, Precision, ROUNDING_SHIFT,
 };
@@ -98,6 +100,14 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
             register,
             rounding: op_code.can_use_rounding_control(),
             suppression: op_code.can_suppress_all_exceptions(),
+        }),
+        EvexOperation::Fused { order, precision, arrangement, .. } => OperandType::EvexFusedData(EvexFusedData {
+            order,
+            precision,
+            vector_bytes: form.vector_bytes(),
+            scalar: arrangement == Arrangement::Scalar,
+            register,
+            rounding: op_code.can_use_rounding_control(),
         }),
         EvexOperation::Integer { operation, element_bytes } => OperandType::EvexIntegerData(EvexIntegerData {
             operation,
@@ -230,6 +240,145 @@ pub fn generate_float_data(data: EvexFloatData) -> Vec<OperandValue> {
     ] {
         for mxcsr in [MXCSR_DEFAULT, unmasked] {
             all.extend(some.iter().map(|&pair| datum(pair, mask, EmbeddedControl::None, mxcsr)));
+        }
+    }
+    all
+}
+
+/// What the data of a fused EVEX form is made of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EvexFusedData {
+    pub order: FusedOrder,
+    pub precision: Precision,
+    pub vector_bytes: usize,
+    pub scalar: bool,
+    /// A register form, whose data holds the opmask and the embedded rounding.
+    pub register: bool,
+    pub rounding: bool,
+}
+
+/// The data of a fused form: the multiplicands and the addend (placed in the destination and the sources as the
+/// form's order has them) rotated so that every triple of critical values meets in some element, the first's
+/// rotations a vector's element count apart (a scalar form's every pair); then the fused edges in every element: a product that cancels the
+/// addend to below the precision, products on a rounding tie and just past it, an overflow the addend undoes,
+/// exact and inexact underflow, an infinity times zero (with a quiet NaN addend too), infinities that cancel, and
+/// three quiet NaNs in each order. MXCSR's other values, each embedded rounding and the opmasks take the first
+/// rotations against every rotation of the addend, and the edges.
+pub fn generate_fused_data(data: EvexFusedData) -> Vec<OperandValue> {
+    let EvexFusedData { order, precision, vector_bytes, scalar, register, rounding } = data;
+    let values: Vec<u64> = rotate_floats(precision, true).into_iter().map(|vector| vector as u64).collect();
+    let bytes = (precision.to_bits() / u8::BITS) as usize;
+    let elements = vector_bytes / bytes;
+    let make = |value: &dyn Fn(usize) -> u64| -> [u128; 4] {
+        let mut vector = [0; 4];
+        for index in 0..elements {
+            write_element(&mut vector, index, bytes, value(index));
+        }
+        vector
+    };
+    let rotate = |rotation: usize| make(&|index| values[(index + rotation) % values.len()]);
+    let fill = |value: u64| make(&|_| value);
+    let digits = precision.to_significand_bits() as i32;
+    let fraction_bits = digits - 1;
+    let bias = (1i32 << (precision.to_bits() as i32 - digits - 1)) - 1;
+    let sign = 1u64 << (precision.to_bits() - 1);
+    let normal = |exponent: i32, fraction: u64| (((exponent + bias) as u64) << fraction_bits) | fraction;
+    let one = normal(0, 0);
+    let (low, high) = (digits / 2, digits - digits / 2);
+    let largest = normal(bias, (1 << fraction_bits) - 1);
+    let infinity = precision.to_default_nan() & !sign & !precision.to_quiet_bit();
+    let quiet = |payload: u64| (precision.to_default_nan() & !sign) | payload;
+    let edges: Vec<[u64; 3]> = vec![
+        [normal(0, 1), normal(-1, (1 << fraction_bits) - 1), one | sign],
+        [normal(0, 1 << (fraction_bits - low)), normal(0, 1 << (fraction_bits - high)), 0],
+        [normal(0, 1 << (fraction_bits - low)), normal(0, 1 << (fraction_bits - high)), normal(-digits - 5, 0)],
+        [largest, normal(1, 0), 0],
+        [largest, normal(1, 0), largest | sign],
+        [largest, one, largest],
+        [normal(1 - bias, 0), normal(-1, 0), 0],
+        [normal(1 - bias, 1), normal(-1, 0), 0],
+        [infinity, 0, quiet(1)],
+        [infinity, 0, one],
+        [infinity, one, infinity | sign],
+        [one, one, one | sign],
+        [0, one, sign],
+        [quiet(1), quiet(2), quiet(3)],
+        [quiet(2), quiet(3), quiet(1)],
+        [quiet(3), quiet(1), quiet(2)],
+    ];
+    // Back from multiplicands and addend to the destination and the two sources.
+    let place = |[a, b, c]: [[u128; 4]; 3]| -> [[u128; 4]; 3] {
+        match order {
+            FusedOrder::Order132 => [a, c, b],
+            FusedOrder::Order213 => [b, a, c],
+            FusedOrder::Order231 => [c, a, b],
+        }
+    };
+    let step = elements;
+    let count = values.len();
+    let firsts: Vec<usize> = (0..count).step_by(step).collect();
+    // A scalar form's one element meets every pair of critical values: the third rotation the sum of the others.
+    let triples = |seconds: &[usize]| -> Vec<[[u128; 4]; 3]> {
+        let all: Vec<(usize, usize, usize)> = match scalar {
+            true => (0..count).flat_map(|first| (0..count).map(move |second| (first, second, (first + second) % count))).collect(),
+            false => firsts
+                .iter()
+                .flat_map(|&first| seconds.iter().flat_map(move |&second| (0..count).map(move |third| (first, second, third))))
+                .collect(),
+        };
+        all.into_iter().map(|(first, second, third)| place([rotate(first), rotate(second), rotate(third)])).collect()
+    };
+    let edge_triples: Vec<[[u128; 4]; 3]> = edges.iter().map(|edge| place(edge.map(fill))).collect();
+    let some: Vec<[[u128; 4]; 3]> = (0..values.len())
+        .map(|third| place([rotate(0), rotate(0), rotate(third)]))
+        .chain(edge_triples.iter().copied())
+        .collect();
+    let datum = |[destination, first, second]: [[u128; 4]; 3], mask: EvexMask, control: EmbeddedControl, mxcsr: u32| {
+        OperandValue::EvexFusedData { destination, first, second, mask, control, mxcsr }
+    };
+    let unmasked = 0;
+    if !register {
+        return (0..values.len())
+            .map(|third| place([rotate(0), rotate(0), rotate(third)]))
+            .flat_map(|triple| [MXCSR_DEFAULT, unmasked].map(|mxcsr| datum(triple, NO_MASK, EmbeddedControl::None, mxcsr)))
+            .collect();
+    }
+    let every_second: Vec<usize> = (0..values.len()).collect();
+    let mut all: Vec<OperandValue> = triples(&every_second)
+        .into_iter()
+        .chain(edge_triples.iter().copied())
+        .map(|triple| datum(triple, NO_MASK, EmbeddedControl::None, MXCSR_DEFAULT))
+        .collect();
+    let plain: Vec<u32> = generate_mxcsr_values(MxcsrSet::Arithmetic)
+        .into_iter()
+        .filter_map(|value| match value {
+            OperandValue::Mxcsr(mxcsr) if mxcsr != MXCSR_DEFAULT => Some(mxcsr),
+            _ => None,
+        })
+        .collect();
+    for mxcsr in plain {
+        all.extend(some.iter().map(|&triple| datum(triple, NO_MASK, EmbeddedControl::None, mxcsr)));
+    }
+    let toward_zero = (MXCSR_DEFAULT & !(3 << ROUNDING_SHIFT)) | (3 << ROUNDING_SHIFT);
+    if rounding {
+        for (control, other_mode) in [
+            (RoundingControl::RoundToNearest, toward_zero),
+            (RoundingControl::RoundDown, MXCSR_DEFAULT),
+            (RoundingControl::RoundUp, MXCSR_DEFAULT),
+            (RoundingControl::RoundTowardZero, MXCSR_DEFAULT),
+        ] {
+            for mxcsr in [other_mode, unmasked, MXCSR_DEFAULT | DENORMALS_ARE_ZEROS | FLUSH_TO_ZERO] {
+                all.extend(some.iter().map(|&triple| datum(triple, NO_MASK, EmbeddedControl::Rounding(control), mxcsr)));
+            }
+        }
+    }
+    let all_elements = to_all(elements);
+    for mask in [
+        EvexMask { register: 1, value: EVERY_OTHER & all_elements, zeroing: false },
+        EvexMask { register: 7, value: EVERY_OTHER & all_elements, zeroing: true },
+    ] {
+        for mxcsr in [MXCSR_DEFAULT, unmasked] {
+            all.extend(some.iter().map(|&triple| datum(triple, mask, EmbeddedControl::None, mxcsr)));
         }
     }
     all
@@ -492,6 +641,16 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
                     mask = data_mask;
                 }
             }
+            (
+                OperandType::EvexFusedData(_),
+                OperandValue::EvexFusedData { destination: old, first: one, second: other, mask: data_mask, control: chosen, mxcsr },
+            ) => {
+                (destination_value, first, second, control) = (Some(old), one, other, chosen);
+                processor.mxcsr = mxcsr;
+                if data_mask.register != 0 {
+                    mask = data_mask;
+                }
+            }
             (OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
             (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
         }
@@ -500,10 +659,10 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
     if form.reads_destination()
         && let Some(value) = destination_value
     {
-        processor.write_zmm(registers[0], value);
+        write_vector(&mut processor, registers[0], value, form.vector_bytes());
     }
     if form.reads_first_source() {
-        processor.write_zmm(registers[1], first);
+        write_vector(&mut processor, registers[1], first, form.vector_bytes());
     }
     let mut memory_mutations = Vec::new();
     let memory_bytes = if broadcast { form.memory_element_bytes } else { form.memory_bytes() };
@@ -528,7 +687,7 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
     if memory_operand.is_none() && form.reads_opmask() {
         processor.opmask_registers[to_opmask_number(registers[2])] = second[0] as u64;
     } else if memory_operand.is_none() {
-        processor.write_zmm(registers[2], second);
+        write_vector(&mut processor, registers[2], second, form.vector_bytes());
     }
     let code = form.code;
     let destination = match form.writes_opmask() {
@@ -582,6 +741,13 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
         processor,
         memory_mutations: all,
     }
+}
+
+/// Writes the vector's low `vector_bytes` into the register, which keeps its fill above them.
+fn write_vector(processor: &mut Processor, number: usize, value: [u128; 4], vector_bytes: usize) {
+    let mut register = processor.read_zmm(number);
+    register[..vector_bytes / 16].copy_from_slice(&value[..vector_bytes / 16]);
+    processor.write_zmm(number, register);
 }
 
 /// Fills every ZMM register with a value no critical value is: register n's 128-bit parts each the complement of

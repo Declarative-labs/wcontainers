@@ -17,6 +17,9 @@ use crate::{OPMASK_REGISTERS, Processor, VECTOR_REGISTERS};
 // The integer operations' formulas.
 #[path = "evex_integer.rs"]
 mod lanes;
+// The fused multiply-add.
+#[path = "evex_fused.rs"]
+pub(crate) mod fused;
 
 pub use lanes::IntegerOperation;
 
@@ -34,6 +37,63 @@ pub enum EvexOperation {
     },
     /// A form without floating-point exceptions, its destination's elements of `element_bytes` bytes.
     Integer { operation: IntegerOperation, element_bytes: usize },
+    /// VFMADD132PS to VFMSUBADD231PD: a product and an addend from the destination and the two sources, summed
+    /// exactly and rounded once.
+    Fused {
+        kind: FusedKind,
+        order: FusedOrder,
+        precision: Precision,
+        arrangement: Arrangement,
+    },
+}
+
+/// The signs a fused form gives its product and addend.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FusedKind {
+    MultiplyAdd,
+    MultiplySubtract,
+    NegatedMultiplyAdd,
+    NegatedMultiplySubtract,
+    /// VFMADDSUB: the addend subtracted in even elements, added in odd ones.
+    AlternatingSubtractAdd,
+    /// VFMSUBADD: added in even elements, subtracted in odd ones.
+    AlternatingAddSubtract,
+}
+
+impl FusedKind {
+    /// Whether the product and the addend are negated in the element of the index.
+    pub const fn to_signs(self, index: usize) -> (bool, bool) {
+        let even = index & 1 == 0;
+        match self {
+            Self::MultiplyAdd => (false, false),
+            Self::MultiplySubtract => (false, true),
+            Self::NegatedMultiplyAdd => (true, false),
+            Self::NegatedMultiplySubtract => (true, true),
+            Self::AlternatingSubtractAdd => (false, even),
+            Self::AlternatingAddSubtract => (false, !even),
+        }
+    }
+}
+
+/// Which operands are the multiplicands and which the addend: 132 multiplies the destination by the second source
+/// and adds the first, 213 multiplies the first by the destination and adds the second, 231 multiplies the two
+/// sources and adds the destination.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum FusedOrder {
+    Order132,
+    Order213,
+    Order231,
+}
+
+impl FusedOrder {
+    /// The multiplicands and the addend from the destination, the first source and the second.
+    pub const fn arrange<T: Copy>(self, destination: T, first: T, second: T) -> [T; 3] {
+        match self {
+            Self::Order132 => [destination, second, first],
+            Self::Order213 => [first, destination, second],
+            Self::Order231 => [first, second, destination],
+        }
+    }
 }
 
 /// Which codes of a mnemonic a row is for: those with an immediate, those without, or every one.
@@ -56,6 +116,11 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
     }
     const fn integer(operation: IntegerOperation, element_bytes: usize) -> EvexOperation {
         EvexOperation::Integer { operation, element_bytes }
+    }
+    use FusedKind as F;
+    use FusedOrder as O;
+    const fn fused(kind: FusedKind, order: FusedOrder, precision: Precision, arrangement: Arrangement) -> EvexOperation {
+        EvexOperation::Fused { kind, order, precision, arrangement }
     }
     [
         (Mnemonic::Vaddps, Any, float(Add, Single, Packed)),
@@ -165,6 +230,66 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vpshufbitqmb, Any, integer(I::ShuffleBitsToMask, 1)),
         (Mnemonic::Vpbroadcastmb2q, Any, integer(I::BroadcastMask, 8)),
         (Mnemonic::Vpbroadcastmw2d, Any, integer(I::BroadcastMask, 4)),
+        (Mnemonic::Vfmadd132ps, Any, fused(F::MultiplyAdd, O::Order132, Single, Packed)),
+        (Mnemonic::Vfmadd132pd, Any, fused(F::MultiplyAdd, O::Order132, Double, Packed)),
+        (Mnemonic::Vfmadd132ss, Any, fused(F::MultiplyAdd, O::Order132, Single, Scalar)),
+        (Mnemonic::Vfmadd132sd, Any, fused(F::MultiplyAdd, O::Order132, Double, Scalar)),
+        (Mnemonic::Vfmadd213ps, Any, fused(F::MultiplyAdd, O::Order213, Single, Packed)),
+        (Mnemonic::Vfmadd213pd, Any, fused(F::MultiplyAdd, O::Order213, Double, Packed)),
+        (Mnemonic::Vfmadd213ss, Any, fused(F::MultiplyAdd, O::Order213, Single, Scalar)),
+        (Mnemonic::Vfmadd213sd, Any, fused(F::MultiplyAdd, O::Order213, Double, Scalar)),
+        (Mnemonic::Vfmadd231ps, Any, fused(F::MultiplyAdd, O::Order231, Single, Packed)),
+        (Mnemonic::Vfmadd231pd, Any, fused(F::MultiplyAdd, O::Order231, Double, Packed)),
+        (Mnemonic::Vfmadd231ss, Any, fused(F::MultiplyAdd, O::Order231, Single, Scalar)),
+        (Mnemonic::Vfmadd231sd, Any, fused(F::MultiplyAdd, O::Order231, Double, Scalar)),
+        (Mnemonic::Vfmsub132ps, Any, fused(F::MultiplySubtract, O::Order132, Single, Packed)),
+        (Mnemonic::Vfmsub132pd, Any, fused(F::MultiplySubtract, O::Order132, Double, Packed)),
+        (Mnemonic::Vfmsub132ss, Any, fused(F::MultiplySubtract, O::Order132, Single, Scalar)),
+        (Mnemonic::Vfmsub132sd, Any, fused(F::MultiplySubtract, O::Order132, Double, Scalar)),
+        (Mnemonic::Vfmsub213ps, Any, fused(F::MultiplySubtract, O::Order213, Single, Packed)),
+        (Mnemonic::Vfmsub213pd, Any, fused(F::MultiplySubtract, O::Order213, Double, Packed)),
+        (Mnemonic::Vfmsub213ss, Any, fused(F::MultiplySubtract, O::Order213, Single, Scalar)),
+        (Mnemonic::Vfmsub213sd, Any, fused(F::MultiplySubtract, O::Order213, Double, Scalar)),
+        (Mnemonic::Vfmsub231ps, Any, fused(F::MultiplySubtract, O::Order231, Single, Packed)),
+        (Mnemonic::Vfmsub231pd, Any, fused(F::MultiplySubtract, O::Order231, Double, Packed)),
+        (Mnemonic::Vfmsub231ss, Any, fused(F::MultiplySubtract, O::Order231, Single, Scalar)),
+        (Mnemonic::Vfmsub231sd, Any, fused(F::MultiplySubtract, O::Order231, Double, Scalar)),
+        (Mnemonic::Vfnmadd132ps, Any, fused(F::NegatedMultiplyAdd, O::Order132, Single, Packed)),
+        (Mnemonic::Vfnmadd132pd, Any, fused(F::NegatedMultiplyAdd, O::Order132, Double, Packed)),
+        (Mnemonic::Vfnmadd132ss, Any, fused(F::NegatedMultiplyAdd, O::Order132, Single, Scalar)),
+        (Mnemonic::Vfnmadd132sd, Any, fused(F::NegatedMultiplyAdd, O::Order132, Double, Scalar)),
+        (Mnemonic::Vfnmadd213ps, Any, fused(F::NegatedMultiplyAdd, O::Order213, Single, Packed)),
+        (Mnemonic::Vfnmadd213pd, Any, fused(F::NegatedMultiplyAdd, O::Order213, Double, Packed)),
+        (Mnemonic::Vfnmadd213ss, Any, fused(F::NegatedMultiplyAdd, O::Order213, Single, Scalar)),
+        (Mnemonic::Vfnmadd213sd, Any, fused(F::NegatedMultiplyAdd, O::Order213, Double, Scalar)),
+        (Mnemonic::Vfnmadd231ps, Any, fused(F::NegatedMultiplyAdd, O::Order231, Single, Packed)),
+        (Mnemonic::Vfnmadd231pd, Any, fused(F::NegatedMultiplyAdd, O::Order231, Double, Packed)),
+        (Mnemonic::Vfnmadd231ss, Any, fused(F::NegatedMultiplyAdd, O::Order231, Single, Scalar)),
+        (Mnemonic::Vfnmadd231sd, Any, fused(F::NegatedMultiplyAdd, O::Order231, Double, Scalar)),
+        (Mnemonic::Vfnmsub132ps, Any, fused(F::NegatedMultiplySubtract, O::Order132, Single, Packed)),
+        (Mnemonic::Vfnmsub132pd, Any, fused(F::NegatedMultiplySubtract, O::Order132, Double, Packed)),
+        (Mnemonic::Vfnmsub132ss, Any, fused(F::NegatedMultiplySubtract, O::Order132, Single, Scalar)),
+        (Mnemonic::Vfnmsub132sd, Any, fused(F::NegatedMultiplySubtract, O::Order132, Double, Scalar)),
+        (Mnemonic::Vfnmsub213ps, Any, fused(F::NegatedMultiplySubtract, O::Order213, Single, Packed)),
+        (Mnemonic::Vfnmsub213pd, Any, fused(F::NegatedMultiplySubtract, O::Order213, Double, Packed)),
+        (Mnemonic::Vfnmsub213ss, Any, fused(F::NegatedMultiplySubtract, O::Order213, Single, Scalar)),
+        (Mnemonic::Vfnmsub213sd, Any, fused(F::NegatedMultiplySubtract, O::Order213, Double, Scalar)),
+        (Mnemonic::Vfnmsub231ps, Any, fused(F::NegatedMultiplySubtract, O::Order231, Single, Packed)),
+        (Mnemonic::Vfnmsub231pd, Any, fused(F::NegatedMultiplySubtract, O::Order231, Double, Packed)),
+        (Mnemonic::Vfnmsub231ss, Any, fused(F::NegatedMultiplySubtract, O::Order231, Single, Scalar)),
+        (Mnemonic::Vfnmsub231sd, Any, fused(F::NegatedMultiplySubtract, O::Order231, Double, Scalar)),
+        (Mnemonic::Vfmaddsub132ps, Any, fused(F::AlternatingSubtractAdd, O::Order132, Single, Packed)),
+        (Mnemonic::Vfmaddsub132pd, Any, fused(F::AlternatingSubtractAdd, O::Order132, Double, Packed)),
+        (Mnemonic::Vfmaddsub213ps, Any, fused(F::AlternatingSubtractAdd, O::Order213, Single, Packed)),
+        (Mnemonic::Vfmaddsub213pd, Any, fused(F::AlternatingSubtractAdd, O::Order213, Double, Packed)),
+        (Mnemonic::Vfmaddsub231ps, Any, fused(F::AlternatingSubtractAdd, O::Order231, Single, Packed)),
+        (Mnemonic::Vfmaddsub231pd, Any, fused(F::AlternatingSubtractAdd, O::Order231, Double, Packed)),
+        (Mnemonic::Vfmsubadd132ps, Any, fused(F::AlternatingAddSubtract, O::Order132, Single, Packed)),
+        (Mnemonic::Vfmsubadd132pd, Any, fused(F::AlternatingAddSubtract, O::Order132, Double, Packed)),
+        (Mnemonic::Vfmsubadd213ps, Any, fused(F::AlternatingAddSubtract, O::Order213, Single, Packed)),
+        (Mnemonic::Vfmsubadd213pd, Any, fused(F::AlternatingAddSubtract, O::Order213, Double, Packed)),
+        (Mnemonic::Vfmsubadd231ps, Any, fused(F::AlternatingAddSubtract, O::Order231, Single, Packed)),
+        (Mnemonic::Vfmsubadd231pd, Any, fused(F::AlternatingAddSubtract, O::Order231, Double, Packed)),
     ]
 };
 
@@ -193,7 +318,9 @@ impl EvexForm {
     /// The bytes of one element of the destination, which the opmask selects.
     pub const fn element_bytes(&self) -> usize {
         match self.operation {
-            EvexOperation::Float { precision, .. } => (precision.to_bits() / u8::BITS) as usize,
+            EvexOperation::Float { precision, .. } | EvexOperation::Fused { precision, .. } => {
+                (precision.to_bits() / u8::BITS) as usize
+            }
             EvexOperation::Integer { element_bytes, .. } => element_bytes,
         }
     }
@@ -201,7 +328,8 @@ impl EvexForm {
     /// The elements the form computes: one for a scalar form.
     pub fn elements(&self) -> usize {
         match self.operation {
-            EvexOperation::Float { arrangement: Arrangement::Scalar, .. } => 1,
+            EvexOperation::Float { arrangement: Arrangement::Scalar, .. }
+            | EvexOperation::Fused { arrangement: Arrangement::Scalar, .. } => 1,
             _ => self.vector_bytes() / self.element_bytes(),
         }
     }
@@ -237,6 +365,7 @@ impl EvexForm {
     pub const fn reads_destination(&self) -> bool {
         match self.operation {
             EvexOperation::Float { .. } => false,
+            EvexOperation::Fused { .. } => true,
             EvexOperation::Integer { operation, .. } => operation.reads_destination(),
         }
     }
@@ -245,7 +374,7 @@ impl EvexForm {
     /// memory elements are the destination's elements.
     pub const fn suppresses_faults(&self) -> bool {
         match self.operation {
-            EvexOperation::Float { .. } => true,
+            EvexOperation::Float { .. } | EvexOperation::Fused { .. } => true,
             EvexOperation::Integer { operation, .. } => operation.is_element_wise(),
         }
     }
