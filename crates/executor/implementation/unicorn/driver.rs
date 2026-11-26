@@ -218,7 +218,11 @@ struct Injecting {
     signal_at: Vec<u64>,
     notice_at: Vec<u64>,
     notices: StdRng,
+    /// The run's turns at the runner's last return: each return is one, and so is each system
+    /// call made before it, as when each call was a turn of the runner.
     turns: u64,
+    /// The system calls made since the runner's last return.
+    calls: u64,
     /// Turn counts at which it is saved and brought back.
     save_at: Vec<u64>,
     /// How many times it was.
@@ -238,6 +242,7 @@ impl Injecting {
             notice_at: moments_apart(seed ^ NOTICES_SALT, injections.notices, NOTICES_APART),
             notices: StdRng::seed_from_u64(seed ^ NOTICE_BYTES_SALT),
             turns: 0,
+            calls: 0,
             save_at: save_moments(seed, injections),
             saved: 0,
             seed,
@@ -245,9 +250,10 @@ impl Injecting {
         }
     }
 
-    /// Whether the run is saved at this turn: if so, the seed of the host it is brought back on.
+    /// Whether the run is saved now, for a moment it has reached: if so, the seed of the host it is
+    /// brought back on.
     fn save_now(&mut self) -> Option<u64> {
-        if self.save_at.first() != Some(&self.turns) {
+        if !reached(&self.save_at, self.turns) {
             return None;
         }
         self.save_at.remove(0);
@@ -397,6 +403,11 @@ impl System for TestHost {
         thread: TaskId,
         request: SystemCallRequest,
     ) -> ControlFlow<SystemCallResponse, SystemCallRequest> {
+        if !self.replaying()
+            && let Some(injecting) = lock(&self.injecting).as_mut()
+        {
+            injecting.calls += 1;
+        }
         match &mut *self.hook() {
             Some(hooks) => {
                 hooks.intercept_system_call_request(on_stand_in(process), thread, request)
@@ -1240,6 +1251,11 @@ fn injected_slice(seed: u64, injections: Injections) -> Option<u64> {
 /// of [`MOMENTS_APART`] turns, 500 to 5,000 instructions, a few system calls' worth.
 const INJECTED_SLICE_PER_GAP_TURN: std::ops::RangeInclusive<u64> = 5..=50;
 
+/// Whether the first of `moments` is at or before `turns`.
+fn reached(moments: &[u64], turns: u64) -> bool {
+    moments.first().is_some_and(|&at| at <= turns)
+}
+
 /// Turn counts at which something is injected: `count` of them, each 1 to `apart` turns after the
 /// last.
 fn moments_apart(seed: u64, count: usize, apart: u64) -> Vec<u64> {
@@ -1720,8 +1736,11 @@ fn drive(driven: &mut Driven, runner: &mut DrivenRunner, host: &Arc<TestHost>) -
         }
         let progress = runner.executor.last_instructions;
         driven.with_parts(|kernel, cpu| host.arrived(kernel, cpu, progress));
-        let save = host.injecting().save_now();
-        if let Some(seed) = save {
+        loop {
+            let save = host.injecting().save_now();
+            let Some(seed) = save else {
+                break;
+            };
             save_and_bring_back(driven, runner, host, seed);
         }
     }
@@ -1784,7 +1803,7 @@ impl TestHost {
     fn arrived_live(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut Machine, progress: u64) {
         let turns = {
             let mut injecting = self.injecting();
-            injecting.turns += 1;
+            injecting.turns += 1 + std::mem::take(&mut injecting.calls);
             injecting.turns
         };
         PROGRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1805,7 +1824,7 @@ impl TestHost {
         {
             deliver(kernel, cpu, self);
         }
-        while self.injecting().notice_at.first() == Some(&turns) {
+        while reached(&self.injecting().notice_at, turns) {
             let notice = {
                 let mut injecting = self.injecting();
                 injecting.notice_at.remove(0);
@@ -1813,7 +1832,7 @@ impl TestHost {
             };
             self.send_notice(notice);
         }
-        while self.injecting().signal_at.first() == Some(&turns) {
+        while reached(&self.injecting().signal_at, turns) {
             let signal = {
                 let mut injecting = self.injecting();
                 injecting.signal_at.remove(0);
