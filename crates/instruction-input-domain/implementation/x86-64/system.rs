@@ -36,6 +36,7 @@ pub fn list_operand_types(form: &SystemForm) -> Vec<OperandType> {
     let mut types = Vec::new();
     // No byte string encodes JCXZ in 64-bit mode, so it has no state.
     if form.operation == SystemOperation::JumpIfCountZero {
+        types.push(OperandType::Unencodable);
         return types;
     }
     if form.codes.len() == 2 {
