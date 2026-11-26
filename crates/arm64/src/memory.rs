@@ -116,7 +116,7 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             rt,
             rn,
         } => {
-            let at = exact_address(e, rn, bytes.into(), bytes.into(), Access::Write);
+            let at = exact_address(e, rn, bytes.into(), bytes.into(), Access::Modify);
             low(e, rs, bytes);
             let value = save(e, Width::X64);
             let old = e.local(ValType::I64);
@@ -207,7 +207,7 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             rt,
             rn,
         } => {
-            let at = exact_address(e, rn, bytes.into(), bytes.into(), Access::Write);
+            let at = exact_address(e, rn, bytes.into(), bytes.into(), Access::Modify);
             e.sink().local_get(at);
             low(e, rs, bytes);
             low(e, rt, bytes);
@@ -222,7 +222,7 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             rn,
         } => {
             let total = 2 * u32::from(bytes);
-            let at = exact_address(e, rn, total, total, Access::Write);
+            let at = exact_address(e, rn, total, total, Access::Modify);
             let (rs2, rt2) = (next(rs), next(rt));
             if bytes == 4 {
                 // Both halves are one 64 bit compare and exchange.

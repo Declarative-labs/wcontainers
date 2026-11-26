@@ -133,7 +133,7 @@ pub(crate) fn effects(i: &Instruction) -> Effects<Arm64> {
         fused_multiply_add: true,
         arm_nans: true,
     };
-    wcontainers_guest_cpu::effects::<Arm64>(i, host, ())
+    wcontainers_guest_cpu::effects::<Arm64>(i, host, Offer::default())
 }
 
 fn width_type(width: Width) -> ValType {
@@ -516,6 +516,7 @@ impl Guest for Arm64 {
             Trap::Alignment(address) => {
                 (TrapKind::Alignment, TrapDetail::Local(address), TrapPc::At)
             }
+            Trap::SystemAccess => (TrapKind::SystemAccess, TrapDetail::Instruction, TrapPc::At),
         }
     }
 
@@ -537,10 +538,17 @@ impl Guest for Arm64 {
         host.answer() as u32
     }
 
-    type Offer = ();
+    type Offer = Offer;
 
-    fn offer_key(_offer: ()) -> u64 {
-        0
+    fn offer_key(offer: Offer) -> u64 {
+        Offer::ALL
+            .iter()
+            .position(|listed| *listed == offer)
+            .expect("every offer is listed") as u64
+    }
+
+    fn offer_from_key(key: u64) -> Option<Offer> {
+        Offer::ALL.get(usize::try_from(key).ok()?).copied()
     }
 
     fn memory_fault(_address: u64, _code: &[u8], _block: &B) -> MemoryFault {
