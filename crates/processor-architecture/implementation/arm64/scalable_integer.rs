@@ -1,6 +1,6 @@
 //! The SVE2 integer instructions of three registers at a 128-bit vector length: long, wide and narrowing arithmetic
-//! of the bottom (even) or top (odd) half-width elements, multiplies, accumulates and the bitwise ternary operations, as
-//! Arm's pseudocode loops over the elements (for example
+//! of the bottom (even) or top (odd) half-width elements, multiplies and accumulates, as Arm's pseudocode loops over
+//! the elements (for example
 //! [SADDLB](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/SADDLB--Signed-add-long--bottom--)).
 //!
 //! SVE's saturating instructions leave FPSR.QC alone.
@@ -18,23 +18,13 @@ pub enum IntegerOperation {
     Subtract,
     AbsoluteDifference,
     Multiply,
-    /// The high half of the product at the element's size.
-    MultiplyHigh,
-    /// SQDMULH and SQRDMULH: twice the product's high half, rounded or not, saturated.
-    SaturatingDoublingMultiplyHigh {
-        rounding: bool,
-    },
     /// SQDMULL: twice the product, saturated at the result's size.
     SaturatingDoublingMultiply,
-    /// The carry-less product.
-    PolynomialMultiply,
 }
 
 /// How the sources' elements are taken and the result written.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum IntegerShape {
-    /// Every element of the size from the two sources' of the same size.
-    Same,
     /// Each element from the two sources' half-width elements, each the bottom (even) or the top (odd) one.
     Long { first_top: bool, second_top: bool },
     /// Each element from the first source's of the same size and the second's half-width bottom or top one.
@@ -46,26 +36,9 @@ pub enum IntegerShape {
         subtract: bool,
         saturating: bool,
     },
-    /// The destination's element plus the result of the same size.
-    Accumulate,
     /// The high half of each result in the bottom or top half-width element; the bottom form zeroes the top ones,
     /// the top form keeps the bottom ones.
     NarrowHigh { top: bool, rounding: bool },
-    /// EORBT and EORTB: the bottom (or top) elements the first source's exclusive-or the second's other ones, the rest
-    /// of the destination kept.
-    InterleavingExclusiveOr { top: bool },
-}
-
-/// What a bitwise ternary instruction computes of the destination, the second source and the third.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TernaryOperation {
-    ExclusiveOr,
-    BitClearExclusiveOr,
-    Select {
-        invert_first: bool,
-        invert_second: bool,
-        invert_result: bool,
-    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -75,13 +48,8 @@ pub enum IntegerForm {
         shape: IntegerShape,
         signedness: Signedness,
     },
-    /// PMUL: bytes only.
-    PolynomialBytes,
     /// PMULLB and PMULLT of doublewords into one 128-bit product.
-    PolynomialQuadword {
-        top: bool,
-    },
-    Ternary(TernaryOperation),
+    PolynomialQuadword { top: bool },
 }
 
 /// The form of each modeled SVE2 integer instruction, none for every other instruction.
@@ -237,18 +205,15 @@ pub fn list_integer_operands(form: IntegerForm) -> &'static [ScalableOperand] {
         source(ZM),
     ];
     const BYTES: &[ScalableOperand] = &[O::VectorDestination(ZD), source(ZN), source(ZM)];
-    const TERNARY: &[ScalableOperand] = &[O::VectorSourceDestination(ZD), source(ZM), source(ZN)];
     match form {
         IntegerForm::Elements { shape, .. } => match shape {
-            IntegerShape::Same | IntegerShape::Long { .. } | IntegerShape::Wide { .. } => THREE,
+            IntegerShape::Long { .. } | IntegerShape::Wide { .. } => THREE,
             IntegerShape::NarrowHigh { top: false, .. } => THREE,
-            IntegerShape::LongAccumulate { .. }
-            | IntegerShape::Accumulate
-            | IntegerShape::NarrowHigh { top: true, .. }
-            | IntegerShape::InterleavingExclusiveOr { .. } => READ_DESTINATION,
+            IntegerShape::LongAccumulate { .. } | IntegerShape::NarrowHigh { top: true, .. } => {
+                READ_DESTINATION
+            }
         },
-        IntegerForm::PolynomialBytes | IntegerForm::PolynomialQuadword { .. } => BYTES,
-        IntegerForm::Ternary(_) => TERNARY,
+        IntegerForm::PolynomialQuadword { .. } => BYTES,
     }
 }
 
@@ -256,15 +221,7 @@ pub fn list_integer_operands(form: IntegerForm) -> &'static [ScalableOperand] {
 pub fn to_element_bits(form: IntegerForm, word: u32) -> Option<u32> {
     let size = SIZE.read(word);
     match form {
-        IntegerForm::PolynomialBytes | IntegerForm::Ternary(_) => Some(u8::BITS),
         IntegerForm::PolynomialQuadword { .. } => Some(u128::BITS),
-        IntegerForm::Elements {
-            shape:
-                IntegerShape::Same
-                | IntegerShape::Accumulate
-                | IntegerShape::InterleavingExclusiveOr { .. },
-            ..
-        } => Some(u8::BITS << size),
         // A long or narrowing form has no byte-sized wide element.
         IntegerForm::Elements { .. } => (size != 0).then(|| u8::BITS << size),
     }
@@ -290,40 +247,15 @@ fn polynomial_multiply(first: u128, second: u128, bits: u32) -> u128 {
         .fold(0, |product, bit| product ^ (first << bit))
 }
 
-/// The operation's result on two integers of `bits` bits each, at `result_bits` bits.
-fn compute(
-    operation: IntegerOperation,
-    first: i128,
-    second: i128,
-    bits: u32,
-    result_bits: u32,
-) -> i128 {
+/// The operation's result on two integers, at `result_bits` bits.
+fn compute(operation: IntegerOperation, first: i128, second: i128, result_bits: u32) -> i128 {
     match operation {
         IntegerOperation::Add => first + second,
         IntegerOperation::Subtract => first - second,
         IntegerOperation::AbsoluteDifference if crate::planted::is(2050) => first - second,
         IntegerOperation::AbsoluteDifference => (first - second).abs(),
         IntegerOperation::Multiply => first.wrapping_mul(second),
-        IntegerOperation::MultiplyHigh => first.wrapping_mul(second) >> bits,
-        IntegerOperation::SaturatingDoublingMultiplyHigh { rounding } => {
-            // Only the most negative value times itself overflows, and saturates to the largest.
-            let round = if rounding && !crate::planted::is(2049) {
-                1 << (bits - 1)
-            } else {
-                0
-            };
-            match first
-                .checked_mul(second)
-                .and_then(|product| product.checked_mul(2))
-            {
-                Some(doubled) => saturate((doubled + round) >> bits, bits),
-                None => (1 << (bits - 1)) - 1,
-            }
-        }
         IntegerOperation::SaturatingDoublingMultiply => saturate(2 * first * second, result_bits),
-        IntegerOperation::PolynomialMultiply => {
-            polynomial_multiply(first as u128, second as u128, bits) as i128
-        }
     }
 }
 
@@ -345,29 +277,6 @@ pub fn simulate_integer_form<LevelSpecific>(
     let mut put =
         |index: u32, bits: u32, value: u128| result |= (value & mask(bits)) << (index * bits);
     match form {
-        IntegerForm::Ternary(operation) => {
-            // Zdn, Zm and Zk, which the list names Zd, Zm and Zn.
-            let (zdn, zm, zk) = (destination, second, first);
-            result = match operation {
-                TernaryOperation::ExclusiveOr => zdn ^ zm ^ zk,
-                TernaryOperation::BitClearExclusiveOr if crate::planted::is(2052) => {
-                    zdn ^ (!zm & zk)
-                }
-                TernaryOperation::BitClearExclusiveOr => zdn ^ (zm & !zk),
-                TernaryOperation::Select {
-                    invert_first,
-                    invert_second,
-                    invert_result,
-                } => {
-                    let invert =
-                        |value: u128, inverted: bool| if inverted { !value } else { value };
-                    invert(
-                        (invert(zdn, invert_first) & zk) | (invert(zm, invert_second) & !zk),
-                        invert_result,
-                    )
-                }
-            };
-        }
         IntegerForm::PolynomialQuadword { top } => {
             let half = u64::BITS;
             let top = u32::from(top != crate::planted::is(2047));
@@ -376,16 +285,6 @@ pub fn simulate_integer_form<LevelSpecific>(
                 read_element(second, top, half),
                 half,
             );
-        }
-        IntegerForm::PolynomialBytes => {
-            for index in 0..elements {
-                let value = polynomial_multiply(
-                    read_element(first, index, esize),
-                    read_element(second, index, esize),
-                    esize,
-                );
-                put(index, esize, value);
-            }
         }
         IntegerForm::Elements {
             operation,
@@ -405,34 +304,6 @@ pub fn simulate_integer_form<LevelSpecific>(
                 to_integer(read_element(vector, index, esize), esize, signedness)
             };
             match shape {
-                IntegerShape::Same => {
-                    for index in 0..elements {
-                        let value = compute(
-                            operation,
-                            wide(first, index),
-                            wide(second, index),
-                            esize,
-                            esize,
-                        );
-                        put(index, esize, value as u128);
-                    }
-                }
-                IntegerShape::Accumulate => {
-                    for index in 0..elements {
-                        let value = compute(
-                            operation,
-                            wide(first, index),
-                            wide(second, index),
-                            esize,
-                            esize,
-                        );
-                        put(
-                            index,
-                            esize,
-                            (value as u128).wrapping_add(read_element(destination, index, esize)),
-                        );
-                    }
-                }
                 IntegerShape::Long {
                     first_top,
                     second_top,
@@ -442,7 +313,6 @@ pub fn simulate_integer_form<LevelSpecific>(
                             operation,
                             narrow(first, index, first_top),
                             narrow(second, index, second_top),
-                            half,
                             esize,
                         );
                         put(index, esize, value as u128);
@@ -454,7 +324,6 @@ pub fn simulate_integer_form<LevelSpecific>(
                             operation,
                             wide(first, index),
                             narrow(second, index, top),
-                            esize,
                             esize,
                         );
                         put(index, esize, value as u128);
@@ -471,7 +340,6 @@ pub fn simulate_integer_form<LevelSpecific>(
                             operation,
                             narrow(first, index, first_top),
                             narrow(second, index, second_top),
-                            half,
                             esize,
                         );
                         let product = if subtract { -product } else { product };
@@ -489,13 +357,9 @@ pub fn simulate_integer_form<LevelSpecific>(
                 }
                 IntegerShape::NarrowHigh { top, rounding } => {
                     for index in 0..elements {
-                        let value = compute(
-                            operation,
-                            wide(first, index),
-                            wide(second, index),
-                            esize,
-                            esize,
-                        ) + if rounding { 1 << (half - 1) } else { 0 };
+                        let value =
+                            compute(operation, wide(first, index), wide(second, index), esize)
+                                + if rounding { 1 << (half - 1) } else { 0 };
                         let high = ((value as u128) >> half) & mask(half);
                         let kept = read_element(destination, 2 * index, half);
                         let (low, upper) = if top {
@@ -506,19 +370,6 @@ pub fn simulate_integer_form<LevelSpecific>(
                             (high, 0)
                         };
                         put(index, esize, low | upper << half);
-                    }
-                }
-                IntegerShape::InterleavingExclusiveOr { top } => {
-                    for pair in 0..elements / 2 {
-                        let (written, other) = if top {
-                            (2 * pair + 1, 2 * pair)
-                        } else {
-                            (2 * pair, 2 * pair + 1)
-                        };
-                        let value = read_element(first, written, esize)
-                            ^ read_element(second, other, esize);
-                        put(written, esize, value);
-                        put(other, esize, read_element(destination, other, esize));
                     }
                 }
             }

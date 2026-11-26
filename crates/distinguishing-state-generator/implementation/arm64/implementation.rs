@@ -253,8 +253,6 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::ProgramCounterOffset(_)
         | OperandType::SplitImmediate(_)
         | OperandType::Pattern(_)
-        | OperandType::EveryValue(_)
-        | OperandType::BytePosition(_)
         | OperandType::Word(_) => Group::Field,
         OperandType::ConditionFlags => Group::Flags,
         OperandType::RegisterValue { .. }

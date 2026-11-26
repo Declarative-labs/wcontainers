@@ -104,9 +104,9 @@ fn read_operand(
             let bits = state.processor.vector_registers
                 [(field.read(word) + offset) as usize % state.processor.vector_registers.len()];
             match values {
-                ScalableValues::Integer
-                | ScalableValues::TableIndices
-                | ScalableValues::Structure => Some(OperandValue::Vector(bits)),
+                ScalableValues::Integer | ScalableValues::Structure => {
+                    Some(OperandValue::Vector(bits))
+                }
                 // The critical value of these bits, whose lanes the bits alone do not name.
                 // The critical value of the bits; a register named twice holds another operand's, read in the
                 // lanes of this operand's first value.
@@ -184,10 +184,7 @@ fn read_operand(
             state.processor.vector_registers[field.read(word) as usize]
                 & (u128::MAX >> (u128::BITS - bytes * u8::BITS)),
         )),
-        OperandType::ProgramCounterOffset(fields)
-        | OperandType::SplitImmediate(fields)
-        | OperandType::EveryValue(fields)
-        | OperandType::BytePosition(fields) => {
+        OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields) => {
             Some(OperandValue::Bits(fields.iter().fold(0, |bits, field| {
                 (bits << field.width) | u64::from(field.read(word))
             })))

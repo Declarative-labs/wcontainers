@@ -298,10 +298,6 @@ pub enum OperandType {
     PredicateNumber(Field),
     /// The value of the P register the field names.
     ScalablePredicateValue(Field),
-    /// An immediate split over fields, the most significant first, which takes every value it can hold.
-    EveryValue(&'static [Field]),
-    /// A byte position in a Z register, split over fields, the most significant first.
-    BytePosition(&'static [Field]),
 }
 
 /// What the elements of a Z register an SVE instruction reads hold.
@@ -309,8 +305,6 @@ pub enum OperandType {
 pub enum ScalableValues {
     /// Bits, as a vector register's.
     Integer,
-    /// Indices into a table, besides bits.
-    TableIndices,
     /// The bits of one register of a structure store: fewer than `Integer`, since each register stores its own bytes.
     Structure,
     /// Floating-point values in the lanes given, or where none, in the lanes of every element size, of which an
@@ -706,11 +700,6 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             }
             OperandType::PredicateNumber(_) => [0, 1].map(OperandValue::RegisterNumber).to_vec(),
             OperandType::ScalablePredicateValue(_) => scalable::to_predicate_values(),
-            OperandType::EveryValue(fields) => {
-                let width: u32 = fields.iter().map(|field| field.width).sum();
-                (0..1 << width).map(OperandValue::Bits).collect()
-            }
-            OperandType::BytePosition(fields) => scalable::to_byte_positions(fields),
             OperandType::DataPagePermission(_) => {
                 let mapped = |data_access| PagePermission::Mapped {
                     data_access,
@@ -902,8 +891,6 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 // `encode_word` has put them in the word.
                 OperandType::ScalableVectorNumber { .. }
                 | OperandType::PredicateNumber(_)
-                | OperandType::EveryValue(_)
-                | OperandType::BytePosition(_)
                 | OperandType::RegisterNumber(_)
                 | OperandType::VectorRegisterNumber(_)
                 | OperandType::PredicateRegisterNumber(_)
@@ -1178,10 +1165,7 @@ pub fn encode_word(
             (OperandType::Word(_), OperandValue::Bits(bits)) => word = bits as u32,
             (OperandType::AdvancedSimd(simd_operand), _) => deferred.push((simd_operand, operand)),
             (
-                OperandType::ProgramCounterOffset(fields)
-                | OperandType::SplitImmediate(fields)
-                | OperandType::EveryValue(fields)
-                | OperandType::BytePosition(fields),
+                OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields),
                 OperandValue::Bits(bits),
             ) => {
                 let mut remaining = bits;
@@ -1197,8 +1181,6 @@ pub fn encode_word(
                 | OperandType::Pattern(_)
                 | OperandType::ScalableVectorNumber { .. }
                 | OperandType::PredicateNumber(_)
-                | OperandType::EveryValue(_)
-                | OperandType::BytePosition(_)
                 | OperandType::VectorListNumber(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)
