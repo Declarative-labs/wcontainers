@@ -1,5 +1,6 @@
 /// The two registers of an ARM64 core that name its design and its revision.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[cfg_attr(feature = "bake", derive(databake::Bake), databake(path = wcontainers_processor_architecture_arm64))]
 pub struct CoreIdentity {
     /// [MIDR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/MIDR-EL1--Main-ID-Register).
     pub main_id_register: u64,
