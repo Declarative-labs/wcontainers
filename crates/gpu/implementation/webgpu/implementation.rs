@@ -504,8 +504,10 @@ pub enum NoTable {}
 /// A point in the submitted work.
 #[derive(Clone, Debug)]
 pub struct Fence {
-    done: Arc<AtomicBool>,
-    index: wgpu::SubmissionIndex,
+    /// Set once the queue has finished the work submitted up to this point.
+    pub done: Arc<AtomicBool>,
+    /// The submission the point ends, which a wait polls the device for.
+    pub index: wgpu::SubmissionIndex,
 }
 
 /// Threads per workgroup of the back end's compute programs (`GROUP` in their text).

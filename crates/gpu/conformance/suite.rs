@@ -1025,25 +1025,39 @@ pub fn textured_draw_with_depth_and_blending<B: Gpu>(mut b: B) {
 const PRESENT_WINDOW: u32 = 1;
 
 /// A surface of the host's window takes cleared frames one after another, and the device keeps working;
-/// a back end built alone whose host named no window answers an error instead, and keeps working too.
+/// a back end built alone whose host named no window answers that the call broke a rule, asking for a
+/// window it was never given, and keeps working too.
 ///
 /// The interface has no call that gives a back end a window: a host names its windows to the
 /// implementation itself, so on a machine without a display (the build machines) no value given to
-/// [`tests!`] has one. What the host then shows is read by each implementation's own test, since only
-/// the host can see its window.
+/// [`tests!`] has one. "This host has no window of that number" is [`GpuError::Invalid`], the same
+/// answer every time it is asked; a refusal of any other kind (the feature absent, memory, a lost
+/// device) is the back end refusing to present, and fails. What the host then shows is read by each
+/// implementation's own test, since only the host can see its window.
 pub fn presents_cleared_frames<B: Gpu>(mut b: B) {
     needs(&b, Format::Rgba8Unorm, FormatUse::PRESENT);
     let surface = match b.create_surface(PRESENT_WINDOW) {
         Ok(surface) => surface,
-        Err(_) => {
+        Err(GpuError::Invalid(no_window)) => {
             assert_eq!(
                 b.status(),
                 DeviceStatus::Ok,
-                "a window refused loses no device"
+                "a window the host never named loses no device"
             );
+            match b.create_surface(PRESENT_WINDOW) {
+                Err(GpuError::Invalid(again)) => assert_eq!(
+                    again, no_window,
+                    "a window the host never named is refused the same way each time"
+                ),
+                other => panic!(
+                    "window {PRESENT_WINDOW} was refused ({no_window}), then answered {:?}",
+                    other.map(|_| ())
+                ),
+            }
             ok(&mut b);
             return;
         }
+        Err(refused) => panic!("the back end refused to present: {refused:?}"),
     };
     b.configure_surface(&surface, Format::Rgba8Unorm, 4, 4, true)
         .expect("configure_surface");
