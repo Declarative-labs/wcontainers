@@ -899,6 +899,8 @@ fn execute_vex_vector(
         (false, _) if is_active(Bug::VexNarrowKeepsUpperHalf) => kept,
         (false, _) => 0,
     };
+    // VEX zeroes the destination up to the widest vector, ZMM's bits 256 to 511.
+    processor.zmm_upper_halves[number] = [0; 2];
     Ok(())
 }
 

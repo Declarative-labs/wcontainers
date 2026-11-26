@@ -23,7 +23,7 @@ use std::ops::Range;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use iced_x86::{Code, Decoder, DecoderOptions, EncodingKind, Mnemonic, OpKind, Register};
+use iced_x86::{Code, Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 
 use kvm_bindings::{
     KVM_MAX_CPUID_ENTRIES, kvm_regs, kvm_segment, kvm_sregs, kvm_xcr, kvm_xcrs,
@@ -45,7 +45,9 @@ use crate::handler::{Handler, VECTORS};
 use crate::layout::{
     ACCESSED, ADDRESS_MASK, ARENA, AVX_COMPONENT, DESCRIPTOR_ENTRIES, DIRTY, ENTRIES, ENTRY_BYTES,
     EXTENDED_CONTROL_0, FAULT_STACK_TOP, FX_CONTROL_WORD, FX_MXCSR, FX_VECTOR_REGISTERS, FX_X87_REGISTERS, GLOBAL,
-    GLOBAL_DESCRIPTOR_TABLE, SAVED_COMPONENTS, SSE_COMPONENT, XSAVE_AVX, XSAVE_HEADER, XSAVE_IMAGE_BYTES, XsaveImage,
+    GLOBAL_DESCRIPTOR_TABLE, HIGH_16_ZMM_COMPONENT, OPMASK_COMPONENT, SAVED_COMPONENTS, SSE_COMPONENT, XSAVE_AVX,
+    XSAVE_HEADER, XSAVE_HIGH_16_ZMM, XSAVE_IMAGE_BYTES, XSAVE_OPMASK, XSAVE_ZMM_HIGH_256, XsaveImage,
+    ZMM_HIGH_256_COMPONENT,
     HANDLER, HANDLER_BYTES, INTERRUPT_DESCRIPTOR_TABLE, KERNEL_CODE, KERNEL_DATA, KERNEL_DIRECTORY,
     KERNEL_DIRECTORY_POINTERS, KERNEL_ENTRY, KERNEL_PAGES, KERNEL_TABLE, LEVELS, MEMORY_BYTES, NO_EXECUTE,
     LARGE_PAGE, NOT_RUN, PAGE_BYTES, PRESENT, RESIDENT, Registers, SLOT, STACK_TOP, Slot, TASK_STATE,
@@ -500,7 +502,7 @@ impl SingleStepMachine {
             }
             MemoryLoading::Incremental | MemoryLoading::Checked => Some(self.prepare(memory)),
         };
-        let slot = to_slot(processor, self.read_slot().page_table);
+        let slot = to_slot(processor, self.read_slot_page_table());
         self.write_bytes(SLOT, slot.as_bytes());
         self.time_loading += started.elapsed();
         held
@@ -800,6 +802,10 @@ impl SingleStepMachine {
         page
     }
 
+    fn read_slot_page_table(&self) -> u64 {
+        self.read_entry(SLOT + offset_of!(Slot, page_table) as u64)
+    }
+
     fn read_slot(&self) -> Slot {
         let mut slot = Slot::new_zeroed();
         self.read_into(SLOT, slot.as_mut_bytes());
@@ -909,6 +915,16 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
         let at = XSAVE_AVX + number * VECTOR_HALF_BYTES;
         image.bytes[at..at + VECTOR_HALF_BYTES].copy_from_slice(&value.to_le_bytes());
     }
+    for (number, value) in processor.opmask_registers.iter().enumerate() {
+        let at = XSAVE_OPMASK + number * size_of::<u64>();
+        image.bytes[at..at + size_of::<u64>()].copy_from_slice(&value.to_le_bytes());
+    }
+    let parts = processor.zmm_upper_halves.iter().flatten().map(|part| (XSAVE_ZMM_HIGH_256, part));
+    let high = processor.high_vector_registers.iter().flatten().map(|part| (XSAVE_HIGH_16_ZMM, part));
+    for (index, (area, value)) in parts.enumerate().chain(high.enumerate()) {
+        let at = area + index * VECTOR_HALF_BYTES;
+        image.bytes[at..at + VECTOR_HALF_BYTES].copy_from_slice(&value.to_le_bytes());
+    }
     // Every saved component is loaded from the image rather than put in its initial state.
     image.bytes[XSAVE_HEADER..XSAVE_HEADER + size_of::<u64>()].copy_from_slice(&SAVED_COMPONENTS.to_le_bytes());
     Slot {
@@ -986,7 +1002,7 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 /// not set as Linux does), a far CALL, JMP or RET (it changes CS), any other write of a segment register (the
 /// selectors are not modeled), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does
 /// not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
-/// on the page says why: an EVEX one, RDTSC, RDTSCP, RDPID, UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
+/// on the page says why: RDTSC, RDTSCP, RDPID, UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
 /// XSAVE family, LAR, LSL, VERR and VERW, SGDT, SIDT and SMSW, INT 0x80, and AMX's; and RDRAND and RDSEED, whose
 /// results are random.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
@@ -1042,7 +1058,6 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         Mnemonic::Lss | Mnemonic::Lfs | Mnemonic::Lgs => Some("it writes a selector, which is not modeled"),
         _ if writes_segment => Some("it writes a selector, which is not modeled"),
         Mnemonic::Vmcall | Mnemonic::Vmmcall => Some("KVM answers it as a hypercall"),
-        _ if decoded.encoding() == EncodingKind::EVEX => Some("AVX-512's state is not modeled"),
         Mnemonic::Rdtsc | Mnemonic::Rdtscp | Mnemonic::Umwait | Mnemonic::Tpause => {
             Some("its result depends on the time, which is not in the state")
         }
@@ -1123,6 +1138,21 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
     };
     let vector_registers = read_halves(SSE_COMPONENT, FX_VECTOR_REGISTERS);
     let upper_vector_halves = read_halves(AVX_COMPONENT, XSAVE_AVX);
+    let read_part = |component: u64, at: usize| -> u128 {
+        let part = u128::from_le_bytes(after_x87[at..at + VECTOR_HALF_BYTES].try_into().expect("sixteen bytes"));
+        if saved & component == 0 { 0 } else { part }
+    };
+    let zmm_upper_halves = std::array::from_fn(|number| {
+        std::array::from_fn(|part| read_part(ZMM_HIGH_256_COMPONENT, XSAVE_ZMM_HIGH_256 + (2 * number + part) * VECTOR_HALF_BYTES))
+    });
+    let high_vector_registers = std::array::from_fn(|number| {
+        std::array::from_fn(|part| read_part(HIGH_16_ZMM_COMPONENT, XSAVE_HIGH_16_ZMM + (4 * number + part) * VECTOR_HALF_BYTES))
+    });
+    let opmask_registers = std::array::from_fn(|number| {
+        let at = XSAVE_OPMASK + number * size_of::<u64>();
+        let value = u64::from_le_bytes(after_x87[at..at + size_of::<u64>()].try_into().expect("eight bytes"));
+        if saved & OPMASK_COMPONENT == 0 { 0 } else { value }
+    });
     let completed = slot.vector == DEBUG_VECTOR && slot.debug_status & SINGLE_STEP != 0;
     let exception = if completed { None } else { Some(to_exception(slot)?) };
     let general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS] = after.general;
@@ -1135,6 +1165,9 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
         mxcsr,
         vector_registers,
         upper_vector_halves,
+        zmm_upper_halves,
+        high_vector_registers,
+        opmask_registers,
         exception,
     })
 }
