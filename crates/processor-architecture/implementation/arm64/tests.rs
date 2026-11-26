@@ -809,9 +809,15 @@ fn every_modeled_instruction_has_its_operands_in_fields_beside_its_fixed_bits() 
         let Some(record) = instruction.to_record() else {
             continue;
         };
-        if DocumentedInstruction::new(instruction).is_none()
-            && LoadStoreInstruction::new(instruction).is_none()
+        // An Advanced SIMD instruction of `advanced_simd` reads its fields from the word by its encoding class.
+        if (DocumentedInstruction::new(instruction).is_none()
+            && LoadStoreInstruction::new(instruction).is_none())
+            || crate::advanced_simd::to_advanced_simd_operation(instruction).is_some()
         {
+            continue;
+        }
+        // An SVE instruction's operands are named by `scalable`, since the list leaves them unmodeled.
+        if crate::scalable::list_scalable_operands(instruction).is_some() {
             continue;
         }
         let mut covered = record.fixed_bits.mask | record.should_be.mask;
@@ -844,6 +850,7 @@ fn every_modeled_instruction_has_its_operands_in_fields_beside_its_fixed_bits() 
                 operand::Operand::ProgramCounterOffset { fields, .. } => fields.to_vec(),
                 operand::Operand::AddressBase { number, .. } => vec![number],
                 operand::Operand::AddressOffset { field, .. } => vec![field],
+                operand::Operand::SplitAddressOffset { fields, .. } => fields.to_vec(),
                 operand::Operand::RegisterOffset {
                     number,
                     signed,
