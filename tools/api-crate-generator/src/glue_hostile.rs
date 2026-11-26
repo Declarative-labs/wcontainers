@@ -786,6 +786,9 @@ impl Writer<'_, '_> {
         if t == "&str" {
             return Some("\"\"".to_string());
         }
+        if t == "&CStr" || t.ends_with("::CStr") && t.starts_with('&') {
+            return Some("c\"\"".to_string());
+        }
         match self.shape(t, scope) {
             Shape::Object { kind, by_ref } => {
                 *counter += 1;

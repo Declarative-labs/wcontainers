@@ -65,6 +65,45 @@ pub unsafe fn read_only_at(pointer: *const u8, length: usize) -> Option<Vec<u8>>
     body()
 }
 
+/// The most units of a text the serving glue copies in: a longer text is refused, so that no text C passes can make
+/// it allocate without bound (the glue's own limit, as its limit on array elements).
+pub const MOST_TEXT_UNITS: usize = 1 << 16;
+
+/// Copies a text the C side passes in, of `unit`-byte units ending at its first zero unit, without that unit; none for
+/// null, for a unit of more than eight bytes, or for a text with no zero unit within `most` units.
+///
+/// # Safety
+/// The metadata promises a text (`PSTR` or `PWSTR`, `In`) at `pointer`: units of `unit` bytes, each readable up to and
+/// including the first zero unit, for the call, which another party may change meanwhile.
+#[expect(unsafe_code, reason = "the promise of a text from the C side")]
+pub unsafe fn read_text(pointer: *const u8, unit: usize, most: usize) -> Option<Vec<u8>> {
+    #[deny(unsafe_code)]
+    let body = move || {
+        let mut one = [u8::MIN; size_of::<u64>()];
+        if pointer.is_null() || unit == usize::MIN || unit > one.len() {
+            return None;
+        }
+        let mut text = Vec::new();
+        for index in usize::MIN..most {
+            let at = pointer.wrapping_add(index * unit);
+            #[expect(unsafe_code, reason = "one unit of a text the C side passes in")]
+            // SAFETY: the caller's promise: every unit up to and including the first zero unit is readable, and no unit
+            // before this one was zero.
+            let read = unsafe { read_bytes(at, &mut one[..unit]) };
+            if !read {
+                return None;
+            }
+            if one[..unit].iter().all(|byte| *byte == u8::MIN) {
+                return Some(text);
+            }
+            text.try_reserve(unit).ok()?;
+            text.extend_from_slice(&one[..unit]);
+        }
+        None
+    };
+    body()
+}
+
 /// Returns writable bytes of `length` bytes at `pointer`, or none for null.
 ///
 /// # Safety

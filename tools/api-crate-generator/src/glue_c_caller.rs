@@ -206,6 +206,10 @@ impl Writer<'_, '_> {
                 Part::InitialData { .. } => {
                     let _ = writeln!(text, "        const uint8_t *{a} = NULL;");
                 }
+                Part::TextIn { wide, .. } => {
+                    let _ = writeln!(text, "        uint8_t *{a} = pick_text(s, {});", if *wide { 2 } else { 1 });
+                    frees.push(a.clone());
+                }
                 Part::ObjectIn { .. } => {
                     let _ = writeln!(text, "        void *{a} = pick_object(s, 1);");
                 }
@@ -781,6 +785,17 @@ static uint8_t *maybe_bytes(State *s, uint64_t size) {
         default: fill(s, bytes, size); break;
         }
     }
+    return bytes;
+}
+
+/* A text of `unit`-byte units ending at a zero unit, of a length of C's choosing (some long), or null now and then. */
+static uint8_t *pick_text(State *s, uint64_t unit) {
+    if (below(s, 16) == 0) { s->counted[NULL_POINTERS]++; return NULL; }
+    uint64_t units = below(s, 8) == 0 ? below(s, 70000) : below(s, 40);
+    uint8_t *bytes = malloc((units + 1) * unit);
+    if (!bytes) return NULL;
+    for (uint64_t at = 0; at < units * unit; at++) bytes[at] = (uint8_t)(1 + below(s, 255));
+    memset(bytes + units * unit, 0, unit);
     return bytes;
 }
 

@@ -117,6 +117,9 @@ enum Part {
     ObjectsOut { count: usize, kind: usize },
     /// A count passed by pointer that an array out names: the room in, the number written out.
     CountByPointer,
+    /// A text in (`PSTR` or `PWSTR` by value, `In`): units ending at the first zero unit, copied once by the serving glue;
+    /// the trait's `&CStr` or `&[u16]`.
+    TextIn { wide: bool, optional: bool },
 }
 
 /// What an entry that refuses its method writes through one of its parameters.
@@ -835,6 +838,15 @@ impl<'g, 'a> Writer<'g, 'a> {
             }
             if named(&param.ty).is_some_and(|k| k == key(GUID.0, GUID.1)) {
                 return Ok(Part::Value { c: GUID_ABI.to_string(), rust: self.g.guid_path(NOWHERE), form: ValueForm::Guid });
+            }
+            if let Some(named_key) = named(&param.ty)
+                && self.g.read.records.get(&named_key).is_some_and(|record| record.kind == RecordKind::Typedef)
+                && let form @ (Typedef::String | Typedef::WideString) = self.g.typedef_form(&named_key)
+            {
+                if param.is_out {
+                    return Err(format!("a {} out, whose room the metadata links to no parameter", named_key.1));
+                }
+                return Ok(Part::TextIn { wide: matches!(form, Typedef::WideString), optional: param.is_optional });
             }
             return self.value_part(&param.ty);
         };

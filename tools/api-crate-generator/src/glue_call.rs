@@ -490,6 +490,24 @@ impl Writer<'_, '_> {
                     let _ = writeln!(body, "            {name}_words.extend(bytes.as_chunks::<8>().0.iter().map(|word| u64::from_ne_bytes(*word)));\n        }}");
                     args.push(format!("if {name}_list.is_empty() {{ null() }} else {{ {name}_words.as_ptr().cast::<u8>() }}"));
                 }
+                Part::TextIn { wide, optional } => {
+                    // A text crosses NUL-terminated: a `&CStr` is one already; `&[u16]` is copied with a zero unit after its
+                    // first zero unit or its end.
+                    if *wide {
+                        let units = "text.iter().copied().take_while(|unit| *unit != u16::MIN).chain(core::iter::once(u16::MIN)).collect::<Vec<u16>>()";
+                        if *optional {
+                            let _ = writeln!(body, "        let {name}_units = {name}.map(|text| {units});");
+                            args.push(format!("{name}_units.as_ref().map_or(null(), |units| units.as_ptr().cast::<u8>())"));
+                        } else {
+                            let _ = writeln!(body, "        let {name}_units = {{ let text = {name}; {units} }};");
+                            args.push(format!("{name}_units.as_ptr().cast::<u8>()"));
+                        }
+                    } else if *optional {
+                        args.push(format!("{name}.map_or(null(), |text| text.as_ptr().cast::<u8>())"));
+                    } else {
+                        args.push(format!("{name}.as_ptr().cast::<u8>()"));
+                    }
+                }
                 Part::UnknownIn { optional } => {
                     // The UnknownRef of the API whose interface holds the method (a face's is its own API's).
                     let owner = place.split_once("::").and_then(|(interface, _)| self.g.interface_api.iter().find(|(k, _)| k.1 == interface).map(|(_, &a)| a)).unwrap_or(self.current.get());

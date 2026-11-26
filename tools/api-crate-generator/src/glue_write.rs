@@ -73,7 +73,7 @@ impl Writer<'_, '_> {
             let c = match part {
                 Part::Value { c, .. } => c.clone(),
                 Part::Count => self.count_c_type(&param.ty),
-                Part::StructIn { .. } | Part::ValuesIn { .. } | Part::InitialData { .. } | Part::Riid | Part::FixedIn { .. } => "*const u8".to_string(),
+                Part::StructIn { .. } | Part::ValuesIn { .. } | Part::InitialData { .. } | Part::Riid | Part::FixedIn { .. } | Part::TextIn { .. } => "*const u8".to_string(),
                 Part::ObjectIn { .. } | Part::UnknownIn { .. } => "Raw".to_string(),
                 Part::ObjectsIn { .. } => "*const Raw".to_string(),
                 Part::ObjectOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } | Part::ObjectsOut { .. } => "*mut Raw".to_string(),
@@ -393,6 +393,27 @@ impl Writer<'_, '_> {
                         args.push(format!("&{name}_records"));
                     } else {
                         args.push(format!("{name}_records.first()"));
+                    }
+                }
+                Part::TextIn { wide, optional } => {
+                    let (unit, typedef) = if *wide { ("u16", "PWSTR") } else { ("u8", "PSTR") };
+                    let _ = writeln!(inner, "            let {name}_null = {name}.is_null();");
+                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
+                    let _ = writeln!(inner, "            // SAFETY: the metadata's `{metadata}` is a `{typedef}` and `In`: units of a `{unit}` ending at the first zero unit, readable for the call, or null.");
+                    let _ = writeln!(inner, "            let {name}_text = unsafe {{ read_text({name}, size_of::<{unit}>(), MOST_TEXT_UNITS) }};");
+                    let convert = if *wide {
+                        "text.as_chunks::<{ size_of::<u16>() }>().0.iter().map(|unit| u16::from_le_bytes(*unit)).collect::<Vec<u16>>()".to_string()
+                    } else {
+                        "std::ffi::CString::new(text).unwrap_or_default()".to_string()
+                    };
+                    if *optional {
+                        let _ = writeln!(inner, "            if {name}_text.is_none() && !{name}_null {{ return {}; }}", if status { "Err(E_INVALIDARG)" } else { "None" });
+                        let _ = writeln!(inner, "            let {name} = {name}_text.map(|text| {convert});");
+                        args.push(format!("{name}.as_deref()"));
+                    } else {
+                        let _ = writeln!(inner, "            let text = {};", fail(&format!("{name}_text"), "E_INVALIDARG"));
+                        let _ = writeln!(inner, "            let {name} = {convert};");
+                        args.push(format!("&{name}"));
                     }
                 }
                 Part::UnknownIn { optional } => {
@@ -1203,7 +1224,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     serving.push_str(STATUS_IMPORTS);
     serving.push('\n');
     let _ = writeln!(serving, "use wcontainers_component_object_model::structures::Foreign;");
-    let _ = writeln!(serving, "use wcontainers_component_object_model_direct::{{IID_IUNKNOWN, ForeignUnknown, Found, Interfaces, Lendings, Raw, Recorded, Shadow, Table, counted, guarded, object, query, read_bytes, read_only_at, record, record_related, made_by_of, related_of, relate, relate_at, related, related_at, serve, status, unknown_table, writable_at, write_bytes}};\n");
+    let _ = writeln!(serving, "use wcontainers_component_object_model_direct::{{IID_IUNKNOWN, MOST_TEXT_UNITS, ForeignUnknown, Found, Interfaces, Lendings, Raw, Recorded, Shadow, Table, counted, guarded, object, query, read_bytes, read_only_at, read_text, record, record_related, made_by_of, related_of, relate, relate_at, related, related_at, serve, status, unknown_table, writable_at, write_bytes}};\n");
     let _ = writeln!(serving, "use crate::KEY;\nuse crate::abi::*;\nuse crate::data::*;\n");
     let _ = writeln!(serving, "/// The tables of this API's interfaces, for objects of type `V`.\npub struct Tables<V>(PhantomData<V>);\n");
     serving.push_str(&tables);

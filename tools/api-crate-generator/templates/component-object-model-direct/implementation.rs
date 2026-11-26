@@ -27,7 +27,7 @@ pub use objects::{
     Address, Counted, Found, Interfaces, Record, Served, Shield, Table, Weak, add_reference, alive, counted, guarded, object,
     peek, query, release, serve,
 };
-pub use pointers::{read_bytes, read_only_at, writable_at, write_bytes};
+pub use pointers::{MOST_TEXT_UNITS, read_bytes, read_only_at, read_text, writable_at, write_bytes};
 pub use unknown::{ForeignUnknown, Raw, UnknownTable, unknown_table};
 
 use wcontainers_component_object_model::constants::{E_FAIL, S_OK};
