@@ -4850,6 +4850,7 @@ name = "wcontainers-instruction-input-domain-arm64"
 version = "0.1.0"
 dependencies = [
  "itertools 0.14.0",
+ "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-instruction-input-domain",
  "wcontainers-instruction-input-domain-conformance",
  "wcontainers-processor-architecture",

@@ -24,6 +24,8 @@ itertools.workspace = true
 
 [dev-dependencies]
 wcontainers-instruction-input-domain-conformance = { path = "../../conformance" }
+# The cut generator, whose states the suite's product check walks.
+wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
 
 [lints]
 workspace = true
