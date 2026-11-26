@@ -3095,9 +3095,7 @@ fn compare_exchange<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
 
 /// `cmpxchg8b` and `cmpxchg16b`: rdx:rax (each half 32 bits for 8 bytes) against memory; equal, memory gets
 /// rcx:rbx, else rdx:rax gets memory, which is written either way. ZF is whether they were equal; no other
-/// flag changes. `cmpxchg16b` needs its operand aligned to 16 bytes. Locked in an ordered form, `cmpxchg8b` is
-/// one 8-byte compare and exchange; `cmpxchg16b`, which no WebAssembly atomic makes, holds the process's other
-/// threads first (`Reason::LockedAccessNeedsGroupStop`).
+/// flag changes. `cmpxchg16b` needs its operand aligned to 16 bytes.
 fn compare_exchange_pair<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     let bytes = memory_bytes(i);
     let half = bytes / 2;
@@ -3114,8 +3112,9 @@ fn compare_exchange_pair<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction
         .i64_add()
         .local_set(high_at);
     let [low, high, rax, rdx, rbx, rcx] = core::array::from_fn(|_| e.local(ValType::I64));
+    // Locked in an ordered form, `cmpxchg8b` is one 8-byte compare and exchange; `cmpxchg16b`, which no
+    // WebAssembly atomic makes, holds the process's other threads first.
     let lock = locked(e, i);
-    // Locked `cmpxchg8b`: the whole operand read and written by one 8-byte access.
     let whole = (lock && bytes == u64::BITS / u8::BITS).then(|| {
         let whole = e.local(ValType::I64);
         locked_start(e);

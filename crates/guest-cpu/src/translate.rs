@@ -19,8 +19,9 @@ pub enum AccessOrdering {
     /// Every guest load and store an ordered access: x86's order kept for threads in parallel on a host that
     /// orders memory more weakly.
     Ordered(OrderedAccess),
-    /// Every guest load an ordered access and every store plain: x86's order for threads in parallel on an x86
-    /// host, whose own stores keep it, while no engine may merge two loads of one address into one.
+    /// Every guest load an ordered access and every store plain: x86's order on an x86 host.
+    ///
+    /// The host's own stores keep the order, and no engine may merge two loads of one address into one.
     LoadsOrdered(OrderedAccess),
 }
 
@@ -34,7 +35,7 @@ impl AccessOrdering {
         }
     }
 
-    /// The kind of access a guest load becomes, or none for a plain one.
+    /// Names the kind of access a guest load becomes, or none for a plain one.
     pub fn loads(self) -> Option<OrderedAccess> {
         match self {
             AccessOrdering::Unordered => None,
@@ -42,7 +43,7 @@ impl AccessOrdering {
         }
     }
 
-    /// The kind of access a guest store becomes, or none for a plain one.
+    /// Names the kind of access a guest store becomes, or none for a plain one.
     pub fn stores(self) -> Option<OrderedAccess> {
         match self {
             AccessOrdering::Ordered(kind) => Some(kind),

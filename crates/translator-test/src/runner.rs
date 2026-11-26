@@ -340,15 +340,14 @@ fn block<G: GuestTest>(thread: &[u8]) -> G::Block {
 /// translator emits for another host runs and is checked here too.
 pub const PROBE_ANSWER_SETTING: &str = "WC_PROBE_ANSWER";
 
-/// Set to [`ORDERED`] or [`LOADS_ORDERED`], every translation the runners make has that form, so that it runs
-/// every test of one thread too.
+/// Names the setting that, as [`ORDERED`] or [`LOADS_ORDERED`], makes every translation of the runners that form.
 pub const ACCESS_ORDERING_SETTING: &str = "WC_ACCESS_ORDERING";
 /// The value of [`ACCESS_ORDERING_SETTING`] that asks for ordered guest accesses.
 pub const ORDERED: &str = "ordered";
 /// The value of [`ACCESS_ORDERING_SETTING`] that asks for ordered guest loads and plain stores.
 pub const LOADS_ORDERED: &str = "loads";
 
-/// The access ordering [`ACCESS_ORDERING_SETTING`] asks for: unordered unless it names another form.
+/// Reads the access ordering [`ACCESS_ORDERING_SETTING`] asks for: unordered unless it names another form.
 pub fn access_ordering<G: GuestTest>() -> AccessOrdering {
     let kind = OrderedAccess::SequentiallyConsistent;
     let ordering = match std::env::var(ACCESS_ORDERING_SETTING).as_deref() {
@@ -713,8 +712,9 @@ impl<G: GuestTest> Machine<G> {
         self.store.data_mut().optimise = optimise;
     }
 
-    /// From now on translations order the guest's accesses as `ordering` says (by default as the runners'
-    /// setting asks): call before any load.
+    /// Makes translations from now on order the guest's accesses as `ordering` says: call before any load.
+    ///
+    /// By default they order them as the runners' setting asks.
     pub fn order_accesses(&mut self, ordering: AccessOrdering) {
         self.store.data_mut().ordering = ordering;
     }

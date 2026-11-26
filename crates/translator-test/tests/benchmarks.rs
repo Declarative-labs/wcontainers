@@ -387,12 +387,11 @@ fn measure_benchmarks_natively_x86_64() {
     }
 }
 
-/// Not a check: what each ordered form costs against the default form, the benchmark set built for x86-64 (as
-/// [`measure_benchmarks_x86_64`] builds it) at full look-ahead in wasmtime on this machine, with no native run,
-/// so that a host of any CPU times it. Each round runs every form once, one after another, and each form's
-/// result must equal the default form's; `WC_BENCH_RUNS` rounds (default 5). Printed per workload: each form's
-/// best and median time, and the median of its ratio to the default form within a round; then the geometric
-/// mean of those medians over the workloads, with the load. `WC_BENCH_WORKLOADS` as above.
+/// Times each ordered form against the default form, the x86-64 benchmark set in wasmtime here, not a check.
+///
+/// No native run, so a host of any CPU times it. Each of `WC_BENCH_RUNS` rounds (default 5) runs every form once,
+/// each result equal to the default form's; printed are each form's best and median time and the median of its
+/// ratio to the default form within a round, then their geometric mean, with the load.
 #[test]
 #[ignore]
 fn measure_ordered_forms_x86_64() {

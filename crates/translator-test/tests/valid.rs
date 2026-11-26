@@ -11,7 +11,7 @@ use wcontainers_translator::{
 };
 use wcontainers_translator_test::ordered::scan;
 use wcontainers_translator_test::programs::LOAD;
-use wcontainers_x86::{Offer, X86_64};
+use wcontainers_x86::{GUEST_MEMORY, Offer, X86_64};
 
 /// A host that needs every fix-up and the software fused multiply-add, so their code is checked too.
 const HOST: Host = Host {
@@ -51,9 +51,6 @@ const LOADS_ORDERED: AccessOrdering =
     AccessOrdering::LoadsOrdered(OrderedAccess::SequentiallyConsistent);
 /// Every form.
 const FORMS: [AccessOrdering; 3] = [AccessOrdering::Unordered, ORDERED, LOADS_ORDERED];
-
-/// The guest's memory in a code module (`wcontainers_x86::GUEST_MEMORY`).
-const GUEST_MEMORY: u32 = wcontainers_x86::GUEST_MEMORY;
 
 /// Locked instructions with a memory destination, each read, changed and written by one compare and exchange.
 const LOCKED: [&[u8]; 10] = [

@@ -1,30 +1,26 @@
-//! The validity of a translated module, and the scan of an ordered-form module: every access its functions make to the guest's memory is checked to be
-//! of the kind its form asks for.
+//! Checks of translated modules: their validity, and the kind of every guest access an ordered form makes.
 
 use wasmparser::{MemArg, MemArgTarget, Operator, Parser, Payload, Validator, WasmFeatures};
 use wcontainers_guest_cpu::AccessOrdering;
-
-/// The guest's memory in a code module (`wcontainers_x86::GUEST_MEMORY`).
-const GUEST_MEMORY: u32 = wcontainers_x86::GUEST_MEMORY;
+use wcontainers_x86::GUEST_MEMORY;
 
 /// What one module's scan found.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Scan {
-    /// Functions read.
+    /// How many functions were read.
     pub functions: usize,
-    /// Atomic loads, stores and read-modify-writes of the guest's memory.
+    /// How many atomic loads, stores and read-modify-writes of the guest's memory there are.
     pub atomic: usize,
     /// Plain stores of the guest's memory where the form keeps stores plain.
     pub plain_stores_kept: usize,
-    /// Bulk operations on the guest's memory (`memory.copy`, `memory.fill`).
+    /// How many bulk operations on the guest's memory (`memory.copy`, `memory.fill`) there are.
     pub bulk: usize,
-    /// Each access the form does not allow, and each function with a bulk operation not between two fences,
-    /// one line each.
+    /// Each access the form does not allow, and each function with a bulk operation not between two fences.
     pub wrong: Vec<String>,
 }
 
 impl Scan {
-    /// Add another module's scan to this one.
+    /// Adds another module's scan to this one.
     pub fn add(&mut self, other: Scan) {
         self.functions += other.functions;
         self.atomic += other.atomic;
@@ -41,7 +37,7 @@ enum Plain {
     Store,
 }
 
-/// The plain (not atomic) access an operator makes, with its memory argument.
+/// Finds the plain (not atomic) access an operator makes, with its memory argument.
 fn plain_access(operator: &Operator<'_>) -> Option<(Plain, MemArg)> {
     use Operator::*;
     Some(match *operator {
@@ -94,7 +90,7 @@ fn plain_access(operator: &Operator<'_>) -> Option<(Plain, MemArg)> {
     })
 }
 
-/// The atomic access an operator makes, with its memory argument.
+/// Finds the atomic access an operator makes, with its memory argument.
 fn atomic_access(operator: &Operator<'_>) -> Option<MemArg> {
     use Operator::*;
     Some(match *operator {
@@ -120,9 +116,10 @@ fn atomic_access(operator: &Operator<'_>) -> Option<MemArg> {
     })
 }
 
-/// Read every function of a module made in `ordering` (not `Unordered`) and find what is not of the kind it asks
-/// for: a plain load of the guest's memory, a plain store of it unless the form keeps stores plain, or a bulk
-/// operation on it with fewer than two fences in its function.
+/// Reads every function of a module made in `ordering` and finds each access its form does not allow.
+///
+/// Not allowed: a plain load of the guest's memory, a plain store of it unless the form keeps stores plain, and a
+/// bulk operation on it with fewer than two fences in its function. `ordering` is not `Unordered`.
 pub fn scan(wasm: &[u8], ordering: AccessOrdering) -> Scan {
     assert_ne!(
         ordering,
@@ -173,7 +170,7 @@ pub fn scan(wasm: &[u8], ordering: AccessOrdering) -> Scan {
     found
 }
 
-/// Whether a translated module validates with the features the translator's output may use.
+/// Validates a translated module with the features the translator's output may use.
 pub fn validity(wasm: &[u8]) -> Result<(), String> {
     let features = WasmFeatures::default()
         | WasmFeatures::TAIL_CALL

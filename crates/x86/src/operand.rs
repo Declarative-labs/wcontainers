@@ -298,8 +298,9 @@ pub fn bulk_fence<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
     }
 }
 
-/// Whether, in an ordered form, the instruction's memory operand is read, changed and written as one atomic
-/// operation: a memory destination with the `lock` prefix, or `xchg` with memory, whose lock is implied (Intel SDM
+/// Tells whether an ordered form makes the instruction's memory operand one atomic read, change and write.
+///
+/// So it is for a memory destination with `lock`, and for `xchg` with memory, whose lock is implied (Intel SDM
 /// Vol. 2B, XCHG).
 pub fn locked<E: Emitter<X86_64> + ?Sized>(e: &E, i: &Instruction) -> bool {
     let ins = &i.iced;
@@ -317,14 +318,10 @@ pub fn locked_start<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
     e.sink().loop_(BlockType::Empty);
 }
 
-/// Write the low `bytes` bytes of the i64 local `new` at `at` when they still hold `old` (the value read after
-/// [`locked_start`]), as one atomic compare and exchange, else go round its loop again; then close the loop.
+/// Writes `new` over the operand at `at` by one compare and exchange while it still holds `old`, else loops again.
 ///
-/// An operand not aligned to its size but inside one aligned 8-byte word is exchanged as that whole word. One that
-/// crosses a word no WebAssembly atomic operation makes: it is counted and warned as
-/// `Reason::LockedAccessNeedsGroupStop`, whose handler holds the process's other threads before it returns (no
-/// `Parallel` form for a process that runs one, until the threads plan's group stop exists), then read again and
-/// written by ordered accesses.
+/// A misaligned operand inside an 8-byte word is exchanged as that word. One across a word is warned first
+/// (`Reason::LockedAccessNeedsGroupStop`, whose handler holds the other threads), then read again and written.
 pub fn locked_write<E: Emitter<X86_64> + ?Sized>(
     e: &mut E,
     (at, bytes): (u32, u32),
@@ -417,23 +414,24 @@ fn aligned(s: &mut InstructionSink<'_>, at: u32, offset: u64, bytes: u32) {
     s.i64_const(i64::from(bytes) - 1).i64_and().i64_eqz();
 }
 
-/// Keep the low `bytes` bytes of the i64 on the stack.
+/// Keeps the low `bytes` bytes of the i64 on the stack.
 fn narrow(s: &mut InstructionSink<'_>, bytes: u32) {
     if bytes < QWORD {
         s.i64_const(mask((bytes * u8::BITS) as u8)).i64_and();
     }
 }
 
-/// A misaligned ordered access, made through the aligned 8-byte words that hold it (WebAssembly's widest atomic
-/// accesses): i64 locals of the first word's address and the bit its first byte starts at, and an i32 local not
-/// zero when it runs on into the next word.
+/// Where a misaligned ordered access lies in the aligned 8-byte words, WebAssembly's widest atomics, that hold it.
+///
+/// Its i64 locals hold the first word's address and the bit the access starts at; its i32 local is not zero when
+/// the access runs on into the next word.
 struct Misaligned {
     word: u32,
     shift: u32,
     crosses: u32,
 }
 
-/// Work out where the access of `bytes` bytes at `at` plus `offset` lies in the words that hold it.
+/// Works out where the access of `bytes` bytes at `at` plus `offset` lies in the words that hold it.
 fn misaligned<E: Emitter<X86_64> + ?Sized>(
     e: &mut E,
     at: u32,
@@ -471,8 +469,7 @@ fn misaligned<E: Emitter<X86_64> + ?Sized>(
     word
 }
 
-/// Push the i64 of `bytes` bytes of a misaligned access, read by an atomic load of each word it lies in, lowest
-/// address first.
+/// Pushes a misaligned access's value, read by an atomic load of each word it lies in, lowest address first.
 fn misaligned_load(
     s: &mut InstructionSink<'_>,
     kind: OrderedAccess,
@@ -498,8 +495,9 @@ fn misaligned_load(
     narrow(s, bytes);
 }
 
-/// Push the word `seen` with the bytes of a misaligned access that lie in it replaced by those of the i64 local
-/// `value`: of the first word, or of the next when `next`.
+/// Pushes the word `seen` with the access's bytes in it replaced by those of `value`.
+///
+/// The word is the first one, or the next when `next`.
 fn merged(
     s: &mut InstructionSink<'_>,
     word: &Misaligned,
@@ -532,9 +530,10 @@ fn merged(
     s.i64_or();
 }
 
-/// Store the low `bytes` bytes of the i64 local `value` in the words a misaligned access lies in, lowest address
-/// first: each word by a compare and exchange of the word as read with it changed only in those bytes, retried
-/// when another thread changed the word meanwhile.
+/// Stores a misaligned access's value in the words it lies in, lowest address first.
+///
+/// Each word is written by a compare and exchange of the word as read with only those bytes changed, retried when
+/// another thread changed the word meanwhile.
 fn misaligned_store<E: Emitter<X86_64> + ?Sized>(
     e: &mut E,
     kind: OrderedAccess,
@@ -570,8 +569,10 @@ fn misaligned_store<E: Emitter<X86_64> + ?Sized>(
     }
 }
 
-/// Push the i64 of `bytes` bytes at `at` plus `offset` read by ordered accesses: one of its width where it is
-/// aligned (WebAssembly's atomic accesses trap where it is not), else through the words that hold it.
+/// Pushes the i64 of `bytes` bytes at `at` plus `offset`, read by ordered accesses.
+///
+/// It is one access of its width where it is aligned (WebAssembly's atomics trap where it is not), else made
+/// through the words that hold it.
 fn ordered_load<E: Emitter<X86_64> + ?Sized>(
     e: &mut E,
     kind: OrderedAccess,

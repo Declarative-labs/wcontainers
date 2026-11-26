@@ -13,7 +13,7 @@
 
 use std::fmt::Write;
 use wcontainers_arm64::Arm64;
-use wcontainers_translator::contract::DESCRIPTION_SECTION;
+use wcontainers_translator::contract::{DESCRIPTION_SECTION, THREAD};
 use wcontainers_translator::{
     AccessOrdering, BOUND, LookAhead, Optimise, OrderedAccess, Translation, translate,
 };
@@ -110,9 +110,6 @@ fn leb128(bytes: &[u8]) -> (usize, usize) {
     (value, taken)
 }
 
-/// The thread module's name in the lists.
-const THREAD: &str = "thread";
-
 /// What is done with each module made: its name and its bytes.
 type Each<'a> = &'a mut dyn FnMut(&str, &[u8]);
 
@@ -122,8 +119,9 @@ fn lines(each: Each<'_>, name: &str, translation: &Translation) {
     }
 }
 
-/// The benchmark set: the whole program (as `measure_benchmarks` sizes it) and each workload alone, from
-/// address 0, and the thread module, in the form `ordering`.
+/// Translates the benchmark set in the form `ordering`, with the thread module.
+///
+/// The whole program (as `measure_benchmarks` sizes it) and each workload alone, from address 0.
 fn bench<G: GuestTest>(each: Each<'_>, ordering: AccessOrdering) {
     each(
         THREAD,
@@ -174,7 +172,7 @@ fn bench<G: GuestTest>(each: Each<'_>, ordering: AccessOrdering) {
     }
 }
 
-/// A real binary from every start its file offers, in the form `ordering`.
+/// Translates a real binary from every start its file offers, in the form `ordering`.
 fn binary<G: GuestTest>(each: Each<'_>, name: &str, ordering: AccessOrdering) {
     let source = sources::<G>()
         .into_iter()
@@ -243,7 +241,7 @@ fn write_output<G: GuestTest>() {
     }
 }
 
-/// Every module of one set (`bench` or a binary's name) in the form `ordering`.
+/// Translates every module of one set (`bench` or a binary's name) in the form `ordering`.
 fn walk<G: GuestTest>(set: &str, each: Each<'_>, ordering: AccessOrdering) {
     match set {
         "bench" => bench::<G>(each, ordering),
@@ -251,10 +249,11 @@ fn walk<G: GuestTest>(set: &str, each: Each<'_>, ordering: AccessOrdering) {
     }
 }
 
-/// The benchmark set and every real binary, in each ordered form: every code module validates, and every function
-/// of it makes only the accesses to the guest's memory its form allows (no plain load, no plain store unless
-/// the form keeps stores plain, every bulk operation between two fences). The sets, look-aheads and probe
-/// answers are those of the output lists (`WC_OUTPUT_SETS`, default all, and `WC_OUTPUT_LOOK_AHEADS`).
+/// Checks every code module of the benchmark set and the real binaries in each ordered form.
+///
+/// Each module validates, and its functions make only the guest accesses its form allows: no plain load, no
+/// plain store unless the form keeps stores plain, every bulk operation between two fences. The sets,
+/// look-aheads and probe answers are the output lists' (`WC_OUTPUT_SETS`, default all; `WC_OUTPUT_LOOK_AHEADS`).
 #[test]
 #[ignore]
 fn ordered_modules_make_only_ordered_accesses_x86_64() {
