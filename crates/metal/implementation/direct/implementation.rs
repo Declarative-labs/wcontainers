@@ -99,20 +99,26 @@ const BUFFER_COPY_GRANULE: u64 = 4;
 
 /// Returns whether the check at a site refuses its call; with the `reach` feature it counts the outcome at the site.
 macro_rules! refuses {
-    ($site:literal, $refused:expr) => {{
+    ($site:expr, $refused:expr) => {{
         let refused: bool = $refused;
         #[cfg(feature = "reach")]
         crate::reach::add_outcome($site, refused);
+        // Without the count the label is only named, so that every site keeps one.
+        #[cfg(not(feature = "reach"))]
+        let _: &str = $site;
         refused
     }};
 }
 
 /// Returns what a check found, its call refused when it found nothing; with the `reach` feature it counts the outcome.
 macro_rules! found {
-    ($site:literal, $found:expr) => {{
+    ($site:expr, $found:expr) => {{
         let found = $found;
         #[cfg(feature = "reach")]
         crate::reach::add_outcome($site, found.is_none());
+        // Without the count the label is only named, so that every site keeps one.
+        #[cfg(not(feature = "reach"))]
+        let _: &str = $site;
         found
     }};
 }
@@ -164,20 +170,463 @@ pub mod reach {
             .match_indices(needles[0])
             .chain(SOURCE.match_indices(needles[1]))
         {
-            let after = &SOURCE[at..];
-            let Some(open) = after.find('"') else {
-                continue;
-            };
-            let label = &after[open.saturating_add(1)..];
-            let Some(close) = label.find('"') else {
+            // The site's label is the macro's first argument: a string, or a named constant of the `site` module.
+            let arguments = SOURCE[at..]
+                .split_once('(')
+                .map_or("", |(_, rest)| rest.trim_start());
+            let Some(label) = label_of(arguments) else {
                 continue;
             };
             let line = SOURCE[..at].matches('\n').count().saturating_add(1);
-            sites.push((&label[..close], line));
+            sites.push((label, line));
         }
         sites.sort_by_key(|(_, line)| *line);
         sites
     }
+
+    /// Returns the label a site's arguments start with: a string, or the string a constant of `site` holds.
+    fn label_of(arguments: &'static str) -> Option<&'static str> {
+        let quoted = |text: &'static str| {
+            text.strip_prefix('"')?
+                .split_once('"')
+                .map(|(label, _)| label)
+        };
+        if arguments.starts_with('"') {
+            return quoted(arguments);
+        }
+        let (name, _) = arguments.strip_prefix("site::")?.split_once(',')?;
+        let name = name.trim();
+        let definition = format!("const {name}: &str = ");
+        let at = SOURCE.find(&definition)?;
+        quoted(&SOURCE[at.checked_add(definition.len())?..])
+    }
+}
+
+/// The labels of the checks, each naming the call and what its check refuses.
+///
+/// The fuzzer's reach table names each site by its label.
+mod site {
+    /// The check of pipeline that refuses a vertex function of another stage.
+    pub(crate) const PIPELINE_VERTEX_FUNCTION_OF_ANOTHER_STAGE: &str =
+        "pipeline: a vertex function of another stage";
+    /// The check of pipeline that refuses a fragment function of another stage.
+    pub(crate) const PIPELINE_FRAGMENT_FUNCTION_OF_ANOTHER_STAGE: &str =
+        "pipeline: a fragment function of another stage";
+    /// The check of pipeline that refuses a sample count the device lacks.
+    pub(crate) const PIPELINE_SAMPLE_COUNT_DEVICE_LACKS: &str =
+        "pipeline: a sample count the device lacks";
+    /// The check of pipeline that refuses a depth or stencil format without the aspect.
+    pub(crate) const PIPELINE_DEPTH_OR_STENCIL_FORMAT_WITHOUT_ASPECT: &str =
+        "pipeline: a depth or stencil format without the aspect";
+    /// The check of pipeline that refuses a combined depth and stencil format beside another.
+    pub(crate) const PIPELINE_COMBINED_DEPTH_AND_STENCIL_FORMAT_BESIDE_ANOTHER: &str =
+        "pipeline: a combined depth and stencil format beside another";
+    /// The check of pipeline that refuses a second source beside other attachments.
+    pub(crate) const PIPELINE_SECOND_SOURCE_BESIDE_OTHER_ATTACHMENTS: &str =
+        "pipeline: a second source beside other attachments";
+    /// The check of pipeline that refuses a color format no attachment takes.
+    pub(crate) const PIPELINE_COLOR_FORMAT_NO_ATTACHMENT_TAKES: &str =
+        "pipeline: a color format no attachment takes";
+    /// The check of pipeline that refuses some channels of a shared exponent.
+    pub(crate) const PIPELINE_SOME_CHANNELS_OF_SHARED_EXPONENT: &str =
+        "pipeline: some channels of a shared exponent";
+    /// The check of pipeline that refuses blending a format that does not blend.
+    pub(crate) const PIPELINE_BLENDING_FORMAT_THAT_DOES_NOT_BLEND: &str =
+        "pipeline: blending a format that does not blend";
+    /// The check of pipeline that refuses alpha to coverage without a blending first attachment.
+    pub(crate) const PIPELINE_ALPHA_TO_COVERAGE_WITHOUT_BLENDING_FIRST_ATTACHMENT: &str =
+        "pipeline: alpha to coverage without a blending first attachment";
+    /// The check of buffer that refuses longer than the device's most.
+    pub(crate) const BUFFER_LONGER_THAN_DEVICES_MOST: &str =
+        "buffer: longer than the device's most";
+    /// The check of write that refuses past the buffer.
+    pub(crate) const WRITE_PAST_BUFFER: &str = "write: past the buffer";
+    /// The check of write that refuses a buffer uncommitted work uses.
+    pub(crate) const WRITE_BUFFER_UNCOMMITTED_WORK_USES: &str =
+        "write: a buffer uncommitted work uses";
+    /// The check of read that refuses past the buffer.
+    pub(crate) const READ_PAST_BUFFER: &str = "read: past the buffer";
+    /// The check of read that refuses a buffer uncommitted work uses.
+    pub(crate) const READ_BUFFER_UNCOMMITTED_WORK_USES: &str =
+        "read: a buffer uncommitted work uses";
+    /// The check of texture that refuses a side past the most.
+    pub(crate) const TEXTURE_SIDE_PAST_MOST: &str = "texture: a side past the most";
+    /// The check of texture that refuses layers past the most.
+    pub(crate) const TEXTURE_LAYERS_PAST_MOST: &str = "texture: layers past the most";
+    /// The check of texture that refuses a stencil view format.
+    pub(crate) const TEXTURE_STENCIL_VIEW_FORMAT: &str = "texture: a stencil view format";
+    /// The check of texture that refuses an empty size.
+    pub(crate) const TEXTURE_EMPTY_SIZE: &str = "texture: an empty size";
+    /// The check of texture that refuses deeper than one outside 3D.
+    pub(crate) const TEXTURE_DEEPER_THAN_ONE_OUTSIDE_3D: &str =
+        "texture: deeper than one outside 3D";
+    /// The check of texture that refuses an array length the type does not take.
+    pub(crate) const TEXTURE_ARRAY_LENGTH_TYPE_DOES_NOT_TAKE: &str =
+        "texture: an array length the type does not take";
+    /// The check of texture that refuses a cube not square.
+    pub(crate) const TEXTURE_CUBE_NOT_SQUARE: &str = "texture: a cube not square";
+    /// The check of texture that refuses levels past the chain.
+    pub(crate) const TEXTURE_LEVELS_PAST_CHAIN: &str = "texture: levels past the chain";
+    /// The check of texture that refuses a sample count the type does not take.
+    pub(crate) const TEXTURE_SAMPLE_COUNT_TYPE_DOES_NOT_TAKE: &str =
+        "texture: a sample count the type does not take";
+    /// The check of texture that refuses compressed in a type that is not.
+    pub(crate) const TEXTURE_COMPRESSED_IN_TYPE_THAT_IS_NOT: &str =
+        "texture: compressed in a type that is not";
+    /// The check of texture that refuses depth or stencil in 3D.
+    pub(crate) const TEXTURE_DEPTH_OR_STENCIL_IN_3D: &str = "texture: depth or stencil in 3D";
+    /// The check of view that refuses of a drawable's texture.
+    pub(crate) const VIEW_OF_DRAWABLES_TEXTURE: &str = "view: of a drawable's texture";
+    /// The check of view that refuses levels or slices past the texture.
+    pub(crate) const VIEW_LEVELS_OR_SLICES_PAST_TEXTURE: &str =
+        "view: levels or slices past the texture";
+    /// The check of view that refuses a format the texture is not seen as.
+    pub(crate) const VIEW_FORMAT_TEXTURE_IS_NOT_SEEN_AS: &str =
+        "view: a format the texture is not seen as";
+    /// The check of view that refuses slices the type does not take.
+    pub(crate) const VIEW_SLICES_TYPE_DOES_NOT_TAKE: &str = "view: slices the type does not take";
+    /// The check of view that refuses a type the texture is not seen as.
+    pub(crate) const VIEW_TYPE_TEXTURE_IS_NOT_SEEN_AS: &str =
+        "view: a type the texture is not seen as";
+    /// The check of view that refuses a cube of a texture not square.
+    pub(crate) const VIEW_CUBE_OF_TEXTURE_NOT_SQUARE: &str = "view: a cube of a texture not square";
+    /// The check of view that refuses a swizzle of a texture drawn into, or a view of a swizzled view.
+    pub(crate) const VIEW_SWIZZLE_OF_TEXTURE_DRAWN_INTO_OR_VIEW_OF_SWIZZLED_VIEW: &str =
+        "view: a swizzle of a texture drawn into, or a view of a swizzled view";
+    /// The check of sampler that refuses an anisotropy outside one to the most.
+    pub(crate) const SAMPLER_ANISOTROPY_OUTSIDE_ONE_TO_MOST: &str =
+        "sampler: an anisotropy outside one to the most";
+    /// The check of sampler that refuses an empty level range.
+    pub(crate) const SAMPLER_EMPTY_LEVEL_RANGE: &str = "sampler: an empty level range";
+    /// The check of sampler that refuses clamps to zero and to the border.
+    pub(crate) const SAMPLER_CLAMPS_TO_ZERO_AND_TO_BORDER: &str =
+        "sampler: clamps to zero and to the border";
+    /// The check of compute pipeline that refuses a function of another stage.
+    pub(crate) const COMPUTE_PIPELINE_FUNCTION_OF_ANOTHER_STAGE: &str =
+        "compute pipeline: a function of another stage";
+    /// The check of compute pipeline that refuses a workgroup past the device's most.
+    pub(crate) const COMPUTE_PIPELINE_WORKGROUP_PAST_DEVICES_MOST: &str =
+        "compute pipeline: a workgroup past the device's most";
+    /// The check of compute pipeline that refuses workgroup memory past the device's.
+    pub(crate) const COMPUTE_PIPELINE_WORKGROUP_MEMORY_PAST_DEVICES: &str =
+        "compute pipeline: workgroup memory past the device's";
+    /// The check of render that refuses a committed command buffer.
+    pub(crate) const RENDER_COMMITTED_COMMAND_BUFFER: &str = "render: a committed command buffer";
+    /// The check of blit that refuses a committed command buffer.
+    pub(crate) const BLIT_COMMITTED_COMMAND_BUFFER: &str = "blit: a committed command buffer";
+    /// The check of compute that refuses a committed command buffer.
+    pub(crate) const COMPUTE_COMMITTED_COMMAND_BUFFER: &str = "compute: a committed command buffer";
+    /// The check of commit that refuses committed before.
+    pub(crate) const COMMIT_COMMITTED_BEFORE: &str = "commit: committed before";
+    /// The check of wait that refuses not committed.
+    pub(crate) const WAIT_NOT_COMMITTED: &str = "wait: not committed";
+    /// The check of layer that refuses off the main thread.
+    pub(crate) const LAYER_OFF_MAIN_THREAD: &str = "layer: off the main thread";
+    /// The check of layer that refuses a window without an AppKit view.
+    pub(crate) const LAYER_WINDOW_WITHOUT_APPKIT_VIEW: &str =
+        "layer: a window without an AppKit view";
+    /// The check of layer that refuses a format no layer takes.
+    pub(crate) const LAYER_FORMAT_NO_LAYER_TAKES: &str = "layer: a format no layer takes";
+    /// The check of layer that refuses an empty size.
+    pub(crate) const LAYER_EMPTY_SIZE: &str = "layer: an empty size";
+    /// The check of layer that refuses a side past the most.
+    pub(crate) const LAYER_SIDE_PAST_MOST: &str = "layer: a side past the most";
+    /// The check of drawable that refuses a layer not configured.
+    pub(crate) const DRAWABLE_LAYER_NOT_CONFIGURED: &str = "drawable: a layer not configured";
+    /// The check of present that refuses a committed command buffer.
+    pub(crate) const PRESENT_COMMITTED_COMMAND_BUFFER: &str = "present: a committed command buffer";
+    /// The check of present that refuses presented before.
+    pub(crate) const PRESENT_PRESENTED_BEFORE: &str = "present: presented before";
+    /// The check of timestamps that refuses no places or past the most.
+    pub(crate) const TIMESTAMPS_NO_PLACES_OR_PAST_MOST: &str =
+        "timestamps: no places or past the most";
+    /// The check of timestamp that refuses a committed command buffer.
+    pub(crate) const TIMESTAMP_COMMITTED_COMMAND_BUFFER: &str =
+        "timestamp: a committed command buffer";
+    /// The check of timestamp that refuses a place past the last.
+    pub(crate) const TIMESTAMP_PLACE_PAST_LAST: &str = "timestamp: a place past the last";
+    /// The check of read timestamps that refuses places past the last.
+    pub(crate) const READ_TIMESTAMPS_PLACES_PAST_LAST: &str =
+        "read timestamps: places past the last";
+    /// The check of read timestamps that refuses uncommitted work writes them.
+    pub(crate) const READ_TIMESTAMPS_UNCOMMITTED_WORK_WRITES_THEM: &str =
+        "read timestamps: uncommitted work writes them";
+    /// The check of reads that refuses an empty buffer slot.
+    pub(crate) const READS_EMPTY_BUFFER_SLOT: &str = "reads: an empty buffer slot";
+    /// The check of reads that refuses a buffer shorter than the function reads.
+    pub(crate) const READS_BUFFER_SHORTER_THAN_FUNCTION_READS: &str =
+        "reads: a buffer shorter than the function reads";
+    /// The check of reads that refuses a buffer offset off the function's alignment.
+    pub(crate) const READS_BUFFER_OFFSET_OFF_FUNCTIONS_ALIGNMENT: &str =
+        "reads: a buffer offset off the function's alignment";
+    /// The check of reads that refuses bytes at a slot the function writes.
+    pub(crate) const READS_BYTES_AT_SLOT_FUNCTION_WRITES: &str =
+        "reads: bytes at a slot the function writes";
+    /// The check of reads that refuses immediates shorter than the function's.
+    pub(crate) const READS_IMMEDIATES_SHORTER_THAN_FUNCTIONS: &str =
+        "reads: immediates shorter than the function's";
+    /// The check of reads that refuses immediates off their alignment.
+    pub(crate) const READS_IMMEDIATES_OFF_THEIR_ALIGNMENT: &str =
+        "reads: immediates off their alignment";
+    /// The check of reads that refuses an empty texture slot.
+    pub(crate) const READS_EMPTY_TEXTURE_SLOT: &str = "reads: an empty texture slot";
+    /// The check of reads that refuses a texture not made to be read.
+    pub(crate) const READS_TEXTURE_NOT_MADE_TO_BE_READ: &str =
+        "reads: a texture not made to be read";
+    /// The check of reads that refuses a texture of another type.
+    pub(crate) const READS_TEXTURE_OF_ANOTHER_TYPE: &str = "reads: a texture of another type";
+    /// The check of reads that refuses texels of another number type.
+    pub(crate) const READS_TEXELS_OF_ANOTHER_NUMBER_TYPE: &str =
+        "reads: texels of another number type";
+    /// The check of reads that refuses an empty sampler slot.
+    pub(crate) const READS_EMPTY_SAMPLER_SLOT: &str = "reads: an empty sampler slot";
+    /// The check of pass that refuses an attachment not made to draw into.
+    pub(crate) const PASS_ATTACHMENT_NOT_MADE_TO_DRAW_INTO: &str =
+        "pass: an attachment not made to draw into";
+    /// The check of pass that refuses an attachment's level, slice or plane outside it.
+    pub(crate) const PASS_ATTACHMENTS_LEVEL_SLICE_OR_PLANE_OUTSIDE_IT: &str =
+        "pass: an attachment's level, slice or plane outside it";
+    /// The check of pass that refuses attachments of different sizes or sample counts.
+    pub(crate) const PASS_ATTACHMENTS_OF_DIFFERENT_SIZES_OR_SAMPLE_COUNTS: &str =
+        "pass: attachments of different sizes or sample counts";
+    /// The check of pass that refuses a depth or stencil texture as a color attachment.
+    pub(crate) const PASS_DEPTH_OR_STENCIL_TEXTURE_AS_COLOR_ATTACHMENT: &str =
+        "pass: a depth or stencil texture as a color attachment";
+    /// The check of pass that refuses a color attachment of a format no attachment takes.
+    pub(crate) const PASS_COLOR_ATTACHMENT_OF_FORMAT_NO_ATTACHMENT_TAKES: &str =
+        "pass: a color attachment of a format no attachment takes";
+    /// The check of pass that refuses a depth attachment without depth.
+    pub(crate) const PASS_DEPTH_ATTACHMENT_WITHOUT_DEPTH: &str =
+        "pass: a depth attachment without depth";
+    /// The check of pass that refuses a depth to clear to outside zero to one.
+    pub(crate) const PASS_DEPTH_TO_CLEAR_TO_OUTSIDE_ZERO_TO_ONE: &str =
+        "pass: a depth to clear to outside zero to one";
+    /// The check of pass that refuses a stencil attachment without stencil.
+    pub(crate) const PASS_STENCIL_ATTACHMENT_WITHOUT_STENCIL: &str =
+        "pass: a stencil attachment without stencil";
+    /// The check of pass that refuses depth and stencil of different textures.
+    pub(crate) const PASS_DEPTH_AND_STENCIL_OF_DIFFERENT_TEXTURES: &str =
+        "pass: depth and stencil of different textures";
+    /// The check of pass that refuses a resolve from or into the wrong sample count.
+    pub(crate) const PASS_RESOLVE_FROM_OR_INTO_WRONG_SAMPLE_COUNT: &str =
+        "pass: a resolve from or into the wrong sample count";
+    /// The check of pass that refuses a resolve into another format.
+    pub(crate) const PASS_RESOLVE_INTO_ANOTHER_FORMAT: &str = "pass: a resolve into another format";
+    /// The check of pass that refuses a resolve of a format that does not resolve.
+    pub(crate) const PASS_RESOLVE_OF_FORMAT_THAT_DOES_NOT_RESOLVE: &str =
+        "pass: a resolve of a format that does not resolve";
+    /// The check of pass that refuses a resolve target's level, slice or plane outside it.
+    pub(crate) const PASS_RESOLVE_TARGETS_LEVEL_SLICE_OR_PLANE_OUTSIDE_IT: &str =
+        "pass: a resolve target's level, slice or plane outside it";
+    /// The check of pass that refuses a resolve target of another size.
+    pub(crate) const PASS_RESOLVE_TARGET_OF_ANOTHER_SIZE: &str =
+        "pass: a resolve target of another size";
+    /// The check of pass that refuses a stencil to clear to that a stencil does not hold.
+    pub(crate) const PASS_STENCIL_TO_CLEAR_TO_THAT_STENCIL_DOES_NOT_HOLD: &str =
+        "pass: a stencil to clear to that a stencil does not hold";
+    /// The check of pass that refuses a visibility result buffer shorter than one result.
+    pub(crate) const PASS_VISIBILITY_RESULT_BUFFER_SHORTER_THAN_ONE_RESULT: &str =
+        "pass: a visibility result buffer shorter than one result";
+    /// The check of pass that refuses no attachment and an area outside one to the longest side.
+    pub(crate) const PASS_NO_ATTACHMENT_AND_AREA_OUTSIDE_ONE_TO_LONGEST_SIDE: &str =
+        "pass: no attachment and an area outside one to the longest side";
+    /// The check of pass that refuses two attachments of one plane.
+    pub(crate) const PASS_TWO_ATTACHMENTS_OF_ONE_PLANE: &str = "pass: two attachments of one plane";
+    /// The check of render that refuses a slot past the last.
+    pub(crate) const RENDER_SLOT_PAST_LAST: &str = "render: a slot past the last";
+    /// The check of draw that refuses a depth test with no depth attachment.
+    pub(crate) const DRAW_DEPTH_TEST_WITH_NO_DEPTH_ATTACHMENT: &str =
+        "draw: a depth test with no depth attachment";
+    /// The check of draw that refuses a stencil test with no stencil attachment.
+    pub(crate) const DRAW_STENCIL_TEST_WITH_NO_STENCIL_ATTACHMENT: &str =
+        "draw: a stencil test with no stencil attachment";
+    /// The check of render that refuses a pipeline made for other attachments.
+    pub(crate) const RENDER_PIPELINE_MADE_FOR_OTHER_ATTACHMENTS: &str =
+        "render: a pipeline made for other attachments";
+    /// The check of render that refuses a pipeline made for another sample count.
+    pub(crate) const RENDER_PIPELINE_MADE_FOR_ANOTHER_SAMPLE_COUNT: &str =
+        "render: a pipeline made for another sample count";
+    /// The check of render that refuses a bound range past its buffer.
+    pub(crate) const RENDER_BOUND_RANGE_PAST_ITS_BUFFER: &str =
+        "render: a bound range past its buffer";
+    /// The check of render that refuses more bytes than Metal copies.
+    pub(crate) const RENDER_MORE_BYTES_THAN_METAL_COPIES: &str =
+        "render: more bytes than Metal copies";
+    /// The check of render that refuses no viewports or past the most.
+    pub(crate) const RENDER_NO_VIEWPORTS_OR_PAST_MOST: &str =
+        "render: no viewports or past the most";
+    /// The check of render that refuses a viewport not finite.
+    pub(crate) const RENDER_VIEWPORT_NOT_FINITE: &str = "render: a viewport not finite";
+    /// The check of render that refuses no scissor rectangles or past the most.
+    pub(crate) const RENDER_NO_SCISSOR_RECTANGLES_OR_PAST_MOST: &str =
+        "render: no scissor rectangles or past the most";
+    /// The check of render that refuses a scissor rectangle outside the pass.
+    pub(crate) const RENDER_SCISSOR_RECTANGLE_OUTSIDE_PASS: &str =
+        "render: a scissor rectangle outside the pass";
+    /// The check of render that refuses a visibility offset off its step or past the span.
+    pub(crate) const RENDER_VISIBILITY_OFFSET_OFF_ITS_STEP_OR_PAST_SPAN: &str =
+        "render: a visibility offset off its step or past the span";
+    /// The check of render that refuses counting with no visibility buffer.
+    pub(crate) const RENDER_COUNTING_WITH_NO_VISIBILITY_BUFFER: &str =
+        "render: counting with no visibility buffer";
+    /// The check of render that refuses a visibility offset past its buffer.
+    pub(crate) const RENDER_VISIBILITY_OFFSET_PAST_ITS_BUFFER: &str =
+        "render: a visibility offset past its buffer";
+    /// The check of render that refuses counting twice at one offset.
+    pub(crate) const RENDER_COUNTING_TWICE_AT_ONE_OFFSET: &str =
+        "render: counting twice at one offset";
+    /// The check of draw that refuses vertices or instances past the largest index.
+    pub(crate) const DRAW_VERTICES_OR_INSTANCES_PAST_LARGEST_INDEX: &str =
+        "draw: vertices or instances past the largest index";
+    /// The check of draw that refuses no instances.
+    pub(crate) const DRAW_NO_INSTANCES: &str = "draw: no instances";
+    /// The check of indexed draw that refuses indices outside their buffer or off their size.
+    pub(crate) const INDEXED_DRAW_INDICES_OUTSIDE_THEIR_BUFFER_OR_OFF_THEIR_SIZE: &str =
+        "indexed draw: indices outside their buffer or off their size";
+    /// The check of indexed draw that refuses instances past the largest index.
+    pub(crate) const INDEXED_DRAW_INSTANCES_PAST_LARGEST_INDEX: &str =
+        "indexed draw: instances past the largest index";
+    /// The check of indexed draw that refuses no instances or no indices.
+    pub(crate) const INDEXED_DRAW_NO_INSTANCES_OR_NO_INDICES: &str =
+        "indexed draw: no instances or no indices";
+    /// The check of indirect indexed draw that refuses an index offset outside its buffer or off its size.
+    pub(crate) const INDIRECT_INDEXED_DRAW_INDEX_OFFSET_OUTSIDE_ITS_BUFFER_OR_OFF_ITS_SIZE: &str =
+        "indirect indexed draw: an index offset outside its buffer or off its size";
+    /// The check of render that refuses depth test bounds Metal lacks, or outside zero to one.
+    pub(crate) const RENDER_DEPTH_TEST_BOUNDS_METAL_LACKS_OR_OUTSIDE_ZERO_TO_ONE: &str =
+        "render: depth test bounds Metal lacks, or outside zero to one";
+    /// The check of render that refuses depth test bounds with no depth attachment.
+    pub(crate) const RENDER_DEPTH_TEST_BOUNDS_WITH_NO_DEPTH_ATTACHMENT: &str =
+        "render: depth test bounds with no depth attachment";
+    /// The check of draw that refuses no pipeline.
+    pub(crate) const DRAW_NO_PIPELINE: &str = "draw: no pipeline";
+    /// The check of draw that refuses primitives of another class than the pipeline's.
+    pub(crate) const DRAW_PRIMITIVES_OF_ANOTHER_CLASS_THAN_PIPELINES: &str =
+        "draw: primitives of another class than the pipeline's";
+    /// The check of indirect that refuses arguments outside their buffer or off four bytes.
+    pub(crate) const INDIRECT_ARGUMENTS_OUTSIDE_THEIR_BUFFER_OR_OFF_FOUR_BYTES: &str =
+        "indirect: arguments outside their buffer or off four bytes";
+    /// The check of compute that refuses a slot past the last.
+    pub(crate) const COMPUTE_SLOT_PAST_LAST: &str = "compute: a slot past the last";
+    /// The check of compute that refuses a bound range past its buffer.
+    pub(crate) const COMPUTE_BOUND_RANGE_PAST_ITS_BUFFER: &str =
+        "compute: a bound range past its buffer";
+    /// The check of compute that refuses more bytes than Metal copies.
+    pub(crate) const COMPUTE_MORE_BYTES_THAN_METAL_COPIES: &str =
+        "compute: more bytes than Metal copies";
+    /// The check of dispatch that refuses no threadgroups.
+    pub(crate) const DISPATCH_NO_THREADGROUPS: &str = "dispatch: no threadgroups";
+    /// The check of dispatch that refuses no pipeline.
+    pub(crate) const DISPATCH_NO_PIPELINE: &str = "dispatch: no pipeline";
+    /// The check of dispatch that refuses more threads on an axis than a u32 holds.
+    pub(crate) const DISPATCH_MORE_THREADS_ON_AXIS_THAN_U32_HOLDS: &str =
+        "dispatch: more threads on an axis than a u32 holds";
+    /// The check of indirect dispatch that refuses no pipeline.
+    pub(crate) const INDIRECT_DISPATCH_NO_PIPELINE: &str = "indirect dispatch: no pipeline";
+    /// The check of region that refuses a level or slice outside the texture.
+    pub(crate) const REGION_LEVEL_OR_SLICE_OUTSIDE_TEXTURE: &str =
+        "region: a level or slice outside the texture";
+    /// The check of region that refuses outside the level.
+    pub(crate) const REGION_OUTSIDE_LEVEL: &str = "region: outside the level";
+    /// The check of region that refuses partial blocks.
+    pub(crate) const REGION_PARTIAL_BLOCKS: &str = "region: partial blocks";
+    /// The check of region that refuses empty.
+    pub(crate) const REGION_EMPTY: &str = "region: empty";
+    /// The check of copy buffers that refuses no bytes, or off whole words.
+    pub(crate) const COPY_BUFFERS_NO_BYTES_OR_OFF_WHOLE_WORDS: &str =
+        "copy buffers: no bytes, or off whole words";
+    /// The check of copy buffers that refuses outside a buffer.
+    pub(crate) const COPY_BUFFERS_OUTSIDE_BUFFER: &str = "copy buffers: outside a buffer";
+    /// The check of copy buffers that refuses overlapping ranges.
+    pub(crate) const COPY_BUFFERS_OVERLAPPING_RANGES: &str = "copy buffers: overlapping ranges";
+    /// The check of copy buffer and texture that refuses a multisampled or drawable texture.
+    pub(crate) const COPY_BUFFER_AND_TEXTURE_MULTISAMPLED_OR_DRAWABLE_TEXTURE: &str =
+        "copy buffer and texture: a multisampled or drawable texture";
+    /// The check of copy buffer and texture that refuses an aspect the format lacks.
+    pub(crate) const COPY_BUFFER_AND_TEXTURE_ASPECT_FORMAT_LACKS: &str =
+        "copy buffer and texture: an aspect the format lacks";
+    /// The check of copy buffer and texture that refuses a row pitch short, long or off a block.
+    pub(crate) const COPY_BUFFER_AND_TEXTURE_ROW_PITCH_SHORT_LONG_OR_OFF_BLOCK: &str =
+        "copy buffer and texture: a row pitch short, long or off a block";
+    /// The check of copy buffer and texture that refuses an image pitch shorter than an image.
+    pub(crate) const COPY_BUFFER_AND_TEXTURE_IMAGE_PITCH_SHORTER_THAN_IMAGE: &str =
+        "copy buffer and texture: an image pitch shorter than an image";
+    /// The check of copy buffer and texture that refuses an offset off a block.
+    pub(crate) const COPY_BUFFER_AND_TEXTURE_OFFSET_OFF_BLOCK: &str =
+        "copy buffer and texture: an offset off a block";
+    /// The check of copy buffer and texture that refuses a length that overflows.
+    pub(crate) const COPY_BUFFER_AND_TEXTURE_LENGTH_THAT_OVERFLOWS: &str =
+        "copy buffer and texture: a length that overflows";
+    /// The check of copy buffer and texture that refuses outside the buffer.
+    pub(crate) const COPY_BUFFER_AND_TEXTURE_OUTSIDE_BUFFER: &str =
+        "copy buffer and texture: outside the buffer";
+    /// The check of copy textures that refuses formats or sample counts that differ.
+    pub(crate) const COPY_TEXTURES_FORMATS_OR_SAMPLE_COUNTS_THAT_DIFFER: &str =
+        "copy textures: formats or sample counts that differ";
+    /// The check of copy textures that refuses a drawable's texture.
+    pub(crate) const COPY_TEXTURES_DRAWABLES_TEXTURE: &str = "copy textures: a drawable's texture";
+    /// The check of copy textures that refuses overlapping regions.
+    pub(crate) const COPY_TEXTURES_OVERLAPPING_REGIONS: &str = "copy textures: overlapping regions";
+    /// The check of fill that refuses no bytes, or off whole words.
+    pub(crate) const FILL_NO_BYTES_OR_OFF_WHOLE_WORDS: &str = "fill: no bytes, or off whole words";
+    /// The check of fill that refuses outside the buffer.
+    pub(crate) const FILL_OUTSIDE_BUFFER: &str = "fill: outside the buffer";
+    /// The check of mipmaps that refuses of a drawable's texture.
+    pub(crate) const MIPMAPS_OF_DRAWABLES_TEXTURE: &str = "mipmaps: of a drawable's texture";
+    /// The check of mipmaps that refuses of one level.
+    pub(crate) const MIPMAPS_OF_ONE_LEVEL: &str = "mipmaps: of one level";
+    /// The check of mipmaps that refuses a format not drawn into and filtered, or multisampled.
+    pub(crate) const MIPMAPS_FORMAT_NOT_DRAWN_INTO_AND_FILTERED_OR_MULTISAMPLED: &str =
+        "mipmaps: a format not drawn into and filtered, or multisampled";
+    /// The check of function that refuses no such entry point.
+    pub(crate) const FUNCTION_NO_SUCH_ENTRY_POINT: &str = "function: no such entry point";
+    /// The check of function that refuses a stage other than vertex, fragment and compute.
+    pub(crate) const FUNCTION_STAGE_OTHER_THAN_VERTEX_FRAGMENT_AND_COMPUTE: &str =
+        "function: a stage other than vertex, fragment and compute";
+    /// The check of function that refuses immediates and lengths not at two slots of their own.
+    pub(crate) const FUNCTION_IMMEDIATES_AND_LENGTHS_NOT_AT_TWO_SLOTS_OF_THEIR_OWN: &str =
+        "function: immediates and lengths not at two slots of their own";
+    /// The check of function that refuses a global in an address space not checked.
+    pub(crate) const FUNCTION_GLOBAL_IN_ADDRESS_SPACE_NOT_CHECKED: &str =
+        "function: a global in an address space not checked";
+    /// The check of function that refuses a resource with no binding.
+    pub(crate) const FUNCTION_RESOURCE_WITH_NO_BINDING: &str =
+        "function: a resource with no binding";
+    /// The check of function that refuses a resource with no slot.
+    pub(crate) const FUNCTION_RESOURCE_WITH_NO_SLOT: &str = "function: a resource with no slot";
+    /// The check of function that refuses a resource of a type not checked.
+    pub(crate) const FUNCTION_RESOURCE_OF_TYPE_NOT_CHECKED: &str =
+        "function: a resource of a type not checked";
+    /// The check of function that refuses a buffer slot past the last or taken.
+    pub(crate) const FUNCTION_BUFFER_SLOT_PAST_LAST_OR_TAKEN: &str =
+        "function: a buffer slot past the last or taken";
+    /// The check of function that refuses an array of bindings.
+    pub(crate) const FUNCTION_ARRAY_OF_BINDINGS: &str = "function: an array of bindings";
+    /// The check of function that refuses a texture slot past the last.
+    pub(crate) const FUNCTION_TEXTURE_SLOT_PAST_LAST: &str =
+        "function: a texture slot past the last";
+    /// The check of function that refuses a texture the function writes.
+    pub(crate) const FUNCTION_TEXTURE_FUNCTION_WRITES: &str =
+        "function: a texture the function writes";
+    /// The check of function that refuses an external texture.
+    pub(crate) const FUNCTION_EXTERNAL_TEXTURE: &str = "function: an external texture";
+    /// The check of function that refuses a texture type not made.
+    pub(crate) const FUNCTION_TEXTURE_TYPE_NOT_MADE: &str = "function: a texture type not made";
+    /// The check of function that refuses a sampler slot past the last.
+    pub(crate) const FUNCTION_SAMPLER_SLOT_PAST_LAST: &str =
+        "function: a sampler slot past the last";
+    /// The check of function that refuses a vertex buffer slot past the last or taken.
+    pub(crate) const FUNCTION_VERTEX_BUFFER_SLOT_PAST_LAST_OR_TAKEN: &str =
+        "function: a vertex buffer slot past the last or taken";
+    /// The check of function that refuses a vertex stride of zero or past the most.
+    pub(crate) const FUNCTION_VERTEX_STRIDE_OF_ZERO_OR_PAST_MOST: &str =
+        "function: a vertex stride of zero or past the most";
+    /// The check of function that refuses an attribute past its stride.
+    pub(crate) const FUNCTION_ATTRIBUTE_PAST_ITS_STRIDE: &str =
+        "function: an attribute past its stride";
+    /// The check of function that refuses texels neither float nor integer.
+    pub(crate) const FUNCTION_TEXELS_NEITHER_FLOAT_NOR_INTEGER: &str =
+        "function: texels neither float nor integer";
 }
 
 // Metal's unsigned integer is as wide as `u64` on every Mac, so `ns_uinteger` never saturates.
@@ -605,7 +1054,7 @@ impl DirectMetal {
     ) -> Result<PipelinePlan, MakeRenderPipelineStateError> {
         let d = descriptor;
         if refuses!(
-            "pipeline: a vertex function of another stage",
+            site::PIPELINE_VERTEX_FUNCTION_OF_ANOTHER_STAGE,
             d.vertex_function.0.stage != naga::ShaderStage::Vertex
         ) {
             return Err(MakeRenderPipelineStateError::Invalid(
@@ -613,7 +1062,7 @@ impl DirectMetal {
             ));
         }
         if refuses!(
-            "pipeline: a fragment function of another stage",
+            site::PIPELINE_FRAGMENT_FUNCTION_OF_ANOTHER_STAGE,
             d.fragment_function
                 .is_some_and(|f| f.0.stage != naga::ShaderStage::Fragment)
         ) {
@@ -622,7 +1071,7 @@ impl DirectMetal {
             ));
         }
         if refuses!(
-            "pipeline: a sample count the device lacks",
+            site::PIPELINE_SAMPLE_COUNT_DEVICE_LACKS,
             !self.limits.takes_samples(d.raster_sample_count)
         ) {
             return Err(MakeRenderPipelineStateError::Invalid(
@@ -630,7 +1079,7 @@ impl DirectMetal {
             ));
         }
         if refuses!(
-            "pipeline: a depth or stencil format without the aspect",
+            site::PIPELINE_DEPTH_OR_STENCIL_FORMAT_WITHOUT_ASPECT,
             d.depth_attachment_pixel_format
                 .is_some_and(|f| !format_facts(f).depth)
                 || d.stencil_attachment_pixel_format
@@ -641,7 +1090,7 @@ impl DirectMetal {
             ));
         }
         if refuses!(
-            "pipeline: a combined depth and stencil format beside another",
+            site::PIPELINE_COMBINED_DEPTH_AND_STENCIL_FORMAT_BESIDE_ANOTHER,
             matches!(
                 (d.depth_attachment_pixel_format, d.stencil_attachment_pixel_format),
                 (Some(depth), Some(stencil)) if depth != stencil
@@ -668,7 +1117,7 @@ impl DirectMetal {
             })
         });
         if refuses!(
-            "pipeline: a second source beside other attachments",
+            site::PIPELINE_SECOND_SOURCE_BESIDE_OTHER_ATTACHMENTS,
             second_source && d.color_attachments.iter().skip(1).any(Option::is_some)
         ) {
             return Err(MakeRenderPipelineStateError::Invalid(
@@ -677,7 +1126,10 @@ impl DirectMetal {
         }
         for attachment in d.color_attachments.iter().flatten() {
             let facts = format_facts(attachment.pixel_format);
-            if refuses!("pipeline: a color format no attachment takes", !facts.color) {
+            if refuses!(
+                site::PIPELINE_COLOR_FORMAT_NO_ATTACHMENT_TAKES,
+                !facts.color
+            ) {
                 return Err(MakeRenderPipelineStateError::Invalid(
                     "a color format no color attachment takes",
                 ));
@@ -687,7 +1139,7 @@ impl DirectMetal {
             let mask = attachment.write_mask;
             let channels = [mask.red, mask.green, mask.blue, mask.alpha];
             if refuses!(
-                "pipeline: some channels of a shared exponent",
+                site::PIPELINE_SOME_CHANNELS_OF_SHARED_EXPONENT,
                 attachment.pixel_format == PixelFormat::Rgb9e5Float
                     && channels.contains(&true)
                     && channels.contains(&false)
@@ -697,7 +1149,7 @@ impl DirectMetal {
                 ));
             }
             if refuses!(
-                "pipeline: blending a format that does not blend",
+                site::PIPELINE_BLENDING_FORMAT_THAT_DOES_NOT_BLEND,
                 attachment.blending.is_some() && !facts.blend
             ) {
                 return Err(MakeRenderPipelineStateError::Invalid(
@@ -708,7 +1160,7 @@ impl DirectMetal {
         // Metal stops the process when the first color attachment of a pipeline with alpha to coverage is not of a
         // format that blends, a float or normalized one.
         if refuses!(
-            "pipeline: alpha to coverage without a blending first attachment",
+            site::PIPELINE_ALPHA_TO_COVERAGE_WITHOUT_BLENDING_FIRST_ATTACHMENT,
             d.alpha_to_coverage_enabled
                 && !d.color_attachments[0].is_some_and(|a| format_facts(a.pixel_format).blend)
         ) {
@@ -874,7 +1326,7 @@ impl Metal for DirectMetal {
 
     fn make_buffer(&mut self, length: u64) -> Result<DirectBuffer, MakeBufferError> {
         if refuses!(
-            "buffer: longer than the device's most",
+            site::BUFFER_LONGER_THAN_DEVICES_MOST,
             length > self.max_buffer_length()
         ) {
             return Err(MakeBufferError::TooLong);
@@ -903,13 +1355,13 @@ impl Metal for DirectMetal {
         bytes: &[u8],
     ) -> Result<(), WriteContentsError> {
         if refuses!(
-            "write: past the buffer",
+            site::WRITE_PAST_BUFFER,
             !buffer.holds(offset, bytes.len() as u64)
         ) {
             return Err(WriteContentsError::OutOfRange);
         }
         if refuses!(
-            "write: a buffer uncommitted work uses",
+            site::WRITE_BUFFER_UNCOMMITTED_WORK_USES,
             buffer.settle().is_err()
         ) {
             return Err(WriteContentsError::UsedByUncommittedWork);
@@ -939,13 +1391,13 @@ impl Metal for DirectMetal {
         bytes: &mut [u8],
     ) -> Result<(), ReadContentsError> {
         if refuses!(
-            "read: past the buffer",
+            site::READ_PAST_BUFFER,
             !buffer.holds(offset, bytes.len() as u64)
         ) {
             return Err(ReadContentsError::OutOfRange);
         }
         if refuses!(
-            "read: a buffer uncommitted work uses",
+            site::READ_BUFFER_UNCOMMITTED_WORK_USES,
             buffer.settle().is_err()
         ) {
             return Err(ReadContentsError::UsedByUncommittedWork);
@@ -993,7 +1445,7 @@ impl Metal for DirectMetal {
             _ => Some(d.array_length),
         };
         if refuses!(
-            "texture: a side past the most",
+            site::TEXTURE_SIDE_PAST_MOST,
             d.width > max_side || d.height > max_side || d.depth > max_side
         ) {
             return Err(MakeTextureError::Invalid(
@@ -1001,7 +1453,7 @@ impl Metal for DirectMetal {
             ));
         }
         if refuses!(
-            "texture: layers past the most",
+            site::TEXTURE_LAYERS_PAST_MOST,
             layers.is_none_or(|layers| layers > MAX_LAYERS)
         ) {
             return Err(MakeTextureError::Invalid(
@@ -1009,7 +1461,7 @@ impl Metal for DirectMetal {
             ));
         }
         if refuses!(
-            "texture: a stencil view format",
+            site::TEXTURE_STENCIL_VIEW_FORMAT,
             d.pixel_format == PixelFormat::X32Stencil8
         ) {
             return Err(MakeTextureError::Invalid(
@@ -1017,13 +1469,13 @@ impl Metal for DirectMetal {
             ));
         }
         if refuses!(
-            "texture: an empty size",
+            site::TEXTURE_EMPTY_SIZE,
             d.width == 0 || d.height == 0 || d.depth == 0
         ) {
             return Err(MakeTextureError::Invalid("an empty size"));
         }
         if refuses!(
-            "texture: deeper than one outside 3D",
+            site::TEXTURE_DEEPER_THAN_ONE_OUTSIDE_3D,
             d.texture_type != TextureType::Type3D && d.depth != 1
         ) {
             return Err(MakeTextureError::Invalid(
@@ -1031,7 +1483,7 @@ impl Metal for DirectMetal {
             ));
         }
         if refuses!(
-            "texture: an array length the type does not take",
+            site::TEXTURE_ARRAY_LENGTH_TYPE_DOES_NOT_TAKE,
             one_slice && d.array_length != 1 || d.array_length == 0
         ) {
             return Err(MakeTextureError::Invalid(
@@ -1039,7 +1491,7 @@ impl Metal for DirectMetal {
             ));
         }
         if refuses!(
-            "texture: a cube not square",
+            site::TEXTURE_CUBE_NOT_SQUARE,
             matches!(
                 d.texture_type,
                 TextureType::TypeCube | TextureType::TypeCubeArray
@@ -1048,14 +1500,14 @@ impl Metal for DirectMetal {
             return Err(MakeTextureError::Invalid("a cube that is not square"));
         }
         if refuses!(
-            "texture: levels past the chain",
+            site::TEXTURE_LEVELS_PAST_CHAIN,
             d.mipmap_level_count == 0
                 || d.mipmap_level_count > full_chain(d.width.max(d.height).max(d.depth))
         ) {
             return Err(MakeTextureError::Invalid("more levels than the size has"));
         }
         if refuses!(
-            "texture: a sample count the type does not take",
+            site::TEXTURE_SAMPLE_COUNT_TYPE_DOES_NOT_TAKE,
             (d.sample_count > 1) != (d.texture_type == TextureType::Type2DMultisample)
                 || !self.limits.takes_samples(d.sample_count)
                 || d.sample_count > 1 && d.mipmap_level_count != 1
@@ -1065,7 +1517,7 @@ impl Metal for DirectMetal {
             ));
         }
         if refuses!(
-            "texture: compressed in a type that is not",
+            site::TEXTURE_COMPRESSED_IN_TYPE_THAT_IS_NOT,
             facts.compressed() && (d.texture_type == TextureType::Type3D || d.sample_count > 1)
         ) {
             return Err(MakeTextureError::Invalid(
@@ -1073,7 +1525,7 @@ impl Metal for DirectMetal {
             ));
         }
         if refuses!(
-            "texture: depth or stencil in 3D",
+            site::TEXTURE_DEPTH_OR_STENCIL_IN_3D,
             facts.depth_or_stencil && d.texture_type == TextureType::Type3D
         ) {
             return Err(MakeTextureError::Invalid(
@@ -1161,7 +1613,7 @@ impl Metal for DirectMetal {
     ) -> Result<DirectTexture, MakeTextureViewError> {
         let t = &texture.0;
         let d = descriptor;
-        if refuses!("view: of a drawable's texture", t.framebuffer_only) {
+        if refuses!(site::VIEW_OF_DRAWABLES_TEXTURE, t.framebuffer_only) {
             return Err(MakeTextureViewError::Incompatible);
         }
         let levels = d.first_level.checked_add(d.level_count);
@@ -1173,7 +1625,7 @@ impl Metal for DirectMetal {
             t.base_slice.checked_add(d.first_slice),
         );
         if refuses!(
-            "view: levels or slices past the texture",
+            site::VIEW_LEVELS_OR_SLICES_PAST_TEXTURE,
             d.level_count == 0
                 || d.slice_count == 0
                 || levels.is_none_or(|end| end > t.levels)
@@ -1230,23 +1682,23 @@ impl Metal for DirectMetal {
                 TextureType::TypeCube | TextureType::TypeCubeArray
             );
         if refuses!(
-            "view: a format the texture is not seen as",
+            site::VIEW_FORMAT_TEXTURE_IS_NOT_SEEN_AS,
             !(same_format || reinterpreted || stencil_of)
         ) {
             return Err(MakeTextureViewError::Incompatible);
         }
-        if refuses!("view: slices the type does not take", !slices_fit) {
+        if refuses!(site::VIEW_SLICES_TYPE_DOES_NOT_TAKE, !slices_fit) {
             return Err(MakeTextureViewError::Incompatible);
         }
-        if refuses!("view: a type the texture is not seen as", !type_fits) {
+        if refuses!(site::VIEW_TYPE_TEXTURE_IS_NOT_SEEN_AS, !type_fits) {
             return Err(MakeTextureViewError::Incompatible);
         }
-        if refuses!("view: a cube of a texture not square", !square) {
+        if refuses!(site::VIEW_CUBE_OF_TEXTURE_NOT_SQUARE, !square) {
             return Err(MakeTextureViewError::Incompatible);
         }
         let swizzled = d.swizzle != TextureSwizzleChannels::IDENTITY;
         if refuses!(
-            "view: a swizzle of a texture drawn into, or a view of a swizzled view",
+            site::VIEW_SWIZZLE_OF_TEXTURE_DRAWN_INTO_OR_VIEW_OF_SWIZZLED_VIEW,
             t.swizzled || (swizzled && t.render_target)
         ) {
             return Err(MakeTextureViewError::Incompatible);
@@ -1301,7 +1753,7 @@ impl Metal for DirectMetal {
     ) -> Result<DirectSamplerState, MakeSamplerStateError> {
         let d = descriptor;
         if refuses!(
-            "sampler: an anisotropy outside one to the most",
+            site::SAMPLER_ANISOTROPY_OUTSIDE_ONE_TO_MOST,
             d.max_anisotropy == 0 || d.max_anisotropy > MAX_ANISOTROPY
         ) {
             return Err(MakeSamplerStateError::Invalid(
@@ -1309,7 +1761,7 @@ impl Metal for DirectMetal {
             ));
         }
         if refuses!(
-            "sampler: an empty level range",
+            site::SAMPLER_EMPTY_LEVEL_RANGE,
             d.lod_min_clamp.is_nan()
                 || d.lod_max_clamp.is_nan()
                 || d.lod_min_clamp > d.lod_max_clamp
@@ -1320,7 +1772,7 @@ impl Metal for DirectMetal {
         }
         let modes = [d.s_address_mode, d.t_address_mode, d.r_address_mode];
         if refuses!(
-            "sampler: clamps to zero and to the border",
+            site::SAMPLER_CLAMPS_TO_ZERO_AND_TO_BORDER,
             modes.contains(&SamplerAddressMode::ClampToZero)
                 && modes.contains(&SamplerAddressMode::ClampToBorderColor)
         ) {
@@ -1532,7 +1984,7 @@ impl Metal for DirectMetal {
         function: &DirectFunction,
     ) -> Result<DirectComputePipelineState, MakeComputePipelineStateError> {
         if refuses!(
-            "compute pipeline: a function of another stage",
+            site::COMPUTE_PIPELINE_FUNCTION_OF_ANOTHER_STAGE,
             function.0.stage != naga::ShaderStage::Compute
         ) {
             return Err(MakeComputePipelineStateError::NotCompute);
@@ -1550,7 +2002,7 @@ impl Metal for DirectMetal {
             .checked_mul(u64::from(y))
             .and_then(|n| n.checked_mul(u64::from(z)));
         if refuses!(
-            "compute pipeline: a workgroup past the device's most",
+            site::COMPUTE_PIPELINE_WORKGROUP_PAST_DEVICES_MOST,
             threads.is_none_or(|n| n > MAX_THREADS_PER_THREADGROUP)
                 || x as usize > most.width
                 || y as usize > most.height
@@ -1578,7 +2030,7 @@ impl Metal for DirectMetal {
             .iter()
             .try_fold(u64::MIN, |total, length| total.checked_add(*length));
         if refuses!(
-            "compute pipeline: workgroup memory past the device's",
+            site::COMPUTE_PIPELINE_WORKGROUP_MEMORY_PAST_DEVICES,
             threadgroup.is_none_or(|n| n > self.device.maxThreadgroupMemoryLength() as u64)
         ) {
             return Err(MakeComputePipelineStateError::TooLarge(
@@ -1609,7 +2061,7 @@ impl Metal for DirectMetal {
         commands: &[RenderCommand<Self>],
     ) -> Result<(), EncodeRenderCommandsError> {
         if refuses!(
-            "render: a committed command buffer",
+            site::RENDER_COMMITTED_COMMAND_BUFFER,
             command_buffer.0.committed.get()
         ) {
             return Err(EncodeRenderCommandsError::Committed);
@@ -1663,7 +2115,7 @@ impl Metal for DirectMetal {
         commands: &[BlitCommand<Self>],
     ) -> Result<(), EncodeBlitCommandsError> {
         if refuses!(
-            "blit: a committed command buffer",
+            site::BLIT_COMMITTED_COMMAND_BUFFER,
             command_buffer.0.committed.get()
         ) {
             return Err(EncodeBlitCommandsError::Committed);
@@ -1691,7 +2143,7 @@ impl Metal for DirectMetal {
         commands: &[ComputeCommand<Self>],
     ) -> Result<(), EncodeComputeCommandsError> {
         if refuses!(
-            "compute: a committed command buffer",
+            site::COMPUTE_COMMITTED_COMMAND_BUFFER,
             command_buffer.0.committed.get()
         ) {
             return Err(EncodeComputeCommandsError::Committed);
@@ -1811,7 +2263,7 @@ impl Metal for DirectMetal {
 
     fn commit(&mut self, command_buffer: &DirectCommandBuffer) -> Result<(), CommitError> {
         if refuses!(
-            "commit: committed before",
+            site::COMMIT_COMMITTED_BEFORE,
             command_buffer.0.committed.replace(true)
         ) {
             return Err(CommitError::AlreadyCommitted);
@@ -1827,7 +2279,7 @@ impl Metal for DirectMetal {
         &mut self,
         command_buffer: &DirectCommandBuffer,
     ) -> Result<(), WaitUntilCompletedError> {
-        if refuses!("wait: not committed", !command_buffer.0.committed.get()) {
+        if refuses!(site::WAIT_NOT_COMMITTED, !command_buffer.0.committed.get()) {
             return Err(WaitUntilCompletedError::NotCommitted);
         }
         command_buffer.0.raw.waitUntilCompleted();
@@ -1847,7 +2299,7 @@ impl Metal for DirectMetal {
 
     fn make_layer(&mut self, window: &dyn HasWindowHandle) -> Result<DirectLayer, MakeLayerError> {
         if refuses!(
-            "layer: off the main thread",
+            site::LAYER_OFF_MAIN_THREAD,
             MainThreadMarker::new().is_none()
         ) {
             return Err(MakeLayerError::NotMainThread);
@@ -1860,7 +2312,7 @@ impl Metal for DirectMetal {
                 RawWindowHandle::AppKit(appkit) => Some(appkit),
                 _ => None,
             });
-        let Some(appkit) = found!("layer: a window without an AppKit view", appkit) else {
+        let Some(appkit) = found!(site::LAYER_WINDOW_WITHOUT_APPKIT_VIEW, appkit) else {
             return Err(MakeLayerError::NotAppKit);
         };
         #[expect(unsafe_code, reason = "the layer of the view a window handle names")]
@@ -1886,7 +2338,7 @@ impl Metal for DirectMetal {
         descriptor: &LayerDescriptor,
     ) -> Result<(), ConfigureLayerError> {
         if refuses!(
-            "layer: a format no layer takes",
+            site::LAYER_FORMAT_NO_LAYER_TAKES,
             !matches!(
                 descriptor.pixel_format,
                 PixelFormat::Bgra8Unorm
@@ -1898,13 +2350,13 @@ impl Metal for DirectMetal {
             return Err(ConfigureLayerError::Invalid("a format no layer takes"));
         }
         if refuses!(
-            "layer: an empty size",
+            site::LAYER_EMPTY_SIZE,
             descriptor.width == 0 || descriptor.height == 0
         ) {
             return Err(ConfigureLayerError::Invalid("an empty size"));
         }
         if refuses!(
-            "layer: a side past the most",
+            site::LAYER_SIDE_PAST_MOST,
             descriptor.width > self.limits.max_side || descriptor.height > self.limits.max_side
         ) {
             return Err(ConfigureLayerError::Invalid(
@@ -1923,8 +2375,11 @@ impl Metal for DirectMetal {
     }
 
     fn next_drawable(&mut self, layer: &DirectLayer) -> Result<DirectDrawable, NextDrawableError> {
-        let descriptor = found!("drawable: a layer not configured", layer.0.configured.get())
-            .ok_or(NextDrawableError::NotConfigured)?;
+        let descriptor = found!(
+            site::DRAWABLE_LAYER_NOT_CONFIGURED,
+            layer.0.configured.get()
+        )
+        .ok_or(NextDrawableError::NotConfigured)?;
         let raw =
             autoreleasepool(|_| layer.0.raw.nextDrawable()).ok_or(NextDrawableError::TimedOut)?;
         let texture = raw.texture();
@@ -1965,13 +2420,13 @@ impl Metal for DirectMetal {
         drawable: &DirectDrawable,
     ) -> Result<(), PresentDrawableError> {
         if refuses!(
-            "present: a committed command buffer",
+            site::PRESENT_COMMITTED_COMMAND_BUFFER,
             command_buffer.0.committed.get()
         ) {
             return Err(PresentDrawableError::Committed);
         }
         if refuses!(
-            "present: presented before",
+            site::PRESENT_PRESENTED_BEFORE,
             drawable.0.presented.replace(true)
         ) {
             return Err(PresentDrawableError::AlreadyPresented);
@@ -1986,7 +2441,7 @@ impl Metal for DirectMetal {
         sample_count: u32,
     ) -> Result<DirectTimestampBuffer, MakeTimestampBufferError> {
         if refuses!(
-            "timestamps: no places or past the most",
+            site::TIMESTAMPS_NO_PLACES_OR_PAST_MOST,
             sample_count == 0 || sample_count > MAX_TIMESTAMPS
         ) {
             return Err(MakeTimestampBufferError::Count);
@@ -2029,15 +2484,12 @@ impl Metal for DirectMetal {
         index: u32,
     ) -> Result<(), EncodeTimestampError> {
         if refuses!(
-            "timestamp: a committed command buffer",
+            site::TIMESTAMP_COMMITTED_COMMAND_BUFFER,
             command_buffer.0.committed.get()
         ) {
             return Err(EncodeTimestampError::Committed);
         }
-        if refuses!(
-            "timestamp: a place past the last",
-            index >= timestamps.0.count
-        ) {
+        if refuses!(site::TIMESTAMP_PLACE_PAST_LAST, index >= timestamps.0.count) {
             return Err(EncodeTimestampError::OutOfRange);
         }
         // The pass starts once all the work encoded before it has ended: Metal runs passes that share no resource side
@@ -2105,7 +2557,7 @@ impl Metal for DirectMetal {
     ) -> Result<(), ReadTimestampsError> {
         let count = u32::try_from(into.len()).ok();
         if refuses!(
-            "read timestamps: places past the last",
+            site::READ_TIMESTAMPS_PLACES_PAST_LAST,
             count
                 .and_then(|count| first.checked_add(count))
                 .is_none_or(|end| end > timestamps.0.count)
@@ -2113,7 +2565,7 @@ impl Metal for DirectMetal {
             return Err(ReadTimestampsError::OutOfRange);
         }
         if refuses!(
-            "read timestamps: uncommitted work writes them",
+            site::READ_TIMESTAMPS_UNCOMMITTED_WORK_WRITES_THEM,
             settle_users(&timestamps.0.users).is_err()
         ) {
             return Err(ReadTimestampsError::UsedByUncommittedWork);
@@ -2241,19 +2693,19 @@ fn lengths(reads: &Reads, bound: &StageBindings) -> Vec<u8> {
 /// Checks that every slot a function reads holds a resource of the kind and size it reads.
 fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str> {
     for (slot, least, alignment) in &reads.buffers {
-        let Some((length, offset)) = found!("reads: an empty buffer slot", bound.buffers.get(slot))
+        let Some((length, offset)) = found!(site::READS_EMPTY_BUFFER_SLOT, bound.buffers.get(slot))
         else {
             return Err("a buffer slot the function reads is empty");
         };
         if refuses!(
-            "reads: a buffer shorter than the function reads",
+            site::READS_BUFFER_SHORTER_THAN_FUNCTION_READS,
             length < least
         ) {
             return Err("a buffer shorter than what the function reads at its slot");
         }
         // Metal takes no buffer offset that is not a multiple of four, whatever the type.
         if refuses!(
-            "reads: a buffer offset off the function's alignment",
+            site::READS_BUFFER_OFFSET_OFF_FUNCTIONS_ALIGNMENT,
             !u32::try_from(*offset).is_ok_and(|offset| {
                 alignment.is_aligned(offset) && Alignment::FOUR.is_aligned(offset)
             })
@@ -2265,13 +2717,13 @@ fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str>
     }
     // Metal's validation stops a function that writes a slot holding bytes (MEASURED: `cs_shared` at slot 2).
     if refuses!(
-        "reads: bytes at a slot the function writes",
+        site::READS_BYTES_AT_SLOT_FUNCTION_WRITES,
         reads.written.iter().any(|slot| bound.bytes.contains(slot))
     ) {
         return Err("bytes at a buffer slot the function writes");
     }
     if refuses!(
-        "reads: immediates shorter than the function's",
+        site::READS_IMMEDIATES_SHORTER_THAN_FUNCTIONS,
         reads
             .immediates
             .is_some_and(|(slot, least, _)| bytes_past(bound, slot) < least)
@@ -2281,7 +2733,7 @@ fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str>
     // Metal's validation stops a draw whose immediates are at an offset off their type's alignment (MEASURED: a
     // `vec4<f32>` at offset 4, found by the fuzzer).
     if refuses!(
-        "reads: immediates off their alignment",
+        site::READS_IMMEDIATES_OFF_THEIR_ALIGNMENT,
         reads.immediates.is_some_and(|(slot, _, alignment)| {
             bound.buffers.get(&slot).is_some_and(|(_, offset)| {
                 !u32::try_from(*offset).is_ok_and(|offset| {
@@ -2293,25 +2745,25 @@ fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str>
         return Err("immediates at an offset not a multiple of their alignment");
     }
     for (slot, read) in &reads.textures {
-        let Some(texture) = found!("reads: an empty texture slot", bound.textures.get(slot)) else {
+        let Some(texture) = found!(site::READS_EMPTY_TEXTURE_SLOT, bound.textures.get(slot)) else {
             return Err("a texture slot the function reads is empty");
         };
         if refuses!(
-            "reads: a texture not made to be read",
+            site::READS_TEXTURE_NOT_MADE_TO_BE_READ,
             !texture.0.shader_read || texture.0.framebuffer_only
         ) {
             return Err("a texture not made to be read by functions");
         }
         let facts = format_facts(texture.0.pixel_format);
         if refuses!(
-            "reads: a texture of another type",
+            site::READS_TEXTURE_OF_ANOTHER_TYPE,
             texture.0.texture_type != read.texture_type || read.depth && !facts.depth
         ) {
             return Err("a texture of another type than the function reads at its slot");
         }
         // Metal's validation stops the process at a draw reading, say, an integer texture as floats.
         if refuses!(
-            "reads: texels of another number type",
+            site::READS_TEXELS_OF_ANOTHER_NUMBER_TYPE,
             facts.texel != read.texel
         ) {
             return Err(
@@ -2320,7 +2772,7 @@ fn check_reads(reads: &Reads, bound: &StageBindings) -> Result<(), &'static str>
         }
     }
     if refuses!(
-        "reads: an empty sampler slot",
+        site::READS_EMPTY_SAMPLER_SLOT,
         reads
             .samplers
             .iter()
@@ -2340,7 +2792,7 @@ fn check_pass(
     let mut fit = |texture: &DirectTexture, level: u32, slice: u32, depth_plane: u32| {
         let t = &texture.0;
         if refuses!(
-            "pass: an attachment not made to draw into",
+            site::PASS_ATTACHMENT_NOT_MADE_TO_DRAW_INTO,
             !t.render_target
         ) {
             return Err(EncodeRenderCommandsError::Invalid(
@@ -2349,7 +2801,7 @@ fn check_pass(
         }
         // The level and slice of the storage are checked here too, which `check_attachments_apart` then sums.
         if refuses!(
-            "pass: an attachment's level, slice or plane outside it",
+            site::PASS_ATTACHMENTS_LEVEL_SLICE_OR_PLANE_OUTSIDE_IT,
             level >= t.levels
                 || slice >= t.slices
                 || depth_plane >= level_side(t.depth, level)
@@ -2366,7 +2818,7 @@ fn check_pass(
             t.sample_count,
         );
         if refuses!(
-            "pass: attachments of different sizes or sample counts",
+            site::PASS_ATTACHMENTS_OF_DIFFERENT_SIZES_OR_SAMPLE_COUNTS,
             area.is_some_and(|seen| seen != size)
         ) {
             return Err(EncodeRenderCommandsError::Invalid(
@@ -2378,7 +2830,7 @@ fn check_pass(
     };
     for attachment in pass.color_attachments.iter().flatten() {
         if refuses!(
-            "pass: a depth or stencil texture as a color attachment",
+            site::PASS_DEPTH_OR_STENCIL_TEXTURE_AS_COLOR_ATTACHMENT,
             format_facts(attachment.texture.0.pixel_format).depth_or_stencil
         ) {
             return Err(EncodeRenderCommandsError::Invalid(
@@ -2386,7 +2838,7 @@ fn check_pass(
             ));
         }
         if refuses!(
-            "pass: a color attachment of a format no attachment takes",
+            site::PASS_COLOR_ATTACHMENT_OF_FORMAT_NO_ATTACHMENT_TAKES,
             !format_facts(attachment.texture.0.pixel_format).color
         ) {
             return Err(EncodeRenderCommandsError::Invalid(
@@ -2402,7 +2854,7 @@ fn check_pass(
     }
     if let Some(depth) = &pass.depth_attachment {
         if refuses!(
-            "pass: a depth attachment without depth",
+            site::PASS_DEPTH_ATTACHMENT_WITHOUT_DEPTH,
             !format_facts(depth.texture.0.pixel_format).depth
         ) {
             return Err(EncodeRenderCommandsError::Invalid(
@@ -2410,7 +2862,7 @@ fn check_pass(
             ));
         }
         if refuses!(
-            "pass: a depth to clear to outside zero to one",
+            site::PASS_DEPTH_TO_CLEAR_TO_OUTSIDE_ZERO_TO_ONE,
             !(0.0..=1.0).contains(&depth.clear_value)
         ) {
             return Err(EncodeRenderCommandsError::Invalid(
@@ -2421,7 +2873,7 @@ fn check_pass(
     }
     if let Some(stencil) = &pass.stencil_attachment {
         if refuses!(
-            "pass: a stencil attachment without stencil",
+            site::PASS_STENCIL_ATTACHMENT_WITHOUT_STENCIL,
             !format_facts(stencil.texture.0.pixel_format).stencil
                 || stencil.texture.0.pixel_format == PixelFormat::X32Stencil8
         ) {
@@ -2432,7 +2884,7 @@ fn check_pass(
         fit(stencil.texture, stencil.level, stencil.slice, u32::MIN)?;
     }
     if refuses!(
-        "pass: depth and stencil of different textures",
+        site::PASS_DEPTH_AND_STENCIL_OF_DIFFERENT_TEXTURES,
         matches!(
             (&pass.depth_attachment, &pass.stencil_attachment),
             (Some(depth), Some(stencil)) if depth.texture.0.storage != stencil.texture.0.storage
@@ -2446,7 +2898,7 @@ fn check_pass(
         if let Some(resolve) = &attachment.resolve {
             let (t, r) = (&attachment.texture.0, &resolve.texture.0);
             if refuses!(
-                "pass: a resolve from or into the wrong sample count",
+                site::PASS_RESOLVE_FROM_OR_INTO_WRONG_SAMPLE_COUNT,
                 t.sample_count == 1 || r.sample_count != 1 || !r.render_target
             ) {
                 return Err(EncodeRenderCommandsError::Invalid(
@@ -2454,7 +2906,7 @@ fn check_pass(
                 ));
             }
             if refuses!(
-                "pass: a resolve into another format",
+                site::PASS_RESOLVE_INTO_ANOTHER_FORMAT,
                 r.pixel_format != t.pixel_format
             ) {
                 return Err(EncodeRenderCommandsError::Invalid(
@@ -2463,7 +2915,7 @@ fn check_pass(
             }
             let facts = format_facts(t.pixel_format);
             if refuses!(
-                "pass: a resolve of a format that does not resolve",
+                site::PASS_RESOLVE_OF_FORMAT_THAT_DOES_NOT_RESOLVE,
                 !facts.resolve || facts.float32 && !limits.float32_resolve
             ) {
                 return Err(EncodeRenderCommandsError::Invalid(
@@ -2472,7 +2924,7 @@ fn check_pass(
             }
             let level = resolve.level;
             if refuses!(
-                "pass: a resolve target's level, slice or plane outside it",
+                site::PASS_RESOLVE_TARGETS_LEVEL_SLICE_OR_PLANE_OUTSIDE_IT,
                 level >= r.levels
                     || resolve.slice >= r.slices
                     || resolve.depth_plane >= level_side(r.depth, level)
@@ -2484,7 +2936,7 @@ fn check_pass(
                 ));
             }
             if refuses!(
-                "pass: a resolve target of another size",
+                site::PASS_RESOLVE_TARGET_OF_ANOTHER_SIZE,
                 (level_side(r.width, level), level_side(r.height, level))
                     != (
                         level_side(t.width, attachment.level),
@@ -2499,7 +2951,7 @@ fn check_pass(
     }
     check_attachments_apart(pass)?;
     if refuses!(
-        "pass: a stencil to clear to that a stencil does not hold",
+        site::PASS_STENCIL_TO_CLEAR_TO_THAT_STENCIL_DOES_NOT_HOLD,
         pass.stencil_attachment
             .as_ref()
             .is_some_and(|stencil| stencil_value(stencil.clear_value).is_none())
@@ -2509,7 +2961,7 @@ fn check_pass(
         ));
     }
     if refuses!(
-        "pass: a visibility result buffer shorter than one result",
+        site::PASS_VISIBILITY_RESULT_BUFFER_SHORTER_THAN_ONE_RESULT,
         pass.visibility_result_buffer
             .is_some_and(|buffer| buffer.0.length < VISIBILITY_RESULT_BYTES)
     ) {
@@ -2522,7 +2974,7 @@ fn check_pass(
     }
     // An area past the longest side of a target ends the GPU's work in an error (MEASURED: a width of 2^32 - 4).
     if refuses!(
-        "pass: no attachment and an area outside one to the longest side",
+        site::PASS_NO_ATTACHMENT_AND_AREA_OUTSIDE_ONE_TO_LONGEST_SIDE,
         !((1..=limits.max_side).contains(&pass.render_target_width)
             && (1..=limits.max_side).contains(&pass.render_target_height)
             && limits.takes_samples(pass.default_raster_sample_count))
@@ -2582,7 +3034,7 @@ fn check_attachments_apart(
         .iter()
         .enumerate()
         .any(|(index, seen)| planes.iter().skip(index).skip(1).any(|other| other == seen));
-    if refuses!("pass: two attachments of one plane", shared) {
+    if refuses!(site::PASS_TWO_ATTACHMENTS_OF_ONE_PLANE, shared) {
         return Err(EncodeRenderCommandsError::Invalid(
             "two attachments of one plane of one texture",
         ));
@@ -2616,7 +3068,7 @@ fn check_render_commands(
     // Metal counts into one offset at most once in a pass.
     let mut counted: Vec<u64> = Vec::new();
     let check_slot = |index: u32, most: u32| {
-        if refuses!("render: a slot past the last", index >= most) {
+        if refuses!(site::RENDER_SLOT_PAST_LAST, index >= most) {
             Err(EncodeRenderCommandsError::OutOfRange(
                 "a slot past the last",
             ))
@@ -2627,7 +3079,7 @@ fn check_render_commands(
     // A draw's depth and stencil state reads the attachments it tests.
     let check_attachments = |state: Option<&DirectDepthStencilState>| {
         if refuses!(
-            "draw: a depth test with no depth attachment",
+            site::DRAW_DEPTH_TEST_WITH_NO_DEPTH_ATTACHMENT,
             state.is_some_and(|state| state.0.depth) && pass.depth_attachment.is_none()
         ) {
             return Err(EncodeRenderCommandsError::Invalid(
@@ -2635,7 +3087,7 @@ fn check_render_commands(
             ));
         }
         if refuses!(
-            "draw: a stencil test with no stencil attachment",
+            site::DRAW_STENCIL_TEST_WITH_NO_STENCIL_ATTACHMENT,
             state.is_some_and(|state| state.0.stencil) && pass.stencil_attachment.is_none()
         ) {
             return Err(EncodeRenderCommandsError::Invalid(
@@ -2650,7 +3102,7 @@ fn check_render_commands(
             RenderCommand::SetRenderPipelineState(state) => {
                 let s = &state.0;
                 if refuses!(
-                    "render: a pipeline made for other attachments",
+                    site::RENDER_PIPELINE_MADE_FOR_OTHER_ATTACHMENTS,
                     s.colors.as_slice() != colors.as_slice()
                         || s.depth != depth
                         || s.stencil != stencil
@@ -2660,7 +3112,7 @@ fn check_render_commands(
                     ));
                 }
                 if refuses!(
-                    "render: a pipeline made for another sample count",
+                    site::RENDER_PIPELINE_MADE_FOR_ANOTHER_SAMPLE_COUNT,
                     s.sample_count != samples
                 ) {
                     return Err(EncodeRenderCommandsError::Invalid(
@@ -2683,7 +3135,7 @@ fn check_render_commands(
             } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
                 if refuses!(
-                    "render: a bound range past its buffer",
+                    site::RENDER_BOUND_RANGE_PAST_ITS_BUFFER,
                     !buffer.holds(*offset, *length)
                 ) {
                     return Err(EncodeRenderCommandsError::OutOfRange(
@@ -2702,7 +3154,7 @@ fn check_render_commands(
             | RenderCommand::SetFragmentBytes { bytes, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
                 if refuses!(
-                    "render: more bytes than Metal copies",
+                    site::RENDER_MORE_BYTES_THAN_METAL_COPIES,
                     bytes.len() > MAX_BYTES
                 ) {
                     return Err(EncodeRenderCommandsError::OutOfRange(
@@ -2735,7 +3187,7 @@ fn check_render_commands(
             }
             RenderCommand::SetViewports(viewports) => {
                 if refuses!(
-                    "render: no viewports or past the most",
+                    site::RENDER_NO_VIEWPORTS_OR_PAST_MOST,
                     viewports.is_empty() || viewports.len() > MAX_VIEWPORTS
                 ) {
                     return Err(EncodeRenderCommandsError::Invalid(
@@ -2748,7 +3200,7 @@ fn check_render_commands(
                         .all(|n| n.is_finite())
                 };
                 if refuses!(
-                    "render: a viewport not finite",
+                    site::RENDER_VIEWPORT_NOT_FINITE,
                     !viewports.iter().all(finite)
                 ) {
                     return Err(EncodeRenderCommandsError::Invalid(
@@ -2758,7 +3210,7 @@ fn check_render_commands(
             }
             RenderCommand::SetScissorRects(rects) => {
                 if refuses!(
-                    "render: no scissor rectangles or past the most",
+                    site::RENDER_NO_SCISSOR_RECTANGLES_OR_PAST_MOST,
                     rects.is_empty() || rects.len() > MAX_VIEWPORTS
                 ) {
                     return Err(EncodeRenderCommandsError::Invalid(
@@ -2770,7 +3222,7 @@ fn check_render_commands(
                         && r.y.checked_add(r.height).is_some_and(|end| end <= height)
                 };
                 if refuses!(
-                    "render: a scissor rectangle outside the pass",
+                    site::RENDER_SCISSOR_RECTANGLE_OUTSIDE_PASS,
                     !rects.iter().all(inside)
                 ) {
                     return Err(EncodeRenderCommandsError::OutOfRange(
@@ -2782,7 +3234,7 @@ fn check_render_commands(
                 // Metal's validation checks the offset whatever the mode, and with no buffer too (MEASURED: an
                 // offset of 15, and of 2^63, with counting off).
                 if refuses!(
-                    "render: a visibility offset off its step or past the span",
+                    site::RENDER_VISIBILITY_OFFSET_OFF_ITS_STEP_OR_PAST_SPAN,
                     !offset.is_multiple_of(VISIBILITY_RESULT_BYTES)
                         || offset
                             .checked_add(VISIBILITY_RESULT_BYTES)
@@ -2794,7 +3246,7 @@ fn check_render_commands(
                 }
                 let Some(buffer) = pass.visibility_result_buffer else {
                     if refuses!(
-                        "render: counting with no visibility buffer",
+                        site::RENDER_COUNTING_WITH_NO_VISIBILITY_BUFFER,
                         *mode != VisibilityResultMode::Disabled
                     ) {
                         return Err(EncodeRenderCommandsError::Invalid(
@@ -2804,7 +3256,7 @@ fn check_render_commands(
                     continue;
                 };
                 if refuses!(
-                    "render: a visibility offset past its buffer",
+                    site::RENDER_VISIBILITY_OFFSET_PAST_ITS_BUFFER,
                     !buffer.holds(*offset, VISIBILITY_RESULT_BYTES)
                 ) {
                     return Err(EncodeRenderCommandsError::OutOfRange(
@@ -2813,7 +3265,7 @@ fn check_render_commands(
                 }
                 if *mode != VisibilityResultMode::Disabled {
                     if refuses!(
-                        "render: counting twice at one offset",
+                        site::RENDER_COUNTING_TWICE_AT_ONE_OFFSET,
                         counted.contains(offset)
                     ) {
                         return Err(EncodeRenderCommandsError::Invalid(
@@ -2831,7 +3283,7 @@ fn check_render_commands(
                 base_instance,
             } => {
                 if refuses!(
-                    "draw: vertices or instances past the largest index",
+                    site::DRAW_VERTICES_OR_INSTANCES_PAST_LARGEST_INDEX,
                     vertex_start.checked_add(*vertex_count).is_none()
                         || base_instance.checked_add(*instance_count).is_none()
                 ) {
@@ -2839,7 +3291,7 @@ fn check_render_commands(
                         "vertices or instances past the largest index",
                     ));
                 }
-                if refuses!("draw: no instances", *instance_count == 0) {
+                if refuses!(site::DRAW_NO_INSTANCES, *instance_count == 0) {
                     return Err(EncodeRenderCommandsError::Invalid("a draw of no instances"));
                 }
                 check_attachments(depth_stencil)?;
@@ -2858,7 +3310,7 @@ fn check_render_commands(
                 let size = index_bytes(*index_type);
                 let indices = u64::from(*index_count).checked_mul(size);
                 if refuses!(
-                    "indexed draw: indices outside their buffer or off their size",
+                    site::INDEXED_DRAW_INDICES_OUTSIDE_THEIR_BUFFER_OR_OFF_THEIR_SIZE,
                     !index_buffer_offset.is_multiple_of(size)
                         || indices
                             .is_none_or(|bytes| !index_buffer.holds(*index_buffer_offset, bytes))
@@ -2868,7 +3320,7 @@ fn check_render_commands(
                     ));
                 }
                 if refuses!(
-                    "indexed draw: instances past the largest index",
+                    site::INDEXED_DRAW_INSTANCES_PAST_LARGEST_INDEX,
                     base_instance.checked_add(*instance_count).is_none()
                 ) {
                     return Err(EncodeRenderCommandsError::OutOfRange(
@@ -2876,7 +3328,7 @@ fn check_render_commands(
                     ));
                 }
                 if refuses!(
-                    "indexed draw: no instances or no indices",
+                    site::INDEXED_DRAW_NO_INSTANCES_OR_NO_INDICES,
                     *instance_count == 0 || *index_count == 0
                 ) {
                     return Err(EncodeRenderCommandsError::Invalid(
@@ -2909,7 +3361,7 @@ fn check_render_commands(
                 indirect_buffer_offset,
             } => {
                 if refuses!(
-                    "indirect indexed draw: an index offset outside its buffer or off its size",
+                    site::INDIRECT_INDEXED_DRAW_INDEX_OFFSET_OUTSIDE_ITS_BUFFER_OR_OFF_ITS_SIZE,
                     !index_buffer_offset.is_multiple_of(index_bytes(*index_type))
                         || !index_buffer.holds(*index_buffer_offset, u64::MIN)
                 ) {
@@ -2931,7 +3383,7 @@ fn check_render_commands(
                 max_bound,
             } => {
                 if refuses!(
-                    "render: depth test bounds Metal lacks, or outside zero to one",
+                    site::RENDER_DEPTH_TEST_BOUNDS_METAL_LACKS_OR_OUTSIDE_ZERO_TO_ONE,
                     !depth_test_bounds
                         || !(0.0..=1.0).contains(min_bound)
                         || !(0.0..=1.0).contains(max_bound)
@@ -2942,7 +3394,7 @@ fn check_render_commands(
                     ));
                 }
                 if refuses!(
-                    "render: depth test bounds with no depth attachment",
+                    site::RENDER_DEPTH_TEST_BOUNDS_WITH_NO_DEPTH_ATTACHMENT,
                     pass.depth_attachment.is_none()
                 ) {
                     return Err(EncodeRenderCommandsError::Invalid(
@@ -2964,7 +3416,7 @@ fn check_render_commands(
 
 /// Checks one draw against the bound pipeline and resources.
 fn check_draw(bound: &RenderBindings, primitive_type: PrimitiveType) -> Result<(), &'static str> {
-    let Some(pipeline) = found!("draw: no pipeline", bound.pipeline.as_ref()) else {
+    let Some(pipeline) = found!(site::DRAW_NO_PIPELINE, bound.pipeline.as_ref()) else {
         return Err("a draw with no pipeline");
     };
     let class = match primitive_type {
@@ -2973,7 +3425,7 @@ fn check_draw(bound: &RenderBindings, primitive_type: PrimitiveType) -> Result<(
         PrimitiveType::Triangle | PrimitiveType::TriangleStrip => PrimitiveTopologyClass::Triangle,
     };
     if refuses!(
-        "draw: primitives of another class than the pipeline's",
+        site::DRAW_PRIMITIVES_OF_ANOTHER_CLASS_THAN_PIPELINES,
         class != pipeline.0.topology
     ) {
         return Err("a draw of primitives the pipeline was not made for");
@@ -3423,7 +3875,7 @@ fn index_bytes(index_type: IndexType) -> u64 {
 /// Checks that `bytes` of indirect arguments lie inside their buffer at an offset that is a multiple of four.
 fn check_arguments(buffer: &DirectBuffer, offset: u64, bytes: u64) -> Result<(), &'static str> {
     if refuses!(
-        "indirect: arguments outside their buffer or off four bytes",
+        site::INDIRECT_ARGUMENTS_OUTSIDE_THEIR_BUFFER_OR_OFF_FOUR_BYTES,
         !offset.is_multiple_of(INDIRECT_ARGUMENTS_ALIGNMENT) || !buffer.holds(offset, bytes)
     ) {
         return Err(
@@ -3718,7 +4170,7 @@ fn check_compute_commands(
     let mut bound = StageBindings::default();
     let mut pipeline: Option<&DirectComputePipelineState> = None;
     let check_slot = |index: u32, most: u32| {
-        if refuses!("compute: a slot past the last", index >= most) {
+        if refuses!(site::COMPUTE_SLOT_PAST_LAST, index >= most) {
             Err(EncodeComputeCommandsError::OutOfRange(
                 "a slot past the last",
             ))
@@ -3737,7 +4189,7 @@ fn check_compute_commands(
             } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
                 if refuses!(
-                    "compute: a bound range past its buffer",
+                    site::COMPUTE_BOUND_RANGE_PAST_ITS_BUFFER,
                     !buffer.holds(*offset, *length)
                 ) {
                     return Err(EncodeComputeCommandsError::OutOfRange(
@@ -3750,7 +4202,7 @@ fn check_compute_commands(
             ComputeCommand::SetBytes { bytes, index } => {
                 check_slot(*index, MAX_BUFFER_SLOTS)?;
                 if refuses!(
-                    "compute: more bytes than Metal copies",
+                    site::COMPUTE_MORE_BYTES_THAN_METAL_COPIES,
                     bytes.len() > MAX_BYTES
                 ) {
                     return Err(EncodeComputeCommandsError::OutOfRange(
@@ -3770,14 +4222,14 @@ fn check_compute_commands(
             }
             ComputeCommand::DispatchThreadgroups(groups) => {
                 if refuses!(
-                    "dispatch: no threadgroups",
+                    site::DISPATCH_NO_THREADGROUPS,
                     groups.width == 0 || groups.height == 0 || groups.depth == 0
                 ) {
                     return Err(EncodeComputeCommandsError::Invalid(
                         "a dispatch of no threadgroups",
                     ));
                 }
-                let Some(pipeline) = found!("dispatch: no pipeline", pipeline) else {
+                let Some(pipeline) = found!(site::DISPATCH_NO_PIPELINE, pipeline) else {
                     return Err(EncodeComputeCommandsError::Unbound(
                         "a dispatch with no pipeline",
                     ));
@@ -3791,7 +4243,7 @@ fn check_compute_commands(
                 // Metal's validation stops a grid whose threads on one axis pass the largest `u32`, which a thread's
                 // position in the grid holds (MEASURED: 2^26 groups of 64 threads).
                 if refuses!(
-                    "dispatch: more threads on an axis than a u32 holds",
+                    site::DISPATCH_MORE_THREADS_ON_AXIS_THAN_U32_HOLDS,
                     axes.iter().any(|(groups, threads)| {
                         u32::try_from(u64::from(*groups).saturating_mul(u64::from(*threads)))
                             .is_err()
@@ -3815,7 +4267,7 @@ fn check_compute_commands(
                     DISPATCH_ARGUMENTS_BYTES,
                 )
                 .map_err(EncodeComputeCommandsError::OutOfRange)?;
-                let Some(pipeline) = found!("indirect dispatch: no pipeline", pipeline) else {
+                let Some(pipeline) = found!(site::INDIRECT_DISPATCH_NO_PIPELINE, pipeline) else {
                     return Err(EncodeComputeCommandsError::Unbound(
                         "a dispatch with no pipeline",
                     ));
@@ -3875,7 +4327,7 @@ fn check_region(
 ) -> Result<(), &'static str> {
     let t = &texture.0;
     if refuses!(
-        "region: a level or slice outside the texture",
+        site::REGION_LEVEL_OR_SLICE_OUTSIDE_TEXTURE,
         level >= t.levels || slice >= t.slices
     ) {
         return Err("a level or slice outside the texture");
@@ -3894,7 +4346,7 @@ fn check_region(
     // reaches past the level's own texels into that block (MEASURED: 4 rows into a level of 1 of ASTC 4x4).
     let (bw, bh) = block;
     if refuses!(
-        "region: outside the level",
+        site::REGION_OUTSIDE_LEVEL,
         !fits(origin.x, size.width, Some(w))
             || !fits(origin.y, size.height, Some(h))
             || !fits(origin.z, size.depth, Some(d))
@@ -3905,13 +4357,13 @@ fn check_region(
         at.is_multiple_of(b) && (n.is_multiple_of(b) || at.checked_add(n) == Some(most))
     };
     if refuses!(
-        "region: partial blocks",
+        site::REGION_PARTIAL_BLOCKS,
         !edge(origin.x, size.width, w, bw) || !edge(origin.y, size.height, h, bh)
     ) {
         return Err("a region of partial blocks");
     }
     if refuses!(
-        "region: empty",
+        site::REGION_EMPTY,
         size.width == 0 || size.height == 0 || size.depth == 0
     ) {
         return Err("an empty region");
@@ -3939,7 +4391,7 @@ fn check_blit(
             size,
         } => {
             if refuses!(
-                "copy buffers: no bytes, or off whole words",
+                site::COPY_BUFFERS_NO_BYTES_OR_OFF_WHOLE_WORDS,
                 *size == 0 || !granular(&[*source_offset, *destination_offset, *size])
             ) {
                 return Err(EncodeBlitCommandsError::Invalid(
@@ -3947,7 +4399,7 @@ fn check_blit(
                 ));
             }
             if refuses!(
-                "copy buffers: outside a buffer",
+                site::COPY_BUFFERS_OUTSIDE_BUFFER,
                 !source_buffer.holds(*source_offset, *size)
                     || !destination_buffer.holds(*destination_offset, *size)
             ) {
@@ -3958,7 +4410,7 @@ fn check_blit(
             // Both ends are inside their buffers, so neither sum overflows; one that did would count as overlapping.
             let before = |a: u64, b: u64| b.checked_add(*size).is_none_or(|end| a < end);
             if refuses!(
-                "copy buffers: overlapping ranges",
+                site::COPY_BUFFERS_OVERLAPPING_RANGES,
                 Rc::ptr_eq(&source_buffer.0, &destination_buffer.0)
                     && before(*source_offset, *destination_offset)
                     && before(*destination_offset, *source_offset)
@@ -3993,7 +4445,7 @@ fn check_blit(
             options,
         } => {
             if refuses!(
-                "copy buffer and texture: a multisampled or drawable texture",
+                site::COPY_BUFFER_AND_TEXTURE_MULTISAMPLED_OR_DRAWABLE_TEXTURE,
                 texture.0.sample_count != 1 || texture.0.framebuffer_only
             ) {
                 return Err(EncodeBlitCommandsError::Invalid(
@@ -4001,7 +4453,7 @@ fn check_blit(
                 ));
             }
             let Some((bytes, block)) = found!(
-                "copy buffer and texture: an aspect the format lacks",
+                site::COPY_BUFFER_AND_TEXTURE_ASPECT_FORMAT_LACKS,
                 moved(texture.0.pixel_format, *options)
             ) else {
                 return Err(EncodeBlitCommandsError::Invalid(
@@ -4031,7 +4483,7 @@ fn check_blit(
                 ));
             };
             if refuses!(
-                "copy buffer and texture: a row pitch short, long or off a block",
+                site::COPY_BUFFER_AND_TEXTURE_ROW_PITCH_SHORT_LONG_OR_OFF_BLOCK,
                 *source_bytes_per_row < row
                     || !source_bytes_per_row.is_multiple_of(bytes)
                     || *source_bytes_per_row > longest_row
@@ -4049,7 +4501,7 @@ fn check_blit(
             let depth = u64::from(source_size.depth);
             let flat = depth == 1 && *source_bytes_per_image == 0;
             if refuses!(
-                "copy buffer and texture: an image pitch shorter than an image",
+                site::COPY_BUFFER_AND_TEXTURE_IMAGE_PITCH_SHORTER_THAN_IMAGE,
                 !flat && pitched_image.is_none_or(|pitched| *source_bytes_per_image < pitched)
             ) {
                 return Err(EncodeBlitCommandsError::Invalid(
@@ -4057,7 +4509,7 @@ fn check_blit(
                 ));
             }
             if refuses!(
-                "copy buffer and texture: an offset off a block",
+                site::COPY_BUFFER_AND_TEXTURE_OFFSET_OFF_BLOCK,
                 !source_offset.is_multiple_of(bytes)
             ) {
                 return Err(EncodeBlitCommandsError::Invalid(
@@ -4066,7 +4518,7 @@ fn check_blit(
             }
             // The bytes of the copy: every image but the last at its pitch, and the last image.
             let Some(length) = found!(
-                "copy buffer and texture: a length that overflows",
+                site::COPY_BUFFER_AND_TEXTURE_LENGTH_THAT_OVERFLOWS,
                 image.and_then(|image| {
                     depth
                         .checked_sub(1)
@@ -4079,7 +4531,7 @@ fn check_blit(
                 ));
             };
             if refuses!(
-                "copy buffer and texture: outside the buffer",
+                site::COPY_BUFFER_AND_TEXTURE_OUTSIDE_BUFFER,
                 !source_buffer.holds(*source_offset, length)
             ) {
                 return Err(EncodeBlitCommandsError::OutOfRange(
@@ -4101,7 +4553,7 @@ fn check_blit(
             let (s, d) = (&source_texture.0, &destination_texture.0);
             let (sf, df) = (format_facts(s.pixel_format), format_facts(d.pixel_format));
             if refuses!(
-                "copy textures: formats or sample counts that differ",
+                site::COPY_TEXTURES_FORMATS_OR_SAMPLE_COUNTS_THAT_DIFFER,
                 s.pixel_format != d.pixel_format || s.sample_count != d.sample_count
             ) {
                 return Err(EncodeBlitCommandsError::Invalid(
@@ -4109,7 +4561,7 @@ fn check_blit(
                 ));
             }
             if refuses!(
-                "copy textures: a drawable's texture",
+                site::COPY_TEXTURES_DRAWABLES_TEXTURE,
                 s.framebuffer_only || d.framebuffer_only
             ) {
                 return Err(EncodeBlitCommandsError::Invalid(
@@ -4144,7 +4596,7 @@ fn check_blit(
                 _ => true,
             };
             if refuses!(
-                "copy textures: overlapping regions",
+                site::COPY_TEXTURES_OVERLAPPING_REGIONS,
                 s.storage == d.storage
                     && same(
                         s.base_level,
@@ -4174,14 +4626,14 @@ fn check_blit(
             ..
         } => {
             if refuses!(
-                "fill: no bytes, or off whole words",
+                site::FILL_NO_BYTES_OR_OFF_WHOLE_WORDS,
                 *length == 0 || !granular(&[*offset, *length])
             ) {
                 return Err(EncodeBlitCommandsError::Invalid(
                     "a fill of no bytes, or at an offset or of a length not in whole words",
                 ));
             }
-            if refuses!("fill: outside the buffer", !buffer.holds(*offset, *length)) {
+            if refuses!(site::FILL_OUTSIDE_BUFFER, !buffer.holds(*offset, *length)) {
                 return Err(EncodeBlitCommandsError::OutOfRange(
                     "a fill outside its buffer",
                 ));
@@ -4191,18 +4643,18 @@ fn check_blit(
             let t = &texture.0;
             let facts = format_facts(t.pixel_format);
             let filters = facts.resolve && (!facts.float32 || limits.float32_resolve);
-            if refuses!("mipmaps: of a drawable's texture", t.framebuffer_only) {
+            if refuses!(site::MIPMAPS_OF_DRAWABLES_TEXTURE, t.framebuffer_only) {
                 return Err(EncodeBlitCommandsError::Invalid(
                     "mipmaps of a drawable's texture",
                 ));
             }
-            if refuses!("mipmaps: of one level", t.levels < 2) {
+            if refuses!(site::MIPMAPS_OF_ONE_LEVEL, t.levels < 2) {
                 return Err(EncodeBlitCommandsError::Invalid(
                     "mipmaps of a texture of one level, or of a format not drawn into and filtered",
                 ));
             }
             if refuses!(
-                "mipmaps: a format not drawn into and filtered, or multisampled",
+                site::MIPMAPS_FORMAT_NOT_DRAWN_INTO_AND_FILTERED_OR_MULTISAMPLED,
                 !facts.color || !filters || t.sample_count != 1
             ) {
                 return Err(EncodeBlitCommandsError::Invalid(
@@ -4474,7 +4926,7 @@ fn translation(
 > {
     let module = source.module;
     let entry_index = found!(
-        "function: no such entry point",
+        site::FUNCTION_NO_SUCH_ENTRY_POINT,
         module
             .entry_points
             .iter()
@@ -4483,7 +4935,7 @@ fn translation(
     .ok_or(MakeFunctionError::Unchecked("no such entry point"))?;
     let entry = &module.entry_points[entry_index];
     if refuses!(
-        "function: a stage other than vertex, fragment and compute",
+        site::FUNCTION_STAGE_OTHER_THAN_VERTEX_FRAGMENT_AND_COMPUTE,
         !matches!(
             source.stage,
             naga::ShaderStage::Vertex | naga::ShaderStage::Fragment | naga::ShaderStage::Compute
@@ -4496,7 +4948,7 @@ fn translation(
     let info = source.info.get_entry_point(entry_index);
     let reserved = [source.immediates_buffer_index, source.sizes_buffer_index];
     if refuses!(
-        "function: immediates and lengths not at two slots of their own",
+        site::FUNCTION_IMMEDIATES_AND_LENGTHS_NOT_AT_TWO_SLOTS_OF_THEIR_OWN,
         reserved.iter().any(|&slot| slot >= MAX_BUFFER_SLOTS) || reserved[0] == reserved[1]
     ) {
         return Err(MakeFunctionError::Unchecked(
@@ -4558,7 +5010,7 @@ fn translation(
             _ => {}
         }
         if refuses!(
-            "function: a global in an address space not checked",
+            site::FUNCTION_GLOBAL_IN_ADDRESS_SPACE_NOT_CHECKED,
             !matches!(
                 var.space,
                 naga::AddressSpace::Uniform
@@ -4570,11 +5022,11 @@ fn translation(
                 "a global in an address space this crate does not check",
             ));
         }
-        let Some(binding) = found!("function: a resource with no binding", var.binding) else {
+        let Some(binding) = found!(site::FUNCTION_RESOURCE_WITH_NO_BINDING, var.binding) else {
             return Err(MakeFunctionError::Unchecked("a resource with no binding"));
         };
         let Some(slot) = found!(
-            "function: a resource with no slot",
+            site::FUNCTION_RESOURCE_WITH_NO_SLOT,
             source
                 .resources
                 .iter()
@@ -4584,7 +5036,7 @@ fn translation(
         };
         let index = slot.index;
         if refuses!(
-            "function: a resource of a type not checked",
+            site::FUNCTION_RESOURCE_OF_TYPE_NOT_CHECKED,
             !matches!(
                 (var.space, ty),
                 (
@@ -4604,7 +5056,7 @@ fn translation(
         match (var.space, ty) {
             (naga::AddressSpace::Uniform | naga::AddressSpace::Storage { .. }, _) => {
                 if refuses!(
-                    "function: a buffer slot past the last or taken",
+                    site::FUNCTION_BUFFER_SLOT_PAST_LAST_OR_TAKEN,
                     index >= MAX_BUFFER_SLOTS
                         || reserved.contains(&index)
                         || source
@@ -4619,7 +5071,7 @@ fn translation(
                 // A runtime-sized array must hold one element: naga's bound subtracts one element's bytes from the
                 // length in 32 bits and wraps on a shorter one (third_party/naga/src/back/msl/writer.rs:1759-1799).
                 if refuses!(
-                    "function: an array of bindings",
+                    site::FUNCTION_ARRAY_OF_BINDINGS,
                     matches!(*ty, naga::TypeInner::BindingArray { .. })
                 ) {
                     return Err(MakeFunctionError::Unchecked("an array of bindings"));
@@ -4659,13 +5111,13 @@ fn translation(
                 },
             ) => {
                 if refuses!(
-                    "function: a texture slot past the last",
+                    site::FUNCTION_TEXTURE_SLOT_PAST_LAST,
                     index >= MAX_TEXTURE_SLOTS
                 ) {
                     return Err(MakeFunctionError::Unchecked("a texture slot past the last"));
                 }
                 if refuses!(
-                    "function: a texture the function writes",
+                    site::FUNCTION_TEXTURE_FUNCTION_WRITES,
                     matches!(*class, naga::ImageClass::Storage { access, .. }
                         if access.contains(naga::StorageAccess::STORE)
                             || access.contains(naga::StorageAccess::ATOMIC))
@@ -4685,7 +5137,7 @@ fn translation(
                     _ => None,
                 };
                 let Some((multisampled, depth, texel)) =
-                    found!("function: an external texture", read)
+                    found!(site::FUNCTION_EXTERNAL_TEXTURE, read)
                 else {
                     return Err(MakeFunctionError::Unchecked("an external texture"));
                 };
@@ -4698,7 +5150,7 @@ fn translation(
                     (naga::ImageDimension::D3, false, false) => Some(TextureType::Type3D),
                     _ => None,
                 };
-                let Some(texture_type) = found!("function: a texture type not made", texture_type)
+                let Some(texture_type) = found!(site::FUNCTION_TEXTURE_TYPE_NOT_MADE, texture_type)
                 else {
                     return Err(MakeFunctionError::Unchecked(
                         "a texture type this crate does not make",
@@ -4716,7 +5168,7 @@ fn translation(
             }
             (_, naga::TypeInner::Sampler { .. }) => {
                 if refuses!(
-                    "function: a sampler slot past the last",
+                    site::FUNCTION_SAMPLER_SLOT_PAST_LAST,
                     index >= MAX_SAMPLER_SLOTS
                 ) {
                     return Err(MakeFunctionError::Unchecked("a sampler slot past the last"));
@@ -4734,7 +5186,7 @@ fn translation(
     if source.stage == naga::ShaderStage::Vertex {
         for layout in source.vertex_buffers {
             if refuses!(
-                "function: a vertex buffer slot past the last or taken",
+                site::FUNCTION_VERTEX_BUFFER_SLOT_PAST_LAST_OR_TAKEN,
                 layout.buffer_index >= MAX_BUFFER_SLOTS
                     || reserved.contains(&layout.buffer_index)
                     || buffer_slots.contains(&layout.buffer_index)
@@ -4744,7 +5196,7 @@ fn translation(
                 ));
             }
             if refuses!(
-                "function: a vertex stride of zero or past the most",
+                site::FUNCTION_VERTEX_STRIDE_OF_ZERO_OR_PAST_MOST,
                 layout.stride == 0 || layout.stride > MAX_VERTEX_STRIDE
             ) {
                 return Err(MakeFunctionError::Unchecked(
@@ -4756,7 +5208,7 @@ fn translation(
                 let format = vertex_format(attribute.format);
                 let bytes = u32::try_from(format.size()).unwrap_or(u32::MAX);
                 if refuses!(
-                    "function: an attribute past its stride",
+                    site::FUNCTION_ATTRIBUTE_PAST_ITS_STRIDE,
                     attribute
                         .offset
                         .checked_add(bytes)
@@ -4848,9 +5300,9 @@ fn texel_kind(kind: naga::ScalarKind) -> Result<TexelKind, MakeFunctionError> {
         naga::ScalarKind::Uint => Some(TexelKind::Uint),
         _ => None,
     };
-    found!("function: texels neither float nor integer", texel).ok_or(MakeFunctionError::Unchecked(
-        "a texture of texels neither float nor integer",
-    ))
+    found!(site::FUNCTION_TEXELS_NEITHER_FLOAT_NOR_INTEGER, texel).ok_or(
+        MakeFunctionError::Unchecked("a texture of texels neither float nor integer"),
+    )
 }
 
 /// Returns the number type a function reads a storage texture's texels as.

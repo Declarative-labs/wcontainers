@@ -335,7 +335,7 @@ mod driver {
     ///
     /// The table goes to `FUZZ_PLACE_TABLE` too, if it is set.
     fn report_places(places: &std::collections::BTreeMap<String, [u64; 2]>) -> usize {
-        let known = wcontainers_gpu_metal::place::ALL;
+        let known = wcontainers_gpu_metal::reach::PLACES;
         let mut table = String::from("| Place | With a pass open | Otherwise |\n|---|---|---|\n");
         let mut holes = 0usize;
         for place in known {

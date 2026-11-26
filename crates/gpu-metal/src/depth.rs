@@ -222,11 +222,16 @@ impl<M: Metal> MetalGpu<M> {
                 .metal
                 .make_compute_pipeline_state(&function)
                 .map_err(|_| "a depth program Metal refuses")?;
-            let slot = |binding: u32| shader.slots.get(&(0, binding)).map(|&(_, index)| index);
+            let slot = |binding: u32| {
+                shader
+                    .slots
+                    .get(&(u32::MIN, binding))
+                    .map(|&(_, index)| index)
+            };
             let missing = "a depth program without its bindings";
             let pipeline = DepthPipeline {
                 state,
-                span: slot(0).ok_or(missing)?,
+                span: slot(u32::MIN).ok_or(missing)?,
                 source: slot(1).ok_or(missing)?,
                 destination: slot(2).ok_or(missing)?,
             };
@@ -363,7 +368,16 @@ impl<M: Metal> MetalGpu<M> {
         let (row, rows) = self
             .tight_rows(texture.desc.format, false, extent)
             .ok_or("a depth copy whose rows overflow")?;
-        self.buffer_texture_copies(&texture, region, extent, floats, 0, row, rows, into_texture)
-            .ok_or("a depth copy whose places overflow")
+        self.buffer_texture_copies(
+            &texture,
+            region,
+            extent,
+            floats,
+            u64::MIN,
+            row,
+            rows,
+            into_texture,
+        )
+        .ok_or("a depth copy whose places overflow")
     }
 }

@@ -1019,15 +1019,15 @@ impl<M: Metal> MetalGpu<M> {
                 fill: FillMode::Solid,
                 cull: CullMode::None,
                 front: FrontFace::CounterClockwise,
-                depth_bias: 0,
-                depth_bias_slope: 0,
-                depth_bias_clamp: 0,
+                depth_bias: u32::MIN,
+                depth_bias_slope: u32::MIN,
+                depth_bias_clamp: u32::MIN,
                 depth_clip: true,
                 scissor: false,
                 line_width: 1.0f32.to_bits(),
                 provoking: ProvokingVertex::First,
                 depth_minus_one: false,
-                sample_mask: !0,
+                sample_mask: u32::MAX,
             })?;
             let vertex_layout = self.create_vertex_layout(&VertexLayoutDesc {
                 streams: [None; MAX_VERTEX_STREAMS],
@@ -1075,7 +1075,7 @@ impl<M: Metal> MetalGpu<M> {
             y: u32::MIN,
             width: (drawable.width as f32).to_bits(),
             height: (drawable.height as f32).to_bits(),
-            min_depth: 0,
+            min_depth: u32::MIN,
             max_depth: 1.0f32.to_bits(),
         }];
         self.begin_pass(&pass);
@@ -1092,8 +1092,8 @@ impl<M: Metal> MetalGpu<M> {
             restart: false,
             viewports: &viewport,
             scissors: &[],
-            blend_constant: [0; 4],
-            stencil_reference: [0; 2],
+            blend_constant: [u32::MIN; 4],
+            stencil_reference: [u8::MIN; 2],
             immediates: &[],
             range: DrawRange::Vertices {
                 first: u32::MIN,
@@ -1127,7 +1127,7 @@ impl<M: Metal> MetalGpu<M> {
             }
             None => RenderCommand::SetVisibilityResultMode {
                 mode: VisibilityResultMode::Disabled,
-                offset: u64::from(pass.active_query.unwrap_or(0)) * QUERY_BYTES,
+                offset: u64::from(pass.active_query.unwrap_or(u32::MIN)) * QUERY_BYTES,
             },
         };
         pass.active_query = index;
@@ -1171,7 +1171,7 @@ impl<M: Metal> MetalGpu<M> {
                     buffer: set.buffer.clone(),
                     offset: u64::from(*index) * QUERY_BYTES,
                     length: QUERY_BYTES,
-                    value: 0,
+                    value: u8::MIN,
                 });
             }
         }

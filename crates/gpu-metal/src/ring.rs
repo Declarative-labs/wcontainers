@@ -110,14 +110,14 @@ impl<M: Metal> MetalGpu<M> {
                                     RingKind::Data => BufferUsage::VERTEX | BufferUsage::UNIFORM,
                                 } | BufferUsage::COPY_DST,
                                 raw: raw.into(),
-                                last_use: 0.into(),
+                                last_use: u64::MIN.into(),
                             })),
                             head: u64::MIN,
                         });
                         index
                     }
                 };
-                self.rings[slot].chunks[index].head = 0;
+                self.rings[slot].chunks[index].head = u64::MIN;
                 self.rings[slot].current = Some((index, encodes));
                 index
             }

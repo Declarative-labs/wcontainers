@@ -241,7 +241,7 @@ fn filled<M: Metal>(subject: &mut M, bytes: &[u8]) -> M::Buffer {
         .make_buffer(bytes.len() as u64)
         .expect("Metal answers make buffer");
     subject
-        .write_contents(&buffer, 0, bytes)
+        .write_contents(&buffer, u64::MIN, bytes)
         .expect("Metal answers write contents");
     buffer
 }
@@ -291,9 +291,9 @@ fn read_texture<M: Metal>(subject: &mut M, texture: &M::Texture) -> Vec<u8> {
         )
         .expect("Metal answers encode blit commands");
     finish(subject, &command_buffer);
-    let mut bytes = vec![0; (row * u64::from(TARGET_SIDE)) as usize];
+    let mut bytes = vec![u8::MIN; (row * u64::from(TARGET_SIDE)) as usize];
     subject
-        .read_contents(&buffer, 0, &mut bytes)
+        .read_contents(&buffer, u64::MIN, &mut bytes)
         .expect("Metal answers read contents");
     bytes
 }
@@ -420,17 +420,17 @@ pub fn writes_and_reads_buffer_contents<M: Metal>(mut subject: M) {
         .expect("Metal answers write contents");
     let mut expected = bytes.clone();
     expected[3..6].copy_from_slice(&[1, 2, 3]);
-    let mut read = vec![0; 64];
+    let mut read = vec![u8::MIN; 64];
     subject
-        .read_contents(&buffer, 0, &mut read)
+        .read_contents(&buffer, u64::MIN, &mut read)
         .expect("Metal answers read contents");
     assert_eq!(read, expected);
     assert_eq!(
-        subject.write_contents(&buffer, 62, &[0; 3]),
+        subject.write_contents(&buffer, 62, &[u8::MIN; 3]),
         Err(WriteContentsError::OutOfRange)
     );
     assert_eq!(
-        subject.read_contents(&buffer, 65, &mut [0; 1]),
+        subject.read_contents(&buffer, 65, &mut [u8::MIN; 1]),
         Err(ReadContentsError::OutOfRange)
     );
 }
@@ -457,7 +457,7 @@ pub fn refuses_contents_of_uncommitted_work_and_a_second_commit<M: Metal>(mut su
         )
         .expect("Metal answers encode blit commands");
     assert_eq!(
-        subject.write_contents(&buffer, 0, &[0]),
+        subject.write_contents(&buffer, u64::MIN, &[u8::MIN]),
         Err(WriteContentsError::UsedByUncommittedWork)
     );
     finish(&mut subject, &command_buffer);
@@ -465,9 +465,9 @@ pub fn refuses_contents_of_uncommitted_work_and_a_second_commit<M: Metal>(mut su
         subject.commit(&command_buffer),
         Err(CommitError::AlreadyCommitted)
     );
-    let mut read = [0; 4];
+    let mut read = [u8::MIN; 4];
     subject
-        .read_contents(&buffer, 0, &mut read)
+        .read_contents(&buffer, u64::MIN, &mut read)
         .expect("Metal answers read contents");
     assert_eq!(read, [9; 4]);
 }
@@ -491,7 +491,7 @@ pub fn frees_a_buffer_whose_command_buffer_was_dropped<M: Metal>(mut subject: M)
         .expect("Metal answers encode blit commands");
     drop(command_buffer);
     subject
-        .write_contents(&buffer, 0, &[0; COLOR_BYTES as usize])
+        .write_contents(&buffer, u64::MIN, &[u8::MIN; COLOR_BYTES as usize])
         .expect("Metal answers write contents");
 }
 
@@ -501,7 +501,7 @@ pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
     let bytes = pattern((row * u64::from(TARGET_SIDE)) as usize);
     let source = filled(&mut subject, &bytes);
     let texture = target(&mut subject);
-    let copy = filled(&mut subject, &[0; 32]);
+    let copy = filled(&mut subject, &[u8::MIN; 32]);
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
@@ -543,12 +543,12 @@ pub fn copies_and_fills_move_exact_bytes<M: Metal>(mut subject: M) {
         .expect("Metal answers encode blit commands");
     finish(&mut subject, &command_buffer);
     assert_eq!(read_texture(&mut subject, &texture), bytes);
-    let mut expected = vec![0; 32];
+    let mut expected = vec![u8::MIN; 32];
     expected[8..16].copy_from_slice(&bytes[4..12]);
     expected[20..24].fill(0xab);
-    let mut read = vec![0; 32];
+    let mut read = vec![u8::MIN; 32];
     subject
-        .read_contents(&copy, 0, &mut read)
+        .read_contents(&copy, u64::MIN, &mut read)
         .expect("Metal answers read contents");
     assert_eq!(read, expected);
 }
@@ -1029,9 +1029,9 @@ pub fn builds_functions_and_pipelines_in_the_background<M: Metal>(mut subject: M
         )
         .expect("Metal answers encode compute commands");
     finish(&mut subject, &command_buffer);
-    let mut read = vec![0; WORDS_BYTES as usize];
+    let mut read = vec![u8::MIN; WORDS_BYTES as usize];
     subject
-        .read_contents(&buffer, 0, &mut read)
+        .read_contents(&buffer, u64::MIN, &mut read)
         .expect("Metal answers read contents");
     let doubled: Vec<u32> = words.iter().map(|w| w * 2).collect();
     assert_eq!(read, word_bytes(&doubled));
@@ -1074,9 +1074,9 @@ pub fn dispatches_a_compute_function<M: Metal>(mut subject: M) {
         )
         .expect("Metal answers encode compute commands");
     finish(&mut subject, &command_buffer);
-    let mut read = vec![0; 32];
+    let mut read = vec![u8::MIN; 32];
     subject
-        .read_contents(&buffer, 0, &mut read)
+        .read_contents(&buffer, u64::MIN, &mut read)
         .expect("Metal answers read contents");
     let doubled: Vec<u8> = words.iter().flat_map(|w| (w * 2).to_le_bytes()).collect();
     assert_eq!(read, doubled);
@@ -1119,7 +1119,7 @@ pub fn dispatches_with_workgroup_memory<M: Metal>(mut subject: M) {
         )
         .expect("Metal answers encode compute commands");
     finish(&mut subject, &command_buffer);
-    let mut read = [0; 4];
+    let mut read = [u8::MIN; 4];
     subject
         .read_contents(&buffer, 16, &mut read)
         .expect("Metal answers read contents");
@@ -1273,7 +1273,7 @@ fn refuses_draw<M: Metal>(
 ) {
     let depth_stencil = no_depth(subject);
     let vertices = covering(subject);
-    let color = filled(subject, &[0; COLOR_BYTES as usize]);
+    let color = filled(subject, &[u8::MIN; COLOR_BYTES as usize]);
     let mut bindings = vec![RenderCommand::SetFragmentBuffer {
         buffer: color,
         offset: u64::MIN,
@@ -1514,7 +1514,7 @@ pub fn refuses_a_viewport_that_is_not_finite<M: Metal>(mut subject: M) {
 pub fn refuses_a_uniform_at_a_misaligned_offset<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
-    let color = filled(&mut subject, &[0; (COLOR_BYTES * 2) as usize]);
+    let color = filled(&mut subject, &[u8::MIN; (COLOR_BYTES * 2) as usize]);
     let bound = RenderCommand::SetFragmentBuffer {
         buffer: color,
         offset: MISALIGNED_UNIFORM,
@@ -1528,7 +1528,7 @@ pub fn refuses_a_uniform_at_a_misaligned_offset<M: Metal>(mut subject: M) {
 pub fn refuses_draws_of_no_instances_or_indices<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
-    let indices = filled(&mut subject, &[0; COVERING_BYTES as usize]);
+    let indices = filled(&mut subject, &[u8::MIN; COVERING_BYTES as usize]);
     for draw in [
         RenderCommand::DrawPrimitives {
             primitive_type: PrimitiveType::Triangle,
@@ -1747,7 +1747,7 @@ pub fn discards_fragments_whose_stored_depth_is_outside_the_bounds<M: Metal>(mut
 
 /// Checks that an empty dispatch and words at a misaligned offset are refused, which Metal's validation stops.
 pub fn refuses_empty_dispatches_and_misaligned_words<M: Metal>(mut subject: M) {
-    let words = filled(&mut subject, &[0; (WORDS_BYTES * 2) as usize]);
+    let words = filled(&mut subject, &[u8::MIN; (WORDS_BYTES * 2) as usize]);
     let compute = function(&mut subject, naga::ShaderStage::Compute, DOUBLE);
     let state = subject
         .make_compute_pipeline_state(&compute)
@@ -1801,10 +1801,10 @@ pub fn refuses_buffer_copies_and_fills_metal_does_not_make<M: Metal>(mut subject
     for command in [
         copy(u64::MIN, RGBA8_BYTES * 2, u64::MIN),
         copy(1, RGBA8_BYTES * 2, RGBA8_BYTES),
-        copy(0, RGBA8_BYTES * 2, 3),
+        copy(u64::MIN, RGBA8_BYTES * 2, 3),
         fill(u64::MIN, u64::MIN),
         fill(1, RGBA8_BYTES),
-        fill(0, 3),
+        fill(u64::MIN, 3),
     ] {
         refuses_blit(&mut subject, command);
     }
@@ -1834,7 +1834,7 @@ pub fn refuses_copy_pitches_metal_does_not_take<M: Metal>(mut subject: M) {
         options: BlitOption::None,
     };
     refuses_blit(&mut subject, copy(row, RGBA8_BYTES, TARGET_SIDE));
-    refuses_blit(&mut subject, copy(BEYOND_ROW, 0, 1));
+    refuses_blit(&mut subject, copy(BEYOND_ROW, u64::MIN, 1));
     // A 3D texture's rows are as long as its own longest side at most, shorter than a 2D texture's (MEASURED: Metal's
     // validation stops 24000 bytes past 16384, found by the fuzzer).
     let volume = made(
@@ -1847,7 +1847,7 @@ pub fn refuses_copy_pitches_metal_does_not_take<M: Metal>(mut subject: M) {
             source_buffer: buffer.clone(),
             source_offset: u64::MIN,
             source_bytes_per_row: u64::from(BEYOND_3D_SIDE) * RGBA8_BYTES,
-            source_bytes_per_image: 0,
+            source_bytes_per_image: u64::MIN,
             source_size: Size {
                 width: TARGET_SIDE,
                 height: 1,
@@ -1915,9 +1915,9 @@ pub fn adds_occlusion_counts_across_passes<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let depth_stencil = no_depth(&mut subject);
     let vertices = covering(&mut subject);
-    let color = filled(&mut subject, &[0; COLOR_BYTES as usize]);
+    let color = filled(&mut subject, &[u8::MIN; COLOR_BYTES as usize]);
     let texture = target(&mut subject);
-    let results = filled(&mut subject, &[0; VISIBILITY_RESULT_BYTES as usize]);
+    let results = filled(&mut subject, &[u8::MIN; VISIBILITY_RESULT_BYTES as usize]);
     let mut descriptor = pass(&texture);
     descriptor.visibility_result_buffer = Some(&results);
     let bindings = vec![
@@ -1942,9 +1942,9 @@ pub fn adds_occlusion_counts_across_passes<M: Metal>(mut subject: M) {
             .expect("Metal answers encode render commands");
     }
     finish(&mut subject, &command_buffer);
-    let mut read = [0; VISIBILITY_RESULT_BYTES as usize];
+    let mut read = [u8::MIN; VISIBILITY_RESULT_BYTES as usize];
     subject
-        .read_contents(&results, 0, &mut read)
+        .read_contents(&results, u64::MIN, &mut read)
         .expect("Metal answers read contents");
     assert_eq!(
         u64::from_le_bytes(read),
@@ -2104,8 +2104,16 @@ pub fn refuses_every_range_whose_end_wraps<M: Metal>(mut subject: M) {
                 "an offset of {offset}"
             );
         }
-        assert!(subject.write_contents(&buffer, offset, &[0; 8]).is_err());
-        assert!(subject.read_contents(&buffer, offset, &mut [0; 8]).is_err());
+        assert!(
+            subject
+                .write_contents(&buffer, offset, &[u8::MIN; 8])
+                .is_err()
+        );
+        assert!(
+            subject
+                .read_contents(&buffer, offset, &mut [u8::MIN; 8])
+                .is_err()
+        );
         refuses_dispatch(
             &mut subject,
             vec![ComputeCommand::SetBuffer {
@@ -2176,7 +2184,7 @@ pub fn refuses_every_range_whose_end_wraps<M: Metal>(mut subject: M) {
     }
     let state = pipeline(&mut subject, FLAT);
     let drawn = target(&mut subject);
-    let results = filled(&mut subject, &[0; VISIBILITY_RESULT_BYTES as usize]);
+    let results = filled(&mut subject, &[u8::MIN; VISIBILITY_RESULT_BYTES as usize]);
     let mut counted = pass(&drawn);
     counted.visibility_result_buffer = Some(&results);
     let indices = filled(&mut subject, &pattern(64));
@@ -2375,9 +2383,9 @@ pub fn refuses_a_runtime_array_shorter_than_one_element<M: Metal>(mut subject: M
         .expect("Metal answers encode compute commands");
     finish(&mut subject, &command_buffer);
     // Only the one bound word may change, though eight threads write.
-    let mut read = vec![0; bytes.len()];
+    let mut read = vec![u8::MIN; bytes.len()];
     subject
-        .read_contents(&buffer, 0, &mut read)
+        .read_contents(&buffer, u64::MIN, &mut read)
         .expect("Metal answers read contents");
     let bound = WORDS_BYTES as usize..(WORDS_BYTES + RGBA8_BYTES) as usize;
     let outside = |b: &[u8]| -> Vec<u8> {
@@ -2618,7 +2626,7 @@ pub fn draws_from_a_vertex_buffer_shorter_than_one_element<M: Metal>(mut subject
     let depth_stencil = no_depth(&mut subject);
     let short = filled(&mut subject, &pattern(4));
     let vertices = covering(&mut subject);
-    let color = filled(&mut subject, &[0; COLOR_BYTES as usize]);
+    let color = filled(&mut subject, &[u8::MIN; COLOR_BYTES as usize]);
     for bytes in [false, true] {
         let shorter = if bytes {
             RenderCommand::SetVertexBytes {
@@ -2711,7 +2719,7 @@ fn green_and_clear() -> (Vec<u8>, Vec<u8>) {
     let texels = (TARGET_SIDE * TARGET_SIDE) as usize;
     (
         [0, 255, 0, 255].repeat(texels),
-        vec![0; texels * RGBA8_BYTES as usize],
+        vec![u8::MIN; texels * RGBA8_BYTES as usize],
     )
 }
 
@@ -2735,7 +2743,7 @@ fn green_draw<M: Metal>(
     let vertices = covering(subject);
     let color = filled(
         subject,
-        &word_bytes(&[0, 1.0f32.to_bits(), 0, 1.0f32.to_bits()]),
+        &word_bytes(&[u32::MIN, 1.0f32.to_bits(), u32::MIN, 1.0f32.to_bits()]),
     );
     let mut commands = covering_draw(
         state,
@@ -2783,7 +2791,7 @@ pub fn draws_with_counts_the_gpu_reads<M: Metal>(mut subject: M) {
         ([3, 1, 0, 0], &green),
         ([3, 1, 0, most - 1], &green),
         ([3, 2, 0, most - 1], &clear),
-        ([3, 1, most - 1, 0], &clear),
+        ([3, 1, most - 1, u32::MIN], &clear),
         ([3, 2, 0, most], &clear),
         ([most, most, most, most], &clear),
         ([0, 1, 0, 0], &clear),
@@ -2812,9 +2820,9 @@ pub fn draws_with_counts_the_gpu_reads<M: Metal>(mut subject: M) {
         ([3, 1, 0, 0, 0], 16, &clear),
         ([1, 1, 0, 0, 0], 24, &clear),
         ([0, 1, 0, 0, 0], 24, &clear),
-        ([2, 1, most, 0, 0], 12, &clear),
+        ([2, 1, most, u32::MIN, u32::MIN], 12, &clear),
         ([3, 2, 0, 0, most - 1], 12, &clear),
-        ([most, 1, 0, 0, 0], 12, &clear),
+        ([most, 1, u32::MIN, u32::MIN, u32::MIN], 12, &clear),
     ] {
         let buffer = filled(&mut subject, &word_bytes(&arguments));
         let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
@@ -2839,8 +2847,8 @@ pub fn draws_with_counts_the_gpu_reads<M: Metal>(mut subject: M) {
 pub fn draws_with_counts_written_before_them_and_waits_for_writes<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, _) = green_and_clear();
-    let written = filled(&mut subject, &word_bytes(&[3, 1, 0, 0]));
-    let arguments = filled(&mut subject, &[0; 16]);
+    let written = filled(&mut subject, &word_bytes(&[3, 1, u32::MIN, u32::MIN]));
+    let arguments = filled(&mut subject, &[u8::MIN; 16]);
     let draw = RenderCommand::DrawPrimitivesIndirect {
         primitive_type: PrimitiveType::Triangle,
         indirect_buffer: arguments.clone(),
@@ -2867,14 +2875,14 @@ pub fn draws_with_counts_written_before_them_and_waits_for_writes<M: Metal>(mut 
         .encode_render_commands(&command_buffer, &pass(&texture), &commands)
         .expect("Metal answers encode render commands");
     assert_eq!(
-        subject.write_contents(&arguments, 0, &[0; 16]),
+        subject.write_contents(&arguments, u64::MIN, &[u8::MIN; 16]),
         Err(WriteContentsError::UsedByUncommittedWork)
     );
     subject
         .commit(&command_buffer)
         .expect("Metal answers commit");
     subject
-        .write_contents(&arguments, 0, &[0; 16])
+        .write_contents(&arguments, u64::MIN, &[u8::MIN; 16])
         .expect("Metal answers write contents");
     assert_eq!(
         subject.status(&command_buffer),
@@ -2901,7 +2909,7 @@ pub fn dispatches_threadgroups_the_gpu_reads<M: Metal>(mut subject: M) {
         ([1, 1, 1], 0, false),
         ([widest + 1, 1, 1], u32::MAX, false),
         ([u32::MAX, 1, 1], u32::MAX, false),
-        ([2, 1, 0], 2, false),
+        ([2, 1, u32::MIN], 2, false),
     ] {
         let buffer = filled(&mut subject, &word_bytes(&words));
         let arguments = filled(&mut subject, &word_bytes(&groups));
@@ -2928,9 +2936,9 @@ pub fn dispatches_threadgroups_the_gpu_reads<M: Metal>(mut subject: M) {
             )
             .expect("Metal answers encode compute commands");
         finish(&mut subject, &command_buffer);
-        let mut read = vec![0; WORDS_BYTES as usize];
+        let mut read = vec![u8::MIN; WORDS_BYTES as usize];
         subject
-            .read_contents(&buffer, 0, &mut read)
+            .read_contents(&buffer, u64::MIN, &mut read)
             .expect("Metal answers read contents");
         let expected: Vec<u32> = if doubled {
             words.iter().map(|w| w * 2).collect()
@@ -2951,7 +2959,19 @@ pub fn dispatches_threadgroups_the_gpu_reads<M: Metal>(mut subject: M) {
 pub fn refuses_indirect_arguments_outside_their_buffer<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
-    let arguments = filled(&mut subject, &word_bytes(&[3, 1, 0, 0, 0, 0, 0, 0]));
+    let arguments = filled(
+        &mut subject,
+        &word_bytes(&[
+            3,
+            1,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+        ]),
+    );
     let indices = filled(&mut subject, &word_bytes(&COVERING_INDICES));
     let mut offsets = vec![2, 17, 20, 32, 36];
     offsets.extend(WRAPPING_OFFSETS);
@@ -2968,10 +2988,10 @@ pub fn refuses_indirect_arguments_outside_their_buffer<M: Metal>(mut subject: M)
         (13, 0),
         (16, 0),
         (u64::MAX - 3, 0),
-        (0, 2),
-        (0, 16),
-        (0, u64::MAX - 3),
-        (0, u64::MAX),
+        (u64::MIN, 2),
+        (u64::MIN, 16),
+        (u64::MIN, u64::MAX - 3),
+        (u64::MIN, u64::MAX),
     ] {
         let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
             primitive_type: PrimitiveType::Triangle,
@@ -3092,7 +3112,7 @@ pub fn steps_instance_buffers_by_their_rate<M: Metal>(mut subject: M) {
                 format: VertexFormat::Float,
             }],
         };
-        let vertex_buffers = [layout(VERTICES, 0, 1), layout(VERTICES + 1, 1, rate)];
+        let vertex_buffers = [layout(VERTICES, u32::MIN, 1), layout(VERTICES + 1, 1, rate)];
         let source = |stage, entry_point| FunctionSource {
             module: &module,
             info: &info,
@@ -3156,7 +3176,7 @@ pub fn steps_instance_buffers_by_their_rate<M: Metal>(mut subject: M) {
         finish(&mut subject, &command_buffer);
         let element = |x: u32| BASE_INSTANCE + x.checked_div(rate).unwrap_or(u32::MIN);
         let row: Vec<u8> = (0..TARGET_SIDE)
-            .flat_map(|x| [stepped_red(element(x)), 0, 0, u8::MAX])
+            .flat_map(|x| [stepped_red(element(x)), u8::MIN, u8::MIN, u8::MAX])
             .collect();
         assert_eq!(
             read_texture(&mut subject, &texture),
@@ -3194,7 +3214,10 @@ pub fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer<M: Metal>(mut sub
     let state = pipeline(&mut subject, FLAT);
     let (green, clear) = green_and_clear();
     // Three 16-bit indices 0, 1, 2 and one byte more: 7 bytes.
-    let indices = filled(&mut subject, &[0, 0, 1, 0, 2, 0, 0xff]);
+    let indices = filled(
+        &mut subject,
+        &[u8::MIN, u8::MIN, 1, u8::MIN, 2, u8::MIN, 0xff],
+    );
     for (arguments, index_offset, drawn) in [
         ([3, 1, 0, 0, 0], 0u64, &green),
         // From byte 2, five bytes are left: two whole indices.
@@ -3203,7 +3226,7 @@ pub fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer<M: Metal>(mut sub
         // From byte 6, one byte: no whole index.
         ([1, 1, 0, 0, 0], 6, &clear),
         ([3, 1, 1, 0, 0], 0, &clear),
-        ([u32::MAX, 1, 1, 0, 0], 0, &clear),
+        ([u32::MAX, 1, 1, u32::MIN, u32::MIN], 0, &clear),
     ] {
         let buffer = filled(&mut subject, &word_bytes(&arguments));
         let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
@@ -3222,7 +3245,10 @@ pub fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer<M: Metal>(mut sub
     }
     let texture = target(&mut subject);
     for index_offset in [1u64, 7, 8] {
-        let buffer = filled(&mut subject, &word_bytes(&[1, 1, 0, 0, 0]));
+        let buffer = filled(
+            &mut subject,
+            &word_bytes(&[1, 1, u32::MIN, u32::MIN, u32::MIN]),
+        );
         let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
             primitive_type: PrimitiveType::Triangle,
             index_type: IndexType::UInt16,
@@ -3243,11 +3269,23 @@ pub fn draws_with_one_buffer_in_every_role_and_arguments_at_its_end<M: Metal>(mu
     let state = pipeline(&mut subject, FLAT);
     let (green, clear) = green_and_clear();
     // Words: the indexed arguments [3, 1, 0, 0, 0], read as indices 3, 1, 0.
-    let shared = filled(&mut subject, &word_bytes(&[3, 1, 0, 0, 0, 0, 0, 0]));
+    let shared = filled(
+        &mut subject,
+        &word_bytes(&[
+            3,
+            1,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+        ]),
+    );
     let depth_stencil = no_depth(&mut subject);
     let color = filled(
         &mut subject,
-        &word_bytes(&[0, 1.0f32.to_bits(), 0, 1.0f32.to_bits()]),
+        &word_bytes(&[u32::MIN, 1.0f32.to_bits(), u32::MIN, 1.0f32.to_bits()]),
     );
     let commands = vec![
         RenderCommand::SetRenderPipelineState(state.clone()),
@@ -3318,7 +3356,7 @@ pub fn draws_with_one_buffer_in_every_role_and_arguments_at_its_end<M: Metal>(mu
         &green,
         "arguments at the buffer's end"
     );
-    let short = filled(&mut subject, &word_bytes(&[3, 1, 0, 0]));
+    let short = filled(&mut subject, &word_bytes(&[3, 1, u32::MIN, u32::MIN]));
     let draw = RenderCommand::DrawIndexedPrimitivesIndirect {
         primitive_type: PrimitiveType::Triangle,
         index_type: IndexType::UInt32,
@@ -3375,14 +3413,18 @@ pub fn draws_a_thousand_indirect_draws_in_one_pass<M: Metal>(mut subject: M) {
     let most = u32::MAX;
     // Read as an indexed draw: past the three indices, or first instance plus instances wrapping.
     let hostile: [[u32; 5]; 5] = [
-        [3, 1, 1, 0, 0],
-        [most, 1, 0, 0, 0],
-        [3, 2, 0, 0, most],
-        [2, 1, most, 0, 0],
-        [3, most, 0, 0, 2],
+        [3, 1, 1, u32::MIN, u32::MIN],
+        [most, 1, u32::MIN, u32::MIN, u32::MIN],
+        [3, 2, u32::MIN, u32::MIN, most],
+        [2, 1, most, u32::MIN, u32::MIN],
+        [3, most, u32::MIN, u32::MIN, 2],
     ];
     // Read as a draw without indices: first vertex plus count, or first instance plus instances, wrapping.
-    let plain: [[u32; 5]; 3] = [[3, 1, most, 0, 0], [3, 2, 0, most, 0], [most, 1, 1, 0, 0]];
+    let plain: [[u32; 5]; 3] = [
+        [3, 1, most, u32::MIN, u32::MIN],
+        [3, 2, u32::MIN, most, u32::MIN],
+        [most, 1, 1, u32::MIN, u32::MIN],
+    ];
     let indices = filled(&mut subject, &word_bytes(&COVERING_INDICES));
     for last_is_good in [true, false] {
         let mut words = Vec::new();
@@ -3432,7 +3474,10 @@ pub fn draws_a_thousand_indirect_draws_in_one_pass<M: Metal>(mut subject: M) {
 pub fn draws_the_largest_count_from_vertex_zero<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let (green, _) = green_and_clear();
-    let buffer = filled(&mut subject, &word_bytes(&[u32::MAX, 1, 0, 0]));
+    let buffer = filled(
+        &mut subject,
+        &word_bytes(&[u32::MAX, 1, u32::MIN, u32::MIN]),
+    );
     let draw = RenderCommand::DrawPrimitivesIndirect {
         primitive_type: PrimitiveType::Triangle,
         indirect_buffer: buffer,
@@ -3488,13 +3533,22 @@ pub fn writes_the_gpu_clock_in_nanoseconds<M: Metal>(mut subject: M) {
     };
     let words = filled(
         &mut subject,
-        &word_bytes(&[1, SPIN_STEPS, 0, 0, 0, 0, 0, 0]),
+        &word_bytes(&[
+            1,
+            SPIN_STEPS,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+        ]),
     );
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
     subject
-        .encode_timestamp(&command_buffer, &timestamps, 0)
+        .encode_timestamp(&command_buffer, &timestamps, u32::MIN)
         .expect("Metal answers encode timestamp");
     spin(&mut subject, &command_buffer, &words);
     subject
@@ -3503,7 +3557,7 @@ pub fn writes_the_gpu_clock_in_nanoseconds<M: Metal>(mut subject: M) {
     subject
         .encode_timestamp(&command_buffer, &timestamps, 2)
         .expect("Metal answers encode timestamp");
-    let mut read = [0; 3];
+    let mut read = [u64::MIN; 3];
     assert_eq!(
         subject.read_timestamps(&timestamps, 0, &mut read),
         Err(wcontainers_metal::ReadTimestampsError::UsedByUncommittedWork)
@@ -3548,14 +3602,14 @@ pub fn refuses_timestamps_outside_their_buffers<M: Metal>(mut subject: M) {
         );
     }
     for (first, count) in [(0, 5), (4, 1), (3, 2), (5, 0), (u32::MAX, 2), (1, 4)] {
-        let mut into = vec![0; count];
+        let mut into = vec![u64::MIN; count];
         assert_eq!(
             subject.read_timestamps(&timestamps, first, &mut into),
             Err(wcontainers_metal::ReadTimestampsError::OutOfRange),
             "a read of {count} from {first}"
         );
     }
-    let mut none = [0; 0];
+    let mut none = [u64::MIN; 0];
     subject
         .read_timestamps(&timestamps, 4, &mut none)
         .expect("Metal answers read timestamps");
@@ -3563,7 +3617,7 @@ pub fn refuses_timestamps_outside_their_buffers<M: Metal>(mut subject: M) {
         .commit(&command_buffer)
         .expect("Metal answers commit");
     assert_eq!(
-        subject.encode_timestamp(&command_buffer, &timestamps, 0),
+        subject.encode_timestamp(&command_buffer, &timestamps, u32::MIN),
         Err(wcontainers_metal::EncodeTimestampError::Committed)
     );
 }
@@ -3575,13 +3629,22 @@ pub fn keeps_a_timestamp_buffer_dropped_before_its_work_runs<M: Metal>(mut subje
     };
     let words = filled(
         &mut subject,
-        &word_bytes(&[1, SPIN_STEPS, 0, 0, 0, 0, 0, 0]),
+        &word_bytes(&[
+            1,
+            SPIN_STEPS,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+        ]),
     );
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
     subject
-        .encode_timestamp(&command_buffer, &timestamps, 0)
+        .encode_timestamp(&command_buffer, &timestamps, u32::MIN)
         .expect("Metal answers encode timestamp");
     spin(&mut subject, &command_buffer, &words);
     subject
@@ -3600,13 +3663,22 @@ pub fn waits_for_a_dropped_writer_before_reading_timestamps<M: Metal>(mut subjec
     };
     let words = filled(
         &mut subject,
-        &word_bytes(&[1, SPIN_STEPS, 0, 0, 0, 0, 0, 0]),
+        &word_bytes(&[
+            1,
+            SPIN_STEPS,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+            u32::MIN,
+        ]),
     );
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
     subject
-        .encode_timestamp(&command_buffer, &timestamps, 0)
+        .encode_timestamp(&command_buffer, &timestamps, u32::MIN)
         .expect("Metal answers encode timestamp");
     spin(&mut subject, &command_buffer, &words);
     subject
@@ -3616,7 +3688,7 @@ pub fn waits_for_a_dropped_writer_before_reading_timestamps<M: Metal>(mut subjec
         .commit(&command_buffer)
         .expect("Metal answers commit");
     drop(command_buffer);
-    let mut read = [0; 2];
+    let mut read = [u64::MIN; 2];
     subject
         .read_timestamps(&timestamps, 0, &mut read)
         .expect("Metal answers read timestamps");
@@ -3656,13 +3728,13 @@ pub fn writes_and_reads_timestamps_at_the_most_places<M: Metal>(mut subject: M) 
             .expect("Metal answers encode timestamp");
     }
     finish(&mut subject, &command_buffer);
-    let mut read = vec![0; most as usize];
+    let mut read = vec![u64::MIN; most as usize];
     subject
         .read_timestamps(&timestamps, 0, &mut read)
         .expect("Metal answers read timestamps");
     let last = read[most as usize - 1];
     assert!(read[0] != 0 && read[0] <= last, "{} {last}", read[0]);
-    let mut one = [0; 1];
+    let mut one = [u64::MIN; 1];
     subject
         .read_timestamps(&timestamps, most - 1, &mut one)
         .expect("Metal answers read timestamps");

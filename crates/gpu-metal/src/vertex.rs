@@ -246,7 +246,7 @@ impl<M: Metal> MetalGpu<M> {
             places.sort_by_key(|(_, a)| a.offset);
             // Every place and length below is checked: one that overflows refuses the draw.
             let overflow = GpuError::Invalid("a vertex stream whose elements overflow");
-            let mut stride: u32 = 0;
+            let mut stride: u32 = u32::MIN;
             for (i, a) in &places {
                 let format = widened(a.format).unwrap_or(a.format);
                 layout.attributes[*i] = Some(VertexAttribute {
@@ -292,16 +292,17 @@ impl<M: Metal> MetalGpu<M> {
             let mut bytes = Vec::new();
             for (at, size) in reads {
                 let offset = binding.offset.checked_add(at).ok_or(overflow)?;
-                let mut element = vec![0; usize::try_from(size).map_err(|_| overflow)?];
+                let mut element = vec![u8::MIN; usize::try_from(size).map_err(|_| overflow)?];
                 self.read_after_use(binding.buffer, offset, &mut element, place::WIDENED_READS)?;
                 if packed != source_stride {
-                    element.resize(usize::try_from(packed).map_err(|_| overflow)?, 0);
+                    element.resize(usize::try_from(packed).map_err(|_| overflow)?, u8::MIN);
                 }
                 bytes.extend_from_slice(&element);
             }
             let size = |n: u64| usize::try_from(n).map_err(|_| overflow);
             // The elements before the first the draw reads stay zero.
-            let mut out = vec![0; size(first.checked_mul(u64::from(stride)).ok_or(overflow)?)?];
+            let mut out =
+                vec![u8::MIN; size(first.checked_mul(u64::from(stride)).ok_or(overflow)?)?];
             out.reserve(size(copy_bytes)?.saturating_sub(out.len()));
             for element in 0..size(end.saturating_sub(first))? {
                 let at = element.checked_mul(size(packed)?).ok_or(overflow)?;
@@ -313,7 +314,10 @@ impl<M: Metal> MetalGpu<M> {
                     let Some(src) = bytes.get(start..end) else {
                         let widened_bytes =
                             convert::vertex_bytes(widened(a.format).unwrap_or(a.format)) as usize;
-                        out.resize(out.len().checked_add(widened_bytes).ok_or(overflow)?, 0);
+                        out.resize(
+                            out.len().checked_add(widened_bytes).ok_or(overflow)?,
+                            u8::MIN,
+                        );
                         continue;
                     };
                     widen(a.format, src, &mut out);
@@ -321,15 +325,15 @@ impl<M: Metal> MetalGpu<M> {
                         .len()
                         .checked_next_multiple_of(ATTRIBUTE_ALIGNMENT as usize)
                         .ok_or(overflow)?;
-                    out.resize(aligned, 0);
+                    out.resize(aligned, u8::MIN);
                 }
             }
             layout.streams[stream] = Some(VertexStream {
-                stride: if s.stride == 0 { 0 } else { stride },
+                stride: if s.stride == 0 { u32::MIN } else { stride },
                 ..*s
             });
             let buffer = self.staging(&out).ok_or(GpuError::OutOfMemory)?.buffer;
-            streams.push(Some((buffer, 0, out.len() as u64)));
+            streams.push(Some((buffer, u64::MIN, out.len() as u64)));
         }
         let id = self.widened_layout(call.vertex_layout.id, layout);
         Ok(Some(Widened {

@@ -25,6 +25,9 @@ macro_rules! inside_pass {
         let open: bool = $open;
         #[cfg(feature = "reach")]
         crate::reach::add_outcome($place, open);
+        // Without the count the place is only named, so that every place keeps one.
+        #[cfg(not(feature = "reach"))]
+        let _: &str = $place;
         open
     }};
 }
@@ -32,33 +35,34 @@ macro_rules! inside_pass {
 /// The places that would wait for, commit or nest work while a pass is open.
 ///
 /// Each ends the pass and opens it again after, or refuses.
-pub mod place {
+mod place {
     /// The place of a submit, which commits.
-    pub const SUBMIT: &str = "submit: commits";
+    pub(crate) const SUBMIT: &str = "submit: commits";
     /// The place of a wait for a read back of work not yet committed.
-    pub const WAIT_READ: &str = "wait_read: commits the work it waits for";
+    pub(crate) const WAIT_READ: &str = "wait_read: commits the work it waits for";
     /// The place of a read back finished before its work is committed.
-    pub const FINISH_READ: &str = "finish_read: commits the work it waits for";
+    pub(crate) const FINISH_READ: &str = "finish_read: commits the work it waits for";
     /// The place of a read back at once, which waits for the work before it.
-    pub const READ_BACK_NOW: &str = "read_back_now: commits the work it waits for";
+    pub(crate) const READ_BACK_NOW: &str = "read_back_now: commits the work it waits for";
     /// The place of a resolve of timestamps, which waits for the work that writes them.
-    pub const RESOLVE_QUERIES: &str = "resolve_queries: commits the work it waits for";
+    pub(crate) const RESOLVE_QUERIES: &str = "resolve_queries: commits the work it waits for";
     /// The place of a capture, which reads its indices and streams on the host after the work that writes them.
-    pub const CAPTURE_READS: &str = "capture: commits the work its reads wait for";
+    pub(crate) const CAPTURE_READS: &str = "capture: commits the work its reads wait for";
     /// The place of a draw of a stream widened on the host, which reads it after the work that writes it.
-    pub const WIDENED_READS: &str = "widened stream: commits the work its reads wait for";
+    pub(crate) const WIDENED_READS: &str = "widened stream: commits the work its reads wait for";
     /// The place of a present, which draws the frame in a pass of its own and commits: refused.
-    pub const PRESENT: &str = "present: refused inside a pass";
+    pub(crate) const PRESENT: &str = "present: refused inside a pass";
     /// The place of a dispatch, which Metal would run before the pass's draws: refused.
-    pub const DISPATCH: &str = "dispatch: refused inside a pass";
+    pub(crate) const DISPATCH: &str = "dispatch: refused inside a pass";
     /// The place of mipmaps generated, which may draw each level in a pass of its own: refused.
-    pub const GENERATE_MIPS: &str = "generate_mips: refused inside a pass";
+    pub(crate) const GENERATE_MIPS: &str = "generate_mips: refused inside a pass";
     /// The place of a resolve, a pass of its own: refused.
-    pub const RESOLVE: &str = "resolve: refused inside a pass";
+    pub(crate) const RESOLVE: &str = "resolve: refused inside a pass";
     /// The place of a pass begun, which would drop the open pass's draws: refused.
-    pub const BEGIN_PASS: &str = "begin_pass: refused inside a pass";
+    pub(crate) const BEGIN_PASS: &str = "begin_pass: refused inside a pass";
 
     /// Every place, which the fuzzer's reach table lists.
+    #[cfg(feature = "reach")]
     pub const ALL: &[&str] = &[
         SUBMIT,
         WAIT_READ,
@@ -80,6 +84,9 @@ pub mod place {
 pub mod reach {
     use std::collections::BTreeMap;
     use std::sync::{Mutex, PoisonError};
+
+    /// Every place, which the fuzzer's reach table lists.
+    pub use crate::place::ALL as PLACES;
 
     /// How often one place found a pass open, and found none.
     #[derive(Clone, Copy, Default)]
@@ -272,8 +279,8 @@ impl<M: Metal> MetalGpu<M> {
         let caps = Caps {
             adapter: AdapterInfo {
                 name: metal.name(),
-                vendor: 0,
-                device: 0,
+                vendor: u32::MIN,
+                device: u32::MIN,
                 software: false,
             },
             features: Features::COMPUTE
@@ -461,7 +468,7 @@ impl<M: Metal> MetalGpu<M> {
     fn staging(&mut self, bytes: &[u8]) -> Option<ByteRange<M>> {
         let length = rounded(bytes.len() as u64)?;
         let buffer = self.metal.make_buffer(length).ok()?;
-        self.metal.write_contents(&buffer, 0, bytes).ok()?;
+        self.metal.write_contents(&buffer, u64::MIN, bytes).ok()?;
         Some(ByteRange {
             buffer,
             length,
@@ -603,7 +610,7 @@ impl<M: Metal> MetalGpu<M> {
                 let origin = Origin {
                     x: region.origin.x,
                     y: region.origin.y,
-                    z: if three_d { region.origin.z } else { 0 },
+                    z: if three_d { region.origin.z } else { u32::MIN },
                 };
                 let (width, height) = level_extent(region, extent);
                 let size = Size {
@@ -820,7 +827,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             size: desc.size,
             usage: desc.usage,
             raw: raw.into(),
-            last_use: 0.into(),
+            last_use: u64::MIN.into(),
         })))
     }
 
@@ -942,7 +949,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                     texture_type,
                     first_level: desc.base_mip,
                     level_count: desc.mip_count,
-                    first_slice: if three_d { 0 } else { desc.base_layer },
+                    first_slice: if three_d { u32::MIN } else { desc.base_layer },
                     slice_count: if three_d { 1 } else { desc.layer_count },
                     swizzle: convert::view_swizzle(desc.format),
                 },
@@ -1086,7 +1093,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             ),
             (desc.depth_minus_one, Features::CLIP_DEPTH_MINUS_ONE),
             (f32::from_bits(desc.line_width) != 1.0, Features::WIDE_LINES),
-            (desc.sample_mask != !0, Features::SAMPLE_MASK),
+            (desc.sample_mask != u32::MAX, Features::SAMPLE_MASK),
             // Metal drops a constant bias's fraction (MEASURED on an Apple M5: 2.75 moves depth by 2 units).
             (
                 f32::from_bits(desc.depth_bias).fract() != 0.0,
@@ -1222,7 +1229,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             {
                 Ok(fresh) => {
                     *buffer.raw.borrow_mut() = fresh;
-                    buffer.last_use.set(0);
+                    buffer.last_use.set(u64::MIN);
                 }
                 Err(_) => {
                     self.fail(format_args!("no buffer to rename into"));
@@ -1265,7 +1272,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             region,
             extent,
             &staging.buffer,
-            0,
+            u64::MIN,
             u64::from(row_pitch),
             u64::from(rows_per_layer),
             true,
@@ -1358,12 +1365,12 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             };
             self.queue_blit(BlitCommand::CopyFromTextureToTexture {
                 source_texture: s.raw.clone(),
-                source_slice: if s3 { 0 } else { source_layer },
+                source_slice: if s3 { u32::MIN } else { source_layer },
                 source_level: src.mip,
                 source_origin: Origin {
                     x: src.origin.x,
                     y: src.origin.y,
-                    z: if s3 { src.origin.z } else { 0 },
+                    z: if s3 { src.origin.z } else { u32::MIN },
                 },
                 source_size: Size {
                     width,
@@ -1371,12 +1378,12 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                     depth: if s3 { extent.depth_or_layers } else { 1 },
                 },
                 destination_texture: d.raw.clone(),
-                destination_slice: if d3 { 0 } else { destination_layer },
+                destination_slice: if d3 { u32::MIN } else { destination_layer },
                 destination_level: dst.mip,
                 destination_origin: Origin {
                     x: dst.origin.x,
                     y: dst.origin.y,
-                    z: if d3 { dst.origin.z } else { 0 },
+                    z: if d3 { dst.origin.z } else { u32::MIN },
                 },
             });
         }
@@ -1566,8 +1573,16 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                     .metal
                     .make_buffer(rounded(length).ok_or(GpuError::OutOfMemory)?)
                     .map_err(|_| GpuError::OutOfMemory)?;
-                let commands = self
-                    .buffer_texture_copies(&texture, region, *extent, &buffer, 0, row, rows, false);
+                let commands = self.buffer_texture_copies(
+                    &texture,
+                    region,
+                    *extent,
+                    &buffer,
+                    u64::MIN,
+                    row,
+                    rows,
+                    false,
+                );
                 self.queue_copies(commands);
                 Ok(Shared(Rc::new(ReadbackObj {
                     serial: self.serial,
@@ -1646,8 +1661,11 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             return;
         }
         // The length was checked against its buffer or texture when the read back began.
-        let mut bytes = vec![0; usize::try_from(readback.length).unwrap_or(usize::MIN)];
-        if let Err(error) = self.metal.read_contents(&readback.buffer, 0, &mut bytes) {
+        let mut bytes = vec![u8::MIN; usize::try_from(readback.length).unwrap_or(usize::MIN)];
+        if let Err(error) = self
+            .metal
+            .read_contents(&readback.buffer, u64::MIN, &mut bytes)
+        {
             self.fail(format_args!("read refused: {error:?}"));
             return;
         }
@@ -1875,7 +1893,8 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 self.record_slow_path(wcontainers_gpu::SlowPath::QueryResolveWait);
                 self.wait_serial(readback.serial, Some(place::RESOLVE_QUERIES));
             }
-            let mut bytes = vec![0; usize::try_from(query_bytes(count)).unwrap_or(usize::MIN)];
+            let mut bytes =
+                vec![u8::MIN; usize::try_from(query_bytes(count)).unwrap_or(usize::MIN)];
             self.finish_read(readback, &mut bytes);
             self.write_buffer(dst, dst_offset, &bytes, WriteMode::Ordered);
             return Ok(());

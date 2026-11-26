@@ -117,7 +117,7 @@ impl<M: Metal> MetalGpu<M> {
             });
             return;
         }
-        self.run_bytes(false, Some(&source), &destination, size, 0);
+        self.run_bytes(false, Some(&source), &destination, size, u8::MIN);
     }
 
     /// Sets `size` bytes to `value`, by a blit where both numbers are multiples of four and by a program otherwise.
@@ -158,11 +158,16 @@ impl<M: Metal> MetalGpu<M> {
                 .metal
                 .make_compute_pipeline_state(&function)
                 .map_err(|_| wcontainers_gpu::GpuError::Invalid("a byte program Metal refuses"))?;
-            let slot = |binding: u32| shader.slots.get(&(0, binding)).map(|&(_, index)| index);
+            let slot = |binding: u32| {
+                shader
+                    .slots
+                    .get(&(u32::MIN, binding))
+                    .map(|&(_, index)| index)
+            };
             let missing = wcontainers_gpu::GpuError::Invalid("a byte program without its bindings");
             let pipeline = BytePipeline {
                 state,
-                span: slot(0).ok_or(missing)?,
+                span: slot(u32::MIN).ok_or(missing)?,
                 source: slot(1),
                 destination: slot(2).ok_or(missing)?,
             };
