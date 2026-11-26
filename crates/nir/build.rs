@@ -55,6 +55,10 @@ const INCLUDES: &[&str] = &[
 ];
 
 /// The static libraries, by their folder in Mesa's build, in link order (users before what they use).
+/// Mesa's OpenGL library (`src/mesa`) is not one: the GLSL and preprocessor stand-ins give what the
+/// compiler takes of it, and a linker that takes archive members in one pass in order (ld.bfd, the
+/// default on ARM64 Linux) would take its definitions of the stand-ins' functions too, and with them
+/// the state tracker and the Gallium helpers it calls.
 const LIBRARIES: &[(&str, &str)] = &[
     ("src/gallium/drivers/zink", "zink"),
     ("src/compiler/glsl", "glsl_standalone"),
@@ -62,7 +66,6 @@ const LIBRARIES: &[(&str, &str)] = &[
     ("src/compiler/glsl", "glsl_util"),
     ("src/compiler/glsl/glcpp", "glcpp_standalone"),
     ("src/compiler/glsl/glcpp", "glcpp"),
-    ("src/mesa", "mesa"),
     ("src/compiler/spirv", "vtn"),
     ("src/compiler/nir", "nir"),
     ("src/compiler", "compiler"),
