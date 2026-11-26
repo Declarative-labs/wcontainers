@@ -130,6 +130,7 @@ impl Kernel {
     /// `sched_yield`: the current thread goes behind every thread waiting for its turn, as the
     /// reference's scheduler (EEVDF, which forfeits the caller's deadline) lets them run first.
     pub(crate) fn yield_turn(&mut self, tid: Tid) {
+        self.gave_way = true;
         if self.current != Some(tid) {
             return;
         }

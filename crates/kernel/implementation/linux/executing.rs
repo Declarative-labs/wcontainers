@@ -551,7 +551,9 @@ where
                     // An interrupt, for a call that waits for the lock or at the end of the
                     // executor's slice, ends the run, so the embedder does the outside's work
                     // between slices as Linux does its own between timer ticks.
-                    if exit == running::Exit::Stop {
+                    // A thread that gave way lets the machine's other tasks run on Linux; here
+                    // the embedder does the outside's work.
+                    if exit == running::Exit::Stop || core::mem::take(&mut kernel.gave_way) {
                         return interface::StopReason::Interrupted;
                     }
                     // A thread that traps often never reaches the end of an executor's slice, so
