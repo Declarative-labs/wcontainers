@@ -139,9 +139,7 @@ pub proof fn lemma_apply_all_append<Permission>(memory: Memory<Permission>, firs
         apply_all(memory, first + second) == apply_all(apply_all(memory, first), second),
     decreases second.len(),
 {
-    if second.len() == 0 {
-        assert(first + second =~= first);
-    } else {
+    if second.len() > 0 {
         lemma_apply_all_append(memory, first, second.drop_last());
         assert((first + second).drop_last() =~= first + second.drop_last());
     }
@@ -235,13 +233,10 @@ pub trait Simulator<Architecture: ProcessorArchitecture> {
                 && memory_of(after.memory_mutations@) == apply_all(memory_of(before.memory_mutations@), changes)),
     {
         let mut mutations = Vec::new();
-        let ghost none = mutations;
         let processor = self.simulate(&before.processor, before.memory(), &mut mutations)?;
         proof {
-            assert(assignments(none@) =~= Seq::empty());
             assert(assignments(before.memory_mutations@ + mutations@) =~= assignments(before.memory_mutations@) + assignments(mutations@));
             lemma_apply_all_append(zeroed::<Architecture>(), assignments(before.memory_mutations@), assignments(mutations@));
-            assert(none.applied_to(memory_of(before.memory_mutations@)) == memory_of(before.memory_mutations@));
             assert(mutations.applied_to(memory_of(before.memory_mutations@))
                 == apply_all(memory_of(before.memory_mutations@), assignments(mutations@)));
         }
@@ -320,12 +315,7 @@ impl<Architecture: ProcessorArchitecture> Clone for ExecutionState<'_, Architect
         proof {
             Architecture::clone_is_identity();
             assert(vstd::pervasive::cloned(self.processor, cloned.processor));
-            assert(assignments(cloned.memory_mutations@) =~= assignments(self.memory_mutations@)) by {
-                assert forall|index: int| 0 <= index < self.memory_mutations@.len()
-                    implies #[trigger] cloned.memory_mutations@[index]@ == self.memory_mutations@[index]@ by {
-                    assert(vstd::pervasive::cloned(self.memory_mutations@[index], cloned.memory_mutations@[index]));
-                }
-            }
+            assert(assignments(cloned.memory_mutations@) =~= assignments(self.memory_mutations@));
         }
         cloned
     }
@@ -412,8 +402,6 @@ impl<Architecture: ProcessorArchitecture> PartialEq for MemorySnapshot<'_, '_, A
                 let changes = choose|changes: Seq<Assignment<Architecture::PagePermission>>|
                     #![trigger apply_all(memory_of(self.mutations@), changes)] receives(none, mutations, changes)
                     && apply_all(memory_of(self.mutations@), changes) == memory_of(other.mutations@);
-                assert(assignments(none@) =~= Seq::empty());
-                assert(assignments(mutations@) =~= Seq::empty());
                 assert(mutations.applied_to(memory_of(self.mutations@)) == apply_all(none.applied_to(memory_of(self.mutations@)), changes));
             }
         }

@@ -73,7 +73,6 @@ pub trait BehaviorSource {
                 == state_after(before, old(self).shown(before.processor, memory_of(before.memory_mutations@))),
     {
         let mut mutations = Vec::new();
-        let ghost none = mutations;
         self.execute_single_instruction_in_place(
             &mut before.processor,
             MemorySnapshot {
@@ -82,10 +81,8 @@ pub trait BehaviorSource {
             &mut mutations,
         )?;
         proof {
-            assert(assignments(none@) =~= Seq::empty());
             assert(assignments(before.memory_mutations@ + mutations@) =~= assignments(before.memory_mutations@) + assignments(mutations@));
             lemma_apply_all_append(zeroed::<Self::Architecture>(), assignments(before.memory_mutations@), assignments(mutations@));
-            assert(none.applied_to(memory_of(before.memory_mutations@)) == memory_of(before.memory_mutations@));
             assert(mutations.applied_to(memory_of(before.memory_mutations@))
                 == apply_all(memory_of(before.memory_mutations@), assignments(mutations@)));
         }
@@ -139,9 +136,6 @@ pub trait BehaviorSource {
                     ==> #[trigger] candidates@.contains(behavior),
         {
             let ghost done = iterator.index() as int;
-            proof {
-                assert(before == states[done]);
-            }
             // VERUS: no proof through a `map` and `collect` chain here, so the behaviors are simulated by index into a list
             // sized as `collect` sizes it, whose type is named since the loop's invariant reads it first.
             let mut simulated_results: Vec<(_, ExecutionStateExpectation<'static, Self::Architecture>)> =
@@ -171,10 +165,6 @@ pub trait BehaviorSource {
                     });
                 }
             };
-            proof {
-                assert((observed_result.processor, memory_of(observed_result.memory_mutations@))
-                    == state_after(before, shown(before.processor, memory_of(before.memory_mutations@))));
-            }
             // VERUS: no proof through a `filter` and `collect` chain here, so the agreeing behaviors are kept by index, in a
             // list made to hold them all.
             let mut agreeing = Vec::with_capacity(simulated_results.len());
@@ -196,17 +186,9 @@ pub trait BehaviorSource {
                 }
                 proof {
                     let candidate = candidates@[index as int];
-                    assert(agrees == agrees_on(candidate, shown, before));
                     if agrees {
-                        assert(agrees_on_every_state(candidate, shown, states.take(done)));
-                        assert forall|state: int| 0 <= state <= done implies #[trigger] agrees_on(candidate, shown, states.take(done + 1)[state]) by {
-                            if state < done {
-                                assert(states.take(done)[state] == states.take(done + 1)[state]);
-                            }
-                        }
                         assert(agreeing@[agreeing@.len() - 1] == candidate);
                     }
-                    assert forall|at: int| 0 <= at < agreeing_before.len() implies #[trigger] agreeing@[at] == agreeing_before[at] by {}
                     assert forall|from: int| 0 <= from < index && #[trigger] agrees_on(candidates@[from], shown, before)
                         implies agreeing@.contains(candidates@[from]) by {
                         let at = choose|at: int| 0 <= at < agreeing_before.len() && agreeing_before[at] == candidates@[from];
@@ -218,9 +200,6 @@ pub trait BehaviorSource {
             proof {
                 assert forall|behavior| known.contains(behavior) && agrees_on_every_state(behavior, shown, states.take(done + 1))
                     implies #[trigger] agreeing@.contains(behavior) by {
-                    assert forall|state: int| 0 <= state < done implies #[trigger] agrees_on(behavior, shown, states.take(done)[state]) by {
-                        assert(states.take(done)[state] == states.take(done + 1)[state]);
-                    }
                     assert(candidates@.contains(behavior));
                     let at = choose|at: int| 0 <= at < candidates@.len() && candidates@[at] == behavior;
                     assert(agrees_on(candidates@[at], shown, states.take(done + 1)[done]));
@@ -298,16 +277,12 @@ pub trait BehaviorSource {
         {
             let ghost measured_before = measurements@;
             let ghost shown_at_call: Shown<Self::Architecture> = |processor, memory| self.shown(processor, memory);
-            proof {
-                assert(instruction == instructions[measured_before.len() as int]);
-            }
             measurements.push((
                 instruction,
                 self.measure_instruction(instruction, generator)?,
             ));
             proof {
                 assert(shown_at_call =~= shown);
-                assert forall|at: int| 0 <= at < measured_before.len() implies #[trigger] measurements@[at] == measured_before[at] by {}
             }
         }
         Ok(measurements)
