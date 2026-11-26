@@ -291,48 +291,46 @@ struct Context {
     flags: u32,
 }
 
-/// The raw bits of a format's parts.
-trait Bits: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double> {
-    fn sign_bit() -> u128 {
-        1 << (Self::BITS - 1)
-    }
-    fn quiet_bit() -> u128 {
-        1 << (Self::PRECISION - 2)
-    }
-    fn fraction_mask() -> u128 {
-        (1 << (Self::PRECISION - 1)) - 1
-    }
-    fn mask() -> u128 {
-        if Self::BITS == u128::BITS as usize {
-            u128::MAX
-        } else {
-            (1 << Self::BITS) - 1
-        }
-    }
-    fn default_nan() -> u128 {
-        (Self::mask() >> 1) & !(Self::fraction_mask() >> 1)
-    }
-    /// A double rounded to nearest in this format.
-    fn from_double(d: Double) -> Self;
+/// The sign bit of format `F`.
+fn sign_bit<F: Float>() -> u128 {
+    1 << (F::BITS - 1)
 }
 
-impl Bits for Half {
-    fn from_double(d: Double) -> Self {
-        d.convert(&mut false).value
-    }
+/// The quiet bit of a not-a-number of format `F`.
+fn quiet_bit<F: Float>() -> u128 {
+    1 << (F::PRECISION - 2)
 }
-impl Bits for Single {
-    fn from_double(d: Double) -> Self {
-        d.convert(&mut false).value
-    }
+
+/// The fraction bits of format `F`.
+fn fraction_mask<F: Float>() -> u128 {
+    (1 << (F::PRECISION - 1)) - 1
 }
-impl Bits for Double {
-    fn from_double(d: Double) -> Self {
-        d
+
+/// Every bit of format `F`.
+fn mask<F: Float>() -> u128 {
+    if F::BITS == u128::BITS as usize {
+        u128::MAX
+    } else {
+        (1 << F::BITS) - 1
     }
 }
 
-fn zero<F: Bits>(negative: bool) -> F {
+/// Arm's default not-a-number of format `F`: positive and quiet, with a zero payload.
+fn default_nan<F: Float>() -> u128 {
+    (mask::<F>() >> 1) & !(fraction_mask::<F>() >> 1)
+}
+
+/// A double rounded to nearest in format `F`.
+fn from_double<F: Float>(d: Double) -> F
+where
+    Double: FloatConvert<F>,
+{
+    d.convert(&mut false).value
+}
+
+fn zero<F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>>(
+    negative: bool,
+) -> F {
     if negative { -F::ZERO } else { F::ZERO }
 }
 
@@ -358,13 +356,18 @@ impl Context {
     }
 
     /// Flush to zero applies to single and double precision only.
-    fn flushes<F: Bits>(&self) -> bool {
+    fn flushes<F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>>(
+        &self,
+    ) -> bool {
         self.fpcr & FZ != 0 && F::BITS > Half::BITS
     }
 
     /// An operand, flushed to zero (raising input denormal) when FZ asks.
-    fn unpack<F: Bits>(&mut self, bits: u64) -> F {
-        let value = F::from_bits(u128::from(bits) & F::mask());
+    fn unpack<F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>>(
+        &mut self,
+        bits: u64,
+    ) -> F {
+        let value = F::from_bits(u128::from(bits) & mask::<F>());
         if self.flushes::<F>() && value.is_denormal() {
             self.flags |= IDC;
             return zero(value.is_negative());
@@ -374,7 +377,10 @@ impl Context {
 
     /// Arm's choice among not-a-number operands: the first signaling one, quieted, else the first quiet
     /// one; the default one under DN. `None` when no operand is one.
-    fn nans<F: Bits>(&mut self, operands: &[F]) -> Option<F> {
+    fn nans<F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>>(
+        &mut self,
+        operands: &[F],
+    ) -> Option<F> {
         let chosen = operands
             .iter()
             .find(|v| v.is_signaling())
@@ -385,17 +391,22 @@ impl Context {
         Some(self.quiet(*chosen))
     }
 
-    fn quiet<F: Bits>(&self, v: F) -> F {
+    fn quiet<F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>>(
+        &self,
+        v: F,
+    ) -> F {
         if self.fpcr & DN != 0 {
-            F::from_bits(F::default_nan())
+            F::from_bits(default_nan::<F>())
         } else {
-            F::from_bits(v.to_bits() | F::quiet_bit())
+            F::from_bits(v.to_bits() | quiet_bit::<F>())
         }
     }
 
-    fn default_nan<F: Bits>(&mut self) -> F {
+    fn default_nan<F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>>(
+        &mut self,
+    ) -> F {
         self.flags |= IOC;
-        F::from_bits(F::default_nan())
+        F::from_bits(default_nan::<F>())
     }
 
     /// A rounded result of an operation on numbers: its exceptions, Arm's underflow (tiny after rounding and
@@ -405,7 +416,10 @@ impl Context {
     /// exact before the rounding wherever the result can be near the largest number. Rounding towards zero
     /// gives the largest number with only inexact raised; whether that was an overflow is whether half the
     /// exact result reaches half the overflow threshold.
-    fn finish<F: Bits>(&mut self, op: impl Fn(Round, bool) -> StatusAnd<F>) -> F {
+    fn finish<F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>>(
+        &mut self,
+        op: impl Fn(Round, bool) -> StatusAnd<F>,
+    ) -> F {
         let StatusAnd { mut status, value } = op(self.round(), false);
         if value.is_finite()
             && value.abs() == F::largest()
@@ -432,7 +446,12 @@ impl Context {
 
     /// Raise a rounded result's exceptions. Arm raises underflow when the exact result is tiny (below the
     /// smallest normal number, before rounding) and inexact.
-    fn status<F: Bits>(&mut self, status: Status, value: F, tiny: bool) -> F {
+    fn status<F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>>(
+        &mut self,
+        status: Status,
+        value: F,
+        tiny: bool,
+    ) -> F {
         if status.contains(Status::INVALID_OP) {
             self.flags |= IOC;
         }
@@ -451,7 +470,16 @@ impl Context {
         value
     }
 
-    fn run<F: Bits>(&mut self, op: Operation, a: u64, b: u64, c: u64) -> u64 {
+    fn run<F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>>(
+        &mut self,
+        op: Operation,
+        a: u64,
+        b: u64,
+        c: u64,
+    ) -> u64
+    where
+        Double: FloatConvert<F>,
+    {
         use Operation as O;
         let bits = |v: F| v.to_bits() as u64;
         match op {
@@ -700,12 +728,12 @@ impl Context {
                     n
                 } else {
                     let raw = x.to_bits();
-                    let sign = raw & F::sign_bit();
-                    let exponent_mask = (F::mask() >> 1) & !F::fraction_mask();
+                    let sign = raw & sign_bit::<F>();
+                    let exponent_mask = (mask::<F>() >> 1) & !fraction_mask::<F>();
                     // Zeros and denormals: the largest finite exponent.
                     let exponent = if raw & exponent_mask == 0 {
                         // The largest exponent of a finite number.
-                        exponent_mask - (F::fraction_mask() + 1)
+                        exponent_mask - (fraction_mask::<F>() + 1)
                     } else {
                         !raw & exponent_mask
                     };
@@ -717,7 +745,12 @@ impl Context {
         bits(result)
     }
 
-    fn convert<F: Bits>(&mut self, a: u64, to: u8, odd: bool) -> u64 {
+    fn convert<F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>>(
+        &mut self,
+        a: u64,
+        to: u8,
+        odd: bool,
+    ) -> u64 {
         match to {
             HALF => self.convert_to::<F, Half>(a, odd),
             SINGLE => self.convert_to::<F, Single>(a, odd),
@@ -725,7 +758,14 @@ impl Context {
         }
     }
 
-    fn convert_to<F: Bits + FloatConvert<T>, T: Bits>(&mut self, a: u64, odd: bool) -> u64 {
+    fn convert_to<
+        F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double> + FloatConvert<T>,
+        T: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>,
+    >(
+        &mut self,
+        a: u64,
+        odd: bool,
+    ) -> u64 {
         let alternative_in = F::BITS == Half::BITS && self.fpcr & AHP != 0;
         if alternative_in && (a >> 10) & 0x1f == 0x1f {
             // The alternative half precision has no infinity or not-a-number: the top exponent is a number.
@@ -740,7 +780,7 @@ impl Context {
                 // No not-a-number in the alternative format: zero with the sign, and invalid.
                 self.flags |= IOC;
                 return if x.is_negative() {
-                    T::sign_bit() as u64
+                    sign_bit::<T>() as u64
                 } else {
                     0
                 };
@@ -749,27 +789,27 @@ impl Context {
                 self.flags |= IOC;
             }
             if self.fpcr & DN != 0 {
-                return T::default_nan() as u64;
+                return default_nan::<T>() as u64;
             }
             // Keep the sign and the top of the payload.
             let raw = x.to_bits();
-            let payload = raw & F::fraction_mask();
+            let payload = raw & fraction_mask::<F>();
             let payload = if T::PRECISION > F::PRECISION {
                 payload << (T::PRECISION - F::PRECISION)
             } else {
                 payload >> (F::PRECISION - T::PRECISION)
             };
-            let sign = if raw & F::sign_bit() != 0 {
-                T::sign_bit()
+            let sign = if raw & sign_bit::<F>() != 0 {
+                sign_bit::<T>()
             } else {
                 0
             };
-            return (sign | T::default_nan() | payload) as u64;
+            return (sign | default_nan::<T>() | payload) as u64;
         }
         if alternative && x.is_infinite() {
             self.flags |= IOC;
-            let sign = if x.is_negative() { T::sign_bit() } else { 0 };
-            return (sign | ((T::mask() >> 1) & T::mask())) as u64;
+            let sign = if x.is_negative() { sign_bit::<T>() } else { 0 };
+            return (sign | ((mask::<T>() >> 1) & mask::<T>())) as u64;
         }
         let round = if odd { Round::TowardZero } else { self.round() };
         if alternative && x.abs() > F::from_u128(65504).value {
@@ -777,15 +817,15 @@ impl Context {
             // convert half the value and move it up one exponent.
             let mut l = false;
             let StatusAnd { status, value }: StatusAnd<T> = x.scalbn(-1).convert_r(round, &mut l);
-            let sign = if x.is_negative() { T::sign_bit() } else { 0 };
+            let sign = if x.is_negative() { sign_bit::<T>() } else { 0 };
             if value.is_infinite()
                 || (value.abs() == T::largest() && x.abs() >= F::from_u128(131072).value)
             {
                 self.flags |= IOC;
-                return (sign | ((T::mask() >> 1) & T::mask())) as u64;
+                return (sign | ((mask::<T>() >> 1) & mask::<T>())) as u64;
             }
-            let raw = value.to_bits() & (T::mask() >> 1);
-            let exponent_one = T::fraction_mask() + 1;
+            let raw = value.to_bits() & (mask::<T>() >> 1);
+            let exponent_one = fraction_mask::<T>() + 1;
             // Below the top exponent the format is the usual one: only values that reach it move.
             if raw >= 30 * exponent_one {
                 return self
@@ -799,11 +839,11 @@ impl Context {
             // No infinity in the alternative format: the largest number, and invalid.
             self.flags |= IOC;
             let sign = if value.is_negative() {
-                T::sign_bit()
+                sign_bit::<T>()
             } else {
                 0
             };
-            return (sign | ((T::mask() >> 1) & T::mask())) as u64;
+            return (sign | ((mask::<T>() >> 1) & mask::<T>())) as u64;
         }
         let mut status = status;
         if value.is_finite() && value.abs() == T::largest() && status.contains(Status::INEXACT) {
@@ -830,7 +870,12 @@ impl Context {
         self.status(status, value, tiny).to_bits() as u64
     }
 
-    fn reciprocal_estimate<F: Bits>(&mut self, x: F) -> F {
+    fn reciprocal_estimate<
+        F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>,
+    >(
+        &mut self,
+        x: F,
+    ) -> F {
         if let Some(n) = self.nans(&[x]) {
             return n;
         }
@@ -875,7 +920,12 @@ impl Context {
         F::from_bits(reciprocal_estimate_bits::<F>(x.to_bits() as u64).into())
     }
 
-    fn reciprocal_sqrt_estimate<F: Bits>(&mut self, x: F) -> F {
+    fn reciprocal_sqrt_estimate<
+        F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>,
+    >(
+        &mut self,
+        x: F,
+    ) -> F {
         if let Some(n) = self.nans(&[x]) {
             return n;
         }
@@ -900,7 +950,13 @@ impl Context {
 /// The square root of a positive, finite, non-zero x, rounded as asked. The host's root is correctly
 /// rounded to nearest; the sign of the remainder m - r * r, exact in one fused step for m in 1 to 4, tells
 /// which way the true root lies for the directed modes. A root is never halfway, so ties need nothing.
-fn sqrt<F: Bits>(x: F, round: Round) -> StatusAnd<F> {
+fn sqrt<F: Float + FloatConvert<Half> + FloatConvert<Single> + FloatConvert<Double>>(
+    x: F,
+    round: Round,
+) -> StatusAnd<F>
+where
+    Double: FloatConvert<F>,
+{
     let half_exponent = x.ilogb().div_euclid(2);
     let m = x.scalbn(-2 * half_exponent);
     let wide: Double = m.convert(&mut false).value;
@@ -912,7 +968,7 @@ fn sqrt<F: Bits>(x: F, round: Round) -> StatusAnd<F> {
     );
     // Rounding the double's root again gives a narrower format's correctly rounded root: 53 bits is more
     // than twice its bits and two.
-    let r = F::from_double(host);
+    let r = from_double::<F>(host);
     let remainder = (-r).mul_add(r, m).value;
     let (status, value) = match round {
         _ if remainder.is_zero() => (Status::OK, r),
