@@ -8,6 +8,8 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use rustix::net::{RecvFlags, SendFlags};
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use wcontainers_abi::HostError;
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     AddressSharing, BindAddress, BindingSetting, ByteCount, DropCount, InterfaceIndex,
@@ -31,6 +33,7 @@ use wcontainers_tcp_sockets::{
     TcpLocalEndError, TcpProtocol, TcpPushOverride, TcpReceiveRequest, TcpReceived,
     TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use super::{
     ABORT_CLOSED_IN_ORDER, HostTcpBoundSocket, HostTcpConnection, HostTcpListener, HostTcpSockets,
@@ -229,6 +232,36 @@ fn prepare(socket: &Socket) -> Result<(), HostError> {
     Ok(())
 }
 
+/// One send on a connection's socket.
+struct Sending<'a> {
+    socket: BorrowedFd<'a>,
+    flags: SendFlags,
+}
+
+impl ByteSink for Sending<'_> {
+    type Error = HostError;
+
+    fn write(&mut self, bytes: &[u8]) -> Result<usize, HostError> {
+        rustix::net::send(self.socket, bytes, self.flags).map_err(host_error)
+    }
+}
+
+/// One receive from a connection's socket.
+struct Receiving<'a> {
+    socket: BorrowedFd<'a>,
+    flags: RecvFlags,
+}
+
+impl ByteSource for Receiving<'_> {
+    type Error = HostError;
+
+    fn read(&mut self, into: &mut [u8]) -> Result<usize, HostError> {
+        rustix::net::recv(self.socket, into, self.flags)
+            .map(|(taken, _)| taken)
+            .map_err(host_error)
+    }
+}
+
 /// Gives the flags every send carries: it never blocks and, where the system has the flag, raises no `SIGPIPE`.
 fn send_flags() -> SendFlags {
     #[cfg(not(target_vendor = "apple"))]
@@ -382,7 +415,7 @@ impl TcpConnections for HostTcpSockets {
         &self,
         connection: &Self::Connection,
         request: TcpSendRequest,
-        bytes: &[u8],
+        payload: &impl VolatileBytes,
     ) -> Result<ByteCount, HostError> {
         if request.continuation == TcpContinuation::MoreToCome {
             return Err(refuse(self, MORE_TO_COME));
@@ -399,16 +432,19 @@ impl TcpConnections for HostTcpSockets {
         if request.record == TcpRecordBoundary::Ended {
             flags |= SendFlags::EOR;
         }
-        rustix::net::send(connection.socket.fd(), bytes, flags)
+        payload
+            .read_to(&mut Sending {
+                socket: connection.socket.fd(),
+                flags,
+            })
             .map(ByteCount)
-            .map_err(host_error)
     }
 
     fn receive(
         &self,
         connection: &Self::Connection,
         request: TcpReceiveRequest,
-        into: &mut [u8],
+        into: &impl VolatileBytes,
     ) -> Result<TcpReceived, HostError> {
         let flags = match request {
             TcpReceiveRequest::Read => RecvFlags::DONTWAIT,
@@ -421,8 +457,10 @@ impl TcpConnections for HostTcpSockets {
                 RecvFlags::DONTWAIT | RecvFlags::OOB | RecvFlags::PEEK
             }
         };
-        let (taken, _) =
-            rustix::net::recv(connection.socket.fd(), into, flags).map_err(host_error)?;
+        let taken = into.write_from(&mut Receiving {
+            socket: connection.socket.fd(),
+            flags,
+        })?;
         Ok(TcpReceived {
             length: ByteCount(taken),
             timestamps: ReceiveTimestamps {

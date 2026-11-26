@@ -1,6 +1,5 @@
 use core::cell::RefCell;
 use core::cmp::Ordering;
-use core::mem::MaybeUninit;
 use core::num::{NonZeroU16, NonZeroU32};
 use core::sync::atomic::{AtomicU64, Ordering::Relaxed};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
@@ -10,6 +9,8 @@ use etherparse::IpNumber;
 use linux_raw_sys::net as uapi;
 use rustix::net::{SocketType, ipproto};
 use wcontainers_abi::{CounterReading, HostError};
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_configurable::Configurable;
 use wcontainers_icmp_sockets::{
     EchoBindAddress, EchoBinding, EchoIdentifier, IcmpSockets, IdentifierSharing, LocalIdentifier,
@@ -24,11 +25,12 @@ use wcontainers_kernel::UserId;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_route_resolver::RouteResolver;
 use wcontainers_route_resolver_host::HostRouteResolver;
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::{HostIcmpSocket, HostIcmpSockets};
 use shared::datagram::addresses::local_address;
 use shared::datagram::exchange::{
-    ErrorQueue, buffer_sizes, dropped_packets, note_packet_wish, receive_in_order,
+    ErrorQueue, OWN_DESCRIPTOR, buffer_sizes, dropped_packets, note_packet_wish, receive_in_order,
     reports_requested, send_message, unsent_bytes,
 };
 use shared::datagram::memberships::{AnycastMemberships, set_multicast_group};
@@ -273,6 +275,54 @@ fn routes_by_the_message(upper_layer: &UpperLayer, protocol: IpNumber, message: 
     upper_layer.protocol == protocol && upper_layer.selector == selector
 }
 
+/// One send of the bytes a message writes to it, which notes that it was made.
+struct Sending<'a> {
+    sockets: &'a HostIcmpSockets,
+    socket: &'a HostIcmpSocket,
+    header: IpHeaderFields<'a>,
+    fields: IpSendFields,
+    sent: bool,
+}
+
+impl ByteSink for Sending<'_> {
+    type Error = SendError;
+
+    fn write(&mut self, bytes: &[u8]) -> Result<usize, SendError> {
+        self.sent = true;
+        self.sockets
+            .send_bytes(self.socket, self.header.clone(), self.fields, bytes)
+            .map(|()| bytes.len())
+    }
+}
+
+/// One receive into the bytes it is given to read into, which keeps what came with them.
+struct Receiving<'a> {
+    sockets: &'a HostIcmpSockets,
+    socket: &'a HostIcmpSocket,
+    received: Option<Received>,
+}
+
+impl ByteSource for Receiving<'_> {
+    type Error = HostError;
+
+    fn read(&mut self, into: &mut [u8]) -> Result<usize, HostError> {
+        let received = self.sockets.receive_bytes(self.socket, into)?;
+        self.received = Some(received);
+        Ok(written_length(&received, into.len()))
+    }
+}
+
+/// Returns the number of bytes a receive wrote into a buffer of `room` bytes, the start of what it tells the length of.
+fn written_length(received: &Received, room: usize) -> usize {
+    let whole = match received {
+        Received::Packet(fields) => fields.length,
+        Received::TransmitReport(report) => {
+            report.packet_length.map_or(usize::MIN, |length| length.0)
+        }
+    };
+    whole.min(room)
+}
+
 impl IcmpSockets for HostIcmpSockets {
     type Socket = HostIcmpSocket;
 
@@ -353,6 +403,71 @@ impl IcmpSockets for HostIcmpSockets {
     fn send_to(
         &self,
         socket: &Self::Socket,
+        header: IpHeaderFields<'_>,
+        fields: IpSendFields,
+        message: &impl VolatileBytes,
+    ) -> Result<(), SendError> {
+        let mut sending = Sending {
+            sockets: self,
+            socket,
+            header,
+            fields,
+            sent: false,
+        };
+        message.read_to(&mut sending)?;
+        if sending.sent {
+            Ok(())
+        } else {
+            // Bytes with nothing to reach may never write to the sink, and the empty message is sent here instead.
+            self.send_bytes(socket, sending.header, fields, &[])
+        }
+    }
+
+    fn receive(
+        &self,
+        socket: &Self::Socket,
+        into: &impl VolatileBytes,
+    ) -> Result<Received, HostError> {
+        let mut receiving = Receiving {
+            sockets: self,
+            socket,
+            received: None,
+        };
+        into.write_from(&mut receiving)?;
+        // Bytes with nothing to reach may never read from the source, and the packet is taken here instead.
+        receiving
+            .received
+            .map_or_else(|| self.receive_bytes(socket, &mut []), Ok)
+    }
+
+    fn count_unsent_bytes(&self, socket: &Self::Socket) -> ByteCount {
+        unsent_bytes(socket.fd()).expect(OWN_DESCRIPTOR)
+    }
+
+    fn read_buffer_sizes(&self, socket: &Self::Socket) -> BufferSizes {
+        buffer_sizes(socket.fd()).expect(OWN_DESCRIPTOR)
+    }
+
+    fn close(&self, socket: Self::Socket) {
+        drop(socket);
+    }
+}
+
+impl Readiness<HostIcmpSocket> for HostIcmpSockets {
+    async fn wait_until_ready(
+        &self,
+        socket: &HostIcmpSocket,
+        interest: ReadyFor,
+    ) -> Result<ReadinessReport, HostError> {
+        socket.watched.wait_until_ready(interest).await
+    }
+}
+
+impl HostIcmpSockets {
+    /// Sends the message's bytes as `send_to` sends the bytes it is given.
+    fn send_bytes(
+        &self,
+        socket: &HostIcmpSocket,
         mut header: IpHeaderFields<'_>,
         fields: IpSendFields,
         message: &[u8],
@@ -471,7 +586,12 @@ impl IcmpSockets for HostIcmpSockets {
         }
     }
 
-    fn receive(&self, socket: &Self::Socket, into: &mut [u8]) -> Result<Received, HostError> {
+    /// Receives into the buffer as `receive` receives into the bytes it is given.
+    fn receive_bytes(
+        &self,
+        socket: &HostIcmpSocket,
+        into: &mut [u8],
+    ) -> Result<Received, HostError> {
         let mut state = socket.state.borrow_mut();
         receive_in_order(
             socket.fd(),
@@ -484,30 +604,6 @@ impl IcmpSockets for HostIcmpSockets {
         )
     }
 
-    fn count_unsent_bytes(&self, socket: &Self::Socket) -> Result<ByteCount, HostError> {
-        unsent_bytes(socket.fd())
-    }
-
-    fn read_buffer_sizes(&self, socket: &Self::Socket) -> Result<BufferSizes, HostError> {
-        buffer_sizes(socket.fd())
-    }
-
-    fn close(&self, socket: Self::Socket) {
-        drop(socket);
-    }
-}
-
-impl Readiness<HostIcmpSocket> for HostIcmpSockets {
-    async fn wait_until_ready(
-        &self,
-        socket: &HostIcmpSocket,
-        interest: ReadyFor,
-    ) -> Result<ReadinessReport, HostError> {
-        socket.watched.wait_until_ready(interest).await
-    }
-}
-
-impl HostIcmpSockets {
     /// Takes the next ICMP error or transmit report of the error queue, kept entries first, past entries that give none.
     fn take_error_entry(
         &self,
@@ -555,9 +651,10 @@ impl HostIcmpSockets {
         let fd = socket.fd();
         let mut control = ControlBuffer::new();
         // Linux cuts a ping socket's packet to the buffers given and tells only what it copied.
-        let mut tail = [MaybeUninit::<u8>::uninit(); LARGEST_MESSAGE];
-        let tail = &mut tail[..LARGEST_MESSAGE.saturating_sub(into.len())];
-        let message = receive::receive_with_tail(fd, into, tail, &mut control, false)?;
+        let message = receive::with_tail(|tail| {
+            let room = LARGEST_MESSAGE.saturating_sub(into.len()).min(tail.len());
+            receive::receive_with_tail(fd, into, &mut tail[..room], &mut control, false)
+        })?;
         if message.control_truncated {
             self.shortfalls.count(receive::CONTROL_TRUNCATED);
         }

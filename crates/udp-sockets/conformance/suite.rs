@@ -22,6 +22,7 @@
 //! The checks are of Linux's behaviour on a Linux network, so the suite builds only on Linux.
 #![cfg(target_os = "linux")]
 
+use core::cell::{Cell, RefCell};
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::num::{NonZeroU16, NonZeroU32};
 use std::pin::{Pin, pin};
@@ -35,6 +36,8 @@ use etherparse::{
 };
 use mitsein::slice1::Slice1;
 use wcontainers_abi::HostError;
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_internet_protocol::{
     AddressSharing, AnycastAddress, BindAddress, BindingSetting, BroadcastPermission, BufferSizes,
     ByteCount, BytesPerSecond, FilterInstruction, FilterJump, FilterOperand, FilterOperation,
@@ -58,6 +61,7 @@ use wcontainers_udp_sockets::{
     ChecksumCoverage, ReceiveCoalescing, SegmentSize, UdpChecksum, UdpDatagram, UdpLocalEnd,
     UdpProtocol, UdpReceived, UdpReceivedPacket, UdpSocketSetting, UdpSockets, ZeroChecksumReceipt,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
 
 /// The owner every check opens its sockets for: the superuser, whom any host lets own a socket.
 const OWNER: UserId = UserId(u32::MIN);
@@ -138,6 +142,10 @@ const SEGMENT_ROUTING_FIXED: usize = 6;
 const LINK_LOCAL: u16 = 0xfe80;
 
 const PAYLOAD: &[u8] = b"a datagram over loopback";
+
+/// The largest payload of a UDP datagram in an IPv6 packet without a jumbogram, which fits an IPv4 packet too.
+const LARGEST_PAYLOAD: usize =
+    u16::MAX as usize - etherparse::Ipv6Header::LEN - etherparse::UdpHeader::LEN;
 const FROM_A_STRANGER: &[u8] = b"from a stranger";
 const TOO_LITTLE_COVERED: &[u8] = b"too little covered";
 const WITHOUT_A_CHECKSUM: &[u8] = b"without a checksum";
@@ -328,7 +336,7 @@ fn arrives<S: UdpSockets>(sockets: &S, socket: &S::Socket) -> bool {
     let start = Instant::now();
     let mut into = buffer();
     loop {
-        match sockets.receive(socket, &mut into) {
+        match sockets.receive(socket, &RefCell::new(&mut into[..])) {
             Ok(_) => return true,
             Err(HostError::WouldBlock) if start.elapsed() < SILENCE => std::thread::yield_now(),
             Err(HostError::WouldBlock) => return false,
@@ -430,6 +438,15 @@ fn send<S: UdpSockets>(
 
 /// The next packet or report for a socket, waited for up to the patience of a check.
 fn receive<S: UdpSockets>(sockets: &S, socket: &S::Socket, into: &mut [u8]) -> UdpReceived {
+    receive_into(sockets, socket, &RefCell::new(into))
+}
+
+/// Takes the next packet or report for a socket into any bytes, waiting up to the patience of a check.
+fn receive_into<S: UdpSockets>(
+    sockets: &S,
+    socket: &S::Socket,
+    into: &impl VolatileBytes,
+) -> UdpReceived {
     let start = Instant::now();
     loop {
         match sockets.receive(socket, into) {
@@ -444,9 +461,79 @@ fn receive_packet<S: UdpSockets>(
     socket: &S::Socket,
     into: &mut [u8],
 ) -> UdpReceivedPacket {
-    match receive(sockets, socket, into) {
+    receive_packet_into(sockets, socket, &RefCell::new(into))
+}
+
+fn receive_packet_into<S: UdpSockets>(
+    sockets: &S,
+    socket: &S::Socket,
+    into: &impl VolatileBytes,
+) -> UdpReceivedPacket {
+    match receive_into(sockets, socket, into) {
         UdpReceived::Packet(packet) => packet,
         UdpReceived::TransmitReport(report) => panic!("a packet, not {report:?}"),
+    }
+}
+
+/// Bytes in cells that a source or a sink reaches only through a buffer of their own, as guest memory is.
+struct CellBytes {
+    cells: Vec<Cell<u8>>,
+    sources_read: Cell<usize>,
+}
+
+impl CellBytes {
+    fn new(length: usize) -> Self {
+        Self {
+            cells: vec![Cell::new(u8::MIN); length],
+            sources_read: Cell::new(usize::MIN),
+        }
+    }
+
+    fn bytes(&self) -> Vec<u8> {
+        self.cells.iter().map(Cell::get).collect()
+    }
+
+    /// Asserts that one receive reached the bytes through one read of its source, so that nothing was cut.
+    fn take_one_source_read(&self) {
+        assert_eq!(
+            self.sources_read.replace(usize::MIN),
+            1,
+            "reads of the source of one receive"
+        );
+    }
+}
+
+impl VolatileBytes for CellBytes {
+    fn len(&self) -> u64 {
+        u64::try_from(self.cells.len()).expect("a length")
+    }
+
+    fn read(&self, into: &mut [u8]) -> usize {
+        self.cells
+            .iter()
+            .zip(into.iter_mut())
+            .map(|(cell, byte)| *byte = cell.get())
+            .count()
+    }
+
+    fn write(&self, bytes: &[u8]) -> usize {
+        self.cells
+            .iter()
+            .zip(bytes)
+            .map(|(cell, byte)| cell.set(*byte))
+            .count()
+    }
+
+    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
+        sink.write(&self.bytes())
+    }
+
+    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
+        self.sources_read.set(self.sources_read.get() + 1);
+        let mut staged = vec![u8::MIN; self.cells.len()];
+        let written = source.read(&mut staged)?;
+        self.write(&staged[..written]);
+        Ok(written)
     }
 }
 
@@ -655,11 +742,12 @@ pub fn port_sharing_lets_two_sockets_bind_one_port<S: UdpSockets>(sockets: S) {
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     send(&sockets, &sender, UdpProtocol::Udp, from, address, PAYLOAD);
     let start = Instant::now();
-    let mut into = buffer();
+    let mut room = buffer();
+    let into = RefCell::new(&mut room[..]);
     let arrived = loop {
         match (
-            sockets.receive(&first, &mut into),
-            sockets.receive(&second, &mut into),
+            sockets.receive(&first, &into),
+            sockets.receive(&second, &into),
         ) {
             (Ok(_), _) | (_, Ok(_)) => break true,
             _ if start.elapsed() > PATIENCE => break false,
@@ -840,11 +928,85 @@ pub fn a_short_buffer_keeps_the_whole_length<S: UdpSockets>(sockets: S) {
     }
 }
 
+/// Checks that bytes that are not a plain buffer take a datagram, a cut one and an ICMP error as a buffer does.
+pub fn bytes_that_are_not_a_buffer_take_what_a_buffer_takes<S: UdpSockets>(sockets: S) {
+    for version in [IpVersion::V4, IpVersion::V6] {
+        for protocol in [UdpProtocol::Udp, UdpProtocol::Lite] {
+            let (receiver, to) = bound(&sockets, version, protocol);
+            let (sender, from) = bound(&sockets, version, protocol);
+            send(&sockets, &sender, protocol, from, to, PAYLOAD);
+            let mut whole = buffer();
+            let in_buffer = receive_packet(&sockets, &receiver, &mut whole);
+            send(&sockets, &sender, protocol, from, to, PAYLOAD);
+            let cells = CellBytes::new(whole.len());
+            let in_cells = receive_packet_into(&sockets, &receiver, &cells);
+            cells.take_one_source_read();
+            assert_eq!(in_cells, in_buffer);
+            let length = in_cells.fields.length;
+            let bytes = cells.bytes();
+            let (taken, expected) = (seen(&bytes[..length]), seen(&whole[..length]));
+            assert_eq!(
+                (taken.source, taken.destination, taken.protocol),
+                (expected.source, expected.destination, expected.protocol)
+            );
+            assert_eq!(
+                (taken.checksum, taken.payload),
+                (expected.checksum, PAYLOAD)
+            );
+            // Cut inside the payload, where the length is still the whole packet's.
+            send(&sockets, &sender, protocol, from, to, PAYLOAD);
+            let cut = length - PAYLOAD.len() / 2;
+            let short = CellBytes::new(cut);
+            assert_eq!(
+                receive_packet_into(&sockets, &receiver, &short)
+                    .fields
+                    .length,
+                length
+            );
+            short.take_one_source_read();
+            assert_eq!(short.bytes()[..], bytes[..cut], "cut to {cut} bytes");
+        }
+        let closed = closed_port(&sockets, version);
+        let (sender, from) = bound(&sockets, version, UdpProtocol::Udp);
+        send(&sockets, &sender, UdpProtocol::Udp, from, closed, PAYLOAD);
+        let mut whole = buffer();
+        let in_buffer = receive_packet(&sockets, &sender, &mut whole);
+        send(&sockets, &sender, UdpProtocol::Udp, from, closed, PAYLOAD);
+        let cells = CellBytes::new(whole.len());
+        let in_cells = receive_packet_into(&sockets, &sender, &cells);
+        cells.take_one_source_read();
+        let length = in_buffer.fields.length;
+        assert_eq!(in_cells.fields.length, length, "the ICMP error's length");
+        assert_eq!(cells.bytes()[..length], whole[..length], "the ICMP error");
+    }
+}
+
+/// Checks that the largest datagram, far longer than a page, arrives whole into a buffer and into cells.
+pub fn a_datagram_longer_than_a_page_arrives_whole<S: UdpSockets>(sockets: S) {
+    let payload: Vec<u8> = (0..LARGEST_PAYLOAD).map(|place| place as u8).collect();
+    for version in [IpVersion::V4, IpVersion::V6] {
+        let (receiver, to) = bound(&sockets, version, UdpProtocol::Udp);
+        let (sender, from) = bound(&sockets, version, UdpProtocol::Udp);
+        send(&sockets, &sender, UdpProtocol::Udp, from, to, &payload);
+        let mut whole = buffer();
+        let packet = receive_packet(&sockets, &receiver, &mut whole);
+        assert_eq!(seen(&whole[..packet.fields.length]).payload, payload);
+        send(&sockets, &sender, UdpProtocol::Udp, from, to, &payload);
+        let cells = CellBytes::new(whole.len());
+        let packet = receive_packet_into(&sockets, &receiver, &cells);
+        cells.take_one_source_read();
+        let bytes = cells.bytes();
+        let taken = seen(&bytes[..packet.fields.length]);
+        assert_eq!((taken.source, taken.destination), (from, to));
+        assert_eq!(taken.payload, payload);
+    }
+}
+
 /// Receiving with nothing queued would block.
 pub fn receive_with_nothing_queued_would_block<S: UdpSockets>(sockets: S) {
     let (socket, _) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     assert_eq!(
-        sockets.receive(&socket, &mut buffer()),
+        sockets.receive(&socket, &RefCell::new(&mut buffer()[..])),
         Err(HostError::WouldBlock)
     );
 }
@@ -1307,7 +1469,8 @@ pub fn a_small_receive_buffer_counts_its_drops<S: UdpSockets>(sockets: S) {
     }
     let mut received = usize::MIN;
     let mut into = buffer();
-    while let Ok(UdpReceived::Packet(_)) = sockets.receive(&receiver, &mut into) {
+    while let Ok(UdpReceived::Packet(_)) = sockets.receive(&receiver, &RefCell::new(&mut into[..]))
+    {
         received += 1;
     }
     assert!(received < sent, "{received} of {sent} received");
@@ -2053,7 +2216,7 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
         receive_packet(&sockets, &second, &mut into);
     }
     assert_eq!(
-        sockets.receive(&first, &mut into),
+        sockets.receive(&first, &RefCell::new(&mut into[..])),
         Err(HostError::WouldBlock)
     );
     set(
@@ -3466,7 +3629,7 @@ pub fn rejected_transmit_times_are_reported_with_their_keys<S: UdpSockets>(socke
     let mut into = buffer();
     let start = Instant::now();
     while start.elapsed() < HELD + SILENCE {
-        match sockets.receive(&sender, &mut into) {
+        match sockets.receive(&sender, &RefCell::new(&mut into[..])) {
             Ok(UdpReceived::TransmitReport(report)) => {
                 let TransmitEvent::TransmitTimeRejected(reason) = report.event else {
                     panic!("a rejection, not {report:?}")
@@ -3510,6 +3673,8 @@ macro_rules! tests {
             a_datagram_arrives_with_its_ipv6_header
             ipv4_options_arrive_in_the_header
             a_short_buffer_keeps_the_whole_length
+            bytes_that_are_not_a_buffer_take_what_a_buffer_takes
+            a_datagram_longer_than_a_page_arrives_whole
             receive_with_nothing_queued_would_block
             a_connected_socket_takes_only_its_peers_datagrams
             disconnect_keeps_the_binding

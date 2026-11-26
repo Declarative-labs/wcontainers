@@ -2112,6 +2112,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "mio"
+version = "1.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a"
+dependencies = [
+ "libc",
+ "wasi",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "mitsein"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3478,6 +3489,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "stats_alloc"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c0e04424e733e69714ca1bbb9204c1a57f09f5493439520f9f68c132ad25eec"
+
+[[package]]
 name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4784,15 +4801,21 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "mitsein",
+ "nix",
  "rustix",
  "wcontainers-abi",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-configurable-conformance",
  "wcontainers-icmp-sockets",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
+ "wcontainers-linux-socket-options",
+ "wcontainers-linux-socket-options-direct",
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4804,7 +4827,10 @@ dependencies = [
  "linux-raw-sys",
  "rustix",
  "socket2",
+ "stats_alloc",
  "wcontainers-abi",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-icmp-sockets",
  "wcontainers-icmp-sockets-conformance",
@@ -4814,6 +4840,7 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-route-resolver",
  "wcontainers-route-resolver-host",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4859,13 +4886,17 @@ dependencies = [
  "etherparse",
  "libc",
  "linux-raw-sys",
- "polling",
+ "mio",
+ "nix",
  "rustix",
  "socket2",
  "wcontainers-abi",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
+ "wcontainers-linux-socket-options",
+ "wcontainers-linux-socket-options-direct",
  "wcontainers-readiness",
+ "zerocopy",
 ]
 
 [[package]]
@@ -4952,6 +4983,44 @@ dependencies = [
  "wcontainers-kvm-conformance",
  "wcontainers-volatile-bytes",
  "wcontainers-volatile-bytes-shared-mapping",
+]
+
+[[package]]
+name = "wcontainers-linux-socket-options"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "linux-raw-sys",
+ "wcontainers-abi",
+ "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-linux-socket-options-conformance"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "linux-raw-sys",
+ "netlink-packet-core",
+ "netlink-packet-route",
+ "netlink-sys",
+ "nix",
+ "socket2",
+ "wcontainers-abi",
+ "wcontainers-linux-socket-options",
+ "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-linux-socket-options-direct"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "linux-raw-sys",
+ "wcontainers-abi",
+ "wcontainers-linux-socket-options",
+ "wcontainers-linux-socket-options-conformance",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5196,6 +5265,7 @@ dependencies = [
  "wcontainers-raw-sockets",
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5207,7 +5277,9 @@ dependencies = [
  "linux-raw-sys",
  "rustix",
  "socket2",
+ "stats_alloc",
  "wcontainers-abi",
+ "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
@@ -5217,6 +5289,7 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-route-resolver",
  "wcontainers-route-resolver-host",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5251,11 +5324,15 @@ dependencies = [
  "etherparse",
  "libc",
  "linux-raw-sys",
+ "nix",
  "rustix",
+ "socket2",
  "wcontainers-abi",
  "wcontainers-icmp-sockets-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
+ "wcontainers-linux-socket-options",
+ "wcontainers-linux-socket-options-direct",
  "wcontainers-route-resolver",
 ]
 
@@ -5269,12 +5346,14 @@ dependencies = [
  "netlink-packet-core",
  "netlink-packet-route",
  "netlink-sys",
+ "nix",
  "rustix",
  "socket2",
  "wcontainers-abi",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
+ "wcontainers-linux-socket-options",
  "wcontainers-route-resolver",
  "wcontainers-route-resolver-conformance",
 ]
@@ -5426,9 +5505,14 @@ version = "0.1.0"
 dependencies = [
  "etherparse",
  "linux-raw-sys",
+ "netlink-packet-core",
+ "netlink-packet-route",
+ "netlink-sys",
  "nix",
  "rustix",
  "wcontainers-abi",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-configurable-conformance",
  "wcontainers-internet-protocol",
@@ -5438,12 +5522,14 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
  "wcontainers-tcp-sockets",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
 name = "wcontainers-tcp-sockets-host"
 version = "0.1.0"
 dependencies = [
+ "allocation-counter",
  "etherparse",
  "libc",
  "linux-raw-sys",
@@ -5452,14 +5538,19 @@ dependencies = [
  "rustix",
  "socket2",
  "wcontainers-abi",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
+ "wcontainers-linux-socket-options",
  "wcontainers-negative-route-advisable",
  "wcontainers-readiness",
  "wcontainers-tcp-sockets",
  "wcontainers-tcp-sockets-conformance",
+ "wcontainers-volatile-bytes",
+ "zerocopy",
 ]
 
 [[package]]
@@ -5532,6 +5623,8 @@ dependencies = [
  "mitsein",
  "rustix",
  "wcontainers-abi",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-configurable-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
@@ -5539,6 +5632,7 @@ dependencies = [
  "wcontainers-readiness",
  "wcontainers-readiness-conformance",
  "wcontainers-udp-sockets",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5548,17 +5642,22 @@ dependencies = [
  "etherparse",
  "libc",
  "linux-raw-sys",
+ "nix",
  "rustix",
  "socket2",
+ "stats_alloc",
  "wcontainers-abi",
+ "wcontainers-byte-source",
  "wcontainers-configurable",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",
+ "wcontainers-linux-socket-options",
  "wcontainers-negative-route-advisable",
  "wcontainers-readiness",
  "wcontainers-udp-sockets",
  "wcontainers-udp-sockets-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]

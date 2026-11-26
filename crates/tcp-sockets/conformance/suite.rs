@@ -12,6 +12,7 @@
 //! prefixes hold), the `dctcp`, `vegas` and `bbr` congestion controls available, a local route for 127.0.0.7 with the `tcp_usec_ts`
 //! feature (TCP timestamps in microseconds) and one VRF device, the only master interface there.
 
+use core::cell::{Cell, RefCell};
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::num::NonZeroU32;
 use core::pin::{Pin, pin};
@@ -32,11 +33,12 @@ use etherparse::{
     icmpv4, icmpv6, tcp_option,
 };
 use linux_raw_sys::if_tun;
-use linux_raw_sys::ioctl::SIOCSIFFLAGS;
 use linux_raw_sys::net::net_device_flags;
 use nix::net::if_::InterfaceFlags;
 use rustix::net::{AddressFamily, RecvFlags, SendFlags, SocketType, ipproto, sockopt};
 use wcontainers_abi::HostError;
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_internet_protocol::{
     AddressSharing, AnycastAddress, BindAddress, BindingSetting, ByteCount, BytesPerSecond,
     FilterInstruction, FilterJump, FilterOperand, FilterOperation, FlowLabelChoice, HopLimit,
@@ -83,6 +85,7 @@ use wcontainers_tcp_sockets::{
     TcpLocalEnd, TcpLocalEndError, TcpProtocol, TcpPushOverride, TcpReceiveRequest, TcpReceived,
     TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
 
 pub use wcontainers_configurable_conformance;
 pub use wcontainers_negative_route_advisable_conformance;
@@ -160,6 +163,14 @@ const PEEK_OFFSET: usize = 2;
 ///
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-suites-own-choices
 const READ_PART: usize = 4;
+
+/// A page of 16 KiB, the larger of the two page sizes the suite's hosts use (4 KiB, and 16 KiB on ARM64 kernels built so).
+///
+/// https://docs.kernel.org/arch/arm64/memory.html
+const PAGE: usize = 1 << 14;
+
+/// The bytes the long receive checks take in one receive, more than two pages.
+const LONG_RECEIVE: usize = 2 * PAGE + 1;
 
 /// Room for the IP and TCP headers of a SYN.
 ///
@@ -605,19 +616,20 @@ fn transfer<S: TcpSockets>(
     to: &S::Connection,
     bytes: &[u8],
 ) -> Vec<u8> {
+    let mut owned = bytes.to_vec();
     let mut sent = usize::MIN;
     let mut received = vec![u8::MIN; bytes.len()];
     let mut length = usize::MIN;
     let start = Instant::now();
     while length < bytes.len() && start.elapsed() < DEADLINE {
         if sent < bytes.len() {
-            match sockets.send(from, plain(), &bytes[sent..]) {
+            match sockets.send(from, plain(), &lent(&mut owned[sent..])) {
                 Ok(taken) => sent += taken.0,
                 Err(HostError::WouldBlock) => {}
                 Err(error) => panic!("send: {error:?}"),
             }
         }
-        match sockets.receive(to, TcpReceiveRequest::Read, &mut received[length..]) {
+        match sockets.receive(to, TcpReceiveRequest::Read, &lent(&mut received[length..])) {
             Ok(got) if got.length.0 == 0 => break,
             Ok(got) => length += got.length.0,
             Err(HostError::WouldBlock) => {}
@@ -682,9 +694,11 @@ fn send_all<S: TcpSockets>(
     request: TcpSendRequest,
     bytes: &[u8],
 ) {
+    let mut owned = bytes.to_vec();
     let mut sent = usize::MIN;
     while sent < bytes.len() {
-        let taken = retry(|| sockets.send(connection, request, &bytes[sent..])).expect("send");
+        let taken =
+            retry(|| sockets.send(connection, request, &lent(&mut owned[sent..]))).expect("send");
         sent += taken.0;
     }
 }
@@ -694,9 +708,14 @@ fn receive_up_to<S: TcpSockets>(sockets: &S, connection: &S::Connection, wanted:
     let mut received = vec![u8::MIN; wanted];
     let mut length = usize::MIN;
     while length < wanted {
-        let got =
-            retry(|| sockets.receive(connection, TcpReceiveRequest::Read, &mut received[length..]))
-                .expect("receive");
+        let got = retry(|| {
+            sockets.receive(
+                connection,
+                TcpReceiveRequest::Read,
+                &lent(&mut received[length..]),
+            )
+        })
+        .expect("receive");
         if got.length.0 == 0 {
             break;
         }
@@ -714,7 +733,7 @@ fn wait_for_unread<S: TcpSockets>(sockets: &S, connection: &S::Connection, wante
         match sockets.receive(
             connection,
             TcpReceiveRequest::Peek { offset: NO_BYTES },
-            &mut buffer,
+            &lent(&mut buffer),
         ) {
             Ok(got) if got.length.0 >= wanted => return,
             Ok(_) | Err(HostError::WouldBlock) if start.elapsed() < DEADLINE => {
@@ -733,7 +752,7 @@ fn assert_silent<S: TcpSockets>(sockets: &S, connection: &S::Connection, period:
         let outcome = sockets.receive(
             connection,
             TcpReceiveRequest::Peek { offset: NO_BYTES },
-            &mut buffer,
+            &lent(&mut buffer),
         );
         assert_eq!(
             outcome.map(|got| got.length),
@@ -753,7 +772,7 @@ fn assert_arrives_within<S: TcpSockets>(
 ) {
     let start = Instant::now();
     let mut buffer = vec![u8::MIN; bytes.len()];
-    let got = retry(|| sockets.receive(connection, TcpReceiveRequest::Read, &mut buffer))
+    let got = retry(|| sockets.receive(connection, TcpReceiveRequest::Read, &lent(&mut buffer)))
         .expect("receive");
     assert!(start.elapsed() < within, "took {:?}", start.elapsed());
     assert_eq!(&buffer[..got.length.0], bytes);
@@ -763,6 +782,56 @@ fn pattern(length: usize) -> Vec<u8> {
     (0..length)
         .map(|index| (index % usize::from(u8::MAX)) as u8)
         .collect()
+}
+
+/// Lends a buffer of the suite's own as volatile bytes, as a caller with its own buffer does.
+fn lent(bytes: &mut [u8]) -> RefCell<&mut [u8]> {
+    RefCell::new(bytes)
+}
+
+/// Bytes held in cells rather than a buffer, so that a source or a sink reaches them only through a buffer of its own.
+struct CellBytes(Vec<Cell<u8>>);
+
+impl CellBytes {
+    fn new(bytes: &[u8]) -> Self {
+        Self(bytes.iter().copied().map(Cell::new).collect())
+    }
+
+    fn to_vec(&self) -> Vec<u8> {
+        self.0.iter().map(Cell::get).collect()
+    }
+}
+
+impl VolatileBytes for CellBytes {
+    fn len(&self) -> u64 {
+        self.0.len() as u64
+    }
+
+    fn read(&self, into: &mut [u8]) -> usize {
+        into.iter_mut()
+            .zip(&self.0)
+            .map(|(byte, cell)| *byte = cell.get())
+            .count()
+    }
+
+    fn write(&self, bytes: &[u8]) -> usize {
+        self.0
+            .iter()
+            .zip(bytes)
+            .map(|(cell, byte)| cell.set(*byte))
+            .count()
+    }
+
+    fn read_to<Sink: ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
+        sink.write(&self.to_vec())
+    }
+
+    fn write_from<Source: ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
+        let mut buffer = vec![u8::MIN; self.0.len()];
+        let count = source.read(&mut buffer)?;
+        self.write(&buffer[..count]);
+        Ok(count)
+    }
 }
 
 /// Sends a byte each way and checks that both arrive.
@@ -1176,11 +1245,11 @@ fn drop_arrivals<S: TcpSockets>(sockets: &S, connection: &S::Connection, version
 
 /// Sends until the connection takes nothing more for a while, the peer not reading, giving the bytes taken.
 fn fill<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> usize {
-    let chunk = pattern(SETTING_BYTES);
+    let mut chunk = pattern(SETTING_BYTES);
     let mut taken = usize::MIN;
     let mut last = Instant::now();
     while last.elapsed() < FILLED_AFTER {
-        match sockets.send(connection, plain(), &chunk) {
+        match sockets.send(connection, plain(), &lent(&mut chunk)) {
             Ok(count) => {
                 taken += count.0;
                 last = Instant::now();
@@ -1199,7 +1268,7 @@ fn unread<S: TcpSockets>(sockets: &S, connection: &S::Connection) -> usize {
         .receive(
             connection,
             TcpReceiveRequest::Peek { offset: NO_BYTES },
-            &mut buffer,
+            &lent(&mut buffer),
         )
         .map_or(usize::MIN, |got| got.length.0)
 }
@@ -1232,7 +1301,7 @@ fn receive_outcome<S: TcpSockets>(
     let start = Instant::now();
     let mut buffer = [u8::MIN; ENTRY_ROOM];
     loop {
-        match sockets.receive(connection, TcpReceiveRequest::Read, &mut buffer) {
+        match sockets.receive(connection, TcpReceiveRequest::Read, &lent(&mut buffer)) {
             Err(HostError::WouldBlock) if start.elapsed() < within => {
                 std::thread::sleep(RETRY_INTERVAL)
             }
@@ -1348,8 +1417,8 @@ pub fn bytes_arrive_in_order_both_ways<S: TcpSockets>(sockets: S) {
 /// Checks that a send offered more than the connection takes at once reports the bytes it took, and exactly those arrive.
 pub fn send_reports_the_bytes_it_took<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
-    let bytes = pattern(ONE_SEND_OFFERED);
-    let taken = retry(|| sockets.send(&pair.client, plain(), &bytes))
+    let mut bytes = pattern(ONE_SEND_OFFERED);
+    let taken = retry(|| sockets.send(&pair.client, plain(), &lent(&mut bytes)))
         .expect("send")
         .0;
     sockets
@@ -1599,8 +1668,13 @@ pub fn stopped_listener_refuses_connections<S: TcpSockets>(sockets: S) {
         .map_err(unbound)
         .expect("start connecting");
     let mut buffer = [u8::MIN; 1];
-    let outcome =
-        retry(|| sockets.receive(&connected.connection, TcpReceiveRequest::Read, &mut buffer));
+    let outcome = retry(|| {
+        sockets.receive(
+            &connected.connection,
+            TcpReceiveRequest::Read,
+            &lent(&mut buffer),
+        )
+    });
     assert_eq!(
         outcome.map(|got| got.length),
         Err(errno(Errno::ECONNREFUSED))
@@ -1632,7 +1706,7 @@ pub fn write_shutdown_ends_the_peers_stream<S: TcpSockets>(sockets: S) {
     send_all(&sockets, &pair.server, plain(), REPLY);
     assert_eq!(receive_up_to(&sockets, &pair.client, REPLY.len()), REPLY);
     assert_eq!(
-        sockets.send(&pair.client, plain(), MESSAGE),
+        sockets.send(&pair.client, plain(), &lent(&mut MESSAGE.to_vec())),
         Err(errno(Errno::EPIPE))
     );
     close(&sockets, pair);
@@ -1645,7 +1719,7 @@ pub fn read_shutdown_ends_the_own_stream<S: TcpSockets>(sockets: S) {
         .expect("shut down");
     let mut buffer = [u8::MIN; 1];
     let got = sockets
-        .receive(&pair.server, TcpReceiveRequest::Read, &mut buffer)
+        .receive(&pair.server, TcpReceiveRequest::Read, &lent(&mut buffer))
         .expect("receive");
     assert_eq!(got.length, NO_BYTES);
     send_all(&sockets, &pair.server, plain(), REPLY);
@@ -1663,12 +1737,12 @@ pub fn shutdown_of_both_directions_ends_both<S: TcpSockets>(sockets: S) {
         Vec::<u8>::new()
     );
     assert_eq!(
-        sockets.send(&pair.client, plain(), MESSAGE),
+        sockets.send(&pair.client, plain(), &lent(&mut MESSAGE.to_vec())),
         Err(errno(Errno::EPIPE))
     );
     let mut buffer = [u8::MIN; 1];
     let got = sockets
-        .receive(&pair.client, TcpReceiveRequest::Read, &mut buffer)
+        .receive(&pair.client, TcpReceiveRequest::Read, &lent(&mut buffer))
         .expect("the own stream has ended");
     assert_eq!(got.length, NO_BYTES);
     close(&sockets, pair);
@@ -1690,7 +1764,8 @@ pub fn abort_resets_the_peer<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     sockets.close(pair.client, TcpClose::Abort);
     let mut buffer = [u8::MIN; 1];
-    let outcome = retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &mut buffer));
+    let outcome =
+        retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &lent(&mut buffer)));
     assert_eq!(outcome.map(|got| got.length), Err(errno(Errno::ECONNRESET)));
     sockets.close(pair.server, TcpClose::Orderly);
     sockets.stop_listening(pair.listener);
@@ -1705,7 +1780,7 @@ pub fn peek_leaves_the_bytes<S: TcpSockets>(sockets: S) {
         .receive(
             &pair.server,
             TcpReceiveRequest::Peek { offset: NO_BYTES },
-            &mut buffer,
+            &lent(&mut buffer),
         )
         .expect("peek");
     assert_eq!(&buffer[..got.length.0], MESSAGE);
@@ -1727,7 +1802,7 @@ pub fn peek_at_an_offset_skips_bytes<S: TcpSockets>(sockets: S) {
             TcpReceiveRequest::Peek {
                 offset: ByteCount(PEEK_OFFSET),
             },
-            &mut buffer,
+            &lent(&mut buffer),
         )
         .expect("peek");
     assert_eq!(&buffer[..got.length.0], &MESSAGE[PEEK_OFFSET..]);
@@ -1735,7 +1810,7 @@ pub fn peek_at_an_offset_skips_bytes<S: TcpSockets>(sockets: S) {
         .receive(
             &pair.server,
             TcpReceiveRequest::Peek { offset: NO_BYTES },
-            &mut buffer,
+            &lent(&mut buffer),
         )
         .expect("peek");
     assert_eq!(&buffer[..got.length.0], MESSAGE);
@@ -1763,7 +1838,11 @@ pub fn urgent_byte_is_read_apart<S: TcpSockets>(sockets: S) {
     );
     let mut byte = vec![u8::MIN; URGENT.len()];
     let peeked = retry(|| {
-        match sockets.receive(&pair.server, TcpReceiveRequest::PeekUrgentByte, &mut byte) {
+        match sockets.receive(
+            &pair.server,
+            TcpReceiveRequest::PeekUrgentByte,
+            &lent(&mut byte),
+        ) {
             // Linux answers EINVAL until the urgent byte has arrived.
             Err(HostError::Errno(code)) if code == Errno::EINVAL as i32 => {
                 Err(HostError::WouldBlock)
@@ -1774,11 +1853,19 @@ pub fn urgent_byte_is_read_apart<S: TcpSockets>(sockets: S) {
     .expect("peek the urgent byte");
     assert_eq!((peeked.length.0, &byte[..]), (URGENT.len(), URGENT));
     let read = sockets
-        .receive(&pair.server, TcpReceiveRequest::ReadUrgentByte, &mut byte)
+        .receive(
+            &pair.server,
+            TcpReceiveRequest::ReadUrgentByte,
+            &lent(&mut byte),
+        )
         .expect("read the urgent byte");
     assert_eq!((read.length.0, &byte[..]), (URGENT.len(), URGENT));
     let again = sockets
-        .receive(&pair.server, TcpReceiveRequest::ReadUrgentByte, &mut byte)
+        .receive(
+            &pair.server,
+            TcpReceiveRequest::ReadUrgentByte,
+            &lent(&mut byte),
+        )
         .map(|got| got.length);
     assert_eq!(again, Err(errno(Errno::EINVAL)));
     close(&sockets, pair);
@@ -1907,7 +1994,7 @@ pub fn unread_byte_reports_count_what_is_left<S: TcpSockets>(sockets: S) {
     send_all(&sockets, &pair.client, plain(), MESSAGE);
     wait_for_unread(&sockets, &pair.server, MESSAGE.len());
     let got = sockets
-        .receive(&pair.server, TcpReceiveRequest::Read, &mut buffer)
+        .receive(&pair.server, TcpReceiveRequest::Read, &lent(&mut buffer))
         .expect("receive");
     assert_eq!(got.unread_after, None, "not asked for");
     sockets
@@ -1917,7 +2004,7 @@ pub fn unread_byte_reports_count_what_is_left<S: TcpSockets>(sockets: S) {
         )
         .expect("unread reports");
     let got = sockets
-        .receive(&pair.server, TcpReceiveRequest::Read, &mut buffer)
+        .receive(&pair.server, TcpReceiveRequest::Read, &lent(&mut buffer))
         .expect("receive");
     assert_eq!(
         (got.length, got.unread_after),
@@ -1925,6 +2012,87 @@ pub fn unread_byte_reports_count_what_is_left<S: TcpSockets>(sockets: S) {
             ByteCount(READ_PART),
             Some(ByteCount(MESSAGE.len() - 2 * READ_PART))
         )
+    );
+    close(&sockets, pair);
+}
+
+/// Checks that bytes which are no slice carry a send, a peek and a read with its unread byte report.
+pub fn bytes_that_are_no_slice_carry_sends_and_receives<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    sockets
+        .configure(
+            &pair.server,
+            TcpSetting::UnreadByteReports(Report::Requested),
+        )
+        .expect("unread reports");
+    let taken =
+        retry(|| sockets.send(&pair.client, plain(), &CellBytes::new(MESSAGE))).expect("send");
+    assert_eq!(taken, ByteCount(MESSAGE.len()));
+    wait_for_unread(&sockets, &pair.server, MESSAGE.len());
+    let peeked = CellBytes::new(&[u8::MIN; MESSAGE.len()]);
+    let got = sockets
+        .receive(
+            &pair.server,
+            TcpReceiveRequest::Peek { offset: NO_BYTES },
+            &peeked,
+        )
+        .expect("peek");
+    assert_eq!(
+        (got.length, peeked.to_vec()),
+        (ByteCount(MESSAGE.len()), MESSAGE.to_vec())
+    );
+    let part = CellBytes::new(&[u8::MIN; READ_PART]);
+    let got = sockets
+        .receive(&pair.server, TcpReceiveRequest::Read, &part)
+        .expect("receive");
+    assert_eq!(
+        (got.length, got.unread_after, part.to_vec()),
+        (
+            ByteCount(READ_PART),
+            Some(ByteCount(MESSAGE.len() - READ_PART)),
+            MESSAGE[..READ_PART].to_vec()
+        )
+    );
+    close(&sockets, pair);
+}
+
+/// Checks that one receive into a buffer the caller lends takes more than a page.
+pub fn one_receive_into_a_lent_buffer_takes_more_than_a_page<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let bytes = pattern(LONG_RECEIVE);
+    send_all(&sockets, &pair.client, plain(), &bytes);
+    wait_for_unread(&sockets, &pair.server, LONG_RECEIVE);
+    let mut buffer = vec![u8::MIN; LONG_RECEIVE];
+    let got = sockets
+        .receive(&pair.server, TcpReceiveRequest::Read, &lent(&mut buffer))
+        .expect("receive");
+    assert!(
+        got.length == ByteCount(LONG_RECEIVE) && buffer == bytes,
+        "{:?} of {LONG_RECEIVE} bytes in one receive",
+        got.length
+    );
+    close(&sockets, pair);
+}
+
+/// Checks that one receive into bytes which are no slice takes more than a page, sent from such bytes too.
+pub fn one_receive_into_bytes_that_are_no_slice_takes_more_than_a_page<S: TcpSockets>(sockets: S) {
+    let pair = pair(&sockets);
+    let bytes = pattern(LONG_RECEIVE);
+    let mut sent = usize::MIN;
+    while sent < bytes.len() {
+        let taken = retry(|| sockets.send(&pair.client, plain(), &CellBytes::new(&bytes[sent..])))
+            .expect("send");
+        sent += taken.0;
+    }
+    wait_for_unread(&sockets, &pair.server, LONG_RECEIVE);
+    let cells = CellBytes::new(&[u8::MIN; LONG_RECEIVE]);
+    let got = sockets
+        .receive(&pair.server, TcpReceiveRequest::Read, &cells)
+        .expect("receive");
+    assert!(
+        got.length == ByteCount(LONG_RECEIVE) && cells.to_vec() == bytes,
+        "{:?} of {LONG_RECEIVE} bytes in one receive",
+        got.length
     );
     close(&sockets, pair);
 }
@@ -1942,7 +2110,7 @@ pub fn listener_unread_byte_reports_reach_the_connections_it_accepts<S: TcpSocke
     send_all(&sockets, &pair.client, plain(), MESSAGE);
     wait_for_unread(&sockets, &pair.server, MESSAGE.len());
     let got = sockets
-        .receive(&pair.server, TcpReceiveRequest::Read, &mut buffer)
+        .receive(&pair.server, TcpReceiveRequest::Read, &lent(&mut buffer))
         .expect("receive");
     assert_eq!(
         (got.length, got.unread_after),
@@ -1958,7 +2126,7 @@ pub fn receive_software_timestamps_when_asked<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
     let mut buffer = [u8::MIN; 1];
     send_all(&sockets, &pair.client, plain(), MESSAGE);
-    let got = retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &mut buffer))
+    let got = retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &lent(&mut buffer)))
         .expect("receive");
     assert_eq!(got.timestamps.software, None, "not asked for");
     let timestamping = Timestamping {
@@ -1973,7 +2141,7 @@ pub fn receive_software_timestamps_when_asked<S: TcpSockets>(sockets: S) {
         )
         .expect("timestamping");
     send_all(&sockets, &pair.client, plain(), MESSAGE);
-    let got = retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &mut buffer))
+    let got = retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &lent(&mut buffer)))
         .expect("receive");
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2231,7 +2399,8 @@ fn icmp_error_reaches_a_synchronizing_connection<S: TcpSockets>(sockets: S, vers
             .expect("connect to the listener")
     };
     let queued = connect(&[]).connection;
-    retry(|| sockets.send(&queued, plain(), URGENT)).expect("the first connection is established");
+    retry(|| sockets.send(&queued, plain(), &lent(&mut URGENT.to_vec())))
+        .expect("the first connection is established");
     std::thread::sleep(SETTLE);
     let capture = raw_socket(version, ipproto::TCP);
     let waiting = connect(&[TcpSetting::IcmpErrorReports {
@@ -3031,7 +3200,7 @@ pub fn user_timeout_ends_an_unacknowledged_connection<S: TcpSockets>(sockets: S)
     let mut buffer = [u8::MIN; 1];
     assert_eq!(
         sockets
-            .receive(&lifted.client, TcpReceiveRequest::Read, &mut buffer)
+            .receive(&lifted.client, TcpReceiveRequest::Read, &lent(&mut buffer))
             .map(|got| got.length),
         Err(HostError::WouldBlock)
     );
@@ -4417,7 +4586,7 @@ pub fn window_probe_is_answered_and_changes_no_setting<S: TcpSockets>(sockets: S
         .receive(
             &pair.client,
             TcpReceiveRequest::Peek { offset: NO_BYTES },
-            &mut queued,
+            &lent(&mut queued),
         )
         .expect("a peek at the receive queue still chosen");
     assert_eq!(&queued[..peeked.length.0], MESSAGE);
@@ -4879,7 +5048,7 @@ pub fn listener_timestamping_reaches_the_connections_it_accepts<S: TcpSockets>(s
     );
     send_all(&sockets, &pair.client, plain(), MESSAGE);
     let mut buffer = [u8::MIN; 1];
-    let got = retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &mut buffer))
+    let got = retry(|| sockets.receive(&pair.server, TcpReceiveRequest::Read, &lent(&mut buffer)))
         .expect("receive");
     assert!(got.timestamps.software.is_some(), "{got:?}");
     close(&sockets, pair);
@@ -5644,26 +5813,7 @@ fn with_tcp_ecn<T: Send>(tcp_ecn: &str, body: impl FnOnce() -> T + Send) -> T {
         scope
             .spawn(|| {
                 own_network_namespace();
-                let socket = rustix::net::socket(AddressFamily::INET, SocketType::DGRAM, None)
-                    .expect("a socket to bring the loopback up with");
-                // SAFETY: ifreq is plain data.
-                let mut request: linux_raw_sys::net::ifreq = unsafe { core::mem::zeroed() };
-                // SAFETY: the name is the union's only member.
-                let name = unsafe { &mut request.ifr_ifrn.ifrn_name };
-                for (to, from) in name.iter_mut().zip(LOOPBACK_NAME.bytes()) {
-                    *to = from as linux_raw_sys::ctypes::c_char;
-                }
-                request.ifr_ifru.ifru_flags = net_device_flags::IFF_UP as core::ffi::c_short;
-                // SAFETY: SIOCSIFFLAGS takes an ifreq that names the device and gives its flags.
-                unsafe {
-                    rustix::ioctl::ioctl(
-                        &socket,
-                        rustix::ioctl::Setter::<{ SIOCSIFFLAGS as rustix::ioctl::Opcode }, _>::new(
-                            request,
-                        ),
-                    )
-                }
-                .expect("bring the loopback up");
+                bring_loopback_up();
                 std::fs::write(TCP_ECN, tcp_ecn).expect("write tcp_ecn");
                 body()
             })
@@ -5675,9 +5825,53 @@ fn with_tcp_ecn<T: Send>(tcp_ecn: &str, body: impl FnOnce() -> T + Send) -> T {
 /// Moves the calling thread into a network namespace of its own, as root.
 #[cfg(target_os = "linux")]
 fn own_network_namespace() {
-    // SAFETY: only the network namespace is unshared, so the thread shares its descriptors as before.
-    unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNET) }
+    nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET)
         .expect("a network namespace of the check's own, as root");
+}
+
+/// Brings the calling thread's loopback up through the kernel's routing socket, as `ip link set lo up` does.
+#[cfg(target_os = "linux")]
+fn bring_loopback_up() {
+    use netlink_packet_core::{
+        NLM_F_ACK, NLM_F_REQUEST, NetlinkHeader, NetlinkMessage, NetlinkPayload,
+    };
+    use netlink_packet_route::RouteNetlinkMessage;
+    use netlink_packet_route::link::{LinkFlags, LinkMessage};
+    let mut link = LinkMessage::default();
+    link.header.index = nix::net::if_::if_nametoindex(LOOPBACK_NAME).expect("the loopback's index");
+    link.header.flags = LinkFlags::Up;
+    link.header.change_mask = LinkFlags::Up;
+    let mut header = NetlinkHeader::default();
+    header.flags = NLM_F_REQUEST | NLM_F_ACK;
+    let mut request = NetlinkMessage::new(
+        header,
+        NetlinkPayload::from(RouteNetlinkMessage::SetLink(link)),
+    );
+    request.finalize();
+    let mut bytes = vec![u8::MIN; request.buffer_len()];
+    request.serialize(&mut bytes);
+    let socket =
+        netlink_sys::Socket::new(netlink_sys::protocols::NETLINK_ROUTE).expect("a routing socket");
+    // The kernel's port number and no multicast groups (netlink(7)).
+    socket
+        .connect(&netlink_sys::SocketAddr::new(u32::MIN, u32::MIN))
+        .expect("connect the routing socket to the kernel");
+    socket
+        .send(&bytes, i32::from(u8::MIN))
+        .expect("ask for the loopback up");
+    let mut reply = Vec::with_capacity(LOOPBACK_ANSWER_ROOM);
+    socket
+        .recv(&mut reply, i32::from(u8::MIN))
+        .expect("the kernel's answer");
+    match NetlinkMessage::<RouteNetlinkMessage>::deserialize(&reply).map(|answer| answer.payload) {
+        Ok(NetlinkPayload::Error(error)) if error.code.is_none() => {}
+        other => panic!("bring the loopback up: {other:?}"),
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn bring_loopback_up() {
+    panic!("a check's own loopback is in a network namespace, which is Linux's");
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -5688,7 +5882,12 @@ fn own_network_namespace() {
 /// The name Linux gives the loopback device of every network namespace.
 ///
 /// https://man7.org/linux/man-pages/man7/network_namespaces.7.html#:~:text=loopback
+#[cfg(target_os = "linux")]
 const LOOPBACK_NAME: &str = "lo";
+
+/// Room for the kernel's answer to a link change: an acknowledgement, or an error that quotes the request.
+#[cfg(target_os = "linux")]
+const LOOPBACK_ANSWER_ROOM: usize = 4096;
 /// The `tcp_ecn` of the namespace of the thread that writes it.
 ///
 /// https://docs.kernel.org/networking/ip-sysctl.html#:~:text=tcp_ecn%20%2D%20INTEGER
@@ -8153,10 +8352,10 @@ pub fn waits_on_many_connections_each_wake_once<S: TcpSockets>(sockets: S) {
 /// Checks that a wait for room to send finishes when the peer has read enough of what fills the connection.
 pub fn wait_for_room_finishes_when_the_peer_reads<S: TcpSockets>(sockets: S) {
     let pair = pair(&sockets);
-    let chunk = vec![u8::MIN; SETTING_BYTES];
+    let mut chunk = vec![u8::MIN; SETTING_BYTES];
     let start = Instant::now();
     loop {
-        match sockets.send(&pair.client, plain(), &chunk) {
+        match sockets.send(&pair.client, plain(), &lent(&mut chunk)) {
             Ok(_) => assert!(start.elapsed() < DEADLINE, "the connection never filled"),
             Err(HostError::WouldBlock) => break,
             Err(error) => panic!("send: {error:?}"),
@@ -8176,7 +8375,7 @@ pub fn wait_for_room_finishes_when_the_peer_reads<S: TcpSockets>(sockets: S) {
                 start.elapsed() < DEADLINE,
                 "never woken while the peer read"
             );
-            match sockets.receive(&pair.server, TcpReceiveRequest::Read, &mut sink) {
+            match sockets.receive(&pair.server, TcpReceiveRequest::Read, &lent(&mut sink)) {
                 Ok(_) | Err(HostError::WouldBlock) => {}
                 Err(error) => panic!("receive: {error:?}"),
             }
@@ -8626,6 +8825,21 @@ macro_rules! tests {
         #[test]
         fn unread_byte_reports_count_what_is_left() {
             $crate::unread_byte_reports_count_what_is_left($value);
+        }
+
+        #[test]
+        fn bytes_that_are_no_slice_carry_sends_and_receives() {
+            $crate::bytes_that_are_no_slice_carry_sends_and_receives($value);
+        }
+
+        #[test]
+        fn one_receive_into_a_lent_buffer_takes_more_than_a_page() {
+            $crate::one_receive_into_a_lent_buffer_takes_more_than_a_page($value);
+        }
+
+        #[test]
+        fn one_receive_into_bytes_that_are_no_slice_takes_more_than_a_page() {
+            $crate::one_receive_into_bytes_that_are_no_slice_takes_more_than_a_page($value);
         }
 
         #[test]
