@@ -442,9 +442,10 @@ Around it, until he answers: both findings stay listed and GI4 is not claimed.
   src/stage/helper/tests.rs) and one constant_defined_twice (`PATCHES = 8` in tests/tessellation_draw.rs:27 and
   src/stage/helper/tests.rs:15).
 
-### For the Metal track (two lines)
+### For the Metal track (two lines; current as of the eighth run)
 
-- gpu-metal goes to `crates/gpu/implementation/metal` (package name kept, `[lib] path = "implementation.rs"`,
+- The Metal back end is being restarted by another agent on branch `graphics-metal` (READ origin/graphics-metal
+  f2560d2d7, 2026-11-26: no crates/gpu/implementation/metal yet); this track does not touch that crate. gpu-metal goes to `crates/gpu/implementation/metal` (package name kept, `[lib] path = "implementation.rs"`,
   exporting only `MetalGpu` and its config), and its conformance_run.rs is the one line
   `wcontainers_gpu_conformance::tests!(<wcontainers_gpu_metal::MetalGpu<..> as wcontainers_gpu::StandaloneGpu>::new(..config..).expect(".."); StandaloneGpu: yes);`.
 - It implements `wcontainers_gpu::Gpu` with the six required methods (`dispatch`, `capture_vertices`,
@@ -704,6 +705,89 @@ machines (no display) keep today's check.
   webgpu's last 30 (the fronts building their back end through `StandaloneGpu`), and webgl's handles and helper blocks
   with GI7.
 
+## The eighth run (2026-11-26): the seventh run's check finished, nir's link without `no_neon`
+
+Logs in the scratch folder gi-check9/ (the check: arm.log, x86.log, out-*/) and graphics-implementations/r8/ (the
+repair: blake3c-arm.log, blake3c-x86.log; the job is tools/r8-blake3.sh).
+
+### His main
+
+- `git fetch` of his checkout's main gives ac696ea19, an ancestor of this branch (`git merge-base --is-ancestor
+  FETCH_HEAD HEAD` exit 0): nothing to merge. READ: the instruction-interface changes named for today are not on that
+  main; no graphics crate names those interfaces.
+
+### The check of the seventh run, finished (MEASURED at the pushed tip 29f39d382)
+
+- A fresh clone of the pushed tip with its submodules (gi-check9/src), the check's own script (gi-check8/tools/chk.sh,
+  its linter folder renamed only), run on both machines with `--jobs 12` (its first x86-64 call had used the
+  machine's default of 96). Both jobs ran to their end: exit 0 after 1,255 s (ARM64) and 1,344 s (x86-64).
+- Both machines alike:
+  - linter da55b9d7 (gpu-webgl's old lints table in the copy): 80,051 findings; the per-rule table and webgpu's line
+    are identical on the two machines; webgpu public_outside_interface 30, unparsed 1, as the seventh run said.
+  - `cargo check --all-targets`: 17 graphics packages exit 0; gpu-webgl and shaders exit 101 (166 error lines, 165
+    unsafe).
+  - Tests: gpu 37, recording 215, trace 55, directx-graphics-infrastructure 13, graphics-test 16, direct3d-11 69,
+    shader-converters linked 7 and contained 7 pass. clippy `-D warnings` exit 0, fmt exit 0, Cargo.lock's hash the
+    same before and after.
+  - Mesa built (99 s ARM64, 104 s x86-64). nir links as pushed (0 undefined, 0 multiple definitions) and passes 41
+    with 2 ignored; opengl 11 pass.
+  - webgpu on lavapipe: 135 passed, 4 failed, 3 ignored, GI2's four; its conformance run 53 passed, 1 failed. wasm32
+    exit 0.
+- The check's three plants in nir's link, ARM64: libmesa back gives 628 undefined references (8 symbols) and 65
+  multiple definitions (13); libmesa back with the NEON change undone gives 628 (8) and 70 (14, `blake3_compress_in_
+  place_portable` the fourteenth); the NEON change undone alone gives 5 (1, that symbol). x86-64 (rust-lld) links all
+  three. So the repair and each of its two parts were needed, as the seventh run said.
+- What the check named by reading: the `no_neon` feature reaches every crate in a whole-workspace ARM64 build.
+  MEASURED at 9034444b8 with the old dependency put back in a copy (`cargo tree --workspace -e normal -f '{p} [{f}]'`,
+  ARM64): blake3 resolves to `[default,no_neon,std]`; the translator built alone keeps `[default,std]`. Repaired below.
+
+### nir's link without `no_neon` (b9fd01638, bc48ee898, 9034444b8)
+
+- nir's build script now links Mesa's BLAKE3 from a copy: each member object of Meson's thin archive (objcopy cannot
+  copy a thin archive whole) is renamed with `objcopy --redefine-syms`, every inner function (`blake3_*` and the
+  `_blake3_*` aliases x86-64's assembly defines, but not the `blake3_hasher_*` functions Mesa's other libraries call)
+  taking the prefix `wcontainers_nir_mesa_`, and the copies are archived anew in the build's output folder. The
+  target-specific `no_neon` dependency is gone. It touches crates/nir/build.rs and crates/nir/Cargo.toml only; the
+  Visual C++ target (no nm or objcopy) links Mesa's library as before.
+- MEASURED at the pushed 9034444b8 (scratch copy with the old lints table for nir and opengl, Mesa built in the job):
+
+| | ARM64 (ld.bfd) | x86-64 (rust-lld) | x86-64 (ld.bfd forced) |
+|---|---|---|---|
+| nir tests link | exit 0, 0 undefined, 0 multiple | exit 0 | exit 0 |
+| nir tests | 41 passed, 2 ignored | 41 passed, 2 ignored | 41 passed, 2 ignored |
+| opengl tests | 11 passed | 11 passed | |
+| plant: rename off | exit 101, 5 multiple (`blake3_compress_in_place_portable`) | exit 0 | exit 0 |
+| plant: rename off, `no_neon` back (the seventh run's repair) | exit 0 | exit 0 | exit 0 |
+| plant: libmesa back | exit 101, 628 undefined, 65 multiple | exit 0 | exit 101, 624 undefined, 65 multiple |
+| whole-workspace blake3 features | `[default,std]` | `[default,std]` | |
+
+- `cargo fmt --check -p wcontainers-nir` and `cargo clippy --all-targets --no-deps -p wcontainers-nir -D warnings`
+  exit 0 on both machines. Cargo.lock: unchanged by the commits (READ `git diff 29f39d382..9034444b8 -- Cargo.lock`
+  empty). A first try (bc48ee898) renamed only names starting `blake3_`; on x86-64 the renamed references then pulled
+  Mesa's assembly objects, whose `_blake3_hash_many_sse41` and ten more aliases the crate defines too (55 multiple
+  definitions): 9034444b8 renames those aliases as well.
+- Not measured: the hashing speed the other crates lost under `no_neon` (it no longer applies).
+
+### webgpu's last 30 public_outside_interface findings: not reduced this run
+
+READ at 9034444b8, each with what still calls it:
+
+| findings | items | callers | what stops it |
+|---|---|---|---|
+| 1 | `add_window` | directx com/chosen.rs:117, opengl src/device.rs:72, direct3d-12 examples/directx/gpu.rs:60, trace replay.rs:104, webgpu tests/host | hosts give windows after the back end exists and the interface has no call for it: his second question (seventh run) |
+| 4 | the impl block, `new`, `device_descriptor`, `INSTANCE_FLAGS` | those hosts, and direct3d-12 tests (answers, gpu, registers), directx tests/com.rs, shaders tests/common, webgpu tests/scenes/draw.rs and timestamps.rs | a host that adds a window must make its surface on the device's own wgpu instance, so it makes instance, adapter and device itself; the window-less callers could move to `StandaloneGpu` now, but the four stay public while any window host needs them, so they follow the second question |
+| 20 | `Counters`, its 15 fields, `counters`, `frame_report`, `FRAME_REPORT`, `held` | 36 reads in webgpu's tests (bindings, writes, scenes and the scenes modules the browser page includes), directx tests/com.rs:957, examples/frames.rs | no interface call reports them; next step (waits on nothing): those tests become unit tests inside the crate, as the recorder's did, and the page stops printing them |
+| 5 | `Depth24` (2), `depth24`, `UNORM24_MAX` (2) | webgpu tests copies.rs and depth.rs, the scenes page, direct3d-12 tests/answers.rs | `Caps`'s `DEPTH24_UNORM` answers only part (not float storage); goes with the unit-test move above |
+
+### Milestones
+
+- Reached this run: none newly. The seventh run's check finished and held (above). GI8's ARM64 link now holds
+  without turning NEON off for other crates.
+- GI4 still waits on his answer to the first question (fifth run); GI6's removal on the cost question; GI7 on the API
+  track's OpenGL ES trait (AC10); GI8 part B on its Mesa compiler (AC11) and Gallium (AC8) traits.
+- Next, waiting on nothing: webgpu's counter-reading tests as unit tests (20 + 5 findings), then the window-less
+  callers on `StandaloneGpu`.
+
 ## SECURITY
 
 CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
@@ -734,5 +818,7 @@ that the runs before used leaves attribute lines out, so it missed webgl's `#[un
   webgpu) as a webgl dev-dependency, and the trace crate uses postcard, serde and naga as webgl did; sixth run none
   (wcontainers-graphics-test, already a Windows dev-dependency of webgpu, on every native target); seventh run none
   (nir takes the blake3 it already had with its `no_neon` feature on ARM64; Cargo.lock unchanged, MEASURED by hash
-  before and after the build on both machines).
+  before and after the build on both machines); eighth run none (the `no_neon` feature dropped; nir's build script
+  calls nm, objcopy and ar from the toolchain, no new crate). Unsafe lines at 9034444b8: the same 733 (gpu-webgpu 19,
+  gpu-webgl 159, shaders 71, shader-converters 5, nir 113, opengl 354, test-window 12, the rest 0).
 - No hostile-guest suite exists, so none was run in any run (the thread-test design review is still owed to the owner).
