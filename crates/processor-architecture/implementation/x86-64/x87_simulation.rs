@@ -269,6 +269,8 @@ pub(super) fn execute_x87(
             let top = x87.read(0);
             let value = if x87.is_empty(0) {
                 underflow(&mut x87).then_some(indefinite)
+            } else if decoded.mnemonic() == iced_x86::Mnemonic::Fisttp && !is_active(Bug::TruncatingStoreRoundsByControl) {
+                crate::optional::store_truncated(&mut x87, |x87| round_for_store(x87, top, bits)).map(|integer| integer.unwrap_or(indefinite))
             } else {
                 round_for_store(&mut x87, top, bits).map(|integer| integer.unwrap_or(indefinite))
             };

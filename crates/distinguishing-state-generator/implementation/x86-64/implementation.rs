@@ -69,6 +69,7 @@ use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
 use wcontainers_processor_architecture_x86_64::sse::find_sse_form;
 use wcontainers_processor_architecture_x86_64::avx512_integer::{EvexIntegerPlace, find_evex_integer_form};
 use wcontainers_processor_architecture_x86_64::opmask::{OpmaskPlace, find_opmask_form};
+use wcontainers_processor_architecture_x86_64::optional::find_optional_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{DataAccess, Flags, Instruction, PagePermission, X86_64};
 
@@ -292,7 +293,10 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::FarPointer
         | OperandType::IretFrame
         | OperandType::HypercallNumber
-        | OperandType::KeyRights => true,
+        | OperandType::KeyRights
+        | OperandType::OptionalVector(_)
+        | OperandType::OptionalMxcsr { .. }
+        | OperandType::OptionalBase => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }
@@ -356,6 +360,11 @@ fn find_access_shape(instruction: Instruction) -> Option<AccessShape> {
         return matches!(form.place, EvexIntegerPlace::Memory | EvexIntegerPlace::Store)
             .then_some(AccessShape { write: form.place == EvexIntegerPlace::Store, alignment: form.to_alignment() });
     }
+    if let Some(form) = find_optional_form(instruction) {
+        // A writemask decides whether a masked form's access faults, so no placement decides that alone.
+        return (form.place != OperandPlace::Register && !form.can_mask())
+            .then_some(AccessShape { write: form.writes_memory(), alignment: None });
+    }
     find_vector_form(instruction).filter(|form| form.place != OperandPlace::Register).map(|form| AccessShape {
         write: false,
         alignment: form.requires_alignment().then_some(SSE_ALIGNMENT),
@@ -380,6 +389,10 @@ fn find_access_bytes(instruction: Instruction, operands: &[Option<OperandValue>]
         return u64::from(form.bits / 8);
     }
     if let Some(form) = find_evex_integer_form(instruction) {
+        let broadcast = operands.iter().flatten().any(|value| *value == OperandValue::LaneBroadcast(true));
+        return form.memory_bytes(broadcast);
+    }
+    if let Some(form) = find_optional_form(instruction) {
         let broadcast = operands.iter().flatten().any(|value| *value == OperandValue::LaneBroadcast(true));
         return form.memory_bytes(broadcast);
     }

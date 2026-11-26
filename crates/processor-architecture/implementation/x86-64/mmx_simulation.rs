@@ -30,14 +30,15 @@ pub(super) fn execute_mmx(
         processor.x87.status &= !(0b111 << 11);
         return Ok(());
     }
-    let length = form.memory_bytes();
+    let wide = is_active(Bug::MmxSsseThreeMemoryReadsSixteenBytes) && crate::planted::SSSE3_MMX_MEMORY.contains(&instruction);
+    let length = if wide { 16 } else { form.memory_bytes() };
     let read = |processor: &Processor, index: u32| -> Result<u64, Exception> {
         Ok(match decoded.op_kind(index) {
             OpKind::Register => read_any(processor, decoded.op_register(index)),
             OpKind::Memory => {
                 let operand = locate(processor, decoded);
                 check_access(processor.flags, memory, operand, length, Access::Read)?;
-                read_value(memory, operand.address, length as usize)
+                read_value(memory, operand.address, length.min(8) as usize)
             }
             _ => u64::from(decoded.immediate8()),
         })

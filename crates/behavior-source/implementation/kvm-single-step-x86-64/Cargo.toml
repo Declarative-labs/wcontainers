@@ -40,6 +40,10 @@ name = "record_reciprocal"
 path = "examples/record_reciprocal.rs"
 
 [[example]]
+name = "record_optional_reciprocal"
+path = "examples/record_optional_reciprocal.rs"
+
+[[example]]
 name = "planted"
 path = "examples/planted.rs"
 required-features = ["planted-bugs"]
