@@ -705,7 +705,7 @@ fn module<G: Guest>(
 ) -> CodeModule {
     let mut module = Module::new();
     module.section(&types::<G>(how.2));
-    module.section(&imports::<G>());
+    module.section(&imports::<G>(how.3));
     let mut functions = FunctionSection::new();
     let mut code_section = CodeSection::new();
     let mut sites = [0; SITES];
@@ -1327,7 +1327,7 @@ pub(crate) fn types<G: Guest>(progress: ProgressCount) -> TypeSection {
     types
 }
 
-pub(crate) fn imports<G: Guest>() -> ImportSection {
+pub(crate) fn imports<G: Guest>(ordering: AccessOrdering) -> ImportSection {
     let mut imports = ImportSection::new();
     for (name, ty) in TRANSLATOR_HOOKS {
         imports.import(HOOKS, name, EntityType::Function(ty));
@@ -1341,9 +1341,9 @@ pub(crate) fn imports<G: Guest>() -> ImportSection {
         MEMORY,
         EntityType::Memory(MemoryType {
             minimum: 0,
-            maximum: None,
+            maximum: ordering.shares_memory().then_some(SHARED_MEMORY_MOST_PAGES),
             memory64: true,
-            shared: false,
+            shared: ordering.shares_memory(),
             page_size_log2: None,
         }),
     );

@@ -37,11 +37,17 @@ pub const HOOKS: &str = "hooks";
 /// Import module name for what the thread module exports.
 pub const THREAD: &str = "thread";
 
-/// The guest memory: a 64 bit memory holding the guest's whole address space, unshared. Its base must never
-/// move, so the engine keeps the base and bound in registers instead of reloading them at every access: in
-/// wasmtime the engine needs `Config::memory_may_move(false)` and a memory reservation that covers the
-/// memory (V8 keeps them in registers either way).
+/// The guest memory: a 64 bit memory holding the guest's whole address space, unshared but in the form that
+/// shares it (`AccessOrdering::shares_memory`), where it is shared with at most [`SHARED_MEMORY_MOST_PAGES`].
+/// Its base must never move, so the engine keeps the base and bound in registers instead of reloading them at
+/// every access: in wasmtime the engine needs `Config::memory_may_move(false)` and a memory reservation that
+/// covers the memory (V8 keeps them in registers either way).
 pub const MEMORY: &str = "memory";
+/// The most pages a shared guest memory declares, 16 GiB: V8's limit for a 64 bit memory, above which it refuses
+/// the module (docs/threads.md 7.2, measured in Node 24.14.1).
+///
+/// https://github.com/v8/v8/blob/main/src/wasm/wasm-limits.h
+pub const SHARED_MEMORY_MOST_PAGES: u64 = 262_144;
 /// The runtime's own memory, which the guest cannot reach: thread blocks and the page permission table.
 /// A shared 32 bit memory, at most 4 GiB.
 pub const STATE: &str = "state";

@@ -50,6 +50,11 @@ impl AccessOrdering {
             AccessOrdering::Unordered | AccessOrdering::LoadsOrdered(_) => None,
         }
     }
+
+    /// Whether code of this form imports the guest's memory shared, so that threads run it at once on one memory.
+    pub fn shares_memory(self) -> bool {
+        matches!(self, AccessOrdering::Ordered(_))
+    }
 }
 
 /// The kind of WebAssembly access an ordered guest access becomes.
