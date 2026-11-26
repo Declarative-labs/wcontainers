@@ -203,6 +203,59 @@ const DEPTH24_MAX: f64 = 16_777_215.0;
 /// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#copies-buffers-images-depth-stencil
 const DEPTH24_BITS: u32 = 0x00ff_ffff;
 
+/// The samples of each texel of a texture that is not multisampled.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturedescriptor/samplecount
+const SINGLE_SAMPLE: u32 = 1;
+
+/// The levels of a texture or a view of one level.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturedescriptor/mipmaplevelcount
+const SINGLE_LEVEL: u32 = 1;
+
+/// The layers of a texture or a view of one layer, which a 3D texture is to Metal.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturedescriptor/arraylength
+const SINGLE_LAYER: u32 = 1;
+
+/// The depth of a texture, region or copy that is not 3D.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturedescriptor/depth
+const FLAT_DEPTH: u32 = 1;
+
+/// The least anisotropy, which samples along no axis more than along another.
+///
+/// https://developer.apple.com/documentation/metal/mtlsamplerdescriptor/maxanisotropy
+const NO_ANISOTROPY: u32 = 1;
+
+/// The places of the timestamp buffer made to learn whether the device writes timestamps.
+///
+/// https://developer.apple.com/documentation/metal/mtlcountersamplebufferdescriptor/samplecount
+const PROBED_TIMESTAMPS: u32 = 1;
+
+/// The serial of the first command buffer, above the zero that counts as completed before any.
+///
+/// https://developer.apple.com/documentation/metal/mtlsharedevent/signaledvalue
+const FIRST_SERIAL: u64 = 1;
+
+/// The rings: one for each kind of ring write, at the kind's number.
+const RING_KINDS: usize = wcontainers_gpu::RingKind::Data as usize + 1;
+
+/// The refusal of a resolve to an offset off a result's multiple, worded as the default's.
+///
+/// https://developer.apple.com/documentation/metal/mtlvisibilityresultmode
+const QUERY_OFFSET_REFUSED: &str = "query results go to multiples of 8 bytes";
+
+/// The nearest depth a unorm depth format holds.
+///
+/// https://developer.apple.com/documentation/metal/mtlviewport/znear
+const NEAREST_DEPTH: f64 = 0.0;
+
+/// The farthest depth a unorm depth format holds.
+///
+/// https://developer.apple.com/documentation/metal/mtlviewport/zfar
+const FARTHEST_DEPTH: f64 = 1.0;
+
 /// What this implementation's devices take, from Apple's feature set tables for the Apple7 family on.
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf
@@ -278,7 +331,7 @@ pub struct MetalGpu<M: Metal> {
     /// How many times work was encoded into a command buffer, which ends a ring chunk's writes.
     encodes: u64,
     /// The rings of indices and of other per-draw data.
-    rings: [ring::Ring<M>; 2],
+    rings: [ring::Ring<M>; RING_KINDS],
     /// The programs and layouts vertex captures draw with.
     captures: capture::Captures,
 }
@@ -347,7 +400,7 @@ impl<M: Metal> MetalGpu<M> {
         };
         // Timestamps where the GPU writes them where passes end, which making a buffer of their places tells.
         let mut caps = caps;
-        if metal.make_timestamp_buffer(1).is_ok() {
+        if metal.make_timestamp_buffer(PROBED_TIMESTAMPS).is_ok() {
             caps.features |= Features::TIMESTAMPS;
         }
         if metal.supports_depth_test_bounds() {
@@ -361,7 +414,7 @@ impl<M: Metal> MetalGpu<M> {
             next_id: u64::MIN,
             lost: None,
             recording: None,
-            serial: 1,
+            serial: FIRST_SERIAL,
             completed: u64::MIN,
             in_flight: VecDeque::new(),
             blits: Vec::new(),
@@ -621,14 +674,14 @@ impl<M: Metal> MetalGpu<M> {
         };
         let image = row_pitch.checked_mul(rows_per_layer)?;
         let (layers, depth) = if three_d {
-            (1, extent.depth_or_layers)
+            (SINGLE_LAYER, extent.depth_or_layers)
         } else {
-            (extent.depth_or_layers, 1)
+            (extent.depth_or_layers, FLAT_DEPTH)
         };
         (0..layers)
             .map(|layer| {
                 let slice = if three_d {
-                    0
+                    u32::MIN
                 } else {
                     region.layer.checked_add(layer)?
                 };
@@ -682,8 +735,8 @@ impl<M: Metal> MetalGpu<M> {
         let facts = FORMAT_FACTS[format as usize];
         let (bw, bh, bytes) = facts.block;
         let bytes = match facts.kind {
-            FormatKind::DepthStencil if stencil => 1,
-            FormatKind::DepthStencil => 4,
+            FormatKind::DepthStencil if stencil => size_of::<u8>() as u32,
+            FormatKind::DepthStencil => size_of::<f32>() as u32,
             _ => bytes,
         };
         Some((
@@ -710,7 +763,7 @@ impl<M: Metal> MetalGpu<M> {
     fn converted_in(format: Format, stencil: bool, bytes: &[u8]) -> Vec<u8> {
         if convert::depth_converted(format) && !stencil {
             bytes
-                .as_chunks::<4>()
+                .as_chunks::<{ size_of::<u32>() }>()
                 .0
                 .iter()
                 .flat_map(|w| {
@@ -765,7 +818,7 @@ impl<M: Metal> MetalGpu<M> {
             .ok_or(GpuError::Invalid("the module has no such entry point"))?;
         let info = module.info.get_entry_point(index);
         let mut slots = std::collections::BTreeMap::new();
-        let mut next = [0u32; 3];
+        let (mut buffers, mut textures, mut samplers) = (u32::MIN, u32::MIN, u32::MIN);
         for (handle, var) in module.module.global_variables.iter() {
             let Some(binding) = var.binding else {
                 continue;
@@ -786,9 +839,9 @@ impl<M: Metal> MetalGpu<M> {
                 }
             };
             let (count, most) = match kind {
-                SlotKind::Buffer => (&mut next[0], RESOURCE_BUFFER_SLOTS),
-                SlotKind::Texture => (&mut next[1], TEXTURE_SLOTS),
-                SlotKind::Sampler => (&mut next[2], wcontainers_metal::MAX_SAMPLER_SLOTS),
+                SlotKind::Buffer => (&mut buffers, RESOURCE_BUFFER_SLOTS),
+                SlotKind::Texture => (&mut textures, TEXTURE_SLOTS),
+                SlotKind::Sampler => (&mut samplers, wcontainers_metal::MAX_SAMPLER_SLOTS),
             };
             if *count >= most {
                 return Err(GpuError::Invalid(
@@ -898,24 +951,28 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             ));
         }
         let (texture_type, depth, array_length) =
-            match (desc.dimension, desc.samples > 1, desc.cube) {
-                (TextureDimension::D3, _, _) => (TextureType::Type3D, desc.depth_or_layers, 1),
-                (TextureDimension::D2, true, _) => (TextureType::Type2DMultisample, 1, 1),
+            match (desc.dimension, desc.samples > SINGLE_SAMPLE, desc.cube) {
+                (TextureDimension::D3, _, _) => {
+                    (TextureType::Type3D, desc.depth_or_layers, SINGLE_LAYER)
+                }
+                (TextureDimension::D2, true, _) => {
+                    (TextureType::Type2DMultisample, FLAT_DEPTH, SINGLE_LAYER)
+                }
                 (TextureDimension::D2, false, true)
                     if desc.depth_or_layers == wcontainers_gpu::resource::CUBE_FACES =>
                 {
-                    (TextureType::TypeCube, 1, 1)
+                    (TextureType::TypeCube, FLAT_DEPTH, SINGLE_LAYER)
                 }
                 (TextureDimension::D2, false, true) => (
                     TextureType::TypeCubeArray,
-                    1,
+                    FLAT_DEPTH,
                     desc.depth_or_layers / wcontainers_gpu::resource::CUBE_FACES,
                 ),
-                (TextureDimension::D2, false, false) if desc.depth_or_layers == 1 => {
-                    (TextureType::Type2D, 1, 1)
+                (TextureDimension::D2, false, false) if desc.depth_or_layers == SINGLE_LAYER => {
+                    (TextureType::Type2D, FLAT_DEPTH, SINGLE_LAYER)
                 }
                 (TextureDimension::D2, false, false) => {
-                    (TextureType::Type2DArray, 1, desc.depth_or_layers)
+                    (TextureType::Type2DArray, FLAT_DEPTH, desc.depth_or_layers)
                 }
             };
         let raw = self
@@ -975,7 +1032,11 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                     first_level: desc.base_mip,
                     level_count: desc.mip_count,
                     first_slice: if three_d { u32::MIN } else { desc.base_layer },
-                    slice_count: if three_d { 1 } else { desc.layer_count },
+                    slice_count: if three_d {
+                        SINGLE_LAYER
+                    } else {
+                        desc.layer_count
+                    },
                     swizzle: convert::view_swizzle(desc.format),
                 },
             )
@@ -1015,12 +1076,10 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 lod_min_clamp: f32::from_bits(desc.lod_range[0]).max(0.0),
                 lod_max_clamp: f32::from_bits(desc.lod_range[1]).min(LOD_MAX),
                 max_anisotropy: if linear_only {
-                    u32::from(
-                        desc.anisotropy
-                            .clamp(1, wcontainers_metal::MAX_ANISOTROPY as u16),
-                    )
+                    u32::from(desc.anisotropy)
+                        .clamp(NO_ANISOTROPY, wcontainers_metal::MAX_ANISOTROPY)
                 } else {
-                    1
+                    NO_ANISOTROPY
                 },
                 compare_function: desc.compare.map(convert::compare),
             })
@@ -1374,7 +1433,11 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             self.fail(format_args!("a copy outside its textures"));
             return;
         }
-        let layers = if s3 { 1 } else { extent.depth_or_layers };
+        let layers = if s3 {
+            SINGLE_LAYER
+        } else {
+            extent.depth_or_layers
+        };
         let ((source_width, source_height), (destination_width, destination_height)) =
             (level_extent(src, extent), level_extent(dst, extent));
         let (width, height) = (
@@ -1400,7 +1463,11 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 source_size: Size {
                     width,
                     height,
-                    depth: if s3 { extent.depth_or_layers } else { 1 },
+                    depth: if s3 {
+                        extent.depth_or_layers
+                    } else {
+                        FLAT_DEPTH
+                    },
                 },
                 destination_texture: d.raw.clone(),
                 destination_slice: if d3 { u32::MIN } else { destination_layer },
@@ -1680,7 +1747,12 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                 self.fail(format_args!("timestamps not read: {error:?}"));
                 return;
             }
-            for (into, value) in dst.as_chunks_mut::<8>().0.iter_mut().zip(values) {
+            for (into, value) in dst
+                .as_chunks_mut::<{ size_of::<u64>() }>()
+                .0
+                .iter_mut()
+                .zip(values)
+            {
                 *into = value.to_le_bytes();
             }
             return;
@@ -1695,8 +1767,9 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             return;
         }
         if let ReadLayout::Depth24 = readback.layout {
-            for word in bytes.as_chunks_mut::<4>().0 {
-                let depth = f64::from(f32::from_le_bytes(*word)).clamp(0.0, 1.0);
+            for word in bytes.as_chunks_mut::<{ size_of::<f32>() }>().0 {
+                let depth =
+                    f64::from(f32::from_le_bytes(*word)).clamp(NEAREST_DEPTH, FARTHEST_DEPTH);
                 *word = ((depth * DEPTH24_MAX).round_ties_even() as u32).to_le_bytes();
             }
         }
@@ -1746,9 +1819,9 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             format,
             width,
             height,
-            depth_or_layers: 1,
-            mip_levels: 1,
-            samples: 1,
+            depth_or_layers: SINGLE_LAYER,
+            mip_levels: SINGLE_LEVEL,
+            samples: SINGLE_SAMPLE,
             usage: TextureUsage::RENDER | TextureUsage::SAMPLE,
             cube: false,
             reinterpret: false,
@@ -1757,9 +1830,9 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             format,
             dimension: ViewDimension::D2,
             base_mip: u32::MIN,
-            mip_count: 1,
+            mip_count: SINGLE_LEVEL,
             base_layer: u32::MIN,
-            layer_count: 1,
+            layer_count: SINGLE_LAYER,
             stencil: false,
         };
         let drawn = self.create_view(&texture, &whole(format))?;
@@ -1803,7 +1876,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
             format: Format::Bgra8Unorm,
             width,
             height,
-            samples: 1,
+            samples: SINGLE_SAMPLE,
         }));
         self.draw_frame(&view, &read)?;
         let command_buffer = self.command_buffer().ok_or(GpuError::DeviceLost)?;
@@ -1908,9 +1981,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         dst_offset: u64,
     ) -> Result<(), GpuError> {
         if !dst_offset.is_multiple_of(QUERY_BYTES) {
-            return Err(GpuError::Invalid(
-                "query results go to multiples of 8 bytes",
-            ));
+            return Err(GpuError::Invalid(QUERY_OFFSET_REFUSED));
         }
         if first.checked_add(count).is_none_or(|end| end > set.count) {
             return Err(GpuError::Invalid("queries past the set's end"));
@@ -2008,7 +2079,7 @@ impl<M: Metal> Gpu for MetalGpu<M> {
                         "a dispatch of more groups than max_dispatch",
                     ));
                 }
-                if groups.contains(&0) {
+                if groups.contains(&u32::MIN) {
                     return Ok(());
                 }
                 ComputeCommand::DispatchThreadgroups(Size {
@@ -2115,7 +2186,7 @@ fn query_bytes(count: u32) -> u64 {
 fn region_inside(
     desc: &TextureDesc,
     mip: u32,
-    origin: [u32; 3],
+    origin: wcontainers_gpu::resource::Origin,
     layer: u32,
     extent: Extent,
 ) -> bool {
@@ -2130,21 +2201,21 @@ fn region_inside(
     };
     let three_d = desc.dimension == TextureDimension::D3;
     let (depth, layers) = if three_d {
-        (Some(side(desc.depth_or_layers)), Some(1))
+        (Some(side(desc.depth_or_layers)), Some(SINGLE_LAYER))
     } else {
-        (Some(1), Some(desc.depth_or_layers))
+        (Some(FLAT_DEPTH), Some(desc.depth_or_layers))
     };
     let (z, slices) = if three_d {
-        ((origin[2], extent.depth_or_layers), (layer, 1))
+        ((origin.z, extent.depth_or_layers), (layer, SINGLE_LAYER))
     } else {
-        ((origin[2], 1), (layer, extent.depth_or_layers))
+        ((origin.z, FLAT_DEPTH), (layer, extent.depth_or_layers))
     };
     fits(
-        origin[0],
+        origin.x,
         extent.width,
         side(desc.width).checked_next_multiple_of(bw),
     ) && fits(
-        origin[1],
+        origin.y,
         extent.height,
         side(desc.height).checked_next_multiple_of(bh),
     ) && fits(z.0, z.1, depth)
@@ -2173,11 +2244,10 @@ fn texture_region_inside<M: Metal>(
     region: &TextureRegion<'_, MetalGpu<M>>,
     extent: Extent,
 ) -> bool {
-    let origin = [region.origin.x, region.origin.y, region.origin.z];
     region_inside(
         &region.texture.desc,
         region.mip,
-        origin,
+        region.origin,
         region.layer,
         extent,
     )

@@ -132,10 +132,15 @@ pub(crate) fn depth_converted(format: Format) -> bool {
 /// https://developer.apple.com/documentation/metal/mtldevice/supportstexturesamplecount(_:)
 const DRAWN_SAMPLES: u8 = 0b101;
 
+/// The sample counts a format not drawn into takes, a bit for each: one.
+///
+/// https://developer.apple.com/documentation/metal/mtldevice/supportstexturesamplecount(_:)
+const ONE_SAMPLE_BIT: u8 = 0b1;
+
 /// Returns what this implementation does with each format, on Apple's GPUs of macOS.
 pub(crate) fn format_caps() -> FormatCaps {
     let mut uses = [FormatUse::empty(); FORMAT_COUNT];
-    let mut samples = [1; FORMAT_COUNT];
+    let mut samples = [ONE_SAMPLE_BIT; FORMAT_COUNT];
     let filtered = FormatUse::SAMPLE | FormatUse::FILTER | FormatUse::COPY_OUT;
     let drawn = filtered | FormatUse::RENDER | FormatUse::BLEND | FormatUse::RESOLVE;
     let integer = FormatUse::SAMPLE | FormatUse::RENDER | FormatUse::COPY_OUT;
@@ -436,19 +441,91 @@ pub(crate) fn vertex_format(format: GpuVertexFormat) -> Option<VertexFormat> {
     })
 }
 
+/// The bytes of one attribute of a format of one 8-bit component.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_8X1: u32 = size_of::<[u8; 1]>() as u32;
+
+/// The bytes of one attribute of a format of two 8-bit components.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_8X2: u32 = size_of::<[u8; 2]>() as u32;
+
+/// The bytes of one attribute of a format of three 8-bit components.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_8X3: u32 = size_of::<[u8; 3]>() as u32;
+
+/// The bytes of one attribute of a format of four 8-bit components.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_8X4: u32 = size_of::<[u8; 4]>() as u32;
+
+/// The bytes of one attribute of a format of one 16-bit component.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_16X1: u32 = size_of::<[u16; 1]>() as u32;
+
+/// The bytes of one attribute of a format of two 16-bit components.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_16X2: u32 = size_of::<[u16; 2]>() as u32;
+
+/// The bytes of one attribute of a format of three 16-bit components.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_16X3: u32 = size_of::<[u16; 3]>() as u32;
+
+/// The bytes of one attribute of a format of four 16-bit components.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_16X4: u32 = size_of::<[u16; 4]>() as u32;
+
+/// The bytes of one attribute of a format of one 32-bit component.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_32X1: u32 = size_of::<[u32; 1]>() as u32;
+
+/// The bytes of one attribute of a format of two 32-bit components.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_32X2: u32 = size_of::<[u32; 2]>() as u32;
+
+/// The bytes of one attribute of a format of three 32-bit components.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_32X3: u32 = size_of::<[u32; 3]>() as u32;
+
+/// The bytes of one attribute of a format of four 32-bit components.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat
+const BYTES_32X4: u32 = size_of::<[u32; 4]>() as u32;
+
+/// The bytes of one attribute of a format that packs every component into one word.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat/uint1010102normalized
+const BYTES_PACKED: u32 = size_of::<u32>() as u32;
+
 /// Returns the bytes one attribute of an interface vertex format holds.
 pub(crate) fn vertex_bytes(format: GpuVertexFormat) -> u32 {
     use GpuVertexFormat as G;
     match format {
-        G::Uint8x1 | G::Sint8x1 | G::Unorm8x1 | G::Snorm8x1 => 1,
-        G::Uint8x2 | G::Sint8x2 | G::Unorm8x2 | G::Snorm8x2 => 2,
-        G::Uint8x3 | G::Sint8x3 | G::Unorm8x3 | G::Snorm8x3 => 3,
-        G::Uint16x1 | G::Sint16x1 | G::Unorm16x1 | G::Snorm16x1 | G::Float16x1 => 2,
-        G::Uint16x3 | G::Sint16x3 | G::Unorm16x3 | G::Snorm16x3 | G::Float16x3 => 6,
-        G::Uint16x4 | G::Sint16x4 | G::Unorm16x4 | G::Snorm16x4 | G::Float16x4 => 8,
-        G::Float32x2 | G::Uint32x2 | G::Sint32x2 => 8,
-        G::Float32x3 | G::Uint32x3 | G::Sint32x3 => 12,
-        G::Float32x4 | G::Uint32x4 | G::Sint32x4 => 16,
-        _ => 4,
+        G::Uint8x1 | G::Sint8x1 | G::Unorm8x1 | G::Snorm8x1 => BYTES_8X1,
+        G::Uint8x2 | G::Sint8x2 | G::Unorm8x2 | G::Snorm8x2 => BYTES_8X2,
+        G::Uint8x3 | G::Sint8x3 | G::Unorm8x3 | G::Snorm8x3 => BYTES_8X3,
+        G::Uint8x4 | G::Sint8x4 | G::Unorm8x4 | G::Snorm8x4 => BYTES_8X4,
+        G::Uint16x1 | G::Sint16x1 | G::Unorm16x1 | G::Snorm16x1 | G::Float16x1 => BYTES_16X1,
+        G::Uint16x2 | G::Sint16x2 | G::Unorm16x2 | G::Snorm16x2 | G::Float16x2 => BYTES_16X2,
+        G::Uint16x3 | G::Sint16x3 | G::Unorm16x3 | G::Snorm16x3 | G::Float16x3 => BYTES_16X3,
+        G::Uint16x4 | G::Sint16x4 | G::Unorm16x4 | G::Snorm16x4 | G::Float16x4 => BYTES_16X4,
+        G::Float32x1 | G::Uint32x1 | G::Sint32x1 => BYTES_32X1,
+        G::Float32x2 | G::Uint32x2 | G::Sint32x2 => BYTES_32X2,
+        G::Float32x3 | G::Uint32x3 | G::Sint32x3 => BYTES_32X3,
+        G::Float32x4 | G::Uint32x4 | G::Sint32x4 => BYTES_32X4,
+        G::Bgra8Unorm
+        | G::Bgrx8Unorm
+        | G::Unorm10_10_10_2
+        | G::Uint10_10_10_2
+        | G::Float11_11_10 => BYTES_PACKED,
     }
 }

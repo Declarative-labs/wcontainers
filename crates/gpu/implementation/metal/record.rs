@@ -10,12 +10,12 @@ use wcontainers_gpu::{
     state::{IndexFormat, StepMode, TargetLayout, Topology},
 };
 use wcontainers_metal::{
-    Blending, BlitCommand, ColorWriteMask, DepthClipMode, FunctionSource, IndexType, LoadAction,
-    MAX_COLOR_ATTACHMENTS, Metal, PrimitiveTopologyClass, PrimitiveType, RenderCommand,
-    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
-    RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor, ResolveTarget, ResourceSlot,
-    StoreAction, TriangleFillMode, VertexAttribute, VertexBufferLayout, VertexStepFunction,
-    VisibilityResultMode,
+    Blending, BlitCommand, CHANNELS, ColorWriteMask, DEFAULT_STEP_RATE, DepthClipMode,
+    FunctionSource, IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, Metal, PrimitiveTopologyClass,
+    PrimitiveType, RenderCommand, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+    RenderPassDescriptor, RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor,
+    ResolveTarget, ResourceSlot, StoreAction, TriangleFillMode, VERTEX_STRIDE_MULTIPLE,
+    VertexAttribute, VertexBufferLayout, VertexStepFunction, VisibilityResultMode,
 };
 
 use crate::objects::{QueryObj, SetResource, ShaderObj, Shared, SlotKind, ViewObj};
@@ -65,12 +65,60 @@ const PRESENT_PROGRAM: &str = "
 }
 ";
 
+/// The binding `PRESENT_PROGRAM` reads the frame at.
+///
+/// https://www.w3.org/TR/WGSL/#attribute-binding
+const FRAME_BINDING: u32 = 32;
+
+/// The vertex entry point of `PRESENT_PROGRAM`.
+///
+/// https://www.w3.org/TR/WGSL/#entry-points
+const PRESENT_VERTEX: &str = "vs";
+
+/// The fragment entry point of `PRESENT_PROGRAM`.
+///
+/// https://www.w3.org/TR/WGSL/#entry-points
+const PRESENT_FRAGMENT: &str = "fs";
+
+/// The vertices of the triangle `PRESENT_PROGRAM` covers the drawable with.
+///
+/// https://developer.apple.com/documentation/metal/mtlprimitivetype/triangle
+const COVERING_TRIANGLE: u32 = 3;
+
+/// The instances of a draw of one instance.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawprimitivesindirectarguments/instancecount
+const SINGLE_INSTANCE: u32 = 1;
+
+/// What an indirect draw's instances count as before the GPU reads its arguments: some.
+///
+/// https://developer.apple.com/documentation/metal/mtldrawprimitivesindirectarguments
+const INDIRECT_INSTANCES: u32 = 1;
+
+/// The clear value of an attachment that is loaded or left as it is, which Metal does not read.
+///
+/// https://developer.apple.com/documentation/metal/mtlloadaction/load
+const NOT_CLEARED: f64 = 0.0;
+
+/// What the draw refuses when Metal refuses a function it builds.
+///
+/// https://developer.apple.com/documentation/metal/mtllibrary/makefunction(name:)
+const FUNCTION_REFUSED: &str = "a function Metal refuses";
+
+/// What the draw refuses when Metal refuses a pipeline it builds.
+///
+/// https://developer.apple.com/documentation/metal/mtldevice/makerenderpipelinestate(descriptor:)
+const PIPELINE_REFUSED: &str = "a render pipeline Metal refuses";
+
+/// What a draw refuses when a stream it widens on the host fails for a reason other than a broken rule.
+const NOT_WIDENED: &str = "a stream whose formats were not widened";
+
 /// One color attachment of an open pass.
 struct OpenColor<M: Metal> {
     view: Shared<ViewObj<M>>,
     depth_slice: u32,
     resolve: Option<Shared<ViewObj<M>>>,
-    load: LoadOp<[u32; 4]>,
+    load: LoadOp<[u32; CHANNELS]>,
     store: StoreOp,
 }
 
@@ -127,7 +175,7 @@ impl<M: Metal> OpenPass<M> {
         let (width, height, samples) = match (first, pass.empty) {
             (Some(view), _) => (view.width, view.height, view.samples),
             (None, Some(empty)) => (empty.width, empty.height, empty.samples),
-            (None, None) => (0, 0, 1),
+            (None, None) => (u32::MIN, u32::MIN, crate::SINGLE_SAMPLE),
         };
         let mut target_colors = [None; MAX_COLOR_TARGETS];
         for (into, color) in target_colors.iter_mut().zip(&colors) {
@@ -203,8 +251,8 @@ impl<M: Metal> OpenPass<M> {
                 continue;
             };
             let (load_action, clear_color) = match c.load {
-                LoadOp::Load => (LoadAction::Load, [0.0; 4]),
-                LoadOp::DontCare => (LoadAction::DontCare, [0.0; 4]),
+                LoadOp::Load => (LoadAction::Load, [NOT_CLEARED; CHANNELS]),
+                LoadOp::DontCare => (LoadAction::DontCare, [NOT_CLEARED; CHANNELS]),
                 LoadOp::Clear(bits) => (LoadAction::Clear, clear_color(c.view.format, bits)),
             };
             *into = Some(RenderPassColorAttachment {
@@ -262,8 +310,8 @@ fn aspect<M: Metal>(
     store: StoreOp,
 ) -> RenderPassDepthStencilAttachment<'_, M> {
     let (load_action, clear_value) = match load {
-        LoadOp::Load => (LoadAction::Load, 0.0),
-        LoadOp::DontCare => (LoadAction::DontCare, 0.0),
+        LoadOp::Load => (LoadAction::Load, NOT_CLEARED),
+        LoadOp::DontCare => (LoadAction::DontCare, NOT_CLEARED),
         LoadOp::Clear(v) => (LoadAction::Clear, v),
     };
     RenderPassDepthStencilAttachment {
@@ -277,7 +325,7 @@ fn aspect<M: Metal>(
 }
 
 /// Returns a clear color's value as Metal takes it, by the kind of the format's values.
-fn clear_color(format: Format, bits: [u32; 4]) -> [f64; 4] {
+fn clear_color(format: Format, bits: [u32; CHANNELS]) -> [f64; CHANNELS] {
     match FORMAT_FACTS[format as usize].kind {
         FormatKind::Uint => bits.map(f64::from),
         FormatKind::Sint => bits.map(|b| f64::from(b as i32)),
@@ -345,7 +393,7 @@ fn vertex_buffers(
             continue;
         };
         let mut attributes = Vec::new();
-        let mut end = 0;
+        let mut end = u32::MIN;
         for a in layout
             .attributes
             .iter()
@@ -367,13 +415,15 @@ fn vertex_buffers(
         }
         let (stride, step_function, step_rate) = match (s.stride, s.step) {
             (0, _) => (
-                end.checked_next_multiple_of(4)
+                end.checked_next_multiple_of(VERTEX_STRIDE_MULTIPLE)
                     .ok_or("an attribute whose end overflows")?
-                    .max(4),
+                    .max(VERTEX_STRIDE_MULTIPLE),
                 VertexStepFunction::Constant,
-                1,
+                DEFAULT_STEP_RATE,
             ),
-            (stride, StepMode::Vertex) => (stride, VertexStepFunction::PerVertex, 1),
+            (stride, StepMode::Vertex) => {
+                (stride, VertexStepFunction::PerVertex, DEFAULT_STEP_RATE)
+            }
             (stride, StepMode::Instance(rate)) => (stride, VertexStepFunction::PerInstance, rate),
         };
         out.push(VertexBufferLayout {
@@ -446,7 +496,7 @@ impl<M: Metal> MetalGpu<M> {
         };
         made.map_err(|error| {
             eprintln!("metal: {} refused: {error:?}", shader.entry_point);
-            "a function Metal refuses"
+            FUNCTION_REFUSED
         })
     }
 
@@ -520,7 +570,7 @@ impl<M: Metal> MetalGpu<M> {
                 .finish_render_pipeline_state(&pending)
                 .map_err(|error| {
                     eprintln!("metal: pipeline refused: {error:?}");
-                    "a render pipeline Metal refuses"
+                    PIPELINE_REFUSED
                 })?;
             self.render_pipelines.insert(key, pipeline.clone());
             return Ok(Some(pipeline));
@@ -626,7 +676,7 @@ impl<M: Metal> MetalGpu<M> {
                 .make_render_pipeline_state_in_background(&descriptor)
                 .map_err(|error| {
                     eprintln!("metal: pipeline refused: {error:?}");
-                    "a render pipeline Metal refuses"
+                    PIPELINE_REFUSED
                 })?;
             self.pending_pipelines.insert(key, pending);
             return Ok(None);
@@ -636,7 +686,7 @@ impl<M: Metal> MetalGpu<M> {
             .make_render_pipeline_state(&descriptor)
             .map_err(|error| {
                 eprintln!("metal: pipeline refused: {error:?}");
-                "a render pipeline Metal refuses"
+                PIPELINE_REFUSED
             })?;
         self.render_pipelines.insert(key, pipeline.clone());
         Ok(Some(pipeline))
@@ -664,12 +714,10 @@ impl<M: Metal> MetalGpu<M> {
             .contains(wcontainers_gpu::caps::Features::DEPTH_BOUNDS)
             && pass.depth.as_ref().is_some_and(|d| d.depth.is_some()))
         .then(|| {
-            call.depth_stencil
-                .desc
-                .depth_bounds
-                .map_or((0.0, 1.0), |[low, high]| {
-                    (f32::from_bits(low), f32::from_bits(high))
-                })
+            call.depth_stencil.desc.depth_bounds.map_or(
+                (crate::NEAREST_DEPTH as f32, crate::FARTHEST_DEPTH as f32),
+                |[low, high]| (f32::from_bits(low), f32::from_bits(high)),
+            )
         });
         let (primitive_type, class) =
             primitive(call.topology).ok_or("a fan or loop through draw")?;
@@ -707,14 +755,16 @@ impl<M: Metal> MetalGpu<M> {
             | DrawRange::Indexed {
                 count, instances, ..
             } => (instances, count == 0),
-            DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => (1, false),
+            DrawRange::Indirect { .. } | DrawRange::IndexedIndirect { .. } => {
+                (INDIRECT_INSTANCES, false)
+            }
         };
         if instances == 0 || empty {
             return Ok(());
         }
         let widened = self.widen_streams(call).map_err(|error| match error {
             GpuError::Invalid(why) => why,
-            _ => "a stream whose formats were not widened",
+            _ => NOT_WIDENED,
         })?;
         let layout = widened
             .as_ref()
@@ -981,10 +1031,10 @@ impl<M: Metal> MetalGpu<M> {
             .as_ref()
             .ok_or("an indexed draw with no index buffer")?;
         let (index_type, size) = match index.format {
-            IndexFormat::U16 => (IndexType::UInt16, 2),
-            IndexFormat::U32 => (IndexType::UInt32, 4),
+            IndexFormat::U16 => (IndexType::UInt16, size_of::<u16>() as u64),
+            IndexFormat::U32 => (IndexType::UInt32, size_of::<u32>() as u64),
             IndexFormat::U8 => {
-                return Err("8-bit indices, which this implementation does not declare");
+                return Err("byte-wide indices, which this implementation does not declare");
             }
         };
         self.mark_used(index.buffer);
@@ -1010,12 +1060,12 @@ impl<M: Metal> MetalGpu<M> {
         if self.present.is_none() {
             let vertex = self.create_shader(&ShaderModule::from_wgsl(
                 PRESENT_PROGRAM,
-                "vs",
+                PRESENT_VERTEX,
                 ShaderStage::Vertex,
             )?)?;
             let fragment = self.create_shader(&ShaderModule::from_wgsl(
                 PRESENT_PROGRAM,
-                "fs",
+                PRESENT_FRAGMENT,
                 ShaderStage::Fragment,
             )?)?;
             let program = self.create_program(&Program::Render {
@@ -1048,7 +1098,7 @@ impl<M: Metal> MetalGpu<M> {
                 depth_bias_clamp: u32::MIN,
                 depth_clip: true,
                 scissor: false,
-                line_width: 1.0f32.to_bits(),
+                line_width: crate::LIMITS.max_line_width.to_bits(),
                 provoking: ProvokingVertex::First,
                 depth_minus_one: false,
                 sample_mask: u32::MAX,
@@ -1077,7 +1127,7 @@ impl<M: Metal> MetalGpu<M> {
             draw.vertex_layout.clone(),
         );
         let set = self.create_binding_set(&[BindingEntry {
-            binding: 32,
+            binding: FRAME_BINDING,
             stages: StageSet::FRAGMENT,
             resource: BindingResource::Texture(frame),
         }])?;
@@ -1100,7 +1150,7 @@ impl<M: Metal> MetalGpu<M> {
             width: (drawable.width as f32).to_bits(),
             height: (drawable.height as f32).to_bits(),
             min_depth: u32::MIN,
-            max_depth: 1.0f32.to_bits(),
+            max_depth: (crate::FARTHEST_DEPTH as f32).to_bits(),
         }];
         self.begin_pass(&pass);
         self.draw(&DrawCall {
@@ -1116,14 +1166,14 @@ impl<M: Metal> MetalGpu<M> {
             restart: false,
             viewports: &viewport,
             scissors: &[],
-            blend_constant: [u32::MIN; 4],
+            blend_constant: [u32::MIN; CHANNELS],
             stencil_reference: [u8::MIN; 2],
             immediates: &[],
             range: DrawRange::Vertices {
                 first: u32::MIN,
-                count: 3,
+                count: COVERING_TRIANGLE,
                 first_instance: u32::MIN,
-                instances: 1,
+                instances: SINGLE_INSTANCE,
             },
         });
         self.end_pass();
@@ -1225,9 +1275,9 @@ impl<M: Metal> MetalGpu<M> {
                     format,
                     dimension: ViewDimension::D2,
                     base_mip: region.mip,
-                    mip_count: 1,
+                    mip_count: crate::SINGLE_LEVEL,
                     base_layer: region.layer,
-                    layer_count: 1,
+                    layer_count: crate::SINGLE_LAYER,
                     stencil: false,
                 },
             )

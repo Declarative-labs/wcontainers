@@ -1129,7 +1129,7 @@ impl<M: Metal> MetalGpu<M> {
             empty: Some(EmptyPass {
                 width: ONE_PIXEL,
                 height: ONE_PIXEL,
-                samples: 1,
+                samples: crate::SINGLE_SAMPLE,
             }),
             occlusion: None,
         });

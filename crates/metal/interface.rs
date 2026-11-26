@@ -1334,6 +1334,16 @@ pub const MAX_TEXTURE_SLOTS: u32 = 128;
 /// https://www.w3.org/TR/webgpu/#dom-supported-limits-maxvertexbufferarraystride
 pub const MAX_VERTEX_STRIDE: u32 = 2048;
 
+/// The step rate Metal gives a vertex buffer unless told otherwise: every instance, read only `PerInstance`.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexbufferlayoutdescriptor/steprate
+pub const DEFAULT_STEP_RATE: u32 = 1;
+
+/// The multiple every vertex buffer's stride is.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexbufferlayoutdescriptor/stride
+pub const VERTEX_STRIDE_MULTIPLE: u32 = 4;
+
 /// The most viewports and scissor rectangles one draw has.
 ///
 /// https://developer.apple.com/metal/Metal-Feature-Set-Tables.pdf

@@ -2,22 +2,22 @@
 
 use wcontainers_metal::{
     BlendFactor, BlendOperation, Blending, BlitCommand, BlitOption, ColorWriteMask,
-    CommandBufferStatus, CommitError, CompareFunction, ComputeCommand, DISPATCH_ARGUMENTS_BYTES,
-    DRAW_ARGUMENTS_BYTES, DRAW_INDEXED_ARGUMENTS_BYTES, DepthStencilDescriptor,
-    DispatchThreadgroupsIndirectArguments, DrawIndexedPrimitivesIndirectArguments,
-    DrawPrimitivesIndirectArguments, EncodeBlitCommandsError, EncodeComputeCommandsError,
-    EncodeRenderCommandsError, FunctionSource, INDIRECT_ARGUMENTS_ALIGNMENT, IndexType, LoadAction,
-    MAX_COLOR_ATTACHMENTS, MAX_TEXTURE_SIDE, MAX_VERTEX_STRIDE, MakeBufferError,
-    MakeRenderPipelineStateError, MakeSamplerStateError, MakeTextureError, Metal, Origin,
-    PixelFormat, PrimitiveTopologyClass, PrimitiveType, ReadContentsError, RenderCommand,
-    RenderPassColorAttachment, RenderPassDepthStencilAttachment, RenderPassDescriptor,
-    RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor, ResolveTarget, ResourceSlot,
-    SamplerAddressMode, SamplerBorderColor, SamplerDescriptor, SamplerMinMagFilter,
-    SamplerMipFilter, ScissorRect, Size, StencilDescriptor, StencilOperation, StoreAction,
-    TextureDescriptor, TextureSwizzle, TextureSwizzleChannels, TextureType, TextureUsage,
-    TextureViewDescriptor, VISIBILITY_RESULT_BYTES, VertexAttribute, VertexBufferLayout,
-    VertexFormat, VertexStepFunction, Viewport, VisibilityResultMode, WaitUntilCompletedError,
-    WriteContentsError,
+    CommandBufferStatus, CommitError, CompareFunction, ComputeCommand, DEFAULT_STEP_RATE,
+    DISPATCH_ARGUMENTS_BYTES, DRAW_ARGUMENTS_BYTES, DRAW_INDEXED_ARGUMENTS_BYTES,
+    DepthStencilDescriptor, DispatchThreadgroupsIndirectArguments,
+    DrawIndexedPrimitivesIndirectArguments, DrawPrimitivesIndirectArguments,
+    EncodeBlitCommandsError, EncodeComputeCommandsError, EncodeRenderCommandsError, FunctionSource,
+    INDIRECT_ARGUMENTS_ALIGNMENT, IndexType, LoadAction, MAX_COLOR_ATTACHMENTS, MAX_TEXTURE_SIDE,
+    MAX_VERTEX_STRIDE, MakeBufferError, MakeRenderPipelineStateError, MakeSamplerStateError,
+    MakeTextureError, Metal, Origin, PixelFormat, PrimitiveTopologyClass, PrimitiveType,
+    ReadContentsError, RenderCommand, RenderPassColorAttachment, RenderPassDepthStencilAttachment,
+    RenderPassDescriptor, RenderPipelineColorAttachmentDescriptor, RenderPipelineDescriptor,
+    ResolveTarget, ResourceSlot, SamplerAddressMode, SamplerBorderColor, SamplerDescriptor,
+    SamplerMinMagFilter, SamplerMipFilter, ScissorRect, Size, StencilDescriptor, StencilOperation,
+    StoreAction, TextureDescriptor, TextureSwizzle, TextureSwizzleChannels, TextureType,
+    TextureUsage, TextureViewDescriptor, VERTEX_STRIDE_MULTIPLE, VISIBILITY_RESULT_BYTES,
+    VertexAttribute, VertexBufferLayout, VertexFormat, VertexStepFunction, Viewport,
+    VisibilityResultMode, WaitUntilCompletedError, WriteContentsError,
 };
 
 /// The side of the square textures the tests draw into and copy, in texels: one block of a compressed format.
@@ -152,6 +152,34 @@ const COLOR_CHANNELS: usize = 4;
 /// https://www.w3.org/TR/WGSL/#vector-types
 const GREEN: Color = [0.0, 1.0, 0.0, 1.0];
 
+/// The color a pass clears to: transparent black.
+///
+/// https://developer.apple.com/documentation/metal/mtlrenderpasscolorattachmentdescriptor/clearcolor
+const TRANSPARENT_BLACK: [f64; wcontainers_metal::CHANNELS] = [0.0; wcontainers_metal::CHANNELS];
+
+/// The bytes of one of the tests' vertices, a `vec2<f32>` position.
+const POSITION_BYTES: u32 = size_of::<[f32; 2]>() as u32;
+
+/// The least and the most level of detail of a sampler that samples the base level alone.
+///
+/// https://developer.apple.com/documentation/metal/mtlsamplerdescriptor/lodminclamp
+const BASE_LEVEL_ONLY: f32 = 0.0;
+
+/// The axes a sampler's address modes are given for: s, t and r.
+///
+/// https://developer.apple.com/documentation/metal/mtlsamplerdescriptor
+const ADDRESS_AXES: usize = 3;
+
+/// The step of `pattern` from one byte to the next, odd so that 256 bytes in a row differ.
+///
+/// https://doc.rust-lang.org/std/primitive.u8.html#method.wrapping_mul
+const PATTERN_STEP: u8 = 37;
+
+/// The first byte of `pattern`.
+///
+/// https://doc.rust-lang.org/std/primitive.u8.html#method.wrapping_add
+const PATTERN_START: u8 = 11;
+
 /// Returns the bytes of a color as a function reads it from a buffer.
 fn color_bytes(color: Color) -> Vec<u8> {
     color
@@ -208,7 +236,11 @@ const TARGET_VIEWPORT: Viewport = Viewport {
 /// Bytes no test writes by accident.
 fn pattern(length: usize) -> Vec<u8> {
     (0..length)
-        .map(|i| (i as u8).wrapping_mul(37).wrapping_add(11))
+        .map(|i| {
+            (i as u8)
+                .wrapping_mul(PATTERN_STEP)
+                .wrapping_add(PATTERN_START)
+        })
         .collect()
 }
 
@@ -229,9 +261,9 @@ fn function<M: Metal>(subject: &mut M, stage: naga::ShaderStage, entry_point: &s
     let (module, info) = programs();
     let vertex_buffers = [VertexBufferLayout {
         buffer_index: VERTICES,
-        stride: 8,
+        stride: POSITION_BYTES,
         step_function: VertexStepFunction::PerVertex,
-        step_rate: 1,
+        step_rate: DEFAULT_STEP_RATE,
         attributes: vec![VertexAttribute {
             location: u32::MIN,
             offset: u32::MIN,
@@ -378,7 +410,7 @@ fn pass<M: Metal>(texture: &M::Texture) -> RenderPassDescriptor<'_, M> {
         depth_plane: u32::MIN,
         load_action: LoadAction::Clear,
         store_action: StoreAction::Store,
-        clear_color: [0.0; 4],
+        clear_color: TRANSPARENT_BLACK,
         resolve: None,
     });
     RenderPassDescriptor {
@@ -488,7 +520,7 @@ pub fn writes_and_reads_buffer_contents<M: Metal>(mut subject: M) {
 
 /// Checks that a buffer an uncommitted command buffer uses is refused to the CPU, and a command buffer committed twice.
 pub fn refuses_contents_of_uncommitted_work_and_a_second_commit<M: Metal>(mut subject: M) {
-    let buffer = filled(&mut subject, &pattern(16));
+    let buffer = filled(&mut subject, &pattern(FILL_LENGTH));
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
@@ -502,8 +534,8 @@ pub fn refuses_contents_of_uncommitted_work_and_a_second_commit<M: Metal>(mut su
             &[BlitCommand::FillBuffer {
                 buffer: buffer.clone(),
                 offset: u64::MIN,
-                length: 4,
-                value: 9,
+                length: FILL_LENGTH as u64,
+                value: FILL_VALUE,
             }],
         )
         .expect("Metal answers encode blit commands");
@@ -516,11 +548,11 @@ pub fn refuses_contents_of_uncommitted_work_and_a_second_commit<M: Metal>(mut su
         subject.commit(&command_buffer),
         Err(CommitError::AlreadyCommitted)
     );
-    let mut read = [u8::MIN; 4];
+    let mut read = [u8::MIN; FILL_LENGTH];
     subject
         .read_contents(&buffer, u64::MIN, &mut read)
         .expect("Metal answers read contents");
-    assert_eq!(read, [9; 4]);
+    assert_eq!(read, [FILL_VALUE; FILL_LENGTH]);
 }
 
 /// Checks that a buffer whose only user was a command buffer dropped uncommitted is the CPU's again.
@@ -652,13 +684,7 @@ pub fn draws_in_a_uniform_color_and_refuses_an_empty_slot<M: Metal>(mut subject:
             .flat_map(|v| v.to_le_bytes())
             .collect::<Vec<u8>>(),
     );
-    let color = filled(
-        &mut subject,
-        &[0.0f32, 1.0, 0.0, 1.0]
-            .iter()
-            .flat_map(|v| v.to_le_bytes())
-            .collect::<Vec<u8>>(),
-    );
+    let color = filled(&mut subject, &color_bytes(GREEN));
     let texture = target(&mut subject);
     let command_buffer = subject
         .make_command_buffer()
@@ -714,8 +740,8 @@ pub fn samples_a_texture_view<M: Metal>(mut subject: M) {
             t_address_mode: SamplerAddressMode::ClampToEdge,
             r_address_mode: SamplerAddressMode::ClampToEdge,
             border_color: SamplerBorderColor::TransparentBlack,
-            lod_min_clamp: 0.0,
-            lod_max_clamp: 0.0,
+            lod_min_clamp: BASE_LEVEL_ONLY,
+            lod_max_clamp: BASE_LEVEL_ONLY,
             max_anisotropy: SINGLE,
             compare_function: None,
         })
@@ -782,7 +808,7 @@ fn sampled_texel<M: Metal>(
     pixel_format: PixelFormat,
     texel: &[u8],
     view_of: impl FnOnce(&mut M, &M::Texture) -> M::Texture,
-) -> [u8; 4] {
+) -> [u8; COLOR_CHANNELS] {
     let row = u64::from(TARGET_SIDE) * texel.len() as u64;
     let source = filled(subject, &texel.repeat((TARGET_SIDE * TARGET_SIDE) as usize));
     let texture = subject
@@ -806,8 +832,8 @@ fn sampled_texel<M: Metal>(
             t_address_mode: SamplerAddressMode::ClampToEdge,
             r_address_mode: SamplerAddressMode::ClampToEdge,
             border_color: SamplerBorderColor::TransparentBlack,
-            lod_min_clamp: 0.0,
-            lod_max_clamp: 0.0,
+            lod_min_clamp: BASE_LEVEL_ONLY,
+            lod_max_clamp: BASE_LEVEL_ONLY,
             max_anisotropy: SINGLE,
             compare_function: None,
         })
@@ -856,13 +882,51 @@ fn sampled_texel<M: Metal>(
         .expect("Metal answers encode render commands");
     finish(subject, &command_buffer);
     let texels = read_texture(subject, &drawn);
-    [texels[0], texels[1], texels[2], texels[3]]
+    *texels
+        .first_chunk::<COLOR_CHANNELS>()
+        .expect("a target of one texel at least")
 }
 
 /// A 16-bit texel of four different 4-bit channels: 1 to 4 from its high bits down.
 ///
 /// https://developer.apple.com/documentation/metal/mtlpixelformat/abgr4unorm
 const NIBBLES: u16 = 0x1234;
+
+/// The bits of a 4-bit channel.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/abgr4unorm
+const NIBBLE_BITS: u16 = 4;
+
+/// The largest value a 4-bit channel holds.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/abgr4unorm
+const NIBBLE_MAX: u16 = (1 << NIBBLE_BITS) - 1;
+
+/// Returns the four 4-bit channels of a 16-bit texel, from its high bits down.
+fn nibbles(bits: u16) -> [u16; COLOR_CHANNELS] {
+    let mut channels = [u16::MIN; COLOR_CHANNELS];
+    for (from_low, channel) in channels.iter_mut().rev().enumerate() {
+        *channel = (bits >> (from_low as u16 * NIBBLE_BITS)) & NIBBLE_MAX;
+    }
+    channels
+}
+
+/// Returns the byte an 8-bit unorm target holds a 4-bit unorm channel's value in: `n / 15` of the largest byte.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/rgba8unorm
+fn unorm4_in_unorm8(channel: u16) -> u8 {
+    u8::try_from(channel * u16::from(u8::MAX) / NIBBLE_MAX).expect("a channel of four bits")
+}
+
+/// A texel of four different channels.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/rgba8unorm
+const DISTINCT_TEXEL: [u8; COLOR_CHANNELS] = [10, 20, 30, 40];
+
+/// Direct3D's `B4G4R4A4` bits of blue 1, green 2, red 3 and alpha 4, from the low bits up.
+///
+/// https://learn.microsoft.com/en-us/windows/win32/api/dxgiformat/ne-dxgiformat-dxgi_format
+const B4G4R4A4: u16 = 0x4321;
 
 /// Checks where `abgr4Unorm` holds its channels: measured, alpha in the low four bits, then blue, green and red.
 pub fn samples_abgr4_with_alpha_in_its_low_bits<M: Metal>(mut subject: M) {
@@ -872,8 +936,8 @@ pub fn samples_abgr4_with_alpha_in_its_low_bits<M: Metal>(mut subject: M) {
         &NIBBLES.to_le_bytes(),
         |_, texture| texture.clone(),
     );
-    // A 4-bit channel n samples as n / 15, which an 8-bit target holds as n * 17.
-    assert_eq!(seen, [17, 34, 51, 68]);
+    // Red is in the high bits and alpha in the low ones, so the channels are as they read from the high bits down.
+    assert_eq!(seen, nibbles(NIBBLES).map(unorm4_in_unorm8));
 }
 
 /// Returns a view of a whole one-level 2D texture in `pixel_format` whose reads swizzle as `swizzle` says.
@@ -905,7 +969,7 @@ pub fn samples_a_swizzled_view<M: Metal>(mut subject: M) {
     let seen = sampled_texel(
         &mut subject,
         PixelFormat::Rgba8Unorm,
-        &[10, 20, 30, 40],
+        &DISTINCT_TEXEL,
         |subject, texture| {
             swizzled_view(
                 subject,
@@ -921,13 +985,12 @@ pub fn samples_a_swizzled_view<M: Metal>(mut subject: M) {
             .expect("Metal answers make texture view")
         },
     );
-    assert_eq!(seen, [30, 0, 255, 10]);
-    // Blue 1, green 2, red 3 and alpha 4, from the low bits up.
-    let b4g4r4a4: u16 = 0x4321;
+    let [red, _, blue, _] = DISTINCT_TEXEL;
+    assert_eq!(seen, [blue, u8::MIN, u8::MAX, red]);
     let seen = sampled_texel(
         &mut subject,
         PixelFormat::Abgr4Unorm,
-        &b4g4r4a4.to_le_bytes(),
+        &B4G4R4A4.to_le_bytes(),
         |subject, texture| {
             swizzled_view(
                 subject,
@@ -943,7 +1006,9 @@ pub fn samples_a_swizzled_view<M: Metal>(mut subject: M) {
             .expect("Metal answers make texture view")
         },
     );
-    assert_eq!(seen, [51, 34, 17, 68]);
+    // Metal reads the high bits as red; the swizzle moves each of Direct3D's channels back to its place.
+    let [red, green, blue, alpha] = nibbles(B4G4R4A4);
+    assert_eq!(seen, [green, blue, alpha, red].map(unorm4_in_unorm8));
 }
 
 /// Checks that a swizzle is refused on a view of a texture drawn into, and that no view of a swizzled view is made.
@@ -996,9 +1061,9 @@ fn function_in_background<M: Metal>(
     let (module, info) = programs();
     let vertex_buffers = [VertexBufferLayout {
         buffer_index: VERTICES,
-        stride: 8,
+        stride: POSITION_BYTES,
         step_function: VertexStepFunction::PerVertex,
-        step_rate: 1,
+        step_rate: DEFAULT_STEP_RATE,
         attributes: vec![VertexAttribute {
             location: u32::MIN,
             offset: u32::MIN,
@@ -1020,6 +1085,11 @@ fn function_in_background<M: Metal>(
         .expect("Metal answers make function in background")
 }
 
+/// The pipelines pending at once in the background test: more than any thread pool runs.
+///
+/// https://developer.apple.com/documentation/metal/mtldevice/makerenderpipelinestate(descriptor:completionhandler:)
+const PENDING_PIPELINES: usize = 20;
+
 /// Checks that functions and pipelines built in the background draw and dispatch as those built at once.
 ///
 /// More pipelines are pending at once than any thread pool runs, each finished after; a pipeline's checks refuse it at
@@ -1027,7 +1097,7 @@ fn function_in_background<M: Metal>(
 pub fn builds_functions_and_pipelines_in_the_background<M: Metal>(mut subject: M) {
     let (green, _) = green_and_clear();
     let mut pending = Vec::new();
-    for _ in 0..20 {
+    for _ in 0..PENDING_PIPELINES {
         let vertex = function_in_background(&mut subject, naga::ShaderStage::Vertex, VERTEX);
         let fragment = function_in_background(&mut subject, naga::ShaderStage::Fragment, FLAT);
         let mut color_attachments = [None; MAX_COLOR_ATTACHMENTS];
@@ -1108,7 +1178,7 @@ pub fn builds_functions_and_pipelines_in_the_background<M: Metal>(mut subject: M
                     index: WORDS_SLOT,
                 },
                 ComputeCommand::DispatchThreadgroups(Size {
-                    width: 2,
+                    width: DOUBLE_GROUPS,
                     height: SINGLE,
                     depth: SINGLE,
                 }),
@@ -1153,7 +1223,7 @@ pub fn dispatches_a_compute_function<M: Metal>(mut subject: M) {
                     index: WORDS_SLOT,
                 },
                 ComputeCommand::DispatchThreadgroups(Size {
-                    width: 2,
+                    width: DOUBLE_GROUPS,
                     height: SINGLE,
                     depth: SINGLE,
                 }),
@@ -1161,13 +1231,26 @@ pub fn dispatches_a_compute_function<M: Metal>(mut subject: M) {
         )
         .expect("Metal answers encode compute commands");
     finish(&mut subject, &command_buffer);
-    let mut read = vec![u8::MIN; 32];
+    let mut read = vec![u8::MIN; WORDS_BYTES as usize];
     subject
         .read_contents(&buffer, u64::MIN, &mut read)
         .expect("Metal answers read contents");
     let doubled: Vec<u8> = words.iter().flat_map(|w| (w * 2).to_le_bytes()).collect();
     assert_eq!(read, doubled);
 }
+
+/// The threads of `sum`'s workgroup, each adding one word.
+///
+/// https://www.w3.org/TR/WGSL/#attribute-workgroup_size
+const SUM_GROUP_WIDTH: usize = 4;
+
+/// The word `sum` writes its total into.
+///
+/// https://www.w3.org/TR/WGSL/#address-spaces-storage
+const SUM_INTO: usize = 4;
+
+/// The groups of `double` that double every word.
+const DOUBLE_GROUPS: u32 = WORD_COUNT as u32 / DOUBLE_GROUP_WIDTH;
 
 /// Checks that a compute function sums words through a workgroup variable, whose memory the dispatch must be given.
 pub fn dispatches_with_workgroup_memory<M: Metal>(mut subject: M) {
@@ -1206,11 +1289,14 @@ pub fn dispatches_with_workgroup_memory<M: Metal>(mut subject: M) {
         )
         .expect("Metal answers encode compute commands");
     finish(&mut subject, &command_buffer);
-    let mut read = [u8::MIN; 4];
+    let mut read = [u8::MIN; size_of::<u32>()];
     subject
-        .read_contents(&buffer, 16, &mut read)
+        .read_contents(&buffer, (SUM_INTO * size_of::<u32>()) as u64, &mut read)
         .expect("Metal answers read contents");
-    assert_eq!(u32::from_le_bytes(read), 1 + 2 + 3 + 4);
+    assert_eq!(
+        u32::from_le_bytes(read),
+        words[..SUM_GROUP_WIDTH].iter().sum::<u32>()
+    );
 }
 
 /// One more than the longest side of a 3D texture.
@@ -1263,7 +1349,7 @@ fn described(texture_type: TextureType, pixel_format: PixelFormat) -> TextureDes
         height: TARGET_SIDE,
         depth: SINGLE,
         mipmap_level_count: SINGLE,
-        sample_count: if multisampled { SAMPLES } else { 1 },
+        sample_count: if multisampled { SAMPLES } else { SINGLE },
         array_length: SINGLE,
         usage: TextureUsage {
             shader_read: true,
@@ -1519,6 +1605,11 @@ pub fn refuses_a_pass_drawing_into_a_compressed_texture<M: Metal>(mut subject: M
     );
 }
 
+/// A depth clear value past the farthest depth.
+///
+/// https://developer.apple.com/documentation/metal/mtlrenderpassdepthattachmentdescriptor/cleardepth
+const BEYOND_FARTHEST_DEPTH: f64 = 2.0;
+
 /// Checks that a depth clear outside zero to one is refused, which Metal's validation stops.
 pub fn refuses_a_depth_clear_outside_zero_to_one<M: Metal>(mut subject: M) {
     let color = target(&mut subject);
@@ -1533,7 +1624,7 @@ pub fn refuses_a_depth_clear_outside_zero_to_one<M: Metal>(mut subject: M) {
         slice: u32::MIN,
         load_action: LoadAction::Clear,
         store_action: StoreAction::Store,
-        clear_value: 2.0,
+        clear_value: BEYOND_FARTHEST_DEPTH,
     });
     let command_buffer = subject
         .make_command_buffer()
@@ -1651,8 +1742,8 @@ pub fn refuses_a_texture_not_made_to_be_read<M: Metal>(mut subject: M) {
             t_address_mode: SamplerAddressMode::ClampToEdge,
             r_address_mode: SamplerAddressMode::ClampToEdge,
             border_color: SamplerBorderColor::TransparentBlack,
-            lod_min_clamp: 0.0,
-            lod_max_clamp: 0.0,
+            lod_min_clamp: BASE_LEVEL_ONLY,
+            lod_max_clamp: BASE_LEVEL_ONLY,
             max_anisotropy: SINGLE,
             compare_function: None,
         })
@@ -1802,6 +1893,11 @@ const REFUSED_DEPTH_BOUNDS: [(f32, f32); 5] = [
     (0.0, f32::INFINITY),
 ];
 
+/// Depth bounds inside the depth range, which a device without them refuses.
+///
+/// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setdepthtestbounds(_:)
+const SOME_DEPTH_BOUNDS: (f32, f32) = (0.25, 0.75);
+
 /// Checks that depth test bounds discard the fragments whose stored depth lies outside them, bounds included.
 ///
 /// Where Metal has them; and that they are refused where it lacks them, outside zero to one, out of order, not
@@ -1840,8 +1936,8 @@ pub fn discards_fragments_whose_stored_depth_is_outside_the_bounds<M: Metal>(mut
         &pass(&texture),
         &state,
         vec![RenderCommand::SetDepthTestBounds {
-            min_bound: 0.25,
-            max_bound: 0.75,
+            min_bound: SOME_DEPTH_BOUNDS.0,
+            max_bound: SOME_DEPTH_BOUNDS.1,
         }],
     );
 }
@@ -1862,7 +1958,7 @@ pub fn refuses_empty_dispatches_and_misaligned_words<M: Metal>(mut subject: M) {
         width: u32::MIN,
         ..one
     };
-    for (offset, groups) in [(0, none), (MISALIGNED_WORDS, one)] {
+    for (offset, groups) in [(u64::MIN, none), (MISALIGNED_WORDS, one)] {
         let command_buffer = subject
             .make_command_buffer()
             .expect("Metal answers make command buffer");
@@ -1883,6 +1979,16 @@ pub fn refuses_empty_dispatches_and_misaligned_words<M: Metal>(mut subject: M) {
     }
 }
 
+/// An offset that is not a multiple of four, which macOS's buffer copies and fills need.
+///
+/// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/fill(buffer:range:value:)
+const OFF_A_WORD: u64 = 1;
+
+/// A length that is not a multiple of four, which macOS's buffer copies and fills need.
+///
+/// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/fill(buffer:range:value:)
+const SHORT_OF_A_WORD: u64 = 3;
+
 /// Checks that buffer copies and fills of no bytes or not in whole words are refused, as Metal on macOS asks.
 pub fn refuses_buffer_copies_and_fills_metal_does_not_make<M: Metal>(mut subject: M) {
     let buffer = filled(&mut subject, &pattern(COVERING_BYTES as usize));
@@ -1901,11 +2007,11 @@ pub fn refuses_buffer_copies_and_fills_metal_does_not_make<M: Metal>(mut subject
     };
     for command in [
         copy(u64::MIN, RGBA8_BYTES * 2, u64::MIN),
-        copy(1, RGBA8_BYTES * 2, RGBA8_BYTES),
-        copy(u64::MIN, RGBA8_BYTES * 2, 3),
+        copy(OFF_A_WORD, RGBA8_BYTES * 2, RGBA8_BYTES),
+        copy(u64::MIN, RGBA8_BYTES * 2, SHORT_OF_A_WORD),
         fill(u64::MIN, u64::MIN),
-        fill(1, RGBA8_BYTES),
-        fill(u64::MIN, 3),
+        fill(OFF_A_WORD, RGBA8_BYTES),
+        fill(u64::MIN, SHORT_OF_A_WORD),
     ] {
         refuses_blit(&mut subject, command);
     }
@@ -1935,7 +2041,7 @@ pub fn refuses_copy_pitches_metal_does_not_take<M: Metal>(mut subject: M) {
         options: BlitOption::None,
     };
     refuses_blit(&mut subject, copy(row, RGBA8_BYTES, TARGET_SIDE));
-    refuses_blit(&mut subject, copy(BEYOND_ROW, u64::MIN, 1));
+    refuses_blit(&mut subject, copy(BEYOND_ROW, u64::MIN, SINGLE));
     // A 3D texture's rows are as long as its own longest side at most, shorter than a 2D texture's (MEASURED: Metal's
     // validation stops 24000 bytes past 16384, found by the fuzzer).
     let volume = made(
@@ -1951,7 +2057,7 @@ pub fn refuses_copy_pitches_metal_does_not_take<M: Metal>(mut subject: M) {
             source_bytes_per_image: u64::MIN,
             source_size: Size {
                 width: TARGET_SIDE,
-                height: 1,
+                height: SINGLE,
                 depth: SINGLE,
             },
             destination_texture: volume,
@@ -2062,7 +2168,7 @@ pub fn refuses_mipmaps_of_one_level<M: Metal>(mut subject: M) {
 /// Returns a nearest sampler with the three address modes.
 fn sampler_of<M: Metal>(
     subject: &mut M,
-    modes: [SamplerAddressMode; 3],
+    modes: [SamplerAddressMode; ADDRESS_AXES],
 ) -> Result<M::SamplerState, MakeSamplerStateError> {
     subject.make_sampler_state(&SamplerDescriptor {
         min_filter: SamplerMinMagFilter::Nearest,
@@ -2072,8 +2178,8 @@ fn sampler_of<M: Metal>(
         t_address_mode: modes[1],
         r_address_mode: modes[2],
         border_color: SamplerBorderColor::TransparentBlack,
-        lod_min_clamp: 0.0,
-        lod_max_clamp: 0.0,
+        lod_min_clamp: BASE_LEVEL_ONLY,
+        lod_max_clamp: BASE_LEVEL_ONLY,
         max_anisotropy: SINGLE,
         compare_function: None,
     })
@@ -2088,7 +2194,7 @@ fn refuses_dispatch<M: Metal>(subject: &mut M, bindings: Vec<ComputeCommand<M>>)
     let mut commands = vec![ComputeCommand::SetComputePipelineState(state)];
     commands.extend(bindings);
     commands.push(ComputeCommand::DispatchThreadgroups(Size {
-        width: 2,
+        width: DOUBLE_GROUPS,
         height: SINGLE,
         depth: SINGLE,
     }));
@@ -2116,22 +2222,47 @@ const WRAPPING_PITCHES: [u64; 5] = [
 /// The offsets whose sum with a small length wraps past the largest `u64`.
 ///
 /// https://doc.rust-lang.org/std/primitive.u64.html#associatedconstant.MAX
-const WRAPPING_OFFSETS: [u64; 3] = [u64::MAX, u64::MAX - 3, u64::MAX - 7];
+const WRAPPING_OFFSETS: [u64; 3] = [u64::MAX, WRAPS_PAST_A_WORD, WRAPS_PAST_A_RESULT];
+
+/// An offset whose sum with four bytes wraps past the largest `u64`.
+///
+/// https://doc.rust-lang.org/std/primitive.u64.html#associatedconstant.MAX
+const WRAPS_PAST_A_WORD: u64 = u64::MAX - 3;
+
+/// An offset whose sum with a visibility result wraps past the largest `u64`.
+///
+/// https://doc.rust-lang.org/std/primitive.u64.html#associatedconstant.MAX
+const WRAPS_PAST_A_RESULT: u64 = u64::MAX - 7;
+
+/// The bytes the wrapping offsets are read and written with.
+///
+/// https://doc.rust-lang.org/std/primitive.u64.html#associatedconstant.MAX
+const SMALL_LENGTH: usize = 8;
+
+/// The depth of the 3D texture the wrapping copies name.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturedescriptor/depth
+const VOLUME_DEPTH: u32 = 2;
+
+/// The bytes of a buffer the refusal tests copy and draw from, more than any region they name.
+///
+/// https://developer.apple.com/documentation/metal/mtldevice/makebuffer(length:options:)
+const SOURCE_BYTES: usize = 256;
 
 /// Checks that every range, place and count whose end wraps past the largest integer is refused, at each such value.
 ///
 /// A 3D copy whose image pitch made its length wrap once passed the range check and wrote into another buffer.
 pub fn refuses_every_range_whose_end_wraps<M: Metal>(mut subject: M) {
     let mut descriptor = described(TextureType::Type3D, PixelFormat::Rgba8Unorm);
-    descriptor.depth = 2;
+    descriptor.depth = VOLUME_DEPTH;
     descriptor.usage.render_target = false;
     let volume = made(&mut subject, descriptor);
-    let buffer = filled(&mut subject, &pattern(256));
+    let buffer = filled(&mut subject, &pattern(SOURCE_BYTES));
     let row = u64::from(TARGET_SIDE) * RGBA8_BYTES;
     let deep = Size {
         width: TARGET_SIDE,
         height: TARGET_SIDE,
-        depth: 2,
+        depth: VOLUME_DEPTH,
     };
     for pitch in WRAPPING_PITCHES {
         let out = BlitCommand::CopyFromTextureToBuffer {
@@ -2207,12 +2338,12 @@ pub fn refuses_every_range_whose_end_wraps<M: Metal>(mut subject: M) {
         }
         assert!(
             subject
-                .write_contents(&buffer, offset, &[u8::MIN; 8])
+                .write_contents(&buffer, offset, &[u8::MIN; SMALL_LENGTH])
                 .is_err()
         );
         assert!(
             subject
-                .read_contents(&buffer, offset, &mut [u8::MIN; 8])
+                .read_contents(&buffer, offset, &mut [u8::MIN; SMALL_LENGTH])
                 .is_err()
         );
         refuses_dispatch(
@@ -2288,11 +2419,11 @@ pub fn refuses_every_range_whose_end_wraps<M: Metal>(mut subject: M) {
     let results = filled(&mut subject, &[u8::MIN; VISIBILITY_RESULT_BYTES as usize]);
     let mut counted = pass(&drawn);
     counted.visibility_result_buffer = Some(&results);
-    let indices = filled(&mut subject, &pattern(64));
+    let indices = filled(&mut subject, &pattern(SOURCE_BYTES));
     let draws = [
         RenderCommand::SetVertexBuffer {
             buffer: buffer.clone(),
-            offset: u64::MAX - 3,
+            offset: WRAPS_PAST_A_WORD,
             length: RGBA8_BYTES,
             index: VERTICES,
         },
@@ -2331,7 +2462,7 @@ pub fn refuses_every_range_whose_end_wraps<M: Metal>(mut subject: M) {
             index_count: COVERING_VERTICES,
             index_type: IndexType::UInt32,
             index_buffer: indices,
-            index_buffer_offset: u64::MAX - 3,
+            index_buffer_offset: WRAPS_PAST_A_WORD,
             instance_count: SINGLE,
             base_vertex: i32::default(),
             base_instance: u32::MIN,
@@ -2342,7 +2473,7 @@ pub fn refuses_every_range_whose_end_wraps<M: Metal>(mut subject: M) {
     }
     let counting = RenderCommand::SetVisibilityResultMode {
         mode: VisibilityResultMode::Counting,
-        offset: u64::MAX - 7,
+        offset: WRAPS_PAST_A_RESULT,
     };
     refuses_draw(&mut subject, &counted, &state, vec![counting]);
 }
@@ -2398,7 +2529,7 @@ pub fn refuses_one_texture_as_two_attachments<M: Metal>(mut subject: M) {
         depth_plane: u32::MIN,
         load_action: LoadAction::Load,
         store_action: StoreAction::Store,
-        clear_color: [0.0; 4],
+        clear_color: TRANSPARENT_BLACK,
         resolve: None,
     });
     refuses_draw(&mut subject, &twice, &state, Vec::new());
@@ -2423,8 +2554,11 @@ pub fn refuses_an_integer_texture_at_a_float_slot<M: Metal>(mut subject: M) {
         &mut subject,
         described(TextureType::Type2D, PixelFormat::Rgba8Uint),
     );
-    let sampler = sampler_of(&mut subject, [SamplerAddressMode::ClampToEdge; 3])
-        .expect("Metal answers make sampler state");
+    let sampler = sampler_of(
+        &mut subject,
+        [SamplerAddressMode::ClampToEdge; ADDRESS_AXES],
+    )
+    .expect("Metal answers make sampler state");
     let bound = vec![
         RenderCommand::SetFragmentTexture {
             texture: integers,
@@ -2438,6 +2572,11 @@ pub fn refuses_an_integer_texture_at_a_float_slot<M: Metal>(mut subject: M) {
     refuses_draw(&mut subject, &pass(&drawn), &state, bound);
 }
 
+/// Bound lengths shorter than one `u32` element of a runtime-sized array.
+///
+/// https://www.w3.org/TR/WGSL/#runtime-sized
+const SHORTER_THAN_AN_ELEMENT: [u64; 3] = [0, 1, 3];
+
 /// Checks that a runtime-sized array bound shorter than one element is refused, and one element taken.
 ///
 /// naga's bound of such an array subtracts one element from the bound length, which wraps on a shorter one and lets the
@@ -2445,7 +2584,7 @@ pub fn refuses_an_integer_texture_at_a_float_slot<M: Metal>(mut subject: M) {
 pub fn refuses_a_runtime_array_shorter_than_one_element<M: Metal>(mut subject: M) {
     let bytes = pattern((WORDS_BYTES * 2) as usize);
     let buffer = filled(&mut subject, &bytes);
-    for length in [0, 1, 3] {
+    for length in SHORTER_THAN_AN_ELEMENT {
         refuses_dispatch(
             &mut subject,
             vec![ComputeCommand::SetBuffer {
@@ -2475,7 +2614,7 @@ pub fn refuses_a_runtime_array_shorter_than_one_element<M: Metal>(mut subject: M
                     index: WORDS_SLOT,
                 },
                 ComputeCommand::DispatchThreadgroups(Size {
-                    width: 2,
+                    width: DOUBLE_GROUPS,
                     height: SINGLE,
                     depth: SINGLE,
                 }),
@@ -2520,10 +2659,15 @@ pub fn refuses_a_buffer_past_the_max_buffer_length<M: Metal>(mut subject: M) {
     }
 }
 
+/// An array length past one, which a cube is refused.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturedescriptor/arraylength
+const CUBE_ARRAY_LENGTH: u32 = 5;
+
 /// Checks that a cube of an array length other than one is refused, which Metal's validation stops.
 pub fn refuses_a_cube_of_more_than_one_slice<M: Metal>(mut subject: M) {
     let mut descriptor = described(TextureType::TypeCube, PixelFormat::Rgba8Unorm);
-    descriptor.array_length = 5;
+    descriptor.array_length = CUBE_ARRAY_LENGTH;
     refuses_texture(&mut subject, descriptor);
     descriptor.array_length = SINGLE;
     made(&mut subject, descriptor);
@@ -2533,8 +2677,9 @@ pub fn refuses_a_cube_of_more_than_one_slice<M: Metal>(mut subject: M) {
 fn color_of(
     format: PixelFormat,
     factor: Option<BlendFactor>,
-    mask: [bool; 4],
+    mask: [bool; COLOR_CHANNELS],
 ) -> RenderPipelineColorAttachmentDescriptor {
+    let [red, green, blue, alpha] = mask;
     RenderPipelineColorAttachmentDescriptor {
         pixel_format: format,
         blending: factor.map(|factor| Blending {
@@ -2546,10 +2691,10 @@ fn color_of(
             destination_alpha_blend_factor: BlendFactor::Zero,
         }),
         write_mask: ColorWriteMask {
-            red: mask[0],
-            green: mask[1],
-            blue: mask[2],
-            alpha: mask[3],
+            red,
+            green,
+            blue,
+            alpha,
         },
     }
 }
@@ -2566,18 +2711,23 @@ fn makes_pipeline<M: Metal>(
     subject.make_render_pipeline_state(&descriptor).is_ok()
 }
 
+/// A color attachment past the second, where blending by the second source is refused too.
+///
+/// https://developer.apple.com/documentation/metal/mtlblendfactor/source1alpha
+const LATER_ATTACHMENT: usize = 3;
+
 /// Checks that blending by the second source in a pipeline of more than its first color attachment is refused.
 ///
 /// Metal's validation stops such a pipeline.
 pub fn refuses_a_second_source_blend_beside_another_attachment<M: Metal>(mut subject: M) {
-    let all = [true; 4];
+    let all = [true; COLOR_CHANNELS];
     let second = Some(BlendFactor::Source1Alpha);
     let mut colors = [None; MAX_COLOR_ATTACHMENTS];
     colors[0] = Some(color_of(PixelFormat::Rgba8Unorm, second, all));
     colors[1] = Some(color_of(PixelFormat::Rgba8Unorm, None, all));
     assert!(!makes_pipeline(&mut subject, colors));
     colors[0] = Some(color_of(PixelFormat::Rgba8Unorm, None, all));
-    colors[3] = Some(color_of(PixelFormat::Rgba8Unorm, second, all));
+    colors[LATER_ATTACHMENT] = Some(color_of(PixelFormat::Rgba8Unorm, second, all));
     assert!(!makes_pipeline(&mut subject, colors));
 }
 
@@ -2592,7 +2742,11 @@ pub fn refuses_some_channels_of_a_shared_exponent_target<M: Metal>(mut subject: 
         [false, true, true, true],
     ));
     assert!(!makes_pipeline(&mut subject, colors));
-    colors[0] = Some(color_of(PixelFormat::Rgb9e5Float, None, [true; 4]));
+    colors[0] = Some(color_of(
+        PixelFormat::Rgb9e5Float,
+        None,
+        [true; COLOR_CHANNELS],
+    ));
     assert!(makes_pipeline(&mut subject, colors));
 }
 
@@ -2611,7 +2765,10 @@ pub fn refuses_bytes_at_a_slot_the_function_writes<M: Metal>(mut subject: M) {
 pub fn refuses_a_vertex_stride_past_the_most<M: Metal>(mut subject: M) {
     let (module, info) = programs();
     for (stride, made) in [
-        (MAX_VERTEX_STRIDE.saturating_add(4), false),
+        (
+            MAX_VERTEX_STRIDE.saturating_add(VERTEX_STRIDE_MULTIPLE),
+            false,
+        ),
         (u32::MAX, false),
         (MAX_VERTEX_STRIDE, true),
     ] {
@@ -2619,7 +2776,7 @@ pub fn refuses_a_vertex_stride_past_the_most<M: Metal>(mut subject: M) {
             buffer_index: VERTICES,
             stride,
             step_function: VertexStepFunction::PerVertex,
-            step_rate: 1,
+            step_rate: DEFAULT_STEP_RATE,
             attributes: vec![VertexAttribute {
                 location: u32::MIN,
                 offset: u32::MIN,
@@ -2641,11 +2798,16 @@ pub fn refuses_a_vertex_stride_past_the_most<M: Metal>(mut subject: M) {
     }
 }
 
+/// Visibility offsets Metal's validation stops: off a multiple of eight, past every buffer, and past the span.
+///
+/// https://developer.apple.com/documentation/metal/mtlrendercommandencoder/setvisibilityresultmode(_:offset:)
+const REFUSED_VISIBILITY_OFFSETS: [u64; 3] = [15, 1 << 63, BEYOND_VISIBILITY_SPAN];
+
 /// Checks that a visibility offset Metal's validation stops is refused with counting off and no buffer too.
 pub fn refuses_a_visibility_offset_with_no_buffer<M: Metal>(mut subject: M) {
     let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
-    for offset in [15, 1 << 63, BEYOND_VISIBILITY_SPAN] {
+    for offset in REFUSED_VISIBILITY_OFFSETS {
         let off = RenderCommand::SetVisibilityResultMode {
             mode: VisibilityResultMode::Disabled,
             offset,
@@ -2654,6 +2816,21 @@ pub fn refuses_a_visibility_offset_with_no_buffer<M: Metal>(mut subject: M) {
     }
 }
 
+/// The bytes of one 4 by 4 block of `BC1_RGBA`.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/bc1_rgba
+const BC1_BLOCK_BYTES: u64 = 8;
+
+/// The height of the compressed texture, whose second level is one texel high.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturedescriptor/height
+const COMPRESSED_HEIGHT: u32 = 2;
+
+/// The level of the compressed texture the copies write.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturedescriptor/mipmaplevelcount
+const SECOND_LEVEL: u32 = 1;
+
 /// Checks that a copy into a compressed level past its texels, into the rest of its last block, is refused.
 ///
 /// Metal's validation stops such a copy; one that ends at the level's texels is taken.
@@ -2661,11 +2838,11 @@ pub fn refuses_a_copy_past_a_compressed_levels_texels<M: Metal>(mut subject: M) 
     let mut descriptor = described(TextureType::Type2D, PixelFormat::Bc1Rgba);
     // Its second level is four texels wide and one high, inside one block.
     descriptor.width = TARGET_SIDE * 2;
-    descriptor.height = 2;
-    descriptor.mipmap_level_count = 2;
+    descriptor.height = COMPRESSED_HEIGHT;
+    descriptor.mipmap_level_count = SECOND_LEVEL + 1;
     descriptor.usage.render_target = false;
     let texture = made(&mut subject, descriptor);
-    let buffer = filled(&mut subject, &pattern(256));
+    let buffer = filled(&mut subject, &pattern(SOURCE_BYTES));
     for (height, taken) in [(TARGET_SIDE, false), (SINGLE, true)] {
         let command_buffer = subject
             .make_command_buffer()
@@ -2675,8 +2852,8 @@ pub fn refuses_a_copy_past_a_compressed_levels_texels<M: Metal>(mut subject: M) 
             &[BlitCommand::CopyFromBufferToTexture {
                 source_buffer: buffer.clone(),
                 source_offset: u64::MIN,
-                source_bytes_per_row: 8,
-                source_bytes_per_image: 8,
+                source_bytes_per_row: BC1_BLOCK_BYTES,
+                source_bytes_per_image: BC1_BLOCK_BYTES,
                 source_size: Size {
                     width: TARGET_SIDE,
                     height,
@@ -2684,7 +2861,7 @@ pub fn refuses_a_copy_past_a_compressed_levels_texels<M: Metal>(mut subject: M) 
                 },
                 destination_texture: texture.clone(),
                 destination_slice: u32::MIN,
-                destination_level: 1,
+                destination_level: SECOND_LEVEL,
                 destination_origin: Origin {
                     x: u32::MIN,
                     y: u32::MIN,
@@ -2700,6 +2877,11 @@ pub fn refuses_a_copy_past_a_compressed_levels_texels<M: Metal>(mut subject: M) 
     }
 }
 
+/// A target width far past the longest side.
+///
+/// https://developer.apple.com/documentation/metal/mtlrenderpassdescriptor/rendertargetwidth
+const PAST_ANY_SIDE: u32 = u32::MAX - 3;
+
 /// Checks that a pass of no attachment wider or higher than a target's longest side is refused.
 ///
 /// The GPU ends such a pass's work in an error.
@@ -2709,7 +2891,7 @@ pub fn refuses_a_pass_of_no_attachment_past_the_longest_side<M: Metal>(mut subje
     let mut empty = pass(&texture);
     empty.color_attachments = [const { None }; MAX_COLOR_ATTACHMENTS];
     for (width, height) in [
-        (u32::MAX - 3, TARGET_SIDE),
+        (PAST_ANY_SIDE, TARGET_SIDE),
         (TARGET_SIDE, MAX_TEXTURE_SIDE + 1),
     ] {
         empty.render_target_width = width;
@@ -2718,6 +2900,9 @@ pub fn refuses_a_pass_of_no_attachment_past_the_longest_side<M: Metal>(mut subje
     }
 }
 
+/// The bytes of half a vertex of the tests' functions: one float of its `vec2<f32>`.
+const HALF_AN_ELEMENT: usize = size_of::<f32>();
+
 /// Checks that a draw whose vertex buffer holds less than one element, as a buffer or as bytes, completes.
 ///
 /// Metal's validation stops such a draw unless what Metal binds holds one element; the function reads none of it.
@@ -2725,20 +2910,20 @@ pub fn draws_from_a_vertex_buffer_shorter_than_one_element<M: Metal>(mut subject
     let state = pipeline(&mut subject, FLAT);
     let texture = target(&mut subject);
     let depth_stencil = no_depth(&mut subject);
-    let short = filled(&mut subject, &pattern(4));
+    let short = filled(&mut subject, &pattern(HALF_AN_ELEMENT));
     let vertices = covering(&mut subject);
     let color = filled(&mut subject, &[u8::MIN; COLOR_BYTES as usize]);
     for bytes in [false, true] {
         let shorter = if bytes {
             RenderCommand::SetVertexBytes {
-                bytes: pattern(4),
+                bytes: pattern(HALF_AN_ELEMENT),
                 index: VERTICES,
             }
         } else {
             RenderCommand::SetVertexBuffer {
                 buffer: short.clone(),
                 offset: u64::MIN,
-                length: 4,
+                length: HALF_AN_ELEMENT as u64,
                 index: VERTICES,
             }
         };
@@ -2773,7 +2958,7 @@ pub fn refuses_a_grid_of_more_threads_on_one_axis_than_a_u32_holds<M: Metal>(mut
         .make_compute_pipeline_state(&compute)
         .expect("Metal answers make compute pipeline state");
     // The function's threadgroup is four threads wide and one high and deep.
-    let widest = u32::MAX / 4;
+    let widest = u32::MAX / DOUBLE_GROUP_WIDTH;
     for (groups, refused) in [
         ((widest.saturating_add(1), SINGLE, SINGLE), true),
         ((u32::MAX, SINGLE, SINGLE), true),
@@ -3141,7 +3326,7 @@ pub fn draws_with_counts_written_before_them_and_waits_for_writes<M: Metal>(mut 
     let state = pipeline(&mut subject, FLAT);
     let (green, _) = green_and_clear();
     let written = filled(&mut subject, &draw_bytes(COVERING_DRAW));
-    let arguments = filled(&mut subject, &[u8::MIN; 16]);
+    let arguments = filled(&mut subject, &[u8::MIN; DRAW_ARGUMENTS_BYTES as usize]);
     let draw = RenderCommand::DrawPrimitivesIndirect {
         primitive_type: PrimitiveType::Triangle,
         indirect_buffer: arguments.clone(),
@@ -3160,7 +3345,7 @@ pub fn draws_with_counts_written_before_them_and_waits_for_writes<M: Metal>(mut 
                 source_offset: u64::MIN,
                 destination_buffer: arguments.clone(),
                 destination_offset: u64::MIN,
-                size: 16,
+                size: DRAW_ARGUMENTS_BYTES,
             }],
         )
         .expect("Metal answers encode blit commands");
@@ -3168,14 +3353,22 @@ pub fn draws_with_counts_written_before_them_and_waits_for_writes<M: Metal>(mut 
         .encode_render_commands(&command_buffer, &pass(&texture), &commands)
         .expect("Metal answers encode render commands");
     assert_eq!(
-        subject.write_contents(&arguments, u64::MIN, &[u8::MIN; 16]),
+        subject.write_contents(
+            &arguments,
+            u64::MIN,
+            &[u8::MIN; DRAW_ARGUMENTS_BYTES as usize]
+        ),
         Err(WriteContentsError::UsedByUncommittedWork)
     );
     subject
         .commit(&command_buffer)
         .expect("Metal answers commit");
     subject
-        .write_contents(&arguments, u64::MIN, &[u8::MIN; 16])
+        .write_contents(
+            &arguments,
+            u64::MIN,
+            &[u8::MIN; DRAW_ARGUMENTS_BYTES as usize],
+        )
         .expect("Metal answers write contents");
     assert_eq!(
         subject.status(&command_buffer),
@@ -3419,8 +3612,48 @@ const STEPPED_ELEMENTS: u32 = BASE_INSTANCE + TARGET_SIDE;
 
 /// Returns the red of element `k` of the step rate test's second buffer, in bytes: ten for each element.
 fn stepped_red(k: u32) -> u8 {
-    u8::try_from((k + 1) * 10).expect("a red that fits")
+    u8::try_from((k + 1) * RED_STEP).expect("a red that fits")
 }
+
+/// The red each element of the step rate test's second buffer adds, in bytes.
+///
+/// https://developer.apple.com/documentation/metal/mtlpixelformat/rgba8unorm
+const RED_STEP: u32 = 10;
+
+/// The step rates the step rate test draws with: every instance, every second and third, and never.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexbufferlayoutdescriptor/steprate
+const STEP_RATES: [u32; 4] = [1, 2, 3, 0];
+
+/// The step rate of the column buffer: every instance.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexbufferlayoutdescriptor/steprate
+const EVERY_INSTANCE: u32 = 1;
+
+/// The location `COLUMNS` reads its column at.
+///
+/// https://www.w3.org/TR/WGSL/#input-output-locations
+const COLUMN_LOCATION: u32 = 0;
+
+/// The location `COLUMNS` reads its red at.
+///
+/// https://www.w3.org/TR/WGSL/#input-output-locations
+const RED_LOCATION: u32 = 1;
+
+/// The vertex entry point of `COLUMNS`.
+///
+/// https://www.w3.org/TR/WGSL/#entry-points
+const COLUMNS_VERTEX: &str = "columns";
+
+/// The fragment entry point of `COLUMNS`.
+///
+/// https://www.w3.org/TR/WGSL/#entry-points
+const COLUMNS_FRAGMENT: &str = "shade";
+
+/// The corners of the quad `COLUMNS` draws each column as, a strip.
+///
+/// https://developer.apple.com/documentation/metal/mtlprimitivetype/trianglestrip
+const COLUMN_CORNERS: u32 = 4;
 
 /// Checks that an instance buffer advances once every `step_rate` instances from the base instance.
 ///
@@ -3444,7 +3677,7 @@ pub fn steps_instance_buffers_by_their_rate<M: Metal>(mut subject: M) {
     let columns = filled(&mut subject, &columns);
     let reds = filled(&mut subject, &reds);
     let depth_stencil = no_depth(&mut subject);
-    for rate in [1, 2, 3, 0] {
+    for rate in STEP_RATES {
         let layout = |buffer_index, location, step_rate| VertexBufferLayout {
             buffer_index,
             stride: float_bytes,
@@ -3456,7 +3689,10 @@ pub fn steps_instance_buffers_by_their_rate<M: Metal>(mut subject: M) {
                 format: VertexFormat::Float,
             }],
         };
-        let vertex_buffers = [layout(VERTICES, u32::MIN, 1), layout(VERTICES + 1, 1, rate)];
+        let vertex_buffers = [
+            layout(VERTICES, COLUMN_LOCATION, EVERY_INSTANCE),
+            layout(VERTICES + 1, RED_LOCATION, rate),
+        ];
         let source = |stage, entry_point| FunctionSource {
             module: &module,
             info: &info,
@@ -3469,10 +3705,10 @@ pub fn steps_instance_buffers_by_their_rate<M: Metal>(mut subject: M) {
             point_size: false,
         };
         let vertex = subject
-            .make_function(&source(naga::ShaderStage::Vertex, "columns"))
+            .make_function(&source(naga::ShaderStage::Vertex, COLUMNS_VERTEX))
             .expect("Metal answers make function");
         let fragment = subject
-            .make_function(&source(naga::ShaderStage::Fragment, "shade"))
+            .make_function(&source(naga::ShaderStage::Fragment, COLUMNS_FRAGMENT))
             .expect("Metal answers make function");
         let state = subject
             .make_render_pipeline_state(&pipeline_descriptor::<M>(
@@ -3494,18 +3730,11 @@ pub fn steps_instance_buffers_by_their_rate<M: Metal>(mut subject: M) {
             RenderCommand::SetDepthStencilState(depth_stencil.clone()),
             whole(&columns, VERTICES),
             whole(&reds, VERTICES + 1),
-            RenderCommand::SetViewports(vec![Viewport {
-                origin_x: 0.0,
-                origin_y: 0.0,
-                width: f64::from(TARGET_SIDE),
-                height: f64::from(TARGET_SIDE),
-                znear: 0.0,
-                zfar: 1.0,
-            }]),
+            RenderCommand::SetViewports(vec![TARGET_VIEWPORT]),
             RenderCommand::DrawPrimitives {
                 primitive_type: PrimitiveType::TriangleStrip,
                 vertex_start: u32::MIN,
-                vertex_count: 4,
+                vertex_count: COLUMN_CORNERS,
                 instance_count: TARGET_SIDE,
                 base_instance: BASE_INSTANCE,
             },
@@ -3621,7 +3850,7 @@ pub fn draws_only_whole_16_bit_indices_of_an_odd_length_buffer<M: Metal>(mut sub
         assert_eq!(
             &drawn_with(&mut subject, &state, draw),
             if draws { &green } else { &clear },
-            "16-bit indexed draw of {arguments:?} from byte {index_offset}"
+            "two-byte indexed draw of {arguments:?} from byte {index_offset}"
         );
     }
     let texture = target(&mut subject);
@@ -3934,11 +4163,46 @@ pub const SPIN_STEPS: u32 = 1 << 23;
 /// https://www.w3.org/TR/WGSL/#for-statement
 const SPIN_WORDS: [u32; WORD_COUNT] = [1, SPIN_STEPS, 0, 0, 0, 0, 0, 0];
 
+/// The places of the clock test's timestamp buffer: before the spin, after it, and after that.
+///
+/// https://developer.apple.com/documentation/metal/mtlcountersamplebufferdescriptor/samplecount
+const CLOCK_PLACES: u32 = 3;
+
+/// The place of the timestamp written after the spin.
+///
+/// https://developer.apple.com/documentation/metal/mtlcountersamplebufferdescriptor/samplecount
+const AFTER_SPIN: u32 = 1;
+
+/// The place of the timestamp written after the one after the spin.
+///
+/// https://developer.apple.com/documentation/metal/mtlcountersamplebufferdescriptor/samplecount
+const AFTER_THAT: u32 = 2;
+
+/// The most of the CPU's wait the GPU's span of the spin may be, a little more for the clocks' grain.
+///
+/// https://developer.apple.com/documentation/metal/mtlcommoncounter/timestamp
+const CLOCK_MOST: f64 = 1.05;
+
+/// The least of the CPU's wait the GPU's span of the spin may be, for the CPU's wait past the work.
+///
+/// https://developer.apple.com/documentation/metal/mtlcommoncounter/timestamp
+const CLOCK_LEAST: f64 = 0.25;
+
+/// The places of a timestamp buffer of a span: its start and its end.
+///
+/// https://developer.apple.com/documentation/metal/mtlcountersamplebufferdescriptor/samplecount
+const SPAN_PLACES: u32 = 2;
+
+/// The nanoseconds of a millisecond, less than the spin runs for.
+///
+/// https://doc.rust-lang.org/std/time/struct.Duration.html#method.from_millis
+const MILLISECOND: u64 = 1_000_000;
+
 /// Checks that timestamps written around work hold the GPU's clock in nanoseconds.
 ///
 /// They are in order, and apart by about the time the CPU waited for the work, which runs for tens of milliseconds.
 pub fn writes_the_gpu_clock_in_nanoseconds<M: Metal>(mut subject: M) {
-    let Ok(timestamps) = subject.make_timestamp_buffer(3) else {
+    let Ok(timestamps) = subject.make_timestamp_buffer(CLOCK_PLACES) else {
         return;
     };
     let words = filled(&mut subject, &word_bytes(&SPIN_WORDS));
@@ -3950,21 +4214,21 @@ pub fn writes_the_gpu_clock_in_nanoseconds<M: Metal>(mut subject: M) {
         .expect("Metal answers encode timestamp");
     spin(&mut subject, &command_buffer, &words);
     subject
-        .encode_timestamp(&command_buffer, &timestamps, 1)
+        .encode_timestamp(&command_buffer, &timestamps, AFTER_SPIN)
         .expect("Metal answers encode timestamp");
     subject
-        .encode_timestamp(&command_buffer, &timestamps, 2)
+        .encode_timestamp(&command_buffer, &timestamps, AFTER_THAT)
         .expect("Metal answers encode timestamp");
-    let mut read = [u64::MIN; 3];
+    let mut read = [u64::MIN; CLOCK_PLACES as usize];
     assert_eq!(
-        subject.read_timestamps(&timestamps, 0, &mut read),
+        subject.read_timestamps(&timestamps, u32::MIN, &mut read),
         Err(wcontainers_metal::ReadTimestampsError::UsedByUncommittedWork)
     );
     let start = std::time::Instant::now();
     finish(&mut subject, &command_buffer);
     let waited = start.elapsed().as_nanos() as f64;
     subject
-        .read_timestamps(&timestamps, 0, &mut read)
+        .read_timestamps(&timestamps, u32::MIN, &mut read)
         .expect("Metal answers read timestamps");
     let [t0, t1, t2] = read;
     eprintln!("timestamps: {t0} {t1} {t2}, {waited} ns waited");
@@ -3974,7 +4238,7 @@ pub fn writes_the_gpu_clock_in_nanoseconds<M: Metal>(mut subject: M) {
     );
     let span = (t1 - t0) as f64;
     assert!(
-        span <= waited * 1.05 && span >= waited * 0.25,
+        span <= waited * CLOCK_MOST && span >= waited * CLOCK_LEAST,
         "{span} ns of GPU work in {waited} ns"
     );
 }
@@ -4033,7 +4297,7 @@ pub fn refuses_timestamps_outside_their_buffers<M: Metal>(mut subject: M) {
 
 /// Checks that a timestamp buffer dropped after its timestamps are encoded is kept until its work completes.
 pub fn keeps_a_timestamp_buffer_dropped_before_its_work_runs<M: Metal>(mut subject: M) {
-    let Ok(timestamps) = subject.make_timestamp_buffer(2) else {
+    let Ok(timestamps) = subject.make_timestamp_buffer(SPAN_PLACES) else {
         return;
     };
     let words = filled(&mut subject, &word_bytes(&SPIN_WORDS));
@@ -4045,7 +4309,7 @@ pub fn keeps_a_timestamp_buffer_dropped_before_its_work_runs<M: Metal>(mut subje
         .expect("Metal answers encode timestamp");
     spin(&mut subject, &command_buffer, &words);
     subject
-        .encode_timestamp(&command_buffer, &timestamps, 1)
+        .encode_timestamp(&command_buffer, &timestamps, AFTER_SPIN)
         .expect("Metal answers encode timestamp");
     drop(timestamps);
     finish(&mut subject, &command_buffer);
@@ -4055,7 +4319,7 @@ pub fn keeps_a_timestamp_buffer_dropped_before_its_work_runs<M: Metal>(mut subje
 ///
 /// The read is refused while an uncommitted writer is held, and taken once that writer is dropped.
 pub fn waits_for_a_dropped_writer_before_reading_timestamps<M: Metal>(mut subject: M) {
-    let Ok(timestamps) = subject.make_timestamp_buffer(2) else {
+    let Ok(timestamps) = subject.make_timestamp_buffer(SPAN_PLACES) else {
         return;
     };
     let words = filled(&mut subject, &word_bytes(&SPIN_WORDS));
@@ -4067,34 +4331,34 @@ pub fn waits_for_a_dropped_writer_before_reading_timestamps<M: Metal>(mut subjec
         .expect("Metal answers encode timestamp");
     spin(&mut subject, &command_buffer, &words);
     subject
-        .encode_timestamp(&command_buffer, &timestamps, 1)
+        .encode_timestamp(&command_buffer, &timestamps, AFTER_SPIN)
         .expect("Metal answers encode timestamp");
     subject
         .commit(&command_buffer)
         .expect("Metal answers commit");
     drop(command_buffer);
-    let mut read = [u64::MIN; 2];
+    let mut read = [u64::MIN; SPAN_PLACES as usize];
     subject
-        .read_timestamps(&timestamps, 0, &mut read)
+        .read_timestamps(&timestamps, u32::MIN, &mut read)
         .expect("Metal answers read timestamps");
     // The spin runs for tens of milliseconds, so the two places are more than a millisecond apart once it ended.
     assert!(
-        read[0] != 0 && read[0] <= read[1] && read[1] - read[0] > 1_000_000,
+        read[0] != 0 && read[0] <= read[1] && read[1] - read[0] > MILLISECOND,
         "{read:?}"
     );
     let second = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
     subject
-        .encode_timestamp(&second, &timestamps, 1)
+        .encode_timestamp(&second, &timestamps, AFTER_SPIN)
         .expect("Metal answers encode timestamp");
     assert_eq!(
-        subject.read_timestamps(&timestamps, 0, &mut read),
+        subject.read_timestamps(&timestamps, u32::MIN, &mut read),
         Err(wcontainers_metal::ReadTimestampsError::UsedByUncommittedWork)
     );
     drop(second);
     subject
-        .read_timestamps(&timestamps, 0, &mut read)
+        .read_timestamps(&timestamps, u32::MIN, &mut read)
         .expect("Metal answers read timestamps");
 }
 
@@ -4107,7 +4371,7 @@ pub fn writes_and_reads_timestamps_at_the_most_places<M: Metal>(mut subject: M) 
     let command_buffer = subject
         .make_command_buffer()
         .expect("Metal answers make command buffer");
-    for index in [0, most - 1, most - 1] {
+    for index in [u32::MIN, most - 1, most - 1] {
         subject
             .encode_timestamp(&command_buffer, &timestamps, index)
             .expect("Metal answers encode timestamp");
@@ -4115,7 +4379,7 @@ pub fn writes_and_reads_timestamps_at_the_most_places<M: Metal>(mut subject: M) 
     finish(&mut subject, &command_buffer);
     let mut read = vec![u64::MIN; most as usize];
     subject
-        .read_timestamps(&timestamps, 0, &mut read)
+        .read_timestamps(&timestamps, u32::MIN, &mut read)
         .expect("Metal answers read timestamps");
     let last = read[most as usize - 1];
     assert!(read[0] != 0 && read[0] <= last, "{} {last}", read[0]);
@@ -4132,12 +4396,12 @@ const QUERIES: &str = "
 @vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {
     return vec4<f32>(p, 0.5, 1.0);
 }
-@fragment fn size_past() -> @location(0) vec4<f32> {
+@fragment fn measure() -> @location(0) vec4<f32> {
     let n = textureNumLevels(t);
     let d = textureDimensions(t, n + 1000u);
     return vec4<f32>(f32(d.x) / 255.0, f32(d.y) / 255.0, f32(n) / 255.0, 1.0);
 }
-@fragment fn load_past() -> @location(0) vec4<f32> {
+@fragment fn fetch() -> @location(0) vec4<f32> {
     let n = textureNumLevels(t);
     return textureLoad(t, vec2<i32>(0, 0), i32(n) + 1000);
 }
@@ -4147,6 +4411,21 @@ const QUERIES: &str = "
 ///
 /// https://developer.apple.com/documentation/metal/mtltexturedescriptor/mipmaplevelcount
 const QUERIED_LEVELS: u32 = 3;
+
+/// The entry point of `QUERIES` that asks a size a thousand levels past the last.
+///
+/// https://www.w3.org/TR/WGSL/#entry-points
+const SIZE_PAST: &str = "measure";
+
+/// The entry point of `QUERIES` that loads a thousand levels past the last.
+///
+/// https://www.w3.org/TR/WGSL/#entry-points
+const LOAD_PAST: &str = "fetch";
+
+/// The slices of the 2D array texture a queried function's 2D slot refuses.
+///
+/// https://developer.apple.com/documentation/metal/mtltexturedescriptor/arraylength
+const ARRAY_SLICES: u32 = 2;
 
 /// Compiles one entry point of `QUERIES`.
 fn query_function<M: Metal>(
@@ -4163,9 +4442,9 @@ fn query_function<M: Metal>(
     .expect("the queries validate");
     let vertex_buffers = [VertexBufferLayout {
         buffer_index: VERTICES,
-        stride: 8,
+        stride: POSITION_BYTES,
         step_function: VertexStepFunction::PerVertex,
-        step_rate: 1,
+        step_rate: DEFAULT_STEP_RATE,
         attributes: vec![VertexAttribute {
             location: u32::MIN,
             offset: u32::MIN,
@@ -4178,7 +4457,7 @@ fn query_function<M: Metal>(
             info: &info,
             stage,
             entry_point,
-            resources: &SLOTS[2..3],
+            resources: core::slice::from_ref(&SLOTS[2]),
             immediates_buffer_index: IMMEDIATES,
             sizes_buffer_index: SIZES,
             vertex_buffers: &vertex_buffers,
@@ -4242,7 +4521,7 @@ fn levels_texture<M: Metal>(
     subject: &mut M,
     texture_type: TextureType,
     array_length: u32,
-    texel: [u8; 4],
+    texel: [u8; COLOR_CHANNELS],
 ) -> M::Texture {
     let texture = subject
         .make_texture(&TextureDescriptor {
@@ -4302,8 +4581,8 @@ const LAST_LEVEL_TEXEL: [u8; 4] = [10, 20, 30, 40];
 /// count it draws.
 pub fn answers_a_size_query_of_a_level_past_the_last<M: Metal>(mut subject: M) {
     let texture = levels_texture(&mut subject, TextureType::Type2D, SINGLE, LAST_LEVEL_TEXEL);
-    let seen = query_drawn(&mut subject, "size_past", &texture).expect("a query past the levels");
-    eprintln!("size of level n + 1000: {seen:?}");
+    let seen = query_drawn(&mut subject, SIZE_PAST, &texture).expect("a query past the levels");
+    eprintln!("size of a level a thousand past the last: {seen:?}");
     assert_eq!(seen[2], QUERIED_LEVELS as u8);
     let view = subject
         .make_texture_view(
@@ -4319,22 +4598,27 @@ pub fn answers_a_size_query_of_a_level_past_the_last<M: Metal>(mut subject: M) {
             },
         )
         .expect("Metal answers make texture view");
-    let seen = query_drawn(&mut subject, "size_past", &view).expect("a query past the levels");
-    eprintln!("size of level n + 1000 of a one-level view: {seen:?}");
+    let seen = query_drawn(&mut subject, SIZE_PAST, &view).expect("a query past the levels");
+    eprintln!("size of a level a thousand past the last of a one-level view: {seen:?}");
     assert_eq!(seen[2], SINGLE as u8);
 }
 
 /// Checks that a load a thousand levels past the level count reads the last level, as naga's restricted loads clamp it.
 pub fn loads_the_last_level_for_a_level_past_it<M: Metal>(mut subject: M) {
     let texture = levels_texture(&mut subject, TextureType::Type2D, SINGLE, LAST_LEVEL_TEXEL);
-    let seen = query_drawn(&mut subject, "load_past", &texture).expect("a load past the levels");
+    let seen = query_drawn(&mut subject, LOAD_PAST, &texture).expect("a load past the levels");
     assert_eq!(seen, LAST_LEVEL_TEXEL);
 }
 
 /// Checks that a 2D array texture at a queried function's 2D texture slot is refused before Metal.
 pub fn refuses_a_texture_of_another_type_at_a_queried_slot<M: Metal>(mut subject: M) {
-    let texture = levels_texture(&mut subject, TextureType::Type2DArray, 2, LAST_LEVEL_TEXEL);
-    let seen = query_drawn(&mut subject, "size_past", &texture);
+    let texture = levels_texture(
+        &mut subject,
+        TextureType::Type2DArray,
+        ARRAY_SLICES,
+        LAST_LEVEL_TEXEL,
+    );
+    let seen = query_drawn(&mut subject, SIZE_PAST, &texture);
     assert!(
         matches!(seen, Err(EncodeRenderCommandsError::Unbound(_))),
         "{seen:?}"

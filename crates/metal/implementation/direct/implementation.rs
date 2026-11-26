@@ -103,12 +103,7 @@ const BUFFER_COPY_GRANULE: u64 = 4;
 /// the build here.
 macro_rules! refuses {
     (site::$site:ident, $refused:expr) => {{
-        const {
-            assert!(
-                crate::site::listed(crate::site::$site),
-                "a site not listed in site::ALL"
-            )
-        };
+        const { assert!(crate::site::listed(crate::site::$site)) };
         let refused: bool = $refused;
         #[cfg(feature = "reach")]
         crate::reach::add_outcome(crate::site::$site, refused);
@@ -121,12 +116,7 @@ macro_rules! refuses {
 /// The site is a constant of `site`, listed in `site::ALL` as `refuses!` asserts.
 macro_rules! found {
     (site::$site:ident, $found:expr) => {{
-        const {
-            assert!(
-                crate::site::listed(crate::site::$site),
-                "a site not listed in site::ALL"
-            )
-        };
+        const { assert!(crate::site::listed(crate::site::$site)) };
         let found = $found;
         #[cfg(feature = "reach")]
         crate::reach::add_outcome(crate::site::$site, found.is_none());
@@ -934,7 +924,7 @@ impl StandaloneMetal for DirectMetal {
             empty,
             limits,
             depth_test_bounds: objc2::available!(macos = 26.0),
-            background: Arc::new(AtomicUsize::new(0)),
+            background: Arc::new(AtomicUsize::new(usize::MIN)),
             in_flight: Vec::new(),
             argument_check: None,
             timestamp_word,
@@ -1110,7 +1100,7 @@ impl DirectMetal {
         let slot: Slot<T> = Arc::new((Mutex::new(None), Condvar::new()));
         let filling = Filling(slot.clone(), None, self.background.clone());
         let spawned = std::thread::Builder::new()
-            .name("metal background build".into())
+            .name(BACKGROUND_THREAD.into())
             .spawn(move || filling.finish(build()));
         match spawned {
             Ok(_) => Some(Built::Building(slot)),
@@ -1191,9 +1181,7 @@ fn function_text(
         Some(Ok(name)) => name.clone(),
         Some(Err(error)) => return Err(MakeFunctionError::Translation(error.to_string())),
         None => {
-            return Err(MakeFunctionError::Translation(
-                "no entry point written".into(),
-            ));
+            return Err(MakeFunctionError::Translation(NO_ENTRY_POINT.into()));
         }
     };
     Ok((text, name, reads))
@@ -2501,7 +2489,10 @@ impl Metal for DirectMetal {
         if bytes.len() != into.len().saturating_mul(size_of::<u64>()) {
             return Err(ReadTimestampsError::Refused);
         }
-        for (value, word) in into.iter_mut().zip(bytes.as_chunks::<8>().0) {
+        for (value, word) in into
+            .iter_mut()
+            .zip(bytes.as_chunks::<{ size_of::<u64>() }>().0)
+        {
             *value = u64::from_le_bytes(*word);
         }
         Ok(())
@@ -2874,7 +2865,7 @@ fn check_pass(
             .is_some_and(|stencil| stencil_value(stencil.clear_value).is_none())
     ) {
         return Err(EncodeRenderCommandsError::Invalid(
-            "a stencil to clear to that is not a whole number from 0 to 255",
+            "a stencil to clear to that is not a whole number a stencil byte holds",
         ));
     }
     if refuses!(
@@ -3802,6 +3793,46 @@ fn check_arguments(buffer: &DirectBuffer, offset: u64, bytes: u64) -> Result<(),
     Ok(())
 }
 
+/// The entry point of `ARGUMENT_CHECK_SOURCE`.
+///
+/// https://developer.apple.com/documentation/metal/mtllibrary/makefunction(name:)
+const ARGUMENT_CHECK_ENTRY: &str = "check_arguments";
+
+/// The buffer index `ARGUMENT_CHECK_SOURCE` reads the arguments at.
+///
+/// https://developer.apple.com/documentation/metal/mtlcomputecommandencoder/setbuffer(_:offset:index:)
+const ARGUMENTS_BUFFER: u32 = 0;
+
+/// The buffer index `ARGUMENT_CHECK_SOURCE` writes the checked arguments at.
+///
+/// https://developer.apple.com/documentation/metal/mtlcomputecommandencoder/setbuffer(_:offset:index:)
+const CHECKED_BUFFER: u32 = 1;
+
+/// The buffer index `ARGUMENT_CHECK_SOURCE` reads its job at.
+///
+/// https://developer.apple.com/documentation/metal/mtlcomputecommandencoder/setbytes(_:length:index:)
+const JOB_BUFFER: u32 = 2;
+
+/// The axes of a grid of threads, x, y and z, as `ARGUMENT_CHECK_SOURCE`'s `Job` holds its threads.
+///
+/// https://developer.apple.com/documentation/metal/mtlsize
+const AXES: usize = 3;
+
+/// A dispatch of one threadgroup of one thread.
+///
+/// https://developer.apple.com/documentation/metal/mtlsize
+const ONE_GROUP: MTLSize = MTLSize {
+    width: 1,
+    height: 1,
+    depth: 1,
+};
+
+/// The name of the threads that build functions and pipelines in the background.
+const BACKGROUND_THREAD: &str = "metal background build";
+
+/// What a function is refused with when naga's Metal writer writes no entry point.
+const NO_ENTRY_POINT: &str = "no entry point written";
+
 /// The function that copies each indirect command's arguments, checked, into direct's own buffer.
 ///
 /// A command reaching past what it is checked against is made one that does nothing. Its kinds are
@@ -3887,7 +3918,7 @@ struct ArgumentJob<'a> {
     /// The indices the index buffer holds past its offset, for an indexed draw.
     index_limit: u32,
     /// The threads of a threadgroup on each axis, for a dispatch.
-    threads: [u32; 3],
+    threads: [u32; AXES],
     max_groups: u32,
 }
 
@@ -3938,7 +3969,7 @@ fn render_argument_jobs(commands: &[RenderCommand<DirectMetal>]) -> Vec<Argument
                 offset: *indirect_buffer_offset,
                 kind: ARGUMENTS_DRAW,
                 index_limit: u32::MIN,
-                threads: [u32::MIN; 3],
+                threads: [u32::MIN; AXES],
                 max_groups: u32::MIN,
             }),
             RenderCommand::DrawIndexedPrimitivesIndirect {
@@ -3962,7 +3993,7 @@ fn render_argument_jobs(commands: &[RenderCommand<DirectMetal>]) -> Vec<Argument
                     offset: *indirect_buffer_offset,
                     kind: ARGUMENTS_DRAW_INDEXED,
                     index_limit: u32::try_from(indices).unwrap_or(u32::MAX),
-                    threads: [u32::MIN; 3],
+                    threads: [u32::MIN; AXES],
                     max_groups: u32::MIN,
                 })
             }
@@ -4020,7 +4051,7 @@ impl DirectMetal {
             )
             .map_err(|_| "Metal compiled no argument check")?;
         let function = library
-            .newFunctionWithName(&NSString::from_str("check_arguments"))
+            .newFunctionWithName(&NSString::from_str(ARGUMENT_CHECK_ENTRY))
             .ok_or("Metal compiled no argument check")?;
         let pipeline = self
             .device
@@ -4057,19 +4088,15 @@ impl DirectMetal {
         let encoder = autoreleasepool(|_| command_buffer.0.raw.computeCommandEncoder())
             .ok_or("Metal made no compute encoder")?;
         encoder.setComputePipelineState(&pipeline);
-        let one = MTLSize {
-            width: 1,
-            height: 1,
-            depth: 1,
-        };
+        let one = ONE_GROUP;
         let mut into = u64::MIN;
         for job in jobs {
             job.arguments.used_by(command_buffer);
             // The arguments lie inside their buffer at a multiple of four (check_arguments), as many bytes as the
             // function reads for the job's kind; the copy's place lies inside `checked`, which holds a stride a job.
-            set_compute_buffer(&encoder, &job.arguments.0.raw, job.offset, 0);
-            set_compute_buffer(&encoder, &checked, into, 1);
-            set_compute_bytes(&encoder, &job.bytes(), 2);
+            set_compute_buffer(&encoder, &job.arguments.0.raw, job.offset, ARGUMENTS_BUFFER);
+            set_compute_buffer(&encoder, &checked, into, CHECKED_BUFFER);
+            set_compute_bytes(&encoder, &job.bytes(), JOB_BUFFER);
             encoder.dispatchThreadgroups_threadsPerThreadgroup(one, one);
             into = into
                 .checked_add(CHECKED_ARGUMENTS_STRIDE)

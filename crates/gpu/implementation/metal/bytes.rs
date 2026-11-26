@@ -19,6 +19,30 @@ pub(crate) const COPY_GRANULE: u64 = 4;
 /// https://www.w3.org/TR/WGSL/#attribute-workgroup_size
 const BYTE_THREADS: u64 = 64;
 
+/// The binding of the span that `BYTE_PROGRAMS` and the depth programs read.
+///
+/// https://www.w3.org/TR/WGSL/#attribute-binding
+pub(crate) const SPAN_BINDING: u32 = 0;
+
+/// The binding of the words that `BYTE_PROGRAMS` and the depth programs read from.
+///
+/// https://www.w3.org/TR/WGSL/#attribute-binding
+pub(crate) const SOURCE_BINDING: u32 = 1;
+
+/// The binding of the words that `BYTE_PROGRAMS` and the depth programs write.
+///
+/// https://www.w3.org/TR/WGSL/#attribute-binding
+pub(crate) const DESTINATION_BINDING: u32 = 2;
+
+/// The entry points of `BYTE_PROGRAMS`.
+const FILL_ENTRY: &str = "fill_bytes";
+const COPY_ENTRY: &str = "copy_bytes";
+
+/// The groups of a dispatch along an axis it does not spread over.
+///
+/// https://developer.apple.com/documentation/metal/mtlcomputecommandencoder/dispatchthreadgroups(_:threadsperthreadgroup:)
+pub(crate) const SINGLE_GROUP: u32 = 1;
+
 /// The programs that copy and fill bytes a word at a time, each thread writing one word of the destination.
 const BYTE_PROGRAMS: &str = "
 struct Span { source: u32, destination: u32, size: u32, value: u32 }
@@ -152,7 +176,7 @@ impl<M: Metal> MetalGpu<M> {
             self.byte_programs.copy.is_some()
         };
         if !made {
-            let entry = if fill { "fill_bytes" } else { "copy_bytes" };
+            let entry = if fill { FILL_ENTRY } else { COPY_ENTRY };
             let shader = self.create_shader(&ShaderModule::from_wgsl(
                 BYTE_PROGRAMS,
                 entry,
@@ -177,9 +201,9 @@ impl<M: Metal> MetalGpu<M> {
                 wcontainers_gpu::error::GpuError::Invalid("a byte program without its bindings");
             let pipeline = BytePipeline {
                 state,
-                span: slot(u32::MIN).ok_or(missing)?,
-                source: slot(1),
-                destination: slot(2).ok_or(missing)?,
+                span: slot(SPAN_BINDING).ok_or(missing)?,
+                source: slot(SOURCE_BINDING),
+                destination: slot(DESTINATION_BINDING).ok_or(missing)?,
             };
             if fill {
                 self.byte_programs.fill = Some(pipeline);
@@ -227,7 +251,7 @@ impl<M: Metal> MetalGpu<M> {
             }
         };
         let span: Vec<u8> = [
-            source.map_or(0, |s| s.offset),
+            source.map_or(u64::MIN, |s| s.offset),
             destination.offset,
             size,
             u64::from(value),
@@ -271,8 +295,8 @@ impl<M: Metal> MetalGpu<M> {
         };
         commands.push(ComputeCommand::DispatchThreadgroups(Size {
             width: groups,
-            height: 1,
-            depth: 1,
+            height: SINGLE_GROUP,
+            depth: SINGLE_GROUP,
         }));
         if self.encode_own_compute(&commands).is_err() {
             self.fail(format_args!("a byte program refused"));

@@ -19,6 +19,13 @@ use crate::objects::BufferObj;
 /// https://www.w3.org/TR/WGSL/#attribute-workgroup_size
 const DEPTH_THREADS: u32 = 64;
 
+/// The entry points of `DEPTH_PROGRAMS`.
+const INTO_FLOATS_ENTRY: &str = "words_to_floats";
+const INTO_WORDS_ENTRY: &str = "floats_to_words";
+
+/// What a depth conversion refuses when its program lacks a binding it reads.
+const MISSING_BINDING: &str = "a depth program without its bindings";
+
 /// The programs that convert depth words a word at a time, each thread converting one texel's word.
 ///
 /// Each function's comments give its rounding, which is the host's: `(f64::from(n) / 16777215.0) as f32` in, and
@@ -212,9 +219,9 @@ impl<M: Metal> MetalGpu<M> {
         };
         if !made {
             let entry = if into_floats {
-                "words_to_floats"
+                INTO_FLOATS_ENTRY
             } else {
-                "floats_to_words"
+                INTO_WORDS_ENTRY
             };
             let module = ShaderModule::from_wgsl(DEPTH_PROGRAMS, entry, ShaderStage::Compute)
                 .map_err(|_| "a depth program that does not parse")?;
@@ -232,12 +239,12 @@ impl<M: Metal> MetalGpu<M> {
                     .get(&(u32::MIN, binding))
                     .map(|&(_, index)| index)
             };
-            let missing = "a depth program without its bindings";
+            let missing = MISSING_BINDING;
             let pipeline = DepthPipeline {
                 state,
-                span: slot(u32::MIN).ok_or(missing)?,
-                source: slot(1).ok_or(missing)?,
-                destination: slot(2).ok_or(missing)?,
+                span: slot(crate::bytes::SPAN_BINDING).ok_or(missing)?,
+                source: slot(crate::bytes::SOURCE_BINDING).ok_or(missing)?,
+                destination: slot(crate::bytes::DESTINATION_BINDING).ok_or(missing)?,
             };
             if into_floats {
                 self.depth_programs.into_floats = Some(pipeline);

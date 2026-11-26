@@ -24,7 +24,9 @@ impl<T> Clone for Shared<T> {
 
 impl<T> fmt::Debug for Shared<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Shared({:p})", Rc::as_ptr(&self.0))
+        f.debug_tuple(core::any::type_name::<Self>())
+            .field(&Rc::as_ptr(&self.0))
+            .finish()
     }
 }
 

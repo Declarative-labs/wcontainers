@@ -29,13 +29,86 @@ const ATTRIBUTE_ALIGNMENT: u32 = 4;
 /// https://docs.rs/naga/30.0.2/naga/back/msl/enum.VertexFormat.html
 const MAX_WIDENED_BYTES: u64 = 64 << 20;
 
+/// The elements a stream of stride zero holds, or one that steps once for every instance: one.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexstepfunction/constant
+const ONE_ELEMENT: u32 = 1;
+
+/// The bits of the exponent of an 11-bit or a 10-bit float, which has no sign.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#fundamentals-fp11
+const SMALL_EXPONENT_BITS: u32 = 5;
+
+/// The exponent of an 11-bit or a 10-bit float, or of a 16-bit one, that means infinity or NaN: all its bits set.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#fundamentals-fp11
+const SMALL_EXPONENT_SPECIAL: u32 = (1 << SMALL_EXPONENT_BITS) - 1;
+
+/// The bias of the exponent of an 11-bit, a 10-bit and a 16-bit float.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#fundamentals-fp11
+const SMALL_EXPONENT_BIAS: i32 = 15;
+
+/// The least exponent of a normal 11-bit, 10-bit or 16-bit float, which a subnormal one also scales by.
+const SMALL_EXPONENT_LEAST: i32 = 1 - SMALL_EXPONENT_BIAS;
+
+/// The bits of the mantissa of an 11-bit float.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#fundamentals-fp11
+const FLOAT11_MANTISSA_BITS: u32 = 6;
+
+/// The bits of the mantissa of a 10-bit float.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#fundamentals-fp10
+const FLOAT10_MANTISSA_BITS: u32 = 5;
+
+/// The bits of an 11-bit float.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#formats-packed
+const FLOAT11_BITS: u32 = FLOAT11_MANTISSA_BITS + SMALL_EXPONENT_BITS;
+
+/// Where the second component of `Float11_11_10` starts.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#formats-packed
+const FLOAT11_SECOND: u32 = FLOAT11_BITS;
+
+/// Where the third component of `Float11_11_10` starts.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#formats-packed
+const FLOAT11_THIRD: u32 = 2 * FLOAT11_BITS;
+
+/// The bits of the mantissa of a 16-bit float.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#fundamentals-fp16
+const HALF_MANTISSA_BITS: u32 = 10;
+
+/// The shift and the bits of each component of `Uint10_10_10_2`, red first.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#formats-packed
+const UINT_10_10_10_2: [(u32, u32); 4] = [(0, 10), (10, 10), (20, 10), (30, 2)];
+
+/// The bytes of the three components of a 16-bit format of three, which widening keeps.
+///
+/// https://developer.apple.com/documentation/metal/mtlvertexformat/half3
+const THREE_HALVES_BYTES: usize = size_of::<[u16; 3]>();
+
+/// The fourth component widening adds to an integer format of three: one, as a missing one reads.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#fxvertex-input-extraction
+const INTEGER_ONE: u8 = 1;
+
+/// The fourth component widening adds to a float format of three: one, as a missing one reads.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#fxvertex-input-extraction
+const FLOAT_ONE: f32 = 1.0;
+
 /// Returns the range of a stream's elements a draw reads, before the stream's buffer cuts it.
 ///
 /// An indexed draw may read any element its indices name, so it reads them all.
 fn find_elements_read<B: Gpu>(range: &DrawRange<'_, B>, step: StepMode, stride: u32) -> (u64, u64) {
     let all = (u64::MIN, u64::MAX);
     if stride == 0 {
-        return (u64::MIN, 1);
+        return (u64::MIN, u64::from(ONE_ELEMENT));
     }
     let span = |first: u32, count: u32| {
         (
@@ -59,7 +132,7 @@ fn find_elements_read<B: Gpu>(range: &DrawRange<'_, B>, step: StepMode, stride: 
             StepMode::Instance(rate),
         ) => {
             // The instance of index `i` reads element `first_instance + (i - first_instance) / rate`.
-            let elements = instances.checked_div(rate).map_or(1, |whole| {
+            let elements = instances.checked_div(rate).map_or(ONE_ELEMENT, |whole| {
                 whole.saturating_add(u32::from(!instances.is_multiple_of(rate)))
             });
             span(*first_instance, elements.min(*instances))
@@ -93,63 +166,75 @@ fn widened(format: VertexFormat) -> Option<VertexFormat> {
     })
 }
 
-/// Returns a float of `mantissa` bits over a 5-bit exponent, with no sign, as an f32, exactly.
+/// Returns a float of `mantissa` bits over an exponent of `SMALL_EXPONENT_BITS`, with no sign, as an f32, exactly.
 fn small_float(bits: u32, mantissa: u32) -> f32 {
-    let exponent = (bits >> mantissa) & 0x1f;
+    let exponent = (bits >> mantissa) & SMALL_EXPONENT_SPECIAL;
     let fraction = bits & !(u32::MAX << mantissa);
     let scale = (1u32 << mantissa) as f32;
     match exponent {
-        0 => fraction as f32 / scale * 2f32.powi(-14),
-        0x1f if fraction == 0 => f32::INFINITY,
-        0x1f => f32::NAN,
-        // The exponent is below 31, so the unbiased one lies within -14 to 15.
+        0 => fraction as f32 / scale * FLOAT_TWO.powi(SMALL_EXPONENT_LEAST),
+        SMALL_EXPONENT_SPECIAL if fraction == 0 => f32::INFINITY,
+        SMALL_EXPONENT_SPECIAL => f32::NAN,
+        // The exponent is below the special one, so the unbiased one lies within the least and the bias.
         e => {
-            (1.0 + fraction as f32 / scale)
-                * 2f32.powi(i32::try_from(e).unwrap_or(i32::MIN).saturating_sub(15))
+            (FLOAT_ONE + fraction as f32 / scale)
+                * FLOAT_TWO.powi(
+                    i32::try_from(e)
+                        .unwrap_or(i32::MIN)
+                        .saturating_sub(SMALL_EXPONENT_BIAS),
+                )
         }
     }
 }
+
+/// The base of a float's exponent.
+///
+/// https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#fundamentals-fp11
+const FLOAT_TWO: f32 = 2.0;
 
 /// Appends one attribute's value, widened, to `out`.
 fn widen(format: VertexFormat, src: &[u8], out: &mut Vec<u8>) {
     use VertexFormat as V;
     let word = || {
-        src.first_chunk::<4>()
+        src.first_chunk::<{ size_of::<u32>() }>()
             .map_or(u32::MIN, |w| u32::from_le_bytes(*w))
     };
     match format {
-        V::Uint8x3 | V::Sint8x3 => out.extend_from_slice(&[src[0], src[1], src[2], 1]),
+        V::Uint8x3 | V::Sint8x3 => out.extend_from_slice(&[src[0], src[1], src[2], INTEGER_ONE]),
         V::Unorm8x3 => out.extend_from_slice(&[src[0], src[1], src[2], u8::MAX]),
         V::Snorm8x3 => out.extend_from_slice(&[src[0], src[1], src[2], i8::MAX as u8]),
         V::Uint16x3 | V::Sint16x3 => {
-            out.extend_from_slice(&src[..6]);
-            out.extend_from_slice(&1u16.to_le_bytes());
+            out.extend_from_slice(&src[..THREE_HALVES_BYTES]);
+            out.extend_from_slice(&u16::from(INTEGER_ONE).to_le_bytes());
         }
         V::Unorm16x3 => {
-            out.extend_from_slice(&src[..6]);
+            out.extend_from_slice(&src[..THREE_HALVES_BYTES]);
             out.extend_from_slice(&u16::MAX.to_le_bytes());
         }
         V::Snorm16x3 => {
-            out.extend_from_slice(&src[..6]);
+            out.extend_from_slice(&src[..THREE_HALVES_BYTES]);
             out.extend_from_slice(&(i16::MAX as u16).to_le_bytes());
         }
         V::Float16x3 => {
-            out.extend_from_slice(&src[..6]);
-            out.extend_from_slice(&half_one().to_le_bytes());
+            out.extend_from_slice(&src[..THREE_HALVES_BYTES]);
+            out.extend_from_slice(&HALF_ONE.to_le_bytes());
         }
         V::Uint10_10_10_2 => {
             let w = word();
-            for (shift, bits) in [(0, 10), (10, 10), (20, 10), (30, 2)] {
+            for (shift, bits) in UINT_10_10_10_2 {
                 out.extend_from_slice(&(((w >> shift) & !(u32::MAX << bits)) as u16).to_le_bytes());
             }
         }
         V::Float11_11_10 => {
             let w = word();
             for value in [
-                small_float(w & 0x7ff, 6),
-                small_float((w >> 11) & 0x7ff, 6),
-                small_float(w >> 22, 5),
-                1.0,
+                small_float(w & !(u32::MAX << FLOAT11_BITS), FLOAT11_MANTISSA_BITS),
+                small_float(
+                    (w >> FLOAT11_SECOND) & !(u32::MAX << FLOAT11_BITS),
+                    FLOAT11_MANTISSA_BITS,
+                ),
+                small_float(w >> FLOAT11_THIRD, FLOAT10_MANTISSA_BITS),
+                FLOAT_ONE,
             ] {
                 out.extend_from_slice(&value.to_le_bytes());
             }
@@ -159,11 +244,8 @@ fn widen(format: VertexFormat, src: &[u8], out: &mut Vec<u8>) {
     }
 }
 
-/// Returns the bits of a 16-bit float one.
-fn half_one() -> u16 {
-    // Exponent 15, the bias, and no fraction.
-    15 << 10
-}
+/// The bits of a 16-bit float one: the exponent of the bias, and no fraction.
+const HALF_ONE: u16 = (SMALL_EXPONENT_BIAS as u16) << HALF_MANTISSA_BITS;
 
 /// Returns the ranges of a stream a widened copy reads, and the stride its elements lie at once read.
 ///
@@ -263,7 +345,9 @@ impl<M: Metal> MetalGpu<M> {
                     .ok_or(overflow)?;
             }
             let source_stride = u64::from(s.stride);
-            let in_buffer = length.checked_div(source_stride).unwrap_or(1);
+            let in_buffer = length
+                .checked_div(source_stride)
+                .unwrap_or(u64::from(ONE_ELEMENT));
             let (first, end) = find_elements_read(&call.range, s.step, s.stride);
             // The elements the draw can read that the buffer holds: past them the copy's bounds checks read zeros, so a
             // draw that reads none of them needs an empty copy.
