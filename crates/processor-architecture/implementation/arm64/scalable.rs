@@ -134,46 +134,6 @@ const fn to_permute_operation(instruction: Instruction<Infallible>) -> Option<Pe
     use Instruction as I;
     use PermuteOperation as P;
     Some(match instruction {
-        I::Zip1ZZZ => P::Zip { high: false },
-        I::Zip2ZZZ => P::Zip { high: true },
-        I::Uzp1ZZZ => P::Unzip { odd: false },
-        I::Uzp2ZZZ => P::Unzip { odd: true },
-        I::Trn1ZZZ => P::Transpose { odd: false },
-        I::Trn2ZZZ => P::Transpose { odd: true },
-        I::TblZZZ => P::TableLookup {
-            registers: 1,
-            keeps_destination: false,
-        },
-        I::TblZZZZ => P::TableLookup {
-            registers: 2,
-            keeps_destination: false,
-        },
-        I::TbxZZZ => P::TableLookup {
-            registers: 1,
-            keeps_destination: true,
-        },
-        I::ExtZZI => P::Extract { destructive: true },
-        I::ExtZZI8 => P::Extract { destructive: false },
-        I::DupZZI => P::DuplicateElement,
-        I::RevZZ => P::Reverse,
-        I::SpliceZPZ => P::Splice { destructive: true },
-        I::SpliceZPZZ => P::Splice { destructive: false },
-        I::Sunpklo => P::Unpack {
-            high: false,
-            signed: true,
-        },
-        I::Sunpkhi => P::Unpack {
-            high: true,
-            signed: true,
-        },
-        I::Uunpklo => P::Unpack {
-            high: false,
-            signed: false,
-        },
-        I::Uunpkhi => P::Unpack {
-            high: true,
-            signed: false,
-        },
         I::CompactZPZ64 => P::Compact,
         _ => return None,
     })

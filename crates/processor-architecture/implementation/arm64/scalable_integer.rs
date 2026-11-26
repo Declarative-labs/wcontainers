@@ -118,13 +118,6 @@ pub const fn to_integer_form(instruction: Instruction<Infallible>) -> Option<Int
     const fn narrow(top: bool, rounding: bool) -> IntegerShape {
         IntegerShape::NarrowHigh { top, rounding }
     }
-    const fn select(invert_first: bool, invert_second: bool, invert_result: bool) -> IntegerForm {
-        IntegerForm::Ternary(TernaryOperation::Select {
-            invert_first,
-            invert_second,
-            invert_result,
-        })
-    }
     let (b, t) = (false, true);
     Some(match instruction {
         I::Saddlb => form(O::Add, long(b, b), Signed),
@@ -218,30 +211,6 @@ pub const fn to_integer_form(instruction: Instruction<Infallible>) -> Option<Int
         I::Subhnt => form(O::Subtract, narrow(t, false), Unsigned),
         I::Rsubhnb => form(O::Subtract, narrow(b, true), Unsigned),
         I::Rsubhnt => form(O::Subtract, narrow(t, true), Unsigned),
-        I::MulZZZ => form(O::Multiply, S::Same, Unsigned),
-        I::SmulhZZZ => form(O::MultiplyHigh, S::Same, Signed),
-        I::UmulhZZZ => form(O::MultiplyHigh, S::Same, Unsigned),
-        I::SqdmulhZZZ => form(
-            O::SaturatingDoublingMultiplyHigh { rounding: false },
-            S::Same,
-            Signed,
-        ),
-        I::SqrdmulhZZZ => form(
-            O::SaturatingDoublingMultiplyHigh { rounding: true },
-            S::Same,
-            Signed,
-        ),
-        I::SabaZZZ => form(O::AbsoluteDifference, S::Accumulate, Signed),
-        I::UabaZZZ => form(O::AbsoluteDifference, S::Accumulate, Unsigned),
-        I::Eorbt => form(O::Add, S::InterleavingExclusiveOr { top: b }, Unsigned),
-        I::Eortb => form(O::Add, S::InterleavingExclusiveOr { top: t }, Unsigned),
-        I::PmulZZZ8 => IntegerForm::PolynomialBytes,
-        I::Eor3ZZZZ => IntegerForm::Ternary(TernaryOperation::ExclusiveOr),
-        I::BcaxZZZZ => IntegerForm::Ternary(TernaryOperation::BitClearExclusiveOr),
-        I::BslZZZZ => select(false, false, false),
-        I::Bsl1n => select(true, false, false),
-        I::Bsl2n => select(false, true, false),
-        I::Nbsl => select(false, false, true),
         _ => return None,
     })
 }

@@ -192,8 +192,6 @@ pub const fn to_floating_point_form(
         I::FrintiZPmZ => round_to(None, false),
         I::FsqrtZPmZ => F::Unary(scalar(O::SquareRoot)),
         I::FrecpxZPmZ => F::Unary(E::ReciprocalExponent),
-        I::FabsZPmZ => F::Unary(scalar(O::Absolute)),
-        I::FnegZPmZ => F::Unary(scalar(O::Negate)),
         I::FcmgePPzZZ => compare(C::GreaterOrEqual),
         I::FcmgtPPzZZ => compare(C::Greater),
         I::FcmeqPPzZZ => compare(C::Equal),

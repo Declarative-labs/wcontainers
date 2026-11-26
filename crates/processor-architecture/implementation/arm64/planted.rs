@@ -63,7 +63,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 489] = [
+pub const PLANTED_BUGS: [PlantedBug; 474] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2699,84 +2699,6 @@ pub const PLANTED_BUGS: [PlantedBug; 489] = [
         what: "SEL takes the second vector where the predicate is set",
     },
     PlantedBug {
-        number: 2001,
-        instruction: Instruction::Zip2ZZZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "the high half starts one element early",
-    },
-    PlantedBug {
-        number: 2002,
-        instruction: Instruction::Uzp1ZZZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "the second source below the first",
-    },
-    PlantedBug {
-        number: 2003,
-        instruction: Instruction::Trn2ZZZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "the second source's element one past the first's",
-    },
-    PlantedBug {
-        number: 2004,
-        instruction: Instruction::TblZZZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "an index one past the table reads its first element",
-    },
-    PlantedBug {
-        number: 2005,
-        instruction: Instruction::TblZZZZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "an index into the second table gives zero",
-    },
-    PlantedBug {
-        number: 2006,
-        instruction: Instruction::TblZZZZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "the second table after Z31 is Z31, not Z0",
-    },
-    PlantedBug {
-        number: 2007,
-        instruction: Instruction::TbxZZZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "an index past the table gives zero",
-    },
-    PlantedBug {
-        number: 2008,
-        instruction: Instruction::ExtZZI,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "a position past the vector wraps instead of being zero",
-    },
-    PlantedBug {
-        number: 2009,
-        instruction: Instruction::DupZZI,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "an index past the vector wraps instead of giving zero",
-    },
-    PlantedBug {
-        number: 2010,
-        instruction: Instruction::RevZZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "doublewords left in place",
-    },
-    PlantedBug {
-        number: 2011,
-        instruction: Instruction::SpliceZPZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "no active element leaves the result zero",
-    },
-    PlantedBug {
-        number: 2012,
-        instruction: Instruction::SpliceZPZZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "the predicate read one bit per element",
-    },
-    PlantedBug {
-        number: 2013,
-        instruction: Instruction::Sunpkhi,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "words taken from the low half",
-    },
-    PlantedBug {
         number: 2014,
         instruction: Instruction::CompactZPZ64,
         planted_by: PlantedBy::ScalableSecondHalf,
@@ -2975,12 +2897,6 @@ pub const PLANTED_BUGS: [PlantedBug; 489] = [
         what: "the accumulation not saturated",
     },
     PlantedBug {
-        number: 2049,
-        instruction: Instruction::SqrdmulhZZZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "the product not rounded",
-    },
-    PlantedBug {
         number: 2050,
         instruction: Instruction::Sabalb,
         planted_by: PlantedBy::ScalableSecondHalf,
@@ -2991,11 +2907,5 @@ pub const PLANTED_BUGS: [PlantedBug; 489] = [
         instruction: Instruction::Addhnb,
         planted_by: PlantedBy::ScalableSecondHalf,
         what: "the top halves kept, not zero",
-    },
-    PlantedBug {
-        number: 2052,
-        instruction: Instruction::BcaxZZZZ,
-        planted_by: PlantedBy::ScalableSecondHalf,
-        what: "the second and third sources swapped",
     },
 ];
