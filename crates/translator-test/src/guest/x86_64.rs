@@ -2352,13 +2352,15 @@ fn as_with_four_level_paging(case: &Case, instruction: &Instruction, expected: &
     }
 }
 
-/// Tells whether the processor makes the access in parts (an x87 or saved state, a far pointer).
+/// Tells whether the translation makes the access in parts (an x87 or saved state, a far pointer, an 80-bit value).
 ///
 /// Such an access is known to reach only the byte that faulted: which part a 48-bit chip meets first was not seen.
 fn made_in_parts(instruction: &Instruction) -> bool {
     matches!(
         instruction.memory_size(),
-        MemorySize::SegPtr16
+        MemorySize::Float80
+            | MemorySize::Bcd
+            | MemorySize::SegPtr16
             | MemorySize::SegPtr32
             | MemorySize::SegPtr64
             | MemorySize::FpuEnv14
