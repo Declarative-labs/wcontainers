@@ -252,6 +252,7 @@ fn to_slot(kind: OpCodeOperandKind, form: &IntegerForm) -> Slot {
         // LEA's operand is memory alone, whose address it takes.
         Kind::r8_or_mem | Kind::r16_or_mem | Kind::r32_or_mem | Kind::r64_or_mem | Kind::mem => Slot::RegisterOrMemory,
         Kind::r8_reg | Kind::r16_reg | Kind::r32_reg | Kind::r64_reg => Slot::Register,
+        Kind::r32_rm | Kind::r64_rm => Slot::Register,
         Kind::r8_opcode | Kind::r16_opcode | Kind::r32_opcode | Kind::r64_opcode => Slot::Register,
         Kind::al | Kind::ax | Kind::eax | Kind::rax => Slot::Accumulator,
         Kind::cl => Slot::Count,
@@ -286,8 +287,8 @@ fn to_kind_width(kind: OpCodeOperandKind) -> Option<usize> {
     Some(match kind {
         Kind::r8_or_mem | Kind::r8_reg | Kind::r8_opcode | Kind::al | Kind::cl => 1,
         Kind::r16_or_mem | Kind::r16_reg | Kind::r16_opcode | Kind::ax => 2,
-        Kind::r32_or_mem | Kind::r32_reg | Kind::r32_opcode | Kind::eax => 4,
-        Kind::r64_or_mem | Kind::r64_reg | Kind::r64_opcode | Kind::rax => 8,
+        Kind::r32_or_mem | Kind::r32_reg | Kind::r32_rm | Kind::r32_opcode | Kind::eax => 4,
+        Kind::r64_or_mem | Kind::r64_reg | Kind::r64_rm | Kind::r64_opcode | Kind::rax => 8,
         _ => return None,
     })
 }

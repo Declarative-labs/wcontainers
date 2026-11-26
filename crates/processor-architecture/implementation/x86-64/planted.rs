@@ -596,6 +596,10 @@ pub enum Bug {
     EvexUnsignedNegativeWraps,
     /// VCVTNEPS2BF16 rounds a denormal rather than reading it as zero.
     EvexBfloatKeepsDenormals,
+    /// The prefetch hints and CLDEMOTE read their memory operand and fault where it does.
+    HintsReadMemory,
+    /// SEAMCALL, TDCALL, ENCLV, VMFUNC and the rest complete as no operation.
+    RingThreeUndefinedFormsComplete,
     // Fifth check.
     /// SUB takes AF from bit 4 of the result.
     SubtractAuxiliaryFromResultBitFour,
@@ -1083,6 +1087,13 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexFusedStickyIgnored, "EVEX fused multiply-add", Family::Evex(|form| matches!(form.operation, EvexOperation::Fused { .. })), EvexSecondHalf),
     row(Bug::EvexUnsignedNegativeWraps, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), EvexSecondHalf),
     row(Bug::EvexBfloatKeepsDenormals, "VCVTNEPS2BF16, VCVTNE2PS2BF16", Family::Evex(|form| matches!(form.operation, EvexOperation::ToBfloat16 { .. })), EvexSecondHalf),
+    row(Bug::HintsReadMemory, "prefetch hints, CLDEMOTE", Family::Forms(&[
+        Instruction::Prefetchw0f0dr1, Instruction::Prefetchw0f0dr3, Instruction::PrefetchExclusiveMemmprefetch,
+        Instruction::PrefetchReserved0f0dr4, Instruction::PrefetchReserved0f0dr5, Instruction::PrefetchReserved0f0dr6,
+        Instruction::PrefetchReserved0f0dr7, Instruction::Prefetchwt1Memu8, Instruction::Prefetchit0Memu8,
+        Instruction::Prefetchit1Memu8, Instruction::CldemoteMemu8,
+    ]), EvexSecondHalf),
+    row(Bug::RingThreeUndefinedFormsComplete, "SEAMCALL to VMFUNC", Family::Forms(&crate::RING_3_UNDEFINED_FORMS), EvexSecondHalf),
     row(Bug::EvexPermuteFaultsSuppressed, "EVEX permutes with memory", Family::Evex(|form| form.place != OperandPlace::Register && !form.suppresses_faults()), EvexSecondHalf),
 ];
 

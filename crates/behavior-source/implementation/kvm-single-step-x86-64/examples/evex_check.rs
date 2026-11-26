@@ -108,6 +108,14 @@ mod on_chip {
         let names = std::env::var("EVEX_CHECK_FORMS").unwrap_or_default();
         let forms: Vec<Instruction> =
             X86_64::list_instructions().filter(|instruction| names.split(',').any(|name| format!("{instruction:?}") == name)).collect();
+        if std::env::var("EVEX_CHECK_CODES").is_ok() {
+            for instruction in &forms {
+                let sample = wcontainers_processor_architecture_x86_64::SAMPLE_ENCODINGS[*instruction as usize];
+                let decoded = iced_x86::Decoder::new(64, sample, iced_x86::DecoderOptions::NONE).decode();
+                println!("CODE {instruction:?} {:?} {:02x?}", decoded.code(), sample);
+            }
+            return;
+        }
         let options = Options { loading: MemoryLoading::Full, entry: EntryPath::Parked };
         let mut machine = SingleStepMachine::with_options(options).unwrap_or_else(|error| panic!("no machine: {error:?}"));
         let mut kinds: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();

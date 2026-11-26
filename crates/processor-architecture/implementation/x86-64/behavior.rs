@@ -12,8 +12,8 @@ use crate::evex::find_evex_form;
 use crate::float::find_float_form;
 use crate::vector::find_vector_form;
 use crate::{
-    CpuidTable, FORBIDDEN_FORMS, Instruction, PRIVILEGED_FORMS, PreciseInstruction, XEON_PLATINUM_8488C_UNDER_KVM,
-    is_optional,
+    CpuidTable, FORBIDDEN_FORMS, Instruction, PRIVILEGED_FORMS, PreciseInstruction, RING_3_UNDEFINED_FORMS,
+    XEON_PLATINUM_8488C_UNDER_KVM, is_optional,
 };
 
 /// What a store writes when part of it faults.
@@ -278,6 +278,11 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
         _ if find_float_form(instruction).is_some() => [PreciseInstruction::Float(instruction)].to_vec(),
         _ if find_branch_form(instruction).is_some() => [PreciseInstruction::Branch(instruction)].to_vec(),
         _ if find_evex_form(instruction).is_some() => [PreciseInstruction::Evex(instruction)].to_vec(),
+        _ if RING_3_UNDEFINED_FORMS.contains(&instruction) => {
+            let in_a_machine = PRIVILEGED_FORMS.iter().any(|(form, _)| *form == instruction);
+            let privileged = in_a_machine.then_some(PreciseInstruction::Privileged(instruction));
+            privileged.into_iter().chain([PreciseInstruction::Undefined(instruction)]).collect()
+        }
         _ if PRIVILEGED_FORMS.iter().any(|(form, _)| *form == instruction) => {
             [PreciseInstruction::Privileged(instruction)].to_vec()
         }
