@@ -17,6 +17,10 @@ use crate::memory::{read_bytes, read_permission};
 use crate::planted::{Bug, is_active};
 use crate::float::{ORDER_FLAGS, find_float_form};
 use crate::vector::{VectorEncoding, VectorForm, find_vector_form};
+
+// The EVEX skeleton, which reads memory as this module's formulas do.
+#[path = "evex_simulation.rs"]
+mod evex_simulation;
 use crate::{
     Access, DataAccess, Exception, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission,
     PreciseInstruction, Processor, ProcessorExpectation, STACK_POINTER, VIRTUAL_ADDRESS_BITS, X86_64,
@@ -198,6 +202,11 @@ fn apply(
         PreciseInstruction::Undefined(_) if is_active(Bug::UndefinedRaisesGeneralProtection) => {
             Err(Exception::GeneralProtection { error_code: 0 })
         }
+        PreciseInstruction::Undefined(instruction)
+            if is_active(Bug::RingThreeUndefinedFormsComplete) && crate::RING_3_UNDEFINED_FORMS.contains(&instruction) =>
+        {
+            Ok(())
+        }
         PreciseInstruction::Undefined(_) => Err(Exception::InvalidOpcode),
         PreciseInstruction::Int3 => {
             expect_code(decoded, &[Code::Int3]);
@@ -241,6 +250,7 @@ fn apply(
         PreciseInstruction::Sse { instruction, across_fault, masked_faults } => {
             sse_simulation::execute_sse(instruction, across_fault, masked_faults, processor, memory, decoded, on_memory_mutated)
         }
+        PreciseInstruction::Evex(instruction) => evex_simulation::execute_evex(instruction, processor, memory, decoded),
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS
                 .iter()
@@ -662,7 +672,7 @@ fn execute_integer(
         }
         _ => 0,
     };
-    let reads_nothing = is_active(Bug::NoOperationReadsMemory) && operation == Operation::NoOperation;
+    let reads_nothing = (is_active(Bug::NoOperationReadsMemory) || is_active(Bug::HintsReadMemory)) && operation == Operation::NoOperation;
     let destination_operand = (decoded.op_count() > 0 && decoded.op0_kind() == OpKind::Memory)
         .then(|| locate_moved(processor, decoded, moved))
         .filter(|_| operation.accesses_memory() || reads_nothing);

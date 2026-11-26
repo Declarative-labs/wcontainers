@@ -24,6 +24,10 @@ name = "probe"
 path = "examples/probe.rs"
 
 [[example]]
+name = "evex_check"
+path = "examples/evex_check.rs"
+
+[[example]]
 name = "hand_states"
 path = "examples/hand_states.rs"
 

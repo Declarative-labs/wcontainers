@@ -36,7 +36,7 @@ pub const DENORMALS_ARE_ZEROS: u32 = 1 << 6;
 pub const MASK_SHIFT: u32 = 7;
 pub const ROUNDING_SHIFT: u32 = 13;
 pub const FLUSH_TO_ZERO: u32 = 1 << 15;
-const FLAGS: u32 = INVALID | DENORMAL | DIVIDE_BY_ZERO | OVERFLOW | UNDERFLOW | INEXACT;
+pub(crate) const FLAGS: u32 = INVALID | DENORMAL | DIVIDE_BY_ZERO | OVERFLOW | UNDERFLOW | INEXACT;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FloatOperation {
@@ -169,11 +169,11 @@ impl Precision {
         if self.to_bits() == u64::BITS { u64::MAX } else { (1 << self.to_bits()) - 1 }
     }
 
-    const fn to_fraction_mask(self) -> u64 {
+    pub(crate) const fn to_fraction_mask(self) -> u64 {
         (1 << (self.to_significand_bits() - 1)) - 1
     }
 
-    const fn to_sign_bit(self) -> u64 {
+    pub(crate) const fn to_sign_bit(self) -> u64 {
         1 << (self.to_bits() - 1)
     }
 
@@ -182,7 +182,7 @@ impl Precision {
         1 << (self.to_significand_bits() - 2)
     }
 
-    const fn to_infinity(self) -> u64 {
+    pub(crate) const fn to_infinity(self) -> u64 {
         self.to_mask() & !self.to_sign_bit() & !self.to_fraction_mask()
     }
 
@@ -198,7 +198,7 @@ impl Precision {
 
 /// MXCSR's rounding control.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Rounding {
+pub(crate) enum Rounding {
     Nearest,
     Down,
     Up,
@@ -207,7 +207,7 @@ enum Rounding {
 
 /// What an operand is, its value read as `significand × 2^exponent` when finite.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Class {
+pub(crate) enum Class {
     Zero,
     Finite { significand: u128, exponent: i32, denormal: bool },
     Infinity,
@@ -215,23 +215,23 @@ enum Class {
 }
 
 #[derive(Clone, Copy, Debug)]
-struct Operand {
-    bits: u64,
-    negative: bool,
-    class: Class,
+pub(crate) struct Operand {
+    pub(crate) bits: u64,
+    pub(crate) negative: bool,
+    pub(crate) class: Class,
 }
 
 /// A lane's result, or the exceptions that stop the instruction before it is computed.
-struct LaneOutcome {
-    bits: u64,
+pub(crate) struct LaneOutcome {
+    pub(crate) bits: u64,
     /// The flags of the exceptions detected before the computation.
-    before: u32,
+    pub(crate) before: u32,
     /// The flags of those detected after it.
-    after: u32,
+    pub(crate) after: u32,
 }
 
 impl Operand {
-    fn read(bits: u64, precision: Precision, denormals_are_zeros: bool) -> Self {
+    pub(crate) fn read(bits: u64, precision: Precision, denormals_are_zeros: bool) -> Self {
         let bits = bits & precision.to_mask();
         let negative = bits & precision.to_sign_bit() != 0;
         let fraction = bits & precision.to_fraction_mask();
@@ -259,18 +259,18 @@ impl Operand {
         Self { bits, negative, class }
     }
 
-    const fn is_denormal(&self) -> bool {
+    pub(crate) const fn is_denormal(&self) -> bool {
         matches!(self.class, Class::Finite { denormal: true, .. })
     }
 
-    const fn is_nan(&self) -> bool {
+    pub(crate) const fn is_nan(&self) -> bool {
         matches!(self.class, Class::Nan { .. })
     }
 }
 
 impl FloatOperation {
     /// Computes one lane from the destination's operand and the source's, under MXCSR.
-    fn compute(self, first: u64, second: u64, precision: Precision, mxcsr: u32, immediate: u8) -> LaneOutcome {
+    pub(crate) fn compute(self, first: u64, second: u64, precision: Precision, mxcsr: u32, immediate: u8) -> LaneOutcome {
         let single = precision == Precision::Single;
         let daz = mxcsr & DENORMALS_ARE_ZEROS != 0
             && !is_active(Bug::DenormalsAreZerosIgnored)
@@ -452,7 +452,7 @@ impl FloatOperation {
 }
 
 /// MXCSR's rounding control.
-const fn read_rounding(mxcsr: u32) -> Rounding {
+pub(crate) const fn read_rounding(mxcsr: u32) -> Rounding {
     match (mxcsr >> ROUNDING_SHIFT) & 3 {
         0 => Rounding::Nearest,
         1 => Rounding::Down,
@@ -535,7 +535,7 @@ fn convert(conversion: Conversion, value: u64, precision: Precision, mxcsr: u32)
 
 /// `significand × 2^exponent` rounded to an integer in the mode, its magnitude (saturated far past any integer
 /// range) and whether bits were lost.
-fn round_to_integer(significand: u128, exponent: i32, rounding: Rounding, negative: bool) -> (u128, bool) {
+pub(crate) fn round_to_integer(significand: u128, exponent: i32, rounding: Rounding, negative: bool) -> (u128, bool) {
     if exponent >= 0 {
         return if exponent >= 64 { (u128::MAX, false) } else { (significand << exponent, false) };
     }
@@ -613,11 +613,11 @@ fn compare(
 /// A finite nonzero value, `significand × 2^exponent`, with `sticky` set where nonzero bits lie below it; when set,
 /// the significand holds at least three bits more than the precision.
 #[derive(Clone, Copy, Debug)]
-struct Exact {
-    negative: bool,
-    significand: u128,
-    exponent: i32,
-    sticky: bool,
+pub(crate) struct Exact {
+    pub(crate) negative: bool,
+    pub(crate) significand: u128,
+    pub(crate) exponent: i32,
+    pub(crate) sticky: bool,
 }
 
 /// The exact sum of two finite nonzero values, or `None` when it is an exact zero.
@@ -700,7 +700,7 @@ fn square_root(value: u128) -> u128 {
 }
 
 /// Whether `first` is less than `second`, both numbers or infinities.
-fn compare_less(first: Operand, second: Operand) -> bool {
+pub(crate) fn compare_less(first: Operand, second: Operand) -> bool {
     let key = |operand: Operand| -> (i8, i32, u128) {
         match operand.class {
             Class::Zero => (0, i32::MIN, 0),
@@ -720,13 +720,13 @@ fn compare_less(first: Operand, second: Operand) -> bool {
     }
 }
 
-fn is_equal(first: Operand, second: Operand) -> bool {
+pub(crate) fn is_equal(first: Operand, second: Operand) -> bool {
     !compare_less(first, second) && !compare_less(second, first)
 }
 
 /// Rounds the exact value in the mode to the precision, and gives its bits and the flags after the computation:
 /// overflow, underflow and inexact, as their masks in MXCSR ask.
-fn round(exact: Exact, precision: Precision, rounding: Rounding, mxcsr: u32) -> (u64, u32) {
+pub(crate) fn round(exact: Exact, precision: Precision, rounding: Rounding, mxcsr: u32) -> (u64, u32) {
     let double = precision == Precision::Double;
     let ties_away = is_active(Bug::NearestTiesAwayFromZero) || (is_active(Bug::DoubleTiesAwayFromZero) && double);
     let digits = precision.to_significand_bits() as i32;

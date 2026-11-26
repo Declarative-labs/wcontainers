@@ -1,5 +1,5 @@
 //! x86-64 as Linux runs a 64-bit program at ring 3: IF set, IOPL 0, CR0.AM set, UMIP, FSGSBASE, OSXSAVE and PKE
-//! on, and XCR0 enabling x87, SSE and AVX state, which the state holds.
+//! on, and XCR0 enabling x87, SSE, AVX and AVX-512 state, which the state holds.
 //!
 //! A program's addresses are [`ADDRESSABLE`](ProcessorArchitecture::ADDRESSABLE), the lower canonical half. Every
 //! canonical address above it is the kernel's: present to the chip and refused to ring 3, so an access there is a
@@ -27,6 +27,7 @@ pub mod avx;
 mod behavior;
 pub mod branch;
 mod cpuid;
+pub mod evex;
 mod cpuid_recording;
 mod exception;
 pub mod extension;
@@ -67,6 +68,8 @@ pub const VIRTUAL_ADDRESS_BITS: u32 = 48;
 pub const GENERAL_PURPOSE_REGISTERS: usize = 16;
 /// XMM0 to XMM15.
 pub const VECTOR_REGISTERS: usize = 16;
+/// k0 to k7, AVX-512's opmask registers.
+pub const OPMASK_REGISTERS: usize = 8;
 /// The number of RSP among the general registers.
 pub const STACK_POINTER: usize = 4;
 /// What [MXCSR](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html) holds after reset and in a new Linux program: every exception masked, round to nearest.
@@ -85,9 +88,9 @@ pub const FIRST_SLICE: [Instruction; 4] = [
 /// The forms the manuals give #GP(0) at ring 3 whatever their operands, and the iced-x86 `Code` of each operand
 /// size, 32 bits first: SWAPGS and SYSRET for CPL other than 0, SYSEXIT for CPL other than 0 (Linux sets
 /// IA32_SYSENTER_CS, so that check comes second), CLI and STI for CPL above IOPL, which Linux leaves 0; CLTS, HLT,
-/// INVD, WBINVD, RDMSR and WRMSR for CPL other than 0, and RDPMC for CPL other than 0 with CR4.PCE clear, as
+/// INVD, WBINVD, WBNOINVD, RDMSR and WRMSR for CPL other than 0, and RDPMC for CPL other than 0 with CR4.PCE clear, as
 /// Linux leaves it for a program that has not mapped a performance counter; XSETBV for CPL other than 0.
-pub const PRIVILEGED_FORMS: [(Instruction, &[Code]); 14] = [
+pub const PRIVILEGED_FORMS: [(Instruction, &[Code]); 17] = [
     (Instruction::Swapgs, &[Code::Swapgs]),
     (Instruction::Sysexit, &[Code::Sysexitd, Code::Sysexitq]),
     (Instruction::Sysret, &[Code::Sysretd]),
@@ -102,6 +105,9 @@ pub const PRIVILEGED_FORMS: [(Instruction, &[Code]); 14] = [
     (Instruction::Wrmsr, &[Code::Wrmsr]),
     (Instruction::Rdpmc, &[Code::Rdpmc]),
     (Instruction::Xsetbv, &[Code::Xsetbv]),
+    (Instruction::Wbnoinvd, &[Code::Wbnoinvd]),
+    (Instruction::Seamcall, &[Code::Seamcall]),
+    (Instruction::Tdcall, &[Code::Tdcall]),
 ];
 
 /// The CPUID features every x86-64 chip has: long mode, and the x87, CMOV, MMX, FXSAVE, SSE and SSE2 that AMD's
@@ -119,6 +125,20 @@ const BASELINE_FEATURES: [CpuidRequirement; 7] = [
 
 /// The forms that take input from outside the processor and memory, the bytes a device gives: VIA's XSTORE.
 pub const FORBIDDEN_FORMS: [Instruction; 2] = [Instruction::Xstore, Instruction::RepXstore];
+
+/// The forms every chip raises #UD for in a program under Linux, outside the environments that give them meaning:
+/// SEAMCALL, SEAMOPS and SEAMRET outside VMX root operation, TDCALL outside a trust domain, ENCLV and VMFUNC
+/// outside VMX non-root operation (the [Intel SDM](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html),
+/// volume 2, and Intel's TDX module specification). SEAMCALL and TDCALL check the privilege level first inside a
+/// virtual machine, where they raise #GP(0), so they are in [`PRIVILEGED_FORMS`] too.
+pub const RING_3_UNDEFINED_FORMS: [Instruction; 6] = [
+    Instruction::Seamcall,
+    Instruction::Seamops,
+    Instruction::Seamret,
+    Instruction::Tdcall,
+    Instruction::Enclv,
+    Instruction::Vmfunc,
+];
 
 /// Returns whether a chip may lack the form: it needs a CPUID feature beyond [`BASELINE_FEATURES`].
 pub fn is_optional(instruction: Instruction) -> bool {
@@ -146,6 +166,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(mmx::MMX_FORMS.iter().map(|form| form.instruction))
         .chain(x87::X87_FORMS.iter().map(|form| form.instruction))
         .chain(stack::STACK_FORMS.iter().map(|form| form.instruction))
+        .chain(evex::list_evex_forms().into_iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -193,13 +214,16 @@ impl ProcessorArchitecture for X86_64 {
             && observed.vector_registers == expectation.vector_registers
             && observed.upper_vector_halves == expectation.upper_vector_halves
             && observed.x87 == expectation.x87
+            && observed.zmm_upper_halves == expectation.zmm_upper_halves
+            && observed.high_vector_registers == expectation.high_vector_registers
+            && observed.opmask_registers == expectation.opmask_registers
             && observed.exception == expectation.exception
     }
 }
 
 /// The registers a program at ring 3 reads and writes, and the exception its last instruction raised.
 ///
-/// TODO: temporary placeholder until the rest of the state is designed: ZMM beyond 256 bits, XMM16 to XMM31 and the opmask registers; APX's R16 to R31; AMX's tile
+/// TODO: temporary placeholder until the rest of the state is designed: APX's R16 to R31; AMX's tile
 /// configuration and tiles; PKRU; CET's shadow stack pointer; the segment selectors; the trap flag. The chip source
 /// checks that an instruction leaves the selectors as they were.
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -221,6 +245,12 @@ pub struct Processor {
     /// Bits 128 to 255 of each vector register, the upper halves of YMM0 to YMM15, which XCR0's AVX bit enables.
     pub upper_vector_halves: [u128; VECTOR_REGISTERS],
     pub x87: X87,
+    /// Bits 256 to 383 and 384 to 511 of ZMM0 to ZMM15, which XCR0's ZMM_Hi256 bit enables.
+    pub zmm_upper_halves: [[u128; 2]; VECTOR_REGISTERS],
+    /// ZMM16 to ZMM31 whole, lowest 128 bits first, which XCR0's Hi16_ZMM bit enables.
+    pub high_vector_registers: [[u128; 4]; VECTOR_REGISTERS],
+    /// k0 to k7, which XCR0's opmask bit enables.
+    pub opmask_registers: [u64; OPMASK_REGISTERS],
     /// None when the last instruction completed.
     pub exception: Option<Exception>,
 }
@@ -279,6 +309,9 @@ pub struct ProcessorExpectation {
     pub vector_registers: [u128; VECTOR_REGISTERS],
     pub upper_vector_halves: [u128; VECTOR_REGISTERS],
     pub x87: X87,
+    pub zmm_upper_halves: [[u128; 2]; VECTOR_REGISTERS],
+    pub high_vector_registers: [[u128; 4]; VECTOR_REGISTERS],
+    pub opmask_registers: [u64; OPMASK_REGISTERS],
     pub exception: Option<Exception>,
 }
 
@@ -295,6 +328,9 @@ impl Processor {
             vector_registers: self.vector_registers,
             upper_vector_halves: self.upper_vector_halves,
             x87: self.x87,
+            zmm_upper_halves: self.zmm_upper_halves,
+            high_vector_registers: self.high_vector_registers,
+            opmask_registers: self.opmask_registers,
             exception: self.exception,
         }
     }
@@ -311,6 +347,9 @@ pub const ZERO_PROCESSOR: Processor = Processor {
     vector_registers: [0; VECTOR_REGISTERS],
     upper_vector_halves: [0; VECTOR_REGISTERS],
     x87: X87_INITIAL,
+    zmm_upper_halves: [[0; 2]; VECTOR_REGISTERS],
+    high_vector_registers: [[0; 4]; VECTOR_REGISTERS],
+    opmask_registers: [0; OPMASK_REGISTERS],
     exception: None,
 };
 
@@ -353,6 +392,8 @@ pub enum PreciseInstruction {
     Privileged(Instruction),
     /// A form of [`branch::BRANCH_FORMS`].
     Branch(Instruction),
+    /// A form of [`evex::EVEX_FORMS`], whose results the manuals define whole.
+    Evex(Instruction),
     /// A form of [`integer::INTEGER_FORMS`].
     Integer {
         instruction: Instruction,

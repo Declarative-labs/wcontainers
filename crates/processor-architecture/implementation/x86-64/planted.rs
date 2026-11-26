@@ -4,6 +4,7 @@
 use iced_x86::Register;
 
 use crate::behavior::UndefinedFlags;
+use crate::evex::{Conversion, EvexForm, EvexOperation, IntegerOperation, Number, find_evex_form};
 use crate::float::{FloatForm, FloatOperation, Precision, find_float_form};
 use crate::integer::{
     BitChange, Condition, OperandPlace, Operation, Outcome, find_integer_form, sign_extend, subtract_with_borrow,
@@ -38,6 +39,8 @@ pub enum Origin {
     Avx,
     /// The family of the legacy integer forms left, x87, MMX and the general-purpose extensions.
     IntegerX87Mmx,
+    /// The second half of AVX-512's forms.
+    EvexSecondHalf,
 }
 
 /// The forms a bug shows on.
@@ -61,6 +64,8 @@ pub enum Family {
     Optional,
     /// The forms of [`crate::sse::SSE_FORMS`] whose operation the test accepts.
     Sse(fn(SseOperation) -> bool),
+    /// The EVEX forms of [`crate::evex`] the test accepts.
+    Evex(fn(&EvexForm) -> bool),
     Every,
     /// The forms of [`crate::avx::AVX_FORMS`] the test accepts.
     Avx(fn(&AvxForm) -> bool),
@@ -95,6 +100,7 @@ impl PlantedBug {
             Family::VexVector => find_vector_form(instruction).is_some_and(|form| form.encoding != VectorEncoding::Legacy),
             Family::Optional => crate::is_optional(instruction),
             Family::Sse(test) => crate::sse::find_sse_form(instruction).is_some_and(|form| test(form.operation)),
+            Family::Evex(test) => find_evex_form(instruction).is_some_and(|form| test(&form)),
             Family::Every => true,
             Family::Avx(test) => find_avx_form(instruction).is_some_and(test),
         }
@@ -557,6 +563,61 @@ pub enum Bug {
     // The whole list.
     /// A form the chip lacks raises #GP(0), not #UD.
     UndefinedRaisesGeneralProtection,
+    // The second half of AVX-512.
+    /// An element the opmask register leaves out under zeroing keeps the destination's value.
+    EvexZeroingMerges,
+    /// Exception suppression and embedded rounding still record the flags and raise #XM.
+    EvexSuppressedExceptionsFlagged,
+    /// A scalar form keeps the destination's bits beyond 128.
+    EvexScalarKeepsUpperBits,
+    /// A write to ZMM16 to ZMM31 goes to the register 16 below.
+    EvexHighRegistersAliasLow,
+    /// The opmask register is ignored: every element is computed.
+    EvexMaskIgnored,
+    /// Embedded rounding uses MXCSR's rounding mode.
+    EvexEmbeddedRoundingIgnored,
+    /// A broadcast source is read as a whole vector.
+    EvexBroadcastReadsVector,
+    /// An element the opmask register leaves out still faults.
+    EvexMaskedFaultNotSuppressed,
+    /// VPERMD and its kin take the index modulo half the element count.
+    EvexPermuteIndexHalved,
+    /// The two-table permutes always read the first table.
+    EvexTwoTablesSelectorIgnored,
+    /// The in-lane permutes and shuffles read the lowest lane for every lane.
+    EvexLanesFromTheFirst,
+    /// VPSHUFB ignores the control byte's zeroing bit.
+    EvexShuffleBytesZeroBitIgnored,
+    /// The unpacks take the second source's element first.
+    EvexUnpackSourcesSwapped,
+    /// VALIGND and VALIGNQ shift by the whole immediate, zero beyond both sources.
+    EvexAlignCountUnreduced,
+    /// The permutes and shuffles suppress a fault on an element the opmask leaves out.
+    EvexPermuteFaultsSuppressed,
+    /// VPDPBUSDS and VPDPWSSDS wrap rather than saturate.
+    EvexDotProductWraps,
+    /// The double shifts take their two sources the other way round.
+    EvexShiftDoubleHalvesSwapped,
+    /// VPCONFLICTD and VPCONFLICTQ count the element itself.
+    EvexConflictIncludesSelf,
+    /// VAESENC and VAESDEC skip MixColumns.
+    EvexAesSkipsMixColumns,
+    /// VPCLMULQDQ always takes the second source's low quadword.
+    EvexCarryLessIgnoresBitFour,
+    /// A form that writes an opmask register keeps the bits its opmask leaves out.
+    EvexMaskDestinationMerges,
+    /// The fused sum drops the bits of the addend or product it shifts out.
+    EvexFusedStickyIgnored,
+    /// A negative number converted to an unsigned integer wraps rather than being invalid.
+    EvexUnsignedNegativeWraps,
+    /// VCVTNEPS2BF16 rounds a denormal rather than reading it as zero.
+    EvexBfloatKeepsDenormals,
+    /// The prefetch hints and CLDEMOTE read their memory operand and fault where it does.
+    HintsReadMemory,
+    /// The EVEX compares ignore bit 4 of the predicate, which swaps whether a quiet NaN signals.
+    EvexCompareSignalingBitIgnored,
+    /// SEAMCALL, TDCALL, ENCLV, VMFUNC and the rest complete as no operation.
+    RingThreeUndefinedFormsComplete,
     // Fifth check.
     /// SUB takes AF from bit 4 of the result.
     SubtractAuxiliaryFromResultBitFour,
@@ -927,8 +988,8 @@ const fn sse(test: fn(SseOperation) -> bool) -> Family {
 }
 
 use Origin::{
-    FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck, SecondPass, ThirdCheck, ThirdPass,
-    WholeList, SseFamily,
+    EvexSecondHalf, FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck, SecondPass,
+    SseFamily, ThirdCheck, ThirdPass, WholeList,
 };
 
 /// Every planted bug of every pass and check, with its family.
@@ -1329,6 +1390,38 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::ExtendedStoreWhole, "FSTP m80", Family::Forms(&[Instruction::FstpMemmem80realSt0]), Origin::IntegerX87Mmx),
     row(Bug::ExtendedAlignmentUnchecked, "FLD m80, FSTP m80", Family::Forms(&[Instruction::FldSt0Memmem80real, Instruction::FstpMemmem80realSt0]), Origin::IntegerX87Mmx),
     row(Bug::X87PushIgnoresOverflow, "x87 pushes", Family::Forms(&[Instruction::FldSt0X87, Instruction::Fld1, Instruction::FildSt0Memmem16int]), Origin::IntegerX87Mmx),
+    row(Bug::EvexZeroingMerges, "EVEX forms", Family::Evex(|_| true), EvexSecondHalf),
+    row(Bug::EvexSuppressedExceptionsFlagged, "EVEX floating-point register forms", Family::Evex(is_float_register_form), EvexSecondHalf),
+    row(Bug::EvexScalarKeepsUpperBits, "EVEX scalar forms", Family::Evex(|form| form.elements() == 1), EvexSecondHalf),
+    row(Bug::EvexHighRegistersAliasLow, "EVEX forms that write a vector", Family::Evex(|form| !form.writes_opmask() && !matches!(form.operation, EvexOperation::OrderedCompare { .. })), EvexSecondHalf),
+    row(Bug::EvexMaskIgnored, "EVEX forms", Family::Evex(|_| true), EvexSecondHalf),
+    row(Bug::EvexEmbeddedRoundingIgnored, "EVEX forms with embedded rounding", Family::Evex(|form| form.code.op_code().can_use_rounding_control()), EvexSecondHalf),
+    row(Bug::EvexBroadcastReadsVector, "EVEX forms that broadcast", Family::Evex(|form| form.place != OperandPlace::Register && form.code.op_code().can_broadcast()), EvexSecondHalf),
+    row(Bug::EvexMaskedFaultNotSuppressed, "EVEX forms with memory that suppress faults", Family::Evex(|form| form.place != OperandPlace::Register && form.suppresses_faults()), EvexSecondHalf),
+    row(Bug::EvexPermuteIndexHalved, "VPERMB to VPERMPD", Family::Evex(|form| is_integer(form, IntegerOperation::Permute)), EvexSecondHalf),
+    row(Bug::EvexTwoTablesSelectorIgnored, "VPERMI2 and VPERMT2", Family::Evex(|form| form.reads_destination()), EvexSecondHalf),
+    row(Bug::EvexLanesFromTheFirst, "EVEX in-lane shuffles", Family::Evex(|form| form.vector_bytes() > 16 && matches!(form.operation, EvexOperation::Integer { .. })), EvexSecondHalf),
+    row(Bug::EvexShuffleBytesZeroBitIgnored, "VPSHUFB", Family::Evex(|form| is_integer(form, IntegerOperation::ShuffleBytes)), EvexSecondHalf),
+    row(Bug::EvexUnpackSourcesSwapped, "VUNPCKH and VUNPCKL", Family::Evex(|form| is_integer(form, IntegerOperation::UnpackLow) || is_integer(form, IntegerOperation::UnpackHigh)), EvexSecondHalf),
+    row(Bug::EvexAlignCountUnreduced, "VALIGND, VALIGNQ", Family::Evex(|form| is_integer(form, IntegerOperation::AlignElements)), EvexSecondHalf),
+    row(Bug::EvexDotProductWraps, "VPDPBUSDS, VPDPWSSDS", Family::Evex(|form| matches!(form.operation, EvexOperation::Integer { operation: IntegerOperation::DotBytes { saturating: true } | IntegerOperation::DotWords { saturating: true }, .. })), EvexSecondHalf),
+    row(Bug::EvexShiftDoubleHalvesSwapped, "VPSHLD, VPSHRD and their variable forms", Family::Evex(|form| matches!(form.operation, EvexOperation::Integer { operation: IntegerOperation::ShiftLeftDouble | IntegerOperation::ShiftRightDouble | IntegerOperation::ShiftLeftDoubleVariable | IntegerOperation::ShiftRightDoubleVariable, .. })), EvexSecondHalf),
+    row(Bug::EvexConflictIncludesSelf, "VPCONFLICTD, VPCONFLICTQ", Family::Evex(|form| is_integer(form, IntegerOperation::Conflict)), EvexSecondHalf),
+    row(Bug::EvexAesSkipsMixColumns, "VAESENC, VAESDEC", Family::Evex(|form| matches!(form.operation, EvexOperation::Integer { operation: IntegerOperation::Aes { last: false, .. }, .. })), EvexSecondHalf),
+    row(Bug::EvexCarryLessIgnoresBitFour, "VPCLMULQDQ", Family::Evex(|form| is_integer(form, IntegerOperation::CarryLessMultiply)), EvexSecondHalf),
+    row(Bug::EvexMaskDestinationMerges, "EVEX forms that write an opmask register", Family::Evex(EvexForm::writes_opmask), EvexSecondHalf),
+    row(Bug::EvexFusedStickyIgnored, "EVEX fused multiply-add", Family::Evex(|form| matches!(form.operation, EvexOperation::Fused { .. })), EvexSecondHalf),
+    row(Bug::EvexUnsignedNegativeWraps, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), EvexSecondHalf),
+    row(Bug::EvexBfloatKeepsDenormals, "VCVTNEPS2BF16, VCVTNE2PS2BF16", Family::Evex(|form| matches!(form.operation, EvexOperation::ToBfloat16 { .. })), EvexSecondHalf),
+    row(Bug::HintsReadMemory, "prefetch hints, CLDEMOTE", Family::Forms(&[
+        Instruction::Prefetchw0f0dr1, Instruction::Prefetchw0f0dr3, Instruction::PrefetchExclusiveMemmprefetch,
+        Instruction::PrefetchReserved0f0dr4, Instruction::PrefetchReserved0f0dr5, Instruction::PrefetchReserved0f0dr6,
+        Instruction::PrefetchReserved0f0dr7, Instruction::Prefetchwt1Memu8, Instruction::Prefetchit0Memu8,
+        Instruction::Prefetchit1Memu8, Instruction::CldemoteMemu8,
+    ]), EvexSecondHalf),
+    row(Bug::RingThreeUndefinedFormsComplete, "SEAMCALL to VMFUNC", Family::Forms(&crate::RING_3_UNDEFINED_FORMS), EvexSecondHalf),
+    row(Bug::EvexCompareSignalingBitIgnored, "VCMPPS to VCMPSD", Family::Evex(|form| matches!(form.operation, EvexOperation::Compare { .. })), EvexSecondHalf),
+    row(Bug::EvexPermuteFaultsSuppressed, "EVEX permutes with memory", Family::Evex(|form| form.place != OperandPlace::Register && !form.suppresses_faults()), EvexSecondHalf),
 ];
 
 const X87_SAMPLE: &[Instruction] = &[Instruction::Fnop, Instruction::FxchSt0X87, Instruction::FldSt0Memmem80real, Instruction::Fchs];
@@ -1408,6 +1501,25 @@ const CMPXCHG_PAIR: &[Instruction] = &[
     Instruction::Cmpxchg16bMemdq,
     Instruction::Cmpxchg16bLockMemdq,
 ];
+
+/// Whether the EVEX form is an integer form of the operation.
+fn is_integer(form: &EvexForm, operation: IntegerOperation) -> bool {
+    matches!(form.operation, EvexOperation::Integer { operation: other, .. } if other == operation)
+}
+
+/// Whether the EVEX form computes floating-point elements from registers alone.
+fn is_float_register_form(form: &EvexForm) -> bool {
+    matches!(
+        form.operation,
+        EvexOperation::Float { .. }
+            | EvexOperation::Fused { .. }
+            | EvexOperation::Convert(_)
+            | EvexOperation::Compare { .. }
+            | EvexOperation::OrderedCompare { .. }
+    )
+        && form.place == OperandPlace::Register
+        && form.code.op_code().can_suppress_all_exceptions()
+}
 
 #[cfg(feature = "planted-bugs")]
 static ACTIVE: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);

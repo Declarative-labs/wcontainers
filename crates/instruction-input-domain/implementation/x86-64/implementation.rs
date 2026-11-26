@@ -30,6 +30,7 @@ use wcontainers_processor_architecture_x86_64::fixed::find_fixed_form;
 use wcontainers_processor_architecture_x86_64::mmx::find_mmx_form;
 use wcontainers_processor_architecture_x86_64::stack::find_stack_form;
 use wcontainers_processor_architecture_x86_64::x87::find_x87_form;
+use wcontainers_processor_architecture_x86_64::evex::find_evex_form;
 use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -42,6 +43,7 @@ use wcontainers_processor_architecture_x86_64::{
 
 pub mod avx;
 pub mod branch;
+pub mod evex;
 pub mod extension;
 pub mod fixed;
 pub mod float;
@@ -181,6 +183,30 @@ pub enum OperandType {
     X87Value(Role, x87::X87ValueSet),
     /// The segment register MOV reads.
     SegmentRegister,
+    /// An EVEX register form's three registers and how its bytes lie.
+    EvexEncoding,
+    /// The first source register of an EVEX form with a memory operand.
+    EvexRegister,
+    /// The opmask register an EVEX form with a memory operand names, and its value, for a form of this many
+    /// elements.
+    EvexMask(usize),
+    /// Whether an EVEX form's memory source is one element broadcast.
+    EvexBroadcast,
+    /// The two sources of a floating-point EVEX form and MXCSR; for a register form also the opmask and the
+    /// embedded rounding or exception suppression.
+    EvexFloatData(evex::EvexFloatData),
+    /// The destination's old value, the two sources and the immediate of an integer EVEX form; for a register form
+    /// also the opmask.
+    EvexIntegerData(evex::EvexIntegerData),
+    /// The destination's old value and the two sources of a fused EVEX form and MXCSR; for a register form also
+    /// the opmask and the embedded rounding.
+    EvexFusedData(evex::EvexFusedData),
+    /// The source of a conversion, the first source of a scalar one, and MXCSR; for a register form also the opmask
+    /// and the embedded rounding or exception suppression.
+    EvexConvertData(evex::EvexConvertData),
+    /// The two operands of a compare, its predicate and MXCSR; for a register form also the opmask and exception
+    /// suppression.
+    EvexCompareData(evex::EvexCompareData),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -317,6 +343,45 @@ pub enum OperandValue {
     AvxData(avx::AvxData),
     X87(mmx::X87Environment),
     X87Stack(x87::X87Stack),
+    EvexEncoding(evex::EvexEncoding),
+    EvexMask(evex::EvexMask),
+    Broadcast(bool),
+    /// Two ZMM values, lowest 128 bits first, an opmask (k0 where the form's own operand gives it), an embedded
+    /// control and MXCSR.
+    EvexFloatData {
+        first: [u128; 4],
+        second: [u128; 4],
+        mask: evex::EvexMask,
+        control: evex::EmbeddedControl,
+        mxcsr: u32,
+    },
+    /// Three ZMM values, an immediate (0 for a form without one) and an opmask (k0 where the form's own operand
+    /// gives it).
+    EvexIntegerData {
+        destination: [u128; 4],
+        first: [u128; 4],
+        second: [u128; 4],
+        immediate: u8,
+        mask: evex::EvexMask,
+    },
+    /// Two ZMM values, a predicate, an opmask, an embedded control and MXCSR.
+    EvexCompareData {
+        first: [u128; 4],
+        second: [u128; 4],
+        immediate: u8,
+        mask: evex::EvexMask,
+        control: evex::EmbeddedControl,
+        mxcsr: u32,
+    },
+    /// Three ZMM values, an opmask, an embedded control and MXCSR.
+    EvexFusedData {
+        destination: [u128; 4],
+        first: [u128; 4],
+        second: [u128; 4],
+        mask: evex::EvexMask,
+        control: evex::EmbeddedControl,
+        mxcsr: u32,
+    },
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -366,6 +431,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_sse_form(instruction) {
             return sse::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_evex_form(instruction) {
+            return evex::list_operand_types(&form).into_iter();
         }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
@@ -577,6 +645,15 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::SegmentRegister => stack::SEGMENT_NUMBERS.map(OperandValue::Register).to_vec(),
             OperandType::X87Stack => x87::X87_STACKS.map(OperandValue::X87Stack).to_vec(),
             OperandType::X87Value(_, set) => x87::generate_x87_values(set),
+            OperandType::EvexEncoding => evex::generate_encodings(),
+            OperandType::EvexRegister => evex::generate_first_sources(),
+            OperandType::EvexMask(set) => evex::generate_masks(set),
+            OperandType::EvexBroadcast => vec![OperandValue::Broadcast(false), OperandValue::Broadcast(true)],
+            OperandType::EvexFloatData(data) => evex::generate_float_data(data),
+            OperandType::EvexIntegerData(data) => evex::generate_integer_data(data),
+            OperandType::EvexFusedData(data) => evex::generate_fused_data(data),
+            OperandType::EvexConvertData(data) => evex::generate_convert_data(data),
+            OperandType::EvexCompareData(data) => evex::generate_compare_data(data),
         };
         values.into_iter()
     }
@@ -634,6 +711,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_sse_form(instruction) {
             return sse::build_state(form, &typed);
+        }
+        if let Some(form) = find_evex_form(instruction) {
+            return evex::build_state(&form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -806,6 +886,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_float_form(instruction).is_some()
         || find_branch_form(instruction).is_some()
         || find_sse_form(instruction).is_some()
+        || find_evex_form(instruction).is_some()
         || find_privileged_codes(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
