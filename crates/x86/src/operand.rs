@@ -289,6 +289,16 @@ pub fn store_lane_at<E: Emitter<X86_64> + ?Sized>(
     ordered_store(e, kind, at, offset, bytes, element);
 }
 
+/// Keeps every store before `mfence` ahead of every load after it, with a fence where only that form needs one.
+///
+/// Only where stores stay plain and loads are ordered (`AccessOrdering::LoadsOrdered`, an x86 host's form) may the
+/// host let a later load pass an earlier store, as x86 itself does without `mfence`.
+pub fn store_load_fence<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
+    if matches!(e.access_ordering(), AccessOrdering::LoadsOrdered(_)) {
+        e.sink().atomic_fence(Ordering::SeqCst);
+    }
+}
+
 /// Order the accesses of a bulk operation (a whole `rep movs` or `rep stos`) after every access before it and
 /// before every access after it; inside it x86 orders its stores no more than the operation itself does
 /// (Intel SDM Vol. 3A, 10.2.4 "Fast-String Operation and Out-of-Order Stores").

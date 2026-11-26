@@ -212,8 +212,10 @@ pub(crate) fn legacy_meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruc
     match m {
         Add | Adc | Sub | Sbb | Cmp | And | Or | Xor | Test => arithmetic(e, i, m),
         Inc | Dec | Neg | Not => unary(e, i, m),
-        // One thread runs at a time, so the fences order nothing more.
-        Lfence | Mfence | Sfence => {}
+        // One thread runs at a time, or x86's order is kept by the accesses themselves, so these fences order nothing
+        // more; `mfence` is a fence of its own only where stores stay plain (`operand::store_load_fence`).
+        Lfence | Sfence => {}
+        Mfence => crate::operand::store_load_fence(e),
         Mov | Movzx | Movnti => {
             let mem = checked(e, i);
             let value = read(e, i, 1, mem);

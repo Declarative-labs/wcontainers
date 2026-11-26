@@ -52,8 +52,58 @@ impl AccessOrdering {
     }
 
     /// Tells whether code of this form imports the guest's memory shared, for threads that run it at once.
+    ///
+    /// Every form does but the default one, which runs one thread at a time.
     pub fn shares_memory(self) -> bool {
-        matches!(self, AccessOrdering::Ordered(_))
+        self != AccessOrdering::Unordered
+    }
+}
+
+/// How a host orders its own memory accesses, as far as the form of x86 code depends on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HostOrdering {
+    /// An x86-64 host, whose order is x86's own (total store order).
+    TotalStoreOrder,
+    /// An ARM64 or RISC-V host, or one not known when the code is made (a WebAssembly build, run in a browser).
+    Weaker,
+}
+
+impl HostOrdering {
+    /// Returns the order of the host this crate is built for.
+    pub const fn of_this_host() -> HostOrdering {
+        if cfg!(target_arch = "x86_64") {
+            HostOrdering::TotalStoreOrder
+        } else {
+            HostOrdering::Weaker
+        }
+    }
+}
+
+impl AccessOrdering {
+    /// Chooses the form of `guest`'s code on a host that orders memory as `host` says (docs/threads.md 9, XF4).
+    ///
+    /// `parallel` is whether its threads may run at once (the kernel's `ThreadOrdering::Parallel`).
+    ///
+    /// Only an x86-64 guest run in parallel gets an ordered form: `Ordered` on a weaker host, `LoadsOrdered` on an
+    /// x86 host, where a sequentially consistent store costs an exchange. Everything else gets `Unordered`.
+    ///
+    /// The executor makes [`AccessOrdering::code`] part of its cache key.
+    pub fn chosen(guest: GuestId, parallel: bool, host: HostOrdering) -> AccessOrdering {
+        const KIND: OrderedAccess = OrderedAccess::SequentiallyConsistent;
+        match (guest, parallel, host) {
+            (GuestId::X86_64, true, HostOrdering::Weaker) => AccessOrdering::Ordered(KIND),
+            (GuestId::X86_64, true, HostOrdering::TotalStoreOrder) => {
+                AccessOrdering::LoadsOrdered(KIND)
+            }
+            (GuestId::X86_64, false, _) | (GuestId::Arm64 | GuestId::Rv64, _, _) => {
+                AccessOrdering::Unordered
+            }
+        }
+    }
+
+    /// Chooses the form of `guest`'s code on the host this crate is built for, as [`AccessOrdering::chosen`].
+    pub fn chosen_here(guest: GuestId, parallel: bool) -> AccessOrdering {
+        AccessOrdering::chosen(guest, parallel, HostOrdering::of_this_host())
     }
 }
 
@@ -883,6 +933,59 @@ impl Reason {
             Reason::StackNearlyFull => "engine stack nearly full",
             Reason::CodeWrittenWithoutAnnouncement => CODE_WRITTEN_WITHOUT_ANNOUNCEMENT,
             Reason::CodeTranslatedFromLiveStackFrame => CODE_TRANSLATED_FROM_LIVE_STACK_FRAME,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Checks the form chosen for every guest, way of running threads and host.
+    ///
+    /// An x86 host never gets `Ordered`, a weaker one never `LoadsOrdered`, and only an x86-64 guest in parallel gets
+    /// an ordered form.
+    #[test]
+    fn the_form_is_chosen_by_guest_threads_and_host() {
+        let guests = [GuestId::Arm64, GuestId::X86_64, GuestId::Rv64];
+        let hosts = [HostOrdering::TotalStoreOrder, HostOrdering::Weaker];
+        for guest in guests {
+            for parallel in [false, true] {
+                for host in hosts {
+                    let form = AccessOrdering::chosen(guest, parallel, host);
+                    let ordered = guest == GuestId::X86_64 && parallel;
+                    assert_eq!(
+                        form != AccessOrdering::Unordered,
+                        ordered,
+                        "{guest:?} {parallel} {host:?}"
+                    );
+                    if host == HostOrdering::TotalStoreOrder {
+                        assert!(
+                            !matches!(form, AccessOrdering::Ordered(_)),
+                            "{guest:?} {parallel}"
+                        );
+                    } else {
+                        assert!(
+                            !matches!(form, AccessOrdering::LoadsOrdered(_)),
+                            "{guest:?} {parallel}"
+                        );
+                    }
+                    assert_eq!(form.shares_memory(), ordered);
+                }
+            }
+        }
+        let kind = OrderedAccess::SequentiallyConsistent;
+        let codes = [
+            AccessOrdering::Unordered.code(),
+            AccessOrdering::Ordered(kind).code(),
+            AccessOrdering::LoadsOrdered(kind).code(),
+        ];
+        assert!(codes[0] != codes[1] && codes[1] != codes[2] && codes[0] != codes[2]);
+        let here = AccessOrdering::chosen_here(GuestId::X86_64, true);
+        if cfg!(target_arch = "x86_64") {
+            assert_eq!(here, AccessOrdering::LoadsOrdered(kind));
+        } else {
+            assert_eq!(here, AccessOrdering::Ordered(kind));
         }
     }
 }
