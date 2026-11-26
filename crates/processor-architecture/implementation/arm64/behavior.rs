@@ -4,6 +4,7 @@ use alloc::vec::Vec;
 use core::convert::Infallible;
 
 use crate::load_store::{LoadStoreChoices, LoadStoreInstruction};
+use crate::sve::{ScalableOperation, to_scalable_instruction};
 use crate::system_register::{NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS};
 use crate::{
     AccessDirection, DocumentedInstruction, DocumentedOperation, Instruction, PreciseInstruction,
@@ -143,6 +144,15 @@ impl PreciseInstruction<Infallible> {
                 PreciseInstruction::SystemRegisterMove { direction, choices }
             }
             Self::MrsCtrEl0 { cache_type } => PreciseInstruction::MrsCtrEl0 { cache_type },
+            Self::Scalable {
+                instruction,
+                operation,
+                trapped,
+            } => PreciseInstruction::Scalable {
+                instruction,
+                operation,
+                trapped,
+            },
             Self::Unimplemented(instruction) => PreciseInstruction::Unimplemented(instruction),
             Self::LevelSpecific(never) => match never {},
         }
@@ -164,7 +174,7 @@ impl PreciseInstruction<Infallible> {
                 ..
             } => Instruction::MsrRegister,
             Self::MrsCtrEl0 { .. } => Instruction::MrsCtrEl0,
-            Self::Unimplemented(instruction) => instruction,
+            Self::Scalable { instruction, .. } | Self::Unimplemented(instruction) => instruction,
         }
     }
 }
@@ -251,6 +261,9 @@ fn list_modeled_behaviors(
         APPLE_M5_CACHE_TYPE,
         PRESENTED_CACHE_TYPE,
     ];
+    if let Some(scalable) = to_scalable_instruction(instruction) {
+        return list_scalable_behaviors(instruction, scalable.operation);
+    }
     if let Some(documented) = DocumentedInstruction::new(instruction) {
         return [PreciseInstruction::Documented(documented)].to_vec();
     }
@@ -299,6 +312,34 @@ const APPLE_M5_CACHE_TYPE: u64 = 0x9_9444_C004;
 
 /// [CTR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register) as the translator presents it and unicorn's `max` model reads it.
 const PRESENTED_CACHE_TYPE: u64 = 0x8444_C004;
+
+/// An SVE instruction run at the vector length the state holds, and for one that SME gives too, the SME exception of
+/// each [cause](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=SMTC%2C%20bits%20%5B2%3A0%5D) a chip with SME and without SVE raises, as for RDVL.
+fn list_scalable_behaviors(
+    instruction: Instruction<Infallible>,
+    operation: ScalableOperation,
+) -> Vec<PreciseInstruction<Infallible>> {
+    let streaming = instruction
+        .to_record()
+        .is_some_and(|record| record.feature.contains(SME_FEATURE));
+    let traps: &[SmeTrapCode] = if streaming {
+        &[SmeTrapCode::Disabled, SmeTrapCode::NotInStreamingMode]
+    } else {
+        &[]
+    };
+    [None]
+        .into_iter()
+        .chain(traps.iter().copied().map(Some))
+        .map(|trapped| PreciseInstruction::Scalable {
+            instruction,
+            operation,
+            trapped,
+        })
+        .collect()
+}
+
+/// The feature that names SME in the list.
+const SME_FEATURE: &str = "FEAT_SME";
 
 /// Each combination of the documented choices of the cases the load or store has.
 fn list_load_store_behaviors(

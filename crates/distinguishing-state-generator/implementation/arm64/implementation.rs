@@ -4,8 +4,9 @@
 //!
 //! Register numbers are chosen together, not in every combination: first every register operand names a register of
 //! its own, and only there do the other operands take every combination; then each operand names each special
-//! register (the zero register or stack pointer, the link register, the vector register holding zero) while the others
-//! keep their own, and each two operands of one kind name the same register, an ordinary one and each special one.
+//! register (the zero register or stack pointer, the link register, the vector register and the predicate holding
+//! zero) while the others keep their own, and each two operands of one kind name the same register, an ordinary one and
+//! each special one.
 //! Under those numbers the values, controls and written state take each of their values once, beside each other.
 //!
 //! By what the values mean, an operand's value cannot change the outcome when:
@@ -213,7 +214,9 @@ const GROUPS: [Group; 9] = [
 /// The group of an operand, the field naming a condition aside.
 const fn to_group(operand_type: OperandType) -> Group {
     match operand_type {
-        OperandType::RegisterNumber(_) | OperandType::VectorRegisterNumber(_) => Group::Register,
+        OperandType::RegisterNumber(_)
+        | OperandType::VectorRegisterNumber(_)
+        | OperandType::PredicateRegisterNumber(_) => Group::Register,
         OperandType::AccessPlacement
         | OperandType::AddressTag
         | OperandType::DataPagePermission(_)
@@ -224,6 +227,7 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::BitmaskImmediate(_)
         | OperandType::ProgramCounterOffset(_)
         | OperandType::SplitImmediate(_)
+        | OperandType::Pattern(_)
         | OperandType::Word(_) => Group::Field,
         OperandType::ConditionFlags => Group::Flags,
         OperandType::RegisterValue { .. }
@@ -233,12 +237,20 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::ConvertedFloatingPoint { .. }
         | OperandType::Comparand { .. }
         | OperandType::SoftwareThreadId
-        | OperandType::VectorValue { .. } => Group::Data,
+        | OperandType::VectorValue { .. }
+        | OperandType::GoverningPredicate(_)
+        | OperandType::PredicateValue(_)
+        | OperandType::NextVectorValue(_)
+        | OperandType::ShiftAmountVector(_)
+        | OperandType::RegisterBound(_)
+        | OperandType::RegisterNearSaturation(_)
+        | OperandType::FirstFaultValue => Group::Data,
         OperandType::SystemRegister(_) => Group::Selector,
         OperandType::FloatingPointControl(_) => Group::Control,
-        OperandType::StatusFlags | OperandType::WrittenConditionFlags | OperandType::MemoryFill => {
-            Group::Written
-        }
+        OperandType::StatusFlags
+        | OperandType::WrittenConditionFlags
+        | OperandType::MemoryFill
+        | OperandType::WrittenFirstFault => Group::Written,
     }
 }
 
@@ -863,7 +875,8 @@ impl Cut {
 
 /// Each choice of register numbers, as the value of each register operand: first every operand names a register of
 /// its own, then each names each special register of its kind while the others keep theirs, then each two of a kind
-/// name one register, an ordinary one and each special one. Operands that encode one field name one register.
+/// name one register, an ordinary one and each special one. Operands that encode one field name one register. The
+/// kinds are the general-purpose, the vector and the predicate registers.
 ///
 /// # Panics
 ///
@@ -874,17 +887,18 @@ fn to_register_assignments(
     values: &[Vec<OperandValue>],
 ) -> Vec<Vec<(usize, usize)>> {
     let field = |operand_type: OperandType| match operand_type {
-        OperandType::RegisterNumber(field) => Some((field, false)),
-        OperandType::VectorRegisterNumber(field) => Some((field, true)),
+        OperandType::RegisterNumber(field) => Some((field, RegisterKind::General)),
+        OperandType::VectorRegisterNumber(field) => Some((field, RegisterKind::Vector)),
+        OperandType::PredicateRegisterNumber(field) => Some((field, RegisterKind::Predicate)),
         _ => None,
     };
     // The first operand of each field, with its kind.
-    let mut named: Vec<(usize, Field, bool)> = Vec::new();
+    let mut named: Vec<(usize, Field, RegisterKind)> = Vec::new();
     for (index, operand_type) in types.iter().enumerate() {
-        if let Some((field, vector)) = field(*operand_type)
+        if let Some((field, kind)) = field(*operand_type)
             && !named.iter().any(|(_, other, _)| *other == field)
         {
-            named.push((index, field, vector));
+            named.push((index, field, kind));
         }
     }
     if named.is_empty() {
@@ -902,12 +916,12 @@ fn to_register_assignments(
             .filter(|value| !distinct(index).contains(value))
             .collect()
     };
-    let mut used = [0_usize; 2];
+    let mut used = [0_usize; REGISTER_KINDS];
     let base: Vec<OperandValue> = named
         .iter()
-        .map(|(index, _, vector)| {
+        .map(|(index, _, kind)| {
             let own = distinct(*index);
-            let place = &mut used[usize::from(*vector)];
+            let place = &mut used[*kind as usize];
             let Some(number) = own.get(*place).copied() else {
                 panic!("more registers of one kind than distinct numbers in {types:?}")
             };
@@ -923,9 +937,9 @@ fn to_register_assignments(
             assignments.push(assignment);
         }
     }
-    for (first, (index, _, vector)) in named.iter().enumerate() {
+    for (first, (index, _, kind)) in named.iter().enumerate() {
         for (second, (_, _, other)) in named.iter().enumerate().skip(first + 1) {
-            if vector != other {
+            if kind != other {
                 continue;
             }
             for number in [base[first]].into_iter().chain(special(*index)) {
@@ -962,6 +976,16 @@ fn to_register_assignments(
         })
         .collect()
 }
+
+/// The kinds of register an operand can name, each with its own numbers.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum RegisterKind {
+    General,
+    Vector,
+    Predicate,
+}
+
+const REGISTER_KINDS: usize = 3;
 
 /// The register of the state an operand of an MRS or MSR gives a value.
 const fn to_held_register(operand_type: OperandType) -> Option<HeldRegister> {

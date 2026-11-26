@@ -12,6 +12,7 @@ use crate::encoding::{IMM16, RD, RDVL_IMM6, RT};
 use crate::memory::{read_bytes, read_permission};
 use crate::operand::RegisterThirtyOne;
 use crate::registers::write_register;
+use crate::sve::simulate_scalable;
 use crate::system_register::{simulate_system_register_move, to_undecided_registers};
 use crate::{
     AccessDirection, Arm64, Exception, FaultStatus, INSTRUCTION_SIZE, Instruction,
@@ -113,6 +114,15 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                     );
                     Ok(())
                 }
+                Self::Scalable {
+                    trapped: Some(code),
+                    ..
+                } => Err(Exception::SmeTrap(code)),
+                Self::Scalable {
+                    operation,
+                    trapped: None,
+                    ..
+                } => simulate_scalable(processor, word, operation),
                 Self::Unimplemented(instruction)
                     if instruction.is_executed_as_hint_without_feature()
                         && !crate::planted::is(508) =>
@@ -160,7 +170,7 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
                 ..
             } => Instruction::Mrs,
             Self::SystemRegisterMove { .. } => Instruction::MsrRegister,
-            Self::Unimplemented(instruction) => instruction,
+            Self::Scalable { instruction, .. } | Self::Unimplemented(instruction) => instruction,
             Self::MrsCtrEl0 { .. } | Self::LevelSpecific(_) => return false,
         };
         instruction.to_record().is_some_and(|record| {

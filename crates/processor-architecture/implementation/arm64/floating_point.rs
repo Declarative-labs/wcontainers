@@ -1323,7 +1323,7 @@ fn is_nan_bits(bits: u64, precision: Precision) -> bool {
 }
 
 /// [VFPExpandImm](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-vfpexpandimm): an 8-bit immediate as a value of the precision.
-fn expand_immediate(immediate: u64, precision: Precision) -> u64 {
+pub(crate) fn expand_immediate(immediate: u64, precision: Precision) -> u64 {
     const IMMEDIATE_FRACTION_BITS: u32 = 4;
     const IMMEDIATE_EXPONENT_LOW_BITS: u32 = 2;
     let exponent_bits = precision.to_exponent_bits();

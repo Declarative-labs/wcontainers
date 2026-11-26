@@ -32,6 +32,13 @@ pub mod pointer_authentication;
 mod registers;
 pub mod simd;
 mod simulation;
+pub mod sve;
+mod sve_count;
+mod sve_element;
+mod sve_move;
+mod sve_predicate;
+#[cfg(test)]
+mod sve_tests;
 pub mod system_register;
 #[cfg(test)]
 mod tests;
@@ -314,6 +321,13 @@ pub enum PreciseInstruction<LevelSpecific> {
     },
     MrsCtrEl0 {
         cache_type: u64,
+    },
+    /// An SVE instruction of [`sve`] at a vector length of 128 bits, or where `trapped`, raising the SME exception as a
+    /// chip with SME and without SVE does outside streaming mode.
+    Scalable {
+        instruction: Instruction<Infallible>,
+        operation: sve::ScalableOperation,
+        trapped: Option<SmeTrapCode>,
     },
     /// What a chip without the instruction's feature does with its word.
     Unimplemented(Instruction<Infallible>),
