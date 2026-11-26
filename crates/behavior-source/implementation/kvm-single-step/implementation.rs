@@ -13,8 +13,8 @@ use std::mem::{self, offset_of};
 use std::ops::Range;
 
 use aarch64_cpu::registers::{
-    CPACR_EL1, ID_AA64MMFR0_EL1, ID_AA64MMFR2_EL1, ID_AA64PFR0_EL1, MDSCR_EL1, SCTLR_EL1, SPSR_EL1,
-    TTBR0_EL1,
+    CPACR_EL1, ESR_EL1, ID_AA64MMFR0_EL1, ID_AA64MMFR2_EL1, ID_AA64PFR0_EL1, MDSCR_EL1, SCTLR_EL1,
+    SPSR_EL1, TTBR0_EL1,
 };
 use aarch64_paging::descriptor::El1Attributes;
 use wcontainers_abi::PAGE_SIZE;
@@ -24,8 +24,8 @@ use wcontainers_processor_architecture::{
 };
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
 use wcontainers_processor_architecture_arm64::{
-    Arm64, ConditionFlags, DataAccess, ExclusiveMonitor, InstructionFetch, PagePermission,
-    Processor, User,
+    Arm64, ConditionFlags, DataAccess, ExclusiveMonitor, INSTRUCTION_SIZE, InstructionFetch,
+    PagePermission, Processor, User,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 use zerocopy::{FromZeros, IntoBytes};
@@ -35,7 +35,7 @@ use crate::boot::{
 };
 use crate::guest_layout::{
     ATTRIBUTE_NORMAL, ENTRIES, ENTRY_BYTES, LEAF_LEVEL, LEVEL_BITS, MEMORY_BASE, TOP_LEVEL,
-    VECTOR_BYTES, VECTOR_TABLE_BYTES, VECTORS, level_index, level_span, linear,
+    VA_BITS, VECTOR_BYTES, VECTOR_TABLE_BYTES, VECTORS, level_index, level_span, linear,
 };
 use crate::machine::{GuestMemory, Machine, MachineError, Register, create_machine};
 use crate::slot::{Ending, FIRST_FAULT_PLACE, Registers, Slot};
@@ -148,6 +148,16 @@ const SME_TRAPS_NOTHING: u64 = 0b11 << 24;
 /// [E0PD1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TCR-EL1--Translation-Control-Register--EL1-#:~:text=E0PD1%2C%20bit%20%5B56%5D), which makes every EL0 access to the handler's half fault at level 0, as Linux sets it on a chip with FEAT_E0PD.
 const E0PD1: u64 = 1 << 56;
 
+/// [DBGBCR0_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/DBGBCR-n--EL1--Debug-Breakpoint-Control-Registers)
+/// of an address breakpoint on a whole A64 instruction at EL0: E, PMC 0b10 and BAS 0b1111.
+const BREAKPOINT_ENABLED: u64 = 1;
+const BREAKPOINT_AT_EL0: u64 = 0b10 << 1;
+const BREAKPOINT_ON_A64_INSTRUCTION: u64 = 0b1111 << 5;
+
+/// The words after which this chip takes no software step, each as the bits that decide it and their value: CPP RCTX
+/// with any register (MEASURED on a Neoverse V2: the next word runs, with no exit to KVM).
+const STEP_SKIPPING_WORDS: [(u32, u32); 1] = [(0xFFFF_FFE0, 0xD50B_73E0)];
+
 /// A slot loaded for the next run, and the pages of it that EL0 may write.
 struct LoadedSlot {
     slot: u64,
@@ -253,6 +263,9 @@ pub struct KvmSingleStepMachine {
     resident: Resident,
     /// Set during a run and after a failed one, when the CPU may be anywhere: the next state makes a new machine.
     renew_machine: bool,
+    /// The address the first breakpoint is on, set only while the state run is one whose word skips the step; with it
+    /// MDSCR_EL1.MDE is set, which also lets EL0 read the debug communications registers, so it is off otherwise.
+    next_word_breakpoint: Option<u64>,
 }
 
 /// What the guest holds between states when loading incrementally.
@@ -328,6 +341,7 @@ impl KvmSingleStepMachine {
                 next_free_page: RESIDENT_TOP + PAGE_SIZE,
             },
             renew_machine: false,
+            next_word_breakpoint: None,
         };
         source.set_up()?;
         Ok(source)
@@ -747,6 +761,39 @@ impl KvmSingleStepMachine {
         }
     }
 
+    /// Puts the first breakpoint on the address, or turns it off with MDSCR_EL1.MDE, where it is not there already.
+    fn place_breakpoint(&mut self, breakpoint: Option<u64>) -> Result<(), Refusal> {
+        if breakpoint == self.next_word_breakpoint {
+            return Ok(());
+        }
+        let on = [
+            (Register::BreakpointValue, breakpoint.unwrap_or_default()),
+            (
+                Register::BreakpointControl,
+                BREAKPOINT_ENABLED | BREAKPOINT_AT_EL0 | BREAKPOINT_ON_A64_INSTRUCTION,
+            ),
+            (
+                Register::DebugControl,
+                (MDSCR_EL1::SS::SET + MDSCR_EL1::MDE::SET).value,
+            ),
+        ];
+        let off = [
+            (Register::DebugControl, MDSCR_EL1::SS::SET.value),
+            (Register::BreakpointControl, 0),
+        ];
+        let writes: &[_] = if breakpoint.is_some() { &on } else { &off };
+        // A failed write leaves the debug registers unknown: the next state makes a new machine.
+        self.renew_machine = true;
+        for &(register, value) in writes {
+            self.machine
+                .set(register, value)
+                .map_err(|MachineError(error)| Refusal::KvmFailed(error))?;
+        }
+        self.renew_machine = false;
+        self.next_word_breakpoint = breakpoint;
+        Ok(())
+    }
+
     /// Enters the handler at the batch's first slot and waits until it leaves after the last.
     fn run(&mut self) -> Result<(), Refusal> {
         let Some(first) = self.first_slot else {
@@ -804,7 +851,11 @@ impl KvmSingleStepMachine {
                 Refusal::SlotNotRun
             });
         }
-        *processor = to_processor(&slot.after);
+        *processor = to_processor(
+            &slot.after,
+            slot.before.program_counter,
+            self.next_word_breakpoint.is_some(),
+        );
         let mut before = mem::take(&mut self.bytes_before);
         let mut after = mem::take(&mut self.bytes_after);
         for run in &self.writable_runs[loaded.writable.clone()] {
@@ -930,6 +981,11 @@ impl KvmSingleStepMachine {
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), Refusal> {
         resolve_memory(memory, resolved)?;
+        let breakpoint =
+            find_step_skipping_word(processor.program_counter, memory, resolved).then(|| {
+                to_canonical_address(processor.program_counter.wrapping_add(INSTRUCTION_SIZE))
+            });
+        self.place_breakpoint(breakpoint)?;
         self.start_batch();
         let resident_pages = match self.loading {
             MemoryLoading::Full => None,
@@ -1421,7 +1477,48 @@ fn to_registers(processor: &Processor<()>) -> Registers {
     }
 }
 
-fn to_processor(registers: &Registers) -> Processor<()> {
+/// Whether the word at the address is one after which this chip takes no step, where a program can execute it.
+fn find_step_skipping_word(
+    address: u64,
+    memory: &[MemoryDelta<'_, Arm64<User>>],
+    resolved: &Resolved,
+) -> bool {
+    let executable = resolved.mapped.iter().any(|range| {
+        range.addresses.contains(&address) && range.instruction_fetch == InstructionFetch::Allowed
+    });
+    if !executable || !address.is_multiple_of(INSTRUCTION_SIZE) {
+        return false;
+    }
+    let mut word = [0; INSTRUCTION_SIZE as usize];
+    compose_bytes(address, &resolved.values, memory, &mut word);
+    let word = u32::from_le_bytes(word);
+    STEP_SKIPPING_WORDS
+        .iter()
+        .any(|(decided, value)| word & decided == *value)
+}
+
+/// The address with the bits above a program's sign-extended from its top bit, as a breakpoint register holds it.
+const fn to_canonical_address(address: u64) -> u64 {
+    let unused = u64::BITS - (VA_BITS + 1);
+    ((address << unused) as i64 >> unused) as u64
+}
+
+/// Gives the processor the registers hold after the instruction at the address ran, with the breakpoint on the next
+/// word or not.
+fn to_processor(
+    registers: &Registers,
+    instruction_address: u64,
+    next_word_breakpoint: bool,
+) -> Processor<()> {
+    // Where the chip skipped the step, the breakpoint ends the run, or fetching the next word faults first (MEASURED:
+    // CPP RCTX at the end of an executable page); either leaves the processor as the instruction did.
+    let class = ESR_EL1::EC.read_as_enum(registers.syndrome);
+    let step_skipped = next_word_breakpoint
+        && registers.program_counter == instruction_address.wrapping_add(INSTRUCTION_SIZE)
+        && matches!(
+            class,
+            Some(ESR_EL1::EC::Value::BreakpointLowerEL | ESR_EL1::EC::Value::InstrAbortLowerEL)
+        );
     Processor {
         general_purpose_registers: registers.general_purpose,
         stack_pointer: registers.stack_pointer,
@@ -1436,7 +1533,11 @@ fn to_processor(registers: &Registers) -> Processor<()> {
         software_thread_id: registers.software_thread_id,
         // The step's exception opens it (MEASURED: `hidden-state-loading/arm64/RESULT.md`, question 4).
         exclusive_monitor: ExclusiveMonitor::Open,
-        exception: syndrome::to_exception(registers.syndrome, registers.fault_address),
+        exception: if step_skipped {
+            None
+        } else {
+            syndrome::to_exception(registers.syndrome, registers.fault_address)
+        },
         level_specific: (),
     }
 }
