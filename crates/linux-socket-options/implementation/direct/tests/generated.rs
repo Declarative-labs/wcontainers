@@ -108,8 +108,10 @@ const BOUND_FORMS: [(&str, &[&str]); 5] = [
     ("ioctl", &["SIOCOUTQ", "SIOCOUTQNSD", "SIOCATMARK"]),
 ];
 
-/// The uapi structures a `struct:` or `slice:` value may name: each holds numbers, bytes and addresses of the network
-/// only, no address of the caller's memory the kernel would follow, so it may be marked `Plain`.
+/// The uapi structures a `struct:` or `slice:` value may name, so that each may be marked `Plain`.
+///
+/// Each holds numbers, bytes and addresses of the network only, no address of the caller's memory the kernel would
+/// follow.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tcp.h
 const PLAIN_STRUCTURES: [&str; 11] = [
@@ -126,8 +128,9 @@ const PLAIN_STRUCTURES: [&str; 11] = [
     "uapi::tcp_repair_opt",
 ];
 
-/// The options a `bytes` value may set: each takes an opaque run of bytes (IP options, IPv6 extension headers, a key)
-/// and reads no address from it.
+/// The options a `bytes` value may set, each taking an opaque run of bytes it reads no address from.
+///
+/// They are IP options, IPv6 extension headers and a key.
 const BYTE_OPTIONS: [&str; 6] = [
     "IP_OPTIONS",
     "IPV6_HOPOPTS",

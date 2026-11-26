@@ -80,9 +80,13 @@ impl<T: Plain> Plain for [T] {}
 ///
 /// A kernel that wrote past the length it was told would change one, and the check after the call stops the program,
 /// as a stack protector does, so that a wrong kernel column in `options.table` cannot go unseen.
+///
+/// https://en.wikipedia.org/wiki/Buffer_overflow_protection
 const GUARD: usize = 64;
 
 /// The first canary byte; each next one adds one, so no canary is zero and no two neighbors are equal.
+///
+/// https://en.wikipedia.org/wiki/Buffer_overflow_protection
 const FIRST_CANARY: u8 = 0xa5;
 
 /// The canaries of a guard, in order.
@@ -455,8 +459,9 @@ fn get_keys(
     Ok(Written { bytes, length })
 }
 
-/// The room of a key query: its answer, then a second answer's worth of canaries before the guard, so that a second
-/// answer the kernel writes is caught whole rather than written past the guard.
+/// The room of a key query: its answer, then a second answer's worth of canaries before the guard.
+///
+/// A second answer the kernel writes is so caught whole rather than written past the guard.
 const KEY_ROOM: usize = KEY_QUERY_LENGTH + KEY_QUERY_LENGTH;
 
 /// `struct mptcp_full_info` with the connection's `struct mptcp_info` as Linux 6.18 defines it.

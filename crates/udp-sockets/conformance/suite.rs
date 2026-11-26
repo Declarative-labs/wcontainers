@@ -67,79 +67,155 @@ use wcontainers_volatile_bytes::VolatileBytes;
 const OWNER: UserId = UserId(u32::MIN);
 
 /// How long a check waits for a datagram sent over loopback.
+///
+/// https://man7.org/linux/man-pages/man7/udp.7.html
 const PATIENCE: Duration = Duration::from_secs(1);
 
 /// How long a check waits to see that no datagram arrives.
+///
+/// https://man7.org/linux/man-pages/man7/udp.7.html
 const SILENCE: Duration = Duration::from_millis(200);
 
 /// How long a transmit time holds a datagram back.
+///
+/// https://man7.org/linux/man-pages/man8/tc-etf.8.html
 const HELD: Duration = Duration::from_millis(200);
 
 /// How far apart the transmit times of one check are, so that each rejection names one send.
+///
+/// https://man7.org/linux/man-pages/man8/tc-etf.8.html
 const APART: Duration = Duration::from_millis(10);
 
-/// 198.51.100.1, an address of TEST-NET-2 ([RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)), which the
-/// caller's network routes through a gateway.
+/// An address of TEST-NET-2, 198.51.100.1, which the caller's network routes through a gateway.
+///
+/// https://www.rfc-editor.org/rfc/rfc5737
 const BEYOND_A_GATEWAY: Ipv4Addr = Ipv4Addr::new(198, 51, 100, 1);
 
 /// Local addresses the caller's network routes with an MTU of ROUTE_MTU; the IPv6 one is of the documentation prefix.
+///
+/// https://www.rfc-editor.org/rfc/rfc3849
 const NARROW_V4: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+/// The IPv6 address of the documentation prefix routed with an MTU of ROUTE_MTU.
+///
+/// https://www.rfc-editor.org/rfc/rfc3849
 const NARROW_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2);
 const ROUTE_MTU: u16 = linux_raw_sys::if_ether::ETH_DATA_LEN as u16;
 
-/// The addresses of the interface with a schedule of transmit times, of TEST-NET-3 and the documentation prefix,
-/// an address its IPv4 route reaches and one its IPv6 prefix does, and the multicast interface's address.
+/// The addresses of the interface with a schedule of transmit times, of TEST-NET-3, and a peer its route reaches.
+///
+/// https://www.rfc-editor.org/rfc/rfc5737
 const SCHEDULED_V4: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 1);
+/// A peer the scheduled interface's IPv4 route reaches, of TEST-NET-3.
+///
+/// https://www.rfc-editor.org/rfc/rfc5737
 const SCHEDULED_V4_PEER: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 2);
+/// The scheduled interface's public IPv6 address, of the documentation prefix.
+///
+/// https://www.rfc-editor.org/rfc/rfc3849
 const PUBLIC_V6: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 1);
+/// A peer within the scheduled interface's IPv6 prefix, of the documentation prefix.
+///
+/// https://www.rfc-editor.org/rfc/rfc3849
 const PREFIX_V6_PEER: Ipv6Addr = Ipv6Addr::new(0x2001, 0xdb8, 1, 0, 0, 0, 0, 0x99);
+/// The multicast interface's address, of TEST-NET-1.
+///
+/// https://www.rfc-editor.org/rfc/rfc5737
 const MULTICAST_INTERFACE_V4: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 3);
 
 /// The segments of an IPv6 address that hold a /64 prefix.
+///
+/// https://www.rfc-editor.org/rfc/rfc4291#section-2.5.4
 const PREFIX_SEGMENTS: usize = 4;
 
 /// The unit of a fragment's data and offset, [RFC 8200](https://www.rfc-editor.org/rfc/rfc8200#section-4.5).
 const FRAGMENT_UNIT: u16 = 8;
 
 /// How many ports above a free one a reserved range covers: a choice that ignores it is caught every time.
+///
+/// https://docs.kernel.org/networking/ip-sysctl.html
 const RESERVED_WIDTH: u16 = 20;
 
 /// Ports below the range Linux chooses from by default (32768 to 60999), and how many at their start are reserved.
+///
+/// https://docs.kernel.org/networking/ip-sysctl.html
 const LOW_PORTS: PortRange = PortRange {
     first: Port(2000),
     last: Port(2010),
 };
+/// How many ports at the start of LOW_PORTS are reserved.
+///
+/// https://docs.kernel.org/networking/ip-sysctl.html
 const LOW_PORTS_RESERVED: u16 = 5;
 
 /// How many senders a check uses so that a port group's default choice reaches every socket of the group.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 const SENDERS: usize = 32;
 
-/// ff0e, the first group of an IPv6 multicast address of global scope.
+/// The first group of an IPv6 multicast address of global scope, ff0e.
+///
+/// https://www.rfc-editor.org/rfc/rfc4291#section-2.7
 const GLOBAL_MULTICAST: u16 = 0xff0e;
 
 /// A user other than the superuser, whose datagrams the caller's network prohibits beyond this host.
+///
+/// https://man7.org/linux/man-pages/man8/ip-rule.8.html
 const OTHER_OWNER: UserId = UserId(1000);
 
-/// 192.0.2.1, an address of TEST-NET-1 ([RFC 5737](https://www.rfc-editor.org/rfc/rfc5737)), routed nowhere.
+/// An address of TEST-NET-1, 192.0.2.1, routed nowhere.
+///
+/// https://www.rfc-editor.org/rfc/rfc5737
 const ROUTED_NOWHERE: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
 
-/// The pacing rate of pacing_holds_datagrams_in_the_send_buffer, below fq's 550 kbit/s at which it paces
-/// datagrams one at a time.
+/// The pacing rate of pacing_holds_datagrams_in_the_send_buffer, below the rate at which fq paces one at a time.
+///
+/// Linux's fq paces datagrams one at a time below 550 kbit/s.
+///
+/// https://man7.org/linux/man-pages/man8/tc-fq.8.html
 const PACING_RATE: BytesPerSecond = BytesPerSecond(50_000);
 
 /// How many datagrams of PACED_LENGTH a paced check sends.
+///
+/// https://man7.org/linux/man-pages/man8/tc-fq.8.html
 const PACED_DATAGRAMS: usize = 5;
+/// The length of each paced datagram.
+///
+/// https://man7.org/linux/man-pages/man8/tc-fq.8.html
 pub const PACED_LENGTH: usize = 1000;
 
 /// The routing type of a segment routing header, [RFC 8754](https://www.rfc-editor.org/rfc/rfc8754#section-2).
 const SEGMENT_ROUTING: u8 = 4;
 
-/// The bytes of a segment routing header after its next header and length, up to its segments: type,
-/// segments left, last entry, flags and tag.
+/// The bytes of a segment routing header after its next header and length, up to its segments.
+///
+/// They are its type, segments left, last entry, flags and tag.
+///
+/// https://www.rfc-editor.org/rfc/rfc8754#section-2
 const SEGMENT_ROUTING_FIXED: usize = 6;
 
-/// fe80, the first group of an IPv6 link-local address.
+/// The first group of an IPv6 link-local address, fe80.
+///
+/// https://www.rfc-editor.org/rfc/rfc4291#section-2.5.6
 const LINK_LOCAL: u16 = 0xfe80;
+
+/// The index a reuse-port program returns for the second socket of its group.
+///
+/// https://docs.kernel.org/networking/filter.html
+const SECOND_SOCKET: u32 = 1;
+
+/// IPv4 options of four bytes: three no-operations and the end of the list.
+///
+/// https://www.rfc-editor.org/rfc/rfc791#section-3.1
+const PADDING_OPTIONS: [u8; 4] = [1, 1, 1, 0];
+
+/// The first wake a waiting call gives.
+///
+/// https://doc.rust-lang.org/std/task/struct.Waker.html
+const ONE_WAKE: usize = 1;
+/// The second wake a waiting call gives.
+///
+/// https://doc.rust-lang.org/std/task/struct.Waker.html
+const TWO_WAKES: usize = 2;
 
 const PAYLOAD: &[u8] = b"a datagram over loopback";
 
@@ -582,8 +658,9 @@ fn check_ipv4_header(packet: &[u8]) {
     }
 }
 
-/// A packet's header fields, after checking its IPv4 header checksum and its UDP or UDP-Lite checksum, which
-/// may be absent (zero) only for UDP.
+/// Gives a packet's header fields after checking its IPv4 header and UDP or UDP-Lite checksums.
+///
+/// The UDP checksum may be absent (zero) only for UDP.
 fn seen(packet: &[u8]) -> Seen<'_> {
     let ip = IpSlice::from_slice(packet).expect("a whole IP packet");
     check_ipv4_header(packet);
@@ -878,8 +955,7 @@ pub fn a_datagram_arrives_with_its_ipv6_header<S: UdpSockets>(sockets: S) {
 pub fn ipv4_options_arrive_in_the_header<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
-    // Three no-operation options and the end of the list.
-    let options = Ipv4Options::try_from(&[1, 1, 1, 0][..]).unwrap();
+    let options = Ipv4Options::try_from(&PADDING_OPTIONS[..]).unwrap();
     let mut route = ipv4_route(UdpProtocol::Udp, from, to);
     route.options = &options;
     sockets
@@ -1048,8 +1124,9 @@ pub fn a_connected_socket_takes_only_its_peers_datagrams<S: UdpSockets>(sockets:
     assert_ne!(local.port(), u16::MIN);
 }
 
-/// A connected socket sends to its peer, and disconnecting keeps the address and port it was bound to and takes
-/// anyone's datagrams again; a port the kernel chose at bind is given up.
+/// A connected socket sends to its peer, and disconnecting keeps its binding and takes anyone's datagrams again.
+///
+/// A port the kernel chose at bind is given up.
 pub fn disconnect_keeps_the_binding<S: UdpSockets>(sockets: S) {
     let local = closed_port(&sockets, IpVersion::V4);
     let socket = sockets
@@ -1126,8 +1203,9 @@ pub fn a_send_after_a_disconnect_carries_the_former_peers_address<S: UdpSockets>
     }
 }
 
-/// A UDP-Lite datagram whose checksum covers less than the receiver's minimum is dropped; one that covers enough
-/// arrives, and with no minimum any coverage does.
+/// A UDP-Lite datagram whose checksum covers less than the receiver's minimum is dropped.
+///
+/// One that covers enough arrives, and with no minimum any coverage does.
 pub fn udp_lite_coverage_below_the_minimum_is_dropped<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Lite);
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Lite);
@@ -1531,8 +1609,9 @@ pub fn sending_settings_are_taken<S: UdpSockets>(sockets: S) {
     );
 }
 
-/// A member of a multicast group takes its datagrams through the loopback of its sender while that is on, from
-/// the sources its filter lets through, until it leaves.
+/// A multicast member takes its group's datagrams through its sender's loopback until it leaves.
+///
+/// It takes them while the sender's loopback is on, and from the sources its filter lets through.
 ///
 /// Runs over the interface the multicast route chooses: Linux's loopback interface brings back every datagram
 /// sent over it, looped or not.
@@ -1619,8 +1698,9 @@ pub fn multicast_membership_takes_the_groups_datagrams<S: UdpSockets>(sockets: S
     assert!(!arrives(&sockets, &receiver), "a datagram after leaving");
 }
 
-/// A socket on a group's port takes the datagrams of a group only another socket joined while all-groups is on,
-/// over IPv4 and IPv6.
+/// A socket on a group's port takes a group's datagrams only another socket joined while all-groups is on.
+///
+/// This holds over IPv4 and IPv6.
 pub fn all_groups_decides_whether_other_sockets_memberships_count<S: UdpSockets>(sockets: S) {
     let ipv4 = (
         IpAddr::V4(Ipv4Addr::from_bits(
@@ -1760,8 +1840,9 @@ fn multicast_interface<S: UdpSockets>(sockets: &S) -> InterfaceIndex {
         .interface
 }
 
-/// A socket bound to an interface still sends over it and takes only what arrives on it; one bound to no
-/// interface that exists cannot be.
+/// A socket bound to an interface still sends over it and takes only what arrives on it.
+///
+/// One bound to no interface that exists cannot be.
 pub fn a_bound_interface_is_taken<S: UdpSockets>(sockets: S) {
     let interface = loopback_interface(&sockets);
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
@@ -1872,8 +1953,10 @@ fn processor_index(processor: usize) -> ProcessorIndex {
     ProcessorIndex(u32::try_from(processor).expect("a processor's number"))
 }
 
-/// The incoming processor set is the one read back, and none once unset; a connected socket's is then the
-/// processor that last took in a packet for it, over loopback the one its sender ran on.
+/// The incoming processor set is the one read back, and none once unset.
+///
+/// A connected socket's is then the processor that last took in a packet for it, over loopback the one its sender ran
+/// on.
 pub fn the_incoming_processor_is_read_back<S: UdpSockets>(sockets: S) {
     let (socket, local) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let processors = two_processors();
@@ -1934,8 +2017,9 @@ pub fn negative_route_advice_keeps_a_socket_sending<S: UdpSockets>(sockets: S) {
     assert_eq!(seen(&into[..packet.fields.length]).payload, PAYLOAD);
 }
 
-/// A send's source, mark, priority, neighbour confirmation, link scope and transmit time are taken, and the
-/// receiver sees the mark, priority and the address the datagram was sent to.
+/// A send's source, mark, priority, neighbour confirmation, link scope and transmit time are taken.
+///
+/// The receiver sees the mark, the priority and the address the datagram was sent to.
 pub fn send_fields_reach_the_receiver<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let sender = sockets
@@ -2063,9 +2147,10 @@ enum OverTheMtu {
     Whole,
 }
 
-/// Each mode of path MTU discovery treats a datagram longer than its route's MTU as Linux does: fragmented
-/// (Want, Dont), too long (Do), or sent whole by the interface's larger MTU (Probe, Interface, Omit), over IPv4
-/// and IPv6.
+/// Each mode of path MTU discovery treats a datagram longer than its route's MTU as Linux does.
+///
+/// It is fragmented (Want, Dont), too long (Do), or sent whole by the interface's larger MTU (Probe, Interface, Omit),
+/// over IPv4 and IPv6.
 pub fn path_mtu_discovery_modes_take_the_routes_mtu<S: UdpSockets>(sockets: S) {
     let mtu = MaximumTransmissionUnit(u32::from(ROUTE_MTU));
     let payload = vec![u8::MIN; usize::from(ROUTE_MTU) * 2];
@@ -2121,8 +2206,9 @@ pub fn path_mtu_discovery_modes_take_the_routes_mtu<S: UdpSockets>(sockets: S) {
     }
 }
 
-/// A source the host lacks may be sent from only with the source check waived on a transparent socket, and
-/// IPv6 source preferences are taken.
+/// A source the host lacks may be sent from only with the source check waived on a transparent socket.
+///
+/// IPv6 source preferences are taken too.
 pub fn a_waived_source_check_sends_from_an_absent_address<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let sender = sockets
@@ -2180,7 +2266,7 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
         ),
         jump_if_true: FilterJump(u8::MIN),
         jump_if_false: FilterJump(u8::MIN),
-        operand: FilterOperand(1),
+        operand: FilterOperand(SECOND_SOCKET),
     }];
     let first = sockets
         .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
@@ -2235,8 +2321,10 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
     );
 }
 
-/// An IPv6 multicast member takes the group's datagrams with all-groups off, joined on the interface the route
-/// chooses or on one given, and a link-local anycast address joined on that interface is reachable.
+/// An IPv6 multicast member takes the group's datagrams with all-groups off.
+///
+/// It is joined on the interface the route chooses or on one given, and a link-local anycast address joined on that
+/// interface is reachable.
 ///
 /// Needs an interface with IPv6 multicast besides loopback: Linux never takes an IPv6 multicast datagram over
 /// its loopback interface, drops a looped one whose source is the loopback address, and lets a host join only
@@ -2379,8 +2467,9 @@ pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
     );
 }
 
-/// A socket's owner is the user its datagrams are routed for: the caller's network prohibits user 1000's
-/// datagrams to an address it routes for the superuser.
+/// A socket's owner is the user its datagrams are routed for.
+///
+/// The caller's network prohibits user 1000's datagrams to an address it routes for the superuser.
 pub fn an_owner_is_routed_as_its_user<S: UdpSockets>(sockets: S) {
     let to = SocketAddr::new(IpAddr::V4(ROUTED_NOWHERE), u16::MAX);
     let answers = [OWNER, OTHER_OWNER].map(|owner| {
@@ -2411,8 +2500,9 @@ pub fn an_owner_is_routed_as_its_user<S: UdpSockets>(sockets: S) {
     );
 }
 
-/// A segment routing header arrives in the header as sent, after the routing destination options when they
-/// are sent too.
+/// A segment routing header arrives in the header as sent.
+///
+/// It comes after the routing destination options when they are sent too.
 pub fn a_routing_header_arrives_in_the_header<S: UdpSockets>(sockets: S) {
     let padding = [u8::MIN; etherparse::Ipv6RawExtHeader::MIN_LEN];
     let options = etherparse::Ipv6RawExtHeaderSlice::from_slice(&padding).unwrap();
@@ -2466,8 +2556,9 @@ pub fn a_routing_header_arrives_in_the_header<S: UdpSockets>(sockets: S) {
     }
 }
 
-/// Datagrams paced to a socket's maximum pacing rate arrive that far apart, waiting in its send buffer
-/// meanwhile, so that a small send buffer fills and a send would block.
+/// Datagrams paced to a socket's maximum pacing rate arrive that far apart, waiting in its send buffer.
+///
+/// So a small send buffer fills and a send would block.
 pub fn pacing_holds_datagrams_in_the_send_buffer<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
@@ -2534,8 +2625,9 @@ pub fn pacing_holds_datagrams_in_the_send_buffer<S: UdpSockets>(sockets: S) {
     );
 }
 
-/// Loopback has no hardware clock: hardware receive times are taken as a setting but none arrives, and no
-/// hardware clock can be bound, on a socket bound to loopback or to no interface.
+/// Hardware receive times are taken as a setting on loopback, but none arrives and no hardware clock can be bound.
+///
+/// This holds on a socket bound to loopback or to no interface.
 pub fn loopback_has_no_hardware_clock<S: UdpSockets>(sockets: S) {
     let interface = loopback_interface(&sockets);
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
@@ -2656,7 +2748,7 @@ fn finished_soon<F: Future<Output = Result<ReadinessReport, HostError>>>(
     let wakes = Arc::new(Wakes::default());
     match poll_with(call.as_mut(), &wakes) {
         Poll::Pending => {
-            assert!(wakes.reach(1), "the wait finished");
+            assert!(wakes.reach(ONE_WAKE), "the wait finished");
             finished(poll_with(call, &wakes))
         }
         ready => finished(ready),
@@ -2685,7 +2777,10 @@ pub fn waits_on_many_sockets_each_wake_once<S: UdpSockets>(sockets: S) {
         send(&sockets, &sender, UdpProtocol::Udp, from, *to, PAYLOAD);
     }
     for (_, wakes) in &waits {
-        assert!(wakes.reach(1), "a wait woken when its datagram arrives");
+        assert!(
+            wakes.reach(ONE_WAKE),
+            "a wait woken when its datagram arrives"
+        );
     }
     // More datagrams before the waits are polled again wake none of them again.
     for (_, to) in &receivers {
@@ -2712,7 +2807,7 @@ pub fn a_wait_sees_an_error_a_send_read_first<S: UdpSockets>(sockets: S) {
         let mut wait = pin!(sockets.wait_until_ready(&sender, ReadyFor::READABLE));
         let facts = match poll_with(wait.as_mut(), &wakes) {
             Poll::Pending => {
-                assert!(wakes.reach(1), "woken by the ICMP error");
+                assert!(wakes.reach(ONE_WAKE), "woken by the ICMP error");
                 finished(poll_with(wait, &wakes))
             }
             ready => finished(ready),
@@ -2763,7 +2858,7 @@ pub fn a_wait_polled_again_wakes_its_newest_waker<S: UdpSockets>(sockets: S) {
     assert!(poll_with(wait.as_mut(), &first).is_pending());
     assert!(poll_with(wait.as_mut(), &newest).is_pending());
     send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
-    assert!(newest.reach(1), "the newest waker woken");
+    assert!(newest.reach(ONE_WAKE), "the newest waker woken");
     assert!(
         finished(poll_with(wait.as_mut(), &newest))
             .ready_for
@@ -2779,7 +2874,7 @@ pub fn a_wait_whose_fact_went_waits_for_the_next<S: UdpSockets>(sockets: S) {
     let mut wait = pin!(sockets.wait_until_ready(&receiver, ReadyFor::READABLE));
     assert!(poll_with(wait.as_mut(), &wakes).is_pending());
     send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
-    assert!(wakes.reach(1), "woken by the first datagram");
+    assert!(wakes.reach(ONE_WAKE), "woken by the first datagram");
     let mut into = buffer();
     receive_packet(&sockets, &receiver, &mut into);
     assert!(
@@ -2787,7 +2882,7 @@ pub fn a_wait_whose_fact_went_waits_for_the_next<S: UdpSockets>(sockets: S) {
         "nothing left to read"
     );
     send(&sockets, &sender, UdpProtocol::Udp, from, to, PAYLOAD);
-    assert!(wakes.reach(2), "woken again by the second datagram");
+    assert!(wakes.reach(TWO_WAKES), "woken again by the second datagram");
     assert!(
         finished(poll_with(wait.as_mut(), &wakes))
             .ready_for
@@ -2795,8 +2890,9 @@ pub fn a_wait_whose_fact_went_waits_for_the_next<S: UdpSockets>(sockets: S) {
     );
 }
 
-/// Two waits on one socket finish each by its own facts: the wait for writing at once, the wait for data when a
-/// datagram arrives and not before.
+/// Two waits on one socket finish each by its own facts.
+///
+/// The wait for writing finishes at once, the wait for data when a datagram arrives and not before.
 pub fn two_waits_on_one_socket_finish_by_their_own_facts<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Lite);
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Lite);
@@ -2816,7 +2912,10 @@ pub fn two_waits_on_one_socket_finish_by_their_own_facts<S: UdpSockets>(sockets:
     std::thread::sleep(SILENCE);
     assert_eq!(reading.count(), 0, "the wait for data woken with no data");
     send(&sockets, &sender, UdpProtocol::Lite, from, to, PAYLOAD);
-    assert!(reading.reach(1), "the wait for data woken by its datagram");
+    assert!(
+        reading.reach(ONE_WAKE),
+        "the wait for data woken by its datagram"
+    );
     assert!(
         finished(poll_with(read.as_mut(), &reading))
             .ready_for
@@ -2889,7 +2988,7 @@ pub fn a_wait_for_a_fact_udp_never_has_waits_on<S: UdpSockets>(sockets: S) {
     send(&sockets, &receiver, UdpProtocol::Udp, to, closed, PAYLOAD);
     for ((wait, wakes), interest) in waits.iter_mut().zip(NEVER_ON_UDP) {
         assert!(
-            wakes.reach(1),
+            wakes.reach(ONE_WAKE),
             "a wait for {interest:?} woken by the ICMP error"
         );
         assert_eq!(
@@ -2906,6 +3005,8 @@ pub fn a_wait_for_a_fact_udp_never_has_waits_on<S: UdpSockets>(sockets: S) {
 }
 
 /// The send buffer size the checks of a full send buffer give, of which Linux keeps twice.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 pub const SEND_BUFFER: usize = 16384;
 
 /// A buffer size beyond the exit node's limits, which [Linux sets](https://man7.org/linux/man-pages/man7/socket.7.html#:~:text=rmem_max) far lower.
@@ -2944,13 +3045,20 @@ pub fn buffer_sizes_read_back_as_set_and_doubled<S: UdpSockets>(sockets: S) {
 }
 
 /// A pacing rate that holds each datagram after a socket's first for a quarter of a second.
+///
+/// https://man7.org/linux/man-pages/man8/tc-fq.8.html
 pub const SLOW_PACING_RATE: BytesPerSecond = BytesPerSecond(4000);
 
 /// How long a check waits for paced datagrams to leave room in a send buffer.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 const ROOM_PATIENCE: Duration = Duration::from_secs(5);
 
-/// The most a datagram of `PACED_LENGTH` bytes takes of a send buffer: its payload, its headers and the memory the
-/// host keeps it in.
+/// The most a datagram of `PACED_LENGTH` bytes takes of a send buffer.
+///
+/// It counts its payload, its headers and the memory the host keeps it in.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 pub const PACED_DATAGRAM_ROOM: usize = 4 * PACED_LENGTH;
 
 /// Sends paced datagrams until a send would block, and answers how many were sent.
@@ -2961,7 +3069,7 @@ fn fill_send_buffer<S: UdpSockets>(
     to: SocketAddr,
     payload: &[u8],
 ) -> usize {
-    let mut sent = 0;
+    let mut sent = usize::MIN;
     loop {
         match sockets.send_to(
             sender,
@@ -2998,9 +3106,10 @@ fn slowly_paced<S: UdpSockets>(
     (sender, from, receiver, to)
 }
 
-/// A send buffer filled until a send would block counts unsent at least the payload of the datagrams it holds,
-/// every one but the first two, which may have left, and less than the most it can hold: twice the size given,
-/// as Linux keeps, and one datagram more.
+/// A send buffer filled until a send would block counts its unsent bytes within the bounds Linux keeps.
+///
+/// They are at least the payload of the datagrams it holds, every one but the first two, which may have left, and less
+/// than the most it can hold: twice the size given, as Linux keeps, and one datagram more.
 pub fn a_full_send_buffer_counts_its_unsent_bytes<S: UdpSockets>(sockets: S) {
     for version in [IpVersion::V4, IpVersion::V6] {
         let (sender, from, _receiver, to) = slowly_paced(&sockets, version, SEND_BUFFER);
@@ -3018,8 +3127,9 @@ pub fn a_full_send_buffer_counts_its_unsent_bytes<S: UdpSockets>(sockets: S) {
     }
 }
 
-/// A wait for writing on a full send buffer does not finish until its paced datagrams leave room, then does,
-/// also after a wait for data on the same socket was woken first.
+/// A wait for writing on a full send buffer finishes only once its paced datagrams leave room.
+///
+/// It does so also after a wait for data on the same socket was woken first.
 pub fn a_wait_for_writing_finishes_when_room_is_made<S: UdpSockets>(sockets: S) {
     let (sender, from, receiver, to) = slowly_paced(&sockets, IpVersion::V4, usize::MIN);
     let payload = vec![u8::MAX; PACED_LENGTH];
@@ -3034,7 +3144,10 @@ pub fn a_wait_for_writing_finishes_when_room_is_made<S: UdpSockets>(sockets: S) 
         "writable with a full send buffer"
     );
     send(&sockets, &receiver, UdpProtocol::Udp, to, from, PAYLOAD);
-    assert!(reading.reach(1), "the wait for data woken by its datagram");
+    assert!(
+        reading.reach(ONE_WAKE),
+        "the wait for data woken by its datagram"
+    );
     assert!(
         finished(poll_with(read.as_mut(), &reading))
             .ready_for
@@ -3042,7 +3155,7 @@ pub fn a_wait_for_writing_finishes_when_room_is_made<S: UdpSockets>(sockets: S) 
     );
     assert_eq!(wakes.count(), 0, "the wait for writing woken with no room");
     assert!(
-        wakes.reach_within(1, ROOM_PATIENCE),
+        wakes.reach_within(ONE_WAKE, ROOM_PATIENCE),
         "woken when room is made"
     );
     assert!(
@@ -3061,8 +3174,9 @@ pub fn a_wait_for_writing_finishes_when_room_is_made<S: UdpSockets>(sockets: S) 
     );
 }
 
-/// A wait for data or writing on a full send buffer, made while a wait for data alone waits, finishes when room
-/// is made, and the wait for data waits on.
+/// A wait for data or writing on a full send buffer finishes when room is made.
+///
+/// It is made while a wait for data alone waits, and that wait for data waits on.
 pub fn a_wait_for_data_or_writing_finishes_when_room_is_made<S: UdpSockets>(sockets: S) {
     let (sender, from, _receiver, to) = slowly_paced(&sockets, IpVersion::V6, usize::MIN);
     let payload = vec![u8::MAX; PACED_LENGTH];
@@ -3078,7 +3192,7 @@ pub fn a_wait_for_data_or_writing_finishes_when_room_is_made<S: UdpSockets>(sock
         "writable with a full send buffer"
     );
     assert!(
-        wakes.reach_within(1, ROOM_PATIENCE),
+        wakes.reach_within(ONE_WAKE, ROOM_PATIENCE),
         "woken when room is made"
     );
     assert_eq!(
@@ -3111,8 +3225,9 @@ pub fn a_header_of_another_protocol_is_refused<S: UdpSockets>(sockets: S) {
     }
 }
 
-/// A checksum only the other protocol has, UDP-Lite's partial coverage on UDP or no checksum on UDP-Lite, is
-/// refused, and sends nothing.
+/// A checksum only the other protocol has is refused, and sends nothing.
+///
+/// That is UDP-Lite's partial coverage on UDP or no checksum on UDP-Lite.
 pub fn a_checksum_of_the_other_protocol_is_refused<S: UdpSockets>(sockets: S) {
     let header_alone = NonZeroU16::new(UdpHeader::LEN_U16).expect("a coverage");
     let coverage = ChecksumCoverage(header_alone);
@@ -3139,8 +3254,9 @@ pub fn a_checksum_of_the_other_protocol_is_refused<S: UdpSockets>(sockets: S) {
     }
 }
 
-/// An ICMP error about a datagram sent waits for a receive however the sends after it answer, as Linux fails the
-/// next send with the error it reports.
+/// An ICMP error about a datagram sent waits for a receive however the sends after it answer.
+///
+/// Linux fails the next send with the error it reports.
 pub fn an_icmp_error_waits_for_a_receive_after_later_sends<S: UdpSockets>(sockets: S) {
     for version in [IpVersion::V4, IpVersion::V6] {
         let closed = closed_port(&sockets, version);
@@ -3251,8 +3367,10 @@ pub fn a_transmit_time_holds_a_datagram_until_then<S: UdpSockets>(sockets: S) {
     assert_eq!(seen(&into[..packet.fields.length]).payload, PAYLOAD);
 }
 
-/// A dual-stack IPv6 socket holds its port for IPv4 too, takes IPv4 datagrams with their IPv4 header and sends
-/// IPv4 ones with the IPv4 header fields given; an IPv6-only one leaves the port's IPv4 side to others.
+/// A dual-stack IPv6 socket holds its port for IPv4 too; an IPv6-only one leaves the port's IPv4 side to others.
+///
+/// The dual-stack socket takes IPv4 datagrams with their IPv4 header and sends IPv4 ones with the IPv4 header fields
+/// given.
 pub fn a_dual_stack_socket_takes_ipv4<S: UdpSockets>(sockets: S) {
     let dual = sockets
         .open(IpVersion::V6, UdpProtocol::Udp, OWNER)
@@ -3398,8 +3516,10 @@ fn clock_now(clock: rustix::time::ClockId) -> Duration {
     )
 }
 
-/// Connect takes its route's selectors: the IPv6 source preferences choose between the public and the temporary
-/// address, the host's choice being temporary, and an IPv4 interface given gives that interface's address.
+/// Connect takes its route's selectors.
+///
+/// The IPv6 source preferences choose between the public and the temporary address, the host's choice being temporary,
+/// and an IPv4 interface given gives that interface's address.
 pub fn connect_takes_its_route_selectors<S: UdpSockets>(sockets: S) {
     let connected = |version, route| {
         let socket = sockets.open(version, UdpProtocol::Udp, OWNER).unwrap();
@@ -3444,8 +3564,9 @@ pub fn connect_takes_its_route_selectors<S: UdpSockets>(sockets: S) {
     );
 }
 
-/// Local fragmentation forbidden refuses a datagram over the route's MTU that path MTU discovery would let be
-/// fragmented, and allowed fragments it.
+/// Local fragmentation forbidden refuses a datagram over the route's MTU, and allowed fragments it.
+///
+/// The datagram is one path MTU discovery would let be fragmented.
 pub fn forbidden_fragmentation_refuses_what_would_be_fragmented<S: UdpSockets>(sockets: S) {
     let receiver = sockets
         .open(IpVersion::V6, UdpProtocol::Udp, OWNER)
@@ -3550,8 +3671,9 @@ pub fn an_unset_pacing_rate_holds_nothing<S: UdpSockets>(sockets: S) {
     assert!(times[PACED_DATAGRAMS - 1] - times[0] < paced, "{times:?}");
 }
 
-/// A transmit time the interface's schedule cannot keep is reported with the key of its send and why: a time
-/// already past, or a clock or mode other than the schedule's, is invalid, and a time the schedule misses is
+/// A transmit time the interface's schedule cannot keep is reported with the key of its send and why.
+///
+/// A time already past, or a clock or mode other than the schedule's, is invalid, and a time the schedule misses is
 /// missed, with the packet if asked; a send that did not ask for errors gets no report.
 pub fn rejected_transmit_times_are_reported_with_their_keys<S: UdpSockets>(sockets: S) {
     let sender = sockets

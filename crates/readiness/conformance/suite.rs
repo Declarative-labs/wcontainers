@@ -20,13 +20,24 @@ pub struct Waiting<R, Handle, MakeReady> {
 }
 
 /// How many waits a check makes on one handle at once.
+///
+/// https://doc.rust-lang.org/std/task/struct.Waker.html
 pub const MANY_WAITS: usize = 32;
 
 /// How long a check waits for a wake.
+///
+/// https://doc.rust-lang.org/std/task/struct.Waker.html
 const PATIENCE: Duration = Duration::from_secs(1);
 
 /// How long a check waits to see that no wake comes.
+///
+/// https://doc.rust-lang.org/std/task/struct.Waker.html
 const SILENCE: Duration = Duration::from_millis(200);
+
+/// The first wake a waiting call gives.
+///
+/// https://doc.rust-lang.org/std/task/struct.Waker.html
+const ONE_WAKE: usize = 1;
 
 /// The wakes a waiting call has given, counted, for a check that polls the call by hand.
 #[derive(Default)]
@@ -83,7 +94,7 @@ fn finished_soon<E: Debug, F: Future<Output = Result<ReadinessReport, E>>>(
     let wakes = Arc::new(Wakes::default());
     match poll_with(call.as_mut(), &wakes) {
         Poll::Pending => {
-            assert!(wakes.reach(1), "the wait finished");
+            assert!(wakes.reach(ONE_WAKE), "the wait finished");
             finished(poll_with(call, &wakes))
         }
         ready => finished(ready),
@@ -133,7 +144,7 @@ pub fn a_wait_finishes_when_the_handle_becomes_ready<R, Handle, MakeReady>(
     let mut wait = pin!(readiness.wait_until_ready(&handle, interest));
     assert!(poll_with(wait.as_mut(), &wakes).is_pending());
     make_ready(&readiness, &handle);
-    assert!(wakes.reach(1), "woken when the handle became ready");
+    assert!(wakes.reach(ONE_WAKE), "woken when the handle became ready");
     let report = finished(poll_with(wait, &wakes));
     assert!(
         report.ready_for.intersects(interest),
@@ -226,7 +237,7 @@ where
     }
     make_ready(&readiness, &handle);
     for (_, wakes) in &waits {
-        assert!(wakes.reach(1), "every wait woken");
+        assert!(wakes.reach(ONE_WAKE), "every wait woken");
     }
     std::thread::sleep(SILENCE);
     for (wait, wakes) in &mut waits {
@@ -256,7 +267,7 @@ pub fn a_failure_ends_a_wait_that_did_not_ask_for_it<R, Handle, MakeReady>(
     let mut wait = pin!(readiness.wait_until_ready(&handle, interest));
     assert!(poll_with(wait.as_mut(), &wakes).is_pending());
     make_ready(&readiness, &handle);
-    assert!(wakes.reach(1), "woken by the failure");
+    assert!(wakes.reach(ONE_WAKE), "woken by the failure");
     let report = finished(poll_with(wait, &wakes));
     assert!(!report.unconditional.is_empty(), "{report:?}");
 }

@@ -116,8 +116,9 @@ fn a_socket_nobody_waits_on_costs_the_watcher_nothing() {
     );
 }
 
-/// A wait for facts UDP never has asks the host for nothing but errors and hang-ups, so it does not keep the watcher
-/// running while the socket has data.
+/// A wait for facts UDP never has asks the host for nothing but errors and hang-ups.
+///
+/// So it does not keep the watcher running while the socket has data.
 #[test]
 fn a_wait_for_an_event_the_socket_lacks_keeps_the_watcher_still() {
     let _alone = ALONE

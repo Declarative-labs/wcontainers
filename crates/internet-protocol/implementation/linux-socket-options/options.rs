@@ -18,18 +18,18 @@ use wcontainers_linux_socket_options_direct::DirectLinuxSocketOptions;
 use crate::datagram::sticky::UDP_LITE_RECEIVE_COVERAGE;
 use crate::{host_error, io_host_error, sock};
 
-/// Linux's socket option calls, for the options no vetted crate covers.
+/// The socket option calls of the running Linux, for the options no vetted crate covers.
 pub const LINUX: DirectLinuxSocketOptions = DirectLinuxSocketOptions;
 
 /// The level of UDP's own options, `SOL_UDP`.
 const SOL_UDP: u32 = uapi::SOL_UDP;
 
-/// `UDP_GRO`, which linux-raw-sys does not carry.
+/// The UDP option that coalesces received datagrams, which linux-raw-sys does not carry.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
 const UDP_GRO: u32 = libc::UDP_GRO as u32;
 
-/// `UDP_NO_CHECK6_RX`, which linux-raw-sys does not carry.
+/// The UDP option that takes IPv6 datagrams with a zero checksum, which linux-raw-sys does not carry.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
 const UDP_NO_CHECK6_RX: u32 = libc::UDP_NO_CHECK6_RX as u32;

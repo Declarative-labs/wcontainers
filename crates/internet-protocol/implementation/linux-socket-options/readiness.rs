@@ -80,10 +80,14 @@ pub struct WaitUntilReady<'a> {
 const WAKE: Token = Token(usize::MAX);
 
 /// The most events taken from the host in one wait; the rest come with the next.
+///
+/// https://man7.org/linux/man-pages/man2/epoll_wait.2.html
 const EVENTS_AT_ONCE: usize = 1024;
 
-/// What the poller is asked for when no fact is, as it takes at least one: on Linux urgent data, which a datagram socket
-/// has only beside an error; elsewhere readable, as kqueue reports errors and hang-ups only with a filter.
+/// What the poller is asked for when no fact is, as it takes at least one.
+///
+/// On Linux it is urgent data, which a datagram socket has only beside an error; elsewhere readable, as kqueue reports
+/// errors and hang-ups only with a filter.
 #[cfg(target_os = "linux")]
 const LEAST: Interest = Interest::PRIORITY;
 #[cfg(not(target_os = "linux"))]

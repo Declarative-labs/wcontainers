@@ -1611,8 +1611,9 @@ pub fn a_mobility_header_is_sent_by_its_type<S: RawSockets>(sockets: S) {
         0,
         0,
     ];
-    /// A binding update eight bytes longer than the smallest header: its type, checksum, sequence number, flags,
-    /// lifetime, and PadN over the rest.
+    /// A binding update eight bytes longer than the smallest header.
+    ///
+    /// It holds its type, checksum, sequence number, flags, lifetime, and PadN over the rest.
     ///
     /// https://www.rfc-editor.org/rfc/rfc6275#section-6.1.7
     const BINDING_UPDATE_MESSAGE: [u8; 16] = [

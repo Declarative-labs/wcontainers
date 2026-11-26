@@ -54,8 +54,12 @@ enum Start {
 const SLOTS: usize = Slot::ChecksumCoverage as usize + 1;
 
 /// `UDPLITE_SEND_CSCOV` of `linux/udp.h`, which neither libc nor linux-raw-sys carries.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
 pub const UDP_LITE_SEND_COVERAGE: u32 = 10;
 /// `UDPLITE_RECV_CSCOV` of `linux/udp.h`.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
 pub const UDP_LITE_RECEIVE_COVERAGE: u32 = 11;
 
 impl Slot {

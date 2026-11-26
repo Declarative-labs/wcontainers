@@ -29,8 +29,9 @@ const DATAGRAMS: usize = 1200;
 /// How many waits warm a socket's waiter list before allocations are counted.
 const WARM_UP: usize = 10;
 
-/// A call that has to wait allocates nothing once its socket has been waited on, and a receive with nothing queued
-/// allocates nothing.
+/// A call that has to wait allocates nothing once its socket has been waited on.
+///
+/// A receive with nothing queued allocates nothing either.
 fn a_warm_wait_and_a_receive_that_would_block_allocate_nothing() {
     let sockets = HostUdpSockets::new().expect("make the host's UDP sockets");
     let (socket, sender) = pair(&sockets);

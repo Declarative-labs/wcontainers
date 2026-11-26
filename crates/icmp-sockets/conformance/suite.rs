@@ -206,6 +206,8 @@ pub const DEVICE: &str = "dev";
 /// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
 pub const PAD_N: u8 = 1;
 /// How many bytes PadN pads after its type and length in the smallest extension header.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
 pub const PADDED: u8 = 4;
 
 /// Returns the number after `field` in a tool's JSON output, after the first `after` in it.
@@ -321,6 +323,9 @@ pub fn batch(tool: &str, options: &[&str], commands: &str) {
 pub const SETTLING: Duration = Duration::from_secs(10);
 /// The `ip` commands that give a link an address, and what they are followed by.
 const ADDRESS: &str = "address";
+/// The verbs that follow `address` when an `ip` command gives a link an address.
+///
+/// https://man7.org/linux/man-pages/man8/ip-address.8.html
 const ADDING: [&str; 2] = ["add", "replace"];
 const LOCAL_ROUTES: &[&str] = &["-6", "route", "show", "table", "local"];
 /// What ends an address before its prefix length in an `ip` command.

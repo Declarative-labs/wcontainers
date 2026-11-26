@@ -26,7 +26,11 @@ use wcontainers_abi::HostError;
 use wcontainers_linux_socket_options::{
     GroupFilter, KEY_QUERY_LENGTH, LinuxSocketOptions, MptcpFullInformation, Written,
 };
-use wcontainers_linux_socket_options_conformance::{own_network, storage_of};
+use wcontainers_linux_socket_options_conformance::{
+    EIGHT_BYTES, FAST_OPEN_QUEUE, HEADER_COVERAGE, LARGE_ROOM, NO_CHECKSUM, ONE_BYTE,
+    QUICK_THEN_DELAYING, RETRANSMISSION_MAXIMUM_MILLISECONDS, RETRANSMISSION_MINIMUM_MICROSECONDS,
+    SEGMENT_SIZE, SEQUENCE, own_network, storage_of,
+};
 
 use crate::DirectLinuxSocketOptions;
 use crate::generated::ROWS;
@@ -57,11 +61,8 @@ const GUARD: usize = 1024;
 /// The two canary patterns, so that a byte the kernel writes equal to one is seen through the other.
 const CANARIES: [u8; 2] = [0xa5, 0x5a];
 
-/// The rooms an option of varying length is read into: none, one byte, eight, and more than any value.
+/// The empty room, the first of those a read of varying length is read into.
 const NO_ROOM: usize = 0;
-const ONE_BYTE: usize = size_of::<u8>();
-const EIGHT_BYTES: usize = size_of::<u64>();
-const LARGE_ROOM: usize = 4096;
 
 /// The forwarding setting of the namespace's loopback, which lets it join any anycast address.
 ///
@@ -137,39 +138,10 @@ const KEY_COUNTS: [u32; 4] = [1, 2, 0, u32::MAX];
 /// The most answers the room of a key query holds.
 const ANSWERS_IN_ROOM: u32 = 1;
 
-/// A TCP sequence number and maximum segment size a repaired socket takes.
-const SEQUENCE: u32 = 0x1234_5678;
-const SEGMENT_SIZE: u32 = 1460;
-
 /// The kind of TCP's maximum segment size option.
 ///
 /// https://www.rfc-editor.org/rfc/rfc9293#section-3.2
 const MAXIMUM_SEGMENT_SIZE: u32 = 2;
-
-/// The lowest retransmission timeout in microseconds and the highest in milliseconds Linux takes, and its longest
-/// delayed acknowledgement in microseconds.
-///
-/// https://man7.org/linux/man-pages/man7/tcp.7.html
-const RETRANSMISSION_MINIMUM_MICROSECONDS: c_int = 200_000;
-const RETRANSMISSION_MAXIMUM_MILLISECONDS: c_int = 120_000;
-
-/// A Fast Open queue length a listener takes.
-const FAST_OPEN_QUEUE: u32 = 5;
-
-/// `TCP_QUICKACK`'s value that sends a scheduled acknowledgement and then delays.
-///
-/// https://github.com/torvalds/linux/blob/v6.18/net/ipv4/tcp.c
-const QUICK_THEN_DELAYING: c_int = 2;
-
-/// The IPv6 checksum offset that has the kernel compute none.
-///
-/// https://man7.org/linux/man-pages/man7/ipv6.7.html
-const NO_CHECKSUM: c_int = -1;
-
-/// The UDP-Lite checksum coverage of the header alone, eight bytes.
-///
-/// https://www.rfc-editor.org/rfc/rfc3828#section-3.1
-const HEADER_COVERAGE: c_int = 8;
 
 /// The congestion control whose `TCP_CC_INFO` Linux fills, `struct tcpvegas_info`; the job loads its module.
 ///

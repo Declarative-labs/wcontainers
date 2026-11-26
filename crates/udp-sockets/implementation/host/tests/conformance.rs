@@ -35,11 +35,12 @@ use wcontainers_udp_sockets_host::{
 /// How many networks the tests of one run can take, all made before any test opens a socket.
 const NETWORKS: usize = 80;
 
-/// The network the suite asks for, as iproute2's `ip -batch` commands: loopback with multicast and a route with
-/// an MTU of 1500 bytes to 127.0.0.2 and 2001:db8::2; a dummy interface that sends nothing anywhere, with
-/// 192.0.2.3/24, the IPv4 multicast route and 198.51.100.0/24 through a gateway on it; user 1000's datagrams
-/// to anything not local prohibited; a dummy interface with 203.0.113.1/24 and 2001:db8:1::1/64, from which
-/// Linux makes a temporary address.
+/// The network the suite asks for, as iproute2's `ip -batch` commands.
+///
+/// Loopback has multicast and a route with an MTU of 1500 bytes to 127.0.0.2 and 2001:db8::2; a dummy interface that
+/// sends nothing anywhere has 192.0.2.3/24, the IPv4 multicast route and 198.51.100.0/24 through a gateway on it; user
+/// 1000's datagrams to anything not local are prohibited; a dummy interface has 203.0.113.1/24 and 2001:db8:1::1/64,
+/// from which Linux makes a temporary address.
 const NETWORK: &str = "\
 link set lo up multicast on
 route add local 127.0.0.2 dev lo table local mtu 1500
@@ -54,8 +55,10 @@ address add 203.0.113.1/24 dev scheduled0
 address add 2001:db8:1::1/64 dev scheduled0 mngtmpaddr
 ";
 
-/// A qdisc that paces each socket's datagrams to its rate and holds each until its transmit time, and one that
-/// keeps a strict schedule on the international atomic clock and so misses every time it holds.
+/// The queueing disciplines: one that paces and holds datagrams, and one that keeps a strict schedule.
+///
+/// The first paces each socket's datagrams to its rate and holds each until its transmit time; the second keeps a
+/// strict schedule on the international atomic clock and so misses every time it holds.
 const QUEUES: &str = "\
 qdisc add dev lo root fq
 qdisc add dev scheduled0 root etf clockid CLOCK_TAI delta 0
@@ -148,9 +151,10 @@ fn network() -> OwnedFd {
         .into()
 }
 
-/// The networks not yet taken. They are all made at the first test's start, while every other test waits here
-/// before opening a socket: a child process holds every descriptor of its parent until it starts its program,
-/// which would keep a socket another test closed alive.
+/// The networks not yet taken, all made at the first test's start.
+///
+/// Every other test waits here before opening a socket: a child process holds every descriptor of its parent until it
+/// starts its program, which would keep a socket another test closed alive.
 static NETWORKS_LEFT: LazyLock<Mutex<Vec<OwnedFd>>> = LazyLock::new(|| {
     let makers: Vec<_> = (0..NETWORKS).map(|_| std::thread::spawn(network)).collect();
     Mutex::new(
@@ -273,8 +277,9 @@ fn computed(payload: &[u8]) -> UdpDatagram<'_> {
     }
 }
 
-/// A send's report comes before a datagram that arrived after it: this implementation reads the host's error
-/// queue first while a send's reports may wait there.
+/// A send's report comes before a datagram that arrived after it.
+///
+/// This implementation reads the host's error queue first while a send's reports may wait there.
 #[test]
 fn a_report_comes_before_a_datagram_that_arrived_after_it() {
     let sockets = isolated();
@@ -301,8 +306,9 @@ fn a_report_comes_before_a_datagram_that_arrived_after_it() {
     ));
 }
 
-/// A full send buffer counts unsent the memory Linux's `SIOCOUTQ` gives a UDP socket: at least twice the size
-/// given that Linux keeps, and less than one datagram more.
+/// A full send buffer counts unsent the memory Linux's `SIOCOUTQ` gives a UDP socket.
+///
+/// It is at least twice the size given that Linux keeps, and less than one datagram more.
 #[test]
 fn a_full_send_buffer_counts_the_memory_linux_counts() {
     let sockets = isolated();

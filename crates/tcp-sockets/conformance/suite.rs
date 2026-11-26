@@ -5886,6 +5886,8 @@ fn ask_routing(message: netlink_packet_route::RouteNetlinkMessage, flags: u16, w
 }
 
 /// The routing request flags of a request that changes only what is there.
+///
+/// https://man7.org/linux/man-pages/man7/netlink.7.html
 #[cfg(target_os = "linux")]
 const NO_FLAGS: u16 = 0;
 
@@ -5925,8 +5927,9 @@ const NAMESPACE_SETTINGS: [(&str, &str); 4] = [
     ("/proc/sys/net/ipv6/conf/lo/forwarding", "1"),
 ];
 
-/// Adds a local route for `MICROSECOND_CLOCK` with the `tcp_usec_ts` feature, as `ip route add local 127.0.0.7 dev lo
-/// table local features tcp_usec_ts` does.
+/// Adds a local route for `MICROSECOND_CLOCK` with the `tcp_usec_ts` feature.
+///
+/// It does what `ip route add local 127.0.0.7 dev lo table local features tcp_usec_ts` does.
 #[cfg(target_os = "linux")]
 fn add_microsecond_route(loopback: u32) {
     use netlink_packet_core::{NLM_F_CREATE, NLM_F_EXCL};
@@ -5957,11 +5960,14 @@ fn add_microsecond_route(loopback: u32) {
 }
 
 /// The prefix length of one IPv4 address.
+///
+/// https://www.rfc-editor.org/rfc/rfc4632#section-3.1
 #[cfg(target_os = "linux")]
 const ONE_ADDRESS_V4: u8 = 32;
 
-/// Gives loopback the `fq` queueing discipline, which honours a transmit delay, as `tc qdisc replace dev lo root fq`
-/// does.
+/// Gives loopback the `fq` queueing discipline, which honours a transmit delay.
+///
+/// It does what `tc qdisc replace dev lo root fq` does.
 #[cfg(target_os = "linux")]
 fn queue_fairly(loopback: u32) {
     use netlink_packet_core::{NLM_F_CREATE, NLM_F_REPLACE};
@@ -5984,8 +5990,9 @@ fn queue_fairly(loopback: u32) {
 #[cfg(target_os = "linux")]
 const FAIR_QUEUE: &str = "fq";
 
-/// Adds the namespace's one VRF device and brings it up, as `ip link add conformance-vrf type vrf table 10` and `ip
-/// link set conformance-vrf up` do.
+/// Adds the namespace's one VRF device and brings it up.
+///
+/// It does what `ip link add conformance-vrf type vrf table 10` and `ip link set conformance-vrf up` do.
 #[cfg(target_os = "linux")]
 fn add_vrf_device() {
     use netlink_packet_core::{NLM_F_CREATE, NLM_F_EXCL};
@@ -6015,6 +6022,9 @@ fn add_vrf_device() {
 /// https://docs.kernel.org/networking/vrf.html
 #[cfg(target_os = "linux")]
 const VRF_NAME: &str = "conformance-vrf";
+/// The routing table of the namespace's VRF device.
+///
+/// https://docs.kernel.org/networking/vrf.html
 #[cfg(target_os = "linux")]
 const VRF_TABLE: u32 = 10;
 
@@ -6035,6 +6045,8 @@ fn own_network_namespace() {
 const LOOPBACK_NAME: &str = "lo";
 
 /// Room for the kernel's answer to a link change: an acknowledgement, or an error that quotes the request.
+///
+/// https://man7.org/linux/man-pages/man7/netlink.7.html
 #[cfg(target_os = "linux")]
 const LOOPBACK_ANSWER_ROOM: usize = 4096;
 /// The `tcp_ecn` of the namespace of the thread that writes it.
@@ -7808,8 +7820,9 @@ pub fn disconnect_gives_back_only_a_port_bound_by_number<S: TcpSockets>(sockets:
     sockets.release(target.bound_socket);
 }
 
-/// Checks that a disconnect keeps a port the program's kernel chose, which is bound by number, and frees one the
-/// exit node chose, which Linux binds as 0.
+/// Checks that a disconnect keeps a port the program's kernel chose and frees one the exit node chose.
+///
+/// The first is bound by number, the second Linux binds as 0.
 pub fn disconnect_keeps_a_port_the_kernel_chose_and_frees_one_the_exit_node_chose<S: TcpSockets>(
     sockets: S,
 ) {
@@ -7890,8 +7903,9 @@ pub fn pending_error_is_taken_once<S: TcpSockets>(sockets: S) {
     sockets.stop_listening(listener);
 }
 
-/// Checks that an established connection that does not report ICMP errors holds a host unreachable one as its
-/// pending error, taken once: Linux's soft error, which `SO_ERROR` gives when no other is pending.
+/// Checks that a connection not reporting ICMP errors holds a host unreachable one as its pending error once.
+///
+/// It is Linux's soft error, which `SO_ERROR` gives when no other is pending.
 pub fn pending_error_holds_an_icmp_error_of_an_established_connection<S: TcpSockets>(sockets: S) {
     let (listener, peer) = listen(&sockets, ipv4_loopback(), &[]);
     let capture = raw_socket(IpVersion::V4, ipproto::TCP);

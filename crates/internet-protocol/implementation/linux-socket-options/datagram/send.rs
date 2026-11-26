@@ -118,8 +118,9 @@ pub struct SendState {
     packet_reports: bool,
 }
 
-/// The `SO_TIMESTAMPING` flags every socket keeps: keys, control messages, one report per source, and receive
-/// timestamps only when asked for.
+/// The `SO_TIMESTAMPING` flags every socket keeps.
+///
+/// They are keys, control messages, one report per source, and receive timestamps only when asked for.
 const TIMESTAMPING_BASE: u32 = uapi::SOF_TIMESTAMPING_OPT_ID as u32
     | uapi::SOF_TIMESTAMPING_OPT_CMSG as u32
     | uapi::SOF_TIMESTAMPING_OPT_TX_SWHW as u32

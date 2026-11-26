@@ -28,13 +28,15 @@ const LOOPBACK_NAME: &str = "lo";
 const LOOPBACK_ANSWER_ROOM: usize = 4096;
 
 /// A room larger than any option value read here, which the kernel fills only in part.
-const LARGE_ROOM: usize = 4096;
+///
+/// https://man7.org/linux/man-pages/man2/getsockopt.2.html
+pub const LARGE_ROOM: usize = 4096;
 
 /// A room of one byte, shorter than every structure read here.
-const ONE_BYTE: usize = size_of::<u8>();
+pub const ONE_BYTE: usize = size_of::<u8>();
 
 /// A room of eight bytes, the start of `struct tcp_info`.
-const EIGHT_BYTES: usize = size_of::<u64>();
+pub const EIGHT_BYTES: usize = size_of::<u64>();
 
 /// An IPv6 extension header of 8 bytes that claims 16: no next header, one 8-byte unit past the first, a PadN of four.
 ///
@@ -116,27 +118,29 @@ const ALL_HOSTS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 1);
 const LINK_GROUP: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x1234);
 
 /// A value of a number option Linux takes on every socket here.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 const SMALL: c_int = 1;
 
 /// The lowest TCP retransmission timeout Linux takes in microseconds, `TCP_RTO_MIN` of 200 ms.
 ///
 /// https://man7.org/linux/man-pages/man7/tcp.7.html
-const RETRANSMISSION_MINIMUM_MICROSECONDS: c_int = 200_000;
+pub const RETRANSMISSION_MINIMUM_MICROSECONDS: c_int = 200_000;
 
 /// The highest TCP retransmission timeout Linux takes in milliseconds, its default of 120 s.
 ///
 /// https://docs.kernel.org/networking/ip-sysctl.html
-const RETRANSMISSION_MAXIMUM_MILLISECONDS: c_int = 120_000;
+pub const RETRANSMISSION_MAXIMUM_MILLISECONDS: c_int = 120_000;
 
 /// The IPv6 checksum offset `IPV6_CHECKSUM` takes to have the kernel compute none.
 ///
 /// https://man7.org/linux/man-pages/man7/ipv6.7.html
-const NO_CHECKSUM: c_int = -1;
+pub const NO_CHECKSUM: c_int = -1;
 
 /// The UDP-Lite checksum coverage of the header alone, eight bytes.
 ///
 /// https://www.rfc-editor.org/rfc/rfc3828#section-3.1
-const HEADER_COVERAGE: c_int = 8;
+pub const HEADER_COVERAGE: c_int = 8;
 
 /// A TCP Fast Open key, 16 bytes.
 ///
@@ -144,7 +148,9 @@ const HEADER_COVERAGE: c_int = 8;
 const FAST_OPEN_KEY: [u8; 16] = [0x5a; 16];
 
 /// A TCP Fast Open queue length a listener takes.
-const FAST_OPEN_QUEUE: u32 = 5;
+///
+/// https://man7.org/linux/man-pages/man7/tcp.7.html
+pub const FAST_OPEN_QUEUE: u32 = 5;
 
 /// `TCP_SAVE_SYN`'s value for saving the headers from the network header.
 ///
@@ -154,15 +160,17 @@ const SAVE_FROM_NETWORK_HEADER: c_int = 1;
 /// `TCP_QUICKACK`'s value that sends a scheduled acknowledgement and then delays.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/net/ipv4/tcp.c
-const QUICK_THEN_DELAYING: c_int = 2;
+pub const QUICK_THEN_DELAYING: c_int = 2;
 
 /// A TCP sequence number a repaired socket takes.
-const SEQUENCE: u32 = 0x1234_5678;
+///
+/// https://docs.kernel.org/networking/tcp-repair.html
+pub const SEQUENCE: u32 = 0x1234_5678;
 
 /// A maximum segment size a repaired connection takes, Ethernet's 1500 bytes less 40 of IPv4 and TCP headers.
 ///
 /// https://www.rfc-editor.org/rfc/rfc894
-const SEGMENT_SIZE: u32 = 1460;
+pub const SEGMENT_SIZE: u32 = 1460;
 
 /// A repair option giving the maximum segment size, as `tcp_repair_opt` holds it: the option's kind, then its value.
 const MSS_REPAIR: uapi::tcp_repair_opt = uapi::tcp_repair_opt {
@@ -171,9 +179,20 @@ const MSS_REPAIR: uapi::tcp_repair_opt = uapi::tcp_repair_opt {
 };
 
 /// Rooms of one `MPTCP_FULL_INFO` read: one subflow, and the start of each structure.
+///
+/// https://man7.org/linux/man-pages/man7/mptcp.7.html
 const ONE_SUBFLOW: usize = 1;
+/// Room for no subflow.
+///
+/// https://man7.org/linux/man-pages/man7/mptcp.7.html
 const NO_SUBFLOW: usize = 0;
+/// A room longer than one `struct mptcp_subflow_info`.
+///
+/// https://man7.org/linux/man-pages/man7/mptcp.7.html
 const SUBFLOW_ROOM: usize = 264;
+/// A room longer than one `struct tcp_info`.
+///
+/// https://man7.org/linux/man-pages/man7/mptcp.7.html
 const INFORMATION_ROOM: usize = 256;
 
 /// The error a call gives.
