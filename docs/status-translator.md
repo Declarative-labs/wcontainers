@@ -111,6 +111,104 @@ TR1 under the orchestrator's two rulings (2026-11-25, 1b3b7578 to d714af58; 9 jo
   the allocator; 5 before, with the attribute); reference/ 86.
 - So TR1's bar does not hold by this measurement: the four allocator lines remain. TR2 is not started.
 
+Run of 2026-11-25 evening (results in scratch `translator-port/run3/`; the owner's main e295234c merged first,
+ded74452, with no conflict: none of the five crates uses an interface that changed).
+
+TR1, the stand-ins hand out memory (orchestrator's ruling: the test stays):
+- Both stand-ins (runner.rs, browser/runner.js) answer `brk`, and `mmap` and `munmap` of private anonymous
+  memory, as Linux does for what musl asks (scratch `exp1-arm.log`: brk(0), brk(+2 pages), mmap fixed
+  PROT_NONE over the first, mmap of single RW pages and munmap): the break moves up when the pages it gains and
+  the one after are free, and down to where it started; a mapping goes where `MAP_FIXED` says
+  (`MAP_FIXED_NOREPLACE` refuses a mapped page with EEXIST) or top down below the highest mapped run less
+  Linux's stack guard gap; new pages read zero; the page permissions are the table's. A shared, file or
+  grows-down mapping, and any call that would map or unmap a page a translation in use was made from, is
+  counted and warned as "system call not implemented" (ENOSYS). The page's numbers come from the Rust side
+  (linux-raw-sys's flags). f701e20d.
+- programs/mappings.c checks the edge cases against Linux (errors of zero length, unaligned offset and address
+  and an overflowing length; fixed over a mapping gives zero; NOREPLACE; a PROT_NONE and an unmapped page give
+  EFAULT to write; the break grows, shrinks and grows back with zero pages; a store to an unmapped page faults):
+  the same output and status as Linux at every look-ahead, wasmtime on both machines, Chrome on ARM64.
+- panics.rs has no allocator (716ee6b5): std allocates through musl's malloc from the stand-in's pages.
+  `unwinding_matches_linux` passes: ARM64 machine 315 s, x86-64 machine 542 s, each at every look-ahead, mixed
+  and in Chrome; the only calls not answered in it are set_tid_address and ioctl, as before.
+- The whole TR1 bar again at 716ee6b5 (scratch `run3/full-*.log`, 12 jobs):
+  - fmt, check, clippy with warnings denied over all targets and features, the browser crate's clippy for both
+    guests and the reference's clippy: exit 0 on both machines.
+  - `unsafe` outside comments: arm64 0, x86 0, guest-cpu 0, translator 0, translator-test 0; reference/ 86.
+  - ARM64's ten output lists: the same sha256 for every list as the baseline's.
+  - Layer 2, 10,000 programs, new seed 25112601, all on the CPU: ARM64 0 failing (3,377 faulted, 557 left to an
+    address); x86-64 0 failing (3,364 faulted, 1,119 left).
+  - Layer 3, cases 0 to 1,199, seed 1: ARM64 1,023 compared, 177 did not end in time on Linux, 0 failing; x86-64 1,023 compared, 177 did not end, 0 failing (4,091 s).
+  - The suite test by test against the baseline: ARM64 machine 223 passed, 50 failed, 19 ignored; every
+    outcome the baseline's (two tests' lines were cut by output written at once; the programs binary's own
+    count, 25 passed, 27 failed, 3 ignored, and its 27 names are the baseline's); the 3 tests TR1 added pass;
+    298 listed, 19 ignored, none removed. x86-64 machine 256 passed, 36 failed, 20 ignored, every outcome the
+    baseline's, the 3 added pass, 316 listed, 20 ignored, none removed.
+  - Layer 1's failing lists against the baseline, form by form: ARM64 machine `["MSR_SR_systemmove"]` at both
+    (1,215 forms, 64 a form, seed 1) and in Chrome; equal. x86-64 machine 1,126 of 2,008 forms, the unoffered forms
+    1,820 of 2,986, Chrome 41 of 2,008: all equal to the baseline's, none only before or only after.
+  - `cargo reviewable check` (59ad72ce, no model key): 12,083 in the five crates (12,070 at d714af58).
+- So TR1's bar holds by this measurement: check and clippy on both machines, 0 `unsafe` in the five crates'
+  files, the same hashes, layers 1 to 3 with no new failing form or case, the native output tests as at the
+  baseline (their outcomes are in the suite), no test removed or ignored. TR1 is ready for its check.
+
+TR2 (plan: scratch `translator-port/tr2-plan.md`):
+- `translator`'s `Layout` is `Layout<G>`, a type with the same constants and functions (8c7a3bb5); the
+  exact float paths' `Bits` traits are free functions over rustc_apfloat's `Float` (e3c12e48); `rdtsc`'s
+  answer reads `wcontainers_clock::Clock::monotonic_nanoseconds` (ce5738f8; crates/clock is a new path
+  dependency of the x86 crate and translator-test, the owner's, no license question); the four shell
+  scripts moved to scratch `translator-port/tools/` (e2e8c020; they run from any checkout as before); the
+  reference runner's `Cpu` is an inherent impl in the module its target chooses (fe6f6a68; its `unsafe`
+  lines 86 to 81, the trait's five declarations gone).
+- ARM64's ten output lists after `Layout`: the same sha256 as the baseline's. Check, clippy (crates, browser,
+  reference), fmt, and the four library crates' tests: exit 0 on both machines.
+- Not done, for the orchestrator:
+  - x86 `answer::Memory` onto `VolatileBytes`: `VolatileBytes` is a run of bytes from its start, with no
+    addresses, page permissions or fault address, which the answers need. Bridging them is a guest-memory
+    view, whose joint review the owner still owes (rule 10). Stopped.
+  - `GuestTest`: both guests run in one build (Chrome and layer 2 run both on each machine), so a cfg cannot
+    choose one, and 253 generic uses hang on it. The form proposed in the plan (each guest's items plain, the
+    harness included once per guest under a module alias) is a rewrite of the harness; it waits on the
+    orchestrator's word on that form.
+- Layout findings: the 111 in the five crates (stray_source 104, conformance_missing 5, crate_not_member 2:
+  browser/ and reference/) are the same before and after; every one is caused by question 3 (these crates
+  have no place in the interface layout). The linter flags none of the traits. Every finding at 5a5332b8:
+  12,081 in the five crates (TR1's tip 12,083); without those that need the model key (`*_unanswered`,
+  `grammar_unclear`), 24 fewer than TR1's tip, with them 2 fewer.
+- TR1's proofs again at 5a5332b8: the suite test by test the same as TR1's tip on both machines (ARM64 224
+  passed, 51 failed, 19 ignored, the two cut lines of TR1's run now whole and the baseline's; x86-64 256, 36,
+  20), 298 and 316 tests listed, none removed; layer 1's lists equal on both machines and in Chrome; ARM64's
+  ten output lists the baseline's sha256; layer 2 at seed 25112601: ARM64 the same counts as TR1 (3,377
+  faulted, 557 left, 28,716 stacks lost, 28,730 pieces forgotten, 0 failing), x86-64 the same counts as TR1 (3,364
+  faulted, 1,119 left, 23,581 stacks lost, 23,900 pieces forgotten, 0 failing); layer 3 cases 0 to 1,199:
+  1,023 compared, 177 did not end, 0 failing on both machines, as TR1.
+- So TR2's bar holds for what this track can do: no layout finding but question 3's, no exclusion, the other
+  findings fewer than TR1's (model-dependent ones apart), TR1's proofs the same. Left: `answer::Memory`
+  (stopped, the guest-memory views' review) and `GuestTest` (the orchestrator's word on its form).
+- Next: TR4 waits on `instruction-port` merged here and the executor track's X2; XN2's last tests on the
+  native track's W3. The machines hold no folder of this track (deleted at the end of this run).
+
+TR3, the carried findings:
+- C1's 1 (validity tests only without the count): no defect; the tests now also check output keeping the count
+  and made for size (drawn in the random tests, both counts in the thread module and every-form tests):
+  14 passed on both machines (5cd0d34b).
+- C1's 2 (the stop raiser stored u32 1 in the u64 limit): fixed in TR1 (de124d4a), its test failed before.
+- C1's 3 (positions across kernel transfers; the count reload at none): no defect in the test crate, whose
+  stand-ins deliver no signals; the plan and `Position::before` now say so, and that only the full emitter
+  loads the count back (`load_count` is called from full.rs alone) (db6d5ed4).
+- C1's 4 (the runtime passes `Absent`): the runtime track's code; the hand-over stands under "For the
+  orchestrator".
+- C1's 5 (the benchmark set only at SCALE=0 and N up to 256 across look-aheads): coverage, no defect; the
+  check ran both and they held.
+- XN1's four: the status wording and the counted speed (listed under "Departures from the plan (XN1)") and the
+  sgdt and sidt cases (the meaning's, x86 track's, under "Coordination") were answered by XN2 run 1 in
+  docs/status-x86-native-output.md; the repeated string under the count stays gap item 1, which needs the x86
+  in-process executor (native track's W3). No defect of this track.
+
+For the x86 front end track (the owner's ruling of today): the ordered form of x86 code for parallel threads
+on weaker hosts is that track's to build; the description section's form byte (its last, a whole byte of
+which 0 and 1 are used) can take it as a new value or bit, with nothing to change here.
+
 ## For the orchestrator
 
 - C1 touched two places outside this track's crates, to keep the workspace building: wcontainers-wasmtime's
