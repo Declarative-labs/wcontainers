@@ -6,7 +6,7 @@ use core::cell::RefCell;
 use std::num::NonZeroUsize;
 
 use etherparse::IpNumber;
-use wcontainers_abi::{Cpu, HostError, Warning};
+use wcontainers_abi::{HostError, Warning};
 use wcontainers_clock::Clock;
 use wcontainers_configurable::Configurable;
 use wcontainers_executor::Executor;
@@ -39,8 +39,7 @@ pub(crate) type LocalKernel<E> = KernelWithExecutor<Interruptible<E>, (), LocalS
 
 impl<E> ProcessTracer for LocalSystem<E>
 where
-    E: Cpu
-        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+    E: Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
         + Send
         + 'static,
 {
@@ -50,8 +49,7 @@ where
 
 impl<E> ProcessorInputs for LocalSystem<E>
 where
-    E: Cpu
-        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+    E: Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
         + Send
         + 'static,
 {
@@ -69,8 +67,7 @@ where
 
 impl<E> MachineDescription for LocalSystem<E>
 where
-    E: Cpu
-        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+    E: Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
         + Send
         + 'static,
 {
@@ -279,8 +276,7 @@ impl<E> RouteResolver for LocalSystem<E> {
 impl<E> wcontainers_tcp_sockets::TcpSockets for LocalSystem<E> {}
 
 impl<E> wcontainers_system::System for LocalSystem<E> where
-    E: Cpu
-        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+    E: Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
         + Send
         + 'static
 {
@@ -291,8 +287,7 @@ impl<E> wcontainers_system::System for LocalSystem<E> where
 #[expect(dead_code, reason = "checked as it is built, never called")]
 fn serves_the_whole_interface<E>()
 where
-    E: Cpu
-        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+    E: Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
         + Send
         + 'static,
 {

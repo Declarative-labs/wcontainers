@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use wcontainers_abi::Cpu;
 use wcontainers_executor::memory_space::MemorySpace;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_kernel::{ReplayDeterminism, StopReason, ThreadOrdering};
@@ -141,8 +140,7 @@ pub struct Runtime<E: wcontainers_executor::Executor, S> {
 
 impl<E, S> wcontainers_runtime::Runtime for Runtime<E, S>
 where
-    E: Cpu
-        + wcontainers_executor::Executor<
+    E: wcontainers_executor::Executor<
             TranslatorConfig: Send + Sync,
             GuestMemory: Send + MemorySpace<PageTable: Send>,
         > + Send
@@ -269,7 +267,7 @@ where
             resume: Box::new(move || lowered.iter().for_each(|slot| slot.lower())),
         };
         let system = Arc::new(system);
-        let memory_bytes = Cpu::address_space(&executor).end;
+        let memory_bytes = space_end(&executor);
         // Of Docker's default mounts, those the configuration lists (accepted only as Docker gives
         // them); the kernel makes no other.
         let mounts: Vec<DockerMount> = DOCKER_MOUNTS
@@ -332,6 +330,27 @@ where
     }
 }
 
+/// Returns the end of the executor's spaces: the first address past the last one a new space lends.
+///
+/// A space fails a borrow only outside itself, so the bisection keeps the last end whose byte before it is lent.
+fn space_end<E: wcontainers_executor::Executor>(executor: &E) -> u64 {
+    let (space, _pages) = executor
+        .create_guest_memory()
+        .unwrap_or_else(|_| panic!("the executor makes a space"));
+    let lends = |end: u64| space.borrow(end - 1..end).is_ok();
+    // The ends strictly between `lent` and `refused` are undecided, so the bisection ends when none is left.
+    let (mut lent, mut refused) = (u64::MIN, u64::MAX);
+    while refused - lent > 1 {
+        let middle = lent + (refused - lent) / 2;
+        if lends(middle) {
+            lent = middle;
+        } else {
+            refused = middle;
+        }
+    }
+    if lends(refused) { refused } else { lent }
+}
+
 /// Keeps `values` for as long as the process lasts, since the kernel's configuration holds its start as `'static`.
 fn kept<T>(values: Vec<T>) -> &'static [T] {
     values.leak()
@@ -340,8 +359,7 @@ fn kept<T>(values: Vec<T>) -> &'static [T] {
 /// A container, run by its kernel's runners.
 pub struct Container<E, S>
 where
-    E: Cpu
-        + wcontainers_executor::Executor<
+    E: wcontainers_executor::Executor<
             TranslatorConfig: Send + Sync,
             GuestMemory: Send + MemorySpace<PageTable: Send>,
         > + Send
@@ -354,8 +372,7 @@ where
 
 impl<E, S> Container<E, S>
 where
-    E: Cpu
-        + wcontainers_executor::Executor<
+    E: wcontainers_executor::Executor<
             TranslatorConfig: Send + Sync,
             GuestMemory: Send + MemorySpace<PageTable: Send>,
         > + Send
@@ -371,8 +388,7 @@ where
 
 impl<E, S> wcontainers_runtime::Container for Container<E, S>
 where
-    E: Cpu
-        + wcontainers_executor::Executor<
+    E: wcontainers_executor::Executor<
             TranslatorConfig: Send + Sync,
             GuestMemory: Send + MemorySpace<PageTable: Send>,
         > + Send
@@ -383,5 +399,19 @@ where
     /// Runs the kernel's runners until the first process ends, a runner dies, or the run is interrupted.
     fn run(&mut self) -> StopReason {
         self.container.run()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use wcontainers_abi::Cpu;
+    use wcontainers_executor_unicorn::standin::StandIn;
+
+    use super::space_end;
+
+    #[test]
+    fn the_probed_end_is_the_one_the_executor_states() {
+        let executor = StandIn::new();
+        assert_eq!(space_end(&executor), executor.address_space().end);
     }
 }

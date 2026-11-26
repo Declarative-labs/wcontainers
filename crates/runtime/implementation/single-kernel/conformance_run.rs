@@ -1,18 +1,20 @@
-//! The runtime suite on the local system, with the unicorn stand-in as the executor.
+//! The runtime suite on the local system, with each executor the runtime is tested on.
 //!
 //! Whoever runs it gives the image, the number of runners and the idle poll in the environment.
 
 use std::io::Write;
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 
-use wcontainers_executor_unicorn::standin::StandIn;
+use wcontainers_executor::Executor;
+use wcontainers_executor::memory_space::MemorySpace;
 use wcontainers_kernel::{ExecutionConfig, ReplayDeterminism, ThreadOrdering};
 use wcontainers_runtime::Runtime as _;
 use wcontainers_runtime_conformance::{Parts, Subject};
-use wcontainers_runtime_single_kernel::{ImageSource, LocalSystem, Runtime, RuntimeConfig};
+use wcontainers_runtime_single_kernel::{
+    ImageSource, LocalSystem, MakeExecutor, MakeRunnerExecutor, Runtime, RuntimeConfig,
+};
 
 /// The variable naming a plain tar of a root file system that holds `sh`, `cat` and `cmp`.
 const IMAGE_VARIABLE: &str = "WCONTAINERS_RUNTIME_SUITE_IMAGE";
@@ -23,7 +25,8 @@ const RUNNERS_VARIABLE: &str = "WCONTAINERS_RUNTIME_SUITE_RUNNERS";
 /// The variable giving the longest an idle runner waits, in microseconds.
 const IDLE_POLL_VARIABLE: &str = "WCONTAINERS_RUNTIME_SUITE_IDLE_POLL_MICROSECONDS";
 
-type StandInRuntime = Runtime<StandIn, LocalSystem<StandIn>>;
+/// The runtime on the executor `E` and the local system.
+type LocalRuntime<E> = Runtime<E, LocalSystem<E>>;
 
 /// Returns the value of the environment variable `name`, which the suite cannot run without.
 fn parameter(name: &str) -> String {
@@ -31,7 +34,14 @@ fn parameter(name: &str) -> String {
 }
 
 /// Returns a system whose standard output goes to `output` and whose standard error is dropped.
-fn parts(output: Box<dyn Write + Send>) -> Parts<StandInRuntime> {
+fn parts<E>(output: Box<dyn Write + Send>) -> Parts<LocalRuntime<E>>
+where
+    E: Executor<
+            TranslatorConfig: Clone + Send + Sync + 'static,
+            GuestMemory: Send + MemorySpace<PageTable: Send>,
+        > + Send
+        + 'static,
+{
     let system = LocalSystem::serving(output, Box::new(std::io::sink()));
     Parts {
         standard_output: system.output_end(),
@@ -53,8 +63,19 @@ impl Write for PanickingOutput {
     }
 }
 
-/// Returns the runtime on the stand-in, made as the environment says.
-fn subject() -> Subject<StandInRuntime> {
+/// Returns the runtime on the executors the makers give, its containers translating as `translator` says, made as the environment says.
+fn subject<E>(
+    make_executor: MakeExecutor<E>,
+    make_runner_executor: MakeRunnerExecutor<E>,
+    translator: E::TranslatorConfig,
+) -> Subject<LocalRuntime<E>>
+where
+    E: Executor<
+            TranslatorConfig: Clone + Send + Sync + 'static,
+            GuestMemory: Send + MemorySpace<PageTable: Send>,
+        > + Send
+        + 'static,
+{
     let runners: NonZeroUsize = parameter(RUNNERS_VARIABLE)
         .parse()
         .expect("the number of runners is a positive whole number");
@@ -65,25 +86,40 @@ fn subject() -> Subject<StandInRuntime> {
     );
     let image = PathBuf::from(parameter(IMAGE_VARIABLE));
     let config = RuntimeConfig {
-        make_executor: Arc::new(|_: &()| StandIn::new()),
-        // A stand-in runs only on the memories of its own engine, which a restored one shares.
-        make_runner_executor: Arc::new(StandIn::restored),
+        make_executor,
+        make_runner_executor,
         runners,
         idle_poll,
     };
     Subject {
-        runtime: StandInRuntime::new(config),
+        runtime: LocalRuntime::new(config),
         runners,
         image: Box::new(move || ImageSource::Tar(image.clone())),
-        execution: Box::new(|| ExecutionConfig {
+        execution: Box::new(move || ExecutionConfig {
             thread_ordering: ThreadOrdering::Serial,
             replay_determinism: ReplayDeterminism::Exact,
-            translator: (),
+            translator: translator.clone(),
         }),
         state: Box::new(|| ()),
-        parts: Box::new(|| parts(Box::new(std::io::sink()))),
-        failing_parts: Box::new(|| parts(Box::new(PanickingOutput))),
+        parts: Box::new(|| parts::<E>(Box::new(std::io::sink()))),
+        failing_parts: Box::new(|| parts::<E>(Box::new(PanickingOutput))),
     }
 }
 
-wcontainers_runtime_conformance::tests!(subject());
+/// The suite on the unicorn stand-in.
+mod on_the_stand_in {
+    use std::sync::Arc;
+
+    use wcontainers_executor_unicorn::standin::StandIn;
+
+    /// Returns the runtime on the stand-in, whose runners' stand-ins share the engine of the kernel's, since a stand-in runs only on the memories of its own engine.
+    fn subject() -> wcontainers_runtime_conformance::Subject<super::LocalRuntime<StandIn>> {
+        super::subject(
+            Arc::new(|_: &()| StandIn::new()),
+            Arc::new(StandIn::restored),
+            (),
+        )
+    }
+
+    wcontainers_runtime_conformance::tests!(subject());
+}
