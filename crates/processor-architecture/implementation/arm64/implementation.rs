@@ -15,6 +15,8 @@ use core::ops::Range;
 use wcontainers_privilege_level::PrivilegeLevel;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
+#[cfg(feature = "bake")]
+mod bake;
 mod behavior;
 pub mod branch;
 mod condition_flags;

@@ -575,6 +575,11 @@ pub struct LoadStoreInstruction(Instruction<Infallible>);
 
 /// What a load or store does in each case the manual leaves open; none where the instruction has no such case.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub struct LoadStoreChoices {
     pub misaligned_stack_pointer: Option<MisalignedStackPointer>,
     pub across_fault: Option<StoreAcrossFault>,

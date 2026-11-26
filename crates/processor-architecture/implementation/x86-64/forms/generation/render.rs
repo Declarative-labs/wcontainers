@@ -12,6 +12,11 @@ pub fn render_module(forms: &[InstructionForm], xed_version: &str) -> String {
          \n\
          /// An x86 [instruction form](https://intelxed.github.io/ref-manual/group__IFORM.html) that executes in 64-bit mode.\n\
          #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]\n\
+         #[cfg_attr(\n    \
+         feature = \"bake\",\n    \
+         derive(databake::Bake),\n    \
+         databake(path = wcontainers_processor_architecture_x86_64)\n\
+         )]\n\
          pub enum Instruction {{\n"
     );
     for form in forms {

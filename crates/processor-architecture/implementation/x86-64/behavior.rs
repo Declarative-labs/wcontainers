@@ -14,6 +14,11 @@ use crate::{CpuidTable, Instruction, PRIVILEGED_FORMS, PreciseInstruction, XEON_
 
 /// What a store writes when part of it faults.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum StoreAcrossFault {
     WritesNothing,
     WritesBytesBelowFault,
@@ -21,6 +26,11 @@ pub enum StoreAcrossFault {
 
 /// What CPUID gives: a table that belongs to the chip, or under a hypervisor to the hypervisor, never to the state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum CpuidReading {
     Reads(&'static CpuidTable),
     /// Raises #GP(0), as CPUID faulting does once Linux's `arch_prctl(ARCH_SET_CPUID, 0)` turns it on.
@@ -31,6 +41,11 @@ pub enum CpuidReading {
 ///
 /// A field the form's family defines is never read, and every behavior of the form holds its first value.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub struct IntegerBehavior {
     pub across_fault: StoreAcrossFault,
     pub undefined: UndefinedFlags,
@@ -40,6 +55,11 @@ pub struct IntegerBehavior {
 /// operation, a shift by at least one bit or IMUL, CF once SHL or SHR shifts an 8-bit or 16-bit operand by its width
 /// or more, and SF, ZF and PF after IMUL.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub struct UndefinedFlags {
     pub overflow: OverflowAfterShift,
     pub auxiliary_carry: UndefinedAuxiliaryCarry,
@@ -62,6 +82,11 @@ pub struct UndefinedFlags {
 
 /// What BSF and BSR leave in the destination when the source is zero.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum ScanOfZero {
     Unchanged,
     /// Written with its own value, so that a 32-bit destination's upper half is cleared.
@@ -71,6 +96,11 @@ pub enum ScanOfZero {
 
 /// What BSWAP leaves in a 16-bit register.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum SixteenBitSwap {
     Zeroed,
     Unchanged,
@@ -80,6 +110,11 @@ pub enum SixteenBitSwap {
 
 /// CF, OF, SF, AF and PF after BSF and BSR.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum BitScanFlags {
     Unchanged,
     Cleared,
@@ -91,6 +126,11 @@ pub enum BitScanFlags {
 
 /// What CMPXCHG of a register does with that register when the accumulator differs from it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum ExchangeMismatch {
     /// Written with its own value, as Intel's manual gives it, so that a 32-bit register's upper half is cleared.
     WrittenBack,
@@ -100,6 +140,11 @@ pub enum ExchangeMismatch {
 
 /// The status flags the manual leaves undefined after an instruction, all by one rule.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum UndefinedStatusFlags {
     Unchanged,
     Cleared,
@@ -107,6 +152,11 @@ pub enum UndefinedStatusFlags {
 
 /// What SHLD and SHRD of 16 bits by more than 16 shift in once the source's bits are used up.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum DoubleShiftFill {
     Zeros,
     /// The bits shifted out of the destination and source joined, as if the two rotated.
@@ -115,6 +165,11 @@ pub enum DoubleShiftFill {
 
 /// SF, ZF and PF where the manual leaves them undefined, each by a rule of its own.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub struct UndefinedResultFlags {
     pub sign: FlagRule,
     pub zero: FlagRule,
@@ -123,6 +178,11 @@ pub struct UndefinedResultFlags {
 
 /// One undefined flag.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum FlagRule {
     /// As the value written gives it.
     FromResult,
@@ -132,6 +192,11 @@ pub enum FlagRule {
 
 /// OF after a shift or rotate by more than one bit, in terms of the OF the manual gives a one-bit count.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum OverflowAfterShift {
     /// The one-bit OF of the first one-bit step (for SHL, the operand's top bit XOR the bit below it).
     FirstStepRule,
@@ -145,6 +210,11 @@ pub enum OverflowAfterShift {
 
 /// AF where the manual leaves it undefined.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum UndefinedAuxiliaryCarry {
     Cleared,
     Set,
@@ -153,6 +223,11 @@ pub enum UndefinedAuxiliaryCarry {
 
 /// CF after SHL or SHR of an 8-bit or 16-bit operand by its width or more.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub enum CarryBeyondWidth {
     /// The last bit shifted out, counting zeros beyond the operand.
     LastBitShiftedOut,
