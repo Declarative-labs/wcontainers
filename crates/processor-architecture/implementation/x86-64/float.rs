@@ -158,7 +158,7 @@ impl Precision {
         if self.to_bits() == u64::BITS { u64::MAX } else { (1 << self.to_bits()) - 1 }
     }
 
-    const fn to_fraction_mask(self) -> u64 {
+    pub(crate) const fn to_fraction_mask(self) -> u64 {
         (1 << (self.to_significand_bits() - 1)) - 1
     }
 
@@ -524,7 +524,7 @@ fn convert(conversion: Conversion, value: u64, precision: Precision, mxcsr: u32)
 
 /// `significand × 2^exponent` rounded to an integer in the mode, its magnitude (saturated far past any integer
 /// range) and whether bits were lost.
-fn round_to_integer(significand: u128, exponent: i32, rounding: Rounding, negative: bool) -> (u128, bool) {
+pub(crate) fn round_to_integer(significand: u128, exponent: i32, rounding: Rounding, negative: bool) -> (u128, bool) {
     if exponent >= 0 {
         return if exponent >= 64 { (u128::MAX, false) } else { (significand << exponent, false) };
     }

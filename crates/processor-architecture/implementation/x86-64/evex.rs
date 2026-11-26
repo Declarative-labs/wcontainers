@@ -20,6 +20,11 @@ mod lanes;
 // The fused multiply-add.
 #[path = "evex_fused.rs"]
 pub(crate) mod fused;
+// The conversions.
+#[path = "evex_convert.rs"]
+pub(crate) mod convert;
+
+pub use convert::{Conversion, Number};
 
 pub use lanes::IntegerOperation;
 
@@ -37,6 +42,12 @@ pub enum EvexOperation {
     },
     /// A form without floating-point exceptions, its destination's elements of `element_bytes` bytes.
     Integer { operation: IntegerOperation, element_bytes: usize },
+    /// VCVTDQ2PS to VCVTSD2SS: each element of the source converted; a scalar form's upper elements are the first
+    /// source's.
+    Convert(Conversion),
+    /// VCVTNEPS2BF16: each single to bfloat16; with `pair`, VCVTNE2PS2BF16: the second source's into the lower half
+    /// of the destination's words, the first's into the upper.
+    ToBfloat16 { pair: bool },
     /// VFMADD132PS to VFMSUBADD231PD: a product and an addend from the destination and the two sources, summed
     /// exactly and rounded once.
     Fused {
@@ -119,6 +130,13 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
     }
     use FusedKind as F;
     use FusedOrder as O;
+    use Number as N;
+    const fn convert(from: Number, to: Number, truncate: bool) -> EvexOperation {
+        EvexOperation::Convert(Conversion { from, to, truncate, scalar: false })
+    }
+    const fn scalar(from: Number, to: Number) -> EvexOperation {
+        EvexOperation::Convert(Conversion { from, to, truncate: false, scalar: true })
+    }
     const fn fused(kind: FusedKind, order: FusedOrder, precision: Precision, arrangement: Arrangement) -> EvexOperation {
         EvexOperation::Fused { kind, order, precision, arrangement }
     }
@@ -230,6 +248,36 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vpshufbitqmb, Any, integer(I::ShuffleBitsToMask, 1)),
         (Mnemonic::Vpbroadcastmb2q, Any, integer(I::BroadcastMask, 8)),
         (Mnemonic::Vpbroadcastmw2d, Any, integer(I::BroadcastMask, 4)),
+        (Mnemonic::Vcvtdq2ps, Any, convert(N::Signed(4), N::Float(Single), false)),
+        (Mnemonic::Vcvtps2dq, Any, convert(N::Float(Single), N::Signed(4), false)),
+        (Mnemonic::Vcvttps2dq, Any, convert(N::Float(Single), N::Signed(4), true)),
+        (Mnemonic::Vcvtdq2pd, Any, convert(N::Signed(4), N::Float(Double), false)),
+        (Mnemonic::Vcvtpd2dq, Any, convert(N::Float(Double), N::Signed(4), false)),
+        (Mnemonic::Vcvttpd2dq, Any, convert(N::Float(Double), N::Signed(4), true)),
+        (Mnemonic::Vcvtudq2ps, Any, convert(N::Unsigned(4), N::Float(Single), false)),
+        (Mnemonic::Vcvtps2udq, Any, convert(N::Float(Single), N::Unsigned(4), false)),
+        (Mnemonic::Vcvttps2udq, Any, convert(N::Float(Single), N::Unsigned(4), true)),
+        (Mnemonic::Vcvtudq2pd, Any, convert(N::Unsigned(4), N::Float(Double), false)),
+        (Mnemonic::Vcvtpd2udq, Any, convert(N::Float(Double), N::Unsigned(4), false)),
+        (Mnemonic::Vcvttpd2udq, Any, convert(N::Float(Double), N::Unsigned(4), true)),
+        (Mnemonic::Vcvtqq2ps, Any, convert(N::Signed(8), N::Float(Single), false)),
+        (Mnemonic::Vcvtps2qq, Any, convert(N::Float(Single), N::Signed(8), false)),
+        (Mnemonic::Vcvttps2qq, Any, convert(N::Float(Single), N::Signed(8), true)),
+        (Mnemonic::Vcvtqq2pd, Any, convert(N::Signed(8), N::Float(Double), false)),
+        (Mnemonic::Vcvtpd2qq, Any, convert(N::Float(Double), N::Signed(8), false)),
+        (Mnemonic::Vcvttpd2qq, Any, convert(N::Float(Double), N::Signed(8), true)),
+        (Mnemonic::Vcvtuqq2ps, Any, convert(N::Unsigned(8), N::Float(Single), false)),
+        (Mnemonic::Vcvtps2uqq, Any, convert(N::Float(Single), N::Unsigned(8), false)),
+        (Mnemonic::Vcvttps2uqq, Any, convert(N::Float(Single), N::Unsigned(8), true)),
+        (Mnemonic::Vcvtuqq2pd, Any, convert(N::Unsigned(8), N::Float(Double), false)),
+        (Mnemonic::Vcvtpd2uqq, Any, convert(N::Float(Double), N::Unsigned(8), false)),
+        (Mnemonic::Vcvttpd2uqq, Any, convert(N::Float(Double), N::Unsigned(8), true)),
+        (Mnemonic::Vcvtps2pd, Any, convert(N::Float(Single), N::Float(Double), false)),
+        (Mnemonic::Vcvtpd2ps, Any, convert(N::Float(Double), N::Float(Single), false)),
+        (Mnemonic::Vcvtss2sd, Any, scalar(N::Float(Single), N::Float(Double))),
+        (Mnemonic::Vcvtsd2ss, Any, scalar(N::Float(Double), N::Float(Single))),
+        (Mnemonic::Vcvtneps2bf16, Any, EvexOperation::ToBfloat16 { pair: false }),
+        (Mnemonic::Vcvtne2ps2bf16, Any, EvexOperation::ToBfloat16 { pair: true }),
         (Mnemonic::Vfmadd132ps, Any, fused(F::MultiplyAdd, O::Order132, Single, Packed)),
         (Mnemonic::Vfmadd132pd, Any, fused(F::MultiplyAdd, O::Order132, Double, Packed)),
         (Mnemonic::Vfmadd132ss, Any, fused(F::MultiplyAdd, O::Order132, Single, Scalar)),
@@ -322,6 +370,17 @@ impl EvexForm {
                 (precision.to_bits() / u8::BITS) as usize
             }
             EvexOperation::Integer { element_bytes, .. } => element_bytes,
+            EvexOperation::Convert(conversion) => conversion.to.to_bytes(),
+            EvexOperation::ToBfloat16 { .. } => 2,
+        }
+    }
+
+    /// The bytes of one element of the source, which a memory source is read by.
+    pub const fn source_element_bytes(&self) -> usize {
+        match self.operation {
+            EvexOperation::Convert(conversion) => conversion.from.to_bytes(),
+            EvexOperation::ToBfloat16 { .. } => 4,
+            _ => self.element_bytes(),
         }
     }
 
@@ -330,13 +389,18 @@ impl EvexForm {
         match self.operation {
             EvexOperation::Float { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::Fused { arrangement: Arrangement::Scalar, .. } => 1,
-            _ => self.vector_bytes() / self.element_bytes(),
+            EvexOperation::Convert(Conversion { scalar: true, .. }) => 1,
+            EvexOperation::ToBfloat16 { pair: true } => self.vector_bytes() / 2,
+            _ => self.vector_bytes() / self.element_bytes().max(self.source_element_bytes()),
         }
     }
 
     /// The bytes a memory source reaches without broadcast: every element's.
     pub fn memory_bytes(&self) -> usize {
-        self.elements() * self.element_bytes()
+        match self.operation {
+            EvexOperation::ToBfloat16 { pair: true } => self.vector_bytes(),
+            _ => self.elements() * self.source_element_bytes(),
+        }
     }
 
     /// Whether the form reads a first source from EVEX.vvvv.
@@ -364,7 +428,7 @@ impl EvexForm {
     /// Whether the form reads its destination's value besides merging into it.
     pub const fn reads_destination(&self) -> bool {
         match self.operation {
-            EvexOperation::Float { .. } => false,
+            EvexOperation::Float { .. } | EvexOperation::Convert(_) | EvexOperation::ToBfloat16 { .. } => false,
             EvexOperation::Fused { .. } => true,
             EvexOperation::Integer { operation, .. } => operation.reads_destination(),
         }
@@ -374,7 +438,8 @@ impl EvexForm {
     /// memory elements are the destination's elements.
     pub const fn suppresses_faults(&self) -> bool {
         match self.operation {
-            EvexOperation::Float { .. } | EvexOperation::Fused { .. } => true,
+            EvexOperation::Float { .. } | EvexOperation::Fused { .. } | EvexOperation::Convert(_) => true,
+            EvexOperation::ToBfloat16 { pair } => !pair,
             EvexOperation::Integer { operation, .. } => operation.is_element_wise(),
         }
     }

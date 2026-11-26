@@ -168,6 +168,9 @@ pub enum OperandType {
     /// The destination's old value and the two sources of a fused EVEX form and MXCSR; for a register form also
     /// the opmask and the embedded rounding.
     EvexFusedData(evex::EvexFusedData),
+    /// The source of a conversion, the first source of a scalar one, and MXCSR; for a register form also the opmask
+    /// and the embedded rounding or exception suppression.
+    EvexConvertData(evex::EvexConvertData),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -513,6 +516,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::EvexFloatData(data) => evex::generate_float_data(data),
             OperandType::EvexIntegerData(data) => evex::generate_integer_data(data),
             OperandType::EvexFusedData(data) => evex::generate_fused_data(data),
+            OperandType::EvexConvertData(data) => evex::generate_convert_data(data),
         };
         values.into_iter()
     }

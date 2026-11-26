@@ -4,7 +4,7 @@
 use iced_x86::Register;
 
 use crate::behavior::UndefinedFlags;
-use crate::evex::{EvexForm, EvexOperation, IntegerOperation, find_evex_form};
+use crate::evex::{Conversion, EvexForm, EvexOperation, IntegerOperation, Number, find_evex_form};
 use crate::float::{FloatForm, FloatOperation, Precision, find_float_form};
 use crate::integer::{
     BitChange, Condition, OperandPlace, Operation, Outcome, find_integer_form, sign_extend, subtract_with_borrow,
@@ -592,6 +592,10 @@ pub enum Bug {
     EvexMaskDestinationMerges,
     /// The fused sum drops the bits of the addend or product it shifts out.
     EvexFusedStickyIgnored,
+    /// A negative number converted to an unsigned integer wraps rather than being invalid.
+    EvexUnsignedNegativeWraps,
+    /// VCVTNEPS2BF16 rounds a denormal rather than reading it as zero.
+    EvexBfloatKeepsDenormals,
     // Fifth check.
     /// SUB takes AF from bit 4 of the result.
     SubtractAuxiliaryFromResultBitFour,
@@ -1077,6 +1081,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexCarryLessIgnoresBitFour, "VPCLMULQDQ", Family::Evex(|form| is_integer(form, IntegerOperation::CarryLessMultiply)), EvexSecondHalf),
     row(Bug::EvexMaskDestinationMerges, "VPSHUFBITQMB", Family::Evex(EvexForm::writes_opmask), EvexSecondHalf),
     row(Bug::EvexFusedStickyIgnored, "EVEX fused multiply-add", Family::Evex(|form| matches!(form.operation, EvexOperation::Fused { .. })), EvexSecondHalf),
+    row(Bug::EvexUnsignedNegativeWraps, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), EvexSecondHalf),
+    row(Bug::EvexBfloatKeepsDenormals, "VCVTNEPS2BF16, VCVTNE2PS2BF16", Family::Evex(|form| matches!(form.operation, EvexOperation::ToBfloat16 { .. })), EvexSecondHalf),
     row(Bug::EvexPermuteFaultsSuppressed, "EVEX permutes with memory", Family::Evex(|form| form.place != OperandPlace::Register && !form.suppresses_faults()), EvexSecondHalf),
 ];
 
@@ -1087,7 +1093,9 @@ fn is_integer(form: &EvexForm, operation: IntegerOperation) -> bool {
 
 /// Whether the EVEX form computes floating-point elements from registers alone.
 fn is_float_register_form(form: &EvexForm) -> bool {
-    matches!(form.operation, EvexOperation::Float { .. } | EvexOperation::Fused { .. }) && form.place == OperandPlace::Register
+    matches!(form.operation, EvexOperation::Float { .. } | EvexOperation::Fused { .. } | EvexOperation::Convert(_))
+        && form.place == OperandPlace::Register
+        && form.code.op_code().can_suppress_all_exceptions()
 }
 
 #[cfg(feature = "planted-bugs")]

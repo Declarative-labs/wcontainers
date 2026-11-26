@@ -12,7 +12,8 @@ use iced_x86::{Instruction as Decoded, OpKind, RoundingControl};
 use super::{Memory, MemoryOperand, check_access, check_alignment, check_canonical, expect_code, locate};
 use crate::evex::{EvexForm, EvexOperation, find_evex_form, read_element, write_element};
 use crate::evex::fused::multiply_add;
-use crate::float::{FLAGS, LaneOutcome, MASK_SHIFT, Precision, ROUNDING_SHIFT};
+use crate::evex::convert::to_bfloat16;
+use crate::float::{FLAGS, LaneOutcome, MASK_SHIFT, ROUNDING_SHIFT};
 
 /// The order a fused form takes NaNs in: the first multiplicand's, the second's, the addend's.
 const NAN_ORDER: [usize; 3] = [0, 1, 2];
@@ -52,12 +53,29 @@ pub(super) fn execute_evex(
     let mut result = old;
     let computed = match form.operation {
         EvexOperation::Float { operation, precision, .. } => {
-            compute_float(processor, decoded, precision, selected, elements, |index, mxcsr, bytes| {
+            compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, bytes| {
                 operation.compute(read_element(&first, index, bytes), read_element(&second, index, bytes), precision, mxcsr, 0)
             })?
         }
+        EvexOperation::Convert(conversion) => {
+            let from = form.source_element_bytes();
+            compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, _| {
+                conversion.convert(read_element(&second, index, from), mxcsr)
+            })?
+        }
+        EvexOperation::ToBfloat16 { pair } => {
+            let mut converted = [0; 4];
+            for index in 0..elements {
+                let (source, at) = match pair && index >= elements / 2 {
+                    true => (&first, index - elements / 2),
+                    false => (&second, index),
+                };
+                write_element(&mut converted, index, 2, u64::from(to_bfloat16(read_element(source, at, 4) as u32)));
+            }
+            converted
+        }
         EvexOperation::Fused { kind, order, precision, .. } => {
-            compute_float(processor, decoded, precision, selected, elements, |index, mxcsr, bytes| {
+            compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, bytes| {
                 let [a, b, c] = order.arrange(&old, &first, &second).map(|vector| read_element(vector, index, bytes));
                 let (negate_product, negate_addend) = kind.to_signs(index);
                 multiply_add(a, b, c, negate_product, negate_addend, precision, mxcsr, NAN_ORDER)
@@ -92,7 +110,11 @@ pub(super) fn execute_evex(
             result[1..].copy_from_slice(&old[1..]);
         }
     } else {
-        result.iter_mut().skip(written * 8 / 128).for_each(|part| *part = 0);
+        // Every bit from the last element written up to 512 is zeroed.
+        for (number, part) in result.iter_mut().enumerate() {
+            let kept = written.saturating_sub(number * 16).min(16);
+            *part &= if kept == 16 { u128::MAX } else { (1u128 << (kept * 8)) - 1 };
+        }
     }
     let target = if is_active(Bug::EvexHighRegistersAliasLow) { destination % 16 } else { destination };
     processor.write_zmm(target, result);
@@ -104,12 +126,11 @@ pub(super) fn execute_evex(
 fn compute_float(
     processor: &mut Processor,
     decoded: &Decoded,
-    precision: Precision,
+    bytes: usize,
     selected: u64,
     elements: usize,
     compute: impl Fn(usize, u32, usize) -> LaneOutcome,
 ) -> Result<[u128; 4], Exception> {
-    let bytes = (precision.to_bits() / u8::BITS) as usize;
     let (mxcsr, suppressed) = to_control(processor.mxcsr, decoded);
     let mut result = [0; 4];
     let (mut before, mut after) = (0, 0);
@@ -173,8 +194,8 @@ fn read_memory_source(
 ) -> Result<[u128; 4], Exception> {
     let operand = locate(processor, decoded);
     let broadcast = decoded.is_broadcast() && !is_active(Bug::EvexBroadcastReadsVector);
-    let bytes = if broadcast { form.memory_element_bytes } else { form.element_bytes() };
-    let elements = if broadcast { form.vector_bytes() / bytes } else { form.elements() };
+    let bytes = if broadcast { form.memory_element_bytes } else { form.source_element_bytes() };
+    let elements = if broadcast { form.vector_bytes() / bytes } else { form.memory_bytes() / bytes };
     let reference = if broadcast { bytes } else { form.memory_bytes() };
     let unchecked = processor.flags.difference(Flags::ALIGNMENT_CHECK);
     let suppresses = form.suppresses_faults() || is_active(Bug::EvexPermuteFaultsSuppressed);
