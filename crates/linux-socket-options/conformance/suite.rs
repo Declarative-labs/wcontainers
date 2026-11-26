@@ -162,7 +162,7 @@ fn errno<T>(result: Result<T, HostError>) -> Option<c_int> {
 }
 
 /// Moves the calling thread into a network namespace of its own with its loopback up.
-fn own_network() {
+pub fn own_network() {
     nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET)
         .expect("a network namespace of the check's own, as root");
     bring_loopback_up();
@@ -253,7 +253,8 @@ fn tcp_pair() -> (TcpStream, TcpStream) {
     (client, accepted)
 }
 
-fn storage_of(address: SocketAddr) -> SocketStorage {
+/// Gives the socket address in the kernel's storage form.
+pub fn storage_of(address: SocketAddr) -> SocketStorage {
     let mut storage = SocketStorage::new_zeroed();
     let mut put =
         |at: usize, bytes: &[u8]| storage.bytes[at..at + bytes.len()].copy_from_slice(bytes);
@@ -590,7 +591,7 @@ pub fn ipv6_options_take_their_values(options: &impl LinuxSocketOptions) {
     options
         .set_ipv6_recvfragsize(fd, true)
         .expect("IPV6_RECVFRAGSIZE on");
-    let lease = uapi::in6_flowlabel_req {
+    let mut lease = uapi::in6_flowlabel_req {
         flr_dst: uapi::in6_addr {
             in6_u: uapi::in6_addr__bindgen_ty_1 {
                 u6_addr8: Ipv6Addr::LOCALHOST.octets(),
@@ -605,7 +606,18 @@ pub fn ipv6_options_take_their_values(options: &impl LinuxSocketOptions) {
         __flr_pad: u32::MIN,
     };
     // Label zero names no label to lease.
-    assert!(options.set_ipv6_flowlabel_mgr(fd, &lease).is_err());
+    assert!(options.set_ipv6_flowlabel_mgr(fd, &mut lease).is_err());
+    // Asked to make a label of its own choosing, the kernel writes the label it chose into the request.
+    lease.flr_share = uapi::IPV6_FL_S_EXCL as u8;
+    lease.flr_flags = uapi::IPV6_FL_F_CREATE as u16;
+    options
+        .set_ipv6_flowlabel_mgr(fd, &mut lease)
+        .expect("a label of the kernel's choosing");
+    assert_ne!(
+        lease.flr_label,
+        u32::MIN,
+        "the label chosen is written back"
+    );
     let anycast = uapi::ipv6_mreq {
         ipv6mr_multiaddr: uapi::in6_addr {
             in6_u: uapi::in6_addr__bindgen_ty_1 {

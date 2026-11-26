@@ -22,6 +22,9 @@ zerocopy.workspace = true
 
 [dev-dependencies]
 wcontainers-linux-socket-options-conformance = { path = "../../conformance" }
+# The sockets the probe calls each option on, and the loopback's index.
+socket2 = { version = "0.6.5", features = ["all"] }
+nix = { version = "0.31.3", default-features = false, features = ["net"] }
 
 [[test]]
 name = "conformance"

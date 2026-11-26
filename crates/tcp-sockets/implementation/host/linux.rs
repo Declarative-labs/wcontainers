@@ -572,14 +572,14 @@ fn hold_flow_label(
         IpAddr::V4(address) => address.to_ipv6_mapped(),
         IpAddr::V6(address) => address,
     };
-    let request = flow_label_request(
+    let mut request = flow_label_request(
         destination,
         label.value().to_be(),
         uapi::IPV6_FL_A_GET,
         uapi::IPV6_FL_S_PROCESS,
         uapi::IPV6_FL_F_CREATE,
     );
-    LINUX.set_ipv6_flowlabel_mgr(socket, &request)?;
+    LINUX.set_ipv6_flowlabel_mgr(socket, &mut request)?;
     set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_FLOWINFO_SEND, true)
 }
 
@@ -1663,14 +1663,14 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                 } else {
                     uapi::IPV6_FL_A_PUT
                 };
-                let request = flow_label_request(
+                let mut request = flow_label_request(
                     Ipv6Addr::UNSPECIFIED,
                     u32::MIN,
                     action,
                     u32::MIN,
                     uapi::IPV6_FL_F_REFLECT,
                 );
-                match LINUX.set_ipv6_flowlabel_mgr(socket, &request) {
+                match LINUX.set_ipv6_flowlabel_mgr(socket, &mut request) {
                     // Turning off a reflection that is off.
                     Err(HostError::Errno(libc::ESRCH)) if !on => Ok(()),
                     other => other,

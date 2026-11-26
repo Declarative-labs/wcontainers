@@ -196,11 +196,11 @@ pub trait LinuxSocketOptions {
     /// Sets `IPV6_AUTOFLOWLABEL` of level `SOL_IPV6` to on or off, as ipv6(7) defines it.
     fn set_ipv6_autoflowlabel(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IPV6_FLOWLABEL_MGR` of level `SOL_IPV6` to a value, as ipv6(7) defines it.
+    /// Sets `IPV6_FLOWLABEL_MGR` of level `SOL_IPV6` to a value the kernel may write into, as ipv6(7) defines it.
     fn set_ipv6_flowlabel_mgr(
         &self,
         socket: BorrowedFd<'_>,
-        value: &uapi::in6_flowlabel_req,
+        value: &mut uapi::in6_flowlabel_req,
     ) -> Result<(), HostError>;
 
     /// Sets `IPV6_ADDR_PREFERENCES` of level `SOL_IPV6` to a number, as ipv6(7) defines it.

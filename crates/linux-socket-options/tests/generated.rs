@@ -11,8 +11,8 @@ use std::process::{Command, Stdio};
 /// The variable that makes the test write the files instead of comparing them.
 const REGENERATE: &str = "REGENERATE";
 
-/// The columns of a row of the table: method, level, option, value, manual page.
-const COLUMNS: usize = 5;
+/// The columns of a row of the table: method, level, option, value, manual page, what the kernel does with the memory.
+const COLUMNS: usize = 6;
 
 /// What the table's comment lines start with.
 const COMMENT: char = '#';
@@ -27,11 +27,38 @@ struct Row<'a> {
     option: &'a str,
     value: &'a str,
     manual: &'a str,
+    kernel: &'a str,
 }
 
 impl Row<'_> {
     fn sets(&self) -> bool {
         self.method.starts_with("set_")
+    }
+
+    /// Tells whether the kernel may write into the value a set gives it.
+    fn written_back(&self) -> bool {
+        self.kernel == WRITES_BACK
+    }
+}
+
+/// The kernel column of a set whose value the kernel only reads.
+const READS: &str = "reads";
+
+/// The kernel column of a set whose value the kernel may write into.
+const WRITES_BACK: &str = "writes-back";
+
+/// The kernel columns of a get: at most the length told, past it, and also through the addresses the value holds.
+const GET_KERNELS: [&str; 3] = ["within", "past", "through"];
+
+/// The probe's name for each kernel column, as `probe.rs` declares `Kernel`.
+fn kernel_variant(kernel: &str) -> &'static str {
+    match kernel {
+        READS => "Reads",
+        WRITES_BACK => "WritesBack",
+        "within" => "Within",
+        "past" => "Past",
+        "through" => "Through",
+        other => panic!("no kernel column {other}"),
     }
 }
 
@@ -58,20 +85,50 @@ fn rows(table: &str) -> Vec<Row<'_>> {
                 option: columns[2],
                 value: columns[3],
                 manual: columns[4],
+                kernel: columns[5],
             }
         })
+        .inspect(|row| {
+            let allowed = if row.sets() {
+                [READS, WRITES_BACK].contains(&row.kernel)
+            } else {
+                GET_KERNELS.contains(&row.kernel)
+            };
+            assert!(allowed, "{} cannot be {}", row.method, row.kernel);
+        })
         .collect()
+}
+
+/// Gives the reference a set takes its value by: shared when the kernel only reads it, exclusive when it may write.
+fn reference(shared: bool) -> &'static str {
+    if shared { "&" } else { "&mut " }
 }
 
 /// The parameters after `socket` and the type of the value a method gives, as the trait declares them.
 fn signature(row: &Row<'_>) -> (String, String, String) {
     let unit = "()".to_owned();
+    let shared = !row.written_back();
     let (generics, parameters, result) = match (row.sets(), row.value) {
+        (true, value)
+            if !shared
+                && !(value.starts_with("struct:")
+                    || value.starts_with("slice:")
+                    || value == "bytes") =>
+        {
+            panic!(
+                "{}: a value the kernel writes into is a structure, a run or bytes, taken by exclusive reference",
+                row.method
+            )
+        }
         (true, "bool") => (String::new(), ", on: bool".to_owned(), unit),
         (true, number @ ("c_int" | "u32" | "u64")) => {
             (String::new(), format!(", value: {number}"), unit)
         }
-        (true, "bytes") => (String::new(), ", value: &[u8]".to_owned(), unit),
+        (true, "bytes") => (
+            String::new(),
+            format!(", value: {}[u8]", reference(shared)),
+            unit,
+        ),
         (true, "program") => (
             String::new(),
             ", program: &[libc::sock_filter]".to_owned(),
@@ -80,12 +137,20 @@ fn signature(row: &Row<'_>) -> (String, String, String) {
         (true, "group_filter") => (String::new(), ", filter: &GroupFilter<'_>".to_owned(), unit),
         (true, value) if value.starts_with("struct:") => (
             String::new(),
-            format!(", value: &{}", &value["struct:".len()..]),
+            format!(
+                ", value: {}{}",
+                reference(shared),
+                &value["struct:".len()..]
+            ),
             unit,
         ),
         (true, value) if value.starts_with("slice:") => (
             String::new(),
-            format!(", value: &[{}]", &value["slice:".len()..]),
+            format!(
+                ", value: {}[{}]",
+                reference(shared),
+                &value["slice:".len()..]
+            ),
             unit,
         ),
         (false, number @ ("c_int" | "u32" | "u64")) => {
@@ -134,7 +199,11 @@ fn summary(row: &Row<'_>) -> String {
         _ if row.value.starts_with("slice:") => "a run of values",
         _ => "a value",
     };
-    if row.sets() {
+    if row.written_back() {
+        format!(
+            "Sets `{option}` of level `{level}` to {what} the kernel may write into, as {manual} defines it."
+        )
+    } else if row.sets() {
         format!("Sets `{option}` of level `{level}` to {what}, as {manual} defines it.")
     } else {
         format!("Reads `{option}` of level `{level}`, as {manual} defines it.")
@@ -149,6 +218,9 @@ fn body(row: &Row<'_>) -> String {
         (true, "c_int" | "u32" | "u64") => format!("set_value(socket, {level}, {option}, &value)"),
         (true, "program") => format!("set_program(socket, {level}, {option}, program)"),
         (true, "group_filter") => format!("set_group_filter(socket, {level}, {option}, filter)"),
+        (true, _) if row.written_back() => {
+            format!("set_value_written(socket, {level}, {option}, value)")
+        }
         (true, _) => format!("set_value(socket, {level}, {option}, value)"),
         (false, number @ ("c_int" | "u32" | "u64")) => {
             format!("get_value::<{number}>(socket, {level}, {option})")
@@ -241,7 +313,7 @@ const INTERFACE_NAMES: [&str; 5] = [
     "MptcpFullInformation",
     "Written",
 ];
-const CRATE_NAMES: [&str; 11] = [
+const CRATE_NAMES: [&str; 12] = [
     "DirectLinuxSocketOptions",
     "Plain",
     "get_full_info",
@@ -253,6 +325,7 @@ const CRATE_NAMES: [&str; 11] = [
     "set_group_filter",
     "set_program",
     "set_value",
+    "set_value_written",
 ];
 
 /// Gives the names of the list that the code uses, as a `use` list.
@@ -285,6 +358,32 @@ fn interface(rows: &[Row<'_>]) -> String {
     }
     text.push_str("}\n");
     text
+}
+
+/// The table's rows as the probe walks them, so that a row added to the table is probed or the probe fails.
+fn probe_rows(rows: &[Row<'_>]) -> String {
+    let mut code = format!(
+        "\n/// The rows of `options.table`, which the probe calls each of.\n#[cfg(test)]\npub(crate) const ROWS: [crate::probe::Row; {}] = [\n",
+        rows.len()
+    );
+    for row in rows {
+        let level = if row.level == NO_LEVEL {
+            "None".to_owned()
+        } else {
+            format!("Some({})", row.level)
+        };
+        writeln!(
+            code,
+            "    crate::probe::Row {{ method: \"{}\", level: {level}, option: {}, value: \"{}\", kernel: crate::probe::Kernel::{} }},",
+            row.method,
+            row.option,
+            row.value,
+            kernel_variant(row.kernel)
+        )
+        .unwrap();
+    }
+    code.push_str("];\n");
+    code
 }
 
 fn direct(rows: &[Row<'_>]) -> String {
@@ -321,6 +420,7 @@ fn direct(rows: &[Row<'_>]) -> String {
         code.push_str("    }\n");
     }
     code.push_str("}\n");
+    code.push_str(&probe_rows(rows));
     let mut text = DIRECT_HEAD.to_owned();
     if used(&["c_int"], &code).is_empty() {
         text.push_str("use std::os::fd::BorrowedFd;\n\n");
@@ -410,4 +510,18 @@ fn the_suite_calls_every_method() {
         })
         .collect();
     assert!(missing.is_empty(), "the suite calls no {missing:?}");
+}
+
+#[test]
+fn the_probe_calls_every_method() {
+    let folder = crate_folder();
+    let table = fs::read_to_string(folder.join("options.table")).expect("the table is there");
+    let probe = fs::read_to_string(folder.join("implementation/direct/probe.rs"))
+        .expect("the probe is there");
+    let missing: Vec<&str> = rows(&table)
+        .iter()
+        .map(|row| row.method)
+        .filter(|method| !probe.contains(&format!("\"{method}\",")))
+        .collect();
+    assert!(missing.is_empty(), "the probe has no case for {missing:?}");
 }
