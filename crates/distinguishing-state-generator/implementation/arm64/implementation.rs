@@ -82,7 +82,9 @@ use wcontainers_processor_architecture_arm64::load_store::scalable_element_acces
 };
 use wcontainers_processor_architecture_arm64::operand::Operand;
 use wcontainers_processor_architecture_arm64::scalable::is_unallocated;
-use wcontainers_processor_architecture_arm64::system_instruction::to_system_instruction_bytes;
+use wcontainers_processor_architecture_arm64::system_instruction::{
+    to_system_instruction_bytes, to_written_process_state_control,
+};
 use wcontainers_processor_architecture_arm64::system_register::{
     HeldRegister, SystemRegisterAccess, to_system_register_access,
 };
@@ -272,6 +274,7 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::ConvertedFloatingPoint { .. }
         | OperandType::Comparand { .. }
         | OperandType::SoftwareThreadId
+        | OperandType::ProcessStateControl(_)
         | OperandType::VectorValue { .. }
         | OperandType::GoverningPredicate(_)
         | OperandType::PredicateValue(_)
@@ -852,6 +855,18 @@ impl Cut {
             }
             return Allowed::Every(every);
         }
+        // An MSR (immediate) writes at most one PSTATE control: the others take each value once.
+        if self.instruction == Instruction::MsrImmediate
+            && let OperandType::ProcessStateControl(held) = self.types[index]
+        {
+            if facts.undefined {
+                return Allowed::Every(vec![to_representative(self.types[index], every.len())]);
+            }
+            if to_written_process_state_control(facts.word) != Some(held) {
+                return Allowed::EachOnce(every);
+            }
+            return Allowed::Every(every);
+        }
         let values = self.allow_values(index, chosen, facts);
         let each_beside_the_rest = (!facts.register_representative || facts.partial_predicate)
             && matches!(group, Group::Data | Group::Control | Group::Written);
@@ -1175,6 +1190,7 @@ const fn to_held_register(operand_type: OperandType) -> Option<HeldRegister> {
         OperandType::FloatingPointControl(_) => Some(HeldRegister::FloatingPointControl),
         OperandType::StatusFlags => Some(HeldRegister::FloatingPointStatus),
         OperandType::SoftwareThreadId => Some(HeldRegister::SoftwareThreadId),
+        OperandType::ProcessStateControl(register) => Some(register),
         _ => None,
     }
 }

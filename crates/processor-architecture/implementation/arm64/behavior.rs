@@ -353,8 +353,8 @@ fn list_modeled_behaviors(
         }
         Instruction::Hint | Instruction::MsrImmediate | Instruction::Sys | Instruction::Sysl => {
             crate::system_instruction::list_system_instruction_behaviors(instruction)
-                .iter()
-                .map(|behavior| PreciseInstruction::SystemInstruction(*behavior))
+                .into_iter()
+                .map(PreciseInstruction::SystemInstruction)
                 .collect()
         }
         Instruction::MrsCtrEl0 => CACHE_TYPES

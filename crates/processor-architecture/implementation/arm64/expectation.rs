@@ -92,6 +92,7 @@ impl<LevelSpecific: PartialEq> ProcessorExpectation<LevelSpecific> {
             && observed.floating_point_control == expected.floating_point_control
             && observed.floating_point_status == expected.floating_point_status
             && observed.software_thread_id == expected.software_thread_id
+            && observed.process_state_controls == expected.process_state_controls
             && observed.exception == expected.exception
             && observed.level_specific == expected.level_specific
     }
