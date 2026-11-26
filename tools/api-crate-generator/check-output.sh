@@ -55,7 +55,8 @@ cat "$build/Cargo.toml"
 (cd "$build" && CARGO_TARGET_DIR=$work/target cargo clippy -j "${ARM_JOBS:-12}" --workspace -- -D warnings 2>&1 | grep -E '^(warning|error)' | sort | uniq -c | sort -rn | head -30; echo "clippy status ${PIPESTATUS[0]}")
 
 step "the direct crates' own tests, each under a time limit"
-(cd "$build" && CARGO_TARGET_DIR=$work/target timeout 600 cargo test -j "${ARM_JOBS:-12}" --release -p wcontainers-component-object-model-direct 2>&1 | grep -E '^test |test result|panicked|error'; echo "test status ${PIPESTATUS[0]}")
+directs=$(cd "$build/crates" && for folder in */implementation/direct; do sed -n 's/^name = "\(.*\)"/-p \1/p' "$folder/Cargo.toml" | head -1; done)
+(cd "$build" && CARGO_TARGET_DIR=$work/target timeout 600 cargo test -j "${ARM_JOBS:-12}" --release $directs 2>&1 | grep -E '^test |test result|panicked|error'; echo "test status ${PIPESTATUS[0]}")
 
 step "unsafe lines per crate written (the root manifest's way: lines naming unsafe, comments included)"
 (cd "$work/first/crates" && for crate in $(find . -name Cargo.toml -exec dirname {} \; | sort); do
