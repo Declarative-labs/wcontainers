@@ -41,8 +41,10 @@ fn traced<B: Gpu>(inner: B, file: Option<std::fs::File>) -> Traced<B> {
     Traced {
         inner,
         table: Table::default(),
-        file,
-        frame: Vec::new(),
+        out: Out {
+            file,
+            frame: Vec::new(),
+        },
         next: 0,
         scratch: Vec::new(),
         helpers: Helpers::default(),
@@ -54,11 +56,7 @@ fn traced<B: Gpu>(inner: B, file: Option<std::fs::File>) -> Traced<B> {
 pub struct Traced<B: Gpu> {
     inner: B,
     table: Table<B>,
-    /// None when the config names no file: the calls run unrecorded.
-    file: Option<std::fs::File>,
-    /// The calls since the last present, written whole at the next, so a program stopped
-    /// mid-frame leaves whole frames.
-    frame: Vec<u8>,
+    out: Out,
     next: u32,
     scratch: Vec<u8>,
     helpers: Helpers<Traced<B>>,
@@ -70,12 +68,16 @@ impl<B: Gpu> core::fmt::Debug for Traced<B> {
     }
 }
 
-impl<B: Gpu> Traced<B> {
-    fn id(&mut self) -> H {
-        self.next += 1;
-        H(self.next)
-    }
+/// Where the calls go: the file, and the calls of the frame not yet written.
+struct Out {
+    /// None when the config names no file: the calls run unrecorded.
+    file: Option<std::fs::File>,
+    /// The calls since the last present, written whole at the next, so a program stopped
+    /// mid-frame leaves whole frames.
+    frame: Vec<u8>,
+}
 
+impl Out {
     fn write(&mut self, call: &Call) {
         if self.file.is_none() {
             return;
@@ -94,39 +96,44 @@ impl<B: Gpu> Traced<B> {
         }
         self.frame.clear();
     }
+}
 
-    /// Records the call and runs it.
-    fn run(&mut self, call: Call) -> Result<Answer, GpuError> {
-        self.write(&call);
-        let mut timer = Timer {
-            clock: None,
-            spent: 0.0,
-        };
-        apply(
-            &mut self.inner,
-            &mut self.table,
-            &call,
-            &mut self.scratch,
-            &mut timer,
-        )
-    }
-
-    /// Records a call that makes an object and answers its number.
-    fn make(&mut self, f: impl FnOnce(H) -> Call) -> Result<H, GpuError> {
-        let h = self.id();
-        self.run(f(h)).map(|_| h)
-    }
-
-    fn void(&mut self, call: Call) {
-        if let Err(e) = self.run(call) {
-            eprintln!("gpu trace: a call the stream holds failed: {e:?}");
-        }
+impl Drop for Out {
+    fn drop(&mut self) {
+        self.flush();
     }
 }
 
-impl<B: Gpu> Drop for Traced<B> {
-    fn drop(&mut self) {
-        self.flush();
+fn id<B: Gpu>(t: &mut Traced<B>) -> H {
+    t.next += 1;
+    H(t.next)
+}
+
+/// Records the call and runs it.
+fn run<B: Gpu>(t: &mut Traced<B>, call: Call) -> Result<Answer, GpuError> {
+    t.out.write(&call);
+    let mut timer = Timer {
+        clock: None,
+        spent: 0.0,
+    };
+    apply(
+        &mut t.inner,
+        &mut t.table,
+        &call,
+        &mut t.scratch,
+        &mut timer,
+    )
+}
+
+/// Records a call that makes an object and answers its number.
+fn make<B: Gpu>(t: &mut Traced<B>, f: impl FnOnce(H) -> Call) -> Result<H, GpuError> {
+    let h = id(t);
+    run(t, f(h)).map(|_| h)
+}
+
+fn void<B: Gpu>(t: &mut Traced<B>, call: Call) {
+    if let Err(e) = run(t, call) {
+        eprintln!("gpu trace: a call the stream holds failed: {e:?}");
     }
 }
 
@@ -268,24 +275,25 @@ impl<B: Gpu> Gpu for Traced<B> {
     }
 
     fn create_buffer(&mut self, desc: &BufferDesc) -> Result<H, GpuError> {
-        self.make(|h| Call::CreateBuffer(h, *desc))
+        make(self, |h| Call::CreateBuffer(h, *desc))
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<H, GpuError> {
-        self.make(|h| Call::CreateTexture(h, *desc))
+        make(self, |h| Call::CreateTexture(h, *desc))
     }
 
     fn create_view(&mut self, texture: &H, desc: &TextureViewDesc) -> Result<H, GpuError> {
-        self.make(|h| Call::CreateView(h, *texture, *desc))
+        make(self, |h| Call::CreateView(h, *texture, *desc))
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<H, GpuError> {
-        self.make(|h| Call::CreateSampler(h, *desc))
+        make(self, |h| Call::CreateSampler(h, *desc))
     }
 
     fn create_shader(&mut self, module: &ShaderModule) -> Result<H, GpuError> {
-        let h = self.id();
-        self.write(&Call::CreateShader(h, Box::new(Shader::of(module))));
+        let h = id(self);
+        self.out
+            .write(&Call::CreateShader(h, Box::new(Shader::of(module))));
         let s = self.inner.create_shader(module)?;
         self.table.shaders.insert(h, s);
         Ok(h)
@@ -296,28 +304,28 @@ impl<B: Gpu> Gpu for Traced<B> {
             Program::Render { vertex, fragment } => (**vertex, fragment.copied(), false),
             Program::Compute(s) => (**s, None, true),
         };
-        self.make(|h| Call::CreateProgram(h, first, fragment, compute))
+        make(self, |h| Call::CreateProgram(h, first, fragment, compute))
     }
 
     fn create_blend(&mut self, desc: &BlendDesc) -> Result<H, GpuError> {
-        self.make(|h| Call::CreateBlend(h, Box::new(*desc)))
+        make(self, |h| Call::CreateBlend(h, Box::new(*desc)))
     }
 
     fn create_depth_stencil(&mut self, desc: &DepthStencilDesc) -> Result<H, GpuError> {
-        self.make(|h| Call::CreateDepthStencil(h, *desc))
+        make(self, |h| Call::CreateDepthStencil(h, *desc))
     }
 
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<H, GpuError> {
-        self.make(|h| Call::CreateRaster(h, *desc))
+        make(self, |h| Call::CreateRaster(h, *desc))
     }
 
     fn create_vertex_layout(&mut self, desc: &VertexLayoutDesc) -> Result<H, GpuError> {
-        self.make(|h| Call::CreateVertexLayout(h, Box::new(*desc)))
+        make(self, |h| Call::CreateVertexLayout(h, Box::new(*desc)))
     }
 
     fn create_binding_set(&mut self, entries: &[BindingEntry<'_, Self>]) -> Result<H, GpuError> {
         let entries = entries_of(entries)?;
-        self.make(|h| Call::CreateBindingSet(h, entries))
+        make(self, |h| Call::CreateBindingSet(h, entries))
     }
 
     fn binding_layout_key(&self, set: &H) -> BindingLayoutKey {
@@ -328,7 +336,7 @@ impl<B: Gpu> Gpu for Traced<B> {
     }
 
     fn create_query_set(&mut self, kind: QueryKind, count: u32) -> Result<H, GpuError> {
-        self.make(|h| Call::CreateQuerySet(h, kind, count))
+        make(self, |h| Call::CreateQuerySet(h, kind, count))
     }
 
     fn destroy(&mut self, object: Object<Self>) {
@@ -348,11 +356,14 @@ impl<B: Gpu> Gpu for Traced<B> {
             Object::Surface(h) => (Kind::Surface, h),
             Object::ResourceTable(_) => return,
         };
-        self.void(Call::Destroy(kind, h));
+        void(self, Call::Destroy(kind, h));
     }
 
     fn write_buffer(&mut self, buffer: &H, offset: u64, data: &[u8], mode: WriteMode) {
-        self.void(Call::WriteBuffer(*buffer, offset, data.to_vec(), mode));
+        void(
+            self,
+            Call::WriteBuffer(*buffer, offset, data.to_vec(), mode),
+        );
     }
 
     fn write_texture(
@@ -364,14 +375,17 @@ impl<B: Gpu> Gpu for Traced<B> {
         rows_per_layer: u32,
         mode: WriteMode,
     ) {
-        self.void(Call::WriteTexture(
-            region(r),
-            extent,
-            data.to_vec(),
-            row_pitch,
-            rows_per_layer,
-            mode,
-        ));
+        void(
+            self,
+            Call::WriteTexture(
+                region(r),
+                extent,
+                data.to_vec(),
+                row_pitch,
+                rows_per_layer,
+                mode,
+            ),
+        );
     }
 
     fn begin_pass(&mut self, pass: &PassDesc<'_, Self>) {
@@ -384,36 +398,42 @@ impl<B: Gpu> Gpu for Traced<B> {
                 store: c.store,
             })
         });
-        self.void(Call::BeginPass(Box::new(Pass {
-            colors,
-            depth: pass.depth.as_ref().map(|d| Depth {
-                view: *d.view,
-                depth: d.depth,
-                stencil: d.stencil,
-            }),
-            empty: pass.empty,
-            occlusion: pass.occlusion.copied(),
-        })));
+        void(
+            self,
+            Call::BeginPass(Box::new(Pass {
+                colors,
+                depth: pass.depth.as_ref().map(|d| Depth {
+                    view: *d.view,
+                    depth: d.depth,
+                    stencil: d.stencil,
+                }),
+                empty: pass.empty,
+                occlusion: pass.occlusion.copied(),
+            })),
+        );
     }
 
     fn end_pass(&mut self) {
-        self.void(Call::EndPass);
+        void(self, Call::EndPass);
     }
 
     fn draw(&mut self, call: &DrawCall<'_, Self>) {
-        self.void(Call::Draw(draw(call)));
+        void(self, Call::Draw(draw(call)));
     }
 
     fn begin_query(&mut self, index: u32) {
-        self.void(Call::BeginQuery(index));
+        void(self, Call::BeginQuery(index));
     }
 
     fn end_query(&mut self) {
-        self.void(Call::EndQuery);
+        void(self, Call::EndQuery);
     }
 
     fn copy_buffer(&mut self, src: &H, src_offset: u64, dst: &H, dst_offset: u64, size: u64) {
-        self.void(Call::CopyBuffer(*src, src_offset, *dst, dst_offset, size));
+        void(
+            self,
+            Call::CopyBuffer(*src, src_offset, *dst, dst_offset, size),
+        );
     }
 
     fn copy_texture(
@@ -422,7 +442,7 @@ impl<B: Gpu> Gpu for Traced<B> {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        self.void(Call::CopyTexture(region(src), region(dst), extent));
+        void(self, Call::CopyTexture(region(src), region(dst), extent));
     }
 
     fn copy_buffer_to_texture(
@@ -431,7 +451,10 @@ impl<B: Gpu> Gpu for Traced<B> {
         dst: &TextureRegion<'_, Self>,
         extent: Extent,
     ) {
-        self.void(Call::CopyBufferToTexture(side(src), region(dst), extent));
+        void(
+            self,
+            Call::CopyBufferToTexture(side(src), region(dst), extent),
+        );
     }
 
     fn copy_texture_to_buffer(
@@ -440,11 +463,17 @@ impl<B: Gpu> Gpu for Traced<B> {
         dst: &CopyBufferTexture<'_, Self>,
         extent: Extent,
     ) {
-        self.void(Call::CopyTextureToBuffer(region(src), side(dst), extent));
+        void(
+            self,
+            Call::CopyTextureToBuffer(region(src), side(dst), extent),
+        );
     }
 
     fn clear_buffer(&mut self, buffer: &H, offset: u64, size: u64, pattern: &[u8]) {
-        self.void(Call::ClearBuffer(*buffer, offset, size, pattern.to_vec()));
+        void(
+            self,
+            Call::ClearBuffer(*buffer, offset, size, pattern.to_vec()),
+        );
     }
 
     fn resolve(
@@ -453,52 +482,53 @@ impl<B: Gpu> Gpu for Traced<B> {
         dst: &TextureRegion<'_, Self>,
         format: Format,
     ) {
-        self.void(Call::Resolve(region(src), region(dst), format));
+        void(self, Call::Resolve(region(src), region(dst), format));
     }
 
     fn submit(&mut self) -> H {
-        let h = self.id();
-        self.void(Call::Submit(h));
+        let h = id(self);
+        void(self, Call::Submit(h));
         h
     }
 
     fn fence_done(&mut self, fence: &H) -> bool {
-        matches!(self.run(Call::FenceDone(*fence)), Ok(Answer::Bool(true)))
+        matches!(run(self, Call::FenceDone(*fence)), Ok(Answer::Bool(true)))
     }
 
     fn wait_fence(&mut self, fence: &H) {
-        self.void(Call::WaitFence(*fence));
+        void(self, Call::WaitFence(*fence));
     }
 
     fn read_back(&mut self, src: &ReadSource<'_, Self>) -> Result<H, GpuError> {
         let s = source(src);
-        self.make(|h| Call::ReadBack(h, s))
+        make(self, |h| Call::ReadBack(h, s))
     }
 
     fn read_queries(&mut self, set: &H, first: u32, count: u32) -> Result<H, GpuError> {
-        self.make(|h| Call::ReadQueries(h, *set, first, count))
+        make(self, |h| Call::ReadQueries(h, *set, first, count))
     }
 
     fn read_state(&mut self, readback: &H) -> ReadState {
-        match self.run(Call::ReadState(*readback)) {
+        match run(self, Call::ReadState(*readback)) {
             Ok(Answer::State(s)) => s,
             _ => ReadState::Ready,
         }
     }
 
     fn wait_read(&mut self, readback: &H) {
-        self.void(Call::WaitRead(*readback));
+        void(self, Call::WaitRead(*readback));
     }
 
     fn finish_read(&mut self, readback: H, dst: &mut [u8]) {
-        self.write(&Call::FinishRead(readback, dst.len() as u64));
+        self.out
+            .write(&Call::FinishRead(readback, dst.len() as u64));
         if let Some(r) = self.table.readbacks.remove(&readback) {
             self.inner.finish_read(r, dst);
         }
     }
 
     fn create_surface(&mut self, window: u32) -> Result<H, GpuError> {
-        self.make(|h| Call::CreateSurface(h, window))
+        make(self, |h| Call::CreateSurface(h, window))
     }
 
     fn configure_surface(
@@ -509,19 +539,20 @@ impl<B: Gpu> Gpu for Traced<B> {
         height: u32,
         vsync: bool,
     ) -> Result<(), GpuError> {
-        self.run(Call::ConfigureSurface(
-            *surface, format, width, height, vsync,
-        ))
+        run(
+            self,
+            Call::ConfigureSurface(*surface, format, width, height, vsync),
+        )
         .map(|_| ())
     }
 
     fn current_texture(&mut self, surface: &H) -> Result<H, GpuError> {
-        self.make(|h| Call::CurrentTexture(h, *surface))
+        make(self, |h| Call::CurrentTexture(h, *surface))
     }
 
     fn present(&mut self, surface: &H) -> Result<(), GpuError> {
-        let r = self.run(Call::Present(*surface)).map(|_| ());
-        self.flush();
+        let r = run(self, Call::Present(*surface)).map(|_| ());
+        self.out.flush();
         r
     }
 
@@ -531,7 +562,7 @@ impl<B: Gpu> Gpu for Traced<B> {
         dst: &mut [u8],
     ) -> Result<(), GpuError> {
         let s = source(src);
-        self.write(&Call::ReadBackNow(s, dst.len() as u64));
+        self.out.write(&Call::ReadBackNow(s, dst.len() as u64));
         let s = self.table.source(&s)?;
         self.inner.read_back_now(&s, dst)
     }
@@ -553,28 +584,34 @@ impl<B: Gpu> Gpu for Traced<B> {
                 base_vertex,
             } => Indices::Guest(indices.to_vec(), format, base_vertex),
         };
-        self.run(Call::DrawFanOrLoop(
-            draw(call),
-            kind,
-            indices,
-            provoking,
-            first_instance,
-            instances,
-        ))
+        run(
+            self,
+            Call::DrawFanOrLoop(
+                draw(call),
+                kind,
+                indices,
+                provoking,
+                first_instance,
+                instances,
+            ),
+        )
         .map(|_| ())
     }
 
     fn prepare(&mut self, desc: &PrepareDesc<'_, Self>) {
-        self.void(Call::Prepare(Box::new(Prepare {
-            program: *desc.program,
-            blend: *desc.blend,
-            depth_stencil: *desc.depth_stencil,
-            raster: *desc.raster,
-            vertex_layout: *desc.vertex_layout,
-            targets: desc.targets,
-            topology: desc.topology,
-            layouts: desc.layouts,
-        })));
+        void(
+            self,
+            Call::Prepare(Box::new(Prepare {
+                program: *desc.program,
+                blend: *desc.blend,
+                depth_stencil: *desc.depth_stencil,
+                raster: *desc.raster,
+                vertex_layout: *desc.vertex_layout,
+                targets: desc.targets,
+                topology: desc.topology,
+                layouts: desc.layouts,
+            })),
+        );
     }
 
     fn clear_texture(
@@ -586,14 +623,17 @@ impl<B: Gpu> Gpu for Traced<B> {
         layers: std::ops::Range<u32>,
         value: ClearValue,
     ) -> Result<(), GpuError> {
-        self.run(Call::ClearTexture(
-            *texture,
-            *desc,
-            format,
-            [mips.start, mips.end],
-            [layers.start, layers.end],
-            value,
-        ))
+        run(
+            self,
+            Call::ClearTexture(
+                *texture,
+                *desc,
+                format,
+                [mips.start, mips.end],
+                [layers.start, layers.end],
+                value,
+            ),
+        )
         .map(|_| ())
     }
 
@@ -604,8 +644,7 @@ impl<B: Gpu> Gpu for Traced<B> {
         value: ClearValue,
         rects: &[ScissorRect],
     ) -> Result<(), GpuError> {
-        self.run(Call::ClearRects(*view, format, value, rects.to_vec()))
-            .map(|_| ())
+        run(self, Call::ClearRects(*view, format, value, rects.to_vec())).map(|_| ())
     }
 
     fn generate_mips(
@@ -616,13 +655,16 @@ impl<B: Gpu> Gpu for Traced<B> {
         mips: std::ops::Range<u32>,
         layers: std::ops::Range<u32>,
     ) -> Result<(), GpuError> {
-        self.run(Call::GenerateMips(
-            *texture,
-            *desc,
-            values,
-            [mips.start, mips.end],
-            [layers.start, layers.end],
-        ))
+        run(
+            self,
+            Call::GenerateMips(
+                *texture,
+                *desc,
+                values,
+                [mips.start, mips.end],
+                [layers.start, layers.end],
+            ),
+        )
         .map(|_| ())
     }
 
@@ -633,9 +675,10 @@ impl<B: Gpu> Gpu for Traced<B> {
         align: u32,
         offsets: &mut [u64],
     ) -> Result<H, GpuError> {
-        let h = self.id();
+        let h = id(self);
         let owned = parts.iter().map(|p| p.to_vec()).collect();
-        self.write(&Call::WriteBufferRing(h, kind, owned, align));
+        self.out
+            .write(&Call::WriteBufferRing(h, kind, owned, align));
         let b = self.inner.write_buffer_ring(kind, parts, align, offsets)?;
         self.table.buffers.insert(h, b);
         Ok(h)
@@ -649,20 +692,26 @@ impl<B: Gpu> Gpu for Traced<B> {
         dst: &H,
         dst_offset: u64,
     ) -> Result<(), GpuError> {
-        self.run(Call::ResolveQueries(*set, first, count, *dst, dst_offset))
-            .map(|_| ())
+        run(
+            self,
+            Call::ResolveQueries(*set, first, count, *dst, dst_offset),
+        )
+        .map(|_| ())
     }
 
     fn dispatch(&mut self, call: &DispatchCall<'_, Self>) -> Result<(), GpuError> {
-        self.run(Call::Dispatch(Box::new(Dispatch {
-            program: *call.program,
-            bindings: sets(&call.bindings),
-            immediates: call.immediates.to_vec(),
-            groups: match call.groups {
-                DispatchGroups::Direct(g) => Ok(g),
-                DispatchGroups::Indirect { args, offset } => Err((*args, offset)),
-            },
-        })))
+        run(
+            self,
+            Call::Dispatch(Box::new(Dispatch {
+                program: *call.program,
+                bindings: sets(&call.bindings),
+                immediates: call.immediates.to_vec(),
+                groups: match call.groups {
+                    DispatchGroups::Direct(g) => Ok(g),
+                    DispatchGroups::Indirect { args, offset } => Err((*args, offset)),
+                },
+            })),
+        )
         .map(|_| ())
     }
 
@@ -676,8 +725,7 @@ impl<B: Gpu> Gpu for Traced<B> {
             .iter()
             .map(|r| (*r.buffer, r.offset, r.size))
             .collect();
-        self.run(Call::CaptureVertices(draw(call), targets, rasterize))
-            .map(|_| ())
+        run(self, Call::CaptureVertices(draw(call), targets, rasterize)).map(|_| ())
     }
 
     fn create_resource_table(&mut self, size: u32) -> Result<H, GpuError> {
@@ -695,11 +743,10 @@ impl<B: Gpu> Gpu for Traced<B> {
     }
 
     fn write_timestamp(&mut self, set: &H, index: u32) -> Result<(), GpuError> {
-        self.run(Call::WriteTimestamp(*set, index)).map(|_| ())
+        run(self, Call::WriteTimestamp(*set, index)).map(|_| ())
     }
 
     fn timestamps_disjoint(&mut self) -> Result<bool, GpuError> {
-        self.run(Call::TimestampsDisjoint)
-            .map(|a| a == Answer::Bool(true))
+        run(self, Call::TimestampsDisjoint).map(|a| a == Answer::Bool(true))
     }
 }
