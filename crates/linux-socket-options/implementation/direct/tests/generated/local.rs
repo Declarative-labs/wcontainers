@@ -15,3 +15,8 @@ pub(crate) const UDPLITE_RECV_CSCOV: u32 = 11;
 pub(crate) const SIOCOUTQ: u32 = linux_raw_sys::ioctl::TIOCOUTQ;
 pub(crate) const SIOCOUTQNSD: u32 = libc::SIOCOUTQNSD as u32;
 pub(crate) const SIOCATMARK: u32 = linux_raw_sys::ioctl::SIOCATMARK;
+/// The protocols of the socket kinds an ioctl request is defined for, as `SO_PROTOCOL` answers them.
+pub(crate) const IPPROTO_TCP: u32 = libc::IPPROTO_TCP as u32;
+pub(crate) const IPPROTO_MPTCP: u32 = libc::IPPROTO_MPTCP as u32;
+pub(crate) const IPPROTO_UDP: u32 = libc::IPPROTO_UDP as u32;
+pub(crate) const IPPROTO_UDPLITE: u32 = libc::IPPROTO_UDPLITE as u32;

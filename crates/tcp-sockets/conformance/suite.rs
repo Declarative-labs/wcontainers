@@ -1,16 +1,7 @@
 //! The tests every implementation of wcontainers-tcp-sockets runs, written against its traits alone.
 //!
-//! Each check makes its own listener on a loopback address with a port the kernel chooses, so the checks run side by
-//! side. Calls other than the waits answer at once, so an answer of `WouldBlock` is tried again until [`DEADLINE`]; the
-//! waits are polled by hand with a waker that counts its wakes.
-//!
-//! The checks watch the wire through the host's packet and raw sockets, so they run as root on a Linux host, each in a
-//! network namespace of its own that [`prepared_network`] makes, whose loopback is up with the `fq` queueing discipline (which honours a transmit
-//! delay), with `net.ipv4.tcp_fastopen` at 3 (fast open for clients and listeners), `net.ipv6.flowlabel_consistency`
-//! at 0 (which flow label reflection needs), `net.ipv4.tcp_fwmark_accept` at 1 (an accepted socket takes its SYN's
-//! mark), `net.ipv6.conf.lo.forwarding` at 1 (loopback may then join any anycast address, not only those its
-//! prefixes hold), the `dctcp`, `vegas` and `bbr` congestion controls available (their modules loaded on the host), a local route for 127.0.0.7 with the `tcp_usec_ts`
-//! feature (TCP timestamps in microseconds) and one VRF device, the only master interface there.
+//! Each check listens on loopback at a port the kernel chooses and tries a `WouldBlock` again until [`DEADLINE`]. It
+//! watches the wire through packet and raw sockets, so it runs as root on Linux in a [`prepared_network`].
 
 use core::cell::{Cell, RefCell};
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
@@ -5890,9 +5881,10 @@ fn ask_routing(message: netlink_packet_route::RouteNetlinkMessage, flags: u16) {
 #[cfg(target_os = "linux")]
 const NO_FLAGS: u16 = 0;
 
-/// Moves the calling thread into a network namespace of its own, set up as the module's documentation says.
+/// Moves the calling thread into a network namespace of its own, so what one check makes or sees reaches no other.
 ///
-/// Each check runs in one, so that what one check makes or sees on loopback reaches no other.
+/// Its loopback is up with `fq`, a local route for `MICROSECOND_CLOCK` and `NAMESPACE_SETTINGS`, beside one VRF
+/// device, the only master interface there. The host must have the `dctcp`, `vegas` and `bbr` modules loaded.
 #[cfg(target_os = "linux")]
 pub fn prepared_network() {
     own_network_namespace();
@@ -6319,16 +6311,14 @@ pub fn information_reads_what_the_connection_did<S: TcpSockets>(sockets: S) {
         ),
         "{sent:?}"
     );
-    assert_eq!(
-        [
-            sent.lost,
-            sent.retransmitted,
-            selectively_acknowledged,
-            sent.forward_acknowledged,
-        ],
-        [SegmentCount(u64::MIN); 4],
-        "{sent:?}"
-    );
+    for count in [
+        sent.lost,
+        sent.retransmitted,
+        selectively_acknowledged,
+        sent.forward_acknowledged,
+    ] {
+        assert_eq!(count, SegmentCount(u64::MIN), "{sent:?}");
+    }
     // A transfer that needed no retransmission counts no timeout, and a segment its receiver got out of order was
     // reordered on the way (loopback reorders when the sending thread moves between processors), which the
     // receiver's selective acknowledgement shows the sender.
@@ -7309,29 +7299,21 @@ pub fn multipath_connection_answers_every_query<S: TcpSockets>(sockets: S) {
     }
     // Linux keeps these for TCP alone, so each is either read as the kind asked or refused.
     let mut room = [u8::MIN; HEADER_ROOM];
-    for (query, outcome) in [
-        (
-            "timestamp",
-            sockets.read_state(&pair.client, TcpQuery::Timestamp),
-        ),
-        ("repair", sockets.read_state(&pair.client, TcpQuery::Repair)),
-        (
-            "authentication",
-            sockets.read_state(&pair.client, TcpQuery::Authentication),
-        ),
-        (
-            "last header",
-            sockets.read_state(&pair.client, TcpQuery::LastReceivedHeader(&mut room)),
-        ),
-    ] {
-        match outcome {
-            Ok(TcpReading::Timestamp(_))
-            | Ok(TcpReading::Repair(_))
-            | Ok(TcpReading::Authentication(_))
-            | Ok(TcpReading::LastReceivedHeader { .. })
-            | Err(_) => {}
-            other => panic!("{query} read {other:?}"),
-        }
+    match sockets.read_state(&pair.client, TcpQuery::Timestamp) {
+        Ok(TcpReading::Timestamp(_)) | Err(_) => {}
+        other => panic!("the timestamp read {other:?}"),
+    }
+    match sockets.read_state(&pair.client, TcpQuery::Repair) {
+        Ok(TcpReading::Repair(_)) | Err(_) => {}
+        other => panic!("the repair state read {other:?}"),
+    }
+    match sockets.read_state(&pair.client, TcpQuery::Authentication) {
+        Ok(TcpReading::Authentication(_)) | Err(_) => {}
+        other => panic!("the authentication state read {other:?}"),
+    }
+    match sockets.read_state(&pair.client, TcpQuery::LastReceivedHeader(&mut room)) {
+        Ok(TcpReading::LastReceivedHeader { .. }) | Err(_) => {}
+        other => panic!("the last header read {other:?}"),
     }
     match sockets.read_listener_state(&pair.listener, TcpListenerQuery::Information) {
         Ok(TcpListenerReading::Information { information, .. }) => {

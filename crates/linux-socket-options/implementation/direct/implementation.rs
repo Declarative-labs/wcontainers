@@ -124,12 +124,31 @@ fn of_family<'a>(socket: BorrowedFd<'a>, families: &[u32]) -> Result<BorrowedFd<
     checked_family(socket, families, libc::ENOPROTOOPT)
 }
 
-/// Gives the socket when it is of one of the `families` whose ioctl handler was read, else `ENOTTY`, Linux's no-request.
-fn request_of_family<'a>(
+/// Gives the socket when it is of one of the `families` and `kinds` a request was read for, else `ENOTTY`.
+///
+/// A kind is a socket type with its protocol, or with none for every protocol of the type. On another kind Linux reads
+/// a whole `struct ifreq` at the pointer for a device's request and answers `ENOTTY`, so the refusal answers as it does.
+fn request_of_kind<'a>(
     socket: BorrowedFd<'a>,
     families: &[u32],
+    kinds: &[(u32, Option<u32>)],
 ) -> Result<BorrowedFd<'a>, HostError> {
-    checked_family(socket, families, libc::ENOTTY)
+    let socket = checked_family(socket, families, libc::ENOTTY)?;
+    let errno = |error: rustix::io::Errno| HostError::Errno(error.raw_os_error());
+    let socket_type = rustix::net::sockopt::socket_type(socket)
+        .map_err(errno)?
+        .as_raw();
+    let protocol = rustix::net::sockopt::socket_protocol(socket)
+        .map_err(errno)?
+        .map(|protocol| protocol.as_raw().get());
+    let defined = kinds.iter().any(|(kind_type, kind_protocol)| {
+        *kind_type == socket_type && kind_protocol.is_none_or(|wanted| protocol == Some(wanted))
+    });
+    if defined {
+        Ok(socket)
+    } else {
+        Err(HostError::Errno(libc::ENOTTY))
+    }
 }
 
 /// Reads the socket's family (`SO_DOMAIN`, socket(7)) and gives the socket when it is one of `families`, else `refused`.
@@ -589,10 +608,10 @@ fn ioctl_within(socket: BorrowedFd<'_>, request: u32, into: &mut [u8]) -> Result
     }
     #[expect(
         unsafe_code,
-        reason = "the generator routes a request here only where the kernel table, keyed by the request number and the \
-                  families whose ioctl handler was read, says it writes one int at the pointer, for a socket checked to \
-                  be of those families (tests/generated.rs `ioctl_reason`, `family_reason`), and `into` holds at least \
-                  one; the descriptor is borrowed, so open"
+        reason = "the generator routes a request here only where the kernel table, keyed by the request number, the \
+                  families and the socket kinds whose ioctl handler was read, says it writes one int at the pointer, \
+                  for a socket checked to be of those families and kinds (tests/generated.rs `ioctl_reason`, \
+                  `family_reason`), and `into` holds at least one; the descriptor is borrowed, so open"
     )]
     let result = unsafe {
         libc::ioctl(

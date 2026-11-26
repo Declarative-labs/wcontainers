@@ -1,6 +1,6 @@
 //! Socket addresses between the standard library's and the uapi's forms.
 
-use core::mem::{align_of, size_of};
+use core::mem::{align_of, offset_of, size_of};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::os::fd::BorrowedFd;
 
@@ -16,9 +16,9 @@ uapi_mirror! {
     #[derive(IntoBytes)]
     struct Ipv4SocketAddress mirrors uapi::sockaddr_in {
         sin_family: u16,
-        sin_port: [u8; 2],
-        sin_addr: [u8; 4],
-        __pad: [u8; 8],
+        sin_port: [u8; size_of::<uapi::__be16>()],
+        sin_addr: [u8; size_of::<uapi::in_addr>()],
+        __pad: [u8; size_of::<uapi::sockaddr_in>() - offset_of!(uapi::sockaddr_in, __pad)],
     }
 }
 
@@ -27,9 +27,9 @@ uapi_mirror! {
     #[derive(IntoBytes)]
     struct Ipv6SocketAddress mirrors uapi::sockaddr_in6 {
         sin6_family: u16,
-        sin6_port: [u8; 2],
-        sin6_flowinfo: [u8; 4],
-        sin6_addr: [u8; 16],
+        sin6_port: [u8; size_of::<uapi::__be16>()],
+        sin6_flowinfo: [u8; size_of::<uapi::__be32>()],
+        sin6_addr: [u8; size_of::<uapi::in6_addr>()],
         sin6_scope_id: u32,
     }
 }
@@ -39,8 +39,8 @@ uapi_mirror! {
     #[derive(IntoBytes)]
     pub(crate) struct Ipv4PacketInformation mirrors uapi::in_pktinfo {
         pub(crate) ipi_ifindex: c_int,
-        pub(crate) ipi_spec_dst: [u8; 4],
-        pub(crate) ipi_addr: [u8; 4],
+        pub(crate) ipi_spec_dst: [u8; size_of::<uapi::in_addr>()],
+        pub(crate) ipi_addr: [u8; size_of::<uapi::in_addr>()],
     }
 }
 
@@ -48,7 +48,7 @@ uapi_mirror! {
     /// `struct in6_pktinfo`, its address in network order.
     #[derive(IntoBytes)]
     pub(crate) struct Ipv6PacketInformation mirrors uapi::in6_pktinfo {
-        pub(crate) ipi6_addr: [u8; 16],
+        pub(crate) ipi6_addr: [u8; size_of::<uapi::in6_addr>()],
         pub(crate) ipi6_ifindex: c_int,
     }
 }

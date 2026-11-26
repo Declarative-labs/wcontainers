@@ -190,6 +190,62 @@ pub const LEVELS: [Level; 7] = [
 /// The families whose ioctl handler the requests' entries were read from: IPv4's and IPv6's (tcp_ioctl).
 pub const REQUEST_FAMILIES: Families = Families::Only(&INTERNET);
 
+/// A socket type and the protocol of it a request was read for, or every protocol of the type for none.
+#[derive(Clone, Copy, Debug)]
+pub struct Kind {
+    pub socket_type: Name,
+    pub protocol: Option<Name>,
+}
+
+/// The kinds of socket whose handler writes one int at the pointer for each request a row may name.
+///
+/// On any other kind Linux reads a whole `struct ifreq` there for `dev_ioctl` (net/socket.c `sock_do_ioctl`, measured
+/// by the probe), so the generated method refuses it first with `ENOTTY`, Linux's own answer.
+pub const REQUEST_KINDS: [(Name, &[Kind]); 3] = [
+    // tcp_ioctl, mptcp_ioctl, udp_ioctl (UDP and UDP-Lite), raw_ioctl and rawv6_ioctl, whatever a raw socket's protocol.
+    (
+        name!(local::SIOCOUTQ),
+        &[
+            kind(name!(uapi::SOCK_STREAM), Some(name!(local::IPPROTO_TCP))),
+            kind(name!(uapi::SOCK_STREAM), Some(name!(local::IPPROTO_MPTCP))),
+            kind(name!(uapi::SOCK_DGRAM), Some(name!(local::IPPROTO_UDP))),
+            kind(name!(uapi::SOCK_DGRAM), Some(name!(local::IPPROTO_UDPLITE))),
+            kind(name!(uapi::SOCK_RAW), None),
+        ],
+    ),
+    // tcp_ioctl and mptcp_ioctl.
+    (
+        name!(local::SIOCOUTQNSD),
+        &[
+            kind(name!(uapi::SOCK_STREAM), Some(name!(local::IPPROTO_TCP))),
+            kind(name!(uapi::SOCK_STREAM), Some(name!(local::IPPROTO_MPTCP))),
+        ],
+    ),
+    // tcp_ioctl alone: mptcp_ioctl does not handle it.
+    (
+        name!(local::SIOCATMARK),
+        &[kind(
+            name!(uapi::SOCK_STREAM),
+            Some(name!(local::IPPROTO_TCP)),
+        )],
+    ),
+];
+
+const fn kind(socket_type: Name, protocol: Option<Name>) -> Kind {
+    Kind {
+        socket_type,
+        protocol,
+    }
+}
+
+/// Gives the kinds of socket a request was read for, or none for a request the table gives no kinds.
+pub fn request_kinds(request_path: &str) -> Option<&'static [Kind]> {
+    REQUEST_KINDS
+        .iter()
+        .find(|(request, _)| request.path == request_path)
+        .map(|(_, kinds)| *kinds)
+}
+
 /// The ioctl requests a row may name, in the one number space of `ioctl(2)` on a socket.
 pub const REQUESTS: [Name; 4] = [
     name!(local::SIOCOUTQ),

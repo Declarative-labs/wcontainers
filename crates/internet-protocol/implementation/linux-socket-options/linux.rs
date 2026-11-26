@@ -433,9 +433,6 @@ pub struct Received<'a, T> {
 /// Makes one `recvmsg` into `vectors` and the room for control messages.
 ///
 /// The sender is read as `S` and given as `source` makes of it; `flags` are `MSG_*` flags.
-///
-/// Made with nix: socket2's `RecvFlags` gives no `MSG_CTRUNC`, rustix hands out only the control messages it parses.
-/// The messages are read from the room's bytes, as nix's parsing allocates for each kind it does not know.
 #[inline]
 pub fn receive_vectored<'a, S: SockaddrLike, T, const WORDS: usize>(
     socket: BorrowedFd<'_>,
@@ -444,6 +441,8 @@ pub fn receive_vectored<'a, S: SockaddrLike, T, const WORDS: usize>(
     control: &'a mut ControlRoom<WORDS>,
     source: impl FnOnce(&S) -> Option<T>,
 ) -> Result<Received<'a, T>, HostError> {
+    // Made with nix, as socket2's `RecvFlags` gives no `MSG_CTRUNC` and rustix hands out only the control messages it
+    // parses; the messages are read from the room's bytes, as nix's parsing allocates for each kind it does not know.
     if control.written {
         control.words.fill(usize::MIN);
     }

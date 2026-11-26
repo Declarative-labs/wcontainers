@@ -13,7 +13,7 @@ use wcontainers_abi::HostError;
 use wcontainers_udp_sockets::UdpSockets;
 use wcontainers_udp_sockets_host::HostUdpSockets;
 
-use support::{Wakes, pair, wait_and_take};
+use support::{DATAGRAMS, Wakes, pair, wait_and_take};
 
 #[global_allocator]
 static COUNTING: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
@@ -23,9 +23,6 @@ fn allocations() -> usize {
     let stats = COUNTING.stats();
     stats.allocations + stats.reallocations
 }
-
-/// How many waits or receives each check counts.
-const DATAGRAMS: usize = 1200;
 
 /// How many waits warm a socket's waiter list before allocations are counted.
 const WARM_UP: usize = 10;

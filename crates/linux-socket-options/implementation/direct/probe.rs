@@ -1530,3 +1530,178 @@ fn every_row_is_probed_through_its_method_and_the_kernel_does_what_its_column_sa
         faults.join("\n")
     );
 }
+
+/// The groups whose sockets may be ICMP echo sockets: the superuser's alone, as the probe runs as root.
+///
+/// https://docs.kernel.org/networking/ip-sysctl.html#ping-group-range
+const PING_GROUPS: (&str, &str) = ("/proc/sys/net/ipv4/ping_group_range", "0 0");
+
+/// Every socket of the internet families an ioctl request is measured on: family, type, protocol and whether connected.
+///
+/// A kind the running kernel cannot make (SCTP without its module) is left out and named.
+const REQUEST_SOCKETS: [(Domain, Type, c_int, bool); 18] = [
+    (Domain::IPV4, Type::STREAM, libc::IPPROTO_TCP, false),
+    (Domain::IPV4, Type::STREAM, libc::IPPROTO_TCP, true),
+    (Domain::IPV6, Type::STREAM, libc::IPPROTO_TCP, true),
+    (Domain::IPV4, Type::STREAM, libc::IPPROTO_MPTCP, false),
+    (Domain::IPV4, Type::STREAM, libc::IPPROTO_MPTCP, true),
+    (Domain::IPV6, Type::STREAM, libc::IPPROTO_MPTCP, true),
+    (Domain::IPV4, Type::DGRAM, libc::IPPROTO_UDP, false),
+    (Domain::IPV6, Type::DGRAM, libc::IPPROTO_UDP, false),
+    (Domain::IPV4, Type::DGRAM, libc::IPPROTO_UDPLITE, false),
+    (Domain::IPV6, Type::DGRAM, libc::IPPROTO_UDPLITE, false),
+    (Domain::IPV4, Type::DGRAM, libc::IPPROTO_ICMP, false),
+    (Domain::IPV6, Type::DGRAM, libc::IPPROTO_ICMPV6, false),
+    (Domain::IPV4, Type::RAW, libc::IPPROTO_ICMP, false),
+    (Domain::IPV4, Type::RAW, libc::IPPROTO_RAW, false),
+    (Domain::IPV6, Type::RAW, libc::IPPROTO_ICMPV6, false),
+    (Domain::IPV4, Type::STREAM, libc::IPPROTO_SCTP, false),
+    (Domain::IPV4, Type::SEQPACKET, libc::IPPROTO_SCTP, false),
+    (Domain::IPV6, Type::STREAM, libc::IPPROTO_SCTP, false),
+];
+
+/// Gives a socket of this kind, connected over loopback when asked, or none when the running kernel cannot make one.
+fn request_socket(
+    domain: Domain,
+    kind: Type,
+    protocol: c_int,
+    connected: bool,
+) -> Option<Prepared> {
+    let protocol = Protocol::from(protocol);
+    if !connected {
+        return Socket::new(domain, kind, Some(protocol)).ok().map(alone);
+    }
+    let loopback = if domain == Domain::IPV4 {
+        SocketAddr::from((Ipv4Addr::LOCALHOST, u16::MIN))
+    } else {
+        SocketAddr::from((Ipv6Addr::LOCALHOST, u16::MIN))
+    };
+    let listener = Socket::new(domain, kind, Some(protocol)).ok()?;
+    listener.bind(&loopback.into()).expect("a loopback binding");
+    listener.listen(1).expect("listening");
+    let client = Socket::new(domain, kind, Some(protocol)).expect("a second socket of the kind");
+    client
+        .connect(&listener.local_addr().expect("its address"))
+        .expect("a loopback connect");
+    let (accepted, _) = listener.accept().expect("an accept");
+    Some(Prepared {
+        socket: client.into(),
+        _keep: vec![accepted.into(), listener.into()],
+    })
+}
+
+/// Each ioctl row's request and its method.
+const REQUEST_METHODS: [(u32, fn(BorrowedFd<'_>) -> Result<c_int, HostError>); 3] = [
+    (crate::local::SIOCOUTQ, |socket| {
+        OPTIONS.get_siocoutq(socket)
+    }),
+    (crate::local::SIOCOUTQNSD, |socket| {
+        OPTIONS.get_siocoutqnsd(socket)
+    }),
+    (crate::local::SIOCATMARK, |socket| {
+        OPTIONS.get_siocatmark(socket)
+    }),
+];
+
+/// An int a request is lent, followed by the bytes a request read as `struct ifreq` would take, set from `after`.
+#[repr(C)]
+struct LentInt {
+    value: [u8; size_of::<c_int>()],
+    after: [u8; GUARD],
+}
+
+/// Makes one request below the method on the socket, lent an int set from `value` with `after` past it.
+///
+/// Gives the int's address, so the job's trace of the kernel can be joined to it, and what the call did.
+fn lent_request(
+    socket: BorrowedFd<'_>,
+    request: u32,
+    value: [u8; size_of::<c_int>()],
+    after: [u8; GUARD],
+) -> (usize, Result<(), HostError>, bool, bool) {
+    let mut lent = Box::new(LentInt { value, after });
+    let address = std::ptr::from_ref(&lent.value).addr();
+    let result = crate::ioctl_within(socket, request, &mut lent.value);
+    let past = lent.after != after;
+    let inside = lent.value != value;
+    (address, result, inside, past)
+}
+
+/// Every ioctl row's request on every socket kind of the internet families, below the method and through it.
+///
+/// Prints one `REQUEST` line per call, with the int's address for the job's trace of what the kernel read, and fails
+/// when a call wrote past the int, followed an address, or the method answered other than the kernel below it. Three
+/// forms: an int between canaries, an int and what follows it set to unmapped addresses, and the method itself.
+#[test]
+fn every_request_is_measured_on_every_socket_kind_of_its_families() {
+    own_network();
+    std::fs::write(PING_GROUPS.0, PING_GROUPS.1).expect("echo sockets for root, as root");
+    let requests: Vec<(&str, u32, fn(BorrowedFd<'_>) -> Result<c_int, HostError>)> = ROWS
+        .iter()
+        .filter(|row| row.level.is_none())
+        .map(|row| {
+            let (_, method) = REQUEST_METHODS
+                .iter()
+                .find(|(request, _)| *request == row.option)
+                .unwrap_or_else(|| panic!("no method listed for {}", row.method));
+            (row.method, row.option, *method)
+        })
+        .collect();
+    assert_eq!(
+        requests.len(),
+        REQUEST_METHODS.len(),
+        "every listed request has its row"
+    );
+    let mut faults = Vec::new();
+    for (domain, kind, protocol, connected) in REQUEST_SOCKETS {
+        let socket_kind = format!("{domain:?} {kind:?} protocol {protocol} connected {connected}");
+        for (method, request, through) in &requests {
+            let Some(prepared) = request_socket(domain, kind, protocol, connected) else {
+                println!("REQUEST {method} {socket_kind} unavailable");
+                continue;
+            };
+            let socket = prepared.socket.as_fd();
+            let [first, second] = CANARIES;
+            let forms = [
+                ("fenced", [first; size_of::<c_int>()], [second; GUARD]),
+                (
+                    "poisoned",
+                    unmapped_bytes(size_of::<c_int>(), UNMAPPED_WORDS[usize::MIN])
+                        .try_into()
+                        .expect("an int's bytes"),
+                    unmapped_bytes(GUARD, UNMAPPED_WORDS[usize::MIN])
+                        .try_into()
+                        .expect("a guard's bytes"),
+                ),
+            ];
+            let mut below = Vec::new();
+            for (form, value, after) in forms {
+                let (address, result, inside, past) = lent_request(socket, *request, value, after);
+                below.push(result.err());
+                println!(
+                    "REQUEST {method} {socket_kind} {form} address {address:#x} result {result:?} inside {inside} \
+                     past {past}"
+                );
+                if past || result == Err(HostError::Errno(libc::EFAULT)) {
+                    faults.push(format!(
+                        "{method} {socket_kind} {form}: {result:?} past {past}"
+                    ));
+                }
+            }
+            let through_method = caught(|| through(socket));
+            println!("REQUEST {method} {socket_kind} method result {through_method:?}");
+            match through_method {
+                Err(stop) => faults.push(format!("{method} {socket_kind} method: {stop}")),
+                Ok(answer) if below.iter().any(|error| *error != answer.err()) => faults.push(format!(
+                    "{method} {socket_kind} method: answered {answer:?} where the kernel answered {below:?}"
+                )),
+                Ok(_) => {}
+            }
+        }
+    }
+    assert!(
+        faults.is_empty(),
+        "requests that wrote past their int or followed an address:\n{}",
+        faults.join("\n")
+    );
+}

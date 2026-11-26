@@ -11,7 +11,7 @@ use wcontainers_linux_socket_options::{
 
 use crate::{
     DirectLinuxSocketOptions, Plain, get_full_info, get_keys, get_value, get_written, ioctl_int,
-    local, of_family, request_of_family, set_group_filter, set_number, set_program, set_value,
+    local, of_family, request_of_kind, set_group_filter, set_number, set_program, set_value,
     set_value_written,
 };
 
@@ -943,21 +943,42 @@ impl LinuxSocketOptions for DirectLinuxSocketOptions {
 
     fn get_siocoutq(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError> {
         ioctl_int(
-            request_of_family(socket, &[uapi::AF_INET, uapi::AF_INET6])?,
+            request_of_kind(
+                socket,
+                &[uapi::AF_INET, uapi::AF_INET6],
+                &[
+                    (uapi::SOCK_STREAM, Some(local::IPPROTO_TCP)),
+                    (uapi::SOCK_STREAM, Some(local::IPPROTO_MPTCP)),
+                    (uapi::SOCK_DGRAM, Some(local::IPPROTO_UDP)),
+                    (uapi::SOCK_DGRAM, Some(local::IPPROTO_UDPLITE)),
+                    (uapi::SOCK_RAW, None),
+                ],
+            )?,
             local::SIOCOUTQ,
         )
     }
 
     fn get_siocoutqnsd(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError> {
         ioctl_int(
-            request_of_family(socket, &[uapi::AF_INET, uapi::AF_INET6])?,
+            request_of_kind(
+                socket,
+                &[uapi::AF_INET, uapi::AF_INET6],
+                &[
+                    (uapi::SOCK_STREAM, Some(local::IPPROTO_TCP)),
+                    (uapi::SOCK_STREAM, Some(local::IPPROTO_MPTCP)),
+                ],
+            )?,
             local::SIOCOUTQNSD,
         )
     }
 
     fn get_siocatmark(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError> {
         ioctl_int(
-            request_of_family(socket, &[uapi::AF_INET, uapi::AF_INET6])?,
+            request_of_kind(
+                socket,
+                &[uapi::AF_INET, uapi::AF_INET6],
+                &[(uapi::SOCK_STREAM, Some(local::IPPROTO_TCP))],
+            )?,
             local::SIOCATMARK,
         )
     }

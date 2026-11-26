@@ -1,25 +1,8 @@
 //! The tests every implementation of wcontainers-udp-sockets runs, written against its traits alone.
 //!
-//! Each check talks over the loopback addresses, with ports the kernel chooses. The rest of the network the
-//! checks need is the caller's to provide, on a network of its own:
-//! - one interface other than loopback with an address in 192.0.2.0/24 and the routes of IPv4 and IPv6
-//!   multicast (multicast_membership_takes_the_groups_datagrams, ipv6_memberships_take_their_datagrams);
-//! - user 1000's datagrams to 192.0.2.0/24 prohibited (an_owner_is_routed_as_its_user);
-//! - loopback taking segment routing headers (a_routing_header_arrives_in_the_header);
-//! - loopback pacing each socket's datagrams to its maximum pacing rate, one at a time at the rate
-//!   pacing_holds_datagrams_in_the_send_buffer sets (Linux's fq qdisc);
-//! - no hardware clock on loopback (loopback_has_no_hardware_clock);
-//! - 198.51.100.0/24 routed through a gateway (link_scope_keeps_a_datagram_on_its_link);
-//! - loopback holding each datagram until its transmit time (a_transmit_time_holds_a_datagram_until_then);
-//! - the local addresses 127.0.0.2 and 2001:db8::2 routed with an MTU of 1500 bytes
-//!   (path_mtu_discovery_modes_take_the_routes_mtu, forbidden_fragmentation_refuses_what_would_be_fragmented,
-//!   an_ipv6_send_takes_its_source);
-//! - an interface with 203.0.113.1/24 and 2001:db8:1::1/64, this prefix's one public address, with a temporary
-//!   address made from it and temporary addresses preferred (connect_takes_its_route_selectors), whose queue
-//!   keeps a schedule of transmit times on the international atomic clock in strict mode and misses every time
-//!   it holds (Linux's etf qdisc with a delta of 0; rejected_transmit_times_are_reported_with_their_keys).
-//!
-//! The checks are of Linux's behaviour on a Linux network, so the suite builds only on Linux.
+//! Each check talks over loopback with ports the kernel chooses; the rest of the network it needs, which its
+//! documentation names, is the caller's to provide on a network of its own. The suite builds only on Linux, whose
+//! behavior it checks.
 #![cfg(target_os = "linux")]
 
 use core::cell::{Cell, RefCell};
@@ -1613,8 +1596,8 @@ pub fn sending_settings_are_taken<S: UdpSockets>(sockets: S) {
 ///
 /// It takes them while the sender's loopback is on, and from the sources its filter lets through.
 ///
-/// Runs over the interface the multicast route chooses: Linux's loopback interface brings back every datagram
-/// sent over it, looped or not.
+/// It needs an interface besides loopback, which brings back every datagram looped or not, with an address in
+/// 192.0.2.0/24 and the IPv4 multicast route.
 pub fn multicast_membership_takes_the_groups_datagrams<S: UdpSockets>(sockets: S) {
     // The last group of the local network control block, which no interface joins by itself.
     let group = Ipv4Addr::from_bits(linux_raw_sys::net::INADDR_MAX_LOCAL_GROUP);
@@ -1940,7 +1923,7 @@ fn two_processors() -> Vec<usize> {
 }
 
 /// Runs `work` on this thread held to one processor, then lets the thread run where it could before.
-fn on_processor(processor: usize, work: impl FnOnce()) {
+fn run_on_processor(processor: usize, work: impl FnOnce()) {
     let allowed = rustix::thread::sched_getaffinity(None).expect("this thread's processors");
     let mut only = rustix::thread::CpuSet::new();
     only.set(processor);
@@ -1984,7 +1967,7 @@ pub fn the_incoming_processor_is_read_back<S: UdpSockets>(sockets: S) {
         .expect("connect");
     let mut into = buffer();
     for &processor in processors.iter().rev() {
-        on_processor(processor, || {
+        run_on_processor(processor, || {
             send(&sockets, &sender, UdpProtocol::Udp, from, local, PAYLOAD);
         });
         receive_packet(&sockets, &socket, &mut into);
@@ -2151,6 +2134,8 @@ enum OverTheMtu {
 ///
 /// It is fragmented (Want, Dont), too long (Do), or sent whole by the interface's larger MTU (Probe, Interface, Omit),
 /// over IPv4 and IPv6.
+///
+/// It needs the local addresses 127.0.0.2 and 2001:db8::2 routed with an MTU of 1500 bytes.
 pub fn path_mtu_discovery_modes_take_the_routes_mtu<S: UdpSockets>(sockets: S) {
     let mtu = MaximumTransmissionUnit(u32::from(ROUTE_MTU));
     let payload = vec![u8::MIN; usize::from(ROUTE_MTU) * 2];
@@ -2323,10 +2308,10 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
 
 /// An IPv6 multicast member takes the group's datagrams with all-groups off.
 ///
-/// It is joined on the route's interface or one given, and a link-local anycast address joined there is reachable.
+/// It is joined on the route's interface or one given; a link-local anycast address joined there is reachable.
 ///
-/// It needs a multicast interface besides loopback: Linux takes no IPv6 multicast datagram over loopback, drops a
-/// looped one from the loopback address, and joins only an anycast address in a prefix of the interface.
+/// It needs that interface with the IPv6 multicast route: Linux takes no IPv6 multicast over loopback and joins
+/// an anycast address only in an interface's prefix.
 pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
     let group = global_group;
     let unspecified = binding(IpAddr::V6(Ipv6Addr::UNSPECIFIED), u16::MIN);
@@ -2467,7 +2452,7 @@ pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
 
 /// A socket's owner is the user its datagrams are routed for.
 ///
-/// The caller's network prohibits user 1000's datagrams to an address it routes for the superuser.
+/// It needs user 1000's datagrams to 192.0.2.0/24 prohibited, an address routed for the superuser.
 pub fn an_owner_is_routed_as_its_user<S: UdpSockets>(sockets: S) {
     let to = SocketAddr::new(IpAddr::V4(ROUTED_NOWHERE), u16::MAX);
     let answers = [OWNER, OTHER_OWNER].map(|owner| {
@@ -2501,6 +2486,8 @@ pub fn an_owner_is_routed_as_its_user<S: UdpSockets>(sockets: S) {
 /// A segment routing header arrives in the header as sent.
 ///
 /// It comes after the routing destination options when they are sent too.
+///
+/// It needs loopback taking segment routing headers.
 pub fn a_routing_header_arrives_in_the_header<S: UdpSockets>(sockets: S) {
     let padding = [u8::MIN; etherparse::Ipv6RawExtHeader::MIN_LEN];
     let options = etherparse::Ipv6RawExtHeaderSlice::from_slice(&padding).unwrap();
@@ -2557,6 +2544,8 @@ pub fn a_routing_header_arrives_in_the_header<S: UdpSockets>(sockets: S) {
 /// Datagrams paced to a socket's maximum pacing rate arrive that far apart, waiting in its send buffer.
 ///
 /// So a small send buffer fills and a send would block.
+///
+/// It needs loopback pacing each socket's datagrams to its maximum pacing rate, one at a time (Linux's fq qdisc).
 pub fn pacing_holds_datagrams_in_the_send_buffer<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
@@ -2626,6 +2615,8 @@ pub fn pacing_holds_datagrams_in_the_send_buffer<S: UdpSockets>(sockets: S) {
 /// Hardware receive times are taken as a setting on loopback, but none arrives and no hardware clock can be bound.
 ///
 /// This holds on a socket bound to loopback or to no interface.
+///
+/// It needs no hardware clock on loopback.
 pub fn loopback_has_no_hardware_clock<S: UdpSockets>(sockets: S) {
     let interface = loopback_interface(&sockets);
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
@@ -3301,6 +3292,8 @@ pub fn a_header_of_another_version_is_refused<S: UdpSockets>(sockets: S) {
 }
 
 /// A datagram whose route must stay on its link is not sent through a gateway; one of universe scope is.
+///
+/// It needs 198.51.100.0/24 routed through a gateway.
 pub fn link_scope_keeps_a_datagram_on_its_link<S: UdpSockets>(sockets: S) {
     let to = SocketAddr::new(IpAddr::V4(BEYOND_A_GATEWAY), u16::MAX);
     let sender = sockets
@@ -3331,6 +3324,8 @@ pub fn link_scope_keeps_a_datagram_on_its_link<S: UdpSockets>(sockets: S) {
 }
 
 /// A datagram with a transmit time on the monotonic clock arrives no earlier than that time.
+///
+/// It needs loopback holding each datagram until its transmit time.
 pub fn a_transmit_time_holds_a_datagram_until_then<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
     let (sender, from) = bound(&sockets, IpVersion::V4, UdpProtocol::Udp);
@@ -3516,8 +3511,11 @@ fn clock_now(clock: rustix::time::ClockId) -> Duration {
 
 /// Connect takes its route's selectors.
 ///
-/// The IPv6 source preferences choose between the public and the temporary address, the host's choice being temporary,
-/// and an IPv4 interface given gives that interface's address.
+/// The IPv6 source preferences choose the public or the temporary address, the host's choice being temporary; an
+/// IPv4 interface given gives its address.
+///
+/// It needs an interface with 203.0.113.1/24 and 2001:db8:1::1/64 as its one public address, a temporary address
+/// from it, and temporary addresses preferred.
 pub fn connect_takes_its_route_selectors<S: UdpSockets>(sockets: S) {
     let connected = |version, route| {
         let socket = sockets.open(version, UdpProtocol::Udp, OWNER).unwrap();
@@ -3565,6 +3563,8 @@ pub fn connect_takes_its_route_selectors<S: UdpSockets>(sockets: S) {
 /// Local fragmentation forbidden refuses a datagram over the route's MTU, and allowed fragments it.
 ///
 /// The datagram is one path MTU discovery would let be fragmented.
+///
+/// It needs 127.0.0.2 routed with an MTU of 1500 bytes.
 pub fn forbidden_fragmentation_refuses_what_would_be_fragmented<S: UdpSockets>(sockets: S) {
     let receiver = sockets
         .open(IpVersion::V6, UdpProtocol::Udp, OWNER)
@@ -3604,6 +3604,8 @@ pub fn forbidden_fragmentation_refuses_what_would_be_fragmented<S: UdpSockets>(s
 }
 
 /// An IPv6 send from a socket bound to no address leaves from the source its header gives.
+///
+/// It needs the local address 2001:db8::2 routed with an MTU of 1500 bytes.
 pub fn an_ipv6_send_takes_its_source<S: UdpSockets>(sockets: S) {
     let (receiver, to) = bound(&sockets, IpVersion::V6, UdpProtocol::Udp);
     let sender = sockets
@@ -3674,6 +3676,8 @@ pub fn an_unset_pacing_rate_holds_nothing<S: UdpSockets>(sockets: S) {
 /// A time already past, or a clock or mode other than the schedule's, is invalid, and a time the schedule misses is
 /// missed, with the packet if asked; a send that did not ask for errors gets no report.
 pub fn rejected_transmit_times_are_reported_with_their_keys<S: UdpSockets>(sockets: S) {
+    // It needs the 203.0.113.1/24 interface's queue keeping a strict schedule of transmit times on the international
+    // atomic clock that misses every time it holds (Linux's etf qdisc with a delta of 0).
     let sender = sockets
         .open(IpVersion::V4, UdpProtocol::Udp, OWNER)
         .unwrap();

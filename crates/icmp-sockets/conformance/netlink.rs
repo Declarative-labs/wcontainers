@@ -7,7 +7,8 @@ use std::net::{IpAddr, Ipv6Addr};
 
 use netlink_packet_core::{
     DefaultNla, Emitable, NLA_F_NESTED, NLM_F_ACK, NLM_F_APPEND, NLM_F_CREATE, NLM_F_DUMP,
-    NLM_F_EXCL, NLM_F_REPLACE, NLM_F_REQUEST, NetlinkHeader, NetlinkMessage, NetlinkPayload,
+    NLM_F_EXCL, NLM_F_REPLACE, NLM_F_REQUEST, NetlinkBuffer, NetlinkHeader, NetlinkMessage,
+    NetlinkPayload, Nla, NlasIterator,
 };
 use netlink_packet_route::address::{
     AddressAttribute, AddressFlags, AddressHeaderFlags, AddressMessage, AddressScope,
@@ -210,8 +211,13 @@ pub(crate) fn done(line: &str, options: &[&str]) -> bool {
 /// Does one line of `tc` commands through the routing socket, or tells that this kind is not done here.
 pub(crate) fn traffic_control_done(line: &str) -> bool {
     let words: Vec<&str> = line.split_whitespace().collect();
+    let mut schedule = None;
     let request = match words.as_slice() {
-        [word::QDISC, word::ADD, word::DEV, link, rest @ ..] => queueing_discipline(link, rest),
+        [word::QDISC, word::ADD, word::DEV, link, rest @ ..] => queueing_discipline(link, rest)
+            .map(|(message, flags, asked)| {
+                schedule = asked.map(|asked| (*link, asked));
+                (message, flags)
+            }),
         [word::QDISC, word::DEL, word::DEV, link, word::ROOT] => {
             let mut message = TcMessage::default();
             message.header.index = tc_index(link);
@@ -225,7 +231,65 @@ pub(crate) fn traffic_control_done(line: &str) -> bool {
         return false;
     };
     ask(message, flags, line);
+    if let Some((link, asked)) = schedule {
+        assert_eq!(
+            schedule_held(link),
+            asked,
+            "tc {line}: the kernel holds another schedule"
+        );
+    }
     true
+}
+
+/// `struct tc_etf_qopt`: the delta in nanoseconds, the clock and the flags of an etf discipline.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/pkt_sched.h
+#[derive(Debug, PartialEq, Eq)]
+struct Schedule {
+    delta: i32,
+    clock: i32,
+    flags: u32,
+}
+
+/// Gives the schedule the kernel holds for the link's etf discipline, read back as `tc qdisc show dev <link>` reads it.
+fn schedule_held(link: &str) -> Schedule {
+    let mut request = TcMessage::default();
+    request.header.index = tc_index(link);
+    let options = dump(RouteNetlinkMessage::GetQueueDiscipline(request))
+        .into_iter()
+        .find_map(|answer| {
+            let RouteNetlinkMessage::NewQueueDiscipline(found) = answer else {
+                return None;
+            };
+            if !found
+                .attributes
+                .contains(&TcAttribute::Kind(word::ETF.to_owned()))
+            {
+                return None;
+            }
+            found
+                .attributes
+                .into_iter()
+                .find_map(|attribute| match attribute {
+                    TcAttribute::Options(options) => Some(options),
+                    _ => None,
+                })
+        })
+        .unwrap_or_else(|| panic!("no etf discipline on {link}"));
+    let [TcOption::Other(nested)] = options.as_slice() else {
+        panic!("etf's options on {link}: {options:?}");
+    };
+    let mut inner = vec![u8::MIN; nested.value_len()];
+    nested.emit_value(&mut inner);
+    let parameters = attribute(&inner, TCA_ETF_PARMS).expect("etf's parameters");
+    let ([delta, clock, flags], []) = parameters.as_chunks::<{ size_of::<i32>() }>() else {
+        panic!("etf's parameters on {link}: {parameters:?}");
+    };
+    Schedule {
+        delta: i32::from_ne_bytes(*delta),
+        clock: i32::from_ne_bytes(*clock),
+        flags: u32::from_ne_bytes(*flags),
+    }
 }
 
 /// The bands of a prio queue made without `bands`, its options being `struct tc_prio_qopt`: this int, then the map.
@@ -256,8 +320,12 @@ const HANDLE_SEPARATOR: char = ':';
 ///
 /// Like tc, a discipline is the root unless it is `clsact`, which takes the ingress parent and handle `ffff:`, and has
 /// the handle the kernel chooses unless one is given.
-fn queueing_discipline(link: &str, words: &[&str]) -> Option<(RouteNetlinkMessage, u16)> {
+fn queueing_discipline(
+    link: &str,
+    words: &[&str],
+) -> Option<(RouteNetlinkMessage, u16, Option<Schedule>)> {
     let mut message = TcMessage::default();
+    let mut schedule = None;
     message.header.index = tc_index(link);
     let mut rest = words.iter();
     while let Some(word) = rest.next() {
@@ -309,6 +377,11 @@ fn queueing_discipline(link: &str, words: &[&str]) -> Option<(RouteNetlinkMessag
                     .iter()
                     .flat_map(|value| value.to_ne_bytes())
                     .collect();
+                schedule = Some(Schedule {
+                    delta,
+                    clock: *clock,
+                    flags: u32::MIN,
+                });
                 message
                     .attributes
                     .push(TcAttribute::Kind(word::ETF.to_owned()));
@@ -324,6 +397,7 @@ fn queueing_discipline(link: &str, words: &[&str]) -> Option<(RouteNetlinkMessag
     Some((
         RouteNetlinkMessage::NewQueueDiscipline(message),
         NLM_F_CREATE | NLM_F_EXCL,
+        schedule,
     ))
 }
 
@@ -1122,11 +1196,7 @@ pub(crate) fn track_made_connections() {
         u32::MAX,
         &[],
     ));
-    let socket = netlink_sys::Socket::new(netlink_sys::protocols::NETLINK_NETFILTER)
-        .expect("a netfilter socket");
-    socket
-        .connect(&netlink_sys::SocketAddr::new(u32::MIN, u32::MIN))
-        .expect("the netfilter socket connects to the kernel");
+    let socket = netfilter_socket();
     socket
         .send(&batch, i32::from(u8::MIN))
         .expect("the firewall batch is sent");
@@ -1150,6 +1220,84 @@ pub(crate) fn track_made_connections() {
                 .max(NETLINK_ALIGNMENT);
         }
     }
+    let hook = tracking_chain_hook();
+    assert_eq!(
+        hook,
+        ChainHook {
+            number: libc::NF_INET_LOCAL_OUT.cast_unsigned(),
+            priority: i32::from(u8::MIN),
+        },
+        "the kernel holds the tracking chain on another hook than `hook output priority 0`"
+    );
+}
+
+/// Opens a netfilter socket of the calling thread's namespace, connected to the kernel.
+fn netfilter_socket() -> netlink_sys::Socket {
+    let socket = netlink_sys::Socket::new(netlink_sys::protocols::NETLINK_NETFILTER)
+        .expect("a netfilter socket");
+    // The kernel's port number and no multicast groups (netlink(7)).
+    socket
+        .connect(&netlink_sys::SocketAddr::new(u32::MIN, u32::MIN))
+        .expect("the netfilter socket connects to the kernel");
+    socket
+}
+
+/// The hook a base chain is on and its priority there, as nf_tables(5) keeps them.
+#[derive(Debug, PartialEq, Eq)]
+struct ChainHook {
+    number: u32,
+    priority: i32,
+}
+
+/// Gives the hook the kernel holds the tracking chain on, read back as `nft list chain` reads it.
+fn tracking_chain_hook() -> ChainHook {
+    use nftables::*;
+    let text = |value: &str| [value.as_bytes(), &[u8::MIN]].concat();
+    let kind = |message: i32| (libc::NFNL_SUBSYS_NFTABLES << u8::BITS) | message;
+    let request = netfilter_message(
+        kind(libc::NFT_MSG_GETCHAIN),
+        u16::MIN,
+        u32::MIN,
+        &[
+            DefaultNla::new(NFTA_CHAIN_TABLE, text(TRACKED_TABLE)),
+            DefaultNla::new(NFTA_CHAIN_NAME, text(TRACKED_CHAIN)),
+        ],
+    );
+    let socket = netfilter_socket();
+    socket
+        .send(&request, i32::from(u8::MIN))
+        .expect("the tracking chain is asked for");
+    let mut reply = Vec::with_capacity(ANSWER_ROOM);
+    socket
+        .recv(&mut reply, i32::from(u8::MIN))
+        .expect("the tracking chain is answered");
+    let answer = NetlinkBuffer::new_checked(reply.as_slice()).expect("a netlink message");
+    assert_eq!(
+        i32::from(answer.message_type()),
+        kind(libc::NFT_MSG_NEWCHAIN),
+        "the tracking chain read back: {reply:?}"
+    );
+    let chain = answer
+        .payload()
+        .get(netfilter_header().len()..)
+        .expect("the chain's attributes");
+    let hook = attribute(chain, NFTA_CHAIN_HOOK).expect("the chain's hook");
+    let word = |kind: u16| {
+        let value = attribute(&hook, kind).expect("the hook's number and priority");
+        value.try_into().expect("a word, as nf_tables writes a hook number and priority")
+    };
+    ChainHook {
+        number: u32::from_be_bytes(word(NFTA_HOOK_HOOKNUM)),
+        priority: i32::from_be_bytes(word(NFTA_HOOK_PRIORITY)),
+    }
+}
+
+/// Gives the value of the first attribute of this kind among these, nested or not.
+fn attribute(attributes: &[u8], kind: u16) -> Option<Vec<u8>> {
+    NlasIterator::new(attributes)
+        .map_while(Result::ok)
+        .find(|found| found.kind() == kind)
+        .map(|found| found.value().to_vec())
 }
 
 /// Gives an attribute holding these attributes, marked as nested as libnftnl marks its own.
@@ -1166,15 +1314,7 @@ fn emitted(attributes: &[DefaultNla]) -> Vec<u8> {
 
 /// Gives one nfnetlink message: its header, `struct nfgenmsg` of IPv4's nf_tables, and the attributes.
 fn netfilter_message(kind: i32, flags: u16, sequence: u32, attributes: &[DefaultNla]) -> Vec<u8> {
-    let mut payload = vec![
-        u8::try_from(libc::NFPROTO_IPV4).unwrap_or(u8::MAX),
-        u8::try_from(libc::NFNETLINK_V0).unwrap_or(u8::MAX),
-    ];
-    payload.extend(
-        u16::try_from(libc::NFNL_SUBSYS_NFTABLES)
-            .unwrap_or(u16::MAX)
-            .to_be_bytes(),
-    );
+    let mut payload = netfilter_header();
     payload.extend(emitted(attributes));
     let mut header = NetlinkHeader::default();
     header.length = u32::try_from(header.buffer_len() + payload.len()).unwrap_or(u32::MAX);
@@ -1185,6 +1325,20 @@ fn netfilter_message(kind: i32, flags: u16, sequence: u32, attributes: &[Default
     header.emit(&mut bytes);
     bytes.extend(payload);
     bytes
+}
+
+/// Gives `struct nfgenmsg` of IPv4's nf_tables, which comes before the attributes of every nf_tables message.
+fn netfilter_header() -> Vec<u8> {
+    let mut header = vec![
+        u8::try_from(libc::NFPROTO_IPV4).unwrap_or(u8::MAX),
+        u8::try_from(libc::NFNETLINK_V0).unwrap_or(u8::MAX),
+    ];
+    header.extend(
+        u16::try_from(libc::NFNL_SUBSYS_NFTABLES)
+            .unwrap_or(u16::MAX)
+            .to_be_bytes(),
+    );
+    header
 }
 
 /// Gives the index of a link of the calling thread's namespace, or stops the check when there is none.

@@ -15,13 +15,10 @@ use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_udp_sockets::UdpSockets;
 use wcontainers_udp_sockets_host::HostUdpSockets;
 
-use support::{PAYLOAD, Wakes, pair, poll_with, wait_and_take};
+use support::{DATAGRAMS, PAYLOAD, Wakes, pair, poll_with, wait_and_take};
 
 /// Taken by each test, so that one counts only its own wakes.
 static ALONE: Mutex<()> = Mutex::new(());
-
-/// How many datagrams each measurement sends.
-const DATAGRAMS: usize = 1200;
 
 /// How long the watcher is given to show a wake it was sent.
 const SETTLE: Duration = Duration::from_millis(50);

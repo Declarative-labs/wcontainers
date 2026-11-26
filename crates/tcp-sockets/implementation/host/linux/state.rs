@@ -1,7 +1,7 @@
 //! The state readings of a Linux TCP or MPTCP socket and the repair settings that write it back.
 
 use std::ffi::c_int;
-use std::mem::size_of;
+use std::mem::{offset_of, size_of};
 use std::net::IpAddr;
 use std::os::fd::BorrowedFd;
 use std::sync::OnceLock;
@@ -138,7 +138,17 @@ struct AccurateEcnInformation {
     ///
     /// It is `tcpi_accecn_fail_mode` then `tcpi_accecn_opt_seen` as two `u16`s on Linux 6.18 and 6.19; from 7.0 one
     /// `u32` of bit fields from `tcpi_ecn_mode`, which [`AccurateEcnLayout`] tells apart.
-    last: [u8; 4],
+    last: [u8; size_of::<u32>()],
+}
+
+/// The last `TCP_INFO` word as Linux 6.18 and 6.19 lay it out.
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, KnownLayout, Immutable)]
+struct AccurateEcnHalves {
+    /// `tcpi_accecn_fail_mode`.
+    fail_mode: u16,
+    /// `tcpi_accecn_opt_seen`.
+    option_seen: u16,
 }
 
 /// How the last word of a `TCP_INFO` with the Accurate ECN fields is laid out, which only the kernel's version tells.
@@ -221,7 +231,7 @@ options::uapi_mirror! {
         tcpi_backoff: u8,
         tcpi_options: u8,
         /// The window scales, the application limit and the fast open failure, read by [`TcpInfo::bit_field`].
-        _bitfield_1: [u8; 2],
+        _bitfield_1: [u8; offset_of!(uapi::tcp_info, tcpi_rto) - offset_of!(uapi::tcp_info, _bitfield_1)],
         tcpi_rto: u32,
         tcpi_ato: u32,
         tcpi_snd_mss: u32,
@@ -280,7 +290,8 @@ options::uapi_mirror! {
     /// `struct tcp_ao_info_opt`, given as linux-raw-sys's by [`authentication_information`] for its bit field accessors.
     #[derive(IntoBytes)]
     struct AuthenticationInformation mirrors uapi::tcp_ao_info_opt {
-        _bitfield_1: [u8; 4],
+        _bitfield_1: [u8; offset_of!(uapi::tcp_ao_info_opt, reserved2)
+            - offset_of!(uapi::tcp_ao_info_opt, _bitfield_1)],
         reserved2: u16,
         current_key: u8,
         rnext: u8,
@@ -591,7 +602,6 @@ fn information_of(
     shortfalls.count(UNFILLED_INFORMATION);
     let classic = u32::from(info.tcpi_options) & uapi::TCPI_OPT_ECN != u32::MIN;
     let word = u32::from_ne_bytes(ecn.last);
-    let [first, second] = [[ecn.last[0], ecn.last[1]], [ecn.last[2], ecn.last[3]]];
     let (ecn_mode, fail_mode, option_seen) = match layout {
         None if classic => (EcnMode::Classic, u16::MIN, u16::MIN),
         None => (EcnMode::Disabled, u16::MIN, u16::MIN),
@@ -606,11 +616,10 @@ fn information_of(
         Some(AccurateEcnLayout::Halves) if classic => {
             return Err(shortfalls.refuse(NO_ECN_MODE));
         }
-        Some(AccurateEcnLayout::Halves) => (
-            EcnMode::Disabled,
-            u16::from_ne_bytes(first),
-            u16::from_ne_bytes(second),
-        ),
+        Some(AccurateEcnLayout::Halves) => {
+            let halves: AccurateEcnHalves = zerocopy::transmute!(ecn.last);
+            (EcnMode::Disabled, halves.fail_mode, halves.option_seen)
+        }
     };
     let state = info
         .tcpi_state

@@ -212,6 +212,12 @@ fn refusal(row: &Row<'_>) -> Option<String> {
             "{method}: an ioctl request has level {NO_LEVEL}, and only it"
         ));
     }
+    if row.level == NO_LEVEL && kernel::request_kinds(row.option).is_none_or(<[_]>::is_empty) {
+        return Some(format!(
+            "{method}: the kernel table names no kind of socket {} was read for",
+            row.option
+        ));
+    }
     if let Some(structure) = named_type(row.value)
         && !PLAIN_STRUCTURES.contains(&structure)
     {
@@ -382,11 +388,11 @@ fn summary(row: &Row<'_>) -> String {
     }
 }
 
-/// The private functions that check a socket's family, for an option and for an ioctl request.
+/// The private functions that check a socket's family, for an option, and its family and kind, for an ioctl request.
 const OPTION_FAMILY_CHECK: &str = "of_family";
-const REQUEST_FAMILY_CHECK: &str = "request_of_family";
+const REQUEST_KIND_CHECK: &str = "request_of_kind";
 
-/// Gives the family check a generated call passes its socket through, from the kernel table's families of the level.
+/// Gives the check a generated call passes its socket through, from the kernel table's families and request kinds.
 ///
 /// It gives none where the level is the socket layer's own, which every family shares.
 fn family_guard(row: &Row<'_>) -> Option<String> {
@@ -395,14 +401,30 @@ fn family_guard(row: &Row<'_>) -> Option<String> {
         Families::Every => None,
         Families::Only(names) => {
             let list: Vec<&str> = names.iter().map(|name| name.path).collect();
-            let check = if level.is_none() {
-                REQUEST_FAMILY_CHECK
-            } else {
-                OPTION_FAMILY_CHECK
-            };
-            Some(format!("{check}(socket, &[{}])?", list.join(", ")))
+            let families = list.join(", ");
+            match level {
+                Some(_) => Some(format!("{OPTION_FAMILY_CHECK}(socket, &[{families}])?")),
+                None => Some(format!(
+                    "{REQUEST_KIND_CHECK}(socket, &[{families}], &[{}])?",
+                    kinds_list(kernel::request_kinds(row.option)?)
+                )),
+            }
         }
     }
+}
+
+/// Gives the kinds a request was read for as the generated code lists them: each type, with its protocol or none.
+fn kinds_list(kinds: &[kernel::Kind]) -> String {
+    let listed: Vec<String> = kinds
+        .iter()
+        .map(|kind| {
+            let protocol = kind
+                .protocol
+                .map_or_else(|| "None".to_owned(), |name| format!("Some({})", name.path));
+            format!("({}, {protocol})", kind.socket_type.path)
+        })
+        .collect();
+    listed.join(", ")
 }
 
 /// The body of the direct implementation's method.
@@ -524,7 +546,7 @@ const CRATE_NAMES: [&str; 15] = [
     "ioctl_int",
     "local",
     "of_family",
-    "request_of_family",
+    "request_of_kind",
     "set_group_filter",
     "set_number",
     "set_program",
@@ -1019,13 +1041,15 @@ fn descriptor_reason(row: &Row<'_>, _: &Entry) -> Result<(), String> {
 }
 
 /// Every reason's family: the socket reaches the call only through the check of the families its level was read in.
+///
+/// A request's socket also passes the check of the kinds of socket the kernel table says it was read for.
 fn family_reason(row: &Row<'_>, _: &Entry) -> Result<(), String> {
     family_check(row, &body(row))
 }
 
-/// Checks that a method's body passes its socket once, through exactly the family check its level's families give.
+/// Checks that a method's body passes its socket once, through exactly the check its level's families give.
 ///
-/// A level of every family gives none.
+/// A level of every family gives none; a request's check also names the kinds of socket it was read for.
 fn family_check(row: &Row<'_>, code: &str) -> Result<(), String> {
     let level = (row.level != NO_LEVEL).then_some(row.level);
     let method = row.method;
@@ -1033,15 +1057,25 @@ fn family_check(row: &Row<'_>, code: &str) -> Result<(), String> {
         kernel::families(level).ok_or_else(|| format!("{method}: its level names no families"))?;
     let passed = code.matches("socket").count();
     let sound = match families {
-        Families::Every => passed == 1 && !code.contains(OPTION_FAMILY_CHECK),
+        Families::Every => {
+            passed == 1 && !code.contains(OPTION_FAMILY_CHECK) && !code.contains(REQUEST_KIND_CHECK)
+        }
         Families::Only(names) => {
             let list: Vec<&str> = names.iter().map(|name| name.path).collect();
-            let check = if level.is_none() {
-                REQUEST_FAMILY_CHECK
-            } else {
-                OPTION_FAMILY_CHECK
+            let families = list.join(", ");
+            let check = match level {
+                Some(_) => format!("{OPTION_FAMILY_CHECK}(socket, &[{families}])?"),
+                None => {
+                    let kinds = kernel::request_kinds(row.option).ok_or_else(|| {
+                        format!("{method}: no kinds of socket in the kernel table")
+                    })?;
+                    format!(
+                        "{REQUEST_KIND_CHECK}(socket, &[{families}], &[{}])?",
+                        kinds_list(kinds)
+                    )
+                }
             };
-            passed == 1 && code.contains(&format!("{check}(socket, &[{}])?", list.join(", ")))
+            passed == 1 && code.contains(&check)
         }
     };
     if sound {
@@ -1081,7 +1115,13 @@ fn a_body_whose_socket_skips_or_changes_its_family_check_is_seen_by_the_family_p
             code.replace("uapi::AF_INET6", "uapi::AF_UNIX"),
             code.replace("uapi::AF_INET, ", ""),
             format!("{code}; set_number(socket, 0, 0, &0)"),
-        ] {
+            code.replace("Some(local::IPPROTO_TCP)", "None"),
+            code.replace("uapi::SOCK_STREAM", "uapi::SOCK_DGRAM"),
+            code.replace("], &[(", "], &[(uapi::SOCK_DGRAM, None), ("),
+        ]
+        .into_iter()
+        .filter(|planted| *planted != code)
+        {
             assert!(
                 family_check(&row, &planted).is_err(),
                 "the family property misses {planted}"
@@ -1113,6 +1153,15 @@ fn every_level_but_the_socket_layers_names_the_internet_families() {
         }
     }
     assert!(matches!(kernel::REQUEST_FAMILIES, Families::Only(_)));
+    for request in &kernel::REQUESTS {
+        let kinds = kernel::request_kinds(request.path);
+        assert_eq!(
+            kinds.is_some_and(|kinds| !kinds.is_empty()),
+            request.path != "uapi::SIOCGSTAMP_OLD",
+            "{}: kinds {kinds:?}",
+            request.path
+        );
+    }
 }
 
 #[test]

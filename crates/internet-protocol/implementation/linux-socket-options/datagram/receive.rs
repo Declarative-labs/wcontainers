@@ -1,6 +1,6 @@
 //! The control messages of `recvmsg` and the error queue as `ReceivedPacketFields`, reports and whole packets.
 
-use core::mem::size_of;
+use core::mem::{offset_of, size_of};
 use core::num::NonZeroU32;
 use core::time::Duration;
 use std::io::IoSliceMut;
@@ -33,7 +33,7 @@ uapi_mirror! {
     struct TimestampingPacketInformation mirrors uapi::scm_ts_pktinfo {
         if_index: u32,
         pkt_length: u32,
-        reserved: [u32; 2],
+        reserved: [u8; size_of::<uapi::scm_ts_pktinfo>() - offset_of!(uapi::scm_ts_pktinfo, reserved)],
     }
 }
 

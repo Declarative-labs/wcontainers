@@ -2,7 +2,7 @@
 
 use std::ffi::c_int;
 use std::io::IoSlice;
-use std::mem::size_of;
+use std::mem::{offset_of, size_of};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -675,11 +675,13 @@ options::uapi_mirror! {
     #[derive(IntoBytes)]
     struct KeyQuery mirrors uapi::tcp_ao_getsockopt {
         addr: StorageBytes,
-        alg_name: [libc::c_char; 64],
-        key: [u8; 80],
+        alg_name: [libc::c_char; offset_of!(uapi::tcp_ao_getsockopt, key)
+            - offset_of!(uapi::tcp_ao_getsockopt, alg_name)],
+        key: [u8; uapi::TCP_AO_MAXKEYLEN as usize],
         nkeys: u32,
         /// `is_current`, `is_rnext` and `get_all`, left clear to ask for the named key alone.
-        _bitfield_1: [u8; 2],
+        _bitfield_1: [u8; offset_of!(uapi::tcp_ao_getsockopt, sndid)
+            - offset_of!(uapi::tcp_ao_getsockopt, _bitfield_1)],
         sndid: u8,
         rcvid: u8,
         prefix: u8,
