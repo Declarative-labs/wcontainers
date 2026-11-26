@@ -40,12 +40,13 @@ cp "$repository/rust-toolchain.toml" "$build/"
 {
     echo '[workspace]'
     echo 'resolver = "3"'
-    # A harness is written beside a slice's glue only: its glob is a member only when one is there.
-    if compgen -G "$build/crates/*/implementation/*/harness" > /dev/null; then
-        echo 'members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*", "crates/*/implementation/*/harness"]'
-    else
-        echo 'members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*"]'
-    fi
+    # A harness is written beside a slice's glue only, the C caller beside any glue: each glob is a member only when
+    # one is there.
+    members='"crates/*", "crates/*/conformance", "crates/*/implementation/*"'
+    for extra in harness c-caller; do
+        if compgen -G "$build/crates/*/implementation/*/$extra" > /dev/null; then members="$members, \"crates/*/implementation/*/$extra\""; fi
+    done
+    echo "members = [$members]"
     echo
     sed -n '/^\[workspace.package\]/,/^$/p' "$repository/Cargo.toml"
     echo '[workspace.metadata.reviewable]'

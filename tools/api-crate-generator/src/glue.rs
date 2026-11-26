@@ -692,7 +692,10 @@ mod write;
 mod record;
 #[path = "glue_hostile.rs"]
 mod hostile;
+#[path = "glue_c_caller.rs"]
+mod c_caller;
 
+pub(super) use c_caller::write_c_caller;
 pub(super) use hostile::write_hostile;
 pub(super) use record::write_recorder;
 pub(super) use write::write_direct;

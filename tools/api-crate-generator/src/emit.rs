@@ -1719,6 +1719,8 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
                 report.push_str(&glue::write_hostile(&writer, api, &folder)?);
             }
         }
+        // The hostile C caller over every table and export (src/glue_c_caller.rs).
+        report.push_str(&glue::write_c_caller(&writer, &out.join("crates"))?);
         // The pass-through test and the spike's harness, hand-written for the slice, go with its Direct3D 11 glue.
         if sliced && let Some(position) = apis.iter().position(|api| api.folder == "direct3d-11") {
             let direct = out.join("crates").join(apis[position].folder).join("implementation").join("direct");

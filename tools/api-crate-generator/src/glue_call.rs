@@ -523,7 +523,7 @@ impl Writer<'_, '_> {
             .unwrap_or_default()
     }
 
-    fn out_interface(&self, param: &crate::metadata::Param) -> Option<Key> {
+    pub(super) fn out_interface(&self, param: &crate::metadata::Param) -> Option<Key> {
         let (inner, _, _) = crate::emit::pointee(&param.ty)?;
         crate::emit::named(inner)
     }

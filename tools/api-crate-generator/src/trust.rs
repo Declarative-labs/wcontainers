@@ -522,7 +522,9 @@ pub fn check(out: &Path, ledger: Option<&Ledger>) -> Result<String, String> {
         // Every VolatileBytes call in the generated files was made through a model: the counts are equal.
         let modeled = ledger.volatile_bytes_asks();
         if modeled + template != seen {
-            failures.push(format!("NOT MODELED: the generated files hold {} calls of VolatileBytes and the models recorded {modeled}: an emission went around `Model::ask`", seen - template));
+            let found = seen - template;
+            let why = if found > modeled { "an emission went around `Model::ask`" } else { "the models recorded asks the text holds under names the text check cannot follow" };
+            failures.push(format!("NOT MODELED: the generated files hold {found} calls of VolatileBytes by name and the models recorded {modeled}: {why}"));
         }
     }
     if failures.is_empty() { Ok(report) } else { Err(format!("{report}{}", failures.join("\n"))) }
