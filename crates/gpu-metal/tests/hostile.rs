@@ -1,4 +1,5 @@
-//! The third check's cases of format usages, step rates and captures, and the cases of calls inside a pass.
+//! The third check's cases of format usages, step rates and captures, the cases of calls inside a pass, and the ninth
+//! check's cases of attachments marked Discard, counts and captures across a call inside a pass (k1 to k5).
 //!
 //! The calls inside a pass are those that would wait for, commit or nest work while a pass is open.
 //! Each prints a line starting HOSTILE with what the device did and what the reference did. The capture after a draw
@@ -7,14 +8,15 @@
 #![cfg(target_os = "macos")]
 
 use wcontainers_gpu::{
-    BlendDesc, BufferDesc, BufferRange, BufferUsage, ColorAttachment, ColorWrites, CullMode,
-    DepthStencilDesc, DeviceStatus, DispatchCall, DispatchGroups, DrawCall, DrawRange, Extent,
-    FORMAT_COUNT, Features, FillMode, Format, FormatUse, FrontFace, Gpu, GpuError, IndexBinding,
-    IndexFormat, LoadOp, MAX_COLOR_TARGETS, MAX_VERTEX_STREAMS, MapIntent, Origin, PassDesc,
-    Program, ProvokingVertex, QueryKind, RasterDesc, ReadSource, RenderTargetBlend, ShaderModule,
-    ShaderStage, StepMode, StoreOp, TextureDesc, TextureDimension, TextureRegion, TextureUsage,
-    TextureViewDesc, Topology, VertexAttribute, VertexBinding, VertexFormat, VertexLayoutDesc,
-    VertexStream, ViewDimension, Viewport, WriteMode,
+    AspectOps, BlendDesc, BufferDesc, BufferRange, BufferUsage, ColorAttachment, ColorWrites,
+    CompareFn, CullMode, DepthAttachment, DepthStencilDesc, DeviceStatus, DispatchCall,
+    DispatchGroups, DrawCall, DrawRange, Extent, FORMAT_COUNT, Features, FillMode, Format,
+    FormatUse, FrontFace, Gpu, GpuError, IndexBinding, IndexFormat, LoadOp, MAX_COLOR_TARGETS,
+    MAX_VERTEX_STREAMS, MapIntent, Origin, PassDesc, Program, ProvokingVertex, QueryKind,
+    RasterDesc, ReadSource, RenderTargetBlend, ShaderModule, ShaderStage, StepMode, StoreOp,
+    TextureDesc, TextureDimension, TextureRegion, TextureUsage, TextureViewDesc, Topology,
+    VertexAttribute, VertexBinding, VertexFormat, VertexLayoutDesc, VertexStream, ViewDimension,
+    Viewport, WriteMode,
 };
 use wcontainers_gpu_metal::MetalGpu;
 use wcontainers_gpu_test::Recorder;
@@ -1381,4 +1383,444 @@ fn p8_a_resolve_or_a_pass_begun_inside_a_pass_is_refused() {
             "p8 {nested}: a new device"
         );
     }
+}
+
+/// The texel of opaque green in `Rgba8Unorm`, which `GREEN` draws.
+const GREEN_TEXEL: [u8; 4] = [u8::MIN, u8::MAX, u8::MIN, u8::MAX];
+/// The texel of opaque red in `Rgba8Unorm`, which `RED_FAR` draws.
+const RED_TEXEL: [u8; 4] = [u8::MAX, u8::MIN, u8::MIN, u8::MAX];
+/// The bytes of `HALVES`, the positions buffer of `halves`.
+const HALVES_BYTES: u64 = size_of::<[f32; 16]>() as u64;
+/// The depth `RED_FAR` draws at, behind the depth `GREEN` draws at, which is the clip space z of 0.5.
+const RED_DEPTH: &str = "0.7";
+/// The depth a pass's depth attachment is cleared to: the farthest.
+const FAR_DEPTH: f32 = 1.0;
+/// The vertices of one half in `HALVES`, a strip of two triangles.
+const HALF_VERTICES: u32 = 4;
+/// The bytes of one occlusion result.
+const RESULT_BYTES: u64 = size_of::<u64>() as u64;
+/// The samples of the multisampled target of k3.
+const K3_SAMPLES: u32 = 4;
+
+/// Returns a program that draws the whole of what it is given red at `RED_DEPTH`.
+fn red_far() -> String {
+    format!(
+        "
+@vertex fn vs(@location(0) p: vec2<f32>) -> @builtin(position) vec4<f32> {{
+    return vec4<f32>(p, {RED_DEPTH}, 1.0);
+}}
+@fragment fn fs() -> @location(0) vec4<f32> {{ return vec4<f32>(1.0, 0.0, 0.0, 1.0); }}
+"
+    )
+}
+
+/// Returns how many texels of `bytes` are green, red and neither.
+fn texels_of(bytes: &[u8]) -> (usize, usize, usize) {
+    let (mut green, mut red, mut other) = (0usize, 0usize, 0usize);
+    for texel in bytes.chunks(GREEN_TEXEL.len()) {
+        let count = if texel == GREEN_TEXEL {
+            &mut green
+        } else if texel == RED_TEXEL {
+            &mut red
+        } else {
+            &mut other
+        };
+        *count += 1;
+    }
+    (green, red, other)
+}
+
+/// Returns whether the left half of the target is green and the right half red.
+fn left_half_green_right_red(bytes: &[u8]) -> bool {
+    let side = CASE_TEXTURE_SIDE as usize;
+    bytes
+        .chunks(GREEN_TEXEL.len())
+        .enumerate()
+        .all(|(n, texel)| {
+            if n % side < side / 2 {
+                texel == GREEN_TEXEL
+            } else {
+                texel == RED_TEXEL
+            }
+        })
+}
+
+/// Makes the call a k case names inside its pass: nothing, a submit, a read at once of the positions, or a wait.
+fn call_inside<B: Gpu>(b: &mut B, h: &Halves<B>, call: &str, wait: Option<&B::Readback>) {
+    let mut out = vec![0; HALVES_BYTES as usize];
+    match call {
+        "submit" => {
+            b.submit();
+        }
+        "read_back_now" => {
+            let read = b.read_back_now(
+                &ReadSource::Buffer {
+                    buffer: &h.positions,
+                    offset: 0,
+                    size: HALVES_BYTES,
+                },
+                &mut out,
+            );
+            println!("HOSTILE {call}: {}", outcome(&read));
+        }
+        "wait_read" => {
+            if let Some(readback) = wait {
+                b.wait_read(readback);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Checks that a pass whose depth is marked Discard, ended early by a call inside it, keeps its depth for the rest.
+#[test]
+fn k1_depth_marked_discard_survives_a_call_inside_the_pass() {
+    for call in ["none", "submit", "read_back_now", "wait_read"] {
+        let mut b = device();
+        let h = halves(&mut b);
+        let depth = b
+            .create_texture(&tex_desc(
+                Format::Depth32Float,
+                TextureUsage::RENDER,
+                1,
+                false,
+            ))
+            .expect("depth");
+        let depth_view = b
+            .create_view(&depth, &view_desc(Format::Depth32Float))
+            .expect("depth view");
+        let tested = b
+            .create_depth_stencil(&DepthStencilDesc {
+                depth_compare: Some(CompareFn::Less),
+                depth_write: true,
+                stencil: None,
+                stencil_read_mask: [u8::MAX; 2],
+                stencil_write_mask: [u8::MAX; 2],
+                depth_bounds: None,
+            })
+            .expect("depth stencil");
+        let red = program(&mut b, &red_far());
+        let (source, bytes) = written(&mut b);
+        let readback = b
+            .read_back(&ReadSource::Buffer {
+                buffer: &source,
+                offset: 0,
+                size: bytes.len() as u64,
+            })
+            .expect("read_back");
+        let mut pass = color_pass::<MetalGpu<DirectMetal>>(&h.view);
+        pass.depth = Some(DepthAttachment {
+            view: &depth_view,
+            depth: Some(AspectOps {
+                load: LoadOp::Clear(FAR_DEPTH.to_bits()),
+                store: StoreOp::Discard,
+                read_only: false,
+            }),
+            stencil: None,
+        });
+        b.begin_pass(&pass);
+        let streams = [Some(VertexBinding {
+            buffer: &h.positions,
+            offset: 0,
+        })];
+        let vp = viewport();
+        let draw = |b: &mut MetalGpu<DirectMetal>, program: &_, half: u32| {
+            b.draw(&DrawCall {
+                program,
+                blend: &h.fixed.blend,
+                depth_stencil: &tested,
+                raster: &h.fixed.raster,
+                vertex_layout: &h.layout,
+                bindings: [None; 4],
+                vertex_buffers: &streams,
+                index: None,
+                topology: Topology::TriangleStrip,
+                restart: false,
+                viewports: &vp,
+                scissors: &[],
+                blend_constant: [0; 4],
+                stencil_reference: [0; 2],
+                immediates: &[],
+                range: DrawRange::Vertices {
+                    first: half * HALF_VERTICES,
+                    count: HALF_VERTICES,
+                    first_instance: 0,
+                    instances: 1,
+                },
+            });
+        };
+        // The left half green, nearer than red.
+        draw(&mut b, &h.program, 0);
+        call_inside(&mut b, &h, call, Some(&readback));
+        // Both halves red, behind: only the right half, whose depth is still the clear, passes Less.
+        draw(&mut b, &red, 0);
+        draw(&mut b, &red, 1);
+        b.end_pass();
+        b.submit();
+        let alive = ok(&mut b);
+        let got = if alive {
+            read_texture(&mut b, &h.target, GREEN_TEXEL.len())
+        } else {
+            Vec::new()
+        };
+        let (green, red_texels, other) = texels_of(&got);
+        let wanted = alive && left_half_green_right_red(&got);
+        println!(
+            "HOSTILE k1 {call}: device ok {alive}; green {green} red {red_texels} other {other}; as wanted {wanted}"
+        );
+        let mut read = vec![0; bytes.len()];
+        b.finish_read(readback, &mut read);
+        assert_eq!(read, bytes, "k1 {call}: the bytes read");
+        assert!(wanted, "k1 {call}: the depth or a draw was lost");
+    }
+}
+
+/// Checks that an occlusion query counting across a call inside its pass counts every sample of the pass.
+#[test]
+fn k2_occlusion_count_spanning_a_call_inside_the_pass() {
+    for call in ["none", "submit", "read_back_now"] {
+        let mut b = device();
+        let counting = b.caps().features.contains(Features::OCCLUSION_COUNT);
+        let kind = if counting {
+            QueryKind::Occlusion
+        } else {
+            QueryKind::OcclusionAny
+        };
+        let h = halves(&mut b);
+        let set = b.create_query_set(kind, 2).expect("query set");
+        let results = buffer(&mut b, 2 * RESULT_BYTES, BufferUsage::empty());
+        let mut pass = color_pass::<MetalGpu<DirectMetal>>(&h.view);
+        pass.occlusion = Some(&set);
+        b.begin_pass(&pass);
+        b.begin_query(1);
+        draw_half(&mut b, &h, 0);
+        call_inside(&mut b, &h, call, None);
+        draw_half(&mut b, &h, 1);
+        b.end_query();
+        b.end_pass();
+        let resolved = outcome(&b.resolve_queries(&set, 0, 2, &results, 0));
+        b.submit();
+        let alive = ok(&mut b);
+        let bytes = if alive {
+            read_bytes(&mut b, &results, 2 * RESULT_BYTES)
+        } else {
+            vec![0; 2 * RESULT_BYTES as usize]
+        };
+        let (first, second) = bytes.split_at(RESULT_BYTES as usize);
+        let unused = u64::from_le_bytes(first.try_into().expect("a result"));
+        let counted = u64::from_le_bytes(second.try_into().expect("a result"));
+        let want = u64::from(CASE_TEXTURE_SIDE * CASE_TEXTURE_SIDE);
+        println!(
+            "HOSTILE k2 {call}: counting {counting}; resolve {resolved}; device ok {alive}; query 0 {unused}, query 1 \
+             {counted} (want {want})"
+        );
+        assert!(alive, "k2 {call}: the device was lost");
+        if counting {
+            assert_eq!(counted, want, "k2 {call}: the samples counted");
+        } else {
+            assert_ne!(counted, 0, "k2 {call}: nothing counted");
+        }
+    }
+}
+
+/// Checks that a multisampled pass marked Discard with a resolve, ended early by a call inside it, resolves each draw.
+#[test]
+fn k3_multisampled_discard_with_resolve_survives_a_call_inside_the_pass() {
+    for call in ["none", "submit", "read_back_now"] {
+        let mut b = device();
+        let h = halves(&mut b);
+        let multisampled = b
+            .create_texture(&tex_desc(
+                Format::Rgba8Unorm,
+                TextureUsage::RENDER,
+                K3_SAMPLES,
+                false,
+            ))
+            .expect("multisampled target");
+        let multisampled_view = b
+            .create_view(&multisampled, &view_desc(Format::Rgba8Unorm))
+            .expect("multisampled view");
+        let mut pass = color_pass::<MetalGpu<DirectMetal>>(&multisampled_view);
+        if let Some(color) = pass.colors[0].as_mut() {
+            color.resolve = Some(&h.view);
+            color.store = StoreOp::Discard;
+        }
+        b.begin_pass(&pass);
+        draw_half(&mut b, &h, 0);
+        call_inside(&mut b, &h, call, None);
+        draw_half(&mut b, &h, 1);
+        b.end_pass();
+        b.submit();
+        let alive = ok(&mut b);
+        let got = if alive {
+            read_texture(&mut b, &h.target, GREEN_TEXEL.len())
+        } else {
+            Vec::new()
+        };
+        let (green, red, other) = texels_of(&got);
+        println!(
+            "HOSTILE k3 {call}: device ok {alive}; resolved green {green} red {red} other {other}"
+        );
+        assert!(alive, "k3 {call}: the device was lost");
+        assert_eq!(
+            green,
+            (CASE_TEXTURE_SIDE * CASE_TEXTURE_SIDE) as usize,
+            "k3 {call}: a draw was not resolved"
+        );
+    }
+}
+
+/// Checks reads at once, inside the pass, of the vertex buffer its draws read, and writes to it in each mode.
+#[test]
+fn k4_reads_and_writes_of_the_open_passes_own_vertex_buffer() {
+    let mut b = device();
+    let h = halves(&mut b);
+    let want: Vec<u8> = HALVES.iter().flat_map(|f| f.to_le_bytes()).collect();
+    let mut out = vec![0; want.len()];
+    let mut outcomes = Vec::new();
+    let read_size = u64::from(u8::BITS);
+    let got = around_a_call(&mut b, &h, |b| {
+        outcomes.push(outcome(&b.read_back_now(
+            &ReadSource::Buffer {
+                buffer: &h.positions,
+                offset: 0,
+                size: HALVES_BYTES,
+            },
+            &mut out,
+        )));
+        // The same bytes written again while the pass's draws use them, in each mode.
+        for mode in [
+            WriteMode::Ordered,
+            WriteMode::Discard,
+            WriteMode::NoOverwrite,
+        ] {
+            b.write_buffer(&h.positions, 0, &want, mode);
+        }
+        // A read at an offset whose end wraps, and one that runs past the end.
+        let mut past = vec![0; read_size as usize];
+        for offset in [u64::MAX - (read_size - 1), HALVES_BYTES - read_size / 2] {
+            outcomes.push(outcome(&b.read_back_now(
+                &ReadSource::Buffer {
+                    buffer: &h.positions,
+                    offset,
+                    size: read_size,
+                },
+                &mut past,
+            )));
+        }
+    });
+    println!(
+        "HOSTILE k4: {outcomes:?}; device ok {}, every texel {}",
+        got.0, got.1
+    );
+    assert_eq!(out, want, "k4: the bytes read");
+    assert!(got.0 && got.1, "k4: {got:?}");
+    assert!(
+        outcomes[1..].iter().all(|o| o.starts_with("refused")),
+        "k4: a read past the end taken: {outcomes:?}"
+    );
+}
+
+/// Checks captures inside a pass resumed after a submit, into targets at offsets that wrap and into their own stream.
+#[test]
+fn k5_captures_inside_a_resumed_pass_with_hostile_targets() {
+    let mut b = device();
+    if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
+        println!("HOSTILE k5: no capture");
+        return;
+    }
+    let h = halves(&mut b);
+    let s = capture_scene(&mut b);
+    let target = buffer(&mut b, TARGET_BYTES, BufferUsage::CAPTURE);
+    b.write_buffer(
+        &target,
+        0,
+        &vec![CANARY; TARGET_BYTES as usize],
+        WriteMode::Ordered,
+    );
+    // The strip and one vertex more, so that six captured vertices read inside it.
+    let own_floats: Vec<f32> = STRIP
+        .iter()
+        .copied()
+        .chain([0.5, 0.25, -0.5, 0.75])
+        .collect();
+    let own_bytes = (own_floats.len() * size_of::<f32>()) as u64;
+    let own = buffer(
+        &mut b,
+        own_bytes,
+        BufferUsage::VERTEX | BufferUsage::CAPTURE,
+    );
+    let own_data: Vec<u8> = own_floats.iter().flat_map(|f| f.to_le_bytes()).collect();
+    b.write_buffer(&own, 0, &own_data, WriteMode::Ordered);
+    let streams = [Some(VertexBinding {
+        buffer: &s.stream,
+        offset: 0,
+    })];
+    let own_streams = [Some(VertexBinding {
+        buffer: &own,
+        offset: 0,
+    })];
+    let vp = viewport();
+    let captured = (own_floats.len() / 2) as u32;
+    let call = capture_call(&s, &streams, &vp, false, captured);
+    let own_call = capture_call(&s, &own_streams, &vp, false, captured);
+    let mut outcomes = Vec::new();
+    let word = size_of::<u32>() as u64;
+    // Twice what the six vertices capture, and an offset of four words.
+    let span = 2 * own_bytes;
+    let inside = 4 * word;
+    let got = around_a_call(&mut b, &h, |b| {
+        b.submit();
+        for (offset, size) in [
+            (u64::MAX - (word - 1), 2 * word),
+            (u64::MAX - (2 * span - 1), 2 * span),
+            (TARGET_BYTES - word, u64::MAX),
+            (inside, u64::MAX - (inside - 1)),
+            (TARGET_BYTES, word),
+            (TARGET_BYTES - span, 2 * span),
+        ] {
+            outcomes.push(format!(
+                "{offset}+{size}: {}",
+                outcome(&b.capture_vertices(
+                    &call,
+                    &[BufferRange {
+                        buffer: &target,
+                        offset,
+                        size
+                    }],
+                    true
+                ))
+            ));
+        }
+        // Into the stream the same capture reads.
+        outcomes.push(format!(
+            "own stream: {}",
+            outcome(&b.capture_vertices(
+                &own_call,
+                &[BufferRange {
+                    buffer: &own,
+                    offset: 0,
+                    size: own_bytes
+                }],
+                true
+            ))
+        ));
+        b.submit();
+    });
+    let alive = ok(&mut b);
+    let bytes = if alive {
+        read_bytes(&mut b, &target, TARGET_BYTES)
+    } else {
+        Vec::new()
+    };
+    let changed = bytes.iter().filter(|v| **v != CANARY).count();
+    println!(
+        "HOSTILE k5: {outcomes:#?}\nHOSTILE k5: device ok {alive}, pass kept {got:?}, target bytes changed {changed}"
+    );
+    assert!(alive, "k5: the device was lost");
+    let wrapping = outcomes.len() - 1;
+    for o in &outcomes[..wrapping] {
+        assert!(o.contains("refused"), "k5 taken: {o}");
+    }
+    assert_eq!(changed, 0, "k5: target bytes changed");
 }

@@ -320,9 +320,20 @@ mod driver {
             canaries[1][0],
             canaries[1][1]
         );
-        let holes = report_reach(&reach).saturating_add(report_places(&places));
+        let (site_holes, unknown_sites) = report_reach(&reach);
+        let (place_holes, unknown_places) = report_places(&places);
+        // A site or place the lists do not hold means the measure itself is broken, so it fails every run.
+        let unknown = unknown_sites.saturating_add(unknown_places);
+        if unknown > 0 {
+            failures.push(format!(
+                "{unknown} check sites or places counted but not listed"
+            ));
+        }
+        let holes = site_holes.saturating_add(place_holes);
         if holes > 0 && variable("FUZZ_REACH_REQUIRED", "0") == "1" {
-            failures.push(format!("{holes} check sites without both outcomes"));
+            failures.push(format!(
+                "{holes} check sites or places without both outcomes"
+            ));
         }
         if failures.is_empty() {
             Ok(())
@@ -331,10 +342,11 @@ mod driver {
         }
     }
 
-    /// Prints how often each of gpu-metal's places found a pass open, and returns how many places lack an outcome.
+    /// Prints how often each of gpu-metal's places found a pass open, and returns how many places lack an outcome and
+    /// how many places were counted that the list does not hold.
     ///
     /// The table goes to `FUZZ_PLACE_TABLE` too, if it is set.
-    fn report_places(places: &std::collections::BTreeMap<String, [u64; 2]>) -> usize {
+    fn report_places(places: &std::collections::BTreeMap<String, [u64; 2]>) -> (usize, usize) {
         let known = wcontainers_gpu_metal::reach::PLACES;
         let mut table = String::from("| Place | With a pass open | Otherwise |\n|---|---|---|\n");
         let mut holes = 0usize;
@@ -358,34 +370,36 @@ mod driver {
         if let Ok(path) = std::env::var("FUZZ_PLACE_TABLE") {
             let _ = std::fs::write(path, table);
         }
-        holes.saturating_add(unknown.len())
+        (holes, unknown.len())
     }
 
-    /// Prints how often each check site of `direct` refused and passed, and returns how many sites lack an outcome.
+    /// Prints how often each check site of `direct` refused and passed, and returns how many sites lack an outcome and
+    /// how many were counted that `direct`'s list does not hold.
     ///
-    /// A site that never refused, or never passed, is a hole. The table goes to `FUZZ_REACH_TABLE` too, if it is set.
-    fn report_reach(reach: &std::collections::BTreeMap<String, [u64; 2]>) -> usize {
+    /// A site that never refused, or never passed, is a hole; a site named twice in the list counts as a hole too. The
+    /// table goes to `FUZZ_REACH_TABLE` too, if it is set.
+    fn report_reach(reach: &std::collections::BTreeMap<String, [u64; 2]>) -> (usize, usize) {
         let sites = wcontainers_metal_direct::reach::sites();
-        let mut table = String::from("| Site | Line | Refused | Passed |\n|---|---|---|---|\n");
+        let mut table = String::from("| Site | Constant | Refused | Passed |\n|---|---|---|---|\n");
         let mut holes = Vec::new();
-        for (site, line) in &sites {
+        for (name, site) in sites {
             let [refused, passed] = reach.get(*site).copied().unwrap_or_default();
-            table.push_str(&format!("| {site} | {line} | {refused} | {passed} |\n"));
+            table.push_str(&format!("| {site} | {name} | {refused} | {passed} |\n"));
             if refused == 0 || passed == 0 {
                 holes.push(format!(
-                    "{site} (line {line}: {refused} refused, {passed} passed)"
+                    "{site} ({name}: {refused} refused, {passed} passed)"
                 ));
             }
         }
         let unknown: Vec<&String> = reach
             .keys()
-            .filter(|site| !sites.iter().any(|(known, _)| known == site))
+            .filter(|site| !sites.iter().any(|(_, known)| known == site))
             .collect();
         let mut seen = std::collections::BTreeSet::new();
         let twice: Vec<&str> = sites
             .iter()
-            .filter(|(site, _)| !seen.insert(*site))
-            .map(|(site, _)| *site)
+            .filter(|(_, site)| !seen.insert(*site))
+            .map(|(_, site)| *site)
             .collect();
         println!(
             "reach: {} check sites, {} with both outcomes, {} holes; unknown sites {unknown:?}, sites named twice {twice:?}",
@@ -399,7 +413,7 @@ mod driver {
         if let Ok(path) = std::env::var("FUZZ_REACH_TABLE") {
             let _ = std::fs::write(path, table);
         }
-        holes.len().saturating_add(twice.len())
+        (holes.len().saturating_add(twice.len()), unknown.len())
     }
 }
 

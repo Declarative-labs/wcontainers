@@ -98,27 +98,38 @@ const VISIBILITY_RESULT_SPAN: u64 = 262_144;
 const BUFFER_COPY_GRANULE: u64 = 4;
 
 /// Returns whether the check at a site refuses its call; with the `reach` feature it counts the outcome at the site.
+///
+/// The site is a constant of `site`, which must be listed in `site::ALL`: a constant declared outside `sites!` fails
+/// the build here.
 macro_rules! refuses {
-    ($site:expr, $refused:expr) => {{
+    (site::$site:ident, $refused:expr) => {{
+        const {
+            assert!(
+                crate::site::listed(crate::site::$site),
+                "a site not listed in site::ALL"
+            )
+        };
         let refused: bool = $refused;
         #[cfg(feature = "reach")]
-        crate::reach::add_outcome($site, refused);
-        // Without the count the label is only named, so that every site keeps one.
-        #[cfg(not(feature = "reach"))]
-        let _: &str = $site;
+        crate::reach::add_outcome(crate::site::$site, refused);
         refused
     }};
 }
 
 /// Returns what a check found, its call refused when it found nothing; with the `reach` feature it counts the outcome.
+///
+/// The site is a constant of `site`, listed in `site::ALL` as `refuses!` asserts.
 macro_rules! found {
-    ($site:expr, $found:expr) => {{
+    (site::$site:ident, $found:expr) => {{
+        const {
+            assert!(
+                crate::site::listed(crate::site::$site),
+                "a site not listed in site::ALL"
+            )
+        };
         let found = $found;
         #[cfg(feature = "reach")]
-        crate::reach::add_outcome($site, found.is_none());
-        // Without the count the label is only named, so that every site keeps one.
-        #[cfg(not(feature = "reach"))]
-        let _: &str = $site;
+        crate::reach::add_outcome(crate::site::$site, found.is_none());
         found
     }};
 }
@@ -128,9 +139,6 @@ macro_rules! found {
 pub mod reach {
     use std::collections::BTreeMap;
     use std::sync::{Mutex, PoisonError};
-
-    /// The source, whose checks are the sites.
-    const SOURCE: &str = include_str!("implementation.rs");
 
     /// How often one check refused its calls and passed them.
     #[derive(Clone, Copy, Default)]
@@ -161,472 +169,381 @@ pub mod reach {
             .clone()
     }
 
-    /// Returns every site of the source with its line, in the order of the source.
-    pub fn sites() -> Vec<(&'static str, usize)> {
-        // Spelled in two parts, so that this function is not a site.
-        let needles = [concat!("refuses", "!("), concat!("found", "!(")];
-        let mut sites = Vec::new();
-        for (at, _) in SOURCE
-            .match_indices(needles[0])
-            .chain(SOURCE.match_indices(needles[1]))
-        {
-            // The site's label is the macro's first argument: a string, or a named constant of the `site` module.
-            let arguments = SOURCE[at..]
-                .split_once('(')
-                .map_or("", |(_, rest)| rest.trim_start());
-            let Some(label) = label_of(arguments) else {
-                continue;
-            };
-            let line = SOURCE[..at].matches('\n').count().saturating_add(1);
-            sites.push((label, line));
-        }
-        sites.sort_by_key(|(_, line)| *line);
-        sites
-    }
-
-    /// Returns the label a site's arguments start with: a string, or the string a constant of `site` holds.
-    fn label_of(arguments: &'static str) -> Option<&'static str> {
-        let quoted = |text: &'static str| {
-            text.strip_prefix('"')?
-                .split_once('"')
-                .map(|(label, _)| label)
-        };
-        if arguments.starts_with('"') {
-            return quoted(arguments);
-        }
-        let (name, _) = arguments.strip_prefix("site::")?.split_once(',')?;
-        let name = name.trim();
-        let definition = format!("const {name}: &str = ");
-        let at = SOURCE.find(&definition)?;
-        quoted(&SOURCE[at.checked_add(definition.len())?..])
+    /// Returns every site's constant name and label, as the compiler lists them in `site::ALL`.
+    pub fn sites() -> &'static [(&'static str, &'static str)] {
+        crate::site::ALL
     }
 }
 
 /// The labels of the checks, each naming the call and what its check refuses.
 ///
-/// The fuzzer's reach table names each site by its label.
+/// The fuzzer's reach table names each site by its label. Every label is declared by `sites!`, which lists it in `ALL`
+/// from the same entry, so that no site is declared and left out of the list.
 mod site {
-    /// The check of pipeline that refuses a vertex function of another stage.
-    pub(crate) const PIPELINE_VERTEX_FUNCTION_OF_ANOTHER_STAGE: &str =
-        "pipeline: a vertex function of another stage";
-    /// The check of pipeline that refuses a fragment function of another stage.
-    pub(crate) const PIPELINE_FRAGMENT_FUNCTION_OF_ANOTHER_STAGE: &str =
-        "pipeline: a fragment function of another stage";
-    /// The check of pipeline that refuses a sample count the device lacks.
-    pub(crate) const PIPELINE_SAMPLE_COUNT_DEVICE_LACKS: &str =
-        "pipeline: a sample count the device lacks";
-    /// The check of pipeline that refuses a depth or stencil format without the aspect.
-    pub(crate) const PIPELINE_DEPTH_OR_STENCIL_FORMAT_WITHOUT_ASPECT: &str =
-        "pipeline: a depth or stencil format without the aspect";
-    /// The check of pipeline that refuses a combined depth and stencil format beside another.
-    pub(crate) const PIPELINE_COMBINED_DEPTH_AND_STENCIL_FORMAT_BESIDE_ANOTHER: &str =
-        "pipeline: a combined depth and stencil format beside another";
-    /// The check of pipeline that refuses a second source beside other attachments.
-    pub(crate) const PIPELINE_SECOND_SOURCE_BESIDE_OTHER_ATTACHMENTS: &str =
-        "pipeline: a second source beside other attachments";
-    /// The check of pipeline that refuses a color format no attachment takes.
-    pub(crate) const PIPELINE_COLOR_FORMAT_NO_ATTACHMENT_TAKES: &str =
-        "pipeline: a color format no attachment takes";
-    /// The check of pipeline that refuses some channels of a shared exponent.
-    pub(crate) const PIPELINE_SOME_CHANNELS_OF_SHARED_EXPONENT: &str =
-        "pipeline: some channels of a shared exponent";
-    /// The check of pipeline that refuses blending a format that does not blend.
-    pub(crate) const PIPELINE_BLENDING_FORMAT_THAT_DOES_NOT_BLEND: &str =
-        "pipeline: blending a format that does not blend";
-    /// The check of pipeline that refuses alpha to coverage without a blending first attachment.
-    pub(crate) const PIPELINE_ALPHA_TO_COVERAGE_WITHOUT_BLENDING_FIRST_ATTACHMENT: &str =
-        "pipeline: alpha to coverage without a blending first attachment";
-    /// The check of buffer that refuses longer than the device's most.
-    pub(crate) const BUFFER_LONGER_THAN_DEVICES_MOST: &str =
-        "buffer: longer than the device's most";
-    /// The check of write that refuses past the buffer.
-    pub(crate) const WRITE_PAST_BUFFER: &str = "write: past the buffer";
-    /// The check of write that refuses a buffer uncommitted work uses.
-    pub(crate) const WRITE_BUFFER_UNCOMMITTED_WORK_USES: &str =
-        "write: a buffer uncommitted work uses";
-    /// The check of read that refuses past the buffer.
-    pub(crate) const READ_PAST_BUFFER: &str = "read: past the buffer";
-    /// The check of read that refuses a buffer uncommitted work uses.
-    pub(crate) const READ_BUFFER_UNCOMMITTED_WORK_USES: &str =
-        "read: a buffer uncommitted work uses";
-    /// The check of texture that refuses a side past the most.
-    pub(crate) const TEXTURE_SIDE_PAST_MOST: &str = "texture: a side past the most";
-    /// The check of texture that refuses layers past the most.
-    pub(crate) const TEXTURE_LAYERS_PAST_MOST: &str = "texture: layers past the most";
-    /// The check of texture that refuses a stencil view format.
-    pub(crate) const TEXTURE_STENCIL_VIEW_FORMAT: &str = "texture: a stencil view format";
-    /// The check of texture that refuses an empty size.
-    pub(crate) const TEXTURE_EMPTY_SIZE: &str = "texture: an empty size";
-    /// The check of texture that refuses deeper than one outside 3D.
-    pub(crate) const TEXTURE_DEEPER_THAN_ONE_OUTSIDE_3D: &str =
-        "texture: deeper than one outside 3D";
-    /// The check of texture that refuses an array length the type does not take.
-    pub(crate) const TEXTURE_ARRAY_LENGTH_TYPE_DOES_NOT_TAKE: &str =
-        "texture: an array length the type does not take";
-    /// The check of texture that refuses a cube not square.
-    pub(crate) const TEXTURE_CUBE_NOT_SQUARE: &str = "texture: a cube not square";
-    /// The check of texture that refuses levels past the chain.
-    pub(crate) const TEXTURE_LEVELS_PAST_CHAIN: &str = "texture: levels past the chain";
-    /// The check of texture that refuses a sample count the type does not take.
-    pub(crate) const TEXTURE_SAMPLE_COUNT_TYPE_DOES_NOT_TAKE: &str =
-        "texture: a sample count the type does not take";
-    /// The check of texture that refuses compressed in a type that is not.
-    pub(crate) const TEXTURE_COMPRESSED_IN_TYPE_THAT_IS_NOT: &str =
-        "texture: compressed in a type that is not";
-    /// The check of texture that refuses depth or stencil in 3D.
-    pub(crate) const TEXTURE_DEPTH_OR_STENCIL_IN_3D: &str = "texture: depth or stencil in 3D";
-    /// The check of view that refuses of a drawable's texture.
-    pub(crate) const VIEW_OF_DRAWABLES_TEXTURE: &str = "view: of a drawable's texture";
-    /// The check of view that refuses levels or slices past the texture.
-    pub(crate) const VIEW_LEVELS_OR_SLICES_PAST_TEXTURE: &str =
-        "view: levels or slices past the texture";
-    /// The check of view that refuses a format the texture is not seen as.
-    pub(crate) const VIEW_FORMAT_TEXTURE_IS_NOT_SEEN_AS: &str =
-        "view: a format the texture is not seen as";
-    /// The check of view that refuses slices the type does not take.
-    pub(crate) const VIEW_SLICES_TYPE_DOES_NOT_TAKE: &str = "view: slices the type does not take";
-    /// The check of view that refuses a type the texture is not seen as.
-    pub(crate) const VIEW_TYPE_TEXTURE_IS_NOT_SEEN_AS: &str =
-        "view: a type the texture is not seen as";
-    /// The check of view that refuses a cube of a texture not square.
-    pub(crate) const VIEW_CUBE_OF_TEXTURE_NOT_SQUARE: &str = "view: a cube of a texture not square";
-    /// The check of view that refuses a swizzle of a texture drawn into, or a view of a swizzled view.
-    pub(crate) const VIEW_SWIZZLE_OF_TEXTURE_DRAWN_INTO_OR_VIEW_OF_SWIZZLED_VIEW: &str =
-        "view: a swizzle of a texture drawn into, or a view of a swizzled view";
-    /// The check of sampler that refuses an anisotropy outside one to the most.
-    pub(crate) const SAMPLER_ANISOTROPY_OUTSIDE_ONE_TO_MOST: &str =
-        "sampler: an anisotropy outside one to the most";
-    /// The check of sampler that refuses an empty level range.
-    pub(crate) const SAMPLER_EMPTY_LEVEL_RANGE: &str = "sampler: an empty level range";
-    /// The check of sampler that refuses clamps to zero and to the border.
-    pub(crate) const SAMPLER_CLAMPS_TO_ZERO_AND_TO_BORDER: &str =
-        "sampler: clamps to zero and to the border";
-    /// The check of compute pipeline that refuses a function of another stage.
-    pub(crate) const COMPUTE_PIPELINE_FUNCTION_OF_ANOTHER_STAGE: &str =
-        "compute pipeline: a function of another stage";
-    /// The check of compute pipeline that refuses a workgroup past the device's most.
-    pub(crate) const COMPUTE_PIPELINE_WORKGROUP_PAST_DEVICES_MOST: &str =
-        "compute pipeline: a workgroup past the device's most";
-    /// The check of compute pipeline that refuses workgroup memory past the device's.
-    pub(crate) const COMPUTE_PIPELINE_WORKGROUP_MEMORY_PAST_DEVICES: &str =
-        "compute pipeline: workgroup memory past the device's";
-    /// The check of render that refuses a committed command buffer.
-    pub(crate) const RENDER_COMMITTED_COMMAND_BUFFER: &str = "render: a committed command buffer";
-    /// The check of blit that refuses a committed command buffer.
-    pub(crate) const BLIT_COMMITTED_COMMAND_BUFFER: &str = "blit: a committed command buffer";
-    /// The check of compute that refuses a committed command buffer.
-    pub(crate) const COMPUTE_COMMITTED_COMMAND_BUFFER: &str = "compute: a committed command buffer";
-    /// The check of commit that refuses committed before.
-    pub(crate) const COMMIT_COMMITTED_BEFORE: &str = "commit: committed before";
-    /// The check of wait that refuses not committed.
-    pub(crate) const WAIT_NOT_COMMITTED: &str = "wait: not committed";
-    /// The check of layer that refuses off the main thread.
-    pub(crate) const LAYER_OFF_MAIN_THREAD: &str = "layer: off the main thread";
-    /// The check of layer that refuses a window without an AppKit view.
-    pub(crate) const LAYER_WINDOW_WITHOUT_APPKIT_VIEW: &str =
-        "layer: a window without an AppKit view";
-    /// The check of layer that refuses a format no layer takes.
-    pub(crate) const LAYER_FORMAT_NO_LAYER_TAKES: &str = "layer: a format no layer takes";
-    /// The check of layer that refuses an empty size.
-    pub(crate) const LAYER_EMPTY_SIZE: &str = "layer: an empty size";
-    /// The check of layer that refuses a side past the most.
-    pub(crate) const LAYER_SIDE_PAST_MOST: &str = "layer: a side past the most";
-    /// The check of drawable that refuses a layer not configured.
-    pub(crate) const DRAWABLE_LAYER_NOT_CONFIGURED: &str = "drawable: a layer not configured";
-    /// The check of present that refuses a committed command buffer.
-    pub(crate) const PRESENT_COMMITTED_COMMAND_BUFFER: &str = "present: a committed command buffer";
-    /// The check of present that refuses presented before.
-    pub(crate) const PRESENT_PRESENTED_BEFORE: &str = "present: presented before";
-    /// The check of timestamps that refuses no places or past the most.
-    pub(crate) const TIMESTAMPS_NO_PLACES_OR_PAST_MOST: &str =
-        "timestamps: no places or past the most";
-    /// The check of timestamp that refuses a committed command buffer.
-    pub(crate) const TIMESTAMP_COMMITTED_COMMAND_BUFFER: &str =
-        "timestamp: a committed command buffer";
-    /// The check of timestamp that refuses a place past the last.
-    pub(crate) const TIMESTAMP_PLACE_PAST_LAST: &str = "timestamp: a place past the last";
-    /// The check of read timestamps that refuses places past the last.
-    pub(crate) const READ_TIMESTAMPS_PLACES_PAST_LAST: &str =
-        "read timestamps: places past the last";
-    /// The check of read timestamps that refuses uncommitted work writes them.
-    pub(crate) const READ_TIMESTAMPS_UNCOMMITTED_WORK_WRITES_THEM: &str =
-        "read timestamps: uncommitted work writes them";
-    /// The check of reads that refuses an empty buffer slot.
-    pub(crate) const READS_EMPTY_BUFFER_SLOT: &str = "reads: an empty buffer slot";
-    /// The check of reads that refuses a buffer shorter than the function reads.
-    pub(crate) const READS_BUFFER_SHORTER_THAN_FUNCTION_READS: &str =
-        "reads: a buffer shorter than the function reads";
-    /// The check of reads that refuses a buffer offset off the function's alignment.
-    pub(crate) const READS_BUFFER_OFFSET_OFF_FUNCTIONS_ALIGNMENT: &str =
-        "reads: a buffer offset off the function's alignment";
-    /// The check of reads that refuses bytes at a slot the function writes.
-    pub(crate) const READS_BYTES_AT_SLOT_FUNCTION_WRITES: &str =
-        "reads: bytes at a slot the function writes";
-    /// The check of reads that refuses immediates shorter than the function's.
-    pub(crate) const READS_IMMEDIATES_SHORTER_THAN_FUNCTIONS: &str =
-        "reads: immediates shorter than the function's";
-    /// The check of reads that refuses immediates off their alignment.
-    pub(crate) const READS_IMMEDIATES_OFF_THEIR_ALIGNMENT: &str =
-        "reads: immediates off their alignment";
-    /// The check of reads that refuses an empty texture slot.
-    pub(crate) const READS_EMPTY_TEXTURE_SLOT: &str = "reads: an empty texture slot";
-    /// The check of reads that refuses a texture not made to be read.
-    pub(crate) const READS_TEXTURE_NOT_MADE_TO_BE_READ: &str =
-        "reads: a texture not made to be read";
-    /// The check of reads that refuses a texture of another type.
-    pub(crate) const READS_TEXTURE_OF_ANOTHER_TYPE: &str = "reads: a texture of another type";
-    /// The check of reads that refuses texels of another number type.
-    pub(crate) const READS_TEXELS_OF_ANOTHER_NUMBER_TYPE: &str =
-        "reads: texels of another number type";
-    /// The check of reads that refuses an empty sampler slot.
-    pub(crate) const READS_EMPTY_SAMPLER_SLOT: &str = "reads: an empty sampler slot";
-    /// The check of pass that refuses an attachment not made to draw into.
-    pub(crate) const PASS_ATTACHMENT_NOT_MADE_TO_DRAW_INTO: &str =
-        "pass: an attachment not made to draw into";
-    /// The check of pass that refuses an attachment's level, slice or plane outside it.
-    pub(crate) const PASS_ATTACHMENTS_LEVEL_SLICE_OR_PLANE_OUTSIDE_IT: &str =
-        "pass: an attachment's level, slice or plane outside it";
-    /// The check of pass that refuses attachments of different sizes or sample counts.
-    pub(crate) const PASS_ATTACHMENTS_OF_DIFFERENT_SIZES_OR_SAMPLE_COUNTS: &str =
-        "pass: attachments of different sizes or sample counts";
-    /// The check of pass that refuses a depth or stencil texture as a color attachment.
-    pub(crate) const PASS_DEPTH_OR_STENCIL_TEXTURE_AS_COLOR_ATTACHMENT: &str =
-        "pass: a depth or stencil texture as a color attachment";
-    /// The check of pass that refuses a color attachment of a format no attachment takes.
-    pub(crate) const PASS_COLOR_ATTACHMENT_OF_FORMAT_NO_ATTACHMENT_TAKES: &str =
-        "pass: a color attachment of a format no attachment takes";
-    /// The check of pass that refuses a depth attachment without depth.
-    pub(crate) const PASS_DEPTH_ATTACHMENT_WITHOUT_DEPTH: &str =
-        "pass: a depth attachment without depth";
-    /// The check of pass that refuses a depth to clear to outside zero to one.
-    pub(crate) const PASS_DEPTH_TO_CLEAR_TO_OUTSIDE_ZERO_TO_ONE: &str =
-        "pass: a depth to clear to outside zero to one";
-    /// The check of pass that refuses a stencil attachment without stencil.
-    pub(crate) const PASS_STENCIL_ATTACHMENT_WITHOUT_STENCIL: &str =
-        "pass: a stencil attachment without stencil";
-    /// The check of pass that refuses depth and stencil of different textures.
-    pub(crate) const PASS_DEPTH_AND_STENCIL_OF_DIFFERENT_TEXTURES: &str =
-        "pass: depth and stencil of different textures";
-    /// The check of pass that refuses a resolve from or into the wrong sample count.
-    pub(crate) const PASS_RESOLVE_FROM_OR_INTO_WRONG_SAMPLE_COUNT: &str =
-        "pass: a resolve from or into the wrong sample count";
-    /// The check of pass that refuses a resolve into another format.
-    pub(crate) const PASS_RESOLVE_INTO_ANOTHER_FORMAT: &str = "pass: a resolve into another format";
-    /// The check of pass that refuses a resolve of a format that does not resolve.
-    pub(crate) const PASS_RESOLVE_OF_FORMAT_THAT_DOES_NOT_RESOLVE: &str =
-        "pass: a resolve of a format that does not resolve";
-    /// The check of pass that refuses a resolve target's level, slice or plane outside it.
-    pub(crate) const PASS_RESOLVE_TARGETS_LEVEL_SLICE_OR_PLANE_OUTSIDE_IT: &str =
-        "pass: a resolve target's level, slice or plane outside it";
-    /// The check of pass that refuses a resolve target of another size.
-    pub(crate) const PASS_RESOLVE_TARGET_OF_ANOTHER_SIZE: &str =
-        "pass: a resolve target of another size";
-    /// The check of pass that refuses a stencil to clear to that a stencil does not hold.
-    pub(crate) const PASS_STENCIL_TO_CLEAR_TO_THAT_STENCIL_DOES_NOT_HOLD: &str =
-        "pass: a stencil to clear to that a stencil does not hold";
-    /// The check of pass that refuses a visibility result buffer shorter than one result.
-    pub(crate) const PASS_VISIBILITY_RESULT_BUFFER_SHORTER_THAN_ONE_RESULT: &str =
-        "pass: a visibility result buffer shorter than one result";
-    /// The check of pass that refuses no attachment and an area outside one to the longest side.
-    pub(crate) const PASS_NO_ATTACHMENT_AND_AREA_OUTSIDE_ONE_TO_LONGEST_SIDE: &str =
-        "pass: no attachment and an area outside one to the longest side";
-    /// The check of pass that refuses two attachments of one plane.
-    pub(crate) const PASS_TWO_ATTACHMENTS_OF_ONE_PLANE: &str = "pass: two attachments of one plane";
-    /// The check of render that refuses a slot past the last.
-    pub(crate) const RENDER_SLOT_PAST_LAST: &str = "render: a slot past the last";
-    /// The check of draw that refuses a depth test with no depth attachment.
-    pub(crate) const DRAW_DEPTH_TEST_WITH_NO_DEPTH_ATTACHMENT: &str =
-        "draw: a depth test with no depth attachment";
-    /// The check of draw that refuses a stencil test with no stencil attachment.
-    pub(crate) const DRAW_STENCIL_TEST_WITH_NO_STENCIL_ATTACHMENT: &str =
-        "draw: a stencil test with no stencil attachment";
-    /// The check of render that refuses a pipeline made for other attachments.
-    pub(crate) const RENDER_PIPELINE_MADE_FOR_OTHER_ATTACHMENTS: &str =
-        "render: a pipeline made for other attachments";
-    /// The check of render that refuses a pipeline made for another sample count.
-    pub(crate) const RENDER_PIPELINE_MADE_FOR_ANOTHER_SAMPLE_COUNT: &str =
-        "render: a pipeline made for another sample count";
-    /// The check of render that refuses a bound range past its buffer.
-    pub(crate) const RENDER_BOUND_RANGE_PAST_ITS_BUFFER: &str =
-        "render: a bound range past its buffer";
-    /// The check of render that refuses more bytes than Metal copies.
-    pub(crate) const RENDER_MORE_BYTES_THAN_METAL_COPIES: &str =
-        "render: more bytes than Metal copies";
-    /// The check of render that refuses no viewports or past the most.
-    pub(crate) const RENDER_NO_VIEWPORTS_OR_PAST_MOST: &str =
-        "render: no viewports or past the most";
-    /// The check of render that refuses a viewport not finite.
-    pub(crate) const RENDER_VIEWPORT_NOT_FINITE: &str = "render: a viewport not finite";
-    /// The check of render that refuses no scissor rectangles or past the most.
-    pub(crate) const RENDER_NO_SCISSOR_RECTANGLES_OR_PAST_MOST: &str =
-        "render: no scissor rectangles or past the most";
-    /// The check of render that refuses a scissor rectangle outside the pass.
-    pub(crate) const RENDER_SCISSOR_RECTANGLE_OUTSIDE_PASS: &str =
-        "render: a scissor rectangle outside the pass";
-    /// The check of render that refuses a visibility offset off its step or past the span.
-    pub(crate) const RENDER_VISIBILITY_OFFSET_OFF_ITS_STEP_OR_PAST_SPAN: &str =
-        "render: a visibility offset off its step or past the span";
-    /// The check of render that refuses counting with no visibility buffer.
-    pub(crate) const RENDER_COUNTING_WITH_NO_VISIBILITY_BUFFER: &str =
-        "render: counting with no visibility buffer";
-    /// The check of render that refuses a visibility offset past its buffer.
-    pub(crate) const RENDER_VISIBILITY_OFFSET_PAST_ITS_BUFFER: &str =
-        "render: a visibility offset past its buffer";
-    /// The check of render that refuses counting twice at one offset.
-    pub(crate) const RENDER_COUNTING_TWICE_AT_ONE_OFFSET: &str =
-        "render: counting twice at one offset";
-    /// The check of draw that refuses vertices or instances past the largest index.
-    pub(crate) const DRAW_VERTICES_OR_INSTANCES_PAST_LARGEST_INDEX: &str =
-        "draw: vertices or instances past the largest index";
-    /// The check of draw that refuses no instances.
-    pub(crate) const DRAW_NO_INSTANCES: &str = "draw: no instances";
-    /// The check of indexed draw that refuses indices outside their buffer or off their size.
-    pub(crate) const INDEXED_DRAW_INDICES_OUTSIDE_THEIR_BUFFER_OR_OFF_THEIR_SIZE: &str =
-        "indexed draw: indices outside their buffer or off their size";
-    /// The check of indexed draw that refuses instances past the largest index.
-    pub(crate) const INDEXED_DRAW_INSTANCES_PAST_LARGEST_INDEX: &str =
-        "indexed draw: instances past the largest index";
-    /// The check of indexed draw that refuses no instances or no indices.
-    pub(crate) const INDEXED_DRAW_NO_INSTANCES_OR_NO_INDICES: &str =
-        "indexed draw: no instances or no indices";
-    /// The check of indirect indexed draw that refuses an index offset outside its buffer or off its size.
-    pub(crate) const INDIRECT_INDEXED_DRAW_INDEX_OFFSET_OUTSIDE_ITS_BUFFER_OR_OFF_ITS_SIZE: &str =
-        "indirect indexed draw: an index offset outside its buffer or off its size";
-    /// The check of render that refuses depth test bounds Metal lacks, or outside zero to one.
-    pub(crate) const RENDER_DEPTH_TEST_BOUNDS_METAL_LACKS_OR_OUTSIDE_ZERO_TO_ONE: &str =
-        "render: depth test bounds Metal lacks, or outside zero to one";
-    /// The check of render that refuses depth test bounds with no depth attachment.
-    pub(crate) const RENDER_DEPTH_TEST_BOUNDS_WITH_NO_DEPTH_ATTACHMENT: &str =
-        "render: depth test bounds with no depth attachment";
-    /// The check of draw that refuses no pipeline.
-    pub(crate) const DRAW_NO_PIPELINE: &str = "draw: no pipeline";
-    /// The check of draw that refuses primitives of another class than the pipeline's.
-    pub(crate) const DRAW_PRIMITIVES_OF_ANOTHER_CLASS_THAN_PIPELINES: &str =
-        "draw: primitives of another class than the pipeline's";
-    /// The check of indirect that refuses arguments outside their buffer or off four bytes.
-    pub(crate) const INDIRECT_ARGUMENTS_OUTSIDE_THEIR_BUFFER_OR_OFF_FOUR_BYTES: &str =
-        "indirect: arguments outside their buffer or off four bytes";
-    /// The check of compute that refuses a slot past the last.
-    pub(crate) const COMPUTE_SLOT_PAST_LAST: &str = "compute: a slot past the last";
-    /// The check of compute that refuses a bound range past its buffer.
-    pub(crate) const COMPUTE_BOUND_RANGE_PAST_ITS_BUFFER: &str =
-        "compute: a bound range past its buffer";
-    /// The check of compute that refuses more bytes than Metal copies.
-    pub(crate) const COMPUTE_MORE_BYTES_THAN_METAL_COPIES: &str =
-        "compute: more bytes than Metal copies";
-    /// The check of dispatch that refuses no threadgroups.
-    pub(crate) const DISPATCH_NO_THREADGROUPS: &str = "dispatch: no threadgroups";
-    /// The check of dispatch that refuses no pipeline.
-    pub(crate) const DISPATCH_NO_PIPELINE: &str = "dispatch: no pipeline";
-    /// The check of dispatch that refuses more threads on an axis than a u32 holds.
-    pub(crate) const DISPATCH_MORE_THREADS_ON_AXIS_THAN_U32_HOLDS: &str =
-        "dispatch: more threads on an axis than a u32 holds";
-    /// The check of indirect dispatch that refuses no pipeline.
-    pub(crate) const INDIRECT_DISPATCH_NO_PIPELINE: &str = "indirect dispatch: no pipeline";
-    /// The check of region that refuses a level or slice outside the texture.
-    pub(crate) const REGION_LEVEL_OR_SLICE_OUTSIDE_TEXTURE: &str =
-        "region: a level or slice outside the texture";
-    /// The check of region that refuses outside the level.
-    pub(crate) const REGION_OUTSIDE_LEVEL: &str = "region: outside the level";
-    /// The check of region that refuses partial blocks.
-    pub(crate) const REGION_PARTIAL_BLOCKS: &str = "region: partial blocks";
-    /// The check of region that refuses empty.
-    pub(crate) const REGION_EMPTY: &str = "region: empty";
-    /// The check of copy buffers that refuses no bytes, or off whole words.
-    pub(crate) const COPY_BUFFERS_NO_BYTES_OR_OFF_WHOLE_WORDS: &str =
-        "copy buffers: no bytes, or off whole words";
-    /// The check of copy buffers that refuses outside a buffer.
-    pub(crate) const COPY_BUFFERS_OUTSIDE_BUFFER: &str = "copy buffers: outside a buffer";
-    /// The check of copy buffers that refuses overlapping ranges.
-    pub(crate) const COPY_BUFFERS_OVERLAPPING_RANGES: &str = "copy buffers: overlapping ranges";
-    /// The check of copy buffer and texture that refuses a multisampled or drawable texture.
-    pub(crate) const COPY_BUFFER_AND_TEXTURE_MULTISAMPLED_OR_DRAWABLE_TEXTURE: &str =
-        "copy buffer and texture: a multisampled or drawable texture";
-    /// The check of copy buffer and texture that refuses an aspect the format lacks.
-    pub(crate) const COPY_BUFFER_AND_TEXTURE_ASPECT_FORMAT_LACKS: &str =
-        "copy buffer and texture: an aspect the format lacks";
-    /// The check of copy buffer and texture that refuses a row pitch short, long or off a block.
-    pub(crate) const COPY_BUFFER_AND_TEXTURE_ROW_PITCH_SHORT_LONG_OR_OFF_BLOCK: &str =
-        "copy buffer and texture: a row pitch short, long or off a block";
-    /// The check of copy buffer and texture that refuses an image pitch shorter than an image.
-    pub(crate) const COPY_BUFFER_AND_TEXTURE_IMAGE_PITCH_SHORTER_THAN_IMAGE: &str =
-        "copy buffer and texture: an image pitch shorter than an image";
-    /// The check of copy buffer and texture that refuses an offset off a block.
-    pub(crate) const COPY_BUFFER_AND_TEXTURE_OFFSET_OFF_BLOCK: &str =
-        "copy buffer and texture: an offset off a block";
-    /// The check of copy buffer and texture that refuses a length that overflows.
-    pub(crate) const COPY_BUFFER_AND_TEXTURE_LENGTH_THAT_OVERFLOWS: &str =
-        "copy buffer and texture: a length that overflows";
-    /// The check of copy buffer and texture that refuses outside the buffer.
-    pub(crate) const COPY_BUFFER_AND_TEXTURE_OUTSIDE_BUFFER: &str =
-        "copy buffer and texture: outside the buffer";
-    /// The check of copy textures that refuses formats or sample counts that differ.
-    pub(crate) const COPY_TEXTURES_FORMATS_OR_SAMPLE_COUNTS_THAT_DIFFER: &str =
-        "copy textures: formats or sample counts that differ";
-    /// The check of copy textures that refuses a drawable's texture.
-    pub(crate) const COPY_TEXTURES_DRAWABLES_TEXTURE: &str = "copy textures: a drawable's texture";
-    /// The check of copy textures that refuses overlapping regions.
-    pub(crate) const COPY_TEXTURES_OVERLAPPING_REGIONS: &str = "copy textures: overlapping regions";
-    /// The check of fill that refuses no bytes, or off whole words.
-    pub(crate) const FILL_NO_BYTES_OR_OFF_WHOLE_WORDS: &str = "fill: no bytes, or off whole words";
-    /// The check of fill that refuses outside the buffer.
-    pub(crate) const FILL_OUTSIDE_BUFFER: &str = "fill: outside the buffer";
-    /// The check of mipmaps that refuses of a drawable's texture.
-    pub(crate) const MIPMAPS_OF_DRAWABLES_TEXTURE: &str = "mipmaps: of a drawable's texture";
-    /// The check of mipmaps that refuses of one level.
-    pub(crate) const MIPMAPS_OF_ONE_LEVEL: &str = "mipmaps: of one level";
-    /// The check of mipmaps that refuses a format not drawn into and filtered, or multisampled.
-    pub(crate) const MIPMAPS_FORMAT_NOT_DRAWN_INTO_AND_FILTERED_OR_MULTISAMPLED: &str =
-        "mipmaps: a format not drawn into and filtered, or multisampled";
-    /// The check of function that refuses no such entry point.
-    pub(crate) const FUNCTION_NO_SUCH_ENTRY_POINT: &str = "function: no such entry point";
-    /// The check of function that refuses a stage other than vertex, fragment and compute.
-    pub(crate) const FUNCTION_STAGE_OTHER_THAN_VERTEX_FRAGMENT_AND_COMPUTE: &str =
-        "function: a stage other than vertex, fragment and compute";
-    /// The check of function that refuses immediates and lengths not at two slots of their own.
-    pub(crate) const FUNCTION_IMMEDIATES_AND_LENGTHS_NOT_AT_TWO_SLOTS_OF_THEIR_OWN: &str =
-        "function: immediates and lengths not at two slots of their own";
-    /// The check of function that refuses a global in an address space not checked.
-    pub(crate) const FUNCTION_GLOBAL_IN_ADDRESS_SPACE_NOT_CHECKED: &str =
-        "function: a global in an address space not checked";
-    /// The check of function that refuses a resource with no binding.
-    pub(crate) const FUNCTION_RESOURCE_WITH_NO_BINDING: &str =
-        "function: a resource with no binding";
-    /// The check of function that refuses a resource with no slot.
-    pub(crate) const FUNCTION_RESOURCE_WITH_NO_SLOT: &str = "function: a resource with no slot";
-    /// The check of function that refuses a resource of a type not checked.
-    pub(crate) const FUNCTION_RESOURCE_OF_TYPE_NOT_CHECKED: &str =
-        "function: a resource of a type not checked";
-    /// The check of function that refuses a buffer slot past the last or taken.
-    pub(crate) const FUNCTION_BUFFER_SLOT_PAST_LAST_OR_TAKEN: &str =
-        "function: a buffer slot past the last or taken";
-    /// The check of function that refuses an array of bindings.
-    pub(crate) const FUNCTION_ARRAY_OF_BINDINGS: &str = "function: an array of bindings";
-    /// The check of function that refuses a texture slot past the last.
-    pub(crate) const FUNCTION_TEXTURE_SLOT_PAST_LAST: &str =
-        "function: a texture slot past the last";
-    /// The check of function that refuses a texture the function writes.
-    pub(crate) const FUNCTION_TEXTURE_FUNCTION_WRITES: &str =
-        "function: a texture the function writes";
-    /// The check of function that refuses an external texture.
-    pub(crate) const FUNCTION_EXTERNAL_TEXTURE: &str = "function: an external texture";
-    /// The check of function that refuses a texture type not made.
-    pub(crate) const FUNCTION_TEXTURE_TYPE_NOT_MADE: &str = "function: a texture type not made";
-    /// The check of function that refuses a sampler slot past the last.
-    pub(crate) const FUNCTION_SAMPLER_SLOT_PAST_LAST: &str =
-        "function: a sampler slot past the last";
-    /// The check of function that refuses a vertex buffer slot past the last or taken.
-    pub(crate) const FUNCTION_VERTEX_BUFFER_SLOT_PAST_LAST_OR_TAKEN: &str =
-        "function: a vertex buffer slot past the last or taken";
-    /// The check of function that refuses a vertex stride of zero or past the most.
-    pub(crate) const FUNCTION_VERTEX_STRIDE_OF_ZERO_OR_PAST_MOST: &str =
-        "function: a vertex stride of zero or past the most";
-    /// The check of function that refuses an attribute past its stride.
-    pub(crate) const FUNCTION_ATTRIBUTE_PAST_ITS_STRIDE: &str =
-        "function: an attribute past its stride";
-    /// The check of function that refuses texels neither float nor integer.
-    pub(crate) const FUNCTION_TEXELS_NEITHER_FLOAT_NOR_INTEGER: &str =
-        "function: texels neither float nor integer";
+    /// Declares each entry's label as a constant and lists every entry, by name and label, in `ALL`.
+    macro_rules! sites {
+        ($($(#[$doc:meta])* $name:ident = $label:literal;)*) => {
+            $($(#[$doc])* pub(crate) const $name: &str = $label;)*
+
+            /// The name and label of every site, in the order they are declared.
+            pub(crate) const ALL: &[(&str, &str)] = &[$((stringify!($name), $name)),*];
+        };
+    }
+
+    /// Returns whether two byte strings are equal, as a constant function can compare them.
+    const fn same(left: &[u8], right: &[u8]) -> bool {
+        let (mut left, mut right) = (left, right);
+        loop {
+            match (left, right) {
+                ([first, left_rest @ ..], [other, right_rest @ ..]) => {
+                    if *first != *other {
+                        return false;
+                    }
+                    (left, right) = (left_rest, right_rest);
+                }
+                ([], []) => return true,
+                _ => return false,
+            }
+        }
+    }
+
+    /// Returns whether a label is one of `sites`' labels.
+    const fn listed_in(sites: &[(&str, &str)], label: &str) -> bool {
+        let mut sites = sites;
+        while let [(_, first), rest @ ..] = sites {
+            if same(first.as_bytes(), label.as_bytes()) {
+                return true;
+            }
+            sites = rest;
+        }
+        false
+    }
+
+    /// Returns whether a label is listed in `ALL`; each check asserts it of its site while it is compiled.
+    pub(crate) const fn listed(label: &str) -> bool {
+        listed_in(ALL, label)
+    }
+
+    sites! {
+        /// The check of pipeline that refuses a vertex function of another stage.
+        PIPELINE_VERTEX_FUNCTION_OF_ANOTHER_STAGE = "pipeline: a vertex function of another stage";
+        /// The check of pipeline that refuses a fragment function of another stage.
+        PIPELINE_FRAGMENT_FUNCTION_OF_ANOTHER_STAGE = "pipeline: a fragment function of another stage";
+        /// The check of pipeline that refuses a sample count the device lacks.
+        PIPELINE_SAMPLE_COUNT_DEVICE_LACKS = "pipeline: a sample count the device lacks";
+        /// The check of pipeline that refuses a depth or stencil format without the aspect.
+        PIPELINE_DEPTH_OR_STENCIL_FORMAT_WITHOUT_ASPECT = "pipeline: a depth or stencil format without the aspect";
+        /// The check of pipeline that refuses a combined depth and stencil format beside another.
+        PIPELINE_COMBINED_DEPTH_AND_STENCIL_FORMAT_BESIDE_ANOTHER = "pipeline: a combined depth and stencil format beside another";
+        /// The check of pipeline that refuses a second source beside other attachments.
+        PIPELINE_SECOND_SOURCE_BESIDE_OTHER_ATTACHMENTS = "pipeline: a second source beside other attachments";
+        /// The check of pipeline that refuses a color format no attachment takes.
+        PIPELINE_COLOR_FORMAT_NO_ATTACHMENT_TAKES = "pipeline: a color format no attachment takes";
+        /// The check of pipeline that refuses some channels of a shared exponent.
+        PIPELINE_SOME_CHANNELS_OF_SHARED_EXPONENT = "pipeline: some channels of a shared exponent";
+        /// The check of pipeline that refuses blending a format that does not blend.
+        PIPELINE_BLENDING_FORMAT_THAT_DOES_NOT_BLEND = "pipeline: blending a format that does not blend";
+        /// The check of pipeline that refuses alpha to coverage without a blending first attachment.
+        PIPELINE_ALPHA_TO_COVERAGE_WITHOUT_BLENDING_FIRST_ATTACHMENT = "pipeline: alpha to coverage without a blending first attachment";
+        /// The check of buffer that refuses longer than the device's most.
+        BUFFER_LONGER_THAN_DEVICES_MOST = "buffer: longer than the device's most";
+        /// The check of write that refuses past the buffer.
+        WRITE_PAST_BUFFER = "write: past the buffer";
+        /// The check of write that refuses a buffer uncommitted work uses.
+        WRITE_BUFFER_UNCOMMITTED_WORK_USES = "write: a buffer uncommitted work uses";
+        /// The check of read that refuses past the buffer.
+        READ_PAST_BUFFER = "read: past the buffer";
+        /// The check of read that refuses a buffer uncommitted work uses.
+        READ_BUFFER_UNCOMMITTED_WORK_USES = "read: a buffer uncommitted work uses";
+        /// The check of texture that refuses a side past the most.
+        TEXTURE_SIDE_PAST_MOST = "texture: a side past the most";
+        /// The check of texture that refuses layers past the most.
+        TEXTURE_LAYERS_PAST_MOST = "texture: layers past the most";
+        /// The check of texture that refuses a stencil view format.
+        TEXTURE_STENCIL_VIEW_FORMAT = "texture: a stencil view format";
+        /// The check of texture that refuses an empty size.
+        TEXTURE_EMPTY_SIZE = "texture: an empty size";
+        /// The check of texture that refuses deeper than one outside 3D.
+        TEXTURE_DEEPER_THAN_ONE_OUTSIDE_3D = "texture: deeper than one outside 3D";
+        /// The check of texture that refuses an array length the type does not take.
+        TEXTURE_ARRAY_LENGTH_TYPE_DOES_NOT_TAKE = "texture: an array length the type does not take";
+        /// The check of texture that refuses a cube not square.
+        TEXTURE_CUBE_NOT_SQUARE = "texture: a cube not square";
+        /// The check of texture that refuses levels past the chain.
+        TEXTURE_LEVELS_PAST_CHAIN = "texture: levels past the chain";
+        /// The check of texture that refuses a sample count the type does not take.
+        TEXTURE_SAMPLE_COUNT_TYPE_DOES_NOT_TAKE = "texture: a sample count the type does not take";
+        /// The check of texture that refuses compressed in a type that is not.
+        TEXTURE_COMPRESSED_IN_TYPE_THAT_IS_NOT = "texture: compressed in a type that is not";
+        /// The check of texture that refuses depth or stencil in 3D.
+        TEXTURE_DEPTH_OR_STENCIL_IN_3D = "texture: depth or stencil in 3D";
+        /// The check of view that refuses of a drawable's texture.
+        VIEW_OF_DRAWABLES_TEXTURE = "view: of a drawable's texture";
+        /// The check of view that refuses levels or slices past the texture.
+        VIEW_LEVELS_OR_SLICES_PAST_TEXTURE = "view: levels or slices past the texture";
+        /// The check of view that refuses a format the texture is not seen as.
+        VIEW_FORMAT_TEXTURE_IS_NOT_SEEN_AS = "view: a format the texture is not seen as";
+        /// The check of view that refuses slices the type does not take.
+        VIEW_SLICES_TYPE_DOES_NOT_TAKE = "view: slices the type does not take";
+        /// The check of view that refuses a type the texture is not seen as.
+        VIEW_TYPE_TEXTURE_IS_NOT_SEEN_AS = "view: a type the texture is not seen as";
+        /// The check of view that refuses a cube of a texture not square.
+        VIEW_CUBE_OF_TEXTURE_NOT_SQUARE = "view: a cube of a texture not square";
+        /// The check of view that refuses a swizzle of a texture drawn into, or a view of a swizzled view.
+        VIEW_SWIZZLE_OF_TEXTURE_DRAWN_INTO_OR_VIEW_OF_SWIZZLED_VIEW = "view: a swizzle of a texture drawn into, or a view of a swizzled view";
+        /// The check of sampler that refuses an anisotropy outside one to the most.
+        SAMPLER_ANISOTROPY_OUTSIDE_ONE_TO_MOST = "sampler: an anisotropy outside one to the most";
+        /// The check of sampler that refuses an empty level range.
+        SAMPLER_EMPTY_LEVEL_RANGE = "sampler: an empty level range";
+        /// The check of sampler that refuses clamps to zero and to the border.
+        SAMPLER_CLAMPS_TO_ZERO_AND_TO_BORDER = "sampler: clamps to zero and to the border";
+        /// The check of compute pipeline that refuses a function of another stage.
+        COMPUTE_PIPELINE_FUNCTION_OF_ANOTHER_STAGE = "compute pipeline: a function of another stage";
+        /// The check of compute pipeline that refuses a workgroup past the device's most.
+        COMPUTE_PIPELINE_WORKGROUP_PAST_DEVICES_MOST = "compute pipeline: a workgroup past the device's most";
+        /// The check of compute pipeline that refuses workgroup memory past the device's.
+        COMPUTE_PIPELINE_WORKGROUP_MEMORY_PAST_DEVICES = "compute pipeline: workgroup memory past the device's";
+        /// The check of render that refuses a committed command buffer.
+        RENDER_COMMITTED_COMMAND_BUFFER = "render: a committed command buffer";
+        /// The check of blit that refuses a committed command buffer.
+        BLIT_COMMITTED_COMMAND_BUFFER = "blit: a committed command buffer";
+        /// The check of compute that refuses a committed command buffer.
+        COMPUTE_COMMITTED_COMMAND_BUFFER = "compute: a committed command buffer";
+        /// The check of commit that refuses committed before.
+        COMMIT_COMMITTED_BEFORE = "commit: committed before";
+        /// The check of wait that refuses not committed.
+        WAIT_NOT_COMMITTED = "wait: not committed";
+        /// The check of layer that refuses off the main thread.
+        LAYER_OFF_MAIN_THREAD = "layer: off the main thread";
+        /// The check of layer that refuses a window without an AppKit view.
+        LAYER_WINDOW_WITHOUT_APPKIT_VIEW = "layer: a window without an AppKit view";
+        /// The check of layer that refuses a format no layer takes.
+        LAYER_FORMAT_NO_LAYER_TAKES = "layer: a format no layer takes";
+        /// The check of layer that refuses an empty size.
+        LAYER_EMPTY_SIZE = "layer: an empty size";
+        /// The check of layer that refuses a side past the most.
+        LAYER_SIDE_PAST_MOST = "layer: a side past the most";
+        /// The check of drawable that refuses a layer not configured.
+        DRAWABLE_LAYER_NOT_CONFIGURED = "drawable: a layer not configured";
+        /// The check of present that refuses a committed command buffer.
+        PRESENT_COMMITTED_COMMAND_BUFFER = "present: a committed command buffer";
+        /// The check of present that refuses presented before.
+        PRESENT_PRESENTED_BEFORE = "present: presented before";
+        /// The check of timestamps that refuses no places or past the most.
+        TIMESTAMPS_NO_PLACES_OR_PAST_MOST = "timestamps: no places or past the most";
+        /// The check of timestamp that refuses a committed command buffer.
+        TIMESTAMP_COMMITTED_COMMAND_BUFFER = "timestamp: a committed command buffer";
+        /// The check of timestamp that refuses a place past the last.
+        TIMESTAMP_PLACE_PAST_LAST = "timestamp: a place past the last";
+        /// The check of read timestamps that refuses places past the last.
+        READ_TIMESTAMPS_PLACES_PAST_LAST = "read timestamps: places past the last";
+        /// The check of read timestamps that refuses uncommitted work writes them.
+        READ_TIMESTAMPS_UNCOMMITTED_WORK_WRITES_THEM = "read timestamps: uncommitted work writes them";
+        /// The check of reads that refuses an empty buffer slot.
+        READS_EMPTY_BUFFER_SLOT = "reads: an empty buffer slot";
+        /// The check of reads that refuses a buffer shorter than the function reads.
+        READS_BUFFER_SHORTER_THAN_FUNCTION_READS = "reads: a buffer shorter than the function reads";
+        /// The check of reads that refuses a buffer offset off the function's alignment.
+        READS_BUFFER_OFFSET_OFF_FUNCTIONS_ALIGNMENT = "reads: a buffer offset off the function's alignment";
+        /// The check of reads that refuses bytes at a slot the function writes.
+        READS_BYTES_AT_SLOT_FUNCTION_WRITES = "reads: bytes at a slot the function writes";
+        /// The check of reads that refuses immediates shorter than the function's.
+        READS_IMMEDIATES_SHORTER_THAN_FUNCTIONS = "reads: immediates shorter than the function's";
+        /// The check of reads that refuses immediates off their alignment.
+        READS_IMMEDIATES_OFF_THEIR_ALIGNMENT = "reads: immediates off their alignment";
+        /// The check of reads that refuses an empty texture slot.
+        READS_EMPTY_TEXTURE_SLOT = "reads: an empty texture slot";
+        /// The check of reads that refuses a texture not made to be read.
+        READS_TEXTURE_NOT_MADE_TO_BE_READ = "reads: a texture not made to be read";
+        /// The check of reads that refuses a texture of another type.
+        READS_TEXTURE_OF_ANOTHER_TYPE = "reads: a texture of another type";
+        /// The check of reads that refuses texels of another number type.
+        READS_TEXELS_OF_ANOTHER_NUMBER_TYPE = "reads: texels of another number type";
+        /// The check of reads that refuses an empty sampler slot.
+        READS_EMPTY_SAMPLER_SLOT = "reads: an empty sampler slot";
+        /// The check of pass that refuses an attachment not made to draw into.
+        PASS_ATTACHMENT_NOT_MADE_TO_DRAW_INTO = "pass: an attachment not made to draw into";
+        /// The check of pass that refuses an attachment's level, slice or plane outside it.
+        PASS_ATTACHMENTS_LEVEL_SLICE_OR_PLANE_OUTSIDE_IT = "pass: an attachment's level, slice or plane outside it";
+        /// The check of pass that refuses attachments of different sizes or sample counts.
+        PASS_ATTACHMENTS_OF_DIFFERENT_SIZES_OR_SAMPLE_COUNTS = "pass: attachments of different sizes or sample counts";
+        /// The check of pass that refuses a depth or stencil texture as a color attachment.
+        PASS_DEPTH_OR_STENCIL_TEXTURE_AS_COLOR_ATTACHMENT = "pass: a depth or stencil texture as a color attachment";
+        /// The check of pass that refuses a color attachment of a format no attachment takes.
+        PASS_COLOR_ATTACHMENT_OF_FORMAT_NO_ATTACHMENT_TAKES = "pass: a color attachment of a format no attachment takes";
+        /// The check of pass that refuses a depth attachment without depth.
+        PASS_DEPTH_ATTACHMENT_WITHOUT_DEPTH = "pass: a depth attachment without depth";
+        /// The check of pass that refuses a depth to clear to outside zero to one.
+        PASS_DEPTH_TO_CLEAR_TO_OUTSIDE_ZERO_TO_ONE = "pass: a depth to clear to outside zero to one";
+        /// The check of pass that refuses a stencil attachment without stencil.
+        PASS_STENCIL_ATTACHMENT_WITHOUT_STENCIL = "pass: a stencil attachment without stencil";
+        /// The check of pass that refuses depth and stencil of different textures.
+        PASS_DEPTH_AND_STENCIL_OF_DIFFERENT_TEXTURES = "pass: depth and stencil of different textures";
+        /// The check of pass that refuses a resolve from or into the wrong sample count.
+        PASS_RESOLVE_FROM_OR_INTO_WRONG_SAMPLE_COUNT = "pass: a resolve from or into the wrong sample count";
+        /// The check of pass that refuses a resolve into another format.
+        PASS_RESOLVE_INTO_ANOTHER_FORMAT = "pass: a resolve into another format";
+        /// The check of pass that refuses a resolve of a format that does not resolve.
+        PASS_RESOLVE_OF_FORMAT_THAT_DOES_NOT_RESOLVE = "pass: a resolve of a format that does not resolve";
+        /// The check of pass that refuses a resolve target's level, slice or plane outside it.
+        PASS_RESOLVE_TARGETS_LEVEL_SLICE_OR_PLANE_OUTSIDE_IT = "pass: a resolve target's level, slice or plane outside it";
+        /// The check of pass that refuses a resolve target of another size.
+        PASS_RESOLVE_TARGET_OF_ANOTHER_SIZE = "pass: a resolve target of another size";
+        /// The check of pass that refuses a stencil to clear to that a stencil does not hold.
+        PASS_STENCIL_TO_CLEAR_TO_THAT_STENCIL_DOES_NOT_HOLD = "pass: a stencil to clear to that a stencil does not hold";
+        /// The check of pass that refuses a visibility result buffer shorter than one result.
+        PASS_VISIBILITY_RESULT_BUFFER_SHORTER_THAN_ONE_RESULT = "pass: a visibility result buffer shorter than one result";
+        /// The check of pass that refuses no attachment and an area outside one to the longest side.
+        PASS_NO_ATTACHMENT_AND_AREA_OUTSIDE_ONE_TO_LONGEST_SIDE = "pass: no attachment and an area outside one to the longest side";
+        /// The check of pass that refuses two attachments of one plane.
+        PASS_TWO_ATTACHMENTS_OF_ONE_PLANE = "pass: two attachments of one plane";
+        /// The check of render that refuses a slot past the last.
+        RENDER_SLOT_PAST_LAST = "render: a slot past the last";
+        /// The check of draw that refuses a depth test with no depth attachment.
+        DRAW_DEPTH_TEST_WITH_NO_DEPTH_ATTACHMENT = "draw: a depth test with no depth attachment";
+        /// The check of draw that refuses a stencil test with no stencil attachment.
+        DRAW_STENCIL_TEST_WITH_NO_STENCIL_ATTACHMENT = "draw: a stencil test with no stencil attachment";
+        /// The check of render that refuses a pipeline made for other attachments.
+        RENDER_PIPELINE_MADE_FOR_OTHER_ATTACHMENTS = "render: a pipeline made for other attachments";
+        /// The check of render that refuses a pipeline made for another sample count.
+        RENDER_PIPELINE_MADE_FOR_ANOTHER_SAMPLE_COUNT = "render: a pipeline made for another sample count";
+        /// The check of render that refuses a bound range past its buffer.
+        RENDER_BOUND_RANGE_PAST_ITS_BUFFER = "render: a bound range past its buffer";
+        /// The check of render that refuses more bytes than Metal copies.
+        RENDER_MORE_BYTES_THAN_METAL_COPIES = "render: more bytes than Metal copies";
+        /// The check of render that refuses no viewports or past the most.
+        RENDER_NO_VIEWPORTS_OR_PAST_MOST = "render: no viewports or past the most";
+        /// The check of render that refuses a viewport not finite.
+        RENDER_VIEWPORT_NOT_FINITE = "render: a viewport not finite";
+        /// The check of render that refuses no scissor rectangles or past the most.
+        RENDER_NO_SCISSOR_RECTANGLES_OR_PAST_MOST = "render: no scissor rectangles or past the most";
+        /// The check of render that refuses a scissor rectangle outside the pass.
+        RENDER_SCISSOR_RECTANGLE_OUTSIDE_PASS = "render: a scissor rectangle outside the pass";
+        /// The check of render that refuses a visibility offset off its step or past the span.
+        RENDER_VISIBILITY_OFFSET_OFF_ITS_STEP_OR_PAST_SPAN = "render: a visibility offset off its step or past the span";
+        /// The check of render that refuses counting with no visibility buffer.
+        RENDER_COUNTING_WITH_NO_VISIBILITY_BUFFER = "render: counting with no visibility buffer";
+        /// The check of render that refuses a visibility offset past its buffer.
+        RENDER_VISIBILITY_OFFSET_PAST_ITS_BUFFER = "render: a visibility offset past its buffer";
+        /// The check of render that refuses counting twice at one offset.
+        RENDER_COUNTING_TWICE_AT_ONE_OFFSET = "render: counting twice at one offset";
+        /// The check of draw that refuses vertices or instances past the largest index.
+        DRAW_VERTICES_OR_INSTANCES_PAST_LARGEST_INDEX = "draw: vertices or instances past the largest index";
+        /// The check of draw that refuses no instances.
+        DRAW_NO_INSTANCES = "draw: no instances";
+        /// The check of indexed draw that refuses indices outside their buffer or off their size.
+        INDEXED_DRAW_INDICES_OUTSIDE_THEIR_BUFFER_OR_OFF_THEIR_SIZE = "indexed draw: indices outside their buffer or off their size";
+        /// The check of indexed draw that refuses instances past the largest index.
+        INDEXED_DRAW_INSTANCES_PAST_LARGEST_INDEX = "indexed draw: instances past the largest index";
+        /// The check of indexed draw that refuses no instances or no indices.
+        INDEXED_DRAW_NO_INSTANCES_OR_NO_INDICES = "indexed draw: no instances or no indices";
+        /// The check of indirect indexed draw that refuses an index offset outside its buffer or off its size.
+        INDIRECT_INDEXED_DRAW_INDEX_OFFSET_OUTSIDE_ITS_BUFFER_OR_OFF_ITS_SIZE = "indirect indexed draw: an index offset outside its buffer or off its size";
+        /// The check of render that refuses depth test bounds Metal lacks, or outside zero to one.
+        RENDER_DEPTH_TEST_BOUNDS_METAL_LACKS_OR_OUTSIDE_ZERO_TO_ONE = "render: depth test bounds Metal lacks, or outside zero to one";
+        /// The check of render that refuses depth test bounds with no depth attachment.
+        RENDER_DEPTH_TEST_BOUNDS_WITH_NO_DEPTH_ATTACHMENT = "render: depth test bounds with no depth attachment";
+        /// The check of draw that refuses no pipeline.
+        DRAW_NO_PIPELINE = "draw: no pipeline";
+        /// The check of draw that refuses primitives of another class than the pipeline's.
+        DRAW_PRIMITIVES_OF_ANOTHER_CLASS_THAN_PIPELINES = "draw: primitives of another class than the pipeline's";
+        /// The check of indirect that refuses arguments outside their buffer or off four bytes.
+        INDIRECT_ARGUMENTS_OUTSIDE_THEIR_BUFFER_OR_OFF_FOUR_BYTES = "indirect: arguments outside their buffer or off four bytes";
+        /// The check of compute that refuses a slot past the last.
+        COMPUTE_SLOT_PAST_LAST = "compute: a slot past the last";
+        /// The check of compute that refuses a bound range past its buffer.
+        COMPUTE_BOUND_RANGE_PAST_ITS_BUFFER = "compute: a bound range past its buffer";
+        /// The check of compute that refuses more bytes than Metal copies.
+        COMPUTE_MORE_BYTES_THAN_METAL_COPIES = "compute: more bytes than Metal copies";
+        /// The check of dispatch that refuses no threadgroups.
+        DISPATCH_NO_THREADGROUPS = "dispatch: no threadgroups";
+        /// The check of dispatch that refuses no pipeline.
+        DISPATCH_NO_PIPELINE = "dispatch: no pipeline";
+        /// The check of dispatch that refuses more threads on an axis than a u32 holds.
+        DISPATCH_MORE_THREADS_ON_AXIS_THAN_U32_HOLDS = "dispatch: more threads on an axis than a u32 holds";
+        /// The check of indirect dispatch that refuses no pipeline.
+        INDIRECT_DISPATCH_NO_PIPELINE = "indirect dispatch: no pipeline";
+        /// The check of region that refuses a level or slice outside the texture.
+        REGION_LEVEL_OR_SLICE_OUTSIDE_TEXTURE = "region: a level or slice outside the texture";
+        /// The check of region that refuses outside the level.
+        REGION_OUTSIDE_LEVEL = "region: outside the level";
+        /// The check of region that refuses partial blocks.
+        REGION_PARTIAL_BLOCKS = "region: partial blocks";
+        /// The check of region that refuses empty.
+        REGION_EMPTY = "region: empty";
+        /// The check of copy buffers that refuses no bytes, or off whole words.
+        COPY_BUFFERS_NO_BYTES_OR_OFF_WHOLE_WORDS = "copy buffers: no bytes, or off whole words";
+        /// The check of copy buffers that refuses outside a buffer.
+        COPY_BUFFERS_OUTSIDE_BUFFER = "copy buffers: outside a buffer";
+        /// The check of copy buffers that refuses overlapping ranges.
+        COPY_BUFFERS_OVERLAPPING_RANGES = "copy buffers: overlapping ranges";
+        /// The check of copy buffer and texture that refuses a multisampled or drawable texture.
+        COPY_BUFFER_AND_TEXTURE_MULTISAMPLED_OR_DRAWABLE_TEXTURE = "copy buffer and texture: a multisampled or drawable texture";
+        /// The check of copy buffer and texture that refuses an aspect the format lacks.
+        COPY_BUFFER_AND_TEXTURE_ASPECT_FORMAT_LACKS = "copy buffer and texture: an aspect the format lacks";
+        /// The check of copy buffer and texture that refuses a row pitch short, long or off a block.
+        COPY_BUFFER_AND_TEXTURE_ROW_PITCH_SHORT_LONG_OR_OFF_BLOCK = "copy buffer and texture: a row pitch short, long or off a block";
+        /// The check of copy buffer and texture that refuses an image pitch shorter than an image.
+        COPY_BUFFER_AND_TEXTURE_IMAGE_PITCH_SHORTER_THAN_IMAGE = "copy buffer and texture: an image pitch shorter than an image";
+        /// The check of copy buffer and texture that refuses an offset off a block.
+        COPY_BUFFER_AND_TEXTURE_OFFSET_OFF_BLOCK = "copy buffer and texture: an offset off a block";
+        /// The check of copy buffer and texture that refuses a length that overflows.
+        COPY_BUFFER_AND_TEXTURE_LENGTH_THAT_OVERFLOWS = "copy buffer and texture: a length that overflows";
+        /// The check of copy buffer and texture that refuses outside the buffer.
+        COPY_BUFFER_AND_TEXTURE_OUTSIDE_BUFFER = "copy buffer and texture: outside the buffer";
+        /// The check of copy textures that refuses formats or sample counts that differ.
+        COPY_TEXTURES_FORMATS_OR_SAMPLE_COUNTS_THAT_DIFFER = "copy textures: formats or sample counts that differ";
+        /// The check of copy textures that refuses a drawable's texture.
+        COPY_TEXTURES_DRAWABLES_TEXTURE = "copy textures: a drawable's texture";
+        /// The check of copy textures that refuses overlapping regions.
+        COPY_TEXTURES_OVERLAPPING_REGIONS = "copy textures: overlapping regions";
+        /// The check of fill that refuses no bytes, or off whole words.
+        FILL_NO_BYTES_OR_OFF_WHOLE_WORDS = "fill: no bytes, or off whole words";
+        /// The check of fill that refuses outside the buffer.
+        FILL_OUTSIDE_BUFFER = "fill: outside the buffer";
+        /// The check of mipmaps that refuses of a drawable's texture.
+        MIPMAPS_OF_DRAWABLES_TEXTURE = "mipmaps: of a drawable's texture";
+        /// The check of mipmaps that refuses of one level.
+        MIPMAPS_OF_ONE_LEVEL = "mipmaps: of one level";
+        /// The check of mipmaps that refuses a format not drawn into and filtered, or multisampled.
+        MIPMAPS_FORMAT_NOT_DRAWN_INTO_AND_FILTERED_OR_MULTISAMPLED = "mipmaps: a format not drawn into and filtered, or multisampled";
+        /// The check of function that refuses no such entry point.
+        FUNCTION_NO_SUCH_ENTRY_POINT = "function: no such entry point";
+        /// The check of function that refuses a stage other than vertex, fragment and compute.
+        FUNCTION_STAGE_OTHER_THAN_VERTEX_FRAGMENT_AND_COMPUTE = "function: a stage other than vertex, fragment and compute";
+        /// The check of function that refuses immediates and lengths not at two slots of their own.
+        FUNCTION_IMMEDIATES_AND_LENGTHS_NOT_AT_TWO_SLOTS_OF_THEIR_OWN = "function: immediates and lengths not at two slots of their own";
+        /// The check of function that refuses a global in an address space not checked.
+        FUNCTION_GLOBAL_IN_ADDRESS_SPACE_NOT_CHECKED = "function: a global in an address space not checked";
+        /// The check of function that refuses a resource with no binding.
+        FUNCTION_RESOURCE_WITH_NO_BINDING = "function: a resource with no binding";
+        /// The check of function that refuses a resource with no slot.
+        FUNCTION_RESOURCE_WITH_NO_SLOT = "function: a resource with no slot";
+        /// The check of function that refuses a resource of a type not checked.
+        FUNCTION_RESOURCE_OF_TYPE_NOT_CHECKED = "function: a resource of a type not checked";
+        /// The check of function that refuses a buffer slot past the last or taken.
+        FUNCTION_BUFFER_SLOT_PAST_LAST_OR_TAKEN = "function: a buffer slot past the last or taken";
+        /// The check of function that refuses an array of bindings.
+        FUNCTION_ARRAY_OF_BINDINGS = "function: an array of bindings";
+        /// The check of function that refuses a texture slot past the last.
+        FUNCTION_TEXTURE_SLOT_PAST_LAST = "function: a texture slot past the last";
+        /// The check of function that refuses a texture the function writes.
+        FUNCTION_TEXTURE_FUNCTION_WRITES = "function: a texture the function writes";
+        /// The check of function that refuses an external texture.
+        FUNCTION_EXTERNAL_TEXTURE = "function: an external texture";
+        /// The check of function that refuses a texture type not made.
+        FUNCTION_TEXTURE_TYPE_NOT_MADE = "function: a texture type not made";
+        /// The check of function that refuses a sampler slot past the last.
+        FUNCTION_SAMPLER_SLOT_PAST_LAST = "function: a sampler slot past the last";
+        /// The check of function that refuses a vertex buffer slot past the last or taken.
+        FUNCTION_VERTEX_BUFFER_SLOT_PAST_LAST_OR_TAKEN = "function: a vertex buffer slot past the last or taken";
+        /// The check of function that refuses a vertex stride of zero or past the most.
+        FUNCTION_VERTEX_STRIDE_OF_ZERO_OR_PAST_MOST = "function: a vertex stride of zero or past the most";
+        /// The check of function that refuses an attribute past its stride.
+        FUNCTION_ATTRIBUTE_PAST_ITS_STRIDE = "function: an attribute past its stride";
+        /// The check of function that refuses texels neither float nor integer.
+        FUNCTION_TEXELS_NEITHER_FLOAT_NOR_INTEGER = "function: texels neither float nor integer";
+    }
 }
 
 // Metal's unsigned integer is as wide as `u64` on every Mac, so `ns_uinteger` never saturates.
@@ -5799,5 +5716,80 @@ fn primitive_type_of(primitive_type: PrimitiveType) -> MTLPrimitiveType {
         PrimitiveType::LineStrip => MTLPrimitiveType::LineStrip,
         PrimitiveType::Triangle => MTLPrimitiveType::Triangle,
         PrimitiveType::TriangleStrip => MTLPrimitiveType::TriangleStrip,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    /// Fails when a check names a site not listed in `site::ALL`, a listed site is checked nowhere or twice, or two
+    /// sites share a name or a label.
+    ///
+    /// A constant of `site` declared outside `sites!` is either checked nowhere, which the dead code lint refuses, or
+    /// checked, which the assertion in `refuses!` and `found!` refuses as the crate is built, and which this test finds
+    /// too. The source is read without its spaces and line breaks, so that no formatting changes what it finds.
+    #[test]
+    fn every_site_checked_is_listed_and_every_listed_site_is_checked_once() {
+        let source: String = include_str!("implementation.rs")
+            .split_whitespace()
+            .collect();
+        let mut checked: BTreeMap<&str, usize> = BTreeMap::new();
+        // Spelled in parts, so that this test is not a check.
+        for needle in [concat!("refuses", "!(site::"), concat!("found", "!(site::")] {
+            for (at, _) in source.match_indices(needle) {
+                let rest = source
+                    .get(at.saturating_add(needle.len())..)
+                    .unwrap_or_default();
+                let name = rest.split(',').next().unwrap_or_default();
+                let count = checked.entry(name).or_default();
+                *count = count.saturating_add(1);
+            }
+        }
+        let listed: BTreeMap<&str, &str> = crate::site::ALL.iter().copied().collect();
+        let labels: std::collections::BTreeSet<&str> =
+            crate::site::ALL.iter().map(|(_, label)| *label).collect();
+        assert_eq!(
+            listed.len(),
+            crate::site::ALL.len(),
+            "a site's name listed twice"
+        );
+        assert_eq!(
+            labels.len(),
+            crate::site::ALL.len(),
+            "a label given to two sites"
+        );
+        let unlisted: Vec<&&str> = checked
+            .keys()
+            .filter(|name| !listed.contains_key(*name))
+            .collect();
+        assert!(unlisted.is_empty(), "checked but not listed: {unlisted:?}");
+        let unchecked: Vec<&&str> = listed
+            .keys()
+            .filter(|name| !checked.contains_key(*name))
+            .collect();
+        assert!(
+            unchecked.is_empty(),
+            "listed but checked nowhere: {unchecked:?}"
+        );
+        let twice: Vec<(&&str, &usize)> = checked.iter().filter(|(_, count)| **count > 1).collect();
+        assert!(
+            twice.is_empty(),
+            "checked at more than one place: {twice:?}"
+        );
+    }
+
+    /// Fails when the constant check that every site is listed would take a label that is not.
+    #[test]
+    fn a_label_not_in_the_list_is_not_listed() {
+        assert!(
+            crate::site::ALL
+                .iter()
+                .all(|(_, label)| crate::site::listed(label))
+        );
+        assert!(!crate::site::listed(
+            "pipeline: a site declared outside the list"
+        ));
+        assert!(!crate::site::listed(""));
     }
 }
