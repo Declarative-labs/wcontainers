@@ -554,7 +554,6 @@ impl SingleStepMachine {
         self.write_bytes(SLOT, &slot.before_xsave.as_bytes()[..end]);
         let inputs = offset_of!(Slot, page_table)..offset_of!(Slot, after);
         self.write_bytes(SLOT + inputs.start as u64, &slot.as_bytes()[inputs]);
-        self.write_bytes(SLOT + offset_of!(Slot, tracking) as u64, slot.tracking.as_bytes());
         self.time_loading += started.elapsed();
         held
     }

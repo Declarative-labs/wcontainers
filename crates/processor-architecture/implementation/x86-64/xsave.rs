@@ -142,7 +142,10 @@ pub fn list_components(bitmap: u64) -> impl Iterator<Item = u64> {
 
 /// Sets XINUSE's bit of every component that does not hold its initial configuration, as a state must have it.
 pub fn mark_components_in_use(processor: &mut Processor) {
-    processor.xinuse |= list_components_not_initial(processor);
+    let unmarked = list_components(processor.xcr0 & !processor.xinuse)
+        .filter(|component| !is_initial(processor, *component))
+        .fold(0, |all, component| all | component);
+    processor.xinuse |= unmarked;
 }
 
 /// Whether XINUSE and the tracking say what the processor can hold: no bit outside XCR0, no component out of its

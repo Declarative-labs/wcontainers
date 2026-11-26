@@ -110,9 +110,9 @@ pub struct Slot {
     pub fault_address: u64,
     /// DR6 after.
     pub debug_status: u64,
+    pub tracking: TrackingSteps,
     pub before: Registers,
     pub after: Registers,
-    pub tracking: TrackingSteps,
 }
 
 /// XRSTOR TRACKING: what the handler runs at ring 3 around the instruction, in the same entry, to load the tracking
