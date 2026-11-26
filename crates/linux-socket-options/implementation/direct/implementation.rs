@@ -116,6 +116,38 @@ fn last_error() -> HostError {
     }
 }
 
+/// Gives the socket when its address family is one of `families`, those whose handler of the option's level the
+/// kernel table was read in; otherwise `ENOPROTOOPT`, as Linux answers an option of a level the socket does not have.
+///
+/// Other families give the same level numbers other meanings: Bluetooth's HCI, L2CAP and SCO levels are 0, 6 and 17.
+fn of_family<'a>(socket: BorrowedFd<'a>, families: &[u32]) -> Result<BorrowedFd<'a>, HostError> {
+    checked_family(socket, families, libc::ENOPROTOOPT)
+}
+
+/// Gives the socket when its address family is one of `families`, those whose ioctl handler the kernel table was read
+/// in; otherwise `ENOTTY`, as Linux answers a request the socket does not take.
+fn request_of_family<'a>(
+    socket: BorrowedFd<'a>,
+    families: &[u32],
+) -> Result<BorrowedFd<'a>, HostError> {
+    checked_family(socket, families, libc::ENOTTY)
+}
+
+/// Reads the socket's family (`SO_DOMAIN`, socket(7)) and gives the socket when it is one of `families`, else `refused`.
+fn checked_family<'a>(
+    socket: BorrowedFd<'a>,
+    families: &[u32],
+    refused: c_int,
+) -> Result<BorrowedFd<'a>, HostError> {
+    let family = rustix::net::sockopt::socket_domain(socket)
+        .map_err(|error| HostError::Errno(error.raw_os_error()))?;
+    if families.contains(&u32::from(family.as_raw())) {
+        Ok(socket)
+    } else {
+        Err(HostError::Errno(refused))
+    }
+}
+
 fn length_of(bytes: usize) -> Result<libc::socklen_t, HostError> {
     libc::socklen_t::try_from(bytes).map_err(|_| invalid())
 }
@@ -147,8 +179,9 @@ fn set_bytes_at<T: ?Sized>(
                   is told only memory the caller lent; the borrow is exclusive wherever the kernel may write into it, \
                   and the value holds no address the kernel follows except `set_program`'s `sock_fprog`, which points \
                   at `len` instructions borrowed for the call: the generator takes a set only where the kernel table, \
-                  keyed by the level and option numbers, says the kernel does exactly that with a value of that form \
-                  (tests/generated.rs `set_reason`); the descriptor is borrowed, so open"
+                  keyed by the level and option numbers and the families whose handler was read, says the kernel does \
+                  exactly that with a value of that form (tests/generated.rs `set_reason`), and the socket reaches \
+                  here only through the check of those families (`family_reason`); the descriptor is borrowed, so open"
     )]
     let result = unsafe {
         libc::setsockopt(
@@ -330,7 +363,8 @@ fn get_within(
     #[expect(
         unsafe_code,
         reason = "the kernel writes only inside `into`: the generator routes a get here only where the kernel table, \
-                  keyed by the level and option numbers, says the kernel writes at most the `told` bytes, no more than \
+                  keyed by the level and option numbers and the families whose handler was read (the socket checked \
+                  against them, `family_reason`), says the kernel writes at most the `told` bytes, no more than \
                   `into` holds, and follows no address in them, except the one pair whose kernel writes `told` bytes \
                   per key asked, routed only through `get_keys`, which asks at most one (tests/generated.rs \
                   `get_within_reason`; the canaries after `told` check every call); the descriptor is borrowed, so open"
@@ -520,9 +554,9 @@ fn full_info_into<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize>(
         reason = "the kernel writes at most `length` bytes of the header, and at most `size_arrays_user` entries of \
                   `size_sfinfo_user` and of `size_tcpinfo_user` bytes at `subflow_info` and `tcp_info`, which are two \
                   runs of rooms of exactly those sizes holding at least that many, alive and not moved during the call; \
-                  the generator routes here only the pair whose kernel entry reads this header and writes those runs \
-                  (tests/generated.rs `full_info_reason`; canaries after the header and after each run check every \
-                  call); the descriptor is borrowed"
+                  the generator routes here only the pair whose kernel entry reads this header and writes those runs, \
+                  for a socket of the families it was read in (tests/generated.rs `full_info_reason`, `family_reason`; \
+                  canaries after the header and after each run check every call); the descriptor is borrowed"
     )]
     let result = unsafe {
         libc::getsockopt(
@@ -556,9 +590,10 @@ fn ioctl_within(socket: BorrowedFd<'_>, request: u32, into: &mut [u8]) -> Result
     }
     #[expect(
         unsafe_code,
-        reason = "the generator routes a request here only where the kernel table, keyed by the request number, says \
-                  it writes one int at the pointer (tests/generated.rs `ioctl_reason`), and `into` holds at least one; \
-                  the descriptor is borrowed, so open"
+        reason = "the generator routes a request here only where the kernel table, keyed by the request number and the \
+                  families whose ioctl handler was read, says it writes one int at the pointer, for a socket checked to \
+                  be of those families (tests/generated.rs `ioctl_reason`, `family_reason`), and `into` holds at least \
+                  one; the descriptor is borrowed, so open"
     )]
     let result = unsafe {
         libc::ioctl(

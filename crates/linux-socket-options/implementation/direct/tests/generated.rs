@@ -8,7 +8,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use kernel::{Does, Entry};
+use kernel::{Does, Entry, Families};
 
 #[path = "generated/kernel.rs"]
 mod kernel;
@@ -382,25 +382,50 @@ fn summary(row: &Row<'_>) -> String {
     }
 }
 
+/// The private functions that check a socket's family, for an option and for an ioctl request.
+const OPTION_FAMILY_CHECK: &str = "of_family";
+const REQUEST_FAMILY_CHECK: &str = "request_of_family";
+
+/// Gives the check of the socket's family a generated call passes the socket through, from the kernel table's families
+/// of the row's level; nothing where the level is the socket layer's own, which every family shares.
+fn family_guard(row: &Row<'_>) -> Option<String> {
+    let level = (row.level != NO_LEVEL).then_some(row.level);
+    match kernel::families(level)? {
+        Families::Every => None,
+        Families::Only(names) => {
+            let list: Vec<&str> = names.iter().map(|name| name.path).collect();
+            let check = if level.is_none() {
+                REQUEST_FAMILY_CHECK
+            } else {
+                OPTION_FAMILY_CHECK
+            };
+            Some(format!("{check}(socket, &[{}])?", list.join(", ")))
+        }
+    }
+}
+
 /// The body of the direct implementation's method.
 fn body(row: &Row<'_>) -> String {
     let (level, option) = (row.level, row.option);
+    let socket = family_guard(row).unwrap_or_else(|| "socket".to_owned());
     match (row.sets(), row.value) {
-        (true, "bool") => format!("set_number(socket, {level}, {option}, &c_int::from(on))"),
-        (true, "c_int" | "u32" | "u64") => format!("set_number(socket, {level}, {option}, &value)"),
-        (true, "program") => format!("set_program(socket, {level}, {option}, program)"),
-        (true, "group_filter") => format!("set_group_filter(socket, {level}, {option}, filter)"),
+        (true, "bool") => format!("set_number({socket}, {level}, {option}, &c_int::from(on))"),
+        (true, "c_int" | "u32" | "u64") => {
+            format!("set_number({socket}, {level}, {option}, &value)")
+        }
+        (true, "program") => format!("set_program({socket}, {level}, {option}, program)"),
+        (true, "group_filter") => format!("set_group_filter({socket}, {level}, {option}, filter)"),
         (true, _) if row.written_back() => {
-            format!("set_value_written(socket, {level}, {option}, value)")
+            format!("set_value_written({socket}, {level}, {option}, value)")
         }
-        (true, _) => format!("set_value(socket, {level}, {option}, value)"),
+        (true, _) => format!("set_value({socket}, {level}, {option}, value)"),
         (false, number @ ("c_int" | "u32" | "u64")) => {
-            format!("get_value::<{number}>(socket, {level}, {option})")
+            format!("get_value::<{number}>({socket}, {level}, {option})")
         }
-        (false, "ioctl") => format!("ioctl_int(socket, {option})"),
-        (false, "room") => format!("get_written(socket, {level}, {option})"),
-        (false, "keys") => format!("get_keys(socket, {level}, {option}, query)"),
-        (false, "full_info") => format!("get_full_info(socket, {level}, {option}, subflows)"),
+        (false, "ioctl") => format!("ioctl_int({socket}, {option})"),
+        (false, "room") => format!("get_written({socket}, {level}, {option})"),
+        (false, "keys") => format!("get_keys({socket}, {level}, {option}, query)"),
+        (false, "full_info") => format!("get_full_info({socket}, {level}, {option}, subflows)"),
         (_, value) => panic!("{}: no body for {value}", row.method),
     }
 }
@@ -488,7 +513,7 @@ const INTERFACE_NAMES: [&str; 5] = [
     "MptcpFullInformation",
     "Written",
 ];
-const CRATE_NAMES: [&str; 13] = [
+const CRATE_NAMES: [&str; 15] = [
     "DirectLinuxSocketOptions",
     "Plain",
     "get_full_info",
@@ -497,6 +522,8 @@ const CRATE_NAMES: [&str; 13] = [
     "get_written",
     "ioctl_int",
     "local",
+    "of_family",
+    "request_of_family",
     "set_group_filter",
     "set_number",
     "set_program",
@@ -545,10 +572,16 @@ fn probe_rows(rows: &[Row<'_>]) -> String {
     for row in rows {
         writeln!(
             code,
-            "    crate::probe::Row {{ method: \"{}\", value: \"{}\", kernel: crate::probe::Kernel::{} }},",
+            "    crate::probe::Row {{ method: \"{}\", value: \"{}\", kernel: crate::probe::Kernel::{}, level: {}, option: {} }},",
             row.method,
             row.value,
-            kernel_variant(row.kernel)
+            kernel_variant(row.kernel),
+            if row.level == NO_LEVEL {
+                "None".to_owned()
+            } else {
+                format!("Some({})", row.level)
+            },
+            row.option
         )
         .unwrap();
     }
@@ -984,17 +1017,101 @@ fn descriptor_reason(row: &Row<'_>, _: &Entry) -> Result<(), String> {
     }
 }
 
+/// Every reason's family: the socket reaches the call only through the check of the families its level was read in.
+fn family_reason(row: &Row<'_>, _: &Entry) -> Result<(), String> {
+    family_check(row, &body(row))
+}
+
+/// Checks that `code`, a method's body, passes its socket once, through exactly the family check the kernel table's
+/// families of the row's level give, or through none where the level is every family's.
+fn family_check(row: &Row<'_>, code: &str) -> Result<(), String> {
+    let level = (row.level != NO_LEVEL).then_some(row.level);
+    let method = row.method;
+    let families =
+        kernel::families(level).ok_or_else(|| format!("{method}: its level names no families"))?;
+    let passed = code.matches("socket").count();
+    let sound = match families {
+        Families::Every => passed == 1 && !code.contains(OPTION_FAMILY_CHECK),
+        Families::Only(names) => {
+            let list: Vec<&str> = names.iter().map(|name| name.path).collect();
+            let check = if level.is_none() {
+                REQUEST_FAMILY_CHECK
+            } else {
+                OPTION_FAMILY_CHECK
+            };
+            passed == 1 && code.contains(&format!("{check}(socket, &[{}])?", list.join(", ")))
+        }
+    };
+    if sound {
+        Ok(())
+    } else {
+        Err(format!(
+            "{method}: the socket does not pass the check of its level's families in {code}"
+        ))
+    }
+}
+
 /// A property of a marked reason, over one row and the entry its names resolve to.
 type Reason = fn(&Row<'_>, &Entry) -> Result<(), String>;
 
 /// Every marked reason's property, by the function whose `unsafe` it lets stand.
-const REASONS: [(&str, Reason); 5] = [
+const REASONS: [(&str, Reason); 6] = [
     ("set_bytes_at", set_reason),
     ("get_within", get_within_reason),
     ("full_info_into", full_info_reason),
     ("ioctl_within", ioctl_reason),
     ("every call's descriptor", descriptor_reason),
+    ("every call's family", family_reason),
 ];
+
+#[test]
+fn a_body_whose_socket_skips_or_changes_its_family_check_is_seen_by_the_family_property() {
+    let table =
+        fs::read_to_string(crate_folder().join("options.table")).expect("the table is there");
+    let mut checked = 0;
+    for row in rows(&table) {
+        let Some(guard) = family_guard(&row) else {
+            continue;
+        };
+        let code = body(&row);
+        for planted in [
+            code.replace(&guard, "socket"),
+            code.replace("uapi::AF_INET6", "uapi::AF_UNIX"),
+            code.replace("uapi::AF_INET, ", ""),
+            format!("{code}; set_number(socket, 0, 0, &0)"),
+        ] {
+            assert!(
+                family_check(&row, &planted).is_err(),
+                "the family property misses {planted}"
+            );
+        }
+        checked += 1;
+    }
+    assert!(checked > 0, "no row of the table has a family check");
+}
+
+#[test]
+fn every_level_but_the_socket_layers_names_the_internet_families() {
+    for level in &kernel::LEVELS {
+        let every = matches!(level.families, Families::Every);
+        assert_eq!(
+            every,
+            level.name.path == "uapi::SOL_SOCKET",
+            "{}",
+            level.name.path
+        );
+        if let Families::Only(names) = level.families {
+            let numbers: Vec<u32> = names.iter().map(|name| name.number).collect();
+            assert_eq!(
+                numbers,
+                [libc::AF_INET as u32, libc::AF_INET6 as u32],
+                "{}",
+                level.name.path
+            );
+        }
+    }
+    assert!(matches!(kernel::REQUEST_FAMILIES, Families::Only(_)));
+}
 
 #[test]
 fn every_row_of_the_table_meets_every_marked_reason() {

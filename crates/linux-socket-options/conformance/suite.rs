@@ -1034,6 +1034,37 @@ pub fn queue_requests_count_a_connection<T: LinuxSocketOptions>(options: T) {
     assert!(options.get_siocoutqnsd(unix_datagram().as_fd()).is_err());
 }
 
+/// A Unix socket is refused every option of a level IPv4 and IPv6 number and every request, by the family check before
+/// the call, where Linux would answer otherwise; the socket layer's options still reach it.
+///
+/// Linux refuses an internet option on a Unix socket with `EOPNOTSUPP` and answers `SIOCOUTQ` on one, so `ENOPROTOOPT`
+/// and `ENOTTY` here are the check's own answers.
+pub fn other_families_are_refused_at_the_internet_levels<T: LinuxSocketOptions>(options: T) {
+    own_network();
+    let unix = unix_datagram();
+    let fd = unix.as_fd();
+    assert_eq!(
+        errno(options.set_ip_recvopts(fd, true)),
+        Some(libc::ENOPROTOOPT)
+    );
+    assert_eq!(
+        errno(options.set_ipv6_recvhopopts(fd, true)),
+        Some(libc::ENOPROTOOPT)
+    );
+    assert_eq!(
+        errno(options.get_tcp_info::<EIGHT_BYTES>(fd)),
+        Some(libc::ENOPROTOOPT)
+    );
+    assert_eq!(
+        errno(options.set_udp_no_check6_rx(fd, true)),
+        Some(libc::ENOPROTOOPT)
+    );
+    assert_eq!(errno(options.get_siocoutq(fd)), Some(libc::ENOTTY));
+    options
+        .set_so_rcvmark(fd, true)
+        .expect("a socket layer option on a Unix socket");
+}
+
 #[macro_export]
 macro_rules! tests {
     ($value:expr) => {
@@ -1100,6 +1131,11 @@ macro_rules! tests {
         #[test]
         fn queue_requests_count_a_connection() {
             $crate::queue_requests_count_a_connection($value);
+        }
+
+        #[test]
+        fn other_families_are_refused_at_the_internet_levels() {
+            $crate::other_families_are_refused_at_the_internet_levels($value);
         }
     };
 }

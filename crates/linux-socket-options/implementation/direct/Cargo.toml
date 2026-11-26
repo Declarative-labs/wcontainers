@@ -19,6 +19,8 @@ linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioc
 libc = "0.2.191"
 # The numbers and headers read from and written as bytes.
 zerocopy.workspace = true
+# The socket's family (SO_DOMAIN), checked before an option of a level other families also number.
+rustix = { version = "1.1.6", features = ["net"] }
 
 [dev-dependencies]
 wcontainers-linux-socket-options-conformance = { path = "../../conformance" }

@@ -10,9 +10,10 @@
 //!
 //! Canaries see only what the kernel writes, so two checks see what it reads. Every value a caller lends is also lent
 //! once with each of its words set to an address no process maps: a kernel that followed an address the value holds
-//! answers `EFAULT`, and any `EFAULT` fails the row. And a `within` room must be seen given less than the kernel had
-//! to write, so that a socket left with nothing to write does not pass for one that stops at its room. Runs as root, in
-//! a network namespace of its own, as the conformance suite does.
+//! answers `EFAULT`, and any `EFAULT` fails the row. And a `within` room, or a number read, must be seen given less
+//! than the kernel had to write, so that a socket left with nothing to write does not pass for one that stops at its
+//! room; a number read is given each room from one byte to its width below the method, with the same level and option.
+//! Runs as root, in a network namespace of its own, as the conformance suite does.
 
 use std::ffi::c_int;
 use std::fmt;
@@ -58,7 +59,17 @@ pub(crate) struct Row {
     pub(crate) method: &'static str,
     pub(crate) value: &'static str,
     pub(crate) kernel: Kernel,
+    /// The level the row's method passes, none for an ioctl request, and the option or request number.
+    pub(crate) level: Option<u32>,
+    pub(crate) option: u32,
 }
+
+/// The value forms of a number, and the bytes each is read into.
+const NUMBER_FORMS: [(&str, usize); 3] = [
+    ("c_int", size_of::<c_int>()),
+    ("u32", size_of::<u32>()),
+    ("u64", size_of::<u64>()),
+];
 
 /// The canary bytes on each side of a value a caller lends.
 const GUARD: usize = 1024;
@@ -307,7 +318,10 @@ impl Seen {
                     "was never asked for more answers than its room holds"
                 }
                 Kernel::Through if self.through == 0 => "was never seen writing into its rooms",
-                Kernel::Within if value == "room" && !self.pressed() => {
+                Kernel::Within
+                    if (value == "room" || NUMBER_FORMS.iter().any(|(form, _)| *form == value))
+                        && !self.pressed() =>
+                {
                     "was never given less room than the kernel had to write, so `within` is not measured"
                 }
                 _ => return None,
@@ -1427,6 +1441,31 @@ fn caught<R>(work: impl FnOnce() -> R) -> Result<R, String> {
     })
 }
 
+/// Reads a number row's option into each room from one byte to the number's own width, a fresh socket for each, below
+/// the method, so that the room is less than the kernel has to write; the implementation's canaries guard every room.
+fn number_rooms(seen: &mut Seen, prepare: fn() -> Prepared, level: u32, option: u32, width: usize) {
+    for told in 1..=width {
+        let outcome = caught(|| {
+            let prepared = prepare();
+            let mut buffer = vec![u8::MIN; told + crate::GUARD];
+            crate::get_guarded(prepared.socket.as_fd(), level, option, &mut buffer, told)
+        });
+        match outcome {
+            Ok(result) => {
+                seen.record(&result);
+                let answered = result.ok();
+                seen.rooms.push((told, answered));
+                if let Some(length) = answered {
+                    seen.shorter += usize::from(length < told);
+                    seen.longer += usize::from(length > told);
+                    seen.written += usize::from(length > NO_ROOM);
+                }
+            }
+            Err(stop) => seen.stops.push(stop),
+        }
+    }
+}
+
 /// Makes the case's calls, a fresh socket for each, recording what stopped any of them.
 fn run(seen: &mut Seen, case: &Case) {
     let count = match caught(|| (case.count)((case.prepare)().socket.as_fd())) {
@@ -1468,6 +1507,12 @@ fn every_row_is_probed_through_its_method_and_the_kernel_does_what_its_column_sa
         let mut seen = Seen::default();
         for case in row_cases {
             run(&mut seen, case);
+        }
+        let number = NUMBER_FORMS.iter().find(|(form, _)| *form == row.value);
+        if let (Some((_, width)), Some(level), Some(case)) = (number, row.level, row_cases.first())
+            && row.kernel == Kernel::Within
+        {
+            number_rooms(&mut seen, case.prepare, level, row.option, *width);
         }
         println!("PROBE {} {:?} {} {seen}", row.method, row.kernel, row.value);
         if let Some(fault) = seen.against(row.kernel, row.value) {

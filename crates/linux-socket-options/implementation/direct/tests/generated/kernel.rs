@@ -4,6 +4,10 @@
 //! taken from the kernel's own headers as linux-raw-sys, libc or the direct crate's `local.rs` give them (never typed
 //! here), and a row's names resolve to numbers only through its level's list. Two names of one pair are one entry.
 //! What an entry says comes from the manual page it names and the kernel handler it names, read, not copied.
+//!
+//! The same numbers mean other things to other address families (Bluetooth's HCI, L2CAP and SCO levels are 0, 6 and
+//! 17), so the key also holds the families whose handler was read: each level, and the ioctl requests, name theirs,
+//! and the generated method refuses a socket of any other family before the call.
 
 #![allow(
     dead_code,
@@ -32,9 +36,22 @@ macro_rules! name {
     };
 }
 
-/// A level of `setsockopt(2)` and the names of the options in its own number space.
+/// The address families whose handler of a level, or of the ioctl requests, the entries were read from.
+#[derive(Clone, Copy, Debug)]
+pub enum Families {
+    /// Every family: the socket layer's own level, which Linux handles before any family's handler.
+    Every,
+    /// Only these families; a socket of another is refused before the call.
+    Only(&'static [Name]),
+}
+
+/// IPv4 and IPv6, whose handlers (and MPTCP's, which are theirs) every level but the socket layer's was read in.
+pub const INTERNET: [Name; 2] = [name!(uapi::AF_INET), name!(uapi::AF_INET6)];
+
+/// A level of `setsockopt(2)`, the families whose handler of it was read, and the names of its own number space.
 pub struct Level {
     pub name: Name,
+    pub families: Families,
     pub options: &'static [Name],
 }
 
@@ -42,6 +59,7 @@ pub struct Level {
 pub const LEVELS: [Level; 7] = [
     Level {
         name: name!(uapi::SOL_SOCKET),
+        families: Families::Every,
         options: &[
             name!(uapi::SO_RCVMARK),
             name!(uapi::SO_RCVPRIORITY),
@@ -64,6 +82,7 @@ pub const LEVELS: [Level; 7] = [
     },
     Level {
         name: name!(uapi::SOL_IP),
+        families: Families::Only(&INTERNET),
         options: &[
             name!(uapi::IP_OPTIONS),
             name!(uapi::IP_UNICAST_IF),
@@ -81,6 +100,7 @@ pub const LEVELS: [Level; 7] = [
     },
     Level {
         name: name!(uapi::SOL_IPV6),
+        families: Families::Only(&INTERNET),
         options: &[
             name!(uapi::IPV6_HOPOPTS),
             name!(uapi::IPV6_RTHDRDSTOPTS),
@@ -111,6 +131,7 @@ pub const LEVELS: [Level; 7] = [
     },
     Level {
         name: name!(uapi::SOL_TCP),
+        families: Families::Only(&INTERNET),
         options: &[
             name!(uapi::TCP_MD5SIG_EXT),
             name!(uapi::TCP_AO_ADD_KEY),
@@ -145,10 +166,12 @@ pub const LEVELS: [Level; 7] = [
     },
     Level {
         name: name!(uapi::SOL_MPTCP),
+        families: Families::Only(&INTERNET),
         options: &[name!(local::MPTCP_INFO), name!(local::MPTCP_FULL_INFO)],
     },
     Level {
         name: name!(uapi::SOL_UDP),
+        families: Families::Only(&INTERNET),
         options: &[
             name!(local::UDP_NO_CHECK6_RX),
             name!(local::UDP_NO_CHECK6_TX),
@@ -156,12 +179,16 @@ pub const LEVELS: [Level; 7] = [
     },
     Level {
         name: name!(local::SOL_UDPLITE),
+        families: Families::Only(&INTERNET),
         options: &[
             name!(local::UDPLITE_RECV_CSCOV),
             name!(local::UDPLITE_SEND_CSCOV),
         ],
     },
 ];
+
+/// The families whose ioctl handler the requests' entries were read from: IPv4's and IPv6's (tcp_ioctl).
+pub const REQUEST_FAMILIES: Families = Families::Only(&INTERNET);
 
 /// The ioctl requests a row may name, in the one number space of `ioctl(2)` on a socket.
 pub const REQUESTS: [Name; 4] = [
@@ -497,6 +524,14 @@ pub const ENTRIES: [Entry; 91] = [
 /// Gives the number a level's name resolves to, if it is a level a row may name.
 pub fn level(path: &str) -> Option<&'static Level> {
     LEVELS.iter().find(|level| level.name.path == path)
+}
+
+/// Gives the families whose handler a row's level was read in, or the ioctl requests' for none; nothing for an unknown level.
+pub fn families(level_path: Option<&str>) -> Option<Families> {
+    match level_path {
+        None => Some(REQUEST_FAMILIES),
+        Some(path) => level(path).map(|found| found.families),
+    }
 }
 
 /// Gives the entry a row's level and option names resolve to, or why they resolve to none.

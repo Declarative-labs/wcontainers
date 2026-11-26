@@ -4821,6 +4821,7 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "nix",
+ "rustix",
  "socket2",
  "wcontainers-abi",
  "wcontainers-linux-socket-options",
