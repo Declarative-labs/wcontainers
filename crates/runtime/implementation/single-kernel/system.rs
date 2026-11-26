@@ -608,7 +608,7 @@ impl<E> wcontainers_system::DomainNameResolver for LocalSystem<E> {
 
 impl<E: 'static> System for LocalSystem<E> {
     /// Starts the thread that hands the kernel what arrives, the arrivals before the start among them.
-    fn started(self: &Arc<Self>) {
+    fn on_container_made(self: &Arc<Self>) {
         let system = Arc::downgrade(self);
         std::thread::Builder::new()
             .name(DELIVERY_THREAD.to_string())

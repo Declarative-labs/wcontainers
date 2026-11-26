@@ -224,7 +224,7 @@ impl<E: Executor> Runtime<E> {
             move || stop_flags.iter().for_each(StopFlag::raise),
             Arc::clone(&system),
         );
-        system.started();
+        system.on_container_made();
         Ok(Container {
             container,
             interrupter,

@@ -191,7 +191,7 @@ impl<H: Host> TestPolicy<H> {
         self.services
     }
 
-    /// How the next turn ends, for the kernel's slice: after the events set, else where the schedule draws.
+    /// Returns how the next turn of the kernel's slice ends: after the events set, else where the schedule draws.
     pub fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
         Turn::Counted {
             limit: self
@@ -200,19 +200,19 @@ impl<H: Host> TestPolicy<H> {
         }
     }
 
-    /// The running thread made `progress` since it was last heard from: the clocks move by the time drawn for it.
+    /// Moves the clocks by the time drawn for `progress` units the running thread made since it was last heard from.
     pub fn ran(&self, progress: u64) {
         let mut state = self.state.lock();
         let nanoseconds = state.schedule.turn_nanoseconds(progress);
         state.clock.advance(nanoseconds);
     }
 
-    /// A turn ended.
+    /// Counts a turn that ended.
     pub fn count_turn(&self) {
         self.state.lock().turns += 1;
     }
 
-    /// Nothing can run until `until` on the monotonic clock: the clocks skip to it.
+    /// Skips the clocks to `until` on the monotonic clock, as nothing can run before it.
     pub fn skip_to(&self, until: u64) {
         self.state.lock().clock.skip_to(until);
     }

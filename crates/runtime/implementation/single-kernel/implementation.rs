@@ -196,8 +196,8 @@ pub trait Execution: Cpu + Sized {
 /// What surrounds the kernel: its [`wcontainers_kernel_linux::System`], and what a container asks of
 /// it as it is made, by shared reference so that the system synchronizes what it changes.
 pub trait System: wcontainers_kernel_linux::System {
-    /// The container is made: the system starts handing the kernel what arrives from outside.
-    fn started(self: &Arc<Self>) {}
+    /// Starts handing the kernel what arrives from outside, once the container is made.
+    fn on_container_made(self: &Arc<Self>) {}
     /// Names the ends of the first process's descriptors 0 to 2, whose other sides the system holds:
     /// a terminal of this size when the configuration asks for one, else pipes.
     fn standard(

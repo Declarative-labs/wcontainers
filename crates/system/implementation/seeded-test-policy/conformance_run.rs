@@ -52,7 +52,7 @@ impl LoopServices {
 }
 
 impl LoopState {
-    /// What `peer` is ready for: sending always has room, receiving holds bytes or hangs up once sending is closed.
+    /// Returns what `peer` is ready for: sending has room, receiving holds bytes or hangs up once sending closed.
     fn report(&self, peer: u32) -> ReadinessReport {
         let mut report = ReadinessReport {
             ready_for: ReadyFor::empty(),
@@ -120,8 +120,7 @@ impl StreamTransport for LoopServices {
         }
     }
 
-    /// Closing sending ends the stream after what it sent and wakes the waits on receiving; closing receiving drops
-    /// what it had yet to receive.
+    /// Ends the stream after what sending sent and wakes its waits, or drops what receiving had yet to receive.
     fn close_stream(&self, peer: &u32) {
         match *peer {
             SENDING => {
@@ -165,7 +164,7 @@ impl Future for Wait<'_> {
 }
 
 impl Drop for Wait<'_> {
-    /// A dropped wait is withdrawn, so it is never woken.
+    /// Withdraws the wait, so it is never woken.
     fn drop(&mut self) {
         if let Some(slot) = self.slot
             && let Some(wait) = self.services.state().waits.get_mut(slot)
