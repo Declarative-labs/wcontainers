@@ -5,12 +5,10 @@
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs. Its own harness reports the bias picture as
 //! ignored, not passed, where the device lacks `DEPTH24_UNORM`.
 
-#[path = "../../../../graphics-test/src/scene.rs"]
-#[allow(dead_code)]
-mod scene;
+use wcontainers_graphics_test::scene;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/draw.rs"]
+#[path = "scenes/draw.rs"]
 mod draw;
 
 use libtest_mimic::{Completion, Failed, Trial};

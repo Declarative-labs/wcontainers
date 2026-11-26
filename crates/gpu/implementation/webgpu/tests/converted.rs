@@ -1,20 +1,18 @@
 //! Formats WebGPU lacks held as `rgba8unorm` (`FormatConverted`): declared, copied exactly, loaded
 //! and filtered within their bounds of Direct3D's values, and 8-bit alpha drawn with its colour
-//! kept zero (examples/scenes/converted.rs; the same runs in Chrome through web/check, and against
+//! kept zero (tests/scenes/converted.rs; the same runs in Chrome through web/check, and against
 //! real Direct3D 11 in tests/direct3d.rs). The three-channel 32-bit formats, held in their
 //! four-channel twins, keep every bit with alpha one.
 //!
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
 
-#[path = "../../../../graphics-test/src/scene.rs"]
-#[allow(dead_code)]
-mod scene;
+use wcontainers_graphics_test::scene;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/draw.rs"]
+#[path = "scenes/draw.rs"]
 mod draw;
 
-#[path = "../examples/scenes/converted.rs"]
+#[path = "scenes/converted.rs"]
 mod converted;
 
 fn backends() -> wgpu::Backends {

@@ -37,6 +37,9 @@ png = "0.18.1"
 wcontainers-gpu-conformance = { path = "../../conformance" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The reference scenes the tests draw (scene), and on Windows the rig's Direct3D 11 device and
+# comparison (tests/direct3d.rs). The scenes page, built for the browser too, includes scene.rs instead.
+wcontainers-graphics-test = { path = "../../../graphics-test" }
 libtest-mimic = "0.8.1"
 pollster = "1.0.1"
 # The fronts' scissor cutting (tests/fitted.rs).
@@ -47,9 +50,8 @@ wcontainers-shaders = { path = "../../../shaders" }
 wcontainers-test-window = { path = "../../../test-window" }
 wcontainers-test-window-appkit = { path = "../../../test-window/implementation/appkit" }
 
-# Real Direct3D 11 on the same GPU and WARP, through the rig's device and comparison (tests/direct3d.rs).
+# Real Direct3D 11 on the same GPU and WARP (tests/direct3d.rs).
 [target.'cfg(windows)'.dev-dependencies]
-wcontainers-graphics-test = { path = "../../../graphics-test" }
 image = { version = "0.25.10", default-features = false }
 windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D_Fxc", "Win32_Graphics_Direct3D11", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
 # The suite's window, and reading what the compositor shows in it.
@@ -61,6 +63,11 @@ wcontainers-test-window-win32 = { path = "../../../test-window/implementation/wi
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 web-sys = { version = "0.3.107", features = ["HtmlCanvasElement"] }
 
+
+# The scenes page (natively and for the browser): its modules sit beside the tests that draw them too.
+[[example]]
+name = "scenes"
+path = "tests/scenes/page.rs"
 
 [[test]]
 name = "present"

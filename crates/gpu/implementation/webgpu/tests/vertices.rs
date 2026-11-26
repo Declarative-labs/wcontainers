@@ -1,21 +1,19 @@
 //! Vertex formats WebGPU lacks, read through shadow streams (plan 5.7, `VertexFormatConverted`):
 //! every one of them, with a float beside it in the same stream, read by points at a stream offset
 //! and compared with the values the format means; the shadow is kept while its source is unwritten
-//! and made again after a write (examples/scenes/vertices.rs; the same runs in Chrome through
+//! and made again after a write (tests/scenes/vertices.rs; the same runs in Chrome through
 //! web/check).
 //!
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs. `WEBGPU_SEED` picks the bytes (default 188),
 //! `WEBGPU_CASES` how many vertices each format draws (default 64).
 
-#[path = "../../../../graphics-test/src/scene.rs"]
-#[allow(dead_code)]
-mod scene;
+use wcontainers_graphics_test::scene;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/draw.rs"]
+#[path = "scenes/draw.rs"]
 mod draw;
 
-#[path = "../examples/scenes/vertices.rs"]
+#[path = "scenes/vertices.rs"]
 mod vertices;
 
 use wcontainers_gpu_webgpu::WebGpu;

@@ -4,18 +4,16 @@
 //!
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
 
-#[path = "../../../../graphics-test/src/scene.rs"]
-#[allow(dead_code)]
-mod scene;
+use wcontainers_graphics_test::scene;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/draw.rs"]
+#[path = "scenes/draw.rs"]
 mod draw;
 
-#[path = "../examples/scenes/renames.rs"]
+#[path = "scenes/renames.rs"]
 mod renames;
 
-#[path = "../examples/scenes/views.rs"]
+#[path = "scenes/views.rs"]
 mod views;
 
 use renames::{Kit, LOAD_WGSL, begin, draw_at, finish, kit};
@@ -240,14 +238,14 @@ fn load_only_textures_keep_one_pipeline_for_any_view() {
 }
 
 /// A scripted scene of four frames, each of four draws loading a texture that a `Discard` write
-/// fills before every draw (examples/scenes/renames.rs; in Chrome too, through web/check).
+/// fills before every draw (tests/scenes/renames.rs; in Chrome too, through web/check).
 #[test]
 fn discarded_textures_are_renamed_from_the_pool() {
     renames::discarded_textures_are_renamed_from_the_pool(&mut device());
 }
 
 /// An sRGB view of a texture that also allows storage reads as an sRGB texture does, also after a
-/// rename (examples/scenes/views.rs; in Chrome too, through web/check).
+/// rename (tests/scenes/views.rs; in Chrome too, through web/check).
 #[test]
 fn srgb_views_of_storage_textures_read_as_srgb_textures() {
     eprintln!(

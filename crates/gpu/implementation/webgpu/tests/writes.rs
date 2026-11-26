@@ -3,17 +3,15 @@
 //!
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
 
-#[path = "../../../../graphics-test/src/scene.rs"]
-#[allow(dead_code)]
-mod scene;
+use wcontainers_graphics_test::scene;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/draw.rs"]
+#[path = "scenes/draw.rs"]
 mod draw;
 
 mod allowance;
 
-#[path = "../examples/scenes/clears.rs"]
+#[path = "scenes/clears.rs"]
 mod clears;
 
 use wcontainers_gpu::{
@@ -933,7 +931,7 @@ fn written_bytes_are_counted_and_reported() {
 }
 
 /// Clears of 32-bit float formats to denormals, negative zero and NaN payloads keep every bit
-/// (examples/scenes/clears.rs; in Chrome too, through web/check).
+/// (tests/scenes/clears.rs; in Chrome too, through web/check).
 #[test]
 fn float_clears_keep_their_bits() {
     let mut b = device();

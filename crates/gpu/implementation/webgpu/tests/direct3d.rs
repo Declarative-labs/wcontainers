@@ -12,28 +12,26 @@
 
 #![cfg(windows)]
 
-#[path = "../../../../graphics-test/src/scene.rs"]
-#[allow(dead_code)]
-mod scene;
+use wcontainers_graphics_test::scene;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/draw.rs"]
+#[path = "scenes/draw.rs"]
 mod draw;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/timestamps.rs"]
+#[path = "scenes/timestamps.rs"]
 mod timestamps;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/converted.rs"]
+#[path = "scenes/converted.rs"]
 mod converted;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/vertices.rs"]
+#[path = "scenes/vertices.rs"]
 mod vertices;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/renames.rs"]
+#[path = "scenes/renames.rs"]
 mod renames;
 
 use wcontainers_gpu::{
@@ -1063,7 +1061,7 @@ fn timestamps_match_direct3d_in_order_and_scale() {
     }
 }
 
-/// examples/scenes/converted.rs's programs in Direct3D's language.
+/// tests/scenes/converted.rs's programs in Direct3D's language.
 const CONVERTED_HLSL: &str = "
 Texture2D<float4> t : register(t0);
 SamplerState s : register(s0);

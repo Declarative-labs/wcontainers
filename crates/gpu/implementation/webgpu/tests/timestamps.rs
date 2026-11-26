@@ -1,19 +1,17 @@
 //! Timestamps: declared where the device writes them in nanoseconds, written in order between
 //! passes, twice the work twice the time, and the GPU clock read through base primitives moving at
-//! the CPU clock's rate (examples/scenes/timestamps.rs; the same runs in Chrome through web/check,
+//! the CPU clock's rate (tests/scenes/timestamps.rs; the same runs in Chrome through web/check,
 //! and against real Direct3D 11 in tests/direct3d.rs).
 //!
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
 
-#[path = "../../../../graphics-test/src/scene.rs"]
-#[allow(dead_code)]
-mod scene;
+use wcontainers_graphics_test::scene;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/draw.rs"]
+#[path = "scenes/draw.rs"]
 mod draw;
 
-#[path = "../examples/scenes/timestamps.rs"]
+#[path = "scenes/timestamps.rs"]
 mod timestamps;
 
 use std::sync::OnceLock;

@@ -2,13 +2,11 @@
 //! standard test harness runs every test on a thread of its own). On Windows tests/surface.rs runs it.
 
 #[cfg(not(target_arch = "wasm32"))]
-#[path = "../../../../graphics-test/src/scene.rs"]
-#[allow(dead_code)]
-mod scene;
+use wcontainers_graphics_test::scene;
 
 #[cfg(not(target_arch = "wasm32"))]
 #[allow(dead_code)]
-#[path = "../examples/scenes/draw.rs"]
+#[path = "scenes/draw.rs"]
 mod draw;
 
 #[cfg(not(target_arch = "wasm32"))]

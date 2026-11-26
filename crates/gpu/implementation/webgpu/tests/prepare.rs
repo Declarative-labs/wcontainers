@@ -5,15 +5,13 @@
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs. `WEBGPU_PROGRAMS` sets how many programs each
 //! half draws (default 16).
 
-#[path = "../../../../graphics-test/src/scene.rs"]
-#[allow(dead_code)]
-mod scene;
+use wcontainers_graphics_test::scene;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/draw.rs"]
+#[path = "scenes/draw.rs"]
 mod draw;
 
-#[path = "../examples/scenes/prepare.rs"]
+#[path = "scenes/prepare.rs"]
 mod prepare;
 
 use std::sync::OnceLock;

@@ -5,18 +5,16 @@
 //!
 //! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
 
-#[path = "../../../../graphics-test/src/scene.rs"]
-#[allow(dead_code)]
-mod scene;
+use wcontainers_graphics_test::scene;
 
 #[allow(dead_code)]
-#[path = "../examples/scenes/draw.rs"]
+#[path = "scenes/draw.rs"]
 mod draw;
 
-#[path = "../examples/scenes/depth16.rs"]
+#[path = "scenes/depth16.rs"]
 mod depth16;
 
-#[path = "../examples/scenes/gaps.rs"]
+#[path = "scenes/gaps.rs"]
 mod gaps;
 
 use wcontainers_gpu::{
@@ -974,7 +972,7 @@ fn sixteen_bit_group_copies_into_depth_keep_the_bits() {
 }
 
 /// Every colour format of Direct3D's `R16_TYPELESS` group copied into `depth16unorm` and back, whole
-/// and in part, keeps the bits (examples/scenes/depth16.rs; also run in Chrome by web/check).
+/// and in part, keeps the bits (tests/scenes/depth16.rs; also run in Chrome by web/check).
 #[test]
 fn sixteen_bit_group_copies_with_depth_both_ways_keep_the_bits() {
     let mut b = device();
