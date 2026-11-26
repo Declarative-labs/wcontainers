@@ -425,6 +425,15 @@ impl BehaviorSource for StandIn {
                 .unwrap_or(PagePermission::Unmapped)
         };
         let exception = match exit {
+            // Unicorn stops a counted turn as it fetches the next instruction, so a fetch fault anywhere but at the
+            // instruction run belongs to the next one: the instruction completed.
+            Ok(
+                Exit::MemoryFault {
+                    address,
+                    access: Access::Execute,
+                }
+                | Exit::AlignmentFault { address },
+            ) if address != pc => None,
             Ok(exit) => to_exception(exit, word, pc, permission_at),
             Err(Unsupported::AlignmentFault { .. }) => {
                 Some(to_alignment_exception(word, &registers))
