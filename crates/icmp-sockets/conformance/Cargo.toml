@@ -27,8 +27,8 @@ mitsein.workspace = true
 wcontainers-linux-socket-options = { path = "../../linux-socket-options" }
 # The packet types of a packet socket and the errno values of Linux.
 libc = "0.2.191"
-# The type number of a segment routing header.
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
+# The type number of a segment routing header, and the route metrics' numbers.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "netlink", "no_std"] }
 # The clocks of transmit times.
 rustix = { version = "1.1.6", features = ["net", "time", "linux_4_11"] }
 # The network namespace of each check and the packet socket that sees what leaves a link.

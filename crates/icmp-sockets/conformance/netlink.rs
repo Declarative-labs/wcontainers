@@ -3,7 +3,7 @@
 //! Each line is read as iproute2 reads it. A kind of line done here becomes the one request `ip` sends for it, and its
 //! acknowledgement is checked; any other line is left to the iproute2 tool, a group of kinds at a time.
 
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 
 use netlink_packet_core::{
     NLM_F_ACK, NLM_F_CREATE, NLM_F_EXCL, NLM_F_REPLACE, NLM_F_REQUEST, NetlinkHeader,
@@ -15,6 +15,10 @@ use netlink_packet_route::address::{
 use netlink_packet_route::link::{
     AfSpecInet6, AfSpecUnspec, In6AddrGenMode, InfoData, InfoKind, InfoVeth, LinkAttribute,
     LinkFlags, LinkInfo, LinkMessage,
+};
+use netlink_packet_route::route::{
+    RouteAddress, RouteAttribute, RouteLwEnCapType, RouteLwTunnelEncap, RouteMessage, RouteMetric,
+    RouteProtocol, RouteScope, RouteSeg6IpTunnel, RouteType, RouteVia, Seg6Header, Seg6Mode,
 };
 use netlink_packet_route::{AddressFamily, RouteNetlinkMessage};
 
@@ -51,6 +55,7 @@ pub fn done(line: &str) -> bool {
         }
         ["link", "set", name, settings @ ..] => set_link(name, settings),
         ["address", verb @ ("add" | "replace"), prefix, rest @ ..] => address(verb, prefix, rest),
+        ["route", "add", rest @ ..] => route(rest),
         _ => None,
     };
     let Some((message, flags)) = request else {
@@ -149,6 +154,140 @@ fn address(verb: &str, prefix: &str, rest: &[&str]) -> Option<(RouteNetlinkMessa
         NLM_F_CREATE | NLM_F_EXCL
     };
     Some((RouteNetlinkMessage::NewAddress(message), creation))
+}
+
+/// The routing table `ip route add` uses when it is given none.
+///
+/// https://man7.org/linux/man-pages/man8/ip-route.8.html
+const MAIN_TABLE: u32 = 254;
+
+/// Gives the request that adds a route as `ip route add ...` does, if every word is one done here.
+///
+/// Like iproute2, the route is the boot protocol's, of the main table unless named, unicast unless its type is given
+/// first, and of the link's scope when it names no gateway.
+fn route(words: &[&str]) -> Option<(RouteNetlinkMessage, u16)> {
+    let mut message = RouteMessage::default();
+    message.header.protocol = RouteProtocol::Boot;
+    message.header.kind = RouteType::Unicast;
+    let mut table = MAIN_TABLE;
+    let mut gateway = false;
+    let mut metrics = Vec::new();
+    let mut locked = 0;
+    let mut destination = None;
+    let mut rest = words.iter();
+    while let Some(word) = rest.next() {
+        match *word {
+            "prohibit" => message.header.kind = RouteType::Prohibit,
+            "blackhole" => message.header.kind = RouteType::BlackHole,
+            "unreachable" => message.header.kind = RouteType::Unreachable,
+            "via" => {
+                gateway = true;
+                let mut next = *rest.next()?;
+                if next == "inet6" {
+                    let address: Ipv6Addr = rest.next()?.parse().ok()?;
+                    message
+                        .attributes
+                        .push(RouteAttribute::Via(RouteVia::Inet6(address)));
+                    continue;
+                }
+                if next == "inet" {
+                    next = rest.next()?;
+                }
+                let address: IpAddr = next.parse().ok()?;
+                message
+                    .attributes
+                    .push(RouteAttribute::Gateway(route_address(address)));
+            }
+            "dev" => message
+                .attributes
+                .push(RouteAttribute::Oif(link_index(rest.next()?))),
+            "table" => table = rest.next()?.parse().ok()?,
+            "metric" => message
+                .attributes
+                .push(RouteAttribute::Priority(rest.next()?.parse().ok()?)),
+            "mtu" => {
+                let mut value = *rest.next()?;
+                if value == "lock" {
+                    locked |= 1 << linux_raw_sys::netlink::RTAX_MTU as u32;
+                    value = rest.next()?;
+                }
+                metrics.push(RouteMetric::Mtu(value.parse().ok()?));
+            }
+            "hoplimit" => metrics.push(RouteMetric::Hoplimit(rest.next()?.parse().ok()?)),
+            "encap" => {
+                // `encap seg6 mode encap segs <address>[,<address>...]`, the one encapsulation the checks use.
+                let ["seg6", "mode", "encap", "segs", segments] = [
+                    rest.next()?,
+                    rest.next()?,
+                    rest.next()?,
+                    rest.next()?,
+                    rest.next()?,
+                ]
+                .map(|word| *word) else {
+                    return None;
+                };
+                let segments: Vec<Ipv6Addr> = segments
+                    .split(',')
+                    .map(str::parse)
+                    .collect::<Result<_, _>>()
+                    .ok()?;
+                let mut header = Seg6Header::default();
+                header.mode = Seg6Mode::Encap;
+                header.segments = segments;
+                message
+                    .attributes
+                    .push(RouteAttribute::EncapType(RouteLwEnCapType::Seg6));
+                message
+                    .attributes
+                    .push(RouteAttribute::Encap(vec![RouteLwTunnelEncap::Seg6(
+                        RouteSeg6IpTunnel::Seg6(header),
+                    )]));
+            }
+            prefix if destination.is_none() => {
+                let (address, length) = prefix.split_once('/')?;
+                let address: IpAddr = address.parse().ok()?;
+                message.header.destination_prefix_length = length.parse().ok()?;
+                destination = Some(address);
+            }
+            _ => return None,
+        }
+    }
+    let destination = destination?;
+    message.header.address_family = match destination {
+        IpAddr::V4(_) => AddressFamily::Inet,
+        IpAddr::V6(_) => AddressFamily::Inet6,
+    };
+    message
+        .attributes
+        .insert(0, RouteAttribute::Destination(route_address(destination)));
+    // A table past the header's byte goes in RTA_TABLE, the header naming none.
+    match u8::try_from(table) {
+        Ok(byte) => message.header.table = byte,
+        Err(_) => message.attributes.push(RouteAttribute::Table(table)),
+    }
+    if locked != 0 {
+        metrics.push(RouteMetric::Lock(locked));
+    }
+    if !metrics.is_empty() {
+        message.attributes.push(RouteAttribute::Metrics(metrics));
+    }
+    message.header.scope = if message.header.kind == RouteType::Unicast && !gateway {
+        RouteScope::Link
+    } else {
+        RouteScope::Universe
+    };
+    Some((
+        RouteNetlinkMessage::NewRoute(message),
+        NLM_F_CREATE | NLM_F_EXCL,
+    ))
+}
+
+/// Gives an address as a route attribute holds it.
+fn route_address(address: IpAddr) -> RouteAddress {
+    match address {
+        IpAddr::V4(v4) => RouteAddress::Inet(v4),
+        IpAddr::V6(v6) => RouteAddress::Inet6(v6),
+    }
 }
 
 /// Gives the index of a link of the calling thread's namespace, or stops the check when there is none.
