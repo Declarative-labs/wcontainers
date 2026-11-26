@@ -4777,6 +4777,7 @@ name = "wcontainers-instruction-input-domain"
 version = "0.1.0"
 dependencies = [
  "itertools 0.14.0",
+ "vstd",
  "wcontainers-processor-architecture",
 ]
 
@@ -4935,6 +4936,21 @@ dependencies = [
  "spirv",
  "wcontainers-gpu",
  "wcontainers-shaders",
+]
+
+[[package]]
+name = "wcontainers-observation-collector"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-observation-collector-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-observation-collector",
+ "wcontainers-processor-architecture",
 ]
 
 [[package]]
