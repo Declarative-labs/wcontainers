@@ -72,6 +72,9 @@ pub enum EvexOperation {
     /// VDPBF16PS: each single of the destination plus the products of the sources' bfloat16 pairs, the upper pair's
     /// first, each sum rounded to nearest with denormals read and written as zeros, MXCSR neither read nor written.
     DotBfloat16,
+    /// VFMULCPH to VFCMADDCSH: complex numbers of two halves, the real part lower, multiplied (the second source
+    /// conjugated where `conjugate`), added to the destination where `accumulate`, each step rounded.
+    ComplexMultiply { conjugate: bool, accumulate: bool, arrangement: Arrangement },
     /// VMOVSH and VMOVW: the low word moved; a load or a move from a general-purpose register zeroes the bits above
     /// it, VMOVSH between registers takes them from the first source.
     MoveScalar,
@@ -456,6 +459,14 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vpexpandw, Any, EvexOperation::Expand { element_bytes: 2 }),
         (Mnemonic::Vpexpandd, Any, EvexOperation::Expand { element_bytes: 4 }),
         (Mnemonic::Vpexpandq, Any, EvexOperation::Expand { element_bytes: 8 }),
+        (Mnemonic::Vfmulcph, Any, EvexOperation::ComplexMultiply { conjugate: false, accumulate: false, arrangement: Packed }),
+        (Mnemonic::Vfmulcsh, Any, EvexOperation::ComplexMultiply { conjugate: false, accumulate: false, arrangement: Scalar }),
+        (Mnemonic::Vfcmulcph, Any, EvexOperation::ComplexMultiply { conjugate: true, accumulate: false, arrangement: Packed }),
+        (Mnemonic::Vfcmulcsh, Any, EvexOperation::ComplexMultiply { conjugate: true, accumulate: false, arrangement: Scalar }),
+        (Mnemonic::Vfmaddcph, Any, EvexOperation::ComplexMultiply { conjugate: false, accumulate: true, arrangement: Packed }),
+        (Mnemonic::Vfmaddcsh, Any, EvexOperation::ComplexMultiply { conjugate: false, accumulate: true, arrangement: Scalar }),
+        (Mnemonic::Vfcmaddcph, Any, EvexOperation::ComplexMultiply { conjugate: true, accumulate: true, arrangement: Packed }),
+        (Mnemonic::Vfcmaddcsh, Any, EvexOperation::ComplexMultiply { conjugate: true, accumulate: true, arrangement: Scalar }),
         (Mnemonic::Vmovsh, Any, EvexOperation::MoveScalar),
         (Mnemonic::Vmovw, Any, EvexOperation::MoveScalar),
         (Mnemonic::Vdpbf16ps, Any, EvexOperation::DotBfloat16),
@@ -564,7 +575,7 @@ impl EvexForm {
             | EvexOperation::Expand { element_bytes } => element_bytes,
             EvexOperation::Convert(conversion) => conversion.to.to_bytes(),
             EvexOperation::ToBfloat16 { .. } => 2,
-            EvexOperation::DotBfloat16 => 4,
+            EvexOperation::DotBfloat16 | EvexOperation::ComplexMultiply { .. } => 4,
             EvexOperation::MoveScalar => 2,
         }
     }
@@ -586,6 +597,7 @@ impl EvexForm {
             | EvexOperation::Compare { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::Special { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::MoveScalar
+            | EvexOperation::ComplexMultiply { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::OrderedCompare { .. } => 1,
             EvexOperation::Convert(Conversion { scalar: true, .. }) => 1,
             EvexOperation::ToBfloat16 { pair: true } => self.vector_bytes() / 2,
@@ -634,6 +646,7 @@ impl EvexForm {
             | EvexOperation::Special { precision, .. }
             | EvexOperation::OrderedCompare { precision, .. } => matches!(precision, Precision::Half),
             EvexOperation::Convert(conversion) => matches!(conversion.to, Number::Float(Precision::Half)),
+            EvexOperation::ComplexMultiply { .. } => true,
             EvexOperation::Integer { .. }
             | EvexOperation::ToBfloat16 { .. }
             | EvexOperation::DotBfloat16
@@ -676,6 +689,7 @@ impl EvexForm {
             | EvexOperation::OrderedCompare { .. } => false,
             EvexOperation::Special { operation, .. } => matches!(operation, SpecialOperation::Fixup),
             EvexOperation::Fused { .. } | EvexOperation::DotBfloat16 => true,
+            EvexOperation::ComplexMultiply { accumulate, .. } => accumulate,
             EvexOperation::Integer { operation, .. } => operation.reads_destination(),
             EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => false,
         }
@@ -692,6 +706,7 @@ impl EvexForm {
             | EvexOperation::Special { .. }
             | EvexOperation::DotBfloat16
             | EvexOperation::MoveScalar
+            | EvexOperation::ComplexMultiply { .. }
             | EvexOperation::OrderedCompare { .. } => true,
             EvexOperation::ToBfloat16 { pair } => !pair,
             EvexOperation::Integer { operation, .. } => operation.is_element_wise(),

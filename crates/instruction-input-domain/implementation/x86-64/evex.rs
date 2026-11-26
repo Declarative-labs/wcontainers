@@ -153,6 +153,15 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
             register,
             rounding: false,
         }),
+        // The halves' critical values, rotated, make the complex numbers' parts.
+        EvexOperation::ComplexMultiply { arrangement, .. } => OperandType::EvexFusedData(EvexFusedData {
+            order: FusedOrder::Order231,
+            precision: Precision::Half,
+            vector_bytes: form.vector_bytes(),
+            scalar: arrangement == Arrangement::Scalar,
+            register,
+            rounding: op_code.can_use_rounding_control(),
+        }),
         EvexOperation::MoveScalar => OperandType::EvexMoveData(EvexMoveData {
             element_bytes: 2,
             vector_bytes: 16,

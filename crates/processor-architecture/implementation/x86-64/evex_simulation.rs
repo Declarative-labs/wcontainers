@@ -117,6 +117,34 @@ pub(super) fn execute_evex(
         }
         EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => unreachable!("moved above"),
         EvexOperation::MoveScalar => second,
+        EvexOperation::ComplexMultiply { conjugate, accumulate, .. } => {
+            let numbers = [decoded.op0_register(), decoded.op1_register(), decoded.op2_register()].map(|register| register.number());
+            let in_register = decoded.op_kind(2) == OpKind::Register;
+            if numbers[0] == numbers[1] || (in_register && numbers[0] == numbers[2]) {
+                return Err(Exception::InvalidOpcode);
+            }
+            // The chip computes as if every exception were masked and raises none, whatever MXCSR's masks say;
+            // the flags are recorded unless suppressed.
+            let (mxcsr, suppressed) = to_control(processor.mxcsr, decoded);
+            let control = if is_active(Bug::ComplexHonorsMasks) { mxcsr } else { mxcsr | ALL_MASKS };
+            let mut products = [0; 4];
+            let mut flags = 0;
+            for index in (0..elements).filter(|index| selected & (1 << index) != 0) {
+                let pair = |vector: &[u128; 4]| [read_element(vector, 2 * index, 2), read_element(vector, 2 * index + 1, 2)];
+                let accumulated = if accumulate { pair(&old) } else { [0, 0] };
+                let outcome = multiply_complex(pair(&first), pair(&second), accumulated, conjugate, accumulate, control);
+                flags |= outcome.before | outcome.after;
+                write_element(&mut products, index, 4, outcome.bits);
+            }
+            if is_active(Bug::ComplexHonorsMasks) && flags & !(processor.mxcsr >> MASK_SHIFT) & FLAGS != 0 {
+                processor.mxcsr |= flags;
+                return Err(Exception::SimdFloatingPoint);
+            }
+            if !suppressed {
+                processor.mxcsr |= flags;
+            }
+            products
+        }
         EvexOperation::DotBfloat16 => {
             let mut sums = [0; 4];
             for index in (0..elements).filter(|index| selected & (1 << index) != 0) {
@@ -187,6 +215,32 @@ pub(super) fn execute_evex(
     let target = if is_active(Bug::EvexHighRegistersAliasLow) { destination % 16 } else { destination };
     processor.write_zmm(target, result);
     Ok(())
+}
+
+/// One complex number of VFMULCPH to VFCMADDCSH: the first source's real and imaginary parts each times the second
+/// source's real part (added to the destination's parts where `accumulate`), then each plus or less the other first
+/// part times the second source's imaginary part, every step one rounding.
+fn multiply_complex(first: [u64; 2], second: [u64; 2], destination: [u64; 2], conjugate: bool, accumulate: bool, mxcsr: u32) -> LaneOutcome {
+    let half = Precision::Half;
+    let step = |a: u64, b: u64, c: u64, negate: bool, added: bool| -> LaneOutcome {
+        if added {
+            multiply_add(a, b, c, negate, false, half, mxcsr, NAN_ORDER)
+        } else {
+            FloatOperation::Multiply.compute(a, b, half, mxcsr, 0)
+        }
+    };
+    let real = step(first[0], second[0], destination[0], false, accumulate);
+    let imaginary = step(first[1], second[0], destination[1], false, accumulate);
+    // Conjugated, the second source's imaginary part is negated.
+    let swapped = is_active(Bug::ComplexConjugateSignsSwapped);
+    let (negate_real, negate_imaginary) = if conjugate != swapped { (false, true) } else { (true, false) };
+    let real_sum = step(first[1], second[1], real.bits, negate_real, true);
+    let imaginary_sum = step(first[0], second[1], imaginary.bits, negate_imaginary, true);
+    LaneOutcome {
+        bits: real_sum.bits | (imaginary_sum.bits << 16),
+        before: real.before | imaginary.before | real_sum.before | imaginary_sum.before,
+        after: real.after | imaginary.after | real_sum.after | imaginary_sum.after,
+    }
 }
 
 /// One element of VDPBF16PS: the addend plus the upper pair's product, then plus the lower pair's, as singles, each

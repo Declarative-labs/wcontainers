@@ -1055,6 +1055,10 @@ pub enum Bug {
     TransactionEndCompletes,
     /// VFIXUPIMM takes the token of +1 for -1 as well.
     FixupOneIgnoresSign,
+    /// VFMULCPH and VFCMULCPH (and their accumulating forms) swap which part's second product is negated.
+    ComplexConjugateSignsSwapped,
+    /// The complex multiplies raise #XM for an unmasked exception, as the other arithmetic does.
+    ComplexHonorsMasks,
     /// A VMOVSH load and VMOVW into a vector keep the destination's bits above the word up to 128.
     MoveWordKeepsUpperBits,
     /// VRANGE's sign control 0 keeps the selected element's sign rather than the first source's.
@@ -1539,6 +1543,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::TransactionEndCompletes, "XEND", Family::Forms(&[Instruction::Xend]), Origin::EvexRest),
     row(Bug::MoveWordKeepsUpperBits, "VMOVSH, VMOVW", Family::Evex(|form| form.operation == EvexOperation::MoveScalar && !form.reads_first_source()), Origin::EvexRest),
     row(Bug::FixupOneIgnoresSign, "VFIXUPIMM", Family::Evex(|form| is_special(form, SpecialOperation::Fixup)), Origin::EvexRest),
+    row(Bug::ComplexConjugateSignsSwapped, "VFMULCPH to VFCMADDCSH", Family::Evex(|form| matches!(form.operation, EvexOperation::ComplexMultiply { .. })), Origin::EvexRest),
+    row(Bug::ComplexHonorsMasks, "VFMULCPH to VFCMADDCSH", Family::Evex(|form| matches!(form.operation, EvexOperation::ComplexMultiply { .. })), Origin::EvexRest),
     row(Bug::RangeSignFromSelected, "VRANGE", Family::Evex(|form| is_special(form, SpecialOperation::Range)), Origin::EvexRest),
     row(Bug::EvexUnsignedIndefiniteSigned, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), Origin::EvexRest),
     row(Bug::HalfToSingleReportsDenormal, "VCVTPH2PS", Family::Evex(|form| !form.reports_denormal()), Origin::EvexRest),
