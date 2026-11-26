@@ -220,6 +220,11 @@ impl Seen {
             "never succeeded, so its column is not measured"
         } else {
             match kernel {
+                Kernel::Reads | Kernel::WritesBack | Kernel::Within | Kernel::Past
+                    if self.through > 0 =>
+                {
+                    "wrote at an address its value holds, which only a `through` column allows"
+                }
                 Kernel::Reads if self.inside > 0 => {
                     "wrote into a value its column says it only reads"
                 }
