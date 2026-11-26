@@ -3,7 +3,6 @@ extern crate std;
 use core::convert::Infallible;
 use std::boxed::Box;
 use std::path::Path;
-use std::println;
 use std::vec::Vec;
 
 use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
@@ -11,7 +10,10 @@ use wcontainers_behavior_source_recording::Recording;
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_distinguishing_state_generator_arm64::CriticalValueCut;
 use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture};
-use wcontainers_processor_architecture_arm64::{Arm64, Instruction, PreciseInstruction, User};
+use wcontainers_processor_architecture_arm64::{
+    Arm64, Instruction, LoadIntoBaseWithWriteback, LoadStoreChoices, MisalignedStackPointer,
+    PreciseInstruction, StoreAcrossFault, User,
+};
 
 use crate::{SLICE, keeps_translator_choices};
 
@@ -129,17 +131,102 @@ fn every_slice_instruction_has_a_known_behavior_that_keeps_the_choices() {
     }
 }
 
+/// Asserts that changing one choice of each kept load or store of the slice breaks the choices.
+///
+/// The change returns whether the choices have that case; at least one kept behavior must have it.
+fn assert_change_breaks_choices(case: &str, change: impl Fn(&mut LoadStoreChoices) -> bool) {
+    let mut changed = 0_usize;
+    for &instruction in SLICE {
+        for behavior in Arm64::<User>::list_known_behaviors(instruction) {
+            if !keeps_translator_choices(&behavior) {
+                continue;
+            }
+            if let PreciseInstruction::LoadStore {
+                instruction: load_store,
+                mut choices,
+            } = behavior
+                && change(&mut choices)
+            {
+                let broken = PreciseInstruction::LoadStore {
+                    instruction: load_store,
+                    choices,
+                };
+                assert!(
+                    !keeps_translator_choices(&broken),
+                    "{instruction:?} keeps the choices with {case}: {broken:?}"
+                );
+                changed += 1;
+            }
+        }
+    }
+    assert!(
+        changed > 0,
+        "no kept behavior of the slice has the case {case}"
+    );
+}
+
+#[test]
+fn a_misaligned_stack_pointer_that_accesses_breaks_the_choices() {
+    assert_change_breaks_choices("a misaligned stack pointer that accesses", |choices| {
+        choices
+            .misaligned_stack_pointer
+            .replace(MisalignedStackPointer::Accesses)
+            .is_some()
+    });
+}
+
+#[test]
+fn a_store_that_writes_the_bytes_below_a_fault_breaks_the_choices() {
+    assert_change_breaks_choices("a store that writes the bytes below a fault", |choices| {
+        choices
+            .across_fault
+            .replace(StoreAcrossFault::WritesBytesBelowFault)
+            .is_some()
+    });
+}
+
+#[test]
+fn a_load_into_its_base_that_suppresses_the_writeback_breaks_the_choices() {
+    assert_change_breaks_choices(
+        "a load into its base that suppresses the writeback",
+        |choices| {
+            choices
+                .load_into_base
+                .replace(LoadIntoBaseWithWriteback::WritebackSuppressed)
+                .is_some()
+        },
+    );
+}
+
+/// The number of states `CriticalValueCut` makes for each instruction of the slice, counted on 2026-11-26.
+const SLICE_STATES: &[(Instruction<Infallible>, usize)] = &[
+    (Instruction::AddShiftedRegister64, 3_680),
+    (Instruction::AddsShiftedRegister64, 4_880),
+    (Instruction::Csel64, 4_360),
+    (Instruction::LdrImmediateUnsignedOffset64, 10_528),
+    (Instruction::StrImmediateUnsignedOffset64, 15_036),
+    (Instruction::StpSignedOffset64, 31_280),
+    (Instruction::LdrImmediatePostIndex64, 9_024),
+    (Instruction::Brk, 18),
+    (Instruction::Rdvl, 27),
+    (Instruction::MrsCtrEl0, 3),
+];
+
+/// The number of states `CriticalValueCut` makes for the whole slice, the sum of `SLICE_STATES`.
+const SLICE_TOTAL_STATES: usize = 78_836;
+
 #[test]
 fn the_generator_makes_states_for_every_slice_instruction() {
     let generator = CriticalValueCut::default();
-    let mut total = 0;
-    for &instruction in SLICE {
-        let states = generator.generate_states(instruction).count();
-        println!("{instruction:?}: {states} states");
-        assert!(states > 0, "no state for {instruction:?}");
-        total += states;
-    }
-    println!("slice: {total} states");
+    let counted: Vec<(Instruction<Infallible>, usize)> = SLICE
+        .iter()
+        .map(|&instruction| (instruction, generator.generate_states(instruction).count()))
+        .collect();
+    assert_eq!(counted, SLICE_STATES);
+    assert_eq!(
+        counted.iter().map(|&(_, states)| states).sum::<usize>(),
+        SLICE_TOTAL_STATES
+    );
 }
 
 #[test]
