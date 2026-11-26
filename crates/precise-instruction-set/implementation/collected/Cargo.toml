@@ -1,0 +1,47 @@
+[package]
+name = "wcontainers-precise-instruction-set-collected"
+description = "The precise instruction sets of the kinds of cores whose collected samples are baked into it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+build = "build.rs"
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+# BAKE THE ACCUMULATOR MACHINE: the test architecture's sample, through the code that bakes a collected one
+[[example]]
+name = "bake_accumulator_machine_sample"
+path = "bake_accumulator_machine_sample.rs"
+required-features = ["bake"]
+
+[features]
+# Lets a sample be written as a baked file.
+bake = ["dep:databake", "dep:prettyplease", "dep:syn"]
+
+[dependencies]
+wcontainers-observation-collector = { path = "../../../observation-collector" }
+wcontainers-precise-instruction-set = { path = "../.." }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+databake = { workspace = true, optional = true }
+# Lays out a baked file as rustfmt lays out code (MIT OR Apache-2.0).
+prettyplease = { version = "0.2.37", optional = true }
+syn = { version = "2.0.119", optional = true, default-features = false, features = ["full", "parsing"] }
+
+[dev-dependencies]
+wcontainers-behavior-source = { path = "../../../behavior-source" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
+wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-instruction-input-domain-accumulator-machine = { path = "../../../instruction-input-domain/implementation/accumulator-machine" }
+wcontainers-precise-instruction-set-conformance = { path = "../../conformance" }
+wcontainers-processor-architecture-accumulator-machine = { path = "../../../processor-architecture/implementation/accumulator-machine", features = ["bake"] }
+
+[lints]
+workspace = true
