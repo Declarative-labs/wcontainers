@@ -23,6 +23,7 @@ pub(super) const HOSTILE_BASE: &str = r#"use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use wcontainers_component_object_model::constants::{E_NOINTERFACE, E_NOTIMPL};
@@ -208,8 +209,31 @@ fn never_asked(what: &str) -> ! {
     panic!("the glue asked an implementation's {what}, which it never does (src/trust.rs)")
 }
 
+/// How many calls reached the implementation, by place (`Interface::Method`).
+static REACHED: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
+
+/// Returns how many calls of `place` reached the implementation.
+pub fn reached(place: &str) -> u64 {
+    REACHED.lock().unwrap_or_else(PoisonError::into_inner).get(place).copied().unwrap_or(0)
+}
+
+/// Calls that reached the implementation whose arguments were not those a row answers with, by place.
+static REACHED_OTHERWISE: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
+
+/// Returns how many calls of `place` reached the implementation with arguments other than `=value`.
+pub fn reached_otherwise(place: &str) -> u64 {
+    REACHED_OTHERWISE.lock().unwrap_or_else(PoisonError::into_inner).get(place).copied().unwrap_or(0)
+}
+
 /// A call of a method of the API's traits.
 fn record(call: String) {
+    let place = call.split('(').next().unwrap_or("").to_string();
+    if let Some((_, value)) = ANSWERED.iter().find(|(answered, _)| *answered == place)
+        && !call.contains(&format!("={value}"))
+    {
+        *REACHED_OTHERWISE.lock().unwrap_or_else(PoisonError::into_inner).entry(place.clone()).or_default() += 1;
+    }
+    *REACHED.lock().unwrap_or_else(PoisonError::into_inner).entry(place).or_default() += 1;
     lie(Site::Method, &call);
 }
 
@@ -1025,11 +1049,33 @@ impl Writer<'_, '_> {
             }
         }
         let _ = writeln!(text, "        if o.kinds_held() == before {{\n            break;\n        }}\n    }}\n    o.kinds_held()\n}}\n");
-        let _ = writeln!(text, "/// Calls every method the calling glue carries on every object held, and the library's exports, each with arguments of\n/// defaults and `bytes()` for every caller's bytes; returns what was called.\npub fn drive(o: &Objects, bytes: &dyn Fn() -> LyingBytes) -> Driven {{\n    let mut driven = Driven::default();");
+        let _ = writeln!(text, "/// Calls every method the calling glue carries on every object held, and the library's exports, each with arguments of\n/// defaults and `bytes()` for every caller's bytes; returns what was called.\npub fn drive(o: &Objects, bytes: &dyn Fn() -> LyingBytes) -> Driven {{\n    drive_where(o, bytes, &|_| true)\n}}\n");
+        let _ = writeln!(text, "/// `drive`, of the methods of the interfaces (or the exports) `wanted` names only.\npub fn drive_where(o: &Objects, bytes: &dyn Fn() -> LyingBytes, wanted: &dyn Fn(&str) -> bool) -> Driven {{\n    let mut driven = Driven::default();");
         for (place, prelude, call) in &calls {
-            let _ = writeln!(text, "    // {place}\n    driven.attempt(|| {{\n{prelude}        let _ = {call};\n        true\n    }});");
+            let interface = place.split("::").next().unwrap_or(place).split(' ').next().unwrap_or(place);
+            let _ = writeln!(text, "    // {place}\n    if wanted(\"{interface}\") {{\n        driven.attempt(|| {{\n{prelude}        let _ = {call};\n        true\n        }});\n    }}");
         }
         let _ = writeln!(text, "    driven\n}}\n");
+        // The effects judgments of the APIs in reach (src/api.rs), and the methods the rows keep from the system.
+        let in_reach: BTreeSet<usize> = scope.iter().map(|&k| g.kinds[k].api).chain(std::iter::once(api)).collect();
+        let mut groups: Vec<String> = Vec::new();
+        for &a in &in_reach {
+            for effects in g.apis[a].effects {
+                let listed: Vec<String> = effects.interfaces.iter().map(|name| format!("\"{name}\"")).collect();
+                groups.push(format!("    (&[{}], \"{}\"),", listed.join(", "), effects.why.replace('"', "'")));
+            }
+        }
+        let _ = writeln!(text, "/// Each effects judgment of the APIs in reach (src/api.rs `effects`): the interfaces (or exports) judged together, and\n/// the judgment.\npub const EFFECTS: &[(&[&str], &str)] = &[\n{}\n];\n", groups.join("\n"));
+        let mut never: Vec<String> = Vec::new();
+        for &a in &in_reach {
+            for pin in g.apis[a].pins {
+                if matches!(pin.hold, crate::api::Hold::NotCalled { .. }) && !never.contains(&pin.method.to_string()) {
+                    never.push(pin.method.to_string());
+                }
+            }
+        }
+        let never_listed: Vec<String> = never.iter().map(|place| format!("    \"{place}\",")).collect();
+        let _ = writeln!(text, "/// The methods the rows keep from the system (never called): none reaches an implementation.\npub const NEVER_REACHED: &[&str] = &[\n{}\n];\n", never_listed.join("\n"));
         // The fuzzer: each method a function of random arguments, picked at random; objects dropped and made again.
         for (index, (place, prelude, call)) in fuzzed.iter().enumerate() {
             let _ = writeln!(text, "/// {place}, of random arguments.\nfn fuzz_{index}(o: &Objects, r: &mut Rng) -> bool {{\n{prelude}        let _ = {call};\n        true\n}}\n");
@@ -1169,7 +1215,21 @@ pub(in crate::emit) fn write_hostile(writer: &Writer<'_, '_>, api: usize, crate_
     writer.struct_values.borrow_mut().clear();
     writer.current.set(api);
     let (driver, calls, makers) = writer.driver(api, &codecs);
-    let mut text = format!("{recorder}\n{driver}");
+    // The rows that answer for the system (src/api.rs): a call reaching the implementation with other arguments is one
+    // the glue let through.
+    let mut answered: Vec<String> = Vec::new();
+    for other in g.apis.iter() {
+        for pin in other.pins {
+            if let crate::api::Hold::Answers { value, .. } = pin.hold {
+                let line = format!("    (\"{}\", \"{value}\"),", pin.method);
+                if !answered.contains(&line) {
+                    answered.push(line);
+                }
+            }
+        }
+    }
+    let answered = format!("/// The methods a row answers for the system, and the argument it answers with (src/api.rs).\npub const ANSWERED: &[(&str, &str)] = &[\n{}\n];\n", answered.join("\n"));
+    let mut text = format!("{recorder}\n{answered}\n{driver}");
     // The recorder's names become the hostile implementation's.
     text = text.replace("Recorder", "HostileLibrary").replace("Recorded", "Hostile").replace("_recorder", "_hostile").replace("recorder", "hostile implementation");
     text = text.replacen("//! A recording implementation of", "//! The hostile implementation (src/glue_hostile.rs) of", 1);
@@ -1218,6 +1278,7 @@ pub(in crate::emit) fn write_hostile(writer: &Writer<'_, '_>, api: usize, crate_
         let tests = folder.join("tests");
         std::fs::create_dir_all(&tests).map_err(|error| error.to_string())?;
         std::fs::write(tests.join("lies.rs"), include_str!("../harness/hostile/lies.rs")).map_err(|error| error.to_string())?;
+        std::fs::write(tests.join("effects.rs"), include_str!("../harness/hostile/effects.rs")).map_err(|error| error.to_string())?;
     }
     Ok(format!("HOSTILE {}: driver calls {calls}, makers {makers}\n", spec.folder))
 }
