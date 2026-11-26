@@ -113,6 +113,20 @@ pub fn ex_range_is_empty<Idx: PartialOrd<Idx>>(range: &Range<Idx>) -> (empty: bo
     range.is_empty()
 }
 
+/// The owner's sort of the written ranges by their starts: the same ranges, each start at most the next one's.
+#[cfg_attr(verus_keep_ghost, verus::trusted)]
+#[verifier::external_body]
+#[inline]
+pub fn sort_by_start(written: &mut [Range<u128>])
+    ensures
+        final(written)@.len() == old(written)@.len(),
+        final(written)@.to_multiset() == old(written)@.to_multiset(),
+        forall|first: int, second: int| 0 <= first < second < final(written)@.len()
+            ==> #[trigger] final(written)@[first].start <= #[trigger] final(written)@[second].start,
+{
+    written.sort_unstable_by_key(|addresses| addresses.start);
+}
+
 /// Whether the two slices are the same slice, which then holds the same bytes.
 #[cfg_attr(verus_keep_ghost, verus::trusted)]
 #[verifier::external_body]
