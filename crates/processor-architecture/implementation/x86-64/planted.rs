@@ -1051,6 +1051,8 @@ pub enum Bug {
     DotBfloat16LowerPairFirst,
     /// VDPBF16PS keeps the sum's NaN over a source's.
     DotBfloat16SumNanFirst,
+    /// XEND outside a transaction completes as no operation.
+    TransactionEndCompletes,
     /// VRANGE's sign control 0 keeps the selected element's sign rather than the first source's.
     RangeSignFromSelected,
 }
@@ -1530,6 +1532,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::RoundScaleSuppressionIgnored, "VRNDSCALE, VREDUCE", Family::Evex(|form| is_special(form, SpecialOperation::RoundScale) || is_special(form, SpecialOperation::Reduce)), Origin::EvexRest),
     row(Bug::DotBfloat16LowerPairFirst, "VDPBF16PS", Family::Evex(|form| form.operation == EvexOperation::DotBfloat16), Origin::EvexRest),
     row(Bug::DotBfloat16SumNanFirst, "VDPBF16PS", Family::Evex(|form| form.operation == EvexOperation::DotBfloat16), Origin::EvexRest),
+    row(Bug::TransactionEndCompletes, "XEND", Family::Forms(&[Instruction::Xend]), Origin::EvexRest),
     row(Bug::RangeSignFromSelected, "VRANGE", Family::Evex(|form| is_special(form, SpecialOperation::Range)), Origin::EvexRest),
     row(Bug::EvexUnsignedIndefiniteSigned, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), Origin::EvexRest),
     row(Bug::HalfToSingleReportsDenormal, "VCVTPH2PS", Family::Evex(|form| !form.reports_denormal()), Origin::EvexRest),

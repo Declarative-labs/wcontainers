@@ -153,6 +153,16 @@ pub static FIXED_FORMS: &[FixedForm] = &[
     fixed(Instruction::RdpidGpr64u64, WritesUndecided, Sample),
     fixed(Instruction::RdrandGprv, WritesRandom, Sample),
     fixed(Instruction::RdseedGprv, WritesRandom, Sample),
+    // Outside a transaction, which a single step never is in: XEND raises #GP(0), XABORT and the TSXLDTRK forms do
+    // nothing.
+    fixed(Instruction::Xend, GeneralProtection, Sample),
+    fixed(Instruction::XabortImmb, NoOperation, Sample),
+    fixed(Instruction::Xsusldtrk, NoOperation, Sample),
+    fixed(Instruction::Xresldtrk, NoOperation, Sample),
+    fixed(Instruction::Prefetchrst2Memu8, NoOperation, All),
+    // ENQCMDS needs CPL 0; ENQCMD needs a valid IA32_PASID, which Linux gives only a process bound to a device.
+    fixed(Instruction::EnqcmdsGpraMemu32, GeneralProtection, Sample),
+    fixed(Instruction::EnqcmdGpraMemu32, GeneralProtection, Sample),
 ];
 
 /// The general registers, by number, a form of [`FixedOutcome::WritesUndecided`] or [`FixedOutcome::WritesRandom`]

@@ -23,6 +23,7 @@ pub(super) fn execute_fixed(
     let form = find_fixed_form(instruction).unwrap_or_else(|| panic!("{instruction:?} is no fixed form"));
     match form.outcome {
         FixedOutcome::GeneralProtection if is_active(Bug::PrivilegedOperandFormsInvalidOpcode) => Err(Exception::InvalidOpcode),
+        FixedOutcome::GeneralProtection if is_active(Bug::TransactionEndCompletes) && instruction == Instruction::Xend => Ok(()),
         FixedOutcome::GeneralProtection => Err(Exception::GeneralProtection { error_code: 0 }),
         FixedOutcome::InvalidOpcode => Err(Exception::InvalidOpcode),
         FixedOutcome::SoftwareInterrupt if decoded.code() == Code::Int1 => Err(Exception::Debug { status: 0 }),
