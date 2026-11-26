@@ -439,6 +439,83 @@ of AC3: a generated hostile C caller over every table (raw pointers and counts o
 glued, the generated conformance suite (the driver is its start: it calls every glued method), the linter per rule, and
 tests of the effects judgments.
 
+## AC3, continued (2026-11-26, tip c285c1292; logs in wcontainers-scratch/graphics-api-crates/ac3v/)
+
+Every bar below is MEASURED at c285c1292 (x86-64 job gac5/20261126-165529-1057658, log ac3v/tip-c285c1292/final.log)
+unless it names another commit. His main (ac696ea19) was already in the branch (`git rev-list --count HEAD..FETCH_HEAD` 0).
+
+- **Asked once, by value** (src/trust.rs `Model`, `Ledger`): every call the generator emits of a method of the other
+  party is made through the model of the function being emitted, which names the value by where it came from (the
+  method's parameter by its place in the metadata, the `Mapped` the implementation's Map returned, the implementation's
+  object of the entry), never by its name in the text. Each entry of `OTHER_PARTY` now carries a limit per method
+  (`Once`, `Never`, `Free`); ByteSink and ByteSource of the caller were added to the list (ForeignLent's read_to and
+  write_from). The text scan stays as a cross-check: the calls of `VolatileBytes` it finds must equal the asks the models
+  recorded plus the templates' own (lent.rs, declared in `TEMPLATE_ASKS` and tested against the template text).
+  Whole set: 1,423 functions modeled, 0 failures; text 43 calls (2 template) equal to the models' 41. Controls (job
+  gac5/20261126-1535, at 3ccf0fd5a, ac3v/): A, the length asked again through another name, through the model: the
+  generator fails, ASKED TWICE 1 (slice) and 19 (whole set); B, the length's call emitted around the model, its text
+  unchanged: the generator fails, NOT MODELED. The generated crates at 3ccf0fd5a were byte-identical to 6f40f3c9d's.
+- **(1) The hostile C caller** (src/glue_c_caller.rs, `crates/direct3d-11/implementation/direct/c-caller`): C written
+  from the tables calls every entry of every table and every export: `this` null, released, of another kind or no
+  object; counts 0, small, at and past the glue's limit (then with one element's memory), all ones; every buffer
+  malloc'd at exactly the size the count gives; random structures and interface ids; out-pointers null or garbage; the
+  objects handed out kept per interface, released at random, all given back each round; a lie of the hostile
+  implementation per round. 3 seeds x 10M calls x each set under AddressSanitizer: 6 of 6 status 0, 0 reports, 0
+  implementation objects left, 0 refusing entries answering other than E_NOTIMPL, 0 failed QueryInterface leaving a
+  pointer (whole set: 543 entries and exports, about 4.2M successes and 1.1M refusals per seed). Control: the serving
+  glue's element limit removed: AddressSanitizer heap-buffer-overflow (READ of 527,320 bytes over an 8-byte region).
+- **(2) The methods not glued**: a GUID by value is now glued (`GuidAbi`, 29 methods): GLUED 504 of 643. The 139 left are
+  each refused by their form, with the reason in the report (NOT GLUED BY FORM): 39 by an entry that reads and writes
+  nothing and answers E_NOTIMPL (no null slot for C to call), 100 by a null entry (a structure by value in the call, or
+  an out-parameter an entry would leave unwritten): 39 arrays out, 16 structures holding a pointer, 14 counts passed by
+  pointer, 11 bytes in, 9 PSTR and 5 PWSTR by value, 9 `void` returns of other forms, 7 void pointers, 6 arrays whose
+  count is no parameter, the rest one or two each. The calling glue answers E_NOTIMPL for all 139.
+- **(3) The conformance suite** (`crates/<api>/conformance/suite.rs`, from the driver): generic over the top trait, it
+  makes an object of every kind it can, calls every method and export, and checks each answer (a failure negative, an
+  object equal to its clone); run by the recorder and the hostile implementation through `tests!` (conformance_run.rs).
+  It found the recorder panicking on 87 methods returning a structure or a list; the recorder now makes those (zero bytes
+  decoded, a default, empty lists). Results: Direct3D 11 65 kinds, 843 of 847 calls made, 0 panics; DXGI 16 kinds,
+  211 of 211; d3dcommon 0 of 4 (its kinds are made only by Direct3D 11's methods); 10 of 10 runs status 0. Not yet run
+  by the direct crates (through both glues): the calling glue still panics for a method not glued that returns a plain
+  value.
+- **(4) The effects judgments, tested** (harness/hostile/effects.rs): for each of the 23 groups, every method of the
+  group driven through both glues after a buffer was mapped, then: no call panicked back; no method a never-called row
+  names reached the implementation; a method a row answers reached it only with the answer's arguments; the memory lent
+  intact unless the group's own Unmap ended it, then reaching nothing; the buffer's description unchanged. Slice and
+  whole set, default and AddressSanitizer: 4 of 4 status 0, 23 groups each, 0 reports. Control: the calling glue planted
+  to pass SetMultithreadProtected through: the test fails ("reached ID3D11Multithread::SetMultithreadProtected with other
+  than true", 3).
+- **(5) Linter** (whole set with its glue, per rule, b09f41a23 then c285c1292): magic_literal 8,612 then 6,916 (the
+  fuzzers picked from a table, the slices' length and the interface filters named, the never-asked traits named);
+  public_outside_interface 6,259 then 5,392 (src/visibility.rs: an item of a direct crate no other crate names becomes
+  `pub(crate)`, 366 narrowed); conformance_untested_method 643 (the suite's calls are inside closures given to
+  `attempt`; not yet worked); implementation_folder 288; conformance_not_run 223. The rest of the causes, read from the
+  findings: magic_literal is the byte forms' offsets and sizes (data.rs 2,061, serve.rs 1,611, call.rs 560: `get_u32(bytes,
+  16)`, `[0_u8; 24]`) and the recorded call texts of the recorder and hostile crates; the fix that removes the first is
+  a `#[repr(C)]` mirror of each record with `offset_of!` and `size_of`, not yet written. public_outside_interface is the
+  direct crates' tables, entries and helpers that other direct crates name, and data.rs counted again in each crate that
+  includes it.
+- Kept from before, at c285c1292: the trait layer and both glue sets written twice IDENTICAL; check, clippy and clippy
+  --all-targets 0; the whole set's 47 hostile tests and probes, default and AddressSanitizer, 47 of 47; slice harness 75 of
+  75; the hostile set's lie tests 44 of 44; its fuzzing 3 seeds x 10M per set under AddressSanitizer 6 of 6, 0 reports;
+  the once-check's negative control and planted defect fail as before.
+- **Costs** (job gac5/20261126-160631, b09f41a23 against the spike's own binary, one after the other on core 92, then 93;
+  load 13.4, 8.4, 8.0, 6.0), ns, serving glue's added / pass-through:
+
+| Operation | Ours (core 92) | Spike (core 92) | Within a tenth |
+|---|---|---|---|
+| Draw | 20.9 / 41.7 | 23.8 / 38.1 | added 12% faster; pass-through 9.4% slower: within |
+| AddRef + Release | 24.8 / 37.4 | 24.7 / 37.5 | both within |
+| QueryInterface + Release | 68.1 / 81.0 | 80.9 / 93.8 | both 14 to 16% faster |
+| GetDevice + Release | 53.4 / 69.3 | 60.2 / 73.2 | added 11% faster; pass-through within |
+| Map + Unmap | 269.9 / 453.4 | 215.0 / 456.5 | pass-through within; added 26% slower (the shadow copy and its write-back) |
+| CreateBuffer + Release | 245.0 / 318.7 | 336.9 / 397.8 | both 20 to 27% faster |
+
+Left of AC3: the conformance run through both glues (the calling glue's not-glued plain returns), the 100 methods
+refused by a null entry (glue for arrays out and counts by pointer), the byte forms' mirrors for magic_literal, the
+direct crates' cross-crate surface for public_outside_interface (a layout question when no narrowing is left), and
+conformance_untested_method.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
