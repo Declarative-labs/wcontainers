@@ -8,7 +8,10 @@
 //! set to a comma-separated list of form names it runs those alone, and with `X86_PROBE_MODELED` set the modeled forms
 //! alone; with `X86_PROBE_TIMING` set to a number of passes it then times every state on the parked machine, the
 //! parked machine with incremental loading and the plain one, interleaved; with `X86_PROBE_SPLIT` set it prints where
-//! the parked machine spends its time.
+//! the parked machine spends its time. With `X86_PROBE_WHOLE` set to a number of passes it does only this: each pass
+//! runs the provided `measure_instructions` over the whole list on the parked machine with incremental loading, then
+//! the provided `measure_instruction` on every listed form, timing the states' making and the chip; then it replays
+//! the provided method's loop once to split a state's time into making it, simulating, the chip and comparing.
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn main() {
@@ -35,7 +38,8 @@ mod on_chip {
     use wcontainers_precise_instruction_set::PreciseInstructionSet;
     use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
     use wcontainers_processor_architecture::{
-        ExecutionState, ExecutionStateExpectation, MemoryDelta, ProcessorArchitecture, Simulator,
+        ExecutionState, ExecutionStateExpectation, MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
+        Simulator,
     };
     use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
     use wcontainers_processor_architecture_x86_64::{
@@ -68,6 +72,48 @@ mod on_chip {
 
         fn generate_states(&self, instruction: Instruction) -> Self::States<'_> {
             Box::new(GENERATOR.generate_states(instruction).inspect(|_| self.states.set(self.states.get() + 1)))
+        }
+    }
+
+    /// The generator, counting the states it gives and timing their making.
+    #[derive(Default)]
+    struct TimedGenerator {
+        states: Cell<usize>,
+        making: Cell<Duration>,
+    }
+
+    impl DistinguishingStateGenerator<X86_64> for TimedGenerator {
+        type States<'generator> = std::vec::IntoIter<State>;
+
+        fn generate_states(&self, instruction: Instruction) -> Self::States<'_> {
+            let started = Instant::now();
+            let states: Vec<State> = GENERATOR.generate_states(instruction).collect();
+            self.making.set(self.making.get() + started.elapsed());
+            self.states.set(self.states.get() + states.len());
+            states.into_iter()
+        }
+    }
+
+    /// The chip source, timing the chip.
+    struct TimedSource {
+        machine: SingleStepMachine,
+        chip: Duration,
+    }
+
+    impl BehaviorSource for TimedSource {
+        type Architecture = X86_64;
+        type Error = Refusal;
+
+        fn execute_single_instruction_in_place(
+            &mut self,
+            processor: &mut Processor,
+            memory: MemorySnapshot<'_, '_, X86_64>,
+            mutation_hook: &mut impl MemorySink<X86_64>,
+        ) -> Result<(), Refusal> {
+            let started = Instant::now();
+            let result = self.machine.execute_single_instruction_in_place(processor, memory, mutation_hook);
+            self.chip += started.elapsed();
+            result
         }
     }
 
@@ -308,6 +354,12 @@ mod on_chip {
 
     pub fn main() {
         println!("load at start: {}", read_load());
+        if let Some(passes) = std::env::var("X86_PROBE_WHOLE").ok().and_then(|passes| passes.parse().ok()) {
+            measure_whole(passes);
+            split_measuring();
+            println!("load at end: {}", read_load());
+            return;
+        }
         let forms = list_forms();
         let mut machine = make_machine(PARKED);
         let counted = Counted { states: Cell::new(0) };
@@ -373,6 +425,132 @@ mod on_chip {
             split_time(&forms);
         }
         println!("load at end: {}", read_load());
+    }
+
+    /// Names the form `measure_instructions` stopped at, its place in the list and why.
+    fn describe_stop(error: &MeasureInstructionError<X86_64, Refusal>) -> String {
+        let (kind, instruction) = match error {
+            MeasureInstructionError::NoKnownBehavior { instruction } => ("no known behavior", instruction),
+            MeasureInstructionError::ExecutionFailed { instruction, .. } => ("refused by the chip source", instruction),
+            MeasureInstructionError::NoBehaviorAgrees { instruction, .. } => ("no behavior agrees", instruction),
+            MeasureInstructionError::IndistinguishableBehaviors { instruction, .. } => ("behaviors indistinguishable", instruction),
+        };
+        let position = X86_64::list_instructions().position(|listed| listed == *instruction).unwrap_or(usize::MAX);
+        format!("stops at listed form {position}, {instruction:?}: {kind}")
+    }
+
+    /// Runs the passes of the whole list on the parked machine with incremental loading: the provided
+    /// `measure_instructions`, then the provided `measure_instruction` form by form, printing each form's outcome,
+    /// states and time and each outcome's totals.
+    fn measure_whole(passes: usize) {
+        let forms: Vec<Instruction> = X86_64::list_instructions().collect();
+        for pass in 0..passes {
+            let load = read_load();
+            let mut source = TimedSource { machine: make_machine(PARKED_INCREMENTAL), chip: Duration::ZERO };
+            let generator = TimedGenerator::default();
+            let started = Instant::now();
+            let stop = match source.measure_instructions(&generator) {
+                Ok(measurements) => format!("every one of {} forms", measurements.len()),
+                Err(error) => describe_stop(&error),
+            };
+            println!(
+                "WHOLE pass {pass} measure_instructions: {stop}; {:.3} s over {} states; load {load}",
+                started.elapsed().as_secs_f64(),
+                generator.states.get()
+            );
+            let load = read_load();
+            let mut source = TimedSource { machine: make_machine(PARKED_INCREMENTAL), chip: Duration::ZERO };
+            let generator = TimedGenerator::default();
+            // Per outcome: forms, states, time, making, chip.
+            let mut outcomes: std::collections::BTreeMap<&'static str, (usize, usize, Duration, Duration, Duration)> =
+                std::collections::BTreeMap::new();
+            let started = Instant::now();
+            for instruction in &forms {
+                let (states, making, chip) = (generator.states.get(), generator.making.get(), source.chip);
+                let form_started = Instant::now();
+                let measured = source.measure_instruction(*instruction, &generator);
+                let elapsed = form_started.elapsed();
+                let outcome = to_outcome(&measured);
+                let states = generator.states.get() - states;
+                let totals = outcomes.entry(outcome).or_default();
+                totals.0 += 1;
+                totals.1 += states;
+                totals.2 += elapsed;
+                totals.3 += generator.making.get() - making;
+                totals.4 += source.chip - chip;
+                println!("WHOLEFORM {pass} {instruction:?} | {outcome} | states {states} | {} ns", elapsed.as_nanos());
+            }
+            let whole = started.elapsed();
+            let states = generator.states.get();
+            let per_state = |time: Duration, count: usize| time.as_nanos() as f64 / count.max(1) as f64;
+            for (outcome, (count, states, time, making, chip)) in &outcomes {
+                println!(
+                    "WHOLEOUTCOME {pass} {outcome}: {count} forms, {states} states, {:.3} s; per state making {:.0} ns, chip {:.0} ns, simulating and comparing {:.0} ns",
+                    time.as_secs_f64(),
+                    per_state(*making, *states),
+                    per_state(*chip, *states),
+                    per_state(time.saturating_sub(*making + *chip), *states),
+                );
+            }
+            println!(
+                "WHOLE pass {pass} every form one by one: {:.3} s over {states} states, {:.0} ns per state; making {:.0} ns, chip {:.0} ns, simulating and comparing {:.0} ns; load {load} at start, {} at end",
+                whole.as_secs_f64(),
+                per_state(whole, states),
+                per_state(generator.making.get(), states),
+                per_state(source.chip, states),
+                per_state(whole.saturating_sub(generator.making.get() + source.chip), states),
+                read_load(),
+            );
+        }
+    }
+
+    /// Replays the provided `measure_instruction`'s loop over every listed form with a known behavior, on the parked
+    /// machine with incremental loading, timing its four parts apart.
+    fn split_measuring() {
+        let mut machine = make_machine(PARKED_INCREMENTAL);
+        let (mut making, mut simulating, mut chip, mut comparing) = (Duration::ZERO, Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let mut count = 0;
+        let started = Instant::now();
+        for instruction in X86_64::list_instructions() {
+            let mut candidates: Vec<PreciseInstruction> = X86_64::list_known_behaviors(instruction).collect();
+            if candidates.is_empty() {
+                continue;
+            }
+            let made = Instant::now();
+            let states: Vec<State> = GENERATOR.generate_states(instruction).collect();
+            making += made.elapsed();
+            for before in states {
+                count += 1;
+                let simulated_at = Instant::now();
+                let simulated: Vec<(PreciseInstruction, Expectation)> =
+                    candidates.iter().map(|&precise| (precise, simulate(precise, &before))).collect();
+                simulating += simulated_at.elapsed();
+                let chip_at = Instant::now();
+                let observed = machine.execute_single_instruction(before.clone());
+                chip += chip_at.elapsed();
+                let Ok(observed) = observed else {
+                    break;
+                };
+                let compared_at = Instant::now();
+                candidates =
+                    simulated.iter().filter(|(_, after)| observed.meets_expectations(after)).map(|&(precise, _)| precise).collect();
+                comparing += compared_at.elapsed();
+                if candidates.is_empty() {
+                    break;
+                }
+            }
+        }
+        let whole = started.elapsed();
+        let per_state = |time: Duration| time.as_nanos() as f64 / count as f64;
+        println!(
+            "SPLITMEASURE {count} states, {:.3} s: making {:.0} ns, simulating {:.0} ns, chip {:.0} ns, comparing {:.0} ns, the rest {:.0} ns per state",
+            whole.as_secs_f64(),
+            per_state(making),
+            per_state(simulating),
+            per_state(chip),
+            per_state(comparing),
+            per_state(whole.saturating_sub(making + simulating + chip + comparing)),
+        );
     }
 
     /// Measures every form with the provided `measure_instructions` and prints where it stops; then builds the set
