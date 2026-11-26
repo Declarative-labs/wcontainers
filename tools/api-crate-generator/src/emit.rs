@@ -29,6 +29,7 @@ const HARNESS: &[(&str, &str)] = &[
     ("tests/attack_table.rs", include_str!("../harness/stand-ins/tests/attack_table.rs")),
     ("tests/check2_c.rs", include_str!("../harness/stand-ins/tests/check2_c.rs")),
     ("tests/fuzz.rs", include_str!("../harness/stand-ins/tests/fuzz.rs")),
+    ("tests/measure.rs", include_str!("../harness/stand-ins/tests/measure.rs")),
     ("c/d3d11_slice.h", include_str!("../harness/stand-ins/c/d3d11_slice.h")),
     ("c/fake_d3d11.c", include_str!("../harness/stand-ins/c/fake_d3d11.c")),
     ("c/game.c", include_str!("../harness/stand-ins/c/game.c")),

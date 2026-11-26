@@ -183,6 +183,11 @@ pub fn initial_length_buffer(desc: &direct3d_11::structures::BufferDesc, index: 
     (index == 0 && length <= most_bytes()).then_some(length)
 }
 
+/// Returns whether the serving glue lends `length` bytes for a buffer.
+pub fn within_served_bound_buffer(desc: &direct3d_11::structures::BufferDesc, _subresource: u32, length: usize) -> bool {
+    within_served_bound(usize::try_from(desc.byte_width).ok(), length)
+}
+
 /// Returns the length of a buffer's mapped bytes: its byte width, for its one subresource, and at least the pitches
 /// the implementation gave, which the C side is told and fills.
 pub fn mapped_length_buffer(desc: &direct3d_11::structures::BufferDesc, subresource: u32, row_pitch: u32, depth_pitch: u32) -> Option<usize> {
@@ -227,6 +232,12 @@ fn size_texture_1d(desc: &direct3d_11::structures::Texture1DDesc, index: usize) 
     let levels = mips(desc.mip_levels, desc.width)?;
     let index = u32::try_from(index).ok()?;
     (index / levels < desc.array_size).then(|| (mip_side(desc.width, index % levels), 1, 1))
+}
+
+/// Returns whether the serving glue lends `length` bytes for a subresource of the texture.
+pub fn within_served_bound_texture_1d(desc: &direct3d_11::structures::Texture1DDesc, subresource: u32, length: usize) -> bool {
+    let padded = usize::try_from(subresource).ok().and_then(|index| padded_extent(desc.format, size_texture_1d(desc, index)?));
+    padded.is_some_and(|padded| length <= padded.max(LEAST_SERVED_BOUND))
 }
 
 /// Returns the length of a 1D texture subresource's initial bytes: one row.
@@ -286,6 +297,12 @@ fn size_texture_2d(desc: &direct3d_11::structures::Texture2DDesc, index: usize) 
     (index / levels < desc.array_size).then(|| (mip_side(desc.width, mip), mip_side(desc.height, mip), 1))
 }
 
+/// Returns whether the serving glue lends `length` bytes for a subresource of the texture.
+pub fn within_served_bound_texture_2d(desc: &direct3d_11::structures::Texture2DDesc, subresource: u32, length: usize) -> bool {
+    let padded = usize::try_from(subresource).ok().and_then(|index| padded_extent(desc.format, size_texture_2d(desc, index)?));
+    padded.is_some_and(|padded| length <= padded.max(LEAST_SERVED_BOUND))
+}
+
 /// Returns the length of a 2D texture subresource's initial bytes: its rows of blocks at the pitch.
 pub fn initial_length_texture_2d(desc: &direct3d_11::structures::Texture2DDesc, index: usize, pitch: u32, _slice_pitch: u32) -> Option<usize> {
     subresource_extent(desc.format, size_texture_2d(desc, index)?, pitch, 0)
@@ -338,6 +355,12 @@ fn size_texture_3d(desc: &direct3d_11::structures::Texture3DDesc, index: usize) 
     Some((mip_side(desc.width, mip), mip_side(desc.height, mip), mip_side(desc.depth, mip)))
 }
 
+/// Returns whether the serving glue lends `length` bytes for a subresource of the texture.
+pub fn within_served_bound_texture_3d(desc: &direct3d_11::structures::Texture3DDesc, subresource: u32, length: usize) -> bool {
+    let padded = usize::try_from(subresource).ok().and_then(|index| padded_extent(desc.format, size_texture_3d(desc, index)?));
+    padded.is_some_and(|padded| length <= padded.max(LEAST_SERVED_BOUND))
+}
+
 /// Returns the length of a 3D texture subresource's initial bytes: its slices at the slice pitch, rows at the pitch.
 pub fn initial_length_texture_3d(desc: &direct3d_11::structures::Texture3DDesc, index: usize, pitch: u32, slice_pitch: u32) -> Option<usize> {
     subresource_extent(desc.format, size_texture_3d(desc, index)?, pitch, slice_pitch)
@@ -349,6 +372,27 @@ pub fn mapped_length_texture_3d(desc: &direct3d_11::structures::Texture3DDesc, s
     at_least_pitches(slices, row_pitch, depth_pitch)
 }
 // end of shape
+
+/// The least memory the serving glue lends for any subresource: what a small resource's padded rows may need.
+const LEAST_SERVED_BOUND: usize = 1 << 16;
+
+/// The widest row alignment the serving glue accepts from an implementation: a page.
+const ROW_ALIGNMENT_BOUND: u64 = 4096;
+
+/// Returns whether memory of `length` bytes for a subresource whose rows hold `packed` bytes is within what the serving
+/// glue lends: twice the packed bytes, or 64 KiB for a small one. An implementation's pitches past that are refused,
+/// so that no implementation makes the glue lend more than its resources hold.
+fn within_served_bound(packed: Option<usize>, length: usize) -> bool {
+    packed.is_some_and(|packed| length <= packed.saturating_mul(2).max(LEAST_SERVED_BOUND))
+}
+
+/// Returns the bytes of a subresource whose rows start a page apart at most: the most the serving glue lends for it.
+fn padded_extent(format: directx_graphics_infrastructure::enumerations::Format, (width, height, depth): (u32, u32, u32)) -> Option<usize> {
+    let block = block(format)?;
+    let row = (u64::from(width.div_ceil(block.width)) * u64::from(block.bytes)).next_multiple_of(ROW_ALIGNMENT_BOUND);
+    let all = row.checked_mul(u64::from(height.div_ceil(block.height).max(1)))?.checked_mul(u64::from(depth.max(1)))?;
+    usize::try_from(all).ok().filter(|all| *all <= most_bytes())
+}
 
 /// Returns `length` raised to the pitches the system gave, which programs fill whole, if within the largest resource.
 fn at_least_pitches(length: usize, row_pitch: u32, depth_pitch: u32) -> Option<usize> {

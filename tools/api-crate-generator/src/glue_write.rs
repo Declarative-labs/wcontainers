@@ -514,6 +514,8 @@ impl Writer<'_, '_> {
                     }).unwrap_or_default();
                     let expression = coded.path.replace('<', "::<");
                     let _ = writeln!(inner, "            let lent_length = mapped_length_found(&{resource}_found, {subresource}, {name}_value.{row}, {name}_value.{depth});");
+                    let _ = writeln!(inner, "            // No longer than the implementation's own bytes: the glue lends no memory it did not lend.");
+                    let _ = writeln!(inner, "            let lent_length = lent_length.filter(|length| u64::try_from(*length).is_ok_and(|length| length <= wcontainers_volatile_bytes::VolatileBytes::len(&{name}_value.{data})));");
                     let _ = writeln!(inner, "            let Some(shadow) = lent_length.and_then(Shadow::allocate) else {{");
                     let _ = writeln!(inner, "                found.value().{until}({resource}_found.get(), {subresource});\n                return Err(E_FAIL);\n            }};");
                     let _ = writeln!(inner, "            shadow.fill_from(&{name}_value.{data});");
@@ -924,7 +926,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
                     let trait_path = writer.trait_path(root);
                     let desc_path = g.read.interfaces[root].methods.iter().find(|m| m.name == "GetDesc").and_then(|m| m.params.first()).and_then(|p| crate::emit::pointee(&p.ty)).and_then(|(inner, _, _)| crate::emit::named(inner)).map(|k| writer.record_path(&k)).unwrap_or_default();
                     let _ = writeln!(found_enums, "        {found_path}::{kind_name}(found) => {{\n            let desc = found.part::<Recorded<{desc_path}>>().map_or_else(|| {trait_path}::get_desc(found.value()), |recorded| recorded.0);");
-                    let _ = writeln!(found_enums, "            crate::lengths::mapped_length_{}(&desc, subresource, row_pitch, depth_pitch)\n        }}", shape.suffix());
+                    let _ = writeln!(found_enums, "            crate::lengths::mapped_length_{0}(&desc, subresource, row_pitch, depth_pitch).filter(|length| crate::lengths::within_served_bound_{0}(&desc, subresource, *length))\n        }}", shape.suffix());
                 }
                 None => {
                     let _ = writeln!(found_enums, "        {found_path}::{kind_name}(_) => None,");

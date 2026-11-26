@@ -128,8 +128,13 @@ struct PoolBlock {
 /// Blocks of ours that no shadow holds now.
 static POOL: Mutex<Vec<PoolBlock>> = Mutex::new(Vec::new());
 
-/// Blocks whose object died while they were lent: kept for life, never lent again.
-static ABANDONED: Mutex<Vec<PoolBlock>> = Mutex::new(Vec::new());
+/// Blocks whose object died while they were lent, oldest first: lent again only once this many bytes of later ones
+/// wait behind them, so that a program writing one after the release reaches no recent mapping, and the memory held
+/// stays bounded.
+static ABANDONED: Mutex<std::collections::VecDeque<PoolBlock>> = Mutex::new(std::collections::VecDeque::new());
+
+/// The bytes of abandoned blocks kept back from the pool.
+const ABANDONED_BYTES: usize = 64 << 20;
 
 impl Shadow {
     /// Returns memory of this many bytes, from the pool or new; what it holds at first is unspecified. None when the
@@ -205,9 +210,20 @@ impl Shadow {
 
 impl Drop for Shadow {
     fn drop(&mut self) {
-        if let Some(block) = self.0.take() {
-            ABANDONED.lock().unwrap_or_else(PoisonError::into_inner).push(block);
-        }
+        let Some(block) = self.0.take() else { return };
+        let released: Vec<PoolBlock> = {
+            let mut abandoned = ABANDONED.lock().unwrap_or_else(PoisonError::into_inner);
+            abandoned.push_back(block);
+            let mut held: usize = abandoned.iter().map(|block| block.class).sum();
+            let mut released = Vec::new();
+            while held > ABANDONED_BYTES && abandoned.len() > 1 {
+                let Some(oldest) = abandoned.pop_front() else { break };
+                held -= oldest.class;
+                released.push(oldest);
+            }
+            released
+        };
+        POOL.lock().unwrap_or_else(PoisonError::into_inner).extend(released);
     }
 }
 
