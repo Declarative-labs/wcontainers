@@ -1533,6 +1533,17 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path) -> Result<String, 
             let folder = out.join("crates").join(spec.folder);
             report.push_str(&glue::write_direct(&writer, api, &folder)?);
         }
+        // The pass-through test of the slice, hand-written beside the generator, goes with Direct3D 11's glue.
+        if let Some(position) = apis.iter().position(|api| api.folder == "direct3d-11") {
+            let direct = out.join("crates").join(apis[position].folder).join("implementation").join("direct");
+            std::fs::create_dir_all(direct.join("tests")).map_err(|error| error.to_string())?;
+            std::fs::write(direct.join("tests").join("round_trip.rs"), include_str!("../harness/round_trip.rs")).map_err(|error| error.to_string())?;
+            let manifest = direct.join("Cargo.toml");
+            let mut text = std::fs::read_to_string(&manifest).map_err(|error| error.to_string())?;
+            let at = text.find("\n# A C boundary").unwrap_or(text.len());
+            text.insert_str(at, "\n[dev-dependencies]\nwcontainers-byte-sink = { path = \"../../../byte-sink\" }\nwcontainers-byte-source = { path = \"../../../byte-source\" }\nwcontainers-volatile-bytes = { path = \"../../../volatile-bytes\" }\nwcontainers-direct3d-common = { path = \"../../../direct3d-common\" }\nwcontainers-directx-graphics-infrastructure = { path = \"../../../directx-graphics-infrastructure\" }\n");
+            std::fs::write(&manifest, text).map_err(|error| error.to_string())?;
+        }
         let mut glued = writer.glued.borrow().clone();
         glued.sort();
         glued.dedup();
