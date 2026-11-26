@@ -23,6 +23,7 @@ fn main() {
     let bugs: Vec<_> = PLANTED_BUGS
         .iter()
         .chain(&wcontainers_processor_architecture_arm64::advanced_simd::ADVANCED_SIMD_PLANTED_BUGS)
+        .chain(&wcontainers_processor_architecture_arm64::load_store::scalable_element_access::ELEMENT_ACCESS_PLANTED_BUGS)
         .filter(|bug| named.is_empty() || named.contains(&bug.number))
         .collect();
     let load = std::fs::read_to_string("/proc/loadavg").unwrap_or_default();

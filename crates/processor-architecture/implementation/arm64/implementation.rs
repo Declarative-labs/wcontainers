@@ -370,6 +370,12 @@ pub enum PreciseInstruction<LevelSpecific> {
     },
     /// HINT, MSR (immediate), SYS or SYSL.
     SystemInstruction(system_instruction::SystemInstructionBehavior),
+    /// An SVE gather, scatter, prefetch of vector addresses, or first-fault or non-fault load, with what the chip fixes
+    /// about its access.
+    ElementAccess {
+        instruction: Instruction<Infallible>,
+        choices: load_store::scalable_element_access::ElementAccessChoices,
+    },
     /// LDG, a tag store or STGP.
     TagAccess {
         instruction: memory_tagging::TagAccessInstruction,

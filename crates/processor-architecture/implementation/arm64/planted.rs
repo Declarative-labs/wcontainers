@@ -25,6 +25,9 @@ pub enum PlantedBy {
     /// The modeling of the cryptography, pointer authentication, memory tagging, structure loads and stores and the
     /// system instructions left after the sync.
     RestOfTheSet,
+    /// The SVE gathers, scatters, prefetches of vector addresses and first-fault and non-fault loads, numbered from
+    /// 3501.
+    ScalableLoadsAndStores,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.
