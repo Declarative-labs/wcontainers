@@ -107,6 +107,11 @@ struct Shared<C: Executor + 'static> {
     waiting: AtomicUsize,
 }
 
+/// The longest a run goes on, on the kernel's clock, before it ends so the embedder does the
+/// outside's work: one millisecond, Linux's scheduler tick at `CONFIG_HZ=1000`
+/// (<https://man7.org/linux/man-pages/man7/time.7.html#:~:text=The%20software%20clock%2C%20HZ%2C%20and%20jiffies>).
+const RUN_TICK_NANOSECONDS: u64 = 1_000_000;
+
 /// What [`KernelWithExecutor`]'s lock guards.
 struct Inner<C: Executor + 'static> {
     kernel: crate::Kernel,
@@ -513,11 +518,13 @@ where
     /// then is ended).
     ///
     /// A turn runs until its thread traps or the executor's own slice ends it, which the kernel
-    /// takes as Linux takes its timer's interrupt and which ends the run (`Interrupted`). While
-    /// another runner holds the lock, none can run on this one, which returns `Idle` with no time
-    /// to look again.
+    /// takes as Linux takes its timer's interrupt and which ends the run (`Interrupted`), as does
+    /// a tick of the kernel's clock passed in turns that end in traps. While another runner holds
+    /// the lock, none can run on this one, which returns `Idle` with no time to look again.
     fn run(&mut self, executor: &mut C) -> interface::StopReason {
         let mut timer_told = false;
+        // The kernel's clock when the run's first turn ended.
+        let mut first_turn_end: Option<u64> = None;
         loop {
             let Some(mut inner) = self.shared.try_lock_for_runner() else {
                 if self.shared.waiting.load(Ordering::SeqCst) != 0 {
@@ -545,6 +552,14 @@ where
                     // executor's slice, ends the run, so the embedder does the outside's work
                     // between slices as Linux does its own between timer ticks.
                     if exit == running::Exit::Stop {
+                        return interface::StopReason::Interrupted;
+                    }
+                    // A thread that traps often never reaches the end of an executor's slice, so
+                    // the run also ends once a tick has passed on the kernel's clock, as Linux's
+                    // timer interrupt comes whatever the thread does.
+                    let ended = kernel.last_now;
+                    let first = *first_turn_end.get_or_insert(ended);
+                    if ended.saturating_sub(first) >= RUN_TICK_NANOSECONDS {
                         return interface::StopReason::Interrupted;
                     }
                 }

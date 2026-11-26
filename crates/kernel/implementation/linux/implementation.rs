@@ -283,7 +283,7 @@ pub struct Kernel {
     entry_now: u64,
     /// The monotonic clock when the kernel last handed control back, which is when the thread it
     /// picks next starts running.
-    last_now: u64,
+    pub(crate) last_now: u64,
     /// The current thread's CPU time when it was picked, for how much of its slice is used.
     picked_runtime: u64,
     /// The last process or thread number handed out. Both share one space, as in Linux.
