@@ -15,6 +15,8 @@ use rustix::thread::futex;
 use wcontainers_abi::RegisterBlock;
 #[cfg(target_arch = "aarch64")]
 use wcontainers_executor_arm64_stop::Interrupted;
+use wcontainers_linux_process::{LinuxProcess, Signal};
+use wcontainers_linux_process_direct::DirectLinuxProcess;
 use zerocopy::IntoBytes;
 
 use crate::filter::stub_filter;
@@ -616,8 +618,10 @@ impl Stub {
     /// same stub, which takes a stale stop.
     pub fn stop_target(&self, thread: usize) -> StopTarget {
         StopTarget {
-            process: self.process.as_raw_nonzero().get(),
-            thread: self.reported_thread_id(thread) as libc::pid_t,
+            process: self.process,
+            thread: i32::try_from(self.reported_thread_id(thread))
+                .ok()
+                .and_then(Pid::from_raw),
         }
     }
 
@@ -863,23 +867,18 @@ pub struct StopsLanded {
 /// One stub thread's stop, to send from any thread.
 #[derive(Debug, Clone, Copy)]
 pub struct StopTarget {
-    process: libc::pid_t,
-    thread: libc::pid_t,
+    process: Pid,
+    thread: Option<Pid>,
 }
 
 impl StopTarget {
-    /// Sends the stop signal.
+    /// Sends the stop signal; a thread id that is not one of the stub's threads reaches no thread (`ESRCH`).
     pub fn stop(self) -> Result<(), Errno> {
-        #[expect(
-            unsafe_code,
-            reason = "glibc's tgkill takes only numbers; neither rustix nor nix sends a signal to one thread of another process"
-        )]
-        // SAFETY: plain integers in, an integer out.
-        let sent = unsafe { libc::tgkill(self.process, self.thread, STOP_SIGNAL as libc::c_int) };
-        if sent == 0 {
-            Ok(())
-        } else {
-            Err(Errno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(Errno::INVAL))
-        }
+        let thread = self.thread.ok_or(Errno::SRCH)?;
+        DirectLinuxProcess.tgkill(
+            self.process,
+            thread,
+            Signal::from_named_raw(STOP_SIGNAL as i32).ok_or(Errno::INVAL)?,
+        )
     }
 }

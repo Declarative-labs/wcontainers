@@ -12,8 +12,8 @@ use rustix::io::Errno;
 use rustix::mm::ProtFlags;
 use rustix::process::Pid;
 use wcontainers_abi::{
-    Access, CpuError, KIB, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions,
-    RegisterBlock, SharedId, ThreadId,
+    Access, CpuError, KIB, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions, RegisterBlock,
+    SharedId, ThreadId,
 };
 use zerocopy::IntoBytes;
 
@@ -1453,7 +1453,12 @@ impl HostProcessExecutor {
         files::read(block.file.as_fd(), offset, into).map_err(host_error)
     }
 
-    pub fn shared_write(&mut self, shared: SharedId, offset: u64, from: &[u8]) -> Result<(), CpuError> {
+    pub fn shared_write(
+        &mut self,
+        shared: SharedId,
+        offset: u64,
+        from: &[u8],
+    ) -> Result<(), CpuError> {
         let block = self.block(shared);
         if offset
             .checked_add(from.len() as u64)

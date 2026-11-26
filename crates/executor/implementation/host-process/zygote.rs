@@ -445,7 +445,8 @@ impl Zygote {
             .ok_or(Unavailable::Host(Errno::PROTO))?;
         drop(theirs);
         // The zygote reaps only when asked, so the number still names its child.
-        let pidfd = match rustix::process::pidfd_open(process, rustix::process::PidfdFlags::empty()) {
+        let pidfd = match rustix::process::pidfd_open(process, rustix::process::PidfdFlags::empty())
+        {
             Ok(pidfd) => pidfd,
             Err(errno) => {
                 let _ = self.kill(process);
@@ -564,9 +565,7 @@ impl Drop for Zygote {
 }
 
 /// Waits for a child's end and reaps it; a signal to the calling thread is not an error.
-fn wait_for(
-    child: Pid,
-) -> Result<Option<(Pid, rustix::process::WaitStatus)>, Errno> {
+fn wait_for(child: Pid) -> Result<Option<(Pid, rustix::process::WaitStatus)>, Errno> {
     loop {
         match rustix::process::waitpid(Some(child), WaitOptions::empty()) {
             Err(Errno::INTR) => {}

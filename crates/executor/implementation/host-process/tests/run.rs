@@ -5,7 +5,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use wcontainers_abi::{Access, CpuError, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId};
+use wcontainers_abi::{
+    Access, CpuError, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId,
+};
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_arm64::{Address, Instruction, Reg};
 use wcontainers_executor_host_process::executor::HostProcessExecutor;
@@ -114,7 +116,13 @@ impl Seen {
 
 /// Runs `thread` from `resume` for `turn`, then from each answer `seen` gives to its exits, until `seen` leaves; the
 /// slow paths taken so far are its warnings.
-fn run(cpu: &mut HostProcessExecutor, thread: ThreadId, mut resume: Resume, mut turn: Turn, seen: &mut Seen) {
+fn run(
+    cpu: &mut HostProcessExecutor,
+    thread: ThreadId,
+    mut resume: Resume,
+    mut turn: Turn,
+    seen: &mut Seen,
+) {
     loop {
         let before = cpu.guest_count(thread);
         let Turn::Counted { limit } = turn;

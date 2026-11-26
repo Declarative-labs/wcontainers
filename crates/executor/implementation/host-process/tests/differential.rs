@@ -20,18 +20,16 @@ use std::time::Instant;
 
 use proptest::strategy::{Strategy, ValueTree};
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
-use wcontainers_abi::{
-    Access, Cpu, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId, Warning,
-};
+use wcontainers_abi::{Access, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId};
 use wcontainers_arm64::carry::TAG_LOW;
 use wcontainers_arm64::encode::{self, field};
 use wcontainers_arm64::forms::{self, Form};
 use wcontainers_arm64::{Address, Arm64, Instruction as I, Reg, SystemRegister, Way, decode};
 use wcontainers_executor_host_process::executor::HostProcessExecutor;
 use wcontainers_executor_host_process::host::HostProcessHost;
+use wcontainers_executor_host_process::stub::StopWhen;
 use wcontainers_guest_cpu::position::Operand;
 use wcontainers_guest_cpu::{Guest, Native, Route, Stopping, counted};
-use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Leaving, Turn};
 use wcontainers_translator::LookAhead;
 use wcontainers_translator_test::guest::arm64::words::{
     Case, Outcome, Stop, cases, covered, excluded, translated,
@@ -374,24 +372,6 @@ fn start_data(case: &Case) -> Vec<u8> {
     data
 }
 
-/// The first exit of a run, with the count made until it; the loop leaves there.
-struct First {
-    exit: Option<(Exit, u64)>,
-}
-
-impl Answer for First {
-    fn exit(&mut self, _cpu: &mut dyn Cpu, exit: Exit, progress: u64) -> Carry {
-        self.exit = Some((exit, progress));
-        Carry::Leave(Leaving::Finished)
-    }
-
-    fn clock(&mut self, _progress: u64) -> u64 {
-        0
-    }
-
-    fn warn(&mut self, _warning: Warning<'_>) {}
-}
-
 /// An executor of form P with one memory laid out as layer 1's: the data area, and the code area holding the filler
 /// (zero, `udf #0`) apart from the words under test.
 struct Side {
@@ -429,12 +409,18 @@ impl Side {
             .code_changed(self.memory, CODE, bytes.len() as u64, &[]);
     }
 
-    /// Runs `thread` to its first exit, its turn unlimited (a case never branches to itself).
+    /// Runs `thread` to its first exit, its turn unlimited (a case never branches to itself), with the count made
+    /// until it.
     fn first_exit(&mut self, thread: ThreadId) -> (Exit, u64) {
-        let mut first = First { exit: None };
-        let turn = Turn::Counted { limit: None };
-        let Ok(()) = self.cpu.run(thread, Resume::Continue, turn, &mut first);
-        first.exit.expect("an exit")
+        let before = self.cpu.guest_count(thread);
+        let unlimited = StopWhen {
+            slice: None,
+            wanted: None,
+        };
+        let exit = self
+            .cpu
+            .run_translated(thread, Resume::Continue, None, unlimited, &mut || 0);
+        (exit, self.cpu.guest_count(thread) - before)
     }
 
     /// Runs `words` at [`CODE`] from `case`'s state on a new thread to the first exit.

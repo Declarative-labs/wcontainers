@@ -1,0 +1,19 @@
+[package]
+name = "wcontainers-linux-process"
+description = "What a Linux process does itself that no safe crate offers: one safe trait over those system calls and instructions."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "interface.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# The kernel's error number, process ids and signals.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "process"] }
+
+[lints]
+workspace = true

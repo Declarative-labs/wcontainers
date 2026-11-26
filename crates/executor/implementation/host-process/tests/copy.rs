@@ -8,8 +8,8 @@ use wcontainers_abi::{Access, Permissions, SystemCallRequest};
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_executor::memory_space::{MemorySpace, PageTable};
 use wcontainers_executor::{
-    Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse,
-    SystemCallResponse, TrapHandler,
+    Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
+    TrapHandler,
 };
 use wcontainers_executor_host_process::executor::{
     HostProcess, HostProcessMemory, HostProcessPageTable,
@@ -140,11 +140,10 @@ fn a_copy_at_the_same_addresses_lends_its_pages_and_each_side_s_stores_stay_its_
 /// the source loses write before any page is lent, or nothing is lent.
 #[test]
 fn a_refused_copy_lends_no_page_the_source_still_writes() {
-    let limit = HOST.get_or_init(|| {
-        Arc::new(HostProcessHost::new().expect("the host is refused"))
-    })
-    .probe()
-    .mapping_limit();
+    let limit = HOST
+        .get_or_init(|| Arc::new(HostProcessHost::new().expect("the host is refused")))
+        .probe()
+        .mapping_limit();
     // gVisor gives 2^31 - 1, which no test reaches in reasonable time (`WCHP_MAPPING_LIMIT_MAX`).
     let reachable = std::env::var("WCHP_MAPPING_LIMIT_MAX")
         .ok()

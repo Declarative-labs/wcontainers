@@ -788,7 +788,8 @@ fn a_stub_whose_turn_failed_while_the_zygote_answers_nothing_keeps_no_shared_blo
         cpu.touch(b.1, Touch::Load(page(0)), None),
         Err(CpuError::OutOfMemory)
     );
-    cpu.shared_unmap(b.0, page(0), PAGE).expect("unmapped from B");
+    cpu.shared_unmap(b.0, page(0), PAGE)
+        .expect("unmapped from B");
     assert_eq!(
         blocks_mapped(stub),
         0,
@@ -830,9 +831,9 @@ fn a_dropped_memory_s_stub_whose_socket_is_held_open_is_still_seen_to_end() {
 /// drops them, are no failure of the host: every stub is seen to end and reaped, and the zygote never restarts.
 #[test]
 fn signals_at_the_embedder_s_thread_leave_no_stub_unreaped() {
-    use std::sync::atomic::{AtomicBool, Ordering};
     use nix::sys::pthread::{pthread_kill, pthread_self};
     use nix::sys::signal::Signal;
+    use std::sync::atomic::{AtomicBool, Ordering};
     let rounds = knob("WCHP_SIGNAL_ROUNDS", 200);
     let mut cpu = executor();
     let caught = Arc::new(AtomicBool::new(false));
@@ -866,7 +867,10 @@ fn signals_at_the_embedder_s_thread_leave_no_stub_unreaped() {
     }
     done.store(true, Ordering::Release);
     let sent = sender.join().expect("the signalling thread");
-    assert!(caught.load(Ordering::Relaxed), "{sent} signals sent, none caught");
+    assert!(
+        caught.load(Ordering::Relaxed),
+        "{sent} signals sent, none caught"
+    );
     assert_eq!(
         cpu.counters().stubs_left_unreaped,
         before.stubs_left_unreaped,

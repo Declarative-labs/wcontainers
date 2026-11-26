@@ -1,0 +1,35 @@
+[package]
+name = "wcontainers-linux-process-direct"
+description = "This host's own system calls and instructions behind the Linux process trait, each use of unsafe one marked line."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wcontainers-linux-process = { path = "../.." }
+# The calls rustix offers: fixed mappings, memory files and their seals, unmapping.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "fs", "mm", "process"] }
+# tgkill, which rustix lacks.
+libc = "0.2.191"
+# The system call number of the SVE probe.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "no_std"] }
+# The shared mapping of a memory file, made and unmapped with safe calls.
+memmap2 = "0.9.12"
+
+[dev-dependencies]
+wcontainers-linux-process-conformance = { path = "../../conformance" }
+
+# The bindings of an outside API: it denies unsafe code, so that each of its uses is marked.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

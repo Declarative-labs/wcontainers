@@ -220,30 +220,22 @@ const UIO_MAXIOV: usize = libc::UIO_MAXIOV as usize;
 /// lines to the point of unification and invalidate the instruction lines, each only where `CTR_EL0` asks, each
 /// finished by a barrier (Arm ARM, "Concurrent modification and execution of instructions").
 #[cfg(target_arch = "aarch64")]
-#[expect(
-    unsafe_code,
-    reason = "cache maintenance by address is an instruction no crate wraps"
-)]
 fn publish_code(probe: &HostProbe, start: usize, bytes: usize) {
     use aarch64_cpu::asm::barrier;
+    use wcontainers_linux_process::LinuxProcess;
+    use wcontainers_linux_process_direct::DirectLinuxProcess;
     let end = start + bytes;
     let lines = |line: usize| (start & !(line - 1)..end).step_by(line);
     let (data, instruction) = probe.code_lines();
     if let Some(line) = data {
         for at in lines(line) {
-            // SAFETY: cleaning a line of a mapping this process holds changes no memory's value.
-            unsafe {
-                core::arch::asm!("dc cvau, {}", in(reg) at, options(nostack, preserves_flags))
-            };
+            DirectLinuxProcess.dc_cvau(at);
         }
     }
     barrier::dsb(barrier::ISH);
     if let Some(line) = instruction {
         for at in lines(line) {
-            // SAFETY: invalidating instruction lines changes no memory's value.
-            unsafe {
-                core::arch::asm!("ic ivau, {}", in(reg) at, options(nostack, preserves_flags))
-            };
+            DirectLinuxProcess.ic_ivau(at);
         }
         barrier::dsb(barrier::ISH);
     }

@@ -1,10 +1,9 @@
 //! The start-up probe: what this host offers both forms, learned once before any guest runs.
 
-use core::ffi::c_void;
-
 use rustix::io::Errno;
-use rustix::mm::{MapFlags, ProtFlags};
 use wcontainers_abi::PAGE_SIZE;
+use wcontainers_linux_process::LinuxProcess;
+use wcontainers_linux_process_direct::DirectLinuxProcess;
 
 /// Why a form cannot run on this host.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,68 +157,18 @@ const CTR_EL0_L1IP_PIPT: u64 = 0b11;
 
 #[cfg(target_arch = "aarch64")]
 fn cache_type() -> u64 {
-    let value: u64;
-    #[expect(
-        unsafe_code,
-        reason = "reads CTR_EL0, which Linux lets user space read; no crate wraps it"
-    )]
-    // SAFETY: the read has no effect beyond its output register.
-    unsafe {
-        core::arch::asm!("mrs {}, ctr_el0", out(reg) value, options(nomem, nostack, preserves_flags));
-    }
-    value
+    DirectLinuxProcess.read_ctr_el0()
 }
-
-// The probe's system call lets Linux zero the bits of z0 to z31 above their low 128, which its assembly does not name
-// as changed. That is sound only while the compiler keeps nothing there: while this crate is built without SVE.
-#[cfg(all(target_arch = "aarch64", target_feature = "sve"))]
-compile_error!(
-    "the SVE probe's system call may clear Z register bits that code built with SVE keeps values in"
-);
-
-/// The largest predicate register: an SVE vector of 2048 bits has predicates of 256 bits.
-#[cfg(target_arch = "aarch64")]
-const LARGEST_PREDICATE: usize = 2048 / 8 / 8;
 
 /// Sets every predicate bit of p0 and FFR, makes a system call, and reads both back, on a thread that then ends.
 #[cfg(target_arch = "aarch64")]
 fn sve_at_system_call() -> SveAtSystemCall {
-    if !std::arch::is_aarch64_feature_detected!("sve") {
-        return SveAtSystemCall::Absent;
-    }
-    let probe = std::thread::spawn(|| {
-        let mut predicate = [0_u8; LARGEST_PREDICATE];
-        let mut first_fault = [0_u8; LARGEST_PREDICATE];
-        #[expect(
-            unsafe_code,
-            reason = "SVE state across a system call can only be set and read by its own instructions"
-        )]
-        // SAFETY: writes at most one predicate register's bytes to each buffer, and touches only clobbered registers
-        // and the Z bits above 128, which code built without SVE never keeps (the `compile_error!` above).
-        unsafe {
-            core::arch::asm!(
-                ".arch_extension sve",
-                "ptrue p0.b",
-                "setffr",
-                "svc #0",
-                "str p0, [{predicate}]",
-                "rdffr p1.b",
-                "str p1, [{first_fault}]",
-                predicate = in(reg) predicate.as_mut_ptr(),
-                first_fault = in(reg) first_fault.as_mut_ptr(),
-                inout("x8") u64::from(linux_raw_sys::general::__NR_getppid) => _,
-                out("x0") _,
-                out("p0") _,
-                out("p1") _,
-                out("ffr") _,
-                options(nostack),
-            );
+    match DirectLinuxProcess.predicates_after_system_call() {
+        None => SveAtSystemCall::Absent,
+        Some(left) if left.p0.iter().chain(&left.ffr).all(|byte| *byte == 0) => {
+            SveAtSystemCall::Dropped
         }
-        predicate.iter().chain(&first_fault).all(|byte| *byte == 0)
-    });
-    match probe.join() {
-        Ok(true) => SveAtSystemCall::Dropped,
-        Ok(false) | Err(_) => SveAtSystemCall::Kept,
+        Some(_) => SveAtSystemCall::Kept,
     }
 }
 
@@ -243,25 +192,11 @@ fn user_space_top(page_size: usize) -> usize {
     high * page_size
 }
 
-/// Whether a page at this address is inside user space (taken already, or mappable now).
+/// Whether a page at this address is inside user space (taken already, or mappable now); a page made here is unmapped
+/// at once, unused.
 fn page_can_be_mapped(address: usize, page_size: usize) -> bool {
-    let flags = MapFlags::PRIVATE | MapFlags::FIXED_NOREPLACE | MapFlags::NORESERVE;
-    #[expect(
-        unsafe_code,
-        reason = "maps a fixed address, which rustix leaves to the caller to keep sound"
-    )]
-    // SAFETY: FIXED_NOREPLACE never replaces a mapping, and the page made here is unmapped at once, unused.
-    let mapped = unsafe {
-        rustix::mm::mmap_anonymous(address as *mut c_void, page_size, ProtFlags::empty(), flags)
-    };
-    match mapped {
-        Ok(page) => {
-            #[expect(unsafe_code, reason = "unmaps the page just made")]
-            // SAFETY: the page is ours alone and nothing refers to it.
-            let unmapped = unsafe { rustix::mm::munmap(page, page_size) };
-            unmapped.is_ok()
-        }
-        Err(Errno::EXIST) => true,
+    match DirectLinuxProcess.mmap_fixed_noreplace(address, page_size) {
+        Ok(_) | Err(Errno::EXIST) => true,
         Err(_) => false,
     }
 }

@@ -737,7 +737,10 @@ impl Execution for HostProcessExecution<'_> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Trap {
     SystemCall(SystemCallRequest),
-    MemoryFault { address: u64, access: Access },
+    MemoryFault {
+        address: u64,
+        access: Access,
+    },
     /// An interrupt asked for while the thread ran, which stopped it.
     Interrupt,
     /// An interrupt asked for before the thread entered, which did not run.
@@ -800,7 +803,8 @@ fn ask_handler(handler: &mut impl TrapHandler, trap: Trap) -> Result<Resume, End
             SystemCallResponse::Return(value) => Ok(Resume::Return(value)),
             SystemCallResponse::Terminate => Err(Ended::SystemCall),
         },
-        Trap::MemoryFault { address, access } => match handler.handle_memory_fault(address, access) {
+        Trap::MemoryFault { address, access } => match handler.handle_memory_fault(address, access)
+        {
             MemoryFaultResponse::Retry => Ok(Resume::FromRegisters),
             MemoryFaultResponse::Terminate => Err(Ended::MemoryFault { address, access }),
         },

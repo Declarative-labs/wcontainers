@@ -2,10 +2,9 @@
 //! and its register page, which the stub writes and the embedder only trusts as far as it checks.
 
 use core::mem::offset_of;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::BorrowedFd;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use rustix::fs::MemfdFlags;
 use rustix::io::Errno;
 use rustix::mm::ProtFlags;
 
@@ -15,6 +14,8 @@ use crate::layout::{
     THREADS_PER_PROCESS,
 };
 use crate::zygote::RECEIVE_BYTE;
+use wcontainers_linux_process::LinuxProcess;
+use wcontainers_linux_process_direct::{DirectLinuxProcess, DirectSharedWords};
 
 /// Byte offsets in a control page.
 pub mod control {
@@ -337,55 +338,28 @@ impl ExitKind {
 
 /// The embedder's mapping of one stub's thread pages, written through atomics because the stub runs beside it.
 pub(crate) struct ThreadPages {
-    file: OwnedFd,
-    mapping: memmap2::MmapRaw,
+    words: DirectSharedWords,
 }
 
 impl ThreadPages {
     pub(crate) fn new() -> Result<Self, Errno> {
-        let file = rustix::fs::memfd_create("wcontainers thread pages", MemfdFlags::CLOEXEC)?;
-        rustix::fs::ftruncate(&file, THREAD_PAGES_SIZE as u64)?;
-        let mapping = memmap2::MmapOptions::new()
-            .len(THREAD_PAGES_SIZE)
-            .map_raw(&file)
-            .map_err(|error| Errno::from_io_error(&error).unwrap_or(Errno::NOMEM))?;
-        Ok(Self { file, mapping })
+        let words = DirectLinuxProcess
+            .create_shared_words("wcontainers thread pages", THREAD_PAGES_SIZE)?;
+        Ok(Self { words })
     }
 
     pub(crate) fn file(&self) -> BorrowedFd<'_> {
-        self.file.as_fd()
+        DirectLinuxProcess.shared_words_file(&self.words)
     }
 
-    /// Every 32-bit word of the mapping.
+    /// Every 32-bit word of the mapping, each byte only ever reached at one size (`word32`, `word64`).
     fn words32(&self) -> &[AtomicU32] {
-        #[expect(
-            unsafe_code,
-            reason = "views the shared thread pages as atomics, which no safe call can give"
-        )]
-        // SAFETY: the mapping is page-aligned, readable and writable, lives as long as `self`, and is only ever
-        // accessed through atomics here, each byte at one size (`word32`, `word64`); the stub's own accesses are
-        // another process's.
-        unsafe {
-            core::slice::from_raw_parts(
-                self.mapping.as_ptr().cast::<AtomicU32>(),
-                THREAD_PAGES_SIZE / size_of::<AtomicU32>(),
-            )
-        }
+        DirectLinuxProcess.shared_words32(&self.words)
     }
 
     /// Every 64-bit word of the mapping.
     fn words64(&self) -> &[AtomicU64] {
-        #[expect(
-            unsafe_code,
-            reason = "views the shared thread pages as atomics, which no safe call can give"
-        )]
-        // SAFETY: as `words32`.
-        unsafe {
-            core::slice::from_raw_parts(
-                self.mapping.as_ptr().cast::<AtomicU64>(),
-                THREAD_PAGES_SIZE / size_of::<AtomicU64>(),
-            )
-        }
+        DirectLinuxProcess.shared_words64(&self.words)
     }
 
     fn control_offset(thread: usize, offset: usize) -> usize {

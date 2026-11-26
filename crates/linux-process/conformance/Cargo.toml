@@ -1,0 +1,21 @@
+[package]
+name = "wcontainers-linux-process-conformance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "suite.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wcontainers-linux-process = { path = ".." }
+# The host's page size, its own process and thread ids, a memory file's size, and mappings read back.
+rustix = { version = "1.1.6", default-features = false, features = ["std", "fs", "mm", "param", "process", "thread"] }
+# Another process that maps the shared words, and a thread of it to signal.
+nix = { version = "0.31.3", default-features = false, features = ["process", "signal"] }
+
+[lints]
+workspace = true
