@@ -73,8 +73,9 @@ impl ErrorEntry {
     }
 }
 
-/// The entries of one socket's error queue that a send read while it looked for its own, kept for receives, and
-/// the sends that asked for transmit time errors, which Linux reports by the time and not the key.
+/// The entries of one socket's error queue a send read while looking for its own, kept for receives.
+///
+/// Also the sends that asked for transmit time errors, which Linux reports by the time and not the key.
 #[derive(Default)]
 pub struct ErrorQueue {
     kept: VecDeque<ErrorEntry>,
@@ -112,8 +113,10 @@ impl ErrorQueue {
             .push_back(TransmitTimeSend { at, key, packet });
     }
 
-    /// Whether the host holds none of the socket's sends; if so, every report or rejection of one is on the error
-    /// queue, which this reads into the entries kept, and the sends noted without a rejection there are forgotten.
+    /// Tells whether the host holds none of the socket's sends.
+    ///
+    /// If so, every report or rejection of one is on the error queue, which this reads into the entries kept, and the
+    /// sends noted without a rejection there are forgotten.
     pub fn settle(
         &mut self,
         fd: BorrowedFd<'_>,
@@ -135,8 +138,9 @@ impl ErrorQueue {
         Ok(true)
     }
 
-    /// Reads every entry of the host's error queue into the entries kept, as a send must when it may have taken
-    /// the socket error that tells a receive an ICMP error waits there.
+    /// Reads every entry of the host's error queue into the entries kept.
+    ///
+    /// A send must do so when it may have taken the socket error that tells a receive an ICMP error waits there.
     pub fn keep_host_entries(&mut self, fd: BorrowedFd<'_>, shortfalls: &Shortfalls) {
         while let Ok(entry) = ErrorEntry::read(fd, shortfalls) {
             self.kept.push_back(entry);
@@ -245,8 +249,10 @@ pub const PACKET_WISH_CHANGED: &str = "a send changed whether transmit reports h
      host held earlier sends, whose reports linux makes by the new wish (it reads SOF_TIMESTAMPING_OPT_TSONLY when \
      it takes a timestamp)";
 
-/// Counts a send that asks for reports with or without the packet unlike the socket's earlier sends, while the
-/// host still holds some of them; `held` is whether the socket's reports hold the packet before this send.
+/// Counts a send that asks for reports with or without the packet unlike the socket's earlier sends.
+///
+/// It counts while the host still holds some of them; `held` is whether the socket's reports hold the packet before
+/// this send.
 pub fn note_packet_wish(
     fd: BorrowedFd<'_>,
     shortfalls: &Shortfalls,
@@ -261,10 +267,10 @@ pub fn note_packet_wish(
     }
 }
 
-/// Receives in the order Linux keeps for a socket with `IP_RECVERR` or `IPV6_RECVERR`: the error queue first while
-/// reports a send asked for may wait there or entries a send took off the host are kept, else the packet queue, and
-/// the error queue when a receive is answered with the socket error that Linux sets for every ICMP error it queues
-/// (and sets again when an entry read off the queue is followed by another ICMP error).
+/// Receives in the order Linux keeps for a socket with `IP_RECVERR` or `IPV6_RECVERR`.
+///
+/// The error queue comes first while reports a send asked for may wait there or entries a send took off the host are
+/// kept, else the packet queue, and the error queue when only it has something.
 pub fn receive_in_order<S, T>(
     fd: BorrowedFd<'_>,
     state: &mut S,
@@ -292,9 +298,10 @@ pub fn receive_in_order<S, T>(
     }
 }
 
-/// What an error queue entry gives: an ICMP error that `write_icmp_error` writes whole into `into` from its
-/// ancillary data, error and offender, returning its length; a transmit report; or nothing, for an entry the
-/// send that made it answered or one the contract has no report for.
+/// What an error queue entry gives: an ICMP error, a transmit report, or nothing.
+///
+/// An ICMP error is written whole into `into` by `write_icmp_error` from its ancillary data, error and offender, with
+/// its length; nothing is given for an entry the send that made it answered or one the contract has no report for.
 pub fn error_entry(
     shortfalls: &Shortfalls,
     entry: &ErrorEntry,

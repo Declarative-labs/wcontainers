@@ -359,6 +359,713 @@ for those suites to take a `LinuxSocketOptions` value from their caller.
 Still owed for HS1/HS2: the linter findings above to 0 or each listed with its smallest example; the TCP suite's
 namespace setup in Rust; x86-64 lint run; the independent check.
 
+## HS1/HS2 repair (2026-11-26): what the kernel writes, as a class
+
+The independent check of 1ea5c793e BLOCKED (READ: orchestrator log, check probe in SCRATCH/host-sockets-check2/ck/probe.rs):
+`set_ipv6_flowlabel_mgr(&self, socket, value: &in6_flowlabel_req)` is safe, but for a get-and-create request with label
+0 Linux writes the label it allocates back into the value, behind the shared reference, while the marked reason on the
+`setsockopt` call said every value is only read. Repaired for every row, not for that method. Commits: 6fe895c92 merges
+the owner's main (ac696ea19; it changed only `crates/executor/interface.rs` and `crates/kernel/interface.rs`, no file of
+this track), 8ac0c13ce the class repair, d4179e4d1 its lock lines, aa2855180 a probe gap the planted faults found,
+84b79700e the TCP namespace in the suite, 73a3e6da2 the linter repairs of the API crate.
+
+### The kernel column and the signatures made from it (READ)
+
+- `options.table` has a sixth column, `kernel`: `reads` (a set whose value the kernel only reads), `writes-back` (a set
+  whose value it may write into), `within` (a get that writes at most the length it is told), `past` (a get that may
+  write past it), `through` (a get that also writes at the addresses its value holds). The generator refuses a set
+  marked as a get or the other way, and a `writes-back` row whose value is a number or flag.
+- Values: 94 rows `reads` or `within`; `set_ipv6_flowlabel_mgr` `writes-back`; `get_tcp_ao_get_keys` `past` (one answer
+  per key asked, which `get_keys` limits to one); `get_mptcp_full_info` `through`.
+- The generator writes a `writes-back` value as `&mut T` and routes it to `set_value_written`, which hands the kernel a
+  pointer from that exclusive borrow; every other set takes its value by shared reference or by copy (numbers and flags
+  are copied into a local before the call). Today the one changed signature is
+  `fn set_ipv6_flowlabel_mgr(&self, socket: BorrowedFd<'_>, value: &mut uapi::in6_flowlabel_req)`; its three callers
+  (shared crate send.rs `lease_flow_label`, tcp host `hold_flow_label` and the reflection setting) now pass `&mut`.
+- The four marked reasons are rewritten: the `setsockopt` one says each value is owned or borrowed for the call and
+  comes from an exclusive borrow wherever the table says the kernel writes into it; the `getsockopt` one says the kernel
+  writes only inside the buffer, at most the length told for every `within` row and that length per key for the one
+  `past` row; the `MPTCP_FULL_INFO` and `ioctl` ones name their column. No reason says "only reads" any more (READ:
+  grep). The private `Plain` marker's comment says the same.
+- The suite now also checks the write-back through the safe method: a get-and-create request with label 0 succeeds and
+  the request holds a label other than 0 afterwards.
+
+### The probe: every row on the running kernel (MEASURED, both machines)
+
+`implementation/direct/probe.rs`, a unit test of the direct crate run as root in a namespace of its own. It walks
+`ROWS`, which the generator writes from the table into `generated.rs`, so a row added to the table is a row the probe
+must call: it fails on a row without a case, and the generator test `the_probe_calls_every_method` fails too (it needs
+no root). Each call puts the value between 1024 canary bytes on each side (patterns 0xa5 and 0x5a, so a byte written
+equal to one shows through the other); a get's room is filled with canaries, and once with zeros; `MPTCP_FULL_INFO`'s
+header and each run of rooms get a canary entry on each side; the reuse-port program's header and its instructions are
+each guarded. After each call every byte is compared. A row fails when any call wrote before its value, when no call
+succeeded, or when what it did contradicts its column (a `reads` set changed its value; a `writes-back` set was never
+seen writing into it; a `within` get wrote past the length told or answered a longer one; a `past` get was never seen
+writing past; a `through` get wrote outside its header and rooms or never into them; any row but `through` wrote at an
+address its value holds). The calls go through the same private functions the methods use, with the same level,
+option and length.
+
+Result on Linux 7.0.0-1018-aws, ARM64 and x86-64 (same counts, `probe exit 0 rows 96`): every set left its value as
+given except `IPV6_FLOWLABEL_MGR`, which wrote into it in 2 of its 8 calls (the get-and-create ones); no call wrote
+before or past its value; `TCP_AO_GET_KEYS` with two keys asked wrote the second answer past the room in 2 of 6 calls;
+`MPTCP_FULL_INFO` wrote into its rooms in 4 of 8 calls and nowhere else; every get answered a length no longer than it
+was told (shorter in 3 to 9 of 12 calls for the variable ones). Per-row lines (`PROBE <method> <column> calls ok inside
+past before shorter longer through errors`) are in SCRATCH/host-sockets/hs3/arm-tcp*.log and the bar logs.
+
+Planted faults (MEASURED, ARM64, SCRATCH/host-sockets/hs3/plant.sh; each regenerated, then the probe run):
+
+| Planted in the table | Caught by |
+|---|---|
+| `IPV6_FLOWLABEL_MGR` marked `reads` | generator check, and the probe: "wrote into a value its column says it only reads" |
+| `TCP_AO_GET_KEYS` marked `within` | generator check, and the probe: "wrote past the length it was told" |
+| `MPTCP_FULL_INFO` marked `within` | generator check; the probe missed it in the first round, fixed in aa2855180, then caught |
+| `IPV6_JOIN_ANYCAST` marked `writes-back` | generator check, and the build: the suite's `&` no longer fits the `&mut` signature |
+| `SO_RCVMARK` marked `writes-back` | the generator refuses the row (a flag cannot be written back) |
+| a new row `get_tcp_maxseg` with no case | `the_probe_calls_every_method`, `the_suite_calls_every_method`, and the probe: "rows the probe does not call" |
+
+### HS1's leftovers
+
+- TCP suite namespace (84b79700e): `prepared_network()` in the suite makes each check's namespace with nix's
+  `unshare` and netlink messages (loopback up, the local route for 127.0.0.7 with `RTAX_FEATURE_TCP_USEC_TS`, the `fq`
+  queueing discipline on loopback, the VRF device with table 10 brought up) and writes the four namespace settings
+  under /proc/sys; every test of `tests!` (and of the nested configurable, negative-route and readiness macros) calls
+  it first. The suite's /proc tables are read from `/proc/thread-self/net/` (three checks failed with `/proc/net`,
+  which is the first thread's namespace). The job runner is now `sudo` alone; `tcp-namespace.sh` is no longer used.
+  The modules `tcp_dctcp tcp_vegas tcp_bbr vrf` are still loaded by the job (`modprobe`): loading a module is the
+  host's, not a namespace's. MEASURED: 143/143 on ARM64 in 3 runs and x86-64 in 4 runs (the x86-64 timing misses of
+  1ea5c793e did not recur). Still owed elsewhere: the ICMP suite runs `ip` and `tc` from iproute2 through `Command`
+  (READ suite.rs:296), so the job must put iproute2 on PATH; not changed in this run.
+- Linter, rules that need no model (`cargo reviewable check` at the linter's main da55b9d7, ARM64, no key; model rules
+  `grammar_unclear`, `summary_unclear`, `*_unanswered`, `verb_not_first`, `function_summary_not_third_person`,
+  `type_summary_not_noun_phrase`, `summary_restates_declaration`, `hook_without_participle` left out). MEASURED in the
+  track's folders, before (84b79700e) -> after (a run at the API repair, one fix later not rerun):
+
+| Rule | Before | After |
+|---|---|---|
+| public_outside_interface | 459 | 442 |
+| summary_not_one_line | 76 | 70 |
+| conformance_not_run | 70 | 56 |
+| number_constant_without_link | 69 | 63 (62 INFERRED with `TWO_ANSWERS`' link) |
+| magic_literal | 59 | 52 |
+| summary_too_long | 46 | 42 |
+| summary_starts_with_name | 23 | 10 |
+| constant_defined_twice | 19 | 18 |
+| implementation_folder | 16 | 16 |
+| comment_too_long | 11 | 11 |
+| summary_not_one_sentence | 7 | 7 |
+| depends_on_implementation, names_implementation, trait_outside_interface | 4, 3, 3 | 4, 3, 3 |
+| interface_item | 3 | 2 |
+| stray_source | 1 | 0 |
+| literal_restates_constant, trait_not_implemented, comment_budget_exceeded, hook_name | 1 each | 1 each |
+| total | 847 (corrected 2026-11-26: the independent check measured 847 at the run's start; 873 was wrong, and the rows above it come from that wrong list) | 803 (the check: 802) |
+
+  No exclusion added. What is left, by cause, each with its smallest example:
+  - Structural, a ruling needed (not changed): `public_outside_interface` 200 in the shared crate
+    `internet-protocol/implementation/linux-socket-options`, whose public functions the four hosts call (for example
+    `pub fn storage_bytes` in datagram/addresses.rs), and 146 in the ICMP suite, whose helpers the raw and route
+    suites import; `implementation_folder` 16, the hosts implementing `Configurable`, `Readiness` and
+    `NegativeRouteAdvisable` of other interfaces (for example tcp host portable.rs:741), which the owner's interfaces
+    ask of them; `depends_on_implementation` 4 and `names_implementation` 3, the ICMP and route suites setting
+    `IPV6_ADDR_PREFERENCES`, `IP_OPTIONS` and `IP_UNICAST_IF` on their own probe sockets through
+    `DirectLinuxSocketOptions`, the only safe way (the rule has no case for an outside API's direct crate);
+    `trait_outside_interface` for the direct crate's private `Plain` marker and the two suites' `LentBuffers`.
+  - Rule against rule (not changed): the probe names the suite (`conformance_not_run`) to reuse its `own_network` and
+    `storage_of`, which therefore are public (`public_outside_interface` 2); copying them instead makes
+    `constant_defined_twice`. The probe's `LARGE_ROOM`, `SEQUENCE`, `SEGMENT_SIZE` and `ONE_ADDRESS_V4` equal constants
+    of crates it may not name.
+  - Linter fault (READ, smallest example): `interface_item` at interface.rs:71 says the compiler's view of
+    `fn get_so_meminfo<const ROOM: usize>(&self, socket: BorrowedFd<'_>) -> Result<Written<ROOM>, HostError>` differs
+    from the text; it prints the const parameter as `<ROOM>()`. And `interface_item` at :29 counts the zerocopy derives
+    on `SocketStorage` as macro-written impl blocks. `magic_literal` 1 is `#[repr(C, align(8))]`, where Rust takes
+    only a literal.
+  - `comment_budget_exceeded` in the generated interface.rs: 4506 characters for 253 lines (3842 allowed), down from
+    8626; one sentence per method of 96 is still over.
+  - Mechanical, not reached in this run: summary length and lines (112), named numbers without a link (62), magic
+    literals (51), long comments (11) in the hosts and the TCP, UDP, ICMP and readiness suites.
+
+### The bar at the repair, both machines (MEASURED: SCRATCH/host-sockets/hs3/{arm,x86}-bar3.log)
+
+| | ARM64 | x86-64 |
+|---|---|---|
+| `cargo check --all-targets`, 17 packages | exit 0 | exit 0 |
+| clippy `--all-targets -D warnings` | exit 0 | exit 0 |
+| `cargo fmt --check` | exit 0 | exit 0 |
+| TCP 143, UDP 80, ICMP 69, raw 54, route resolver 38 | all pass | all pass |
+| API suite 13, generator tests 4, probe 1 (96 rows) | pass | pass |
+| hosts' other tests (unit 2, readiness 3+1, counters 5+2+1, waiting 1+1) | pass | pass |
+| ignored | only the two speed tests, run apart | same |
+
+Speed, both commits run the same way now (as root in the host's namespace, median of 4000 batches of 32, three runs):
+
+| | 1ea5c793e | 73a3e6da2 |
+|---|---|---|
+| ARM64 TCP send / receive | 395-400 / 400-407 ns | 398-401 / 402-406 ns |
+| ARM64 UDP send / receive | 1.471-1.516 us / 808-812 ns | 1.493-1.498 us / 807-813 ns |
+| x86-64 TCP send / receive | 309-335 / 363-394 ns | 317-321 / 353-382 ns |
+| x86-64 UDP send / receive | 1.431-1.464 us / 760-778 ns | 1.445-1.521 us / 765-804 ns |
+
+(Earlier figures in this file were measured inside the runner's namespace with `fq` on loopback, so they differ from
+these by the environment, not the code.) One rule slip to report: the x86-64 jobs before 07:15 ran with x86-run's
+default of 96 build jobs instead of 12; every later one passed `--jobs 12`.
+
+### For the runtime track
+
+Safe to merge: 73a3e6da2 (code), or the status commit after it, which changes only this file. Everything the runtime's socket hosts need
+builds and passes there on both machines; the only interface change for a caller is `set_ipv6_flowlabel_mgr` taking
+`&mut`.
+
+## Repair of the guard for future rows (2026-11-26, after the third check BLOCKED)
+
+The third check (SCRATCH/host-sockets-check3/) planted `get_tcp_ao_keys_room room past` and nothing refused it. Commits:
+52a7b3778 (generator, probe, canaries), b599e5b85 (linter repairs by hand). The owner's main (ac696ea19) was already
+merged (MEASURED: `git merge-base --is-ancestor FETCH_HEAD HEAD`). No interface file of the owner changed; the API
+crate's options.table and interface.rs did not change either (MEASURED: regenerated interface.rs identical).
+
+### (1) The generator refuses every pairing it cannot make safe (READ: tests/generated.rs `refusal`)
+
+- Form and column: sets take `reads` only, except a `struct:` value, which may be `writes-back` (exclusive borrow);
+  gets of a number, `room` or `ioctl` take `within` only; `keys` takes `past` only; `full_info` takes `through`
+  only. Bytes and runs lost `writes-back` (no option writes them back and the probe has no exclusive form for them).
+- Form and option, both ways: `program` only for `SO_ATTACH_FILTER`/`SO_ATTACH_REUSEPORT_CBPF`, `group_filter` only
+  for `MCAST_MSFILTER`, `keys` only for `TCP_AO_GET_KEYS`, `full_info` only for `MPTCP_FULL_INFO`, `ioctl` only for
+  `SIOCOUTQ`, `SIOCOUTQNSD`, `SIOCATMARK` (each writes one int); and none of those options in any other form.
+- Level: an `ioctl` row has level `-`, and only it. `struct:`/`slice:` name only the 11 uapi structures known to hold
+  no address the kernel follows; `bytes` only for the 6 options that read an opaque run.
+- Tests (MEASURED, both machines, `--test generated`: 10 passed): the full matrix of 2 directions x 13 forms x 5
+  columns (130 pairs: 17 taken, 113 refused, each checked), the check's planted row, levels, bound options, unknown
+  structures and byte options, and every table row taken.
+
+### (2) The probe calls the generated trait methods (READ: implementation/direct/probe.rs)
+
+Every case is written `row!(method, builder(...))`, which expands to a call of `OPTIONS.method(...)` through the
+trait, so a changed signature fails to build. Lent memory sits between canaries: structures in a `#[repr(C)]` fence,
+compared after the call by reading their bytes with nix's `process_vm_readv` on the probe's own process (linux-raw-sys
+structures give no byte view; read only); byte strings and runs likewise. Memory the method owns carries the
+implementation's canaries (4); a canary stop is caught (`catch_unwind`) and fails the row, and a socket that cannot be
+made fails its row without stopping the others. `past` is now measured as: every key query asking more answers than
+the room holds is refused (4 of 4 refused, none taken).
+
+### (3) The four `within` rows the kernel was never seen writing (MEASURED, both machines, probe `written` count)
+
+| Row | Case that makes the kernel write | Written |
+|---|---|---|
+| get_ip_pktoptions | connected TCP pair with `IP_PKTINFO` on (nix), the kernel writes an `IP_PKTINFO` record | 1 of 4 rooms (the large one; the others are shorter than one record) |
+| get_ipv6_2292pktoptions | connected TCP pair with `IPV6_RECVPKTINFO` on (nix) | 1 of 4 |
+| get_tcp_cc_info | connected pair running Vegas (socket2 `set_tcp_congestion`), which fills `tcpvegas_info` | 3 of 4 (all rooms but the empty one) |
+| get_tcp_ao_info | socket with two TCP-AO keys; the old probe filled the room with canaries, which the kernel reads as nonzero reserved fields (EINVAL), and the zero room showed zeros over zeros | 4 of 5 (the empty room is EINVAL) |
+
+### (4) The canary that catches a getsockopt told more than its room (READ: implementation.rs)
+
+Every room, number copy and header the implementation hands the kernel is followed by 64 canary bytes (0xa5, 0xa6, ...,
+none zero), checked after each call; a changed one stops the program (`assert!`), as a stack protector does. Covered:
+`get_value`, `get_written`, `get_keys` (a whole second answer's worth plus the guard), `ioctl_int`, the
+`MPTCP_FULL_INFO` header and one extra room per run, `set_number` (also checks the value unchanged), `set_program`'s
+header and `set_group_filter`'s bytes. Speed with them (MEASURED, same job, alternating, 3 rounds): ARM64 TCP 399-400 /
+406-409 ns before vs 399-400 / 406-407 after, UDP 1.482-1.503 us / 815-819 ns vs 1.486-1.491 us / 813-814 ns; x86-64
+noisy (other jobs): TCP send 361-367 vs 371-395 ns, UDP 1.698-2.051 us vs 1.686-2.045 us.
+
+Planted faults (MEASURED, ARM64, SCRATCH/host-sockets/hs4/plant.sh and api2.sh, arm-plant.log, arm-api2.log):
+
+| Planted | Caught by |
+|---|---|
+| IPV6_FLOWLABEL_MGR marked `reads` | probe: "wrote into a value its column says it only reads" (inside 2 of 8) |
+| the check's row `get_tcp_ao_keys_room room past` | generator: "a room value cannot be past" |
+| the same row marked `within` | generator: "the keys form carries only TCP_AO_GET_KEYS" |
+| SIOCATMARK `past`; TCP_INFO `through`; SO_RCVMARK `writes-back` | generator |
+| `struct:libc::sock_fprog`; a new ioctl `SIOCGSTAMP`; the program option as `bytes` | generator |
+| the generator gives the opposite reference | the build (28 errors in the suite) |
+| a probe case removed | `the_probe_calls_every_method` and the probe |
+| getsockopt told 8 bytes more than the room (caught by accident before) | the canaries: get_so_meminfo, get_ip_pktoptions, get_ipv6_2292pktoptions and more stop with "canary changed" |
+| full information told one entry more than its rooms | the canary of the extra room |
+| get_keys letting two answers through | the canaries ("wrote past the 304 bytes it was told"), and the API suite |
+
+### The bar at b599e5b85, both machines (MEASURED: hs4/{arm,x86}-bar2.log)
+
+check --all-targets, clippy `-D warnings`, fmt --check of the 17 packages: exit 0. Suites: TCP 143, UDP 80, ICMP 69, raw
+54, route resolver 38, API suite 13, generator tests 10, probe 1 (96 rows), the hosts' other tests: all pass; only the
+two speed tests ignored. Speed in the bar: ARM64 TCP 401-402 / 403-404 ns, UDP 1.473-1.488 us / 803-805 ns; x86-64 TCP
+340-363 / 384-422 ns, UDP 1.661-1.725 us / 873-899 ns.
+
+### Linter, rules that need no model (MEASURED, ARM64, linter da55b9d7, hs4/arm-lint-before.log and -final.log)
+
+| Rule | 52a7b3778 (before the hand repairs) | b599e5b85 |
+|---|---|---|
+| public_outside_interface | 442 | 453 (+11: the suite's constants the probe now imports) |
+| summary_not_one_line | 74 | 5 |
+| number_constant_without_link | 64 | 0 |
+| conformance_not_run | 56 | 56 |
+| magic_literal | 53 | 34 |
+| summary_too_long | 45 | 2 |
+| constant_defined_twice | 27 | 18 |
+| implementation_folder | 16 | 16 |
+| comment_too_long | 11 | 10 |
+| summary_starts_with_name | 10 | 0 |
+| summary_not_one_sentence | 7 | 0 |
+| depends_on_implementation, names_implementation, trait_outside_interface | 4, 3, 3 | 4, 3, 3 |
+| interface_item | 2 | 2 |
+| trait_not_implemented, literal_restates_constant, hook_name, comment_budget_exceeded | 1 each | 1 each |
+| total | 821 | 610 |
+
+No exclusion, no rule loosened. Left of the mechanical kinds: the module comments of the TCP and UDP suites (1240 and
+1786 characters, a list of the network each check needs), 6 more long comments, the summaries of 5 module docs, and
+string literals given to `ask_routing` in the TCP suite.
+
+### The two linter faults (SCRATCH/host-sockets/linter-faults/)
+
+`const-generic-method-view/` and `zerocopy-derive-impls/` hold the smallest crates of each shape and a NOTE. MEASURED:
+neither reproduces at da55b9d7 yet (the linter gives only model-unanswered findings and a magic literal there), while
+crates/linux-socket-options/interface.rs:71 and :29 still give them. Not worked around.
+
+### Questions for the orchestrator (each tried with the structure the rule asks first)
+
+1. `public_outside_interface` in `crates/internet-protocol/implementation/linux-socket-options` (the shared crate the
+   four hosts call, for example `pub fn storage_bytes(address: SocketAddr) -> StorageBytes` in datagram/addresses.rs:62).
+   It is an implementation shared by hosts of four interfaces, not a suite helper, so the conformance-folder structure
+   does not apply; the rule allows a trait only for the brief's three reasons. Which structure should it take?
+2. `public_outside_interface` for the ICMP suite's helpers the raw and route suites import (for example
+   `pub fn ip(commands: &str)`, `pub const NETWORK: &str`). The interface whose conformance folder they belong in is
+   `crates/internet-protocol`, which has no conformance crate; making one is a new crate (a stop for the orchestrator).
+   Tried in small: the probe now imports 11 constants from `crates/linux-socket-options/conformance` instead of
+   repeating them, and that conformance crate's `pub const`s are each counted `public_outside_interface` (+11, -9
+   `constant_defined_twice`). Should shared helpers in a conformance crate be `pub`, and may the orchestrator create
+   `crates/internet-protocol/conformance`?
+3. `implementation_folder` 16: the hosts implement other interfaces' traits, for example
+   `impl<'a> Configurable<HostTcpConnection, TcpSetting<'a>> for HostTcpSockets` (tcp host portable.rs:741) and
+   `impl NegativeRouteAdvisable<HostTcpConnection> for HostTcpSockets` (:768). The layout `cargo reviewable new
+   foreign-implementation` makes lives inside the other interface's crate and adds a `mod` to its interface.rs (READ:
+   syntax/foreign.rs, examples/interface_item), an owner's file, and is for a type from outside the workspace. Not done.
+   Where should these impls go?
+4. `depends_on_implementation` 4 / `names_implementation` 3: the ICMP and route suites set `IPV6_ADDR_PREFERENCES`,
+   `IP_OPTIONS`, `IP_UNICAST_IF` on their own probe sockets through
+   `wcontainers_linux_socket_options_direct::DirectLinuxSocketOptions` (icmp suite.rs:2368, route suite.rs:1533, :1661).
+   The structure the rule asks (the suite takes a `LinuxSocketOptions` value from its caller) changes those suites'
+   `tests!` macros and every host's conformance_run; not done this run. Go ahead?
+5. `trait_outside_interface` 3: the direct crate's private `trait Plain {}` (the marker that limits what a set hands the
+   kernel) and `pub trait LentBuffers: IcmpSockets` / `: RawSockets` in the two suites. Keep, or how?
+6. `conformance_not_run` 56 and the probe: the probe is a unit test of the direct crate and uses the API suite's
+   `own_network`, `storage_of` and now its constants; is a suite crate the right home for what both use?
+
+### Not done this run
+
+- The ICMP suite's `ip` and `tc` through `Command` (READ: about 195 call sites over the ICMP, raw and route suites, with
+  links, addresses, routes, neighbours, rules by mark, user, protocol and port, prio, fq and etf queueing, and JSON reads
+  of classes, neighbours and temporary addresses) is still iproute2; the netlink rewrite is next.
+
+## Round 4 (2026-11-26): the guard keyed by what the kernel sees, the probe repaired, question 4, netlink groups 1-4
+
+The fourth check (SCRATCH/host-sockets-check4/, READ: its logs and planted rows) did not hold: the generator matched a bound
+option by its bare name, so `SO_GET_FILTER` (26, the number of `SO_ATTACH_FILTER`) as `slice:tcp_repair_opt` and
+`TCP_CC_INFO` named at `SOL_SOCKET` were taken and generated as safe methods, every guard green, and the marked reason on
+`set_bytes_at` was false. Commits: 8ba636218 (guard, reasons, hostile rows, probe, huge count), 566f15438 (question 4),
+ffb5fa31d (linter repairs of the new code), 58d6079df, a2bd36ec2, 580addb83, 6ee323c7d (netlink groups 1-4); pushed. The owner's main
+(FETCH_HEAD ac696ea19) was already merged (MEASURED: `git merge-base --is-ancestor FETCH_HEAD HEAD`); no interface file of
+the owner changed.
+
+### (1) The kernel table, keyed by (level number, option number) (READ: implementation/direct/tests/generated/kernel.rs)
+
+- `LEVELS`: the 7 levels a row may name, each with the names of its own number space (91 names); `REQUESTS`: the 4 ioctl
+  requests. Every number comes from the constant of that same path (`name!(uapi::SO_GET_FILTER)` is the path and
+  `uapi::SO_GET_FILTER`), from linux-raw-sys, libc, or `tests/generated/local.rs`, which the direct crate compiles too
+  (`#[path]`), so a table name means one number in both; none is typed in the table.
+- `ENTRIES`: 91 entries keyed by the pair of numbers, each saying for a set and for a get what the kernel does with the
+  value (`ReadsNumber`, `ReadsBytes`, `ReadsStructure(T)`, `ReadsRun(T)`, `ReadsGroupFilter`, `WritesBack(T)`,
+  `FollowsProgram`, `Follows`, `WritesWithin`, `WritesPerKey`, `WritesPast`, `WritesThroughFullInfo`, `WritesInt`,
+  `WritesStructure(T)`, or `Unknown`), with the manual page and kernel handler it was read from. Complete for every pair
+  the 96 rows use; a direction no row uses is `Unknown`. Known-dangerous pairs are entries too: `(SOL_SOCKET, 26)` set
+  `FollowsProgram`, get `WritesPast` (sk_get_filter counts the length in instructions); `(SOL_TCP, TCP_ZEROCOPY_RECEIVE)`
+  get `Follows`; `SIOCGSTAMP_OLD` writes a 16-byte `__kernel_old_timeval`.
+- The generator resolves a row's level text in `LEVELS`, its option text only among that level's names, and then the
+  entry by the two numbers. A row is refused when a name does not resolve, when there is no entry, when the direction is
+  `Unknown`, `Follows`, `WritesPast` or `WritesStructure`, when its kernel column is not the one the entry implies, or
+  when its form does not fit what the kernel does (a `struct:T` only where the kernel reads exactly `T`, a `program` only
+  where it follows a program, a `room` only where it writes within the length told, ...). The method must be an
+  identifier. Bare-name matching (`BOUND_FORMS`, `BYTE_OPTIONS`) is gone. Two names with one pair are one entry
+  (`SO_GET_FILTER` and `SO_ATTACH_FILTER`, `SO_TIMESTAMPING` and `SO_TIMESTAMPING_OLD`: the test checks they resolve to
+  the same entry).
+
+### (2) A property per marked reason, each with a planted row (READ: tests/generated.rs `REASONS`)
+
+| Marked reason | Property over the generated code and the entry | Planted rows that break it (each also refused) |
+|---|---|---|
+| `set_bytes_at` | the set is routed to the private function matching what the kernel does (`set_value` only for `ReadsStructure(T)`/`ReadsRun(T)`/`ReadsBytes` of the row's own type, `set_value_written` with `&mut` only for `WritesBack(T)`, `set_program` only for `FollowsProgram`, ...) | `IPV6_FLOWLABEL_MGR` marked `reads`; `SO_GET_FILTER` as `slice:tcp_repair_opt`; `TCP_REPAIR_OPTIONS` as `struct:group_req` |
+| `get_within` | `get_value`/`get_written` only where the kernel `WritesWithin`, `get_keys` only where `WritesPerKey` | a room for `TCP_AO_GET_KEYS`, for `SO_GET_FILTER`, for `TCP_ZEROCOPY_RECEIVE` |
+| `full_info_into` | `get_full_info` exactly where the kernel `WritesThroughFullInfo` | `full_info` on `MPTCP_INFO`; `MPTCP_FULL_INFO` as a room |
+| `ioctl_within` | `ioctl_int` exactly for a request whose kernel `WritesInt`, with no level | `SIOCGSTAMP_OLD` as `ioctl` |
+| every reason's "the descriptor is borrowed" | the method is an identifier, so the generator writes its signature (`socket: BorrowedFd<'_>`) | a method text that writes a method of its own taking `fd: i32` |
+
+`set_bytes_at` now takes the lent value itself (`Lent::Shared(&T)` or `Lent::Exclusive(&mut T)`) and computes the address
+and length from it inside, so "the kernel is told only memory the caller lent" holds by construction, not by each caller.
+The four marked reasons were rewritten to name the pair-keyed table and the property test each rests on.
+MEASURED (both machines, `--test generated`): 12 passed, among them `every_row_of_the_table_meets_every_marked_reason` and
+`a_planted_row_breaking_each_marked_reason_is_seen_by_its_property_and_refused`.
+
+### (3) Thirty hostile rows (MEASURED, both machines: `every_hostile_row_is_refused`, the reasons printed in hs5/arm-api3.log)
+
+Taken: 0 of 30. By kind: SO_GET_FILTER/SO_ATTACH_FILTER's number 26 under four forms (slice, room, c_int count, bytes); a
+name of another level's space (TCP_CC_INFO at SOL_SOCKET, MCAST_JOIN_GROUP at SOL_TCP where 42 is TCP_AO_REPAIR,
+SO_ATTACH_FILTER at SOL_TCP, SIOCOUTQ as a SOL_TCP option); the right pair given another structure (TCP_AO_REPAIR as
+`group_req`, TCP_REPAIR_OPTIONS as one value); a structure holding an address (`libc::sock_fprog`, `libc::iovec`,
+TCP_ZEROCOPY_RECEIVE, MPTCP_FULL_INFO as a room); a count the kernel trusts (TCP_AO_GET_KEYS as a room `past` and
+`within`, `full_info` on MPTCP_INFO, `keys` on TCP_SAVED_SYN); write-back lent shared or on a number or bytes; an option
+that changes how a later one reads (TCP_ULP, and the SOL_TLS level it opens); an aliasing ioctl (SIOCGSTAMP_OLD, SIOCOUTQ
+given a level, SO_RCVMARK as a request); a literal number, a `libc::` path, code in the method name, a room marked `past`.
+
+With the kernel table itself made wrong in a planted copy (hs5/plant.sh K3, K4), `every_hostile_row_is_refused` and the
+planted-reason test fail too (MEASURED), so a wrong entry is seen by more than the probe.
+
+### (4) The probe: why it was weak, and the repair (READ: check4 logs; implementation/direct/probe.rs)
+
+Why (READ, check4 arm-plant2.log): canaries see only what the kernel writes. P9 (a set whose kernel follows an address in
+the value) passed with 0 faults because the kernel only read through it; P11 (a `within` room for SO_GET_FILTER on a socket
+with no filter) passed because the kernel had nothing to write, while the same row on a filtered socket overflowed (P12
+canary stop, P13 SIGSEGV): the verdict depended on the case writer choosing a socket state where the kernel acts.
+
+Repair:
+- Every value a caller lends (structures, exclusive structures, runs, byte strings, key queries) is also lent twice with
+  every word set to an address no process maps (1 and 16, below `vm.mmap_min_addr`, 32768 on ARM64, MEASURED); a kernel that
+  follows an address answers EFAULT, and any EFAULT fails the row. The words are written into a box of the probe's own
+  through `process_vm_writev` on its own process (nix, safe), as structures give no byte view.
+- A `within` room row must be seen given less room than the kernel had to write (a room above zero and below the longest
+  answer, answered whole or refused); `get_ip_pktoptions` and `get_ipv6_2292pktoptions` gained a 20-byte room, longer than a
+  control message header and shorter than the message, which the kernel fills and cuts.
+- Result at the tip (MEASURED both machines): probe exit 0, 96 rows, every room row `pressed true`, no EFAULT.
+
+Planted (MEASURED, ARM64, hs5/plant.sh, arm-plant.log), the generator bypassed or the kernel table made wrong so that the
+probe alone must catch it:
+
+| Planted | Caught by the probe |
+|---|---|
+| K1: check's P9 row (generator bypassed), the check's real program pointer as its value | "was answered EFAULT: the kernel followed an address the value holds" (poisoned 2, followed 2) |
+| K2: check's P11 row (bypassed), socket without a filter | "was never given less room than the kernel had to write" |
+| K3: kernel table says SO_ATTACH_FILTER's set reads a run, P9 row | EFAULT, as K1 (and the generator tests fail) |
+| K4: kernel table says SO_GET_FILTER's get is within, P11 row | "never given less room" (and the generator tests fail) |
+| K5: K4 on a 4-instruction filtered socket | the implementation's canary: "wrote past the 8 bytes it was told for option 26" |
+| K6 (control): K3 with the poisoned calls removed | not caught (probe exit 0): the poisoned calls are what catch K1/K3 |
+
+Still not seen by the probe: a kernel reading past the length it is told (no safe way to place a value against unmapped
+memory); that length is now the lent value's own size by construction in `set_bytes_at`.
+
+### (5) `get_full_info` with a huge count (READ: implementation.rs; MEASURED: API suite, both machines)
+
+The count must fit the kernel's 32 bits (else EINVAL) and the rooms are reserved with `try_reserve_exact` (ENOMEM instead
+of an abort). The API suite now asks `usize::MAX` subflows (EINVAL) and `u32::MAX` subflows of mebibyte rooms (ENOMEM):
+13 passed on both machines.
+
+### Question 4 (ruled GO): the suites take a `LinuxSocketOptions` from their caller
+
+The ICMP suite's `host_source`, `sources_by_preference` and `source_preferences_are_taken`, the raw suite's
+`ipv6_source_preferences_choose_the_source` and the route suite's three checks that set options take an `O:
+LinuxSocketOptions`; the three `tests!` macros take `($value, $options)`; the suites depend on the interface crate only;
+the three hosts pass `wcontainers_linux_socket_options_direct::DirectLinuxSocketOptions` (dev-dependency). MEASURED: the
+suites' `depends_on_implementation` 4 and `names_implementation` 3 are gone, but the linter now gives `conformance_not_run`
+6 in the hosts' conformance_run.rs ("the file must be exactly one invocation ... `tests!(<value>);`", "it names another
+implementation, `wcontainers_linux_socket_options_direct`"). Rule against rule, smallest example:
+`wcontainers_raw_sockets_conformance::tests!(HostRawSockets::new().expect(".."), DirectLinuxSocketOptions);` Written here
+for the orchestrator; nothing loosened.
+
+### The bar at 566f15438, both machines (MEASURED: hs5/{arm,x86}-bar.log; `--jobs 12` on both)
+
+check --all-targets, clippy `-D warnings`, fmt --check of the 17 packages: exit 0. Suites: TCP 143, UDP 80, ICMP 69, raw 54,
+route resolver 38, API suite 13, generator tests 12, probe 1 (96 rows), hosts' other tests: all pass; only the two speed
+tests ignored. Speed: ARM64 TCP 400-401 / 409-410 ns, UDP 1.524-1.545 us / 808-810 ns; x86-64 TCP 310-313 / 340-353 ns, UDP
+1.439-1.709 us / 759-794 ns (b599e5b85's bar: ARM64 401-402 / 403-404 ns, 1.473-1.488 us / 803-805 ns).
+
+### The bar at f7227d94e (code of 6ee323c7d), both machines (MEASURED: hs5/{arm,x86}-bar-tip.log; `--jobs 12`)
+
+check --all-targets, clippy `-D warnings`, fmt --check of the 17 packages: exit 0. TCP 143, UDP 80, ICMP 69, raw 54, route
+resolver 38, API suite 13, generator tests 12, probe 1 (96 rows), the hosts' other tests: all pass; only the two speed tests
+ignored. Speed: ARM64 TCP 401 / 405-406 ns, UDP 1.515-1.525 us / 799-801 ns; x86-64 TCP 339-356 / 382-419 ns, UDP
+1.551-1.644 us / 820-871 ns.
+
+### Netlink instead of `ip` and `tc` (groups 1-4 done, each measured on both machines before the next)
+
+`crates/icmp-sockets/conformance/netlink.rs`: `batch` (which every `ip` call of the three suites goes through) now sends
+each line of a kind done there as the one request iproute2 sends for it, through netlink-packet-route 0.34.0 and
+netlink-sys 0.9.0 (MIT, already in the lock for the TCP suite), and checks the acknowledgement; other lines still go to
+iproute2, in order. Defaults follow iproute2's (address scope, route protocol `boot`, main table, link scope without a
+gateway, RTA_TABLE past 255, IFA_FLAGS for flags past a byte, permanent neighbours, rule action and table). Group 1: `link
+add` (dummy, veth), `link set` (up, mtu, arp on, multicast on, addrgenmode none), `address add|replace` (broadcast, nodad,
+mngtmpaddr). Group 2: `route add` (via, via inet6, dev, table, metric, mtu [lock], hoplimit, prohibit, blackhole,
+unreachable, encap seg6). Group 3: `rule add` (fwmark, uidrange, ipproto, dport, sport, from, oif, dscp, flowlabel,
+lookup, prohibit) and `neigh add`. Group 4, the reads: `settle_addresses`' poll of the local table, a neighbour's
+confirmed age (ticks divided by `rustix::param::clock_ticks_per_second`, as `ip -s neigh` divides), a link's temporary
+address and its link-layer address by netlink dumps; a link's multicast groups from `/proc/thread-self/net/igmp` and
+`igmp6`, which is where `ip maddr show` reads them (`joined_groups`, `link_address`, now used by the raw suite too). The
+words of `ip` are named constants (`word::*`).
+
+Measured with a logging `ip`/`tc` in front of the real ones (hs5/measure.sh; every line that still reaches iproute2):
+
+| | lines to iproute2, ARM64 | x86-64 | ICMP / raw / route suites, both machines | wall, ARM64 (rounds 2-3) |
+|---|---|---|---|---|
+| before (566f15438) | 1458 | 1458 | 69 / 54 / 38 pass | 1.04-1.07 / 2.93 / 0.13 s |
+| group 1 (58d6079df) | 619 | 619 | pass | 1.03-1.07 / 2.94-2.97 / 0.12-0.13 s |
+| group 2 (a2bd36ec2) | 281 | 282 | pass | 1.01-1.05 / 2.94-2.97 / 0.13-0.14 s |
+| group 3 (580addb83) | 226 | 226 | pass | 1.04 / 2.95 / 0.13 s |
+| group 4 (6ee323c7d) | 45, none of them `ip` | 45 | pass | 1.00-1.03 / 2.95 / 0.13-0.16 s |
+
+Left (45, all `tc`, MEASURED): 22 `qdisc add` (prio with its default priority map, fq, etf with `CLOCK_TAI`, clsact), 8
+`qdisc del`, 10 `-s -j class show` (packets of class 1:3), 4 `-s -j filter show` (the flower action's packets), 1 `filter
+add ... flower dst_mac ... action pass`. Group 5 is next and waits on nothing: netlink-packet-route 0.34 has flower
+filters but no prio or etf options and no gact action (READ: src/tc), so those are written as the uapi structures
+`tc_prio_qopt`, `tc_etf_qopt` and `tc_gact` inside raw attributes, and the class and action statistics are read from
+TCA_STATS2. Not yet done: a check that each converted line
+leaves the same kernel state as iproute2's (a dump comparison); the suites passing on both machines is the evidence so far.
+
+### Linter (MEASURED at 566f15438, ARM64, linter da55b9d7, no model key; hs5/arm-lint.log)
+
+Rules that need no model, the track's folders: 632 (b599e5b85: 610). New: `conformance_not_run` +6 in the hosts and -7
+`depends_on_implementation`/`names_implementation` in the suites (question 4, above); `constant_defined_twice` for the
+local numbers, which the kernel crate also defines and does not export (as before); the rest in the new code was repaired
+in ffb5fa31d (summaries, a link, two literals, the `#[path]` the linter could not follow). At 6ee323c7d (MEASURED, hs5/
+arm-lint3.log): 642. Left in this round's code, not repaired yet: netlink.rs 6 `magic_literal`, 3 summary length, 1
+`constant_defined_twice`; the ICMP suite +3 `magic_literal`, +2 `constant_defined_twice`, +2 `literal_restates_constant`,
++1 `number_constant_without_link`, +1 `comment_too_long`, +1 `public_outside_interface` (`joined_groups`/`link_address`
+for the raw suite, -1 for `SHOW_GROUPS`); `local.rs` `comment_budget_exceeded` 1 (810 characters for 10 lines of code,
+each number needing its link).
+
+## Round 5 (2026-11-26): no iproute2 or nft left, the dump comparison, the family key, number rooms, the linter
+
+The independent check of round 4 held. Commits: 433a895b7 (group 5 and the rest of `ip`/`tc`/`nft`), 31f9e252a (family
+check, number rooms), cf3dba9aa (linter repairs); pushed. The owner's main (FETCH_HEAD ac696ea19) was already merged
+(MEASURED: `git merge-base --is-ancestor FETCH_HEAD HEAD`); no interface file of the owner changed, and the API crate's
+generated interface.rs did not change either (MEASURED: `cmp` after `REGENERATE=1`). Logs: SCRATCH/host-sockets/hs6/.
+
+### (1) Group 5, and no `Command` in the three suites (READ: netlink.rs; MEASURED: hs6/arm-suites1.log, both bars)
+
+- `tc` lines done through the routing socket: `qdisc add` of prio (`handle 1:`, `struct tc_prio_qopt` with tc-prio(8)'s
+  default bands and map as a raw TCA_OPTIONS), fq (empty options), etf (`TCA_ETF_PARMS` with the delta, `CLOCK_TAI`, no
+  flags), clsact (parent and handle `ffff:`), `qdisc del dev <link> root`, and `filter add dev <link> egress protocol all
+  flower dst_mac <mac> action pass` (the egress parent, `ETH_P_ALL` in network order, the address and a full mask, a
+  `gact` action whose `struct tc_gact` netlink-packet-route's `TcActionGeneric` writes). The reads: class 1:3's packets
+  from `TCA_STATS2` (`third_band_packets`) and the egress action's packets from its `TCA_ACT_STATS`
+  (`egress_action_packets`), by dumps.
+- More line kinds the measuring found (the UDP host test and the route-resolver host's counters test also built their
+  networks with `ip`/`tc`): `link add <name> up type dummy`, `route add local <address> ... table local` (host scope,
+  local table), `route del ...` (no protocol; the 1500-byte local route of the UDP test), a bare address as a full
+  prefix, table names `main` and `local`, and multipath `nexthop via <address> dev <link>` (RTA_MULTIPATH). `rule add from
+  <address>` now refuses a source of the other family than the command's, as iproute2 does (found by the comparison).
+- The raw suite's `nft -f` table is sent as the batch `nft` sends (`track_made_connections`: NEWTABLE, NEWCHAIN on the
+  output hook at priority 0, NEWRULE `[ct state] [bitwise & new] [cmp neq 0] [counter]`, each acknowledged).
+- `batch` and `tc` now stop the check on a line not done here; `run_tool`, `output`, `number_after`, `IP`,
+  `TRAFFIC_CONTROL`, `PACKETS`, `DEVICE` and `SHOW_CLASSES` are gone. MEASURED: `grep Command::new` over the icmp, raw and
+  route suites gives nothing. The UDP host test (crates/udp-sockets/implementation/host/tests/conformance.rs) also lost
+  its `Command`s: it builds its network through the ICMP suite's `ip`, `ip6`, `tc` and `temporary_address`
+  (dev-dependency on the ICMP suite).
+- The job's PATH: the bar no longer adds iproute2 or nftables, and puts a failing `ip`, `tc` and `nft` first on PATH that
+  log every call. MEASURED both machines: 0 calls; ICMP 69, raw 54, route resolver 38, UDP 80 in three rounds on ARM64
+  (wall 0.94-0.96 / 2.93-2.94 / 0.13 / 0.97-0.98 s in rounds 2-3, against 1.00-1.03 / 2.95 / 0.13-0.16 s for ICMP, raw,
+  route at 6ee323c7d).
+
+### (2) The dump comparison: each kind of converted line against the line it replaced (MEASURED once, both machines)
+
+A recorded measurement (SCRATCH/host-sockets/hs6/dump_compare.rs, run by hs6/compare.sh, logs arm-compare2.log and
+x86-compare2.log; iproute2 7.2.0 and nftables 1.1.7 from nixpkgs). It is installed into the job's copy only, as a child
+module of netlink.rs, and run as root. Each of 23 cases (every distinct line kind of the 130 lines in the suites and host
+tests, in batches as the suites write them) runs in two fresh namespaces with the same setup through the real tools; one
+gets the lines through iproute2 or nft, the other through netlink.rs; both are dumped raw (links, addresses, IPv4 and
+IPv6 routes of every table, rules, neighbours, qdiscs, classes and filters of every link at the root, ingress and egress
+parents, nf_tables tables, chains and rules, and `nft list ruleset`) and the sorted renderings compared. Masked, as two
+namespaces differ there by themselves: statistics and cache timestamps, the random link-layer addresses and the
+`fe80::` addresses and routes made from them, the tentative bit of an address, qdisc handles the kernel takes from a
+global counter, the nf_tables generation, and neighbour entries of IPv6 multicast groups (made by the link's own
+solicitations).
+
+Result: 22 of 23 cases leave the same state. The one difference: nft 1.1.7 writes `NFTA_TABLE_USERDATA` on the table
+(its own version, 1.1.7, and its build time, which only nft reads); our table has none. The chain, the rule (every
+expression and register) and `nft list ruleset`'s text are equal. First run found two faults, both fixed before the
+second: `rule add from fd02::1` without `-6`, which iproute2 refuses and netlink.rs took (now refused), and the harness's
+own rendering of a table's handle.
+
+### (3) The two corners
+
+- Number reads given less room (READ: probe.rs `number_rooms`; MEASURED both machines): the five `within` gets of a
+  number (`get_so_rcvlowat`, `get_tcp_window_clamp`, `get_tcp_queue_seq`, `get_tcp_repair_queue`, `get_tcp_timestamp`)
+  are also read below the method, through the same private `get_guarded` with the row's level and option (the generator
+  now writes both into `ROWS`), into each room from one byte to the number's width, the implementation's canaries after
+  each; `against` requires `pressed` for them as for rooms. Each answered every room whole (`calls 5 ok 5 shorter 0
+  longer 0 pressed true`); probe `rows 96 pressed 15`. The ioctl rows are not pressed: `ioctl(2)` is told no length, and
+  `ioctl_within` refuses a room under one int. Planted (hs6/arm-plant.log): the number rooms switched off -> the probe
+  fails all five with "was never given less room than the kernel had to write".
+- The family (READ: kernel.rs `Families`, `INTERNET`, `REQUEST_FAMILIES`; implementation.rs `of_family`,
+  `request_of_family`). Decided: both, because only both are sound. A method takes a `BorrowedFd`, which carries no
+  family, so a key with the family proves nothing unless the call checks it; and a check needs the families each entry
+  was read for. So each level of the kernel table names the families whose handler was read (SOL_SOCKET: every family,
+  as Linux handles it before any family's handler; every other level, MPTCP's included, and the ioctl requests: AF_INET
+  and AF_INET6), and every generated method of such a level passes its socket through `of_family(socket, &[uapi::AF_INET,
+  uapi::AF_INET6])?` (requests: `request_of_family`), which reads `SO_DOMAIN` (rustix `socket_domain`) and refuses any
+  other family with `ENOPROTOOPT` (`ENOTTY` for a request) before the call. Making the check where the socket is made
+  would need the trait to take a socket type of its own instead of `BorrowedFd`, an interface change; not done. A sixth
+  marked-reason property (`family_reason`: the body passes its socket once, through exactly the check its level's
+  families give) holds for every row; a planted body without the check, with AF_UNIX instead of AF_INET6, with one family
+  dropped, or passing the socket a second time is seen by it (MEASURED: `--test generated` 14 passed). The four marked
+  reasons now name the families and `family_reason`. The API suite's new check `other_families_are_refused_at_the_
+  internet_levels` gives a Unix socket an IP, IPv6, TCP and UDP option and `SIOCOUTQ`: `ENOPROTOOPT` and `ENOTTY`, where
+  Linux would answer `EOPNOTSUPP` and an int, and a SOL_SOCKET option still reaches it. Planted: the generated checks
+  removed -> the generator test ("generated.rs differs from what options.table gives") and that suite check (`left:
+  Some(95) right: Some(92)`, Linux's EOPNOTSUPP instead of the check's ENOPROTOOPT). No caller changes: the hosts and
+  suites pass IPv4 and IPv6 sockets only.
+
+### (4) Linter, rules that need no model (MEASURED: ARM64, linter da55b9d7, no key; hs6/arm-lint1.log, -final.log)
+
+| Rule | 6ee323c7d (round start) | 31f9e252a (new code in) | cf3dba9aa |
+|---|---|---|---|
+| public_outside_interface | 454 | 449 | 449 |
+| conformance_not_run | 66 | 66 | 66 |
+| magic_literal | 42 | 49 | 23 |
+| constant_defined_twice | 30 | 30 | 28 |
+| implementation_folder | 16 | 16 | 16 |
+| comment_too_long | 11 | 16 | 4 |
+| summary_not_one_line | 7 | 22 | 0 |
+| literal_restates_constant | 3 | 3 | 0 |
+| summary_too_long | 3 | 14 | 0 |
+| trait_outside_interface | 3 | 3 | 3 |
+| comment_budget_exceeded | 2 | 2 | 1 |
+| interface_item | 2 | 2 | 2 |
+| number_constant_without_link | 1 | 30 | 0 |
+| hook_name, trait_not_implemented | 1, 1 | 1, 1 | 1, 1 |
+| summary_starts_with_name | 0 | 2 | 0 |
+| total | 642 | 706 | 594 |
+
+No exclusion, no rule loosened, no help text changed. Repaired by hand: every finding netlink.rs and local.rs held (each
+nf_tables number with its link, the dump descriptions taken from the request itself, words and separators shared with
+the ICMP suite instead of restated, local.rs within its comment budget) and in the rest: every long summary and
+module comment of the track except the TCP and UDP suites' module comments, the TCP suite's request descriptions and
+`tcp_ecn` values, two literal zeros in the shared crate. Left, by cause:
+- Structural, rulings asked in round 3 (questions 1-6 above): public_outside_interface 449, implementation_folder 16,
+  trait_outside_interface 3, conformance_not_run 66 (60 suites naming suites, and 6 from the second `tests!` value,
+  below).
+- Cross-crate coincidences the linter itself says the crate cannot name (constant_defined_twice 28: `LOOKUP = "lookup"`
+  in the translator, `BPF_RET`/`BPF_K` in the kernel crate, the TCP and UDP tests' `BATCH`/`BATCHES`/`WARM_UP`, ...).
+- Linter faults, unchanged: interface_item 2, the `#[repr(C, align(8))]` literal, the generated interface.rs's comment
+  budget.
+- Mechanical, not reached: the TCP and UDP suites' module comments (1240 and 1786 characters, the network list of each
+  check), 22 literals (array lengths of uapi mirrors in addresses.rs and state.rs, four labels in a TCP check), `hook_name`
+  `on_processor`.
+- The second value in `tests!`, left as it is and counted (6 `conformance_not_run` in the hosts' conformance_run.rs);
+  the smallest example: `wcontainers_raw_sockets_conformance::tests!(HostRawSockets::new().expect(".."),
+  DirectLinuxSocketOptions);`
+
+### The bar at cf3dba9aa, both machines (MEASURED: hs6/{arm,x86}-bar.log; `--jobs 12`)
+
+check --all-targets, clippy `-D warnings`, fmt --check of the 17 packages: exit 0. TCP 143, UDP 80, ICMP 69, raw 54, route
+resolver 38, API suite 14, generator tests 14, probe 1 (96 rows, 15 pressed), the hosts' other tests (unit 2, readiness
+1+3, counters 5+2+1, waiting 1+1, the two allocation binaries): all pass; only the two speed tests ignored, run apart.
+Calls of `ip`, `tc` or `nft`: 0, with neither iproute2 nor nftables added to PATH. Speed (median of 4000 batches of 32,
+three runs): ARM64 TCP 398-400 / 399-400 ns, UDP 1.457-1.462 us / 798-809 ns; x86-64 TCP 312-323 / 343-351 ns, UDP
+1.427-1.463 us / 761-785 ns (6ee323c7d's bar: ARM64 401 / 405-406 ns, 1.515-1.525 us / 799-801 ns; x86-64 339-356 /
+382-419 ns, 1.551-1.644 us / 820-871 ns). The extra `SO_DOMAIN` read before an API-crate call shows in neither.
+
+### For the runtime track
+
+Merge cf3dba9aa (code), or the status commit after it, which changes only this file. Everything the runtime's ICMP, raw
+and route hosts need builds and passes there on both machines. For a caller: the API crate's methods of an internet level
+now refuse a socket of another family (`ENOPROTOOPT`, `ENOTTY` for the three requests), and the direct crate depends on
+rustix 1.1.6 (already in the lock); no signature changed.
+
+### Next
+
+Every milestone this track can reach now is reached (HS0, HS1, HS2 and round 5's items by this track's measurement). The
+independent check of this round is next; the guest-reachable option list waits on owner question 2; the hostile-guest
+suite waits on the thread-test design review owed to the owner.
+
+## Round 6 (2026-11-26): the named linter findings, the two read-backs, the ioctl kinds, who sees the family error
+
+The independent check of round 5 held but for one claim: round 5 said its items were reached while 28 linter findings
+of rules that need no model were still open in the track's crates. That claim was wrong; they are repaired below. The
+owner's main (FETCH_HEAD ac696ea19) was already merged (MEASURED: `git merge-base --is-ancestor`, 0 commits ahead).
+Commits: c0e15bdd5 (code), f8e5feb23 (one rustfmt line); pushed. Logs: SCRATCH/host-sockets/hs7/.
+
+### (1) The linter findings the check named (MEASURED: ARM64, linter da55b9d7, no model key; hs7/arm-bar.log)
+
+| Rule | cf3dba9aa | f8e5feb23 |
+|---|---|---|
+| magic_literal | 23 | 1 |
+| comment_too_long | 4 | 0 |
+| hook_name | 1 | 0 |
+| constant_defined_twice | 28 | 27 |
+| comment_budget_exceeded | 1 | 1 |
+| public_outside_interface, conformance_not_run, implementation_folder | 449, 66, 16 | 449, 66, 16 |
+| trait_outside_interface, interface_item, trait_not_implemented | 3, 2, 1 | 3, 2, 1 |
+| total | 594 | 566 |
+
+Repaired by hand, no exclusion, no rule or help text changed: the 22 literals of the track's code (the uapi mirrors'
+array lengths now come from the uapi types: `size_of::<uapi::in_addr>()`, `offset_of!` differences, `TCP_AO_MAXKEYLEN`;
+the Linux 6.18 halves of the last `TCP_INFO` word read through a named `AccurateEcnHalves`; the TCP check's four labels
+and its `[..; 4]` replaced by one match per query and a loop), the four long comments (the TCP and UDP suites' module
+comments now say only what every check shares, and each UDP check's documentation names the network it needs; the
+nix reason in `receive_vectored` moved into its body), `on_processor` renamed `run_on_processor`, and `DATAGRAMS`
+defined once in the UDP host tests' shared `support` module. The 27 `constant_defined_twice` left are all ones the
+linter itself says the crate cannot name (another crate's constant).
+
+Left, each with its smallest example, both in the generated `crates/linux-socket-options/interface.rs`, which this
+run's rules forbid changing: `magic_literal` "8 in `SocketStorage`", from `#[repr(C, align(8))] pub struct
+SocketStorage { .. }` (Rust takes only an integer literal in `repr(align)`, so no repair exists), and
+`comment_budget_exceeded` (4506 comment characters for 253 code lines, allowed 3842), repairable only by changing the
+generator's method documentation, which rewrites that interface file. The structural ones are the round 3 questions.
+
+### (2) The two netlink settings are now read back in every suite run (READ: icmp suite netlink.rs; MEASURED both)
+
+- The tracking chain: after `track_made_connections` the suite asks the kernel for the chain (`NFT_MSG_GETCHAIN`,
+  table `tracked`, chain `output`) and requires its `NFTA_CHAIN_HOOK` to hold `NF_INET_LOCAL_OUT` at priority 0, what
+  `hook output priority 0` names.
+- etf: after every `tc qdisc add ... etf ...` line the suite dumps the link's disciplines and requires the etf one's
+  `TCA_ETF_PARMS` (`struct tc_etf_qopt`) to hold the line's delta and clock and no flag.
+- Planted on both machines at f8e5feb23 (the job's copy only, restored after): the chain sent on `NF_INET_LOCAL_IN` ->
+  the raw host's suite 53 passed, 1 failed ("the kernel holds the tracking chain on another hook than `hook output
+  priority 0`"); etf sent a delta of the line's plus one -> the UDP host's suite 0 passed, 80 failed ("tc qdisc add
+  dev scheduled0 root etf clockid CLOCK_TAI delta 0: the kernel holds another schedule"). Unplanted: 54 and 80 pass.
+
+### (3) The socket ioctl requests on other socket kinds (MEASURED both machines; READ: probe.rs, kernel.rs)
+
+The check's inference held. A new probe test, `every_request_is_measured_on_every_socket_kind_of_its_families`, makes
+each of the three requests on 18 kinds of IPv4 and IPv6 socket (TCP unconnected and connected, MPTCP, UDP, UDP-Lite,
+ICMP echo, raw of three protocols, SCTP stream and seqpacket) in three forms: below the method with the int between
+canaries, below the method with the int and the 1024 bytes after it set to an unmapped address, and through the
+generated method with the implementation's own canaries. The job puts kernel probes on `sock_ioctl` (request, pointer,
+answer), `get_user_ifreq`, `dev_ioctl` and `put_user_ifreq`, and joins the trace to the calls by pointer
+(hs7/join.py). Before the repair (ARM64, hs7/arm1): on every kind but TCP for `SIOCATMARK`, and every kind but TCP
+and MPTCP for `SIOCOUTQNSD`, the kernel copies a whole `struct ifreq` from the pointer (`get_user_ifreq`, 40 bytes
+on these 64-bit machines, READ net/socket.c), hands it to `dev_ioctl` and answers `ENOTTY`; it writes nothing back
+(no `put_user_ifreq`, canaries whole, no `EFAULT`). `SIOCOUTQ` never copies an ifreq: it writes the int on TCP, MPTCP,
+UDP, UDP-Lite and raw, and answers `ENOTTY` on ICMP echo and SCTP.
+
+Repair: the kernel table names, per request, the socket kinds whose handler writes the int (`REQUEST_KINDS`:
+`SIOCOUTQ` stream TCP and MPTCP, datagram UDP and UDP-Lite, raw of any protocol; `SIOCOUTQNSD` stream TCP and MPTCP;
+`SIOCATMARK` stream TCP), the generator refuses a request row with none, and each generated method passes its socket
+through `request_of_kind` (`SO_DOMAIN`, `SO_TYPE`, `SO_PROTOCOL` by rustix), which refuses any other kind with
+`ENOTTY` before the call. The `family_reason` property now also requires the kinds, with three more plants (a protocol
+widened to every one, a type changed, a kind added); `--test generated` 14 passed on both machines. At f8e5feb23 (x86-64
+counts; ARM64 the same): of 54 method calls, 32 never reach the kernel and 22 do, none of them copying an ifreq;
+below the method 27 of 54 calls per form still copy one, as the kernel does. The test also requires the method's answer
+to equal the kernel's below it for every kind and request, so the refusal changes no answer a caller sees: `ENOTTY`
+either way. The generated interface.rs did not change (MEASURED: `cmp` after `REGENERATE=1`).
+
+### (4) Who could see the family check's `ENOPROTOOPT`
+
+No caller today: the five hosts and their suites hand the API crate only sockets they opened as AF_INET or AF_INET6, and the runtime calls the hosts, never the API crate (READ: no other family in the hosts; `git grep` of origin/runtime-restart 30b99ec08).
+Only a future caller passing another family's socket (Unix, packet, netlink) would see `ENOPROTOOPT` (`ENOTTY` for a request) where Linux answers by that family, `EOPNOTSUPP` on a Unix socket.
+
+### The bar at f8e5feb23, both machines (MEASURED: hs7/{arm,x86}-bar.log; `--jobs 12`)
+
+check --all-targets, clippy `-D warnings`, fmt --check of the 17 packages: exit 0. TCP 143, UDP 80, ICMP 69, raw 54,
+route resolver 38, API suite 14, generator tests 14, probe 96 rows (15 pressed) and the request test (162 lines, no
+kind unavailable), the hosts' other tests: all pass; only the two speed tests ignored, run apart. Calls of `ip`, `tc`
+or `nft`: 0. Speed (median of 4000 batches of 32, three runs): x86-64 TCP 321-371 / 352-427 ns, UDP 1.427-1.492 us /
+762-788 ns; ARM64 TCP 405-408 / 419-424 ns, UDP 1.655-1.694 us / 798-806 ns. The ARM64 UDP send is above round 5's
+1.457-1.462 us, but cf3dba9aa built and run alternately in the same hour gives the same 1.662-1.694 us (hs7/arm-speed-
+ab.log), so it is the machine, not the code.
+
+### For the runtime track
+
+Merge f8e5feb23 (code), or the status commit after it, which changes only this file. No signature changed; the three
+ioctl methods now refuse a socket kind their request was not read for with `ENOTTY`, Linux's own answer there.
+
+### Next
+
+Reached by this track's measurement: HS0, HS1, HS2 and round 6's items, with the two interface.rs findings above left
+by rule. The independent check of round 6 is next; the guest-reachable option list waits on owner question 2; the
+hostile-guest suite waits on the thread-test design review owed to the owner.
+
 ## Owner questions
 
 1. Ruled 2026-11-25 (every outside API: one crate named for it, a safe trait, the unsafe in `implementation/direct`):
@@ -372,6 +1079,45 @@ namespace setup in Rust; x86-64 lint run; the independent check.
 
 ## SECURITY
 
+- 2026-11-26 round 6 (cf3dba9aa -> f8e5feb23): unsafe lines unchanged, the direct crate 4 -> 4 (the same four calls; the
+  ioctl reason now names the socket kinds), its manifest's `unsafe_code = "deny"` line unchanged, every other crate of the
+  track 0 -> 0; MEASURED by `git grep -nw unsafe` without comments and attributes. No manifest or lock change, so no new
+  dependency; no lint table changed, no exclusion, no linter text changed. New hostile-caller checks: the three ioctl
+  methods refuse every socket kind on which the kernel would read a `struct ifreq` past the int (probe test, both
+  machines, with a kernel trace); the suites read back the tracking chain's hook and etf's schedule. The measurement
+  asked for the `sctp` module on both machines; it stays loaded (in use there, so `modprobe -r` refused). Hostile-guest suite: not built and not run (the
+  thread-test design review is owed to the owner first). Options a guest can reach: unchanged, the 96 methods.
+- 2026-11-26 round 5 (a4fd5da4d -> cf3dba9aa): unsafe lines unchanged, the direct crate 4 -> 4 (the same four calls; all
+  four reasons now name the families each entry was read for and the `family_reason` property), every other crate of the
+  track 0 -> 0; MEASURED by `git grep -nw unsafe` without comments and attributes. No lint table changed, no exclusion,
+  no linter text changed. New dependencies: none; new uses of crates already in the lock: the direct crate takes rustix
+  1.1.6 (`net`; Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT) for `SO_DOMAIN`; the UDP host's tests take the ICMP suite. Removed: the suites' and tests'
+  child processes (`ip`, `tc`, `nft`), and iproute2 and nftables from the job's PATH. New hostile-caller checks of the
+  API crate: sockets of another family refused before the call (suite and planted), number reads given less room
+  (probe and planted). Hostile-guest suite: not built and not run (the thread-test design review is owed to the owner
+  first). Options a guest can reach: unchanged, the 96 methods, now only on IPv4 and IPv6 sockets but for SOL_SOCKET's.
+- 2026-11-26 round 4 (8c01a1037 -> 6ee323c7d): unsafe lines unchanged, the direct crate 4 -> 4 (the same four calls;
+  `set_bytes_at` now computes address and length from the lent borrow inside; all four reasons rewritten to name the
+  pair-keyed kernel table and their property tests), every other crate of the track 0 -> 0; MEASURED by `git grep -nw
+  unsafe` without comments and attributes. No lint table changed, no exclusion, no linter text changed. New dependencies:
+  none; new uses of crates already in the lock: the ICMP suite takes netlink-packet-core 0.9.0, netlink-packet-route
+  0.34.0, netlink-sys 0.9.0 (MIT), linux-raw-sys's `netlink` feature and rustix's `param` feature; the raw suite takes the interface crate; the
+  three hosts take the direct crate as a dev-dependency. The probe also writes its own memory with nix's
+  `process_vm_writev` (feature `uio`, already on). Hostile-guest suite: not built and not run (the thread-test design
+  review is owed to the owner first); the generator's refusals and properties, the thirty hostile rows, the probe and
+  the canaries are the hostile-caller checks of the API crate. Options a guest can reach: unchanged, the 96 methods.
+- 2026-11-26 guard repair (e36328391 -> b599e5b85): unsafe lines unchanged, the direct crate 4 -> 4 (the same four
+  calls, two reasons rewritten to name the canaries), every other crate of the track 0 -> 0; MEASURED by `git grep -nw
+  unsafe` without comments and attributes. No lint table changed, no exclusion. New dependencies: none; the direct
+  crate's dev-dependency nix takes two more features, `process` and `uio`, for the probe's `process_vm_readv` read of
+  its own memory (read only). Hostile-guest suite: not built and not run (the thread-test design review is owed to the
+  owner first); the generator's refusals, the probe and the canaries are the hostile-caller checks of the API crate.
+- 2026-11-26 repair: unsafe lines unchanged, every crate of the track 0 -> 0 except the direct crate 4 -> 4 (the same
+  four calls; `get_into`, `full_info_into` and `ioctl_within` now hold three of them); MEASURED by `git grep -nw unsafe`
+  without comments and attributes at 1ea5c793e and at the tip. New dependencies: none; the direct crate's tests now use
+  socket2 0.6.5 and nix 0.31.4 (already in the lock), the TCP suite takes linux-raw-sys's `netlink` feature.
+  Hostile-guest suite: not built and not run (the thread-test design review is owed to the owner first); the probe and
+  the API suite are the hostile-caller checks of the API crate.
 - Unsafe lines (root manifest's count, `git grep` at HEAD), before HS1 (55fd7bafc, agents' copies) and after
   (24d3b3b6a): linux-socket-options 2 -> 0, tcp host 1 -> 0, icmp suite 1 -> 0, route-resolver suite 2 -> 0, every
   other crate of the track 0 -> 0; new `crates/linux-socket-options/implementation/direct` 0 -> 4, its interface,

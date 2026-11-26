@@ -1,5 +1,6 @@
-//! What a wait and a receive allocate, counted over the whole process: a binary without the test harness, whose
-//! threads would allocate beside the check.
+//! What a wait and a receive allocate, counted over the whole process.
+//!
+//! It is a binary without the test harness, whose threads would allocate beside the check.
 
 mod support;
 
@@ -12,7 +13,7 @@ use wcontainers_abi::HostError;
 use wcontainers_udp_sockets::UdpSockets;
 use wcontainers_udp_sockets_host::HostUdpSockets;
 
-use support::{Wakes, pair, wait_and_take};
+use support::{DATAGRAMS, Wakes, pair, wait_and_take};
 
 #[global_allocator]
 static COUNTING: &StatsAlloc<System> = &INSTRUMENTED_SYSTEM;
@@ -23,14 +24,12 @@ fn allocations() -> usize {
     stats.allocations + stats.reallocations
 }
 
-/// How many waits or receives each check counts.
-const DATAGRAMS: usize = 1200;
-
 /// How many waits warm a socket's waiter list before allocations are counted.
 const WARM_UP: usize = 10;
 
-/// A call that has to wait allocates nothing once its socket has been waited on, and a receive with nothing queued
-/// allocates nothing.
+/// A call that has to wait allocates nothing once its socket has been waited on.
+///
+/// A receive with nothing queued allocates nothing either.
 fn a_warm_wait_and_a_receive_that_would_block_allocate_nothing() {
     let sockets = HostUdpSockets::new().expect("make the host's UDP sockets");
     let (socket, sender) = pair(&sockets);

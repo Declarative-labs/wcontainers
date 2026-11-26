@@ -117,8 +117,9 @@ fn allocations_of(mut cycle: impl FnMut()) -> u64 {
     .count_total
 }
 
-/// Once a connection has waited, its waits that have to wait allocate nothing; a receive that brings control
-/// messages, a timestamp and the unread byte count allocates nothing.
+/// Once a connection has waited, its waits that have to wait allocate nothing.
+///
+/// A receive that brings control messages, a timestamp and the unread byte count allocates nothing either.
 fn a_warm_wait_and_a_receive_with_control_messages_allocate_nothing() {
     let sockets = HostTcpSockets::new().expect("readiness");
     let (_listener, client, server) = connected(&sockets);

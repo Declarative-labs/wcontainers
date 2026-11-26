@@ -1,18 +1,17 @@
 //! The tests every implementation of wcontainers-icmp-sockets runs, written against its traits alone.
 //!
-//! Each runs as root in a network namespace of its own, with loopback up and every group allowed ICMP echo
-//! sockets, on links, routes, rules and queueing disciplines it builds there with iproute2's `ip` and `tc`. A
-//! packet socket of the namespace sees what leaves a link.
+//! Each runs as root in a network namespace of its own, loopback up and ICMP echo sockets allowed, on links, routes,
+//! rules and queues built there as `ip` and `tc` commands. A packet socket sees what leaves a link.
 #![cfg(target_os = "linux")]
+
+mod netlink;
 
 use core::cell::{Cell, RefCell};
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use core::num::{NonZeroU16, NonZeroU32};
 use std::future::Future;
-use std::io::Write;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::pin::{Pin, pin};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
@@ -64,13 +63,11 @@ pub const PING_GROUP_RANGE: &str = "/proc/sys/net/ipv4/ping_group_range";
 pub const ECHO_IGNORE_BROADCASTS: &str = "/proc/sys/net/ipv4/icmp_echo_ignore_broadcasts";
 /// The anycast addresses of this thread's network namespace.
 pub const ANYCAST_LIST: &str = "/proc/thread-self/net/anycast6";
-pub const TRAFFIC_CONTROL: &str = "tc";
-const STATISTICS: &str = "-s";
-const JSON: &str = "-j";
-pub const SHOW_CLASSES: &[&str] = &[STATISTICS, JSON, "class", "show", DEVICE];
-pub const SHOW_GROUPS: &[&str] = &["maddr", "show", DEVICE];
-/// The third band of a prio queue, which its default map gives `TC_PRIO_FILLER` alone.
-pub const THIRD_BAND: &str = "\"handle\":\"1:3\"";
+/// The third band of [`PRIO_QUEUE`], class 1:3, which its default map gives `TC_PRIO_FILLER` alone.
+///
+/// https://man7.org/linux/man-pages/man8/tc-prio.8.html
+const THIRD_BAND: netlink_packet_route::tc::TcHandle =
+    netlink_packet_route::tc::TcHandle { major: 1, minor: 3 };
 /// The gateways of the dummy link, as neighbours last confirmed long ago; the link resolves neighbours so that IPv6 confirms them.
 pub const STALE_GATEWAYS: &str = "link set ia arp on
 neigh add 10.3.0.2 lladdr 02:00:00:00:00:02 dev ia nud stale
@@ -192,78 +189,51 @@ pub const LOOK_AGAIN_SOON: Duration = Duration::from_millis(1);
 ///
 /// https://man7.org/linux/man-pages/man7/icmp.7.html
 pub const PATIENCE: Duration = Duration::from_secs(2);
-/// The iproute2 tool the checks build their networks with.
-pub const IP: &str = "ip";
-/// Reads the commands from the input.
-const BATCH: &[&str] = &["-batch", "-"];
-const IPV6: &[&str] = &["-6"];
-/// The packet count of a statistics object in iproute2's JSON.
-pub const PACKETS: &str = "\"packets\":";
-/// The word before a link's name in an `ip` command.
-pub const DEVICE: &str = "dev";
+/// The `ip` options of an IPv6 command.
+const IPV6: &[&str] = &[netlink::IPV6_OPTION];
 /// The option that pads an IPv6 extension header by its length and two bytes more.
 ///
 /// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
 pub const PAD_N: u8 = 1;
 /// How many bytes PadN pads after its type and length in the smallest extension header.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
 pub const PADDED: u8 = 4;
 
-/// Returns the number after `field` in a tool's JSON output, after the first `after` in it.
-pub fn number_after(text: &str, after: &str, field: &str) -> u64 {
-    let start = text
-        .find(after)
-        .unwrap_or_else(|| panic!("no {after}: {text}"));
-    let rest = &text[start..];
-    let at = rest
-        .find(field)
-        .unwrap_or_else(|| panic!("no {field}: {text}"))
-        + field.len();
-    rest[at..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{text}"))
+/// Returns the packets the link's third prio band has sent, as `tc -s class show dev <link>` gives them for class 1:3.
+pub fn third_band_packets(link: &str) -> u64 {
+    netlink::class_packets(link, THIRD_BAND)
 }
 
-/// Returns how long ago the link's neighbour entry for the address was confirmed, in whole seconds.
+/// Returns the packets the link's egress filter's action took, as `tc -s filter show dev <link> egress` gives them.
+pub fn egress_action_packets(link: &str) -> u64 {
+    netlink::egress_action_packets(link)
+}
+
+/// Makes the calling thread's namespace track the connections of the packets it makes, as an `nft` table with `ct state`.
+pub fn track_made_connections() {
+    netlink::track_made_connections();
+}
+
+/// Returns how long ago the link's neighbour entry for the address was confirmed, in whole seconds, as iproute2 counts.
+///
+/// Linux gives the age in clock ticks, which `ip -s neigh show` divides by the ticks of a second.
 pub fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
-    const FIELD: &str = "\"confirmed\":";
-    /// Shows the neighbour entries with their times, as JSON.
-    const SHOW: &[&str] = &[STATISTICS, JSON, "neigh", "show"];
-    let output = Command::new(IP)
-        .args(SHOW)
-        .arg(address.to_string())
-        .args([DEVICE, link])
-        .output()
-        .expect("ip runs");
-    let text = String::from_utf8(output.stdout).expect("ip writes text");
-    number_after(&text, FIELD, FIELD)
+    let ticks = netlink::confirmed_ticks(address, link)
+        .unwrap_or_else(|| panic!("no neighbour entry for {address} on {link}"));
+    u64::from(ticks) / rustix::param::clock_ticks_per_second()
 }
 
 /// Returns the temporary address Linux made on the link, once its duplicate address detection, which runs later, is done.
 pub fn temporary_address(link: &str) -> Ipv6Addr {
-    /// Shows the link's temporary addresses that are no longer tentative, as JSON.
-    const SHOW: &[&str] = &["-6", JSON, "address", "show", "temporary", "-tentative"];
-    /// The mark that ends a string in iproute2's JSON.
-    const JSON_QUOTE: char = '"';
     /// The time between two looks, a hundredth of the time duplicate address detection waits.
     ///
     /// https://www.rfc-editor.org/rfc/rfc4861#section-10
     const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_millis(10);
-    const LOCAL: &str = "\"local\":\"";
     let deadline = std::time::Instant::now() + PATIENCE;
     while std::time::Instant::now() < deadline {
-        let output = Command::new(IP)
-            .args(SHOW)
-            .args([DEVICE, link])
-            .output()
-            .expect("ip runs");
-        let text = String::from_utf8(output.stdout).expect("ip writes text");
-        if let Some(start) = text.find(LOCAL) {
-            let rest = &text[start + LOCAL.len()..];
-            let end = rest.find(JSON_QUOTE).expect("an address ends");
-            return rest[..end].parse().expect("an IPv6 address");
+        if let Some(address) = netlink::temporary_address(link) {
+            return address;
         }
         std::thread::sleep(LOOK_AGAIN);
     }
@@ -281,80 +251,120 @@ const ICMP_HEADER: usize = 8;
 static NO_OPTIONS: std::sync::LazyLock<Ipv4Options> = std::sync::LazyLock::new(Ipv4Options::new);
 
 pub fn ip(commands: &str) {
-    batch(IP, &[], commands);
+    batch(&[], commands);
 }
 
 pub fn ip6(commands: &str) {
-    batch(IP, IPV6, commands);
+    batch(IPV6, commands);
 }
 
+/// Does each line of `commands` as the `tc` command it is, through the routing socket, in order.
 pub fn tc(commands: &str) {
-    batch(TRAFFIC_CONTROL, &[], commands);
+    for line in commands.lines() {
+        assert!(
+            netlink::traffic_control_done(line),
+            "tc {line}: not a command done here"
+        );
+    }
 }
 
-/// Runs each line of `commands` as one command of the iproute2 tool, with these options.
-pub fn batch(tool: &str, options: &[&str], commands: &str) {
-    let mut child = Command::new(tool)
-        .args(options)
-        .args(BATCH)
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|error| panic!("{tool} runs: {error}"));
-    child
-        .stdin
-        .take()
-        .expect("the tool's input")
-        .write_all(commands.as_bytes())
-        .expect("the tool reads its commands");
-    assert!(
-        child.wait().expect("the tool ends").success(),
-        "{tool}: {commands}"
-    );
-    if tool == IP {
-        settle_addresses(commands);
+/// Does each line of `commands` as the `ip` command it is with these options, through the routing socket, in order.
+///
+/// Then it waits until each IPv6 address the lines add is local, as Linux makes it in its later address work.
+pub fn batch(options: &[&str], commands: &str) {
+    for line in commands.lines() {
+        assert!(
+            netlink::done(line, options),
+            "ip {line}: not a command done here"
+        );
     }
+    settle_addresses(commands);
 }
 
 /// How long a check waits for Linux to finish what an `ip` command began, which its work behind the routing lock delays.
 ///
 /// https://man7.org/linux/man-pages/man8/ip-address.8.html#:~:text=nodad
 pub const SETTLING: Duration = Duration::from_secs(10);
-/// The `ip` commands that give a link an address, and what they are followed by.
-const ADDRESS: &str = "address";
-const ADDING: [&str; 2] = ["add", "replace"];
-const LOCAL_ROUTES: &[&str] = &["-6", "route", "show", "table", "local"];
-/// What ends an address before its prefix length in an `ip` command.
-const PREFIX_LENGTH: char = '/';
+/// The verbs that follow `address` when an `ip` command gives a link an address.
+const ADDING: [&str; 2] = [netlink::word::ADD, netlink::word::REPLACE];
 
 /// Waits until each IPv6 address the commands add is local: Linux routes a `nodad` one locally only in its later address work.
 fn settle_addresses(commands: &str) {
     for line in commands.lines() {
         let mut words = line.split_whitespace();
-        if words.next() != Some(ADDRESS) || !words.next().is_some_and(|verb| ADDING.contains(&verb))
+        if words.next() != Some(netlink::word::ADDRESS)
+            || !words.next().is_some_and(|verb| ADDING.contains(&verb))
         {
             continue;
         }
         let Some(Ok(IpAddr::V6(address))) = words
             .next()
-            .and_then(|prefix| prefix.split(PREFIX_LENGTH).next())
+            .and_then(|prefix| prefix.split(netlink::PREFIX_SEPARATOR).next())
             .map(str::parse)
         else {
             continue;
         };
         let start = Instant::now();
-        while output(IP, &[LOCAL_ROUTES, &[&address.to_string()]].concat()).is_empty() {
+        while !netlink::locally_routed(address) {
             assert!(start.elapsed() < SETTLING, "{address} is not local yet");
             std::thread::sleep(LOOK_AGAIN_SOON);
         }
     }
 }
 
-pub fn output(tool: &str, arguments: &[&str]) -> String {
-    let output = Command::new(tool)
-        .args(arguments)
-        .output()
-        .expect("the tool runs");
-    String::from_utf8(output.stdout).expect("the tool writes text")
+/// The multicast groups of this thread's namespace, IPv4's and IPv6's, which `ip maddr show` lists.
+///
+/// https://man7.org/linux/man-pages/man8/ip-maddress.8.html
+const GROUPS_V4: &str = "/proc/thread-self/net/igmp";
+const GROUPS_V6: &str = "/proc/thread-self/net/igmp6";
+
+/// Returns the multicast groups the link has joined, read where `ip maddr show dev <link>` reads them.
+///
+/// The IPv4 table names a link on a line, `<index> <name> : ...`, with a line per group under it in hexadecimal of the
+/// machine's order; the IPv6 table has a line per group, `<index> <name> <32 hexadecimal digits> ...`.
+pub fn joined_groups(link: &str) -> Vec<IpAddr> {
+    /// What follows a link's name in the IPv4 table, joined to a name of ten characters or more.
+    const NAME_END: char = ':';
+    let mut groups = Vec::new();
+    let v4 =
+        std::fs::read_to_string(GROUPS_V4).unwrap_or_else(|error| panic!("{GROUPS_V4}: {error}"));
+    let mut current = None;
+    for line in v4.lines().skip(1) {
+        let mut words = line.split_whitespace();
+        if line.starts_with(char::is_whitespace) {
+            if current == Some(link)
+                && let Some(Ok(value)) = words
+                    .next()
+                    .map(|hex| u32::from_str_radix(hex, netlink::HEX_RADIX))
+            {
+                groups.push(IpAddr::V4(Ipv4Addr::from(value.to_ne_bytes())));
+            }
+        } else {
+            // A name of ten characters or more meets the colon after it.
+            current = words.nth(1).map(|name| name.trim_end_matches(NAME_END));
+        }
+    }
+    let v6 =
+        std::fs::read_to_string(GROUPS_V6).unwrap_or_else(|error| panic!("{GROUPS_V6}: {error}"));
+    for line in v6.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if let [_, name, hex, ..] = words.as_slice()
+            && *name == link
+            && let Ok(value) = u128::from_str_radix(hex, netlink::HEX_RADIX)
+        {
+            groups.push(IpAddr::V6(Ipv6Addr::from(value)));
+        }
+    }
+    groups
+}
+
+/// Returns a link's link-layer address as iproute2 writes it, bytes in hexadecimal between colons.
+pub fn link_address(link: &str) -> String {
+    netlink::link_address(link)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(&netlink::MAC_SEPARATOR.to_string())
 }
 
 pub fn write_setting(path: &str, value: &str) {
@@ -1787,8 +1797,7 @@ const OVER_THE_LINK: usize = 1600;
 /// Returns what each path MTU discovery mode makes of a packet over its route's MTU and of one over its link's.
 ///
 /// `send` sends one of the length given toward [`NARROW`] or [`NARROW_V6`]. Dont and want fragment to the route's MTU;
-/// do is too long for it; probe (with the don't-fragment bit on IPv4) and interface leave it whole and are too long for
-/// the link's; omit leaves it whole and fragments to the link's MTU.
+/// do is too long for it; probe (don't-fragment on IPv4) and interface are too long for the link's; omit fragments.
 pub fn path_mtu_modes_take_their_mtu(
     send: impl Fn(IpAddr, PathMtuDiscovery, usize) -> Result<(), SendError>,
 ) {
@@ -2345,8 +2354,12 @@ const TEMPORARY_BUT_PUBLIC_PREFERRED: &str = "1";
 /// https://www.rfc-editor.org/rfc/rfc863
 const DISCARD_PORT: u16 = 9;
 
-/// Returns the source the host's own UDP socket takes to an address with the preferences' flags set.
-pub fn host_source(to: Ipv6Addr, preferences: SourcePreferences) -> Ipv6Addr {
+/// Returns the source the host's own UDP socket takes to an address with the preferences' flags set by `options`.
+pub fn host_source<O: wcontainers_linux_socket_options::LinuxSocketOptions>(
+    options: &O,
+    to: Ipv6Addr,
+    preferences: SourcePreferences,
+) -> Ipv6Addr {
     let temporary = match preferences.temporary {
         TemporaryAddressPreference::SystemDefault => libc::IPV6_PREFER_SRC_PUBTMP_DEFAULT,
         TemporaryAddressPreference::Temporary => libc::IPV6_PREFER_SRC_TMP,
@@ -2359,12 +2372,9 @@ pub fn host_source(to: Ipv6Addr, preferences: SourcePreferences) -> Ipv6Addr {
     let socket =
         std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, u16::MIN)).expect("a UDP socket");
     let flags = (temporary | mobile).cast_unsigned();
-    wcontainers_linux_socket_options::LinuxSocketOptions::set_ipv6_addr_preferences(
-        &wcontainers_linux_socket_options_direct::DirectLinuxSocketOptions,
-        std::os::fd::AsFd::as_fd(&socket),
-        flags,
-    )
-    .expect("the source preferences are set");
+    options
+        .set_ipv6_addr_preferences(std::os::fd::AsFd::as_fd(&socket), flags)
+        .expect("the source preferences are set");
     socket
         .connect((to, DISCARD_PORT))
         .expect("the socket connects");
@@ -2378,7 +2388,9 @@ pub fn host_source(to: Ipv6Addr, preferences: SourcePreferences) -> Ipv6Addr {
 ///
 /// A care-of preference chooses as the host's own socket does: Linux prefers a care-of address only over a Mobile IPv6
 /// home address, which no link here has.
-pub fn sources_by_preference() -> Vec<(SourcePreferences, Ipv6Addr)> {
+pub fn sources_by_preference<O: wcontainers_linux_socket_options::LinuxSocketOptions>(
+    options: &O,
+) -> Vec<(SourcePreferences, Ipv6Addr)> {
     write_setting(TEMPORARY_ADDRESSES, TEMPORARY_BUT_PUBLIC_PREFERRED);
     ip6(MANAGED_TEMPORARY);
     let temporary = temporary_address(DUMMY);
@@ -2391,22 +2403,28 @@ pub fn sources_by_preference() -> Vec<(SourcePreferences, Ipv6Addr)> {
             temporary: preference,
             mobile: MobileAddressPreference::Home,
         };
-        assert_eq!(host_source(ON_LINK_V6, home), source, "{home:?}");
+        assert_eq!(host_source(options, ON_LINK_V6, home), source, "{home:?}");
         let care_of = SourcePreferences {
             mobile: MobileAddressPreference::CareOf,
             ..home
         };
         sources.push((home, source));
-        sources.push((care_of, host_source(ON_LINK_V6, care_of)));
+        sources.push((care_of, host_source(options, ON_LINK_V6, care_of)));
     }
     sources
 }
 
 /// Checks that IPv6 source preferences choose between the link's public address and a temporary one.
-pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
+pub fn source_preferences_are_taken<
+    S: IcmpSockets,
+    O: wcontainers_linux_socket_options::LinuxSocketOptions,
+>(
+    sockets: S,
+    options: O,
+) {
     enter_network_namespace();
     ip(NETWORK);
-    let sources = sources_by_preference();
+    let sources = sources_by_preference(&options);
     let socket = opened(&sockets, IpVersion::V6);
     let capture = Capture::on(DUMMY);
     let message = echo(IpVersion::V6, PAYLOAD);
@@ -2467,13 +2485,7 @@ pub fn priority_chooses_the_band<S: IcmpSockets>(sockets: S) {
     for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
         let socket = opened(&sockets, version_of(to));
         let message = echo(version_of(to), PAYLOAD);
-        let third_band = || {
-            number_after(
-                &output(TRAFFIC_CONTROL, &[SHOW_CLASSES, &[DUMMY]].concat()),
-                THIRD_BAND,
-                PACKETS,
-            )
-        };
+        let third_band = || third_band_packets(DUMMY);
         let before = third_band();
         ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
         assert_eq!(third_band(), before, "{to}: priority 0 is not filler");
@@ -3269,8 +3281,7 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
     const ANYCAST: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 0x99);
     let link = Some(index(DUMMY));
     let socket = opened(&sockets, IpVersion::V4);
-    let joined =
-        |group: IpAddr| output(IP, &[SHOW_GROUPS, &[DUMMY]].concat()).contains(&group.to_string());
+    let joined = |group: IpAddr| joined_groups(DUMMY).contains(&group);
     // An echo request to the group from the dummy link, which the namespace answers only if it takes the request.
     let replies_looped = |socket: &S::Socket, group: IpAddr| {
         for (looped, replied) in [(false, false), (true, true)] {
@@ -3973,7 +3984,7 @@ pub fn other_settings_set_twice_answer_as_once<S: IcmpSockets>(sockets: S) {
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
-    ($value:expr) => {
+    ($value:expr, $options:expr) => {
         #[test]
         fn echo_reply_arrives_whole_over_ipv4() {
             $crate::echo_reply_arrives_whole_over_ipv4($value);
@@ -4131,7 +4142,7 @@ macro_rules! tests {
 
         #[test]
         fn source_preferences_are_taken() {
-            $crate::source_preferences_are_taken($value);
+            $crate::source_preferences_are_taken($value, $options);
         }
 
         #[test]

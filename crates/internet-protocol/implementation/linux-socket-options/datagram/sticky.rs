@@ -54,8 +54,12 @@ enum Start {
 const SLOTS: usize = Slot::ChecksumCoverage as usize + 1;
 
 /// `UDPLITE_SEND_CSCOV` of `linux/udp.h`, which neither libc nor linux-raw-sys carries.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
 pub const UDP_LITE_SEND_COVERAGE: u32 = 10;
 /// `UDPLITE_RECV_CSCOV` of `linux/udp.h`.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/udp.h
 pub const UDP_LITE_RECEIVE_COVERAGE: u32 = 11;
 
 impl Slot {
@@ -191,7 +195,7 @@ fn words(value: &[u8]) -> Result<(u32, u32), HostError> {
             .and_then(|bytes| bytes.try_into().ok())
             .map(u32::from_ne_bytes)
     };
-    match (value.len(), word(0), word(size_of::<u32>())) {
+    match (value.len(), word(usize::MIN), word(size_of::<u32>())) {
         (TWO_WORDS, Some(first), Some(second)) => Ok((first, second)),
         _ => Err(HostError::Errno(libc::EINVAL)),
     }

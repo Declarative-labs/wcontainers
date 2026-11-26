@@ -19,7 +19,7 @@ use wcontainers_udp_sockets_host::{HostUdpSocket, HostUdpSockets};
 
 /// Datagrams sent before they are all received, fewer than a loopback socket's default receive buffer holds.
 const BATCH: usize = 32;
-/// Batches measured; the median batch is reported.
+/// How many batches are measured; the median batch is reported.
 const BATCHES: usize = 4000;
 const PAYLOAD: [u8; 64] = [0x5a; 64];
 

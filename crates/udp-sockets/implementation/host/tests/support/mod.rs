@@ -19,6 +19,9 @@ pub const PATIENCE: Duration = Duration::from_secs(1);
 
 pub const PAYLOAD: &[u8] = b"a datagram waited for";
 
+/// How many datagrams each check sends, waits for or receives.
+pub const DATAGRAMS: usize = 1200;
+
 #[derive(Default)]
 pub struct Wakes {
     pub count: Mutex<usize>,

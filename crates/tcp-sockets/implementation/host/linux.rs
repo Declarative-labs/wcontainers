@@ -2,7 +2,7 @@
 
 use std::ffi::c_int;
 use std::io::IoSlice;
-use std::mem::size_of;
+use std::mem::{offset_of, size_of};
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -572,14 +572,14 @@ fn hold_flow_label(
         IpAddr::V4(address) => address.to_ipv6_mapped(),
         IpAddr::V6(address) => address,
     };
-    let request = flow_label_request(
+    let mut request = flow_label_request(
         destination,
         label.value().to_be(),
         uapi::IPV6_FL_A_GET,
         uapi::IPV6_FL_S_PROCESS,
         uapi::IPV6_FL_F_CREATE,
     );
-    LINUX.set_ipv6_flowlabel_mgr(socket, &request)?;
+    LINUX.set_ipv6_flowlabel_mgr(socket, &mut request)?;
     set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_FLOWINFO_SEND, true)
 }
 
@@ -675,11 +675,13 @@ options::uapi_mirror! {
     #[derive(IntoBytes)]
     struct KeyQuery mirrors uapi::tcp_ao_getsockopt {
         addr: StorageBytes,
-        alg_name: [libc::c_char; 64],
-        key: [u8; 80],
+        alg_name: [libc::c_char; offset_of!(uapi::tcp_ao_getsockopt, key)
+            - offset_of!(uapi::tcp_ao_getsockopt, alg_name)],
+        key: [u8; uapi::TCP_AO_MAXKEYLEN as usize],
         nkeys: u32,
         /// `is_current`, `is_rnext` and `get_all`, left clear to ask for the named key alone.
-        _bitfield_1: [u8; 2],
+        _bitfield_1: [u8; offset_of!(uapi::tcp_ao_getsockopt, sndid)
+            - offset_of!(uapi::tcp_ao_getsockopt, _bitfield_1)],
         sndid: u8,
         rcvid: u8,
         prefix: u8,
@@ -1663,14 +1665,14 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                 } else {
                     uapi::IPV6_FL_A_PUT
                 };
-                let request = flow_label_request(
+                let mut request = flow_label_request(
                     Ipv6Addr::UNSPECIFIED,
                     u32::MIN,
                     action,
                     u32::MIN,
                     uapi::IPV6_FL_F_REFLECT,
                 );
-                match LINUX.set_ipv6_flowlabel_mgr(socket, &request) {
+                match LINUX.set_ipv6_flowlabel_mgr(socket, &mut request) {
                     // Turning off a reflection that is off.
                     Err(HostError::Errno(libc::ESRCH)) if !on => Ok(()),
                     other => other,

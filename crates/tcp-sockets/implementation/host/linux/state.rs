@@ -1,7 +1,7 @@
 //! The state readings of a Linux TCP or MPTCP socket and the repair settings that write it back.
 
 use std::ffi::c_int;
-use std::mem::size_of;
+use std::mem::{offset_of, size_of};
 use std::net::IpAddr;
 use std::os::fd::BorrowedFd;
 use std::sync::OnceLock;
@@ -69,8 +69,9 @@ const NO_MULTIPATH_URGENT_MARK: &str = "Linux keeps no urgent mark for a multipa
 const NO_MULTIPATH_CLAMP: &str = "Linux reads no window clamp or quick acknowledgement mode of a multipath socket (TCP_WINDOW_CLAMP and TCP_QUICKACK answer EOPNOTSUPP), and the tuned values need both";
 const NO_FULLMESH_LIMIT: &str = "the host's MPTCP_INFO gives the limit of fullmesh endpoints, which the contract's multipath information has no field for";
 
-/// The TCP states in the order Linux numbers them from `TCP_ESTABLISHED`, which is one, less `TCP_NEW_SYN_RECV` and
-/// `TCP_BOUND_INACTIVE`, which no socket a program holds is in.
+/// The TCP states in the order Linux numbers them from `TCP_ESTABLISHED`, which is one.
+///
+/// `TCP_NEW_SYN_RECV` and `TCP_BOUND_INACTIVE` are left out, as no socket a program holds is in them.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/include/net/tcp_states.h
 const STATES: [TcpState; 11] = [
@@ -133,9 +134,21 @@ struct AccurateEcnInformation {
     received_e1_bytes: u32,
     received_e0_bytes: u32,
     received_ce_bytes: u32,
-    /// `tcpi_accecn_fail_mode` then `tcpi_accecn_opt_seen` as two `u16`s on Linux 6.18 and 6.19; from 7.0 one `u32` of
-    /// bit fields from `tcpi_ecn_mode`, which [`AccurateEcnLayout`] tells apart.
-    last: [u8; 4],
+    /// The last `TCP_INFO` word, whose layout changed with Linux 7.0.
+    ///
+    /// It is `tcpi_accecn_fail_mode` then `tcpi_accecn_opt_seen` as two `u16`s on Linux 6.18 and 6.19; from 7.0 one
+    /// `u32` of bit fields from `tcpi_ecn_mode`, which [`AccurateEcnLayout`] tells apart.
+    last: [u8; size_of::<u32>()],
+}
+
+/// The last `TCP_INFO` word as Linux 6.18 and 6.19 lay it out.
+#[repr(C)]
+#[derive(Clone, Copy, FromBytes, KnownLayout, Immutable)]
+struct AccurateEcnHalves {
+    /// `tcpi_accecn_fail_mode`.
+    fail_mode: u16,
+    /// `tcpi_accecn_opt_seen`.
+    option_seen: u16,
 }
 
 /// How the last word of a `TCP_INFO` with the Accurate ECN fields is laid out, which only the kernel's version tells.
@@ -152,12 +165,19 @@ enum AccurateEcnLayout {
 /// https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/tcp.h#L344-L347
 const ECN_MODE_SINCE: (u32, u32) = (7, 0);
 
-/// The bit fields of the last `TCP_INFO` word from Linux 7.0, in order: `tcpi_ecn_mode:2`, `tcpi_accecn_opt_seen:2` and
-/// `tcpi_accecn_fail_mode:4`.
+/// The bit fields of the last `TCP_INFO` word from Linux 7.0, in order.
+///
+/// They are `tcpi_ecn_mode:2`, `tcpi_accecn_opt_seen:2` and `tcpi_accecn_fail_mode:4`.
 ///
 /// https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/tcp.h#L344-L347
 const ECN_MODE_BITS: u32 = 2;
+/// The width of `tcpi_accecn_opt_seen`.
+///
+/// https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/tcp.h#L344-L347
 const OPTION_SEEN_BITS: u32 = 2;
+/// The width of `tcpi_accecn_fail_mode`.
+///
+/// https://github.com/torvalds/linux/blob/v7.0/include/uapi/linux/tcp.h#L344-L347
 const FAIL_MODE_BITS: u32 = 4;
 
 /// The ECN modes in the order `TCPI_ECN_MODE_*` numbers them from zero.
@@ -170,8 +190,9 @@ const ECN_MODES: [EcnMode; 4] = [
     EcnMode::Pending,
 ];
 
-/// Gives the `bits` of a native-endian `word` after the first `shift`, counted as GCC lays out bit fields: from the
-/// lowest bit on a little-endian host, from the highest on a big-endian one.
+/// Gives the `bits` of a native-endian `word` after the first `shift`, counted as GCC lays out bit fields.
+///
+/// That is from the lowest bit on a little-endian host, from the highest on a big-endian one.
 fn bit_field(word: u32, shift: u32, bits: u32) -> u32 {
     let from_lowest = if cfg!(target_endian = "big") {
         u32::BITS - shift - bits
@@ -210,7 +231,7 @@ options::uapi_mirror! {
         tcpi_backoff: u8,
         tcpi_options: u8,
         /// The window scales, the application limit and the fast open failure, read by [`TcpInfo::bit_field`].
-        _bitfield_1: [u8; 2],
+        _bitfield_1: [u8; offset_of!(uapi::tcp_info, tcpi_rto) - offset_of!(uapi::tcp_info, _bitfield_1)],
         tcpi_rto: u32,
         tcpi_ato: u32,
         tcpi_snd_mss: u32,
@@ -269,7 +290,8 @@ options::uapi_mirror! {
     /// `struct tcp_ao_info_opt`, given as linux-raw-sys's by [`authentication_information`] for its bit field accessors.
     #[derive(IntoBytes)]
     struct AuthenticationInformation mirrors uapi::tcp_ao_info_opt {
-        _bitfield_1: [u8; 4],
+        _bitfield_1: [u8; offset_of!(uapi::tcp_ao_info_opt, reserved2)
+            - offset_of!(uapi::tcp_ao_info_opt, _bitfield_1)],
         reserved2: u16,
         current_key: u8,
         rnext: u8,
@@ -331,13 +353,24 @@ pub(super) fn microsecond_timestamps(socket: BorrowedFd<'_>) -> Result<bool, Hos
     Ok(u32::from(information.tcpi_options) & uapi::TCPI_OPT_USEC_TS != u32::MIN)
 }
 
-/// The bit fields of `tcp_info` by their first bit and width: `tcpi_snd_wscale:4`, `tcpi_rcv_wscale:4`,
-/// `tcpi_delivery_rate_app_limited:1` and `tcpi_fastopen_client_fail:2`.
+/// The bit fields of `tcp_info` by their first bit and width.
+///
+/// They are `tcpi_snd_wscale:4`, `tcpi_rcv_wscale:4`, `tcpi_delivery_rate_app_limited:1` and
+/// `tcpi_fastopen_client_fail:2`.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tcp.h#:~:text=tcpi_snd_wscale
 const SEND_WINDOW_SCALE: (usize, u8) = (0, 4);
+/// The first bit and width of `tcpi_rcv_wscale`.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tcp.h#:/Users/thomaseaton:text=tcpi_snd_wscale
 const RECEIVE_WINDOW_SCALE: (usize, u8) = (4, 4);
+/// The first bit and width of `tcpi_delivery_rate_app_limited`.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tcp.h#:/Users/thomaseaton:text=tcpi_snd_wscale
 const DELIVERY_RATE_APPLICATION_LIMITED: (usize, u8) = (8, 1);
+/// The first bit and width of `tcpi_fastopen_client_fail`.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tcp.h#:/Users/thomaseaton:text=tcpi_snd_wscale
 const FAST_OPEN_CLIENT_FAILURE: (usize, u8) = (9, 2);
 
 impl TcpInfo {
@@ -569,7 +602,6 @@ fn information_of(
     shortfalls.count(UNFILLED_INFORMATION);
     let classic = u32::from(info.tcpi_options) & uapi::TCPI_OPT_ECN != u32::MIN;
     let word = u32::from_ne_bytes(ecn.last);
-    let [first, second] = [[ecn.last[0], ecn.last[1]], [ecn.last[2], ecn.last[3]]];
     let (ecn_mode, fail_mode, option_seen) = match layout {
         None if classic => (EcnMode::Classic, u16::MIN, u16::MIN),
         None => (EcnMode::Disabled, u16::MIN, u16::MIN),
@@ -584,11 +616,10 @@ fn information_of(
         Some(AccurateEcnLayout::Halves) if classic => {
             return Err(shortfalls.refuse(NO_ECN_MODE));
         }
-        Some(AccurateEcnLayout::Halves) => (
-            EcnMode::Disabled,
-            u16::from_ne_bytes(first),
-            u16::from_ne_bytes(second),
-        ),
+        Some(AccurateEcnLayout::Halves) => {
+            let halves: AccurateEcnHalves = zerocopy::transmute!(ecn.last);
+            (EcnMode::Disabled, halves.fail_mode, halves.option_seen)
+        }
     };
     let state = info
         .tcpi_state

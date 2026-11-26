@@ -118,8 +118,9 @@ pub struct SendState {
     packet_reports: bool,
 }
 
-/// The `SO_TIMESTAMPING` flags every socket keeps: keys, control messages, one report per source, and receive
-/// timestamps only when asked for.
+/// The `SO_TIMESTAMPING` flags every socket keeps.
+///
+/// They are keys, control messages, one report per source, and receive timestamps only when asked for.
 const TIMESTAMPING_BASE: u32 = uapi::SOF_TIMESTAMPING_OPT_ID as u32
     | uapi::SOF_TIMESTAMPING_OPT_CMSG as u32
     | uapi::SOF_TIMESTAMPING_OPT_TX_SWHW as u32
@@ -446,7 +447,7 @@ fn lease_flow_label(
     destination: std::net::Ipv6Addr,
     label: u32,
 ) -> Result<(), HostError> {
-    let request = uapi::in6_flowlabel_req {
+    let mut request = uapi::in6_flowlabel_req {
         flr_dst: in6_addr(destination),
         flr_label: label.to_be(),
         flr_action: uapi::IPV6_FL_A_GET as u8,
@@ -456,7 +457,7 @@ fn lease_flow_label(
         flr_linger: u16::MIN,
         __flr_pad: u32::MIN,
     };
-    LINUX.set_ipv6_flowlabel_mgr(fd, &request)
+    LINUX.set_ipv6_flowlabel_mgr(fd, &mut request)
 }
 
 /// The unspecified address of a destination's family, for binding before a connect or send.

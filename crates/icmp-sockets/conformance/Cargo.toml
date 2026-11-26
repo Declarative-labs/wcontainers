@@ -25,15 +25,18 @@ mitsein.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux's socket option calls for the source preferences, which no vetted crate wraps.
 wcontainers-linux-socket-options = { path = "../../linux-socket-options" }
-wcontainers-linux-socket-options-direct = { path = "../../linux-socket-options/implementation/direct" }
 # The packet types of a packet socket and the errno values of Linux.
 libc = "0.2.191"
-# The type number of a segment routing header.
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
-# The clocks of transmit times.
-rustix = { version = "1.1.6", features = ["net", "time", "linux_4_11"] }
+# The type number of a segment routing header, and the route metrics' numbers.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "netlink", "no_std"] }
+# The clocks of transmit times, and the clock ticks of a second that neighbour ages count.
+rustix = { version = "1.1.6", features = ["net", "param", "time", "linux_4_11"] }
 # The network namespace of each check and the packet socket that sees what leaves a link.
 nix = { version = "0.31.3", default-features = false, features = ["net", "sched", "socket"] }
+# The links and addresses of each check's network, made through the kernel's routing socket (MIT).
+netlink-packet-core = "0.9.0"
+netlink-packet-route = "0.34.0"
+netlink-sys = { version = "0.9.0", default-features = false }
 
 [lints]
 workspace = true

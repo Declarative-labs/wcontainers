@@ -19,7 +19,7 @@ use wcontainers_tcp_sockets_host::HostTcpSockets;
 
 /// Sends made before their bytes are all received, far fewer bytes than a loopback connection's buffers hold.
 const BATCH: usize = 32;
-/// Batches measured; the median batch is reported.
+/// How many batches are measured; the median batch is reported.
 const BATCHES: usize = 4000;
 const PAYLOAD: [u8; 64] = [0x5a; 64];
 

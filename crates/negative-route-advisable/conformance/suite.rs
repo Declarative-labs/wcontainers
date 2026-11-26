@@ -69,7 +69,7 @@ mod suite {
         }
     }
 
-    /// Refuses every advice as not supported, as a correct implementation on a host that cannot take it does.
+    /// An implementation that refuses every advice as not supported, as a correct one on a host that cannot take it does.
     struct Refuses;
 
     impl NegativeRouteAdvisable<()> for Refuses {

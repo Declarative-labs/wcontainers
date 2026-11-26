@@ -62,8 +62,9 @@ impl AnycastMemberships {
     }
 }
 
-/// The interface Linux joins a group on when none is given, found by joining it on a socket of its own and
-/// leaving it on each interface until one holds it.
+/// The interface Linux joins a group on when none is given.
+///
+/// It is found by joining the group on a socket of its own and leaving it on each interface until one holds it.
 fn chosen_interface(level: u32, group: IpAddr) -> Result<u32, HostError> {
     let domain = match group {
         IpAddr::V4(_) => Domain::IPV4,
@@ -86,8 +87,10 @@ fn chosen_interface(level: u32, group: IpAddr) -> Result<u32, HostError> {
     Err(HostError::Errno(libc::EADDRNOTAVAIL))
 }
 
-/// Joins a group and writes its whole source filter, or leaves it. Linux writes a filter only for a membership
-/// named by its interface, so a join on no interface given is made on the one Linux would choose.
+/// Joins a group and writes its whole source filter, or leaves it.
+///
+/// Linux writes a filter only for a membership named by its interface, so a join on no interface given is made on the
+/// one Linux would choose.
 pub fn set_multicast_group<A: Copy>(
     fd: BorrowedFd<'_>,
     level: u32,

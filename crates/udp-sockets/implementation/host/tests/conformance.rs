@@ -3,17 +3,15 @@
 
 use core::cell::RefCell;
 use std::fs::File;
-use std::io::Write;
 use std::os::fd::OwnedFd;
-use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
-use std::time::Duration;
 
 use std::net::{Ipv4Addr, SocketAddr};
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options};
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
+use wcontainers_icmp_sockets_conformance as icmp_suite;
 use wcontainers_internet_protocol::{
     BindAddress, BroadcastPermission, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting,
     IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, LocalBinding, LocalPort,
@@ -35,11 +33,12 @@ use wcontainers_udp_sockets_host::{
 /// How many networks the tests of one run can take, all made before any test opens a socket.
 const NETWORKS: usize = 80;
 
-/// The network the suite asks for, as iproute2's `ip -batch` commands: loopback with multicast and a route with
-/// an MTU of 1500 bytes to 127.0.0.2 and 2001:db8::2; a dummy interface that sends nothing anywhere, with
-/// 192.0.2.3/24, the IPv4 multicast route and 198.51.100.0/24 through a gateway on it; user 1000's datagrams
-/// to anything not local prohibited; a dummy interface with 203.0.113.1/24 and 2001:db8:1::1/64, from which
-/// Linux makes a temporary address.
+/// The network the suite asks for, as `ip` commands the ICMP suite's `ip` does through the routing socket.
+///
+/// Loopback has multicast and a route with an MTU of 1500 bytes to 127.0.0.2 and 2001:db8::2; a dummy interface that
+/// sends nothing anywhere has 192.0.2.3/24, the IPv4 multicast route and 198.51.100.0/24 through a gateway on it; user
+/// 1000's datagrams to anything not local are prohibited; a dummy interface has 203.0.113.1/24 and 2001:db8:1::1/64,
+/// from which Linux makes a temporary address.
 const NETWORK: &str = "\
 link set lo up multicast on
 route add local 127.0.0.2 dev lo table local mtu 1500
@@ -54,35 +53,21 @@ address add 203.0.113.1/24 dev scheduled0
 address add 2001:db8:1::1/64 dev scheduled0 mngtmpaddr
 ";
 
-/// A qdisc that paces each socket's datagrams to its rate and holds each until its transmit time, and one that
-/// keeps a strict schedule on the international atomic clock and so misses every time it holds.
+/// The queueing disciplines: one that paces and holds datagrams, and one that keeps a strict schedule.
+///
+/// The first paces each socket's datagrams to its rate and holds each until its transmit time; the second keeps a
+/// strict schedule on the international atomic clock and so misses every time it holds.
 const QUEUES: &str = "\
 qdisc add dev lo root fq
 qdisc add dev scheduled0 root etf clockid CLOCK_TAI delta 0
 ";
 
-const NARROW_V6: &str = "2001:db8::2";
+/// The IPv6 address of loopback whose local route the network replaces with one of a 1500-byte MTU.
+const NARROW_ROUTE: &str = "route del local 2001:db8::2 table local";
+const NARROW_ROUTE_MTU: &str = "route add local 2001:db8::2 dev lo table local mtu 1500";
 
-/// How often and how long apart the network's maker looks for what Linux adds to an IPv6 address after it.
-const LOCAL_ROUTE_TRIES: u32 = 100;
-const LOCAL_ROUTE_WAIT: Duration = Duration::from_millis(10);
-
-/// Runs one iproute2 program with commands on its standard input, in this thread's network namespace.
-fn iproute2(program: &str, commands: &str) {
-    let mut child = Command::new(program)
-        .args(["-batch", "-"])
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("run iproute2");
-    child
-        .stdin
-        .take()
-        .expect("its input")
-        .write_all(commands.as_bytes())
-        .expect("give iproute2 its commands");
-    let status = child.wait().expect("wait for iproute2");
-    assert!(status.success(), "{program} {commands} answered {status}");
-}
+/// The link Linux makes a temporary address on.
+const TEMPORARY_LINK: &str = "scheduled0";
 
 /// A new network namespace made as the suite asks, held open by the descriptor returned.
 fn network() -> OwnedFd {
@@ -91,50 +76,13 @@ fn network() -> OwnedFd {
     // Temporary addresses made and preferred on every interface made from here on.
     std::fs::write("/proc/sys/net/ipv6/conf/default/use_tempaddr", "2")
         .expect("prefer temporary addresses");
-    iproute2("ip", NETWORK);
-    // Linux adds an IPv6 address's local route a moment after the address, from a work queue.
-    let mut tries = 0;
-    while !Command::new("ip")
-        .args(["-6", "route", "del", "local", NARROW_V6, "table", "local"])
-        .stderr(Stdio::null())
-        .status()
-        .expect("run iproute2")
-        .success()
-    {
-        tries += 1;
-        assert!(tries < LOCAL_ROUTE_TRIES, "the local route of {NARROW_V6}");
-        std::thread::sleep(LOCAL_ROUTE_WAIT);
-    }
-    iproute2(
-        "ip",
-        &format!("route add local {NARROW_V6} dev lo table local mtu 1500\n"),
-    );
-    iproute2("tc", QUEUES);
+    // Each IPv6 address is local once `ip` gives back: Linux adds its local route a moment later, from a work queue.
+    icmp_suite::ip(NETWORK);
+    icmp_suite::ip6(NARROW_ROUTE);
+    icmp_suite::ip(NARROW_ROUTE_MTU);
+    icmp_suite::tc(QUEUES);
     // Linux makes the temporary address a moment after the public one, and it is tentative at first.
-    let mut tries = 0;
-    while Command::new("ip")
-        .args([
-            "-6",
-            "-o",
-            "address",
-            "show",
-            "dev",
-            "scheduled0",
-            "temporary",
-            "-tentative",
-        ])
-        .output()
-        .expect("run iproute2")
-        .stdout
-        .is_empty()
-    {
-        tries += 1;
-        assert!(
-            tries < LOCAL_ROUTE_TRIES,
-            "the temporary address of scheduled0"
-        );
-        std::thread::sleep(LOCAL_ROUTE_WAIT);
-    }
+    icmp_suite::temporary_address(TEMPORARY_LINK);
     // This thread's namespace is the one /proc/sys/net shows it.
     for interface in ["all", "lo"] {
         std::fs::write(
@@ -148,9 +96,10 @@ fn network() -> OwnedFd {
         .into()
 }
 
-/// The networks not yet taken. They are all made at the first test's start, while every other test waits here
-/// before opening a socket: a child process holds every descriptor of its parent until it starts its program,
-/// which would keep a socket another test closed alive.
+/// The networks not yet taken, all made at the first test's start.
+///
+/// Every other test waits here before opening a socket: a child process holds every descriptor of its parent until it
+/// starts its program, which would keep a socket another test closed alive.
 static NETWORKS_LEFT: LazyLock<Mutex<Vec<OwnedFd>>> = LazyLock::new(|| {
     let makers: Vec<_> = (0..NETWORKS).map(|_| std::thread::spawn(network)).collect();
     Mutex::new(
@@ -273,8 +222,9 @@ fn computed(payload: &[u8]) -> UdpDatagram<'_> {
     }
 }
 
-/// A send's report comes before a datagram that arrived after it: this implementation reads the host's error
-/// queue first while a send's reports may wait there.
+/// A send's report comes before a datagram that arrived after it.
+///
+/// This implementation reads the host's error queue first while a send's reports may wait there.
 #[test]
 fn a_report_comes_before_a_datagram_that_arrived_after_it() {
     let sockets = isolated();
@@ -301,8 +251,9 @@ fn a_report_comes_before_a_datagram_that_arrived_after_it() {
     ));
 }
 
-/// A full send buffer counts unsent the memory Linux's `SIOCOUTQ` gives a UDP socket: at least twice the size
-/// given that Linux keeps, and less than one datagram more.
+/// A full send buffer counts unsent the memory Linux's `SIOCOUTQ` gives a UDP socket.
+///
+/// It is at least twice the size given that Linux keeps, and less than one datagram more.
 #[test]
 fn a_full_send_buffer_counts_the_memory_linux_counts() {
     let sockets = isolated();

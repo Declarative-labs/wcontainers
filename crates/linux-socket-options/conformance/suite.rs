@@ -1,6 +1,7 @@
-//! Checks of an implementation of `LinuxSocketOptions` against the kernel it runs on, each in a network namespace of
-//! its own (so the checks run as root): every method once with a value Linux takes, and with values and rooms a hostile
-//! caller would give.
+//! Checks of an implementation of `LinuxSocketOptions` against the kernel it runs on, as root.
+//!
+//! Each check runs in a network namespace of its own and calls every method once with a value Linux takes, and with
+//! values and rooms a hostile caller would give.
 #![cfg(target_os = "linux")]
 
 use std::ffi::c_int;
@@ -21,17 +22,35 @@ use zerocopy::FromZeros;
 /// https://man7.org/linux/man-pages/man7/network_namespaces.7.html
 const LOOPBACK_NAME: &str = "lo";
 
-/// Room for the kernel's answer to bringing the loopback up, a netlink error message.
+/// Room for the kernel's answer to bringing the loopback up, a netlink error message, a page as netlink(7) advises.
+///
+/// https://man7.org/linux/man-pages/man7/netlink.7.html
 const LOOPBACK_ANSWER_ROOM: usize = 4096;
 
 /// A room larger than any option value read here, which the kernel fills only in part.
-const LARGE_ROOM: usize = 4096;
+///
+/// https://man7.org/linux/man-pages/man2/getsockopt.2.html
+pub const LARGE_ROOM: usize = 4096;
 
 /// A room of one byte, shorter than every structure read here.
-const ONE_BYTE: usize = 1;
+pub const ONE_BYTE: usize = size_of::<u8>();
 
 /// A room of eight bytes, the start of `struct tcp_info`.
-const EIGHT_BYTES: usize = 8;
+pub const EIGHT_BYTES: usize = size_of::<u64>();
+
+/// An IPv6 extension header of 8 bytes that claims 16: no next header, one 8-byte unit past the first, a PadN of four.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-4.3
+const CLAIMS_MORE: [u8; 8] = [0, 1, 1, 4, 0, 0, 0, 0];
+
+/// The `nkeys` of a key query that asks for one answer.
+///
+/// https://docs.kernel.org/networking/tcp_ao.html
+const ONE_ANSWER: u32 = 1;
+/// The `nkeys` of a key query that asks for two answers, more than the room of one holds.
+///
+/// https://docs.kernel.org/networking/tcp_ao.html
+const TWO_ANSWERS: u32 = 2;
 
 /// The longest IPv4 options, 40 bytes after the 20 of the header.
 ///
@@ -84,6 +103,8 @@ const TCP_MAXIMUM_SEGMENT_SIZE: u32 = 2;
 const LONGEST_PROGRAM: usize = 4096;
 
 /// The value `SO_DETACH_REUSEPORT_BPF` takes, which Linux does not read.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 const DETACH: c_int = 0;
 
 /// An IPv4 multicast group no check joins, the all-hosts group.
@@ -91,31 +112,35 @@ const DETACH: c_int = 0;
 /// https://www.rfc-editor.org/rfc/rfc1112#section-4
 const ALL_HOSTS: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 1);
 
-/// An IPv6 multicast group of the link no check joins.
+/// An IPv6 multicast group of the link no check joins, of the link-local scope 2.
+///
+/// https://www.rfc-editor.org/rfc/rfc4291#section-2.7
 const LINK_GROUP: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 0x1234);
 
 /// A value of a number option Linux takes on every socket here.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 const SMALL: c_int = 1;
 
 /// The lowest TCP retransmission timeout Linux takes in microseconds, `TCP_RTO_MIN` of 200 ms.
 ///
 /// https://man7.org/linux/man-pages/man7/tcp.7.html
-const RETRANSMISSION_MINIMUM_MICROSECONDS: c_int = 200_000;
+pub const RETRANSMISSION_MINIMUM_MICROSECONDS: c_int = 200_000;
 
 /// The highest TCP retransmission timeout Linux takes in milliseconds, its default of 120 s.
 ///
 /// https://docs.kernel.org/networking/ip-sysctl.html
-const RETRANSMISSION_MAXIMUM_MILLISECONDS: c_int = 120_000;
+pub const RETRANSMISSION_MAXIMUM_MILLISECONDS: c_int = 120_000;
 
 /// The IPv6 checksum offset `IPV6_CHECKSUM` takes to have the kernel compute none.
 ///
 /// https://man7.org/linux/man-pages/man7/ipv6.7.html
-const NO_CHECKSUM: c_int = -1;
+pub const NO_CHECKSUM: c_int = -1;
 
 /// The UDP-Lite checksum coverage of the header alone, eight bytes.
 ///
 /// https://www.rfc-editor.org/rfc/rfc3828#section-3.1
-const HEADER_COVERAGE: c_int = 8;
+pub const HEADER_COVERAGE: c_int = 8;
 
 /// A TCP Fast Open key, 16 bytes.
 ///
@@ -123,7 +148,9 @@ const HEADER_COVERAGE: c_int = 8;
 const FAST_OPEN_KEY: [u8; 16] = [0x5a; 16];
 
 /// A TCP Fast Open queue length a listener takes.
-const FAST_OPEN_QUEUE: u32 = 5;
+///
+/// https://man7.org/linux/man-pages/man7/tcp.7.html
+pub const FAST_OPEN_QUEUE: u32 = 5;
 
 /// `TCP_SAVE_SYN`'s value for saving the headers from the network header.
 ///
@@ -133,13 +160,17 @@ const SAVE_FROM_NETWORK_HEADER: c_int = 1;
 /// `TCP_QUICKACK`'s value that sends a scheduled acknowledgement and then delays.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/net/ipv4/tcp.c
-const QUICK_THEN_DELAYING: c_int = 2;
+pub const QUICK_THEN_DELAYING: c_int = 2;
 
 /// A TCP sequence number a repaired socket takes.
-const SEQUENCE: u32 = 0x1234_5678;
+///
+/// https://docs.kernel.org/networking/tcp-repair.html
+pub const SEQUENCE: u32 = 0x1234_5678;
 
 /// A maximum segment size a repaired connection takes, Ethernet's 1500 bytes less 40 of IPv4 and TCP headers.
-const SEGMENT_SIZE: u32 = 1460;
+///
+/// https://www.rfc-editor.org/rfc/rfc894
+pub const SEGMENT_SIZE: u32 = 1460;
 
 /// A repair option giving the maximum segment size, as `tcp_repair_opt` holds it: the option's kind, then its value.
 const MSS_REPAIR: uapi::tcp_repair_opt = uapi::tcp_repair_opt {
@@ -148,10 +179,25 @@ const MSS_REPAIR: uapi::tcp_repair_opt = uapi::tcp_repair_opt {
 };
 
 /// Rooms of one `MPTCP_FULL_INFO` read: one subflow, and the start of each structure.
+///
+/// https://man7.org/linux/man-pages/man7/mptcp.7.html
 const ONE_SUBFLOW: usize = 1;
+/// Room for no subflow.
+///
+/// https://man7.org/linux/man-pages/man7/mptcp.7.html
 const NO_SUBFLOW: usize = 0;
+/// A room longer than one `struct mptcp_subflow_info`.
+///
+/// https://man7.org/linux/man-pages/man7/mptcp.7.html
 const SUBFLOW_ROOM: usize = 264;
+/// A room longer than one `struct tcp_info`.
+///
+/// https://man7.org/linux/man-pages/man7/mptcp.7.html
 const INFORMATION_ROOM: usize = 256;
+/// A room of a mebibyte, so that the most subflows a count names take more memory than any machine has.
+///
+/// https://man7.org/linux/man-pages/man7/mptcp.7.html
+const MEBIBYTE_ENTRY: usize = 1 << 20;
 
 /// The error a call gives.
 fn errno<T>(result: Result<T, HostError>) -> Option<c_int> {
@@ -162,7 +208,7 @@ fn errno<T>(result: Result<T, HostError>) -> Option<c_int> {
 }
 
 /// Moves the calling thread into a network namespace of its own with its loopback up.
-fn own_network() {
+pub fn own_network() {
     nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET)
         .expect("a network namespace of the check's own, as root");
     bring_loopback_up();
@@ -253,7 +299,8 @@ fn tcp_pair() -> (TcpStream, TcpStream) {
     (client, accepted)
 }
 
-fn storage_of(address: SocketAddr) -> SocketStorage {
+/// Gives the socket address in the kernel's storage form.
+pub fn storage_of(address: SocketAddr) -> SocketStorage {
     let mut storage = SocketStorage::new_zeroed();
     let mut put =
         |at: usize, bytes: &[u8]| storage.bytes[at..at + bytes.len()].copy_from_slice(bytes);
@@ -307,8 +354,8 @@ fn written<const ROOM: usize>(result: Result<Written<ROOM>, HostError>) -> Writt
     result.expect("a read Linux answers")
 }
 
-/// Socket-level options take their values on the sockets they belong to.
-pub fn socket_level_options_take_their_values(options: &impl LinuxSocketOptions) {
+/// Checks that socket-level options take their values on the sockets they belong to.
+pub fn socket_level_options_take_their_values<T: LinuxSocketOptions>(options: T) {
     own_network();
     let udp = udp4();
     let fd = udp.as_fd();
@@ -364,7 +411,7 @@ pub fn socket_level_options_take_their_values(options: &impl LinuxSocketOptions)
 }
 
 /// A read into a room shorter than the value gives the room's worth, and one into a longer room what the kernel has.
-pub fn reads_fit_their_rooms(options: &impl LinuxSocketOptions) {
+pub fn reads_fit_their_rooms<T: LinuxSocketOptions>(options: T) {
     own_network();
     let (client, _accepted) = tcp_pair();
     let fd = client.as_fd();
@@ -385,7 +432,7 @@ pub fn reads_fit_their_rooms(options: &impl LinuxSocketOptions) {
 }
 
 /// A classic BPF program steers a reuse-port group, and programs Linux cannot take are refused.
-pub fn reuse_port_programs_attach_and_detach(options: &impl LinuxSocketOptions) {
+pub fn reuse_port_programs_attach_and_detach<T: LinuxSocketOptions>(options: T) {
     own_network();
     let udp = udp4();
     udp.set_reuse_port(true).expect("port sharing");
@@ -414,8 +461,8 @@ pub fn reuse_port_programs_attach_and_detach(options: &impl LinuxSocketOptions) 
     );
 }
 
-/// IPv4 options take their values, and byte strings Linux cannot take are refused.
-pub fn ipv4_options_take_their_values(options: &impl LinuxSocketOptions) {
+/// Checks that IPv4 options take their values and that byte strings Linux cannot take are refused.
+pub fn ipv4_options_take_their_values<T: LinuxSocketOptions>(options: T) {
     own_network();
     let udp = udp4();
     let fd = udp.as_fd();
@@ -473,7 +520,7 @@ pub fn ipv4_options_take_their_values(options: &impl LinuxSocketOptions) {
 }
 
 /// Multicast memberships are joined and left at both IP levels, and a filter is written only for a group joined.
-pub fn multicast_memberships_join_and_leave(options: &impl LinuxSocketOptions) {
+pub fn multicast_memberships_join_and_leave<T: LinuxSocketOptions>(options: T) {
     own_network();
     let index = nix::net::if_::if_nametoindex(LOOPBACK_NAME).expect("the loopback's index");
     let udp = udp4();
@@ -531,8 +578,8 @@ pub fn multicast_memberships_join_and_leave(options: &impl LinuxSocketOptions) {
     assert!(options.set_ipv6_mcast_leave_group(fd, &request).is_err());
 }
 
-/// IPv6 options take their values, extension headers Linux cannot parse are refused, and anycast leaves only what joined.
-pub fn ipv6_options_take_their_values(options: &impl LinuxSocketOptions) {
+/// Checks IPv6 options, extension headers Linux cannot parse, and that anycast leaves only what joined.
+pub fn ipv6_options_take_their_values<T: LinuxSocketOptions>(options: T) {
     own_network();
     let udp = udp6();
     let fd = udp.as_fd();
@@ -547,8 +594,7 @@ pub fn ipv6_options_take_their_values(options: &impl LinuxSocketOptions) {
     options
         .set_ipv6_dstopts(fd, &[])
         .expect("no destination options");
-    // Next header, a length of one 8-byte unit past the first, then six bytes of padding: 8 bytes given of 16 claimed.
-    let claims_more = [u8::MIN, 1, 1, 4, u8::MIN, u8::MIN, u8::MIN, u8::MIN];
+    let claims_more = CLAIMS_MORE;
     assert_eq!(
         errno(options.set_ipv6_hopopts(fd, &claims_more)),
         Some(libc::EINVAL)
@@ -590,7 +636,7 @@ pub fn ipv6_options_take_their_values(options: &impl LinuxSocketOptions) {
     options
         .set_ipv6_recvfragsize(fd, true)
         .expect("IPV6_RECVFRAGSIZE on");
-    let lease = uapi::in6_flowlabel_req {
+    let mut lease = uapi::in6_flowlabel_req {
         flr_dst: uapi::in6_addr {
             in6_u: uapi::in6_addr__bindgen_ty_1 {
                 u6_addr8: Ipv6Addr::LOCALHOST.octets(),
@@ -605,7 +651,18 @@ pub fn ipv6_options_take_their_values(options: &impl LinuxSocketOptions) {
         __flr_pad: u32::MIN,
     };
     // Label zero names no label to lease.
-    assert!(options.set_ipv6_flowlabel_mgr(fd, &lease).is_err());
+    assert!(options.set_ipv6_flowlabel_mgr(fd, &mut lease).is_err());
+    // Asked to make a label of its own choosing, the kernel writes the label it chose into the request.
+    lease.flr_share = uapi::IPV6_FL_S_EXCL as u8;
+    lease.flr_flags = uapi::IPV6_FL_F_CREATE as u16;
+    options
+        .set_ipv6_flowlabel_mgr(fd, &mut lease)
+        .expect("a label of the kernel's choosing");
+    assert_ne!(
+        lease.flr_label,
+        u32::MIN,
+        "the label chosen is written back"
+    );
     let anycast = uapi::ipv6_mreq {
         ipv6mr_multiaddr: uapi::in6_addr {
             in6_u: uapi::in6_addr__bindgen_ty_1 {
@@ -637,7 +694,7 @@ pub fn ipv6_options_take_their_values(options: &impl LinuxSocketOptions) {
 }
 
 /// TCP's number options take their values and give them back where Linux reads them.
-pub fn tcp_number_options_take_their_values(options: &impl LinuxSocketOptions) {
+pub fn tcp_number_options_take_their_values<T: LinuxSocketOptions>(options: T) {
     own_network();
     let (client, _accepted) = tcp_pair();
     let fd = client.as_fd();
@@ -681,7 +738,7 @@ pub fn tcp_number_options_take_their_values(options: &impl LinuxSocketOptions) {
 }
 
 /// A listener takes Fast Open's queue and keys and keeps a SYN's headers, read only into a room that holds them.
-pub fn listeners_keep_what_they_are_asked_to(options: &impl LinuxSocketOptions) {
+pub fn listeners_keep_what_they_are_asked_to<T: LinuxSocketOptions>(options: T) {
     own_network();
     let listener = tcp4();
     let lfd = listener.as_fd();
@@ -718,7 +775,7 @@ pub fn listeners_keep_what_they_are_asked_to(options: &impl LinuxSocketOptions) 
 }
 
 /// A socket in repair mode takes and gives back its sequence numbers, window and options.
-pub fn repair_mode_takes_and_gives_its_state(options: &impl LinuxSocketOptions) {
+pub fn repair_mode_takes_and_gives_its_state<T: LinuxSocketOptions>(options: T) {
     own_network();
     let (client, _accepted) = tcp_pair();
     let fd = client.as_fd();
@@ -778,9 +835,8 @@ pub fn repair_mode_takes_and_gives_its_state(options: &impl LinuxSocketOptions) 
     assert!(options.set_tcp_repair_options(fd, &[MSS_REPAIR]).is_ok());
 }
 
-/// TCP's signature and authentication keys are refused when they name no key, and a query asking past its room is refused
-/// before the kernel sees it.
-pub fn tcp_keys_are_named_or_refused(options: &impl LinuxSocketOptions) {
+/// Checks that TCP keys naming no key are refused, and a query asking past its room before the kernel sees it.
+pub fn tcp_keys_are_named_or_refused<T: LinuxSocketOptions>(options: T) {
     own_network();
     let tcp = tcp4();
     let fd = tcp.as_fd();
@@ -791,7 +847,7 @@ pub fn tcp_keys_are_named_or_refused(options: &impl LinuxSocketOptions) {
         tcpm_prefixlen: u8::MIN,
         tcpm_keylen: u16::MIN,
         tcpm_ifindex: c_int::default(),
-        tcpm_key: [u8::MIN; 80],
+        tcpm_key: [u8::MIN; _],
     };
     assert_eq!(
         errno(options.set_tcp_md5sig_ext(fd, &removal)),
@@ -799,7 +855,7 @@ pub fn tcp_keys_are_named_or_refused(options: &impl LinuxSocketOptions) {
     );
     let addition = uapi::tcp_ao_add {
         addr: kernel_storage(peer),
-        alg_name: [libc::c_char::default(); 64],
+        alg_name: [libc::c_char::default(); _],
         ifindex: c_int::default(),
         _bitfield_align_1: [],
         _bitfield_1: Default::default(),
@@ -810,7 +866,7 @@ pub fn tcp_keys_are_named_or_refused(options: &impl LinuxSocketOptions) {
         maclen: u8::MIN,
         keyflags: u8::MIN,
         keylen: u8::MIN,
-        key: [u8::MIN; 80],
+        key: [u8::MIN; _],
     };
     assert!(options.set_tcp_ao_add_key(fd, &addition).is_err());
     let deletion = uapi::tcp_ao_del {
@@ -865,10 +921,10 @@ pub fn tcp_keys_are_named_or_refused(options: &impl LinuxSocketOptions) {
     );
     let at = core::mem::offset_of!(uapi::tcp_ao_getsockopt, nkeys);
     let mut query = [u8::MIN; KEY_QUERY_LENGTH];
-    query[at..at + size_of::<u32>()].copy_from_slice(&1_u32.to_ne_bytes());
+    query[at..at + size_of::<u32>()].copy_from_slice(&ONE_ANSWER.to_ne_bytes());
     assert!(options.get_tcp_ao_get_keys(fd, &query).is_err());
     // Two answers asked for in the room of one: the kernel would write the second past the room.
-    query[at..at + size_of::<u32>()].copy_from_slice(&2_u32.to_ne_bytes());
+    query[at..at + size_of::<u32>()].copy_from_slice(&TWO_ANSWERS.to_ne_bytes());
     assert_eq!(
         errno(options.get_tcp_ao_get_keys(fd, &query)),
         Some(libc::EINVAL)
@@ -881,8 +937,21 @@ pub fn tcp_keys_are_named_or_refused(options: &impl LinuxSocketOptions) {
 }
 
 /// A multipath socket gives its information, its subflows only into the rooms asked for.
-pub fn multipath_information_fits_its_rooms(options: &impl LinuxSocketOptions) {
+pub fn multipath_information_fits_its_rooms<T: LinuxSocketOptions>(options: T) {
     own_network();
+    // A count the kernel cannot be told is refused, and rooms no memory holds are an error, not a stop.
+    let tcp = tcp4();
+    assert_eq!(
+        errno(
+            options.get_mptcp_full_info::<SUBFLOW_ROOM, INFORMATION_ROOM>(tcp.as_fd(), usize::MAX)
+        ),
+        Some(libc::EINVAL)
+    );
+    let most = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
+    assert_eq!(
+        errno(options.get_mptcp_full_info::<MEBIBYTE_ENTRY, MEBIBYTE_ENTRY>(tcp.as_fd(), most)),
+        Some(libc::ENOMEM)
+    );
     let Ok(multipath) = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::MPTCP)) else {
         // A kernel without MPTCP refuses the socket; the TCP socket's refusal is still checked.
         assert!(
@@ -912,7 +981,7 @@ pub fn multipath_information_fits_its_rooms(options: &impl LinuxSocketOptions) {
 }
 
 /// UDP's and UDP-Lite's checksum options take their values only on their own sockets.
-pub fn udp_checksum_options_take_their_values(options: &impl LinuxSocketOptions) {
+pub fn udp_checksum_options_take_their_values<T: LinuxSocketOptions>(options: T) {
     own_network();
     let udp = udp6();
     options
@@ -941,7 +1010,7 @@ pub fn udp_checksum_options_take_their_values(options: &impl LinuxSocketOptions)
 }
 
 /// The queue requests count what a connection holds, and a socket of another kind refuses them.
-pub fn queue_requests_count_a_connection(options: &impl LinuxSocketOptions) {
+pub fn queue_requests_count_a_connection<T: LinuxSocketOptions>(options: T) {
     own_network();
     let (client, _accepted) = tcp_pair();
     let fd = client.as_fd();
@@ -965,72 +1034,107 @@ pub fn queue_requests_count_a_connection(options: &impl LinuxSocketOptions) {
     assert!(options.get_siocoutqnsd(unix_datagram().as_fd()).is_err());
 }
 
+/// A Unix socket is refused every internet level's option and every request before the call; the socket layer's reach it.
+///
+/// Linux refuses an internet option on a Unix socket with `EOPNOTSUPP` and answers `SIOCOUTQ` on one, so `ENOPROTOOPT`
+/// and `ENOTTY` here are the family check's own answers.
+pub fn other_families_are_refused_at_the_internet_levels<T: LinuxSocketOptions>(options: T) {
+    own_network();
+    let unix = unix_datagram();
+    let fd = unix.as_fd();
+    assert_eq!(
+        errno(options.set_ip_recvopts(fd, true)),
+        Some(libc::ENOPROTOOPT)
+    );
+    assert_eq!(
+        errno(options.set_ipv6_recvhopopts(fd, true)),
+        Some(libc::ENOPROTOOPT)
+    );
+    assert_eq!(
+        errno(options.get_tcp_info::<EIGHT_BYTES>(fd)),
+        Some(libc::ENOPROTOOPT)
+    );
+    assert_eq!(
+        errno(options.set_udp_no_check6_rx(fd, true)),
+        Some(libc::ENOPROTOOPT)
+    );
+    assert_eq!(errno(options.get_siocoutq(fd)), Some(libc::ENOTTY));
+    options
+        .set_so_rcvmark(fd, true)
+        .expect("a socket layer option on a Unix socket");
+}
+
 #[macro_export]
 macro_rules! tests {
-    ($options:expr) => {
+    ($value:expr) => {
         #[test]
         fn socket_level_options_take_their_values() {
-            $crate::socket_level_options_take_their_values(&$options);
+            $crate::socket_level_options_take_their_values($value);
         }
 
         #[test]
         fn reads_fit_their_rooms() {
-            $crate::reads_fit_their_rooms(&$options);
+            $crate::reads_fit_their_rooms($value);
         }
 
         #[test]
         fn reuse_port_programs_attach_and_detach() {
-            $crate::reuse_port_programs_attach_and_detach(&$options);
+            $crate::reuse_port_programs_attach_and_detach($value);
         }
 
         #[test]
         fn ipv4_options_take_their_values() {
-            $crate::ipv4_options_take_their_values(&$options);
+            $crate::ipv4_options_take_their_values($value);
         }
 
         #[test]
         fn multicast_memberships_join_and_leave() {
-            $crate::multicast_memberships_join_and_leave(&$options);
+            $crate::multicast_memberships_join_and_leave($value);
         }
 
         #[test]
         fn ipv6_options_take_their_values() {
-            $crate::ipv6_options_take_their_values(&$options);
+            $crate::ipv6_options_take_their_values($value);
         }
 
         #[test]
         fn tcp_number_options_take_their_values() {
-            $crate::tcp_number_options_take_their_values(&$options);
+            $crate::tcp_number_options_take_their_values($value);
         }
 
         #[test]
         fn listeners_keep_what_they_are_asked_to() {
-            $crate::listeners_keep_what_they_are_asked_to(&$options);
+            $crate::listeners_keep_what_they_are_asked_to($value);
         }
 
         #[test]
         fn repair_mode_takes_and_gives_its_state() {
-            $crate::repair_mode_takes_and_gives_its_state(&$options);
+            $crate::repair_mode_takes_and_gives_its_state($value);
         }
 
         #[test]
         fn tcp_keys_are_named_or_refused() {
-            $crate::tcp_keys_are_named_or_refused(&$options);
+            $crate::tcp_keys_are_named_or_refused($value);
         }
 
         #[test]
         fn multipath_information_fits_its_rooms() {
-            $crate::multipath_information_fits_its_rooms(&$options);
+            $crate::multipath_information_fits_its_rooms($value);
         }
 
         #[test]
         fn udp_checksum_options_take_their_values() {
-            $crate::udp_checksum_options_take_their_values(&$options);
+            $crate::udp_checksum_options_take_their_values($value);
         }
 
         #[test]
         fn queue_requests_count_a_connection() {
-            $crate::queue_requests_count_a_connection(&$options);
+            $crate::queue_requests_count_a_connection($value);
+        }
+
+        #[test]
+        fn other_families_are_refused_at_the_internet_levels() {
+            $crate::other_families_are_refused_at_the_internet_levels($value);
         }
     };
 }

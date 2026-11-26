@@ -357,7 +357,10 @@ pub fn set_packet_setting(
     }
 }
 
-/// `SCM_TSTAMP_SND`, the stage of a transmit timestamp taken as the packet left, from [linux/errqueue.h](https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h), which neither libc nor linux-raw-sys carries.
+/// `SCM_TSTAMP_SND`, the stage of a transmit timestamp taken as the packet left.
+///
+/// It is defined in [linux/errqueue.h](https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h),
+/// which neither libc nor linux-raw-sys carries.
 pub const TIMESTAMP_STAGE_SENT: u32 = 0;
 /// `SCM_TSTAMP_SCHED`, taken as the packet entered the queueing discipline.
 ///
@@ -378,7 +381,12 @@ pub const TIMESTAMP_STAGE_COMPLETED: u32 = 3;
 pub const TIMESTAMPING_TIMES: usize = 3;
 
 /// The places of the software and hardware times among them; the one between is deprecated.
+///
+/// https://docs.kernel.org/networking/timestamping.html
 const SOFTWARE_TIME: usize = 0;
+/// The place of the hardware time among the timestamping times.
+///
+/// https://docs.kernel.org/networking/timestamping.html
 const HARDWARE_TIME: usize = 2;
 
 /// The room for the control messages of one receive: timestamps, an extended error, packet information, statistics.
@@ -412,8 +420,9 @@ impl<const WORDS: usize> Default for ControlRoom<WORDS> {
 /// The control messages of one stream receive.
 pub type ControlBuffer = ControlRoom<{ CONTROL_ROOM / size_of::<usize>() }>;
 
-/// What one `recvmsg` gave: the bytes it wrote, its flags (`MSG_*`), the sender, and the room with its control
-/// messages, zeros after them.
+/// What one `recvmsg` gave: the bytes it wrote, its flags, the sender, and the room with its control messages.
+///
+/// The flags are `MSG_*` flags; the room holds zeros after the control messages.
 pub struct Received<'a, T> {
     pub length: usize,
     pub flags: c_int,
@@ -421,12 +430,9 @@ pub struct Received<'a, T> {
     pub control: &'a [u8],
 }
 
-/// Makes one `recvmsg` into `vectors` and the room for control messages, the sender read as `S` and given as
-/// `source` makes of it; `flags` are `MSG_*` flags.
+/// Makes one `recvmsg` into `vectors` and the room for control messages.
 ///
-/// Made with nix rather than socket2, whose `RecvFlags` gives no `MSG_CTRUNC`, or rustix, which hands out only the
-/// control messages it parses; the messages are read from the room's bytes, not through nix's parsing, which
-/// allocates for each kind it does not know.
+/// The sender is read as `S` and given as `source` makes of it; `flags` are `MSG_*` flags.
 #[inline]
 pub fn receive_vectored<'a, S: SockaddrLike, T, const WORDS: usize>(
     socket: BorrowedFd<'_>,
@@ -435,6 +441,8 @@ pub fn receive_vectored<'a, S: SockaddrLike, T, const WORDS: usize>(
     control: &'a mut ControlRoom<WORDS>,
     source: impl FnOnce(&S) -> Option<T>,
 ) -> Result<Received<'a, T>, HostError> {
+    // Made with nix, as socket2's `RecvFlags` gives no `MSG_CTRUNC` and rustix hands out only the control messages it
+    // parses; the messages are read from the room's bytes, as nix's parsing allocates for each kind it does not know.
     if control.written {
         control.words.fill(usize::MIN);
     }
@@ -458,7 +466,7 @@ pub fn receive_vectored<'a, S: SockaddrLike, T, const WORDS: usize>(
 
 /// How many bytes of the control messages of a receive, read up to the zeros after them, they take.
 pub fn written_length(control: &[u8]) -> usize {
-    let mut at = 0;
+    let mut at = usize::MIN;
     while let Some(length) = header_field(control.get(at..).unwrap_or_default(), CONTROL_LENGTH_AT)
     {
         let length = usize::from_ne_bytes(length);

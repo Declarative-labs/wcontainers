@@ -102,6 +102,8 @@ pub const RECEIVE_BUFFER_CUT_BY_THE_HOST: &str =
 const UNSENT_MEMINFO_INDEX: usize = libc::SK_MEMINFO_WMEM_ALLOC as usize;
 
 /// The receive control messages every socket turns on that socket2 does not, by level.
+///
+/// https://man7.org/linux/man-pages/man7/ip.7.html
 const IPV4_RECEIVE_OPTIONS: [u32; 6] = [
     uapi::IP_PKTINFO,
     uapi::IP_RECVORIGDSTADDR,
@@ -110,6 +112,9 @@ const IPV4_RECEIVE_OPTIONS: [u32; 6] = [
     uapi::IP_RECVFRAGSIZE,
     uapi::IP_RECVERR,
 ];
+/// The IPv6 options that ask for receive control messages.
+///
+/// https://man7.org/linux/man-pages/man7/ipv6.7.html
 const IPV6_RECEIVE_OPTIONS: [u32; 8] = [
     uapi::IPV6_RECVPKTINFO,
     uapi::IPV6_RECVORIGDSTADDR,
@@ -120,6 +125,9 @@ const IPV6_RECEIVE_OPTIONS: [u32; 8] = [
     uapi::IPV6_RECVFRAGSIZE,
     uapi::IPV6_RECVERR,
 ];
+/// The socket options that ask for receive control messages.
+///
+/// https://man7.org/linux/man-pages/man7/socket.7.html
 const SOCKET_RECEIVE_OPTIONS: [u32; 3] =
     [uapi::SO_RXQ_OVFL, uapi::SO_RCVMARK, uapi::SO_RCVPRIORITY];
 

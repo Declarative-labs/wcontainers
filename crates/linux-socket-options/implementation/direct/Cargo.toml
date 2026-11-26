@@ -19,9 +19,18 @@ linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioc
 libc = "0.2.191"
 # The numbers and headers read from and written as bytes.
 zerocopy.workspace = true
+# The socket's family (SO_DOMAIN), checked before an option of a level other families also number.
+rustix = { version = "1.1.6", features = ["net"] }
 
 [dev-dependencies]
 wcontainers-linux-socket-options-conformance = { path = "../../conformance" }
+# The sockets the probe calls each option on, and the loopback's index.
+socket2 = { version = "0.6.5", features = ["all"] }
+# Also the probe's read of a lent structure's bytes, by process_vm_readv(2) on its own process.
+nix = { version = "0.31.3", default-features = false, features = ["net", "process", "uio"] }
+# The request test's page with an unreadable page after it: an anonymous page below a memory file's page past its end.
+memmap2 = "0.9.12"
+rustix = { version = "1.1.6", features = ["fs", "net", "param"] }
 
 [[test]]
 name = "conformance"

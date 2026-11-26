@@ -7,10 +7,8 @@
 
 use core::cell::RefCell;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::io::Write;
 use std::os::fd::AsFd;
 use std::pin::pin;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -23,12 +21,14 @@ use wcontainers_icmp_sockets_conformance::{
     BROADCAST, Capture, CellBytes, DUMMY, FAIR_QUEUE, FAR, FAR_V6_SEGMENT, FLOW_LABEL, GATEWAY,
     GATEWAY_V6, HOP_LIMIT, LOCAL, LOCAL_V6, LOOK_AGAIN_SOON, MARK, MARK_PROHIBITED, NETWORK,
     NEVER_ON_DATAGRAMS, ON_LINK, ON_LINK_V6, OTHER_CODE, OTHER_USER, OWNER_PROHIBITED, PATIENCE,
-    PAYLOAD, QUEUED_ERRORS, QUIET, REPORT_KEY, ROOT, SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE, Wakes,
-    buffer, buffer_sizes_are_read_back, filtered_membership, finished, finished_soon, index, ip,
-    ip6, ipv4, ipv6, no_reports, output, plain_fields, poll_with, seen, segment_routing_header,
+    PAYLOAD, QUEUED_ERRORS, QUIET, REPORT_KEY, ROOT, SELF_LINK, TIME_TO_LIVE, Wakes, buffer,
+    buffer_sizes_are_read_back, filtered_membership, finished, finished_soon, index, ip, ip6, ipv4,
+    ipv6, no_reports, plain_fields, poll_with, seen, segment_routing_header,
     source_filters_are_written, tc, version_of, woken, write_setting,
 };
-use wcontainers_icmp_sockets_conformance::{LONGER_THAN_A_PAGE, PAD_N, seconds_since_confirmed};
+use wcontainers_icmp_sockets_conformance::{
+    LONGER_THAN_A_PAGE, PAD_N, joined_groups, link_address, seconds_since_confirmed,
+};
 use wcontainers_internet_protocol::{
     AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, FragmentSize, IcmpType,
     InterfaceSelector, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields,
@@ -79,8 +79,6 @@ const RAW_PACING: BytesPerSecond = BytesPerSecond(16_000);
 ///
 /// https://man7.org/linux/man-pages/man7/socket.7.html
 const FLOODING_SENDS: usize = 63;
-/// The brief listing iproute2 gives of a link: its name, state and link address.
-const BRIEF_LINK: &[&str] = &["-br", "link", "show"];
 /// The network namespace of the calling thread.
 const THREAD_NAMESPACE: &str = "/proc/thread-self/ns/net";
 /// A protocol number for experiments, which nothing else of the namespace sends or takes.
@@ -89,10 +87,6 @@ pub const EXPERIMENT: IpNumber = IpNumber::EXPERIMENTAL_AND_TESTING_0;
 const OTHER_EXPERIMENT: IpNumber = IpNumber::EXPERIMENTAL_AND_TESTING_1;
 /// Type 253 only, as a rule takes it.
 const EXPERIMENT_PROHIBITED: &str = "rule add ipproto 253 prohibit";
-const NFTABLES: &str = "nft";
-const RULESET_FROM_INPUT: &[&str] = &["-f", "-"];
-/// A firewall table that tracks connections of locally made packets, which makes Linux reassemble their fragments.
-const TRACKED_OUTPUT: &str = "table ip tracked { chain output { type filter hook output priority 0; ct state new counter; }; }";
 /// A pair of linked virtual links: what leaves the first arrives at the second.
 const LINKED_PAIR: &str = "link add ra type veth peer name rb
 link set ra up
@@ -691,17 +685,8 @@ pub fn header_included_packets_take_their_route<S: RawSockets>(sockets: S) {
 pub fn withdrawn_reassembly_lets_a_fragment_leave<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
-    let mut nft = Command::new(NFTABLES)
-        .args(RULESET_FROM_INPUT)
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("nftables runs");
-    nft.stdin
-        .take()
-        .expect("nftables' input")
-        .write_all(TRACKED_OUTPUT.as_bytes())
-        .expect("nftables reads its ruleset");
-    assert!(nft.wait().expect("nftables ends").success());
+    // A firewall table that tracks connections of locally made packets, which makes Linux reassemble their fragments.
+    wcontainers_icmp_sockets_conformance::track_made_connections();
     let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
     let fragment = ipv4_packet(LOCAL, ON_LINK, EXPERIMENT, &[], true, PAYLOAD);
     let capture = Capture::on(DUMMY);
@@ -1195,11 +1180,7 @@ fn forwarding_pair() {
         write_setting(path, value);
     }
     // The link address of the second link, from iproute2's brief listing: name, state, address.
-    let text = output(
-        wcontainers_icmp_sockets_conformance::IP,
-        &[BRIEF_LINK, &[SECOND_OF_PAIR]].concat(),
-    );
-    let address = text.split_whitespace().nth(2).expect("a link address");
+    let address = link_address(SECOND_OF_PAIR);
     ip(&format!(
         "neigh add {BEYOND} lladdr {address} dev {FIRST_OF_PAIR}\nneigh add {BEYOND_V6} lladdr {address} dev {FIRST_OF_PAIR}"
     ));
@@ -1392,13 +1373,7 @@ pub fn close_gives_up_the_sockets_holdings<S: RawSockets>(sockets: S) {
     const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 2, 6);
     // https://www.rfc-editor.org/rfc/rfc4291#section-2.7
     const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x126);
-    let joined = |group: IpAddr| {
-        output(
-            wcontainers_icmp_sockets_conformance::IP,
-            &[SHOW_GROUPS, &[DUMMY]].concat(),
-        )
-        .contains(&group.to_string())
-    };
+    let joined = |group: IpAddr| joined_groups(DUMMY).contains(&group);
     for group in [IpAddr::V4(GROUP), IpAddr::V6(GROUP_V6)] {
         let socket = opened(&sockets, version_of(group), EXPERIMENT);
         set(&sockets, &socket, membership(group, true));
@@ -1611,8 +1586,9 @@ pub fn a_mobility_header_is_sent_by_its_type<S: RawSockets>(sockets: S) {
         0,
         0,
     ];
-    /// A binding update eight bytes longer than the smallest header: its type, checksum, sequence number, flags,
-    /// lifetime, and PadN over the rest.
+    /// A binding update eight bytes longer than the smallest header.
+    ///
+    /// It holds its type, checksum, sequence number, flags, lifetime, and PadN over the rest.
     ///
     /// https://www.rfc-editor.org/rfc/rfc6275#section-6.1.7
     const BINDING_UPDATE_MESSAGE: [u8; 16] = [
@@ -1696,10 +1672,16 @@ pub fn a_mobility_header_is_sent_by_its_type<S: RawSockets>(sockets: S) {
 }
 
 /// Checks that IPv6 source preferences choose between the link's public address and a temporary one.
-pub fn ipv6_source_preferences_choose_the_source<S: RawSockets>(sockets: S) {
+pub fn ipv6_source_preferences_choose_the_source<
+    S: RawSockets,
+    O: wcontainers_linux_socket_options::LinuxSocketOptions,
+>(
+    sockets: S,
+    options: O,
+) {
     enter_network_namespace();
     ip(NETWORK);
-    let sources = wcontainers_icmp_sockets_conformance::sources_by_preference();
+    let sources = wcontainers_icmp_sockets_conformance::sources_by_preference(&options);
     let capture = Capture::on(DUMMY);
     let socket = opened(&sockets, IpVersion::V6, EXPERIMENT);
     for (preferences, source) in sources {
@@ -1985,16 +1967,7 @@ pub fn send_fields_are_taken<S: RawSockets>(sockets: S) {
         assert_eq!(seconds_since_confirmed(gateway, DUMMY), 0, "{gateway}");
     }
     tc(wcontainers_icmp_sockets_conformance::PRIO_QUEUE);
-    let third_band = || {
-        wcontainers_icmp_sockets_conformance::number_after(
-            &output(
-                wcontainers_icmp_sockets_conformance::TRAFFIC_CONTROL,
-                &[wcontainers_icmp_sockets_conformance::SHOW_CLASSES, &[DUMMY]].concat(),
-            ),
-            wcontainers_icmp_sockets_conformance::THIRD_BAND,
-            wcontainers_icmp_sockets_conformance::PACKETS,
-        )
-    };
+    let third_band = || wcontainers_icmp_sockets_conformance::third_band_packets(DUMMY);
     let filler = IpSendFields {
         priority: PacketPriority(wcontainers_icmp_sockets_conformance::FILLER),
         ..plain_fields()
@@ -2199,13 +2172,7 @@ pub fn multicast_settings_are_taken<S: RawSockets>(sockets: S) {
     // https://www.rfc-editor.org/rfc/rfc4291#section-2.7
     const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x125);
     let link = Some(InterfaceSelector::Requested(index(DUMMY)));
-    let joined = |group: IpAddr| {
-        output(
-            wcontainers_icmp_sockets_conformance::IP,
-            &[SHOW_GROUPS, &[DUMMY]].concat(),
-        )
-        .contains(&group.to_string())
-    };
+    let joined = |group: IpAddr| joined_groups(DUMMY).contains(&group);
     for group in [IpAddr::V4(GROUP), IpAddr::V6(GROUP_V6)] {
         let version = version_of(group);
         let member = opened(&sockets, version, EXPERIMENT);
@@ -2726,7 +2693,7 @@ pub fn other_settings_set_twice_answer_as_once<S: RawSockets>(sockets: S) {
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
-    ($value:expr) => {
+    ($value:expr, $options:expr) => {
         #[test]
         fn open_takes_each_version_and_protocol() {
             $crate::open_takes_each_version_and_protocol($value);
@@ -2844,7 +2811,7 @@ macro_rules! tests {
 
         #[test]
         fn ipv6_source_preferences_choose_the_source() {
-            $crate::ipv6_source_preferences_choose_the_source($value);
+            $crate::ipv6_source_preferences_choose_the_source($value, $options);
         }
 
         #[test]

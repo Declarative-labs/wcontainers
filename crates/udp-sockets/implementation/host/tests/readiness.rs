@@ -15,13 +15,10 @@ use wcontainers_readiness::{Readiness, ReadyFor};
 use wcontainers_udp_sockets::UdpSockets;
 use wcontainers_udp_sockets_host::HostUdpSockets;
 
-use support::{PAYLOAD, Wakes, pair, poll_with, wait_and_take};
+use support::{DATAGRAMS, PAYLOAD, Wakes, pair, poll_with, wait_and_take};
 
 /// Taken by each test, so that one counts only its own wakes.
 static ALONE: Mutex<()> = Mutex::new(());
-
-/// How many datagrams each measurement sends.
-const DATAGRAMS: usize = 1200;
 
 /// How long the watcher is given to show a wake it was sent.
 const SETTLE: Duration = Duration::from_millis(50);
@@ -116,8 +113,9 @@ fn a_socket_nobody_waits_on_costs_the_watcher_nothing() {
     );
 }
 
-/// A wait for facts UDP never has asks the host for nothing but errors and hang-ups, so it does not keep the watcher
-/// running while the socket has data.
+/// A wait for facts UDP never has asks the host for nothing but errors and hang-ups.
+///
+/// So it does not keep the watcher running while the socket has data.
 #[test]
 fn a_wait_for_an_event_the_socket_lacks_keeps_the_watcher_still() {
     let _alone = ALONE

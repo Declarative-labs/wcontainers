@@ -1,16 +1,25 @@
 # The Linux socket options and socket ioctl requests that no vetted crate (rustix, socket2, nix, std) wraps safely.
-# interface.rs and implementation/direct/generated.rs are made from this table by the test tests/generated.rs, which
+# interface.rs and implementation/direct/generated.rs are made from this table by implementation/direct/tests/generated.rs, which
 # fails when either differs from what the table gives; run it with REGENERATE=1 to write them.
 #
 # Columns: the method; the level (`-` for an ioctl request); the option or request; its value; the manual page that
-# defines it. A method named set_* writes the option, get_* reads it.
+# defines it; what the kernel does with the caller's memory. A method named set_* writes the option, get_* reads it.
+#
+# Kernel (the generator takes a row only where the kernel table in implementation/direct/tests/generated/kernel.rs,
+# keyed by the level and option numbers the names resolve to, says the kernel does this with a value of that form;
+# the direct implementation's probe checks every row on the running kernel):
+#   reads         a set: the kernel only reads the value, so the method takes it by shared reference or by copy
+#   writes-back   a set: the kernel may write into the value, so the method takes it by exclusive reference
+#   within        a get: the kernel writes at most the length it is told, often less, and never before the value
+#   past          a get: the kernel may write past the length it is told (one answer per key asked)
+#   through       a get: the kernel also writes at the addresses the value holds, within the counts and sizes it names
 #
 # Values:
 #   bool          an int the kernel reads as off (0) or on (1)
 #   c_int u32 u64 a number of that width
 #   bytes         a byte string the kernel reads whole (set only)
 #   room          a read of a value of varying length into a room whose size the caller names as a constant
-#   struct:T      one value of the uapi type T (set only)
+#   struct:T      one value of the uapi type T (set only), by the reference the kernel column asks
 #   slice:T       a run of values of the uapi type T (set only)
 #   keys          one TCP_AO_GET_KEYS query, read back in place
 #   program       a classic BPF program the kernel copies through `struct sock_fprog`
@@ -18,100 +27,100 @@
 #   full_info     an MPTCP_FULL_INFO read, the kernel writing the subflow arrays named in the value
 #   ioctl         an ioctl request that writes one int
 #
-# method                           level            option                            value                         manual
-set_so_rcvmark                     uapi::SOL_SOCKET uapi::SO_RCVMARK                  bool                          socket(7)
-set_so_rcvpriority                 uapi::SOL_SOCKET uapi::SO_RCVPRIORITY              bool                          socket(7)
-set_so_attach_reuseport_cbpf       uapi::SOL_SOCKET uapi::SO_ATTACH_REUSEPORT_CBPF    program                       socket(7)
-set_so_detach_reuseport_bpf        uapi::SOL_SOCKET uapi::SO_DETACH_REUSEPORT_BPF     c_int                         socket(7)
-set_so_max_pacing_rate             uapi::SOL_SOCKET uapi::SO_MAX_PACING_RATE          u64                           socket(7)
-set_so_rcvlowat                    uapi::SOL_SOCKET uapi::SO_RCVLOWAT                 c_int                         socket(7)
-get_so_rcvlowat                    uapi::SOL_SOCKET uapi::SO_RCVLOWAT                 c_int                         socket(7)
-set_so_buf_lock                    uapi::SOL_SOCKET uapi::SO_BUF_LOCK                 u32                           socket(7)
-set_so_txrehash                    uapi::SOL_SOCKET uapi::SO_TXREHASH                 c_int                         socket(7)
-set_so_cnx_advice                  uapi::SOL_SOCKET uapi::SO_CNX_ADVICE               bool                          socket(7)
-set_so_wifi_status                 uapi::SOL_SOCKET uapi::SO_WIFI_STATUS              bool                          socket(7)
-set_so_peek_off                    uapi::SOL_SOCKET uapi::SO_PEEK_OFF                 c_int                         socket(7)
-get_so_meminfo                     uapi::SOL_SOCKET uapi::SO_MEMINFO                  room                          socket(7)
-set_so_no_check                    uapi::SOL_SOCKET uapi::SO_NO_CHECK                 bool                          socket(7)
-set_so_timestamping                uapi::SOL_SOCKET uapi::SO_TIMESTAMPING             struct:uapi::so_timestamping  socket(7)
-set_ip_options                     uapi::SOL_IP     uapi::IP_OPTIONS                  bytes                         ip(7)
-set_ip_unicast_if                  uapi::SOL_IP     uapi::IP_UNICAST_IF               u32                           ip(7)
-set_ip_local_port_range            uapi::SOL_IP     uapi::IP_LOCAL_PORT_RANGE         u32                           ip(7)
-set_ip_router_alert                uapi::SOL_IP     uapi::IP_ROUTER_ALERT             bool                          ip(7)
-set_ip_nodefrag                    uapi::SOL_IP     uapi::IP_NODEFRAG                 bool                          ip(7)
-set_ip_recvopts                    uapi::SOL_IP     uapi::IP_RECVOPTS                 bool                          ip(7)
-set_ip_recvfragsize                uapi::SOL_IP     uapi::IP_RECVFRAGSIZE             bool                          ip(7)
-set_ip_minttl                      uapi::SOL_IP     uapi::IP_MINTTL                   c_int                         ip(7)
-get_ip_pktoptions                  uapi::SOL_IP     uapi::IP_PKTOPTIONS               room                          ip(7)
-set_ip_mcast_join_group            uapi::SOL_IP     uapi::MCAST_JOIN_GROUP            struct:uapi::group_req        ip(7)
-set_ip_mcast_leave_group           uapi::SOL_IP     uapi::MCAST_LEAVE_GROUP           struct:uapi::group_req        ip(7)
-set_ip_mcast_msfilter              uapi::SOL_IP     uapi::MCAST_MSFILTER              group_filter                  ip(7)
-set_ipv6_hopopts                   uapi::SOL_IPV6   uapi::IPV6_HOPOPTS                bytes                         ipv6(7)
-set_ipv6_rthdrdstopts              uapi::SOL_IPV6   uapi::IPV6_RTHDRDSTOPTS           bytes                         ipv6(7)
-set_ipv6_rthdr                     uapi::SOL_IPV6   uapi::IPV6_RTHDR                  bytes                         ipv6(7)
-set_ipv6_dstopts                   uapi::SOL_IPV6   uapi::IPV6_DSTOPTS                bytes                         ipv6(7)
-set_ipv6_flowinfo_send             uapi::SOL_IPV6   uapi::IPV6_FLOWINFO_SEND          bool                          ipv6(7)
-set_ipv6_autoflowlabel             uapi::SOL_IPV6   uapi::IPV6_AUTOFLOWLABEL          bool                          ipv6(7)
-set_ipv6_flowlabel_mgr             uapi::SOL_IPV6   uapi::IPV6_FLOWLABEL_MGR          struct:uapi::in6_flowlabel_req ipv6(7)
-set_ipv6_addr_preferences          uapi::SOL_IPV6   uapi::IPV6_ADDR_PREFERENCES       u32                           ipv6(7)
-set_ipv6_join_anycast              uapi::SOL_IPV6   uapi::IPV6_JOIN_ANYCAST           struct:uapi::ipv6_mreq        ipv6(7)
-set_ipv6_leave_anycast             uapi::SOL_IPV6   uapi::IPV6_LEAVE_ANYCAST          struct:uapi::ipv6_mreq        ipv6(7)
-set_ipv6_mtu                       uapi::SOL_IPV6   uapi::IPV6_MTU                    c_int                         ipv6(7)
-set_ipv6_unicast_if                uapi::SOL_IPV6   uapi::IPV6_UNICAST_IF             u32                           ipv6(7)
-set_ipv6_router_alert              uapi::SOL_IPV6   uapi::IPV6_ROUTER_ALERT           c_int                         ipv6(7)
-set_ipv6_router_alert_isolate      uapi::SOL_IPV6   uapi::IPV6_ROUTER_ALERT_ISOLATE   bool                          ipv6(7)
-set_ipv6_checksum                  uapi::SOL_IPV6   uapi::IPV6_CHECKSUM               c_int                         ipv6(7)
-set_ipv6_recvhopopts               uapi::SOL_IPV6   uapi::IPV6_RECVHOPOPTS            bool                          ipv6(7)
-set_ipv6_recvdstopts               uapi::SOL_IPV6   uapi::IPV6_RECVDSTOPTS            bool                          ipv6(7)
-set_ipv6_recvrthdr                 uapi::SOL_IPV6   uapi::IPV6_RECVRTHDR              bool                          ipv6(7)
-set_ipv6_flowinfo                  uapi::SOL_IPV6   uapi::IPV6_FLOWINFO               bool                          ipv6(7)
-set_ipv6_recvfragsize              uapi::SOL_IPV6   uapi::IPV6_RECVFRAGSIZE           bool                          ipv6(7)
-set_ipv6_minhopcount               uapi::SOL_IPV6   uapi::IPV6_MINHOPCOUNT            c_int                         ipv6(7)
-get_ipv6_2292pktoptions            uapi::SOL_IPV6   uapi::IPV6_2292PKTOPTIONS         room                          ipv6(7)
-set_ipv6_mcast_join_group          uapi::SOL_IPV6   uapi::MCAST_JOIN_GROUP            struct:uapi::group_req        ipv6(7)
-set_ipv6_mcast_leave_group         uapi::SOL_IPV6   uapi::MCAST_LEAVE_GROUP           struct:uapi::group_req        ipv6(7)
-set_ipv6_mcast_msfilter            uapi::SOL_IPV6   uapi::MCAST_MSFILTER              group_filter                  ipv6(7)
-set_tcp_md5sig_ext                 uapi::SOL_TCP    uapi::TCP_MD5SIG_EXT              struct:uapi::tcp_md5sig       tcp(7)
-set_tcp_ao_add_key                 uapi::SOL_TCP    uapi::TCP_AO_ADD_KEY              struct:uapi::tcp_ao_add       tcp(7)
-get_tcp_ao_get_keys                uapi::SOL_TCP    uapi::TCP_AO_GET_KEYS             keys                          tcp(7)
-set_tcp_ao_del_key                 uapi::SOL_TCP    uapi::TCP_AO_DEL_KEY              struct:uapi::tcp_ao_del       tcp(7)
-set_tcp_ao_info                    uapi::SOL_TCP    uapi::TCP_AO_INFO                 struct:uapi::tcp_ao_info_opt  tcp(7)
-get_tcp_ao_info                    uapi::SOL_TCP    uapi::TCP_AO_INFO                 room                          tcp(7)
-set_tcp_ao_repair                  uapi::SOL_TCP    uapi::TCP_AO_REPAIR               struct:uapi::tcp_ao_repair    tcp(7)
-get_tcp_ao_repair                  uapi::SOL_TCP    uapi::TCP_AO_REPAIR               room                          tcp(7)
-set_tcp_window_clamp               uapi::SOL_TCP    uapi::TCP_WINDOW_CLAMP            c_int                         tcp(7)
-get_tcp_window_clamp               uapi::SOL_TCP    uapi::TCP_WINDOW_CLAMP            c_int                         tcp(7)
-set_tcp_syncnt                     uapi::SOL_TCP    uapi::TCP_SYNCNT                  c_int                         tcp(7)
-set_tcp_defer_accept               uapi::SOL_TCP    uapi::TCP_DEFER_ACCEPT            c_int                         tcp(7)
-set_tcp_linger2                    uapi::SOL_TCP    uapi::TCP_LINGER2                 c_int                         tcp(7)
-set_tcp_rto_min_us                 uapi::SOL_TCP    uapi::TCP_RTO_MIN_US              c_int                         tcp(7)
-set_tcp_rto_max_ms                 uapi::SOL_TCP    uapi::TCP_RTO_MAX_MS              c_int                         tcp(7)
-set_tcp_delack_max_us              uapi::SOL_TCP    uapi::TCP_DELACK_MAX_US           c_int                         tcp(7)
-set_tcp_tx_delay                   uapi::SOL_TCP    uapi::TCP_TX_DELAY                c_int                         tcp(7)
-set_tcp_fastopen_no_cookie         uapi::SOL_TCP    uapi::TCP_FASTOPEN_NO_COOKIE      bool                          tcp(7)
-set_tcp_inq                        uapi::SOL_TCP    uapi::TCP_INQ                     bool                          tcp(7)
-set_tcp_queue_seq                  uapi::SOL_TCP    uapi::TCP_QUEUE_SEQ               u32                           tcp(7)
-get_tcp_queue_seq                  uapi::SOL_TCP    uapi::TCP_QUEUE_SEQ               u32                           tcp(7)
-get_tcp_saved_syn                  uapi::SOL_TCP    uapi::TCP_SAVED_SYN               room                          tcp(7)
-set_tcp_fastopen                   uapi::SOL_TCP    uapi::TCP_FASTOPEN                u32                           tcp(7)
-set_tcp_fastopen_key               uapi::SOL_TCP    uapi::TCP_FASTOPEN_KEY            bytes                         tcp(7)
-set_tcp_save_syn                   uapi::SOL_TCP    uapi::TCP_SAVE_SYN                c_int                         tcp(7)
-set_tcp_repair_queue               uapi::SOL_TCP    uapi::TCP_REPAIR_QUEUE            c_int                         tcp(7)
-get_tcp_repair_queue               uapi::SOL_TCP    uapi::TCP_REPAIR_QUEUE            c_int                         tcp(7)
-set_tcp_timestamp                  uapi::SOL_TCP    uapi::TCP_TIMESTAMP               u32                           tcp(7)
-get_tcp_timestamp                  uapi::SOL_TCP    uapi::TCP_TIMESTAMP               u32                           tcp(7)
-set_tcp_quickack                   uapi::SOL_TCP    uapi::TCP_QUICKACK                c_int                         tcp(7)
-get_tcp_info                       uapi::SOL_TCP    uapi::TCP_INFO                    room                          tcp(7)
-get_tcp_cc_info                    uapi::SOL_TCP    uapi::TCP_CC_INFO                 room                          tcp(7)
-set_tcp_repair_window              uapi::SOL_TCP    uapi::TCP_REPAIR_WINDOW           struct:uapi::tcp_repair_window tcp(7)
-get_tcp_repair_window              uapi::SOL_TCP    uapi::TCP_REPAIR_WINDOW           room                          tcp(7)
-set_tcp_repair_options             uapi::SOL_TCP    uapi::TCP_REPAIR_OPTIONS          slice:uapi::tcp_repair_opt    tcp(7)
-get_mptcp_info                     uapi::SOL_MPTCP  local::MPTCP_INFO                 room                          mptcp(7)
-get_mptcp_full_info                uapi::SOL_MPTCP  local::MPTCP_FULL_INFO            full_info                     mptcp(7)
-set_udp_no_check6_rx               uapi::SOL_UDP    local::UDP_NO_CHECK6_RX           bool                          udp(7)
-set_udp_no_check6_tx               uapi::SOL_UDP    local::UDP_NO_CHECK6_TX           bool                          udp(7)
-set_udplite_recv_cscov             local::SOL_UDPLITE local::UDPLITE_RECV_CSCOV       c_int                         udplite(7)
-set_udplite_send_cscov             local::SOL_UDPLITE local::UDPLITE_SEND_CSCOV       c_int                         udplite(7)
-get_siocoutq                       -                local::SIOCOUTQ                   ioctl                         tcp(7)
-get_siocoutqnsd                    -                local::SIOCOUTQNSD                ioctl                         tcp(7)
-get_siocatmark                     -                local::SIOCATMARK                 ioctl                         tcp(7)
+# method                           level            option                            value                          manual      kernel
+set_so_rcvmark                     uapi::SOL_SOCKET uapi::SO_RCVMARK                  bool                           socket(7)   reads
+set_so_rcvpriority                 uapi::SOL_SOCKET uapi::SO_RCVPRIORITY              bool                           socket(7)   reads
+set_so_attach_reuseport_cbpf       uapi::SOL_SOCKET uapi::SO_ATTACH_REUSEPORT_CBPF    program                        socket(7)   reads
+set_so_detach_reuseport_bpf        uapi::SOL_SOCKET uapi::SO_DETACH_REUSEPORT_BPF     c_int                          socket(7)   reads
+set_so_max_pacing_rate             uapi::SOL_SOCKET uapi::SO_MAX_PACING_RATE          u64                            socket(7)   reads
+set_so_rcvlowat                    uapi::SOL_SOCKET uapi::SO_RCVLOWAT                 c_int                          socket(7)   reads
+get_so_rcvlowat                    uapi::SOL_SOCKET uapi::SO_RCVLOWAT                 c_int                          socket(7)   within
+set_so_buf_lock                    uapi::SOL_SOCKET uapi::SO_BUF_LOCK                 u32                            socket(7)   reads
+set_so_txrehash                    uapi::SOL_SOCKET uapi::SO_TXREHASH                 c_int                          socket(7)   reads
+set_so_cnx_advice                  uapi::SOL_SOCKET uapi::SO_CNX_ADVICE               bool                           socket(7)   reads
+set_so_wifi_status                 uapi::SOL_SOCKET uapi::SO_WIFI_STATUS              bool                           socket(7)   reads
+set_so_peek_off                    uapi::SOL_SOCKET uapi::SO_PEEK_OFF                 c_int                          socket(7)   reads
+get_so_meminfo                     uapi::SOL_SOCKET uapi::SO_MEMINFO                  room                           socket(7)   within
+set_so_no_check                    uapi::SOL_SOCKET uapi::SO_NO_CHECK                 bool                           socket(7)   reads
+set_so_timestamping                uapi::SOL_SOCKET uapi::SO_TIMESTAMPING             struct:uapi::so_timestamping   socket(7)   reads
+set_ip_options                     uapi::SOL_IP     uapi::IP_OPTIONS                  bytes                          ip(7)       reads
+set_ip_unicast_if                  uapi::SOL_IP     uapi::IP_UNICAST_IF               u32                            ip(7)       reads
+set_ip_local_port_range            uapi::SOL_IP     uapi::IP_LOCAL_PORT_RANGE         u32                            ip(7)       reads
+set_ip_router_alert                uapi::SOL_IP     uapi::IP_ROUTER_ALERT             bool                           ip(7)       reads
+set_ip_nodefrag                    uapi::SOL_IP     uapi::IP_NODEFRAG                 bool                           ip(7)       reads
+set_ip_recvopts                    uapi::SOL_IP     uapi::IP_RECVOPTS                 bool                           ip(7)       reads
+set_ip_recvfragsize                uapi::SOL_IP     uapi::IP_RECVFRAGSIZE             bool                           ip(7)       reads
+set_ip_minttl                      uapi::SOL_IP     uapi::IP_MINTTL                   c_int                          ip(7)       reads
+get_ip_pktoptions                  uapi::SOL_IP     uapi::IP_PKTOPTIONS               room                           ip(7)       within
+set_ip_mcast_join_group            uapi::SOL_IP     uapi::MCAST_JOIN_GROUP            struct:uapi::group_req         ip(7)       reads
+set_ip_mcast_leave_group           uapi::SOL_IP     uapi::MCAST_LEAVE_GROUP           struct:uapi::group_req         ip(7)       reads
+set_ip_mcast_msfilter              uapi::SOL_IP     uapi::MCAST_MSFILTER              group_filter                   ip(7)       reads
+set_ipv6_hopopts                   uapi::SOL_IPV6   uapi::IPV6_HOPOPTS                bytes                          ipv6(7)     reads
+set_ipv6_rthdrdstopts              uapi::SOL_IPV6   uapi::IPV6_RTHDRDSTOPTS           bytes                          ipv6(7)     reads
+set_ipv6_rthdr                     uapi::SOL_IPV6   uapi::IPV6_RTHDR                  bytes                          ipv6(7)     reads
+set_ipv6_dstopts                   uapi::SOL_IPV6   uapi::IPV6_DSTOPTS                bytes                          ipv6(7)     reads
+set_ipv6_flowinfo_send             uapi::SOL_IPV6   uapi::IPV6_FLOWINFO_SEND          bool                           ipv6(7)     reads
+set_ipv6_autoflowlabel             uapi::SOL_IPV6   uapi::IPV6_AUTOFLOWLABEL          bool                           ipv6(7)     reads
+set_ipv6_flowlabel_mgr             uapi::SOL_IPV6   uapi::IPV6_FLOWLABEL_MGR          struct:uapi::in6_flowlabel_req ipv6(7)     writes-back
+set_ipv6_addr_preferences          uapi::SOL_IPV6   uapi::IPV6_ADDR_PREFERENCES       u32                            ipv6(7)     reads
+set_ipv6_join_anycast              uapi::SOL_IPV6   uapi::IPV6_JOIN_ANYCAST           struct:uapi::ipv6_mreq         ipv6(7)     reads
+set_ipv6_leave_anycast             uapi::SOL_IPV6   uapi::IPV6_LEAVE_ANYCAST          struct:uapi::ipv6_mreq         ipv6(7)     reads
+set_ipv6_mtu                       uapi::SOL_IPV6   uapi::IPV6_MTU                    c_int                          ipv6(7)     reads
+set_ipv6_unicast_if                uapi::SOL_IPV6   uapi::IPV6_UNICAST_IF             u32                            ipv6(7)     reads
+set_ipv6_router_alert              uapi::SOL_IPV6   uapi::IPV6_ROUTER_ALERT           c_int                          ipv6(7)     reads
+set_ipv6_router_alert_isolate      uapi::SOL_IPV6   uapi::IPV6_ROUTER_ALERT_ISOLATE   bool                           ipv6(7)     reads
+set_ipv6_checksum                  uapi::SOL_IPV6   uapi::IPV6_CHECKSUM               c_int                          ipv6(7)     reads
+set_ipv6_recvhopopts               uapi::SOL_IPV6   uapi::IPV6_RECVHOPOPTS            bool                           ipv6(7)     reads
+set_ipv6_recvdstopts               uapi::SOL_IPV6   uapi::IPV6_RECVDSTOPTS            bool                           ipv6(7)     reads
+set_ipv6_recvrthdr                 uapi::SOL_IPV6   uapi::IPV6_RECVRTHDR              bool                           ipv6(7)     reads
+set_ipv6_flowinfo                  uapi::SOL_IPV6   uapi::IPV6_FLOWINFO               bool                           ipv6(7)     reads
+set_ipv6_recvfragsize              uapi::SOL_IPV6   uapi::IPV6_RECVFRAGSIZE           bool                           ipv6(7)     reads
+set_ipv6_minhopcount               uapi::SOL_IPV6   uapi::IPV6_MINHOPCOUNT            c_int                          ipv6(7)     reads
+get_ipv6_2292pktoptions            uapi::SOL_IPV6   uapi::IPV6_2292PKTOPTIONS         room                           ipv6(7)     within
+set_ipv6_mcast_join_group          uapi::SOL_IPV6   uapi::MCAST_JOIN_GROUP            struct:uapi::group_req         ipv6(7)     reads
+set_ipv6_mcast_leave_group         uapi::SOL_IPV6   uapi::MCAST_LEAVE_GROUP           struct:uapi::group_req         ipv6(7)     reads
+set_ipv6_mcast_msfilter            uapi::SOL_IPV6   uapi::MCAST_MSFILTER              group_filter                   ipv6(7)     reads
+set_tcp_md5sig_ext                 uapi::SOL_TCP    uapi::TCP_MD5SIG_EXT              struct:uapi::tcp_md5sig        tcp(7)      reads
+set_tcp_ao_add_key                 uapi::SOL_TCP    uapi::TCP_AO_ADD_KEY              struct:uapi::tcp_ao_add        tcp(7)      reads
+get_tcp_ao_get_keys                uapi::SOL_TCP    uapi::TCP_AO_GET_KEYS             keys                           tcp(7)      past
+set_tcp_ao_del_key                 uapi::SOL_TCP    uapi::TCP_AO_DEL_KEY              struct:uapi::tcp_ao_del        tcp(7)      reads
+set_tcp_ao_info                    uapi::SOL_TCP    uapi::TCP_AO_INFO                 struct:uapi::tcp_ao_info_opt   tcp(7)      reads
+get_tcp_ao_info                    uapi::SOL_TCP    uapi::TCP_AO_INFO                 room                           tcp(7)      within
+set_tcp_ao_repair                  uapi::SOL_TCP    uapi::TCP_AO_REPAIR               struct:uapi::tcp_ao_repair     tcp(7)      reads
+get_tcp_ao_repair                  uapi::SOL_TCP    uapi::TCP_AO_REPAIR               room                           tcp(7)      within
+set_tcp_window_clamp               uapi::SOL_TCP    uapi::TCP_WINDOW_CLAMP            c_int                          tcp(7)      reads
+get_tcp_window_clamp               uapi::SOL_TCP    uapi::TCP_WINDOW_CLAMP            c_int                          tcp(7)      within
+set_tcp_syncnt                     uapi::SOL_TCP    uapi::TCP_SYNCNT                  c_int                          tcp(7)      reads
+set_tcp_defer_accept               uapi::SOL_TCP    uapi::TCP_DEFER_ACCEPT            c_int                          tcp(7)      reads
+set_tcp_linger2                    uapi::SOL_TCP    uapi::TCP_LINGER2                 c_int                          tcp(7)      reads
+set_tcp_rto_min_us                 uapi::SOL_TCP    uapi::TCP_RTO_MIN_US              c_int                          tcp(7)      reads
+set_tcp_rto_max_ms                 uapi::SOL_TCP    uapi::TCP_RTO_MAX_MS              c_int                          tcp(7)      reads
+set_tcp_delack_max_us              uapi::SOL_TCP    uapi::TCP_DELACK_MAX_US           c_int                          tcp(7)      reads
+set_tcp_tx_delay                   uapi::SOL_TCP    uapi::TCP_TX_DELAY                c_int                          tcp(7)      reads
+set_tcp_fastopen_no_cookie         uapi::SOL_TCP    uapi::TCP_FASTOPEN_NO_COOKIE      bool                           tcp(7)      reads
+set_tcp_inq                        uapi::SOL_TCP    uapi::TCP_INQ                     bool                           tcp(7)      reads
+set_tcp_queue_seq                  uapi::SOL_TCP    uapi::TCP_QUEUE_SEQ               u32                            tcp(7)      reads
+get_tcp_queue_seq                  uapi::SOL_TCP    uapi::TCP_QUEUE_SEQ               u32                            tcp(7)      within
+get_tcp_saved_syn                  uapi::SOL_TCP    uapi::TCP_SAVED_SYN               room                           tcp(7)      within
+set_tcp_fastopen                   uapi::SOL_TCP    uapi::TCP_FASTOPEN                u32                            tcp(7)      reads
+set_tcp_fastopen_key               uapi::SOL_TCP    uapi::TCP_FASTOPEN_KEY            bytes                          tcp(7)      reads
+set_tcp_save_syn                   uapi::SOL_TCP    uapi::TCP_SAVE_SYN                c_int                          tcp(7)      reads
+set_tcp_repair_queue               uapi::SOL_TCP    uapi::TCP_REPAIR_QUEUE            c_int                          tcp(7)      reads
+get_tcp_repair_queue               uapi::SOL_TCP    uapi::TCP_REPAIR_QUEUE            c_int                          tcp(7)      within
+set_tcp_timestamp                  uapi::SOL_TCP    uapi::TCP_TIMESTAMP               u32                            tcp(7)      reads
+get_tcp_timestamp                  uapi::SOL_TCP    uapi::TCP_TIMESTAMP               u32                            tcp(7)      within
+set_tcp_quickack                   uapi::SOL_TCP    uapi::TCP_QUICKACK                c_int                          tcp(7)      reads
+get_tcp_info                       uapi::SOL_TCP    uapi::TCP_INFO                    room                           tcp(7)      within
+get_tcp_cc_info                    uapi::SOL_TCP    uapi::TCP_CC_INFO                 room                           tcp(7)      within
+set_tcp_repair_window              uapi::SOL_TCP    uapi::TCP_REPAIR_WINDOW           struct:uapi::tcp_repair_window tcp(7)      reads
+get_tcp_repair_window              uapi::SOL_TCP    uapi::TCP_REPAIR_WINDOW           room                           tcp(7)      within
+set_tcp_repair_options             uapi::SOL_TCP    uapi::TCP_REPAIR_OPTIONS          slice:uapi::tcp_repair_opt     tcp(7)      reads
+get_mptcp_info                     uapi::SOL_MPTCP  local::MPTCP_INFO                 room                           mptcp(7)    within
+get_mptcp_full_info                uapi::SOL_MPTCP  local::MPTCP_FULL_INFO            full_info                      mptcp(7)    through
+set_udp_no_check6_rx               uapi::SOL_UDP    local::UDP_NO_CHECK6_RX           bool                           udp(7)      reads
+set_udp_no_check6_tx               uapi::SOL_UDP    local::UDP_NO_CHECK6_TX           bool                           udp(7)      reads
+set_udplite_recv_cscov             local::SOL_UDPLITE local::UDPLITE_RECV_CSCOV         c_int                          udplite(7)  reads
+set_udplite_send_cscov             local::SOL_UDPLITE local::UDPLITE_SEND_CSCOV         c_int                          udplite(7)  reads
+get_siocoutq                       -                local::SIOCOUTQ                   ioctl                          tcp(7)      within
+get_siocoutqnsd                    -                local::SIOCOUTQNSD                ioctl                          tcp(7)      within
+get_siocatmark                     -                local::SIOCATMARK                 ioctl                          tcp(7)      within

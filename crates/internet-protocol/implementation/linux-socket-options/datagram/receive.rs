@@ -1,7 +1,6 @@
-//! The control messages of `recvmsg` and the error queue as `ReceivedPacketFields`, `TransmitReport`s and
-//! packets written whole from their IP header.
+//! The control messages of `recvmsg` and the error queue as `ReceivedPacketFields`, reports and whole packets.
 
-use core::mem::size_of;
+use core::mem::{offset_of, size_of};
 use core::num::NonZeroU32;
 use core::time::Duration;
 use std::io::IoSliceMut;
@@ -34,7 +33,7 @@ uapi_mirror! {
     struct TimestampingPacketInformation mirrors uapi::scm_ts_pktinfo {
         if_index: u32,
         pkt_length: u32,
-        reserved: [u32; 2],
+        reserved: [u8; size_of::<uapi::scm_ts_pktinfo>() - offset_of!(uapi::scm_ts_pktinfo, reserved)],
     }
 }
 
@@ -54,10 +53,16 @@ uapi_mirror! {
 use crate::control_space as space;
 
 /// The IPv6 extension headers Linux reports for one packet: hop-by-hop, destination, routing, destination.
+///
+/// https://www.rfc-editor.org/rfc/rfc8200#section-4
 const EXTENSION_HEADERS: usize = 4;
 
-/// The integer-sized messages: TTL, TOS, hop limit, traffic class, flow information, two fragment sizes, mark,
-/// priority, drop counter and segment size.
+/// The integer-sized control messages.
+///
+/// They are TTL, TOS, hop limit, traffic class, flow information, two fragment sizes, mark, priority, drop counter and
+/// segment size.
+///
+/// https://man7.org/linux/man-pages/man7/ip.7.html
 const INTEGER_MESSAGES: usize = 11;
 
 const RECEIVE_CONTROL: usize = space(size_of::<uapi::in_pktinfo>())
@@ -71,10 +76,17 @@ const RECEIVE_CONTROL: usize = space(size_of::<uapi::in_pktinfo>())
     + space(size_of::<uapi::scm_ts_pktinfo>())
     + space(size_of::<libc::sock_extended_err>() + size_of::<uapi::sockaddr_in6>());
 
-/// `SO_EE_ORIGIN_TXTIME` of `linux/errqueue.h`, which neither libc nor linux-raw-sys carries.
+/// The origin of an error queue entry about a transmit time, which neither libc nor linux-raw-sys carries.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const SO_EE_ORIGIN_TXTIME: u8 = 6;
-/// `SO_EE_CODE_TXTIME_INVALID_PARAM` and `SO_EE_CODE_TXTIME_MISSED` of `linux/errqueue.h`, which neither carries.
+/// The code of a transmit time its queue cannot take, which neither libc nor linux-raw-sys carries.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const SO_EE_CODE_TXTIME_INVALID_PARAM: u8 = 1;
+/// The code of a transmit time its queue missed, which neither libc nor linux-raw-sys carries.
+///
+/// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const SO_EE_CODE_TXTIME_MISSED: u8 = 2;
 
 /// The control messages of one receive.
@@ -336,13 +348,14 @@ fn address(data: &[u8]) -> Option<SocketAddr> {
     address_of_storage(data)
 }
 
-/// The largest run of headers written before a payload: IPv6, its extension headers, ICMPv6 and a quoted IPv6
-/// and UDP header.
+/// The largest run of headers written before a payload.
+///
+/// It is IPv6, its extension headers, ICMPv6 and a quoted IPv6 and UDP header.
 const HEADERS: usize =
     Ipv6Header::LEN * 2 + EXTENSION_HEADERS * Ipv6RawExtHeader::MAX_LEN + UDP_HEADER * 2;
 const UDP_HEADER: usize = etherparse::UdpHeader::LEN;
 
-/// Headers written in order, then put before a payload that arrived at the start of a buffer.
+/// The headers of a packet written in order, then put before a payload that arrived at the start of a buffer.
 pub struct Headers {
     bytes: [u8; HEADERS],
     length: usize,
@@ -373,8 +386,9 @@ impl Headers {
         self.length += bytes.len();
     }
 
-    /// Moves the payload of `copied` bytes at the start of `into` up behind the headers and writes them; the
-    /// tail that no longer fits is cut. Returns the bytes now in `into`.
+    /// Moves the payload of `copied` bytes at the start of `into` up behind the headers and writes them.
+    ///
+    /// The tail that no longer fits is cut; gives the bytes now in `into`.
     pub fn place(&self, into: &mut [u8], copied: usize) -> usize {
         let length = self.length;
         if length >= into.len() {

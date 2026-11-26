@@ -26,8 +26,9 @@ etherparse = { workspace = true, features = ["std"] }
 # The raw sockets the ICMP checks capture SYNs and send errors with, as the network between the two ends.
 rustix = { version = "1.1.6", features = ["net"] }
 
-# Linux's codes of classic BPF and IPv4 options, which the checks write into what they send.
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "if_tun", "no_std"] }
+# Linux's codes of classic BPF and IPv4 options, which the checks write into what they send, and the local routing
+# table and route feature numbers each check's namespace is set up with.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "if_tun", "netlink", "no_std"] }
 # The host's interfaces, to find the loopback one by its flag, and the network namespace of a check of its own.
 nix = { version = "0.31.3", default-features = false, features = ["net", "sched"] }
 
