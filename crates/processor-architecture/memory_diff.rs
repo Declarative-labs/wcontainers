@@ -1905,37 +1905,6 @@ pub proof fn lemma_cursor_to_next_range<Permission>(
     }
 }
 
-/// A byte the two windows hold alike is passed by the cursor with nothing to change.
-pub proof fn lemma_same_resolved_byte_passed<Permission>(
-    first: Memory<Permission>,
-    second: Memory<Permission>,
-    memory: Memory<Permission>,
-    ranges: Seq<(u128, u128)>,
-    index: int,
-    start: u64,
-    first_bytes: Seq<u8>,
-    second_bytes: Seq<u8>,
-    at: int,
-)
-    requires
-        0 <= index < ranges.len(),
-        ranges[index].0 <= start,
-        0 <= at < first_bytes.len(),
-        first_bytes.len() == second_bytes.len(),
-        start + first_bytes.len() <= ranges[index].1 <= address_count(),
-        bytes_resolved(first, first_bytes, start),
-        bytes_resolved(second, second_bytes, start),
-        first_bytes[at] == second_bytes[at],
-        values_up_to(first, second, memory, ranges, start + at),
-    ensures
-        values_up_to(first, second, memory, ranges, start + at + 1),
-{
-    assert(first_bytes[at] == first((start + at) as u64).0);
-    assert(second_bytes[at] == second((start + at) as u64).0);
-    assert((start + at) as u64 == start + at);
-    lemma_same_byte_passed(first, second, memory, ranges, index, (start + at) as u64);
-}
-
 /// A run of bytes the two windows hold differently, sent as the second's, moves the cursor past the run, and shows
 /// the two memories differ.
 pub proof fn lemma_run_sent<Permission>(
