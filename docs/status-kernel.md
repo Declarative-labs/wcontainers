@@ -197,3 +197,36 @@ pub trait MemorySpace: Sized {
 4. The suite cases with a `PerThreadWatch` bound (`thread_watched_memory_is_read_and_written`,
    `thread_watch_leaves_the_process`) must sit in the one `tests!` macro the linter fixes, so every
    kernel that runs the suite needs an executor with per-thread watches.
+
+## 2026-11-26: KP2, the kernel's own part (`f39e9cec8`, `9e3b1d4a1`)
+
+- The internal `Cpu` adapter is gone: `GuestMachine<C>` no longer implements the abi's `Cpu`; its
+  calls are its own methods (verb first: `make_memory`, `duplicate_memory`, `map_shared`, ...), and
+  the call context, the call memory, the guest copy and the hooks' process handle carry the
+  executor type `C` instead of `&mut dyn Cpu`. The size of a space is read once, in
+  `GuestMachine::new`, with the one legacy call `executor.address_space()` (owner line 3), so
+  `C: Cpu` stays only where the kernel is made (`start`, `Kernel` and the `Process` impls).
+- `Host` is gone: the kernel's `System` asks for the system interface's
+  `FallbackObserver<Warning<'static>>`, and each counted fallback is told through
+  `on_fallback_used`. An embedder's `Host::warn` becomes `on_fallback_used`.
+- The old drive is gone from the kernel's surface: `next` and `exit` are the runner's alone
+  (crate-private), on the kernel's own `Next` and `Exit`; `event` is split into the runner's
+  `fire_timers` and a public `resize_terminal` (no interface carries a resize from outside); the
+  abi's backend notice event went, as the kernel waits for notices itself. `Exit` has no fault
+  without registers: no executor of the interface makes one.
+- The runner's turn stays one clear step: run until the next trap (`execute`, a handler that
+  ends at the first trap, polled to its end), then the kernel answers the trap.
+- MEASURED, ARM64 and x86-64, `--jobs 12`: `cargo metadata --locked`, rustfmt `--check`, and
+  `cargo check` and `cargo clippy --no-deps -- -D warnings` of `--lib` of both kernel crates exit 0;
+  0 `.rs` lines with `unsafe` in crates/kernel; unit tests in the copy without the stand-in: 30
+  passed on both. `git grep` of the abi's `Cpu`, `Host`, `Event`, `Next`, `Exit` in crates/kernel:
+  only `Cpu`, in executing.rs (the bounds above) and guest_machine.rs (the one call).
+- Linter, the kernel's own crates: 31,322 findings (31,316 before): 12 more `name_unanswered` and
+  8 more `summary_unanswered` (the renamed methods and new types need the model's key), every other
+  rule the same or fewer; the `Cpu` implementation_folder finding is gone. Logs:
+  SCRATCH/kernel-port/kp2/.
+- Waiting: the harness (driver.rs, replay.rs, streams.rs, ltp.rs and the tests) still drives the
+  kernel through `next`, `exit`, `event` and `&mut dyn Cpu`; it moves to `Runner::run` when it can
+  build, with the stand-in of the executor track's X3. Other tracks' crates that call the old drive
+  or implement `Host` for the kernel: the runtime (single-kernel), seeded-test-policy, and the
+  hardware-virtualization executors.
