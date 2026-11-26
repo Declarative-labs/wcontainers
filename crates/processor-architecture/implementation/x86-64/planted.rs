@@ -1278,6 +1278,10 @@ pub enum Bug {
     AreaFaultsAtLowestByte,
     /// VZEROUPPER tracks SSE as initial too.
     ZeroUpperTracksSseInitial,
+    /// XRSTOR reads its header from XSTATE_BV on, so that a fault there is reported at the header's start.
+    RestoreReadsHeaderFromStart,
+    /// XRSTOR tracks the components it restores as modified.
+    RestoreTracksModified,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1870,6 +1874,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::WaitIgnoresReservedBits, "UMWAIT, TPAUSE", Family::Forms(&[Instruction::UmwaitGpr32, Instruction::TpauseGpr32u32]), Origin::StateAndXsave),
     row(Bug::AreaFaultsAtLowestByte, "XSAVE family", Family::Forms(XSAVE_FAMILY), Origin::StateAndXsave),
     row(Bug::ZeroUpperTracksSseInitial, "VZEROUPPER", Family::Forms(&[Instruction::Vzeroupper]), Origin::StateAndXsave),
+    row(Bug::RestoreReadsHeaderFromStart, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::RestoreTracksModified, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
 ];
 
 const STANDARD_SAVES: &[Instruction] = &[

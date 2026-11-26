@@ -40,7 +40,7 @@ use wcontainers_processor_architecture_x86_64::memory::{read_bytes, read_permiss
 use wcontainers_processor_architecture_x86_64::xsave;
 use wcontainers_processor_architecture_x86_64::{
     Access, DataAccess, Exception, Flags, GENERAL_PURPOSE_REGISTERS, InstructionFetch, MXCSR_DEFAULT,
-    CODE_SEGMENT, PagePermission, Processor, STACK_POINTER, VECTOR_REGISTERS, X86_64,
+    CODE_SEGMENT, PKRU_DEFAULT, PagePermission, Processor, STACK_POINTER, VECTOR_REGISTERS, X86_64,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 use zerocopy::{FromZeros, IntoBytes};
@@ -58,6 +58,7 @@ use crate::layout::{
     TASK_STATE_SEGMENT, TaskStateSegment, UPPER_HALF_DIRECTORY_POINTERS, USER, USER_CODE, USER_DATA, WRITABLE,
     list_descriptors, to_gate, to_gate_privilege, to_index, to_interrupt_stack, to_kernel,
 };
+use crate::layout::{AREA_MARKER, OBSERVED_AREA, PHASE_READ, PHASE_STEP_FAILED, TRACKED_AREA_BYTES, TRACKING_CODE, TrackingSteps};
 
 mod handler;
 mod layout;
@@ -204,6 +205,10 @@ pub enum Refusal {
     UnexpectedVector(u64),
     /// A page fault with a reserved bit, a key or a shadow stack in its error code.
     UnexpectedPageFault(u32),
+    /// XRSTOR TRACKING: the loading XRSTOR or the reading XSAVEOPT ended with this vector, not its single-step trap.
+    TrackingStepFailed(u64),
+    /// XRSTOR TRACKING: the host preempted every run of the state, each of which lost the tracking.
+    Disturbed,
 }
 
 /// A page of zeros, which clears guest memory.
@@ -421,14 +426,16 @@ impl SingleStepMachine {
         // The kernel's pages, supervisor only and global; only the handler's may be executed.
         for page in 0..KERNEL_PAGES {
             let physical = page * PAGE_BYTES;
-            let executable = (HANDLER..HANDLER + HANDLER_BYTES).contains(&physical);
+            let executable = (HANDLER..HANDLER + HANDLER_BYTES).contains(&physical) || physical == TRACKING_CODE;
             let fetch = if executable { 0 } else { NO_EXECUTE };
             let entry = physical | PRESENT | WRITABLE | ACCESSED | DIRTY | GLOBAL | fetch;
             self.write_entry(KERNEL_TABLE + to_index(to_kernel(physical), LEVELS - 1) * ENTRY_BYTES, entry);
         }
         let table = PRESENT | WRITABLE | ACCESSED;
-        self.write_entry(KERNEL_DIRECTORY + (ENTRIES - 1) * ENTRY_BYTES, KERNEL_TABLE | table);
-        self.write_entry(KERNEL_DIRECTORY_POINTERS + (ENTRIES - 1) * ENTRY_BYTES, KERNEL_DIRECTORY | table);
+        // XRSTOR TRACKING: USER on the path to the kernel's table, so that the tracking code's own entry decides.
+        self.write_entry(KERNEL_DIRECTORY + (ENTRIES - 1) * ENTRY_BYTES, KERNEL_TABLE | table | USER);
+        self.write_entry(KERNEL_DIRECTORY_POINTERS + (ENTRIES - 1) * ENTRY_BYTES, KERNEL_DIRECTORY | table | USER);
+        self.write_bytes(TRACKING_CODE, &handler::assemble_tracking_code());
         // Every other address of the upper half is a present, supervisor-only, read-only page, as the architecture
         // has the kernel's half: 1 GiB, 2 MiB and 4 KiB pages of frame 0, which ring 3 can never reach.
         let filler = PRESENT | ACCESSED | NO_EXECUTE;
@@ -512,7 +519,7 @@ impl SingleStepMachine {
         let table = PRESENT | WRITABLE | ACCESSED;
         let mut entries = [0; ENTRIES as usize];
         entries[(ENTRIES / 2) as usize..KERNEL_ENTRY as usize].fill(UPPER_HALF_DIRECTORY_POINTERS | table);
-        entries[KERNEL_ENTRY as usize] = KERNEL_DIRECTORY_POINTERS | table;
+        entries[KERNEL_ENTRY as usize] = KERNEL_DIRECTORY_POINTERS | table | USER;
         // One copy of the whole table: guest memory is reached only by copies, each with a cost of its own.
         self.write_bytes(at, entries.as_bytes());
         at
@@ -524,7 +531,12 @@ impl SingleStepMachine {
     }
 
     /// Writes the state's memory and registers into the guest, fully or incrementally.
-    fn load(&mut self, processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Option<Vec<MemoryDelta<'static, X86_64>>> {
+    fn load(
+        &mut self,
+        processor: &Processor,
+        memory: &[MemoryDelta<'_, X86_64>],
+        steps: TrackingSteps,
+    ) -> Option<Vec<MemoryDelta<'static, X86_64>>> {
         let started = Instant::now();
         self.writable.clear();
         self.bytes_before.clear();
@@ -535,13 +547,14 @@ impl SingleStepMachine {
             }
             MemoryLoading::Incremental | MemoryLoading::Checked => Some(self.prepare(memory)),
         };
-        let slot = to_slot(processor, self.read_page_table());
+        let slot = to_slot(processor, self.read_page_table(), steps);
         // The handler reads the image before (up to its last component loaded) and the fields up to the registers
         // before; it writes the rest.
         let end = to_image_end(processor.xinuse & SAVED_COMPONENTS);
         self.write_bytes(SLOT, &slot.before_xsave.as_bytes()[..end]);
         let inputs = offset_of!(Slot, page_table)..offset_of!(Slot, after);
         self.write_bytes(SLOT + inputs.start as u64, &slot.as_bytes()[inputs]);
+        self.write_bytes(SLOT + offset_of!(Slot, tracking) as u64, slot.tracking.as_bytes());
         self.time_loading += started.elapsed();
         held
     }
@@ -795,6 +808,26 @@ impl SingleStepMachine {
             .map_err(|error| Refusal::KvmFailed(format!("the handler's entry: {error}")))
     }
 
+    /// XRSTOR TRACKING: the tracking the reading XSAVEOPT found: in the area it read, each requested component in use
+    /// whose bytes it left as the marker; none where it did not read.
+    fn read_tracking(&self, processor: &mut Processor, tracked: bool) -> Result<(), Refusal> {
+        if !tracked {
+            return Ok(());
+        }
+        let mut steps = TrackingSteps::new_zeroed();
+        self.read_into(SLOT + offset_of!(Slot, tracking) as u64, steps.as_mut_bytes());
+        processor.xsave_tracking = match steps.phase {
+            PHASE_STEP_FAILED => return Err(Refusal::TrackingStepFailed(steps.step_vector)),
+            PHASE_READ => {
+                let observed = self.read_bytes(OBSERVED_AREA, steps.reading_bytes);
+                let skipped = list_skipped_components(&observed, steps.reading_request & processor.xcr0 & processor.xinuse);
+                xsave::to_tracking(steps.reading_area, skipped, processor.xinuse)
+            }
+            _ => None,
+        };
+        Ok(())
+    }
+
     /// Gives the processor after the run, and each run of bytes it changed; writes neither when the run is refused.
     fn read_back(
         &mut self,
@@ -951,28 +984,42 @@ impl BehaviorSource for SingleStepMachine {
         }
         check_holdable(processor, memory)?;
         check_steppable(processor, memory)?;
-        let held = self.load(processor, memory);
-        let Some(mut held) = held else {
+        let steps = to_tracking_steps(processor, memory)?;
+        let tracked = steps.load_area != 0 || steps.completed_area != 0 || steps.excepted_area != 0;
+        let mut tries = 0;
+        let held = loop {
+            // XRSTOR TRACKING: a run the host preempted lost the tracking, so it runs again.
+            let switches = tracked.then(read_involuntary_switches);
+            let held = self.load(processor, memory, steps);
+            if held.is_some() && self.options.loading == MemoryLoading::Checked && !self.check_guest_holds(memory) {
+                self.check_mismatches += 1;
+            }
             self.run()?;
-            self.hide_pushed_trap_flag(processor, memory);
-            return self.read_back(processor, |mutation| mutation_hook.on_memory_mutated(mutation));
+            if switches.is_none_or(|before| before == read_involuntary_switches()) {
+                break held;
+            }
+            tries += 1;
+            if tries == TRACKING_RUNS {
+                return Err(Refusal::Disturbed);
+            }
+            self.resident.memory = Held::Unknown;
         };
-        if self.options.loading == MemoryLoading::Checked && !self.check_guest_holds(memory) {
-            self.check_mismatches += 1;
-        }
-        self.run()?;
         self.hide_pushed_trap_flag(processor, memory);
+        let Some(mut held) = held else {
+            self.read_back(processor, |mutation| mutation_hook.on_memory_mutated(mutation))?;
+            return self.read_tracking(processor, tracked);
+        };
         self.read_back(processor, |mutation| {
             held.push(mutation.clone().into_owned());
             mutation_hook.on_memory_mutated(mutation);
         })?;
         self.resident.memory = Held::Known(held);
-        Ok(())
+        self.read_tracking(processor, tracked)
     }
 }
 
 /// The slot that loads the processor under the page table.
-fn to_slot(processor: &Processor, page_table: u64) -> Slot {
+fn to_slot(processor: &Processor, page_table: u64, tracking: TrackingSteps) -> Slot {
     let registers = Registers {
         general: processor.general_purpose_registers,
         instruction_pointer: processor.instruction_pointer,
@@ -1018,7 +1065,7 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
         debug_status: 0,
         before: registers,
         after: registers,
-        reserved: [0; 7],
+        tracking,
     }
 }
 
@@ -1076,9 +1123,6 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
     if !xsave::is_consistent(processor) {
         return Err(Refusal::NotModeled("XINUSE with a bit outside XCR0, or clear for a component out of its initial configuration"));
     }
-    if processor.xsave_tracking.is_some() {
-        return Err(Refusal::NotModeled("an XRSTOR tracked for XSAVEOPT, which this source cannot load"));
-    }
     if processor.code_segment != CODE_SEGMENT {
         return Err(Refusal::NotModeled("CS other than Linux's 64-bit code segment, which every state holds"));
     }
@@ -1112,7 +1156,7 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 /// For a MOV SS that loads SS (it steps two instructions) and SYSENTER (it enters ring 0 at MSRs the source does not
 /// set as Linux does). VMCALL runs, which KVM answers as a hypercall, and VMMCALL, which raises #UD once KVM's quirk
 /// that rewrites it is off. Then for each instruction whose result under Linux differs from the source's guest, the table of settings
-/// on the page says why: XRSTOR, INT 0x80, and AMX's. LAR, LSL, VERR and VERW run: the guest's descriptor table is Linux's. SGDT, SIDT and SMSW run: the chip's #GP under
+/// on the page says why: INT 0x80, and AMX's. LAR, LSL, VERR and VERW run: the guest's descriptor table is Linux's. SGDT, SIDT and SMSW run: the chip's #GP under
 /// UMIP is the program's outcome at this level, as every other exception is, whatever Linux then does with it.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
     let address = processor.instruction_pointer;
@@ -1141,9 +1185,6 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         Mnemonic::Sysenter => Some("it enters ring 0 at SYSENTER MSRs the source does not set as Linux does"),
         // RDTSC, RDTSCP, RDPID, RDRAND and RDSEED run: their behaviors do not compare the registers the time,
         // IA32_TSC_AUX and the random source decide; nor do UMWAIT's and TPAUSE's the CF the time decides.
-        Mnemonic::Xrstor | Mnemonic::Xrstor64 => {
-            Some("it leaves XSAVEOPT's tracking, which this source cannot read back before the halt resets it")
-        }
         Mnemonic::Int if decoded.immediate8() == LINUX_SYSTEM_CALL_VECTOR => {
             Some("Linux takes it as a 32-bit system call")
         }
@@ -1245,8 +1286,8 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
         code_segment: after.code_segment as u16,
         xcr0: EXTENDED_CONTROL_0,
         xinuse: saved & SAVED_COMPONENTS,
-        // The tracking a ring 3 XRSTOR would leave is refused; the handler's own XRSTOR64 at ring 0 leaves none a
-        // program's XSAVEOPT can use.
+        // The handler's own XRSTOR64 at ring 0 leaves no tracking a program's XSAVEOPT can use; the reading step gives
+        // any other.
         xsave_tracking: None,
     })
 }
@@ -1399,3 +1440,106 @@ fn compose_page(page: u64, memory: &[MemoryDelta<'_, X86_64>], bytes: &mut [u8])
 
 // The default MXCSR a state starts from fits what the handler loads.
 const _: () = assert!(MXCSR_DEFAULT <= u16::MAX as u32);
+
+/// XRSTOR TRACKING: how many times a state whose tracking the host preempted runs before it is refused.
+const TRACKING_RUNS: u32 = 8;
+
+/// XRSTOR TRACKING: the times the host took this thread off its CPU, as Linux counts them.
+fn read_involuntary_switches() -> u64 {
+    let status = std::fs::read_to_string("/proc/thread-self/status").unwrap_or_default();
+    status
+        .lines()
+        .find_map(|line| line.strip_prefix("nonvoluntary_ctxt_switches:"))
+        .and_then(|count| count.trim().parse().ok())
+        .unwrap_or(u64::MAX)
+}
+
+/// XRSTOR TRACKING: the steps around the instruction: loading the state's tracking with an XRSTOR at ring 3 from its
+/// area, and reading the tracking after it with an XSAVEOPT at ring 3, at the area the state tracks or, after a
+/// completed XRSTOR, at that XRSTOR's area.
+///
+/// # Errors
+///
+/// When an area to load or read does not lie, aligned, on one writable page of the state, or the state's PKRU is not
+/// the host's (KVM then writes PKRU at each exit, which marks it modified).
+fn to_tracking_steps(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<TrackingSteps, Refusal> {
+    let mut steps = TrackingSteps::new_zeroed();
+    let fits = |area: u64, bytes: u64| {
+        area.is_multiple_of(64)
+            && area < X86_64::ADDRESSABLE.end
+            && (area..area + bytes).step_by(PAGE_BYTES as usize).chain([area + bytes - 1]).all(|byte| {
+                matches!(read_permission(memory, byte), PagePermission::Mapped { data_access: DataAccess::ReadWrite, .. })
+            })
+    };
+    let one_page = |area: u64| area % PAGE_BYTES + TRACKED_AREA_BYTES <= PAGE_BYTES;
+    if let Some(tracking) = processor.xsave_tracking {
+        if !(fits(tracking.area, TRACKED_AREA_BYTES) && one_page(tracking.area) && processor.pkru == PKRU_DEFAULT) {
+            return Err(Refusal::NotModeled("a tracked area not aligned on one writable page, or PKRU not the host's"));
+        }
+        steps.load_area = tracking.area;
+        steps.load_request = tracking.unmodified;
+        steps.excepted_area = tracking.area;
+        steps.completed_area = tracking.area;
+        steps.completed_request = u64::MAX;
+        steps.completed_bytes = TRACKED_AREA_BYTES;
+    }
+    let bytes: [u8; 15] = read_bytes(memory, processor.instruction_pointer);
+    let decoded = Decoder::with_ip(64, &bytes, processor.instruction_pointer, DecoderOptions::NONE).decode();
+    if matches!(decoded.mnemonic(), Mnemonic::Xrstor | Mnemonic::Xrstor64)
+        && let Some(area) = read_memory_address(processor, &decoded)
+    {
+        let registers = &processor.general_purpose_registers;
+        let request = (registers[2] << 32 | registers[0] & u64::from(u32::MAX)) & processor.xcr0;
+        let reached = xsave::to_extent(request, true);
+        let readable = (area..area + reached).step_by(PAGE_BYTES as usize).chain([area + reached - 1]).all(|byte| {
+            matches!(read_permission(memory, byte), PagePermission::Mapped { .. })
+        });
+        if fits(area, reached) && area % PAGE_BYTES + reached <= PAGE_BYTES {
+            (steps.completed_area, steps.completed_request, steps.completed_bytes) = (area, request, reached);
+        } else if readable && area.is_multiple_of(64) && area < X86_64::ADDRESSABLE.end {
+            return Err(Refusal::NotModeled("an XRSTOR that may complete from an area the source cannot read back"));
+        } else {
+            steps.completed_area = 0;
+        }
+    }
+    Ok(steps)
+}
+
+/// XRSTOR TRACKING: the components of `requested` whose bytes the reading XSAVEOPT left as the marker.
+fn list_skipped_components(observed: &[u8], requested: u64) -> u64 {
+    let ranges = |component: u64| -> Vec<Range<usize>> {
+        match component {
+            xsave::X87_COMPONENT => vec![0..24, 32..160],
+            xsave::SSE_COMPONENT => vec![160..416],
+            xsave::PKRU_COMPONENT => vec![2688..2692],
+            other => xsave::EXTENDED_COMPONENTS
+                .iter()
+                .filter(|extended| extended.bit == other)
+                .map(|extended| extended.offset as usize..(extended.offset + extended.bytes) as usize)
+                .collect(),
+        }
+    };
+    xsave::list_components(requested)
+        .filter(|component| {
+            ranges(*component)
+                .into_iter()
+                .all(|range| observed.get(range).is_some_and(|bytes| bytes.iter().all(|byte| *byte == AREA_MARKER)))
+        })
+        .fold(0, |all, component| all | component)
+}
+
+/// The linear address of the instruction's memory operand, from the state's registers.
+fn read_memory_address(processor: &Processor, decoded: &iced_x86::Instruction) -> Option<u64> {
+    decoded.virtual_address(0, 0, |register, _, _| {
+        let value = match register {
+            Register::FS => processor.fs_base,
+            Register::GS => processor.gs_base,
+            Register::ES | Register::CS | Register::SS | Register::DS => 0,
+            register if register.is_gpr64() => processor.general_purpose_registers[register.number()],
+            register if register.is_gpr32() => processor.general_purpose_registers[register.full_register().number()] & u64::from(u32::MAX),
+            Register::RIP => processor.instruction_pointer,
+            _ => return None,
+        };
+        Some(value)
+    })
+}

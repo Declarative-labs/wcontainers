@@ -280,13 +280,28 @@ fn restore(
 ) -> Result<(), Exception> {
     let requested = to_requested(processor);
     let header_address = address.wrapping_add(HEADER_OFFSET);
-    if let Some(exception) = find_area_fault(memory, address, HEADER_OFFSET + crate::xsave::HEADER_BYTES, Access::Read) {
-        return Err(exception);
+    // XCOMP_BV first, which chooses the form, at its own first byte.
+    let compaction_address = header_address.wrapping_add(8);
+    let compaction_bytes = if is_active(Bug::RestoreReadsHeaderFromStart) { 16 } else { 8 };
+    let compaction_start = if compaction_bytes == 16 { header_address } else { compaction_address };
+    if let Some((faulting, page_present)) = find_page_fault(memory, compaction_start, compaction_bytes, Access::Read) {
+        return Err(Exception::PageFault { access: Access::Read, page_present, address: faulting });
     }
     let header: [u8; 64] = crate::memory::read_bytes(memory, header_address);
     let quad = |index: usize| u64::from_le_bytes(header[index..index + 8].try_into().expect("eight bytes"));
     let (state_bitmap, compaction) = (quad(0), quad(8));
     let compacted = compaction & COMPACTED != 0;
+    let offsets = list_component_offsets(if compacted { compaction & !COMPACTED } else { requested }, !compacted);
+    // Then every byte of the request's components in the form's layout, reported at the last.
+    let extent = offsets
+        .iter()
+        .filter(|(component, _)| requested & component.bit != 0)
+        .map(|(component, offset)| offset + component.bytes)
+        .max()
+        .unwrap_or(HEADER_OFFSET + crate::xsave::HEADER_BYTES);
+    if let Some(exception) = find_area_fault(memory, address, extent, Access::Read) {
+        return Err(exception);
+    }
     let refused = if compacted {
         compaction & !COMPACTED & !processor.xcr0 != 0 || state_bitmap & !compaction != 0 || header[16..].iter().any(|byte| *byte != 0)
     } else {
@@ -295,11 +310,6 @@ fn restore(
     };
     if refused {
         return Err(Exception::GeneralProtection { error_code: 0 });
-    }
-    let offsets = list_component_offsets(if compacted { compaction & !COMPACTED } else { requested }, !compacted);
-    let extent = to_extent(if compacted { compaction & !COMPACTED & requested } else { requested }, !compacted);
-    if let Some(exception) = find_area_fault(memory, address, extent, Access::Read) {
-        return Err(exception);
     }
     let legacy: [u8; 416] = crate::memory::read_bytes(memory, address);
     let loads_mxcsr = if compacted {
@@ -336,9 +346,15 @@ fn restore(
         load_component(processor, component.bit, &bytes);
     }
     let initialized = requested & !state_bitmap;
-    let in_use_initialized = if restored_initial == RestoredInitial::TrackedInUse { initialized } else { 0 };
+    let in_use_initialized = match restored_initial {
+        RestoredInitial::TrackedInUse => initialized,
+        RestoredInitial::TrackedInitialButPkru => initialized & PKRU_COMPONENT,
+        RestoredInitial::TrackedInitial => 0,
+    };
     processor.xinuse = processor.xinuse & !requested | loaded | in_use_initialized;
-    processor.xsave_tracking = if compacted { None } else { to_tracking(address, requested, processor.xinuse) };
+    // PKRU that the behavior leaves in use when it puts it in its initial configuration is written, so modified.
+    let unmodified = if is_active(Bug::RestoreTracksModified) { 0 } else { requested & !(in_use_initialized & PKRU_COMPONENT) };
+    processor.xsave_tracking = if compacted { None } else { to_tracking(address, unmodified, processor.xinuse) };
     Ok(())
 }
 

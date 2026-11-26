@@ -323,11 +323,13 @@ pub enum MisalignedArea {
     AlignmentCheckBelow { width: u64 },
 }
 
-/// What XRSTOR leaves in XINUSE for a requested component it puts in its initial configuration.
+/// What XRSTOR leaves in XINUSE for a requested component it puts in its initial configuration: tracked as initial,
+/// in use, or as initial but PKRU, which a chip may not track; PKRU left in use so is written, and so modified.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RestoredInitial {
     TrackedInitial,
     TrackedInUse,
+    TrackedInitialButPkru,
 }
 
 /// What UMWAIT and TPAUSE do at ring 3: wait, or raise #GP(0) because CR4.TSD refuses the time-stamp counter to it.
@@ -357,7 +359,8 @@ const MISALIGNED: [MisalignedArea; 6] = [
     MisalignedArea::AlignmentCheckBelow { width: 64 },
 ];
 const ACROSS_FAULT: [StoreAcrossFault; 2] = [StoreAcrossFault::WritesNothing, StoreAcrossFault::WritesBytesBelowFault];
-const RESTORED_INITIAL: [RestoredInitial; 2] = [RestoredInitial::TrackedInitial, RestoredInitial::TrackedInUse];
+const RESTORED_INITIAL: [RestoredInitial; 3] =
+    [RestoredInitial::TrackedInitial, RestoredInitial::TrackedInUse, RestoredInitial::TrackedInitialButPkru];
 
 /// Every combination of the choices the form leaves open, the documented one first.
 pub(crate) fn list_state_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {

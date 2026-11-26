@@ -300,7 +300,9 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::RestoredImage
         | OperandType::ControlIndex
         | OperandType::WaitSource
-        | OperandType::WaitDeadline => true,
+        | OperandType::WaitDeadline
+        | OperandType::XrstorTracking
+        | OperandType::RestoredOver => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }

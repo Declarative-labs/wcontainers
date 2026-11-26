@@ -30,7 +30,14 @@ pub const KERNEL_DIRECTORY: u64 = 0xA000;
 pub const KERNEL_TABLE: u64 = 0xB000;
 /// The directory pointers of every top-level entry of the upper half but the kernel's: 1 GiB supervisor pages.
 pub const UPPER_HALF_DIRECTORY_POINTERS: u64 = 0xC000;
-pub const KERNEL_PAGES: u64 = 0xD;
+/// XRSTOR TRACKING: the page of the two instructions ring 3 runs to load and to read the tracking, which only those
+/// runs may reach.
+pub const TRACKING_CODE: u64 = 0xD000;
+/// XRSTOR TRACKING: where the handler keeps the area's own bytes while it holds other bytes, and what the reading
+/// XSAVEOPT wrote.
+pub const SAVED_AREA: u64 = 0xE000;
+pub const OBSERVED_AREA: u64 = 0xF000;
+pub const KERNEL_PAGES: u64 = 0x10;
 /// What full loading takes a state's tables and frames from.
 pub const ARENA: Range<u64> = 0x20_0000..0x200_0000;
 /// INCREMENTAL MEMORY: the top-level table, the lower tables and the frames the guest keeps between states.
@@ -105,9 +112,52 @@ pub struct Slot {
     pub debug_status: u64,
     pub before: Registers,
     pub after: Registers,
-    /// Fills the slot to a multiple of its alignment.
-    pub reserved: [u64; 7],
+    pub tracking: TrackingSteps,
 }
+
+/// XRSTOR TRACKING: what the handler runs at ring 3 around the instruction, in the same entry, to load the tracking
+/// XSAVEOPT uses and to read it back. An area's bytes are copied aside while it holds other bytes; the loading area
+/// and the area read after an exception take [`TRACKED_AREA_BYTES`], the area read after completion its own count.
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, FromBytes, IntoBytes, Immutable, KnownLayout)]
+pub struct TrackingSteps {
+    /// The area the loading XRSTOR restores the state's own image from, 0 for none.
+    pub load_area: u64,
+    /// The loading XRSTOR's EDX:EAX: the components to track as unmodified.
+    pub load_request: u64,
+    /// The area the reading XSAVEOPT saves to once the instruction completes, 0 for none, with its EDX:EAX and the
+    /// bytes it reaches.
+    pub completed_area: u64,
+    pub completed_request: u64,
+    pub completed_bytes: u64,
+    /// The area the reading XSAVEOPT saves to once the instruction raises an exception, 0 for none.
+    pub excepted_area: u64,
+    /// Where the handler is: [`PHASE_INSTRUCTION`] and the others.
+    pub phase: u64,
+    /// The vector that ended the loading or the reading.
+    pub step_vector: u64,
+    /// The reading XSAVEOPT's area, EDX:EAX and bytes.
+    pub reading_area: u64,
+    pub reading_request: u64,
+    pub reading_bytes: u64,
+    /// Fills the slot to a multiple of its alignment.
+    pub reserved: [u64; 4],
+}
+
+/// XRSTOR TRACKING: the phases: the instruction runs, the loading XRSTOR runs, the reading XSAVEOPT runs, the
+/// reading is done, and a step ended otherwise than by its single-step trap.
+pub const PHASE_INSTRUCTION: u64 = 0;
+pub const PHASE_LOADING: u64 = 1;
+pub const PHASE_READING: u64 = 2;
+pub const PHASE_READ: u64 = 3;
+pub const PHASE_STEP_FAILED: u64 = 4;
+/// XRSTOR TRACKING: the bytes the handler copies of an area: the standard format under XCR0, to its alignment.
+pub const TRACKED_AREA_BYTES: u64 = XSAVE_IMAGE_BYTES as u64;
+/// XRSTOR TRACKING: the byte the reading XSAVEOPT's area is filled with, so that each component it skips is seen.
+pub const AREA_MARKER: u8 = 0x5A;
+/// XRSTOR TRACKING: the loading XRSTOR64's and the reading XSAVEOPT64's offsets in [`TRACKING_CODE`].
+pub const LOADING_CODE_OFFSET: u64 = 0;
+pub const READING_CODE_OFFSET: u64 = 16;
 
 // Where the image keeps each part: the legacy area as FXSAVE64 lays it out, then the header, then the AVX area of the
 // standard form, https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html (volume 1, 13.4).

@@ -304,6 +304,10 @@ pub enum OperandType {
     WaitSource,
     /// UMWAIT's or TPAUSE's deadline in EDX:EAX.
     WaitDeadline,
+    /// What XSAVEOPT's modified optimization knows before it runs.
+    XrstorTracking,
+    /// The registers XRSTOR restores over and what XINUSE says of them.
+    RestoredOver,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -510,6 +514,8 @@ pub enum OperandValue {
     RestoredImage(xsave::RestoredImage),
     /// EDX:EAX's request of an XSAVE form, which decides how far its access reaches.
     XsaveRequest(u64),
+    /// The area of the last XRSTOR and the components unmodified since, or none.
+    XrstorTracking(Option<(u64, u64)>),
     WaitSource { register: usize, value: u64 },
 }
 
@@ -846,6 +852,8 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::ControlIndex => xsave::generate_control_indices(),
             OperandType::WaitSource => xsave::generate_wait_sources(),
             OperandType::WaitDeadline => xsave::generate_deadlines(),
+            OperandType::XrstorTracking => xsave::generate_trackings(),
+            OperandType::RestoredOver => xsave::generate_restored_over(),
         };
         values.into_iter()
     }

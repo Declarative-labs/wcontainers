@@ -13,7 +13,7 @@ use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::xsave::{
     AVX_COMPONENT, EXTENDED_COMPONENTS, HEADER_OFFSET, HIGH_16_ZMM_COMPONENT, LINUX_XCR0, MXCSR_RESET, OPMASK_COMPONENT,
     PKRU_COMPONENT, SSE_COMPONENT, SaveFormat, StateForm, StateOperation, X87_COMPONENT, ZMM_HIGH_256_COMPONENT,
-    find_state_form, list_components, to_extent,
+    find_state_form, list_components, to_extent, to_tracking,
 };
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PKRU_DEFAULT, PagePermission, Processor, X87, X87_INITIAL, X86_64,
@@ -69,17 +69,23 @@ pub struct RestoredImage {
 pub fn list_operand_types(form: &StateForm) -> Vec<OperandType> {
     match form.operation {
         StateOperation::ReadControl => vec![OperandType::ControlIndex, OperandType::RegisterContents, OperandType::Flags(FlagSet::Unread)],
-        StateOperation::Save { .. } => vec![
-            OperandType::XsaveArea { read: false },
-            OperandType::XsaveRequest,
-            OperandType::RegisterContents,
-            OperandType::OldStateBitmap,
-        ],
+        StateOperation::Save { format, .. } => {
+            let mut types = vec![
+                OperandType::XsaveArea { read: false },
+                OperandType::XsaveRequest,
+                OperandType::RegisterContents,
+                OperandType::OldStateBitmap,
+            ];
+            if format == SaveFormat::Optimized {
+                types.push(OperandType::XrstorTracking);
+            }
+            types
+        }
         StateOperation::Restore { .. } => vec![
             OperandType::XsaveArea { read: true },
             OperandType::XsaveRequest,
             OperandType::RestoredImage,
-            OperandType::RegisterContents,
+            OperandType::RestoredOver,
         ],
         StateOperation::Wait => vec![OperandType::WaitSource, OperandType::WaitDeadline, OperandType::Flags(FlagSet::Unread)],
     }
@@ -148,6 +154,18 @@ pub fn generate_contents() -> Vec<OperandValue> {
     all
 }
 
+/// The registers XRSTOR restores over: every component in use; every one initial, XINUSE clear but PKRU's; and every
+/// one initial with XINUSE set. What they hold is replaced where the request reaches; XINUSE says what is kept.
+pub fn generate_restored_over() -> Vec<OperandValue> {
+    [
+        RegisterContents { initial: 0, in_use: LINUX_XCR0, mxcsr: MXCSR_RESET },
+        RegisterContents { initial: LINUX_XCR0, in_use: PKRU_COMPONENT, mxcsr: CHANGED_MXCSR },
+        RegisterContents { initial: LINUX_XCR0, in_use: LINUX_XCR0, mxcsr: MXCSR_RESET },
+    ]
+    .map(OperandValue::RegisterContents)
+    .to_vec()
+}
+
 /// The XSTATE_BV an area held before XSAVE or XSAVEOPT writes it: the data page's own bytes, none, and every bit.
 pub fn generate_old_bitmaps() -> Vec<OperandValue> {
     [None, Some(0), Some(u64::MAX)].map(OperandValue::OldStateBitmap).to_vec()
@@ -175,6 +193,19 @@ pub fn generate_images() -> Vec<OperandValue> {
         image(LINUX_XCR0, compacted, true, MXCSR_RESET),
     ]
     .map(OperandValue::RestoredImage)
+    .to_vec()
+}
+
+/// What the modified optimization knows before XSAVEOPT: every component in use unmodified since an XRSTOR from the
+/// area at the lower page's start; none; x87, SSE and AVX alone unmodified; and every one, of an area 64 bytes above.
+pub fn generate_trackings() -> Vec<OperandValue> {
+    [
+        Some((LOWER_DATA_ADDRESS, u64::MAX)),
+        None,
+        Some((LOWER_DATA_ADDRESS, X87_COMPONENT | SSE_COMPONENT | AVX_COMPONENT)),
+        Some((LOWER_DATA_ADDRESS + 64, u64::MAX)),
+    ]
+    .map(OperandValue::XrstorTracking)
     .to_vec()
 }
 
@@ -249,11 +280,12 @@ pub fn build_state(form: &StateForm, operands: &[(OperandType, OperandValue)]) -
     let mut processor = fill_processor();
     let mut memory_mutations = Vec::new();
     let (mut area, mut old_bitmap, mut image, mut request, mut deadline) = (None, None, None, None, 0);
+    let mut tracking = None;
     for (operand_type, operand) in operands {
         match (operand_type, *operand) {
             (OperandType::XsaveArea { .. }, OperandValue::XsaveArea(chosen)) => area = Some(chosen),
             (OperandType::XsaveRequest, OperandValue::XsaveRequest(chosen)) => request = Some(chosen),
-            (OperandType::RegisterContents, OperandValue::RegisterContents(contents)) => {
+            (OperandType::RegisterContents | OperandType::RestoredOver, OperandValue::RegisterContents(contents)) => {
                 initialize(&mut processor, contents.initial);
                 processor.xinuse = contents.in_use;
                 processor.mxcsr = contents.mxcsr;
@@ -265,9 +297,14 @@ pub fn build_state(form: &StateForm, operands: &[(OperandType, OperandValue)]) -
                 processor.general_purpose_registers[register] = value;
             }
             (OperandType::WaitDeadline, OperandValue::Bits(chosen)) => deadline = chosen,
+            (OperandType::XrstorTracking, OperandValue::XrstorTracking(chosen)) => tracking = chosen,
             (OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
             (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
         }
+    }
+    // The source loads a tracking only under Linux's PKRU, which it keeps the host's.
+    if let Some((area, unmodified)) = tracking.filter(|_| processor.pkru == PKRU_DEFAULT) {
+        processor.xsave_tracking = to_tracking(area, unmodified & LINUX_XCR0, processor.xinuse);
     }
     if let Some(request) = request {
         processor.general_purpose_registers[0] = ABOVE_LOW_HALF | (request & u64::from(u32::MAX));
@@ -376,7 +413,11 @@ fn write_image(mutations: &mut Vec<MemoryDelta<'static, X86_64>>, address: u64, 
         }
         let offset = if compacted { next } else { component.offset };
         next = offset + component.bytes;
-        let bytes: Vec<u8> = (0..component.bytes).map(|index| (index as u8).wrapping_mul(7) ^ (component.bit as u8 | 0x40)).collect();
+        let mut bytes: Vec<u8> = (0..component.bytes).map(|index| (index as u8).wrapping_mul(7) ^ (component.bit as u8 | 0x40)).collect();
+        // PKRU loads as Linux's, which the source keeps the host's while it reads the tracking back.
+        if component.bit == PKRU_COMPONENT {
+            bytes[..4].copy_from_slice(&PKRU_DEFAULT.to_le_bytes());
+        }
         push_bytes(mutations, address.wrapping_add(offset), &bytes);
     }
 }
@@ -393,8 +434,8 @@ fn to_restored_processor() -> Processor {
 
 /// Whether the values decide the state's outcome whatever the data: an area that is misaligned, not canonical or in
 /// the kernel's half faults before any byte is read or written; a save whose request reaches a page that refuses the
-/// write faults whatever it would write; a restore whose legacy region or header lies on a page that refuses the read
-/// faults before it reads the header.
+/// write faults whatever it would write; a restore whose XCOMP_BV lies on a page that refuses the read faults before
+/// it reads anything else.
 pub fn decides_without_data(instruction: Instruction, operands: &[Option<OperandValue>]) -> bool {
     let Some(form) = find_state_form(instruction) else {
         return false;
@@ -423,7 +464,8 @@ pub fn decides_without_data(instruction: Instruction, operands: &[Option<Operand
             let requested = LINUX_XCR0 & request.unwrap_or(0);
             (to_extent(requested, format != SaveFormat::Compacted), true)
         }
-        _ => (HEADER_OFFSET + 64, false),
+        // XRSTOR reads XCOMP_BV first, whatever the image holds.
+        _ => (HEADER_OFFSET + 16, false),
     };
     let last = area.address + extent - 1;
     refuses(area.lower, write) || (last >= UPPER_DATA_ADDRESS && refuses(area.upper, write))
