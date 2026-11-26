@@ -353,6 +353,92 @@ generated hostile C caller over every table; the generated conformance suite; fu
 under AddressSanitizer (the recorder is the first generated implementation it can drive); the linter per rule; the effects
 judgments are not yet tested.
 
+## AC3, after the check of 90b14f72a: what the marks relied on of the other party (2026-11-26)
+
+The check did not hold: safe code could make the system write memory that was never lent. The calling glue asked a
+caller's `VolatileBytes` for `len()` twice, sized its buffer by one answer and told the system the other; a caller
+answering 8 then 0 (or 16 then 4096) got a heap overflow (READ: the check's probes.log, SIGSEGV in the default build,
+an AddressSanitizer report under it). Repaired as a class: marked code relied on something a safe trait implemented
+by the other party does not promise.
+
+- **The list** (src/trust.rs `OTHER_PARTY`, printed in every report under `OTHER PARTY`): every safe trait the glue
+  meets whose implementation comes from the caller or the implementation behind the glue, the methods the glue calls,
+  and what the marks hold whatever they answer. The caller's `VolatileBytes` (len once, write once, last); an
+  implementation's `Mapped` (len once, read_to once at Map, write_from once at Unmap, into sinks and sources of ours
+  bounded by our shadow); every generated API trait (answers recorded, never asked again; no lock held; panics caught);
+  an implementation's `Clone`, `PartialEq`, `Hash` (never called: tables are keyed by our own words' addresses and by
+  role); `Drop` (after every lock, caught); slices and Options of plain data and the glue's own objects (the
+  language's length; the glue writes their `Clone` and `Hash`); `Adopt` (an `unsafe fn`, which no crate under `forbid`
+  can write); `Deref`, `AsRef`, `Borrow`, `Ord`, iterators (no trait signature takes a type bound by them). READ: the
+  serving glue calls no `Clone`, `PartialEq` or `Hash` of an implementation (grep of serve.rs) and asks `Mapped::len`
+  once.
+- **Asked once** (src/glue_call.rs): each length of the caller's bytes is asked once, before any step of the call; that
+  answer both sizes our buffer and is the count the system is told; the caller's `write` runs last, after every object
+  is adopted. **The check** (src/trust.rs `check`, run on every set written): every function of every direct crate's
+  files is read, and a second call of one `VolatileBytes` method on one value (a parameter of that type, its closure
+  or `if let` binding, or an expression passed to `VolatileBytes::m` or to `fill_from`/`empty_into`) fails the
+  generator. Five tests of it, among them the exact form 90b14f72a wrote.
+- **The hostile implementation set** (src/glue_hostile.rs, `crates/<api>/implementation/hostile`, generated for the
+  slice and the whole set, `forbid`): the recorder's text turned hostile. Every method of every trait, every object's
+  `Drop` and the bytes Map lends can panic, re-enter the glue or never return at a chosen call (`plan`); `Clone`,
+  `PartialEq` and `Hash` panic and are counted; every caller's bytes lent to it are written and read in full (as the
+  system writes all it is told); Map's bytes answer a different length on every call, more bytes than the length,
+  other bytes on every read, and pitches that lie. `LyingBytes` lies the same ways on the caller's side. A generated
+  driver makes an object of every kind it can (makers: every method that hands one out, an interface by id once per
+  kind) and calls every method the calling glue carries, through both glues (`served`). Tests: harness/hostile/lies.rs.
+
+MEASURED, x86-64 job gac4/20261126-141945-2400779 at 354e36e6d (log wcontainers-scratch/graphics-api-crates/ac3r/tip-354e36e6d/):
+
+| Bar | Result |
+|---|---|
+| Generator: build, tests | status 0, 0 warnings; 7 tests pass (5 of them the check's) |
+| Trait layer (AC1): twice, check, clippy, unmapped, linter | IDENTICAL; 0; 0; 37 lines; 283 findings (unchanged) |
+| Slice (AC2): twice, check, clippy, clippy --all-targets, direct tests | IDENTICAL; 0; 0; 0; 0 (the round trip passes) |
+| Slice harness, each test alone, default + small-table + AddressSanitizer | 75 of 75 status 0 |
+| Slice fuzzing, 16 runs of 10M (4 modes x seeds 11, 12, 13, + front-correct, pass-correct), AddressSanitizer | 16 of 16 status 0; 0 reports, 0 hangs, 0 promises broken |
+| Whole set (AC3): twice, check, clippy, clippy --all-targets | IDENTICAL; 0; 0; 0 |
+| Whole set's 47 hostile tests and 30 probes, default and AddressSanitizer | 47 of 47, both; probes 28 held, 15 and 16 through by rule (unchanged) |
+| Asked once: calls of the other party's `VolatileBytes` in the direct crates | slice 7, whole set 43; 0 asked twice |
+| Hostile set, 10 tests x slice and whole set x default and AddressSanitizer | 40 of 40 status 0; 0 reports, 0 hangs, 0 never-asked calls, 0 objects left alive |
+| Driver's reach, honest drive | whole set: 65 kinds, 627 of 629 calls made (501 reach the implementation); slice: 9 kinds, 41 of 45 |
+| Lies told, whole set (default) | caller's bytes: 9 length sequences, panics at calls 0 to 3 (19 and 18 panicked back, caught), re-entry, 37 calls blocked while other drives ended (longest 0.9 ms; 7.4 ms under AddressSanitizer); implementation's methods: 173 panic plans, 855 panics caught, 186 re-entries, 32 blocks; Drop: 234 panics, 19,008 re-entries, 19 blocks; Map's bytes: 85 Maps of 256 succeeded on lying lengths, 88 panics, 135 re-entries, 5 blocks |
+
+Controls (the same job): **negative**: the check run on 90b14f72a's own output (`once-check`) fails it, naming 19 functions
+of the whole set and GetData of the slice (an independent regular expression over the same files also counts 19; the
+check's 20 is taken to include the slice's GetData, INFERRED). **Planted**: a copy of the generator with the length
+asked twice again and the check's failure ignored: the hostile set's lengths test under AddressSanitizer gets a report in
+both sets (`SEGV on unknown address 0x000000000001`: the buffer of the first answer, 0, written for the second, 8).
+
+Costs at 354e36e6d (MEASURED, job gac4/20261126-142925-2858484, the harness's measure test on the tip's slice build,
+pinned to cores 92 and 93, load 64 to 73; ns, serving glue's added / pass-through, core 93): Draw 24.9 / 49.3, AddRef +
+Release 42.7 / 55.4, QueryInterface + Release 81.1 / 96.1, GetDevice + Release 59.0 / 82.4, Map + Unmap 411.2 / 662.3,
+CreateBuffer + Release 240.2 / 343.1. No code on these paths changed since ab721bebf but 330c3352b's value checks (READ:
+the repair touches only methods with the caller's bytes); the load was twice that run's (INFERRED: the spread).
+
+## AC3, continued: fuzzing every method (2026-11-26, commit b34d648bf)
+
+The hostile set's driver also fuzzes: each method the calling glue carries is a function of random arguments (values with
+edges, structures decoded from random bytes, slices of one length per call, objects held or none, the caller's bytes of
+lengths that change), picked at random; every 4096 calls some objects are dropped and made again; each round of 50,000
+calls runs under a lie picked at random (method, `Drop` or Map's bytes; panic or re-entry; every 7th to 506th call), one
+round in three honest. MEASURED, job gac4/20261126-144005-3206473 at b34d648bf (log ac3r/fuzz-b34d648bf/): everything
+but the hostile crates IDENTICAL to 354e36e6d's output (`diff -r`), clippy --all-targets 0 on both sets, the 10 lie tests
+40 of 40 again; fuzzing under AddressSanitizer, 3 seeds x 10M calls each:
+
+| Set, seed | Status, time | Calls made / skipped | Lies told | AddressSanitizer reports, hangs |
+|---|---|---|---|---|
+| slice 11, 12, 13 | 0, 47 s; 0, 44 s; 0, 45 s | 9,069,597 / 930,403; 9,070,152 / 929,848; 9,069,126 / 930,874 | 10,813; 6,378; 10,084 | 0, 0 each |
+| whole set 11, 12, 13 | 0, 123 s; 0, 121 s; 0, 123 s | 9,967,980 / 32,020; 9,968,126 / 31,874; 9,967,980 / 32,020 | 17,047; 9,508; 14,962 | 0, 0 each |
+
+0 never-asked calls in every run. The slice leaves 13 to 22 Maps the fuzzer never unmapped; each keeps its context and
+resource alive for the memory lent (14 to 23 implementation objects alive after every object is dropped), as the system
+would; the whole set's 0.
+
+This fuzzes every table the calling glue reaches through the serving glue (calls well formed by the calling glue). Left
+of AC3: a generated hostile C caller over every table (raw pointers and counts of C's choosing), the 168 methods not
+glued, the generated conformance suite (the driver is its start: it calls every glued method), the linter per rule, and
+tests of the effects judgments.
+
 ## The merge of graphics-layout (asked for AC4): stopped
 
 2026-11-26: the nine interface files are written for the orchestrator, one diff each with three lines of context, in
