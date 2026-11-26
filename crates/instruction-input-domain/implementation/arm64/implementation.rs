@@ -362,7 +362,9 @@ pub enum ScalableValues {
 /// What every byte of the data pages holds before the instruction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MemoryFill {
-    /// The complement of the byte's address's low byte, so that no loaded value equals an address near it.
+    /// The complement of the byte's address's low byte, so that no loaded value equals an address near it, with bit
+    /// 6 flipped at odd addresses, so that bits 7 and 6 differ in every second byte, the top byte of every aligned
+    /// element of two bytes or more among them, near a page's start and its end alike.
     Pattern,
     Zeros,
     Ones,
@@ -1368,7 +1370,7 @@ fn to_example_word(instruction: Instruction<Infallible>) -> u32 {
 /// The byte a data page holds at the address.
 const fn to_data_byte(address: u64, fill: MemoryFill) -> u8 {
     match fill {
-        MemoryFill::Pattern => !(address as u8),
+        MemoryFill::Pattern => !(address as u8) ^ ((address as u8 & 1) << 6),
         MemoryFill::Zeros => u8::MIN,
         MemoryFill::Ones => u8::MAX,
     }
