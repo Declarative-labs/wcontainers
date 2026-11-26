@@ -303,7 +303,8 @@ where
             standard,
             address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
             memory_bytes,
-            ceiling: None,
+            // The kernel bounds its spaces by this alone: the executor's spaces end there.
+            ceiling: Some(memory_bytes),
             options: StartOptions {
                 mounts: kept(mounts),
                 ..StartOptions::default()

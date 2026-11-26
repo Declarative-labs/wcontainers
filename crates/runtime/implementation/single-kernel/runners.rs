@@ -1,7 +1,7 @@
 //! A container run through its kernel's runners: each on a host thread of its own with an executor of its own.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::Duration;
@@ -24,8 +24,8 @@ pub(crate) struct RunnerStops {
 
 /// A container on one kernel, run by that kernel's runners.
 pub(crate) struct KernelContainer<K: Kernel, S> {
-    /// The kernel itself, held as long as its runners' container, though only they are run.
-    _kernel: K,
+    /// The kernel itself, held as long as its runners' container; its interrupter calls it to end their runs.
+    _kernel: Arc<K>,
     runners: Vec<(K::Runner, K::Executor)>,
     signals: Arc<Signals>,
     system: Arc<S>,
@@ -52,6 +52,10 @@ struct Signals {
     stop: Box<dyn Fn() + Send + Sync>,
     /// Lets the executors run again once a run is over.
     resume: Box<dyn Fn() + Send + Sync>,
+    /// How many runners are inside the kernel's `run` now.
+    inside: AtomicUsize,
+    /// Makes one call of the kernel's interface, which ends every runner's run once it waits for the kernel's lock.
+    call_kernel: Box<dyn Fn() + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -63,7 +67,7 @@ struct Signalled {
 
 impl<K, S> KernelContainer<K, S>
 where
-    K: Kernel,
+    K: Kernel + Send + 'static,
     K::Executor: Send,
     S: Clock + FallbackObserver<Warning<'static>> + Sync,
 {
@@ -80,6 +84,8 @@ where
             stop,
             resume,
         } = stops;
+        let kernel = Arc::new(kernel);
+        let called = Arc::clone(&kernel);
         let signals = Arc::new(Signals {
             state: Mutex::default(),
             changed: Condvar::new(),
@@ -88,6 +94,9 @@ where
             idle_poll,
             stop,
             resume,
+            inside: AtomicUsize::new(usize::MIN),
+            // Taking no task, it changes nothing: only its wait for the lock ends the runs.
+            call_kernel: Box::new(move || drop(called.suspend_tasks(&[]))),
         });
         let container = Self {
             _kernel: kernel,
@@ -149,7 +158,7 @@ where
 
 impl<K, S> wcontainers_runtime::Container for KernelContainer<K, S>
 where
-    K: Kernel,
+    K: Kernel + Send + 'static,
     K::Executor: Send,
     S: Clock + FallbackObserver<Warning<'static>> + Sync,
 {
@@ -162,7 +171,7 @@ impl wcontainers_runtime::Interrupter for RunInterrupter {
     fn interrupt(&self) {
         self.signals.lock().interrupted = true;
         self.signals.changed.notify_all();
-        (self.signals.stop)();
+        self.signals.end_runs();
     }
 }
 
@@ -174,11 +183,15 @@ fn drive<K: Kernel>(
     clock: &impl Clock,
 ) {
     loop {
+        // Counted inside first, so an interrupt either sees this runner inside or is seen here.
+        signals.inside.fetch_add(1, Ordering::SeqCst);
         if signals.leaving() {
+            signals.inside.fetch_sub(1, Ordering::SeqCst);
             return;
         }
         let stopped =
             catch_unwind(AssertUnwindSafe(|| runner.run(executor))).unwrap_or(StopReason::Panicked);
+        signals.inside.fetch_sub(1, Ordering::SeqCst);
         match stopped {
             StopReason::Interrupted => {}
             StopReason::Idle { until } => signals.wait(until, clock),
@@ -214,7 +227,19 @@ impl Signals {
         }
         drop(state);
         self.changed.notify_all();
+        self.end_runs();
+    }
+
+    /// Ends the executions running and calls the kernel until no runner is inside its `run`.
+    ///
+    /// The kernel's runner goes on to its next turn after an execution's interrupt alone, and leaves `run` only while one
+    /// of the kernel's calls waits for its lock.
+    fn end_runs(&self) {
         (self.stop)();
+        while self.inside.load(Ordering::SeqCst) != 0 {
+            (self.call_kernel)();
+            thread::yield_now();
+        }
     }
 
     /// Waits until `until` on `clock`'s monotonic time, at most the idle poll, or until the run ends.
