@@ -2,11 +2,11 @@
 //! operand and the registers besides it), the writemask, whether memory is a broadcast lane, each source's value, an
 //! immediate and the flags.
 //!
-//! The writemask's critical values: none (k0), and k1 holding the lanes alternating, every lane but the second (with
-//! every bit above the lanes set, which the form ignores) or no lane, each merging and zeroing (only merging for a
-//! store, and none for a compare, which writes an opmask register). A vector's critical values are the legacy
-//! skeleton's lane values rotated across all 512 bits, so that the lanes past a shorter vector's length hold values
-//! too, which the form must ignore. Every state's registers hold distinct values in all 512 bits, so that a lane
+//! The writemask's critical values, for a form that takes one: none (k0), and k1 holding the lanes alternating, every
+//! lane but the second (with every bit above the lanes set, which the form ignores) or no lane, each merging and
+//! zeroing (only merging for a store, and none for a compare, which writes an opmask register). A vector's critical
+//! values are the legacy skeleton's values for the sources' lanes (a pack's on both sides of each narrow end) rotated
+//! across all 512 bits, so that the lanes past a shorter vector's length hold values too, which the form must ignore. Every state's registers hold distinct values in all 512 bits, so that a lane
 //! kept, merged or zeroed is seen to be.
 
 use alloc::borrow::Cow;
@@ -20,7 +20,7 @@ use wcontainers_processor_architecture_x86_64::avx512_integer::{
     EvexIntegerForm, EvexIntegerOperation, EvexIntegerPlace, EvexVectorLength, Zmm, from_lanes, write_zmm,
 };
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
-use wcontainers_processor_architecture_x86_64::vector::Lane;
+use wcontainers_processor_architecture_x86_64::vector::{Lane, LaneOperation};
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, InstructionFetch, PagePermission, Processor, VECTOR_REGISTERS, X86_64, ZERO_PROCESSOR,
 };
@@ -63,6 +63,9 @@ pub enum ZmmValues {
     /// A shift count in the low quadword: zero, one, the width less one, the width, one with a bit above 32 set,
     /// and all ones; every other bit a pattern.
     Count(Lane),
+    /// A pack's: zero, one, each end of the narrow lane's signed and unsigned ranges and one past it, all ones and
+    /// each end of the wide lane's signed range, rotated as the lanes' edges are.
+    Narrowing { lane: Lane, every_rotation: bool },
     /// Per-lane counts: zero, one, the width less one, the width and one more, the top bit alone, all ones and a
     /// count past the width by its own width plus one, every rotation.
     LaneCounts(Lane),
@@ -79,14 +82,16 @@ const MEMORY_REGISTER_CHOICES: [[usize; 3]; 1] = [[17, 2, 0]];
 
 /// The operand types of an EVEX integer form, in the order the build reads them.
 pub fn list_operand_types(form: &EvexIntegerForm) -> Vec<OperandType> {
-    let lane = form.lane;
+    let lane = form.source_lane();
     let in_memory = matches!(form.place, EvexIntegerPlace::Memory | EvexIntegerPlace::Store);
     let mut types = Vec::new();
     if in_memory {
         types.push(OperandType::Memory { splits: Splits::Allowed, offset: false });
     }
     types.push(OperandType::EvexIntegerEncoding { codes: form.codes.len(), in_memory });
-    types.push(OperandType::Writemask { zeroing: !(form.writes_mask() || form.place == EvexIntegerPlace::Store) });
+    if form.can_mask() {
+        types.push(OperandType::Writemask { zeroing: form.can_zero() && !(form.writes_mask() || form.place == EvexIntegerPlace::Store) });
+    }
     if form.place == EvexIntegerPlace::Memory && form.can_broadcast() {
         types.push(OperandType::LaneBroadcast);
     }
@@ -96,6 +101,9 @@ pub fn list_operand_types(form: &EvexIntegerForm) -> Vec<OperandType> {
         EvexIntegerOperation::ShiftByCount(_) => (None, Some(lanes(true)), ZmmValues::Count(lane)),
         EvexIntegerOperation::ShiftByLane(_) | EvexIntegerOperation::Rotate { by_lane: true, .. } => {
             (None, Some(lanes(true)), ZmmValues::LaneCounts(lane))
+        }
+        EvexIntegerOperation::Lanes(LaneOperation::Pack(..)) => {
+            (None, Some(ZmmValues::Narrowing { lane, every_rotation: false }), ZmmValues::Narrowing { lane, every_rotation: true })
         }
         _ if form.has_first_source() => (None, Some(lanes(false)), lanes(true)),
         _ => (None, None, lanes(true)),
@@ -165,6 +173,26 @@ pub fn generate_zmm_values(values: ZmmValues) -> Vec<OperandValue> {
             let mut all = rotated(lane, &lane_values, step);
             all.extend([0, signed_maximum, signed_maximum + 1, to_mask(bits)].map(|end| fill(lane, end)));
             all
+        }
+        ZmmValues::Narrowing { lane, every_rotation } => {
+            let bits = lane.to_bits();
+            let narrow_maximum = to_mask(bits / 2 - 1);
+            let narrow_minimum = !narrow_maximum & to_mask(bits);
+            let lane_values = [
+                0,
+                1,
+                narrow_maximum,
+                narrow_maximum + 1,
+                narrow_minimum,
+                narrow_minimum - 1,
+                to_mask(bits / 2),
+                to_mask(bits / 2) + 1,
+                to_mask(bits),
+                to_mask(bits - 1),
+                to_mask(bits - 1) + 1,
+            ];
+            let step = if every_rotation { 1 } else { (512 / bits) as usize };
+            rotated(lane, &lane_values, step)
         }
         ZmmValues::Count(lane) => {
             let bits = u64::from(lane.to_bits());
@@ -304,7 +332,9 @@ pub fn build_state(form: &EvexIntegerForm, operands: &[(OperandType, OperandValu
             let general = if form.lane == Lane::Quadword { Register::RAX } else { Register::EAX };
             Register::try_from(general as usize + last_number % 16).unwrap_or_else(|_| panic!("general register {last_number}"))
         }
-        EvexIntegerOperation::ShiftByCount(_) | EvexIntegerOperation::Broadcast => narrow(last_number),
+        EvexIntegerOperation::ShiftByCount(_) | EvexIntegerOperation::Broadcast | EvexIntegerOperation::BroadcastTuple(_) => {
+            narrow(last_number)
+        }
         _ => vector(last_number),
     };
     let immediate = immediate.map(|value| value as u8 as u32);

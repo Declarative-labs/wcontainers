@@ -1,15 +1,17 @@
-//! The AVX-512 foundation set's integer forms under EVEX: lane arithmetic and logic, shifts and rotates, the
-//! compares and tests into an opmask register, VPBLENDM, the broadcasts and the moves, at each vector length, as the
+//! AVX-512's integer forms under EVEX and those of its floating-point forms that only move or combine bits: lane
+//! arithmetic and logic, packs and unpacks, shifts and rotates, the compares and tests into an opmask register, the
+//! blends, the broadcasts and the moves, at each vector length, as the
 //! [manual](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html) (volume 2) defines them.
 //!
-//! Every form but a compare or test writes its destination's lanes under a writemask: k0 writes every lane, another
-//! opmask register the lanes whose bit is set, and the others keep their value (merging) or are zeroed (zeroing).
+//! Every form but a compare or test writes its destination's lanes under a writemask, where it takes one: k0 writes
+//! every lane, another opmask register the lanes whose bit is set, and the others keep their value (merging) or are
+//! zeroed (zeroing).
 //! The destination's bits from the vector length to 511 are zeroed. A compare or test writes one bit for each lane,
 //! cleared where the writemask's bit is, and zeroes the opmask register above the lanes.
 
 use alloc::vec::Vec;
 
-use iced_x86::Code;
+use iced_x86::{Code, OpCodeOperandKind};
 
 use crate::forms::Instruction;
 use crate::vector::{Lane, LaneOperation, Signedness, join, split};
@@ -61,10 +63,12 @@ pub enum EvexIntegerOperation {
     /// VPBLENDM: the second source's lane where the writemask's bit is set, else the first source's, or zero under
     /// zeroing.
     Blend,
-    /// VPBROADCAST: the low lane of an XMM register, of memory or of a general register in every lane.
+    /// VPBROADCAST, VBROADCASTSS and VBROADCASTSD: the low lane of an XMM register, of memory or of a general
+    /// register in every lane.
     Broadcast,
-    /// VBROADCASTI32X4 and VBROADCASTI64X4: 16 or 32 bytes of memory repeated.
-    BroadcastTuple,
+    /// VBROADCASTI32X2 to VBROADCASTF64X4: the low lanes of memory or of an XMM register, as many as the number,
+    /// repeated.
+    BroadcastTuple(usize),
     /// VMOVDQA and VMOVDQU; the aligned ones need memory aligned to the vector's length.
     Move { aligned: bool },
 }
@@ -126,25 +130,60 @@ impl EvexIntegerForm {
         matches!(self.operation, EvexIntegerOperation::TestIntoMask { .. } | EvexIntegerOperation::CompareIntoMask(_))
     }
 
+    /// The lane of the sources, which a broadcast repeats: twice the destination's for a pack, the words or bytes
+    /// whose pairs or groups VPMADDWD, VPMADDUBSW and VPSADBW sum.
+    pub const fn source_lane(&self) -> Lane {
+        match self.operation {
+            EvexIntegerOperation::Lanes(LaneOperation::Pack(lane, _)) => lane,
+            EvexIntegerOperation::Lanes(LaneOperation::MultiplyAddWords) => Lane::Word,
+            EvexIntegerOperation::Lanes(LaneOperation::MultiplyAddBytes | LaneOperation::SumAbsoluteDifferences) => Lane::Byte,
+            _ => self.lane,
+        }
+    }
+
     /// Whether the form's memory operand may be one lane broadcast ({1toN}).
-    pub const fn can_broadcast(&self) -> bool {
-        !matches!(
-            self.operation,
-            EvexIntegerOperation::ShiftByCount(_) | EvexIntegerOperation::Broadcast | EvexIntegerOperation::BroadcastTuple | EvexIntegerOperation::Move { .. }
-        )
+    pub fn can_broadcast(&self) -> bool {
+        self.codes[0].op_code().can_broadcast()
+    }
+
+    /// Whether the form takes a writemask.
+    pub fn can_mask(&self) -> bool {
+        self.codes[0].op_code().can_use_op_mask_register()
+    }
+
+    /// Whether the form's writemask may zero.
+    pub fn can_zero(&self) -> bool {
+        self.codes[0].op_code().can_use_zeroing_masking()
+    }
+
+    /// Whether each lane of the memory source is the destination's lane at the same place, so that the writemask
+    /// decides which lanes are read; the others read the whole operand.
+    pub const fn is_element_wise(&self) -> bool {
+        match self.operation {
+            EvexIntegerOperation::Lanes(operation) => !matches!(
+                operation,
+                LaneOperation::Pack(..)
+                    | LaneOperation::UnpackHigh(_)
+                    | LaneOperation::UnpackLow(_)
+                    | LaneOperation::MultiplyAddWords
+                    | LaneOperation::MultiplyAddBytes
+                    | LaneOperation::SumAbsoluteDifferences
+                    | LaneOperation::ShiftBytesLeft
+                    | LaneOperation::ShiftBytesRight
+                    | LaneOperation::DuplicateEvenSingles
+                    | LaneOperation::DuplicateOddSingles
+                    | LaneOperation::DuplicateLowDouble
+            ),
+            EvexIntegerOperation::ShiftByCount(_) => false,
+            _ => true,
+        }
     }
 
     /// The bytes a memory operand reaches: the vector, the shift count's 16 bytes, a broadcast's lane or tuple.
-    pub const fn memory_bytes(&self, broadcast: bool) -> u64 {
-        let lane = self.lane.to_bits() as u64 / 8;
-        match self.operation {
-            _ if broadcast => lane,
-            EvexIntegerOperation::ShiftByCount(_) => 16,
-            EvexIntegerOperation::Broadcast => lane,
-            // VBROADCASTI32X4 repeats 16 bytes, VBROADCASTI64X4 32.
-            EvexIntegerOperation::BroadcastTuple => lane * 4,
-            _ => self.length.to_bits() as u64 / 8,
-        }
+    pub fn memory_bytes(&self, broadcast: bool) -> u64 {
+        let op_code = self.codes[0].op_code();
+        let size = if broadcast { op_code.broadcast_memory_size() } else { op_code.memory_size() };
+        size.size() as u64
     }
 
     /// The alignment the memory operand needs whatever AC holds: the vector's length for VMOVDQA.
@@ -164,24 +203,24 @@ impl EvexIntegerForm {
     pub const fn has_first_source(&self) -> bool {
         !matches!(
             self.operation,
-            EvexIntegerOperation::Lanes(LaneOperation::Absolute(_))
-                | EvexIntegerOperation::ShiftByImmediate(_)
+            EvexIntegerOperation::Lanes(
+                LaneOperation::Absolute(_)
+                    | LaneOperation::ShiftBytesLeft
+                    | LaneOperation::ShiftBytesRight
+                    | LaneOperation::DuplicateEvenSingles
+                    | LaneOperation::DuplicateOddSingles
+                    | LaneOperation::DuplicateLowDouble
+            ) | EvexIntegerOperation::ShiftByImmediate(_)
                 | EvexIntegerOperation::Rotate { by_lane: false, .. }
                 | EvexIntegerOperation::Broadcast
-                | EvexIntegerOperation::BroadcastTuple
+                | EvexIntegerOperation::BroadcastTuple(_)
                 | EvexIntegerOperation::Move { .. }
         )
     }
 
     /// Whether the form has an immediate.
-    pub const fn has_immediate(&self) -> bool {
-        matches!(
-            self.operation,
-            EvexIntegerOperation::ShiftByImmediate(_)
-                | EvexIntegerOperation::Rotate { by_lane: false, .. }
-                | EvexIntegerOperation::TernaryLogic
-                | EvexIntegerOperation::CompareIntoMask(ComparePredicate::Immediate(_))
-        )
+    pub fn has_immediate(&self) -> bool {
+        self.codes[0].op_code().op_kinds().contains(&OpCodeOperandKind::imm8)
     }
 }
 
@@ -279,6 +318,9 @@ impl EvexIntegerForm {
         };
         let signed = |value: u64| crate::vector::to_signed(value, bits);
         match self.operation {
+            EvexIntegerOperation::Lanes(operation @ (LaneOperation::ShiftBytesLeft | LaneOperation::ShiftBytesRight)) => {
+                per_quarter(&|quarter| operation.compute(second[quarter], u128::from(immediate), 0))
+            }
             EvexIntegerOperation::Lanes(operation) => per_quarter(&|quarter| operation.compute(first[quarter], second[quarter], 0)),
             EvexIntegerOperation::ShiftByCount(shift) => {
                 per_quarter(&|quarter| shift.to_lane_operation(lane).compute(first[quarter], second[0] & u128::from(u64::MAX), 0))
@@ -334,9 +376,9 @@ impl EvexIntegerForm {
                 let value = to_lanes(lane, second, 1)[0];
                 from_lanes(lane, &alloc::vec![value; count])
             }
-            EvexIntegerOperation::BroadcastTuple => {
-                let tuple = self.memory_bytes(false) as usize / 16;
-                per_quarter(&|quarter| second[quarter % tuple])
+            EvexIntegerOperation::BroadcastTuple(elements) => {
+                let tuple = to_lanes(lane, second, elements);
+                from_lanes(lane, &(0..count).map(|index| tuple[index % elements]).collect::<Vec<_>>())
             }
             EvexIntegerOperation::Move { .. } => per_quarter(&|quarter| second[quarter]),
         }
@@ -385,7 +427,7 @@ use EvexIntegerOperation::{
     TernaryLogic, TestIntoMask,
 };
 use EvexIntegerPlace::{General, Memory, Register, Store};
-use Lane::{Doubleword, Quadword};
+use Lane::{Byte, Doubleword, Quadword, Word};
 use Signedness::{Signed, Unsigned};
 use EvexVectorLength::{L128, L256, L512};
 
@@ -402,11 +444,11 @@ macro_rules! evex_forms {
     };
 }
 
-/// Every EVEX integer form of the foundation set modeled.
+/// Every EVEX integer form modeled.
 pub static EVEX_INTEGER_FORMS: &[EvexIntegerForm] = evex_forms! {
-    Vbroadcasti32x4Ymmu32MaskmskwMemu32Avx512, BroadcastTuple, Doubleword, Memory, L256, [EVEX_Vbroadcasti32x4_ymm_k1z_m128];
-    Vbroadcasti32x4Zmmu32MaskmskwMemu32Avx512, BroadcastTuple, Doubleword, Memory, L512, [EVEX_Vbroadcasti32x4_zmm_k1z_m128];
-    Vbroadcasti64x4Zmmu64MaskmskwMemu64Avx512, BroadcastTuple, Quadword, Memory, L512, [EVEX_Vbroadcasti64x4_zmm_k1z_m256];
+    Vbroadcasti32x4Ymmu32MaskmskwMemu32Avx512, BroadcastTuple(4), Doubleword, Memory, L256, [EVEX_Vbroadcasti32x4_ymm_k1z_m128];
+    Vbroadcasti32x4Zmmu32MaskmskwMemu32Avx512, BroadcastTuple(4), Doubleword, Memory, L512, [EVEX_Vbroadcasti32x4_zmm_k1z_m128];
+    Vbroadcasti64x4Zmmu64MaskmskwMemu64Avx512, BroadcastTuple(4), Quadword, Memory, L512, [EVEX_Vbroadcasti64x4_zmm_k1z_m256];
     Vmovdqa32Memu32MaskmskwXmmu32Avx512, Move { aligned: true }, Doubleword, Store, L128, [EVEX_Vmovdqa32_xmmm128_k1z_xmm];
     Vmovdqa32Memu32MaskmskwYmmu32Avx512, Move { aligned: true }, Doubleword, Store, L256, [EVEX_Vmovdqa32_ymmm256_k1z_ymm];
     Vmovdqa32Memu32MaskmskwZmmu32Avx512, Move { aligned: true }, Doubleword, Store, L512, [EVEX_Vmovdqa32_zmmm512_k1z_zmm];
@@ -863,4 +905,407 @@ pub static EVEX_INTEGER_FORMS: &[EvexIntegerForm] = evex_forms! {
     VpxorqYmmu64MaskmskwYmmu64Ymmu64Avx512, Lanes(LaneOperation::Xor), Quadword, Register, L256, [EVEX_Vpxorq_ymm_k1z_ymm_ymmm256b64];
     VpxorqZmmu64MaskmskwZmmu64Memu64Avx512, Lanes(LaneOperation::Xor), Quadword, Memory, L512, [EVEX_Vpxorq_zmm_k1z_zmm_zmmm512b64];
     VpxorqZmmu64MaskmskwZmmu64Zmmu64Avx512, Lanes(LaneOperation::Xor), Quadword, Register, L512, [EVEX_Vpxorq_zmm_k1z_zmm_zmmm512b64];
+    // Byte and word arithmetic, VPMULLQ, word shifts, byte and word compares and tests, blends and the floating-point logic.
+    VandnpdXmmu64MaskmskwXmmu64Memu64Avx512, Lanes(LaneOperation::AndNot), Quadword, Memory, L128, [EVEX_Vandnpd_xmm_k1z_xmm_xmmm128b64];
+    VandnpdXmmu64MaskmskwXmmu64Xmmu64Avx512, Lanes(LaneOperation::AndNot), Quadword, Register, L128, [EVEX_Vandnpd_xmm_k1z_xmm_xmmm128b64];
+    VandnpdYmmu64MaskmskwYmmu64Memu64Avx512, Lanes(LaneOperation::AndNot), Quadword, Memory, L256, [EVEX_Vandnpd_ymm_k1z_ymm_ymmm256b64];
+    VandnpdYmmu64MaskmskwYmmu64Ymmu64Avx512, Lanes(LaneOperation::AndNot), Quadword, Register, L256, [EVEX_Vandnpd_ymm_k1z_ymm_ymmm256b64];
+    VandnpdZmmu64MaskmskwZmmu64Memu64Avx512, Lanes(LaneOperation::AndNot), Quadword, Memory, L512, [EVEX_Vandnpd_zmm_k1z_zmm_zmmm512b64];
+    VandnpdZmmu64MaskmskwZmmu64Zmmu64Avx512, Lanes(LaneOperation::AndNot), Quadword, Register, L512, [EVEX_Vandnpd_zmm_k1z_zmm_zmmm512b64];
+    VandnpsXmmu32MaskmskwXmmu32Memu32Avx512, Lanes(LaneOperation::AndNot), Doubleword, Memory, L128, [EVEX_Vandnps_xmm_k1z_xmm_xmmm128b32];
+    VandnpsXmmu32MaskmskwXmmu32Xmmu32Avx512, Lanes(LaneOperation::AndNot), Doubleword, Register, L128, [EVEX_Vandnps_xmm_k1z_xmm_xmmm128b32];
+    VandnpsYmmu32MaskmskwYmmu32Memu32Avx512, Lanes(LaneOperation::AndNot), Doubleword, Memory, L256, [EVEX_Vandnps_ymm_k1z_ymm_ymmm256b32];
+    VandnpsYmmu32MaskmskwYmmu32Ymmu32Avx512, Lanes(LaneOperation::AndNot), Doubleword, Register, L256, [EVEX_Vandnps_ymm_k1z_ymm_ymmm256b32];
+    VandnpsZmmu32MaskmskwZmmu32Memu32Avx512, Lanes(LaneOperation::AndNot), Doubleword, Memory, L512, [EVEX_Vandnps_zmm_k1z_zmm_zmmm512b32];
+    VandnpsZmmu32MaskmskwZmmu32Zmmu32Avx512, Lanes(LaneOperation::AndNot), Doubleword, Register, L512, [EVEX_Vandnps_zmm_k1z_zmm_zmmm512b32];
+    VandpdXmmu64MaskmskwXmmu64Memu64Avx512, Lanes(LaneOperation::And), Quadword, Memory, L128, [EVEX_Vandpd_xmm_k1z_xmm_xmmm128b64];
+    VandpdXmmu64MaskmskwXmmu64Xmmu64Avx512, Lanes(LaneOperation::And), Quadword, Register, L128, [EVEX_Vandpd_xmm_k1z_xmm_xmmm128b64];
+    VandpdYmmu64MaskmskwYmmu64Memu64Avx512, Lanes(LaneOperation::And), Quadword, Memory, L256, [EVEX_Vandpd_ymm_k1z_ymm_ymmm256b64];
+    VandpdYmmu64MaskmskwYmmu64Ymmu64Avx512, Lanes(LaneOperation::And), Quadword, Register, L256, [EVEX_Vandpd_ymm_k1z_ymm_ymmm256b64];
+    VandpdZmmu64MaskmskwZmmu64Memu64Avx512, Lanes(LaneOperation::And), Quadword, Memory, L512, [EVEX_Vandpd_zmm_k1z_zmm_zmmm512b64];
+    VandpdZmmu64MaskmskwZmmu64Zmmu64Avx512, Lanes(LaneOperation::And), Quadword, Register, L512, [EVEX_Vandpd_zmm_k1z_zmm_zmmm512b64];
+    VandpsXmmu32MaskmskwXmmu32Memu32Avx512, Lanes(LaneOperation::And), Doubleword, Memory, L128, [EVEX_Vandps_xmm_k1z_xmm_xmmm128b32];
+    VandpsXmmu32MaskmskwXmmu32Xmmu32Avx512, Lanes(LaneOperation::And), Doubleword, Register, L128, [EVEX_Vandps_xmm_k1z_xmm_xmmm128b32];
+    VandpsYmmu32MaskmskwYmmu32Memu32Avx512, Lanes(LaneOperation::And), Doubleword, Memory, L256, [EVEX_Vandps_ymm_k1z_ymm_ymmm256b32];
+    VandpsYmmu32MaskmskwYmmu32Ymmu32Avx512, Lanes(LaneOperation::And), Doubleword, Register, L256, [EVEX_Vandps_ymm_k1z_ymm_ymmm256b32];
+    VandpsZmmu32MaskmskwZmmu32Memu32Avx512, Lanes(LaneOperation::And), Doubleword, Memory, L512, [EVEX_Vandps_zmm_k1z_zmm_zmmm512b32];
+    VandpsZmmu32MaskmskwZmmu32Zmmu32Avx512, Lanes(LaneOperation::And), Doubleword, Register, L512, [EVEX_Vandps_zmm_k1z_zmm_zmmm512b32];
+    VblendmpdXmmf64MaskmskwXmmf64Memf64Avx512, Blend, Quadword, Memory, L128, [EVEX_Vblendmpd_xmm_k1z_xmm_xmmm128b64];
+    VblendmpdXmmf64MaskmskwXmmf64Xmmf64Avx512, Blend, Quadword, Register, L128, [EVEX_Vblendmpd_xmm_k1z_xmm_xmmm128b64];
+    VblendmpdYmmf64MaskmskwYmmf64Memf64Avx512, Blend, Quadword, Memory, L256, [EVEX_Vblendmpd_ymm_k1z_ymm_ymmm256b64];
+    VblendmpdYmmf64MaskmskwYmmf64Ymmf64Avx512, Blend, Quadword, Register, L256, [EVEX_Vblendmpd_ymm_k1z_ymm_ymmm256b64];
+    VblendmpdZmmf64MaskmskwZmmf64Memf64Avx512, Blend, Quadword, Memory, L512, [EVEX_Vblendmpd_zmm_k1z_zmm_zmmm512b64];
+    VblendmpdZmmf64MaskmskwZmmf64Zmmf64Avx512, Blend, Quadword, Register, L512, [EVEX_Vblendmpd_zmm_k1z_zmm_zmmm512b64];
+    VblendmpsXmmf32MaskmskwXmmf32Memf32Avx512, Blend, Doubleword, Memory, L128, [EVEX_Vblendmps_xmm_k1z_xmm_xmmm128b32];
+    VblendmpsXmmf32MaskmskwXmmf32Xmmf32Avx512, Blend, Doubleword, Register, L128, [EVEX_Vblendmps_xmm_k1z_xmm_xmmm128b32];
+    VblendmpsYmmf32MaskmskwYmmf32Memf32Avx512, Blend, Doubleword, Memory, L256, [EVEX_Vblendmps_ymm_k1z_ymm_ymmm256b32];
+    VblendmpsYmmf32MaskmskwYmmf32Ymmf32Avx512, Blend, Doubleword, Register, L256, [EVEX_Vblendmps_ymm_k1z_ymm_ymmm256b32];
+    VblendmpsZmmf32MaskmskwZmmf32Memf32Avx512, Blend, Doubleword, Memory, L512, [EVEX_Vblendmps_zmm_k1z_zmm_zmmm512b32];
+    VblendmpsZmmf32MaskmskwZmmf32Zmmf32Avx512, Blend, Doubleword, Register, L512, [EVEX_Vblendmps_zmm_k1z_zmm_zmmm512b32];
+    VorpdXmmu64MaskmskwXmmu64Memu64Avx512, Lanes(LaneOperation::Or), Quadword, Memory, L128, [EVEX_Vorpd_xmm_k1z_xmm_xmmm128b64];
+    VorpdXmmu64MaskmskwXmmu64Xmmu64Avx512, Lanes(LaneOperation::Or), Quadword, Register, L128, [EVEX_Vorpd_xmm_k1z_xmm_xmmm128b64];
+    VorpdYmmu64MaskmskwYmmu64Memu64Avx512, Lanes(LaneOperation::Or), Quadword, Memory, L256, [EVEX_Vorpd_ymm_k1z_ymm_ymmm256b64];
+    VorpdYmmu64MaskmskwYmmu64Ymmu64Avx512, Lanes(LaneOperation::Or), Quadword, Register, L256, [EVEX_Vorpd_ymm_k1z_ymm_ymmm256b64];
+    VorpdZmmu64MaskmskwZmmu64Memu64Avx512, Lanes(LaneOperation::Or), Quadword, Memory, L512, [EVEX_Vorpd_zmm_k1z_zmm_zmmm512b64];
+    VorpdZmmu64MaskmskwZmmu64Zmmu64Avx512, Lanes(LaneOperation::Or), Quadword, Register, L512, [EVEX_Vorpd_zmm_k1z_zmm_zmmm512b64];
+    VorpsXmmu32MaskmskwXmmu32Memu32Avx512, Lanes(LaneOperation::Or), Doubleword, Memory, L128, [EVEX_Vorps_xmm_k1z_xmm_xmmm128b32];
+    VorpsXmmu32MaskmskwXmmu32Xmmu32Avx512, Lanes(LaneOperation::Or), Doubleword, Register, L128, [EVEX_Vorps_xmm_k1z_xmm_xmmm128b32];
+    VorpsYmmu32MaskmskwYmmu32Memu32Avx512, Lanes(LaneOperation::Or), Doubleword, Memory, L256, [EVEX_Vorps_ymm_k1z_ymm_ymmm256b32];
+    VorpsYmmu32MaskmskwYmmu32Ymmu32Avx512, Lanes(LaneOperation::Or), Doubleword, Register, L256, [EVEX_Vorps_ymm_k1z_ymm_ymmm256b32];
+    VorpsZmmu32MaskmskwZmmu32Memu32Avx512, Lanes(LaneOperation::Or), Doubleword, Memory, L512, [EVEX_Vorps_zmm_k1z_zmm_zmmm512b32];
+    VorpsZmmu32MaskmskwZmmu32Zmmu32Avx512, Lanes(LaneOperation::Or), Doubleword, Register, L512, [EVEX_Vorps_zmm_k1z_zmm_zmmm512b32];
+    VpabsbXmmi8MaskmskwMemi8Avx512, Lanes(LaneOperation::Absolute(Byte)), Byte, Memory, L128, [EVEX_Vpabsb_xmm_k1z_xmmm128];
+    VpabsbXmmi8MaskmskwXmmi8Avx512, Lanes(LaneOperation::Absolute(Byte)), Byte, Register, L128, [EVEX_Vpabsb_xmm_k1z_xmmm128];
+    VpabsbYmmi8MaskmskwMemi8Avx512, Lanes(LaneOperation::Absolute(Byte)), Byte, Memory, L256, [EVEX_Vpabsb_ymm_k1z_ymmm256];
+    VpabsbYmmi8MaskmskwYmmi8Avx512, Lanes(LaneOperation::Absolute(Byte)), Byte, Register, L256, [EVEX_Vpabsb_ymm_k1z_ymmm256];
+    VpabsbZmmi8MaskmskwMemi8Avx512, Lanes(LaneOperation::Absolute(Byte)), Byte, Memory, L512, [EVEX_Vpabsb_zmm_k1z_zmmm512];
+    VpabsbZmmi8MaskmskwZmmi8Avx512, Lanes(LaneOperation::Absolute(Byte)), Byte, Register, L512, [EVEX_Vpabsb_zmm_k1z_zmmm512];
+    VpabswXmmi16MaskmskwMemi16Avx512, Lanes(LaneOperation::Absolute(Word)), Word, Memory, L128, [EVEX_Vpabsw_xmm_k1z_xmmm128];
+    VpabswXmmi16MaskmskwXmmi16Avx512, Lanes(LaneOperation::Absolute(Word)), Word, Register, L128, [EVEX_Vpabsw_xmm_k1z_xmmm128];
+    VpabswYmmi16MaskmskwMemi16Avx512, Lanes(LaneOperation::Absolute(Word)), Word, Memory, L256, [EVEX_Vpabsw_ymm_k1z_ymmm256];
+    VpabswYmmi16MaskmskwYmmi16Avx512, Lanes(LaneOperation::Absolute(Word)), Word, Register, L256, [EVEX_Vpabsw_ymm_k1z_ymmm256];
+    VpabswZmmi16MaskmskwMemi16Avx512, Lanes(LaneOperation::Absolute(Word)), Word, Memory, L512, [EVEX_Vpabsw_zmm_k1z_zmmm512];
+    VpabswZmmi16MaskmskwZmmi16Avx512, Lanes(LaneOperation::Absolute(Word)), Word, Register, L512, [EVEX_Vpabsw_zmm_k1z_zmmm512];
+    VpaddbXmmu8MaskmskwXmmu8Memu8Avx512, Lanes(LaneOperation::Add(Byte)), Byte, Memory, L128, [EVEX_Vpaddb_xmm_k1z_xmm_xmmm128];
+    VpaddbXmmu8MaskmskwXmmu8Xmmu8Avx512, Lanes(LaneOperation::Add(Byte)), Byte, Register, L128, [EVEX_Vpaddb_xmm_k1z_xmm_xmmm128];
+    VpaddbYmmu8MaskmskwYmmu8Memu8Avx512, Lanes(LaneOperation::Add(Byte)), Byte, Memory, L256, [EVEX_Vpaddb_ymm_k1z_ymm_ymmm256];
+    VpaddbYmmu8MaskmskwYmmu8Ymmu8Avx512, Lanes(LaneOperation::Add(Byte)), Byte, Register, L256, [EVEX_Vpaddb_ymm_k1z_ymm_ymmm256];
+    VpaddbZmmu8MaskmskwZmmu8Memu8Avx512, Lanes(LaneOperation::Add(Byte)), Byte, Memory, L512, [EVEX_Vpaddb_zmm_k1z_zmm_zmmm512];
+    VpaddbZmmu8MaskmskwZmmu8Zmmu8Avx512, Lanes(LaneOperation::Add(Byte)), Byte, Register, L512, [EVEX_Vpaddb_zmm_k1z_zmm_zmmm512];
+    VpaddsbXmmi8MaskmskwXmmi8Memi8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Signed)), Byte, Memory, L128, [EVEX_Vpaddsb_xmm_k1z_xmm_xmmm128];
+    VpaddsbXmmi8MaskmskwXmmi8Xmmi8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Signed)), Byte, Register, L128, [EVEX_Vpaddsb_xmm_k1z_xmm_xmmm128];
+    VpaddsbYmmi8MaskmskwYmmi8Memi8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Signed)), Byte, Memory, L256, [EVEX_Vpaddsb_ymm_k1z_ymm_ymmm256];
+    VpaddsbYmmi8MaskmskwYmmi8Ymmi8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Signed)), Byte, Register, L256, [EVEX_Vpaddsb_ymm_k1z_ymm_ymmm256];
+    VpaddsbZmmi8MaskmskwZmmi8Memi8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Signed)), Byte, Memory, L512, [EVEX_Vpaddsb_zmm_k1z_zmm_zmmm512];
+    VpaddsbZmmi8MaskmskwZmmi8Zmmi8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Signed)), Byte, Register, L512, [EVEX_Vpaddsb_zmm_k1z_zmm_zmmm512];
+    VpaddswXmmi16MaskmskwXmmi16Memi16Avx512, Lanes(LaneOperation::AddSaturating(Word, Signed)), Word, Memory, L128, [EVEX_Vpaddsw_xmm_k1z_xmm_xmmm128];
+    VpaddswXmmi16MaskmskwXmmi16Xmmi16Avx512, Lanes(LaneOperation::AddSaturating(Word, Signed)), Word, Register, L128, [EVEX_Vpaddsw_xmm_k1z_xmm_xmmm128];
+    VpaddswYmmi16MaskmskwYmmi16Memi16Avx512, Lanes(LaneOperation::AddSaturating(Word, Signed)), Word, Memory, L256, [EVEX_Vpaddsw_ymm_k1z_ymm_ymmm256];
+    VpaddswYmmi16MaskmskwYmmi16Ymmi16Avx512, Lanes(LaneOperation::AddSaturating(Word, Signed)), Word, Register, L256, [EVEX_Vpaddsw_ymm_k1z_ymm_ymmm256];
+    VpaddswZmmi16MaskmskwZmmi16Memi16Avx512, Lanes(LaneOperation::AddSaturating(Word, Signed)), Word, Memory, L512, [EVEX_Vpaddsw_zmm_k1z_zmm_zmmm512];
+    VpaddswZmmi16MaskmskwZmmi16Zmmi16Avx512, Lanes(LaneOperation::AddSaturating(Word, Signed)), Word, Register, L512, [EVEX_Vpaddsw_zmm_k1z_zmm_zmmm512];
+    VpaddusbXmmu8MaskmskwXmmu8Memu8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Unsigned)), Byte, Memory, L128, [EVEX_Vpaddusb_xmm_k1z_xmm_xmmm128];
+    VpaddusbXmmu8MaskmskwXmmu8Xmmu8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Unsigned)), Byte, Register, L128, [EVEX_Vpaddusb_xmm_k1z_xmm_xmmm128];
+    VpaddusbYmmu8MaskmskwYmmu8Memu8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Unsigned)), Byte, Memory, L256, [EVEX_Vpaddusb_ymm_k1z_ymm_ymmm256];
+    VpaddusbYmmu8MaskmskwYmmu8Ymmu8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Unsigned)), Byte, Register, L256, [EVEX_Vpaddusb_ymm_k1z_ymm_ymmm256];
+    VpaddusbZmmu8MaskmskwZmmu8Memu8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Unsigned)), Byte, Memory, L512, [EVEX_Vpaddusb_zmm_k1z_zmm_zmmm512];
+    VpaddusbZmmu8MaskmskwZmmu8Zmmu8Avx512, Lanes(LaneOperation::AddSaturating(Byte, Unsigned)), Byte, Register, L512, [EVEX_Vpaddusb_zmm_k1z_zmm_zmmm512];
+    VpadduswXmmu16MaskmskwXmmu16Memu16Avx512, Lanes(LaneOperation::AddSaturating(Word, Unsigned)), Word, Memory, L128, [EVEX_Vpaddusw_xmm_k1z_xmm_xmmm128];
+    VpadduswXmmu16MaskmskwXmmu16Xmmu16Avx512, Lanes(LaneOperation::AddSaturating(Word, Unsigned)), Word, Register, L128, [EVEX_Vpaddusw_xmm_k1z_xmm_xmmm128];
+    VpadduswYmmu16MaskmskwYmmu16Memu16Avx512, Lanes(LaneOperation::AddSaturating(Word, Unsigned)), Word, Memory, L256, [EVEX_Vpaddusw_ymm_k1z_ymm_ymmm256];
+    VpadduswYmmu16MaskmskwYmmu16Ymmu16Avx512, Lanes(LaneOperation::AddSaturating(Word, Unsigned)), Word, Register, L256, [EVEX_Vpaddusw_ymm_k1z_ymm_ymmm256];
+    VpadduswZmmu16MaskmskwZmmu16Memu16Avx512, Lanes(LaneOperation::AddSaturating(Word, Unsigned)), Word, Memory, L512, [EVEX_Vpaddusw_zmm_k1z_zmm_zmmm512];
+    VpadduswZmmu16MaskmskwZmmu16Zmmu16Avx512, Lanes(LaneOperation::AddSaturating(Word, Unsigned)), Word, Register, L512, [EVEX_Vpaddusw_zmm_k1z_zmm_zmmm512];
+    VpaddwXmmu16MaskmskwXmmu16Memu16Avx512, Lanes(LaneOperation::Add(Word)), Word, Memory, L128, [EVEX_Vpaddw_xmm_k1z_xmm_xmmm128];
+    VpaddwXmmu16MaskmskwXmmu16Xmmu16Avx512, Lanes(LaneOperation::Add(Word)), Word, Register, L128, [EVEX_Vpaddw_xmm_k1z_xmm_xmmm128];
+    VpaddwYmmu16MaskmskwYmmu16Memu16Avx512, Lanes(LaneOperation::Add(Word)), Word, Memory, L256, [EVEX_Vpaddw_ymm_k1z_ymm_ymmm256];
+    VpaddwYmmu16MaskmskwYmmu16Ymmu16Avx512, Lanes(LaneOperation::Add(Word)), Word, Register, L256, [EVEX_Vpaddw_ymm_k1z_ymm_ymmm256];
+    VpaddwZmmu16MaskmskwZmmu16Memu16Avx512, Lanes(LaneOperation::Add(Word)), Word, Memory, L512, [EVEX_Vpaddw_zmm_k1z_zmm_zmmm512];
+    VpaddwZmmu16MaskmskwZmmu16Zmmu16Avx512, Lanes(LaneOperation::Add(Word)), Word, Register, L512, [EVEX_Vpaddw_zmm_k1z_zmm_zmmm512];
+    VpavgbXmmu8MaskmskwXmmu8Memu8Avx512, Lanes(LaneOperation::Average(Byte)), Byte, Memory, L128, [EVEX_Vpavgb_xmm_k1z_xmm_xmmm128];
+    VpavgbXmmu8MaskmskwXmmu8Xmmu8Avx512, Lanes(LaneOperation::Average(Byte)), Byte, Register, L128, [EVEX_Vpavgb_xmm_k1z_xmm_xmmm128];
+    VpavgbYmmu8MaskmskwYmmu8Memu8Avx512, Lanes(LaneOperation::Average(Byte)), Byte, Memory, L256, [EVEX_Vpavgb_ymm_k1z_ymm_ymmm256];
+    VpavgbYmmu8MaskmskwYmmu8Ymmu8Avx512, Lanes(LaneOperation::Average(Byte)), Byte, Register, L256, [EVEX_Vpavgb_ymm_k1z_ymm_ymmm256];
+    VpavgbZmmu8MaskmskwZmmu8Memu8Avx512, Lanes(LaneOperation::Average(Byte)), Byte, Memory, L512, [EVEX_Vpavgb_zmm_k1z_zmm_zmmm512];
+    VpavgbZmmu8MaskmskwZmmu8Zmmu8Avx512, Lanes(LaneOperation::Average(Byte)), Byte, Register, L512, [EVEX_Vpavgb_zmm_k1z_zmm_zmmm512];
+    VpavgwXmmu16MaskmskwXmmu16Memu16Avx512, Lanes(LaneOperation::Average(Word)), Word, Memory, L128, [EVEX_Vpavgw_xmm_k1z_xmm_xmmm128];
+    VpavgwXmmu16MaskmskwXmmu16Xmmu16Avx512, Lanes(LaneOperation::Average(Word)), Word, Register, L128, [EVEX_Vpavgw_xmm_k1z_xmm_xmmm128];
+    VpavgwYmmu16MaskmskwYmmu16Memu16Avx512, Lanes(LaneOperation::Average(Word)), Word, Memory, L256, [EVEX_Vpavgw_ymm_k1z_ymm_ymmm256];
+    VpavgwYmmu16MaskmskwYmmu16Ymmu16Avx512, Lanes(LaneOperation::Average(Word)), Word, Register, L256, [EVEX_Vpavgw_ymm_k1z_ymm_ymmm256];
+    VpavgwZmmu16MaskmskwZmmu16Memu16Avx512, Lanes(LaneOperation::Average(Word)), Word, Memory, L512, [EVEX_Vpavgw_zmm_k1z_zmm_zmmm512];
+    VpavgwZmmu16MaskmskwZmmu16Zmmu16Avx512, Lanes(LaneOperation::Average(Word)), Word, Register, L512, [EVEX_Vpavgw_zmm_k1z_zmm_zmmm512];
+    VpblendmbXmmu8MaskmskwXmmu8Memu8Avx512, Blend, Byte, Memory, L128, [EVEX_Vpblendmb_xmm_k1z_xmm_xmmm128];
+    VpblendmbXmmu8MaskmskwXmmu8Xmmu8Avx512, Blend, Byte, Register, L128, [EVEX_Vpblendmb_xmm_k1z_xmm_xmmm128];
+    VpblendmbYmmu8MaskmskwYmmu8Memu8Avx512, Blend, Byte, Memory, L256, [EVEX_Vpblendmb_ymm_k1z_ymm_ymmm256];
+    VpblendmbYmmu8MaskmskwYmmu8Ymmu8Avx512, Blend, Byte, Register, L256, [EVEX_Vpblendmb_ymm_k1z_ymm_ymmm256];
+    VpblendmbZmmu8MaskmskwZmmu8Memu8Avx512, Blend, Byte, Memory, L512, [EVEX_Vpblendmb_zmm_k1z_zmm_zmmm512];
+    VpblendmbZmmu8MaskmskwZmmu8Zmmu8Avx512, Blend, Byte, Register, L512, [EVEX_Vpblendmb_zmm_k1z_zmm_zmmm512];
+    VpblendmwXmmu16MaskmskwXmmu16Memu16Avx512, Blend, Word, Memory, L128, [EVEX_Vpblendmw_xmm_k1z_xmm_xmmm128];
+    VpblendmwXmmu16MaskmskwXmmu16Xmmu16Avx512, Blend, Word, Register, L128, [EVEX_Vpblendmw_xmm_k1z_xmm_xmmm128];
+    VpblendmwYmmu16MaskmskwYmmu16Memu16Avx512, Blend, Word, Memory, L256, [EVEX_Vpblendmw_ymm_k1z_ymm_ymmm256];
+    VpblendmwYmmu16MaskmskwYmmu16Ymmu16Avx512, Blend, Word, Register, L256, [EVEX_Vpblendmw_ymm_k1z_ymm_ymmm256];
+    VpblendmwZmmu16MaskmskwZmmu16Memu16Avx512, Blend, Word, Memory, L512, [EVEX_Vpblendmw_zmm_k1z_zmm_zmmm512];
+    VpblendmwZmmu16MaskmskwZmmu16Zmmu16Avx512, Blend, Word, Register, L512, [EVEX_Vpblendmw_zmm_k1z_zmm_zmmm512];
+    VpcmpbMaskmskwMaskmskwXmmi8Memi8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Byte, Memory, L128, [EVEX_Vpcmpb_kr_k1_xmm_xmmm128_imm8];
+    VpcmpbMaskmskwMaskmskwXmmi8Xmmi8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Byte, Register, L128, [EVEX_Vpcmpb_kr_k1_xmm_xmmm128_imm8];
+    VpcmpbMaskmskwMaskmskwYmmi8Memi8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Byte, Memory, L256, [EVEX_Vpcmpb_kr_k1_ymm_ymmm256_imm8];
+    VpcmpbMaskmskwMaskmskwYmmi8Ymmi8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Byte, Register, L256, [EVEX_Vpcmpb_kr_k1_ymm_ymmm256_imm8];
+    VpcmpbMaskmskwMaskmskwZmmi8Memi8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Byte, Memory, L512, [EVEX_Vpcmpb_kr_k1_zmm_zmmm512_imm8];
+    VpcmpbMaskmskwMaskmskwZmmi8Zmmi8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Byte, Register, L512, [EVEX_Vpcmpb_kr_k1_zmm_zmmm512_imm8];
+    VpcmpeqbMaskmskwMaskmskwXmmu8Memu8Avx512, CompareIntoMask(ComparePredicate::Equal), Byte, Memory, L128, [EVEX_Vpcmpeqb_kr_k1_xmm_xmmm128];
+    VpcmpeqbMaskmskwMaskmskwXmmu8Xmmu8Avx512, CompareIntoMask(ComparePredicate::Equal), Byte, Register, L128, [EVEX_Vpcmpeqb_kr_k1_xmm_xmmm128];
+    VpcmpeqbMaskmskwMaskmskwYmmu8Memu8Avx512, CompareIntoMask(ComparePredicate::Equal), Byte, Memory, L256, [EVEX_Vpcmpeqb_kr_k1_ymm_ymmm256];
+    VpcmpeqbMaskmskwMaskmskwYmmu8Ymmu8Avx512, CompareIntoMask(ComparePredicate::Equal), Byte, Register, L256, [EVEX_Vpcmpeqb_kr_k1_ymm_ymmm256];
+    VpcmpeqbMaskmskwMaskmskwZmmu8Memu8Avx512, CompareIntoMask(ComparePredicate::Equal), Byte, Memory, L512, [EVEX_Vpcmpeqb_kr_k1_zmm_zmmm512];
+    VpcmpeqbMaskmskwMaskmskwZmmu8Zmmu8Avx512, CompareIntoMask(ComparePredicate::Equal), Byte, Register, L512, [EVEX_Vpcmpeqb_kr_k1_zmm_zmmm512];
+    VpcmpeqwMaskmskwMaskmskwXmmu16Memu16Avx512, CompareIntoMask(ComparePredicate::Equal), Word, Memory, L128, [EVEX_Vpcmpeqw_kr_k1_xmm_xmmm128];
+    VpcmpeqwMaskmskwMaskmskwXmmu16Xmmu16Avx512, CompareIntoMask(ComparePredicate::Equal), Word, Register, L128, [EVEX_Vpcmpeqw_kr_k1_xmm_xmmm128];
+    VpcmpeqwMaskmskwMaskmskwYmmu16Memu16Avx512, CompareIntoMask(ComparePredicate::Equal), Word, Memory, L256, [EVEX_Vpcmpeqw_kr_k1_ymm_ymmm256];
+    VpcmpeqwMaskmskwMaskmskwYmmu16Ymmu16Avx512, CompareIntoMask(ComparePredicate::Equal), Word, Register, L256, [EVEX_Vpcmpeqw_kr_k1_ymm_ymmm256];
+    VpcmpeqwMaskmskwMaskmskwZmmu16Memu16Avx512, CompareIntoMask(ComparePredicate::Equal), Word, Memory, L512, [EVEX_Vpcmpeqw_kr_k1_zmm_zmmm512];
+    VpcmpeqwMaskmskwMaskmskwZmmu16Zmmu16Avx512, CompareIntoMask(ComparePredicate::Equal), Word, Register, L512, [EVEX_Vpcmpeqw_kr_k1_zmm_zmmm512];
+    VpcmpgtbMaskmskwMaskmskwXmmu8Memu8Avx512, CompareIntoMask(ComparePredicate::Greater), Byte, Memory, L128, [EVEX_Vpcmpgtb_kr_k1_xmm_xmmm128];
+    VpcmpgtbMaskmskwMaskmskwXmmu8Xmmu8Avx512, CompareIntoMask(ComparePredicate::Greater), Byte, Register, L128, [EVEX_Vpcmpgtb_kr_k1_xmm_xmmm128];
+    VpcmpgtbMaskmskwMaskmskwYmmu8Memu8Avx512, CompareIntoMask(ComparePredicate::Greater), Byte, Memory, L256, [EVEX_Vpcmpgtb_kr_k1_ymm_ymmm256];
+    VpcmpgtbMaskmskwMaskmskwYmmu8Ymmu8Avx512, CompareIntoMask(ComparePredicate::Greater), Byte, Register, L256, [EVEX_Vpcmpgtb_kr_k1_ymm_ymmm256];
+    VpcmpgtbMaskmskwMaskmskwZmmu8Memu8Avx512, CompareIntoMask(ComparePredicate::Greater), Byte, Memory, L512, [EVEX_Vpcmpgtb_kr_k1_zmm_zmmm512];
+    VpcmpgtbMaskmskwMaskmskwZmmu8Zmmu8Avx512, CompareIntoMask(ComparePredicate::Greater), Byte, Register, L512, [EVEX_Vpcmpgtb_kr_k1_zmm_zmmm512];
+    VpcmpgtwMaskmskwMaskmskwXmmu16Memu16Avx512, CompareIntoMask(ComparePredicate::Greater), Word, Memory, L128, [EVEX_Vpcmpgtw_kr_k1_xmm_xmmm128];
+    VpcmpgtwMaskmskwMaskmskwXmmu16Xmmu16Avx512, CompareIntoMask(ComparePredicate::Greater), Word, Register, L128, [EVEX_Vpcmpgtw_kr_k1_xmm_xmmm128];
+    VpcmpgtwMaskmskwMaskmskwYmmu16Memu16Avx512, CompareIntoMask(ComparePredicate::Greater), Word, Memory, L256, [EVEX_Vpcmpgtw_kr_k1_ymm_ymmm256];
+    VpcmpgtwMaskmskwMaskmskwYmmu16Ymmu16Avx512, CompareIntoMask(ComparePredicate::Greater), Word, Register, L256, [EVEX_Vpcmpgtw_kr_k1_ymm_ymmm256];
+    VpcmpgtwMaskmskwMaskmskwZmmu16Memu16Avx512, CompareIntoMask(ComparePredicate::Greater), Word, Memory, L512, [EVEX_Vpcmpgtw_kr_k1_zmm_zmmm512];
+    VpcmpgtwMaskmskwMaskmskwZmmu16Zmmu16Avx512, CompareIntoMask(ComparePredicate::Greater), Word, Register, L512, [EVEX_Vpcmpgtw_kr_k1_zmm_zmmm512];
+    VpcmpubMaskmskwMaskmskwXmmu8Memu8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Byte, Memory, L128, [EVEX_Vpcmpub_kr_k1_xmm_xmmm128_imm8];
+    VpcmpubMaskmskwMaskmskwXmmu8Xmmu8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Byte, Register, L128, [EVEX_Vpcmpub_kr_k1_xmm_xmmm128_imm8];
+    VpcmpubMaskmskwMaskmskwYmmu8Memu8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Byte, Memory, L256, [EVEX_Vpcmpub_kr_k1_ymm_ymmm256_imm8];
+    VpcmpubMaskmskwMaskmskwYmmu8Ymmu8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Byte, Register, L256, [EVEX_Vpcmpub_kr_k1_ymm_ymmm256_imm8];
+    VpcmpubMaskmskwMaskmskwZmmu8Memu8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Byte, Memory, L512, [EVEX_Vpcmpub_kr_k1_zmm_zmmm512_imm8];
+    VpcmpubMaskmskwMaskmskwZmmu8Zmmu8Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Byte, Register, L512, [EVEX_Vpcmpub_kr_k1_zmm_zmmm512_imm8];
+    VpcmpuwMaskmskwMaskmskwXmmu16Memu16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Word, Memory, L128, [EVEX_Vpcmpuw_kr_k1_xmm_xmmm128_imm8];
+    VpcmpuwMaskmskwMaskmskwXmmu16Xmmu16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Word, Register, L128, [EVEX_Vpcmpuw_kr_k1_xmm_xmmm128_imm8];
+    VpcmpuwMaskmskwMaskmskwYmmu16Memu16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Word, Memory, L256, [EVEX_Vpcmpuw_kr_k1_ymm_ymmm256_imm8];
+    VpcmpuwMaskmskwMaskmskwYmmu16Ymmu16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Word, Register, L256, [EVEX_Vpcmpuw_kr_k1_ymm_ymmm256_imm8];
+    VpcmpuwMaskmskwMaskmskwZmmu16Memu16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Word, Memory, L512, [EVEX_Vpcmpuw_kr_k1_zmm_zmmm512_imm8];
+    VpcmpuwMaskmskwMaskmskwZmmu16Zmmu16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Unsigned)), Word, Register, L512, [EVEX_Vpcmpuw_kr_k1_zmm_zmmm512_imm8];
+    VpcmpwMaskmskwMaskmskwXmmi16Memi16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Word, Memory, L128, [EVEX_Vpcmpw_kr_k1_xmm_xmmm128_imm8];
+    VpcmpwMaskmskwMaskmskwXmmi16Xmmi16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Word, Register, L128, [EVEX_Vpcmpw_kr_k1_xmm_xmmm128_imm8];
+    VpcmpwMaskmskwMaskmskwYmmi16Memi16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Word, Memory, L256, [EVEX_Vpcmpw_kr_k1_ymm_ymmm256_imm8];
+    VpcmpwMaskmskwMaskmskwYmmi16Ymmi16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Word, Register, L256, [EVEX_Vpcmpw_kr_k1_ymm_ymmm256_imm8];
+    VpcmpwMaskmskwMaskmskwZmmi16Memi16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Word, Memory, L512, [EVEX_Vpcmpw_kr_k1_zmm_zmmm512_imm8];
+    VpcmpwMaskmskwMaskmskwZmmi16Zmmi16Imm8Avx512, CompareIntoMask(ComparePredicate::Immediate(Signed)), Word, Register, L512, [EVEX_Vpcmpw_kr_k1_zmm_zmmm512_imm8];
+    VpmaddubswXmmi16MaskmskwXmmi16Memi16Avx512, Lanes(LaneOperation::MultiplyAddBytes), Word, Memory, L128, [EVEX_Vpmaddubsw_xmm_k1z_xmm_xmmm128];
+    VpmaddubswXmmi16MaskmskwXmmi16Xmmi16Avx512, Lanes(LaneOperation::MultiplyAddBytes), Word, Register, L128, [EVEX_Vpmaddubsw_xmm_k1z_xmm_xmmm128];
+    VpmaddubswYmmi16MaskmskwYmmi16Memi16Avx512, Lanes(LaneOperation::MultiplyAddBytes), Word, Memory, L256, [EVEX_Vpmaddubsw_ymm_k1z_ymm_ymmm256];
+    VpmaddubswYmmi16MaskmskwYmmi16Ymmi16Avx512, Lanes(LaneOperation::MultiplyAddBytes), Word, Register, L256, [EVEX_Vpmaddubsw_ymm_k1z_ymm_ymmm256];
+    VpmaddubswZmmi16MaskmskwZmmi16Memi16Avx512, Lanes(LaneOperation::MultiplyAddBytes), Word, Memory, L512, [EVEX_Vpmaddubsw_zmm_k1z_zmm_zmmm512];
+    VpmaddubswZmmi16MaskmskwZmmi16Zmmi16Avx512, Lanes(LaneOperation::MultiplyAddBytes), Word, Register, L512, [EVEX_Vpmaddubsw_zmm_k1z_zmm_zmmm512];
+    VpmaddwdXmmi32MaskmskwXmmi16Memi16Avx512, Lanes(LaneOperation::MultiplyAddWords), Doubleword, Memory, L128, [EVEX_Vpmaddwd_xmm_k1z_xmm_xmmm128];
+    VpmaddwdXmmi32MaskmskwXmmi16Xmmi16Avx512, Lanes(LaneOperation::MultiplyAddWords), Doubleword, Register, L128, [EVEX_Vpmaddwd_xmm_k1z_xmm_xmmm128];
+    VpmaddwdYmmi32MaskmskwYmmi16Memi16Avx512, Lanes(LaneOperation::MultiplyAddWords), Doubleword, Memory, L256, [EVEX_Vpmaddwd_ymm_k1z_ymm_ymmm256];
+    VpmaddwdYmmi32MaskmskwYmmi16Ymmi16Avx512, Lanes(LaneOperation::MultiplyAddWords), Doubleword, Register, L256, [EVEX_Vpmaddwd_ymm_k1z_ymm_ymmm256];
+    VpmaddwdZmmi32MaskmskwZmmi16Memi16Avx512, Lanes(LaneOperation::MultiplyAddWords), Doubleword, Memory, L512, [EVEX_Vpmaddwd_zmm_k1z_zmm_zmmm512];
+    VpmaddwdZmmi32MaskmskwZmmi16Zmmi16Avx512, Lanes(LaneOperation::MultiplyAddWords), Doubleword, Register, L512, [EVEX_Vpmaddwd_zmm_k1z_zmm_zmmm512];
+    VpmaxsbXmmi8MaskmskwXmmi8Memi8Avx512, Lanes(LaneOperation::Maximum(Byte, Signed)), Byte, Memory, L128, [EVEX_Vpmaxsb_xmm_k1z_xmm_xmmm128];
+    VpmaxsbXmmi8MaskmskwXmmi8Xmmi8Avx512, Lanes(LaneOperation::Maximum(Byte, Signed)), Byte, Register, L128, [EVEX_Vpmaxsb_xmm_k1z_xmm_xmmm128];
+    VpmaxsbYmmi8MaskmskwYmmi8Memi8Avx512, Lanes(LaneOperation::Maximum(Byte, Signed)), Byte, Memory, L256, [EVEX_Vpmaxsb_ymm_k1z_ymm_ymmm256];
+    VpmaxsbYmmi8MaskmskwYmmi8Ymmi8Avx512, Lanes(LaneOperation::Maximum(Byte, Signed)), Byte, Register, L256, [EVEX_Vpmaxsb_ymm_k1z_ymm_ymmm256];
+    VpmaxsbZmmi8MaskmskwZmmi8Memi8Avx512, Lanes(LaneOperation::Maximum(Byte, Signed)), Byte, Memory, L512, [EVEX_Vpmaxsb_zmm_k1z_zmm_zmmm512];
+    VpmaxsbZmmi8MaskmskwZmmi8Zmmi8Avx512, Lanes(LaneOperation::Maximum(Byte, Signed)), Byte, Register, L512, [EVEX_Vpmaxsb_zmm_k1z_zmm_zmmm512];
+    VpmaxswXmmi16MaskmskwXmmi16Memi16Avx512, Lanes(LaneOperation::Maximum(Word, Signed)), Word, Memory, L128, [EVEX_Vpmaxsw_xmm_k1z_xmm_xmmm128];
+    VpmaxswXmmi16MaskmskwXmmi16Xmmi16Avx512, Lanes(LaneOperation::Maximum(Word, Signed)), Word, Register, L128, [EVEX_Vpmaxsw_xmm_k1z_xmm_xmmm128];
+    VpmaxswYmmi16MaskmskwYmmi16Memi16Avx512, Lanes(LaneOperation::Maximum(Word, Signed)), Word, Memory, L256, [EVEX_Vpmaxsw_ymm_k1z_ymm_ymmm256];
+    VpmaxswYmmi16MaskmskwYmmi16Ymmi16Avx512, Lanes(LaneOperation::Maximum(Word, Signed)), Word, Register, L256, [EVEX_Vpmaxsw_ymm_k1z_ymm_ymmm256];
+    VpmaxswZmmi16MaskmskwZmmi16Memi16Avx512, Lanes(LaneOperation::Maximum(Word, Signed)), Word, Memory, L512, [EVEX_Vpmaxsw_zmm_k1z_zmm_zmmm512];
+    VpmaxswZmmi16MaskmskwZmmi16Zmmi16Avx512, Lanes(LaneOperation::Maximum(Word, Signed)), Word, Register, L512, [EVEX_Vpmaxsw_zmm_k1z_zmm_zmmm512];
+    VpmaxubXmmu8MaskmskwXmmu8Memu8Avx512, Lanes(LaneOperation::Maximum(Byte, Unsigned)), Byte, Memory, L128, [EVEX_Vpmaxub_xmm_k1z_xmm_xmmm128];
+    VpmaxubXmmu8MaskmskwXmmu8Xmmu8Avx512, Lanes(LaneOperation::Maximum(Byte, Unsigned)), Byte, Register, L128, [EVEX_Vpmaxub_xmm_k1z_xmm_xmmm128];
+    VpmaxubYmmu8MaskmskwYmmu8Memu8Avx512, Lanes(LaneOperation::Maximum(Byte, Unsigned)), Byte, Memory, L256, [EVEX_Vpmaxub_ymm_k1z_ymm_ymmm256];
+    VpmaxubYmmu8MaskmskwYmmu8Ymmu8Avx512, Lanes(LaneOperation::Maximum(Byte, Unsigned)), Byte, Register, L256, [EVEX_Vpmaxub_ymm_k1z_ymm_ymmm256];
+    VpmaxubZmmu8MaskmskwZmmu8Memu8Avx512, Lanes(LaneOperation::Maximum(Byte, Unsigned)), Byte, Memory, L512, [EVEX_Vpmaxub_zmm_k1z_zmm_zmmm512];
+    VpmaxubZmmu8MaskmskwZmmu8Zmmu8Avx512, Lanes(LaneOperation::Maximum(Byte, Unsigned)), Byte, Register, L512, [EVEX_Vpmaxub_zmm_k1z_zmm_zmmm512];
+    VpmaxuwXmmu16MaskmskwXmmu16Memu16Avx512, Lanes(LaneOperation::Maximum(Word, Unsigned)), Word, Memory, L128, [EVEX_Vpmaxuw_xmm_k1z_xmm_xmmm128];
+    VpmaxuwXmmu16MaskmskwXmmu16Xmmu16Avx512, Lanes(LaneOperation::Maximum(Word, Unsigned)), Word, Register, L128, [EVEX_Vpmaxuw_xmm_k1z_xmm_xmmm128];
+    VpmaxuwYmmu16MaskmskwYmmu16Memu16Avx512, Lanes(LaneOperation::Maximum(Word, Unsigned)), Word, Memory, L256, [EVEX_Vpmaxuw_ymm_k1z_ymm_ymmm256];
+    VpmaxuwYmmu16MaskmskwYmmu16Ymmu16Avx512, Lanes(LaneOperation::Maximum(Word, Unsigned)), Word, Register, L256, [EVEX_Vpmaxuw_ymm_k1z_ymm_ymmm256];
+    VpmaxuwZmmu16MaskmskwZmmu16Memu16Avx512, Lanes(LaneOperation::Maximum(Word, Unsigned)), Word, Memory, L512, [EVEX_Vpmaxuw_zmm_k1z_zmm_zmmm512];
+    VpmaxuwZmmu16MaskmskwZmmu16Zmmu16Avx512, Lanes(LaneOperation::Maximum(Word, Unsigned)), Word, Register, L512, [EVEX_Vpmaxuw_zmm_k1z_zmm_zmmm512];
+    VpminsbXmmi8MaskmskwXmmi8Memi8Avx512, Lanes(LaneOperation::Minimum(Byte, Signed)), Byte, Memory, L128, [EVEX_Vpminsb_xmm_k1z_xmm_xmmm128];
+    VpminsbXmmi8MaskmskwXmmi8Xmmi8Avx512, Lanes(LaneOperation::Minimum(Byte, Signed)), Byte, Register, L128, [EVEX_Vpminsb_xmm_k1z_xmm_xmmm128];
+    VpminsbYmmi8MaskmskwYmmi8Memi8Avx512, Lanes(LaneOperation::Minimum(Byte, Signed)), Byte, Memory, L256, [EVEX_Vpminsb_ymm_k1z_ymm_ymmm256];
+    VpminsbYmmi8MaskmskwYmmi8Ymmi8Avx512, Lanes(LaneOperation::Minimum(Byte, Signed)), Byte, Register, L256, [EVEX_Vpminsb_ymm_k1z_ymm_ymmm256];
+    VpminsbZmmi8MaskmskwZmmi8Memi8Avx512, Lanes(LaneOperation::Minimum(Byte, Signed)), Byte, Memory, L512, [EVEX_Vpminsb_zmm_k1z_zmm_zmmm512];
+    VpminsbZmmi8MaskmskwZmmi8Zmmi8Avx512, Lanes(LaneOperation::Minimum(Byte, Signed)), Byte, Register, L512, [EVEX_Vpminsb_zmm_k1z_zmm_zmmm512];
+    VpminswXmmi16MaskmskwXmmi16Memi16Avx512, Lanes(LaneOperation::Minimum(Word, Signed)), Word, Memory, L128, [EVEX_Vpminsw_xmm_k1z_xmm_xmmm128];
+    VpminswXmmi16MaskmskwXmmi16Xmmi16Avx512, Lanes(LaneOperation::Minimum(Word, Signed)), Word, Register, L128, [EVEX_Vpminsw_xmm_k1z_xmm_xmmm128];
+    VpminswYmmi16MaskmskwYmmi16Memi16Avx512, Lanes(LaneOperation::Minimum(Word, Signed)), Word, Memory, L256, [EVEX_Vpminsw_ymm_k1z_ymm_ymmm256];
+    VpminswYmmi16MaskmskwYmmi16Ymmi16Avx512, Lanes(LaneOperation::Minimum(Word, Signed)), Word, Register, L256, [EVEX_Vpminsw_ymm_k1z_ymm_ymmm256];
+    VpminswZmmi16MaskmskwZmmi16Memi16Avx512, Lanes(LaneOperation::Minimum(Word, Signed)), Word, Memory, L512, [EVEX_Vpminsw_zmm_k1z_zmm_zmmm512];
+    VpminswZmmi16MaskmskwZmmi16Zmmi16Avx512, Lanes(LaneOperation::Minimum(Word, Signed)), Word, Register, L512, [EVEX_Vpminsw_zmm_k1z_zmm_zmmm512];
+    VpminubXmmu8MaskmskwXmmu8Memu8Avx512, Lanes(LaneOperation::Minimum(Byte, Unsigned)), Byte, Memory, L128, [EVEX_Vpminub_xmm_k1z_xmm_xmmm128];
+    VpminubXmmu8MaskmskwXmmu8Xmmu8Avx512, Lanes(LaneOperation::Minimum(Byte, Unsigned)), Byte, Register, L128, [EVEX_Vpminub_xmm_k1z_xmm_xmmm128];
+    VpminubYmmu8MaskmskwYmmu8Memu8Avx512, Lanes(LaneOperation::Minimum(Byte, Unsigned)), Byte, Memory, L256, [EVEX_Vpminub_ymm_k1z_ymm_ymmm256];
+    VpminubYmmu8MaskmskwYmmu8Ymmu8Avx512, Lanes(LaneOperation::Minimum(Byte, Unsigned)), Byte, Register, L256, [EVEX_Vpminub_ymm_k1z_ymm_ymmm256];
+    VpminubZmmu8MaskmskwZmmu8Memu8Avx512, Lanes(LaneOperation::Minimum(Byte, Unsigned)), Byte, Memory, L512, [EVEX_Vpminub_zmm_k1z_zmm_zmmm512];
+    VpminubZmmu8MaskmskwZmmu8Zmmu8Avx512, Lanes(LaneOperation::Minimum(Byte, Unsigned)), Byte, Register, L512, [EVEX_Vpminub_zmm_k1z_zmm_zmmm512];
+    VpminuwXmmu16MaskmskwXmmu16Memu16Avx512, Lanes(LaneOperation::Minimum(Word, Unsigned)), Word, Memory, L128, [EVEX_Vpminuw_xmm_k1z_xmm_xmmm128];
+    VpminuwXmmu16MaskmskwXmmu16Xmmu16Avx512, Lanes(LaneOperation::Minimum(Word, Unsigned)), Word, Register, L128, [EVEX_Vpminuw_xmm_k1z_xmm_xmmm128];
+    VpminuwYmmu16MaskmskwYmmu16Memu16Avx512, Lanes(LaneOperation::Minimum(Word, Unsigned)), Word, Memory, L256, [EVEX_Vpminuw_ymm_k1z_ymm_ymmm256];
+    VpminuwYmmu16MaskmskwYmmu16Ymmu16Avx512, Lanes(LaneOperation::Minimum(Word, Unsigned)), Word, Register, L256, [EVEX_Vpminuw_ymm_k1z_ymm_ymmm256];
+    VpminuwZmmu16MaskmskwZmmu16Memu16Avx512, Lanes(LaneOperation::Minimum(Word, Unsigned)), Word, Memory, L512, [EVEX_Vpminuw_zmm_k1z_zmm_zmmm512];
+    VpminuwZmmu16MaskmskwZmmu16Zmmu16Avx512, Lanes(LaneOperation::Minimum(Word, Unsigned)), Word, Register, L512, [EVEX_Vpminuw_zmm_k1z_zmm_zmmm512];
+    VpmulhrswXmmi16MaskmskwXmmi16Memi16Avx512, Lanes(LaneOperation::MultiplyHighRoundScale), Word, Memory, L128, [EVEX_Vpmulhrsw_xmm_k1z_xmm_xmmm128];
+    VpmulhrswXmmi16MaskmskwXmmi16Xmmi16Avx512, Lanes(LaneOperation::MultiplyHighRoundScale), Word, Register, L128, [EVEX_Vpmulhrsw_xmm_k1z_xmm_xmmm128];
+    VpmulhrswYmmi16MaskmskwYmmi16Memi16Avx512, Lanes(LaneOperation::MultiplyHighRoundScale), Word, Memory, L256, [EVEX_Vpmulhrsw_ymm_k1z_ymm_ymmm256];
+    VpmulhrswYmmi16MaskmskwYmmi16Ymmi16Avx512, Lanes(LaneOperation::MultiplyHighRoundScale), Word, Register, L256, [EVEX_Vpmulhrsw_ymm_k1z_ymm_ymmm256];
+    VpmulhrswZmmi16MaskmskwZmmi16Memi16Avx512, Lanes(LaneOperation::MultiplyHighRoundScale), Word, Memory, L512, [EVEX_Vpmulhrsw_zmm_k1z_zmm_zmmm512];
+    VpmulhrswZmmi16MaskmskwZmmi16Zmmi16Avx512, Lanes(LaneOperation::MultiplyHighRoundScale), Word, Register, L512, [EVEX_Vpmulhrsw_zmm_k1z_zmm_zmmm512];
+    VpmulhuwXmmu16MaskmskwXmmu16Memu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Unsigned)), Word, Memory, L128, [EVEX_Vpmulhuw_xmm_k1z_xmm_xmmm128];
+    VpmulhuwXmmu16MaskmskwXmmu16Xmmu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Unsigned)), Word, Register, L128, [EVEX_Vpmulhuw_xmm_k1z_xmm_xmmm128];
+    VpmulhuwYmmu16MaskmskwYmmu16Memu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Unsigned)), Word, Memory, L256, [EVEX_Vpmulhuw_ymm_k1z_ymm_ymmm256];
+    VpmulhuwYmmu16MaskmskwYmmu16Ymmu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Unsigned)), Word, Register, L256, [EVEX_Vpmulhuw_ymm_k1z_ymm_ymmm256];
+    VpmulhuwZmmu16MaskmskwZmmu16Memu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Unsigned)), Word, Memory, L512, [EVEX_Vpmulhuw_zmm_k1z_zmm_zmmm512];
+    VpmulhuwZmmu16MaskmskwZmmu16Zmmu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Unsigned)), Word, Register, L512, [EVEX_Vpmulhuw_zmm_k1z_zmm_zmmm512];
+    VpmulhwXmmu16MaskmskwXmmu16Memu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Signed)), Word, Memory, L128, [EVEX_Vpmulhw_xmm_k1z_xmm_xmmm128];
+    VpmulhwXmmu16MaskmskwXmmu16Xmmu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Signed)), Word, Register, L128, [EVEX_Vpmulhw_xmm_k1z_xmm_xmmm128];
+    VpmulhwYmmu16MaskmskwYmmu16Memu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Signed)), Word, Memory, L256, [EVEX_Vpmulhw_ymm_k1z_ymm_ymmm256];
+    VpmulhwYmmu16MaskmskwYmmu16Ymmu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Signed)), Word, Register, L256, [EVEX_Vpmulhw_ymm_k1z_ymm_ymmm256];
+    VpmulhwZmmu16MaskmskwZmmu16Memu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Signed)), Word, Memory, L512, [EVEX_Vpmulhw_zmm_k1z_zmm_zmmm512];
+    VpmulhwZmmu16MaskmskwZmmu16Zmmu16Avx512, Lanes(LaneOperation::MultiplyHighWords(Signed)), Word, Register, L512, [EVEX_Vpmulhw_zmm_k1z_zmm_zmmm512];
+    VpmullqXmmu64MaskmskwXmmu64Memu64Avx512, Lanes(LaneOperation::MultiplyLow(Quadword)), Quadword, Memory, L128, [EVEX_Vpmullq_xmm_k1z_xmm_xmmm128b64];
+    VpmullqXmmu64MaskmskwXmmu64Xmmu64Avx512, Lanes(LaneOperation::MultiplyLow(Quadword)), Quadword, Register, L128, [EVEX_Vpmullq_xmm_k1z_xmm_xmmm128b64];
+    VpmullqYmmu64MaskmskwYmmu64Memu64Avx512, Lanes(LaneOperation::MultiplyLow(Quadword)), Quadword, Memory, L256, [EVEX_Vpmullq_ymm_k1z_ymm_ymmm256b64];
+    VpmullqYmmu64MaskmskwYmmu64Ymmu64Avx512, Lanes(LaneOperation::MultiplyLow(Quadword)), Quadword, Register, L256, [EVEX_Vpmullq_ymm_k1z_ymm_ymmm256b64];
+    VpmullqZmmu64MaskmskwZmmu64Memu64Avx512, Lanes(LaneOperation::MultiplyLow(Quadword)), Quadword, Memory, L512, [EVEX_Vpmullq_zmm_k1z_zmm_zmmm512b64];
+    VpmullqZmmu64MaskmskwZmmu64Zmmu64Avx512, Lanes(LaneOperation::MultiplyLow(Quadword)), Quadword, Register, L512, [EVEX_Vpmullq_zmm_k1z_zmm_zmmm512b64];
+    VpmullwXmmu16MaskmskwXmmu16Memu16Avx512, Lanes(LaneOperation::MultiplyLow(Word)), Word, Memory, L128, [EVEX_Vpmullw_xmm_k1z_xmm_xmmm128];
+    VpmullwXmmu16MaskmskwXmmu16Xmmu16Avx512, Lanes(LaneOperation::MultiplyLow(Word)), Word, Register, L128, [EVEX_Vpmullw_xmm_k1z_xmm_xmmm128];
+    VpmullwYmmu16MaskmskwYmmu16Memu16Avx512, Lanes(LaneOperation::MultiplyLow(Word)), Word, Memory, L256, [EVEX_Vpmullw_ymm_k1z_ymm_ymmm256];
+    VpmullwYmmu16MaskmskwYmmu16Ymmu16Avx512, Lanes(LaneOperation::MultiplyLow(Word)), Word, Register, L256, [EVEX_Vpmullw_ymm_k1z_ymm_ymmm256];
+    VpmullwZmmu16MaskmskwZmmu16Memu16Avx512, Lanes(LaneOperation::MultiplyLow(Word)), Word, Memory, L512, [EVEX_Vpmullw_zmm_k1z_zmm_zmmm512];
+    VpmullwZmmu16MaskmskwZmmu16Zmmu16Avx512, Lanes(LaneOperation::MultiplyLow(Word)), Word, Register, L512, [EVEX_Vpmullw_zmm_k1z_zmm_zmmm512];
+    VpsadbwXmmu16Xmmu8Memu8Avx512, Lanes(LaneOperation::SumAbsoluteDifferences), Quadword, Memory, L128, [EVEX_Vpsadbw_xmm_xmm_xmmm128];
+    VpsadbwXmmu16Xmmu8Xmmu8Avx512, Lanes(LaneOperation::SumAbsoluteDifferences), Quadword, Register, L128, [EVEX_Vpsadbw_xmm_xmm_xmmm128];
+    VpsadbwYmmu16Ymmu8Memu8Avx512, Lanes(LaneOperation::SumAbsoluteDifferences), Quadword, Memory, L256, [EVEX_Vpsadbw_ymm_ymm_ymmm256];
+    VpsadbwYmmu16Ymmu8Ymmu8Avx512, Lanes(LaneOperation::SumAbsoluteDifferences), Quadword, Register, L256, [EVEX_Vpsadbw_ymm_ymm_ymmm256];
+    VpsadbwZmmu16Zmmu8Memu8Avx512, Lanes(LaneOperation::SumAbsoluteDifferences), Quadword, Memory, L512, [EVEX_Vpsadbw_zmm_zmm_zmmm512];
+    VpsadbwZmmu16Zmmu8Zmmu8Avx512, Lanes(LaneOperation::SumAbsoluteDifferences), Quadword, Register, L512, [EVEX_Vpsadbw_zmm_zmm_zmmm512];
+    VpslldqXmmu8Memu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesLeft), Quadword, Memory, L128, [EVEX_Vpslldq_xmm_xmmm128_imm8];
+    VpslldqXmmu8Xmmu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesLeft), Quadword, Register, L128, [EVEX_Vpslldq_xmm_xmmm128_imm8];
+    VpslldqYmmu8Memu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesLeft), Quadword, Memory, L256, [EVEX_Vpslldq_ymm_ymmm256_imm8];
+    VpslldqYmmu8Ymmu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesLeft), Quadword, Register, L256, [EVEX_Vpslldq_ymm_ymmm256_imm8];
+    VpslldqZmmu8Memu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesLeft), Quadword, Memory, L512, [EVEX_Vpslldq_zmm_zmmm512_imm8];
+    VpslldqZmmu8Zmmu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesLeft), Quadword, Register, L512, [EVEX_Vpslldq_zmm_zmmm512_imm8];
+    VpsllvwXmmu16MaskmskwXmmu16Memu16Avx512, ShiftByLane(LaneShift::Left), Word, Memory, L128, [EVEX_Vpsllvw_xmm_k1z_xmm_xmmm128];
+    VpsllvwXmmu16MaskmskwXmmu16Xmmu16Avx512, ShiftByLane(LaneShift::Left), Word, Register, L128, [EVEX_Vpsllvw_xmm_k1z_xmm_xmmm128];
+    VpsllvwYmmu16MaskmskwYmmu16Memu16Avx512, ShiftByLane(LaneShift::Left), Word, Memory, L256, [EVEX_Vpsllvw_ymm_k1z_ymm_ymmm256];
+    VpsllvwYmmu16MaskmskwYmmu16Ymmu16Avx512, ShiftByLane(LaneShift::Left), Word, Register, L256, [EVEX_Vpsllvw_ymm_k1z_ymm_ymmm256];
+    VpsllvwZmmu16MaskmskwZmmu16Memu16Avx512, ShiftByLane(LaneShift::Left), Word, Memory, L512, [EVEX_Vpsllvw_zmm_k1z_zmm_zmmm512];
+    VpsllvwZmmu16MaskmskwZmmu16Zmmu16Avx512, ShiftByLane(LaneShift::Left), Word, Register, L512, [EVEX_Vpsllvw_zmm_k1z_zmm_zmmm512];
+    VpsllwXmmu16MaskmskwMemu16Imm8Avx512, ShiftByImmediate(LaneShift::Left), Word, Memory, L128, [EVEX_Vpsllw_xmm_k1z_xmmm128_imm8];
+    VpsllwXmmu16MaskmskwXmmu16Imm8Avx512, ShiftByImmediate(LaneShift::Left), Word, Register, L128, [EVEX_Vpsllw_xmm_k1z_xmmm128_imm8];
+    VpsllwXmmu16MaskmskwXmmu16Memu16Avx512, ShiftByCount(LaneShift::Left), Word, Memory, L128, [EVEX_Vpsllw_xmm_k1z_xmm_xmmm128];
+    VpsllwXmmu16MaskmskwXmmu16Xmmu16Avx512, ShiftByCount(LaneShift::Left), Word, Register, L128, [EVEX_Vpsllw_xmm_k1z_xmm_xmmm128];
+    VpsllwYmmu16MaskmskwMemu16Imm8Avx512, ShiftByImmediate(LaneShift::Left), Word, Memory, L256, [EVEX_Vpsllw_ymm_k1z_ymmm256_imm8];
+    VpsllwYmmu16MaskmskwYmmu16Imm8Avx512, ShiftByImmediate(LaneShift::Left), Word, Register, L256, [EVEX_Vpsllw_ymm_k1z_ymmm256_imm8];
+    VpsllwYmmu16MaskmskwYmmu16Memu16Avx512, ShiftByCount(LaneShift::Left), Word, Memory, L256, [EVEX_Vpsllw_ymm_k1z_ymm_xmmm128];
+    VpsllwYmmu16MaskmskwYmmu16Xmmu16Avx512, ShiftByCount(LaneShift::Left), Word, Register, L256, [EVEX_Vpsllw_ymm_k1z_ymm_xmmm128];
+    VpsllwZmmu16MaskmskwMemu16Imm8Avx512, ShiftByImmediate(LaneShift::Left), Word, Memory, L512, [EVEX_Vpsllw_zmm_k1z_zmmm512_imm8];
+    VpsllwZmmu16MaskmskwZmmu16Imm8Avx512, ShiftByImmediate(LaneShift::Left), Word, Register, L512, [EVEX_Vpsllw_zmm_k1z_zmmm512_imm8];
+    VpsllwZmmu16MaskmskwZmmu16Memu16Avx512, ShiftByCount(LaneShift::Left), Word, Memory, L512, [EVEX_Vpsllw_zmm_k1z_zmm_xmmm128];
+    VpsllwZmmu16MaskmskwZmmu16Xmmu16Avx512, ShiftByCount(LaneShift::Left), Word, Register, L512, [EVEX_Vpsllw_zmm_k1z_zmm_xmmm128];
+    VpsravwXmmu16MaskmskwXmmu16Memu16Avx512, ShiftByLane(LaneShift::RightArithmetic), Word, Memory, L128, [EVEX_Vpsravw_xmm_k1z_xmm_xmmm128];
+    VpsravwXmmu16MaskmskwXmmu16Xmmu16Avx512, ShiftByLane(LaneShift::RightArithmetic), Word, Register, L128, [EVEX_Vpsravw_xmm_k1z_xmm_xmmm128];
+    VpsravwYmmu16MaskmskwYmmu16Memu16Avx512, ShiftByLane(LaneShift::RightArithmetic), Word, Memory, L256, [EVEX_Vpsravw_ymm_k1z_ymm_ymmm256];
+    VpsravwYmmu16MaskmskwYmmu16Ymmu16Avx512, ShiftByLane(LaneShift::RightArithmetic), Word, Register, L256, [EVEX_Vpsravw_ymm_k1z_ymm_ymmm256];
+    VpsravwZmmu16MaskmskwZmmu16Memu16Avx512, ShiftByLane(LaneShift::RightArithmetic), Word, Memory, L512, [EVEX_Vpsravw_zmm_k1z_zmm_zmmm512];
+    VpsravwZmmu16MaskmskwZmmu16Zmmu16Avx512, ShiftByLane(LaneShift::RightArithmetic), Word, Register, L512, [EVEX_Vpsravw_zmm_k1z_zmm_zmmm512];
+    VpsrawXmmu16MaskmskwMemu16Imm8Avx512, ShiftByImmediate(LaneShift::RightArithmetic), Word, Memory, L128, [EVEX_Vpsraw_xmm_k1z_xmmm128_imm8];
+    VpsrawXmmu16MaskmskwXmmu16Imm8Avx512, ShiftByImmediate(LaneShift::RightArithmetic), Word, Register, L128, [EVEX_Vpsraw_xmm_k1z_xmmm128_imm8];
+    VpsrawXmmu16MaskmskwXmmu16Memu16Avx512, ShiftByCount(LaneShift::RightArithmetic), Word, Memory, L128, [EVEX_Vpsraw_xmm_k1z_xmm_xmmm128];
+    VpsrawXmmu16MaskmskwXmmu16Xmmu16Avx512, ShiftByCount(LaneShift::RightArithmetic), Word, Register, L128, [EVEX_Vpsraw_xmm_k1z_xmm_xmmm128];
+    VpsrawYmmu16MaskmskwMemu16Imm8Avx512, ShiftByImmediate(LaneShift::RightArithmetic), Word, Memory, L256, [EVEX_Vpsraw_ymm_k1z_ymmm256_imm8];
+    VpsrawYmmu16MaskmskwYmmu16Imm8Avx512, ShiftByImmediate(LaneShift::RightArithmetic), Word, Register, L256, [EVEX_Vpsraw_ymm_k1z_ymmm256_imm8];
+    VpsrawYmmu16MaskmskwYmmu16Memu16Avx512, ShiftByCount(LaneShift::RightArithmetic), Word, Memory, L256, [EVEX_Vpsraw_ymm_k1z_ymm_xmmm128];
+    VpsrawYmmu16MaskmskwYmmu16Xmmu16Avx512, ShiftByCount(LaneShift::RightArithmetic), Word, Register, L256, [EVEX_Vpsraw_ymm_k1z_ymm_xmmm128];
+    VpsrawZmmu16MaskmskwMemu16Imm8Avx512, ShiftByImmediate(LaneShift::RightArithmetic), Word, Memory, L512, [EVEX_Vpsraw_zmm_k1z_zmmm512_imm8];
+    VpsrawZmmu16MaskmskwZmmu16Imm8Avx512, ShiftByImmediate(LaneShift::RightArithmetic), Word, Register, L512, [EVEX_Vpsraw_zmm_k1z_zmmm512_imm8];
+    VpsrawZmmu16MaskmskwZmmu16Memu16Avx512, ShiftByCount(LaneShift::RightArithmetic), Word, Memory, L512, [EVEX_Vpsraw_zmm_k1z_zmm_xmmm128];
+    VpsrawZmmu16MaskmskwZmmu16Xmmu16Avx512, ShiftByCount(LaneShift::RightArithmetic), Word, Register, L512, [EVEX_Vpsraw_zmm_k1z_zmm_xmmm128];
+    VpsrldqXmmu8Memu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesRight), Quadword, Memory, L128, [EVEX_Vpsrldq_xmm_xmmm128_imm8];
+    VpsrldqXmmu8Xmmu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesRight), Quadword, Register, L128, [EVEX_Vpsrldq_xmm_xmmm128_imm8];
+    VpsrldqYmmu8Memu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesRight), Quadword, Memory, L256, [EVEX_Vpsrldq_ymm_ymmm256_imm8];
+    VpsrldqYmmu8Ymmu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesRight), Quadword, Register, L256, [EVEX_Vpsrldq_ymm_ymmm256_imm8];
+    VpsrldqZmmu8Memu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesRight), Quadword, Memory, L512, [EVEX_Vpsrldq_zmm_zmmm512_imm8];
+    VpsrldqZmmu8Zmmu8Imm8Avx512, Lanes(LaneOperation::ShiftBytesRight), Quadword, Register, L512, [EVEX_Vpsrldq_zmm_zmmm512_imm8];
+    VpsrlvwXmmu16MaskmskwXmmu16Memu16Avx512, ShiftByLane(LaneShift::RightLogical), Word, Memory, L128, [EVEX_Vpsrlvw_xmm_k1z_xmm_xmmm128];
+    VpsrlvwXmmu16MaskmskwXmmu16Xmmu16Avx512, ShiftByLane(LaneShift::RightLogical), Word, Register, L128, [EVEX_Vpsrlvw_xmm_k1z_xmm_xmmm128];
+    VpsrlvwYmmu16MaskmskwYmmu16Memu16Avx512, ShiftByLane(LaneShift::RightLogical), Word, Memory, L256, [EVEX_Vpsrlvw_ymm_k1z_ymm_ymmm256];
+    VpsrlvwYmmu16MaskmskwYmmu16Ymmu16Avx512, ShiftByLane(LaneShift::RightLogical), Word, Register, L256, [EVEX_Vpsrlvw_ymm_k1z_ymm_ymmm256];
+    VpsrlvwZmmu16MaskmskwZmmu16Memu16Avx512, ShiftByLane(LaneShift::RightLogical), Word, Memory, L512, [EVEX_Vpsrlvw_zmm_k1z_zmm_zmmm512];
+    VpsrlvwZmmu16MaskmskwZmmu16Zmmu16Avx512, ShiftByLane(LaneShift::RightLogical), Word, Register, L512, [EVEX_Vpsrlvw_zmm_k1z_zmm_zmmm512];
+    VpsrlwXmmu16MaskmskwMemu16Imm8Avx512, ShiftByImmediate(LaneShift::RightLogical), Word, Memory, L128, [EVEX_Vpsrlw_xmm_k1z_xmmm128_imm8];
+    VpsrlwXmmu16MaskmskwXmmu16Imm8Avx512, ShiftByImmediate(LaneShift::RightLogical), Word, Register, L128, [EVEX_Vpsrlw_xmm_k1z_xmmm128_imm8];
+    VpsrlwXmmu16MaskmskwXmmu16Memu16Avx512, ShiftByCount(LaneShift::RightLogical), Word, Memory, L128, [EVEX_Vpsrlw_xmm_k1z_xmm_xmmm128];
+    VpsrlwXmmu16MaskmskwXmmu16Xmmu16Avx512, ShiftByCount(LaneShift::RightLogical), Word, Register, L128, [EVEX_Vpsrlw_xmm_k1z_xmm_xmmm128];
+    VpsrlwYmmu16MaskmskwMemu16Imm8Avx512, ShiftByImmediate(LaneShift::RightLogical), Word, Memory, L256, [EVEX_Vpsrlw_ymm_k1z_ymmm256_imm8];
+    VpsrlwYmmu16MaskmskwYmmu16Imm8Avx512, ShiftByImmediate(LaneShift::RightLogical), Word, Register, L256, [EVEX_Vpsrlw_ymm_k1z_ymmm256_imm8];
+    VpsrlwYmmu16MaskmskwYmmu16Memu16Avx512, ShiftByCount(LaneShift::RightLogical), Word, Memory, L256, [EVEX_Vpsrlw_ymm_k1z_ymm_xmmm128];
+    VpsrlwYmmu16MaskmskwYmmu16Xmmu16Avx512, ShiftByCount(LaneShift::RightLogical), Word, Register, L256, [EVEX_Vpsrlw_ymm_k1z_ymm_xmmm128];
+    VpsrlwZmmu16MaskmskwMemu16Imm8Avx512, ShiftByImmediate(LaneShift::RightLogical), Word, Memory, L512, [EVEX_Vpsrlw_zmm_k1z_zmmm512_imm8];
+    VpsrlwZmmu16MaskmskwZmmu16Imm8Avx512, ShiftByImmediate(LaneShift::RightLogical), Word, Register, L512, [EVEX_Vpsrlw_zmm_k1z_zmmm512_imm8];
+    VpsrlwZmmu16MaskmskwZmmu16Memu16Avx512, ShiftByCount(LaneShift::RightLogical), Word, Memory, L512, [EVEX_Vpsrlw_zmm_k1z_zmm_xmmm128];
+    VpsrlwZmmu16MaskmskwZmmu16Xmmu16Avx512, ShiftByCount(LaneShift::RightLogical), Word, Register, L512, [EVEX_Vpsrlw_zmm_k1z_zmm_xmmm128];
+    VpsubbXmmu8MaskmskwXmmu8Memu8Avx512, Lanes(LaneOperation::Subtract(Byte)), Byte, Memory, L128, [EVEX_Vpsubb_xmm_k1z_xmm_xmmm128];
+    VpsubbXmmu8MaskmskwXmmu8Xmmu8Avx512, Lanes(LaneOperation::Subtract(Byte)), Byte, Register, L128, [EVEX_Vpsubb_xmm_k1z_xmm_xmmm128];
+    VpsubbYmmu8MaskmskwYmmu8Memu8Avx512, Lanes(LaneOperation::Subtract(Byte)), Byte, Memory, L256, [EVEX_Vpsubb_ymm_k1z_ymm_ymmm256];
+    VpsubbYmmu8MaskmskwYmmu8Ymmu8Avx512, Lanes(LaneOperation::Subtract(Byte)), Byte, Register, L256, [EVEX_Vpsubb_ymm_k1z_ymm_ymmm256];
+    VpsubbZmmu8MaskmskwZmmu8Memu8Avx512, Lanes(LaneOperation::Subtract(Byte)), Byte, Memory, L512, [EVEX_Vpsubb_zmm_k1z_zmm_zmmm512];
+    VpsubbZmmu8MaskmskwZmmu8Zmmu8Avx512, Lanes(LaneOperation::Subtract(Byte)), Byte, Register, L512, [EVEX_Vpsubb_zmm_k1z_zmm_zmmm512];
+    VpsubsbXmmi8MaskmskwXmmi8Memi8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Signed)), Byte, Memory, L128, [EVEX_Vpsubsb_xmm_k1z_xmm_xmmm128];
+    VpsubsbXmmi8MaskmskwXmmi8Xmmi8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Signed)), Byte, Register, L128, [EVEX_Vpsubsb_xmm_k1z_xmm_xmmm128];
+    VpsubsbYmmi8MaskmskwYmmi8Memi8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Signed)), Byte, Memory, L256, [EVEX_Vpsubsb_ymm_k1z_ymm_ymmm256];
+    VpsubsbYmmi8MaskmskwYmmi8Ymmi8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Signed)), Byte, Register, L256, [EVEX_Vpsubsb_ymm_k1z_ymm_ymmm256];
+    VpsubsbZmmi8MaskmskwZmmi8Memi8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Signed)), Byte, Memory, L512, [EVEX_Vpsubsb_zmm_k1z_zmm_zmmm512];
+    VpsubsbZmmi8MaskmskwZmmi8Zmmi8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Signed)), Byte, Register, L512, [EVEX_Vpsubsb_zmm_k1z_zmm_zmmm512];
+    VpsubswXmmi16MaskmskwXmmi16Memi16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Signed)), Word, Memory, L128, [EVEX_Vpsubsw_xmm_k1z_xmm_xmmm128];
+    VpsubswXmmi16MaskmskwXmmi16Xmmi16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Signed)), Word, Register, L128, [EVEX_Vpsubsw_xmm_k1z_xmm_xmmm128];
+    VpsubswYmmi16MaskmskwYmmi16Memi16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Signed)), Word, Memory, L256, [EVEX_Vpsubsw_ymm_k1z_ymm_ymmm256];
+    VpsubswYmmi16MaskmskwYmmi16Ymmi16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Signed)), Word, Register, L256, [EVEX_Vpsubsw_ymm_k1z_ymm_ymmm256];
+    VpsubswZmmi16MaskmskwZmmi16Memi16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Signed)), Word, Memory, L512, [EVEX_Vpsubsw_zmm_k1z_zmm_zmmm512];
+    VpsubswZmmi16MaskmskwZmmi16Zmmi16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Signed)), Word, Register, L512, [EVEX_Vpsubsw_zmm_k1z_zmm_zmmm512];
+    VpsubusbXmmu8MaskmskwXmmu8Memu8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Unsigned)), Byte, Memory, L128, [EVEX_Vpsubusb_xmm_k1z_xmm_xmmm128];
+    VpsubusbXmmu8MaskmskwXmmu8Xmmu8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Unsigned)), Byte, Register, L128, [EVEX_Vpsubusb_xmm_k1z_xmm_xmmm128];
+    VpsubusbYmmu8MaskmskwYmmu8Memu8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Unsigned)), Byte, Memory, L256, [EVEX_Vpsubusb_ymm_k1z_ymm_ymmm256];
+    VpsubusbYmmu8MaskmskwYmmu8Ymmu8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Unsigned)), Byte, Register, L256, [EVEX_Vpsubusb_ymm_k1z_ymm_ymmm256];
+    VpsubusbZmmu8MaskmskwZmmu8Memu8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Unsigned)), Byte, Memory, L512, [EVEX_Vpsubusb_zmm_k1z_zmm_zmmm512];
+    VpsubusbZmmu8MaskmskwZmmu8Zmmu8Avx512, Lanes(LaneOperation::SubtractSaturating(Byte, Unsigned)), Byte, Register, L512, [EVEX_Vpsubusb_zmm_k1z_zmm_zmmm512];
+    VpsubuswXmmu16MaskmskwXmmu16Memu16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Unsigned)), Word, Memory, L128, [EVEX_Vpsubusw_xmm_k1z_xmm_xmmm128];
+    VpsubuswXmmu16MaskmskwXmmu16Xmmu16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Unsigned)), Word, Register, L128, [EVEX_Vpsubusw_xmm_k1z_xmm_xmmm128];
+    VpsubuswYmmu16MaskmskwYmmu16Memu16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Unsigned)), Word, Memory, L256, [EVEX_Vpsubusw_ymm_k1z_ymm_ymmm256];
+    VpsubuswYmmu16MaskmskwYmmu16Ymmu16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Unsigned)), Word, Register, L256, [EVEX_Vpsubusw_ymm_k1z_ymm_ymmm256];
+    VpsubuswZmmu16MaskmskwZmmu16Memu16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Unsigned)), Word, Memory, L512, [EVEX_Vpsubusw_zmm_k1z_zmm_zmmm512];
+    VpsubuswZmmu16MaskmskwZmmu16Zmmu16Avx512, Lanes(LaneOperation::SubtractSaturating(Word, Unsigned)), Word, Register, L512, [EVEX_Vpsubusw_zmm_k1z_zmm_zmmm512];
+    VpsubwXmmu16MaskmskwXmmu16Memu16Avx512, Lanes(LaneOperation::Subtract(Word)), Word, Memory, L128, [EVEX_Vpsubw_xmm_k1z_xmm_xmmm128];
+    VpsubwXmmu16MaskmskwXmmu16Xmmu16Avx512, Lanes(LaneOperation::Subtract(Word)), Word, Register, L128, [EVEX_Vpsubw_xmm_k1z_xmm_xmmm128];
+    VpsubwYmmu16MaskmskwYmmu16Memu16Avx512, Lanes(LaneOperation::Subtract(Word)), Word, Memory, L256, [EVEX_Vpsubw_ymm_k1z_ymm_ymmm256];
+    VpsubwYmmu16MaskmskwYmmu16Ymmu16Avx512, Lanes(LaneOperation::Subtract(Word)), Word, Register, L256, [EVEX_Vpsubw_ymm_k1z_ymm_ymmm256];
+    VpsubwZmmu16MaskmskwZmmu16Memu16Avx512, Lanes(LaneOperation::Subtract(Word)), Word, Memory, L512, [EVEX_Vpsubw_zmm_k1z_zmm_zmmm512];
+    VpsubwZmmu16MaskmskwZmmu16Zmmu16Avx512, Lanes(LaneOperation::Subtract(Word)), Word, Register, L512, [EVEX_Vpsubw_zmm_k1z_zmm_zmmm512];
+    VptestmbMaskmskwMaskmskwXmmu8Memu8Avx512, TestIntoMask { not: false }, Byte, Memory, L128, [EVEX_Vptestmb_kr_k1_xmm_xmmm128];
+    VptestmbMaskmskwMaskmskwXmmu8Xmmu8Avx512, TestIntoMask { not: false }, Byte, Register, L128, [EVEX_Vptestmb_kr_k1_xmm_xmmm128];
+    VptestmbMaskmskwMaskmskwYmmu8Memu8Avx512, TestIntoMask { not: false }, Byte, Memory, L256, [EVEX_Vptestmb_kr_k1_ymm_ymmm256];
+    VptestmbMaskmskwMaskmskwYmmu8Ymmu8Avx512, TestIntoMask { not: false }, Byte, Register, L256, [EVEX_Vptestmb_kr_k1_ymm_ymmm256];
+    VptestmbMaskmskwMaskmskwZmmu8Memu8Avx512, TestIntoMask { not: false }, Byte, Memory, L512, [EVEX_Vptestmb_kr_k1_zmm_zmmm512];
+    VptestmbMaskmskwMaskmskwZmmu8Zmmu8Avx512, TestIntoMask { not: false }, Byte, Register, L512, [EVEX_Vptestmb_kr_k1_zmm_zmmm512];
+    VptestmwMaskmskwMaskmskwXmmu16Memu16Avx512, TestIntoMask { not: false }, Word, Memory, L128, [EVEX_Vptestmw_kr_k1_xmm_xmmm128];
+    VptestmwMaskmskwMaskmskwXmmu16Xmmu16Avx512, TestIntoMask { not: false }, Word, Register, L128, [EVEX_Vptestmw_kr_k1_xmm_xmmm128];
+    VptestmwMaskmskwMaskmskwYmmu16Memu16Avx512, TestIntoMask { not: false }, Word, Memory, L256, [EVEX_Vptestmw_kr_k1_ymm_ymmm256];
+    VptestmwMaskmskwMaskmskwYmmu16Ymmu16Avx512, TestIntoMask { not: false }, Word, Register, L256, [EVEX_Vptestmw_kr_k1_ymm_ymmm256];
+    VptestmwMaskmskwMaskmskwZmmu16Memu16Avx512, TestIntoMask { not: false }, Word, Memory, L512, [EVEX_Vptestmw_kr_k1_zmm_zmmm512];
+    VptestmwMaskmskwMaskmskwZmmu16Zmmu16Avx512, TestIntoMask { not: false }, Word, Register, L512, [EVEX_Vptestmw_kr_k1_zmm_zmmm512];
+    VptestnmbMaskmskwMaskmskwXmmu8Memu8Avx512, TestIntoMask { not: true }, Byte, Memory, L128, [EVEX_Vptestnmb_kr_k1_xmm_xmmm128];
+    VptestnmbMaskmskwMaskmskwXmmu8Xmmu8Avx512, TestIntoMask { not: true }, Byte, Register, L128, [EVEX_Vptestnmb_kr_k1_xmm_xmmm128];
+    VptestnmbMaskmskwMaskmskwYmmu8Memu8Avx512, TestIntoMask { not: true }, Byte, Memory, L256, [EVEX_Vptestnmb_kr_k1_ymm_ymmm256];
+    VptestnmbMaskmskwMaskmskwYmmu8Ymmu8Avx512, TestIntoMask { not: true }, Byte, Register, L256, [EVEX_Vptestnmb_kr_k1_ymm_ymmm256];
+    VptestnmbMaskmskwMaskmskwZmmu8Memu8Avx512, TestIntoMask { not: true }, Byte, Memory, L512, [EVEX_Vptestnmb_kr_k1_zmm_zmmm512];
+    VptestnmbMaskmskwMaskmskwZmmu8Zmmu8Avx512, TestIntoMask { not: true }, Byte, Register, L512, [EVEX_Vptestnmb_kr_k1_zmm_zmmm512];
+    VptestnmwMaskmskwMaskmskwXmmu16Memu16Avx512, TestIntoMask { not: true }, Word, Memory, L128, [EVEX_Vptestnmw_kr_k1_xmm_xmmm128];
+    VptestnmwMaskmskwMaskmskwXmmu16Xmmu16Avx512, TestIntoMask { not: true }, Word, Register, L128, [EVEX_Vptestnmw_kr_k1_xmm_xmmm128];
+    VptestnmwMaskmskwMaskmskwYmmu16Memu16Avx512, TestIntoMask { not: true }, Word, Memory, L256, [EVEX_Vptestnmw_kr_k1_ymm_ymmm256];
+    VptestnmwMaskmskwMaskmskwYmmu16Ymmu16Avx512, TestIntoMask { not: true }, Word, Register, L256, [EVEX_Vptestnmw_kr_k1_ymm_ymmm256];
+    VptestnmwMaskmskwMaskmskwZmmu16Memu16Avx512, TestIntoMask { not: true }, Word, Memory, L512, [EVEX_Vptestnmw_kr_k1_zmm_zmmm512];
+    VptestnmwMaskmskwMaskmskwZmmu16Zmmu16Avx512, TestIntoMask { not: true }, Word, Register, L512, [EVEX_Vptestnmw_kr_k1_zmm_zmmm512];
+    VxorpdXmmu64MaskmskwXmmu64Memu64Avx512, Lanes(LaneOperation::Xor), Quadword, Memory, L128, [EVEX_Vxorpd_xmm_k1z_xmm_xmmm128b64];
+    VxorpdXmmu64MaskmskwXmmu64Xmmu64Avx512, Lanes(LaneOperation::Xor), Quadword, Register, L128, [EVEX_Vxorpd_xmm_k1z_xmm_xmmm128b64];
+    VxorpdYmmu64MaskmskwYmmu64Memu64Avx512, Lanes(LaneOperation::Xor), Quadword, Memory, L256, [EVEX_Vxorpd_ymm_k1z_ymm_ymmm256b64];
+    VxorpdYmmu64MaskmskwYmmu64Ymmu64Avx512, Lanes(LaneOperation::Xor), Quadword, Register, L256, [EVEX_Vxorpd_ymm_k1z_ymm_ymmm256b64];
+    VxorpdZmmu64MaskmskwZmmu64Memu64Avx512, Lanes(LaneOperation::Xor), Quadword, Memory, L512, [EVEX_Vxorpd_zmm_k1z_zmm_zmmm512b64];
+    VxorpdZmmu64MaskmskwZmmu64Zmmu64Avx512, Lanes(LaneOperation::Xor), Quadword, Register, L512, [EVEX_Vxorpd_zmm_k1z_zmm_zmmm512b64];
+    VxorpsXmmu32MaskmskwXmmu32Memu32Avx512, Lanes(LaneOperation::Xor), Doubleword, Memory, L128, [EVEX_Vxorps_xmm_k1z_xmm_xmmm128b32];
+    VxorpsXmmu32MaskmskwXmmu32Xmmu32Avx512, Lanes(LaneOperation::Xor), Doubleword, Register, L128, [EVEX_Vxorps_xmm_k1z_xmm_xmmm128b32];
+    VxorpsYmmu32MaskmskwYmmu32Memu32Avx512, Lanes(LaneOperation::Xor), Doubleword, Memory, L256, [EVEX_Vxorps_ymm_k1z_ymm_ymmm256b32];
+    VxorpsYmmu32MaskmskwYmmu32Ymmu32Avx512, Lanes(LaneOperation::Xor), Doubleword, Register, L256, [EVEX_Vxorps_ymm_k1z_ymm_ymmm256b32];
+    VxorpsZmmu32MaskmskwZmmu32Memu32Avx512, Lanes(LaneOperation::Xor), Doubleword, Memory, L512, [EVEX_Vxorps_zmm_k1z_zmm_zmmm512b32];
+    VxorpsZmmu32MaskmskwZmmu32Zmmu32Avx512, Lanes(LaneOperation::Xor), Doubleword, Register, L512, [EVEX_Vxorps_zmm_k1z_zmm_zmmm512b32];
 };

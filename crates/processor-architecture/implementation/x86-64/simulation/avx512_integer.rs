@@ -5,7 +5,8 @@
 //! raises no fault, as the manual's memory fault suppression gives it. A broadcast lane and VPBROADCAST's memory are
 //! read once any lane is let through, and checked as a legacy access of their size is (with a writemask other than
 //! k0, for being canonical before for alignment);
-//! VBROADCASTI reads each lane of its tuple that some lane let through repeats; a shift's count is read always.
+//! VBROADCASTI reads each lane of its tuple that some lane let through repeats; a shift's count, and the memory of a
+//! form whose lanes are not the destination's, is read whole always.
 //! Where some lane is accessed, VMOVDQA's alignment is checked first, then every lane for being canonical, then for
 //! its page. A load faults at the lowest byte refused; so does a store, but under a writemask other than k0, where
 //! that byte's page is not the page of the store's first byte, at the highest byte refused on it.
@@ -101,11 +102,11 @@ fn list_accessed(form: &EvexIntegerForm, broadcast: bool, active: u64) -> Vec<(u
     let active = if is_active(Bug::EvexIntegerNoFaultSuppression) { u64::MAX } else { active };
     let lanes = form.count_lanes() as u64;
     match form.operation {
-        EvexIntegerOperation::ShiftByCount(_) => alloc::vec![(0, bytes)],
+        _ if !form.is_element_wise() && !is_active(Bug::EvexWholeReadSuppressed) => alloc::vec![(0, bytes)],
         _ if broadcast || form.operation == EvexIntegerOperation::Broadcast => {
             if active & to_low_bits(lanes as usize) != 0 { alloc::vec![(0, bytes)] } else { Vec::new() }
         }
-        EvexIntegerOperation::BroadcastTuple => {
+        EvexIntegerOperation::BroadcastTuple(_) => {
             let tuple = bytes / lane_bytes;
             (0..tuple)
                 .filter(|element| (0..lanes).any(|lane| lane % tuple == *element && active >> lane & 1 != 0))
@@ -164,15 +165,17 @@ fn read_source(form: &EvexIntegerForm, processor: &Processor, memory: Memory<'_,
     let operand = locate(processor, decoded);
     let runs = list_accessed(form, broadcast, active);
     let masked = decoded.op_mask() != Register::None;
-    // One lane read alone is an access of its size, which alignment checking covers.
-    if let [(0, length)] = runs.as_slice()
-        && (broadcast || form.operation == EvexIntegerOperation::Broadcast)
-    {
-        if masked {
-            check_canonical(operand, *length)?;
-            check_alignment(processor.flags, operand, *length)?;
+    // A memory operand of at most eight bytes is one access of its size, which alignment checking covers; under a
+    // writemask that suppresses faults, after the bytes read are checked for being canonical.
+    let length = form.memory_bytes(broadcast);
+    if !runs.is_empty() && length <= 8 {
+        if masked && form.is_element_wise() {
+            for &(offset, run) in &runs {
+                check_canonical(MemoryOperand { address: operand.address.wrapping_add(offset), stack: operand.stack }, run)?;
+            }
+            check_alignment(processor.flags, operand, length)?;
         } else {
-            check_access(processor.flags, memory, operand, *length, Access::Read)?;
+            check_access(processor.flags, memory, operand, length, Access::Read)?;
         }
     }
     check_runs(form, memory, operand, &runs, Access::Read, masked)?;
@@ -184,8 +187,9 @@ fn read_source(form: &EvexIntegerForm, processor: &Processor, memory: Memory<'_,
     }
     let whole: Zmm = core::array::from_fn(|quarter| u128::from_le_bytes(value[16 * quarter..16 * quarter + 16].try_into().expect("sixteen bytes")));
     if broadcast {
-        let lane = to_lanes(form.lane, &whole, 1)[0];
-        return Ok(from_lanes(form.lane, &alloc::vec![lane; form.count_lanes()]));
+        let lane = if is_active(Bug::EvexBroadcastDestinationLane) { form.lane } else { form.source_lane() };
+        let count = (form.length.to_bits() / lane.to_bits()) as usize;
+        return Ok(from_lanes(lane, &alloc::vec![to_lanes(lane, &whole, 1)[0]; count]));
     }
     Ok(whole)
 }
