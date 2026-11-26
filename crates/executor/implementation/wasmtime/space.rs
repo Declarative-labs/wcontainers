@@ -572,6 +572,26 @@ impl Space {
         true
     }
 
+    /// Drops every load, so that the lookup finds none of their pieces. Called only while no thread runs.
+    pub(crate) fn drop_every_load(&self) {
+        let loads: Vec<Arc<Load>> = lock(&self.code).loads.clone();
+        for load in loads
+            .iter()
+            .filter(|load| !load.dropped.swap(true, Ordering::SeqCst))
+        {
+            let mut slot = load.slot_base;
+            for (_, offsets) in &load.translated.modules {
+                for offset in offsets {
+                    let address = load.load_address + offset;
+                    if self.slot(address) == slot {
+                        self.set_slot(address, 0);
+                    }
+                    slot += 1;
+                }
+            }
+        }
+    }
+
     /// Drops the code read from the addresses, if any, once no thread runs.
     pub(crate) fn drop_code(&self, addresses: Range<u64>) {
         let Ok(pages) = pages_of(&addresses) else {

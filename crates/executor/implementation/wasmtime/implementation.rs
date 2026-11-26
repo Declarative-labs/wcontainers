@@ -36,6 +36,8 @@ pub struct WasmtimeExecutor {
     config: WasmtimeTranslatorConfig,
     /// By the address of its space, the store this executor runs that space's threads in.
     threads: HashMap<usize, ThreadStore>,
+    /// The space single instructions run on.
+    scratch: Option<single_instruction::Scratch>,
 }
 
 /// How the executor translates code.
@@ -91,6 +93,7 @@ impl WasmtimeExecutor {
             shared: Shared::get(),
             config,
             threads: HashMap::new(),
+            scratch: None,
         }
     }
 

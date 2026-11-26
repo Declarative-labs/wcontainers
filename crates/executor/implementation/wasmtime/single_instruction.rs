@@ -1,6 +1,6 @@
-//! The executor as a behavior source: one instruction of a state, run on a fresh space that holds the state's memory.
+//! The executor as a behavior source: one instruction of a state, run on a scratch space that holds the state's memory.
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
 use wcontainers_abi::{Access, PAGE_SIZE, Permissions, SystemCallRequest};
 use wcontainers_behavior_source::BehaviorSource;
@@ -17,7 +17,7 @@ use wcontainers_volatile_bytes::VolatileBytes;
 use wcontainers_wasmtime::Wasmtime;
 
 use crate::thread::{Ending, Mode};
-use crate::{WasmtimeError, WasmtimeExecutor, WasmtimeMemory};
+use crate::{WasmtimeError, WasmtimeExecutor, WasmtimeMemory, WasmtimePageTable};
 
 /// The handler of a step, which no trap reaches: a step ends at every trap itself.
 struct Unasked;
@@ -58,20 +58,69 @@ fn to_permissions(permission: PagePermission) -> Option<Permissions> {
     }
 }
 
+/// A space one executor runs single instructions on, cleared after each, and made anew after [`SCRATCH_STEPS`] of them.
+pub(crate) struct Scratch {
+    memory: WasmtimeMemory,
+    table: WasmtimePageTable,
+    steps: u32,
+}
+
+/// The single instructions run on one scratch space before it is made anew, which bounds what its store accumulates:
+/// an instance and lookup table slots for each instruction.
+const SCRATCH_STEPS: u32 = 1 << 10;
+
 impl BehaviorSource for WasmtimeExecutor {
     type Architecture = Arm64<User>;
     type Error = WasmtimeError;
 
-    /// Runs the instruction at the program counter on a fresh space holding the memory, and reports the bytes it changed
-    /// on the pages the memory lets it write.
+    /// Runs the instruction at the program counter on a scratch space holding the memory, and reports the bytes it
+    /// changed on the pages the memory lets it write.
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
         memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), WasmtimeError> {
-        let (space, mut table) = WasmtimeMemory::create(self.shared.clone())?;
-        let mut writable = BTreeMap::new();
+        let mut scratch = match self.scratch.take() {
+            Some(scratch) if scratch.steps < SCRATCH_STEPS => scratch,
+            old => {
+                if let Some(old) = old {
+                    self.forget(&old.memory.space);
+                }
+                let (memory, table) = WasmtimeMemory::create(self.shared.clone())?;
+                Scratch {
+                    memory,
+                    table,
+                    steps: 0,
+                }
+            }
+        };
+        let stepped = self.step(&mut scratch, processor, memory, mutation_hook);
+        match stepped {
+            Ok(()) => {
+                scratch.steps += 1;
+                self.scratch = Some(scratch);
+            }
+            // A state refused part way leaves the scratch space holding part of it.
+            Err(_) => self.forget(&scratch.memory.space),
+        }
+        stepped
+    }
+}
+
+impl WasmtimeExecutor {
+    /// Runs one instruction on the scratch space, then clears what the state and the instruction left in it.
+    fn step(
+        &mut self,
+        scratch: &mut Scratch,
+        processor: &mut Processor<()>,
+        memory: MemorySnapshot<'_, '_, Arm64<User>>,
+        mutation_hook: &mut impl MemorySink<Arm64<User>>,
+    ) -> Result<(), WasmtimeError> {
+        let space = &scratch.memory;
+        let mut assigned = Vec::new();
+        let mut written = BTreeSet::new();
+        let mut writable = BTreeSet::new();
         for delta in memory.mutations {
             match delta {
                 MemoryDelta::PermissionAssignment {
@@ -79,14 +128,16 @@ impl BehaviorSource for WasmtimeExecutor {
                     permission,
                 } => {
                     let allowed = to_permissions(*permission);
-                    table
+                    scratch
+                        .table
                         .assign(addresses.clone(), allowed)
                         .map_err(|_| WasmtimeError::AddressOutsideSpace)?;
+                    assigned.push(addresses.clone());
                     let writes =
                         allowed.is_some_and(|allowed| allowed.contains(Permissions::WRITE));
                     for page in addresses.start / PAGE_SIZE..addresses.end.div_ceil(PAGE_SIZE) {
                         if writes {
-                            writable.insert(page, ());
+                            writable.insert(page);
                         } else {
                             writable.remove(&page);
                         }
@@ -100,6 +151,7 @@ impl BehaviorSource for WasmtimeExecutor {
                         .borrow(*start..end)
                         .map_err(|_| WasmtimeError::AddressOutsideSpace)?;
                     view.write(bytes);
+                    written.extend(start / PAGE_SIZE..end.div_ceil(PAGE_SIZE));
                 }
             }
         }
@@ -111,7 +163,7 @@ impl BehaviorSource for WasmtimeExecutor {
             bytes
         };
         let before: Vec<(u64, Vec<u8>)> = writable
-            .keys()
+            .iter()
             .map(|&page| (page, read_page(page)))
             .collect();
         let start = processor.program_counter;
@@ -133,10 +185,21 @@ impl BehaviorSource for WasmtimeExecutor {
         };
         *processor = thread.processor(processor, exception);
         thread.finish();
-        self.forget(&space.space);
         for (page, before) in before {
             report_changed_bytes(page * PAGE_SIZE, &before, &read_page(page), mutation_hook);
         }
+        for addresses in assigned {
+            scratch
+                .table
+                .assign(addresses, None)
+                .map_err(|_| WasmtimeError::AddressOutsideSpace)?;
+        }
+        for page in written.into_iter().chain(writable) {
+            space
+                .zero(page * PAGE_SIZE..(page + 1) * PAGE_SIZE)
+                .map_err(|_| WasmtimeError::AddressOutsideSpace)?;
+        }
+        space.space.drop_every_load();
         Ok(())
     }
 }
