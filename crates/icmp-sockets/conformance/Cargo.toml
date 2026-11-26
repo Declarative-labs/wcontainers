@@ -25,7 +25,6 @@ mitsein.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux's socket option calls for the source preferences, which no vetted crate wraps.
 wcontainers-linux-socket-options = { path = "../../linux-socket-options" }
-wcontainers-linux-socket-options-direct = { path = "../../linux-socket-options/implementation/direct" }
 # The packet types of a packet socket and the errno values of Linux.
 libc = "0.2.191"
 # The type number of a segment routing header.

@@ -2350,8 +2350,12 @@ const TEMPORARY_BUT_PUBLIC_PREFERRED: &str = "1";
 /// https://www.rfc-editor.org/rfc/rfc863
 const DISCARD_PORT: u16 = 9;
 
-/// Returns the source the host's own UDP socket takes to an address with the preferences' flags set.
-pub fn host_source(to: Ipv6Addr, preferences: SourcePreferences) -> Ipv6Addr {
+/// Returns the source the host's own UDP socket takes to an address with the preferences' flags set by `options`.
+pub fn host_source<O: wcontainers_linux_socket_options::LinuxSocketOptions>(
+    options: &O,
+    to: Ipv6Addr,
+    preferences: SourcePreferences,
+) -> Ipv6Addr {
     let temporary = match preferences.temporary {
         TemporaryAddressPreference::SystemDefault => libc::IPV6_PREFER_SRC_PUBTMP_DEFAULT,
         TemporaryAddressPreference::Temporary => libc::IPV6_PREFER_SRC_TMP,
@@ -2364,12 +2368,9 @@ pub fn host_source(to: Ipv6Addr, preferences: SourcePreferences) -> Ipv6Addr {
     let socket =
         std::net::UdpSocket::bind((Ipv6Addr::UNSPECIFIED, u16::MIN)).expect("a UDP socket");
     let flags = (temporary | mobile).cast_unsigned();
-    wcontainers_linux_socket_options::LinuxSocketOptions::set_ipv6_addr_preferences(
-        &wcontainers_linux_socket_options_direct::DirectLinuxSocketOptions,
-        std::os::fd::AsFd::as_fd(&socket),
-        flags,
-    )
-    .expect("the source preferences are set");
+    options
+        .set_ipv6_addr_preferences(std::os::fd::AsFd::as_fd(&socket), flags)
+        .expect("the source preferences are set");
     socket
         .connect((to, DISCARD_PORT))
         .expect("the socket connects");
@@ -2383,7 +2384,9 @@ pub fn host_source(to: Ipv6Addr, preferences: SourcePreferences) -> Ipv6Addr {
 ///
 /// A care-of preference chooses as the host's own socket does: Linux prefers a care-of address only over a Mobile IPv6
 /// home address, which no link here has.
-pub fn sources_by_preference() -> Vec<(SourcePreferences, Ipv6Addr)> {
+pub fn sources_by_preference<O: wcontainers_linux_socket_options::LinuxSocketOptions>(
+    options: &O,
+) -> Vec<(SourcePreferences, Ipv6Addr)> {
     write_setting(TEMPORARY_ADDRESSES, TEMPORARY_BUT_PUBLIC_PREFERRED);
     ip6(MANAGED_TEMPORARY);
     let temporary = temporary_address(DUMMY);
@@ -2396,22 +2399,28 @@ pub fn sources_by_preference() -> Vec<(SourcePreferences, Ipv6Addr)> {
             temporary: preference,
             mobile: MobileAddressPreference::Home,
         };
-        assert_eq!(host_source(ON_LINK_V6, home), source, "{home:?}");
+        assert_eq!(host_source(options, ON_LINK_V6, home), source, "{home:?}");
         let care_of = SourcePreferences {
             mobile: MobileAddressPreference::CareOf,
             ..home
         };
         sources.push((home, source));
-        sources.push((care_of, host_source(ON_LINK_V6, care_of)));
+        sources.push((care_of, host_source(options, ON_LINK_V6, care_of)));
     }
     sources
 }
 
 /// Checks that IPv6 source preferences choose between the link's public address and a temporary one.
-pub fn source_preferences_are_taken<S: IcmpSockets>(sockets: S) {
+pub fn source_preferences_are_taken<
+    S: IcmpSockets,
+    O: wcontainers_linux_socket_options::LinuxSocketOptions,
+>(
+    sockets: S,
+    options: O,
+) {
     enter_network_namespace();
     ip(NETWORK);
-    let sources = sources_by_preference();
+    let sources = sources_by_preference(&options);
     let socket = opened(&sockets, IpVersion::V6);
     let capture = Capture::on(DUMMY);
     let message = echo(IpVersion::V6, PAYLOAD);
@@ -3978,7 +3987,7 @@ pub fn other_settings_set_twice_answer_as_once<S: IcmpSockets>(sockets: S) {
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
-    ($value:expr) => {
+    ($value:expr, $options:expr) => {
         #[test]
         fn echo_reply_arrives_whole_over_ipv4() {
             $crate::echo_reply_arrives_whole_over_ipv4($value);
@@ -4136,7 +4145,7 @@ macro_rules! tests {
 
         #[test]
         fn source_preferences_are_taken() {
-            $crate::source_preferences_are_taken($value);
+            $crate::source_preferences_are_taken($value, $options);
         }
 
         #[test]

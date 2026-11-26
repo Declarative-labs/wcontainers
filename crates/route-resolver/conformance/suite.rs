@@ -26,6 +26,7 @@ use wcontainers_internet_protocol::{
     TransportPorts, UpperLayer, UpperLayerSelector,
 };
 use wcontainers_kernel::UserId;
+use wcontainers_linux_socket_options::LinuxSocketOptions;
 use wcontainers_route_resolver::RouteResolver;
 
 pub use wcontainers_icmp_sockets_conformance as icmp_suite;
@@ -1486,7 +1487,13 @@ pub fn other_protocols_route<R: RouteResolver>(resolver: R) {
 }
 
 /// Checks that IPv4 options `IP_OPTIONS` refuses are refused with its error, and well-formed ones are taken.
-pub fn malformed_ipv4_options_are_refused_as_a_send_refuses_them<R: RouteResolver>(resolver: R) {
+pub fn malformed_ipv4_options_are_refused_as_a_send_refuses_them<
+    R: RouteResolver,
+    O: LinuxSocketOptions,
+>(
+    resolver: R,
+    linux: O,
+) {
     /// Where a source route's pointer is, after its type and length.
     ///
     /// https://www.rfc-editor.org/rfc/rfc791#section-3.1
@@ -1511,7 +1518,7 @@ pub fn malformed_ipv4_options_are_refused_as_a_send_refuses_them<R: RouteResolve
         two_source_routes,
     ] {
         let options = Ipv4Options::try_from(options.as_slice()).expect("options");
-        let refused = ip_options_error(&options);
+        let refused = ip_options_error(&linux, &options);
         assert_ne!(refused, None, "{options:?}");
         assert_eq!(
             resolve4(&resolver, v4(&options, FAR)).err(),
@@ -1519,18 +1526,17 @@ pub fn malformed_ipv4_options_are_refused_as_a_send_refuses_them<R: RouteResolve
             "{options:?}"
         );
     }
-    assert_eq!(ip_options_error(&whole), None);
+    assert_eq!(ip_options_error(&linux, &whole), None);
     assert!(resolve4(&resolver, v4(&whole, FAR)).is_ok());
 }
 
-/// Returns the error a datagram socket's `IP_OPTIONS` gives for the options, if it refuses them.
-fn ip_options_error(options: &Ipv4Options) -> Option<HostError> {
+/// Returns the error a datagram socket's `IP_OPTIONS`, set by `linux`, gives for the options, if it refuses them.
+fn ip_options_error<O: LinuxSocketOptions>(linux: &O, options: &Ipv4Options) -> Option<HostError> {
     #[cfg(target_os = "linux")]
     {
         let socket =
             std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, u16::MIN)).expect("a socket opens");
-        use wcontainers_linux_socket_options::LinuxSocketOptions;
-        wcontainers_linux_socket_options_direct::DirectLinuxSocketOptions
+        linux
             .set_ip_options(std::os::fd::AsFd::as_fd(&socket), options.as_slice())
             .err()
     }
@@ -1644,7 +1650,8 @@ address add fd03::1/64 dev dx nodad";
 /// That is the source and path MTU it is told, or the error of the connect. A requested interface is named for the
 /// socket's unicast sends (`IP_UNICAST_IF`, `IPV6_UNICAST_IF`), as a send names it per packet; a bound one binds the
 /// socket to the device (`SO_BINDTOIFINDEX`).
-fn told_by_interface(
+fn told_by_interface<O: LinuxSocketOptions>(
+    options: &O,
     destination: IpAddr,
     source: Option<IpAddr>,
     selector: InterfaceSelector,
@@ -1657,8 +1664,6 @@ fn told_by_interface(
         std::net::UdpSocket::bind((source.unwrap_or(any), u16::MIN)).expect("a socket binds");
     #[cfg(target_os = "linux")]
     {
-        use wcontainers_linux_socket_options::LinuxSocketOptions;
-        let options = wcontainers_linux_socket_options_direct::DirectLinuxSocketOptions;
         let fd = std::os::fd::AsFd::as_fd(&socket);
         let result = match (selector, destination) {
             // Both versions take the index of a requested interface in network byte order.
@@ -1783,14 +1788,17 @@ fn resolve_by_interface<R: RouteResolver>(
 /// Checks that a lookup requesting an interface routes as a send naming it does, so that over IPv6 with a source it only prefers its routes.
 ///
 /// A send names its interface per packet (`IP_PKTINFO`, `IPV6_PKTINFO`) as `IP_UNICAST_IF` does.
-pub fn an_interface_routes_as_a_send_that_names_it<R: RouteResolver>(resolver: R) {
+pub fn an_interface_routes_as_a_send_that_names_it<R: RouteResolver, O: LinuxSocketOptions>(
+    resolver: R,
+    options: O,
+) {
     let cases = interface_cases();
     for (destination, source, interface) in cases {
         let selector = InterfaceSelector::Requested(interface);
         assert_eq!(
             resolve_by_interface(&resolver, destination, source, selector)
                 .map(|route| (route.source, route.path_mtu)),
-            told_by_interface(destination, source, selector),
+            told_by_interface(&options, destination, source, selector),
             "{destination} from {source:?} by {interface:?}"
         );
     }
@@ -1800,11 +1808,14 @@ pub fn an_interface_routes_as_a_send_that_names_it<R: RouteResolver>(resolver: R
 ///
 /// Over IPv6 with a source this differs from a requested interface: a destination routed only by the other link, or
 /// by an unreachable route, has no route.
-pub fn a_bound_interface_routes_as_a_bound_socket<R: RouteResolver>(resolver: R) {
+pub fn a_bound_interface_routes_as_a_bound_socket<R: RouteResolver, O: LinuxSocketOptions>(
+    resolver: R,
+    options: O,
+) {
     let cases = interface_cases();
     for (destination, source, interface) in cases {
         let selector = InterfaceSelector::Bound(interface);
-        let told = told_by_interface(destination, source, selector);
+        let told = told_by_interface(&options, destination, source, selector);
         let route = resolve_by_interface(&resolver, destination, source, selector);
         // Linux's IPv6 lookup from a source only prefers an interface, so only where it leaves by another may one be refused.
         let requested = InterfaceSelector::Requested(interface);
@@ -1826,7 +1837,7 @@ pub fn a_bound_interface_routes_as_a_bound_socket<R: RouteResolver>(resolver: R)
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
-    ($value:expr) => {
+    ($value:expr, $options:expr) => {
         #[test]
         fn loopback_route_is_local() {
             $crate::loopback_route_is_local($value);
@@ -1989,7 +2000,7 @@ macro_rules! tests {
 
         #[test]
         fn malformed_ipv4_options_are_refused_as_a_send_refuses_them() {
-            $crate::malformed_ipv4_options_are_refused_as_a_send_refuses_them($value);
+            $crate::malformed_ipv4_options_are_refused_as_a_send_refuses_them($value, $options);
         }
 
         #[test]
@@ -2009,12 +2020,12 @@ macro_rules! tests {
 
         #[test]
         fn an_interface_routes_as_a_send_that_names_it() {
-            $crate::an_interface_routes_as_a_send_that_names_it($value);
+            $crate::an_interface_routes_as_a_send_that_names_it($value, $options);
         }
 
         #[test]
         fn a_bound_interface_routes_as_a_bound_socket() {
-            $crate::a_bound_interface_routes_as_a_bound_socket($value);
+            $crate::a_bound_interface_routes_as_a_bound_socket($value, $options);
         }
     };
 }

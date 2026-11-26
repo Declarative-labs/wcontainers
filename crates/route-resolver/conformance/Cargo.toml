@@ -20,7 +20,6 @@ linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net
 [target.'cfg(target_os = "linux")'.dependencies]
 # Linux's socket option calls for the options the checks set that no vetted crate wraps.
 wcontainers-linux-socket-options = { path = "../../linux-socket-options" }
-wcontainers-linux-socket-options-direct = { path = "../../linux-socket-options/implementation/direct" }
 # Binds a check's socket to a device.
 socket2 = { version = "0.6.5", features = ["all"] }
 rustix = { version = "1.1.6", features = ["net"] }

@@ -1697,10 +1697,16 @@ pub fn a_mobility_header_is_sent_by_its_type<S: RawSockets>(sockets: S) {
 }
 
 /// Checks that IPv6 source preferences choose between the link's public address and a temporary one.
-pub fn ipv6_source_preferences_choose_the_source<S: RawSockets>(sockets: S) {
+pub fn ipv6_source_preferences_choose_the_source<
+    S: RawSockets,
+    O: wcontainers_linux_socket_options::LinuxSocketOptions,
+>(
+    sockets: S,
+    options: O,
+) {
     enter_network_namespace();
     ip(NETWORK);
-    let sources = wcontainers_icmp_sockets_conformance::sources_by_preference();
+    let sources = wcontainers_icmp_sockets_conformance::sources_by_preference(&options);
     let capture = Capture::on(DUMMY);
     let socket = opened(&sockets, IpVersion::V6, EXPERIMENT);
     for (preferences, source) in sources {
@@ -2727,7 +2733,7 @@ pub fn other_settings_set_twice_answer_as_once<S: RawSockets>(sockets: S) {
 /// Runs each suite function above as its own test on the value an implementation gives, made anew for every test.
 #[macro_export]
 macro_rules! tests {
-    ($value:expr) => {
+    ($value:expr, $options:expr) => {
         #[test]
         fn open_takes_each_version_and_protocol() {
             $crate::open_takes_each_version_and_protocol($value);
@@ -2845,7 +2851,7 @@ macro_rules! tests {
 
         #[test]
         fn ipv6_source_preferences_choose_the_source() {
-            $crate::ipv6_source_preferences_choose_the_source($value);
+            $crate::ipv6_source_preferences_choose_the_source($value, $options);
         }
 
         #[test]

@@ -45,6 +45,8 @@ path = "conformance_run.rs"
 wcontainers-raw-sockets-conformance = { path = "../../conformance" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+# The socket options the suite's checks set on their own sockets.
+wcontainers-linux-socket-options-direct = { path = "../../../linux-socket-options/implementation/direct" }
 libc = "0.2.191"
 # Counts the allocations of the waiting test (MIT).
 stats_alloc = "0.1.10"
