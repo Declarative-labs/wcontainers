@@ -111,6 +111,23 @@ struct Shared<C: Executor + 'static> {
 struct Inner<C: Executor + 'static> {
     kernel: crate::Kernel,
     executor: GuestMachine<C>,
+    /// The embedder's data of the first process, until that process exists: a start that waits
+    /// (for its ends, or a root on the backend) makes it later.
+    first: Option<EmbedderData>,
+}
+
+impl<C: Executor + 'static> Inner<C> {
+    /// Hands the first process its embedder's data once it exists.
+    fn give_first(&mut self) {
+        let Some(first) = self.kernel.init else {
+            return;
+        };
+        if let Some(data) = self.first.take()
+            && let Some(process) = self.kernel.processes.get_mut(&first)
+        {
+            process.embedder = Some(data);
+        }
+    }
 }
 
 impl<C: Executor + 'static> Shared<C> {
@@ -272,18 +289,18 @@ impl<
         supported(&config)?;
         let mut executor = GuestMachine::new(executor);
         kernel.start(&mut executor, system, start);
-        let first = kernel
-            .init
-            .expect("a started container has a first process");
         let data = ProcessData {
             config: Arc::new(config),
             state,
         };
-        if let Some(process) = kernel.processes.get_mut(&first) {
-            process.embedder = Some(EmbedderData::new(data));
-        }
+        let mut inner = Inner {
+            kernel,
+            executor,
+            first: Some(EmbedderData::new(data)),
+        };
+        inner.give_first();
         Ok(Self {
-            shared: Arc::new(Shared::new(Inner { kernel, executor })),
+            shared: Arc::new(Shared::new(inner)),
             types: PhantomData,
         })
     }
@@ -295,8 +312,10 @@ impl<
         drive: impl FnOnce(&mut crate::Kernel, &mut GuestMachine<C>) -> R,
     ) -> R {
         let mut inner = self.shared.lock();
-        let Inner { kernel, executor } = &mut *inner;
-        drive(kernel, executor)
+        let Inner { kernel, executor, .. } = &mut *inner;
+        let driven = drive(kernel, executor);
+        inner.give_first();
+        driven
     }
 
     /// Starts the container `config` describes, its programs told that `parallelism` processors
@@ -391,7 +410,7 @@ where
 
     fn suspend_tasks(&self, tasks: &[TaskId]) -> Self::SuspendedTasks<'_> {
         let mut inner = self.shared.lock();
-        let Inner { kernel, executor } = &mut *inner;
+        let Inner { kernel, executor, .. } = &mut *inner;
         let taken: Vec<_> = kernel
             .suspend_tasks(executor, tasks)
             .map(|(id, task)| (id, self.shared.hold(task)))
@@ -405,7 +424,7 @@ where
         process: TaskId,
     ) -> Option<(Self::ProcessContext, Self::SuspendedTasks<'_>)> {
         let mut inner = self.shared.lock();
-        let Inner { kernel, executor } = &mut *inner;
+        let Inner { kernel, executor, .. } = &mut *inner;
         let (context, tasks) = kernel.suspend_process(executor, process)?;
         let tasks: Vec<_> = tasks
             .map(|(id, task)| (id, self.shared.hold(task)))
@@ -473,7 +492,7 @@ where
                 Err(foreign) => handed_back.push(foreign),
             }
         }
-        let Inner { kernel, executor } = &mut *inner;
+        let Inner { kernel, executor, .. } = &mut *inner;
         handed_back.extend(
             kernel
                 .resume_tasks(executor, own)
@@ -525,9 +544,11 @@ impl<C: Executor + 'static, State, S: crate::System> KernelRunner<C, State, S> {
                     interface::StopReason::Interrupted
                 };
             };
+            inner.give_first();
             let Inner {
                 kernel,
                 executor: machine,
+                ..
             } = &mut *inner;
             match kernel.next() {
                 Next::Run { thread, resume, .. } => {
