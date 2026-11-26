@@ -31,7 +31,8 @@ started", so it is not merged.
 
 2026-11-26 (evening): his main FETCH_HEAD ac696ea19 already merged. Merged origin/executor-restart 914b4e9d1 (dd899860a, no
 conflict), origin/host-sockets 572e37e70 (4c9d4f318, no conflict) and origin/executor-restart c4113f822 (b07c27008, no
-conflict: the stand-in's own slice, and kernel-port 406fba566, which that branch had merged). After them the 91 files of his interface folders are
+conflict: the stand-in's own slice, and kernel-port 406fba566, which that branch had merged), then origin/executor-restart
+20d552cdf (08028d218, no conflict). After them the 91 files of his interface folders are
 byte-identical to his main (MEASURED, `git diff --quiet FETCH_HEAD HEAD` per file).
 
 ## RT0: done (results in SCRATCH/runtime-restart/results-main, results-agents)
@@ -250,6 +251,10 @@ SCRATCH/runtime-restart/slice/bar3-*.log):
 | runtime suite, 1 runner, three rounds | 8 of 8 each | 8 of 8 each |
 | runtime suite, 4 runners, three rounds | 8 of 8 each | 8 of 8 each |
 
+The same table held again at 08028d218 (pushed, after merging executor-restart 20d552cdf; MEASURED, jobs
+runtime-restart/20261126-201750-2030376 ARM64 load 20 and 20261126-201741-1488821 x86-64 load 22-46; slice/bar4-*.log),
+with the plant below repeated there.
+
 Planted (MEASURED, ARM64, the machine's copy only): the stand-in configured with `slice_instructions: u64::MAX` makes
 the busy test run past the timeout at 1 runner (exit 124) and pass at 4 (slice/bar3-arm.log, plant2-arm.log).
 
@@ -268,7 +273,10 @@ runners, three rounds, on both machines. MEASURED with b547d187f (origin/executo
 both machines (ARM64 load 38, x86-64 load 46-49); planted `slice: None` on wasmtime makes the busy test run past the
 timeout at 1 runner (exit 124). FILL=1 is needed: that branch brings arm64's new `Processor::process_state_controls`
 (58791651d), which the kernel's running.rs and the stand-in's standin.rs do not fill (E0063 in each); fill.cmd adds
-`process_state_controls: 0` in the machine's copy only.
+`process_state_controls: 0` in the machine's copy only. Again with 6e358a5c3 (the tip later, on this branch at
+08028d218): 8 of 8 on wasmtime and on the stand-in in every round at 1 and 4 runners on both machines (jobs
+runtime-restart-wasmtime/20261126-201821-2058265 ARM64 load 20, 20261126-201838-1519618 x86-64 load 14-44); that tip
+fills the stand-in itself, so only running.rs still needs the fill.
 
 Linter (`cargo reviewable check`, ARM64, reviewable-rust da55b9d7, no model key; MEASURED at the tree before the last
 two small fixes): single-kernel 403, suite 39, policy 68. `magic_literal` 0 and `number_constant_without_link` 0 in all
@@ -284,8 +292,8 @@ grammar_unclear 10, summary_unclear 8.
 ## Next
 
 - RT2: waits on (a) the executor track's status naming a commit of origin/executor-wasmtime a container runs on, then
-  rt2-wasmtime.sh with it and the merge; (b) the kernel and executor tracks filling `process_state_controls` in running.rs
-  and standin.rs, without which that merge does not build; (c) the harness `--features runtime` on wasmtime (the
+  rt2-wasmtime.sh with it and the merge; (b) the kernel track filling `process_state_controls` in running.rs, without which
+  that merge does not build; (c) the harness `--features runtime` on wasmtime (the
   executor track's kernel-harness-on-wasmtime.patch touches their files) at full, none and bounded against j5f's lists,
   and LTP.
 - RT3: waits on KP2 and X4.
@@ -304,8 +312,8 @@ grammar_unclear 10, summary_unclear 8.
 5. Kernel track (and question 3 of the brief): the runner leaves `run` only while one of the kernel's calls waits for its
    lock, so an embedder's interrupt needs a call that does nothing (`suspend_tasks(&[])`); an execution interrupt that
    ends `run` as `Interrupted` when the embedder asks (as at d176769a7) would let the runtime drop that loop.
-6. Kernel and executor tracks: origin/executor-wasmtime b547d187f carries arm64-instructions 58791651d, whose
-   `Processor::process_state_controls` running.rs:210 and standin.rs:918 do not fill (E0063, MEASURED in the trial merge).
+6. Kernel track: origin/executor-wasmtime carries arm64-instructions 58791651d, whose `Processor::process_state_controls`
+   running.rs:210 does not fill (E0063, MEASURED in the trial merge; the stand-in fills it from 6e358a5c3).
 
 For the owner (his files unchanged):
 1. A system has no constructor. Before (crates/system/interface.rs:26):
