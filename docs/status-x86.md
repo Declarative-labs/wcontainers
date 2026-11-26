@@ -153,6 +153,119 @@ Second run's measurements (code at 04081b4bc; logs and lists in scratch `x86-fro
   12,188 findings before this run's changes, 12,255 after them, then their new summaries rewritten (most of
   the rest are the codebase's own kinds: magic 0s, names without an answer as no model key is on the machine).
 
+Third run, 2026-11-26 (owner's main ac696ea19 merged in at f6a111088: one commit, the executor's interface only,
+none of this track's crates or the instruction interfaces they use). The orchestrator ruled that XF3 need not wait
+for the threads track: this branch makes the guest-memory import shared in the ordered form alone.
+- The shared import (`crates/translator`, rule 10: code.rs's import section and contract.rs's constant only):
+  code in `Ordered` imports the guest memory shared with a declared maximum of
+  `contract::SHARED_MEMORY_MOST_PAGES` = 262,144 pages (16 GiB, V8's limit for a 64-bit memory, threads plan 7.2);
+  `AccessOrdering::shares_memory` (guest-cpu) says which form shares it. `Unordered` and `LoadsOrdered` are
+  unchanged (unshared, no maximum), so every default-form module is byte for byte as before. `LoadsOrdered`, the x86
+  hosts' form, stays unshared until XF5 and threads T2 need it. For the executor (XF4): the guest memory given to
+  `Ordered` code must be a shared 64-bit memory of at most that many pages.
+- The runner (`translator-test`): the guest memory is `guest_memory::GuestMemory`, its own or a
+  `SharedGuestMemory` reached through a small module of its own (no `unsafe`: wasmtime's shared memory gives only
+  raw cells). A machine in a form that shares the memory makes it shared; `Machine::new_sharing` puts a machine on a
+  memory other machines share; `Machine::meet_at` and `Meeting` let the stand-in answer one system call by waiting
+  for every thread. On a shared memory, code of a form that does not share it has its import rewritten to the shared
+  one (`guest_memory::import_shared`): that is the control of the parallel tests only.
+- The litmus programs (`src/litmus.rs`, `tests/litmus.rs`): named x86 shapes, each thread on its own host thread,
+  machine and translation at full look-ahead, all on one shared memory. Each round the threads meet at the system
+  call, each waits its round number times its own odd number of empty turns (below 64) so that their parts overlap
+  in many ways, runs its part, meets again; thread 0 counts the outcome in guest memory and sets the words back to
+  0. Not a fuzzing suite: fixed shapes, counted outcomes (brief rule 9).
+
+XF3 measurements (rented ARM64 machine, Neoverse-V2, 96 cores; 10,000,000 rounds a form; 3 tests at once; load 9 to
+21; 166 s; scratch `x86-front-end/r3/litmus-10m-arm.log`; MEASURED):
+
+| shape (threads) | outcome x86 forbids | `Ordered` | default form (control) |
+|---|---|---|---|
+| store buffering (2) | none (both loads 0 is allowed) | both 0: 0 | both 0: 3,261,925 |
+| store buffering with `mfence` (2) | both loads 0 | 0 | 3,095,211 (`mfence` is nothing there) |
+| message passing (2) | flag 1, data 0 | 0 | 2,216 |
+| load buffering (2) | both loads 1 | 0 | 0 |
+| sequence lock (2) | even, unchanged count with words not the count's | 0 | 210,800 |
+| store-back (2) | r 0, flag 1, x 1 at the end | 0 | 2,237 |
+| independent reads of independent writes (4) | readers see the stores in opposite orders | 0 | 10 |
+| `lock xadd` counter (2), 10,000,000 adds each | any add lost | 0 lost | 9,996,190 lost |
+| `lock xadd` counter (4), 10,000,000 adds each | any add lost | 0 lost | 29,949,529 lost |
+
+- The ordered form shows no outcome x86 forbids in any shape; the control shows it in every shape but load
+  buffering. This chip did not show load buffering with plain accesses in 10,000,000 rounds, so for that shape the
+  test cannot show it would see one here (INFERRED: Neoverse cores are not known to make it visible; the Arm model
+  allows it).
+- In the control the counter's loop keeps the count in a register: each thread's count ends where its own ended,
+  which is why nearly all adds by the other threads are lost.
+- Cost of `Ordered`, now on a shared memory, against the default form, `measure_ordered_forms_x86_64`, 7 alternating
+  rounds, median ratio within a round (ARM64 machine, load 6 to 12, scratch `r3/bench-arm.log`):
+
+  | workload | `Ordered` | `LoadsOrdered` (unshared) |
+  |---|---|---|
+  | fib | 1.268 | 1.044 |
+  | sieve | 1.075 | 0.995 |
+  | hash | 1.000 | 1.000 |
+  | sort | 1.208 | 1.029 |
+  | interpret | 1.029 | 1.036 |
+  | matrix | 1.225 | 1.314 |
+  | walk | 1.003 | 1.042 |
+  | search | 0.979 | 0.985 |
+  | geometric mean | 1.093 | 1.051 |
+
+  The second run measured 1.096 for `Ordered` on an unshared memory: the shared import costs nothing measurable.
+
+The 5-level paging answers, modelled as a known behavior of the reference's chip (src/guest/x86_64.rs):
+- MEASURED: the rented x86-64 machine is an Intel Xeon Platinum 8488C, Linux 7.0.0-1018-aws, with `la57` in
+  /proc/cpuinfo ("57 bits virtual"). Its reference takes a page fault where a 48-bit chip raises #GP or #SS (an
+  access past bit 47), and faults at a branch's target past bit 47 where a 48-bit chip raises #GP at the branch.
+- The model: `LinearAddressWidth { FourLevelPaging, FiveLevelPaging }`; `KNOWN_CHIPS` records the 8488C with
+  `FiveLevelPaging` and where it was seen; `reference_linear_addresses` reads it from this host's /proc/cpuinfo when
+  the reference runs here (an SSH reference is taken as 48 bits, as every one used so far), and a unit test checks
+  that a recorded chip shows its recorded width. `reconcile` turns the reference's answer into a 48-bit chip's:
+  a page fault in an access with a byte in the hole between 2^47 and its negation (wrapping at the top of the address
+  space as the CPU does) becomes #SS through the stack segment or #GP; a fault at a branch target in the hole becomes
+  #GP at the branch with nothing changed; a repeated string instruction's element and a masked access's element are
+  the ones that faulted.
+- Set aside, not decided (INFERRED: no 48-bit chip ran the reference here): an access made in parts (x87 state,
+  saved state, far pointer) or masked, where the reference faulted in a canonical part and another part runs past
+  bit 47 and the translation gives that part's #GP. Which of the two faults a 48-bit chip raises first was not
+  measured, so such a case counts as a known failure with its reason. Intel's priority table puts #GP above #PF
+  within one instruction; if a 48-bit chip shows that, the translation's x87-state and far-pointer accesses, which
+  give the page fault there, are wrong (to measure on a 48-bit chip).
+- A first full run of the model found three things it had wrong, each fixed before the run below: an access that
+  wraps at the top of the address space is canonical (each byte is); iced gives no memory for a repeated string
+  instruction, whose faulting element is then the one at the faulting byte; and a bit offset in a register moves the
+  address the CPU reaches even when that register is also in the address (layer 1's drawing leaves such a move out
+  on purpose, `bit_offset_move`; the model uses `bit_offset_move_made`).
+- Layer 1, x86-64 machine (the 8488C), seed 1, 12 at once, load 15 to 38, with the model, at cf2e37416's behavior:
+  - every form at 64 cases, in each of `Ordered`, `LoadsOrdered` and the default form: 5 forms fail, the same five
+    in each (`iretq`, `sldt`, `smsw` twice, `str`, the machine's own differences TR1 found, not paging), 1 case set
+    aside in each (`vmaskmovpd` store);
+  - the 125 lockable forms and `xstore` at 1,000 cases, `lock` drawn in half the cases: 0 failing and 0 set aside
+    in each of the three forms.
+- Layer 2 in the ordered form, now on a shared memory, 10,000 programs, seed 25112502 (x86-64 machine, 12 at once,
+  load 8 to 38, 2,496 s): 0 failing; 3,442 faulted and 1,104 left to an address at full, as before.
+- Layer 3 in the ordered form, cases 0 to 1,199, seed 1 (x86-64 machine, 6 at once, load 8 to 30, 06:53 to 08:16):
+  1,023 compared, 177 did not end in time on Linux, 0 failing, the counts as before.
+- So XF2's one-thread bar holds by measurement, not by a scratch copy: every lock form at 1,000 cases against the
+  CPU in the ordered form, failing list (empty) equal to the default form's.
+
+Where XF stands after the third run: XF1 and XF2 hold by this track's measurements and wait for their independent
+check; XF3's bar holds for every shape but one control (load buffering, which this ARM64 chip never showed with
+plain accesses) and waits for its check. XF4 waits on the executor track's X2 and threads T2; XF5 on threads T2 (its
+question was ruled: `LoadsOrdered`); X10 on the kernel track's KP1 and KS and the executor's X3; XN2's last tests on
+the native track's W3. The fault-order cases set aside need a 48-bit x86 chip to settle.
+
+Linter (`cargo reviewable check` built from reviewable-rust da55b9d7 on the x86-64 machine, no model key there;
+MEASURED): this track's five crates 12,216 findings at 8020bec5a, 12,384 at cf2e37416. The 168 more: 67 magic
+literals (mostly the litmus shapes' thread and slot numbers and outcome values), 81 summaries and names the linter
+could not ask a model about, 18 number constants without a link (the litmus layout's places and counts), and a few
+comment lengths; the summaries it flagged as too long, not one line, not one sentence or not third person were
+rewritten, and e2224f1e7 fixes three more comments (not counted again).
+
+Third run, tests (MEASURED): `tests/valid.rs` 16 of 16, unit tests of x86, guest-cpu and translator 95 passed,
+translator-test's own 4, clippy `-D warnings` of the five packages and the browser crate for both guests: exit 0
+(ARM64 machine).
+
 Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime` is now
 `wcontainers-executor-wasmtime` (crates/executor/implementation/wasmtime), `wcontainers-runtime` is
 `wcontainers-runtime-single-kernel` (crates/runtime/implementation/single-kernel), `wcontainers-kernel` is
