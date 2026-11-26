@@ -189,6 +189,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(descriptor::DESCRIPTOR_FORMS.iter().map(|form| form.instruction))
         .chain(reciprocal::RECIPROCAL_FORMS.iter().map(|form| form.instruction))
         .chain(segment::SEGMENT_FORMS.iter().map(|form| form.instruction))
+        .chain(optional::OPTIONAL_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
