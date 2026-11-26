@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use core::convert::Infallible;
 
 use wcontainers_processor_architecture_arm64::Instruction;
-use wcontainers_processor_architecture_arm64::encoding::{Field, RN};
+use wcontainers_processor_architecture_arm64::encoding::RN;
 use wcontainers_processor_architecture_arm64::floating_point::{FLUSH_HALF_TO_ZERO, Precision};
 use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
     AccessKind, ElementSize, Offset, PT, RM, ScalableAccess, to_scalable_access,
@@ -21,7 +21,7 @@ use wcontainers_processor_architecture_arm64::scalable_floating_point::{
 
 use crate::{
     ControlReads, DataPage, OperandType, OperandValue, ScalableValues, low_ones,
-    to_floating_point_bits, to_vector_values, with_each_bit_alone,
+    to_floating_point_bits, to_vector_values,
 };
 
 /// The element sizes of SVE in bytes, smallest first.
@@ -61,17 +61,6 @@ pub(crate) fn list_scalable_operand_types(
                     }),
                 );
             }
-            ScalableOperand::TableIndices(number) => types.extend([
-                OperandType::ScalableVectorNumber {
-                    field: number,
-                    registers: 1,
-                },
-                OperandType::ScalableVectorValue {
-                    field: number,
-                    offset: 0,
-                    values: ScalableValues::TableIndices,
-                },
-            ]),
             ScalableOperand::VectorDestination(number) => {
                 types.push(OperandType::ScalableVectorNumber {
                     field: number,
@@ -93,8 +82,6 @@ pub(crate) fn list_scalable_operand_types(
                 OperandType::PredicateNumber(number),
                 OperandType::ScalablePredicateValue(number),
             ]),
-            ScalableOperand::EveryValue(fields) => types.push(OperandType::EveryValue(fields)),
-            ScalableOperand::BytePosition(fields) => types.push(OperandType::BytePosition(fields)),
             ScalableOperand::FloatingPointSource { number, role } => types.extend([
                 OperandType::ScalableVectorNumber {
                     field: number,
@@ -216,9 +203,7 @@ fn list_access_operand_types(access: ScalableAccess) -> Vec<OperandType> {
     types
 }
 
-/// The values a whole Z register takes: those of a vector register, and for indices into a table, at each element
-/// size, each element its own index, the indices reversed, the last index and the first past one table alternating,
-/// and the indices of a second table, and the last index of two tables and the first past them alternating.
+/// The values a whole Z register takes: those of a vector register, or of the lanes its values name.
 pub(crate) fn to_scalable_vector_values(values: ScalableValues) -> Vec<OperandValue> {
     match values {
         ScalableValues::FloatingPoint { lanes: None, role } => {
@@ -251,38 +236,9 @@ pub(crate) fn to_scalable_vector_values(values: ScalableValues) -> Vec<OperandVa
                 .take(STRUCTURE_VALUES)
                 .collect();
         }
-        ScalableValues::Integer | ScalableValues::TableIndices => {}
+        ScalableValues::Integer => {}
     }
-    let mut chosen = to_vector_values(VECTOR_BITS / u8::BITS);
-    if values == ScalableValues::TableIndices {
-        for bytes in ELEMENT_BYTES {
-            let esize = bytes * u8::BITS;
-            let elements = VECTOR_BITS / esize;
-            let fill = |lane: &dyn Fn(u32) -> u32| {
-                (0..elements).fold(0_u128, |vector, index| {
-                    vector | (u128::from(lane(index)) << (index * esize))
-                })
-            };
-            let alternate = |even: u32, odd: u32| {
-                move |index: u32| {
-                    if index.is_multiple_of(2) { even } else { odd }
-                }
-            };
-            for vector in [
-                fill(&|index| index),
-                fill(&|index| elements - 1 - index),
-                fill(&alternate(elements - 1, elements)),
-                fill(&|index| elements + index),
-                fill(&alternate(2 * elements - 1, 2 * elements)),
-            ] {
-                let value = OperandValue::Vector(vector);
-                if !chosen.contains(&value) {
-                    chosen.push(value);
-                }
-            }
-        }
-    }
-    chosen
+    to_vector_values(VECTOR_BITS / u8::BITS)
 }
 
 /// The values one lane of the kind takes: a floating-point value's, with the bounds of an integer it converts to; an
@@ -428,15 +384,6 @@ pub(crate) fn is_value_of_word(
         }
         _ => true,
     }
-}
-
-/// Every byte position of a Z register and the first past it, the largest the fields hold, and each bit alone.
-pub(crate) fn to_byte_positions(fields: &[Field]) -> Vec<OperandValue> {
-    let width: u32 = fields.iter().map(|field| field.width).sum();
-    with_each_bit_alone(
-        width,
-        (0..=u64::from(VECTOR_BITS / u8::BITS)).chain([low_ones(width)]),
-    )
 }
 
 /// The values a predicate takes: none and every bit set; and at each element size every element active, only the

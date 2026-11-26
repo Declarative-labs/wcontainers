@@ -4,12 +4,15 @@ use core::convert::Infallible;
 
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
-use wcontainers_processor_architecture_arm64::encoding::{Field, RN};
+use wcontainers_processor_architecture_arm64::encoding::{Field, RN, RT};
 use wcontainers_processor_architecture_arm64::load_store::AccessLayout;
 use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
     Offset, RM, to_scalable_access,
 };
 use wcontainers_processor_architecture_arm64::operand::{Operand, RegisterThirtyOne};
+use wcontainers_processor_architecture_arm64::system_instruction::{
+    SYSTEM_INSTRUCTION, to_system_instruction_bytes,
+};
 use wcontainers_processor_architecture_arm64::{
     Arm64, Instruction, LoadStoreInstruction, User, VIRTUAL_ADDRESS_BITS,
 };
@@ -104,9 +107,9 @@ fn read_operand(
             let bits = state.processor.vector_registers
                 [(field.read(word) + offset) as usize % state.processor.vector_registers.len()];
             match values {
-                ScalableValues::Integer
-                | ScalableValues::TableIndices
-                | ScalableValues::Structure => Some(OperandValue::Vector(bits)),
+                ScalableValues::Integer | ScalableValues::Structure => {
+                    Some(OperandValue::Vector(bits))
+                }
                 // The critical value of these bits, whose lanes the bits alone do not name.
                 // The critical value of the bits; a register named twice holds another operand's, read in the
                 // lanes of this operand's first value.
@@ -184,10 +187,7 @@ fn read_operand(
             state.processor.vector_registers[field.read(word) as usize]
                 & (u128::MAX >> (u128::BITS - bytes * u8::BITS)),
         )),
-        OperandType::ProgramCounterOffset(fields)
-        | OperandType::SplitImmediate(fields)
-        | OperandType::EveryValue(fields)
-        | OperandType::BytePosition(fields) => {
+        OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields) => {
             Some(OperandValue::Bits(fields.iter().fold(0, |bits, field| {
                 (bits << field.width) | u64::from(field.read(word))
             })))
@@ -254,7 +254,7 @@ fn read_operand(
         OperandType::AccessPlacement => {
             let layout = to_layout(instruction, word, &state.processor)?;
             let base = registers
-                .get(RN.read(word) as usize)
+                .get(to_base_field(instruction).read(word) as usize)
                 .copied()
                 .unwrap_or(state.processor.stack_pointer);
             let address = untag(base.wrapping_add(layout.offset));
@@ -266,7 +266,7 @@ fn read_operand(
         OperandType::AddressTag => {
             let layout = to_layout(instruction, word, &state.processor)?;
             let base = registers
-                .get(RN.read(word) as usize)
+                .get(to_base_field(instruction).read(word) as usize)
                 .copied()
                 .unwrap_or(state.processor.stack_pointer);
             Some(OperandValue::Bits(
@@ -329,6 +329,20 @@ fn to_layout(
     LoadStoreInstruction::new(instruction)
         .and_then(|load_store| load_store.to_access_layout(word, processor))
         .or_else(|| to_scalable_access(instruction)?.to_access_layout(word, processor))
+        .or_else(|| {
+            let bytes = (instruction == Instruction::Sys)
+                .then(|| to_system_instruction_bytes(SYSTEM_INSTRUCTION.read(word)))??;
+            Some(AccessLayout { bytes, offset: 0 })
+        })
+}
+
+/// The field of the register that holds the base of an access: Rt for SYS, Rn for every other instruction.
+fn to_base_field(instruction: Instruction<Infallible>) -> Field {
+    if instruction == Instruction::Sys {
+        RT
+    } else {
+        RN
+    }
 }
 
 /// Every listed instruction that has a known behavior, in the list's order.
@@ -428,6 +442,16 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                 .map(
                     |(operand_type, asked)| match (operand_type, base_is_offset) {
                         (OperandType::AccessPlacement | OperandType::AddressTag, true) => {
+                            Some(*asked)
+                        }
+                        // An encoding that reaches no memory gets no data pages, so they hold nothing to read back.
+                        (
+                            OperandType::AccessPlacement
+                            | OperandType::AddressTag
+                            | OperandType::DataPagePermission(_)
+                            | OperandType::MemoryFill,
+                            false,
+                        ) if to_layout(instruction, word, &state.processor).is_none() => {
                             Some(*asked)
                         }
                         _ => read_operand(&state, instruction, word, *operand_type),

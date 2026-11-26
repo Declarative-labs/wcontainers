@@ -47,6 +47,9 @@ use wcontainers_processor_architecture_arm64::simd::to_vector_operation;
 use wcontainers_processor_architecture_arm64::sve::{
     GeneralValues, PredicateValues, ScalableOperand, VectorValues, to_scalable_instruction,
 };
+use wcontainers_processor_architecture_arm64::system_instruction::{
+    SYSTEM_INSTRUCTION, to_system_instruction_bytes,
+};
 use wcontainers_processor_architecture_arm64::system_register::SYSTEM_REGISTER;
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, DocumentedInstruction, GENERAL_PURPOSE_REGISTERS,
@@ -295,10 +298,6 @@ pub enum OperandType {
     PredicateNumber(Field),
     /// The value of the P register the field names.
     ScalablePredicateValue(Field),
-    /// An immediate split over fields, the most significant first, which takes every value it can hold.
-    EveryValue(&'static [Field]),
-    /// A byte position in a Z register, split over fields, the most significant first.
-    BytePosition(&'static [Field]),
 }
 
 /// What the elements of a Z register an SVE instruction reads hold.
@@ -306,8 +305,6 @@ pub enum OperandType {
 pub enum ScalableValues {
     /// Bits, as a vector register's.
     Integer,
-    /// Indices into a table, besides bits.
-    TableIndices,
     /// The bits of one register of a structure store: fewer than `Integer`, since each register stores its own bytes.
     Structure,
     /// Floating-point values in the lanes given, or where none, in the lanes of every element size, of which an
@@ -473,6 +470,33 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             Instruction::Brk => vec![UnsignedImmediate(IMM16)],
             Instruction::Rdvl => vec![RegisterNumber(RD), SignedImmediate(RDVL_IMM6)],
             Instruction::MrsCtrEl0 => vec![RegisterNumber(RT)],
+            // The hint number as CRm and op2, and X30, which hint 7 (XPACLRI) strips.
+            Instruction::Hint => vec![
+                UnsignedImmediate(Field::new(8, 4)),
+                UnsignedImmediate(Field::new(5, 3)),
+                OperandType::ImplicitAddress(LINK_REGISTER),
+            ],
+            // op1, CRm and op2, and the flags CFINV, XAFLAG and AXFLAG read.
+            Instruction::MsrImmediate => vec![
+                UnsignedImmediate(Field::new(16, 3)),
+                UnsignedImmediate(Field::new(8, 4)),
+                UnsignedImmediate(Field::new(5, 3)),
+                OperandType::ConditionFlags,
+            ],
+            // Every encoding of op1, CRn, CRm and op2, and the register that holds an address where it reaches one.
+            Instruction::Sys => vec![
+                OperandType::SystemRegister(SYSTEM_INSTRUCTION),
+                RegisterNumber(RT),
+                OperandType::AccessPlacement,
+                OperandType::AddressTag,
+                OperandType::DataPagePermission(DataPage::Lower),
+                OperandType::DataPagePermission(DataPage::Upper),
+                OperandType::MemoryFill,
+            ],
+            Instruction::Sysl => vec![
+                OperandType::SystemRegister(SYSTEM_INSTRUCTION),
+                RegisterNumber(RT),
+            ],
             _ => vec![OperandType::Word(to_example_word(instruction))],
         };
         operand_types.into_iter()
@@ -676,11 +700,6 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             }
             OperandType::PredicateNumber(_) => [0, 1].map(OperandValue::RegisterNumber).to_vec(),
             OperandType::ScalablePredicateValue(_) => scalable::to_predicate_values(),
-            OperandType::EveryValue(fields) => {
-                let width: u32 = fields.iter().map(|field| field.width).sum();
-                (0..1 << width).map(OperandValue::Bits).collect()
-            }
-            OperandType::BytePosition(fields) => scalable::to_byte_positions(fields),
             OperandType::DataPagePermission(_) => {
                 let mapped = |data_access| PagePermission::Mapped {
                     data_access,
@@ -872,8 +891,6 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 // `encode_word` has put them in the word.
                 OperandType::ScalableVectorNumber { .. }
                 | OperandType::PredicateNumber(_)
-                | OperandType::EveryValue(_)
-                | OperandType::BytePosition(_)
                 | OperandType::RegisterNumber(_)
                 | OperandType::VectorRegisterNumber(_)
                 | OperandType::PredicateRegisterNumber(_)
@@ -1020,13 +1037,24 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 let bytes = StructureInstruction::new(instruction)?.to_access_bytes(word)?;
                 Some(AccessLayout { bytes, offset: 0 })
             })
-            .or_else(|| Some(TagAccessInstruction::new(instruction)?.to_access_layout(word)));
+            .or_else(|| Some(TagAccessInstruction::new(instruction)?.to_access_layout(word)))
+            .or_else(|| {
+                let bytes = (instruction == Instruction::Sys)
+                    .then(|| to_system_instruction_bytes(SYSTEM_INSTRUCTION.read(word)))??;
+                Some(AccessLayout { bytes, offset: 0 })
+            });
+        // SYS takes its address from Rt.
+        let base_field = if instruction == Instruction::Sys {
+            RT
+        } else {
+            RN
+        };
         if let (Some(placement), Some(layout)) = (placement, layout) {
             let address = to_access_address(placement, layout.bytes);
             let base = address.wrapping_sub(layout.offset).wrapping_add(tag);
             match processor
                 .general_purpose_registers
-                .get_mut(RN.read(word) as usize)
+                .get_mut(base_field.read(word) as usize)
             {
                 Some(register) => *register = base,
                 None => processor.stack_pointer = base,
@@ -1137,10 +1165,7 @@ pub fn encode_word(
             (OperandType::Word(_), OperandValue::Bits(bits)) => word = bits as u32,
             (OperandType::AdvancedSimd(simd_operand), _) => deferred.push((simd_operand, operand)),
             (
-                OperandType::ProgramCounterOffset(fields)
-                | OperandType::SplitImmediate(fields)
-                | OperandType::EveryValue(fields)
-                | OperandType::BytePosition(fields),
+                OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields),
                 OperandValue::Bits(bits),
             ) => {
                 let mut remaining = bits;
@@ -1156,8 +1181,6 @@ pub fn encode_word(
                 | OperandType::Pattern(_)
                 | OperandType::ScalableVectorNumber { .. }
                 | OperandType::PredicateNumber(_)
-                | OperandType::EveryValue(_)
-                | OperandType::BytePosition(_)
                 | OperandType::VectorListNumber(_)
                 | OperandType::UnsignedImmediate(_)
                 | OperandType::SignedImmediate(_)

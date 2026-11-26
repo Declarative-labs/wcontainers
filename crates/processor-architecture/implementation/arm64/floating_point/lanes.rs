@@ -130,7 +130,7 @@ fn compute(
             let sign = first.sign != second.sign;
             match (first.kind, second.kind) {
                 (Kind::Infinity, Kind::Zero) | (Kind::Zero, Kind::Infinity)
-                    if crate::planted::is(1031) =>
+                    if crate::planted::is(3031) =>
                 {
                     precision.to_default_nan()
                 }
@@ -154,7 +154,7 @@ fn compute(
                 precision,
                 context,
             );
-            if crate::planted::is(1065) {
+            if crate::planted::is(3065) {
                 let exponent_ones = precision.to_exponent_ones() << precision.to_fraction_bits();
                 if difference & exponent_ones == exponent_ones
                     && difference & low_ones(precision.to_fraction_bits()) != 0
@@ -166,7 +166,7 @@ fn compute(
         }
         LaneOperation::ReciprocalStep | LaneOperation::ReciprocalSquareRootStep => {
             let square_root = operation == LaneOperation::ReciprocalSquareRootStep;
-            let negated = if crate::planted::is(1032) {
+            let negated = if crate::planted::is(3032) {
                 0
             } else {
                 precision.to_sign_bit()
@@ -291,7 +291,7 @@ fn compute(
             );
             let inexact = context.flags & INEXACT != 0;
             context.flags |= before;
-            if crate::planted::is(1040) {
+            if crate::planted::is(3040) {
                 context.flags &= !INEXACT;
                 let nearest = round(
                     Real::from_number(operand),
@@ -329,7 +329,7 @@ fn compare_lane(
     let absolute = matches!(
         comparison,
         LaneComparison::AbsoluteGreaterOrEqual | LaneComparison::AbsoluteGreater
-    ) && !(crate::planted::is(1034)
+    ) && !(crate::planted::is(3034)
         && comparison == LaneComparison::AbsoluteGreater);
     let strip = |bits: u64| {
         if absolute {
@@ -341,7 +341,7 @@ fn compare_lane(
     let first = unpack(strip(first), precision, context);
     let second = unpack(strip(second), precision, context);
     let signaling = comparison != LaneComparison::Equal
-        && !(crate::planted::is(1033) && comparison == LaneComparison::GreaterOrEqual);
+        && !(crate::planted::is(3033) && comparison == LaneComparison::GreaterOrEqual);
     let flags = compare(first, second, signaling, context);
     let equal = ConditionFlags::ZERO | ConditionFlags::CARRY;
     match comparison {
@@ -368,7 +368,7 @@ fn to_double_fraction(bits: u64, precision: Precision) -> (u64, i64) {
 pub fn estimate_reciprocal_fraction(a: u64) -> u64 {
     let a = a * 2 + 1;
     let b = (1 << 19) / a;
-    if crate::planted::is(1035) {
+    if crate::planted::is(3035) {
         b / 2
     } else {
         b.div_ceil(2)
@@ -474,7 +474,7 @@ fn estimate_reciprocal_square_root(bits: u64, precision: Precision, context: &mu
         }
         fraction = (fraction << 1) & low_ones(DOUBLE_FRACTION_BITS);
     }
-    let scaled = if (exponent & 1 == 1) != crate::planted::is(1036) {
+    let scaled = if (exponent & 1 == 1) != crate::planted::is(3036) {
         (1 << 7) | (fraction >> (DOUBLE_FRACTION_BITS - 7))
     } else {
         (1 << 8) | (fraction >> (DOUBLE_FRACTION_BITS - 8))
@@ -513,7 +513,7 @@ fn to_lane_integer(
     let magnitude = i128::try_from(magnitude).unwrap_or(i128::MAX);
     let value = if sign { -magnitude } else { magnitude };
     if value < minimum || value > maximum {
-        if !crate::planted::is(1037) {
+        if !crate::planted::is(3037) {
             context.raise(INVALID_OPERATION);
         }
         return value.clamp(minimum, maximum) as u64 & low_ones(bits);
@@ -535,7 +535,7 @@ fn from_lane_integer(
     context: &mut Context,
 ) -> u64 {
     let value = value & low_ones(bits);
-    let negative = !unsigned && !crate::planted::is(1038) && (value >> (bits - 1)) & 1 != 0;
+    let negative = !unsigned && !crate::planted::is(3038) && (value >> (bits - 1)) & 1 != 0;
     let magnitude = if negative {
         value.wrapping_neg() & low_ones(bits)
     } else {
@@ -649,7 +649,7 @@ pub fn convert_to_brain_float(bits: u64, fpcr: u64, flags: &mut u64) -> u64 {
             // Rounding the real to a single whose fraction ends seven bits down: the single's own rounding, with the
             // value scaled so that its lowest kept bit is the BFloat16's.
             let value = Real::from_number(operand);
-            let rounding = if crate::planted::is(1061) {
+            let rounding = if crate::planted::is(3061) {
                 Rounding::TowardZero
             } else {
                 to_rounding(fpcr)
@@ -735,7 +735,7 @@ fn round_brain_odd(value: Real) -> u64 {
     if context.flags & OVERFLOW != 0 {
         return Precision::Single.to_infinity(value.sign);
     }
-    if context.flags & INEXACT != 0 && context.flags & UNDERFLOW == 0 && !crate::planted::is(1060) {
+    if context.flags & INEXACT != 0 && context.flags & UNDERFLOW == 0 && !crate::planted::is(3060) {
         rounded | 1
     } else {
         rounded
