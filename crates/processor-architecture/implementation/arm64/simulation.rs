@@ -26,6 +26,23 @@ where
 {
     type Error = Infallible;
 
+    // VERUS: this impl is not verified yet, so it stays outside `verus!` and its specification is a placeholder that
+    // exists only when Verus builds the crate, which reads none of it.
+    #[cfg(verus_keep_ghost)]
+    fn simulation(
+        &self,
+        _: Processor<Level::PrivilegedProcessorSubset>,
+        _: wcontainers_processor_architecture::Memory<PagePermission>,
+    ) -> Result<
+        (
+            ProcessorExpectation<Level::PrivilegedProcessorSubset>,
+            vstd::seq::Seq<wcontainers_processor_architecture::Assignment<PagePermission>>,
+        ),
+        Infallible,
+    > {
+        unimplemented!()
+    }
+
     /// Fetches the word at the program counter and applies this behavior to it, reading its operands from it.
     fn simulate(
         &self,
@@ -175,6 +192,23 @@ impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
 /// The user level adds no instruction, so it has none to simulate.
 impl Simulator<Arm64<User>> for Infallible {
     type Error = Infallible;
+
+    // VERUS: this impl is not verified yet, so it stays outside `verus!` and its specification is a placeholder that
+    // exists only when Verus builds the crate, which reads none of it.
+    #[cfg(verus_keep_ghost)]
+    fn simulation(
+        &self,
+        _: Processor<()>,
+        _: wcontainers_processor_architecture::Memory<PagePermission>,
+    ) -> Result<
+        (
+            ProcessorExpectation<()>,
+            vstd::seq::Seq<wcontainers_processor_architecture::Assignment<PagePermission>>,
+        ),
+        Infallible,
+    > {
+        unimplemented!()
+    }
 
     fn simulate(
         &self,

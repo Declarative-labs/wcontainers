@@ -3,6 +3,10 @@
 
 use core::convert::Infallible;
 
+#[cfg(verus_keep_ghost)]
+use vstd::arithmetic::power2::pow2;
+use vstd::prelude::*;
+
 use crate::condition_flags::{CONDITIONS, ConditionFlags};
 use crate::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Rotation, Signedness,
@@ -667,13 +671,42 @@ fn decode_bit_masks(
     ))
 }
 
+verus! {
+
 /// Ones in the low `count` bits.
-pub(crate) const fn low_ones(count: u32) -> u64 {
+pub(crate) const fn low_ones(count: u32) -> (low: u64)
+    requires
+        count <= u64::BITS,
+    ensures
+        low == crate::pseudocode::ones(count as nat),
+{
+    proof {
+        // Ones(count) is 2^64 - 1 divided by 2^(64 - count), which is what the shift computes.
+        vstd::arithmetic::power2::lemma2_to64();
+        vstd::bits::lemma_unsigned_int_max_is_pow2_minus_1();
+        if count > 0 {
+            let shift = (u64::BITS - count) as u64;
+            let narrow_shift = (u64::BITS - count) as u32;
+            assert(u64::MAX >> narrow_shift == u64::MAX >> shift) by (bit_vector)
+                requires
+                    shift == narrow_shift as u64,
+                    narrow_shift < 64;
+            vstd::bits::lemma_u64_shr_is_div(u64::MAX, shift);
+            vstd::arithmetic::power2::lemma_pow2_adds(count as nat, shift as nat);
+            vstd::arithmetic::power2::lemma_pow2_pos(shift as nat);
+            vstd::arithmetic::power2::lemma_pow2_pos(count as nat);
+            let (high, low) = (pow2(count as nat) as int, pow2(shift as nat) as int);
+            assert((high - 1) * low == high * low - low) by (nonlinear_arith);
+            vstd::arithmetic::div_mod::lemma_fundamental_div_mod_converse(u64::MAX as int, low, high - 1, low - 1);
+        }
+    }
     match count {
         0 => 0,
         _ => u64::MAX >> (u64::BITS - count),
     }
 }
+
+} // verus!
 
 fn rotate_within(value: u64, amount: u32, bits: u32) -> u64 {
     let amount = amount % bits;

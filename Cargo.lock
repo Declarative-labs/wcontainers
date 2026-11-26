@@ -5038,6 +5038,7 @@ name = "wcontainers-processor-architecture-arm64"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
+ "vstd",
  "wcontainers-behavior-source",
  "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-distinguishing-state-generator",

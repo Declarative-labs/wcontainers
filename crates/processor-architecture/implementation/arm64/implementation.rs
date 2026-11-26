@@ -31,6 +31,7 @@ pub mod planted;
 pub mod pointer_authentication;
 mod registers;
 pub mod simd;
+mod pseudocode;
 mod simulation;
 pub mod system_register;
 #[cfg(test)]
@@ -102,6 +103,34 @@ impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
 
     const ADDRESSABLE: Range<u64> = 0..1 << VIRTUAL_ADDRESS_BITS;
     const DEFAULT_PERMISSION: PagePermission = PagePermission::Unmapped;
+
+    // VERUS: this impl is not verified yet, so it stays outside `verus!` and its specification items are placeholders
+    // that exist only when Verus builds the crate, which reads none of them.
+    #[cfg(verus_keep_ghost)]
+    fn instructions() -> vstd::seq::Seq<Instruction<Level::PrivilegedInstruction>> {
+        unimplemented!()
+    }
+
+    #[cfg(verus_keep_ghost)]
+    fn known_behaviors(
+        _: Instruction<Level::PrivilegedInstruction>,
+    ) -> vstd::seq::Seq<Self::PreciseInstruction> {
+        unimplemented!()
+    }
+
+    #[cfg(verus_keep_ghost)]
+    fn equality_is_identity() {}
+
+    #[cfg(verus_keep_ghost)]
+    fn clone_is_identity() {}
+
+    #[cfg(verus_keep_ghost)]
+    fn meets(
+        _: Processor<Level::PrivilegedProcessorSubset>,
+        _: ProcessorExpectation<Level::PrivilegedProcessorSubset>,
+    ) -> bool {
+        unimplemented!()
+    }
 
     /// Every variant of Arm's list in its order, then MRS of CTR_EL0, then those `Level` adds.
     ///

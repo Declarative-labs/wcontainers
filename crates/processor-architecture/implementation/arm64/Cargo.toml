@@ -31,6 +31,8 @@ wcontainers-processor-architecture = { path = "../.." }
 wcontainers-privilege-level = { path = "../../../privilege-level" }
 wcontainers-privilege-level-arm64-user = { path = "../../../privilege-level/implementation/arm64-user" }
 bitflags.workspace = true
+# Verus's library, in which the proven functions' specifications are written; a plain build keeps none of them.
+vstd.workspace = true
 
 [dev-dependencies]
 wcontainers-behavior-source = { path = "../../../behavior-source" }
@@ -41,6 +43,9 @@ wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguis
 # The chip the planted bugs are measured on.
 [target.'cfg(all(target_arch = "aarch64", target_os = "linux"))'.dev-dependencies]
 wcontainers-behavior-source-kvm-single-step = { path = "../../../behavior-source/implementation/kvm-single-step" }
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true

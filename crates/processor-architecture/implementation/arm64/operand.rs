@@ -1,7 +1,13 @@
 //! The operands of an instruction's assembler syntax and the fields of its encoding that hold them.
 
+#[cfg(verus_keep_ghost)]
+use vstd::arithmetic::power2::pow2;
+use vstd::prelude::*;
+
 use crate::encoding::Field;
 use crate::floating_point::Precision;
+#[cfg(verus_keep_ghost)]
+use crate::pseudocode::ones;
 
 /// One operand of an instruction's assembler syntax, as far as its encoding is modeled.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -112,6 +118,8 @@ pub enum Indexing {
     PostIndex,
 }
 
+verus! {
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RegisterWidth {
     Bits32,
@@ -119,7 +127,18 @@ pub enum RegisterWidth {
 }
 
 impl RegisterWidth {
-    pub const fn to_bits(self) -> u32 {
+    /// The number of bits of the width, as the specification reads it.
+    pub open spec fn bits(self) -> nat {
+        match self {
+            Self::Bits32 => 32,
+            Self::Bits64 => 64,
+        }
+    }
+
+    pub const fn to_bits(self) -> (bits: u32)
+        ensures
+            bits == self.bits(),
+    {
         match self {
             Self::Bits32 => u32::BITS,
             Self::Bits64 => u64::BITS,
@@ -127,10 +146,21 @@ impl RegisterWidth {
     }
 
     /// Ones in every bit of the width.
-    pub const fn to_mask(self) -> u64 {
+    pub const fn to_mask(self) -> (mask: u64)
+        ensures
+            mask == ones(self.bits()),
+    {
+        proof {
+            assert(u64::MAX >> (u64::BITS - u32::BITS) == 0xffff_ffffu64) by (compute_only);
+            assert(u64::MAX >> (u64::BITS - u64::BITS) == u64::MAX) by (compute_only);
+            vstd::arithmetic::power2::lemma2_to64();
+            vstd::bits::lemma_unsigned_int_max_is_pow2_minus_1();
+        }
         u64::MAX >> (u64::BITS - self.to_bits())
     }
 }
+
+} // verus!
 
 /// What register number 31 names in an operand.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
