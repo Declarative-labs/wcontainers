@@ -131,3 +131,109 @@ and the LTP verdicts. Waits on KP1 and TR1 (`wcontainers-arm64`) to build, RT1 f
 X2 left: 33 lines (wasmtime, raw): the deserialize cache (311), the custom memory (memory.rs, 20 lines), the store
 data's erased lifetimes (1818, 1829, 2383), and fork in the tests (3097, tests/fork.rs: rustix has no fork, a stop
 item). Waits on TR1 and RT1 to build.
+
+## His main `ac696ea19`, the kernel and translator ports, X1 confirmed, X3's executor part (2026-11-26)
+
+Merges (normal, no conflict, MEASURED `git merge`): `77391e4f1` his main `ac696ea19` (`prepare_execution`,
+`Execution::run`, named iterators, `MemoryReader`, observation collector), `818181556` `origin/kernel-port`
+`e177511f5`, `e829931b8` `origin/translator-port` `15968cb89`; his main again: already up to date.
+`origin/arm64-instructions` is still at `d708c4a55`, merged before. After the merges, 91 files beside the
+`interface.rs` of his 29 interface folders are byte-identical to his main (MEASURED, `git diff --quiet` on each).
+
+- `ca24485a4`: the random-source implementations take the interface's `&impl VolatileBytes` (they still took
+  `&mut [u8]`): `host` and `seeded` fill through `write_from` with a `ByteSource` of their generator, and fail if
+  fewer bytes were taken; the suite fills `RefCell<&mut [u8]>`. The simulation's tests take `seeded` (ChaCha8 from
+  a seed) instead of their own SplitMix64.
+- `481a558ef`: the simulation and the suite on `prepare_execution` and `Execution::run`: `run` is a loop of
+  `run_until_trap` (instructions until an exception or an interrupt), then the handler's answer. The simulation
+  never waits (`Wait = Ready<()>`, never made). The suite's helper prepares again after a `Waiting` from the state
+  it stopped at and hands each new interrupter to the interrupting thread. `interrupt_before_the_first_poll_...`
+  is now `interrupt_before_the_run_is_answered_at_the_start`.
+- `ccd4db9da` and the commit after it: X3's executor part, below.
+
+### X1 (MEASURED, Graviton4, `-j 12`)
+
+| Run | Result |
+|---|---|
+| random-source `host`, `seeded` suites | 4 of 4 each |
+| simulation unit tests | 9 of 9 |
+| executor suite on the simulation | 22 of 22 |
+| behavior source suite on the simulation | 3 of 4 |
+| clippy `-D warnings` (all targets), rustfmt `--check`, five crates | clean |
+| `unsafe` | 0 in all five |
+
+The failing test is `measured_behavior_agrees_with_the_source` (suite.rs:90): `measure_instructions` stops at
+the instructions the architecture knows no behavior of. A probe measuring every instruction one by one
+(simulation, `CriticalValueCut`, 48 s): 4,430 instructions, 4,426 measure, 4 have no known behavior (`Hint`,
+`MsrImmediate`, `Sys`, `Sysl`), 0 fail otherwise. That is what remains on `origin/arm64-instructions`.
+
+Planted wrong implementations, each applied to the simulation alone, every suite test but the two slow ones:
+
+| Wrong implementation | Fails |
+|---|---|
+| `copy_from` zeroes the bytes it copies | `copy_from_carries_bytes_permissions_and_mappings` |
+| `copy_from` drops permissions | `copy_from_carries_bytes_permissions_and_mappings` |
+| `copy_from` copies a mapped page instead of sharing it | `copy_from_carries_bytes_permissions_and_mappings` |
+| `map_from` reads its own space | 2 unit tests; `copy_from_...`, `map_from_shares_the_bytes_both_ways` |
+| `copy_from` reads its own space | `copy_from_carries_bytes_permissions_and_mappings` |
+| a table made with a space changes another space | 2 unit tests; `copy_from_...`, `map_from_...`, `permissions_bind_guest_code_and_not_borrowed_bytes` |
+| a retry keeps the faulted state | 1 unit test (the suite passes: the simulation runs the faulting instruction again anyway) |
+| a system call's result is dropped | `system_call_answered_return_goes_on_with_the_value` |
+| an interrupt is never answered | 2 unit tests (the suite run hit its 900 s timeout) |
+| an undecided register is a constant | `undecided_values_come_from_the_random_source` |
+
+X1 holds by this measurement, except that the behavior source suite fails until the four instructions have a behavior.
+
+### X3, the stand-in's executor (MEASURED unless marked)
+
+- The stand-in implements today's `BehaviorSource` (`Arm64<User>`, `Error = Unsupported`) and `Executor`
+  (`create_guest_memory` gives `UnicornSpace` and `UnicornPageTable`; `prepare_execution` gives
+  `StandInExecution`, whose `run` is the same "run until the next trap, then ask the handler" loop). The impl of
+  the runtime's `Execution` at standin.rs:932 is gone.
+- 0 lines with `unsafe` in its files (8 raw `unsafe` words before in standin.rs; the 4 marked lines go):
+  `unsafe impl Send for Memory` goes (a stand-in and its spaces now stay on the thread that made them);
+  `mem_map_ptr`, `from_raw_parts_mut` and `from_raw_parts` go: unicorn owns the bytes of the pages it maps
+  (`mem_map`, `mem_read`, `mem_write`), host memory holds the rest, and shared pages (`Rc<SharedPages>`) are copied
+  into unicorn before a turn when they changed and given back after it, page by page where they differ. The shared
+  block pointers, and with them the use after free, are gone: a dropped block a memory shows lives on through its
+  `Rc` (still recorded as `Refused`). New file `memory.rs`.
+- The kernel test harness is behind a default feature `harness`, so the stand-in builds and is measured
+  without it: `cargo test -p wcontainers-executor-unicorn --no-default-features --lib --test conformance`.
+- Results: unit tests 6 of 6 (2 new: a dropped block keeps its bytes; two memories share a block's bytes, the
+  guest's writes among them); executor suite 21 of 22 and behavior source suite 1 of 4 (rerun after the fix: unit 6 of 6,
+  the 21 fast suite tests 21 of 21; clippy `-D warnings` and rustfmt clean):
+  - `agrees_with_precise_instruction_set` (first known behaviors, `CriticalValueCut`, all 4,430 instructions):
+    the process aborts in QEMU (`disas_simd_three_reg_same_fp16: insn 0xec01dcd`, SIGABRT) partway through.
+  - A probe over the first 2,962 instructions (before the abort): 295 instructions where the stand-in's state
+    meets no known behavior. After the fix below, 283; their examples show unicorn runs at EL1: `ERET`, `MRS`/`MSR`
+    of EL1 registers and the pointer-authentication branches run where EL0 has them undefined, and `BR` to
+    `0x8000000000000000` leaves that program counter where the architecture expects 0. `MRS` of the counter gives
+    different values in two runs (164 states), which no known behavior allows; 2 `MSR` states stop with QEMU
+    exception 3 (`UnknownStop`).
+  - Fixed (in the commit after `ccd4db9da`): a counted turn stops as unicorn fetches the next instruction, so a
+    fetch fault at another address than the instruction's belongs to the next one; the instruction completed.
+  - `measured_behavior_agrees_with_the_source`, `execution_is_deterministic` and
+    `execute_agrees_with_execute_in_place` fail on the same disagreements and the counter.
+- Speed (INFERRED, not measured): every turn compares the writable pages of each shared range it maps; a large
+  shared mapping costs that much per turn.
+
+X3 is not reached: the instruction agreement over today's full list fails as above (it passed 21 of 21 on the old
+ten-instruction list), and the LTP verdicts wait on the kernel track's harness, which does not build (with the
+default feature, MEASURED: 22 errors, all in `runtime-single-kernel`; and the harness still drives `next`, `exit`, `event` and
+`&mut dyn Cpu`). For the harness: the stand-in is no longer `Send`; `StandIn::run`, `run_on`, `restored`,
+`take_refused`, `Refused`, `Unsupported` and the `SPACE_*` constants are kept.
+
+X2 has not started: wasmtime's `CpuSide` implements the runtime's own `Execution` and `Executor`
+(`wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Executor, Leaving, RuntimeConfig, StopFlag,
+Turn}`, implementation.rs:44), and `runtime-single-kernel` does not compile on this branch (MEASURED: 6 `unsafe`
+blocks, `next`/`exit` private, no `event`, no `FallbackObserver` for `LocalSystem`, `send`/`receive` type
+parameters). It waits on RT1, or on the runtime track moving those traits.
+
+SECURITY: lines with `unsafe` (raw word, `grep -rn unsafe *.rs`), before (`0ad228c01`) and after: unicorn 34 to 26
+(the stand-in's files 8 to 0; the 26 are the harness's: `libc::fork` in driver.rs and the generator's text
+handling); wasmtime 62 to 62; simulation 0, conformance 0, random-source 0. No marked exception added, no UNSOUND
+mark. Dependencies: unicorn drops `atomic_refcell`; the harness's dependencies become optional; dev-dependencies
+`wcontainers-precise-instruction-set(-measured)` and `wcontainers-distinguishing-state-generator-arm64` replace the
+input-domain ones; simulation adds dev-dependency `wcontainers-random-source-seeded`; the random-source
+implementations add `wcontainers-volatile-bytes` and `wcontainers-byte-source`. No outside crate added. The
+hostile-guest suite was not run.
