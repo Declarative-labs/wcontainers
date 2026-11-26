@@ -363,13 +363,14 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             let at = e.local(ValType::I64);
             e.get(rn);
             e.sink().local_set(at);
-            // The block's address keeps the tag, which the check takes off, so a fault reports it.
+            // The aligned block lies in the page of the address, so one byte at the address checks it, and a fault
+            // reports the address as the program gave it, as FAR_EL1 does.
+            e.check(at, 1, Access::Write, 0);
             e.sink()
                 .local_get(at)
                 .i64_const(!63)
                 .i64_and()
                 .local_set(at);
-            e.check(at, 64, Access::Write, 0);
             e.sink()
                 .local_get(at)
                 .i32_const(0)
