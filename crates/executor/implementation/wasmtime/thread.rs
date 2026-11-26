@@ -787,7 +787,15 @@ fn trap(caller: &mut Caller<'_, ThreadData>, kind: i32, detail: i64) {
         Some(TrapKind::Alignment) => Exception::StackPointerAlignmentFault,
         _ => Exception::UndefinedInstruction,
     };
-    caller.data_mut().ending = Some(Ending::Raised(exception));
+    // A branch to a misaligned address completes; the fault is the fetch of the next instruction, which a step leaves
+    // out, as it leaves out any other fetch after its instruction.
+    let next_fetch = matches!(exception, Exception::ProgramCounterAlignmentFault { .. })
+        && matches!(caller.data().mode, Mode::Step { start, .. } if start != pc);
+    caller.data_mut().ending = Some(if next_fetch {
+        Ending::Stepped
+    } else {
+        Ending::Raised(exception)
+    });
 }
 
 /// The guest's own code changed hook (ARM64 `ic ivau`): drops the code of the line holding the address.
