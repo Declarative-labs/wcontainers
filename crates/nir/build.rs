@@ -82,7 +82,8 @@ const RENAMED_BLAKE3: &str = "wcontainers_nir_mesa_blake3";
 const RENAMED_PREFIX: &str = "wcontainers_nir_mesa_";
 const INNER_PREFIX: &str = "blake3_";
 const OUTER_PREFIXES: &[&str] = &["blake3_hasher_", "blake3_version"];
-/// The tools that list an archive's symbols and rename them, and the variables that may name others.
+/// The tools that list an archive's symbols and rename an object's, and the variables that may name
+/// others.
 const NM: &str = "nm";
 const NM_VARIABLE: &str = "NM";
 const OBJCOPY: &str = "objcopy";
@@ -91,6 +92,12 @@ const OBJCOPY_VARIABLE: &str = "OBJCOPY";
 const NM_ARGUMENTS: &[&str] = &["--defined-only", "--extern-only", "--format=posix"];
 const REDEFINE_FLAG: &str = "--redefine-syms=";
 const RENAMES_FILE: &str = "mesa_blake3_renames.txt";
+const RENAMED_OBJECTS: &str = "mesa_blake3_objects";
+/// The archiver, which lists an archive's members and makes a new archive (with its index).
+const AR: &str = "ar";
+const AR_VARIABLE: &str = "AR";
+const AR_LIST: &str = "t";
+const AR_CREATE: &str = "crs";
 const TARGET_ENV_VARIABLE: &str = "CARGO_CFG_TARGET_ENV";
 const MSVC_ENV: &str = "msvc";
 const OUT_DIR_VARIABLE: &str = "OUT_DIR";
@@ -249,16 +256,46 @@ fn renamed_blake3(folder: &Path) -> PathBuf {
         .collect();
     let renames_file = out.join(RENAMES_FILE);
     std::fs::write(&renames_file, renames).expect("the renames are written");
+    // Meson writes thin archives, which objcopy cannot copy: each member object is renamed on its
+    // own and the copies are archived anew.
+    let members = std::process::Command::new(tool(AR_VARIABLE, AR))
+        .arg(AR_LIST)
+        .arg(&archive)
+        .output()
+        .expect("ar runs");
+    assert!(members.status.success(), "ar lists {}", archive.display());
+    let objects = out.join(RENAMED_OBJECTS);
+    std::fs::create_dir_all(&objects).expect("the folder of renamed objects is made");
+    let mut renamed_objects = Vec::new();
+    for (index, member) in std::str::from_utf8(&members.stdout)
+        .expect("member names are text")
+        .lines()
+        .enumerate()
+    {
+        let source = folder.join(member);
+        let name = Path::new(member).file_name().expect("a member names a file");
+        let copy = objects.join(format!("{index}-{}", name.to_string_lossy()));
+        let status = std::process::Command::new(tool(OBJCOPY_VARIABLE, OBJCOPY))
+            .arg(format!("{REDEFINE_FLAG}{}", renames_file.display()))
+            .arg(&source)
+            .arg(&copy)
+            .status()
+            .expect("objcopy runs");
+        assert!(status.success(), "objcopy renames {}", source.display());
+        renamed_objects.push(copy);
+    }
     let renamed = out.join(format!(
         "{LIBRARY_PREFIX}{RENAMED_BLAKE3}.{STATIC_EXTENSION}"
     ));
-    let status = std::process::Command::new(tool(OBJCOPY_VARIABLE, OBJCOPY))
-        .arg(format!("{REDEFINE_FLAG}{}", renames_file.display()))
-        .arg(&archive)
+    // `ar` adds to an archive that is there, so a rebuild starts from none.
+    let _ = std::fs::remove_file(&renamed);
+    let status = std::process::Command::new(tool(AR_VARIABLE, AR))
+        .arg(AR_CREATE)
         .arg(&renamed)
+        .args(&renamed_objects)
         .status()
-        .expect("objcopy runs");
-    assert!(status.success(), "objcopy renames {}", archive.display());
+        .expect("ar runs");
+    assert!(status.success(), "ar archives the renamed objects");
     out
 }
 
