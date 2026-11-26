@@ -1858,6 +1858,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexUnsignedIndefiniteSigned, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), Origin::EvexRest),
     row(Bug::HalfToSingleReportsDenormal, "VCVTPH2PS", Family::Evex(|form| !form.reports_denormal()), Origin::EvexRest),
     row(Bug::IntegerToHalfOverflowExact, "VCVTW2PH to VCVTUQQ2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { from: Number::Signed(_) | Number::Unsigned(_), to: Number::Float(Precision::Half), .. }))), Origin::EvexRest),
+    row(Bug::InUseIgnoresSameValueWrites, "XINUSE after a write", Family::Every, Origin::StateAndXsave),
     row(Bug::ControlReadIgnoresInUse, "XGETBV", Family::Forms(&[Instruction::Xgetbv]), Origin::StateAndXsave),
     row(Bug::ControlReadIgnoresMxcsr, "XGETBV", Family::Forms(&[Instruction::Xgetbv]), Origin::StateAndXsave),
     row(Bug::SaveHeaderDropsUnrequested, "XSAVE, XSAVEOPT", Family::Forms(STANDARD_SAVES), Origin::StateAndXsave),

@@ -166,9 +166,10 @@ pub fn generate_restored_over() -> Vec<OperandValue> {
     .to_vec()
 }
 
-/// The XSTATE_BV an area held before XSAVE or XSAVEOPT writes it: the data page's own bytes, none, and every bit.
+/// The XSTATE_BV an area held before XSAVE or XSAVEOPT writes it: the data page's own bytes, which set some bits of
+/// each component and clear others, and every bit.
 pub fn generate_old_bitmaps() -> Vec<OperandValue> {
-    [None, Some(0), Some(u64::MAX)].map(OperandValue::OldStateBitmap).to_vec()
+    [None, Some(u64::MAX)].map(OperandValue::OldStateBitmap).to_vec()
 }
 
 /// XRSTOR's images: the standard form loading every component, none, x87 alone and AVX-512's three; a bit XCR0 does

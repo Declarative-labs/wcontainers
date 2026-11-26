@@ -156,18 +156,19 @@ pub fn is_consistent(processor: &Processor) -> bool {
         && tracking_holds
 }
 
-/// The components whose registers differ between the two processors.
-pub fn list_changed_components(before: &Processor, after: &Processor) -> u64 {
-    let pairs = [
-        (X87_COMPONENT, before.x87 != after.x87),
-        (SSE_COMPONENT, before.vector_registers != after.vector_registers),
-        (AVX_COMPONENT, before.upper_vector_halves != after.upper_vector_halves),
-        (OPMASK_COMPONENT, before.opmask_registers != after.opmask_registers),
-        (ZMM_HIGH_256_COMPONENT, before.zmm_upper_halves != after.zmm_upper_halves),
-        (HIGH_16_ZMM_COMPONENT, before.high_vector_registers != after.high_vector_registers),
-        (PKRU_COMPONENT, before.pkru != after.pkru),
-    ];
-    pairs.into_iter().filter(|(_, changed)| *changed).fold(0, |all, (component, _)| all | component)
+/// The components of `components` whose registers differ between the two processors.
+pub fn list_changed_components(before: &Processor, after: &Processor, components: u64) -> u64 {
+    let differs = |component: u64| match component {
+        X87_COMPONENT => before.x87 != after.x87,
+        SSE_COMPONENT => before.vector_registers != after.vector_registers,
+        AVX_COMPONENT => before.upper_vector_halves != after.upper_vector_halves,
+        OPMASK_COMPONENT => before.opmask_registers != after.opmask_registers,
+        ZMM_HIGH_256_COMPONENT => before.zmm_upper_halves != after.zmm_upper_halves,
+        HIGH_16_ZMM_COMPONENT => before.high_vector_registers != after.high_vector_registers,
+        PKRU_COMPONENT => before.pkru != after.pkru,
+        _ => false,
+    };
+    list_components(components).filter(|component| differs(*component)).fold(0, |all, component| all | component)
 }
 
 /// The components an instruction names a register of to write, as iced-x86 lists them: an XMM register of 0 to 15
@@ -207,16 +208,23 @@ pub(crate) fn track_components(behavior: PreciseInstruction, before: &Processor,
     if matches!(behavior, PreciseInstruction::State { .. }) {
         return;
     }
-    let mut touched = list_changed_components(before, after);
+    let zeroed = if after.exception.is_none() { list_zeroed_components(behavior) } else { 0 };
+    // Only a component XINUSE marks unused, or any where a tracking is kept, can change what is tracked.
+    let open = if after.xsave_tracking.is_some() { after.xcr0 } else { after.xcr0 & !after.xinuse };
+    if open == 0 && zeroed == 0 {
+        return;
+    }
+    let mut touched = list_changed_components(before, after, open);
+    // Legacy encodings write no AVX-512 component, so their registers need not be looked up for those.
+    let widened = decoded.is_some_and(|decoded| matches!(decoded.encoding(), iced_x86::EncodingKind::VEX | iced_x86::EncodingKind::EVEX));
+    let reachable = if widened { open } else { open & LEGACY_AND_KEY_COMPONENTS };
     if let Some(decoded) = decoded
         && after.exception.is_none()
-        && (after.xinuse & !touched != 0 || after.xsave_tracking.is_some())
+        && reachable & !touched != 0
         && !crate::planted::is_active(crate::planted::Bug::InUseIgnoresSameValueWrites)
     {
-        touched |= list_written_components(decoded);
+        touched |= list_written_components(decoded) & open;
     }
-    touched &= after.xcr0;
-    let zeroed = if after.exception.is_none() { list_zeroed_components(behavior) } else { 0 };
     after.xinuse = (after.xinuse | touched) & !zeroed;
     after.xsave_tracking = after.xsave_tracking.and_then(|tracking| to_tracking(tracking.area, tracking.unmodified & !touched, after.xinuse));
 }

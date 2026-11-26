@@ -1507,16 +1507,16 @@ fn to_tracking_steps(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) 
 
 /// XRSTOR TRACKING: the components of `requested` whose bytes the reading XSAVEOPT left as the marker.
 fn list_skipped_components(observed: &[u8], requested: u64) -> u64 {
-    let ranges = |component: u64| -> Vec<Range<usize>> {
+    // Each component's bytes in the standard format, in at most two runs.
+    let ranges = |component: u64| -> [Range<usize>; 2] {
         match component {
-            xsave::X87_COMPONENT => vec![0..24, 32..160],
-            xsave::SSE_COMPONENT => vec![160..416],
-            xsave::PKRU_COMPONENT => vec![2688..2692],
-            other => xsave::EXTENDED_COMPONENTS
-                .iter()
-                .filter(|extended| extended.bit == other)
-                .map(|extended| extended.offset as usize..(extended.offset + extended.bytes) as usize)
-                .collect(),
+            xsave::X87_COMPONENT => [0..24, 32..160],
+            xsave::SSE_COMPONENT => [160..416, 0..0],
+            xsave::PKRU_COMPONENT => [2688..2692, 0..0],
+            other => {
+                let extended = xsave::EXTENDED_COMPONENTS.iter().find(|extended| extended.bit == other);
+                [extended.map_or(0..0, |extended| extended.offset as usize..(extended.offset + extended.bytes) as usize), 0..0]
+            }
         }
     };
     xsave::list_components(requested)

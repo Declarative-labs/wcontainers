@@ -203,7 +203,7 @@ fn list_saved_pieces(processor: &Processor, memory: Memory<'_, '_>, address: u64
 
 /// XSAVE's and XSAVEOPT's XSTATE_BV: the old one's bits outside the request, XINUSE's inside it.
 fn to_kept_bitmap(memory: Memory<'_, '_>, address: u64, requested: u64, in_use: u64) -> u64 {
-    let old = super::read_value(memory, address.wrapping_add(HEADER_OFFSET), 8);
+    let old = u64::from_le_bytes(read_area(memory, address.wrapping_add(HEADER_OFFSET), 8).try_into().expect("eight bytes"));
     let kept = if is_active(Bug::SaveHeaderDropsUnrequested) { 0 } else { old & !requested };
     kept | in_use & requested
 }
@@ -252,6 +252,8 @@ fn write_pieces(
     on_memory_mutated: &mut impl FnMut(MemoryDelta<'_, X86_64>),
 ) -> Result<(), Exception> {
     let fault = find_page_fault(memory, address, extent, Access::Write);
+    // Pieces that meet are written as one run.
+    let mut run: Option<(u64, Vec<u8>)> = None;
     for piece in pieces {
         let start = address.wrapping_add(piece.offset);
         let length = match fault {
@@ -259,9 +261,23 @@ fn write_pieces(
             Some(_) if across_fault == StoreAcrossFault::WritesNothing => 0,
             Some((faulting, _)) => faulting.saturating_sub(start).min(piece.bytes.len() as u64) as usize,
         };
-        if length > 0 {
-            on_memory_mutated(MemoryDelta::ValueAssignment { start, bytes: Cow::Owned(piece.bytes[..length].to_vec()) });
+        if length == 0 {
+            continue;
         }
+        match &mut run {
+            Some((run_start, bytes)) if run_start.wrapping_add(bytes.len() as u64) == start => {
+                bytes.extend_from_slice(&piece.bytes[..length]);
+            }
+            _ => {
+                if let Some((run_start, bytes)) = run.take() {
+                    on_memory_mutated(MemoryDelta::ValueAssignment { start: run_start, bytes: Cow::Owned(bytes) });
+                }
+                run = Some((start, piece.bytes[..length].to_vec()));
+            }
+        }
+    }
+    if let Some((start, bytes)) = run {
+        on_memory_mutated(MemoryDelta::ValueAssignment { start, bytes: Cow::Owned(bytes) });
     }
     match find_area_fault(memory, address, extent, Access::Write) {
         None => Ok(()),
@@ -287,7 +303,7 @@ fn restore(
     if let Some((faulting, page_present)) = find_page_fault(memory, compaction_start, compaction_bytes, Access::Read) {
         return Err(Exception::PageFault { access: Access::Read, page_present, address: faulting });
     }
-    let header: [u8; 64] = crate::memory::read_bytes(memory, header_address);
+    let header = read_area(memory, header_address, crate::xsave::HEADER_BYTES);
     let quad = |index: usize| u64::from_le_bytes(header[index..index + 8].try_into().expect("eight bytes"));
     let (state_bitmap, compaction) = (quad(0), quad(8));
     let compacted = compaction & COMPACTED != 0;
@@ -311,7 +327,8 @@ fn restore(
     if refused {
         return Err(Exception::GeneralProtection { error_code: 0 });
     }
-    let legacy: [u8; 416] = crate::memory::read_bytes(memory, address);
+    let area = read_area(memory, address, extent.max(HEADER_OFFSET + crate::xsave::HEADER_BYTES));
+    let legacy = &area[..416];
     let loads_mxcsr = if compacted {
         requested & SSE_COMPONENT != 0 && state_bitmap & SSE_COMPONENT != 0
     } else if is_active(Bug::RestoreMxcsrOnlyWithSse) {
@@ -329,7 +346,7 @@ fn restore(
         processor.mxcsr = MXCSR_RESET;
     }
     let loaded = requested & state_bitmap;
-    let (mut x87, _, vectors) = x87_state::read_extended(&legacy, wide);
+    let (mut x87, _, vectors) = x87_state::read_extended(legacy, wide);
     x87_state::set_summary(&mut x87);
     if requested & X87_COMPONENT != 0 {
         processor.x87 = if loaded & X87_COMPONENT != 0 { x87 } else { X87_INITIAL };
@@ -339,7 +356,7 @@ fn restore(
     }
     for (component, offset) in offsets.into_iter().filter(|(component, _)| requested & component.bit != 0) {
         let bytes = if loaded & component.bit != 0 {
-            read_component(memory, address.wrapping_add(offset), component.bytes)
+            area[offset as usize..(offset + component.bytes) as usize].to_vec()
         } else {
             vec![0; component.bytes as usize]
         };
@@ -358,10 +375,20 @@ fn restore(
     Ok(())
 }
 
-/// The bytes of a component, at most Hi16_ZMM's 1024.
-fn read_component(memory: Memory<'_, '_>, address: u64, bytes: u64) -> Vec<u8> {
-    let all: [u8; 1024] = crate::memory::read_bytes(memory, address);
-    all[..bytes as usize].to_vec()
+/// The bytes memory holds from the address on, each change laid over the ones before it, zero where none wrote.
+fn read_area(memory: Memory<'_, '_>, address: u64, length: u64) -> Vec<u8> {
+    let mut area = vec![0; length as usize];
+    for mutation in memory {
+        if let MemoryDelta::ValueAssignment { start, bytes } = mutation {
+            let end = start.wrapping_add(bytes.len() as u64);
+            let (from, to) = ((*start).max(address), end.min(address.wrapping_add(length)));
+            if from < to && *start < end {
+                area[(from - address) as usize..(to - address) as usize]
+                    .copy_from_slice(&bytes[(from - start) as usize..(to - start) as usize]);
+            }
+        }
+    }
+    area
 }
 
 /// Loads an extended component's registers from its bytes in the area.
