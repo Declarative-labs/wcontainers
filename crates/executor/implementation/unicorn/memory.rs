@@ -59,9 +59,9 @@ const MONITOR_TRAPS_NONE: u64 = 1 << 8;
 /// as op0, op1, CRn, CRm and op2.
 const TRANSLATION_CONTROL: RegisterARM64CP =
     RegisterARM64CP::new().op0(3).op1(0).crn(2).crm(0).op2(2);
-/// TCR_EL1 with T0SZ (bits 5:0) at 16, the 48-bit addresses Linux gives a program, which sets where a pointer
-/// authentication code lies.
-const USER_TRANSLATION_CONTROL: u64 = 64 - 48;
+/// TCR_EL1 as Linux sets it for a program's addresses: T0SZ (bits 5:0) at 16 for 48-bit addresses, which sets where a
+/// pointer authentication code lies, and TBI0 (bit 37), so a data address's top byte is a tag the access ignores.
+const USER_TRANSLATION_CONTROL: u64 = (64 - 48) | 1 << 37;
 
 /// The most bytes a space maps in unicorn as one region, a level 2 block of pages.
 ///
