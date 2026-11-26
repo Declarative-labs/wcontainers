@@ -21,7 +21,7 @@ wcontainers-processor-architecture-arm64 = { path = "../../../processor-architec
 
 [dev-dependencies]
 wcontainers-precise-instruction-set-conformance = { path = "../../conformance" }
-wcontainers-processor-architecture-recording = { path = "../../../processor-architecture/implementation/recording" }
+wcontainers-behavior-source-recording = { path = "../../../behavior-source/implementation/recording" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 
 [lints]

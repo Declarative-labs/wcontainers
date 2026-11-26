@@ -5078,6 +5078,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-precise-instruction-set-apple-m5"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-behavior-source-recording",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-conformance",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+]
+
+[[package]]
 name = "wcontainers-precise-instruction-set-collected"
 version = "0.1.0"
 dependencies = [
@@ -5114,6 +5125,17 @@ dependencies = [
  "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-instruction-input-domain",
  "wcontainers-instruction-input-domain-arm64",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-conformance",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+]
+
+[[package]]
+name = "wcontainers-precise-instruction-set-neoverse-v2"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-behavior-source-recording",
  "wcontainers-precise-instruction-set",
  "wcontainers-precise-instruction-set-conformance",
  "wcontainers-processor-architecture",

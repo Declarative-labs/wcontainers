@@ -1,32 +1,48 @@
 use std::path::Path;
 
+use wcontainers_behavior_source_recording::Recording;
+use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_precise_instruction_set_apple_m5::AppleM5;
 use wcontainers_processor_architecture::ExecutionState;
-use wcontainers_processor_architecture_arm64::{Arm64, Instruction};
-use wcontainers_processor_architecture_recording::read_recordings;
+use wcontainers_processor_architecture_arm64::{Arm64, Instruction, PreciseInstruction, User};
 
-/// What an Apple M5 under Hypervisor.framework did, written by the measured set's record tool.
-const RECORDINGS: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/recordings");
+/// What an Apple M5 under Hypervisor.framework did, written by the record tool, in the recording source.
+const RECORDINGS: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../../behavior-source/implementation/recording/recordings/apple-m5"
+);
+
+fn read_recording() -> Recording {
+    match Recording::read(Path::new(RECORDINGS)) {
+        Ok(recording) => recording,
+        Err(error) => panic!("reading {RECORDINGS}: {error}"),
+    }
+}
 
 fn recorded_cases() -> Vec<(
-    Instruction,
-    ExecutionState<'static, Arm64>,
-    ExecutionState<'static, Arm64>,
+    Instruction<core::convert::Infallible>,
+    ExecutionState<'static, Arm64<User>>,
+    ExecutionState<'static, Arm64<User>>,
 )> {
-    let recordings = match read_recordings(Path::new(RECORDINGS)) {
-        Ok(recordings) => recordings,
-        Err(error) => panic!("reading {RECORDINGS}: {error}"),
-    };
-    recordings
-        .iter()
-        .flat_map(|recording| {
-            let instruction = recording.instruction();
-            recording
-                .cases()
-                .iter()
-                .map(move |(before, after)| (instruction, before.clone(), after.clone()))
-        })
+    read_recording()
+        .cases()
+        .map(|(instruction, before, after)| (instruction, before.clone(), after.clone()))
         .collect()
 }
 
-wcontainers_precise_instruction_set_conformance::tests!(AppleM5, recorded_cases());
+/// The set's own choice for each recorded instruction, since its choices are written out, not measured.
+fn written_choices() -> Vec<(
+    Instruction<core::convert::Infallible>,
+    PreciseInstruction<core::convert::Infallible>,
+)> {
+    read_recording()
+        .instructions()
+        .map(|instruction| (instruction, AppleM5.to_precise(instruction)))
+        .collect()
+}
+
+wcontainers_precise_instruction_set_conformance::tests!(
+    AppleM5,
+    written_choices(),
+    recorded_cases()
+);
