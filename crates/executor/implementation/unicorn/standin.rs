@@ -27,10 +27,13 @@ use wcontainers_processor_architecture::{
 };
 use wcontainers_processor_architecture_arm64::encoding::{IMM16, RN};
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
+use wcontainers_processor_architecture_arm64::system_register::{
+    NEOVERSE_V2_SYSTEM_REGISTERS, simulate_system_register_move,
+};
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, ExclusiveMonitor, FaultStatus,
     INSTRUCTION_SIZE, Instruction, InstructionFetch, PagePermission, Processor, User,
-    WaitInstruction,
+    WaitInstruction, ZERO_PROCESSOR,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -43,6 +46,26 @@ pub const SPACE_32_BIT: u64 = 1 << 32;
 /// A process's address space on a host with 64 bit memories, at the smallest cap such a host
 /// sets (Chrome's 16 GiB).
 pub const SPACE_64_BIT: u64 = 16 << 30;
+
+/// How many guest instructions an execution retires before the stand-in asks its handler, as an interrupt from outside
+/// does, unless configured otherwise.
+pub const DEFAULT_SLICE_INSTRUCTIONS: u64 = 1_000_000;
+
+/// What the stand-in is configured with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StandInConfig {
+    /// How many guest instructions an execution retires before it calls `TrapHandler::handle_interrupt`, counted from
+    /// its start and again after each interrupt, so where a slice ends repeats exactly.
+    pub slice_instructions: u64,
+}
+
+impl Default for StandInConfig {
+    fn default() -> Self {
+        Self {
+            slice_instructions: DEFAULT_SLICE_INSTRUCTIONS,
+        }
+    }
+}
 
 /// The register a system call's result goes in, x0 (<https://man7.org/linux/man-pages/man2/syscall.2.html>).
 const RESULT_REGISTER: usize = 0;
@@ -148,6 +171,7 @@ pub struct StandIn {
     pub last_instructions: u64,
     /// Whether the kernel's clock is the machine's, so a slice is also a span of it.
     wall_clock: bool,
+    config: StandInConfig,
 }
 
 /// The memories, threads and blocks of a stand-in, on its engine's thread.
@@ -213,7 +237,14 @@ impl StandIn {
             end,
             last_instructions: 0,
             wall_clock: false,
+            config: StandInConfig::default(),
         }
+    }
+
+    /// The same CPU side with the configuration given.
+    pub fn configured(mut self, config: StandInConfig) -> Self {
+        self.config = config;
+        self
     }
 
     /// The same CPU side for a kernel on the machine's clock: a turn also ends once its slice has
@@ -240,6 +271,7 @@ impl StandIn {
             end: self.end,
             last_instructions: 0,
             wall_clock: self.wall_clock,
+            config: self.config,
         }
     }
 
@@ -604,7 +636,8 @@ impl BehaviorSource for StandIn {
     }
 }
 
-/// The stand-in runs guest code as it is, with no translator to configure.
+/// The stand-in runs guest code as it is, with no translator to configure; its slice is set as it is built
+/// ([`StandIn::configured`]).
 impl Executor for StandIn {
     type TranslatorConfig = ();
     type GuestMemory = UnicornSpace;
@@ -629,7 +662,10 @@ impl Executor for StandIn {
         let interrupter = StandInInterrupter {
             raised: Arc::clone(&raised),
         };
+        let slice = self.config.slice_instructions;
         let execution = StandInExecution {
+            slice,
+            left_in_slice: slice,
             stand_in: self,
             registers: to_register_block(&processor),
             predicates: Predicates {
@@ -664,6 +700,9 @@ pub struct StandInExecution<'execution> {
     predicates: Predicates,
     memory: &'execution UnicornSpace,
     raised: Arc<AtomicBool>,
+    /// The instructions of a slice, and how many of the current slice the guest has yet to retire.
+    slice: u64,
+    left_in_slice: u64,
 }
 
 /// Why the stand-in stopped running the guest.
@@ -728,19 +767,23 @@ impl Execution for StandInExecution<'_> {
 }
 
 impl StandInExecution<'_> {
-    /// Runs the guest until it traps or an interrupt is raised, which unicorn answers at the next block.
+    /// Runs the guest until it traps, an interrupt is raised, which unicorn answers at the next block, or its slice
+    /// ends, which unicorn counts exactly.
     fn run_until_trap(&mut self) -> Stop {
         loop {
             if self.raised.swap(false, Ordering::AcqRel) {
+                self.left_in_slice = self.slice;
                 return Stop::Interrupted;
             }
             let (exit, instructions) = self.memory.run_turn(
                 &mut self.registers,
-                None,
+                Some(self.left_in_slice),
                 None,
                 Some(Arc::clone(&self.raised)),
             );
             self.stand_in.last_instructions = instructions;
+            // Unicorn counts whole blocks as they start, so a trap inside a block counts the block's rest too.
+            self.left_in_slice = self.left_in_slice.saturating_sub(instructions);
             let exit = match exit {
                 Ok(exit) => exit,
                 Err(Unsupported::AlignmentFault { pc }) => {
@@ -754,7 +797,11 @@ impl StandInExecution<'_> {
                 Exit::MemoryFault { address, access } => {
                     return Stop::MemoryFault { address, access };
                 }
-                // Only an interrupt stops a turn with no limit; it is answered at the top.
+                // A stop with no interrupt raised is the slice's end; an interrupt is answered at the top.
+                Exit::Stop if !self.raised.load(Ordering::Acquire) => {
+                    self.left_in_slice = self.slice;
+                    return Stop::Interrupted;
+                }
                 Exit::Stop => {}
                 Exit::IllegalInstruction => {
                     let pc = self.registers.pc;
@@ -954,10 +1001,40 @@ fn to_exception(
 fn to_undefined_exception(word: u32, pc: u64) -> Result<Exception, Unsupported> {
     if word == WAIT_FOR_INTERRUPT {
         Ok(Exception::WaitTrapped(WaitInstruction::WaitForInterrupt))
+    } else if let Some(direction) = to_register_move_direction(word) {
+        // QEMU raises an access EL1 traps and an undefined one alike; what EL0 reaches of each register, as the
+        // architecture lists it, tells them apart. An access the list lets complete stays a refusal.
+        let mut processor = ZERO_PROCESSOR;
+        match simulate_system_register_move(
+            &mut processor,
+            word,
+            direction,
+            NEOVERSE_V2_SYSTEM_REGISTERS,
+        ) {
+            Err(
+                exception @ (Exception::SystemAccessTrapped(_) | Exception::UndefinedInstruction),
+            ) => Ok(exception),
+            _ => Err(Unsupported::TrapOrUndefined { pc, word }),
+        }
     } else if word & SYSTEM_INSTRUCTION_MASK == SYSTEM_INSTRUCTION_VALUE {
         Err(Unsupported::TrapOrUndefined { pc, word })
     } else {
         Ok(Exception::UndefinedInstruction)
+    }
+}
+
+/// The direction of an MRS (a read) or MSR (register) word (a write), none for another word.
+fn to_register_move_direction(word: u32) -> Option<AccessDirection> {
+    let matches = |instruction: Instruction<Infallible>| {
+        let fixed = instruction.to_fixed_bits();
+        word & fixed.mask == fixed.value
+    };
+    if matches(Instruction::Mrs) {
+        Some(AccessDirection::Read)
+    } else if matches(Instruction::MsrRegister) {
+        Some(AccessDirection::Write)
+    } else {
+        None
     }
 }
 
@@ -1304,7 +1381,7 @@ fn check_block(block: &SharedPages, offset: u64, length: usize) -> Result<(), Cp
 mod tests {
     use wcontainers_abi::{Cpu, PAGE_SIZE, Permissions};
 
-    use super::{SPACE_32_BIT, StandIn};
+    use super::{Processor, SPACE_32_BIT, StandIn};
 
     /// The stand-in and its spaces may move to another host thread, though unicorn's instances may not.
     #[test]
@@ -1348,6 +1425,73 @@ mod tests {
             .expect("the shown byte read");
         assert_eq!(read, [u8::MAX]);
         assert_eq!(stand_in.take_refused().len(), 1, "the refusals");
+    }
+
+    /// A read of the virtual counter at EL0 traps to EL1, so the kernel answers it from its own clock.
+    #[test]
+    fn a_counter_read_traps() {
+        use wcontainers_abi::{Access, SystemCallRequest};
+        use wcontainers_executor::memory_space::{MemorySpace, PageTable};
+        use wcontainers_executor::{
+            Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse,
+            SystemCallResponse, TrapHandler,
+        };
+        use wcontainers_processor_architecture_arm64::{
+            AccessDirection, Exception, SystemAccess, ZERO_PROCESSOR,
+        };
+        use wcontainers_volatile_bytes::VolatileBytes;
+
+        /// Ends the execution at any trap a handler is given.
+        struct Ending;
+        impl TrapHandler for Ending {
+            fn handle_system_call(&mut self, _: SystemCallRequest) -> SystemCallResponse {
+                SystemCallResponse::Terminate
+            }
+            fn handle_memory_fault(&mut self, _: u64, _: Access) -> MemoryFaultResponse {
+                MemoryFaultResponse::Terminate
+            }
+            fn handle_interrupt(&mut self) -> InterruptResponse {
+                InterruptResponse::Terminate
+            }
+        }
+
+        /// [MRS](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register-)
+        /// of X0 from CNTVCT_EL0, op0 3, op1 3, CRn 14, CRm 0, op2 2.
+        const READ_VIRTUAL_COUNTER: u32 = 0xD53B_E040;
+        let mut stand_in = StandIn::with_space(SPACE_32_BIT);
+        let (memory, mut table) = stand_in.create_guest_memory().expect("a memory");
+        let code = PAGE_SIZE..PAGE_SIZE * 2;
+        table
+            .set_permissions(code.clone(), Permissions::READ | Permissions::EXECUTE)
+            .expect("the code's page allowed");
+        memory
+            .borrow(code.start..code.start + super::INSTRUCTION_SIZE)
+            .expect("the code's word")
+            .write(&READ_VIRTUAL_COUNTER.to_le_bytes());
+        let start = Processor {
+            program_counter: code.start,
+            ..ZERO_PROCESSOR
+        };
+        let (execution, _interrupter) = stand_in.prepare_execution(start.clone(), &memory);
+        let ExecutionStop::Terminated(stopped) = execution.run(&mut Ending) else {
+            panic!("the stand-in never waits");
+        };
+        let trapped = Exception::SystemAccessTrapped(SystemAccess {
+            op0: 3,
+            op1: 3,
+            crn: 14,
+            crm: 0,
+            op2: 2,
+            rt: 0,
+            direction: AccessDirection::Read,
+        });
+        assert_eq!(
+            stopped,
+            Processor {
+                exception: Some(trapped),
+                ..start
+            }
+        );
     }
 
     /// Two memories that show one block see each other's writes, the guest's among them.

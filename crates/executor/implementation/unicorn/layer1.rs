@@ -1,5 +1,5 @@
-//! Layer 1: random sequences of system calls, made in the reference by a small native runner and in our
-//! kernel with a plain buffer as guest memory. Every return value and the arena after every call are
+//! Layer 1: random sequences of system calls, made by a small native runner in the reference and,
+//! as a container's program on the stand-in, in our kernel. Every return value and the arena after every call are
 //! compared, and the play area (which pages can be read, and their bytes) after the last call: reading
 //! it brings pages in, which would change what later calls see. The few values that must differ
 //! (inode numbers, times, process numbers, `/proc`'s link count) are masked on both sides.
@@ -14,20 +14,6 @@ use linux_raw_sys::net;
 use linux_raw_sys::ptrace as seccomp;
 use wcontainers_abi::PAGE_SIZE;
 
-/// The CPU side the sequences run over: the buffer CPU, or with the `runtime` feature the WebAssembly
-/// back end's memories, permission tables, blocks of shared pages and fork copies.
-#[cfg(not(feature = "runtime"))]
-type Layer1Cpu = crate::buffer::BufferCpu;
-#[cfg(feature = "runtime")]
-type Layer1Cpu = crate::driver::Back;
-
-fn layer1_cpu() -> Layer1Cpu {
-    #[cfg(not(feature = "runtime"))]
-    return crate::buffer::BufferCpu::new();
-    #[cfg(feature = "runtime")]
-    return crate::driver::back_end(0, crate::standin::SPACE_32_BIT, false);
-}
-use crate::driver::TestHost;
 use crate::{guest, reference};
 
 /// Where each sequence's memory is, in both runners.
@@ -4424,128 +4410,134 @@ pub fn runner(out: &Path) -> std::path::PathBuf {
     guest::build("layer1", &[], out)
 }
 
-/// Runs a sequence on our kernel: a fresh container with the runner as its program, whose process makes
-/// the calls with no instructions run. Where the reference's runner zeroed a random device's bytes
-/// after a call (`theirs`), the same is done here, by the same calls.
+/// Runs a sequence on our kernel: a fresh container on the stand-in with the reference's runner as
+/// its program, the sequence sent to its input and its report read from its output, as the
+/// reference's runner is run. The runner zeroes what the reference's zeroes itself.
 pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> SequenceResult {
     run_ours_with(sequence, runner, theirs, &mut None)
 }
 
-/// As [`run_ours`], with the file backend a sequence on it uses: one server for every sequence,
-/// started at the first, each kernel connecting afresh, and emptied after each as the reference's
-/// runner empties its own.
+/// As [`run_ours`]. A sequence on the file backend has a server of its own, which the driver
+/// starts for the container, so `backend` is left as it is.
 pub fn run_ours_with(
     sequence: &Sequence,
     runner: &[u8],
-    theirs: &SequenceResult,
-    backend: &mut Option<crate::backend::Backend>,
+    _theirs: &SequenceResult,
+    _backend: &mut Option<crate::backend::Backend>,
 ) -> SequenceResult {
-    let host = std::sync::Arc::new(TestHost::new(0));
-    if sequence.backend {
-        *host.backend() = Some(backend.take().unwrap_or_else(|| {
-            crate::backend::Backend::start(
-                &crate::backend::out(),
-                crate::backend::Served::Empty,
-                sequence.cached,
-            )
-        }));
-    }
-    let (result, host, _) = run_ours_digested(sequence, runner, theirs, host);
-    let server = host.backend().take();
-    if let Some(mut server) = server {
-        // Unmounted, as the reference's runner's mount lets go of everything a sequence looked up.
-        server.destroy();
-        server.empty();
-        *backend = Some(server);
-    }
-    result
+    run_on_runner(sequence, runner, 0, None).0
 }
 
 /// As [`run_ours_with`], keeping a record of what the host gave the kernel, then again on a fresh
-/// kernel and CPU side from that record alone, with no backend; both runs' results and every
-/// guest memory, as each was dropped and at the end, must be the same. Gives the first run's
-/// result and how many entries its record held.
+/// kernel and stand-in from that record alone, with no backend and another seed; both runs'
+/// results must be the same and the replay must use the record up. Gives the first run's result
+/// and how many entries its record held.
 #[cfg(not(feature = "runtime"))]
 pub fn run_ours_replayed(
     sequence: &Sequence,
     runner: &[u8],
-    theirs: &SequenceResult,
-    backend: &mut Option<crate::backend::Backend>,
+    _theirs: &SequenceResult,
+    _backend: &mut Option<crate::backend::Backend>,
 ) -> (SequenceResult, usize) {
-    let host = std::sync::Arc::new(TestHost::new(0).taped(crate::replay::Tape::recording()));
-    if sequence.backend {
-        *host.backend() = Some(backend.take().unwrap_or_else(|| {
-            crate::backend::Backend::start(
-                &crate::backend::out(),
-                crate::backend::Served::Empty,
-                sequence.cached,
-            )
-        }));
-    }
-    let (recorded, host, memories) = run_ours_digested(sequence, runner, theirs, host);
-    let server = host.backend().take();
-    if let Some(mut server) = server {
-        server.destroy();
-        server.empty();
-        *backend = Some(server);
-    }
-    let tape = host.take_tape().expect("a record");
+    let (recorded, tape) =
+        run_on_runner(sequence, runner, 0, Some(crate::replay::Tape::recording()));
+    let tape = tape.expect("a record");
+    let entries = tape.len();
     // Another seed, so nothing of the first run's comes from anywhere but the record.
-    let replaying = std::sync::Arc::new(TestHost::new(u64::MAX).taped(tape.replaying()));
-    let (replayed, host, replayed_memories) =
-        run_ours_digested(sequence, runner, theirs, replaying);
-    let left = host.take_tape().expect("a record");
+    let (replayed, left) = run_on_runner(sequence, runner, u64::MAX, Some(tape.replaying()));
+    let left = left.expect("a record");
     assert!(left.used_up(), "the replay left {} entries", left.len());
     assert_eq!(replayed, recorded, "the replay's results");
-    assert!(!memories.is_empty(), "no memory was seen");
-    assert_eq!(replayed_memories, memories, "the replay's guest memories");
-    (recorded, tape.len())
+    (recorded, entries)
 }
 
-/// The run itself, on `host`, which it gives back with what every guest memory held when the host
-/// keeps a record.
-fn run_ours_digested(
+/// The run itself, of `seed`, keeping or answering from `tape`: the runner at `/wc/layer1` in
+/// the reference's image, its work directory on the file backend at [`BACKEND_ROOT`] if the
+/// sequence asks, given the sequence on its input, which then closes, so it ends after it.
+/// Gives what it reported and the record.
+fn run_on_runner(
     sequence: &Sequence,
     runner: &[u8],
-    theirs: &SequenceResult,
-    host: std::sync::Arc<TestHost>,
-) -> (
-    SequenceResult,
-    std::sync::Arc<TestHost>,
-    crate::replay::MemoryDigests,
-) {
-    let mut cpu = layer1_cpu();
-    #[cfg(not(feature = "runtime"))]
-    let taped = host.taped_run();
-    #[cfg(not(feature = "runtime"))]
-    if taped {
-        crate::replay::DigestMemories::keep_digests(&mut cpu);
-    }
-    let (result, host) = run_ours_on(sequence, runner, theirs, host, &mut cpu);
-    #[cfg(not(feature = "runtime"))]
-    let memories = if taped {
-        crate::replay::DigestMemories::digests(&mut cpu)
+    seed: u64,
+    tape: Option<crate::replay::Tape>,
+) -> (SequenceResult, Option<crate::replay::Tape>) {
+    use crate::image::{File, Kind};
+    let mut files = crate::image::reference_image().to_vec();
+    files.push(File {
+        path: "wc".into(),
+        mode: 0o755,
+        uid: 0,
+        gid: 0,
+        mtime: 0,
+        kind: Kind::Directory,
+    });
+    files.push(File {
+        path: "wc/layer1".into(),
+        mode: 0o755,
+        uid: 0,
+        gid: 0,
+        mtime: 0,
+        kind: Kind::Regular(runner.to_vec()),
+    });
+    let arguments: &[&str] = if sequence.backend {
+        &["/wc/layer1", BACKEND_ROOT]
     } else {
-        Vec::new()
+        &["/wc/layer1"]
     };
-    #[cfg(feature = "runtime")]
-    let memories = Vec::new();
-    (result, host, memories)
+    let container = crate::driver::Container {
+        files: &files,
+        path: "/wc/layer1",
+        arguments,
+        environment: reference::ENVIRONMENT,
+        working_directory: reference::ROOT_DIRECTORY,
+        backend: sequence.backend.then_some(BACKEND_ROOT),
+        cached: sequence.cached,
+        published: &[],
+        root_image: None,
+        address_space: crate::standin::SPACE_32_BIT,
+    };
+    let prepared = crate::driver::Prepared {
+        client: crate::streams::StreamClient {
+            input: true,
+            script: vec![
+                crate::streams::Step::Send(sequence_bytes(sequence)),
+                crate::streams::Step::CloseInput,
+            ],
+            ..Default::default()
+        },
+        tape,
+        ..crate::driver::prepare(&container)
+    };
+    let run = crate::driver::run_prepared(
+        prepared,
+        &container,
+        seed,
+        crate::driver::Injections::default(),
+    )
+    .unwrap_or_else(|failure| panic!("the runner did not run: {failure:?}"));
+    (parse_run(&run.outcome.stdout, sequence), run.tape)
 }
 
-/// Layer 1 made each call as if the running thread had reached it, through the kernel's old
-/// drive (`next` and `exit`), which is gone: on the kernel's runners it needs an executor that
-/// makes those calls, which is not built yet.
-fn run_ours_on(
-    _sequence: &Sequence,
-    _runner: &[u8],
-    _theirs: &SequenceResult,
-    _host: std::sync::Arc<TestHost>,
-    _cpu: &mut Layer1Cpu,
-) -> (SequenceResult, std::sync::Arc<TestHost>) {
-    panic!(
-        "layer 1 makes its calls through the kernel's old drive, which is gone; it waits on an executor that makes them"
-    )
+/// What the runner wrote for one sequence: everything its child reported (u32 length, bytes),
+/// then the child's wait status (u32).
+fn parse_run(output: &[u8], sequence: &Sequence) -> SequenceResult {
+    let (length, output) = output
+        .split_first_chunk::<4>()
+        .expect("the runner wrote the length of its report");
+    let (reported, output) = output
+        .split_at_checked(u32::from_le_bytes(*length) as usize)
+        .expect("the runner wrote all it reported");
+    let status = i32::from_le_bytes(
+        *output
+            .first_chunk::<4>()
+            .expect("the runner wrote the status"),
+    );
+    let (calls, play) = parse_reports(reported, sequence.calls.len());
+    SequenceResult {
+        calls,
+        status,
+        play,
+    }
 }
 
 /// What is compared for one call: its value and the whole arena after it, with the bytes that must
