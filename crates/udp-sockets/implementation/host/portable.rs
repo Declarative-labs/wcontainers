@@ -25,6 +25,7 @@ use wcontainers_udp_sockets::{
     ReceiveCoalescing, UdpDatagram, UdpLocalEnd, UdpProtocol, UdpReceived, UdpSocketSetting,
     UdpSockets, ZeroChecksumReceipt,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
 
 use shared::readiness::{DATAGRAM_FACTS, Watched, Watcher};
 use shared::{Shortfalls, io_host_error, sock};
@@ -301,7 +302,11 @@ impl UdpSockets for HostUdpSockets {
         Err(SendError::Host(self.refuse(SEND_HEADER)))
     }
 
-    fn receive(&self, _socket: &Self::Socket, _into: &mut [u8]) -> Result<UdpReceived, HostError> {
+    fn receive(
+        &self,
+        _socket: &Self::Socket,
+        _into: &impl VolatileBytes,
+    ) -> Result<UdpReceived, HostError> {
         Err(self.refuse(RECEIVED_HEADER))
     }
 

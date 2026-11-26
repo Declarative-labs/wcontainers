@@ -2,6 +2,9 @@
 //! wherever the runtime's loop runs, with the host's services behind any [`Host`].
 
 #![no_std]
+// The kernel asks a system's waits to return `Send` futures, so the policy asks the same of its
+// host's, which only return type notation can say of a generic host.
+#![feature(return_type_notation)]
 
 extern crate alloc;
 
@@ -10,20 +13,19 @@ mod udp;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::convert::Infallible;
-use core::ops::{ControlFlow, Range};
+use core::ops::Range;
 use core::time::Duration;
 
-use alloc::sync::Arc;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use spin::Mutex;
-use wcontainers_abi::{Cpu, Event, Host, HostError, Warning};
-use wcontainers_kernel_linux::{Kernel, Standard, TaskId};
+use wcontainers_abi::{Host, HostError, Warning};
+use wcontainers_kernel_linux::{Standard, TaskId};
 use wcontainers_random_source::RandomSource;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
-use wcontainers_runtime_single_kernel::{Execution, System, TerminalSize, Turn};
-use wcontainers_system::StreamTransport;
+use wcontainers_runtime_single_kernel::{System, TerminalSize, Turn};
+use wcontainers_system::{FallbackObserver, StreamTransport};
+use wcontainers_volatile_bytes::VolatileBytes;
 
 /// The services' stream endpoints this policy names for the first process's standard output and
 /// error; it gives no input.
@@ -189,6 +191,41 @@ impl<H: Host> TestPolicy<H> {
         self.services
     }
 
+    /// Returns how the next turn of the kernel's slice ends: after the events set, else where the schedule draws.
+    pub fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
+        Turn::Counted {
+            limit: self
+                .turn_events
+                .or_else(|| self.state.lock().schedule.turn_limit(slice_nanoseconds)),
+        }
+    }
+
+    /// Moves the clocks by the time drawn for `progress` units the running thread made since it was last heard from.
+    pub fn ran(&self, progress: u64) {
+        let mut state = self.state.lock();
+        let nanoseconds = state.schedule.turn_nanoseconds(progress);
+        state.clock.advance(nanoseconds);
+    }
+
+    /// Counts a turn that ended.
+    pub fn count_turn(&self) {
+        self.state.lock().turns += 1;
+    }
+
+    /// Skips the clocks to `until` on the monotonic clock, as nothing can run before it.
+    pub fn skip_to(&self, until: u64) {
+        self.state.lock().clock.skip_to(until);
+    }
+
+    /// Keeps a slow path of the executor, apart from the kernel's fallbacks.
+    pub fn cpu_warning(&self, warning: Warning<'_>) {
+        self.state.lock().warnings.push(Warned {
+            reason: warning.reason.to_string(),
+            count: warning.count,
+            detail: warning.detail,
+        });
+    }
+
     fn refuse(&self, detail: u64) -> Result<(), HostError> {
         let mut state = self.state.lock();
         state.refused += 1;
@@ -215,14 +252,15 @@ impl<H> wcontainers_clock::Clock for TestPolicy<H> {
 
 /// Randomness is the services' own.
 impl<H: RandomSource> RandomSource for TestPolicy<H> {
-    fn fill_random_bytes(&self, into: &mut [u8]) -> Result<(), HostError> {
+    fn fill_random_bytes(&self, into: &impl VolatileBytes) -> Result<(), HostError> {
         self.services.fill_random_bytes(into)
     }
 }
 
-impl<H: Host> Host for TestPolicy<H> {
-    fn warn(&self, warning: Warning<'_>) {
-        self.services.warn(warning);
+/// The kernel's fallbacks are the services' warnings.
+impl<H: Host> FallbackObserver<Warning<'static>> for TestPolicy<H> {
+    fn on_fallback_used(&self, which: &Warning<'static>) {
+        self.services.warn(*which);
     }
 }
 
@@ -230,11 +268,11 @@ impl<H: Host> Host for TestPolicy<H> {
 impl<H: StreamTransport<Endpoint = u32>> StreamTransport for TestPolicy<H> {
     type Endpoint = u32;
 
-    fn send_stream(&self, peer: &u32, bytes: &[u8]) -> Result<usize, HostError> {
-        self.services.send_stream(peer, bytes)
+    fn send_stream(&self, peer: &u32, payload: &impl VolatileBytes) -> Result<usize, HostError> {
+        self.services.send_stream(peer, payload)
     }
 
-    fn receive_stream(&self, peer: &u32, into: &mut [u8]) -> Result<usize, HostError> {
+    fn receive_stream(&self, peer: &u32, into: &impl VolatileBytes) -> Result<usize, HostError> {
         self.services.receive_stream(peer, into)
     }
 
@@ -291,64 +329,27 @@ impl<H> wcontainers_system::TaskIdAllocator for TestPolicy<H> {
     fn free_task_id(&self, _id: TaskId) {}
 }
 
-impl<H: Host + RandomSource + StreamTransport<Endpoint = u32> + 'static>
-    wcontainers_kernel_linux::System for TestPolicy<H>
+impl<H> wcontainers_kernel_linux::System for TestPolicy<H> where
+    H: Host
+        + RandomSource
+        + StreamTransport<Endpoint = u32>
+        + Readiness<u32, wait_until_ready(..): Send>
+        + Send
+        + Sync
+        + 'static
 {
 }
 
-impl<H: Host + RandomSource + StreamTransport<Endpoint = u32> + 'static> System for TestPolicy<H> {
-    type End = Infallible;
-
-    fn started(self: &Arc<Self>, _kernel: &mut Kernel, _cpu: &mut dyn Cpu) {}
-
-    fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
-        Turn::Counted {
-            limit: self
-                .turn_events
-                .or_else(|| self.state.lock().schedule.turn_limit(slice_nanoseconds)),
-        }
-    }
-
-    fn ran(&self, progress: u64) {
-        let mut state = self.state.lock();
-        let nanoseconds = state.schedule.turn_nanoseconds(progress);
-        state.clock.advance(nanoseconds);
-    }
-
-    fn arrived(self: &Arc<Self>, _kernel: &mut Kernel, _cpu: &mut dyn Cpu) -> bool {
-        self.state.lock().turns += 1;
-        false
-    }
-
-    fn stopped<E: Execution>(
-        self: &Arc<Self>,
-        _kernel: &mut Kernel,
-        _cpu: &mut E,
-    ) -> ControlFlow<Infallible> {
-        ControlFlow::Continue(())
-    }
-
-    fn idle(
-        self: &Arc<Self>,
-        kernel: &mut Kernel,
-        cpu: &mut dyn Cpu,
-        until_nanoseconds: Option<u64>,
-    ) {
-        let Some(until) = until_nanoseconds else {
-            panic!("the kernel is idle with nothing to wake it, and this policy has no events");
-        };
-        self.state.lock().clock.skip_to(until);
-        kernel.event(cpu, self, Event::Timer);
-    }
-
-    fn cpu_warning(&self, warning: Warning<'_>) {
-        self.state.lock().warnings.push(Warned {
-            reason: warning.reason.to_string(),
-            count: warning.count,
-            detail: warning.detail,
-        });
-    }
-
+impl<H> System for TestPolicy<H>
+where
+    H: Host
+        + RandomSource
+        + StreamTransport<Endpoint = u32>
+        + Readiness<u32, wait_until_ready(..): Send>
+        + Send
+        + Sync
+        + 'static,
+{
     fn standard(&self, _terminal: Option<TerminalSize>) -> Standard<u32> {
         Standard::Pipes {
             input: None,

@@ -19,6 +19,9 @@ wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-negative-route-advisable = { path = "../../../negative-route-advisable" }
 wcontainers-readiness = { path = "../../../readiness" }
 wcontainers-tcp-sockets = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
 etherparse.workspace = true
 wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
 
@@ -32,15 +35,26 @@ nix = { version = "0.31.3", default-features = false, features = ["net"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["ioctl", "net", "netlink", "no_std"] }
 libc = "0.2.191"
+# Linux's socket option and ioctl calls for the options and requests no vetted crate wraps.
+wcontainers-linux-socket-options = { path = "../../../linux-socket-options" }
 # The attributes of a transmit report's statistics.
 netlink-packet-core = "0.9.0"
+# The uapi structures read from and written as bytes.
+zerocopy.workspace = true
 
 [dev-dependencies]
 wcontainers-tcp-sockets-conformance = { path = "../../conformance" }
+# Counts the allocations of the waiting thread in the allocation test (MIT or Apache-2.0).
+allocation-counter = "0.8.1"
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
+
+[[test]]
+name = "allocations"
+path = "tests/allocations.rs"
+harness = false
 
 [lints]
 workspace = true

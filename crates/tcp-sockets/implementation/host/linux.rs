@@ -2,8 +2,8 @@
 
 use std::ffi::c_int;
 use std::io::IoSlice;
-use std::mem::{MaybeUninit, size_of};
-use std::net::{IpAddr, SocketAddr};
+use std::mem::size_of;
+use std::net::{IpAddr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU32;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
@@ -17,6 +17,8 @@ use rustix::io::Errno;
 use rustix::net::{RecvFlags, SocketFlags, SocketType, ipproto};
 use socket2::{MsgHdr, SockAddr, SockRef};
 use wcontainers_abi::HostError;
+use wcontainers_byte_sink::ByteSink;
+use wcontainers_byte_source::ByteSource;
 use wcontainers_configurable::Configurable;
 use wcontainers_internet_protocol::{
     BindingSetting, ByteCount, BytesPerSecond, DropCount, FlowLabelChoice, FrameLength, HopLimit,
@@ -25,7 +27,9 @@ use wcontainers_internet_protocol::{
     TransmitEvent, TransmitReport, TransmitReportKey, TransmitReportRequest,
     WirelessAcknowledgement,
 };
-use wcontainers_internet_protocol_linux_socket_options::datagram::addresses::{in6_addr, storage};
+use wcontainers_internet_protocol_linux_socket_options::datagram::addresses::{
+    StorageBytes, in6_addr, kernel_storage, storage, storage_bytes,
+};
 use wcontainers_internet_protocol_linux_socket_options::datagram::exchange::NO_ARRIVAL_INTERFACE;
 use wcontainers_internet_protocol_linux_socket_options::datagram::memberships::{
     AnycastMemberships, set_multicast_group,
@@ -36,11 +40,12 @@ use wcontainers_internet_protocol_linux_socket_options::errno::errno_of;
 use wcontainers_internet_protocol_linux_socket_options::icmp_error::write_icmp_error;
 use wcontainers_internet_protocol_linux_socket_options::readiness::Watched;
 use wcontainers_internet_protocol_linux_socket_options::{
-    self as options, ControlBuffer, bind, family_of, get_int, host_error, open_socket, peer_for,
-    set_flag, set_int, set_option,
+    self as options, ControlBuffer, LINUX, bind, family_of, get_int, host_error, open_socket,
+    peer_for, set_flag, set_int,
 };
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::errno::Errno as KernelErrno;
+use wcontainers_linux_socket_options::{KEY_QUERY_LENGTH, LinuxSocketOptions};
 use wcontainers_negative_route_advisable::NegativeRouteAdvisable;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
 use wcontainers_tcp_sockets::authentication::{
@@ -67,6 +72,8 @@ use wcontainers_tcp_sockets::{
     TcpLocalEndError, TcpProtocol, TcpPushOverride, TcpReceiveRequest, TcpReceived,
     TcpRecordBoundary, TcpSendRequest, TcpShutdown, TcpSockets, TcpUrgency,
 };
+use wcontainers_volatile_bytes::VolatileBytes;
+use zerocopy::{FromBytes, FromZeros, IntoBytes};
 
 mod state;
 
@@ -97,6 +104,9 @@ const DEFAULT_VRF_INDEX: c_int = 0;
 const SAVED_SYNCHRONIZE_ROOM: usize = etherparse::Ethernet2Header::LEN
     + etherparse::Ipv4Header::MAX_LEN
     + etherparse::TcpHeader::MAX_LEN;
+
+/// The room `TCP_SAVED_SYN` is read with when the first is too small: the longest headers a 16-bit length allows.
+const LARGEST_SAVED_SYNCHRONIZE: usize = u16::MAX as usize;
 
 /// `TCP_SAVE_SYN`'s value for saving no headers, which Linux does not name.
 ///
@@ -442,13 +452,6 @@ fn network_header_start(saved: &[u8], local: SocketAddr, peer: SocketAddr) -> Op
 const PACKET_OPTIONS_ROOM: usize =
     size_of::<libc::cmsghdr>() + size_of::<uapi::in6_pktinfo>() + size_of::<usize>();
 
-/// Control message room aligned as the messages' headers are.
-#[repr(C)]
-struct PacketOptions {
-    _aligned: [libc::cmsghdr; usize::MIN],
-    bytes: [u8; PACKET_OPTIONS_ROOM],
-}
-
 /// Gives the host error of a failed socket2 call.
 fn io_host_error(error: std::io::Error) -> HostError {
     host_error(Errno::from_io_error(&error).unwrap_or(Errno::IO))
@@ -460,12 +463,6 @@ fn internet_address(address: std::io::Result<SockAddr>) -> Result<SocketAddr, Ho
         .map_err(io_host_error)?
         .as_socket()
         .ok_or(HostError::Errno(libc::EAFNOSUPPORT))
-}
-
-/// Gives a receive buffer as socket2 takes it.
-fn uninitialised(bytes: &mut [u8]) -> &mut [MaybeUninit<u8>] {
-    // SAFETY: MaybeUninit<u8> has u8's layout, and socket2 writes only initialised bytes into it.
-    unsafe { &mut *(std::ptr::from_mut(bytes) as *mut [MaybeUninit<u8>]) }
 }
 
 fn invalid() -> HostError {
@@ -571,18 +568,39 @@ fn hold_flow_label(
     peer: SocketAddr,
     label: Ipv6FlowLabel,
 ) -> Result<(), HostError> {
-    // SAFETY: in6_flowlabel_req is plain data.
-    let mut request: uapi::in6_flowlabel_req = unsafe { std::mem::zeroed() };
-    request.flr_dst = in6_addr(match peer.ip() {
+    let destination = match peer.ip() {
         IpAddr::V4(address) => address.to_ipv6_mapped(),
         IpAddr::V6(address) => address,
-    });
-    request.flr_label = label.value().to_be();
-    request.flr_action = uapi::IPV6_FL_A_GET as u8;
-    request.flr_share = uapi::IPV6_FL_S_PROCESS as u8;
-    request.flr_flags = uapi::IPV6_FL_F_CREATE as u16;
-    set_option(socket, uapi::SOL_IPV6, uapi::IPV6_FLOWLABEL_MGR, &request)?;
+    };
+    let request = flow_label_request(
+        destination,
+        label.value().to_be(),
+        uapi::IPV6_FL_A_GET,
+        uapi::IPV6_FL_S_PROCESS,
+        uapi::IPV6_FL_F_CREATE,
+    );
+    LINUX.set_ipv6_flowlabel_mgr(socket, &request)?;
     set_flag(socket, uapi::SOL_IPV6, uapi::IPV6_FLOWINFO_SEND, true)
+}
+
+/// An `IPV6_FLOWLABEL_MGR` request, with no expiry or linger of its own.
+fn flow_label_request(
+    destination: Ipv6Addr,
+    label: u32,
+    action: u32,
+    share: u32,
+    flags: u32,
+) -> uapi::in6_flowlabel_req {
+    uapi::in6_flowlabel_req {
+        flr_dst: in6_addr(destination),
+        flr_label: label,
+        flr_action: action as u8,
+        flr_share: share as u8,
+        flr_flags: flags as u16,
+        flr_expires: u16::MIN,
+        flr_linger: u16::MIN,
+        __flr_pad: u32::MIN,
+    }
 }
 
 /// Sets or removes the MD5 signature key of the peers a prefix holds, through `TCP_MD5SIG_EXT`.
@@ -597,11 +615,14 @@ fn set_md5_key(
         TcpMd5KeyChange::Set { peer, key } => (peer, key),
         TcpMd5KeyChange::Removed(peer) => (peer, &[][..]),
     };
-    // SAFETY: tcp_md5sig is plain data.
-    let mut request: uapi::tcp_md5sig = unsafe { std::mem::zeroed() };
-    request.tcpm_addr = storage(key_address(family, peer.prefix.address));
-    request.tcpm_flags = uapi::TCP_MD5SIG_FLAG_PREFIX as u8;
-    request.tcpm_prefixlen = peer.prefix.length.0;
+    let mut request = uapi::tcp_md5sig {
+        tcpm_addr: storage(key_address(family, peer.prefix.address)),
+        tcpm_flags: uapi::TCP_MD5SIG_FLAG_PREFIX as u8,
+        tcpm_prefixlen: peer.prefix.length.0,
+        tcpm_keylen: u16::MIN,
+        tcpm_ifindex: UNSET,
+        tcpm_key: std::array::from_fn(|_| u8::MIN),
+    };
     if let Some(index) = vrf_index(peer.vrf)? {
         request.tcpm_flags |= uapi::TCP_MD5SIG_FLAG_IFINDEX as u8;
         request.tcpm_ifindex = index;
@@ -612,7 +633,7 @@ fn set_md5_key(
         .ok_or_else(invalid)?
         .copy_from_slice(key);
     request.tcpm_keylen = key.len() as u16;
-    match set_option(socket, uapi::SOL_TCP, uapi::TCP_MD5SIG_EXT, &request) {
+    match LINUX.set_tcp_md5sig_ext(socket, &request) {
         Err(HostError::Errno(libc::ENOENT)) if key.is_empty() => Ok(()),
         other => other,
     }
@@ -641,12 +662,55 @@ fn vrf_index(vrf: TcpKeyVrf) -> Result<Option<c_int>, HostError> {
 
 /// The `TCP_AO_*` fields that name a key: its peer, prefix, interface flag and index, and identifiers.
 struct AuthenticationKeyName {
-    address: uapi::__kernel_sockaddr_storage,
+    address: StorageBytes,
     prefix: u8,
     flags: u8,
     interface: i32,
     send: u8,
     receive: u8,
+}
+
+options::uapi_mirror! {
+    /// `struct tcp_ao_getsockopt`, which `TCP_AO_GET_KEYS` reads a key's name from and writes the key into.
+    #[derive(IntoBytes)]
+    struct KeyQuery mirrors uapi::tcp_ao_getsockopt {
+        addr: StorageBytes,
+        alg_name: [libc::c_char; 64],
+        key: [u8; 80],
+        nkeys: u32,
+        /// `is_current`, `is_rnext` and `get_all`, left clear to ask for the named key alone.
+        _bitfield_1: [u8; 2],
+        sndid: u8,
+        rcvid: u8,
+        prefix: u8,
+        maclen: u8,
+        keyflags: u8,
+        keylen: u8,
+        ifindex: i32,
+        pkt_good: u64,
+        pkt_bad: u64,
+    }
+}
+
+/// The bytes of the `TCP_AO_GET_KEYS` query for the one key of the name.
+fn key_query_bytes(name: &AuthenticationKeyName) -> [u8; KEY_QUERY_LENGTH] {
+    let mut bytes = [u8::MIN; KEY_QUERY_LENGTH];
+    bytes.copy_from_slice(key_query(name).as_bytes());
+    bytes
+}
+
+/// Asks `TCP_AO_GET_KEYS` for the one key of the name.
+fn key_query(name: &AuthenticationKeyName) -> KeyQuery {
+    KeyQuery {
+        addr: name.address,
+        prefix: name.prefix,
+        keyflags: name.flags,
+        ifindex: name.interface,
+        sndid: name.send,
+        rcvid: name.receive,
+        nkeys: ONE_KEY,
+        ..KeyQuery::new_zeroed()
+    }
 }
 
 fn authentication_key_name(
@@ -658,7 +722,10 @@ fn authentication_key_name(
         None => (u8::MIN, DEFAULT_VRF_INDEX),
     };
     Ok(AuthenticationKeyName {
-        address: storage(key_address(family, identity.peer.address)),
+        address: storage_bytes(SocketAddr::new(
+            key_address(family, identity.peer.address),
+            u16::MIN,
+        )),
         prefix: identity.peer.length.0,
         flags,
         interface,
@@ -676,18 +743,24 @@ fn add_authentication_key(
     addition: &TcpAuthenticationKeyAddition<'_>,
 ) -> Result<(), HostError> {
     let name = authentication_key_name(family, &addition.identity)?;
-    // SAFETY: tcp_ao_add is plain data.
-    let mut request: uapi::tcp_ao_add = unsafe { std::mem::zeroed() };
-    request.addr = name.address;
-    request.prefix = name.prefix;
-    request.ifindex = name.interface;
-    request.keyflags = name.flags;
+    let mut request = uapi::tcp_ao_add {
+        addr: kernel_storage(&name.address),
+        alg_name: std::array::from_fn(|_| libc::c_char::default()),
+        ifindex: name.interface,
+        _bitfield_align_1: [],
+        _bitfield_1: Default::default(),
+        reserved2: u16::MIN,
+        prefix: name.prefix,
+        sndid: name.send,
+        rcvid: name.receive,
+        maclen: addition.mac_length.0,
+        keyflags: name.flags,
+        keylen: u8::MIN,
+        key: std::array::from_fn(|_| u8::MIN),
+    };
     if addition.other_options == TcpAuthenticationOptionCoverage::Excluded {
         request.keyflags |= uapi::TCP_AO_KEYF_EXCLUDE_OPT as u8;
     }
-    request.sndid = name.send;
-    request.rcvid = name.receive;
-    request.maclen = addition.mac_length.0;
     // The algorithm's name is a C string, so one with a NUL or no room for the terminating one is invalid.
     let algorithm = addition.algorithm.as_bytes();
     if algorithm.contains(&u8::MIN) || algorithm.len() >= request.alg_name.len() {
@@ -710,8 +783,10 @@ fn add_authentication_key(
     };
     request.set_set_current(u32::from(current));
     request.set_set_rnext(u32::from(next));
-    match set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_ADD_KEY, &request) {
-        Err(HostError::Errno(libc::EEXIST)) if holds_authentication_key(socket, &request) => {
+    match LINUX.set_tcp_ao_add_key(socket, &request) {
+        Err(HostError::Errno(libc::EEXIST))
+            if holds_authentication_key(socket, &name, &request) =>
+        {
             if current || next {
                 change_authentication_options(socket, |options| {
                     options.set_set_current(u32::from(current));
@@ -728,25 +803,18 @@ fn add_authentication_key(
 }
 
 /// Tells whether the socket holds the key the request adds, as `TCP_AO_GET_KEYS` gives the key with its name.
-fn holds_authentication_key(socket: BorrowedFd<'_>, request: &uapi::tcp_ao_add) -> bool {
-    // SAFETY: tcp_ao_getsockopt is plain data.
-    let mut held: uapi::tcp_ao_getsockopt = unsafe { std::mem::zeroed() };
-    held.addr = request.addr;
-    held.prefix = request.prefix;
-    held.keyflags = request.keyflags & uapi::TCP_AO_KEYF_IFINDEX as u8;
-    held.ifindex = request.ifindex;
-    held.sndid = request.sndid;
-    held.rcvid = request.rcvid;
-    held.nkeys = ONE_KEY;
-    // SAFETY: the structure is plain data, read and written as its bytes.
-    let bytes = unsafe {
-        std::slice::from_raw_parts_mut(
-            std::ptr::from_mut(&mut held).cast::<u8>(),
-            size_of::<uapi::tcp_ao_getsockopt>(),
-        )
+fn holds_authentication_key(
+    socket: BorrowedFd<'_>,
+    name: &AuthenticationKeyName,
+    request: &uapi::tcp_ao_add,
+) -> bool {
+    let Ok(answer) = LINUX.get_tcp_ao_get_keys(socket, &key_query_bytes(name)) else {
+        return false;
     };
-    options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_AO_GET_KEYS, bytes).is_ok()
-        && held.nkeys == ONE_KEY
+    let Ok(held) = KeyQuery::read_from_bytes(&answer.bytes) else {
+        return false;
+    };
+    held.nkeys == ONE_KEY
         && held.alg_name == request.alg_name
         && held.maclen == request.maclen
         && held.keyflags == request.keyflags
@@ -763,14 +831,19 @@ fn remove_authentication_key(
     asynchronously: bool,
 ) -> Result<(), HostError> {
     let name = authentication_key_name(family, &removal.identity)?;
-    // SAFETY: tcp_ao_del is plain data.
-    let mut request: uapi::tcp_ao_del = unsafe { std::mem::zeroed() };
-    request.addr = name.address;
-    request.prefix = name.prefix;
-    request.ifindex = name.interface;
-    request.keyflags = name.flags;
-    request.sndid = name.send;
-    request.rcvid = name.receive;
+    let mut request = uapi::tcp_ao_del {
+        addr: kernel_storage(&name.address),
+        ifindex: name.interface,
+        _bitfield_align_1: [],
+        _bitfield_1: Default::default(),
+        reserved2: u16::MIN,
+        prefix: name.prefix,
+        sndid: name.send,
+        rcvid: name.receive,
+        current_key: u8::MIN,
+        rnext: u8::MIN,
+        keyflags: name.flags,
+    };
     if let Some(key) = removal.current {
         request.set_set_current(u32::from(true));
         request.current_key = key.0;
@@ -780,7 +853,7 @@ fn remove_authentication_key(
         request.rnext = key.0;
     }
     request.set_del_async(u32::from(asynchronously));
-    match set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_DEL_KEY, &request) {
+    match LINUX.set_tcp_ao_del_key(socket, &request) {
         Err(HostError::Errno(libc::ENOENT)) => {
             if removal.current.is_none() && removal.requested_next.is_none() {
                 return Ok(());
@@ -803,21 +876,27 @@ fn change_authentication_options(
     socket: BorrowedFd<'_>,
     change: impl FnOnce(&mut uapi::tcp_ao_info_opt),
 ) -> Result<(), HostError> {
-    let mut options = match options::get_option::<uapi::tcp_ao_info_opt>(
-        socket,
-        uapi::SOL_TCP,
-        uapi::TCP_AO_INFO,
-    ) {
+    let mut options = match state::authentication_information(socket) {
         Ok(held) => held,
-        // SAFETY: tcp_ao_info_opt is plain data.
-        Err(HostError::Errno(libc::ENOENT)) => unsafe { std::mem::zeroed() },
+        Err(HostError::Errno(libc::ENOENT)) => uapi::tcp_ao_info_opt {
+            _bitfield_align_1: [],
+            _bitfield_1: Default::default(),
+            reserved2: u16::MIN,
+            current_key: u8::MIN,
+            rnext: u8::MIN,
+            pkt_good: u64::MIN,
+            pkt_bad: u64::MIN,
+            pkt_key_not_found: u64::MIN,
+            pkt_ao_required: u64::MIN,
+            pkt_dropped_icmp: u64::MIN,
+        },
         Err(error) => return Err(error),
     };
     options.set_set_current(u32::from(false));
     options.set_set_rnext(u32::from(false));
     options.set_set_counters(u32::from(false));
     change(&mut options);
-    set_option(socket, uapi::SOL_TCP, uapi::TCP_AO_INFO, &options)
+    LINUX.set_tcp_ao_info(socket, &options)
 }
 
 fn set_authentication_options(
@@ -880,26 +959,88 @@ fn record_flags(request: &TransmitReportRequest) -> (u32, u32) {
     (flags, reports)
 }
 
-/// Gives one send with an `SO_TIMESTAMPING` control message carrying the record flags.
-fn send_with_record_flags(
-    socket: BorrowedFd<'_>,
-    bytes: &[u8],
+/// One send on a connection's socket, which carries the record flags in an `SO_TIMESTAMPING` control message when any are set.
+struct Sending<'a> {
+    socket: BorrowedFd<'a>,
     flags: c_int,
     record: u32,
-) -> Result<usize, HostError> {
-    let mut control = Control::new();
-    control.push(
-        libc::SOL_SOCKET as u32,
-        libc::SO_TIMESTAMPING as u32,
-        &record,
-    );
-    let buffers = [IoSlice::new(bytes)];
-    let message = MsgHdr::new()
-        .with_buffers(&buffers)
-        .with_control(control.bytes());
-    SockRef::from(&socket)
-        .sendmsg(&message, flags)
-        .map_err(io_host_error)
+}
+
+impl ByteSink for Sending<'_> {
+    type Error = HostError;
+
+    fn write(&mut self, bytes: &[u8]) -> Result<usize, HostError> {
+        if self.record == 0 {
+            return SockRef::from(&self.socket)
+                .send_with_flags(bytes, self.flags)
+                .map_err(io_host_error);
+        }
+        let mut control = Control::new();
+        control.push(
+            libc::SOL_SOCKET as u32,
+            libc::SO_TIMESTAMPING as u32,
+            &self.record,
+        );
+        let buffers = [IoSlice::new(bytes)];
+        let message = MsgHdr::new()
+            .with_buffers(&buffers)
+            .with_control(control.bytes());
+        SockRef::from(&self.socket)
+            .sendmsg(&message, self.flags)
+            .map_err(io_host_error)
+    }
+}
+
+/// One receive from a connection's socket, which keeps what Linux tells of it beside the bytes.
+struct Receiving<'a> {
+    sockets: &'a HostTcpSockets,
+    socket: BorrowedFd<'a>,
+    flags: c_int,
+    timestamping: u32,
+    unread_reports: bool,
+    received: TcpReceived,
+}
+
+impl ByteSource for Receiving<'_> {
+    type Error = HostError;
+
+    fn read(&mut self, into: &mut [u8]) -> Result<usize, HostError> {
+        if self.timestamping == 0 && !self.unread_reports {
+            let (_, length) = rustix::net::recv(
+                self.socket,
+                into,
+                RecvFlags::from_bits_retain(self.flags as u32),
+            )
+            .map_err(host_error)?;
+            self.received.length = ByteCount(length);
+            return Ok(length);
+        }
+        let mut control = ControlBuffer::default();
+        let message = options::receive_message(self.socket, into, self.flags, &mut control)?;
+        if message.flags & libc::MSG_CTRUNC != 0 {
+            self.sockets.shortfalls.count(CUT_CONTROL);
+        }
+        self.received.length = ByteCount(message.length);
+        for (level, kind, data) in message.messages() {
+            if level == libc::SOL_SOCKET && kind == libc::SCM_TIMESTAMPING {
+                let (software, hardware) = options::timestamps(data);
+                if self.timestamping & uapi::SOF_TIMESTAMPING_RX_SOFTWARE as u32 != 0 {
+                    self.received.timestamps.software = software;
+                }
+                if self.timestamping & uapi::SOF_TIMESTAMPING_RX_HARDWARE as u32 != 0 {
+                    self.received.timestamps.hardware = hardware;
+                }
+            } else if level == libc::SOL_TCP
+                && kind == uapi::TCP_CM_INQ as c_int
+                && let Ok(unread) = <[u8; size_of::<c_int>()]>::try_from(data)
+            {
+                self.received.unread_after = usize::try_from(c_int::from_ne_bytes(unread))
+                    .ok()
+                    .map(ByteCount);
+            }
+        }
+        Ok(message.length)
+    }
 }
 
 /// Gives the statistics of a transmit report from the `TCP_NLA_*` attributes of its `SCM_TIMESTAMPING_OPT_STATS`.
@@ -1045,7 +1186,7 @@ impl HostTcpSockets {
                 if locks.receive == BufferTuning::Locked {
                     value |= uapi::SOCK_RCVBUF_LOCK;
                 }
-                set_option(socket, uapi::SOL_SOCKET, uapi::SO_BUF_LOCK, &value)
+                LINUX.set_so_buf_lock(socket, value)
             }
             TcpSetting::ReceiveLowWater(bytes) => {
                 set_int(socket, uapi::SOL_SOCKET, uapi::SO_RCVLOWAT, count(bytes.0)?)
@@ -1214,9 +1355,7 @@ impl HostTcpSockets {
                     TcpRepairQueue::Send => uapi::TCP_SEND_QUEUE,
                 } as c_int,
             ),
-            TcpSetting::QueueSequence(sequence) => {
-                set_option(socket, uapi::SOL_TCP, uapi::TCP_QUEUE_SEQ, &sequence.0)
-            }
+            TcpSetting::QueueSequence(sequence) => LINUX.set_tcp_queue_seq(socket, sequence.0),
             TcpSetting::RepairOptions(repair) => state::set_repair_options(socket, repair),
             TcpSetting::RepairWindow(ref window) => state::set_repair_window(socket, window),
         }
@@ -1229,14 +1368,17 @@ impl HostTcpSockets {
         room: &'b mut [u8],
         large: &'b mut Vec<u8>,
     ) -> Result<&'b [u8], HostError> {
-        match options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_SAVED_SYN, room) {
-            Ok(length) => Ok(&room[..length]),
-            // Too small a buffer: the headers stay saved and can be read with room for any.
+        match LINUX.get_tcp_saved_syn::<SAVED_SYNCHRONIZE_ROOM>(socket) {
+            Ok(saved) => {
+                room[..saved.length].copy_from_slice(&saved.bytes[..saved.length]);
+                Ok(&room[..saved.length])
+            }
+            // Too small a room: the headers stay saved and can be read with room for any.
             Err(HostError::Errno(libc::EINVAL)) => {
                 self.shortfalls.count(LONG_SAVED_SYNCHRONIZE);
-                *large = vec![u8::MIN; usize::from(u16::MAX)];
-                let length = options::get_bytes(socket, uapi::SOL_TCP, uapi::TCP_SAVED_SYN, large)?;
-                Ok(&large[..length])
+                let saved = LINUX.get_tcp_saved_syn::<LARGEST_SAVED_SYNCHRONIZE>(socket)?;
+                *large = saved.bytes[..saved.length].to_vec();
+                Ok(&large[..])
             }
             Err(error) => Err(error),
         }
@@ -1251,30 +1393,16 @@ impl HostTcpSockets {
         family: IpVersion,
         local: IpAddr,
     ) -> Option<InterfaceIndex> {
-        let mut control = PacketOptions {
-            _aligned: [],
-            bytes: [u8::MIN; PACKET_OPTIONS_ROOM],
-        };
-        let length = match local {
+        let control = match local {
             IpAddr::V4(_) => {
                 self.shortfalls.count(ARRIVAL_INTERFACE_OF_THE_HANDSHAKE);
-                options::get_bytes(
-                    socket,
-                    uapi::SOL_IP,
-                    uapi::IP_PKTOPTIONS,
-                    &mut control.bytes,
-                )
+                LINUX.get_ip_pktoptions::<PACKET_OPTIONS_ROOM>(socket)
             }
-            IpAddr::V6(_) => options::get_bytes(
-                socket,
-                uapi::SOL_IPV6,
-                uapi::IPV6_2292PKTOPTIONS,
-                &mut control.bytes,
-            ),
+            IpAddr::V6(_) => LINUX.get_ipv6_2292pktoptions::<PACKET_OPTIONS_ROOM>(socket),
         }
         .ok()?;
         match_packet_information(socket, family).ok()?;
-        Ancillary::parse(&control.bytes[..length]).interface()
+        Ancillary::parse(&control.bytes[..control.length]).interface()
     }
 
     fn synchronize_fields(
@@ -1324,16 +1452,8 @@ impl HostTcpSockets {
                 software: None,
                 hardware: None,
             },
-            mark: PacketMark(options::get_option(
-                socket,
-                uapi::SOL_SOCKET,
-                uapi::SO_MARK,
-            )?),
-            priority: PacketPriority(options::get_option(
-                socket,
-                uapi::SOL_SOCKET,
-                uapi::SO_PRIORITY,
-            )?),
+            mark: PacketMark(SockRef::from(&socket).mark().map_err(io_host_error)?),
+            priority: PacketPriority(SockRef::from(&socket).priority().map_err(io_host_error)?),
             drops_since_previous: DropCount(u32::MIN),
         })
     }
@@ -1499,18 +1619,15 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
             TcpListenerSetting::Backlog(backlog) => SockRef::from(&socket)
                 .listen(i32::try_from(backlog.0).unwrap_or(i32::MAX))
                 .map_err(io_host_error),
-            TcpListenerSetting::FastOpenQueue(queue) => set_option(
-                socket,
-                uapi::SOL_TCP,
-                uapi::TCP_FASTOPEN,
-                &queue.map_or(u32::MIN, NonZeroU32::get),
-            ),
+            TcpListenerSetting::FastOpenQueue(queue) => {
+                LINUX.set_tcp_fastopen(socket, queue.map_or(u32::MIN, NonZeroU32::get))
+            }
             TcpListenerSetting::FastOpenKeys(keys) => {
                 let mut bytes = keys.primary.0.to_vec();
                 if let Some(backup) = keys.backup {
                     bytes.extend_from_slice(&backup.0);
                 }
-                options::set_bytes(socket, uapi::SOL_TCP, uapi::TCP_FASTOPEN_KEY, &bytes)
+                LINUX.set_tcp_fastopen_key(socket, &bytes)
             }
             // Every TCP listener saves its SYNs' headers from the link header, which accept gives and measures the frame
             // by; the setting decides which of them the accepted connections keep to be taken.
@@ -1541,15 +1658,19 @@ impl<'a> Configurable<HostTcpListener, TcpListenerSetting<'a>> for HostTcpSocket
                 )
             }
             TcpListenerSetting::FlowLabelReflection(on) => {
-                // SAFETY: in6_flowlabel_req is plain data.
-                let mut request: uapi::in6_flowlabel_req = unsafe { std::mem::zeroed() };
-                request.flr_action = if on {
+                let action = if on {
                     uapi::IPV6_FL_A_GET
                 } else {
                     uapi::IPV6_FL_A_PUT
-                } as u8;
-                request.flr_flags = uapi::IPV6_FL_F_REFLECT as u16;
-                match set_option(socket, uapi::SOL_IPV6, uapi::IPV6_FLOWLABEL_MGR, &request) {
+                };
+                let request = flow_label_request(
+                    Ipv6Addr::UNSPECIFIED,
+                    u32::MIN,
+                    action,
+                    u32::MIN,
+                    uapi::IPV6_FL_F_REFLECT,
+                );
+                match LINUX.set_ipv6_flowlabel_mgr(socket, &request) {
                     // Turning off a reflection that is off.
                     Err(HostError::Errno(libc::ESRCH)) if !on => Ok(()),
                     other => other,
@@ -1875,7 +1996,7 @@ impl TcpConnections for HostTcpSockets {
         &self,
         connection: &Self::Connection,
         request: TcpSendRequest,
-        bytes: &[u8],
+        payload: &impl VolatileBytes,
     ) -> Result<ByteCount, HostError> {
         let socket = connection.socket.fd();
         let mut flags = libc::MSG_NOSIGNAL | libc::MSG_DONTWAIT;
@@ -1892,14 +2013,16 @@ impl TcpConnections for HostTcpSockets {
         let packet = asked.packet == Report::Requested;
         let statistics = request.transmit_statistics == Report::Requested;
         let (record, expected) = record_flags(&asked);
+        let mut sending = Sending {
+            socket,
+            flags,
+            record,
+        };
         if record == 0
             && asked.wireless_status == Report::NotRequested
             && !connection.reports_armed.load(Ordering::Relaxed)
         {
-            return SockRef::from(&socket)
-                .send_with_flags(bytes, flags)
-                .map(ByteCount)
-                .map_err(io_host_error);
+            return payload.read_to(&mut sending).map(ByteCount);
         }
         let mut reports = connection.reports();
         if asked.wireless_status == Report::Requested && !reports.wireless_status {
@@ -1907,12 +2030,10 @@ impl TcpConnections for HostTcpSockets {
             reports.wireless_status = true;
         }
         let taken = if record == 0 {
-            SockRef::from(&socket)
-                .send_with_flags(bytes, flags)
-                .map_err(io_host_error)?
+            payload.read_to(&mut sending)?
         } else {
             self.arm_reports(connection, &mut reports, packet, statistics)?;
-            let taken = send_with_record_flags(socket, bytes, flags, record)?;
+            let taken = payload.read_to(&mut sending)?;
             if taken > 0 {
                 let last = reports.sent.wrapping_add(taken as u32).wrapping_sub(1);
                 reports.keys.insert(
@@ -1937,7 +2058,7 @@ impl TcpConnections for HostTcpSockets {
         &self,
         connection: &Self::Connection,
         request: TcpReceiveRequest,
-        into: &mut [u8],
+        into: &impl VolatileBytes,
     ) -> Result<TcpReceived, HostError> {
         let _receiving = locked(&connection.receiving);
         let socket = connection.socket.fd();
@@ -1955,55 +2076,22 @@ impl TcpConnections for HostTcpSockets {
         if offset != 0 {
             set_int(socket, uapi::SOL_SOCKET, uapi::SO_PEEK_OFF, offset)?;
         }
-        let timestamping = connection.receive_timestamping.load(Ordering::Relaxed);
-        let unread_reports = connection.unread_reports.load(Ordering::Relaxed);
-        let outcome = if timestamping == 0 && !unread_reports {
-            SockRef::from(&socket)
-                .recv_with_flags(uninitialised(into), flags)
-                .map(|length| TcpReceived {
-                    length: ByteCount(length),
-                    timestamps: ReceiveTimestamps {
-                        software: None,
-                        hardware: None,
-                    },
-                    unread_after: None,
-                })
-                .map_err(io_host_error)
-        } else {
-            let mut control = ControlBuffer::default();
-            options::receive_message(socket, into, flags, &mut control).map(|message| {
-                if message.flags & libc::MSG_CTRUNC != 0 {
-                    self.shortfalls.count(CUT_CONTROL);
-                }
-                let mut received = TcpReceived {
-                    length: ByteCount(message.length),
-                    timestamps: ReceiveTimestamps {
-                        software: None,
-                        hardware: None,
-                    },
-                    unread_after: None,
-                };
-                for (level, kind, data) in message.messages() {
-                    if level == libc::SOL_SOCKET && kind == libc::SCM_TIMESTAMPING {
-                        let (software, hardware) = options::timestamps(data);
-                        if timestamping & uapi::SOF_TIMESTAMPING_RX_SOFTWARE as u32 != 0 {
-                            received.timestamps.software = software;
-                        }
-                        if timestamping & uapi::SOF_TIMESTAMPING_RX_HARDWARE as u32 != 0 {
-                            received.timestamps.hardware = hardware;
-                        }
-                    } else if level == libc::SOL_TCP
-                        && kind == uapi::TCP_CM_INQ as c_int
-                        && let Ok(unread) = <[u8; size_of::<c_int>()]>::try_from(data)
-                    {
-                        received.unread_after = usize::try_from(c_int::from_ne_bytes(unread))
-                            .ok()
-                            .map(ByteCount);
-                    }
-                }
-                received
-            })
+        let mut receiving = Receiving {
+            sockets: self,
+            socket,
+            flags,
+            timestamping: connection.receive_timestamping.load(Ordering::Relaxed),
+            unread_reports: connection.unread_reports.load(Ordering::Relaxed),
+            received: TcpReceived {
+                length: ByteCount(usize::MIN),
+                timestamps: ReceiveTimestamps {
+                    software: None,
+                    hardware: None,
+                },
+                unread_after: None,
+            },
         };
+        let outcome = into.write_from(&mut receiving).map(|_| receiving.received);
         if offset != 0 {
             set_int(socket, uapi::SOL_SOCKET, uapi::SO_PEEK_OFF, NO_PEEK_OFFSET)?;
         }
@@ -2266,14 +2354,12 @@ impl HostTcpSockets {
         };
         let value = reading.value.0 & !TIMESTAMP_IN_MICROSECONDS | unit;
         if !microseconds {
-            return set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value);
+            return LINUX.set_tcp_timestamp(socket, value);
         }
-        let before: u32 = options::get_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP)?;
-        set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &value)?;
-        let information: uapi::tcp_info =
-            options::get_option(socket, uapi::SOL_TCP, uapi::TCP_INFO)?;
-        if u32::from(information.tcpi_options) & uapi::TCPI_OPT_USEC_TS == u32::MIN {
-            set_option(socket, uapi::SOL_TCP, uapi::TCP_TIMESTAMP, &before)?;
+        let before = LINUX.get_tcp_timestamp(socket)?;
+        LINUX.set_tcp_timestamp(socket, value)?;
+        if !state::microsecond_timestamps(socket)? {
+            LINUX.set_tcp_timestamp(socket, before)?;
             return Err(self.shortfalls.refuse(NO_MICROSECOND_CLOCK));
         }
         Ok(())
@@ -2529,45 +2615,16 @@ impl TcpSockets for HostTcpSockets {}
 
 #[cfg(test)]
 mod tests {
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
+    use std::cell::RefCell;
     use std::net::Ipv4Addr;
     use std::pin::pin;
     use std::sync::Arc;
     use std::task::{Context, Wake, Waker};
     use std::thread::Thread;
 
-    use wcontainers_internet_protocol::{BindAddress, Port, Timestamping};
+    use wcontainers_internet_protocol::{BindAddress, Port};
 
     use super::*;
-
-    /// The system's allocator, counting the allocations each thread makes.
-    struct Counting;
-
-    thread_local! {
-        static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-    }
-
-    // SAFETY: every call goes straight to the system's allocator.
-    unsafe impl GlobalAlloc for Counting {
-        unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-            ALLOCATIONS.with(|count| count.set(count.get() + 1));
-            // SAFETY: as the caller promised.
-            unsafe { System.alloc(layout) }
-        }
-
-        unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
-            // SAFETY: as the caller promised.
-            unsafe { System.dealloc(pointer, layout) }
-        }
-    }
-
-    #[global_allocator]
-    static ALLOCATOR: Counting = Counting;
-
-    fn allocations() -> usize {
-        ALLOCATIONS.with(Cell::get)
-    }
 
     struct Unparking(Thread);
 
@@ -2576,9 +2633,6 @@ mod tests {
             self.0.unpark();
         }
     }
-
-    /// The cycles each allocation check measures, after one to warm up.
-    const MEASURED_CYCLES: usize = 100;
 
     /// How long a wait may take to be woken once its data is sent.
     const DEADLINE: Duration = Duration::from_secs(10);
@@ -2658,76 +2712,6 @@ mod tests {
         }
     }
 
-    /// Checks that once a connection has waited, its waits that have to wait allocate nothing on the waiting thread.
-    #[test]
-    fn a_wait_allocates_nothing_once_warm() {
-        let sockets = HostTcpSockets::new().expect("readiness");
-        let (_listener, client, server) = connected(&sockets);
-        let waker = Waker::from(Arc::new(Unparking(std::thread::current())));
-        let mut byte = [0; 1];
-        let mut cycle = || {
-            let mut wait = pin!(sockets.wait_until_ready(&server, ReadyFor::READABLE));
-            let mut context = Context::from_waker(&waker);
-            assert!(wait.as_mut().poll(&mut context).is_pending());
-            sockets.send(&client, plain(), &byte).expect("send");
-            let start = std::time::Instant::now();
-            while wait.as_mut().poll(&mut context).is_pending() {
-                assert!(start.elapsed() < DEADLINE, "the wait was not woken");
-                std::thread::park_timeout(DEADLINE);
-            }
-            sockets
-                .receive(&server, TcpReceiveRequest::Read, &mut byte)
-                .expect("receive");
-        };
-        cycle();
-        let before = allocations();
-        for _ in 0..MEASURED_CYCLES {
-            cycle();
-        }
-        assert_eq!(allocations() - before, 0);
-        let counted = Box::new(0_u8);
-        assert_eq!(allocations() - before, 1, "the allocator counts");
-        drop(counted);
-    }
-
-    /// Checks that a receive that brings control messages, a timestamp and the unread byte count allocates nothing.
-    #[test]
-    fn a_receive_with_control_messages_allocates_nothing() {
-        let sockets = HostTcpSockets::new().expect("readiness");
-        let (_listener, client, server) = connected(&sockets);
-        let timestamping = Timestamping {
-            receive_software: Report::Requested,
-            receive_hardware: Report::NotRequested,
-            bound_clock: None,
-        };
-        sockets
-            .configure(
-                &server,
-                TcpSetting::Ip(IpSocketSetting::Timestamping(timestamping)),
-            )
-            .expect("timestamping");
-        sockets
-            .configure(&server, TcpSetting::UnreadByteReports(Report::Requested))
-            .expect("unread byte reports");
-        let waker = Waker::from(Arc::new(Unparking(std::thread::current())));
-        let mut byte = [0; 1];
-        let mut cycle = || {
-            sockets.send(&client, plain(), &byte).expect("send");
-            wait(&sockets, &server, ReadyFor::READABLE, &waker);
-            let received = sockets
-                .receive(&server, TcpReceiveRequest::Read, &mut byte)
-                .expect("receive");
-            assert!(received.timestamps.software.is_some());
-            assert_eq!(received.unread_after, Some(ByteCount(0)));
-        };
-        cycle();
-        let before = allocations();
-        for _ in 0..MEASURED_CYCLES {
-            cycle();
-        }
-        assert_eq!(allocations() - before, 0);
-    }
-
     /// The peeks of each thread in the two-thread peek check.
     const PEEK_ROUNDS: usize = 20_000;
 
@@ -2738,7 +2722,9 @@ mod tests {
         let (_listener, client, server) = connected(&sockets);
         let message = b"two threads";
         let offset = message.len() / 2;
-        sockets.send(&client, plain(), message).expect("send");
+        sockets
+            .send(&client, plain(), &RefCell::new(&mut message.to_vec()[..]))
+            .expect("send");
         let waker = Waker::from(Arc::new(Unparking(std::thread::current())));
         wait(&sockets, &server, ReadyFor::READABLE, &waker);
         let peek = |from: usize| {
@@ -2749,7 +2735,7 @@ mod tests {
                     TcpReceiveRequest::Peek {
                         offset: ByteCount(from),
                     },
-                    &mut buffer,
+                    &RefCell::new(&mut buffer[..]),
                 )
                 .map(|got| buffer[..got.length.0].to_vec())
         };
@@ -2778,7 +2764,7 @@ mod tests {
             .send(
                 &client,
                 reports(Report::Requested, Report::Requested),
-                b"reported",
+                &RefCell::new(&mut b"reported".to_vec()[..]),
             )
             .expect("send");
         let waker = Waker::from(Arc::new(Unparking(std::thread::current())));

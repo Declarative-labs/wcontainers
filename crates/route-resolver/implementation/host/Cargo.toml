@@ -17,6 +17,8 @@ wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-route-resolver = { path = "../.." }
 wcontainers-internet-protocol-linux-socket-options = { path = "../../../internet-protocol/implementation/linux-socket-options" }
+# Linux's socket option calls for the unicast interface, which no vetted crate wraps.
+wcontainers-linux-socket-options = { path = "../../../linux-socket-options" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 etherparse.workspace = true
@@ -30,10 +32,14 @@ netlink-sys = { version = "0.9.0", default-features = false }
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
 [dev-dependencies]
 wcontainers-route-resolver-conformance = { path = "../../conformance" }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The network namespace of the counter test and the index of its link.
+nix = { version = "0.31.3", default-features = false, features = ["net", "sched"] }
 
 [lints]
 workspace = true

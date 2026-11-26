@@ -1,19 +1,20 @@
 //! The control messages of `recvmsg` and the error queue as `ReceivedPacketFields`, `TransmitReport`s and
 //! packets written whole from their IP header.
 
-use core::mem::{MaybeUninit, size_of};
+use core::mem::size_of;
 use core::num::NonZeroU32;
 use core::time::Duration;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::os::fd::{AsRawFd, BorrowedFd};
+use std::io::IoSliceMut;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::os::fd::BorrowedFd;
 
 use etherparse::checksum::Sum16BitWords;
 use etherparse::{
     IpDscp, IpEcn, IpNumber, Ipv4Header, Ipv6FlowLabel, Ipv6Header, Ipv6RawExtHeader,
 };
-use libc::{c_int, socklen_t};
+use libc::c_int;
 use linux_raw_sys::net as uapi;
-use rustix::net::addr::SocketAddrStorage;
+use nix::sys::socket::SockaddrStorage;
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     ByteCount, DropCount, FragmentSize, FrameLength, InterfaceIndex, PacketMark, PacketPriority,
@@ -21,13 +22,36 @@ use wcontainers_internet_protocol::{
     TransmitReportKey, TransmitStage,
 };
 
-use crate::datagram::addresses::{from_in_addr, from_in6_addr, read_address};
-use crate::last_host_error;
+use zerocopy::FromBytes;
 
-const fn space(length: usize) -> usize {
-    // SAFETY: CMSG_SPACE only computes a length.
-    unsafe { libc::CMSG_SPACE(length as u32) as usize }
+use crate::datagram::addresses::{
+    Ipv4PacketInformation, Ipv6PacketInformation, address_of_storage, unmapped,
+};
+use crate::{ControlRoom, receive_vectored, uapi_mirror};
+
+uapi_mirror! {
+    /// `struct scm_ts_pktinfo`.
+    struct TimestampingPacketInformation mirrors uapi::scm_ts_pktinfo {
+        if_index: u32,
+        pkt_length: u32,
+        reserved: [u32; 2],
+    }
 }
+
+uapi_mirror! {
+    /// `struct sock_extended_err`.
+    struct ExtendedError mirrors libc::sock_extended_err {
+        ee_errno: u32,
+        ee_origin: u8,
+        ee_type: u8,
+        ee_code: u8,
+        ee_pad: u8,
+        ee_info: u32,
+        ee_data: u32,
+    }
+}
+
+use crate::control_space as space;
 
 /// The IPv6 extension headers Linux reports for one packet: hop-by-hop, destination, routing, destination.
 const EXTENSION_HEADERS: usize = 4;
@@ -53,19 +77,8 @@ pub const SO_EE_ORIGIN_TXTIME: u8 = 6;
 pub const SO_EE_CODE_TXTIME_INVALID_PARAM: u8 = 1;
 pub const SO_EE_CODE_TXTIME_MISSED: u8 = 2;
 
-/// The control messages of one receive, in words so that they are aligned as `cmsghdr` needs.
-pub struct ControlBuffer([usize; RECEIVE_CONTROL.div_ceil(size_of::<usize>())]);
-
-impl ControlBuffer {
-    pub fn new() -> Self {
-        Self([usize::MIN; RECEIVE_CONTROL.div_ceil(size_of::<usize>())])
-    }
-
-    pub fn bytes(&self) -> &[u8] {
-        // SAFETY: the words are read as the bytes the kernel wrote the messages to.
-        unsafe { core::slice::from_raw_parts(self.0.as_ptr().cast::<u8>(), RECEIVE_CONTROL) }
-    }
-}
+/// The control messages of one receive.
+pub type ControlBuffer = ControlRoom<{ RECEIVE_CONTROL.div_ceil(size_of::<usize>()) }>;
 
 /// What one `recvmsg` gave: its byte count, flags, sender and control messages.
 pub struct Message<'a> {
@@ -85,51 +98,60 @@ pub fn receive<'a>(
     receive_with_tail(fd, into, &mut [], control, error_queue)
 }
 
+/// The largest payload of one receive: an IP packet's largest length.
+const LARGEST_PAYLOAD: usize = u16::MAX as usize;
+
+std::thread_local! {
+    static TAIL: core::cell::RefCell<Box<[u8]>> =
+        core::cell::RefCell::new(vec![u8::MIN; LARGEST_PAYLOAD].into_boxed_slice());
+}
+
+/// Runs `with` on this thread's room for a whole payload, made once so that a receive does not clear it.
+///
+/// Not reentrant: `with` may not call it again.
+pub fn with_tail<R>(with: impl FnOnce(&mut [u8]) -> R) -> R {
+    TAIL.with_borrow_mut(|tail| with(tail))
+}
+
 /// One `recvmsg` into `into` and, for what does not fit there, on into `tail`.
 pub fn receive_with_tail<'a>(
     fd: BorrowedFd<'_>,
     into: &mut [u8],
-    tail: &mut [MaybeUninit<u8>],
+    tail: &mut [u8],
     control: &'a mut ControlBuffer,
     error_queue: bool,
 ) -> Result<Message<'a>, HostError> {
-    let mut name = MaybeUninit::<SocketAddrStorage>::zeroed();
-    let mut vectors = [
-        libc::iovec {
-            iov_base: into.as_mut_ptr().cast(),
-            iov_len: into.len(),
-        },
-        libc::iovec {
-            iov_base: tail.as_mut_ptr().cast(),
-            iov_len: tail.len(),
-        },
-    ];
-    let mut header = crate::datagram::addresses::zeroed::<libc::msghdr>();
-    header.msg_name = name.as_mut_ptr().cast();
-    header.msg_namelen = size_of::<SocketAddrStorage>() as socklen_t;
-    header.msg_iov = vectors.as_mut_ptr();
-    header.msg_iovlen = vectors.len() as _;
-    header.msg_control = control.0.as_mut_ptr().cast();
-    header.msg_controllen = RECEIVE_CONTROL as _;
     let flags = libc::MSG_DONTWAIT
         | if error_queue {
             libc::MSG_ERRQUEUE
         } else {
             libc::MSG_TRUNC
         };
-    // SAFETY: every pointer in the header describes a buffer that outlives the call.
-    let length = unsafe { libc::recvmsg(fd.as_raw_fd(), &mut header, flags) };
-    if length < 0 {
-        return Err(last_host_error());
-    }
-    // A u32 on musl, a usize on glibc.
-    let control_length: usize = header.msg_controllen as _;
+    let message = receive_vectored(
+        fd,
+        &mut [IoSliceMut::new(into), IoSliceMut::new(tail)],
+        flags,
+        control,
+        socket_address,
+    )?;
     Ok(Message {
-        length: length as usize,
-        source: read_address(&name, header.msg_namelen),
-        control: &control.bytes()[..control_length],
-        control_truncated: header.msg_flags & libc::MSG_CTRUNC != 0,
+        length: message.length,
+        source: message.source,
+        control: message.control,
+        control_truncated: message.flags & libc::MSG_CTRUNC != 0,
     })
+}
+
+/// The IPv4 or IPv6 address of a sender, IPv4-mapped ones as IPv4, its flow information in host order as elsewhere here.
+fn socket_address(source: &SockaddrStorage) -> Option<SocketAddr> {
+    let address = if let Some(v4) = source.as_sockaddr_in() {
+        SocketAddr::V4(SocketAddrV4::from(*v4))
+    } else {
+        let mut address = SocketAddrV6::from(*source.as_sockaddr_in6()?);
+        address.set_flowinfo(u32::from_be(address.flowinfo()));
+        SocketAddr::V6(address)
+    };
+    Some(unmapped(address))
 }
 
 pub const CONTROL_TRUNCATED: &str =
@@ -158,34 +180,17 @@ pub struct Ancillary<'a> {
     pub segment_size: Option<u16>,
 }
 
-fn read<T: Copy>(data: &[u8]) -> Option<T> {
-    // SAFETY: the bytes are a control message's data, read unaligned as the plain uapi type it carries.
-    (data.len() >= size_of::<T>()).then(|| unsafe { data.as_ptr().cast::<T>().read_unaligned() })
+/// Reads the value a control message's data starts with.
+fn read<T: FromBytes>(data: &[u8]) -> Option<T> {
+    T::read_from_prefix(data).ok().map(|(value, _)| value)
 }
 
 impl<'a> Ancillary<'a> {
     pub fn parse(control: &'a [u8]) -> Self {
         let mut found = Self::default();
-        let mut header = crate::datagram::addresses::zeroed::<libc::msghdr>();
-        header.msg_control = control.as_ptr() as *mut _;
-        header.msg_controllen = control.len() as _;
         let mut headers = usize::MIN;
-        // SAFETY: the walk stays within `control`, whose messages the kernel wrote.
-        let mut message = unsafe { libc::CMSG_FIRSTHDR(&header) };
-        while !message.is_null() {
-            // SAFETY: `message` points at a complete control message header inside `control`.
-            let (level, kind, data) = unsafe {
-                let start = libc::CMSG_DATA(message);
-                let length = (*message).cmsg_len as usize - (start as usize - message as usize);
-                (
-                    (*message).cmsg_level as u32,
-                    (*message).cmsg_type as u32,
-                    core::slice::from_raw_parts(start, length),
-                )
-            };
-            found.take(level, kind, data, &mut headers);
-            // SAFETY: as above.
-            message = unsafe { libc::CMSG_NXTHDR(&header, message) };
+        for (level, kind, data) in crate::ControlMessages::new(control) {
+            found.take(level as u32, kind as u32, data, &mut headers);
         }
         found
     }
@@ -194,17 +199,18 @@ impl<'a> Ancillary<'a> {
         let integer = || read::<c_int>(data);
         match (level, kind) {
             (uapi::SOL_IP, uapi::IP_PKTINFO) => {
-                if let Some(information) = read::<uapi::in_pktinfo>(data) {
+                if let Some(information) = read::<Ipv4PacketInformation>(data) {
                     self.interface = Some(information.ipi_ifindex as u32);
-                    self.specific_destination = Some(from_in_addr(information.ipi_spec_dst));
-                    self.header_destination = Some(IpAddr::V4(from_in_addr(information.ipi_addr)));
+                    self.specific_destination = Some(Ipv4Addr::from(information.ipi_spec_dst));
+                    self.header_destination =
+                        Some(IpAddr::V4(Ipv4Addr::from(information.ipi_addr)));
                 }
             }
             (uapi::SOL_IPV6, uapi::IPV6_PKTINFO) => {
-                if let Some(information) = read::<uapi::in6_pktinfo>(data) {
+                if let Some(information) = read::<Ipv6PacketInformation>(data) {
                     self.interface = Some(information.ipi6_ifindex as u32);
                     self.header_destination =
-                        Some(IpAddr::V6(from_in6_addr(information.ipi6_addr)));
+                        Some(IpAddr::V6(Ipv6Addr::from(information.ipi6_addr)));
                 }
             }
             (uapi::SOL_IP, uapi::IP_ORIGDSTADDR) | (uapi::SOL_IPV6, uapi::IPV6_ORIGDSTADDR) => {
@@ -242,15 +248,21 @@ impl<'a> Ancillary<'a> {
                 (self.software, self.hardware) = crate::timestamps(data);
             }
             (uapi::SOL_SOCKET, uapi::SCM_TIMESTAMPING_PKTINFO) => {
-                self.link = read::<uapi::scm_ts_pktinfo>(data)
+                self.link = read::<TimestampingPacketInformation>(data)
                     .map(|information| (information.if_index, information.pkt_length));
             }
             (uapi::SOL_IP, uapi::IP_RECVERR) | (uapi::SOL_IPV6, uapi::IPV6_RECVERR) => {
-                if let Some(error) = read::<libc::sock_extended_err>(data) {
-                    self.error = Some((
-                        error,
-                        address(&data[size_of::<libc::sock_extended_err>()..]),
-                    ));
+                if let Some(error) = read::<ExtendedError>(data) {
+                    let error = libc::sock_extended_err {
+                        ee_errno: error.ee_errno,
+                        ee_origin: error.ee_origin,
+                        ee_type: error.ee_type,
+                        ee_code: error.ee_code,
+                        ee_pad: error.ee_pad,
+                        ee_info: error.ee_info,
+                        ee_data: error.ee_data,
+                    };
+                    self.error = Some((error, address(&data[size_of::<ExtendedError>()..])));
                 }
             }
             (level, kind) if level == libc::SOL_UDP as u32 && kind == libc::UDP_GRO as u32 => {
@@ -321,16 +333,7 @@ impl<'a> Ancillary<'a> {
 
 /// A `sockaddr_in` or `sockaddr_in6` at the start of a control message's data.
 fn address(data: &[u8]) -> Option<SocketAddr> {
-    let length = data.len().min(size_of::<SocketAddrStorage>());
-    let mut storage = MaybeUninit::<SocketAddrStorage>::zeroed();
-    // SAFETY: `length` bytes fit in the storage.
-    unsafe {
-        core::ptr::copy_nonoverlapping(data.as_ptr(), storage.as_mut_ptr().cast::<u8>(), length)
-    };
-    let family = read::<u16>(data)?;
-    (u32::from(family) == uapi::AF_INET || u32::from(family) == uapi::AF_INET6)
-        .then(|| read_address(&storage, length as socklen_t))
-        .flatten()
+    address_of_storage(data)
 }
 
 /// The largest run of headers written before a payload: IPv6, its extension headers, ICMPv6 and a quoted IPv6
@@ -499,12 +502,6 @@ fn mapped(address: IpAddr) -> Ipv6Addr {
     match address {
         IpAddr::V4(v4) => v4.to_ipv6_mapped(),
         IpAddr::V6(v6) => v6,
-    }
-}
-
-impl Default for ControlBuffer {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
