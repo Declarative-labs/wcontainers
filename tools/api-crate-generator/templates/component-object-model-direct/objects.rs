@@ -146,14 +146,26 @@ impl<V> Drop for Served<V> {
 
 type Entry = Arc<dyn Any + Send + Sync>;
 
-/// Our object found for one call, which stays alive until this drops.
-pub struct Found<V>(Arc<Served<V>>);
+/// Our object found for one call, which stays alive until this drops, with the word and generation it was found in.
+pub struct Found<V> {
+    served: Arc<Served<V>>,
+    index: usize,
+    generation: u32,
+}
 
 impl<V> Deref for Found<V> {
     type Target = Served<V>;
 
     fn deref(&self) -> &Served<V> {
-        &self.0
+        &self.served
+    }
+}
+
+impl<V: Send + Sync + 'static> Found<V> {
+    /// Returns a handle that finds the object again while any reference to it lives, as `Counted::weak` does, with no
+    /// second look in the table.
+    pub fn weak(&self) -> Weak {
+        Weak { index: self.index, generation: self.generation, add: add_exact::<V>, release: release_exact::<V> }
     }
 }
 
@@ -270,8 +282,20 @@ impl ObjectTable {
     }
 
     fn find<V: Send + Sync + 'static>(&self, index: usize) -> Option<Found<V>> {
-        let entry = lock(self.slot(index)?).entry.clone()?;
-        entry.downcast::<Served<V>>().ok().map(Found)
+        let (entry, generation) = {
+            let slot = lock(self.slot(index)?);
+            (slot.entry.clone()?, slot.generation)
+        };
+        let served = entry.downcast::<Served<V>>().ok()?;
+        // The handle `weak` gives is of the object's first word, IUnknown's, whatever word the C side called through.
+        let first = served.first.0;
+        let generation = if first == index { generation } else { self.generation_of(first)? };
+        Some(Found { index: first, generation, served })
+    }
+
+    /// Returns the generation of the word at `index`.
+    fn generation_of(&self, index: usize) -> Option<u32> {
+        Some(lock(self.slot(index)?).generation)
     }
 
     fn take(&self, index: usize) -> Option<Entry> {
@@ -312,12 +336,15 @@ fn release_exact<V: Send + Sync + 'static>(index: usize, generation: Option<u32>
         slot.entry.take()
     };
     let Some(served) = last.and_then(|entry| entry.downcast::<Served<V>>().ok()) else { return 0 };
+    // The first word's entry was taken above (when `index` is it); the other words' entries now, with no allocation for
+    // an object that answered no other interface.
     let others = core::mem::take(&mut *lock(&served.others));
-    let words: Vec<(usize, Table)> = core::iter::once(served.first).chain(others).collect();
-    let taken: Vec<Option<Entry>> = words.iter().map(|&(word, _)| table.take(word)).collect();
-    words.into_iter().for_each(|(word, word_table)| table.give_back(word, word_table));
+    let first_taken = table.take(served.first.0);
+    let taken: Vec<Option<Entry>> = others.iter().map(|&(word, _)| table.take(word)).collect();
+    table.give_back(served.first.0, served.first.1);
+    others.into_iter().for_each(|(word, word_table)| table.give_back(word, word_table));
     // Outside every lock; `Served`'s drop catches a panic of the value's.
-    drop(taken);
+    drop((first_taken, taken));
     drop(served);
     ALIVE.fetch_sub(1, Ordering::Relaxed);
     0
@@ -384,6 +411,17 @@ pub fn object<V: Send + Sync + 'static>(_key: GlueKey, address: usize) -> Option
     table.find(table.index(address)?)
 }
 
+/// Reads a part of what the glue recorded for our object of type `V` at this address, under the word's lock and with
+/// no reference taken; none for a wrong or stale address, another type or no such part. `read` runs no code but the
+/// glue's own: a record's parts are the glue's types.
+pub fn peek<V: Send + Sync + 'static, P: Any, T>(_key: GlueKey, address: usize, read: impl FnOnce(&P) -> Option<T>) -> Option<T> {
+    let table: &ObjectTable = &OBJECTS;
+    let index = table.index(address)?;
+    let slot = lock(table.slot(index)?);
+    let served = slot.entry.as_ref()?.downcast_ref::<Served<V>>()?;
+    read(served.part::<P>()?)
+}
+
 /// Serves a new object in a free word, with one reference the glue holds, recording `record` and answering by
 /// `interfaces`; none when the table is full (the value is dropped, caught).
 pub fn serve<V: Send + Sync + 'static>(_key: GlueKey, value: V, record: Record, interfaces: Interfaces) -> Option<Counted> {
@@ -434,7 +472,7 @@ pub fn query<V: Send + Sync + 'static>(key: GlueKey, address: usize, interface: 
             Some(&(index, _)) => index,
             None => {
                 let index = table.claim(wanted)?;
-                let entry: Entry = Arc::clone(&found.0) as Entry;
+                let entry: Entry = Arc::clone(&found.served) as Entry;
                 if let Err(entry) = table.install(index, entry) {
                     drop(others);
                     drop(entry);

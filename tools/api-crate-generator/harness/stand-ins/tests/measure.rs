@@ -58,6 +58,33 @@ fn load() -> String {
     std::fs::read_to_string("/proc/loadavg").unwrap_or_default().trim().to_string()
 }
 
+/// Reads a setting of the profile run from the environment.
+fn setting(name: &str) -> String {
+    std::env::var(name).unwrap_or_default()
+}
+
+/// One operation on one path, long enough for a sampling profiler: `PROFILE_OPERATION` (an `Operation`'s name),
+/// `PROFILE_PATH` (`served`: the C game on the front through the serving glue; `calling`: Rust through the calling glue
+/// to the fake; anything else: pass-through) and `PROFILE_ITERATIONS`.
+#[test]
+#[ignore = "a profile, run on its own under a sampling profiler"]
+fn profile() {
+    let operation = match setting("PROFILE_OPERATION").as_str() {
+        "MapUnmap" => Operation::MapUnmap,
+        "CreateBufferRelease" => Operation::CreateBufferRelease,
+        "GetDeviceRelease" => Operation::GetDeviceRelease,
+        "AddRefRelease" => Operation::AddRefRelease,
+        _ => Operation::Draw,
+    };
+    let iterations = setting("PROFILE_ITERATIONS").parse().unwrap_or(5_000_000);
+    let nanoseconds = match setting("PROFILE_PATH").as_str() {
+        "served" => Entry::served(Front).time(operation, iterations),
+        "calling" => through_traits(&Entry::fake().system(), operation, iterations),
+        _ => Entry::pass_through().time(operation, iterations),
+    };
+    println!("PROFILE {operation:?} {}: {:.1} ns a call", setting("PROFILE_PATH"), nanoseconds as f64 / iterations as f64);
+}
+
 #[test]
 #[ignore = "a measurement, run on its own"]
 fn measures() {

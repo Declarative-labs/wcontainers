@@ -166,6 +166,7 @@ static void destroy(Header *header) {
         Context *context = ((Device *)header)->context;
         release_private(&context->header);
         free(context);
+        atomic_fetch_sub(&live_by_kind[KIND_CONTEXT], 1);
         atomic_fetch_sub(&live_objects, 1);
     }
     if (header->kind == KIND_BUFFER) free(((Buffer *)header)->bytes);
@@ -334,6 +335,7 @@ static void multithread_leave(void *this) { pthread_mutex_unlock(&multithread_co
 static int32_t multithread_set_protected(void *this, int32_t on) {
     int32_t before = atomic_exchange(&multithread_context(this)->protected_, on ? 1 : 0);
     if (on && !before) OBSERVE(observed.protected_contexts++);
+    if (!on && before) OBSERVE(observed.unprotections++);
     return before;
 }
 static int32_t multithread_get_protected(void *this) { return atomic_load(&multithread_context(this)->protected_); }
@@ -674,7 +676,8 @@ HRESULT D3D11CreateDevice(void *adapter, int32_t driver_type, void *software, ui
                           void **context_out) {
     (void)adapter;
     (void)software;
-    OBSERVE((observed.create_calls++, observed.create_flags = flags, observed.create_driver_type = driver_type));
+    OBSERVE((observed.create_calls++, observed.create_flags = flags, observed.create_driver_type = driver_type,
+             observed.single_threaded_creates += (flags & D3D11_CREATE_DEVICE_SINGLETHREADED) ? 1 : 0));
     if (sdk_version != D3D11_SDK_VERSION) return E_INVALIDARG;
     int32_t level = D3D_FEATURE_LEVEL_11_0;
     if (levels && level_count) {

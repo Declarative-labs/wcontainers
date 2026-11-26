@@ -25,7 +25,7 @@ pub use key::GlueKey;
 pub use lent::{ForeignLent, Shadow};
 pub use objects::{
     Address, Counted, Found, Interfaces, Record, Served, Shield, Table, Weak, add_reference, alive, counted, guarded, object,
-    query, release, serve,
+    peek, query, release, serve,
 };
 pub use pointers::{read_bytes, read_only_at, writable_at, write_bytes};
 pub use unknown::{Absent, ForeignUnknown, Raw, UnknownTable, unknown_table};
@@ -89,8 +89,14 @@ impl<const N: usize> Default for Aligned<N> {
 /// the name of what it was handed out as) and index, held without a reference (so that two related objects do not keep
 /// each other alive). An object handed out again (a child's device, the immediate context, a back buffer) is answered
 /// from here. Roles, not Rust types: one implementation type may serve several kinds.
+///
+/// The object that made it, known when it is served, is kept apart and never changed, so that the answer most asked for
+/// (a child's device) is read with no lock.
 #[derive(Default)]
-pub struct Relations(std::sync::Mutex<Vec<(&'static str, u32, Weak)>>);
+pub struct Relations {
+    made_by: Option<(&'static str, Weak)>,
+    later: std::sync::Mutex<Vec<(&'static str, u32, Weak)>>,
+}
 
 /// Records that our object of type `V` at `address` is related to `related`, which plays `role` for it.
 pub fn relate<V: Send + Sync + 'static>(key: GlueKey, address: usize, role: &'static str, related: Weak) {
@@ -101,7 +107,7 @@ pub fn relate<V: Send + Sync + 'static>(key: GlueKey, address: usize, role: &'st
 pub fn relate_at<V: Send + Sync + 'static>(key: GlueKey, address: usize, role: &'static str, index: u32, related: Weak) {
     let Some(found) = object::<V>(key, address) else { return };
     if let Some(relations) = found.part::<Relations>() {
-        let mut held = relations.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut held = relations.later.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         held.retain(|(other, at, _)| !(*other == role && *at == index));
         held.push((role, index, related));
     }
@@ -112,12 +118,30 @@ pub fn related<V: Send + Sync + 'static>(key: GlueKey, address: usize, role: &'s
     related_at::<V>(key, address, role, 0)
 }
 
+/// Returns a reference to the object that made our object of type `V` at `address`, if it plays `role` and lives,
+/// read with no reference to our object taken.
+pub fn made_by_of<V: Send + Sync + 'static>(key: GlueKey, address: usize, role: &'static str) -> Option<Counted> {
+    let made_by = peek::<V, Relations, Weak>(key, address, |relations| relations.made_by.filter(|(made_role, _)| *made_role == role).map(|(_, weak)| weak))?;
+    made_by.upgrade()
+}
+
 /// Returns a reference to the `index`th `role` our object of type `V` at `address` handed out, while it lives.
 pub fn related_at<V: Send + Sync + 'static>(key: GlueKey, address: usize, role: &'static str, index: u32) -> Option<Counted> {
-    let found = object::<V>(key, address)?;
+    related_of(&object::<V>(key, address)?, role, index)
+}
+
+/// As `related_at`, for an object the call already found: no second look in the table.
+pub fn related_of<V>(found: &Found<V>, role: &'static str, index: u32) -> Option<Counted> {
     let relations = found.part::<Relations>()?;
+    if let Some((made_role, made_by)) = &relations.made_by
+        && index == 0
+        && *made_role == role
+        && let Some(counted) = made_by.upgrade()
+    {
+        return Some(counted);
+    }
     let weak = {
-        let held = relations.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let held = relations.later.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         held.iter().find(|(other, at, _)| *other == role && *at == index).map(|(_, _, weak)| *weak)
     };
     weak?.upgrade()
@@ -187,9 +211,24 @@ impl Drop for Reservation<'_> {
 /// the implementation.
 pub struct Recorded<T>(pub T);
 
-/// A new record holding empty relations and lendings.
+/// The parts a record holds at most: relations, lendings, and what a getter answers from.
+const RECORD_PARTS: usize = 4;
+
+/// A new record holding empty relations and lendings, with room for what the glue records.
 pub fn record() -> Record {
-    vec![Box::new(Relations::default()), Box::new(Lendings::default())]
+    let mut parts: Record = Vec::with_capacity(RECORD_PARTS);
+    parts.push(Box::new(Relations::default()));
+    parts.push(Box::new(Lendings::default()));
+    parts
+}
+
+/// A new record whose relations already hold `related` as the object's `role` (the object that made it), so that no
+/// look in the table is needed after the object is served.
+pub fn record_related(role: &'static str, related: Weak) -> Record {
+    let mut parts: Record = Vec::with_capacity(RECORD_PARTS);
+    parts.push(Box::new(Relations { made_by: Some((role, related)), later: std::sync::Mutex::default() }));
+    parts.push(Box::new(Lendings::default()));
+    parts
 }
 
 /// An object type of a calling glue: adopted from a reference to an object of the C side's of the interface

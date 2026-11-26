@@ -13,7 +13,7 @@ has() { case " $steps " in *" $1 "*) return 0 ;; esac; return 1; }
 package=(-p wcontainers-direct3d-11-direct-harness)
 filter='^ATTACK|^CHECK2|^FUZZ|^test |test result|panicked|error|SUMMARY|ERROR: AddressSanitizer|WRITE of|READ of|SEGV|signal|Abort|abort|heap-buffer|allocation-size|assertion|left:|right:'
 each_attack() {
-    for test in attack_c attack_table check2_c game; do
+    for test in attack_c attack_table check2_c game undo; do
         for name in $(CARGO_TARGET_DIR=$target cargo test --release "$@" --test $test -- --list 2>/dev/null | sed -n 's/: test$//p'); do
             CARGO_TARGET_DIR=$target timeout 300 cargo test --release "$@" --test $test -- --exact "$name" --test-threads=1 --nocapture 2>&1 |
                 grep -E "$filter" | grep -vE '^test result|running' | head -8

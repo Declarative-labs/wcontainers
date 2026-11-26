@@ -42,6 +42,7 @@ static PROTECTED: AtomicU32 = AtomicU32::new(0);
 static CREATED: AtomicU32 = AtomicU32::new(0);
 /// The lengths of the initial bytes the toy was given, per resource made with any.
 static INITIAL: Mutex<Vec<Vec<usize>>> = Mutex::new(Vec::new());
+/// An event query's data, a BOOL: the size the glue derives from the query's kind (lengths.rs `data_size_of_query`).
 const QUERY_DATA: [u8; 4] = [1, 2, 3, 4];
 /// DXGI_FORMAT_R8G8B8A8_UNORM: four bytes a texel.
 const RGBA: Format = Format(28);
@@ -404,7 +405,7 @@ fn the_toy_through_both_glues() {
     assert!(device.get_immediate_context() == Some(context.clone()), "GetImmediateContext answers the context created with the device");
     assert!(context.get_device() == Some(device.clone()), "the context's device is the device it was created with");
 
-    let desc = QueryDesc { query: QueryKind(4), misc_flags: 1 };
+    let desc = QueryDesc { query: QueryKind(0), misc_flags: 1 };
     let query = device.create_query(&desc).expect("a query");
     assert_eq!(query.get_desc(), desc, "a description crossed both glues both ways");
     assert_eq!(query.get_data_size(), QUERY_DATA.len() as u32);
@@ -428,7 +429,8 @@ fn the_toy_through_both_glues() {
     assert_eq!(device.create_buffer(&buffer_desc, Some(&short)).err(), Some(E_INVALIDARG), "initial bytes shorter than the description are refused");
     let buffer = device.create_buffer(&buffer_desc, Some(&SubresourceData { sys_mem: initial.clone(), sys_mem_pitch: 0, sys_mem_slice_pitch: 0 })).expect("a buffer");
     assert_eq!(buffer.get_desc(), buffer_desc);
-    let mapped = context.map(ResourceRef::Buffer(&buffer), 0, Map(4), 0).expect("a map");
+    // READ_WRITE: the contents are lent (a discarding Map lends cleared memory, which the documentation leaves undefined).
+    let mapped = context.map(ResourceRef::Buffer(&buffer), 0, Map(3), 0).expect("a map");
     assert_eq!(mapped.data.len(), u64::from(width), "the length the description gives");
     let mut read = vec![0_u8; 16];
     assert_eq!(mapped.data.read(&mut read), 16);
@@ -441,6 +443,22 @@ fn the_toy_through_both_glues() {
     let mut read = vec![0_u8; 16];
     let _ = again.data.read(&mut read);
     assert_eq!(read, vec![9; 16], "what the caller wrote reached the implementation at Unmap");
+    assert_eq!(again.data.write(&[5; 16]), 16);
+    context.unmap(ResourceRef::Buffer(&buffer), 0);
+    let read_again = context.map(ResourceRef::Buffer(&buffer), 0, Map(1), 0).expect("a read map again");
+    let mut read = vec![0_u8; 16];
+    let _ = read_again.data.read(&mut read);
+    assert_eq!(read, vec![9; 16], "what was written to memory lent for reading only did not go back");
+    context.unmap(ResourceRef::Buffer(&buffer), 0);
+    let discarded = context.map(ResourceRef::Buffer(&buffer), 0, Map(4), 0).expect("a discarding map");
+    let mut read = vec![1_u8; 16];
+    let _ = discarded.data.read(&mut read);
+    assert_eq!(read, vec![0; 16], "a discarding Map lends cleared memory, never an earlier lending's bytes");
+    context.unmap(ResourceRef::Buffer(&buffer), 0);
+    let last = context.map(ResourceRef::Buffer(&buffer), 0, Map(1), 0).expect("a third map");
+    let mut read = vec![0_u8; 16];
+    let _ = last.data.read(&mut read);
+    assert_eq!(read, vec![0; 16], "the discarding Map's cleared bytes went back at its Unmap");
     context.unmap(ResourceRef::Buffer(&buffer), 0);
 
     // A texture of two mips: one initial record per subresource, each of its own length.
@@ -480,7 +498,7 @@ fn the_toy_through_both_glues() {
 
     drop((back, swap_chain, swap_device, swap_context));
     // A view of lent memory holds the context and the resource until it goes.
-    drop((mapped, again, texture_mapped));
+    drop((mapped, again, read_again, discarded, last, texture_mapped));
     drop((view, empty, texture, buffer, query, context, device));
     assert_eq!(LIVE.load(Ordering::SeqCst), 0, "every toy object is released when the last C reference goes");
 }

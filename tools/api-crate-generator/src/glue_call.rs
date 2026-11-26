@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use super::{Glued, Part, Writer, direct_alias, snake, upper};
-use crate::api::Exception;
+use crate::api::{Exception, Hold};
 use crate::emit::{At, HEADER, Key, alias};
 use crate::metadata::Method;
 
@@ -63,6 +63,52 @@ impl Writer<'_, '_> {
             return text;
         };
         let mut body = String::new();
+        // The pins of the method (src/api.rs, checked by src/undo.rs): what could undo a fact a mark relies on.
+        let holds = self.g.holds_of(place);
+        let pinned_body = holds.iter().find_map(|hold| match hold {
+            Hold::NotCalled { why } => {
+                let answer = if result.starts_with("Result<") {
+                    "Err(E_NOTIMPL)"
+                } else if result == "()" {
+                    ""
+                } else if result.starts_with("Option<") {
+                    "None"
+                } else {
+                    "Default::default()"
+                };
+                Some(format!("        // Pinned (src/api.rs): never called by the calling glue: {why}.\n        {answer}\n"))
+            }
+            Hold::Answers { value, why } => Some(format!("        // Pinned (src/api.rs): answered, the system never called: {why}.\n        {value}\n")),
+            _ => None,
+        });
+        if let Some(pinned) = pinned_body {
+            for (name, _) in inputs {
+                let _ = writeln!(text, "        let _ = {name};");
+            }
+            text.push_str(&pinned);
+            text.push_str("    }\n");
+            return text;
+        }
+        for hold in &holds {
+            match hold {
+                Hold::Clears { param, mask, why } => {
+                    let name = crate::names::value_name(param);
+                    let newtype = glued.parts.iter().any(|(n, part)| *n == name && matches!(part, Part::Value { form: super::ValueForm::Newtype, .. }));
+                    let _ = writeln!(body, "        // Pinned (src/api.rs): {why}.");
+                    if newtype {
+                        let _ = writeln!(body, "        let mut {name} = {name};\n        {name}.0 &= !{mask:#x};");
+                    } else {
+                        let _ = writeln!(body, "        let {name} = {name} & !{mask:#x};");
+                    }
+                }
+                Hold::Refuses { param, when, why } => {
+                    let name = crate::names::value_name(param);
+                    let _ = writeln!(body, "        // Pinned (src/api.rs): {why}.");
+                    let _ = writeln!(body, "        if {} {{ {fail} }}", when.replace("{}", &name));
+                }
+                _ => {}
+            }
+        }
         let mut args: Vec<String> = Vec::new();
         let mut after = String::new();
         let mut outs: Vec<String> = Vec::new();
@@ -291,7 +337,7 @@ impl Writer<'_, '_> {
                     let top = self.g.top_path(self.current.get(), usize::MAX);
                     let _ = writeln!(body, "        let mut {name}: Raw = null_mut();");
                     args.push(format!("&raw mut {name}"));
-                    let _ = writeln!(after, "        #[expect(unsafe_code, reason = \"{place}: {}\")]", param.name);
+                    let _ = writeln!(after, "        #[expect(unsafe_code, reason = \"{place}: {}, Out and ComOutPtr\")]", param.name);
                     let _ = writeln!(after, "        // SAFETY: the metadata's `{}` is `Out` and `ComOutPtr`: after a success, null or one reference to an object of the interface `riid` named, which is `Adopt::INTERFACE`.", param.name);
                     let _ = writeln!(after, "        let Some({name}) = (unsafe {{ <<{api_type} as {top}>::{bound} as Adopt>::adopt({name}) }}) else {{ return Err(E_FAIL); }};");
                     outs.push(name.clone());
@@ -322,7 +368,7 @@ impl Writer<'_, '_> {
                     let _ = writeln!(after, "            unsafe {{ (self.object.entry_points().{until_slot})(self.object.raw(), lent_resource, {subresource_name}) }};");
                     let _ = writeln!(after, "            return Err(E_FAIL);\n        }};");
                     let _ = writeln!(after, "        let lent_keep: Vec<Box<dyn Send + Sync>> = vec![Box::new(self.clone()), {keep}];");
-                    let _ = writeln!(after, "        #[expect(unsafe_code, reason = \"{place}: {}\")]", param.name);
+                    let _ = writeln!(after, "        #[expect(unsafe_code, reason = \"{place}: {}, memory the system lends until its Unmap\")]", param.name);
                     let _ = writeln!(after, "        // SAFETY: `{}`'s exception line (src/api.rs): after a success the system lends `lent_length` bytes at `{data}` (the shape's rule from the description and the pitches it returned) until its Unmap of this resource and subresource, which this glue calls only after revoking the view; `lent_keep` holds the context and the resource.", param.name);
                     let _ = writeln!(after, "        let lent = unsafe {{ ForeignLent::new({name}_record.{data}, lent_length, lent_keep) }};");
                     let _ = writeln!(after, "        pending.settle(lent.clone());");
@@ -337,7 +383,7 @@ impl Writer<'_, '_> {
                     let newest = self.g.kinds[kinds[0]].newest.first().cloned();
                     let adopt = if newest.as_ref() == interface_key.as_ref() { "from_owned" } else { "from_owned_older" };
                     let system = self.system_path(kinds[0], api_type);
-                    let _ = writeln!(after, "        #[expect(unsafe_code, reason = \"{place}: {}\")]", param.name);
+                    let _ = writeln!(after, "        #[expect(unsafe_code, reason = \"{place}: {}, {}\")]", param.name, if *made { "Out and ComOutPtr" } else { "an object the metadata's Out hands over" });
                     let _ = writeln!(after, "        // SAFETY: the metadata's `{}` is `Out`{}: after a success, null or one reference to an object of `{}`.", param.name, if *made { " and `ComOutPtr`" } else { "" }, interface_key.as_ref().map_or("", |k| k.1.as_str()));
                     if *made {
                         let _ = writeln!(after, "        let Some({name}) = (unsafe {{ {system}::{adopt}({name}) }}) else {{ return Err(E_FAIL); }};");
@@ -370,7 +416,7 @@ impl Writer<'_, '_> {
         }
         let target = if face.is_some() { "object".to_string() } else { call_target.to_string() };
         let callee = if this { format!("({target}.entry_points().{slot})({target}.raw(){})", args.iter().map(|a| format!(", {a}")).collect::<String>()) } else { format!("({target}.{slot})({})", args.join(", ")) };
-        let _ = writeln!(body, "        #[expect(unsafe_code, reason = \"{place}, called out\")]");
+        let _ = writeln!(body, "        #[expect(unsafe_code, reason = \"{place}{}, called out\")]", if this { "" } else { ", the library's export" });
         if this {
             let _ = writeln!(body, "        // SAFETY: a live object whose table holds `{place}` where the metadata orders it; every pointer passed is ours for the call.");
         } else {
@@ -468,21 +514,21 @@ impl Writer<'_, '_> {
             let _ = writeln!(text, "pub struct {name}<A> {{\n    object: ForeignObject<{table}>,\n    api: PhantomData<fn() -> A>,\n}}\n");
             let _ = writeln!(text, "impl<A> {name}<A> {{");
             let _ = writeln!(text, "    /// The object's pointer, live while this lives.\n    pub fn raw(&self) -> Raw {{\n        self.object.raw()\n    }}\n");
-            let _ = writeln!(text, "    /// Takes over a reference to an object of `{}`, or returns none for null.\n    ///\n    /// # Safety\n    /// `raw` is null or a live object of `{0}` whose reference the caller gives up.", newest.1);
+            let _ = writeln!(text, "    /// Takes over a reference to an object of `{}`, or returns none for null.\n    ///\n    /// # Safety\n    /// `raw` is null or a live object of `{0}` whose reference the caller gives up, and which may be called from any\n    /// thread as `Interface` states (a context only under the system's multithread protection, never a deferred one).", newest.1);
             let _ = writeln!(text, "    #[expect(unsafe_code, reason = \"the promise that a pointer is a live object of an interface\")]");
             let _ = writeln!(text, "    pub unsafe fn from_owned(raw: Raw) -> Option<{name}<A>> {{\n        #[deny(unsafe_code)]\n        let body = move || {{");
-            let _ = writeln!(text, "            #[expect(unsafe_code, reason = \"the caller's live object\")]\n            // SAFETY: the caller's promise.");
+            let _ = writeln!(text, "            #[expect(unsafe_code, reason = \"the promise of the caller: a live object of {}\")]\n            // SAFETY: the caller's promise.", newest.1);
             let _ = writeln!(text, "            let object = unsafe {{ ForeignObject::<{table}>::from_owned(raw) }}?;\n            Some({name} {{ object, api: PhantomData }})\n        }};\n        body()\n    }}\n");
-            let _ = writeln!(text, "    /// Takes over a reference to an object of an older interface of the kind, asking it for `{}`.\n    ///\n    /// # Safety\n    /// `raw` is null or a live COM object whose reference the caller gives up.", newest.1);
+            let _ = writeln!(text, "    /// Takes over a reference to an object of an older interface of the kind, asking it for `{}`.\n    ///\n    /// # Safety\n    /// `raw` is null or a live COM object whose reference the caller gives up, and which may be called from any thread\n    /// as `Interface` states (a context only under the system's multithread protection, never a deferred one).", newest.1);
             let _ = writeln!(text, "    #[expect(unsafe_code, reason = \"the promise that a pointer is a live COM object\")]");
             let _ = writeln!(text, "    pub unsafe fn from_owned_older(raw: Raw) -> Option<{name}<A>> {{\n        #[deny(unsafe_code)]\n        let body = move || {{");
-            let _ = writeln!(text, "            #[expect(unsafe_code, reason = \"the caller's live object\")]\n            // SAFETY: the caller's promise: any COM object is an IUnknown.");
+            let _ = writeln!(text, "            #[expect(unsafe_code, reason = \"the promise of the caller: a live COM object, which is an IUnknown\")]\n            // SAFETY: the caller's promise: any COM object is an IUnknown.");
             let _ = writeln!(text, "            let unknown = unsafe {{ ForeignObject::<UnknownTable>::from_owned(raw) }}?;");
             let _ = writeln!(text, "            #[expect(unsafe_code, reason = \"QueryInterface for the newest interface of the kind\")]\n            // SAFETY: `{iid}` names the interface `{table}` lays out.");
             let _ = writeln!(text, "            let object = unsafe {{ unknown.query::<{table}>(&{iid}) }}?;\n            Some({name} {{ object, api: PhantomData }})\n        }};\n        body()\n    }}\n}}\n");
             let _ = writeln!(text, "impl<A> Adopt for {name}<A> {{\n    const INTERFACE: Guid = {iid};\n");
             let _ = writeln!(text, "    #[expect(unsafe_code, reason = \"the promise that a pointer is a live object of an interface\")]\n    unsafe fn adopt(raw: Raw) -> Option<{name}<A>> {{\n        #[deny(unsafe_code)]\n        let body = move || {{");
-            let _ = writeln!(text, "            #[expect(unsafe_code, reason = \"the caller's live object\")]\n            // SAFETY: the caller's promise, for `INTERFACE`'s interface, the newest of the kind.");
+            let _ = writeln!(text, "            #[expect(unsafe_code, reason = \"the promise of the caller: a live object of {}, the newest interface of the kind\")]\n            // SAFETY: the caller's promise, for `INTERFACE`'s interface, the newest of the kind.", newest.1);
             let _ = writeln!(text, "            unsafe {{ {name}::from_owned(raw) }}\n        }};\n        body()\n    }}\n}}\n");
             let _ = writeln!(text, "impl<A> Clone for {name}<A> {{\n    fn clone(&self) -> {name}<A> {{\n        {name} {{ object: self.object.clone(), api: PhantomData }}\n    }}\n}}\n");
             let _ = writeln!(text, "impl<A> PartialEq for {name}<A> {{\n    fn eq(&self, other: &{name}<A>) -> bool {{\n        self.object == other.object\n    }}\n}}\n\nimpl<A> Eq for {name}<A> {{}}\n");

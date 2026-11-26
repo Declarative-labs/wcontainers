@@ -164,6 +164,14 @@ impl Writer<'_, '_> {
             Some(_) => format!("let found = {};", fail("object::<V>(KEY, this.addr())", "E_POINTER")),
             None => format!("let found = {};", fail("module::<M>()", "E_FAIL")),
         };
+        // An object handed out again (a child's device) that the record holds as its maker: read under the word's lock,
+        // with no reference to `this` taken first.
+        let out_parts: Vec<&(String, Part)> = glued.parts.iter().filter(|(_, part)| matches!(part, Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::LentOut { .. } | Part::BoundOut { .. })).collect();
+        if let ([(name, Part::ObjectOut { kinds, made: false })], false, None, Some(_)) = (out_parts.as_slice(), status, &glued.returned, bound) {
+            let role = &self.g.kinds[kinds[0]].name;
+            let _ = writeln!(inner, "            if !{name}.is_null() && let Some(recorded) = made_by_of::<V>(KEY, this.addr(), \"{role}\") {{");
+            let _ = writeln!(inner, "                return Some((recorded.into_address().get().to_ne_bytes(),));\n            }}");
+        }
         let _ = writeln!(inner, "            {this_lookup}");
         // Counts past the header's range are refused before any array is read; a keep value reads none.
         let refused = if status { "Err(E_INVALIDARG)" } else { "None" };
@@ -200,7 +208,7 @@ impl Writer<'_, '_> {
                 Part::StructIn { optional, coded } => {
                     let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; {}];", coded.size);
                     let _ = writeln!(inner, "            let {name}_null = {name}.is_null();");
-                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
+                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "            // SAFETY: the metadata's `{metadata}` is `In` and `Const`: one `{}` of {} bytes, readable for the call.", coded.path.rsplit("::").next().unwrap_or(""), coded.size);
                     let _ = writeln!(inner, "            let {name}_read = unsafe {{ read_bytes({name}, &mut {name}_bytes) }};");
                     let _ = writeln!(inner, "            let {name} = {name}_read.then(|| decode_{}(&{name}_bytes));", coded.ident);
@@ -243,7 +251,7 @@ impl Writer<'_, '_> {
                     let _ = writeln!(inner, "            let {name}_count = {};", fail(&format!("usize::try_from({count_name}).ok().filter(|count| *count <= {MOST_ELEMENTS})"), "E_INVALIDARG"));
                     let empty = if *optional { format!("{name}_count == 0 || {name}.is_null()") } else { format!("{name}_count == 0") };
                     let _ = writeln!(inner, "            let {name}_bytes = if {empty} {{ Some(Vec::new()) }} else {{");
-                    let _ = writeln!(inner, "                #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
+                    let _ = writeln!(inner, "                #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "                // SAFETY: the metadata's `NativeArrayInfo` names `{}` as the count of `{metadata}`: that many elements of {size} bytes, readable for the call.", method.params[*count].name);
                     let _ = writeln!(inner, "                unsafe {{ read_only_at({name}, {name}_count * {size}) }}\n            }};");
                     let c = match element.as_ref() {
@@ -272,7 +280,7 @@ impl Writer<'_, '_> {
                     }
                     let nulls = if *optional { format!("Some(vec![0_u8; {name}_count * size_of::<usize>()])") } else { "None".to_string() };
                     let _ = writeln!(inner, "            let {name}_bytes = if {empty} {{ Some(Vec::new()) }} else if {name}.is_null() {{ {nulls} }} else {{");
-                    let _ = writeln!(inner, "                #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
+                    let _ = writeln!(inner, "                #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "                // SAFETY: the metadata's `NativeArrayInfo` names `{}` as the count of `{metadata}`: that many pointers, readable for the call.", method.params[*count].name);
                     let _ = writeln!(inner, "                unsafe {{ read_only_at({name}.cast::<u8>(), {name}_count * size_of::<usize>()) }}\n            }};");
                     let _ = writeln!(inner, "            let mut {name}_found = Vec::new();");
@@ -289,7 +297,7 @@ impl Writer<'_, '_> {
                 Part::BytesOut { count, optional } => {
                     let count_name = &glued.parts[*count].0;
                     let _ = writeln!(inner, "            let {name}_length = {};", fail(&format!("usize::try_from({count_name}).ok()"), "E_INVALIDARG"));
-                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
+                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "            // SAFETY: the metadata's `MemorySize` names `{}` as the byte count of `{metadata}`, which is `Out`: that many bytes, writable for the call.", method.params[*count].name);
                     let _ = writeln!(inner, "            let {name} = unsafe {{ writable_at({name}, {name}_length) }};");
                     if *optional {
@@ -309,7 +317,7 @@ impl Writer<'_, '_> {
                     } else {
                         let _ = writeln!(inner, "                let count = 1;");
                     }
-                    let _ = writeln!(inner, "                #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
+                    let _ = writeln!(inner, "                #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "                // SAFETY: `{metadata}`'s exception line (src/api.rs): {}, each of {size} bytes, readable for the call.", if *per_subresource { "one record per subresource of the description" } else { "one record" });
                     let _ = writeln!(inner, "                let records = unsafe {{ read_only_at({name}, count * {size}) }};");
                     let _ = writeln!(inner, "                let records = {};", fail("records", "E_INVALIDARG"));
@@ -318,7 +326,7 @@ impl Writer<'_, '_> {
                     let _ = writeln!(inner, "                    let {pitch_field} = get_u32(record, {pitch_at});\n                    let {slice_field} = get_u32(record, {slice_at});");
                     let _ = writeln!(inner, "                    let length = {};", fail(&format!("crate::lengths::initial_length_{suffix}(&{desc_name}, index, {pitch_field}, {slice_field})"), "E_INVALIDARG"));
                     let _ = writeln!(inner, "                    let address = core::ptr::with_exposed_provenance::<u8>(get_usize(record, {bytes_at}));");
-                    let _ = writeln!(inner, "                    #[expect(unsafe_code, reason = \"{place}: {metadata}'s bytes\")]");
+                    let _ = writeln!(inner, "                    #[expect(unsafe_code, reason = \"{place}: {metadata}'s bytes, as the header declares them for the C side\")]");
                     let _ = writeln!(inner, "                    // SAFETY: `{metadata}`'s exception line (src/api.rs): each record's bytes hold the length its shape's rule gives from the description and the pitches, readable for the call.");
                     let _ = writeln!(inner, "                    let {bytes_field} = unsafe {{ read_only_at(address, length) }};");
                     let _ = writeln!(inner, "                    let {bytes_field} = {};", fail(bytes_field, "E_INVALIDARG"));
@@ -331,7 +339,7 @@ impl Writer<'_, '_> {
                 }
                 Part::UnknownIn { optional } => {
                     let found = format!("UnknownFound::<{api_type}>");
-                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
+                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "            // SAFETY: the metadata's `{metadata}` is an `IUnknown*`: null or a live COM object, for the call.");
                     let _ = writeln!(inner, "            let {name}_found = unsafe {{ {found}::find({name}) }};");
                     if *optional {
@@ -344,7 +352,7 @@ impl Writer<'_, '_> {
                 }
                 Part::Riid => {
                     let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; 16];");
-                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
+                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "            // SAFETY: the metadata's `{metadata}` is `In` and `Const`: one GUID, readable for the call.");
                     let _ = writeln!(inner, "            let {name}_read = unsafe {{ read_bytes({name}, &mut {name}_bytes) }};");
                     let _ = writeln!(inner, "            if !{name}_read {{ return {}; }}", if status { "Err(E_INVALIDARG)" } else { "None" });
@@ -389,9 +397,10 @@ impl Writer<'_, '_> {
         if let Some((resource, subresource)) = &ending {
             let _ = writeln!(inner, "            let ending = {resource}_found.part::<Lendings>().and_then(|lendings| lendings.begin_end({subresource}));");
             let _ = writeln!(inner, "            let Some((lent, busy)) = ending else {{ return {}; }};", if status { "Ok(())" } else { "Some(())" });
-            let _ = writeln!(inner, "            let lent = lent.downcast::<(Shadow, <{api_type} as {top_of_api}>::Mapped)>().ok().map(|held| *held);");
-            let _ = writeln!(inner, "            let data = lent.map(|(shadow, data)| {{");
-            let _ = writeln!(inner, "                shadow.empty_into(&data);");
+            let _ = writeln!(inner, "            let lent = lent.downcast::<(Shadow, <{api_type} as {top_of_api}>::Mapped, bool)>().ok().map(|held| *held);");
+            let _ = writeln!(inner, "            let data = lent.map(|(shadow, data, written_back)| {{");
+            let _ = writeln!(inner, "                // Memory lent for reading only has nothing to write back (an exception line of src/api.rs).");
+            let _ = writeln!(inner, "                if written_back {{ shadow.empty_into(&data); }}");
             let _ = writeln!(inner, "                shadow.give_back();\n                data\n            }});");
         }
         // A description answered from what the glue recorded when the object was made.
@@ -454,7 +463,7 @@ impl Writer<'_, '_> {
                 let role = &self.g.kinds[kinds[0]].name;
                 // No reference is handed out through a null pointer.
                 let _ = writeln!(inner, "            if {name}.is_null() {{ return None; }}");
-                let _ = writeln!(inner, "            if let Some(recorded) = related::<V>(KEY, this.addr(), \"{role}\") {{");
+                let _ = writeln!(inner, "            if let Some(recorded) = related_of(&found, \"{role}\", 0) {{");
                 let _ = writeln!(inner, "                return Some((recorded.into_address().get().to_ne_bytes(),));\n            }}");
                 let _ = writeln!(inner, "            let made = {call};");
                 let _ = writeln!(inner, "            let Some(made) = made else {{ return Some((0_usize.to_ne_bytes(),)); }};");
@@ -484,7 +493,7 @@ impl Writer<'_, '_> {
             for (_, part, _) in &outs {
                 if let (Part::BoundOut { name: bound_name }, Some(index), Some(riid)) = (part, &bound_index, &riid) {
                     let bound_type = format!("<{api_type} as {top_of_api}>::{bound_name}");
-                    let _ = writeln!(inner, "            if let Some(recorded) = related_at::<V>(KEY, this.addr(), \"{bound_name}\", {index}) {{");
+                    let _ = writeln!(inner, "            if let Some(recorded) = related_of(&found, \"{bound_name}\", {index}) {{");
                     let _ = writeln!(inner, "                let answered = {};", fail(&format!("query::<{bound_type}>(KEY, recorded.address(), &{riid})"), "E_NOINTERFACE"));
                     let _ = writeln!(inner, "                return Ok((answered.into_address().get().to_ne_bytes(),));\n            }}");
                 }
@@ -518,13 +527,24 @@ impl Writer<'_, '_> {
                     let _ = writeln!(inner, "            let lent_length = lent_length.filter(|length| u64::try_from(*length).is_ok_and(|length| length <= wcontainers_volatile_bytes::VolatileBytes::len(&{name}_value.{data})));");
                     let _ = writeln!(inner, "            let Some(shadow) = lent_length.and_then(Shadow::allocate) else {{");
                     let _ = writeln!(inner, "                found.value().{until}({resource}_found.get(), {subresource});\n                return Err(E_FAIL);\n            }};");
-                    let _ = writeln!(inner, "            shadow.fill_from(&{name}_value.{data});");
+                    let (how, read_only, discard) = self.g.lent_of(place).and_then(|exception| match exception {
+                        Exception::Lent { how, read_only, discard, .. } => Some((names::value_name(how), *read_only, *discard)),
+                        _ => None,
+                    }).unwrap_or_default();
+                    let _ = writeln!(inner, "            // Contents the API leaves undefined are cleared, not read; memory lent for reading only is not written back (an exception line of src/api.rs).");
+                    let _ = writeln!(inner, "            if {how}.0 == {discard} {{ shadow.clear(); }} else {{ shadow.fill_from(&{name}_value.{data}); }}");
+                    let _ = writeln!(inner, "            let written_back = {how}.0 != {read_only};");
                     let _ = writeln!(inner, "            let {name}_record = {expression} {{ {data}: shadow.address(), {row}: {name}_value.{row}, {depth}: {name}_value.{depth} }};");
-                    let _ = writeln!(inner, "            reservation.settle(Box::new((shadow, {name}_value.{data})));");
+                    let _ = writeln!(inner, "            reservation.settle(Box::new((shadow, {name}_value.{data}, written_back)));");
                     let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; {}];", coded.size);
                     let _ = writeln!(inner, "            encode_{}(&{name}_record, &mut {name}_bytes);", coded.ident);
                     written.push(format!("{name}_bytes"));
                 }
+            }
+            // The object that made the new ones, related to them in their records before they are served.
+            let relates_maker = bound.is_some() && this_role.is_some() && outs.iter().any(|(_, part, _)| matches!(part, Part::ObjectOut { made: true, .. }));
+            if relates_maker {
+                let _ = writeln!(inner, "            let this_weak = found.weak();");
             }
             let _ = writeln!(inner, "            drop(found);");
             for (name, part, _) in &outs {
@@ -573,20 +593,19 @@ impl Writer<'_, '_> {
                                     }
                                 }
                             }
+                            let new_record = match (&this_role, bound.is_some()) {
+                                (Some(this_role), true) => format!("record_related(\"{this_role}\", this_weak)"),
+                                _ => "record()".to_string(),
+                            };
                             if recorded.is_empty() {
-                                let _ = writeln!(inner, "            let {name}_record = record();");
+                                let _ = writeln!(inner, "            let {name}_record = {new_record};");
                             } else {
-                                let _ = writeln!(inner, "            let mut {name}_record = record();");
+                                let _ = writeln!(inner, "            let mut {name}_record = {new_record};");
                                 for value in &recorded {
                                     let _ = writeln!(inner, "            if let Some(value) = {value} {{ {name}_record.push(Box::new(Recorded(value))); }}");
                                 }
                             }
                             let _ = writeln!(inner, "            let {name}_served = {};", fail(&format!("serve(KEY, {name}_value, {name}_record, {interfaces}::<{kind_type}>)"), "E_OUTOFMEMORY"));
-                            if bound.is_some()
-                                && let Some(this_role) = &this_role
-                            {
-                                let _ = writeln!(inner, "            if let Some(this_counted) = counted::<V>(KEY, this.addr()) {{ relate::<{kind_type}>(KEY, {name}_served.address(), \"{this_role}\", this_counted.weak()); }}");
-                            }
                             served.push((name.clone(), kind_type, self.g.kinds[kinds[0]].name.clone()));
                             written.push(format!("{name}_served"));
                         } else {
@@ -658,7 +677,7 @@ impl Writer<'_, '_> {
                 Part::ObjectOut { .. } => "`Out`: one interface pointer to write",
                 _ => "`Out`: one value of this size to write",
             };
-            let _ = writeln!(text, "        #[expect(unsafe_code, reason = \"{place}: {metadata}\")]");
+            let _ = writeln!(text, "        #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
             let _ = writeln!(text, "        // SAFETY: the metadata's `{metadata}` is {promise}, or null, for the call.");
             let _ = writeln!(text, "        let _ = unsafe {{ write_bytes({name}.cast::<u8>(), &{name}_written) }};");
         }
@@ -960,7 +979,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     serving.push_str(STATUS_IMPORTS);
     serving.push('\n');
     let _ = writeln!(serving, "use wcontainers_component_object_model::structures::Foreign;");
-    let _ = writeln!(serving, "use wcontainers_component_object_model_direct::{{IID_IUNKNOWN, ForeignUnknown, Found, Interfaces, Lendings, Raw, Recorded, Shadow, Table, counted, guarded, object, query, read_bytes, read_only_at, record, relate, relate_at, related, related_at, serve, status, unknown_table, writable_at, write_bytes}};\n");
+    let _ = writeln!(serving, "use wcontainers_component_object_model_direct::{{IID_IUNKNOWN, ForeignUnknown, Found, Interfaces, Lendings, Raw, Recorded, Shadow, Table, counted, guarded, object, query, read_bytes, read_only_at, record, record_related, made_by_of, related_of, relate, relate_at, related, related_at, serve, status, unknown_table, writable_at, write_bytes}};\n");
     let _ = writeln!(serving, "use crate::KEY;\nuse crate::abi::*;\nuse crate::data::*;\n");
     let _ = writeln!(serving, "/// The tables of this API's interfaces, for objects of type `V`.\npub struct Tables<V>(PhantomData<V>);\n");
     serving.push_str(&tables);

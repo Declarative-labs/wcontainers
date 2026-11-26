@@ -69,7 +69,7 @@ impl<T: Interface> ForeignObject<T> {
     pub unsafe fn from_borrowed(raw: Raw) -> Option<ForeignObject<T>> {
         #[deny(unsafe_code)]
         let body = move || {
-            #[expect(unsafe_code, reason = "the caller's live object")]
+            #[expect(unsafe_code, reason = "the promise of from_borrowed's caller: a live COM object of T's interface")]
             // SAFETY: the caller's promise; the borrowed reference is not given back, as it was never ours.
             let borrowed = ManuallyDrop::new(unsafe { ForeignObject::<T>::from_owned(raw) }?);
             Some(ForeignObject::clone(&borrowed))

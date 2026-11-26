@@ -30,6 +30,7 @@ const HARNESS: &[(&str, &str)] = &[
     ("tests/check2_c.rs", include_str!("../harness/stand-ins/tests/check2_c.rs")),
     ("tests/fuzz.rs", include_str!("../harness/stand-ins/tests/fuzz.rs")),
     ("tests/measure.rs", include_str!("../harness/stand-ins/tests/measure.rs")),
+    ("tests/undo.rs", include_str!("../harness/stand-ins/tests/undo.rs")),
     ("c/d3d11_slice.h", include_str!("../harness/stand-ins/c/d3d11_slice.h")),
     ("c/fake_d3d11.c", include_str!("../harness/stand-ins/c/fake_d3d11.c")),
     ("c/game.c", include_str!("../harness/stand-ins/c/game.c")),
@@ -447,6 +448,11 @@ impl<'a> Generator<'a> {
     /// Every exception line of the set's APIs.
     fn exceptions(&self) -> impl Iterator<Item = &'static Exception> + '_ {
         self.apis.iter().flat_map(|api| api.exceptions.iter())
+    }
+
+    /// The holds of every pin of `method` in the set's APIs (src/api.rs).
+    fn holds_of(&self, method: &str) -> Vec<&'static crate::api::Hold> {
+        self.apis.iter().flat_map(|api| api.pins.iter()).filter(|pin| pin.method == method).map(|pin| &pin.hold).collect()
     }
 
     /// The initial-data exception line of a method's parameter, if any.
@@ -1707,6 +1713,8 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path) -> Result<String, 
     }
     std::fs::write(out.join("MAPPING.md"), mapping).map_err(|error| error.to_string())?;
     format_written(out)?;
+    // Every mark's reliance, and every method that could undo it pinned: a failure here fails the generator.
+    report.push_str(&crate::undo::check(index, apis, out)?);
     Ok(report)
 }
 

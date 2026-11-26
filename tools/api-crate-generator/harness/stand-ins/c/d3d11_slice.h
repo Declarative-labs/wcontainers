@@ -172,6 +172,7 @@ typedef void (*OutputMergerFunction)(void *, uint32_t, void *const *, void *, ui
 typedef HRESULT (*SurfaceGetDescFunction)(void *, SURFACE_DESC *);
 typedef HRESULT (*PresentFunction)(void *, uint32_t, uint32_t);
 typedef HRESULT (*GetBufferFunction)(void *, uint32_t, const GUID *, void **);
+typedef int32_t (*SetProtectedFunction)(void *, int32_t);
 
 /* The entry at `index` of the object's table, as type `type`. */
 #define ENTRY(object, index, type) ((type)((*(Entry **)(object))[index]))
@@ -204,6 +205,7 @@ typedef HRESULT (*GetBufferFunction)(void *, uint32_t, const GUID *, void **);
 #define SurfaceGetDesc(s, out) ENTRY(s, 8, SurfaceGetDescFunction)(s, out)
 #define Present(s, interval, flags) ENTRY(s, 8, PresentFunction)(s, interval, flags)
 #define GetBuffer(s, index, iid, out) ENTRY(s, 9, GetBufferFunction)(s, index, iid, out)
+#define SetMultithreadProtected(m, on) ENTRY(m, 5, SetProtectedFunction)(m, on)
 
 /* What the fake saw, so that a test can tell what reached the system. */
 typedef struct {
@@ -211,6 +213,9 @@ typedef struct {
         om_first_view, mapped_now;
     int32_t create_driver_type;
     uint32_t protected_contexts;
+    /* Times a context's protection was turned off, and devices asked for single threaded (D3D11_CREATE_DEVICE_SINGLETHREADED):
+       both undo the free threading the calling glue's Send and Sync rest on, so a test expects 0 through the glue. */
+    uint32_t unprotections, single_threaded_creates;
 } Observed;
 
 #endif

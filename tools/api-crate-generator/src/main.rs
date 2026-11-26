@@ -11,6 +11,7 @@ mod mapping;
 mod metadata;
 mod names;
 mod runtime;
+mod undo;
 
 use std::collections::BTreeMap;
 use std::process::ExitCode;

@@ -136,15 +136,40 @@ static ABANDONED: Mutex<std::collections::VecDeque<PoolBlock>> = Mutex::new(std:
 /// The bytes of abandoned blocks kept back from the pool.
 const ABANDONED_BYTES: usize = 64 << 20;
 
+/// How many blocks a thread keeps for itself before giving them to the pool, so that a Map and its Unmap on one thread
+/// take no lock for their block.
+const SPARE_BLOCKS: usize = 4;
+
+/// A thread's own spare blocks, given to the pool when the thread ends.
+struct Spare(Vec<PoolBlock>);
+
+impl Drop for Spare {
+    fn drop(&mut self) {
+        POOL.lock().unwrap_or_else(PoisonError::into_inner).append(&mut self.0);
+    }
+}
+
+thread_local! {
+    static SPARE: core::cell::RefCell<Spare> = const { core::cell::RefCell::new(Spare(Vec::new())) };
+}
+
 impl Shadow {
     /// Returns memory of this many bytes, from the pool or new; what it holds at first is unspecified. None when the
     /// allocator cannot give it.
     pub fn allocate(length: usize) -> Option<Shadow> {
         let class = length.max(SMALLEST).checked_next_power_of_two()?;
-        let reused = {
+        let spare = SPARE
+            .try_with(|spare| {
+                let mut spare = spare.try_borrow_mut().ok()?;
+                let at = spare.0.iter().position(|block| block.class == class)?;
+                Some(spare.0.swap_remove(at))
+            })
+            .ok()
+            .flatten();
+        let reused = spare.or_else(|| {
             let mut pool = POOL.lock().unwrap_or_else(PoisonError::into_inner);
             pool.iter().position(|block| block.class == class).map(|at| pool.swap_remove(at))
-        };
+        });
         let block = match reused {
             Some(block) => block,
             None => {
@@ -185,6 +210,22 @@ impl Shadow {
         let _ = target.write_from(&mut reader);
     }
 
+    /// Writes zeros over the bytes lent, so that memory whose contents the API leaves undefined (a discarding Map)
+    /// shows nothing of an earlier lending, with no read of the implementation's bytes.
+    pub fn clear(&self) {
+        const ZEROS: [u8; 4096] = [0; 4096];
+        let Some(block) = self.0.as_ref() else { return };
+        let mut at = 0_u64;
+        let end = self.1 as u64;
+        while at < end {
+            let written = block.view.part(at..end).map_or(0, |rest| rest.write(&ZEROS));
+            if written == 0 {
+                return;
+            }
+            at += written as u64;
+        }
+    }
+
     /// Copies the bytes in from `bytes`, as many as both hold, and returns how many.
     pub fn fill(&self, bytes: &[u8]) -> usize {
         self.0.as_ref().map_or(0, |block| block.view.part(0..self.1 as u64).map_or(0, |view| view.write(bytes)))
@@ -202,7 +243,16 @@ impl Shadow {
 impl Shadow {
     /// Gives the block back to the pool, at the Unmap that ends the lending.
     pub fn give_back(mut self) {
-        if let Some(block) = self.0.take() {
+        let mut held = self.0.take();
+        let _ = SPARE.try_with(|spare| {
+            if let Ok(mut spare) = spare.try_borrow_mut()
+                && spare.0.len() < SPARE_BLOCKS
+                && let Some(block) = held.take()
+            {
+                spare.0.push(block);
+            }
+        });
+        if let Some(block) = held {
             POOL.lock().unwrap_or_else(PoisonError::into_inner).push(block);
         }
     }

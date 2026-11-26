@@ -25,7 +25,8 @@ rm -rf "$work/first" "$work/second"
 diff -r "$work/first" "$work/second" > /dev/null && echo "IDENTICAL: the two runs wrote the same files" || echo "DIFFERENT: the two runs differ"
 find "$work/first" -name '*.rs' | sort | xargs wc -l | tail -1
 sed -n '/^CRATE/p;/^ROWS/,/^UNMAPPED/p' "$work/report.txt"
-echo "unmapped lines: $(sed -n '/^UNMAPPED/,$p' "$work/report.txt" | tail -n +2 | wc -l)"
+echo "unmapped lines: $(sed -n '/^UNMAPPED/,/^RELIANCES/p' "$work/report.txt" | grep -vc '^UNMAPPED\|^RELIANCES')"
+sed -n '/^RELIANCES/,$p' "$work/report.txt" | grep -E '^RELIANCES|^  [A-Za-z]|UNPINNED|MISSING'
 
 step "build the crates written, in a workspace of their own"
 build=$work/build
@@ -39,7 +40,12 @@ cp "$repository/rust-toolchain.toml" "$build/"
 {
     echo '[workspace]'
     echo 'resolver = "3"'
-    echo 'members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*", "crates/*/implementation/*/harness"]'
+    # A harness is written beside a slice's glue only: its glob is a member only when one is there.
+    if compgen -G "$build/crates/*/implementation/*/harness" > /dev/null; then
+        echo 'members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*", "crates/*/implementation/*/harness"]'
+    else
+        echo 'members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*"]'
+    fi
     echo
     sed -n '/^\[workspace.package\]/,/^$/p' "$repository/Cargo.toml"
     echo '[workspace.metadata.reviewable]'

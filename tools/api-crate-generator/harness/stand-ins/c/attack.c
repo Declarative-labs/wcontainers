@@ -254,3 +254,28 @@ int attack_output_merger(CreateDevice create, char *out, size_t capacity) {
     Release(device);
     return 0;
 }
+
+/* A program that undoes the free threading the calling glue's Send and Sync rest on: it asks for a single-threaded
+   device and turns the immediate context's multithread protection on, then off twice. Returns what the second
+   SetMultithreadProtected answered (1: protection was on before it), or -1 when no device or protection object came. */
+int attack_undo_threads(CreateDevice create, char *out, size_t capacity) {
+    void *device = NULL, *context = NULL, *protection = NULL;
+    int32_t levels[] = {D3D_FEATURE_LEVEL_11_0}, level = 0;
+    HRESULT made = create(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, D3D11_CREATE_DEVICE_SINGLETHREADED, levels, 1,
+                          D3D11_SDK_VERSION, &device, &level, &context);
+    if (made != S_OK) return -1;
+    HRESULT asked = QueryInterface(context, &IID_ID3D11Multithread, &protection);
+    int32_t first = -1, second = -1;
+    if (asked == S_OK && protection) {
+        /* On, as a careful program would turn it on (the system's default is off); then off, twice. */
+        SetMultithreadProtected(protection, 1);
+        first = SetMultithreadProtected(protection, 0);
+        second = SetMultithreadProtected(protection, 0);
+        Release(protection);
+    }
+    snprintf(out, capacity, "single-threaded device made: %#x; QueryInterface(ID3D11Multithread) %#x; "
+             "SetMultithreadProtected(FALSE) answered %d, then %d", (unsigned)made, (unsigned)asked, first, second);
+    Release(context);
+    Release(device);
+    return protection ? second : -1;
+}

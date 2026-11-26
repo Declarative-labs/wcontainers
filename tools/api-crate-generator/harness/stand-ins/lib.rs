@@ -66,6 +66,8 @@ pub struct Observed {
     pub mapped_now: u32,
     pub create_driver_type: i32,
     pub protected_contexts: u32,
+    pub unprotections: u32,
+    pub single_threaded_creates: u32,
 }
 
 #[expect(unsafe_code, reason = "the stand-ins' own C functions")]
@@ -94,6 +96,7 @@ unsafe extern "C" {
     fn attack_write_mapped(create: CreateDevice, width: u32, out: *mut u8, capacity: usize) -> i32;
     fn attack_write_mapped_texture(create: CreateDevice, side: u32, out: *mut u8, capacity: usize) -> i32;
     fn attack_output_merger(create: CreateDevice, out: *mut u8, capacity: usize) -> i32;
+    fn attack_undo_threads(create: CreateDevice, out: *mut u8, capacity: usize) -> i32;
     fn check2_get_device_twice(create: CreateDevice, out: *mut u8, capacity: usize) -> i32;
     fn check2_held_texture_after_draw(create: CreateDevice, out: *mut u8, capacity: usize) -> i32;
     fn check2_get_type_then_get_desc(create: CreateDevice, exact: i32, out: *mut u8, capacity: usize) -> i32;
@@ -135,6 +138,8 @@ pub enum Attack {
     WriteMapped(u32),
     WriteMappedTexture(u32),
     OutputMerger,
+    /// Asks for a single-threaded device and turns the context's multithread protection off, twice.
+    UndoThreads,
 }
 
 /// check-2's C games (c/check2.c).
@@ -265,6 +270,7 @@ impl Entry {
                 Attack::WriteMapped(width) => attack_write_mapped(create, width, out, capacity),
                 Attack::WriteMappedTexture(side) => attack_write_mapped_texture(create, side, out, capacity),
                 Attack::OutputMerger => attack_output_merger(create, out, capacity),
+                Attack::UndoThreads => attack_undo_threads(create, out, capacity),
             }
         };
         (status, text(&report))

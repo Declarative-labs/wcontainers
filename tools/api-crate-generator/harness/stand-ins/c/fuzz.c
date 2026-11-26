@@ -66,6 +66,16 @@ typedef struct {
     uint64_t state;
 } Random;
 
+/* A thread's first state from the run's seed: splitmix64 of the seed and the thread's stream, never zero, so that
+   every seed gives its own sequence (forcing the low bit, as before, made seeds 2k and 2k+1 one sequence). */
+static uint64_t first_state(uint64_t seed, uint64_t stream) {
+    uint64_t z = seed * 0x9e3779b97f4a7c15ull + stream * 0xbf58476d1ce4e5b9ull + 0x94d049bb133111ebull;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+    z ^= z >> 31;
+    return z ? z : 1;
+}
+
 static uint64_t next(Random *random) {
     uint64_t x = random->state;
     x ^= x >> 12;
@@ -566,7 +576,7 @@ unsigned long long fuzz_correct(CreateDevice create, CreateDeviceAndSwapChain cr
     if (threads > 32) threads = 32;
     uint64_t before = atomic_load(&fuzz_calls);
     for (uint32_t at = 0; at < threads; at++) {
-        games[at].random.state = (seed ^ (0x9e3779b97f4a7c15ull * (at + 1))) | 1;
+        games[at].random.state = first_state(seed, at + 1);
         games[at].create = create;
         games[at].create_swap = create_swap;
         games[at].budget = calls / threads;
@@ -982,7 +992,7 @@ unsigned long long fuzz_hostile(CreateDevice create, CreateDeviceAndSwapChain cr
     if (threads > 32) threads = 32;
     hostile_budget = calls / threads;
     Hostile *hostiles = calloc(threads, sizeof *hostiles);
-    for (uint32_t at = 0; at < threads; at++) hostiles[at].random.state = (seed ^ (0xd1b54a32d192ed03ull * (at + 1))) | 1;
+    for (uint32_t at = 0; at < threads; at++) hostiles[at].random.state = first_state(seed, 0x100 + at + 1);
     for (int tries = 0; tries < 1000 && !atomic_load(&tables[CONTEXT]); tries++) hostile_create_device(&hostiles[0]);
     pthread_t workers[32];
     uint64_t before = atomic_load(&fuzz_calls);
