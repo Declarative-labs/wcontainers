@@ -1635,9 +1635,8 @@ address add fd03::1/64 dev dx nodad";
 
 /// Returns what Linux gives a datagram socket held to the interface as the selector says, from the source if any, when it connects.
 ///
-/// That is the source and path MTU it is told, or the error of the connect. A requested interface is named for the
-/// socket's unicast sends (`IP_UNICAST_IF`, `IPV6_UNICAST_IF`), as a send names it per packet; a bound one binds the
-/// socket to the device (`SO_BINDTOIFINDEX`).
+/// That is the source and path MTU it is told, or the connect's error. A requested interface is named for unicast
+/// sends (`IP_UNICAST_IF`, `IPV6_UNICAST_IF`); a bound one binds the device (`SO_BINDTOIFINDEX`).
 fn told_by_interface<O: LinuxSocketOptions>(
     options: &O,
     destination: IpAddr,

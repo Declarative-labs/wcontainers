@@ -3985,9 +3985,8 @@ fn authentication_round<S: TcpSockets>(
 
 /// Checks that a listener with TCP Authentication Option keys takes only connections signed with one of them.
 ///
-/// Signed by the key, MAC length and option coverage given; keys added twice are added once, the key asked to be
-/// current signs the SYN, a key removed signs nothing, and a listener that requires authentication takes no plain
-/// client until it no longer does.
+/// Signed by the key, MAC length and coverage given; a key added twice is added once, the current key signs the SYN,
+/// a removed key signs nothing, and a listener requiring authentication takes no plain client until it stops.
 pub fn authentication_keys_admit_only_connections_signed_with_them<S: TcpSockets>(sockets: S) {
     use TcpAuthenticationKeyUse::{CurrentAndRequestedNext, Stored};
     use TcpAuthenticationOptionCoverage::{Excluded, Included};
@@ -5058,9 +5057,8 @@ pub fn listener_timestamping_reaches_the_connections_it_accepts<S: TcpSockets>(s
 
 /// Checks that a listener asked to save SYNs leaves each accepted connection its SYN's headers, to be taken once.
 ///
-/// From the IP header or from the link header before it as asked, kept while the buffer is too small for them; a
-/// listener not asked, or asked to stop, leaves none. Accept gives the IP header whichever is saved. A multipath
-/// listener may refuse to save them, and then leaves none either.
+/// From the IP or the link header as asked, kept while the buffer is too small; a listener not asked, or asked to
+/// stop, leaves none. Accept gives the IP header either way. A multipath listener may refuse, and leaves none.
 pub fn saved_synchronize_is_taken_once<S: TcpSockets>(sockets: S) {
     let save = TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::FromNetworkHeader);
     let stop = TcpListenerSetting::SaveSynchronize(TcpSavedSynchronize::Off);
@@ -5834,7 +5832,7 @@ fn own_network_namespace() {
 /// Brings the calling thread's loopback up through the kernel's routing socket, as `ip link set lo up` does.
 #[cfg(target_os = "linux")]
 fn bring_loopback_up() {
-    bring_up(loopback_index(), "bring the loopback up");
+    bring_up(loopback_index());
 }
 
 /// Gives the index of the calling thread's loopback.
@@ -5845,23 +5843,24 @@ fn loopback_index() -> u32 {
 
 /// Brings a link of the calling thread's namespace up, as `ip link set <link> up` does.
 #[cfg(target_os = "linux")]
-fn bring_up(index: u32, what: &str) {
+fn bring_up(index: u32) {
     use netlink_packet_route::RouteNetlinkMessage;
     use netlink_packet_route::link::{LinkFlags, LinkMessage};
     let mut link = LinkMessage::default();
     link.header.index = index;
     link.header.flags = LinkFlags::Up;
     link.header.change_mask = LinkFlags::Up;
-    ask_routing(RouteNetlinkMessage::SetLink(link), NO_FLAGS, what);
+    ask_routing(RouteNetlinkMessage::SetLink(link), NO_FLAGS);
 }
 
 /// Sends one request to the kernel's routing socket of the calling thread's namespace and checks that it is done.
 #[cfg(target_os = "linux")]
-fn ask_routing(message: netlink_packet_route::RouteNetlinkMessage, flags: u16, what: &str) {
+fn ask_routing(message: netlink_packet_route::RouteNetlinkMessage, flags: u16) {
     use netlink_packet_core::{
         NLM_F_ACK, NLM_F_REQUEST, NetlinkHeader, NetlinkMessage, NetlinkPayload,
     };
     use netlink_packet_route::RouteNetlinkMessage;
+    let what = format!("{message:?}");
     let mut header = NetlinkHeader::default();
     header.flags = NLM_F_REQUEST | NLM_F_ACK | flags;
     let mut request = NetlinkMessage::new(header, NetlinkPayload::from(message));
@@ -5874,7 +5873,7 @@ fn ask_routing(message: netlink_packet_route::RouteNetlinkMessage, flags: u16, w
     socket
         .connect(&netlink_sys::SocketAddr::new(u32::MIN, u32::MIN))
         .expect("connect the routing socket to the kernel");
-    socket.send(&bytes, i32::from(u8::MIN)).expect(what);
+    socket.send(&bytes, i32::from(u8::MIN)).expect(&what);
     let mut reply = Vec::with_capacity(LOOPBACK_ANSWER_ROOM);
     socket
         .recv(&mut reply, i32::from(u8::MIN))
@@ -5955,7 +5954,6 @@ fn add_microsecond_route(loopback: u32) {
     ask_routing(
         RouteNetlinkMessage::NewRoute(route),
         NLM_F_CREATE | NLM_F_EXCL,
-        "add the microsecond route",
     );
 }
 
@@ -5980,7 +5978,6 @@ fn queue_fairly(loopback: u32) {
     ask_routing(
         RouteNetlinkMessage::NewQueueDiscipline(discipline),
         NLM_F_CREATE | NLM_F_REPLACE,
-        "give loopback the fq queueing discipline",
     );
 }
 
@@ -6011,10 +6008,9 @@ fn add_vrf_device() {
     ask_routing(
         RouteNetlinkMessage::NewLink(link),
         NLM_F_CREATE | NLM_F_EXCL,
-        "add the VRF device",
     );
     let index = nix::net::if_::if_nametoindex(VRF_NAME).expect("the VRF device's index");
-    bring_up(index, "bring the VRF device up");
+    bring_up(index);
 }
 
 /// The name and routing table of the namespace's VRF device.
@@ -6053,15 +6049,21 @@ const LOOPBACK_ANSWER_ROOM: usize = 4096;
 ///
 /// https://docs.kernel.org/networking/ip-sysctl.html#:~:text=tcp_ecn%20%2D%20INTEGER
 const TCP_ECN: &str = "/proc/sys/net/ipv4/tcp_ecn";
+/// The `tcp_ecn` values that never ask for ECN, ask for Classic ECN, and ask for Accurate ECN.
+///
+/// https://docs.kernel.org/networking/ip-sysctl.html#:~:text=tcp_ecn%20%2D%20INTEGER
+const ECN_NEVER: &str = "0";
+const ECN_CLASSIC: &str = "1";
+const ECN_ACCURATE: &str = "3";
 
 /// Checks that a connection reads the ECN both ends negotiated: none, Classic ECN, or Accurate ECN.
 ///
 /// Each end asks for ECN as `tcp_ecn` 0 (never), 1 (Classic) and 3 (Accurate) tell it, in a namespace of its own.
 pub fn ecn_mode_is_what_both_ends_negotiated<S: TcpSockets + Sync>(sockets: S) {
     for (tcp_ecn, mode) in [
-        ("0", EcnMode::Disabled),
-        ("1", EcnMode::Classic),
-        ("3", EcnMode::Accurate),
+        (ECN_NEVER, EcnMode::Disabled),
+        (ECN_CLASSIC, EcnMode::Classic),
+        (ECN_ACCURATE, EcnMode::Accurate),
     ] {
         with_tcp_ecn(tcp_ecn, || {
             let pair = pair(&sockets);
@@ -6738,9 +6740,8 @@ pub fn timestamp_reads_the_clock_in_its_unit<S: TcpSockets>(sockets: S) {
 
 /// Checks that a connection read in repair mode and written back into a new socket goes on where the first left off.
 ///
-/// The repair state reads each end's sequence numbers as the other's, and is refused out of repair mode; the new socket
-/// takes the sequence numbers, options, window and clock, reads them back, and then carries bytes both ways with the
-/// first one's peer and its segment size.
+/// The repair state reads each end's sequence numbers as the other's, refused out of repair mode; the new socket takes
+/// the numbers, options, window and clock, reads them back, and carries bytes both ways with the first one's peer.
 pub fn repaired_connection_continues_where_the_original_left_off<S: TcpSockets>(sockets: S) {
     let (listener, local) = listen(&sockets, ipv4_loopback(), &[]);
     // A small receive buffer on the client's side, so that its window and the server's differ; a small window on the

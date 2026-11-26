@@ -2323,12 +2323,10 @@ pub fn a_group_filter_chooses_the_socket<S: UdpSockets>(sockets: S) {
 
 /// An IPv6 multicast member takes the group's datagrams with all-groups off.
 ///
-/// It is joined on the interface the route chooses or on one given, and a link-local anycast address joined on that
-/// interface is reachable.
+/// It is joined on the route's interface or one given, and a link-local anycast address joined there is reachable.
 ///
-/// Needs an interface with IPv6 multicast besides loopback: Linux never takes an IPv6 multicast datagram over
-/// its loopback interface, drops a looped one whose source is the loopback address, and lets a host join only
-/// an anycast address in a prefix of the interface.
+/// It needs a multicast interface besides loopback: Linux takes no IPv6 multicast datagram over loopback, drops a
+/// looped one from the loopback address, and joins only an anycast address in a prefix of the interface.
 pub fn ipv6_memberships_take_their_datagrams<S: UdpSockets>(sockets: S) {
     let group = global_group;
     let unspecified = binding(IpAddr::V6(Ipv6Addr::UNSPECIFIED), u16::MIN);

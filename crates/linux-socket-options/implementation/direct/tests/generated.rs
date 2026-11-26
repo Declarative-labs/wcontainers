@@ -386,8 +386,9 @@ fn summary(row: &Row<'_>) -> String {
 const OPTION_FAMILY_CHECK: &str = "of_family";
 const REQUEST_FAMILY_CHECK: &str = "request_of_family";
 
-/// Gives the check of the socket's family a generated call passes the socket through, from the kernel table's families
-/// of the row's level; nothing where the level is the socket layer's own, which every family shares.
+/// Gives the family check a generated call passes its socket through, from the kernel table's families of the level.
+///
+/// It gives none where the level is the socket layer's own, which every family shares.
 fn family_guard(row: &Row<'_>) -> Option<String> {
     let level = (row.level != NO_LEVEL).then_some(row.level);
     match kernel::families(level)? {
@@ -1022,8 +1023,9 @@ fn family_reason(row: &Row<'_>, _: &Entry) -> Result<(), String> {
     family_check(row, &body(row))
 }
 
-/// Checks that `code`, a method's body, passes its socket once, through exactly the family check the kernel table's
-/// families of the row's level give, or through none where the level is every family's.
+/// Checks that a method's body passes its socket once, through exactly the family check its level's families give.
+///
+/// A level of every family gives none.
 fn family_check(row: &Row<'_>, code: &str) -> Result<(), String> {
     let level = (row.level != NO_LEVEL).then_some(row.level);
     let method = row.method;

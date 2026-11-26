@@ -1,8 +1,7 @@
 //! The `ip` and `tc` commands the checks build their networks with, done through the kernel's routing socket.
 //!
-//! Each line is read as iproute2 reads it and becomes the one request `ip` or `tc` sends for it, and its
-//! acknowledgement is checked; a line of a kind not done here stops the check. The one firewall table a check needs is
-//! sent to the netfilter socket as the batch `nft` sends for it.
+//! Each line becomes the one request iproute2 sends for it, acknowledged; a line of another kind stops the check. The
+//! one firewall table a check needs goes to the netfilter socket as `nft` sends it.
 
 use std::net::{IpAddr, Ipv6Addr};
 
@@ -34,96 +33,97 @@ use netlink_packet_route::tc::{
 };
 use netlink_packet_route::{AddressFamily, IpProtocol, RouteNetlinkMessage};
 
-/// The words of the `ip` and `tc` commands done here, as ip-link(8), ip-address(8), ip-route(8), ip-rule(8),
-/// ip-neighbour(8), tc(8), tc-prio(8), tc-fq(8), tc-etf(8), tc-flower(8) and tc-actions(8) spell them.
-mod word {
-    pub(super) const ACTION: &str = "action";
-    pub(super) const ADD: &str = "add";
-    pub(super) const ADDRESS: &str = "address";
-    pub(super) const ADDRGENMODE: &str = "addrgenmode";
-    pub(super) const ALL: &str = "all";
-    pub(super) const ARP: &str = "arp";
-    pub(super) const BLACKHOLE: &str = "blackhole";
-    pub(super) const BROADCAST: &str = "broadcast";
-    pub(super) const CLOCKID: &str = "clockid";
-    pub(super) const CLSACT: &str = "clsact";
-    pub(super) const DEL: &str = "del";
-    pub(super) const DELTA: &str = "delta";
-    pub(super) const DEV: &str = "dev";
-    pub(super) const DPORT: &str = "dport";
-    pub(super) const DSCP: &str = "dscp";
-    pub(super) const DST_MAC: &str = "dst_mac";
-    pub(super) const DUMMY: &str = "dummy";
-    pub(super) const EGRESS: &str = "egress";
-    pub(super) const ENCAP: &str = "encap";
-    pub(super) const ETF: &str = "etf";
-    pub(super) const FILTER: &str = "filter";
-    pub(super) const FLOWER: &str = "flower";
-    pub(super) const FLOWLABEL: &str = "flowlabel";
-    pub(super) const FQ: &str = "fq";
-    pub(super) const FROM: &str = "from";
-    pub(super) const FWMARK: &str = "fwmark";
-    pub(super) const HANDLE: &str = "handle";
-    pub(super) const HOPLIMIT: &str = "hoplimit";
-    pub(super) const INET: &str = "inet";
-    pub(super) const INET6: &str = "inet6";
-    pub(super) const IPPROTO: &str = "ipproto";
-    pub(super) const LINK: &str = "link";
-    pub(super) const LLADDR: &str = "lladdr";
-    pub(super) const LOCAL: &str = "local";
-    pub(super) const LOCK: &str = "lock";
-    pub(super) const LOOKUP: &str = "lookup";
-    pub(super) const MAIN: &str = "main";
-    pub(super) const METRIC: &str = "metric";
-    pub(super) const MNGTMPADDR: &str = "mngtmpaddr";
-    pub(super) const MODE: &str = "mode";
-    pub(super) const MTU: &str = "mtu";
-    pub(super) const MULTICAST: &str = "multicast";
-    pub(super) const NAME: &str = "name";
-    pub(super) const NEIGH: &str = "neigh";
-    pub(super) const NEXTHOP: &str = "nexthop";
-    pub(super) const NODAD: &str = "nodad";
-    pub(super) const NONE: &str = "none";
-    pub(super) const NUD: &str = "nud";
-    pub(super) const OIF: &str = "oif";
-    pub(super) const ON: &str = "on";
-    pub(super) const PASS: &str = "pass";
-    pub(super) const PEER: &str = "peer";
-    pub(super) const PRIO: &str = "prio";
-    pub(super) const PROHIBIT: &str = "prohibit";
-    pub(super) const PROTOCOL: &str = "protocol";
-    pub(super) const QDISC: &str = "qdisc";
-    pub(super) const REPLACE: &str = "replace";
-    pub(super) const ROOT: &str = "root";
-    pub(super) const ROUTE: &str = "route";
-    pub(super) const RULE: &str = "rule";
-    pub(super) const SEG6: &str = "seg6";
-    pub(super) const SEGS: &str = "segs";
-    pub(super) const SET: &str = "set";
-    pub(super) const SPORT: &str = "sport";
-    pub(super) const STALE: &str = "stale";
-    pub(super) const TABLE: &str = "table";
-    pub(super) const TYPE: &str = "type";
-    pub(super) const UIDRANGE: &str = "uidrange";
-    pub(super) const UNREACHABLE: &str = "unreachable";
-    pub(super) const UP: &str = "up";
-    pub(super) const VETH: &str = "veth";
-    pub(super) const VIA: &str = "via";
+/// The words of the `ip` and `tc` commands done here, as the manual pages of ip(8) and tc(8) spell them.
+pub(crate) mod word {
+    pub(crate) const ACTION: &str = "action";
+    pub(crate) const ADD: &str = "add";
+    pub(crate) const ADDRESS: &str = "address";
+    pub(crate) const ADDRGENMODE: &str = "addrgenmode";
+    pub(crate) const ALL: &str = "all";
+    pub(crate) const ARP: &str = "arp";
+    pub(crate) const BLACKHOLE: &str = "blackhole";
+    pub(crate) const BROADCAST: &str = "broadcast";
+    pub(crate) const CLOCKID: &str = "clockid";
+    pub(crate) const CLSACT: &str = "clsact";
+    pub(crate) const DEL: &str = "del";
+    pub(crate) const DELTA: &str = "delta";
+    pub(crate) const DEV: &str = "dev";
+    pub(crate) const DPORT: &str = "dport";
+    pub(crate) const DSCP: &str = "dscp";
+    pub(crate) const DST_MAC: &str = "dst_mac";
+    pub(crate) const DUMMY: &str = "dummy";
+    pub(crate) const EGRESS: &str = "egress";
+    pub(crate) const ENCAP: &str = "encap";
+    pub(crate) const ETF: &str = "etf";
+    pub(crate) const FILTER: &str = "filter";
+    pub(crate) const FLOWER: &str = "flower";
+    pub(crate) const FLOWLABEL: &str = "flowlabel";
+    pub(crate) const FQ: &str = "fq";
+    pub(crate) const FROM: &str = "from";
+    pub(crate) const FWMARK: &str = "fwmark";
+    pub(crate) const HANDLE: &str = "handle";
+    pub(crate) const HOPLIMIT: &str = "hoplimit";
+    pub(crate) const INET: &str = "inet";
+    pub(crate) const INET6: &str = "inet6";
+    pub(crate) const IPPROTO: &str = "ipproto";
+    pub(crate) const LINK: &str = "link";
+    pub(crate) const LLADDR: &str = "lladdr";
+    pub(crate) const LOCAL: &str = "local";
+    pub(crate) const LOCK: &str = "lock";
+    pub(crate) const LOOKUP: &str = "lookup";
+    pub(crate) const MAIN: &str = "main";
+    pub(crate) const METRIC: &str = "metric";
+    pub(crate) const MNGTMPADDR: &str = "mngtmpaddr";
+    pub(crate) const MODE: &str = "mode";
+    pub(crate) const MTU: &str = "mtu";
+    pub(crate) const MULTICAST: &str = "multicast";
+    pub(crate) const NAME: &str = "name";
+    pub(crate) const NEIGH: &str = "neigh";
+    pub(crate) const NEXTHOP: &str = "nexthop";
+    pub(crate) const NODAD: &str = "nodad";
+    pub(crate) const NONE: &str = "none";
+    pub(crate) const NUD: &str = "nud";
+    pub(crate) const OIF: &str = "oif";
+    pub(crate) const ON: &str = "on";
+    pub(crate) const PASS: &str = "pass";
+    pub(crate) const PEER: &str = "peer";
+    pub(crate) const PRIO: &str = "prio";
+    pub(crate) const PROHIBIT: &str = "prohibit";
+    pub(crate) const PROTOCOL: &str = "protocol";
+    pub(crate) const QDISC: &str = "qdisc";
+    pub(crate) const REPLACE: &str = "replace";
+    pub(crate) const ROOT: &str = "root";
+    pub(crate) const ROUTE: &str = "route";
+    pub(crate) const RULE: &str = "rule";
+    pub(crate) const SEG6: &str = "seg6";
+    pub(crate) const SEGS: &str = "segs";
+    pub(crate) const SET: &str = "set";
+    pub(crate) const SPORT: &str = "sport";
+    pub(crate) const STALE: &str = "stale";
+    pub(crate) const TABLE: &str = "table";
+    pub(crate) const TYPE: &str = "type";
+    pub(crate) const UIDRANGE: &str = "uidrange";
+    pub(crate) const UNREACHABLE: &str = "unreachable";
+    pub(crate) const UP: &str = "up";
+    pub(crate) const VETH: &str = "veth";
+    pub(crate) const VIA: &str = "via";
 }
 
-/// What iproute2 writes between an address and its prefix length, between segments, between a range's ends, between a
-/// link address's bytes, and before a hexadecimal number.
+/// What iproute2 writes between an address and its prefix length, between segments and between a range's ends.
 ///
 /// https://man7.org/linux/man-pages/man8/ip.8.html
-const PREFIX_SEPARATOR: char = '/';
+pub(crate) const PREFIX_SEPARATOR: char = '/';
 const SEGMENT_SEPARATOR: char = ',';
 const RANGE_SEPARATOR: char = '-';
-const MAC_SEPARATOR: char = ':';
+/// What iproute2 writes between a link address's bytes, and before a hexadecimal number.
+///
+/// https://man7.org/linux/man-pages/man8/ip.8.html
+pub(crate) const MAC_SEPARATOR: char = ':';
 const HEX_PREFIX: &str = "0x";
 /// The base of the hexadecimal numbers iproute2 reads.
 ///
 /// https://man7.org/linux/man-pages/man8/ip.8.html
-const HEX_RADIX: u32 = 16;
+pub(crate) const HEX_RADIX: u32 = 16;
 
 /// Room for the kernel's answer to one request: an acknowledgement, or an error that quotes the request.
 ///
@@ -138,7 +138,7 @@ const CHANGE: u16 = 0;
 /// The `ip` option that makes a command without an address IPv6's; without it a rule is IPv4's.
 ///
 /// https://man7.org/linux/man-pages/man8/ip.8.html
-const IPV6_OPTION: &str = "-6";
+pub(crate) const IPV6_OPTION: &str = "-6";
 
 /// Does one line of `ip` commands, given with these options, through the routing socket, or tells that this kind is not done here.
 pub(crate) fn done(line: &str, options: &[&str]) -> bool {
@@ -228,11 +228,13 @@ pub(crate) fn traffic_control_done(line: &str) -> bool {
     true
 }
 
-/// The bands of a prio queue made without `bands`, and the band each of the sixteen priorities goes to, as tc-prio(8)
-/// gives them; the queue's options are `struct tc_prio_qopt`, an int and the sixteen bytes.
+/// The bands of a prio queue made without `bands`, its options being `struct tc_prio_qopt`: this int, then the map.
 ///
 /// https://man7.org/linux/man-pages/man8/tc-prio.8.html
 const PRIO_BANDS: i32 = 3;
+/// The band each of the sixteen priorities goes to in a prio queue made without `priomap`.
+///
+/// https://man7.org/linux/man-pages/man8/tc-prio.8.html
 const PRIO_MAP: [u8; 16] = [1, 2, 2, 2, 1, 2, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1];
 
 /// The attribute of etf's options that holds `struct tc_etf_qopt`: the delta, the clock and the flags, each 32 bits.
@@ -325,10 +327,13 @@ fn queueing_discipline(link: &str, words: &[&str]) -> Option<(RouteNetlinkMessag
     ))
 }
 
-/// The generic action's kind, and the attribute of its options that holds `struct tc_gact`.
+/// The generic action's kind.
+///
+/// https://man7.org/linux/man-pages/man8/tc-actions.8.html
+const GENERIC_ACTION: &str = "gact";
+/// The attribute of the generic action's options that holds `struct tc_gact`.
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/tc_act/tc_gact.h
-const GENERIC_ACTION: &str = "gact";
 const TCA_GACT_PARMS: u16 = 2;
 
 /// The bytes of a link-layer address.
@@ -336,8 +341,7 @@ const TCA_GACT_PARMS: u16 = 2;
 /// https://www.rfc-editor.org/rfc/rfc7042#section-2.1
 const MAC_LENGTH: usize = 6;
 
-/// Gives the request that adds a filter as `tc filter add dev <link> egress protocol all flower dst_mac <mac> action
-/// pass` does, the one filter the checks add.
+/// Gives the request of `tc filter add dev <link> egress protocol all flower dst_mac <mac> action pass`.
 ///
 /// Like tc, the filter has the priority and handle the kernel chooses, matches every protocol, masks the whole address
 /// and passes what it matches through a generic action of the index the kernel chooses.
@@ -406,71 +410,65 @@ fn mac(text: &str) -> Option<Vec<u8>> {
 
 /// Gives the index of a link as a traffic control message holds it.
 fn tc_index(link: &str) -> i32 {
-    i32::try_from(link_index(link)).unwrap_or_else(|_| panic!("the index of {link} fits 31 bits"))
+    // Linux numbers links with an int, so an index is never past it.
+    link_index(link).cast_signed()
 }
 
 /// Gives the packets a class of the link's queueing discipline has sent, as `tc -s class show dev <link>` reads them.
 pub(crate) fn class_packets(link: &str, class: TcHandle) -> u64 {
     let mut request = TcMessage::default();
     request.header.index = tc_index(link);
-    dump(
-        RouteNetlinkMessage::GetTrafficClass(request),
-        "the traffic classes",
-    )
-    .into_iter()
-    .find_map(|answer| match answer {
-        RouteNetlinkMessage::NewTrafficClass(found) if found.header.handle == class => {
-            basic_packets(
-                found
-                    .attributes
-                    .iter()
-                    .filter_map(|attribute| match attribute {
-                        TcAttribute::Stats2(statistics) => Some(statistics.as_slice()),
-                        _ => None,
-                    }),
-            )
-        }
-        _ => None,
-    })
-    .unwrap_or_else(|| panic!("no statistics of class {class} on {link}"))
+    dump(RouteNetlinkMessage::GetTrafficClass(request))
+        .into_iter()
+        .find_map(|answer| match answer {
+            RouteNetlinkMessage::NewTrafficClass(found) if found.header.handle == class => {
+                basic_packets(
+                    found
+                        .attributes
+                        .iter()
+                        .filter_map(|attribute| match attribute {
+                            TcAttribute::Stats2(statistics) => Some(statistics.as_slice()),
+                            _ => None,
+                        }),
+                )
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no statistics of class {class} on {link}"))
 }
 
-/// Gives the packets the action of the link's first egress filter has taken, as `tc -s filter show dev <link> egress`
-/// reads them.
+/// Gives the packets the link's first egress filter's action took, as `tc -s filter show dev <link> egress` reads them.
 pub(crate) fn egress_action_packets(link: &str) -> u64 {
     let mut request = TcMessage::default();
     request.header.index = tc_index(link);
     request.header.parent = egress();
-    dump(
-        RouteNetlinkMessage::GetTrafficFilter(request),
-        "the egress filters",
-    )
-    .into_iter()
-    .find_map(|answer| {
-        let RouteNetlinkMessage::NewTrafficFilter(found) = answer else {
-            return None;
-        };
-        found.attributes.iter().find_map(|attribute| {
-            let TcAttribute::Options(options) = attribute else {
+    dump(RouteNetlinkMessage::GetTrafficFilter(request))
+        .into_iter()
+        .find_map(|answer| {
+            let RouteNetlinkMessage::NewTrafficFilter(found) = answer else {
                 return None;
             };
-            options.iter().find_map(|option| {
-                let TcOption::Flower(TcFilterFlowerOption::Actions(actions)) = option else {
+            found.attributes.iter().find_map(|attribute| {
+                let TcAttribute::Options(options) = attribute else {
                     return None;
                 };
-                basic_packets(actions.iter().flat_map(|action| {
-                    action
-                        .attributes
-                        .iter()
-                        .filter_map(|attribute| match attribute {
-                            TcActionAttribute::Stats(statistics) => Some(statistics.as_slice()),
-                            _ => None,
-                        })
-                }))
+                options.iter().find_map(|option| {
+                    let TcOption::Flower(TcFilterFlowerOption::Actions(actions)) = option else {
+                        return None;
+                    };
+                    basic_packets(actions.iter().flat_map(|action| {
+                        action
+                            .attributes
+                            .iter()
+                            .filter_map(|attribute| match attribute {
+                                TcActionAttribute::Stats(statistics) => Some(statistics.as_slice()),
+                                _ => None,
+                            })
+                    }))
+                })
             })
         })
-    })
-    .unwrap_or_else(|| panic!("no egress action statistics on {link}"))
+        .unwrap_or_else(|| panic!("no egress action statistics on {link}"))
 }
 
 /// Gives the packet count of the first basic statistics among these.
@@ -603,13 +601,10 @@ fn destination_prefix(text: &str) -> Option<(IpAddr, u8)> {
     Some((address, length.unwrap_or(u8::try_from(whole).ok()?)))
 }
 
-/// Gives the request that adds a route as `ip route add ...` does, or removes one as `ip route del ...` does, if every
-/// word is one done here.
+/// Gives the request of `ip route add ...`, or of `ip route del ...`, if every word is one done here.
 ///
-/// Like iproute2, an added route is the boot protocol's, unicast unless its type is given first, and of the link's
-/// scope when it names no gateway; a removal names no protocol, and the scope only of a local route. A local route is
-/// of the host's scope and the local table unless one is named; any other is of the main table unless named. Each
-/// `nexthop` after the route's own words is one path of a multipath route, of the weight one.
+/// As in iproute2, an added route is the boot protocol's, unicast unless typed, of link scope without a gateway; a
+/// removal names no protocol. A local route has host scope and the local table. Each `nexthop` is one path.
 fn route(words: &[&str], deleting: bool) -> Option<(RouteNetlinkMessage, u16)> {
     let mut message = RouteMessage::default();
     if !deleting {
@@ -627,7 +622,7 @@ fn route(words: &[&str], deleting: bool) -> Option<(RouteNetlinkMessage, u16)> {
     }
     let mut table = None;
     let mut metrics = Vec::new();
-    let mut locked = 0;
+    let mut locked = u32::MIN;
     let mut destination = None;
     let mut rest = words.iter();
     while let Some(word) = rest.next() {
@@ -712,9 +707,10 @@ fn route(words: &[&str], deleting: bool) -> Option<(RouteNetlinkMessage, u16)> {
         IpAddr::V4(_) => AddressFamily::Inet,
         IpAddr::V6(_) => AddressFamily::Inet6,
     };
-    message
-        .attributes
-        .insert(0, RouteAttribute::Destination(route_address(destination)));
+    message.attributes.insert(
+        usize::MIN,
+        RouteAttribute::Destination(route_address(destination)),
+    );
     let local = message.header.kind == RouteType::Local;
     let table = table.unwrap_or(if local { LOCAL_TABLE } else { MAIN_TABLE });
     // A table past the header's byte goes in RTA_TABLE, the header naming none.
@@ -936,37 +932,71 @@ fn neighbour(address: &str, rest: &[&str]) -> Option<(RouteNetlinkMessage, u16)>
 ///
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
 mod nftables {
-    pub(super) const NFTA_TABLE_NAME: u16 = 1;
-    pub(super) const NFTA_TABLE_FLAGS: u16 = 2;
-    pub(super) const NFTA_CHAIN_TABLE: u16 = 1;
-    pub(super) const NFTA_CHAIN_NAME: u16 = 3;
-    pub(super) const NFTA_CHAIN_HOOK: u16 = 4;
-    pub(super) const NFTA_CHAIN_TYPE: u16 = 7;
-    pub(super) const NFTA_HOOK_HOOKNUM: u16 = 1;
-    pub(super) const NFTA_HOOK_PRIORITY: u16 = 2;
-    pub(super) const NFTA_RULE_TABLE: u16 = 1;
-    pub(super) const NFTA_RULE_CHAIN: u16 = 2;
-    pub(super) const NFTA_RULE_EXPRESSIONS: u16 = 4;
-    pub(super) const NFTA_LIST_ELEM: u16 = 1;
-    pub(super) const NFTA_EXPR_NAME: u16 = 1;
-    pub(super) const NFTA_EXPR_DATA: u16 = 2;
-    pub(super) const NFTA_CT_DREG: u16 = 1;
-    pub(super) const NFTA_CT_KEY: u16 = 2;
-    pub(super) const NFTA_BITWISE_SREG: u16 = 1;
-    pub(super) const NFTA_BITWISE_DREG: u16 = 2;
-    pub(super) const NFTA_BITWISE_LEN: u16 = 3;
-    pub(super) const NFTA_BITWISE_MASK: u16 = 4;
-    pub(super) const NFTA_BITWISE_XOR: u16 = 5;
-    pub(super) const NFTA_DATA_VALUE: u16 = 1;
-    pub(super) const NFTA_CMP_SREG: u16 = 1;
-    pub(super) const NFTA_CMP_OP: u16 = 2;
-    pub(super) const NFTA_CMP_DATA: u16 = 3;
-    pub(super) const NFTA_COUNTER_BYTES: u16 = 1;
-    pub(super) const NFTA_COUNTER_PACKETS: u16 = 2;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_TABLE_NAME: u16 = 1;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_TABLE_FLAGS: u16 = 2;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_CHAIN_TABLE: u16 = 1;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_CHAIN_NAME: u16 = 3;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_CHAIN_HOOK: u16 = 4;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_CHAIN_TYPE: u16 = 7;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_HOOK_HOOKNUM: u16 = 1;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_HOOK_PRIORITY: u16 = 2;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_RULE_TABLE: u16 = 1;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_RULE_CHAIN: u16 = 2;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_RULE_EXPRESSIONS: u16 = 4;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_LIST_ELEM: u16 = 1;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_EXPR_NAME: u16 = 1;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_EXPR_DATA: u16 = 2;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_CT_DREG: u16 = 1;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_CT_KEY: u16 = 2;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_BITWISE_SREG: u16 = 1;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_BITWISE_DREG: u16 = 2;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_BITWISE_LEN: u16 = 3;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_BITWISE_MASK: u16 = 4;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_BITWISE_XOR: u16 = 5;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_DATA_VALUE: u16 = 1;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_CMP_SREG: u16 = 1;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_CMP_OP: u16 = 2;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_CMP_DATA: u16 = 3;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_COUNTER_BYTES: u16 = 1;
+    // https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_tables.h
+    pub(crate) const NFTA_COUNTER_PACKETS: u16 = 2;
     /// The bit of a new connection in conntrack's state, `NF_CT_STATE_BIT(IP_CT_NEW)`.
     ///
     /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/netfilter/nf_conntrack_common.h
-    pub(super) const CONNECTION_NEW: u32 = 1 << 3;
+    pub(crate) const CONNECTION_NEW: u32 = 1 << 3;
+    /// The expressions of the rule, by the names nf_tables registers them under.
+    ///
+    /// https://wiki.nftables.org/wiki-nftables/index.php/Building_rules_through_expressions
+    pub(super) const CT: &str = "ct";
+    pub(super) const BITWISE: &str = "bitwise";
+    pub(super) const CMP: &str = "cmp";
+    pub(super) const COUNTER: &str = "counter";
 }
 
 /// The firewall table, chain and rule of the connection tracking check, as `nft` names them.
@@ -976,11 +1006,10 @@ const TRACKED_TABLE: &str = "tracked";
 const TRACKED_CHAIN: &str = "output";
 const FILTER_CHAIN: &str = "filter";
 
-/// Makes the calling thread's namespace track the connections of the packets it makes, as `nft -f` loads
-/// `table ip tracked { chain output { type filter hook output priority 0; ct state new counter; }; }`.
+/// Makes the calling thread's namespace track the connections of the packets it makes, as `nft` loads a table to.
 ///
-/// The batch is the one `nft` sends: the table, the base chain on the output hook, and the rule `[ct load state => reg
-/// 1] [bitwise reg 1 = (reg 1 & new) ^ 0] [cmp neq reg 1 0] [counter]`, each acknowledged.
+/// The table is `table ip tracked { chain output { type filter hook output priority 0; ct state new counter; }; }`,
+/// sent as `nft` sends it: the table, the output chain, the rule `[ct state] [bitwise new] [cmp neq 0] [counter]`.
 pub(crate) fn track_made_connections() {
     use nftables::*;
     let word = |value: u32| value.to_be_bytes().to_vec();
@@ -1005,14 +1034,14 @@ pub(crate) fn track_made_connections() {
             NFTA_RULE_EXPRESSIONS,
             &[
                 expression(
-                    "ct",
+                    nftables::CT,
                     vec![
                         DefaultNla::new(NFTA_CT_DREG, register()),
                         DefaultNla::new(NFTA_CT_KEY, word(libc::NFT_CT_STATE.cast_unsigned())),
                     ],
                 ),
                 expression(
-                    "bitwise",
+                    nftables::BITWISE,
                     vec![
                         DefaultNla::new(NFTA_BITWISE_SREG, register()),
                         DefaultNla::new(NFTA_BITWISE_DREG, register()),
@@ -1025,7 +1054,7 @@ pub(crate) fn track_made_connections() {
                     ],
                 ),
                 expression(
-                    "cmp",
+                    nftables::CMP,
                     vec![
                         DefaultNla::new(NFTA_CMP_SREG, register()),
                         DefaultNla::new(NFTA_CMP_OP, word(libc::NFT_CMP_NEQ.cast_unsigned())),
@@ -1033,7 +1062,7 @@ pub(crate) fn track_made_connections() {
                     ],
                 ),
                 expression(
-                    "counter",
+                    nftables::COUNTER,
                     vec![
                         DefaultNla::new(NFTA_COUNTER_BYTES, u64::MIN.to_be_bytes().to_vec()),
                         DefaultNla::new(NFTA_COUNTER_PACKETS, u64::MIN.to_be_bytes().to_vec()),
@@ -1101,7 +1130,7 @@ pub(crate) fn track_made_connections() {
     socket
         .send(&batch, i32::from(u8::MIN))
         .expect("the firewall batch is sent");
-    let mut answered = 0;
+    let mut answered = usize::MIN;
     while answered < acknowledged {
         let mut reply = Vec::with_capacity(ANSWER_ROOM);
         socket
@@ -1135,8 +1164,7 @@ fn emitted(attributes: &[DefaultNla]) -> Vec<u8> {
     bytes
 }
 
-/// Gives one nfnetlink message: the netlink header, `struct nfgenmsg` naming IPv4 and the nf_tables subsystem, and the
-/// attributes.
+/// Gives one nfnetlink message: its header, `struct nfgenmsg` of IPv4's nf_tables, and the attributes.
 fn netfilter_message(kind: i32, flags: u16, sequence: u32, attributes: &[DefaultNla]) -> Vec<u8> {
     let mut payload = vec![
         u8::try_from(libc::NFPROTO_IPV4).unwrap_or(u8::MAX),
@@ -1208,7 +1236,9 @@ const DUMP_ROOM: usize = 1 << 16;
 const NETLINK_ALIGNMENT: usize = 4;
 
 /// Gives every message the kernel answers a dump request with, as `ip ... show` reads them.
-fn dump(message: RouteNetlinkMessage, what: &str) -> Vec<RouteNetlinkMessage> {
+fn dump(message: RouteNetlinkMessage) -> Vec<RouteNetlinkMessage> {
+    let what = format!("{message:?}");
+    let what = what.as_str();
     let socket = sent(message, NLM_F_DUMP, what);
     let mut answers = Vec::new();
     loop {
@@ -1242,7 +1272,7 @@ const LOCAL_TABLE: u32 = 255;
 pub(crate) fn locally_routed(address: Ipv6Addr) -> bool {
     let mut request = RouteMessage::default();
     request.header.address_family = AddressFamily::Inet6;
-    dump(RouteNetlinkMessage::GetRoute(request), "the IPv6 routes")
+    dump(RouteNetlinkMessage::GetRoute(request))
         .into_iter()
         .any(|answer| {
             let RouteNetlinkMessage::NewRoute(route) = answer else {
@@ -1271,10 +1301,9 @@ pub(crate) fn confirmed_ticks(address: IpAddr, link: &str) -> Option<u32> {
         IpAddr::V4(v4) => NeighbourAddress::Inet(v4),
         IpAddr::V6(v6) => NeighbourAddress::Inet6(v6),
     };
-    dump(
-        RouteNetlinkMessage::GetNeighbour(NeighbourMessage::default()),
-        "the neighbours",
-    )
+    dump(RouteNetlinkMessage::GetNeighbour(
+        NeighbourMessage::default(),
+    ))
     .into_iter()
     .find_map(|answer| {
         let RouteNetlinkMessage::NewNeighbour(entry) = answer else {
@@ -1302,64 +1331,58 @@ pub(crate) fn temporary_address(link: &str) -> Option<Ipv6Addr> {
     let index = link_index(link);
     let mut request = AddressMessage::default();
     request.header.family = AddressFamily::Inet6;
-    dump(
-        RouteNetlinkMessage::GetAddress(request),
-        "the IPv6 addresses",
-    )
-    .into_iter()
-    .find_map(|answer| {
-        let RouteNetlinkMessage::NewAddress(address) = answer else {
-            return None;
-        };
-        // Linux names a temporary address by IFA_F_SECONDARY, and gives all flags in IFA_FLAGS when it sends them.
-        let flags = address
-            .attributes
-            .iter()
-            .find_map(|attribute| match attribute {
-                AddressAttribute::Flags(flags) => Some(*flags),
-                _ => None,
-            })
-            .unwrap_or_else(|| {
-                AddressFlags::from_bits_retain(u32::from(address.header.flags.bits()))
-            });
-        if address.header.index != index
-            || !flags.contains(AddressFlags::Secondary)
-            || flags.contains(AddressFlags::Tentative)
-        {
-            return None;
-        }
-        address
-            .attributes
-            .iter()
-            .find_map(|attribute| match attribute {
-                AddressAttribute::Address(IpAddr::V6(v6)) => Some(*v6),
-                _ => None,
-            })
-    })
+    dump(RouteNetlinkMessage::GetAddress(request))
+        .into_iter()
+        .find_map(|answer| {
+            let RouteNetlinkMessage::NewAddress(address) = answer else {
+                return None;
+            };
+            // Linux names a temporary address by IFA_F_SECONDARY, and gives all flags in IFA_FLAGS when it sends them.
+            let flags = address
+                .attributes
+                .iter()
+                .find_map(|attribute| match attribute {
+                    AddressAttribute::Flags(flags) => Some(*flags),
+                    _ => None,
+                })
+                .unwrap_or_else(|| {
+                    AddressFlags::from_bits_retain(u32::from(address.header.flags.bits()))
+                });
+            if address.header.index != index
+                || !flags.contains(AddressFlags::Secondary)
+                || flags.contains(AddressFlags::Tentative)
+            {
+                return None;
+            }
+            address
+                .attributes
+                .iter()
+                .find_map(|attribute| match attribute {
+                    AddressAttribute::Address(IpAddr::V6(v6)) => Some(*v6),
+                    _ => None,
+                })
+        })
 }
 
 /// Gives a link's link-layer address, as `ip -br link show <link>` lists it.
 pub(crate) fn link_address(link: &str) -> Vec<u8> {
     let index = link_index(link);
-    dump(
-        RouteNetlinkMessage::GetLink(LinkMessage::default()),
-        "the links",
-    )
-    .into_iter()
-    .find_map(|answer| {
-        let RouteNetlinkMessage::NewLink(found) = answer else {
-            return None;
-        };
-        if found.header.index != index {
-            return None;
-        }
-        found
-            .attributes
-            .into_iter()
-            .find_map(|attribute| match attribute {
-                LinkAttribute::Address(bytes) => Some(bytes),
-                _ => None,
-            })
-    })
-    .unwrap_or_else(|| panic!("no link address on {link}"))
+    dump(RouteNetlinkMessage::GetLink(LinkMessage::default()))
+        .into_iter()
+        .find_map(|answer| {
+            let RouteNetlinkMessage::NewLink(found) = answer else {
+                return None;
+            };
+            if found.header.index != index {
+                return None;
+            }
+            found
+                .attributes
+                .into_iter()
+                .find_map(|attribute| match attribute {
+                    LinkAttribute::Address(bytes) => Some(bytes),
+                    _ => None,
+                })
+        })
+        .unwrap_or_else(|| panic!("no link address on {link}"))
 }

@@ -195,7 +195,7 @@ fn words(value: &[u8]) -> Result<(u32, u32), HostError> {
             .and_then(|bytes| bytes.try_into().ok())
             .map(u32::from_ne_bytes)
     };
-    match (value.len(), word(0), word(size_of::<u32>())) {
+    match (value.len(), word(usize::MIN), word(size_of::<u32>())) {
         (TWO_WORDS, Some(first), Some(second)) => Ok((first, second)),
         _ => Err(HostError::Errno(libc::EINVAL)),
     }

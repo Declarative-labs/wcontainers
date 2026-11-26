@@ -434,9 +434,8 @@ pub struct Received<'a, T> {
 ///
 /// The sender is read as `S` and given as `source` makes of it; `flags` are `MSG_*` flags.
 ///
-/// Made with nix rather than socket2, whose `RecvFlags` gives no `MSG_CTRUNC`, or rustix, which hands out only the
-/// control messages it parses; the messages are read from the room's bytes, not through nix's parsing, which
-/// allocates for each kind it does not know.
+/// Made with nix: socket2's `RecvFlags` gives no `MSG_CTRUNC`, rustix hands out only the control messages it parses.
+/// The messages are read from the room's bytes, as nix's parsing allocates for each kind it does not know.
 #[inline]
 pub fn receive_vectored<'a, S: SockaddrLike, T, const WORDS: usize>(
     socket: BorrowedFd<'_>,
@@ -468,7 +467,7 @@ pub fn receive_vectored<'a, S: SockaddrLike, T, const WORDS: usize>(
 
 /// How many bytes of the control messages of a receive, read up to the zeros after them, they take.
 pub fn written_length(control: &[u8]) -> usize {
-    let mut at = 0;
+    let mut at = usize::MIN;
     while let Some(length) = header_field(control.get(at..).unwrap_or_default(), CONTROL_LENGTH_AT)
     {
         let length = usize::from_ne_bytes(length);

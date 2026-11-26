@@ -116,16 +116,15 @@ fn last_error() -> HostError {
     }
 }
 
-/// Gives the socket when its address family is one of `families`, those whose handler of the option's level the
-/// kernel table was read in; otherwise `ENOPROTOOPT`, as Linux answers an option of a level the socket does not have.
+/// Gives the socket when it is of one of the `families` whose handler of the level was read, else `ENOPROTOOPT`.
 ///
-/// Other families give the same level numbers other meanings: Bluetooth's HCI, L2CAP and SCO levels are 0, 6 and 17.
+/// That is Linux's answer to an option of a level the socket does not have. Other families give the same level numbers
+/// other meanings: Bluetooth's HCI, L2CAP and SCO levels are 0, 6 and 17.
 fn of_family<'a>(socket: BorrowedFd<'a>, families: &[u32]) -> Result<BorrowedFd<'a>, HostError> {
     checked_family(socket, families, libc::ENOPROTOOPT)
 }
 
-/// Gives the socket when its address family is one of `families`, those whose ioctl handler the kernel table was read
-/// in; otherwise `ENOTTY`, as Linux answers a request the socket does not take.
+/// Gives the socket when it is of one of the `families` whose ioctl handler was read, else `ENOTTY`, Linux's no-request.
 fn request_of_family<'a>(
     socket: BorrowedFd<'a>,
     families: &[u32],

@@ -1,5 +1,4 @@
-//! The control messages of `recvmsg` and the error queue as `ReceivedPacketFields`, `TransmitReport`s and
-//! packets written whole from their IP header.
+//! The control messages of `recvmsg` and the error queue as `ReceivedPacketFields`, reports and whole packets.
 
 use core::mem::size_of;
 use core::num::NonZeroU32;

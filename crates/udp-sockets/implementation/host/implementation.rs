@@ -1,5 +1,6 @@
-//! UdpSockets on the UDP sockets of the machine it runs on: on Linux every field and setting, elsewhere what
-//! socket2 covers.
+//! UdpSockets on the UDP sockets of the machine it runs on.
+//!
+//! On Linux it serves every field and setting, elsewhere what socket2 covers.
 #![cfg(unix)]
 
 #[cfg(target_os = "linux")]

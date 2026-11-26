@@ -1,5 +1,6 @@
-//! What a wait and a receive allocate, counted over the whole process: a binary without the test harness, whose
-//! threads would allocate beside the check.
+//! What a wait and a receive allocate, counted over the whole process.
+//!
+//! It is a binary without the test harness, whose threads would allocate beside the check.
 
 mod support;
 

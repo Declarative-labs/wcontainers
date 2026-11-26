@@ -33,8 +33,7 @@ use wcontainers_udp_sockets_host::{
 /// How many networks the tests of one run can take, all made before any test opens a socket.
 const NETWORKS: usize = 80;
 
-/// The network the suite asks for, as iproute2's `ip` commands, which the ICMP suite's `ip` does through the kernel's
-/// routing socket.
+/// The network the suite asks for, as `ip` commands the ICMP suite's `ip` does through the routing socket.
 ///
 /// Loopback has multicast and a route with an MTU of 1500 bytes to 127.0.0.2 and 2001:db8::2; a dummy interface that
 /// sends nothing anywhere has 192.0.2.3/24, the IPv4 multicast route and 198.51.100.0/24 through a gateway on it; user

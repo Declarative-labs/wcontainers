@@ -1,8 +1,7 @@
 //! The tests every implementation of wcontainers-icmp-sockets runs, written against its traits alone.
 //!
-//! Each runs as root in a network namespace of its own, with loopback up and every group allowed ICMP echo
-//! sockets, on links, routes, rules and queueing disciplines it builds there through the kernel's routing socket, each
-//! written as the `ip` or `tc` command it is. A packet socket of the namespace sees what leaves a link.
+//! Each runs as root in a network namespace of its own, loopback up and ICMP echo sockets allowed, on links, routes,
+//! rules and queues built there as `ip` and `tc` commands. A packet socket sees what leaves a link.
 #![cfg(target_os = "linux")]
 
 mod netlink;
@@ -190,10 +189,8 @@ pub const LOOK_AGAIN_SOON: Duration = Duration::from_millis(1);
 ///
 /// https://man7.org/linux/man-pages/man7/icmp.7.html
 pub const PATIENCE: Duration = Duration::from_secs(2);
-/// The `ip` option that makes a command without an address IPv6's.
-///
-/// https://man7.org/linux/man-pages/man8/ip.8.html
-const IPV6: &[&str] = &["-6"];
+/// The `ip` options of an IPv6 command.
+const IPV6: &[&str] = &[netlink::IPV6_OPTION];
 /// The option that pads an IPv6 extension header by its length and two bytes more.
 ///
 /// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
@@ -208,14 +205,12 @@ pub fn third_band_packets(link: &str) -> u64 {
     netlink::class_packets(link, THIRD_BAND)
 }
 
-/// Returns the packets the action of the link's egress filter has taken, as `tc -s filter show dev <link> egress`
-/// gives them.
+/// Returns the packets the link's egress filter's action took, as `tc -s filter show dev <link> egress` gives them.
 pub fn egress_action_packets(link: &str) -> u64 {
     netlink::egress_action_packets(link)
 }
 
-/// Makes the calling thread's namespace track the connections of the packets it makes, as `nft -f` loads
-/// `table ip tracked { chain output { type filter hook output priority 0; ct state new counter; }; }`.
+/// Makes the calling thread's namespace track the connections of the packets it makes, as an `nft` table with `ct state`.
 pub fn track_made_connections() {
     netlink::track_made_connections();
 }
@@ -290,26 +285,21 @@ pub fn batch(options: &[&str], commands: &str) {
 ///
 /// https://man7.org/linux/man-pages/man8/ip-address.8.html#:~:text=nodad
 pub const SETTLING: Duration = Duration::from_secs(10);
-/// The `ip` commands that give a link an address, and what they are followed by.
-const ADDRESS: &str = "address";
 /// The verbs that follow `address` when an `ip` command gives a link an address.
-///
-/// https://man7.org/linux/man-pages/man8/ip-address.8.html
-const ADDING: [&str; 2] = ["add", "replace"];
-/// What ends an address before its prefix length in an `ip` command.
-const PREFIX_LENGTH: char = '/';
+const ADDING: [&str; 2] = [netlink::word::ADD, netlink::word::REPLACE];
 
 /// Waits until each IPv6 address the commands add is local: Linux routes a `nodad` one locally only in its later address work.
 fn settle_addresses(commands: &str) {
     for line in commands.lines() {
         let mut words = line.split_whitespace();
-        if words.next() != Some(ADDRESS) || !words.next().is_some_and(|verb| ADDING.contains(&verb))
+        if words.next() != Some(netlink::word::ADDRESS)
+            || !words.next().is_some_and(|verb| ADDING.contains(&verb))
         {
             continue;
         }
         let Some(Ok(IpAddr::V6(address))) = words
             .next()
-            .and_then(|prefix| prefix.split(PREFIX_LENGTH).next())
+            .and_then(|prefix| prefix.split(netlink::PREFIX_SEPARATOR).next())
             .map(str::parse)
         else {
             continue;
@@ -330,12 +320,11 @@ const GROUPS_V6: &str = "/proc/thread-self/net/igmp6";
 
 /// Returns the multicast groups the link has joined, read where `ip maddr show dev <link>` reads them.
 ///
-/// The IPv4 table names a link on a line of its own, `<index> <name> : ...`, with a line per group under it, each
-/// address the hexadecimal of its four bytes in the machine's order; the IPv6 table gives one line per group,
-/// `<index> <name> <32 hexadecimal digits> ...`.
+/// The IPv4 table names a link on a line, `<index> <name> : ...`, with a line per group under it in hexadecimal of the
+/// machine's order; the IPv6 table has a line per group, `<index> <name> <32 hexadecimal digits> ...`.
 pub fn joined_groups(link: &str) -> Vec<IpAddr> {
-    /// The base of the tables' hexadecimal addresses.
-    const HEX_RADIX: u32 = 16;
+    /// What follows a link's name in the IPv4 table, joined to a name of ten characters or more.
+    const NAME_END: char = ':';
     let mut groups = Vec::new();
     let v4 =
         std::fs::read_to_string(GROUPS_V4).unwrap_or_else(|error| panic!("{GROUPS_V4}: {error}"));
@@ -344,13 +333,15 @@ pub fn joined_groups(link: &str) -> Vec<IpAddr> {
         let mut words = line.split_whitespace();
         if line.starts_with(char::is_whitespace) {
             if current == Some(link)
-                && let Some(Ok(value)) = words.next().map(|hex| u32::from_str_radix(hex, HEX_RADIX))
+                && let Some(Ok(value)) = words
+                    .next()
+                    .map(|hex| u32::from_str_radix(hex, netlink::HEX_RADIX))
             {
                 groups.push(IpAddr::V4(Ipv4Addr::from(value.to_ne_bytes())));
             }
         } else {
             // A name of ten characters or more meets the colon after it.
-            current = words.nth(1).map(|name| name.trim_end_matches(':'));
+            current = words.nth(1).map(|name| name.trim_end_matches(NAME_END));
         }
     }
     let v6 =
@@ -359,7 +350,7 @@ pub fn joined_groups(link: &str) -> Vec<IpAddr> {
         let words: Vec<&str> = line.split_whitespace().collect();
         if let [_, name, hex, ..] = words.as_slice()
             && *name == link
-            && let Ok(value) = u128::from_str_radix(hex, HEX_RADIX)
+            && let Ok(value) = u128::from_str_radix(hex, netlink::HEX_RADIX)
         {
             groups.push(IpAddr::V6(Ipv6Addr::from(value)));
         }
@@ -373,7 +364,7 @@ pub fn link_address(link: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<Vec<_>>()
-        .join(":")
+        .join(&netlink::MAC_SEPARATOR.to_string())
 }
 
 pub fn write_setting(path: &str, value: &str) {
@@ -1806,8 +1797,7 @@ const OVER_THE_LINK: usize = 1600;
 /// Returns what each path MTU discovery mode makes of a packet over its route's MTU and of one over its link's.
 ///
 /// `send` sends one of the length given toward [`NARROW`] or [`NARROW_V6`]. Dont and want fragment to the route's MTU;
-/// do is too long for it; probe (with the don't-fragment bit on IPv4) and interface leave it whole and are too long for
-/// the link's; omit leaves it whole and fragments to the link's MTU.
+/// do is too long for it; probe (don't-fragment on IPv4) and interface are too long for the link's; omit fragments.
 pub fn path_mtu_modes_take_their_mtu(
     send: impl Fn(IpAddr, PathMtuDiscovery, usize) -> Result<(), SendError>,
 ) {

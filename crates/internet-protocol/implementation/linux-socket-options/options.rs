@@ -1,5 +1,7 @@
-//! Socket options of a number by level and name, each made through the typed call that covers it: socket2's, rustix's or
-//! nix's where one of them has it, else Linux's socket option calls in wcontainers-linux-socket-options.
+//! Socket options of a number by level and name, each made through the typed call that covers it.
+//!
+//! That is socket2's, rustix's or nix's where one has it, else Linux's socket option calls in
+//! wcontainers-linux-socket-options.
 //!
 //! An option no arm lists is refused with `ENOPROTOOPT`: every option the host crates set or read this way is listed.
 

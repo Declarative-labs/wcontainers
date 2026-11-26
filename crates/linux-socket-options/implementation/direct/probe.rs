@@ -1441,8 +1441,9 @@ fn caught<R>(work: impl FnOnce() -> R) -> Result<R, String> {
     })
 }
 
-/// Reads a number row's option into each room from one byte to the number's own width, a fresh socket for each, below
-/// the method, so that the room is less than the kernel has to write; the implementation's canaries guard every room.
+/// Reads a number row's option into each room from one byte to the number's width, below the method, a socket each.
+///
+/// So the room is less than the kernel has to write; the implementation's canaries guard every room.
 fn number_rooms(seen: &mut Seen, prepare: fn() -> Prepared, level: u32, option: u32, width: usize) {
     for told in 1..=width {
         let outcome = caught(|| {

@@ -1034,11 +1034,10 @@ pub fn queue_requests_count_a_connection<T: LinuxSocketOptions>(options: T) {
     assert!(options.get_siocoutqnsd(unix_datagram().as_fd()).is_err());
 }
 
-/// A Unix socket is refused every option of a level IPv4 and IPv6 number and every request, by the family check before
-/// the call, where Linux would answer otherwise; the socket layer's options still reach it.
+/// A Unix socket is refused every internet level's option and every request before the call; the socket layer's reach it.
 ///
 /// Linux refuses an internet option on a Unix socket with `EOPNOTSUPP` and answers `SIOCOUTQ` on one, so `ENOPROTOOPT`
-/// and `ENOTTY` here are the check's own answers.
+/// and `ENOTTY` here are the family check's own answers.
 pub fn other_families_are_refused_at_the_internet_levels<T: LinuxSocketOptions>(options: T) {
     own_network();
     let unix = unix_datagram();

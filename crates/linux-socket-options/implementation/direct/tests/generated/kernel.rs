@@ -39,9 +39,9 @@ macro_rules! name {
 /// The address families whose handler of a level, or of the ioctl requests, the entries were read from.
 #[derive(Clone, Copy, Debug)]
 pub enum Families {
-    /// Every family: the socket layer's own level, which Linux handles before any family's handler.
+    /// All families: the socket layer's own level, which Linux handles before any family's handler.
     Every,
-    /// Only these families; a socket of another is refused before the call.
+    /// These families alone; a socket of another is refused before the call.
     Only(&'static [Name]),
 }
 
