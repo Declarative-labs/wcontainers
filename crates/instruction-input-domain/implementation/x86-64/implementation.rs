@@ -37,6 +37,7 @@ use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
 use wcontainers_processor_architecture_x86_64::sse::find_sse_form;
 use wcontainers_processor_architecture_x86_64::avx512_integer::find_evex_integer_form;
 use wcontainers_processor_architecture_x86_64::opmask::find_opmask_form;
+use wcontainers_processor_architecture_x86_64::string::find_string_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
@@ -55,6 +56,7 @@ pub mod mmx;
 pub mod opmask;
 pub mod sse;
 pub mod stack;
+pub mod string;
 pub mod vector;
 pub mod x87;
 #[cfg(test)]
@@ -225,6 +227,12 @@ pub enum OperandType {
     /// The value of a ZMM register that has a role in the form (the first source's is `Implicit(1)`), or of the
     /// memory its last source reads.
     ZmmValue(Role, avx512_integer::ZmmValues),
+    /// Where a string form's source and destination elements lie, for a form that reaches each, of `bytes` each.
+    StringLayout { source: bool, destination: bool, bytes: u64 },
+    /// A repeated string form's count.
+    StringCount,
+    /// The accumulator or the elements a string form stores or compares.
+    StringData(string::StringDataSet),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -405,6 +413,10 @@ pub enum OperandValue {
     Writemask(avx512_integer::Writemask),
     LaneBroadcast(bool),
     Zmm([u128; 4]),
+    StringLayout(string::StringLayout),
+    /// Two values of a string form: the accumulator and the destination element, or the source and destination
+    /// elements.
+    StringData { first: u64, second: u64 },
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -463,6 +475,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_evex_integer_form(instruction) {
             return avx512_integer::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_string_form(instruction) {
+            return string::list_operand_types(form).into_iter();
         }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
@@ -689,6 +704,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::Writemask { zeroing } => avx512_integer::generate_maskings(zeroing),
             OperandType::LaneBroadcast => [false, true].map(OperandValue::LaneBroadcast).to_vec(),
             OperandType::ZmmValue(_, values) => avx512_integer::generate_zmm_values(values),
+            OperandType::StringLayout { source, destination, bytes } => string::generate_layouts(source, destination, bytes),
+            OperandType::StringCount => string::generate_counts(),
+            OperandType::StringData(set) => string::generate_data(set),
         };
         values.into_iter()
     }
@@ -755,6 +773,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_evex_integer_form(instruction) {
             return avx512_integer::build_state(form, &typed);
+        }
+        if let Some(form) = find_string_form(instruction) {
+            return string::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -931,6 +952,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_privileged_codes(instruction).is_some()
         || find_opmask_form(instruction).is_some()
         || find_evex_integer_form(instruction).is_some()
+        || find_string_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 

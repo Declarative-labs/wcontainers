@@ -9,6 +9,8 @@
 //! leaves its memory to the next machine made, zeroed first, so that making machines does not grow the process. Every
 //! read and write of it here goes through `VolatileBytes`, never a slice.
 //!
+//! A repeated string form steps one iteration, as the architecture's model of it does.
+//!
 //! A state the source cannot hold is refused, with a [`Refusal`] that names why, before anything of it is written:
 //! memory outside the program's addresses (where the source keeps its own pages), RFLAGS bits a program cannot set,
 //! and the instructions it cannot step (see [`check_steppable`]). A run that ends otherwise than the model has it is
@@ -1042,7 +1044,7 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 ///
 /// # Errors
 ///
-/// For MOV SS (it steps two instructions), a REP string form (it steps one iteration), POPF and IRET (they can
+/// For MOV SS (it steps two instructions), POPF and IRET (they can
 /// change TF), PUSHF (it pushes the source's TF), SYSCALL and SYSENTER (they enter ring 0 at MSRs the source does
 /// not set as Linux does), a far CALL, JMP or RET (it changes CS), any other write of a segment register (the
 /// selectors are not modeled), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does
@@ -1065,17 +1067,6 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
     if decoded.is_invalid() || !fetchable {
         return Ok(());
     }
-    let is_string = (0..decoded.op_count()).any(|operand| {
-        matches!(
-            decoded.op_kind(operand),
-            OpKind::MemorySegSI
-                | OpKind::MemorySegESI
-                | OpKind::MemorySegRSI
-                | OpKind::MemoryESDI
-                | OpKind::MemoryESEDI
-                | OpKind::MemoryESRDI
-        )
-    });
     // PUSH FS and PUSH GS name the register they read first.
     let writes_segment = decoded.op_count() > 0
         && decoded.mnemonic() != Mnemonic::Push
@@ -1088,9 +1079,6 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
     let reason = match decoded.mnemonic() {
         Mnemonic::Mov if writes_segment && decoded.op0_register() == Register::SS => {
             Some("it steps two instructions")
-        }
-        _ if is_string && (decoded.has_rep_prefix() || decoded.has_repne_prefix()) => {
-            Some("it steps one iteration")
         }
         Mnemonic::Popf | Mnemonic::Popfq | Mnemonic::Iret | Mnemonic::Iretd | Mnemonic::Iretq => {
             Some("it can change TF, which steps it")

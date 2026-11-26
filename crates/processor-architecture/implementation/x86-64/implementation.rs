@@ -46,6 +46,7 @@ pub mod planted;
 mod simulation;
 pub mod sse;
 pub mod stack;
+pub mod string;
 pub mod vector;
 pub mod x87;
 #[cfg(test)]
@@ -171,6 +172,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(evex::list_evex_forms().into_iter().map(|form| form.instruction))
         .chain(opmask::OPMASK_FORMS.iter().map(|form| form.instruction))
         .chain(avx512_integer::EVEX_INTEGER_FORMS.iter().map(|form| form.instruction))
+        .chain(string::STRING_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -448,5 +450,10 @@ pub enum PreciseInstruction {
     EvexInteger {
         instruction: Instruction,
         across_fault: StoreAcrossFault,
+    },
+    /// A form of [`string::STRING_FORMS`].
+    String {
+        instruction: Instruction,
+        behavior: string::StringBehavior,
     },
 }

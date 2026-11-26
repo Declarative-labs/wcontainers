@@ -47,6 +47,8 @@ pub enum Origin {
     Avx512Integer,
     /// The sync onto the owner's expectations, for RDRAND and RDSEED.
     Expectations,
+    /// The family of the forms every x86-64 chip has that were left, and of the forms the chip source refused.
+    Mandatory,
 }
 
 /// The forms a bug shows on.
@@ -79,6 +81,8 @@ pub enum Family {
     Opmask(fn(OpmaskOperation) -> bool),
     /// The EVEX integer forms the test accepts.
     EvexInteger(fn(&EvexIntegerForm) -> bool),
+    /// The string forms the test accepts.
+    String(fn(&crate::string::StringForm) -> bool),
 }
 
 /// One planted bug.
@@ -115,6 +119,7 @@ impl PlantedBug {
             Family::Avx(test) => find_avx_form(instruction).is_some_and(test),
             Family::Opmask(test) => find_opmask_form(instruction).is_some_and(|form| test(form.operation)),
             Family::EvexInteger(test) => find_evex_integer_form(instruction).is_some_and(test),
+            Family::String(test) => crate::string::find_string_form(instruction).is_some_and(test),
         }
     }
 }
@@ -1020,6 +1025,26 @@ pub enum Bug {
     RandomLeavesStatusFlags,
     /// RDRAND and RDSEED clear CF, as if the random source had no value ready.
     RandomClearsCarry,
+    /// A string form moves RSI and RDI up whatever DF holds.
+    StringDirectionIgnored,
+    /// A repeated string form leaves the instruction pointer past it after one iteration, as if it were done.
+    RepeatEndsAfterOneIteration,
+    /// REPE stops where the elements are equal.
+    RepeatWhileEqualReversed,
+    /// Under the 0x67 prefix a string form keeps the upper halves of RSI, RDI and RCX.
+    StringNarrowKeepsUpperHalves,
+    /// SCAS and CMPS subtract the first element from the second.
+    StringCompareOperandsSwapped,
+    /// MOVS checks its destination before it reads its source.
+    MoveChecksDestinationFirst,
+    /// A string form reads its source through DS whatever segment overrides it.
+    StringSourceSegmentIgnored,
+    /// A repeated string form whose count is zero still runs one iteration.
+    RepeatCountZeroRuns,
+    /// REPE and REPNE write the status flags after an iteration that leaves the repetition going on.
+    RepeatFlagsWrittenEachIteration,
+    /// CMPS reads its source element before its destination element.
+    CompareReadsSourceFirst,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1486,6 +1511,16 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::CompareIgnoresWritemask, "compares and tests into masks", Family::EvexInteger(EvexIntegerForm::writes_mask), Avx512Integer),
     row(Bug::RandomLeavesStatusFlags, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
     row(Bug::RandomClearsCarry, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
+    row(Bug::StringDirectionIgnored, "string forms", Family::String(|form| form.reads_source() || form.reaches_destination()), Origin::Mandatory),
+    row(Bug::RepeatEndsAfterOneIteration, "repeated string forms", Family::String(|form| form.is_repeated()), Origin::Mandatory),
+    row(Bug::RepeatWhileEqualReversed, "REPE SCAS, REPE CMPS", Family::String(|form| form.repetition == crate::string::Repetition::WhileEqual), Origin::Mandatory),
+    row(Bug::StringNarrowKeepsUpperHalves, "string forms", Family::String(|form| form.reads_source() || form.reaches_destination()), Origin::Mandatory),
+    row(Bug::StringCompareOperandsSwapped, "SCAS, CMPS", Family::String(|form| form.compares()), Origin::Mandatory),
+    row(Bug::MoveChecksDestinationFirst, "MOVS", Family::String(|form| form.operation == crate::string::StringOperation::Move), Origin::Mandatory),
+    row(Bug::StringSourceSegmentIgnored, "LODS, MOVS, CMPS", Family::String(|form| form.reads_source()), Origin::Mandatory),
+    row(Bug::RepeatCountZeroRuns, "repeated string forms", Family::String(|form| form.is_repeated()), Origin::Mandatory),
+    row(Bug::RepeatFlagsWrittenEachIteration, "REPE and REPNE SCAS and CMPS", Family::String(|form| form.is_repeated() && form.compares()), Origin::Mandatory),
+    row(Bug::CompareReadsSourceFirst, "CMPS", Family::String(|form| form.operation == crate::string::StringOperation::Compare), Origin::Mandatory),
 ];
 
 const RANDOM: &[Instruction] = &[Instruction::RdrandGprv, Instruction::RdseedGprv];

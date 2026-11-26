@@ -249,6 +249,7 @@ impl PreciseInstruction {
             Self::Mmx { instruction, .. } | Self::X87 { instruction, .. } | Self::Stack { instruction, .. } => instruction,
             Self::Evex(instruction) => instruction,
             Self::Opmask { instruction, .. } | Self::EvexInteger { instruction, .. } => instruction,
+            Self::String { instruction, .. } => instruction,
         }
     }
 }
@@ -316,6 +317,7 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
         _ if crate::extension::find_extension_form(instruction).is_some() => {
             crate::extension::list_extension_behaviors(instruction)
         }
+        _ if crate::string::find_string_form(instruction).is_some() => crate::string::list_string_behaviors(instruction),
         _ => list_integer_behaviors(instruction),
     }
 }

@@ -63,6 +63,8 @@ mod mmx_simulation;
 mod x87_simulation;
 #[path = "stack_simulation.rs"]
 mod stack_simulation;
+#[path = "string_simulation.rs"]
+mod string_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -118,7 +120,7 @@ fn simulate_processor(
         Ok(()) => {
             *processor = changed;
             // A jump leaves the instruction pointer where it goes, as the stack forms leave it themselves.
-            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. }) {
+            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. } | PreciseInstruction::String { .. }) {
                 processor.instruction_pointer = decoded.next_ip();
             }
             processor.exception = None;
@@ -141,6 +143,10 @@ fn simulate_processor(
             // An MMX store that faults leaves the TOP it cleared first.
             if matches!(behavior, PreciseInstruction::Mmx { .. }) {
                 processor.x87.status = changed.x87.status;
+            }
+            // A repeated string form that faults leaves the registers it wrote as 32-bit ones first.
+            if matches!(behavior, PreciseInstruction::String { .. }) {
+                processor.general_purpose_registers = changed.general_purpose_registers;
             }
             if exception.is_trap() {
                 processor.instruction_pointer = decoded.next_ip();
@@ -259,6 +265,9 @@ fn apply(
         }
         PreciseInstruction::EvexInteger { instruction, across_fault } => {
             avx512_integer::execute_evex_integer(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::String { instruction, behavior } => {
+            string_simulation::execute_string(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS
