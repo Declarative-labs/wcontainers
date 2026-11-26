@@ -10,6 +10,7 @@
 use std::fmt::Debug;
 use std::iter::Map;
 use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
@@ -51,6 +52,9 @@ const GENERATOR_ADDRESSES: std::ops::RangeInclusive<u64> =
     CODE_PAGE..=CODE_PAGE + GENERATOR_PAGES * PAGE_SIZE;
 /// The 48 bits of an address a program uses: above them a tag or the upper half's bits, which a move keeps.
 const ADDRESS_BITS_MASK: u64 = (1 << VIRTUAL_ADDRESS_BITS) - 1;
+
+/// How many instructions are measured at once, each on a form P executor of its own.
+const MEASURING_THREADS: usize = 10;
 
 static HOST: OnceLock<Arc<HostProcessHost>> = OnceLock::new();
 
@@ -311,38 +315,42 @@ fn recorded_instructions_on_form_p_when_moved() {
 }
 
 /// Every instruction with a known behavior measured on form P from the moved states: how many show exactly one known
-/// behavior, and why each of the rest does not. A measurement of hours, so run on request.
+/// behavior, and why each of the rest does not, a line for each as it ends. A measurement of hours, so run on request.
 #[test]
 #[ignore = "a measurement of every instruction, hours long"]
 fn every_instruction_measured_on_form_p_when_moved() {
     let started = Instant::now();
-    let moved = MovedUp::default();
-    let mut form_p = executor();
-    let (mut one, mut none_known, mut refused, mut none_agrees, mut indistinguishable) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    for instruction in Chip::list_instructions() {
-        match form_p.measure_instruction(instruction, &moved) {
-            Ok(_) => one.push(instruction),
-            Err(MeasureInstructionError::NoKnownBehavior { .. }) => none_known.push(instruction),
-            Err(MeasureInstructionError::ExecutionFailed { error, .. }) => {
-                refused.push((instruction, error));
-            }
-            Err(MeasureInstructionError::NoBehaviorAgrees { .. }) => none_agrees.push(instruction),
-            Err(MeasureInstructionError::IndistinguishableBehaviors { .. }) => {
-                indistinguishable.push(instruction);
-            }
+    let instructions: Arc<Vec<Instruction>> = Arc::new(Chip::list_instructions().collect());
+    let next = Arc::new(AtomicUsize::new(0));
+    let workers: Vec<_> = (0..MEASURING_THREADS)
+        .map(|_| {
+            let (instructions, next) = (Arc::clone(&instructions), Arc::clone(&next));
+            std::thread::spawn(move || {
+                let moved = MovedUp::default();
+                let mut form_p = executor();
+                let mut outcomes = Vec::new();
+                while let Some(&instruction) =
+                    instructions.get(next.fetch_add(1, Ordering::Relaxed))
+                {
+                    let outcome = describe(&form_p.measure_instruction(instruction, &moved));
+                    println!("measured {instruction:?}: {outcome}");
+                    outcomes.push(outcome);
+                }
+                outcomes
+            })
+        })
+        .collect();
+    let mut tally = std::collections::BTreeMap::<String, usize>::new();
+    for worker in workers {
+        for outcome in worker.join().expect("a measuring thread") {
+            // A refusal's error names its state's details; its kind is what is counted.
+            let kind = outcome.split(" (").next().unwrap_or_default().to_owned();
+            *tally.entry(kind).or_default() += 1;
         }
     }
-    println!("no behavior agrees: {none_agrees:?}");
-    println!("refused: {refused:?}");
-    println!("indistinguishable: {indistinguishable:?}");
     println!(
-        "instructions: one known behavior {}, no known behavior {}, refused {}, no behavior agrees {}, indistinguishable {}; {:.1} s",
-        one.len(),
-        none_known.len(),
-        refused.len(),
-        none_agrees.len(),
-        indistinguishable.len(),
+        "instructions: {} of them, {tally:?}; {:.1} s",
+        instructions.len(),
         started.elapsed().as_secs_f64()
     );
 }

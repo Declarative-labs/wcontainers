@@ -889,8 +889,32 @@ mapped-or-not); NOT MADE, for the orchestrator (one line): it changes the addres
 receives, which the kernel turns into a guest's `si_addr`, so a guest can observe it, unless the kernel strips the
 tag as Linux does for a handler without the flag.
 
-Every instruction (job native-r2all, `every_instruction_measured_on_form_p_when_moved` and the behavior-source
-suite on the moved generator): see "Every instruction, moved" below.
+Every instruction: see "Every instruction, moved" below. The behavior-source suite on the moved generator (the
+`behavior_source` module of tests/moved.rs): `measured_behavior_agrees_with_the_source` FAILED (suite.rs:90, as the
+outcomes below explain); the other three were stopped unfinished after 1 h 15 min.
+
+### Every instruction, moved (MEASURED, job native-r2all 20261126-123210, Graviton4, release, 10 threads)
+
+`every_instruction_measured_on_form_p_when_moved` measures each listed instruction on form P from the moved states,
+a line per instruction (log kept at wcontainers-scratch/native-restart-r2c/all.txt):
+
+| Outcome | Instructions |
+|---|---|
+| one known behavior | 2,881 |
+| no behavior agrees | 1,530 |
+| no known behavior (Hint, MsrImmediate, Sys, Sysl) | 4 |
+| refused | 0 |
+| never ended | 9 |
+| listed | 4,424 |
+
+The 9 that never ended: B, BCond, Bl, Cbnz32, Cbnz64, Cbz32, Cbz64, Tbnz, Tbz (the listed instructions with no
+line; Br, Blr and Ret ended). After 30 minutes their 9 stubs each ran at 99.9% CPU and the 9 measuring threads
+slept waiting on them; the job was stopped. INFERRED: a state whose branch targets its own instruction (offset 0) is
+a loop inside one piece, which no landing ends, so the single instruction's count never stops it: a form P fault in
+`run_alone`, to fix and test next. Of the 1,530 that agree with no behavior, the tagged base explains every state of
+the four recorded memory instructions above; the rest are not yet sorted by cause, and some are this test's move
+(INFERRED: a base in a vector register, as SVE gathers have, is not moved, and an index register that holds a
+value inside the generator's pages is).
 
 ### The zygote's own crate (the orchestrator's ruling 1)
 
