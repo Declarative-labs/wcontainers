@@ -4,6 +4,93 @@ Plan: docs/phase-2-guest-cpu-and-x86.md. Branch: agents, in the agents' shared w
 (since the evening of 2026-11-21; before that main, and before that phase-2-x86). Brief:
 pyro-parked/wcontainers-scratch/orchestrator/brief-x86.md.
 
+## Restart of 2026-11-25 (branch x86-front-end, from main at 95bceadf0)
+
+Brief: pyro-parked/wcontainers-scratch/orchestrator/restart-2026-11-25/brief-x86.md. Results and logs in scratch
+`x86-front-end/`. The port of these crates to today's rules (TR1 to TR3) is the translator track's, on
+`translator-port`; this branch carries its five folders from there and builds the ordered form on them.
+
+XF0, inventory (all MEASURED unless marked):
+- 9c4e000ee brings `crates/{arm64,x86,guest-cpu,translator,translator-test}` and the native output plan and status
+  from translator-port 1b3b7578e by path, and its lock entries onto main's lock; `git diff --cached 1b3b7578e` of the
+  five folders: 0 lines.
+- Size: `crates/x86` 38 files and 19,635 lines of `.rs` on main, 51 and 27,387 on translator-port (the native
+  output, `answer.rs`, `carry.rs` and the rest); `crates/guest-cpu` 7 and 2,029 against 7 and 2,231.
+  `phase-2-x86` (d46262af5) is an ancestor of origin/agents.
+- On main 95bceadf0 (rented x86-64 machine, `cargo check --all-targets --all-features` per package):
+  guest-cpu, x86 and translator exit 0; arm64 and translator-test exit 101, one error each, "usage of an `unsafe`
+  block" in arm64 (translator-test fails through it).
+- On 9c4e000ee (the same machine): check and `clippy --no-deps -D warnings` of the five packages, all targets and
+  features: exit 0 (scratch `xr0-check.log`).
+- `unsafe` lines (the root manifest's command of 198bb11d6), main / translator-port: x86 0 / 0, guest-cpu 0 / 0,
+  translator 0 / 0, arm64 1 / 0, translator-test 101 / 90 (of them `reference/` 86 / 86 and, on translator-port,
+  `programs/panics.rs` 4, a guest program cargo never builds). All five packages have `[lints] workspace = true`
+  on both.
+- Traits nobody ruled on: `Personality` (guest-cpu lib.rs:42), `Guest` (translate.rs:18), `Emitter`
+  (translate.rs:264), `Native` (native.rs:61): the translator brief's question 2; `answer::Memory` (x86
+  answer.rs:43), `answer::Clock` (answer.rs:66), `Bits` (exact.rs:305): the translator brief's TR2 removes them.
+  This branch adds none.
+- The linter's findings for these crates are the translator track's baseline (READ status-translator.md:
+  x86 3,144, guest-cpu 513 of 12,049 at 62abb61d).
+
+XF1, the ordered form (decisions in the brief; what was built):
+- `wcontainers_guest_cpu::AccessOrdering { Unordered, Ordered(OrderedAccess) }` and `OrderedAccess {
+  SequentiallyConsistent }`, whose `memarg_ordering` is the one place the acquire-release kind lands later.
+  `Guest::ORDERED_ACCESSES` (false by default, true for x86-64) and `Emitter::access_ordering` (Unordered by
+  default) are the two items added to the interface's traits; vex.rs's lane emitter passes it on.
+- `translate`, `translate_omitting` and `translate_in_modules` take the ordering after the progress count; a guest
+  without ordered accesses gets `Error::OrderedAccessesNotMade`. The description section is version 6 and holds
+  the ordering's byte before the progress byte.
+- Every guest access of an x86 meaning goes through `operand.rs`'s `load_at`, `store_at`, `load_vector_at`,
+  `store_vector_at`, `load_lane_at`, `store_lane_at` and `bulk_fence`, which emit the same instructions as before
+  when unordered.
+- For the orchestrator: the wasmtime executor's two `translate` calls (not this track's) need
+  `AccessOrdering::Unordered` added after `ProgressCount::Absent` when it builds on this branch.
+- The runners take the form from `WC_ACCESS_ORDERING=ordered` (`runner::access_ordering`), so every one-thread
+  test runs the ordered form too; `tests/output.rs` follows it and, with `WC_OUTPUT_CUT_DESCRIPTION=1`, hashes each
+  module without its description section; it now has `write_output_x86_64`.
+
+XF1's measurements (d897423bf; machine named on each):
+- Default output (rented ARM64 machine, 12 jobs, load 15 to 27): `tests/output.rs` with the description cut, this
+  branch against 9c4e000ee carrying the same `tests/output.rs` (scratch worktree): ARM64's ten lists, every
+  look-ahead, both settings, 965 modules: 0 differ; x86-64 at none, bounded and full, both settings, the benchmark
+  set, busybox and musl, 327 modules: 0 differ (scratch `lists/`). The other seven amd64 binaries need `apk add` in
+  an amd64 container, which that machine cannot run ("exec format error"): left for the x86 machine.
+- `tests/valid.rs` (ARM64 machine): 15 of 15; `every_form_is_valid_x86_64` translates 32,128 cases of 2,008 forms
+  at none, bounded 16 and full in both forms: every module validates and the ordered ones hold 0 plain accesses to
+  the guest's memory and no bulk operation outside two fences; `the_ordered_form_is_refused_arm64` passes. A first
+  run found 419 forms with plain accesses, all VEX: vex.rs's lane emitter did not pass the ordering on (fixed).
+- clippy `-D warnings` of the five packages, all targets and features, and the browser crate's wasm32 clippy for
+  both guests: exit 0 (ARM64 machine). rustfmt: clean in the files this branch changed (`src/programs.rs` differs
+  from rustfmt at translator-port already).
+- x86 layer 1, 64 cases a form, seed 1 (rented x86-64 machine, 12 jobs, load 41 to 52): both forms fail the same
+  1,126 of 2,008 forms (the machine's 5-level paging and features, as TR1 found), with the same case, reference
+  answer and translated answer in each (scratch `layer1/triples-*.txt`, 0 lines differ); the other 882 pass in
+  both, random bases and so misaligned accesses of every width included.
+- x86 layer 2, 10,000 programs, seed 25112502, in the ordered form (x86-64 machine, 12 jobs, load 38 to 55, 2,742 s):
+  0 failing; 3,442 faulted and 1,104 left to an address at full, the counts TR1 measured for the default form at
+  that seed (READ status-translator.md). The default form's own run here was stopped as a repeat of TR1's.
+
+XF2, locked instructions (4a2cd7347):
+- In the ordered form, a memory destination with `lock` (`add`, `adc`, `sub`, `sbb`, `and`, `or`, `xor`, `inc`,
+  `dec`, `neg`, `not`, `bts`, `btr`, `btc`, `xadd`, `cmpxchg`) and `xchg` with memory open a loop at the read of the
+  operand and end it with one `i64.atomic.rmw*.cmpxchg` of the value read, retried when another thread changed it
+  meanwhile; registers the instruction writes are written after the loop. Flags come from the value the exchange
+  found. An operand not aligned to its size is written by ordered accesses instead, counted and warned as
+  `Reason::LockedAccessNotAligned` (x86 allows it; WebAssembly's atomics trap). Unordered code is unchanged.
+- Not yet: `lock cmpxchg8b` (one 8-byte exchange fits) and `cmpxchg16b` (no 16-byte atomic in WebAssembly: the
+  threads plan's group stop, T2) are still two ordered halves.
+- x86 layer 1 at 4a2cd7347, 64 cases a form, seed 1 (x86-64 machine, load 25 to 48): the same 1,126 failing forms
+  with the same cases and answers in both forms, and the same as at d897423bf. Layer 1 draws no `lock` prefix (READ
+  `src/guest/x86_64.rs`: prefixes are drawn only before reserved NOPs), so it tests the locked path only through
+  `xchg` with memory; XF2's bar needs it to draw `lock` before lockable forms with a memory destination.
+- x86 layer 3, cases 0 to 1,199, seed 1, in the ordered form at 4a2cd7347 (x86-64 machine, 6 at once, load 10 to
+  41, 5,463 s): 1,023 compared, 177 did not end in time on Linux, 0 failing, the counts TR1 measured for the
+  default form (READ status-translator.md).
+- `tests/valid.rs` (ARM64 machine): 16 of 16; `locked_instructions_compare_and_exchange_when_ordered_x86_64`: nine
+  locked forms at none and full hold a compare and exchange on the guest's memory in the ordered form and none in
+  the unordered form, every module valid.
+
 Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime` is now
 `wcontainers-executor-wasmtime` (crates/executor/implementation/wasmtime), `wcontainers-runtime` is
 `wcontainers-runtime-single-kernel` (crates/runtime/implementation/single-kernel), `wcontainers-kernel` is
