@@ -322,12 +322,21 @@ fn list_scalable_access_behaviors(
         }]
         .to_vec();
     }
+    // One vector's length holds a store of one register, so that writing its whole vectors below a fault writes
+    // nothing; two and four registers fault at a vector's end in every generated state, where the whole vectors below
+    // are the bytes below, so only three tell those two apart.
     let across: &[Option<ScalableStoreAcrossFault>] = if access.kind == AccessKind::Store {
-        &[
-            Some(ScalableStoreAcrossFault::WritesNothing),
-            Some(ScalableStoreAcrossFault::WritesBytesBelowFault),
-            Some(ScalableStoreAcrossFault::WritesWholeVectorsBelowFault),
-        ]
+        match access.registers {
+            3 => &[
+                Some(ScalableStoreAcrossFault::WritesNothing),
+                Some(ScalableStoreAcrossFault::WritesBytesBelowFault),
+                Some(ScalableStoreAcrossFault::WritesWholeVectorsBelowFault),
+            ],
+            _ => &[
+                Some(ScalableStoreAcrossFault::WritesNothing),
+                Some(ScalableStoreAcrossFault::WritesBytesBelowFault),
+            ],
+        }
     } else {
         &[None]
     };

@@ -5,6 +5,10 @@ use core::convert::Infallible;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::encoding::{Field, RN};
+use wcontainers_processor_architecture_arm64::load_store::AccessLayout;
+use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
+    Offset, RM, to_scalable_access,
+};
 use wcontainers_processor_architecture_arm64::operand::{Operand, RegisterThirtyOne};
 use wcontainers_processor_architecture_arm64::{
     Arm64, Instruction, LoadStoreInstruction, User, VIRTUAL_ADDRESS_BITS,
@@ -76,14 +80,26 @@ fn read_operand(
             match values {
                 ScalableValues::Integer
                 | ScalableValues::TableIndices
-                | ScalableValues::Structure => {
-                    Some(OperandValue::Vector(bits))
-                }
+                | ScalableValues::Structure => Some(OperandValue::Vector(bits)),
                 // The critical value of these bits, whose lanes the bits alone do not name.
+                // The critical value of the bits; a register named twice holds another operand's, read in the
+                // lanes of this operand's first value.
                 ScalableValues::FloatingPoint { .. } | ScalableValues::Converted(_) => {
-                    Arm64InputDomain.generate_critical_values(operand_type).find(|value| {
-                        matches!(value, OperandValue::ScalableVector { bits: held, .. } if *held == bits)
-                    })
+                    let values: Vec<OperandValue> = Arm64InputDomain
+                        .generate_critical_values(operand_type)
+                        .collect();
+                    values
+                        .iter()
+                        .copied()
+                        .find(|value| {
+                            matches!(value, OperandValue::ScalableVector { bits: held, .. } if *held == bits)
+                        })
+                        .or_else(|| match values.first() {
+                            Some(OperandValue::ScalableVector { lanes, .. }) => {
+                                Some(OperandValue::ScalableVector { bits, lanes: *lanes })
+                            }
+                            _ => None,
+                        })
                 }
             }
         }
@@ -152,8 +168,7 @@ fn read_operand(
                 }),
         )),
         OperandType::Comparand { field, bytes, pair } => {
-            let layout =
-                LoadStoreInstruction::new(instruction)?.to_access_layout(word, &state.processor)?;
+            let layout = to_layout(instruction, word, &state.processor)?;
             let base = registers
                 .get(RN.read(word) as usize)
                 .copied()
@@ -200,8 +215,7 @@ fn read_operand(
             OperandValue::ConditionFlags(state.processor.condition_flags),
         ),
         OperandType::AccessPlacement => {
-            let layout =
-                LoadStoreInstruction::new(instruction)?.to_access_layout(word, &state.processor)?;
+            let layout = to_layout(instruction, word, &state.processor)?;
             let base = registers
                 .get(RN.read(word) as usize)
                 .copied()
@@ -213,8 +227,7 @@ fn read_operand(
                 .map(OperandValue::AccessPlacement)
         }
         OperandType::AddressTag => {
-            let layout =
-                LoadStoreInstruction::new(instruction)?.to_access_layout(word, &state.processor)?;
+            let layout = to_layout(instruction, word, &state.processor)?;
             let base = registers
                 .get(RN.read(word) as usize)
                 .copied()
@@ -257,11 +270,25 @@ fn untag(address: u64) -> u64 {
 
 /// Whether the instruction adds a register to its base that is its base.
 fn is_base_also_offset(instruction: Instruction<Infallible>, word: u32) -> bool {
-    instruction.to_record().is_some_and(|record| {
-        record.operands.iter().any(|operand| {
-            matches!(operand, Operand::RegisterOffset { number, .. } if number.read(word) == RN.read(word))
+    let scalable = to_scalable_access(instruction)
+        .is_some_and(|access| access.offset == Offset::Register && RM.read(word) == RN.read(word));
+    scalable
+        || instruction.to_record().is_some_and(|record| {
+            record.operands.iter().any(|operand| {
+                matches!(operand, Operand::RegisterOffset { number, .. } if number.read(word) == RN.read(word))
+            })
         })
-    })
+}
+
+/// The access of a load or store, or of an SVE access, given the registers.
+fn to_layout(
+    instruction: Instruction<Infallible>,
+    word: u32,
+    processor: &wcontainers_processor_architecture_arm64::Processor<()>,
+) -> Option<AccessLayout> {
+    LoadStoreInstruction::new(instruction)
+        .and_then(|load_store| load_store.to_access_layout(word, processor))
+        .or_else(|| to_scalable_access(instruction)?.to_access_layout(word, processor))
 }
 
 /// Every listed instruction that has a known behavior, in the list's order.

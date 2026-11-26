@@ -814,6 +814,10 @@ fn every_modeled_instruction_has_its_operands_in_fields_beside_its_fixed_bits() 
         {
             continue;
         }
+        // An SVE instruction's operands are named by `scalable`, since the list leaves them unmodeled.
+        if crate::scalable::list_scalable_operands(instruction).is_some() {
+            continue;
+        }
         let mut covered = record.fixed_bits.mask | record.should_be.mask;
         for operand in record.operands {
             let fields: Vec<Field> = match *operand {

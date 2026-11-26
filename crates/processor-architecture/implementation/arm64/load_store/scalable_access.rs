@@ -108,7 +108,7 @@ pub enum ScalableStoreAcrossFault {
     WritesNothing,
     WritesBytesBelowFault,
     /// The elements of each vector's length of the access, counted from its first byte, that ends at or below the
-    /// fault, as a Neoverse V2 shows for ST3B (MEASURED: `default_behaviors`, 1,012,812 of 1,283,904 states).
+    /// fault, as a Neoverse V2 does for ST3B.
     WritesWholeVectorsBelowFault,
 }
 
@@ -133,13 +133,15 @@ impl ScalableAccess {
     }
 
     /// The bytes the encoding moves at most, and what it adds to its base's value to find the first, given the
-    /// registers.
+    /// registers; an unallocated element size is laid out as the memory's element, so that its state places the base.
     pub fn to_access_layout<LevelSpecific>(
         self,
         word: u32,
         processor: &Processor<LevelSpecific>,
     ) -> Option<AccessLayout> {
-        let esize = self.to_element_bits(word)?;
+        let esize = self
+            .to_element_bits(word)
+            .unwrap_or(self.memory_bytes * u8::BITS);
         let bytes = self.to_transfer_bytes(esize);
         let offset = match self.offset {
             Offset::Register => {
