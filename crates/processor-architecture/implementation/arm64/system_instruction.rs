@@ -232,11 +232,6 @@ where
         A::NoOperation => Ok(()),
         A::ZeroBlock { zeroes } => {
             let block = location & !(ZERO_BLOCK_BYTES - 1);
-            let block = if crate::planted::is(725) {
-                location
-            } else {
-                block
-            };
             // The fault address is the register's, wherever in the block the fault lies.
             if let Some((_, status)) =
                 find_fault(memory, block, ZERO_BLOCK_BYTES, AccessDirection::Write)

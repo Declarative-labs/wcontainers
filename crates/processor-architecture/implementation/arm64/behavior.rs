@@ -321,6 +321,10 @@ fn list_modeled_behaviors(
     }
 }
 
+/// The reservation granule of a Neoverse V2: CTR_EL0.ERG is 4, and a store exclusive anywhere in the 64 bytes stores
+/// (MEASURED: `hidden-state-loading/arm64/RESULT.md`, question 5).
+const NEOVERSE_V2_RESERVATION_GRANULE_BYTES: u64 = 64;
+
 /// [CTR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register) as an Arm Neoverse V2 under KVM reads it, measured on an AWS Graviton4.
 const NEOVERSE_V2_CACHE_TYPE: u64 = 0xB444_C004;
 
@@ -366,6 +370,7 @@ fn list_load_store_behaviors(
         store_exclusive_overlap: None,
         misaligned_exclusive: None,
         fault_address_tag: None,
+        reservation_granule_bytes: None,
     };
     let combinations = widen(
         [none].to_vec(),
@@ -444,6 +449,13 @@ fn list_load_store_behaviors(
             MisalignedExclusive::WithinSixteenBytes,
         ],
         |choices, choice| choices.misaligned_exclusive = Some(choice),
+    );
+    // No state single-stepping reaches holds the monitor, so the one granule a chip was measured to have is listed.
+    let combinations = widen(
+        combinations,
+        open.reservation_granule,
+        &[NEOVERSE_V2_RESERVATION_GRANULE_BYTES],
+        |choices, choice| choices.reservation_granule_bytes = Some(choice),
     );
     widen(
         combinations,

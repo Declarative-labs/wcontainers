@@ -787,24 +787,8 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             addresses: CODE_ADDRESS..CODE_ADDRESS + PAGE_BYTES,
             permission: readable_and_executable,
         }];
-        let layout = LoadStoreInstruction::new(instruction)
-            .and_then(|load_store| load_store.to_access_layout(word, &processor))
-            .or_else(|| {
-                let bytes = StructureInstruction::new(instruction)?.to_access_bytes(word)?;
-                Some(AccessLayout { bytes, offset: 0 })
-            })
-            .or_else(|| Some(TagAccessInstruction::new(instruction)?.to_access_layout(word)))
-            .or_else(|| {
-                let bytes = (instruction == Instruction::Sys)
-                    .then(|| to_system_instruction_bytes(SYSTEM_INSTRUCTION.read(word)))??;
-                Some(AccessLayout { bytes, offset: 0 })
-            });
-        // SYS takes its address from Rt.
-        let base_field = if instruction == Instruction::Sys {
-            RT
-        } else {
-            RN
-        };
+        let layout = to_access_layout(instruction, word, &processor);
+        let base_field = to_base_field(instruction);
         if let (Some(placement), Some(layout)) = (placement, layout) {
             let address = to_access_address(placement, layout.bytes);
             let base = address.wrapping_sub(layout.offset).wrapping_add(tag);
@@ -878,6 +862,36 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             processor,
             memory_mutations,
         }
+    }
+}
+
+/// The bytes the encoding accesses and what it adds to its base, none for an instruction or encoding that reaches no
+/// memory.
+pub(crate) fn to_access_layout(
+    instruction: Instruction<Infallible>,
+    word: u32,
+    processor: &Processor<()>,
+) -> Option<AccessLayout> {
+    LoadStoreInstruction::new(instruction)
+        .and_then(|load_store| load_store.to_access_layout(word, processor))
+        .or_else(|| {
+            let bytes = StructureInstruction::new(instruction)?.to_access_bytes(word)?;
+            Some(AccessLayout { bytes, offset: 0 })
+        })
+        .or_else(|| Some(TagAccessInstruction::new(instruction)?.to_access_layout(word)))
+        .or_else(|| {
+            let bytes = (instruction == Instruction::Sys)
+                .then(|| to_system_instruction_bytes(SYSTEM_INSTRUCTION.read(word)))??;
+            Some(AccessLayout { bytes, offset: 0 })
+        })
+}
+
+/// The field of the register that holds the base of an access: Rt for SYS, Rn for every other instruction.
+pub(crate) fn to_base_field(instruction: Instruction<Infallible>) -> Field {
+    if instruction == Instruction::Sys {
+        RT
+    } else {
+        RN
     }
 }
 

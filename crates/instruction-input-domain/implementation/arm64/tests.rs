@@ -13,7 +13,7 @@ use wcontainers_processor_architecture_arm64::{
 use crate::{
     AccessPlacement, Arm64InputDomain, CODE_ADDRESS, CodePlacement, Comparison, DataPage,
     GENERAL_PURPOSE_REGISTERS, LOWER_DATA_ADDRESS, MemoryFill, OperandType, OperandValue,
-    UPPER_DATA_ADDRESS, to_access_address,
+    UPPER_DATA_ADDRESS, to_access_address, to_access_layout, to_base_field,
 };
 
 const PLACEMENTS: [AccessPlacement; 7] = [
@@ -183,10 +183,9 @@ fn read_operand(
             OperandValue::ConditionFlags(state.processor.condition_flags),
         ),
         OperandType::AccessPlacement => {
-            let layout =
-                LoadStoreInstruction::new(instruction)?.to_access_layout(word, &state.processor)?;
+            let layout = to_access_layout(instruction, word, &state.processor)?;
             let base = registers
-                .get(RN.read(word) as usize)
+                .get(to_base_field(instruction).read(word) as usize)
                 .copied()
                 .unwrap_or(state.processor.stack_pointer);
             let address = untag(base.wrapping_add(layout.offset));
@@ -196,10 +195,9 @@ fn read_operand(
                 .map(OperandValue::AccessPlacement)
         }
         OperandType::AddressTag => {
-            let layout =
-                LoadStoreInstruction::new(instruction)?.to_access_layout(word, &state.processor)?;
+            let layout = to_access_layout(instruction, word, &state.processor)?;
             let base = registers
-                .get(RN.read(word) as usize)
+                .get(to_base_field(instruction).read(word) as usize)
                 .copied()
                 .unwrap_or(state.processor.stack_pointer);
             Some(OperandValue::Bits(
@@ -344,6 +342,16 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                 .map(
                     |(operand_type, asked)| match (operand_type, base_is_offset) {
                         (OperandType::AccessPlacement | OperandType::AddressTag, true) => {
+                            Some(*asked)
+                        }
+                        // An encoding that reaches no memory gets no data pages, so they hold nothing to read back.
+                        (
+                            OperandType::AccessPlacement
+                            | OperandType::AddressTag
+                            | OperandType::DataPagePermission(_)
+                            | OperandType::MemoryFill,
+                            false,
+                        ) if to_access_layout(instruction, word, &state.processor).is_none() => {
                             Some(*asked)
                         }
                         _ => read_operand(&state, instruction, word, *operand_type),

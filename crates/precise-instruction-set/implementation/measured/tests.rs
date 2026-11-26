@@ -89,6 +89,7 @@ fn expect_chip(
         store_exclusive_overlap: Some(StoreExclusiveOverlap::Runs),
         misaligned_exclusive: Some(MisalignedExclusive::WithinSixteenBytes),
         fault_address_tag: Some(FaultAddressTag::KeepsTopByte),
+        reservation_granule_bytes: Some(64),
     };
     move |instruction| {
         let behaviors: Vec<_> = Arm64::<User>::list_known_behaviors(instruction).collect();

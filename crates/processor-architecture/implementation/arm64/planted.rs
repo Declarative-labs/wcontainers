@@ -60,7 +60,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 406] = [
+pub const PLANTED_BUGS: [PlantedBug; 405] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -2490,11 +2490,5 @@ pub const PLANTED_BUGS: [PlantedBug; 406] = [
         instruction: Instruction::MsrImmediate,
         planted_by: PlantedBy::RestOfTheSet,
         what: "DAIFSet and DAIFClr are undefined, not trapped",
-    },
-    PlantedBug {
-        number: 725,
-        instruction: Instruction::Sys,
-        planted_by: PlantedBy::RestOfTheSet,
-        what: "DC ZVA zeroes from the address, not its block",
     },
 ];

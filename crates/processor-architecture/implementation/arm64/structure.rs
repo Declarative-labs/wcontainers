@@ -126,7 +126,7 @@ fn decode(word: u32) -> Result<Decoded, Exception> {
         }
         0 => (
             Form::Lane {
-                index: (u32::from(!crate::planted::is(714)) * q << 3) | (s << 2) | size,
+                index: ((u32::from(!crate::planted::is(714)) * q) << 3) | (s << 2) | size,
             },
             0,
         ),
