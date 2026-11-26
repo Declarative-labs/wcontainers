@@ -10,7 +10,9 @@ use rangemap::RangeMap;
 
 use core::ops::Range;
 
-use crate::trusted::{append_bounds, insert_range, is_same_slice, new_range_map, range_map_get, sort_by_start};
+use crate::trusted::{
+    append_bounds, insert_range, is_same_slice, new_range_map, range_map_get, sort_by_start,
+};
 
 /// A permission-like value whose `==` is equality, as `insert_range` requires.
 type Value = u8;
@@ -144,11 +146,19 @@ fn sorting_by_start_keeps_the_ranges_and_orders_their_starts() {
                 start..start + u128::from(random.next() % 5)
             })
             .collect();
-        let mut before: Vec<(u128, u128)> = written.iter().map(|addresses| (addresses.start, addresses.end)).collect();
+        let mut before: Vec<(u128, u128)> = written
+            .iter()
+            .map(|addresses| (addresses.start, addresses.end))
+            .collect();
         sort_by_start(&mut written);
-        let mut after: Vec<(u128, u128)> = written.iter().map(|addresses| (addresses.start, addresses.end)).collect();
+        let mut after: Vec<(u128, u128)> = written
+            .iter()
+            .map(|addresses| (addresses.start, addresses.end))
+            .collect();
         assert!(
-            written.windows(2).all(|pair| pair[0].start <= pair[1].start),
+            written
+                .windows(2)
+                .all(|pair| pair[0].start <= pair[1].start),
             "seed {seed}: the starts are not in order: {written:?}"
         );
         // The same ranges, as many times each: equal once both are sorted the same way.

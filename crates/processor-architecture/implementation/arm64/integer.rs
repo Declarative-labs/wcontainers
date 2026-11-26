@@ -17,8 +17,8 @@ use crate::operand::{
 #[cfg(verus_keep_ghost)]
 use crate::pseudocode::{
     arithmetic_immediate_value, arithmetic_or_logical, conditional_compare, extended_register,
-    is_zero, logical_result, multiply_long_value, nzcv_immediate, ones, ror, shifted_register, sint,
-    uint, written,
+    is_zero, logical_result, multiply_long_value, nzcv_immediate, ones, ror, shifted_register,
+    sint, uint, written,
 };
 use crate::registers::{read_register, write_register};
 use crate::{Exception, Instruction, Processor};

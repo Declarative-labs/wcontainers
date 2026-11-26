@@ -30,9 +30,9 @@ pub mod memory;
 pub mod operand;
 pub mod planted;
 pub mod pointer_authentication;
+mod pseudocode;
 mod registers;
 pub mod simd;
-mod pseudocode;
 mod simulation;
 pub mod system_register;
 #[cfg(test)]

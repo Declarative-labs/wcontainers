@@ -272,16 +272,28 @@ impl Random {
 }
 
 /// A random list of mutations whose bytes are owned or borrowed from the pool.
-fn random_mutations<'pool>(random: &mut Random, pool: &'pool [Vec<u8>]) -> Vec<MemoryDelta<'pool, MemoryOnly>> {
-    (0..random.below(8)).map(|_| random_mutation(random, pool)).collect()
+fn random_mutations<'pool>(
+    random: &mut Random,
+    pool: &'pool [Vec<u8>],
+) -> Vec<MemoryDelta<'pool, MemoryOnly>> {
+    (0..random.below(8))
+        .map(|_| random_mutation(random, pool))
+        .collect()
 }
 
-fn random_mutation<'pool>(random: &mut Random, pool: &'pool [Vec<u8>]) -> MemoryDelta<'pool, MemoryOnly> {
+fn random_mutation<'pool>(
+    random: &mut Random,
+    pool: &'pool [Vec<u8>],
+) -> MemoryDelta<'pool, MemoryOnly> {
     if random.below(5) < 3 {
         let bytes = if random.below(2) == 0 {
             Cow::Borrowed(pool[random.below(pool.len() as u64) as usize].as_slice())
         } else {
-            Cow::Owned((0..random.below(7)).map(|_| random.below(3) as u8).collect())
+            Cow::Owned(
+                (0..random.below(7))
+                    .map(|_| random.below(3) as u8)
+                    .collect(),
+            )
         };
         MemoryDelta::ValueAssignment {
             start: random.address(),
@@ -367,18 +379,28 @@ fn diff_sends_what_the_owners_diff_sends() {
         .unwrap_or(0x5eed_d1ff);
     let mut random = Random(seed);
     let pool: Vec<Vec<u8>> = (0..6)
-        .map(|_| (0..random.below(7)).map(|_| random.below(3) as u8).collect())
+        .map(|_| {
+            (0..random.below(7))
+                .map(|_| random.below(3) as u8)
+                .collect()
+        })
         .collect();
     let (mut sent, mut pairs_with_changes, mut hash) = (0_usize, 0_u64, 0xcbf2_9ce4_8422_2325_u64);
     for pair in 0..pairs {
         let old = random_mutations(&mut random, &pool);
         let new = random_successor(&mut random, &pool, &old);
-        let (old_snapshot, new_snapshot) = (MemorySnapshot { mutations: &old }, MemorySnapshot { mutations: &new });
+        let (old_snapshot, new_snapshot) = (
+            MemorySnapshot { mutations: &old },
+            MemorySnapshot { mutations: &new },
+        );
         let mut proven: Vec<MemoryDelta<'static, MemoryOnly>> = Vec::new();
         old_snapshot.diff(&new_snapshot, &mut proven);
         let mut owners: Vec<MemoryDelta<'static, MemoryOnly>> = Vec::new();
         OwnersDiff::diff(&old_snapshot, &new_snapshot, &mut owners);
-        assert!(proven == owners, "pair {pair} (seed {seed:#x}): the two diffs sent different mutations");
+        assert!(
+            proven == owners,
+            "pair {pair} (seed {seed:#x}): the two diffs sent different mutations"
+        );
         sent += proven.len();
         pairs_with_changes += u64::from(!proven.is_empty());
         fold_hash(&mut hash, &proven);
