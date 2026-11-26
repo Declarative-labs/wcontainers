@@ -16,7 +16,7 @@ use wcontainers_abi::{
 };
 use wcontainers_arm64::thread_state::untag_address;
 use wcontainers_arm64::{
-    Arm64, EXCLUSIVE_ADDRESS, EXCLUSIVE_BYTES, FLOAT_TRACKING, INSTRUCTION_BYTES,
+    Arm64, EXCLUSIVE_ADDRESS, EXCLUSIVE_BYTES, FLOAT_TRACKING, INSTRUCTION_BYTES, Reg,
 };
 use wcontainers_executor::{
     InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
@@ -814,12 +814,7 @@ fn trap(caller: &mut Caller<'_, ThreadData>, kind: i32, detail: i64) {
         Some(TrapKind::Breakpoint) => Exception::Breakpoint {
             comment: u16::try_from(detail & i64::from(u16::MAX)).expect("a 16-bit comment"),
         },
-        Some(TrapKind::Alignment) if detail.cast_unsigned() == pc => {
-            Exception::ProgramCounterAlignmentFault {
-                address: detail.cast_unsigned(),
-            }
-        }
-        Some(TrapKind::Alignment) => Exception::StackPointerAlignmentFault,
+        Some(TrapKind::Alignment) => alignment_fault(caller.data(), pc, detail.cast_unsigned()),
         _ => Exception::UndefinedInstruction,
     };
     // A branch to a misaligned address completes; the fault is the fetch of the next instruction, which a step leaves
@@ -831,6 +826,36 @@ fn trap(caller: &mut Caller<'_, ThreadData>, kind: i32, detail: i64) {
     } else {
         Ending::Raised(exception)
     });
+}
+
+/// Returns the exception of an alignment trap at `pc` whose detail is `address`: a data abort for an access that must
+/// be aligned and is not, at the address it computed; a fault of the program counter, which a branch left at
+/// `address`; or else a fault of the stack pointer, which an access through it found misaligned.
+fn alignment_fault(data: &ThreadData, pc: u64, address: u64) -> Exception {
+    use wcontainers_arm64::Instruction as I;
+    let mut word = [0; INSTRUCTION_BYTES];
+    let read = pc.is_multiple_of(INSTRUCTION_BYTES as u64) && space_of(data).read(pc, &mut word);
+    let access = match read.then(|| wcontainers_arm64::decode(u32::from_le_bytes(word))) {
+        Some(I::StoreExclusive { rn, .. } | I::StoreRelease { rn, .. }) if rn != Reg::Sp => {
+            Some(AccessDirection::Write)
+        }
+        Some(
+            I::LoadExclusive { rn, .. }
+            | I::LoadAcquire { rn, .. }
+            | I::Atomic { rn, .. }
+            | I::CompareSwap { rn, .. },
+        ) if rn != Reg::Sp => Some(AccessDirection::Read),
+        _ => None,
+    };
+    match access {
+        Some(access) => Exception::DataAbort {
+            status: FaultStatus::AlignmentFault,
+            access,
+            address,
+        },
+        None if address == pc => Exception::ProgramCounterAlignmentFault { address },
+        None => Exception::StackPointerAlignmentFault,
+    }
 }
 
 /// Returns the fields EL1 is given of a trapped MRS or MSR, the instruction word given.
