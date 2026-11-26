@@ -1062,6 +1062,10 @@ pub enum Bug {
     EvexExtractIndexUnreduced,
     /// VMOVHLPS moves the low quadword high, and VMOVLHPS, VMOVHPS and VMOVHPD the high one low.
     EvexHalvesMovedTheOtherWay,
+    /// VPINSRB to VPINSRQ replace the lowest lane whatever the immediate.
+    EvexInsertLaneLowest,
+    /// VMOVD and VMOVQ into an XMM register keep its other lanes.
+    EvexMoveLowKeepsOthers,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1547,6 +1551,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexInsertLowestPart, "VINSERTI32X4 to VINSERTF64X4", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Insert { .. })), Origin::EvexFirstHalf),
     row(Bug::EvexExtractIndexUnreduced, "VEXTRACTI32X4 to VEXTRACTF64X4", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Extract { .. })), Origin::EvexFirstHalf),
     row(Bug::EvexHalvesMovedTheOtherWay, "VMOVHLPS, VMOVLHPS, VMOVHPS", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Lanes(LaneOperation::MoveHighToLow | LaneOperation::MoveLowToHigh))), Origin::EvexFirstHalf),
+    row(Bug::EvexInsertLaneLowest, "VPINSRB to VPINSRQ", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::InsertLane), Origin::EvexFirstHalf),
+    row(Bug::EvexMoveLowKeepsOthers, "VMOVD, VMOVQ", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Lanes(LaneOperation::MoveLowZeroing(_)))), Origin::EvexFirstHalf),
     row(Bug::EvexAndNotComplementsSecond, "VANDNPS, VPANDND", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::Lanes(LaneOperation::AndNot)), Origin::EvexFirstHalf),
 ];
 
@@ -1744,6 +1750,10 @@ pub(crate) fn mutate_evex(form: &EvexIntegerForm, destination: &Zmm, first: &Zmm
         }
         (Some(Bug::EvexBlockDifferencesInOrder), EvexIntegerOperation::DoubleBlockDifferences) => recompute(form.operation, first, second, 0xE4),
         (Some(Bug::EvexInsertLowestPart), EvexIntegerOperation::Insert { .. }) => recompute(form.operation, first, second, 0),
+        (Some(Bug::EvexInsertLaneLowest), EvexIntegerOperation::InsertLane) => recompute(form.operation, first, second, 0),
+        (Some(Bug::EvexMoveLowKeepsOthers), EvexIntegerOperation::Lanes(LaneOperation::MoveLowZeroing(lane))) => {
+            recompute(EvexIntegerOperation::Lanes(LaneOperation::MoveLow(lane)), destination, second, immediate)
+        }
         (Some(Bug::EvexHalvesMovedTheOtherWay), EvexIntegerOperation::Lanes(LaneOperation::MoveHighToLow)) => {
             recompute(EvexIntegerOperation::Lanes(LaneOperation::MoveLowToHigh), first, second, immediate)
         }

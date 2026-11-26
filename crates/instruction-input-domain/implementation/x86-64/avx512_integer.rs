@@ -14,7 +14,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::array;
 
-use iced_x86::{Instruction as Encoded, MemoryOperand, Register};
+use iced_x86::{Instruction as Encoded, MemoryOperand, OpCodeOperandKind, Register};
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_x86_64::avx512_integer::{
     EvexIntegerForm, EvexIntegerOperation, EvexIntegerPlace, EvexVectorLength, Zmm, from_lanes, write_zmm,
@@ -350,7 +350,9 @@ pub fn build_state(form: &EvexIntegerForm, operands: &[(OperandType, OperandValu
     };
     let last_register = match form.operation {
         _ if form.place == EvexIntegerPlace::General => {
-            let general = if form.lane == Lane::Quadword { Register::RAX } else { Register::EAX };
+            let wide = form.lane == Lane::Quadword
+                || code.op_code().op_kinds().iter().any(|kind| matches!(kind, OpCodeOperandKind::r64_or_mem | OpCodeOperandKind::r64_reg));
+            let general = if wide { Register::RAX } else { Register::EAX };
             Register::try_from(general as usize + last_number % 16).unwrap_or_else(|_| panic!("general register {last_number}"))
         }
         EvexIntegerOperation::FromMask => to_opmask_register(last_number),

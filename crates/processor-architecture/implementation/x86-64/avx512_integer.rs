@@ -90,6 +90,9 @@ pub enum EvexIntegerOperation {
     /// VEXTRACTI32X4 to VEXTRACTF64X4: the source's part of this many 128-bit quarters the immediate's low bits
     /// number; the vector length is the source's.
     Extract { quarters: usize },
+    /// VPINSRB to VPINSRQ: the first source with the lane the immediate's low bits number replaced by the second
+    /// source's low lane.
+    InsertLane,
 }
 
 /// Where an EVEX form's last source lies.
@@ -223,11 +226,13 @@ impl EvexIntegerForm {
                     | LaneOperation::MoveLowToHigh
                     | LaneOperation::MoveLow(_)
                     | LaneOperation::InsertSingle { .. }
+                    | LaneOperation::MoveLowZeroing(_)
             ),
             EvexIntegerOperation::ShiftByCount(_)
             | EvexIntegerOperation::DoubleBlockDifferences
             | EvexIntegerOperation::Insert { .. }
-            | EvexIntegerOperation::Extract { .. } => false,
+            | EvexIntegerOperation::Extract { .. }
+            | EvexIntegerOperation::InsertLane => false,
             _ => true,
         }
     }
@@ -263,6 +268,7 @@ impl EvexIntegerForm {
                     | LaneOperation::DuplicateEvenSingles
                     | LaneOperation::DuplicateOddSingles
                     | LaneOperation::DuplicateLowDouble
+                    | LaneOperation::MoveLowZeroing(_)
             ) | EvexIntegerOperation::ShiftByImmediate(_)
                 | EvexIntegerOperation::Rotate { by_lane: false, .. }
                 | EvexIntegerOperation::Broadcast
@@ -472,6 +478,11 @@ impl EvexIntegerForm {
                 let index = usize::from(immediate) & (quarters / part - 1);
                 core::array::from_fn(|quarter| if quarter < part { second[index * part + quarter] } else { 0 })
             }
+            EvexIntegerOperation::InsertLane => {
+                let mut lanes = to_lanes(lane, first, count);
+                lanes[usize::from(immediate) % count] = to_lanes(lane, second, 1)[0];
+                from_lanes(lane, &lanes)
+            }
             EvexIntegerOperation::DoubleBlockDifferences => per_quarter(&|quarter| {
                 let chosen = split(Lane::Doubleword, second[quarter]);
                 let window: Vec<u64> = (0..4)
@@ -530,8 +541,8 @@ pub fn find_evex_integer_form(instruction: Instruction) -> Option<&'static EvexI
 }
 
 use EvexIntegerOperation::{
-    Blend, Broadcast, BroadcastTuple, CompareIntoMask, DoubleBlockDifferences, Extend, Extract, FromMask, Insert, Lanes, Move,
-    Narrow, Rotate, ShiftByCount, ShiftByImmediate, ShiftByLane, TernaryLogic, TestIntoMask, ToMask,
+    Blend, Broadcast, BroadcastTuple, CompareIntoMask, DoubleBlockDifferences, Extend, Extract, FromMask, Insert, InsertLane,
+    Lanes, Move, Narrow, Rotate, ShiftByCount, ShiftByImmediate, ShiftByLane, TernaryLogic, TestIntoMask, ToMask,
 };
 use EvexIntegerPlace::{General, Memory, Register, Store};
 use Lane::{Byte, Doubleword, Quadword, Word};
@@ -1892,4 +1903,18 @@ pub static EVEX_INTEGER_FORMS: &[EvexIntegerForm] = evex_forms! {
     VmovlhpsXmmf32Xmmf32Xmmf32Avx512, Lanes(LaneOperation::MoveLowToHigh), Quadword, Register, L128, [EVEX_Vmovlhps_xmm_xmm_xmm];
     VmovlpdXmmf64Xmmf64Memf64Avx512, Lanes(LaneOperation::MoveLow(Quadword)), Quadword, Memory, L128, [EVEX_Vmovlpd_xmm_xmm_m64];
     VmovlpsXmmf32Xmmf32Memf32Avx512, Lanes(LaneOperation::MoveLow(Quadword)), Quadword, Memory, L128, [EVEX_Vmovlps_xmm_xmm_m64];
+    // VMOVD and VMOVQ into an XMM register, and VPINSRB to VPINSRQ.
+    VmovdXmmu32Gpr32u32Avx512, Lanes(LaneOperation::MoveLowZeroing(Doubleword)), Doubleword, General, L128, [EVEX_Vmovd_xmm_rm32];
+    VmovdXmmu32Memu32Avx512, Lanes(LaneOperation::MoveLowZeroing(Doubleword)), Doubleword, Memory, L128, [EVEX_Vmovd_xmm_rm32];
+    VmovqXmmu64Gpr64u64Avx512, Lanes(LaneOperation::MoveLowZeroing(Quadword)), Quadword, General, L128, [EVEX_Vmovq_xmm_rm64];
+    VmovqXmmu64Memu64Avx512, Lanes(LaneOperation::MoveLowZeroing(Quadword)), Quadword, Memory, L128, [EVEX_Vmovq_xmm_rm64, EVEX_Vmovq_xmm_xmmm64];
+    VmovqXmmu64Xmmu64Avx512, Lanes(LaneOperation::MoveLowZeroing(Quadword)), Quadword, Register, L128, [EVEX_Vmovq_xmm_xmmm64, EVEX_Vmovq_xmmm64_xmm];
+    VpinsrbXmmu8Xmmu8Gpr32u8Imm8Avx512, InsertLane, Byte, General, L128, [EVEX_Vpinsrb_xmm_xmm_r32m8_imm8, EVEX_Vpinsrb_xmm_xmm_r64m8_imm8];
+    VpinsrbXmmu8Xmmu8Memu8Imm8Avx512, InsertLane, Byte, Memory, L128, [EVEX_Vpinsrb_xmm_xmm_r32m8_imm8, EVEX_Vpinsrb_xmm_xmm_r64m8_imm8];
+    VpinsrdXmmu32Xmmu32Gpr32u32Imm8Avx512, InsertLane, Doubleword, General, L128, [EVEX_Vpinsrd_xmm_xmm_rm32_imm8];
+    VpinsrdXmmu32Xmmu32Memu32Imm8Avx512, InsertLane, Doubleword, Memory, L128, [EVEX_Vpinsrd_xmm_xmm_rm32_imm8];
+    VpinsrqXmmu64Xmmu64Gpr64u64Imm8Avx512, InsertLane, Quadword, General, L128, [EVEX_Vpinsrq_xmm_xmm_rm64_imm8];
+    VpinsrqXmmu64Xmmu64Memu64Imm8Avx512, InsertLane, Quadword, Memory, L128, [EVEX_Vpinsrq_xmm_xmm_rm64_imm8];
+    VpinsrwXmmu16Xmmu16Gpr32u16Imm8Avx512, InsertLane, Word, General, L128, [EVEX_Vpinsrw_xmm_xmm_r32m16_imm8, EVEX_Vpinsrw_xmm_xmm_r64m16_imm8];
+    VpinsrwXmmu16Xmmu16Memu16Imm8Avx512, InsertLane, Word, Memory, L128, [EVEX_Vpinsrw_xmm_xmm_r32m16_imm8, EVEX_Vpinsrw_xmm_xmm_r64m16_imm8];
 };
