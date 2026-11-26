@@ -14,6 +14,11 @@ use crate::{
 ///
 /// A chip raises the [alignment fault](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) Linux turns on for every level; QEMU leaves the check out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum MisalignedStackPointer {
     Faults,
     Accesses,
@@ -21,6 +26,11 @@ pub enum MisalignedStackPointer {
 
 /// What a store writes when part of it faults.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum StoreAcrossFault {
     WritesNothing,
     WritesBytesBelowFault,
@@ -28,6 +38,11 @@ pub enum StoreAcrossFault {
 
 /// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate--#:~:text=CONSTRAINED%20UNPREDICTABLE) choice of a post-indexed load whose target is its base.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum LoadIntoBaseWithWriteback {
     WritebackSuppressed,
     WritebackOverwritesLoad,
@@ -37,6 +52,11 @@ pub enum LoadIntoBaseWithWriteback {
 
 /// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STR--immediate---Store-register--immediate--#:~:text=CONSTRAINED%20UNPREDICTABLE) choice of a store with writeback whose register is its base.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum StoreOfBaseWithWriteback {
     StoresOriginalValue,
     Undefined,
@@ -45,6 +65,11 @@ pub enum StoreOfBaseWithWriteback {
 
 /// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDP--Load-pair-of-registers-#:~:text=CONSTRAINED%20UNPREDICTABLE) choice of a load pair that names one register twice.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum LoadPairIntoOneRegister {
     KeepsFirstValue,
     KeepsSecondValue,
@@ -55,6 +80,11 @@ pub enum LoadPairIntoOneRegister {
 /// Whether a store exclusive that fails, as every one does whose address the exclusive monitor does not hold,
 /// [checks the access](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STXR--Store-exclusive-register-#:~:text=IMPLEMENTATION%20DEFINED) as a store would.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum FailedStoreExclusive {
     ChecksAccess,
     LeavesAccessUnchecked,
@@ -62,6 +92,11 @@ pub enum FailedStoreExclusive {
 
 /// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/STXR--Store-exclusive-register-#:~:text=CONSTRAINED%20UNPREDICTABLE) choice of a store exclusive whose status register is one it stores or its base.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum StoreExclusiveOverlap {
     Runs,
     Undefined,
@@ -72,6 +107,11 @@ pub enum StoreExclusiveOverlap {
 /// exclusive access must be aligned to its size before [FEAT_LSE2](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-4-architecture-extension#:~:text=FEAT_LSE2), and a Neoverse V2 lets it lie anywhere inside 16
 /// aligned bytes, as its ordered and atomic accesses may.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum MisalignedExclusive {
     AlignmentFault,
     WithinSixteenBytes,
@@ -80,6 +120,11 @@ pub enum MisalignedExclusive {
 /// What a data abort's fault address keeps of the top byte of a tagged address: Linux documents that bits 63 to
 /// 60 of a fault address are [not preserved](https://docs.kernel.org/arch/arm64/tagged-pointers.html#:~:text=bits%2063%3A60) on every chip.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum FaultAddressTag {
     KeepsTopByte,
     ClearsTopNibble,
@@ -88,12 +133,22 @@ pub enum FaultAddressTag {
 /// What WFI does at EL0: EL1 traps it where [SCTLR_EL1.nTWI](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SCTLR-EL1--System-Control-Register--EL1-#:~:text=nTWI%2C%20bit%20%5B16%5D) is clear, and it waits for an interrupt or
 /// completes where it is set.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum WaitForInterruptBehavior {
     Traps,
     Completes,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum VectorLengthReading {
     Undefined,
     /// Raises the [SME exception](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=SMTC%2C%20bits%20%5B2%3A0%5D), as a chip with SME and no SVE does outside streaming mode.
@@ -103,6 +158,11 @@ pub enum VectorLengthReading {
 
 /// An SVE vector length, as [ZCR_EL1.LEN](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ZCR-EL1--SVE-Control-Register-EL1-#:~:text=LEN%2C%20bits%20%5B3%3A0%5D) permits it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64)
+)]
 pub enum VectorLength {
     Bits128,
     Bits256,

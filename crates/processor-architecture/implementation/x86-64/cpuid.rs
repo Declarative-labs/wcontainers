@@ -2,6 +2,11 @@
 
 /// One answer of CPUID.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub struct CpuidLeaf {
     pub leaf: u32,
     /// The ECX the answer is for, or `None` when the leaf ignores ECX.
@@ -13,6 +18,11 @@ pub struct CpuidLeaf {
 /// The answers a chip gives, for the leaves it has; a leaf the table does not hold answers by the rule of
 /// [`CpuidTable::read`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_x86_64)
+)]
 pub struct CpuidTable {
     pub leaves: &'static [CpuidLeaf],
 }

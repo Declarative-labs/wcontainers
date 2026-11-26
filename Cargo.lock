@@ -979,6 +979,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "databake"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74d4b1db5ca40636726f1f73daff0d626accbd49bcd8136fcade87d7cf1e6bbb"
+dependencies = [
+ "databake-derive",
+ "proc-macro2",
+ "quote",
+]
+
+[[package]]
+name = "databake-derive"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "495503291b258422ea2bb9863d9f4e31eadbc5bcbdbe8b721769fa2c98dc4d41"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 3.0.10",
+ "synstructure",
+]
+
+[[package]]
 name = "derive_builder"
 version = "0.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4733,6 +4756,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-instruction-input-domain-accumulator-machine"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-instruction-input-domain",
+ "wcontainers-instruction-input-domain-conformance",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-accumulator-machine",
+]
+
+[[package]]
 name = "wcontainers-instruction-input-domain-arm64"
 version = "0.1.0"
 dependencies = [
@@ -4902,6 +4935,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-observation-collector"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-observation-collector-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-observation-collector",
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
 name = "wcontainers-opengl"
 version = "0.1.0"
 dependencies = [
@@ -4924,6 +4972,24 @@ name = "wcontainers-precise-instruction-set"
 version = "0.1.0"
 dependencies = [
  "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-precise-instruction-set-collected"
+version = "0.1.0"
+dependencies = [
+ "databake",
+ "prettyplease",
+ "syn 2.0.119",
+ "wcontainers-behavior-source",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-instruction-input-domain-accumulator-machine",
+ "wcontainers-observation-collector",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-conformance",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-accumulator-machine",
 ]
 
 [[package]]
@@ -4995,10 +5061,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-processor-architecture-accumulator-machine"
+version = "0.1.0"
+dependencies = [
+ "databake",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-instruction-input-domain-accumulator-machine",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-conformance",
+]
+
+[[package]]
 name = "wcontainers-processor-architecture-arm64"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
+ "databake",
  "wcontainers-behavior-source",
  "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-distinguishing-state-generator",
@@ -5022,6 +5101,7 @@ name = "wcontainers-processor-architecture-x86-64"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.13.2",
+ "databake",
  "iced-x86",
  "serde",
  "serde_json",

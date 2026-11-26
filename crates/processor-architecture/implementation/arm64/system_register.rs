@@ -245,6 +245,11 @@ pub fn to_system_register_access(field: u32) -> SystemRegisterAccess {
 
 /// What a chip or its executor fixes about the system registers EL0 reaches.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::system_register)
+)]
 pub struct SystemRegisterChoices {
     pub cache_type: u64,
     pub zero_block_size: u64,
