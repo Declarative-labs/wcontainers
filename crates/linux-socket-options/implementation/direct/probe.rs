@@ -24,9 +24,11 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::panic::AssertUnwindSafe;
 
 use linux_raw_sys::net as uapi;
+use memmap2::{MmapMut, MmapOptions, MmapRaw};
 use nix::sys::socket::{setsockopt, sockopt};
 use nix::sys::uio::{RemoteIoVec, process_vm_readv, process_vm_writev};
 use nix::unistd::Pid;
+use rustix::fs::MemfdFlags;
 use socket2::{Domain, Protocol, SockRef, Socket, Type};
 use wcontainers_abi::HostError;
 use wcontainers_linux_socket_options::{
@@ -39,7 +41,7 @@ use wcontainers_linux_socket_options_conformance::{
 };
 
 use crate::DirectLinuxSocketOptions;
-use crate::generated::ROWS;
+use crate::generated::{REQUEST_CHECKS, ROWS};
 
 /// The implementation every call of the probe goes through, by its trait.
 const OPTIONS: DirectLinuxSocketOptions = DirectLinuxSocketOptions;
@@ -53,6 +55,9 @@ pub(crate) enum Kernel {
     Past,
     Through,
 }
+
+/// The check a request's method passes its socket through, which gives it back for a kind the request was read for.
+pub(crate) type KindCheck = fn(BorrowedFd<'_>) -> Result<BorrowedFd<'_>, HostError>;
 
 /// One row of `options.table`.
 pub(crate) struct Row {
@@ -1610,6 +1615,83 @@ struct LentInt {
     after: [u8; GUARD],
 }
 
+/// The most pairs of mappings made before an anonymous page lands just below a page past a file's end.
+const MAPPING_TRIES: usize = 64;
+
+/// A page of this process's memory followed directly by one no access can read: a memory file's page past its end.
+///
+/// A copy the kernel makes that reaches the second page answers `EFAULT`, so a request lent the first page's last int
+/// shows whether the kernel reads past the int. Pairs that land apart stay mapped, so each try fills a gap.
+struct PageEnd {
+    page: MmapMut,
+    _after: MmapRaw,
+    _apart: Vec<(MmapMut, MmapRaw)>,
+}
+
+impl PageEnd {
+    fn new() -> Self {
+        let length = rustix::param::page_size();
+        let file =
+            rustix::fs::memfd_create("past-its-end", MemfdFlags::CLOEXEC).expect("a memory file");
+        let mut apart = Vec::new();
+        for _ in 0..MAPPING_TRIES {
+            let after = MmapOptions::new()
+                .len(length)
+                .map_raw_read_only(&file)
+                .expect("a page past the file's end");
+            let page = MmapOptions::new()
+                .len(length)
+                .map_anon()
+                .expect("an anonymous page");
+            if page.as_ptr().addr() + length == after.as_ptr().addr() {
+                let mut ends = Self {
+                    page,
+                    _after: after,
+                    _apart: apart,
+                };
+                ends.check();
+                return ends;
+            }
+            apart.push((page, after));
+        }
+        panic!(
+            "no anonymous page landed just below a page past a file's end in {MAPPING_TRIES} tries"
+        );
+    }
+
+    /// Requires the kernel to copy the last int and to fault on the byte after it.
+    fn check(&mut self) {
+        let mut copied = [u8::MIN; size_of::<c_int>() + 1];
+        let remote = [RemoteIoVec {
+            base: self.last_int().as_ptr().expose_provenance(),
+            len: copied.len(),
+        }];
+        let read = process_vm_readv(Pid::this(), &mut [IoSliceMut::new(&mut copied)], &remote)
+            .expect("the probe reads its own memory, as root");
+        assert_eq!(
+            read,
+            size_of::<c_int>(),
+            "the kernel copies the last int and stops at the page after it"
+        );
+    }
+
+    /// The page's last int.
+    fn last_int(&mut self) -> &mut [u8] {
+        let end = self.page.len();
+        &mut self.page[end - size_of::<c_int>()..]
+    }
+}
+
+/// Makes one request below the method on the socket, lent the last int of a page no access can read past.
+///
+/// Gives the int's address and what the call did; `EFAULT` means the kernel read past the int.
+fn request_at_page_end(socket: BorrowedFd<'_>, request: u32) -> (usize, Result<(), HostError>) {
+    let mut ends = PageEnd::new();
+    let int = ends.last_int();
+    let address = int.as_ptr().addr();
+    (address, crate::ioctl_within(socket, request, int))
+}
+
 /// Makes one request below the method on the socket, lent an int set from `value` with `after` past it.
 ///
 /// Gives the int's address, so the job's trace of the kernel can be joined to it, and what the call did.
@@ -1629,9 +1711,9 @@ fn lent_request(
 
 /// Every ioctl row's request on every socket kind of the internet families, below the method and through it.
 ///
-/// Prints one `REQUEST` line per call, with the int's address for the job's trace of what the kernel read, and fails
-/// when a call wrote past the int, followed an address, or the method answered other than the kernel below it. Three
-/// forms: an int between canaries, an int and what follows it set to unmapped addresses, and the method itself.
+/// Prints one `REQUEST` line per call, with the int's address for the job's trace of what the kernel read. Fails when a
+/// call wrote past the int or followed an address, the method answered other than the kernel below it, or the method's
+/// check lets by a kind on which the kernel reads past an int at a page's end, or refuses one on which it writes it.
 #[test]
 fn every_request_is_measured_on_every_socket_kind_of_its_families() {
     own_network();
@@ -1687,6 +1769,24 @@ fn every_request_is_measured_on_every_socket_kind_of_its_families() {
                         "{method} {socket_kind} {form}: {result:?} past {past}"
                     ));
                 }
+            }
+            let (address, at_page_end) = request_at_page_end(socket, *request);
+            let (_, check) = REQUEST_CHECKS
+                .iter()
+                .find(|(checked, _)| checked == request)
+                .unwrap_or_else(|| panic!("no check generated for {method}"));
+            let let_by = check(socket).is_ok();
+            println!(
+                "REQUEST {method} {socket_kind} page-end address {address:#x} result {at_page_end:?} let by {let_by}"
+            );
+            match (&at_page_end, let_by) {
+                (Err(HostError::Errno(libc::EFAULT)), true) => faults.push(format!(
+                    "{method} {socket_kind}: the check lets the kind by, and the kernel reads past the int"
+                )),
+                (Ok(()), false) => faults.push(format!(
+                    "{method} {socket_kind}: the check refuses the kind, and the kernel writes the int"
+                )),
+                _ => {}
             }
             let through_method = caught(|| through(socket));
             println!("REQUEST {method} {socket_kind} method result {through_method:?}");

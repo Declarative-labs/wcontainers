@@ -373,18 +373,29 @@ fn signature(row: &Row<'_>) -> (String, String, String) {
     (generics, parameters, result)
 }
 
-/// The method's documentation, one sentence naming the option and the manual page that defines it.
+/// Where the Linux manual pages are read, by section and name.
+const MANUAL_PAGES: &str = "https://man7.org/linux/man-pages";
+
+/// Gives the address of a manual page the table names as `name(section)`.
+fn manual_address(manual: &str) -> String {
+    let (name, section) = manual
+        .strip_suffix(')')
+        .and_then(|page| page.split_once('('))
+        .unwrap_or_else(|| panic!("a manual page is named as name(section): {manual}"));
+    format!("{MANUAL_PAGES}/man{section}/{name}.{section}.html")
+}
+
+/// The method's documentation, one sentence naming the option, linked to the manual page that defines it.
 fn summary(row: &Row<'_>) -> String {
-    let option = bare(row.option);
-    let manual = row.manual;
+    let option = format!("[`{}`]({})", bare(row.option), manual_address(row.manual));
     if row.level == NO_LEVEL {
-        format!("Reads the int of the `{option}` request ({manual}).")
+        format!("Reads the int of the {option} request.")
     } else if row.written_back() {
-        format!("Sets `{option}` to a value the kernel may write into ({manual}).")
+        format!("Sets {option} to a value the kernel may write into.")
     } else if row.sets() {
-        format!("Sets `{option}` ({manual}).")
+        format!("Sets {option}.")
     } else {
-        format!("Reads `{option}` ({manual}).")
+        format!("Reads {option}.")
     }
 }
 
@@ -607,6 +618,23 @@ fn probe_rows(rows: &[Row<'_>]) -> String {
             row.option
         )
         .unwrap();
+    }
+    code.push_str("];\n");
+    code.push_str(&request_checks(rows));
+    code
+}
+
+/// Each request with the check its method passes the socket through, so the request test sees the kinds it lets by.
+fn request_checks(rows: &[Row<'_>]) -> String {
+    let requests: Vec<&Row<'_>> = rows.iter().filter(|row| row.level == NO_LEVEL).collect();
+    let mut code = format!(
+        "\n/// Each request with the check of its method, which the request test compares with what the kernel reads.\n#[cfg(test)]\npub(crate) const REQUEST_CHECKS: [(u32, crate::probe::KindCheck); {}] = [\n",
+        requests.len()
+    );
+    for row in requests {
+        let check = family_guard(row).unwrap_or_else(|| panic!("{}: no kind check", row.method));
+        let check = check.strip_suffix('?').unwrap_or(&check);
+        writeln!(code, "    ({}, |socket| {check}),", row.option).unwrap();
     }
     code.push_str("];\n");
     code

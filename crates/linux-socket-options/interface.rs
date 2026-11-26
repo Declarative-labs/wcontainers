@@ -69,416 +69,416 @@ pub struct MptcpFullInformation<const SUBFLOW_ROOM: usize, const INFORMATION_ROO
     reason = "each method is one system call on the host's socket and fails only the ways that call does"
 )]
 pub trait LinuxSocketOptions {
-    /// Sets `SO_RCVMARK` (socket(7)).
+    /// Sets [`SO_RCVMARK`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_rcvmark(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `SO_RCVPRIORITY` (socket(7)).
+    /// Sets [`SO_RCVPRIORITY`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_rcvpriority(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `SO_ATTACH_REUSEPORT_CBPF` (socket(7)).
+    /// Sets [`SO_ATTACH_REUSEPORT_CBPF`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_attach_reuseport_cbpf(
         &self,
         socket: BorrowedFd<'_>,
         program: &[libc::sock_filter],
     ) -> Result<(), HostError>;
 
-    /// Sets `SO_DETACH_REUSEPORT_BPF` (socket(7)).
+    /// Sets [`SO_DETACH_REUSEPORT_BPF`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_detach_reuseport_bpf(
         &self,
         socket: BorrowedFd<'_>,
         value: c_int,
     ) -> Result<(), HostError>;
 
-    /// Sets `SO_MAX_PACING_RATE` (socket(7)).
+    /// Sets [`SO_MAX_PACING_RATE`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_max_pacing_rate(&self, socket: BorrowedFd<'_>, value: u64) -> Result<(), HostError>;
 
-    /// Sets `SO_RCVLOWAT` (socket(7)).
+    /// Sets [`SO_RCVLOWAT`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_rcvlowat(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Reads `SO_RCVLOWAT` (socket(7)).
+    /// Reads [`SO_RCVLOWAT`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn get_so_rcvlowat(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError>;
 
-    /// Sets `SO_BUF_LOCK` (socket(7)).
+    /// Sets [`SO_BUF_LOCK`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_buf_lock(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError>;
 
-    /// Sets `SO_TXREHASH` (socket(7)).
+    /// Sets [`SO_TXREHASH`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_txrehash(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `SO_CNX_ADVICE` (socket(7)).
+    /// Sets [`SO_CNX_ADVICE`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_cnx_advice(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `SO_WIFI_STATUS` (socket(7)).
+    /// Sets [`SO_WIFI_STATUS`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_wifi_status(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `SO_PEEK_OFF` (socket(7)).
+    /// Sets [`SO_PEEK_OFF`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_peek_off(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Reads `SO_MEMINFO` (socket(7)).
+    /// Reads [`SO_MEMINFO`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn get_so_meminfo<const ROOM: usize>(
         &self,
         socket: BorrowedFd<'_>,
     ) -> Result<Written<ROOM>, HostError>;
 
-    /// Sets `SO_NO_CHECK` (socket(7)).
+    /// Sets [`SO_NO_CHECK`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_no_check(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `SO_TIMESTAMPING` (socket(7)).
+    /// Sets [`SO_TIMESTAMPING`](https://man7.org/linux/man-pages/man7/socket.7.html).
     fn set_so_timestamping(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::so_timestamping,
     ) -> Result<(), HostError>;
 
-    /// Sets `IP_OPTIONS` (ip(7)).
+    /// Sets [`IP_OPTIONS`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn set_ip_options(&self, socket: BorrowedFd<'_>, value: &[u8]) -> Result<(), HostError>;
 
-    /// Sets `IP_UNICAST_IF` (ip(7)).
+    /// Sets [`IP_UNICAST_IF`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn set_ip_unicast_if(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError>;
 
-    /// Sets `IP_LOCAL_PORT_RANGE` (ip(7)).
+    /// Sets [`IP_LOCAL_PORT_RANGE`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn set_ip_local_port_range(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError>;
 
-    /// Sets `IP_ROUTER_ALERT` (ip(7)).
+    /// Sets [`IP_ROUTER_ALERT`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn set_ip_router_alert(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IP_NODEFRAG` (ip(7)).
+    /// Sets [`IP_NODEFRAG`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn set_ip_nodefrag(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IP_RECVOPTS` (ip(7)).
+    /// Sets [`IP_RECVOPTS`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn set_ip_recvopts(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IP_RECVFRAGSIZE` (ip(7)).
+    /// Sets [`IP_RECVFRAGSIZE`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn set_ip_recvfragsize(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IP_MINTTL` (ip(7)).
+    /// Sets [`IP_MINTTL`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn set_ip_minttl(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Reads `IP_PKTOPTIONS` (ip(7)).
+    /// Reads [`IP_PKTOPTIONS`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn get_ip_pktoptions<const ROOM: usize>(
         &self,
         socket: BorrowedFd<'_>,
     ) -> Result<Written<ROOM>, HostError>;
 
-    /// Sets `MCAST_JOIN_GROUP` (ip(7)).
+    /// Sets [`MCAST_JOIN_GROUP`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn set_ip_mcast_join_group(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::group_req,
     ) -> Result<(), HostError>;
 
-    /// Sets `MCAST_LEAVE_GROUP` (ip(7)).
+    /// Sets [`MCAST_LEAVE_GROUP`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn set_ip_mcast_leave_group(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::group_req,
     ) -> Result<(), HostError>;
 
-    /// Sets `MCAST_MSFILTER` (ip(7)).
+    /// Sets [`MCAST_MSFILTER`](https://man7.org/linux/man-pages/man7/ip.7.html).
     fn set_ip_mcast_msfilter(
         &self,
         socket: BorrowedFd<'_>,
         filter: &GroupFilter<'_>,
     ) -> Result<(), HostError>;
 
-    /// Sets `IPV6_HOPOPTS` (ipv6(7)).
+    /// Sets [`IPV6_HOPOPTS`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_hopopts(&self, socket: BorrowedFd<'_>, value: &[u8]) -> Result<(), HostError>;
 
-    /// Sets `IPV6_RTHDRDSTOPTS` (ipv6(7)).
+    /// Sets [`IPV6_RTHDRDSTOPTS`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_rthdrdstopts(&self, socket: BorrowedFd<'_>, value: &[u8]) -> Result<(), HostError>;
 
-    /// Sets `IPV6_RTHDR` (ipv6(7)).
+    /// Sets [`IPV6_RTHDR`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_rthdr(&self, socket: BorrowedFd<'_>, value: &[u8]) -> Result<(), HostError>;
 
-    /// Sets `IPV6_DSTOPTS` (ipv6(7)).
+    /// Sets [`IPV6_DSTOPTS`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_dstopts(&self, socket: BorrowedFd<'_>, value: &[u8]) -> Result<(), HostError>;
 
-    /// Sets `IPV6_FLOWINFO_SEND` (ipv6(7)).
+    /// Sets [`IPV6_FLOWINFO_SEND`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_flowinfo_send(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IPV6_AUTOFLOWLABEL` (ipv6(7)).
+    /// Sets [`IPV6_AUTOFLOWLABEL`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_autoflowlabel(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IPV6_FLOWLABEL_MGR` to a value the kernel may write into (ipv6(7)).
+    /// Sets [`IPV6_FLOWLABEL_MGR`](https://man7.org/linux/man-pages/man7/ipv6.7.html) to a value the kernel may write into.
     fn set_ipv6_flowlabel_mgr(
         &self,
         socket: BorrowedFd<'_>,
         value: &mut uapi::in6_flowlabel_req,
     ) -> Result<(), HostError>;
 
-    /// Sets `IPV6_ADDR_PREFERENCES` (ipv6(7)).
+    /// Sets [`IPV6_ADDR_PREFERENCES`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_addr_preferences(
         &self,
         socket: BorrowedFd<'_>,
         value: u32,
     ) -> Result<(), HostError>;
 
-    /// Sets `IPV6_JOIN_ANYCAST` (ipv6(7)).
+    /// Sets [`IPV6_JOIN_ANYCAST`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_join_anycast(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::ipv6_mreq,
     ) -> Result<(), HostError>;
 
-    /// Sets `IPV6_LEAVE_ANYCAST` (ipv6(7)).
+    /// Sets [`IPV6_LEAVE_ANYCAST`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_leave_anycast(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::ipv6_mreq,
     ) -> Result<(), HostError>;
 
-    /// Sets `IPV6_MTU` (ipv6(7)).
+    /// Sets [`IPV6_MTU`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_mtu(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `IPV6_UNICAST_IF` (ipv6(7)).
+    /// Sets [`IPV6_UNICAST_IF`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_unicast_if(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError>;
 
-    /// Sets `IPV6_ROUTER_ALERT` (ipv6(7)).
+    /// Sets [`IPV6_ROUTER_ALERT`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_router_alert(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `IPV6_ROUTER_ALERT_ISOLATE` (ipv6(7)).
+    /// Sets [`IPV6_ROUTER_ALERT_ISOLATE`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_router_alert_isolate(
         &self,
         socket: BorrowedFd<'_>,
         on: bool,
     ) -> Result<(), HostError>;
 
-    /// Sets `IPV6_CHECKSUM` (ipv6(7)).
+    /// Sets [`IPV6_CHECKSUM`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_checksum(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `IPV6_RECVHOPOPTS` (ipv6(7)).
+    /// Sets [`IPV6_RECVHOPOPTS`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_recvhopopts(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IPV6_RECVDSTOPTS` (ipv6(7)).
+    /// Sets [`IPV6_RECVDSTOPTS`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_recvdstopts(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IPV6_RECVRTHDR` (ipv6(7)).
+    /// Sets [`IPV6_RECVRTHDR`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_recvrthdr(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IPV6_FLOWINFO` (ipv6(7)).
+    /// Sets [`IPV6_FLOWINFO`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_flowinfo(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IPV6_RECVFRAGSIZE` (ipv6(7)).
+    /// Sets [`IPV6_RECVFRAGSIZE`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_recvfragsize(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `IPV6_MINHOPCOUNT` (ipv6(7)).
+    /// Sets [`IPV6_MINHOPCOUNT`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_minhopcount(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Reads `IPV6_2292PKTOPTIONS` (ipv6(7)).
+    /// Reads [`IPV6_2292PKTOPTIONS`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn get_ipv6_2292pktoptions<const ROOM: usize>(
         &self,
         socket: BorrowedFd<'_>,
     ) -> Result<Written<ROOM>, HostError>;
 
-    /// Sets `MCAST_JOIN_GROUP` (ipv6(7)).
+    /// Sets [`MCAST_JOIN_GROUP`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_mcast_join_group(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::group_req,
     ) -> Result<(), HostError>;
 
-    /// Sets `MCAST_LEAVE_GROUP` (ipv6(7)).
+    /// Sets [`MCAST_LEAVE_GROUP`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_mcast_leave_group(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::group_req,
     ) -> Result<(), HostError>;
 
-    /// Sets `MCAST_MSFILTER` (ipv6(7)).
+    /// Sets [`MCAST_MSFILTER`](https://man7.org/linux/man-pages/man7/ipv6.7.html).
     fn set_ipv6_mcast_msfilter(
         &self,
         socket: BorrowedFd<'_>,
         filter: &GroupFilter<'_>,
     ) -> Result<(), HostError>;
 
-    /// Sets `TCP_MD5SIG_EXT` (tcp(7)).
+    /// Sets [`TCP_MD5SIG_EXT`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_md5sig_ext(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::tcp_md5sig,
     ) -> Result<(), HostError>;
 
-    /// Sets `TCP_AO_ADD_KEY` (tcp(7)).
+    /// Sets [`TCP_AO_ADD_KEY`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_ao_add_key(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::tcp_ao_add,
     ) -> Result<(), HostError>;
 
-    /// Reads `TCP_AO_GET_KEYS` (tcp(7)).
+    /// Reads [`TCP_AO_GET_KEYS`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn get_tcp_ao_get_keys(
         &self,
         socket: BorrowedFd<'_>,
         query: &[u8; KEY_QUERY_LENGTH],
     ) -> Result<Written<KEY_QUERY_LENGTH>, HostError>;
 
-    /// Sets `TCP_AO_DEL_KEY` (tcp(7)).
+    /// Sets [`TCP_AO_DEL_KEY`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_ao_del_key(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::tcp_ao_del,
     ) -> Result<(), HostError>;
 
-    /// Sets `TCP_AO_INFO` (tcp(7)).
+    /// Sets [`TCP_AO_INFO`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_ao_info(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::tcp_ao_info_opt,
     ) -> Result<(), HostError>;
 
-    /// Reads `TCP_AO_INFO` (tcp(7)).
+    /// Reads [`TCP_AO_INFO`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn get_tcp_ao_info<const ROOM: usize>(
         &self,
         socket: BorrowedFd<'_>,
     ) -> Result<Written<ROOM>, HostError>;
 
-    /// Sets `TCP_AO_REPAIR` (tcp(7)).
+    /// Sets [`TCP_AO_REPAIR`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_ao_repair(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::tcp_ao_repair,
     ) -> Result<(), HostError>;
 
-    /// Reads `TCP_AO_REPAIR` (tcp(7)).
+    /// Reads [`TCP_AO_REPAIR`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn get_tcp_ao_repair<const ROOM: usize>(
         &self,
         socket: BorrowedFd<'_>,
     ) -> Result<Written<ROOM>, HostError>;
 
-    /// Sets `TCP_WINDOW_CLAMP` (tcp(7)).
+    /// Sets [`TCP_WINDOW_CLAMP`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_window_clamp(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Reads `TCP_WINDOW_CLAMP` (tcp(7)).
+    /// Reads [`TCP_WINDOW_CLAMP`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn get_tcp_window_clamp(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError>;
 
-    /// Sets `TCP_SYNCNT` (tcp(7)).
+    /// Sets [`TCP_SYNCNT`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_syncnt(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `TCP_DEFER_ACCEPT` (tcp(7)).
+    /// Sets [`TCP_DEFER_ACCEPT`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_defer_accept(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `TCP_LINGER2` (tcp(7)).
+    /// Sets [`TCP_LINGER2`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_linger2(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `TCP_RTO_MIN_US` (tcp(7)).
+    /// Sets [`TCP_RTO_MIN_US`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_rto_min_us(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `TCP_RTO_MAX_MS` (tcp(7)).
+    /// Sets [`TCP_RTO_MAX_MS`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_rto_max_ms(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `TCP_DELACK_MAX_US` (tcp(7)).
+    /// Sets [`TCP_DELACK_MAX_US`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_delack_max_us(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `TCP_TX_DELAY` (tcp(7)).
+    /// Sets [`TCP_TX_DELAY`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_tx_delay(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `TCP_FASTOPEN_NO_COOKIE` (tcp(7)).
+    /// Sets [`TCP_FASTOPEN_NO_COOKIE`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_fastopen_no_cookie(&self, socket: BorrowedFd<'_>, on: bool)
     -> Result<(), HostError>;
 
-    /// Sets `TCP_INQ` (tcp(7)).
+    /// Sets [`TCP_INQ`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_inq(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `TCP_QUEUE_SEQ` (tcp(7)).
+    /// Sets [`TCP_QUEUE_SEQ`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_queue_seq(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError>;
 
-    /// Reads `TCP_QUEUE_SEQ` (tcp(7)).
+    /// Reads [`TCP_QUEUE_SEQ`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn get_tcp_queue_seq(&self, socket: BorrowedFd<'_>) -> Result<u32, HostError>;
 
-    /// Reads `TCP_SAVED_SYN` (tcp(7)).
+    /// Reads [`TCP_SAVED_SYN`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn get_tcp_saved_syn<const ROOM: usize>(
         &self,
         socket: BorrowedFd<'_>,
     ) -> Result<Written<ROOM>, HostError>;
 
-    /// Sets `TCP_FASTOPEN` (tcp(7)).
+    /// Sets [`TCP_FASTOPEN`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_fastopen(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError>;
 
-    /// Sets `TCP_FASTOPEN_KEY` (tcp(7)).
+    /// Sets [`TCP_FASTOPEN_KEY`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_fastopen_key(&self, socket: BorrowedFd<'_>, value: &[u8]) -> Result<(), HostError>;
 
-    /// Sets `TCP_SAVE_SYN` (tcp(7)).
+    /// Sets [`TCP_SAVE_SYN`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_save_syn(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Sets `TCP_REPAIR_QUEUE` (tcp(7)).
+    /// Sets [`TCP_REPAIR_QUEUE`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_repair_queue(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Reads `TCP_REPAIR_QUEUE` (tcp(7)).
+    /// Reads [`TCP_REPAIR_QUEUE`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn get_tcp_repair_queue(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError>;
 
-    /// Sets `TCP_TIMESTAMP` (tcp(7)).
+    /// Sets [`TCP_TIMESTAMP`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_timestamp(&self, socket: BorrowedFd<'_>, value: u32) -> Result<(), HostError>;
 
-    /// Reads `TCP_TIMESTAMP` (tcp(7)).
+    /// Reads [`TCP_TIMESTAMP`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn get_tcp_timestamp(&self, socket: BorrowedFd<'_>) -> Result<u32, HostError>;
 
-    /// Sets `TCP_QUICKACK` (tcp(7)).
+    /// Sets [`TCP_QUICKACK`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_quickack(&self, socket: BorrowedFd<'_>, value: c_int) -> Result<(), HostError>;
 
-    /// Reads `TCP_INFO` (tcp(7)).
+    /// Reads [`TCP_INFO`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn get_tcp_info<const ROOM: usize>(
         &self,
         socket: BorrowedFd<'_>,
     ) -> Result<Written<ROOM>, HostError>;
 
-    /// Reads `TCP_CC_INFO` (tcp(7)).
+    /// Reads [`TCP_CC_INFO`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn get_tcp_cc_info<const ROOM: usize>(
         &self,
         socket: BorrowedFd<'_>,
     ) -> Result<Written<ROOM>, HostError>;
 
-    /// Sets `TCP_REPAIR_WINDOW` (tcp(7)).
+    /// Sets [`TCP_REPAIR_WINDOW`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_repair_window(
         &self,
         socket: BorrowedFd<'_>,
         value: &uapi::tcp_repair_window,
     ) -> Result<(), HostError>;
 
-    /// Reads `TCP_REPAIR_WINDOW` (tcp(7)).
+    /// Reads [`TCP_REPAIR_WINDOW`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn get_tcp_repair_window<const ROOM: usize>(
         &self,
         socket: BorrowedFd<'_>,
     ) -> Result<Written<ROOM>, HostError>;
 
-    /// Sets `TCP_REPAIR_OPTIONS` (tcp(7)).
+    /// Sets [`TCP_REPAIR_OPTIONS`](https://man7.org/linux/man-pages/man7/tcp.7.html).
     fn set_tcp_repair_options(
         &self,
         socket: BorrowedFd<'_>,
         value: &[uapi::tcp_repair_opt],
     ) -> Result<(), HostError>;
 
-    /// Reads `MPTCP_INFO` (mptcp(7)).
+    /// Reads [`MPTCP_INFO`](https://man7.org/linux/man-pages/man7/mptcp.7.html).
     fn get_mptcp_info<const ROOM: usize>(
         &self,
         socket: BorrowedFd<'_>,
     ) -> Result<Written<ROOM>, HostError>;
 
-    /// Reads `MPTCP_FULL_INFO` (mptcp(7)).
+    /// Reads [`MPTCP_FULL_INFO`](https://man7.org/linux/man-pages/man7/mptcp.7.html).
     fn get_mptcp_full_info<const SUBFLOW_ROOM: usize, const INFORMATION_ROOM: usize>(
         &self,
         socket: BorrowedFd<'_>,
         subflows: usize,
     ) -> Result<MptcpFullInformation<SUBFLOW_ROOM, INFORMATION_ROOM>, HostError>;
 
-    /// Sets `UDP_NO_CHECK6_RX` (udp(7)).
+    /// Sets [`UDP_NO_CHECK6_RX`](https://man7.org/linux/man-pages/man7/udp.7.html).
     fn set_udp_no_check6_rx(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `UDP_NO_CHECK6_TX` (udp(7)).
+    /// Sets [`UDP_NO_CHECK6_TX`](https://man7.org/linux/man-pages/man7/udp.7.html).
     fn set_udp_no_check6_tx(&self, socket: BorrowedFd<'_>, on: bool) -> Result<(), HostError>;
 
-    /// Sets `UDPLITE_RECV_CSCOV` (udplite(7)).
+    /// Sets [`UDPLITE_RECV_CSCOV`](https://man7.org/linux/man-pages/man7/udplite.7.html).
     fn set_udplite_recv_cscov(&self, socket: BorrowedFd<'_>, value: c_int)
     -> Result<(), HostError>;
 
-    /// Sets `UDPLITE_SEND_CSCOV` (udplite(7)).
+    /// Sets [`UDPLITE_SEND_CSCOV`](https://man7.org/linux/man-pages/man7/udplite.7.html).
     fn set_udplite_send_cscov(&self, socket: BorrowedFd<'_>, value: c_int)
     -> Result<(), HostError>;
 
-    /// Reads the int of the `SIOCOUTQ` request (tcp(7)).
+    /// Reads the int of the [`SIOCOUTQ`](https://man7.org/linux/man-pages/man7/tcp.7.html) request.
     fn get_siocoutq(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError>;
 
-    /// Reads the int of the `SIOCOUTQNSD` request (tcp(7)).
+    /// Reads the int of the [`SIOCOUTQNSD`](https://man7.org/linux/man-pages/man7/tcp.7.html) request.
     fn get_siocoutqnsd(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError>;
 
-    /// Reads the int of the `SIOCATMARK` request (tcp(7)).
+    /// Reads the int of the [`SIOCATMARK`](https://man7.org/linux/man-pages/man7/tcp.7.html) request.
     fn get_siocatmark(&self, socket: BorrowedFd<'_>) -> Result<c_int, HostError>;
 }

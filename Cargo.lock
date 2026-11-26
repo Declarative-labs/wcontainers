@@ -4820,6 +4820,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "linux-raw-sys",
+ "memmap2",
  "nix",
  "rustix",
  "socket2",

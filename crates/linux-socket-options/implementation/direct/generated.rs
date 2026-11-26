@@ -1660,3 +1660,38 @@ pub(crate) const ROWS: [crate::probe::Row; 96] = [
         option: local::SIOCATMARK,
     },
 ];
+
+/// Each request with the check of its method, which the request test compares with what the kernel reads.
+#[cfg(test)]
+pub(crate) const REQUEST_CHECKS: [(u32, crate::probe::KindCheck); 3] = [
+    (local::SIOCOUTQ, |socket| {
+        request_of_kind(
+            socket,
+            &[uapi::AF_INET, uapi::AF_INET6],
+            &[
+                (uapi::SOCK_STREAM, Some(local::IPPROTO_TCP)),
+                (uapi::SOCK_STREAM, Some(local::IPPROTO_MPTCP)),
+                (uapi::SOCK_DGRAM, Some(local::IPPROTO_UDP)),
+                (uapi::SOCK_DGRAM, Some(local::IPPROTO_UDPLITE)),
+                (uapi::SOCK_RAW, None),
+            ],
+        )
+    }),
+    (local::SIOCOUTQNSD, |socket| {
+        request_of_kind(
+            socket,
+            &[uapi::AF_INET, uapi::AF_INET6],
+            &[
+                (uapi::SOCK_STREAM, Some(local::IPPROTO_TCP)),
+                (uapi::SOCK_STREAM, Some(local::IPPROTO_MPTCP)),
+            ],
+        )
+    }),
+    (local::SIOCATMARK, |socket| {
+        request_of_kind(
+            socket,
+            &[uapi::AF_INET, uapi::AF_INET6],
+            &[(uapi::SOCK_STREAM, Some(local::IPPROTO_TCP))],
+        )
+    }),
+];
