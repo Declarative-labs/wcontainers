@@ -333,8 +333,9 @@ pub(crate) fn lookup<G: Guest>(
     s.if_(BlockType::Empty);
     slots.at.push(s);
     s.local_get(offset).i32_wrap_i64();
-    if G::ALIGN_SHIFT < SLOT_SHIFT {
-        s.i32_const((SLOT_SHIFT - G::ALIGN_SHIFT) as i32).i32_shl();
+    if Layout::<G>::ALIGN_SHIFT < SLOT_SHIFT {
+        s.i32_const((SLOT_SHIFT - Layout::<G>::ALIGN_SHIFT) as i32)
+            .i32_shl();
     }
     s.i32_add()
         .i32_load(memarg(slots.memory, 0, natural_align::<SlotEntry>()))

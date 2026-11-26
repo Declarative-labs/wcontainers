@@ -332,11 +332,18 @@ per translation (`ProgressCount::Kept`); without it the output is what it was.
   registers are saved the block holds the count. In translated code the count is a piece's last parameter
   and last result, so a call passes it and gets it back with no memory access, at every look-ahead. A tail
   call off the hot path (to a stop, to a loop's checked copy, to exact code) passes it through the block,
-  and code that carries on after a stop or a system call loads it from there.
+  and code of the full emitter (full and bounded look-ahead) that carries on after a stop or a system call
+  loads it from there. At none it stays in the piece's local across both: none's system call and stop check
+  save it with the registers and never change it, so nothing is loaded back.
 - **The check.** The stop check stays where it is, and tests "count >= limit" instead of the flag. Raising
   the stop writes a limit of 0.
 - **Positions.** A stop is at (count, pc), the count being the events before the instruction at pc. Between
-  two events the pc only grows. A position logged at any look-ahead is reached again from any other: run
+  two events the pc only grows within the guest's own control flow. A transfer the kernel makes does not
+  count: delivering a signal to a handler and `rt_sigreturn` back move the pc down with no event, so a
+  position inside a handler before its first event is not ordered by (count, pc). The stand-in kernels
+  deliver no signals, so the test crate never meets one; replaying programs that take signals needs such a
+  transfer counted as an event, or positions ordered by it too. A position logged at any look-ahead is
+  reached again from any other: run
   with the position's count as the limit (lowered until the first stop is at or before the position), then
   carry on at look-ahead none, which checks at every instruction, until count and pc are the position's
   (`progress::reach` in the test crate).

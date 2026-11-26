@@ -9,13 +9,14 @@ use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::programs::{Library, build, native};
 use wcontainers_x86::X86_64;
 
-const PROGRAMS: [(&str, Library); 7] = [
+const PROGRAMS: [(&str, Library); 8] = [
     ("hello", Library::C),
     ("differences", Library::C),
     ("bench", Library::None),
     ("integers", Library::None),
     ("tables", Library::None),
     ("buffers", Library::None),
+    ("mappings", Library::None),
     ("walks", Library::None),
 ];
 const LEVELS: [&str; 5] = ["-O0", "-O1", "-O2", "-O3", "-Os"];
