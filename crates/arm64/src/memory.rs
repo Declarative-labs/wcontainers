@@ -18,8 +18,9 @@ fn aligned(bytes: u8) -> MemArg {
     }
 }
 
-/// The address in `rn`, with the stack pointer's alignment checked when it is the base, untagged, checked to
-/// be a multiple of `align` (an alignment fault if not) and then checked for the access.
+/// The address in `rn`, with the stack pointer's alignment checked when it is the base, checked to be a multiple
+/// of `align` once untagged (an alignment fault at the address as computed if not), and then checked for the
+/// access.
 fn exact_address<E: Emitter<Arm64> + ?Sized>(
     e: &mut E,
     rn: Reg,
@@ -44,7 +45,7 @@ fn exact_address<E: Emitter<Arm64> + ?Sized>(
             .i64_const(0)
             .i64_ne()
             .if_(BlockType::Empty);
-        e.trap(Trap::Alignment(untagged));
+        e.trap(Trap::Alignment(at));
         e.sink().end();
     }
     e.check(at, bytes, access, 0);
@@ -362,9 +363,12 @@ pub(crate) fn emit<E: Emitter<Arm64> + ?Sized>(e: &mut E, instruction: &Instruct
             let at = e.local(ValType::I64);
             e.get(rn);
             e.sink().local_set(at);
-            let mut s = e.sink();
-            untag(&mut s, at);
-            s.i64_const(!63).i64_and().local_set(at);
+            // The block's address keeps the tag, which the check takes off, so a fault reports it.
+            e.sink()
+                .local_get(at)
+                .i64_const(!63)
+                .i64_and()
+                .local_set(at);
             e.check(at, 64, Access::Write, 0);
             e.sink()
                 .local_get(at)
