@@ -99,4 +99,5 @@ fn fuzz_every_table() {
     assert_eq!(total[16], 0, "a failed QueryInterface left a pointer");
     assert_eq!(total[18], 0, "a refusing entry answered other than E_NOTIMPL or wrote other than null and zeros");
     assert_eq!(total[1], 0, "a table entry is null");
+    assert_eq!(hostile::live(), before, "implementation objects outlived the run: a reference was leaked");
 }

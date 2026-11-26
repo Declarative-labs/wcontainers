@@ -634,6 +634,13 @@ impl Writer<'_, '_> {
                 let _ = writeln!(inner, "            let this_weak = found.weak();");
             }
             let _ = writeln!(inner, "            drop(found);");
+            // The implementation's objects no array out hands over are dropped before any object is served: a `Drop`
+            // that panics or re-enters then leaves no reference served and never given to C.
+            for (name, part, _) in &outs {
+                if let Part::ObjectsOut { .. } = part {
+                    let _ = writeln!(inner, "            let mut {name}_value = {name}_value;\n            {name}_value.truncate(if {name}.is_null() {{ 0 }} else {{ {name}_length / size_of::<usize>() }});");
+                }
+            }
             for (name, part, _) in &outs {
                 match part {
                     Part::LentOut { .. } => {}
