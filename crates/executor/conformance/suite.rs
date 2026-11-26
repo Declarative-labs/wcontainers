@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Wake, Waker};
 use std::thread::{self, Thread};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use wcontainers_abi::{
     Access, LOWEST_ADDRESS, PAGE_MASK, PAGE_SIZE, Permissions, SYSTEM_CALL_ARGUMENT_COUNT,
@@ -84,6 +84,13 @@ const STORED: u64 = u32::MAX as u64;
 const COUNT: u64 = u32::MAX as u64 >> u8::BITS;
 /// How many times the guest an interrupt ends counts down: seconds of work, so that it ends by the interrupt.
 const LONG_COUNT: u64 = u32::MAX as u64;
+/// The count of the guest that loops forever: no executor counts it down to zero.
+const FOREVER: u64 = u64::MAX;
+/// The most instructions a guest that never traps may retire before its executor asks the handler, with no interrupt
+/// from outside: every executor bounds its own run by a slice of its configuration, which must end by then.
+pub const SLICE_BOUND_INSTRUCTIONS: u64 = 1 << 26;
+/// How long the slice test waits for the executor's own slice before it interrupts the guest from outside and fails.
+const SLICE_WAIT: Duration = Duration::from_secs(600);
 /// How long the interrupting thread waits between interrupts: one tick of a kernel built with HZ at 1000.
 ///
 /// <https://github.com/torvalds/linux/blob/master/kernel/Kconfig.hz>
@@ -502,7 +509,64 @@ where
     assert_eq!(stopped, guest.start, "the state execute returned");
 }
 
-/// Checks that an interrupt raised after its execution ended reaches neither it nor the next execution.
+/// Checks that a guest that loops forever, never trapping nor interrupted from outside, is stopped by the executor's own
+/// slice: its handler is asked within [`SLICE_BOUND_INSTRUCTIONS`].
+pub fn a_guest_that_loops_forever_is_interrupted_by_its_slice<Chip>(mut executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip>,
+{
+    let (memory, mut table) = create_memory(&executor);
+    let guest = arm64::build_count_down(CODE, FOREVER);
+    place(&memory, &mut table, &guest);
+    let mut handler =
+        Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>).terminating_at_interrupts();
+    let current: Mutex<Option<Chip::Interrupter>> = Mutex::new(None);
+    let ended = AtomicBool::new(false);
+    let rescued = AtomicBool::new(false);
+    let stopped = thread::scope(|scope| {
+        scope.spawn(|| {
+            let started = Instant::now();
+            while !ended.load(Ordering::Acquire) {
+                if started.elapsed() >= SLICE_WAIT {
+                    rescued.store(true, Ordering::Release);
+                    if let Some(interrupter) =
+                        &*current.lock().unwrap_or_else(PoisonError::into_inner)
+                    {
+                        interrupter.interrupt();
+                    }
+                }
+                thread::sleep(INTERRUPT_PERIOD);
+            }
+        });
+        let _ending = SetOnDrop(&ended);
+        run_to_the_end(
+            &mut executor,
+            guest.start.clone(),
+            &memory,
+            &mut handler,
+            |interrupter| {
+                *current.lock().unwrap_or_else(PoisonError::into_inner) = Some(interrupter);
+            },
+        )
+    });
+    assert!(
+        !rescued.load(Ordering::Acquire),
+        "the guest ran {SLICE_WAIT:?} and its executor never asked the handler"
+    );
+    handler.assert_no_trap();
+    assert_eq!(
+        handler.interrupts, 1,
+        "the interrupts the handler was given"
+    );
+    let retired = arm64::count_down_retired(&guest.start, &stopped);
+    assert!(
+        retired <= SLICE_BOUND_INSTRUCTIONS,
+        "the guest retired about {retired} instructions before its handler was asked, past {SLICE_BOUND_INSTRUCTIONS}"
+    );
+}
+
+/// Checks that an interrupt raised after its execution ended reaches neither it nor the next execution: both are asked
+/// only at the ends of their own slices, the same ones.
 pub fn interrupt_after_the_end_does_nothing<Chip>(mut executor: Chip)
 where
     Chip: Executor<Architecture = arm64::Chip>,
@@ -527,9 +591,8 @@ where
     let mut next = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
     let stopped = execute(&mut executor, guest.start.clone(), &memory, &mut next);
     assert_eq!(
-        (first.interrupts, next.interrupts),
-        (usize::MIN, usize::MIN),
-        "the interrupts the handlers were given"
+        next.interrupts, first.interrupts,
+        "the interrupts the next handler was given, against the first's"
     );
     assert_eq!(
         stopped, guest.finished,
@@ -1443,6 +1506,11 @@ macro_rules! tests {
         #[test]
         fn interrupt_before_the_run_is_answered_at_the_start() {
             $crate::interrupt_before_the_run_is_answered_at_the_start($executor);
+        }
+
+        #[test]
+        fn a_guest_that_loops_forever_is_interrupted_by_its_slice() {
+            $crate::a_guest_that_loops_forever_is_interrupted_by_its_slice($executor);
         }
 
         #[test]

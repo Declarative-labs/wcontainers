@@ -40,6 +40,8 @@ const COUNT_STEP: u32 = 1;
 ///
 /// <https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/CBNZ--Compare-and-branch-on-nonzero->
 const LOOP_BACK: i32 = -1;
+/// The instructions the counting guest runs each time round: the subtraction and the branch.
+const ROUND_INSTRUCTIONS: u64 = 2;
 
 /// SVC, the supervisor call, with its comment in [`IMM16`].
 ///
@@ -183,6 +185,15 @@ pub(crate) fn build_count_down(code: u64, count: u64) -> Guest<Chip> {
     let mut counted = start.clone();
     counted.general_purpose_registers[COUNTER_REGISTER as usize] = u64::MIN;
     end_at_breakpoint(&[step, loop_back], start, counted)
+}
+
+/// Returns about how many instructions a counting guest retired from its start to where it stopped: two each time
+/// round, the subtraction and the branch.
+pub(crate) fn count_down_retired(start: &Processor<()>, stopped: &Processor<()>) -> u64 {
+    let counter = COUNTER_REGISTER as usize;
+    let rounds = start.general_purpose_registers[counter]
+        .wrapping_sub(stopped.general_purpose_registers[counter]);
+    rounds.saturating_mul(ROUND_INSTRUCTIONS)
 }
 
 /// Returns whether the guest stopped at its first instruction for the trap, every register as it started.

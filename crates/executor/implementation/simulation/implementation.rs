@@ -37,12 +37,34 @@ mod tests;
 
 use memory::{SpaceCopy, SpacePages, apply, create_space, refresh};
 
+/// How many guest instructions an execution retires before the simulation asks its handler, unless configured otherwise.
+pub const DEFAULT_SLICE_INSTRUCTIONS: u64 = 1_000_000;
+/// What each instruction run takes from a slice.
+const ONE_INSTRUCTION: u64 = 1;
+
+/// What the simulation is configured with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SimulationConfig {
+    /// How many guest instructions an execution retires before it calls `TrapHandler::handle_interrupt`, as an
+    /// interrupt from outside does, counted from its start and again after each interrupt.
+    pub slice_instructions: u64,
+}
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self {
+            slice_instructions: DEFAULT_SLICE_INSTRUCTIONS,
+        }
+    }
+}
+
 /// A chip that runs each instruction as the set simulates it, choosing what a behavior leaves undecided at random.
 pub struct Simulation<Set, Random> {
     set: Set,
     random: Random,
     /// Every listed instruction's encoding, those that fix most bits first and otherwise in the list's order.
     encodings: Vec<Encoding>,
+    config: SimulationConfig,
 }
 
 /// A listed instruction, the bits that tell its words, and whether the architecture knows a behavior of it.
@@ -71,7 +93,14 @@ impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource> Simulation<S
             set,
             random,
             encodings,
+            config: SimulationConfig::default(),
         }
+    }
+
+    /// The same chip with the configuration given.
+    pub fn configured(mut self, config: SimulationConfig) -> Self {
+        self.config = config;
+        self
     }
 
     /// Returns the processor the expectation holds, each register it leaves undecided read from the random source.
@@ -213,6 +242,7 @@ impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource> BehaviorSour
 impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource> Executor
     for Simulation<Set, Random>
 {
+    /// No translator; the slice is set as the simulation is built ([`Simulation::configured`]).
     type TranslatorConfig = ();
     type GuestMemory = SimulatedMemory;
     type Interrupter = SimulationInterrupter;
@@ -238,7 +268,10 @@ impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource> Executor
         let interrupter = SimulationInterrupter {
             raised: Arc::default(),
         };
+        let slice = self.config.slice_instructions;
         let execution = SimulationExecution {
+            slice,
+            left_in_slice: slice,
             simulation: self,
             processor,
             memory,
@@ -254,6 +287,9 @@ pub struct SimulationExecution<'execution, Set, Random> {
     processor: Processor<()>,
     memory: &'execution SimulatedMemory,
     raised: Arc<AtomicBool>,
+    /// The instructions of a slice, and how many of the current slice the guest has yet to retire.
+    slice: u64,
+    left_in_slice: u64,
 }
 
 /// Why the simulation stopped running instructions.
@@ -311,15 +347,18 @@ impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource> Execution
 impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource>
     SimulationExecution<'_, Set, Random>
 {
-    /// Runs instructions until one raises its exception or an interrupt is raised, which is answered between two instructions.
+    /// Runs instructions until one raises its exception, an interrupt is raised or the slice ends, each answered between
+    /// two instructions.
     ///
     /// Before each instruction the processor is kept in `before`.
     fn run_until_trap(&mut self, copy: &mut SpaceCopy, before: &mut Processor<()>) -> Stop {
         let mut changes: Vec<MemoryDelta<'static, Arm64<User>>> = Vec::new();
         loop {
-            if self.raised.swap(false, Ordering::Acquire) {
+            if self.raised.swap(false, Ordering::Acquire) || self.left_in_slice == u64::MIN {
+                self.left_in_slice = self.slice;
                 return Stop::Interrupted;
             }
+            self.left_in_slice -= ONE_INSTRUCTION;
             before.clone_from(&self.processor);
             refresh(self.memory, copy);
             let executed = self.simulation.execute_single_instruction_in_place(

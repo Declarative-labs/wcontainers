@@ -65,6 +65,12 @@ const TRANSLATION_CONTROL: RegisterARM64CP =
 /// TCR_EL1 as Linux sets it for a program's addresses: T0SZ (bits 5:0) at 16 for 48-bit addresses, which sets where a
 /// pointer authentication code lies, and TBI0 (bit 37), so a data address's top byte is a tag the access ignores.
 const USER_TRANSLATION_CONTROL: u64 = (64 - 48) | 1 << 37;
+/// [CNTKCTL_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CNTKCTL-EL1--Counter-timer-Kernel-Control-Register)
+/// as op0, op1, CRn, CRm and op2.
+const COUNTER_CONTROL: RegisterARM64CP = RegisterARM64CP::new().op0(3).op1(0).crn(14).crm(1).op2(0);
+/// CNTKCTL_EL1 with EL0PCTEN and EL0VCTEN (bits 0 and 1) clear, and every other EL0 timer access too: a read of the
+/// counter or its frequency at EL0 traps to EL1, so the kernel answers it from its own clock and a replay repeats it.
+const USER_COUNTERS_TRAPPED: u64 = 0;
 
 /// [SCR_EL3](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SCR-EL3--Secure-Configuration-Register)
 /// as op0, op1, CRn, CRm and op2.
@@ -1547,6 +1553,9 @@ fn enter_user_level(unicorn: &mut Unicorn<'static, Stopped>) {
     unicorn
         .reg_write_arm64_coproc(&TRANSLATION_CONTROL.val(USER_TRANSLATION_CONTROL))
         .expect("writing TCR_EL1");
+    unicorn
+        .reg_write_arm64_coproc(&COUNTER_CONTROL.val(USER_COUNTERS_TRAPPED))
+        .expect("writing CNTKCTL_EL1");
     unicorn
         .reg_write(RegisterARM64::PSTATE, USER_PSTATE)
         .expect("writing PSTATE");
