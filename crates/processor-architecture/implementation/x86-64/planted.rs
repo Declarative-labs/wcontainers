@@ -1101,6 +1101,10 @@ pub enum Bug {
     VerifyWriteTakesCode,
     /// SYSCALL writes its own address into RCX.
     SystemCallReturnsToItself,
+    /// RCP reads the table's entry after the source's.
+    ReciprocalTableNeighbor,
+    /// RSQRT reads an odd exponent's entries for an even exponent and the other way round.
+    RootParitySwapped,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1605,6 +1609,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::SegmentLimitInPages, "LSL", Family::Forms(&[Instruction::LslGprvGprz, Instruction::LslGprvMemw]), Origin::Mandatory),
     row(Bug::VerifyWriteTakesCode, "VERW", Family::Forms(&[Instruction::VerwGpr16, Instruction::VerwMemw]), Origin::Mandatory),
     row(Bug::SystemCallReturnsToItself, "SYSCALL", Family::Forms(&[Instruction::Syscall]), Origin::Mandatory),
+    row(Bug::ReciprocalTableNeighbor, "RCPPS, RCPSS", Family::Forms(&[Instruction::RcppsXmmpsXmmps, Instruction::RcppsXmmpsMemps, Instruction::RcpssXmmssXmmss, Instruction::RcpssXmmssMemss]), Origin::Mandatory),
+    row(Bug::RootParitySwapped, "RSQRTPS, RSQRTSS", Family::Forms(&[Instruction::RsqrtpsXmmpsXmmps, Instruction::RsqrtpsXmmpsMemps, Instruction::RsqrtssXmmssXmmss, Instruction::RsqrtssXmmssMemss]), Origin::Mandatory),
 ];
 
 const DESCRIPTOR_QUERIES: &[Instruction] = &[

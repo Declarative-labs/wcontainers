@@ -45,6 +45,8 @@ pub mod mmx;
 pub mod mmx_convert;
 pub mod opmask;
 pub mod planted;
+pub mod reciprocal;
+mod reciprocal_recording;
 mod simulation;
 pub mod sse;
 pub mod stack;
@@ -181,6 +183,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(system::SYSTEM_FORMS.iter().map(|form| form.instruction))
         .chain(mmx_convert::MMX_CONVERT_FORMS.iter().map(|form| form.instruction))
         .chain(descriptor::DESCRIPTOR_FORMS.iter().map(|form| form.instruction))
+        .chain(reciprocal::RECIPROCAL_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -476,4 +479,9 @@ pub enum PreciseInstruction {
     },
     /// A form of [`descriptor::DESCRIPTOR_FORMS`].
     Descriptor(Instruction),
+    /// A form of [`reciprocal::RECIPROCAL_FORMS`], with the chip's tables.
+    Reciprocal {
+        instruction: Instruction,
+        table: &'static reciprocal::ReciprocalTable,
+    },
 }

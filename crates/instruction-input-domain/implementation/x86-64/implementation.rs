@@ -41,6 +41,7 @@ use wcontainers_processor_architecture_x86_64::string::find_string_form;
 use wcontainers_processor_architecture_x86_64::system::find_system_form;
 use wcontainers_processor_architecture_x86_64::mmx_convert::find_mmx_convert_form;
 use wcontainers_processor_architecture_x86_64::descriptor::find_descriptor_form;
+use wcontainers_processor_architecture_x86_64::reciprocal::find_reciprocal_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
@@ -59,6 +60,7 @@ pub mod integer;
 pub mod mmx;
 pub mod mmx_convert;
 pub mod opmask;
+pub mod reciprocal;
 pub mod sse;
 pub mod stack;
 pub mod string;
@@ -254,6 +256,8 @@ pub enum OperandType {
     X87Case(x87_arithmetic::X87CaseSet),
     /// The selector LAR to VERW read.
     Selector,
+    /// The four lanes RCPPS to RSQRTSS read.
+    ReciprocalSource,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -512,6 +516,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         if let Some(form) = find_descriptor_form(instruction) {
             return descriptor::list_operand_types(form).into_iter();
         }
+        if let Some(form) = find_reciprocal_form(instruction) {
+            return reciprocal::list_operand_types(form).into_iter();
+        }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
             return sizes.into_iter().chain([OperandType::Encoding(0), UNREAD]).collect::<Vec<_>>().into_iter();
@@ -747,6 +754,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::ConvertSource(set) => mmx_convert::generate_sources(set),
             OperandType::X87Case(set) => x87_arithmetic::generate_cases(set),
             OperandType::Selector => descriptor::generate_selectors(),
+            OperandType::ReciprocalSource => reciprocal::generate_sources(),
         };
         values.into_iter()
     }
@@ -825,6 +833,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_descriptor_form(instruction) {
             return descriptor::build_state(form, &typed);
+        }
+        if let Some(form) = find_reciprocal_form(instruction) {
+            return reciprocal::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -1005,6 +1016,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_system_form(instruction).is_some()
         || find_mmx_convert_form(instruction).is_some()
         || find_descriptor_form(instruction).is_some()
+        || find_reciprocal_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 

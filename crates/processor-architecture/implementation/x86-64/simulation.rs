@@ -71,6 +71,8 @@ mod system_simulation;
 mod mmx_convert_simulation;
 #[path = "descriptor_simulation.rs"]
 mod descriptor_simulation;
+#[path = "reciprocal_simulation.rs"]
+mod reciprocal_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -294,6 +296,9 @@ fn apply(
             system_simulation::execute_system(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Descriptor(instruction) => descriptor_simulation::execute_descriptor(instruction, processor, memory, decoded),
+        PreciseInstruction::Reciprocal { instruction, table } => {
+            reciprocal_simulation::execute_reciprocal(instruction, table, processor, memory, decoded)
+        }
         PreciseInstruction::MmxConvert { instruction, behavior } => {
             mmx_convert_simulation::execute_mmx_convert(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
