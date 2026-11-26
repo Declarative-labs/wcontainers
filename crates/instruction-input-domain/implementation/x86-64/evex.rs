@@ -884,6 +884,9 @@ fn to_vector_register(form: &EvexForm, operand: usize, number: usize) -> Registe
     let first = match form.code.op_code().op_kinds()[operand] {
         Kind::xmm_reg | Kind::xmm_rm | Kind::xmm_vvvv | Kind::xmm_or_mem => Register::XMM0,
         Kind::ymm_reg | Kind::ymm_rm | Kind::ymm_vvvv | Kind::ymm_or_mem => Register::YMM0,
+        // A general-purpose register: one of the sixteen.
+        Kind::r32_reg | Kind::r32_or_mem => return Register::try_from(Register::EAX as usize + number % 16).expect("EAX to R15D"),
+        Kind::r64_reg | Kind::r64_or_mem => return Register::try_from(Register::RAX as usize + number % 16).expect("RAX to R15"),
         _ => Register::ZMM0,
     };
     Register::try_from(first as usize + number).expect("XMM, YMM and ZMM 0 to 31")
@@ -990,6 +993,8 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
     // A register named twice holds the second source's value, the last written.
     if memory_operand.is_none() && form.reads_opmask() {
         processor.opmask_registers[to_opmask_number(registers[2])] = second[0] as u64;
+    } else if memory_operand.is_none() && to_vector_register(form, second_source_operand(form), registers[2]).is_gpr() {
+        processor.general_purpose_registers[registers[2] % 16] = read_element(&second, 0, 8);
     } else if memory_operand.is_none() {
         write_vector(&mut processor, registers[2], second, form.vector_bytes());
     }
@@ -999,7 +1004,7 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
         false => to_vector_register(form, 0, registers[0]),
     };
     let first_register = to_vector_register(form, 1, registers[1]);
-    let second_operand = if form.reads_first_source() { 2 } else { 1 };
+    let second_operand = second_source_operand(form);
     let second_register = match form.reads_opmask() {
         true => to_opmask_register(to_opmask_number(registers[2])),
         false => to_vector_register(form, second_operand, registers[2]),
@@ -1046,6 +1051,11 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
         processor,
         memory_mutations: all,
     }
+}
+
+/// The index of the form's operand that is its second source.
+fn second_source_operand(form: &EvexForm) -> usize {
+    if form.reads_first_source() { 2 } else { 1 }
 }
 
 /// Writes the vector's low `vector_bytes` into the register, which keeps its fill above them.

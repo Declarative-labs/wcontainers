@@ -9,12 +9,12 @@
 
 use iced_x86::{Instruction as Decoded, OpKind, RoundingControl};
 
-use super::{Memory, MemoryOperand, check_access, check_alignment, check_canonical, expect_code, locate};
-use crate::evex::{EvexForm, EvexOperation, find_evex_form, read_element, write_element};
+use super::{Memory, MemoryOperand, check_access, check_alignment, check_canonical, expect_code, locate, read_register, write_register};
+use crate::evex::{EvexForm, EvexOperation, find_evex_form, read_element, write_element, writes_register};
 use crate::evex::fused::multiply_add;
 use crate::evex::compare::compare;
 use crate::evex::convert::to_bfloat16;
-use crate::float::{FLAGS, FloatOperation, LaneOutcome, MASK_SHIFT, ORDER_FLAGS, ROUNDING_SHIFT};
+use crate::float::{DENORMAL, FLAGS, FloatOperation, LaneOutcome, MASK_SHIFT, ORDER_FLAGS, ROUNDING_SHIFT};
 
 /// The order a fused form takes NaNs in: the first multiplicand's, the second's, the addend's.
 const NAN_ORDER: [usize; 3] = [0, 1, 2];
@@ -40,6 +40,9 @@ pub(super) fn execute_evex(
     let destination = decoded.op0_register().number();
     let source_operand = if form.has_immediate() { decoded.op_count() - 2 } else { decoded.op_count() - 1 };
     let second = match decoded.op_kind(source_operand) {
+        OpKind::Register if decoded.op_register(source_operand).is_gpr() => {
+            [u128::from(read_register(processor, decoded.op_register(source_operand))), 0, 0, 0]
+        }
         OpKind::Register if form.reads_opmask() => {
             [u128::from(processor.read_opmask(decoded.op_register(source_operand).number())), 0, 0, 0]
         }
@@ -50,7 +53,8 @@ pub(super) fn execute_evex(
         true => processor.read_zmm(decoded.op1_register().number()),
         false => second,
     };
-    let old = if form.writes_opmask() { [0; 4] } else { processor.read_zmm(destination) };
+    let to_register = writes_register(&form);
+    let old = if form.writes_opmask() || to_register { [0; 4] } else { processor.read_zmm(destination) };
     let mut result = old;
     let computed = match form.operation {
         EvexOperation::Float { operation, precision, .. } => {
@@ -80,8 +84,10 @@ pub(super) fn execute_evex(
         }
         EvexOperation::Convert(conversion) => {
             let from = form.source_element_bytes();
+            let reports_denormal = form.reports_denormal() || is_active(Bug::HalfToSingleReportsDenormal);
             compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, _| {
-                conversion.convert(read_element(&second, index, from), mxcsr)
+                let outcome = conversion.convert(read_element(&second, index, from), mxcsr);
+                LaneOutcome { before: if reports_denormal { outcome.before } else { outcome.before & !DENORMAL }, ..outcome }
             })?
         }
         EvexOperation::ToBfloat16 { pair } => {
@@ -107,6 +113,10 @@ pub(super) fn execute_evex(
             operation.compute(&old, &first, &second, immediate, form.vector_bytes(), bytes)
         }
     };
+    if to_register {
+        write_register(processor, decoded.op0_register(), read_element(&computed, 0, bytes));
+        return Ok(());
+    }
     if form.writes_opmask() {
         // The opmask selects by zeroing: a bit it leaves out is cleared, as is every bit beyond the elements.
         let keep = if is_active(Bug::EvexMaskDestinationMerges) { processor.read_opmask(destination) & !selected } else { 0 };

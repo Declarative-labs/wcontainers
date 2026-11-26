@@ -90,7 +90,13 @@ impl Conversion {
             (Number::Float(from), Number::Signed(bytes) | Number::Unsigned(bytes)) => {
                 let bits = 8 * bytes as u32;
                 let signed = matches!(self.to, Number::Signed(_));
-                let indefinite = if signed { 1 << (bits - 1) } else if bits == 64 { u64::MAX } else { (1 << bits) - 1 };
+                let indefinite = if signed || is_active(Bug::EvexUnsignedIndefiniteSigned) {
+                    1 << (bits - 1)
+                } else if bits == 64 {
+                    u64::MAX
+                } else {
+                    (1 << bits) - 1
+                };
                 let operand = Operand::read(value, from, daz);
                 let Class::Finite { significand, exponent, .. } = operand.class else {
                     return match operand.class {

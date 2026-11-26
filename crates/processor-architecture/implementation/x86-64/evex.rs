@@ -425,6 +425,25 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vcvttph2uw, Any, convert(N::Float(Half), N::Unsigned(2), true)),
         (Mnemonic::Vcvtuw2ph, Any, convert(N::Unsigned(2), N::Float(Half), false)),
         (Mnemonic::Vcvtph2ps, Any, convert(N::Float(Half), N::Float(Single), false)),
+        // A general-purpose register or its memory: an integer as wide as the register (0 here), the low element alone.
+        (Mnemonic::Vcvtsd2si, Any, convert(N::Float(Double), N::Signed(0), false)),
+        (Mnemonic::Vcvttsd2si, Any, convert(N::Float(Double), N::Signed(0), true)),
+        (Mnemonic::Vcvtsd2usi, Any, convert(N::Float(Double), N::Unsigned(0), false)),
+        (Mnemonic::Vcvttsd2usi, Any, convert(N::Float(Double), N::Unsigned(0), true)),
+        (Mnemonic::Vcvtsi2sd, Any, scalar(N::Signed(0), N::Float(Double))),
+        (Mnemonic::Vcvtusi2sd, Any, scalar(N::Unsigned(0), N::Float(Double))),
+        (Mnemonic::Vcvtss2si, Any, convert(N::Float(Single), N::Signed(0), false)),
+        (Mnemonic::Vcvttss2si, Any, convert(N::Float(Single), N::Signed(0), true)),
+        (Mnemonic::Vcvtss2usi, Any, convert(N::Float(Single), N::Unsigned(0), false)),
+        (Mnemonic::Vcvttss2usi, Any, convert(N::Float(Single), N::Unsigned(0), true)),
+        (Mnemonic::Vcvtsi2ss, Any, scalar(N::Signed(0), N::Float(Single))),
+        (Mnemonic::Vcvtusi2ss, Any, scalar(N::Unsigned(0), N::Float(Single))),
+        (Mnemonic::Vcvtsh2si, Any, convert(N::Float(Half), N::Signed(0), false)),
+        (Mnemonic::Vcvttsh2si, Any, convert(N::Float(Half), N::Signed(0), true)),
+        (Mnemonic::Vcvtsh2usi, Any, convert(N::Float(Half), N::Unsigned(0), false)),
+        (Mnemonic::Vcvttsh2usi, Any, convert(N::Float(Half), N::Unsigned(0), true)),
+        (Mnemonic::Vcvtsi2sh, Any, scalar(N::Signed(0), N::Float(Half))),
+        (Mnemonic::Vcvtusi2sh, Any, scalar(N::Unsigned(0), N::Float(Half))),
         (Mnemonic::Vcvtsh2ss, Any, scalar(N::Float(Half), N::Float(Single))),
         (Mnemonic::Vcvtsh2sd, Any, scalar(N::Float(Half), N::Float(Double))),
         (Mnemonic::Vcvtss2sh, Any, scalar(N::Float(Single), N::Float(Half))),
@@ -495,6 +514,11 @@ impl EvexForm {
             EvexOperation::ToBfloat16 { pair: true } => self.vector_bytes(),
             _ => self.elements() * self.source_element_bytes(),
         }
+    }
+
+    /// Whether a denormal source is reported: not by VCVTPH2PS, which converts halves as F16C does.
+    pub fn reports_denormal(&self) -> bool {
+        self.code.mnemonic() != Mnemonic::Vcvtph2ps
     }
 
     /// Whether an operand the form reads is a half.
@@ -587,13 +611,47 @@ pub fn find_evex_form(instruction: Instruction) -> Option<EvexForm> {
             }
     })?;
     let in_memory = (0..decoded.op_count()).any(|operand| decoded.op_kind(operand) == OpKind::Memory);
+    let operation = match *operation {
+        EvexOperation::Convert(conversion) => EvexOperation::Convert(Conversion {
+            from: widen_to_register(conversion.from, &decoded),
+            to: widen_to_register(conversion.to, &decoded),
+            // A conversion to a general-purpose register reads the low element alone.
+            scalar: conversion.scalar || to_register_bytes(&decoded).is_some(),
+            ..conversion
+        }),
+        operation => operation,
+    };
     Some(EvexForm {
         instruction,
         code: decoded.code(),
-        operation: *operation,
+        operation,
         place: if in_memory { OperandPlace::Memory } else { OperandPlace::Register },
         memory_element_bytes: if in_memory { to_broadcast_bytes(&decoded) } else { 0 },
     })
+}
+
+/// The bytes of the general-purpose register (or its memory) the form names.
+fn to_register_bytes(decoded: &iced_x86::Instruction) -> Option<usize> {
+    decoded.code().op_code().op_kinds().iter().find_map(|kind| match kind {
+        OpCodeOperandKind::r32_reg | OpCodeOperandKind::r32_or_mem => Some(4),
+        OpCodeOperandKind::r64_reg | OpCodeOperandKind::r64_or_mem => Some(8),
+        _ => None,
+    })
+}
+
+/// An integer of the row's width 0 as wide as the form's general-purpose register.
+fn widen_to_register(number: Number, decoded: &iced_x86::Instruction) -> Number {
+    let bytes = to_register_bytes(decoded).unwrap_or(0);
+    match number {
+        Number::Signed(0) => Number::Signed(bytes),
+        Number::Unsigned(0) => Number::Unsigned(bytes),
+        number => number,
+    }
+}
+
+/// Whether the form's destination is a general-purpose register.
+pub fn writes_register(form: &EvexForm) -> bool {
+    matches!(form.code.op_code().op_kinds().first(), Some(OpCodeOperandKind::r32_reg | OpCodeOperandKind::r64_reg))
 }
 
 /// The bytes of the element the form's broadcast reads, which may differ from its vector's element.
