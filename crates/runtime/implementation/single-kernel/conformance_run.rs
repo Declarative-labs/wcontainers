@@ -16,7 +16,7 @@ use wcontainers_runtime_single_kernel::{
     ImageSource, LocalSystem, MakeExecutor, MakeRunnerExecutor, Runtime, RuntimeConfig,
 };
 
-/// The variable naming a plain tar of a root file system that holds `sh`, `cat` and `cmp`.
+/// The variable naming a plain tar of a root file system that holds `sh`, `cat`, `cmp` and `sleep`.
 const IMAGE_VARIABLE: &str = "WCONTAINERS_RUNTIME_SUITE_IMAGE";
 
 /// The variable giving how many runners each container has.
@@ -112,7 +112,9 @@ mod on_the_stand_in {
 
     use wcontainers_executor_unicorn::standin::StandIn;
 
-    /// Returns the runtime on the stand-in, whose runners' stand-ins share the engine of the kernel's, since a stand-in runs only on the memories of its own engine.
+    /// Returns the runtime on the stand-in, whose runners' stand-ins share the kernel's engine.
+    ///
+    /// A stand-in runs only on the memories of its own engine.
     fn subject() -> wcontainers_runtime_conformance::Subject<super::LocalRuntime<StandIn>> {
         super::subject(
             Arc::new(|_: &()| StandIn::new()),

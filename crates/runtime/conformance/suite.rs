@@ -16,7 +16,7 @@ pub struct Subject<R: Runtime> {
     pub runtime: R,
     /// How many runners each container of the runtime has.
     pub runners: NonZeroUsize,
-    /// An image whose `PATH` holds a POSIX shell named `sh` and the utilities `cat` and `cmp`.
+    /// An image whose `PATH` holds a POSIX shell named `sh` and the utilities `cat`, `cmp` and `sleep`.
     pub image: Box<dyn Fn() -> R::ImageSource>,
     pub execution: Box<dyn Fn() -> ExecutionConfig<ExecutorOf<R>>>,
     pub state: Box<dyn Fn() -> <R::System as ProcessTracer>::ProcessState>,
@@ -46,6 +46,10 @@ const MISSING_PROGRAM: &str = "no-program-has-this-name";
 
 /// One stage of a pipeline, which copies what it reads to what it writes.
 const PIPELINE_STAGE: &str = " | cat";
+
+/// The utility that waits, and how many seconds the first process waits while a busy one runs.
+const SLEEP: &str = "sleep";
+const SLEEP_SECONDS: u32 = 1;
 
 /// A script that never ends by itself.
 const ENDLESS_SCRIPT: &str = "while :; do :; done";
@@ -155,11 +159,12 @@ pub fn a_run_goes_on_after_an_interrupt<R: Runtime>(subject: Subject<R>) {
 
 /// Checks that a first process that exits ends its container while a process it started in the background never stops.
 ///
-/// With one runner, the busy process holds it until its slice ends, so the container ends only if slices end.
+/// The first process sleeps before it exits, so the busy one runs first: with one runner, the container ends only if
+/// a run ends its slice.
 pub fn a_busy_background_process_does_not_keep_its_container_running<R: Runtime>(
     subject: Subject<R>,
 ) {
-    let script = format!("({ENDLESS_SCRIPT}) & exit {EXIT_CODE}");
+    let script = format!("({ENDLESS_SCRIPT}) & {SLEEP} {SLEEP_SECONDS}; exit {EXIT_CODE}");
     let (mut container, _interrupter) = made(&subject, shell(&script));
     assert_eq!(container.run(), exited());
 }
