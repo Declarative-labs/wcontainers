@@ -29,6 +29,7 @@ mod behavior;
 pub mod branch;
 mod cpuid;
 mod cpuid_recording;
+pub mod descriptor;
 pub mod evex;
 mod exception;
 pub mod extension;
@@ -179,6 +180,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(string::STRING_FORMS.iter().map(|form| form.instruction))
         .chain(system::SYSTEM_FORMS.iter().map(|form| form.instruction))
         .chain(mmx_convert::MMX_CONVERT_FORMS.iter().map(|form| form.instruction))
+        .chain(descriptor::DESCRIPTOR_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -472,4 +474,6 @@ pub enum PreciseInstruction {
         instruction: Instruction,
         behavior: mmx_convert::MmxConvertBehavior,
     },
+    /// A form of [`descriptor::DESCRIPTOR_FORMS`].
+    Descriptor(Instruction),
 }

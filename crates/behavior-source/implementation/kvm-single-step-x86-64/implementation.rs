@@ -1077,7 +1077,7 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 /// selectors are not modeled), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does
 /// not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
 /// on the page says why: UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
-/// XSAVE family, LAR, LSL, VERR and VERW, INT 0x80, and AMX's. SGDT, SIDT and SMSW run: the chip's #GP under
+/// XSAVE family, INT 0x80, and AMX's. LAR, LSL, VERR and VERW run: the guest's descriptor table is Linux's. SGDT, SIDT and SMSW run: the chip's #GP under
 /// UMIP is the program's outcome at this level, as every other exception is, whatever Linux then does with it.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
     let address = processor.instruction_pointer;
@@ -1130,9 +1130,6 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         | Mnemonic::Xsavec64
         | Mnemonic::Xrstor
         | Mnemonic::Xrstor64 => Some("it reaches components the state does not hold, under an XCR0 that is not Linux's"),
-        Mnemonic::Lar | Mnemonic::Lsl | Mnemonic::Verr | Mnemonic::Verw => {
-            Some("it answers from the source's descriptor table, not Linux's")
-        }
         Mnemonic::Int if decoded.immediate8() == LINUX_SYSTEM_CALL_VECTOR => {
             Some("Linux takes it as a 32-bit system call")
         }

@@ -235,7 +235,8 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::StringData(_)
         | OperandType::PoppedFlags
         | OperandType::ConvertSource(_)
-        | OperandType::X87Case(_) => true,
+        | OperandType::X87Case(_)
+        | OperandType::Selector => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }

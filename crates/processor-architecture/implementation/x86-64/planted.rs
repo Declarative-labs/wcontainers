@@ -1091,6 +1091,14 @@ pub enum Bug {
     X87EnvironmentAlignmentUnchecked,
     /// FXSAVE and FXRSTOR report a page fault from the area's first byte.
     X87AreaFaultsAtFirstByte,
+    /// LAR to VERW read a selector's table indicator as if it named the GDT.
+    DescriptorTableIndicatorIgnored,
+    /// LAR to VERW fail a selector whose RPL is below 3.
+    DescriptorRequestedPrivilegeChecked,
+    /// LSL gives the limit in pages.
+    SegmentLimitInPages,
+    /// VERW succeeds for a readable code segment.
+    VerifyWriteTakesCode,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1590,6 +1598,21 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::X87EnvironmentSkipsSelectors, "FNSTENV, FNSAVE", Family::Forms(&[Instruction::FnstenvMemmem14, Instruction::FnsaveMemmem94]), Origin::Mandatory),
     row(Bug::X87EnvironmentAlignmentUnchecked, "FNSTENV to FRSTOR", Family::Forms(X87_ENVIRONMENTS), Origin::Mandatory),
     row(Bug::X87AreaFaultsAtFirstByte, "FNSTENV to FRSTOR, FXSAVE, FXRSTOR", Family::Forms(X87_ENVIRONMENTS), Origin::Mandatory),
+    row(Bug::DescriptorTableIndicatorIgnored, "LAR, LSL, VERR, VERW", Family::Forms(DESCRIPTOR_QUERIES), Origin::Mandatory),
+    row(Bug::DescriptorRequestedPrivilegeChecked, "LAR, LSL, VERR, VERW", Family::Forms(DESCRIPTOR_QUERIES), Origin::Mandatory),
+    row(Bug::SegmentLimitInPages, "LSL", Family::Forms(&[Instruction::LslGprvGprz, Instruction::LslGprvMemw]), Origin::Mandatory),
+    row(Bug::VerifyWriteTakesCode, "VERW", Family::Forms(&[Instruction::VerwGpr16, Instruction::VerwMemw]), Origin::Mandatory),
+];
+
+const DESCRIPTOR_QUERIES: &[Instruction] = &[
+    Instruction::LarGprvGprv,
+    Instruction::LarGprvMemw,
+    Instruction::LslGprvGprz,
+    Instruction::LslGprvMemw,
+    Instruction::VerrGpr16,
+    Instruction::VerrMemw,
+    Instruction::VerwGpr16,
+    Instruction::VerwMemw,
 ];
 
 const X87_EXTENDED_AREAS: &[Instruction] = &[

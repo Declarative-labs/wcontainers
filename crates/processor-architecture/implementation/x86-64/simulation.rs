@@ -69,6 +69,8 @@ mod string_simulation;
 mod system_simulation;
 #[path = "mmx_convert_simulation.rs"]
 mod mmx_convert_simulation;
+#[path = "descriptor_simulation.rs"]
+mod descriptor_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -88,6 +90,7 @@ impl Simulator<X86_64> for PreciseInstruction {
         memory: MemorySnapshot<'_, '_, X86_64>,
         mutation_hook: &mut impl MemorySink<X86_64>,
     ) -> Result<ProcessorExpectation, Infallible> {
+        let start = processor;
         let mut processor = processor.clone();
         let before = processor.instruction_pointer;
         simulate_processor(*self, &mut processor, memory.mutations, mutation_hook);
@@ -97,6 +100,12 @@ impl Simulator<X86_64> for PreciseInstruction {
         if undecided && processor.exception.is_none() {
             let decoded = fetch(memory.mutations, before).expect("a completed instruction was fetched");
             for number in crate::fixed::list_undecided_registers(&decoded) {
+                expectation.general_purpose_registers[number] = crate::RegisterValueExpectation::NonDeterministic;
+            }
+        }
+        if let (PreciseInstruction::Descriptor(instruction), None) = (self, processor.exception) {
+            let decoded = fetch(memory.mutations, before).expect("a completed instruction was fetched");
+            if let Some(number) = descriptor_simulation::find_undecided_register(*instruction, start, memory.mutations, &decoded) {
                 expectation.general_purpose_registers[number] = crate::RegisterValueExpectation::NonDeterministic;
             }
         }
@@ -280,6 +289,7 @@ fn apply(
         PreciseInstruction::System { instruction, behavior } => {
             system_simulation::execute_system(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
+        PreciseInstruction::Descriptor(instruction) => descriptor_simulation::execute_descriptor(instruction, processor, memory, decoded),
         PreciseInstruction::MmxConvert { instruction, behavior } => {
             mmx_convert_simulation::execute_mmx_convert(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }

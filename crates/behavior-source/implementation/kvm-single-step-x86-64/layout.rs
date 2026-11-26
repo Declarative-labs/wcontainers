@@ -42,7 +42,7 @@ pub const KERNEL_DATA: u16 = 0x18;
 pub const USER_DATA: u16 = 0x2B;
 pub const USER_CODE: u16 = 0x33;
 pub const TASK_STATE: u16 = 0x40;
-pub const DESCRIPTOR_ENTRIES: u64 = 10;
+pub const DESCRIPTOR_ENTRIES: u64 = 16;
 
 // Page table entry bits.
 pub const PRESENT: u64 = 1 << 0;
@@ -163,7 +163,8 @@ const fn to_segment(access: u64, flags: u64) -> u64 {
     0xFFFF | (access << 40) | (0xF << 48) | (flags << 52)
 }
 
-/// The global descriptor table's entries: null, Linux's kernel and user segments, then the task state segment.
+/// The global descriptor table's entries, as Linux lays out its 16: null, Linux's kernel and user segments, the task
+/// state segment, empty entries, and the per-CPU segment.
 pub fn list_descriptors() -> [u64; DESCRIPTOR_ENTRIES as usize] {
     const LONG: u64 = 0b1010;
     const BIG: u64 = 0b1100;
@@ -181,6 +182,15 @@ pub fn list_descriptors() -> [u64; DESCRIPTOR_ENTRIES as usize] {
         0,
         tss_low,
         tss >> 32,
+        // The LDT's entry, an unused one and the three TLS entries, empty as Linux leaves them in a program that never
+        // set them.
+        0,
+        0,
+        0,
+        0,
+        0,
+        // The per-CPU segment: read-only expand-down data, DPL 3, whose limit Linux makes the CPU's number.
+        0xF5 << 40 | 0b0100 << 52,
     ]
 }
 

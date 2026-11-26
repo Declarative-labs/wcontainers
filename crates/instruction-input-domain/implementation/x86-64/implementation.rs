@@ -40,6 +40,7 @@ use wcontainers_processor_architecture_x86_64::opmask::find_opmask_form;
 use wcontainers_processor_architecture_x86_64::string::find_string_form;
 use wcontainers_processor_architecture_x86_64::system::find_system_form;
 use wcontainers_processor_architecture_x86_64::mmx_convert::find_mmx_convert_form;
+use wcontainers_processor_architecture_x86_64::descriptor::find_descriptor_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
@@ -49,6 +50,7 @@ use wcontainers_processor_architecture_x86_64::{
 pub mod avx;
 pub mod avx512_integer;
 pub mod branch;
+pub mod descriptor;
 pub mod evex;
 pub mod extension;
 pub mod fixed;
@@ -250,6 +252,8 @@ pub enum OperandType {
     ConvertSource(mmx_convert::ConvertSet),
     /// FCW, FSW and the operands of an x87 arithmetic form together.
     X87Case(x87_arithmetic::X87CaseSet),
+    /// The selector LAR to VERW read.
+    Selector,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -505,6 +509,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         if let Some(form) = find_mmx_convert_form(instruction) {
             return mmx_convert::list_operand_types(form).into_iter();
         }
+        if let Some(form) = find_descriptor_form(instruction) {
+            return descriptor::list_operand_types(form).into_iter();
+        }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
             return sizes.into_iter().chain([OperandType::Encoding(0), UNREAD]).collect::<Vec<_>>().into_iter();
@@ -739,6 +746,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::EnterOperands => system::generate_enter_operands(),
             OperandType::ConvertSource(set) => mmx_convert::generate_sources(set),
             OperandType::X87Case(set) => x87_arithmetic::generate_cases(set),
+            OperandType::Selector => descriptor::generate_selectors(),
         };
         values.into_iter()
     }
@@ -814,6 +822,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_mmx_convert_form(instruction) {
             return mmx_convert::build_state(form, &typed);
+        }
+        if let Some(form) = find_descriptor_form(instruction) {
+            return descriptor::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -993,6 +1004,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_string_form(instruction).is_some()
         || find_system_form(instruction).is_some()
         || find_mmx_convert_form(instruction).is_some()
+        || find_descriptor_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 
