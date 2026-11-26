@@ -120,6 +120,13 @@ pub fn agrees_with_precise_instruction_set<Chip, Set, Generator>(
 {
     let mut report = String::new();
     for instruction in Chip::Architecture::list_instructions() {
+        // An instruction the architecture knows no behavior of has none in any set to agree with.
+        if Chip::Architecture::list_known_behaviors(instruction)
+            .next()
+            .is_none()
+        {
+            continue;
+        }
         let precise = set.to_precise(instruction);
         let mut states = usize::MIN;
         let mut disagreeing = usize::MIN;

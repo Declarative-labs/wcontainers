@@ -1,38 +1,49 @@
-use std::path::Path;
+use std::cmp::Reverse;
+use std::convert::Infallible;
 
-use wcontainers_behavior_source::BehaviorSource;
-use wcontainers_behavior_source_recording::Recording;
-use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
+use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
+use wcontainers_distinguishing_state_generator_arm64::CriticalValueCut;
 use wcontainers_executor_simulation::Simulation;
-use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
-use wcontainers_precise_instruction_set::PreciseInstructionSet;
-use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
-use wcontainers_processor_architecture_arm64::{Arm64, User};
+use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture};
+use wcontainers_processor_architecture_arm64::memory::read_bytes;
+use wcontainers_processor_architecture_arm64::{Arm64, Instruction, User};
 
-/// What an Apple M5 did with each listed instruction, written by the record tool.
-const RECORDINGS: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../../behavior-source/implementation/recording/recordings/apple-m5"
-);
+#[path = "testing.rs"]
+mod testing;
 
-type Generator = CriticalValueProduct<Arm64InputDomain>;
-type AppleM5 = MeasuredInstructionSet<Arm64<User>>;
+use testing::{SEED, SeededRandom, list_first_behaviors};
 
-/// Returns the behaviors the Apple M5 showed, measured from its recording.
-fn measure_apple_m5() -> AppleM5 {
-    let mut recording = match Recording::read(Path::new(RECORDINGS)) {
-        Ok(recording) => recording,
-        Err(error) => panic!("reading {RECORDINGS}: {error}"),
-    };
-    match recording.measure_instructions(&Generator::new(Arm64InputDomain)) {
-        Ok(measurements) => AppleM5::from_measurements(&measurements),
-        Err(_) => panic!("the recording shows no one known behavior for some instruction"),
-    }
+/// Returns the generated states whose word, read as the encoding fixing most bits, has no known behavior.
+fn list_states_without_behavior() -> Vec<ExecutionState<'static, Arm64<User>>> {
+    let generator = CriticalValueCut::default();
+    Arm64::<User>::list_instructions()
+        .filter(|&instruction| has_no_behavior(instruction))
+        .flat_map(|instruction| generator.generate_states(instruction).collect::<Vec<_>>())
+        .filter(|state| {
+            let word = u32::from_le_bytes(read_bytes(
+                &state.memory_mutations,
+                state.processor.program_counter,
+            ));
+            Arm64::<User>::list_instructions()
+                .filter(|instruction| {
+                    let fixed = instruction.to_fixed_bits();
+                    word & fixed.mask == fixed.value
+                })
+                .min_by_key(|instruction| Reverse(instruction.to_fixed_bits().mask.count_ones()))
+                .is_some_and(has_no_behavior)
+        })
+        .collect()
+}
+
+fn has_no_behavior(instruction: Instruction<Infallible>) -> bool {
+    Arm64::<User>::list_known_behaviors(instruction)
+        .next()
+        .is_none()
 }
 
 wcontainers_executor_conformance::tests!(
-    Simulation::new(measure_apple_m5()),
-    measure_apple_m5(),
-    Generator::new(Arm64InputDomain),
-    []
+    Simulation::new(list_first_behaviors(), SeededRandom::new(SEED)),
+    list_first_behaviors(),
+    CriticalValueCut::default(),
+    list_states_without_behavior()
 );

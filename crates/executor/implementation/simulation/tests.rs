@@ -1,6 +1,6 @@
 use std::borrow::Cow;
+use std::cell::RefCell;
 use std::future::Future;
-use std::path::Path;
 use std::pin::pin;
 use std::sync::OnceLock;
 use std::task::{Context, Poll, Waker};
@@ -8,8 +8,6 @@ use std::thread;
 
 use wcontainers_abi::{Access, LOWEST_ADDRESS, PAGE_SIZE, Permissions, SystemCallRequest, WORD};
 use wcontainers_behavior_source::BehaviorSource;
-use wcontainers_behavior_source_recording::Recording;
-use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
 use wcontainers_executor::memory_space::{
     CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, PageTable,
 };
@@ -17,18 +15,18 @@ use wcontainers_executor::{
     ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
     TrapHandler,
 };
-use wcontainers_instruction_input_domain_arm64::Arm64InputDomain;
-use wcontainers_precise_instruction_set::PreciseInstructionSet;
-use wcontainers_precise_instruction_set_measured::MeasuredInstructionSet;
 use wcontainers_processor_architecture::{MemoryDelta, MemorySnapshot};
 use wcontainers_processor_architecture_arm64::encoding::{RN, RT};
 use wcontainers_processor_architecture_arm64::memory::read_bytes;
 use wcontainers_processor_architecture_arm64::{
-    Arm64, Exception, INSTRUCTION_SIZE, Instruction, Processor, User, ZERO_PROCESSOR,
+    Arm64, ConditionFlags, Exception, INSTRUCTION_SIZE, Instruction, Processor,
+    ProcessorExpectation, RegisterValueExpectation, User, ZERO_PROCESSOR,
 };
+use wcontainers_random_source::RandomSource;
 use wcontainers_volatile_bytes::VolatileBytes;
 
 use crate::memory::{SpaceCopy, apply, create_space, refresh};
+use crate::testing::{FirstBehaviors, SEED, SeededRandom, list_first_behaviors};
 use crate::{SimulatedMemory, SimulatedPageTable};
 use crate::{Simulation, SimulationInterrupter};
 
@@ -40,29 +38,15 @@ const STORED_VALUE_REGISTER: u32 = STORE_ADDRESS_REGISTER + 1;
 const STORED: u64 = u64::MAX;
 /// The bytes of a change shorter than a word, which a test places across the end of a page.
 const SHORT: u64 = size_of::<u32>() as u64;
-/// What an Apple M5 did with each listed instruction, written by the record tool.
-const RECORDINGS: &str = concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../../behavior-source/implementation/recording/recordings/apple-m5"
-);
 
-type AppleM5 = MeasuredInstructionSet<Arm64<User>>;
-
-/// Returns a chip that runs each instruction as the Apple M5 recording shows it.
-fn simulate_apple_m5() -> Simulation<AppleM5> {
-    let mut recording = match Recording::read(Path::new(RECORDINGS)) {
-        Ok(recording) => recording,
-        Err(error) => panic!("reading {RECORDINGS}: {error}"),
-    };
-    match recording.measure_instructions(&CriticalValueProduct::new(Arm64InputDomain)) {
-        Ok(measurements) => Simulation::new(AppleM5::from_measurements(&measurements)),
-        Err(_) => panic!("the recording shows no one known behavior for some instruction"),
-    }
+/// Returns a chip that runs the first known behavior of each instruction.
+fn simulate_first_behaviors() -> Simulation<FirstBehaviors, SeededRandom> {
+    Simulation::new(list_first_behaviors(), SeededRandom::new(SEED))
 }
 
 #[test]
 fn word_no_listed_instruction_matches_is_undefined() {
-    let mut chip = simulate_apple_m5();
+    let mut chip = simulate_first_behaviors();
     let (memory, mut table) = create_space();
     let allowed = Permissions::READ | Permissions::EXECUTE;
     assert_eq!(
@@ -79,7 +63,11 @@ fn word_no_listed_instruction_matches_is_undefined() {
     let memory = MemorySnapshot {
         mutations: copy.deltas(),
     };
-    let Ok(()) = chip.execute_single_instruction_in_place(&mut stopped, memory, &mut Vec::new());
+    let executed = chip.execute_single_instruction_in_place(&mut stopped, memory, &mut Vec::new());
+    assert!(
+        matches!(executed, Ok(())),
+        "the simulation gave {executed:?}"
+    );
     assert_eq!(
         stopped,
         Processor {
@@ -87,6 +75,40 @@ fn word_no_listed_instruction_matches_is_undefined() {
             ..start
         }
     );
+}
+
+#[test]
+fn undecided_values_come_from_the_random_source() {
+    let chip = simulate_first_behaviors();
+    let undecided = 5;
+    let mut expectation = ProcessorExpectation::new(ZERO_PROCESSOR);
+    expectation.general_purpose_registers[undecided] = RegisterValueExpectation::NonDeterministic;
+    expectation.condition_flags = RegisterValueExpectation::NonDeterministic;
+    let same_seed = SeededRandom::new(SEED);
+    let mut expected = ZERO_PROCESSOR;
+    expected.general_purpose_registers[undecided] = read_random_word(&same_seed);
+    let [_, _, _, _, high @ ..] = read_random_word(&same_seed).to_le_bytes();
+    expected.condition_flags = ConditionFlags::from_bits_truncate(u32::from_le_bytes(high));
+    let Ok(chosen) = chip.choose_processor(expectation.clone()) else {
+        panic!("the seeded source gives every word");
+    };
+    assert_eq!(chosen, expected, "the values the seed's words give");
+    let other = Simulation::new(chip.set, SeededRandom::new(SEED + 1));
+    assert_ne!(
+        other.choose_processor(expectation).ok(),
+        Some(chosen),
+        "two seeds chose the same values"
+    );
+}
+
+/// Returns the source's next word.
+fn read_random_word(source: &SeededRandom) -> u64 {
+    let mut word = [0; size_of::<u64>()];
+    assert_eq!(
+        source.fill_random_bytes(&RefCell::new(word.as_mut_slice())),
+        Ok(())
+    );
+    u64::from_le_bytes(word)
 }
 
 #[test]
@@ -199,7 +221,7 @@ fn interrupt_raised_while_running_answered_terminate_stops_before_the_next_instr
     let start = place_store_guest(&memory, &mut table);
     let raised = OnceLock::new();
     let mut handler = InterruptingAtFault::new(&mut table, &raised, true);
-    let mut chip = simulate_apple_m5();
+    let mut chip = simulate_first_behaviors();
     let (execution, interrupter) = chip.execute(start.clone(), &memory, &mut handler);
     assert!(
         raised.set(interrupter).is_ok(),
@@ -225,7 +247,7 @@ fn interrupt_raised_while_running_answered_continue_changes_nothing() {
     let start = place_store_guest(&memory, &mut table);
     let raised = OnceLock::new();
     let mut handler = InterruptingAtFault::new(&mut table, &raised, false);
-    let mut chip = simulate_apple_m5();
+    let mut chip = simulate_first_behaviors();
     let (execution, interrupter) = chip.execute(start.clone(), &memory, &mut handler);
     assert!(
         raised.set(interrupter).is_ok(),

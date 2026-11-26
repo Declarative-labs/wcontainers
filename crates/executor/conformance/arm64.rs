@@ -148,7 +148,7 @@ pub(crate) fn build_count_down(code: u64, count: u64) -> Guest<Chip> {
 /// Returns whether the guest stopped at its first instruction for the trap, every register as it started.
 ///
 /// A page that allows nothing may be held unmapped or mapped without the access, which the interface does not tell
-/// apart. A system call has no exception of its own in the architecture crate yet, so it may stop with any one.
+/// apart. A system call stops as the architecture crate takes its supervisor call: at the instruction after it.
 pub(crate) fn is_stop_at_first_instruction(
     guest: &Guest<Chip>,
     trap: FirstTrap,
@@ -161,11 +161,14 @@ pub(crate) fn is_stop_at_first_instruction(
     let expected = |exception| stopped_by(guest.start.clone(), exception) == *stopped;
     match trap {
         FirstTrap::SystemCall => {
-            stopped.exception.is_some()
-                && Processor {
-                    exception: None,
-                    ..stopped.clone()
-                } == guest.start
+            let mut after = guest.start.clone();
+            after.program_counter = after.program_counter.wrapping_add(INSTRUCTION_SIZE);
+            stopped_by(
+                after,
+                Exception::SupervisorCall {
+                    immediate: IMMEDIATE,
+                },
+            ) == *stopped
         }
         FirstTrap::MemoryFault {
             address,

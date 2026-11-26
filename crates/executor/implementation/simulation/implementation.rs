@@ -1,41 +1,108 @@
 //! A stand-in for an ARM64 chip, for tests that need a chip whose behaviors are known.
 
+use std::cell::RefCell;
+use std::cmp::Reverse;
 use std::convert::Infallible;
 use std::ops::Range;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Weak};
 
-use wcontainers_abi::Access;
+use wcontainers_abi::{
+    Access, HostError, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER, SystemCallNumber,
+    SystemCallRequest,
+};
 use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_executor::{
-    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, TrapHandler,
+    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
+    TrapHandler,
 };
 use wcontainers_precise_instruction_set::PreciseInstructionSet;
 use wcontainers_processor_architecture::{
     MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture, Simulator,
 };
+use wcontainers_processor_architecture_arm64::encoding::FixedBits;
 use wcontainers_processor_architecture_arm64::memory::read_bytes;
 use wcontainers_processor_architecture_arm64::{
-    AccessDirection, Arm64, Exception, PreciseInstruction, Processor, User,
+    AccessDirection, Arm64, ConditionFlags, Exception, PreciseInstruction, Processor,
+    ProcessorExpectation, RegisterValueExpectation, User,
 };
+use wcontainers_random_source::RandomSource;
 
 mod memory;
+#[cfg(test)]
+mod testing;
 #[cfg(test)]
 mod tests;
 
 use memory::{SpaceCopy, SpacePages, apply, create_space, refresh};
 
-/// A chip that runs each instruction as the set's precise instruction simulates it.
-pub struct Simulation<Set> {
+/// A chip that runs each instruction as the set simulates it, choosing what a behavior leaves undecided at random.
+pub struct Simulation<Set, Random> {
     set: Set,
+    random: Random,
+    /// Every listed instruction's encoding, those that fix most bits first and otherwise in the list's order.
+    encodings: Vec<Encoding>,
 }
 
-impl<Set: PreciseInstructionSet<Arm64<User>>> Simulation<Set> {
-    /// Returns a chip that runs each instruction as the set simulates it.
+/// A listed instruction, the bits that tell its words, and whether the architecture knows a behavior of it.
+struct Encoding {
+    instruction: <Arm64<User> as ProcessorArchitecture>::Instruction,
+    fixed: FixedBits,
+    has_known_behavior: bool,
+}
+
+impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource> Simulation<Set, Random> {
+    /// Returns a chip that runs each instruction as the set simulates it, choosing undecided values from `random`.
     ///
     /// TODO: temporary placeholder until the executor interface says how an executor is built.
-    pub const fn new(set: Set) -> Self {
-        Self { set }
+    pub fn new(set: Set, random: Random) -> Self {
+        let mut encodings: Vec<Encoding> = Arm64::<User>::list_instructions()
+            .map(|instruction| Encoding {
+                instruction,
+                fixed: instruction.to_fixed_bits(),
+                has_known_behavior: Arm64::<User>::list_known_behaviors(instruction)
+                    .next()
+                    .is_some(),
+            })
+            .collect();
+        encodings.sort_by_key(|encoding| Reverse(encoding.fixed.mask.count_ones()));
+        Self {
+            set,
+            random,
+            encodings,
+        }
+    }
+
+    /// Returns the processor the expectation holds, each register it leaves undecided read from the random source.
+    fn choose_processor(
+        &self,
+        expectation: ProcessorExpectation<()>,
+    ) -> Result<Processor<()>, SimulationError> {
+        let mut processor = expectation.processor;
+        for (value, expected) in processor
+            .general_purpose_registers
+            .iter_mut()
+            .zip(expectation.general_purpose_registers)
+        {
+            if expected == RegisterValueExpectation::NonDeterministic {
+                *value = self.read_random_word()?;
+            }
+        }
+        if expectation.condition_flags == RegisterValueExpectation::NonDeterministic {
+            let [_, _, _, _, high @ ..] = self.read_random_word()?.to_le_bytes();
+            processor.condition_flags =
+                ConditionFlags::from_bits_truncate(u32::from_le_bytes(high));
+        }
+        Ok(processor)
+    }
+
+    /// Returns one word of the random source's bytes.
+    fn read_random_word(&self) -> Result<u64, SimulationError> {
+        let mut word = [u8::MIN; size_of::<u64>()];
+        self.random
+            .fill_random_bytes(&RefCell::new(word.as_mut_slice()))
+            .map_err(SimulationError::RandomSourceFailed)?;
+        Ok(u64::from_le_bytes(word))
     }
 }
 
@@ -77,10 +144,19 @@ impl MemorySink<Arm64<User>> for DroppedChanges {
     fn on_memory_mutated(&mut self, _: MemoryDelta<'_, Arm64<User>>) {}
 }
 
+/// Why the simulation could not execute an instruction.
+#[derive(Debug)]
+pub enum SimulationError {
+    /// The architecture knows no behavior of the instruction at the program counter, so no set holds one.
+    NoKnownBehavior,
+    /// The random source failed to choose a value the instruction left undecided, after its memory changes.
+    RandomSourceFailed(HostError),
+}
+
 /// What the executor does when an instruction raised its exception.
-///
-/// No listed instruction makes a system call, so the simulation never gives the handler one.
 enum Trap {
+    /// A supervisor call, which leaves the program counter at the instruction after it.
+    SystemCall,
     MemoryFault {
         address: u64,
         access: Access,
@@ -89,34 +165,43 @@ enum Trap {
     Final,
 }
 
-impl<Set: PreciseInstructionSet<Arm64<User>>> BehaviorSource for Simulation<Set> {
+impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource> BehaviorSource
+    for Simulation<Set, Random>
+{
     type Architecture = Arm64<User>;
-    type Error = Infallible;
+    type Error = SimulationError;
 
     /// Runs the instruction at the program counter, taking a word none of the listed instructions match as undefined.
+    ///
+    /// Of the instructions whose encoding matches the word, the first that fixes most bits runs.
     fn execute_single_instruction_in_place(
         &mut self,
         processor: &mut Processor<()>,
         memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
-    ) -> Result<(), Infallible> {
+    ) -> Result<(), SimulationError> {
         let word = u32::from_le_bytes(read_bytes(memory.mutations, processor.program_counter));
-        let listed = Arm64::<User>::list_instructions().find(|instruction| {
-            let fixed = instruction.to_fixed_bits();
-            word & fixed.mask == fixed.value
-        });
-        if let Some(instruction) = listed {
-            // ARM64 expects every value of the processor, so the expected processor is the one the chip ends with.
-            let Ok(after) =
+        // A word several listed encodings match, as CFINV and MSR (immediate), is the one that fixes most bits.
+        let listed = self
+            .encodings
+            .iter()
+            .find(|encoding| word & encoding.fixed.mask == encoding.fixed.value);
+        if let Some(encoding) = listed {
+            if !encoding.has_known_behavior {
+                return Err(SimulationError::NoKnownBehavior);
+            }
+            let instruction = encoding.instruction;
+            let Ok(expectation) =
                 self.set
                     .to_precise(instruction)
                     .simulate(processor, memory, mutation_hook);
-            *processor = after;
+            *processor = self.choose_processor(expectation)?;
             return Ok(());
         }
         // A breakpoint changes nothing but the exception, so it gives the fault of the fetch, if any.
         let Ok(fetched) = PreciseInstruction::Brk.simulate(processor, memory, &mut DroppedChanges);
         let fetch_fault = fetched
+            .processor
             .exception
             .filter(|exception| !matches!(exception, Exception::Breakpoint { .. }));
         processor.exception = Some(fetch_fault.unwrap_or(Exception::UndefinedInstruction));
@@ -124,7 +209,9 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> BehaviorSource for Simulation<Set>
     }
 }
 
-impl<Set: PreciseInstructionSet<Arm64<User>>> Executor for Simulation<Set> {
+impl<Set: PreciseInstructionSet<Arm64<User>>, Random: RandomSource> Executor
+    for Simulation<Set, Random>
+{
     type TranslatorConfig = ();
     type GuestMemory = SimulatedMemory;
     type Interrupter = SimulationInterrupter;
@@ -162,13 +249,17 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> Executor for Simulation<Set> {
                 }
                 let before = processor.clone();
                 refresh(memory, &mut copy);
-                let Ok(()) = self.execute_single_instruction_in_place(
+                let executed = self.execute_single_instruction_in_place(
                     &mut processor,
                     MemorySnapshot {
                         mutations: copy.deltas(),
                     },
                     &mut changes,
                 );
+                // The trap handler has no answer for either error, and a chip cannot go on past the instruction.
+                if let Err(error) = executed {
+                    panic!("the simulation cannot execute the instruction: {error:?}");
+                }
                 for delta in changes.drain(..) {
                     apply(memory, delta, &mut copy);
                 }
@@ -176,6 +267,14 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> Executor for Simulation<Set> {
                     continue;
                 };
                 match to_trap(exception) {
+                    Trap::SystemCall => match handler.handle_system_call(to_request(&processor)) {
+                        SystemCallResponse::Return(value) => {
+                            let [result, ..] = &mut processor.general_purpose_registers;
+                            *result = value;
+                            processor.exception = None;
+                        }
+                        SystemCallResponse::Terminate => return processor,
+                    },
                     Trap::MemoryFault { address, access } => {
                         match handler.handle_memory_fault(address, access) {
                             MemoryFaultResponse::Retry => processor = before,
@@ -190,8 +289,19 @@ impl<Set: PreciseInstructionSet<Arm64<User>>> Executor for Simulation<Set> {
     }
 }
 
+/// Returns the system call the processor makes: its number in x8 and its arguments from x0.
+fn to_request(processor: &Processor<()>) -> SystemCallRequest {
+    let mut arguments = [u64::MIN; SYSTEM_CALL_ARGUMENT_COUNT];
+    arguments.copy_from_slice(&processor.general_purpose_registers[..SYSTEM_CALL_ARGUMENT_COUNT]);
+    SystemCallRequest {
+        number: SystemCallNumber(processor.general_purpose_registers[SYSTEM_CALL_NUMBER_REGISTER]),
+        arguments,
+    }
+}
+
 fn to_trap(exception: Exception) -> Trap {
     match exception {
+        Exception::SupervisorCall { .. } => Trap::SystemCall,
         Exception::InstructionAbort { address, .. } => Trap::MemoryFault {
             address,
             access: Access::Execute,
@@ -217,6 +327,8 @@ fn to_trap(exception: Exception) -> Trap {
         | Exception::StackPointerAlignmentFault
         | Exception::Breakpoint { .. }
         | Exception::SmeTrap(_)
+        | Exception::WaitTrapped(_)
+        | Exception::SystemAccessTrapped(_)
         | Exception::Undecoded { .. } => Trap::Final,
     }
 }
