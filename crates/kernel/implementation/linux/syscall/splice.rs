@@ -29,7 +29,7 @@ fn same_pipe(a: &FileRef, b: &FileRef) -> bool {
     alloc::sync::Arc::ptr_eq(&a.borrow().node, &b.borrow().node)
 }
 
-fn sigpipe<S: crate::System, C: Executor>(
+fn sigpipe<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -51,7 +51,7 @@ fn park(kernel: &mut Kernel, tid: Tid, pipe: &FileRef) -> Errno {
 }
 
 /// After bytes went into a pipe: its readers wake and hear of them (`wakeup_pipe_readers`).
-fn readers_woken<S: crate::System, C: Executor>(
+fn readers_woken<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     pipe: &FileRef,
@@ -62,7 +62,7 @@ fn readers_woken<S: crate::System, C: Executor>(
 }
 
 /// After a pipe's slots went: its writers wake and hear of the room (`wakeup_pipe_writers`).
-fn writers_woken<S: crate::System, C: Executor>(
+fn writers_woken<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     pipe: &FileRef,
@@ -95,7 +95,7 @@ fn input_ready(
 }
 
 /// `opipe_prep` and `wait_for_space`: waits until the output has room; with no reader, SIGPIPE.
-fn output_ready<S: crate::System, C: Executor>(
+fn output_ready<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -131,7 +131,7 @@ fn into_output(output: &FileRef, moved: impl FnOnce(&mut crate::pipe::Pipe)) {
     moved(pipe);
 }
 
-pub(super) fn splice<S: crate::System, C: Executor>(
+pub(super) fn splice<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -248,7 +248,7 @@ pub(super) fn splice<S: crate::System, C: Executor>(
 }
 
 /// `splice_pipe_to_pipe`: whole slots move as they are, a last part is copied.
-fn pipe_to_pipe<S: crate::System, C: Executor>(
+fn pipe_to_pipe<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -300,7 +300,7 @@ fn pipe_to_pipe<S: crate::System, C: Executor>(
 /// `splice_file_to_pipe`: room first, then the file's bytes read into slots, one for each of the
 /// file's pages, as many as fit.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-pub(super) fn file_to_pipe<S: crate::System, C: Executor>(
+pub(super) fn file_to_pipe<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -371,7 +371,7 @@ pub(super) fn file_to_pipe<S: crate::System, C: Executor>(
 /// `splice_to_socket`: the pipe's bytes sent on the socket in one message, waiting for bytes
 /// first. A send that waits for room parks with nothing taken from the pipe; its rerun sends the
 /// same bytes on from where the send got to.
-fn pipe_to_socket<S: crate::System, C: Executor>(
+fn pipe_to_socket<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -411,7 +411,7 @@ fn pipe_to_socket<S: crate::System, C: Executor>(
 /// (`unix_stream_splice_read`); TCP's and datagram sockets' reads wait unless the socket is
 /// nonblocking (measured).
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn socket_to_pipe<S: crate::System, C: Executor>(
+fn socket_to_pipe<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -443,7 +443,7 @@ fn socket_to_pipe<S: crate::System, C: Executor>(
 /// `iter_file_splice_write` (and `splice_write_null` for the devices that drop what they get): slot
 /// after slot written to the file at `at`, waiting for bytes only before the first.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn pipe_to_file<S: crate::System, C: Executor>(
+fn pipe_to_file<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -570,7 +570,7 @@ fn pipe_to_file<S: crate::System, C: Executor>(
     }
 }
 
-pub(super) fn tee<S: crate::System, C: Executor>(
+pub(super) fn tee<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -633,7 +633,7 @@ pub(super) fn tee<S: crate::System, C: Executor>(
     }
 }
 
-pub(super) fn vmsplice<S: crate::System, C: Executor>(
+pub(super) fn vmsplice<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -669,7 +669,7 @@ pub(super) fn vmsplice<S: crate::System, C: Executor>(
 /// `vmsplice_to_pipe`: room first, then the caller's pages, a slot for each page's part, as many as
 /// fit. Linux puts the pages themselves in the pipe, so a later change to them shows in what is read;
 /// here they are copied when the call is made (counted).
-fn vmsplice_to_pipe<S: crate::System, C: Executor>(
+fn vmsplice_to_pipe<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -726,7 +726,7 @@ fn vmsplice_to_pipe<S: crate::System, C: Executor>(
 
 /// `vmsplice_to_user`: `__splice_from_pipe` with `pipe_to_user`, slot by slot into the parts; a slot
 /// whose copy faults stays, with what was stored before the fault.
-fn vmsplice_to_user<S: crate::System, C: Executor>(
+fn vmsplice_to_user<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,

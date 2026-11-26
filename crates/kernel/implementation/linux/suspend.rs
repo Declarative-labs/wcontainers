@@ -98,7 +98,7 @@ const SIGNAL_INFORMATION_SIZE: usize = size_of::<crate::siginfo::Bytes>();
 impl Kernel {
     /// Takes the tasks named, as of one moment; a task not on this kernel is absent from the
     /// answer.
-    pub fn suspend_tasks<C: Executor>(
+    pub fn suspend_tasks<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         tasks: &[TaskId],
@@ -112,7 +112,7 @@ impl Kernel {
 
     /// Takes a process's context and every task of it on this kernel, which then has none of
     /// it; none for a process not here.
-    pub fn suspend_process<C: Executor>(
+    pub fn suspend_process<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         process: TaskId,
@@ -195,7 +195,7 @@ impl Kernel {
 
     /// Puts tasks back on this kernel, each going on as it was taken; hands back those whose
     /// process context is not here.
-    pub fn resume_tasks<C: Executor>(
+    pub fn resume_tasks<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         tasks: impl IntoIterator<Item = SuspendedTask>,
@@ -228,7 +228,7 @@ impl Kernel {
 
     /// Takes the tasks of `tasks` that are on this kernel (of process `only`, if given); one the
     /// kernel cannot take now is counted.
-    pub(crate) fn take_tasks<C: Executor>(
+    pub(crate) fn take_tasks<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         only: Option<Pid>,
@@ -264,7 +264,7 @@ impl Kernel {
     /// Takes a process's context and its tasks; none for a process not here or being ended. With
     /// a task the kernel cannot take now, the process stays and the answer holds a copy of its
     /// context and the tasks taken.
-    pub(crate) fn take_process<C: Executor>(
+    pub(crate) fn take_process<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         pid: Pid,
@@ -394,7 +394,11 @@ impl Kernel {
     /// in it: the call's next run answers as interrupted by a signal with no handler, and a waiter
     /// in a line a wake chooses from (a futex's, a semaphore set's, a message queue's) leaves it
     /// now. A thread taken before its call began makes the call again.
-    fn take_task<C: Executor>(&mut self, cpu: &mut GuestMachine<C>, tid: Tid) -> SuspendedTask {
+    fn take_task<C: Executor + 'static>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        tid: Tid,
+    ) -> SuspendedTask {
         let mut registers = RegisterBlock::ZERO;
         cpu.read_registers(self.threads[&tid].cpu, &mut registers);
         let wait = self.threads[&tid].call.wait;
@@ -451,7 +455,7 @@ impl Kernel {
 
     /// Puts one task on the kernel, going on as it was taken; gives it back if its process
     /// context is not here, its number is taken, or the executor cannot make its thread.
-    fn place_task<C: Executor>(
+    fn place_task<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         mut task: SuspendedTask,
@@ -524,7 +528,7 @@ impl Kernel {
     }
 }
 
-impl<C: Executor> Process<'_, C> {
+impl<C: Executor + 'static> Process<'_, C> {
     /// As [`Kernel::suspend_tasks`] for this process's tasks.
     pub fn suspend_tasks(
         &mut self,

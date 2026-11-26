@@ -243,3 +243,41 @@ pub trait MemorySpace: Sized {
   clippy `--no-deps -D warnings` of both kernel crates exit 0; 0 `unsafe` lines; unit tests 30
   passed on both (then one test-only doc comment shortened, rechecked on ARM64). Linter, the
   kernel's own crates: 31,319 (31,322 before this fit). Logs: SCRATCH/kernel-port/exec-1126/.
+
+## 2026-11-26: KS, the harness on the kernel's runner (first guest programs end to end)
+
+- Fast-forward to `origin/executor-restart` 62d137472 (the stand-in on today's interfaces); every
+  file of his main's interface folders byte-identical to his main ac696ea19 (MEASURED, 90 files).
+- Kernel (`61a003c87`, `49f659c08`): `KernelWithExecutor::with_runners` and `runner`, and
+  `KernelRunner::run_on`, need no `Send` executor (the interface's `new` and `run` call them), so a
+  stand-in stays on the host thread that made it; `Process::on_executor` names a hook's executor;
+  the runner settles before it reports the end; a system call's program counter is taken as the
+  executor leaves it (taken after its instruction: the turn added 4 again, MEASURED as hello's
+  second write skipped); a start that waits gets its first process's data once it exists.
+- Harness (`90b0fec53`, `38f65e53a`): driver.rs runs every container through `run_on` with the
+  outside's work between runs; the abi's `Cpu`, `Host`, `Event`, `Next`, `Exit` and the runtime's
+  `drive`, `Execution`, `Turn` are gone from driver, streams, replay, hooks and ltp; the four traits
+  (`Hooks` stays as the tests' own boxed hooks, `BetweenSteps`, `DigestMemories` use, `StreamHost`)
+  are down to `Hooks` and `DigestMemories` (the latter is the stand-in's file); the LTP runner
+  starts each test as this program again (`std::process::Command`), no `fork`/`_exit`. Saving (a
+  copy made by `fork`) panics with the reason; layer 1's old-drive calls panic with the reason.
+- MEASURED (ARM64, job kernel-port/20261126-071122-3199251, 07:11 to 09:32 UTC, load 8 to 35, three
+  targets at a time, 4 test threads, 2,400 s per target): kernel unit tests 30 passed; kernel clippy
+  `--lib -D warnings` 0; harness tests 257 passed, 92 failed, 8 ignored, 8 targets timed out
+  (cpulimit, cputime, deadlines, edges, processes, repeats, threads, turns). Of fails16's 35, 34
+  fail; the 35th (proc_task) is in the timed-out threads target. Rerun with the start fix (job
+  kernel-port-b): the 22 start failures are gone but the 5 on the known list. New failures left:
+  saves 26 (fork), layer 1 1, and 11 others: sharedmap 2, sharedviews 3, privatemap 1 (views of
+  one block disagree in the stand-in), rseqabort, aio poll, procstatus fdinfo, embedder
+  compute-used (no time passes in a turn: the runner keeps no slice), streams
+  input_arrives_while_the_reader_waits (epoll does not hear the input closed). Logs:
+  SCRATCH/kernel-port/ks/.
+- LTP: the whole job's 30 all crashed (before the start fix). With the fix, a run stopped after 12:
+  mprotect01, sendto01, recvfrom01, listen01 pass as the reference; fork01, clone04, vfork01,
+  mmap01, munmap01, pipe01, pipe2_01, socket01 hang (TPASS lines, then LTP's own timeout: the
+  parent never sees its child end; INFERRED: the shared memory LTP's library keeps its results and
+  checkpoints in, as the sharedviews failures show).
+- Not building: tests round_trips, runners and the kernel's conformance (the interface's `Kernel`
+  asks a `Send` executor; the conformance also `PerThreadWatch`, which the stand-in lacks);
+  guest_edges (the old executor surface). Clippy of the harness: one finding in standin.rs
+  (`refused_in_a_copy` unused, the executor track's file).

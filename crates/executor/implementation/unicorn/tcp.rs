@@ -103,7 +103,7 @@ fn unspecified(peer: SocketAddr) -> SocketAddr {
     }
 }
 
-impl<H: Send> TcpConnections for TestHost<H> {
+impl TcpConnections for TestHost {
     type Connection = TcpHandle;
     type BoundSocket = Infallible;
 
@@ -306,7 +306,7 @@ impl<H: Send> TcpConnections for TestHost<H> {
     }
 }
 
-impl<H: Send> TcpListeners for TestHost<H> {
+impl TcpListeners for TestHost {
     type Listener = TcpHandle;
 
     fn listen(
@@ -411,7 +411,7 @@ impl<H: Send> TcpListeners for TestHost<H> {
     }
 }
 
-impl<H: Send> Readiness<TcpHandle> for TestHost<H> {
+impl Readiness<TcpHandle> for TestHost {
     async fn wait_until_ready(
         &self,
         connection: &TcpHandle,
@@ -427,7 +427,7 @@ impl<H: Send> Readiness<TcpHandle> for TestHost<H> {
     }
 }
 
-impl<'a, H: Send> Configurable<TcpHandle, TcpSetting<'a>> for TestHost<H> {
+impl<'a> Configurable<TcpHandle, TcpSetting<'a>> for TestHost {
     fn configure(
         &self,
         _connection: &TcpHandle,
@@ -437,7 +437,7 @@ impl<'a, H: Send> Configurable<TcpHandle, TcpSetting<'a>> for TestHost<H> {
     }
 }
 
-impl<'a, H: Send> Configurable<TcpHandle, TcpListenerSetting<'a>> for TestHost<H> {
+impl<'a> Configurable<TcpHandle, TcpListenerSetting<'a>> for TestHost {
     fn configure(
         &self,
         _listener: &TcpHandle,
@@ -447,7 +447,7 @@ impl<'a, H: Send> Configurable<TcpHandle, TcpListenerSetting<'a>> for TestHost<H
     }
 }
 
-impl<H: Send> NegativeRouteAdvisable<TcpHandle> for TestHost<H> {
+impl NegativeRouteAdvisable<TcpHandle> for TestHost {
     fn give_negative_route_advice(&self, _connection: &TcpHandle) -> Result<(), HostError> {
         Err(HostError::NotSupported)
     }

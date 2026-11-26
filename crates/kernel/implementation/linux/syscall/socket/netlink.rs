@@ -44,7 +44,7 @@ pub(crate) struct Netlink {
 }
 
 /// `netlink_create`: NETLINK_ROUTE only.
-pub(super) fn create<S: crate::System, C: Executor>(
+pub(super) fn create<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     kind: u32,
@@ -141,7 +141,7 @@ pub(super) fn bind(
     Ok(0)
 }
 
-pub(super) fn connect<S: crate::System, C: Executor>(
+pub(super) fn connect<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -199,7 +199,7 @@ pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
 
 /// `netlink_sendmsg` to the kernel: every request in the bytes is answered into the socket's own
 /// queue, as `netlink_rcv_skb` and `rtnetlink_rcv_msg` answer.
-pub(super) fn send<S: crate::System, C: Executor>(
+pub(super) fn send<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -272,7 +272,7 @@ pub(super) fn send<S: crate::System, C: Executor>(
 }
 
 /// `netlink_sendskb`: a message for the socket's reader, who hears of it.
-fn queue<S: crate::System, C: Executor>(
+fn queue<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -298,7 +298,7 @@ fn queue<S: crate::System, C: Executor>(
 
 /// `netlink_sendskb` of a message the kernel made for no request (a message queue's
 /// SIGEV_THREAD cookie): from port 0 with empty credentials.
-pub(crate) fn send_from_kernel<S: crate::System, C: Executor>(
+pub(crate) fn send_from_kernel<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
@@ -401,7 +401,7 @@ impl Message {
 
 /// `rtnetlink_rcv_msg`: GET requests are answered; anything that would change the network needs
 /// CAP_NET_ADMIN, which Docker does not give.
-fn answer<S: crate::System, C: Executor>(
+fn answer<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     request: &[u8],
@@ -739,7 +739,7 @@ fn addresses(family: u32, index: Option<u32>, request: &[u8], portid: u32) -> Ve
 
 /// The neighbour table's dump (`neigh_dump_info`): IPv4's entries, then IPv6's. A request for
 /// proxies (NTF_PROXY) has none; under strict checking an interface named filters.
-fn neighbours<S: crate::System, C: Executor>(
+fn neighbours<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     family: u32,
@@ -1268,7 +1268,7 @@ fn route_message(route: &Route, request: &[u8], portid: u32, flags: u16) -> Vec<
 }
 
 /// `netlink_recvmsg`: one message buffer, the kernel as its sender.
-pub(super) fn receive<S: crate::System, C: Executor>(
+pub(super) fn receive<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,

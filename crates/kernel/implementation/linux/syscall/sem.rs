@@ -98,7 +98,7 @@ pub(crate) struct Semaphores {
 /// Threads to wake with how their operations ended, in Linux's `wake_q` order.
 type Woken = Vec<(Tid, Result<(), Errno>)>;
 
-pub(super) fn semget<S: crate::System, C: Executor>(
+pub(super) fn semget<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -150,7 +150,7 @@ pub(super) fn semget<S: crate::System, C: Executor>(
     Ok(id as u64)
 }
 
-pub(super) fn semop<S: crate::System, C: Executor>(
+pub(super) fn semop<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -159,7 +159,7 @@ pub(super) fn semop<S: crate::System, C: Executor>(
     operate(kernel, cx, tid, id, ops, count, 0)
 }
 
-pub(super) fn semtimedop<S: crate::System, C: Executor>(
+pub(super) fn semtimedop<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -170,7 +170,7 @@ pub(super) fn semtimedop<S: crate::System, C: Executor>(
 
 /// `ksys_semtimedop` and `__do_semtimedop`, in their order. A call that waited runs again from
 /// `waited`.
-fn operate<S: crate::System, C: Executor>(
+fn operate<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -290,7 +290,7 @@ fn operate<S: crate::System, C: Executor>(
 
 /// A waiting operation's call run again: how it was told it ended, or its time is up, a signal
 /// came (neither restarts it), or it waits on.
-fn waited<S: crate::System, C: Executor>(
+fn waited<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -365,7 +365,7 @@ pub(crate) fn renumber(kernel: &mut Kernel, from: Tid, to: Tid) {
 
 /// `exit_sem`: when the last thread using an undo list ends, each set's adjustments are added
 /// (the values held between 0 and `SEMVMX`) and waiting operations looked at again.
-pub(crate) fn exit_sem<S: crate::System, C: Executor>(
+pub(crate) fn exit_sem<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     pid: Pid,
@@ -805,7 +805,7 @@ fn count_waiting(array: &Array, num: usize, zero: bool) -> u64 {
     (simple + complex) as u64
 }
 
-pub(super) fn semctl<S: crate::System, C: Executor>(
+pub(super) fn semctl<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,

@@ -11,7 +11,7 @@ use wcontainers_executor_unicorn::driver::{
     FIRST_PROCESS, InterfaceRunner, program_exit_code, program_on_runners,
 };
 use wcontainers_executor_unicorn::standin::{SPACE_32_BIT, StandIn};
-use wcontainers_kernel::{Kernel, ProcessEnd, Runner, StopReason};
+use wcontainers_kernel::{Kernel, ProcessEnd, StopReason};
 
 /// How long a guest that never traps is let run before the kernel's interface is called.
 const RUNNING_FOR: Duration = Duration::from_millis(300);
@@ -27,7 +27,7 @@ fn out() -> PathBuf {
 fn run_to_end(runner: &mut InterfaceRunner<u64>) -> StopReason {
     let mut executor = StandIn::with_space(SPACE_32_BIT);
     loop {
-        match runner.run(&mut executor) {
+        match runner.run_on(&mut executor) {
             StopReason::Idle { until: Some(_) } | StopReason::Interrupted => {}
             stopped => return stopped,
         }
@@ -77,7 +77,7 @@ fn a_program_that_never_traps_is_interrupted_for_the_kernels_interface() {
     let mut runner = runners.pop().expect("one runner");
     let running = std::thread::spawn(move || {
         let mut executor = StandIn::with_space(SPACE_32_BIT);
-        runner.run(&mut executor)
+        runner.run_on(&mut executor)
     });
     std::thread::sleep(RUNNING_FOR);
     // The kernel cannot move to another thread, so a call that never returns ends the test binary.

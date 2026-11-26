@@ -2185,7 +2185,7 @@ async fn notice_of<F: wcontainers_system::FuseServer>(
 impl crate::Kernel {
     /// Asks the backend for its next notice, telling it how the one before was applied, and
     /// applies each that comes at once.
-    fn wait_for_notice<S: crate::System, C: Executor>(
+    fn wait_for_notice<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut crate::Context<'_, S, C>,
         mut applied: Option<Result<(), wcontainers_kernel::errno::Errno>>,
@@ -2214,7 +2214,7 @@ impl crate::Kernel {
     }
 
     /// The kernel's wait for a notice finished: the notice is applied and the next one asked for.
-    pub(crate) fn notice_came<S: crate::System, C: Executor>(
+    pub(crate) fn notice_came<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut crate::Context<'_, S, C>,
         notice: Result<(), wcontainers_abi::HostError>,
@@ -2227,7 +2227,7 @@ impl crate::Kernel {
 
     /// Applies a notice the backend sent and gives how it went, as Linux's device write answers
     /// the server; none, with the wait ended, if the system sends no notice or can send no more.
-    fn apply_notice<S: crate::System, C: Executor>(
+    fn apply_notice<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut crate::Context<'_, S, C>,
         notice: Result<(), wcontainers_abi::HostError>,
@@ -2260,7 +2260,7 @@ impl crate::Kernel {
 
     /// Hands the backend the messages made since the last time, counting each by its opcode, each
     /// a call the kernel waits on until the backend answers it.
-    pub(crate) fn send_to_backend<S: crate::System, C: Executor>(
+    pub(crate) fn send_to_backend<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut crate::Context<'_, S, C>,
     ) {
@@ -2310,7 +2310,7 @@ impl crate::Kernel {
     /// fault that waits for one asks again when it runs (a restore runs every parked call again).
     /// On the same system they go on, since asking again would send a request twice to a backend
     /// that already has it.
-    pub(crate) fn backend_restored<S: crate::System, C: Executor>(
+    pub(crate) fn backend_restored<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut crate::Context<'_, S, C>,
     ) {
@@ -2343,7 +2343,7 @@ impl crate::Kernel {
     }
 
     /// The backend answered a request, or could not be asked: the call waiting for it runs again.
-    pub(crate) fn backend_answered<S: crate::System, C: Executor>(
+    pub(crate) fn backend_answered<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut crate::Context<'_, S, C>,
         sent: Sent,
@@ -2425,7 +2425,7 @@ impl crate::Kernel {
 
     /// A notice the backend sent unasked (`fuse_notify`), and how it went. Nothing is cached, so
     /// most change only what the kernel holds of an inode, or the pages of a mapped file.
-    pub(crate) fn backend_notice<S: crate::System, C: Executor>(
+    pub(crate) fn backend_notice<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut crate::Context<'_, S, C>,
         notice: &[u8],

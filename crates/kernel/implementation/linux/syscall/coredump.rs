@@ -117,7 +117,7 @@ pub(crate) fn wanted(kernel: &Kernel, pid: Pid) -> bool {
 
 /// Starts the dump of thread `tid`'s process for `signal` (`coredump_wait` stops the other
 /// threads where they are, then the dump is written), and runs it as far as it goes now.
-pub(crate) fn start<S: crate::System, C: Executor>(
+pub(crate) fn start<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -152,7 +152,7 @@ pub(crate) fn start<S: crate::System, C: Executor>(
 
 /// Runs thread `tid`'s dump, the first time or again once the backend has answered; when it is
 /// done, the process ends with the signal, and the core bit if a core file was made.
-pub(crate) fn run<S: crate::System, C: Executor>(
+pub(crate) fn run<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -183,7 +183,7 @@ pub(crate) fn run<S: crate::System, C: Executor>(
 }
 
 /// Does the dump's next stage: whether another follows.
-fn step<S: crate::System, C: Executor>(
+fn step<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -268,7 +268,7 @@ fn step<S: crate::System, C: Executor>(
 
 impl Dump {
     /// The file's next bytes from `written` on.
-    fn bytes_at<S: crate::System, C: Executor>(
+    fn bytes_at<S: crate::System, C: Executor + 'static>(
         &self,
         kernel: &mut Kernel,
         cx: &mut Context<'_, S, C>,
@@ -301,7 +301,7 @@ impl Dump {
 
 /// Reads the dying process's memory as the dump does (`get_dump_page` forces reading whatever the
 /// page allows), once pages of mapped backend files are read in.
-fn read_memory<S: crate::System, C: Executor>(
+fn read_memory<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -319,7 +319,7 @@ fn read_memory<S: crate::System, C: Executor>(
 }
 
 /// `do_unlinkat` of the core's name, as Linux removes an old core before making the new one.
-fn unlink<S: crate::System, C: Executor>(
+fn unlink<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -363,7 +363,7 @@ impl Note {
 
 /// The notes in `elf_core_dump`'s order: the dumping thread's status, the process's notes, that
 /// thread's other register sets, then each other thread's status and register sets.
-fn notes<S: crate::System, C: Executor>(
+fn notes<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -484,7 +484,7 @@ fn status(kernel: &Kernel, pid: Pid, tid: Tid, signal: u32, registers: &Register
 }
 
 /// The process's `elf_prpsinfo` (`fill_psinfo`), of its first thread.
-fn process_info<S: crate::System, C: Executor>(
+fn process_info<S: crate::System, C: Executor + 'static>(
     kernel: &Kernel,
     cx: &mut Context<'_, S, C>,
     pid: Pid,
@@ -587,7 +587,7 @@ fn mapped_files(kernel: &Kernel, pid: Pid) -> Vec<u8> {
 /// How much of a mapping the dump writes (`vma_dump_size`) under `filter`. Which pages a program
 /// touched is not known here: anonymous memory counts as written to, as Linux's `anon_vma` shows
 /// once a page was touched, and a private file mapping as written to once a page was copied.
-fn dump_size<S: crate::System, C: Executor>(
+fn dump_size<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -676,7 +676,7 @@ impl Writer {
 }
 
 /// The file's writes in order (`elf_core_dump`) and its size.
-fn layout<S: crate::System, C: Executor>(
+fn layout<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,

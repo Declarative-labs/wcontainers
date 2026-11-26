@@ -38,7 +38,7 @@ fn destination(route: &RouteSelectors<'_>) -> Result<SocketAddr, HostError> {
     }
 }
 
-impl<H: Send> UdpSockets for TestHost<H> {
+impl UdpSockets for TestHost {
     type Socket = UdpHandle;
 
     fn open(
@@ -149,7 +149,7 @@ impl<H: Send> UdpSockets for TestHost<H> {
     }
 }
 
-impl<H: Send> Readiness<UdpHandle> for TestHost<H> {
+impl Readiness<UdpHandle> for TestHost {
     async fn wait_until_ready(
         &self,
         socket: &UdpHandle,
@@ -162,7 +162,7 @@ impl<H: Send> Readiness<UdpHandle> for TestHost<H> {
     }
 }
 
-impl<'a, H: Send> Configurable<UdpHandle, UdpSocketSetting<'a>> for TestHost<H> {
+impl<'a> Configurable<UdpHandle, UdpSocketSetting<'a>> for TestHost {
     fn configure(
         &self,
         _socket: &UdpHandle,
@@ -172,7 +172,7 @@ impl<'a, H: Send> Configurable<UdpHandle, UdpSocketSetting<'a>> for TestHost<H> 
     }
 }
 
-impl<H: Send> NegativeRouteAdvisable<UdpHandle> for TestHost<H> {
+impl NegativeRouteAdvisable<UdpHandle> for TestHost {
     fn give_negative_route_advice(&self, _socket: &UdpHandle) -> Result<(), HostError> {
         Err(HostError::NotSupported)
     }

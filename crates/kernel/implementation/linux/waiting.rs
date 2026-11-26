@@ -100,7 +100,7 @@ impl Cell {
 
 impl crate::Kernel {
     /// A call the kernel waited on has its answer.
-    pub(crate) fn waiting_answered<S: crate::System, C: Executor>(
+    pub(crate) fn waiting_answered<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut crate::Context<'_, S, C>,
         about: WaitFor,

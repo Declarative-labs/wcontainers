@@ -139,7 +139,7 @@ pub(crate) struct Program {
 }
 
 /// Finds a file to run by path from the process's point of view, with Linux's checks.
-pub(crate) fn open_program<C: Executor>(
+pub(crate) fn open_program<C: Executor + 'static>(
     kernel: &Kernel,
     cpu: &mut GuestMachine<C>,
     tid: Tid,
@@ -151,7 +151,7 @@ pub(crate) fn open_program<C: Executor>(
 
 /// Finds a file to run by a name the kernel made (`open_exec`): one that may be empty
 /// (`getname_kernel`), which names the working directory and so no program.
-fn open_named_program<C: Executor>(
+fn open_named_program<C: Executor + 'static>(
     kernel: &Kernel,
     cpu: &mut GuestMachine<C>,
     tid: Tid,
@@ -165,7 +165,7 @@ fn open_named_program<C: Executor>(
 }
 
 /// The same from `start`; not following a link as the last part makes one ELOOP.
-pub(crate) fn open_program_at<C: Executor>(
+pub(crate) fn open_program_at<C: Executor + 'static>(
     kernel: &Kernel,
     cpu: &mut GuestMachine<C>,
     tid: Tid,
@@ -192,7 +192,7 @@ pub(crate) fn open_program_at<C: Executor>(
 }
 
 /// Linux's checks on a file to run (`do_open_execat`), for a file already found.
-pub(crate) fn program_of<C: Executor>(
+pub(crate) fn program_of<C: Executor + 'static>(
     kernel: &Kernel,
     cpu: &mut GuestMachine<C>,
     tid: Tid,
@@ -254,7 +254,7 @@ pub(crate) fn program_of<C: Executor>(
     clippy::too_many_arguments,
     reason = "the parts of one exec, each distinct"
 )]
-pub(crate) fn load<S: crate::System, C: Executor>(
+pub(crate) fn load<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -500,7 +500,7 @@ struct Placed {
     clippy::too_many_arguments,
     reason = "one call site, each value distinct"
 )]
-fn place<S: crate::System, C: Executor>(
+fn place<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -785,7 +785,7 @@ const VDSO_LENGTH: u64 = (crate::vdso::VVAR_PAGES + crate::vdso::CODE_PAGES) * P
 
 /// Maps `[vvar]` and the vDSO where `mmap` would put them, and writes the vDSO's code
 /// (`arch_setup_additional_pages`). The data pages hold nothing a program reads here.
-fn place_vdso<S: crate::System, C: Executor>(
+fn place_vdso<S: crate::System, C: Executor + 'static>(
     cx: &mut Context<'_, S, C>,
     memory: MemoryId,
     map: &mut AddressMap,
@@ -937,7 +937,7 @@ fn fits_below_ceiling(
 
 /// Places one ELF file's loadable segments, with the tails [`segment_tails`] read. With no bias
 /// given, the file goes wherever free space is, as `mmap` would put it.
-fn place_elf<S: crate::System, C: Executor>(
+fn place_elf<S: crate::System, C: Executor + 'static>(
     cx: &mut Context<'_, S, C>,
     memory: MemoryId,
     map: &mut AddressMap,
@@ -1106,13 +1106,13 @@ fn segment_permissions(flags: u32) -> Permissions {
 /// platform name, 16 random bytes, then, 16 byte aligned, `argc`, the argument pointers, the environment
 /// pointers and the auxiliary vector.
 /// A word of the host's randomness.
-fn random_word<S: crate::System, C: Executor>(cx: &Context<'_, S, C>) -> u64 {
+fn random_word<S: crate::System, C: Executor + 'static>(cx: &Context<'_, S, C>) -> u64 {
     let mut bytes = [0; size_of::<u64>()];
     cx.random(&mut bytes);
     u64::from_le_bytes(bytes)
 }
 
-fn build_stack<S: crate::System, C: Executor>(
+fn build_stack<S: crate::System, C: Executor + 'static>(
     cx: &mut Context<'_, S, C>,
     memory: MemoryId,
     (top, below_strings): (u64, u64),

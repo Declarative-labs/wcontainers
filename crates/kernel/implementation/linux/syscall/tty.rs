@@ -50,7 +50,7 @@ pub(crate) fn end(file: &FileRef) -> Option<(PtyRef, usize, bool)> {
 
 /// Opens a terminal device on an open file not yet in a table (`tty_open`): `/dev/ptmx` makes a
 /// pair, a devpts node opens its slave, `/dev/tty` the caller's controlling terminal.
-pub(super) fn open<S: crate::System, C: Executor>(
+pub(super) fn open<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -88,7 +88,7 @@ pub(super) fn open<S: crate::System, C: Executor>(
 }
 
 /// `ptmx_open`: a new pair with the lowest free number, its slave node in devpts, locked.
-fn open_master<S: crate::System, C: Executor>(
+fn open_master<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -148,7 +148,7 @@ fn open_master<S: crate::System, C: Executor>(
 }
 
 /// `tty_reopen` and `pty_open` for the slave, then the controlling terminal as `tty_open` sets it.
-fn open_slave<S: crate::System, C: Executor>(
+fn open_slave<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     _cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -215,7 +215,7 @@ fn is_controlling(kernel: &Kernel, tid: Tid, pty: &PtyRef, side: usize) -> bool 
 
 /// `__tty_check_change`: a background process using its controlling terminal is sent `signal`
 /// (its group is), unless it blocks or ignores it, or its group is orphaned.
-fn check_change<S: crate::System, C: Executor>(
+fn check_change<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -251,7 +251,7 @@ fn check_change<S: crate::System, C: Executor>(
 }
 
 /// Sends the signals keys and size changes raised, and wakes whoever waits on the pair.
-fn after<S: crate::System, C: Executor>(
+fn after<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     pty: &PtyRef,
@@ -276,7 +276,7 @@ fn after<S: crate::System, C: Executor>(
 
 /// `tty_update_time`: a read or write moves the access or change time of every file's inode on
 /// the side, in steps of 8 seconds.
-fn update_time<S: crate::System, C: Executor>(
+fn update_time<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     pty: &PtyRef,
@@ -304,7 +304,7 @@ fn update_time<S: crate::System, C: Executor>(
 }
 
 /// `tty_read` and `n_tty_read` into the given segments.
-pub(super) fn read<S: crate::System, C: Executor>(
+pub(super) fn read<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -316,7 +316,7 @@ pub(super) fn read<S: crate::System, C: Executor>(
 
 /// A read of up to `count` bytes into a kernel buffer, as sendfile's splicing reads
 /// (`copy_splice_read`).
-pub(super) fn take<S: crate::System, C: Executor>(
+pub(super) fn take<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -329,7 +329,7 @@ pub(super) fn take<S: crate::System, C: Executor>(
 }
 
 /// A read into the guest's segments, or into `kernel_buffer` (one segment, its address unused).
-fn read_into<S: crate::System, C: Executor>(
+fn read_into<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -486,7 +486,7 @@ fn read_into<S: crate::System, C: Executor>(
 
 /// `tty_write` and `n_tty_write` from the given segments, 2048 bytes at a time, keeping what is
 /// written in the call's slot while it waits for room.
-pub(super) fn write<S: crate::System, C: Executor>(
+pub(super) fn write<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -564,7 +564,7 @@ pub(super) fn write<S: crate::System, C: Executor>(
 
 /// Kernel bytes into a terminal, as sendfile's and splice's `iter_file_splice_write` hands them to
 /// `tty_write`: what fits now. A caller left with bytes waits through [`wait_for_room`].
-pub(super) fn put<S: crate::System, C: Executor>(
+pub(super) fn put<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -663,7 +663,7 @@ pub(super) fn can_async(file: &FileRef) -> bool {
 /// `tty_ioctl`: the requests of every terminal, then the pseudo-terminal master's own
 /// (`pty_unix98_ioctl`), then the line discipline's (`n_tty_ioctl`) and the settings
 /// (`tty_mode_ioctl`).
-pub(super) fn ioctl<S: crate::System, C: Executor>(
+pub(super) fn ioctl<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -689,7 +689,7 @@ pub(super) fn ioctl<S: crate::System, C: Executor>(
     clippy::too_many_arguments,
     reason = "every request names its file and side"
 )]
-fn requests<S: crate::System, C: Executor>(
+fn requests<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -929,7 +929,7 @@ fn requests<S: crate::System, C: Executor>(
 }
 
 /// `tty_mode_ioctl`: getting and setting the slave's settings.
-fn settings<S: crate::System, C: Executor>(
+fn settings<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1081,7 +1081,7 @@ fn clear_session(kernel: &mut Kernel, session: Pid) {
 /// `disassociate_ctty`: a session leader lets its terminal go. Its foreground group is sent
 /// SIGHUP, and SIGCONT unless the leader is ending; with no terminal, an ending leader's group
 /// from before a hangup is sent both.
-pub(crate) fn disassociate<S: crate::System, C: Executor>(
+pub(crate) fn disassociate<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     pid: Pid,
@@ -1134,7 +1134,7 @@ fn slave_path(index: u32) -> Vec<u8> {
 }
 
 /// `TIOCGPTPEER` (`ptm_open_peer`): the slave opened with `flags`, without a path lookup.
-fn open_peer<S: crate::System, C: Executor>(
+fn open_peer<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1166,7 +1166,7 @@ fn open_peer<S: crate::System, C: Executor>(
 
 /// `__tty_hangup` of a side: its files are hung up, the session that has it loses it (its leader
 /// sent SIGHUP and SIGCONT), and its job control is cleared.
-fn hang_up<S: crate::System, C: Executor>(
+fn hang_up<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     pty: &PtyRef,
@@ -1220,7 +1220,7 @@ fn hang_up<S: crate::System, C: Executor>(
 /// Deals with sides whose last file has closed (`tty_release` and `pty_close`): a slave's last
 /// close tells the master; the master's hangs up the slave and takes its node away; once both
 /// sides are closed, the number is free again.
-pub(crate) fn released<S: crate::System, C: Executor>(
+pub(crate) fn released<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
 ) {
@@ -1296,7 +1296,7 @@ fn remove_node(node: &Node) {
 /// `/dev/ptmx`, unlocked, at the size given, its slave opened as `TIOCGPTPEER` opens it (flags
 /// `O_RDWR | O_NOCTTY | O_CLOEXEC`) and made the process's controlling terminal. Returns the
 /// master's file and the slave's.
-pub(crate) fn start_terminal<S: crate::System, C: Executor>(
+pub(crate) fn start_terminal<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     pid: Pid,
@@ -1333,7 +1333,7 @@ pub const PTMX_PATH: &str = "/dev/ptmx";
 
 /// The system's bytes into the master its end holds, no more than there is room for, as a master
 /// write takes them: the slave's line discipline takes them in at once.
-pub(crate) fn receive_from_end<S: crate::System, C: Executor>(
+pub(crate) fn receive_from_end<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     file: &FileRef,
@@ -1360,7 +1360,7 @@ pub(crate) fn room_for_end(file: &FileRef) -> usize {
 
 /// Up to `most` bytes the master its end holds has for the embedder, taken as a master read takes
 /// them, the slave's writers woken.
-pub(crate) fn send_to_end<S: crate::System, C: Executor>(
+pub(crate) fn send_to_end<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     file: &FileRef,
@@ -1406,7 +1406,7 @@ pub(crate) fn drained(file: &FileRef) -> bool {
 }
 
 /// A terminal end's new size, as `TIOCSWINSZ` on its master sets it.
-pub(crate) fn resize_from_end<S: crate::System, C: Executor>(
+pub(crate) fn resize_from_end<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     file: &FileRef,
