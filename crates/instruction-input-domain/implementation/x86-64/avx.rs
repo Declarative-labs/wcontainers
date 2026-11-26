@@ -80,6 +80,8 @@ pub enum AvxDataSet {
     Strings { explicit: bool, quadword_lengths: bool },
     /// The gathers: the destination, the indices (the scale in the immediate) and the mask.
     Gather { data: Lane, index: Lane },
+    /// AVX-VNNI: the destination's doublewords and the two sources' bytes or words.
+    DotAccumulate { words: bool },
 }
 
 impl AvxDataSet {
@@ -87,7 +89,7 @@ impl AvxDataSet {
     const fn count(self) -> usize {
         match self {
             Self::Compare { .. } | Self::Mask(_) | Self::Dot(_) => 2,
-            Self::Strings { .. } | Self::Gather { .. } => 3,
+            Self::Strings { .. } | Self::Gather { .. } | Self::DotAccumulate { .. } => 3,
             Self::Fused { .. } => 3,
             Self::Round { scalar, .. } => 1 + scalar as usize,
             Self::ToInteger { .. } | Self::HalfToSingle | Self::SingleToHalf => 1,
@@ -133,7 +135,9 @@ fn to_lane_bits(form: &AvxForm) -> u32 {
         | AvxOperation::RoundToIntegral { precision, .. }
         | AvxOperation::Fused { precision, .. }
         | AvxOperation::DotProduct(precision) => precision.to_bits(),
-        AvxOperation::ConvertWidening(Conversion::IntegerToFloat) | AvxOperation::PermuteDoublewords => u32::BITS,
+        AvxOperation::ConvertWidening(Conversion::IntegerToFloat) | AvxOperation::PermuteDoublewords | AvxOperation::DotAccumulate { .. } => {
+            u32::BITS
+        }
         AvxOperation::HalfToSingle | AvxOperation::SingleToHalf => u32::BITS,
         AvxOperation::MultipleSumsOfDifferences | AvxOperation::GaloisMultiply | AvxOperation::GaloisAffine { .. } => u8::BITS,
         _ => u64::BITS,
@@ -305,6 +309,10 @@ pub fn list_operand_types(form: &AvxForm) -> Vec<OperandType> {
             ]);
             (None, None)
         }
+        AvxOperation::DotAccumulate { words, .. } => {
+            types.push(data(AvxDataSet::DotAccumulate { words }));
+            (None, None)
+        }
         AvxOperation::MaskedByteStore => {
             types.extend([
                 OperandType::AccessPlacement(Splits::Allowed),
@@ -337,6 +345,7 @@ pub fn generate_data(set: AvxDataSet) -> Vec<OperandValue> {
         AvxDataSet::Dot(precision) => generate_dots(precision),
         AvxDataSet::Strings { explicit, quadword_lengths } => generate_strings(explicit, quadword_lengths),
         AvxDataSet::Gather { data, index } => generate_gathers(data, index),
+        AvxDataSet::DotAccumulate { words } => crate::vnni::generate_dot_accumulations(words),
     };
     values.into_iter().map(OperandValue::AvxData).collect()
 }

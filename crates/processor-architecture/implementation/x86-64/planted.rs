@@ -49,6 +49,8 @@ pub enum Origin {
     Expectations,
     /// The family of the forms every x86-64 chip has that were left, and of the forms the chip source refused.
     Mandatory,
+    /// The VEX family's second pass: ZMM's bits above 255, AVX-VNNI and the XSAVE family.
+    VexSecondPass,
 }
 
 /// The forms a bug shows on.
@@ -1127,6 +1129,20 @@ pub enum Bug {
     HypervisorCallAnswersZero,
     /// WRPKRU takes a nonzero EDX.
     WritePkruIgnoresEdx,
+    /// A VEX write of a vector register keeps ZMM's bits 256 to 511.
+    VexKeepsZmmUpperBits,
+    /// VZEROUPPER keeps ZMM's bits 256 to 511.
+    ZeroUpperKeepsZmmUpperBits,
+    /// VZEROUPPER and VZEROALL zero ZMM16 to ZMM31 too.
+    ZeroAllClearsHighRegisters,
+    /// VPDPBUSDS and VPDPWSSDS wrap rather than saturate.
+    DotSaturationWraps,
+    /// VPDPBUSD and VPDPBUSDS take the first source's bytes as signed.
+    DotUnsignedBytesSigned,
+    /// VPDPBUSDS and VPDPWSSDS wrap the products' sum to 32 bits before adding the destination.
+    DotProductsWrappedFirst,
+    /// XSAVES and XRSTORS check their memory operand's page before the privilege level.
+    SupervisorSaveChecksOperandFirst,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1644,6 +1660,18 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::CallFarChecksTargetFirst, "CALL far", Family::Forms(&[Instruction::CallFarMemp2]), Origin::Mandatory),
     row(Bug::FarTargetUnchecked, "CALL far, JMP far, RET far, IRET", Family::Forms(&[Instruction::CallFarMemp2, Instruction::JmpFarMemp2, Instruction::RetFar, Instruction::RetFarImmw, Instruction::Iretq]), Origin::Mandatory),
     row(Bug::RootParitySwapped, "RSQRTPS, RSQRTSS", Family::Forms(&[Instruction::RsqrtpsXmmpsXmmps, Instruction::RsqrtpsXmmpsMemps, Instruction::RsqrtssXmmssXmmss, Instruction::RsqrtssXmmssMemss]), Origin::Mandatory),
+    row(Bug::VexKeepsZmmUpperBits, "VEX writes of a vector register", Family::Avx(writes_vector_register), Origin::VexSecondPass),
+    row(Bug::ZeroUpperKeepsZmmUpperBits, "VZEROUPPER", Family::Avx(|form| form.operation == AvxOperation::ZeroUpper), Origin::VexSecondPass),
+    row(
+        Bug::ZeroAllClearsHighRegisters,
+        "VZEROUPPER, VZEROALL",
+        Family::Avx(|form| matches!(form.operation, AvxOperation::ZeroUpper | AvxOperation::ZeroAll)),
+        Origin::VexSecondPass,
+    ),
+    row(Bug::DotSaturationWraps, "VPDPBUSDS, VPDPWSSDS", Family::Avx(|form| matches!(form.operation, AvxOperation::DotAccumulate { saturate: true, .. })), Origin::VexSecondPass),
+    row(Bug::DotUnsignedBytesSigned, "VPDPBUSD, VPDPBUSDS", Family::Avx(|form| matches!(form.operation, AvxOperation::DotAccumulate { words: false, .. })), Origin::VexSecondPass),
+    row(Bug::SupervisorSaveChecksOperandFirst, "XSAVES, XRSTORS", Family::Forms(SUPERVISOR_SAVES), Origin::VexSecondPass),
+    row(Bug::DotProductsWrappedFirst, "VPDPBUSDS, VPDPWSSDS", Family::Avx(|form| matches!(form.operation, AvxOperation::DotAccumulate { saturate: true, .. })), Origin::VexSecondPass),
 ];
 
 const SEGMENT_LOADS: &[Instruction] = &[
@@ -1709,6 +1737,16 @@ const MMX_CONVERTS: &[Instruction] = &[
     Instruction::MaskmovqMmxqMmxq,
 ];
 
+/// Whether the AVX form writes a vector register: its first operand is one and it writes no flags, or it zeroes them.
+fn writes_vector_register(form: &AvxForm) -> bool {
+    use iced_x86::OpCodeOperandKind as Kind;
+    let first = form.code.op_code().op_kind(0);
+    (matches!(first, Kind::xmm_reg | Kind::ymm_reg) && !form.operation.writes_flags())
+        || matches!(form.operation, AvxOperation::ZeroUpper | AvxOperation::ZeroAll)
+}
+
+const SUPERVISOR_SAVES: &[Instruction] =
+    &[Instruction::XsavesMemmxsave, Instruction::Xsaves64Memmxsave, Instruction::XrstorsMemmxsave, Instruction::Xrstors64Memmxsave];
 const RANDOM: &[Instruction] = &[Instruction::RdrandGprv, Instruction::RdseedGprv];
 
 const X87_SAMPLE: &[Instruction] = &[Instruction::Fnop, Instruction::FxchSt0X87, Instruction::FldSt0Memmem80real, Instruction::Fchs];

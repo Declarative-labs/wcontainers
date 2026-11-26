@@ -23,6 +23,10 @@ pub(super) fn execute_fixed(
     let form = find_fixed_form(instruction).unwrap_or_else(|| panic!("{instruction:?} is no fixed form"));
     match form.outcome {
         FixedOutcome::GeneralProtection if is_active(Bug::PrivilegedOperandFormsInvalidOpcode) => Err(Exception::InvalidOpcode),
+        FixedOutcome::GeneralProtection if is_active(Bug::SupervisorSaveChecksOperandFirst) && is_supervisor_save(decoded.code()) => {
+            check_access(processor.flags, memory, locate(processor, decoded), 1, Access::Read)?;
+            Err(Exception::GeneralProtection { error_code: 0 })
+        }
         FixedOutcome::GeneralProtection => Err(Exception::GeneralProtection { error_code: 0 }),
         FixedOutcome::InvalidOpcode => Err(Exception::InvalidOpcode),
         FixedOutcome::SoftwareInterrupt if decoded.code() == Code::Int1 => Err(Exception::Debug { status: 0 }),
@@ -57,4 +61,9 @@ pub(super) fn execute_fixed(
             check_access(processor.flags, memory, locate(processor, decoded), width, Access::Read)
         }
     }
+}
+
+/// Whether the code is XSAVES's or XRSTORS's.
+fn is_supervisor_save(code: Code) -> bool {
+    matches!(code, Code::Xsaves_mem | Code::Xsaves64_mem | Code::Xrstors_mem | Code::Xrstors64_mem)
 }

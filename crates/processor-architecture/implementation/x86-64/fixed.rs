@@ -12,7 +12,8 @@ use crate::forms::Instruction;
 /// What the form does at ring 3 under Linux, whatever its operands hold.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FixedOutcome {
-    /// #GP(0): the form needs CPL 0, or IOPL 3 as the I/O forms do, or UMIP stops it.
+    /// #GP(0): the form needs CPL 0 (XSAVES and XRSTORS too, before their memory operand is checked), or IOPL 3 as
+    /// the I/O forms do, or UMIP stops it.
     GeneralProtection,
     /// #UD once fetched whole: RSM outside SMM, UD0 and 0xD6.
     InvalidOpcode,
@@ -157,6 +158,10 @@ pub static FIXED_FORMS: &[FixedForm] = &[
     fixed(Instruction::RdpidGpr64u64, WritesUndecided, Sample),
     fixed(Instruction::RdrandGprv, WritesRandom, Sample),
     fixed(Instruction::RdseedGprv, WritesRandom, Sample),
+    fixed(Instruction::XsavesMemmxsave, GeneralProtection, All),
+    fixed(Instruction::Xsaves64Memmxsave, GeneralProtection, All),
+    fixed(Instruction::XrstorsMemmxsave, GeneralProtection, All),
+    fixed(Instruction::Xrstors64Memmxsave, GeneralProtection, All),
 ];
 
 /// The general registers, by number, a form of [`FixedOutcome::WritesUndecided`] or [`FixedOutcome::WritesRandom`]

@@ -75,6 +75,8 @@ mod descriptor_simulation;
 mod reciprocal_simulation;
 #[path = "segment_simulation.rs"]
 mod segment_simulation;
+#[path = "vex_upper.rs"]
+mod vex_upper;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -136,6 +138,7 @@ fn simulate_processor(
     match apply(behavior, &mut changed, memory, &decoded, on_memory_mutated) {
         Ok(()) => {
             *processor = changed;
+            vex_upper::zero_written_upper_bits(processor, &decoded);
             // A jump leaves the instruction pointer where it goes, as the stack forms leave it themselves.
             if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. } | PreciseInstruction::String { .. } | PreciseInstruction::System { .. } | PreciseInstruction::Segment { .. }) {
                 processor.instruction_pointer = decoded.next_ip();
@@ -149,6 +152,9 @@ fn simulate_processor(
                 processor.mxcsr = changed.mxcsr;
                 processor.vector_registers = changed.vector_registers;
                 processor.upper_vector_halves = changed.upper_vector_halves;
+                if is_gather(behavior) {
+                    vex_upper::zero_gather_mask_upper_bits(processor, &decoded);
+                }
             }
             // #XM leaves the flags of the exceptions it found in MXCSR.
             if exception == Exception::SimdFloatingPoint
@@ -179,6 +185,12 @@ fn simulate_processor(
             processor.exception = Some(exception);
         }
     }
+}
+
+/// Whether the behavior is a VEX gather's, which writes its destination and mask though it faults.
+fn is_gather(behavior: PreciseInstruction) -> bool {
+    matches!(behavior, PreciseInstruction::Avx { instruction, .. }
+        if crate::avx::find_avx_form(instruction).is_some_and(|form| matches!(form.operation, crate::avx::AvxOperation::Gather { .. })))
 }
 
 /// What the planted bugs that write despite a fault keep of the instruction's writes.

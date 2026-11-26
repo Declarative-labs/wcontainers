@@ -54,6 +54,7 @@ pub mod stack;
 pub mod string;
 pub mod system;
 pub mod vector;
+mod vnni;
 pub mod x87;
 pub mod x87_arithmetic;
 pub mod x87_state;

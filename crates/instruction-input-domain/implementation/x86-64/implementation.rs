@@ -68,6 +68,8 @@ pub mod stack;
 pub mod string;
 pub mod system;
 pub mod vector;
+mod vex_upper;
+mod vnni;
 pub mod x87;
 pub mod x87_arithmetic;
 #[cfg(test)]
@@ -792,7 +794,8 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         values.into_iter()
     }
 
-    /// Every register no operand names holds the complement of its number, so that none holds zero.
+    /// Every register no operand names holds the complement of its number, so that none holds zero; a VEX form's
+    /// state also holds ZMM's bits above 255 and ZMM16 to ZMM31, which no VEX form names (see `vex_upper`).
     ///
     /// A register named twice holds the value of its last register value operand; a base register holds what puts
     /// the access at its placement, whatever else names it.
@@ -801,6 +804,13 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
     ///
     /// When the operands are not one value of each operand type the form lists, in its order.
     fn build_state(&self, instruction: Instruction, operands: &[OperandValue]) -> ExecutionState<'static, X86_64> {
+        vex_upper::fill_upper_bits(self.build_form_state(instruction, operands))
+    }
+}
+
+impl X86_64InputDomain {
+    /// The state as the form's module builds it.
+    fn build_form_state(&self, instruction: Instruction, operands: &[OperandValue]) -> ExecutionState<'static, X86_64> {
         let typed: Vec<(OperandType, OperandValue)> = self
             .list_operand_types(instruction)
             .zip(operands.iter().copied())

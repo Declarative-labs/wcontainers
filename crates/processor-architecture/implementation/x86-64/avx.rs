@@ -129,6 +129,10 @@ pub enum AvxOperation {
     /// lowest first, its mask lane cleared once loaded; the whole mask zeroed at the end. A fault leaves the lanes
     /// loaded before it, and #UD comes from any two of the destination, index and mask registers being one.
     Gather { data: Lane, index: Lane },
+    /// VPDPBUSD to VPDPWSSDS: each doubleword of the destination plus the products of the first source's bytes
+    /// (unsigned) with the second's (signed) four at a time, or of their signed words two at a time, wrapped or, with
+    /// `saturate`, saturated to a signed doubleword.
+    DotAccumulate { words: bool, saturate: bool },
 }
 
 /// Which way VPSLLVD to VPSRAVD shift.
@@ -206,6 +210,7 @@ impl AvxOperation {
             Self::Test
                 | Self::TestSigns(_)
                 | Self::Fused { .. }
+                | Self::DotAccumulate { .. }
                 | Self::StringCompare { .. }
                 | Self::Float { operation: FloatOperation::OrderedCompare { .. }, .. }
                 | Self::LoadMxcsr
@@ -369,6 +374,10 @@ fn compute_lanes(form: &AvxForm, sources: &[Wide], immediate: u8) -> Option<Wide
                 }),
             )
         }),
+        AvxOperation::DotAccumulate { words, saturate } => {
+            let third = sources.get(2).copied().unwrap_or_default();
+            both(&|half| crate::vnni::accumulate_dots(first[half], second[half], third[half], words, saturate))
+        }
         _ => return None,
     };
     Some(result)
@@ -631,7 +640,7 @@ use AvxOperation::{
     InsertLane, IntegerToScalar, LoadMxcsr, MaskedLoad, MaskedStore, MultipleSumsOfDifferences, PermuteDoublewords,
     PermuteHalves, PermuteQuadwords, PermuteVariable, RoundToIntegral, ScalarToInteger, ShiftByCount, ShiftByImmediate,
     ShiftEach, Signs, SingleToHalf, StoreMxcsr, Test, TestSigns, ZeroAll, ZeroUpper, DotProduct, StringCompare,
-    MaskedByteStore, Gather,
+    MaskedByteStore, Gather, DotAccumulate,
 };
 use Conversion::{DoubleToSingle, FloatToInteger, IntegerToFloat, SingleToDouble};
 use FloatOperation::{
