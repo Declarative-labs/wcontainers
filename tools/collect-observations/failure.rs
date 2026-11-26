@@ -9,6 +9,10 @@ use wcontainers_processor_architecture::{MemoryDelta, ProcessorArchitecture};
 
 use crate::collection::CoreIdentity;
 
+const STATE_BEFORE: &str = "state before";
+/// The title of what the core left, whose memory is only what it changed.
+const CORE_RESULT: &str = "the core did (memory: changes after the state before's)";
+
 /// Returns a line that says what failed, and the whole evidence for the file beside the output.
 pub fn describe_failure<
     ListCoresError,
@@ -93,7 +97,7 @@ where
         } => {
             write_section(
                 &mut evidence,
-                "state before",
+                STATE_BEFORE,
                 &before.processor,
                 &before.memory_mutations,
             );
@@ -108,7 +112,7 @@ where
             let before_changes = before.memory_mutations.len();
             write_section(
                 &mut evidence,
-                "state before",
+                STATE_BEFORE,
                 &before.processor,
                 &before.memory_mutations,
             );
@@ -125,7 +129,7 @@ where
             }
             write_section(
                 &mut evidence,
-                "the core did (memory: changes after the state before's)",
+                CORE_RESULT,
                 &observed.processor,
                 observed
                     .memory_mutations

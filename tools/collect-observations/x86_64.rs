@@ -1,5 +1,4 @@
-//! The collection on an x86-64 machine: the KVM chip source on each core, and the state generator of the x86-64
-//! input domain.
+//! The collection on an x86-64 machine: the KVM chip source on each core and the x86-64 input domain's generator.
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -11,6 +10,9 @@ use wcontainers_processor_architecture_x86_64::CoreIdentity;
 
 use crate::collection::collect_and_write;
 
+/// The microcode part of the name where the system reports none.
+const MICROCODE_UNREPORTED: &str = "unreported";
+
 pub fn collect(output: &Path) -> ExitCode {
     collect_and_write(
         output,
@@ -20,8 +22,7 @@ pub fn collect(output: &Path) -> ExitCode {
     )
 }
 
-/// Returns the name of the kind's file: the vendor in lower case, then family, model, stepping, core type and
-/// microcode in hexadecimal, as [CPUID](https://www.felixcloutier.com/x86/cpuid) gives them.
+/// Returns the kind's file name: vendor, family, model, stepping, core type and microcode, as [CPUID](https://www.felixcloutier.com/x86/cpuid) gives them.
 pub fn name_kind(core: &CoreIdentity) -> String {
     let vendor: String = core
         .vendor_identification
@@ -34,7 +35,7 @@ pub fn name_kind(core: &CoreIdentity) -> String {
         .map(|core_type| format!("-core-type-{core_type:02x}"))
         .unwrap_or_default();
     let microcode = core.microcode_version.map_or_else(
-        || String::from("unreported"),
+        || String::from(MICROCODE_UNREPORTED),
         |version| format!("{version:x}"),
     );
     format!(

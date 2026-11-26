@@ -1,8 +1,7 @@
 //! A collector that runs on every core a behavior source made on that core, the cores of one kind sharing one queue.
 //!
-//! Each run takes the next instruction of its kind's queue and measures it with the provided `measure_instruction` on
-//! every state the generator gives, until the queue is empty, so a kind of more cores is measured sooner. The first
-//! failure stops every run before its next instruction, and the collection returns that failure.
+//! Each run measures the next instruction of its kind's queue on every generated state until the queue is empty. The
+//! first failure stops every run before its next instruction.
 
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -14,8 +13,7 @@ use wcontainers_observation_collector::{ObservationCollector, Sample};
 use wcontainers_processor_architecture::{ProcessorArchitecture, Simulator};
 use wcontainers_processor_cores::{ProcessorCores, RunOnAllCoresError};
 
-/// The cores of a machine, a way to make a behavior source on the core a run is on, and the generator of the states
-/// every instruction is measured on.
+/// The cores, a way to make a behavior source on the core a run is on, and the generator of the states to measure.
 pub struct PinnedBehaviorSourcesObservationCollector<Cores, MakeSource, Generator> {
     cores: Cores,
     /// Called once in each run, on the core the run holds, with that core's identity.
@@ -153,8 +151,8 @@ where
 impl<Cores, MakeSource, Generator>
     PinnedBehaviorSourcesObservationCollector<Cores, MakeSource, Generator>
 {
-    /// Measures the instructions this run takes from the queue until it is empty or a run has failed, each with the
-    /// position it has in the listed instructions.
+    /// Measures the instructions this run takes from the queue, each with its listed position, until none is left.
+    /// It also stops when another run has failed.
     fn measure_from_queue<Source, MakeSourceError>(
         &self,
         core: &Cores::CoreIdentity,

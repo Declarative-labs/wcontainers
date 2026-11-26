@@ -1,5 +1,4 @@
-//! The interface's suite, and checks of what this collector adds, on four cores of the accumulator machine in two
-//! kinds whose behavior sources each show the behavior their revision chooses.
+//! The interface's suite and this collector's own checks, on four simulated accumulator machine cores of two kinds.
 
 use std::convert::Infallible;
 use std::sync::Mutex;

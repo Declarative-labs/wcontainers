@@ -28,9 +28,18 @@ pub type CoreIdentity = <LinuxProcessorCores as ProcessorCores>::CoreIdentity;
 /// The file beside the baked files that holds what the core did when the collection failed.
 const FAILURE_EVIDENCE: &str = "collection-failure.txt";
 const BAKED_EXTENSION: &str = "rs";
+/// The first comment line of a baked file.
+const FILE_ORIGIN: &str =
+    "Written by tools/collect-observations. The lines below describe the machine, not the core.";
+const OPERATING_SYSTEM: &str = "operating system";
+const OPERATING_SYSTEM_BUILD: &str = "operating system build";
+const KERNEL: &str = "kernel";
+const HYPERVISOR: &str = "hypervisor";
+const UNDERLYING_HYPERVISOR: &str = "underlying hypervisor";
+const FIRMWARE: &str = "firmware";
+const MACHINE_MODEL: &str = "machine model";
 
-/// Collects a sample of each kind of core with a source made on each core, writes each to `<output>/<kind>.rs`, and
-/// returns the status the command exits with.
+/// Collects a sample of each kind of core, writes each to `<output>/<kind>.rs`, and returns the command's status.
 pub fn collect_and_write<Source, MakeSourceError, Generator>(
     output: &Path,
     make_source: impl Fn(CoreIdentity) -> Result<Source, MakeSourceError> + Sync,
@@ -127,33 +136,34 @@ where
 
 /// Prints how many cores the machine has and each kind with its count of cores.
 fn print_kinds<Core>(cores: &[(Core, CoreIdentity)], name_kind: fn(&CoreIdentity) -> String) {
-    let mut kinds: Vec<(&CoreIdentity, usize)> = Vec::new();
+    let mut kinds: Vec<&CoreIdentity> = Vec::new();
     for (_, identity) in cores {
-        match kinds.iter_mut().find(|(kind, _)| *kind == identity) {
-            Some((_, count)) => *count += 1,
-            None => kinds.push((identity, 1)),
+        if !kinds.contains(&identity) {
+            kinds.push(identity);
         }
     }
     println!("{} cores of {} kinds", cores.len(), kinds.len());
-    for (identity, count) in kinds {
-        println!("kind {}: {count} cores, {identity:?}", name_kind(identity));
+    for kind in kinds {
+        let count = cores
+            .iter()
+            .filter(|(_, identity)| identity == kind)
+            .count();
+        println!("kind {}: {count} cores, {kind:?}", name_kind(kind));
     }
 }
 
 /// Returns the comment lines of a baked file: where it came from, then each label of the machine that is known.
 pub fn describe_labels(labels: &MachineLabels) -> Vec<String> {
     let known = [
-        ("operating system", &labels.operating_system),
-        ("operating system build", &labels.operating_system_build),
-        ("kernel", &labels.kernel),
-        ("hypervisor", &labels.hypervisor),
-        ("underlying hypervisor", &labels.underlying_hypervisor),
-        ("firmware", &labels.firmware),
-        ("machine model", &labels.machine_model),
+        (OPERATING_SYSTEM, &labels.operating_system),
+        (OPERATING_SYSTEM_BUILD, &labels.operating_system_build),
+        (KERNEL, &labels.kernel),
+        (HYPERVISOR, &labels.hypervisor),
+        (UNDERLYING_HYPERVISOR, &labels.underlying_hypervisor),
+        (FIRMWARE, &labels.firmware),
+        (MACHINE_MODEL, &labels.machine_model),
     ];
-    let mut lines = Vec::from([String::from(
-        "Written by tools/collect-observations. The lines below describe the machine, not the core.",
-    )]);
+    let mut lines = Vec::from([String::from(FILE_ORIGIN)]);
     lines.extend(
         known
             .into_iter()
