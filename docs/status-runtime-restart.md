@@ -29,6 +29,11 @@ committed, and the final bar below ran with no fill. After it the 77 top-level f
 byte-identical to his main (MEASURED). origin/executor-wasmtime appeared (ee26ae9f9) but its status still reads "X2: not
 started", so it is not merged.
 
+2026-11-26 (evening): his main FETCH_HEAD ac696ea19 already merged. Merged origin/executor-restart 914b4e9d1 (dd899860a, no
+conflict), origin/host-sockets 572e37e70 (4c9d4f318, no conflict) and origin/executor-restart c4113f822 (b07c27008, no
+conflict: the stand-in's own slice, and kernel-port 406fba566, which that branch had merged). After them the 91 files of his interface folders are
+byte-identical to his main (MEASURED, `git diff --quiet FETCH_HEAD HEAD` per file).
+
 ## RT0: done (results in SCRATCH/runtime-restart/results-main, results-agents)
 
 ## RT1: built; bar NOT met: the linter (the earlier line here that called it met but for the linter was wrong)
@@ -210,8 +215,60 @@ panics on its first write) ends the container as `Panicked` for every later run.
 container's interrupter raising no executor's slot (before the kernel merge), and again at 7d6d0e11e with it ending no
 run, `an_interrupt_from_another_thread_stops_a_run` runs past the timeout at 1 and at 4 runners (exit 124). The image: alpine:3.22 for linux/arm64 from `docker export`.
 
-RT2 IS NOT CLAIMED: its bar also asks the suite, the interrupt test and the harness verdicts on wasmtime (X2 is not on
-origin), the kernel harness at full, none and bounded against j5f's lists, and LTP.
+RT2 IS NOT CLAIMED: its bar also asks the suite and the interrupt test on wasmtime from a merged commit, the kernel
+harness at full, none and bounded against j5f's lists, and LTP.
+
+### The time slice (orchestrator ruling of 2026-11-26: an executor bounds its own run)
+
+The independent check found a container with a busy background process never finished on one runner. MEASURED at
+2b50e4a23 before the executor's slice (ARM64, job 20261126-190222-1663300, slice/base2-arm.log): the check's test,
+added to the suite, ran past the timeout at 1 runner (exit 124) and passed at 4.
+- The suite has an eighth test, `a_busy_background_process_does_not_keep_its_container_running`: `sh -c "(while :; do
+  :; done) & sleep T; exit 255"`, T being as long as a container that only exits took (measured in the test, no number);
+  the first process sleeps so the busy one holds the runner first.
+- The stand-in now ends a slice of its own configuration (`StandInConfig::slice_instructions`, default 1,000,000 retired
+  instructions) with `TrapHandler::handle_interrupt` (executor-restart 30ca724a8, merged). The runtime needs nothing
+  else: the kernel takes that interrupt as a slice's end.
+- The slice timer is gone (`SliceTimer`, timer.rs and its two tests; nothing used it). `StopFlag` stays for RT3.
+- `ceiling: Some(executor end)` as before; the end is now found through the executor interface (`space_end`: a bisection
+  over `MemorySpace::borrow`, which fails only outside the space), so the runtime asks no abi `Cpu` of an executor
+  (wasmtime has none). New unit test: the probed end equals the stand-in's `address_space().end`.
+- conformance_run.rs runs the suite in a module per executor (`on_the_stand_in`), generic over the executor.
+
+Bar at a839372ff (pushed; the runs were of the working tree equal to it, MEASURED, rustc 1.99.0, `-j 12`, jobs
+runtime-restart/20261126-195620-1777559 ARM64 load 25-42 and 20261126-195615-782681 x86-64 load 42; logs
+SCRATCH/runtime-restart/slice/bar3-*.log):
+
+| | ARM64 | x86-64 |
+|---|---|---|
+| `cargo metadata --locked` | 0 | 0 |
+| rustfmt `--check`, three packages | 0 | 0 |
+| check `--all-targets`, three packages; single-kernel `--no-default-features` | 0 / 0 | 0 / 0 |
+| clippy `--no-deps -D warnings --all-targets`, the same two | 0 / 0 | 0 / 0 |
+| single-kernel unit tests | 14 of 14 | 14 of 14 |
+| policy tests | 13 of 13 | 13 of 13 |
+| runtime suite, 1 runner, three rounds | 8 of 8 each | 8 of 8 each |
+| runtime suite, 4 runners, three rounds | 8 of 8 each | 8 of 8 each |
+
+Planted (MEASURED, ARM64, the machine's copy only): the stand-in configured with `slice_instructions: u64::MAX` makes
+the busy test run past the timeout at 1 runner (exit 124) and pass at 4 (slice/bar3-arm.log, plant2-arm.log).
+
+Linter at a839372ff (ARM64, reviewable-rust da55b9d7, no model key): single-kernel 396, suite 43, policy 68; the only
+changes from the table below are the model's unanswered questions for the new and changed items (time_to_exit, the busy
+test, space_end, the two subjects), and 5 fewer public_outside_interface (`SliceTimer` gone). No magic_literal,
+number_constant_without_link or summary rule.
+
+### The WebAssembly half, prepared as one command (not merged: its status names no commit for containers yet)
+
+SCRATCH/runtime-restart/wasmtime/rt2-wasmtime.sh <commit>: a throwaway worktree of this branch merged with that commit of
+origin/executor-wasmtime, wasmtime-suite.patch (wasmtime as a dev-dependency and a module `on_wasmtime` running the same
+suite, the executors made with `WasmtimeExecutor::new`), then the suite on the stand-in and on wasmtime at 1 and 4
+runners, three rounds, on both machines. MEASURED with b547d187f (origin/executor-wasmtime's tip; its status still reads
+4bae8d25 for RT2), FILL=1: merge without conflict; clippy 0; on wasmtime 8 of 8 in every round at 1 and 4 runners on
+both machines (ARM64 load 38, x86-64 load 46-49); planted `slice: None` on wasmtime makes the busy test run past the
+timeout at 1 runner (exit 124). FILL=1 is needed: that branch brings arm64's new `Processor::process_state_controls`
+(58791651d), which the kernel's running.rs and the stand-in's standin.rs do not fill (E0063 in each); fill.cmd adds
+`process_state_controls: 0` in the machine's copy only.
 
 Linter (`cargo reviewable check`, ARM64, reviewable-rust da55b9d7, no model key; MEASURED at the tree before the last
 two small fixes): single-kernel 403, suite 39, policy 68. `magic_literal` 0 and `number_constant_without_link` 0 in all
@@ -226,17 +283,19 @@ grammar_unclear 10, summary_unclear 8.
 
 ## Next
 
-- RT2: waits on X2: the executor track's status saying a commit of origin/executor-wasmtime is ready, to merge it and run
-  the suite, the interrupt test and the harness `--features runtime` at full, none and bounded against j5f's lists and
-  LTP on wasmtime.
+- RT2: waits on (a) the executor track's status naming a commit of origin/executor-wasmtime a container runs on, then
+  rt2-wasmtime.sh with it and the merge; (b) the kernel and executor tracks filling `process_state_controls` in running.rs
+  and standin.rs, without which that merge does not build; (c) the harness `--features runtime` on wasmtime (the
+  executor track's kernel-harness-on-wasmtime.patch touches their files) at full, none and bounded against j5f's lists,
+  and LTP.
 - RT3: waits on KP2 and X4.
 
 ## For the orchestrator (one line each)
 
 1. Kernel track: `KernelConfig` holds `Start<'static>`, so every container leaks its start (a few kilobytes); owning its
    bytes, or `KernelConfig<'a, ..>`, would end it.
-2. Executor track (X2): the runtime asks of an executor only `Cpu + wcontainers_executor::Executor<TranslatorConfig: Send
-   + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>> + Send + 'static`; wasmtime is given through `RuntimeConfig
+2. Executor track (X2): the runtime asks of an executor only `wcontainers_executor::Executor<TranslatorConfig: Send
+   + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>> + Send + 'static` (no abi `Cpu` since 286f5cc60); wasmtime is given through `RuntimeConfig
    { make_executor, make_runner_executor, runners, idle_poll }` and run through `Runtime::make_container`; wcon takes its
    endpoints from `LocalSystem::output_end`, `error_end`, `give_input`, `give_terminal`.
 3. Kernel track: the 21 errors measured in single-kernel were main's old copy of the crate; kernel-port has since merged
@@ -245,6 +304,8 @@ grammar_unclear 10, summary_unclear 8.
 5. Kernel track (and question 3 of the brief): the runner leaves `run` only while one of the kernel's calls waits for its
    lock, so an embedder's interrupt needs a call that does nothing (`suspend_tasks(&[])`); an execution interrupt that
    ends `run` as `Interrupted` when the embedder asks (as at d176769a7) would let the runtime drop that loop.
+6. Kernel and executor tracks: origin/executor-wasmtime b547d187f carries arm64-instructions 58791651d, whose
+   `Processor::process_state_controls` running.rs:210 and standin.rs:918 do not fill (E0063, MEASURED in the trial merge).
 
 For the owner (his files unchanged):
 1. A system has no constructor. Before (crates/system/interface.rs:26):
