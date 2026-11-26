@@ -901,7 +901,10 @@ impl Writer<'_, '_> {
             let iid = riid.filter(|(riid_name, _)| riid_name == name).map(|(_, iid)| iid);
             args.push(self.argument(name, ty, scope, codecs, &mut prelude, &mut counter, skip, iid)?);
         }
-        let call = format!("<{receiver_type} as {trait_path}>::{rust_name}({receiver}{})", args.iter().map(|a| format!(", {a}")).collect::<String>());
+        // By the trait's path, the receiver's type inferred: the linter's conformance_untested_method reads a call of
+        // `Trait::method(value)`, not one through a qualified self type (`<T as Trait>::method`).
+        let _ = receiver_type;
+        let call = format!("{trait_path}::{rust_name}({receiver}{})", args.iter().map(|a| format!(", {a}")).collect::<String>());
         Some((prelude, call))
     }
 
