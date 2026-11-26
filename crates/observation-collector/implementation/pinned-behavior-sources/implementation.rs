@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use wcontainers_behavior_source::{BehaviorSource, MeasureInstructionError};
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
-use wcontainers_observation_collector::{ObservationCollector, Sample};
+use wcontainers_observation_collector::{CoreSample, ObservationCollector};
 use wcontainers_processor_architecture::{ProcessorArchitecture, Simulator};
 use wcontainers_processor_cores::{ProcessorCores, RunOnAllCoresError};
 
@@ -94,7 +94,7 @@ where
     /// Returns the samples in the order the cores list their kinds first.
     fn collect_samples(
         &self,
-    ) -> Result<Vec<Sample<Source::Architecture, Cores::CoreIdentity>>, Self::Error> {
+    ) -> Result<Vec<CoreSample<Source::Architecture, Cores::CoreIdentity>>, Self::Error> {
         let instructions: Vec<_> = Source::Architecture::list_instructions().collect();
         let queues = Queues::new(Vec::new());
         let failed = AtomicBool::new(false);
@@ -136,7 +136,7 @@ where
             .into_iter()
             .map(|(core, mut measured)| {
                 measured.sort_unstable_by_key(|(position, _)| *position);
-                Sample {
+                CoreSample {
                     core,
                     measurements: measured
                         .into_iter()

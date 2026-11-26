@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use wcontainers_observation_collector::Sample;
+use wcontainers_observation_collector::CoreSample;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
 /// A sample as a constant holds it, its measurements in a static slice where the collector's sample has a `Vec`.
@@ -19,8 +19,8 @@ impl<Architecture: ProcessorArchitecture, CoreIdentity: Clone>
     BakedSample<Architecture, CoreIdentity>
 {
     /// Returns the sample as the collector gives it.
-    pub fn to_sample(&self) -> Sample<Architecture, CoreIdentity> {
-        Sample {
+    pub fn to_sample(&self) -> CoreSample<Architecture, CoreIdentity> {
+        CoreSample {
             core: self.core.clone(),
             measurements: Vec::from(self.measurements),
         }
@@ -35,7 +35,7 @@ mod writing {
     use alloc::string::String;
 
     use databake::{Bake, CrateEnv, quote};
-    use wcontainers_observation_collector::Sample;
+    use wcontainers_observation_collector::CoreSample;
     use wcontainers_processor_architecture::ProcessorArchitecture;
 
     const COMMENT: &str = "// ";
@@ -59,7 +59,7 @@ mod writing {
     /// The source is laid out as rustfmt lays out code, by prettyplease: rustfmt itself leaves an item whole when a
     /// path is longer than its line, as the full paths of a sample are.
     pub fn bake_sample<Architecture, CoreIdentity>(
-        sample: &Sample<Architecture, CoreIdentity>,
+        sample: &CoreSample<Architecture, CoreIdentity>,
         labels: &[String],
     ) -> Result<String, BakeSampleError>
     where

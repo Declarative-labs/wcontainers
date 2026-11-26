@@ -5,7 +5,7 @@
 use std::fs;
 use std::path::Path;
 
-use wcontainers_observation_collector::Sample;
+use wcontainers_observation_collector::CoreSample;
 use wcontainers_precise_instruction_set_collected::bake_sample;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 use wcontainers_processor_architecture_accumulator_machine::{
@@ -25,7 +25,7 @@ fn main() {
                 .map(|precise| (instruction, precise))
         })
         .collect();
-    let sample: Sample<AccumulatorMachineProcessorArchitecture, CoreIdentity> = Sample {
+    let sample: CoreSample<AccumulatorMachineProcessorArchitecture, CoreIdentity> = CoreSample {
         core: CoreIdentity {
             design: CoreDesign::Reference,
             revision: CoreRevision::Second,
