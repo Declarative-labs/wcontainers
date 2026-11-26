@@ -655,6 +655,9 @@ impl Writer<'_, '_> {
         if t == "&str" {
             return Some("\"\"".to_string());
         }
+        if t == "&CStr" || t.ends_with("::CStr") && t.starts_with('&') {
+            return Some("c\"\"".to_string());
+        }
         match self.shape(t, scope) {
             Shape::Object { kind, by_ref } => {
                 *counter += 1;
@@ -1088,6 +1091,21 @@ pub(super) struct Codecs {
     modules: Vec<(String, String)>,
 }
 
+/// Sets the writer's structure values from the set's crates (a decoder of zero bytes, or `Default`), and returns the
+/// data modules they name: module name and path from an implementation's crate.
+pub(super) fn struct_values(writer: &Writer<'_, '_>, crates: &Path, api: usize) -> Vec<(String, String)> {
+    let codecs = codecs(writer, crates, api);
+    let mut values = writer.struct_values.borrow_mut();
+    values.clear();
+    for path in &codecs.defaults {
+        values.insert(path.clone(), "Default::default()".to_string());
+    }
+    for (path, (module, ident, size)) in &codecs.decoders {
+        values.entry(path.clone()).or_insert_with(|| format!("{module}::decode_{ident}(&[0_u8; {size}])"));
+    }
+    codecs.modules
+}
+
 /// Reads the decoders and `Default` structures the set's crates were written with.
 fn codecs(writer: &Writer<'_, '_>, crates: &Path, api: usize) -> Codecs {
     let g = writer.g;
@@ -1144,9 +1162,11 @@ pub(in crate::emit) fn write_hostile(writer: &Writer<'_, '_>, api: usize, crate_
     let spec = g.apis[api];
     let crates = crate_folder.parent().ok_or("no crates folder")?;
     let codecs = codecs(writer, crates, api);
+    let _ = struct_values(writer, crates, api);
     writer.hostile.set(true);
     let recorder = writer.recorder(api);
     writer.hostile.set(false);
+    writer.struct_values.borrow_mut().clear();
     writer.current.set(api);
     let (driver, calls, makers) = writer.driver(api, &codecs);
     let mut text = format!("{recorder}\n{driver}");
@@ -1200,4 +1220,244 @@ pub(in crate::emit) fn write_hostile(writer: &Writer<'_, '_>, api: usize, crate_
         std::fs::write(tests.join("lies.rs"), include_str!("../harness/hostile/lies.rs")).map_err(|error| error.to_string())?;
     }
     Ok(format!("HOSTILE {}: driver calls {calls}, makers {makers}\n", spec.folder))
+}
+
+/// The conformance suite's fixed part: what a drive counted, makers that may panic, and honest bytes for the caller's.
+const SUITE_BASE: &str = r#"
+/// What one drive did: methods called, skipped for want of an object or an argument, and calls that panicked.
+#[derive(Clone, Copy, Debug, Default)]
+struct Driven {
+    called: usize,
+    skipped: usize,
+    panicked: usize,
+}
+
+impl Driven {
+    fn attempt(&mut self, call: impl FnOnce() -> bool) {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)) {
+            Ok(true) => self.called += 1,
+            Ok(false) => self.skipped += 1,
+            Err(_) => {
+                self.called += 1;
+                self.panicked += 1;
+            }
+        }
+    }
+}
+
+/// Runs a maker: its object, if any (a panic is counted by the drive, not here).
+fn made<T>(make: impl FnOnce() -> Option<T>) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(make)).ok().flatten()
+}
+
+/// The caller's bytes: a buffer of ours, read and written in full.
+#[derive(Debug, Default)]
+struct SuiteBytes(std::sync::Mutex<Vec<u8>>);
+
+/// How many bytes the suite lends where a method writes bytes of the caller's.
+const LENT_BYTES: usize = 256;
+
+fn bytes() -> SuiteBytes {
+    SuiteBytes(std::sync::Mutex::new(vec![0; LENT_BYTES]))
+}
+
+impl wcontainers_volatile_bytes::VolatileBytes for SuiteBytes {
+    fn len(&self) -> u64 {
+        self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len() as u64
+    }
+
+    fn read(&self, into: &mut [u8]) -> usize {
+        let held = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = into.len().min(held.len());
+        into[..count].copy_from_slice(&held[..count]);
+        count
+    }
+
+    fn write(&self, bytes: &[u8]) -> usize {
+        let mut held = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = bytes.len().min(held.len());
+        held[..count].copy_from_slice(&bytes[..count]);
+        count
+    }
+
+    fn read_to<Sink: wcontainers_byte_sink::ByteSink>(&self, sink: &mut Sink) -> Result<usize, Sink::Error> {
+        let copy = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        sink.write(&copy)
+    }
+
+    fn write_from<Source: wcontainers_byte_source::ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
+        let mut copy = vec![0_u8; self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()];
+        let count = source.read(&mut copy)?;
+        Ok(self.write(&copy[..count.min(copy.len())]))
+    }
+}
+
+/// A method's failure is negative, as every HRESULT failure is.
+fn failure_is_negative<T>(answer: Result<T, component_object_model::structures::HResult>) -> bool {
+    if let Err(failure) = answer {
+        assert!(failure.0 < 0, "a failure answered as {:#x}, which reads as success", failure.0);
+    }
+    true
+}
+
+/// An object handed out equals its clone, as COM's identity is the object's.
+fn equals_its_clone<T: Clone + Eq>(object: T) -> bool {
+    assert!(object.clone() == object, "an object differs from its clone");
+    true
+}
+
+/// An answer the interface promises nothing more of than its type.
+fn answered<T>(answer: T) -> bool {
+    drop(answer);
+    true
+}
+"#;
+
+impl Writer<'_, '_> {
+    /// The conformance suite of API `api`: generic over any implementation of its top trait, it makes an object of
+    /// every kind it can and calls every method of every kind and every export on them, checking each answer as the
+    /// interface promises (a failure negative, an object equal to its clone).
+    fn suite(&self, api: usize, codecs: &Codecs) -> Option<String> {
+        let g = self.g;
+        let spec = g.apis[api];
+        let top_name = spec.top_trait?;
+        let top = format!("{}::{top_name}", alias(spec));
+        let scope = self.driver_scope(api);
+        let generic = |k: usize| {
+            let kind_api = g.apis[g.kinds[k].api];
+            format!("<A as {}::{}>::{}", alias(kind_api), kind_api.top_trait.unwrap_or(""), g.kinds[k].name)
+        };
+        let mut text = String::new();
+        let _ = writeln!(text, "//! {}\n//!\n//! The conformance suite of {}, written against the traits alone (src/glue_hostile.rs): an object of every kind\n//! the implementation makes, every method of every kind and every export called on them, each answer checked as the\n//! interface promises.\n", crate::emit::HEADER, spec.folder);
+        text.push_str("#![allow(unused_variables, unused_imports, dead_code, unreachable_code, clippy::let_unit_value, clippy::unit_arg, clippy::redundant_closure_call, clippy::too_many_lines, clippy::unnecessary_lazy_evaluations, clippy::option_map_unit_fn, clippy::bool_assert_comparison, clippy::eq_op, reason = \"generated: every call has the same shape\")]\n\n");
+        text.push_str("@IMPORTS@\n");
+        text.push_str(SUITE_BASE);
+        let _ = writeln!(text, "\n/// One object of each kind the suite made, by kind.\nstruct Objects<A: {top}> {{\n    api: A,");
+        for &k in &scope {
+            let _ = writeln!(text, "    k{k}: Option<{}>,", generic(k));
+        }
+        let _ = writeln!(text, "}}\n\nimpl<A: {top}> Objects<A> {{\n    fn new(api: A) -> Objects<A> {{\n        Objects {{\n            api,");
+        for &k in &scope {
+            let _ = writeln!(text, "            k{k}: None,");
+        }
+        let held: Vec<String> = scope.iter().map(|k| format!("self.k{k}.is_some()")).collect();
+        let _ = writeln!(text, "        }}\n    }}\n\n    fn kinds_held(&self) -> usize {{\n        [{}].iter().filter(|held| **held).count()\n    }}\n}}\n", if held.is_empty() { "false".to_string() } else { held.join(", ") });
+        let mut calls: Vec<(String, String, String)> = Vec::new();
+        let mut makers: Vec<Maker> = Vec::new();
+        let check = |result: &str, call: &str, scope: &[usize]| -> String {
+            if result.starts_with("Result<") {
+                format!("failure_is_negative({call})")
+            } else if matches!(self.shape(result, scope), Shape::Object { by_ref: false, .. }) {
+                format!("equals_its_clone({call})")
+            } else {
+                format!("answered({call})")
+            }
+        };
+        for &k in &scope {
+            for (interface_key, trait_path, sig_api, method, glued) in self.kind_methods(k) {
+                let place = format!("{}::{}", interface_key.1, method.name);
+                let saved = self.current.replace(sig_api);
+                let (inputs, result) = self.trait_signature(method, sig_api, "Self::Api", &place);
+                self.current.set(saved);
+                let rust_name = Self::method_name(method);
+                if let Some((prelude, call)) = self.driven_call(Some(k), &generic(k), &trait_path, &rust_name, &inputs, &scope, codecs, "false", None) {
+                    calls.push((format!("{place} on {}", g.kinds[k].name), prelude, check(&result, &call, &scope)));
+                }
+                if let Some(glued) = glued {
+                    makers.extend(self.makers_of(&place, Some(k), &generic(k), &trait_path, &rust_name, &inputs, &result, &glued, &scope, codecs));
+                }
+            }
+        }
+        for function in self.exported(api) {
+            let rust_name = crate::names::escaped(snake(crate::names::strip_first(&function.name, spec.function_prefixes)));
+            let mut renamed = function.clone();
+            renamed.name = crate::names::strip_first(&function.name, spec.function_prefixes).to_string();
+            let (inputs, result) = self.trait_signature(&renamed, api, "Self", &function.name);
+            if let Some((prelude, call)) = self.driven_call(None, "A", &top, &rust_name, &inputs, &scope, codecs, "false", None) {
+                calls.push((function.name.clone(), prelude, check(&result, &call, &scope)));
+            }
+            if let Ok(glued) = self.glue_of(function, &function.name) {
+                makers.extend(self.makers_of(&function.name, None, "A", &top, &rust_name, &inputs, &result, &glued, &scope, codecs));
+            }
+        }
+        let _ = writeln!(text, "/// Makes an object of every kind it can, by every method that hands one out, in rounds until none is new.\nfn make_all<A: {top}>(o: &mut Objects<A>) -> usize {{\n    for _ in 0..6 {{\n        let before = o.kinds_held();");
+        for maker in &makers {
+            let wanted: Vec<String> = maker.stores.iter().map(|(k, _)| format!("o.k{k}.is_none()")).collect();
+            let answer = if maker.fallible { "answer.ok()" } else { "Some(answer)" };
+            let _ = writeln!(text, "        // {}\n        if {} {{\n            let answer = {{\n                let o = &*o;\n                made(|| {{\n{}        let answer = {};\n        {answer}\n                }})\n            }};", maker.place, wanted.join(" || "), maker.prelude, maker.call);
+            let _ = writeln!(text, "            if let Some({}) = answer {{", maker.pattern);
+            for (kind, var) in &maker.stores {
+                let _ = writeln!(text, "                if o.k{kind}.is_none() {{\n                    o.k{kind} = Some({var});\n                }}");
+            }
+            let _ = writeln!(text, "            }}\n        }}");
+        }
+        let _ = writeln!(text, "        if o.kinds_held() == before {{\n            break;\n        }}\n    }}\n    o.kinds_held()\n}}\n");
+        let _ = writeln!(text, "/// Calls every method on every object held, and the exports, each answer checked.\nfn drive<A: {top}>(o: &Objects<A>) -> Driven {{\n    let mut driven = Driven::default();");
+        for (place, prelude, call) in &calls {
+            let _ = writeln!(text, "    // {place}\n    driven.attempt(|| {{\n{prelude}        {call}\n    }});");
+        }
+        let _ = writeln!(text, "    driven\n}}\n");
+        let _ = writeln!(text, "/// The number of methods and exports the suite calls where it holds the objects and can make the arguments.\nconst CALLS: usize = {};\n", calls.len());
+        let _ = writeln!(text, "/// Makes an object of every kind the implementation makes and calls every method of every kind and every export on\n/// them: no method panics, a failure is negative, an object handed out equals its clone.\npub fn every_method_answers<A: {top}>(api: A) {{\n    let mut o = Objects::new(api);\n    let kinds = make_all(&mut o);\n    let driven = drive(&o);\n    println!(\"SUITE {}: kinds made {{kinds}}, calls {{CALLS}}: called {{}}, skipped {{}}, panicked {{}}\", driven.called, driven.skipped, driven.panicked);\n    assert_eq!(driven.panicked, 0, \"a method panicked\");\n    assert_eq!(driven.called + driven.skipped, CALLS, \"a call was neither made nor skipped\");\n}}\n", spec.folder);
+        let _ = writeln!(text, "/// Runs each suite function above as its own test on the value an implementation gives.\n#[macro_export]\nmacro_rules! tests {{\n    ($value:expr) => {{\n        #[test]\n        fn every_method_answers() {{\n            $crate::every_method_answers($value);\n        }}\n    }};\n}}");
+        let mut imports: Vec<String> = Vec::new();
+        for other in g.apis.iter() {
+            let named = text.lines().any(|line| !line.starts_with("//") && line.contains(&format!("{}::", alias(other))));
+            if named || other.folder == "component-object-model" {
+                imports.push(format!("use {} as {};", package(other).replace('-', "_"), alias(other)));
+            }
+        }
+        Some(text.replace("@IMPORTS@", &imports.join("\n")))
+    }
+}
+
+/// Writes API `api`'s conformance crate, and has each of its implementations written in this set run it.
+pub(in crate::emit) fn write_suite(writer: &Writer<'_, '_>, api: usize, crate_folder: &Path) -> Result<String, String> {
+    let g = writer.g;
+    writer.current.set(api);
+    let spec = g.apis[api];
+    let crates = crate_folder.parent().ok_or("no crates folder")?;
+    let mut codecs = codecs(writer, crates, api);
+    // The suite names no implementation: structures it cannot default are not made, and their calls skipped.
+    codecs.decoders.clear();
+    codecs.modules.clear();
+    let Some(text) = writer.suite(api, &codecs) else { return Ok(String::new()) };
+    writer.current.set(api);
+    let folder = crate_folder.join("conformance");
+    std::fs::create_dir_all(&folder).map_err(|error| error.to_string())?;
+    std::fs::write(folder.join("suite.rs"), &text).map_err(|error| error.to_string())?;
+    let mut manifest = format!("[package]\nname = \"{}-conformance\"\ndescription = \"The conformance suite of {}'s traits.\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\npath = \"suite.rs\"\n\n[dependencies]\n", package(spec), spec.folder);
+    for other in g.apis.iter() {
+        if text.contains(&format!("use {} as", package(other).replace('-', "_"))) {
+            let path = if other.folder == spec.folder { "..".to_string() } else { format!("../../{}", other.folder) };
+            let _ = writeln!(manifest, "{} = {{ path = \"{path}\" }}", package(other));
+        }
+    }
+    let _ = writeln!(manifest, "wcontainers-byte-sink = {{ path = \"../../byte-sink\" }}\nwcontainers-byte-source = {{ path = \"../../byte-source\" }}\nwcontainers-volatile-bytes = {{ path = \"../../volatile-bytes\" }}\n\n[lints]\nworkspace = true");
+    std::fs::write(folder.join("Cargo.toml"), manifest).map_err(|error| error.to_string())?;
+    // Each implementation of this set runs the suite once.
+    let suite_crate = format!("{}_conformance", package(spec).replace('-', "_"));
+    let mut runs = Vec::new();
+    for (implementation, value) in [("hostile", format!("{}_hostile::HostileLibrary", package(spec).replace('-', "_"))), ("recorder", format!("{}_recorder::Recorder", package(spec).replace('-', "_")))] {
+        let place = crate_folder.join("implementation").join(implementation);
+        let manifest_path = place.join("Cargo.toml");
+        let Ok(mut manifest) = std::fs::read_to_string(&manifest_path) else { continue };
+        if !manifest.contains("[lib]") {
+            continue;
+        }
+        std::fs::write(place.join("conformance_run.rs"), format!("//! {}\n//!\n//! The conformance suite of {}, run on this implementation.\n\n{suite_crate}::tests!({value});\n", crate::emit::HEADER, spec.folder)).map_err(|error| error.to_string())?;
+        let test = "\n[[test]]\nname = \"conformance_run\"\npath = \"conformance_run.rs\"\n";
+        let at = manifest.find("\n[dependencies]").unwrap_or(manifest.len());
+        manifest.insert_str(at, test);
+        let dev = format!("{}-conformance = {{ path = \"../../conformance\" }}\n", package(spec));
+        if let Some(at) = manifest.find("[dev-dependencies]\n") {
+            manifest.insert_str(at + "[dev-dependencies]\n".len(), &dev);
+        } else {
+            let at = manifest.find("\n[lints]").unwrap_or(manifest.len());
+            manifest.insert_str(at, &format!("\n[dev-dependencies]\n{dev}"));
+        }
+        std::fs::write(&manifest_path, manifest).map_err(|error| error.to_string())?;
+        runs.push(implementation);
+    }
+    Ok(format!("SUITE {}: written; run by {}\n", spec.folder, if runs.is_empty() { "none".to_string() } else { runs.join(", ") }))
 }

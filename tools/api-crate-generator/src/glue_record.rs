@@ -123,7 +123,55 @@ impl wcontainers_volatile_bytes::VolatileBytes for RecordedBytes {
 }
 "#;
 
+/// Splits a list of types at its top-level commas.
+fn split_types(list: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let (mut depth, mut start) = (0_i32, 0);
+    for (at, ch) in list.char_indices() {
+        match ch {
+            '(' | '<' | '[' => depth += 1,
+            ')' | '>' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(list[start..at].trim().to_string());
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    if !list[start..].trim().is_empty() {
+        parts.push(list[start..].trim().to_string());
+    }
+    parts
+}
+
 impl Writer<'_, '_> {
+    /// A value of type `ty` the recorder can answer with: empty, none, false, zero bytes decoded or a default; none
+    /// for an object or a structure it cannot make.
+    fn made_value(&self, ty: &str) -> Option<String> {
+        let ty = ty.trim();
+        if ty.starts_with("Vec<") {
+            return Some("Vec::new()".to_string());
+        }
+        if ty.starts_with("Option<") {
+            return Some("None".to_string());
+        }
+        if let Some(inner) = ty.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
+            let parts: Option<Vec<String>> = split_types(inner).iter().map(|part| self.made_value(part)).collect();
+            return parts.map(|parts| format!("({})", parts.join(", ")));
+        }
+        if let Some(value) = self.struct_values.borrow().get(ty) {
+            return Some(value.clone());
+        }
+        // A fixed array: each element made.
+        if let Some((element, _)) = ty.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).and_then(|inner| inner.rsplit_once(';')) {
+            return self.made_value(element).map(|value| format!("core::array::from_fn(|_| {value})"));
+        }
+        if ty.contains("::structures::") || ty.contains(" as ") || ty.starts_with('<') || ty.starts_with('[') {
+            return None;
+        }
+        Some("Default::default()".to_string())
+    }
+
     /// The recorder's type of a kind, named from the recorder crate of API `from`.
     fn recorded_type(&self, kind: usize, from: usize) -> String {
         let k = &self.g.kinds[kind];
@@ -172,7 +220,11 @@ impl Writer<'_, '_> {
         };
         let Some(glued) = glued else {
             // A slot the glue does not carry is never reached through C.
-            let none = if fallback == "Default::default()" { format!("unimplemented!(\"{place} is not glued\")") } else { fallback.clone() };
+            let none = match self.made_value(result) {
+                Some(value) if fallback == "Default::default()" => value,
+                _ if fallback == "Default::default()" => format!("unimplemented!(\"{place} is not glued\")"),
+                _ => fallback.clone(),
+            };
             let _ = writeln!(text, "        {none}\n    }}");
             return text;
         };
@@ -217,6 +269,13 @@ impl Writer<'_, '_> {
                     }
                     let _ = write!(arms, "{{ return Err(E_NOINTERFACE); }}");
                     answers.push(arms);
+                }
+                Part::StructOut { .. } if fallback == "Default::default()" && self.made_value(result).is_some() => {
+                    // A structure the recorder can make: zero bytes decoded, or its default.
+                    let value = self.made_value(result).unwrap_or_default();
+                    let _ = writeln!(text, "        {value}\n    }}");
+                    let _ = name;
+                    return text;
                 }
                 Part::StructOut { .. } | Part::BoundOut { .. } => {
                     let none = if fallback == "Default::default()" { format!("unimplemented!(\"the recorder makes no structure for {place}\")") } else { fallback.clone() };
@@ -433,8 +492,18 @@ pub(in crate::emit) fn write_recorder(writer: &Writer<'_, '_>, api: usize, crate
     let g = writer.g;
     writer.current.set(api);
     let spec = g.apis[api];
+    let crates = crate_folder.parent().ok_or("no crates folder")?;
+    let modules = super::hostile::struct_values(writer, crates, api);
     let text = writer.recorder(api);
-    let text = with_recorder_imports(g, &text);
+    writer.struct_values.borrow_mut().clear();
+    let mut text = with_recorder_imports(g, &text);
+    // The direct crates' data modules, for the structures the recorder makes from zero bytes.
+    let included: String = modules.iter().filter(|(module, _)| text.contains(&format!("{module}::"))).map(|(module, from)| format!("#[path = \"{from}\"]\nmod {module};\n")).collect();
+    if !included.is_empty() {
+        let lines: Vec<&str> = text.lines().collect();
+        let at = lines.iter().position(|line| !(line.starts_with("//!") || line.starts_with("#![") || line.is_empty())).unwrap_or(lines.len());
+        text = format!("{}\n{included}\n{}\n", lines[..at].join("\n"), lines[at..].join("\n"));
+    }
     let folder = crate_folder.join("implementation").join("recorder");
     std::fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
     std::fs::write(folder.join("recorder.rs"), &text).map_err(|error| error.to_string())?;
@@ -456,11 +525,15 @@ pub(in crate::emit) fn write_recorder(writer: &Writer<'_, '_>, api: usize, crate
         }
     }
     let _ = writeln!(manifest, "wcontainers-byte-sink = {{ path = \"../../../byte-sink\" }}\nwcontainers-byte-source = {{ path = \"../../../byte-source\" }}\nwcontainers-volatile-bytes = {{ path = \"../../../volatile-bytes\" }}");
-    // The hostile tests reach the recorder through both glues: the direct crates of the set.
-    let _ = writeln!(manifest, "\n[dev-dependencies]");
+    // The direct crates of the set: their data modules make structures, and the hostile tests reach the recorder
+    // through both glues.
     for other_spec in g.apis.iter() {
+        if !manifest.contains(&format!("\n{} =", package(other_spec))) {
+            let _ = writeln!(manifest, "{} = {{ path = \"../../../{}\" }}", package(other_spec), other_spec.folder);
+        }
         let _ = writeln!(manifest, "{}-direct = {{ path = \"../../../{}/implementation/direct\" }}", package(other_spec), other_spec.folder);
     }
+    let _ = writeln!(manifest, "\n[dev-dependencies]");
     manifest.push_str("\n[lints]\nworkspace = true\n");
     std::fs::write(folder.join("Cargo.toml"), manifest).map_err(|error| error.to_string())?;
     Ok(format!("RECORDER {}: written\n", spec.folder))

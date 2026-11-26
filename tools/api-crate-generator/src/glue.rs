@@ -135,6 +135,9 @@ pub(super) struct Writer<'g, 'a> {
     current: std::cell::Cell<usize>,
     /// Whether the recorder being written is the hostile one (src/glue_hostile.rs).
     hostile: std::cell::Cell<bool>,
+    /// For the recorder and the hostile implementation: a value of each structure they can make, by its path (a
+    /// decoder of zero bytes, or `Default`).
+    struct_values: RefCell<BTreeMap<String, String>>,
 }
 
 impl<'g, 'a> Writer<'g, 'a> {
@@ -149,6 +152,7 @@ impl<'g, 'a> Writer<'g, 'a> {
             refused: RefCell::new(Vec::new()),
             current: std::cell::Cell::new(NOWHERE),
             hostile: std::cell::Cell::new(false),
+            struct_values: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -743,6 +747,6 @@ mod hostile;
 mod c_caller;
 
 pub(super) use c_caller::write_c_caller;
-pub(super) use hostile::write_hostile;
+pub(super) use hostile::{write_hostile, write_suite};
 pub(super) use record::write_recorder;
 pub(super) use write::write_direct;
