@@ -96,7 +96,9 @@ pub(crate) mod word {
     /// 1 when an indexed strip was made an indexed list ([`super::strip_program`]): the first word at
     /// `INDICES_BINDING` is the listed indices' total, and the draw's places past it up to `COUNT`
     /// hold no vertex: the vertex stage writes their records outside every clip volume, the
-    /// geometry stage closes their slots and stream output skips their primitives.
+    /// geometry stage closes their slots and stream output skips their primitives. Also 1 for a
+    /// domain stage, whose dispatch covers the most points its patches can make: the first word is
+    /// the tessellator's point total, and invocations past it end before the program runs.
     pub const LISTED_TOTAL: u32 = 12;
     /// The stream a geometry shader's replay form keeps the vertices of, for one of several streams.
     pub const STREAM: u32 = 13;
@@ -1376,6 +1378,9 @@ pub mod tess {
     /// Words of the tessellator's counts buffer before its two words per patch: the indexed indirect
     /// draw's arguments, then the draw's point total.
     pub const COUNTS_BASE: u32 = 8;
+    /// The word of the counts buffer holding the draw's point total, after the indexed indirect
+    /// draw's five arguments.
+    pub const POINT_TOTAL: u32 = 5;
     /// Words at the start of the tessellator's indices buffer before the indices: the draw's index
     /// total, then unused. The indexed indirect draw starts at this index.
     pub const INDEX_HEADER: u32 = 4;

@@ -248,6 +248,9 @@ struct Domain<B: Gpu> {
     /// Words per record it writes.
     words: u32,
     records: Option<Owned<B>>,
+    /// The tessellator's point total, copied for the dispatch to read at `INDICES_BINDING`
+    /// ([`word::LISTED_TOTAL`]).
+    total: Option<Owned<B>>,
 }
 
 /// The cull program and where the records hold what it reads.
@@ -924,6 +927,7 @@ impl<B: Gpu> Stages<B> {
                     program,
                     words: c.words,
                     records: None,
+                    total: None,
                 };
                 cull = Some(c);
                 (None, Some(domain), None)
@@ -964,6 +968,7 @@ impl<B: Gpu> Stages<B> {
                     program,
                     words: super::record_words(super::read_slots(&read, distances)),
                     records: None,
+                    total: None,
                 };
                 (geometry, Some(domain), stream)
             }
@@ -1026,8 +1031,8 @@ impl<B: Gpu> Stages<B> {
         }
         if let Some(d) = self.domain {
             backend.destroy(Object::Program(d.program));
-            if let Some(r) = d.records {
-                backend.destroy(Object::Buffer(r.buffer));
+            for owned in [d.records, d.total].into_iter().flatten() {
+                backend.destroy(Object::Buffer(owned.buffer));
             }
         }
         if let Some(s) = self.stream {
@@ -1712,25 +1717,33 @@ impl<B: Gpu> Stages<B> {
             };
             u32::try_from(words).map_err(|_| GpuError::OutOfMemory)?;
             grow(backend, &mut d.records, words * u64::from(WORD), usage)?;
+            let usage = BufferUsage::STORAGE | BufferUsage::COPY_DST;
+            grow(backend, &mut d.total, UNUSED_RANGE_BYTES, usage)?;
         }
         if let (Some(d), Some(later), Some(h), Some((points, _, _))) =
             (&self.domain, later, &self.hull, listed)
         {
             let bytes = u64::from(points) * u64::from(d.words) * u64::from(WORD);
             let out = &d.records.as_ref().unwrap().buffer;
-            let (_, tess_points, _) = h.tessellator.owned();
+            let (counts, tess_points, _) = h.tessellator.owned();
             let patches = &h.patches.as_ref().unwrap();
-            let at = ring_values(backend, &after_bytes)?;
+            // The dispatch covers the most points the patches can make; those past the
+            // tessellator's total end before the program runs.
+            let total = &d
+                .total
+                .as_ref()
+                .ok_or(GpuError::Invalid("the domain stage's point total"))?
+                .buffer;
+            let word_bytes = u64::from(WORD);
+            let total_at = u64::from(tess::POINT_TOTAL) * word_bytes;
+            backend.copy_buffer(&counts.buffer, total_at, total, 0, word_bytes);
+            let mut domain_values = after;
+            domain_values[word::LISTED_TOTAL as usize] = 1;
+            let domain_bytes = words_as_bytes(&domain_values);
+            let at = ring_values(backend, &domain_bytes)?;
             let set = backend.create_binding_set(&[
-                values_entry(&at, &after_bytes),
-                BindingEntry {
-                    binding: INDICES_BINDING,
-                    stages: StageSet::COMPUTE,
-                    resource: BindingResource::StorageBuffer {
-                        range: self.unused_range(0),
-                        writable: false,
-                    },
-                },
+                values_entry(&at, &domain_bytes),
+                storage(INDICES_BINDING, total, UNUSED_RANGE_BYTES, false),
                 storage(VERTICES_BINDING, out, bytes, true),
                 storage(PATCHES_BINDING, &patches.buffer, patches.size, false),
                 storage(POINTS_BINDING, &tess_points.buffer, tess_points.size, false),
@@ -2468,3 +2481,6 @@ pub(super) fn grow<B: Gpu>(
     *owned = Some(Owned { buffer, size });
     Ok(())
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests;
