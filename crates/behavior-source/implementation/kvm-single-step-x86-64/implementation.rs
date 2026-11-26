@@ -37,6 +37,7 @@ use wcontainers_kvm::Kvm;
 use wcontainers_kvm_direct::DirectKvm;
 use wcontainers_processor_architecture::{MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture};
 use wcontainers_processor_architecture_x86_64::memory::{read_bytes, read_permission, report_changed_bytes};
+use wcontainers_processor_architecture_x86_64::xsave;
 use wcontainers_processor_architecture_x86_64::{
     Access, DataAccess, Exception, Flags, GENERAL_PURPOSE_REGISTERS, InstructionFetch, MXCSR_DEFAULT,
     CODE_SEGMENT, PagePermission, Processor, STACK_POINTER, VECTOR_REGISTERS, X86_64,
@@ -220,6 +221,9 @@ const SYSTEM_CALL_TARGET: u32 = 0xC000_0081;
 const LONG_MODE_SYSTEM_CALL_TARGET: u32 = 0xC000_0082;
 const SYSTEM_CALL_FLAG_MASK: u32 = 0xC000_0084;
 const SYSTEM_CALL_MASKED_FLAGS: u64 = TRAP | INTERRUPT_ENABLE | 1 << 10 | IO_PRIVILEGE | 1 << 14 | RESUME | 1 << 18;
+/// IA32_UMWAIT_CONTROL, and the value Linux gives it: UMWAIT and TPAUSE wait at most 100,000 TSC cycles, C0.2 allowed.
+const WAIT_CONTROL: u32 = 0xE1;
+const LINUX_WAIT_CONTROL: u64 = 100_000;
 /// R11, where SYSCALL saves RFLAGS.
 const SAVED_FLAGS: usize = 11;
 /// DR6.BS: the #DB is the trap after a single step.
@@ -333,6 +337,7 @@ impl SingleStepMachine {
             (SYSTEM_CALL_TARGET, KERNEL_CODE_SELECTOR << 32),
             (LONG_MODE_SYSTEM_CALL_TARGET, handler.system_call),
             (SYSTEM_CALL_FLAG_MASK, SYSTEM_CALL_MASKED_FLAGS),
+            (WAIT_CONTROL, LINUX_WAIT_CONTROL),
         ]
         .map(|(index, data)| kvm_msr_entry { index, data, ..kvm_msr_entry::default() })
         .to_vec();
@@ -533,7 +538,7 @@ impl SingleStepMachine {
         let slot = to_slot(processor, self.read_page_table());
         // The handler reads the image before (up to its last component loaded) and the fields up to the registers
         // before; it writes the rest.
-        let end = to_image_end(to_loaded_components(processor));
+        let end = to_image_end(processor.xinuse & SAVED_COMPONENTS);
         self.write_bytes(SLOT, &slot.before_xsave.as_bytes()[..end]);
         let inputs = offset_of!(Slot, page_table)..offset_of!(Slot, after);
         self.write_bytes(SLOT + inputs.start as u64, &slot.as_bytes()[inputs]);
@@ -999,10 +1004,10 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
         let at = area + index * VECTOR_HALF_BYTES;
         image.bytes[at..at + VECTOR_HALF_BYTES].copy_from_slice(&value.to_le_bytes());
     }
-    // Every saved component is loaded from the image rather than put in its initial state, but an AVX-512 component
-    // that holds zeros, whose initial state is the same.
+    // XINUSE's components are loaded from the image and the others put in their initial configuration, which leaves
+    // their bits of XINUSE clear.
     image.bytes[XSAVE_PKRU..XSAVE_PKRU + size_of::<u32>()].copy_from_slice(&processor.pkru.to_le_bytes());
-    image.bytes[XSAVE_HEADER..XSAVE_HEADER + size_of::<u64>()].copy_from_slice(&to_loaded_components(processor).to_le_bytes());
+    image.bytes[XSAVE_HEADER..XSAVE_HEADER + size_of::<u64>()].copy_from_slice(&(processor.xinuse & SAVED_COMPONENTS).to_le_bytes());
     Slot {
         before_xsave: image,
         after_xsave: image,
@@ -1015,15 +1020,6 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
         after: registers,
         reserved: [0; 7],
     }
-}
-
-/// The components the handler loads from the image: every saved one but each AVX-512 component that holds zeros.
-fn to_loaded_components(processor: &Processor) -> u64 {
-    let zero = |held: bool, component: u64| if held { 0 } else { component };
-    SAVED_COMPONENTS
-        & !zero(processor.opmask_registers.iter().any(|value| *value != 0), OPMASK_COMPONENT)
-        & !zero(processor.zmm_upper_halves.iter().flatten().any(|part| *part != 0), ZMM_HIGH_256_COMPONENT)
-        & !zero(processor.high_vector_registers.iter().flatten().any(|part| *part != 0), HIGH_16_ZMM_COMPONENT)
 }
 
 /// The bytes of the image up to the end of the last component the header names, AVX's at least.
@@ -1074,6 +1070,15 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
     if processor.mxcsr > u32::from(u16::MAX) {
         return Err(Refusal::MxcsrReservedBits(processor.mxcsr));
     }
+    if processor.xcr0 != EXTENDED_CONTROL_0 {
+        return Err(Refusal::NotModeled("XCR0 other than the source's, Linux's without AMX"));
+    }
+    if !xsave::is_consistent(processor) {
+        return Err(Refusal::NotModeled("XINUSE with a bit outside XCR0, or clear for a component out of its initial configuration"));
+    }
+    if processor.xsave_tracking.is_some() {
+        return Err(Refusal::NotModeled("an XRSTOR tracked for XSAVEOPT, which this source cannot load"));
+    }
     if processor.code_segment != CODE_SEGMENT {
         return Err(Refusal::NotModeled("CS other than Linux's 64-bit code segment, which every state holds"));
     }
@@ -1107,8 +1112,7 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 /// For a MOV SS that loads SS (it steps two instructions) and SYSENTER (it enters ring 0 at MSRs the source does not
 /// set as Linux does). VMCALL runs, which KVM answers as a hypercall, and VMMCALL, which raises #UD once KVM's quirk
 /// that rewrites it is off. Then for each instruction whose result under Linux differs from the source's guest, the table of settings
-/// on the page says why: UMWAIT and TPAUSE, XGETBV, the
-/// XSAVE family, INT 0x80, and AMX's. LAR, LSL, VERR and VERW run: the guest's descriptor table is Linux's. SGDT, SIDT and SMSW run: the chip's #GP under
+/// on the page says why: XRSTOR, INT 0x80, and AMX's. LAR, LSL, VERR and VERW run: the guest's descriptor table is Linux's. SGDT, SIDT and SMSW run: the chip's #GP under
 /// UMIP is the program's outcome at this level, as every other exception is, whatever Linux then does with it.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
     let address = processor.instruction_pointer;
@@ -1136,17 +1140,10 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         // Linux sets IA32_SYSENTER_CS, so a 64-bit SYSENTER enters its kernel; the source leaves it 0, where it faults.
         Mnemonic::Sysenter => Some("it enters ring 0 at SYSENTER MSRs the source does not set as Linux does"),
         // RDTSC, RDTSCP, RDPID, RDRAND and RDSEED run: their behaviors do not compare the registers the time,
-        // IA32_TSC_AUX and the random source decide.
-        Mnemonic::Umwait | Mnemonic::Tpause => Some("its result depends on the time, which is not in the state"),
-        Mnemonic::Xgetbv => Some("XCR0 under Linux also enables AMX's tiles, and XINUSE is not in the state"),
-        Mnemonic::Xsave
-        | Mnemonic::Xsave64
-        | Mnemonic::Xsaveopt
-        | Mnemonic::Xsaveopt64
-        | Mnemonic::Xsavec
-        | Mnemonic::Xsavec64
-        | Mnemonic::Xrstor
-        | Mnemonic::Xrstor64 => Some("it reaches components the state does not hold, under an XCR0 that is not Linux's"),
+        // IA32_TSC_AUX and the random source decide; nor do UMWAIT's and TPAUSE's the CF the time decides.
+        Mnemonic::Xrstor | Mnemonic::Xrstor64 => {
+            Some("it leaves XSAVEOPT's tracking, which this source cannot read back before the halt resets it")
+        }
         Mnemonic::Int if decoded.immediate8() == LINUX_SYSTEM_CALL_VECTOR => {
             Some("Linux takes it as a 32-bit system call")
         }
@@ -1246,6 +1243,11 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
             u32::from_le_bytes(after_x87[XSAVE_PKRU..XSAVE_PKRU + size_of::<u32>()].try_into().expect("four bytes"))
         },
         code_segment: after.code_segment as u16,
+        xcr0: EXTENDED_CONTROL_0,
+        xinuse: saved & SAVED_COMPONENTS,
+        // The tracking a ring 3 XRSTOR would leave is refused; the handler's own XRSTOR64 at ring 0 leaves none a
+        // program's XSAVEOPT can use.
+        xsave_tracking: None,
     })
 }
 

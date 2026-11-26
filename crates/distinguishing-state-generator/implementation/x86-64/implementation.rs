@@ -50,7 +50,7 @@ use iced_x86::OpCodeOperandKind;
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_instruction_input_domain_x86_64::integer::to_access_bytes;
-use wcontainers_instruction_input_domain_x86_64::{segment, string, system};
+use wcontainers_instruction_input_domain_x86_64::{segment, string, system, xsave};
 use wcontainers_instruction_input_domain_x86_64::{
     Access, AccessPlacement, AddressSize, Addressing, CodeLayout, DataPlacement, FlagSet, LOWER_DATA_ADDRESS, OperandSize, OperandType,
     OperandValue, SegmentChoice, UPPER_DATA_ADDRESS, ValueSet, X86_64InputDomain, to_data_address,
@@ -128,7 +128,8 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                 || is_misaligned_under_alignment_check(&operands, width)
                 || string::decides_without_data(instruction, &operands)
                 || system::decides_without_data(instruction, &operands)
-                || segment::decides_without_data(instruction, &operands);
+                || segment::decides_without_data(instruction, &operands)
+                || xsave::decides_without_data(instruction, &operands);
             // Whether the structure operand at the position takes another value than its turn.
             let out_of_turn = |position: usize| {
                 let others = chosen.iter().enumerate().filter(|(other, _)| *other != position).map(|(_, value)| value).sum::<usize>();
@@ -252,7 +253,8 @@ fn combine(counts: Vec<usize>) -> Vec<Vec<usize>> {
 }
 
 /// Whether the operand holds data the instruction computes with, rather than where things lie or what decides them;
-/// a bit test's offset moves its access, so it is not data.
+/// a bit test's offset moves its access, so it is not data, nor is an XSAVE form's request, which decides how far its
+/// area's access reaches.
 fn is_data(operand_type: OperandType) -> bool {
     match operand_type {
         OperandType::RegisterValue(_, set) => set != ValueSet::BitOffset,
@@ -292,7 +294,13 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::FarPointer
         | OperandType::IretFrame
         | OperandType::HypercallNumber
-        | OperandType::KeyRights => true,
+        | OperandType::KeyRights
+        | OperandType::RegisterContents
+        | OperandType::OldStateBitmap
+        | OperandType::RestoredImage
+        | OperandType::ControlIndex
+        | OperandType::WaitSource
+        | OperandType::WaitDeadline => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }

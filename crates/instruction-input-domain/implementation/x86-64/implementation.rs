@@ -43,6 +43,7 @@ use wcontainers_processor_architecture_x86_64::mmx_convert::find_mmx_convert_for
 use wcontainers_processor_architecture_x86_64::descriptor::find_descriptor_form;
 use wcontainers_processor_architecture_x86_64::reciprocal::find_reciprocal_form;
 use wcontainers_processor_architecture_x86_64::segment::find_segment_form;
+use wcontainers_processor_architecture_x86_64::xsave::find_state_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
@@ -72,6 +73,7 @@ mod vex_upper;
 mod vnni;
 pub mod x87;
 pub mod x87_arithmetic;
+pub mod xsave;
 #[cfg(test)]
 mod tests;
 
@@ -286,6 +288,22 @@ pub enum OperandType {
     HypercallNumber,
     /// PKRU with EAX, ECX and EDX for RDPKRU and WRPKRU.
     KeyRights,
+    /// Where an XSAVE form's area lies, for a form that reads it or writes it.
+    XsaveArea { read: bool },
+    /// EDX:EAX's request of an XSAVE form.
+    XsaveRequest,
+    /// What the XSAVE components hold and which of them XINUSE marks, with MXCSR.
+    RegisterContents,
+    /// The XSTATE_BV XSAVE and XSAVEOPT find in the area.
+    OldStateBitmap,
+    /// The header and image XRSTOR reads.
+    RestoredImage,
+    /// XGETBV's ECX.
+    ControlIndex,
+    /// UMWAIT's or TPAUSE's source register and its value.
+    WaitSource,
+    /// UMWAIT's or TPAUSE's deadline in EDX:EAX.
+    WaitDeadline,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -485,6 +503,14 @@ pub enum OperandValue {
     KeyRights { pkru: u32, accumulator: u64, counter: u64, data: u64 },
     IretFrame(segment::IretFrame),
     CallStack(segment::CallStack),
+    XsaveArea(xsave::AreaPlacement),
+    RegisterContents(xsave::RegisterContents),
+    /// The XSTATE_BV written over the area's header, or `None` to keep the data page's bytes.
+    OldStateBitmap(Option<u64>),
+    RestoredImage(xsave::RestoredImage),
+    /// EDX:EAX's request of an XSAVE form, which decides how far its access reaches.
+    XsaveRequest(u64),
+    WaitSource { register: usize, value: u64 },
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -561,6 +587,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_segment_form(instruction) {
             return segment::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_state_form(instruction) {
+            return xsave::list_operand_types(form).into_iter();
         }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
@@ -808,7 +837,16 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::CallStack => segment::generate_call_stacks(),
             OperandType::FrameLayout { bytes } => segment::generate_frame_layouts(bytes),
             OperandType::HypercallNumber => system::generate_hypercall_numbers(),
-            OperandType::KeyRights => system::generate_key_rights(),        };
+            OperandType::KeyRights => system::generate_key_rights(),
+            OperandType::XsaveArea { read } => xsave::generate_areas(read),
+            OperandType::XsaveRequest => xsave::generate_requests(),
+            OperandType::RegisterContents => xsave::generate_contents(),
+            OperandType::OldStateBitmap => xsave::generate_old_bitmaps(),
+            OperandType::RestoredImage => xsave::generate_images(),
+            OperandType::ControlIndex => xsave::generate_control_indices(),
+            OperandType::WaitSource => xsave::generate_wait_sources(),
+            OperandType::WaitDeadline => xsave::generate_deadlines(),
+        };
         values.into_iter()
     }
 
@@ -816,13 +854,16 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
     /// state also holds ZMM's bits above 255 and ZMM16 to ZMM31, which no VEX form names (see `vex_upper`).
     ///
     /// A register named twice holds the value of its last register value operand; a base register holds what puts
-    /// the access at its placement, whatever else names it.
+    /// the access at its placement, whatever else names it. XINUSE marks every component out of its initial
+    /// configuration besides those the form's operands mark.
     ///
     /// # Panics
     ///
     /// When the operands are not one value of each operand type the form lists, in its order.
     fn build_state(&self, instruction: Instruction, operands: &[OperandValue]) -> ExecutionState<'static, X86_64> {
-        vex_upper::fill_upper_bits(self.build_form_state(instruction, operands))
+        let mut state = vex_upper::fill_upper_bits(self.build_form_state(instruction, operands));
+        wcontainers_processor_architecture_x86_64::xsave::mark_components_in_use(&mut state.processor);
+        state
     }
 }
 
@@ -900,6 +941,9 @@ impl X86_64InputDomain {
         }
         if let Some(form) = find_segment_form(instruction) {
             return segment::build_state(form, &typed);
+        }
+        if let Some(form) = find_state_form(instruction) {
+            return xsave::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -1082,6 +1126,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_descriptor_form(instruction).is_some()
         || find_reciprocal_form(instruction).is_some()
         || find_segment_form(instruction).is_some()
+        || find_state_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 

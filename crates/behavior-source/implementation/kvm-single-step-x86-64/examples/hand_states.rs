@@ -55,6 +55,7 @@ mod on_chip {
             ..ZERO_PROCESSOR
         };
         set(&mut processor);
+        wcontainers_processor_architecture_x86_64::xsave::mark_components_in_use(&mut processor);
         let code_page = address & !(PAGE - 1);
         let mut memory = vec![MemoryDelta::PermissionAssignment {
             addresses: code_page..code_page + PAGE,

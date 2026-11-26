@@ -93,6 +93,9 @@ mod on_chip {
             data_segments: expected.data_segments,
             code_segment: expected.code_segment,
             pkru: expected.pkru,
+            xcr0: expected.xcr0,
+            xinuse: expected.xinuse,
+            xsave_tracking: expected.xsave_tracking,
         }
     }
 

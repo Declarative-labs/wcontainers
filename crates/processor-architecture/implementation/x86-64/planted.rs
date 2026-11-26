@@ -55,6 +55,8 @@ pub enum Origin {
     EvexFirstHalf,
     /// The second EVEX pass: AVX512-FP16 and the rest of AVX-512's second half, and the small sets left.
     EvexRest,
+    /// The family of XCR0, XINUSE and the XSAVE forms, and of UMWAIT and TPAUSE.
+    StateAndXsave,
 }
 
 /// The forms a bug shows on.
@@ -1242,6 +1244,40 @@ pub enum Bug {
     MoveWordKeepsUpperBits,
     /// VRANGE's sign control 0 keeps the selected element's sign rather than the first source's.
     RangeSignFromSelected,
+    /// An instruction that writes a component with the value it held leaves the component's XINUSE bit clear.
+    InUseIgnoresSameValueWrites,
+    /// XGETBV with ECX 1 gives XCR0 whole.
+    ControlReadIgnoresInUse,
+    /// XGETBV with ECX 1 sets SSE's bit from XINUSE alone, whatever MXCSR holds.
+    ControlReadIgnoresMxcsr,
+    /// XSAVE and XSAVEOPT clear the header's bits outside the request.
+    SaveHeaderDropsUnrequested,
+    /// XSAVE and XSAVEOPT save MXCSR only when SSE is requested, not for AVX alone.
+    SaveMxcsrOnlyWithSse,
+    /// XSAVEOPT saves the components in their initial configuration too.
+    OptimizedSavesInitial,
+    /// XSAVEC leaves SSE's bit to XINUSE whatever MXCSR holds.
+    CompactedIgnoresMxcsr,
+    /// XSAVEC puts each component at its standard offset.
+    CompactedStandardOffsets,
+    /// The family's request takes EAX as its upper half and EDX as its lower.
+    SaveRequestHalvesSwapped,
+    /// XSAVE, XSAVEC and XSAVEOPT without REX.W save FIP and FDP whole.
+    NarrowSaveWidePointers,
+    /// The family's area needs only 16-byte alignment.
+    AreaAlignedToSixteen,
+    /// XRSTOR takes an XSTATE_BV with a bit outside XCR0.
+    RestoreAcceptsUnenabledComponents,
+    /// XRSTOR loads MXCSR only when SSE is requested.
+    RestoreMxcsrOnlyWithSse,
+    /// UMWAIT and TPAUSE keep OF, SF, ZF, AF and PF.
+    WaitKeepsFlags,
+    /// UMWAIT and TPAUSE take a source with bits above bit 0.
+    WaitIgnoresReservedBits,
+    /// The family's page fault beyond the area's first page is reported at the lowest byte that faults.
+    AreaFaultsAtLowestByte,
+    /// VZEROUPPER tracks SSE as initial too.
+    ZeroUpperTracksSseInitial,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1818,6 +1854,40 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexUnsignedIndefiniteSigned, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), Origin::EvexRest),
     row(Bug::HalfToSingleReportsDenormal, "VCVTPH2PS", Family::Evex(|form| !form.reports_denormal()), Origin::EvexRest),
     row(Bug::IntegerToHalfOverflowExact, "VCVTW2PH to VCVTUQQ2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { from: Number::Signed(_) | Number::Unsigned(_), to: Number::Float(Precision::Half), .. }))), Origin::EvexRest),
+    row(Bug::ControlReadIgnoresInUse, "XGETBV", Family::Forms(&[Instruction::Xgetbv]), Origin::StateAndXsave),
+    row(Bug::ControlReadIgnoresMxcsr, "XGETBV", Family::Forms(&[Instruction::Xgetbv]), Origin::StateAndXsave),
+    row(Bug::SaveHeaderDropsUnrequested, "XSAVE, XSAVEOPT", Family::Forms(STANDARD_SAVES), Origin::StateAndXsave),
+    row(Bug::SaveMxcsrOnlyWithSse, "XSAVE, XSAVEOPT", Family::Forms(STANDARD_SAVES), Origin::StateAndXsave),
+    row(Bug::OptimizedSavesInitial, "XSAVEOPT", Family::Forms(&[Instruction::XsaveoptMemmxsave, Instruction::Xsaveopt64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::CompactedIgnoresMxcsr, "XSAVEC", Family::Forms(&[Instruction::XsavecMemmxsave, Instruction::Xsavec64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::CompactedStandardOffsets, "XSAVEC", Family::Forms(&[Instruction::XsavecMemmxsave, Instruction::Xsavec64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::SaveRequestHalvesSwapped, "XSAVE family", Family::Forms(XSAVE_FAMILY), Origin::StateAndXsave),
+    row(Bug::NarrowSaveWidePointers, "XSAVE, XSAVEC, XSAVEOPT", Family::Forms(&[Instruction::XsaveMemmxsave, Instruction::XsaveoptMemmxsave, Instruction::XsavecMemmxsave]), Origin::StateAndXsave),
+    row(Bug::AreaAlignedToSixteen, "XSAVE family", Family::Forms(XSAVE_FAMILY), Origin::StateAndXsave),
+    row(Bug::RestoreAcceptsUnenabledComponents, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::RestoreMxcsrOnlyWithSse, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::WaitKeepsFlags, "UMWAIT, TPAUSE", Family::Forms(&[Instruction::UmwaitGpr32, Instruction::TpauseGpr32u32]), Origin::StateAndXsave),
+    row(Bug::WaitIgnoresReservedBits, "UMWAIT, TPAUSE", Family::Forms(&[Instruction::UmwaitGpr32, Instruction::TpauseGpr32u32]), Origin::StateAndXsave),
+    row(Bug::AreaFaultsAtLowestByte, "XSAVE family", Family::Forms(XSAVE_FAMILY), Origin::StateAndXsave),
+    row(Bug::ZeroUpperTracksSseInitial, "VZEROUPPER", Family::Forms(&[Instruction::Vzeroupper]), Origin::StateAndXsave),
+];
+
+const STANDARD_SAVES: &[Instruction] = &[
+    Instruction::XsaveMemmxsave,
+    Instruction::Xsave64Memmxsave,
+    Instruction::XsaveoptMemmxsave,
+    Instruction::Xsaveopt64Memmxsave,
+];
+
+const XSAVE_FAMILY: &[Instruction] = &[
+    Instruction::XsaveMemmxsave,
+    Instruction::Xsave64Memmxsave,
+    Instruction::XsaveoptMemmxsave,
+    Instruction::Xsaveopt64Memmxsave,
+    Instruction::XsavecMemmxsave,
+    Instruction::Xsavec64Memmxsave,
+    Instruction::XrstorMemmxsave,
+    Instruction::Xrstor64Memmxsave,
 ];
 
 const SEGMENT_LOADS: &[Instruction] = &[
