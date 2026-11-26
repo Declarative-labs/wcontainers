@@ -1,6 +1,8 @@
-//! The native reference runner, for real Linux on the guest's CPU: ARM64 (in Docker on an ARM64 host) or
-//! x86-64 (over SSH on an x86-64 machine). One program; its per-CPU part is the module `cfg(target_arch)`
-//! chooses, `machine`, whose `Cpu` gives the same items for each CPU.
+//! The native reference runner, for real Linux on the guest's CPU.
+//!
+//! It runs on ARM64 (in Docker on an ARM64 host) or x86-64 (over SSH on an x86-64 machine). One program; its
+//! per-CPU part is the module `cfg(target_arch)` chooses, `machine`, whose `Cpu` gives the same items for
+//! each CPU.
 //!
 //! `wcontainers-reference serve` speaks the wire of `layout.rs` on stdin and stdout until stdin ends.
 //!
