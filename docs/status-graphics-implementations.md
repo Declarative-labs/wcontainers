@@ -103,6 +103,164 @@ run named here are in the scratch folder graphics-implementations/.
   imports to the data modules; at GI4 move to `crates/gpu/implementation/metal`, export only `MetalGpu` and its
   config, drop the inherent `new`, and run the conformance crate's `tests!` from its suite.
 
+## The third run (2026-11-26): GI3, GI4 and GI5 done, GI6 measured
+
+### The last check's blocking point
+
+- It found one: the run did one step and stopped although nothing waited. This run took GI3 to its end and went on
+  through GI4 and GI5 and GI6's measurement. The check's own jobs (gi-check-r2) were stopped by the machines after
+  51 s and 58 s (exit 143), so they hold no other finding.
+- His main ac696ea19 ("verus compat", crates/executor/interface.rs only) was merged in first (65104afb4); no
+  graphics crate names the executor.
+
+### GI3, gpu as the interface crate (bcf7e0175)
+
+- crates/gpu: `[lib] path = "interface.rs"` (the tool's template, written by hand: the tool is not run on the Mac).
+  interface.rs holds `Gpu`, `StandaloneGpu`, the call data (`IndexSource`, `RingKind`, `FanOrLoop`, `ClearValue`,
+  `PrepareDesc`, `Object`) and the four constants. Twelve `pub mod` data files: caps, draw, error, format, helpers,
+  occlusion, passes, reflect, resource, shader, slow, state. Users import from them (`wcontainers_gpu::format::Format`).
+- The shared code is impl blocks of the interface's own types in sibling files (the 14:10 ruling): caps_methods,
+  defaults (the provided methods' helpers and `Helpers::generate_mips_by_draws`), format_methods
+  (`Format::color_target_bytes`), helpers_methods, occlusion_methods, passes_methods, reflect_methods
+  (`ShaderStage::helper_binding`), resource_methods, shader_methods; tests in defaults/tests.rs,
+  helpers_methods/tests.rs and slow_tests.rs. The free functions became associated functions of those types.
+- Plain data needs public fields, so `Helpers`, `PassTracker`, `OcclusionCounter` and their parts are public now:
+  `Builtin`, `MipRead`, `Builtins`, `HelperRing`, `KeptRange`, `KeptDraw`, `PooledTexture`, `TemporaryTarget`,
+  `OpenPass`, `PassQueries` (renamed from the private names so that no glob import meets `Range` or `Open`).
+- Front hunks: imports and paths only (MEASURED: every changed line outside the graphics crates is a `use` line or
+  a path, or the same statement rewrapped by rustfmt), in direct3d-11, direct3d-12, directx,
+  directx-graphics-infrastructure.
+- MEASURED, both machines: every graphics package checks with `--all-targets` exactly as after GI1 (gpu-webgl's
+  library 166 errors, 165 of them unsafe; shaders through it; nir with Mesa 59; opengl through nir); gpu 37,
+  gpu-test 204, direct3d-11 69, directx-graphics-infrastructure 13, graphics-test 16, shader-converters 7 and 7
+  pass; scratch copy: shaders 157 (5 ignored), gpu-webgl 17, opengl 11, nir 41 (x86-64; ARM64 does not link, as
+  before), wasm32 exit 0; lavapipe 124 passed, 4 failed (GI2's four); clippy `-D warnings` and fmt exit 0.
+- Linter da55b9d7 on crates/gpu: interface_item 0, item_out_of_order 0 (`cargo reviewable format` changed nothing),
+  stray_source 12 (the sibling files above, by the 14:10 ruling, which the linter does not know yet; the linter's
+  branch `ruled-2026-11-25` accepts own-type impl blocks), explicit_shared_error 1 (`GpuError` is the error of 31
+  methods; the rule's exclusion needs his word, so it is listed for his review of interface.rs).
+
+### GI4, the conformance crate and three implementations (44f91fef7)
+
+- crates/gpu/conformance (`wcontainers-gpu-conformance`, only target suite.rs): gpu-test's suite and its draws and
+  routes in one file (the linter takes suite functions only from suite.rs), each suite function taking its back end
+  by value; `suite!` is `tests!($value; StandaloneGpu: yes)` in the tool's fixed shape. gpu-test's `Host` trait is
+  gone. `present_shows_the_frame` needed the host to read its window, so the suite has `presents_cleared_frames`
+  (window 1, four surface calls, device still working) and each implementation reads its own window in its own test
+  (recorder: unit test; webgpu: tests/surface.rs and tests/present.rs; webgl: tests/suite.rs).
+- Seven suite functions added so the suite calls every method (`slow_paths_are_counted_and_warned_once`,
+  `ring_writes_place_each_part_at_an_aligned_offset`, `binding_sets_of_one_layout_share_its_key`,
+  `fences_are_done_once_waited_on`, `fans_cover_their_triangles`, `clear_texture_fills_every_texel`,
+  `absent_abilities_answer_absent`). 51 suite tests.
+- crates/gpu/implementation/recording (`wcontainers-gpu-recording`, was gpu-test): `Recorder` and `RecorderConfig`
+  are declared in implementation.rs, their fields crate-private; the old tests are unit tests (unit_tests/);
+  conformance_run.rs is one invocation. The package wcontainers-gpu-test is gone.
+- crates/gpu/implementation/webgpu and webgl (packages keep their names): moved as folders, every path out of them
+  two levels deeper. `WebGpuConfig` is plain data now (`backends`, `software`): `new` opens the adapter and device
+  itself (a native wgpu request answers at once), so conformance_run.rs is one invocation. The browser builds from its
+  own device through the inherent constructor.
+- webgl keeps a private `Host` trait in examples/common/checks.rs (its own checks make two devices and read a window;
+  moved there from gpu-test, not new): a `trait_outside_interface` to settle at GI7. Its ANGLE host moved to
+  examples/common/angle.rs, with the one Windows `unsafe` line (`add_window`); webgl's count is unchanged (160).
+- MEASURED, both machines: recording 212 (161 unit, 51 suite), gpu 37, direct3d-11 69, dxgi 13, graphics-test 16;
+  webgpu on lavapipe 131 passed, 5 failed, 2 ignored: GI2's four and `presents_cleared_frames`, which fails for the
+  same reason as `present_shows_the_frame` (no window on the build machines: "no window of that number was
+  registered"); scratch copy shaders 157, gpu-webgl 17, opengl 11, nir 41 (x86-64), wasm32 exit 0; clippy and fmt
+  clean.
+- Linter on crates/gpu at GI4: trait_not_implemented 0, conformance_missing 0. conformance_not_run 3:
+  webgl/conformance_run.rs starts with `#![cfg(windows)]` (ANGLE is Windows only; without it the suite fails on
+  Linux), and the two browser pages (webgpu examples/scenes/suite.rs, webgl examples/browser.rs) call suite functions
+  one per page. conformance_untested_method 1: `StandaloneGpu::new`, which the tool's fixed shape gives no group test
+  (the same finding his shader-converters interface has). Not in GI4's bar and listed: public_outside_interface
+  (the implementations' inherent constructors and methods; recording 123, webgpu 175), implementation_folder 2
+  (webgpu's and webgl's own test and example targets), unparsed 63 (`#[path]` into graphics-test).
+
+### For the Metal track (what section 4 of its status lists, checked against this layout)
+
+- `crates/gpu/interface.rs` exists; the imports become `wcontainers_gpu::{Gpu, StandaloneGpu, caps::Features,
+  error::GpuError, resource::BindingEntry}`.
+- crates/gpu/implementation/metal is the folder; members already match `crates/*/implementation/*`.
+- conformance_run.rs must be one invocation, e.g. `wcontainers_gpu_conformance::tests!(<wcontainers_gpu_metal::
+  MetalGpu<..> as wcontainers_gpu::StandaloneGpu>::new(..config..).expect(".."); StandaloneGpu: yes);`. The shared
+  suite's six new programs go into crates/gpu/conformance/suite.rs (one file), each suite function taking `mut b: B`,
+  and into `tests!` in file order. `presents_cleared_frames` presents into window 1, so a value made for the suite has
+  window 1 where it can.
+- New provided methods (GI5) have defaults, so Metal need add nothing.
+
+### GI5, guest bytes through VolatileBytes (b62be23ec)
+
+- `Gpu::write_buffer_from`, `write_texture_from` and `finish_read_into` take `&impl VolatileBytes`; the defaults copy
+  out once and call today's methods. gpu depends on wcontainers-volatile-bytes (workspace crate).
+- WebGpu overrides `write_buffer_from` (a write the queue takes now goes from the bytes into wgpu's staging memory
+  through `read_to` and a sink calling `queue.write_buffer`, one copy) and `finish_read_into` (a mapped read back of
+  one run goes from the mapping into the bytes, one copy). Texture writes keep the default: wgpu has no write-with
+  for textures.
+- Suite: three tests with bytes that change during the call (`Drifting`: every byte goes up by one after each read):
+  `buffer_writes_from_changing_bytes_land_as_held`, `texture_writes_from_changing_bytes_land_as_held`,
+  `read_backs_finish_into_changing_bytes`. MEASURED pass on recording (215) and webgpu on lavapipe (134 passed, the
+  same 5 failed) on both machines.
+- MEASURED (webgpu tests/volatile.rs, release, lavapipe, 64 x 4 MiB, three runs):
+
+| machine | write, copied out first | write, copied once | saved | finish read, copied out | finish read, once | saved |
+|---|---|---|---|---|---|---|
+| x86-64 | 295,234 to 301,859 ns/MiB | 164,437 to 172,549 | 122,685 to 137,116 | 190,685 to 195,191 | 76,049 to 86,009 | 109,182 to 119,023 |
+| ARM64 | 135,026 to 144,851 | 77,292 to 79,729 | 55,296 to 66,126 | 94,008 to 105,011 | 37,849 to 39,010 | 56,159 to 66,643 |
+
+### GI6, shaders on the contained converters: the measurement
+
+- conversion_time (crates/shaders/examples) now reports the 99th percentile beside the 95th. Release, the corpora
+  on the machines (/work/probes/shaders-corpus: dxbc 191, games 973, runner 3,020 files), each converted shader's
+  first conversion (what a program pays; conversions are cached), median / 99th percentile / worst, MEASURED:
+
+| x86-64 | linked | contained |
+|---|---|---|
+| process's first conversion | 0.7 to 1.0 ms | 149 to 160 ms (the module's compile) |
+| corpus DXBC (164) | 122 / 356 / 408 us | 311 / 641 / 782 us |
+| games DXBC (467) | 286 / 15,421 us / 16.7 s | 520 / 28,816 us / 38.2 s (bf4b9f4770dfd7ca.dxbc) |
+| games DXIL (350) | 493 / 39,095 / 43,247 us | 867 / 49,167 / 51,277 us |
+| runner DXBC (1,399) | 157 / 556 / 1,001 us | 304 / 867 / 1,695 us |
+| runner DXIL (1,327) | 230 / 562 / 687 us | 482 / 876 / 1,048 us |
+| all first conversions summed | games DXBC 17.2 s, DXIL 0.76 s; runner 0.57 s | games DXBC 39.0 s, DXIL 1.07 s; runner 1.12 s |
+
+| ARM64 (95th percentile; the run started before the 99th was added) | linked | contained |
+|---|---|---|
+| process's first conversion | 0.5 to 0.9 ms | 316 to 328 ms |
+| corpus DXBC (164) | 113 / 266 (95th) / 411 us | 285 / 540 (95th) / 849 us |
+| games DXBC (467) | 289 / 2,706 (95th) us / 16.4 s | 528 / 5,303 (95th) us / 48.7 s |
+| games DXIL (350) | 487 / 5,240 (95th) / 41,953 us | 927 / 9,564 (95th) / 60,100 us |
+| runner DXBC (1,399) | 131 / 322 (95th) / 921 us | 231 / 532 (95th) / 1,950 us |
+| runner DXIL (1,327) | 166 / 315 (95th) / 609 us | 384 / 591 (95th) / 942 us |
+
+- The two routes' outputs: MEASURED (x86-64), the corpus test over all nine corpora with every written file kept
+  (`WCONTAINERS_SHADERS_OUT`), linked and contained: 13 of 13 tests pass on each, 4,557 files each, `diff -r` 0
+  lines. So the 122 of 1,284 converter calls whose bytes differ (graphics-layout pass 2: SPIR-V ids numbered
+  differently, DXBC IR instructions in another order, lengths equal) give the same WGSL, GLSL, verdicts and cache
+  records: INFERRED from that, the differences are in numbering and order only (C++ leaves the order of
+  evaluation of call arguments unspecified, and the host compiler and wasi-sdk's clang choose differently).
+- Fuzz, contained route, ARM64, 12,000 cases at the seeds 141421, 2236067 and 1732050: each seed passes (10 of 10 tests; 4,584 s, 6,091 s and 4,757 s), 0 process ends in 36,000 cases; every former process end is now a named refusal: "dxbc-spirv ran past its memory bound of 268435456 bytes" (33, 24, 27), "dxbc-spirv stopped: wasm trap" (105, 90, 78), "dxil-spirv ran past its memory bound" (9, 7, 4) among them (MEASURED, f6-*.err).
+- The saved stage.rs and helper.rs hunks (SCRATCH/rename-crates/uncommitted/wcontainers-agents.patch lines 177 to
+  276) READ: the domain stage's dispatch reads the tessellator's point total (`tess::POINT_TOTAL`, copied into a
+  buffer at `INDICES_BINDING`) and sets `word::LISTED_TOTAL` to 1, so invocations past the total write records
+  outside every clip volume, as the vertex stage already does for a listed strip (src/stage.rs reads
+  `LISTED_TOTAL`). Not brought yet: it needs a tessellation draw test on a device (lavapipe), which is the next
+  step of GI6.
+- The removal of the linked route and its 5 `unsafe` lines waits on his question 1: the contained route costs
+  150 to 330 ms once per process, about twice per shader, and 22 to 32 s more on the worst game shader, a cost a
+  user would see.
+
+### GI8 part A (READ, nothing to change)
+
+- Both SECURITY findings were already fixed on graphics-layout, which this branch carries: the enum values from the
+  C bridge are read by zerocopy's checked `TryFromBytes` (nir src/direct.rs `variant`, `deref_kind`), with the
+  test `a_value_the_bridge_does_not_write_is_no_variant`; `PIPE_QUERY_OCCLUSION_COUNTER` (SAMPLES_PASSED) is
+  counted (opengl src/query.rs), and `refuse` unwinds into the context's own reset instead of aborting (tests
+  `a_refused_call_answers_its_dropped_value_and_its_context_reports_its_own_reset` and two more). MEASURED in the
+  scratch copy: nir 41 and opengl 11 pass (x86-64).
+- direct.rs's five `unsafe` lines are the bridge calls themselves (`wc_flat_free`, `from_raw_parts`,
+  `CStr::from_ptr`, `wc_nir_flatten`), not enum reads: they go with the Mesa compiler API crate (part B).
+- Not added: a hostile test that makes a SAMPLES_PASSED query through st/mesa needs a GL context over our Gallium
+  driver, which part B's tooling gives.
+
 ## SECURITY
 
 - Lines with unsafe, unchanged from graphics-layout: gpu-webgl 160, opengl 353, nir 113, shaders 71, gpu-webgpu 19,
@@ -111,3 +269,8 @@ run named here are in the scratch folder graphics-implementations/.
 - Second run: unchanged (733 lines in the nine crates; this run added none and removed none). No marked exception is
   written by this track any more (ruling of 2026-11-25).
 - No new dependency. No hostile-guest suite exists.
+- Third run: unchanged, 733 lines (gpu 0, conformance 0, recording 0, webgpu 19, webgl 160, shaders 71,
+  shader-converters 5, nir 113, opengl 353, test-window 12); one webgl line moved from tests/suite.rs to
+  examples/common/angle.rs with the code around it. New dependencies: none from outside the workspace;
+  wcontainers-volatile-bytes (gpu, webgpu, conformance) and wcontainers-byte-sink and byte-source (webgpu,
+  conformance), all workspace crates. No hostile-guest suite was run (none exists).

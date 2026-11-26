@@ -1,7 +1,7 @@
 //! Times `convert` of every DXBC and DXIL container under the given directories: the process's first
 //! conversion (which loads the converters), then each converted shader's first conversion (what a
 //! program pays, conversions being cached) and its best of `rounds` more, with the median, 95th
-//! percentile and worst per shader for each kind of bytecode. Natively the converters are linked in;
+//! and 99th percentiles and worst per shader for each kind of bytecode. Natively the converters are linked in;
 //! with `--features contained-converters` they run as their own module.
 //!   cargo run --release --example conversion_time [--features contained-converters] -- <rounds> <dir>...
 
@@ -13,8 +13,8 @@ use wcontainers_shaders::{Source, convert};
 /// The file extensions of the two kinds of bytecode.
 const KINDS: [&str; 2] = ["dxbc", "dxil"];
 
-/// The percentile reported beside the median and the worst.
-const PERCENTILE: usize = 95;
+/// The percentiles reported beside the median and the worst.
+const PERCENTILES: [usize; 2] = [95, 99];
 
 /// A shader as `convert` takes it.
 fn source((dxil, bytes): &(bool, Vec<u8>)) -> Source<'_> {
@@ -81,10 +81,13 @@ fn main() {
             let total: Duration = times.iter().map(|t| t.0).sum();
             let count = times.len();
             println!(
-                "{kind} {which}: {count} converted, {:.1} ms in all; per shader median {:.1} us, {PERCENTILE}th percentile {:.1} us, worst {:.1} us ({:?})",
+                "{kind} {which}: {count} converted, {:.1} ms in all; per shader median {:.1} us, {}th percentile {:.1} us, {}th percentile {:.1} us, worst {:.1} us ({:?})",
                 total.as_secs_f64() * 1e3,
                 at(count / 2),
-                at((count * PERCENTILE / 100).min(count.saturating_sub(1))),
+                PERCENTILES[0],
+                at((count * PERCENTILES[0] / 100).min(count.saturating_sub(1))),
+                PERCENTILES[1],
+                at((count * PERCENTILES[1] / 100).min(count.saturating_sub(1))),
                 at(count.saturating_sub(1)),
                 times.last().map(|t| t.1),
             );
