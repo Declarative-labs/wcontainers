@@ -8,7 +8,8 @@ run named here are in the scratch folder graphics-implementations/.
 - Base: main 95bceadf0. The graphics folders, third_party and five status files come from graphics-layout 97e1daafe
   by path, unchanged except the nine lints tables, which inherit the workspace as main's did, and their TODO lines.
 - `cargo check --all-targets`, x86-64 and ARM64, Mesa off: every graphics package exits 0 except
-  wcontainers-gpu-webgl (its library holds 160 lines of unsafe code, which the workspace forbids) and
+  wcontainers-gpu-webgl (its library holds unsafe code, which the workspace forbids; 161 lines by the one counting
+  method of the SECURITY section, 160 as first written) and
   wcontainers-shaders (only through its dev-dependency on gpu-webgl). Mesa on, x86-64: wcontainers-nir's library
   fails (59 errors), wcontainers-opengl through it.
 - Tests, both machines: gpu 37, gpu-test 202, shader-converters linked 7 and contained 7, directx-graphics-infrastructure
@@ -161,7 +162,8 @@ run named here are in the scratch folder graphics-implementations/.
   own device through the inherent constructor.
 - webgl keeps a private `Host` trait in examples/common/checks.rs (its own checks make two devices and read a window;
   moved there from gpu-test, not new): a `trait_outside_interface` to settle at GI7. Its ANGLE host moved to
-  examples/common/angle.rs, with the one Windows `unsafe` line (`add_window`); webgl's count is unchanged (160).
+  examples/common/angle.rs, with the one Windows `unsafe` line (`add_window`); webgl's count is unchanged (161 by the one counting method; 160 as first
+  written).
 - MEASURED, both machines: recording 212 (161 unit, 51 suite), gpu 37, direct3d-11 69, dxgi 13, graphics-test 16;
   webgpu on lavapipe 131 passed, 5 failed, 2 ignored: GI2's four and `presents_cleared_frames`, which fails for the
   same reason as `present_shows_the_frame` (no window on the build machines: "no window of that number was
@@ -540,24 +542,197 @@ not build its webgpu tests; the pushed tip does (measured above).
 - Next: webgpu's eight private helper blocks as functions, as the recorder's (waits on nothing), then the handles
   as plain data; webgl's two with GI7.
 
+## The seventh run (2026-11-26): webgpu's own code as functions, its handles as plain data, nir linked on ARM64
+
+Logs and lint outputs in the scratch folder graphics-implementations/r7/ (one per job, named by machine and step); the
+jobs are tools/r7-job.sh, r7-lint.sh, r7-nirlink.sh, r7-nirwhy.sh, r7-nirfix.sh; the conversion is
+tools/webgpu_functions.py; counting is tools/count-unsafe.sh. The independent check of the sixth run held.
+
+### His main
+
+- `git fetch` of his checkout's main gives ac696ea19 ("verus compat"), already in this branch (`git merge-base
+  --is-ancestor` exit 0, `git log HEAD..FETCH_HEAD` empty): nothing to merge. READ: the instruction-interface
+  changes named for today (`meets_expectations`, `simulate_state`, `MemorySnapshot`, ...) are not on that main yet;
+  no graphics crate names those interfaces.
+
+### webgpu's eight helper impl blocks are functions (a9ddff2f4)
+
+- blocks.rs, draw.rs, edge.rs, fill.rs, memory.rs, packed.rs, vertex.rs and implementation.rs's second block: 92
+  methods became functions of their modules taking `gpu: &mut WebGpu` or `&WebGpu`; every call `x.name(..)` on a
+  `WebGpu` is `name(x, ..)`. Only the block with the inherent constructor and accessors is left (it is the
+  `new`/`add_window` finding below).
+- Layout findings, linter da55b9d7 with gpu-webgl's old lints table in the copy (MEASURED, both machines; the tables
+  of 221883a43 are identical on ARM64 and x86-64, 80,088 findings each):
+
+| rule (crates/gpu/implementation/webgpu) | 221883a43 | a9ddff2f4 | 9fba25913 + 42d75efa2 | 58cc43187 (tip) |
+|---|---|---|---|---|
+| public_outside_interface | 80 | 72 | 30 | 30 |
+| unparsed | 1 | 1 | 1 | 1 |
+| all rules, whole workspace | 80,088 | 80,080 (ARM64 total, x86-64 table) | 80,061 | 80,051 |
+
+  Every other graphics crate's layout counts are unchanged (tables identical but for the webgpu line). At the tip the
+  tables and the per-rule totals are identical on both machines.
+
+### webgpu's handles are plain data (9fba25913)
+
+- The fourteen handle types filling `Gpu`'s associated types are `pub struct Buffer(pub u64)` and so on, deriving
+  only `Clone` and `Debug`: the number the back end keeps the object under. The back end holds every object in a
+  table per kind until `destroy` (the recorder's design); the `Rc` each handle held is now the table's.
+  Blocks and binding sets that equal ones share keep a count of the creations that gave them out and leave the table
+  when the last is destroyed; a read back leaves it when finished; views, samplers, shaders, query sets and surfaces,
+  whose destroy did nothing before, leave it at their destroy. Textures the back end makes for itself (depth staging,
+  the raw blocks of converted formats, a depth read drawn into a colour texture) leave the table once nothing names
+  them by number; recorded work keeps its own hold, as before.
+- A handle naming a destroyed object, or a number the back end never gave, is refused: `Invalid` where the call
+  answers a result, the device lost with `Error` where it answers nothing (no panic path was added).
+- The two tests that compared handles (`pipelines_and_bind_groups_are_cached`,
+  `sets_differing_only_in_a_dynamic_offset_share_a_bind_group`) compare the numbers. The 28 `PartialEq`/`Eq`
+  findings and the 14 private-field findings are gone (table above). Left of webgpu's 30: the inherent constructor
+  and accessors the fronts call (`new`, `device_descriptor`, `INSTANCE_FLAGS`, `add_window`, `counters`, `depth24`,
+  `frame_report`, `held`), the exported `Counters` and its 15 pub fields, `Depth24`, `UNORM24_MAX`, `FRAME_REPORT`:
+  they go when the fronts build their back end through `StandaloneGpu` and the counters are read another way.
+- New text findings of this run's code: name_unanswered +6 and summary_unanswered +6 (the new names and summaries
+  wait on the model's answers, which need the key on the Mac), grammar_unclear +1 (`held`'s summary, same cause),
+  number_constant_without_link +1 (`ONE_CREATION = 1`); magic_literal -1.
+
+### nir on ARM64: the cause, and the repair (42d75efa2, 58cc43187)
+
+- CORRECTED: the sixth run's line ("multiple definitions in the state tracker's objects") was half of it. MEASURED at
+  221883a43 (tools/r7-nirlink.sh, both machines, Mesa on, `cargo test -p wcontainers-nir --no-run`):
+
+| machine, linker | exit | lines "undefined reference" (symbols) | lines "multiple definition" (symbols) |
+|---|---|---|---|
+| ARM64, default (ld.bfd 2.46 through gcc) | 101 | 628 (8) | 70 (14) |
+| ARM64, rust-lld forced | 101 | 0 | 5 (1: `blake3_compress_in_place_portable`) |
+| x86-64, default (rust-lld) | 0, tests 41 passed, 2 ignored | 0 | 0 |
+| x86-64, ld.bfd forced | 101 | 624 (8) | 65 (13) |
+
+  So the difference is the linker, not the CPU: Rust links x86-64 Linux with rust-lld and ARM64 with the system
+  ld.bfd. ld.bfd's map (r7/nirwhy-x86/why/bfd.map, "Archive member included") shows the chain: glcpp's generated
+  parser (libglcpp) references `_mesa_get_shader_include_cursor`; its stand-in in libglcpp_standalone comes earlier in
+  the link line, so ld.bfd, taking members in one pass in order, takes libmesa's main/shaderapi.c instead, which pulls
+  main/shaderobj.c (defining `_mesa_reference_shader` and others the GLSL stand-ins define too: the multiple
+  definitions, 13 symbols on x86-64 and 14 on ARM64 with blake3's), main/state.c, texobj.c and on into the state tracker (st_atom_array.cpp, st_atom_image.c), whose
+  `cso_*`, `tc_*` and `u_upload_*` (7 symbols, libgallium.a) and `_mesa_glapi_tls_Context` (libglapi.a) are linked by
+  nobody: the 628 undefined references. rust-lld (--why-extract, r7/nirwhy-x86/why/lld-why.txt, the `narrow` test) takes no
+  member of libmesa at all. The second cause is ARM64's alone: the blake3 crate's NEON code exports the C function
+  `blake3_compress_in_place_portable`, which Mesa's own BLAKE3 (libblake3, linked with Mesa) defines too.
+- Repair (tools/r7-nirfix.sh tried each in a copy, both machines): libmesa is no longer linked (crates/nir/build.rs;
+  "reorder", the stand-ins after their users, also linked), and on ARM64 nir takes blake3 with the crate's own
+  `no_neon` feature (crates/nir/Cargo.toml, a target-specific dependency; a build that holds nir on ARM64 hashes
+  without NEON, the product's wasm32 build is not touched). MEASURED in the copy: ARM64 links and nir passes 41 with
+  2 ignored; x86-64 passes the same with rust-lld and with ld.bfd forced.
+- MEASURED at the pushed commits 42d75efa2 and 58cc43187 (scratch copy with the old lints table, `WCONTAINERS_MESA`
+  set): nir 41 passed, 2 ignored and opengl 11 passed on both machines.
+
+### Measured at the pushed tip 58cc43187 (both machines alike)
+
+- `cargo check --all-targets` under the workspace lints: 17 graphics packages exit 0; gpu-webgl exits 101 (167 error
+  lines, 165 of them unsafe, one its lib test's `could not compile`) and shaders through it (166), as before.
+- Tests: gpu 37, recording 215, trace 55, directx-graphics-infrastructure 13, graphics-test 16, direct3d-11 69,
+  shader-converters linked 7 and contained 7 pass. clippy `--all-targets --no-deps -D warnings` of gpu, conformance,
+  recording, trace, webgpu exit 0; `cargo fmt --check` of webgpu and nir exit 0; Cargo.lock's hash is the same before
+  and after the build.
+- webgpu on lavapipe: 135 passed, 4 failed, 3 ignored, the same four as GI2 (bc_textures_read_back_as_written_and_
+  bc6h_and_bc7_sample_exactly, a_copy_within_one_depth_or_stencil_subresource_moves_the_region,
+  depth_and_stencil_parts_copy_and_read_back_exactly, present_shows_the_frame); its conformance run 53 passed, 1 failed
+  (depth24plus rounding); lavapipe through a manifest of another name is refused.
+- Scratch copy: wasm32 checks of the libraries and of the scenes, browser and replay pages exit 0; nir and opengl as
+  above.
+
+### Unsafe counts: one method from now on
+
+- The SECURITY section is CORRECTED to one counting method (non-comment lines matching the whole word): the earlier
+  runs mixed the root manifest's command (which skips attribute lines) with per-file greps. 735 at GI1, 733 since the
+  fourth run, as tabled there.
+
+### GI7 and GI8 part B: what the API track should build first
+
+- READ docs/status-graphics-api-crates.md at origin/graphics-api-crates 3ccf0fd5a: no OpenGL ES, Mesa compiler or
+  Gallium trait yet (AC10 and AC11 come after Direct3D 12; AC8 waits on where our driver logic lives). The scratch
+  folder's graphics-implementations/NEEDED-FROM-API-CRATES.md now opens with the order we ask for and the exact first
+  methods: AC11's trait first (B1's 36 methods and B2's flat form: nir's library is the one that fails with Mesa on),
+  then AC10's (EGL without the window surface, the 145 GL ES methods with a copying buffer read, the ten extension
+  calls; MEASURED that the library compiles only whole: even `new`, `caps` and `status` alone reach 74 of the 145),
+  then AC8's two sides (the 95 of 234 Gallium function pointers our driver fills, and the 23 Mesa helper functions it
+  calls, besides our two C field readers); desktop GL and Vulkan for nir's corpus last.
+- Nothing more of GI7 can be built before that trait: every remaining call is an `unsafe fn` of glow or khronos-egl.
+
+### The second question for the owner (the present test)
+
+The present test cannot tell a back end that refuses every window, because no call of the interface gives a back
+end a window (webgpu's `add_window(u32, wgpu::Surface)` and webgl's `unsafe fn add_window(u32, *mut c_void)` are
+inherent, outside it), so no value given to `tests!` has one. **May `Gpu` take the host's window through one more
+method?** In crates/gpu/interface.rs (not changed by this track):
+
+```rust
+// before: pub trait Gpu, "Frames", as on this branch
+    // ---- Frames ----
+
+    /// Attaches to a host window, given by the number the host's graphics hook uses for it.
+    fn create_surface(&mut self, window: u32) -> Result<Self::Surface, GpuError>;
+
+// after
+    // ---- Frames ----
+
+    /// Gives the back end the host's window under the number the host's graphics hook uses for it. The
+    /// window lives until the process ends, so a surface made on it may outlive this call.
+    fn add_window(
+        &mut self,
+        window: u32,
+        host: &'static (impl raw_window_handle::HasWindowHandle + raw_window_handle::HasDisplayHandle + Sync),
+    ) -> Result<(), GpuError>;
+    /// Attaches to a host window given with [`Gpu::add_window`], by its number.
+    fn create_surface(&mut self, window: u32) -> Result<Self::Surface, GpuError>;
+```
+
+With it, a conformance run on a machine with a display (Windows, macOS: test-window's two implementations) gives its
+value window 1 before `tests!`, and `presents_cleared_frames` fails any refusal of a window the back end accepted;
+the `'static` window also removes webgl's one loan (the window outliving its EGL surface, NEEDED-FROM-API-CRATES.md
+A1). Around it, until he answers: the gap stays listed, each implementation's own window test covers it, and the build
+machines (no display) keep today's check.
+
+### Milestones
+
+- Reached this run: none newly. GI4 stays not reached, waiting on his answer to the first question (above, fifth
+  run); not worked around. The second question is new.
+- Done and measured at a pushed commit: webgpu's helper blocks as functions and its handles as plain data (GI4's
+  layout work, not its bar), nir linking on ARM64 (GI8's), the unsafe count corrected, GI7's ordering written for the
+  API track.
+- Next: GI6's removal of the linked route waits on the cost question of the brief; GI7 waits on the API track's
+  OpenGL ES trait (AC10); GI8 part B on its Mesa compiler (AC11) and Gallium (AC8) traits. What waits on nothing:
+  webgpu's last 30 (the fronts building their back end through `StandaloneGpu`), and webgl's handles and helper blocks
+  with GI7.
+
 ## SECURITY
 
-- Lines with unsafe, unchanged from graphics-layout: gpu-webgl 160, opengl 353, nir 113, shaders 71, gpu-webgpu 19,
-  test-window 12, shader-converters 5; gpu and gpu-test 0.
+CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
+`.rs` files under each crate folder that match the whole word `unsafe` and are not comment lines (after leading blanks
+they do not start with `//`); attribute lines, strings and `reason =` lines count, so `unsafe_code` does not match
+and `#[unsafe(no_mangle)]` does (scratch graphics-implementations/tools/count-unsafe.sh). The root manifest's command
+that the runs before used leaves attribute lines out, so it missed webgl's `#[unsafe(no_mangle)]`
+(examples/browser.rs) and opengl's (src/screen.rs:591): its 733 and 731 were 735 and 733. MEASURED with the one method:
+
+| crate | graphics-layout 97e1daafe | GI1 9843ce0ce | third run 1282b3928 | fourth to sixth runs (948af1837, 221883a43) | seventh run (a9ddff2f4, 9fba25913, 42d75efa2, 58cc43187) |
+|---|---|---|---|---|---|
+| gpu (interface and shared code) | 0 | 0 | 0 | 0 | 0 |
+| gpu-test / conformance, recording, trace | 0 | 0 | 0 | 0 | 0 |
+| gpu-webgpu | 19 | 19 | 19 | 19 | 19 |
+| gpu-webgl | 161 | 161 | 161 | 159 | 159 |
+| shaders | 71 | 71 | 71 | 71 | 71 |
+| shader-converters | 5 | 5 | 5 | 5 | 5 |
+| nir | 113 | 113 | 113 | 113 | 113 |
+| opengl | 354 | 354 | 354 | 354 | 354 |
+| test-window | 12 | 12 | 12 | 12 | 12 |
+| total | 735 | 735 | 735 | 733 | 733 |
+
 - Marked exceptions in crates with their own deny table: shader-converters linked 5, test-window appkit 8 and win32 4.
-- Second run: unchanged (733 lines in the nine crates; this run added none and removed none). No marked exception is
-  written by this track any more (ruling of 2026-11-25).
-- No new dependency. No hostile-guest suite exists.
-- Third run: unchanged, 733 lines (gpu 0, conformance 0, recording 0, webgpu 19, webgl 160, shaders 71,
-  shader-converters 5, nir 113, opengl 353, test-window 12); one webgl line moved from tests/suite.rs to
-  examples/common/angle.rs with the code around it. New dependencies: none from outside the workspace;
-  wcontainers-volatile-bytes (gpu, webgpu, conformance) and wcontainers-byte-sink and byte-source (webgpu,
-  conformance), all workspace crates. No hostile-guest suite was run (none exists).
-- Fourth run: gpu 0, conformance 0, recording 0, trace 0 (new), webgpu 19, webgl 158 (the two lines of the ANGLE-only
-  `impl Traced<Gl>` removed with it), shaders 71, shader-converters 5, nir 113, opengl 353, test-window 12: 731. No
-  marked exception added. New dependencies: bytemuck (already in the lock through webgpu) as a webgl dev-dependency;
-  the trace crate uses postcard, serde and naga as webgl did. No hostile-guest suite was run (none exists).
-- Sixth run (counting command of the root manifest, 948af1837, a856bf204 and ac7a97aaf alike): gpu (interface and shared code) 0,
-  conformance 0, recording 0, trace 0, webgpu 19, webgl 158, shaders 71, shader-converters 5, nir 113, opengl 353,
-  test-window 12: 731. No marked exception added. New dependencies: none; wcontainers-graphics-test, already a Windows
-  dev-dependency of webgpu, is now one on every native target. No hostile-guest suite was run (none exists).
+  No marked exception is written by this track (ruling of 2026-11-25); none added in any run.
+- The fourth run's two fewer webgl lines are the ANGLE-only `impl Traced<Gl>`, removed with it.
+- New dependencies, by run: third run none from outside the workspace (wcontainers-volatile-bytes in gpu, webgpu and
+  conformance; byte-sink and byte-source in webgpu and conformance); fourth run bytemuck (already in the lock through
+  webgpu) as a webgl dev-dependency, and the trace crate uses postcard, serde and naga as webgl did; sixth run none
+  (wcontainers-graphics-test, already a Windows dev-dependency of webgpu, on every native target); seventh run none
+  (nir takes the blake3 it already had with its `no_neon` feature on ARM64; Cargo.lock unchanged, MEASURED by hash
+  before and after the build on both machines).
+- No hostile-guest suite exists, so none was run in any run (the thread-test design review is still owed to the owner).
