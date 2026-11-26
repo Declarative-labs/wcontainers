@@ -3,12 +3,16 @@
 
 use proptest::prelude::*;
 use proptest::test_runner::{Config, RngSeed};
-use wasmparser::{Validator, WasmFeatures};
+use wasmparser::{Operator, Parser, Payload};
 use wcontainers_arm64::{Arm64, Host};
 use wcontainers_guest_cpu::Guest;
-use wcontainers_translator::{LookAhead, Optimise, ProgressCount, thread_module, translate};
+use wcontainers_translator::{
+    AccessOrdering, Error, LookAhead, Optimise, OrderedAccess, ProgressCount, thread_module,
+    translate,
+};
+use wcontainers_translator_test::ordered::scan;
 use wcontainers_translator_test::programs::LOAD;
-use wcontainers_x86::{Offer, X86_64};
+use wcontainers_x86::{GUEST_MEMORY, Offer, X86_64};
 
 /// A host that needs every fix-up and the software fused multiply-add, so their code is checked too.
 const HOST: Host = Host {
@@ -59,19 +63,122 @@ fn validate(wasm: &[u8]) {
 }
 
 fn check(wasm: &[u8]) -> Result<(), String> {
-    let features = WasmFeatures::default()
-        | WasmFeatures::TAIL_CALL
-        | WasmFeatures::FUNCTION_REFERENCES
-        | WasmFeatures::EXCEPTIONS
-        | WasmFeatures::THREADS
-        | WasmFeatures::MEMORY64
-        | WasmFeatures::MULTI_MEMORY
-        | WasmFeatures::EXTENDED_CONST
-        | WasmFeatures::RELAXED_SIMD;
-    Validator::new_with_features(features)
-        .validate_all(wasm)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    wcontainers_translator_test::ordered::validity(wasm)
+}
+
+/// The ordered form, as the runners' setting asks for it.
+const ORDERED: AccessOrdering = AccessOrdering::Ordered(OrderedAccess::SequentiallyConsistent);
+/// The form of ordered loads and plain stores, for x86 hosts.
+const LOADS_ORDERED: AccessOrdering =
+    AccessOrdering::LoadsOrdered(OrderedAccess::SequentiallyConsistent);
+/// Every form.
+const FORMS: [AccessOrdering; 3] = [AccessOrdering::Unordered, ORDERED, LOADS_ORDERED];
+
+/// Locked instructions with a memory destination, each read, changed and written by one compare and exchange.
+const LOCKED: [&[u8]; 10] = [
+    // lock add [rax], rbx
+    &[0xf0, 0x48, 0x01, 0x18],
+    // lock add dword [rax], 1
+    &[0xf0, 0x83, 0x00, 0x01],
+    // lock inc qword [rax]
+    &[0xf0, 0x48, 0xff, 0x00],
+    // lock xadd [rax], rbx
+    &[0xf0, 0x48, 0x0f, 0xc1, 0x18],
+    // lock cmpxchg [rax], rbx
+    &[0xf0, 0x48, 0x0f, 0xb1, 0x18],
+    // xchg [rax], rbx, locked without a prefix
+    &[0x48, 0x87, 0x18],
+    // lock bts [rax], rbx
+    &[0xf0, 0x48, 0x0f, 0xab, 0x18],
+    // lock xor byte [rax], 1
+    &[0xf0, 0x80, 0x30, 0x01],
+    // lock neg word [rax]
+    &[0xf0, 0x66, 0xf7, 0x18],
+    // lock cmpxchg8b [rax]
+    &[0xf0, 0x0f, 0xc7, 0x08],
+];
+
+/// How many compare and exchange operations on the guest's memory a module holds.
+fn compare_exchanges(wasm: &[u8]) -> usize {
+    let mut found = 0;
+    for payload in Parser::new(0).parse_all(wasm) {
+        let Payload::CodeSectionEntry(body) = payload.expect("a module") else {
+            continue;
+        };
+        for operator in body.get_operators_reader().expect("a body") {
+            let memarg = match operator.expect("an operator") {
+                Operator::I64AtomicRmwCmpxchg { memarg }
+                | Operator::I64AtomicRmw32CmpxchgU { memarg }
+                | Operator::I64AtomicRmw16CmpxchgU { memarg }
+                | Operator::I64AtomicRmw8CmpxchgU { memarg } => memarg,
+                _ => continue,
+            };
+            if memarg.target == wasmparser::MemArgTarget::Memory(GUEST_MEMORY) {
+                found += 1;
+            }
+        }
+    }
+    found
+}
+
+/// In the ordered form a locked instruction is one compare and exchange; in the unordered form it has none.
+#[test]
+fn locked_instructions_compare_and_exchange_when_ordered_x86_64() {
+    for one in LOCKED {
+        let mut code = one.to_vec();
+        code.push(RETURN);
+        for look_ahead in [LookAhead::None, LookAhead::Full] {
+            for ordering in FORMS {
+                let translation = translate::<X86_64>(
+                    &code,
+                    0..code.len() as u64,
+                    None,
+                    &[0],
+                    look_ahead,
+                    Optimise::Speed,
+                    wcontainers_translator::ProgressCount::Absent,
+                    ordering,
+                    HOST_X86_64,
+                    Offer::default(),
+                )
+                .unwrap();
+                let found: usize = translation
+                    .modules
+                    .iter()
+                    .map(|module| {
+                        validate(&module.wasm);
+                        compare_exchanges(&module.wasm)
+                    })
+                    .sum();
+                let at = format!("{one:02x?} at {look_ahead:?} {ordering:?}");
+                if ordering != AccessOrdering::Unordered {
+                    assert!(found > 0, "{at}: no compare and exchange");
+                } else {
+                    assert_eq!(found, 0, "{at}");
+                }
+            }
+        }
+    }
+}
+
+/// ARM64's meanings make no ordered accesses, so the ordered form is refused for it.
+#[test]
+fn the_ordered_form_is_refused_arm64() {
+    // ret
+    let code = 0xd65f03c0u32.to_le_bytes();
+    let refused = translate::<Arm64>(
+        &code,
+        0..code.len() as u64,
+        None,
+        &[0],
+        LookAhead::Full,
+        Optimise::Speed,
+        wcontainers_translator::ProgressCount::Absent,
+        ORDERED,
+        HOST,
+        (),
+    );
+    assert_eq!(refused.err(), Some(Error::OrderedAccessesNotMade));
 }
 
 #[test]
@@ -170,6 +277,7 @@ fn target_below_zero_arm64() {
         LookAhead::None,
         Optimise::Speed,
         wcontainers_translator::ProgressCount::Absent,
+        wcontainers_translator::AccessOrdering::Unordered,
         HOST,
         (),
     )
@@ -200,6 +308,7 @@ fn long_chains_translate_on_a_small_stack_arm64() {
                 LookAhead::Full,
                 Optimise::Speed,
                 wcontainers_translator::ProgressCount::Absent,
+                wcontainers_translator::AccessOrdering::Unordered,
                 HOST,
                 (),
             )
@@ -242,6 +351,7 @@ fn run_bytes_x86_64(unit: &[u8], count: usize, optimise: Optimise) -> usize {
         LookAhead::Full,
         optimise,
         wcontainers_translator::ProgressCount::Absent,
+        wcontainers_translator::AccessOrdering::Unordered,
         HOST_X86_64,
         Offer::default(),
     )
@@ -276,7 +386,7 @@ proptest! {
     fn code_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64), kept in any::<bool>(), size in any::<bool>()) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let starts: Vec<u64> = (0..words.len() as u64).map(|i| 4 * i).collect();
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::None, optimise(size), count(kept), HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::None, optimise(size), count(kept), AccessOrdering::Unordered, HOST, ()).unwrap();
         validate(&translation.modules[0].wasm);
     }
 
@@ -286,7 +396,7 @@ proptest! {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut starts = vec![0];
         starts.extend(picks.iter().map(|p| 4 * p.index(words.len()) as u64));
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Full, optimise(size), count(kept), HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Full, optimise(size), count(kept), AccessOrdering::Unordered, HOST, ()).unwrap();
         validate(&translation.modules[0].wasm);
     }
 
@@ -295,7 +405,7 @@ proptest! {
     #[test]
     fn code_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), v3 in any::<bool>(), kept in any::<bool>(), size in any::<bool>()) {
         let starts: Vec<u64> = (0..bytes.len() as u64).collect();
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::None, optimise(size), count(kept), HOST_X86_64, told(v3)).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::None, optimise(size), count(kept), AccessOrdering::Unordered, HOST_X86_64, told(v3)).unwrap();
         prop_assert_eq!(&translation.modules[0].pieces, &whole_x86_64(&bytes, &starts));
         validate(&translation.modules[0].wasm);
     }
@@ -305,7 +415,7 @@ proptest! {
     fn full_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 0..4), v3 in any::<bool>(), kept in any::<bool>(), size in any::<bool>()) {
         let mut starts = vec![0];
         starts.extend(picks.iter().map(|p| p.index(bytes.len()) as u64));
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Full, optimise(size), count(kept), HOST_X86_64, told(v3)).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Full, optimise(size), count(kept), AccessOrdering::Unordered, HOST_X86_64, told(v3)).unwrap();
         for module in &translation.modules {
             validate(&module.wasm);
         }
@@ -315,7 +425,7 @@ proptest! {
     #[test]
     fn bounded_modules_are_valid_x86_64(bytes in prop::collection::vec(any::<u8>(), 1..=CASE_BYTES), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32, v3 in any::<bool>(), kept in any::<bool>(), size in any::<bool>()) {
         let mut starts: Vec<u64> = picks.iter().map(|p| p.index(bytes.len()) as u64).collect();
-        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Bounded(bound), optimise(size), count(kept), HOST_X86_64, told(v3)).unwrap();
+        let translation = translate::<X86_64>(&bytes, 0..bytes.len() as u64, None, &starts, LookAhead::Bounded(bound), optimise(size), count(kept), AccessOrdering::Unordered, HOST_X86_64, told(v3)).unwrap();
         starts.sort();
         starts.dedup();
         prop_assert_eq!(&translation.modules[0].pieces, &whole_x86_64(&bytes, &starts));
@@ -337,7 +447,7 @@ proptest! {
         code.extend(&bytes);
         let starts: Vec<u64> = (0..code.len() as u64).filter(|&t| X86_64::decode(&code[t as usize..]).is_some()).collect();
         for look_ahead in [LookAhead::Full, LookAhead::Bounded(bound)] {
-            let translation = translate::<X86_64>(&code, 0..code.len() as u64, Some(LOAD), &[0], look_ahead, optimise(size), count(kept), HOST_X86_64, Offer::default()).unwrap();
+            let translation = translate::<X86_64>(&code, 0..code.len() as u64, Some(LOAD), &[0], look_ahead, optimise(size), count(kept), AccessOrdering::Unordered, HOST_X86_64, Offer::default()).unwrap();
             for module in &translation.modules {
                 validate(&module.wasm);
             }
@@ -355,7 +465,7 @@ proptest! {
     fn bounded_modules_are_valid_arm64(words in prop::collection::vec(any::<u32>(), 1..64), picks in prop::collection::vec(any::<prop::sample::Index>(), 1..4), bound in 1..80u32, kept in any::<bool>(), size in any::<bool>()) {
         let blob: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
         let mut starts: Vec<u64> = picks.iter().map(|p| 4 * p.index(words.len()) as u64).collect();
-        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Bounded(bound), optimise(size), count(kept), HOST, ()).unwrap();
+        let translation = translate::<Arm64>(&blob, 0..blob.len() as u64, None, &starts, LookAhead::Bounded(bound), optimise(size), count(kept), AccessOrdering::Unordered, HOST, ()).unwrap();
         starts.sort();
         starts.dedup();
         prop_assert_eq!(&translation.modules[0].pieces, &starts);
@@ -391,6 +501,7 @@ fn every_form_is_valid_arm64() {
                 LookAhead::None,
                 Optimise::Speed,
                 wcontainers_translator::ProgressCount::Absent,
+                wcontainers_translator::AccessOrdering::Unordered,
                 HOST,
                 (),
             )
@@ -437,6 +548,7 @@ fn every_form_is_valid_arm64() {
                     look_ahead,
                     Optimise::Speed,
                     count,
+                    AccessOrdering::Unordered,
                     HOST,
                     (),
                 )
@@ -483,23 +595,30 @@ fn every_form_is_valid_x86_64() {
                 .into_iter()
                 .flat_map(|look_ahead| COUNTS.map(|count| (look_ahead, count)))
             {
-                let translation = translate::<X86_64>(
-                    &code,
-                    0..code.len() as u64,
-                    None,
-                    &[0],
-                    look_ahead,
-                    Optimise::Speed,
-                    count,
-                    HOST_X86_64,
-                    X86_64::case_offer(&case),
-                )
-                .unwrap();
-                for module in &translation.modules {
-                    if let Err(error) = check(&module.wasm) {
-                        failures.push(format!(
-                            "{name} {one:02x?} at {look_ahead:?} {count:?}: {error}"
-                        ));
+                for ordering in FORMS {
+                    let translation = translate::<X86_64>(
+                        &code,
+                        0..code.len() as u64,
+                        None,
+                        &[0],
+                        look_ahead,
+                        Optimise::Speed,
+                        count,
+                        ordering,
+                        HOST_X86_64,
+                        X86_64::case_offer(&case),
+                    )
+                    .unwrap();
+                    let at = format!("{name} {one:02x?} at {look_ahead:?} {count:?} {ordering:?}");
+                    for module in &translation.modules {
+                        if let Err(error) = check(&module.wasm) {
+                            failures.push(format!("{at}: {error}"));
+                        }
+                        if ordering != AccessOrdering::Unordered {
+                            for left in scan(&module.wasm, ordering).wrong {
+                                failures.push(format!("{at}: {left}"));
+                            }
+                        }
                     }
                 }
             }

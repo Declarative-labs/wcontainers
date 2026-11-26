@@ -10,7 +10,7 @@ use crate::operand::*;
 use crate::simd::{BYTE, DWORD, QWORD, WORD};
 use crate::{X86_64, XMM_BYTES};
 use iced_x86::{Code, Mnemonic, OpKind};
-use wasm_encoder::{InstructionSink, MemArg, ValType};
+use wasm_encoder::{InstructionSink, ValType};
 use wcontainers_guest_cpu::Emitter;
 
 const HALF_BYTES: u8 = XMM_BYTES as u8;
@@ -161,16 +161,11 @@ pub(crate) fn halves<E: Emitter<X86_64> + ?Sized>(
             let at = at.expect("a checked memory operand");
             match memory_bytes(i) {
                 bytes if bytes == 2 * XMM_BYTES => {
-                    e.sink()
-                        .local_get(at)
-                        .v128_load(upper())
-                        .local_set(high)
-                        .local_get(at)
-                        .v128_load(memory());
+                    load_vector_at(e, at, XMM_BYTES.into());
+                    e.sink().local_set(high);
+                    load_vector_at(e, at, 0);
                 }
-                XMM_BYTES => {
-                    e.sink().local_get(at).v128_load(memory());
-                }
+                XMM_BYTES => load_vector_at(e, at, 0),
                 bytes => {
                     e.sink().v128_const(0);
                     load(e, at, bytes);
@@ -181,14 +176,6 @@ pub(crate) fn halves<E: Emitter<X86_64> + ?Sized>(
     }
     e.sink().local_set(low);
     [low, high]
-}
-
-/// The upper half of a 256-bit memory operand.
-fn upper() -> MemArg {
-    MemArg {
-        offset: XMM_BYTES.into(),
-        ..memory()
-    }
 }
 
 /// Write the result's halves to operand 0: both to a ymm register, the lower to an xmm register with its
@@ -216,9 +203,9 @@ pub(crate) fn put<E: Emitter<X86_64> + ?Sized>(
         e.set_vector(ymm_high(x));
     } else {
         let at = at.expect("a checked memory operand");
-        e.sink().local_get(at).local_get(low).v128_store(memory());
+        store_vector_at(e, at, 0, low);
         if memory_bytes(i) == 2 * XMM_BYTES {
-            e.sink().local_get(at).local_get(high).v128_store(upper());
+            store_vector_at(e, at, XMM_BYTES.into(), high);
         }
     }
 }

@@ -81,7 +81,9 @@ pub use host::Host;
 #[cfg(feature = "translate")]
 pub use meaning::written;
 #[cfg(feature = "translate")]
-pub use operand::{General, general as general_register, size_of_memory as memory_size_bytes};
+pub use operand::{
+    GUEST_MEMORY, General, general as general_register, size_of_memory as memory_size_bytes,
+};
 pub use user_segments::{
     CPU_NUMBER, KERNEL_CS, SELECTOR_INDEX, SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS,
     USER32_CS,

@@ -123,7 +123,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             let low = e.local(ValType::I64);
             e.sink().local_get(r).i64x2_extract_lane(0).local_set(low);
             if memory_bytes(i) == XMM_BYTES {
-                e.sink().local_get(at).local_get(r).v128_store(memory());
+                store_vector_at(e, at, 0, r);
             } else {
                 store(e, at, memory_bytes(i), low);
             }

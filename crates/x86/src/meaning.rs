@@ -229,6 +229,16 @@ pub(crate) fn legacy_meaning<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruc
             let at = linear_free_address(e, i);
             write(e, i, 0, None, at);
         }
+        Xchg if locked(e, i) => {
+            let mem = checked(e, i).expect("a memory operand");
+            let n = u32::from(i.iced.op_kind(0) != OpKind::Memory);
+            let bytes = u32::from(width(i, n) / W8);
+            locked_start(e);
+            let old = read(e, i, n, Some(mem));
+            let new = read(e, i, 1 - n, None);
+            locked_write(e, (mem, bytes), old, new);
+            write(e, i, 1 - n, None, old);
+        }
         Xchg => {
             let mem = checked(e, i);
             let a = read(e, i, 0, mem);
@@ -603,6 +613,10 @@ fn arithmetic<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemon
     use Mnemonic::*;
     let w = width(i, 0);
     let mem = checked(e, i);
+    let lock = locked(e, i) && !matches!(m, Cmp | Test);
+    if lock {
+        locked_start(e);
+    }
     let a = read(e, i, 0, mem);
     let b = read(e, i, 1, mem);
     let carry = matches!(m, Adc | Sbb).then(|| {
@@ -633,7 +647,10 @@ fn arithmetic<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemon
         s.local_set(result);
     }
     truncate(e, result, w);
-    if !matches!(m, Cmp | Test) {
+    if lock {
+        let at = mem.expect("a memory operand");
+        locked_write(e, (at, u32::from(w / W8)), a, result);
+    } else if !matches!(m, Cmp | Test) {
         write(e, i, 0, mem, result);
     }
     e.set_flags(match m {
@@ -661,8 +678,16 @@ fn unary<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     use Mnemonic::*;
     let w = width(i, 0);
     let mem = checked(e, i);
+    let lock = locked(e, i);
+    if lock {
+        locked_start(e);
+    }
     let value = read(e, i, 0, mem);
     let result = e.local(ValType::I64);
+    let put = |e: &mut E| match (lock, mem) {
+        (true, Some(at)) => locked_write(e, (at, u32::from(w / W8)), value, result),
+        _ => write(e, i, 0, mem, result),
+    };
     match m {
         Inc => e.sink().local_get(value).i64_const(1).i64_add(),
         Dec => e.sink().local_get(value).i64_const(1).i64_sub(),
@@ -672,7 +697,7 @@ fn unary<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     e.sink().local_set(result);
     truncate(e, result, w);
     if !e.flags_live() {
-        write(e, i, 0, mem, result);
+        put(e);
         return;
     }
     let kept = matches!(m, Inc | Dec).then(|| {
@@ -681,7 +706,7 @@ fn unary<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
         e.sink().local_set(c);
         c
     });
-    write(e, i, 0, mem, result);
+    put(e);
     let constant = |e: &mut E, k: i64| {
         let local = e.local(ValType::I64);
         e.sink().i64_const(k).local_set(local);
@@ -1366,6 +1391,7 @@ fn bulk_or_element<E: Emitter<X86_64> + ?Sized>(
         }
         s.if_(BlockType::Empty);
     }
+    bulk_fence(e);
     match source_at {
         Some(source) => {
             e.sink()
@@ -1376,6 +1402,7 @@ fn bulk_or_element<E: Emitter<X86_64> + ?Sized>(
         }
         None => bulk_store(e, i, destination, length),
     }
+    bulk_fence(e);
     e.sink().else_();
     for (bit, reason) in [
         (DF, Reason::StringDirectionDown),
@@ -1479,10 +1506,7 @@ fn bulk_store<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, at: u32, 
             .end();
     };
     stores(e, vectors_end, vector, &|e: &mut E| {
-        e.sink()
-            .local_get(at)
-            .local_get(pattern)
-            .v128_store(memory());
+        store_vector_at(e, at, 0, pattern)
     });
     stores(e, end, bytes, &|e: &mut E| store(e, at, bytes, value));
     e.sink().end();
@@ -2451,6 +2475,10 @@ fn bit_test<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         e.check(at, u32::from(w / W8), check_kind(kind), 0);
         at
     });
+    let lock = locked(e, i) && m != Mnemonic::Bt;
+    if lock {
+        locked_start(e);
+    }
     let value = read(e, i, 0, mem);
     let bit = e.local(ValType::I64);
     e.sink()
@@ -2468,7 +2496,10 @@ fn bit_test<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             _ => s.local_get(value).i64_xor(),
         };
         s.local_set(result);
-        write(e, i, 0, mem, result);
+        match (lock, mem) {
+            (true, Some(at)) => locked_write(e, (at, u32::from(w / W8)), value, result),
+            _ => write(e, i, 0, mem, result),
+        }
     }
     if e.flags_live() {
         let carry = e.local(ValType::I32);
@@ -2973,6 +3004,10 @@ fn shift_flagless<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mn
 fn exchange_add<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     let w = width(i, 0);
     let mem = checked(e, i);
+    let lock = locked(e, i);
+    if lock {
+        locked_start(e);
+    }
     let a = read(e, i, 0, mem);
     let b = read(e, i, 1, None);
     let result = e.local(ValType::I64);
@@ -2982,8 +3017,14 @@ fn exchange_add<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
         .i64_add()
         .local_set(result);
     truncate(e, result, w);
-    write(e, i, 1, None, a);
-    write(e, i, 0, mem, result);
+    if lock {
+        let at = mem.expect("a memory operand");
+        locked_write(e, (at, u32::from(w / W8)), a, result);
+        write(e, i, 1, None, a);
+    } else {
+        write(e, i, 1, None, a);
+        write(e, i, 0, mem, result);
+    }
     e.set_flags(Flags::Add {
         width: w,
         a,
@@ -3000,6 +3041,10 @@ fn exchange_add<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
 fn compare_exchange<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     let w = width(i, 0);
     let mem = checked(e, i);
+    let lock = locked(e, i);
+    if lock {
+        locked_start(e);
+    }
     let dest = read(e, i, 0, mem);
     let source = read(e, i, 1, None);
     let acc = e.local(ValType::I64);
@@ -3022,7 +3067,11 @@ fn compare_exchange<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
                 .local_get(equal)
                 .select()
                 .local_set(stored);
-            store(e, at, u32::from(w / W8), stored);
+            if lock {
+                locked_write(e, (at, u32::from(w / W8)), dest, stored);
+            } else {
+                store(e, at, u32::from(w / W8), stored);
+            }
         }
         None => set_general_when(e, destination(i), source, equal),
     }
@@ -3063,9 +3112,32 @@ fn compare_exchange_pair<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction
         .i64_add()
         .local_set(high_at);
     let [low, high, rax, rdx, rbx, rcx] = core::array::from_fn(|_| e.local(ValType::I64));
-    for (local, from) in [(low, at), (high, high_at)] {
-        load(e, from, half);
-        e.sink().local_set(local);
+    // Locked in an ordered form, `cmpxchg8b` is one 8-byte compare and exchange; `cmpxchg16b`, which no
+    // WebAssembly atomic makes, holds the process's other threads first.
+    let lock = locked(e, i);
+    let whole = (lock && bytes == u64::BITS / u8::BITS).then(|| {
+        let whole = e.local(ValType::I64);
+        locked_start(e);
+        load(e, at, bytes);
+        e.sink()
+            .local_tee(whole)
+            .i64_const(mask(W32))
+            .i64_and()
+            .local_set(low)
+            .local_get(whole)
+            .i64_const(u32::BITS.into())
+            .i64_shr_u()
+            .local_set(high);
+        whole
+    });
+    if whole.is_none() {
+        if lock {
+            e.warn(Reason::LockedAccessNeedsGroupStop);
+        }
+        for (local, from) in [(low, at), (high, high_at)] {
+            load(e, from, half);
+            e.sink().local_set(local);
+        }
     }
     for (local, number) in [(rax, RAX), (rdx, RDX), (rbx, RBX), (rcx, RCX)] {
         get_general(e, register(number, w));
@@ -3083,15 +3155,33 @@ fn compare_exchange_pair<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction
         .local_tee(equal)
         .i32_eqz()
         .local_set(differ);
-    for (memory, new, from) in [(low, rbx, at), (high, rcx, high_at)] {
-        let stored = e.local(ValType::I64);
-        e.sink()
-            .local_get(new)
-            .local_get(memory)
-            .local_get(equal)
-            .select()
-            .local_set(stored);
-        store(e, from, half, stored);
+    match whole {
+        Some(whole) => {
+            let stored = e.local(ValType::I64);
+            e.sink()
+                .local_get(rcx)
+                .i64_const(u32::BITS.into())
+                .i64_shl()
+                .local_get(rbx)
+                .i64_or()
+                .local_get(whole)
+                .local_get(equal)
+                .select()
+                .local_set(stored);
+            locked_write(e, (at, bytes), whole, stored);
+        }
+        None => {
+            for (memory, new, from) in [(low, rbx, at), (high, rcx, high_at)] {
+                let stored = e.local(ValType::I64);
+                e.sink()
+                    .local_get(new)
+                    .local_get(memory)
+                    .local_get(equal)
+                    .select()
+                    .local_set(stored);
+                store(e, from, half, stored);
+            }
+        }
     }
     set_general_when(e, register(RAX, w), low, differ);
     set_general_when(e, register(RDX, w), high, differ);

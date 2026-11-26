@@ -615,7 +615,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         _ => {
             let at = mem.unwrap();
             if bytes == XMM_BYTES {
-                e.sink().local_get(at).v128_load(memory());
+                load_vector_at(e, at, 0);
             } else {
                 e.sink().v128_const(0);
                 load(e, at, bytes);
@@ -1239,7 +1239,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
                 let at = mem.unwrap();
                 let bytes = memory_bytes(i);
                 if bytes == XMM_BYTES {
-                    e.sink().local_get(at).local_get(value).v128_store(memory());
+                    store_vector_at(e, at, 0, value);
                 } else {
                     let low = e.local(ValType::I64);
                     e.sink()

@@ -92,6 +92,7 @@ fn write<G: GuestTest>(
         LookAhead::Full,
         Optimise::Speed,
         progress,
+        wcontainers_translator::AccessOrdering::Unordered,
         probe::<G>(),
         G::Offer::default(),
         omit,

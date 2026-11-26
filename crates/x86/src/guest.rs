@@ -100,6 +100,7 @@ pub enum Reason {
     X87InSoftware,
     BitDepositOrExtractInSoftware,
     HalfPrecisionInSoftware,
+    LockedAccessNeedsGroupStop,
 }
 
 /// The thread state the float hook works on: MXCSR in the block to the end of the private words.
@@ -234,6 +235,7 @@ impl X86_64 {
 
 impl Guest for X86_64 {
     const ID: GuestId = GuestId::X86_64;
+    const ORDERED_ACCESSES: bool = true;
     const ALIGN: u64 = 1;
     const MAX_LENGTH: u64 = 15;
     type Instruction = Instruction;
@@ -619,6 +621,10 @@ impl Guest for X86_64 {
         (
             Reason::HalfPrecisionInSoftware,
             "half precision rounding in software: vcvtps2ph, which WebAssembly has no operation for",
+        ),
+        (
+            Reason::LockedAccessNeedsGroupStop,
+            "locked access across an 8-byte word or of 16 bytes: the process's other threads are held while it runs",
         ),
     ];
 

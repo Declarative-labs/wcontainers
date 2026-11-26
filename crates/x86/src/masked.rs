@@ -10,7 +10,7 @@ use crate::operand::*;
 use crate::wide::{HALVES, halves, put};
 use crate::{X86_64, X86Block, XMM_BYTES};
 use iced_x86::{Mnemonic, OpKind, Register};
-use wasm_encoder::{BlockType, MemArg, ValType};
+use wasm_encoder::{BlockType, ValType};
 use wcontainers_guest_cpu::{Access, AccessBytes, Emitter, Guest, Index, MemoryAccess};
 
 /// What a masked access is made of.
@@ -180,14 +180,6 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     }
 }
 
-/// The memory argument of an element `offset` bytes past the operand's data address.
-fn lane_memory(offset: u32) -> MemArg {
-    MemArg {
-        offset: offset.into(),
-        ..memory()
-    }
-}
-
 fn masked_move<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, shape: &Shape) {
     let ins = &i.iced;
     let load = ins.op_kind(0) == OpKind::Register;
@@ -275,32 +267,17 @@ fn masked_move<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, shape: &
     }
     for n in 0..shape.count {
         let (h, lane) = place(n, element);
-        let mut s = e.sink();
-        s.local_get(bits)
+        e.sink()
+            .local_get(bits)
             .i32_const(1 << n)
             .i32_and()
-            .if_(BlockType::Empty)
-            .local_get(data_at);
-        let memarg = lane_memory(n * element);
-        match (&data, element == size_of::<u32>() as u32) {
-            (None, true) => {
-                s.local_get(result[h])
-                    .v128_load32_lane(memarg, lane as u8)
-                    .local_set(result[h]);
-            }
-            (None, false) => {
-                s.local_get(result[h])
-                    .v128_load64_lane(memarg, lane as u8)
-                    .local_set(result[h]);
-            }
-            (Some(d), true) => {
-                s.local_get(d[h]).v128_store32_lane(memarg, lane as u8);
-            }
-            (Some(d), false) => {
-                s.local_get(d[h]).v128_store64_lane(memarg, lane as u8);
-            }
+            .if_(BlockType::Empty);
+        let offset = u64::from(n * element);
+        match &data {
+            None => load_lane_at(e, data_at, offset, element, (result[h], lane as u8)),
+            Some(d) => store_lane_at(e, data_at, offset, element, (d[h], lane as u8)),
         }
-        s.end();
+        e.sink().end();
     }
     if load {
         put(e, i, None, result);
@@ -394,20 +371,13 @@ fn gather<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, shape: &Shape
         }
         e.sink().local_set(at);
         e.check(at, element, Access::Read, 0);
+        load_lane_at(e, at, 0, element, (result[h], lane as u8));
         let mut s = e.sink();
-        s.local_get(at).local_get(result[h]);
+        s.local_get(mask[h]);
         if element == size_of::<u32>() as u32 {
-            s.v128_load32_lane(memory(), lane as u8)
-                .local_set(result[h])
-                .local_get(mask[h])
-                .i32_const(0)
-                .i32x4_replace_lane(lane as u8);
+            s.i32_const(0).i32x4_replace_lane(lane as u8);
         } else {
-            s.v128_load64_lane(memory(), lane as u8)
-                .local_set(result[h])
-                .local_get(mask[h])
-                .i64_const(0)
-                .i64x2_replace_lane(lane as u8);
+            s.i64_const(0).i64x2_replace_lane(lane as u8);
         }
         s.local_set(mask[h]);
         // The element is done: a fault at a later one leaves it gathered and its mask element clear.

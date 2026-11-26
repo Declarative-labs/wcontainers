@@ -13,8 +13,8 @@ use wasm_encoder::{
 };
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_guest_cpu::{
-    Access, BuiltAddress, Effects, Emitter, FlowKind, GUEST_REASONS, Guest, ReturnAddress, Target,
-    TrapDetail, TrapKind, TrapPc,
+    Access, AccessOrdering, BuiltAddress, Effects, Emitter, FlowKind, GUEST_REASONS, Guest,
+    ReturnAddress, Target, TrapDetail, TrapKind, TrapPc,
 };
 
 /// How much code the translator sees at once.
@@ -62,10 +62,11 @@ enum LookAheadCode {
 }
 
 /// The version of the description section's layout.
-const DESCRIPTION_VERSION: u8 = 5;
+const DESCRIPTION_VERSION: u8 = 6;
 
-/// What a translation is made with: the look-ahead, what it is optimised for, and the progress count.
-type How = (LookAhead, Optimise, ProgressCount);
+/// What a translation is made with: the look-ahead, what it is optimised for, the progress count and the
+/// ordering of guest accesses.
+type How = (LookAhead, Optimise, ProgressCount, AccessOrdering);
 
 /// What a translation is made for: the one setting the translator has. Both give the same results.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -141,6 +142,8 @@ pub enum Error {
     BadCodeRange,
     /// A bounded look-ahead of no instructions.
     NoBound,
+    /// Ordered guest accesses asked of a guest whose meanings do not make them (`Guest::ORDERED_ACCESSES`).
+    OrderedAccessesNotMade,
 }
 
 /// One translation: its code modules, which together hold every piece. There is more than one only where one
@@ -399,7 +402,9 @@ pub(crate) fn depth_check<G: Guest>(
 /// are blob offsets. `link_address` is the address the blob's first byte is linked at when the program is
 /// linked at a fixed address (an ELF of type `ET_EXEC`), whose code may name its functions by absolute
 /// addresses; `None` for code that may be loaded anywhere. It only adds entries: the output never holds an
-/// absolute address and runs wherever it is loaded.
+/// absolute address and runs wherever it is loaded. `ordering` is how the guest's loads and stores are ordered
+/// between threads: ordered only for an x86 guest whose threads run in parallel on a host that orders memory
+/// more weakly, a form of its own in the cache key.
 #[allow(clippy::too_many_arguments)]
 pub fn translate<G: Guest>(
     blob: &[u8],
@@ -409,11 +414,12 @@ pub fn translate<G: Guest>(
     look_ahead: LookAhead,
     optimise: Optimise,
     progress: ProgressCount,
+    ordering: AccessOrdering,
     host: G::Host,
     offer: G::Offer,
 ) -> Result<Translation, Error> {
     let omit = Omit::default();
-    let how = (look_ahead, optimise, progress);
+    let how = (look_ahead, optimise, progress, ordering);
     let placed = (code, link_address);
     translate_within::<G>(blob, placed, starts, how, (host, offer), omit, MODULE_BYTES)
 }
@@ -430,11 +436,12 @@ pub fn translate_omitting<G: Guest>(
     look_ahead: LookAhead,
     optimise: Optimise,
     progress: ProgressCount,
+    ordering: AccessOrdering,
     host: G::Host,
     offer: G::Offer,
     omit: Omit,
 ) -> Result<Translation, Error> {
-    let how = (look_ahead, optimise, progress);
+    let how = (look_ahead, optimise, progress, ordering);
     let placed = (code, link_address);
     translate_within::<G>(blob, placed, starts, how, (host, offer), omit, MODULE_BYTES)
 }
@@ -451,12 +458,13 @@ pub fn translate_in_modules<G: Guest>(
     look_ahead: LookAhead,
     optimise: Optimise,
     progress: ProgressCount,
+    ordering: AccessOrdering,
     host: G::Host,
     offer: G::Offer,
     module_bytes: usize,
 ) -> Result<Translation, Error> {
     let omit = Omit::default();
-    let how = (look_ahead, optimise, progress);
+    let how = (look_ahead, optimise, progress, ordering);
     let placed = (code, link_address);
     translate_within::<G>(blob, placed, starts, how, (host, offer), omit, module_bytes)
 }
@@ -527,7 +535,7 @@ fn translate_within<G: Guest>(
     blob: &[u8],
     placed: (Range<u64>, Option<u64>),
     starts: &[u64],
-    how: (LookAhead, Optimise, ProgressCount),
+    how: How,
     chosen: (G::Host, G::Offer),
     omit: Omit,
     module_bytes: usize,
@@ -541,7 +549,7 @@ fn translate_on_this_thread<G: Guest>(
     blob: &[u8],
     (code, link_address): (Range<u64>, Option<u64>),
     starts: &[u64],
-    (look_ahead, optimise, progress): (LookAhead, Optimise, ProgressCount),
+    (look_ahead, optimise, progress, ordering): How,
     (host, offer): (G::Host, G::Offer),
     omit: Omit,
     module_bytes: usize,
@@ -550,6 +558,9 @@ fn translate_on_this_thread<G: Guest>(
     {
         return Err(Error::BadCodeRange);
     }
+    if ordering != AccessOrdering::Unordered && !G::ORDERED_ACCESSES {
+        return Err(Error::OrderedAccessesNotMade);
+    }
     let blob_code = Code::<G> {
         blob,
         range: code,
@@ -557,6 +568,7 @@ fn translate_on_this_thread<G: Guest>(
         host,
         offer,
         progress,
+        ordering,
     };
     for &start in starts {
         if !blob_code.inside(start) {
@@ -586,7 +598,7 @@ fn translate_on_this_thread<G: Guest>(
                 counts[means as usize] += 1;
             }
             let first = none_emit(&blob_code, &found, 0..found.len());
-            let how = (look_ahead, optimise, progress);
+            let how = (look_ahead, optimise, progress, ordering);
             modules::<G>(blob, how, offer, &entries, first, module_bytes, |group| {
                 none_emit(&blob_code, &found, group)
             })
@@ -614,7 +626,7 @@ fn translate_on_this_thread<G: Guest>(
                         counts[means as usize] += 1;
                     }
                     let emit = |group| planned.emit(group);
-                    let how = (look_ahead, optimise, progress);
+                    let how = (look_ahead, optimise, progress, ordering);
                     break modules::<G>(blob, how, offer, &entries, first, module_bytes, emit);
                 }
                 for i in over {
@@ -693,7 +705,7 @@ fn module<G: Guest>(
 ) -> CodeModule {
     let mut module = Module::new();
     module.section(&types::<G>(how.2));
-    module.section(&imports::<G>());
+    module.section(&imports::<G>(how.3));
     let mut functions = FunctionSection::new();
     let mut code_section = CodeSection::new();
     let mut sites = [0; SITES];
@@ -750,6 +762,7 @@ pub(crate) struct Code<'a, G: Guest> {
     pub host: G::Host,
     pub offer: G::Offer,
     pub progress: ProgressCount,
+    pub ordering: AccessOrdering,
 }
 
 impl<G: Guest> Code<'_, G> {
@@ -849,6 +862,7 @@ fn none_emit<G: Guest>(
             let mut emitter = NoneEmitter::<G> {
                 host: code.host,
                 offer: code.offer,
+                ordering: code.ordering,
                 offset: *offset,
                 length: decoded.length,
                 detail: G::trap_detail(code.bytes(*offset)),
@@ -1313,7 +1327,7 @@ pub(crate) fn types<G: Guest>(progress: ProgressCount) -> TypeSection {
     types
 }
 
-pub(crate) fn imports<G: Guest>() -> ImportSection {
+pub(crate) fn imports<G: Guest>(ordering: AccessOrdering) -> ImportSection {
     let mut imports = ImportSection::new();
     for (name, ty) in TRANSLATOR_HOOKS {
         imports.import(HOOKS, name, EntityType::Function(ty));
@@ -1327,9 +1341,9 @@ pub(crate) fn imports<G: Guest>() -> ImportSection {
         MEMORY,
         EntityType::Memory(MemoryType {
             minimum: 0,
-            maximum: None,
+            maximum: ordering.shares_memory().then_some(SHARED_MEMORY_MOST_PAGES),
             memory64: true,
-            shared: false,
+            shared: ordering.shares_memory(),
             page_size_log2: None,
         }),
     );
@@ -1660,7 +1674,7 @@ pub(crate) fn elements<G: Guest>(pieces: u32) -> ElementSection {
 
 pub(crate) fn description<'a, G: Guest>(
     blob: &[u8],
-    (look_ahead, optimise, progress): How,
+    (look_ahead, optimise, progress, ordering): How,
     offer: G::Offer,
     pieces: impl ExactSizeIterator<Item = &'a u64>,
 ) -> CustomSection<'static> {
@@ -1674,6 +1688,7 @@ pub(crate) fn description<'a, G: Guest>(
     for offset in pieces {
         offset.encode(&mut data);
     }
+    data.push(ordering.code());
     data.push(progress as u8);
     CustomSection {
         name: DESCRIPTION_SECTION.into(),
@@ -1686,6 +1701,7 @@ pub(crate) fn description<'a, G: Guest>(
 struct NoneEmitter<'a, G: Guest> {
     host: G::Host,
     offer: G::Offer,
+    ordering: AccessOrdering,
     offset: u64,
     length: u8,
     /// What a trap reports of the instruction's bytes.
@@ -1982,6 +1998,10 @@ impl<G: Guest> Emitter<G> for NoneEmitter<'_, G> {
 
     fn offer(&self) -> G::Offer {
         self.offer
+    }
+
+    fn access_ordering(&self) -> AccessOrdering {
+        self.ordering
     }
 
     fn check(&mut self, address: u32, bytes: u32, access: Access, _which: u8) {

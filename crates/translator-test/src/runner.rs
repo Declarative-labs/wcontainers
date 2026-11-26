@@ -4,11 +4,13 @@
 //! anonymous memory.
 
 use crate::guest::GuestTest;
+use crate::guest_memory::{GuestMemory, SharedGuestMemory};
 use crate::state_memory::StateMemory;
 use rustc_hash::FxHashMap;
 use std::collections::HashMap;
 use std::ops::Range;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 use wasmtime::{
     Caller, Config, Engine, Extern, Global, Instance, Linker, Memory, MemoryType, Module, Store,
@@ -23,7 +25,8 @@ pub use wcontainers_translator::contract::thread_state_size;
 use wcontainers_translator::contract::{self, Reason, SLOT_BYTES, WASM_PAGE_BYTES};
 use wcontainers_translator::contract::{progress_count_offset, progress_limit_offset};
 use wcontainers_translator::{
-    LookAhead, Omit, Optimise, ProgressCount, Translation, translate_in_modules, translate_omitting,
+    AccessOrdering, LookAhead, Omit, Optimise, OrderedAccess, ProgressCount, Translation,
+    translate_in_modules, translate_omitting,
 };
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -99,9 +102,9 @@ impl<G: GuestTest> Paused<'_, '_, G> {
     }
 
     pub fn read(&mut self, address: u64, into: &mut [u8]) {
-        let memory = self.caller.data().memory.unwrap();
+        let memory = self.caller.data().memory.clone().unwrap();
         memory
-            .read(&*self.caller, address as usize, into)
+            .read(&*self.caller, address, into)
             .expect("read inside guest memory");
     }
 
@@ -119,9 +122,9 @@ impl<G: GuestTest> Paused<'_, '_, G> {
             );
             host.lose_stack = true;
         }
-        let memory = host.memory.unwrap();
+        let memory = host.memory.clone().unwrap();
         memory
-            .write(&mut *self.caller, address as usize, bytes)
+            .write(&mut *self.caller, address, bytes)
             .expect("write inside guest memory");
     }
 
@@ -206,6 +209,8 @@ pub struct Host<G: GuestTest> {
     run_time: Box<dyn FnMut() -> LookAhead>,
     /// What translations are made for, unless a load says.
     optimise: Optimise,
+    /// How translations order the guest's loads and stores between threads.
+    ordering: AccessOrdering,
     /// The code translated ahead of time, in the order it was loaded, made again in a fresh thread instance.
     loads: Vec<Load>,
     /// After every load, the piece each of these addresses gets: the one of this load.
@@ -229,7 +234,7 @@ pub struct Host<G: GuestTest> {
     mapped: Vec<bool>,
     engine: Engine,
     thread: Option<Instance>,
-    memory: Option<Memory>,
+    memory: Option<GuestMemory>,
     table_base: u64,
     /// The stop hook raises the flag again before it says carry on, so the thread stops at every check.
     stop_everywhere: bool,
@@ -250,17 +255,55 @@ pub struct Host<G: GuestTest> {
     progress: ProgressCount,
     /// With the progress count, the limit the stop hook puts back.
     limit: u64,
+    /// The system call number at which the thread meets the other threads on its memory, and where they meet.
+    meeting: Option<(u64, Arc<Meeting>)>,
+}
+
+/// Where threads on one memory wait for each other: each arrival waits, spinning, until all have arrived.
+pub struct Meeting {
+    threads: u64,
+    /// Arrivals so far, of every meeting before this one too.
+    arrived: AtomicU64,
+}
+
+impl Meeting {
+    pub fn new(threads: u64) -> Meeting {
+        Meeting {
+            threads,
+            arrived: AtomicU64::new(u64::MIN),
+        }
+    }
+
+    /// Waits until every thread has arrived at this meeting.
+    pub fn wait(&self) {
+        let arrival = self.arrived.fetch_add(1, Ordering::SeqCst);
+        let all = (arrival / self.threads + 1) * self.threads;
+        while self.arrived.load(Ordering::SeqCst) < all {
+            std::hint::spin_loop();
+        }
+    }
 }
 
 pub struct Machine<G: GuestTest> {
     store: Store<Host<G>>,
-    memory: Memory,
+    memory: GuestMemory,
+    /// Whether the memory is one other machines share, given to this one, and so never made again.
+    memory_given: bool,
     state: StateMemory,
     run: TypedFunc<(), ()>,
 }
 
+/// A guest memory of `bytes`, rounded up to whole WebAssembly pages, of the kind the store's form imports.
+fn guest_memory<G: GuestTest>(store: &mut Store<Host<G>>, bytes: u64) -> GuestMemory {
+    if store.data().ordering.shares_memory() {
+        return GuestMemory::Shared(SharedGuestMemory::new(store.engine(), bytes));
+    }
+    let pages = bytes.div_ceil(WASM_PAGE_BYTES);
+    GuestMemory::Own(Memory::new(store, MemoryType::new64(pages, Some(pages))).expect("memory"))
+}
+
 /// One engine for the whole process, so compiled modules can be shared.
-fn engine() -> Engine {
+pub(crate) fn engine() -> Engine {
     static ENGINE: OnceLock<Engine> = OnceLock::new();
     ENGINE.get_or_init(new_engine).clone()
 }
@@ -342,6 +385,28 @@ fn block<G: GuestTest>(thread: &[u8]) -> G::Block {
 /// translator emits for another host runs and is checked here too.
 pub const PROBE_ANSWER_SETTING: &str = "WC_PROBE_ANSWER";
 
+/// Names the setting that, as [`ORDERED`] or [`LOADS_ORDERED`], makes every translation of the runners that form.
+pub const ACCESS_ORDERING_SETTING: &str = "WC_ACCESS_ORDERING";
+/// The value of [`ACCESS_ORDERING_SETTING`] that asks for ordered guest accesses.
+pub const ORDERED: &str = "ordered";
+/// The value of [`ACCESS_ORDERING_SETTING`] that asks for ordered guest loads and plain stores.
+pub const LOADS_ORDERED: &str = "loads";
+
+/// Reads the access ordering [`ACCESS_ORDERING_SETTING`] asks for: unordered unless it names another form.
+pub fn access_ordering<G: GuestTest>() -> AccessOrdering {
+    let kind = OrderedAccess::SequentiallyConsistent;
+    let ordering = match std::env::var(ACCESS_ORDERING_SETTING).as_deref() {
+        Ok(ORDERED) => AccessOrdering::Ordered(kind),
+        Ok(LOADS_ORDERED) => AccessOrdering::LoadsOrdered(kind),
+        _ => return AccessOrdering::Unordered,
+    };
+    assert!(
+        G::ORDERED_ACCESSES,
+        "{ACCESS_ORDERING_SETTING} asks for ordered accesses this guest does not make"
+    );
+    ordering
+}
+
 /// The probe of this engine, run once per process, or the answer `PROBE_ANSWER_SETTING` names.
 pub fn probe<G: GuestTest>() -> G::Host {
     per_guest::<G, _>(|| {
@@ -399,6 +464,28 @@ impl<G: GuestTest> Machine<G> {
     /// A machine with `memory_bytes` of guest memory, nothing allowed anywhere, and an array of slots of
     /// `slots` entries, for the instructions from guest address `table_base`.
     pub fn new(memory_bytes: u64, table_base: u64, slots: u32, syscalls: Syscalls) -> Self {
+        Self::new_on(memory_bytes, table_base, slots, syscalls, None)
+    }
+
+    /// A machine as [`Machine::new`] makes, a thread on `memory`, which other machines' threads share. Code of a
+    /// form that does not share the memory runs on it with its import made shared (`import_shared`).
+    pub fn new_sharing(
+        memory: &SharedGuestMemory,
+        memory_bytes: u64,
+        table_base: u64,
+        slots: u32,
+        syscalls: Syscalls,
+    ) -> Self {
+        Self::new_on(memory_bytes, table_base, slots, syscalls, Some(memory))
+    }
+
+    fn new_on(
+        memory_bytes: u64,
+        table_base: u64,
+        slots: u32,
+        syscalls: Syscalls,
+        shared: Option<&SharedGuestMemory>,
+    ) -> Self {
         const {
             assert!(
                 BLOCK_AT as usize + thread_state_size::<G>() <= PERMISSIONS_AT as usize,
@@ -426,6 +513,7 @@ impl<G: GuestTest> Machine<G> {
                 exact_pieces: HashMap::new(),
                 run_time: Box::new(|| LookAhead::AT_RUN_TIME),
                 optimise: Optimise::Speed,
+                ordering: access_ordering::<G>(),
                 loads: Vec::new(),
                 picks: Vec::new(),
                 placed: Vec::new(),
@@ -454,12 +542,15 @@ impl<G: GuestTest> Machine<G> {
                     .build(),
                 progress: ProgressCount::Absent,
                 limit: u64::MAX,
+                meeting: None,
             },
         );
         store.limiter(|host| &mut host.limits);
-        let pages = memory_bytes.div_ceil(WASM_PAGE_BYTES);
-        let memory =
-            Memory::new(&mut store, MemoryType::new64(pages, Some(pages))).expect("memory");
+        let memory = match shared {
+            Some(shared) => GuestMemory::Shared(shared.clone()),
+            None => guest_memory(&mut store, memory_bytes),
+        };
+
         let slots_at =
             (u64::from(PERMISSIONS_AT) + permission_pages + 1).next_multiple_of(SLOT_BYTES as u64);
         let state_pages =
@@ -468,12 +559,13 @@ impl<G: GuestTest> Machine<G> {
 
         let host = store.data_mut();
         host.state = Some(state.clone());
-        host.memory = Some(memory);
+        host.memory = Some(memory.clone());
         host.slots_at = slots_at as u32;
         let run = thread_instance(&mut store);
         Machine {
             store,
             memory,
+            memory_given: shared.is_some(),
             state,
             run,
         }
@@ -556,14 +648,20 @@ impl<G: GuestTest> Machine<G> {
     pub fn write(&mut self, address: u64, bytes: &[u8]) {
         code_written_in(self.store.data_mut(), address, bytes.len());
         self.memory
-            .write(&mut self.store, address as usize, bytes)
+            .write(&mut self.store, address, bytes)
             .expect("write inside guest memory");
     }
 
     pub fn read(&mut self, address: u64, into: &mut [u8]) {
         self.memory
-            .read(&self.store, address as usize, into)
+            .read(&self.store, address, into)
             .expect("read inside guest memory");
+    }
+
+    /// From now on the thread's system call `number` waits, in the stand-in, until every thread of `meeting` has
+    /// made it, then returns 0.
+    pub fn meet_at(&mut self, number: u64, meeting: Arc<Meeting>) {
+        self.store.data_mut().meeting = Some((number, meeting));
     }
 
     /// Say what a page aligned range allows.
@@ -642,12 +740,18 @@ impl<G: GuestTest> Machine<G> {
             LookAhead::Full,
             host.optimise,
             host.progress,
+            host.ordering,
             host.facts,
             host.offer,
             module_bytes,
         )
         .expect("translate");
-        let load = compile(&host.engine, load_address, translation);
+        let load = compile(
+            &host.engine,
+            load_address,
+            translation,
+            imports_shared(host),
+        );
         instantiate(&mut self.store, &load, false);
         self.store.data_mut().loads.push(load);
     }
@@ -663,7 +767,8 @@ impl<G: GuestTest> Machine<G> {
     ) -> (Duration, Duration, usize) {
         self.place(bytes, code, load_address);
         let started = Instant::now();
-        let load = compile(self.store.engine(), load_address, translation);
+        let share = imports_shared(self.store.data());
+        let load = compile(self.store.engine(), load_address, translation, share);
         let compiled = started.elapsed();
         let machine_code = load
             .modules
@@ -691,6 +796,28 @@ impl<G: GuestTest> Machine<G> {
     /// From now on translations are made for `optimise`, those made at run time included.
     pub fn optimise_for(&mut self, optimise: Optimise) {
         self.store.data_mut().optimise = optimise;
+    }
+
+    /// Makes translations from now on order the guest's accesses as `ordering` says: call before any load or
+    /// write, as the guest's memory is made again, empty, when the form shares it and the last did not, or the
+    /// other way round.
+    ///
+    /// By default they order them as the runners' setting asks.
+    pub fn order_accesses(&mut self, ordering: AccessOrdering) {
+        let host = self.store.data_mut();
+        let remade =
+            !self.memory_given && host.ordering.shares_memory() != ordering.shares_memory();
+        assert!(
+            !remade || host.code_ranges.is_empty() && host.loads.is_empty(),
+            "the form changes after a load"
+        );
+        host.ordering = ordering;
+        if remade {
+            let bytes = self.memory.data_size(&self.store);
+            let memory = guest_memory(&mut self.store, bytes);
+            self.store.data_mut().memory = Some(memory.clone());
+            self.memory = memory;
+        }
     }
 
     /// From now on code reached with no piece is translated at the look-ahead `choose` gives each time.
@@ -1145,10 +1272,15 @@ impl<G: GuestTest> CpuHooks<G> {
 
 /// The guest's bytes from `pc`, as many as an instruction may take and the memory has.
 fn code_at<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, pc: u64) -> Vec<u8> {
-    let memory = caller.data().memory.unwrap();
-    let data = memory.data(&*caller);
-    let at = (pc as usize).min(data.len());
-    data[at..(at + G::MAX_LENGTH as usize).min(data.len())].to_vec()
+    let memory = caller.data().memory.clone().unwrap();
+    let size = memory.data_size(&*caller);
+    let at = pc.min(size);
+    let end = (at + G::MAX_LENGTH).min(size);
+    let mut bytes = vec![0; (end - at) as usize];
+    memory
+        .read(&*caller, at, &mut bytes)
+        .expect("bytes inside guest memory");
+    bytes
 }
 
 /// Count a slow path taken at an address (or for a number) and the time it took; warn once per address
@@ -1410,9 +1542,9 @@ fn hooks<G: GuestTest>(linker: &mut Linker<Host<G>>) {
                     None => run.start.max(covered.start)..run.end.min(covered.end),
                 };
                 let mut bytes = vec![0; (run.end - run.start) as usize];
-                let memory = caller.data().memory.unwrap();
+                let memory = caller.data().memory.clone().unwrap();
                 memory
-                    .read(&caller, run.start as usize, &mut bytes)
+                    .read(&caller, run.start, &mut bytes)
                     .expect("code inside guest memory");
                 let offset = address - run.start;
                 let sp = stack_pointer_of::<G>(&snapshot(&mut caller));
@@ -1642,16 +1774,28 @@ fn translate_load<G: GuestTest>(
         look_ahead,
         optimise,
         host.progress,
+        host.ordering,
         host.facts,
         host.offer,
         omit,
     )
     .expect("translate");
-    compile(&host.engine, load_address, translation)
+    compile(
+        &host.engine,
+        load_address,
+        translation,
+        imports_shared(host),
+    )
 }
 
-/// Compile a translation's code modules.
-fn compile(engine: &Engine, load_address: u64, translation: Translation) -> Load {
+/// Whether code of the host's form must have its import of the guest memory made shared: the memory is shared
+/// and the form does not share it.
+fn imports_shared<G: GuestTest>(host: &Host<G>) -> bool {
+    matches!(host.memory, Some(GuestMemory::Shared(_))) && !host.ordering.shares_memory()
+}
+
+/// Compile a translation's code modules, with `share`, each with its import of the guest memory made shared.
+fn compile(engine: &Engine, load_address: u64, translation: Translation, share: bool) -> Load {
     Load {
         load_address,
         read: translation
@@ -1669,7 +1813,14 @@ fn compile(engine: &Engine, load_address: u64, translation: Translation) -> Load
         modules: translation
             .modules
             .iter()
-            .map(|m| Module::new(engine, &m.wasm).expect("code module"))
+            .map(|m| {
+                let wasm = if share {
+                    crate::guest_memory::import_shared(&m.wasm)
+                } else {
+                    m.wasm.clone()
+                };
+                Module::new(engine, &wasm).expect("code module")
+            })
             .collect(),
     }
 }
@@ -1728,7 +1879,7 @@ fn instantiate<G: GuestTest>(
     let table = lookup_table(&mut store);
     let host = store.data();
     let thread = host.thread.unwrap();
-    let memory = host.memory.unwrap();
+    let memory = host.memory.clone().unwrap();
     let state = host.state.clone().unwrap();
     let load_address = load.load_address;
     let first = if exact {
@@ -1751,7 +1902,7 @@ fn instantiate<G: GuestTest>(
     linker.allow_shadowing(true);
     hooks(&mut linker);
     linker
-        .define(&store, contract::ENV, contract::MEMORY, memory)
+        .define(&store, contract::ENV, contract::MEMORY, memory.to_extern())
         .unwrap();
     linker
         .define(
@@ -1761,7 +1912,7 @@ fn instantiate<G: GuestTest>(
             state.shared_memory(),
         )
         .unwrap();
-    let pages = memory.size(&store);
+    let pages = memory.pages(&store);
     for (name, value) in [
         (contract::LOAD_ADDRESS, Val::I64(load_address as i64)),
         (
@@ -1873,13 +2024,19 @@ fn stand_in<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, call: SystemCallRequ
     use linux_raw_sys::general::{UIO_MAXIOV, iovec};
     let error = |errno: u32| -i64::from(errno);
     let [a0, a1, a2, ..] = call.arguments;
-    let memory = caller.data().memory.unwrap();
+    if let Some((number, meeting)) = &caller.data().meeting
+        && call.number.0 == *number
+    {
+        meeting.wait();
+        return 0;
+    }
+    let memory = caller.data().memory.clone().unwrap();
     // Guest bytes, if every one is on a page the guest may read. Like a write to a pipe on Linux, a buffer
     // that is only partly readable gives a fault and writes nothing.
     let read = |caller: &mut Caller<'_, Host<G>>, address: u64, length: u64| -> Option<Vec<u8>> {
         if length > 0 {
             let last = address.checked_add(length - 1)?;
-            if last >= memory.data_size(&*caller) as u64 {
+            if last >= memory.data_size(&*caller) {
                 return None;
             }
             // Every page's byte of the permission table, which must lie inside the state memory.
@@ -1896,7 +2053,7 @@ fn stand_in<G: GuestTest>(caller: &mut Caller<'_, Host<G>>, call: SystemCallRequ
             }
         }
         let mut bytes = vec![0; usize::try_from(length).ok()?];
-        memory.read(&*caller, address as usize, &mut bytes).ok()?;
+        memory.read(&*caller, address, &mut bytes).ok()?;
         Some(bytes)
     };
     let numbers = G::STAND_IN;
@@ -2024,8 +2181,14 @@ fn map_pages<G: GuestTest>(
     permissions: Permissions,
 ) {
     let bytes = pages.start * PAGE_SIZE..pages.end * PAGE_SIZE;
-    let memory = caller.data().memory.unwrap();
-    memory.data_mut(&mut *caller)[bytes.start as usize..bytes.end as usize].fill(u8::MIN);
+    let memory = caller.data().memory.clone().unwrap();
+    // A page at a time, through the memory's own writes, so a shared memory is cleared the same way.
+    let zero_page = [u8::MIN; PAGE_SIZE as usize];
+    for page in pages.clone() {
+        memory
+            .write(&mut *caller, page * PAGE_SIZE, &zero_page)
+            .expect("mapped pages inside guest memory");
+    }
     forget_exact_pieces(caller.data_mut(), &pages);
     set_permissions(caller.data_mut(), bytes, permissions);
 }

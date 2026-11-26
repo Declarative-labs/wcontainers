@@ -2844,6 +2844,10 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         self.code.offer
     }
 
+    fn access_ordering(&self) -> wcontainers_guest_cpu::AccessOrdering {
+        self.code.ordering
+    }
+
     /// The slow path leaves the piece by a tail call, so no call stays in the function, which would make the
     /// engine keep values out of registers around it.
     fn float_mode(&mut self) -> bool {

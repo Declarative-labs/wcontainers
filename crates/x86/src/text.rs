@@ -149,7 +149,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
     match (ins.op_kind(1), mem) {
         (OpKind::Register, _) => e.get_vector(xmm(ins.op_register(1)).expect("an xmm register")),
         (_, at) => {
-            e.sink().local_get(at.expect("checked")).v128_load(memory());
+            load_vector_at(e, at.expect("checked"), 0);
         }
     }
     e.sink().local_set(b);
