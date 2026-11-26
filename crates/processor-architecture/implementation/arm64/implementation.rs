@@ -18,6 +18,7 @@ use wcontainers_processor_architecture::ProcessorArchitecture;
 mod behavior;
 pub mod branch;
 mod condition_flags;
+mod core_identity;
 mod documented;
 pub mod encoding;
 mod exception;
@@ -42,6 +43,7 @@ pub use behavior::{
     StoreOfBaseWithWriteback, VectorLength, VectorLengthReading, WaitForInterruptBehavior,
 };
 pub use condition_flags::{CONDITIONS, Condition, ConditionFlags};
+pub use core_identity::CoreIdentity;
 pub use documented::{
     DocumentedInstruction, DocumentedOperation, to_documented_operation, to_implicit_inputs,
     writes_condition_flags,

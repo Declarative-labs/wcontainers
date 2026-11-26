@@ -24,6 +24,7 @@ use wcontainers_processor_architecture::ProcessorArchitecture;
 
 mod behavior;
 pub mod branch;
+mod core_identity;
 mod cpuid;
 mod cpuid_recording;
 mod exception;
@@ -45,6 +46,7 @@ pub use behavior::{
     ScanOfZero, SixteenBitSwap, StoreAcrossFault, UndefinedAuxiliaryCarry, UndefinedFlags, UndefinedResultFlags,
     UndefinedStatusFlags,
 };
+pub use core_identity::CoreIdentity;
 pub use cpuid::{CpuidLeaf, CpuidTable, XEON_PLATINUM_8488C_UNDER_KVM};
 pub use exception::{Access, Exception};
 pub use flags::Flags;
