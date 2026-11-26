@@ -114,8 +114,8 @@ Disagreeing instructions by cause at `e4a430b6c` on ARM64, first differing state
     is gone (`492c943d8`).
 - 1: Mrs (`d5380000`, MRS MIDR_EL1): the list has EL1 trap every ID register read (FEAT_IDST); the translator answers
   in place with the values Linux's emulation gives.
-- 1: Sys (`d50b7520`, IC IVAU of an address above 48 bits): the list says it never faults, the translator checked it;
-  fixed in `9802b9416`, re-measure below.
+- 1: Sys. At `e4a430b6c` its first differing state was IC IVAU (`d50b7520`) of an address above 48 bits, which the list
+  says never faults and the translator checked: fixed in `9802b9416`.
 
 The DAIF and ID-register causes are one question, for the orchestrator: should the executor trap every register the
 list says EL1 traps (DAIF, DAIFSet/Clr, SCXTNUM_EL0, the timers, the activity monitors, the ID space), as it now does
@@ -124,7 +124,13 @@ offer switch in the translator (`CounterAccess::Trapped` would grow into "EL1 tr
 kernel to answer `SystemAccessTrapped` first, since a program that reads MIDR_EL1 (glibc does, given HWCAP_CPUID)
 would then stop the kernel where today it reads Linux's value.
 
-The re-measure at `9802b9416` (both machines) is running; its result follows here when in.
+Re-measured at `9802b9416` (MEASURED, both machines, logs `fetched/run7-arm/full7.log`, `fetched/run7-x86/full7.log`):
+33,322,792 states executed, 0 refused, 143 instructions disagree on each machine (49 and 50 min); the behavior-source
+determinism tests pass on both. The causes are the four above; Sys's first differing state is now DC CVAC (`d50b7a20`)
+of an unmapped address: the list gives the cache maintenance abort as `Undecoded { syndrome: 0x92000147 }` (EC 0x24,
+CM and WnR set, a level 3 translation fault), the executor a `DataAbort`. Its fix is two small parts: the executor
+reports a fault of DC CVAC or CIVAC as that `Undecoded` exception (mine, next), and DC CVAU, which the list says never
+faults, stops being checked (translator: `CleanCache` does not tell CVAU from CVAC today, decode_forms.rs:191).
 
 ### Next
 
