@@ -247,7 +247,7 @@ fn touch(bytes: &impl wcontainers_volatile_bytes::VolatileBytes) {
     let length = usize::try_from(bytes.len()).unwrap_or(usize::MAX).min(1 << 24);
     let pattern = vec![0xa5_u8; length];
     let _ = bytes.write(&pattern);
-    let mut back = vec![0_u8; length];
+    let mut back = vec![u8::MIN; length];
     let _ = bytes.read(&mut back);
     let _ = bytes.read_to(&mut Swallow);
     let _ = bytes.write_from(&mut Pattern(0));
@@ -339,7 +339,7 @@ fn drain_source<Source: wcontainers_byte_source::ByteSource>(source: &mut Source
     let mut taken = 0;
     let mut piece = 2_usize;
     while taken < most {
-        let mut chunk = vec![0_u8; piece.min(most - taken)];
+        let mut chunk = vec![u8::MIN; piece.min(most - taken)];
         let read = source.read(&mut chunk)?;
         if read == 0 {
             break;
@@ -725,7 +725,7 @@ impl Writer<'_, '_> {
                 return Some(format!("{reference}Default::default()"));
             }
             let (module, ident, size) = codecs.decoders.get(bare)?;
-            return Some(format!("{reference}{module}::decode_{ident}(&[0_u8; {size}])"));
+            return Some(format!("{reference}{module}::decode_{ident}(&[u8::MIN; {size}])"));
         }
         if bare.contains("Foreign") || bare.contains("impl ") || bare.contains("dyn ") {
             return None;
@@ -1162,7 +1162,7 @@ pub(super) fn struct_values(writer: &Writer<'_, '_>, crates: &Path, api: usize) 
         values.insert(path.clone(), "Default::default()".to_string());
     }
     for (path, (module, ident, size)) in &codecs.decoders {
-        values.entry(path.clone()).or_insert_with(|| format!("{module}::decode_{ident}(&[0_u8; {size}])"));
+        values.entry(path.clone()).or_insert_with(|| format!("{module}::decode_{ident}(&[u8::MIN; {size}])"));
     }
     codecs.modules
 }
@@ -1362,7 +1362,7 @@ impl wcontainers_volatile_bytes::VolatileBytes for SuiteBytes {
     }
 
     fn write_from<Source: wcontainers_byte_source::ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
-        let mut copy = vec![0_u8; self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()];
+        let mut copy = vec![u8::MIN; self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()];
         let count = source.read(&mut copy)?;
         Ok(self.write(&copy[..count.min(copy.len())]))
     }

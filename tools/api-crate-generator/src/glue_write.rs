@@ -129,7 +129,7 @@ impl Writer<'_, '_> {
     pub(super) fn element_read(element: &Part, bytes: &str) -> String {
         match element {
             Part::StructIn { coded, .. } => format!("decode_{}({bytes})", coded.ident),
-            Part::Value { c, .. } => Self::convert_in(element, &format!("get_{c}({bytes}, 0)")),
+            Part::Value { c, .. } => Self::convert_in(element, &format!("get_{c}({bytes}, usize::MIN)")),
             _ => format!("get_u32({bytes}, 0)"),
         }
     }
@@ -141,7 +141,7 @@ impl Writer<'_, '_> {
             Part::Value { c, form, .. } => {
                 // A newtype's field auto-derefs; any other value is copied out of the reference.
                 let value = if *form == ValueForm::Newtype { value.to_string() } else { format!("*{value}") };
-                format!("put_{c}({bytes}, 0, {});", Self::convert_out(element, &value))
+                format!("put_{c}({bytes}, usize::MIN, {});", Self::convert_out(element, &value))
             }
             _ => String::new(),
         }
@@ -198,7 +198,7 @@ impl Writer<'_, '_> {
             let count_name = &glued.parts[count].0;
             let count_metadata = &method.params[count].name;
             if by_pointer {
-                let _ = writeln!(pre, "    let mut {count_name}_room = [0_u8; 4];");
+                let _ = writeln!(pre, "    let mut {count_name}_room = [u8::MIN; 4];");
                 let _ = writeln!(pre, "    #[expect(unsafe_code, reason = \"{place}: {count_metadata}, as the header declares it for the C side\")]");
                 let _ = writeln!(pre, "    // SAFETY: the metadata's `{count_metadata}` is a UINT in and out: four bytes, readable for the call, or null.");
                 let _ = writeln!(pre, "    let {count_name}_read = unsafe {{ read_bytes({count_name}, &mut {count_name}_room) }};");
@@ -263,7 +263,7 @@ impl Writer<'_, '_> {
                 }
                 Part::Count => {}
                 Part::StructIn { optional, coded } => {
-                    let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; {}];", coded.size);
+                    let _ = writeln!(inner, "            let mut {name}_bytes = [u8::MIN; size_of::<{}>()];", coded.mirror);
                     let _ = writeln!(inner, "            let {name}_null = {name}.is_null();");
                     let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "            // SAFETY: the metadata's `{metadata}` is `In` and `Const`: one `{}` of {} bytes, readable for the call.", coded.path.rsplit("::").next().unwrap_or(""), coded.size);
@@ -336,14 +336,14 @@ impl Writer<'_, '_> {
                     if let Some(keep) = &keep {
                         empty = format!("{empty} || {keep}");
                     }
-                    let nulls = if *optional { format!("Some(vec![0_u8; {name}_count * size_of::<usize>()])") } else { "None".to_string() };
+                    let nulls = if *optional { format!("Some(vec![u8::MIN; {name}_count * size_of::<usize>()])") } else { "None".to_string() };
                     let _ = writeln!(inner, "            let {name}_bytes = if {empty} {{ Some(Vec::new()) }} else if {name}.is_null() {{ {nulls} }} else {{");
                     let _ = writeln!(inner, "                #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "                // SAFETY: the metadata's `NativeArrayInfo` names `{}` as the count of `{metadata}`: that many pointers, readable for the call.", method.params[*count].name);
                     let _ = writeln!(inner, "                unsafe {{ read_only_at({name}.cast::<u8>(), {name}_count * size_of::<usize>()) }}\n            }};");
                     let _ = writeln!(inner, "            let mut {name}_found = Vec::new();");
                     let _ = writeln!(inner, "            for element in {}.as_chunks::<{{ size_of::<usize>() }}>().0 {{", fail(&format!("{name}_bytes"), "E_INVALIDARG"));
-                    let _ = writeln!(inner, "                let address = get_usize(element, 0);");
+                    let _ = writeln!(inner, "                let address = get_usize(element, usize::MIN);");
                     let _ = writeln!(inner, "                {name}_found.push(if address == 0 {{ None }} else {{ Some({}) }});", fail(&format!("object::<{kind_type}>(KEY, address)"), "E_INVALIDARG"));
                     let _ = writeln!(inner, "            }}");
                     let _ = writeln!(inner, "            let {name}: Vec<Option<&{kind_type}>> = {name}_found.iter().map(|held| held.as_ref().map(|held| held.value())).collect();");
@@ -409,7 +409,7 @@ impl Writer<'_, '_> {
                     }
                 }
                 Part::Riid => {
-                    let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; 16];");
+                    let _ = writeln!(inner, "            let mut {name}_bytes = [u8::MIN; 16];");
                     let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "            // SAFETY: the metadata's `{metadata}` is `In` and `Const`: one GUID, readable for the call.");
                     let _ = writeln!(inner, "            let {name}_read = unsafe {{ read_bytes({name}, &mut {name}_bytes) }};");
@@ -491,7 +491,7 @@ impl Writer<'_, '_> {
         {
             let wrap = if status { "Ok" } else { "Some" };
             let _ = writeln!(inner, "            if let Some(Recorded(recorded)) = found.part::<Recorded<{}>>() {{", coded.path);
-            let _ = writeln!(inner, "                let mut {name}_bytes = [0_u8; {}];\n                encode_{}(recorded, &mut {name}_bytes);", coded.size, coded.ident);
+            let _ = writeln!(inner, "                let mut {name}_bytes = [u8::MIN; size_of::<{}>()];\n                encode_{}(recorded, &mut {name}_bytes);", coded.mirror, coded.ident);
             let _ = writeln!(inner, "                return {wrap}(({name}_bytes,));\n            }}");
         }
         // An index past what the glue recorded is refused before the implementation is asked.
@@ -528,7 +528,7 @@ impl Writer<'_, '_> {
                             Part::Value { c, .. } => c.clone(),
                             _ => "u32".to_string(),
                         };
-                        format!("({{ let mut {name}_bytes = [0_u8; {size}]; put_{c}(&mut {name}_bytes, 0, {}); {name}_bytes }},)", Self::convert_out(element, "answer"))
+                        format!("({{ let mut {name}_bytes = [u8::MIN; {size}]; put_{c}(&mut {name}_bytes, usize::MIN, {}); {name}_bytes }},)", Self::convert_out(element, "answer"))
                     }
                     _ => continue,
                 };
@@ -623,7 +623,7 @@ impl Writer<'_, '_> {
                     let _ = writeln!(inner, "            let written_back = {how}.0 != {read_only};");
                     let _ = writeln!(inner, "            let {name}_record = {expression} {{ {data}: shadow.address(), {row}: {name}_value.{row}, {depth}: {name}_value.{depth} }};");
                     let _ = writeln!(inner, "            reservation.settle(Box::new((shadow, {name}_value.{data}, written_back)));");
-                    let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; {}];", coded.size);
+                    let _ = writeln!(inner, "            let mut {name}_bytes = [u8::MIN; size_of::<{}>()];", coded.mirror);
                     let _ = writeln!(inner, "            encode_{}(&{name}_record, &mut {name}_bytes);", coded.ident);
                     written.push(format!("{name}_bytes"));
                 }
@@ -730,24 +730,24 @@ impl Writer<'_, '_> {
                             Part::Value { c, .. } => c.clone(),
                             _ => "u32".to_string(),
                         };
-                        let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; {size}];");
-                        let _ = writeln!(inner, "            put_{c}(&mut {name}_bytes, 0, {});", Self::convert_out(element, &format!("{name}_value")));
+                        let _ = writeln!(inner, "            let mut {name}_bytes = [u8::MIN; {size}];");
+                        let _ = writeln!(inner, "            put_{c}(&mut {name}_bytes, usize::MIN, {});", Self::convert_out(element, &format!("{name}_value")));
                         written.push(format!("{name}_bytes"));
                     }
                     Part::StructOut { coded } => {
-                        let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; {}];", coded.size);
+                        let _ = writeln!(inner, "            let mut {name}_bytes = [u8::MIN; size_of::<{}>()];", coded.mirror);
                         let _ = writeln!(inner, "            encode_{}(&{name}_value, &mut {name}_bytes);", coded.ident);
                         written.push(format!("{name}_bytes"));
                     }
                     Part::FixedOut { element, length, size } => {
-                        let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; {}];", length * size);
+                        let _ = writeln!(inner, "            let mut {name}_bytes = [u8::MIN; {}];", length * size);
                         let write = Self::element_write(element, "value", "bytes");
                         let _ = writeln!(inner, "            for (value, bytes) in {name}_value.iter().zip({name}_bytes.as_chunks_mut::<{size}>().0.iter_mut()) {{ {write} }}");
                         written.push(format!("{name}_bytes"));
                     }
                     Part::ValuesOut { element, size, by_pointer, .. } => {
                         // Exactly the room C gave: an implementation's longer list is cut, a shorter one ends in zeros.
-                        let _ = writeln!(inner, "            let mut {name}_bytes = vec![0_u8; {name}_length];");
+                        let _ = writeln!(inner, "            let mut {name}_bytes = vec![u8::MIN; {name}_length];");
                         let write = Self::element_write(element, "value", "bytes");
                         let _ = writeln!(inner, "            for (value, bytes) in {name}_value.iter().zip({name}_bytes.as_chunks_mut::<{size}>().0.iter_mut()) {{ {write} }}");
                         if *by_pointer {
@@ -760,11 +760,11 @@ impl Writer<'_, '_> {
                         let kind_type = self.kind_type(*kind, api_type);
                         let interfaces = self.interfaces_fn(*kind, self.current.get());
                         // Exactly the room C gave, each element one reference or null; none served through a null array.
-                        let _ = writeln!(inner, "            let mut {name}_bytes = vec![0_u8; {name}_length];");
+                        let _ = writeln!(inner, "            let mut {name}_bytes = vec![u8::MIN; {name}_length];");
                         let _ = writeln!(inner, "            if !{name}.is_null() {{");
                         let _ = writeln!(inner, "                for (value, bytes) in {name}_value.into_iter().zip({name}_bytes.as_chunks_mut::<{{ size_of::<usize>() }}>().0.iter_mut()) {{");
                         let _ = writeln!(inner, "                    let address = value.and_then(|value| serve(KEY, value, record(), {interfaces}::<{kind_type}>)).map_or(0, |served| served.into_address().get());");
-                        let _ = writeln!(inner, "                    put_usize(bytes, 0, address);\n                }}\n            }}");
+                        let _ = writeln!(inner, "                    put_usize(bytes, usize::MIN, address);\n                }}\n            }}");
                         written.push(format!("{name}_bytes"));
                     }
                     Part::CountByPointer => {
@@ -819,7 +819,7 @@ impl Writer<'_, '_> {
                 let count = *count;
                 let count_metadata = &method.params[count].name;
                 let _ = writeln!(text, "        if let Some(length) = {name}_length {{");
-                let _ = writeln!(text, "            let {name}_written = {answered}.map_or_else(|| vec![0_u8; length], |written| written.{index}.clone());");
+                let _ = writeln!(text, "            let {name}_written = {answered}.map_or_else(|| vec![u8::MIN; length], |written| written.{index}.clone());");
                 let _ = writeln!(text, "            #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                 let _ = writeln!(text, "            // SAFETY: the metadata's `NativeArrayInfo` names `{count_metadata}` as the count of `{metadata}`, which is `Out`: that many elements of {size} bytes (`length`), writable for the call, or null.");
                 let _ = writeln!(text, "            let _ = unsafe {{ write_bytes({name}.cast::<u8>(), &{name}_written) }};\n        }}");
@@ -827,14 +827,14 @@ impl Writer<'_, '_> {
             }
             let size = match part {
                 Part::ObjectOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } => "size_of::<usize>()".to_string(),
-                Part::LentOut { coded, .. } => coded.size.to_string(),
+                Part::LentOut { coded, .. } => format!("size_of::<{}>()", coded.mirror),
                 Part::ValueOut { size, .. } => size.to_string(),
-                Part::StructOut { coded } => coded.size.to_string(),
+                Part::StructOut { coded } => format!("size_of::<{}>()", coded.mirror),
                 Part::FixedOut { length, size, .. } => (length * size).to_string(),
-                Part::CountByPointer => "4".to_string(),
+                Part::CountByPointer => "size_of::<u32>()".to_string(),
                 _ => "0".to_string(),
             };
-            let _ = writeln!(text, "        let {name}_written = answer.as_ref().{}.map_or([0_u8; {size}], |written| written.{index});", if status { "ok()" } else { "as_ref()" }.replace(".as_ref().as_ref()", ".as_ref()"));
+            let _ = writeln!(text, "        let {name}_written = answer.as_ref().{}.map_or([u8::MIN; {size}], |written| written.{index});", if status { "ok()" } else { "as_ref()" }.replace(".as_ref().as_ref()", ".as_ref()"));
             let promise = match part {
                 Part::ObjectOut { made: true, .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } => "`Out` and `ComOutPtr`: one interface pointer to write",
                 Part::ObjectOut { .. } => "`Out`: one interface pointer to write",
@@ -873,6 +873,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     writer.current.set(api);
     writer.coded.borrow_mut().clear();
     writer.codecs.borrow_mut().clear();
+    writer.mirror_checks.borrow_mut().clear();
     let spec = g.apis[api];
     let mut abi = String::new();
     let mut serve = String::new();
@@ -1183,6 +1184,16 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     let folder = crate_folder.join("implementation").join("direct");
     std::fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
     let codecs = writer.codecs.replace(String::new());
+    // The mirror-check build only: each mirror's offsets and size against the generator's own (MIRROR_CHECK).
+    let mirror_checks = writer.mirror_checks.replace(String::new());
+    if writer.mirror_check.get() {
+        eprintln!("MIRROR CHECKS {}: {}", spec.folder, mirror_checks.lines().count());
+    }
+    let codecs = if mirror_checks.is_empty() {
+        codecs
+    } else {
+        format!("{codecs}\n#[cfg(test)]\n#[test]\nfn mirrors_have_the_generators_layout() {{\n{mirror_checks}}}\n")
+    };
     let data = format!("//! {HEADER}\n//!\n//! Every structure this crate passes, as the bytes C lays it out in.\n\n#![allow(dead_code, unused_imports, reason = \"each structure's both forms are written; a method may use one\")]\n{BYTES_HELPERS}\n{codecs}");
     let mut serving = String::new();
     let _ = writeln!(serving, "//! {HEADER}\n//!\n//! The serving glue: raw C calls in, any implementation of the traits out.\n");

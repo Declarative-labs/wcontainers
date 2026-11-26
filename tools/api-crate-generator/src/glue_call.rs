@@ -59,7 +59,7 @@ impl Writer<'_, '_> {
                 return Some("Default::default()".to_string());
             }
             let coded = self.codec_of(&record_key)?;
-            return Some(format!("decode_{}(&[0_u8; {}])", coded.ident, coded.size));
+            return Some(format!("decode_{}(&[u8::MIN; size_of::<{}>()])", coded.ident, coded.mirror));
         }
         if ty.contains(" as ") || ty.starts_with('<') || ty.starts_with('&') {
             return None;
@@ -199,7 +199,7 @@ impl Writer<'_, '_> {
             let value = format!("parameter {position} ({})", method.params.get(position).map_or("", |param| param.name.as_str()));
             let length = model.ask(&value, "caller-bytes", "len", if *optional { format!("{name}.map_or(0, |bytes| bytes.len())") } else { format!("{name}.len()") });
             let _ = writeln!(body, "        let Ok({name}_length) = usize::try_from({length}) else {{ {fail} }};");
-            let _ = writeln!(body, "        let mut {name}_buffer = Vec::new();\n        if {name}_buffer.try_reserve_exact({name}_length).is_err() {{ {} }}\n        {name}_buffer.resize({name}_length, 0_u8);", if status { "return Err(E_OUTOFMEMORY);" } else { &fail });
+            let _ = writeln!(body, "        let mut {name}_buffer = Vec::new();\n        if {name}_buffer.try_reserve_exact({name}_length).is_err() {{ {} }}\n        {name}_buffer.resize({name}_length, u8::MIN);", if status { "return Err(E_OUTOFMEMORY);" } else { &fail });
             let write = model.ask(&value, "caller-bytes", "write", if *optional { format!("if let Some(bytes) = {name} {{ bytes.write(&{name}_buffer); }}") } else { format!("{name}.write(&{name}_buffer);") });
             let _ = writeln!(writes_back, "        {write}");
         }
@@ -320,7 +320,7 @@ impl Writer<'_, '_> {
                         text.push_str("    }\n");
                         return text;
                     }
-                    let size = coded.size;
+                    let size = format!("{{ size_of::<{}>() }}", coded.mirror);
                     if *optional {
                         let _ = writeln!(body, "        let {name}_bytes = {name}.map(|value| {{ let mut bytes = Aligned::<{size}>::default(); encode_{}(value, &mut bytes.0); bytes }});", coded.ident);
                         args.push(format!("{name}_bytes.as_ref().map_or(null(), |bytes| bytes.0.as_ptr())"));
@@ -351,7 +351,7 @@ impl Writer<'_, '_> {
                     let source = if kept { format!("{name}.unwrap_or_default()") } else { name.clone() };
                     let write = Self::element_write(element, "value", "bytes");
                     let _ = writeln!(body, "        let Some({name}_length) = {source}.len().checked_mul({size}) else {{ {fail} }};");
-                    let _ = writeln!(body, "        let mut {name}_bytes = vec![0_u8; {name}_length.next_multiple_of(8)];");
+                    let _ = writeln!(body, "        let mut {name}_bytes = vec![u8::MIN; {name}_length.next_multiple_of(8)];");
                     let _ = writeln!(body, "        for (value, bytes) in {source}.iter().zip({name}_bytes.as_chunks_mut::<{size}>().0.iter_mut()) {{ {write} }}");
                     let _ = writeln!(body, "        let {name}_c: Vec<u64> = {name}_bytes.as_chunks::<8>().0.iter().map(|word| u64::from_ne_bytes(*word)).collect();");
                     if *optional || kept {
@@ -484,7 +484,7 @@ impl Writer<'_, '_> {
                     let _ = writeln!(body, "            // The system reads the length the shape's rule gives (an exception line of src/api.rs): no fewer bytes are passed.");
                     let _ = writeln!(body, "            let Some(needed) = crate::lengths::initial_length_{suffix}({desc_name}, index, record.{pitch_field}, record.{slice_field}) else {{ {fail} }};");
                     let _ = writeln!(body, "            if record.{bytes_field}.len() < needed {{ {fail} }}");
-                    let _ = writeln!(body, "            let mut bytes = [0_u8; {size}];");
+                    let _ = writeln!(body, "            let mut bytes = [u8::MIN; {size}];");
                     let _ = writeln!(body, "            put_usize(&mut bytes, {bytes_at}, record.{bytes_field}.as_ptr().expose_provenance());");
                     let _ = writeln!(body, "            put_u32(&mut bytes, {pitch_at}, record.{pitch_field});\n            put_u32(&mut bytes, {slice_at}, record.{slice_field});");
                     let _ = writeln!(body, "            {name}_words.extend(bytes.as_chunks::<8>().0.iter().map(|word| u64::from_ne_bytes(*word)));\n        }}");
@@ -551,7 +551,7 @@ impl Writer<'_, '_> {
                     let _ = writeln!(body, "        let lent_key = (self.object.raw().addr(), lent_resource.addr(), {subresource_name});");
                     let _ = writeln!(body, "        // A subresource mapped through us is not mapped again: the first one's memory would die under its view.");
                     let _ = writeln!(body, "        let Some(pending) = PendingLent::reserve(lent_key) else {{ {fail} }};");
-                    let _ = writeln!(body, "        let mut {name} = Aligned::<{}>::default();", coded.size);
+                    let _ = writeln!(body, "        let mut {name} = Aligned::<{{ size_of::<{}>() }}>::default();", coded.mirror);
                     args.push(format!("{name}.0.as_mut_ptr()"));
                     let _ = writeln!(after, "        let {name}_record = decode_{}(&{name}.0);", coded.ident);
                     let _ = writeln!(after, "        let lent_length = mapped_length(&{resource_name}, {subresource_name}, {name}_record.{row}, {name}_record.{depth});");
@@ -596,11 +596,11 @@ impl Writer<'_, '_> {
                     };
                     let _ = writeln!(body, "        let mut {name} = Aligned::<{size}>::default();");
                     args.push(format!("{name}.0.as_mut_ptr()"));
-                    let _ = writeln!(after, "        let {name} = {};", Self::convert_in(element, &format!("get_{c}(&{name}.0, 0)")));
+                    let _ = writeln!(after, "        let {name} = {};", Self::convert_in(element, &format!("get_{c}(&{name}.0, usize::MIN)")));
                     outs.push(name.clone());
                 }
                 Part::StructOut { coded } => {
-                    let _ = writeln!(body, "        let mut {name} = Aligned::<{}>::default();", coded.size);
+                    let _ = writeln!(body, "        let mut {name} = Aligned::<{{ size_of::<{}>() }}>::default();", coded.mirror);
                     args.push(format!("{name}.0.as_mut_ptr()"));
                     let _ = writeln!(after, "        let {name} = decode_{}(&{name}.0);", coded.ident);
                     outs.push(name.clone());

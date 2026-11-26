@@ -116,7 +116,7 @@ impl wcontainers_volatile_bytes::VolatileBytes for RecordedBytes {
     }
 
     fn write_from<Source: wcontainers_byte_source::ByteSource>(&self, source: &mut Source) -> Result<usize, Source::Error> {
-        let mut copy = vec![0_u8; self.0.lock().unwrap_or_else(PoisonError::into_inner).len()];
+        let mut copy = vec![u8::MIN; self.0.lock().unwrap_or_else(PoisonError::into_inner).len()];
         let count = source.read(&mut copy)?;
         Ok(self.write(&copy[..count.min(copy.len())]))
     }

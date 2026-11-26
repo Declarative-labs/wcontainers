@@ -29,19 +29,24 @@ const MOST_ELEMENTS: &str = "1 << 16";
 /// Where a rendering is: a direct crate, which names every API by its alias, never as `crate`.
 const NOWHERE: usize = usize::MAX;
 
-/// `at + amount` as text, added up when `at` is a number, so that no generated offset adds zero.
-fn plus(at: &str, amount: u64) -> String {
-    match at.parse::<u64>() {
-        Ok(at) => (at + amount).to_string(),
-        Err(_) if amount == 0 => at.to_string(),
-        Err(_) => format!("{at} + {amount}"),
-    }
+/// The offset of element `index` of an array at `at`, each element of the mirror type `element`.
+fn element_at(at: &str, element: &str) -> String {
+    format!("{at} + index * size_of::<{element}>()")
 }
 
-/// The offset of element `index` of an array at `at`.
-fn element_at(at: &str, size: u64) -> String {
-    let step = if size == 1 { "index".to_string() } else { format!("index * {size}") };
-    if at == "0" { step } else { format!("{at} + {step}") }
+/// The end of a record whose mirror is `mirror`, at `at`.
+fn end_of(at: &str, mirror: &str) -> String {
+    format!("{at} + size_of::<{mirror}>()")
+}
+
+/// The name of a record's `#[repr(C)]` mirror, from its codec's identifier.
+fn mirror_name(ident: &str) -> String {
+    let mut name: String = ident.split('_').filter(|part| !part.is_empty()).map(|part| {
+        let mut chars = part.chars();
+        chars.next().map_or_else(String::new, |first| first.to_ascii_uppercase().to_string() + chars.as_str())
+    }).collect();
+    name.push_str("Layout");
+    name
 }
 
 fn snake(name: &str) -> String {
@@ -61,6 +66,8 @@ fn direct_alias(api_folder: &str) -> String {
 #[derive(Clone)]
 struct Coded {
     size: u64,
+    /// The `#[repr(C)]` mirror of the record in data.rs, whose `size_of` and `offset_of!` the byte form is written with.
+    mirror: String,
     ident: String,
     path: String,
     decode_only: bool,
@@ -128,8 +135,8 @@ impl Writes {
     pub(super) fn bytes(&self) -> Option<String> {
         match self {
             Writes::Nothing => None,
-            Writes::Null => Some("[0_u8; size_of::<usize>()]".to_string()),
-            Writes::Zeros(size) => Some(format!("[0_u8; {size}]")),
+            Writes::Null => Some("[u8::MIN; size_of::<usize>()]".to_string()),
+            Writes::Zeros(size) => Some(format!("[u8::MIN; {size}]")),
         }
     }
 
@@ -210,6 +217,11 @@ pub(super) struct Writer<'g, 'a> {
     /// For the recorder and the hostile implementation: a value of each structure they can make, by its path (a
     /// decoder of zero bytes, or `Default`).
     struct_values: RefCell<BTreeMap<String, String>>,
+    /// Whether the codecs also write, per crate, a test of each mirror's offsets and size against the generator's own
+    /// (the mirror-check build, never the crates the repository keeps).
+    pub(super) mirror_check: std::cell::Cell<bool>,
+    /// The checks written so far for the crate being written.
+    pub(super) mirror_checks: RefCell<String>,
 }
 
 impl<'g, 'a> Writer<'g, 'a> {
@@ -226,6 +238,8 @@ impl<'g, 'a> Writer<'g, 'a> {
             current: std::cell::Cell::new(NOWHERE),
             hostile: std::cell::Cell::new(false),
             struct_values: RefCell::new(BTreeMap::new()),
+            mirror_check: std::cell::Cell::new(std::env::var_os("MIRROR_CHECK").is_some()),
+            mirror_checks: RefCell::new(String::new()),
         }
     }
 
@@ -282,6 +296,9 @@ impl<'g, 'a> Writer<'g, 'a> {
         self.coded.borrow_mut().insert(ident.to_string(), None);
         let places = self.layouts.field_places(record)?;
         let (size, _) = self.layouts.of_record(record)?;
+        let mirror = mirror_name(ident);
+        let mut mirror_fields = String::new();
+        let mut mirror_names: Vec<String> = Vec::new();
         let mut decode = String::new();
         let mut encode = String::new();
         let union = record.kind == RecordKind::Union;
@@ -292,17 +309,21 @@ impl<'g, 'a> Writer<'g, 'a> {
             Some(Exception::Lent { field, .. }) => Some(*field),
             _ => None,
         };
-        for (field, (offset, field_size)) in record.fields.iter().zip(&places) {
+        for field in &record.fields {
             let mut name = names::value_name(&field.name);
             while !used.insert(name.clone()) {
                 name.push('_');
             }
-            let at = offset.to_string();
+            mirror_names.push(name.clone());
+            let at = format!("offset_of!({mirror}, {name})");
             if lent_field == Some(field.name.as_str()) {
+                let _ = writeln!(mirror_fields, "    {name}: usize,");
                 let _ = writeln!(decode, "        {name}: get_usize(bytes, {at}),");
                 let _ = writeln!(encode, "    put_usize(bytes, {at}, value.{name});");
                 continue;
             }
+            let field_mirror = self.mirror_type(&field.ty, record, rust_name)?;
+            let _ = writeln!(mirror_fields, "    {name}: {field_mirror},");
             let (read, only) = self.read_value(&field.ty, record, rust_name, &at)?;
             decode_only |= only;
             let _ = writeln!(decode, "        {name}: {read},");
@@ -311,17 +332,31 @@ impl<'g, 'a> Writer<'g, 'a> {
                 if union {
                     // A union is written as the largest of its members that is not all zeros: exact for a value read
                     // from C (every member holds the same bytes) and for one built with the other members zeroed.
-                    let _ = writeln!(encode, "    {{\n        let mut scratch = [0_u8; {size}];\n        {{\n            let bytes = &mut scratch[..];\n            {statement}\n        }}");
-                    let _ = writeln!(encode, "        if scratch != [0_u8; {size}] && {field_size} > chosen.0 {{\n            chosen = ({field_size}, scratch);\n        }}\n    }}");
+                    let _ = writeln!(encode, "    {{\n        let mut scratch = [u8::MIN; size_of::<{mirror}>()];\n        {{\n            let bytes = &mut scratch[..];\n            {statement}\n        }}");
+                    let _ = writeln!(encode, "        if scratch != [u8::MIN; size_of::<{mirror}>()] && size_of::<{field_mirror}>() > chosen.0 {{\n            chosen = (size_of::<{field_mirror}>(), scratch);\n        }}\n    }}");
                 } else {
                     let _ = writeln!(encode, "    {statement}");
                 }
             }
         }
         if union && !decode_only {
-            encode = format!("    let mut chosen = (0_u64, [0_u8; {size}]);\n{encode}    bytes[..{size}].copy_from_slice(&chosen.1);\n");
+            encode = format!("    let mut chosen = (usize::MIN, [u8::MIN; size_of::<{mirror}>()]);\n{encode}    bytes[..size_of::<{mirror}>()].copy_from_slice(&chosen.1);\n");
         }
         let mut text = String::new();
+        // The mirror: the record's fields in C's types and order, laid out by Rust's `repr(C)` with the record's packing.
+        // The generator's own offsets (which the layout check compares with MinGW's headers) are checked against it by
+        // the mirror-check build (MIRROR_CHECK set).
+        let repr = record.packing.map_or_else(|| "C".to_string(), |pack| format!("C, packed({pack})"));
+        let keyword = if union { "union" } else { "struct" };
+        let _ = writeln!(text, "/// `{}` as C lays it out: its offsets and size are this type's.\n#[derive(Clone, Copy)]\n#[repr({repr})]\npub(crate) {keyword} {mirror} {{\n{mirror_fields}}}\n", record.name);
+        if self.mirror_check.get() {
+            let mut checks = String::new();
+            for ((offset, _), name) in places.iter().zip(&mirror_names) {
+                let _ = writeln!(checks, "    assert_eq!(offset_of!({mirror}, {name}), {offset}, \"{} {name}\");", record.name);
+            }
+            let _ = writeln!(checks, "    assert_eq!(size_of::<{mirror}>(), {size}, \"{} size\");", record.name);
+            self.mirror_checks.borrow_mut().push_str(&checks);
+        }
         let path = if lent_field.is_some() { format!("{path}<usize>") } else { path.to_string() };
         let path = path.as_str();
         let expression = path.replace('<', "::<");
@@ -332,9 +367,49 @@ impl<'g, 'a> Writer<'g, 'a> {
             let _ = writeln!(text, "pub fn encode_{ident}(value: &{path}, bytes: &mut [u8]) {{\n{encode}}}\n");
         }
         self.codecs.borrow_mut().push_str(&text);
-        let coded = Coded { size, ident: ident.to_string(), path: path.to_string(), decode_only };
+        let coded = Coded { size, mirror, ident: ident.to_string(), path: path.to_string(), decode_only };
         self.coded.borrow_mut().insert(ident.to_string(), Some(coded.clone()));
         Some(coded)
+    }
+
+    /// The type a field of `ty` has in a record's `#[repr(C)]` mirror: C's primitive, the mirror of a record, an array of
+    /// those; none where the byte forms have no reading either.
+    fn mirror_type(&self, ty: &Type, outer: &Record, outer_name: &str) -> Option<String> {
+        if let Some(p) = primitive(ty) {
+            return (p != "bool").then(|| p.to_string());
+        }
+        match ty {
+            Type::ArrayFixed(inner, length) => Some(format!("[{}; {length}]", self.mirror_type(inner, outer, outer_name)?)),
+            Type::Name(name) if name.namespace.is_empty() => {
+                let nested = outer.nested.iter().find(|nested| nested.name == name.name)?;
+                let owner = self.g.record_owner(&key(&outer.namespace, &outer.name));
+                let rust = nested_name(outer_name, &nested.name);
+                let path = self.g.data_path(owner, Module::Structures, &rust, NOWHERE);
+                let ident = format!("{}_{}", snake(&outer.namespace.replace('.', "_")), snake(&rust)).to_ascii_lowercase();
+                Some(self.codec(nested, &path, &ident, &rust)?.mirror)
+            }
+            Type::Name(_) => {
+                let named_key = named(ty)?;
+                if named_key == key(GUID.0, GUID.1) {
+                    return Some("GuidLayout".to_string());
+                }
+                if Generator::is_large_integer(&named_key) {
+                    return Some("i64".to_string());
+                }
+                let record = self.g.read.records.get(&named_key)?;
+                match record.kind {
+                    RecordKind::Enum => Some(record.underlying.as_ref().and_then(primitive).unwrap_or("i32").to_string()),
+                    RecordKind::Typedef => match self.g.typedef_form(&named_key) {
+                        Typedef::Bool | Typedef::Status => Some("i32".to_string()),
+                        Typedef::Newtype => Some(record.fields.first().map_or("usize", |f| if pointee(&f.ty).is_some() { "usize" } else { primitive(&f.ty).unwrap_or("usize") }).to_string()),
+                        _ => None,
+                    },
+                    RecordKind::Struct | RecordKind::Union => Some(self.codec_of(&named_key)?.mirror),
+                    RecordKind::Delegate => None,
+                }
+            }
+            _ => None,
+        }
     }
 
     /// The expression reading a value of `ty` at byte offset `at` of `bytes`, and whether it holds a union.
@@ -346,10 +421,9 @@ impl<'g, 'a> Writer<'g, 'a> {
             return Some((format!("get_{p}(bytes, {at})"), false));
         }
         match ty {
-            Type::ArrayFixed(inner, length) => {
-                let (element_size, _) = self.layouts.of_type(inner, outer)?;
-                let (element, only) = self.read_value(inner, outer, outer_name, &element_at(at, element_size))?;
-                let _ = length;
+            Type::ArrayFixed(inner, _) => {
+                let element_type = self.mirror_type(inner, outer, outer_name)?;
+                let (element, only) = self.read_value(inner, outer, outer_name, &element_at(at, &element_type))?;
                 Some((format!("core::array::from_fn(|index| {element})"), only))
             }
             Type::Name(name) if name.namespace.is_empty() => {
@@ -359,7 +433,7 @@ impl<'g, 'a> Writer<'g, 'a> {
                 let path = self.g.data_path(owner, Module::Structures, &rust, NOWHERE);
                 let ident = format!("{}_{}", snake(&outer.namespace.replace('.', "_")), snake(&rust)).to_ascii_lowercase();
                 let coded = self.codec(nested, &path, &ident, &rust)?;
-                Some((format!("decode_{}(&bytes[{at}..{}])", coded.ident, plus(at, coded.size)), coded.decode_only))
+                Some((format!("decode_{}(&bytes[{at}..{}])", coded.ident, end_of(at, &coded.mirror)), coded.decode_only))
             }
             Type::Name(_) => {
                 let named_key = named(ty)?;
@@ -387,7 +461,7 @@ impl<'g, 'a> Writer<'g, 'a> {
                     },
                     RecordKind::Struct | RecordKind::Union => {
                         let coded = self.codec_of(&named_key)?;
-                        Some((format!("decode_{}(&bytes[{at}..{}])", coded.ident, plus(at, coded.size)), coded.decode_only))
+                        Some((format!("decode_{}(&bytes[{at}..{}])", coded.ident, end_of(at, &coded.mirror)), coded.decode_only))
                     }
                     RecordKind::Delegate => None,
                 }
@@ -403,8 +477,8 @@ impl<'g, 'a> Writer<'g, 'a> {
         }
         match ty {
             Type::ArrayFixed(inner, _) => {
-                let (element_size, _) = self.layouts.of_type(inner, outer)?;
-                let element = self.write_value(inner, outer, outer_name, &element_at(at, element_size), "*item")?;
+                let element_type = self.mirror_type(inner, outer, outer_name)?;
+                let element = self.write_value(inner, outer, outer_name, &element_at(at, &element_type), "*item")?;
                 Some(format!("for (index, item) in {value}.iter().enumerate() {{ {element} }}"))
             }
             Type::Name(name) if name.namespace.is_empty() => {
@@ -417,7 +491,7 @@ impl<'g, 'a> Writer<'g, 'a> {
                 (!coded.decode_only).then(|| {
                     // An array's element is already a reference: `*item` is passed as `item`, not reborrowed.
                     let reference = value.strip_prefix('*').map_or_else(|| format!("&{value}"), str::to_string);
-                    format!("encode_{}({reference}, &mut bytes[{at}..{}]);", coded.ident, plus(at, coded.size))
+                    format!("encode_{}({reference}, &mut bytes[{at}..{}]);", coded.ident, end_of(at, &coded.mirror))
                 })
             }
             Type::Name(_) => {
@@ -448,7 +522,7 @@ impl<'g, 'a> Writer<'g, 'a> {
                         (!coded.decode_only).then(|| {
                     // An array's element is already a reference: `*item` is passed as `item`, not reborrowed.
                     let reference = value.strip_prefix('*').map_or_else(|| format!("&{value}"), str::to_string);
-                    format!("encode_{}({reference}, &mut bytes[{at}..{}]);", coded.ident, plus(at, coded.size))
+                    format!("encode_{}({reference}, &mut bytes[{at}..{}]);", coded.ident, end_of(at, &coded.mirror))
                 })
                     }
                     RecordKind::Delegate => None,
@@ -861,7 +935,7 @@ impl<'g, 'a> Writer<'g, 'a> {
             return Ok(Part::StructIn { optional: param.is_optional, coded });
         }
         if named_key.as_ref().is_some_and(|k| *k == key(GUID.0, GUID.1)) {
-            let coded = Coded { size: 16, ident: "guid".to_string(), path: self.g.guid_path(NOWHERE), decode_only: false };
+            let coded = Coded { size: 16, mirror: "GuidLayout".to_string(), ident: "guid".to_string(), path: self.g.guid_path(NOWHERE), decode_only: false };
             if is_out {
                 return Ok(Part::StructOut { coded });
             }
@@ -902,11 +976,13 @@ fn primitive_or_record_size(layouts: &Layouts<'_>, ty: &Type) -> Option<(u64, u6
 
 /// The helpers every direct crate's byte forms use: one getter and one putter per primitive.
 const BYTES_HELPERS: &str = r#"
+use core::mem::offset_of;
+
 macro_rules! primitive_bytes {
     ($($get:ident $put:ident $type:ty;)*) => {$(
         /// Reads the value at this offset, as C lays it out (little-endian).
         pub fn $get(bytes: &[u8], at: usize) -> $type {
-            let mut value = [0_u8; size_of::<$type>()];
+            let mut value = [u8::MIN; size_of::<$type>()];
             value.copy_from_slice(&bytes[at..at + size_of::<$type>()]);
             <$type>::from_le_bytes(value)
         }
@@ -935,7 +1011,7 @@ primitive_bytes! {
 
 /// Reads a GUID at this offset.
 pub fn get_guid(bytes: &[u8], at: usize) -> wcontainers_component_object_model::structures::Guid {
-    let mut value = [0_u8; wcontainers_component_object_model_direct::GUID_SIZE];
+    let mut value = [u8::MIN; wcontainers_component_object_model_direct::GUID_SIZE];
     value.copy_from_slice(&bytes[at..at + wcontainers_component_object_model_direct::GUID_SIZE]);
     wcontainers_component_object_model_direct::guid_from(&value)
 }
@@ -948,13 +1024,18 @@ pub fn put_guid(bytes: &mut [u8], at: usize, value: &wcontainers_component_objec
 
 /// Reads a GUID from its 16 bytes.
 pub fn decode_guid(bytes: &[u8]) -> wcontainers_component_object_model::structures::Guid {
-    get_guid(bytes, 0)
+    get_guid(bytes, usize::MIN)
 }
 
 /// Writes a GUID as its 16 bytes.
 pub fn encode_guid(value: &wcontainers_component_object_model::structures::Guid, bytes: &mut [u8]) {
-    put_guid(bytes, 0, value);
+    put_guid(bytes, usize::MIN, value);
 }
+
+/// A GUID as C lays it out: its 16 bytes, aligned as its first field (a 32-bit word).
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub(crate) struct GuidLayout([u32; wcontainers_component_object_model_direct::GUID_SIZE / size_of::<u32>()]);
 "#;
 
 #[path = "glue_call.rs"]
