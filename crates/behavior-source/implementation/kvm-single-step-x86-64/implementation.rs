@@ -989,7 +989,7 @@ fn to_slot(processor: &Processor, page_table: u64) -> Slot {
         general: processor.general_purpose_registers,
         instruction_pointer: processor.instruction_pointer,
         flags: processor.flags.bits() | RESERVED_ONE | INTERRUPT_ENABLE | TRAP,
-        code_segment: u64::from(USER_CODE),
+        code_segment: u64::from(processor.code_segment),
         stack_segment: u64::from(USER_DATA),
         fs_base: processor.fs_base,
         gs_base: processor.gs_base,
@@ -1091,8 +1091,8 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
     if processor.mxcsr > u32::from(u16::MAX) {
         return Err(Refusal::MxcsrReservedBits(processor.mxcsr));
     }
-    if processor.code_segment != CODE_SEGMENT {
-        return Err(Refusal::NotModeled("CS other than Linux's 64-bit code segment, which every state holds"));
+    if processor.code_segment != CODE_SEGMENT && u64::from(processor.code_segment) != USER_32_BIT_CODE {
+        return Err(Refusal::NotModeled("CS other than Linux's 64-bit or 32-bit code segment"));
     }
     if !processor.data_segments.iter().all(|selector| is_loadable(*selector)) {
         return Err(Refusal::NotModeled("a data segment selector no program can load under Linux"));

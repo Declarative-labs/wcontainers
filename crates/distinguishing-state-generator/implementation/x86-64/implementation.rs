@@ -99,7 +99,7 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
 
     fn generate_states(&self, instruction: Instruction) -> vec::IntoIter<ExecutionState<'static, X86_64>> {
         let types: Vec<OperandType> = self.domain.list_operand_types(instruction).collect();
-        // Only JCXZ, which no byte string encodes in 64-bit mode, has no operand.
+        // A form without operands has no state.
         if types.is_empty() {
             return Vec::new().into_iter();
         }
@@ -292,7 +292,8 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::FarPointer
         | OperandType::IretFrame
         | OperandType::HypercallNumber
-        | OperandType::KeyRights => true,
+        | OperandType::KeyRights
+        | OperandType::CountJump => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }

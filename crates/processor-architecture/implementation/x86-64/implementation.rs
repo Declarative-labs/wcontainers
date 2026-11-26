@@ -290,8 +290,8 @@ pub struct Processor {
     pub exception: Option<Exception>,
     /// ES, DS, FS and GS's selectors, null as Linux starts a program; SS is always Linux's 0x2B at ring 3.
     pub data_segments: [u16; DATA_SEGMENTS],
-    /// CS: Linux's 64-bit code segment, 0x33, in every state of this architecture; a far transfer to Linux's 32-bit
-    /// code segment, 0x23, leaves one in compatibility mode, which no state starts in.
+    /// CS: Linux's 64-bit code segment, 0x33, in every state of this architecture but JCXZ's, which start in Linux's
+    /// 32-bit code segment, 0x23, the only one that encodes it; a far transfer there leaves one in compatibility mode.
     pub code_segment: u16,
     /// PKRU, which XCR0's PKRU bit enables: Linux starts a program at 0x55555554, every key but 0 denied access, and a
     /// state's pages all have key 0.

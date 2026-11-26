@@ -52,6 +52,7 @@ use wcontainers_processor_architecture_x86_64::{
 pub mod avx;
 pub mod avx512_integer;
 pub mod branch;
+pub mod compatibility;
 pub mod descriptor;
 pub mod evex;
 pub mod extension;
@@ -287,6 +288,8 @@ pub enum OperandType {
     HypercallNumber,
     /// PKRU with EAX, ECX and EDX for RDPKRU and WRPKRU.
     KeyRights,
+    /// JCXZ's operand size, code address, displacement and RCX together.
+    CountJump,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -486,6 +489,7 @@ pub enum OperandValue {
     KeyRights { pkru: u32, accumulator: u64, counter: u64, data: u64 },
     IretFrame(segment::IretFrame),
     CallStack(segment::CallStack),
+    CountJump(compatibility::CountJump),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -495,7 +499,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
     type CriticalValues<'domain> = vec::IntoIter<OperandValue>;
 
     /// The operands of the form in Intel's order, then the state it reads besides them; for a form not yet modeled
-    /// its sample encoding, and nothing for JCXZ, which no byte string encodes in 64-bit mode.
+    /// its sample encoding.
     fn list_operand_types(&self, instruction: Instruction) -> vec::IntoIter<OperandType> {
         use OperandType::{
             AccessPlacement, CpuidLeaf, CpuidSubleaf, CpuidUpperHalves, DataPagePermission, OperandSize, Register,
@@ -529,6 +533,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_float_form(instruction) {
             return float::list_operand_types(form).into_iter();
+        }
+        if instruction == Instruction::JcxzRelbrb {
+            return compatibility::list_operand_types().into_iter();
         }
         if let Some(form) = find_branch_form(instruction) {
             return branch::list_operand_types(form).into_iter();
@@ -809,7 +816,8 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::CallStack => segment::generate_call_stacks(),
             OperandType::FrameLayout { bytes } => segment::generate_frame_layouts(bytes),
             OperandType::HypercallNumber => system::generate_hypercall_numbers(),
-            OperandType::KeyRights => system::generate_key_rights(),        };
+            OperandType::KeyRights => system::generate_key_rights(),
+            OperandType::CountJump => compatibility::generate_cases(),        };
         values.into_iter()
     }
 
@@ -868,6 +876,9 @@ impl X86_64InputDomain {
         }
         if let Some(form) = find_float_form(instruction) {
             return float::build_state(form, &typed);
+        }
+        if instruction == Instruction::JcxzRelbrb {
+            return compatibility::build_state(&typed);
         }
         if let Some(form) = find_branch_form(instruction) {
             return branch::build_state(form, &typed);

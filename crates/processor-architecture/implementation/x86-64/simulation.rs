@@ -79,6 +79,8 @@ mod reciprocal_simulation;
 mod segment_simulation;
 #[path = "vex_upper.rs"]
 mod vex_upper;
+#[path = "compatibility_simulation.rs"]
+mod compatibility_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -102,6 +104,7 @@ impl Simulator<X86_64> for PreciseInstruction {
         let mut processor = processor.clone();
         let before = processor.instruction_pointer;
         simulate_processor(*self, &mut processor, memory.mutations, mutation_hook);
+        compatibility_simulation::clear_stack_upper_half(start, &mut processor);
         let mut expectation = processor.to_expectation();
         let undecided = matches!(self, PreciseInstruction::Fixed(instruction)
             if crate::fixed::find_fixed_form(*instruction).is_some_and(|form| matches!(form.outcome, crate::fixed::FixedOutcome::WritesUndecided | crate::fixed::FixedOutcome::WritesRandom)));
@@ -310,6 +313,7 @@ fn apply(
             avx_simulation::execute_avx(form, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Float(instruction) => execute_float(instruction, processor, memory, decoded),
+        PreciseInstruction::Branch(Instruction::JcxzRelbrb) => compatibility_simulation::execute_jump_if_count_zero(processor, memory),
         PreciseInstruction::Branch(instruction) => execute_branch(instruction, processor, decoded),
         PreciseInstruction::Sse { instruction, across_fault, masked_faults } => {
             sse_simulation::execute_sse(instruction, across_fault, masked_faults, processor, memory, decoded, on_memory_mutated)

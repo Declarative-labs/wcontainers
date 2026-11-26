@@ -1271,6 +1271,12 @@ pub enum Bug {
     TimeStampCounterUnrestricted,
     /// UMWAIT and TPAUSE wait whatever CR4.TSD holds.
     WaitWithoutTimeStampControl,
+    /// JCXZ tests ECX, as JECXZ does.
+    CountJumpTestsDoubleword,
+    /// JCXZ under the prefix 0x66 keeps the target's bits above 16.
+    SixteenBitJumpTargetWhole,
+    /// A step in compatibility mode keeps RSP's upper half.
+    CompatibilityStepKeepsStackUpperHalf,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1860,6 +1866,9 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::SystemEnterAdvances, "SYSENTER", Family::Forms(&[Instruction::Sysenter]), Origin::X87AndRefused),
     row(Bug::TimeStampCounterUnrestricted, "RDTSC, RDTSCP", Family::Forms(&[Instruction::Rdtsc, Instruction::Rdtscp]), Origin::X87AndRefused),
     row(Bug::WaitWithoutTimeStampControl, "UMWAIT, TPAUSE", Family::Forms(&[Instruction::UmwaitGpr32, Instruction::TpauseGpr32u32]), Origin::X87AndRefused),
+    row(Bug::CountJumpTestsDoubleword, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
+    row(Bug::SixteenBitJumpTargetWhole, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
+    row(Bug::CompatibilityStepKeepsStackUpperHalf, "JCXZ", Family::Forms(&[Instruction::JcxzRelbrb]), Origin::X87AndRefused),
 ];
 
 const TRIGONOMETRIC: [Instruction; 4] = [Instruction::Fsin, Instruction::Fcos, Instruction::Fptan, Instruction::Fsincos];
