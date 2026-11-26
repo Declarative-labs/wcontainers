@@ -4310,6 +4310,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-collect-observations"
+version = "0.1.0"
+dependencies = [
+ "databake",
+ "wcontainers-behavior-source",
+ "wcontainers-behavior-source-kvm-single-step",
+ "wcontainers-behavior-source-kvm-single-step-x86-64",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-arm64",
+ "wcontainers-distinguishing-state-generator-x86-64",
+ "wcontainers-instruction-input-domain-x86-64",
+ "wcontainers-machine-labels",
+ "wcontainers-observation-collector",
+ "wcontainers-observation-collector-pinned-behavior-sources",
+ "wcontainers-precise-instruction-set-collected",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+ "wcontainers-processor-architecture-x86-64",
+ "wcontainers-processor-cores",
+ "wcontainers-processor-cores-linux",
+]
+
+[[package]]
 name = "wcontainers-configurable"
 version = "0.1.0"
 dependencies = [
@@ -5012,6 +5035,21 @@ version = "0.1.0"
 dependencies = [
  "wcontainers-observation-collector",
  "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-observation-collector-pinned-behavior-sources"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-behavior-source",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-instruction-input-domain-accumulator-machine",
+ "wcontainers-observation-collector",
+ "wcontainers-observation-collector-conformance",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-accumulator-machine",
+ "wcontainers-processor-cores",
 ]
 
 [[package]]

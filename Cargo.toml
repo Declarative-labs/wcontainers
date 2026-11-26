@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*", "tools/machine-labels"]
+members = ["crates/*", "crates/*/conformance", "crates/*/implementation/*", "tools/collect-observations", "tools/machine-labels"]
 exclude = ["third_party"]
 
 [workspace.metadata.reviewable]
