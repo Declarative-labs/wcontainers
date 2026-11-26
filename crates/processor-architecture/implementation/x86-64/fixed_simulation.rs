@@ -5,7 +5,7 @@ use iced_x86::{Code, Instruction as Decoded};
 use super::{Memory, check_access, locate};
 use crate::fixed::{FixedOutcome, find_fixed_form};
 use crate::planted::{Bug, is_active};
-use crate::{Access, Exception, Instruction, Processor};
+use crate::{Access, Exception, Flags, Instruction, Processor};
 
 /// The vectors whose gates Linux lets ring 3 reach with INT n, besides its system call's.
 const BREAKPOINT_VECTOR: u8 = 3;
@@ -16,7 +16,7 @@ const GATE_BYTES: u32 = 8;
 
 pub(super) fn execute_fixed(
     instruction: Instruction,
-    processor: &Processor,
+    processor: &mut Processor,
     memory: Memory<'_, '_>,
     decoded: &Decoded,
 ) -> Result<(), Exception> {
@@ -42,6 +42,12 @@ pub(super) fn execute_fixed(
             Ok(())
         }
         FixedOutcome::NoOperation | FixedOutcome::WritesUndecided => Ok(()),
+        FixedOutcome::WritesRandom if is_active(Bug::RandomLeavesStatusFlags) => Ok(()),
+        FixedOutcome::WritesRandom => {
+            let carry = if is_active(Bug::RandomClearsCarry) { Flags::empty() } else { Flags::CARRY };
+            processor.flags = processor.flags.difference(Flags::STATUS).union(carry);
+            Ok(())
+        }
         FixedOutcome::TouchesByte => {
             let access = if is_active(Bug::FlushChecksWrite) { Access::Write } else { Access::Read };
             check_access(processor.flags, memory, locate(processor, decoded), 1, access)

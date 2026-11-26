@@ -1048,8 +1048,7 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 /// selectors are not modeled), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does
 /// not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
 /// on the page says why: UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
-/// XSAVE family, LAR, LSL, VERR and VERW, SGDT, SIDT and SMSW, INT 0x80, and AMX's; and RDRAND and RDSEED, whose
-/// results are random.
+/// XSAVE family, LAR, LSL, VERR and VERW, SGDT, SIDT and SMSW, INT 0x80, and AMX's.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
     let address = processor.instruction_pointer;
     let bytes: [u8; 15] = read_bytes(memory, address);
@@ -1105,9 +1104,9 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         Mnemonic::Lss | Mnemonic::Lfs | Mnemonic::Lgs => Some("it writes a selector, which is not modeled"),
         _ if writes_segment => Some("it writes a selector, which is not modeled"),
         Mnemonic::Vmcall | Mnemonic::Vmmcall => Some("KVM answers it as a hypercall"),
-        // RDTSC, RDTSCP and RDPID run: their behaviors do not compare the registers the time and IA32_TSC_AUX decide.
+        // RDTSC, RDTSCP, RDPID, RDRAND and RDSEED run: their behaviors do not compare the registers the time,
+        // IA32_TSC_AUX and the random source decide.
         Mnemonic::Umwait | Mnemonic::Tpause => Some("its result depends on the time, which is not in the state"),
-        Mnemonic::Rdrand | Mnemonic::Rdseed => Some("its result is random, which is not in the state"),
         Mnemonic::Rdpkru | Mnemonic::Wrpkru => Some("PKRU is not modeled, and Linux starts it at 0x55555554"),
         Mnemonic::Xgetbv => Some("XCR0 under Linux also enables AMX's tiles, and XINUSE is not in the state"),
         Mnemonic::Xsave

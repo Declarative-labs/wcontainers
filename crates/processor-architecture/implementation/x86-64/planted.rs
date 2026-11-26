@@ -45,6 +45,8 @@ pub enum Origin {
     EvexSecondHalf,
     /// The opmask forms and the foundation set's EVEX integer forms.
     Avx512Integer,
+    /// The sync onto the owner's expectations, for RDRAND and RDSEED.
+    Expectations,
 }
 
 /// The forms a bug shows on.
@@ -1014,6 +1016,10 @@ pub enum Bug {
     BlendKeepsDestination,
     /// A compare or test into a mask ignores its writemask.
     CompareIgnoresWritemask,
+    /// RDRAND and RDSEED leave the status flags as they were.
+    RandomLeavesStatusFlags,
+    /// RDRAND and RDSEED clear CF, as if the random source had no value ready.
+    RandomClearsCarry,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1478,7 +1484,11 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::RotateRightAsLeft, "VPROR, VPRORV", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Rotate { left: false, .. })), Avx512Integer),
     row(Bug::BlendKeepsDestination, "VPBLENDM", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::Blend), Avx512Integer),
     row(Bug::CompareIgnoresWritemask, "compares and tests into masks", Family::EvexInteger(EvexIntegerForm::writes_mask), Avx512Integer),
+    row(Bug::RandomLeavesStatusFlags, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
+    row(Bug::RandomClearsCarry, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
 ];
+
+const RANDOM: &[Instruction] = &[Instruction::RdrandGprv, Instruction::RdseedGprv];
 
 const X87_SAMPLE: &[Instruction] = &[Instruction::Fnop, Instruction::FxchSt0X87, Instruction::FldSt0Memmem80real, Instruction::Fchs];
 const MMX_SAMPLE: &[Instruction] = &[

@@ -1,6 +1,7 @@
 //! The forms whose outcome at ring 3 no data of the state decides: the privileged forms that raise #GP(0) at ring 3
 //! whatever their operands, the hint-space and reserved forms that run as no-ops, the cache line flushes that only
-//! check their byte's page, INT n and INT1, and the forms that always raise #UD.
+//! check their byte's page, INT n and INT1, the forms that always raise #UD, and the forms whose register result
+//! the time or a random source decides.
 //!
 //! Each is one row of [`FIXED_FORMS`]; its states come from its sample encoding, with every placement of its memory
 //! operand where the variation keeps the form, every code layout and every flag, so the row also says how far the
@@ -28,6 +29,9 @@ pub enum FixedOutcome {
     /// EDX:EAX the time stamp counter, RDTSCP's also ECX, and RDPID's register IA32_TSC_AUX, which Linux sets to the
     /// CPU's number.
     WritesUndecided,
+    /// The register operand is written with a random value, which a behavior does not compare, CF is set and OF, SF,
+    /// ZF, AF and PF are cleared, as RDRAND and RDSEED do when the random source had a value ready.
+    WritesRandom,
 }
 
 /// How far a state may move the form's memory operand without its encoding becoming another form's.
@@ -57,7 +61,9 @@ const fn fixed(instruction: Instruction, outcome: FixedOutcome, memory: MemoryVa
     FixedForm { instruction, outcome, memory }
 }
 
-use FixedOutcome::{GeneralProtection, InvalidOpcode, NoOperation, ReadsOperand, SoftwareInterrupt, TouchesByte, WritesUndecided};
+use FixedOutcome::{
+    GeneralProtection, InvalidOpcode, NoOperation, ReadsOperand, SoftwareInterrupt, TouchesByte, WritesRandom, WritesUndecided,
+};
 use MemoryVariation::{All, NotInstructionPointerRelative, Sample};
 
 /// Every fixed form modeled.
@@ -145,10 +151,12 @@ pub static FIXED_FORMS: &[FixedForm] = &[
     fixed(Instruction::Rdtsc, WritesUndecided, Sample),
     fixed(Instruction::Rdtscp, WritesUndecided, Sample),
     fixed(Instruction::RdpidGpr64u64, WritesUndecided, Sample),
+    fixed(Instruction::RdrandGprv, WritesRandom, Sample),
+    fixed(Instruction::RdseedGprv, WritesRandom, Sample),
 ];
 
-/// The general registers, by number, a form of [`FixedOutcome::WritesUndecided`] writes: EAX and EDX, ECX for RDTSCP,
-/// and RDPID's operand.
+/// The general registers, by number, a form of [`FixedOutcome::WritesUndecided`] or [`FixedOutcome::WritesRandom`]
+/// writes: EAX and EDX, ECX for RDTSCP, and the register operand of RDPID, RDRAND and RDSEED.
 pub fn list_undecided_registers(decoded: &iced_x86::Instruction) -> alloc::vec::Vec<usize> {
     const ACCUMULATOR: usize = 0;
     const COUNTER: usize = 1;

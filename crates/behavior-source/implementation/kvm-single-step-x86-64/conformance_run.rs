@@ -72,22 +72,25 @@ fn to_unexecutable() -> Vec<ExecutionState<'static, X86_64>> {
     ]
 }
 
-/// The generator, without the states of RDTSC and RDTSCP, whose results the time decides, so that no two runs of
-/// one state agree; their behaviors do not compare those registers.
-struct TimeExcluded(CriticalValueCut);
+/// The generator, without the states of RDTSC and RDTSCP, whose results the time decides, and of RDRAND and RDSEED,
+/// whose results are random, so that no two runs of one state agree; their behaviors do not compare those registers.
+struct UndecidedExcluded(CriticalValueCut);
 
-impl DistinguishingStateGenerator<X86_64> for TimeExcluded {
+impl DistinguishingStateGenerator<X86_64> for UndecidedExcluded {
     type States<'generator> = std::vec::IntoIter<ExecutionState<'static, X86_64>>;
 
     fn generate_states(&self, instruction: Instruction) -> Self::States<'_> {
-        if matches!(instruction, Instruction::Rdtsc | Instruction::Rdtscp) {
+        if matches!(
+            instruction,
+            Instruction::Rdtsc | Instruction::Rdtscp | Instruction::RdrandGprv | Instruction::RdseedGprv
+        ) {
             return Vec::new().into_iter();
         }
         self.0.generate_states(instruction)
     }
 }
 
-const GENERATOR: TimeExcluded = TimeExcluded(CriticalValueCut::new(X86_64InputDomain));
+const GENERATOR: UndecidedExcluded = UndecidedExcluded(CriticalValueCut::new(X86_64InputDomain));
 
 #[test]
 fn execute_agrees_with_execute_in_place() {

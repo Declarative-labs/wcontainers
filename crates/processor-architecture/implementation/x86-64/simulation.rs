@@ -87,7 +87,7 @@ impl Simulator<X86_64> for PreciseInstruction {
         simulate_processor(*self, &mut processor, memory.mutations, mutation_hook);
         let mut expectation = processor.to_expectation();
         let undecided = matches!(self, PreciseInstruction::Fixed(instruction)
-            if crate::fixed::find_fixed_form(*instruction).is_some_and(|form| form.outcome == crate::fixed::FixedOutcome::WritesUndecided));
+            if crate::fixed::find_fixed_form(*instruction).is_some_and(|form| matches!(form.outcome, crate::fixed::FixedOutcome::WritesUndecided | crate::fixed::FixedOutcome::WritesRandom)));
         if undecided && processor.exception.is_none() {
             let decoded = fetch(memory.mutations, before).expect("a completed instruction was fetched");
             for number in crate::fixed::list_undecided_registers(&decoded) {
