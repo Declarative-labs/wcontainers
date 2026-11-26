@@ -5,6 +5,10 @@ use core::convert::Infallible;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_arm64::encoding::{Field, RN};
+use wcontainers_processor_architecture_arm64::load_store::AccessLayout;
+use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
+    Offset, RM, to_scalable_access,
+};
 use wcontainers_processor_architecture_arm64::operand::{Operand, RegisterThirtyOne};
 use wcontainers_processor_architecture_arm64::{
     Arm64, Instruction, LoadStoreInstruction, User, VIRTUAL_ADDRESS_BITS,
@@ -13,7 +17,7 @@ use wcontainers_processor_architecture_arm64::{
 use crate::{
     AccessPlacement, Arm64InputDomain, CODE_ADDRESS, CodePlacement, Comparison, DataPage,
     GENERAL_PURPOSE_REGISTERS, LOWER_DATA_ADDRESS, MemoryFill, OperandType, OperandValue,
-    UPPER_DATA_ADDRESS, to_access_address,
+    ScalableValues, UPPER_DATA_ADDRESS, to_access_address,
 };
 
 const PLACEMENTS: [AccessPlacement; 7] = [
@@ -60,9 +64,82 @@ fn read_operand(
 ) -> Option<OperandValue> {
     let registers = &state.processor.general_purpose_registers;
     match operand_type {
-        OperandType::RegisterNumber(field) | OperandType::VectorRegisterNumber(field) => {
+        OperandType::RegisterNumber(field)
+        | OperandType::VectorRegisterNumber(field)
+        | OperandType::PredicateRegisterNumber(field)
+        | OperandType::ScalableVectorNumber { field, .. }
+        | OperandType::PredicateNumber(field)
+        | OperandType::VectorListNumber(field) => {
             Some(OperandValue::RegisterNumber(field.read(word)))
         }
+        OperandType::Pattern(field) => Some(OperandValue::Bits(u64::from(field.read(word)))),
+        OperandType::GoverningPredicate(field) | OperandType::PredicateValue(field) => state
+            .processor
+            .predicate_registers
+            .get(field.read(word) as usize)
+            .copied()
+            .map(OperandValue::Predicate),
+        OperandType::FirstFaultValue | OperandType::WrittenFirstFault => Some(
+            OperandValue::Predicate(state.processor.first_fault_register),
+        ),
+        OperandType::NextVectorValue(field) => Some(OperandValue::Vector(
+            state.processor.vector_registers[(field.read(word) as usize + 1) % 32],
+        )),
+        OperandType::ShiftAmountVector(field) => Some(OperandValue::Vector(
+            state.processor.vector_registers[field.read(word) as usize],
+        )),
+        OperandType::RegisterBound(field) | OperandType::RegisterNearSaturation(field) => {
+            Some(OperandValue::Bits(
+                registers
+                    .get(field.read(word) as usize)
+                    .copied()
+                    .unwrap_or(0),
+            ))
+        }
+        OperandType::ScalableVectorValue {
+            field,
+            offset,
+            values,
+        } => {
+            let bits = state.processor.vector_registers
+                [(field.read(word) + offset) as usize % state.processor.vector_registers.len()];
+            match values {
+                ScalableValues::Integer
+                | ScalableValues::TableIndices
+                | ScalableValues::Structure => Some(OperandValue::Vector(bits)),
+                // The critical value of these bits, whose lanes the bits alone do not name.
+                // The critical value of the bits; a register named twice holds another operand's, read in the
+                // lanes of this operand's first value.
+                ScalableValues::FloatingPoint { .. } | ScalableValues::Converted(_) => {
+                    let values: Vec<OperandValue> = Arm64InputDomain
+                        .generate_critical_values(operand_type)
+                        .collect();
+                    values
+                        .iter()
+                        .copied()
+                        .find(|value| {
+                            matches!(value, OperandValue::ScalableVector { bits: held, .. } if *held == bits)
+                        })
+                        .or_else(|| match values.first() {
+                            Some(OperandValue::ScalableVector { lanes, .. }) => {
+                                Some(OperandValue::ScalableVector { bits, lanes: *lanes })
+                            }
+                            _ => None,
+                        })
+                }
+            }
+        }
+        OperandType::ScalablePredicateValue(field) => Some(OperandValue::Bits(u64::from(
+            state.processor.predicate_registers[field.read(word) as usize],
+        ))),
+        OperandType::ListedVectorValue {
+            field,
+            place,
+            bytes,
+        } => Some(OperandValue::Vector(
+            state.processor.vector_registers[(field.read(word) + place) as usize % 32]
+                & (u128::MAX >> (u128::BITS - bytes * u8::BITS)),
+        )),
         OperandType::FloatingPointValue { field, precision }
         | OperandType::ConvertedFloatingPoint {
             field, precision, ..
@@ -100,11 +177,17 @@ fn read_operand(
             Some(OperandValue::Bits(state.processor.software_thread_id))
         }
         OperandType::Word(_) => Some(OperandValue::Bits(u64::from(word))),
+        OperandType::ImplicitAddress(number) => {
+            Some(OperandValue::Bits(registers[number as usize]))
+        }
         OperandType::VectorValue { field, bytes } => Some(OperandValue::Vector(
             state.processor.vector_registers[field.read(word) as usize]
                 & (u128::MAX >> (u128::BITS - bytes * u8::BITS)),
         )),
-        OperandType::ProgramCounterOffset(fields) | OperandType::SplitImmediate(fields) => {
+        OperandType::ProgramCounterOffset(fields)
+        | OperandType::SplitImmediate(fields)
+        | OperandType::EveryValue(fields)
+        | OperandType::BytePosition(fields) => {
             Some(OperandValue::Bits(fields.iter().fold(0, |bits, field| {
                 (bits << field.width) | u64::from(field.read(word))
             })))
@@ -122,8 +205,7 @@ fn read_operand(
                 }),
         )),
         OperandType::Comparand { field, bytes, pair } => {
-            let layout =
-                LoadStoreInstruction::new(instruction)?.to_access_layout(word, &state.processor)?;
+            let layout = to_layout(instruction, word, &state.processor)?;
             let base = registers
                 .get(RN.read(word) as usize)
                 .copied()
@@ -170,8 +252,7 @@ fn read_operand(
             OperandValue::ConditionFlags(state.processor.condition_flags),
         ),
         OperandType::AccessPlacement => {
-            let layout =
-                LoadStoreInstruction::new(instruction)?.to_access_layout(word, &state.processor)?;
+            let layout = to_layout(instruction, word, &state.processor)?;
             let base = registers
                 .get(RN.read(word) as usize)
                 .copied()
@@ -183,8 +264,7 @@ fn read_operand(
                 .map(OperandValue::AccessPlacement)
         }
         OperandType::AddressTag => {
-            let layout =
-                LoadStoreInstruction::new(instruction)?.to_access_layout(word, &state.processor)?;
+            let layout = to_layout(instruction, word, &state.processor)?;
             let base = registers
                 .get(RN.read(word) as usize)
                 .copied()
@@ -200,6 +280,9 @@ fn read_operand(
                 CodePlacement::PageEnd
             },
         )),
+        OperandType::AdvancedSimd(operand) => {
+            crate::advanced_simd::read_back(operand, word, &state.processor)
+        }
         OperandType::DataPagePermission(page) => {
             let page_address = match page {
                 DataPage::Lower => LOWER_DATA_ADDRESS,
@@ -227,11 +310,25 @@ fn untag(address: u64) -> u64 {
 
 /// Whether the instruction adds a register to its base that is its base.
 fn is_base_also_offset(instruction: Instruction<Infallible>, word: u32) -> bool {
-    instruction.to_record().is_some_and(|record| {
-        record.operands.iter().any(|operand| {
-            matches!(operand, Operand::RegisterOffset { number, .. } if number.read(word) == RN.read(word))
+    let scalable = to_scalable_access(instruction)
+        .is_some_and(|access| access.offset == Offset::Register && RM.read(word) == RN.read(word));
+    scalable
+        || instruction.to_record().is_some_and(|record| {
+            record.operands.iter().any(|operand| {
+                matches!(operand, Operand::RegisterOffset { number, .. } if number.read(word) == RN.read(word))
+            })
         })
-    })
+}
+
+/// The access of a load or store, or of an SVE access, given the registers.
+fn to_layout(
+    instruction: Instruction<Infallible>,
+    word: u32,
+    processor: &wcontainers_processor_architecture_arm64::Processor<()>,
+) -> Option<AccessLayout> {
+    LoadStoreInstruction::new(instruction)
+        .and_then(|load_store| load_store.to_access_layout(word, processor))
+        .or_else(|| to_scalable_access(instruction)?.to_access_layout(word, processor))
 }
 
 /// Every listed instruction that has a known behavior, in the list's order.
@@ -354,7 +451,11 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                         OperandValue::AccessPlacement(_)
                     ) | (OperandValue::Comparison(_), OperandValue::Comparison(_))
                 );
-                if asked == held || placements {
+                // An Advanced SIMD operand reads back as the first of its values that builds the same register.
+                if asked == held
+                    || placements
+                    || matches!(operand_types.get(index), Some(OperandType::AdvancedSimd(_)))
+                {
                     continue;
                 }
                 // A floating-point register named twice holds its last value.
@@ -368,10 +469,42 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                 {
                     continue;
                 }
+                // A Z register or a predicate named twice holds the value written into it last.
+                if let Some((register, place)) =
+                    to_vector_or_predicate(operand_types[index], word, index)
+                    && operand_types
+                        .iter()
+                        .enumerate()
+                        .any(|(other, operand_type)| {
+                            to_vector_or_predicate(*operand_type, word, other).is_some_and(
+                                |(later, later_place)| later == register && later_place > place,
+                            )
+                        })
+                {
+                    continue;
+                }
+                // So does a Z register or a predicate an SVE instruction names twice.
+                if let Some(OperandType::ScalableVectorValue { field, offset, .. }) =
+                    operand_types.get(index)
+                    && operand_types[index + 1..].iter().any(|later| {
+                        matches!(later, OperandType::ScalableVectorValue { field: other, offset: other_offset, .. } if (other.read(word) + other_offset) % 32 == (field.read(word) + offset) % 32)
+                    })
+                {
+                    continue;
+                }
+                if let Some(OperandType::ScalablePredicateValue(field)) = operand_types.get(index)
+                    && operand_types[index + 1..].iter().any(|later| {
+                        matches!(later, OperandType::ScalablePredicateValue(other) if other.read(word) == field.read(word))
+                    })
+                {
+                    continue;
+                }
                 let Some(
                     OperandType::RegisterValue { field, .. }
                     | OperandType::Address { field, .. }
-                    | OperandType::ConvertedInteger { field, .. },
+                    | OperandType::ConvertedInteger { field, .. }
+                    | OperandType::RegisterBound(field)
+                    | OperandType::RegisterNearSaturation(field),
                 ) = operand_types.get(index)
                 else {
                     panic!("{instruction:?} {operands:?} holds {held:?} for {asked:?}");
@@ -382,7 +515,7 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                 let shared = operand_types.iter().enumerate().any(|(other, operand_type)| {
                     matches!(operand_type, OperandType::Comparand { field: later, .. } if names(later))
                         || other > index
-                            && matches!(operand_type, OperandType::RegisterValue { field: later, .. } | OperandType::Address { field: later, .. } if names(later))
+                            && matches!(operand_type, OperandType::RegisterValue { field: later, .. } | OperandType::Address { field: later, .. } | OperandType::RegisterBound(later) | OperandType::RegisterNearSaturation(later) if names(later))
                 });
                 // A placed access's base holds the address that places it.
                 let based = placed && number == RN.read(word);
@@ -392,5 +525,29 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                 );
             }
         }
+    }
+}
+
+/// The Z register or predicate a value operand writes, as a vector register's number or a predicate's past the vector
+/// registers, and where its write comes among the state's: the values of the next register of a pair after every other
+/// vector value, each kind in the operands' order.
+fn to_vector_or_predicate(
+    operand_type: OperandType,
+    word: u32,
+    index: usize,
+) -> Option<(usize, (usize, usize))> {
+    const VECTOR_REGISTERS: usize = 32;
+    let number = |field: Field| field.read(word) as usize;
+    match operand_type {
+        OperandType::VectorValue { field, .. } | OperandType::ShiftAmountVector(field) => {
+            Some((number(field), (0, index)))
+        }
+        OperandType::NextVectorValue(field) => {
+            Some(((number(field) + 1) % VECTOR_REGISTERS, (1, index)))
+        }
+        OperandType::GoverningPredicate(field) | OperandType::PredicateValue(field) => {
+            Some((VECTOR_REGISTERS + number(field), (0, index)))
+        }
+        _ => None,
     }
 }

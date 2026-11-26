@@ -1,8 +1,8 @@
 //! Pointer authentication at EL0 as the executor's guest configures it: SCTLR_EL1's EnIA, EnIB, EnDA and EnDB clear, so
 //! that every instruction that adds or checks a code leaves its pointer as it is, as [AddPAC](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-pac#:~:text=AddPACIA)
 //! and Auth return it when the key is not enabled; the generic key's PACGA, which no enable bit covers, traps to the
-//! hypervisor, which makes it undefined; and XPACI and XPACD strip the code whatever the keys. XPACLRI, which strips
-//! the link register, is left out: the generated states hold zero there, which no strip changes.
+//! hypervisor, which makes it undefined; and XPACI, XPACD and XPACLRI strip the code whatever the keys. The branches
+//! with authentication branch as BR, BLR and RET do, and LDRAA and LDRAB load as LDR does.
 
 use core::convert::Infallible;
 
@@ -14,6 +14,8 @@ use crate::{Instruction, Processor, VIRTUAL_ADDRESS_BITS};
 
 /// The bit that tells an upper-half address from a lower-half one, which a stripped code is made of copies of.
 const HALF_BIT: u32 = 55;
+/// X30, which XPACLRI strips.
+const LINK_REGISTER: u32 = 30;
 /// Where the top byte starts, which TBI0 leaves out of a lower-half address.
 const TOP_BYTE_SHIFT: u32 = u64::BITS - u8::BITS;
 
@@ -26,6 +28,8 @@ pub enum PointerAuthenticationOperation {
     Strip,
     /// PACGA, which the hypervisor traps.
     Undefined,
+    /// XPACLRI, which strips the code from X30.
+    StripLinkRegister,
 }
 
 /// The operation of each modeled pointer authentication instruction, none for every other instruction.
@@ -65,8 +69,17 @@ pub const fn to_pointer_authentication_operation(
         | I::Autibsp => O::KeyDisabled,
         I::Xpaci | I::Xpacd => O::Strip,
         I::Pacga => O::Undefined,
+        I::Xpaclri => O::StripLinkRegister,
         _ => return None,
     })
+}
+
+/// Whether the instruction reads X30 without naming it: RETAA, RETAB and XPACLRI.
+pub const fn reads_link_register(instruction: Instruction<Infallible>) -> bool {
+    matches!(
+        instruction,
+        Instruction::Retaa | Instruction::Retab | Instruction::Xpaclri
+    )
 }
 
 /// [Strip](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-pac#:~:text=Strip):
@@ -104,6 +117,8 @@ pub fn simulate_pointer_authentication<LevelSpecific>(
         }
         O::Undefined => return Err(crate::Exception::UndefinedInstruction),
         O::Strip => RD.read(word),
+        O::StripLinkRegister if crate::planted::is(713) => return Ok(()),
+        O::StripLinkRegister => LINK_REGISTER,
     };
     let pointer = read_register(processor, number, RegisterThirtyOne::ZeroRegister);
     write_register(

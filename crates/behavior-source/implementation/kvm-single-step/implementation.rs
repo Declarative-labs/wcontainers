@@ -6,6 +6,7 @@
 
 #![cfg(all(target_arch = "aarch64", target_os = "linux"))]
 
+use std::array;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BinaryHeap};
 use std::mem::{self, offset_of};
@@ -37,7 +38,7 @@ use crate::guest_layout::{
     VECTOR_BYTES, VECTOR_TABLE_BYTES, VECTORS, level_index, level_span, linear,
 };
 use crate::machine::{GuestMemory, Machine, MachineError, Register, create_machine};
-use crate::slot::{Ending, Registers, Slot};
+use crate::slot::{Ending, FIRST_FAULT_PLACE, Registers, Slot};
 
 mod boot;
 mod guest_layout;
@@ -214,6 +215,8 @@ pub enum Refusal {
     },
     /// The guest rang the doorbell without the handler ending the state's slot.
     SlotNotRun,
+    /// A predicate or FFR holds a set bit on a chip without SVE, which has neither.
+    PredicatesWithoutScalableVectors,
 }
 
 /// One KVM virtual machine with one virtual CPU, bound to the thread that made it, that runs one instruction a state.
@@ -225,6 +228,8 @@ pub struct KvmSingleStepMachine {
     entry: u64,
     /// PSTATE as the host enters the handler.
     entry_pstate: u64,
+    /// Whether the chip has SVE, so that the handler moves the predicates and FFR.
+    scalable_vectors: bool,
     next_free_page: u64,
     /// How many ASIDs the chip has, and so how many slots a batch holds at most.
     asid_count: u64,
@@ -303,6 +308,7 @@ impl KvmSingleStepMachine {
             memory,
             entry: 0,
             entry_pstate: 0,
+            scalable_vectors: false,
             next_free_page: ARENA.start,
             asid_count: 0,
             slot_count: 0,
@@ -371,11 +377,16 @@ impl KvmSingleStepMachine {
         let sctlr = sctlr | SCTLR_EL1::UCT::DontTrap.value;
         let has_sve =
             ID_AA64PFR0_EL1::SVE.read(self.machine.get(Register::ProcessorFeatures)?) != 0;
+        self.scalable_vectors = has_sve;
         let cpacr = if has_sve {
             cpacr | CPACR_EL1::ZEN::TrapNothing.value
         } else {
             cpacr
         };
+        // The shortest vector length, 128 bits, which every chip with SVE has and the state holds.
+        if has_sve {
+            self.machine.set(Register::SveControl, 0)?;
+        }
         let has_sme = self.machine.get(Register::ProcessorFeatures1)? & SME_IMPLEMENTED != 0;
         let cpacr = if has_sme {
             cpacr | SME_TRAPS_NOTHING
@@ -465,7 +476,7 @@ impl KvmSingleStepMachine {
             translation_table: top | TTBR0_EL1::ASID.val(self.slot_count).value,
             next: 0,
             ending: Ending::NotRun as u64,
-            alignment: 0,
+            scalable_vectors: u64::from(self.scalable_vectors),
             before: to_registers(processor),
             after: to_registers(processor),
         };
@@ -543,7 +554,7 @@ impl KvmSingleStepMachine {
             translation_table: RESIDENT_TOP | TTBR0_EL1::ASID.val(0).value,
             next: 0,
             ending: Ending::NotRun as u64,
-            alignment: 0,
+            scalable_vectors: u64::from(self.scalable_vectors),
             before: to_registers(processor),
             after: to_registers(processor),
         };
@@ -983,6 +994,12 @@ impl BehaviorSource for KvmSingleStepMachine {
         if processor.exclusive_monitor != ExclusiveMonitor::Open {
             return Err(Refusal::ExclusiveMonitorHeld(processor.exclusive_monitor));
         }
+        if !self.scalable_vectors
+            && (processor.first_fault_register != 0
+                || processor.predicate_registers.iter().any(|p| *p != 0))
+        {
+            return Err(Refusal::PredicatesWithoutScalableVectors);
+        }
         let memory = memory.mutations;
         if self.renew_machine {
             self.renew()?;
@@ -1396,6 +1413,11 @@ fn to_registers(processor: &Processor<()>) -> Registers {
         fault_address: 0,
         alignment: 0,
         vector: processor.vector_registers,
+        predicate: array::from_fn(|place| match processor.predicate_registers.get(place) {
+            Some(predicate) => *predicate,
+            None => processor.first_fault_register,
+        }),
+        predicate_alignment: [0; _],
     }
 }
 
@@ -1407,6 +1429,8 @@ fn to_processor(registers: &Registers) -> Processor<()> {
         // NZCV sits at the same bits of SPSR_EL1; the rest of EL0's PSTATE is not part of the processor yet.
         condition_flags: ConditionFlags::from_bits_truncate(registers.saved_program_status as u32),
         vector_registers: registers.vector,
+        predicate_registers: array::from_fn(|number| registers.predicate[number]),
+        first_fault_register: registers.predicate[FIRST_FAULT_PLACE],
         floating_point_control: registers.floating_point_control,
         floating_point_status: registers.floating_point_status,
         software_thread_id: registers.software_thread_id,

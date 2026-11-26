@@ -3,7 +3,11 @@
 use alloc::vec::Vec;
 use core::convert::Infallible;
 
+use crate::load_store::scalable_access::{
+    AccessKind, ScalableAccess, ScalableAccessChoices, ScalableStoreAcrossFault, to_scalable_access,
+};
 use crate::load_store::{LoadStoreChoices, LoadStoreInstruction};
+use crate::sve::{ScalableOperation, to_scalable_instruction};
 use crate::system_register::{NEOVERSE_V2_SYSTEM_REGISTERS, OTHER_SYSTEM_REGISTERS};
 use crate::{
     AccessDirection, DocumentedInstruction, DocumentedOperation, Instruction, PreciseInstruction,
@@ -143,6 +147,36 @@ impl PreciseInstruction<Infallible> {
                 PreciseInstruction::SystemRegisterMove { direction, choices }
             }
             Self::MrsCtrEl0 { cache_type } => PreciseInstruction::MrsCtrEl0 { cache_type },
+            Self::Scalable {
+                instruction,
+                operation,
+                trapped,
+            } => PreciseInstruction::Scalable {
+                instruction,
+                operation,
+                trapped,
+            },
+            Self::ScalableAccess {
+                instruction,
+                choices,
+            } => PreciseInstruction::ScalableAccess {
+                instruction,
+                choices,
+            },
+            Self::Structure {
+                instruction,
+                choices,
+            } => PreciseInstruction::Structure {
+                instruction,
+                choices,
+            },
+            Self::TagAccess {
+                instruction,
+                choices,
+            } => PreciseInstruction::TagAccess {
+                instruction,
+                choices,
+            },
             Self::Unimplemented(instruction) => PreciseInstruction::Unimplemented(instruction),
             Self::LevelSpecific(never) => match never {},
         }
@@ -164,7 +198,11 @@ impl PreciseInstruction<Infallible> {
                 ..
             } => Instruction::MsrRegister,
             Self::MrsCtrEl0 { .. } => Instruction::MrsCtrEl0,
-            Self::Unimplemented(instruction) => instruction,
+            Self::Scalable { instruction, .. }
+            | Self::ScalableAccess { instruction, .. }
+            | Self::Unimplemented(instruction) => instruction,
+            Self::Structure { instruction, .. } => instruction.instruction(),
+            Self::TagAccess { instruction, .. } => instruction.instruction(),
         }
     }
 }
@@ -251,11 +289,23 @@ fn list_modeled_behaviors(
         APPLE_M5_CACHE_TYPE,
         PRESENTED_CACHE_TYPE,
     ];
+    if let Some(scalable) = to_scalable_instruction(instruction) {
+        return list_scalable_behaviors(instruction, scalable.operation);
+    }
     if let Some(documented) = DocumentedInstruction::new(instruction) {
         return [PreciseInstruction::Documented(documented)].to_vec();
     }
     if let Some(load_store) = LoadStoreInstruction::new(instruction) {
         return list_load_store_behaviors(load_store);
+    }
+    if let Some(access) = to_scalable_access(instruction) {
+        return list_scalable_access_behaviors(instruction, access);
+    }
+    if let Some(access) = crate::memory_tagging::TagAccessInstruction::new(instruction) {
+        return crate::memory_tagging::list_tag_access_behaviors(access);
+    }
+    if let Some(structure) = crate::StructureInstruction::new(instruction) {
+        return crate::structure::list_structure_behaviors(structure).collect();
     }
     match instruction {
         Instruction::Brk => [PreciseInstruction::Brk].to_vec(),
@@ -291,6 +341,64 @@ fn list_modeled_behaviors(
     }
 }
 
+/// Each combination of the choices an SVE access has: a prefetch none, a load no choice across a fault.
+fn list_scalable_access_behaviors(
+    instruction: Instruction<Infallible>,
+    access: ScalableAccess,
+) -> Vec<PreciseInstruction<Infallible>> {
+    if access.kind == AccessKind::Prefetch {
+        return [PreciseInstruction::ScalableAccess {
+            instruction,
+            choices: ScalableAccessChoices {
+                misaligned_stack_pointer: MisalignedStackPointer::Faults,
+                across_fault: None,
+                fault_address_tag: FaultAddressTag::KeepsTopByte,
+            },
+        }]
+        .to_vec();
+    }
+    // One vector's length holds a store of one register, so that writing its whole vectors below a fault writes
+    // nothing; two and four registers fault at a vector's end in every generated state, where the whole vectors below
+    // are the bytes below, so only three tell those two apart.
+    let across: &[Option<ScalableStoreAcrossFault>] = if access.kind == AccessKind::Store {
+        match access.registers {
+            3 => &[
+                Some(ScalableStoreAcrossFault::WritesNothing),
+                Some(ScalableStoreAcrossFault::WritesBytesBelowFault),
+                Some(ScalableStoreAcrossFault::WritesWholeVectorsBelowFault),
+            ],
+            _ => &[
+                Some(ScalableStoreAcrossFault::WritesNothing),
+                Some(ScalableStoreAcrossFault::WritesBytesBelowFault),
+            ],
+        }
+    } else {
+        &[None]
+    };
+    let mut behaviors = Vec::new();
+    for misaligned_stack_pointer in [
+        MisalignedStackPointer::Faults,
+        MisalignedStackPointer::Accesses,
+    ] {
+        for across_fault in across {
+            for fault_address_tag in [
+                FaultAddressTag::KeepsTopByte,
+                FaultAddressTag::ClearsTopNibble,
+            ] {
+                behaviors.push(PreciseInstruction::ScalableAccess {
+                    instruction,
+                    choices: ScalableAccessChoices {
+                        misaligned_stack_pointer,
+                        across_fault: *across_fault,
+                        fault_address_tag,
+                    },
+                });
+            }
+        }
+    }
+    behaviors
+}
+
 /// [CTR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register) as an Arm Neoverse V2 under KVM reads it, measured on an AWS Graviton4.
 const NEOVERSE_V2_CACHE_TYPE: u64 = 0xB444_C004;
 
@@ -299,6 +407,34 @@ const APPLE_M5_CACHE_TYPE: u64 = 0x9_9444_C004;
 
 /// [CTR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CTR-EL0--Cache-Type-Register) as the translator presents it and unicorn's `max` model reads it.
 const PRESENTED_CACHE_TYPE: u64 = 0x8444_C004;
+
+/// An SVE instruction run at the vector length the state holds, and for one that SME gives too, the SME exception of
+/// each [cause](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=SMTC%2C%20bits%20%5B2%3A0%5D) a chip with SME and without SVE raises, as for RDVL.
+fn list_scalable_behaviors(
+    instruction: Instruction<Infallible>,
+    operation: ScalableOperation,
+) -> Vec<PreciseInstruction<Infallible>> {
+    let streaming = instruction
+        .to_record()
+        .is_some_and(|record| record.feature.contains(SME_FEATURE));
+    let traps: &[SmeTrapCode] = if streaming {
+        &[SmeTrapCode::Disabled, SmeTrapCode::NotInStreamingMode]
+    } else {
+        &[]
+    };
+    [None]
+        .into_iter()
+        .chain(traps.iter().copied().map(Some))
+        .map(|trapped| PreciseInstruction::Scalable {
+            instruction,
+            operation,
+            trapped,
+        })
+        .collect()
+}
+
+/// The feature that names SME in the list.
+const SME_FEATURE: &str = "FEAT_SME";
 
 /// Each combination of the documented choices of the cases the load or store has.
 fn list_load_store_behaviors(

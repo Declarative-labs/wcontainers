@@ -59,6 +59,8 @@ pub(crate) enum Register {
     DebugControl,
     /// TPIDR_EL1: the handler's thread register, which names the slot it runs.
     HandlerThread,
+    /// ZCR_EL1: the SVE vector length of EL1 and EL0.
+    SveControl,
 }
 
 /// The SMCCC filter that forwards the doorbell's function, alone, to this program.
@@ -238,6 +240,7 @@ const ID_AA64PFR1_EL1: SystemRegister = system(3, 0, 0, 4, 1);
 const VBAR_EL1: SystemRegister = system(3, 0, 12, 0, 0);
 const MDSCR_EL1: SystemRegister = system(2, 0, 0, 2, 2);
 const TPIDR_EL1: SystemRegister = system(3, 0, 13, 0, 4);
+const ZCR_EL1: SystemRegister = system(3, 0, 1, 2, 0);
 
 /// Returns KVM's number of the register: a core register by its offset in `kvm_regs`, or a system register by its
 /// encoding.
@@ -265,6 +268,7 @@ fn to_id(register: Register) -> u64 {
         Register::Vectors => VBAR_EL1,
         Register::DebugControl => MDSCR_EL1,
         Register::HandlerThread => TPIDR_EL1,
+        Register::SveControl => ZCR_EL1,
     };
     let SystemRegister {
         op0,

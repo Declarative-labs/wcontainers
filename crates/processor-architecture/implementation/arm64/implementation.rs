@@ -15,9 +15,11 @@ use core::ops::Range;
 use wcontainers_privilege_level::PrivilegeLevel;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
+pub mod advanced_simd;
 mod behavior;
 pub mod branch;
 mod condition_flags;
+pub mod cryptography;
 mod documented;
 pub mod encoding;
 mod exception;
@@ -26,12 +28,24 @@ pub mod integer;
 mod listing;
 pub mod load_store;
 pub mod memory;
+pub mod memory_tagging;
 pub mod operand;
 pub mod planted;
 pub mod pointer_authentication;
 mod registers;
+pub mod scalable;
+pub mod scalable_floating_point;
+pub mod scalable_integer;
 pub mod simd;
 mod simulation;
+mod structure;
+pub mod sve;
+mod sve_count;
+mod sve_element;
+mod sve_move;
+mod sve_predicate;
+#[cfg(test)]
+mod sve_tests;
 pub mod system_register;
 #[cfg(test)]
 mod tests;
@@ -53,6 +67,7 @@ pub use listing::{
     Instruction, InstructionClass, InstructionRecord, LISTED_INSTRUCTIONS, PrivilegeBehavior,
 };
 pub use load_store::{LoadStoreChoices, LoadStoreInstruction};
+pub use structure::{StructureChoices, StructureInstruction};
 pub use wcontainers_privilege_level_arm64_user::User;
 
 /// The number of bits of a virtual address under a 4 KiB granule without [FEAT_LVA](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-2-architecture-extension#:~:text=FEAT_LVA%2C%20Large%20VA%20support).
@@ -62,6 +77,8 @@ pub const INSTRUCTION_SIZE: u64 = size_of::<u32>() as u64;
 pub const GENERAL_PURPOSE_REGISTERS: usize = 31;
 /// V0 to V31.
 pub const VECTOR_REGISTERS: usize = 32;
+/// P0 to P15, the SVE predicate registers.
+pub const PREDICATE_REGISTERS: usize = 16;
 
 /// What every privilege level has, and what `Level` adds to it.
 ///
@@ -142,6 +159,8 @@ impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
             && observed.stack_pointer == expected.stack_pointer
             && observed.program_counter == expected.program_counter
             && observed.vector_registers == expected.vector_registers
+            && observed.predicate_registers == expected.predicate_registers
+            && observed.first_fault_register == expected.first_fault_register
             && observed.floating_point_control == expected.floating_point_control
             && observed.floating_point_status == expected.floating_point_status
             && observed.software_thread_id == expected.software_thread_id
@@ -222,16 +241,24 @@ impl<Level: PrivilegeLevel> Iterator for Instructions<Level> {
 
 /// The registers every privilege level has, the exception its last instruction raised, and what one level adds.
 ///
+/// The SVE registers are those of a 128-bit vector length: each Z register is its vector register, and each
+/// predicate holds one bit for each of its bytes.
+///
 /// TODO: temporary placeholder until the rest of the state every level has is designed: TPIDRRO_EL0 and TPIDR2_EL0;
-/// PSTATE's DIT, SSBS, TCO and BTYPE; SVCR (streaming mode and ZA); Z beyond 128 bits, P and FFR; ZA and ZT0;
-/// FPMR; GCSPR_EL0.
+/// PSTATE's DIT, SSBS, TCO and BTYPE; SVCR (streaming mode and ZA); Z, P and FFR beyond a 128-bit vector length; ZA
+/// and ZT0; FPMR; GCSPR_EL0.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Processor<LevelSpecific> {
     pub general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS],
     pub stack_pointer: u64,
     pub program_counter: u64,
     pub condition_flags: ConditionFlags,
+    /// V0 to V31, which are Z0 to Z31 at a 128-bit vector length.
     pub vector_registers: [u128; VECTOR_REGISTERS],
+    /// P0 to P15.
+    pub predicate_registers: [u16; PREDICATE_REGISTERS],
+    /// [FFR](https://developer.arm.com/documentation/ddi0487/latest/-Part-C-The-AArch64-Instruction-Set/-Chapter-C1-The-A64-Instruction-Set/-C1-4-Registers-in-AArch64-execution-state#:~:text=FFR), the first-fault register.
+    pub first_fault_register: u16,
     /// [FPCR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FPCR--Floating-point-Control-Register).
     pub floating_point_control: u64,
     /// [FPSR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FPSR--Floating-point-Status-Register).
@@ -252,6 +279,8 @@ pub const ZERO_PROCESSOR: Processor<()> = Processor {
     program_counter: 0,
     condition_flags: ConditionFlags::empty(),
     vector_registers: [0; VECTOR_REGISTERS],
+    predicate_registers: [0; PREDICATE_REGISTERS],
+    first_fault_register: 0,
     floating_point_control: 0,
     floating_point_status: 0,
     software_thread_id: 0,
@@ -301,6 +330,28 @@ pub enum PreciseInstruction<LevelSpecific> {
     },
     MrsCtrEl0 {
         cache_type: u64,
+    },
+    /// An SVE instruction of [`sve`] at a vector length of 128 bits, or where `trapped`, raising the SME exception as a
+    /// chip with SME and without SVE does outside streaming mode.
+    Scalable {
+        instruction: Instruction<Infallible>,
+        operation: sve::ScalableOperation,
+        trapped: Option<SmeTrapCode>,
+    },
+    /// An SVE contiguous load, store or prefetch, with what the chip fixes about its access.
+    ScalableAccess {
+        instruction: Instruction<Infallible>,
+        choices: load_store::scalable_access::ScalableAccessChoices,
+    },
+    /// LDG, a tag store or STGP.
+    TagAccess {
+        instruction: memory_tagging::TagAccessInstruction,
+        choices: memory_tagging::TagAccessChoices,
+    },
+    /// A load or store of Advanced SIMD structures.
+    Structure {
+        instruction: StructureInstruction,
+        choices: StructureChoices,
     },
     /// What a chip without the instruction's feature does with its word.
     Unimplemented(Instruction<Infallible>),
