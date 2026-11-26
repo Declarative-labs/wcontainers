@@ -14,14 +14,6 @@ pub fn collect(output: &Path) -> ExitCode {
         output,
         |_| KvmSingleStepMachine::new(),
         CriticalValueCut::default(),
-        name_kind,
-    )
-}
-
-/// Returns the name of the kind's file: its [MIDR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/MIDR-EL1--Main-ID-Register) and [REVIDR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/REVIDR-EL1--Revision-ID-Register) in hexadecimal.
-pub fn name_kind(core: &CoreIdentity) -> String {
-    format!(
-        "midr-{:08x}-revidr-{:08x}",
-        core.main_id_register, core.revision_id_register
+        CoreIdentity::to_kind_name,
     )
 }

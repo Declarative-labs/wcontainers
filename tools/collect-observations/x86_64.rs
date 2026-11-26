@@ -10,36 +10,11 @@ use wcontainers_processor_architecture_x86_64::CoreIdentity;
 
 use crate::collection::collect_and_write;
 
-/// The microcode part of the name where the system reports none.
-const MICROCODE_UNREPORTED: &str = "unreported";
-
 pub fn collect(output: &Path) -> ExitCode {
     collect_and_write(
         output,
         |_| SingleStepMachine::new(),
         CriticalValueCut::new(X86_64InputDomain),
-        name_kind,
-    )
-}
-
-/// Returns the kind's file name: vendor, family, model, stepping, core type and microcode, as [CPUID](https://www.felixcloutier.com/x86/cpuid) gives them.
-pub fn name_kind(core: &CoreIdentity) -> String {
-    let vendor: String = core
-        .vendor_identification
-        .iter()
-        .filter(|byte| byte.is_ascii_alphanumeric())
-        .map(|byte| char::from(byte.to_ascii_lowercase()))
-        .collect();
-    let core_type = core
-        .hybrid_core_type
-        .map(|core_type| format!("-core-type-{core_type:02x}"))
-        .unwrap_or_default();
-    let microcode = core.microcode_version.map_or_else(
-        || String::from(MICROCODE_UNREPORTED),
-        |version| format!("{version:x}"),
-    );
-    format!(
-        "{vendor}-family-{:x}-model-{:x}-stepping-{:x}{core_type}-microcode-{microcode}",
-        core.family, core.model, core.stepping
+        CoreIdentity::to_kind_name,
     )
 }

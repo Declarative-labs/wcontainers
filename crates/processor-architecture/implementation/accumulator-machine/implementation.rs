@@ -7,6 +7,8 @@
 
 extern crate alloc;
 
+use alloc::format;
+use alloc::string::String;
 use alloc::vec::{self, Vec};
 use core::convert::Infallible;
 use core::ops::Range;
@@ -193,6 +195,20 @@ pub enum CoreDesign {
 pub enum CoreRevision {
     First,
     Second,
+}
+
+impl CoreIdentity {
+    /// Returns the name of the kind of core, which names its baked sample: its design, then its revision.
+    pub fn to_kind_name(&self) -> String {
+        let design = match self.design {
+            CoreDesign::Reference => "reference",
+        };
+        let revision = match self.revision {
+            CoreRevision::First => "first",
+            CoreRevision::Second => "second",
+        };
+        format!("{design}-{revision}-revision")
+    }
 }
 
 impl PreciseInstruction {
