@@ -1,4 +1,4 @@
-# Streams: standard input, output, error and the terminal
+# Streams: standard input, output and error
 
 The plan of the streams track, rewritten on 2026-11-25 for the owner's committed interface. The track's brief is
 orchestrator/restart-2026-11-25/brief-streams.md; where this plan and the brief disagree, the brief wins. The
@@ -19,6 +19,15 @@ credit design this page held before (`stream_credit`, `Event::StreamData`, `Even
 
 The runtime names the endpoints of the first process's descriptors 0 to 2 in `ContainerConfig`
 (`standard_input`, `standard_output`, `standard_error`, crates/runtime/interface.rs:53-55).
+
+## No terminal on the interface (the owner's ruling of 2026-11-22)
+
+A terminal's size is not on any interface, and no terminal is in the kernel by default
+(orchestrator/open-with-owner.md:980-982, interface-changes.md:231-232). A container that wants a terminal runs a
+small program of its own that holds the pseudo-terminal; the window size, and any change of it, travels inside the
+stream to that program, as ssh and telnet carry it. So `StreamTransport` carries bytes only, nothing calls the
+kernel for a resize, and the suite checks no terminal. Who builds that program inside the container is not
+assigned yet (written in the track's status for the orchestrator).
 
 ## What the kernel relies on, and the check that holds it
 
@@ -48,12 +57,21 @@ and fifteen loops each with one flaw, every one of which a named check catches b
 |---|---|---|
 | The interface | crates/system/interface.rs, crates/readiness/interface.rs | the owner |
 | The stream suite | crates/system/conformance/suite.rs | streams |
-| The kernel's side: pipes and a pseudo-terminal whose other side is an endpoint | crates/kernel/implementation/linux/ends.rs, syscall/pipe, syscall/tty | kernel |
-| The Docker comparisons of descriptors 0 to 2 and the terminal | unicorn harness tests/streams.rs, tests/terminal.rs | kernel |
+| The kernel's side: descriptors 0 to 2 as pipe ends whose other side is an endpoint | crates/kernel/implementation/linux/ends.rs, syscall/pipe | kernel |
+| The Docker comparisons of descriptors 0 to 2 | unicorn harness tests/streams.rs | kernel |
+| The program inside a container that holds a pseudo-terminal and reads the window size from its stream | none yet | not assigned |
 | The runtime's endpoints (`LocalSystem`) and seeded-test-policy | crates/runtime/implementation/single-kernel, crates/system/implementation/seeded-test-policy | runtime |
 | The native executors' `LinkHost` | crates/executor/implementation/hardware-virtualization-inside | native |
 
-Each implementation runs `stream_tests!` once it builds on main (the brief's ST4).
+The kernel's terminal on main (the `Standard::Terminal` start, `terminal_resized` driven by the legacy
+`Event::TerminalResized` at crates/abi/host.rs:51, the harness's `Step::Resize` and tests/terminal.rs) predates the
+ruling; with the legacy events it is the kernel track's to remove or leave off by default (its KP2).
+
+Each implementation runs `stream_tests!` once it builds (the brief's ST4). The suite needs two endpoints of one
+stream, what is sent at the first arriving at the second; an implementation whose other side is the outside gives
+that pair in its test only: seeded-test-policy and `LinkHost` forward to a loop of services on the other side, and
+the unicorn `TestHost` gets a client that gives back on descriptor 0 what it was sent on descriptor 1, as `cat`
+would. The patches are in pyro-parked/wcontainers-scratch/streams-restart/patches/.
 
 ## Linux behavior to match, and the Docker command that shows it
 
@@ -62,17 +80,16 @@ The kernel track keeps these; they are unchanged by the interface. On ARM64 Linu
   `docker run --rm alpine:3.22 sh -c 'ls -l /proc/self/fd; cat /proc/self/fdinfo/0'`.
 - With `-i`: 0 is a pipe (flags 00, mode `fifo 600`): `echo hi | docker run --rm -i alpine:3.22
   sh -c 'ls -l /proc/self/fd; cat /proc/self/fdinfo/0'`.
-- With `-t`: 0 to 2 are one open file of `/dev/pts/0` (fdinfo flags 02000002), devpts mounted with
-  `gid=5,mode=620,ptmxmode=666`, the first process its session's leader with it as controlling terminal
-  (`/proc/self/stat`: tty_nr 34816, tpgid 1), stty settings `icrnl ixon opost onlcr isig icanon iexten echo echoe
-  echok echoctl echoke`: `docker run --rm -t alpine:3.22 sh -c 'ls -l /proc/self/fd; stty -a; cat /proc/self/stat'`.
 - A closed reader: `docker run --rm alpine:3.22 sh -c 'trap "" PIPE; (sleep 1; echo x; echo $? >&2) | true'` prints 1.
+
+What Docker shows with `-t` (0 to 2 one open file of `/dev/pts/0`, devpts, a controlling terminal, stty settings:
+`docker run --rm -t alpine:3.22 sh -c 'ls -l /proc/self/fd; stty -a; cat /proc/self/stat'`) is, under the ruling
+above, the behavior of the program inside the container that holds the pseudo-terminal, not the kernel's default.
 
 ## Open
 
-- A terminal's size change has no path through the committed interfaces (the brief's question 1); the size at
-  start comes from the spec's `process.consoleSize`.
-- `type Endpoint: Ord` is used by no caller, and the kernel needs `Send + Sync + 'static` (the brief's question 2).
-- The linter's `conformance_not_run` asks each suite function to take one value; a `StreamTransport` alone gives
-  no endpoint, so the stream checks take the transport and two endpoints (the brief's question 3).
+- For the owner (brief, question 1): `type Endpoint: Ord` (crates/system/interface.rs:191) is used by no caller,
+  while the kernel needs `Send + Sync + 'static`, which only its own trait states.
+- For the owner (brief, question 2): the linter's `conformance_not_run` asks each suite function to take one value;
+  a `StreamTransport` alone gives no endpoint, so the stream checks take the transport and two endpoints.
 - Not built, not closed off: endpoints made by connect, accept, export or import.
