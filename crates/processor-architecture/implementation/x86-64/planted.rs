@@ -47,6 +47,8 @@ pub enum Origin {
     Avx512Integer,
     /// The sync onto the owner's expectations, for RDRAND and RDSEED.
     Expectations,
+    /// The VEX family's second pass: ZMM's bits above 255, AVX-VNNI and the XSAVE family.
+    VexSecondPass,
 }
 
 /// The forms a bug shows on.
@@ -1020,6 +1022,12 @@ pub enum Bug {
     RandomLeavesStatusFlags,
     /// RDRAND and RDSEED clear CF, as if the random source had no value ready.
     RandomClearsCarry,
+    /// A VEX write of a vector register keeps ZMM's bits 256 to 511.
+    VexKeepsZmmUpperBits,
+    /// VZEROUPPER keeps ZMM's bits 256 to 511.
+    ZeroUpperKeepsZmmUpperBits,
+    /// VZEROUPPER and VZEROALL zero ZMM16 to ZMM31 too.
+    ZeroAllClearsHighRegisters,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1486,7 +1494,23 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::CompareIgnoresWritemask, "compares and tests into masks", Family::EvexInteger(EvexIntegerForm::writes_mask), Avx512Integer),
     row(Bug::RandomLeavesStatusFlags, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
     row(Bug::RandomClearsCarry, "RDRAND, RDSEED", Family::Forms(RANDOM), Origin::Expectations),
+    row(Bug::VexKeepsZmmUpperBits, "VEX writes of a vector register", Family::Avx(writes_vector_register), Origin::VexSecondPass),
+    row(Bug::ZeroUpperKeepsZmmUpperBits, "VZEROUPPER", Family::Avx(|form| form.operation == AvxOperation::ZeroUpper), Origin::VexSecondPass),
+    row(
+        Bug::ZeroAllClearsHighRegisters,
+        "VZEROUPPER, VZEROALL",
+        Family::Avx(|form| matches!(form.operation, AvxOperation::ZeroUpper | AvxOperation::ZeroAll)),
+        Origin::VexSecondPass,
+    ),
 ];
+
+/// Whether the AVX form writes a vector register: its first operand is one and it writes no flags, or it zeroes them.
+fn writes_vector_register(form: &AvxForm) -> bool {
+    use iced_x86::OpCodeOperandKind as Kind;
+    let first = form.code.op_code().op_kind(0);
+    (matches!(first, Kind::xmm_reg | Kind::ymm_reg) && !form.operation.writes_flags())
+        || matches!(form.operation, AvxOperation::ZeroUpper | AvxOperation::ZeroAll)
+}
 
 const RANDOM: &[Instruction] = &[Instruction::RdrandGprv, Instruction::RdseedGprv];
 
