@@ -16,6 +16,10 @@ const ALWAYS_PUSHED: u64 = 1 << 1 | 1 << 9;
 const LOW_FLAGS: u64 = 0xFFFF;
 /// ENTER takes its nesting level modulo this.
 const NESTING_LEVELS: u8 = 32;
+/// RCX, which SYSCALL writes with the next instruction's address.
+const RETURN_ADDRESS: usize = 1;
+/// R11, which SYSCALL writes with RFLAGS.
+const SAVED_FLAGS: usize = 11;
 
 pub(super) fn execute_system(
     instruction: Instruction,
@@ -74,6 +78,13 @@ pub(super) fn execute_system(
             let frame_register = if size == 2 { Register::BP } else { Register::RBP };
             write_register(processor, frame_register, frame);
             processor.general_purpose_registers[STACK_POINTER] = last;
+        }
+        SystemOperation::SystemCall => {
+            let return_address = if is_active(Bug::SystemCallReturnsToItself) { processor.instruction_pointer } else { decoded.next_ip() };
+            processor.general_purpose_registers[RETURN_ADDRESS] = return_address;
+            let always = if is_active(Bug::PushFlagsOmitsInterrupt) { 1 << 1 } else { ALWAYS_PUSHED };
+            processor.general_purpose_registers[SAVED_FLAGS] = flags.bits() | always;
+            return Err(Exception::SystemCall);
         }
         SystemOperation::JumpIfCountZero => {
             let target = decoded.near_branch_target();

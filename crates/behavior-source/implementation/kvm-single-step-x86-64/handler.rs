@@ -39,11 +39,21 @@ const STACK_POINTER: usize = 4;
 const DEBUG_STATUS_RESET: u32 = 0xFFFF_0FF0;
 pub const VECTORS: usize = 256;
 
+/// The vector the save records for SYSCALL's entry, past every interrupt vector.
+pub const SYSTEM_CALL_VECTOR: u64 = VECTORS as u64;
+/// The kernel's code segment SYSCALL loads, which IA32_STAR names.
+pub const KERNEL_CODE_SELECTOR: u64 = 0x10;
+/// Linux's user segments, which the frame of a SYSCALL entry names.
+const USER_CODE_SELECTOR: i32 = 0x33;
+const USER_DATA_SELECTOR: i32 = 0x2B;
+
 /// The handler's bytes, to be placed at [`HANDLER`], and the kernel addresses of its parts.
 pub struct Handler {
     pub bytes: Vec<u8>,
     pub entry: u64,
     pub stubs: [u64; VECTORS],
+    /// SYSCALL's entry, which IA32_LSTAR names.
+    pub system_call: u64,
     /// PROBE-COST TIMING: a halt that halts again when resumed.
     pub floor: u64,
 }
@@ -76,6 +86,7 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
     let mut entry = a.create_label();
     let mut save = a.create_label();
     let mut floor = a.create_label();
+    let mut system_call = a.create_label();
     let mut stubs: Vec<CodeLabel> = (0..VECTORS).map(|_| a.create_label()).collect();
 
     a.set_label(&mut entry)?;
@@ -112,6 +123,20 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
         a.push(vector as i32)?;
         a.jmp(save)?;
     }
+
+    // SYSCALL's entry: on the kernel's stack, the frame an exception from ring 3 would push, with the program's RSP,
+    // R11's RFLAGS and RCX's address, then the vector.
+    a.set_label(&mut system_call)?;
+    a.mov(qword_ptr(to_after(to_general(STACK_POINTER))), rsp)?;
+    a.mov(rsp, to_kernel(STACK_TOP) as i64)?;
+    a.push(USER_DATA_SELECTOR)?;
+    a.push(qword_ptr(to_after(to_general(STACK_POINTER))))?;
+    a.push(r11)?;
+    a.push(USER_CODE_SELECTOR)?;
+    a.push(rcx)?;
+    a.push(0_i32)?;
+    a.push(SYSTEM_CALL_VECTOR as i32)?;
+    a.jmp(save)?;
 
     a.set_label(&mut save)?;
     for (number, register) in LOADED {
@@ -161,5 +186,6 @@ fn try_assemble() -> Result<Handler, iced_x86::IcedError> {
         entry: assembled.label_ip(&entry)?,
         stubs: addresses,
         floor: assembled.label_ip(&floor)?,
+        system_call: assembled.label_ip(&system_call)?,
     })
 }

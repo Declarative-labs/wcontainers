@@ -20,6 +20,8 @@ pub enum SystemOperation {
     /// ENTER: RBP pushed, the frame pointers of the outer levels copied, the frame pointer pushed, RBP set to the new
     /// frame and RSP lowered by the frame's size.
     Enter,
+    /// SYSCALL: RCX and R11 written, then the kernel entered, which ends the program's instruction as an exception does.
+    SystemCall,
     /// JCXZ: the jump taken where CX is zero. It needs the 16-bit address size, which 64-bit mode does not have (0x67
     /// makes 0xE3 JECXZ there), so no byte string encodes it and no state runs it.
     JumpIfCountZero,
@@ -86,4 +88,5 @@ pub static SYSTEM_FORMS: &[SystemForm] = &[
     system(Instruction::Popfq, SystemOperation::PopFlags, &[Code::Popfq]),
     system(Instruction::EnterImmwImmb, SystemOperation::Enter, &[Code::Enterw_imm16_imm8, Code::Enterq_imm16_imm8]),
     system(Instruction::JcxzRelbrb, SystemOperation::JumpIfCountZero, &[Code::Jcxz_rel8_16]),
+    system(Instruction::Syscall, SystemOperation::SystemCall, &[Code::Syscall]),
 ];

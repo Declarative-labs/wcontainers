@@ -161,6 +161,10 @@ fn simulate_processor(
             if matches!(behavior, PreciseInstruction::MmxConvert { .. }) {
                 processor.x87 = changed.x87;
             }
+            // SYSCALL leaves RCX and R11 written when it enters the kernel.
+            if exception == Exception::SystemCall {
+                processor.general_purpose_registers = changed.general_purpose_registers;
+            }
             // A repeated string form that faults leaves the registers it wrote as 32-bit ones first.
             if matches!(behavior, PreciseInstruction::String { .. }) {
                 processor.general_purpose_registers = changed.general_purpose_registers;

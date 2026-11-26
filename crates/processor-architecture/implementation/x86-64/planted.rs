@@ -1045,7 +1045,7 @@ pub enum Bug {
     RepeatFlagsWrittenEachIteration,
     /// CMPS reads its source element before its destination element.
     CompareReadsSourceFirst,
-    /// PUSHF pushes IF clear.
+    /// PUSHF pushes IF clear, and SYSCALL saves it clear in R11.
     PushFlagsOmitsInterrupt,
     /// The 16-bit POPF changes the flags above bit 15 too.
     PopFlagsSixteenReachesUpper,
@@ -1099,6 +1099,8 @@ pub enum Bug {
     SegmentLimitInPages,
     /// VERW succeeds for a readable code segment.
     VerifyWriteTakesCode,
+    /// SYSCALL writes its own address into RCX.
+    SystemCallReturnsToItself,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1575,7 +1577,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::RepeatCountZeroRuns, "repeated string forms", Family::String(|form| form.is_repeated()), Origin::Mandatory),
     row(Bug::RepeatFlagsWrittenEachIteration, "REPE and REPNE SCAS and CMPS", Family::String(|form| form.is_repeated() && form.compares()), Origin::Mandatory),
     row(Bug::CompareReadsSourceFirst, "CMPS", Family::String(|form| form.operation == crate::string::StringOperation::Compare), Origin::Mandatory),
-    row(Bug::PushFlagsOmitsInterrupt, "PUSHF", Family::Forms(&[Instruction::Pushf, Instruction::Pushfq]), Origin::Mandatory),
+    row(Bug::PushFlagsOmitsInterrupt, "PUSHF, SYSCALL", Family::Forms(&[Instruction::Pushf, Instruction::Pushfq, Instruction::Syscall]), Origin::Mandatory),
     row(Bug::PopFlagsSixteenReachesUpper, "POPF", Family::Forms(&[Instruction::Popf]), Origin::Mandatory),
     row(Bug::PopFlagsKeepsAlignmentCheck, "POPF", Family::Forms(&[Instruction::Popf, Instruction::Popfq]), Origin::Mandatory),
     row(Bug::EnterNestingUnreduced, "ENTER", Family::Forms(&[Instruction::EnterImmwImmb]), Origin::Mandatory),
@@ -1602,6 +1604,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::DescriptorRequestedPrivilegeChecked, "LAR, LSL, VERR, VERW", Family::Forms(DESCRIPTOR_QUERIES), Origin::Mandatory),
     row(Bug::SegmentLimitInPages, "LSL", Family::Forms(&[Instruction::LslGprvGprz, Instruction::LslGprvMemw]), Origin::Mandatory),
     row(Bug::VerifyWriteTakesCode, "VERW", Family::Forms(&[Instruction::VerwGpr16, Instruction::VerwMemw]), Origin::Mandatory),
+    row(Bug::SystemCallReturnsToItself, "SYSCALL", Family::Forms(&[Instruction::Syscall]), Origin::Mandatory),
 ];
 
 const DESCRIPTOR_QUERIES: &[Instruction] = &[

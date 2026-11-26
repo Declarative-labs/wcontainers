@@ -48,6 +48,10 @@ pub fn list_operand_types(form: &SystemForm) -> Vec<OperandType> {
         SystemOperation::PopFlags => types.extend([OperandType::Flags(FlagSet::Unread), OperandType::PoppedFlags]),
         SystemOperation::Enter => types.extend([OperandType::Flags(FlagSet::Unread), OperandType::EnterOperands]),
         SystemOperation::JumpIfCountZero => {}
+        SystemOperation::SystemCall => {
+            types.clear();
+            types.extend([OperandType::Encoding(0), OperandType::SystemFlags]);
+        }
     }
     types
 }
@@ -111,6 +115,9 @@ pub fn build_state(form: &SystemForm, operands: &[(OperandType, OperandValue)]) 
         match (operand_type, *operand) {
             (OperandType::OperandSize(_), OperandValue::OperandSize(chosen)) => size = Some(chosen),
             (OperandType::SystemLayout { .. }, OperandValue::SystemLayout(chosen)) => layout = Some(chosen),
+            (OperandType::Encoding(_), OperandValue::Encoding(encoding)) => {
+                layout = Some(SystemLayout { placement: PLAIN, code: encoding.layout });
+            }
             (OperandType::SystemFlags | OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
             (OperandType::PoppedFlags, OperandValue::Bits(value)) => popped = Some(value),
             (OperandType::EnterOperands, OperandValue::EnterOperands { allocation, level }) => enter = Some((allocation, level)),
@@ -121,7 +128,9 @@ pub fn build_state(form: &SystemForm, operands: &[(OperandType, OperandValue)]) 
     let narrow = size == Some(OperandSize::Bits16) || form.codes[0] == iced_x86::Code::Pushfw || form.codes[0] == iced_x86::Code::Popfw;
     let bytes = if narrow { 2 } else { 8 };
     let mut memory_mutations = Vec::new();
-    place(layout.placement, false, &mut memory_mutations);
+    if form.operation != SystemOperation::SystemCall {
+        place(layout.placement, false, &mut memory_mutations);
+    }
     let address = to_address(layout.placement, bytes, false);
     processor.general_purpose_registers[STACK_POINTER] =
         if form.operation == SystemOperation::PopFlags { address } else { address.wrapping_add(bytes) };
@@ -143,6 +152,7 @@ pub fn build_state(form: &SystemForm, operands: &[(OperandType, OperandValue)]) 
             encoded.push(if form.operation == SystemOperation::PushFlags { 0x9C } else { 0x9D });
         }
         SystemOperation::JumpIfCountZero => unreachable!("JCXZ has no state"),
+        SystemOperation::SystemCall => encoded.extend([0x0F, 0x05]),
         SystemOperation::Enter => {
             let (allocation, level) = enter.expect("ENTER's operands");
             processor.general_purpose_registers[FRAME_POINTER] = FRAME_ADDRESS;

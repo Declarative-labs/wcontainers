@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 use iced_x86::{Code, Decoder, DecoderOptions, Mnemonic, OpKind, Register};
 
 use kvm_bindings::{
-    KVM_MAX_CPUID_ENTRIES, kvm_regs, kvm_segment, kvm_sregs, kvm_xcr, kvm_xcrs,
+    KVM_MAX_CPUID_ENTRIES, Msrs, kvm_msr_entry, kvm_regs, kvm_segment, kvm_sregs, kvm_xcr, kvm_xcrs,
 };
 use kvm_ioctls::{Kvm as KvmSystem, VcpuExit, VcpuFd, VmFd};
 use wcontainers_behavior_source::BehaviorSource;
@@ -43,7 +43,7 @@ use wcontainers_processor_architecture_x86_64::{
 use wcontainers_volatile_bytes::VolatileBytes;
 use zerocopy::{FromZeros, IntoBytes};
 
-use crate::handler::{Handler, VECTORS};
+use crate::handler::{Handler, KERNEL_CODE_SELECTOR, SYSTEM_CALL_VECTOR, VECTORS};
 use crate::layout::{
     ACCESSED, ADDRESS_MASK, ARENA, AVX_COMPONENT, DESCRIPTOR_ENTRIES, DIRTY, ENTRIES, ENTRY_BYTES,
     EXTENDED_CONTROL_0, FAULT_STACK_TOP, FX_MXCSR, FX_VECTOR_REGISTERS, GLOBAL,
@@ -214,6 +214,13 @@ const INTERRUPT_ENABLE: u64 = 1 << 9;
 const IO_PRIVILEGE: u64 = 0b11 << 12;
 const RESUME: u64 = 1 << 16;
 const VIRTUAL_8086: u64 = 1 << 17;
+/// IA32_STAR, IA32_LSTAR and IA32_FMASK, and the RFLAGS bits SYSCALL clears.
+const SYSTEM_CALL_TARGET: u32 = 0xC000_0081;
+const LONG_MODE_SYSTEM_CALL_TARGET: u32 = 0xC000_0082;
+const SYSTEM_CALL_FLAG_MASK: u32 = 0xC000_0084;
+const SYSTEM_CALL_MASKED_FLAGS: u64 = TRAP | INTERRUPT_ENABLE | 1 << 10 | IO_PRIVILEGE | 1 << 14 | RESUME | 1 << 18;
+/// R11, where SYSCALL saves RFLAGS.
+const SAVED_FLAGS: usize = 11;
 /// DR6.BS: the #DB is the trap after a single step.
 const SINGLE_STEP: u64 = 1 << 14;
 /// DR6 as reset.
@@ -314,12 +321,24 @@ impl SingleStepMachine {
             }
         }
         cpu.set_cpuid2(&cpuid).map_err(|error| refused("setting CPUID", error))?;
+        let handler = handler::assemble();
+        // SYSCALL enters the handler's own entry on the kernel's code segment, with TF, IF, DF, IOPL, NT, RF and AC
+        // masked so that nothing steps or interrupts it.
+        let entries: Vec<kvm_msr_entry> = [
+            (SYSTEM_CALL_TARGET, KERNEL_CODE_SELECTOR << 32),
+            (LONG_MODE_SYSTEM_CALL_TARGET, handler.system_call),
+            (SYSTEM_CALL_FLAG_MASK, SYSTEM_CALL_MASKED_FLAGS),
+        ]
+        .map(|(index, data)| kvm_msr_entry { index, data, ..kvm_msr_entry::default() })
+        .to_vec();
+        let msrs = Msrs::from_entries(&entries).map_err(|error| refused("listing SYSCALL's MSRs", format!("{error:?}")))?;
+        cpu.set_msrs(&msrs).map_err(|error| refused("setting SYSCALL's MSRs", error))?;
         let mut executor = Self {
             cpu,
             _machine: machine,
             memory,
             page: vec![0; PAGE_BYTES as usize],
-            handler: handler::assemble(),
+            handler,
             options,
             parked: false,
             next_free_page: ARENA.start,
@@ -1072,7 +1091,7 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 /// # Errors
 ///
 /// For MOV SS (it steps two instructions), IRET (it can change TF),
-/// SYSCALL and SYSENTER (they enter ring 0 at MSRs the source does
+/// SYSENTER (it enters ring 0 at MSRs the source does
 /// not set as Linux does), a far CALL, JMP or RET (it changes CS), any other write of a segment register (the
 /// selectors are not modeled), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does
 /// not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
@@ -1109,7 +1128,6 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
             Some("it steps two instructions")
         }
         Mnemonic::Iret | Mnemonic::Iretd | Mnemonic::Iretq => Some("it can change TF, which steps it"),
-        Mnemonic::Syscall => Some("it enters ring 0 at an LSTAR the source does not set"),
         // Linux sets IA32_SYSENTER_CS, so a 64-bit SYSENTER enters its kernel; the source leaves it 0, where it faults.
         Mnemonic::Sysenter => Some("it enters ring 0 at SYSENTER MSRs the source does not set as Linux does"),
         Mnemonic::Retf => Some("it changes CS"),
@@ -1201,7 +1219,11 @@ fn to_processor(slot: &Slot) -> Result<Processor, Refusal> {
     });
     let completed = slot.vector == DEBUG_VECTOR && slot.debug_status & SINGLE_STEP != 0;
     let exception = if completed { None } else { Some(to_exception(slot)?) };
-    let general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS] = after.general;
+    let mut general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS] = after.general;
+    // R11 holds the RFLAGS SYSCALL saw, with the TF the source steps by.
+    if slot.vector == SYSTEM_CALL_VECTOR {
+        general_purpose_registers[SAVED_FLAGS] &= !TRAP;
+    }
     Ok(Processor {
         general_purpose_registers,
         instruction_pointer: after.instruction_pointer,
@@ -1263,6 +1285,7 @@ fn to_exception(slot: &Slot) -> Result<Exception, Refusal> {
         20 => Exception::Virtualization,
         21 => Exception::ControlProtection { error_code },
         vector @ 32..=255 => Exception::SoftwareInterrupt { vector: vector as u8 },
+        SYSTEM_CALL_VECTOR => Exception::SystemCall,
         vector => return Err(Refusal::UnexpectedVector(vector)),
     })
 }
