@@ -1,7 +1,7 @@
 //! ARM64's part of the runner. A case stops wherever control lands, on the `udf #0` filler or by its own
 //! fault, so nothing is stepped.
 
-use super::{MAX_STOP_REGISTERS, Machine};
+use super::MAX_STOP_REGISTERS;
 use core::ptr::{addr_of, addr_of_mut};
 
 pub struct Cpu;
@@ -51,14 +51,19 @@ const THREAD_POINTER: usize = 34;
 const VECTORS: usize = 35;
 const FPSR: usize = 67;
 
-impl Machine for Cpu {
-    const FILLER: u8 = aarch64::FILLER;
-    const CODE_SPAN: u64 = aarch64::CODE_SPAN;
-    const RUNNER: core::ops::Range<u64> = aarch64::RUNNER;
+/// One CPU's part of the runner.
+impl Cpu {
+    /// The code area: the byte it is filled with and how far it reaches either side of CODE.
+    pub(crate) const FILLER: u8 = aarch64::FILLER;
+    pub(crate) const CODE_SPAN: u64 = aarch64::CODE_SPAN;
+    /// Where the runner's own memory is, which no case reaches.
+    pub(crate) const RUNNER: core::ops::Range<u64> = aarch64::RUNNER;
     /// The instruction and the address after a `svc` there.
-    const WINDOW: u64 = 8;
-    const AUDIT_ARCH: u32 = AUDIT_ARCH_AARCH64;
-    const FIELDS: &'static [&'static str] = &[
+    pub(crate) const WINDOW: u64 = 8;
+    /// seccomp's architecture of this CPU's own system calls; a call of any other raises SIGSYS.
+    pub(crate) const AUDIT_ARCH: u32 = AUDIT_ARCH_AARCH64;
+    /// The state's fields, in wire order.
+    pub(crate) const FIELDS: &'static [&'static str] = &[
         "x0",
         "x1",
         "x2",
@@ -130,7 +135,13 @@ impl Machine for Cpu {
         "fpcr",
     ];
 
-    unsafe fn enter(uc: *mut libc::ucontext_t, state: &[u128]) -> Result<(), &'static str> {
+    /// Keep the runner's own state from the frame and put the case's in its place (with the single-step
+    /// trap set, where that is how the CPU stops), and the case's thread pointers. `Err` names what Linux
+    /// refused to set up; the frame and the thread pointers are then the runner's, untouched.
+    pub(crate) unsafe fn enter(
+        uc: *mut libc::ucontext_t,
+        state: &[u128],
+    ) -> Result<(), &'static str> {
         unsafe {
             (*addr_of_mut!(HOST)).write(core::ptr::read(&(*uc).uc_mcontext));
             HOST_THREAD_POINTER = thread_pointer();
@@ -150,7 +161,9 @@ impl Machine for Cpu {
         Ok(())
     }
 
-    unsafe fn leave(
+    /// Read the frame back into a state after giving the runner its own thread pointers back, and put the
+    /// runner's own state back into the frame. `code` is the instruction and `start` the state it ran from.
+    pub(crate) unsafe fn leave(
         _: &[u8],
         _: &[u128],
         uc: *mut libc::ucontext_t,
@@ -176,15 +189,22 @@ impl Machine for Cpu {
         }
     }
 
-    unsafe fn unfinished(_: &[u8], _: *const libc::ucontext_t, _: *const libc::siginfo_t) -> bool {
+    /// Whether this stop leaves the instruction `code` unfinished, so the runner steps on.
+    pub(crate) unsafe fn unfinished(
+        _: &[u8],
+        _: *const libc::ucontext_t,
+        _: *const libc::siginfo_t,
+    ) -> bool {
         false
     }
 
-    fn limit(_: &[u8], _: &[u128]) -> u64 {
+    /// How many steps an unfinished instruction may take from `state`.
+    pub(crate) fn limit(_: &[u8], _: &[u128]) -> u64 {
         0
     }
 
-    fn synchronise(address: u64, length: u64) {
+    /// Make code just written at `address` visible to instruction fetch.
+    pub(crate) fn synchronise(address: u64, length: u64) {
         let mut line = address & !63;
         while line < address + length {
             unsafe {
@@ -198,7 +218,7 @@ impl Machine for Cpu {
     }
 
     /// Every register zero but sp and pc.
-    unsafe fn blob_start(uc: *mut libc::ucontext_t, entry: u64, stack: u64) {
+    pub(crate) unsafe fn blob_start(uc: *mut libc::ucontext_t, entry: u64, stack: u64) {
         unsafe {
             let context = &mut (*uc).uc_mcontext;
             context.regs = [0; 31];
@@ -212,7 +232,10 @@ impl Machine for Cpu {
     }
 
     /// x0 to x30, sp and pc.
-    unsafe fn blob_stop(uc: *const libc::ucontext_t, out: &mut [u64; MAX_STOP_REGISTERS]) -> usize {
+    pub(crate) unsafe fn blob_stop(
+        uc: *const libc::ucontext_t,
+        out: &mut [u64; MAX_STOP_REGISTERS],
+    ) -> usize {
         unsafe {
             let context = &(*uc).uc_mcontext;
             out[..31].copy_from_slice(&context.regs);

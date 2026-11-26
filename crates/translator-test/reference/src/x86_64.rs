@@ -3,7 +3,7 @@
 //! handlers' own frames and raw system calls are used while the case's thread pointers are set, since the
 //! runner's own thread pointer is FS.
 
-use super::{CODE, MAX_STOP_REGISTERS, Machine};
+use super::{CODE, MAX_STOP_REGISTERS};
 use core::ptr::{addr_of, addr_of_mut};
 
 pub struct Cpu;
@@ -255,14 +255,19 @@ fn slot(value: u128) -> [u8; 16] {
     (value & ((1 << 80) - 1)).to_le_bytes()
 }
 
-impl Machine for Cpu {
-    const FILLER: u8 = crate::x86_64::FILLER;
-    const CODE_SPAN: u64 = crate::x86_64::CODE_SPAN;
-    const RUNNER: core::ops::Range<u64> = crate::x86_64::RUNNER;
+/// One CPU's part of the runner.
+impl Cpu {
+    /// The code area: the byte it is filled with and how far it reaches either side of CODE.
+    pub(crate) const FILLER: u8 = crate::x86_64::FILLER;
+    pub(crate) const CODE_SPAN: u64 = crate::x86_64::CODE_SPAN;
+    /// Where the runner's own memory is, which no case reaches.
+    pub(crate) const RUNNER: core::ops::Range<u64> = crate::x86_64::RUNNER;
     /// The longest instruction and the `syscall` after it.
-    const WINDOW: u64 = 16 + 2;
-    const AUDIT_ARCH: u32 = AUDIT_ARCH_X86_64;
-    const FIELDS: &'static [&'static str] = &[
+    pub(crate) const WINDOW: u64 = 16 + 2;
+    /// seccomp's architecture of this CPU's own system calls; a call of any other raises SIGSYS.
+    pub(crate) const AUDIT_ARCH: u32 = AUDIT_ARCH_X86_64;
+    /// The state's fields, in wire order.
+    pub(crate) const FIELDS: &'static [&'static str] = &[
         "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
         "r13", "r14", "r15", "rip", "rflags", "fs_base", "gs_base", "mxcsr", "fcw", "fsw", "ftw",
         "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4",
@@ -273,7 +278,10 @@ impl Machine for Cpu {
     ];
 
     /// Linux refuses a base at or above the top of user space (2^47 - 4096); nothing else changes then.
-    unsafe fn enter(uc: *mut libc::ucontext_t, state: &[u128]) -> Result<(), &'static str> {
+    pub(crate) unsafe fn enter(
+        uc: *mut libc::ucontext_t,
+        state: &[u128],
+    ) -> Result<(), &'static str> {
         unsafe {
             let wanted: [u16; SEGMENTS] = core::array::from_fn(|n| state[SELECTORS + n] as u16);
             let base = |register| match register {
@@ -339,7 +347,7 @@ impl Machine for Cpu {
 
     /// TF in the frame is the runner's own unless the instruction loaded rflags (`popf`, `iret`) and
     /// finished, which a `TRAP_TRACE` stop shows; otherwise the case's starting TF is what it left.
-    unsafe fn leave(
+    pub(crate) unsafe fn leave(
         code: &[u8],
         start: &[u128],
         uc: *mut libc::ucontext_t,
@@ -418,7 +426,7 @@ impl Machine for Cpu {
 
     /// A trap-flag stop with rip still at CODE: a rep string instruction one element on, or a gather after
     /// the elements before a faulting one. `limit` gives steps only to those.
-    unsafe fn unfinished(
+    pub(crate) unsafe fn unfinished(
         _: &[u8],
         uc: *const libc::ucontext_t,
         info: *const libc::siginfo_t,
@@ -431,7 +439,7 @@ impl Machine for Cpu {
 
     /// A rep string instruction's count register (rcx, or ecx with an address-size prefix) and a gather's
     /// most elements, 8; nothing for any other instruction.
-    fn limit(code: &[u8], state: &[u128]) -> u64 {
+    pub(crate) fn limit(code: &[u8], state: &[u128]) -> u64 {
         use iced_x86::{Decoder, DecoderOptions, OpKind};
         let instruction = Decoder::with_ip(64, code, CODE, DecoderOptions::NONE).decode();
         if instruction.is_string_instruction()
@@ -453,11 +461,12 @@ impl Machine for Cpu {
         }
     }
 
-    fn synchronise(_: u64, _: u64) {}
+    /// Make code just written at `address` visible to instruction fetch.
+    pub(crate) fn synchronise(_: u64, _: u64) {}
 
     /// Every general register zero but rsp, rflags 0x202, MXCSR 0x1F80, the x87 control word 0x37F, the
     /// vector registers zero, and no thread pointers.
-    unsafe fn blob_start(uc: *mut libc::ucontext_t, entry: u64, stack: u64) {
+    pub(crate) unsafe fn blob_start(uc: *mut libc::ucontext_t, entry: u64, stack: u64) {
         unsafe {
             let gregs = &mut (*uc).uc_mcontext.gregs;
             for &at in &GREGS {
@@ -480,7 +489,10 @@ impl Machine for Cpu {
     }
 
     /// The general registers in field order, rip and rflags.
-    unsafe fn blob_stop(uc: *const libc::ucontext_t, out: &mut [u64; MAX_STOP_REGISTERS]) -> usize {
+    pub(crate) unsafe fn blob_stop(
+        uc: *const libc::ucontext_t,
+        out: &mut [u64; MAX_STOP_REGISTERS],
+    ) -> usize {
         unsafe {
             let gregs = &(*uc).uc_mcontext.gregs;
             for (field, &at) in GREGS.iter().enumerate() {

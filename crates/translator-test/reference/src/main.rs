@@ -1,6 +1,6 @@
 //! The native reference runner, for real Linux on the guest's CPU: ARM64 (in Docker on an ARM64 host) or
 //! x86-64 (over SSH on an x86-64 machine). One program; its per-CPU part is the module `cfg(target_arch)`
-//! chooses, the `Machine`.
+//! chooses, `machine`, whose `Cpu` gives the same items for each CPU.
 //!
 //! `wcontainers-reference serve` speaks the wire of `layout.rs` on stdin and stdout until stdin ends.
 //!
@@ -41,58 +41,12 @@ const MAX_FIELDS: usize = 80;
 /// The most general registers a blob's stop record holds.
 const MAX_STOP_REGISTERS: usize = 40;
 
-/// One CPU's part of the runner.
-pub trait Machine {
-    /// The code area: the byte it is filled with and how far it reaches either side of CODE.
-    const FILLER: u8;
-    const CODE_SPAN: u64;
-    /// Where the runner's own memory is, which no case reaches.
-    const RUNNER: core::ops::Range<u64>;
-    /// The end of the instruction window, from CODE: a system call whose reported instruction pointer (the
-    /// address after the call) is in `CODE..CODE + WINDOW` raises SIGSYS instead of running.
-    const WINDOW: u64;
-    /// seccomp's architecture of this CPU's own system calls; a call of any other raises SIGSYS.
-    const AUDIT_ARCH: u32;
-    /// The state's fields, in wire order.
-    const FIELDS: &'static [&'static str];
-    /// Keep the runner's own state from the frame and put the case's in its place (with the single-step
-    /// trap set, where that is how the CPU stops), and the case's thread pointers. `Err` names what Linux
-    /// refused to set up; the frame and the thread pointers are then the runner's, untouched.
-    unsafe fn enter(context: *mut libc::ucontext_t, state: &[u128]) -> Result<(), &'static str>;
-    /// Read the frame back into a state after giving the runner its own thread pointers back, and put the
-    /// runner's own state back into the frame. `code` is the instruction and `start` the state it ran from.
-    unsafe fn leave(
-        code: &[u8],
-        start: &[u128],
-        context: *mut libc::ucontext_t,
-        info: *const libc::siginfo_t,
-        state: &mut [u128],
-    );
-    /// Whether this stop leaves the instruction `code` unfinished, so the runner steps on.
-    unsafe fn unfinished(
-        code: &[u8],
-        context: *const libc::ucontext_t,
-        info: *const libc::siginfo_t,
-    ) -> bool;
-    /// How many steps an unfinished instruction may take from `state`.
-    fn limit(code: &[u8], state: &[u128]) -> u64;
-    /// Make code just written at `address` visible to instruction fetch.
-    fn synchronise(address: u64, length: u64);
-    /// A blob's starting state in the frame: pc at `entry`, the stack pointer at `stack`.
-    unsafe fn blob_start(context: *mut libc::ucontext_t, entry: u64, stack: u64);
-    /// A stopped blob's pc and general registers, into `out`; returns how many were written.
-    unsafe fn blob_stop(
-        context: *const libc::ucontext_t,
-        out: &mut [u64; MAX_STOP_REGISTERS],
-    ) -> usize;
-}
-
 /// The state a case starts from, and the state where control stopped.
 static mut GUEST: [u128; MAX_FIELDS] = [0; MAX_FIELDS];
 static mut LANDED: [u128; MAX_FIELDS] = [0; MAX_FIELDS];
 /// The stopping signal, its `si_code` and `si_addr`.
 static mut SIGNAL: [u64; 3] = [0; 3];
-/// The case's instruction, for `Machine::unfinished`.
+/// The case's instruction, for `Cpu::unfinished`.
 static mut CODE_BYTES: [u8; 16] = [0; 16];
 static mut CODE_LENGTH: usize = 0;
 /// Steps left for an unfinished instruction.
