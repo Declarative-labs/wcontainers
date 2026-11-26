@@ -66,6 +66,9 @@ const _: () = assert!(offset_of!(RegisterBlock, fpsr).is_multiple_of(size_of::<u
 /// its memory before dropping it.
 pub struct Stub {
     process: Pid,
+    /// The process's pidfd, opened before the zygote may reap it: it names this process alone, readable once every
+    /// thread of it has ended.
+    pidfd: OwnedFd,
     /// The number of the zygote that forked it.
     zygote: u64,
     socket: OwnedFd,
@@ -151,6 +154,7 @@ pub enum TurnEnd {
 impl Stub {
     pub(crate) fn new(
         process: Pid,
+        pidfd: OwnedFd,
         zygote: u64,
         socket: OwnedFd,
         pages: ThreadPages,
@@ -160,6 +164,7 @@ impl Stub {
         held[0] = 1;
         Self {
             process,
+            pidfd,
             zygote,
             socket,
             pages,
@@ -665,16 +670,35 @@ impl Stub {
         }
     }
 
-    /// Ends the stub's last thread, and so its process, and waits for its socket to hang up; `TIMEDOUT` if it has
-    /// not after 100 ms, when the zygote must kill it.
+    /// Ends the stub's last thread, and so its process, and waits for it to end; `TIMEDOUT` if it has not after
+    /// 100 ms, when it must be killed.
     pub fn end(&self, thread: usize) -> Result<(), Errno> {
         self.give(thread, &[], Resume::ExitThread)?;
-        let mut socket = [PollFd::new(&self.socket, PollFlags::IN)];
-        let ready = rustix::event::poll(&mut socket, Some(&timeout()))?;
-        if ready > 0 && socket[0].revents().contains(PollFlags::HUP) {
+        if self.wait_ended(LOOK_FOR_END)? {
             Ok(())
         } else {
             Err(Errno::TIMEDOUT)
+        }
+    }
+
+    /// Sends SIGKILL to the stub's process, by its pidfd.
+    pub fn kill(&self) -> Result<(), Errno> {
+        rustix::process::pidfd_send_signal(&self.pidfd, rustix::process::Signal::KILL)
+    }
+
+    /// Waits up to `limit` for the stub's process to end, as its pidfd says, whatever descriptors of the stub's
+    /// another holds; whether it did. A signal to the waiting thread is not an error.
+    pub(crate) fn wait_ended(&self, limit: Duration) -> Result<bool, Errno> {
+        let until = Instant::now() + limit;
+        loop {
+            let left = until.saturating_duration_since(Instant::now());
+            let mut process = [PollFd::new(&self.pidfd, PollFlags::IN)];
+            match rustix::event::poll(&mut process, Some(&timespec(left))) {
+                Ok(_) if process[0].revents().contains(PollFlags::IN) => return Ok(true),
+                Ok(_) if left.is_zero() => return Ok(false),
+                Ok(_) | Err(Errno::INTR) => {}
+                Err(other) => return Err(other),
+            }
         }
     }
 
@@ -801,34 +825,17 @@ impl Stub {
         }
     }
 
-    /// Whether the stub's socket has hung up, which only its end does.
+    /// Whether the stub's socket has hung up, which only its end does. A signal to the calling thread is not an error.
     pub(crate) fn hung_up(&self) -> Result<bool, Errno> {
-        let mut socket = [PollFd::new(&self.socket, PollFlags::IN)];
-        let ready = rustix::event::poll(&mut socket, Some(&Timespec::default()))?;
-        Ok(ready > 0 && socket[0].revents().contains(PollFlags::HUP))
-    }
-
-    /// Waits up to `limit` for the stub's socket to hang up; whether it did. Linux closes a process's files only after
-    /// every thread of it has left its address space (do_exit releases the memory before the files), so once it has,
-    /// no guest code runs on the stub's mappings.
-    pub(crate) fn wait_hung_up(&self, limit: Duration) -> Result<bool, Errno> {
-        let until = Instant::now() + limit;
         loop {
-            if self.hung_up()? {
-                return Ok(true);
-            }
-            let left = until.saturating_duration_since(Instant::now());
-            if left.is_zero() {
-                return Ok(false);
-            }
             let mut socket = [PollFd::new(&self.socket, PollFlags::IN)];
-            rustix::event::poll(&mut socket, Some(&timespec(left.min(LOOK_FOR_END))))?;
+            match rustix::event::poll(&mut socket, Some(&Timespec::default())) {
+                Ok(ready) => return Ok(ready > 0 && socket[0].revents().contains(PollFlags::HUP)),
+                Err(Errno::INTR) => {}
+                Err(other) => return Err(other),
+            }
         }
     }
-}
-
-fn timeout() -> Timespec {
-    timespec(LOOK_FOR_END)
 }
 
 fn timespec(duration: Duration) -> Timespec {

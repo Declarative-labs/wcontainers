@@ -168,12 +168,9 @@ impl HostProcessHost {
         }
     }
 
-    /// Kills a stub; one whose zygote has ended died with it.
+    /// Kills a stub by its own pidfd, so the kill does not wait on the zygote, which may answer nothing.
     pub fn kill(&self, stub: &Stub) -> Result<(), Errno> {
-        match &*self.lock() {
-            Ok(zygote) if zygote.forked(stub) => zygote.kill(stub.process()),
-            _ => Ok(()),
-        }
+        stub.kill()
     }
 
     /// Waits for a stub's end and reaps it; one whose zygote has ended died with it, killed.

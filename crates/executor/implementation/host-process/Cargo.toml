@@ -59,7 +59,9 @@ rustix = { version = "1.1.6", features = ["fs", "mm", "process", "thread"] }
 # Seeded order of the stop test's turns.
 fastrand = "2.5.0"
 # Tracing one stub thread to step it and send its stop at every instruction of a turn.
-nix = { version = "0.31.3", default-features = false, features = ["process", "ptrace", "signal"] }
+nix = { version = "0.31.3", default-features = false, features = ["process", "pthread", "ptrace", "signal"] }
+# A handler for the signals sent at the embedder's thread while it waits on its stubs.
+signal-hook = "0.3.18"
 
 [target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
 # Where translated code finds its slots, its floor entries and its register page, and the words a loader fills.

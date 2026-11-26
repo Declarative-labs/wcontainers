@@ -655,39 +655,27 @@ fn a_refused_command_never_leaves_a_narrowed_page_writable() {
     cpu.shared_drop(block);
 }
 
-/// As above, where the kill of the stub after the refused command fails: the zygote is held stopped and its socket
-/// shut, so it answers no request, and the stub lives on. The next turn must not run on the narrowed page's old view.
-#[test]
-fn a_failed_kill_after_a_refused_command_never_leaves_a_narrowed_page_writable() {
-    use rustix::process::{PidfdFlags, PidfdGetfdFlags, Resource, Rlimit, Signal, prlimit};
-    // A host of its own, as its zygote is broken on purpose, started once the shared one is: two hosts starting at
-    // once both want the zygote's fixed pages in this process.
+/// Kills the zygote, its stubs with it, before the host waits for its end, even where the test fails.
+struct KillZygote(rustix::process::Pid);
+
+impl Drop for KillZygote {
+    fn drop(&mut self) {
+        let _ = rustix::process::kill_process(self.0, rustix::process::Signal::KILL);
+    }
+}
+
+/// A host of its own, as its zygote is broken on purpose, started once the shared one is: two hosts starting at once
+/// both want the zygote's fixed pages in this process.
+fn host_to_break() -> (HostProcessExecutor, KillZygote) {
     drop(executor());
     let host = Arc::new(HostProcessHost::new().expect("the host is refused"));
     let zygote = host.zygote_process().expect("a zygote");
-    let mut cpu = HostProcessExecutor::new(host.clone());
-    /// Kills the zygote, its stubs with it, before the host waits for its end, even where the test fails.
-    struct KillZygote(rustix::process::Pid);
-    impl Drop for KillZygote {
-        fn drop(&mut self) {
-            let _ = rustix::process::kill_process(self.0, Signal::KILL);
-        }
-    }
-    let _kill = KillZygote(zygote);
-    let (memory, thread) = process(&mut cpu, 8);
-    assert_eq!(store(&mut cpu, thread, page(4), 1), Touched::Stored);
-    let block = cpu.shared_new(PAGE).expect("a block");
-    cpu.shared_map(block, 0, memory, page(0), PAGE)
-        .expect("the block mapped");
-    cpu.set_permissions(memory, page(4), PAGE, Permissions::READ)
-        .expect("read only");
-    let stub = cpu.stub_process(memory);
-    let limit = |current| Rlimit {
-        current,
-        maximum: None,
-    };
-    prlimit(Some(stub), Resource::As, limit(Some(1 << 20))).expect("the stub's limit");
-    // Every socket of the zygote shut, while it is stopped so it does not end on seeing it.
+    (HostProcessExecutor::new(host), KillZygote(zygote))
+}
+
+/// Holds the zygote stopped with every socket of it shut, so it answers no request (and does not end on seeing it).
+fn break_zygote(zygote: rustix::process::Pid) {
+    use rustix::process::{PidfdFlags, PidfdGetfdFlags, Signal};
     rustix::process::kill_process(zygote, Signal::STOP).expect("stop the zygote");
     let pidfd =
         rustix::process::pidfd_open(zygote, PidfdFlags::empty()).expect("the zygote's pidfd");
@@ -711,26 +699,109 @@ fn a_failed_kill_after_a_refused_command_never_leaves_a_narrowed_page_writable()
         shut += 1;
     }
     assert!(shut > 0, "the zygote holds a socket");
+}
+
+/// A process's state letter as /proc gives it, or none once it is reaped.
+fn process_state(process: rustix::process::Pid) -> Option<char> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", process.as_raw_nonzero())).ok()?;
+    stat.rsplit_once(") ")
+        .and_then(|(_, rest)| rest.chars().next())
+}
+
+/// The mappings of shared blocks a process holds, as /proc lists them; none once it has ended.
+fn blocks_mapped(process: rustix::process::Pid) -> usize {
+    std::fs::read_to_string(format!("/proc/{}/maps", process.as_raw_nonzero()))
+        .unwrap_or_default()
+        .lines()
+        .filter(|line| line.contains("wcontainers shared block"))
+        .count()
+}
+
+/// As above, where the zygote answers no request when the stub must be killed after the refused command: the stub is
+/// killed all the same, and the next turn does not run on the narrowed page's old view.
+#[test]
+fn a_kill_the_zygote_cannot_answer_after_a_refused_command_never_leaves_a_narrowed_page_writable() {
+    use rustix::process::{Resource, Rlimit, prlimit};
+    let (mut cpu, zygote) = host_to_break();
+    let (memory, thread) = process(&mut cpu, 8);
+    assert_eq!(store(&mut cpu, thread, page(4), 1), Touched::Stored);
+    let block = cpu.shared_new(PAGE).expect("a block");
+    cpu.shared_map(block, 0, memory, page(0), PAGE)
+        .expect("the block mapped");
+    cpu.set_permissions(memory, page(4), PAGE, Permissions::READ)
+        .expect("read only");
+    let stub = cpu.stub_process(memory);
+    let limit = |current| Rlimit {
+        current,
+        maximum: None,
+    };
+    prlimit(Some(stub), Resource::As, limit(Some(1 << 20))).expect("the stub's limit");
+    break_zygote(zygote.0);
     assert_eq!(
         cpu.touch(thread, Touch::Store(page(4), 2), None),
         Err(CpuError::OutOfMemory)
     );
     assert_eq!(
-        rustix::process::test_kill_process(stub),
-        Ok(()),
-        "the stub lives on, as the kill failed"
+        process_state(stub),
+        Some('Z'),
+        "the stub was killed, and is left for the zygote to reap"
     );
-    let _ = prlimit(Some(stub), Resource::As, limit(None));
     let after = cpu.touch(thread, Touch::Store(page(4), 3), None);
     assert_ne!(after, Ok(Touched::Stored), "the read-only page was written");
     assert_eq!(word(&mut cpu, memory, page(4)), 1);
 }
 
-/// A dropped memory whose stub is not seen to end (here its socket is held open by a copy, so it never hangs up) is
-/// left to the zygote's end: the zygote, which answers nothing while it waits for a stub, is never asked to, and the
-/// next memory's stub starts.
+/// A memory whose turn fails while the zygote answers no request keeps no shared block mapped in its stub: the block
+/// another memory goes on using is no longer reachable from a stub the record has let go of.
 #[test]
-fn a_dropped_memory_s_stub_not_seen_to_end_is_not_waited_for() {
+fn a_stub_whose_turn_failed_while_the_zygote_answers_nothing_keeps_no_shared_block() {
+    use rustix::process::{Resource, Rlimit, prlimit};
+    let (mut cpu, zygote) = host_to_break();
+    let a = process(&mut cpu, 4);
+    let b = process(&mut cpu, 4);
+    let block = cpu.shared_new(PAGE).expect("a block");
+    cpu.shared_map(block, 0, a.0, page(0), PAGE)
+        .expect("the block mapped in A");
+    cpu.shared_map(block, 0, b.0, page(0), PAGE)
+        .expect("the block mapped in B");
+    assert_eq!(store(&mut cpu, a.1, page(0), 1), Touched::Stored);
+    assert_eq!(load(&mut cpu, b.1, page(0)), Touched::Loaded(1));
+    let stub = cpu.stub_process(b.0);
+    assert_eq!(blocks_mapped(stub), 1, "B's stub maps the block");
+    // B's next turn is refused: its address space is past the limit it is given now.
+    cpu.set_permissions(b.0, page(1), PAGE, Permissions::READ)
+        .expect("a change for B's next turn");
+    let refused_page = cpu.shared_new(PAGE).expect("a second block");
+    cpu.shared_map(refused_page, 0, b.0, page(2), PAGE)
+        .expect("a mapping for B's next turn");
+    prlimit(
+        Some(stub),
+        Resource::As,
+        Rlimit {
+            current: Some(1 << 20),
+            maximum: None,
+        },
+    )
+    .expect("B's stub's limit");
+    break_zygote(zygote.0);
+    assert_eq!(
+        cpu.touch(b.1, Touch::Load(page(0)), None),
+        Err(CpuError::OutOfMemory)
+    );
+    cpu.shared_unmap(b.0, page(0), PAGE).expect("unmapped from B");
+    assert_eq!(
+        blocks_mapped(stub),
+        0,
+        "B's stub still maps the block A writes ({:?})",
+        process_state(stub)
+    );
+    assert_eq!(store(&mut cpu, a.1, page(0), 2), Touched::Stored);
+}
+
+/// A dropped memory whose stub's socket another holds open (here a copy of it, so it never hangs up) is still seen
+/// to end, by its pidfd, and reaped.
+#[test]
+fn a_dropped_memory_s_stub_whose_socket_is_held_open_is_still_seen_to_end() {
     use rustix::process::{PidfdFlags, PidfdGetfdFlags};
     use wcontainers_executor_host_process::stub::SOCKET_FD;
     let mut cpu = executor();
@@ -743,17 +814,69 @@ fn a_dropped_memory_s_stub_not_seen_to_end_is_not_waited_for() {
     let before = cpu.counters().stubs_left_unreaped;
     cpu.thread_drop(thread);
     cpu.memory_drop(memory);
-    assert_eq!(cpu.counters().stubs_left_unreaped, before + 1);
-    let state = std::fs::read_to_string(format!("/proc/{}/stat", stub.as_raw_nonzero()))
-        .expect("the stub is not reaped");
-    let state = state
-        .rsplit_once(") ")
-        .and_then(|(_, rest)| rest.chars().next());
-    assert_eq!(state, Some('Z'), "the stub was killed and left unreaped");
+    assert_eq!(
+        cpu.counters().stubs_left_unreaped,
+        before,
+        "the stub was left unreaped"
+    );
+    assert_eq!(process_state(stub), None, "the stub is reaped");
     drop(held);
     let next = process(&mut cpu, 1);
     assert_eq!(store(&mut cpu, next.1, page(0), 2), Touched::Stored);
     end(&mut cpu, next);
+}
+
+/// Signals with a handler, sent at the embedder's thread without pause while it makes memories, gives them turns and
+/// drops them, are no failure of the host: every stub is seen to end and reaped, and the zygote never restarts.
+#[test]
+fn signals_at_the_embedder_s_thread_leave_no_stub_unreaped() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use nix::sys::pthread::{pthread_kill, pthread_self};
+    use nix::sys::signal::Signal;
+    let rounds = knob("WCHP_SIGNAL_ROUNDS", 200);
+    let mut cpu = executor();
+    let caught = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(Signal::SIGUSR2 as i32, Arc::clone(&caught))
+        .expect("a handler of the signal");
+    let target = pthread_self();
+    let done = Arc::new(AtomicBool::new(false));
+    let sender = {
+        let done = Arc::clone(&done);
+        std::thread::spawn(move || {
+            let mut sent = 0_u64;
+            while !done.load(Ordering::Acquire) {
+                // One after another, so a signal is pending at nearly every moment the test's thread blocks.
+                pthread_kill(target, Signal::SIGUSR2).expect("a signal to the test's thread");
+                sent += 1;
+            }
+            sent
+        })
+    };
+    let before = cpu.counters();
+    let zygote_ends = HOST.get().expect("the host").zygote_ends();
+    for round in 0..rounds {
+        let (memory, thread) = process(&mut cpu, 2);
+        assert_eq!(
+            store(&mut cpu, thread, page(0), round),
+            Touched::Stored,
+            "round {round}"
+        );
+        cpu.thread_drop(thread);
+        cpu.memory_drop(memory);
+    }
+    done.store(true, Ordering::Release);
+    let sent = sender.join().expect("the signalling thread");
+    assert!(caught.load(Ordering::Relaxed), "{sent} signals sent, none caught");
+    assert_eq!(
+        cpu.counters().stubs_left_unreaped,
+        before.stubs_left_unreaped,
+        "stubs left unreaped while {sent} signals were sent"
+    );
+    assert_eq!(
+        HOST.get().expect("the host").zygote_ends(),
+        zygote_ends,
+        "the zygote restarted"
+    );
 }
 
 /// The cost of a fork's copies to its child, one store per page over `WCHP_PAGES` written pages, in order and in a

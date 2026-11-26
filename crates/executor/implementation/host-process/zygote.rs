@@ -444,7 +444,16 @@ impl Zygote {
             .and_then(Pid::from_raw)
             .ok_or(Unavailable::Host(Errno::PROTO))?;
         drop(theirs);
-        let stub = Stub::new(process, self.number, ours, pages, memory);
+        // The zygote reaps only when asked, so the number still names its child.
+        let pidfd = match rustix::process::pidfd_open(process, rustix::process::PidfdFlags::empty()) {
+            Ok(pidfd) => pidfd,
+            Err(errno) => {
+                let _ = self.kill(process);
+                let _ = self.reap(process);
+                return Err(Unavailable::Host(errno));
+            }
+        };
+        let stub = Stub::new(process, pidfd, self.number, ours, pages, memory);
         match stub.started() {
             Ok(crate::stub::TurnEnd::Done { .. }) => Ok(stub),
             Ok(crate::stub::TurnEnd::StubEnded) => match self.reap(process) {
@@ -479,8 +488,7 @@ impl Zygote {
     pub fn end(mut self) -> Result<Ended, Errno> {
         self.close();
         self.reaped = true;
-        let (_, status) = rustix::process::waitpid(Some(self.process), WaitOptions::empty())?
-            .ok_or(Errno::CHILD)?;
+        let (_, status) = wait_for(self.process)?.ok_or(Errno::CHILD)?;
         Ok(Ended::from_wait(status.as_raw()))
     }
 
@@ -510,17 +518,28 @@ impl Zygote {
         if !descriptors.is_empty() && !control.push(SendAncillaryMessage::ScmRights(descriptors)) {
             return Err(Errno::NOBUFS);
         }
-        let sent = rustix::net::sendmsg(
-            &*socket,
-            &[IoSlice::new(&message)],
-            &mut control,
-            SendFlags::NOSIGNAL,
-        )?;
+        // A signal to the calling thread before the message went is not an error, nor one before the answer came.
+        let sent = loop {
+            match rustix::net::sendmsg(
+                &*socket,
+                &[IoSlice::new(&message)],
+                &mut control,
+                SendFlags::NOSIGNAL,
+            ) {
+                Err(Errno::INTR) => {}
+                sent => break sent?,
+            }
+        };
         if sent != MESSAGE {
             return Err(Errno::PROTO);
         }
         let mut answer = [0; MESSAGE];
-        let (_, received) = rustix::net::recv(&*socket, &mut answer, RecvFlags::empty())?;
+        let (_, received) = loop {
+            match rustix::net::recv(&*socket, &mut answer, RecvFlags::empty()) {
+                Err(Errno::INTR) => {}
+                received => break received?,
+            }
+        };
         if received == 0 {
             return Err(Errno::PIPE);
         }
@@ -539,7 +558,19 @@ impl Drop for Zygote {
     fn drop(&mut self) {
         if !self.reaped {
             self.close();
-            let _ = rustix::process::waitpid(Some(self.process), WaitOptions::empty());
+            let _ = wait_for(self.process);
+        }
+    }
+}
+
+/// Waits for a child's end and reaps it; a signal to the calling thread is not an error.
+fn wait_for(
+    child: Pid,
+) -> Result<Option<(Pid, rustix::process::WaitStatus)>, Errno> {
+    loop {
+        match rustix::process::waitpid(Some(child), WaitOptions::empty()) {
+            Err(Errno::INTR) => {}
+            waited => return waited,
         }
     }
 }

@@ -837,7 +837,7 @@ impl HostProcessExecutor {
         let stub = &self.memory(id).stub;
         let killed = self.host.kill(stub);
         let ended =
-            killed.is_ok() && matches!(stub.wait_hung_up(crate::stub::STOP_IGNORED), Ok(true));
+            killed.is_ok() && matches!(stub.wait_ended(crate::stub::STOP_IGNORED), Ok(true));
         if !ended {
             eprintln!(
                 "wcontainers warning: a stub was not seen to end ({killed:?}), its memory gets no turn"
@@ -1253,11 +1253,11 @@ impl HostProcessExecutor {
         let stub = &self.memory(id).stub;
         let seen_to_end = if unstopped {
             let _ = self.host.kill(stub);
-            matches!(stub.hung_up(), Ok(true))
+            matches!(stub.wait_ended(Duration::ZERO), Ok(true))
         } else {
             stub.end(last).is_ok()
                 || self.host.kill(stub).is_ok()
-                    && matches!(stub.wait_hung_up(crate::stub::STOP_IGNORED), Ok(true))
+                    && matches!(stub.wait_ended(crate::stub::STOP_IGNORED), Ok(true))
         };
         if seen_to_end {
             let _ = self.host.reap(stub);
