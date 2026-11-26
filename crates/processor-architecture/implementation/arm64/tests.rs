@@ -32,6 +32,7 @@ const NO_CHOICES: LoadStoreChoices = LoadStoreChoices {
     store_exclusive_overlap: None,
     misaligned_exclusive: None,
     fault_address_tag: None,
+    reservation_granule_bytes: None,
 };
 
 const fn to_load_store(
@@ -1319,6 +1320,7 @@ fn an_exclusive_load_marks_its_granule_and_a_store_exclusive_there_stores() {
     let choices = LoadStoreChoices {
         failed_store_exclusive: Some(FailedStoreExclusive::ChecksAccess),
         store_exclusive_overlap: Some(StoreExclusiveOverlap::Runs),
+        reservation_granule_bytes: Some(64),
         ..NO_CHOICES
     };
     let store = encode(Instruction::Stxr64, &[(RM, 2), (RT, 3), (RN, 1)]);
