@@ -1,0 +1,23 @@
+[package]
+name = "wcontainers-wasmtime"
+description = "What wasmtime's embedding API leaves unsafe: one safe trait over host memories and the trap handler its host functions reach."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "interface.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wasmtime = { version = "50.0.1", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "gc", "gc-drc", "threads", "parallel-compilation"] }
+# The kernel's error number.
+rustix = { version = "1.1.6", default-features = false, features = ["std"] }
+wcontainers-volatile-bytes = { path = "../volatile-bytes" }
+# The trap handler the host functions reach.
+wcontainers-executor = { path = "../executor" }
+
+[lints]
+workspace = true
