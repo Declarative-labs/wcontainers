@@ -73,3 +73,44 @@ pub fn guid_bytes(guid: &Guid) -> [u8; GUID_SIZE] {
     bytes[8..].copy_from_slice(&guid.data4);
     bytes
 }
+
+/// Bytes laid out for C at the largest alignment a structure of these APIs needs.
+#[repr(C, align(16))]
+pub struct Aligned<const N: usize>(pub [u8; N]);
+
+impl<const N: usize> Default for Aligned<N> {
+    fn default() -> Aligned<N> {
+        Aligned([0_u8; N])
+    }
+}
+
+/// What the glue recorded about the objects one object is related to: the one that made it, and those made with it
+/// in the same call, each by its type, held without a reference (so that two related objects do not keep each other
+/// alive). An object handed out again (a child's device, the immediate context) is answered from here.
+#[derive(Default)]
+pub struct Relations(std::sync::Mutex<Vec<(core::any::TypeId, Weak)>>);
+
+/// Records that our object of type `V` at `address` is related to `related`, an object of type `R`.
+pub fn relate<V: Send + Sync + 'static, R: 'static>(key: GlueKey, address: usize, related: Weak) {
+    let Some(found) = object::<V>(key, address) else { return };
+    if let Some(relations) = found.part::<Relations>() {
+        relations.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((core::any::TypeId::of::<R>(), related));
+    }
+}
+
+/// Returns a reference to the object of type `R` that our object of type `V` at `address` is related to, while it
+/// lives.
+pub fn related<V: Send + Sync + 'static, R: 'static>(key: GlueKey, address: usize) -> Option<Counted> {
+    let found = object::<V>(key, address)?;
+    let relations = found.part::<Relations>()?;
+    let weak = {
+        let held = relations.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        held.iter().find(|(kind, _)| *kind == core::any::TypeId::of::<R>()).map(|(_, weak)| *weak)
+    };
+    weak?.upgrade()
+}
+
+/// A new record holding empty relations.
+pub fn record() -> Record {
+    vec![Box::new(Relations::default())]
+}

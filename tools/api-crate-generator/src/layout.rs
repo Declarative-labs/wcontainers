@@ -41,12 +41,12 @@ fn round_up(value: u64, align: u64) -> u64 {
     value.div_ceil(align) * align
 }
 
-struct Layouts<'a> {
-    read: &'a Namespaces,
+pub(crate) struct Layouts<'a> {
+    pub(crate) read: &'a Namespaces,
 }
 
 impl Layouts<'_> {
-    fn of_type(&self, ty: &Type, outer: &Record) -> Option<(u64, u64)> {
+    pub(crate) fn of_type(&self, ty: &Type, outer: &Record) -> Option<(u64, u64)> {
         if let Some(layout) = primitive(ty) {
             return Some(layout);
         }
@@ -79,7 +79,7 @@ impl Layouts<'_> {
 
     /// Size and alignment, by C's rules: each field at its alignment (no more than the packing), the whole padded
     /// to the largest; a union is as large as its largest member.
-    fn of_record(&self, record: &Record) -> Option<(u64, u64)> {
+    pub(crate) fn of_record(&self, record: &Record) -> Option<(u64, u64)> {
         let pack = record.packing.map(u64::from);
         let mut size = 0;
         let mut align = 1;
@@ -94,6 +94,25 @@ impl Layouts<'_> {
             }
         }
         Some((round_up(size, align), align))
+    }
+
+    /// Every field's offset and size, anonymous members included; none when a field's layout is unknown.
+    pub(crate) fn field_places(&self, record: &Record) -> Option<Vec<(u64, u64)>> {
+        let pack = record.packing.map(u64::from);
+        let mut offset = 0;
+        let mut places = Vec::new();
+        for field in &record.fields {
+            let (field_size, field_align) = self.of_type(&field.ty, record)?;
+            let field_align = pack.map_or(field_align, |pack| field_align.min(pack));
+            if record.kind == RecordKind::Union {
+                places.push((0, field_size));
+            } else {
+                offset = round_up(offset, field_align);
+                places.push((offset, field_size));
+                offset += field_size;
+            }
+        }
+        Some(places)
     }
 
     fn offsets(&self, record: &Record) -> Vec<(String, u64)> {

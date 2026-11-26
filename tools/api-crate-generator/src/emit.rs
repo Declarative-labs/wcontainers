@@ -13,6 +13,9 @@ use crate::mapping::Row;
 use crate::metadata::{self, Field, Interface, Literal, Method, Param, Record, RecordKind, attribute_named};
 use crate::names;
 
+#[path = "glue.rs"]
+mod glue;
+
 pub const HEADER: &str = "Written by tools/api-crate-generator from the Win32 metadata, version 63.0.31, and never by hand.";
 const UNKNOWN: (&str, &str) = ("Windows.Win32.System.Com", "IUnknown");
 const FOUNDATION: &str = "Windows.Win32.Foundation";
@@ -90,6 +93,8 @@ struct Generator<'a> {
     apiless: RefCell<BTreeSet<Key>>,
     /// Per crate, the named length of each array of a count the header fixes: name, length, C name, link.
     lengths: RefCell<BTreeMap<usize, BTreeMap<String, (i128, String, Option<String>)>>>,
+    /// Every interface's own methods as the metadata has them, before a slice: the C tables keep every entry.
+    all_methods: BTreeMap<Key, Vec<Method>>,
 }
 
 fn alias(api: &Api) -> String {
@@ -186,6 +191,55 @@ fn nested_name(outer: &str, nested: &str) -> String {
     format!("{outer}{}", names::pascal_case_of_upper_snake(cleaned))
 }
 
+/// The interfaces a type names, through pointers.
+fn named_interface(ty: &Type, read: &metadata::Namespaces) -> Option<Key> {
+    let inner = pointee(ty).map_or(ty, |(inner, _, _)| inner);
+    named(inner).filter(|k| read.interfaces.contains_key(k))
+}
+
+/// Cuts each sliced API down to the methods and exports it names, and the interfaces those need: the interfaces
+/// that hold them, the ones their parameters name, and every base of those.
+fn slice(apis: &[&Api], read: &mut metadata::Namespaces, interface_api: &mut BTreeMap<Key, usize>) {
+    if apis.iter().all(|api| api.only.is_empty()) {
+        return;
+    }
+    let sliced = |position: usize| !apis[position].only.is_empty();
+    for (interface_key, &position) in interface_api.iter() {
+        if !sliced(position) {
+            continue;
+        }
+        let only = apis[position].only;
+        if let Some(interface) = read.interfaces.get_mut(interface_key) {
+            interface.methods.retain(|method| only.contains(&format!("{}::{}", interface_key.1, method.name).as_str()));
+        }
+    }
+    let mut keep: BTreeSet<Key> = BTreeSet::new();
+    let mut pending: Vec<Key> = Vec::new();
+    for (interface_key, &position) in interface_api.iter() {
+        let interface = &read.interfaces[interface_key];
+        if !sliced(position) || !interface.methods.is_empty() {
+            pending.push(interface_key.clone());
+        }
+    }
+    for ((namespace, _), function) in &read.functions {
+        let owner = apis.iter().position(|api| api.namespaces.contains(&namespace.as_str()));
+        if owner.is_some_and(|position| sliced(position) && apis[position].only.contains(&function.name.as_str())) {
+            pending.extend(function.params.iter().filter_map(|param| named_interface(&param.ty, read)));
+        }
+    }
+    while let Some(interface_key) = pending.pop() {
+        if !keep.insert(interface_key.clone()) {
+            continue;
+        }
+        let Some(interface) = read.interfaces.get(&interface_key) else { continue };
+        pending.extend(interface.base.iter().cloned());
+        for method in &interface.methods {
+            pending.extend(method.params.iter().filter_map(|param| named_interface(&param.ty, read)));
+        }
+    }
+    interface_api.retain(|interface_key, position| !sliced(*position) || keep.contains(interface_key));
+}
+
 impl<'a> Generator<'a> {
     fn new(index: &TypeIndex, apis: &'a [&'a Api]) -> Generator<'a> {
         let mut namespaces: Vec<&str> = vec![UNKNOWN.0, FOUNDATION];
@@ -210,6 +264,9 @@ impl<'a> Generator<'a> {
                 }
             }
         }
+        let mut read = read;
+        let all_methods: BTreeMap<Key, Vec<Method>> = read.interfaces.iter().map(|(k, i)| (k.clone(), i.methods.clone())).collect();
+        slice(apis, &mut read, &mut interface_api);
         let mut trait_names = HashMap::new();
         for (interface_key, &position) in &interface_api {
             let api = apis[position];
@@ -232,6 +289,7 @@ impl<'a> Generator<'a> {
             generic_memo: RefCell::new(HashMap::new()),
             apiless: RefCell::new(BTreeSet::new()),
             lengths: RefCell::new(BTreeMap::new()),
+            all_methods,
         };
         generator.find_kinds();
         generator
@@ -906,6 +964,7 @@ impl<'a> Generator<'a> {
             .filter(|((namespace, _), _)| spec.namespaces.contains(&namespace.as_str()))
             .map(|(_, function)| function)
             .filter(|function| spec.library.is_some_and(|library| function.library.as_deref().is_some_and(|l| l.eq_ignore_ascii_case(library))))
+            .filter(|function| spec.only.is_empty() || spec.only.contains(&function.name.as_str()))
             .collect();
         self.shared_error_allow(&functions, out);
         let supertraits: Vec<String> = spec
@@ -1467,6 +1526,25 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path) -> Result<String, 
         let kinds = generator.kinds.iter().filter(|kind| kind.api == api).count();
         let _ = writeln!(report, "CRATE {}: interfaces {interfaces} methods {methods} object kinds {kinds}", spec.folder);
     }
+    // The glue: each API's direct crate, for a slice (the whole APIs follow at AC3).
+    if apis.iter().any(|api| !api.only.is_empty()) {
+        let writer = glue::Writer::new(&generator);
+        for (api, spec) in apis.iter().enumerate().skip(1) {
+            let folder = out.join("crates").join(spec.folder);
+            report.push_str(&glue::write_direct(&writer, api, &folder)?);
+        }
+        let mut glued = writer.glued.borrow().clone();
+        glued.sort();
+        glued.dedup();
+        let mut not_glued = writer.not_glued.borrow().clone();
+        not_glued.sort();
+        not_glued.dedup();
+        let _ = writeln!(report, "GLUED {} (both glues): {}", glued.len(), glued.join(", "));
+        let _ = writeln!(report, "NOT GLUED {} (null in our tables; E_NOTIMPL or nothing when called):", not_glued.len());
+        for line in &not_glued {
+            let _ = writeln!(report, "  {line}");
+        }
+    }
     let _ = writeln!(report, "ROWS (parameters, fields and returns mapped by each row of MAPPING.md):");
     for row in Row::ALL {
         let _ = writeln!(report, "  {:>6}  {row:?}: {}", generator.rows.borrow().get(&row).copied().unwrap_or(0), row.statement());
@@ -1483,6 +1561,11 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path) -> Result<String, 
     std::fs::write(out.join("MAPPING.md"), mapping).map_err(|error| error.to_string())?;
     format_written(out)?;
     Ok(report)
+}
+
+/// In a direct crate, the items of its own API's interface crate are named by the crate's alias.
+fn rewrite_direct_paths(text: &str, generator: &Generator<'_>, api: usize) -> String {
+    text.replace("crate::", &format!("{}::", alias(generator.apis[api])))
 }
 
 /// In interface.rs, items of the crate's root are named without `crate::`.

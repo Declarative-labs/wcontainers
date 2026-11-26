@@ -27,6 +27,9 @@ pub struct Api {
     pub supertraits: &'static [&'static str],
     /// Other interfaces an object kind answers through QueryInterface, as (kind's root interface, interfaces).
     pub faces: &'static [(&'static str, &'static [&'static str])],
+    /// A slice of the API: only these methods (`Interface::Method`) and exports, with the interfaces they need; empty
+    /// for the whole API. The C tables keep every entry, those left out null.
+    pub only: &'static [&'static str],
 }
 
 pub const COMPONENT_OBJECT_MODEL: Api = Api {
@@ -49,6 +52,7 @@ pub const COMPONENT_OBJECT_MODEL: Api = Api {
     depends_on: &[],
     supertraits: &[],
     faces: &[],
+    only: &[],
 };
 
 pub const DIRECT3D_COMMON: Api = Api {
@@ -67,6 +71,7 @@ pub const DIRECT3D_COMMON: Api = Api {
     depends_on: &["component-object-model"],
     supertraits: &[],
     faces: &[],
+    only: &[],
 };
 
 pub const DIRECTX_GRAPHICS_INFRASTRUCTURE: Api = Api {
@@ -84,6 +89,7 @@ pub const DIRECTX_GRAPHICS_INFRASTRUCTURE: Api = Api {
     depends_on: &["component-object-model"],
     supertraits: &[],
     faces: &[],
+    only: &[],
 };
 
 pub const DIRECT3D_11: Api = Api {
@@ -125,13 +131,56 @@ pub const DIRECT3D_11: Api = Api {
         ("ID3D11Texture2D", &["IDXGIResource1", "IDXGISurface2"]),
         ("ID3D11Texture3D", &["IDXGIResource1"]),
     ],
+    only: &[],
+};
+
+/// The spike's slice of DXGI (SPIKE.md): a surface's description, and a swap chain's Present and GetBuffer.
+pub const DIRECTX_GRAPHICS_INFRASTRUCTURE_SLICE: Api = Api {
+    only: &["IDXGISurface::GetDesc", "IDXGISwapChain::Present", "IDXGISwapChain::GetBuffer"],
+    library: None,
+    ..DIRECTX_GRAPHICS_INFRASTRUCTURE
+};
+
+/// The spike's slice of Direct3D 11 (SPIKE.md), 24 methods and exports.
+pub const DIRECT3D_11_SLICE: Api = Api {
+    only: &[
+        "D3D11CreateDevice",
+        "D3D11CreateDeviceAndSwapChain",
+        "ID3D11DeviceChild::GetDevice",
+        "ID3D11DeviceChild::SetPrivateDataInterface",
+        "ID3D11Device::CreateBuffer",
+        "ID3D11Device::CreateTexture2D",
+        "ID3D11Device::CreateUnorderedAccessView",
+        "ID3D11Device::CreateRenderTargetView",
+        "ID3D11Device::CreateDepthStencilView",
+        "ID3D11Device::CreateQuery",
+        "ID3D11Device::GetImmediateContext",
+        "ID3D11Resource::GetType",
+        "ID3D11Buffer::GetDesc",
+        "ID3D11Texture2D::GetDesc",
+        "ID3D11Query::GetDesc",
+        "ID3D11Asynchronous::GetDataSize",
+        "ID3D11DeviceContext::Draw",
+        "ID3D11DeviceContext::Map",
+        "ID3D11DeviceContext::Unmap",
+        "ID3D11DeviceContext::IASetVertexBuffers",
+        "ID3D11DeviceContext::OMSetRenderTargetsAndUnorderedAccessViews",
+        "ID3D11DeviceContext::Begin",
+        "ID3D11DeviceContext::End",
+        "ID3D11DeviceContext::GetData",
+    ],
+    faces: &[("ID3D11Texture2D", &["IDXGISurface"])],
+    ..DIRECT3D_11
 };
 
 /// The crates written together: each API with the ones it names, lowest first.
-pub const SETS: &[(&str, &[&Api])] = &[(
-    "direct3d-11",
-    &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE, &DIRECT3D_11],
-)];
+pub const SETS: &[(&str, &[&Api])] = &[
+    ("direct3d-11", &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE, &DIRECT3D_11]),
+    (
+        "direct3d-11-slice",
+        &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE_SLICE, &DIRECT3D_11_SLICE],
+    ),
+];
 
 pub fn by_name(name: &str) -> Option<&'static [&'static Api]> {
     SETS.iter().find(|(set, _)| *set == name).map(|(_, apis)| *apis)
