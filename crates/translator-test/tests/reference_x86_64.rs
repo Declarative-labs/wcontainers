@@ -812,3 +812,21 @@ fn the_x86_64_reference_comes_back_after_its_connection_is_lost() {
 fn the_x86_64_reference_reports_its_own_failure() {
     Reference::check_runner_failure(&X86_64);
 }
+
+/// Checks that the reference's chip shows the linear address width its record holds.
+///
+/// A chip with no record fails with the width measured, to be recorded in `KNOWN_CHIPS`.
+#[test]
+fn the_x86_64_reference_chip_shows_its_recorded_linear_address_width() {
+    use wcontainers_translator_test::guest::x86_64::{known_chip, measure_linear_addresses};
+    let mut reference = Reference::start(&X86_64);
+    let measured = measure_linear_addresses(&mut reference);
+    eprintln!("reference CPU: {}: {measured:?}", reference.model);
+    let chip = known_chip(&reference.model).unwrap_or_else(|| {
+        panic!(
+            "{:?} has no record: it measured {measured:?}",
+            reference.model
+        )
+    });
+    assert_eq!(measured, chip.linear_addresses, "{}", chip.seen_on);
+}

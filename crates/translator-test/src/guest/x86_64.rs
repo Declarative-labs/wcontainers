@@ -2230,56 +2230,61 @@ pub enum LinearAddressWidth {
     FiveLevelPaging,
 }
 
-/// A chip a reference has run on, and how it behaves where x86-64 chips differ.
+/// A chip a reference has run on, and the behavior it was measured to show where x86-64 chips differ.
 pub struct ChipBehaviors {
-    /// The chip as `/proc/cpuinfo` names it.
+    /// The chip as the reference runner names it (the model name Linux gives).
     pub model: &'static str,
-    /// Where and when the behaviors were seen.
+    /// Where and when the behaviors were measured.
     pub seen_on: &'static str,
     pub linear_addresses: LinearAddressWidth,
 }
 
-/// The chips references have run on, with what was seen on each.
+/// The chips references have run on, each with the behaviors measured on it.
 pub const KNOWN_CHIPS: &[ChipBehaviors] = &[ChipBehaviors {
     model: "Intel(R) Xeon(R) Platinum 8488C",
-    seen_on: "the rented x86-64 machine (AWS, Linux 7.0.0-1018-aws), 2026-11-25: the 5-level paging flag in \
-        /proc/cpuinfo, and layer 1's reference took page faults above bit 47 where the translation raises #GP or #SS",
+    seen_on: "the rented x86-64 machine (AWS, Linux 7.0.0-1018-aws), 2026-11-25 and 2026-11-26: a load at the \
+        first address past bit 47 took a page fault (`measure_linear_addresses`), and layer 1's reference took page \
+        faults above bit 47 where the translation raises #GP or #SS",
     linear_addresses: LinearAddressWidth::FiveLevelPaging,
 }];
 
-/// The flag `/proc/cpuinfo` shows when Linux runs with 5-level paging; it leaves the flag out otherwise.
-///
-/// https://docs.kernel.org/arch/x86/x86_64/5level-paging.html
-const FIVE_LEVEL_PAGING_FLAG: &str = "la57";
-const CPU_INFORMATION: &str = "/proc/cpuinfo";
+/// Returns the record of the chip the runner names `model`, if one was measured.
+pub fn known_chip(model: &str) -> Option<&'static ChipBehaviors> {
+    KNOWN_CHIPS.iter().find(|chip| chip.model == model)
+}
 
-/// Finds once the linear address width of the chip the reference runs on.
+/// Returns, once, the linear address width the record of the reference's chip holds.
 ///
-/// A local reference runs on this host's chip, read from `/proc/cpuinfo`; one over SSH is taken to have 48 bits, as
-/// every such machine used so far.
+/// The chip is the one the reference runner named when it started. One not in [`KNOWN_CHIPS`] stops the run: its
+/// width is measured first (`measure_linear_addresses`, the reference test) and recorded there.
 pub fn reference_linear_addresses() -> LinearAddressWidth {
     static FOUND: OnceLock<LinearAddressWidth> = OnceLock::new();
     *FOUND.get_or_init(|| {
-        if std::env::var_os(X86_64::REFERENCE.reference_host).is_some() {
-            return LinearAddressWidth::FourLevelPaging;
-        }
-        linear_addresses_of(&std::fs::read_to_string(CPU_INFORMATION).unwrap_or_default())
+        let model = crate::reference::reference_chip(&X86_64::REFERENCE)
+            .expect("the reference has started before its answers are compared");
+        known_chip(&model)
+            .unwrap_or_else(|| {
+                panic!(
+                    "the reference's chip {model:?} is not in KNOWN_CHIPS: measure its linear address width with the \
+                     reference test and record it"
+                )
+            })
+            .linear_addresses
     })
 }
 
-/// Returns the linear address width `/proc/cpuinfo`'s text shows.
-pub fn linear_addresses_of(cpu_information: &str) -> LinearAddressWidth {
-    let five_levels = cpu_information
-        .lines()
-        .filter(|line| line.starts_with("flags"))
-        .any(|line| {
-            line.split_whitespace()
-                .any(|flag| flag == FIVE_LEVEL_PAGING_FLAG)
-        });
-    if five_levels {
-        LinearAddressWidth::FiveLevelPaging
-    } else {
-        LinearAddressWidth::FourLevelPaging
+/// Measures the reference chip's linear address width with one load at the first address past bit 47.
+///
+/// The load takes a page fault with 5-level paging and raises #GP with 4-level paging.
+pub fn measure_linear_addresses(reference: &mut crate::reference::Reference) -> LinearAddressWidth {
+    /// `mov rax, [rbx]`.
+    const LOAD_THROUGH_RBX: &[u8] = &[0x48, 0x8b, 0x03];
+    let mut probe = plain(LOAD_THROUGH_RBX);
+    probe.state.0[wcontainers_x86::RBX as usize] = USER_END.into();
+    match crate::layer1::on_reference::<X86_64>(reference, &probe).stop {
+        Stop::MemoryFault(at) if at == USER_END => LinearAddressWidth::FiveLevelPaging,
+        Stop::GeneralProtection => LinearAddressWidth::FourLevelPaging,
+        other => panic!("a load past bit 47 stopped as {other:?}"),
     }
 }
 
@@ -3151,18 +3156,14 @@ fn cpuid_cases() -> Vec<Designed> {
 mod tests {
     use super::*;
 
-    /// Checks that the flag decides the width, and which accesses are canonical in 48 bits.
+    /// Checks which accesses are canonical in 48 bits, and that the recorded chip is found by its name.
     #[test]
-    fn linear_address_width_and_canonical_accesses() {
-        let flags = |rest: &str| format!("model name\t: a chip\nflags\t\t: fpu vme {rest}\n");
+    fn canonical_accesses_and_the_chip_record() {
         assert_eq!(
-            linear_addresses_of(&flags("la57 pku")),
-            LinearAddressWidth::FiveLevelPaging
+            known_chip("Intel(R) Xeon(R) Platinum 8488C").map(|chip| chip.linear_addresses),
+            Some(LinearAddressWidth::FiveLevelPaging)
         );
-        assert_eq!(
-            linear_addresses_of(&flags("pku")),
-            LinearAddressWidth::FourLevelPaging
-        );
+        assert!(known_chip("a chip never measured").is_none());
         let top = USER_END;
         assert!(canonical_with_four_levels(top - 8, 8));
         assert!(!canonical_with_four_levels(top - 4, 8));
@@ -3170,27 +3171,6 @@ mod tests {
         assert!(!canonical_with_four_levels(1 << 55, 8));
         assert!(canonical_with_four_levels(top.wrapping_neg(), 8));
         assert!(canonical_with_four_levels(u64::MAX - 3, 8));
-    }
-
-    /// Checks that on a chip of the record this host's `/proc/cpuinfo` shows the width the record holds.
-    #[test]
-    fn a_known_chip_shows_its_recorded_width() {
-        let Ok(text) = std::fs::read_to_string(CPU_INFORMATION) else {
-            return;
-        };
-        let model = text
-            .lines()
-            .find_map(|line| line.strip_prefix("model name"))
-            .and_then(|rest| rest.split_once(':'))
-            .map(|(_, name)| name.trim());
-        if let Some(chip) = KNOWN_CHIPS.iter().find(|chip| Some(chip.model) == model) {
-            assert_eq!(
-                linear_addresses_of(&text),
-                chip.linear_addresses,
-                "{}",
-                chip.seen_on
-            );
-        }
     }
 
     /// The reserved NOP forms' cases reach encodings with each of `66`, `F2` and `F3` first, and with REX.W.

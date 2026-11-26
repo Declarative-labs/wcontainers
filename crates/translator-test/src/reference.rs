@@ -4,6 +4,7 @@
 
 use crate::layout::*;
 use sha2::Digest;
+use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
@@ -278,6 +279,18 @@ pub struct BlobRan {
     pub stop: Option<(u32, u32, Vec<u64>)>,
 }
 
+/// The chip each guest's reference runs on in this process, as its runner named it, by the guest's Rust target.
+static REFERENCE_CHIPS: Mutex<BTreeMap<&'static str, String>> = Mutex::new(BTreeMap::new());
+
+/// Returns the chip the reference of `target` named when it started in this process, or none before one started.
+pub fn reference_chip(target: &Target) -> Option<String> {
+    REFERENCE_CHIPS
+        .lock()
+        .unwrap()
+        .get(target.rust_target)
+        .cloned()
+}
+
 /// A running reference runner for one guest.
 pub struct Reference {
     target: Target,
@@ -353,6 +366,10 @@ impl Reference {
             fields, target.fields,
             "the reference runner's fields are the guest's"
         );
+        REFERENCE_CHIPS
+            .lock()
+            .unwrap()
+            .insert(target.rust_target, model.clone());
         Ok(Reference {
             target: *target,
             child,
