@@ -24,11 +24,12 @@ use iced_x86::Code;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
 pub mod avx;
+pub mod avx512_integer;
 mod behavior;
 pub mod branch;
 mod cpuid;
-pub mod evex;
 mod cpuid_recording;
+pub mod evex;
 mod exception;
 pub mod extension;
 pub mod fixed;
@@ -40,6 +41,7 @@ mod forms;
 pub mod integer;
 pub mod memory;
 pub mod mmx;
+pub mod opmask;
 pub mod planted;
 mod simulation;
 pub mod sse;
@@ -167,6 +169,8 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(x87::X87_FORMS.iter().map(|form| form.instruction))
         .chain(stack::STACK_FORMS.iter().map(|form| form.instruction))
         .chain(evex::list_evex_forms().into_iter().map(|form| form.instruction))
+        .chain(opmask::OPMASK_FORMS.iter().map(|form| form.instruction))
+        .chain(avx512_integer::EVEX_INTEGER_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -434,5 +438,15 @@ pub enum PreciseInstruction {
     Extension {
         instruction: Instruction,
         behavior: extension::ExtensionBehavior,
+    },
+    /// A form of [`opmask::OPMASK_FORMS`]; `across_fault` is read by KMOV's store alone.
+    Opmask {
+        instruction: Instruction,
+        across_fault: StoreAcrossFault,
+    },
+    /// A form of [`avx512_integer::EVEX_INTEGER_FORMS`]; `across_fault` is read by the stores alone.
+    EvexInteger {
+        instruction: Instruction,
+        across_fault: StoreAcrossFault,
     },
 }

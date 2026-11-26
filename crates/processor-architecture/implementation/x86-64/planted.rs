@@ -14,6 +14,8 @@ use crate::vector::{Lane, LaneOperation, Signedness, VectorEncoding, find_vector
 use crate::sse::{Combination, LaneSelect, SseOperation};
 use crate::float::Arrangement;
 use crate::avx::{AvxForm, AvxOperation, Wide, find_avx_form};
+use crate::avx512_integer::{EvexIntegerForm, EvexIntegerOperation, EvexIntegerPlace, ComparePredicate, Zmm, find_evex_integer_form, from_lanes, to_lanes};
+use crate::opmask::{OpmaskOperation, find_opmask_form};
 use crate::{Flags, Instruction};
 
 /// Who planted a bug first.
@@ -41,6 +43,8 @@ pub enum Origin {
     IntegerX87Mmx,
     /// The second half of AVX-512's forms.
     EvexSecondHalf,
+    /// The opmask forms and the foundation set's EVEX integer forms.
+    Avx512Integer,
 }
 
 /// The forms a bug shows on.
@@ -69,6 +73,10 @@ pub enum Family {
     Every,
     /// The forms of [`crate::avx::AVX_FORMS`] the test accepts.
     Avx(fn(&AvxForm) -> bool),
+    /// The opmask forms whose operation the test accepts.
+    Opmask(fn(OpmaskOperation) -> bool),
+    /// The EVEX integer forms the test accepts.
+    EvexInteger(fn(&EvexIntegerForm) -> bool),
 }
 
 /// One planted bug.
@@ -103,6 +111,8 @@ impl PlantedBug {
             Family::Evex(test) => find_evex_form(instruction).is_some_and(|form| test(&form)),
             Family::Every => true,
             Family::Avx(test) => find_avx_form(instruction).is_some_and(test),
+            Family::Opmask(test) => find_opmask_form(instruction).is_some_and(|form| test(form.operation)),
+            Family::EvexInteger(test) => find_evex_integer_form(instruction).is_some_and(test),
         }
     }
 }
@@ -973,6 +983,37 @@ pub enum Bug {
     StackBranchToNonCanonical,
     /// RET imm16 releases nothing beyond the return address.
     ReturnReleasesBeforePop,
+    // The opmask forms and the EVEX integer forms.
+    /// KADD keeps the carry out of its width.
+    OpmaskAddKeepsCarry,
+    /// KSHIFTL and KSHIFTR take their count modulo the width.
+    OpmaskShiftCountModulo,
+    /// KORTEST sets CF where any bit is set.
+    OpmaskOrTestCarryOnAnyBit,
+    /// KUNPCK puts the first source's half low.
+    OpmaskUnpackHalvesSwapped,
+    /// Zeroing masks merge.
+    EvexIntegerZeroingMerges,
+    /// A vector shorter than 512 bits keeps the destination's bits above it.
+    EvexIntegerUpperBitsKept,
+    /// ZMM16 to ZMM31 are read and written as ZMM0 to ZMM15.
+    EvexIntegerHighRegistersAliasLow,
+    /// A lane the writemask keeps still faults.
+    EvexIntegerNoFaultSuppression,
+    /// A broadcast memory operand is read whole.
+    EvexIntegerBroadcastIgnored,
+    /// VPTERNLOG indexes its immediate with the two sources swapped.
+    TernaryLogicSourcesSwapped,
+    /// VPCMP's predicate 2 (less or equal) compares less.
+    CompareLessOrEqualAsLess,
+    /// The per-lane shifts take their count modulo the width.
+    LaneShiftCountModulo,
+    /// VPROR rotates left.
+    RotateRightAsLeft,
+    /// VPBLENDM keeps the destination's lane, not the first source's.
+    BlendKeepsDestination,
+    /// A compare or test into a mask ignores its writemask.
+    CompareIgnoresWritemask,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -988,8 +1029,8 @@ const fn sse(test: fn(SseOperation) -> bool) -> Family {
 }
 
 use Origin::{
-    EvexSecondHalf, FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck, SecondPass,
-    SseFamily, ThirdCheck, ThirdPass, WholeList,
+    Avx512Integer, EvexSecondHalf, FifthCheck, FifthPass, FirstCheck, FirstPass, FourthCheck, FourthPass, Port, SecondCheck,
+    SecondPass, SseFamily, ThirdCheck, ThirdPass, WholeList,
 };
 
 /// Every planted bug of every pass and check, with its family.
@@ -1422,6 +1463,21 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::RingThreeUndefinedFormsComplete, "SEAMCALL to VMFUNC", Family::Forms(&crate::RING_3_UNDEFINED_FORMS), EvexSecondHalf),
     row(Bug::EvexCompareSignalingBitIgnored, "VCMPPS to VCMPSD", Family::Evex(|form| matches!(form.operation, EvexOperation::Compare { .. })), EvexSecondHalf),
     row(Bug::EvexPermuteFaultsSuppressed, "EVEX permutes with memory", Family::Evex(|form| form.place != OperandPlace::Register && !form.suppresses_faults()), EvexSecondHalf),
+    row(Bug::OpmaskAddKeepsCarry, "KADD", Family::Opmask(|o| o == OpmaskOperation::Add), Avx512Integer),
+    row(Bug::OpmaskShiftCountModulo, "KSHIFTL, KSHIFTR", Family::Opmask(|o| matches!(o, OpmaskOperation::ShiftLeft | OpmaskOperation::ShiftRight)), Avx512Integer),
+    row(Bug::OpmaskOrTestCarryOnAnyBit, "KORTEST", Family::Opmask(|o| o == OpmaskOperation::OrTest), Avx512Integer),
+    row(Bug::OpmaskUnpackHalvesSwapped, "KUNPCK", Family::Opmask(|o| o == OpmaskOperation::Unpack), Avx512Integer),
+    row(Bug::EvexIntegerZeroingMerges, "EVEX integer forms", Family::EvexInteger(|form| !form.writes_mask()), Avx512Integer),
+    row(Bug::EvexIntegerUpperBitsKept, "EVEX integer forms", Family::EvexInteger(|form| !form.writes_mask()), Avx512Integer),
+    row(Bug::EvexIntegerHighRegistersAliasLow, "EVEX integer forms", Family::EvexInteger(|_| true), Avx512Integer),
+    row(Bug::EvexIntegerNoFaultSuppression, "EVEX integer forms in memory", Family::EvexInteger(|form| matches!(form.place, EvexIntegerPlace::Memory | EvexIntegerPlace::Store)), Avx512Integer),
+    row(Bug::EvexIntegerBroadcastIgnored, "EVEX integer forms that broadcast", Family::EvexInteger(|form| form.place == EvexIntegerPlace::Memory && form.can_broadcast()), Avx512Integer),
+    row(Bug::TernaryLogicSourcesSwapped, "VPTERNLOG", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::TernaryLogic), Avx512Integer),
+    row(Bug::CompareLessOrEqualAsLess, "VPCMP, VPCMPU", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::CompareIntoMask(ComparePredicate::Immediate(_)))), Avx512Integer),
+    row(Bug::LaneShiftCountModulo, "VPSLLV, VPSRLV, VPSRAV", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::ShiftByLane(_))), Avx512Integer),
+    row(Bug::RotateRightAsLeft, "VPROR, VPRORV", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Rotate { left: false, .. })), Avx512Integer),
+    row(Bug::BlendKeepsDestination, "VPBLENDM", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::Blend), Avx512Integer),
+    row(Bug::CompareIgnoresWritemask, "compares and tests into masks", Family::EvexInteger(EvexIntegerForm::writes_mask), Avx512Integer),
 ];
 
 const X87_SAMPLE: &[Instruction] = &[Instruction::Fnop, Instruction::FxchSt0X87, Instruction::FldSt0Memmem80real, Instruction::Fchs];
@@ -1519,6 +1575,45 @@ fn is_float_register_form(form: &EvexForm) -> bool {
     )
         && form.place == OperandPlace::Register
         && form.code.op_code().can_suppress_all_exceptions()
+}
+
+/// The opmask operation's result with the planted bug of its family.
+pub(crate) fn mutate_opmask(operation: OpmaskOperation, bits: u32, first: u64, second: u64, immediate: u8, result: u64) -> u64 {
+    let mask = crate::opmask::to_mask(bits);
+    match (active(), operation) {
+        (Some(Bug::OpmaskAddKeepsCarry), OpmaskOperation::Add) => (first & mask) + (second & mask),
+        (Some(Bug::OpmaskShiftCountModulo), OpmaskOperation::ShiftLeft | OpmaskOperation::ShiftRight) => {
+            operation.compute(bits, first, second, (u32::from(immediate) % bits) as u8)
+        }
+        (Some(Bug::OpmaskOrTestCarryOnAnyBit), OpmaskOperation::OrTest) => {
+            (result & !1) | u64::from((first | second) & mask != 0)
+        }
+        (Some(Bug::OpmaskUnpackHalvesSwapped), OpmaskOperation::Unpack) => operation.compute(bits, second, first, immediate),
+        _ => result,
+    }
+}
+
+/// The EVEX integer form's result with the planted bug of its family.
+pub(crate) fn mutate_evex(form: &EvexIntegerForm, destination: &Zmm, first: &Zmm, second: &Zmm, immediate: u8, result: Zmm) -> Zmm {
+    let recompute = |operation: EvexIntegerOperation, first: &Zmm, second: &Zmm, immediate: u8| {
+        EvexIntegerForm { operation, ..*form }.compute_unplanted(destination, first, second, immediate)
+    };
+    match (active(), form.operation) {
+        (Some(Bug::TernaryLogicSourcesSwapped), EvexIntegerOperation::TernaryLogic) => recompute(form.operation, second, first, immediate),
+        (Some(Bug::CompareLessOrEqualAsLess), EvexIntegerOperation::CompareIntoMask(ComparePredicate::Immediate(_))) if immediate & 7 == 2 => {
+            recompute(form.operation, first, second, 1)
+        }
+        (Some(Bug::LaneShiftCountModulo), EvexIntegerOperation::ShiftByLane(_)) => {
+            let bits = form.lane.to_bits();
+            let counts: alloc::vec::Vec<u64> =
+                to_lanes(form.lane, second, form.count_lanes()).iter().map(|count| count % u64::from(bits)).collect();
+            recompute(form.operation, first, &from_lanes(form.lane, &counts), immediate)
+        }
+        (Some(Bug::RotateRightAsLeft), EvexIntegerOperation::Rotate { left: false, by_lane }) => {
+            recompute(EvexIntegerOperation::Rotate { left: true, by_lane }, first, second, immediate)
+        }
+        _ => result,
+    }
 }
 
 #[cfg(feature = "planted-bugs")]

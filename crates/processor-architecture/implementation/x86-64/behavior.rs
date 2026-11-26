@@ -11,6 +11,8 @@ use crate::branch::find_branch_form;
 use crate::evex::find_evex_form;
 use crate::float::find_float_form;
 use crate::vector::find_vector_form;
+use crate::avx512_integer::{EvexIntegerPlace, find_evex_integer_form};
+use crate::opmask::{OpmaskPlace, find_opmask_form};
 use crate::{
     CpuidTable, FORBIDDEN_FORMS, Instruction, PRIVILEGED_FORMS, PreciseInstruction, RING_3_UNDEFINED_FORMS,
     XEON_PLATINUM_8488C_UNDER_KVM, is_optional,
@@ -246,6 +248,7 @@ impl PreciseInstruction {
             Self::Extension { instruction, .. } | Self::Fixed(instruction) => instruction,
             Self::Mmx { instruction, .. } | Self::X87 { instruction, .. } | Self::Stack { instruction, .. } => instruction,
             Self::Evex(instruction) => instruction,
+            Self::Opmask { instruction, .. } | Self::EvexInteger { instruction, .. } => instruction,
         }
     }
 }
@@ -266,6 +269,20 @@ pub(crate) fn list_behaviors(instruction: Instruction) -> vec::IntoIter<PreciseI
 
 /// The behaviors of the form's model; none for a form not yet modeled.
 fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
+    if let Some(form) = find_opmask_form(instruction) {
+        // A store of one byte cannot fault part-way.
+        return take(&ACROSS_FAULT, form.place == OpmaskPlace::Store && form.bits > u8::BITS)
+            .iter()
+            .map(|&across_fault| PreciseInstruction::Opmask { instruction, across_fault })
+            .collect();
+    }
+    if let Some(form) = find_evex_integer_form(instruction) {
+        // An aligned store lies on one page.
+        return take(&ACROSS_FAULT, form.place == EvexIntegerPlace::Store && form.to_alignment().is_none())
+            .iter()
+            .map(|&across_fault| PreciseInstruction::EvexInteger { instruction, across_fault })
+            .collect();
+    }
     match instruction {
         Instruction::PushGprv50 => ACROSS_FAULT
             .map(|across_fault| PreciseInstruction::PushGprv50 { across_fault })

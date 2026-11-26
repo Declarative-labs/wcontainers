@@ -154,6 +154,54 @@ mod on_chip {
         ) + &render_x87(&processor.x87)
     }
 
+    /// Each ZMM register, all 512 bits, and each opmask register, by name.
+    fn list_avx512(
+        low: &[u128; 16],
+        middle: &[u128; 16],
+        upper: &[[u128; 2]; 16],
+        high: &[[u128; 4]; 16],
+        opmask: &[u64; 8],
+    ) -> Vec<(String, String)> {
+        let zmm = (0..32).map(|number| {
+            let [first, second, third, fourth] =
+                if number < 16 { [low[number], middle[number], upper[number][0], upper[number][1]] } else { high[number - 16] };
+            (format!("zmm{number}"), format!("{fourth:032x}_{third:032x}_{second:032x}_{first:032x}"))
+        });
+        zmm.chain(opmask.iter().enumerate().map(|(number, value)| (format!("k{number}"), format!("{value:016x}")))).collect()
+    }
+
+    /// The ZMM and opmask registers where the simulation and the chip differ: before, simulated, executed.
+    fn render_avx512_differences(before: &Processor, simulated: &ProcessorExpectation, executed: Option<&Processor>) -> String {
+        let Some(executed) = executed else {
+            return String::new();
+        };
+        let of = |processor: &Processor| {
+            list_avx512(
+                &processor.vector_registers,
+                &processor.upper_vector_halves,
+                &processor.zmm_upper_halves,
+                &processor.high_vector_registers,
+                &processor.opmask_registers,
+            )
+        };
+        let expected = list_avx512(
+            &simulated.vector_registers,
+            &simulated.upper_vector_halves,
+            &simulated.zmm_upper_halves,
+            &simulated.high_vector_registers,
+            &simulated.opmask_registers,
+        );
+        of(before)
+            .into_iter()
+            .zip(expected)
+            .zip(of(executed))
+            .filter(|((_, (_, simulated)), (_, executed))| simulated != executed)
+            .map(|(((name, before), (_, simulated)), (_, executed))| {
+                format!("\n    {name}: before {before}\n      simulated {simulated}\n      executed  {executed}")
+            })
+            .collect()
+    }
+
     fn summarize(changes: &[MemoryDelta<'_, X86_64>]) -> Vec<String> {
         changes
             .iter()
@@ -175,6 +223,7 @@ mod on_chip {
             Some(MemoryDelta::ValueAssignment { bytes, .. }) => format!("{:02x?}", &bytes[..]),
             _ => String::new(),
         };
+        let differences = render_avx512_differences(&before.processor, &simulated.processor, executed.as_ref().ok().map(|state| &state.processor));
         let executed = match executed {
             Ok(executed) => format!(
                 "{}\n      {:x?}",
@@ -184,7 +233,7 @@ mod on_chip {
             Err(refusal) => format!("refused: {refusal}"),
         };
         format!(
-            "    code {code}\n    before:    {}\n      {:x?}\n    simulated: {}\n      {:x?}\n    executed:  {executed}",
+            "    code {code}\n    before:    {}\n      {:x?}\n    simulated: {}\n      {:x?}\n    executed:  {executed}{differences}",
             render(&before.processor),
             summarize(&before.memory_mutations[2.min(start)..]),
             render_expected(&simulated.processor),

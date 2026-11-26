@@ -30,6 +30,9 @@ use crate::{
 #[path = "avx_simulation.rs"]
 mod avx_simulation;
 
+mod avx512_integer;
+mod opmask;
+
 const MAXIMUM_INSTRUCTION_BYTES: usize = 15;
 /// The byte 64-bit mode leaves undefined that XED names UDB.
 const UNDEFINED_SINGLE_BYTE: u8 = 0xD6;
@@ -251,6 +254,12 @@ fn apply(
             sse_simulation::execute_sse(instruction, across_fault, masked_faults, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Evex(instruction) => evex_simulation::execute_evex(instruction, processor, memory, decoded),
+        PreciseInstruction::Opmask { instruction, across_fault } => {
+            opmask::execute_opmask(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::EvexInteger { instruction, across_fault } => {
+            avx512_integer::execute_evex_integer(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
+        }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS
                 .iter()
@@ -973,6 +982,8 @@ fn execute_vex_vector(
         (false, _) if is_active(Bug::VexNarrowKeepsUpperHalf) => kept,
         (false, _) => 0,
     };
+    // VEX zeroes the destination up to the widest vector, ZMM's bits 256 to 511.
+    processor.zmm_upper_halves[number] = [0; 2];
     Ok(())
 }
 
