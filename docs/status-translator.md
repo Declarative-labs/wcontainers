@@ -290,6 +290,112 @@ For the x86 front end track (the owner's ruling of today): the ordered form of x
 on weaker hosts is that track's to build; the description section's form byte (its last, a whole byte of
 which 0 and 1 are used) can take it as a new value or bit, with nothing to change here.
 
+Run of 2026-11-26, second (results and scripts in scratch `translator-port/run4/`; 12 jobs a build):
+
+Merges (MEASURED unless marked):
+- f95377a7 `origin/arm64-instructions` f7f80cae (no conflict); `origin/x86-instructions` a62c849e and the owner's
+  main ac696ea1 (fetched from his checkout): already in, "Already up to date".
+- e393e2b0 `origin/x86-front-end` at its tip 3e168614 (orchestrator's ruling). It builds, so its tip was merged,
+  not an earlier commit; its status records XF1's and XF2's bars at 04081b4b, and 3e168614 (layer 1's 5-level
+  paging answer) after them. 12 files conflicted, as the check measured. The front end's first commit copied
+  this branch's five folders from 1b3b7578 by path, so git's merge base was older than the real common state;
+  each file was merged three ways against 1b3b7578's copy: 11 merged with no conflict, and in
+  `tests/valid.rs` 10 hunks where both sides changed the `translate` calls were resolved by hand (this branch's
+  count and size draws kept, the front end's ordering added after the count, and the x86 every-form test run
+  over both counts and all three forms). Every file git merged by itself is byte-identical to that three-way
+  result. One line changed after: the stand-in's `mmap` zero fill (`runner.rs` `map_pages`) writes through
+  the front end's `GuestMemory`, a page at a time, as it now may be shared.
+- The owner's interface files: all 91 files of his 29 interface folders byte-identical to his main
+  (`git diff --quiet` on each); `crates/kvm` is the port's and is not on his main.
+
+TR4 follow-ups from the check of the last run (57eee2f1, 3454e90b):
+- The comment on `keeps_load_store_choices` said a load into its base keeps the loaded value; the code keeps
+  `WritebackOverwritesLoad`. The comment now says the post-indexed load ends with the written-back address.
+- New tests change one choice of every kept load or store of the slice and assert the changed behavior is
+  rejected: a misaligned stack pointer that `Accesses`, a store that `WritesBytesBelowFault`, and a load whose
+  writeback is `WritebackSuppressed`. The states test asserts each instruction's count and the total, 78,836,
+  instead of printing them.
+- The check's 12 planted faults (its script `checks/tr4-plants.sh`, rerun on the ARM64 machine): all 12 now
+  fail the crate's tests (exit 101); plants 8 and 10 (the misaligned stack pointer and the store across a
+  fault accepted whatever the choice) were caught by nothing before and are caught now by the new tests.
+  7 tests pass unplanted on both machines.
+
+The whole bar after the merge (e393e2b0; ARM64 machine and x86-64 machine):
+- fmt, check and clippy with warnings denied of the five packages and the precise set, all targets and
+  features; the browser crate's wasm32 clippy for both guests; the reference's clippy: exit 0 on both.
+- `unsafe` outside comments: arm64 0, x86 0, guest-cpu 0, translator 0, translator-test 0,
+  precise-instruction-set/implementation/translator 0; reference/ 81.
+- ARM64's ten output lists (965 modules): the description section is now version 6 with the ordering's byte, so
+  the whole modules' hashes changed in every list. With the description cut (`WC_OUTPUT_CUT_DESCRIPTION`), all
+  ten lists have the same sha256 as the pre-merge tip 3454e90b's cut lists, and that tip's whole lists have the
+  TR1 baseline's sha256, list for list.
+- The suite test by test against TR2's tip: ARM64 machine 322 listed (298 before), 31 ignored (19), none
+  removed; every outcome the same but the added tests (the programs binary's own count 25 passed, 27 failed, 3
+  ignored, and its failing names, are the same; three of its lines were cut by output written at once, as in
+  TR1). x86-64 machine 340 listed (316), 32 ignored (20), none removed; every outcome the same but the added
+  tests and `bytes_in_no_form_stop_as_on_the_cpu_x86_64`, failed before and passing now (the front end's
+  5-level paging answer).
+- Layer 1, failing forms, form by form against TR2's tip: ARM64 `["MSR_SR_systemmove"]` at both, and in Chrome;
+  equal. x86-64: 5 failing (`Iretq`, `Sldt_r32m16`, `Smsw_r32m16`, `Smsw_rm16`, `Str_r32m16`), all failing before,
+  of 1,126 before (the front end's 3e168614 turns the reference's 5-level paging answers into a 48-bit chip's);
+  unoffered forms 1,820 of 2,986 at both, equal; in Chrome 3 of 2,008 (41 before), one of them new:
+  `Fbstp_m80bcd`, code `41 df 74 e5 e6`, the reference (read as a 48-bit chip) general protection, the
+  translation a memory fault at 0x7ffffffffff8: a 10-byte store across the canonical boundary, which only
+  3e168614 compares this way. For the x86 front end track (its layer 1 rule) or the x86 meaning: not this
+  track's code.
+- Layer 2, 10,000 programs, new seed 25112602, all on the CPU: ARM64 0 failing (3,434 faulted, 568 left to an
+  address); x86-64 0 failing (3,404 faulted, 1,161 left).
+- Layer 3, cases 0 to 1,199, seed 1: ARM64 1,023 compared, 177 did not end in time on Linux, 0 failing; x86-64 1,023
+  compared, 177 did not end, 0 failing.
+- `cargo reviewable check` (59ad72ce, no model key): 12,465 in the five crates (12,112 at the last run's tip;
+  the merge brings the front end's code).
+- So the bar holds by this measurement but for the one Chrome form above, which the merged front end brings.
+
+`GuestTest` removed (17c05a9e, 2eb467bf), in the plan's form, after the bar:
+- The trait is gone. `src/arm64.rs` and `src/x86_64.rs` each compile the harness files written once (runner,
+  programs, layer1 to 3, browser, changes, mixed, progress, binaries, guest/mod.rs's shared types; litmus for
+  x86-64 only) through `#[path]` modules, with `Cpu` the guest's type and `part` that guest's own part of the
+  harness, whose former trait items are now plain `pub` items (guest/arm64.rs, guest/x86_64.rs). Tests and the
+  two tools that ran for both guests include their code written once in a module per guest
+  (`tests/for_guest/*.rs`, `src/bin/for_guest/*.rs`); code for one guest only is in that guest's module. No
+  trait, no `unsafe`, no new dependency.
+- Two clippy lints are marked allowed, with reasons, on the modules where this form trips them:
+  `clippy::duplicate_mod` (the same harness file in both guests' modules, which is the plan's form) and
+  `clippy::unit_arg` in ARM64's modules (ARM64's offer is `()`, passed where x86-64 passes its list). The
+  orchestrator may prefer `include!` for the library as well, which needs neither but moves each file's
+  module comment to its declaration.
+- What a static in a generic function held once per process is now one per guest. Three must stay one per
+  process and moved to the new root module `process`: the unique file names (`programs::unique`; with one
+  counter per guest, a test binary building for both guests made the same file name twice, and the suite
+  failed in `zig objcopy` and on missing files until the fix), wasmtime's engine, and Csmith's header copy.
+  The four others are keyed by the guest already.
+- fmt, check and clippy with warnings denied (all targets and features), the browser crate's clippy for both
+  guests: exit 0 on both machines. The test lists against the merge: 322 and 340 on the two machines, the same
+  names but for the four unit tests of x86-64's part, now `x86_64::part::tests::*` (were `guest::x86_64::tests::*`).
+  The suite test by test against the merge: x86-64 machine every outcome the same (273 passed, 35
+  failed, 32 ignored at both); ARM64 machine every outcome the same (the three programs tests whose lines the
+  merge's run cut are whole here and are TR2's outcomes: two pass, `stops_at_every_check_change_nothing_x86_64`
+  fails for want of the other guest's reference). Before the fix of the file names, two tests on each machine
+  failed on files another guest's build had taken; run alone they passed.
+- Linter: 12,518 in the five crates (12,465 at the merge): 66 more `name_unanswered`, 4 `summary_unanswered`
+  and 6 `grammar_unclear`, which need the model key; 16 more `stray_source`, the new files, whose only cause is
+  question 3; all other rules together 39 fewer.
+- For the native track: `crates/executor/implementation/hardware-virtualization`'s tests name the old paths
+  (`wcontainers_translator_test::guest::GuestTest` in tests/common/mod.rs:16, 207, 254; `programs::`, `runner::`
+  and `guest::arm64::words::` elsewhere). Its tests do not build at this tip today for other reasons (the kernel
+  crate's errors), so nothing measurable breaks now; when they build, the paths become
+  `wcontainers_translator_test::arm64::{programs, runner, part::words}`, and `<Arm64 as GuestTest>::C_TARGET`
+  and `::NAME` become `wcontainers_translator_test::arm64::part::{C_TARGET, NAME}`. Not changed here (another
+  track's crate).
+
+For the executor track (its `conformance_run.rs` imports the `Translator` set this track removed):
+1. Measure the slice on the executor itself: `let measured: Vec<_> = wcontainers_precise_instruction_set_translator::SLICE.iter().map(|&i| (i, executor.measure_instruction(i, &CriticalValueCut::default()).expect("one behavior"))).collect();` (`CriticalValueCut` from `wcontainers-distinguishing-state-generator-arm64`; the executor as `BehaviorSource`, which is X2).
+2. Pass `MeasuredInstructionSet::<Arm64<User>>::from_measurements(&measured)` (`wcontainers-precise-instruction-set-measured`, with the `PreciseInstructionSet` trait in scope) where `Translator` was, and assert `measured.iter().all(|(_, b)| keeps_translator_choices(b))`.
+
+TR4's measurement: still waits on X2. READ docs/status-executor-restart.md on origin/executor-restart at its
+tip 62d13747: "X2 has not started: wasmtime's `CpuSide` implements the runtime's own `Execution` and
+`Executor` ... It waits on RT1".
+
 ## For the orchestrator
 
 - TR4 (2026-11-26): `precise-instruction-set/implementation/translator` now holds the translator's written
