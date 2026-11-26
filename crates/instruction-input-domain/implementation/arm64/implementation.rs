@@ -34,6 +34,7 @@ use wcontainers_processor_architecture_arm64::floating_point::{
     ROUNDING_MODE_BITS, ROUNDING_MODE_SHIFT, UNDERFLOW, to_floating_point_operation,
 };
 use wcontainers_processor_architecture_arm64::load_store::scalable_access::to_scalable_access;
+use wcontainers_processor_architecture_arm64::load_store::scalable_element_access::to_element_access;
 use wcontainers_processor_architecture_arm64::load_store::{
     AccessLayout, AtomicOperation, Transfer,
 };
@@ -58,6 +59,7 @@ use wcontainers_processor_architecture_arm64::{
 pub mod advanced_simd;
 mod memory_tagging;
 mod scalable;
+mod scalable_element_access;
 mod structure;
 #[cfg(test)]
 mod tests;
@@ -109,6 +111,8 @@ const SECOND_VECTOR_REGISTER: usize = 1;
 const SECOND_PREDICATE_REGISTER: usize = 1;
 /// The bytes FEAT_LSE2 lets an unaligned ordered or atomic access lie anywhere inside.
 const SINGLE_COPY_ATOMIC_BYTES: u64 = 16;
+/// Half of an SVE vector's bytes at a 128-bit vector length.
+const HALF_VECTOR_BYTES: u64 = 8;
 /// A doubleword's bytes: a boundary the alignment rules name besides an access's own size and 16 bytes.
 const DOUBLEWORD_BYTES: u64 = u64::BITS as u64 / u8::BITS as u64;
 /// Ordinary registers, as many as an instruction names, so that every register operand can name one of its own: even
@@ -299,6 +303,25 @@ pub enum OperandType {
     EveryValue(&'static [Field]),
     /// A byte position in a Z register, split over fields, the most significant first.
     BytePosition(&'static [Field]),
+    /// The Z register of offsets of an SVE access, its elements of `element_bits` holding offsets of `offset_bits`,
+    /// in elements of memory where scaled.
+    ElementOffsets {
+        field: Field,
+        element_bits: u32,
+        memory_bytes: u32,
+        offset_bits: u32,
+        scaled: bool,
+    },
+    /// The Z register of addresses of an SVE access, its elements of `element_bits` each an address.
+    ElementAddresses {
+        field: Field,
+        element_bits: u32,
+        memory_bytes: u32,
+    },
+    /// Where an SVE store of two or four registers lies: also across the boundary inside a vector.
+    ScalableStructurePlacement,
+    /// Where an SVE access of elements of more than one byte lies: also across the boundary inside an element.
+    ElementPlacement,
 }
 
 /// What the elements of a Z register an SVE instruction reads hold.
@@ -359,6 +382,11 @@ pub enum AccessPlacement {
     EndsAtBoundary,
     StraddlesBoundary,
     UpperPageStart,
+    /// Across the boundary half a vector below the middle of the access, inside a vector of a structure whose middle
+    /// is a vector's end.
+    StraddlesInsideVector,
+    /// Across the boundary half an element below the middle of an access of elements, inside the element there.
+    StraddlesInsideElement,
 }
 
 /// Whether a compared register holds what the memory it is compared with holds.
@@ -452,6 +480,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         }
         if let Some(scalable) = to_scalable_instruction(instruction) {
             return to_scalable_operand_types(scalable.operands).into_iter();
+        }
+        if let Some(access) = to_element_access(instruction) {
+            return scalable_element_access::list_operand_types(access).into_iter();
         }
         if let Some(operand_types) = scalable::list_scalable_operand_types(instruction) {
             return operand_types.into_iter();
@@ -643,6 +674,47 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             ]
             .map(OperandValue::AccessPlacement)
             .to_vec(),
+            OperandType::ScalableStructurePlacement => [
+                AccessPlacement::LowerPageStart,
+                AccessPlacement::ByteAfterLowerPageStart,
+                AccessPlacement::AcrossEightBytes,
+                AccessPlacement::AcrossSixteenBytes,
+                AccessPlacement::EndsAtBoundary,
+                AccessPlacement::StraddlesBoundary,
+                AccessPlacement::UpperPageStart,
+                AccessPlacement::StraddlesInsideVector,
+            ]
+            .map(OperandValue::AccessPlacement)
+            .to_vec(),
+            OperandType::ElementPlacement => [
+                AccessPlacement::LowerPageStart,
+                AccessPlacement::ByteAfterLowerPageStart,
+                AccessPlacement::AcrossEightBytes,
+                AccessPlacement::AcrossSixteenBytes,
+                AccessPlacement::EndsAtBoundary,
+                AccessPlacement::StraddlesBoundary,
+                AccessPlacement::UpperPageStart,
+                AccessPlacement::StraddlesInsideElement,
+            ]
+            .map(OperandValue::AccessPlacement)
+            .to_vec(),
+            OperandType::ElementOffsets {
+                element_bits,
+                memory_bytes,
+                offset_bits,
+                scaled,
+                ..
+            } => scalable_element_access::to_offset_values(
+                element_bits,
+                memory_bytes,
+                offset_bits,
+                scaled,
+            ),
+            OperandType::ElementAddresses {
+                element_bits,
+                memory_bytes,
+                ..
+            } => scalable_element_access::to_address_values(element_bits, memory_bytes),
             OperandType::Comparand { bytes, pair, .. } => {
                 let register_bytes = if pair { bytes / 2 } else { bytes };
                 let above = (register_bytes < u64::from(u64::BITS / u8::BITS))
@@ -853,6 +925,13 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                     };
                     scalable_values.push((field, offset, value));
                 }
+                OperandType::ElementOffsets { field, .. }
+                | OperandType::ElementAddresses { field, .. } => {
+                    let OperandValue::Vector(value) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    scalable_values.push((field, 0, value));
+                }
                 OperandType::ScalablePredicateValue(field) => {
                     let OperandValue::Bits(value) = operand else {
                         reject_mismatch(operand_type, operand)
@@ -935,7 +1014,9 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                         CodePlacement::PageEnd => CODE_ADDRESS + PAGE_BYTES - INSTRUCTION_SIZE,
                     };
                 }
-                OperandType::AccessPlacement => {
+                OperandType::AccessPlacement
+                | OperandType::ScalableStructurePlacement
+                | OperandType::ElementPlacement => {
                     let OperandValue::AccessPlacement(chosen) = operand else {
                         reject_mismatch(operand_type, operand)
                     };
@@ -1017,19 +1098,28 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                     .and_then(|access| access.to_access_layout(word, &processor))
             })
             .or_else(|| {
+                to_element_access(instruction)
+                    .map(|access| access.to_access_layout(word, &processor))
+            })
+            .or_else(|| {
                 let bytes = StructureInstruction::new(instruction)?.to_access_bytes(word)?;
                 Some(AccessLayout { bytes, offset: 0 })
             })
             .or_else(|| Some(TagAccessInstruction::new(instruction)?.to_access_layout(word)));
         if let (Some(placement), Some(layout)) = (placement, layout) {
-            let address = to_access_address(placement, layout.bytes);
+            let address = to_placed_address(instruction, placement, layout.bytes);
             let base = address.wrapping_sub(layout.offset).wrapping_add(tag);
-            match processor
-                .general_purpose_registers
-                .get_mut(RN.read(word) as usize)
-            {
-                Some(register) => *register = base,
-                None => processor.stack_pointer = base,
+            match to_element_access(instruction).filter(|access| access.has_vector_base()) {
+                Some(access) => {
+                    scalable_element_access::place_vector_base(access, word, base, &mut processor);
+                }
+                None => match processor
+                    .general_purpose_registers
+                    .get_mut(RN.read(word) as usize)
+                {
+                    Some(register) => *register = base,
+                    None => processor.stack_pointer = base,
+                },
             }
             // A comparand that is also the base keeps the base's value, which places the access.
             if let Some((field, comparison, pair)) = comparand {
@@ -1778,6 +1868,21 @@ fn to_register_values(width: RegisterWidth) -> Vec<OperandValue> {
     .to_vec()
 }
 
+/// The address of the access's first byte, for an access of elements across the boundary inside an element by the size
+/// of its elements.
+fn to_placed_address(
+    instruction: Instruction<Infallible>,
+    placement: AccessPlacement,
+    access_bytes: u64,
+) -> u64 {
+    match to_element_access(instruction) {
+        Some(access) if placement == AccessPlacement::StraddlesInsideElement => {
+            UPPER_DATA_ADDRESS - access_bytes / 2 - u64::from(access.memory_bytes) / 2
+        }
+        _ => to_access_address(placement, access_bytes),
+    }
+}
+
 fn to_access_address(placement: AccessPlacement, access_bytes: u64) -> u64 {
     match placement {
         AccessPlacement::LowerPageStart => LOWER_DATA_ADDRESS,
@@ -1791,6 +1896,11 @@ fn to_access_address(placement: AccessPlacement, access_bytes: u64) -> u64 {
         AccessPlacement::EndsAtBoundary => UPPER_DATA_ADDRESS - access_bytes,
         AccessPlacement::StraddlesBoundary => UPPER_DATA_ADDRESS - access_bytes / 2,
         AccessPlacement::UpperPageStart => UPPER_DATA_ADDRESS,
+        AccessPlacement::StraddlesInsideVector => {
+            UPPER_DATA_ADDRESS - access_bytes / 2 - HALF_VECTOR_BYTES
+        }
+        // An access of elements places it by its element's size, `to_placed_address`.
+        AccessPlacement::StraddlesInsideElement => UPPER_DATA_ADDRESS - access_bytes / 2,
     }
 }
 

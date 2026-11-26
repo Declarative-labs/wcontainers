@@ -30,7 +30,9 @@
 //! the domain gives each size's values, and those of another size are bits the instruction does not read as its own.
 //!
 //! Where an SVE access is moved, its predicate chooses which elements reach which page and its offset only where the
-//! base lies, so the two take each of their values once beside each other.
+//! base lies, so the two take each of their values once beside each other. The offsets or addresses a vector gives
+//! each element of a gather, scatter or prefetch are its offset, and so is FFR before a first-fault or non-fault load,
+//! which only chooses which elements it keeps.
 //!
 //! A predicate of an SVE instruction that leaves some element inactive only chooses which elements it computes: only
 //! where every element is active do the values, controls and written state take every combination; under any other
@@ -73,6 +75,9 @@ use wcontainers_processor_architecture_arm64::integer::IntegerOperation;
 use wcontainers_processor_architecture_arm64::load_store::Transfer;
 use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
     AccessKind, Offset, RM, to_scalable_access,
+};
+use wcontainers_processor_architecture_arm64::load_store::scalable_element_access::{
+    Addressing, IMMEDIATE4, IMMEDIATE5, to_element_access,
 };
 use wcontainers_processor_architecture_arm64::operand::Operand;
 use wcontainers_processor_architecture_arm64::scalable::is_unallocated;
@@ -241,6 +246,8 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::VectorListNumber(_) => Group::Register,
         OperandType::ScalablePredicateValue(_) => Group::Predicate,
         OperandType::AccessPlacement
+        | OperandType::ScalableStructurePlacement
+        | OperandType::ElementPlacement
         | OperandType::AddressTag
         | OperandType::DataPagePermission(_)
         | OperandType::CodePlacement => Group::Placement,
@@ -272,6 +279,8 @@ const fn to_group(operand_type: OperandType) -> Group {
         | OperandType::RegisterNearSaturation(_)
         | OperandType::FirstFaultValue
         | OperandType::ScalableVectorValue { .. }
+        | OperandType::ElementOffsets { .. }
+        | OperandType::ElementAddresses { .. }
         | OperandType::ListedVectorValue { .. } => Group::Data,
         OperandType::SystemRegister(_) => Group::Selector,
         OperandType::FloatingPointControl(_) => Group::Control,
@@ -446,6 +455,8 @@ impl Cut {
             )
         }) || to_scalable_access(instruction)
             .is_some_and(|access| access.kind == AccessKind::Store)
+            || to_element_access(instruction)
+                .is_some_and(|access| access.kind == AccessKind::Store)
             || structure.is_some_and(StructureInstruction::is_store)
             || wcontainers_processor_architecture_arm64::memory_tagging::TagAccessInstruction::new(
                 instruction,
@@ -481,6 +492,14 @@ impl Cut {
             match access.offset {
                 Offset::Register => addressing.push(RM),
                 Offset::Immediate { fields, .. } => addressing.extend(fields.iter().copied()),
+            }
+        }
+        if let Some(access) = to_element_access(instruction) {
+            match access.addressing {
+                Addressing::ScalarPlusScalar | Addressing::VectorPlusScalar => addressing.push(RM),
+                Addressing::ScalarPlusImmediate => addressing.push(IMMEDIATE4),
+                Addressing::ScalarPlusVector { extension, .. } => addressing.extend(extension),
+                Addressing::VectorPlusImmediate => addressing.push(IMMEDIATE5),
             }
         }
         let register_operands = groups
@@ -579,9 +598,7 @@ impl Cut {
             match group {
                 Group::Register => facts.held = self.find_held(chosen),
                 Group::Placement => {
-                    let placement = self.find(chosen, |operand_type| {
-                        operand_type == OperandType::AccessPlacement
-                    });
+                    let placement = self.find(chosen, is_placement);
                     let page = |page| {
                         self.find(chosen, |operand_type| {
                             operand_type == OperandType::DataPagePermission(page)
@@ -601,15 +618,19 @@ impl Cut {
                         == Some(OperandValue::AccessPlacement(
                             AccessPlacement::LowerPageStart,
                         ))
-                        && tag == Some(OperandValue::Bits(0))
+                        && matches!(tag, None | Some(OperandValue::Bits(0)))
                         && page(DataPage::Lower) == read_write;
                     facts.moved = (placement.is_some() && !plain)
                         || code == Some(OperandValue::CodePlacement(CodePlacement::PageEnd));
                     facts.partial_store = self.writes_memory
-                        && placement
-                            == Some(OperandValue::AccessPlacement(
-                                AccessPlacement::StraddlesBoundary,
+                        && matches!(
+                            placement,
+                            Some(OperandValue::AccessPlacement(
+                                AccessPlacement::StraddlesBoundary
+                                    | AccessPlacement::StraddlesInsideVector
+                                    | AccessPlacement::StraddlesInsideElement,
                             ))
+                        )
                         && page(DataPage::Lower) == read_write
                         && page(DataPage::Upper) != read_write;
                 }
@@ -805,7 +826,8 @@ impl Cut {
         let each_beside_the_rest = (!facts.register_representative || facts.partial_predicate)
             && matches!(group, Group::Data | Group::Control | Group::Written);
         let moved_access = facts.moved
-            && to_scalable_access(self.instruction).is_some()
+            && (to_scalable_access(self.instruction).is_some()
+                || to_element_access(self.instruction).is_some())
             && (group == Group::Predicate || self.is_addressing(self.types[index]));
         // Each register a structure store moves goes to bytes of its own, so the registers' combinations do not matter.
         let listed = matches!(self.types[index], OperandType::ListedVectorValue { .. });
@@ -858,13 +880,14 @@ impl Cut {
             Group::Predicate if facts.undefined => one,
             Group::Predicate => all,
             Group::Placement => {
-                let placement = self.find(chosen, |operand_type| {
-                    operand_type == OperandType::AccessPlacement
-                });
+                let placement = self.find(chosen, is_placement);
                 let reaches_upper = matches!(
                     placement,
                     Some(OperandValue::AccessPlacement(
-                        AccessPlacement::StraddlesBoundary | AccessPlacement::UpperPageStart
+                        AccessPlacement::StraddlesBoundary
+                            | AccessPlacement::StraddlesInsideVector
+                            | AccessPlacement::StraddlesInsideElement
+                            | AccessPlacement::UpperPageStart
                     ))
                 );
                 let reaches_lower = placement
@@ -975,6 +998,10 @@ impl Cut {
             | OperandType::RegisterValue { field, .. } => self.addressing.contains(&field),
             OperandType::SplitImmediate(fields) | OperandType::ProgramCounterOffset(fields) => {
                 fields.iter().all(|field| self.addressing.contains(field))
+            }
+            OperandType::ElementOffsets { .. } | OperandType::ElementAddresses { .. } => true,
+            OperandType::FirstFaultValue => {
+                to_element_access(self.instruction).is_some_and(|access| access.suppresses_faults())
             }
             _ => false,
         }
@@ -1087,6 +1114,16 @@ fn to_register_assignments(
                 .collect()
         })
         .collect()
+}
+
+/// Whether the operand places the access.
+fn is_placement(operand_type: OperandType) -> bool {
+    matches!(
+        operand_type,
+        OperandType::AccessPlacement
+            | OperandType::ScalableStructurePlacement
+            | OperandType::ElementPlacement
+    )
 }
 
 /// The kinds of register an operand can name, each with its own numbers.

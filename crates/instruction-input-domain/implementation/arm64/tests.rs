@@ -9,6 +9,9 @@ use wcontainers_processor_architecture_arm64::load_store::AccessLayout;
 use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
     Offset, RM, to_scalable_access,
 };
+use wcontainers_processor_architecture_arm64::load_store::scalable_element_access::{
+    Addressing, to_element_access,
+};
 use wcontainers_processor_architecture_arm64::operand::{Operand, RegisterThirtyOne};
 use wcontainers_processor_architecture_arm64::{
     Arm64, Instruction, LoadStoreInstruction, User, VIRTUAL_ADDRESS_BITS,
@@ -17,10 +20,10 @@ use wcontainers_processor_architecture_arm64::{
 use crate::{
     AccessPlacement, Arm64InputDomain, CODE_ADDRESS, CodePlacement, Comparison, DataPage,
     GENERAL_PURPOSE_REGISTERS, LOWER_DATA_ADDRESS, MemoryFill, OperandType, OperandValue,
-    ScalableValues, UPPER_DATA_ADDRESS, to_access_address,
+    ScalableValues, UPPER_DATA_ADDRESS, to_placed_address,
 };
 
-const PLACEMENTS: [AccessPlacement; 7] = [
+const PLACEMENTS: [AccessPlacement; 9] = [
     AccessPlacement::LowerPageStart,
     AccessPlacement::ByteAfterLowerPageStart,
     AccessPlacement::AcrossEightBytes,
@@ -28,6 +31,8 @@ const PLACEMENTS: [AccessPlacement; 7] = [
     AccessPlacement::EndsAtBoundary,
     AccessPlacement::StraddlesBoundary,
     AccessPlacement::UpperPageStart,
+    AccessPlacement::StraddlesInsideVector,
+    AccessPlacement::StraddlesInsideElement,
 ];
 
 fn read_word(state: &ExecutionState<'static, Arm64<User>>) -> Option<u32> {
@@ -128,6 +133,12 @@ fn read_operand(
                         })
                 }
             }
+        }
+        // A vector base holds the placed address besides its value, which the test takes as asked.
+        OperandType::ElementOffsets { field, .. } | OperandType::ElementAddresses { field, .. } => {
+            Some(OperandValue::Vector(
+                state.processor.vector_registers[field.read(word) as usize],
+            ))
         }
         OperandType::ScalablePredicateValue(field) => Some(OperandValue::Bits(u64::from(
             state.processor.predicate_registers[field.read(word) as usize],
@@ -251,7 +262,9 @@ fn read_operand(
         OperandType::ConditionFlags | OperandType::WrittenConditionFlags => Some(
             OperandValue::ConditionFlags(state.processor.condition_flags),
         ),
-        OperandType::AccessPlacement => {
+        OperandType::AccessPlacement
+        | OperandType::ScalableStructurePlacement
+        | OperandType::ElementPlacement => {
             let layout = to_layout(instruction, word, &state.processor)?;
             let base = registers
                 .get(RN.read(word) as usize)
@@ -260,7 +273,9 @@ fn read_operand(
             let address = untag(base.wrapping_add(layout.offset));
             PLACEMENTS
                 .into_iter()
-                .find(|placement| to_access_address(*placement, layout.bytes) == address)
+                .find(|placement| {
+                    to_placed_address(instruction, *placement, layout.bytes) == address
+                })
                 .map(OperandValue::AccessPlacement)
         }
         OperandType::AddressTag => {
@@ -312,7 +327,10 @@ fn untag(address: u64) -> u64 {
 fn is_base_also_offset(instruction: Instruction<Infallible>, word: u32) -> bool {
     let scalable = to_scalable_access(instruction)
         .is_some_and(|access| access.offset == Offset::Register && RM.read(word) == RN.read(word));
-    scalable
+    let element = to_element_access(instruction).is_some_and(|access| {
+        access.addressing == Addressing::ScalarPlusScalar && RM.read(word) == RN.read(word)
+    });
+    scalable || element
         || instruction.to_record().is_some_and(|record| {
             record.operands.iter().any(|operand| {
                 matches!(operand, Operand::RegisterOffset { number, .. } if number.read(word) == RN.read(word))
@@ -329,6 +347,7 @@ fn to_layout(
     LoadStoreInstruction::new(instruction)
         .and_then(|load_store| load_store.to_access_layout(word, processor))
         .or_else(|| to_scalable_access(instruction)?.to_access_layout(word, processor))
+        .or_else(|| Some(to_element_access(instruction)?.to_access_layout(word, processor)))
 }
 
 /// Every listed instruction that has a known behavior, in the list's order.
@@ -421,15 +440,24 @@ fn every_state_decodes_to_its_instruction_and_operands() {
             assert_eq!(word & fixed.mask, fixed.value, "{instruction:?}");
             // A base that is also the register offset cannot hold the value that places the access.
             let base_is_offset = is_base_also_offset(instruction, word);
-            let placed = operand_types.contains(&OperandType::AccessPlacement);
+            let placed = operand_types.contains(&OperandType::AccessPlacement)
+                || operand_types.contains(&OperandType::ScalableStructurePlacement)
+                || operand_types.contains(&OperandType::ElementPlacement);
+            let vector_based =
+                to_element_access(instruction).is_some_and(|access| access.has_vector_base());
             let read: Vec<OperandValue> = operand_types
                 .iter()
                 .zip(&operands)
                 .map(
-                    |(operand_type, asked)| match (operand_type, base_is_offset) {
-                        (OperandType::AccessPlacement | OperandType::AddressTag, true) => {
-                            Some(*asked)
-                        }
+                    |(operand_type, asked)| match (operand_type, base_is_offset || vector_based) {
+                        (
+                            OperandType::AccessPlacement
+                            | OperandType::ScalableStructurePlacement
+                            | OperandType::ElementPlacement
+                            | OperandType::AddressTag,
+                            true,
+                        ) => Some(*asked),
+                        (OperandType::ElementAddresses { .. }, _) => Some(*asked),
                         _ => read_operand(&state, instruction, word, *operand_type),
                     },
                 )
@@ -488,6 +516,7 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                     operand_types.get(index)
                     && operand_types[index + 1..].iter().any(|later| {
                         matches!(later, OperandType::ScalableVectorValue { field: other, offset: other_offset, .. } if (other.read(word) + other_offset) % 32 == (field.read(word) + offset) % 32)
+                            || matches!(later, OperandType::ElementOffsets { field: other, .. } | OperandType::ElementAddresses { field: other, .. } if other.read(word) == (field.read(word) + offset) % 32)
                     })
                 {
                     continue;

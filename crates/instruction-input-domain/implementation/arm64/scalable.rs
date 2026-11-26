@@ -204,8 +204,14 @@ fn list_access_operand_types(access: ScalableAccess) -> Vec<OperandType> {
         } => types.push(OperandType::UnsignedImmediate(*field)),
         Offset::Immediate { fields, .. } => types.push(OperandType::SplitImmediate(fields)),
     }
+    // A store of two or four registers can straddle the boundary inside a vector only at a placement of its own.
+    let placement = if stores && matches!(access.registers, 2 | 4) {
+        OperandType::ScalableStructurePlacement
+    } else {
+        OperandType::AccessPlacement
+    };
     types.extend([
-        OperandType::AccessPlacement,
+        placement,
         OperandType::AddressTag,
         OperandType::DataPagePermission(DataPage::Lower),
         OperandType::DataPagePermission(DataPage::Upper),

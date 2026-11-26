@@ -367,6 +367,12 @@ pub enum PreciseInstruction<LevelSpecific> {
         instruction: Instruction<Infallible>,
         choices: load_store::scalable_access::ScalableAccessChoices,
     },
+    /// An SVE gather, scatter, prefetch of vector addresses, or first-fault or non-fault load, with what the chip fixes
+    /// about its access.
+    ElementAccess {
+        instruction: Instruction<Infallible>,
+        choices: load_store::scalable_element_access::ElementAccessChoices,
+    },
     /// LDG, a tag store or STGP.
     TagAccess {
         instruction: memory_tagging::TagAccessInstruction,

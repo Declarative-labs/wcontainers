@@ -170,6 +170,13 @@ impl PreciseInstruction<Infallible> {
                 instruction,
                 choices,
             },
+            Self::ElementAccess {
+                instruction,
+                choices,
+            } => PreciseInstruction::ElementAccess {
+                instruction,
+                choices,
+            },
             Self::TagAccess {
                 instruction,
                 choices,
@@ -200,6 +207,7 @@ impl PreciseInstruction<Infallible> {
             Self::MrsCtrEl0 { .. } => Instruction::MrsCtrEl0,
             Self::Scalable { instruction, .. }
             | Self::ScalableAccess { instruction, .. }
+            | Self::ElementAccess { instruction, .. }
             | Self::Unimplemented(instruction) => instruction,
             Self::Structure { instruction, .. } => instruction.instruction(),
             Self::TagAccess { instruction, .. } => instruction.instruction(),
@@ -301,6 +309,13 @@ fn list_modeled_behaviors(
     if let Some(access) = to_scalable_access(instruction) {
         return list_scalable_access_behaviors(instruction, access);
     }
+    if let Some(access) = crate::load_store::scalable_element_access::to_element_access(instruction)
+    {
+        return crate::load_store::scalable_element_access::list_element_access_behaviors(
+            instruction,
+            access,
+        );
+    }
     if let Some(access) = crate::memory_tagging::TagAccessInstruction::new(instruction) {
         return crate::memory_tagging::list_tag_access_behaviors(access);
     }
@@ -358,11 +373,10 @@ fn list_scalable_access_behaviors(
         .to_vec();
     }
     // One vector's length holds a store of one register, so that writing its whole vectors below a fault writes
-    // nothing; two and four registers fault at a vector's end in every generated state, where the whole vectors below
-    // are the bytes below, so only three tell those two apart.
+    // nothing; a store of two to four registers can fault inside a vector, where the two differ.
     let across: &[Option<ScalableStoreAcrossFault>] = if access.kind == AccessKind::Store {
         match access.registers {
-            3 => &[
+            2..=4 => &[
                 Some(ScalableStoreAcrossFault::WritesNothing),
                 Some(ScalableStoreAcrossFault::WritesBytesBelowFault),
                 Some(ScalableStoreAcrossFault::WritesWholeVectorsBelowFault),
