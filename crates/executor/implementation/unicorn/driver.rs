@@ -74,8 +74,11 @@ pub type Machine = wcontainers_kernel_linux::GuestMachine<Back>;
 /// A kernel with its executor, the stand-in, as the driver runs it.
 type Driven = wcontainers_kernel_linux::KernelWithExecutor<Back, (), TestHost>;
 
-fn back_end(address_space: u64, wall_clock: bool) -> Back {
-    let stand_in = crate::standin::StandIn::with_space(address_space);
+fn back_end(address_space: u64, wall_clock: bool, slice_instructions: Option<u64>) -> Back {
+    let mut stand_in = crate::standin::StandIn::with_space(address_space);
+    if let Some(slice_instructions) = slice_instructions {
+        stand_in = stand_in.configured(crate::standin::StandInConfig { slice_instructions });
+    }
     if wall_clock {
         stand_in.on_wall_clock()
     } else {
@@ -1216,6 +1219,27 @@ pub fn save_moments(seed: u64, injections: Injections) -> Vec<u64> {
     moments_apart(seed ^ SAVES_SALT, injections.saves, injections.save_gap)
 }
 
+/// The stand-in's slice for a run with something injected at turn counts: drawn from the seed in
+/// [`INJECTED_SLICE_PER_GAP_TURN`] times the run's save gap, so the runner comes back about as
+/// often as when each system call was a turn of it, the moments the gap was chosen for are
+/// reached, and where they fall moves with the seed; none (the stand-in's own) for a run with
+/// nothing injected.
+fn injected_slice(seed: u64, injections: Injections) -> Option<u64> {
+    let injected = injections.saves > 0 || injections.signal.is_some() || injections.notices > 0;
+    injected.then(|| {
+        let gap = injections.save_gap.max(1);
+        let (low, high) = (
+            INJECTED_SLICE_PER_GAP_TURN.start() * gap,
+            INJECTED_SLICE_PER_GAP_TURN.end() * gap,
+        );
+        StdRng::seed_from_u64(seed ^ SLICE_SALT).random_range(low..=high)
+    })
+}
+
+/// The instructions of an injected run's slice for each turn of its save gap: with the default gap
+/// of [`MOMENTS_APART`] turns, 500 to 5,000 instructions, a few system calls' worth.
+const INJECTED_SLICE_PER_GAP_TURN: std::ops::RangeInclusive<u64> = 5..=50;
+
 /// Turn counts at which something is injected: `count` of them, each 1 to `apart` turns after the
 /// last.
 fn moments_apart(seed: u64, count: usize, apart: u64) -> Vec<u64> {
@@ -1575,7 +1599,11 @@ fn run_hosted(
     } = prepared;
     // The kernel's own stand-in makes its memories; the runner runs its turns on another on the
     // same engine.
-    let cpu = back_end(container.address_space, wall_clock);
+    let cpu = back_end(
+        container.address_space,
+        wall_clock,
+        injected_slice(seed, injections),
+    );
     let executor = cpu.restored();
     *held(&mut host.injecting) = Some(Injecting::new(seed, injections));
     *host.streams() = Streams::new(client);
@@ -1905,6 +1933,8 @@ impl TestHost {
 /// Mixed into a run's seed for the moments of saves and signals, so that each draws apart from the
 /// host's own randomness (the schedule's choices are the policy's, `SCHEDULE_STREAM`).
 const SAVES_SALT: u64 = 0x5a7e;
+/// Mixed into the seed for an injected run's slice.
+const SLICE_SALT: u64 = 0x511ce;
 const SIGNALS_SALT: u64 = 0x5197;
 const NOTICES_SALT: u64 = 0x6e07;
 const NOTICE_BYTES_SALT: u64 = 0x6e08;
