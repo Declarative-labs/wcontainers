@@ -1066,6 +1066,81 @@ Reached by this track's measurement: HS0, HS1, HS2 and round 6's items, with the
 by rule. The independent check of round 6 is next; the guest-reachable option list waits on owner question 2; the
 hostile-guest suite waits on the thread-test design review owed to the owner.
 
+## Round 7 (2026-11-26): round 6's check finished, the request test made to see a read past the int, the comment budget
+
+The owner's main (FETCH_HEAD ac696ea19) was already merged (MEASURED: `git merge-base --is-ancestor`, 0 commits
+ahead), so nothing of today's instruction interfaces reaches these crates. Commit 572e37e70 (code); pushed with this
+file. Logs: SCRATCH/host-sockets/hs8/ and SCRATCH/host-sockets-check6/ ({arm2,x86-2}.log, {arm,x86}-out/).
+
+### (1) Round 6's check, finished in a fresh clone of faf64374d (MEASURED: `bash .ck6/ck6.sh`, `--jobs 12` on both)
+
+| Part | ARM64 (bar plant lint) | x86-64 (bar) |
+|---|---|---|
+| check --all-targets, clippy `-D warnings`, fmt --check | exit 0, 0, 0 (0 lines) | exit 0, 0, 0 (0 lines) |
+| tests with failing `ip`/`tc`/`nft` first on PATH | exit 0: TCP 143, UDP 80, ICMP 69, raw 54, route resolver 38, API suite 14, generator 14; calls of the tools 0 | the same |
+| probe and request test | exit 0, 96 rows (15 pressed), 162 `REQUEST` lines, 0 unavailable; method answers 32 `ENOTTY`, 22 `Ok(0)` | the same |
+| `REGENERATE=1`, then `cmp` | interface.rs and generated.rs identical; generator 14 passed | the same |
+| kernel trace of the check's own kinds test (22 kinds) | `sock_ioctl` 19, `get_user_ifreq` 0 | the same |
+| speed, TCP send/receive, UDP send/receive | 399/400-401 ns, 1.457-1.458 us/801-802 ns | 348-369/390-420 ns, 1.452-1.549 us/765-828 ns |
+| K0: `request_of_kind` lets every kind by | trace: `get_user_ifreq` 34; **request test passes** | not run |
+| K1: kernel table says `SIOCATMARK` for UDP, regenerated | trace: `get_user_ifreq` 2; **request test passes** | not run |
+| K2: a hand edit of generated.rs | the script's `perl` wrote a literal `&` over its match, so generated.rs did not compile; nothing measured (redone below as P3) | not run |
+| N1 chain on the input hook; N2 etf delta + 1; N3 etf flag 1 | raw 53/1 failed; raw 53/1 failed; UDP 0/80 failed: each plant caught | not run |
+| linter da55b9d7, no model key | 566 plain findings in the track's folders, as round 6 said | not run |
+
+So round 6's bar holds on both machines, but the check's finding stands: with K0 or K1 planted the request test
+passed, and only the job's kernel trace showed the kernel reading a `struct ifreq` past the int.
+
+### (2) The request test now sees that read (READ: probe.rs `PageEnd`, generated.rs `REQUEST_CHECKS`)
+
+A fourth form lends the request the last int of an anonymous page whose next page is a memory file's page past the
+file's end, so any copy the kernel makes past the int answers `EFAULT`. Both pages come from memmap2's safe
+`map_anon` and `map_raw_read_only`; pairs that land apart stay mapped and the next pair is tried (at most 64), and
+before use `process_vm_readv` must copy exactly the int's 4 bytes of 5 asked. The generator now also writes
+`REQUEST_CHECKS`, each request with the same `request_of_kind(..)` call its method makes. The test fails when the
+check lets a kind by on which the page-end call answers `EFAULT`, or refuses one on which it answers `Ok`.
+No `unsafe` added.
+
+MEASURED at 572e37e70, both machines alike (hs8/{arm,x86}-bar.log): 54 page-end calls, 27 `EFAULT` (`SIOCATMARK` 15,
+`SIOCOUTQNSD` 12), 22 `Ok`, 5 `ENOTTY` (`SIOCOUTQ` on ICMP echo and SCTP). All 27 `EFAULT` kinds are refused by the
+check, and all 22 `Ok` kinds are let by. Plants:
+- P1, the kernel table widened as K1 and regenerated: exit 101, "get_siocatmark AF_INET SOCK_DGRAM protocol 17: the
+  check lets the kind by, and the kernel reads past the int" (and IPv6).
+- P2, the check opened as K0: exit 101, 54 let by.
+- P3, K2 done right (ARM64): the `get_siocatmark` method's kinds widened by hand, the table left alone. It compiles,
+  and `--test generated` fails "generated.rs differs from what options.table gives". The request test alone would
+  not see P3, because its checks are a second generated copy; the generator's comparison does.
+
+### (3) The two findings in the generated interface.rs (orchestrator's ruling: the track's own generated file)
+
+Each method's documentation is now one sentence whose option links to its manual page, as in ``Sets
+[`SO_RCVMARK`](https://man7.org/linux/man-pages/man7/socket.7.html).``; the linter counts no address. MEASURED (ARM64,
+linter da55b9d7, no model key, hs8/arm-bar.log): `comment_budget_exceeded` 1 -> 0, plain findings in the track's
+folders 566 -> 565. The rest: public_outside_interface 449, conformance_not_run 66, constant_defined_twice 27 (all
+"cannot name"), implementation_folder 16, trait_outside_interface 3, interface_item 2, trait_not_implemented 1, and
+`magic_literal` "8 in `SocketStorage`" (`#[repr(C, align(8))]`), which stays counted as ruled.
+
+### The bar at 572e37e70, both machines (MEASURED: hs8/{arm,x86}-bar.log; `--jobs 12`)
+
+check --all-targets, clippy `-D warnings`, fmt --check of the 17 packages: exit 0. TCP 143, UDP 80, ICMP 69, raw 54,
+route resolver 38, API suite 14, generator 14, probe 96 rows (15 pressed), request test 216 lines; only the two speed
+tests ignored, run apart; calls of `ip`, `tc` or `nft`: 0. `REGENERATE=1` leaves both generated files identical.
+Speed (median of 4000 batches of 32, three runs): ARM64 TCP 399 / 399-401 ns, UDP 1.452-1.459 us / 800-805 ns; x86-64
+TCP 319-372 / 347-421 ns, UDP 1.461-1.671 us / 780-879 ns. x86-64 varied with the machine's load, which rose from 3.5
+to 18 during the job. Its fastest run matches round 6's 321-371 / 352-427 ns and 1.427-1.492 us.
+
+### For the runtime track
+
+Merge 572e37e70 (code), or the status commit after it, which changes only this file. No signature changed. The
+generated interface.rs changed only in its method documentation. The direct crate gained the test-only
+`REQUEST_CHECKS` and dev-dependencies, and no behavior changed.
+
+### Next
+
+Reached by this track's measurement: HS0, HS1, HS2, and rounds 6 and 7. The independent check of round 7 is next.
+The guest-reachable option list waits on owner question 2. The hostile-guest suite waits on the thread-test design
+review owed to the owner.
+
 ## Owner questions
 
 1. Ruled 2026-11-25 (every outside API: one crate named for it, a safe trait, the unsafe in `implementation/direct`):
@@ -1079,6 +1154,15 @@ hostile-guest suite waits on the thread-test design review owed to the owner.
 
 ## SECURITY
 
+- 2026-11-26 round 7 (faf64374d -> 572e37e70): `unsafe` lines unchanged. The direct crate stays at 4 (implementation.rs
+  204, 390, 579, 616; the same four marked calls), and every other crate of the track stays at 0. MEASURED by `git
+  grep -nw unsafe` without comments and attributes. No lint table changed, no exclusion added, and no linter text
+  changed. New dependencies from outside the lock: none. The direct crate's tests now use memmap2 0.9.12 (MIT OR
+  Apache-2.0, already in the lock for volatile-bytes and unicorn; its safe `map_anon` and `map_raw_read_only` only)
+  and rustix's `fs` and `param` features (memfd_create, page size). New hostile-caller check: the request test lends
+  an int with an unreadable page after it and fails when a request's kind check lets by a kind the kernel reads past
+  (two plants caught). Hostile-guest suite: not built and not run, because the thread-test design review is owed to
+  the owner first. Options a guest can reach: unchanged, the 96 methods.
 - 2026-11-26 round 6 (cf3dba9aa -> f8e5feb23): unsafe lines unchanged, the direct crate 4 -> 4 (the same four calls; the
   ioctl reason now names the socket kinds), its manifest's `unsafe_code = "deny"` line unchanged, every other crate of the
   track 0 -> 0; MEASURED by `git grep -nw unsafe` without comments and attributes. No manifest or lock change, so no new
