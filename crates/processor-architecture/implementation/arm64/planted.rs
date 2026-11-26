@@ -17,7 +17,7 @@ pub enum PlantedBy {
     CutCheck,
     FourthCheck,
     Sync,
-    /// The Advanced SIMD instructions beyond `simd.rs`.
+    /// The Advanced SIMD instructions beyond `simd.rs`, whose bugs are numbered from 3001.
     AdvancedSimd,
     ScalableFirstHalf,
     /// The second half of the SVE work list, whose bugs are numbered from 2001.
