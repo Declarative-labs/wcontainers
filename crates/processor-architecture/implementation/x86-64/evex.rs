@@ -23,11 +23,15 @@ pub(crate) mod fused;
 // The conversions.
 #[path = "evex_convert.rs"]
 pub(crate) mod convert;
+// The operations on a number's parts.
+#[path = "evex_special.rs"]
+pub(crate) mod special;
 // The compares into opmask registers.
 #[path = "evex_compare.rs"]
 pub(crate) mod compare;
 
 pub use convert::{Conversion, Number};
+pub use special::SpecialOperation;
 
 pub use lanes::IntegerOperation;
 
@@ -63,6 +67,8 @@ pub enum EvexOperation {
         precision: Precision,
         arrangement: Arrangement,
     },
+    /// VGETEXP, VGETMANT, VFPCLASS, VRNDSCALE, VREDUCE and VSCALEF of each precision.
+    Special { operation: SpecialOperation, precision: Precision, arrangement: Arrangement },
     /// VCOMPRESSPS to VPCOMPRESSQ: the selected elements packed into the lowest, in order.
     Compress { element_bytes: usize },
     /// VEXPANDPS to VPEXPANDQ: the lowest elements, in order, into the selected ones.
@@ -147,6 +153,9 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
     }
     const fn scalar(from: Number, to: Number) -> EvexOperation {
         EvexOperation::Convert(Conversion { from, to, truncate: false, scalar: true })
+    }
+    const fn special(operation: SpecialOperation, precision: Precision, arrangement: Arrangement) -> EvexOperation {
+        EvexOperation::Special { operation, precision, arrangement }
     }
     const fn fused(kind: FusedKind, order: FusedOrder, precision: Precision, arrangement: Arrangement) -> EvexOperation {
         EvexOperation::Fused { kind, order, precision, arrangement }
@@ -441,6 +450,42 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vpexpandw, Any, EvexOperation::Expand { element_bytes: 2 }),
         (Mnemonic::Vpexpandd, Any, EvexOperation::Expand { element_bytes: 4 }),
         (Mnemonic::Vpexpandq, Any, EvexOperation::Expand { element_bytes: 8 }),
+        (Mnemonic::Vgetexpps, Any, special(SpecialOperation::GetExponent, Single, Packed)),
+        (Mnemonic::Vgetexppd, Any, special(SpecialOperation::GetExponent, Double, Packed)),
+        (Mnemonic::Vgetexpph, Any, special(SpecialOperation::GetExponent, Half, Packed)),
+        (Mnemonic::Vgetexpss, Any, special(SpecialOperation::GetExponent, Single, Scalar)),
+        (Mnemonic::Vgetexpsd, Any, special(SpecialOperation::GetExponent, Double, Scalar)),
+        (Mnemonic::Vgetexpsh, Any, special(SpecialOperation::GetExponent, Half, Scalar)),
+        (Mnemonic::Vgetmantps, Any, special(SpecialOperation::GetMantissa, Single, Packed)),
+        (Mnemonic::Vgetmantpd, Any, special(SpecialOperation::GetMantissa, Double, Packed)),
+        (Mnemonic::Vgetmantph, Any, special(SpecialOperation::GetMantissa, Half, Packed)),
+        (Mnemonic::Vgetmantss, Any, special(SpecialOperation::GetMantissa, Single, Scalar)),
+        (Mnemonic::Vgetmantsd, Any, special(SpecialOperation::GetMantissa, Double, Scalar)),
+        (Mnemonic::Vgetmantsh, Any, special(SpecialOperation::GetMantissa, Half, Scalar)),
+        (Mnemonic::Vfpclassps, Any, special(SpecialOperation::Class, Single, Packed)),
+        (Mnemonic::Vfpclasspd, Any, special(SpecialOperation::Class, Double, Packed)),
+        (Mnemonic::Vfpclassph, Any, special(SpecialOperation::Class, Half, Packed)),
+        (Mnemonic::Vfpclassss, Any, special(SpecialOperation::Class, Single, Scalar)),
+        (Mnemonic::Vfpclasssd, Any, special(SpecialOperation::Class, Double, Scalar)),
+        (Mnemonic::Vfpclasssh, Any, special(SpecialOperation::Class, Half, Scalar)),
+        (Mnemonic::Vrndscaleps, Any, special(SpecialOperation::RoundScale, Single, Packed)),
+        (Mnemonic::Vrndscalepd, Any, special(SpecialOperation::RoundScale, Double, Packed)),
+        (Mnemonic::Vrndscaleph, Any, special(SpecialOperation::RoundScale, Half, Packed)),
+        (Mnemonic::Vrndscaless, Any, special(SpecialOperation::RoundScale, Single, Scalar)),
+        (Mnemonic::Vrndscalesd, Any, special(SpecialOperation::RoundScale, Double, Scalar)),
+        (Mnemonic::Vrndscalesh, Any, special(SpecialOperation::RoundScale, Half, Scalar)),
+        (Mnemonic::Vreduceps, Any, special(SpecialOperation::Reduce, Single, Packed)),
+        (Mnemonic::Vreducepd, Any, special(SpecialOperation::Reduce, Double, Packed)),
+        (Mnemonic::Vreduceph, Any, special(SpecialOperation::Reduce, Half, Packed)),
+        (Mnemonic::Vreducess, Any, special(SpecialOperation::Reduce, Single, Scalar)),
+        (Mnemonic::Vreducesd, Any, special(SpecialOperation::Reduce, Double, Scalar)),
+        (Mnemonic::Vreducesh, Any, special(SpecialOperation::Reduce, Half, Scalar)),
+        (Mnemonic::Vscalefps, Any, special(SpecialOperation::Scale, Single, Packed)),
+        (Mnemonic::Vscalefpd, Any, special(SpecialOperation::Scale, Double, Packed)),
+        (Mnemonic::Vscalefph, Any, special(SpecialOperation::Scale, Half, Packed)),
+        (Mnemonic::Vscalefss, Any, special(SpecialOperation::Scale, Single, Scalar)),
+        (Mnemonic::Vscalefsd, Any, special(SpecialOperation::Scale, Double, Scalar)),
+        (Mnemonic::Vscalefsh, Any, special(SpecialOperation::Scale, Half, Scalar)),
         // A general-purpose register or its memory: an integer as wide as the register (0 here), the low element alone.
         (Mnemonic::Vcvtsd2si, Any, convert(N::Float(Double), N::Signed(0), false)),
         (Mnemonic::Vcvttsd2si, Any, convert(N::Float(Double), N::Signed(0), true)),
@@ -495,6 +540,7 @@ impl EvexForm {
             EvexOperation::Float { precision, .. }
             | EvexOperation::Fused { precision, .. }
             | EvexOperation::Compare { precision, .. }
+            | EvexOperation::Special { precision, .. }
             | EvexOperation::OrderedCompare { precision, .. } => (precision.to_bits() / u8::BITS) as usize,
             EvexOperation::Integer { element_bytes, .. }
             | EvexOperation::Compress { element_bytes }
@@ -519,6 +565,7 @@ impl EvexForm {
             EvexOperation::Float { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::Fused { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::Compare { arrangement: Arrangement::Scalar, .. }
+            | EvexOperation::Special { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::OrderedCompare { .. } => 1,
             EvexOperation::Convert(Conversion { scalar: true, .. }) => 1,
             EvexOperation::ToBfloat16 { pair: true } => self.vector_bytes() / 2,
@@ -558,6 +605,7 @@ impl EvexForm {
             EvexOperation::Float { precision, .. }
             | EvexOperation::Fused { precision, .. }
             | EvexOperation::Compare { precision, .. }
+            | EvexOperation::Special { precision, .. }
             | EvexOperation::OrderedCompare { precision, .. } => matches!(precision, Precision::Half),
             EvexOperation::Convert(conversion) => matches!(conversion.to, Number::Float(Precision::Half)),
             EvexOperation::Integer { .. }
@@ -596,6 +644,7 @@ impl EvexForm {
             | EvexOperation::Convert(_)
             | EvexOperation::ToBfloat16 { .. }
             | EvexOperation::Compare { .. }
+            | EvexOperation::Special { .. }
             | EvexOperation::OrderedCompare { .. } => false,
             EvexOperation::Fused { .. } => true,
             EvexOperation::Integer { operation, .. } => operation.reads_destination(),
@@ -611,6 +660,7 @@ impl EvexForm {
             | EvexOperation::Fused { .. }
             | EvexOperation::Convert(_)
             | EvexOperation::Compare { .. }
+            | EvexOperation::Special { .. }
             | EvexOperation::OrderedCompare { .. } => true,
             EvexOperation::ToBfloat16 { pair } => !pair,
             EvexOperation::Integer { operation, .. } => operation.is_element_wise(),

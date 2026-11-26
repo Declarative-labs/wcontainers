@@ -4,7 +4,7 @@
 use iced_x86::Register;
 
 use crate::behavior::UndefinedFlags;
-use crate::evex::{Conversion, EvexForm, EvexOperation, IntegerOperation, Number, find_evex_form};
+use crate::evex::{Conversion, EvexForm, EvexOperation, IntegerOperation, Number, SpecialOperation, find_evex_form};
 use crate::float::{FloatForm, FloatOperation, Precision, find_float_form};
 use crate::integer::{
     BitChange, Condition, OperandPlace, Operation, Outcome, find_integer_form, sign_extend, subtract_with_borrow,
@@ -1039,6 +1039,14 @@ pub enum Bug {
     EvexExpandReadsFromTheTop,
     /// VCOMPRESS and VEXPAND with memory reach the whole vector's bytes, not only the moved elements'.
     EvexCompressReachesWholeVector,
+    /// VGETMANT's interval 3/4 to 3/2 halves the significand when its fraction's top bit is clear.
+    MantissaIntervalThreeInverted,
+    /// VSCALEF truncates its power toward zero rather than taking its floor.
+    ScaleTruncatesPower,
+    /// VFPCLASS's negative finite class takes in -0.
+    ClassNegativeFiniteIncludesZero,
+    /// VRNDSCALE and VREDUCE report inexact even where the immediate's bit 3 suppresses it.
+    RoundScaleSuppressionIgnored,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1510,10 +1518,19 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::HalfUnderflowInexactUnbounded, "AVX512-FP16", Family::Evex(EvexForm::writes_half), Origin::EvexRest),
     row(Bug::EvexExpandReadsFromTheTop, "VEXPAND, VPEXPAND", Family::Evex(|form| matches!(form.operation, EvexOperation::Expand { .. })), Origin::EvexRest),
     row(Bug::EvexCompressReachesWholeVector, "VCOMPRESS, VEXPAND with memory", Family::Evex(|form| form.place != OperandPlace::Register && matches!(form.operation, EvexOperation::Compress { .. } | EvexOperation::Expand { .. })), Origin::EvexRest),
+    row(Bug::MantissaIntervalThreeInverted, "VGETMANT", Family::Evex(|form| is_special(form, SpecialOperation::GetMantissa)), Origin::EvexRest),
+    row(Bug::ScaleTruncatesPower, "VSCALEF", Family::Evex(|form| is_special(form, SpecialOperation::Scale)), Origin::EvexRest),
+    row(Bug::ClassNegativeFiniteIncludesZero, "VFPCLASS", Family::Evex(|form| is_special(form, SpecialOperation::Class)), Origin::EvexRest),
+    row(Bug::RoundScaleSuppressionIgnored, "VRNDSCALE, VREDUCE", Family::Evex(|form| is_special(form, SpecialOperation::RoundScale) || is_special(form, SpecialOperation::Reduce)), Origin::EvexRest),
     row(Bug::EvexUnsignedIndefiniteSigned, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), Origin::EvexRest),
     row(Bug::HalfToSingleReportsDenormal, "VCVTPH2PS", Family::Evex(|form| !form.reports_denormal()), Origin::EvexRest),
     row(Bug::IntegerToHalfOverflowExact, "VCVTW2PH to VCVTUQQ2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { from: Number::Signed(_) | Number::Unsigned(_), to: Number::Float(Precision::Half), .. }))), Origin::EvexRest),
 ];
+
+/// Whether the form is an EVEX form of the operation on a number's parts.
+fn is_special(form: &EvexForm, wanted: SpecialOperation) -> bool {
+    matches!(form.operation, EvexOperation::Special { operation, .. } if operation == wanted)
+}
 
 const RANDOM: &[Instruction] = &[Instruction::RdrandGprv, Instruction::RdseedGprv];
 

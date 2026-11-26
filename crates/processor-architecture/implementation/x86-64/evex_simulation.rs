@@ -13,6 +13,7 @@ use super::{Memory, MemoryOperand, check_access, check_alignment, check_canonica
 use crate::evex::{EvexForm, EvexOperation, find_evex_form, read_element, write_element, writes_register};
 use crate::evex::fused::multiply_add;
 use crate::evex::compare::compare;
+use crate::evex::special::{SpecialOperation, compute_special};
 use crate::evex::convert::to_bfloat16;
 use crate::float::{DENORMAL, FLAGS, FloatOperation, LaneOutcome, MASK_SHIFT, ORDER_FLAGS, ROUNDING_SHIFT};
 
@@ -112,6 +113,18 @@ pub(super) fn execute_evex(
             })?
         }
         EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => unreachable!("moved above"),
+        EvexOperation::Special { operation, precision, .. } => {
+            let immediate = if form.has_immediate() { decoded.immediate8() } else { 0 };
+            let lanes = compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, bytes| {
+                compute_special(operation, read_element(&first, index, bytes), read_element(&second, index, bytes), precision, mxcsr, immediate)
+            })?;
+            if operation == SpecialOperation::Class {
+                let bits = (0..elements).fold(0u64, |mask, index| mask | ((read_element(&lanes, index, bytes) & 1) << index));
+                [u128::from(bits), 0, 0, 0]
+            } else {
+                lanes
+            }
+        }
         EvexOperation::Integer { operation, .. } => {
             let immediate = if form.has_immediate() { decoded.immediate8() } else { 0 };
             operation.compute(&old, &first, &second, immediate, form.vector_bytes(), bytes)

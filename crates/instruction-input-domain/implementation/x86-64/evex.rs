@@ -25,7 +25,8 @@ use core::array;
 use iced_x86::{Instruction as Encoded, MemoryOperand, Register, RoundingControl};
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_x86_64::evex::{
-    Conversion, EvexForm, EvexOperation, FusedOrder, IntegerOperation, Number, read_element, write_element,
+    Conversion, EvexForm, EvexOperation, FusedOrder, IntegerOperation, Number, SpecialOperation, read_element,
+    write_element,
 };
 use wcontainers_processor_architecture_x86_64::float::Conversion as LegacyConversion;
 use wcontainers_processor_architecture_x86_64::float::{
@@ -133,6 +134,15 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
             rounding: op_code.can_use_rounding_control(),
             suppression: op_code.can_suppress_all_exceptions(),
             maskable: op_code.can_use_op_mask_register(),
+        }),
+        EvexOperation::Special { operation, precision, arrangement } => OperandType::EvexSpecialData(EvexSpecialData {
+            operation,
+            precision,
+            vector_bytes: form.vector_bytes(),
+            scalar: arrangement == Arrangement::Scalar,
+            register,
+            rounding: op_code.can_use_rounding_control(),
+            suppression: op_code.can_suppress_all_exceptions(),
         }),
         EvexOperation::Compress { element_bytes } | EvexOperation::Expand { element_bytes } => {
             OperandType::EvexMoveData(EvexMoveData { element_bytes, vector_bytes: form.vector_bytes(), register })
@@ -872,6 +882,153 @@ pub fn generate_integer_data(data: EvexIntegerData) -> Vec<OperandValue> {
     all
 }
 
+/// What the data of VGETEXP to VSCALEF is made of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EvexSpecialData {
+    pub operation: SpecialOperation,
+    pub precision: Precision,
+    pub vector_bytes: usize,
+    pub scalar: bool,
+    /// A register form, whose data holds the opmask and the embedded control.
+    pub register: bool,
+    pub rounding: bool,
+    pub suppression: bool,
+}
+
+/// The values an element of VGETEXP to VSCALEF takes beyond the sixteen critical values: for VRNDSCALE and VREDUCE
+/// numbers with a fraction on and either side of each rounding's tie at the scales tried; for VSCALEF's second
+/// source powers whose floor is on either side of an integer and powers past either end of the exponent's range.
+fn list_special_values(operation: SpecialOperation, precision: Precision) -> Vec<u64> {
+    let mut values: Vec<u64> = rotate_floats(precision, true).into_iter().map(|vector| vector as u64).collect();
+    let digits = precision.to_significand_bits() as i32;
+    let fraction_bits = digits - 1;
+    let bias = (1i32 << (precision.to_bits() as i32 - digits - 1)) - 1;
+    let sign = 1u64 << (precision.to_bits() - 1);
+    let normal = |exponent: i32, fraction: u64| (((exponent + bias) as u64) << fraction_bits) | fraction;
+    let half = 1u64 << (fraction_bits - 1);
+    let quarter = half >> 1;
+    let extra: Vec<u64> = match operation {
+        SpecialOperation::RoundScale | SpecialOperation::Reduce => vec![
+            normal(1, quarter),
+            normal(1, half),
+            normal(-1, half),
+            normal(0, half),
+            normal(0, half | 1),
+            normal(-5, half),
+            normal(-2, 0),
+            normal(fraction_bits - 1, half),
+        ],
+        SpecialOperation::Scale => vec![
+            normal(0, half),
+            normal(-1, 0) | sign,
+            normal(0, half) | sign,
+            normal(4, 0),
+            normal(4, 0) | sign,
+            normal(5, half),
+            normal(5, half) | sign,
+            normal(9, 0),
+            normal(9, 0) | sign,
+            normal(11, 0) | sign,
+        ],
+        SpecialOperation::GetMantissa | SpecialOperation::GetExponent | SpecialOperation::Class => {
+            vec![normal(0, half), normal(1, half) | sign, normal(-1, 1) | sign, 1 | sign]
+        }
+    };
+    values.extend(extra);
+    values
+}
+
+/// The immediates of an operation: VGETMANT's every interval and sign control; VFPCLASS's each class alone, all,
+/// none and two; VRNDSCALE's and VREDUCE's each rounding mode, MXCSR's, suppression and scales 0, 1, 4 and 15.
+fn list_special_immediates(operation: SpecialOperation) -> Vec<u8> {
+    match operation {
+        SpecialOperation::GetMantissa => (0..16).collect(),
+        SpecialOperation::Class => vec![0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0xFF, 0x00, 0x81],
+        SpecialOperation::RoundScale | SpecialOperation::Reduce => vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x08, 0x10, 0x11, 0x41, 0x4A, 0xF0, 0xF3],
+        SpecialOperation::GetExponent | SpecialOperation::Scale => vec![0],
+    }
+}
+
+/// The data of VGETEXP to VSCALEF: the element's values rotated across the vector (VSCALEF: the second source's every
+/// rotation against the first's every rotation a vector apart) with each immediate and MXCSR at its default; then
+/// with the first immediate MXCSR's critical values, each embedded control with every exception unmasked and with DAZ
+/// and FTZ, and every other element selected, merging and zeroing. A memory form takes the rotations with each
+/// immediate, MXCSR at its default, and with the first immediate every exception unmasked.
+pub fn generate_special_data(data: EvexSpecialData) -> Vec<OperandValue> {
+    let EvexSpecialData { operation, precision, vector_bytes, scalar, register, rounding, suppression } = data;
+    let values = list_special_values(operation, precision);
+    let bytes = (precision.to_bits() / u8::BITS) as usize;
+    let elements = if scalar { 16 / bytes } else { vector_bytes / bytes };
+    let rotate = |rotation: usize| {
+        let mut vector = [0; 4];
+        for index in 0..elements {
+            write_element(&mut vector, index, bytes, values[(index + rotation) % values.len()]);
+        }
+        vector
+    };
+    let firsts: Vec<usize> = match (operation.is_binary(), scalar) {
+        (false, _) => vec![values.len() / 2],
+        (true, true) => (0..values.len()).collect(),
+        (true, false) => (0..values.len()).step_by(elements).collect(),
+    };
+    let pairs: Vec<([u128; 4], [u128; 4])> =
+        firsts.iter().flat_map(|&first| (0..values.len()).map(move |second| (rotate(first), rotate(second)))).collect();
+    let some: Vec<([u128; 4], [u128; 4])> = (0..values.len()).map(|second| (rotate(firsts[0]), rotate(second))).collect();
+    let immediates = list_special_immediates(operation);
+    let datum = |(first, second): ([u128; 4], [u128; 4]), immediate: u8, mask, control, mxcsr| {
+        OperandValue::EvexCompareData { first, second, immediate, mask, control, mxcsr }
+    };
+    let unmasked = 0;
+    if !register {
+        let mut all: Vec<OperandValue> =
+            immediates.iter().flat_map(|&immediate| some.iter().map(move |&pair| datum(pair, immediate, NO_MASK, EmbeddedControl::None, MXCSR_DEFAULT))).collect();
+        all.extend(some.iter().map(|&pair| datum(pair, immediates[0], NO_MASK, EmbeddedControl::None, unmasked)));
+        return all;
+    }
+    let mut all: Vec<OperandValue> = immediates
+        .iter()
+        .flat_map(|&immediate| pairs.iter().map(move |&pair| datum(pair, immediate, NO_MASK, EmbeddedControl::None, MXCSR_DEFAULT)))
+        .collect();
+    let plain = generate_mxcsr_values(MxcsrSet::Arithmetic).into_iter().filter_map(|value| match value {
+        OperandValue::Mxcsr(mxcsr) if mxcsr != MXCSR_DEFAULT => Some(mxcsr),
+        _ => None,
+    });
+    for mxcsr in plain {
+        for &immediate in &immediates[..immediates.len().min(4)] {
+            all.extend(some.iter().map(|&pair| datum(pair, immediate, NO_MASK, EmbeddedControl::None, mxcsr)));
+        }
+    }
+    let toward_zero = (MXCSR_DEFAULT & !(3 << ROUNDING_SHIFT)) | (3 << ROUNDING_SHIFT);
+    let mut controls = Vec::new();
+    if rounding {
+        controls.extend([
+            (EmbeddedControl::Rounding(RoundingControl::RoundToNearest), toward_zero),
+            (EmbeddedControl::Rounding(RoundingControl::RoundDown), MXCSR_DEFAULT),
+            (EmbeddedControl::Rounding(RoundingControl::RoundUp), MXCSR_DEFAULT),
+            (EmbeddedControl::Rounding(RoundingControl::RoundTowardZero), MXCSR_DEFAULT),
+        ]);
+    } else if suppression {
+        controls.push((EmbeddedControl::Suppression, MXCSR_DEFAULT));
+    }
+    for (control, other_mode) in controls {
+        for mxcsr in [other_mode, unmasked, MXCSR_DEFAULT | DENORMALS_ARE_ZEROS | FLUSH_TO_ZERO] {
+            for &immediate in &immediates[..immediates.len().min(6)] {
+                all.extend(some.iter().map(|&pair| datum(pair, immediate, NO_MASK, control, mxcsr)));
+            }
+        }
+    }
+    let all_elements = to_all(elements);
+    for mask in [
+        EvexMask { register: 1, value: EVERY_OTHER & all_elements, zeroing: false },
+        EvexMask { register: 7, value: EVERY_OTHER & all_elements, zeroing: true },
+    ] {
+        for mxcsr in [MXCSR_DEFAULT, unmasked] {
+            all.extend(some.iter().map(|&pair| datum(pair, immediates[0], mask, EmbeddedControl::None, mxcsr)));
+        }
+    }
+    all
+}
+
 /// What the data of VCOMPRESS and VEXPAND is made of.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EvexMoveData {
@@ -990,7 +1147,7 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
                 }
             }
             (
-                OperandType::EvexCompareData(_),
+                OperandType::EvexCompareData(_) | OperandType::EvexSpecialData(_),
                 OperandValue::EvexCompareData { first: one, second: other, immediate: chosen, mask: data_mask, control: embedded, mxcsr },
             ) => {
                 (first, second, immediate, control) = (one, other, Some(chosen), embedded);
