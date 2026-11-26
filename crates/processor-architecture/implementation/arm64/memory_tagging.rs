@@ -143,6 +143,11 @@ pub struct TagAccessInstruction(Instruction<Infallible>);
 
 /// What a tag load or store does in each case the manual leaves open or a chip does its own way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::memory_tagging)
+)]
 pub struct TagAccessChoices {
     pub misaligned_stack_pointer: MisalignedStackPointer,
     /// None for an instruction that writes no data across a page.
