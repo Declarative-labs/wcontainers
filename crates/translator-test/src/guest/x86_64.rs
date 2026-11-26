@@ -2242,8 +2242,8 @@ pub struct ChipBehaviors {
 /// The chips references have run on, with what was seen on each.
 pub const KNOWN_CHIPS: &[ChipBehaviors] = &[ChipBehaviors {
     model: "Intel(R) Xeon(R) Platinum 8488C",
-    seen_on: "the rented x86-64 machine (AWS, Linux 7.0.0-1018-aws), 2026-11-25: `la57` in /proc/cpuinfo, and \
-        layer 1's reference took page faults above bit 47 where the translation raises #GP or #SS",
+    seen_on: "the rented x86-64 machine (AWS, Linux 7.0.0-1018-aws), 2026-11-25: the 5-level paging flag in \
+        /proc/cpuinfo, and layer 1's reference took page faults above bit 47 where the translation raises #GP or #SS",
     linear_addresses: LinearAddressWidth::FiveLevelPaging,
 }];
 

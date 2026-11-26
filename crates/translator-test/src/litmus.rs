@@ -1,11 +1,7 @@
-//! x86-64 litmus shapes, translated and run by two or four host threads on one shared guest memory (XF3).
+//! The x86-64 litmus shapes, translated and run by two or four host threads on one shared guest memory (XF3).
 //!
-//! Each shape's outcomes are counted and those x86 forbids picked out; shapes and rounds are fixed, so this is no
-//! fuzzing suite.
-//!
-//! Each round the threads meet at a system call the stand-in answers by waiting for all of them. Each then waits
-//! empty turns that change from round to round, so that their parts overlap in many ways, and runs its part.
-//! They meet again, and thread 0 counts the outcome and sets the shared words back to 0.
+//! Shapes and rounds are fixed: no fuzzing suite. Each round the threads meet at a system call, wait empty turns
+//! that change by round, and run their parts; they meet again and thread 0 counts the outcome.
 
 use crate::guest::GuestTest;
 use crate::guest_memory::SharedGuestMemory;

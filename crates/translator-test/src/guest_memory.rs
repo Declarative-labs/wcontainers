@@ -362,10 +362,12 @@ pub fn import_shared(module: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Bits of a value each byte of an unsigned LEB128 number holds, and the flag of every byte but the last.
+/// Bits of a value each byte of an unsigned LEB128 number holds.
 ///
 /// https://webassembly.github.io/spec/core/binary/values.html#integers
 const LEB_BITS: u32 = 7;
+/// The flag of every byte of an unsigned LEB128 number but the last.
+///
 /// https://webassembly.github.io/spec/core/binary/values.html#integers
 const LEB_MORE: u8 = 0x80;
 
