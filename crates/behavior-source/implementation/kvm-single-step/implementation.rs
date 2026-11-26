@@ -23,6 +23,7 @@ use wcontainers_processor_architecture::{
     MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
 };
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
+use wcontainers_processor_architecture_arm64::system_register::PROCESS_STATE_CONTROLS;
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, ExclusiveMonitor, INSTRUCTION_SIZE, InstructionFetch,
     PagePermission, Processor, User,
@@ -1450,6 +1451,20 @@ fn compose_bytes(
     }
 }
 
+/// SSBS, DIT and TCO at their bits of SPSR_EL1, where the processor state holds them too.
+const PROCESS_STATE_CONTROL_BITS: u64 = {
+    let mut bits = 0;
+    let mut place = 0;
+    while place < PROCESS_STATE_CONTROLS.len() {
+        bits |= match PROCESS_STATE_CONTROLS[place].to_process_state_bit() {
+            Some(bit) => bit,
+            None => panic!("a PSTATE control has a bit"),
+        };
+        place += 1;
+    }
+    bits
+};
+
 fn to_registers(processor: &Processor<()>) -> Registers {
     let el0 = SPSR_EL1::M::EL0t
         + SPSR_EL1::SS.val(1)
@@ -1460,10 +1475,11 @@ fn to_registers(processor: &Processor<()>) -> Registers {
         general_purpose: processor.general_purpose_registers,
         stack_pointer: processor.stack_pointer,
         program_counter: processor.program_counter,
-        // Only NZCV: any other bit would put EL0 in another state, which the handler does not expect.
+        // Only NZCV, SSBS, DIT and TCO: any other bit would put EL0 in another state, which the handler does not expect.
         saved_program_status: u64::from(
             ConditionFlags::from_bits_truncate(processor.condition_flags.bits()).bits(),
-        ) | el0.value,
+        ) | (processor.process_state_controls & PROCESS_STATE_CONTROL_BITS)
+            | el0.value,
         software_thread_id: processor.software_thread_id,
         floating_point_control: processor.floating_point_control,
         floating_point_status: processor.floating_point_status,
@@ -1525,8 +1541,10 @@ fn to_processor(
         general_purpose_registers: registers.general_purpose,
         stack_pointer: registers.stack_pointer,
         program_counter: registers.program_counter,
-        // NZCV sits at the same bits of SPSR_EL1; the rest of EL0's PSTATE is not part of the processor yet.
+        // NZCV, SSBS, DIT and TCO sit at the same bits of SPSR_EL1; the rest of EL0's PSTATE is not part of the processor
+        // yet.
         condition_flags: ConditionFlags::from_bits_truncate(registers.saved_program_status as u32),
+        process_state_controls: registers.saved_program_status & PROCESS_STATE_CONTROL_BITS,
         vector_registers: registers.vector,
         predicate_registers: array::from_fn(|number| registers.predicate[number]),
         first_fault_register: registers.predicate[FIRST_FAULT_PLACE],

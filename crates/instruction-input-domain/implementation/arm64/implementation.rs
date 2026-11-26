@@ -51,7 +51,9 @@ use wcontainers_processor_architecture_arm64::sve::{
 use wcontainers_processor_architecture_arm64::system_instruction::{
     SYSTEM_INSTRUCTION, to_system_instruction_bytes,
 };
-use wcontainers_processor_architecture_arm64::system_register::SYSTEM_REGISTER;
+use wcontainers_processor_architecture_arm64::system_register::{
+    HeldRegister, PROCESS_STATE_CONTROLS, SYSTEM_REGISTER,
+};
 use wcontainers_processor_architecture_arm64::{
     Arm64, ConditionFlags, DataAccess, DocumentedInstruction, GENERAL_PURPOSE_REGISTERS,
     INSTRUCTION_SIZE, Instruction, InstructionClass, InstructionFetch, LoadStoreInstruction,
@@ -145,16 +147,19 @@ const UPPER_WORD_ONES: u64 = 0xFFFF_FFFF << u32::BITS;
 const SATURATION_DISTANCES: [u64; 4] = [0, 1, 16, 256];
 
 /// An MRS reaches one of the registers its field names: each the state holds is an operand.
-const SYSTEM_REGISTER_READ: [OperandType; 6] = [
+const SYSTEM_REGISTER_READ: [OperandType; 9] = [
     OperandType::SystemRegister(SYSTEM_REGISTER),
     OperandType::RegisterNumber(RT),
     OperandType::ConditionFlags,
     OperandType::FloatingPointControl(ControlReads::Conversion),
     OperandType::StatusFlags,
     OperandType::SoftwareThreadId,
+    OperandType::ProcessStateControl(PROCESS_STATE_CONTROLS[0]),
+    OperandType::ProcessStateControl(PROCESS_STATE_CONTROLS[1]),
+    OperandType::ProcessStateControl(PROCESS_STATE_CONTROLS[2]),
 ];
 /// An MSR (register) writes one of them from its register's value.
-const SYSTEM_REGISTER_WRITE: [OperandType; 7] = [
+const SYSTEM_REGISTER_WRITE: [OperandType; 10] = [
     OperandType::SystemRegister(SYSTEM_REGISTER),
     OperandType::RegisterNumber(RT),
     OperandType::RegisterValue {
@@ -166,7 +171,14 @@ const SYSTEM_REGISTER_WRITE: [OperandType; 7] = [
     OperandType::FloatingPointControl(ControlReads::Conversion),
     OperandType::StatusFlags,
     OperandType::SoftwareThreadId,
+    OperandType::ProcessStateControl(PROCESS_STATE_CONTROLS[0]),
+    OperandType::ProcessStateControl(PROCESS_STATE_CONTROLS[1]),
+    OperandType::ProcessStateControl(PROCESS_STATE_CONTROLS[2]),
 ];
+
+/// op1 3 and CRn 7, the only SYS and SYSL encodings EL0 reaches, as the field's bits above CRm and op2.
+const EL0_SYSTEM_INSTRUCTIONS: u32 = 0b011_0111;
+const EL0_SYSTEM_INSTRUCTION_SHIFT: u32 = 7;
 
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Arm64InputDomain;
@@ -252,6 +264,8 @@ pub enum OperandType {
     SystemRegister(Field),
     /// TPIDR_EL0, which an MRS or MSR may read or write.
     SoftwareThreadId,
+    /// One of PSTATE's SSBS, DIT and TCO, which an MRS or MSR may read or write.
+    ProcessStateControl(HeldRegister),
     /// The low `bytes` bytes of the SIMD and floating-point register a store moves.
     VectorValue {
         field: Field,
@@ -516,12 +530,15 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                 UnsignedImmediate(Field::new(5, 3)),
                 OperandType::ImplicitAddress(LINK_REGISTER),
             ],
-            // op1, CRm and op2, and the flags CFINV, XAFLAG and AXFLAG read.
+            // op1, CRm and op2, the flags CFINV, XAFLAG and AXFLAG read, and the PSTATE controls it writes.
             Instruction::MsrImmediate => vec![
                 UnsignedImmediate(Field::new(16, 3)),
                 UnsignedImmediate(Field::new(8, 4)),
                 UnsignedImmediate(Field::new(5, 3)),
                 OperandType::ConditionFlags,
+                OperandType::ProcessStateControl(PROCESS_STATE_CONTROLS[0]),
+                OperandType::ProcessStateControl(PROCESS_STATE_CONTROLS[1]),
+                OperandType::ProcessStateControl(PROCESS_STATE_CONTROLS[2]),
             ],
             // Every encoding of op1, CRn, CRm and op2, and the register that holds an address where it reaches one.
             Instruction::Sys => vec![
@@ -568,14 +585,30 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
             OperandType::ConvertedFloatingPoint {
                 precision, width, ..
             } => to_converted_floating_point_values(precision, width),
-            // Every encoding the field can hold, each op0, op1, CRn, CRm and op2 with every other.
-            OperandType::SystemRegister(field) => (0..1_u32 << field.width)
-                .map(|encoding| OperandValue::Bits(u64::from(encoding)))
-                .collect(),
+            // Every encoding the field can hold, each op0, op1, CRn, CRm and op2 with every other; for SYS and SYSL those
+            // EL0 reaches come first, so that a run tells the features of a chip apart on its first states.
+            OperandType::SystemRegister(field) => {
+                let mut encodings: Vec<u32> = (0..1_u32 << field.width).collect();
+                if field == SYSTEM_INSTRUCTION {
+                    encodings.sort_by_key(|encoding| {
+                        encoding >> EL0_SYSTEM_INSTRUCTION_SHIFT != EL0_SYSTEM_INSTRUCTIONS
+                    });
+                }
+                encodings
+                    .into_iter()
+                    .map(|encoding| OperandValue::Bits(u64::from(encoding)))
+                    .collect()
+            }
             OperandType::Word(word) => [OperandValue::Bits(u64::from(word))].to_vec(),
             OperandType::AdvancedSimd(operand) => advanced_simd::generate_critical_values(operand),
             OperandType::Remaining(operand) => sve_remaining::generate_critical_values(operand),
             OperandType::SoftwareThreadId => to_register_values(RegisterWidth::Bits64),
+            // Clear and set.
+            OperandType::ProcessStateControl(register) => {
+                [0, register.to_process_state_bit().unwrap_or(0)]
+                    .map(OperandValue::Bits)
+                    .to_vec()
+            }
             OperandType::VectorValue { bytes, .. }
             | OperandType::ListedVectorValue { bytes, .. } => to_vector_values(bytes),
             // The register holding zero, and the last, after which the list wraps.
@@ -941,6 +974,12 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
                         reject_mismatch(operand_type, operand)
                     };
                     processor.software_thread_id = bits;
+                }
+                OperandType::ProcessStateControl(_) => {
+                    let OperandValue::Bits(bit) = operand else {
+                        reject_mismatch(operand_type, operand)
+                    };
+                    processor.process_state_controls |= bit;
                 }
                 OperandType::VectorValue { field, bytes } => {
                     let OperandValue::Vector(value) = operand else {

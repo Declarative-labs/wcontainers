@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 use core::convert::Infallible;
 
 use wcontainers_processor_architecture_arm64::Instruction;
-use wcontainers_processor_architecture_arm64::encoding::RN;
+use wcontainers_processor_architecture_arm64::encoding::{Field, RN};
 use wcontainers_processor_architecture_arm64::floating_point::{FLUSH_HALF_TO_ZERO, Precision};
 use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
     AccessKind, ElementSize, Offset, PT, RM, ScalableAccess, to_scalable_access,
@@ -39,7 +39,10 @@ pub(crate) fn list_scalable_operand_types(
     instruction: Instruction<Infallible>,
 ) -> Option<Vec<OperandType>> {
     if let Some(access) = to_scalable_access(instruction) {
-        return Some(list_access_operand_types(access));
+        return Some(list_access_operand_types(
+            access,
+            instruction.to_fixed_bits().mask,
+        ));
     }
     let operands = list_scalable_operands(instruction)?;
     let mut types = Vec::new();
@@ -133,10 +136,15 @@ pub(crate) fn list_scalable_operand_types(
 /// The operand types of an SVE contiguous access: its element size where a field gives it, the registers it moves,
 /// with their values for a store, its predicate, base and offset, then where the access lies, and for a store what
 /// the data pages hold.
-fn list_access_operand_types(access: ScalableAccess) -> Vec<OperandType> {
+fn list_access_operand_types(access: ScalableAccess, fixed: u32) -> Vec<OperandType> {
     let mut types = Vec::new();
+    // A bit of the size field the encoding fixes takes no value of its own, as ST1W's size is 1x.
     if let ElementSize::Field(field) = access.element {
-        types.push(OperandType::UnsignedImmediate(field));
+        let free = field.to_mask() & !fixed;
+        types.push(OperandType::UnsignedImmediate(Field::new(
+            free.trailing_zeros(),
+            free.count_ones(),
+        )));
     }
     let stores = access.kind == AccessKind::Store;
     if access.predicate_register {
