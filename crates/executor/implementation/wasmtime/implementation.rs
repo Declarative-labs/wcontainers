@@ -14,6 +14,7 @@ mod thread;
 
 use std::collections::HashMap;
 use std::future::Ready;
+use std::num::NonZeroU64;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, PoisonError};
 
@@ -40,17 +41,25 @@ pub struct WasmtimeExecutor {
     scratch: Option<single_instruction::Scratch>,
 }
 
-/// How the executor translates code.
+/// How the executor translates code, and how long a run goes on before it asks the handler.
 #[derive(Clone, Copy, Debug)]
 pub struct WasmtimeTranslatorConfig {
     /// The look-ahead code reached at run time is translated at.
     pub look_ahead: LookAhead,
+    /// The slice of a run: after this many events of the translator's progress count (the guest's executed jumps that
+    /// can go backward, calls and returns) the run asks the handler as at an interrupt from outside, and again after
+    /// each such slice; none for a run no slice bounds.
+    pub slice: Option<NonZeroU64>,
 }
+
+/// Tuning number: the progress events of a slice, a few milliseconds of a loop of a few instructions.
+pub const DEFAULT_SLICE: NonZeroU64 = NonZeroU64::new(1 << 22).expect("a slice of events");
 
 impl Default for WasmtimeTranslatorConfig {
     fn default() -> Self {
         Self {
             look_ahead: LookAhead::AT_RUN_TIME,
+            slice: Some(DEFAULT_SLICE),
         }
     }
 }
@@ -127,8 +136,13 @@ impl WasmtimeExecutor {
         mode: Mode,
     ) -> (&mut ThreadStore, Arc<InterruptState>) {
         let interrupt = Arc::new(InterruptState::default());
+        // A step runs one instruction, which no slice ends.
+        let slice = match mode {
+            Mode::Execute(_) => self.config.slice,
+            Mode::Step { .. } => None,
+        };
         let thread = self.thread_for(space);
-        thread.prepare(space, processor, mode, interrupt.clone());
+        thread.prepare(space, processor, (mode, slice), interrupt.clone());
         let block = thread.store.data().block;
         *interrupt
             .target

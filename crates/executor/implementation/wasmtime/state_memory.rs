@@ -32,7 +32,7 @@ struct Access {
     load_byte: TypedFunc<u32, u32>,
     store_byte: TypedFunc<(u32, u32), ()>,
     fill: TypedFunc<(u32, u32, u32), ()>,
-    store_u32: TypedFunc<(u32, u32), ()>,
+    store_u64: TypedFunc<(u32, u64), ()>,
 }
 
 /// The module's exports, in the order of its functions.
@@ -71,7 +71,7 @@ impl StateMemory {
             load_byte: instance.get_typed_func(&mut store, LOAD_BYTE)?,
             store_byte: instance.get_typed_func(&mut store, STORE_BYTE)?,
             fill: instance.get_typed_func(&mut store, FILL)?,
-            store_u32: instance.get_typed_func(&mut store, STORE_U32)?,
+            store_u64: instance.get_typed_func(&mut store, STORE_U64)?,
             store,
         };
         Ok(StateMemory {
@@ -167,13 +167,13 @@ impl StateMemory {
         }
     }
 
-    /// Stores a u32 at `at`, which must be 4 byte aligned, as one sequentially consistent atomic store.
-    pub(crate) fn store_u32(&self, at: usize, value: u32) {
+    /// Stores a u64 at `at`, which must be 8 byte aligned, as one sequentially consistent atomic store.
+    pub(crate) fn store_u64(&self, at: usize, value: u64) {
         let mut access = self.access.lock().unwrap_or_else(PoisonError::into_inner);
         let Access {
-            store, store_u32, ..
+            store, store_u64, ..
         } = &mut *access;
-        store_u32
+        store_u64
             .call(&mut *store, (address(at), value))
             .expect("an aligned word inside the state memory");
     }

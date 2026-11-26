@@ -4,10 +4,9 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::time::Instant;
 
 use wasmtime::{Config, Engine, Instance, Module, Store};
-use wcontainers_arm64::Arm64;
+use wcontainers_arm64::{Arm64, CounterAccess, Offer};
 use wcontainers_guest_cpu::Guest;
 use wcontainers_translator::contract;
 use wcontainers_translator::{LookAhead, Optimise, ProgressCount, translate};
@@ -24,9 +23,16 @@ pub(crate) struct Shared {
     /// What the engine does where WebAssembly leaves results open, which translations are made for.
     host: <Arm64 as Guest>::Host,
     translations: Mutex<HashMap<TranslationKey, Arc<Translated>>>,
-    /// When the process first ran a guest: the clock hook's zero.
-    pub(crate) started: Instant,
 }
+
+/// What every program on this executor is told: its reads of the counter trap, and the kernel answers them from its
+/// own clock, which replay needs.
+pub(crate) const OFFER: Offer = Offer {
+    counter: CounterAccess::Trapped,
+};
+
+/// The translator's progress count, which bounds a run by the slice of its configuration.
+pub(crate) const PROGRESS: ProgressCount = ProgressCount::Kept;
 
 /// What a translation is kept under: the hash of its code bytes, their length, the start and the look-ahead.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -77,7 +83,7 @@ impl Shared {
         let engine = Engine::new(&config).expect("a wasmtime engine for the translator's output");
         let thread_module = Module::new(
             &engine,
-            wcontainers_translator::thread_module::<Arm64>(ProgressCount::Absent),
+            wcontainers_translator::thread_module::<Arm64>(PROGRESS),
         )
         .expect("wasmtime compiles the thread module");
         Shared {
@@ -86,7 +92,6 @@ impl Shared {
             thread_module,
             host: probe(),
             translations: Mutex::new(HashMap::new()),
-            started: Instant::now(),
         }
     }
 
@@ -115,10 +120,9 @@ impl Shared {
             &[start],
             look_ahead,
             Optimise::Speed,
-            ProgressCount::Absent,
+            PROGRESS,
             self.host,
-            // What the program is told its processor has: ARM64 offers nothing beyond its base, so its offer is `()`.
-            (),
+            OFFER,
         )
         .ok()?;
         let modules = translation

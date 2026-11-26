@@ -108,8 +108,13 @@ fn list_unexecutable_states() -> Vec<ExecutionState<'static, Arm64<User>>> {
     }]
 }
 
+// The suite counts the interrupts another thread raises, so its runs take no slice of their own; tests/time_slice.rs
+// checks the slice.
 wcontainers_executor_conformance::tests!(
-    WasmtimeExecutor::new(WasmtimeTranslatorConfig::default()),
+    WasmtimeExecutor::new(WasmtimeTranslatorConfig {
+        slice: None,
+        ..WasmtimeTranslatorConfig::default()
+    }),
     list_translator_behaviors(),
     CriticalValueCut::default(),
     list_unexecutable_states()

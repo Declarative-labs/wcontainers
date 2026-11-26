@@ -2,6 +2,7 @@
 //! translated code calls, which ask the trap handler of the run in progress from inside the run.
 
 use std::collections::HashMap;
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, Weak};
 
@@ -13,6 +14,7 @@ use wasmtime::{
 use wcontainers_abi::{
     Access, PAGE_SIZE, Permissions, RegisterBlock, SystemCallNumber, SystemCallRequest,
 };
+use wcontainers_arm64::thread_state::untag_address;
 use wcontainers_arm64::{
     Arm64, EXCLUSIVE_ADDRESS, EXCLUSIVE_BYTES, FLOAT_TRACKING, INSTRUCTION_BYTES,
 };
@@ -20,13 +22,16 @@ use wcontainers_executor::{
     InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
 use wcontainers_guest_cpu::{Guest, HookBody, Personality, TrapKind};
-use wcontainers_processor_architecture_arm64::encoding::IMM16;
+use wcontainers_processor_architecture_arm64::encoding::{IMM16, RT};
+use wcontainers_processor_architecture_arm64::system_register::{
+    SYSTEM_REGISTER, SystemRegisterEncoding,
+};
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, ConditionFlags, Exception, ExclusiveMonitor, FaultStatus, Processor,
-    VIRTUAL_ADDRESS_BITS,
+    SystemAccess, VIRTUAL_ADDRESS_BITS,
 };
 use wcontainers_translator::LookAhead;
-use wcontainers_translator::contract::{self, thread_state_size};
+use wcontainers_translator::contract::{self, progress_limit_offset, thread_state_size};
 use wcontainers_wasmtime::Wasmtime;
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -40,6 +45,8 @@ const PAGES_AHEAD: u64 = 4;
 const CPU_HOOK_ARGUMENTS: usize = 8;
 /// The import that gives a code module the guest's own hook at an index of `Arm64::HOOKS`.
 type CpuHookIndex = usize;
+/// The bit of an MRS or MSR word that is set in an MRS, [L](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/MRS--Move-system-register-to-general-purpose-register-).
+const SYSTEM_MOVE_READ_BIT: u32 = 21;
 
 /// How a thread runs.
 #[derive(Clone, Copy)]
@@ -96,6 +103,10 @@ pub(crate) struct ThreadData {
     /// Whether the thread is counted in guest code.
     entered: bool,
     pub(crate) interrupt: Arc<InterruptState>,
+    /// The progress events a run goes on for before it asks the handler as at an interrupt; none for no bound.
+    slice: Option<NonZeroU64>,
+    /// The progress count at which the slice in progress ends: the thread's limit while no stop is raised.
+    slice_end: u64,
     limits: StoreLimits,
 }
 
@@ -140,6 +151,8 @@ impl ThreadStore {
             rerun: false,
             entered: false,
             interrupt: Arc::default(),
+            slice: None,
+            slice_end: u64::MAX,
             limits: StoreLimitsBuilder::new()
                 .instances(usize::MAX)
                 .tables(usize::MAX)
@@ -176,12 +189,13 @@ impl ThreadStore {
         }
     }
 
-    /// Readies the thread to run from the processor in the mode, its interrupts going to the state given.
+    /// Readies the thread to run from the processor in the mode, its interrupts going to the state given, and the run
+    /// bounded by slices of the progress events given.
     pub(crate) fn prepare(
         &mut self,
         space: &Arc<Space>,
         processor: &Processor<()>,
-        mode: Mode,
+        (mode, slice): (Mode, Option<NonZeroU64>),
         interrupt: Arc<InterruptState>,
     ) {
         let data = self.store.data_mut();
@@ -190,10 +204,12 @@ impl ThreadStore {
         data.ending = None;
         data.rerun = false;
         data.interrupt = interrupt;
+        data.slice = slice;
+        data.slice_end = slice.map_or(u64::MAX, NonZeroU64::get);
         let block = data.block;
         space.state.write(
             usize::try_from(block).expect("a block offset"),
-            &thread_state(processor),
+            &thread_state(processor, data.slice_end),
         );
     }
 
@@ -261,9 +277,9 @@ impl ThreadStore {
     }
 }
 
-/// Returns the thread's state bytes for the processor: its registers, a clear stop flag, the float status kept exact
-/// from the start and an open exclusive monitor.
-fn thread_state(processor: &Processor<()>) -> Vec<u8> {
+/// Returns the thread's state bytes for the processor: its registers, the progress limit given with a count of zero,
+/// the float status kept exact from the start and an open exclusive monitor.
+fn thread_state(processor: &Processor<()>, limit: u64) -> Vec<u8> {
     let block = RegisterBlock {
         x: processor.general_purpose_registers,
         sp: processor.stack_pointer,
@@ -282,11 +298,13 @@ fn thread_state(processor: &Processor<()>) -> Vec<u8> {
     state[..size_of::<RegisterBlock>()].copy_from_slice(block.as_bytes());
     state[FLOAT_TRACKING..FLOAT_TRACKING + size_of::<u32>()]
         .copy_from_slice(&u32::from(true).to_le_bytes());
+    let at = progress_limit_offset::<Arm64>();
+    state[at..at + size_of::<u64>()].copy_from_slice(&limit.to_le_bytes());
     state
 }
 
-/// Returns the processor of the thread's state bytes, with the exception, and the start's SVE predicates, which the
-/// translated code does not change.
+/// Returns the processor of the thread's state bytes, with the exception, and the start's SVE predicates and PSTATE
+/// controls, which the translated code does not change.
 fn to_processor(
     state: &[u8],
     start: &Processor<()>,
@@ -318,6 +336,7 @@ fn to_processor(
             .map(|[low, high]| u128::from(low) | u128::from(high) << u64::BITS),
         predicate_registers: start.predicate_registers,
         first_fault_register: start.first_fault_register,
+        process_state_controls: start.process_state_controls,
         floating_point_control: u64::from(block.fpcr),
         floating_point_status: u64::from(block.fpsr),
         software_thread_id: block.tpidr_el0,
@@ -556,11 +575,21 @@ fn system_call(caller: &mut Caller<'_, ThreadData>, request: SystemCallRequest) 
     }
 }
 
-/// The stop hook: a change, an interrupt, or the end of a step or of a run raised the flag.
+/// The stop hook: a change, an interrupt, the end of a slice, or the end of a step or of a run stopped the thread.
 fn stop(caller: &mut Caller<'_, ThreadData>) -> i32 {
     leave_guest(caller.data_mut());
     let data = caller.data();
-    space_of(data).clear_stop_flag(data.block);
+    let space = space_of(data);
+    let count = space.progress_count(data.block);
+    // The slice ends once the count reaches its end; the next slice starts from where the thread stopped.
+    let sliced = matches!(data.mode, Mode::Execute(_)) && count >= data.slice_end;
+    if sliced && let Some(slice) = data.slice {
+        caller.data_mut().slice_end = count.saturating_add(slice.get());
+    }
+    // The limit is set again before the interrupter's flag is read, so an interrupt raised meanwhile is answered now
+    // or stops the thread again.
+    let data = caller.data();
+    space.set_progress_limit(data.block, data.slice_end);
     if data.ending.is_some() || data.rerun {
         return contract::UNWIND_LEAVE;
     }
@@ -588,7 +617,7 @@ fn stop(caller: &mut Caller<'_, ThreadData>) -> i32 {
         }
         Mode::Execute(_) => {
             let raised = caller.data().interrupt.raised.swap(false, Ordering::SeqCst);
-            if raised
+            if (raised || sliced)
                 && matches!(
                     ask(caller, |handler| handler.handle_interrupt()),
                     InterruptResponse::Terminate
@@ -608,8 +637,11 @@ fn stop(caller: &mut Caller<'_, ThreadData>) -> i32 {
 
 /// The memory fault hook: a write to a page holding code drops the code and runs the thread again; any other fault
 /// goes to the handler, which retries the instruction or ends the run at it.
-fn memory_fault(caller: &mut Caller<'_, ThreadData>, address: u64, write: bool) -> i32 {
+fn memory_fault(caller: &mut Caller<'_, ThreadData>, computed: u64, write: bool) -> i32 {
     leave_guest(caller.data_mut());
+    // The hook is given the address as the program computed it, tag and all; the pages and the handler see the address
+    // the access reaches, and the exception keeps the tag, as FAR_EL1 does.
+    let address = untag_address(computed);
     let data = caller.data();
     let space = space_of(data);
     let page = address / PAGE_SIZE;
@@ -648,7 +680,7 @@ fn memory_fault(caller: &mut Caller<'_, ThreadData>, address: u64, write: bool) 
     caller.data_mut().ending = Some(Ending::Raised(Exception::DataAbort {
         status: fault_status(&space, address),
         access: direction,
-        address,
+        address: computed,
     }));
     contract::UNWIND_LEAVE
 }
@@ -776,6 +808,9 @@ fn trap(caller: &mut Caller<'_, ThreadData>, kind: i32, detail: i64) {
     leave_guest(caller.data_mut());
     let pc = program_counter(caller.data());
     let exception = match TrapKind::from_i32(kind) {
+        Some(TrapKind::SystemAccess) => Exception::SystemAccessTrapped(to_system_access(
+            u32::try_from(detail & i64::from(u32::MAX)).expect("an instruction word"),
+        )),
         Some(TrapKind::Breakpoint) => Exception::Breakpoint {
             comment: u16::try_from(detail & i64::from(u16::MAX)).expect("a 16-bit comment"),
         },
@@ -796,6 +831,25 @@ fn trap(caller: &mut Caller<'_, ThreadData>, kind: i32, detail: i64) {
     } else {
         Ending::Raised(exception)
     });
+}
+
+/// Returns the fields EL1 is given of a trapped MRS or MSR, the instruction word given.
+fn to_system_access(word: u32) -> SystemAccess {
+    let encoding = SystemRegisterEncoding::from_field(SYSTEM_REGISTER.read(word));
+    let field = |value: u32| u8::try_from(value).expect("a field of a system register's encoding");
+    SystemAccess {
+        op0: field(encoding.op0),
+        op1: field(encoding.op1),
+        crn: field(encoding.crn),
+        crm: field(encoding.crm),
+        op2: field(encoding.op2),
+        rt: field(RT.read(word)),
+        direction: if word >> SYSTEM_MOVE_READ_BIT & 1 == 1 {
+            AccessDirection::Read
+        } else {
+            AccessDirection::Write
+        },
+    }
 }
 
 /// The guest's own code changed hook (ARM64 `ic ivau`): drops the code of the line holding the address.
@@ -917,9 +971,8 @@ fn make_hooks(store: &mut Store<ThreadData>) -> Vec<(&'static str, Func)> {
     ];
     for (index, hook) in Arm64::HOOKS.iter().enumerate() {
         let func = match hook.body {
-            HookBody::Clock => Func::wrap(&mut *store, |caller: Caller<'_, ThreadData>| -> i64 {
-                let elapsed = space_of(caller.data()).shared.started.elapsed().as_nanos();
-                i64::try_from(elapsed).unwrap_or(i64::MAX)
+            HookBody::Clock => Func::wrap(&mut *store, |_: Caller<'_, ThreadData>| -> i64 {
+                unreachable!("the executor's offer makes every counter read trap")
             }),
             HookBody::CodeChanged { line } => Func::wrap(
                 &mut *store,

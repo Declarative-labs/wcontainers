@@ -15,9 +15,10 @@ use wcontainers_byte_source::ByteSource;
 use wcontainers_executor::memory_space::{
     CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, PageTable,
 };
-use wcontainers_guest_cpu::{Guest, Personality};
+use wcontainers_guest_cpu::Guest;
 use wcontainers_translator::contract::{
-    self, SLOT_BYTES, WASM_PAGE_BYTES, permission_byte, thread_state_size,
+    self, SLOT_BYTES, WASM_PAGE_BYTES, permission_byte, progress_count_offset,
+    progress_limit_offset, thread_state_size,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 use wcontainers_wasmtime::Wasmtime;
@@ -406,14 +407,23 @@ impl Space {
         self.gate.running.fetch_sub(1, Ordering::SeqCst);
     }
 
+    /// Makes the thread of the block call the stop hook at its next stop check: its progress limit becomes zero.
     pub(crate) fn raise_stop_flag(&self, block: u32) {
-        let at = usize::try_from(block).expect("a block offset") + Arm64::STOP_FLAG_OFFSET;
-        self.state.store_u32(at, u32::from(true));
+        self.set_progress_limit(block, u64::MIN);
     }
 
-    pub(crate) fn clear_stop_flag(&self, block: u32) {
-        let at = usize::try_from(block).expect("a block offset") + Arm64::STOP_FLAG_OFFSET;
-        self.state.store_u32(at, u32::from(false));
+    /// Sets the progress count at which the thread of the block calls the stop hook at its next stop check.
+    pub(crate) fn set_progress_limit(&self, block: u32, limit: u64) {
+        let at = usize::try_from(block).expect("a block offset") + progress_limit_offset::<Arm64>();
+        self.state.store_u64(at, limit);
+    }
+
+    /// Returns the progress count the thread of the block saved last.
+    pub(crate) fn progress_count(&self, block: u32) -> u64 {
+        let at = usize::try_from(block).expect("a block offset") + progress_count_offset::<Arm64>();
+        let mut count = [0; size_of::<u64>()];
+        self.state.read(at, &mut count);
+        u64::from_le_bytes(count)
     }
 
     /// Returns a zeroed thread block for a new thread, whose stop flag every change raises; none when all are taken.
