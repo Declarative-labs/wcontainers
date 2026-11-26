@@ -57,6 +57,7 @@ pub mod string;
 pub mod system;
 pub mod vector;
 mod vnni;
+pub mod xsave;
 pub mod x87;
 pub mod x87_arithmetic;
 pub mod x87_state;
@@ -71,6 +72,7 @@ pub use behavior::{
 pub use cpuid::{CpuidLeaf, CpuidTable, XEON_PLATINUM_8488C_UNDER_KVM};
 pub use exception::{Access, Exception};
 pub use flags::Flags;
+pub use xsave::{LINUX_XCR0, XsaveTracking};
 pub use forms::{
     CPUID_REQUIREMENTS, CpuidRegister, CpuidRequirement, INSTRUCTIONS, Instruction, SAMPLE_ENCODINGS, XED_VERSION,
     list_instructions as list_forms,
@@ -190,6 +192,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(reciprocal::RECIPROCAL_FORMS.iter().map(|form| form.instruction))
         .chain(segment::SEGMENT_FORMS.iter().map(|form| form.instruction))
         .chain(optional::OPTIONAL_FORMS.iter().map(|form| form.instruction))
+        .chain(xsave::STATE_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -230,7 +233,6 @@ impl ProcessorArchitecture for X86_64 {
             });
         registers_meet
             && observed.instruction_pointer == expectation.instruction_pointer
-            && observed.flags == expectation.flags
             && observed.fs_base == expectation.fs_base
             && observed.gs_base == expectation.gs_base
             && observed.mxcsr == expectation.mxcsr
@@ -244,6 +246,10 @@ impl ProcessorArchitecture for X86_64 {
             && observed.data_segments == expectation.data_segments
             && observed.code_segment == expectation.code_segment
             && observed.pkru == expectation.pkru
+            && observed.xcr0 == expectation.xcr0
+            && observed.xinuse == expectation.xinuse
+            && observed.xsave_tracking == expectation.xsave_tracking
+            && (observed.flags.bits() ^ expectation.flags.bits()) & !expectation.nondeterministic_flags.bits() == 0
     }
 }
 
@@ -286,6 +292,12 @@ pub struct Processor {
     /// PKRU, which XCR0's PKRU bit enables: Linux starts a program at 0x55555554, every key but 0 denied access, and a
     /// state's pages all have key 0.
     pub pkru: u32,
+    /// XCR0, the state components the operating system enables; see [`LINUX_XCR0`].
+    pub xcr0: u64,
+    /// XINUSE: a clear bit says its state component holds its initial configuration; a set bit says nothing.
+    pub xinuse: u64,
+    /// What XSAVEOPT's modified optimization knows of the last XRSTOR this program ran; `None` where it skips nothing.
+    pub xsave_tracking: Option<XsaveTracking>,
 }
 
 /// The PKRU Linux starts a program with.
@@ -357,6 +369,11 @@ pub struct ProcessorExpectation {
     pub data_segments: [u16; DATA_SEGMENTS],
     pub code_segment: u16,
     pub pkru: u32,
+    pub xcr0: u64,
+    pub xinuse: u64,
+    pub xsave_tracking: Option<XsaveTracking>,
+    /// The flags the state before does not decide, as UMWAIT's and TPAUSE's CF, which are not compared.
+    pub nondeterministic_flags: Flags,
 }
 
 impl Processor {
@@ -379,12 +396,17 @@ impl Processor {
             data_segments: self.data_segments,
             code_segment: self.code_segment,
             pkru: self.pkru,
+            xcr0: self.xcr0,
+            xinuse: self.xinuse,
+            xsave_tracking: self.xsave_tracking,
+            nondeterministic_flags: Flags::empty(),
         }
     }
 }
 
 /// Every register zero, the flags clear, MXCSR at its default, no exception, the data segments null, CS Linux's and
-/// PKRU Linux's.
+/// PKRU Linux's; XCR0 Linux's, the x87, SSE, AVX and PKRU components in use and the AVX-512 ones not, and no XRSTOR
+/// tracked.
 pub const ZERO_PROCESSOR: Processor = Processor {
     general_purpose_registers: [0; GENERAL_PURPOSE_REGISTERS],
     instruction_pointer: 0,
@@ -402,6 +424,9 @@ pub const ZERO_PROCESSOR: Processor = Processor {
     data_segments: [0; DATA_SEGMENTS],
     code_segment: CODE_SEGMENT,
     pkru: PKRU_DEFAULT,
+    xcr0: LINUX_XCR0,
+    xinuse: xsave::LEGACY_AND_KEY_COMPONENTS,
+    xsave_tracking: None,
 };
 
 /// What the running program may do with a page; memory that was never given a permission is unmapped.
@@ -532,5 +557,10 @@ pub enum PreciseInstruction {
     Optional {
         instruction: Instruction,
         across_fault: StoreAcrossFault,
+    },
+    /// A form of [`xsave::STATE_FORMS`].
+    State {
+        instruction: Instruction,
+        behavior: xsave::StateBehavior,
     },
 }

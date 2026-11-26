@@ -148,7 +148,7 @@ mod on_chip {
             .map(|(number, value)| format!("xmm{number} {value:032x}"))
             .collect();
         format!(
-            "{:x?} ip {:#x} {:?} {:?} fs {:#x} gs {:#x} mxcsr {:#x} {}",
+            "{:x?} ip {:#x} {:?} {:?} fs {:#x} gs {:#x} mxcsr {:#x} {} xinuse {:#x} pkru {:#x} tracking {:x?}",
             processor.general_purpose_registers,
             processor.instruction_pointer,
             processor.flags,
@@ -157,6 +157,9 @@ mod on_chip {
             processor.gs_base,
             processor.mxcsr,
             vectors.join(" "),
+            processor.xinuse,
+            processor.pkru,
+            processor.xsave_tracking,
         ) + &render_x87(&processor.x87)
     }
 
@@ -189,7 +192,7 @@ mod on_chip {
             .map(|(number, value)| format!("xmm{number} {value:032x}"))
             .collect();
         format!(
-            "[{}] ip {:#x} {:?} {:?} fs {:#x} gs {:#x} mxcsr {:#x} {}",
+            "[{}] ip {:#x} {:?} {:?} fs {:#x} gs {:#x} mxcsr {:#x} {} xinuse {:#x} pkru {:#x} tracking {:x?}",
             registers.join(", "),
             processor.instruction_pointer,
             processor.flags,
@@ -198,6 +201,9 @@ mod on_chip {
             processor.gs_base,
             processor.mxcsr,
             vectors.join(" "),
+            processor.xinuse,
+            processor.pkru,
+            processor.xsave_tracking,
         ) + &render_x87(&processor.x87)
     }
 
@@ -271,6 +277,7 @@ mod on_chip {
             _ => String::new(),
         };
         let differences = render_avx512_differences(&before.processor, &simulated.processor, executed.as_ref().ok().map(|state| &state.processor));
+        let executed_state = executed.as_ref().ok();
         let executed = match executed {
             Ok(executed) => format!(
                 "{}\n      {:x?}",
@@ -279,13 +286,67 @@ mod on_chip {
             ),
             Err(refusal) => format!("refused: {refusal}"),
         };
+        let fields = executed_state.map(|state| render_field_differences(&simulated, state)).unwrap_or_default();
         format!(
-            "    code {code}\n    before:    {}\n      {:x?}\n    simulated: {}\n      {:x?}\n    executed:  {executed}{differences}",
+            "    code {code}\n    before:    {}\n      {:x?}\n    simulated: {}\n      {:x?}\n    executed:  {executed}{differences}{fields}",
             render(&before.processor),
             summarize(&before.memory_mutations[2.min(start)..]),
             render_expected(&simulated.processor),
             summarize(&simulated.memory_mutations[start..]),
         )
+    }
+
+    /// The XSAVE state the two differ in, and each run of data bytes where their memory differs: simulated, executed.
+    fn render_field_differences(simulated: &Expectation, executed: &State) -> String {
+        let (expected, observed) = (&simulated.processor, &executed.processor);
+        let mut lines = Vec::new();
+        if expected.xinuse != observed.xinuse || expected.xsave_tracking != observed.xsave_tracking || expected.pkru != observed.pkru {
+            lines.push(format!(
+                "\n    xinuse {:#x} / {:#x} tracking {:x?} / {:x?} pkru {:#x} / {:#x}",
+                expected.xinuse, observed.xinuse, expected.xsave_tracking, observed.xsave_tracking, expected.pkru, observed.pkru
+            ));
+        }
+        if expected.exception != observed.exception || expected.instruction_pointer != observed.instruction_pointer {
+            lines.push(format!("\n    exception {:x?} / {:x?}", expected.exception, observed.exception));
+        }
+        if expected.mxcsr != observed.mxcsr || expected.vector_registers != observed.vector_registers {
+            lines.push(format!("\n    mxcsr or xmm {:#x} / {:#x}", expected.mxcsr, observed.mxcsr));
+        }
+        if expected.x87 != observed.x87 {
+            lines.push(format!("\n    x87 {:x?}\n      / {:x?}", expected.x87, observed.x87));
+        }
+        let mut pages: Vec<u64> = simulated
+            .memory_mutations
+            .iter()
+            .chain(&executed.memory_mutations)
+            .filter_map(|change| match change {
+                MemoryDelta::ValueAssignment { start, bytes } if !bytes.is_empty() && *start < 1 << 47 => Some(*start & !0xFFF),
+                _ => None,
+            })
+            .collect();
+        pages.sort_unstable();
+        pages.dedup();
+        for page in pages {
+            let wanted: [u8; 4096] = wcontainers_processor_architecture_x86_64::memory::read_bytes(&simulated.memory_mutations, page);
+            let got: [u8; 4096] = wcontainers_processor_architecture_x86_64::memory::read_bytes(&executed.memory_mutations, page);
+            let mut offset = 0;
+            while offset < 4096 {
+                if wanted[offset] == got[offset] {
+                    offset += 1;
+                    continue;
+                }
+                let start = offset;
+                while offset < 4096 && wanted[offset] != got[offset] {
+                    offset += 1;
+                }
+                let end = offset.min(start + 24);
+                lines.push(format!("\n    memory {:#x}..{:#x}: {:02x?} / {:02x?}", page + start as u64, page + offset as u64, &wanted[start..end], &got[start..end]));
+                if lines.len() > 12 {
+                    return lines.concat();
+                }
+            }
+        }
+        lines.concat()
     }
 
     fn list_forms() -> Vec<Instruction> {
@@ -344,8 +405,10 @@ mod on_chip {
         let Some((closest, _)) = behaviors.iter().zip(&disagreements).min_by_key(|(_, count)| **count) else {
             return;
         };
+        // `X86_PROBE_SHOW` states, 4 where it is unset.
+        let shown = std::env::var("X86_PROBE_SHOW").ok().and_then(|count| count.parse().ok()).unwrap_or(4);
         for (before, after) in
-            states.iter().zip(&executed).filter(|(before, after)| differs(*closest, before, after)).take(4)
+            states.iter().zip(&executed).filter(|(before, after)| differs(*closest, before, after)).take(shown)
         {
             println!("{}", describe(*closest, before, after));
         }

@@ -58,6 +58,8 @@ pub enum Origin {
     EvexRest,
     /// The optional forms the chip runs that had no model, and the generator's holes the check found.
     OptionalRemaining,
+    /// The family of XCR0, XINUSE and the XSAVE forms, and of UMWAIT and TPAUSE.
+    StateAndXsave,
 }
 
 /// The forms a bug shows on.
@@ -1291,6 +1293,42 @@ pub enum Bug {
     NegateAuxiliaryFromBitThree,
     /// A VEX instruction keeps ZMM's bits 256 to 511 of a destination it also reads.
     VexReadDestinationKeepsZmmUpperBits,
+    /// XGETBV with ECX 1 gives XCR0 whole.
+    ControlReadIgnoresInUse,
+    /// XGETBV with ECX 1 sets SSE's bit from XINUSE alone, whatever MXCSR holds.
+    ControlReadIgnoresMxcsr,
+    /// XSAVE and XSAVEOPT clear the header's bits outside the request.
+    SaveHeaderDropsUnrequested,
+    /// XSAVE and XSAVEOPT save MXCSR only when SSE is requested, not for AVX alone.
+    SaveMxcsrOnlyWithSse,
+    /// XSAVEOPT saves the components in their initial configuration too.
+    OptimizedSavesInitial,
+    /// XSAVEC leaves SSE's bit to XINUSE whatever MXCSR holds.
+    CompactedIgnoresMxcsr,
+    /// XSAVEC puts each component at its standard offset.
+    CompactedStandardOffsets,
+    /// The family's request takes EAX as its upper half and EDX as its lower.
+    SaveRequestHalvesSwapped,
+    /// XSAVE, XSAVEC and XSAVEOPT without REX.W save FIP and FDP whole.
+    NarrowSaveWidePointers,
+    /// The family's area needs only 16-byte alignment.
+    AreaAlignedToSixteen,
+    /// XRSTOR takes an XSTATE_BV with a bit outside XCR0.
+    RestoreAcceptsUnenabledComponents,
+    /// XRSTOR loads MXCSR only when SSE is requested.
+    RestoreMxcsrOnlyWithSse,
+    /// UMWAIT and TPAUSE keep OF, SF, ZF, AF and PF.
+    WaitKeepsFlags,
+    /// UMWAIT and TPAUSE take a source with bits above bit 0.
+    WaitIgnoresReservedBits,
+    /// The family's page fault beyond the area's first page is reported at the lowest byte that faults.
+    AreaFaultsAtLowestByte,
+    /// VZEROUPPER tracks SSE as initial too.
+    ZeroUpperTracksSseInitial,
+    /// XRSTOR reads its header from XSTATE_BV on, so that a fault there is reported at the header's start.
+    RestoreReadsHeaderFromStart,
+    /// XRSTOR tracks the components it restores as modified.
+    RestoreTracksModified,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1866,7 +1904,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::RangeSignFromSelected, "VRANGE", Family::Evex(|form| is_special(form, SpecialOperation::Range)), Origin::EvexRest),
     row(Bug::EvexUnsignedIndefiniteSigned, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), Origin::EvexRest),
     row(Bug::HalfToSingleReportsDenormal, "VCVTPH2PS", Family::Evex(|form| !form.reports_denormal()), Origin::EvexRest),
-    row(Bug::IntegerToHalfOverflowExact, "VCVTW2PH to VCVTUQQ2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { from: Number::Signed(_) | Number::Unsigned(_), to: Number::Float(Precision::Half), .. }))), Origin::EvexRest),    row(Bug::TruncatingStoreRoundsByControl, "FISTTP", Family::Forms(FISTTP), Origin::OptionalRemaining),
+    row(Bug::IntegerToHalfOverflowExact, "VCVTW2PH to VCVTUQQ2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { from: Number::Signed(_) | Number::Unsigned(_), to: Number::Float(Precision::Half), .. }))), Origin::EvexRest),
+    row(Bug::TruncatingStoreRoundsByControl, "FISTTP", Family::Forms(FISTTP), Origin::OptionalRemaining),
     row(Bug::MmxSsseThreeMemoryReadsSixteenBytes, "SSSE3 MMX forms in memory", Family::Forms(SSSE3_MMX_MEMORY), Origin::OptionalRemaining),
     row(Bug::ExtractIndexUnmasked, "EVEX VPEXTRB to VPEXTRQ, VEXTRACTPS", Family::OptionalForms(|form| matches!(form.operation, OptionalOperation::ExtractElement { bytes: 2.. }) && form.has_immediate()), Origin::OptionalRemaining),
     row(Bug::QuadwordStoreHalvesSwapped, "EVEX VMOVHPS to VMOVLPD", Family::OptionalForms(|form| matches!(form.operation, OptionalOperation::StoreQuadword { .. })), Origin::OptionalRemaining),
@@ -1887,6 +1926,24 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::SubtractAuxiliaryFromBitThree, "SUB, CMP, SBB", integer(|o| matches!(o, Operation::Subtract | Operation::Compare | Operation::SubtractWithBorrow)), Origin::OptionalRemaining),
     row(Bug::NegateAuxiliaryFromBitThree, "NEG", integer(|o| o == Operation::Negate), Origin::OptionalRemaining),
     row(Bug::VexReadDestinationKeepsZmmUpperBits, "VEX writes of a vector register", Family::Avx(writes_vector_register), Origin::OptionalRemaining),
+    row(Bug::ControlReadIgnoresInUse, "XGETBV", Family::Forms(&[Instruction::Xgetbv]), Origin::StateAndXsave),
+    row(Bug::ControlReadIgnoresMxcsr, "XGETBV", Family::Forms(&[Instruction::Xgetbv]), Origin::StateAndXsave),
+    row(Bug::SaveHeaderDropsUnrequested, "XSAVE, XSAVEOPT", Family::Forms(STANDARD_SAVES), Origin::StateAndXsave),
+    row(Bug::SaveMxcsrOnlyWithSse, "XSAVE, XSAVEOPT", Family::Forms(STANDARD_SAVES), Origin::StateAndXsave),
+    row(Bug::OptimizedSavesInitial, "XSAVEOPT", Family::Forms(&[Instruction::XsaveoptMemmxsave, Instruction::Xsaveopt64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::CompactedIgnoresMxcsr, "XSAVEC", Family::Forms(&[Instruction::XsavecMemmxsave, Instruction::Xsavec64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::CompactedStandardOffsets, "XSAVEC", Family::Forms(&[Instruction::XsavecMemmxsave, Instruction::Xsavec64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::SaveRequestHalvesSwapped, "XSAVE family", Family::Forms(XSAVE_FAMILY), Origin::StateAndXsave),
+    row(Bug::NarrowSaveWidePointers, "XSAVE, XSAVEC, XSAVEOPT", Family::Forms(&[Instruction::XsaveMemmxsave, Instruction::XsaveoptMemmxsave, Instruction::XsavecMemmxsave]), Origin::StateAndXsave),
+    row(Bug::AreaAlignedToSixteen, "XSAVE family", Family::Forms(XSAVE_FAMILY), Origin::StateAndXsave),
+    row(Bug::RestoreAcceptsUnenabledComponents, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::RestoreMxcsrOnlyWithSse, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::WaitKeepsFlags, "UMWAIT, TPAUSE", Family::Forms(&[Instruction::UmwaitGpr32, Instruction::TpauseGpr32u32]), Origin::StateAndXsave),
+    row(Bug::WaitIgnoresReservedBits, "UMWAIT, TPAUSE", Family::Forms(&[Instruction::UmwaitGpr32, Instruction::TpauseGpr32u32]), Origin::StateAndXsave),
+    row(Bug::AreaFaultsAtLowestByte, "XSAVE family", Family::Forms(XSAVE_FAMILY), Origin::StateAndXsave),
+    row(Bug::ZeroUpperTracksSseInitial, "VZEROUPPER", Family::Forms(&[Instruction::Vzeroupper]), Origin::StateAndXsave),
+    row(Bug::RestoreReadsHeaderFromStart, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
+    row(Bug::RestoreTracksModified, "XRSTOR", Family::Forms(&[Instruction::XrstorMemmxsave, Instruction::Xrstor64Memmxsave]), Origin::StateAndXsave),
 ];
 
 const FISTTP: &[Instruction] =
@@ -1897,6 +1954,24 @@ pub const SSSE3_MMX_MEMORY: &[Instruction] = &[
     Instruction::PhadddMmxqMemq, Instruction::PhaddswMmxqMemq, Instruction::PhaddwMmxqMemq, Instruction::PhsubdMmxqMemq,
     Instruction::PhsubswMmxqMemq, Instruction::PhsubwMmxqMemq, Instruction::PmaddubswMmxqMemq, Instruction::PmulhrswMmxqMemq,
     Instruction::PshufbMmxqMemq, Instruction::PsignbMmxqMemq, Instruction::PsigndMmxqMemq, Instruction::PsignwMmxqMemq,
+];
+
+const STANDARD_SAVES: &[Instruction] = &[
+    Instruction::XsaveMemmxsave,
+    Instruction::Xsave64Memmxsave,
+    Instruction::XsaveoptMemmxsave,
+    Instruction::Xsaveopt64Memmxsave,
+];
+
+const XSAVE_FAMILY: &[Instruction] = &[
+    Instruction::XsaveMemmxsave,
+    Instruction::Xsave64Memmxsave,
+    Instruction::XsaveoptMemmxsave,
+    Instruction::Xsaveopt64Memmxsave,
+    Instruction::XsavecMemmxsave,
+    Instruction::Xsavec64Memmxsave,
+    Instruction::XrstorMemmxsave,
+    Instruction::Xrstor64Memmxsave,
 ];
 
 const SEGMENT_LOADS: &[Instruction] = &[

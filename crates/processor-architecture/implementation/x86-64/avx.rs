@@ -564,11 +564,12 @@ fn compute_aes(step: AesStep, state: u128, key: u128, immediate: u8) -> u128 {
 }
 
 /// The choices an AVX form leaves open: what a store that faults part-way writes, and how a fused multiply-add
-/// treats NaNs.
+/// treats NaNs; `zeroed` is read by VZEROUPPER and VZEROALL alone.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AvxBehavior {
     pub across_fault: StoreAcrossFault,
     pub fused: FusedChoices,
+    pub zeroed: crate::xsave::ZeroedTracking,
 }
 
 const STORES: [StoreAcrossFault; 2] = [StoreAcrossFault::WritesNothing, StoreAcrossFault::WritesBytesBelowFault];
@@ -604,12 +605,16 @@ pub(crate) fn list_avx_behaviors(instruction: Instruction) -> Vec<PreciseInstruc
     let fused = matches!(form.operation, AvxOperation::Fused { .. });
     let orders: &[FusedNanOrder] = if fused { &NAN_ORDERS } else { &NAN_ORDERS[..1] };
     let products: &[InfiniteProductOfZero] = if fused { &PRODUCTS_OF_ZERO } else { &PRODUCTS_OF_ZERO[..1] };
+    let zeroes = matches!(form.operation, AvxOperation::ZeroUpper | AvxOperation::ZeroAll);
+    let trackings = if zeroes { &crate::xsave::ZEROED_TRACKINGS[..] } else { &crate::xsave::ZEROED_TRACKINGS[..1] };
     let mut behaviors = Vec::new();
     for &across_fault in stores {
         for &nan_order in orders {
             for &product_of_zero in products {
                 let fused = FusedChoices { nan_order, product_of_zero };
-                behaviors.push(PreciseInstruction::Avx { instruction, behavior: AvxBehavior { across_fault, fused } });
+                for &zeroed in trackings {
+                    behaviors.push(PreciseInstruction::Avx { instruction, behavior: AvxBehavior { across_fault, fused, zeroed } });
+                }
             }
         }
     }

@@ -81,6 +81,8 @@ mod segment_simulation;
 mod vex_upper;
 #[path = "optional_simulation.rs"]
 mod optional_simulation;
+#[path = "xsave_simulation.rs"]
+mod xsave_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -103,8 +105,12 @@ impl Simulator<X86_64> for PreciseInstruction {
         let start = processor;
         let mut processor = processor.clone();
         let before = processor.instruction_pointer;
-        simulate_processor(*self, &mut processor, memory.mutations, mutation_hook);
+        let decoded = simulate_processor(*self, &mut processor, memory.mutations, mutation_hook);
+        crate::xsave::track_components(*self, start, decoded.as_ref(), &mut processor);
         let mut expectation = processor.to_expectation();
+        if crate::xsave::is_wait(*self) && processor.exception.is_none() {
+            expectation.nondeterministic_flags = Flags::CARRY;
+        }
         let undecided = matches!(self, PreciseInstruction::Fixed(instruction)
             if crate::fixed::find_fixed_form(*instruction).is_some_and(|form| matches!(form.outcome, crate::fixed::FixedOutcome::WritesUndecided | crate::fixed::FixedOutcome::WritesRandom)));
         if undecided && processor.exception.is_none() {
@@ -123,18 +129,19 @@ impl Simulator<X86_64> for PreciseInstruction {
     }
 }
 
-/// Applies the behavior to the processor, writing memory changes through the hook.
+/// Applies the behavior to the processor, writing memory changes through the hook; gives the instruction decoded,
+/// none where fetching it faults.
 fn simulate_processor(
     behavior: PreciseInstruction,
     processor: &mut Processor,
     memory: Memory<'_, '_>,
     mutation_hook: &mut impl MemorySink<X86_64>,
-) {
+) -> Option<Decoded> {
     let decoded = match fetch(memory, processor.instruction_pointer) {
         Ok(decoded) => decoded,
         Err(exception) => {
             processor.exception = Some(exception);
-            return;
+            return None;
         }
     };
     let mut changed = processor.clone();
@@ -205,6 +212,7 @@ fn simulate_processor(
             processor.exception = Some(exception);
         }
     }
+    Some(decoded)
 }
 
 /// Whether the behavior is a VEX gather's, which writes its destination and mask though it faults.
@@ -347,6 +355,9 @@ fn apply(
         }
         PreciseInstruction::Optional { instruction, across_fault } => {
             optional_simulation::execute_optional(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::State { instruction, behavior } => {
+            xsave_simulation::execute_state(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS
