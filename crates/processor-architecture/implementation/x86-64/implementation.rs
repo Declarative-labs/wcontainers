@@ -1,5 +1,5 @@
 //! x86-64 as Linux runs a 64-bit program at ring 3: IF set, IOPL 0, CR0.AM set, UMIP, FSGSBASE, OSXSAVE and PKE
-//! on, and XCR0 enabling x87, SSE and AVX state, of which the state holds SSE's and AVX's.
+//! on, and XCR0 enabling x87, SSE and AVX state, which the state holds.
 //!
 //! A program's addresses are [`ADDRESSABLE`](ProcessorArchitecture::ADDRESSABLE), the lower canonical half. Every
 //! canonical address above it is the kernel's: present to the chip and refused to ring 3, so an access there is a
@@ -29,6 +29,8 @@ pub mod branch;
 mod cpuid;
 mod cpuid_recording;
 mod exception;
+pub mod extension;
+pub mod fixed;
 mod flags;
 pub mod float;
 // Every form of the list, generated from Intel XED by the `generate_forms` example.
@@ -36,10 +38,13 @@ pub mod float;
 mod forms;
 pub mod integer;
 pub mod memory;
+pub mod mmx;
 pub mod planted;
 mod simulation;
 pub mod sse;
+pub mod stack;
 pub mod vector;
+pub mod x87;
 #[cfg(test)]
 mod tests;
 
@@ -136,6 +141,11 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(vector::VEX_FORMS.iter().map(|form| form.instruction))
         .chain(sse::SSE_FORMS.iter().map(|form| form.instruction))
         .chain(avx::AVX_FORMS.iter().map(|form| form.instruction))
+        .chain(extension::EXTENSION_FORMS.iter().map(|form| form.instruction))
+        .chain(fixed::FIXED_FORMS.iter().map(|form| form.instruction))
+        .chain(mmx::MMX_FORMS.iter().map(|form| form.instruction))
+        .chain(x87::X87_FORMS.iter().map(|form| form.instruction))
+        .chain(stack::STACK_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -182,16 +192,16 @@ impl ProcessorArchitecture for X86_64 {
             && observed.mxcsr == expectation.mxcsr
             && observed.vector_registers == expectation.vector_registers
             && observed.upper_vector_halves == expectation.upper_vector_halves
+            && observed.x87 == expectation.x87
             && observed.exception == expectation.exception
     }
 }
 
 /// The registers a program at ring 3 reads and writes, and the exception its last instruction raised.
 ///
-/// TODO: temporary placeholder until the rest of the state is designed: the x87 stack with its control, status and
-/// tag words and MMX; ZMM beyond 256 bits, XMM16 to XMM31 and the opmask registers; APX's R16 to R31; AMX's tile
+/// TODO: temporary placeholder until the rest of the state is designed: ZMM beyond 256 bits, XMM16 to XMM31 and the opmask registers; APX's R16 to R31; AMX's tile
 /// configuration and tiles; PKRU; CET's shadow stack pointer; the segment selectors; the trap flag. The chip source
-/// checks that an instruction leaves the x87 state and the selectors as they were.
+/// checks that an instruction leaves the selectors as they were.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Processor {
     /// In the order of their encodings, RSP at [`STACK_POINTER`].
@@ -210,9 +220,43 @@ pub struct Processor {
     pub vector_registers: [u128; VECTOR_REGISTERS],
     /// Bits 128 to 255 of each vector register, the upper halves of YMM0 to YMM15, which XCR0's AVX bit enables.
     pub upper_vector_halves: [u128; VECTOR_REGISTERS],
+    pub x87: X87,
     /// None when the last instruction completed.
     pub exception: Option<Exception>,
 }
+
+/// The x87 registers MMX shares, FXSAVE64's view of the x87 state.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct X87 {
+    /// The physical registers R0 to R7, which MMX names MM0 to MM7, each 80 bits in the low bits.
+    pub registers: [u128; X87_REGISTERS],
+    /// FCW.
+    pub control: u16,
+    /// FSW, the top of the stack in bits 11 to 13.
+    pub status: u16,
+    /// FXSAVE's abridged tag word: bit i set where physical register i is not empty.
+    pub tags: u8,
+    /// The opcode, instruction pointer and data pointer of the last x87 instruction that was not a control
+    /// instruction, as FXSAVE64 saves them; a program reads them with FNSTENV.
+    pub opcode: u16,
+    pub instruction_pointer: u64,
+    pub data_pointer: u64,
+}
+
+/// R0 to R7.
+pub const X87_REGISTERS: usize = 8;
+
+/// The x87 state after FNINIT, as Linux starts a program: every exception masked, round to nearest, 64-bit
+/// precision, every register empty.
+pub const X87_INITIAL: X87 = X87 {
+    registers: [0; X87_REGISTERS],
+    control: 0x037F,
+    status: 0,
+    tags: 0,
+    opcode: 0,
+    instruction_pointer: 0,
+    data_pointer: 0,
+};
 
 /// What a behavior expects one register to hold after an instruction.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -234,6 +278,7 @@ pub struct ProcessorExpectation {
     pub mxcsr: u32,
     pub vector_registers: [u128; VECTOR_REGISTERS],
     pub upper_vector_halves: [u128; VECTOR_REGISTERS],
+    pub x87: X87,
     pub exception: Option<Exception>,
 }
 
@@ -249,6 +294,7 @@ impl Processor {
             mxcsr: self.mxcsr,
             vector_registers: self.vector_registers,
             upper_vector_halves: self.upper_vector_halves,
+            x87: self.x87,
             exception: self.exception,
         }
     }
@@ -264,6 +310,7 @@ pub const ZERO_PROCESSOR: Processor = Processor {
     mxcsr: MXCSR_DEFAULT,
     vector_registers: [0; VECTOR_REGISTERS],
     upper_vector_halves: [0; VECTOR_REGISTERS],
+    x87: X87_INITIAL,
     exception: None,
 };
 
@@ -324,5 +371,27 @@ pub enum PreciseInstruction {
     Avx {
         instruction: Instruction,
         behavior: avx::AvxBehavior,
+    },
+    /// A form of [`fixed::FIXED_FORMS`].
+    Fixed(Instruction),
+    /// A form of [`stack::STACK_FORMS`].
+    Stack {
+        instruction: Instruction,
+        behavior: stack::StackBehavior,
+    },
+    /// A form of [`x87::X87_FORMS`].
+    X87 {
+        instruction: Instruction,
+        behavior: x87::X87Behavior,
+    },
+    /// A form of [`mmx::MMX_FORMS`].
+    Mmx {
+        instruction: Instruction,
+        behavior: mmx::MmxBehavior,
+    },
+    /// A form of [`extension::EXTENSION_FORMS`].
+    Extension {
+        instruction: Instruction,
+        behavior: extension::ExtensionBehavior,
     },
 }

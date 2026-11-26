@@ -36,6 +36,8 @@ pub enum Origin {
     SseFamily,
     /// The AVX family: AVX, AVX2, FMA, F16C and the VEX forms of AES, PCLMULQDQ and GFNI.
     Avx,
+    /// The family of the legacy integer forms left, x87, MMX and the general-purpose extensions.
+    IntegerX87Mmx,
 }
 
 /// The forms a bug shows on.
@@ -835,6 +837,81 @@ pub enum Bug {
     MaskedByteStoreEveryByte,
     /// The gathers leave the mask as it was once they complete.
     GatherMaskKept,
+    // The family of the legacy integer forms left, x87, MMX and the general-purpose extensions.
+    /// ANDN complements its second source, not its first.
+    AndNotComplementsSecond,
+    /// BEXTR takes the field's length from the control's low byte.
+    ExtractBitFieldLengthFromLowByte,
+    /// BLSR sets CF for a zero result, not a zero source.
+    ResetLowestSetBitCarryFromResult,
+    /// BZHI reads its index from the whole register, not its low byte.
+    ZeroHighBitsIndexWholeRegister,
+    /// LZCNT sets CF for a zero count, not a zero source.
+    CountCarryFromResult,
+    /// PEXT packs the selected bits in reverse order.
+    ExtractBitsReversed,
+    /// SHLX does not mask its count.
+    ShiftLeftWithoutFlagsCountUnmasked,
+    /// ADOX ignores the OF it reads.
+    AddWithOverflowFlagIgnoresOverflow,
+    /// MULX with one register for both halves leaves the low half there.
+    MultiplyWithoutFlagsLowWins,
+    /// MOVBE of 32 bits into a register keeps its upper half.
+    MoveSwappingBytesKeepsUpperHalf,
+    /// CMPXCHG16B raises no #GP(0) for an operand not aligned to 16.
+    CompareExchangePairAlignmentUnchecked,
+    /// CMPXCHG8B and CMPXCHG16B compare the low halves alone.
+    CompareExchangePairComparesLowHalf,
+    /// CMPXCHG8B and CMPXCHG16B write EDX:EAX also when the comparison holds, clearing upper halves.
+    CompareExchangePairWritesAccumulatorWhenEqual,
+    /// The privileged forms raise #UD, not #GP(0).
+    PrivilegedOperandFormsInvalidOpcode,
+    /// INT 4 raises #GP, as if its gate were the kernel's.
+    InterruptOverflowGeneralProtection,
+    /// INT n's #GP error code lacks the bit that names the IDT.
+    InterruptErrorCodeWithoutTableBit,
+    /// A hint-space no-op reads its memory operand.
+    NoOperationReadsItsOperand,
+    /// CLFLUSH, CLFLUSHOPT and CLWB need their page writable.
+    FlushChecksWrite,
+    /// MMX forms run with an x87 exception pending.
+    MmxIgnoresPendingException,
+    /// EMMS marks every x87 register valid.
+    EmptyStateMarksValid,
+    /// MMX forms leave TOP as it was.
+    MmxKeepsTop,
+    /// An MMX write leaves bits 64 to 79 of its x87 register clear.
+    MmxWriteKeepsExponent,
+    /// PUNPCKH of MMX registers interleaves their low halves.
+    MmxUnpackHighFromLowHalves,
+    /// PSHUFB of MMX registers takes four bits of each index.
+    MmxShuffleBytesIndexFourBits,
+    /// An MMX store that faults leaves TOP as it was.
+    MmxStoreFaultKeepsTop,
+    /// x87 forms run with an exception pending.
+    X87IgnoresPendingException,
+    /// FLDCW keeps the reserved bits it loads.
+    LoadControlKeepsEveryBit,
+    /// x87 forms leave FIP as it was.
+    X87InstructionPointerKept,
+    /// A push onto a register in use raises no stack fault.
+    X87PushIgnoresOverflow,
+    /// FLD ST(i) reports an overflow before an underflow.
+    X87OverflowBeforeUnderflow,
+    /// An 80-bit operand is not checked for alignment.
+    ExtendedAlignmentUnchecked,
+    /// FSTP m80 stores its ten bytes at once.
+    ExtendedStoreWhole,
+    /// FLD m32 and m64 push despite an unmasked IE.
+    LoadFloatPushesDespiteUnmasked,
+    /// FCOM takes a QNaN without IE.
+    OrderedComparisonQuietNaNValid,
+    /// FIST rounds a half away from zero, not to even.
+    RoundHalfAwayFromZero,
+    /// CALL, RET and JMP m64 go to a target that is not canonical.
+    StackBranchToNonCanonical,
+    /// RET imm16 releases nothing beyond the return address.
+    ReturnReleasesBeforePop,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1215,6 +1292,121 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::MaskedByteStoreEveryByte, "VMASKMOVDQU", Family::Avx(|form| form.operation == AvxOperation::MaskedByteStore), Origin::Avx),
     row(Bug::GatherMaskKept, "VGATHERDPS, VPGATHERQQ", Family::Avx(|form| matches!(form.operation, AvxOperation::Gather { .. })), Origin::Avx),
     row(Bug::VexScalarUpperFromSecond, "VADDSS and the VEX scalar forms", Family::Avx(|form| matches!(form.operation, AvxOperation::Float { arrangement: crate::float::Arrangement::Scalar, operation, .. } if !operation.writes_flags())), Origin::Avx),
+    row(Bug::AndNotComplementsSecond, "ANDN", Family::Forms(ANDN), Origin::IntegerX87Mmx),
+    row(Bug::ExtractBitFieldLengthFromLowByte, "BEXTR", Family::Forms(BEXTR), Origin::IntegerX87Mmx),
+    row(Bug::ResetLowestSetBitCarryFromResult, "BLSR", Family::Forms(BLSR), Origin::IntegerX87Mmx),
+    row(Bug::ZeroHighBitsIndexWholeRegister, "BZHI", Family::Forms(BZHI), Origin::IntegerX87Mmx),
+    row(Bug::CountCarryFromResult, "LZCNT", Family::Forms(LZCNT), Origin::IntegerX87Mmx),
+    row(Bug::ExtractBitsReversed, "PEXT", Family::Forms(PEXT), Origin::IntegerX87Mmx),
+    row(Bug::ShiftLeftWithoutFlagsCountUnmasked, "SHLX", Family::Forms(SHLX), Origin::IntegerX87Mmx),
+    row(Bug::AddWithOverflowFlagIgnoresOverflow, "ADOX", Family::Forms(ADOX), Origin::IntegerX87Mmx),
+    row(Bug::MultiplyWithoutFlagsLowWins, "MULX", Family::Forms(MULX), Origin::IntegerX87Mmx),
+    row(Bug::MoveSwappingBytesKeepsUpperHalf, "MOVBE", Family::Forms(MOVBE), Origin::IntegerX87Mmx),
+    row(Bug::CompareExchangePairAlignmentUnchecked, "CMPXCHG16B", Family::Forms(CMPXCHG16B), Origin::IntegerX87Mmx),
+    row(Bug::CompareExchangePairComparesLowHalf, "CMPXCHG8B, CMPXCHG16B", Family::Forms(CMPXCHG_PAIR), Origin::IntegerX87Mmx),
+    row(Bug::CompareExchangePairWritesAccumulatorWhenEqual, "CMPXCHG8B", Family::Forms(CMPXCHG8B), Origin::IntegerX87Mmx),
+    row(Bug::PrivilegedOperandFormsInvalidOpcode, "LGDT, MOV CR, IN, OUT", Family::Forms(PRIVILEGED_OPERAND_FORMS), Origin::IntegerX87Mmx),
+    row(Bug::InterruptOverflowGeneralProtection, "INT n", Family::Forms(&[Instruction::IntImmb]), Origin::IntegerX87Mmx),
+    row(Bug::InterruptErrorCodeWithoutTableBit, "INT n", Family::Forms(&[Instruction::IntImmb]), Origin::IntegerX87Mmx),
+    row(Bug::NoOperationReadsItsOperand, "hint-space no-ops", Family::Forms(HINT_NO_OPERATIONS), Origin::IntegerX87Mmx),
+    row(Bug::FlushChecksWrite, "CLFLUSH, CLFLUSHOPT, CLWB", Family::Forms(FLUSHES), Origin::IntegerX87Mmx),
+    row(Bug::MmxIgnoresPendingException, "MMX", Family::Forms(MMX_SAMPLE), Origin::IntegerX87Mmx),
+    row(Bug::EmptyStateMarksValid, "EMMS", Family::Forms(&[Instruction::Emms]), Origin::IntegerX87Mmx),
+    row(Bug::MmxKeepsTop, "MMX", Family::Forms(MMX_SAMPLE), Origin::IntegerX87Mmx),
+    row(Bug::MmxWriteKeepsExponent, "MMX", Family::Forms(MMX_SAMPLE), Origin::IntegerX87Mmx),
+    row(Bug::MmxUnpackHighFromLowHalves, "PUNPCKH of MMX", Family::Forms(&[Instruction::PunpckhbwMmxqMmxd, Instruction::PunpckhdqMmxqMemq]), Origin::IntegerX87Mmx),
+    row(Bug::MmxShuffleBytesIndexFourBits, "PSHUFB of MMX", Family::Forms(&[Instruction::PshufbMmxqMmxq]), Origin::IntegerX87Mmx),
+    row(Bug::MmxStoreFaultKeepsTop, "MMX stores", Family::Forms(&[Instruction::MovqMemqMmxq0f7f, Instruction::MovntqMemqMmxq]), Origin::IntegerX87Mmx),
+    row(Bug::X87IgnoresPendingException, "x87", Family::Forms(X87_SAMPLE), Origin::IntegerX87Mmx),
+    row(Bug::LoadControlKeepsEveryBit, "FLDCW", Family::Forms(&[Instruction::FldcwMemmem16]), Origin::IntegerX87Mmx),
+    row(Bug::X87InstructionPointerKept, "x87", Family::Forms(X87_SAMPLE), Origin::IntegerX87Mmx),
+    row(Bug::X87OverflowBeforeUnderflow, "FLD ST(i)", Family::Forms(&[Instruction::FldSt0X87]), Origin::IntegerX87Mmx),
+    row(Bug::LoadFloatPushesDespiteUnmasked, "FLD m32, m64", Family::Forms(&[Instruction::FldSt0Memmem32real, Instruction::FldSt0Memm64real]), Origin::IntegerX87Mmx),
+    row(Bug::OrderedComparisonQuietNaNValid, "FCOM", Family::Forms(&[Instruction::FcomSt0X87, Instruction::FcomSt0Memm64real, Instruction::Ftst]), Origin::IntegerX87Mmx),
+    row(Bug::StackBranchToNonCanonical, "CALL, RET, JMP m64", Family::Forms(&[Instruction::CallNearGprv, Instruction::RetNear, Instruction::JmpMemv]), Origin::IntegerX87Mmx),
+    row(Bug::ReturnReleasesBeforePop, "RET imm16", Family::Forms(&[Instruction::RetNearImmw]), Origin::IntegerX87Mmx),
+    row(Bug::RoundHalfAwayFromZero, "FIST", Family::Forms(&[Instruction::FistMemmem16intSt0, Instruction::FistpMemm64intSt0]), Origin::IntegerX87Mmx),
+    row(Bug::ExtendedStoreWhole, "FSTP m80", Family::Forms(&[Instruction::FstpMemmem80realSt0]), Origin::IntegerX87Mmx),
+    row(Bug::ExtendedAlignmentUnchecked, "FLD m80, FSTP m80", Family::Forms(&[Instruction::FldSt0Memmem80real, Instruction::FstpMemmem80realSt0]), Origin::IntegerX87Mmx),
+    row(Bug::X87PushIgnoresOverflow, "x87 pushes", Family::Forms(&[Instruction::FldSt0X87, Instruction::Fld1, Instruction::FildSt0Memmem16int]), Origin::IntegerX87Mmx),
+];
+
+const X87_SAMPLE: &[Instruction] = &[Instruction::Fnop, Instruction::FxchSt0X87, Instruction::FldSt0Memmem80real, Instruction::Fchs];
+const MMX_SAMPLE: &[Instruction] = &[
+    Instruction::PaddbMmxqMmxq,
+    Instruction::PsllqMmxqImmb,
+    Instruction::MovdMmxqGpr32,
+    Instruction::MovqMemqMmxq0f7f,
+    Instruction::PextrwGpr32MmxqImmb,
+];
+
+const PRIVILEGED_OPERAND_FORMS: &[Instruction] = &[
+    Instruction::LgdtMems64,
+    Instruction::LldtGpr16,
+    Instruction::MovCrCrGpr64,
+    Instruction::InAlDx,
+    Instruction::OutImmbOeax,
+    Instruction::Insb,
+    Instruction::SldtMemw,
+];
+const HINT_NO_OPERATIONS: &[Instruction] = &[
+    Instruction::NopMemv0f18r4,
+    Instruction::NopMemvGprv0f19,
+    Instruction::NopGprvMemv0f1a,
+    Instruction::Prefetchw0f0dr1,
+    Instruction::CldemoteMemu8,
+];
+const FLUSHES: &[Instruction] =
+    &[Instruction::ClflushMemmprefetch, Instruction::ClflushoptMemmprefetch, Instruction::ClwbMemmprefetch];
+
+const ANDN: &[Instruction] = &[
+    Instruction::AndnGpr32dGpr32dGpr32d,
+    Instruction::AndnGpr32dGpr32dMemd,
+    Instruction::AndnGpr64qGpr64qGpr64q,
+    Instruction::AndnGpr64qGpr64qMemq,
+];
+const BEXTR: &[Instruction] = &[
+    Instruction::BextrGpr32dGpr32dGpr32d,
+    Instruction::BextrGpr32dMemdGpr32d,
+    Instruction::BextrGpr64qGpr64qGpr64q,
+    Instruction::BextrGpr64qMemqGpr64q,
+];
+const BLSR: &[Instruction] = &[
+    Instruction::BlsrGpr32dGpr32d,
+    Instruction::BlsrGpr32dMemd,
+    Instruction::BlsrGpr64qGpr64q,
+    Instruction::BlsrGpr64qMemq,
+];
+const BZHI: &[Instruction] = &[
+    Instruction::BzhiGpr32dGpr32dGpr32d,
+    Instruction::BzhiGpr32dMemdGpr32d,
+    Instruction::BzhiGpr64qGpr64qGpr64q,
+    Instruction::BzhiGpr64qMemqGpr64q,
+];
+const LZCNT: &[Instruction] = &[Instruction::LzcntGprvGprv, Instruction::LzcntGprvMemv];
+const PEXT: &[Instruction] = &[
+    Instruction::PextGpr32dGpr32dGpr32d,
+    Instruction::PextGpr32dGpr32dMemd,
+    Instruction::PextGpr64qGpr64qGpr64q,
+    Instruction::PextGpr64qGpr64qMemq,
+];
+const SHLX: &[Instruction] = &[
+    Instruction::ShlxGpr32dGpr32dGpr32d,
+    Instruction::ShlxGpr32dMemdGpr32d,
+    Instruction::ShlxGpr64qGpr64qGpr64q,
+    Instruction::ShlxGpr64qMemqGpr64q,
+];
+const ADOX: &[Instruction] =
+    &[Instruction::AdoxGpr32dGpr32d, Instruction::AdoxGpr32dMemd, Instruction::AdoxGpr64qGpr64q, Instruction::AdoxGpr64qMemq];
+const MULX: &[Instruction] = &[Instruction::MulxGpr32dGpr32dGpr32d, Instruction::MulxGpr64qGpr64qGpr64q];
+const MOVBE: &[Instruction] = &[Instruction::MovbeGprvMemv];
+const CMPXCHG16B: &[Instruction] = &[Instruction::Cmpxchg16bMemdq, Instruction::Cmpxchg16bLockMemdq];
+const CMPXCHG8B: &[Instruction] = &[Instruction::Cmpxchg8bMemq, Instruction::Cmpxchg8bLockMemq];
+const CMPXCHG_PAIR: &[Instruction] = &[
+    Instruction::Cmpxchg8bMemq,
+    Instruction::Cmpxchg8bLockMemq,
+    Instruction::Cmpxchg16bMemdq,
+    Instruction::Cmpxchg16bLockMemdq,
 ];
 
 #[cfg(feature = "planted-bugs")]

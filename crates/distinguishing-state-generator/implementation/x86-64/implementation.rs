@@ -16,7 +16,8 @@
 //!
 //! Flags are not data: they hold AC, which decides between faults, and the condition a form reads, so they keep
 //! every critical value. Where a store faults part-way, what it writes below the fault depends on the value in
-//! memory and, for CMPXCHG, on whether the accumulator equals it, so those keep every critical value there too.
+//! memory and, for CMPXCHG, on whether the accumulator equals it, and for an MMX store on the MMX value, so those keep
+//! every critical value there too.
 //!
 //! The flags of a form without a memory operand that reads none of them are the one exception: nothing reads them
 //! and AC decides nothing, so they only pass through. Where the form has another data operand they take their
@@ -37,12 +38,16 @@ use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_instruction_input_domain_x86_64::integer::to_access_bytes;
 use wcontainers_instruction_input_domain_x86_64::{
-    Access, AccessPlacement, AddressSize, Addressing, CodeLayout, DataPlacement, FlagSet, LOWER_DATA_ADDRESS, OperandType,
+    Access, AccessPlacement, AddressSize, Addressing, CodeLayout, DataPlacement, FlagSet, LOWER_DATA_ADDRESS, OperandSize, OperandType,
     OperandValue, SegmentChoice, UPPER_DATA_ADDRESS, ValueSet, X86_64InputDomain, to_data_address,
 };
 use wcontainers_processor_architecture::ExecutionState;
 use wcontainers_processor_architecture_x86_64::avx::{AvxOperation, find_avx_form};
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
+use wcontainers_processor_architecture_x86_64::extension::{ExtensionForm, find_extension_form};
+use wcontainers_processor_architecture_x86_64::mmx::find_mmx_form;
+use wcontainers_processor_architecture_x86_64::stack::{StackForm, find_stack_form};
+use wcontainers_processor_architecture_x86_64::x87::find_x87_form;
 use wcontainers_processor_architecture_x86_64::integer::{OperandPlace, find_integer_form};
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -105,7 +110,13 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                 let counts = data_operands
                     .iter()
                     .map(|&index| match types[index] {
-                        OperandType::MemoryValue(_) | OperandType::Comparison if in_part => values[index].len(),
+                        OperandType::MemoryValue(_) | OperandType::Comparison | OperandType::MmxValue(..)
+                        | OperandType::X87Value(..)
+                        | OperandType::X87Stack
+                            if in_part =>
+                        {
+                            values[index].len()
+                        }
                         _ => 1,
                     })
                     .collect();
@@ -116,7 +127,13 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
                             .iter()
                             .zip(&data_operands)
                             .map(|(&value, &index)| match types[index] {
-                                OperandType::MemoryValue(_) | OperandType::Comparison if in_part => value,
+                                OperandType::MemoryValue(_) | OperandType::Comparison | OperandType::MmxValue(..)
+                                | OperandType::X87Value(..)
+                                | OperandType::X87Stack
+                                    if in_part =>
+                                {
+                                    value
+                                }
                                 _ => to_representative(types[index], values[index].len()),
                             })
                             .collect()
@@ -193,7 +210,11 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::CpuidLeaf
         | OperandType::CpuidSubleaf
         | OperandType::CpuidUpperHalves
-        | OperandType::AvxData(_) => true,
+        | OperandType::AvxData(_)
+        | OperandType::MmxValue(..)
+        | OperandType::X87Environment
+        | OperandType::X87Stack
+        | OperandType::X87Value(..) => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }
@@ -202,6 +223,21 @@ fn is_data(operand_type: OperandType) -> bool {
 /// Whether the form writes its memory operand, and the alignment it requires; `None` for a form without one.
 fn find_access_shape(instruction: Instruction) -> Option<AccessShape> {
     use OpCodeOperandKind as Kind;
+    if let Some(form) = find_mmx_form(instruction) {
+        return (form.place != OperandPlace::Register).then_some(AccessShape { write: form.writes_memory(), alignment: None });
+    }
+    if let Some(form) = find_x87_form(instruction) {
+        return form.has_memory_operand().then_some(AccessShape { write: form.writes_memory(), alignment: None });
+    }
+    if let Some(form) = find_stack_form(instruction) {
+        return (form.place != OperandPlace::Register).then_some(AccessShape { write: form.writes_memory(), alignment: None });
+    }
+    if let Some(form) = find_extension_form(instruction) {
+        return (form.place != OperandPlace::Register).then_some(AccessShape {
+            write: form.writes_memory(),
+            alignment: form.required_alignment(),
+        });
+    }
     if let Some(form) = find_integer_form(instruction) {
         if form.place == OperandPlace::Register {
             return None;
@@ -257,6 +293,28 @@ fn find_access_bytes(instruction: Instruction, operands: &[Option<OperandValue>]
     });
     if let Some(form) = find_sse_form(instruction) {
         return wcontainers_instruction_input_domain_x86_64::sse::to_access_bytes(form, size);
+    }
+    if let Some(form) = find_mmx_form(instruction) {
+        return form.memory_bytes();
+    }
+    if let Some(form) = find_x87_form(instruction) {
+        return form.memory_bytes();
+    }
+    if let Some(form) = find_stack_form(instruction) {
+        let code = match size {
+            Some(OperandSize::Bits64) => form.codes[form.codes.len() - 1],
+            Some(OperandSize::Bits32) if form.codes.len() == 3 => form.codes[1],
+            _ => form.codes[0],
+        };
+        return StackForm::to_memory_bytes(code);
+    }
+    if let Some(form) = find_extension_form(instruction) {
+        let code = match size {
+            Some(OperandSize::Bits32) if form.codes.len() == 3 => form.codes[1],
+            Some(OperandSize::Bits64) if form.codes.len() == 3 => form.codes[2],
+            _ => form.codes[0],
+        };
+        return ExtensionForm::to_memory_bytes(code);
     }
     match find_integer_form(instruction) {
         Some(form) => to_access_bytes(form, size),

@@ -110,6 +110,17 @@ mod on_chip {
             processor.gs_base,
             processor.mxcsr,
             vectors.join(" "),
+        ) + &render_x87(&processor.x87)
+    }
+
+    /// The x87 state, when it is not the initial one.
+    fn render_x87(x87: &wcontainers_processor_architecture_x86_64::X87) -> String {
+        if *x87 == wcontainers_processor_architecture_x86_64::X87_INITIAL {
+            return String::new();
+        }
+        format!(
+            " x87 fcw {:#x} fsw {:#x} tags {:#x} fop {:#x} fip {:#x} fdp {:#x} {:x?}",
+            x87.control, x87.status, x87.tags, x87.opcode, x87.instruction_pointer, x87.data_pointer, x87.registers
         )
     }
 
@@ -140,7 +151,7 @@ mod on_chip {
             processor.gs_base,
             processor.mxcsr,
             vectors.join(" "),
-        )
+        ) + &render_x87(&processor.x87)
     }
 
     fn summarize(changes: &[MemoryDelta<'_, X86_64>]) -> Vec<String> {

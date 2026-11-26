@@ -27,6 +27,8 @@ use crate::{
 mod avx_simulation;
 
 const MAXIMUM_INSTRUCTION_BYTES: usize = 15;
+/// The byte 64-bit mode leaves undefined that XED names UDB.
+const UNDEFINED_SINGLE_BYTE: u8 = 0xD6;
 /// The legacy prefixes: segment overrides, operand and address size, LOCK, REPNE and REP.
 const LEGACY_PREFIXES: [u8; 11] = [0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF0, 0xF2, 0xF3];
 /// The legacy prefixes that never change an instruction's length: the segment overrides and LOCK.
@@ -43,6 +45,17 @@ const SSE_ALIGNMENT: u64 = 16;
 mod sse_simulation;
 
 type Memory<'list, 'memory> = &'list [MemoryDelta<'memory, X86_64>];
+
+#[path = "extension_simulation.rs"]
+mod extension_simulation;
+#[path = "fixed_simulation.rs"]
+mod fixed_simulation;
+#[path = "mmx_simulation.rs"]
+mod mmx_simulation;
+#[path = "x87_simulation.rs"]
+mod x87_simulation;
+#[path = "stack_simulation.rs"]
+mod stack_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -63,8 +76,18 @@ impl Simulator<X86_64> for PreciseInstruction {
         mutation_hook: &mut impl MemorySink<X86_64>,
     ) -> Result<ProcessorExpectation, Infallible> {
         let mut processor = processor.clone();
+        let before = processor.instruction_pointer;
         simulate_processor(*self, &mut processor, memory.mutations, mutation_hook);
-        Ok(processor.to_expectation())
+        let mut expectation = processor.to_expectation();
+        let undecided = matches!(self, PreciseInstruction::Fixed(instruction)
+            if crate::fixed::find_fixed_form(*instruction).is_some_and(|form| form.outcome == crate::fixed::FixedOutcome::WritesUndecided));
+        if undecided && processor.exception.is_none() {
+            let decoded = fetch(memory.mutations, before).expect("a completed instruction was fetched");
+            for number in crate::fixed::list_undecided_registers(&decoded) {
+                expectation.general_purpose_registers[number] = crate::RegisterValueExpectation::NonDeterministic;
+            }
+        }
+        Ok(expectation)
     }
 }
 
@@ -87,8 +110,8 @@ fn simulate_processor(
     match apply(behavior, &mut changed, memory, &decoded, on_memory_mutated) {
         Ok(()) => {
             *processor = changed;
-            // A jump leaves the instruction pointer where it goes.
-            if !matches!(behavior, PreciseInstruction::Branch(_)) {
+            // A jump leaves the instruction pointer where it goes, as the stack forms leave it themselves.
+            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. }) {
                 processor.instruction_pointer = decoded.next_ip();
             }
             processor.exception = None;
@@ -107,6 +130,10 @@ fn simulate_processor(
                     && behavior == PreciseInstruction::Float(Instruction::SubssXmmssMemss))
             {
                 processor.mxcsr = changed.mxcsr;
+            }
+            // An MMX store that faults leaves the TOP it cleared first.
+            if matches!(behavior, PreciseInstruction::Mmx { .. }) {
+                processor.x87.status = changed.x87.status;
             }
             if exception.is_trap() {
                 processor.instruction_pointer = decoded.next_ip();
@@ -190,6 +217,19 @@ fn apply(
                     Ok(())
                 }
             }
+        }
+        PreciseInstruction::Fixed(instruction) => fixed_simulation::execute_fixed(instruction, processor, memory, decoded),
+        PreciseInstruction::Stack { instruction, behavior } => {
+            stack_simulation::execute_stack(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::X87 { instruction, behavior } => {
+            x87_simulation::execute_x87(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::Mmx { instruction, behavior } => {
+            mmx_simulation::execute_mmx(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::Extension { instruction, behavior } => {
+            extension_simulation::execute_extension(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Vector(instruction) => execute_vector(instruction, processor, memory, decoded),
         PreciseInstruction::Avx { instruction, behavior } => {
@@ -317,6 +357,10 @@ fn measure_length(bytes: &[u8]) -> Length {
     }
     if count == bytes.len() {
         return Length::BeyondAvailable;
+    }
+    // The chip measures 0xD6 as one byte, where iced-x86 would read a ModRM byte after it.
+    if bytes[count] == UNDEFINED_SINGLE_BYTE {
+        return Length::Bytes(count + 1);
     }
     let vector = VECTOR_PREFIXES.contains(&bytes[count]);
     let mut kept: Vec<u8> = Vec::new();

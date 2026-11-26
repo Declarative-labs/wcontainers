@@ -137,9 +137,6 @@ mod on_chip {
             ("SYSENTER", make(0x1000, &[0x0F, 0x34], &[], |_| {})),
             ("EVEX VPADDD", make(0x1000, &EVEX_ADD, &[], |_| {})),
             ("15 bytes, DS 9 times then EVEX VPADDD", make(0x1000, &padded(0x3E, 9, &EVEX_ADD), &[], |_| {})),
-            ("RDTSC", make(0x1000, &[0x0F, 0x31], &[], |_| {})),
-            ("RDTSCP", make(0x1000, &[0x0F, 0x01, 0xF9], &[], |_| {})),
-            ("RDPID RAX", make(0x1000, &[0xF3, 0x0F, 0xC7, 0xF8], &[], |_| {})),
             ("RDPKRU", make(0x1000, &[0x0F, 0x01, 0xEE], &[], |processor| processor.general_purpose_registers[1] = 0)),
             ("XGETBV", make(0x1000, &[0x0F, 0x01, 0xD0], &[], |processor| processor.general_purpose_registers[1] = 0)),
             ("XSAVE [RBX]", make(0x1000, &[0x0F, 0xAE, 0x23], &[(0x2000, WRITABLE)], |processor| processor.general_purpose_registers[3] = 0x2000)),
@@ -150,7 +147,7 @@ mod on_chip {
             ("SMSW EAX", make(0x1000, &[0x0F, 0x01, 0xE0], &[], |_| {})),
             ("INT 0x80", make(0x1000, &[0xCD, 0x80], &[], |_| {})),
             ("LDTILECFG [RBX]", make(0x1000, &[0xC4, 0xE2, 0x78, 0x49, 0x03], &[(0x2000, WRITABLE)], |processor| processor.general_purpose_registers[3] = 0x2000)),
-            ("FLD1, which runs and changes the x87 state", make(0x1000, &[0xD9, 0xE8], &[], |_| {})),
+            ("an x87 register wider than 80 bits", make(0x1000, &[0x48, 0x01, 0xD8], &[], |processor| processor.x87.registers[3] = 1 << 80)),
             ("too many pages for the arena", {
                 let mut state = make(0x1000, &[0x48, 0x01, 0xD8], &[], |_| {});
                 state.memory_mutations.push(MemoryDelta::PermissionAssignment {

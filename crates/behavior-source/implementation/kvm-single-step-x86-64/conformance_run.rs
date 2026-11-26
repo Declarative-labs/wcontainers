@@ -5,11 +5,12 @@
 use std::borrow::Cow;
 
 use wcontainers_behavior_source_kvm_single_step_x86_64::SingleStepMachine;
+use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_distinguishing_state_generator_x86_64::CriticalValueCut;
 use wcontainers_instruction_input_domain_x86_64::X86_64InputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_x86_64::{
-    DataAccess, InstructionFetch, PagePermission, Processor, X86_64, ZERO_PROCESSOR,
+    DataAccess, Instruction, InstructionFetch, PagePermission, Processor, X86_64, ZERO_PROCESSOR,
 };
 
 fn chip() -> SingleStepMachine {
@@ -47,8 +48,8 @@ fn make(code: &[u8], after: Vec<MemoryDelta<'static, X86_64>>) -> ExecutionState
     }
 }
 
-/// States the chip refuses: a permission that starts inside a page, bytes past the program's addresses, SYSCALL,
-/// which it cannot step, and FLD1, which it runs and which changes the x87 state, which is not modeled.
+/// States the chip refuses: a permission that starts inside a page, bytes past the program's addresses, and SYSCALL and
+/// PUSHFQ, which it cannot step.
 fn to_unexecutable() -> Vec<ExecutionState<'static, X86_64>> {
     const ADD: [u8; 3] = [0x48, 0x01, 0xD8];
     vec![
@@ -67,24 +68,35 @@ fn to_unexecutable() -> Vec<ExecutionState<'static, X86_64>> {
             }],
         ),
         make(&[0x0F, 0x05], Vec::new()),
-        make(&[0xD9, 0xE8], Vec::new()),
+        make(&[0x9C], Vec::new()),
     ]
 }
 
+/// The generator, without the states of RDTSC and RDTSCP, whose results the time decides, so that no two runs of
+/// one state agree; their behaviors do not compare those registers.
+struct TimeExcluded(CriticalValueCut);
+
+impl DistinguishingStateGenerator<X86_64> for TimeExcluded {
+    type States<'generator> = std::vec::IntoIter<ExecutionState<'static, X86_64>>;
+
+    fn generate_states(&self, instruction: Instruction) -> Self::States<'_> {
+        if matches!(instruction, Instruction::Rdtsc | Instruction::Rdtscp) {
+            return Vec::new().into_iter();
+        }
+        self.0.generate_states(instruction)
+    }
+}
+
+const GENERATOR: TimeExcluded = TimeExcluded(CriticalValueCut::new(X86_64InputDomain));
+
 #[test]
 fn execute_agrees_with_execute_in_place() {
-    wcontainers_behavior_source_conformance::execute_agrees_with_execute_in_place(
-        chip(),
-        CriticalValueCut::new(X86_64InputDomain),
-    );
+    wcontainers_behavior_source_conformance::execute_agrees_with_execute_in_place(chip(), GENERATOR);
 }
 
 #[test]
 fn execution_is_deterministic() {
-    wcontainers_behavior_source_conformance::execution_is_deterministic(
-        chip(),
-        CriticalValueCut::new(X86_64InputDomain),
-    );
+    wcontainers_behavior_source_conformance::execution_is_deterministic(chip(), GENERATOR);
 }
 
 // The suite's measuring needs every listed form to show one known behavior, which waits for every family.
@@ -102,7 +114,7 @@ fn next_state_after_an_error_executes_as_on_a_fresh_source() {
     wcontainers_behavior_source_conformance::next_state_after_an_error_executes_as_on_a_fresh_source(
         chip(),
         chip(),
-        CriticalValueCut::new(X86_64InputDomain),
+        GENERATOR,
         to_unexecutable(),
     );
 }

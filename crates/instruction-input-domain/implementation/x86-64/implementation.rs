@@ -25,6 +25,11 @@ use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta};
 use wcontainers_processor_architecture_x86_64::avx::find_avx_form;
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
+use wcontainers_processor_architecture_x86_64::extension::find_extension_form;
+use wcontainers_processor_architecture_x86_64::fixed::find_fixed_form;
+use wcontainers_processor_architecture_x86_64::mmx::find_mmx_form;
+use wcontainers_processor_architecture_x86_64::stack::find_stack_form;
+use wcontainers_processor_architecture_x86_64::x87::find_x87_form;
 use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
 use wcontainers_processor_architecture_x86_64::vector::find_vector_form;
@@ -37,9 +42,14 @@ use wcontainers_processor_architecture_x86_64::{
 
 pub mod avx;
 pub mod branch;
+pub mod extension;
+pub mod fixed;
 pub mod float;
 pub mod integer;
+pub mod mmx;
 pub mod sse;
+pub mod stack;
+pub mod x87;
 pub mod vector;
 #[cfg(test)]
 mod tests;
@@ -67,6 +77,8 @@ const DATA_PAGES_BYTES: usize = 2 * PAGE_BYTES as usize;
 const NIBBLE_EDGE: u64 = 1 << 4;
 /// What a register holds above the width a narrower form reads of it.
 const ABOVE_LOW_HALF: u64 = 0xA5A5_A5A5_0000_0000;
+/// What an index or count register holds above its low byte, which the form ignores.
+const ABOVE_INDEX: u64 = 0xA5A5_A5A5_A5A5_A500;
 /// RAX's bits above AX when AX is an 8-bit division's dividend.
 const BYTE_DIVIDEND_UPPER: u64 = 0xA5A5_A5A5_A5A5_0000;
 
@@ -156,6 +168,19 @@ pub enum OperandType {
     Sse(sse::SseOperand),
     /// The sources, immediate and MXCSR of an AVX form that takes them together.
     AvxData(avx::AvxDataSet),
+    /// The value of the MMX (or XMM or general) register that has a role in an MMX form, or of the memory its source
+    /// reads.
+    MmxValue(Role, vector::VectorValues),
+    /// The x87 state MMX shares: its stack, tags, control and status words and pointers.
+    X87Environment,
+    /// ST(i)'s index in an x87 form.
+    StackRegister,
+    /// The x87 state around an x87 form's operands.
+    X87Stack,
+    /// The value of ST(0) (the destination) or ST(i) (the source) of an x87 form, or of its memory operand.
+    X87Value(Role, x87::X87ValueSet),
+    /// The segment register MOV reads.
+    SegmentRegister,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -193,6 +218,8 @@ pub enum Role {
     Base,
     /// A register the form reads besides its operands, by number: the accumulator or the data register.
     Implicit(usize),
+    /// The register of the form's operand at this index, for a form with several register sources.
+    Operand(usize),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -210,6 +237,23 @@ pub enum ValueSet {
     /// AX as an 8-bit division's dividend: every edge of a 16-, 32- and 64-bit sum, and the dividends whose quotient
     /// by 1 or by -1 is the least or the greatest signed byte, or one past it.
     ByteDividend,
+    /// An index or count read from a register's low bits: each side of 8, 16, 32 and 64, the largest byte, and some
+    /// with every byte above the lowest set.
+    Index,
+    /// BEXTR's control: a start and a length each at 0, 1 and each side of 32 and 64, and once with bits above them.
+    BitField,
+    /// PDEP's and PEXT's mask: none, one bit at each end of 32 and 64 bits, alternating bits and bytes, and all.
+    Mask,
+    /// FLDCW's source: FNINIT's, none, all, every defined bit, and some of each field.
+    ControlWord,
+    /// A single-precision number of each class: each zero, one, a negative, the denormal ends, the smallest and
+    /// largest normal, each infinity, a QNaN and an SNaN, and two.
+    SingleFloat,
+    /// The same in double precision.
+    DoubleFloat,
+    /// A near branch's target: canonical in the lower half, the first address past it, canonical in the upper half,
+    /// and the last address of the lower half.
+    Target,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -271,6 +315,8 @@ pub enum OperandValue {
     SampleEncoding,
     Sse(sse::SseValue),
     AvxData(avx::AvxData),
+    X87(mmx::X87Environment),
+    X87Stack(x87::X87Stack),
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -290,6 +336,21 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         const UNREAD: OperandType = OperandType::Flags(FlagSet::Unread);
         if let Some(form) = find_integer_form(instruction) {
             return integer::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_extension_form(instruction) {
+            return extension::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_fixed_form(instruction) {
+            return fixed::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_mmx_form(instruction) {
+            return mmx::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_x87_form(instruction) {
+            return x87::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_stack_form(instruction) {
+            return stack::list_operand_types(form).into_iter();
         }
         if let Some(form) = find_vector_form(instruction) {
             return vector::list_operand_types(form).into_iter();
@@ -351,7 +412,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
                     .to_vec()
             }
             // RAX, RSP and R13, which needs REX.
-            OperandType::Register(Role::Destination | Role::Source) => {
+            OperandType::Register(Role::Destination | Role::Source | Role::Operand(_)) => {
                 [0, STACK_POINTER, 13].map(OperandValue::Register).to_vec()
             }
             OperandType::Register(Role::Base | Role::Implicit(_)) => {
@@ -368,6 +429,45 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
                         .map(|byte| OperandValue::Bits(0xA5A5_A5A5_A5A5_A500 | byte))
                         .to_vec(),
                     ValueSet::Few => bits(&[0, 1, 0x8000_0000, u64::MAX]),
+                    ValueSet::Index => bits(&[0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 0xFF, ABOVE_INDEX | 1, ABOVE_INDEX | 31, ABOVE_INDEX | 64]),
+                    ValueSet::BitField => {
+                        let edges = [0, 1, 31, 32, 63, 64];
+                        let mut values: Vec<u64> =
+                            edges.iter().flat_map(|&start| [0, 1, 31, 32, 64].map(|length| start | (length << 8))).collect();
+                        values.push(ABOVE_INDEX & !0xFFFF | 4 | (8 << 8));
+                        bits(&values)
+                    }
+                    ValueSet::ControlWord => bits(&[0x037F, 0x0000, 0xFFFF, 0x1F7F, 0x0C7E, 0x027F, 0x0040]),
+                    ValueSet::Target => bits(&[CODE_ADDRESS + 0x123, 1 << 47, 0xFFFF_8000_0000_0000, (1 << 47) - 1]),
+                    ValueSet::SingleFloat => bits(&[
+                        0, 0x8000_0000, 0x3F80_0000, 0xBFC0_0000, 1, 0x007F_FFFF, 0x0080_0000, 0x7F7F_FFFF, 0x7F80_0000,
+                        0xFF80_0000, 0x7FC0_0001, 0x7FA0_0001, 0x4000_0000,
+                    ]),
+                    ValueSet::DoubleFloat => bits(&[
+                        0,
+                        1 << 63,
+                        0x3FF0_0000_0000_0000,
+                        0xBFF8_0000_0000_0000,
+                        1,
+                        0x000F_FFFF_FFFF_FFFF,
+                        0x0010_0000_0000_0000,
+                        0x7FEF_FFFF_FFFF_FFFF,
+                        0x7FF0_0000_0000_0000,
+                        0xFFF0_0000_0000_0000,
+                        0x7FF8_0000_0000_0001,
+                        0x7FF4_0000_0000_0001,
+                        0x4000_0000_0000_0000,
+                    ]),
+                    ValueSet::Mask => bits(&[
+                        0,
+                        1,
+                        0x8000_0000,
+                        0x8000_0000_0000_0000,
+                        0x5555_5555_5555_5555,
+                        0xAAAA_AAAA_AAAA_AAAA,
+                        0x00FF_00FF_00FF_00FF,
+                        u64::MAX,
+                    ]),
                     ValueSet::BitOffset => bits(&[0, 1, 15, 16, 31, 32, 63, 64, u64::MAX, -64i64 as u64, i64::MAX as u64]),
                     ValueSet::ByteDividend => {
                         let mut values = self.generate_critical_values(OperandType::MemoryValue(ValueSet::Arithmetic)).collect::<Vec<_>>();
@@ -471,6 +571,12 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::SampleEncoding => vec![OperandValue::SampleEncoding],
             OperandType::Sse(operand) => sse::generate_values(operand),
             OperandType::AvxData(set) => avx::generate_data(set),
+            OperandType::MmxValue(_, values) => mmx::generate_mmx_values(values),
+            OperandType::X87Environment => mmx::X87_ENVIRONMENTS.map(OperandValue::X87).to_vec(),
+            OperandType::StackRegister => x87::STACK_INDICES.map(OperandValue::Register).to_vec(),
+            OperandType::SegmentRegister => stack::SEGMENT_NUMBERS.map(OperandValue::Register).to_vec(),
+            OperandType::X87Stack => x87::X87_STACKS.map(OperandValue::X87Stack).to_vec(),
+            OperandType::X87Value(_, set) => x87::generate_x87_values(set),
         };
         values.into_iter()
     }
@@ -498,6 +604,21 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         );
         if let Some(form) = find_integer_form(instruction) {
             return integer::build_state(form, &typed);
+        }
+        if let Some(form) = find_extension_form(instruction) {
+            return extension::build_state(form, &typed);
+        }
+        if let Some(form) = find_fixed_form(instruction) {
+            return fixed::build_state(form, &typed);
+        }
+        if let Some(form) = find_mmx_form(instruction) {
+            return mmx::build_state(form, &typed);
+        }
+        if let Some(form) = find_x87_form(instruction) {
+            return x87::build_state(form, &typed);
+        }
+        if let Some(form) = find_stack_form(instruction) {
+            return stack::build_state(form, &typed);
         }
         if let Some(form) = find_vector_form(instruction) {
             return vector::build_state(form, &typed);
@@ -627,7 +748,7 @@ impl Choice {
     fn to_register(&self, role: Role) -> usize {
         match role {
             Role::Source => self.source,
-            Role::Destination | Role::Base | Role::Implicit(_) => {
+            Role::Destination | Role::Base | Role::Implicit(_) | Role::Operand(_) => {
                 panic!("no form of this path names a {role:?} register")
             }
         }
@@ -675,6 +796,11 @@ fn encode(instruction: Instruction, choice: &Choice) -> Vec<u8> {
 /// Whether the domain models the form's operands.
 fn is_modeled(instruction: Instruction) -> bool {
     find_integer_form(instruction).is_some()
+        || find_extension_form(instruction).is_some()
+        || find_fixed_form(instruction).is_some()
+        || find_mmx_form(instruction).is_some()
+        || find_x87_form(instruction).is_some()
+        || find_stack_form(instruction).is_some()
         || find_vector_form(instruction).is_some()
         || find_avx_form(instruction).is_some()
         || find_float_form(instruction).is_some()
