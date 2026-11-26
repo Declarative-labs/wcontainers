@@ -33,6 +33,9 @@ pub enum PlantedBy {
     /// The per-lane expectation of first-fault and non-fault loads and the 32-bit vector bases with bit 31 set, whose
     /// bugs are numbered from 3601, with the fourth check's 9008 and 9010 again.
     LanesAndBases,
+    /// Narrow bases whose sum crosses 4 GiB, the data a load extends, and the choices of first-fault and non-fault
+    /// loads after a clear FFR bit, whose bugs are numbered from 3621, with 9910 and 3618 again.
+    GeneratorAndFirstFault,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.
