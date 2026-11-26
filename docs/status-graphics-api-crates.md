@@ -116,17 +116,79 @@ Logs: wcontainers-scratch/graphics-api-crates/ac2/. All jobs on the x86-64 machi
   number_constant_without_link 7, trait_outside_interface 4, summary_not_one_sentence 4, conformance_missing 3,
   summary_starts_with_name 2, independent_trait 2, associated_type_unused 2, summary_repeated 1. Nothing loosened.
 
-Known gaps, in the order they are next:
-1. The trait-layer exception lines above (Map's lent memory as the top trait's `Mapped: VolatileBytes` type with a
-   shadow copy in the serving glue; initial data lengths; GetBuffer's buffer kind; a foreign IUnknown).
-2. Direct3D 11's immediate context is not free threaded: the calling glue must turn on the system's multithread
-   protection at device creation (ID3D11Multithread), as the spike did. Until then `SystemDeviceContext`'s `Send`
-   and `Sync` rest on the table promise alone: not reachable on Linux, where only our own serving glue is called.
-3. A non-null `HMODULE` reaches the system unchecked through the calling glue (the system reads it as a module).
-4. The spike's harness on the layout (C fake d3d11, correct and hostile C games, the liar, the attack tests), the
-   fuzzing of 4 modes x 3 seeds x 10 million calls under AddressSanitizer, and the cost table.
+Known gaps of the start of AC2 (1 to 4 done below); left:
 5. The linter's shape findings above: whether a direct crate may hold public items outside an interface, and
-   whether the byte forms' offsets need names.
+   whether the byte forms' offsets need names. The linter was not rerun on the slice after the restart.
+
+## AC2, finished parts (2026-11-26, after the restart; logs in wcontainers-scratch/graphics-api-crates/ac2/)
+
+All jobs on the x86-64 machine, the slice written by the generator, built in a workspace of its own.
+
+- **All 27 methods of the slice glued in both glues**, plus `ID3D11Multithread::SetMultithreadProtected` (the calling
+  glue calls it): report line "GLUED 30" (2 of d3dcommon's that the spike did not have); NOT GLUED only d3dcommon's
+  GetBufferPointer and RegisterDestructionCallback, outside the spike's 27 (MEASURED, report.txt).
+- **Exception lines** (src/api.rs, row ExceptionLine in MAPPING.md): initial data at the length the description and
+  pitches give (one record per subresource for a texture); Map's memory as the top trait's `Mapped: VolatileBytes`,
+  lent by the serving glue as a shadow of ours written back at Unmap, held by the calling glue as `ForeignLent`
+  revoked before the system's Unmap; GetBuffer's buffer as DXGI's `Buffer`, which Direct3D 11 binds to its texture;
+  multithread protection of the immediate context at creation (refused without it); a non-null module handle
+  refused; the header's count ranges and keep values (OMSetRenderTargetsAndUnorderedAccessViews, IASetVertexBuffers,
+  FeatureLevels at most 16); descriptions within d3d11.h's ranges in both glues; descriptions, kinds and query data
+  sizes answered from what the glue recorded, never asked of the implementation; a returned feature level one of
+  those asked; a back buffer index below the recorded count. An `IUnknown*` of no kind of the API is COM's
+  `Foreign` (UnknownIn row changed), so the per-API `type Unknown` is gone. Unions in an input structure are written
+  as their largest non-zero member.
+- **Defects the harness found and the generated glue fixes**: an object made for a null `_COM_Outptr_opt_` (Direct3D's
+  validation-only call) was handed out through the null pointer and its reference lost (pass-correct left 379 fake
+  objects; now 0); counts past the header's range read garbage arrays (SIGSEGV in the output-merger attack); a 256-byte
+  stack over-read of feature levels (ASan); a shadow sized from an implementation's pitches let the C side write past
+  it (ASan heap overflow), now bounded by the recorded description and the implementation's own bytes; relations
+  keyed by Rust type confused kinds served by one type (now keyed by role).
+- **The spike's harness on the layout** (`crates/direct3d-11/implementation/direct/harness`, written beside the glue):
+  the spike's C (fake d3d11, game, attacks, check-2's games, fuzz drivers) unchanged but two counters, the front ported
+  to the generated traits, a new lying implementation, and the tests game, attack_c, attack_table, check2_c, fuzz,
+  measure. MEASURED (harness-all.log): 21 tests, each alone under a time limit, in the default build, the
+  small-table build and under AddressSanitizer: 63 of 63 status 0; the C instrumented (30 `__asan_report` symbols).
+- **Marks per method** (MEASURED, marks-per-method.txt): serving 75 marks over 30 entries = 2.50 (spike 3.2);
+  calling 69 over 45 methods = 1.53 (spike 1.6); the rest are per kind or per table (93 in Direct3D 11's crate, 30
+  in DXGI's, 19 in d3dcommon's) and COM's 35. Totals: 321 marks against the spike's 182, because each kind of the
+  full chain gets its tables, adoption and `Adopt` impl.
+
+- **Fuzzing, 4 modes x 3 seeds (11, 12, 13) x 10 million calls under AddressSanitizer, 8 threads each** (MEASURED,
+  fuzz-long.log): 12 of 12 status 0; 0 AddressSanitizer reports, 0 hangs, 0 crashes; liar + correct game: 0 promises
+  broken (about 397,000 resources, 110,000 mappings written, 78,000 query results, 65,000 back buffers, 836,000 lies
+  per run); front, pass-through and liar + hostile game: 8 of 8 kinds of table reached each. Before the fixes above
+  the same runs found the defects listed (fuzz-long-first-killed.log: the liar runs killed for memory).
+- **Cost per call, ns** (MEASURED, measure.log; median of 31 runs, pinned to core 13; load 45 before, 23 after, the
+  spike's was 4.6):
+
+| Operation | Direct (fake) | Added by the serving glue | Pass-through | Spike: added / pass-through |
+|---|---|---|---|---|
+| Draw | 15.0 | +24.1 | 46.6 | +23.9 / 37.8 |
+| AddRef + Release | 14.5 | +26.4 | 43.1 | +24.7 / 37.4 |
+| Map + Unmap | 60.6 | +344.4 | 545.2 | +215.1 / 455.9 |
+| CreateBuffer + Release | 68.1 | +455.4 | 547.3 | +337.3 / 397.4 |
+| QueryInterface + Release | 14.7 | +78.9 | 91.3 | +80.8 / 93.7 |
+| GetDevice + Release | 15.8 | +101.5 | 117.6 | +60.2 / 72.9 |
+
+  Within 10% of the spike: Draw and AddRef+Release added, QueryInterface. Not within it, and why (INFERRED): Map+Unmap
+  copies the implementation's bytes into the shadow and back (the spike lent the implementation's memory); CreateBuffer
+  copies the initial bytes once (the brief's decided cost, question 2 removes it), checks the description and pushes
+  the recorded description; GetDevice looks up relations by role. The machine was ten times busier than for the
+  spike's table.
+
+## The merge of graphics-layout (asked for AC4): stopped
+
+`git merge-tree` of the track against origin's graphics-layout (97e1daafe): 97 conflicting files (shaders 25,
+wcontainers-shaders 13, shader-converters 13, opengl 8, nir 4, direct3d-12 4, ...). Since the merge base e9fff41e3,
+graphics-layout changes 10 of the owner's interface files (MEASURED `git diff --stat`): shader-converters (+140),
+win32 (+128), test-window (+26), system (+8), tcp-sockets (+8), icmp-sockets and raw-sockets (8 changed lines each),
+udp-sockets (+4), volatile-bytes (+6). A normal merge carries those into his interface files, which this run may not
+change; the merge waits on the owner taking (or refusing) those interface changes first. No generated crate is in
+crates/ yet, so no file has both sides. Hand-written pieces the generated crates must absorb (lines naming unsafe on
+graphics-layout): directx 1,056 (src/com/device.rs 84, context.rs 45, mod.rs 35; examples own_* ; tests/com.rs 68),
+direct3d-12 498 (examples/directx 316, examples/check 169), graphics-test 321 (src/d3d11, src/d3d12), graphics-test-
+forward 190 (census.rs 151, clock.rs 13), opengl 357, gpu-webgl 164, nir 115.
 
 ## Scope added 2026-11-25 (the orchestrator's ruling)
 
