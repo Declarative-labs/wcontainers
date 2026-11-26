@@ -8,13 +8,15 @@ rem unpacked copy of the crate in C:\wc\tools\mozangle-0.7.1-patched.
 rem _CL_ holds the compiler to three processes (mozangle asks cl for /MP); mozangle's bindgen needs
 rem libclang, taken from the libclang 18.1.1 wheel unpacked in C:\wc\tools, told that the Visual Studio
 rem library's wish for clang 19 does not matter to bindings.
+rem The package whose build makes the DLLs is written here into the build folder, so no crate of
+rem the repository is outside its workspace.
 setlocal
 set _CL_=/MP3
 set LIBCLANG_PATH=C:\wc\tools\libclang-18.1.1\libclang-18.1.1.data\platlib\clang\native
 set BINDGEN_EXTRA_CLANG_ARGS=-D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH
 set DEST=C:\wc\tools\angle-mozangle-0.7.1
 set SRC=C:\wc\tools\mozangle-0.7.1-patched
-set PATCHES=%CD%\crates\gpu-webgl\angle
+set PATCHES=%CD%\crates\gpu\implementation\webgl\angle
 set UNPACK=C:\wc\tools\mozangle-0.7.1-unpack
 if exist %UNPACK% rmdir /s /q %UNPACK%
 mkdir %UNPACK%
@@ -28,7 +30,19 @@ rmdir /s /q %UNPACK%
 rem A build from nothing: the unpacked sources keep the archive's old times, which cargo would trust.
 set TARGET=%CARGO_TARGET_DIR%\angle-patched
 if exist %TARGET% rmdir /s /q %TARGET%
-cargo build -j 3 --release --manifest-path crates\gpu-webgl\angle\Cargo.toml --target-dir %TARGET% --config "patch.crates-io.mozangle.path='C:/wc/tools/mozangle-0.7.1-patched'" || exit /b 1
+set TOOL=%TARGET%-tool
+if exist %TOOL% rmdir /s /q %TOOL%
+mkdir %TOOL%\src
+> %TOOL%\Cargo.toml echo [package]
+>> %TOOL%\Cargo.toml echo name = "wcontainers-angle-dlls"
+>> %TOOL%\Cargo.toml echo version = "0.1.0"
+>> %TOOL%\Cargo.toml echo edition = "2024"
+>> %TOOL%\Cargo.toml echo publish = false
+>> %TOOL%\Cargo.toml echo [dependencies]
+>> %TOOL%\Cargo.toml echo mozangle = { version = "=0.7.1", features = ["build_dlls"] }
+>> %TOOL%\Cargo.toml echo [workspace]
+> %TOOL%\src\main.rs echo fn main() {}
+cargo build -j 3 --release --manifest-path %TOOL%\Cargo.toml --target-dir %TARGET% --config "patch.crates-io.mozangle.path='C:/wc/tools/mozangle-0.7.1-patched'" || exit /b 1
 if not exist %DEST% mkdir %DEST%
 for /d %%d in ("%TARGET%\release\build\mozangle-*") do if exist "%%d\out\libEGL.dll" copy /y "%%d\out\libEGL.dll" %DEST% >nul && copy /y "%%d\out\libGLESv2.dll" %DEST% >nul
 if not exist %DEST%\libGLESv2.dll exit /b 1
