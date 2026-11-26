@@ -121,7 +121,11 @@ fn gcc_image<G: GuestTest>() -> String {
 pub fn csmith(seed: u64) -> PathBuf {
     let directory = out_directory().join("layer3");
     std::fs::create_dir_all(&directory).unwrap();
-    let path = directory.join(format!("csmith-{seed}.c"));
+    let name = format!("csmith-{seed}.c");
+    let path = directory.join(&name);
+    // Tests run the same case at once, so each writes its own file and moves it into place whole, and none
+    // compiles a file another is writing.
+    let own = directory.join(unique(&name));
     let status = Command::new("csmith")
         .args([
             "--seed",
@@ -132,10 +136,11 @@ pub fn csmith(seed: u64) -> PathBuf {
             "4",
             OUTPUT_FLAG,
         ])
-        .arg(&path)
+        .arg(&own)
         .status()
         .expect("run csmith (from the Nix shell)");
     assert!(status.success(), "csmith failed for seed {seed}");
+    std::fs::rename(&own, &path).unwrap();
     path
 }
 

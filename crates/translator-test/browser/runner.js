@@ -61,7 +61,17 @@ function run({
   // The names and numbers the runner shares with the wasmtime runner.
   runner,
 }) {
-  const translator = new WebAssembly.Instance(new WebAssembly.Module(translatorBytes)).exports;
+  // The translator's exports are wasm-bindgen's, named by its processing; its JavaScript is not used, and
+  // nothing here calls what the module imports for it.
+  const translatorModule = new WebAssembly.Module(translatorBytes);
+  const translatorImports = {};
+  for (const { module, name, kind } of WebAssembly.Module.imports(translatorModule)) {
+    if (kind !== "function") throw new Error(`the translator imports the ${kind} ${module}.${name}`);
+    (translatorImports[module] ??= {})[name] = () => {
+      throw new Error(`the translator called ${module}.${name}`);
+    };
+  }
+  const translator = new WebAssembly.Instance(translatorModule, translatorImports).exports;
   const result = (length) =>
     new Uint8Array(translator.memory.buffer, translator.output(), length).slice();
   const contract = JSON.parse(new TextDecoder().decode(result(translator.contract())));

@@ -23,6 +23,8 @@ const PACKAGE: &str = "browser";
 /// Rust's name for the target the browser translator is built for, and the module that build makes.
 const MODULE_TRIPLE: &str = "wasm32-unknown-unknown";
 const MODULE: &str = "wcontainers_browser.wasm";
+/// The module after wasm-bindgen's processing, beside the one the build makes.
+const BOUND_MODULE: &str = "wcontainers_browser_bound.wasm";
 /// Where the page's runs keep their files, a folder for each, under the browser build.
 const CASES: &str = "cases";
 /// The files of a case's folder the runner loads: the translator module, the blob and its stack.
@@ -167,13 +169,23 @@ pub fn translator<G: GuestTest>() -> PathBuf {
         return path.clone();
     }
     let features = [FEATURES_FLAG, G::NAME];
-    let path = release_build_with(
+    let built_module = release_build_with(
         &package(),
         MODULE_TRIPLE,
         &target().join(G::NAME),
         &features,
     )
     .join(MODULE);
+    // wasm-bindgen's own processing gives the exports their names; its JavaScript is not used.
+    let mut output = wasm_bindgen_cli_support::Bindgen::new()
+        .input_path(&built_module)
+        .typescript(false)
+        .web(true)
+        .expect("wasm-bindgen's web output")
+        .generate_output()
+        .expect("wasm-bindgen processes the translator");
+    let path = built_module.with_file_name(BOUND_MODULE);
+    std::fs::write(&path, output.wasm_mut().emit_wasm()).unwrap();
     built.push((G::NAME, path.clone()));
     path
 }

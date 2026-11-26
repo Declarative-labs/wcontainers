@@ -1,0 +1,1235 @@
+//! The native output's x86-64 code read back through iced's decoder (docs/x86-native-output.md section 7): every
+//! piece decodes whole, with every span, exit and address place where the position map says, the guest's
+//! copied bytes unchanged, and each route's sequence as the plan writes it.
+
+use iced_x86::{
+    Code, Decoder, DecoderOptions, Formatter, Instruction as Iced, InstructionInfoFactory,
+    IntelFormatter, Mnemonic, OpAccess, OpKind, Register,
+};
+use wcontainers_guest_cpu::position::Side;
+use wcontainers_guest_cpu::{HostCode, InsideCall, Native, Route};
+use wcontainers_translator::{
+    LookAhead, NativeRequest, translate_native_for, translate_native_request,
+};
+use wcontainers_x86::area::{ENTRIES, FIRST_CALL_VECTOR, STOP_WORD, WITHHELD_VALUES};
+use wcontainers_x86::carry::{AREA_WORD, COUNT, T, U, WITHHELD, names_withheld};
+use wcontainers_x86::native::{HostMatches, Target, Way};
+use wcontainers_x86::{Offer, V3, X86_64, decode, general_register};
+
+/// The ways this output is built for so far: no memory check.
+const WAYS: [Way; 2] = [Way::Machine, Way::Process];
+/// Where the sweep's pieces start.
+const AT: u64 = 0x40_1000;
+
+fn target() -> Target {
+    Target {
+        host: HostMatches {
+            five_level_paging: true,
+            partial_writes: true,
+            undefined_results: true,
+        },
+        offer: Offer::new(V3).expect("the v3 list has meanings"),
+    }
+}
+
+fn bytes(hex: &str) -> Vec<u8> {
+    let hex: String = hex.split_whitespace().collect();
+    (0..hex.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).expect("hex"))
+        .collect()
+}
+
+/// A whole number from the environment, for the sweep's seed and size.
+fn knob(name: &str, default: u64) -> u64 {
+    std::env::var(name).map_or(default, |v| {
+        let v = v.trim();
+        v.strip_prefix("0x").map_or_else(
+            || v.parse().expect("a number"),
+            |hex| u64::from_str_radix(hex, 16).expect("a hex number"),
+        )
+    })
+}
+
+/// The host instructions of `code`, decoded one after another from its first byte, with their offsets.
+fn host(code: &[u8]) -> Vec<(usize, Iced)> {
+    let mut decoder = Decoder::with_ip(64, code, 0, DecoderOptions::NONE);
+    let mut out = Vec::new();
+    while decoder.can_decode() {
+        let at = decoder.position();
+        let i = decoder.decode();
+        assert!(!i.is_invalid(), "host code decodes at {at}: {code:02x?}");
+        out.push((at, i));
+    }
+    out
+}
+
+fn listing(code: &[u8]) -> String {
+    let mut formatter = IntelFormatter::new();
+    let mut text = String::new();
+    for (at, i) in host(code) {
+        let mut line = String::new();
+        formatter.format(&i, &mut line);
+        text += &format!("{at:4} {line}\n");
+    }
+    text
+}
+
+fn translate(code: &[u8], address: u64, way: Way, exact: bool) -> Option<HostCode> {
+    translate_native_for::<X86_64>(code, address, LookAhead::Full, exact, &way, &target())
+}
+
+/// The piece of `code` at `address` made as asked: with the replay check before its start (`stop`), or as a
+/// stepping piece.
+fn translate_made(
+    code: &[u8],
+    address: u64,
+    way: Way,
+    exact: bool,
+    stop: bool,
+    step: bool,
+) -> Option<HostCode> {
+    let made = NativeRequest {
+        look_ahead: LookAhead::Full,
+        exact_replay: exact,
+        stop,
+        step,
+    };
+    translate_native_request::<X86_64>(code, address, &made, &way, &target())
+}
+
+/// The calls into the inside a piece makes, in the order they are laid out.
+fn calls(piece: &HostCode, way: Way) -> Vec<InsideCall> {
+    host(&piece.bytes)
+        .into_iter()
+        .filter_map(|(_, i)| {
+            let code = match way {
+                Way::Machine if i.mnemonic() == Mnemonic::Int => {
+                    i.immediate8().checked_sub(FIRST_CALL_VECTOR)?.into()
+                }
+                Way::Machine => return None,
+                _ if i.mnemonic() == Mnemonic::Jmp && i.memory_segment() == Register::GS => {
+                    let from = i.memory_displacement64().checked_sub(ENTRIES as u64)?;
+                    u16::try_from(from / AREA_WORD as u64).ok()?
+                }
+                _ => return None,
+            };
+            InsideCall::from_code(code)
+        })
+        .collect()
+}
+
+/// Checks one piece against its own position map and the guest code it came from, giving what was broken.
+/// A string instruction with a repeat prefix, which the inside runs when the count is kept.
+fn repeated_string(i: &Iced) -> bool {
+    let string = (0..i.op_count()).any(|n| {
+        matches!(
+            i.op_kind(n),
+            OpKind::MemorySegRSI | OpKind::MemorySegESI | OpKind::MemoryESRDI | OpKind::MemoryESEDI
+        )
+    });
+    string && (i.has_rep_prefix() || i.has_repne_prefix())
+}
+
+fn broken(piece: &HostCode, guest: &[u8], address: u64, way: Way, exact: bool) -> Option<String> {
+    let decoded = host(&piece.bytes);
+    let starts: std::collections::BTreeMap<usize, Iced> = decoded.iter().copied().collect();
+    let at = |offset: u32| starts.get(&(offset as usize));
+    for span in &piece.spans {
+        at(span.start)?;
+    }
+    for exit in &piece.exits {
+        let i = at(exit.start)?;
+        let fits = match exit.retarget {
+            None => i.code() == Code::Jmp_rel32_64,
+            Some(field) => i.is_jcc_near() && field as usize == i.len() - 4,
+        };
+        if !fits {
+            return Some(format!("exit {exit:?} is {:?}", i.code()));
+        }
+    }
+    for place in &piece.places {
+        let i = at(place.start)?;
+        if i.code() != Code::Mov_r64_imm64 || i.immediate64() != place.address {
+            return Some(format!("place {place:?} is {i:?}"));
+        }
+    }
+    for (offset, i) in &decoded {
+        // Translated code never keeps a host address on any stack, and never reads the code as data.
+        if matches!(i.mnemonic(), Mnemonic::Ret | Mnemonic::Call) {
+            return Some(format!("host {:?} at {offset}", i.mnemonic()));
+        }
+        let lea_back = i.mnemonic() == Mnemonic::Lea && i.op0_register() == T;
+        if i.is_ip_rel_memory_operand() && !(way == Way::Process && lea_back) {
+            return Some(format!("RIP-relative host access at {offset}"));
+        }
+    }
+    // At every call into the inside and its return point, the guest's state is its registers and the register
+    // area alone: nothing relocated, and no fix-up pending where the guest goes on.
+    for (offset, i) in &decoded {
+        let call = match way {
+            Way::Machine => i.mnemonic() == Mnemonic::Int,
+            _ => {
+                i.mnemonic() == Mnemonic::Jmp
+                    && i.memory_segment() == Register::GS
+                    && i.memory_base() == Register::None
+            }
+        };
+        if !call {
+            continue;
+        }
+        let at = piece.span(*offset as u32)?;
+        if !at.relocated.is_empty() {
+            return Some(format!(
+                "call at {offset} with {:?} relocated",
+                at.relocated
+            ));
+        }
+        // An exit's call never comes back, nor a stepping piece's Step: the code after it is another way's.
+        let leaving = |kind: InsideCall| match way {
+            Way::Machine => u16::from(i.immediate8()) == u16::from(FIRST_CALL_VECTOR) + kind.code(),
+            _ => {
+                i.memory_displacement64() == (ENTRIES + AREA_WORD * usize::from(kind.code())) as u64
+            }
+        };
+        let exit_call = leaving(InsideCall::Exit) || leaving(InsideCall::Step);
+        let back = offset + i.len();
+        if exit_call {
+            continue;
+        }
+        if let Some(span) = piece.span(back as u32).filter(|_| back < piece.bytes.len()) {
+            let stays = span.guest == at.guest;
+            if stays && (!span.relocated.is_empty() || !span.fixups.is_empty()) {
+                return Some(format!("return point {back} holds {span:?}"));
+            }
+        }
+    }
+    // Each guest instruction's commit point: the last host instruction before its first span after it.
+    for (k, span) in piece.spans.iter().enumerate() {
+        let commit = piece
+            .spans
+            .get(k + 1)
+            .is_some_and(|n| n.guest == span.guest && n.side == Side::After)
+            && span.side == Side::Before;
+        if !commit {
+            continue;
+        }
+        let offset = span.guest.wrapping_sub(address) as usize;
+        let Some((i, length)) = guest.get(offset..).and_then(decode) else {
+            continue;
+        };
+        // A stepping piece sends `pushf` and a repeated string to the inside.
+        let stepped = piece.stepping
+            && (repeated_string(&i.iced)
+                || matches!(i.iced.mnemonic(), Mnemonic::Pushf | Mnemonic::Pushfq));
+        if X86_64::route(&way, &i, &target()) != Route::Copy
+            || exact && repeated_string(&i.iced)
+            || stepped
+        {
+            continue;
+        }
+        let end = piece.spans[k + 1].start as usize;
+        let (&last, &host_i) = starts.range(..end).next_back()?;
+        let own = &guest[offset..offset + usize::from(length)];
+        if names_withheld(&i.iced) {
+            let same = host_i.code() == i.iced.code()
+                && !names_withheld(&host_i)
+                && host_i.memory_size() == i.iced.memory_size();
+            if !same && !on_slot(&i.iced, &host_i, way) {
+                return Some(format!("stand-in form of {own:02x?} is {host_i:?}"));
+            }
+        } else if piece.bytes.get(last..last + own.len()) != Some(own) {
+            return Some(format!("copy of {own:02x?} at {last} differs"));
+        }
+    }
+    map_follows_the_moves(piece, way)
+}
+
+/// Whose guest value each host register and each word of the register area holds, by guest register number.
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct Holders {
+    registers: [Option<u8>; 16],
+    area: std::collections::BTreeMap<u64, u8>,
+}
+
+/// Every host instruction reachable from the piece's start, along its branches and links, finds each guest register
+/// where the position map says: the moves between host registers and the register area are followed from the
+/// start (every guest register in its own, the withheld ones in their slots); a register or area word any other
+/// instruction writes holds afterwards the guest value the map gives it there, every other copy of that value now
+/// stale. So a move left out or a copy read after the guest wrote the register is found, and a map wrong only where
+/// an instruction writes is not.
+fn map_follows_the_moves(piece: &HostCode, way: Way) -> Option<String> {
+    use wcontainers_guest_cpu::position::Held;
+    let decoded: std::collections::BTreeMap<usize, Iced> = host(&piece.bytes).into_iter().collect();
+    let slot = |k: usize| (WITHHELD_VALUES + k * AREA_WORD) as u64;
+    let number = |r: Register| general_register(r).map(|g| g.number);
+    let on_area = |i: &Iced, n: u32| {
+        i.op_kind(n) == OpKind::Memory
+            && i.memory_segment() == way.area_segment()
+            && i.memory_base() == Register::None
+            && i.memory_index() == Register::None
+    };
+    let mut start = Holders {
+        registers: [None; 16],
+        area: WITHHELD
+            .iter()
+            .enumerate()
+            .map(|(k, &w)| (slot(k), w))
+            .collect(),
+    };
+    for n in 0..16u8 {
+        if !WITHHELD.contains(&n) {
+            start.registers[usize::from(n)] = Some(n);
+        }
+    }
+    // A rebased register holds its guest value less the window's base: the value's holder all the same.
+    let holder = |h: Held| match h {
+        Held::Rebased(r) => Held::Register(r),
+        other => other,
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut work = vec![(0usize, start)];
+    while let Some((at, mut holders)) = work.pop() {
+        let Some(i) = decoded.get(&at) else {
+            continue;
+        };
+        if !seen.insert((at, holders.clone())) {
+            continue;
+        }
+        let span = piece.span(at as u32)?;
+        for g in 0..16u8 {
+            let held = span
+                .relocated
+                .iter()
+                .find(|r| r.guest == g)
+                .map(|r| holder(r.held));
+            let found = match held {
+                Some(Held::Register(h) | Held::Rebased(h)) => holders.registers[usize::from(h)],
+                Some(Held::Page(p)) => holders.area.get(&u64::from(p)).copied(),
+                None => match WITHHELD.iter().position(|&w| w == g) {
+                    Some(k) => holders.area.get(&slot(k)).copied(),
+                    None => holders.registers[usize::from(g)],
+                },
+            };
+            if found != Some(g) {
+                return Some(format!(
+                    "at {at} guest {g} is {held:?} by the map, which holds {found:?}"
+                ));
+            }
+        }
+        let next = piece
+            .span((at + i.len()) as u32)
+            .filter(|_| at + i.len() < piece.bytes.len());
+        // The guest instruction itself, the slot form's move among them, writes (the last host instruction before
+        // its commit point); the carrying code's moves move.
+        let guest_own = span.side == Side::Before
+            && next.is_none_or(|n| n.guest != span.guest || n.side == Side::After);
+        if !guest_own && i.code() == Code::Mov_rm64_r64 && on_area(i, 0) {
+            let from = number(i.op1_register()).expect("a general register");
+            match holders.registers[usize::from(from)] {
+                Some(g) => holders.area.insert(i.memory_displacement64(), g),
+                None => holders.area.remove(&i.memory_displacement64()),
+            };
+        } else if !guest_own && i.code() == Code::Mov_r64_rm64 && on_area(i, 1) {
+            let to = number(i.op0_register()).expect("a general register");
+            holders.registers[usize::from(to)] =
+                holders.area.get(&i.memory_displacement64()).copied();
+        } else {
+            let after = next.unwrap_or(span);
+            let held_at = |held: Held| {
+                (0..16u8).find(|&g| {
+                    let mapped = after
+                        .relocated
+                        .iter()
+                        .find(|r| r.guest == g)
+                        .map(|r| holder(r.held));
+                    mapped.unwrap_or_else(|| match WITHHELD.iter().position(|&w| w == g) {
+                        Some(k) => Held::Page(slot(k) as u16),
+                        None => Held::Register(g),
+                    }) == held
+                })
+            };
+            let mut written = Vec::new();
+            let mut info = InstructionInfoFactory::new();
+            let facts = info.info(i);
+            for u in facts.used_registers() {
+                if matches!(
+                    u.access(),
+                    OpAccess::Read | OpAccess::CondRead | OpAccess::None
+                ) {
+                    continue;
+                }
+                if let Some(n) = number(u.register()) {
+                    written.push(Held::Register(n));
+                }
+            }
+            for m in facts.used_memory() {
+                let area = m.segment() == way.area_segment()
+                    && m.base() == Register::None
+                    && m.index() == Register::None;
+                if area
+                    && !matches!(
+                        m.access(),
+                        OpAccess::Read | OpAccess::CondRead | OpAccess::None
+                    )
+                {
+                    written.push(Held::Page(m.displacement() as u16));
+                }
+            }
+            for held in written {
+                let now = held_at(held);
+                if let Some(g) = now {
+                    holders
+                        .registers
+                        .iter_mut()
+                        .filter(|r| **r == Some(g))
+                        .for_each(|r| *r = None);
+                    holders.area.retain(|_, v| *v != g);
+                }
+                match (held, now) {
+                    (Held::Register(n) | Held::Rebased(n), _) => {
+                        holders.registers[usize::from(n)] = now;
+                    }
+                    (Held::Page(p), Some(g)) => {
+                        holders.area.insert(u64::from(p), g);
+                    }
+                    (Held::Page(p), None) => {
+                        holders.area.remove(&u64::from(p));
+                    }
+                }
+            }
+        }
+        let next = at + i.len();
+        let target = i.near_branch_target() as usize;
+        let ways: Vec<usize> = match i.flow_control() {
+            iced_x86::FlowControl::UnconditionalBranch => vec![target],
+            iced_x86::FlowControl::ConditionalBranch => vec![target, next],
+            iced_x86::FlowControl::IndirectBranch
+            | iced_x86::FlowControl::Interrupt
+            | iced_x86::FlowControl::Exception => vec![],
+            _ => vec![next],
+        };
+        for to in ways {
+            work.push((to, holders.clone()));
+        }
+    }
+    None
+}
+
+/// Whether `host` is `guest` with the one withheld register it names read or written in that register's slot of
+/// the area, every other operand as the guest names it.
+fn on_slot(guest: &Iced, host: &Iced, way: Way) -> bool {
+    let named: Vec<u32> = (0..guest.op_count())
+        .filter(|&n| {
+            guest.op_kind(n) == OpKind::Register && names_withheld(&only(guest.op_register(n)))
+        })
+        .collect();
+    let &[n] = named.as_slice() else {
+        return false;
+    };
+    let Some(k) = general_register(guest.op_register(n))
+        .and_then(|g| WITHHELD.iter().position(|&w| w == g.number))
+    else {
+        return false;
+    };
+    let others_same = (0..guest.op_count()).filter(|&m| m != n).all(|m| {
+        guest.op_kind(m) == host.op_kind(m)
+            && (guest.op_kind(m) != OpKind::Register || guest.op_register(m) == host.op_register(m))
+    });
+    host.mnemonic() == guest.mnemonic()
+        && !names_withheld(host)
+        && host.op_count() == guest.op_count()
+        && host.op_kind(n) == OpKind::Memory
+        && host.memory_segment() == way.area_segment()
+        && host.memory_base() == Register::None
+        && host.memory_index() == Register::None
+        && host.memory_displacement64() == (WITHHELD_VALUES + k * AREA_WORD) as u64
+        && others_same
+}
+
+/// `mov rax, r` of register `r`, to ask whether it is withheld.
+fn only(r: Register) -> Iced {
+    Iced::with2(Code::Mov_r64_rm64, Register::RAX, r).unwrap_or_default()
+}
+
+/// Bytes shaped like an instruction: some legacy prefixes, maybe a REX, an opcode map, then random bytes.
+fn instruction_like(rng: &mut fastrand::Rng) -> [u8; 16] {
+    const PREFIXES: [u8; 8] = [0x64, 0x65, 0x66, 0x67, 0xf2, 0xf3, 0xf0, 0x2e];
+    const MAPS: [&[u8]; 5] = [&[], &[], &[0x0f], &[0x0f, 0x38], &[0x0f, 0x3a]];
+    let mut code = [0; 16];
+    rng.fill(&mut code);
+    let mut at = 0;
+    for _ in 0..rng.usize(0..3) {
+        code[at] = PREFIXES[rng.usize(..PREFIXES.len())];
+        at += 1;
+    }
+    if rng.bool() {
+        code[at] = 0x40 | rng.u8(0..16);
+        at += 1;
+    }
+    for &b in MAPS[rng.usize(..MAPS.len())] {
+        code[at] = b;
+        at += 1;
+    }
+    code
+}
+
+/// Branches back and forward inside a piece, a call and a return, to mix with the swept forms.
+fn branch(rng: &mut fastrand::Rng, so_far: usize) -> Vec<u8> {
+    let back = -(rng.i32(0..=so_far as i32 + 6));
+    match rng.u8(0..6) {
+        0 => [&[0x0f, 0x80 | rng.u8(0..16)][..], &(back - 6).to_le_bytes()].concat(),
+        1 => vec![0x70 | rng.u8(0..16), rng.u8(0..32)],
+        2 => vec![0xe2, (back - 2) as u8],
+        3 => vec![0xe3, rng.u8(0..16)],
+        4 => {
+            let reach = wcontainers_abi::PAGE_SIZE as i32;
+            [&[0xe8][..], &rng.i32(-reach..reach).to_le_bytes()].concat()
+        }
+        _ => vec![0xc3],
+    }
+}
+
+/// Every piece of a seeded sweep of instruction mixes decodes whole and matches its position map, in both ways,
+/// with and without the count.
+#[test]
+fn pieces_decode_and_match_their_maps() {
+    let seed = knob("X86_OUTPUT_SEED", 0x5eed);
+    let cases = knob("X86_OUTPUT_CASES", 20_000);
+    let mut rng = fastrand::Rng::with_seed(seed);
+    let (mut pieces, mut instructions) = (0u64, 0u64);
+    for case in 0..cases {
+        let mut guest = Vec::new();
+        for _ in 0..rng.usize(1..12) {
+            if rng.u8(0..4) == 0 {
+                guest.extend(branch(&mut rng, guest.len()));
+            } else {
+                let candidate = instruction_like(&mut rng);
+                if let Some((_, length)) = decode(&candidate) {
+                    guest.extend_from_slice(&candidate[..usize::from(length)]);
+                }
+            }
+        }
+        if guest.is_empty() {
+            continue;
+        }
+        for way in WAYS {
+            // The count, the replay check and a stepping piece, each as a way makes them.
+            let made = [
+                (false, false, false),
+                (true, false, false),
+                (true, true, false),
+                (false, false, true),
+                (true, true, true),
+            ];
+            for (exact, stop, step) in made {
+                if step && way != Way::Process {
+                    continue;
+                }
+                let Some(mut piece) = translate_made(&guest, AT, way, exact, stop, step) else {
+                    continue;
+                };
+                piece.finish();
+                pieces += 1;
+                instructions += piece.spans.len() as u64;
+                if let Some(what) = broken(&piece, &guest, AT, way, exact) {
+                    panic!(
+                        "case {case} of seed {seed:#x} ({way:?}, count {exact}, stop {stop}, step \
+                         {step}): {what}\nguest \
+                         {guest:02x?}\n{}",
+                        listing(&piece.bytes)
+                    );
+                }
+            }
+        }
+    }
+    println!("seed {seed:#x}: {cases} cases, {pieces} pieces, {instructions} spans, 0 broken");
+}
+
+/// The host instructions of the piece made of `hex` at [`AT`], by mnemonic.
+fn shape(hex: &str, way: Way) -> Vec<Mnemonic> {
+    let piece = translate(&bytes(hex), AT, way, true).expect("a piece");
+    println!("{hex} in {way:?}:\n{}", listing(&piece.bytes));
+    host(&piece.bytes)
+        .iter()
+        .map(|(_, i)| i.mnemonic())
+        .collect()
+}
+
+fn decoded(hex: &str, way: Way) -> Vec<Iced> {
+    let piece = translate(&bytes(hex), AT, way, true).expect("a piece");
+    host(&piece.bytes).into_iter().map(|(_, i)| i).collect()
+}
+
+/// A return reads its target into t, looks it up through the two levels and pops at its commit point.
+#[test]
+fn a_return_goes_through_the_mirror() {
+    use Mnemonic::*;
+    for way in WAYS {
+        assert_eq!(shape("c3", way), [Lea, Mov, Rorx, Mov, Mov, Lea, Jmp]);
+        let code = decoded("c2 10 00", way);
+        assert_eq!(code[0].op0_register(), COUNT, "the count's add comes first");
+        assert_eq!(code[1].memory_base(), Register::RSP);
+        assert_eq!(
+            code[4].memory_segment(),
+            Register::GS,
+            "the first level is the area's"
+        );
+        assert_eq!(
+            code[5].memory_displacement64(),
+            8 + 0x10,
+            "the pop and the immediate"
+        );
+        assert_eq!((code[6].memory_base(), code[6].memory_index()), (U, T));
+    }
+}
+
+/// A call through a register pushes the guest return address from a stand-in, never a host address.
+#[test]
+fn a_call_through_a_register_pushes_the_guest_address() {
+    use Mnemonic::*;
+    for way in WAYS {
+        let code = decoded("ff d0", way);
+        let push = code
+            .iter()
+            .position(|i| i.mnemonic() == Push)
+            .expect("a push");
+        let built = &code[push - 1];
+        assert_eq!(built.code(), Code::Mov_r64_imm64);
+        assert_eq!(built.immediate64(), AT + 2, "the guest return address");
+        assert_eq!(code.last().map(Iced::mnemonic), Some(Jmp));
+    }
+}
+
+/// A direct call pushes its guest return address and leaves by a linkable `jmp rel32` before its call into the
+/// inside.
+#[test]
+fn a_direct_call_pushes_and_exits() {
+    use Mnemonic::*;
+    assert_eq!(
+        shape("e8 00 01 00 00", Way::Machine),
+        [Lea, Mov, Push, Jmp, Int]
+    );
+    assert_eq!(
+        shape("e8 00 01 00 00", Way::Process),
+        [Lea, Mov, Push, Jmp, Lea, Jmp]
+    );
+}
+
+/// A loop back to itself stays in the piece: its `jcc` is linked to the piece's start.
+#[test]
+fn a_loop_is_linked_inside_the_piece() {
+    // dec ecx; jnz back to the dec
+    let piece = translate(&bytes("ff c9 75 fc"), AT, Way::Process, true).expect("a piece");
+    let code = host(&piece.bytes);
+    let jcc = code.iter().find(|(_, i)| i.is_jcc_near()).expect("a jcc");
+    assert_eq!(
+        jcc.1.near_branch64(),
+        0,
+        "the jcc goes to the piece's start:\n{}",
+        listing(&piece.bytes)
+    );
+}
+
+/// A loop naming withheld registers runs its turns with them in registers it never names: the copy it loops in
+/// names none of them, reaches no area word, and its map holds each in its home; the moves are before and after.
+#[test]
+fn a_loop_holds_its_withheld_registers_at_home() {
+    use wcontainers_guest_cpu::position::Held;
+    // l: add r10, r11; dec r11; jnz l
+    let guest = bytes("4d 01 da 49 ff cb 75 f8");
+    for way in WAYS {
+        for exact in [false, true] {
+            let piece = translate(&guest, AT, way, exact).expect("a piece");
+            let code = host(&piece.bytes);
+            let text = listing(&piece.bytes);
+            let (back_at, back) = code
+                .iter()
+                .filter(|(at, i)| i.is_jcc_near() && (i.near_branch64() as usize) < *at)
+                .max_by_key(|(_, i)| i.near_branch64())
+                .expect("a branch back");
+            let head = back.near_branch64() as usize;
+            assert!(head > 0, "the loop's copy is after the moves:\n{text}");
+            let body: Vec<&Iced> = code
+                .iter()
+                .filter(|(at, _)| (head..=*back_at).contains(at))
+                .map(|(_, i)| i)
+                .collect();
+            for i in &body {
+                let count = i.mnemonic() == Mnemonic::Lea && i.op0_register() == COUNT;
+                assert!(
+                    count || !names_withheld(i),
+                    "{i} names a withheld register:\n{text}"
+                );
+                assert_ne!(
+                    i.memory_segment(),
+                    way.area_segment(),
+                    "{i} reaches the area:\n{text}"
+                );
+            }
+            for span in piece
+                .spans
+                .iter()
+                .filter(|s| (head..=*back_at).contains(&(s.start as usize)))
+            {
+                for w in [WITHHELD[0], WITHHELD[1]] {
+                    let held = span.relocated.iter().find(|r| r.guest == w);
+                    assert!(
+                        held.is_some_and(|r| matches!(r.held, Held::Register(_))),
+                        "guest {w} at home in {span:?}:\n{text}"
+                    );
+                }
+            }
+            if let Some(what) = broken(&piece, &guest, AT, way, exact) {
+                panic!("{what}\n{text}");
+            }
+        }
+    }
+}
+
+/// A guest instruction naming a withheld register runs on a stand-in loaded from and stored to the area.
+#[test]
+fn a_withheld_register_takes_a_stand_in() {
+    for way in WAYS {
+        // add r10, r11
+        let code = decoded("4d 01 da", way);
+        let add = code
+            .iter()
+            .find(|i| i.mnemonic() == Mnemonic::Add)
+            .expect("the add");
+        assert!(!names_withheld(add), "{add:?}");
+        let area = code
+            .iter()
+            .filter(|i| i.mnemonic() == Mnemonic::Mov && i.memory_segment() == Register::GS)
+            .count();
+        let piece = translate(&bytes("4d 01 da"), AT, way, true).expect("a piece");
+        assert_eq!(
+            area,
+            7,
+            "two stand-ins saved, loaded and restored, r10 stored back, r11 (only read) not:\n{}",
+            listing(&piece.bytes)
+        );
+    }
+}
+
+/// A guest instruction naming one withheld register as a whole operand reads or writes its slot of the area,
+/// unless the memory form would act otherwise.
+#[test]
+fn a_withheld_operand_is_its_slot() {
+    let slot = |k: usize| (WITHHELD_VALUES + k * AREA_WORD) as u64;
+    for way in WAYS {
+        // mov r9d, r11d: the load form, from t's slot.
+        let code = decoded("45 89 d9", way);
+        let mov = code
+            .iter()
+            .find(|i| i.mnemonic() == Mnemonic::Mov)
+            .expect("the move");
+        assert_eq!(mov.code(), Code::Mov_r32_rm32);
+        assert_eq!(
+            (mov.op0_register(), mov.memory_displacement64()),
+            (Register::R9D, slot(1))
+        );
+        // mov r10, rax: the store, a whole register written.
+        let code = decoded("49 89 c2", way);
+        let mov = code
+            .iter()
+            .find(|i| i.mnemonic() == Mnemonic::Mov)
+            .expect("the move");
+        assert_eq!(
+            (mov.code(), mov.memory_displacement64()),
+            (Code::Mov_rm64_r64, slot(0))
+        );
+        // push r15: from u's slot.
+        let code = decoded("41 57", way);
+        let push = code
+            .iter()
+            .find(|i| i.mnemonic() == Mnemonic::Push)
+            .expect("the push");
+        assert_eq!(
+            (push.code(), push.memory_displacement64()),
+            (Code::Push_rm64, slot(2))
+        );
+        // Stand-ins: mov r10d, r8d zero-extends into the register only; bt r11, rax reaches past it in memory; rol
+        // r15, 0xeb leaves OF as Intel leaves it undefined, unlike the register form on the reference (native
+        // layer 1); pextrb r10d, xmm6, 0xea writes one byte of memory but the whole register.
+        // Each saves its stand-in and restores it, loads it only where the guest reads the register and stores
+        // it back only where the guest writes it.
+        for (hex, moves) in [
+            ("45 89 c2", 3),
+            ("49 0f a3 c3", 3),
+            ("49 c1 c7 eb", 4),
+            ("66 49 0f 3a 14 f2 ea", 3),
+        ] {
+            let code = decoded(hex, way);
+            let on_area = code
+                .iter()
+                .filter(|i| i.mnemonic() == Mnemonic::Mov && i.memory_segment() == Register::GS)
+                .count();
+            assert_eq!(on_area, moves, "{hex}: the stand-in's moves");
+        }
+    }
+}
+
+/// A guest `gs:` operand is the guest's own instruction made on FS, which holds the guest's GS base from the area
+/// meanwhile, the guest's FS base kept in u; a `fs:` one is copied.
+#[test]
+fn the_area_segment_runs_on_fs_with_the_guests_base() {
+    for way in WAYS {
+        for hex in ["65 48 8b 03", "65 48 a1 10 00 00 00 00 00 00 01"] {
+            // After the count's add.
+            let code: Vec<Iced> = decoded(hex, way)
+                .into_iter()
+                .skip_while(|i| i.mnemonic() == Mnemonic::Lea && i.op0_register() == COUNT)
+                .collect();
+            let codes: Vec<Code> = code.iter().take(5).map(|i| i.code()).collect();
+            assert_eq!(
+                codes[..3],
+                [Code::Rdfsbase_r64, Code::Mov_r64_rm64, Code::Wrfsbase_r64],
+                "{hex}"
+            );
+            assert_eq!(code[0].op0_register(), U);
+            assert_eq!(
+                (code[1].op0_register(), code[1].memory_segment()),
+                (T, Register::GS)
+            );
+            assert_eq!(code[2].op0_register(), T);
+            assert_eq!(code[3].memory_segment(), Register::FS, "{hex}");
+            assert_eq!(code[3].code(), decoded_guest(hex).code(), "{hex}");
+            assert_eq!(
+                (code[4].code(), code[4].op0_register()),
+                (Code::Wrfsbase_r64, U)
+            );
+        }
+        let copied = translate(&bytes("64 48 8b 03"), AT, way, false).expect("a piece");
+        assert_eq!(&copied.bytes[..4], &bytes("64 48 8b 03")[..]);
+    }
+}
+
+/// The guest instruction `hex` as decoded.
+fn decoded_guest(hex: &str) -> Iced {
+    let mut code = bytes(hex);
+    code.resize(16, 0);
+    decode(&code).expect("decodes").0.iced
+}
+
+/// What native layer 1 found against the CPU, now each the CPU's own access on FS: a `gs:` access based on rsp or
+/// rbp (whose rebuilt form took the stack segment's fault), a `pop` based on rsp, a float status operand on `gs:`,
+/// and a bit test's register offset on `gs:` under 0x67; and a stand-in base is never rsp or rbp.
+#[test]
+fn what_layer_1_found_on_the_cpu() {
+    let on_stack = |r: Register| matches!(r, Register::RSP | Register::RBP);
+    for way in WAYS {
+        // add gs:[rsp+43h], ax; rcr qword ptr gs:[rbp], cl; pop word ptr gs:[rsp+rdx*2]; ldmxcsr gs:[r12*4-48h];
+        // bts gs:[edx], rdx under 0x67
+        for (hex, mnemonic) in [
+            ("65 66 01 44 24 43", Mnemonic::Add),
+            ("65 48 d3 5c 65 00", Mnemonic::Rcr),
+            ("65 66 8f 04 54", Mnemonic::Pop),
+            ("65 42 0f ae 14 a5 b8 ff ff ff", Mnemonic::Ldmxcsr),
+            ("65 67 48 0f ab 14 a2", Mnemonic::Bts),
+        ] {
+            let guest = decoded_guest(hex);
+            let access = decoded(hex, way)
+                .into_iter()
+                .find(|i| i.mnemonic() == mnemonic)
+                .expect("the access");
+            assert_eq!(access.memory_segment(), Register::FS, "{hex} in {way:?}");
+            assert_eq!(
+                (
+                    access.memory_base(),
+                    access.memory_index(),
+                    access.memory_displacement64()
+                ),
+                (
+                    guest.memory_base(),
+                    guest.memory_index(),
+                    guest.memory_displacement64()
+                ),
+                "{hex} in {way:?}: the guest's own operand"
+            );
+        }
+        // cmpxchg8b [r15]: the stand-in base is never rsp or rbp.
+        let code = decoded("41 0f c7 0c e7", way);
+        let access = code
+            .iter()
+            .find(|i| i.mnemonic() == Mnemonic::Cmpxchg8b)
+            .expect("the access");
+        assert!(
+            !on_stack(access.memory_base()),
+            "cmpxchg8b in {way:?}: {access:?}"
+        );
+    }
+}
+
+/// A RIP-relative load is made on the guest address built in t, an address place.
+#[test]
+fn a_rip_relative_load_is_rebased() {
+    for way in WAYS {
+        let piece = translate(&bytes("48 8b 05 10 00 00 00"), AT, way, false).expect("a piece");
+        assert_eq!(piece.places[0].address, AT + 7 + 0x10);
+        let code = host(&piece.bytes);
+        assert_eq!(code[1].1.memory_base(), T);
+    }
+}
+
+/// `syscall` is copied in the machine, whose floor owns it, and a call into the inside in a host process.
+#[test]
+fn a_system_call_per_way() {
+    use Mnemonic::*;
+    assert_eq!(shape("0f 05", Way::Machine)[0], Syscall);
+    assert_eq!(&shape("0f 05", Way::Process)[..2], [Lea, Jmp]);
+}
+
+/// The emitted code of a fault and a stop: a `ud2` is the Trap call, and a stop inside a loop's body lands in a
+/// span the map resolves.
+#[test]
+fn a_trap_and_its_map() {
+    for way in WAYS {
+        let piece = translate(&bytes("0f 0b"), AT, way, false).expect("a piece");
+        let code = host(&piece.bytes);
+        let expected = match way {
+            Way::Machine => Mnemonic::Int,
+            _ => Mnemonic::Lea,
+        };
+        assert_eq!(code[0].1.mnemonic(), expected);
+        assert_eq!(piece.spans[0].guest, AT);
+        assert_eq!(piece.spans[0].side, Side::Before);
+    }
+}
+
+/// A stepping piece holds one guest instruction and goes on only through the call of kind Step: never an exit a
+/// loader may link, a loop of its own or the lookup's second level; `pushf` and a repeated string are the
+/// inside's, a debug trap after a host instruction would not be the guest's.
+#[test]
+fn a_stepping_piece_leaves_only_through_the_inside() {
+    use wcontainers_guest_cpu::NativeReason;
+    let way = Way::Process;
+    for (hex, answered) in [
+        ("90 90", false),
+        ("eb fe", false),
+        ("74 05", false),
+        ("e2 fe", false),
+        ("e8 00 00 00 00", false),
+        ("c3", false),
+        ("ff e0", false),
+        ("41 ff 13", false),
+        ("f3 a4", true),
+        ("9c", true),
+        ("66 9c", true),
+        ("0f 0b", false),
+    ] {
+        for exact in [false, true] {
+            let piece = translate_made(&bytes(hex), AT, way, exact, false, true).expect("a piece");
+            let all = calls(&piece, way);
+            let what = format!("{hex}, count {exact}: {all:?}\n{}", listing(&piece.bytes));
+            assert!(piece.exits.is_empty(), "{what}");
+            assert_eq!(piece.sites_of(NativeReason::GuestSingleStep), 1, "{what}");
+            assert!(piece.spans.iter().all(|s| s.guest == AT), "{what}");
+            assert!(!all.contains(&InsideCall::Exit), "{what}");
+            assert_eq!(all.contains(&InsideCall::Answer), answered, "{what}");
+            assert_eq!(all.contains(&InsideCall::Step), hex != "0f 0b", "{what}");
+            let second_level = host(&piece.bytes)
+                .iter()
+                .any(|(_, i)| i.mnemonic() == Mnemonic::Jmp && i.memory_base() == U);
+            assert!(!second_level, "{what}");
+        }
+    }
+}
+
+/// The machine way steps on the hardware's TF, so it is never asked for a stepping piece.
+#[test]
+#[should_panic(expected = "this way steps on the hardware")]
+fn the_machine_way_makes_no_stepping_piece() {
+    translate_made(&bytes("90"), AT, Way::Machine, false, false, true);
+}
+
+/// The replay check (section 3.7) comes first, before the count's add, writes no flag, and calls the inside with
+/// kind Stop where the stop word less the count is zero; a branch back to the stop point goes through it again.
+#[test]
+fn the_replay_check_comes_first_and_writes_no_flag() {
+    use Mnemonic::*;
+    for way in WAYS {
+        let piece =
+            translate_made(&bytes("48 ff c8 75 fb"), AT, way, true, true, false).expect("a piece");
+        let code = host(&piece.bytes);
+        let what = listing(&piece.bytes);
+        let mnemonics: Vec<Mnemonic> = code.iter().take(7).map(|(_, i)| i.mnemonic()).collect();
+        assert_eq!(mnemonics, [Mov, Mov, Not, Lea, Jrcxz, Mov, Jmp], "{what}");
+        assert_eq!(
+            code[1].1.memory_displacement64(),
+            STOP_WORD as u64,
+            "{what}"
+        );
+        assert_eq!(code[3].1.memory_index(), COUNT, "{what}");
+        for (_, i) in &code[..7] {
+            assert_eq!(i.rflags_modified(), 0, "{what}");
+        }
+        assert_eq!(
+            calls(&piece, way).first(),
+            Some(&InsideCall::Stop),
+            "{what}"
+        );
+        let after = code
+            .iter()
+            .position(|(_, i)| i.op0_register() == COUNT && i.mnemonic() == Lea)
+            .expect("the count's add");
+        assert!(after > 7, "the count's add follows the check\n{what}");
+        let back = code
+            .iter()
+            .find(|(_, i)| i.mnemonic() == Jne)
+            .expect("the branch back");
+        assert_eq!(
+            back.1.near_branch_target(),
+            0,
+            "the loop goes back through the check\n{what}"
+        );
+        assert_eq!(
+            code.iter().filter(|(_, i)| i.mnemonic() == Jrcxz).count(),
+            1,
+            "no loop copy without the check\n{what}"
+        );
+    }
+}
+
+/// A stop point needs the count it compares.
+#[test]
+#[should_panic(expected = "a stop point needs the count")]
+fn a_stop_point_without_the_count_is_refused() {
+    translate_made(&bytes("90"), AT, Way::Process, false, true, false);
+}
+
+/// The count's add is the first instruction of a counted run and touches no flag.
+#[test]
+fn the_count_is_a_lea() {
+    let code = decoded("ff c9 75 fc", Way::Machine);
+    assert_eq!(code[0].mnemonic(), Mnemonic::Lea);
+    assert_eq!(code[0].op0_register(), COUNT);
+    assert_eq!(code[0].op_kind(1), OpKind::Memory);
+}
+
+/// A copied x87 instruction stores its guest address as the guest's FIP, a fix-up covering the store.
+#[test]
+fn x87_arithmetic_stores_the_guest_pointer() {
+    use wcontainers_guest_cpu::position::Fixup;
+    for way in WAYS {
+        // fld st(0); fldcw [rax], a control instruction, which leaves FIP as it is
+        let piece = translate(&bytes("d9 c0 d9 28"), AT, way, false).expect("a piece");
+        let code = host(&piece.bytes);
+        assert_eq!(&piece.bytes[..2], &bytes("d9 c0")[..]);
+        assert_eq!(code[1].1.immediate64(), AT, "{}", listing(&piece.bytes));
+        assert_eq!(code[2].1.memory_segment(), Register::GS);
+        assert_eq!(code[2].1.op1_register(), T);
+        let fixed: Vec<_> = piece
+            .spans
+            .iter()
+            .filter(|s| s.fixups.contains(&Fixup::X87Pointer(AT)))
+            .collect();
+        assert!(!fixed.is_empty() && fixed.iter().all(|s| s.guest == AT));
+        let stores = code
+            .iter()
+            .filter(|(_, i)| i.mnemonic() == Mnemonic::Mov && i.op1_register() == T)
+            .count();
+        assert_eq!(stores, 1, "the control instruction stores nothing");
+    }
+}
+
+/// A repeated string instruction is copied, and run by the inside when the count must take its passes.
+#[test]
+fn a_rep_string_is_copied_or_counted_by_the_inside() {
+    use wcontainers_guest_cpu::NativeReason;
+    for way in WAYS {
+        let plain = translate(&bytes("f3 a4"), AT, way, false).expect("a piece");
+        assert_eq!(&plain.bytes[..2], &bytes("f3 a4")[..]);
+        assert_eq!(plain.sites_of(NativeReason::RepeatedStringCounted), 0);
+        let counted = translate(&bytes("f3 a4"), AT, way, true).expect("a piece");
+        assert_eq!(counted.sites_of(NativeReason::RepeatedStringCounted), 1);
+        assert!(!counted.bytes.windows(2).any(|w| w == bytes("f3 a4")));
+    }
+}
+
+/// A form the inside answers only because the host differs from the meaning is a counted slow path; one it answers
+/// on every host is not.
+#[test]
+fn a_form_routed_for_the_host_is_counted() {
+    use wcontainers_guest_cpu::NativeReason;
+    let matching = target();
+    let differing = Target {
+        host: HostMatches {
+            five_level_paging: true,
+            partial_writes: false,
+            undefined_results: false,
+        },
+        ..matching
+    };
+    let sites = |hex: &str, way: Way, target: &Target| {
+        translate_native_for::<X86_64>(&bytes(hex), AT, LookAhead::Full, false, &way, target)
+            .expect("a piece")
+            .sites_of(NativeReason::HostModelResultRouted)
+    };
+    // enter 16, 2; fstp tbyte [rbx]; fbstp [rbx]; shl rax, cl; imul rax, rbx.
+    for hex in ["c8 10 00 02", "db 3b", "df 33", "48 d3 e0", "48 0f af c3"] {
+        for way in WAYS {
+            assert_eq!(sites(hex, way, &differing), 1, "{hex} in {way:?}");
+            assert_eq!(sites(hex, way, &matching), 0, "{hex} in {way:?}");
+        }
+    }
+    // wrfsbase rax: the 5-level host takes bases the meaning refuses, which only P's copy would let through.
+    assert_eq!(sites("f3 48 0f ae d0", Way::Process, &differing), 1);
+    assert_eq!(sites("f3 48 0f ae d0", Way::Machine, &differing), 0);
+    // cpuid and enter 16, 0 go the same way on every host.
+    for hex in ["0f a2", "c8 10 00 00"] {
+        for way in WAYS {
+            assert_eq!(sites(hex, way, &differing), 0, "{hex} in {way:?}");
+        }
+    }
+}
+
+/// A copied `fldcw` is followed by the flag-free check of the control word the hardware loaded, which calls the
+/// inside only when an exception is unmasked.
+#[test]
+fn fldcw_is_checked_without_flags() {
+    use Mnemonic::*;
+    for way in WAYS {
+        let piece = translate(&bytes("d9 28"), AT, way, false).expect("a piece");
+        let code = host(&piece.bytes);
+        let mnemonics: Vec<_> = code.iter().map(|(_, i)| i.mnemonic()).collect();
+        assert_eq!(
+            &mnemonics[..10],
+            [Fldcw, Fnstcw, Movzx, Not, Mov, Pext, Mov, Mov, Jrcxz, Mov]
+        );
+        let (jrcxz, short) = (
+            code[8].1,
+            code.iter()
+                .find(|(_, i)| i.mnemonic() == Jmp && i.len() == 2),
+        );
+        let (short_at, short) = short.expect("the short jump over the masked side");
+        let masked = jrcxz.near_branch64() as usize;
+        assert_eq!(masked, short_at + 2, "{}", listing(&piece.bytes));
+        let back = code
+            .iter()
+            .find(|(at, _)| *at == masked)
+            .expect("the masked side")
+            .1;
+        assert_eq!(
+            (back.op0_register(), back.op1_register()),
+            (Register::RCX, U)
+        );
+        assert_eq!(short.near_branch64() as usize, masked + back.len());
+        // Nothing is relocated where the inside is called.
+        let calls = code
+            .iter()
+            .filter(|(_, i)| matches!(i.mnemonic(), Int | Lea) && i.op0_register() != COUNT);
+        for (at, _) in calls {
+            let span = piece.span(*at as u32).expect("a span");
+            assert!(span.relocated.is_empty(), "{span:?}");
+        }
+        // No arithmetic flag is written by the check (the SDM leaves x87's C0 to C3 undefined after `fnstcw`).
+        use iced_x86::RflagsBits;
+        let arithmetic = RflagsBits::OF
+            | RflagsBits::SF
+            | RflagsBits::ZF
+            | RflagsBits::AF
+            | RflagsBits::CF
+            | RflagsBits::PF;
+        for (_, i) in &code[1..10] {
+            assert_eq!(i.rflags_modified() & arithmetic, 0, "{i:?}");
+        }
+    }
+}
+
+/// A `jcc` exit records its condition by the low four bits of its opcode, for the `int3` hit of a link.
+#[test]
+fn a_jcc_exit_records_its_condition() {
+    for (hex, condition) in [("75 10", 5), ("0f 8c 00 01 00 00", 0xc), ("70 10", 0)] {
+        let piece = translate(&bytes(hex), AT, Way::Process, false).expect("a piece");
+        let exit = piece
+            .exits
+            .iter()
+            .find(|e| e.retarget.is_some())
+            .expect("the jcc's exit");
+        assert_eq!(exit.condition, Some(condition), "{hex}");
+        assert!(
+            piece
+                .exits
+                .iter()
+                .filter(|e| e.retarget.is_none())
+                .all(|e| e.condition.is_none())
+        );
+    }
+}
+
+/// What a stop in an access needs of it: its operand with the segment and the address's width.
+#[test]
+fn an_access_gives_its_operand() {
+    use wcontainers_guest_cpu::Stopping;
+    use wcontainers_guest_cpu::position::{Base, Index, Operand, Segment};
+    let stopping = |hex: &str| {
+        let mut code = bytes(hex);
+        code.resize(16, 0);
+        let (i, _) = decode(&code).expect("decodes");
+        X86_64::stopping(&i, AT)
+    };
+    let access = |base, offset, index, segment, address_bits| {
+        Stopping::Access(Operand {
+            base,
+            offset,
+            index,
+            segment,
+            address_bits,
+        })
+    };
+    assert_eq!(
+        stopping("65 67 8b 00"),
+        access(Base::Register(0), 0, None, Some(Segment::Gs), 32)
+    );
+    assert_eq!(
+        stopping("48 8b 44 24 08"),
+        access(Base::StackPointer, 8, None, None, 64)
+    );
+    assert_eq!(
+        stopping("8b 05 10 00 00 00"),
+        access(Base::Pc, 0x16, None, None, 64)
+    );
+    let index = Index {
+        register: Base::Register(1),
+        bits: 64,
+        signed: false,
+        shift: 3,
+    };
+    assert_eq!(
+        stopping("64 48 8b 04 c8"),
+        access(Base::Register(0), 0, Some(index), Some(Segment::Fs), 64)
+    );
+    assert_eq!(
+        stopping("48 8d 04 c8"),
+        Stopping::Plain,
+        "lea touches no memory"
+    );
+    assert_eq!(stopping("0f 05"), Stopping::Syscall);
+}
+
+/// A gather on the area's segment, with and without the guest's 0x67, is the guest's own on FS.
+#[test]
+fn a_gather_on_the_area_segment() {
+    for way in WAYS {
+        for hex in ["65 67 c4 e2 69 90 04 88", "65 c4 e2 69 90 04 88"] {
+            let route = X86_64::route(
+                &way,
+                &decode(&{
+                    let mut code = bytes(hex);
+                    code.resize(16, 0);
+                    code
+                })
+                .expect("decodes")
+                .0,
+                &target(),
+            );
+            assert_eq!(route, Route::Area, "{hex}");
+            let gather = decoded(hex, way)
+                .into_iter()
+                .find(|i| i.mnemonic() == Mnemonic::Vpgatherdd)
+                .expect("the gather");
+            assert_eq!(gather.memory_segment(), Register::FS, "{hex}");
+        }
+    }
+}

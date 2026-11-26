@@ -16,7 +16,7 @@ use wasm_encoder::{
 use wasmparser::{Validator, WasmFeatures};
 use wasmtime::{
     AsContextMut, Caller, Config, Engine, Extern, Global, GlobalType, Instance, Linker, Memory,
-    MemoryType, Module, Mutability, SharedMemory, Store, Val,
+    MemoryType, Module, Mutability, Store, Val,
 };
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 use wcontainers_guest_cpu::{
@@ -29,6 +29,7 @@ use wcontainers_guest_cpu::{
 use wcontainers_translator::contract::{self, permission_byte};
 use wcontainers_translator::{LookAhead, Optimise, Sites, Translation, thread_module, translate};
 use wcontainers_translator_test::runner;
+use wcontainers_translator_test::state_memory::StateMemory;
 
 /// The test CPU, with flags or without.
 #[derive(Clone, Copy, Debug)]
@@ -938,7 +939,7 @@ enum Event {
 }
 
 struct Host {
-    state: SharedMemory,
+    state: StateMemory,
     memory: Option<Memory>,
     thread: Option<Instance>,
     blob: Vec<u8>,
@@ -1018,23 +1019,12 @@ fn engine() -> Engine {
         .clone()
 }
 
-fn write_shared(memory: &SharedMemory, at: usize, bytes: &[u8]) {
-    for (cell, &byte) in memory.data()[at..at + bytes.len()].iter().zip(bytes) {
-        // SAFETY: the guest thread is not running, so nothing else touches the byte.
-        unsafe { *cell.get() = byte };
-    }
-}
-
-fn read_shared(memory: &SharedMemory, at: usize, into: &mut [u8]) {
-    for (byte, cell) in into.iter_mut().zip(&memory.data()[at..]) {
-        // SAFETY: as for `write_shared`.
-        *byte = unsafe { *cell.get() };
-    }
-}
-
 fn block(caller: &Caller<'_, Host>) -> Vec<u8> {
     let mut bytes = vec![0; STATE_SIZE];
-    read_shared(&caller.data().state, runner::BLOCK_AT as usize, &mut bytes);
+    caller
+        .data()
+        .state
+        .read(runner::BLOCK_AT as usize, &mut bytes);
     bytes
 }
 
@@ -1091,11 +1081,10 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
             HOOK_STOP,
             move |mut caller: Caller<'_, Host>| -> i32 {
                 let block = block(&caller);
-                write_shared(
-                    &caller.data().state,
-                    runner::BLOCK_AT as usize + STOP_FLAG,
-                    &[0; 4],
-                );
+                caller
+                    .data()
+                    .state
+                    .write(runner::BLOCK_AT as usize + STOP_FLAG, &[0; 4]);
                 let r0 = u64::from_le_bytes(block[..8].try_into().unwrap());
                 let pc = pc_of(&block);
                 record(&mut caller, Event::Stop { pc, r0 });
@@ -1177,11 +1166,10 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
                 let mut bytes = block(&caller);
                 let range = hook.state.range();
                 let done = Test::<F>::run_hook(0, &[argument], &mut bytes[range.clone()]);
-                write_shared(
-                    &caller.data().state,
-                    runner::BLOCK_AT as usize + range.start,
-                    &bytes[range],
-                );
+                caller
+                    .data()
+                    .state
+                    .write(runner::BLOCK_AT as usize + range.start, &bytes[range]);
                 done.results[0]
             },
         )
@@ -1221,7 +1209,12 @@ fn instantiate<const F: bool>(
         .define(&store, contract::ENV, contract::MEMORY, memory)
         .unwrap();
     linker
-        .define(&store, contract::ENV, contract::STATE, state.clone())
+        .define(
+            &store,
+            contract::ENV,
+            contract::STATE,
+            state.shared_memory(),
+        )
         .unwrap();
     let cover = store.data().blob.len() as i64 * Test::<F>::ALIGN as i64;
     for (name, value) in [
@@ -1264,7 +1257,7 @@ fn instantiate<const F: bool>(
         for &offset in &module.pieces {
             if !exact {
                 let at = SLOTS_AT + contract::slot_entry::<Test<F>>(offset) as usize;
-                write_shared(&state, at, &slot.to_le_bytes());
+                state.write(at, &slot.to_le_bytes());
             }
             slot += 1;
         }
@@ -1280,7 +1273,7 @@ fn run<const F: bool>(
     optimise: Optimise,
 ) -> Ran {
     let engine = engine();
-    let state = SharedMemory::new(&engine, MemoryType::shared(1, 1)).unwrap();
+    let state = StateMemory::new(&engine, 1);
     let mut store = Store::new(
         &engine,
         Host {
@@ -1311,7 +1304,7 @@ fn run<const F: bool>(
             }
         })
         .collect();
-    write_shared(&state, runner::PERMISSIONS_AT as usize, &table);
+    state.write(runner::PERMISSIONS_AT as usize, &table);
     let mut block = vec![0; STATE_SIZE];
     block[..128].copy_from_slice(&Test::<F>::initial_block(LOAD + starts[0], STACK));
     for &(r, value) in &start.registers {
@@ -1319,12 +1312,17 @@ fn run<const F: bool>(
         block[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }
     block[80..88].copy_from_slice(&start.fs.to_le_bytes());
-    write_shared(&state, runner::BLOCK_AT as usize, &block);
+    state.write(runner::BLOCK_AT as usize, &block);
 
     let mut linker = Linker::new(&engine);
     hooks::<F>(&mut linker);
     linker
-        .define(&store, contract::ENV, contract::STATE, state.clone())
+        .define(
+            &store,
+            contract::ENV,
+            contract::STATE,
+            state.shared_memory(),
+        )
         .unwrap();
     let cover = code.len() as i64 * Test::<F>::ALIGN as i64;
     for (name, value) in [
@@ -1370,7 +1368,7 @@ fn run<const F: bool>(
     run.call(&mut store, ()).expect("the thread runs");
 
     let mut block = vec![0; STATE_SIZE];
-    read_shared(&state, runner::BLOCK_AT as usize, &mut block);
+    state.read(runner::BLOCK_AT as usize, &mut block);
     Ran {
         block,
         memory: memory.data(&store).to_vec(),

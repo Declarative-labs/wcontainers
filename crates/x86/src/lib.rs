@@ -1,5 +1,5 @@
 //! Everything that is only true of x86-64. The core, [`X86_64`]'s [`Personality`] and its register block
-//! [`X86Block`], is `no_std`; with the `translate` feature (on by default) also the decoder (iced-x86), the
+//! [`X86Block`] and the x87 unit, is `no_std`; with the `translate` feature (on by default) also the decoder (iced-x86), the
 //! meaning of every instruction as WebAssembly and [`X86_64`]'s `Guest` implementation.
 
 #![cfg_attr(not(feature = "translate"), no_std)]
@@ -7,6 +7,8 @@
 use wcontainers_guest_cpu::Personality;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
+#[cfg(feature = "translate")]
+pub mod carry;
 #[cfg(feature = "translate")]
 mod decode;
 #[cfg(feature = "translate")]
@@ -34,8 +36,9 @@ mod masked;
 #[cfg(feature = "translate")]
 mod meaning;
 #[cfg(feature = "translate")]
-mod operand;
+pub mod native;
 #[cfg(feature = "translate")]
+mod operand;
 mod root;
 #[cfg(feature = "translate")]
 mod segments;
@@ -43,33 +46,32 @@ mod segments;
 mod simd;
 #[cfg(feature = "translate")]
 mod text;
-#[cfg(feature = "translate")]
 mod transcendental;
-#[cfg(feature = "translate")]
 pub mod x87;
 
+pub mod answer;
+pub mod area;
 pub mod claims;
+pub mod condition;
 pub mod cpuid;
 pub mod encoding;
 #[cfg(feature = "translate")]
 mod lanes;
 pub mod offer;
+pub mod strings;
+mod user_segments;
 #[cfg(feature = "translate")]
 mod vex;
 #[cfg(feature = "translate")]
 mod wide;
 
+pub use condition::{Condition, Test};
 pub use offer::{FULL_SPEED, Offer, Refused, V3};
 
 #[cfg(feature = "translate")]
 pub use decode::{Instruction, claim, decode, told_feature};
 #[cfg(feature = "translate")]
-pub use descriptors::{
-    CPU_NUMBER, KERNEL_CS, SELECTOR_INDEX, SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS,
-    USER32_CS,
-};
-#[cfg(feature = "translate")]
-pub use flags::{Condition, Flag, Flags, Shape, Test};
+pub use flags::{Flag, Flags, Shape};
 #[cfg(feature = "translate")]
 pub use float::reciprocal;
 #[cfg(feature = "translate")]
@@ -80,8 +82,10 @@ pub use host::Host;
 pub use meaning::written;
 #[cfg(feature = "translate")]
 pub use operand::{General, general as general_register, size_of_memory as memory_size_bytes};
-#[cfg(feature = "translate")]
-pub use operand::{R8, R9, R10, R11, R12, R13, R14, R15, RAX, RBP, RBX, RCX, RDI, RDX, RSI};
+pub use user_segments::{
+    CPU_NUMBER, KERNEL_CS, SELECTOR_INDEX, SELECTOR_PRIVILEGE, TASK_STATE, USER_CS, USER_DS,
+    USER32_CS,
+};
 
 /// The x86-64 guest, 64-bit user mode.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -224,6 +228,23 @@ pub const XMM_BYTES: u32 = size_of::<u128>() as u32;
 /// The bit of a string compare's (`pcmpestri` and its kin) immediate that makes its elements words.
 pub const STRING_COMPARE_WORDS: u8 = 1;
 
+/// The general registers' numbers, in hardware order.
+pub const RAX: u8 = 0;
+pub const RCX: u8 = 1;
+pub const RDX: u8 = 2;
+pub const RBX: u8 = 3;
+pub const RSP: u8 = RSP_NUMBER;
+pub const RBP: u8 = 5;
+pub const RSI: u8 = 6;
+pub const RDI: u8 = 7;
+pub const R8: u8 = 8;
+pub const R9: u8 = 9;
+pub const R10: u8 = 10;
+pub const R11: u8 = 11;
+pub const R12: u8 = 12;
+pub const R13: u8 = 13;
+pub const R14: u8 = 14;
+pub const R15: u8 = 15;
 /// rsp's number in the general registers.
 pub const RSP_NUMBER: u8 = 4;
 
@@ -294,6 +315,10 @@ pub const fn is_canonical(address: u64) -> bool {
 pub const BREAKPOINT_VECTOR: u8 = 3;
 pub const OVERFLOW_VECTOR: u8 = 4;
 pub const LINUX_32_BIT_SYSTEM_CALL: u8 = 0x80;
+
+/// The quiet bit, and x86's default not-a-number, negative and quiet, of single precision.
+pub(crate) const QUIET32: u32 = 1 << (f32::MANTISSA_DIGITS - 2);
+pub(crate) const DEFAULT32: u32 = (-f32::INFINITY).to_bits() | QUIET32;
 
 /// Bits user code always sees set in rflags: the reserved bit 1 and IF.
 pub const ALWAYS: u64 = 0x202;

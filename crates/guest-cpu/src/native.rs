@@ -2,7 +2,7 @@
 //! carried over to host code of the same architecture. It never says what an instruction computes; the
 //! hardware computes it, and the meanings stay the definition the routes are proven against.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use serde::{Deserialize, Serialize};
@@ -42,6 +42,8 @@ pub enum Route {
     Trap,
     /// The exclusive monitor kept as the meaning keeps it.
     Exclusive,
+    /// An operand or base instruction of the segment that holds the thread area, rebuilt on the guest's base.
+    Area,
 }
 
 /// What the native output does with a hook or a control a meaning uses.
@@ -57,8 +59,13 @@ pub enum NativeClass {
 
 /// A guest whose instructions the native output carries over to the same architecture.
 pub trait Native: Guest {
+    /// How translated code reaches guest memory, the thread area and the inside; part of the cache key.
+    type Way: Copy + Eq + core::hash::Hash;
+    /// What the code is made for besides the way: what the probe found of the host and the features the process
+    /// was told of; part of the cache key.
+    type Target;
     /// The route of one decoded instruction.
-    fn route(i: &Self::Instruction) -> Route;
+    fn route(way: &Self::Way, i: &Self::Instruction, target: &Self::Target) -> Route;
     /// The class of a hook, given the constant its meaning passes as the first argument where it passes one
     /// (the float hook's operation).
     fn hook_class(hook: Self::Hook, first: Option<i64>) -> NativeClass;
@@ -69,14 +76,21 @@ pub trait Native: Guest {
     /// What one test before a straight-line part that loops to its own start (`part`, with its guest addresses)
     /// can settle for every turn, because no instruction of the part changes it.
     fn loop_invariant(part: &[(u64, Self::Instruction)]) -> Self::LoopInvariant;
-    /// Writes the test of `invariant`, ending in a branch taken when it holds and pointed later by
+    /// Writes the test of `invariant` for `way`, ending in a branch taken when it holds and pointed later by
     /// [`Self::link`]; gives that branch's offset, or none when it settles nothing.
-    fn test_loop_invariant(code: &mut HostCode, invariant: &Self::LoopInvariant) -> Option<usize>;
+    fn test_loop_invariant(
+        way: &Self::Way,
+        code: &mut HostCode,
+        invariant: &Self::LoopInvariant,
+    ) -> Option<usize>;
     /// Writes the host code of one decoded instruction, `bytes` at guest `address`, as its route says, given the
     /// instructions of its straight-line part before it (`before`, oldest first, with their guest addresses)
     /// and what a test before its loop settled (`invariant`). Its spans start at the instruction, before its
     /// commit point, with the count already placed.
+    #[allow(clippy::too_many_arguments)]
     fn carry(
+        way: &Self::Way,
+        target: &Self::Target,
         before: &[(u64, Self::Instruction)],
         i: &Self::Instruction,
         bytes: &[u8],
@@ -87,9 +101,9 @@ pub trait Native: Guest {
     /// Writes the count's add of `events` counted events.
     fn count(code: &mut HostCode, events: u32);
     /// Writes a call into the inside.
-    fn call(code: &mut HostCode, call: InsideCall);
+    fn call(way: &Self::Way, code: &mut HostCode, call: InsideCall);
     /// Writes the exit to the direct guest `target` after the current instruction's commit point.
-    fn exit(code: &mut HostCode, target: u64);
+    fn exit(way: &Self::Way, code: &mut HostCode, target: u64);
     /// Points a direct exit of `code` at host offset `to` of the same code, as a loader links one; false where
     /// its branch cannot reach.
     fn link(code: &mut HostCode, exit: &DirectExit, to: usize) -> bool;
@@ -100,6 +114,35 @@ pub trait Native: Guest {
     fn movable() -> Range<u64>;
     /// Writes the word of `code` at `place` for the place's address.
     fn write_place(code: &mut [u8], place: &AddressPlace);
+    /// Whether `way` runs a guest's single step on stepping pieces ([`HostCode::stepping`]); where it does not,
+    /// the hardware's own single step runs it and no stepping piece is made.
+    fn steps(_: &Self::Way) -> bool {
+        false
+    }
+    /// Writes the replay check before the instruction at a stop point (docs/native.md 5.7): a call of kind
+    /// [`InsideCall::Stop`] where the thread's stop word equals its count, the guest's flags kept. False, with
+    /// nothing written, for a guest that has none yet.
+    fn stop_check(_: &Self::Way, _: &mut HostCode) -> bool {
+        false
+    }
+    /// The way each straight-line part of one piece is written for, given each part's instructions and the piece's
+    /// loops as ranges of parts; the default is `way` for every part.
+    fn part_ways(
+        way: &Self::Way,
+        parts: &[&[Self::Instruction]],
+        _loops: &[Range<usize>],
+    ) -> Vec<Self::Way> {
+        vec![*way; parts.len()]
+    }
+    /// Writes what a part of `way` does first when it is entered from outside the piece; the default writes nothing.
+    fn enter(_: &Self::Way, _: &mut HostCode) {}
+    /// Notes, writing nothing, where a part of `way` holds guest values once [`Self::enter`] has run.
+    fn entered(_: &Self::Way, _: &mut HostCode) {}
+    /// Writes [`Self::enter`] and then a branch to host offset `to`, for a part of `way` entered from a part of
+    /// another way through its exit; false, with nothing written, where entering it needs no code.
+    fn enter_at(_: &Self::Way, _: &mut HostCode, _to: usize) -> bool {
+        false
+    }
 }
 
 /// Host code with its position map, written one guest instruction after another.
@@ -125,7 +168,25 @@ pub struct HostCode {
     /// Exits written while the count was ahead, by start: the bytes of their first words, which settle the
     /// count, or none for a branch only the code's own linking may point elsewhere.
     settling: BTreeMap<u32, Option<u32>>,
+    /// Of those exits, the ones whose settling ends in code that only leaving the piece runs: the bytes before it.
+    within: BTreeMap<u32, u32>,
+    /// Branches only linking within the code may point elsewhere, by start.
+    local: BTreeSet<u32>,
+    /// Guest values held elsewhere throughout the piece once it is entered, unless released.
+    kept: Vec<Relocated>,
+    /// Kept values the current instruction has released.
+    released: Vec<u8>,
+    /// The current instruction's first host byte.
+    begun: u32,
+    /// Whether this is a stepping piece: one instruction whose every way on goes into the inside with
+    /// [`InsideCall::Step`], none linked.
+    pub stepping: bool,
 }
+
+/// A state of [`HostCode`] to come back to: the current instruction's span, whether its event is owed, and the
+/// guest values the piece keeps elsewhere there.
+#[derive(Clone, Debug)]
+pub struct Snapshot(pub Span, bool, Vec<Relocated>);
 
 /// Code placed out of line, in the order it was deferred.
 #[derive(Default)]
@@ -150,17 +211,19 @@ impl HostCode {
     /// earlier in the run may be this one's.
     pub fn start(&mut self, address: u64, counted: bool, stopping: Stopping) {
         let lead = self.now.as_ref().map_or(0, |s| s.lead);
+        self.released.clear();
         self.now = Some(Span {
             start: 0,
             guest: address,
             side: Side::Before,
             lead,
             resume: Resume::At(address),
-            relocated: Vec::new(),
+            relocated: self.kept.clone(),
             fixups: Vec::new(),
             stopping,
         });
         self.owed = counted;
+        self.begun = u32::try_from(self.bytes.len()).expect("host code fits in u32 offsets");
     }
 
     fn state(&mut self) -> &mut Span {
@@ -168,17 +231,20 @@ impl HostCode {
     }
 
     /// The current state, to come back to for code placed out of line.
-    pub fn snapshot(&self) -> (Span, bool) {
-        (
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot(
             self.now.clone().expect("an instruction was started"),
             self.owed,
+            self.kept.clone(),
         )
     }
 
     /// Goes back to a state taken with [`Self::snapshot`].
-    pub fn restore(&mut self, (span, owed): (Span, bool)) {
+    pub fn restore(&mut self, Snapshot(span, owed, kept): Snapshot) {
+        self.released.clear();
         self.now = Some(span);
         self.owed = owed;
+        self.kept = kept;
     }
 
     /// Counts one site of a slow path.
@@ -224,6 +290,7 @@ impl HostCode {
             start,
             target,
             retarget: None,
+            condition: None,
         });
         self.push(bytes);
         if let Some(resume) = commit {
@@ -248,14 +315,16 @@ impl HostCode {
         self.tables.push(BranchTable { start, ..table });
     }
 
-    /// Records the branch written at `at` as one more exit to the direct guest `target`, which a loader may point
-    /// at the target's piece through the offset bits `field`, unless the count is ahead here.
-    pub fn branch_exit(&mut self, at: usize, target: u64, field: u32) {
+    /// Records the branch written at `at` as one more exit to the direct guest `target`, taken under `condition`
+    /// where it has one, which a loader may point at the target's piece through the offset bits `field`, unless
+    /// the count is ahead here.
+    pub fn branch_exit(&mut self, at: usize, target: u64, field: u32, condition: Option<u8>) {
         let start = u32::try_from(at).expect("host code fits in u32 offsets");
         self.exits.push(DirectExit {
             start,
             target,
             retarget: Some(field),
+            condition,
         });
         if self.lead() > 0 {
             self.settling.insert(start, None);
@@ -265,6 +334,9 @@ impl HostCode {
     /// The exit as a loader may link it, once linking within the code has left it an exit: none when only
     /// linking within the code may.
     pub fn for_loader(&self, exit: DirectExit) -> Option<DirectExit> {
+        if self.local.contains(&exit.start) {
+            return None;
+        }
         match self.settling.get(&exit.start) {
             None => Some(exit),
             Some(None) => None,
@@ -273,6 +345,55 @@ impl HostCode {
                 ..exit
             }),
         }
+    }
+
+    /// The exit as linking within the code links it where the part it goes to is entered with the guest's count:
+    /// past its settling but before code only leaving the piece runs; none when only an exit taken with the count
+    /// ahead may be linked.
+    pub fn for_within(&self, exit: DirectExit) -> Option<DirectExit> {
+        match self.settling.get(&exit.start) {
+            None => Some(exit),
+            Some(None) => None,
+            Some(&Some(length)) => Some(DirectExit {
+                start: exit.start + self.within.get(&exit.start).copied().unwrap_or(length),
+                ..exit
+            }),
+        }
+    }
+
+    /// Notes that the exit started at `start` runs `length` more bytes, here, before its loader's word, which only
+    /// leaving the piece needs.
+    pub fn leaving(&mut self, start: usize, length: usize) {
+        let start = u32::try_from(start).expect("host code fits in u32 offsets");
+        let length = u32::try_from(length).expect("host code fits in u32 offsets");
+        let settled = self.settling.get(&start).copied().flatten().unwrap_or(0);
+        self.settling.insert(start, Some(settled + length));
+        self.within.insert(start, settled);
+    }
+
+    /// Notes that only linking within the code may point the branch at `at` elsewhere.
+    pub fn local(&mut self, at: usize) {
+        self.local
+            .insert(u32::try_from(at).expect("host code fits in u32 offsets"));
+    }
+
+    /// From here on, and in every instruction after, a guest register's value is held elsewhere.
+    pub fn keep(&mut self, guest: u8, held: Held) {
+        self.kept.retain(|r| r.guest != guest);
+        self.kept.push(Relocated { guest, held });
+        self.relocate(guest, held);
+    }
+
+    /// From here on, and in every instruction after, no guest value is kept elsewhere until kept again.
+    pub fn unkeep(&mut self) {
+        let kept = std::mem::take(&mut self.kept);
+        self.state().relocated.retain(|r| !kept.contains(r));
+    }
+
+    /// For the rest of the current instruction, a kept guest register's value is in its own place again.
+    pub fn release(&mut self, guest: u8) {
+        self.released.push(guest);
+        self.state().relocated.retain(|r| r.guest != guest);
     }
 
     /// How far the count is ahead of the guest's here.
@@ -342,9 +463,25 @@ impl HostCode {
         now.relocated.push(Relocated { guest, held });
     }
 
-    /// From here on a guest register's value is in its own place again.
+    /// Throughout the current instruction, from its first byte (an add written before it included), a guest
+    /// register's value is held elsewhere.
+    pub fn relocate_throughout(&mut self, guest: u8, held: Held) {
+        let begun = self.begun;
+        for span in self.spans.iter_mut().rev().take_while(|s| s.start >= begun) {
+            span.relocated.retain(|r| r.guest != guest);
+            span.relocated.push(Relocated { guest, held });
+        }
+        self.relocate(guest, held);
+    }
+
+    /// From here on a guest register's value is in its own place again, or where the piece keeps it.
     pub fn home(&mut self, guest: u8) {
-        self.state().relocated.retain(|r| r.guest != guest);
+        let kept = (!self.released.contains(&guest))
+            .then(|| self.kept.iter().find(|r| r.guest == guest).copied())
+            .flatten();
+        let now = self.state();
+        now.relocated.retain(|r| r.guest != guest);
+        now.relocated.extend(kept);
     }
 
     /// From here on a stop also makes this fix-up.
@@ -377,6 +514,27 @@ impl HostCode {
     }
 }
 
+/// The most bytes a patch changes: one word, which a store or the `int3` protocol writes whole.
+pub const PATCH_BYTES: usize = size_of::<u64>();
+
+/// A change to code other threads may be running, written by the way's protocol (x86 by the `int3` protocol,
+/// ARM64 in one store).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Patch {
+    /// Offset of the changed instruction's first byte in the code.
+    pub at: u32,
+    /// The instruction's bytes after the change, the first `length` of them.
+    pub bytes: [u8; PATCH_BYTES],
+    pub length: u8,
+}
+
+impl Patch {
+    /// The bytes the patch writes.
+    pub fn written(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.length)]
+    }
+}
+
 /// Translated code as a loader takes and keeps it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Translation {
@@ -403,7 +561,7 @@ impl Translation {
                 moved(address);
             }
             for fixup in &mut span.fixups {
-                if let Fixup::Address { value, .. } = fixup {
+                if let Fixup::Address { value, .. } | Fixup::X87Pointer(value) = fixup {
                     moved(value);
                 }
             }

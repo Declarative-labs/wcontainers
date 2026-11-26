@@ -25,6 +25,8 @@ pub struct RegisterPage {
     pub withheld: [u64; WITHHELD.len()],
     /// A stand-in's own value while it holds another register's, then the registers a sequence borrows.
     pub saved: [u64; 2 * BORROWED],
+    /// The guest's x30 while a call of the process way names its floor entry there (`native::Way::Process`).
+    pub link: u64,
     /// The exclusive monitor, as the meanings keep it.
     pub exclusive_bytes: u64,
     pub exclusive_address: u64,
@@ -40,11 +42,15 @@ pub type Exclusive = [u64; (size_of::<RegisterPage>()
 impl RegisterPage {
     /// The word at a byte offset of the page.
     pub fn word(&self, offset: u16) -> u64 {
-        let words = size_of::<Self>() / size_of::<u64>();
-        // SAFETY: the page is `#[repr(C)]` words, and the index is checked against their number.
-        let all =
-            unsafe { core::slice::from_raw_parts((self as *const Self).cast::<u64>(), words) };
-        all[usize::from(offset) / size_of::<u64>()]
+        let exclusive = self.exclusive();
+        let mut all = self
+            .withheld
+            .iter()
+            .chain(&self.saved)
+            .chain(core::iter::once(&self.link))
+            .chain(&exclusive);
+        *all.nth(usize::from(offset) / size_of::<u64>())
+            .expect("an offset inside the register page")
     }
 
     /// The exclusive monitor: bytes, address, low and high words.

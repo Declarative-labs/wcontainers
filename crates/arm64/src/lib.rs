@@ -46,6 +46,8 @@ mod native;
 mod simd;
 pub mod thread_state;
 pub use thread_state::{FPCR_BITS, FPSR_BITS};
+pub mod way;
+pub use way::Way;
 #[cfg(feature = "translate")]
 mod vector;
 
