@@ -261,6 +261,86 @@ run named here are in the scratch folder graphics-implementations/.
 - Not added: a hostile test that makes a SAMPLES_PASSED query through st/mesa needs a GL context over our Gallium
   driver, which part B's tooling gives.
 
+## The fourth run (2026-11-26): the check of GI4 did not hold; its repair
+
+### What the check measured and what this run measured first
+
+- The check (linter da55b9d7 on a copy with gpu-webgl's old lints table, so its compiler view exists) found GI4
+  reported done with its bar not met: conformance_not_run 4, conformance_untested_method 1. MEASURED again here at
+  1282b3928 the same way: conformance_not_run 4, conformance_untested_method 1, public_outside_interface 124
+  (recording), 175 (webgpu), 425 (webgl), implementation_folder 2, trait_outside_interface 2, crate_not_member 1,
+  constant_defined_twice 1 in webgpu and 1 in webgl. GI4 is not done; this run did not call it done either.
+- His main is ac696ea19, already merged into the branch (`git merge-base --is-ancestor`), so there was nothing to
+  merge; no graphics crate names the instruction interfaces that changed.
+
+### What changed, by finding (counts before and after, linter da55b9d7, x86-64, MEASURED)
+
+| rule (crates/gpu) | before | after | how |
+|---|---|---|---|
+| conformance_not_run | 4 | 1 | below |
+| conformance_untested_method | 1 | 1 | blocked: below |
+| implementation_folder | 2 | 0 | webgpu's and webgl's library moved from src/lib.rs to implementation.rs at the folder root, its modules beside it (`[lib] path`) |
+| trait_outside_interface | 2 | 0 | webgl's checks take their host from a `host` module the including file gives (the browser page, the ANGLE test), not a trait; the scenes' `Plain` trait became bytemuck's `Pod` |
+| crate_not_member | 1 | 0 | the ANGLE DLL tool (webgl/angle) is no crate any more: build.cmd writes its two-line package into the build folder |
+| constant_defined_twice (implementations) | 2 | 0 | webgpu's edge program uses the interface's `STORAGE_WORD`; draw-cost's `SIZE` is `TARGET_SIDE`, the fact it is |
+| public_outside_interface | 124 / 175 / 425 | 4 / 83 / 177, trace 15 | below |
+
+- conformance_not_run: the two browser pages (webgpu examples/scenes/suite.rs, webgl examples/browser.rs) no longer
+  name the conformance crate: webgpu's suite page and its runner (web/suite.html, suite.mjs, the steps of web/check)
+  are gone; webgl's page keeps its own checks only. The shared suite therefore no longer runs in Chrome (a WebAssembly
+  runner of conformance_run.rs would bring it back). webgl's conformance_run.rs has no `#![cfg(windows)]`: its config
+  names the folder of any EGL library in `WEBGL_ANGLE_DIR` (default ANGLE's on the desktop), and the back end takes an
+  off-screen-only configuration where the display has no windows, so it runs on Mesa's EGL (llvmpipe, surfaceless) on
+  the build machines. `Traced` left webgl: it is the implementation crates/gpu/implementation/trace
+  (`wcontainers-gpu-trace`), exported, built through `StandaloneGpu` from `TracedConfig { inner, file }`, its suite run
+  on `Traced<Recorder>`; the stream format and `Replay` came with it, and the replay page and a record-then-replay
+  test (now on the recorder, so it runs anywhere) moved there. The ANGLE-only `impl Traced<Gl>` (on_angle, add_window)
+  went, so directx's `Chosen` is `Gl`; recording a real program's frames through directx waits until directx builds
+  `Traced<Gl>` itself.
+- The one conformance_not_run left is the trace crate's run: its value must write `RecorderConfig { .. }`, which names
+  the recording crate outside a type argument. It and conformance_untested_method (`StandaloneGpu::new`) have one
+  cause, for the orchestrator (smallest example in the run's report): no suite function and no wrapper's run can make
+  a value of `StandaloneGpu::Config` without naming an implementation, and the tool's `tests!` shape gives the group
+  arm no config. His shader-converters, test-window and win32 interfaces have the same finding.
+- public_outside_interface: every `pub` item no other crate can reach is `pub(crate)` (rustc's `unreachable_pub`,
+  applied by `cargo fix`), and so is every `pub` field of a crate-private struct; the recorder's config is plain data
+  without `Default` or `Clone` (`RecorderConfig { caps: None }` declares everything it records), and neither config
+  derives `Clone`. Left, each a design step of its own: the inherent methods and impl blocks on the exported back ends
+  that tests, examples and directx call (`add_window`, `on_angle`, `counters`, `device_descriptor`, the inherent `new`),
+  the handle types filling associated types (private fields, `PartialEq`/`Eq` derived), webgl's `pub mod platform` and
+  `glsl`, the trace crate's `Frame` and `Replay` (the replay page uses them).
+
+### The fifth lavapipe failure, and D6 in the conformance value
+
+- `presents_cleared_frames` failed because the suite presented into window 1 while every value given to `tests!` is
+  built by `StandaloneGpu::new`, which names no window: the interface has no call that gives a back end a window, so
+  it failed on any machine, not for want of a GPU (the recorder passed because it accepts any window number). The test
+  now presents where `create_surface` succeeds and otherwise checks that the refusal loses no device. MEASURED on
+  lavapipe, both machines: it passes; webgpu 135 passed, 4 failed (GI2's four), 3 ignored.
+- D6: `WebGpuConfig { backends, lavapipe }` takes a CPU adapter only when it is lavapipe and `VK_DRIVER_FILES` or
+  `VK_ICD_FILENAMES` names its manifest; the test helper asks the back end itself. MEASURED, both machines: with
+  lavapipe named, the webgpu conformance run 53 passed, 1 failed (the depth24plus rounding); with lavapipe loaded
+  through a manifest of another name, the run refuses it ("the adapter is the software llvmpipe ...").
+
+### Measured at this commit (both machines alike unless named)
+
+- `cargo check --all-targets` under the workspace lints: every graphics package exits 0 except gpu-webgl (167 errors,
+  165 of them unsafe) and shaders through it, as before; the new trace crate exits 0.
+- Tests: gpu 37, recording 215, trace 55 (51 suite, 3 volatile-bytes, 1 record-then-replay),
+  directx-graphics-infrastructure 13, graphics-test 16, direct3d-11 69, shader-converters 7 and 7 pass; clippy
+  `-D warnings` of gpu, conformance, recording, trace, webgpu exits 0; wasm32 checks of the libraries and of the
+  three browser pages exit 0.
+- New, gpu-webgl on Mesa's EGL (llvmpipe, scratch copy with its old lints table): 69 passed, 2 failed (its 17 own
+  and 52 of 54 suite tests). 28 suite failures were the suite's helpers asking for the first provoking vertex, which
+  OpenGL ES without ANGLE's extension lacks; they now ask for one the back end has. Left: the depth24plus rounding (as
+  lavapipe) and `edges_through_pixel_centres_follow_the_top_left_rule` (texel (0, 0) not drawn; INFERRED llvmpipe's
+  tie rule under OpenGL's lower-left origin, not yet shown).
+
+### Not done in this run
+
+- GI6's tessellation hunk: its draw tests are all Windows-only against real Direct3D 11; a test that shows the hunk on
+  lavapipe needs the domain records past the tessellator's total read back, which no test does yet. Next.
+
 ## SECURITY
 
 - Lines with unsafe, unchanged from graphics-layout: gpu-webgl 160, opengl 353, nir 113, shaders 71, gpu-webgpu 19,
@@ -274,3 +354,7 @@ run named here are in the scratch folder graphics-implementations/.
   examples/common/angle.rs with the code around it. New dependencies: none from outside the workspace;
   wcontainers-volatile-bytes (gpu, webgpu, conformance) and wcontainers-byte-sink and byte-source (webgpu,
   conformance), all workspace crates. No hostile-guest suite was run (none exists).
+- Fourth run: gpu 0, conformance 0, recording 0, trace 0 (new), webgpu 19, webgl 158 (the two lines of the ANGLE-only
+  `impl Traced<Gl>` removed with it), shaders 71, shader-converters 5, nir 113, opengl 353, test-window 12: 731. No
+  marked exception added. New dependencies: bytemuck (already in the lock through webgpu) as a webgl dev-dependency;
+  the trace crate uses postcard, serde and naga as webgl did. No hostile-guest suite was run (none exists).
