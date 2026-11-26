@@ -340,6 +340,9 @@ fn execute_masked(
     let lane_mask = (1u128 << lane.to_bits()) - 1;
     let enabled: Vec<usize> = (0..halves * per_half)
         .filter(|&index| {
+            if bytewise && is_active(Bug::MaskedByteStoreEveryByte) {
+                return true;
+            }
             let value = (mask[index / per_half] >> (lane.to_bits() as usize * (index % per_half))) & lane_mask;
             value >> (lane.to_bits() - 1) != 0
         })

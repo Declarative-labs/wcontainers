@@ -416,7 +416,8 @@ pub fn compare_strings(first: u128, second: u128, lengths: Option<(i64, i64)>, i
     let found = (0..count).fold(0u16, |bits, j| bits | (u16::from(matched(j)) << j));
     let all = if count == 16 { u16::MAX } else { (1 << count) - 1 };
     let valid_mask = if second_length >= 16 { u16::MAX } else { (1u16 << second_length) - 1 };
-    let result = match (immediate >> 4) & 3 {
+    let polarity = if is_active(Bug::StringCompareMaskedPolarityIgnored) { (immediate >> 4) & 1 } else { (immediate >> 4) & 3 };
+    let result = match polarity {
         1 => !found & all,
         3 => (found ^ valid_mask) & all,
         _ => found,

@@ -299,7 +299,8 @@ pub(crate) fn dot_half(first: u128, second: u128, precision: Precision, immediat
     };
     let mut products = Vec::new();
     for lane in 0..lanes {
-        products.push(if immediate >> (4 + lane) & 1 != 0 { step(Multiply.compute(a[lane], b[lane], precision, mxcsr, 0))? } else { 0 });
+        let selected = immediate >> (4 + lane) & 1 != 0 || is_active(Bug::DotProductEveryLane);
+        products.push(if selected { step(Multiply.compute(a[lane], b[lane], precision, mxcsr, 0))? } else { 0 });
     }
     // The steps' exceptions are those of the pair sums and their sum; each lane's sum takes its operands in an order
     // of its own, which decides only the NaN it gives: for singles its partner's product before its own and its own

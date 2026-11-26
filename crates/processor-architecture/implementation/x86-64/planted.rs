@@ -752,6 +752,12 @@ pub enum Bug {
     HalfRoundsToNearest,
     /// The VEX scalar floating-point forms take the upper lanes from the second source.
     VexScalarUpperFromSecond,
+    /// VDPPS and VDPPD multiply every lane whatever the immediate's high nibble.
+    DotProductEveryLane,
+    /// VPCMPESTRI to VPCMPISTRM ignore the masked polarities.
+    StringCompareMaskedPolarityIgnored,
+    /// VMASKMOVDQU stores every byte whatever its mask.
+    MaskedByteStoreEveryByte,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1090,6 +1096,9 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::WideningUpperFromLowLanes, "VCVTPS2PD of 256 bits", Family::Avx(|form| form.wide && matches!(form.operation, AvxOperation::ConvertWidening(_))), Origin::Avx),
     row(Bug::HalfSubnormalAsZero, "VCVTPH2PS", Family::Avx(|form| form.operation == AvxOperation::HalfToSingle), Origin::Avx),
     row(Bug::HalfRoundsToNearest, "VCVTPS2PH", Family::Avx(|form| form.operation == AvxOperation::SingleToHalf), Origin::Avx),
+    row(Bug::DotProductEveryLane, "VDPPS, VDPPD", Family::Avx(|form| matches!(form.operation, AvxOperation::DotProduct(_))), Origin::Avx),
+    row(Bug::StringCompareMaskedPolarityIgnored, "VPCMPESTRI, VPCMPISTRM", Family::Avx(|form| matches!(form.operation, AvxOperation::StringCompare { .. })), Origin::Avx),
+    row(Bug::MaskedByteStoreEveryByte, "VMASKMOVDQU", Family::Avx(|form| form.operation == AvxOperation::MaskedByteStore), Origin::Avx),
     row(Bug::VexScalarUpperFromSecond, "VADDSS and the VEX scalar forms", Family::Avx(|form| matches!(form.operation, AvxOperation::Float { arrangement: crate::float::Arrangement::Scalar, operation, .. } if !operation.writes_flags())), Origin::Avx),
 ];
 
