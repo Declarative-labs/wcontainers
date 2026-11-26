@@ -252,12 +252,7 @@ fn exit_of_syndrome(syndrome: u64, fault_address: u64, registers: &RegisterBlock
 /// Returns the exit of a trapped system access of encoding `(op0, op1, CRn, CRm)` and `op2`, into
 /// or from general register `register`, a read if `read`: a counter read the kernel answers,
 /// else an access the kernel does not emulate, which ends as an undefined instruction does.
-fn exit_of_system_access(
-    encoding: (u8, u8, u8, u8),
-    op2: u8,
-    register: u8,
-    read: bool,
-) -> Exit {
+fn exit_of_system_access(encoding: (u8, u8, u8, u8), op2: u8, register: u8, read: bool) -> Exit {
     match counter_of(op2) {
         Some(counter) if read && encoding == COUNTER_REGISTERS => {
             Exit::CounterRead { counter, register }

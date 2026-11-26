@@ -19,9 +19,11 @@ use wcontainers_kernel_linux::{
     AccessKind, FileRecord, Kernel, MemoryObject, Process, SignalInformation, Standard, Start,
     System, SystemCallResponse, TaskId,
 };
-use wcontainers_system_seeded_test_policy::{
-    REPEATABLE_START_NANOSECONDS, Schedule, TURN_NANOSECONDS,
-};
+use wcontainers_system_seeded_test_policy::{REPEATABLE_START_NANOSECONDS, Schedule};
+
+/// What a reading of a repeatable clock passes: the kernel's work between two readings, which such
+/// a clock cannot measure: about a system call's entry and return, chosen rather than measured.
+const READING_NANOSECONDS: u64 = 100;
 
 use crate::hooks::Hooks;
 use crate::replay::{Entry, MemoryDigests, Tape};
@@ -153,9 +155,6 @@ pub struct TestHost {
     /// What a run's choices come from: how long each turn on the CPU side lasts, and when the
     /// backend's answers arrive.
     schedule: Mutex<Schedule>,
-    /// With a repeatable clock, the time the kernel's work on a turn's end takes, passed at the
-    /// next reading of the clock.
-    kernel_work: AtomicU64,
     /// The file backend, for a container with a volume.
     pub(crate) backend: Mutex<Option<crate::backend::Backend>>,
     /// The backend's replies the kernel's calls wait for.
@@ -267,7 +266,6 @@ impl TestHost {
             virtual_now: None,
             wall_base: AtomicU64::new(0),
             schedule: Mutex::new(Schedule::new(seed)),
-            kernel_work: AtomicU64::default(),
             backend: Mutex::default(),
             replies: Mutex::default(),
             notices: Mutex::default(),
@@ -318,7 +316,6 @@ impl TestHost {
             now.store(0, Ordering::Relaxed);
         }
         *lock(&self.schedule) = Schedule::new(seed);
-        self.kernel_work.store(0, Ordering::Relaxed);
         {
             let mut network = lock(&self.network);
             let moved = network.moved();
@@ -713,12 +710,14 @@ impl TestHost {
 }
 
 impl TestHost {
-    /// The monotonic clock as this host keeps it.
+    /// The monotonic clock as this host keeps it. A repeatable clock passes
+    /// [`READING_NANOSECONDS`] at each reading, as the kernel's work between two readings takes
+    /// time, so two readings inside one run of the runner differ as on Linux.
     fn monotonic_live(&self) -> u64 {
         match &self.virtual_now {
             Some(now) => {
-                let work = self.kernel_work.swap(0, Ordering::Relaxed);
-                now.fetch_add(work, Ordering::Relaxed) + self.skipped.load(Ordering::Relaxed)
+                now.fetch_add(READING_NANOSECONDS, Ordering::Relaxed)
+                    + self.skipped.load(Ordering::Relaxed)
             }
             None => {
                 (self.origin.elapsed().as_nanos() as u64)
@@ -1691,7 +1690,8 @@ fn drive(driven: &mut Driven, runner: &mut DrivenRunner, host: &Arc<TestHost>) -
                 panic!("the kernel's runner stopped: {stop:?}")
             }
         }
-        driven.with_parts(|kernel, cpu| host.arrived(kernel, cpu));
+        let progress = runner.executor.last_instructions;
+        driven.with_parts(|kernel, cpu| host.arrived(kernel, cpu, progress));
         let save = host.injecting().save_now();
         if let Some(seed) = save {
             save_and_bring_back(driven, runner, host, seed);
@@ -1750,19 +1750,20 @@ impl<T> std::ops::DerefMut for Held<'_, T> {
 
 impl TestHost {
     /// What the outside does each time the kernel's runner comes back, which counts as a turn of
-    /// the run: the time the runner's turns took passes, the outside's answers and the client's
-    /// steps arrive, and the signals and notices due at this turn are sent.
-    fn arrived_live(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut Machine) {
+    /// the run: the time the runner's last turn took for its `progress` (the instructions the
+    /// stand-in ran) passes, the outside's answers and the client's steps arrive, and the signals
+    /// and notices due at this turn are sent.
+    fn arrived_live(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut Machine, progress: u64) {
         let turns = {
             let mut injecting = self.injecting();
             injecting.turns += 1;
             injecting.turns
         };
         PROGRESS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // The stand-in tells no count of what the runner's turns ran, so a repeatable clock moves
-        // on by one turn's work of the kernel, drawn from the seed.
+        // A repeatable clock moves on by the time the last turn's instructions took and the
+        // kernel's work on its end, both drawn from the seed.
         if let Some(now) = &self.virtual_now {
-            let work = lock(&self.schedule).draws().random_range(TURN_NANOSECONDS);
+            let work = lock(&self.schedule).turn_nanoseconds(progress);
             now.fetch_add(work, Ordering::Relaxed);
         }
         network_events(self, Duration::ZERO);
@@ -1874,13 +1875,13 @@ impl TestHost {
     }
 
     /// [`TestHost::arrived_live`], kept in the record.
-    fn arrived(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut Machine) {
+    fn arrived(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut Machine, progress: u64) {
         self.outside_part(
             kernel,
             cpu,
             |()| Entry::Arrived,
             |entry| (*entry == Entry::Arrived).then_some(()),
-            |host, kernel, cpu| host.arrived_live(kernel, cpu),
+            |host, kernel, cpu| host.arrived_live(kernel, cpu, progress),
         );
     }
 

@@ -513,8 +513,9 @@ where
     /// then is ended).
     ///
     /// A turn runs until its thread traps or the executor's own slice ends it, which the kernel
-    /// takes as Linux takes its timer's interrupt. While another runner holds the lock, none can
-    /// run on this one, which returns `Idle` with no time to look again.
+    /// takes as Linux takes its timer's interrupt and which ends the run (`Interrupted`). While
+    /// another runner holds the lock, none can run on this one, which returns `Idle` with no time
+    /// to look again.
     fn run(&mut self, executor: &mut C) -> interface::StopReason {
         let mut timer_told = false;
         loop {
@@ -540,9 +541,12 @@ where
                         });
                     self.shared.turn_ended();
                     kernel.exit(machine, &self.system, exit);
-                    // An interrupt for a call that waits for the lock ends the run as the lock
-                    // is let go of at the top; the end of the executor's slice goes on to the
-                    // next turn.
+                    // An interrupt, for a call that waits for the lock or at the end of the
+                    // executor's slice, ends the run, so the embedder does the outside's work
+                    // between slices as Linux does its own between timer ticks.
+                    if exit == running::Exit::Stop {
+                        return interface::StopReason::Interrupted;
+                    }
                 }
                 // The kernel's waits to settle, or the time it waits for may have come.
                 Next::Idle {
