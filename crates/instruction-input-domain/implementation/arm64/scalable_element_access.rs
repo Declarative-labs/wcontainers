@@ -4,7 +4,8 @@
 //! A vector of offsets or addresses holds, element by element, where each element lies from the first byte the
 //! placement gives: one after the other, the other way round, all at one address, the odd ones on the next page, all
 //! below it, and one after the other one byte on, so that each element is misaligned and one can straddle a page's end. A vector base holds those
-//! displacements plus the placed address, which the state's builder adds.
+//! displacements plus the placed address, which the state's builder adds; a vector of 32-bit addresses also holds them
+//! with bit 31 set, which only an extension with the sign would carry into the bits above.
 
 use alloc::vec::Vec;
 
@@ -129,6 +130,8 @@ pub(crate) fn list_operand_types(access: ElementAccess) -> Vec<OperandType> {
 
 /// A page's bytes, which the odd elements of one pattern lie further on, on the page after.
 const PAGE_BYTES: i64 = 1 << 12;
+/// Bit 31, the sign of a 32-bit element.
+const WORD_SIGN_BIT: i64 = 1 << 31;
 
 /// Each element's displacement from the first byte, in bytes: one after the other, the other way round, all at one
 /// address, the odd elements a page further on, and one after the other one byte on where an element has more than one
@@ -201,9 +204,19 @@ pub(crate) fn to_offset_values(
     values.into_iter().map(OperandValue::Vector).collect()
 }
 
-/// The values of a vector base before the placed address is added: each displacement.
+/// The values of a vector base before the placed address is added: each displacement, and for elements of 32 bits,
+/// one after the other with bit 31 set, which a base extended with its sign would carry into the bits above.
 pub(crate) fn to_address_values(element_bits: u32, memory_bytes: u32) -> Vec<OperandValue> {
-    to_displacements(element_bits, memory_bytes)
+    let mut patterns = to_displacements(element_bits, memory_bytes);
+    if element_bits == u32::BITS {
+        let elements = i64::from(VECTOR_BITS / element_bits);
+        patterns.push(
+            (0..elements)
+                .map(|element| element * i64::from(memory_bytes) + WORD_SIGN_BIT)
+                .collect(),
+        );
+    }
+    patterns
         .into_iter()
         .map(|pattern| {
             OperandValue::Vector(pack(

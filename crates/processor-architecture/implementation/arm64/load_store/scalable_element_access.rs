@@ -25,6 +25,7 @@ use crate::registers::{is_general_purpose, read_register};
 use crate::scalable::{PG, VECTOR_BITS, ZD, ZM, ZN, is_active, read_element, read_predicate};
 use crate::{
     AccessDirection, Exception, Instruction, PagePermission, PreciseInstruction, Processor,
+    SuppressibleLoad,
 };
 
 /// The register Xm of the scalar-plus-scalar and vector-plus-scalar forms.
@@ -168,8 +169,11 @@ impl ElementAccess {
         let index = u64::from(element);
         match self.addressing {
             Addressing::ScalarPlusScalar => {
-                let offset =
-                    read_register(processor, RM.read(word), RegisterThirtyOne::ZeroRegister);
+                let offset = if crate::planted::is(3605) && element > 0 {
+                    0
+                } else {
+                    read_register(processor, RM.read(word), RegisterThirtyOne::ZeroRegister)
+                };
                 base.wrapping_add(offset.wrapping_add(index).wrapping_mul(memory_bytes))
             }
             Addressing::ScalarPlusImmediate => {
@@ -177,6 +181,15 @@ impl ElementAccess {
                     IMMEDIATE4.read_signed(word) as u64
                 } else {
                     (IMMEDIATE4.read_signed(word) as u64).wrapping_mul(u64::from(self.elements()))
+                };
+                let index = if crate::planted::is(3601) {
+                    index + 1
+                } else if crate::planted::is(3604) && index == 1 {
+                    0
+                } else if crate::planted::is(3609) {
+                    u64::from(self.elements()) - 1 - index
+                } else {
+                    index
                 };
                 base.wrapping_add(vectors.wrapping_add(index).wrapping_mul(memory_bytes))
             }
@@ -222,6 +235,9 @@ impl ElementAccess {
             Addressing::VectorPlusScalar => {
                 let offset = if crate::planted::is(3509) {
                     0
+                } else if crate::planted::is(3612) {
+                    read_register(processor, RM.read(word), RegisterThirtyOne::ZeroRegister)
+                        .wrapping_mul(2)
                 } else {
                     read_register(processor, RM.read(word), RegisterThirtyOne::ZeroRegister)
                 };
@@ -238,11 +254,25 @@ impl ElementAccess {
         word: u32,
         element: u32,
     ) -> u64 {
-        read_element(
+        let bits = if crate::planted::is(3620) {
+            u32::BITS
+        } else {
+            self.element_bits
+        };
+        let value = read_element(
             processor.vector_registers[ZN.read(word) as usize],
             element,
-            self.element_bits,
-        ) as u64
+            bits,
+        ) as u64;
+        if crate::planted::any(&[9010, 3610, 3611]) && bits == u32::BITS {
+            i64::from(value as u32 as i32) as u64
+        } else if crate::planted::is(3613) {
+            value & !(1 << (u32::BITS - 1))
+        } else if crate::planted::is(3619) {
+            value & !(0xFF << (u64::BITS - u8::BITS))
+        } else {
+            value
+        }
     }
 }
 
@@ -665,7 +695,7 @@ where
     let elements = access.elements();
     let memory_bytes = u64::from(access.memory_bytes);
     let predicate = read_predicate(processor, word, PG);
-    let active = |element: u32| is_active(predicate, element, esize);
+    let active = |element: u32| is_active(predicate, element, esize) || crate::planted::is(3615);
     // Each active element in the pseudocode's order, with its address.
     let order: Vec<u32> = if crate::planted::is(3506) {
         (0..elements).rev().collect()
@@ -695,7 +725,13 @@ where
             } else {
                 access.memory_bytes
             };
-            read_element(source, element, esize).to_le_bytes()[..bytes as usize].to_vec()
+            let value = read_element(source, element, esize)
+                >> if crate::planted::is(3617) {
+                    esize / 2
+                } else {
+                    0
+                };
+            value.to_le_bytes()[..bytes as usize].to_vec()
         };
         let fault = moves.iter().enumerate().find_map(|(place, (element, at))| {
             find(*at).map(|(location, status)| (place, *element, *at, location, status))
@@ -730,8 +766,9 @@ where
         let mut buffer = [0_u8; size_of::<u64>()];
         buffer[..bytes.len()].copy_from_slice(bytes);
         let value = u64::from_le_bytes(buffer);
-        let bits = bytes.len() as u32 * u8::BITS;
-        let value = if access.signed && !crate::planted::is(3507) {
+        let bits = bytes.len() as u32 * u8::BITS - u32::from(crate::planted::is(3618));
+        let signed = (access.signed || crate::planted::is(3603)) && !crate::planted::is(9008);
+        let value = if signed && !crate::planted::is(3507) {
             (((value << (u64::BITS - bits)) as i64) >> (u64::BITS - bits)) as u64
         } else {
             value
@@ -742,6 +779,9 @@ where
         let mut bytes = [0_u8; size_of::<u64>()];
         let bytes = &mut bytes[..memory_bytes as usize];
         read_bytes_into(memory, to_untagged_address(at), bytes);
+        if crate::planted::is(3602) {
+            bytes.reverse();
+        }
         extend(bytes)
     };
     let target = ZD.read(word) as usize;
@@ -782,19 +822,28 @@ where
             != crate::planted::is(3501)
             || (crate::planted::is(3508) && first == Some(element))
             || crate::planted::is(3502);
+        let later = first.is_some_and(|first| element > first);
         let (data, fault) = match at {
             Some(at) => match find(at) {
                 Some((location, status)) if performs_first => {
                     return Err(abort(at, location, status));
                 }
                 Some(_) => (0, true),
+                None if crate::planted::is(3606) && later => (
+                    read(at) & (u128::MAX >> (u128::BITS - memory_bytes as u32 * u8::BITS)),
+                    false,
+                ),
+                None if crate::planted::is(3607) && later => (0, false),
+                None if crate::planted::is(3614) && later => {
+                    (read(moves.first().map_or(at, |(_, first)| *first)), false)
+                }
                 None => (read(at), false),
             },
             None => (0, false),
         };
         faulted |= fault;
         let group = (u16::MAX >> (u16::BITS - predicate_bits)) << (element * predicate_bits);
-        if faulted {
+        if faulted || (crate::planted::is(3608) && later) {
             first_fault &= !group;
         }
         let held = (before & first_fault) >> (element * predicate_bits) & 1;
@@ -817,15 +866,13 @@ where
     Ok(())
 }
 
-/// The Z register of a first-fault or non-fault load whose value, with FFR's, the state does not decide: one that
-/// completes with an access it may suppress, since [MemNF](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-sve#impl-aarch64.MemNF.3)
-/// may fail for any reason, and a Neoverse V2 suppresses accesses that would not fault by what its translations held
-/// before, which no state holds; none for any other instruction.
-pub(crate) fn to_undecided_register<LevelSpecific>(
+/// The access of a first-fault or non-fault load that a chip may suppress though it would not fault, from its first
+/// such active element on; none for any other instruction, or where no such element is active.
+pub(crate) fn to_suppressible_load<LevelSpecific>(
     instruction: Instruction<Infallible>,
     processor: &Processor<LevelSpecific>,
     word: u32,
-) -> Option<usize> {
+) -> Option<SuppressibleLoad> {
     let access = to_element_access(instruction)?;
     if !access.suppresses_faults() {
         return None;
@@ -836,9 +883,12 @@ pub(crate) fn to_undecided_register<LevelSpecific>(
     if access.faulting == Faulting::AfterFirst {
         active.next();
     }
-    active
-        .next()
-        .map(|_| ZD.read(word) as usize % crate::VECTOR_REGISTERS)
+    Some(SuppressibleLoad {
+        register: ZD.read(word) as usize % crate::VECTOR_REGISTERS,
+        element_bits: access.element_bits,
+        first_suppressible: active.next()?,
+        first_fault_before: processor.first_fault_register,
+    })
 }
 
 /// The bugs planted in these models, each caught by its instruction's states.
@@ -925,6 +975,134 @@ const fn bug(number: u32, instruction: Instruction<Infallible>, what: &'static s
         number,
         instruction,
         planted_by: PlantedBy::ScalableLoadsAndStores,
+        what,
+    }
+}
+
+/// The bugs planted for the per-lane expectation of first-fault and non-fault loads and for 32-bit vector bases with
+/// bit 31 set, each caught by its instruction's states; 9008 and 9010 are the fourth check's, planted again.
+pub const LANE_AND_BASE_PLANTED_BUGS: [PlantedBug; 22] = [
+    lane_bug(
+        9008,
+        Instruction::Ldnf1shImmediate32,
+        "a signed non-fault load zero-extends",
+    ),
+    lane_bug(
+        9010,
+        Instruction::Ld1wGatherImmediate,
+        "a 32-bit vector base is sign-extended",
+    ),
+    lane_bug(
+        3601,
+        Instruction::Ldnf1bImmediate,
+        "a non-fault load reads each element from the next one's address",
+    ),
+    lane_bug(
+        3602,
+        Instruction::Ldnf1hImmediate,
+        "a non-fault halfword load swaps the bytes of each element",
+    ),
+    lane_bug(
+        3603,
+        Instruction::Ldnf1wImmediate64,
+        "an unsigned non-fault load sign-extends",
+    ),
+    lane_bug(
+        3604,
+        Instruction::Ldnf1d,
+        "a non-fault load reads its second element from the first's address",
+    ),
+    lane_bug(
+        3605,
+        Instruction::Ldff1b,
+        "a first-fault load leaves Xm out of every element but the first",
+    ),
+    lane_bug(
+        3606,
+        Instruction::Ldff1sh32,
+        "a signed first-fault load zero-extends every element but the first",
+    ),
+    lane_bug(
+        3607,
+        Instruction::Ldff1w,
+        "a first-fault load zeroes every element after the first active one",
+    ),
+    lane_bug(
+        3608,
+        Instruction::Ldff1d,
+        "a first-fault load clears FFR after its first active element though nothing faults",
+    ),
+    lane_bug(
+        3609,
+        Instruction::Ldnf1sbImmediate32,
+        "a non-fault load reads its elements from the last",
+    ),
+    lane_bug(
+        3610,
+        Instruction::Ldff1wGatherImmediate,
+        "a first-fault gather sign-extends its 32-bit vector base",
+    ),
+    lane_bug(
+        3611,
+        Instruction::St1wScatterImmediate,
+        "a scatter sign-extends its 32-bit vector base",
+    ),
+    lane_bug(
+        3612,
+        Instruction::Ldnt1wZZR32,
+        "a vector-plus-scalar load adds Xm twice",
+    ),
+    lane_bug(
+        3613,
+        Instruction::Ld1hGatherImmediate32,
+        "a gather clears bit 31 of its 32-bit vector base",
+    ),
+    lane_bug(
+        3614,
+        Instruction::Ldff1sb16,
+        "a first-fault load gives every later element the first one's data",
+    ),
+    lane_bug(
+        3615,
+        Instruction::Ldnf1hImmediate32,
+        "a non-fault load takes every element as active",
+    ),
+    lane_bug(
+        3616,
+        Instruction::St1wZPBr,
+        "ST1W stores doubleword elements as words",
+    ),
+    lane_bug(
+        3617,
+        Instruction::St1hScatterImmediate,
+        "a halfword scatter stores the high half of each element",
+    ),
+    lane_bug(
+        3618,
+        Instruction::Ld1sbGatherImmediate32,
+        "a signed byte gather extends bit 6",
+    ),
+    lane_bug(
+        3619,
+        Instruction::Ld1dGatherImmediate,
+        "a 64-bit vector base loses its tag before the access",
+    ),
+    lane_bug(
+        3620,
+        Instruction::Ldnt1sbZZR64,
+        "a vector-plus-scalar load reads 32-bit elements of its 64-bit base",
+    ),
+];
+
+const fn lane_bug(
+    number: u32,
+    instruction: Instruction<Infallible>,
+    what: &'static str,
+) -> PlantedBug {
+    PlantedBug {
+        number,
+        instruction,
+        planted_by: PlantedBy::LanesAndBases,
         what,
     }
 }
