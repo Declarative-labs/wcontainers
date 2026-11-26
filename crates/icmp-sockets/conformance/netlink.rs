@@ -1284,7 +1284,9 @@ fn tracking_chain_hook() -> ChainHook {
     let hook = attribute(chain, NFTA_CHAIN_HOOK).expect("the chain's hook");
     let word = |kind: u16| {
         let value = attribute(&hook, kind).expect("the hook's number and priority");
-        value.try_into().expect("a word, as nf_tables writes a hook number and priority")
+        value
+            .try_into()
+            .expect("a word, as nf_tables writes a hook number and priority")
     };
     ChainHook {
         number: u32::from_be_bytes(word(NFTA_HOOK_HOOKNUM)),
