@@ -11,6 +11,10 @@ publish = false
 [lib]
 path = "implementation.rs"
 
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
 [dependencies]
 wcontainers-abi.workspace = true
 wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
@@ -21,6 +25,7 @@ wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-tcp-sockets = { path = "../../../tcp-sockets" }
 wcontainers-udp-sockets = { path = "../../../udp-sockets" }
 wcontainers-readiness = { path = "../../../readiness" }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
 wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-configurable = { path = "../../../configurable" }
 wcontainers-negative-route-advisable = { path = "../../../negative-route-advisable" }
@@ -31,6 +36,10 @@ wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/si
 rand = { version = "0.9.2", default-features = false, features = ["std_rng"] }
 # The policy's state, changed through the shared reference the kernel holds.
 spin = { version = "0.10.0", default-features = false, features = ["spin_mutex", "lock_api"] }
+
+[dev-dependencies]
+# The system suite's stream checks, run on the policy over a loop of services.
+wcontainers-system-conformance = { path = "../../conformance" }
 
 [lints]
 workspace = true

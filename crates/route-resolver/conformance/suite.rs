@@ -33,8 +33,7 @@ pub use wcontainers_icmp_sockets_conformance as icmp_suite;
 /// Moves the calling thread into a new, empty network namespace, which needs `CAP_SYS_ADMIN`.
 fn enter_network_namespace() {
     #[cfg(target_os = "linux")]
-    // SAFETY: a new network namespace shares no memory or file with the rest of the process.
-    unsafe { rustix::thread::unshare_unsafe(rustix::thread::UnshareFlags::NEWNET) }
+    nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET)
         .expect("a new network namespace needs root");
     #[cfg(not(target_os = "linux"))]
     panic!("the checks build their routes in a Linux network namespace");
@@ -133,10 +132,9 @@ fn write_setting(path: &str, value: impl ToString) {
 }
 
 fn index(name: &str) -> InterfaceIndex {
-    let name = std::ffi::CString::new(name).expect("a link's name");
-    // SAFETY: the name is a string that ends in a zero byte, which the call only reads.
-    let index = unsafe { libc::if_nametoindex(name.as_ptr()) };
-    InterfaceIndex(NonZeroU32::new(index).unwrap_or_else(|| panic!("no link {name:?}")))
+    let index = nix::net::if_::if_nametoindex(name)
+        .unwrap_or_else(|error| panic!("no link {name}: {error}"));
+    InterfaceIndex(NonZeroU32::new(index).unwrap_or_else(|| panic!("no link {name}")))
 }
 
 /// Builds the two links, their addresses and routes in a network namespace of the calling thread's own.
@@ -1531,24 +1529,10 @@ fn ip_options_error(options: &Ipv4Options) -> Option<HostError> {
     {
         let socket =
             std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, u16::MIN)).expect("a socket opens");
-        let bytes = options.as_slice();
-        // SAFETY: the value is the options' bytes, which the call only reads for their length.
-        let result = unsafe {
-            libc::setsockopt(
-                std::os::fd::AsRawFd::as_raw_fd(&socket),
-                libc::IPPROTO_IP,
-                libc::IP_OPTIONS,
-                bytes.as_ptr().cast(),
-                libc::socklen_t::try_from(bytes.len()).expect("a length"),
-            )
-        };
-        (result != 0).then(|| {
-            HostError::Errno(
-                std::io::Error::last_os_error()
-                    .raw_os_error()
-                    .expect("an errno"),
-            )
-        })
+        use wcontainers_linux_socket_options::LinuxSocketOptions;
+        wcontainers_linux_socket_options_direct::DirectLinuxSocketOptions
+            .set_ip_options(std::os::fd::AsFd::as_fd(&socket), options.as_slice())
+            .err()
     }
     #[cfg(not(target_os = "linux"))]
     panic!("only Linux sets IP options as the checks know them: {options:?}");
@@ -1673,39 +1657,26 @@ fn told_by_interface(
         std::net::UdpSocket::bind((source.unwrap_or(any), u16::MIN)).expect("a socket binds");
     #[cfg(target_os = "linux")]
     {
-        let (level, name, value) = match (selector, destination) {
+        use wcontainers_linux_socket_options::LinuxSocketOptions;
+        let options = wcontainers_linux_socket_options_direct::DirectLinuxSocketOptions;
+        let fd = std::os::fd::AsFd::as_fd(&socket);
+        let result = match (selector, destination) {
             // Both versions take the index of a requested interface in network byte order.
-            (InterfaceSelector::Requested(index), IpAddr::V4(_)) => (
-                libc::IPPROTO_IP,
-                linux_raw_sys::net::IP_UNICAST_IF,
-                index.0.get().to_be(),
-            ),
-            (InterfaceSelector::Requested(index), IpAddr::V6(_)) => (
-                libc::IPPROTO_IPV6,
-                linux_raw_sys::net::IPV6_UNICAST_IF,
-                index.0.get().to_be(),
-            ),
-            (InterfaceSelector::Bound(index), _) => (
-                libc::SOL_SOCKET,
-                linux_raw_sys::net::SO_BINDTOIFINDEX,
-                index.0.get(),
-            ),
+            (InterfaceSelector::Requested(index), IpAddr::V4(_)) => {
+                options.set_ip_unicast_if(fd, index.0.get().to_be())
+            }
+            (InterfaceSelector::Requested(index), IpAddr::V6(_)) => {
+                options.set_ipv6_unicast_if(fd, index.0.get().to_be())
+            }
+            // socket2 binds a socket of either version to the device by `SO_BINDTOIFINDEX`.
+            (InterfaceSelector::Bound(index), IpAddr::V4(_)) => socket2::SockRef::from(&socket)
+                .bind_device_by_index_v4(Some(index.0))
+                .map_err(|error| HostError::Errno(error.raw_os_error().unwrap_or(libc::EIO))),
+            (InterfaceSelector::Bound(index), IpAddr::V6(_)) => socket2::SockRef::from(&socket)
+                .bind_device_by_index_v6(Some(index.0))
+                .map_err(|error| HostError::Errno(error.raw_os_error().unwrap_or(libc::EIO))),
         };
-        // SAFETY: the value is an integer that lives across the call, which only reads it for its size.
-        let result = unsafe {
-            libc::setsockopt(
-                std::os::fd::AsRawFd::as_raw_fd(&socket),
-                level,
-                libc::c_int::try_from(name).expect("an option name"),
-                (&raw const value).cast(),
-                libc::socklen_t::try_from(size_of_val(&value)).expect("a length"),
-            )
-        };
-        assert!(
-            result == 0,
-            "{destination} by {selector:?}: {}",
-            std::io::Error::last_os_error()
-        );
+        assert!(result.is_ok(), "{destination} by {selector:?}: {result:?}");
     }
     socket
         .connect((destination, DISCARD))

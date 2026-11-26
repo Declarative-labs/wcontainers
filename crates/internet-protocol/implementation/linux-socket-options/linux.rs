@@ -1,13 +1,15 @@
 //! The shared settings of crates/internet-protocol as Linux socket options, and the raw option calls under them.
 
-use std::ffi::{c_int, c_void};
-use std::marker::PhantomData;
-use std::mem::{MaybeUninit, size_of};
+use std::ffi::c_int;
+use std::io::IoSliceMut;
+use std::mem::size_of;
 use std::net::{IpAddr, SocketAddr, SocketAddrV6};
 use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
 use linux_raw_sys::net as uapi;
+use nix::sys::socket::{MsgFlags, SockaddrLike, TimestampingFlag, recvmsg, setsockopt, sockopt};
+use nix::unistd::{Uid, setfsuid};
 use rustix::io::Errno;
 use rustix::net::{Protocol, SocketType};
 use socket2::{Domain, SockAddr, Socket};
@@ -19,8 +21,10 @@ use wcontainers_internet_protocol::{
     PortSharing, RouteScope, SocketFilter, TemporaryAddressPreference, Timestamping,
 };
 use wcontainers_kernel::UserId;
+use wcontainers_linux_socket_options::LinuxSocketOptions;
+use zerocopy::IntoBytes;
 
-use crate::{Shortfalls, host_error, io_host_error, last_host_error, sock};
+use crate::{LINUX, Shortfalls, host_error, io_host_error, set_flag, set_int, sock};
 
 const NO_MEMBERSHIPS: &str = "multicast and anycast memberships are not mapped to the host";
 
@@ -36,110 +40,6 @@ pub fn bind_to(socket: BorrowedFd<'_>, address: SocketAddr) -> Result<(), Errno>
         .map_err(|error| Errno::from_io_error(&error).unwrap_or(Errno::IO))
 }
 
-/// Sets a socket option to the bytes of a value.
-pub fn set_option<T>(
-    socket: BorrowedFd<'_>,
-    level: u32,
-    name: u32,
-    value: &T,
-) -> Result<(), HostError> {
-    set_raw(
-        socket,
-        level,
-        name,
-        (value as *const T).cast(),
-        size_of::<T>(),
-    )
-}
-
-pub fn set_bytes(
-    socket: BorrowedFd<'_>,
-    level: u32,
-    name: u32,
-    bytes: &[u8],
-) -> Result<(), HostError> {
-    set_raw(socket, level, name, bytes.as_ptr().cast(), bytes.len())
-}
-
-pub fn set_int(
-    socket: BorrowedFd<'_>,
-    level: u32,
-    name: u32,
-    value: c_int,
-) -> Result<(), HostError> {
-    set_option(socket, level, name, &value)
-}
-
-pub fn set_flag(socket: BorrowedFd<'_>, level: u32, name: u32, on: bool) -> Result<(), HostError> {
-    set_int(socket, level, name, c_int::from(on))
-}
-
-fn set_raw(
-    socket: BorrowedFd<'_>,
-    level: u32,
-    name: u32,
-    value: *const c_void,
-    length: usize,
-) -> Result<(), HostError> {
-    let length = libc::socklen_t::try_from(length).map_err(|_| HostError::Errno(libc::EINVAL))?;
-    // SAFETY: the callers give a pointer to `length` readable bytes; the descriptor is borrowed and open.
-    let result = unsafe {
-        libc::setsockopt(
-            socket.as_raw_fd(),
-            level as c_int,
-            name as c_int,
-            value,
-            length,
-        )
-    };
-    if result == 0 {
-        Ok(())
-    } else {
-        Err(last_host_error())
-    }
-}
-
-/// Reads a socket option into the buffer, returning the length the kernel gave.
-pub fn get_bytes(
-    socket: BorrowedFd<'_>,
-    level: u32,
-    name: u32,
-    into: &mut [u8],
-) -> Result<usize, HostError> {
-    let mut length =
-        libc::socklen_t::try_from(into.len()).map_err(|_| HostError::Errno(libc::EINVAL))?;
-    // SAFETY: the buffer is writable for `length` bytes and the kernel writes no more than that.
-    let result = unsafe {
-        libc::getsockopt(
-            socket.as_raw_fd(),
-            level as c_int,
-            name as c_int,
-            into.as_mut_ptr().cast(),
-            &mut length,
-        )
-    };
-    if result == 0 {
-        Ok(length as usize)
-    } else {
-        Err(last_host_error())
-    }
-}
-
-/// Reads a socket option whose value is plain data that every bit pattern is valid for.
-pub fn get_option<T: Copy>(socket: BorrowedFd<'_>, level: u32, name: u32) -> Result<T, HostError> {
-    let mut value = MaybeUninit::<T>::zeroed();
-    // SAFETY: a zeroed T is a valid T for the plain uapi types this is used with, and the buffer is its bytes.
-    let bytes =
-        unsafe { std::slice::from_raw_parts_mut(value.as_mut_ptr().cast::<u8>(), size_of::<T>()) };
-    get_bytes(socket, level, name, bytes)?;
-    // SAFETY: zeroed and then written by the kernel, so initialised.
-    Ok(unsafe { value.assume_init() })
-}
-
-pub fn get_int(socket: BorrowedFd<'_>, level: u32, name: u32) -> Result<c_int, HostError> {
-    get_option(socket, level, name)
-}
-
 /// Gives the flags of `SO_TIMESTAMPING` that a socket's receive timestamping asks for.
 pub fn receive_timestamping_flags(timestamping: &Timestamping) -> u32 {
     let mut flags = u32::MIN;
@@ -153,29 +53,28 @@ pub fn receive_timestamping_flags(timestamping: &Timestamping) -> u32 {
     flags
 }
 
-/// The `bind_phc` of `SO_TIMESTAMPING` when no hardware clock is bound.
-///
-/// https://docs.kernel.org/networking/timestamping.html
-const NO_HARDWARE_CLOCK: c_int = 0;
-
 /// Sets `SO_TIMESTAMPING` to the flags, bound to the hardware clock if one is given.
 pub fn set_timestamping(
     socket: BorrowedFd<'_>,
     flags: u32,
     bound_clock: Option<wcontainers_internet_protocol::PtpHardwareClockIndex>,
 ) -> Result<(), HostError> {
-    let (flags, bind_phc) = match bound_clock {
-        Some(clock) => (
-            flags | uapi::SOF_TIMESTAMPING_BIND_PHC as u32,
-            c_int::try_from(clock.0).map_err(|_| HostError::Errno(libc::EINVAL))?,
-        ),
-        None => (flags, NO_HARDWARE_CLOCK),
-    };
-    let value = uapi::so_timestamping {
-        flags: flags as c_int,
-        bind_phc,
-    };
-    set_option(socket, uapi::SOL_SOCKET, uapi::SO_TIMESTAMPING, &value)
+    match bound_clock {
+        // Without a bound clock the 4-byte flags are the whole value, as Linux reads a shorter one.
+        None => setsockopt(
+            &socket,
+            sockopt::Timestamping,
+            &TimestampingFlag::from_bits_retain(flags),
+        )
+        .map_err(|errno| host_error(Errno::from_raw_os_error(errno as c_int))),
+        Some(clock) => {
+            let value = uapi::so_timestamping {
+                flags: (flags | uapi::SOF_TIMESTAMPING_BIND_PHC as u32).cast_signed(),
+                bind_phc: c_int::try_from(clock.0).map_err(|_| HostError::Errno(libc::EINVAL))?,
+            };
+            LINUX.set_so_timestamping(socket, &value)
+        }
+    }
 }
 
 /// Attaches the classic BPF program with one option or detaches it with the other, detaching none being no error.
@@ -186,31 +85,50 @@ pub fn set_filter(
     filter: Option<SocketFilter<'_>>,
 ) -> Result<(), HostError> {
     match filter {
-        Some(SocketFilter(instructions)) => {
-            let program: Vec<libc::sock_filter> = instructions
-                .iter()
-                .map(
-                    |&FilterInstruction {
-                         operation,
-                         jump_if_true,
-                         jump_if_false,
-                         operand,
-                     }| {
-                        libc::sock_filter {
-                            code: operation.0,
-                            jt: jump_if_true.0,
-                            jf: jump_if_false.0,
-                            k: operand.0,
-                        }
-                    },
-                )
-                .collect();
-            let value = libc::sock_fprog {
-                len: u16::try_from(program.len()).map_err(|_| HostError::Errno(libc::EINVAL))?,
-                filter: program.as_ptr().cast_mut(),
-            };
-            set_option(socket, uapi::SOL_SOCKET, attach, &value)
-        }
+        Some(SocketFilter(instructions)) => match attach {
+            // socket2 cuts the count to 16 bits, so a longer program is refused here, as Linux refuses it.
+            uapi::SO_ATTACH_FILTER if u16::try_from(instructions.len()).is_err() => {
+                Err(HostError::Errno(libc::EINVAL))
+            }
+            uapi::SO_ATTACH_FILTER => {
+                let program: Vec<socket2::SockFilter> = instructions
+                    .iter()
+                    .map(|instruction| {
+                        socket2::SockFilter::new(
+                            instruction.operation.0,
+                            instruction.jump_if_true.0,
+                            instruction.jump_if_false.0,
+                            instruction.operand.0,
+                        )
+                    })
+                    .collect();
+                sock(&socket)
+                    .attach_filter(&program)
+                    .map_err(|error| io_host_error(&error))
+            }
+            uapi::SO_ATTACH_REUSEPORT_CBPF => {
+                let program: Vec<libc::sock_filter> = instructions
+                    .iter()
+                    .map(
+                        |&FilterInstruction {
+                             operation,
+                             jump_if_true,
+                             jump_if_false,
+                             operand,
+                         }| {
+                            libc::sock_filter {
+                                code: operation.0,
+                                jt: jump_if_true.0,
+                                jf: jump_if_false.0,
+                                k: operand.0,
+                            }
+                        },
+                    )
+                    .collect();
+                LINUX.set_so_attach_reuseport_cbpf(socket, &program)
+            }
+            _ => Err(host_error(Errno::NOPROTOOPT)),
+        },
         None => match set_int(socket, uapi::SOL_SOCKET, detach, DETACH_VALUE) {
             Err(HostError::Errno(libc::ENOENT)) => Ok(()),
             other => other,
@@ -230,12 +148,9 @@ pub fn set_ip_socket_setting(
         IpSocketSetting::MulticastV4(_)
         | IpSocketSetting::MulticastV6(_)
         | IpSocketSetting::Anycast(_) => Err(shortfalls.refuse(NO_MEMBERSHIPS)),
-        IpSocketSetting::MaximumPacingRate(rate) => set_option(
-            socket,
-            uapi::SOL_SOCKET,
-            uapi::SO_MAX_PACING_RATE,
-            &rate.map_or(u64::MAX, |rate| rate.0),
-        ),
+        IpSocketSetting::MaximumPacingRate(rate) => {
+            LINUX.set_so_max_pacing_rate(socket, rate.map_or(u64::MAX, |rate| rate.0))
+        }
         IpSocketSetting::SendBuffer(bytes) => sock(&socket)
             .set_send_buffer_size(bytes.0)
             .map_err(|error| io_host_error(&error)),
@@ -390,33 +305,19 @@ pub fn set_packet_setting(
             uapi::IPV6_MTU_DISCOVER,
             path_mtu_discovery(*mode) as c_int,
         ),
-        IpPacketSetting::Ipv4Options(options) => {
-            set_bytes(socket, uapi::SOL_IP, uapi::IP_OPTIONS, options.as_slice())
+        IpPacketSetting::Ipv4Options(options) => LINUX.set_ip_options(socket, options.as_slice()),
+        IpPacketSetting::HopByHopOptions(header) => {
+            LINUX.set_ipv6_hopopts(socket, header.as_ref().map_or(&[], |h| h.slice()))
         }
-        IpPacketSetting::HopByHopOptions(header) => set_bytes(
-            socket,
-            uapi::SOL_IPV6,
-            uapi::IPV6_HOPOPTS,
-            header.as_ref().map_or(&[], |h| h.slice()),
-        ),
-        IpPacketSetting::RoutingDestinationOptions(header) => set_bytes(
-            socket,
-            uapi::SOL_IPV6,
-            uapi::IPV6_RTHDRDSTOPTS,
-            header.as_ref().map_or(&[], |h| h.slice()),
-        ),
-        IpPacketSetting::RoutingHeader(header) => set_bytes(
-            socket,
-            uapi::SOL_IPV6,
-            uapi::IPV6_RTHDR,
-            header.as_ref().map_or(&[], |h| h.slice()),
-        ),
-        IpPacketSetting::DestinationOptions(header) => set_bytes(
-            socket,
-            uapi::SOL_IPV6,
-            uapi::IPV6_DSTOPTS,
-            header.as_ref().map_or(&[], |h| h.slice()),
-        ),
+        IpPacketSetting::RoutingDestinationOptions(header) => {
+            LINUX.set_ipv6_rthdrdstopts(socket, header.as_ref().map_or(&[], |h| h.slice()))
+        }
+        IpPacketSetting::RoutingHeader(header) => {
+            LINUX.set_ipv6_rthdr(socket, header.as_ref().map_or(&[], |h| h.slice()))
+        }
+        IpPacketSetting::DestinationOptions(header) => {
+            LINUX.set_ipv6_dstopts(socket, header.as_ref().map_or(&[], |h| h.slice()))
+        }
         IpPacketSetting::FlowLabel(FlowLabelChoice::Label(_)) => {
             Err(shortfalls.refuse(NO_FIXED_FLOW_LABEL))
         }
@@ -429,10 +330,12 @@ pub fn set_packet_setting(
                 *choice == FlowLabelChoice::Automatic,
             )
         }
-        IpPacketSetting::Mark(mark) => set_option(socket, uapi::SOL_SOCKET, uapi::SO_MARK, &mark.0),
-        IpPacketSetting::Priority(priority) => {
-            set_option(socket, uapi::SOL_SOCKET, uapi::SO_PRIORITY, &priority.0)
-        }
+        IpPacketSetting::Mark(mark) => sock(&socket)
+            .set_mark(mark.0)
+            .map_err(|error| io_host_error(&error)),
+        IpPacketSetting::Priority(priority) => sock(&socket)
+            .set_priority(priority.0)
+            .map_err(|error| io_host_error(&error)),
         IpPacketSetting::RouteScope(scope) => set_flag(
             socket,
             uapi::SOL_SOCKET,
@@ -449,12 +352,7 @@ pub fn set_packet_setting(
                 MobileAddressPreference::Home => uapi::IPV6_PREFER_SRC_HOME,
                 MobileAddressPreference::CareOf => uapi::IPV6_PREFER_SRC_COA,
             };
-            set_option(
-                socket,
-                uapi::SOL_IPV6,
-                uapi::IPV6_ADDR_PREFERENCES,
-                &(temporary | mobile),
-            )
+            LINUX.set_ipv6_addr_preferences(socket, temporary | mobile)
         }
     }
 }
@@ -479,21 +377,102 @@ pub const TIMESTAMP_STAGE_COMPLETED: u32 = 3;
 /// https://github.com/torvalds/linux/blob/v6.18/include/uapi/linux/errqueue.h
 pub const TIMESTAMPING_TIMES: usize = 3;
 
+/// The places of the software and hardware times among them; the one between is deprecated.
+const SOFTWARE_TIME: usize = 0;
+const HARDWARE_TIME: usize = 2;
+
 /// The room for the control messages of one receive: timestamps, an extended error, packet information, statistics.
 ///
 /// https://github.com/Declarative-labs/wcontainers/blob/main/docs/plan-host-tcp-sockets.md#the-shared-crates-own-choices
 const CONTROL_ROOM: usize = 1024;
 
-/// The control messages of one `recvmsg`, in words so that they are aligned as `cmsghdr` needs.
-pub struct ControlBuffer([usize; CONTROL_ROOM / size_of::<usize>()]);
+/// Room for the control messages of a `recvmsg`, in words so that it is aligned as `cmsghdr` needs.
+///
+/// Before each receive it holds zeros, so that a walk of the control messages the receive writes ends where they end.
+pub struct ControlRoom<const WORDS: usize> {
+    words: [usize; WORDS],
+    written: bool,
+}
 
-impl Default for ControlBuffer {
-    fn default() -> Self {
-        Self([usize::MIN; CONTROL_ROOM / size_of::<usize>()])
+impl<const WORDS: usize> ControlRoom<WORDS> {
+    pub fn new() -> Self {
+        Self {
+            words: [usize::MIN; WORDS],
+            written: false,
+        }
     }
 }
 
-/// What one `recvmsg` gave: the bytes it wrote, its flags and its control messages.
+impl<const WORDS: usize> Default for ControlRoom<WORDS> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The control messages of one stream receive.
+pub type ControlBuffer = ControlRoom<{ CONTROL_ROOM / size_of::<usize>() }>;
+
+/// What one `recvmsg` gave: the bytes it wrote, its flags (`MSG_*`), the sender, and the room with its control
+/// messages, zeros after them.
+pub struct Received<'a, T> {
+    pub length: usize,
+    pub flags: c_int,
+    pub source: Option<T>,
+    pub control: &'a [u8],
+}
+
+/// Makes one `recvmsg` into `vectors` and the room for control messages, the sender read as `S` and given as
+/// `source` makes of it; `flags` are `MSG_*` flags.
+///
+/// Made with nix rather than socket2, whose `RecvFlags` gives no `MSG_CTRUNC`, or rustix, which hands out only the
+/// control messages it parses; the messages are read from the room's bytes, not through nix's parsing, which
+/// allocates for each kind it does not know.
+#[inline]
+pub fn receive_vectored<'a, S: SockaddrLike, T, const WORDS: usize>(
+    socket: BorrowedFd<'_>,
+    vectors: &mut [IoSliceMut<'_>],
+    flags: c_int,
+    control: &'a mut ControlRoom<WORDS>,
+    source: impl FnOnce(&S) -> Option<T>,
+) -> Result<Received<'a, T>, HostError> {
+    if control.written {
+        control.words.fill(usize::MIN);
+    }
+    control.written = true;
+    let received = recvmsg::<S>(
+        socket.as_raw_fd(),
+        vectors,
+        Some(control.words.as_mut_bytes()),
+        MsgFlags::from_bits_retain(flags),
+    )
+    .map_err(|errno| host_error(Errno::from_raw_os_error(errno as c_int)))?;
+    let (length, flags) = (received.bytes, received.flags.bits());
+    let source = received.address.as_ref().and_then(source);
+    Ok(Received {
+        length,
+        flags,
+        source,
+        control: control.words.as_bytes(),
+    })
+}
+
+/// How many bytes of the control messages of a receive, read up to the zeros after them, they take.
+pub fn written_length(control: &[u8]) -> usize {
+    let mut at = 0;
+    while let Some(length) = header_field(control.get(at..).unwrap_or_default(), CONTROL_LENGTH_AT)
+    {
+        let length = usize::from_ne_bytes(length);
+        if length < CONTROL_DATA_AT {
+            break;
+        }
+        at = at
+            .saturating_add(control_aligned(length))
+            .min(control.len());
+    }
+    at
+}
+
+/// What one stream `recvmsg` gave: the bytes it wrote, its flags and its control messages.
 pub struct ReceivedMessage<'a> {
     pub length: usize,
     pub flags: c_int,
@@ -507,64 +486,55 @@ impl<'a> ReceivedMessage<'a> {
 }
 
 /// Makes one `recvmsg` into the buffer with room for control messages; `flags` are `MSG_*` flags.
-///
-/// Made with libc rather than socket2, whose `RecvFlags` gives no `MSG_CTRUNC`: a cut is the caller's to count.
 pub fn receive_message<'a>(
     socket: BorrowedFd<'_>,
     into: &mut [u8],
     flags: c_int,
     control: &'a mut ControlBuffer,
 ) -> Result<ReceivedMessage<'a>, HostError> {
-    let mut vectors = [libc::iovec {
-        iov_base: into.as_mut_ptr().cast(),
-        iov_len: into.len(),
-    }];
-    // SAFETY: msghdr is plain data; the fields set below are the only ones the call reads.
-    let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
-    header.msg_iov = vectors.as_mut_ptr();
-    header.msg_iovlen = vectors.len() as _;
-    header.msg_control = control.0.as_mut_ptr().cast();
-    header.msg_controllen = CONTROL_ROOM as _;
-    // SAFETY: the vectors and the control buffer stay alive and writable for the call.
-    let length = unsafe { libc::recvmsg(socket.as_raw_fd(), &mut header, flags) };
-    if length < 0 {
-        return Err(last_host_error());
-    }
-    // SAFETY: the kernel wrote `msg_controllen` bytes of control messages into the buffer.
-    let control = unsafe {
-        std::slice::from_raw_parts(
-            control.0.as_ptr().cast::<u8>(),
-            header.msg_controllen as usize,
-        )
-    };
-    Ok(ReceivedMessage {
-        length: length as usize,
-        flags: header.msg_flags,
+    let received = receive_vectored(
+        socket,
+        &mut [IoSliceMut::new(into)],
+        flags,
         control,
+        |_: &()| None::<()>,
+    )?;
+    Ok(ReceivedMessage {
+        length: received.length,
+        flags: received.flags,
+        control: received.control,
     })
 }
 
-/// The control messages of a receive as level, type and data, walked in place.
+/// Rounds a length up to the alignment of control messages, a `size_t`'s (`CMSG_ALIGN`).
+const fn control_aligned(length: usize) -> usize {
+    length.next_multiple_of(size_of::<uapi::__kernel_size_t>())
+}
+
+/// Where a control message's data starts, after its header (`CMSG_DATA`).
+const CONTROL_DATA_AT: usize = control_aligned(size_of::<uapi::cmsghdr>());
+
+/// Where a control message's header holds its length, data included (`cmsg_len`).
+const CONTROL_LENGTH_AT: usize = std::mem::offset_of!(uapi::cmsghdr, cmsg_len);
+
+/// The room one control message of `length` bytes of data takes (`CMSG_SPACE`).
+pub const fn control_space(length: usize) -> usize {
+    control_aligned(length) + CONTROL_DATA_AT
+}
+
+/// The bytes of one field of the control message header at the start of `bytes`.
+fn header_field<const N: usize>(bytes: &[u8], at: usize) -> Option<[u8; N]> {
+    bytes.get(at..at + N)?.try_into().ok()
+}
+
+/// The control messages of a receive as level, type and data, read from the bytes the kernel wrote.
 pub struct ControlMessages<'a> {
-    header: libc::msghdr,
-    next: *const libc::cmsghdr,
-    control: PhantomData<&'a [u8]>,
+    rest: &'a [u8],
 }
 
 impl<'a> ControlMessages<'a> {
-    /// Walks the messages of control bytes the kernel wrote, aligned as `cmsghdr` needs.
     pub fn new(control: &'a [u8]) -> Self {
-        // SAFETY: msghdr is plain data; only its control fields are read by the walk.
-        let mut header: libc::msghdr = unsafe { std::mem::zeroed() };
-        header.msg_control = control.as_ptr().cast_mut().cast();
-        header.msg_controllen = control.len() as _;
-        // SAFETY: the header describes `control`, which outlives the walk.
-        let next = unsafe { libc::CMSG_FIRSTHDR(&header) };
-        Self {
-            header,
-            next,
-            control: PhantomData,
-        }
+        Self { rest: control }
     }
 }
 
@@ -572,32 +542,42 @@ impl<'a> Iterator for ControlMessages<'a> {
     type Item = (c_int, c_int, &'a [u8]);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let message = self.next;
-        if message.is_null() {
-            return None;
-        }
-        // SAFETY: CMSG_FIRSTHDR and CMSG_NXTHDR give only whole message headers inside the control bytes, whose data
-        // runs to `cmsg_len`.
-        unsafe {
-            let data = libc::CMSG_DATA(message);
-            let used = data.offset_from(message.cast::<u8>()) as usize;
-            // A u32 on musl, a usize on glibc.
-            let length: usize = (*message).cmsg_len as _;
-            let data_length = length.saturating_sub(used);
-            self.next = libc::CMSG_NXTHDR(&self.header, message);
-            Some((
-                (*message).cmsg_level,
-                (*message).cmsg_type,
-                std::slice::from_raw_parts(data, data_length),
-            ))
-        }
+        let rest = std::mem::take(&mut self.rest);
+        let length = usize::from_ne_bytes(header_field(rest, CONTROL_LENGTH_AT)?);
+        let level = c_int::from_ne_bytes(header_field(
+            rest,
+            std::mem::offset_of!(uapi::cmsghdr, cmsg_level),
+        )?);
+        let kind = c_int::from_ne_bytes(header_field(
+            rest,
+            std::mem::offset_of!(uapi::cmsghdr, cmsg_type),
+        )?);
+        // As CMSG_NXTHDR, a header that claims less than itself or more than the bytes there ends the walk.
+        let data = rest.get(CONTROL_DATA_AT..length)?;
+        self.rest = rest.get(control_aligned(length)..).unwrap_or_default();
+        Some((level, kind, data))
     }
 }
 
-fn timespec(time: &libc::timespec) -> Option<Duration> {
-    let seconds = u64::try_from(time.tv_sec).ok()?;
-    let nanoseconds = u32::try_from(time.tv_nsec).ok()?;
-    let duration = Duration::new(seconds, nanoseconds);
+/// Reads the `timespec` at an index of the data, absent when it is zero.
+fn timespec(data: &[u8], index: usize) -> Option<Duration> {
+    let at = index * size_of::<libc::timespec>();
+    let seconds = at + std::mem::offset_of!(libc::timespec, tv_sec);
+    let nanoseconds = at + std::mem::offset_of!(libc::timespec, tv_nsec);
+    let seconds = libc::time_t::from_ne_bytes(
+        data.get(seconds..seconds + size_of::<libc::time_t>())?
+            .try_into()
+            .ok()?,
+    );
+    let nanoseconds = libc::c_long::from_ne_bytes(
+        data.get(nanoseconds..nanoseconds + size_of::<libc::c_long>())?
+            .try_into()
+            .ok()?,
+    );
+    let duration = Duration::new(
+        u64::try_from(seconds).ok()?,
+        u32::try_from(nanoseconds).ok()?,
+    );
     (!duration.is_zero()).then_some(duration)
 }
 
@@ -606,14 +586,7 @@ pub fn timestamps(data: &[u8]) -> (Option<Duration>, Option<Duration>) {
     if data.len() < size_of::<[libc::timespec; TIMESTAMPING_TIMES]>() {
         return (None, None);
     }
-    // SAFETY: the data holds the three timespecs of scm_timestamping, read unaligned.
-    let times = unsafe {
-        data.as_ptr()
-            .cast::<[libc::timespec; TIMESTAMPING_TIMES]>()
-            .read_unaligned()
-    };
-    let [software, _, hardware] = times;
-    (timespec(&software), timespec(&hardware))
+    (timespec(data, SOFTWARE_TIME), timespec(data, HARDWARE_TIME))
 }
 
 pub fn family_of(address: &BindAddress) -> IpVersion {
@@ -647,23 +620,18 @@ pub fn open_socket(
             .map_err(|error| io_host_error(&error))
     };
     // An invalid id changes nothing and answers the thread's filesystem user.
-    // SAFETY: setfsuid only changes this thread's filesystem user, which is restored before returning.
-    let previous = unsafe { libc::setfsuid(libc::uid_t::MAX) } as libc::uid_t;
-    if previous == owner.0 {
+    let unchanged = Uid::from_raw(libc::uid_t::MAX);
+    let previous = setfsuid(unchanged);
+    if previous.as_raw() == owner.0 {
         return open();
     }
-    // SAFETY: as above.
-    let acting = unsafe {
-        libc::setfsuid(owner.0);
-        libc::setfsuid(libc::uid_t::MAX) as libc::uid_t
-    };
-    let socket = if acting == owner.0 {
+    setfsuid(Uid::from_raw(owner.0));
+    let socket = if setfsuid(unchanged).as_raw() == owner.0 {
         open()
     } else {
         Err(HostError::Errno(libc::EPERM))
     };
-    // SAFETY: as above.
-    unsafe { libc::setfsuid(previous) };
+    setfsuid(previous);
     socket
 }
 
@@ -695,7 +663,7 @@ pub fn allowed_ranges(choice: &PortChoice<'_>) -> Vec<PortRange> {
 
 pub fn set_port_range(socket: BorrowedFd<'_>, range: PortRange) -> Result<(), HostError> {
     let value = u32::from(range.last.0) << u16::BITS | u32::from(range.first.0);
-    set_option(socket, uapi::SOL_IP, uapi::IP_LOCAL_PORT_RANGE, &value)
+    LINUX.set_ip_local_port_range(socket, value)
 }
 
 /// Runs an operation that takes a local port once per range the exit node may choose from, until one has a free port.

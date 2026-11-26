@@ -1,9 +1,10 @@
 //! The conformance suite on the host implementation, each test in a network namespace of its own thread.
 #![cfg(target_os = "linux")]
 
+use core::cell::RefCell;
 use std::fs::File;
 use std::io::Write;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 use std::time::Duration;
@@ -85,12 +86,8 @@ fn iproute2(program: &str, commands: &str) {
 
 /// A new network namespace made as the suite asks, held open by the descriptor returned.
 fn network() -> OwnedFd {
-    // SAFETY: unshare changes only this thread's network namespace.
-    assert_eq!(
-        unsafe { libc::unshare(libc::CLONE_NEWNET) },
-        0,
-        "unshare the network namespace (run as root)"
-    );
+    nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNET)
+        .expect("unshare the network namespace (run as root)");
     // Temporary addresses made and preferred on every interface made from here on.
     std::fs::write("/proc/sys/net/ipv6/conf/default/use_tempaddr", "2")
         .expect("prefer temporary addresses");
@@ -171,12 +168,7 @@ fn isolated() -> HostUdpSockets {
         .expect("the networks left")
         .pop()
         .expect("a network left for this test (raise NETWORKS)");
-    // SAFETY: setns changes only this thread's network namespace.
-    assert_eq!(
-        unsafe { libc::setns(network.as_raw_fd(), libc::CLONE_NEWNET) },
-        0,
-        "enter the network"
-    );
+    nix::sched::setns(&network, nix::sched::CloneFlags::CLONE_NEWNET).expect("enter the network");
     HostUdpSockets::new().expect("make the host's UDP sockets")
 }
 
@@ -299,12 +291,12 @@ fn a_report_comes_before_a_datagram_that_arrived_after_it() {
         )
         .unwrap();
     let mut into = vec![u8::MIN; usize::from(u16::MAX)];
-    match sockets.receive(&socket, &mut into) {
+    match sockets.receive(&socket, &RefCell::new(&mut into[..])) {
         Ok(UdpReceived::TransmitReport(report)) => assert_eq!(report.key, key),
         other => panic!("the report first, not {other:?}"),
     }
     assert!(matches!(
-        sockets.receive(&socket, &mut into),
+        sockets.receive(&socket, &RefCell::new(&mut into[..])),
         Ok(UdpReceived::Packet(_))
     ));
 }

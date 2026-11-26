@@ -1,0 +1,28 @@
+[package]
+name = "wcontainers-linux-socket-options-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "suite.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+wcontainers-abi.workspace = true
+wcontainers-linux-socket-options = { path = ".." }
+# The uapi structures and constants the checks give the options.
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["net", "no_std"] }
+# Linux's error numbers and classic BPF instructions.
+libc = "0.2.191"
+# The sockets the checks set and read options on.
+socket2 = { version = "0.6.5", features = ["all"] }
+# The network namespace of each check, and the loopback's index.
+nix = { version = "0.31.3", default-features = false, features = ["net", "sched"] }
+# Brings a check's own loopback up through the kernel's routing socket.
+netlink-packet-core = "0.9.0"
+netlink-packet-route = "0.34.0"
+netlink-sys = { version = "0.9.0", default-features = false }
+zerocopy.workspace = true
+
+[lints]
+workspace = true

@@ -1,13 +1,11 @@
-//! The local system's file backend: a directory of the host served to the kernel in Linux's FUSE
-//! messages, with the rights of the user the runtime runs as. Every name is opened relative to its
-//! directory's descriptor without following links, so nothing outside the directory is reached.
+//! The local system's file backend: a host directory served to the kernel in Linux's FUSE messages, as the runtime's user.
 //!
-//! What the host cannot do as Linux does is answered with the error Linux gives for it, counted and
-//! warned (the reasons in [`reason`]).
+//! Every name is opened relative to its directory's descriptor without following links, so nothing outside is reached.
+//! What the host cannot do as Linux does is answered with Linux's error, counted and warned (see [`reason`]).
 
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use fuse_abi::linux::{
@@ -30,31 +28,48 @@ use wcontainers_kernel_linux::linux::general as linux;
 use zerocopy::{FromBytes, Immutable, IntoBytes};
 
 use crate::errno;
+use crate::image::SEPARATOR_BYTE;
 
 /// The file backend's slow paths.
-pub mod reason {
-    /// The host gave an error Linux has no number for, answered as EIO; the detail is the host's
-    /// number.
-    pub const HOST_ERROR_WITHOUT_LINUX_NUMBER: &str =
+pub(crate) mod reason {
+    /// A host error Linux has no number for, answered as EIO; the detail is the host's number.
+    pub(crate) const HOST_ERROR_WITHOUT_LINUX_NUMBER: &str =
         "file backend: host error with no Linux number, answered as EIO";
     /// An open flag the host has no equivalent of was left out; the detail is the flag.
-    pub const OPEN_FLAG_LEFT_OUT: &str = "file backend: open flag the host lacks left out";
+    pub(crate) const OPEN_FLAG_LEFT_OUT: &str = "file backend: open flag the host lacks left out";
     /// A request this backend does not serve was answered ENOSYS; the detail is its opcode.
-    pub const REQUEST_NOT_SERVED: &str = "file backend: request not served, answered ENOSYS";
-    /// A device node was asked for or shown: the host user cannot make one, and its number is not
-    /// given (Linux's encoding of device numbers is the kernel's own).
-    pub const DEVICE_NODE: &str = "file backend: device node not made or its number not given";
-    /// A host directory could not be opened to serve the names in it; the detail is the host's
-    /// error number.
-    pub const DIRECTORY_NOT_OPENED: &str = "file backend: directory not opened, its names refused";
+    pub(crate) const REQUEST_NOT_SERVED: &str = "file backend: request not served, answered ENOSYS";
+    /// A device node asked for or shown, which the host user cannot make and whose number Linux encodes its own way.
+    pub(crate) const DEVICE_NODE: &str =
+        "file backend: device node not made or its number not given";
+    /// A host directory not opened to serve the names in it; the detail is the host's error number.
+    pub(crate) const DIRECTORY_NOT_OPENED: &str =
+        "file backend: directory not opened, its names refused";
 }
 
-/// How long the kernel may keep a name and its attributes before asking again, in seconds: the host
-/// may change the directory underneath.
+/// How long the kernel may keep a name and its attributes before asking again, in seconds, as libfuse's default.
+///
+/// https://libfuse.github.io/doxygen/structfuse__config.html
 const VALID_SECONDS: u64 = 1;
 
-/// The largest write the kernel is told it may send.
+/// The largest write the kernel is told it may send: Linux's most pages per request, 256, of 4 KiB.
+///
+/// https://github.com/torvalds/linux/blob/master/fs/fuse/fuse_i.h
 const MAX_WRITE: u32 = 1 << 20;
+
+/// How many lookups the kernel holds of a node it is first told of.
+///
+/// https://libfuse.github.io/doxygen/structfuse__lowlevel__ops.html
+const FIRST_LOOKUP: u64 = 1;
+
+/// The error of a reply that succeeded.
+///
+/// https://github.com/torvalds/linux/blob/master/include/uapi/linux/fuse.h
+const SUCCEEDED: i32 = 0;
+
+/// The directory itself and its parent, as a listing names them.
+const CURRENT_DIRECTORY: &CStr = c".";
+const PARENT_DIRECTORY: &CStr = c"..";
 
 /// What INIT grants of what the kernel asks.
 const GRANTED: u32 = FUSE_ASYNC_READ
@@ -99,7 +114,7 @@ struct Listed {
 }
 
 /// One host directory served.
-pub struct Files {
+pub(crate) struct Files {
     nodes: HashMap<u64, Node>,
     identities: HashMap<Identity, u64>,
     handles: HashMap<u64, Handle>,
@@ -119,7 +134,7 @@ fn identity(stat: &host::Stat) -> Identity {
     (stat.st_dev, stat.st_ino)
 }
 
-/// Linux's type bits and directory entry type for a host file type.
+/// Returns Linux's type bits and directory entry type for a host file type.
 fn kind(file: FileType) -> (u32, u32) {
     match file {
         FileType::RegularFile => (linux::S_IFREG, linux::DT_REG),
@@ -129,35 +144,61 @@ fn kind(file: FileType) -> (u32, u32) {
         FileType::Socket => (linux::S_IFSOCK, linux::DT_SOCK),
         FileType::CharacterDevice => (linux::S_IFCHR, linux::DT_CHR),
         FileType::BlockDevice => (linux::S_IFBLK, linux::DT_BLK),
-        FileType::Unknown => (0, linux::DT_UNKNOWN),
+        FileType::Unknown => (u32::MIN, linux::DT_UNKNOWN),
     }
 }
 
-/// The NUL-ended name at the start of `bytes`, and what follows it.
+/// Returns the NUL-ended name at the start of `bytes`, and what follows it.
 fn name(bytes: &[u8]) -> Result<(CString, &[u8]), Fail> {
     let name = CStr::from_bytes_until_nul(bytes).map_err(|_| Errno::EINVAL as u32)?;
     let rest = &bytes[name.to_bytes_with_nul().len()..];
     let plain = name.to_bytes();
-    if plain.is_empty() || plain.contains(&b'/') || plain == b"." || plain == b".." {
+    if plain.is_empty()
+        || plain.contains(&SEPARATOR_BYTE)
+        || plain == CURRENT_DIRECTORY.to_bytes()
+        || plain == PARENT_DIRECTORY.to_bytes()
+    {
         return Err(Errno::EINVAL as u32);
     }
     Ok((name.to_owned(), rest))
 }
 
-/// A FIFO or socket node (rustix offers `mknodat` on Linux only).
+/// Makes a FIFO or socket node.
+#[cfg(not(target_vendor = "apple"))]
 fn make_node(
     dir: BorrowedFd<'_>,
     name: &CStr,
     file: FileType,
     permissions: u32,
 ) -> Result<(), HostErrno> {
-    let mode = file.as_raw_mode() | Mode::from_raw_mode(permissions as _).bits();
-    // SAFETY: a descriptor this backend holds open and a NUL-ended name.
-    let made = unsafe { libc::mknodat(dir.as_raw_fd(), name.as_ptr(), mode as libc::mode_t, 0) };
-    if made == 0 {
-        Ok(())
+    host::mknodat(
+        dir,
+        name,
+        file,
+        Mode::from_raw_mode(permissions as _),
+        host::Dev::default(),
+    )
+}
+
+/// Makes a FIFO or socket node at its path, as macOS has no `mknodat`: a socket's by binding a socket there.
+#[cfg(target_vendor = "apple")]
+fn make_node(
+    dir: BorrowedFd<'_>,
+    name: &CStr,
+    file: FileType,
+    permissions: u32,
+) -> Result<(), HostErrno> {
+    use std::os::unix::ffi::OsStrExt;
+    let directory = host::getpath(dir)?;
+    let path = Path::new(std::ffi::OsStr::from_bytes(directory.to_bytes()))
+        .join(std::ffi::OsStr::from_bytes(name.to_bytes()));
+    if file == FileType::Socket {
+        std::os::unix::net::UnixListener::bind(&path)
+            .map(drop)
+            .map_err(|error| HostErrno::from_io_error(&error).unwrap_or(HostErrno::IO))
     } else {
-        Err(HostErrno::from_io_error(&std::io::Error::last_os_error()).unwrap_or(HostErrno::IO))
+        let mode = nix::sys::stat::Mode::from_bits_truncate(permissions as _);
+        nix::unistd::mkfifo(&path, mode).map_err(|error| HostErrno::from_raw_os_error(error as i32))
     }
 }
 
@@ -171,7 +212,7 @@ fn bytes<T: IntoBytes + Immutable>(value: &T) -> Vec<u8> {
 
 impl Files {
     /// Serves `directory`.
-    pub fn new(directory: &Path) -> std::io::Result<Self> {
+    pub(crate) fn new(directory: &Path) -> std::io::Result<Self> {
         let root = host::open(
             directory,
             OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -191,17 +232,17 @@ impl Files {
             FUSE_ROOT_ID,
             Node {
                 parent: FUSE_ROOT_ID,
-                name: c".".to_owned(),
+                name: CURRENT_DIRECTORY.to_owned(),
                 identity: identity(&stat),
-                lookups: 1,
+                lookups: FIRST_LOOKUP,
                 directory: Some(root),
             },
         );
         Ok(files)
     }
 
-    /// The slow paths taken since last asked: reason, detail and count so far.
-    pub fn warnings(&mut self) -> Vec<(&'static str, u64, u64)> {
+    /// Returns the slow paths taken since last asked: reason, detail and count so far.
+    pub(crate) fn warnings(&mut self) -> Vec<(&'static str, u64, u64)> {
         std::mem::take(&mut self.unsent)
     }
 
@@ -211,7 +252,7 @@ impl Files {
         self.unsent.push((reason, detail, *count));
     }
 
-    /// Linux's number for a host error, counting one it has none for.
+    /// Returns Linux's number for a host error, counting one it has none for.
     fn fail(&mut self, error: HostErrno) -> Fail {
         host_error(error).unwrap_or_else(|error| {
             self.slow(
@@ -227,7 +268,7 @@ impl Files {
         self.last
     }
 
-    /// The directory a node's name is in, and the name: the root is "." in itself.
+    /// Returns the directory a node's name is in, and the name: the root is "." in itself.
     fn at(&self, node: u64) -> Result<(BorrowedFd<'_>, &CStr), Fail> {
         let record = self.nodes.get(&node).ok_or(Errno::ENOENT as u32)?;
         if node == FUSE_ROOT_ID {
@@ -237,7 +278,7 @@ impl Files {
         Ok((self.directory(record.parent)?, &record.name))
     }
 
-    /// A directory node's descriptor.
+    /// Returns a directory node's descriptor.
     fn directory(&self, node: u64) -> Result<BorrowedFd<'_>, Fail> {
         let record = self.nodes.get(&node).ok_or(Errno::ENOENT as u32)?;
         record
@@ -279,25 +320,22 @@ impl Files {
             nlink: stat.st_nlink as _,
             uid: stat.st_uid,
             gid: stat.st_gid,
-            rdev: 0,
             blksize: stat.st_blksize as u32,
-            flags: 0,
+            ..Default::default()
         }
     }
 
     fn entry(&mut self, node: u64, stat: &host::Stat) -> fuse_entry_out {
         fuse_entry_out {
             nodeid: node,
-            generation: 0,
             entry_valid: VALID_SECONDS,
             attr_valid: VALID_SECONDS,
-            entry_valid_nsec: 0,
-            attr_valid_nsec: 0,
             attr: self.attr(stat),
+            ..Default::default()
         }
     }
 
-    /// The node for `name` in `parent`, now found to be `stat`: one more lookup of it.
+    /// Returns the node for `name` in `parent`, now found to be `stat`, with one more lookup of it.
     fn remember(&mut self, parent: u64, name: &CStr, stat: &host::Stat) -> u64 {
         let id = identity(stat);
         if let Some(&node) = self.identities.get(&id) {
@@ -337,7 +375,7 @@ impl Files {
                 parent,
                 name: name.to_owned(),
                 identity: id,
-                lookups: 1,
+                lookups: FIRST_LOOKUP,
                 directory,
             },
         );
@@ -375,7 +413,7 @@ impl Files {
         }
     }
 
-    /// The host's open flags for Linux's, counting those the host lacks.
+    /// Returns the host's open flags for Linux's, counting those the host lacks.
     fn open_flags(&mut self, flags: u32) -> OFlags {
         let mut host = match flags & linux::O_ACCMODE {
             linux::O_WRONLY => OFlags::WRONLY,
@@ -421,7 +459,7 @@ impl Files {
     }
 
     /// Serves one request; the reply, or none for a request FUSE gives none.
-    pub fn serve(&mut self, message: &[u8]) -> Option<Vec<u8>> {
+    pub(crate) fn serve(&mut self, message: &[u8]) -> Option<Vec<u8>> {
         let (header, _) = fuse_in_header::read_from_prefix(message).ok()?;
         let end = (header.len as usize).min(message.len());
         let body = message
@@ -451,7 +489,7 @@ impl Files {
             _ => self.answer(header.nodeid, opcode, body),
         };
         let (error, body) = match answer {
-            Ok(body) => (0, body),
+            Ok(body) => (SUCCEEDED, body),
             Err(number) => (-(number as i32), Vec::new()),
         };
         let out = fuse_out_header {
@@ -543,7 +581,7 @@ impl Files {
         }
         if is(FUSE_RENAME) {
             let (rename, rest) = read::<fuse_rename_in>(body)?;
-            return self.rename(node, rename.newdir, 0, rest);
+            return self.rename(node, rename.newdir, RenameFlags::empty().bits(), rest);
         }
         if is(FUSE_RENAME2) {
             let (rename, rest) = read::<fuse_rename2_in>(body)?;
@@ -573,7 +611,7 @@ impl Files {
         if is(FUSE_READ) {
             let (read_in, _) = read::<fuse_read_in>(body)?;
             let fd = self.handle_fd(read_in.fh)?;
-            let mut data = vec![0; read_in.size as usize];
+            let mut data = vec![u8::MIN; read_in.size as usize];
             let count =
                 rustix::io::pread(fd, &mut data, read_in.offset).map_err(|e| self.fail(e))?;
             data.truncate(count);
@@ -585,7 +623,7 @@ impl Files {
                 .get(..write.size as usize)
                 .ok_or(Errno::EINVAL as u32)?;
             let fd = self.handle_fd(write.fh)?;
-            let mut done = 0;
+            let mut done = usize::MIN;
             while done < data.len() {
                 let offset = write.offset + done as u64;
                 match rustix::io::pwrite(fd, &data[done..], offset) {
@@ -596,7 +634,7 @@ impl Files {
             }
             let out = fuse_write_out {
                 size: done as u32,
-                padding: 0,
+                ..Default::default()
             };
             return Ok(bytes(&out));
         }
@@ -639,7 +677,7 @@ impl Files {
             let dir = self.directory(node)?;
             let fd = host::openat(
                 dir,
-                c".",
+                CURRENT_DIRECTORY,
                 OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
                 Mode::empty(),
             )
@@ -674,9 +712,8 @@ impl Files {
     fn attr_out(&mut self, stat: &host::Stat) -> Vec<u8> {
         let out = fuse_attr_out {
             attr_valid: VALID_SECONDS,
-            attr_valid_nsec: 0,
-            dummy: 0,
             attr: self.attr(stat),
+            ..Default::default()
         };
         bytes(&out)
     }
@@ -686,8 +723,7 @@ impl Files {
         self.handles.insert(fh, handle);
         bytes(&fuse_open_out {
             fh,
-            open_flags: 0,
-            backing_id: 0,
+            ..Default::default()
         })
     }
 
@@ -871,8 +907,7 @@ impl Files {
         Ok(self.attr_out(&stat))
     }
 
-    /// The extended attribute calls, through a descriptor of the node (a link has none: Linux
-    /// allows no user attributes on one).
+    /// Answers the extended attribute calls through a descriptor of the node; a link has none, as Linux allows it none.
     fn attribute(&mut self, node: u64, opcode: u32, body: &[u8]) -> Answer {
         use fuse_opcode::*;
         let is = |op: fuse_opcode| opcode == op as u32;
@@ -916,7 +951,7 @@ impl Files {
             return Ok(Vec::new());
         }
         let (get, rest) = read::<fuse_getxattr_in>(body)?;
-        let mut value = vec![0; get.size as usize];
+        let mut value = vec![u8::MIN; get.size as usize];
         let count = if is(FUSE_GETXATTR) {
             let name = CStr::from_bytes_until_nul(rest).map_err(|_| Errno::EINVAL as u32)?;
             host::fgetxattr(&fd, name, &mut value[..])
@@ -927,14 +962,14 @@ impl Files {
         if get.size == 0 {
             return Ok(bytes(&fuse_getxattr_out {
                 size: count as u32,
-                padding: 0,
+                ..Default::default()
             }));
         }
         value.truncate(count);
         Ok(value)
     }
 
-    /// A directory's entries from `read_in.offset`, as many as fit; with each entry's node when `plus`.
+    /// Returns a directory's entries from `read_in.offset`, as many as fit, with each entry's node when `plus`.
     fn list(&mut self, node: u64, read_in: &fuse_read_in, plus: bool) -> Answer {
         let offset = read_in.offset as usize;
         let relist = offset == 0
@@ -986,7 +1021,9 @@ impl Files {
                 break;
             }
             if plus {
-                let entry = if plain == b"." || plain == b".." {
+                let entry = if plain == CURRENT_DIRECTORY.to_bytes()
+                    || plain == PARENT_DIRECTORY.to_bytes()
+                {
                     fuse_entry_out::default()
                 } else {
                     let dir = self.directory(node)?;
@@ -1010,7 +1047,7 @@ impl Files {
             };
             out.extend_from_slice(&dirent.as_bytes()[..size_of::<fuse_dirent>()]);
             out.extend_from_slice(plain);
-            out.resize(out.len().next_multiple_of(DIRENT_ALIGN), 0);
+            out.resize(out.len().next_multiple_of(DIRENT_ALIGN), u8::MIN);
         }
         Ok(out)
     }
@@ -1020,7 +1057,7 @@ impl Files {
 mod tests {
     use super::*;
 
-    /// One request's bytes: the header, then the body's parts.
+    /// Returns one request's bytes: the header, then the body's parts.
     fn request(opcode: fuse_opcode, node: u64, unique: u64, parts: &[&[u8]]) -> Vec<u8> {
         let length = size_of::<fuse_in_header>() + parts.iter().map(|p| p.len()).sum::<usize>();
         let header = fuse_in_header {
@@ -1037,7 +1074,7 @@ mod tests {
         bytes
     }
 
-    /// The reply's error and body.
+    /// Returns the reply's error and body.
     fn reply(files: &mut Files, message: &[u8]) -> (i32, Vec<u8>) {
         let reply = files.serve(message).expect("a reply");
         let (header, body) = fuse_out_header::read_from_prefix(&reply).unwrap();
@@ -1045,8 +1082,7 @@ mod tests {
         (header.error, body.to_vec())
     }
 
-    /// A file made, written, read back, looked up again, listed and removed through FUSE's messages,
-    /// as the host directory shows it.
+    /// Checks that a file is made, written, read back, looked up, listed and removed through FUSE as the host shows it.
     #[test]
     fn a_file_is_made_written_read_listed_and_removed() {
         // Beside the test program, in the build directory.
@@ -1147,7 +1183,14 @@ mod tests {
             rest = &rest[size..];
         }
         names.sort();
-        assert_eq!(names, [b".".to_vec(), b"..".to_vec(), b"made".to_vec()]);
+        assert_eq!(
+            names,
+            [
+                CURRENT_DIRECTORY.to_bytes().to_vec(),
+                PARENT_DIRECTORY.to_bytes().to_vec(),
+                b"made".to_vec()
+            ]
+        );
         let message = request(fuse_opcode::FUSE_UNLINK, FUSE_ROOT_ID, 8, &[b"made\0"]);
         assert_eq!(reply(&mut files, &message).0, 0);
         let message = request(fuse_opcode::FUSE_LOOKUP, FUSE_ROOT_ID, 9, &[b"made\0"]);

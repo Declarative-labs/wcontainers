@@ -7,8 +7,7 @@ use std::os::fd::AsFd;
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6Header, Ipv6RawExtHeaderSlice};
 use linux_raw_sys::net::{
-    IP_UNICAST_IF, IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4, IPV6_UNICAST_IF, MSG_PROBE, SOL_IP,
-    SOL_IPV6, in6_addr, ipv6_rt_hdr, rt0_hdr,
+    IPV6_SRCRT_TYPE_2, IPV6_SRCRT_TYPE_4, MSG_PROBE, in6_addr, ipv6_rt_hdr, rt0_hdr,
 };
 use linux_raw_sys::netlink::RTAX_MTU;
 use netlink_packet_core::{
@@ -34,9 +33,10 @@ use wcontainers_internet_protocol::{
     UpperLayerSelector,
 };
 use wcontainers_internet_protocol_linux_socket_options::{
-    Shortfalls, io_host_error, open_socket, set_option, set_packet_setting,
+    LINUX, Shortfalls, io_host_error, open_socket, set_packet_setting,
 };
 use wcontainers_kernel::UserId;
+use wcontainers_linux_socket_options::LinuxSocketOptions;
 
 const LINK_SCOPE: &str = "route lookup: a link-scope IPv4 lookup the routing socket cannot ask for";
 const WAIVED_SOURCE_CHECK: &str = "route lookup: a waived source check for an IPv4 address the host lacks, which the routing socket always checks";
@@ -1073,11 +1073,11 @@ fn name_interface(
     version: IpVersion,
     interface: InterfaceIndex,
 ) -> Result<(), HostError> {
-    let (level, name) = match version {
-        IpVersion::V4 => (SOL_IP, IP_UNICAST_IF),
-        IpVersion::V6 => (SOL_IPV6, IPV6_UNICAST_IF),
-    };
-    set_option(socket.as_fd(), level, name, &interface.0.get().to_be())
+    let index = interface.0.get().to_be();
+    match version {
+        IpVersion::V4 => LINUX.set_ip_unicast_if(socket.as_fd(), index),
+        IpVersion::V6 => LINUX.set_ipv6_unicast_if(socket.as_fd(), index),
+    }
 }
 
 /// Sets the socket's traffic class, the DSCP and ECN bits a datagram socket sends with.
