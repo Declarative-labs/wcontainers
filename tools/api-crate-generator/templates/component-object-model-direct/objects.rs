@@ -146,26 +146,27 @@ impl<V> Drop for Served<V> {
 
 type Entry = Arc<dyn Any + Send + Sync>;
 
-/// Our object found for one call, which stays alive until this drops, with the word and generation it was found in.
-pub struct Found<V> {
-    served: Arc<Served<V>>,
-    index: usize,
-    generation: u32,
-}
+/// Our object found for one call, which stays alive until this drops.
+pub struct Found<V>(Arc<Served<V>>);
 
 impl<V> Deref for Found<V> {
     type Target = Served<V>;
 
     fn deref(&self) -> &Served<V> {
-        &self.served
+        &self.0
     }
 }
 
 impl<V: Send + Sync + 'static> Found<V> {
-    /// Returns a handle that finds the object again while any reference to it lives, as `Counted::weak` does, with no
-    /// second look in the table.
-    pub fn weak(&self) -> Weak {
-        Weak { index: self.index, generation: self.generation, add: add_exact::<V>, release: release_exact::<V> }
+    /// Returns a handle to the object's first word (IUnknown's), which finds the object again while any reference to it
+    /// lives, as `Counted::weak` does, with no search of the table; none if the word no longer holds this object.
+    pub fn weak(&self) -> Option<Weak> {
+        let index = self.0.first.0;
+        let slot = lock(OBJECTS.slot(index)?);
+        let entry = slot.entry.as_ref()?;
+        // The word holds this very object (the same allocation), so its generation is this object's.
+        let same = core::ptr::addr_eq(Arc::as_ptr(entry), Arc::as_ptr(&self.0));
+        same.then_some(Weak { index, generation: slot.generation, add: add_exact::<V>, release: release_exact::<V> })
     }
 }
 
@@ -282,20 +283,8 @@ impl ObjectTable {
     }
 
     fn find<V: Send + Sync + 'static>(&self, index: usize) -> Option<Found<V>> {
-        let (entry, generation) = {
-            let slot = lock(self.slot(index)?);
-            (slot.entry.clone()?, slot.generation)
-        };
-        let served = entry.downcast::<Served<V>>().ok()?;
-        // The handle `weak` gives is of the object's first word, IUnknown's, whatever word the C side called through.
-        let first = served.first.0;
-        let generation = if first == index { generation } else { self.generation_of(first)? };
-        Some(Found { index: first, generation, served })
-    }
-
-    /// Returns the generation of the word at `index`.
-    fn generation_of(&self, index: usize) -> Option<u32> {
-        Some(lock(self.slot(index)?).generation)
+        let entry = lock(self.slot(index)?).entry.clone()?;
+        entry.downcast::<Served<V>>().ok().map(Found)
     }
 
     fn take(&self, index: usize) -> Option<Entry> {
@@ -472,7 +461,7 @@ pub fn query<V: Send + Sync + 'static>(key: GlueKey, address: usize, interface: 
             Some(&(index, _)) => index,
             None => {
                 let index = table.claim(wanted)?;
-                let entry: Entry = Arc::clone(&found.served) as Entry;
+                let entry: Entry = Arc::clone(&found.0) as Entry;
                 if let Err(entry) = table.install(index, entry) {
                     drop(others);
                     drop(entry);

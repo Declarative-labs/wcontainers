@@ -594,7 +594,7 @@ impl Writer<'_, '_> {
                                 }
                             }
                             let new_record = match (&this_role, bound.is_some()) {
-                                (Some(this_role), true) => format!("record_related(\"{this_role}\", this_weak)"),
+                                (Some(this_role), true) => format!("this_weak.map_or_else(record, |weak| record_related(\"{this_role}\", weak))"),
                                 _ => "record()".to_string(),
                             };
                             if recorded.is_empty() {
