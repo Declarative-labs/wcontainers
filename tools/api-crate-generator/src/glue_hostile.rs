@@ -1523,7 +1523,23 @@ pub(in crate::emit) fn write_suite(writer: &Writer<'_, '_>, api: usize, crate_fo
             continue;
         }
         std::fs::write(place.join("conformance_run.rs"), format!("//! {}\n//!\n//! The conformance suite of {}, run on this implementation.\n\n{suite_crate}::tests!({value});\n", crate::emit::HEADER, spec.folder)).map_err(|error| error.to_string())?;
-        let test = "\n[[test]]\nname = \"conformance_run\"\npath = \"conformance_run.rs\"\n";
+        let mut test = "\n[[test]]\nname = \"conformance_run\"\npath = \"conformance_run.rs\"\n".to_string();
+        // The same suite through both glues: the calling glue over the serving glue's own exports of this implementation,
+        // as if it were the system's library (every method's C form crossed twice).
+        let direct_crate = format!("{}_direct", package(spec).replace('-', "_"));
+        let serve_text = std::fs::read_to_string(crate_folder.join("implementation").join("direct").join("serve.rs")).unwrap_or_default();
+        if serve_text.contains("pub fn served") {
+            std::fs::write(place.join("conformance_through_glues.rs"), format!("//! {}\n//!\n//! The conformance suite of {}, run on this implementation through both glues (`served`).\n\n{suite_crate}::tests!({direct_crate}::served({value}));\n", crate::emit::HEADER, spec.folder)).map_err(|error| error.to_string())?;
+            test.push_str("\n[[test]]\nname = \"conformance_through_glues\"\npath = \"conformance_through_glues.rs\"\n");
+            if !manifest.contains(&format!("{}-direct = ", package(spec))) {
+                runs.push("(no direct dependency)");
+            }
+            runs.push(match implementation {
+                "hostile" => "hostile through both glues",
+                _ => "recorder through both glues",
+            });
+        }
+        let test = test.as_str();
         let at = manifest.find("\n[dependencies]").unwrap_or(manifest.len());
         manifest.insert_str(at, test);
         let dev = format!("{}-conformance = {{ path = \"../../conformance\" }}\n", package(spec));

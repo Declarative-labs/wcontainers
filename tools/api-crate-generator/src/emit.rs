@@ -1690,6 +1690,7 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
     *generator.classified.borrow_mut() = Some(classified);
     // The glue: each API's direct crate, for a slice and for the whole APIs (AC3).
     let sliced = apis.iter().any(|api| !api.only.is_empty());
+    let mut failures: Vec<String> = Vec::new();
     if writes_glue {
         let writer = glue::Writer::new(&generator);
         for (api, spec) in apis.iter().enumerate().skip(1) {
@@ -1748,34 +1749,37 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
         let mut glued = writer.glued.borrow().clone();
         glued.sort();
         glued.dedup();
-        let mut not_glued = writer.not_glued.borrow().clone();
-        not_glued.sort();
-        not_glued.dedup();
-        let _ = writeln!(report, "GLUED {} (both glues): {}", glued.len(), glued.join(", "));
-        // Each method no form of the glue carries is refused by its form: an entry that reads and writes nothing, or,
-        // where none can be written, a null entry; the calling glue answers E_NOTIMPL.
-        let mut refused = writer.refused.borrow().clone();
-        refused.sort();
-        refused.dedup();
-        let (by_entry, null): (Vec<&String>, Vec<&String>) = not_glued.iter().partition(|line| refused.iter().any(|place| line.starts_with(&format!("{place}:"))));
-        let _ = writeln!(report, "NOT GLUED {} (each refused by its form; the calling glue answers E_NOTIMPL or nothing):", not_glued.len());
-        let _ = writeln!(report, "REFUSED BY AN ENTRY {} (it reads and writes nothing and answers E_NOTIMPL, or nothing):", by_entry.len());
-        for line in &by_entry {
-            let _ = writeln!(report, "  {line}");
-        }
-        let _ = writeln!(report, "REFUSED BY A NULL ENTRY {} (a structure by value in the call, or an out-parameter an entry would leave unwritten):", null.len());
-        for line in &null {
-            let _ = writeln!(report, "  {line}");
-        }
+        let _ = writeln!(report, "GLUED {} (the serving glue's entry or export calls the implementation): {}", glued.len(), glued.join(", "));
+        // Every method the serving glue does not carry, with what each glue wrote for it, from the record kept as their
+        // text was written (src/glue.rs `Outcome`): the report and the glue cannot disagree.
+        let outcomes = writer.outcomes.borrow().clone();
+        let not_glued: Vec<(&String, &glue::Outcome)> = outcomes.iter().filter(|(_, outcome)| !outcome.serving.iter().any(|what| what.starts_with("glued"))).collect();
+        let _ = writeln!(report, "NOT GLUED {} (each refused by its form, as each glue wrote it):", not_glued.len());
+        let mut by_answer: BTreeMap<String, usize> = BTreeMap::new();
         let mut reasons: BTreeMap<String, usize> = BTreeMap::new();
-        for line in &not_glued {
-            let reason = line.rsplit(": ").next().unwrap_or("").to_string();
-            *reasons.entry(reason).or_default() += 1;
+        for (place, outcome) in &not_glued {
+            let reason = outcome.reason.clone().unwrap_or_else(|| "no reason recorded".to_string());
+            let serving: Vec<String> = outcome.serving.iter().cloned().collect();
+            let calling: Vec<String> = outcome.calling.iter().cloned().collect();
+            let calling = if calling.is_empty() { "no trait method (not in the set)".to_string() } else { calling.join(" | ") };
+            let _ = writeln!(report, "  {place}: {reason}\n      serving: {}\n      calling: {calling}", serving.join(" | "));
+            for what in &outcome.serving {
+                *by_answer.entry(format!("serving {what}")).or_default() += 1;
+            }
+            *reasons.entry(reason.rsplit(": ").next().unwrap_or("").to_string()).or_default() += 1;
+        }
+        let calling_refusals = outcomes.values().filter(|outcome| outcome.calling.iter().any(|what| !what.starts_with("glued"))).count();
+        let _ = writeln!(report, "NULL ENTRIES {} (a table entry the generator could not write fails it)", writer.failures.borrow().iter().filter(|f| f.starts_with("NULL ENTRY")).count());
+        let _ = writeln!(report, "CALLING GLUE METHODS THAT DO NOT CALL THE SYSTEM {calling_refusals} (refused by kinds, by form, or pinned; each answer above)");
+        let _ = writeln!(report, "NOT GLUED BY ENTRY:");
+        for (what, count) in &by_answer {
+            let _ = writeln!(report, "  {count:>4}  {what}");
         }
         let _ = writeln!(report, "NOT GLUED BY FORM:");
         for (reason, count) in &reasons {
             let _ = writeln!(report, "  {count:>4}  {reason}");
         }
+        failures.extend(writer.failures.borrow().iter().cloned());
     }
     let _ = writeln!(report, "ROWS (parameters, fields and returns mapped by each row of MAPPING.md):");
     for row in Row::ALL {
@@ -1797,6 +1801,10 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
         report.push_str(&crate::visibility::narrow(out, &folders)?);
     }
     format_written(out)?;
+    // No null entry, no panicking body (src/complete.rs).
+    if writes_glue {
+        report.push_str(&crate::complete::check(out, &failures).map_err(|failure| format!("{report}{failure}"))?);
+    }
     report.push_str(&kinds_report);
     // Every mark's reason matched to what it relies on, and every hostile test the rows owe written.
     report.push_str(&crate::undo::check(out)?);

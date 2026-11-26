@@ -3,7 +3,7 @@
 
 use std::fmt::Write as _;
 
-use super::{Glued, Part, Writer, direct_alias, snake, upper};
+use super::{Glued, MOST_ELEMENTS, NOWHERE, Part, Writer, direct_alias, snake, upper};
 use crate::api::{Exception, Hold};
 use crate::emit::{At, HEADER, Key, alias};
 use crate::metadata::Method;
@@ -25,6 +25,54 @@ impl Writer<'_, '_> {
         (inputs.into_iter().map(|(name, ty)| (name, fix(ty))).collect(), fix(result))
     }
 
+    /// A value of the trait type `ty` that holds nothing, which a refused method with no status answers: no list, no
+    /// object, zeros (a structure decoded from zero bytes); none for a type of which no such value can be written,
+    /// which fails the generator rather than write a panic.
+    pub(super) fn nothing_of(&self, ty: &str) -> Option<String> {
+        let ty = ty.trim();
+        if ty == "()" {
+            return Some("()".to_string());
+        }
+        if ty.starts_with("Vec<") {
+            return Some("Vec::new()".to_string());
+        }
+        if ty.starts_with("Option<") {
+            return Some("None".to_string());
+        }
+        if ty == "bool" {
+            return Some("false".to_string());
+        }
+        if let Some(inner) = ty.strip_prefix('(').and_then(|rest| rest.strip_suffix(')')) {
+            let parts: Option<Vec<String>> = super::record::split_types(inner).iter().map(|part| self.nothing_of(part)).collect();
+            return parts.map(|parts| format!("({})", parts.join(", ")));
+        }
+        if let Some((element, _)) = ty.strip_prefix('[').and_then(|rest| rest.strip_suffix(']')).and_then(|inner| inner.rsplit_once(';')) {
+            return self.nothing_of(element).map(|value| format!("core::array::from_fn(|_| {value})"));
+        }
+        if ty == self.g.guid_path(NOWHERE) {
+            return Some("Default::default()".to_string());
+        }
+        if ty.contains("::structures::") {
+            let record_key = self.g.read.records.keys().find(|k| self.record_path(k) == ty)?.clone();
+            // A handle's newtype derives `Default` (zero); a structure is zero bytes decoded.
+            if !matches!(self.g.read.records[&record_key].kind, crate::metadata::RecordKind::Struct | crate::metadata::RecordKind::Union) {
+                return Some("Default::default()".to_string());
+            }
+            let coded = self.codec_of(&record_key)?;
+            return Some(format!("decode_{}(&[0_u8; {}])", coded.ident, coded.size));
+        }
+        if ty.contains(" as ") || ty.starts_with('<') || ty.starts_with('&') {
+            return None;
+        }
+        // A primitive, or an enumeration's or handle's newtype, each of which derives `Default` (zero).
+        Some("Default::default()".to_string())
+    }
+
+    /// Records what the calling glue wrote for a method.
+    fn calling_outcome(&self, place: &str, what: String) {
+        self.outcomes.borrow_mut().entry(place.to_string()).or_default().calling.insert(what);
+    }
+
     /// One method of the calling glue, called through `object` (an expression of a `ForeignObject` whose table holds
     /// `slot`), or through a library's export when `slot` is the export's field.
     #[allow(clippy::too_many_arguments, reason = "the method's own parts")]
@@ -36,6 +84,19 @@ impl Writer<'_, '_> {
         let returns = if result == "()" { String::new() } else { format!(" -> {result}") };
         let _ = writeln!(text, "    fn {rust_name}(&self{parameters}){returns} {{");
         let status = glued.is_some_and(|g| g.status);
+        // What a method answers when it does nothing: the API's refusal (E_NOTIMPL), no result, no object, or a value
+        // that holds nothing; never a panic (a type of which none can be written fails the generator).
+        let nothing = if result.starts_with("Result<") || result == "()" || result.starts_with("Option<") {
+            None
+        } else {
+            match self.nothing_of(result) {
+                Some(value) => Some(value),
+                None => {
+                    self.failures.borrow_mut().push(format!("PANIC BODY calling glue {place}: no value that holds nothing of {result}"));
+                    Some("Default::default()".to_string())
+                }
+            }
+        };
         let fail = if result.starts_with("Result<") {
             "return Err(E_INVALIDARG);".to_string()
         } else if result == "()" {
@@ -43,44 +104,35 @@ impl Writer<'_, '_> {
         } else if result.starts_with("Option<") {
             "return None;".to_string()
         } else {
-            "return Default::default();".to_string()
+            format!("return {};", nothing.clone().unwrap_or_default())
         };
-        let not_glued = |why: &str| -> String {
-            if result.starts_with("Result<") {
-                format!("        // Not glued yet: {why}.\n        Err(E_NOTIMPL)\n")
-            } else if result == "()" {
-                format!("        // Not glued yet: {why}.\n")
-            } else if result.starts_with("Option<") {
-                format!("        // Not glued yet: {why}.\n        None\n")
-            } else {
-                format!("        unimplemented!(\"{place}: not glued yet: {why}\")\n")
-            }
+        let refused = if result.starts_with("Result<") {
+            ("Err(E_NOTIMPL)".to_string(), "E_NOTIMPL".to_string())
+        } else if result == "()" {
+            (String::new(), "no result (nothing done)".to_string())
+        } else if result.starts_with("Option<") {
+            ("None".to_string(), "no object".to_string())
+        } else {
+            (nothing.clone().unwrap_or_default(), format!("a value that holds nothing (`{}`)", nothing.clone().unwrap_or_default()))
         };
         // Default deny (src/kinds.rs): a part of a kind the system trusts, or memory lent until later, with no row.
         if let Some(crate::emit::kinds::Treatment::Refused(why)) = self.g.treatment(place) {
             for (name, _) in inputs {
                 let _ = writeln!(text, "        let _ = {name};");
             }
-            let answer = if result.starts_with("Result<") {
-                "Err(E_NOTIMPL)"
-            } else if result == "()" {
-                ""
-            } else if result.starts_with("Option<") {
-                "None"
-            } else {
-                "Default::default()"
-            };
             let why = why.join("; ").replace('\n', " ");
-            let _ = writeln!(text, "        // Refused by its kinds (src/kinds.rs), the system never called: {why}.\n        {answer}");
+            let _ = writeln!(text, "        // Refused by its kinds (src/kinds.rs), the system never called: {why}.\n        {}", refused.0);
             text.push_str("    }\n");
+            self.calling_outcome(place, format!("refused by its kinds: the system is not called; answers {}", refused.1));
             return text;
         }
         let Some(glued) = glued else {
             for (name, _) in inputs {
                 let _ = writeln!(text, "        let _ = {name};");
             }
-            text.push_str(&not_glued("refused by its form: a parameter of a form the glue does not carry (the report's NOT GLUED BY FORM)"));
+            let _ = writeln!(text, "        // Refused by its form (the report's NOT GLUED): the system is not called.\n        {}", refused.0);
             text.push_str("    }\n");
+            self.calling_outcome(place, format!("refused by its form: the system is not called; answers {}", refused.1));
             return text;
         };
         let mut body = String::new();
@@ -88,18 +140,13 @@ impl Writer<'_, '_> {
         let holds = self.g.holds_of(place);
         let pinned_body = holds.iter().find_map(|hold| match hold {
             Hold::NotCalled { why } => {
-                let answer = if result.starts_with("Result<") {
-                    "Err(E_NOTIMPL)"
-                } else if result == "()" {
-                    ""
-                } else if result.starts_with("Option<") {
-                    "None"
-                } else {
-                    "Default::default()"
-                };
-                Some(format!("        // Pinned (src/api.rs): never called by the calling glue: {why}.\n        {answer}\n"))
+                self.calling_outcome(place, format!("pinned never called: the system is not called; answers {}", refused.1));
+                Some(format!("        // Pinned (src/api.rs): never called by the calling glue: {why}.\n        {}\n", refused.0))
             }
-            Hold::Answers { value, why } => Some(format!("        // Pinned (src/api.rs): answered, the system never called: {why}.\n        {value}\n")),
+            Hold::Answers { value, why } => Some({
+                self.calling_outcome(place, format!("pinned answered: the system is not called; answers {value}"));
+                format!("        // Pinned (src/api.rs): answered, the system never called: {why}.\n        {value}\n")
+            }),
             _ => None,
         });
         if let Some(pinned) = pinned_body {
@@ -109,6 +156,12 @@ impl Writer<'_, '_> {
             text.push_str(&pinned);
             text.push_str("    }\n");
             return text;
+        }
+        // Bytes the trait takes as an `Option`: a slice from here on, and whether one was given.
+        for (name, part) in &glued.parts {
+            if let Part::ValuesIn { as_option: true, .. } = part {
+                let _ = writeln!(body, "        let {name}_given = {name}.is_some();\n        let {name}: &[u8] = {name}.unwrap_or_default();");
+            }
         }
         for hold in &holds {
             match hold {
@@ -152,6 +205,8 @@ impl Writer<'_, '_> {
         }
         let mut args: Vec<String> = Vec::new();
         let mut after = String::new();
+        // An array out counted by pointer: what runs between the call asking how many and the call that fills them.
+        let mut by_pointer = String::new();
         let mut outs: Vec<String> = Vec::new();
         for exception in self.g.exceptions() {
             if let Exception::Checked { method: m, param, rule } = exception
@@ -225,7 +280,11 @@ impl Writer<'_, '_> {
                         };
                         let _ = writeln!(body, "        if {name} != {keep:#x} && {span} {{ {fail} }}");
                     } else if let Some(first) = required.first().copied().or(users.first()) {
-                        let _ = writeln!(body, "        let Ok({name}) = {c}::try_from({}) else {{ {fail} }};", length(first));
+                        if c == "usize" {
+                            let _ = writeln!(body, "        let {name}: usize = {};", length(first));
+                        } else {
+                            let _ = writeln!(body, "        let Ok({name}) = {c}::try_from({}) else {{ {fail} }};", length(first));
+                        }
                         for other in users.iter().filter(|other| other.0 != first.0) {
                             if matches!(other.1, Part::ValuesIn { optional: true, .. }) {
                                 let _ = writeln!(body, "        if !{}.is_empty() && {c}::try_from({}).ok() != Some({name}) {{ {fail} }}", other.0, length(other));
@@ -256,7 +315,8 @@ impl Writer<'_, '_> {
                         for (input, _) in inputs {
                             let _ = writeln!(text, "        let _ = {input};");
                         }
-                        text.push_str(&not_glued("a structure holding a union, which the glue only reads"));
+                        let _ = writeln!(text, "        // Refused: a structure holding a union, which the glue only reads.\n        {}", refused.0);
+                        self.calling_outcome(place, format!("refused: a structure holding a union, which the glue only reads; answers {}", refused.1));
                         text.push_str("    }\n");
                         return text;
                     }
@@ -284,6 +344,90 @@ impl Writer<'_, '_> {
                     } else {
                         args.push(format!("{{ let held = {name}; {raw} }}"));
                     }
+                }
+                Part::ValuesIn { element, count, optional, size, .. } if matches!(element.as_ref(), Part::StructIn { .. }) => {
+                    // Structures copied as C lays them out, into words so that the system reads them aligned.
+                    let kept = glued.ranges.iter().any(|(c, _, _, keep, _)| c == count && keep.is_some());
+                    let source = if kept { format!("{name}.unwrap_or_default()") } else { name.clone() };
+                    let write = Self::element_write(element, "value", "bytes");
+                    let _ = writeln!(body, "        let Some({name}_length) = {source}.len().checked_mul({size}) else {{ {fail} }};");
+                    let _ = writeln!(body, "        let mut {name}_bytes = vec![0_u8; {name}_length.next_multiple_of(8)];");
+                    let _ = writeln!(body, "        for (value, bytes) in {source}.iter().zip({name}_bytes.as_chunks_mut::<{size}>().0.iter_mut()) {{ {write} }}");
+                    let _ = writeln!(body, "        let {name}_c: Vec<u64> = {name}_bytes.as_chunks::<8>().0.iter().map(|word| u64::from_ne_bytes(*word)).collect();");
+                    if *optional || kept {
+                        args.push(format!("if {name}_c.is_empty() {{ null() }} else {{ {name}_c.as_ptr().cast::<u8>() }}"));
+                    } else {
+                        args.push(format!("{name}_c.as_ptr().cast::<u8>()"));
+                    }
+                }
+                Part::FixedIn { element, length, size, optional } => {
+                    let total = length * size;
+                    let write = Self::element_write(element, "value", "bytes");
+                    let _ = writeln!(body, "        let mut {name}_bytes = Aligned::<{total}>::default();");
+                    if *optional {
+                        let _ = writeln!(body, "        if let Some(values) = {name} {{ for (value, bytes) in values.iter().zip({name}_bytes.0.as_chunks_mut::<{size}>().0.iter_mut()) {{ {write} }} }}");
+                        args.push(format!("if {name}.is_some() {{ {name}_bytes.0.as_ptr() }} else {{ null() }}"));
+                    } else {
+                        let _ = writeln!(body, "        for (value, bytes) in {name}.iter().zip({name}_bytes.0.as_chunks_mut::<{size}>().0.iter_mut()) {{ {write} }}");
+                        args.push(format!("{name}_bytes.0.as_ptr()"));
+                    }
+                }
+                Part::FixedOut { element, length, size } => {
+                    let total = length * size;
+                    let _ = writeln!(body, "        let mut {name} = Aligned::<{total}>::default();");
+                    args.push(format!("{name}.0.as_mut_ptr()"));
+                    let read = Self::element_read(element, &format!("&{name}.0[index * {size}..]"));
+                    let _ = writeln!(after, "        let {name} = core::array::from_fn(|index| {read});");
+                    outs.push(name.clone());
+                }
+                Part::ValuesOut { element, size, by_pointer: false, count } => {
+                    let count_name = &glued.parts[*count].0;
+                    let _ = writeln!(body, "        let Some({name}_length) = {}.filter(|count| *count <= {MOST_ELEMENTS}).map(|count| {}) else {{ {fail} }};", self.to_usize(method, *count, count_name), super::times("count", &size.to_string()));
+                    let _ = writeln!(body, "        let mut {name}_words = vec![0_u64; {name}_length.div_ceil(8)];");
+                    args.push(format!("{name}_words.as_mut_ptr().cast::<u8>()"));
+                    let read = Self::element_read(element, "element");
+                    let _ = writeln!(after, "        let {name}_bytes: Vec<u8> = {name}_words.iter().flat_map(|word| word.to_ne_bytes()).collect();");
+                    let _ = writeln!(after, "        let {name}: Vec<_> = {name}_bytes.get(..{name}_length).unwrap_or_default().as_chunks::<{size}>().0.iter().map(|element| {read}).collect();");
+                    outs.push(name.clone());
+                }
+                Part::ValuesOut { element, size, by_pointer: true, count } => {
+                    // Asked twice of the system (see the call below): how many, then that many, none past the glue's limit.
+                    let count_name = &glued.parts[*count].0;
+                    let _ = writeln!(body, "        let mut {name}_words: Vec<u64> = Vec::new();");
+                    args.push(format!("if {name}_words.is_empty() {{ null_mut() }} else {{ {name}_words.as_mut_ptr().cast::<u8>() }}"));
+                    let _ = writeln!(by_pointer, "        let Some({name}_room) = usize::try_from({count_name}_cell).ok().filter(|count| *count <= {MOST_ELEMENTS}) else {{ {fail} }};");
+                    let _ = writeln!(by_pointer, "        {name}_words = vec![0_u64; ({}).div_ceil(8).max(1)];", super::times(&format!("{name}_room"), &size.to_string()));
+                    let _ = writeln!(by_pointer, "        let Ok(room) = u32::try_from({name}_room) else {{ {fail} }};\n        {count_name}_cell = room;");
+                    let read = Self::element_read(element, "element");
+                    let _ = writeln!(after, "        let {name}_number = usize::try_from({count_name}_cell).unwrap_or(usize::MAX).min({name}_room);");
+                    let _ = writeln!(after, "        let {name}_bytes: Vec<u8> = {name}_words.iter().flat_map(|word| word.to_ne_bytes()).collect();");
+                    let _ = writeln!(after, "        let {name}: Vec<_> = {name}_bytes.get(..{}).unwrap_or_default().as_chunks::<{size}>().0.iter().map(|element| {read}).collect();", super::times(&format!("{name}_number"), &size.to_string()));
+                    outs.push(name.clone());
+                }
+                Part::CountByPointer => {
+                    let _ = writeln!(body, "        let mut {name}_cell: u32 = 0;");
+                    args.push(format!("(&raw mut {name}_cell).cast::<u8>()"));
+                }
+                Part::ObjectsOut { count, kind } => {
+                    let count_name = &glued.parts[*count].0;
+                    let param_name = &param.name;
+                    let interface_key = self.out_interface(param);
+                    let newest = self.g.kinds[*kind].newest.first().cloned();
+                    let adopt = if newest.as_ref() == interface_key.as_ref() { "from_owned" } else { "from_owned_older" };
+                    let system = self.system_path(*kind, api_type);
+                    let _ = writeln!(body, "        let Some({name}_count) = {}.filter(|count| *count <= {MOST_ELEMENTS}) else {{ {fail} }};", self.to_usize(method, *count, count_name));
+                    let _ = writeln!(body, "        let mut {name}: Vec<Raw> = vec![null_mut(); {name}_count];");
+                    args.push(format!("{name}.as_mut_ptr()"));
+                    let _ = writeln!(after, "        let mut {name}_adopted = Vec::new();\n        for raw in {name} {{");
+                    let _ = writeln!(after, "            #[expect(unsafe_code, reason = \"{place}: {param_name}, an object the metadata's Out hands over\")]");
+                    let _ = writeln!(after, "            // SAFETY: the metadata's `{param_name}` is `Out` with `{count_name}` its count: after the call, each element null or one reference to an object of `{}`.", interface_key.as_ref().map_or("", |k| k.1.as_str()));
+                    let _ = writeln!(after, "            {name}_adopted.push(unsafe {{ {system}::{adopt}(raw) }});\n        }}");
+                    let _ = writeln!(after, "        let {name} = {name}_adopted;");
+                    outs.push(name.clone());
+                }
+                Part::ValuesIn { as_option: true, .. } => {
+                    let _ = writeln!(body, "        let {name}_c: Vec<u8> = {name}.to_vec();");
+                    args.push(format!("if {name}_given {{ {name}_c.as_ptr() }} else {{ null() }}"));
                 }
                 Part::ValuesIn { element, count, optional, .. } => {
                     let kept = glued.ranges.iter().any(|(c, _, _, keep, _)| c == count && keep.is_some());
@@ -471,6 +615,18 @@ impl Writer<'_, '_> {
         } else {
             let _ = writeln!(body, "        // SAFETY: the library's export `{place}`, as `new`'s caller promised; every pointer passed is ours for the call.");
         }
+        if !by_pointer.is_empty() {
+            // First the system is asked how many (a null array), then that many are passed room for.
+            let _ = writeln!(body, "        let first = unsafe {{ {callee} }};");
+            if status {
+                let _ = writeln!(body, "        succeeded(first)?;");
+            } else {
+                let _ = writeln!(body, "        let () = first;");
+            }
+            body.push_str(&by_pointer);
+            let _ = writeln!(body, "        #[expect(unsafe_code, reason = \"{place}{}, called out\")]", if this { "" } else { ", the library's export" });
+            let _ = writeln!(body, "        // SAFETY: a live object whose table holds `{place}` where the metadata orders it; every pointer passed is ours for the call, the array the room its count says.");
+        }
         let _ = writeln!(body, "        let returned = unsafe {{ {callee} }};");
         if status {
             let _ = writeln!(body, "        succeeded(returned)?;");
@@ -496,6 +652,7 @@ impl Writer<'_, '_> {
         }
         text.push_str(&body);
         text.push_str("    }\n");
+        self.calling_outcome(place, "glued: calls the system".to_string());
         text
     }
 

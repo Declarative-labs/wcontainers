@@ -1,8 +1,9 @@
 //! Each API's `implementation/direct` crate: the C tables, the serving glue (raw C calls in, any implementation of
 //! the traits out) and the calling glue (a raw foreign object wrapped as an implementation), method by method from
-//! the metadata, by the same rows of MAPPING.md the traits were written by. A method with a parameter of a row the
-//! glue does not handle yet keeps a null entry in our tables, and its calling form answers E_NOTIMPL (or nothing);
-//! the report lists each such method with the reason.
+//! the metadata, by the same rows of MAPPING.md the traits were written by. A method with a parameter of a form the
+//! glue does not carry gets an entry that refuses it (src/glue.rs `refusal`: nothing read, COM's null and zeros written
+//! through its out-parameters, E_NOTIMPL or no result answered), never a null entry; its calling form answers the same
+//! refusal, never a panic. The report lists each such method with what each glue wrote, from the same record.
 //!
 //! The glue trusts neither side (SPIKE.md's invariants): every structure is copied once at the size C's layout
 //! gives; every implementation call runs under `guarded` and no lock; every out-parameter is written on every path;
@@ -72,8 +73,8 @@ enum Part {
     Value { c: String, rust: String, form: ValueForm },
     StructIn { optional: bool, coded: Coded },
     ObjectIn { optional: bool, kinds: Vec<usize>, enum_path: Option<String> },
-    /// An array of values and the index of its count.
-    ValuesIn { count: usize, element: Box<Part>, size: u64, optional: bool },
+    /// An array of values and the index of its count; `as_option` when the trait takes it as an `Option` (bytes `_opt_`).
+    ValuesIn { count: usize, element: Box<Part>, size: u64, optional: bool, as_option: bool },
     /// An array of objects, each may be null, and the index of its count.
     ObjectsIn { count: usize, kind: usize, optional: bool },
     /// A count another parameter names, dropped from the trait.
@@ -97,6 +98,75 @@ enum Part {
     BoundOut { name: String },
     /// `void**` out of the interface the GUID at index `riid` names: the API's `UnknownObject`, one reference.
     InterfaceOut { riid: usize },
+    /// A fixed array in (`CountConst`): `length` elements of `size` bytes each.
+    FixedIn { element: Box<Part>, length: u64, size: u64, optional: bool },
+    /// A fixed array out (`CountConst`): `length` elements of `size` bytes each.
+    FixedOut { element: Box<Part>, length: u64, size: u64 },
+    /// An array of values the callee writes, and the index of its count: passed by value (kept in the trait), or by
+    /// pointer (in, the room C gave; out, how many were written).
+    ValuesOut { count: usize, element: Box<Part>, size: u64, by_pointer: bool },
+    /// An array of objects the callee writes, each one reference handed over or null, and the index of its count,
+    /// passed by value.
+    ObjectsOut { count: usize, kind: usize },
+    /// A count passed by pointer that an array out names: the room in, the number written out.
+    CountByPointer,
+}
+
+/// What an entry that refuses its method writes through one of its parameters.
+#[derive(Clone, PartialEq)]
+pub(super) enum Writes {
+    /// Nothing: an input, an array or bytes out (no count of them is trusted), or a parameter in and out.
+    Nothing,
+    /// A null pointer: COM's rule for an out-pointer on failure.
+    Null,
+    /// Zero bytes of this size: a value out, which holds nothing.
+    Zeros(u64),
+}
+
+impl Writes {
+    /// The bytes written, as the generated text names them; none for `Nothing`.
+    pub(super) fn bytes(&self) -> Option<String> {
+        match self {
+            Writes::Nothing => None,
+            Writes::Null => Some("[0_u8; size_of::<usize>()]".to_string()),
+            Writes::Zeros(size) => Some(format!("[0_u8; {size}]")),
+        }
+    }
+
+    /// The bytes written, for C.
+    pub(super) fn c_size(&self) -> Option<String> {
+        match self {
+            Writes::Nothing => None,
+            Writes::Null => Some("sizeof(void *)".to_string()),
+            Writes::Zeros(size) => Some(size.to_string()),
+        }
+    }
+}
+
+/// The entry of a method no form of the glue carries: its C types by calling convention only, what it writes through
+/// each parameter (out-pointers nulled, values out zeroed, nothing read), and the refusal it answers.
+#[derive(Clone)]
+pub(super) struct Refusal {
+    /// Each parameter after `this`: its name in the metadata, its C type, and what the entry writes through it.
+    pub(super) params: Vec<(String, String, Writes)>,
+    /// C's return type.
+    pub(super) returned: String,
+    /// The Rust expression the entry answers (empty for no result).
+    pub(super) answer: String,
+    /// The answer as the report states it.
+    pub(super) stated: String,
+}
+
+/// What each glue does with one method, recorded when its text is written: the report is printed from this, so that
+/// the report and the glue cannot disagree.
+#[derive(Clone, Default)]
+pub(super) struct Outcome {
+    /// Why no form of the glue carries it, if none does.
+    pub(super) reason: Option<String>,
+    /// What the serving glue's table entry does.
+    pub(super) serving: BTreeSet<String>,
+    /// What the calling glue's method does.
+    pub(super) calling: BTreeSet<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -129,8 +199,10 @@ pub(super) struct Writer<'g, 'a> {
     codecs: RefCell<String>,
     pub(super) glued: RefCell<Vec<String>>,
     pub(super) not_glued: RefCell<Vec<String>>,
-    /// Methods a form of the glue does not carry whose entry refuses them (E_NOTIMPL, nothing read or written).
-    pub(super) refused: RefCell<Vec<String>>,
+    /// What each glue wrote for each method, by its place (`Interface::Method`, or an export's name).
+    pub(super) outcomes: RefCell<BTreeMap<String, Outcome>>,
+    /// What the generator could not write without a panic or a null entry: each fails the generator.
+    pub(super) failures: RefCell<Vec<String>>,
     /// The API whose direct crate is being written: its own items are named without a crate path.
     current: std::cell::Cell<usize>,
     /// Whether the recorder being written is the hostile one (src/glue_hostile.rs).
@@ -149,7 +221,8 @@ impl<'g, 'a> Writer<'g, 'a> {
             codecs: RefCell::new(String::new()),
             glued: RefCell::new(Vec::new()),
             not_glued: RefCell::new(Vec::new()),
-            refused: RefCell::new(Vec::new()),
+            outcomes: RefCell::new(BTreeMap::new()),
+            failures: RefCell::new(Vec::new()),
             current: std::cell::Cell::new(NOWHERE),
             hostile: std::cell::Cell::new(false),
             struct_values: RefCell::new(BTreeMap::new()),
@@ -434,48 +507,116 @@ impl<'g, 'a> Writer<'g, 'a> {
         Ok((kinds, enum_path))
     }
 
-    /// The C types of a method a form of the glue does not carry, for an entry that refuses it without reading or
-    /// writing anything: every parameter by its calling convention only, and the return. None when a parameter or the
-    /// return is a structure by value (its passing is the structure's), or when the method writes through a pointer
-    /// (an out-parameter would be left unwritten).
-    fn refusal_signature(&self, method: &Method) -> Option<(Vec<String>, String)> {
-        let mut types = Vec::new();
-        for param in &method.params {
-            if pointee(&param.ty).is_some() {
-                if param.is_out {
-                    return None;
+    /// Whether a record holds only integers (no float, at any depth): passed by value as one integer of its size by both
+    /// x64 calling conventions when it is 1, 2, 4 or 8 bytes.
+    fn integer_record(&self, record: &Record) -> bool {
+        record.fields.iter().all(|field| match primitive(&field.ty) {
+            Some(p) => !p.starts_with('f'),
+            None => match &field.ty {
+                Type::ArrayFixed(inner, _) => primitive(inner).is_some_and(|p| !p.starts_with('f')),
+                Type::Name(name) if name.namespace.is_empty() => record.nested.iter().find(|nested| nested.name == name.name).is_some_and(|nested| self.integer_record(nested)),
+                _ => named(&field.ty).and_then(|k| self.g.read.records.get(&k)).is_some_and(|inner| match inner.kind {
+                    RecordKind::Enum => true,
+                    RecordKind::Typedef => !matches!(self.g.typedef_form(&key(&inner.namespace, &inner.name)), Typedef::String | Typedef::WideString),
+                    RecordKind::Struct | RecordKind::Union => self.integer_record(inner),
+                    RecordKind::Delegate => false,
+                }),
+            },
+        })
+    }
+
+    /// The C type a value passes by in an entry that reads nothing: its calling convention only.
+    fn by_value_c(&self, ty: &Type) -> Result<String, String> {
+        if let Ok(Part::Value { c, .. }) = self.value_part(ty) {
+            return Ok(c);
+        }
+        let named_key = named(ty).ok_or_else(|| format!("{ty:?} by value"))?;
+        let record = self.g.read.records.get(&named_key).ok_or_else(|| format!("{} not read", named_key.1))?;
+        match record.kind {
+            RecordKind::Typedef if matches!(self.g.typedef_form(&named_key), Typedef::String | Typedef::WideString) => Ok("*const u8".to_string()),
+            RecordKind::Delegate => Ok("usize".to_string()),
+            RecordKind::Struct | RecordKind::Union => {
+                let (size, _) = self.layouts.of_record(record).ok_or_else(|| format!("{}: no layout", named_key.1))?;
+                if !self.integer_record(record) {
+                    return Err(format!("a {} by value holding a float", named_key.1));
                 }
-                types.push("*const u8".to_string());
-            } else if named(&param.ty).is_some_and(|k| self.is_object(&k)) {
-                types.push("Raw".to_string());
-            } else if named(&param.ty).is_some_and(|k| k == key(GUID.0, GUID.1)) {
-                types.push(GUID_ABI.to_string());
-            } else {
-                match self.value_part(&param.ty) {
-                    Ok(Part::Value { c, .. }) => types.push(c),
-                    _ => return None,
+                match size {
+                    1 => Ok("u8".to_string()),
+                    2 => Ok("u16".to_string()),
+                    4 => Ok("u32".to_string()),
+                    8 => Ok("u64".to_string()),
+                    _ => Err(format!("a {} of {size} bytes by value", named_key.1)),
                 }
             }
+            _ => Err(format!("a {} by value", named_key.1)),
         }
-        let returned = if named(&method.return_type).is_some_and(|k| k == key(FOUNDATION, "HRESULT")) {
-            "i32".to_string()
+    }
+
+    /// The entry of a method a form of the glue does not carry: every parameter by its calling convention only, and
+    /// what it writes: COM's null through each out-pointer to one object or pointer, zero bytes through each value
+    /// out of a fixed size, nothing through arrays and bytes (no count of them is trusted) or anything else. An error
+    /// names a parameter or return whose calling convention the glue does not know; the generator fails on it, for a
+    /// table never holds a null entry.
+    pub(super) fn refusal(&self, method: &Method) -> Result<Refusal, String> {
+        let mut params = Vec::new();
+        for param in &method.params {
+            let entry = if let Some((inner, depth, _)) = pointee(&param.ty) {
+                let only_out = param.is_out && !param.is_in;
+                let counted = attribute_named(&param.attributes, "NativeArrayInfo").is_some() || attribute_named(&param.attributes, "MemorySize").is_some();
+                let writes = if !only_out || counted {
+                    Writes::Nothing
+                } else if depth >= 2 || named(inner).is_some_and(|k| self.is_object(&k) || self.g.read.interfaces.contains_key(&k)) {
+                    Writes::Null
+                } else if *inner == Type::Void {
+                    Writes::Nothing
+                } else {
+                    primitive_or_record_size(&self.layouts, inner).map_or(Writes::Nothing, |(size, _)| Writes::Zeros(size))
+                };
+                ("*mut u8".to_string(), writes)
+            } else if named(&param.ty).is_some_and(|k| self.is_object(&k) || self.g.read.interfaces.contains_key(&k)) {
+                // An interface pointer, of the set or of an interface a slice leaves out.
+                ("Raw".to_string(), Writes::Nothing)
+            } else if named(&param.ty).is_some_and(|k| k == key(GUID.0, GUID.1)) {
+                (GUID_ABI.to_string(), Writes::Nothing)
+            } else {
+                (self.by_value_c(&param.ty).map_err(|why| format!("{}: {why}", param.name))?, Writes::Nothing)
+            };
+            params.push((param.name.clone(), entry.0, entry.1));
+        }
+        let (returned, answer, stated) = if named(&method.return_type).is_some_and(|k| k == key(FOUNDATION, "HRESULT")) {
+            ("i32".to_string(), "wcontainers_component_object_model::constants::E_NOTIMPL.0".to_string(), "E_NOTIMPL".to_string())
         } else if method.return_type == Type::Void {
-            "()".to_string()
+            ("()".to_string(), String::new(), "no result (nothing done)".to_string())
+        } else if pointee(&method.return_type).is_some() {
+            ("*mut u8".to_string(), "core::ptr::null_mut()".to_string(), "null".to_string())
         } else {
-            match self.value_part(&method.return_type) {
-                Ok(Part::Value { c, .. }) => c,
-                _ => return None,
+            let c = self.by_value_c(&method.return_type).map_err(|why| format!("return: {why}"))?;
+            if c == "*const u8" {
+                ("*mut u8".to_string(), "core::ptr::null_mut()".to_string(), "null".to_string())
+            } else {
+                (c, "Default::default()".to_string(), "zero".to_string())
             }
         };
-        Some((types, returned))
+        Ok(Refusal { params, returned, answer, stated })
     }
 
     fn glue_of(&self, method: &Method, place: &str) -> Result<Glued, String> {
+        // A count the trait drops (it follows from a slice's length) is a `Count`; a count by value of arrays out only is
+        // kept in the trait as a value (the room the caller asks for); a count by pointer of an array out is the room in
+        // and the number written out. The same rule as the trait's (src/emit.rs `signature`).
         let mut counts: BTreeSet<usize> = BTreeSet::new();
+        let mut by_pointer: BTreeSet<usize> = BTreeSet::new();
         for param in &method.params {
+            let is_out = param.is_out && !param.is_in;
             for (attribute, argument) in [("NativeArrayInfo", "CountParamIndex"), ("MemorySize", "BytesParamIndex")] {
                 if let Some(count) = attribute_named(&param.attributes, attribute).and_then(|a| super::integer_argument(a, argument)) {
-                    counts.insert(usize::try_from(count).map_err(|_| "a negative count index".to_string())?);
+                    let count = usize::try_from(count).map_err(|_| "a negative count index".to_string())?;
+                    let count_is_pointer = method.params.get(count).is_some_and(|c| pointee(&c.ty).is_some());
+                    if count_is_pointer && is_out && attribute == "NativeArrayInfo" {
+                        by_pointer.insert(count);
+                    } else if !(is_out && !count_is_pointer && attribute == "NativeArrayInfo") {
+                        counts.insert(count);
+                    }
                 }
             }
         }
@@ -486,9 +627,17 @@ impl<'g, 'a> Writer<'g, 'a> {
             while !used.insert(name.clone()) {
                 name.push('_');
             }
-            let part = if counts.contains(&position) {
+            let part = if by_pointer.contains(&position) {
+                if counts.contains(&position) {
+                    return Err(format!("{}: a count passed by pointer of bytes or an array in", param.name));
+                }
+                match pointee(&param.ty) {
+                    Some((inner, 1, _)) if primitive(inner) == Some("u32") => Part::CountByPointer,
+                    _ => return Err(format!("{}: a count by pointer that is not a UINT", param.name)),
+                }
+            } else if counts.contains(&position) {
                 if pointee(&param.ty).is_some() {
-                    return Err(format!("{}: a count passed by pointer", param.name));
+                    return Err(format!("{}: a count passed by pointer of bytes or an array in", param.name));
                 }
                 Part::Count
             } else if let Some(part) = self.exception_part(place, method, param).map_err(|why| format!("{}: {why}", param.name))? {
@@ -499,9 +648,18 @@ impl<'g, 'a> Writer<'g, 'a> {
                 let riid = method.params[..position].iter().rposition(is_guid).ok_or_else(|| format!("{}: an interface out with no interface id before it", param.name))?;
                 Part::InterfaceOut { riid }
             } else {
-                self.part(param).map_err(|why| format!("{}: {why}", param.name))?
+                self.part(method, param).map_err(|why| format!("{}: {why}", param.name))?
             };
             parts.push((name, part));
+        }
+        // An array out counted by pointer is asked twice of the system (its count, then its elements): only when it is
+        // the method's one out-parameter, and its count names it alone.
+        if parts.iter().any(|(_, part)| matches!(part, Part::CountByPointer)) {
+            let outs = parts.iter().filter(|(_, part)| !matches!(part, Part::Value { .. } | Part::Count | Part::CountByPointer | Part::StructIn { .. } | Part::ValuesIn { .. } | Part::ObjectIn { .. })).count();
+            let counted = parts.iter().filter(|(_, part)| matches!(part, Part::ValuesOut { by_pointer: true, .. })).count();
+            if outs != 1 || counted != 1 || parts.iter().filter(|(_, part)| matches!(part, Part::CountByPointer)).count() != 1 {
+                return Err("an array out counted by pointer beside other outs".to_string());
+            }
         }
         let status = named(&method.return_type).is_some_and(|k| k == key(FOUNDATION, "HRESULT"));
         let returned = if status || method.return_type == Type::Void {
@@ -566,7 +724,27 @@ impl<'g, 'a> Writer<'g, 'a> {
         Ok(None)
     }
 
-    fn part(&self, param: &Param) -> Result<Part, String> {
+    /// An element of an array: a value, or a structure the glue copies as bytes both ways.
+    fn element_part(&self, inner: &Type) -> Result<(Part, u64), String> {
+        let (size, _) = primitive_or_record_size(&self.layouts, inner).ok_or("an element of unknown size")?;
+        if let Ok(value) = self.value_part(inner) {
+            return Ok((value, size));
+        }
+        let named_key = named(inner).ok_or("an element of no name")?;
+        if let Some(record) = self.g.read.records.get(&named_key)
+            && matches!(record.kind, RecordKind::Struct | RecordKind::Union)
+            && !Generator::is_large_integer(&named_key)
+        {
+            let coded = self.codec_of(&named_key).ok_or_else(|| format!("an array of {} the glue cannot copy as bytes", named_key.1))?;
+            if coded.decode_only {
+                return Err(format!("an array of {} holding a union, which the glue only reads", named_key.1));
+            }
+            return Ok((Part::StructIn { optional: false, coded }, size));
+        }
+        Err(format!("an array of {}", named_key.1))
+    }
+
+    fn part(&self, method: &Method, param: &Param) -> Result<Part, String> {
         let is_out = param.is_out && !param.is_in;
         let array = attribute_named(&param.attributes, "NativeArrayInfo");
         let bytes = attribute_named(&param.attributes, "MemorySize");
@@ -590,10 +768,44 @@ impl<'g, 'a> Writer<'g, 'a> {
             return Err(format!("a pointer of depth {depth}"));
         }
         if let Some(array) = array {
-            let count = super::integer_argument(array, "CountParamIndex").ok_or("an array whose count is not a parameter")?;
+            if let Some(length) = super::integer_argument(array, "CountConst") {
+                let length = u64::try_from(length).map_err(|_| "a negative length")?;
+                if named(inner).is_some_and(|k| self.is_object(&k)) {
+                    return Err("a fixed array of objects".to_string());
+                }
+                let (element, size) = self.element_part(inner)?;
+                if is_out || !is_const && param.is_out {
+                    return Ok(Part::FixedOut { element: Box::new(element), length, size });
+                }
+                return Ok(Part::FixedIn { element: Box::new(element), length, size, optional: param.is_optional });
+            }
+            let count = super::integer_argument(array, "CountParamIndex").ok_or("an array whose count is neither a parameter nor a constant")?;
             let count = usize::try_from(count).map_err(|_| "a negative count")?;
+            if *inner == Type::Void && !(is_out || !is_const && param.is_out) {
+                // An array of void in is bytes (the trait's `&[u8]`), its count a byte count.
+                return Ok(Part::ValuesIn { count, element: Box::new(bytes_element()), size: 1, optional: param.is_optional, as_option: param.is_optional });
+            }
             if is_out || !is_const && param.is_out {
-                return Err("an array out".to_string());
+                let by_pointer = method.params.get(count).is_some_and(|c| pointee(&c.ty).is_some());
+                if let Some(interface_key) = named(inner).filter(|k| self.is_object(k)) {
+                    if by_pointer {
+                        return Err("an array of objects out counted by pointer".to_string());
+                    }
+                    if interface_key == key(UNKNOWN.0, UNKNOWN.1) {
+                        return Err("an array of IUnknown out".to_string());
+                    }
+                    let kinds = self.g.kinds_deriving(&interface_key);
+                    let single = kinds.len() == 1 && self.g.kind_of.get(&interface_key) == kinds.first();
+                    if !single {
+                        return Err("an array out of objects of several kinds".to_string());
+                    }
+                    return Ok(Part::ObjectsOut { count, kind: kinds[0] });
+                }
+                if *inner == Type::Void {
+                    return Err("an array of void out".to_string());
+                }
+                let (element, size) = self.element_part(inner)?;
+                return Ok(Part::ValuesOut { count, element: Box::new(element), size, by_pointer });
             }
             if let Some(interface_key) = named(inner).filter(|k| self.is_object(k)) {
                 let (kinds, enum_path) = self.object_kinds(&interface_key)?;
@@ -602,13 +814,15 @@ impl<'g, 'a> Writer<'g, 'a> {
                 }
                 return Ok(Part::ObjectsIn { count, kind: kinds[0], optional: param.is_optional });
             }
-            let element = self.value_part(inner)?;
-            let (size, _) = primitive_or_record_size(&self.layouts, inner).ok_or("an element of unknown size")?;
-            return Ok(Part::ValuesIn { count, element: Box::new(element), size, optional: param.is_optional });
+            let (element, size) = self.element_part(inner)?;
+            return Ok(Part::ValuesIn { count, element: Box::new(element), size, optional: param.is_optional, as_option: false });
         }
         if let Some(bytes) = bytes {
             if !(is_out || param.is_out && !is_const) {
-                return Err("bytes in".to_string());
+                // Bytes in (the trait's `&[u8]`): copied once from C, as an array of bytes of that count.
+                let count = super::integer_argument(bytes, "BytesParamIndex").ok_or("bytes whose count is not a parameter")?;
+                let count = usize::try_from(count).map_err(|_| "a negative count")?;
+                return Ok(Part::ValuesIn { count, element: Box::new(bytes_element()), size: 1, optional: param.is_optional, as_option: param.is_optional });
             }
             let count = super::integer_argument(bytes, "BytesParamIndex").ok_or("bytes whose count is not a parameter")?;
             return Ok(Part::BytesOut { count: usize::try_from(count).map_err(|_| "a negative count")?, optional: param.is_optional });
@@ -647,13 +861,11 @@ impl<'g, 'a> Writer<'g, 'a> {
             return Ok(Part::StructIn { optional: param.is_optional, coded });
         }
         if named_key.as_ref().is_some_and(|k| *k == key(GUID.0, GUID.1)) {
+            let coded = Coded { size: 16, ident: "guid".to_string(), path: self.g.guid_path(NOWHERE), decode_only: false };
             if is_out {
-                return Err("a GUID out".to_string());
+                return Ok(Part::StructOut { coded });
             }
-            return Ok(Part::StructIn {
-                optional: param.is_optional,
-                coded: Coded { size: 16, ident: "guid".to_string(), path: self.g.guid_path(NOWHERE), decode_only: false },
-            });
+            return Ok(Part::StructIn { optional: param.is_optional, coded });
         }
         if is_out {
             let element = self.value_part(inner)?;
@@ -662,6 +874,16 @@ impl<'g, 'a> Writer<'g, 'a> {
         }
         Err("a pointer to a value in".to_string())
     }
+}
+
+/// `count * size` as text, with no multiplication by one.
+fn times(count: &str, size: &str) -> String {
+    if size == "1" { count.to_string() } else { format!("{count} * {size}") }
+}
+
+/// One byte of an array of bytes.
+fn bytes_element() -> Part {
+    Part::Value { c: "u8".to_string(), rust: "u8".to_string(), form: ValueForm::Same }
 }
 
 fn primitive_or_record_size(layouts: &Layouts<'_>, ty: &Type) -> Option<(u64, u64)> {

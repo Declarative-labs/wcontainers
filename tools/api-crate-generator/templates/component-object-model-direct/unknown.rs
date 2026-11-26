@@ -17,9 +17,6 @@ const KEY: GlueKey = GlueKey::OWN;
 /// A COM interface pointer, or any other pointer the C side passes.
 pub type Raw = *mut c_void;
 
-/// An entry point a generated table leaves out: null in our tables, never called in theirs.
-pub type Absent = Option<unsafe extern "system" fn()>;
-
 /// IUnknown's table, which begins every COM table.
 #[repr(C)]
 pub struct UnknownTable {

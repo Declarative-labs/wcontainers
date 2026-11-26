@@ -83,11 +83,16 @@ impl Writer<'_, '_> {
         }
         let mut text = String::new();
         let _ = writeln!(text, "        typedef {ret} (*F)({});", if types.is_empty() { "void".to_string() } else { types.join(", ") });
-        let _ = writeln!(text, "        F f = (F)({function});\n        if (!f) {{ s->counted[ABSENT]++; break; }}");
+        let _ = writeln!(text, "        F f = (F)({function});\n        if (!f) {{ fprintf(stderr, \"C CALLER: a null entry\\n\"); abort(); }}");
         // Counts first: each array it counts is allocated by it.
         let mut counts: BTreeMap<usize, String> = BTreeMap::new();
+        // A count passed by value of an array out, and a count by pointer, are counts too: C allocates by them.
+        let out_counts: Vec<usize> = glued.parts.iter().filter_map(|(_, part)| match part {
+            Part::ValuesOut { count, .. } | Part::ObjectsOut { count, .. } => Some(*count),
+            _ => None,
+        }).collect();
         for (position, (_, part)) in glued.parts.iter().enumerate() {
-            if matches!(part, Part::Count) {
+            if matches!(part, Part::Count | Part::CountByPointer) || out_counts.contains(&position) {
                 let _ = writeln!(text, "        uint64_t n{position} = pick_count(s);");
                 counts.insert(position, format!("n{position}"));
             }
@@ -113,6 +118,9 @@ impl Writer<'_, '_> {
                 continue;
             }
             match part {
+                Part::Value { .. } if out_counts.contains(&position) => {
+                    let _ = writeln!(text, "        {c} {a} = ({c})n{position};");
+                }
                 Part::Value { c: value_type, .. } => {
                     let value = if value_type == super::GUID_ABI {
                         "pick_guid(s)".to_string()
@@ -144,6 +152,31 @@ impl Writer<'_, '_> {
                 Part::BytesOut { count, .. } => {
                     let n = counts.get(count).cloned().unwrap_or_else(|| "0".to_string());
                     let _ = writeln!(text, "        uint8_t *{a} = out_bytes(s, {n});");
+                    frees.push(a.clone());
+                }
+                Part::FixedIn { length, size, .. } => {
+                    let _ = writeln!(text, "        uint8_t *{a} = maybe_bytes(s, {});", length * size);
+                    frees.push(a.clone());
+                }
+                Part::FixedOut { length, size, .. } => {
+                    let _ = writeln!(text, "        uint8_t *{a} = out_bytes_fixed(s, {});", length * size);
+                    frees.push(a.clone());
+                }
+                Part::CountByPointer => {
+                    let _ = writeln!(text, "        uint8_t *{a} = (uint8_t *)count_cell(s, n{position});");
+                    frees.push(a.clone());
+                }
+                Part::ValuesOut { count, size, .. } => {
+                    let n = counts.get(count).cloned().unwrap_or_else(|| "0".to_string());
+                    let _ = writeln!(text, "        uint8_t *{a} = out_elements(s, {n}, {size});");
+                    frees.push(a.clone());
+                }
+                Part::ObjectsOut { count, .. } => {
+                    let n = counts.get(count).cloned().unwrap_or_else(|| "0".to_string());
+                    let _ = writeln!(text, "        void **{a} = (void **)out_elements(s, {n}, sizeof(void *));");
+                    let interface = self.out_interface(&method.params[position]).and_then(|key| plan.index.get(&key).copied()).map_or("-1".to_string(), |index| index.to_string());
+                    // Within the glue's limit the glue writes every element (a reference or null); past it, none.
+                    let _ = writeln!(after, "        if ({a} && {n} <= MOST) for (uint64_t i = 0; i < {n}; i++) adopt(s, ok ? {a}[i] : NULL, {interface});");
                     frees.push(a.clone());
                 }
                 Part::InitialData { .. } => {
@@ -246,15 +279,11 @@ impl Writer<'_, '_> {
                         cases.push_str(&self.c_call(plan, glued, slot.method, &format!("(*(void ***)right)[{place}]"), Some("this"))?);
                         called += 1;
                     }
-                    None => match self.refusal_signature(slot.method) {
-                        Some((types, returned)) => {
-                            cases.push_str(&refused_call(&types, &returned, crate::emit::named(&slot.method.return_type).is_some_and(|k| k.1 == "HRESULT"), &format!("(*(void ***)right)[{place}]"))?);
-                            called += 1;
-                        }
-                        None => {
-                            let _ = writeln!(cases, "        if ((*(void ***)right)[{place}]) {{ fprintf(stderr, \"C CALLER: a slot the glue leaves out is not null: {}::{}\\n\"); abort(); }}\n        s->counted[ABSENT]++;", key.1, slot.method.name);
-                        }
-                    },
+                    None => {
+                        let refusal = self.refusal(slot.method).map_err(|why| format!("{}::{}: {why}", key.1, slot.method.name))?;
+                        cases.push_str(&refused_call(&refusal, crate::emit::named(&slot.method.return_type).is_some_and(|k| k.1 == "HRESULT"), &format!("(*(void ***)right)[{place}]"))?);
+                        called += 1;
+                    }
                 }
                 let _ = writeln!(cases, "        break;\n    }}");
                 case += 1;
@@ -320,17 +349,26 @@ impl Writer<'_, '_> {
     }
 }
 
-/// A call of an entry that refuses its method: arguments of the right types and any values (it reads none), and its
-/// answer checked.
-fn refused_call(types: &[String], returned: &str, status: bool, function: &str) -> Result<String, String> {
+/// A call of an entry that refuses its method: arguments of the right types and any values where it reads and writes
+/// nothing, an out-buffer of exactly the size it writes where it writes (null now and then), its answer checked and
+/// what it wrote checked to be COM's null or zeros.
+fn refused_call(refusal: &super::Refusal, status: bool, function: &str) -> Result<String, String> {
     let mut c_types = vec!["void *".to_string()];
     let mut args = vec!["this".to_string()];
-    for ty in types {
+    let mut text = String::new();
+    let mut checks = String::new();
+    for (at, (_, ty, writes)) in refusal.params.iter().enumerate() {
         let c = c_type(ty);
         if c.is_empty() {
             return Err(format!("a refused entry's parameter of C type {ty} the C caller has no form for"));
         }
         c_types.push(c.to_string());
+        if let Some(size) = writes.c_size() {
+            let _ = writeln!(text, "        uint8_t *w{at} = out_bytes_fixed(s, {size});");
+            let _ = writeln!(checks, "        if (w{at}) {{ for (uint64_t i = 0; i < {size}; i++) if (w{at}[i]) {{ s->counted[REFUSED_WRONG]++; break; }} free(w{at}); }}");
+            args.push(format!("w{at}"));
+            continue;
+        }
         args.push(match c {
             "GuidAbi" => "pick_guid(s)".to_string(),
             "float" | "double" => format!("({c})pick_float(s)"),
@@ -338,10 +376,13 @@ fn refused_call(types: &[String], returned: &str, status: bool, function: &str) 
             _ => format!("({c})pick_value(s)"),
         });
     }
+    let returned = refusal.returned.as_str();
     let ret = c_type(returned);
-    let mut text = String::new();
+    if ret.is_empty() {
+        return Err(format!("a refused entry's return of C type {returned} the C caller has no form for"));
+    }
     let _ = writeln!(text, "        typedef {ret} (*F)({});", c_types.join(", "));
-    let _ = writeln!(text, "        F f = (F)({function});\n        if (!f) {{ s->counted[ABSENT]++; break; }}");
+    let _ = writeln!(text, "        F f = (F)({function});\n        if (!f) {{ fprintf(stderr, \"C CALLER: a null entry\\n\"); abort(); }}");
     if status {
         let _ = writeln!(text, "        if (f({}) != (int32_t)0x80004001u) s->counted[REFUSED_WRONG]++;", args.join(", "));
     } else if ret == "void" {
@@ -349,6 +390,7 @@ fn refused_call(types: &[String], returned: &str, status: bool, function: &str) 
     } else {
         let _ = writeln!(text, "        (void)f({});", args.join(", "));
     }
+    text.push_str(&checks);
     let _ = writeln!(text, "        s->counted[REFUSED]++;");
     Ok(text)
 }
@@ -534,6 +576,24 @@ static uint8_t *out_bytes(State *s, uint64_t count) {
     uint8_t *bytes = malloc(count ? count : 1);
     if (bytes) memset(bytes, 0xa5, count);
     return bytes;
+}
+
+/* Elements the callee writes: exactly `count` of them, or one element's memory past the glue's limit (which the glue
+   must refuse before writing), or null now and then. */
+static uint8_t *out_elements(State *s, uint64_t count, uint64_t size) {
+    if (below(s, 32) == 0) { s->counted[NULL_POINTERS]++; return NULL; }
+    uint64_t length = (count > MOST ? 1 : count) * size;
+    uint8_t *bytes = malloc(length ? length : 1);
+    if (bytes) memset(bytes, 0xa5, length);
+    return bytes;
+}
+
+/* A count by pointer: the room `count` (cut to 32 bits), or null now and then. */
+static uint32_t *count_cell(State *s, uint64_t count) {
+    if (below(s, 16) == 0) { s->counted[NULL_POINTERS]++; return NULL; }
+    uint32_t *cell = malloc(sizeof(uint32_t));
+    if (cell) *cell = (uint32_t)count;
+    return cell;
 }
 
 static uint8_t *out_bytes_fixed(State *s, uint64_t size) {

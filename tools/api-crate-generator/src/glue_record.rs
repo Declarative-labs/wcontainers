@@ -124,7 +124,7 @@ impl wcontainers_volatile_bytes::VolatileBytes for RecordedBytes {
 "#;
 
 /// Splits a list of types at its top-level commas.
-fn split_types(list: &str) -> Vec<String> {
+pub(super) fn split_types(list: &str) -> Vec<String> {
     let mut parts = Vec::new();
     let (mut depth, mut start) = (0_i32, 0);
     for (at, ch) in list.char_indices() {
@@ -170,6 +170,17 @@ impl Writer<'_, '_> {
             return None;
         }
         Some("Default::default()".to_string())
+    }
+
+    /// A value of an array's element the recorder answers with: zero bytes decoded, or zero.
+    fn element_value(&self, element: &Part) -> String {
+        match element {
+            Part::StructIn { coded, .. } => self.made_value(&coded.path).unwrap_or_else(|| {
+                self.failures.borrow_mut().push(format!("PANIC BODY recorder: no value of {}", coded.path));
+                "Default::default()".to_string()
+            }),
+            _ => "Default::default()".to_string(),
+        }
     }
 
     /// The recorder's type of a kind, named from the recorder crate of API `from`.
@@ -222,7 +233,10 @@ impl Writer<'_, '_> {
             // A slot the glue does not carry is never reached through C.
             let none = match self.made_value(result) {
                 Some(value) if fallback == "Default::default()" => value,
-                _ if fallback == "Default::default()" => format!("unimplemented!(\"{place} is not glued\")"),
+                _ if fallback == "Default::default()" => {
+                    self.failures.borrow_mut().push(format!("PANIC BODY recorder {place}: no value of {result}"));
+                    "Default::default()".to_string()
+                }
                 _ => fallback.clone(),
             };
             let _ = writeln!(text, "        {none}\n    }}");
@@ -257,6 +271,21 @@ impl Writer<'_, '_> {
                         answers.push(format!("{path} {{ {data}: RecordedBytes::new(), {row}: MAPPED_ROW_PITCH, {depth}: MAPPED_DEPTH_PITCH }}"));
                     }
                 }
+                Part::FixedOut { element, .. } => {
+                    let value = self.element_value(element);
+                    answers.push(format!("core::array::from_fn(|_| {value})"));
+                }
+                Part::ValuesOut { element, count, by_pointer, .. } => {
+                    let value = self.element_value(element);
+                    // A few elements: the room C gave (or asked how many of) is the glue's to respect, not the recorder's.
+                    // A count the trait drops (it is an array in's length) is not the recorder's to read.
+                    let number = if *by_pointer || !matches!(glued.parts[*count].1, Part::Value { .. }) { "2_u32".to_string() } else { format!("{}.min(4)", glued.parts[*count].0) };
+                    answers.push(format!("(0..{number}).map(|_| {value}).collect()"));
+                }
+                Part::ObjectsOut { kind, count } => {
+                    let new = format!("{}::new()", self.recorded_type(*kind, from));
+                    answers.push(format!("(0..{}.min(4)).map(|_| Some({new})).collect()", glued.parts[*count].0));
+                }
                 Part::InterfaceOut { riid } => {
                     // An object of the kind the interface id names, of the API whose interface holds the method.
                     let owner = place.split_once("::").and_then(|(interface, _)| self.g.interface_api.iter().find(|(k, _)| k.1 == interface).map(|(_, &a)| a)).unwrap_or(self.current.get());
@@ -278,7 +307,12 @@ impl Writer<'_, '_> {
                     return text;
                 }
                 Part::StructOut { .. } | Part::BoundOut { .. } => {
-                    let none = if fallback == "Default::default()" { format!("unimplemented!(\"the recorder makes no structure for {place}\")") } else { fallback.clone() };
+                    let none = if fallback == "Default::default()" {
+                        self.failures.borrow_mut().push(format!("PANIC BODY recorder {place}: no structure or bound object of {result}"));
+                        "Default::default()".to_string()
+                    } else {
+                        fallback.clone()
+                    };
                     let _ = writeln!(text, "        // A structure or a bound object: the recorder makes none.\n        {none}\n    }}");
                     let _ = name;
                     return text;

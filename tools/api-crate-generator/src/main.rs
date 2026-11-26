@@ -6,6 +6,7 @@
 //!   api-crate-generator once-check <Windows.Win32.winmd> <folder holding crates/>
 
 mod api;
+mod complete;
 mod emit;
 mod layout;
 mod mapping;

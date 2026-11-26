@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use super::{BYTES_HELPERS, Glued, MOST_ELEMENTS, NOWHERE, Part, ValueForm, Writer, direct_alias, snake, upper};
+use super::{BYTES_HELPERS, Glued, MOST_ELEMENTS, NOWHERE, Part, ValueForm, Writer, Writes, direct_alias, snake, upper};
 use crate::api::Exception;
 use crate::emit::{HEADER, Key, alias, package};
 use crate::metadata::Method;
@@ -53,6 +53,7 @@ impl Writer<'_, '_> {
                         Ok(glued) => Some(glued),
                         Err(why) => {
                             self.not_glued.borrow_mut().push(format!("{}::{}: {why}", member.1, method.name));
+                            self.outcomes.borrow_mut().entry(format!("{}::{}", member.1, method.name)).or_default().reason = Some(why);
                             None
                         }
                     }
@@ -72,11 +73,11 @@ impl Writer<'_, '_> {
             let c = match part {
                 Part::Value { c, .. } => c.clone(),
                 Part::Count => self.count_c_type(&param.ty),
-                Part::StructIn { .. } | Part::ValuesIn { .. } | Part::InitialData { .. } | Part::Riid => "*const u8".to_string(),
+                Part::StructIn { .. } | Part::ValuesIn { .. } | Part::InitialData { .. } | Part::Riid | Part::FixedIn { .. } => "*const u8".to_string(),
                 Part::ObjectIn { .. } | Part::UnknownIn { .. } => "Raw".to_string(),
                 Part::ObjectsIn { .. } => "*const Raw".to_string(),
-                Part::ObjectOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } => "*mut Raw".to_string(),
-                Part::ValueOut { .. } | Part::StructOut { .. } | Part::BytesOut { .. } | Part::LentOut { .. } => "*mut u8".to_string(),
+                Part::ObjectOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } | Part::ObjectsOut { .. } => "*mut Raw".to_string(),
+                Part::ValueOut { .. } | Part::StructOut { .. } | Part::BytesOut { .. } | Part::LentOut { .. } | Part::FixedOut { .. } | Part::ValuesOut { .. } | Part::CountByPointer => "*mut u8".to_string(),
             };
             parameters.push((name.clone(), c));
         }
@@ -89,6 +90,11 @@ impl Writer<'_, '_> {
             }
         };
         (parameters, returned)
+    }
+
+    /// A count of C's type as an `Option<usize>`: no conversion of a count that is already a `usize` (SIZE_T).
+    pub(super) fn to_usize(&self, method: &Method, count: usize, name: &str) -> String {
+        if method.params.get(count).is_some_and(|param| self.count_c_type(&param.ty) == "usize") { format!("Some({name})") } else { format!("usize::try_from({name}).ok()") }
     }
 
     pub(super) fn count_c_type(&self, ty: &windows_metadata::Type) -> String {
@@ -116,6 +122,28 @@ impl Writer<'_, '_> {
             Part::Value { form: ValueForm::Newtype, rust, .. } => format!("{rust}({raw})"),
             Part::Value { form: ValueForm::Guid, .. } => format!("{raw}.guid()"),
             _ => raw.to_string(),
+        }
+    }
+
+    /// An element of an array read from its bytes (`bytes` is an expression of a slice starting at the element).
+    pub(super) fn element_read(element: &Part, bytes: &str) -> String {
+        match element {
+            Part::StructIn { coded, .. } => format!("decode_{}({bytes})", coded.ident),
+            Part::Value { c, .. } => Self::convert_in(element, &format!("get_{c}({bytes}, 0)")),
+            _ => format!("get_u32({bytes}, 0)"),
+        }
+    }
+
+    /// The statement writing an element of an array (`value` an expression of a reference to it) to its bytes.
+    pub(super) fn element_write(element: &Part, value: &str, bytes: &str) -> String {
+        match element {
+            Part::StructIn { coded, .. } => format!("encode_{}({value}, {bytes});", coded.ident),
+            Part::Value { c, form, .. } => {
+                // A newtype's field auto-derefs; any other value is copied out of the reference.
+                let value = if *form == ValueForm::Newtype { value.to_string() } else { format!("*{value}") };
+                format!("put_{c}({bytes}, 0, {});", Self::convert_out(element, &value))
+            }
+            _ => String::new(),
         }
     }
 
@@ -158,6 +186,31 @@ impl Writer<'_, '_> {
         let _ = writeln!(text, "pub unsafe extern \"system\" fn {fn_name}<{generic}>({}){returns} {{", c_list.join(", "));
         let _ = writeln!(text, "    #[deny(unsafe_code)]\n    let body = move || {{");
         let mut inner = String::new();
+        // Before the call: the bytes each array out takes, from the count C passed (or the room a count by pointer
+        // holds), none past the glue's limit; then nothing of it is written.
+        let mut pre = String::new();
+        for ((name, part), param) in glued.parts.iter().zip(&method.params) {
+            let (count, size, by_pointer) = match part {
+                Part::ValuesOut { count, size, by_pointer, .. } => (*count, size.to_string(), *by_pointer),
+                Part::ObjectsOut { count, .. } => (*count, "size_of::<usize>()".to_string(), false),
+                _ => continue,
+            };
+            let count_name = &glued.parts[count].0;
+            let count_metadata = &method.params[count].name;
+            if by_pointer {
+                let _ = writeln!(pre, "    let mut {count_name}_room = [0_u8; 4];");
+                let _ = writeln!(pre, "    #[expect(unsafe_code, reason = \"{place}: {count_metadata}, as the header declares it for the C side\")]");
+                let _ = writeln!(pre, "    // SAFETY: the metadata's `{count_metadata}` is a UINT in and out: four bytes, readable for the call, or null.");
+                let _ = writeln!(pre, "    let {count_name}_read = unsafe {{ read_bytes({count_name}, &mut {count_name}_room) }};");
+                let bytes = super::times("room", &size);
+                let _ = writeln!(pre, "    let {name}_length: Option<usize> = if !{count_name}_read {{ None }} else if {name}.is_null() {{ Some(0) }} else {{ usize::try_from(get_u32(&{count_name}_room, 0)).ok().filter(|room| *room <= {MOST_ELEMENTS}).map(|room| {bytes}) }};");
+            } else {
+                let bytes = super::times("count", &size);
+                let _ = writeln!(pre, "    let {name}_length: Option<usize> = {}.filter(|count| *count <= {MOST_ELEMENTS}).map(|count| {bytes});", self.to_usize(method, count, count_name));
+            }
+            let _ = writeln!(inner, "            let {name}_length = {};", fail(&format!("{name}_length"), "E_INVALIDARG"));
+            let _ = param;
+        }
         // Required out-parameters must be writable before anything is made.
         for ((name, part), param) in glued.parts.iter().zip(&method.params) {
             if matches!(part, Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. }) && !param.is_optional && status {
@@ -170,7 +223,7 @@ impl Writer<'_, '_> {
         };
         // An object handed out again (a child's device) that the record holds as its maker: read under the word's lock,
         // with no reference to `this` taken first.
-        let out_parts: Vec<&(String, Part)> = glued.parts.iter().filter(|(_, part)| matches!(part, Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::LentOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. })).collect();
+        let out_parts: Vec<&(String, Part)> = glued.parts.iter().filter(|(_, part)| matches!(part, Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::LentOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } | Part::FixedOut { .. } | Part::ValuesOut { .. } | Part::ObjectsOut { .. } | Part::CountByPointer)).collect();
         if let ([(name, Part::ObjectOut { kinds, made: false })], false, None, Some(_)) = (out_parts.as_slice(), status, &glued.returned, bound) {
             let role = &self.g.kinds[kinds[0]].name;
             let _ = writeln!(inner, "            if !{name}.is_null() && let Some(recorded) = made_by_of::<V>(KEY, this.addr(), \"{role}\") {{");
@@ -245,28 +298,29 @@ impl Writer<'_, '_> {
                         args.push(format!("{name}_found.{get}"));
                     }
                 }
-                Part::ValuesIn { count, element, size, optional } => {
+                Part::ValuesIn { count, element, size, optional, as_option } => {
+                    if *as_option {
+                        let _ = writeln!(inner, "            let {name}_absent = {name}.is_null();");
+                    }
                     let count_name = &glued.parts[*count].0;
                     let position = glued.parts.iter().position(|(n, _)| n == name).unwrap_or(usize::MAX);
                     let keep = kept_by.get(&position).cloned();
                     if let Some(keep) = &keep {
                         let _ = writeln!(inner, "            let {name}: Option<Vec<_>> = if {keep} {{ None }} else {{ Some({{");
                     }
-                    let _ = writeln!(inner, "            let {name}_count = {};", fail(&format!("usize::try_from({count_name}).ok().filter(|count| *count <= {MOST_ELEMENTS})"), "E_INVALIDARG"));
+                    let _ = writeln!(inner, "            let {name}_count = {};", fail(&format!("{}.filter(|count| *count <= {MOST_ELEMENTS})", self.to_usize(method, *count, count_name)), "E_INVALIDARG"));
                     let empty = if *optional { format!("{name}_count == 0 || {name}.is_null()") } else { format!("{name}_count == 0") };
                     let _ = writeln!(inner, "            let {name}_bytes = if {empty} {{ Some(Vec::new()) }} else {{");
                     let _ = writeln!(inner, "                #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "                // SAFETY: the metadata's `NativeArrayInfo` names `{}` as the count of `{metadata}`: that many elements of {size} bytes, readable for the call.", method.params[*count].name);
-                    let _ = writeln!(inner, "                unsafe {{ read_only_at({name}, {name}_count * {size}) }}\n            }};");
-                    let c = match element.as_ref() {
-                        Part::Value { c, .. } => c.clone(),
-                        _ => "u32".to_string(),
-                    };
-                    let read = Self::convert_in(element, &format!("get_{c}(element, 0)"));
+                    let _ = writeln!(inner, "                unsafe {{ read_only_at({name}, {}) }}\n            }};", super::times(&format!("{name}_count"), &size.to_string()));
+                    let read = Self::element_read(element, "element");
                     let _ = writeln!(inner, "            let {name}: Vec<_> = {}.as_chunks::<{size}>().0.iter().map(|element| {read}).collect();", fail(&format!("{name}_bytes"), "E_INVALIDARG"));
                     if keep.is_some() {
                         let _ = writeln!(inner, "            {name}\n            }}) }};");
                         args.push(format!("{name}.as_deref()"));
+                    } else if *as_option {
+                        args.push(format!("(!{name}_absent).then_some(&{name}[..])"));
                     } else {
                         args.push(format!("&{name}"));
                     }
@@ -276,7 +330,7 @@ impl Writer<'_, '_> {
                     let kind_type = self.kind_type(*kind, api_type);
                     let position = glued.parts.iter().position(|(n, _)| n == name).unwrap_or(usize::MAX);
                     let keep = kept_by.get(&position).cloned();
-                    let _ = writeln!(inner, "            let {name}_count = {};", fail(&format!("usize::try_from({count_name}).ok().filter(|count| *count <= {MOST_ELEMENTS})"), "E_INVALIDARG"));
+                    let _ = writeln!(inner, "            let {name}_count = {};", fail(&format!("{}.filter(|count| *count <= {MOST_ELEMENTS})", self.to_usize(method, *count, count_name)), "E_INVALIDARG"));
                     // A null array of an `_opt_` parameter is that many nulls; under a keep value none is read.
                     let mut empty = format!("{name}_count == 0");
                     if let Some(keep) = &keep {
@@ -300,7 +354,7 @@ impl Writer<'_, '_> {
                 }
                 Part::BytesOut { count, optional } => {
                     let count_name = &glued.parts[*count].0;
-                    let _ = writeln!(inner, "            let {name}_length = {};", fail(&format!("usize::try_from({count_name}).ok()"), "E_INVALIDARG"));
+                    let _ = writeln!(inner, "            let {name}_length = {};", fail(&self.to_usize(method, *count, count_name), "E_INVALIDARG"));
                     let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
                     let _ = writeln!(inner, "            // SAFETY: the metadata's `MemorySize` names `{}` as the byte count of `{metadata}`, which is `Out`: that many bytes, writable for the call.", method.params[*count].name);
                     let _ = writeln!(inner, "            let {name} = unsafe {{ writable_at({name}, {name}_length) }};");
@@ -362,9 +416,32 @@ impl Writer<'_, '_> {
                     let _ = writeln!(inner, "            if !{name}_read {{ return {}; }}", if status { "Err(E_INVALIDARG)" } else { "None" });
                     let _ = writeln!(inner, "            let {name} = decode_guid(&{name}_bytes);");
                 }
-                Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::LentOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } => {
+                Part::FixedIn { element, length, size, optional } => {
+                    let total = length * size;
+                    let _ = writeln!(inner, "            #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
+                    let _ = writeln!(inner, "            // SAFETY: the metadata's `NativeArrayInfo` gives `{metadata}` {length} elements of {size} bytes ({total} bytes), readable for the call, or null.");
+                    let _ = writeln!(inner, "            let {name}_bytes = unsafe {{ read_only_at({name}, {total}) }};");
+                    let read = Self::element_read(element, &format!("&bytes[index * {size}..]"));
+                    let _ = writeln!(inner, "            let {name}_null = {name}.is_null();");
+                    let _ = writeln!(inner, "            let {name} = {name}_bytes.map(|bytes| core::array::from_fn(|index| {read}));");
+                    if *optional {
+                        let _ = writeln!(inner, "            if {name}.is_none() && !{name}_null {{ return {}; }}", if status { "Err(E_INVALIDARG)" } else { "None" });
+                        args.push(format!("{name}.as_ref()"));
+                    } else {
+                        let _ = writeln!(inner, "            let {name} = {};", fail(name, "E_INVALIDARG"));
+                        args.push(format!("&{name}"));
+                    }
+                }
+                Part::CountByPointer => {}
+                Part::ObjectOut { .. } | Part::ValueOut { .. } | Part::StructOut { .. } | Part::LentOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } | Part::FixedOut { .. } | Part::ValuesOut { .. } | Part::ObjectsOut { .. } => {
                     outs.push((name.clone(), part, metadata.clone()));
                 }
+            }
+        }
+        // Counts by pointer: the room C gave, read once before the call; a count by pointer is written after it.
+        for ((name, part), param) in glued.parts.iter().zip(&method.params) {
+            if matches!(part, Part::CountByPointer) {
+                outs.push((name.clone(), part, param.name.clone()));
             }
         }
         // Descriptions past the header's ranges are refused before the implementation sees them.
@@ -487,7 +564,7 @@ impl Writer<'_, '_> {
             if glued.returned.is_some() {
                 names_out.push("returned".to_string());
             }
-            names_out.extend(outs.iter().map(|(name, _, _)| format!("{name}_value")));
+            names_out.extend(outs.iter().filter(|(_, part, _)| !matches!(part, Part::CountByPointer)).map(|(name, _, _)| format!("{name}_value")));
             let pattern = match names_out.len() {
                 0 => "()".to_string(),
                 1 => names_out[0].clone(),
@@ -655,6 +732,38 @@ impl Writer<'_, '_> {
                         let _ = writeln!(inner, "            encode_{}(&{name}_value, &mut {name}_bytes);", coded.ident);
                         written.push(format!("{name}_bytes"));
                     }
+                    Part::FixedOut { element, length, size } => {
+                        let _ = writeln!(inner, "            let mut {name}_bytes = [0_u8; {}];", length * size);
+                        let write = Self::element_write(element, "value", "bytes");
+                        let _ = writeln!(inner, "            for (value, bytes) in {name}_value.iter().zip({name}_bytes.as_chunks_mut::<{size}>().0.iter_mut()) {{ {write} }}");
+                        written.push(format!("{name}_bytes"));
+                    }
+                    Part::ValuesOut { element, size, by_pointer, .. } => {
+                        // Exactly the room C gave: an implementation's longer list is cut, a shorter one ends in zeros.
+                        let _ = writeln!(inner, "            let mut {name}_bytes = vec![0_u8; {name}_length];");
+                        let write = Self::element_write(element, "value", "bytes");
+                        let _ = writeln!(inner, "            for (value, bytes) in {name}_value.iter().zip({name}_bytes.as_chunks_mut::<{size}>().0.iter_mut()) {{ {write} }}");
+                        if *by_pointer {
+                            // A null array asks how many there are; otherwise the number written.
+                            let _ = writeln!(inner, "            let {name}_number = u32::try_from(if {name}.is_null() {{ {name}_value.len() }} else {{ {name}_value.len().min({name}_length / {size}) }}).unwrap_or(u32::MAX).to_le_bytes();");
+                        }
+                        written.push(format!("{name}_bytes"));
+                    }
+                    Part::ObjectsOut { kind, .. } => {
+                        let kind_type = self.kind_type(*kind, api_type);
+                        let interfaces = self.interfaces_fn(*kind, self.current.get());
+                        // Exactly the room C gave, each element one reference or null; none served through a null array.
+                        let _ = writeln!(inner, "            let mut {name}_bytes = vec![0_u8; {name}_length];");
+                        let _ = writeln!(inner, "            if !{name}.is_null() {{");
+                        let _ = writeln!(inner, "                for (value, bytes) in {name}_value.into_iter().zip({name}_bytes.as_chunks_mut::<{{ size_of::<usize>() }}>().0.iter_mut()) {{");
+                        let _ = writeln!(inner, "                    let address = value.and_then(|value| serve(KEY, value, record(), {interfaces}::<{kind_type}>)).map_or(0, |served| served.into_address().get());");
+                        let _ = writeln!(inner, "                    put_usize(bytes, 0, address);\n                }}\n            }}");
+                        written.push(format!("{name}_bytes"));
+                    }
+                    Part::CountByPointer => {
+                        let array = glued.parts.iter().find(|(_, part)| matches!(part, Part::ValuesOut { by_pointer: true, .. })).map(|(array, _)| array.clone()).unwrap_or_default();
+                        written.push(format!("{array}_number"));
+                    }
                     _ => {}
                 }
             }
@@ -687,18 +796,37 @@ impl Writer<'_, '_> {
             let _ = writeln!(inner, "            {}", if status { format!("Ok({tuple})") } else { format!("Some({tuple})") });
         }
         let failed = if status { "Err(E_FAIL)" } else { "None" };
+        text.push_str(&pre);
         let _ = writeln!(text, "        let answer = guarded({failed}, move || {{\n{inner}        }});");
-        // Every out-parameter is written on every path: the answer, or zeros.
+        // Every out-parameter is written on every path: the answer, or zeros (an array out: none past the glue's limit).
         let offset = usize::from(glued.returned.is_some());
+        let answered = if status { "answer.as_ref().ok()" } else { "answer.as_ref()" };
         for (position, (name, part, metadata)) in outs.iter().enumerate() {
+            let index = position + offset;
+            let array = match part {
+                Part::ValuesOut { count, size, .. } => Some((*count, size.to_string())),
+                Part::ObjectsOut { count, .. } => Some((*count, "size_of::<usize>()".to_string())),
+                _ => None,
+            };
+            if let Some((count, size)) = &array {
+                let count = *count;
+                let count_metadata = &method.params[count].name;
+                let _ = writeln!(text, "        if let Some(length) = {name}_length {{");
+                let _ = writeln!(text, "            let {name}_written = {answered}.map_or_else(|| vec![0_u8; length], |written| written.{index}.clone());");
+                let _ = writeln!(text, "            #[expect(unsafe_code, reason = \"{place}: {metadata}, as the header declares it for the C side\")]");
+                let _ = writeln!(text, "            // SAFETY: the metadata's `NativeArrayInfo` names `{count_metadata}` as the count of `{metadata}`, which is `Out`: that many elements of {size} bytes (`length`), writable for the call, or null.");
+                let _ = writeln!(text, "            let _ = unsafe {{ write_bytes({name}.cast::<u8>(), &{name}_written) }};\n        }}");
+                continue;
+            }
             let size = match part {
                 Part::ObjectOut { .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } => "size_of::<usize>()".to_string(),
                 Part::LentOut { coded, .. } => coded.size.to_string(),
                 Part::ValueOut { size, .. } => size.to_string(),
                 Part::StructOut { coded } => coded.size.to_string(),
+                Part::FixedOut { length, size, .. } => (length * size).to_string(),
+                Part::CountByPointer => "4".to_string(),
                 _ => "0".to_string(),
             };
-            let index = position + offset;
             let _ = writeln!(text, "        let {name}_written = answer.as_ref().{}.map_or([0_u8; {size}], |written| written.{index});", if status { "ok()" } else { "as_ref()" }.replace(".as_ref().as_ref()", ".as_ref()"));
             let promise = match part {
                 Part::ObjectOut { made: true, .. } | Part::BoundOut { .. } | Part::InterfaceOut { .. } => "`Out` and `ComOutPtr`: one interface pointer to write",
@@ -750,22 +878,23 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         let trait_name = &g.trait_names[interface_key];
         let table = format!("{trait_name}Table");
         let slots = writer.slots(interface_key);
-        let _ = writeln!(abi, "/// `{}`'s table of entry points, in the metadata's order; an entry the glue leaves out is null.", interface_key.1);
+        let _ = writeln!(abi, "/// `{}`'s table of entry points, in the metadata's order; every entry is a function (none is null).", interface_key.1);
         let _ = writeln!(abi, "#[repr(C)]\npub struct {table} {{\n    pub unknown: UnknownTable,");
         for slot in &slots {
             match &slot.glued {
                 Some(glued) => {
                     let _ = writeln!(abi, "    pub {}: {},", slot.name, writer.fn_type(glued, slot.method, true));
                 }
-                None => match writer.refusal_signature(slot.method) {
-                    Some((types, returned)) => {
+                None => match writer.refusal(slot.method) {
+                    Ok(refusal) => {
                         let mut list = vec!["Raw".to_string()];
-                        list.extend(types);
-                        let returns = if returned == "()" { String::new() } else { format!(" -> {returned}") };
+                        list.extend(refusal.params.iter().map(|(_, c, _)| c.clone()));
+                        let returns = if refusal.returned == "()" { String::new() } else { format!(" -> {}", refusal.returned) };
                         let _ = writeln!(abi, "    pub {}: unsafe extern \"system\" fn({}){returns},", slot.name, list.join(", "));
                     }
-                    None => {
-                        let _ = writeln!(abi, "    pub {}: Absent,", slot.name);
+                    Err(why) => {
+                        // No null entry is ever written: a form whose calling convention the glue does not know fails the generator.
+                        writer.failures.borrow_mut().push(format!("NULL ENTRY {}::{}: {why}", slot.interface.1, slot.method.name));
                     }
                 },
             }
@@ -783,25 +912,32 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
                 let bound = writer.trait_path(&slot.interface);
                 let place = format!("{}::{}", slot.interface.1, slot.method.name);
                 serve.push_str(&writer.serving_entry(&slot.name, slot.method, glued, Some(&bound), "", &place));
+                writer.outcomes.borrow_mut().entry(place.clone()).or_default().serving.insert("glued: the entry calls the implementation".to_string());
                 writer.glued.borrow_mut().push(place);
             }
         }
-        // Entries that refuse a method no form of the glue carries: nothing read or written, E_NOTIMPL answered.
+        // Entries that refuse a method no form of the glue carries: nothing read, COM's null through each out-pointer and
+        // zeros through each value out of a fixed size, and the API's refusal answered (E_NOTIMPL, or no result).
         for slot in slots.iter().filter(|slot| slot.interface == *interface_key && slot.glued.is_none()) {
-            let Some((types, returned)) = writer.refusal_signature(slot.method) else { continue };
+            let Ok(refusal) = writer.refusal(slot.method) else { continue };
             if !entries_written.insert(slot.name.clone()) {
                 continue;
             }
             let place = format!("{}::{}", slot.interface.1, slot.method.name);
-            let mut list = vec!["_this: Raw".to_string()];
-            list.extend(types.iter().enumerate().map(|(at, ty)| format!("_p{at}: {ty}")));
-            let (returns, answer) = match returned.as_str() {
-                "()" => (String::new(), String::new()),
-                "i32" if crate::emit::named(&slot.method.return_type).is_some_and(|k| k.1 == "HRESULT") => (" -> i32".to_string(), "    wcontainers_component_object_model::constants::E_NOTIMPL.0\n".to_string()),
-                other => (format!(" -> {other}"), "    Default::default()\n".to_string()),
-            };
-            let _ = writeln!(serve, "/// `{place}` as the C side calls it, refused by its form: nothing is read or written, and the method is not\n/// called.\npub extern \"system\" fn {}_refused({}){returns} {{\n{answer}}}\n", slot.name, list.join(", "));
-            writer.refused.borrow_mut().push(place);
+            serve.push_str(&refusal_entry(&format!("{}_refused", slot.name), &place, &refusal));
+            let writes: Vec<String> = refusal.params.iter().filter_map(|(param, _, writes)| match writes {
+                Writes::Null => Some(format!("null through {param}")),
+                Writes::Zeros(size) => Some(format!("{size} zero bytes through {param}")),
+                Writes::Nothing => None,
+            }).collect();
+            let writes = if writes.is_empty() { "writes nothing".to_string() } else { format!("writes {}", writes.join(", ")) };
+            let mut outcomes = writer.outcomes.borrow_mut();
+            let outcome = outcomes.entry(place.clone()).or_default();
+            outcome.serving.insert(format!("refused: reads nothing, {writes}, answers {}", refusal.stated));
+            if !g.read.interfaces[&slot.interface].methods.iter().any(|m| m.name == slot.method.name) {
+                outcome.reason.get_or_insert_with(|| "left out of the set (src/api.rs `only`)".to_string());
+            }
+            drop(outcomes);
         }
         // The table, filled with the entries, for any object type that is this interface.
         let _ = writeln!(tables, "impl<V: {}> Tables<V> {{", writer.trait_path(interface_key));
@@ -810,10 +946,8 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
         for slot in &slots {
             if slot.glued.is_some() {
                 let _ = writeln!(tables, "        {}: {}::<V>,", slot.name, slot.name);
-            } else if writer.refusal_signature(slot.method).is_some() {
-                let _ = writeln!(tables, "        {}: {}_refused,", slot.name, slot.name);
             } else {
-                let _ = writeln!(tables, "        {}: None,", slot.name);
+                let _ = writeln!(tables, "        {}: {}_refused,", slot.name, slot.name);
             }
         }
         let _ = writeln!(tables, "    }};\n}}\n");
@@ -877,9 +1011,16 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
                 let entry = format!("export_{name}");
                 serve.push_str(&writer.serving_entry(&entry, function, &glued, None, &top, &function.name));
                 export_fields.push((name, writer.fn_type(&glued, function, false), entry, glued));
+                writer.outcomes.borrow_mut().entry(function.name.clone()).or_default().serving.insert("glued: the export calls the implementation".to_string());
                 writer.glued.borrow_mut().push(function.name.clone());
             }
-            Err(why) => writer.not_glued.borrow_mut().push(format!("{}: {why}", function.name)),
+            Err(why) => {
+                writer.not_glued.borrow_mut().push(format!("{}: {why}", function.name));
+                let mut outcomes = writer.outcomes.borrow_mut();
+                let outcome = outcomes.entry(function.name.clone()).or_default();
+                outcome.reason = Some(why);
+                outcome.serving.insert("not exported: C finds no such symbol in the served library".to_string());
+            }
         }
     }
     if !export_fields.is_empty() {
@@ -1052,7 +1193,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     serving.push_str(&found_enums);
     serving.push_str(&exports_fn);
     serving.push_str(&serve);
-    let abi_text = format!("//! {HEADER}\n//!\n//! The C tables of this API's interfaces, and its library's exports.\n\nuse wcontainers_component_object_model_direct::{{Absent, Interface, Raw, UnknownTable}};\n\n{abi}{library}");
+    let abi_text = format!("//! {HEADER}\n//!\n//! The C tables of this API's interfaces, and its library's exports.\n\nuse wcontainers_component_object_model_direct::{{Interface, Raw, UnknownTable}};\n\n{abi}{library}");
     let has_lengths = spec.exceptions.iter().any(|e| matches!(e, Exception::InitialData { .. } | Exception::Lent { .. } | Exception::Checked { .. }));
     let lengths_module = if has_lengths { "#[path = \"lengths.rs\"]\nmod lengths;\n" } else { "" };
     let lib = format!(
@@ -1113,6 +1254,36 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     std::fs::write(folder.join("Cargo.toml"), manifest).map_err(|error| error.to_string())?;
     let _ = writeln!(report, "DIRECT {}: {} interfaces with tables", spec.folder, interfaces.len());
     Ok(report)
+}
+
+/// The entry of a method no form of the glue carries (`refusal`): it reads nothing, calls nothing, writes COM's null
+/// through each out-pointer and zeros through each value out of a fixed size, and answers the API's refusal.
+fn refusal_entry(fn_name: &str, place: &str, refusal: &super::Refusal) -> String {
+    let mut text = String::new();
+    let writes: Vec<&(String, String, Writes)> = refusal.params.iter().filter(|(_, _, writes)| *writes != Writes::Nothing).collect();
+    let mut list = vec!["_this: Raw".to_string()];
+    for (at, (_, c, writes)) in refusal.params.iter().enumerate() {
+        let prefix = if *writes == Writes::Nothing { "_" } else { "" };
+        list.push(format!("{prefix}p{at}: {c}"));
+    }
+    let returns = if refusal.returned == "()" { String::new() } else { format!(" -> {}", refusal.returned) };
+    let _ = writeln!(text, "/// `{place}` as the C side calls it, refused by its form: nothing is read, the method is not called, and it\n/// answers {}.", refusal.stated);
+    if writes.is_empty() {
+        let _ = writeln!(text, "pub extern \"system\" fn {fn_name}({}){returns} {{\n    {}\n}}\n", list.join(", "), refusal.answer);
+        return text;
+    }
+    let _ = writeln!(text, "///\n/// # Safety\n/// Every pointer it writes through is what the metadata describes for this entry: writable for the call, or null.");
+    let _ = writeln!(text, "#[expect(unsafe_code, reason = \"{place}, which the C side calls\")]");
+    let _ = writeln!(text, "pub unsafe extern \"system\" fn {fn_name}({}){returns} {{", list.join(", "));
+    for (at, (param, _, writes)) in refusal.params.iter().enumerate() {
+        let Some(bytes) = writes.bytes() else { continue };
+        let promise = if *writes == Writes::Null { "`Out`: one pointer to write (COM's null on failure)" } else { "`Out`: one value of this size to write" };
+        let _ = writeln!(text, "    #[expect(unsafe_code, reason = \"{place}: {param}, as the header declares it for the C side\")]");
+        let _ = writeln!(text, "    // SAFETY: the metadata's `{param}` is {promise}, or null, for the call.");
+        let _ = writeln!(text, "    let _ = unsafe {{ write_bytes(p{at}, &{bytes}) }};");
+    }
+    let _ = writeln!(text, "    {}\n}}\n", refusal.answer);
+    text
 }
 
 /// Adds `use` lines for every crate of the set a direct crate's file names by alias.
