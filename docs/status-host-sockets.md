@@ -457,7 +457,7 @@ Planted faults (MEASURED, ARM64, SCRATCH/host-sockets/hs3/plant.sh; each regener
 | interface_item | 3 | 2 |
 | stray_source | 1 | 0 |
 | literal_restates_constant, trait_not_implemented, comment_budget_exceeded, hook_name | 1 each | 1 each |
-| total | 873 | 803 |
+| total | 847 (corrected 2026-11-26: the independent check measured 847 at the run's start; 873 was wrong, and the rows above it come from that wrong list) | 803 (the check: 802) |
 
   No exclusion added. What is left, by cause, each with its smallest example:
   - Structural, a ruling needed (not changed): `public_outside_interface` 200 in the shared crate
@@ -514,6 +514,143 @@ Safe to merge: 73a3e6da2 (code), or the status commit after it, which changes on
 builds and passes there on both machines; the only interface change for a caller is `set_ipv6_flowlabel_mgr` taking
 `&mut`.
 
+## Repair of the guard for future rows (2026-11-26, after the third check BLOCKED)
+
+The third check (SCRATCH/host-sockets-check3/) planted `get_tcp_ao_keys_room room past` and nothing refused it. Commits:
+52a7b3778 (generator, probe, canaries), b599e5b85 (linter repairs by hand). The owner's main (ac696ea19) was already
+merged (MEASURED: `git merge-base --is-ancestor FETCH_HEAD HEAD`). No interface file of the owner changed; the API
+crate's options.table and interface.rs did not change either (MEASURED: regenerated interface.rs identical).
+
+### (1) The generator refuses every pairing it cannot make safe (READ: tests/generated.rs `refusal`)
+
+- Form and column: sets take `reads` only, except a `struct:` value, which may be `writes-back` (exclusive borrow);
+  gets of a number, `room` or `ioctl` take `within` only; `keys` takes `past` only; `full_info` takes `through`
+  only. Bytes and runs lost `writes-back` (no option writes them back and the probe has no exclusive form for them).
+- Form and option, both ways: `program` only for `SO_ATTACH_FILTER`/`SO_ATTACH_REUSEPORT_CBPF`, `group_filter` only
+  for `MCAST_MSFILTER`, `keys` only for `TCP_AO_GET_KEYS`, `full_info` only for `MPTCP_FULL_INFO`, `ioctl` only for
+  `SIOCOUTQ`, `SIOCOUTQNSD`, `SIOCATMARK` (each writes one int); and none of those options in any other form.
+- Level: an `ioctl` row has level `-`, and only it. `struct:`/`slice:` name only the 11 uapi structures known to hold
+  no address the kernel follows; `bytes` only for the 6 options that read an opaque run.
+- Tests (MEASURED, both machines, `--test generated`: 10 passed): the full matrix of 2 directions x 13 forms x 5
+  columns (130 pairs: 17 taken, 113 refused, each checked), the check's planted row, levels, bound options, unknown
+  structures and byte options, and every table row taken.
+
+### (2) The probe calls the generated trait methods (READ: implementation/direct/probe.rs)
+
+Every case is written `row!(method, builder(...))`, which expands to a call of `OPTIONS.method(...)` through the
+trait, so a changed signature fails to build. Lent memory sits between canaries: structures in a `#[repr(C)]` fence,
+compared after the call by reading their bytes with nix's `process_vm_readv` on the probe's own process (linux-raw-sys
+structures give no byte view; read only); byte strings and runs likewise. Memory the method owns carries the
+implementation's canaries (4); a canary stop is caught (`catch_unwind`) and fails the row, and a socket that cannot be
+made fails its row without stopping the others. `past` is now measured as: every key query asking more answers than
+the room holds is refused (4 of 4 refused, none taken).
+
+### (3) The four `within` rows the kernel was never seen writing (MEASURED, both machines, probe `written` count)
+
+| Row | Case that makes the kernel write | Written |
+|---|---|---|
+| get_ip_pktoptions | connected TCP pair with `IP_PKTINFO` on (nix), the kernel writes an `IP_PKTINFO` record | 1 of 4 rooms (the large one; the others are shorter than one record) |
+| get_ipv6_2292pktoptions | connected TCP pair with `IPV6_RECVPKTINFO` on (nix) | 1 of 4 |
+| get_tcp_cc_info | connected pair running Vegas (socket2 `set_tcp_congestion`), which fills `tcpvegas_info` | 3 of 4 (all rooms but the empty one) |
+| get_tcp_ao_info | socket with two TCP-AO keys; the old probe filled the room with canaries, which the kernel reads as nonzero reserved fields (EINVAL), and the zero room showed zeros over zeros | 4 of 5 (the empty room is EINVAL) |
+
+### (4) The canary that catches a getsockopt told more than its room (READ: implementation.rs)
+
+Every room, number copy and header the implementation hands the kernel is followed by 64 canary bytes (0xa5, 0xa6, ...,
+none zero), checked after each call; a changed one stops the program (`assert!`), as a stack protector does. Covered:
+`get_value`, `get_written`, `get_keys` (a whole second answer's worth plus the guard), `ioctl_int`, the
+`MPTCP_FULL_INFO` header and one extra room per run, `set_number` (also checks the value unchanged), `set_program`'s
+header and `set_group_filter`'s bytes. Speed with them (MEASURED, same job, alternating, 3 rounds): ARM64 TCP 399-400 /
+406-409 ns before vs 399-400 / 406-407 after, UDP 1.482-1.503 us / 815-819 ns vs 1.486-1.491 us / 813-814 ns; x86-64
+noisy (other jobs): TCP send 361-367 vs 371-395 ns, UDP 1.698-2.051 us vs 1.686-2.045 us.
+
+Planted faults (MEASURED, ARM64, SCRATCH/host-sockets/hs4/plant.sh and api2.sh, arm-plant.log, arm-api2.log):
+
+| Planted | Caught by |
+|---|---|
+| IPV6_FLOWLABEL_MGR marked `reads` | probe: "wrote into a value its column says it only reads" (inside 2 of 8) |
+| the check's row `get_tcp_ao_keys_room room past` | generator: "a room value cannot be past" |
+| the same row marked `within` | generator: "the keys form carries only TCP_AO_GET_KEYS" |
+| SIOCATMARK `past`; TCP_INFO `through`; SO_RCVMARK `writes-back` | generator |
+| `struct:libc::sock_fprog`; a new ioctl `SIOCGSTAMP`; the program option as `bytes` | generator |
+| the generator gives the opposite reference | the build (28 errors in the suite) |
+| a probe case removed | `the_probe_calls_every_method` and the probe |
+| getsockopt told 8 bytes more than the room (caught by accident before) | the canaries: get_so_meminfo, get_ip_pktoptions, get_ipv6_2292pktoptions and more stop with "canary changed" |
+| full information told one entry more than its rooms | the canary of the extra room |
+| get_keys letting two answers through | the canaries ("wrote past the 304 bytes it was told"), and the API suite |
+
+### The bar at b599e5b85, both machines (MEASURED: hs4/{arm,x86}-bar2.log)
+
+check --all-targets, clippy `-D warnings`, fmt --check of the 17 packages: exit 0. Suites: TCP 143, UDP 80, ICMP 69, raw
+54, route resolver 38, API suite 13, generator tests 10, probe 1 (96 rows), the hosts' other tests: all pass; only the
+two speed tests ignored. Speed in the bar: ARM64 TCP 401-402 / 403-404 ns, UDP 1.473-1.488 us / 803-805 ns; x86-64 TCP
+340-363 / 384-422 ns, UDP 1.661-1.725 us / 873-899 ns.
+
+### Linter, rules that need no model (MEASURED, ARM64, linter da55b9d7, hs4/arm-lint-before.log and -final.log)
+
+| Rule | 52a7b3778 (before the hand repairs) | b599e5b85 |
+|---|---|---|
+| public_outside_interface | 442 | 453 (+11: the suite's constants the probe now imports) |
+| summary_not_one_line | 74 | 5 |
+| number_constant_without_link | 64 | 0 |
+| conformance_not_run | 56 | 56 |
+| magic_literal | 53 | 34 |
+| summary_too_long | 45 | 2 |
+| constant_defined_twice | 27 | 18 |
+| implementation_folder | 16 | 16 |
+| comment_too_long | 11 | 10 |
+| summary_starts_with_name | 10 | 0 |
+| summary_not_one_sentence | 7 | 0 |
+| depends_on_implementation, names_implementation, trait_outside_interface | 4, 3, 3 | 4, 3, 3 |
+| interface_item | 2 | 2 |
+| trait_not_implemented, literal_restates_constant, hook_name, comment_budget_exceeded | 1 each | 1 each |
+| total | 821 | 610 |
+
+No exclusion, no rule loosened. Left of the mechanical kinds: the module comments of the TCP and UDP suites (1240 and
+1786 characters, a list of the network each check needs), 6 more long comments, the summaries of 5 module docs, and
+string literals given to `ask_routing` in the TCP suite.
+
+### The two linter faults (SCRATCH/host-sockets/linter-faults/)
+
+`const-generic-method-view/` and `zerocopy-derive-impls/` hold the smallest crates of each shape and a NOTE. MEASURED:
+neither reproduces at da55b9d7 yet (the linter gives only model-unanswered findings and a magic literal there), while
+crates/linux-socket-options/interface.rs:71 and :29 still give them. Not worked around.
+
+### Questions for the orchestrator (each tried with the structure the rule asks first)
+
+1. `public_outside_interface` in `crates/internet-protocol/implementation/linux-socket-options` (the shared crate the
+   four hosts call, for example `pub fn storage_bytes(address: SocketAddr) -> StorageBytes` in datagram/addresses.rs:62).
+   It is an implementation shared by hosts of four interfaces, not a suite helper, so the conformance-folder structure
+   does not apply; the rule allows a trait only for the brief's three reasons. Which structure should it take?
+2. `public_outside_interface` for the ICMP suite's helpers the raw and route suites import (for example
+   `pub fn ip(commands: &str)`, `pub const NETWORK: &str`). The interface whose conformance folder they belong in is
+   `crates/internet-protocol`, which has no conformance crate; making one is a new crate (a stop for the orchestrator).
+   Tried in small: the probe now imports 11 constants from `crates/linux-socket-options/conformance` instead of
+   repeating them, and that conformance crate's `pub const`s are each counted `public_outside_interface` (+11, -9
+   `constant_defined_twice`). Should shared helpers in a conformance crate be `pub`, and may the orchestrator create
+   `crates/internet-protocol/conformance`?
+3. `implementation_folder` 16: the hosts implement other interfaces' traits, for example
+   `impl<'a> Configurable<HostTcpConnection, TcpSetting<'a>> for HostTcpSockets` (tcp host portable.rs:741) and
+   `impl NegativeRouteAdvisable<HostTcpConnection> for HostTcpSockets` (:768). The layout `cargo reviewable new
+   foreign-implementation` makes lives inside the other interface's crate and adds a `mod` to its interface.rs (READ:
+   syntax/foreign.rs, examples/interface_item), an owner's file, and is for a type from outside the workspace. Not done.
+   Where should these impls go?
+4. `depends_on_implementation` 4 / `names_implementation` 3: the ICMP and route suites set `IPV6_ADDR_PREFERENCES`,
+   `IP_OPTIONS`, `IP_UNICAST_IF` on their own probe sockets through
+   `wcontainers_linux_socket_options_direct::DirectLinuxSocketOptions` (icmp suite.rs:2368, route suite.rs:1533, :1661).
+   The structure the rule asks (the suite takes a `LinuxSocketOptions` value from its caller) changes those suites'
+   `tests!` macros and every host's conformance_run; not done this run. Go ahead?
+5. `trait_outside_interface` 3: the direct crate's private `trait Plain {}` (the marker that limits what a set hands the
+   kernel) and `pub trait LentBuffers: IcmpSockets` / `: RawSockets` in the two suites. Keep, or how?
+6. `conformance_not_run` 56 and the probe: the probe is a unit test of the direct crate and uses the API suite's
+   `own_network`, `storage_of` and now its constants; is a suite crate the right home for what both use?
+
+### Not done this run
+
+- The ICMP suite's `ip` and `tc` through `Command` (READ: about 195 call sites over the ICMP, raw and route suites, with
+  links, addresses, routes, neighbours, rules by mark, user, protocol and port, prio, fq and etf queueing, and JSON reads
+  of classes, neighbours and temporary addresses) is still iproute2; the netlink rewrite is next.
+
 ## Owner questions
 
 1. Ruled 2026-11-25 (every outside API: one crate named for it, a safe trait, the unsafe in `implementation/direct`):
@@ -527,6 +664,12 @@ builds and passes there on both machines; the only interface change for a caller
 
 ## SECURITY
 
+- 2026-11-26 guard repair (e36328391 -> b599e5b85): unsafe lines unchanged, the direct crate 4 -> 4 (the same four
+  calls, two reasons rewritten to name the canaries), every other crate of the track 0 -> 0; MEASURED by `git grep -nw
+  unsafe` without comments and attributes. No lint table changed, no exclusion. New dependencies: none; the direct
+  crate's dev-dependency nix takes two more features, `process` and `uio`, for the probe's `process_vm_readv` read of
+  its own memory (read only). Hostile-guest suite: not built and not run (the thread-test design review is owed to the
+  owner first); the generator's refusals, the probe and the canaries are the hostile-caller checks of the API crate.
 - 2026-11-26 repair: unsafe lines unchanged, every crate of the track 0 -> 0 except the direct crate 4 -> 4 (the same
   four calls; `get_into`, `full_info_into` and `ioctl_within` now hold three of them); MEASURED by `git grep -nw unsafe`
   without comments and attributes at 1ea5c793e and at the tip. New dependencies: none; the direct crate's tests now use
