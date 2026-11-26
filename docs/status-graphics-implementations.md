@@ -351,24 +351,26 @@ run named here are in the scratch folder graphics-implementations/.
 
 ### GI4: the config as the group's value does not compile, so GI4 is not reached
 
-- The ruling's shape, measured (patch in the scratch folder, gi5r/config-as-value.patch): the suite function
-  `opens_from_its_config<B: StandaloneGpu>(config: B::Config)`, the group arm `$crate::opens_from_its_config($value);`,
-  every run giving its config as the group's value (`StandaloneGpu: yes(wcontainers_gpu_recording::RecorderConfig {
-  caps: None })`). `cargo check --all-targets`, x86-64: all four conformance targets fail with
-  `error[E0284]: type annotations needed ... cannot satisfy <_ as StandaloneGpu>::Config == _`. A projection never
-  fixes its `Self` type, and the tool's test body is exactly `$crate::f($value);`, so nothing can name `B`. With no
-  build, the linter has no compiler view of those targets. The change was taken out again.
-- So the two findings stay counted: conformance_untested_method 1 (`StandaloneGpu::new`) and conformance_not_run 1
-  (the trace run names `wcontainers_gpu_recording::RecorderConfig` outside a type argument). No `Default` was added to a
-  config, and his interface did not change.
+- Settled: the config as the group's value does not compile (E0284: nothing names the implementation when it appears
+  only in a projection). No `Default` was added to a config, his interface did not change, and the `tests!` macro did
+  not change. GI4 stays not reached with its two findings counted (MEASURED at 49976d73c, linter da55b9d7, x86-64, a
+  copy with gpu-webgl's old lints table so its compiler view exists):
+  `crates/gpu/interface.rs:917 conformance_untested_method: `StandaloneGpu::new` is never called with the value it
+  returns used, on a value or type bounded by `StandaloneGpu`, in code the suite functions of
+  `wcontainers_gpu_conformance` reach` and `crates/gpu/implementation/trace/conformance_run.rs:1 conformance_not_run:
+  it names another implementation, `wcontainers_gpu_recording`, outside a type argument of a type of
+  `wcontainers_gpu_trace``. The same `new` finding stands on his shader-converters (interface.rs:139) and test-window
+  (interface.rs:19) interfaces.
 
-**The one question for the owner.** How should the suite open a back end from a config without inventing one
-(`conformance_untested_method` on `StandaloneGpu::new`, which his shader-converters, test-window and win32 interfaces
-have too)? The smallest example, the two shapes side by side:
+**The one question for the owner.** How should the shared suite open a back end from a config, so that it calls
+`StandaloneGpu::new`, when it may neither give configs `Default` nor take the config as the group's value? The
+smallest example and the two shapes tried, each measured at 49976d73c as a scratch patch (never committed):
 
 ```rust
-// A: the check's shape. It reaches 0, but four configs gain `Default`
-//    (four new public_outside_interface findings).
+// interface (his, unchanged): pub trait StandaloneGpu: Gpu { type Config; type NewError: Debug;
+//                                fn new(config: Self::Config) -> Result<Self, Self::NewError>; }
+
+// Shape A (graphics-implementations/check-gi4r2/out/experiment-default-config.patch): configs gain Default.
 pub fn opens_from_a_default_config<B: StandaloneGpu>(b: B)
 where
     B::Config: Default,
@@ -376,17 +378,22 @@ where
     let second = B::new(B::Config::default()).expect("a second back end");
     drop((second, b));
 }
-// arm: $crate::opens_from_a_default_config($value);       run: `StandaloneGpu: yes`
-// trace run: TracedConfig { inner: Default::default(), file: .. }
+// arm: $crate::opens_from_a_default_config($value);     every run: `StandaloneGpu: yes`
+// linter: conformance_untested_method 0, conformance_not_run 0, and four new findings, e.g.
+//   crates/gpu/implementation/recording/implementation.rs:50 public_outside_interface: exported `RecorderConfig`
+//   derives `core::default::Default`, which none of StandaloneGpu::Config requires as written here; it widens what
+//   the type offers   (the same for TracedConfig, GlConfig and WebGpuConfig)
 
-// B: the config as the group's value. It never builds (E0284: nothing names `B`).
+// Shape B (graphics-implementations/gi5r/config-as-value.patch): the config is the group's value.
 pub fn opens_from_its_config<B: StandaloneGpu>(config: B::Config) {
     let mut b = B::new(config).expect("a back end from its config");
-    drop(b.submit());
+    ok(&mut b);
 }
-// arm: $crate::opens_from_its_config($value);              run: `StandaloneGpu: yes(RecorderConfig { caps: None })`
-// B builds only if the tool's group arm may write the type: `$crate::opens_from_its_config::<$type>($value);`
-// (a change to the linter's fixed shape), and the trace run would still name RecorderConfig.
+// arm: $crate::opens_from_its_config($value);   run: `StandaloneGpu: yes(wcontainers_gpu_recording::RecorderConfig { caps: None })`
+// compiler (cargo check --all-targets, x86-64), in the recording, trace and webgpu conformance targets:
+//   error[E0284]: type annotations needed
+//    --> crates/gpu/implementation/recording/conformance_run.rs:1:233
+//     = note: cannot satisfy `<_ as StandaloneGpu>::Config == _`
 ```
 
 Around it, until he answers: both findings stay listed and GI4 is not claimed.
@@ -425,11 +432,13 @@ Around it, until he answers: both findings stay listed and GI4 is not claimed.
 - Its test, crates/shaders/src/stage/helper/tests.rs: on a WebGPU device (lavapipe), 8 patches of `hs_tri_integer_ccw`
   and `ds_tri` at factor 3 with stream output, so the dispatch's bound is far above the point total. It reads back the
   domain records: every point below the total is drawn, and every record past it is `[0, 0, 0, OUTSIDE_W]`. MEASURED
-  on x86-64 in the scratch copy: it passes with the hunk, and with the hunk's one line taken out it fails
-  ("invocation 96, past the 96 points, wrote no point").
+  at the pushed commit 49976d73c on both machines (sixth run): it passes with the hunk, and with the hunk's one line
+  taken out it fails ("invocation 96, past the 96 points, wrote no point").
 - It needs shaders to dev-depend on wcontainers-gpu-webgpu and wgpu on every native target. Before, only Windows did,
-  and both were already in the lock. That adds one depends_on_implementation finding in shaders, of the same kind as its
-  webgl dev-dependency.
+  and both were already in the lock. Corrected in the sixth run (MEASURED, linter at 948af1837 against 49976d73c): it
+  adds no depends_on_implementation finding (shaders 5 before and after); it adds one stray_source (the new
+  src/stage/helper/tests.rs) and one constant_defined_twice (`PATCHES = 8` in tests/tessellation_draw.rs:27 and
+  src/stage/helper/tests.rs:15).
 
 ### For the Metal track (two lines)
 
@@ -441,6 +450,91 @@ Around it, until he answers: both findings stay listed and GI4 is not claimed.
   `GpuError::Absent` where it lacks one; a window its host never named is `GpuError::Invalid`) and
   `wcontainers_gpu::StandaloneGpu` (a plain-data `Config` with pub fields and no `Default`, `NewError`, `new`), taking
   its data types from `wcontainers_gpu::{caps, error, format, resource, ..}`.
+
+## The sixth run (2026-11-26): the fifth run pushed and measured, layout work in the moved implementations, GI7 prepared
+
+Logs in the scratch folder graphics-implementations/gi6/ (one per job, named by machine and commit); the job script
+is tools/gi6-job.sh, the linter's tools/gi4r-lint.sh and tools/layout_by_crate.py.
+
+### What the fifth run left, and what this run did first
+
+- The fifth run had ended with nothing pushed: 758f63f57 and 8d30641a4 and its status section were only in the
+  worktree, and its jobs had all ended (`arm-run --status`: gi5r-arm and gi5r-x86 exit 0; no job of this track
+  running on either machine). Its folders on both machines were deleted, the untracked helpers (gi-linter-src/,
+  gi4r-lint.sh, gi5r-job.sh; copies kept in tools/) removed, the section committed as 49976d73c and pushed.
+- His main: `git fetch` of his checkout's main gives ac696ea19, already in this branch (`git merge-base
+  --is-ancestor FETCH_HEAD HEAD` exit 0, `git log HEAD..FETCH_HEAD` empty), so there was nothing to merge.
+
+### Measured at the pushed commit 49976d73c, and again at a856bf204 (both machines alike unless named)
+
+- `cargo check --all-targets` under the workspace lints: 17 graphics packages exit 0 (gpu, conformance, recording,
+  trace, webgpu, opengl, nir, direct3d-11, direct3d-12, directx, directx-graphics-infrastructure, graphics-test,
+  graphics-test-forward, shader-converters with linked and contained, test-window); gpu-webgl exits 101 (166 error lines,
+  165 of them unsafe; at a856bf204 one more, its lib test's `could not compile`) and shaders through it. With the old lints table in a scratch copy: all 19 exit 0.
+- Tests: gpu 37, recording 215, trace 55, directx-graphics-infrastructure 13, graphics-test 16, direct3d-11 69,
+  shader-converters linked 7 and contained 7, all pass. clippy `-D warnings` of gpu, conformance, recording, trace,
+  webgpu: exit 0.
+- Mesa built from the pinned source (x86-64 65 s, ARM64 99 s). webgpu on lavapipe: 135 passed, 4 failed, 3 ignored
+  (GI2's four: bc_textures_read_back_as_written_and_bc6h_and_bc7_sample_exactly,
+  a_copy_within_one_depth_or_stencil_subresource_moves_the_region, depth_and_stencil_parts_copy_and_read_back_exactly,
+  present_shows_the_frame); its conformance run 53 passed, 1 failed (depth24plus rounding); with lavapipe loaded
+  through a manifest of another name the run refuses it ("the adapter is the software llvmpipe").
+- Scratch copy (old lints table for gpu-webgl, nir, opengl): webgl on Mesa's EGL 69 passed, 2 failed
+  (a_copy_within_one_depth_or_stencil_subresource_moves_the_region, edges_through_pixel_centres_follow_the_top_left_rule,
+  as in the fourth run); wasm32 checks of the libraries and of the scenes, browser and replay pages exit 0 (without the
+  old table the library check and the browser and replay pages fail through gpu-webgl, the scenes page passes);
+  shaders 158 passed, 5 ignored (GI1's 157 and the tessellation test); with `WCONTAINERS_MESA` set, nir 41 passed and
+  2 ignored on x86-64 and opengl 11 passed on both; nir's tests on ARM64 still do not link against Mesa (multiple
+  definitions in the state tracker's objects, as recorded for GI8).
+- The tessellation test (`domain_invocations_past_the_point_total_write_no_point`): passes; with the hunk's one line
+  taken out in the copy (`HUNK-LINE before=1 after=0`) it fails with "invocation 96, past the 96 points, wrote no
+  point".
+
+### Linter counts (da55b9d7, x86-64, gpu-webgl's old lints table in the copy so its compiler view exists)
+
+Last run's commits, 948af1837 against 49976d73c (without the old table): webgpu public_outside_interface 83 to 80
+(the fence is plain data); shaders stray_source 56 to 57 and constant_defined_twice 5 to 6 (the GI6 test, above);
+nothing else in the layout rules changed.
+
+This run's layout work, 49976d73c against a856bf204:
+
+| crate | rule | before | after | how |
+|---|---|---|---|---|
+| webgpu | unparsed | 55 | 1 | the tests take `scene` from wcontainers-graphics-test (a dev-dependency on every native target; it was Windows-only) instead of including graphics-test/src/scene.rs, and the scenes page's modules moved from examples/scenes to tests/scenes (`[[example]] scenes`, `path = "tests/scenes/page.rs"`), so every test includes them below its own folder |
+| trace | public_outside_interface | 15 | 13 | the stream file and the unwritten frame are a private `Out`, whose `Drop` writes the last frame; `id`, `run`, `make`, `void` are functions |
+
+Every other layout count in the nine crates is unchanged: recording 4, webgpu 80, webgl 177 public_outside_interface;
+webgl unparsed 7; conformance constant_defined_twice 27. All rules in the nine crates: 22,387 to 22,317 (unparsed
+-54, public_outside_interface -2, text rules -14).
+
+Tried and taken out: webgpu's handles without `PartialEq`/`Eq` (28 findings) do not compile:
+`error[E0369]: binary operation == cannot be applied to type wcontainers_gpu_webgpu::Blend` at tests/scenes.rs:134
+(and five more there and at tests/bindings.rs:125). Those tests check that equal blocks made twice are one object;
+they need the identity from outside the crate, so the findings stay until the tests can see it another way.
+
+Left, by structure: the inherent constructors and accessors of the exported back ends (webgpu `new`,
+`device_descriptor`, `INSTANCE_FLAGS`, `add_window`, `counters`; webgl `new`, `on_angle`, `add_window`) are called by
+the fronts (direct3d-12, directx, opengl, shaders' tests), so they go when the fronts build their back ends through
+`StandaloneGpu`; the helper impl blocks on `WebGpu` (8), `Recorder` (3) and `Gl` (2) become a private device type
+inside each exported one; the handles' private fields fill associated types (webgpu 14, webgl 45) and need handles
+that are plain data. Note: 23ec9ae7a holds the scenes files' renames that belong to a856bf204, so 23ec9ae7a alone does
+not build its webgpu tests; the pushed tip does (measured above).
+
+### GI7 prepared (READ origin/graphics-api-crates 90b14f72a: no OpenGL ES trait yet; AC10 comes after Direct3D 12)
+
+- The list of what the WebGL back end needs (scratch NEEDED-FROM-API-CRATES.md) re-measured at 49976d73c: the moved
+  crate calls the same 145 distinct glow methods 313 times (`diff` with the list: empty); its unsafe lines by form
+  (tools/gi7_sites.py): 39 one-call lines that become the plain call, 104 lines of blocks with several calls, 17
+  `unsafe fn`/`impl` items. nir's 52 + 5 + 39 + 17 lines unchanged.
+- Nothing more can be built before the trait exists: every one of those calls is an `unsafe fn` of glow or EGL.
+
+### Milestones
+
+- Reached this run: none newly. GI1 to GI3 and GI5 as recorded; the tessellation part of GI6 measured at a pushed
+  commit; GI4 not reached (the question above); GI6's removal of the linked route waits on the cost question of the
+  brief; GI7 waits on the API track's OpenGL ES trait (AC10); GI8 part B on its Gallium and Mesa compiler traits.
+- Next: the private device type inside `WebGpu`, `Recorder` and `Gl` (waits on nothing), then the handles as plain
+  data.
 
 ## SECURITY
 
@@ -459,3 +553,7 @@ Around it, until he answers: both findings stay listed and GI4 is not claimed.
   `impl Traced<Gl>` removed with it), shaders 71, shader-converters 5, nir 113, opengl 353, test-window 12: 731. No
   marked exception added. New dependencies: bytemuck (already in the lock through webgpu) as a webgl dev-dependency;
   the trace crate uses postcard, serde and naga as webgl did. No hostile-guest suite was run (none exists).
+- Sixth run (counting command of the root manifest, 948af1837 and a856bf204 alike): gpu (interface and shared code) 0,
+  conformance 0, recording 0, trace 0, webgpu 19, webgl 158, shaders 71, shader-converters 5, nir 113, opengl 353,
+  test-window 12: 731. No marked exception added. New dependencies: none; wcontainers-graphics-test, already a Windows
+  dev-dependency of webgpu, is now one on every native target. No hostile-guest suite was run (none exists).
