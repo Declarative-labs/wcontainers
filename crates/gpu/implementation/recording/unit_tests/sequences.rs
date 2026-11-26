@@ -3,7 +3,8 @@
 //! and the same contents. `WCONTAINERS_GPU_SEQUENCES` sets how many (default 1000) and
 //! `WCONTAINERS_GPU_SEED` the seed (default 0x5eed); the test prints both.
 
-use crate::{Call, Recorder, replay, sequence};
+use crate::recorder::{contents, full};
+use crate::{Call, replay, sequence};
 use proptest::test_runner::{Config, RngAlgorithm, RngSeed, TestRunner};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -42,7 +43,7 @@ fn random_sequences_record_and_replay_identically() {
     let seen = Cell::new([0usize; 14]);
     let result = runner.run(&sequence::steps(40), |steps| {
         ran.set(ran.get() + 1);
-        let mut r = Recorder::new();
+        let mut r = full();
         let read = sequence::run(&mut r, &steps).expect("a step was refused");
         assert!(r.violations.is_empty(), "violations: {:?}", r.violations);
         calls.set(calls.get() + r.calls.len());
@@ -116,7 +117,7 @@ fn random_sequences_record_and_replay_identically() {
         );
         assert_eq!(again.calls, r.calls);
         assert_eq!(again.dropped_draws, r.dropped_draws);
-        assert_eq!(again.contents(), r.contents());
+        assert_eq!(contents(&again), contents(&r));
         // The bytes the steps read back are in the stream's finish_read calls.
         let finished: Vec<_> = r
             .calls

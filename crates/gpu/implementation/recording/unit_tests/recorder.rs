@@ -1,13 +1,14 @@
 //! The shared suite on the recording back end, and the interface rules it enforces.
 
 use crate::Recorder;
+use crate::recorder::full;
 use wcontainers_gpu::{caps::*, draw::*, error::*, format::*, resource::*, state::*, *};
 
 /// What is drawn into the surface's current texture is what the recorder shows, frame after frame.
 #[test]
 fn present_shows_the_frame() {
     const WINDOW: u32 = 7;
-    let mut b = Recorder::new();
+    let mut b = full();
     let surface = b.create_surface(WINDOW).expect("create_surface");
     b.configure_surface(&surface, Format::Rgba8Unorm, 4, 4, true)
         .expect("configure_surface");
@@ -100,7 +101,7 @@ fn pass_on<'a>(color: &'a crate::Id, depth: Option<&'a crate::Id>) -> PassDesc<'
 
 #[test]
 fn attachments_of_different_sizes_are_refused() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let color = target(&mut r, 4, 4, Format::Rgba8Unorm);
     let depth = target(&mut r, 8, 8, Format::Depth32Float);
     r.begin_pass(&pass_on(&color, Some(&depth)));
@@ -110,7 +111,7 @@ fn attachments_of_different_sizes_are_refused() {
 
 #[test]
 fn depth_aspects_must_match_the_format() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let color = target(&mut r, 4, 4, Format::Rgba8Unorm);
     let depth = target(&mut r, 4, 4, Format::Depth24PlusStencil8);
     r.begin_pass(&pass_on(&color, Some(&depth)));
@@ -122,7 +123,7 @@ fn depth_aspects_must_match_the_format() {
 
 #[test]
 fn copies_and_read_backs_inside_a_pass_are_refused() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let color = target(&mut r, 4, 4, Format::Rgba8Unorm);
     let buffer = r
         .create_buffer(&BufferDesc {
@@ -150,7 +151,7 @@ fn copies_and_read_backs_inside_a_pass_are_refused() {
 
 #[test]
 fn a_finished_read_before_submit_is_refused() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let buffer = r
         .create_buffer(&BufferDesc {
             size: 4,
@@ -175,7 +176,7 @@ fn a_finished_read_before_submit_is_refused() {
 
 #[test]
 fn objects_used_after_destroy_are_refused() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let buffer = r
         .create_buffer(&BufferDesc {
             size: 4,
@@ -191,7 +192,7 @@ fn objects_used_after_destroy_are_refused() {
 
 #[test]
 fn blocks_needing_absent_features_are_refused_at_creation() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let mut desc = BlendDesc {
         targets: [RenderTargetBlend {
             blend: None,

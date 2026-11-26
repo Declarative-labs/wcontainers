@@ -5,6 +5,7 @@
 //! is ready, objects used after destroy, blocks needing absent features) and the usage-scope rule
 //! (`tests/helpers.rs`) are not repeated here.
 
+use crate::recorder::{contents, full, texture_bytes, with_caps};
 use crate::{Id, Recorder};
 use wcontainers_gpu::{caps::*, draw::*, error::*, format::*, resource::*, shader::*, state::*, *};
 
@@ -145,12 +146,12 @@ struct Drawing {
 
 impl Drawing {
     fn new() -> Drawing {
-        Drawing::on(Recorder::new())
+        Drawing::on(full())
     }
 
     /// The same on a recording back end whose capabilities `change` alters.
     fn with_caps(change: impl FnOnce(&mut Caps)) -> Drawing {
-        Drawing::on(Recorder::with_caps(change))
+        Drawing::on(with_caps(change))
     }
 
     fn on(mut r: Recorder) -> Drawing {
@@ -497,7 +498,7 @@ fn a_query_ends_into_a_live_set() {
 
 #[test]
 fn objects_are_used_live_and_as_their_kind() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 16, COPIES);
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     r.write_texture(&region(&b), extent(1), &[0; 4], 4, 1, WriteMode::Ordered);
@@ -566,11 +567,11 @@ fn step_rates_and_texel_buffers_need_their_features() {
         desc.streams[0] = Some(VertexStream { stride: 8, step });
         desc
     };
-    let mut r = Recorder::new();
+    let mut r = full();
     for step in [StepMode::Instance(0), StepMode::Instance(2)] {
         assert!(r.create_vertex_layout(&layout(step)).is_ok());
     }
-    let mut r = Recorder::with_caps(|c| c.features.remove(Features::INSTANCE_STEP_RATE));
+    let mut r = with_caps(|c| c.features.remove(Features::INSTANCE_STEP_RATE));
     for step in [StepMode::Vertex, StepMode::Instance(1)] {
         assert!(r.create_vertex_layout(&layout(step)).is_ok());
     }
@@ -581,7 +582,7 @@ fn step_rates_and_texel_buffers_need_their_features() {
         );
     }
 
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 64, BufferUsage::STORAGE);
     assert_eq!(
         r.create_binding_set(&[BindingEntry {
@@ -637,7 +638,7 @@ fn a_query_index_is_begun_once_in_a_pass() {
 
 #[test]
 fn an_attachment_is_one_level_and_layer_with_render_usage() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Rgba8Unorm, 2, TextureUsage::SAMPLE);
     let v = view(&mut r, &t, Format::Rgba8Unorm);
     let mut pass = PassDesc {
@@ -733,7 +734,7 @@ struct First { @location(5) @interpolate(flat, first) n: u32, @location(7) @inte
 @fragment fn either_vertex(@location(7) @interpolate(flat, either) f: f32) -> @location(0) vec4<f32> { return vec4<f32>(f); }
 @fragment fn perspective_in(@location(7) f: f32) -> @location(0) vec4<f32> { return vec4<f32>(f); }
 ";
-    let mut r = Recorder::new();
+    let mut r = full();
     let shader = |r: &mut Recorder, entry, stage| {
         r.create_shader(&ShaderModule::from_wgsl(LINKED, entry, stage).unwrap())
             .unwrap()
@@ -793,7 +794,7 @@ fn shaders_and_programs_hold_entry_points_of_their_stages() {
             key: [0; 32],
         })
     };
-    let mut r = Recorder::new();
+    let mut r = full();
     let lacks = Err(GpuError::Invalid(
         "a shader naming an entry point of its stage its module lacks",
     ));
@@ -839,7 +840,7 @@ fn a_vertex_program_reads_only_locations_its_layout_has() {
 
 #[test]
 fn a_binding_set_names_each_binding_once() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 256, BufferUsage::UNIFORM);
     let entry = BindingEntry {
         binding: 0,
@@ -870,7 +871,7 @@ fn a_binding_set_names_each_binding_once() {
 
 #[test]
 fn buffers_and_textures_are_used_only_as_made() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 16, BufferUsage::COPY_SRC);
     r.write_buffer(&b, 0, &[1], WriteMode::Ordered);
     assert_eq!(
@@ -881,7 +882,7 @@ fn buffers_and_textures_are_used_only_as_made() {
         )]
     );
 
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 256, BufferUsage::COPY_DST);
     let t = texture(&mut r, Format::Rgba8Unorm, 2, TextureUsage::COPY_DST);
     let v = view(&mut r, &t, Format::Rgba8Unorm);
@@ -968,7 +969,7 @@ fn each_use_needs_its_usage_flag() {
         rows_per_layer: 0,
     };
 
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 64, all.difference(BufferUsage::COPY_SRC));
     let _ = r.read_back(&ReadSource::Buffer {
         buffer: &b,
@@ -983,7 +984,7 @@ fn each_use_needs_its_usage_flag() {
         buffer_flag(BufferUsage::COPY_SRC),
     );
 
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 64, all);
     let less = buffer(&mut r, 64, all.difference(BufferUsage::COPY_SRC));
     r.copy_buffer(&less, 0, &b, 0, 4);
@@ -994,7 +995,7 @@ fn each_use_needs_its_usage_flag() {
         &less,
         buffer_flag(BufferUsage::COPY_SRC),
     );
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 64, all);
     let less = buffer(&mut r, 64, all.difference(BufferUsage::COPY_DST));
     r.copy_buffer(&b, 0, &less, 0, 4);
@@ -1006,7 +1007,7 @@ fn each_use_needs_its_usage_flag() {
         buffer_flag(BufferUsage::COPY_DST),
     );
 
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     let less = buffer(&mut r, 1024, all.difference(BufferUsage::COPY_SRC));
     r.copy_buffer_to_texture(&side(&less), &region(&t), extent(2));
@@ -1017,7 +1018,7 @@ fn each_use_needs_its_usage_flag() {
         &less,
         buffer_flag(BufferUsage::COPY_SRC),
     );
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(
         &mut r,
         Format::Rgba8Unorm,
@@ -1034,7 +1035,7 @@ fn each_use_needs_its_usage_flag() {
         texture_flag(TextureUsage::COPY_DST),
     );
 
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     let less = buffer(&mut r, 1024, all.difference(BufferUsage::COPY_DST));
     r.copy_texture_to_buffer(&region(&t), &side(&less), extent(2));
@@ -1045,7 +1046,7 @@ fn each_use_needs_its_usage_flag() {
         &less,
         buffer_flag(BufferUsage::COPY_DST),
     );
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(
         &mut r,
         Format::Rgba8Unorm,
@@ -1062,7 +1063,7 @@ fn each_use_needs_its_usage_flag() {
         texture_flag(TextureUsage::COPY_SRC),
     );
 
-    let mut r = Recorder::new();
+    let mut r = full();
     let less = buffer(&mut r, 64, all.difference(BufferUsage::COPY_DST));
     r.clear_buffer(&less, 0, 4, &[0]);
     refused(
@@ -1073,7 +1074,7 @@ fn each_use_needs_its_usage_flag() {
         buffer_flag(BufferUsage::COPY_DST),
     );
 
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(
         &mut r,
         Format::Rgba8Unorm,
@@ -1089,7 +1090,7 @@ fn each_use_needs_its_usage_flag() {
         texture_flag(TextureUsage::COPY_DST),
     );
 
-    let mut r = Recorder::new();
+    let mut r = full();
     let less = texture(
         &mut r,
         Format::Rgba8Unorm,
@@ -1105,7 +1106,7 @@ fn each_use_needs_its_usage_flag() {
         &less,
         texture_flag(TextureUsage::COPY_SRC),
     );
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     let less = texture(
         &mut r,
@@ -1142,7 +1143,7 @@ fn each_use_needs_its_usage_flag() {
         })
         .unwrap()
     };
-    let mut r = Recorder::new();
+    let mut r = full();
     let src = many(&mut r, TextureUsage::SAMPLE);
     let dst = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     r.resolve(&region(&src), &region(&dst), Format::Rgba8Unorm);
@@ -1153,7 +1154,7 @@ fn each_use_needs_its_usage_flag() {
         &src,
         texture_flag(TextureUsage::RENDER),
     );
-    let mut r = Recorder::new();
+    let mut r = full();
     let src = many(&mut r, TextureUsage::RENDER);
     let dst = texture(
         &mut r,
@@ -1218,7 +1219,7 @@ fn each_use_needs_its_usage_flag() {
 /// overlap.
 #[test]
 fn texture_copies_within_one_texture_do_not_overlap() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let flat = shaped(&mut r, TextureDimension::D2, 4, 2, 2);
     let volume = shaped(&mut r, TextureDimension::D3, 4, 4, 1);
     let at = |texture, x, y, z, layer, mip| TextureRegion {
@@ -1252,7 +1253,7 @@ fn texture_copies_within_one_texture_do_not_overlap() {
     let overlap = "a copy between overlapping regions of one texture";
     r.copy_texture(&from, &at(&flat, 1, 1, 0, 0, 0), two);
     assert_eq!(r.violations, [overlap]);
-    let mut r = Recorder::new();
+    let mut r = full();
     let volume = shaped(&mut r, TextureDimension::D3, 4, 4, 1);
     r.copy_texture(
         &at(&volume, 0, 0, 0, 0, 0),
@@ -1264,7 +1265,7 @@ fn texture_copies_within_one_texture_do_not_overlap() {
 
 #[test]
 fn texture_copies_stay_in_one_typeless_group() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let a = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     let b = texture(&mut r, Format::R32Float, 2, ALL);
     let c = texture(&mut r, Format::Rgba8Uint, 2, ALL);
@@ -1282,7 +1283,7 @@ fn texture_copies_stay_in_one_typeless_group() {
 
 #[test]
 fn views_take_the_textures_format_or_its_twin() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     let desc = TextureViewDesc {
         format: Format::Rgba8UnormSrgb,
@@ -1359,7 +1360,7 @@ fn views_in_other_formats_of_the_same_size_need_format_reinterpret() {
         layer_count: 1,
         stencil: false,
     };
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = reinterpreting(&mut r);
     assert!(r.create_view(&t, &desc(Format::Rgba8Uint)).is_ok());
     assert!(r.create_view(&t, &desc(Format::R32Float)).is_ok());
@@ -1367,7 +1368,7 @@ fn views_in_other_formats_of_the_same_size_need_format_reinterpret() {
     assert_eq!(r.create_view(&t, &desc(Format::R8Unorm)), other);
     assert_eq!(r.create_view(&t, &desc(Format::Depth32Float)), other);
 
-    let mut r = Recorder::with_caps(|c| c.features.remove(Features::FORMAT_REINTERPRET));
+    let mut r = with_caps(|c| c.features.remove(Features::FORMAT_REINTERPRET));
     let t = reinterpreting(&mut r);
     assert_eq!(
         r.create_view(&t, &desc(Format::R32Float)),
@@ -1398,7 +1399,7 @@ fn a_view_in_another_format_reads_the_bytes_as_that_format() {
     d.r.end_pass();
     assert!(d.r.violations.is_empty());
     assert_eq!(
-        d.r.texture_bytes(d.target).unwrap(),
+        texture_bytes(&d.r, d.target).unwrap(),
         [255, 0, 0, 255].repeat(4)
     );
 }
@@ -1478,7 +1479,7 @@ fn a_draw_binds_a_texture_through_one_mip_range_without_texture_views() {
 
 #[test]
 fn writes_copies_and_clears_stay_inside_their_buffers() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 16, COPIES);
     r.write_buffer(&b, 12, &[0; 8], WriteMode::Ordered);
     r.copy_buffer(&b, 0, &b, 4, 8);
@@ -1499,7 +1500,7 @@ fn writes_copies_and_clears_stay_inside_their_buffers() {
 fn buffer_texture_copies_take_pitches_covering_the_region() {
     // A row of two texels is 8 bytes, and the region two rows: a pitch of 4 bytes, or of 1 row.
     for (row_pitch, rows_per_layer) in [(4, 2), (8, 1), (8, 2)] {
-        let mut r = Recorder::new();
+        let mut r = full();
         let b = buffer(&mut r, 256, COPIES);
         let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
         r.copy_texture_to_buffer(
@@ -1538,7 +1539,7 @@ fn buffer_texture_copies_take_offsets_and_pitches_of_whole_blocks() {
     ];
     for (format, stencil, at, row_pitch, want) in cases {
         for to_texture in [false, true] {
-            let mut r = Recorder::new();
+            let mut r = full();
             let b = buffer(&mut r, 64, COPIES);
             let t = texture(&mut r, format, 2, ALL);
             let side = CopyBufferTexture {
@@ -1566,7 +1567,7 @@ fn buffer_texture_copies_take_offsets_and_pitches_of_whole_blocks() {
 
 #[test]
 fn reads_back_stay_inside_their_buffers() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 16, COPIES);
     let read = |r: &mut Recorder, offset, size| {
         r.read_back(&ReadSource::Buffer {
@@ -1583,7 +1584,7 @@ fn reads_back_stay_inside_their_buffers() {
 
 #[test]
 fn a_read_finishes_into_bytes_of_its_size() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 8, COPIES);
     let rb = r
         .read_back(&ReadSource::Buffer {
@@ -1652,7 +1653,7 @@ fn a_discard_write_gives_the_buffer_fresh_contents() {
     d.r.write_buffer(&vertices, 8, &[3; 8], WriteMode::NoOverwrite);
     assert!(d.r.violations.is_empty(), "{:?}", d.r.violations);
     let at: usize = n(&vertices).parse().unwrap();
-    let got = d.r.contents().0[at].clone().unwrap();
+    let got = contents(&d.r).0[at].clone().unwrap();
     assert_eq!(got[..16], [2, 2, 2, 2, 1, 1, 1, 1, 3, 3, 3, 3, 3, 3, 3, 3]);
     assert_eq!(
         got[16..],
@@ -1670,7 +1671,7 @@ fn a_discard_write_gives_the_buffer_fresh_contents() {
 #[test]
 fn a_discard_texture_write_gives_the_texture_fresh_contents() {
     // A 2 by 2 texture of two levels: a copy reads level 0, then a discard writes one texel of it.
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = r
         .create_texture(&TextureDesc {
             mip_levels: 2,
@@ -1703,7 +1704,7 @@ fn a_discard_texture_write_gives_the_texture_fresh_contents() {
         WriteMode::NoOverwrite,
     );
     assert!(r.violations.is_empty(), "{:?}", r.violations);
-    let (objects, _) = r.contents();
+    let (objects, _) = contents(&r);
     let mut want = [0xcd; 20];
     want[..4].copy_from_slice(&[2; 4]);
     want[12..16].copy_from_slice(&[1; 4]);
@@ -1734,7 +1735,7 @@ fn a_no_overwrite_texture_write_keeps_off_texels_in_use() {
     }
     let one = extent(1);
     // An ordered write not waited for, then texels beside it and over it.
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     r.write_texture(&at(&t, 0, 0), one, &[1; 4], 4, 1, WriteMode::Ordered);
     r.write_texture(&at(&t, 1, 0), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
@@ -1809,7 +1810,7 @@ fn a_no_overwrite_texture_write_keeps_off_texels_in_use() {
     ];
     for (name, use_texels) in uses {
         for wait in [false, true] {
-            let mut r = Recorder::new();
+            let mut r = full();
             let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
             let other = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
             let b = buffer(&mut r, 64, COPIES);
@@ -1826,7 +1827,7 @@ fn a_no_overwrite_texture_write_keeps_off_texels_in_use() {
         }
     }
     // A resolve writes all of its destination.
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     let ms = r
         .create_texture(&TextureDesc {
@@ -1839,7 +1840,7 @@ fn a_no_overwrite_texture_write_keeps_off_texels_in_use() {
     r.write_texture(&at(&t, 1, 1), one, &[2; 4], 4, 1, WriteMode::NoOverwrite);
     assert_eq!(r.violations, [refusal(&t)]);
     // A pass attaching slice 1 of level 1 (2 by 2 by 2) of a 3D texture uses that slice alone.
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = shaped(&mut r, TextureDimension::D3, 4, 4, 2);
     let level = view_of(&mut r, &t, ViewDimension::D3, (1, 1), (0, 1));
     r.begin_pass(&pass_of([ColorAttachment {
@@ -1880,7 +1881,7 @@ fn a_no_overwrite_texture_write_keeps_off_texels_in_use() {
 
 #[test]
 fn work_recorded_before_a_destroy_still_sees_the_object() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let a = buffer(&mut r, 4, COPIES);
     let b = buffer(&mut r, 4, COPIES);
     r.write_buffer(&a, 0, &[1, 2, 3, 4], WriteMode::Discard);
@@ -1902,7 +1903,7 @@ fn work_recorded_before_a_destroy_still_sees_the_object() {
 
 #[test]
 fn storage_writes_come_from_fragment_programs_only() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 16, BufferUsage::STORAGE);
     let entry = [BindingEntry {
         binding: 160,
@@ -1924,7 +1925,7 @@ fn storage_writes_come_from_fragment_programs_only() {
 
 #[test]
 fn present_needs_the_current_texture() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let s = r.create_surface(1).unwrap();
     r.configure_surface(&s, Format::Rgba8Unorm, 2, 2, true)
         .unwrap();
@@ -1952,7 +1953,7 @@ fn multisampled(r: &mut Recorder, format: Format, size: u32) -> Result<Id, GpuEr
 
 #[test]
 fn a_multisampled_texture_is_2d_with_one_level_and_layer_and_no_storage() {
-    let mut r = Recorder::new();
+    let mut r = full();
     assert!(multisampled(&mut r, Format::Rgba8Unorm, 2).is_ok());
     let desc = TextureDesc {
         dimension: TextureDimension::D2,
@@ -2040,7 +2041,7 @@ fn a_multisampled_textures_bytes_move_by_draws_resolves_and_whole_copies() {
         }),
     ];
     for (violation, f) in broken {
-        let mut r = Recorder::new();
+        let mut r = full();
         let ms = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
         let other = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
         let single = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
@@ -2051,7 +2052,7 @@ fn a_multisampled_textures_bytes_move_by_draws_resolves_and_whole_copies() {
     // Whole on one side only: all of a 2 by 2 into part of a 4 by 4, and part of the 4 by 4 into
     // all of the 2 by 2.
     for small_to_large in [true, false] {
-        let mut r = Recorder::new();
+        let mut r = full();
         let small = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
         let large = multisampled(&mut r, Format::Rgba8Unorm, 4).unwrap();
         let (src, dst) = if small_to_large {
@@ -2063,7 +2064,7 @@ fn a_multisampled_textures_bytes_move_by_draws_resolves_and_whole_copies() {
         assert_eq!(r.violations, [not_whole], "{small_to_large}");
     }
     // A whole copy between equal sample counts is one of the ways.
-    let mut r = Recorder::new();
+    let mut r = full();
     let ms = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
     let other = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
     r.copy_texture(&region(&ms), &region(&other), extent(2));
@@ -2072,7 +2073,7 @@ fn a_multisampled_textures_bytes_move_by_draws_resolves_and_whole_copies() {
 
 #[test]
 fn attachments_share_one_sample_count() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let ms = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
     let ms = view(&mut r, &ms, Format::Rgba8Unorm);
     let single = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
@@ -2096,7 +2097,7 @@ fn attachments_share_one_sample_count() {
     assert_eq!(r.violations, ["attachments of different sample counts"]);
 
     // The depth attachment too.
-    let mut r = Recorder::new();
+    let mut r = full();
     let ms = multisampled(&mut r, Format::Depth32Float, 2).unwrap();
     let ms = view(&mut r, &ms, Format::Depth32Float);
     let single = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
@@ -2216,13 +2217,13 @@ fn resolves_go_from_many_samples_to_one_of_an_averaging_format() {
         ),
     ];
     for (violation, f) in cases {
-        let mut r = Recorder::new();
+        let mut r = full();
         f(&mut r);
         assert_eq!(r.violations, [violation]);
     }
     // `resolve` from one sample, or into many.
     for samples in [(1, 1), (4, 4)] {
-        let mut r = Recorder::new();
+        let mut r = full();
         let mut make = |n| {
             if n > 1 {
                 multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap()
@@ -2248,7 +2249,7 @@ fn resolves_go_from_many_samples_to_one_of_an_averaging_format() {
         ([0, 1, 1, 0], 4, false),
     ];
     for ([src_mip, src_layer, mip, layer], size, fits) in at {
-        let mut r = Recorder::new();
+        let mut r = full();
         let a = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
         let b = shaped(&mut r, TextureDimension::D2, size, 2, 2);
         let src = TextureRegion {
@@ -2294,7 +2295,7 @@ fn component(src: BlendFactor, dst: BlendFactor) -> BlendComponent {
 
 #[test]
 fn blocks_differ_per_target_only_with_independent_blend() {
-    let mut r = Recorder::with_caps(|c| c.features.remove(Features::INDEPENDENT_BLEND));
+    let mut r = with_caps(|c| c.features.remove(Features::INDEPENDENT_BLEND));
     let mut desc = blend_desc(None);
     assert!(r.create_blend(&desc).is_ok());
     desc.same_for_all = false;
@@ -2302,12 +2303,12 @@ fn blocks_differ_per_target_only_with_independent_blend() {
         r.create_blend(&desc),
         Err(GpuError::Absent(Features::INDEPENDENT_BLEND))
     );
-    assert!(Recorder::new().create_blend(&desc).is_ok());
+    assert!(full().create_blend(&desc).is_ok());
 }
 
 #[test]
 fn the_constant_alpha_factors_need_blend_constant_alpha() {
-    let mut r = Recorder::with_caps(|c| c.features.remove(Features::BLEND_CONSTANT_ALPHA));
+    let mut r = with_caps(|c| c.features.remove(Features::BLEND_CONSTANT_ALPHA));
     let add = component(BlendFactor::One, BlendFactor::Zero);
     let desc = blend_desc(Some((
         component(
@@ -2320,12 +2321,12 @@ fn the_constant_alpha_factors_need_blend_constant_alpha() {
         r.create_blend(&desc),
         Err(GpuError::Absent(Features::BLEND_CONSTANT_ALPHA))
     );
-    assert!(Recorder::new().create_blend(&desc).is_ok());
+    assert!(full().create_blend(&desc).is_ok());
 }
 
 #[test]
 fn stencil_masks_differ_per_face_only_with_stencil_per_face() {
-    let mut r = Recorder::new();
+    let mut r = full();
     assert!(!r.caps().features.contains(Features::STENCIL_PER_FACE));
     let mut desc = DepthStencilDesc {
         depth_compare: None,
@@ -2394,21 +2395,21 @@ fn raster_blocks_need_the_features_they_use() {
     for (feature, change) in cases {
         let mut desc = base;
         change(&mut desc);
-        let mut r = Recorder::with_caps(|c| c.features.remove(feature));
+        let mut r = with_caps(|c| c.features.remove(feature));
         assert_eq!(
             r.create_raster(&desc),
             Err(GpuError::Absent(feature)),
             "{feature:?}"
         );
-        if Recorder::new().caps().features.contains(feature) {
-            assert!(Recorder::new().create_raster(&desc).is_ok(), "{feature:?}");
+        if full().caps().features.contains(feature) {
+            assert!(full().create_raster(&desc).is_ok(), "{feature:?}");
         }
     }
 }
 
 #[test]
 fn buffer_bindings_are_aligned_inside_the_buffer_and_the_limits() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let limits = r.caps().limits;
     let uniform = buffer(&mut r, 1 << 17, BufferUsage::UNIFORM);
     let storage = buffer(&mut r, 1024, BufferUsage::STORAGE);
@@ -2501,12 +2502,12 @@ fn bindings_need_the_features_their_stages_and_textures_use() {
             },
         }])
     };
-    let mut r = Recorder::with_caps(|c| c.features.remove(Features::FRAGMENT_STORAGE_WRITE));
+    let mut r = with_caps(|c| c.features.remove(Features::FRAGMENT_STORAGE_WRITE));
     assert_eq!(
         storage(&mut r, StageSet::FRAGMENT, true),
         Err(GpuError::Absent(Features::FRAGMENT_STORAGE_WRITE))
     );
-    let mut r = Recorder::with_caps(|c| c.features.remove(Features::VERTEX_STORAGE_READ));
+    let mut r = with_caps(|c| c.features.remove(Features::VERTEX_STORAGE_READ));
     assert_eq!(
         storage(&mut r, StageSet::VERTEX, false),
         Err(GpuError::Absent(Features::VERTEX_STORAGE_READ))
@@ -2534,12 +2535,12 @@ fn bindings_need_the_features_their_stages_and_textures_use() {
             resource: BindingResource::Texture(&v),
         }])
     };
-    let mut r = Recorder::with_caps(|c| c.features.remove(Features::MULTISAMPLE_READ));
+    let mut r = with_caps(|c| c.features.remove(Features::MULTISAMPLE_READ));
     assert_eq!(
         multisampled(&mut r),
         Err(GpuError::Absent(Features::MULTISAMPLE_READ))
     );
-    assert!(multisampled(&mut Recorder::new()).is_ok());
+    assert!(multisampled(&mut full()).is_ok());
 }
 
 #[test]
@@ -2559,12 +2560,12 @@ fn textures_take_only_the_usages_their_format_does() {
     let refused = Err(GpuError::Invalid(
         "a texture usage its format does not take",
     ));
-    let mut r = Recorder::new();
+    let mut r = full();
     assert_eq!(
         r.create_texture(&desc(Format::Rgba8Unorm, TextureUsage::STORAGE)),
         refused
     );
-    let mut r = Recorder::with_caps(|c| {
+    let mut r = with_caps(|c| {
         let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::RENDER);
     });
@@ -2576,7 +2577,7 @@ fn textures_take_only_the_usages_their_format_does() {
         r.create_texture(&desc(Format::R32Float, TextureUsage::SAMPLE))
             .is_ok()
     );
-    let mut r = Recorder::with_caps(|c| {
+    let mut r = with_caps(|c| {
         let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::SAMPLE);
     });
@@ -2790,7 +2791,7 @@ fn programs_run_per_sample_only_with_sample_shading() {
 
 #[test]
 fn resolves_and_copies_out_need_the_formats_uses() {
-    let mut r = Recorder::with_caps(|c| {
+    let mut r = with_caps(|c| {
         c.formats.uses[Format::Rgba8Unorm as usize].remove(FormatUse::RESOLVE | FormatUse::COPY_OUT)
     });
     let many = r
@@ -2813,9 +2814,8 @@ fn resolves_and_copies_out_need_the_formats_uses() {
         r.violations,
         ["a resolve of a format that cannot be averaged"]
     );
-    let mut r = Recorder::with_caps(|c| {
-        c.formats.uses[Format::Rgba8Unorm as usize].remove(FormatUse::COPY_OUT)
-    });
+    let mut r =
+        with_caps(|c| c.formats.uses[Format::Rgba8Unorm as usize].remove(FormatUse::COPY_OUT));
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     let b = buffer(&mut r, 16, COPIES);
     r.copy_texture_to_buffer(
@@ -2833,9 +2833,8 @@ fn resolves_and_copies_out_need_the_formats_uses() {
         ["Rgba8Unorm copied out, which this back end does not declare"]
     );
     // A read back copies out too.
-    let mut r = Recorder::with_caps(|c| {
-        c.formats.uses[Format::Rgba8Unorm as usize].remove(FormatUse::COPY_OUT)
-    });
+    let mut r =
+        with_caps(|c| c.formats.uses[Format::Rgba8Unorm as usize].remove(FormatUse::COPY_OUT));
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     let _ = r.read_back(&ReadSource::Texture {
         region: region(&t),
@@ -2851,7 +2850,7 @@ fn resolves_and_copies_out_need_the_formats_uses() {
 /// stencil byte, or depth in four bytes; copies between textures move both, naming neither.
 #[test]
 fn copies_of_depth_and_stencil_move_the_aspect_named() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Depth24PlusStencil8, 2, ALL);
     let b = buffer(&mut r, 64, COPIES);
     let to_buffer = |stencil, row_pitch| {
@@ -2942,7 +2941,7 @@ fn copies_of_depth_and_stencil_move_the_aspect_named() {
         r.violations,
         ["a copy between textures naming one aspect of depth and stencil"]
     );
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     r.write_texture(
         &TextureRegion {
@@ -2965,7 +2964,7 @@ fn copies_of_depth_and_stencil_move_the_aspect_named() {
 /// layers) and views of all layers in the texture's own dimension; it binds only the latter.
 #[test]
 fn views_of_other_shapes_need_texture_views() {
-    let mut r = Recorder::with_caps(|c| c.features.remove(Features::TEXTURE_VIEWS));
+    let mut r = with_caps(|c| c.features.remove(Features::TEXTURE_VIEWS));
     let t = r
         .create_texture(&TextureDesc {
             dimension: TextureDimension::D2,
@@ -3093,13 +3092,13 @@ fn view_of(
 #[test]
 fn an_attachment_view_is_one_level_and_one_layer() {
     let one = "an attachment view must be one level and one layer";
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = shaped(&mut r, TextureDimension::D2, 4, 1, 2);
     let levels = view_of(&mut r, &t, ViewDimension::D2, (0, 2), (0, 1));
     r.begin_pass(&pass_of([color(&levels)]));
     assert_eq!(r.violations, [one]);
 
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = shaped(&mut r, TextureDimension::D2, 4, 2, 1);
     let layers = view_of(&mut r, &t, ViewDimension::D2Array, (0, 1), (0, 2));
     r.begin_pass(&pass_of([color(&layers)]));
@@ -3109,7 +3108,7 @@ fn an_attachment_view_is_one_level_and_one_layer() {
 /// A 3D texture's depth halves with each level: level 1 of a 4-deep texture has slices 0 and 1.
 #[test]
 fn a_3d_attachment_slice_lies_inside_its_levels_depth() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = shaped(&mut r, TextureDimension::D3, 4, 4, 2);
     let level = view_of(&mut r, &t, ViewDimension::D3, (1, 1), (0, 1));
     let slice = |depth_slice| ColorAttachment {
@@ -3131,7 +3130,7 @@ fn a_subresource_is_attached_once() {
     d.refused("one subresource attached twice");
 
     // Two resolves into one view.
-    let mut r = Recorder::new();
+    let mut r = full();
     let a = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
     let a = view(&mut r, &a, Format::Rgba8Unorm);
     let b = multisampled(&mut r, Format::Rgba8Unorm, 2).unwrap();
@@ -3161,11 +3160,11 @@ fn a_pass_has_attachments_or_empty_but_not_both() {
     });
     d.refused("a pass with attachments and `empty`");
 
-    let mut r = Recorder::new();
+    let mut r = full();
     r.begin_pass(&pass_of([]));
     assert_eq!(r.violations, ["a pass with no attachment and no `empty`"]);
     // `empty` alone is a pass.
-    let mut r = Recorder::new();
+    let mut r = full();
     r.begin_pass(&PassDesc {
         empty: Some(empty),
         ..pass_of([])
@@ -3341,7 +3340,7 @@ fn present_happens_outside_a_pass() {
 
 #[test]
 fn a_surface_takes_a_format_it_can_present() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let s = r.create_surface(1).unwrap();
     assert_eq!(
         r.configure_surface(&s, Format::R32Float, 2, 2, true),
@@ -3372,7 +3371,7 @@ fn regions_lie_inside_their_texture() {
         );
     };
     let at = |x, y, z| Origin { x, y, z };
-    let mut r = Recorder::new();
+    let mut r = full();
     let flat = shaped(&mut r, TextureDimension::D2, 4, 2, 2);
     let deep = shaped(&mut r, TextureDimension::D3, 4, 4, 2);
     // Inside: level 1 is 2 by 2 (by 2 slices for the 3D one).
@@ -3415,7 +3414,7 @@ fn regions_lie_inside_their_texture() {
             WriteMode::Ordered,
         );
     };
-    let mut r = Recorder::new();
+    let mut r = full();
     let flat = shaped(&mut r, TextureDimension::D2, 4, 2, 2);
     let deep = shaped(&mut r, TextureDimension::D3, 4, 4, 2);
     one(&mut r, &flat, 0, at(u32::MAX - 1, 0, 0), 2, 1);
@@ -3460,7 +3459,7 @@ fn a_texture_is_multisampled_exactly_where_the_program_reads_one() {
 
 #[test]
 fn buffers_and_textures_stay_within_the_size_limits() {
-    let mut r = Recorder::with_caps(|c| {
+    let mut r = with_caps(|c| {
         c.limits.max_buffer_size = 64;
         c.limits.max_texture_2d = 8;
         c.limits.max_texture_cube = 4;
@@ -3515,7 +3514,7 @@ fn buffers_and_textures_stay_within_the_size_limits() {
 
 #[test]
 fn vertex_layouts_stay_within_the_limits() {
-    let mut r = Recorder::with_caps(|c| {
+    let mut r = with_caps(|c| {
         c.limits.vertex_streams = 2;
         c.limits.vertex_attributes = 2;
         c.limits.max_vertex_stride = 16;
@@ -3567,7 +3566,7 @@ fn vertex_layouts_stay_within_the_limits() {
 
 #[test]
 fn samplers_stay_within_the_anisotropy_limit() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let sampler = |anisotropy| SamplerDesc {
         min: Filter::Linear,
         mag: Filter::Linear,
@@ -3685,7 +3684,7 @@ fn a_draws_bindings_stay_within_the_limits_per_stage() {
 #[test]
 fn texture_writes_take_pitches_covering_the_region() {
     let short = "write or copy pitch smaller than the region";
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     let ds = texture(&mut r, Format::Depth24PlusStencil8, 2, ALL);
     let b = buffer(&mut r, 64, COPIES);
@@ -3719,7 +3718,7 @@ fn texture_writes_take_pitches_covering_the_region() {
 
 #[test]
 fn colour_attachments_have_colour_formats() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Depth32Float, 2, ALL);
     let v = view(&mut r, &t, Format::Depth32Float);
     r.begin_pass(&pass_of([color(&v)]));
@@ -3728,8 +3727,7 @@ fn colour_attachments_have_colour_formats() {
 
 #[test]
 fn textures_are_of_held_formats_and_not_empty() {
-    let mut r =
-        Recorder::with_caps(|c| c.formats.uses[Format::R8Unorm as usize] = FormatUse::empty());
+    let mut r = with_caps(|c| c.formats.uses[Format::R8Unorm as usize] = FormatUse::empty());
     let desc = TextureDesc {
         dimension: TextureDimension::D2,
         format: Format::Rgba8Unorm,
@@ -3791,7 +3789,7 @@ fn textures_are_of_held_formats_and_not_empty() {
 
 #[test]
 fn cube_textures_are_square_and_levels_end_at_the_full_chain() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let cube = TextureDesc {
         cube: true,
         depth_or_layers: 6,
@@ -3850,7 +3848,7 @@ fn cube_textures_are_square_and_levels_end_at_the_full_chain() {
 
 #[test]
 fn view_dimensions_fit_their_texture_and_layers() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let array = shaped(&mut r, TextureDimension::D2, 4, 12, 1);
     let cube = r
         .create_texture(&TextureDesc {
@@ -3906,7 +3904,7 @@ fn view_dimensions_fit_their_texture_and_layers() {
 
 #[test]
 fn views_cover_at_least_one_level_and_layer_inside_the_texture() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = shaped(&mut r, TextureDimension::D2, 4, 2, 2);
     let desc = TextureViewDesc {
         format: Format::Rgba8Unorm,
@@ -3942,7 +3940,7 @@ fn views_cover_at_least_one_level_and_layer_inside_the_texture() {
 
 #[test]
 fn depth_bounds_and_border_and_mirror_once_samplers_are_absent() {
-    let mut r = Recorder::new();
+    let mut r = full();
     assert_eq!(
         r.create_depth_stencil(&DepthStencilDesc {
             depth_compare: None,
@@ -3996,7 +3994,7 @@ fn depth_bounds_and_border_and_mirror_once_samplers_are_absent() {
 
 #[test]
 fn storage_bindings_need_storage_usage() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 256, BufferUsage::UNIFORM);
     assert_eq!(
         r.create_binding_set(&[BindingEntry {
@@ -4019,7 +4017,7 @@ fn storage_bindings_need_storage_usage() {
 
 #[test]
 fn texture_writes_carry_the_whole_region() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
     r.write_texture(&region(&t), extent(2), &[0; 15], 8, 2, WriteMode::Ordered);
     assert_eq!(r.violations, ["data shorter than the region"]);
@@ -4027,22 +4025,22 @@ fn texture_writes_carry_the_whole_region() {
 
 #[test]
 fn passes_and_queries_end_only_where_they_began() {
-    let mut r = Recorder::new();
+    let mut r = full();
     r.end_pass();
     assert_eq!(r.violations, ["end_pass without a pass"]);
-    let mut r = Recorder::new();
+    let mut r = full();
     r.end_query();
     assert_eq!(r.violations, ["end_query outside a pass"]);
 }
 
 #[test]
 fn query_sets_of_absent_kinds_are_refused() {
-    let mut r = Recorder::new();
+    let mut r = full();
     assert_eq!(
         r.create_query_set(QueryKind::Occlusion, 1),
         Err(GpuError::Absent(Features::OCCLUSION_COUNT))
     );
-    let mut r = Recorder::with_caps(|c| c.features.remove(Features::TIMESTAMPS));
+    let mut r = with_caps(|c| c.features.remove(Features::TIMESTAMPS));
     assert_eq!(
         r.create_query_set(QueryKind::Timestamp, 1),
         Err(GpuError::Absent(Features::TIMESTAMPS))
@@ -4106,7 +4104,7 @@ fn buffer_copies_and_clears_stay_inside_their_buffers() {
         }),
     ];
     for (violation, f) in cases {
-        let mut r = Recorder::new();
+        let mut r = full();
         let a = buffer(&mut r, 16, COPIES);
         let b = buffer(&mut r, 16, COPIES);
         let t = texture(&mut r, Format::Rgba8Unorm, 2, ALL);
@@ -4117,7 +4115,7 @@ fn buffer_copies_and_clears_stay_inside_their_buffers() {
 
 #[test]
 fn a_surface_gives_a_texture_once_configured() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let s = r.create_surface(1).unwrap();
     assert_eq!(
         r.current_texture(&s),
@@ -4368,7 +4366,7 @@ fn an_indexed_draw_fetching_past_a_stream_is_dropped_whole() {
             .flat_map(|i| i.to_le_bytes())
             .collect();
         d.r.write_buffer(&d.spare, 0, &indices, WriteMode::Ordered);
-        let before = d.r.texture_bytes(d.target);
+        let before = texture_bytes(&d.r, d.target);
         let p = d.program("plain");
         d.begin();
         d.draw_with(&p, None, Topology::TriangleList, false, |c, spare| {
@@ -4389,7 +4387,7 @@ fn an_indexed_draw_fetching_past_a_stream_is_dropped_whole() {
         assert!(d.r.violations.is_empty(), "{:?}", d.r.violations);
         assert_eq!(d.r.dropped_draws, dropped, "index {last}");
         assert_eq!(
-            d.r.texture_bytes(d.target) == before,
+            texture_bytes(&d.r, d.target) == before,
             dropped == 1,
             "index {last}"
         );
@@ -4760,7 +4758,7 @@ fn samplers_compare_exactly_where_the_program_compares() {
             Some(v) => d.refused(v),
             None => {
                 assert!(d.r.violations.is_empty(), "{:?}", d.r.violations);
-                let got = d.r.texture_bytes(d.target).unwrap();
+                let got = texture_bytes(&d.r, d.target).unwrap();
                 assert!(got.iter().all(|&b| b == want), "{compare:?}: {got:?}");
             }
         }
@@ -4921,7 +4919,7 @@ fn a_draw_has_one_viewport_and_at_most_one_scissor() {
 fn an_empty_pass_has_a_size_and_a_sample_count_r8unorm_takes() {
     let size = "an empty pass of no size or wider or taller than max_texture_2d";
     let samples = "an empty pass of a sample count r8unorm does not take";
-    let most = Recorder::new().caps().limits.max_texture_2d;
+    let most = full().caps().limits.max_texture_2d;
     let cases = [
         (0, 2, 1, Some(size)),
         (2, 0, 1, Some(size)),
@@ -4935,7 +4933,7 @@ fn an_empty_pass_has_a_size_and_a_sample_count_r8unorm_takes() {
         (most, most, 1, None),
     ];
     for (width, height, count, violation) in cases {
-        let mut r = Recorder::new();
+        let mut r = full();
         r.begin_pass(&PassDesc {
             empty: Some(EmptyPass {
                 width,
@@ -5020,7 +5018,7 @@ fn ranges_ending_past_the_largest_offset_are_refused() {
         }),
     ];
     for (violation, call) in cases {
-        let mut r = Recorder::new();
+        let mut r = full();
         let uses = COPIES | BufferUsage::STORAGE;
         let a = buffer(&mut r, 16, uses);
         let b = buffer(&mut r, 16, uses);
@@ -5116,7 +5114,7 @@ fn sample_low() -> vec4<f32> {
     )
     .validate(&module)
     .unwrap();
-    let mut r = Recorder::new();
+    let mut r = full();
     let outside = Err(GpuError::Invalid(
         "a texture paired with a sampler outside the sampled-texture bindings",
     ));

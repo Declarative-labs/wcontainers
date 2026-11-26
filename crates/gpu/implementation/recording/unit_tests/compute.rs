@@ -2,6 +2,7 @@
 //! timestamps run and give exact results, and each of their rules (plan 4.3, 4.7) broken once is
 //! refused, as a violation that loses the device and `GpuError::Invalid`, or as `GpuError::Absent`.
 
+use crate::recorder::{full, with_caps};
 use crate::{Id, Recorder};
 use wcontainers_gpu::{caps::*, draw::*, error::*, format::*, resource::*, shader::*, state::*, *};
 
@@ -152,7 +153,7 @@ fn words(bytes: &[u8]) -> Vec<u32> {
 
 #[test]
 fn dispatches_run_every_invocation_with_its_ids() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let out = buffer(&mut r, 32, BufferUsage::STORAGE);
     let p = compute(&mut r, "ids").unwrap();
     let set = storage(&mut r, &out, StageSet::COMPUTE);
@@ -176,7 +177,7 @@ fn dispatches_run_every_invocation_with_its_ids() {
 #[test]
 fn dispatches_keep_to_their_rules() {
     let refused = |what: &str, run: &dyn Fn(&mut Recorder, &Id, &Id, &Id)| {
-        let mut r = Recorder::new();
+        let mut r = full();
         let out = buffer(&mut r, 32, BufferUsage::STORAGE | BufferUsage::VERTEX);
         let p = compute(&mut r, "ids").unwrap();
         let set = storage(&mut r, &out, StageSet::COMPUTE);
@@ -270,7 +271,7 @@ fn dispatches_keep_to_their_rules() {
         );
     });
     // Arguments from a buffer need INDIRECT, which the recording back end does not declare.
-    let mut r = Recorder::new();
+    let mut r = full();
     let out = buffer(&mut r, 32, BufferUsage::STORAGE | BufferUsage::INDIRECT);
     let p = compute(&mut r, "ids").unwrap();
     let set = storage(&mut r, &out, StageSet::COMPUTE);
@@ -291,7 +292,7 @@ fn dispatches_keep_to_their_rules() {
 
 #[test]
 fn compute_programs_keep_to_the_compute_limits() {
-    let mut r = Recorder::new();
+    let mut r = full();
     // Past the invocations in all, and past one axis alone.
     for entry in ["wide", "many", "deep"] {
         assert_eq!(
@@ -326,7 +327,7 @@ struct Strip {
 
 impl Strip {
     fn new() -> Strip {
-        Strip::on(Recorder::new())
+        Strip::on(full())
     }
 
     fn on(mut r: Recorder) -> Strip {
@@ -911,7 +912,7 @@ fn captures_keep_to_their_rules() {
 
 #[test]
 fn timestamps_count_the_calls_run_and_keep_to_their_rules() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let set = r.create_query_set(QueryKind::Timestamp, 2).unwrap();
     r.write_timestamp(&set, 0).unwrap();
     let scratch = buffer(&mut r, 4, BufferUsage::COPY_DST);
@@ -930,7 +931,7 @@ fn timestamps_count_the_calls_run_and_keep_to_their_rules() {
     assert!(r.violations.is_empty(), "{:?}", r.violations);
 
     let refused = |what: &str, run: &dyn Fn(&mut Recorder, &Id) -> Result<(), GpuError>| {
-        let mut r = Recorder::new();
+        let mut r = full();
         let set = r.create_query_set(QueryKind::Timestamp, 2).unwrap();
         assert_eq!(
             run(&mut r, &set),
@@ -963,7 +964,7 @@ fn timestamps_count_the_calls_run_and_keep_to_their_rules() {
         },
     );
     // A timestamp set is not a pass's occlusion set.
-    let mut r = Recorder::new();
+    let mut r = full();
     let set = r.create_query_set(QueryKind::Timestamp, 2).unwrap();
     r.begin_pass(&PassDesc {
         colors: Default::default(),
@@ -983,7 +984,7 @@ fn timestamps_count_the_calls_run_and_keep_to_their_rules() {
 
 #[test]
 fn resource_tables_are_absent() {
-    let mut r = Recorder::new();
+    let mut r = full();
     assert_eq!(
         r.create_resource_table(16).err(),
         Some(GpuError::Absent(Features::RESOURCE_TABLES))
@@ -993,7 +994,7 @@ fn resource_tables_are_absent() {
 
 #[test]
 fn each_operation_is_absent_without_its_feature() {
-    let mut r = Recorder::with_caps(|c| c.features.remove(Features::COMPUTE));
+    let mut r = with_caps(|c| c.features.remove(Features::COMPUTE));
     let s = shader(&mut r, "ids", ShaderStage::Compute);
     assert_eq!(
         r.create_program(&Program::Compute(&s)),
@@ -1005,7 +1006,7 @@ fn each_operation_is_absent_without_its_feature() {
         dispatch(&mut r, &s, &set, [1; 3]),
         Err(GpuError::Absent(Features::COMPUTE))
     );
-    let mut s = Strip::on(Recorder::with_caps(|c| {
+    let mut s = Strip::on(with_caps(|c| {
         c.features.remove(Features::TRANSFORM_FEEDBACK)
     }));
     let t = buffer(&mut s.r, 144, BufferUsage::CAPTURE);
@@ -1013,7 +1014,7 @@ fn each_operation_is_absent_without_its_feature() {
         s.capture(&[whole(&t, 144)], Topology::TriangleStrip, false),
         Err(GpuError::Absent(Features::TRANSFORM_FEEDBACK))
     );
-    let mut t = Recorder::with_caps(|c| c.features.remove(Features::TIMESTAMPS));
+    let mut t = with_caps(|c| c.features.remove(Features::TIMESTAMPS));
     let occlusion = t.create_query_set(QueryKind::OcclusionAny, 1).unwrap();
     assert_eq!(
         t.write_timestamp(&occlusion, 0),

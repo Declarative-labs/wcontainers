@@ -1,6 +1,7 @@
 //! Every fast path's default, run on the recording back end, which overrides none: the recorded
 //! stream shows each is made of base calls only, and its answer is right.
 
+use crate::recorder::{full, with_caps};
 use crate::{Call, Id, Recorder};
 use wcontainers_gpu::{
     caps::*, draw::*, error::*, format::*, resource::*, shader::*, slow::*, state::*, *,
@@ -210,7 +211,7 @@ fn pass_on(view: &Id, load: LoadOp<[u32; 4]>) -> PassDesc<'_, Recorder> {
 
 #[test]
 fn read_back_now_reads_back_later_and_waits() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let b = buffer(&mut r, 8, BufferUsage::COPY_SRC | BufferUsage::COPY_DST);
     r.write_buffer(&b, 0, &[1, 2, 3, 4, 5, 6, 7, 8], WriteMode::Discard);
     let from = r.calls.len();
@@ -232,7 +233,7 @@ fn read_back_now_reads_back_later_and_waits() {
 
 #[test]
 fn prepare_does_nothing() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let k = blocks(&mut r);
     let from = r.calls.len();
     r.prepare(&PrepareDesc {
@@ -263,7 +264,7 @@ fn prepare_does_nothing() {
 
 #[test]
 fn clear_texture_is_a_pass_per_level_and_layer() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let (t, desc) = texture(&mut r, 4, 2, 2);
     let from = r.calls.len();
     r.clear_texture(
@@ -296,7 +297,7 @@ fn clear_texture_is_a_pass_per_level_and_layer() {
 
 #[test]
 fn clear_rects_draws_one_triangle_per_rectangle_in_one_pass() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let (t, _) = texture(&mut r, 4, 1, 1);
     let v = view(&mut r, &t);
     let from = r.calls.len();
@@ -340,7 +341,7 @@ fn clear_rects_draws_one_triangle_per_rectangle_in_one_pass() {
 /// `PROVOKING_VERTEX_FIRST`, a draw-made clear asks for the last and clears.
 #[test]
 fn built_ins_take_the_provoking_vertex_the_back_end_has() {
-    let mut r = Recorder::with_caps(|c| c.features.remove(Features::PROVOKING_VERTEX_FIRST));
+    let mut r = with_caps(|c| c.features.remove(Features::PROVOKING_VERTEX_FIRST));
     let (t, _) = texture(&mut r, 2, 1, 1);
     let v = view(&mut r, &t);
     let whole = ScissorRect {
@@ -359,7 +360,7 @@ fn built_ins_take_the_provoking_vertex_the_back_end_has() {
 /// within the bounds the recorder checks (`max_texture_2d` wide at most).
 #[test]
 fn clear_rects_reaching_past_the_largest_offset_clear_to_the_views_edges() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let (t, _) = texture(&mut r, 4, 1, 1);
     let v = view(&mut r, &t);
     let rect = [ScissorRect {
@@ -442,7 +443,7 @@ fn read_aspect(r: &mut Recorder, t: &Id, stencil: bool) -> Vec<u8> {
 /// the value as the reference; the other aspect is left as it was.
 #[test]
 fn clear_rects_writes_depth_and_stencil_by_draws() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let (t, v) = depth_texture(&mut r, Format::Depth32Float);
     let from = r.calls.len();
     let rect = [ScissorRect {
@@ -512,7 +513,7 @@ fn clear_rects_writes_depth_and_stencil_by_draws() {
 
 #[test]
 fn generate_mips_is_a_pass_per_level_and_layer() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let (t, desc) = texture(&mut r, 4, 2, 3);
     let white = [255u8; 4].repeat(16);
     for layer in 0..2 {
@@ -595,7 +596,7 @@ fn mipped(r: &mut Recorder, format: Format, values: Format, texels: &[u8], size:
 #[test]
 fn generate_mips_averages_the_four_texels_below_on_every_route() {
     // Texel k of 16: red 16 k in an rgba8unorm texture, through the linear sampler.
-    let mut r = Recorder::new();
+    let mut r = full();
     let texels: Vec<u8> = (0..16u8).flat_map(|k| [16 * k, 0, 0, 255]).collect();
     let got = mipped(&mut r, Format::Rgba8Unorm, Format::Rgba8Unorm, &texels, 4);
     let reds: Vec<u8> = got.chunks(4).map(|c| c[0]).collect();
@@ -604,9 +605,7 @@ fn generate_mips_averages_the_four_texels_below_on_every_route() {
     healthy(&mut r);
 
     // r32float holding k, on a back end that does not filter it.
-    let mut r = Recorder::with_caps(|c| {
-        c.formats.uses[Format::R32Float as usize].remove(FormatUse::FILTER)
-    });
+    let mut r = with_caps(|c| c.formats.uses[Format::R32Float as usize].remove(FormatUse::FILTER));
     let texels: Vec<u8> = (0..16).flat_map(|k| (k as f32).to_le_bytes()).collect();
     let got = mipped(&mut r, Format::R32Float, Format::R32Float, &texels, 4);
     let values: Vec<f32> = got
@@ -618,7 +617,7 @@ fn generate_mips_averages_the_four_texels_below_on_every_route() {
     healthy(&mut r);
 
     // rgba16uint holding rgba16unorm values 4000 k in every channel.
-    let mut r = Recorder::new();
+    let mut r = full();
     let texels: Vec<u8> = (0..16u16)
         .flat_map(|k| (4000 * k).to_le_bytes().repeat(4))
         .collect();
@@ -638,7 +637,7 @@ fn generate_mips_averages_the_four_texels_below_on_every_route() {
 
 #[test]
 fn fans_become_lists_in_the_ring() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let k = blocks(&mut r);
     let (t, _) = texture(&mut r, 4, 1, 1);
     let v = view(&mut r, &t);
@@ -724,7 +723,7 @@ fn fans_become_lists_in_the_ring() {
 /// end draws no lines, so the stream is shown and the draw itself refused.
 #[test]
 fn loops_become_line_lists_in_the_ring() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let k = blocks(&mut r);
     let (t, _) = texture(&mut r, 4, 1, 1);
     let v = view(&mut r, &t);
@@ -799,7 +798,7 @@ fn loops_become_line_lists_in_the_ring() {
 
 #[test]
 fn the_ring_writes_without_waiting() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let mut offsets = [0u64; 2];
     let from = r.calls.len();
     let ring = r
@@ -830,7 +829,7 @@ fn the_ring_writes_without_waiting() {
 /// read.
 #[test]
 fn the_ring_wraps_with_a_discard() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let k = blocks(&mut r);
     let (t, _) = texture(&mut r, 2, 1, 1);
     let v = view(&mut r, &t);
@@ -936,7 +935,7 @@ fn the_ring_wraps_with_a_discard() {
 
 #[test]
 fn resolve_queries_reads_them_back_and_writes_them_in_order() {
-    let mut r = Recorder::new();
+    let mut r = full();
     let k = blocks(&mut r);
     let (t, _) = texture(&mut r, 2, 1, 1);
     let v = view(&mut r, &t);

@@ -1,6 +1,8 @@
 //! The recording back end's call stream: every base call it received, with its arguments and its
 //! answer, as plain data that [`replay`] runs again on a new recording back end.
 
+#[cfg(test)]
+use crate::recorder::full;
 use crate::recorder::{Id, Recorder};
 use std::rc::Rc;
 use wcontainers_gpu::{draw::*, error::*, format::*, resource::*, shader::*, state::*, *};
@@ -501,7 +503,7 @@ impl Draw {
 /// Runs `calls` on a new recording back end, each as it was made, and gives the back end, whose
 /// own stream then equals `calls` where the recording is deterministic.
 pub fn replay(calls: &[Call]) -> Recorder {
-    let mut r = Recorder::new();
+    let mut r = full();
     for call in calls {
         run(&mut r, call);
     }

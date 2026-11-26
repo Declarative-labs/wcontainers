@@ -1,6 +1,7 @@
 //! The interface's shared helpers (the pass tracker, the occlusion counter and the combination
 //! tracker) driving the recording back end through scripted draws.
 
+use crate::recorder::{full, texture_bytes, with_caps};
 use crate::{Call, Id, Recorder};
 use wcontainers_gpu::{
     caps::*, draw::*, error::*, format::*, occlusion::*, passes::*, resource::*, shader::*,
@@ -89,7 +90,7 @@ fn raster_desc(scissor: bool) -> RasterDesc {
 
 impl Kit {
     fn new() -> Kit {
-        Kit::on(Recorder::new())
+        Kit::on(full())
     }
 
     fn on(mut r: Recorder) -> Kit {
@@ -524,9 +525,7 @@ fn multisampled_targets_fitted(direct: bool) {
     let mut k = if direct {
         Kit::new()
     } else {
-        Kit::on(Recorder::with_caps(|c| {
-            c.features.remove(Features::MULTISAMPLE_READ)
-        }))
+        Kit::on(with_caps(|c| c.features.remove(Features::MULTISAMPLE_READ)))
     };
     let mut passes = PassTracker::default();
     let small = k.target_of(2, 2, Format::Rgba8Unorm, 4);
@@ -567,7 +566,7 @@ fn multisampled_targets_fitted(direct: bool) {
 
     // Every sample of the larger target, as the recording back end holds them: sample i's red in
     // channel i (a back end without MULTISAMPLE_READ cannot load them in a program).
-    let held = k.r.texture_bytes(large.texture).unwrap();
+    let held = texture_bytes(&k.r, large.texture).unwrap();
     let got: Vec<u8> = (0..9)
         .flat_map(|t| (0..4).map(move |s| (s, t)))
         .map(|(s, t)| held[s * 36 + t * 4])
@@ -606,9 +605,7 @@ fn multisampled_targets_of_different_sizes_are_fitted_through_the_resolved_value
 /// the fitting absent.
 #[test]
 fn integer_multisampled_targets_need_multisample_reads_to_be_fitted() {
-    let mut k = Kit::on(Recorder::with_caps(|c| {
-        c.features.remove(Features::MULTISAMPLE_READ)
-    }));
+    let mut k = Kit::on(with_caps(|c| c.features.remove(Features::MULTISAMPLE_READ)));
     let mut passes = PassTracker::default();
     let small = k.target_of(2, 2, Format::Rgba8Uint, 4);
     let large = k.target_of(3, 3, Format::Rgba8Uint, 4);
@@ -1082,7 +1079,7 @@ fn the_occlusion_counter_writes_its_count_into_a_buffer_in_order() {
 /// in halves: of the draws, of one draw's instances, or of one list's primitives.
 #[test]
 fn the_occlusion_counter_counts_past_its_formats_bound_in_halves() {
-    let mut k = Kit::on(Recorder::with_caps(|c| {
+    let mut k = Kit::on(with_caps(|c| {
         let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::BLEND);
     }));
@@ -1183,7 +1180,7 @@ fn the_occlusion_counter_counts_past_its_formats_bound_in_halves() {
 #[test]
 fn the_occlusion_counter_splits_instances_only_where_each_reads_the_same() {
     for bases in [true, false] {
-        let mut k = Kit::on(Recorder::with_caps(|c| {
+        let mut k = Kit::on(with_caps(|c| {
             c.formats.uses[Format::R32Float as usize].remove(FormatUse::BLEND);
             if !bases {
                 c.features.remove(Features::BASE_VERTEX_INSTANCE);
@@ -1592,7 +1589,7 @@ fn the_occlusion_counter_counts_across_writes_and_target_changes() {
 /// 3,000 triangles over the target is split into strips of whole pairs.
 #[test]
 fn the_occlusion_counter_counts_halves_from_the_depth_they_began_with() {
-    let mut k = Kit::on(Recorder::with_caps(|c| {
+    let mut k = Kit::on(with_caps(|c| {
         let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::BLEND);
     }));
@@ -1671,7 +1668,7 @@ fn the_occlusion_counter_counts_halves_from_the_depth_they_began_with() {
 /// (all 16 samples pass, 9,600), then a quad at 0.3 writing it with `Less` (16).
 #[test]
 fn the_occlusion_counter_keeps_the_starting_depth_for_halves_on_four_samples() {
-    let mut k = Kit::on(Recorder::with_caps(|c| {
+    let mut k = Kit::on(with_caps(|c| {
         let at = Format::R32Float as usize;
         c.formats.uses[at].remove(FormatUse::BLEND);
     }));
