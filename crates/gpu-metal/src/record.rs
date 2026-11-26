@@ -631,6 +631,15 @@ impl<M: Metal> MetalGpu<M> {
 
     /// Records one draw into the open pass.
     pub(crate) fn record_draw(&mut self, call: &DrawCall<'_, Self>) -> Result<(), &'static str> {
+        self.record_draw_with(call, Vec::new())
+    }
+
+    /// Records one draw into the open pass, `extra` commands encoded just before it.
+    pub(crate) fn record_draw_with(
+        &mut self,
+        call: &DrawCall<'_, Self>,
+        extra: Vec<RenderCommand<M>>,
+    ) -> Result<(), &'static str> {
         let Some(pass) = &self.pass else {
             return Err("a draw outside a pass");
         };
@@ -879,6 +888,7 @@ impl<M: Metal> MetalGpu<M> {
                 index: IMMEDIATES_SLOT,
             });
         }
+        commands.extend(extra);
         commands.push(match call.range {
             DrawRange::Vertices {
                 first,

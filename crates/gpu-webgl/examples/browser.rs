@@ -186,6 +186,7 @@ suite!(
     fractional_viewports_cover_the_centres_within_them,
     prepared_combinations_draw_as_those_built_at_the_draw,
     instances_step_through_their_streams_at_each_streams_rate,
+    captures_while_drawing_write_indexed_instances_in_draw_order,
     present_shows_the_frame;
     vertex_and_instance_numbers_include_the_bases,
     discard_then_no_overwrite_writes,

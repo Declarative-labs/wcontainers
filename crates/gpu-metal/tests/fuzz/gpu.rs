@@ -1333,7 +1333,14 @@ impl World {
                 self.counts.call(drawn.is_err());
             }
             1 => {
-                let targets: Vec<BufferRange<&<B as Gpu>::Buffer>> = streams
+                // Targets of their own now and then, which a capture may write; else the streams, which it must not.
+                let own: Vec<_> = if random.chance(60) {
+                    (0..=random.index(3)).map(|_| self.range(random)).collect()
+                } else {
+                    Vec::new()
+                };
+                let chosen = if own.is_empty() { &streams } else { &own };
+                let targets: Vec<BufferRange<&<B as Gpu>::Buffer>> = chosen
                     .iter()
                     .flatten()
                     .map(|(buffer, offset, size, shadow)| {

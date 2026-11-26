@@ -9,6 +9,7 @@
 #![deny(clippy::arithmetic_side_effects)]
 
 mod bytes;
+mod capture;
 mod convert;
 mod depth;
 mod objects;
@@ -124,8 +125,8 @@ const LIMITS: Limits = Limits {
     max_point_size: 511.0,
     max_line_width: 1.0,
     max_anisotropy: wcontainers_metal::MAX_ANISOTROPY as u16,
-    capture_buffers: 0,
-    capture_components: 0,
+    capture_buffers: capture::CAPTURE_BUFFERS,
+    capture_components: capture::CAPTURE_COMPONENTS,
 };
 
 /// The interface drawn with Metal.
@@ -167,6 +168,8 @@ pub struct MetalGpu<M: Metal> {
     encodes: u64,
     /// The rings of indices and of other per-draw data.
     rings: [ring::Ring<M>; 2],
+    /// The programs and layouts vertex captures draw with.
+    captures: capture::Captures,
 }
 
 impl<M: Metal> MetalGpu<M> {
@@ -211,7 +214,8 @@ impl<M: Metal> MetalGpu<M> {
                 | Features::CLIP_DISTANCE
                 | Features::FRACTIONAL_VIEWPORT
                 | Features::BACKGROUND_PREPARE
-                | Features::INSTANCE_STEP_RATE,
+                | Features::INSTANCE_STEP_RATE
+                | Features::TRANSFORM_FEEDBACK,
             limits: LIMITS,
             formats: convert::format_caps(),
         };
@@ -249,6 +253,7 @@ impl<M: Metal> MetalGpu<M> {
             depth_programs: depth::DepthPrograms::default(),
             encodes: u64::MIN,
             rings: Default::default(),
+            captures: capture::Captures::default(),
         }
     }
 
@@ -1149,6 +1154,15 @@ impl<M: Metal> Gpu for MetalGpu<M> {
         if let Err(why) = self.record_draw(call) {
             self.fail(format_args!("{why}"));
         }
+    }
+
+    fn capture_vertices(
+        &mut self,
+        call: &DrawCall<'_, Self>,
+        targets: wcontainers_gpu::CaptureTargets<'_, Self>,
+        rasterize: bool,
+    ) -> Result<(), GpuError> {
+        self.capture(call, targets, rasterize)
     }
 
     fn begin_query(&mut self, index: u32) {

@@ -3008,3 +3008,407 @@ fn repeated_and_crossed_prepares_all_draw_without_a_miss() {
     assert_eq!(after, before, "a draw missed its prepared pipeline");
     assert!(works(&mut b));
 }
+
+/// The capture tests' program: its vertex index comes in a structure beside its position, and it writes the index, the
+/// position doubled and the instance negated.
+const CAPTURED: &str = "
+struct In { @location(0) p: vec2<f32>, @builtin(vertex_index) v: u32 }
+struct V {
+    @builtin(position) at: vec4<f32>,
+    @location(0) @interpolate(flat) v: u32,
+    @location(1) p: vec2<f32>,
+    @location(2) @interpolate(flat) i: i32,
+}
+@vertex fn vs(input: In, @builtin(instance_index) i: u32) -> V {
+    return V(vec4<f32>(input.p, 0.5, 1.0), input.v, input.p * 2.0, -i32(i));
+}
+@fragment fn fs() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+}
+";
+
+/// The components of each of the capture program's outputs.
+const CAPTURED_COMPONENTS: [u32; 3] = [1, 2, 1];
+
+/// The vertices of the capture tests' stream.
+const CAPTURED_VERTICES: u32 = 8;
+
+/// The bytes of each capture target of the capture tests, more than any of their draws writes.
+const CAPTURE_TARGET_BYTES: u64 = 4096;
+
+/// What a capture test draws: the program, its states, its stream and its layout.
+struct CaptureScene<B: Gpu> {
+    program: B::Program,
+    states: States<B>,
+    stream: B::Buffer,
+    layout: B::VertexLayout,
+}
+
+/// Makes the capture tests' program, states and a stream of `CAPTURED_VERTICES` positions.
+fn capture_scene<B: Gpu>(b: &mut B) -> CaptureScene<B> {
+    let module = |entry, stage| ShaderModule::from_wgsl(CAPTURED, entry, stage).expect("parses");
+    let vertex = b
+        .create_shader(&module("vs", ShaderStage::Vertex))
+        .expect("create_shader");
+    let fragment = b
+        .create_shader(&module("fs", ShaderStage::Fragment))
+        .expect("create_shader");
+    let program = b
+        .create_program(&Program::Render {
+            vertex: &vertex,
+            fragment: Some(&fragment),
+        })
+        .expect("create_program");
+    let states = states(b, writes_all(None), &no_tests(), &plain_raster(0.0));
+    let mut layout = VertexLayoutDesc {
+        streams: [None; MAX_VERTEX_STREAMS],
+        attributes: [None; MAX_VERTEX_STREAMS],
+    };
+    let pair = 2 * WORD;
+    layout.streams[0] = Some(wcontainers_gpu::VertexStream {
+        stride: pair,
+        step: wcontainers_gpu::StepMode::Vertex,
+    });
+    layout.attributes[0] = Some(wcontainers_gpu::VertexAttribute {
+        location: 0,
+        stream: 0,
+        offset: 0,
+        format: wcontainers_gpu::VertexFormat::Float32x2,
+    });
+    let layout = b
+        .create_vertex_layout(&layout)
+        .expect("create_vertex_layout");
+    let stream = b
+        .create_buffer(&BufferDesc {
+            size: u64::from(CAPTURED_VERTICES * pair),
+            usage: BufferUsage::VERTEX | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .expect("create_buffer");
+    let positions: Vec<u8> = (0..CAPTURED_VERTICES * 2)
+        .flat_map(|n| (n as f32 * 0.125 - 1.0).to_le_bytes())
+        .collect();
+    b.write_buffer(&stream, 0, &positions, WriteMode::Ordered);
+    CaptureScene {
+        program,
+        states,
+        stream,
+        layout,
+    }
+}
+
+/// Makes a capture target of `CAPTURE_TARGET_BYTES`, filled with the canary byte.
+fn capture_target<B: Gpu>(b: &mut B) -> B::Buffer {
+    let target = b
+        .create_buffer(&BufferDesc {
+            size: CAPTURE_TARGET_BYTES,
+            usage: BufferUsage::CAPTURE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .expect("create_buffer");
+    fill_canary(b, &target, CAPTURE_TARGET_BYTES);
+    target
+}
+
+/// Captures `range` of the scene drawn as `topology` into `targets` targets outside a pass, and returns what each holds.
+fn captured<B: Gpu>(
+    b: &mut B,
+    topology: Topology,
+    range: DrawRange<'_, B>,
+    targets: usize,
+) -> Result<Vec<Vec<u8>>, GpuError> {
+    let scene = capture_scene(b);
+    let buffers: Vec<B::Buffer> = (0..targets).map(|_| capture_target(b)).collect();
+    let streams = [Some(wcontainers_gpu::VertexBinding {
+        buffer: &scene.stream,
+        offset: 0,
+    })];
+    let call = DrawCall {
+        program: &scene.program,
+        blend: &scene.states.blend,
+        depth_stencil: &scene.states.depth_stencil,
+        raster: &scene.states.raster,
+        vertex_layout: &scene.layout,
+        bindings: [None; 4],
+        vertex_buffers: &streams,
+        index: None,
+        topology,
+        restart: false,
+        viewports: &viewport(DRAWN_SIDE),
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range,
+    };
+    let ranges: Vec<_> = buffers
+        .iter()
+        .map(|buffer| wcontainers_gpu::BufferRange {
+            buffer,
+            offset: 0,
+            size: CAPTURE_TARGET_BYTES,
+        })
+        .collect();
+    b.capture_vertices(&call, &ranges, false)?;
+    Ok(buffers
+        .iter()
+        .map(|buffer| {
+            let readback = b
+                .read_back(&ReadSource::Buffer {
+                    buffer,
+                    offset: 0,
+                    size: CAPTURE_TARGET_BYTES,
+                })
+                .expect("read_back");
+            b.submit();
+            let mut bytes = vec![0; CAPTURE_TARGET_BYTES as usize];
+            b.finish_read(readback, &mut bytes);
+            bytes
+        })
+        .collect())
+}
+
+/// Returns the recording back end with capture switched on.
+fn capturing_reference() -> Recorder {
+    reference(Features::TRANSFORM_FEEDBACK)
+}
+
+#[test]
+fn captures_as_the_reference_does_in_every_list_and_strip() {
+    for topology in [
+        Topology::PointList,
+        Topology::LineList,
+        Topology::LineStrip,
+        Topology::TriangleList,
+        Topology::TriangleStrip,
+    ] {
+        for count in [1, 2, 5, 7] {
+            for targets in [1, CAPTURED_COMPONENTS.len()] {
+                let mut b = device();
+                let got =
+                    captured(&mut b, topology, from_one(count), targets).expect("capture_vertices");
+                assert!(works(&mut b));
+                let mut r = capturing_reference();
+                let wanted =
+                    captured(&mut r, topology, from_one(count), targets).expect("capture_vertices");
+                assert_eq!(got, wanted, "{topology:?} of {count}, {targets} targets");
+            }
+        }
+    }
+}
+
+#[test]
+fn captures_of_fans_indirect_draws_and_compute_programs_are_refused() {
+    let mut b = device();
+    assert_eq!(
+        captured(&mut b, Topology::TriangleFan, vertices_of(4), 1).err(),
+        Some(GpuError::Absent(Features::FAN_AND_LOOP))
+    );
+    let args = buffer(&mut b, 16);
+    assert!(matches!(
+        captured(
+            &mut b,
+            Topology::TriangleList,
+            DrawRange::Indirect {
+                args: &args,
+                offset: 0,
+            },
+            1,
+        ),
+        Err(GpuError::Invalid(_))
+    ));
+    assert!(works(&mut b));
+}
+
+/// Returns a range of `count` vertices from vertex 1, two instances from instance 3.
+fn from_one<'a, B: Gpu>(count: u32) -> DrawRange<'a, B> {
+    DrawRange::Vertices {
+        first: 1,
+        count,
+        first_instance: 3,
+        instances: 2,
+    }
+}
+
+/// Returns a range of `count` vertices from vertex 0, one instance.
+fn vertices_of<'a, B: Gpu>(count: u32) -> DrawRange<'a, B> {
+    DrawRange::Vertices {
+        first: 0,
+        count,
+        first_instance: 0,
+        instances: 1,
+    }
+}
+
+#[test]
+fn a_capture_past_its_targets_off_a_word_or_into_what_it_reads_is_refused_and_writes_nothing() {
+    let mut b = device();
+    let scene = capture_scene(&mut b);
+    let target = capture_target(&mut b);
+    let streams = [Some(wcontainers_gpu::VertexBinding {
+        buffer: &scene.stream,
+        offset: 0,
+    })];
+    let call = |range| DrawCall {
+        program: &scene.program,
+        blend: &scene.states.blend,
+        depth_stencil: &scene.states.depth_stencil,
+        raster: &scene.states.raster,
+        vertex_layout: &scene.layout,
+        bindings: [None; 4],
+        vertex_buffers: &streams,
+        index: None,
+        topology: Topology::TriangleList,
+        restart: false,
+        viewports: &[],
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range,
+    };
+    // Three vertices of four words each.
+    let whole = u64::from(3 * 4 * WORD);
+    let at = |buffer, offset, size| wcontainers_gpu::BufferRange {
+        buffer,
+        offset,
+        size,
+    };
+    for (name, targets) in [
+        (
+            "one word short",
+            vec![at(&target, 0, whole - u64::from(WORD))],
+        ),
+        ("off a word", vec![at(&target, 2, whole)]),
+        (
+            "past the buffer",
+            vec![at(&target, CAPTURE_TARGET_BYTES - 4, whole)],
+        ),
+        (
+            "past the largest offset",
+            vec![at(&target, u64::MAX - 3, whole)],
+        ),
+        ("into its own stream", vec![at(&scene.stream, 0, whole)]),
+        (
+            "two targets of three outputs",
+            vec![at(&target, 0, whole); 2],
+        ),
+        (
+            "more targets than capture_buffers",
+            vec![at(&target, 0, whole); 5],
+        ),
+        ("no targets", vec![]),
+    ] {
+        let refused = b.capture_vertices(&call(vertices_of(3)), &targets, false);
+        assert!(
+            matches!(refused, Err(GpuError::Invalid(_))),
+            "{name}: {refused:?}"
+        );
+    }
+    // A capture that rasterises outside a pass, and a draw of u32::MAX vertices into one small target, refused before
+    // the vertices are listed.
+    let small = [at(&target, 0, whole)];
+    assert!(
+        b.capture_vertices(&call(vertices_of(3)), &small, true)
+            .is_err()
+    );
+    let clock = std::time::Instant::now();
+    assert!(
+        b.capture_vertices(&call(vertices_of(u32::MAX)), &small, false)
+            .is_err()
+    );
+    assert!(
+        clock.elapsed() < std::time::Duration::from_secs(1),
+        "listed every vertex"
+    );
+    assert!(works(&mut b));
+    let got = read_bytes(&mut b, &target, CAPTURE_TARGET_BYTES);
+    assert!(
+        got.iter().all(|byte| *byte == CANARY),
+        "a refused capture wrote"
+    );
+    assert!(works(&mut b));
+}
+
+#[test]
+fn a_capture_of_wild_indices_writes_only_its_range_of_its_target() {
+    let mut b = device();
+    let scene = capture_scene(&mut b);
+    let target = capture_target(&mut b);
+    let streams = [Some(wcontainers_gpu::VertexBinding {
+        buffer: &scene.stream,
+        offset: 0,
+    })];
+    // Indices past the stream, at the largest value with restart off, and below zero through a base vertex of -1.
+    let indices: [u32; 6] = [0, 1000, u32::MAX, 1, 0, CAPTURED_VERTICES];
+    let index_bytes: Vec<u8> = indices.iter().flat_map(|i| i.to_le_bytes()).collect();
+    let index = b
+        .create_buffer(&BufferDesc {
+            size: index_bytes.len() as u64,
+            usage: BufferUsage::INDEX | BufferUsage::COPY_DST,
+            intent: MapIntent::Rarely,
+        })
+        .expect("create_buffer");
+    b.write_buffer(&index, 0, &index_bytes, WriteMode::Ordered);
+    let call = DrawCall {
+        program: &scene.program,
+        blend: &scene.states.blend,
+        depth_stencil: &scene.states.depth_stencil,
+        raster: &scene.states.raster,
+        vertex_layout: &scene.layout,
+        bindings: [None; 4],
+        vertex_buffers: &streams,
+        index: Some(wcontainers_gpu::IndexBinding {
+            buffer: &index,
+            offset: 0,
+            format: wcontainers_gpu::IndexFormat::U32,
+        }),
+        topology: Topology::TriangleList,
+        restart: false,
+        viewports: &[],
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Indexed {
+            first: 0,
+            count: 6,
+            base_vertex: -1,
+            first_instance: 0,
+            instances: 1,
+        },
+    };
+    // Six vertices of four words, from byte 256 of the target, which holds exactly them.
+    let (offset, size) = (256u64, u64::from(6 * 4 * WORD));
+    b.capture_vertices(
+        &call,
+        &[wcontainers_gpu::BufferRange {
+            buffer: &target,
+            offset,
+            size,
+        }],
+        false,
+    )
+    .expect("capture_vertices");
+    let got = read_words(&mut b, &target, CAPTURE_TARGET_BYTES);
+    assert!(works(&mut b));
+    let canary = u32::from_le_bytes([CANARY; 4]);
+    let (first, last) = ((offset / 4) as usize, ((offset + size) / 4) as usize);
+    assert!(
+        got[..first]
+            .iter()
+            .chain(&got[last..])
+            .all(|w| *w == canary),
+        "a word outside the range changed"
+    );
+    // Each vertex's number, wrapped as the reference wraps it; past the stream its position reads zero.
+    for (n, index) in indices.iter().enumerate() {
+        let number = index.wrapping_sub(1);
+        let vertex = &got[first + n * 4..first + n * 4 + 4];
+        assert_eq!(vertex[0], number, "vertex {n}'s number");
+        if number >= CAPTURED_VERTICES {
+            assert_eq!(&vertex[1..3], &[0, 0], "vertex {n} past the stream");
+        }
+        assert_eq!(vertex[3], 0, "vertex {n}'s instance");
+    }
+}

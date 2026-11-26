@@ -750,6 +750,141 @@ pub fn captures_write_location_outputs_packed_in_draw_order<H: Host>() {
     ok(&mut b);
 }
 
+/// Where the back end captures (`TRANSFORM_FEEDBACK`), a capture that also draws, inside a pass: an indexed strip of
+/// 16-bit indices with a restart and a base vertex of one, two instances from the first instance (2 where
+/// `BASE_VERTEX_INSTANCE` is declared, else 0), writes each whole triangle's vertex number, instance number and x in
+/// draw order, instance after instance, and draws the triangles, which cover the target.
+pub fn captures_while_drawing_write_indexed_instances_in_draw_order<H: Host>() {
+    let mut b = H::make();
+    if !b.caps().features.contains(Features::TRANSFORM_FEEDBACK) {
+        return;
+    }
+    const CAPTURED: &str = "
+    struct V {
+        @builtin(position) p: vec4<f32>,
+        @location(0) @interpolate(flat) numbers: vec2<u32>,
+        @location(1) x: f32,
+    }
+    @vertex fn vs(@location(0) p: vec2<f32>, @builtin(vertex_index) v: u32,
+                  @builtin(instance_index) i: u32) -> V {
+        return V(vec4<f32>(p, 0.5, 1.0), vec2<u32>(v, i), p.x);
+    }
+    @fragment fn fs() -> @location(0) vec4<f32> {
+        return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+    }
+    ";
+    let first = if b.caps().features.contains(Features::BASE_VERTEX_INSTANCE) {
+        2
+    } else {
+        0
+    };
+    // Vertex 0 is never drawn; 1 to 4 are the target's corners.
+    const CORNERS: [f32; 10] = [9.0, 9.0, -1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
+    let vb = buffer(&mut b, 40, BufferUsage::VERTEX | BufferUsage::COPY_DST);
+    b.write_buffer(&vb, 0, &floats(&CORNERS), WriteMode::Discard);
+    // Two strips of one triangle each, (0, 1, 2) and (1, 2, 3) before the base vertex.
+    let indices: [u16; 7] = [0, 1, 2, 0xffff, 1, 2, 3];
+    let ib = buffer(&mut b, 16, BufferUsage::INDEX | BufferUsage::COPY_DST);
+    let index_bytes: Vec<u8> = indices
+        .iter()
+        .flat_map(|i| i.to_le_bytes())
+        .chain([0, 0])
+        .collect();
+    b.write_buffer(&ib, 0, &index_bytes, WriteMode::Discard);
+    let v = shader(&mut b, CAPTURED, "vs", ShaderStage::Vertex);
+    let f = shader(&mut b, CAPTURED, "fs", ShaderStage::Fragment);
+    let p = b
+        .create_program(&Program::Render {
+            vertex: &v,
+            fragment: Some(&f),
+        })
+        .expect("create_program");
+    let rs = raster(&mut b, CullMode::None);
+    let vl = positions(&mut b);
+    let bl = blend(&mut b, opaque());
+    let ds = depth_test(&mut b, None, false);
+    let vp = viewport(2, 2);
+    let streams = [Some(VertexBinding {
+        buffer: &vb,
+        offset: 0,
+    })];
+    let call = DrawCall {
+        program: &p,
+        blend: &bl,
+        depth_stencil: &ds,
+        raster: &rs,
+        vertex_layout: &vl,
+        bindings: [None; MAX_BINDING_SETS],
+        vertex_buffers: &streams,
+        index: Some(IndexBinding {
+            buffer: &ib,
+            offset: 0,
+            format: IndexFormat::U16,
+        }),
+        topology: Topology::TriangleStrip,
+        restart: true,
+        viewports: &vp,
+        scissors: &[],
+        blend_constant: [0; 4],
+        stencil_reference: [0; 2],
+        immediates: &[],
+        range: DrawRange::Indexed {
+            first: 0,
+            count: 7,
+            base_vertex: 1,
+            first_instance: first,
+            instances: 2,
+        },
+    };
+    let mut expected = Vec::new();
+    for instance in first..first + 2 {
+        for number in [1u32, 2, 3, 2, 3, 4] {
+            expected.extend(number.to_le_bytes());
+            expected.extend(instance.to_le_bytes());
+            expected.extend(CORNERS[number as usize * 2].to_le_bytes());
+        }
+    }
+    let size = expected.len() as u64;
+    let target = buffer(
+        &mut b,
+        size + 8,
+        BufferUsage::CAPTURE | BufferUsage::COPY_SRC | BufferUsage::COPY_DST,
+    );
+    b.write_buffer(
+        &target,
+        0,
+        &pattern(size as usize + 8, 3),
+        WriteMode::Ordered,
+    );
+    let (t, view) = rgba8_target(&mut b, 2);
+    b.begin_pass(&color_pass::<H::Backend>(&view, LoadOp::Clear([0; 4])));
+    b.capture_vertices(
+        &call,
+        &[BufferRange {
+            buffer: &target,
+            offset: 0,
+            size,
+        }],
+        true,
+    )
+    .expect("capture_vertices");
+    b.end_pass();
+    let got = read_buffer(&mut b, &target, 0, size + 8);
+    assert_eq!(
+        &got[..size as usize],
+        &expected[..],
+        "the captured vertices"
+    );
+    assert_eq!(
+        &got[size as usize..],
+        &pattern(size as usize + 8, 3)[size as usize..],
+        "the bytes after"
+    );
+    let drawn = read_texture(&mut b, region(&t, 0, 0, 0, 0), extent(2, 2, 1), 4);
+    assert_eq!(drawn, [255, 0, 0, 255].repeat(4), "the drawn triangles");
+    ok(&mut b);
+}
+
 /// A copy between two regions of one subresource that do not overlap, as Vulkan and OpenGL allow
 /// (a back end whose API refuses it copies through a buffer, `CopyWithinTexture`): the right half
 /// of a 4 by 2 texture takes the left half's texels, which stay.
