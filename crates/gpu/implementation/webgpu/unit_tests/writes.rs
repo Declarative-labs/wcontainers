@@ -1,18 +1,9 @@
 //! Writes in their three modes keep the order plan section 4.6 promises: exact answers through
 //! copies and read backs, and an ordered write inside a pass splits it without losing what it drew.
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs.
 
-use wcontainers_graphics_test::scene;
-
-#[allow(dead_code)]
-#[path = "scenes/draw.rs"]
-mod draw;
-
-mod allowance;
-
-#[path = "scenes/clears.rs"]
-mod clears;
+use super::{allowance, clears, draw, scene};
 
 use wcontainers_gpu::{
     Gpu, Object, draw::ColorAttachment, draw::LoadOp, draw::PassDesc, draw::StoreOp,

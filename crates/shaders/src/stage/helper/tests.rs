@@ -50,6 +50,9 @@ fn domain_invocations_past_the_point_total_write_no_point() {
     let mut b = <WebGpu as StandaloneGpu>::new(WebGpuConfig {
         backends: wgpu::Backends::PRIMARY,
         lavapipe: true,
+        software: false,
+        required: wgpu::Features::empty(),
+        without: wgpu::Features::empty(),
     })
     .expect("a WebGPU device (lavapipe where VK_DRIVER_FILES names it)");
     let vs = program("vs_patch.dxbc");

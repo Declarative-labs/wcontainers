@@ -1,6 +1,6 @@
 //! Copies from a texture into a buffer write the copied rows and nothing between them: the bytes
 //! between rows and between layers keep what the buffer held, at any offset and pitch. Shared by
-//! tests/copies.rs and the browser page.
+//! unit_tests/copies.rs and the browser page.
 
 use wcontainers_gpu::{
     Gpu, error::DeviceStatus, format::FORMAT_FACTS, format::Format, resource::BufferDesc,

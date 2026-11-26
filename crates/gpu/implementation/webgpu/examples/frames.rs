@@ -11,8 +11,7 @@
 //! function's. Other libraries count by their name.
 //!
 //! With `--log`, the back end's counters a frame too: from the program's log of the long run,
-//! the difference of its last report ([`wcontainers_gpu_webgpu::FRAME_REPORT`]) and the one at
-//! half its frames.
+//! the difference of its last report ([`FRAME_REPORT`]) and the one at half its frames.
 //!
 //!   frames [--log <output.log>] <process> <short.json> <short frames> <long.json> <long frames>
 //!     <pdb dir>...
@@ -28,6 +27,12 @@ use pdb::FallibleIterator;
 
 use anyhow::{Context, Result, anyhow, ensure};
 use serde_json::Value;
+
+/// The start of the line the WebGPU back end reports a power of two frames with on standard error.
+///
+/// It is `FRAME_REPORT` in the back end's implementation.rs: the frames, then each count as
+/// `name=count`.
+const FRAME_REPORT: &str = "webgpu: frames=";
 
 /// The parts a sample can belong to, in printing order.
 const PARTS: [&str; 12] = [
@@ -391,10 +396,7 @@ fn reports(log: &Path) -> Result<Vec<(u64, HashMap<String, u64>)>> {
     let text = String::from_utf8_lossy(&bytes);
     let mut out = Vec::new();
     for line in text.lines() {
-        let Some(rest) = line
-            .trim()
-            .strip_prefix(wcontainers_gpu_webgpu::FRAME_REPORT)
-        else {
+        let Some(rest) = line.trim().strip_prefix(FRAME_REPORT) else {
             continue;
         };
         let mut tokens = rest.split_whitespace();

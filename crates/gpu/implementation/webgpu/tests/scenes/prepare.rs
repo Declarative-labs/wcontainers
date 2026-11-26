@@ -1,6 +1,6 @@
 //! First draws of new programs, with and without `prepare` ahead of them, timed by a clock the
-//! caller gives (natively `Instant`, in the browser `performance.now()`): shared by tests/prepare.rs
-//! and the browser page.
+//! caller gives (natively `Instant`, in the browser `performance.now()`): shared by
+//! unit_tests/first_draws.rs and the browser page.
 
 use wcontainers_gpu::{
     Gpu, MAX_COLOR_TARGETS, PrepareDesc, draw::ColorAttachment, draw::DrawCall, draw::DrawRange,
@@ -9,7 +9,7 @@ use wcontainers_gpu::{
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
-use crate::draw;
+use super::draw;
 
 /// A program with some work in its fragment stage, distinct per `n` so no compiled program is
 /// shared.
@@ -43,9 +43,9 @@ pub struct FirstDraws {
     pub draws: Vec<f64>,
     /// The draws, the submit and the wait for the GPU to finish them: the frame.
     pub frame: f64,
-    /// `PipelineMiss`es and pipelines built while drawing.
+    /// `PipelineMiss`es and pipelines built while drawing (where counted).
     pub misses: u64,
-    pub built: u64,
+    pub built: Option<u64>,
 }
 
 impl FirstDraws {
@@ -67,7 +67,7 @@ impl FirstDraws {
             d[d.len() - 1],
             self.frame,
             self.misses,
-            self.built
+            draw::shown(self.built)
         )
     }
 }
@@ -117,7 +117,7 @@ pub fn first_draws(
     let prepared = now() - started;
     let (misses, built) = (
         b.slow_paths().counts[SlowPath::PipelineMiss as usize],
-        b.counters().pipelines,
+        super::made(b),
     );
     let mut pass = PassDesc {
         colors: Default::default(),
@@ -182,7 +182,7 @@ pub fn first_draws(
         draws,
         frame,
         misses: b.slow_paths().counts[SlowPath::PipelineMiss as usize] - misses,
-        built: b.counters().pipelines - built,
+        built: draw::since(super::made(b), built, |m| m.pipelines),
     }
 }
 
@@ -227,7 +227,7 @@ pub fn prepared_strips(b: &mut WebGpu) -> Result<String, String> {
     b.wait_fence(&fence);
     let (misses, built) = (
         b.slow_paths().counts[SlowPath::PipelineMiss as usize],
-        b.counters().pipelines,
+        super::made(b),
     );
     let mut pass = PassDesc {
         colors: Default::default(),
@@ -297,16 +297,17 @@ pub fn prepared_strips(b: &mut WebGpu) -> Result<String, String> {
     b.wait_fence(&fence);
     let (misses, built) = (
         b.slow_paths().counts[SlowPath::PipelineMiss as usize] - misses,
-        b.counters().pipelines - built,
+        draw::since(super::made(b), built, |m| m.pipelines),
     );
     if b.status() != DeviceStatus::Ok {
         return Err(format!("prepared strips: device {:?}", b.status()));
     }
     let line = format!(
-        "prepared strips drawn without indices and with 16 and 32-bit indices: {misses} misses, {built} pipelines built while drawing"
+        "prepared strips drawn without indices and with 16 and 32-bit indices: {misses} misses, {} pipelines built while drawing",
+        draw::shown(built)
     );
     match (misses, built) {
-        (0, 0) => Ok(line),
+        (0, Some(0) | None) => Ok(line),
         _ => Err(line),
     }
 }

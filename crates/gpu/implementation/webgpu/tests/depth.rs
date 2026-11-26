@@ -1,9 +1,9 @@
-//! How 24-bit depth is stored (the probe of plan 4.11), and a constant, slope-scaled and clamped
-//! depth bias on `depth24plus-stencil8` against real Direct3D 11's picture of the rig's depth-bias
-//! scene.
+//! A constant, slope-scaled and clamped depth bias on `depth24plus-stencil8` against real Direct3D
+//! 11's picture of the rig's depth-bias scene (the probe of plan 4.11, how 24-bit depth is stored,
+//! is a unit test: unit_tests/depth_probe.rs).
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs. Its own harness reports the bias picture as
-//! ignored, not passed, where the device lacks `DEPTH24_UNORM`.
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs. Its own harness reports the bias picture
+//! as ignored, not passed, where the device lacks `DEPTH24_UNORM`.
 
 use wcontainers_graphics_test::scene;
 
@@ -20,20 +20,14 @@ use wcontainers_gpu::{
     resource::ReadSource, resource::TextureRegion, resource::TextureUsage, state::DepthStencilDesc,
     state::RasterDesc, state::StepMode, state::Topology, state::VertexFormat,
 };
-use wcontainers_gpu_webgpu::{Depth24, WebGpu};
+use wcontainers_gpu_webgpu::WebGpu;
 
 fn main() {
     let args = libtest_mimic::Arguments::from_args();
-    let trials = vec![
-        Trial::test("the_depth24_probe_finds_how_depth24plus_is_stored", || {
-            the_depth24_probe_finds_how_depth24plus_is_stored();
-            Ok(())
-        }),
-        Trial::ignorable_test(
-            "depth_bias_on_24_bit_depth_matches_direct3d",
-            depth_bias_on_24_bit_depth_matches_direct3d,
-        ),
-    ];
+    let trials = vec![Trial::ignorable_test(
+        "depth_bias_on_24_bit_depth_matches_direct3d",
+        depth_bias_on_24_bit_depth_matches_direct3d,
+    )];
     libtest_mimic::run(&args, trials).exit();
 }
 
@@ -83,26 +77,11 @@ fn reference(name: &str) -> Vec<u8> {
     buf
 }
 
-/// The probe's bias moved the depth up, and the device declares `DEPTH24_UNORM` exactly when it moved
-/// it by one 24-bit step, Direct3D's rule. Another amount is not refused: the bit stays clear and
-/// fronts bias in the program (wgpu's Vulkan on the RTX 3080 moves it by two steps).
-fn the_depth24_probe_finds_how_depth24plus_is_stored() {
-    let b = device();
-    let found = b.depth24();
-    eprintln!("depth24plus: {found:?}");
-    let (Depth24::Unorm(v) | Depth24::Float(v) | Depth24::Other(v)) = found;
-    assert!(v > 0.1 && v < 0.1001, "{found:?}");
-    assert_eq!(
-        b.caps().features.contains(Features::DEPTH24_UNORM),
-        matches!(found, Depth24::Unorm(_))
-    );
-}
-
-/// The rig's depth-bias scene (crates/graphics-test/src/d3d11/scenes/depth.rs): a
-/// sloped blue quad, then a yellow one over it with each bias (none; constant -3; slope -1.5;
-/// constant -3000, slope -1.5, clamp -0.00002) into `depth24plus-stencil8`. Where `DEPTH24_UNORM` is
-/// absent a front biases in the program instead, which is not this back end's route to test, so the
-/// test is ignored there.
+/// The rig's depth-bias scene (crates/graphics-test/src/d3d11/scenes/depth.rs): a sloped blue quad,
+/// then a yellow one over it with each bias (none; constant -3; slope -1.5; constant -3000, slope
+/// -1.5, clamp -0.00002) into `depth24plus-stencil8`. Where `DEPTH24_UNORM` is absent a front
+/// biases in the program instead, which is not this back end's route to test, so the test is
+/// ignored there.
 fn depth_bias_on_24_bit_depth_matches_direct3d() -> Result<Completion, Failed> {
     let mut b = device();
     if !b.caps().features.contains(Features::DEPTH24_UNORM) {

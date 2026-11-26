@@ -31,7 +31,7 @@ fn probe_wgsl() -> String {
 
 /// What the probe found.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum Depth24 {
+pub(crate) enum Depth24 {
     /// 24-bit unsigned normalised: the biased depth read back.
     Unorm(f32),
     /// 32-bit float.

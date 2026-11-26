@@ -4,7 +4,7 @@
 //! real Direct3D 11 in tests/direct3d.rs). The three-channel 32-bit formats, held in their
 //! four-channel twins, keep every bit with alpha one.
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs.
 
 use wcontainers_graphics_test::scene;
 

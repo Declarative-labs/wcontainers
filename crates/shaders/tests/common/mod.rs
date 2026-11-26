@@ -1754,35 +1754,28 @@ pub fn webgpu_on_warp() -> wcontainers_gpu_webgpu::WebGpu {
     webgpu_adapter(wgpu::Backends::DX12, wgpu::Features::empty(), true)
 }
 
-/// The WebGPU back end on wgpu's `backends` with `more` features: on the GPU, or with `software` on
-/// the system's software adapter.
+/// Makes the WebGPU back end on wgpu's `backends` with `more` features.
+///
+/// It is on the GPU (or lavapipe where the Vulkan loader names it alone), or with `software` on the
+/// system's software adapter.
 fn webgpu_adapter(
     backends: wgpu::Backends,
     more: wgpu::Features,
     software: bool,
 ) -> wcontainers_gpu_webgpu::WebGpu {
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    desc.backends = backends;
-    let instance = wgpu::Instance::new(desc);
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        force_fallback_adapter: software,
-        ..Default::default()
-    }))
+    use wcontainers_gpu::StandaloneGpu;
+    let b = <wcontainers_gpu_webgpu::WebGpu as StandaloneGpu>::new(
+        wcontainers_gpu_webgpu::WebGpuConfig {
+            backends,
+            lavapipe: true,
+            software,
+            required: more,
+            without: wgpu::Features::empty(),
+        },
+    )
     .expect("an adapter");
-    let info = adapter.get_info();
-    assert_eq!(
-        info.device_type == wgpu::DeviceType::Cpu,
-        software,
-        "{}",
-        info.name
-    );
-    eprintln!("webgpu: {} ({:?})", info.name, info.backend);
-    let mut device_desc = wcontainers_gpu_webgpu::WebGpu::device_descriptor(&adapter);
-    assert!(adapter.features().contains(more), "{more:?}");
-    device_desc.required_features |= more;
-    let (device, queue) = pollster::block_on(adapter.request_device(&device_desc)).unwrap();
-    wcontainers_gpu_webgpu::WebGpu::new(&adapter, device, queue)
+    eprintln!("webgpu: {}", b.caps().adapter.name);
+    b
 }
 
 pub fn webgl() -> wcontainers_gpu_webgl::WebGl {

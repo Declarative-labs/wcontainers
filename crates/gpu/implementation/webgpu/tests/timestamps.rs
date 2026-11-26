@@ -3,7 +3,7 @@
 //! the CPU clock's rate (tests/scenes/timestamps.rs; the same runs in Chrome through web/check,
 //! and against real Direct3D 11 in tests/direct3d.rs).
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs.
 
 use wcontainers_graphics_test::scene;
 

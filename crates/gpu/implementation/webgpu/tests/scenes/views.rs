@@ -1,10 +1,10 @@
 //! Views in a texture's other sRGB form where that form lacks a usage the texture has: an sRGB view
-//! of a texture that also allows storage (Direct3D 12 reads such a shader resource view in its UNORM
-//! texture's sRGB twin), read as a texture made sRGB reads, also after the texture is renamed.
-//! Shared by tests/bindings.rs and the browser page.
+//! of a texture that also allows storage (Direct3D 12 reads such a shader resource view in its
+//! UNORM texture's sRGB twin), read as a texture made sRGB reads, also after the texture is
+//! renamed. Shared by unit_tests/bindings.rs and the browser page.
 
-use crate::draw;
-use crate::renames::{Kit, begin, draw_at, finish, kit};
+use super::draw;
+use super::renames::{Kit, begin, draw_at, finish, kit};
 use anyhow::{Result, ensure};
 use wcontainers_gpu::{
     Gpu, error::DeviceStatus, format::Format, resource::BindingEntry, resource::BindingResource,
@@ -92,12 +92,13 @@ fn write_row(b: &mut WebGpu, texture: &<WebGpu as Gpu>::Texture, texels: &[[u8; 
 
 /// Draws `view` of `texture` into the first `ROW` pixels of a fresh float target, writes the next
 /// round's texels with `Discard` (which renames the texture the recorded draws read) and draws the
-/// view again into the next `ROW`; returns the target's texels and the renames it took.
+/// view again into the next `ROW`; returns the target's texels and the renames it took, where
+/// counted.
 fn draw_both_rounds(
     b: &mut WebGpu,
     texture: &<WebGpu as Gpu>::Texture,
     view: &<WebGpu as Gpu>::TextureView,
-) -> Result<(Vec<u8>, u64)> {
+) -> Result<(Vec<u8>, Option<u64>)> {
     let width = ROW * ROUNDS.len() as u32;
     let (target, target_view) = draw::texture_2d(
         b,
@@ -120,7 +121,7 @@ fn draw_both_rounds(
         }])
         .map_err(|e| anyhow::anyhow!("{e:?}"))?;
     write_row(b, texture, &ROUNDS[0]);
-    let before = b.counters().texture_renames;
+    let before = super::made(b);
     begin(b, &k, [0.0; 4]);
     for (round, texels) in ROUNDS.iter().enumerate() {
         if round > 0 {
@@ -136,7 +137,10 @@ fn draw_both_rounds(
         "device lost: {:?}",
         b.status()
     );
-    Ok((got, b.counters().texture_renames - before))
+    Ok((
+        got,
+        draw::since(super::made(b), before, |m| m.texture_renames),
+    ))
 }
 
 /// An `Rgba8UnormSrgb` view of an `Rgba8Unorm` texture that allows storage reads each texel as an
@@ -163,7 +167,10 @@ pub fn srgb_views_of_storage_textures(b: &mut WebGpu) -> Result<String> {
     )?;
     let (got, renames) = draw_both_rounds(b, &texture, &srgb)?;
     let (want, _) = draw_both_rounds(b, &reference, &reference_view)?;
-    ensure!(renames > 0, "the Discard write did not rename the texture");
+    ensure!(
+        renames != Some(0),
+        "the Discard write did not rename the texture"
+    );
     let floats: Vec<f32> = bytemuck::pod_collect_to_vec(&got);
     let wanted: Vec<f32> = bytemuck::pod_collect_to_vec(&want);
     let bytes = ROUNDS.as_flattened().as_flattened();
@@ -181,7 +188,8 @@ pub fn srgb_views_of_storage_textures(b: &mut WebGpu) -> Result<String> {
     }
     Ok(format!(
         "sRGB views of storage textures: {} channels equal to an sRGB texture's, bit for bit, \
-         across {renames} rename",
-        floats.len()
+         across {} rename",
+        floats.len(),
+        draw::shown(renames)
     ))
 }

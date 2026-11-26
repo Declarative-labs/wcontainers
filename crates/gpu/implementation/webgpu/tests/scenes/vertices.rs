@@ -3,7 +3,7 @@
 //! and compared with the values the format means; the shadow is kept while its source is unwritten
 //! and made again after a write. Shared by tests/vertices.rs and the browser page.
 
-use crate::draw;
+use super::draw;
 use half::f16;
 use wcontainers_gpu::{
     Gpu, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp, draw::PassDesc,

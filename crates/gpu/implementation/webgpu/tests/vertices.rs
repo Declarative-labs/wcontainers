@@ -4,8 +4,8 @@
 //! and made again after a write (tests/scenes/vertices.rs; the same runs in Chrome through
 //! web/check).
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs. `WEBGPU_SEED` picks the bytes (default 188),
-//! `WEBGPU_CASES` how many vertices each format draws (default 64).
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs. `WEBGPU_SEED` picks the bytes (default
+//! 188), `WEBGPU_CASES` how many vertices each format draws (default 64).
 
 use wcontainers_graphics_test::scene;
 

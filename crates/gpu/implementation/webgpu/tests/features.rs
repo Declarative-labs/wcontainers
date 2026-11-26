@@ -2,7 +2,7 @@
 //! drawn as they define where declared, and refused by name on a device made without them; fine
 //! derivatives (WGSL's core) declared and drawn on every device.
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs.
 
 use wcontainers_graphics_test::scene;
 

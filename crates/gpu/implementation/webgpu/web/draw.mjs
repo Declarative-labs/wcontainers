@@ -68,11 +68,12 @@ try {
       failed = true;
     }
   }
-  // First draws with and without prepare: the prepared half must build nothing while drawing.
+  // First draws with and without prepare: the prepared half must miss no pipeline while drawing (the
+  // pipelines built are counted only by the crate's unit tests; the page shows them as not counted).
   try {
     const lines = (await page.evaluate((n) => window.prepareTimings(n), 16)).split('\n');
     for (const line of lines) console.log(`chrome prepare: ${line}`);
-    if (!lines[1]?.endsWith(' 0 misses, 0 pipelines built while drawing')) {
+    if (!/ 0 misses, (0|\(not counted here\)) pipelines built while drawing$/.test(lines[1] ?? '')) {
       console.log('chrome prepare: the prepared draws built pipelines');
       failed = true;
     }

@@ -3,7 +3,7 @@
 //! and stored from a temporary sample by sample, and every sample outside the drawn area keeps its
 //! value.
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs.
 
 use wcontainers_graphics_test::scene;
 

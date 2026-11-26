@@ -26,8 +26,10 @@ use wcontainers_direct3d_12::state::{
 use wcontainers_direct3d_12::{Device, GraphicsPipelineDesc, PipelineId};
 use wcontainers_directx_graphics_infrastructure::dxgi;
 use wcontainers_directx_graphics_infrastructure::stage_registers::INPUT_SLOTS;
-use wcontainers_gpu::{Gpu, error::DeviceStatus, slow::SlowPath, state::ColorWrites};
-use wcontainers_gpu_webgpu::WebGpu;
+use wcontainers_gpu::{
+    Gpu, StandaloneGpu, error::DeviceStatus, slow::SlowPath, state::ColorWrites,
+};
+use wcontainers_gpu_webgpu::{WebGpu, WebGpuConfig};
 
 const VS: &[u8] = include_bytes!("registers/vs.dxbc");
 const PS: &[u8] = include_bytes!("registers/ps.dxbc");
@@ -62,18 +64,14 @@ fn webgpu() -> WebGpu {
         Ok("metal") => wgpu::Backends::METAL,
         _ => wgpu::Backends::PRIMARY,
     };
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    desc.backends = backends;
-    desc.flags |= WebGpu::INSTANCE_FLAGS;
-    let instance = wgpu::Instance::new(desc);
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    }))
-    .expect("a GPU adapter");
-    let desc = WebGpu::device_descriptor(&adapter);
-    let (device, queue) = pollster::block_on(adapter.request_device(&desc)).unwrap();
-    WebGpu::new(&adapter, device, queue)
+    <WebGpu as StandaloneGpu>::new(WebGpuConfig {
+        backends,
+        lavapipe: true,
+        software: false,
+        required: wgpu::Features::empty(),
+        without: wgpu::Features::empty(),
+    })
+    .expect("a GPU adapter, or lavapipe where the Vulkan loader names it alone")
 }
 
 fn buffer(size: u64) -> ResourceDesc {

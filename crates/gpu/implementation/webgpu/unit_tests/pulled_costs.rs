@@ -2,18 +2,11 @@
 //! (tests/scenes/pulled.rs; the same runs in Chrome through web/check): every route draws the same
 //! picture, and each route's timings are printed.
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs; `WEBGPU_FRAMES` frames per route (default 20);
-//! `WEBGPU_STREAMS` the streams a draw, a comma-separated list (default 4, 8 and the device's most,
-//! up to 16). Timings that matter run alone: `gpu-job --alone`.
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs; `WEBGPU_FRAMES` frames per route (default
+//! 20); `WEBGPU_STREAMS` the streams a draw, a comma-separated list (default 4, 8 and the device's
+//! most, up to 16). Timings that matter run alone: `gpu-job --alone`.
 
-use wcontainers_graphics_test::scene;
-
-#[allow(dead_code)]
-#[path = "scenes/draw.rs"]
-mod draw;
-
-#[path = "scenes/pulled.rs"]
-mod pulled;
+use super::{draw, pulled};
 
 use std::sync::OnceLock;
 use std::time::Instant;

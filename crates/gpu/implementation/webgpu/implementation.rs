@@ -18,8 +18,15 @@ mod layout;
 mod memory;
 mod packed;
 mod probe;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod unit_tests;
 mod vertex;
 mod wait;
+
+// The unit tests include modules the scenes page and the integration tests share, which name the
+// crate by its package name.
+#[cfg(all(test, not(target_arch = "wasm32")))]
+extern crate self as wcontainers_gpu_webgpu;
 
 use crate::draw::{
     begin_pass_impl, binding_set, close_pass, dispatch_impl, draw_impl, prepare_impl, resolve_impl,
@@ -54,9 +61,8 @@ use wcontainers_gpu::{
     state::ProvokingVertex, state::RasterDesc, state::StepMode, state::VertexLayoutDesc,
 };
 
-pub use draw::Counters;
-pub use fill::UNORM24_MAX;
-pub use probe::Depth24;
+use draw::Counters;
+use probe::Depth24;
 #[cfg(target_arch = "wasm32")]
 pub use wait::block_on;
 
@@ -106,6 +112,8 @@ pub struct WebGpu {
     query_sum: Option<(wgpu::ComputePipeline, wgpu::BindGroupLayout)>,
     vertices: vertex::Vertices,
     fills: fill::Fills,
+    /// What the probe of how `depth24plus` is stored found, which the unit tests read.
+    #[cfg(test)]
     depth24: Depth24,
     /// Colour clears reach the API as floats, so integers past 2^24 cannot be cleared exactly.
     float_clears: bool,
@@ -619,22 +627,36 @@ const MAX_ANISOTROPY: u16 = 16;
 /// The start of the line the back end prints on standard error at each power of two frames
 /// presented: the frames, then every counter ([`Counters`]) and every slow path taken, each as
 /// `name=count`, so any program's log gives what a frame costs between two reports.
-pub const FRAME_REPORT: &str = "webgpu: frames=";
+const FRAME_REPORT: &str = "webgpu: frames=";
 
-/// What a WebGPU back end built alone is made from: which of wgpu's native APIs to open, and whether
-/// lavapipe, Mesa's Vulkan driver that draws on the CPU, is taken when no GPU is there.
+/// What a WebGPU back end built alone is made from.
 ///
-/// wgpu ranks a GPU before a CPU adapter, so `lavapipe` matters only on a machine without one (the
-/// build machines). Any other CPU adapter is refused, and lavapipe too unless the Vulkan loader is told
-/// to load only it ([`VULKAN_DRIVER_VARIABLES`] names its manifest). A host that made its adapter and
-/// device itself (the browser, whose adapter answers only asynchronously) builds the back end from them
-/// instead.
+/// Which of wgpu's native APIs to open, whether lavapipe (Mesa's Vulkan driver that draws on the
+/// CPU) is taken when no GPU is there, whether the system's software adapter is asked for instead,
+/// and which wgpu features the device must have or lack. wgpu ranks a GPU before a CPU adapter, so
+/// `lavapipe` matters only on a machine without one (the build machines). Any other CPU adapter is
+/// refused unless `software` asks for it, and lavapipe too unless the Vulkan loader is told to load
+/// only it ([`VULKAN_DRIVER_VARIABLES`] names its manifest). A host that made its adapter and
+/// device itself (the browser, whose adapter answers only asynchronously, and a host whose windows'
+/// surfaces must come from the device's own wgpu instance) builds the back end from them instead.
 #[derive(Debug)]
 pub struct WebGpuConfig {
     /// The native APIs wgpu may open.
     pub backends: wgpu::Backends,
     /// Lavapipe is taken when it is the only adapter and the loader's variables name it.
     pub lavapipe: bool,
+    /// Whether the system's software adapter (WARP on Windows) is taken instead of a GPU.
+    ///
+    /// A test drawing against Direct3D on WARP asks for it.
+    pub software: bool,
+    /// The `wgpu` features the device is made with beyond the back end's own.
+    ///
+    /// The back end is not made where the adapter lacks one.
+    pub required: wgpu::Features,
+    /// The `wgpu` features the device is made without though the adapter has them.
+    ///
+    /// A browser lacking them gives such a device.
+    pub without: wgpu::Features,
 }
 
 /// The Vulkan loader's variables that name the only driver manifests it loads.
@@ -667,6 +689,7 @@ impl StandaloneGpu for WebGpu {
         let instance = wgpu::Instance::new(desc);
         let adapter = ready(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: config.software,
             ..Default::default()
         }))?
         .map_err(|e| e.to_string())?;
@@ -675,14 +698,27 @@ impl StandaloneGpu for WebGpu {
             && info.backend == wgpu::Backend::Vulkan
             && info.name.contains(LAVAPIPE_DRIVER)
             && lavapipe_named();
-        if info.device_type == wgpu::DeviceType::Cpu && !lavapipe {
+        let cpu = info.device_type == wgpu::DeviceType::Cpu;
+        if config.software && !cpu {
+            return Err(format!(
+                "the software adapter was asked for, and {} is not one",
+                info.name
+            ));
+        }
+        if cpu && !lavapipe && !config.software {
             return Err(format!(
                 "the adapter is the software {}, not a GPU (lavapipe is taken only where the Vulkan loader is told to load it alone)",
                 info.name
             ));
         }
-        let (device, queue) = ready(adapter.request_device(&Self::device_descriptor(&adapter)))?
-            .map_err(|e| e.to_string())?;
+        let lacking = config.required - adapter.features();
+        if !lacking.is_empty() {
+            return Err(format!("{} lacks {lacking:?}", info.name));
+        }
+        let mut desc = Self::device_descriptor(&adapter);
+        desc.required_features |= config.required;
+        desc.required_features.remove(config.without);
+        let (device, queue) = ready(adapter.request_device(&desc))?.map_err(|e| e.to_string())?;
         Ok(WebGpu::new(&adapter, device, queue))
     }
 }
@@ -706,8 +742,8 @@ impl WebGpu {
     pub const INSTANCE_FLAGS: wgpu::InstanceFlags =
         wgpu::InstanceFlags::AUTOMATIC_TIMESTAMP_NORMALIZATION;
 
-    /// The features this back end uses where the adapter has them, and the adapter's highest limits:
-    /// what to make its device with.
+    /// The features this back end uses where the adapter has them, and the adapter's highest
+    /// limits: what to make its device with.
     pub fn device_descriptor(adapter: &wgpu::Adapter) -> wgpu::DeviceDescriptor<'static> {
         let wanted = wgpu::Features::DEPTH_CLIP_CONTROL
             | wgpu::Features::TEXTURE_COMPRESSION_BC
@@ -817,12 +853,14 @@ impl WebGpu {
             counters: Counters::default(),
             usages,
             resolved_by_draw,
+            #[cfg(test)]
             depth24,
         }
     }
 
     /// What the probe of how `depth24plus` is stored found.
-    pub fn depth24(&self) -> Depth24 {
+    #[cfg(test)]
+    pub(crate) fn depth24(&self) -> Depth24 {
         self.depth24
     }
 
@@ -833,12 +871,13 @@ impl WebGpu {
     }
 
     /// What the caches have made so far.
-    pub fn counters(&self) -> &Counters {
+    #[cfg(test)]
+    pub(crate) fn counters(&self) -> &Counters {
         &self.counters
     }
 
     /// The line printed at each power of two frames presented ([`FRAME_REPORT`]).
-    pub fn frame_report(&self) -> String {
+    fn frame_report(&self) -> String {
         let mut line = format!("{FRAME_REPORT}{}", self.presented);
         if let Ok(serde_json::Value::Object(fields)) = serde_json::to_value(self.counters) {
             for (name, count) in fields {
@@ -855,7 +894,8 @@ impl WebGpu {
     }
 
     /// How many pipelines (render and compute) and program layouts the caches hold now.
-    pub fn held(&self) -> (usize, usize) {
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> (usize, usize) {
         self.caches.held()
     }
 

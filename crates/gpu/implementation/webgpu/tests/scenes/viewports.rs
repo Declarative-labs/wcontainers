@@ -13,7 +13,7 @@ use wcontainers_gpu::{
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
-use crate::{draw, scene};
+use super::{draw, scene};
 
 /// The picture's size.
 pub const SIZE: (u32, u32) = (256, 128);

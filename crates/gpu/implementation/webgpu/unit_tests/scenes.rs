@@ -3,13 +3,7 @@
 //!
 //! Needs a GPU. `WEBGPU_API` picks wgpu's API (dx12, vulkan, metal); the default is the platform's.
 
-use wcontainers_graphics_test::scene;
-
-#[allow(dead_code)]
-#[path = "scenes/draw.rs"]
-mod draw;
-
-mod allowance;
+use super::{allowance, draw, scene};
 
 use draw::Twist;
 use scene::Scene;

@@ -27,36 +27,36 @@ use crate::{
 
 /// How many objects the caches made, which tests read to prove the caching.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
-pub struct Counters {
+pub(crate) struct Counters {
     /// Render and compute pipelines built.
-    pub pipelines: u64,
+    pub(crate) pipelines: u64,
     /// `setPipeline` calls.
-    pub pipeline_binds: u64,
+    pub(crate) pipeline_binds: u64,
     /// Bind groups made.
-    pub bind_groups: u64,
+    pub(crate) bind_groups: u64,
     /// Bind group layouts made.
-    pub group_layouts: u64,
+    pub(crate) group_layouts: u64,
     /// Buffers given fresh storage by a `Discard` write.
-    pub renames: u64,
+    pub(crate) renames: u64,
     /// Textures given fresh storage by a `Discard` write.
-    pub texture_renames: u64,
+    pub(crate) texture_renames: u64,
     /// Renames of buffers or textures that took storage from the pool instead of making it.
-    pub spares_reused: u64,
+    pub(crate) spares_reused: u64,
     /// Pooled storage destroyed because the buffer or texture whose renames made it was destroyed.
-    pub spares_dropped: u64,
+    pub(crate) spares_dropped: u64,
     /// Uniform arena buffers moved to a new slice by a `Discard` write.
-    pub slices: u64,
+    pub(crate) slices: u64,
     /// Writes ordered through a staging buffer and a copy.
-    pub staged_writes: u64,
+    pub(crate) staged_writes: u64,
     /// Bytes the device was asked to write into buffers (`write_buffer`, every route).
-    pub buffer_bytes: u64,
+    pub(crate) buffer_bytes: u64,
     /// Bytes the device was asked to write into textures (`write_texture`, as given).
-    pub texture_bytes: u64,
+    pub(crate) texture_bytes: u64,
     /// Staging rings made (the first, and each larger one a submit's staged bytes needed).
-    pub staging_rings: u64,
+    pub(crate) staging_rings: u64,
     /// Query rings made, which resolved query results are taken from as staged bytes are from
     /// the staging ring.
-    pub query_rings: u64,
+    pub(crate) query_rings: u64,
 }
 
 /// An immutable block, made once per distinct value.
@@ -332,6 +332,7 @@ impl Caches {
     }
 
     /// How many pipelines and program layouts are held.
+    #[cfg(test)]
     pub(crate) fn held(&self) -> (usize, usize) {
         (
             self.pipelines.len() + self.computes.len(),

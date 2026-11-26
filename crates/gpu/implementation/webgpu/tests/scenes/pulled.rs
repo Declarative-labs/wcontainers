@@ -1,11 +1,11 @@
 //! What instance data fetched in the vertex program costs (the fronts' route for step rates other
-//! than one, `InstanceRateInShader`) against vertex buffers, on a scene of many objects each with its
-//! own buffers, at a chosen number of streams a draw: the routes draw the same picture; CPU time to
-//! record and submit a frame and GPU time (timestamps around the pass) are measured, first frame and
-//! the median of the rest. Every buffer of this back end already has storage usage
+//! than one, `InstanceRateInShader`) against vertex buffers, on a scene of many objects each with
+//! its own buffers, at a chosen number of streams a draw: the routes draw the same picture; CPU
+//! time to record and submit a frame and GPU time (timestamps around the pass) are measured, first
+//! frame and the median of the rest. Every buffer of this back end already has storage usage
 //! (`UnalignedBufferEdge`), so the storage usage the fronts ask for adds nothing here; what differs
 //! is the fetch and a binding set per object. Sets made per draw must find the bind groups their
-//! equals of the frame before made. Shared by tests/pulled.rs and the browser page.
+//! equals of the frame before made. Shared by unit_tests/pulled_costs.rs and the browser page.
 
 use std::fmt::Write;
 
@@ -20,13 +20,13 @@ use wcontainers_gpu::{
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
-use crate::draw;
+use super::draw;
 
 type B = WebGpu;
 type Buffer = <B as Gpu>::Buffer;
 
 /// The side of the square target, the reference scenes' width.
-pub const TARGET_SIDE: u32 = crate::scene::WIDTH;
+pub const TARGET_SIDE: u32 = super::scene::WIDTH;
 /// Objects, one draw each.
 pub const OBJECTS: u32 = 256;
 /// Instances a draw.
@@ -69,7 +69,8 @@ pub struct Timing {
     pub streams: u32,
     pub cpu_ms: Vec<f64>,
     pub gpu_ms: Vec<f64>,
-    pub bind_groups: u64,
+    /// How many bind groups the frames made, where counted.
+    pub bind_groups: Option<u64>,
     picture: Vec<u8>,
 }
 
@@ -91,7 +92,7 @@ impl Timing {
             self.cpu_ms.len() - 1,
             median(&self.cpu_ms[1..]),
             median(&self.gpu_ms[1..]),
-            self.bind_groups
+            draw::shown(self.bind_groups)
         )
     }
 }
@@ -261,13 +262,13 @@ fn run(b: &mut B, route: Route, streams: u32, frames: u32, now: fn() -> f64) -> 
     };
     let stamps = b.create_query_set(QueryKind::Timestamp, 2).map_err(gpu)?;
     let results = draw::buffer(b, &[0; 16], BufferUsage::COPY_SRC | BufferUsage::READ_BACK)?;
-    let groups_before = b.counters().bind_groups;
+    let groups_before = super::made(b);
     let mut timing = Timing {
         route,
         streams,
         cpu_ms: Vec::new(),
         gpu_ms: Vec::new(),
-        bind_groups: 0,
+        bind_groups: None,
         picture: Vec::new(),
     };
     for _ in 0..frames.max(2) {
@@ -348,7 +349,7 @@ fn run(b: &mut B, route: Route, streams: u32, frames: u32, now: fn() -> f64) -> 
         let t = |i: usize| u64::from_le_bytes(bytes[i * 8..][..8].try_into().unwrap());
         timing.gpu_ms.push(t(1).saturating_sub(t(0)) as f64 / 1e6);
     }
-    timing.bind_groups = b.counters().bind_groups - groups_before;
+    timing.bind_groups = draw::since(super::made(b), groups_before, |m| m.bind_groups);
     let rb = b
         .read_back(&ReadSource::Texture {
             region: TextureRegion {
@@ -404,8 +405,8 @@ pub fn measure(b: &mut B, streams: u32, frames: u32, now: fn() -> f64) -> Result
     ensure!(
         timings[1].bind_groups == timings[2].bind_groups,
         "sets made per draw made {} bind groups in {frames} frames, kept sets {}",
-        timings[1].bind_groups,
-        timings[2].bind_groups
+        draw::shown(timings[1].bind_groups),
+        draw::shown(timings[2].bind_groups)
     );
     for t in &timings[1..] {
         ensure!(

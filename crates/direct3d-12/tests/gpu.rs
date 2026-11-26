@@ -10,8 +10,8 @@ use wcontainers_direct3d_12::state::{
     CULL_MODE_NONE, FILL_MODE_SOLID, Raster, TOPOLOGY_TYPE_TRIANGLE,
 };
 use wcontainers_directx_graphics_infrastructure::dxgi;
-use wcontainers_gpu::{Gpu, caps::Features, error::DeviceStatus, slow::SlowPath};
-use wcontainers_gpu_webgpu::WebGpu;
+use wcontainers_gpu::{Gpu, StandaloneGpu, caps::Features, error::DeviceStatus, slow::SlowPath};
+use wcontainers_gpu_webgpu::{WebGpu, WebGpuConfig};
 
 /// The rig's shaders passing a three-component position and a colour.
 const COLOR_VS: &[u8] = include_bytes!("../../graphics-test/shaders/dxil/common.vs_color.dxil");
@@ -29,27 +29,17 @@ fn webgpu_without(hidden: wgpu::Features) -> WebGpu {
         Ok("metal") => wgpu::Backends::METAL,
         _ => wgpu::Backends::PRIMARY,
     };
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    desc.backends = backends;
-    desc.flags |= WebGpu::INSTANCE_FLAGS;
-    let instance = wgpu::Instance::new(desc);
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    }))
+    // No CPU adapter: lavapipe is not taken, as no other is.
+    let b = <WebGpu as StandaloneGpu>::new(WebGpuConfig {
+        backends,
+        lavapipe: false,
+        software: false,
+        required: wgpu::Features::empty(),
+        without: hidden,
+    })
     .expect("a GPU adapter");
-    let info = adapter.get_info();
-    assert_ne!(
-        info.device_type,
-        wgpu::DeviceType::Cpu,
-        "{} is not a GPU",
-        info.name
-    );
-    eprintln!("adapter: {} ({:?})", info.name, info.backend);
-    let mut desc = WebGpu::device_descriptor(&adapter);
-    desc.required_features.remove(hidden);
-    let (device, queue) = pollster::block_on(adapter.request_device(&desc)).unwrap();
-    WebGpu::new(&adapter, device, queue)
+    eprintln!("adapter: {}", b.caps().adapter.name);
+    b
 }
 
 /// The rig's allowance for `name` among the Direct3D 12 references: the largest channel difference

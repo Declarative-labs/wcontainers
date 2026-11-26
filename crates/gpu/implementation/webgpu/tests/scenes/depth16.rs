@@ -1,5 +1,5 @@
 //! Copies between `depth16unorm` and the colour formats of Direct3D's `R16_TYPELESS` group: shared
-//! by tests/copies.rs and the browser page.
+//! by unit_tests/copies.rs and the browser page.
 
 use wcontainers_gpu::{
     Gpu, caps::FormatUse, error::DeviceStatus, format::Format, resource::Extent, resource::Origin,
@@ -7,11 +7,11 @@ use wcontainers_gpu::{
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
-use crate::draw;
+use super::draw;
 
 type Tex = <WebGpu as Gpu>::Texture;
 
-/// The size of the textures the copies here and in tests/copies.rs move between.
+/// The size of the textures the copies here and in unit_tests/copies.rs move between.
 pub const W: u32 = 8;
 pub const H: u32 = 4;
 

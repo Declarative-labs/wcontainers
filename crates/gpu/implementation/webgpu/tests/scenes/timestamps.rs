@@ -11,7 +11,7 @@ use wcontainers_gpu::{
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
-use crate::draw;
+use super::draw;
 
 /// The side of the square target the work draws into.
 pub const SIZE: u32 = 512;

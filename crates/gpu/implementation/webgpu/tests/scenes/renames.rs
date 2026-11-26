@@ -1,14 +1,12 @@
-//! Textures written with `Discard` while recorded work uses them, renamed from a pool (plan 4.6),
-//! and the small full-target draws the bind group tests use. Shared by tests/bindings.rs and the
-//! browser page.
+//! Writing one texel with `Discard`, and the small full-target draws the bind group tests use.
+//! Shared by the crate's unit tests, tests/features.rs, tests/direct3d.rs and the browser page.
 
-use crate::draw;
+use super::draw;
 use wcontainers_gpu::{
-    Gpu, Object, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp,
-    draw::PassDesc, draw::StoreOp, draw::Viewport, error::DeviceStatus, format::Format,
-    resource::BindingEntry, resource::BindingResource, resource::Extent, resource::Origin,
+    Gpu, draw::ColorAttachment, draw::DrawCall, draw::DrawRange, draw::LoadOp, draw::PassDesc,
+    draw::StoreOp, draw::Viewport, format::Format, resource::Extent, resource::Origin,
     resource::ReadSource, resource::TextureRegion, resource::TextureUsage, resource::WriteMode,
-    shader::StageSet, slow::SlowPath, state::BlendDesc, state::Topology,
+    state::BlendDesc, state::Topology,
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
@@ -167,91 +165,4 @@ pub fn one_texel(b: &mut WebGpu, texture: &<WebGpu as Gpu>::Texture, x: u32, rgb
         1,
         WriteMode::Discard,
     );
-}
-
-/// A scripted scene of four frames, each of four draws loading a texture that a `Discard` write
-/// fills before every draw (Direct3D 11's `Map(WRITE_DISCARD)` of a dynamic texture): the writes
-/// after a frame's first draw rename the texture, the first frame's renames make textures and later
-/// frames' take the pool's, nothing splits the pass, and each pixel is its own write's red. Then a
-/// `Discard` of the texture the open pass draws into cannot rename it: it splits the pass.
-pub fn discarded_textures_are_renamed_from_the_pool(b: &mut WebGpu) {
-    let (target, view) = draw::texture_2d(
-        b,
-        Format::Rgba8Unorm,
-        4,
-        1,
-        TextureUsage::RENDER | TextureUsage::COPY_SRC | TextureUsage::COPY_DST,
-    )
-    .unwrap();
-    let k = Kit {
-        program: draw::program(b, LOAD_WGSL).unwrap(),
-        target,
-        view,
-        ..kit(b, Format::Rgba8Unorm, 4, &draw::opaque())
-    };
-    let (texture, texture_view) = draw::texture_2d(
-        b,
-        Format::Rgba8Unorm,
-        1,
-        1,
-        TextureUsage::SAMPLE | TextureUsage::COPY_DST,
-    )
-    .unwrap();
-    let set = b
-        .create_binding_set(&[BindingEntry {
-            binding: 32,
-            stages: StageSet::FRAGMENT,
-            resource: BindingResource::Texture(&texture_view),
-        }])
-        .unwrap();
-    let red = |frame: u32, i: u32| (frame * 4 + i) as u8 * 15 + 7;
-    let mut seen = Vec::new();
-    for frame in 0..4 {
-        let before = *b.counters();
-        begin(b, &k, [0.0, 1.0, 0.0, 1.0]);
-        for i in 0..4 {
-            one_texel(b, &texture, 0, [red(frame, i), 9, 9, 255]);
-            draw_at(b, &k, &set, Some(i));
-        }
-        let got = finish(b, &k, 4);
-        // The frame's work is done, so the storage it gave up is free for the next.
-        let fence = b.submit();
-        b.wait_fence(&fence);
-        let want: Vec<u8> = (0..4).flat_map(|i| [red(frame, i), 0, 0, 255]).collect();
-        assert_eq!(got, want, "frame {frame}");
-        let c = *b.counters();
-        seen.push((
-            c.texture_renames - before.texture_renames,
-            c.spares_reused - before.spares_reused,
-        ));
-    }
-    eprintln!("texture renames and spares reused per frame: {seen:?}");
-    assert_eq!(seen, [(3, 0), (3, 3), (3, 3), (3, 3)]);
-    assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 0);
-    // The pass draws into the target: a discard of it is ordered in the pass instead.
-    let before = *b.counters();
-    begin(b, &k, [0.0, 1.0, 0.0, 1.0]);
-    draw_at(b, &k, &set, Some(0));
-    one_texel(b, &k.target, 3, [1, 2, 3, 4]);
-    draw_at(b, &k, &set, Some(1));
-    let got = finish(b, &k, 4);
-    let last = red(3, 3);
-    assert_eq!(
-        got,
-        [
-            [last, 0, 0, 255],
-            [last, 0, 0, 255],
-            [0, 255, 0, 255],
-            [1, 2, 3, 4]
-        ]
-        .concat()
-    );
-    assert_eq!(b.counters().texture_renames, before.texture_renames);
-    assert_eq!(b.slow_paths().counts[SlowPath::WriteSplitPass as usize], 1);
-    b.destroy(Object::Texture(texture));
-    let fence = b.submit();
-    b.wait_fence(&fence);
-    b.submit();
-    assert_eq!(b.counters().spares_dropped, 3, "{:?}", b.counters());
-    assert_eq!(b.status(), DeviceStatus::Ok);
 }

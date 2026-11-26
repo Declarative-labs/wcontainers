@@ -1,7 +1,8 @@
 //! Query sets larger than WebGPU's 4096 queries a set, paged over several of its sets, and query
-//! results taken from one ring frame after frame. Shared by tests/queries.rs and the browser page.
+//! results taken from one ring frame after frame. Shared by unit_tests/query_sets.rs and the
+//! browser page.
 
-use crate::{draw, scene};
+use super::{draw, scene};
 use wcontainers_gpu::{
     Gpu, caps::Features, draw::ColorAttachment, draw::LoadOp, draw::PassDesc, draw::StoreOp,
     error::DeviceStatus, resource::BufferUsage, resource::QueryKind, resource::WriteMode,
@@ -155,7 +156,7 @@ pub fn results_ring(b: &mut WebGpu, frames: u32) -> Result<String, String> {
     let set = gpu(b.create_query_set(QueryKind::OcclusionAny, 2))?;
     let results = draw::buffer(b, &[0; 16], BufferUsage::COPY_SRC | BufferUsage::READ_BACK)
         .map_err(|e| e.to_string())?;
-    let rings = b.counters().query_rings;
+    let rings = super::made(b);
     for frame in 0..frames {
         b.begin_pass(&pass_with(&t, &set));
         b.begin_query(0);
@@ -182,15 +183,24 @@ pub fn results_ring(b: &mut WebGpu, frames: u32) -> Result<String, String> {
             ));
         }
     }
-    let (made, all) = (b.counters().query_rings - rings, b.counters().query_rings);
-    if b.status() != DeviceStatus::Ok || made > 1 || all != 1 {
+    let after = super::made(b);
+    let (made, all) = (
+        draw::since(after, rings, |m| m.query_rings),
+        after.map(|m| m.query_rings),
+    );
+    if b.status() != DeviceStatus::Ok || made.is_some_and(|n| n > 1) || all.is_some_and(|n| n != 1)
+    {
         return Err(format!(
-            "{frames} frames of results made {made} query rings, {all} on the device; {:?}",
+            "{frames} frames of results made {} query rings, {} on the device; {:?}",
+            draw::shown(made),
+            draw::shown(all),
             b.status()
         ));
     }
     Ok(format!(
-        "query results: {frames} frames resolved and read as drawn; {made} query rings made in \
-         them, 1 on the device"
+        "query results: {frames} frames resolved and read as drawn; {} query rings made in \
+         them, {} on the device",
+        draw::shown(made),
+        draw::shown(all)
     ))
 }

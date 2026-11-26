@@ -47,10 +47,13 @@ use wcontainers_directx_graphics_infrastructure::{
     dxgi, dxgi_format, support1, support2, typeless_group,
 };
 use wcontainers_gpu::{
-    Gpu, error::DeviceStatus, format::FORMAT_FACTS, format::FormatKind, resource::CUBE_FACES,
-    state::ColorWrites,
+    Gpu, StandaloneGpu, error::DeviceStatus, format::FORMAT_FACTS, format::FormatKind,
+    resource::CUBE_FACES, state::ColorWrites,
 };
-use wcontainers_gpu_webgpu::{UNORM24_MAX, WebGpu};
+use wcontainers_gpu_webgpu::{WebGpu, WebGpuConfig};
+
+/// The largest 24-bit unorm depth's integer, as `CopyBufferTexture` reads depth words.
+const UNORM24_MAX: u32 = (1 << 24) - 1;
 
 /// The DXGI format values up to `B4G4R4A4_UNORM`, the last Direct3D 12 defines below its video
 /// and sampler feedback formats.
@@ -65,18 +68,14 @@ fn webgpu() -> WebGpu {
         Ok("metal") => wgpu::Backends::METAL,
         _ => wgpu::Backends::PRIMARY,
     };
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    desc.backends = backends;
-    desc.flags |= WebGpu::INSTANCE_FLAGS;
-    let instance = wgpu::Instance::new(desc);
-    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-        power_preference: wgpu::PowerPreference::HighPerformance,
-        ..Default::default()
-    }))
-    .expect("a GPU adapter");
-    let desc = WebGpu::device_descriptor(&adapter);
-    let (device, queue) = pollster::block_on(adapter.request_device(&desc)).unwrap();
-    WebGpu::new(&adapter, device, queue)
+    <WebGpu as StandaloneGpu>::new(WebGpuConfig {
+        backends,
+        lavapipe: true,
+        software: false,
+        required: wgpu::Features::empty(),
+        without: wgpu::Features::empty(),
+    })
+    .expect("a GPU adapter, or lavapipe where the Vulkan loader names it alone")
 }
 
 fn texture(

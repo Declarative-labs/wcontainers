@@ -2,17 +2,10 @@
 //! counted, and the first draws timed with and without it (printed; `--nocapture` shows them). The
 //! same draws run in Chrome through the scenes example (web/check).
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs. `WEBGPU_PROGRAMS` sets how many programs each
-//! half draws (default 16).
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs. `WEBGPU_PROGRAMS` sets how many programs
+//! each half draws (default 16).
 
-use wcontainers_graphics_test::scene;
-
-#[allow(dead_code)]
-#[path = "scenes/draw.rs"]
-mod draw;
-
-#[path = "scenes/prepare.rs"]
-mod prepare;
+use super::{draw, prepare};
 
 use std::sync::OnceLock;
 use std::time::Instant;
@@ -50,9 +43,9 @@ fn prepared_combinations_build_nothing_at_their_first_draw() {
     eprintln!("{}", prepared.line(true));
     assert_eq!(
         (unprepared.misses, unprepared.built),
-        (u64::from(n), u64::from(n))
+        (u64::from(n), Some(u64::from(n)))
     );
-    assert_eq!((prepared.misses, prepared.built), (0, 0));
+    assert_eq!((prepared.misses, prepared.built), (0, Some(0)));
 }
 
 /// A prepared strip is built for both index formats, so its indexed draws build nothing.

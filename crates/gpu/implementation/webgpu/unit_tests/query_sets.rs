@@ -1,16 +1,9 @@
 //! Query sets past WebGPU's 4096 queries a set, and query results taken from one ring
 //! (tests/scenes/queries.rs; the same runs in Chrome through web/check).
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs.
 
-use wcontainers_graphics_test::scene;
-
-#[allow(dead_code)]
-#[path = "scenes/draw.rs"]
-mod draw;
-
-#[path = "scenes/queries.rs"]
-mod queries;
+use super::{draw, queries};
 
 use wcontainers_gpu_webgpu::WebGpu;
 

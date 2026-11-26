@@ -2,19 +2,9 @@
 //! per draw, sets differing only in a dynamic offset share one, and blending into float targets is
 //! done or refused, never dropped. Every picture is checked.
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs.
 
-use wcontainers_graphics_test::scene;
-
-#[allow(dead_code)]
-#[path = "scenes/draw.rs"]
-mod draw;
-
-#[path = "scenes/renames.rs"]
-mod renames;
-
-#[path = "scenes/views.rs"]
-mod views;
+use super::{draw, pool, renames, views};
 
 use renames::{Kit, LOAD_WGSL, begin, draw_at, finish, kit};
 
@@ -82,7 +72,8 @@ fn unorm(c: [u8; 4]) -> Vec<u8> {
 }
 
 /// Twenty draws, each after a `Discard` of the constant buffer they read (Direct3D 11's
-/// `Map(WRITE_DISCARD)` per draw): one bind group, no renames, and each pixel its own draw's colour.
+/// `Map(WRITE_DISCARD)` per draw): one bind group, no renames, and each pixel its own draw's
+/// colour.
 #[test]
 fn constants_rewritten_per_draw_make_no_bind_group_per_draw() {
     const DRAWS: u32 = 20;
@@ -108,6 +99,53 @@ fn constants_rewritten_per_draw_make_no_bind_group_per_draw() {
         c.slices - before.slices,
         u64::from(DRAWS - 1),
         "every write after the first draw moves to a new slice"
+    );
+}
+
+/// Constants made as the Direct3D 11 front makes them, rewritten per draw, make no bind group per
+/// draw.
+///
+/// The buffer is copied from and to, uniform and storage, written often
+/// (crates/direct3d-11/src/device.rs `gpu_buffer`), and rewritten with `Discard` before each of
+/// three draws, as the front's `Map(WRITE_DISCARD)` and its `UpdateSubresource` of a whole constant
+/// buffer write it: no bind group after the first draw's. A known failure: the uniform arena takes
+/// only buffers whose usage is uniform alone, so each rewrite gives the buffer new storage and its
+/// bind group is made again. Moved here from crates/directx/tests/com.rs, which could count the
+/// bind groups only through the back end's counters.
+#[test]
+#[ignore = "a known failure: the uniform arena takes only buffers whose usage is uniform alone"]
+fn constants_as_the_direct3d_11_front_makes_them_rewritten_per_draw_make_no_bind_group_per_draw() {
+    const DRAWS: u32 = 3;
+    let mut b = device();
+    let k = kit(&mut b, Format::Rgba8Unorm, DRAWS, &draw::opaque());
+    let ub = b
+        .create_buffer(&BufferDesc {
+            size: 16,
+            usage: BufferUsage::COPY_SRC
+                | BufferUsage::COPY_DST
+                | BufferUsage::UNIFORM
+                | BufferUsage::STORAGE,
+            intent: MapIntent::Often,
+        })
+        .unwrap();
+    let s = set(&mut b, &ub, 0);
+    begin(&mut b, &k, [0.0; 4]);
+    let mut after_first = 0;
+    for i in 0..DRAWS {
+        b.write_buffer(&ub, 0, &unorm(color_of(i)), WriteMode::Discard);
+        draw_at(&mut b, &k, &s, Some(i));
+        if i == 0 {
+            after_first = b.counters().bind_groups;
+        }
+    }
+    let got = finish(&mut b, &k, 4);
+    assert_eq!(b.status(), DeviceStatus::Ok);
+    let want: Vec<u8> = (0..DRAWS).flat_map(color_of).collect();
+    assert_eq!(got, want, "a draw read another draw's constants");
+    assert_eq!(
+        b.counters().bind_groups - after_first,
+        0,
+        "bind groups made after the first draw"
     );
 }
 
@@ -238,10 +276,11 @@ fn load_only_textures_keep_one_pipeline_for_any_view() {
 }
 
 /// A scripted scene of four frames, each of four draws loading a texture that a `Discard` write
-/// fills before every draw (tests/scenes/renames.rs; in Chrome too, through web/check).
+/// fills before every draw (tests/scenes/pool.rs; in Chrome too, through web/check, without its
+/// counts).
 #[test]
 fn discarded_textures_are_renamed_from_the_pool() {
-    renames::discarded_textures_are_renamed_from_the_pool(&mut device());
+    pool::discarded_textures_are_renamed_from_the_pool(&mut device());
 }
 
 /// An sRGB view of a texture that also allows storage reads as an sRGB texture does, also after a

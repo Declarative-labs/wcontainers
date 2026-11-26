@@ -3,7 +3,7 @@
 //! raster.rs): four of the eight viewports start half a pixel down. Wireframe filling
 //! (`POLYGON_MODE`) against the same scenes' fill picture.
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs.
 
 use wcontainers_graphics_test::scene;
 

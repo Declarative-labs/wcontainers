@@ -1,12 +1,12 @@
 //! Block-compressed textures sampled natively and, on a device made without
 //! `texture-compression-bc`, decoded (`BlockDecoded`): every BC format's seeded blocks, each level
 //! loaded texel by texel on both devices and compared, and both read back as the blocks written,
-//! also after copies between two BC textures, from a buffer, into a buffer, and from an uncompressed
-//! texture whose texels are the blocks.
+//! also after copies between two BC textures, from a buffer, into a buffer, and from an
+//! uncompressed texture whose texels are the blocks.
 //!
-//! Needs a GPU with BC (the RTX 3080 has it); `WEBGPU_API` as in tests/scenes.rs; `WEBGPU_SEED`
-//! picks the blocks and `WEBGPU_CASES` how many textures of seeded blocks each test makes per format
-//! (default 1).
+//! Needs a GPU with BC (the RTX 3080 has it); `WEBGPU_API` as in unit_tests/scenes.rs;
+//! `WEBGPU_SEED` picks the blocks and `WEBGPU_CASES` how many textures of seeded blocks each test
+//! makes per format (default 1).
 
 use wcontainers_graphics_test::scene;
 

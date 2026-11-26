@@ -1,6 +1,6 @@
 //! Colour clears of 32-bit float formats keep the value's bits: denormals, negative zero and NaN
-//! payloads read back as given, as Direct3D's storage clears take them. Shared by tests/writes.rs
-//! and the browser page.
+//! payloads read back as given, as Direct3D's storage clears take them. Shared by
+//! unit_tests/writes.rs and the browser page.
 
 use wcontainers_gpu::{
     ClearValue, Gpu, error::DeviceStatus, format::FORMAT_FACTS, format::Format, resource::Extent,

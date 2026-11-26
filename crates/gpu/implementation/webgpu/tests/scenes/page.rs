@@ -1,5 +1,5 @@
-//! Draws the rig's three reference scenes (and the quads again on depth and stencil, `draw::PICTURES`)
-//! through the WebGPU back end and saves them as PNG files.
+//! Draws the rig's three reference scenes (and the quads again on depth and stencil,
+//! `draw::PICTURES`) through the WebGPU back end and saves them as PNG files.
 //!
 //! Natively: `scenes <dx12|vulkan|metal> <out-dir> [none|blend-factor|depth-function]` writes
 //! `webgpu-<api>-<picture>.png`. Built for WebAssembly, web/scenes.html calls `draw_scene` and
@@ -7,9 +7,10 @@
 //! (`prepare_timings`, prepare.rs), checks timestamps (`timestamps`, timestamps.rs) and the formats
 //! held converted (`converted`, converted.rs) and the vertex formats WebGPU lacks
 //! (`vertex_formats`, vertices.rs), checks query sets past 4096 and the query ring (`query_sets`,
-//! queries.rs), checks sRGB views of storage textures (`srgb_views`, views.rs), float clears' bits (`float_clears`, clears.rs), checks subgroups, the primitive index and fine derivatives (`program_features`, features.rs),
-//! and measures instance data fetched in the program (`pulled_costs`, pulled.rs). The shared suite
-//! runs only from conformance_run.rs.
+//! queries.rs), checks sRGB views of storage textures (`srgb_views`, views.rs), float clears' bits
+//! (`float_clears`, clears.rs), checks subgroups, the primitive index and fine derivatives
+//! (`program_features`, features.rs), and measures instance data fetched in the program
+//! (`pulled_costs`, pulled.rs). The shared suite runs only from conformance_run.rs.
 
 #![forbid(unsafe_code)]
 
@@ -51,7 +52,6 @@ fn main() -> anyhow::Result<()> {
         std::fs::write(&path, draw::png(&rgba)?)?;
         println!("{}", path.display());
     }
-    println!("counters: {:?}", b.counters());
     Ok(())
 }
 
@@ -80,6 +80,9 @@ mod vertices;
 mod renames;
 
 #[cfg(target_arch = "wasm32")]
+mod pool;
+
+#[cfg(target_arch = "wasm32")]
 mod features;
 
 #[cfg(target_arch = "wasm32")]
@@ -97,6 +100,14 @@ mod pulled;
 #[cfg(target_arch = "wasm32")]
 mod queries;
 
+/// Gives no counts: the page is outside the crate and cannot read what the back end's caches made.
+///
+/// The shared checks leave their counts out here; the crate's unit tests count them.
+#[cfg(target_arch = "wasm32")]
+fn made(_: &wcontainers_gpu_webgpu::WebGpu) -> Option<draw::Made> {
+    None
+}
+
 // JSPI exports and imports, which wasm-bindgen still marks experimental.
 #[cfg(target_arch = "wasm32")]
 #[allow(deprecated)]
@@ -110,12 +121,18 @@ mod web {
         JsError::new(&e.to_string())
     }
 
-    /// The adapter the browser gives WebGPU, as the back end sees it, and what the depth probe
-    /// found there.
+    /// Returns the browser's adapter as the back end sees it, and whether it declares
+    /// `DEPTH24_UNORM`.
+    ///
+    /// The back end declares it where its depth probe found `depth24plus` stored as 24-bit unorm.
     #[wasm_bindgen(jspi)]
     pub fn adapter() -> Result<String, JsError> {
         let (b, name) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
-        Ok(format!("{name}; depth24plus {:?}", b.depth24()))
+        let unorm = b
+            .caps()
+            .features
+            .contains(wcontainers_gpu::caps::Features::DEPTH24_UNORM);
+        Ok(format!("{name}; depth24plus as 24-bit unorm: {unorm}"))
     }
 
     /// Draws one picture of `draw::PICTURES` on the browser's WebGPU and returns it as a PNG file.
@@ -149,8 +166,8 @@ mod web {
     }
 
     /// `programs` new programs drawn first unprepared and then, others, after `prepare`, on the
-    /// browser's WebGPU: one line per half, as tests/prepare.rs prints natively, and a line for a
-    /// prepared strip drawn with indices (an error if it built anything while drawing).
+    /// browser's WebGPU: one line per half, as unit_tests/first_draws.rs prints natively, and a
+    /// line for a prepared strip drawn with indices (an error if it built anything while drawing).
     #[wasm_bindgen(jspi)]
     pub fn prepare_timings(programs: u32) -> Result<String, JsError> {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
@@ -200,15 +217,15 @@ mod web {
         ))
     }
 
-    /// Textures written with `Discard` behind recorded draws, renamed from the pool on the
-    /// browser's WebGPU; fails at the first wrong pixel or count.
+    /// Textures written with `Discard` behind recorded draws on the browser's WebGPU; fails at the
+    /// first wrong pixel (the renames and the pool are counted by the crate's unit tests).
     #[wasm_bindgen(jspi)]
     pub fn texture_renames() -> Result<String, JsError> {
         let (mut b, _) = block_on(draw::device(wgpu::Backends::BROWSER_WEBGPU)).map_err(js)?;
-        super::renames::discarded_textures_are_renamed_from_the_pool(&mut b);
+        super::pool::discarded_textures_are_renamed_from_the_pool(&mut b);
         Ok(
-            "texture renames: four frames of four discarded writes, three renames a frame, \
-            from the pool after the first"
+            "texture renames: four frames of four discarded writes, each pixel its own write's \
+            red; renames not counted outside the crate"
                 .into(),
         )
     }

@@ -3,20 +3,12 @@
 //! from a texture of the group, into part of the destination; and texture reads into a buffer that
 //! leave the bytes between rows as they were.
 //!
-//! Needs a GPU; `WEBGPU_API` as in tests/scenes.rs.
+//! Needs a GPU; `WEBGPU_API` as in unit_tests/scenes.rs.
 
-use wcontainers_graphics_test::scene;
+use super::{depth16, draw, gaps};
 
-#[allow(dead_code)]
-#[path = "scenes/draw.rs"]
-mod draw;
-
-#[path = "scenes/depth16.rs"]
-mod depth16;
-
-#[path = "scenes/gaps.rs"]
-mod gaps;
-
+use crate::fill::UNORM24_MAX;
+use crate::probe::Depth24;
 use wcontainers_gpu::{
     Gpu, caps::FormatUse, draw::AspectOps, draw::ColorAttachment, draw::DepthAttachment,
     draw::DrawCall, draw::DrawRange, draw::LoadOp, draw::PassDesc, draw::StoreOp, draw::Viewport,
@@ -26,7 +18,7 @@ use wcontainers_gpu::{
     resource::ReadSource, resource::TextureRegion, resource::TextureUsage, resource::WriteMode,
     shader::StageSet, slow::SlowPath, state::Topology,
 };
-use wcontainers_gpu_webgpu::{UNORM24_MAX, WebGpu};
+use wcontainers_gpu_webgpu::WebGpu;
 
 type Tex = <WebGpu as Gpu>::Texture;
 type View = <WebGpu as Gpu>::TextureView;
@@ -659,7 +651,7 @@ fn depth_and_stencil_parts_copy_and_read_back_exactly() {
             .collect();
         // Where `depth24plus` is stored as a float, the word is the float's nearest 24-bit step,
         // which the program's float arithmetic may miss by one at a near tie.
-        let stored_as_float = matches!(b.depth24(), wcontainers_gpu_webgpu::Depth24::Float(_));
+        let stored_as_float = matches!(b.depth24(), Depth24::Float(_));
         if unorm24 && stored_as_float {
             let off: Vec<_> = (0..want.len())
                 .filter(|i| want[*i].abs_diff(whole[*i]) > 1)

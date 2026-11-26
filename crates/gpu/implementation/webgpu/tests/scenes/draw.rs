@@ -21,7 +21,7 @@ use wcontainers_gpu::{
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
-use crate::scene::{self, HEIGHT, Scene, WIDTH};
+use super::scene::{self, HEIGHT, Scene, WIDTH};
 
 type B = WebGpu;
 
@@ -68,6 +68,40 @@ struct VsOut { @builtin(position) pos: vec4f, @location(0) color: vec4f }
 @fragment fn ps(i: VsOut) -> @location(0) vec4f { return i.color; }
 "#;
 
+/// What the back end's caches made, as far as the checks shared with the scenes page count it.
+///
+/// Each module including these gives `made`: the crate's own unit tests read the back end's counts;
+/// the scenes page, outside the crate, cannot read them and gives none, and the checks leave their
+/// counts out.
+#[allow(dead_code, reason = "the scenes page reads one but never makes one")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Made {
+    /// Render and compute pipelines built.
+    pub pipelines: u64,
+    /// Bind groups made.
+    pub bind_groups: u64,
+    /// Textures given fresh storage by a `Discard` write.
+    pub texture_renames: u64,
+    /// Renames that took storage from the pool instead of making it.
+    pub spares_reused: u64,
+    /// Pooled storage destroyed with the buffer or texture whose renames made it.
+    pub spares_dropped: u64,
+    /// Rings made for query results.
+    pub query_rings: u64,
+}
+
+/// Gives one count's growth from `before` to `after`, where both were read.
+#[allow(dead_code, reason = "the scenes page's checks run only in the browser")]
+pub fn since(after: Option<Made>, before: Option<Made>, count: fn(&Made) -> u64) -> Option<u64> {
+    Some(count(&after?) - count(&before?))
+}
+
+/// Writes a count for a check's line, or says that it was not counted.
+#[allow(dead_code, reason = "the scenes page's checks run only in the browser")]
+pub fn shown(count: Option<u64>) -> String {
+    count.map_or_else(|| String::from("(not counted here)"), |n| n.to_string())
+}
+
 fn gpu<T>(r: Result<T, GpuError>) -> Result<T> {
     r.map_err(|e| anyhow!("{e:?}"))
 }
@@ -111,6 +145,9 @@ pub async fn device_without(
         <WebGpu as wcontainers_gpu::StandaloneGpu>::new(wcontainers_gpu_webgpu::WebGpuConfig {
             backends: wgpu::Backends::from(info.backend),
             lavapipe: true,
+            software: false,
+            required: wgpu::Features::empty(),
+            without: wgpu::Features::empty(),
         })
         .map_err(|e| anyhow!(e))?;
     }
@@ -589,8 +626,8 @@ pub const PICTURES: [(&str, Scene, Format); 4] = [
     ("quads-d24s8", Scene::Quads, Format::Depth24PlusStencil8),
 ];
 
-/// Draws a scene into fresh targets, with a depth target of `depth`'s format where the scene has one,
-/// starts its read back and submits.
+/// Draws a scene into fresh targets, with a depth target of `depth`'s format where the scene has
+/// one, starts its read back and submits.
 pub fn render_on(
     b: &mut B,
     which: Scene,

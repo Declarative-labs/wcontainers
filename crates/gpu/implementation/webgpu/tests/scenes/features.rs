@@ -2,8 +2,8 @@
 //! primitive index where the adapter has them, fine derivatives always (WGSL's core). Shared by
 //! tests/features.rs and the browser page.
 
-use crate::draw;
-use crate::renames::{Kit, begin, finish, kit};
+use super::draw;
+use super::renames::{Kit, begin, finish, kit};
 use wcontainers_gpu::{
     Gpu, caps::Features, draw::DrawCall, draw::DrawRange, draw::Viewport, error::DeviceStatus,
     error::GpuError, format::Format, shader::Program, shader::ShaderModule, shader::ShaderStage,

@@ -23,6 +23,9 @@ fn device() -> WebGpu {
     <WebGpu as StandaloneGpu>::new(WebGpuConfig {
         backends: wgpu::Backends::PRIMARY,
         lavapipe: true,
+        software: false,
+        required: wgpu::Features::empty(),
+        without: wgpu::Features::empty(),
     })
     .expect("a WebGPU adapter")
 }

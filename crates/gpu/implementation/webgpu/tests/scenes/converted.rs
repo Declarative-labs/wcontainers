@@ -19,7 +19,7 @@ use wcontainers_gpu::{
 };
 use wcontainers_gpu_webgpu::WebGpu;
 
-use crate::draw;
+use super::draw;
 
 type B = WebGpu;
 

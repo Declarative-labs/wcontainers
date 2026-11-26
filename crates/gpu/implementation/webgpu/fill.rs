@@ -20,7 +20,7 @@ pub(crate) const COVER_VERTICES: Range<u32> = 0..3;
 const UNORM24_BITS: u32 = 24;
 
 /// The largest 24-bit unorm depth's integer.
-pub const UNORM24_MAX: u32 = (1 << UNORM24_BITS) - 1;
+pub(crate) const UNORM24_MAX: u32 = (1 << UNORM24_BITS) - 1;
 
 /// Bits of a stencil value: the stencil draw's programs, one a bit.
 const STENCIL_BITS: usize = u8::BITS as usize;
