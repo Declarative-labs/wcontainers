@@ -31,6 +31,7 @@ use crate::{
 mod avx_simulation;
 
 mod avx512_integer;
+mod evex_compress;
 mod opmask;
 
 const MAXIMUM_INSTRUCTION_BYTES: usize = 15;
@@ -254,6 +255,9 @@ fn apply(
             sse_simulation::execute_sse(instruction, across_fault, masked_faults, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Evex(instruction) => evex_simulation::execute_evex(instruction, processor, memory, decoded),
+        PreciseInstruction::EvexStore { instruction, across_fault } => {
+            evex_compress::store_compressed(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
+        }
         PreciseInstruction::Opmask { instruction, across_fault } => {
             opmask::execute_opmask(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
         }

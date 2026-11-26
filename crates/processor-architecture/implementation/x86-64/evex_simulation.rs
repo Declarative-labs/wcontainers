@@ -37,6 +37,9 @@ pub(super) fn execute_evex(
     let elements = form.elements();
     let bytes = form.element_bytes();
     let selected = read_selection(processor, decoded, elements);
+    if let EvexOperation::Compress { .. } | EvexOperation::Expand { .. } = form.operation {
+        return super::evex_compress::move_selected(&form, processor, memory, decoded, selected);
+    }
     let destination = decoded.op0_register().number();
     let source_operand = if form.has_immediate() { decoded.op_count() - 2 } else { decoded.op_count() - 1 };
     let second = match decoded.op_kind(source_operand) {
@@ -108,6 +111,7 @@ pub(super) fn execute_evex(
                 multiply_add(a, b, c, negate_product, negate_addend, precision, mxcsr, NAN_ORDER)
             })?
         }
+        EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => unreachable!("moved above"),
         EvexOperation::Integer { operation, .. } => {
             let immediate = if form.has_immediate() { decoded.immediate8() } else { 0 };
             operation.compute(&old, &first, &second, immediate, form.vector_bytes(), bytes)
@@ -187,7 +191,7 @@ fn compute_float(
 }
 
 /// The elements the opmask register selects, bit by bit from the lowest; every element without one.
-fn read_selection(processor: &Processor, decoded: &Decoded, elements: usize) -> u64 {
+pub(super) fn read_selection(processor: &Processor, decoded: &Decoded, elements: usize) -> u64 {
     let all = if elements >= 64 { u64::MAX } else { (1 << elements) - 1 };
     let mask = decoded.op_mask();
     if mask == iced_x86::Register::None || is_active(Bug::EvexMaskIgnored) {

@@ -1035,6 +1035,10 @@ pub enum Bug {
     HalfToSingleReportsDenormal,
     /// A conversion to an unsigned integer gives the signed integer indefinite, the sign bit alone.
     EvexUnsignedIndefiniteSigned,
+    /// VEXPAND takes the moved elements from the highest of those the source holds.
+    EvexExpandReadsFromTheTop,
+    /// VCOMPRESS and VEXPAND with memory reach the whole vector's bytes, not only the moved elements'.
+    EvexCompressReachesWholeVector,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1504,6 +1508,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::HalfDenormalsAreZeros, "AVX512-FP16", Family::Evex(EvexForm::reads_half), Origin::EvexRest),
     row(Bug::HalfFlushesToZero, "AVX512-FP16", Family::Evex(EvexForm::writes_half), Origin::EvexRest),
     row(Bug::HalfUnderflowInexactUnbounded, "AVX512-FP16", Family::Evex(EvexForm::writes_half), Origin::EvexRest),
+    row(Bug::EvexExpandReadsFromTheTop, "VEXPAND, VPEXPAND", Family::Evex(|form| matches!(form.operation, EvexOperation::Expand { .. })), Origin::EvexRest),
+    row(Bug::EvexCompressReachesWholeVector, "VCOMPRESS, VEXPAND with memory", Family::Evex(|form| form.place != OperandPlace::Register && matches!(form.operation, EvexOperation::Compress { .. } | EvexOperation::Expand { .. })), Origin::EvexRest),
     row(Bug::EvexUnsignedIndefiniteSigned, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), Origin::EvexRest),
     row(Bug::HalfToSingleReportsDenormal, "VCVTPH2PS", Family::Evex(|form| !form.reports_denormal()), Origin::EvexRest),
     row(Bug::IntegerToHalfOverflowExact, "VCVTW2PH to VCVTUQQ2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { from: Number::Signed(_) | Number::Unsigned(_), to: Number::Float(Precision::Half), .. }))), Origin::EvexRest),

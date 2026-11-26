@@ -398,6 +398,11 @@ pub enum PreciseInstruction {
     Branch(Instruction),
     /// A form of [`evex::EVEX_FORMS`], whose results the manuals define whole.
     Evex(Instruction),
+    /// VCOMPRESS with a memory destination, and what it writes below a fault part-way.
+    EvexStore {
+        instruction: Instruction,
+        across_fault: StoreAcrossFault,
+    },
     /// A form of [`integer::INTEGER_FORMS`].
     Integer {
         instruction: Instruction,

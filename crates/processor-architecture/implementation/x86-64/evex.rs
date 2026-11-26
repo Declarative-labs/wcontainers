@@ -63,6 +63,10 @@ pub enum EvexOperation {
         precision: Precision,
         arrangement: Arrangement,
     },
+    /// VCOMPRESSPS to VPCOMPRESSQ: the selected elements packed into the lowest, in order.
+    Compress { element_bytes: usize },
+    /// VEXPANDPS to VPEXPANDQ: the lowest elements, in order, into the selected ones.
+    Expand { element_bytes: usize },
 }
 
 /// The signs a fused form gives its product and addend.
@@ -425,6 +429,18 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vcvttph2uw, Any, convert(N::Float(Half), N::Unsigned(2), true)),
         (Mnemonic::Vcvtuw2ph, Any, convert(N::Unsigned(2), N::Float(Half), false)),
         (Mnemonic::Vcvtph2ps, Any, convert(N::Float(Half), N::Float(Single), false)),
+        (Mnemonic::Vcompressps, Any, EvexOperation::Compress { element_bytes: 4 }),
+        (Mnemonic::Vcompresspd, Any, EvexOperation::Compress { element_bytes: 8 }),
+        (Mnemonic::Vpcompressb, Any, EvexOperation::Compress { element_bytes: 1 }),
+        (Mnemonic::Vpcompressw, Any, EvexOperation::Compress { element_bytes: 2 }),
+        (Mnemonic::Vpcompressd, Any, EvexOperation::Compress { element_bytes: 4 }),
+        (Mnemonic::Vpcompressq, Any, EvexOperation::Compress { element_bytes: 8 }),
+        (Mnemonic::Vexpandps, Any, EvexOperation::Expand { element_bytes: 4 }),
+        (Mnemonic::Vexpandpd, Any, EvexOperation::Expand { element_bytes: 8 }),
+        (Mnemonic::Vpexpandb, Any, EvexOperation::Expand { element_bytes: 1 }),
+        (Mnemonic::Vpexpandw, Any, EvexOperation::Expand { element_bytes: 2 }),
+        (Mnemonic::Vpexpandd, Any, EvexOperation::Expand { element_bytes: 4 }),
+        (Mnemonic::Vpexpandq, Any, EvexOperation::Expand { element_bytes: 8 }),
         // A general-purpose register or its memory: an integer as wide as the register (0 here), the low element alone.
         (Mnemonic::Vcvtsd2si, Any, convert(N::Float(Double), N::Signed(0), false)),
         (Mnemonic::Vcvttsd2si, Any, convert(N::Float(Double), N::Signed(0), true)),
@@ -480,7 +496,9 @@ impl EvexForm {
             | EvexOperation::Fused { precision, .. }
             | EvexOperation::Compare { precision, .. }
             | EvexOperation::OrderedCompare { precision, .. } => (precision.to_bits() / u8::BITS) as usize,
-            EvexOperation::Integer { element_bytes, .. } => element_bytes,
+            EvexOperation::Integer { element_bytes, .. }
+            | EvexOperation::Compress { element_bytes }
+            | EvexOperation::Expand { element_bytes } => element_bytes,
             EvexOperation::Convert(conversion) => conversion.to.to_bytes(),
             EvexOperation::ToBfloat16 { .. } => 2,
         }
@@ -516,6 +534,11 @@ impl EvexForm {
         }
     }
 
+    /// Whether the form stores to memory: VCOMPRESS with a memory destination.
+    pub fn stores(&self) -> bool {
+        matches!(self.operation, EvexOperation::Compress { .. }) && self.place == OperandPlace::Memory
+    }
+
     /// Whether a denormal source is reported: not by VCVTPH2PS, which converts halves as F16C does.
     pub fn reports_denormal(&self) -> bool {
         self.code.mnemonic() != Mnemonic::Vcvtph2ps
@@ -537,7 +560,10 @@ impl EvexForm {
             | EvexOperation::Compare { precision, .. }
             | EvexOperation::OrderedCompare { precision, .. } => matches!(precision, Precision::Half),
             EvexOperation::Convert(conversion) => matches!(conversion.to, Number::Float(Precision::Half)),
-            EvexOperation::Integer { .. } | EvexOperation::ToBfloat16 { .. } => false,
+            EvexOperation::Integer { .. }
+            | EvexOperation::ToBfloat16 { .. }
+            | EvexOperation::Compress { .. }
+            | EvexOperation::Expand { .. } => false,
         }
     }
 
@@ -573,6 +599,7 @@ impl EvexForm {
             | EvexOperation::OrderedCompare { .. } => false,
             EvexOperation::Fused { .. } => true,
             EvexOperation::Integer { operation, .. } => operation.reads_destination(),
+            EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => false,
         }
     }
 
@@ -587,6 +614,7 @@ impl EvexForm {
             | EvexOperation::OrderedCompare { .. } => true,
             EvexOperation::ToBfloat16 { pair } => !pair,
             EvexOperation::Integer { operation, .. } => operation.is_element_wise(),
+            EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => true,
         }
     }
 }

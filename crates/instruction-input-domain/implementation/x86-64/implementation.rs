@@ -211,6 +211,9 @@ pub enum OperandType {
     /// The two operands of a compare, its predicate and MXCSR; for a register form also the opmask and exception
     /// suppression.
     EvexCompareData(evex::EvexCompareData),
+    /// The vector VCOMPRESS or VEXPAND moves elements of and what memory holds before; for a register form also the
+    /// opmask.
+    EvexMoveData(evex::EvexMoveData),
     /// The registers an opmask form names, this many, and how its bytes lie.
     OpmaskEncoding(usize),
     /// The value of the opmask register of the form's operand of that index, `bits` of it read.
@@ -683,6 +686,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::EvexFusedData(data) => evex::generate_fused_data(data),
             OperandType::EvexConvertData(data) => evex::generate_convert_data(data),
             OperandType::EvexCompareData(data) => evex::generate_compare_data(data),
+            OperandType::EvexMoveData(data) => evex::generate_move_data(data),
             OperandType::OpmaskEncoding(_) => opmask::generate_encodings(),
             OperandType::OpmaskValue { bits, .. } => opmask::generate_values(bits),
             OperandType::EvexIntegerEncoding { codes, in_memory } => avx512_integer::generate_encodings(codes, in_memory),

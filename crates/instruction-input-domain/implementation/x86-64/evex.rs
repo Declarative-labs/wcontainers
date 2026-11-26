@@ -134,6 +134,9 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
             suppression: op_code.can_suppress_all_exceptions(),
             maskable: op_code.can_use_op_mask_register(),
         }),
+        EvexOperation::Compress { element_bytes } | EvexOperation::Expand { element_bytes } => {
+            OperandType::EvexMoveData(EvexMoveData { element_bytes, vector_bytes: form.vector_bytes(), register })
+        }
         EvexOperation::Integer { operation, element_bytes } => OperandType::EvexIntegerData(EvexIntegerData {
             operation,
             element_bytes,
@@ -152,7 +155,7 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
     };
     [memory]
         .into_iter()
-        .chain(form.reads_first_source().then_some(OperandType::EvexRegister))
+        .chain((form.reads_first_source() || form.stores()).then_some(OperandType::EvexRegister))
         .chain(op_code.can_use_op_mask_register().then_some(OperandType::EvexMask(form.elements())))
         .chain(op_code.can_broadcast().then_some(OperandType::EvexBroadcast))
         .chain([data, unread])
@@ -869,6 +872,48 @@ pub fn generate_integer_data(data: EvexIntegerData) -> Vec<OperandValue> {
     all
 }
 
+/// What the data of VCOMPRESS and VEXPAND is made of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EvexMoveData {
+    pub element_bytes: usize,
+    pub vector_bytes: usize,
+    /// A register form, whose data holds the opmask.
+    pub register: bool,
+}
+
+/// The data of VCOMPRESS and VEXPAND: a table of elements each its own value as the vector moved, and the other
+/// table in memory before; a register form takes each table with every opmask of [`list_move_masks`], merging and
+/// zeroing. A memory form's opmask is an operand of its own.
+pub fn generate_move_data(data: EvexMoveData) -> Vec<OperandValue> {
+    let EvexMoveData { element_bytes, vector_bytes, register } = data;
+    let tables = generate_role(Role::Table, element_bytes, vector_bytes, false);
+    let datum = |source: [u128; 4], held: [u128; 4], mask| OperandValue::EvexIntegerData {
+        destination: [0; 4],
+        first: held,
+        second: source,
+        immediate: 0,
+        mask,
+    };
+    if !register {
+        return vec![datum(tables[0], tables[1], NO_MASK)];
+    }
+    let masks = list_move_masks(vector_bytes / element_bytes);
+    tables.iter().zip(tables.iter().rev()).flat_map(|(&source, &held)| masks.iter().map(move |&mask| datum(source, held, mask))).collect()
+}
+
+/// A register form's opmasks: none, every other element, the upper half, the last alone and a scattered pattern,
+/// each merging and zeroing, and none selected.
+fn list_move_masks(elements: usize) -> Vec<EvexMask> {
+    let all = to_all(elements);
+    let patterns = [EVERY_OTHER & all, all & !(all >> (elements / 2)), 1 << (elements - 1), 0xA5C3_0F96_5AA5_3CF1 & all, 0];
+    let mut masks = vec![NO_MASK];
+    for (number, value) in patterns.into_iter().enumerate() {
+        masks.push(EvexMask { register: 1 + number % 7, value, zeroing: false });
+        masks.push(EvexMask { register: 7 - number % 7, value, zeroing: true });
+    }
+    masks
+}
+
 /// k1 to k7 for a register number of a triple or an access.
 const fn to_opmask_number(number: usize) -> usize {
     1 + number % 7
@@ -926,7 +971,7 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
                 }
             }
             (
-                OperandType::EvexIntegerData(_),
+                OperandType::EvexIntegerData(_) | OperandType::EvexMoveData(_),
                 OperandValue::EvexIntegerData { destination: old, first: one, second: other, immediate: chosen, mask: data_mask },
             ) => {
                 (destination_value, first, second, immediate) = (Some(old), one, other, Some(chosen));
@@ -980,7 +1025,7 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
             .map(|offset| address.wrapping_add(offset))
             .take_while(|byte| X86_64::ADDRESSABLE.contains(byte))
             .enumerate()
-            .map(|(offset, _)| read_element(&second, offset, 1) as u8)
+            .map(|(offset, _)| read_element(if form.stores() { &first } else { &second }, offset, 1) as u8)
             .collect();
         if !bytes.is_empty() {
             memory_mutations.push(MemoryDelta::ValueAssignment {
@@ -1010,7 +1055,12 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
         false => to_vector_register(form, second_operand, registers[2]),
     };
     let immediate = form.has_immediate().then(|| u32::from(immediate.unwrap_or(0)));
+    if form.stores() {
+        write_vector(&mut processor, registers[1], second, form.vector_bytes());
+    }
     let mut encoded = match (memory_operand, form.reads_first_source(), immediate) {
+        // VCOMPRESS into memory: the memory operand first, then the vector it packs.
+        (Some(operand), _, None) if form.stores() => Encoded::with2(code, operand, to_vector_register(form, 1, registers[1])),
         (Some(operand), true, None) => Encoded::with3(code, destination, first_register, operand),
         (Some(operand), false, None) => Encoded::with2(code, destination, operand),
         (None, true, None) => Encoded::with3(code, destination, first_register, second_register),
