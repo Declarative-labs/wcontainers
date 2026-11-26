@@ -1430,8 +1430,8 @@ fn an_optional_instruction_has_the_behavior_of_a_chip_without_its_feature() {
     );
     assert!(behaviors(Instruction::Ldadd64).contains(&unimplemented(Instruction::Ldadd64)));
     assert_eq!(
-        behaviors(Instruction::Pacm),
-        [unimplemented(Instruction::Pacm)]
+        behaviors(Instruction::Ld1b2Z),
+        [unimplemented(Instruction::Ld1b2Z)]
     );
     assert_eq!(
         behaviors(Instruction::St64bv),
@@ -1439,6 +1439,7 @@ fn an_optional_instruction_has_the_behavior_of_a_chip_without_its_feature() {
     );
     // A modeled hint that changes nothing already is what a chip without it does.
     assert!(!behaviors(Instruction::Bti).contains(&unimplemented(Instruction::Bti)));
+    assert!(!behaviors(Instruction::Pacm).contains(&unimplemented(Instruction::Pacm)));
     let hint = to_state(encode(Instruction::Pacm, &[]), READ_WRITE, READ_WRITE);
     let (after, _) = run(unimplemented(Instruction::Pacm), hint);
     assert_eq!(after.exception, None);

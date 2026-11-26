@@ -168,6 +168,9 @@ const SYSTEM_REGISTER_WRITE: [OperandType; 7] = [
     OperandType::SoftwareThreadId,
 ];
 
+/// The option bit of SRLS.
+const SCOPED_RELEASE_OPTION: Field = Field::new(5, 1);
+
 #[derive(Clone, Copy, Default, Debug)]
 pub struct Arm64InputDomain;
 
@@ -498,6 +501,10 @@ impl InstructionInputDomain<Arm64<User>> for Arm64InputDomain {
         }
         if let Some(access) = TagAccessInstruction::new(instruction) {
             return memory_tagging::to_tag_access_operand_types(access).into_iter();
+        }
+        // SRLS's one operand, the bit at 5 that selects STRM, which the list leaves without a meaning.
+        if instruction == Instruction::SrlsHiHints {
+            return vec![UnsignedImmediate(SCOPED_RELEASE_OPTION)].into_iter();
         }
         if DocumentedInstruction::new(instruction).is_some()
             || LoadStoreInstruction::new(instruction).is_some()
