@@ -9,6 +9,10 @@ path = "interface.rs"
 [dependencies]
 wcontainers-processor-architecture = { path = "../processor-architecture" }
 itertools.workspace = true
+vstd.workspace = true
+
+[package.metadata.verus]
+verify = true
 
 [lints]
 workspace = true
