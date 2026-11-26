@@ -334,7 +334,7 @@ pub trait StreamHost: wcontainers_kernel_linux::System {
     /// Does [`Step::ChangeServed`].
     fn change_served(&self, path: &str, bytes: &[u8]);
     /// Hands the kernel an event.
-    fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event<'_>);
+    fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event);
     /// Ends the kernel's wait on an endpoint with what it is ready for.
     fn ready(
         self: &Arc<Self>,

@@ -166,9 +166,12 @@ pub struct Backend {
     outstanding: VecDeque<u64>,
     /// The server's bytes read while a send waited for room, not yet taken as messages.
     unread: VecDeque<u8>,
-    /// Messages read from the server and not yet handed to the kernel: a host may hand them over
-    /// in any order, as a backend that answers from many threads does.
-    held: Vec<Message>,
+    /// Messages read from the server and not yet handed to the kernel, each with its place in
+    /// what the server sent: a host may hand them over in any order, as a backend that answers
+    /// from many threads does, but no reply before a notice sent ahead of it.
+    held: Vec<(u64, Message)>,
+    /// How many messages were read from the server.
+    read: u64,
     /// How many messages went each way.
     pub sent: u64,
     /// The image archive its container unpacked, removed when the backend ends.
@@ -277,6 +280,7 @@ impl Backend {
             outstanding: VecDeque::new(),
             unread: VecDeque::new(),
             held: Vec::new(),
+            read: 0,
             sent: 0,
             archive: kept,
         }
@@ -341,25 +345,20 @@ impl Backend {
     /// Linux's FUSE queues requests: the server reads no more while its answers wait to be read, so
     /// while there is no room for the request its answers are read ahead.
     pub fn send(&mut self, unique: u64, bytes: &[u8]) {
-        use std::os::fd::AsRawFd;
+        use rustix::event::{PollFd, PollFlags};
         let mut rest = bytes;
         while !rest.is_empty() {
-            let mut ready = libc::pollfd {
-                fd: self.input.as_raw_fd(),
-                events: libc::POLLOUT | libc::POLLIN,
-                revents: 0,
-            };
-            // SAFETY: waits on one descriptor this backend owns.
-            let polled = unsafe { libc::poll(&mut ready, 1, -1) };
-            if polled < 0 {
-                let error = std::io::Error::last_os_error();
-                assert_eq!(error.kind(), std::io::ErrorKind::Interrupted, "{error}");
-                continue;
+            let mut ready = [PollFd::new(&self.input, PollFlags::OUT | PollFlags::IN)];
+            match rustix::event::poll(&mut ready, None) {
+                Ok(_) => {}
+                Err(rustix::io::Errno::INTR) => continue,
+                Err(error) => panic!("waiting on the backend: {error}"),
             }
+            let readable = ready[0].revents().contains(PollFlags::IN);
             self.input
                 .set_nonblocking(true)
                 .expect("a nonblocking send");
-            if ready.revents & libc::POLLIN != 0 {
+            if readable {
                 let mut buffer = [0u8; 1 << 16];
                 loop {
                     match self.output.read(&mut buffer) {
@@ -403,13 +402,25 @@ impl Backend {
         use rand::Rng;
         while !self.outstanding.is_empty() && (self.held.is_empty() || random.random_bool(0.5)) {
             let message = self.receive().expect("an answer is owed");
-            self.held.push(message);
+            self.read += 1;
+            self.held.push((self.read, message));
         }
         if self.held.is_empty() {
             return None;
         }
-        let index = random.random_range(0..self.held.len());
-        Some(self.held.swap_remove(index))
+        let mut index = random.random_range(0..self.held.len());
+        // A reply completes only after the notices sent before it (the FUSE server interface's
+        // rule), so the first of those goes in its place.
+        if let (place, Message::Answer(..)) = self.held[index]
+            && let Some(notice) = (0..self.held.len())
+                .filter(|other| {
+                    matches!(self.held[*other], (before, Message::Notice(_)) if before < place)
+                })
+                .min_by_key(|other| self.held[*other].0)
+        {
+            index = notice;
+        }
+        Some(self.held.swap_remove(index).1)
     }
 
     /// Reads the server's next message, waiting for it; none when no answer is to come.

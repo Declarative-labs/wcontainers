@@ -22,6 +22,8 @@ path = "bin/ltp.rs"
 
 [dependencies]
 wcontainers-abi.workspace = true
+# The touched-page bits of host pages that spaces on any host thread share (MIT OR Apache-2.0).
+atomic_refcell = "0.1.13"
 wcontainers-kernel = { path = "../../../kernel" }
 wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
 wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel" }
@@ -38,8 +40,13 @@ wcontainers-internet-protocol = { path = "../../../internet-protocol" }
 wcontainers-configurable = { path = "../../../configurable" }
 wcontainers-negative-route-advisable = { path = "../../../negative-route-advisable" }
 wcontainers-executor = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+# The exception classes of ESR_EL1 a stopped processor's syndrome is built from, the version the architecture uses.
+aarch64-cpu = "12.0.0"
 # Single instruction execution on any CPU side of the abi, shared with the WebAssembly executor.
 wcontainers-executor-wasmtime = { path = "../wasmtime" }
 wcontainers-arm64 = { path = "../../../arm64", optional = true }
@@ -48,6 +55,11 @@ memmap2 = "0.9.12"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp", "elf_uapi", "no_std"] }
 cargo_metadata = "0.23.1"
 libc = "0.2.191"
+# Safe system calls: polling, pipes, waiting for and signalling children, standard streams and terminal sizes.
+rustix = { version = "1.1.6", features = ["event", "pipe", "process", "stdio", "termios"] }
+# The pseudo-terminal of a reference client, opened and made raw safely.
+nix = { version = "0.31.3", default-features = false, features = ["term"] }
+socket2 = "0.6.5"
 regex = "1.13.1"
 rand = "0.9.2"
 domain = { version = "0.12.3", default-features = false, features = ["alloc"] }
@@ -58,6 +70,10 @@ zerocopy.workspace = true
 coarsetime = "0.1.38"
 
 [dev-dependencies]
+# This machine's TCP sockets, read from /proc/net/tcp to see a reset arrive (MIT OR Apache-2.0).
+procfs = { version = "0.18.0", default-features = false }
+# The heap allocations a test process makes, counted without a global allocator of our own.
+stats_alloc = "0.1.10"
 wcontainers-executor-conformance = { path = "../../conformance" }
 wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
 wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
@@ -65,7 +81,7 @@ wcontainers-precise-instruction-set-unicorn = { path = "../../../precise-instruc
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
 [features]
 # Every test runs with the translator's WebAssembly behind the kernel (the runtime's WebAssembly back end)
