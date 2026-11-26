@@ -32,7 +32,7 @@ const MAX_ERRNO: u32 = 4095;
 /// The size of Linux's `struct sock_fprog`: a 16 bit length, padding and a pointer.
 const FPROG_SIZE: u64 = 16;
 
-pub(super) fn seccomp<S: crate::System, C: Executor>(
+pub(super) fn seccomp<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -77,7 +77,7 @@ pub(super) fn seccomp<S: crate::System, C: Executor>(
 }
 
 /// `prctl(PR_SET_SECCOMP, mode, filter)`: the call's operations without flags.
-pub(super) fn prctl_set<S: crate::System, C: Executor>(
+pub(super) fn prctl_set<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -92,7 +92,7 @@ pub(super) fn prctl_set<S: crate::System, C: Executor>(
 }
 
 /// Linux's `seccomp_set_mode_filter`, in its order.
-fn set_filter<S: crate::System, C: Executor>(
+fn set_filter<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -191,7 +191,7 @@ fn set_filter<S: crate::System, C: Executor>(
 
 /// Runs the thread's filters on a call, with Docker's answer as the oldest filter's, and acts on what
 /// wins as Linux's `__seccomp_filter` does. `None` lets the call through.
-pub(super) fn filter_call<S: crate::System, C: Executor>(
+pub(super) fn filter_call<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -257,7 +257,7 @@ pub(super) fn filter_call<S: crate::System, C: Executor>(
 }
 
 /// SIGSYS's information for a call a filter stopped: the call, its address and the filter's data.
-fn sigsys_info<S: crate::System, C: Executor>(
+fn sigsys_info<S: crate::System, C: Executor + 'static>(
     kernel: &Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,

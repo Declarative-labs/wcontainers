@@ -29,7 +29,7 @@ pub(crate) fn access_ok(address: u64, length: u64) -> bool {
 }
 
 /// One process's memory as a system call sees it.
-pub(crate) struct Guest<'a, C: Executor> {
+pub(crate) struct Guest<'a, C: Executor + 'static> {
     pub cpu: &'a mut GuestMachine<C>,
     pub memory: MemoryId,
     pub map: &'a atomic_refcell::AtomicRefCell<AddressMap>,
@@ -43,7 +43,7 @@ pub(crate) struct Guest<'a, C: Executor> {
     pub written: &'a atomic_refcell::AtomicRefCell<Vec<crate::system::KernelWrite>>,
 }
 
-impl<C: Executor> Guest<'_, C> {
+impl<C: Executor + 'static> Guest<'_, C> {
     /// How many bytes from `address` on can be accessed as `wanted`, growing the stack as a fault there
     /// would. Pages of backend files in the range that are not read yet are asked for, and while
     /// they are awaited nothing is accessible: the call sees a fault, and runs again once they came

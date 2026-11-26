@@ -18,7 +18,7 @@ use wcontainers_volatile_bytes::VolatileBytes;
 const UNSHARED_PIECE_BYTES: u64 = 16 * PAGE_SIZE;
 
 /// An executor with the memory spaces and registers of the guest threads it runs.
-pub struct GuestMachine<C: Executor> {
+pub struct GuestMachine<C: Executor + 'static> {
     executor: C,
     /// The addresses each of the executor's spaces holds.
     address_space: AddressSpace,
@@ -32,7 +32,7 @@ pub struct GuestMachine<C: Executor> {
 }
 
 /// A memory space and its pages, which the machine alone holds and changes.
-struct Space<C: Executor> {
+struct Space<C: Executor + 'static> {
     memory: C::GuestMemory,
     pages: PageTableOf<C>,
 }
@@ -63,7 +63,7 @@ impl<C: Executor + Cpu> GuestMachine<C> {
     }
 }
 
-impl<C: Executor> GuestMachine<C> {
+impl<C: Executor + 'static> GuestMachine<C> {
     /// Returns the executor, and the registers and memory space of the thread, for a driver that
     /// runs the thread itself.
     ///
@@ -167,7 +167,7 @@ fn not_copied(error: CopyMemoryError) -> CpuError {
     }
 }
 
-impl<C: Executor> GuestMachine<C> {
+impl<C: Executor + 'static> GuestMachine<C> {
     /// Returns the addresses each space holds.
     pub(crate) fn address_space(&self) -> AddressSpace {
         self.address_space

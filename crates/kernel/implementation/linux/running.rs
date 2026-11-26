@@ -13,9 +13,7 @@ use wcontainers_executor::{
     Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf,
     SystemCallResponse, TrapHandler,
 };
-use wcontainers_processor_architecture_arm64::{
-    ConditionFlags, Exception, ExclusiveMonitor, INSTRUCTION_SIZE,
-};
+use wcontainers_processor_architecture_arm64::{ConditionFlags, Exception, ExclusiveMonitor};
 
 /// The register a system call's value is returned in on arm64, x0
 /// (<https://man7.org/linux/man-pages/man2/syscall.2.html#:~:text=arm64%20%20%20%20%20%20%20%20%20%20svc%20%230>).
@@ -104,13 +102,9 @@ pub(crate) fn turn<C: Executor + 'static>(
         .downcast_ref()
         .expect("the executor's processor is the one it was given");
     *registers = to_registers(processor);
+    // A supervisor call is taken after its instruction (`Exception::is_taken_after_instruction`),
+    // so the processor's state at a system call already holds the program counter after it.
     match trap.exit {
-        // The processor's state keeps the call's instruction at the program counter; the kernel
-        // takes it after the call.
-        Some(exit @ Exit::Syscall(_)) => {
-            registers.pc = registers.pc.wrapping_add(INSTRUCTION_SIZE);
-            exit
-        }
         Some(exit) => exit,
         None => exit_of(processor.exception, registers),
     }
@@ -244,6 +238,7 @@ fn to_registers(processor: &Processor) -> RegisterBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wcontainers_processor_architecture_arm64::INSTRUCTION_SIZE;
 
     #[test]
     fn registers_come_back_from_the_processor_state_unchanged() {

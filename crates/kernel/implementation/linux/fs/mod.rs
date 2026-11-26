@@ -610,7 +610,7 @@ impl Regular {
     }
 
     /// Up to `count` bytes from `offset`, stopping at the end of the file.
-    pub(crate) fn read<C: Executor>(
+    pub(crate) fn read<C: Executor + 'static>(
         &self,
         cpu: &mut GuestMachine<C>,
         offset: u64,
@@ -635,11 +635,11 @@ impl Regular {
     }
 
     /// Every byte of the file.
-    pub(crate) fn bytes<C: Executor>(&self, cpu: &mut GuestMachine<C>) -> Vec<u8> {
+    pub(crate) fn bytes<C: Executor + 'static>(&self, cpu: &mut GuestMachine<C>) -> Vec<u8> {
         self.read(cpu, 0, self.size())
     }
 
-    pub(crate) fn write<C: Executor>(
+    pub(crate) fn write<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         offset: u64,
@@ -686,7 +686,12 @@ impl Regular {
     }
 
     /// Punches a hole in `[offset, end)`: its bytes read as zero and its whole pages are given back.
-    pub(crate) fn punch<C: Executor>(&mut self, cpu: &mut GuestMachine<C>, offset: u64, end: u64) {
+    pub(crate) fn punch<C: Executor + 'static>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        offset: u64,
+        end: u64,
+    ) {
         let (from, to) = (offset.min(self.size()), end.min(self.size()));
         let held = self.data.len() as u64;
         self.data[from.min(held) as usize..to.min(held) as usize].fill(0);
@@ -696,7 +701,7 @@ impl Regular {
         self.drop_pages(|page| page < first || page >= last);
     }
 
-    fn zero_block<C: Executor>(&mut self, cpu: &mut GuestMachine<C>, from: u64, to: u64) {
+    fn zero_block<C: Executor + 'static>(&mut self, cpu: &mut GuestMachine<C>, from: u64, to: u64) {
         if let Some(block) = self.block
             && from < block.length
         {
@@ -708,7 +713,11 @@ impl Regular {
 
     /// Sets the size. Pages dropped from the end are gone from shared mappings too, so they read as
     /// zero if the file grows again.
-    pub(crate) fn truncate<C: Executor>(&mut self, cpu: &mut GuestMachine<C>, length: u64) {
+    pub(crate) fn truncate<C: Executor + 'static>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        length: u64,
+    ) {
         if let Some(block) = self.block
             && length < self.size()
         {
@@ -721,7 +730,10 @@ impl Regular {
     }
 
     /// Moves the bytes the block holds back into the file's own memory, ending the block.
-    pub(crate) fn take_block<C: Executor>(&mut self, cpu: &mut GuestMachine<C>) -> Option<Block> {
+    pub(crate) fn take_block<C: Executor + 'static>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+    ) -> Option<Block> {
         let block = self.block.take()?;
         let end = block.length.min(self.size());
         if (self.data.len() as u64) < end {

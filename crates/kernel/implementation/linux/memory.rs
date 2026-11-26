@@ -732,7 +732,7 @@ impl AddressMap {
     /// Sets the embedder's watch on the mapped pages of `[start, end)` (page aligned) and tells
     /// the CPU side; whether any page's watch changed, and how many pages' were raised (set, or
     /// widened to `All`).
-    pub(crate) fn set_watch<C: Executor>(
+    pub(crate) fn set_watch<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -755,7 +755,7 @@ impl AddressMap {
     ///
     /// The CPU side is told if that thread's watches are the ones it holds. The answer says what
     /// changed, as [`Self::set_watch`]'s does.
-    pub(crate) fn set_thread_watch<C: Executor>(
+    pub(crate) fn set_thread_watch<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -794,7 +794,7 @@ impl AddressMap {
     /// Readies the memory for a turn of thread `tid`: the CPU side holds its own watches.
     ///
     /// Those of the thread readied before it are let go of.
-    pub(crate) fn ready_for<C: Executor>(
+    pub(crate) fn ready_for<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -808,7 +808,7 @@ impl AddressMap {
     }
 
     /// Ends thread `tid`'s own watches, as the thread has ended.
-    pub(crate) fn end_thread_watches<C: Executor>(
+    pub(crate) fn end_thread_watches<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -825,7 +825,7 @@ impl AddressMap {
     }
 
     /// Tells the CPU side again what the pages watched for any of `threads` alone allow.
-    fn reapply_own<C: Executor>(
+    fn reapply_own<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -853,7 +853,7 @@ impl AddressMap {
 
     /// The pages written since the embedder last asked, as ranges, and a fresh record from now
     /// (the first time: every page mapped writable).
-    pub(crate) fn take_dirty<C: Executor>(
+    pub(crate) fn take_dirty<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -878,7 +878,11 @@ impl AddressMap {
     /// Makes a fork's child's copy: no written record, no parent thread's watch, no running call.
     ///
     /// The child's thread is a new one, so the watches of its parent's threads are not its own.
-    pub(crate) fn start_child<C: Executor>(&mut self, cpu: &mut GuestMachine<C>, memory: MemoryId) {
+    pub(crate) fn start_child<C: Executor + 'static>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        memory: MemoryId,
+    ) {
         self.note_sharers_changed();
         self.watches.touched = None;
         self.watches.described = None;
@@ -898,7 +902,7 @@ impl AddressMap {
     }
 
     /// Tells the CPU side again what every mapping's pages over `[start, end)` allow.
-    pub(crate) fn reapply<C: Executor>(
+    pub(crate) fn reapply<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -929,7 +933,7 @@ impl AddressMap {
 
     /// Notes that the process's bytes in `[start, end)` changed, and lets the CPU side write the
     /// pages it now may.
-    pub(crate) fn note_written<C: Executor>(
+    pub(crate) fn note_written<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -951,7 +955,7 @@ impl AddressMap {
 
     /// Pages moved to `[start, end)`: the watches taken along with them are set here, and the
     /// pages are noted as written.
-    pub(crate) fn moved_here<C: Executor>(
+    pub(crate) fn moved_here<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -967,7 +971,7 @@ impl AddressMap {
     }
 
     /// Ends the watches of `[start, end)`, whose pages a fork's child gets fresh.
-    pub(crate) fn forget_watches<C: Executor>(
+    pub(crate) fn forget_watches<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -983,7 +987,7 @@ impl AddressMap {
 
     /// A write fault on a page the record of written pages held back: noted, and the page may be
     /// written from now on. Whether that was the fault's reason.
-    pub(crate) fn written_fault<C: Executor>(
+    pub(crate) fn written_fault<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1110,7 +1114,7 @@ impl AddressMap {
     }
 
     /// Makes `pages` guard pages, which the CPU side then allows nothing.
-    pub(crate) fn add_guards<C: Executor>(
+    pub(crate) fn add_guards<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1126,7 +1130,7 @@ impl AddressMap {
 
     /// Takes the guard pages of `[start, end)` away and tells the CPU side what their mappings
     /// allow again.
-    pub(crate) fn remove_guards<C: Executor>(
+    pub(crate) fn remove_guards<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1466,7 +1470,7 @@ impl AddressMap {
 
     /// Puts a mapping in the table, replacing whatever it covers, and tells the CPU side. New anonymous
     /// memory is zero: a range that has been used before is cleared first.
-    pub(crate) fn insert<C: Executor>(
+    pub(crate) fn insert<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1493,7 +1497,7 @@ impl AddressMap {
     }
 
     /// Unmaps a range, as `munmap` does.
-    pub(crate) fn unmap<C: Executor>(
+    pub(crate) fn unmap<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1517,7 +1521,7 @@ impl AddressMap {
     }
 
     /// Changes what a fully mapped range allows, as `mprotect` does.
-    pub(crate) fn protect<C: Executor>(
+    pub(crate) fn protect<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1542,7 +1546,7 @@ impl AddressMap {
     /// Moves where the mappings of a file stop being reachable to the file's new end, `file_pages`
     /// bytes from its start. Private copies wholly past it go, as Linux's truncation unmaps even
     /// copied pages (`unmap_mapping_range` with `even_cows`), so they show the file's block again.
-    pub(crate) fn set_file_end<C: Executor>(
+    pub(crate) fn set_file_end<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1582,7 +1586,7 @@ impl AddressMap {
     /// Makes the pages of private file mappings in `[start, end)` that still show the file, up to
     /// each file's end, the mappings' own copies, and lets them be written as the mappings allow: a
     /// write fault's copy on write, done ahead for the kernel's own writes and for populating.
-    pub(crate) fn copy_on_write<C: Executor>(
+    pub(crate) fn copy_on_write<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1647,7 +1651,7 @@ impl AddressMap {
 
     /// Drops the private file pages copied in `[start, end)`, so they show the file again, as
     /// `MADV_DONTNEED` zaps a private mapping's copies.
-    pub(crate) fn drop_copies<C: Executor>(
+    pub(crate) fn drop_copies<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1734,7 +1738,7 @@ impl AddressMap {
     }
 
     /// Tells the CPU side what a mapping's pages allow, and that its code may run.
-    fn apply<C: Executor>(
+    fn apply<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1749,7 +1753,7 @@ impl AddressMap {
 
     /// Tells the CPU side again what the pages of `[start, end)` in the mapping holding `start`
     /// allow, once pages of its file came that it showed with no access.
-    pub(crate) fn refresh<C: Executor>(
+    pub(crate) fn refresh<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1766,7 +1770,7 @@ impl AddressMap {
     }
 
     /// Tells the CPU side what a mapping's pages allow.
-    fn apply_permissions<C: Executor>(
+    fn apply_permissions<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1784,7 +1788,7 @@ impl AddressMap {
     }
 
     /// Zeroes the parts of a range that held something before, and marks it all as used.
-    fn clear_used<C: Executor>(
+    fn clear_used<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1889,7 +1893,7 @@ impl AddressMap {
 
     /// Grows the mapping above `address` down to cover it if that mapping grows down, as Linux does on
     /// a fault below it (`expand_downwards`). Returns whether it grew.
-    pub(crate) fn grow_stack<C: Executor>(
+    pub(crate) fn grow_stack<C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         memory: MemoryId,
@@ -1940,7 +1944,7 @@ impl AddressMap {
 
 /// Drops a private file mapping's copies of the pages in `[start, end)`: they show the file's block
 /// again.
-fn drop_copies<C: Executor>(
+fn drop_copies<C: Executor + 'static>(
     cpu: &mut GuestMachine<C>,
     memory: MemoryId,
     mapping: &mut Mapping,
@@ -2005,7 +2009,7 @@ pub(crate) fn cpu_permissions(asked: Permissions) -> Permissions {
 /// end, nothing where a backend file's page is not read yet, so the first touch comes back to read
 /// it, no writing where a private file page is not copied yet, so the first write comes back
 /// to copy it, and nothing on a guard page; the embedder's watches narrow each page further.
-fn apply_permissions_in<C: Executor>(
+fn apply_permissions_in<C: Executor + 'static>(
     cpu: &mut GuestMachine<C>,
     memory: MemoryId,
     mapping: &Mapping,

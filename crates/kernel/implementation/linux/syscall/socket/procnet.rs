@@ -32,7 +32,7 @@ const UDP_BUCKETS: u16 = 1 << 14;
 const SO_ACCEPTCON: u32 = 1 << 16;
 
 /// The bytes of one file of `/proc/net`.
-pub(crate) fn contents<S: crate::System, C: Executor>(
+pub(crate) fn contents<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     file: NetFile,
@@ -57,7 +57,10 @@ fn pad(out: &mut String, start: usize, width: usize) {
     out.push('\n');
 }
 
-fn dev<S: crate::System, C: Executor>(kernel: &mut Kernel, cx: &mut Context<'_, S, C>) -> String {
+fn dev<S: crate::System, C: Executor + 'static>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+) -> String {
     kernel
         .counters
         .count(cx.host, crate::reason::INTERFACE_COUNTERS_NOT_KEPT, 0);

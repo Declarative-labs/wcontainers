@@ -159,7 +159,7 @@ impl Kernel {
     /// by piece, as the starts it was told less the ends, so an end names the whole or a part of
     /// one start, and a process a hook takes off the kernel carries exactly that, and is told the
     /// rest when it is back.
-    pub(crate) fn announce_sharing<S: crate::System, C: Executor>(
+    pub(crate) fn announce_sharing<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
     ) {
@@ -224,7 +224,7 @@ impl Kernel {
 
     /// A process about to go: what it maps of shared memory is announced ended while it is
     /// whole, and it is left out from then on.
-    pub(crate) fn withdraw_sharing<S: crate::System, C: Executor>(
+    pub(crate) fn withdraw_sharing<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
         pid: Pid,
@@ -240,7 +240,7 @@ impl Kernel {
     }
 
     /// Announces one hook of the shared memory a process maps.
-    fn announce_shared<S: crate::System, C: Executor>(
+    fn announce_shared<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
         pid: Pid,

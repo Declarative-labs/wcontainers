@@ -120,7 +120,10 @@ pub(crate) fn tell(kernel: &mut Kernel, node: &Node, mask: u32, extra: u32) {
 }
 
 /// Sends the signals events owed (`send_sigio` with POLL_MSG), in order.
-pub(crate) fn send<S: crate::System, C: Executor>(kernel: &mut Kernel, cx: &mut Context<'_, S, C>) {
+pub(crate) fn send<S: crate::System, C: Executor + 'static>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+) {
     for (file, fd) in core::mem::take(&mut kernel.dnotified) {
         if let Some(file) = file.upgrade() {
             let owner = file.borrow().owner;

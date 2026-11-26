@@ -81,18 +81,18 @@ type Simple<S, C> = fn(&mut Kernel, &mut Context<'_, S, C>, Tid, Args) -> Result
 /// A call that may also end its thread, park it or replace its registers.
 type Full<S, C> = fn(&mut Kernel, &mut Context<'_, S, C>, Tid, Args) -> Outcome;
 
-enum Handler<S, C: Executor> {
+enum Handler<S, C: Executor + 'static> {
     Simple(Simple<S, C>),
     Full(Full<S, C>),
 }
 
-impl<S, C: Executor> Clone for Handler<S, C> {
+impl<S, C: Executor + 'static> Clone for Handler<S, C> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<S, C: Executor> Copy for Handler<S, C> {}
+impl<S, C: Executor + 'static> Copy for Handler<S, C> {}
 
 #[derive(Clone, Copy)]
 struct Entry {
@@ -143,7 +143,7 @@ macro_rules! built_calls {
             table
         };
 
-        impl<Sys: crate::System, Cx: Executor> Handlers<Sys, Cx> {
+        impl<Sys: crate::System, Cx: Executor + 'static> Handlers<Sys, Cx> {
             const TABLE: [Option<Handler<Sys, Cx>>; LENGTH] = {
                 use crate::linux::general::*;
 
@@ -430,7 +430,7 @@ built_calls! {
 
 /// Runs a system call. `again` is a call a parked thread runs again after a wake: the filters
 /// already let it through.
-pub(crate) fn dispatch<S: crate::System, C: Executor>(
+pub(crate) fn dispatch<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -485,7 +485,7 @@ pub(crate) fn dispatch<S: crate::System, C: Executor>(
 }
 
 /// The calling thread's process memory, for copying to and from it.
-pub(crate) fn guest<'a, S: crate::System, C: Executor>(
+pub(crate) fn guest<'a, S: crate::System, C: Executor + 'static>(
     kernel: &'a mut Kernel,
     cx: &'a mut Context<'_, S, C>,
     tid: Tid,
@@ -497,7 +497,7 @@ pub(crate) fn guest<'a, S: crate::System, C: Executor>(
 }
 
 /// Process `pid`'s memory, for copies made for its task `tid`, which need not be on the kernel.
-pub(crate) fn process_guest<'a, S: crate::System, C: Executor>(
+pub(crate) fn process_guest<'a, S: crate::System, C: Executor + 'static>(
     kernel: &'a mut Kernel,
     cx: &'a mut Context<'_, S, C>,
     pid: crate::process::Pid,
@@ -519,7 +519,7 @@ pub(crate) fn process_guest<'a, S: crate::System, C: Executor>(
 
 /// A path argument, copied once per call (`getname`): a call that waits takes the same bytes in
 /// its later runs, whatever memory holds by then. Empty is ENOENT unless `may_be_empty`.
-pub(crate) fn path_argument<S: crate::System, C: Executor>(
+pub(crate) fn path_argument<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -572,7 +572,7 @@ pub(crate) fn name(number: u64) -> Option<&'static str> {
 
 /// The one anonymous inode signal descriptors and their like share: owned by root, readable and
 /// writable by it, with no file type (measured).
-fn anon_node<S: crate::System, C: Executor>(
+fn anon_node<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
 ) -> crate::fs::Node {
