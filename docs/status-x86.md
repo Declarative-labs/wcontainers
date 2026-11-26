@@ -266,6 +266,179 @@ Third run, tests (MEASURED): `tests/valid.rs` 16 of 16, unit tests of x86, guest
 translator-test's own 4, clippy `-D warnings` of the five packages and the browser crate for both guests: exit 0
 (ARM64 machine).
 
+Fourth run, 2026-11-26 (the orchestrator's ruling on the independent check of XF3; owner's main ac696ea19, already
+merged at f6a111088, so nothing new to merge or follow: READ `git fetch` of his checkout, FETCH_HEAD ac696ea19 is
+this branch's merge base). Logs in scratch `x86-front-end/r4/`.
+
+Load buffering on the rented ARM64 chip, a measured behavior of that chip (MEASURED, Neoverse-V2, Linux
+7.0.0-1018-aws): the default form, whose accesses are plain, never showed both loads 1 in 10,000,000 rounds in four
+runs (this track 2026-11-25 and twice 2026-11-26, the independent check once) nor in 100,000,000 rounds
+(2026-11-26, 274 s; outcomes 0/0 34,250,977, 0/1 63,539,183, 1/0 2,209,840). The Arm model allows it; this chip
+does not show it to these programs, so on this chip the ordered form's 0 for that shape proves nothing by itself.
+
+The simulated weaker engine (`src/simulated.rs`, `litmus::simulate_shape`), the control for a shape the chip does
+not show:
+- What runs: each thread's litmus part alone (rbp set, the part, `exit`), translated by this branch at full
+  look-ahead in the form under test, on the runner, with every code module rewritten (`simulated::instrument`, by
+  wasm-encoder's re-encoder) so that each load, store, compare and exchange and fence on the guest memory is a call
+  to the runner carrying its kind (plain or atomic), width and sign. Accesses to the shared words go to a script
+  that chooses the value each load sees and records what the thread did; every other access is the machine's own.
+  The rest of the code is the translation's own, so the accesses and their kinds are the ones the engine would get.
+- Exhaustive, not sampled: each thread is run once for every choice of values its loads of shared words can see,
+  among 0 and every value any run writes (grown until no new value appears: {0, 1}, the sequence lock {0, 1, 2});
+  then every combination of runs, one per thread, is checked against the form's model.
+- The ordered form's model: interleavings. Every recorded access must be atomic (asserted: it is), and WebAssembly
+  gives code whose every shared access is sequentially consistent exactly the interleavings of its threads.
+- The default form's model: coherence only. Every recorded access must be plain (asserted: it is, and there is no
+  fence); an execution is any choice of one order of each word's writes and of a write (or the initial 0) for each
+  read with that read's value, such that no word's accesses in each thread's order, its write order, what each read
+  saw and what it did not see make a cycle. Accesses to different words are not ordered at all, so store buffering,
+  load buffering (a read seeing a write later in the other thread's order) and every other reordering ARM64 allows
+  plain accesses are in it, and also those ARM64 forbids through dependencies or multi-copy atomicity.
+- MEASURED (ARM64 machine, `the_simulated_control_shows_what_the_ordered_form_never_shows`, 1.3 s for all seven):
+
+  | shape | runs by thread | ordered form: outcomes / with no interleaving | control: outcomes / with no interleaving |
+  |---|---|---|---|
+  | store buffering | 2, 2 | 3 / 0 | 4 / 1 (both 0) |
+  | store buffering with `mfence` | 2, 2 | 3 / 0 | 4 / 1 (both 0) |
+  | message passing | 1, 4 | 3 / 0 | 4 / 1 (flag 1, data 0) |
+  | load buffering | 2, 2 | 3 / 0 | 4 / 1 (both 1) |
+  | sequence lock | 1, 81 | 18 / 0 | 24 / 6 (every even, unchanged count with other words) |
+  | store-back | 4, 1 | 4 / 0 | 5 / 1 (r 0, flag 1, x 1 at the end) |
+  | independent reads of independent writes | 1, 1, 4, 4 | 15 / 0 | 16 / 1 (opposite orders) |
+
+  The control shows every outcome no interleaving gives, in the shape's whole outcome space, and the ordered form
+  none; the ordered form's outcomes are a subset of the control's.
+- What this proves: the ordered form's translated code makes, for these programs, only sequentially consistent
+  accesses to the shared words, in the threads' program order, so an engine that keeps WebAssembly's threads model
+  cannot give an outcome x86 forbids, whatever the host reorders beneath it; and the test can see such an outcome,
+  since the same programs in the default form give every one of them under a model that allows what ARM64 allows.
+  What it does not prove: that a real engine or chip keeps WebAssembly's model (wasmtime's lowering to ARM64's
+  `ldar`/`stlr` and fences is assumed), anything about timing, or that a chip will ever show a given reordering
+  (load buffering, above). It covers these seven shapes' accesses, not the lock xadd counter (whose control the chip
+  shows in millions) nor `LoadsOrdered` (whose plain stores and atomic loads mix kinds the two models do not cover).
+
+Every litmus test now asserts its control (`tests/litmus.rs`): each shape's test first asserts the simulated control
+above, then runs the chip; it fails if the ordered form shows an outcome no interleaving gives, and, on an ARM64
+host for the shapes the chip showed in every run (`ChipControl::Asserted`: store buffering with and without
+`mfence`, message passing, the sequence lock), if the control never shows one. Load buffering, the store-back and
+independent reads (`ChipControl::Simulated`) assert the simulated control and print the chip's count: the
+store-back showed 2,237, 1 and 0 and the four threads' shape 10, 69 and 0 in three runs, too rare to assert. The
+counter asserts that the control loses additions.
+
+XF3 on the chip, after these changes (MEASURED, ARM64 machine, 10,000,000 rounds a form, three tests at once, load 9
+to 15, 166 s, scratch `r4/litmus-10m-arm-2.log`; `r4/litmus-10m-arm.log` is the run before the four threads' shape
+was moved to the simulated control, which failed on its chip control of 0):
+
+| shape | ordered: rounds with no interleaving's outcome | control (chip) |
+|---|---|---|
+| store buffering | 0 | 689,087 (both 0) |
+| store buffering with `mfence` | 0 | 790,923 |
+| message passing | 0 | 31,777 |
+| load buffering | 0 | 0 |
+| sequence lock | 0 | 128,873 |
+| store-back | 0 | 0 |
+| independent reads of independent writes | 0 | 0 |
+| lock xadd counter, 2 and 4 threads | 0 lost | 9,996,632 and 29,991,550 lost |
+
+`cargo test --test litmus -- --ignored`: 9 passed, exit 0.
+
+The linear address width as a known behavior of the chip (`src/guest/x86_64.rs`): the reference runner names its
+chip when it starts (the model name it already sent); `reference::reference_chip` keeps it per guest, and
+`reference_linear_addresses` takes the width from that chip's record in `KNOWN_CHIPS` (`known_chip`). Nothing reads
+`/proc/cpuinfo`'s flags any more (`linear_addresses_of` and its flag are gone). A chip with no record stops the
+comparison with a message: its width is measured first and recorded. `measure_linear_addresses` measures it on the
+reference with one load at 2^47 (a page fault with 5-level paging, #GP with 4-level), and the reference test
+`the_x86_64_reference_chip_shows_its_recorded_linear_address_width` checks the record against that measurement.
+MEASURED (x86-64 machine): "Intel(R) Xeon(R) Platinum 8488C: FiveLevelPaging", 1 passed. Layer 1, every form at 64
+cases, seed 1, default form, 12 at once, load 24 to 30, 118 s: 5 failing (`Iretq`, `Sldt_r32m16`, `Smsw_r32m16`,
+`Smsw_rm16`, `Str_r32m16`), 1 set aside (`vmaskmovpd` store), as at cf2e37416 (before 1f734e7d2, below).
+
+XF4, prepared (the call is the executor's): `AccessOrdering::chosen(guest, parallel, host)` with `HostOrdering {
+TotalStoreOrder, Weaker }` and `AccessOrdering::chosen_here(guest, parallel)` (guest-cpu, re-exported by the
+translator): an x86-64 guest with `parallel` gets `Ordered` on a weaker host and `LoadsOrdered` on an x86 host,
+every other case `Unordered`; a host not known when the code is made (a WebAssembly build) counts as weaker.
+`AccessOrdering::code` is the byte for the cache key. Test `the_form_is_chosen_by_guest_threads_and_host`: every
+guest, both ways of running threads and both hosts, an x86 host never `Ordered`, a weaker one never
+`LoadsOrdered`, each ordered form sharing the memory, the three codes distinct (MEASURED: passes, ARM64 machine).
+Left for the executor track: call `chosen_here(GuestId::X86_64, thread_ordering == ThreadOrdering::Parallel)`
+where it builds the translator's options, pass the result to both `translate` calls (today
+`AccessOrdering::Unordered` after `ProgressCount::Absent`), put its `code()` in the cache key, give code of a form
+that `shares_memory()` a shared 64-bit guest memory of at most `contract::SHARED_MEMORY_MOST_PAGES` pages, and
+handle `Reason::LockedAccessNeedsGroupStop` as written above. Its X2 and threads T2 are what it waits on.
+
+XF5, prepared: `LoadsOrdered` now imports the guest memory shared too (`shares_memory` is every form but
+`Unordered`; default-form output unchanged), and its `mfence` is an `atomic.fence` (`operand::store_load_fence`):
+with plain stores and ordered loads an x86 host may otherwise let a later load pass an earlier store. `Ordered` and
+`Unordered` emit nothing for it, as before. `the_x86_host_form_keeps_x86_order` (x86-64 hosts only) runs every
+shape and the counter in `LoadsOrdered` against the default form. MEASURED (x86-64 machine, 10,000,000 rounds a
+form, load 17 to 32, 375 s, scratch `r4/x86-run1.log`): `LoadsOrdered` 0 rounds x86 forbids in every shape and 0
+additions lost (2 and 4 threads); the default form shows store buffering through its empty `mfence` 79,898 times and
+the sequence lock 740 times (plain loads the engine is free to reorder or merge, threads plan 7.6), the other
+shapes 0. Left for threads T2: the "tested" part of the tested fence (the fence behind the process's
+runs-in-parallel byte) and the T6 tests of threads plan 7.3 on x86 hosts.
+
+X10, prepared against main's kernel interface: `wcontainers_x86::signals` (the x86 crate's no_std core):
+`signal_information(Stop) -> SignalInformation` (the kernel interface's type) for each way a thread stops, as plan
+section 6 lists them and the reference reports them (undefined and unsupported: SIGILL `ILL_ILLOPN` at pc; `int3`
+and `int 3`: SIGTRAP `SI_KERNEL`; `int1`: `TRAP_BRKPT`; divide error `FPE_INTDIV`; general protection and `int 4`:
+SIGSEGV `SI_KERNEL`; float exceptions by their raised unmasked flags, invalid first; page fault `SEGV_MAPERR` or,
+with a mapping that refuses, `SEGV_ACCERR`, at the address; stack fault SIGBUS `SI_KERNEL`; single step
+`TRAP_TRACE`), `float_exception_code`, and `resume_flag_in_frame` (RF in a fault's frame, not a trap's). Tests
+`every_stop_raises_the_reference_signal` and `float_codes_and_the_resume_flag` (MEASURED: pass). INFERRED, not
+measured: the code for a float exception with no flag raised (`FPE_FLTUNK`). Left for the kernel track (KP1, KS) and
+the executor's X3: everything else of section 6 (register block conversions and sigreturn, the address limit, the
+copy model, system call numbering and layouts, signal frames, clone, exec and the auxiliary vector,
+`arch_prctl`, the machine description) and the call of these functions where the kernel delivers a fault.
+
+Fourth run's checks (MEASURED; code at d6f8be1f4 unless said):
+- Default-form output: the x86 benchmark set, busybox and musl at none, bounded and full, both settings, this
+  branch at 3bb63a8db against fa4155059 (scratch worktree `base-r4`, the same `tests/output.rs`), description not
+  cut (its version is 6 on both sides): 327 modules, the three lists' sha256 equal (ARM64 machine).
+- ARM64 machine: clippy `-D warnings` of the five packages, all targets and features, exit 0; the x86 core without
+  `translate` (`--no-default-features`) checks; `tests/valid.rs` 16 of 16 (the scan of the three forms, now with
+  `LoadsOrdered` on a shared import); unit tests of x86, guest-cpu and translator 98 passed (95 before, plus the
+  form choice and the two signal tests); translator-test's own 5 (plus the simulated accesses and the models);
+  `tests/litmus.rs` not ignored 2 of 2; the browser crate's wasm32 clippy for both guests exit 0; rustfmt clean in
+  every file this run changed (`src/programs.rs` differs from rustfmt as before).
+- Cost of the forms on the ARM64 machine, `measure_ordered_forms_x86_64`, 7 alternating rounds (load 8 to 14, at
+  3bb63a8db): `Ordered` geometric mean 1.095 (most 1.266 fib), `LoadsOrdered` now on a shared memory 1.054 (most
+  1.317 matrix), as the third run's 1.093 and 1.051.
+- Linter (`cargo reviewable check` built from reviewable-rust da55b9d7 on the x86-64 machine, no model key there;
+  the same binary on both sides): this track's five crates 12,380 at fa4155059, 12,500 at d6f8be1f4. The 120 more:
+  89 names and summaries the linter could not ask a model about, 25 magic literals (0s, the litmus layout's places),
+  3 comments over 350 characters, 2 `stray_source` for the two new source files in crates of the old layout (as
+  translator-test's `state_memory.rs`), 1 summary of two sentences, 1 number constant without a link
+  (`INT1_DETAIL`, the meanings' own detail value). The rest of what it flagged in the new code was rewritten.
+- The translator track's merge of this branch (READ origin/translator-port 7bfac7e9c, its status, "Run of
+  2026-11-26, second"): e393e2b0 merged this branch at 3e168614e, so this run's commits and cf2e37416 to fa4155059
+  are not in it yet. It reports one thing against this track: layer 1 in Chrome, `Fbstp_m80bcd`, code
+  `41 df 74 e5 e6`, the reference read as a 48-bit chip #GP, the translation a page fault at 0x7ffffffffff8.
+  Reproduced here (x86-64 machine, `sample_matches_the_cpu_in_chrome_x86_64`, seed 1: 3 failing, `Fbstp_m80bcd`,
+  `Sldt_r32m16`, `Smsw_r32m16`). Cause (MEASURED with a scratch test, never committed): the case is r13 =
+  0x800000000012, a 10-byte store from 0x7ffffffffff8 across 2^47; wasmtime's translation gives the same page fault
+  as Chrome's (layer 1's own run at seed 1 never draws this case). The translation stores an 80-bit value in two
+  parts, 8 bytes then 2, so it faults at the first part's unmapped page, while the 5-level model treated the access
+  as one piece and expected #GP. Which fault a 48-bit chip raises first for such an access is the unmeasured fault
+  order already set aside for x87 state and far pointers; 1f734e7d2 counts `Float80` and `Bcd` accesses as made in
+  parts too. After it (x86-64 machine): Chrome's sample 2 failing (`Sldt_r32m16`, `Smsw_r32m16`, this machine's
+  own differences); the four 80-bit forms at 1,000 cases, 0 failing, 17 cases set aside (the translation's #GP
+  where the first part already crosses 2^47); every form at 64 cases, the same 5 failing, 4 set aside (`Fcos`'s
+  known one, `Fstp_m80fp` 2, `vmaskmovpd` 1). The two cases of `Fstp_m80fp` agreed before only because the model
+  read the whole access as one piece; a 48-bit chip is still needed to settle the order (Intel's priority table
+  puts #GP above #PF, which if seen would make the translation's page fault here wrong).
+- A trial merge of this tip into 7bfac7e9c is the translator track's to make next; it removed `GuestTest`
+  (17c05a9e), so this run's new harness code (`simulated.rs`, `litmus.rs`, `runner.rs`'s imports and the reference
+  chip record) will need that track's form there: each guest's harness items plain, litmus for x86-64 only.
+
+Where XF stands after the fourth run: XF1 and XF2 hold by this track's measurements and wait for their independent
+check; XF3's bar holds with every control asserted, on the chip for four shapes and on the simulated weaker engine
+for all seven, and waits for its check; XF4 is prepared (`AccessOrdering::chosen`) and waits on the executor track's
+X2 (the call, the cache key, the shared memory) and threads T2; XF5 is prepared and measured on the x86-64 machine
+and waits on threads T2 (the tested fence and T6); X10 has its first function (`signals`) and waits on the kernel
+track's KP1 and KS and the executor's X3; XN2's last tests wait on the native track's W3. The fault-order cases set
+aside need a 48-bit x86 chip to settle.
+
 Sections before 2026-11-21 name crates as they were then: `wcontainers-wasmtime` is now
 `wcontainers-executor-wasmtime` (crates/executor/implementation/wasmtime), `wcontainers-runtime` is
 `wcontainers-runtime-single-kernel` (crates/runtime/implementation/single-kernel), `wcontainers-kernel` is
