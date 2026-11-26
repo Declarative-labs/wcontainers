@@ -38,6 +38,7 @@ use wcontainers_processor_architecture_x86_64::sse::find_sse_form;
 use wcontainers_processor_architecture_x86_64::avx512_integer::find_evex_integer_form;
 use wcontainers_processor_architecture_x86_64::opmask::find_opmask_form;
 use wcontainers_processor_architecture_x86_64::string::find_string_form;
+use wcontainers_processor_architecture_x86_64::system::find_system_form;
 use wcontainers_processor_architecture_x86_64::memory::PAGE_BYTES;
 use wcontainers_processor_architecture_x86_64::{
     DataAccess, Flags, Instruction, InstructionFetch, PRIVILEGED_FORMS, PagePermission, Processor, SAMPLE_ENCODINGS,
@@ -57,6 +58,7 @@ pub mod opmask;
 pub mod sse;
 pub mod stack;
 pub mod string;
+pub mod system;
 pub mod vector;
 pub mod x87;
 #[cfg(test)]
@@ -233,6 +235,14 @@ pub enum OperandType {
     StringCount,
     /// The accumulator or the elements a string form stores or compares.
     StringData(string::StringDataSet),
+    /// Where the stack access of PUSHF, POPF or ENTER lies, of `bytes`, or how the code lies.
+    SystemLayout { bytes: u64 },
+    /// The flags PUSHF pushes.
+    SystemFlags,
+    /// The image POPF pops.
+    PoppedFlags,
+    /// ENTER's frame size and nesting level.
+    EnterOperands,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -417,6 +427,8 @@ pub enum OperandValue {
     /// Two values of a string form: the accumulator and the destination element, or the source and destination
     /// elements.
     StringData { first: u64, second: u64 },
+    SystemLayout(system::SystemLayout),
+    EnterOperands { allocation: u16, level: u8 },
 }
 
 impl InstructionInputDomain<X86_64> for X86_64InputDomain {
@@ -478,6 +490,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_string_form(instruction) {
             return string::list_operand_types(form).into_iter();
+        }
+        if let Some(form) = find_system_form(instruction) {
+            return system::list_operand_types(form).into_iter();
         }
         if let Some(codes) = find_privileged_codes(instruction) {
             let sizes = (codes.len() > 1).then_some(OperandSize(OperandSizes::WithoutSixteen));
@@ -707,6 +722,10 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::StringLayout { source, destination, bytes } => string::generate_layouts(source, destination, bytes),
             OperandType::StringCount => string::generate_counts(),
             OperandType::StringData(set) => string::generate_data(set),
+            OperandType::SystemLayout { bytes } => system::generate_layouts(bytes),
+            OperandType::SystemFlags => system::generate_flags(),
+            OperandType::PoppedFlags => system::generate_popped(),
+            OperandType::EnterOperands => system::generate_enter_operands(),
         };
         values.into_iter()
     }
@@ -776,6 +795,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_string_form(instruction) {
             return string::build_state(form, &typed);
+        }
+        if let Some(form) = find_system_form(instruction) {
+            return system::build_state(form, &typed);
         }
         let mut choice = Choice::default();
         for (operand_type, operand) in typed {
@@ -953,6 +975,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_opmask_form(instruction).is_some()
         || find_evex_integer_form(instruction).is_some()
         || find_string_form(instruction).is_some()
+        || find_system_form(instruction).is_some()
         || matches!(instruction, Instruction::PushGprv50 | Instruction::Ud2 | Instruction::Int3 | Instruction::Cpuid)
 }
 

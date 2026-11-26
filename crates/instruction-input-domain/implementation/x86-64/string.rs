@@ -89,11 +89,11 @@ pub enum StringDataSet {
     Accumulator,
 }
 
-const PLAIN: Placement = Placement::Pages { placement: AccessPlacement::LowerPageStart, lower: READ_WRITE, upper: UNMAPPED };
+pub(crate) const PLAIN: Placement = Placement::Pages { placement: AccessPlacement::LowerPageStart, lower: READ_WRITE, upper: UNMAPPED };
 
 /// The placements one element takes: the plain one first, then each fault, each way across the boundary, and the
 /// edges of the address space; an element of one byte never crosses a boundary nor is misaligned.
-fn list_placements(bytes: u64) -> Vec<Placement> {
+pub(crate) fn list_placements(bytes: u64) -> Vec<Placement> {
     let pages = |placement, lower, upper| Placement::Pages { placement, lower, upper };
     let mut placements = vec![
         PLAIN,
@@ -218,7 +218,7 @@ const fn to_mask(bytes: u64) -> u64 {
 }
 
 /// The address of the element's first byte; the destination's pair of pages lies above the source's.
-fn to_address(placement: Placement, bytes: u64, destination: bool) -> u64 {
+pub(crate) fn to_address(placement: Placement, bytes: u64, destination: bool) -> u64 {
     match placement {
         Placement::Pages { placement: AccessPlacement::NonCanonical, .. } => NON_CANONICAL_ADDRESS,
         Placement::Pages { placement, .. } => {
@@ -229,7 +229,7 @@ fn to_address(placement: Placement, bytes: u64, destination: bool) -> u64 {
 }
 
 /// Maps the element's pages with their bytes.
-fn place(placement: Placement, destination: bool, memory: &mut Vec<MemoryDelta<'static, X86_64>>) {
+pub(crate) fn place(placement: Placement, destination: bool, memory: &mut Vec<MemoryDelta<'static, X86_64>>) {
     let pattern: &'static [u8] = if destination { &DESTINATION_PAGES } else { &DATA_PAGES };
     match (placement, destination) {
         (Placement::Pages { lower, upper, .. }, false) => memory.extend(to_data_pages(lower, upper)),
@@ -387,35 +387,37 @@ pub fn decides_without_data(instruction: Instruction, operands: &[Option<Operand
     let Some(layout) = layout else {
         return false;
     };
-    let narrow = layout.narrow;
-    let mask = if narrow { u64::from(u32::MAX) } else { u64::MAX };
+    let mask = if layout.narrow { u64::from(u32::MAX) } else { u64::MAX };
     if count.is_some_and(|count| count & mask == 0) || layout.code.faults_before_execution() {
         return true;
     }
     let bytes = form.bytes;
-    let refuses = |placement: Placement, destination: bool, write: bool| -> bool {
-        let address = to_address(placement, bytes, destination);
-        if flags.contains(Flags::ALIGNMENT_CHECK) && bytes > 1 && !address.is_multiple_of(bytes) {
-            return true;
-        }
-        let Placement::Pages { placement, lower, upper } = placement else {
-            return false;
-        };
-        if placement == AccessPlacement::NonCanonical {
-            return true;
-        }
-        let lower_page = LOWER_DATA_ADDRESS + if destination { DESTINATION_SHIFT } else { 0 };
-        let allows = |byte: u64| {
-            let permission = if byte < lower_page + PAGE_BYTES { lower } else { upper };
-            match permission {
-                PagePermission::Unmapped => false,
-                PagePermission::Mapped { data_access, .. } => !write || data_access == DataAccess::ReadWrite,
-            }
-        };
-        let address = address & mask;
-        if write { !allows(address) } else { (address..address + bytes).any(|byte| !allows(byte)) }
-    };
-    let source = form.reads_source() && refuses(layout.source, false, false);
-    let destination = form.reaches_destination() && refuses(layout.destination, true, form.stores());
+    let alignment_check = flags.contains(Flags::ALIGNMENT_CHECK);
+    let source = form.reads_source() && refuses(layout.source, bytes, alignment_check, false, false);
+    let destination = form.reaches_destination() && refuses(layout.destination, bytes, alignment_check, true, form.stores());
     source || destination
+}
+
+/// Whether an access of `bytes` at the placement faults whatever it reads or stores: misaligned under AC, not
+/// canonical, or a page refusing a byte a read reaches or the first byte a store reaches.
+pub(crate) fn refuses(placement: Placement, bytes: u64, alignment_check: bool, destination: bool, write: bool) -> bool {
+    let address = to_address(placement, bytes, destination);
+    if alignment_check && bytes > 1 && !address.is_multiple_of(bytes) {
+        return true;
+    }
+    let Placement::Pages { placement, lower, upper } = placement else {
+        return false;
+    };
+    if placement == AccessPlacement::NonCanonical {
+        return true;
+    }
+    let lower_page = LOWER_DATA_ADDRESS + if destination { DESTINATION_SHIFT } else { 0 };
+    let allows = |byte: u64| {
+        let permission = if byte < lower_page + PAGE_BYTES { lower } else { upper };
+        match permission {
+            PagePermission::Unmapped => false,
+            PagePermission::Mapped { data_access, .. } => !write || data_access == DataAccess::ReadWrite,
+        }
+    };
+    if write { !allows(address) } else { (address..address + bytes).any(|byte| !allows(byte)) }
 }

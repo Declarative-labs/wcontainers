@@ -47,6 +47,7 @@ mod simulation;
 pub mod sse;
 pub mod stack;
 pub mod string;
+pub mod system;
 pub mod vector;
 pub mod x87;
 #[cfg(test)]
@@ -173,6 +174,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(opmask::OPMASK_FORMS.iter().map(|form| form.instruction))
         .chain(avx512_integer::EVEX_INTEGER_FORMS.iter().map(|form| form.instruction))
         .chain(string::STRING_FORMS.iter().map(|form| form.instruction))
+        .chain(system::SYSTEM_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -455,5 +457,10 @@ pub enum PreciseInstruction {
     String {
         instruction: Instruction,
         behavior: string::StringBehavior,
+    },
+    /// A form of [`system::SYSTEM_FORMS`].
+    System {
+        instruction: Instruction,
+        behavior: system::SystemBehavior,
     },
 }

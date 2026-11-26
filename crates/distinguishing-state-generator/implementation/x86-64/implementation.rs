@@ -39,7 +39,7 @@ use iced_x86::OpCodeOperandKind;
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_instruction_input_domain_x86_64::integer::to_access_bytes;
-use wcontainers_instruction_input_domain_x86_64::string;
+use wcontainers_instruction_input_domain_x86_64::{string, system};
 use wcontainers_instruction_input_domain_x86_64::{
     Access, AccessPlacement, AddressSize, Addressing, CodeLayout, DataPlacement, FlagSet, LOWER_DATA_ADDRESS, OperandSize, OperandType,
     OperandValue, SegmentChoice, UPPER_DATA_ADDRESS, ValueSet, X86_64InputDomain, to_data_address,
@@ -109,7 +109,8 @@ impl DistinguishingStateGenerator<X86_64> for CriticalValueCut {
             let width = find_access_bytes(instruction, &operands);
             let decided = operands.iter().flatten().any(|value| decides_without_data(*value, shape, width, relative))
                 || is_misaligned_under_alignment_check(&operands, width)
-                || string::decides_without_data(instruction, &operands);
+                || string::decides_without_data(instruction, &operands)
+                || system::decides_without_data(instruction, &operands);
             let in_part = operands.iter().flatten().any(|value| stores_in_part(*value, shape, width));
             let data_choices: Vec<Vec<usize>> = if decided {
                 // Each data operand one value, but the value in memory and CMPXCHG's comparison every value where the
@@ -229,7 +230,8 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::EvexCompareData(_)
         | OperandType::OpmaskValue { .. }
         | OperandType::ZmmValue(..)
-        | OperandType::StringData(_) => true,
+        | OperandType::StringData(_)
+        | OperandType::PoppedFlags => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }

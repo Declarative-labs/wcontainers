@@ -38,7 +38,7 @@ use wcontainers_processor_architecture::{MemoryDelta, MemorySink, MemorySnapshot
 use wcontainers_processor_architecture_x86_64::memory::{read_bytes, read_permission, report_changed_bytes};
 use wcontainers_processor_architecture_x86_64::{
     Access, DataAccess, Exception, Flags, GENERAL_PURPOSE_REGISTERS, InstructionFetch, MXCSR_DEFAULT,
-    PagePermission, Processor, VECTOR_REGISTERS, X86_64,
+    PagePermission, Processor, STACK_POINTER, VECTOR_REGISTERS, X86_64,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 use zerocopy::{FromZeros, IntoBytes};
@@ -786,6 +786,31 @@ impl SingleStepMachine {
         Ok(())
     }
 
+    /// Clears TF in the image a completed PUSHF wrote: the source sets TF to step, where a program's PUSHF pushes it
+    /// clear.
+    fn hide_pushed_trap_flag(&mut self, processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) {
+        let bytes: [u8; 15] = read_bytes(memory, processor.instruction_pointer);
+        let decoded = Decoder::with_ip(64, &bytes, processor.instruction_pointer, DecoderOptions::NONE).decode();
+        let size = match decoded.code() {
+            Code::Pushfw => 2,
+            Code::Pushfq => 8,
+            _ => return,
+        };
+        let vector = self.read_entry(SLOT + offset_of!(Slot, vector) as u64);
+        let status = self.read_entry(SLOT + offset_of!(Slot, debug_status) as u64);
+        if !(vector == DEBUG_VECTOR && status & SINGLE_STEP != 0) {
+            return;
+        }
+        // TF is bit 8 of the image, bit 0 of its second byte.
+        let address = processor.general_purpose_registers[STACK_POINTER].wrapping_sub(size).wrapping_add(1);
+        let page = address & !(PAGE_BYTES - 1);
+        if let Some(frame) = self.writable.iter().find(|writable| writable.page == page).map(|writable| writable.frame) {
+            let at = frame + (address - page);
+            let byte = self.read_bytes(at, 1)[0];
+            self.write_bytes(at, &[byte & !1]);
+        }
+    }
+
     /// The address of the last-level entry of a page under a top-level table, making the tables that lead to it.
     fn find_leaf_entry(&mut self, next_free_page: &mut u64, top: u64, page: u64) -> u64 {
         let mut table = top;
@@ -900,12 +925,14 @@ impl BehaviorSource for SingleStepMachine {
         let held = self.load(processor, memory);
         let Some(mut held) = held else {
             self.run()?;
+            self.hide_pushed_trap_flag(processor, memory);
             return self.read_back(processor, |mutation| mutation_hook.on_memory_mutated(mutation));
         };
         if self.options.loading == MemoryLoading::Checked && !self.check_guest_holds(memory) {
             self.check_mismatches += 1;
         }
         self.run()?;
+        self.hide_pushed_trap_flag(processor, memory);
         self.read_back(processor, |mutation| {
             held.push(mutation.clone().into_owned());
             mutation_hook.on_memory_mutated(mutation);
@@ -1044,13 +1071,14 @@ fn check_holdable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> 
 ///
 /// # Errors
 ///
-/// For MOV SS (it steps two instructions), POPF and IRET (they can
-/// change TF), PUSHF (it pushes the source's TF), SYSCALL and SYSENTER (they enter ring 0 at MSRs the source does
+/// For MOV SS (it steps two instructions), IRET (it can change TF),
+/// SYSCALL and SYSENTER (they enter ring 0 at MSRs the source does
 /// not set as Linux does), a far CALL, JMP or RET (it changes CS), any other write of a segment register (the
 /// selectors are not modeled), and VMCALL and VMMCALL (KVM answers them as hypercalls, which the chip alone does
 /// not). Then for each instruction whose result under Linux differs from the source's guest, the table of settings
 /// on the page says why: UMWAIT and TPAUSE, RDPKRU and WRPKRU, XGETBV, the
-/// XSAVE family, LAR, LSL, VERR and VERW, SGDT, SIDT and SMSW, INT 0x80, and AMX's.
+/// XSAVE family, LAR, LSL, VERR and VERW, INT 0x80, and AMX's. SGDT, SIDT and SMSW run: the chip's #GP under
+/// UMIP is the program's outcome at this level, as every other exception is, whatever Linux then does with it.
 fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) -> Result<(), Refusal> {
     let address = processor.instruction_pointer;
     let bytes: [u8; 15] = read_bytes(memory, address);
@@ -1080,10 +1108,7 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         Mnemonic::Mov if writes_segment && decoded.op0_register() == Register::SS => {
             Some("it steps two instructions")
         }
-        Mnemonic::Popf | Mnemonic::Popfq | Mnemonic::Iret | Mnemonic::Iretd | Mnemonic::Iretq => {
-            Some("it can change TF, which steps it")
-        }
-        Mnemonic::Pushf | Mnemonic::Pushfq => Some("it pushes the TF that steps it"),
+        Mnemonic::Iret | Mnemonic::Iretd | Mnemonic::Iretq => Some("it can change TF, which steps it"),
         Mnemonic::Syscall => Some("it enters ring 0 at an LSTAR the source does not set"),
         // Linux sets IA32_SYSENTER_CS, so a 64-bit SYSENTER enters its kernel; the source leaves it 0, where it faults.
         Mnemonic::Sysenter => Some("it enters ring 0 at SYSENTER MSRs the source does not set as Linux does"),
@@ -1107,9 +1132,6 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
         | Mnemonic::Xrstor64 => Some("it reaches components the state does not hold, under an XCR0 that is not Linux's"),
         Mnemonic::Lar | Mnemonic::Lsl | Mnemonic::Verr | Mnemonic::Verw => {
             Some("it answers from the source's descriptor table, not Linux's")
-        }
-        Mnemonic::Sgdt | Mnemonic::Sidt | Mnemonic::Smsw => {
-            Some("Linux answers it after the chip's #GP with values of its own")
         }
         Mnemonic::Int if decoded.immediate8() == LINUX_SYSTEM_CALL_VECTOR => {
             Some("Linux takes it as a 32-bit system call")

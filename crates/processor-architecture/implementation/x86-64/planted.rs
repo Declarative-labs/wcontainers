@@ -1045,6 +1045,16 @@ pub enum Bug {
     RepeatFlagsWrittenEachIteration,
     /// CMPS reads its source element before its destination element.
     CompareReadsSourceFirst,
+    /// PUSHF pushes IF clear.
+    PushFlagsOmitsInterrupt,
+    /// The 16-bit POPF changes the flags above bit 15 too.
+    PopFlagsSixteenReachesUpper,
+    /// POPF leaves AC as it was.
+    PopFlagsKeepsAlignmentCheck,
+    /// ENTER takes its whole nesting level rather than modulo 32.
+    EnterNestingUnreduced,
+    /// ENTER does not check the stack at its final RSP.
+    EnterProbeSkipped,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1521,6 +1531,11 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::RepeatCountZeroRuns, "repeated string forms", Family::String(|form| form.is_repeated()), Origin::Mandatory),
     row(Bug::RepeatFlagsWrittenEachIteration, "REPE and REPNE SCAS and CMPS", Family::String(|form| form.is_repeated() && form.compares()), Origin::Mandatory),
     row(Bug::CompareReadsSourceFirst, "CMPS", Family::String(|form| form.operation == crate::string::StringOperation::Compare), Origin::Mandatory),
+    row(Bug::PushFlagsOmitsInterrupt, "PUSHF", Family::Forms(&[Instruction::Pushf, Instruction::Pushfq]), Origin::Mandatory),
+    row(Bug::PopFlagsSixteenReachesUpper, "POPF", Family::Forms(&[Instruction::Popf]), Origin::Mandatory),
+    row(Bug::PopFlagsKeepsAlignmentCheck, "POPF", Family::Forms(&[Instruction::Popf, Instruction::Popfq]), Origin::Mandatory),
+    row(Bug::EnterNestingUnreduced, "ENTER", Family::Forms(&[Instruction::EnterImmwImmb]), Origin::Mandatory),
+    row(Bug::EnterProbeSkipped, "ENTER", Family::Forms(&[Instruction::EnterImmwImmb]), Origin::Mandatory),
 ];
 
 const RANDOM: &[Instruction] = &[Instruction::RdrandGprv, Instruction::RdseedGprv];

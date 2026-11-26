@@ -65,6 +65,8 @@ mod x87_simulation;
 mod stack_simulation;
 #[path = "string_simulation.rs"]
 mod string_simulation;
+#[path = "system_simulation.rs"]
+mod system_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -120,7 +122,7 @@ fn simulate_processor(
         Ok(()) => {
             *processor = changed;
             // A jump leaves the instruction pointer where it goes, as the stack forms leave it themselves.
-            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. } | PreciseInstruction::String { .. }) {
+            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. } | PreciseInstruction::String { .. } | PreciseInstruction::System { .. }) {
                 processor.instruction_pointer = decoded.next_ip();
             }
             processor.exception = None;
@@ -268,6 +270,9 @@ fn apply(
         }
         PreciseInstruction::String { instruction, behavior } => {
             string_simulation::execute_string(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
+        PreciseInstruction::System { instruction, behavior } => {
+            system_simulation::execute_system(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS
