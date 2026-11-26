@@ -253,6 +253,42 @@ where
     outcome
 }
 
+/// Checks that an executor, its guest memory, its page table and its interrupter may move to another thread, as the
+/// kernel's runners move them: the bounds fail the build of an executor that may not, and a guest then runs there.
+pub fn executor_and_its_memory_move_between_threads<Chip>(executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip> + Send,
+    Chip::GuestMemory: Send,
+    PageTableOf<Chip>: Send,
+    Chip::Interrupter: Send,
+{
+    let (memory, mut table) = create_memory(&executor);
+    let store = arm64::build_store(CODE, DATA, STORED);
+    let (stopped, finished) = thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let mut executor = executor;
+                place(&memory, &mut table, &store);
+                assert_eq!(table.set_permissions(page(DATA), DATA_PERMISSIONS), Ok(()));
+                let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
+                let stopped = execute(&mut executor, store.start.clone(), &memory, &mut handler);
+                handler.assert_no_trap();
+                assert_eq!(
+                    read_bytes(&memory, DATA..DATA + WORD),
+                    STORED.to_le_bytes(),
+                    "the bytes the store on another thread left"
+                );
+                (stopped, store.finished)
+            })
+            .join()
+            .expect("the executor ran on another thread")
+    });
+    assert_eq!(
+        stopped, finished,
+        "the state the store on another thread returned"
+    );
+}
+
 /// Checks that a system call answered with a value goes on after the call with the value in the result register.
 pub fn system_call_answered_return_goes_on_with_the_value<Chip>(mut executor: Chip)
 where
@@ -1320,6 +1356,11 @@ macro_rules! tests {
         #[test]
         fn agrees_with_precise_instruction_set() {
             $crate::agrees_with_precise_instruction_set(|| $executor, $set, $generator);
+        }
+
+        #[test]
+        fn executor_and_its_memory_move_between_threads() {
+            $crate::executor_and_its_memory_move_between_threads($executor);
         }
 
         #[test]
