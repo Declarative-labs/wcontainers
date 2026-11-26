@@ -101,23 +101,11 @@ pub struct KernelWithExecutor<C: Executor + 'static, State, S> {
 struct Shared<C: Executor + 'static> {
     inner: spin::Mutex<Inner<C>>,
     let_go: spin::Mutex<Vec<Box<dyn Any + Send>>>,
-    /// The turn a runner runs under the lock, while it runs.
-    running: spin::Mutex<Option<RunningTurn<C>>>,
+    /// The interrupter of the turn a runner runs under the lock, while it runs.
+    running: spin::Mutex<Option<C::Interrupter>>,
     /// How many of the interface's calls wait for the lock; runners leave it to them.
     waiting: AtomicUsize,
 }
-
-/// A turn a runner runs: its execution's interrupter and when its time slice ends, on the
-/// system's monotonic clock, if the kernel gave it one.
-struct RunningTurn<C: Executor + 'static> {
-    interrupter: C::Interrupter,
-    slice_end: Option<u64>,
-}
-
-/// How long a runner that keeps no turn's time waits before it looks again, in nanoseconds: one
-/// millisecond, Linux's scheduler tick at `CONFIG_HZ=1000`
-/// (<https://man7.org/linux/man-pages/man7/time.7.html#:~:text=The%20software%20clock%2C%20HZ%2C%20and%20jiffies>).
-const TIMER_RUNNER_TICK_NANOSECONDS: u64 = 1_000_000;
 
 /// What [`KernelWithExecutor`]'s lock guards.
 struct Inner<C: Executor + 'static> {
@@ -158,8 +146,8 @@ impl<C: Executor + 'static> Shared<C> {
     fn lock(&self) -> spin::MutexGuard<'_, Inner<C>> {
         let guard = self.inner.try_lock().unwrap_or_else(|| {
             self.waiting.fetch_add(1, Ordering::SeqCst);
-            if let Some(turn) = &*self.running.lock() {
-                turn.interrupter.interrupt();
+            if let Some(interrupter) = &*self.running.lock() {
+                interrupter.interrupt();
             }
             let guard = self.inner.lock();
             self.waiting.fetch_sub(1, Ordering::SeqCst);
@@ -186,33 +174,13 @@ impl<C: Executor + 'static> Shared<C> {
     }
 
     /// Keeps `interrupter`, of the execution about to run under the lock, for the interface's
-    /// calls and the other runners to end it, with the end of its turn's slice, `slice_end`; ends
-    /// it at once if a call already waits.
-    fn turn_started(&self, interrupter: C::Interrupter, slice_end: Option<u64>) {
+    /// calls to end it; ends it at once if a call already waits.
+    fn turn_started(&self, interrupter: C::Interrupter) {
         let mut running = self.running.lock();
         if self.waiting.load(Ordering::SeqCst) != 0 {
             interrupter.interrupt();
         }
-        *running = Some(RunningTurn {
-            interrupter,
-            slice_end,
-        });
-    }
-
-    /// What a runner that finds the lock held does: the turn another runner runs has its slice
-    /// ended if `now` is past it. Returns when the runner should look again, on the same clock.
-    fn keep_time(&self, now: u64) -> u64 {
-        let running = self.running.lock();
-        match running.as_ref().and_then(|turn| turn.slice_end) {
-            Some(end) if now >= end => {
-                if let Some(turn) = running.as_ref() {
-                    turn.interrupter.interrupt();
-                }
-                now.saturating_add(TIMER_RUNNER_TICK_NANOSECONDS)
-            }
-            Some(end) => end.min(now.saturating_add(TIMER_RUNNER_TICK_NANOSECONDS)),
-            None => now.saturating_add(TIMER_RUNNER_TICK_NANOSECONDS),
-        }
+        *running = Some(interrupter);
     }
 
     /// Forgets the interrupter of the turn that has ended.
@@ -544,10 +512,9 @@ where
     /// one of the kernel interface's calls waits for the lock (`Interrupted`; the turn running
     /// then is ended).
     ///
-    /// While another runner holds the lock, none can run on this one: it keeps that runner's
-    /// time instead, interrupting a turn whose time slice has passed, and returns `Idle` until it
-    /// should look again. So a kernel with one runner keeps no time slice: a turn runs until its
-    /// thread traps.
+    /// A turn runs until its thread traps or the executor's own slice ends it, which the kernel
+    /// takes as Linux takes its timer's interrupt. While another runner holds the lock, none can
+    /// run on this one, which returns `Idle` with no time to look again.
     fn run(&mut self, executor: &mut C) -> interface::StopReason {
         let mut timer_told = false;
         loop {
@@ -555,10 +522,7 @@ where
                 if self.shared.waiting.load(Ordering::SeqCst) != 0 {
                     return interface::StopReason::Interrupted;
                 }
-                let again = self.shared.keep_time(self.system.monotonic_nanoseconds());
-                return interface::StopReason::Idle {
-                    until: Some(Duration::from_nanos(again)),
-                };
+                return interface::StopReason::Idle { until: None };
             };
             inner.give_first();
             let Inner {
@@ -567,23 +531,18 @@ where
                 ..
             } = &mut *inner;
             match kernel.next() {
-                Next::Run {
-                    thread,
-                    resume,
-                    slice_nanoseconds,
-                } => {
+                Next::Run { thread, resume } => {
                     kernel.ready_turn(machine);
-                    let slice_end = slice_nanoseconds
-                        .map(|slice| self.system.monotonic_nanoseconds().saturating_add(slice));
                     let (_, registers, predicates, memory) = machine.thread_parts(thread);
                     let exit =
                         running::turn(executor, registers, predicates, memory, resume, |turn| {
-                            self.shared.turn_started(turn, slice_end);
+                            self.shared.turn_started(turn);
                         });
                     self.shared.turn_ended();
                     kernel.exit(machine, &self.system, exit);
                     // An interrupt for a call that waits for the lock ends the run as the lock
-                    // is let go of at the top; one for a slice's end goes on to the next turn.
+                    // is let go of at the top; the end of the executor's slice goes on to the
+                    // next turn.
                 }
                 // The kernel's waits to settle, or the time it waits for may have come.
                 Next::Idle {

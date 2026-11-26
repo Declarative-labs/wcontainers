@@ -13,7 +13,9 @@ use wcontainers_executor::{
     Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf,
     SystemCallResponse, TrapHandler,
 };
-use wcontainers_processor_architecture_arm64::{ConditionFlags, Exception, ExclusiveMonitor};
+use wcontainers_processor_architecture_arm64::{
+    AccessDirection, ConditionFlags, Exception, ExclusiveMonitor,
+};
 
 use crate::guest_machine::Predicates;
 
@@ -36,6 +38,33 @@ pub(crate) enum Exit {
     IllegalInstruction,
     /// A breakpoint instruction (`brk`), with its 16-bit comment.
     Breakpoint { comment: u16 },
+    /// A read of the generic timer's counter or frequency that EL1 traps, with the program counter
+    /// at its instruction and the general register it reads into (31 for none).
+    CounterRead { counter: Counter, register: u8 },
+}
+
+/// What a trapped counter read asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Counter {
+    /// CNTFRQ_EL0: the counter's ticks a second.
+    Frequency,
+    /// CNTVCT_EL0, CNTPCT_EL0 and their self-synchronized forms: the count.
+    Count,
+}
+
+/// The encoding fields (op0, op1, CRn, CRm) every EL0 counter register shares
+/// (<https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CNTVCT-EL0--Counter-timer-Virtual-Count-Register#:~:text=Accessing%20CNTVCT_EL0>).
+const COUNTER_REGISTERS: (u8, u8, u8, u8) = (3, 3, 14, 0);
+
+/// Returns the counter a read of the system register of encoding op2 `op2` among
+/// [`COUNTER_REGISTERS`] gives: 0 is CNTFRQ_EL0, 1 CNTPCT_EL0, 2 CNTVCT_EL0, 5 CNTPCTSS_EL0 and
+/// 6 CNTVCTSS_EL0.
+fn counter_of(op2: u8) -> Option<Counter> {
+    match op2 {
+        0 => Some(Counter::Frequency),
+        1 | 2 | 5 | 6 => Some(Counter::Count),
+        _ => None,
+    }
 }
 
 /// The processor's state of a thread at EL0, which adds no state to what every level has.
@@ -162,13 +191,17 @@ fn exit_of(exception: Option<Exception>, registers: &RegisterBlock) -> Exit {
             syndrome,
             fault_address,
         } => exit_of_syndrome(syndrome, fault_address, registers),
-        // A supervisor call goes to the hook first, and Linux lets EL0 wait untrapped. A trapped
-        // system access names no exit yet, as when the processor kept it as its syndrome.
+        Exception::SystemAccessTrapped(access) => exit_of_system_access(
+            (access.op0, access.op1, access.crn, access.crm),
+            access.op2,
+            access.rt,
+            access.direction == AccessDirection::Read,
+        ),
+        // A supervisor call goes to the hook first, and Linux lets EL0 wait untrapped.
         exception @ (Exception::InstructionAbort { .. }
         | Exception::SmeTrap(_)
         | Exception::SupervisorCall { .. }
-        | Exception::WaitTrapped(_)
-        | Exception::SystemAccessTrapped(_)) => {
+        | Exception::WaitTrapped(_)) => {
             panic!("an execution ended on an exception no exit names: {exception:?}")
         }
     }
@@ -197,7 +230,39 @@ fn exit_of_syndrome(syndrome: u64, fault_address: u64, registers: &RegisterBlock
         Some(Class::DataAbortLowerEL) => Exit::AlignmentFault {
             address: fault_address,
         },
+        Some(Class::TrappedMsrMrs) => {
+            let field = |shift: u32, width: u32| {
+                u8::try_from((syndrome >> shift) & ((1 << width) - 1))
+                    .expect("a syndrome field is narrower than a byte")
+            };
+            // ISS of an MSR or MRS trap: Op0 [21:20], Op2 [19:17], Op1 [16:14], CRn [13:10],
+            // Rt [9:5], CRm [4:1], Direction [0], 1 for a read
+            // (<https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=ISS%20encoding%20for%20an%20exception%20from%20MSR%2C%20MRS%2C%20or%20System%20instruction%20execution%20in%20AArch64%20state>).
+            exit_of_system_access(
+                (field(20, 2), field(14, 3), field(10, 4), field(1, 4)),
+                field(17, 3),
+                field(5, 5),
+                field(0, 1) == 1,
+            )
+        }
         _ => panic!("an execution ended on an exception no exit names: syndrome {syndrome:#x}"),
+    }
+}
+
+/// Returns the exit of a trapped system access of encoding `(op0, op1, CRn, CRm)` and `op2`, into
+/// or from general register `register`, a read if `read`: a counter read the kernel answers,
+/// else an access the kernel does not emulate, which ends as an undefined instruction does.
+fn exit_of_system_access(
+    encoding: (u8, u8, u8, u8),
+    op2: u8,
+    register: u8,
+    read: bool,
+) -> Exit {
+    match counter_of(op2) {
+        Some(counter) if read && encoding == COUNTER_REGISTERS => {
+            Exit::CounterRead { counter, register }
+        }
+        _ => Exit::IllegalInstruction,
     }
 }
 
@@ -253,7 +318,7 @@ fn to_registers(processor: &Processor) -> RegisterBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wcontainers_processor_architecture_arm64::INSTRUCTION_SIZE;
+    use wcontainers_processor_architecture_arm64::{INSTRUCTION_SIZE, SystemAccess};
 
     #[test]
     fn registers_come_back_from_the_processor_state_unchanged() {
@@ -352,5 +417,97 @@ mod tests {
         for (exception, exit) in kept_whole {
             assert_eq!(exit_of(exception, &registers), exit, "{exception:?}");
         }
+    }
+
+    /// A trapped `mrs` of the system register `(op0, op1, crn, crm, op2)` into `rt`.
+    fn trapped_read(encoding: (u8, u8, u8, u8, u8), rt: u8) -> Exception {
+        let (op0, op1, crn, crm, op2) = encoding;
+        Exception::SystemAccessTrapped(SystemAccess {
+            op0,
+            op1,
+            crn,
+            crm,
+            op2,
+            rt,
+            direction: AccessDirection::Read,
+        })
+    }
+
+    /// The same read kept whole as its syndrome, in the ISS layout of an MSR or MRS trap.
+    fn trapped_read_syndrome(encoding: (u8, u8, u8, u8, u8), rt: u8) -> Option<Exception> {
+        let (op0, op1, crn, crm, op2) = encoding;
+        let specific = u64::from(op0) << 20
+            | u64::from(op2) << 17
+            | u64::from(op1) << 14
+            | u64::from(crn) << 10
+            | u64::from(rt) << 5
+            | u64::from(crm) << 1
+            | 1;
+        undecoded(ESR_EL1::EC::Value::TrappedMsrMrs, specific, 0)
+    }
+
+    #[test]
+    fn trapped_counter_reads_are_answered_and_other_system_accesses_are_undefined() {
+        let registers = RegisterBlock::ZERO;
+        let frequency = (3, 3, 14, 0, 0);
+        let physical = (3, 3, 14, 0, 1);
+        let virtual_count = (3, 3, 14, 0, 2);
+        let virtual_self_synchronized = (3, 3, 14, 0, 6);
+        let virtual_timer_control = (3, 3, 14, 3, 1);
+        let main_id = (3, 0, 0, 0, 0);
+        let cases = [
+            (
+                frequency,
+                Exit::CounterRead {
+                    counter: Counter::Frequency,
+                    register: 3,
+                },
+            ),
+            (
+                physical,
+                Exit::CounterRead {
+                    counter: Counter::Count,
+                    register: 3,
+                },
+            ),
+            (
+                virtual_count,
+                Exit::CounterRead {
+                    counter: Counter::Count,
+                    register: 3,
+                },
+            ),
+            (
+                virtual_self_synchronized,
+                Exit::CounterRead {
+                    counter: Counter::Count,
+                    register: 3,
+                },
+            ),
+            (virtual_timer_control, Exit::IllegalInstruction),
+            (main_id, Exit::IllegalInstruction),
+        ];
+        for (encoding, exit) in cases {
+            assert_eq!(
+                exit_of(Some(trapped_read(encoding, 3)), &registers),
+                exit,
+                "{encoding:?}"
+            );
+            assert_eq!(
+                exit_of(trapped_read_syndrome(encoding, 3), &registers),
+                exit,
+                "{encoding:?} kept whole"
+            );
+        }
+        let write = Exception::SystemAccessTrapped(SystemAccess {
+            op0: 3,
+            op1: 3,
+            crn: 14,
+            crm: 0,
+            op2: 2,
+            rt: 3,
+            direction: AccessDirection::Write,
+        });
+        assert_eq!(exit_of(Some(write), &registers), Exit::IllegalInstruction);
     }
 }

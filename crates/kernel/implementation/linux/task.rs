@@ -10,6 +10,7 @@ use wcontainers_abi::{
     SystemCallNumber, SystemCallRequest, ThreadId,
 };
 use wcontainers_executor::Executor;
+use wcontainers_processor_architecture_arm64::INSTRUCTION_SIZE;
 
 use crate::counters::reason;
 use crate::linux::general::*;
@@ -18,16 +19,17 @@ use crate::running::Exit;
 use crate::schedule;
 use crate::{Context, Errno, Kernel, syscall};
 
+/// The counter's frequency a trapped CNTFRQ_EL0 read gets, in ticks a second: 1 GHz, which Armv8.6
+/// fixes and the reference's Neoverse V2 has, so a tick is a nanosecond of the kernel's clock
+/// (<https://developer.arm.com/documentation/102379/latest/What-is-the-Generic-Timer-#:~:text=1GHz>).
+pub(crate) const COUNTER_FREQUENCY: u64 = 1_000_000_000;
+
 /// What the kernel's runner does next.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Next {
-    /// Runs this thread until its turn ends, carrying on as `resume` says.
-    Run {
-        thread: ThreadId,
-        resume: Resume,
-        /// The longest the kernel lets the turn last, if another thread or a deadline waits.
-        slice_nanoseconds: Option<u64>,
-    },
+    /// Runs this thread until its turn ends, carrying on as `resume` says. The executor bounds the
+    /// turn by its own slice, which ends it as an interrupt does.
+    Run { thread: ThreadId, resume: Resume },
     /// Waits until this time on the host's monotonic clock (0: at once), or with none until woken.
     Idle { until_nanoseconds: Option<u64> },
     /// The container's first process has ended with this wait status.
@@ -61,28 +63,9 @@ impl Kernel {
         self.current = Some(tid);
         self.running = Some(tid);
         let thread = &self.threads[&tid];
-        let fair = (self.run_queue.len() > 0).then(|| {
-            let weight = schedule::weight(&thread.schedule);
-            let ideal = schedule::slice(
-                weight,
-                self.run_queue.load + weight,
-                self.run_queue.len() + 1,
-            );
-            ideal
-                .saturating_sub(thread.runtime - self.picked_runtime)
-                .max(1)
-        });
-        // A parked call's deadline ends the turn as Linux's timer interrupt would.
-        let timer = self
-            .next_deadline()
-            .map(|at| at.saturating_sub(self.last_now).max(1));
-        // So does a CPU timer of the thread's or its process's.
-        let cpu = syscall::timer::cpu_slice(self, tid);
-        let slice_nanoseconds = [fair, timer, cpu].into_iter().flatten().min();
         Next::Run {
             thread: thread.cpu,
             resume: thread.resume,
-            slice_nanoseconds,
         }
     }
 
@@ -187,7 +170,37 @@ impl Kernel {
                 let pc = self.thread_pc(cx, tid);
                 self.force_fault(cx, tid, SIGTRAP, TRAP_BRKPT as i32, pc)
             }
+            Exit::CounterRead { counter, register } => {
+                self.answer_counter_read(cx, tid, counter, register);
+            }
         }
+    }
+
+    /// Answers a counter read the executor trapped as the instruction would on a host that lets
+    /// EL0 read the counter: the value goes into general register `register` (31, the zero
+    /// register, takes nothing) and the thread goes on after the instruction. The count is the
+    /// kernel's monotonic clock at [`COUNTER_FREQUENCY`], so it never goes backwards, also across
+    /// a restore, and a replay reads it from the system's clock as it reads every other time.
+    fn answer_counter_read<S: crate::System, C: Executor + 'static>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        tid: Tid,
+        counter: crate::running::Counter,
+        register: u8,
+    ) {
+        let value = match counter {
+            crate::running::Counter::Frequency => COUNTER_FREQUENCY,
+            crate::running::Counter::Count => cx.monotonic(),
+        };
+        let thread = self.threads[&tid].cpu;
+        let mut registers = RegisterBlock::ZERO;
+        cx.cpu.read_registers(thread, &mut registers);
+        if let Some(slot) = registers.x.get_mut(usize::from(register)) {
+            *slot = value;
+        }
+        registers.pc = registers.pc.wrapping_add(INSTRUCTION_SIZE);
+        cx.cpu.set_registers(thread, &registers);
+        self.return_to_user(cx, tid, Resume::FromRegisters);
     }
 
     fn thread_pc<S: crate::System, C: Executor + 'static>(
