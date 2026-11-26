@@ -12,8 +12,12 @@
 //! processor differs from that one, then its memory changes; the `after` line below it lists the fields in
 //! which the chip's processor differs from the before, then the memory changes the chip made. A run of bytes
 //! longer than [`INLINE_BYTES`] is written once on a `bytes` line and named by its number.
+//!
+//! A recording made from a generator's states writes no state before: its second line is `generated` and the number
+//! of states, and each `after` line belongs to the state the generator gives at its place.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::convert::Infallible;
 
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
@@ -29,6 +33,9 @@ use crate::RecordedCase;
 const INLINE_BYTES: usize = 16;
 const NO_EXCEPTION: &str = "none";
 const INSTRUCTION_FETCH: &str = "+execute";
+const AFTER: &str = "after";
+/// The keyword of the line that counts the states of a recording made from a generator.
+const GENERATED: &str = "generated";
 
 /// Why a text is no recording.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -142,6 +149,138 @@ pub(crate) fn from_text(
         return Err(MalformedRecording::UnfinishedCase);
     }
     Ok((instruction.ok_or(MalformedRecording::NoInstruction)?, cases))
+}
+
+/// The runs of bytes longer than [`INLINE_BYTES`] a recording names by number, each with its number.
+#[derive(Default)]
+pub(crate) struct LongRuns {
+    runs: Vec<Vec<u8>>,
+    numbers: HashMap<Vec<u8>, usize>,
+}
+
+impl LongRuns {
+    fn name_run(&mut self, bytes: &[u8]) -> usize {
+        if let Some(number) = self.numbers.get(bytes) {
+            return *number;
+        }
+        let number = self.runs.len();
+        self.runs.push(bytes.to_vec());
+        self.numbers.insert(bytes.to_vec(), number);
+        number
+    }
+
+    pub(crate) fn into_runs(self) -> Vec<Vec<u8>> {
+        self.runs
+    }
+}
+
+/// Returns the `after` line of a state: the fields in which the processor differs from the one before, then the memory
+/// changes made, each run of bytes longer than [`INLINE_BYTES`] named by its number among the long runs.
+pub(crate) fn to_after_line(
+    before: &Processor<()>,
+    after: &Processor<()>,
+    made: &[MemoryDelta<'_, Arm64<User>>],
+    long_runs: &mut LongRuns,
+) -> String {
+    let mutations: Vec<String> = made
+        .iter()
+        .map(|mutation| match mutation {
+            MemoryDelta::ValueAssignment { start, bytes } if bytes.len() > INLINE_BYTES => {
+                format!("value {start:#x} #{}", long_runs.name_run(bytes))
+            }
+            MemoryDelta::ValueAssignment { .. } | MemoryDelta::PermissionAssignment { .. } => {
+                to_mutation_text(mutation, &[])
+            }
+        })
+        .collect();
+    let fields = to_differing_fields(Some(before), after);
+    let mutations = mutations.join("; ");
+    let parts = [AFTER, &fields, "|", &mutations];
+    let written: Vec<&str> = parts.into_iter().filter(|part| !part.is_empty()).collect();
+    written.join(" ")
+}
+
+/// Returns the processor and the memory changes an `after` line gives from the processor before.
+pub(crate) fn apply_after_line(
+    before: &Processor<()>,
+    line: &str,
+    long_runs: &[Vec<u8>],
+) -> Option<(Processor<()>, Vec<MemoryDelta<'static, Arm64<User>>>)> {
+    let (fields, memory) = line.strip_prefix(AFTER)?.split_once('|')?;
+    Some((
+        from_fields(before.clone(), fields)?,
+        from_mutations_text(memory, long_runs)?,
+    ))
+}
+
+/// Returns the text of a recording made from a generator's states: the instruction, the number of states, the long
+/// runs, then the `after` line of each state in the generator's order.
+pub(crate) fn to_generated_text<'line>(
+    instruction: Instruction<Infallible>,
+    long_runs: &[Vec<u8>],
+    after_lines: impl ExactSizeIterator<Item = &'line str>,
+) -> String {
+    let mut lines = vec![
+        format!("instruction {instruction:?}"),
+        format!("{GENERATED} {}", after_lines.len()),
+    ];
+    for (number, bytes) in long_runs.iter().enumerate() {
+        lines.push(format!("bytes #{number} {}", to_hex(bytes)));
+    }
+    lines.extend(after_lines.map(str::to_owned));
+    lines.push(String::new());
+    lines.join("\n")
+}
+
+/// Returns the instruction a text `to_generated_text` wrote names, its long runs and its `after` lines.
+pub(crate) fn from_generated_text(
+    text: &str,
+) -> Result<(Instruction<Infallible>, Vec<Vec<u8>>, Vec<&str>), MalformedRecording> {
+    let mut lines = text.lines().enumerate();
+    let mut read_header = |keyword: &str| {
+        let (index, line) = lines.next().ok_or(MalformedRecording::NoInstruction)?;
+        line.strip_prefix(keyword)
+            .and_then(|rest| rest.strip_prefix(' '))
+            .ok_or(MalformedRecording::UnreadableLine(index + 1))
+            .map(|rest| (index, rest))
+    };
+    let (index, name) = read_header("instruction")?;
+    let instruction = Arm64::<User>::list_instructions()
+        .find(|instruction| format!("{instruction:?}") == name)
+        .ok_or(MalformedRecording::UnreadableLine(index + 1))?;
+    let (index, count) = read_header(GENERATED)?;
+    let count: usize = count
+        .parse()
+        .map_err(|_| MalformedRecording::UnreadableLine(index + 1))?;
+    let mut long_runs = Vec::new();
+    let mut after_lines = Vec::with_capacity(count);
+    for (index, line) in lines {
+        let unreadable = MalformedRecording::UnreadableLine(index + 1);
+        if line.starts_with(AFTER) {
+            after_lines.push(line);
+        } else if let Some(rest) = line.strip_prefix("bytes ")
+            && after_lines.is_empty()
+        {
+            let (name, hex) = rest.split_once(' ').ok_or(unreadable)?;
+            if name != format!("#{}", long_runs.len()) {
+                return Err(unreadable);
+            }
+            long_runs.push(from_hex(hex).ok_or(unreadable)?);
+        } else {
+            return Err(unreadable);
+        }
+    }
+    if after_lines.len() != count {
+        return Err(MalformedRecording::UnfinishedCase);
+    }
+    Ok((instruction, long_runs, after_lines))
+}
+
+/// Whether a text is a recording made from a generator's states, whose second line counts them.
+pub(crate) fn is_generated_text(text: &str) -> bool {
+    text.lines()
+        .nth(1)
+        .is_some_and(|line| line.starts_with(GENERATED))
 }
 
 /// Writes `name=value` for each field of the processor whose value differs from the earlier one's.
