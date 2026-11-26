@@ -17,7 +17,7 @@ pub enum PlantedBy {
     CutCheck,
     FourthCheck,
     Sync,
-    /// The Advanced SIMD instructions beyond `simd.rs`.
+    /// The Advanced SIMD instructions beyond `simd.rs`, whose bugs are numbered from 3001.
     AdvancedSimd,
     ScalableFirstHalf,
     /// The second half of the SVE work list, whose bugs are numbered from 2001.
@@ -25,6 +25,11 @@ pub enum PlantedBy {
     /// The modeling of the cryptography, pointer authentication, memory tagging, structure loads and stores and the
     /// system instructions left after the sync.
     RestOfTheSet,
+    /// The SVE gathers, scatters, prefetches of vector addresses and first-fault and non-fault loads, numbered from
+    /// 3501.
+    ScalableLoadsAndStores,
+    /// The SVE floating-point and SVE2 instructions of `sve_remaining`, whose bugs are numbered from 3201 and 3101.
+    ScalableRemaining,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.
@@ -66,7 +71,7 @@ pub fn plant(bug: u32) {
 }
 
 /// Every planted bug, by number.
-pub const PLANTED_BUGS: [PlantedBug; 496] = [
+pub const PLANTED_BUGS: [PlantedBug; 502] = [
     PlantedBug {
         number: 1,
         instruction: Instruction::BicsShiftedRegister32,
@@ -3042,5 +3047,41 @@ pub const PLANTED_BUGS: [PlantedBug; 496] = [
         instruction: Instruction::StgImmediate64,
         planted_by: PlantedBy::RestOfTheSet,
         what: "an unaligned tag store does not fault",
+    },
+    PlantedBug {
+        number: 723,
+        instruction: Instruction::Hint,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "hint 7 leaves X30",
+    },
+    PlantedBug {
+        number: 724,
+        instruction: Instruction::MsrImmediate,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "DAIFSet and DAIFClr are undefined, not trapped",
+    },
+    PlantedBug {
+        number: 725,
+        instruction: Instruction::Sys,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "DC ZVA zeroes from the address, not its block",
+    },
+    PlantedBug {
+        number: 726,
+        instruction: Instruction::Sysl,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "SYSL completes, changing nothing",
+    },
+    PlantedBug {
+        number: 727,
+        instruction: Instruction::Sys,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "CPP RCTX traps as CFP RCTX does on a Neoverse V2",
+    },
+    PlantedBug {
+        number: 728,
+        instruction: Instruction::MsrImmediate,
+        planted_by: PlantedBy::RestOfTheSet,
+        what: "writing SSBS, DIT or TCO is undefined",
     },
 ];

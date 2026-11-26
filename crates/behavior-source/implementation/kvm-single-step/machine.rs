@@ -56,6 +56,10 @@ pub(crate) enum Register {
     Vectors,
     /// MDSCR_EL1: the debug controls, software step among them.
     DebugControl,
+    /// DBGBCR0_EL1: what the first breakpoint matches, and where.
+    BreakpointControl,
+    /// DBGBVR0_EL1: the address of the first breakpoint.
+    BreakpointValue,
     /// TPIDR_EL1: the handler's thread register, which names the slot it runs.
     HandlerThread,
     /// ZCR_EL1: the SVE vector length of EL1 and EL0.
@@ -211,6 +215,8 @@ const ID_AA64PFR0_EL1: SystemRegister = system(3, 0, 0, 4, 0);
 const ID_AA64PFR1_EL1: SystemRegister = system(3, 0, 0, 4, 1);
 const VBAR_EL1: SystemRegister = system(3, 0, 12, 0, 0);
 const MDSCR_EL1: SystemRegister = system(2, 0, 0, 2, 2);
+const DBGBCR0_EL1: SystemRegister = system(2, 0, 0, 0, 5);
+const DBGBVR0_EL1: SystemRegister = system(2, 0, 0, 0, 4);
 const TPIDR_EL1: SystemRegister = system(3, 0, 13, 0, 4);
 const ZCR_EL1: SystemRegister = system(3, 0, 1, 2, 0);
 
@@ -239,6 +245,8 @@ fn to_id(register: Register) -> u64 {
         Register::ProcessorFeatures1 => ID_AA64PFR1_EL1,
         Register::Vectors => VBAR_EL1,
         Register::DebugControl => MDSCR_EL1,
+        Register::BreakpointControl => DBGBCR0_EL1,
+        Register::BreakpointValue => DBGBVR0_EL1,
         Register::HandlerThread => TPIDR_EL1,
         Register::SveControl => ZCR_EL1,
     };

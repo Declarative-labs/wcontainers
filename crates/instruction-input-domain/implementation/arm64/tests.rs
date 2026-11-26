@@ -4,12 +4,18 @@ use core::convert::Infallible;
 
 use wcontainers_instruction_input_domain::InstructionInputDomain;
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
-use wcontainers_processor_architecture_arm64::encoding::{Field, RN};
+use wcontainers_processor_architecture_arm64::encoding::{Field, RN, RT};
 use wcontainers_processor_architecture_arm64::load_store::AccessLayout;
 use wcontainers_processor_architecture_arm64::load_store::scalable_access::{
     Offset, RM, to_scalable_access,
 };
+use wcontainers_processor_architecture_arm64::load_store::scalable_element_access::{
+    Addressing, to_element_access,
+};
 use wcontainers_processor_architecture_arm64::operand::{Operand, RegisterThirtyOne};
+use wcontainers_processor_architecture_arm64::system_instruction::{
+    SYSTEM_INSTRUCTION, to_system_instruction_bytes,
+};
 use wcontainers_processor_architecture_arm64::{
     Arm64, Instruction, LoadStoreInstruction, User, VIRTUAL_ADDRESS_BITS,
 };
@@ -17,10 +23,10 @@ use wcontainers_processor_architecture_arm64::{
 use crate::{
     AccessPlacement, Arm64InputDomain, CODE_ADDRESS, CodePlacement, Comparison, DataPage,
     GENERAL_PURPOSE_REGISTERS, LOWER_DATA_ADDRESS, MemoryFill, OperandType, OperandValue,
-    ScalableValues, UPPER_DATA_ADDRESS, to_access_address,
+    ScalableValues, UPPER_DATA_ADDRESS, to_placed_address,
 };
 
-const PLACEMENTS: [AccessPlacement; 7] = [
+const PLACEMENTS: [AccessPlacement; 9] = [
     AccessPlacement::LowerPageStart,
     AccessPlacement::ByteAfterLowerPageStart,
     AccessPlacement::AcrossEightBytes,
@@ -28,6 +34,8 @@ const PLACEMENTS: [AccessPlacement; 7] = [
     AccessPlacement::EndsAtBoundary,
     AccessPlacement::StraddlesBoundary,
     AccessPlacement::UpperPageStart,
+    AccessPlacement::StraddlesInsideVector,
+    AccessPlacement::StraddlesInsideElement,
 ];
 
 fn read_word(state: &ExecutionState<'static, Arm64<User>>) -> Option<u32> {
@@ -104,9 +112,9 @@ fn read_operand(
             let bits = state.processor.vector_registers
                 [(field.read(word) + offset) as usize % state.processor.vector_registers.len()];
             match values {
-                ScalableValues::Integer
-                | ScalableValues::TableIndices
-                | ScalableValues::Structure => Some(OperandValue::Vector(bits)),
+                ScalableValues::Integer | ScalableValues::Structure => {
+                    Some(OperandValue::Vector(bits))
+                }
                 // The critical value of these bits, whose lanes the bits alone do not name.
                 // The critical value of the bits; a register named twice holds another operand's, read in the
                 // lanes of this operand's first value.
@@ -128,6 +136,12 @@ fn read_operand(
                         })
                 }
             }
+        }
+        // A vector base holds the placed address besides its value, which the test takes as asked.
+        OperandType::ElementOffsets { field, .. } | OperandType::ElementAddresses { field, .. } => {
+            Some(OperandValue::Vector(
+                state.processor.vector_registers[field.read(word) as usize],
+            ))
         }
         OperandType::ScalablePredicateValue(field) => Some(OperandValue::Bits(u64::from(
             state.processor.predicate_registers[field.read(word) as usize],
@@ -186,8 +200,7 @@ fn read_operand(
         )),
         OperandType::ProgramCounterOffset(fields)
         | OperandType::SplitImmediate(fields)
-        | OperandType::EveryValue(fields)
-        | OperandType::BytePosition(fields) => {
+        | OperandType::EveryValue(fields) => {
             Some(OperandValue::Bits(fields.iter().fold(0, |bits, field| {
                 (bits << field.width) | u64::from(field.read(word))
             })))
@@ -251,22 +264,26 @@ fn read_operand(
         OperandType::ConditionFlags | OperandType::WrittenConditionFlags => Some(
             OperandValue::ConditionFlags(state.processor.condition_flags),
         ),
-        OperandType::AccessPlacement => {
+        OperandType::AccessPlacement
+        | OperandType::ScalableStructurePlacement
+        | OperandType::ElementPlacement => {
             let layout = to_layout(instruction, word, &state.processor)?;
             let base = registers
-                .get(RN.read(word) as usize)
+                .get(to_base_field(instruction).read(word) as usize)
                 .copied()
                 .unwrap_or(state.processor.stack_pointer);
             let address = untag(base.wrapping_add(layout.offset));
             PLACEMENTS
                 .into_iter()
-                .find(|placement| to_access_address(*placement, layout.bytes) == address)
+                .find(|placement| {
+                    to_placed_address(instruction, *placement, layout.bytes) == address
+                })
                 .map(OperandValue::AccessPlacement)
         }
         OperandType::AddressTag => {
             let layout = to_layout(instruction, word, &state.processor)?;
             let base = registers
-                .get(RN.read(word) as usize)
+                .get(to_base_field(instruction).read(word) as usize)
                 .copied()
                 .unwrap_or(state.processor.stack_pointer);
             Some(OperandValue::Bits(
@@ -280,6 +297,9 @@ fn read_operand(
                 CodePlacement::PageEnd
             },
         )),
+        OperandType::Remaining(operand) => {
+            crate::sve_remaining::read_back(operand, word, &state.processor)
+        }
         OperandType::AdvancedSimd(operand) => {
             crate::advanced_simd::read_back(operand, word, &state.processor)
         }
@@ -312,7 +332,10 @@ fn untag(address: u64) -> u64 {
 fn is_base_also_offset(instruction: Instruction<Infallible>, word: u32) -> bool {
     let scalable = to_scalable_access(instruction)
         .is_some_and(|access| access.offset == Offset::Register && RM.read(word) == RN.read(word));
-    scalable
+    let element = to_element_access(instruction).is_some_and(|access| {
+        access.addressing == Addressing::ScalarPlusScalar && RM.read(word) == RN.read(word)
+    });
+    scalable || element
         || instruction.to_record().is_some_and(|record| {
             record.operands.iter().any(|operand| {
                 matches!(operand, Operand::RegisterOffset { number, .. } if number.read(word) == RN.read(word))
@@ -329,6 +352,21 @@ fn to_layout(
     LoadStoreInstruction::new(instruction)
         .and_then(|load_store| load_store.to_access_layout(word, processor))
         .or_else(|| to_scalable_access(instruction)?.to_access_layout(word, processor))
+        .or_else(|| {
+            let bytes = (instruction == Instruction::Sys)
+                .then(|| to_system_instruction_bytes(SYSTEM_INSTRUCTION.read(word)))??;
+            Some(AccessLayout { bytes, offset: 0 })
+        })
+        .or_else(|| Some(to_element_access(instruction)?.to_access_layout(word, processor)))
+}
+
+/// The field of the register that holds the base of an access: Rt for SYS, Rn for every other instruction.
+fn to_base_field(instruction: Instruction<Infallible>) -> Field {
+    if instruction == Instruction::Sys {
+        RT
+    } else {
+        RN
+    }
 }
 
 /// Every listed instruction that has a known behavior, in the list's order.
@@ -421,13 +459,34 @@ fn every_state_decodes_to_its_instruction_and_operands() {
             assert_eq!(word & fixed.mask, fixed.value, "{instruction:?}");
             // A base that is also the register offset cannot hold the value that places the access.
             let base_is_offset = is_base_also_offset(instruction, word);
-            let placed = operand_types.contains(&OperandType::AccessPlacement);
+            let placed = operand_types.contains(&OperandType::AccessPlacement)
+                || operand_types.contains(&OperandType::ScalableStructurePlacement)
+                || operand_types.contains(&OperandType::ElementPlacement);
+            let vector_based =
+                to_element_access(instruction).is_some_and(|access| access.has_vector_base());
             let read: Vec<OperandValue> = operand_types
                 .iter()
                 .zip(&operands)
                 .map(
-                    |(operand_type, asked)| match (operand_type, base_is_offset) {
-                        (OperandType::AccessPlacement | OperandType::AddressTag, true) => {
+                    |(operand_type, asked)| match (operand_type, base_is_offset || vector_based) {
+                        (
+                            OperandType::AccessPlacement
+                            | OperandType::ScalableStructurePlacement
+                            | OperandType::ElementPlacement
+                            | OperandType::AddressTag,
+                            true,
+                        ) => Some(*asked),
+                        (OperandType::ElementAddresses { .. }, _) => Some(*asked),
+                        // An encoding that reaches no memory gets no data pages, so they hold nothing to read back.
+                        (
+                            OperandType::AccessPlacement
+                            | OperandType::ScalableStructurePlacement
+                            | OperandType::ElementPlacement
+                            | OperandType::AddressTag
+                            | OperandType::DataPagePermission(_)
+                            | OperandType::MemoryFill,
+                            false,
+                        ) if to_layout(instruction, word, &state.processor).is_none() => {
                             Some(*asked)
                         }
                         _ => read_operand(&state, instruction, word, *operand_type),
@@ -454,7 +513,10 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                 // An Advanced SIMD operand reads back as the first of its values that builds the same register.
                 if asked == held
                     || placements
-                    || matches!(operand_types.get(index), Some(OperandType::AdvancedSimd(_)))
+                    || matches!(
+                        operand_types.get(index),
+                        Some(OperandType::AdvancedSimd(_) | OperandType::Remaining(_))
+                    )
                 {
                     continue;
                 }
@@ -488,6 +550,7 @@ fn every_state_decodes_to_its_instruction_and_operands() {
                     operand_types.get(index)
                     && operand_types[index + 1..].iter().any(|later| {
                         matches!(later, OperandType::ScalableVectorValue { field: other, offset: other_offset, .. } if (other.read(word) + other_offset) % 32 == (field.read(word) + offset) % 32)
+                            || matches!(later, OperandType::ElementOffsets { field: other, .. } | OperandType::ElementAddresses { field: other, .. } if other.read(word) == (field.read(word) + offset) % 32)
                     })
                 {
                     continue;
