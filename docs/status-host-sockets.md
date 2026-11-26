@@ -770,6 +770,13 @@ route resolver 38, API suite 13, generator tests 12, probe 1 (96 rows), hosts' o
 tests ignored. Speed: ARM64 TCP 400-401 / 409-410 ns, UDP 1.524-1.545 us / 808-810 ns; x86-64 TCP 310-313 / 340-353 ns, UDP
 1.439-1.709 us / 759-794 ns (b599e5b85's bar: ARM64 401-402 / 403-404 ns, 1.473-1.488 us / 803-805 ns).
 
+### The bar at f7227d94e (code of 6ee323c7d), both machines (MEASURED: hs5/{arm,x86}-bar-tip.log; `--jobs 12`)
+
+check --all-targets, clippy `-D warnings`, fmt --check of the 17 packages: exit 0. TCP 143, UDP 80, ICMP 69, raw 54, route
+resolver 38, API suite 13, generator tests 12, probe 1 (96 rows), the hosts' other tests: all pass; only the two speed tests
+ignored. Speed: ARM64 TCP 401 / 405-406 ns, UDP 1.515-1.525 us / 799-801 ns; x86-64 TCP 339-356 / 382-419 ns, UDP
+1.551-1.644 us / 820-871 ns.
+
 ### Netlink instead of `ip` and `tc` (groups 1-4 done, each measured on both machines before the next)
 
 `crates/icmp-sockets/conformance/netlink.rs`: `batch` (which every `ip` call of the three suites goes through) now sends
