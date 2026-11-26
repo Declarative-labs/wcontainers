@@ -21,6 +21,7 @@ use crate::pointer_authentication::{
 };
 use crate::scalable::{ScalableOperation, simulate_scalable, to_scalable_operation};
 use crate::simd::{VectorOperation, simulate_vector, to_vector_operation};
+use crate::sve_remaining::{RemainingOperation, simulate_remaining, to_remaining_operation};
 use crate::{Exception, ExclusiveMonitor, Instruction, Processor};
 
 /// An instruction whose manual leaves no choice, so its documented behavior is its only one.
@@ -38,6 +39,8 @@ pub enum DocumentedOperation {
     AdvancedSimd(AdvancedSimdOperation),
     /// An SVE instruction of `scalable`.
     Scalable(ScalableOperation),
+    /// An SVE instruction of `sve_remaining`.
+    ScalableRemaining(RemainingOperation),
     Cryptography(CryptographyOperation),
     MemoryTagging(TagOperation),
     /// A hint or barrier, which changes nothing a single instruction's state shows.
@@ -112,6 +115,9 @@ pub const fn to_documented_operation(
     if let Some(operation) = to_scalable_operation(instruction) {
         return Some(DocumentedOperation::Scalable(operation));
     }
+    if let Some(operation) = to_remaining_operation(instruction) {
+        return Some(DocumentedOperation::ScalableRemaining(operation));
+    }
     if let Some(operation) = to_cryptography_operation(instruction) {
         return Some(DocumentedOperation::Cryptography(operation));
     }
@@ -153,6 +159,7 @@ pub const fn to_implicit_inputs(instruction: Instruction<Infallible>) -> Implici
         Some(
             DocumentedOperation::Vector(_)
             | DocumentedOperation::Scalable(_)
+            | DocumentedOperation::ScalableRemaining(_)
             | DocumentedOperation::Cryptography(_)
             | DocumentedOperation::MemoryTagging(_)
             | DocumentedOperation::NoOperation
@@ -244,6 +251,9 @@ impl DocumentedInstruction {
             }
             DocumentedOperation::Scalable(operation) => {
                 simulate_scalable(processor, word, operation).map(|()| None)
+            }
+            DocumentedOperation::ScalableRemaining(operation) => {
+                simulate_remaining(processor, word, operation).map(|()| None)
             }
             DocumentedOperation::Cryptography(operation) => {
                 simulate_cryptography(processor, word, operation).map(|()| None)

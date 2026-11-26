@@ -110,6 +110,9 @@ pub enum ScalableStoreAcrossFault {
     /// The elements of each vector's length of the access, counted from its first byte, that ends at or below the
     /// fault, as a Neoverse V2 does for ST3B.
     WritesWholeVectorsBelowFault,
+    /// Every element before the one that faults, in the order the elements are numbered, as a Neoverse V2 does for a
+    /// scatter.
+    WritesElementsBeforeFault,
 }
 
 /// The choices a chip makes for an SVE access, as for the other loads and stores.

@@ -3,6 +3,7 @@
 //! Unicorn owns the bytes of the pages it maps; a page that allows nothing is not mapped, so it faults by being absent,
 //! and its bytes wait in host memory. A range that shows shared pages reads and writes them in host memory between
 //! turns; unicorn holds a copy for a turn, taken before it when the shared pages changed and given back after it.
+//! Where two ranges of one space show the same shared bytes, a store hook copies each guest store to the other.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -14,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use memmap2::MmapMut;
 use unicorn_engine::{
     Arch, Arm64CpuModel, Context, HookType, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP,
-    Unicorn, uc_error,
+    TlbEntry, TlbType, UcHookId, Unicorn, uc_error,
 };
 use wcontainers_abi::{
     Access, CpuError, Exit, PAGE_SIZE, Permissions, RegisterBlock, SYSTEM_CALL_ARGUMENT_COUNT,
@@ -30,6 +31,8 @@ use crate::standin::Unsupported;
 const EXCEPTION_UNDEFINED: u32 = 1;
 /// [EXCP_SWI](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
 const EXCEPTION_SYSCALL: u32 = 2;
+/// [EXCP_PREFETCH_ABORT](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
+const EXCEPTION_PREFETCH_ABORT: u32 = 3;
 /// [EXCP_DATA_ABORT](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
 const EXCEPTION_DATA_ABORT: u32 = 4;
 /// [EXCP_BKPT](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
@@ -63,6 +66,18 @@ const TRANSLATION_CONTROL: RegisterARM64CP =
 /// pointer authentication code lies, and TBI0 (bit 37), so a data address's top byte is a tag the access ignores.
 const USER_TRANSLATION_CONTROL: u64 = (64 - 48) | 1 << 37;
 
+/// [SCR_EL3](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SCR-EL3--Secure-Configuration-Register)
+/// as op0, op1, CRn, CRm and op2.
+const MONITOR_CONTROL: RegisterARM64CP = RegisterARM64CP::new().op0(3).op1(6).crn(1).crm(1).op2(0);
+/// SCR_EL3's RW (bit 10): the levels below EL3 are AArch64, as under Linux. Unicorn starts with it clear, and QEMU then
+/// translates EL0's addresses as an AArch32 regime's, which leaves TBI0 out (MEASURED: a load from a tagged address
+/// faulted at that address until it was set).
+const LOWER_LEVELS_AARCH64: u64 = 1 << 10;
+/// Bit 55 of an address, which picks the upper half of the address space, where TBI1 is clear on Linux.
+const UPPER_HALF: u64 = 1 << 55;
+/// The bits of a lower-half address below its tag, the top byte TBI0 leaves out of translation.
+const UNTAGGED: u64 = (1 << 56) - 1;
+
 /// The most bytes a space maps in unicorn as one region, a level 2 block of pages.
 ///
 /// A change of one page's permissions maps the regions it touches anew, so it costs this much at most.
@@ -73,6 +88,8 @@ const UNICORN_NO_LIMIT: usize = 0;
 const UNICORN_NO_TIMEOUT: u64 = 0;
 /// The slice that runs one instruction, at one instruction a nanosecond.
 pub(crate) const ONE_INSTRUCTION: u64 = 1;
+/// The count of instructions unicorn runs that is one instruction.
+const ONE_INSTRUCTION_COUNT: usize = 1;
 
 /// A page's length as an index into host memory.
 const PAGE_BYTES: usize = PAGE_SIZE as usize;
@@ -92,6 +109,125 @@ pub(crate) struct Stopped {
     deadline: Option<coarsetime::Instant>,
     /// Raised from another thread to end the turn at the next block.
     interrupt: Option<Arc<AtomicBool>>,
+    /// The ranges that show shared pages another range of the same space shows, for the store hook to keep alike.
+    views: Vec<View>,
+    /// The pages of addresses a run with translation by hand found refusing their access, each translated to a page of
+    /// [`FAULT_PAGES`] by its place here, so the fault hook gives back the address the guest used.
+    fault_pages: Vec<u64>,
+}
+
+/// Where the pages that stand for refusing guest pages start, past every physical address unicorn maps and every
+/// untagged lower-half address.
+const FAULT_PAGES: u64 = 1 << 60;
+
+/// Returns the physical page unicorn's virtual TLB gives a page of addresses: a lower-half address without its tag, as
+/// TBI0 has it, and any other as it is, so an address outside the space reaches no memory and faults whole.
+fn translate(page: u64) -> u64 {
+    if page & UPPER_HALF == 0 {
+        page & UNTAGGED
+    } else {
+        page
+    }
+}
+
+/// Returns the address the guest used for the physical address a fault gave, which a page of [`FAULT_PAGES`] stands
+/// for in a run with translation by hand.
+fn to_guest_address(stopped: &Stopped, address: u64) -> u64 {
+    let place = address
+        .checked_sub(FAULT_PAGES)
+        .map(|offset| offset / PAGE_SIZE);
+    place
+        .and_then(|place| stopped.fault_pages.get(usize::try_from(place).ok()?))
+        .map_or(address, |page| page | (address % PAGE_SIZE))
+}
+
+/// Returns the permission an access needs.
+fn to_needed(access: MemType) -> Prot {
+    match access {
+        MemType::WRITE => Prot::WRITE,
+        MemType::FETCH => Prot::EXEC,
+        _ => Prot::READ,
+    }
+}
+
+/// Returns whether a region unicorn maps at the physical page allows what the access needs.
+fn allows(unicorn: &Unicorn<'_, Stopped>, physical: u64, needed: Prot) -> bool {
+    unicorn.mem_regions().is_ok_and(|regions| {
+        regions.iter().any(|region| {
+            region.begin <= physical
+                && physical <= region.end
+                && region.perms & needed.0 == needed.0
+        })
+    })
+}
+
+/// A range of a space that shows shared pages another of its ranges shows too, so a store to one is copied to the other.
+#[derive(Clone)]
+struct View {
+    addresses: Range<u64>,
+    /// Where in the shared pages the range's start lies.
+    offset: u64,
+    /// Which shared pages, the same number for every range that shows the same ones.
+    pages: usize,
+    /// Whether the guest may store to the range, so a store hooked there takes place.
+    writable: bool,
+}
+
+/// What a run does after a fault QEMU's translation gave no guest address for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FaultRun {
+    /// Runs the faulting instruction again, translated by hand, from the registers the fault left.
+    AgainInPlace,
+    /// Says so, for the caller to run the instruction again from its own state.
+    Reported,
+    /// Keeps what the run gave: it was translated by hand already.
+    Kept,
+}
+
+/// The most bytes one guest store moves, which QEMU hands its store hook as one value.
+const LARGEST_STORE: usize = size_of::<u64>();
+
+/// Copies the bytes a guest store is about to write through one view to every other view of the same shared bytes.
+///
+/// Unicorn calls its store hook before the store, with the value, and a write through its interface also drops what it
+/// translated from the bytes written, so code run through another view is the code stored.
+fn copy_store_to_other_views(
+    unicorn: &mut Unicorn<'_, Stopped>,
+    address: u64,
+    size: usize,
+    value: i64,
+) {
+    let stored = value.to_le_bytes();
+    let count = size.min(LARGEST_STORE);
+    let store = address..address.saturating_add(count as u64);
+    let mut copies = Vec::new();
+    let views = &unicorn.get_data().views;
+    for source in views.iter().filter(|view| view.writable) {
+        let cut = store.start.max(source.addresses.start)..store.end.min(source.addresses.end);
+        if cut.is_empty() {
+            continue;
+        }
+        let shared = source.offset + (cut.start - source.addresses.start)
+            ..source.offset + (cut.end - source.addresses.start);
+        for target in views
+            .iter()
+            .filter(|view| view.pages == source.pages && view.addresses != source.addresses)
+        {
+            let shown =
+                target.offset..target.offset + (target.addresses.end - target.addresses.start);
+            let both = shared.start.max(shown.start)..shared.end.min(shown.end);
+            if both.is_empty() {
+                continue;
+            }
+            let first = to_index(both.start - shared.start + (cut.start - store.start));
+            let bytes = stored[first..first + to_index(both.end - both.start)].to_vec();
+            copies.push((target.addresses.start + (both.start - target.offset), bytes));
+        }
+    }
+    for (at, bytes) in copies {
+        // A view whose pages allow nothing is not mapped, and takes the bytes when it is mapped again.
+        let _ = unicorn.mem_write(at, &bytes);
+    }
 }
 
 /// Pages that may hold something other than zeros, one bit each.
@@ -258,6 +394,8 @@ pub(crate) struct Memory {
     counting: bool,
     /// Where its address space ends.
     end: u64,
+    /// The store hook that keeps several views of the same shared bytes alike, while the space has such views.
+    view_hook: Option<UcHookId>,
 }
 
 impl Memory {
@@ -306,13 +444,38 @@ impl Memory {
                 };
                 // QEMU stores an access that crosses pages one byte at a time and goes on past the first
                 // byte that faults, so the first is the instruction's fault.
-                unicorn
-                    .get_data_mut()
-                    .fault
-                    .get_or_insert((address, access));
+                let stopped = unicorn.get_data_mut();
+                let address = to_guest_address(stopped, address);
+                stopped.fault.get_or_insert((address, access));
                 false
             })
             .expect("adding the fault hook");
+        // Translation by hand, used only to run a faulting instruction again (`find_guest_fault`): QEMU's own with the
+        // MMU off raises an address beyond its physical addresses as an abort with no address and drops a tag from a
+        // fault's address, and unicorn's virtual TLB costs too much to run every instruction on.
+        unicorn
+            .add_tlb_hook(1, 0, |unicorn, page, access| {
+                let mut physical = translate(page);
+                let needed = to_needed(access);
+                // A page refusing the access becomes a page of its own that nothing maps, so the fault hook names it.
+                if !allows(unicorn, physical, needed) {
+                    let pages = &mut unicorn.get_data_mut().fault_pages;
+                    let place = pages
+                        .iter()
+                        .position(|kept| *kept == page)
+                        .unwrap_or_else(|| {
+                            pages.push(page);
+                            pages.len() - 1
+                        });
+                    physical = FAULT_PAGES + place as u64 * PAGE_SIZE;
+                }
+                // Only the access asked for, so another kind of access to the page is translated again.
+                Some(TlbEntry {
+                    paddr: physical,
+                    perms: needed,
+                })
+            })
+            .expect("adding the TLB hook");
         enter_user_level(&mut unicorn);
         let fresh = unicorn
             .context_init()
@@ -329,6 +492,7 @@ impl Memory {
             touched: TouchedPages::new(end / PAGE_SIZE),
             counting: false,
             end,
+            view_hook: None,
         })
     }
 
@@ -898,12 +1062,109 @@ impl Memory {
                 }
             }
         }
+        // Unicorn's copy of a range another range shows too may lack a store the hook did not see, such as DC ZVA's,
+        // so it is taken again before the next turn.
+        let overlapping = self.list_overlapping();
+        let stale: Vec<u64> = overlapping
+            .into_iter()
+            .filter(|start| {
+                written
+                    .iter()
+                    .any(|(pages, _, _)| Rc::ptr_eq(pages, &self.shared[start].pages))
+            })
+            .collect();
         for (pages, offset, bytes) in written {
             pages.write(offset, &bytes);
         }
-        for shown in self.shared.values_mut() {
-            shown.synced = Some(shown.pages.version.get());
+        for (start, shown) in &mut self.shared {
+            shown.synced = (!stale.contains(start)).then(|| shown.pages.version.get());
         }
+    }
+
+    /// Returns the starts of the shared ranges whose shared bytes another shared range of the space shows too.
+    fn list_overlapping(&self) -> Vec<u64> {
+        let ranges: Vec<(u64, &Shown)> = self
+            .shared
+            .iter()
+            .map(|(start, shown)| (*start, shown))
+            .collect();
+        ranges
+            .iter()
+            .filter(|range| ranges.iter().any(|other| shows_same_bytes(range, other)))
+            .map(|(start, _)| *start)
+            .collect()
+    }
+
+    /// Returns the views the store hook keeps alike: the shared ranges that show bytes another shows, cut where the
+    /// pages' permission to store changes.
+    fn list_views(&self) -> Vec<View> {
+        let overlapping = self.list_overlapping();
+        let mut groups: Vec<Rc<SharedPages>> = Vec::new();
+        let mut views = Vec::new();
+        for start in overlapping {
+            let shown = &self.shared[&start];
+            let pages = match groups
+                .iter()
+                .position(|group| Rc::ptr_eq(group, &shown.pages))
+            {
+                Some(group) => group,
+                None => {
+                    groups.push(Rc::clone(&shown.pages));
+                    groups.len() - 1
+                }
+            };
+            let mut at = start;
+            while at < shown.end {
+                let writable = self.read_permissions(at).contains(Permissions::WRITE);
+                let mut end = (at / PAGE_SIZE + 1) * PAGE_SIZE;
+                while end < shown.end
+                    && self.read_permissions(end).contains(Permissions::WRITE) == writable
+                {
+                    end += PAGE_SIZE;
+                }
+                let end = end.min(shown.end);
+                views.push(View {
+                    addresses: at..end,
+                    offset: shown.offset + (at - start),
+                    pages,
+                    writable,
+                });
+                at = end;
+            }
+        }
+        views
+    }
+
+    /// Adds the store hook that copies stores between views, or removes it, and drops what unicorn translated: its
+    /// translations call the hook only if it was there as they were made, and a store with no hook is faster.
+    fn hook_views(&mut self, hooked: bool) {
+        if hooked == self.view_hook.is_some() {
+            return;
+        }
+        match self.view_hook.take() {
+            Some(hook) => self
+                .unicorn
+                .remove_hook(hook)
+                .expect("removing the store hook"),
+            None => {
+                let hook = self
+                    .unicorn
+                    .add_mem_hook(
+                        HookType::MEM_WRITE,
+                        1,
+                        0,
+                        |unicorn, _, address, size, value| {
+                            copy_store_to_other_views(unicorn, address, size, value);
+                            true
+                        },
+                    )
+                    .expect("adding the store hook");
+                self.view_hook = Some(hook);
+            }
+        }
+        self.unicorn
+            .ctl_flush_tb()
+            .expect("flushing unicorn's translated blocks");
     }
 
     /// Writes the registers into unicorn over whatever else its CPU holds.
@@ -960,37 +1221,100 @@ impl Memory {
         self.unicorn
             .context_restore(&self.fresh)
             .expect("restoring unicorn's fresh CPU state");
-        self.run_loaded(registers, slice_nanoseconds, deadline, interrupt)
+        let (exit, instructions, _) = self.run_loaded(
+            registers,
+            slice_nanoseconds,
+            deadline,
+            interrupt,
+            FaultRun::AgainInPlace,
+        );
+        (exit, instructions)
     }
 
-    /// Runs as [`Memory::run_turn`] does, on what unicorn's CPU holds besides the registers.
+    /// Runs as [`Memory::run_turn`] does, on what unicorn's CPU holds besides the registers, and returns besides whether
+    /// a fault stopped it that only a run with translation by hand gives the guest's address of.
     fn run_loaded(
         &mut self,
         registers: &mut RegisterBlock,
         slice_nanoseconds: Option<u64>,
         deadline: Option<coarsetime::Instant>,
         interrupt: Option<Arc<AtomicBool>>,
-    ) -> (Result<Exit, Unsupported>, u64) {
+        fault_run: FaultRun,
+    ) -> (Result<Exit, Unsupported>, u64, bool) {
         self.copy_shared_in();
         self.load_registers(registers)
             .expect("loading registers into unicorn");
+        let views = self.list_views();
+        self.hook_views(!views.is_empty());
         *self.unicorn.get_data_mut() = Stopped {
             deadline,
             interrupt,
+            views,
             ..Stopped::default()
         };
         let count = slice_nanoseconds.map_or(UNICORN_NO_LIMIT, |nanoseconds| {
             usize::try_from(nanoseconds.max(ONE_INSTRUCTION)).unwrap_or(usize::MAX)
         });
-        let result = self.start(registers.pc, count);
+        let mut result = self.start(registers.pc, count);
+        let mut stopped = std::mem::take(self.unicorn.get_data_mut());
+        let pc = self
+            .unicorn
+            .reg_read(RegisterARM64::PC)
+            .expect("reading the program counter");
+        // A branch to a misaligned upper-half address faults on the program counter's alignment before translation,
+        // where QEMU raised the address's size.
+        if stopped.exception == Some(EXCEPTION_PREFETCH_ABORT)
+            && !pc.is_multiple_of(INSTRUCTION_SIZE)
+        {
+            stopped.exception = Some(EXCEPTION_UNDEFINED);
+        }
+        let faulted = stopped.fault.is_some()
+            || matches!(
+                stopped.exception,
+                Some(EXCEPTION_PREFETCH_ABORT | EXCEPTION_DATA_ABORT)
+            );
+        if faulted && fault_run == FaultRun::AgainInPlace {
+            let instructions = stopped.instructions;
+            (result, stopped) = self.find_guest_fault(pc);
+            stopped.instructions = instructions;
+        }
         self.save_registers(registers)
             .expect("reading registers from unicorn");
         self.copy_shared_out();
-        let stopped = std::mem::take(self.unicorn.get_data_mut());
         (
             self.to_exit(result, &stopped, registers),
             stopped.instructions,
+            faulted && fault_run == FaultRun::Reported,
         )
+    }
+
+    /// Sets how unicorn translates addresses: by hand, through the TLB hook, or as QEMU does with the MMU off.
+    fn translate_by_hand(&mut self, by_hand: bool) {
+        let kind = if by_hand {
+            TlbType::VIRTUAL
+        } else {
+            TlbType::CPU
+        };
+        self.unicorn
+            .ctl_set_tlb_type(kind)
+            .expect("setting unicorn's TLB");
+        self.unicorn
+            .ctl_flush_tlb()
+            .expect("flushing unicorn's TLB");
+    }
+
+    /// Runs the instruction a fault stopped at once more with addresses translated by hand, which gives a fault the
+    /// address the guest used, tag and all, and an address past the physical ones the fault hook; an alignment fault
+    /// comes before translation and stays one.
+    ///
+    /// The registers are as the fault left them, which may hold part of what the instruction loaded.
+    fn find_guest_fault(&mut self, pc: u64) -> (Result<(), uc_error>, Stopped) {
+        self.translate_by_hand(true);
+        *self.unicorn.get_data_mut() = Stopped::default();
+        let result = self.start(pc, ONE_INSTRUCTION_COUNT);
+        let stopped = std::mem::take(self.unicorn.get_data_mut());
+        self.translate_by_hand(false);
+        (result, stopped)
     }
 
     /// Starts unicorn at the address for the count of instructions, none for no limit.
@@ -1016,6 +1340,29 @@ impl Memory {
         predicates: &mut Predicates,
         scratch: u64,
     ) -> (Result<Exit, Unsupported>, u64) {
+        let (before, predicates_before) = (*registers, *predicates);
+        let (exit, instructions, faulted) =
+            self.run_instruction_once(registers, predicates, scratch, FaultRun::Reported);
+        if !faulted {
+            return (exit, instructions);
+        }
+        // The whole instruction again from its state, translated by hand: a fault may have left part of a load.
+        (*registers, *predicates) = (before, predicates_before);
+        self.translate_by_hand(true);
+        let (exit, instructions, _) =
+            self.run_instruction_once(registers, predicates, scratch, FaultRun::Kept);
+        self.translate_by_hand(false);
+        (exit, instructions)
+    }
+
+    /// Runs one instruction as [`Memory::run_instruction`] does, once, with the fault run asked for.
+    fn run_instruction_once(
+        &mut self,
+        registers: &mut RegisterBlock,
+        predicates: &mut Predicates,
+        scratch: u64,
+        fault_run: FaultRun,
+    ) -> (Result<Exit, Unsupported>, u64, bool) {
         let page = scratch..scratch + PAGE_SIZE;
         let data = scratch + PREDICATE_DATA;
         self.set_permissions(page.clone(), Permissions::all());
@@ -1030,7 +1377,7 @@ impl Memory {
             .expect("restoring unicorn's fresh CPU state");
         self.run_helper(scratch, data, PREDICATE_LOADER.len());
         self.set_permissions(page.clone(), Permissions::empty());
-        let ran = self.run_loaded(registers, Some(ONE_INSTRUCTION), None, None);
+        let ran = self.run_loaded(registers, Some(ONE_INSTRUCTION), None, None, fault_run);
         self.set_permissions(page.clone(), Permissions::all());
         self.run_helper(scratch + PREDICATE_SAVER, data, PREDICATE_SAVER_CODE.len());
         let mut bytes = [u8::MIN; PREDICATE_BYTES];
@@ -1112,6 +1459,14 @@ impl Memory {
     }
 }
 
+/// Returns whether two shared ranges of a space, each with its start, show some of the same shared bytes.
+fn shows_same_bytes((start, shown): &(u64, &Shown), (other_start, other): &(u64, &Shown)) -> bool {
+    start != other_start
+        && Rc::ptr_eq(&shown.pages, &other.pages)
+        && shown.offset < other.offset + (other.end - other_start)
+        && other.offset < shown.offset + (shown.end - start)
+}
+
 /// Returns each run of bytes that differs between two copies of a page, with its place in the page.
 fn changed_runs(before: &[u8], after: &[u8]) -> Vec<(Vec<u8>, u64)> {
     let mut runs = Vec::new();
@@ -1176,6 +1531,13 @@ fn to_index(number: u64) -> usize {
 /// A write of a system register through `CP_REG` is what makes unicorn rebuild the flags its translations read, so the
 /// level is changed before it.
 fn enter_user_level(unicorn: &mut Unicorn<'static, Stopped>) {
+    let mut monitor = MONITOR_CONTROL;
+    unicorn
+        .reg_read_arm64_coproc(&mut monitor)
+        .expect("reading SCR_EL3");
+    unicorn
+        .reg_write_arm64_coproc(&MONITOR_CONTROL.val(monitor.val | LOWER_LEVELS_AARCH64))
+        .expect("writing SCR_EL3");
     unicorn
         .reg_write(RegisterARM64::CPACR_EL1, USER_FEATURE_ACCESS)
         .expect("writing CPACR_EL1");
