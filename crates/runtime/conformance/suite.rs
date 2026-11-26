@@ -1,7 +1,8 @@
 //! The tests every implementation of wcontainers-runtime runs, written against its traits alone.
 
+use std::num::NonZeroUsize;
 use std::thread;
-use std::time::Duration;
+use std::time::Instant;
 
 use oci_spec::runtime::Spec;
 use wcontainers_kernel::{ExecutionConfig, ProcessEnd, StopReason};
@@ -13,12 +14,14 @@ use wcontainers_system::ProcessTracer;
 /// A runtime, with what each of its containers is made from.
 pub struct Subject<R: Runtime> {
     pub runtime: R,
-    /// An image whose `PATH` holds a POSIX shell named `sh`.
+    /// How many runners each container of the runtime has.
+    pub runners: NonZeroUsize,
+    /// An image whose `PATH` holds a POSIX shell named `sh` and the utilities `cat` and `cmp`.
     pub image: Box<dyn Fn() -> R::ImageSource>,
     pub execution: Box<dyn Fn() -> ExecutionConfig<ExecutorOf<R>>>,
     pub state: Box<dyn Fn() -> <R::System as ProcessTracer>::ProcessState>,
     pub parts: Box<dyn Fn() -> Parts<R>>,
-    /// Parts whose system panics on the first question the kernel asks it once the container runs.
+    /// Parts whose system panics when the container writes to its standard output.
     pub failing_parts: Box<dyn Fn() -> Parts<R>>,
 }
 
@@ -29,25 +32,10 @@ pub struct Parts<R: Runtime> {
     pub standard_error: EndpointOf<R>,
 }
 
-/// The exit status the shell scripts below end with, one no shell gives of its own.
+/// The exit status the shell scripts below end with: the largest Linux keeps, which no shell gives of its own.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/runtime.md#15-testing
-const EXIT_CODE: u8 = 7;
-
-/// How long a thread waits before it interrupts a run that has started.
-///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/runtime.md#15-testing
-const BEFORE_INTERRUPTING: Duration = Duration::from_millis(200);
-
-/// How many shells run side by side in the parallel check.
-///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/runtime.md#15-testing
-const SIDE_BY_SIDE: usize = 4;
-
-/// How many times each of those shells goes round its loop.
-///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/runtime.md#15-testing
-const ROUNDS: usize = 2000;
+/// A shell's own statuses are 0 to 2, 126, 127 and 128 plus a signal's number, at most 64.
+const EXIT_CODE: u8 = u8::MAX;
 
 /// The POSIX shell the image holds, and its option that runs a script.
 const SHELL: &str = "sh";
@@ -55,6 +43,9 @@ const SCRIPT_OPTION: &str = "-c";
 
 /// A program name no image holds.
 const MISSING_PROGRAM: &str = "no-program-has-this-name";
+
+/// One stage of a pipeline, which copies what it reads to what it writes.
+const PIPELINE_STAGE: &str = " | cat";
 
 /// A script that never ends by itself.
 const ENDLESS_SCRIPT: &str = "while :; do :; done";
@@ -133,12 +124,18 @@ pub fn a_program_that_is_nowhere_is_refused<R: Runtime>(subject: Subject<R>) {
 }
 
 /// Checks that an interrupt from another thread ends a run that would never end by itself, every time.
+///
+/// The interrupt waits as long as a container that only exits took to make and run, so that the run has started.
 pub fn an_interrupt_from_another_thread_stops_a_run<R: Runtime>(subject: Subject<R>) {
+    let started = Instant::now();
+    let (mut exiting, _interrupter) = made(&subject, shell(&format!("exit {EXIT_CODE}")));
+    assert_eq!(exiting.run(), exited());
+    let before_interrupting = started.elapsed();
     let (mut container, interrupter) = made(&subject, shell(ENDLESS_SCRIPT));
     thread::scope(|scope| {
         for _ in 0..2 {
             let interrupting = scope.spawn(|| {
-                thread::sleep(BEFORE_INTERRUPTING);
+                thread::sleep(before_interrupting);
                 interrupter.interrupt();
                 interrupter.interrupt();
             });
@@ -156,10 +153,13 @@ pub fn a_run_goes_on_after_an_interrupt<R: Runtime>(subject: Subject<R>) {
     assert_eq!(container.run(), exited());
 }
 
-/// Checks that several shells working at once all run to their ends.
+/// Checks that a pipeline of processes working at once runs to its end and passes every byte on unchanged.
+///
+/// It copies the shell's own program through one more stage than the runtime has runners, so the runners take turns.
 pub fn work_side_by_side_runs_to_its_end<R: Runtime>(subject: Subject<R>) {
+    let stages = PIPELINE_STAGE.repeat(subject.runners.get() + 1);
     let script = format!(
-        "for i in $(seq {SIDE_BY_SIDE}); do (j=0; while [ $j -lt {ROUNDS} ]; do j=$((j+1)); done) & done; wait; exit {EXIT_CODE}"
+        "s=$(command -v {SHELL}); cat \"$s\"{stages} | cmp - \"$s\" && exit {EXIT_CODE}"
     );
     let (mut container, _interrupter) = made(&subject, shell(&script));
     assert_eq!(container.run(), exited());
@@ -169,7 +169,7 @@ pub fn work_side_by_side_runs_to_its_end<R: Runtime>(subject: Subject<R>) {
 pub fn a_host_thread_dying_inside_a_run_ends_the_container<R: Runtime>(subject: Subject<R>) {
     let (mut container, _interrupter) = make(
         &subject,
-        shell(&format!("exit {EXIT_CODE}")),
+        shell(&format!("echo; exit {EXIT_CODE}")),
         (subject.failing_parts)(),
     )
     .unwrap_or_else(|error| panic!("the container is made: {error:?}"));

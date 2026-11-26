@@ -28,14 +28,14 @@ use wcontainers_route_resolver_host::HostRouteResolver;
 use wcontainers_system::{FallbackObserver, MachineDescription, ProcessTracer, ProcessorInputs};
 use wcontainers_volatile_bytes::VolatileBytes;
 
-use crate::LocalSystem;
+use crate::{Interruptible, LocalSystem};
 
 /// Why the host's sockets of a kind are open whenever one of their sockets is asked about.
 const OPENED_WITH_ITS_SOCKET: &str =
     "a socket is only given out once the host's sockets of its kind opened";
 
 /// The kernel a local system on the executor `E` serves; its processes carry no state of the system's.
-pub(crate) type LocalKernel<E> = KernelWithExecutor<E, (), LocalSystem<E>>;
+pub(crate) type LocalKernel<E> = KernelWithExecutor<Interruptible<E>, (), LocalSystem<E>>;
 
 impl<E> ProcessTracer for LocalSystem<E>
 where

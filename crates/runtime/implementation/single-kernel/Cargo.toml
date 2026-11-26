@@ -31,6 +31,9 @@ wcontainers-configurable = { path = "../../../configurable" }
 wcontainers-negative-route-advisable = { path = "../../../negative-route-advisable" }
 # The executor the kernel this system serves runs its threads on, and the host's ICMP echo sockets, raw sockets and routes.
 wcontainers-executor = { path = "../../../executor", optional = true }
+# What an executor answers one instruction with, which an interruptible executor passes on.
+wcontainers-behavior-source = { path = "../../../behavior-source", optional = true }
+wcontainers-processor-architecture = { path = "../../../processor-architecture", optional = true }
 wcontainers-icmp-sockets = { path = "../../../icmp-sockets", optional = true }
 wcontainers-icmp-sockets-host = { path = "../../../icmp-sockets/implementation/host", optional = true }
 wcontainers-raw-sockets = { path = "../../../raw-sockets", optional = true }
@@ -89,6 +92,8 @@ std = [
     "dep:etherparse",
     "dep:domain",
     "dep:wcontainers-executor",
+    "dep:wcontainers-behavior-source",
+    "dep:wcontainers-processor-architecture",
     "dep:wcontainers-icmp-sockets",
     "dep:wcontainers-icmp-sockets-host",
     "dep:wcontainers-raw-sockets",
@@ -100,6 +105,15 @@ std = [
 [dev-dependencies]
 # libzstd, the reference that zstd layers are compared with.
 zstd = "0.13.5"
+# The runtime suite, run on the unicorn stand-in without its kernel test harness.
+wcontainers-runtime-conformance = { path = "../../conformance" }
+wcontainers-executor-unicorn = { path = "../../../executor/implementation/unicorn", default-features = false }
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+# The suite makes containers, which need the standard library.
+required-features = ["std"]
 
 [lints]
 workspace = true

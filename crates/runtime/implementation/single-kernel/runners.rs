@@ -11,14 +11,16 @@ use wcontainers_clock::Clock;
 use wcontainers_kernel::{Kernel, Runner, StopReason};
 use wcontainers_system::FallbackObserver;
 
-/// The longest an idle runner waits before it is run again, since nothing tells the runtime that a wait of the kernel's ended.
-///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/runtime.md#16-milestones
-const IDLE_POLL: Duration = Duration::from_millis(1);
-
 /// Why an idle runner was run again before the time the kernel gave.
 pub(crate) const IDLE_WITHOUT_WAKE: &str =
     "an idle runner is run again after a pause, since the kernel tells of no wake";
+
+/// How a container's runners poll when idle, and what ends and resumes their executions.
+pub(crate) struct RunnerStops {
+    pub(crate) idle_poll: Duration,
+    pub(crate) stop: Box<dyn Fn() + Send + Sync>,
+    pub(crate) resume: Box<dyn Fn() + Send + Sync>,
+}
 
 /// A container on one kernel, run by that kernel's runners.
 pub(crate) struct KernelContainer<K: Kernel, S> {
@@ -44,8 +46,12 @@ struct Signals {
     idle_polls: AtomicU64,
     /// How many idle polls the system has been told of.
     idle_polls_told: AtomicU64,
-    /// Ends the executors' runs in progress.
+    /// The longest an idle runner waits before it is run again, since nothing tells the runtime that a wait of the kernel's ended.
+    idle_poll: Duration,
+    /// Ends the executors' runs in progress, and every later one until `resume`.
     stop: Box<dyn Fn() + Send + Sync>,
+    /// Lets the executors run again once a run is over.
+    resume: Box<dyn Fn() + Send + Sync>,
 }
 
 #[derive(Default)]
@@ -61,24 +67,31 @@ where
     K::Executor: Send,
     S: Clock + FallbackObserver<Warning<'static>> + Sync,
 {
-    /// Returns a container whose runners each get an executor `executor` makes; `stop` ends every run of those executors.
+    /// Returns a container whose runners each get one of `executors`, whose executions `stops` ends.
     pub(crate) fn new(
         kernel: K,
         runners: impl Iterator<Item = K::Runner>,
-        mut executor: impl FnMut() -> K::Executor,
-        stop: impl Fn() + Send + Sync + 'static,
+        executors: Vec<K::Executor>,
+        stops: RunnerStops,
         system: Arc<S>,
     ) -> (Self, RunInterrupter) {
+        let RunnerStops {
+            idle_poll,
+            stop,
+            resume,
+        } = stops;
         let signals = Arc::new(Signals {
             state: Mutex::default(),
             changed: Condvar::new(),
             idle_polls: AtomicU64::default(),
             idle_polls_told: AtomicU64::default(),
-            stop: Box::new(stop),
+            idle_poll,
+            stop,
+            resume,
         });
         let container = Self {
             _kernel: kernel,
-            runners: runners.map(|runner| (runner, executor())).collect(),
+            runners: runners.zip(executors).collect(),
             signals: Arc::clone(&signals),
             system,
             ended: None,
@@ -97,7 +110,7 @@ where
             self.system.on_fallback_used(&Warning {
                 reason: IDLE_WITHOUT_WAKE,
                 count: polls,
-                detail: IDLE_POLL.as_nanos() as u64,
+                detail: self.signals.idle_poll.as_nanos() as u64,
             });
         }
     }
@@ -116,6 +129,7 @@ where
                     .expect("a host thread for a runner");
             }
         });
+        (signals.resume)();
         let mut state = signals.lock();
         let stopped = match state.stopped.take() {
             Some(StopReason::Interrupted) | None => {
@@ -203,15 +217,15 @@ impl Signals {
         (self.stop)();
     }
 
-    /// Waits until `until` on `clock`'s monotonic time, at most [`IDLE_POLL`], or until the run ends.
+    /// Waits until `until` on `clock`'s monotonic time, at most the idle poll, or until the run ends.
     fn wait(&self, until: Option<Duration>, clock: &impl Clock) {
         let now = Duration::from_nanos(clock.monotonic_nanoseconds());
         let left = until.map(|until| until.saturating_sub(now));
         let pause = match left {
-            Some(left) if left <= IDLE_POLL => left,
+            Some(left) if left <= self.idle_poll => left,
             _ => {
                 self.idle_polls.fetch_add(1, Ordering::Relaxed);
-                IDLE_POLL
+                self.idle_poll
             }
         };
         let state = self.lock();

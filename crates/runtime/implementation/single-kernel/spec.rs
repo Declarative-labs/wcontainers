@@ -4,6 +4,12 @@
 
 use oci_spec::runtime::Spec;
 use serde_json::{Value, json};
+use wcontainers_kernel_linux::DOCKER_LIMITS;
+use wcontainers_kernel_linux::linux::general::{
+    RLIM_NLIMITS, RLIMIT_AS, RLIMIT_CORE, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_FSIZE, RLIMIT_LOCKS,
+    RLIMIT_MEMLOCK, RLIMIT_MSGQUEUE, RLIMIT_NICE, RLIMIT_NOFILE, RLIMIT_NPROC, RLIMIT_RSS,
+    RLIMIT_RTPRIO, RLIMIT_RTTIME, RLIMIT_SIGPENDING, RLIMIT_STACK,
+};
 
 use crate::image::{ROOT_ID, ROOT_PATH};
 use crate::{Error, TerminalSize};
@@ -26,18 +32,42 @@ const CAPABILITIES: &[&str] = &[
     "CAP_AUDIT_WRITE",
 ];
 
-/// The limits the kernel starts the first process with, as (name, soft, hard); every other limit is unlimited.
+/// Each resource limit as the runtime specification's `process.rlimits[].type` names it, with Linux's number of it.
 ///
-/// https://github.com/stack1ng/wcontainers/blob/main/docs/runtime.md#18-measurements-behind-the-decisions
-const LIMITS: &[(&str, u64, u64)] = &[
-    ("RLIMIT_STACK", 8 << 20, u64::MAX),
-    ("RLIMIT_CORE", 0, u64::MAX),
-    ("RLIMIT_NOFILE", 1 << 20, 1 << 20),
-    ("RLIMIT_NICE", 0, 0),
-    ("RLIMIT_RTPRIO", 0, 0),
-    ("RLIMIT_SIGPENDING", 128_302, 128_302),
-    ("RLIMIT_MSGQUEUE", 819_200, 819_200),
+/// https://github.com/opencontainers/runtime-spec/blob/v1.2.1/config.md#posix-process
+const RESOURCE_NAMES: [(&str, u32); RLIM_NLIMITS as usize] = [
+    ("RLIMIT_CPU", RLIMIT_CPU),
+    ("RLIMIT_FSIZE", RLIMIT_FSIZE),
+    ("RLIMIT_DATA", RLIMIT_DATA),
+    ("RLIMIT_STACK", RLIMIT_STACK),
+    ("RLIMIT_CORE", RLIMIT_CORE),
+    ("RLIMIT_RSS", RLIMIT_RSS),
+    ("RLIMIT_NPROC", RLIMIT_NPROC),
+    ("RLIMIT_NOFILE", RLIMIT_NOFILE),
+    ("RLIMIT_MEMLOCK", RLIMIT_MEMLOCK),
+    ("RLIMIT_AS", RLIMIT_AS),
+    ("RLIMIT_LOCKS", RLIMIT_LOCKS),
+    ("RLIMIT_SIGPENDING", RLIMIT_SIGPENDING),
+    ("RLIMIT_MSGQUEUE", RLIMIT_MSGQUEUE),
+    ("RLIMIT_NICE", RLIMIT_NICE),
+    ("RLIMIT_RTPRIO", RLIMIT_RTPRIO),
+    ("RLIMIT_RTTIME", RLIMIT_RTTIME),
 ];
+
+/// Returns the soft and hard limit the kernel starts the first process with for the resource the specification names `name`.
+///
+/// Those are the kernel's own ([`DOCKER_LIMITS`]); every other limit is unlimited.
+fn starting_limit(name: &str) -> (u64, u64) {
+    RESOURCE_NAMES
+        .iter()
+        .find(|(named, _)| *named == name)
+        .and_then(|&(_, resource)| {
+            DOCKER_LIMITS
+                .iter()
+                .find(|(limited, ..)| *limited == resource)
+        })
+        .map_or((u64::MAX, u64::MAX), |&(_, soft, hard)| (soft, hard))
+}
 
 /// The namespaces every container has its own of, by construction.
 const NAMESPACES: &[&str] = &["pid", "network", "ipc", "uts", "mount", "cgroup"];
@@ -749,10 +779,7 @@ fn process(value: &Value) -> Result<(), Error> {
             RLIMITS_KEY => {
                 for (index, limit) in field.as_array().into_iter().flatten().enumerate() {
                     let kind = limit[TYPE_KEY].as_str().unwrap_or_default();
-                    let (soft, hard) = LIMITS
-                        .iter()
-                        .find(|(name, ..)| *name == kind)
-                        .map_or((u64::MAX, u64::MAX), |&(_, soft, hard)| (soft, hard));
+                    let (soft, hard) = starting_limit(kind);
                     if limit[SOFT_KEY].as_u64() != Some(soft)
                         || limit[HARD_KEY].as_u64() != Some(hard)
                     {

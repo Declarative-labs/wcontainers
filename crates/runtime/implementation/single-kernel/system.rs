@@ -12,16 +12,15 @@ use std::task::{Poll, Waker};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use wcontainers_abi::{HostError, PAGE_SIZE, Warning};
-use wcontainers_kernel_linux::Standard;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_system::StreamTransport;
 use wcontainers_volatile_bytes::VolatileBytes;
 
+use crate::System;
 use crate::arrivals::{Arrival, Arrivals};
 use crate::files::Files;
 use crate::net::Network;
 use crate::timer::nanoseconds_since;
-use crate::{StopFlag, System, TerminalSize};
 
 /// A warning as the system keeps it: the kernel's or the executor's, by reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,11 +140,34 @@ impl<E> LocalSystem<E> {
         self.machine_memory.set(bytes)
     }
 
-    /// Gives the first process `input` as its standard input, as `docker run --interactive` does; else it is `/dev/null`.
+    /// Returns the endpoint the container's standard output goes to.
+    pub fn output_end(&self) -> u32 {
+        OUTPUT
+    }
+
+    /// Returns the endpoint the container's standard error goes to.
+    pub fn error_end(&self) -> u32 {
+        ERROR
+    }
+
+    /// Gives the first process `input` as its standard input, as `docker run --interactive` does, and returns its endpoint.
     ///
-    /// It is read on a thread of its own, never more than the kernel has room for.
-    pub fn input(&mut self, input: Box<dyn Read + Send>) {
-        self.state_mut().input = Some(input);
+    /// It is read on a thread of its own once the container is made, never more than the kernel has room for.
+    pub fn give_input(&mut self, input: Box<dyn Read + Send>) -> u32 {
+        let state = self.state_mut();
+        state.input = Some(input);
+        state.input_end = Some(INPUT);
+        INPUT
+    }
+
+    /// Returns the endpoint of a terminal for standard input, output and error, typed on from `input` when there is one.
+    ///
+    /// With no input it is a terminal nobody types on, as `docker run --tty` without `--interactive` gives.
+    pub fn give_terminal(&mut self, input: Option<Box<dyn Read + Send>>) -> u32 {
+        let state = self.state_mut();
+        state.input_end = input.is_some().then_some(TERMINAL);
+        state.input = input;
+        TERMINAL
     }
 
     /// Lets connections from the host at `at` reach the container's TCP port `port`, as `docker run --publish` does.
@@ -607,46 +629,9 @@ impl<E> wcontainers_system::DomainNameResolver for LocalSystem<E> {
 }
 
 impl<E: 'static> System for LocalSystem<E> {
-    /// Starts the thread that hands the kernel what arrives, the arrivals before the start among them.
+    /// Starts the thread that hands the kernel what arrives, the arrivals before the start among them, and the input's reader.
     fn on_container_made(self: &Arc<Self>) {
-        let system = Arc::downgrade(self);
-        std::thread::Builder::new()
-            .name(DELIVERY_THREAD.to_string())
-            .spawn(move || deliver_arrivals(&system))
-            .expect("a delivery thread");
-    }
-
-    /// Arrivals end a free turn.
-    fn on_stop_flag_made(&self, flag: StopFlag) {
-        self.state().arrivals.set_flag(flag);
-    }
-
-    fn serve_directory(&self, source: &Path) -> std::io::Result<()> {
-        self.state().files = Some(Files::new(source)?);
-        Ok(())
-    }
-
-    /// Names the terminal asked for, or pipes; with an input, its reader starts.
-    fn standard(&self, terminal: Option<TerminalSize>) -> Standard<u32> {
         let mut state = self.state();
-        let standard = match terminal {
-            Some(size) => {
-                state.input_end = state.input.is_some().then_some(TERMINAL);
-                Standard::Terminal {
-                    end: TERMINAL,
-                    columns: size.columns,
-                    rows: size.rows,
-                }
-            }
-            None => {
-                state.input_end = state.input.is_some().then_some(INPUT);
-                Standard::Pipes {
-                    input: state.input_end,
-                    output: OUTPUT,
-                    error: ERROR,
-                }
-            }
-        };
         if let Some(input) = state.input.take() {
             let credit = state.input_credit.clone();
             credit.give(INPUT_PIECE);
@@ -656,6 +641,16 @@ impl<E: 'static> System for LocalSystem<E> {
                 .spawn(move || read_input(input, &credit, &arrivals))
                 .expect("an input thread");
         }
-        standard
+        drop(state);
+        let system = Arc::downgrade(self);
+        std::thread::Builder::new()
+            .name(DELIVERY_THREAD.to_string())
+            .spawn(move || deliver_arrivals(&system))
+            .expect("a delivery thread");
+    }
+
+    fn serve_directory(&self, source: &Path) -> std::io::Result<()> {
+        self.state().files = Some(Files::new(source)?);
+        Ok(())
     }
 }

@@ -16,7 +16,6 @@ use wcontainers_abi::{Cpu, Exit, Resume, ThreadId, Warning};
 #[cfg(feature = "std")]
 const RAISED: u32 = true as u32;
 pub use wcontainers_kernel_linux::Kernel;
-use wcontainers_kernel_linux::Standard;
 
 #[cfg(feature = "std")]
 mod arrivals;
@@ -32,6 +31,8 @@ mod files;
 mod host_call;
 #[cfg(feature = "std")]
 pub mod image;
+#[cfg(feature = "std")]
+mod interruptible;
 #[cfg(feature = "std")]
 pub mod names;
 #[cfg(feature = "std")]
@@ -50,9 +51,14 @@ mod timer;
 pub mod udp;
 
 #[cfg(feature = "std")]
-pub use container::{Container, Error, Executor, GuestMachine, Runtime, RuntimeConfig};
+pub use container::{
+    Container, ContainerKernel, Error, GUEST_ARCHITECTURE, ImageSource, MakeExecutor,
+    MakeRunnerExecutor, Runtime, RuntimeConfig,
+};
 #[cfg(feature = "std")]
 pub use image::Image;
+#[cfg(feature = "std")]
+pub use interruptible::{Interruptible, SharedInterrupter};
 #[cfg(feature = "std")]
 pub use oci_spec;
 #[cfg(feature = "std")]
@@ -189,14 +195,6 @@ pub trait Execution: Cpu + Sized {
 pub trait System: wcontainers_kernel_linux::System {
     /// Starts handing the kernel what arrives from outside, once the container is made.
     fn on_container_made(self: &Arc<Self>) {}
-    /// Names the first process's standard streams: a terminal of this size, else pipes.
-    fn standard(
-        &self,
-        terminal: Option<TerminalSize>,
-    ) -> Standard<<Self as wcontainers_system::StreamTransport>::Endpoint>;
-    /// Takes the executor's stop flag as the container is made, for a system that gives free turns.
-    #[cfg(feature = "std")]
-    fn on_stop_flag_made(&self, _flag: StopFlag) {}
     /// Serves a host directory as the kernel's file backend for a bind mount, or answers `Unsupported`.
     #[cfg(feature = "std")]
     fn serve_directory(&self, _source: &std::path::Path) -> std::io::Result<()> {

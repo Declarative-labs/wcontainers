@@ -20,10 +20,10 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use spin::Mutex;
 use wcontainers_abi::{Host, HostError, Warning};
-use wcontainers_kernel_linux::{Standard, TaskId};
+use wcontainers_kernel_linux::TaskId;
 use wcontainers_random_source::RandomSource;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
-use wcontainers_runtime_single_kernel::{System, TerminalSize, Turn};
+use wcontainers_runtime_single_kernel::{System, Turn};
 use wcontainers_system::{FallbackObserver, StreamTransport};
 use wcontainers_volatile_bytes::VolatileBytes;
 
@@ -340,21 +340,13 @@ impl<H> wcontainers_kernel_linux::System for TestPolicy<H> where
 {
 }
 
-impl<H> System for TestPolicy<H>
-where
+impl<H> System for TestPolicy<H> where
     H: Host
         + RandomSource
         + StreamTransport<Endpoint = u32>
         + Readiness<u32, wait_until_ready(..): Send>
         + Send
         + Sync
-        + 'static,
+        + 'static
 {
-    fn standard(&self, _terminal: Option<TerminalSize>) -> Standard<u32> {
-        Standard::Pipes {
-            input: None,
-            output: OUTPUT,
-            error: ERROR,
-        }
-    }
 }

@@ -1,12 +1,10 @@
 //! What the system's threads hand the kernel: the network's changes and the standard input's bytes.
 //!
-//! Each arrival wakes the system's delivery thread and ends a free turn.
+//! Each arrival wakes the system's delivery thread.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError};
 use std::time::Duration;
-
-use crate::StopFlag;
 
 /// What arrived from outside for the kernel.
 pub(crate) enum Arrival {
@@ -24,14 +22,13 @@ pub(crate) enum Arrival {
     InputEnded(Option<std::io::Error>),
 }
 
-/// A queue of what the network's threads and the input's reader hand over, which wakes the delivery thread and ends a free turn.
+/// A queue of what the network's threads and the input's reader hand over, which wakes the delivery thread.
 #[derive(Default)]
 pub(crate) struct Arrivals {
     queue: Mutex<Vec<Arrival>>,
     /// Whether the queue may hold something: read at every exit without the lock.
     pending: AtomicBool,
     changed: Condvar,
-    flag: Mutex<Option<StopFlag>>,
     /// Whether the system they arrive for is gone.
     closed: AtomicBool,
 }
@@ -44,13 +41,6 @@ impl Arrivals {
             .push(arrival);
         self.pending.store(true, Ordering::SeqCst);
         self.changed.notify_all();
-        if let Some(flag) = &*self.flag.lock().unwrap_or_else(PoisonError::into_inner) {
-            flag.raise();
-        }
-    }
-
-    pub(crate) fn set_flag(&self, flag: StopFlag) {
-        *self.flag.lock().unwrap_or_else(PoisonError::into_inner) = Some(flag);
     }
 
     /// Returns what arrived, if anything did.

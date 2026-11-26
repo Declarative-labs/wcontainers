@@ -127,11 +127,6 @@ const PARENT_PART: &[u8] = b"..";
 const LINK_WITHOUT_TARGET: &str = "a link without a target";
 const LINK_OUT_OF_ROOT: &str = "a link out of the root";
 
-/// How many blocks of a zstd frame are decoded at a time.
-///
-/// https://docs.rs/ruzstd/0.9.1/ruzstd/decoding/enum.BlockDecodingStrategy.html
-const BLOCKS_AT_A_TIME: usize = 1;
-
 /// What separates the user from the group in an image configuration's `User` (config.md).
 const USER_GROUP_SEPARATOR: char = ':';
 
@@ -522,14 +517,25 @@ impl Image {
             };
             kernel
                 .add_file(path, entry.attributes, file)
-                .map_err(|error| {
-                    Error::Image(format!(
-                        "/{}: the kernel refused it ({error:?})",
-                        String::from_utf8_lossy(path)
-                    ))
+                .map_err(|error| Error::FileRefused {
+                    path: Path::new(ROOT_PATH).join(String::from_utf8_lossy(path).as_ref()),
+                    error,
                 })?;
         }
         Ok(())
+    }
+}
+
+/// The image's own configuration converted, with a field the runtime cannot honour named as the refusal's.
+impl wcontainers_runtime::Image for Image {
+    fn to_runtime_spec(&self) -> Result<Spec, wcontainers_runtime::Refusal> {
+        self.spec().map_err(|error| match error {
+            Error::Refused { field, reason } => wcontainers_runtime::Refusal { field, reason },
+            other => wcontainers_runtime::Refusal {
+                field: String::new(),
+                reason: other.to_string(),
+            },
+        })
     }
 }
 
@@ -770,11 +776,12 @@ impl Read for Zstd<'_> {
         }
         loop {
             if let Some(given) = self.in_frame {
+                // Each step decodes blocks until they hold as much as the caller can take, or the frame ends.
                 while self.decoder.can_collect() == 0 && !self.decoder.is_finished() {
                     self.decoder
                         .decode_blocks(
                             &mut self.source,
-                            BlockDecodingStrategy::UptoBlocks(BLOCKS_AT_A_TIME),
+                            BlockDecodingStrategy::UptoBytes(buffer.len()),
                         )
                         .map_err(std::io::Error::other)?;
                 }
@@ -1024,7 +1031,7 @@ mod tests {
         }
         let configuration = config.map(|config| {
             serde_json::from_value(serde_json::json!({
-                "architecture": "arm64", "os": Os::Linux,
+                "architecture": crate::GUEST_ARCHITECTURE, "os": Os::Linux,
                 "rootfs": oci_spec::image::RootFs::default(),
                 "config": config,
             }))
@@ -1151,7 +1158,7 @@ mod tests {
         let annotations = spec.annotations().as_ref().unwrap();
         let expected = [
             (annotation::OS, "label"),
-            (annotation::ARCHITECTURE, "arm64"),
+            (annotation::ARCHITECTURE, crate::GUEST_ARCHITECTURE),
             (annotation::VARIANT, "v8"),
             (annotation::OS_VERSION, "6.1"),
             (annotation::OS_FEATURES, "a,b"),

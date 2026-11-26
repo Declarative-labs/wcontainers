@@ -8,7 +8,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::{Poll, Waker};
 use std::thread::JoinHandle;
 
@@ -27,11 +27,6 @@ const NETWORK_THREAD: &str = "wcontainers network";
 
 /// The token of the poller's waker, which no socket's number gives.
 const WAKE: Token = Token(usize::MAX);
-
-/// The most changes taken from the host in one wait; the rest come with the next.
-///
-/// https://docs.rs/mio/1.2.5/mio/struct.Events.html#method.with_capacity
-const CHANGES_PER_WAIT: usize = 1024;
 
 /// What the poller is asked for when neither reading nor writing is, as it takes at least one.
 ///
@@ -95,6 +90,8 @@ pub(crate) struct Network {
     waker: mio::Waker,
     thread: Option<JoinHandle<()>>,
     gone: Arc<AtomicBool>,
+    /// How many sources the poller was given: its waker and every socket made, each told at most once in a wait.
+    sources: Arc<AtomicUsize>,
     datagrams: HashMap<u32, Datagram>,
     streams: HashMap<u32, Stream>,
     listeners: HashMap<u32, Listener>,
@@ -154,9 +151,15 @@ fn linux_error(error: &std::io::Error, otherwise: u32) -> i32 {
 }
 
 /// Waits for the sockets armed, and tells of each change.
-fn watch(mut poller: Poller, arrivals: &Arrivals, gone: &AtomicBool) {
-    let mut events = Events::with_capacity(CHANGES_PER_WAIT);
+///
+/// A wait takes one change per source, all that epoll tells in one wait; what kqueue tells beyond that comes with the next.
+fn watch(mut poller: Poller, arrivals: &Arrivals, gone: &AtomicBool, sources: &AtomicUsize) {
+    let mut events = Events::with_capacity(sources.load(Ordering::SeqCst));
     loop {
+        let given = sources.load(Ordering::SeqCst);
+        if events.capacity() < given {
+            events = Events::with_capacity(given);
+        }
         if poller.poll(&mut events, None).is_err() || gone.load(Ordering::SeqCst) {
             return;
         }
@@ -186,12 +189,15 @@ impl Network {
             .try_clone()
             .expect("the host's readiness poller");
         let waker = mio::Waker::new(&registry, WAKE).expect("the host's readiness poller");
+        let sources = Arc::new(AtomicUsize::new(usize::MIN));
+        sources.fetch_add(1, Ordering::SeqCst);
         let gone = Arc::new(AtomicBool::new(false));
         let thread = {
             let gone = gone.clone();
+            let sources = sources.clone();
             std::thread::Builder::new()
                 .name(NETWORK_THREAD.to_string())
-                .spawn(move || watch(poller, &arrivals, &gone))
+                .spawn(move || watch(poller, &arrivals, &gone, &sources))
                 .expect("a network thread")
         };
         Self {
@@ -199,6 +205,7 @@ impl Network {
             waker,
             thread: Some(thread),
             gone,
+            sources,
             datagrams: HashMap::new(),
             streams: HashMap::new(),
             listeners: HashMap::new(),
@@ -212,6 +219,7 @@ impl Network {
     }
 
     fn next_number(&mut self) -> u32 {
+        self.sources.fetch_add(1, Ordering::SeqCst);
         self.last = self.last.wrapping_add(1);
         self.last
     }
