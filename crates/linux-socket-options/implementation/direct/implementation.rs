@@ -4,6 +4,7 @@
 #![cfg(target_os = "linux")]
 
 mod generated;
+#[path = "tests/generated/local.rs"]
 mod local;
 #[cfg(test)]
 mod probe;
@@ -51,7 +52,7 @@ const CANARIES: [u8; GUARD] = canaries();
 
 const fn canaries() -> [u8; GUARD] {
     let mut bytes = [FIRST_CANARY; GUARD];
-    let mut index = 0;
+    let mut index = usize::MIN;
     while index < GUARD {
         bytes[index] = FIRST_CANARY.wrapping_add(index as u8);
         index += 1;

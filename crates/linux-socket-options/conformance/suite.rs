@@ -195,6 +195,8 @@ const SUBFLOW_ROOM: usize = 264;
 /// https://man7.org/linux/man-pages/man7/mptcp.7.html
 const INFORMATION_ROOM: usize = 256;
 /// A room of a mebibyte, so that the most subflows a count names take more memory than any machine has.
+///
+/// https://man7.org/linux/man-pages/man7/mptcp.7.html
 const MEBIBYTE_ENTRY: usize = 1 << 20;
 
 /// The error a call gives.
@@ -945,7 +947,7 @@ pub fn multipath_information_fits_its_rooms<T: LinuxSocketOptions>(options: T) {
         ),
         Some(libc::EINVAL)
     );
-    let most = usize::try_from(u32::MAX).expect("a 64-bit machine");
+    let most = usize::try_from(u32::MAX).unwrap_or(usize::MAX);
     assert_eq!(
         errno(options.get_mptcp_full_info::<MEBIBYTE_ENTRY, MEBIBYTE_ENTRY>(tcp.as_fd(), most)),
         Some(libc::ENOMEM)

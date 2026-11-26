@@ -12,7 +12,7 @@
 
 use linux_raw_sys::net as uapi;
 
-#[path = "../../local.rs"]
+#[path = "local.rs"]
 mod local;
 
 /// A name a row may give, its path as the table spells it and the number the kernel's headers give it.

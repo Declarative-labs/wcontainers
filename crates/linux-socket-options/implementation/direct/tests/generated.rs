@@ -889,8 +889,10 @@ fn routed(row: &Row<'_>) -> String {
         .to_owned()
 }
 
-/// `set_bytes_at`: the value lent is exactly what the kernel reads at the pair, from an exclusive borrow where the
-/// kernel writes into it, and holds no address the kernel follows except the program header `set_program` writes.
+/// Checks `set_bytes_at`'s reason: a value lent is what the kernel reads at the pair, and no address it follows.
+///
+/// The value comes from an exclusive borrow where the kernel writes into it, and the one address the kernel follows is
+/// in the program header `set_program` writes.
 fn set_reason(row: &Row<'_>, entry: &Entry) -> Result<(), String> {
     let route = routed(row);
     if !route.starts_with(SET_PREFIX) {
@@ -923,8 +925,9 @@ fn set_reason(row: &Row<'_>, entry: &Entry) -> Result<(), String> {
     }
 }
 
-/// `get_within`: a get reaches it only where the kernel writes at most the length told and follows no address in it,
-/// or through `get_keys` where the kernel writes one answer per key asked.
+/// Checks `get_within`'s reason: a get reaches it only where the kernel writes at most the length told.
+///
+/// The kernel follows no address in it there, except through `get_keys`, where it writes one answer per key asked.
 fn get_within_reason(row: &Row<'_>, entry: &Entry) -> Result<(), String> {
     let route = routed(row);
     let sound = match route.as_str() {
@@ -1149,9 +1152,10 @@ fn a_planted_row_breaking_each_marked_reason_is_seen_by_its_property_and_refused
 
 // Rows an attacker writes into the table, each of which must be refused.
 
-/// Thirty hostile rows: the same number under another name, another level, a structure that holds an address, a
-/// length the kernel trusts, an option that changes how a later one reads, an ioctl number that aliases, and text that
-/// would write code.
+/// Thirty hostile rows an attacker could write into the table.
+///
+/// They give the same number under another name, another level, a structure that holds an address, a length the kernel
+/// trusts, an option that changes how a later one reads, an ioctl number that aliases, and text that would write code.
 const HOSTILE: [(&str, &str, &str, &str, &str); 30] = [
     // 1-4: SO_GET_FILTER is SO_ATTACH_FILTER's number 26.
     (
