@@ -56,8 +56,9 @@ mod driver {
     /// The lines a batch prints its checks' outcomes on, one a site: refused, passed, then the site.
     pub const REACH_LINE: &str = "FUZZ-REACH";
 
-    /// The lines a batch prints the outcomes of gpu-metal's places on, one a place: with a pass open that the place
-    /// ended or refused for, otherwise, then the place.
+    /// The lines a batch prints the outcomes of gpu-metal's places on, one a place.
+    ///
+    /// Each holds the count with a pass open that the place ended or refused for, the count otherwise, then the place.
     pub const PLACE_LINE: &str = "FUZZ-PLACE";
 
     /// What a batch found, and how many of the bytes it read back to check were free to change.
@@ -330,8 +331,9 @@ mod driver {
         }
     }
 
-    /// Prints how often each of gpu-metal's places found a pass open and found none, and returns how many places lack an
-    /// outcome; the table goes to `FUZZ_PLACE_TABLE` too, if it is set.
+    /// Prints how often each of gpu-metal's places found a pass open, and returns how many places lack an outcome.
+    ///
+    /// The table goes to `FUZZ_PLACE_TABLE` too, if it is set.
     fn report_places(places: &std::collections::BTreeMap<String, [u64; 2]>) -> usize {
         let known = wcontainers_gpu_metal::place::ALL;
         let mut table = String::from("| Place | With a pass open | Otherwise |\n|---|---|---|\n");

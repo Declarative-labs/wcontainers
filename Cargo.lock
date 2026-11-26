@@ -5370,6 +5370,7 @@ dependencies = [
  "wcontainers-gpu",
  "wcontainers-gpu-test",
  "wcontainers-metal",
+ "wcontainers-metal-conformance",
  "wcontainers-metal-direct",
  "wcontainers-test-window",
  "wcontainers-test-window-appkit",

@@ -17,6 +17,8 @@ use wcontainers_gpu::{
 use wcontainers_gpu_metal::MetalGpu;
 use wcontainers_gpu_test::Recorder;
 use wcontainers_metal::StandaloneMetal;
+// The steps of `SPIN` that keep one GPU thread busy for tens of milliseconds, as in the Metal trait's own suite.
+use wcontainers_metal_conformance::SPIN_STEPS;
 use wcontainers_metal_direct::DirectMetal;
 
 /// The side of the square targets the tests draw into: four texels, one for each coordinate the mirrored sample reads.
@@ -1556,9 +1558,6 @@ const SPIN: &str = "
     words[2] = x;
 }
 ";
-
-/// The steps of `SPIN` that keep one GPU thread busy for tens of milliseconds.
-const SPIN_STEPS: u32 = 1 << 23;
 
 #[test]
 fn timestamps_are_nanoseconds_of_the_time_the_cpu_waits() {

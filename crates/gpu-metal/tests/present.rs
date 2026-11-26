@@ -1,25 +1,26 @@
-//! The shared suite's `present_shows_the_frame`, and a present inside a pass, run on the main thread, which macOS
-//! windows need.
+//! The tests that present, run on the main thread, which macOS windows need.
 //!
+//! They are the shared suite's `present_shows_the_frame` and a present inside a pass.
 //! The standard test harness runs every test on a thread of its own.
 
 #[cfg(target_os = "macos")]
 mod host;
 
-/// A present inside a pass, which would draw the frame in a pass of its own and commit, is refused; the pass's draw
-/// lands, and the frame presents after it.
+/// Checks that a present inside a pass, which would draw the frame in a pass of its own and commit, is refused.
+///
+/// The frame presents after the pass.
 #[cfg(target_os = "macos")]
 fn a_present_inside_a_pass_is_refused_and_the_pass_goes_on() -> Result<(), libtest_mimic::Failed> {
     use wcontainers_gpu::{ColorAttachment, DeviceStatus, Format, Gpu, LoadOp, PassDesc, StoreOp};
     use wcontainers_gpu_test::Host;
 
-    /// The side of the frame.
-    const SIDE: u32 = 4;
+    // The frame is as large as the window it shows in.
+    let side = wcontainers_test_window::WINDOW_SIDE as u32;
     let mut b = host::Native::make();
     let window = host::Native::window(&mut b);
     let failed = |e: wcontainers_gpu::GpuError| libtest_mimic::Failed::from(format!("{e:?}"));
     let surface = b.create_surface(window).map_err(failed)?;
-    b.configure_surface(&surface, Format::Bgra8Unorm, SIDE, SIDE, false)
+    b.configure_surface(&surface, Format::Bgra8Unorm, side, side, false)
         .map_err(failed)?;
     let view = b.current_texture(&surface).map_err(failed)?;
     let mut pass = PassDesc {

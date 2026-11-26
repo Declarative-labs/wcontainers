@@ -324,8 +324,9 @@ struct World {
     readbacks: Vec<<B as Gpu>::Readback>,
     fences: Vec<<B as Gpu>::Fence>,
     surfaces: Vec<<B as Gpu>::Surface>,
-    /// What a capture after a draw of its own buffers draws with: a program that writes location outputs, its vertex
-    /// layout, and a target to draw into.
+    /// What a capture after a draw of its own buffers draws with.
+    ///
+    /// It is a program that writes location outputs, its vertex layout, and a target to draw into.
     capture: Option<CaptureScene>,
     in_pass: bool,
     /// Whether the device was lost: once it is, a write may be dropped, so it no longer makes its bytes known.
@@ -350,11 +351,8 @@ struct CaptureScene {
 /// The side of the texture a capture after a draw draws into, and of its viewport.
 const CAPTURE_SIDE: u32 = 4;
 
-/// The side of the frame of a surface a present makes when the batch holds none.
-const FRAME_SIDE: u32 = 4;
-
-/// The bytes of a capture's target, which hold every vertex such a capture makes.
-const CAPTURE_TARGET_BYTES: u64 = 4096;
+/// The bytes of the target of a capture after a draw, which hold every vertex such a capture makes.
+const CAPTURE_AFTER_DRAW_TARGET_BYTES: u64 = 4096;
 
 /// Makes what a capture after a draw of its own buffers draws with.
 fn capture_scene(b: &mut B) -> Option<CaptureScene> {
@@ -583,16 +581,18 @@ impl World {
         }
     }
 
-    /// Ends the open pass most times, before calls the interface makes outside one: the rest reach the places that end
-    /// the pass and open it again after, or refuse inside one.
+    /// Ends the open pass most times, before calls the interface makes outside one.
+    ///
+    /// The rest reach the places that end the pass and open it again after, or refuse inside one.
     fn mostly_leave_pass(&mut self, random: &mut Random) {
         if random.chance(LEAVES_PASS) {
             self.leave_pass();
         }
     }
 
-    /// Ends the open pass nearly every time, before calls whose refusal inside one loses the device, which drops the
-    /// batch's checks of later writes.
+    /// Ends the open pass nearly every time, before calls whose refusal inside one loses the device.
+    ///
+    /// A lost device drops the batch's checks of later writes.
     fn nearly_always_leave_pass(&mut self, random: &mut Random) {
         if random.chance(LEAVES_PASS_BEFORE_A_LOSS) {
             self.leave_pass();
@@ -1476,9 +1476,10 @@ impl World {
         }
     }
 
-    /// Draws a call and then captures the same call, as a program that captures what it drew a moment ago does: in one
-    /// pass, the draw in a pass before the capture's not yet submitted, or the capture not rasterising after the pass;
-    /// the call's stream and indices are buffers of the batch, the target a buffer of its own.
+    /// Draws a call and then captures the same call, as a program that captures what it drew a moment ago does.
+    ///
+    /// The two are in one pass, the draw in a pass before the capture's not yet submitted, or the capture not
+    /// rasterising after the pass; the call's stream and indices are buffers of the batch, the target one of its own.
     fn capture_after_draw(&mut self, random: &mut Random) {
         let (Some(scene), Some(blend), Some(depth_stencil), Some(raster)) = (
             self.capture.clone(),
@@ -1494,7 +1495,7 @@ impl World {
             return;
         };
         let target = self.b.create_buffer(&BufferDesc {
-            size: CAPTURE_TARGET_BYTES,
+            size: CAPTURE_AFTER_DRAW_TARGET_BYTES,
             usage: BufferUsage::CAPTURE | BufferUsage::COPY_SRC,
             intent: MapIntent::Rarely,
         });
@@ -1590,7 +1591,7 @@ impl World {
             &[BufferRange {
                 buffer: &target,
                 offset: 0,
-                size: CAPTURE_TARGET_BYTES,
+                size: CAPTURE_AFTER_DRAW_TARGET_BYTES,
             }],
             how < 2,
         );
@@ -1851,8 +1852,8 @@ impl World {
                     let configured = self.b.configure_surface(
                         &surface,
                         Format::Bgra8Unorm,
-                        FRAME_SIDE,
-                        FRAME_SIDE,
+                        wcontainers_test_window::WINDOW_SIDE as u32,
+                        wcontainers_test_window::WINDOW_SIDE as u32,
                         false,
                     );
                     self.counts.call(configured.is_err());

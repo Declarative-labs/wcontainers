@@ -96,11 +96,6 @@ const WORDS_SLOT: u32 = 1;
 /// https://developer.apple.com/documentation/metal/mtlblitcommandencoder/fill(buffer:range:value:)
 const FILL_BYTE: u8 = 1;
 
-/// The vertices of one triangle.
-///
-/// https://developer.apple.com/documentation/metal/mtlprimitivetype/triangle
-const TRIANGLE_VERTICES: u32 = 3;
-
 /// The tests' vertex function, which places the covering triangle.
 const VERTEX: &str = "vs";
 
@@ -122,7 +117,10 @@ const SUM: &str = "sum";
 /// A triangle covering every pixel centre of the target: corners at x and y of -1 and 3 in clip space.
 ///
 /// https://developer.apple.com/documentation/metal/mtlviewport
-const COVERING: &[f32] = &[-1.0, -1.0, 3.0, -1.0, -1.0, 3.0];
+const COVERING: &[[f32; 2]] = &[[-1.0, -1.0], [3.0, -1.0], [-1.0, 3.0]];
+
+/// The vertices of the covering triangle, which one draw of a triangle takes.
+const COVERING_VERTICES: u32 = COVERING.len() as u32;
 
 /// The bytes of the covering triangle's positions.
 const COVERING_BYTES: u64 = size_of_val(COVERING) as u64;
@@ -389,7 +387,7 @@ fn covering_draw<M: Metal>(
     commands.push(RenderCommand::DrawPrimitives {
         primitive_type: PrimitiveType::Triangle,
         vertex_start: u32::MIN,
-        vertex_count: TRIANGLE_VERTICES,
+        vertex_count: COVERING_VERTICES,
         instance_count: SINGLE,
         base_instance: u32::MIN,
     });
@@ -562,6 +560,7 @@ pub fn draws_in_a_uniform_color_and_refuses_an_empty_slot<M: Metal>(mut subject:
     let vertices = filled(
         &mut subject,
         &COVERING
+            .as_flattened()
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect::<Vec<u8>>(),
@@ -639,6 +638,7 @@ pub fn samples_a_texture_view<M: Metal>(mut subject: M) {
     let vertices = filled(
         &mut subject,
         &COVERING
+            .as_flattened()
             .iter()
             .flat_map(|v| v.to_le_bytes())
             .collect::<Vec<u8>>(),
@@ -986,7 +986,7 @@ pub fn builds_functions_and_pipelines_in_the_background<M: Metal>(mut subject: M
         let draw = RenderCommand::DrawPrimitives {
             primitive_type: PrimitiveType::Triangle,
             vertex_start: u32::MIN,
-            vertex_count: TRIANGLE_VERTICES,
+            vertex_count: COVERING_VERTICES,
             instance_count: SINGLE,
             base_instance: u32::MIN,
         };
@@ -1256,7 +1256,11 @@ fn refuses_pipeline<M: Metal>(
 
 /// Returns a buffer holding the covering triangle.
 fn covering<M: Metal>(subject: &mut M) -> M::Buffer {
-    let bytes: Vec<u8> = COVERING.iter().flat_map(|v| v.to_le_bytes()).collect();
+    let bytes: Vec<u8> = COVERING
+        .as_flattened()
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
     filled(subject, &bytes)
 }
 
@@ -1529,7 +1533,7 @@ pub fn refuses_draws_of_no_instances_or_indices<M: Metal>(mut subject: M) {
         RenderCommand::DrawPrimitives {
             primitive_type: PrimitiveType::Triangle,
             vertex_start: u32::MIN,
-            vertex_count: TRIANGLE_VERTICES,
+            vertex_count: COVERING_VERTICES,
             instance_count: u32::MIN,
             base_instance: u32::MIN,
         },
@@ -1675,7 +1679,7 @@ fn drawn_within_bounds<M: Metal>(
     commands.push(RenderCommand::DrawPrimitives {
         primitive_type: PrimitiveType::Triangle,
         vertex_start: u32::MIN,
-        vertex_count: TRIANGLE_VERTICES,
+        vertex_count: COVERING_VERTICES,
         instance_count: SINGLE,
         base_instance: u32::MIN,
     });
@@ -2192,14 +2196,14 @@ pub fn refuses_every_range_whose_end_wraps<M: Metal>(mut subject: M) {
         RenderCommand::DrawPrimitives {
             primitive_type: PrimitiveType::Triangle,
             vertex_start: u32::MAX,
-            vertex_count: TRIANGLE_VERTICES,
+            vertex_count: COVERING_VERTICES,
             instance_count: SINGLE,
             base_instance: u32::MIN,
         },
         RenderCommand::DrawPrimitives {
             primitive_type: PrimitiveType::Triangle,
             vertex_start: u32::MIN,
-            vertex_count: TRIANGLE_VERTICES,
+            vertex_count: COVERING_VERTICES,
             instance_count: SINGLE,
             base_instance: u32::MAX,
         },
@@ -2215,7 +2219,7 @@ pub fn refuses_every_range_whose_end_wraps<M: Metal>(mut subject: M) {
         },
         RenderCommand::DrawIndexedPrimitives {
             primitive_type: PrimitiveType::Triangle,
-            index_count: TRIANGLE_VERTICES,
+            index_count: COVERING_VERTICES,
             index_type: IndexType::UInt32,
             index_buffer: indices,
             index_buffer_offset: u64::MAX - 3,
@@ -3473,7 +3477,7 @@ fn spin<M: Metal>(subject: &mut M, command_buffer: &M::CommandBuffer, words: &M:
 /// The steps of `SPIN` that keep one GPU thread busy for tens of milliseconds.
 ///
 /// https://developer.apple.com/documentation/metal/mtlcommandbuffer/gpustarttime
-const SPIN_STEPS: u32 = 1 << 23;
+pub const SPIN_STEPS: u32 = 1 << 23;
 
 /// Checks that timestamps written around work hold the GPU's clock in nanoseconds.
 ///

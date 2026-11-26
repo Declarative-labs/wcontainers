@@ -1,6 +1,6 @@
-//! Hostile cases of the third check (format usages, step rates, captures) and of the places that would wait for,
-//! commit or nest work while a pass is open.
+//! The third check's cases of format usages, step rates and captures, and the cases of calls inside a pass.
 //!
+//! The calls inside a pass are those that would wait for, commit or nest work while a pass is open.
 //! Each prints a line starting HOSTILE with what the device did and what the reference did. The capture after a draw
 //! of its own buffers, which the check found losing the device, is in the shared suite, as the reference takes it.
 
@@ -21,8 +21,10 @@ use wcontainers_gpu_test::Recorder;
 use wcontainers_metal::StandaloneMetal;
 use wcontainers_metal_direct::DirectMetal;
 
-const SIDE: u32 = 8;
-const CANARY: u8 = 0xa5;
+/// The side of every texture the cases make.
+const CASE_TEXTURE_SIDE: u32 = 8;
+/// The byte a target is filled with before a case, which only what the case may change changes.
+const CANARY: u8 = u8::MAX;
 
 fn device() -> MetalGpu<DirectMetal> {
     MetalGpu::new(DirectMetal::new(()))
@@ -71,8 +73,8 @@ fn tex_desc(format: Format, usage: TextureUsage, samples: u32, reinterpret: bool
     TextureDesc {
         dimension: TextureDimension::D2,
         format,
-        width: SIDE,
-        height: SIDE,
+        width: CASE_TEXTURE_SIDE,
+        height: CASE_TEXTURE_SIDE,
         depth_or_layers: 1,
         mip_levels: 1,
         samples,
@@ -106,14 +108,14 @@ fn region<B: Gpu>(texture: &B::Texture) -> TextureRegion<'_, B> {
 
 fn extent() -> Extent {
     Extent {
-        width: SIDE,
-        height: SIDE,
+        width: CASE_TEXTURE_SIDE,
+        height: CASE_TEXTURE_SIDE,
         depth_or_layers: 1,
     }
 }
 
 fn read_texture<B: Gpu>(b: &mut B, texture: &B::Texture, texel: usize) -> Vec<u8> {
-    let mut out = vec![0; SIDE as usize * SIDE as usize * texel];
+    let mut out = vec![0; CASE_TEXTURE_SIDE as usize * CASE_TEXTURE_SIDE as usize * texel];
     b.submit();
     b.read_back_now(
         &ReadSource::Texture {
@@ -210,8 +212,8 @@ fn viewport() -> [Viewport; 1] {
     [Viewport {
         x: 0,
         y: 0,
-        width: (SIDE as f32).to_bits(),
-        height: (SIDE as f32).to_bits(),
+        width: (CASE_TEXTURE_SIDE as f32).to_bits(),
+        height: (CASE_TEXTURE_SIDE as f32).to_bits(),
         min_depth: 0,
         max_depth: 1.0f32.to_bits(),
     }]
@@ -243,8 +245,9 @@ fn outcome<T>(r: &Result<T, GpuError>) -> String {
 // ---------------------------------------------------------------------------------------------------------------
 // Feature 1: texture usages a format lacks.
 
-/// H1a: every format, every usage alone and with others, one and four samples: a texture is made exactly where the
-/// device's own format caps say the format takes the usage (and the sample count).
+/// Checks that a texture is made exactly where the device's format caps take its format, usage and sample count.
+///
+/// H1a: every format, every usage alone and with others, one and four samples.
 #[test]
 fn h1a_every_format_and_usage_is_made_only_where_the_caps_allow() {
     let mut b = device();
@@ -378,8 +381,10 @@ fn h1a_every_format_and_usage_is_made_only_where_the_caps_allow() {
     assert!(ok(&mut b));
 }
 
+/// Checks views of a drawn texture in formats whose caps lack RENDER, and passes into them, against the reference.
+///
 /// H1b: a drawn `Rgba8Unorm` texture made for views in other formats, seen as each 32-bit format whose caps lack
-/// RENDER, then drawn into: compared with the reference.
+/// RENDER, then drawn into.
 #[test]
 fn h1b_a_view_in_a_format_that_is_not_drawn_into_is_refused_or_not_drawn() {
     for format in [Format::Rgb9e5Float, Format::Rg16Uint, Format::R32Float] {
@@ -428,11 +433,14 @@ fn scene_h1b<B: Gpu>(b: &mut B, format: Format) -> (String, String, bool) {
     (view, "begun and ended".into(), ok(b))
 }
 
-/// H1c: a `Bgra4Unorm` texture written from the host and read back unchanged (its bit order the interface's both
-/// ways), and a copy of it into an `Rg8Unorm` texture of the same block size: compared with the reference.
+/// Checks that `Bgra4Unorm` texels written from the host read back unchanged, and copies them to another format.
+///
+/// H1c: the bit order is the interface's both ways; the copy is into an `Rg8Unorm` texture of the same block size.
 #[test]
 fn h1c_bgra4_texels_written_and_read_back_keep_the_interfaces_bit_order() {
-    let pattern: Vec<u8> = (0..SIDE * SIDE * 2).map(|n| (n * 37 + 11) as u8).collect();
+    let pattern: Vec<u8> = (0..CASE_TEXTURE_SIDE * CASE_TEXTURE_SIDE * 2)
+        .map(|n| (n * 37 + 11) as u8)
+        .collect();
     let mut b = device();
     let got = scene_h1c(&mut b, &pattern);
     let r = reference();
@@ -458,8 +466,8 @@ fn scene_h1c<B: Gpu>(b: &mut B, pattern: &[u8]) -> (Vec<u8>, String) {
         &region(&t),
         extent(),
         pattern,
-        SIDE * 2,
-        SIDE,
+        CASE_TEXTURE_SIDE * 2,
+        CASE_TEXTURE_SIDE,
         WriteMode::Ordered,
     );
     let back = read_texture(b, &t, 2);
@@ -496,8 +504,10 @@ struct Out { @builtin(position) pos: vec4<f32>, @location(0) @interpolate(flat) 
 
 const STRIP: [f32; 8] = [-1.0, -1.0, 1.0, -1.0, -1.0, 1.0, 1.0, 1.0];
 
-/// Draws eight columns, one an instance from `first_instance`, colored from a per-instance stream of `format` at `rate`
-/// bound at `offset` of a buffer of `stream` bytes; returns what the draw did and the pixels.
+/// Draws eight columns colored from a per-instance stream, and returns whether the device stayed and the pixels.
+///
+/// Each column is an instance from `first_instance`; the stream is of `format` at `rate`, bound at `offset` of a buffer
+/// of `stream` bytes.
 #[allow(clippy::too_many_arguments)]
 fn stepped_scene<B: Gpu>(
     b: &mut B,
@@ -598,13 +608,15 @@ fn float_colors(n: u32) -> Vec<u8> {
         .collect()
 }
 
-/// Whether two images agree within one step per channel.
+/// Returns whether two images agree within one step per channel.
 fn close(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.abs_diff(*y) <= 1)
 }
 
-/// S1: the first instance near the largest u32, at rates 0, 1, 2 and u32::MAX, so that every element read lies past a
-/// one-element stream: what the device does against the reference (Metal's shader validation reports a read outside).
+/// Checks per-instance streams read from a first instance near the largest `u32` against the reference.
+///
+/// S1: rates 0, 1, 2 and `u32::MAX`, so that every element read lies past a one-element stream; Metal's shader
+/// validation reports a read outside.
 #[test]
 fn s1_rates_from_a_first_instance_near_the_largest_u32_read_nothing_outside() {
     let stream = float_colors(1);
@@ -649,8 +661,9 @@ fn s1_rates_from_a_first_instance_near_the_largest_u32_read_nothing_outside() {
     }
 }
 
-/// S2: a stream of a format naga lacks (`Unorm8x3`, widened on the host) at rates 2, 3 and 0 from first instance 5:
-/// the widened copy must place each element where the rate's index reads it.
+/// Checks that a stream widened on the host at a step rate places each element where the rate's index reads it.
+///
+/// S2: a stream of a format naga lacks (`Unorm8x3`) at rates 2, 3 and 0 from first instance 5.
 #[test]
 fn s2_a_widened_stream_at_a_rate_from_a_late_first_instance_matches_the_reference() {
     // Twelve elements of three bytes and one of padding.
@@ -682,8 +695,10 @@ fn s2_a_widened_stream_at_a_rate_from_a_late_first_instance_matches_the_referenc
     }
 }
 
+/// Checks a stepped stream bound near its buffer's end against the reference.
+///
 /// S3: a per-instance stream at rate 3 bound at offsets that leave less than one element (off its stride), none, or
-/// exactly the elements read: the device against the reference.
+/// exactly the elements read.
 #[test]
 fn s3_a_stepped_stream_bound_near_its_end_reads_zeros_past_it() {
     let stream = float_colors(3);
@@ -837,8 +852,9 @@ fn capture_call<'a, B: Gpu>(
 
 const TARGET_BYTES: u64 = 1024;
 
-/// C2: an indexed capture of u32::MAX 32-bit indices from a 16-byte index buffer into a small target: refused at once,
-/// without holding the indices' 16 GiB first.
+/// Checks that a capture of `u32::MAX` indices from a small index buffer is refused before the indices are held.
+///
+/// C2: 32-bit indices from a 16-byte index buffer into a small target, whose 16 GiB would be held first.
 #[test]
 fn c2_an_indexed_capture_of_u32_max_indices_from_a_small_buffer_is_refused_at_once() {
     let mut b = device();
@@ -885,9 +901,10 @@ fn c2_an_indexed_capture_of_u32_max_indices_from_a_small_buffer_is_refused_at_on
     assert!(ok(&mut b));
 }
 
+/// Checks aliased, overlapping, ragged and unmarked capture targets against the reference.
+///
 /// C3: separate targets that are one range of one buffer, targets that overlap by a word, a target whose size is not
-/// whole words, and a target in a buffer made without CAPTURE: the device against the reference, and nothing outside
-/// the ranges changed.
+/// whole words, and a target in a buffer made without CAPTURE; nothing outside the ranges may change.
 #[test]
 fn c3_aliased_overlapping_ragged_and_unmarked_targets_agree_with_the_reference() {
     for case in 0..4 {
@@ -1079,8 +1096,9 @@ fn draw_half<B: Gpu>(b: &mut B, h: &Halves<B>, half: u32) {
     });
 }
 
-/// Begins a pass that clears the target and draws its left half; `call` runs inside it; then the right half is drawn
-/// and the pass ends. Returns whether the device stayed and whether every texel is green.
+/// Returns whether the device stayed and every texel is green after `call` ran between the draws of one pass.
+///
+/// The pass clears the target and draws its left half; `call` runs; the right half is drawn and the pass ends.
 fn around_a_call<B: Gpu>(b: &mut B, h: &Halves<B>, call: impl FnOnce(&mut B)) -> (bool, bool) {
     b.begin_pass(&color_pass::<B>(&h.view));
     draw_half(b, h, 0);
@@ -1089,8 +1107,9 @@ fn around_a_call<B: Gpu>(b: &mut B, h: &Halves<B>, call: impl FnOnce(&mut B)) ->
     b.end_pass();
     b.submit();
     let alive = ok(b);
-    let green =
-        alive && read_texture(b, &h.target, 4) == [0, 255, 0, 255].repeat((SIDE * SIDE) as usize);
+    let green = alive
+        && read_texture(b, &h.target, 4)
+            == [0, 255, 0, 255].repeat((CASE_TEXTURE_SIDE * CASE_TEXTURE_SIDE) as usize);
     (alive, green)
 }
 
@@ -1114,7 +1133,7 @@ fn written<B: Gpu>(b: &mut B) -> (B::Buffer, Vec<u8>) {
     (source, bytes)
 }
 
-/// `submit` inside a pass commits the draws so far, ending the pass and opening it again after.
+/// Checks that a submit inside a pass commits the draws so far, ending the pass and opening it again after.
 #[test]
 fn p1_a_submit_inside_a_pass_keeps_the_pass_and_its_draws() {
     let mut b = device();
@@ -1130,7 +1149,7 @@ fn p1_a_submit_inside_a_pass_keeps_the_pass_and_its_draws() {
     kept("p1 submit", got, &r);
 }
 
-/// `wait_read` inside a pass, of a read back recorded before it and not submitted, commits it there.
+/// Checks that a wait inside a pass for a read back not yet submitted commits it there and keeps the pass.
 #[test]
 fn p2_a_wait_for_a_read_back_inside_a_pass_keeps_the_pass_and_reads_the_bytes() {
     let mut b = device();
@@ -1151,7 +1170,7 @@ fn p2_a_wait_for_a_read_back_inside_a_pass_keeps_the_pass_and_reads_the_bytes() 
     assert_eq!(out, bytes, "p2: the bytes read back");
 }
 
-/// `finish_read` inside a pass, of a read back recorded before it and not submitted, commits it there.
+/// Checks that finishing a read back not yet submitted inside a pass commits it there and keeps the pass.
 #[test]
 fn p3_a_finished_read_back_inside_a_pass_keeps_the_pass_and_reads_the_bytes() {
     let mut b = device();
@@ -1176,8 +1195,9 @@ fn p3_a_finished_read_back_inside_a_pass_keeps_the_pass_and_reads_the_bytes() {
     assert_eq!(out, bytes, "p3: the bytes read back");
 }
 
-/// `read_back_now` inside a pass, of a buffer a copy recorded before the pass writes, and of a texture written before
-/// it: each waits for that work, committing it there.
+/// Checks that reads back at once inside a pass wait for the work before, committing it there.
+///
+/// One reads a buffer a copy recorded before the pass writes, the other a texture written before it.
 #[test]
 fn p4_a_read_back_now_inside_a_pass_keeps_the_pass_and_reads_the_bytes() {
     let mut b = device();
@@ -1185,7 +1205,9 @@ fn p4_a_read_back_now_inside_a_pass_keeps_the_pass_and_reads_the_bytes() {
     let (source, bytes) = written(&mut b);
     let copy = buffer(&mut b, 64, BufferUsage::empty());
     b.copy_buffer(&source, 0, &copy, 0, 64);
-    let texels: Vec<u8> = (0..SIDE * SIDE * 4).map(|n| (n * 13 + 1) as u8).collect();
+    let texels: Vec<u8> = (0..CASE_TEXTURE_SIDE * CASE_TEXTURE_SIDE * 4)
+        .map(|n| (n * 13 + 1) as u8)
+        .collect();
     let texture = b
         .create_texture(&tex_desc(
             Format::Rgba8Unorm,
@@ -1198,8 +1220,8 @@ fn p4_a_read_back_now_inside_a_pass_keeps_the_pass_and_reads_the_bytes() {
         &region(&texture),
         extent(),
         &texels,
-        SIDE * 4,
-        SIDE,
+        CASE_TEXTURE_SIDE * 4,
+        CASE_TEXTURE_SIDE,
         WriteMode::Ordered,
     );
     let (mut from_buffer, mut from_texture) = (vec![0; 64], vec![0; texels.len()]);
@@ -1228,7 +1250,7 @@ fn p4_a_read_back_now_inside_a_pass_keeps_the_pass_and_reads_the_bytes() {
     assert_eq!(from_texture, texels, "p4: the texture's texels");
 }
 
-/// `resolve_queries` of timestamps inside a pass waits for the work that writes them, committing it there.
+/// Checks that timestamps resolved inside a pass wait for the work that writes them, committing it there.
 #[test]
 fn p5_timestamps_resolved_inside_a_pass_keep_the_pass() {
     let mut b = device();
@@ -1253,7 +1275,7 @@ fn p5_timestamps_resolved_inside_a_pass_keep_the_pass() {
     assert_ne!(read_bytes(&mut b, &results, 8), [0; 8], "p5: the timestamp");
 }
 
-/// `dispatch` inside a pass, which Metal would run before the pass's draws, is refused; the pass goes on.
+/// Checks that a dispatch inside a pass, which Metal would run before the pass's draws, is refused.
 #[test]
 fn p6_a_dispatch_inside_a_pass_is_refused_and_the_pass_goes_on() {
     let mut b = device();
@@ -1284,7 +1306,7 @@ fn p6_a_dispatch_inside_a_pass_is_refused_and_the_pass_goes_on() {
     assert_eq!(outside, "taken");
 }
 
-/// `generate_mips` inside a pass, which may draw each level in a pass of its own, is refused; the pass goes on.
+/// Checks that mipmaps generated inside a pass, which may draw each level in a pass of its own, are refused.
 #[test]
 fn p7_mipmaps_generated_inside_a_pass_are_refused_and_the_pass_goes_on() {
     let mut b = device();
@@ -1311,8 +1333,9 @@ fn p7_mipmaps_generated_inside_a_pass_are_refused_and_the_pass_goes_on() {
     assert_eq!(outside, "taken");
 }
 
-/// `resolve` and `begin_pass` inside a pass, each a pass of its own that would drop the open one's draws, are refused:
-/// both lose the device, as the reference loses it, and nothing reaches Metal that its checks stop.
+/// Checks that a resolve or a pass begun inside a pass, which would drop the open pass's draws, is refused.
+///
+/// Both lose the device, as the reference loses it, and nothing reaches Metal that its checks stop.
 #[test]
 fn p8_a_resolve_or_a_pass_begun_inside_a_pass_is_refused() {
     for nested in ["resolve", "begin_pass"] {

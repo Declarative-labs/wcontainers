@@ -1137,8 +1137,9 @@ impl<M: Metal> MetalGpu<M> {
         pass.commands.push(command);
     }
 
-    /// Ends the open pass before the caller's end, storing what it drew for the pass that goes on after it, which it
-    /// returns.
+    /// Ends the open pass before the caller ends it, and returns the pass that goes on after it.
+    ///
+    /// What the pass drew is stored for the pass that goes on, whatever the caller's store operations.
     pub(crate) fn end_open_pass_early(&mut self) -> Option<OpenPass<M>> {
         let mut pass = self.pass.take()?;
         let resumed = pass.resumed();

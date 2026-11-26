@@ -17,8 +17,9 @@ mod record;
 mod ring;
 mod vertex;
 
-/// Returns whether a pass is open at a place that would wait for, commit or nest work inside it; with the `reach`
-/// feature it counts the outcome at the place.
+/// Returns whether a pass is open at a place that would wait for, commit or nest work inside it.
+///
+/// With the `reach` feature it also counts the outcome at the place.
 macro_rules! inside_pass {
     ($place:expr, $open:expr) => {{
         let open: bool = $open;
@@ -28,32 +29,33 @@ macro_rules! inside_pass {
     }};
 }
 
-/// The places that would wait for, commit or nest work while a pass is open: each ends the pass and opens it again
-/// after, or refuses.
+/// The places that would wait for, commit or nest work while a pass is open.
+///
+/// Each ends the pass and opens it again after, or refuses.
 pub mod place {
-    /// `submit`, which commits.
+    /// The place of a submit, which commits.
     pub const SUBMIT: &str = "submit: commits";
-    /// `wait_read` of work not yet committed.
+    /// The place of a wait for a read back of work not yet committed.
     pub const WAIT_READ: &str = "wait_read: commits the work it waits for";
-    /// `finish_read` of work not yet committed.
+    /// The place of a read back finished before its work is committed.
     pub const FINISH_READ: &str = "finish_read: commits the work it waits for";
-    /// `read_back_now`, which waits for the work before it.
+    /// The place of a read back at once, which waits for the work before it.
     pub const READ_BACK_NOW: &str = "read_back_now: commits the work it waits for";
-    /// `resolve_queries` of timestamps, which waits for the work that writes them.
+    /// The place of a resolve of timestamps, which waits for the work that writes them.
     pub const RESOLVE_QUERIES: &str = "resolve_queries: commits the work it waits for";
-    /// A capture, which reads its indices and streams on the host after the work that writes them.
+    /// The place of a capture, which reads its indices and streams on the host after the work that writes them.
     pub const CAPTURE_READS: &str = "capture: commits the work its reads wait for";
-    /// A draw of a stream widened on the host, which reads it after the work that writes it.
+    /// The place of a draw of a stream widened on the host, which reads it after the work that writes it.
     pub const WIDENED_READS: &str = "widened stream: commits the work its reads wait for";
-    /// `present`, which draws the frame in a pass of its own and commits: refused.
+    /// The place of a present, which draws the frame in a pass of its own and commits: refused.
     pub const PRESENT: &str = "present: refused inside a pass";
-    /// `dispatch`, which Metal would run before the pass's draws: refused.
+    /// The place of a dispatch, which Metal would run before the pass's draws: refused.
     pub const DISPATCH: &str = "dispatch: refused inside a pass";
-    /// `generate_mips`, which may draw each level in a pass of its own: refused.
+    /// The place of mipmaps generated, which may draw each level in a pass of its own: refused.
     pub const GENERATE_MIPS: &str = "generate_mips: refused inside a pass";
-    /// `resolve`, a pass of its own: refused.
+    /// The place of a resolve, a pass of its own: refused.
     pub const RESOLVE: &str = "resolve: refused inside a pass";
-    /// `begin_pass`, which would drop the open pass's draws: refused.
+    /// The place of a pass begun, which would drop the open pass's draws: refused.
     pub const BEGIN_PASS: &str = "begin_pass: refused inside a pass";
 
     /// Every place, which the fuzzer's reach table lists.
@@ -478,8 +480,9 @@ impl<M: Metal> MetalGpu<M> {
         }
     }
 
-    /// Commits the command buffer being recorded, and returns its serial; an open pass is ended for it and opened again
-    /// after, in the next command buffer.
+    /// Commits the command buffer being recorded, and returns its serial.
+    ///
+    /// An open pass is ended for it and opened again after, in the next command buffer.
     fn commit_around_pass(&mut self) -> u64 {
         let resumed = if self.pass.is_some() {
             self.end_open_pass_early()
@@ -512,8 +515,9 @@ impl<M: Metal> MetalGpu<M> {
         serial
     }
 
-    /// Blocks until the command buffer of `serial` has completed, committing it first if it is being recorded; `place`
-    /// counts whether that commit found a pass open.
+    /// Blocks until the command buffer of `serial` has completed, committing it first if it is being recorded.
+    ///
+    /// `place` counts whether that commit found a pass open.
     fn wait_serial(&mut self, serial: u64, place: Option<&'static str>) {
         let commits = serial >= self.serial;
         if let Some(place) = place {
@@ -687,8 +691,9 @@ impl<M: Metal> MetalGpu<M> {
         }
     }
 
-    /// Reads a buffer's bytes from `offset` into `dst` once the work that uses it is done, committing that work at
-    /// `place` if it is being recorded.
+    /// Reads a buffer's bytes from `offset` into `dst` once the work that uses it is done.
+    ///
+    /// That work is committed first, at `place`, if it is being recorded.
     fn read_after_use(
         &mut self,
         buffer: &BufferObj<M>,
