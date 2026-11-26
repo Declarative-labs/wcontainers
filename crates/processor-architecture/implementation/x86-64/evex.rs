@@ -648,7 +648,13 @@ impl EvexForm {
     pub fn stores(&self) -> bool {
         let to_memory = matches!(
             self.code.op_code().op_kinds().first(),
-            Some(OpCodeOperandKind::mem | OpCodeOperandKind::r32_or_mem | OpCodeOperandKind::xmm_or_mem)
+            Some(
+                OpCodeOperandKind::mem
+                    | OpCodeOperandKind::r32_or_mem
+                    | OpCodeOperandKind::xmm_or_mem
+                    | OpCodeOperandKind::ymm_or_mem
+                    | OpCodeOperandKind::zmm_or_mem
+            )
         );
         let scatter = matches!(self.operation, EvexOperation::Scatter { .. });
         scatter
