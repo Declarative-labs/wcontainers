@@ -995,7 +995,8 @@ impl BehaviorSource for KvmSingleStepMachine {
             return Err(Refusal::ExclusiveMonitorHeld(processor.exclusive_monitor));
         }
         if !self.scalable_vectors
-            && (processor.first_fault_register != 0 || processor.predicate_registers.iter().any(|p| *p != 0))
+            && (processor.first_fault_register != 0
+                || processor.predicate_registers.iter().any(|p| *p != 0))
         {
             return Err(Refusal::PredicatesWithoutScalableVectors);
         }

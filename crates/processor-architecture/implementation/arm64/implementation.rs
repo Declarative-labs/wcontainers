@@ -38,6 +38,7 @@ pub mod scalable_floating_point;
 pub mod scalable_integer;
 pub mod simd;
 mod simulation;
+mod structure;
 pub mod sve;
 mod sve_count;
 mod sve_element;
@@ -45,7 +46,6 @@ mod sve_move;
 mod sve_predicate;
 #[cfg(test)]
 mod sve_tests;
-mod structure;
 pub mod system_register;
 #[cfg(test)]
 mod tests;
