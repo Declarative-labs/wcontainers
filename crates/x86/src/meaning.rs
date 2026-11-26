@@ -3095,7 +3095,9 @@ fn compare_exchange<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
 
 /// `cmpxchg8b` and `cmpxchg16b`: rdx:rax (each half 32 bits for 8 bytes) against memory; equal, memory gets
 /// rcx:rbx, else rdx:rax gets memory, which is written either way. ZF is whether they were equal; no other
-/// flag changes. `cmpxchg16b` needs its operand aligned to 16 bytes.
+/// flag changes. `cmpxchg16b` needs its operand aligned to 16 bytes. Locked in an ordered form, `cmpxchg8b` is
+/// one 8-byte compare and exchange; `cmpxchg16b`, which no WebAssembly atomic makes, holds the process's other
+/// threads first (`Reason::LockedAccessNeedsGroupStop`).
 fn compare_exchange_pair<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction) {
     let bytes = memory_bytes(i);
     let half = bytes / 2;
@@ -3112,9 +3114,31 @@ fn compare_exchange_pair<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction
         .i64_add()
         .local_set(high_at);
     let [low, high, rax, rdx, rbx, rcx] = core::array::from_fn(|_| e.local(ValType::I64));
-    for (local, from) in [(low, at), (high, high_at)] {
-        load(e, from, half);
-        e.sink().local_set(local);
+    let lock = locked(e, i);
+    // Locked `cmpxchg8b`: the whole operand read and written by one 8-byte access.
+    let whole = (lock && bytes == u64::BITS / u8::BITS).then(|| {
+        let whole = e.local(ValType::I64);
+        locked_start(e);
+        load(e, at, bytes);
+        e.sink()
+            .local_tee(whole)
+            .i64_const(mask(W32))
+            .i64_and()
+            .local_set(low)
+            .local_get(whole)
+            .i64_const(u32::BITS.into())
+            .i64_shr_u()
+            .local_set(high);
+        whole
+    });
+    if whole.is_none() {
+        if lock {
+            e.warn(Reason::LockedAccessNeedsGroupStop);
+        }
+        for (local, from) in [(low, at), (high, high_at)] {
+            load(e, from, half);
+            e.sink().local_set(local);
+        }
     }
     for (local, number) in [(rax, RAX), (rdx, RDX), (rbx, RBX), (rcx, RCX)] {
         get_general(e, register(number, w));
@@ -3132,15 +3156,33 @@ fn compare_exchange_pair<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction
         .local_tee(equal)
         .i32_eqz()
         .local_set(differ);
-    for (memory, new, from) in [(low, rbx, at), (high, rcx, high_at)] {
-        let stored = e.local(ValType::I64);
-        e.sink()
-            .local_get(new)
-            .local_get(memory)
-            .local_get(equal)
-            .select()
-            .local_set(stored);
-        store(e, from, half, stored);
+    match whole {
+        Some(whole) => {
+            let stored = e.local(ValType::I64);
+            e.sink()
+                .local_get(rcx)
+                .i64_const(u32::BITS.into())
+                .i64_shl()
+                .local_get(rbx)
+                .i64_or()
+                .local_get(whole)
+                .local_get(equal)
+                .select()
+                .local_set(stored);
+            locked_write(e, (at, bytes), whole, stored);
+        }
+        None => {
+            for (memory, new, from) in [(low, rbx, at), (high, rcx, high_at)] {
+                let stored = e.local(ValType::I64);
+                e.sink()
+                    .local_get(new)
+                    .local_get(memory)
+                    .local_get(equal)
+                    .select()
+                    .local_set(stored);
+                store(e, from, half, stored);
+            }
+        }
     }
     set_general_when(e, register(RAX, w), low, differ);
     set_general_when(e, register(RDX, w), high, differ);

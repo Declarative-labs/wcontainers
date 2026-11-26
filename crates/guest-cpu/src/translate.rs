@@ -19,6 +19,9 @@ pub enum AccessOrdering {
     /// Every guest load and store an ordered access: x86's order kept for threads in parallel on a host that
     /// orders memory more weakly.
     Ordered(OrderedAccess),
+    /// Every guest load an ordered access and every store plain: x86's order for threads in parallel on an x86
+    /// host, whose own stores keep it, while no engine may merge two loads of one address into one.
+    LoadsOrdered(OrderedAccess),
 }
 
 impl AccessOrdering {
@@ -27,6 +30,23 @@ impl AccessOrdering {
         match self {
             AccessOrdering::Unordered => 0,
             AccessOrdering::Ordered(OrderedAccess::SequentiallyConsistent) => 1,
+            AccessOrdering::LoadsOrdered(OrderedAccess::SequentiallyConsistent) => 2,
+        }
+    }
+
+    /// The kind of access a guest load becomes, or none for a plain one.
+    pub fn loads(self) -> Option<OrderedAccess> {
+        match self {
+            AccessOrdering::Unordered => None,
+            AccessOrdering::Ordered(kind) | AccessOrdering::LoadsOrdered(kind) => Some(kind),
+        }
+    }
+
+    /// The kind of access a guest store becomes, or none for a plain one.
+    pub fn stores(self) -> Option<OrderedAccess> {
+        match self {
+            AccessOrdering::Ordered(kind) => Some(kind),
+            AccessOrdering::Unordered | AccessOrdering::LoadsOrdered(_) => None,
         }
     }
 }
@@ -65,7 +85,7 @@ pub trait Guest: Personality {
     // --- identity ---
     /// Names the guest in the description section and the cache key.
     const ID: GuestId;
-    /// Whether the meanings make every guest access ordered when asked ([`AccessOrdering::Ordered`]).
+    /// Whether the meanings make guest accesses ordered when asked (any [`AccessOrdering`] but `Unordered`).
     const ORDERED_ACCESSES: bool = false;
 
     // --- the instruction unit ---

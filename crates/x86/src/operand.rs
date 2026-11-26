@@ -153,10 +153,9 @@ pub fn store<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, bytes: u32, value:
 
 /// Push the i64 of `bytes` bytes at the data address in `at` plus `offset`, zero-extended.
 pub fn load_at<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, offset: u64, bytes: u32) {
-    let ordering = e.access_ordering();
-    let mut s = e.sink();
-    let AccessOrdering::Ordered(kind) = ordering else {
+    let Some(kind) = e.access_ordering().loads() else {
         let m = MemArg { offset, ..memory() };
+        let mut s = e.sink();
         s.local_get(at);
         match bytes {
             BYTE => s.i64_load8_u(m),
@@ -166,7 +165,7 @@ pub fn load_at<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, offset: u64, byt
         };
         return;
     };
-    ordered_load(&mut s, kind, at, offset, bytes);
+    ordered_load(e, kind, at, offset, bytes);
 }
 
 /// Store the low `bytes` bytes of the i64 local `value` at the data address in `at` plus `offset`.
@@ -177,10 +176,9 @@ pub fn store_at<E: Emitter<X86_64> + ?Sized>(
     bytes: u32,
     value: u32,
 ) {
-    let ordering = e.access_ordering();
-    let mut s = e.sink();
-    let AccessOrdering::Ordered(kind) = ordering else {
+    let Some(kind) = e.access_ordering().stores() else {
         let m = MemArg { offset, ..memory() };
+        let mut s = e.sink();
         s.local_get(at).local_get(value);
         match bytes {
             BYTE => s.i64_store8(m),
@@ -190,27 +188,27 @@ pub fn store_at<E: Emitter<X86_64> + ?Sized>(
         };
         return;
     };
-    ordered_store(&mut s, kind, at, offset, bytes, value);
+    ordered_store(e, kind, at, offset, bytes, value);
 }
 
 /// Push the 16 bytes at the data address in `at` plus `offset` as a v128.
 pub fn load_vector_at<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, offset: u64) {
-    let ordering = e.access_ordering();
-    let mut s = e.sink();
-    let AccessOrdering::Ordered(kind) = ordering else {
-        s.local_get(at).v128_load(MemArg { offset, ..memory() });
+    let Some(kind) = e.access_ordering().loads() else {
+        e.sink()
+            .local_get(at)
+            .v128_load(MemArg { offset, ..memory() });
         return;
     };
     // x86 makes no access above 8 bytes one access, so the halves are two, in address order.
-    ordered_load(&mut s, kind, at, offset, QWORD);
-    s.i64x2_splat();
-    ordered_load(&mut s, kind, at, offset + u64::from(QWORD), QWORD);
-    s.i64x2_replace_lane(1);
+    ordered_load(e, kind, at, offset, QWORD);
+    e.sink().i64x2_splat();
+    ordered_load(e, kind, at, offset + u64::from(QWORD), QWORD);
+    e.sink().i64x2_replace_lane(1);
 }
 
 /// Store the v128 local `vector` at the data address in `at` plus `offset`.
 pub fn store_vector_at<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, offset: u64, vector: u32) {
-    let AccessOrdering::Ordered(kind) = e.access_ordering() else {
+    let Some(kind) = e.access_ordering().stores() else {
         e.sink()
             .local_get(at)
             .local_get(vector)
@@ -218,12 +216,12 @@ pub fn store_vector_at<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, offset: 
         return;
     };
     let half = e.local(ValType::I64);
-    let mut s = e.sink();
     for (lane, past) in [0, QWORD].into_iter().enumerate() {
-        s.local_get(vector)
+        e.sink()
+            .local_get(vector)
             .i64x2_extract_lane(lane as u8)
             .local_set(half);
-        ordered_store(&mut s, kind, at, offset + u64::from(past), QWORD, half);
+        ordered_store(e, kind, at, offset + u64::from(past), QWORD, half);
     }
 }
 
@@ -236,10 +234,9 @@ pub fn load_lane_at<E: Emitter<X86_64> + ?Sized>(
     bytes: u32,
     (vector, lane): (u32, u8),
 ) {
-    let ordering = e.access_ordering();
-    let mut s = e.sink();
-    let AccessOrdering::Ordered(kind) = ordering else {
+    let Some(kind) = e.access_ordering().loads() else {
         let m = MemArg { offset, ..memory() };
+        let mut s = e.sink();
         s.local_get(at).local_get(vector);
         if bytes == DWORD {
             s.v128_load32_lane(m, lane);
@@ -249,8 +246,9 @@ pub fn load_lane_at<E: Emitter<X86_64> + ?Sized>(
         s.local_set(vector);
         return;
     };
-    s.local_get(vector);
-    ordered_load(&mut s, kind, at, offset, bytes);
+    e.sink().local_get(vector);
+    ordered_load(e, kind, at, offset, bytes);
+    let mut s = e.sink();
     if bytes == DWORD {
         s.i32_wrap_i64().i32x4_replace_lane(lane);
     } else {
@@ -268,7 +266,7 @@ pub fn store_lane_at<E: Emitter<X86_64> + ?Sized>(
     bytes: u32,
     (vector, lane): (u32, u8),
 ) {
-    let AccessOrdering::Ordered(kind) = e.access_ordering() else {
+    let Some(kind) = e.access_ordering().stores() else {
         let m = MemArg { offset, ..memory() };
         let mut s = e.sink();
         s.local_get(at).local_get(vector);
@@ -288,7 +286,7 @@ pub fn store_lane_at<E: Emitter<X86_64> + ?Sized>(
         s.i64x2_extract_lane(lane);
     }
     s.local_set(element);
-    ordered_store(&mut s, kind, at, offset, bytes, element);
+    ordered_store(e, kind, at, offset, bytes, element);
 }
 
 /// Order the accesses of a bulk operation (a whole `rep movs` or `rep stos`) after every access before it and
@@ -300,7 +298,7 @@ pub fn bulk_fence<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
     }
 }
 
-/// Whether, in the ordered form, the instruction's memory operand is read, changed and written as one atomic
+/// Whether, in an ordered form, the instruction's memory operand is read, changed and written as one atomic
 /// operation: a memory destination with the `lock` prefix, or `xchg` with memory, whose lock is implied (Intel SDM
 /// Vol. 2B, XCHG).
 pub fn locked<E: Emitter<X86_64> + ?Sized>(e: &E, i: &Instruction) -> bool {
@@ -320,17 +318,21 @@ pub fn locked_start<E: Emitter<X86_64> + ?Sized>(e: &mut E) {
 }
 
 /// Write the low `bytes` bytes of the i64 local `new` at `at` when they still hold `old` (the value read after
-/// [`locked_start`]), as one atomic compare and exchange, else go round its loop again; then close the loop. An
-/// operand not aligned to its size cannot be one WebAssembly atomic operation: it is written by ordered accesses,
-/// counted and warned.
+/// [`locked_start`]), as one atomic compare and exchange, else go round its loop again; then close the loop.
+///
+/// An operand not aligned to its size but inside one aligned 8-byte word is exchanged as that whole word. One that
+/// crosses a word no WebAssembly atomic operation makes: it is counted and warned as
+/// `Reason::LockedAccessNeedsGroupStop`, whose handler holds the process's other threads before it returns (no
+/// `Parallel` form for a process that runs one, until the threads plan's group stop exists), then read again and
+/// written by ordered accesses.
 pub fn locked_write<E: Emitter<X86_64> + ?Sized>(
     e: &mut E,
     (at, bytes): (u32, u32),
     old: u32,
     new: u32,
 ) {
-    let AccessOrdering::Ordered(kind) = e.access_ordering() else {
-        unreachable!("only the ordered form locks");
+    let Some(kind) = e.access_ordering().loads() else {
+        unreachable!("only an ordered form locks");
     };
     let m = MemArg {
         offset: 0,
@@ -351,10 +353,48 @@ pub fn locked_write<E: Emitter<X86_64> + ?Sized>(
         _ => s.i64_atomic_rmw_cmpxchg(m),
     };
     s.local_get(old).i64_ne().else_();
-    e.warn(crate::guest::Reason::LockedAccessNotAligned);
+    let word = misaligned(e, at, 0, bytes);
+    let seen = e.local(ValType::I64);
     let mut s = e.sink();
-    ordered_store(&mut s, kind, at, 0, bytes, new);
-    s.i32_const(0).end().br_if(0).end();
+    s.local_get(word.crosses)
+        .if_(BlockType::Result(ValType::I32));
+    e.warn(crate::guest::Reason::LockedAccessNeedsGroupStop);
+    // Read again, now that no other thread runs: the value read before the warning may be stale.
+    misaligned_load(&mut e.sink(), kind, &word, bytes);
+    e.sink()
+        .local_get(old)
+        .i64_ne()
+        .if_(BlockType::Result(ValType::I32));
+    e.sink().i32_const(1).else_();
+    misaligned_store(e, kind, &word, bytes, new);
+    let mut s = e.sink();
+    s.i32_const(0).end().else_();
+    // Inside one word: exchange the word as it is when the operand still holds the value read.
+    s.local_get(word.word)
+        .i64_atomic_load(ordered_memory(kind, 0, QWORD))
+        .local_tee(seen)
+        .local_get(word.shift)
+        .i64_shr_u();
+    narrow(&mut s, bytes);
+    s.local_get(old)
+        .i64_ne()
+        .if_(BlockType::Result(ValType::I32))
+        .i32_const(1)
+        .else_()
+        .local_get(word.word)
+        .local_get(seen);
+    merged(&mut s, &word, (seen, new), bytes, false);
+    s.i64_atomic_rmw_cmpxchg(MemArg {
+        align: QWORD.trailing_zeros(),
+        ..m
+    })
+    .local_get(seen)
+    .i64_ne()
+    .end()
+    .end()
+    .end()
+    .br_if(0)
+    .end();
 }
 
 /// The memory argument of an ordered access of `bytes` bytes at `offset` past its address, naturally aligned
@@ -377,10 +417,163 @@ fn aligned(s: &mut InstructionSink<'_>, at: u32, offset: u64, bytes: u32) {
     s.i64_const(i64::from(bytes) - 1).i64_and().i64_eqz();
 }
 
-/// Push the i64 of `bytes` bytes at `at` plus `offset` read by ordered accesses: one of its width where it is
-/// aligned (WebAssembly's atomic accesses trap where it is not), else one a byte, lowest address first.
-fn ordered_load(
+/// Keep the low `bytes` bytes of the i64 on the stack.
+fn narrow(s: &mut InstructionSink<'_>, bytes: u32) {
+    if bytes < QWORD {
+        s.i64_const(mask((bytes * u8::BITS) as u8)).i64_and();
+    }
+}
+
+/// A misaligned ordered access, made through the aligned 8-byte words that hold it (WebAssembly's widest atomic
+/// accesses): i64 locals of the first word's address and the bit its first byte starts at, and an i32 local not
+/// zero when it runs on into the next word.
+struct Misaligned {
+    word: u32,
+    shift: u32,
+    crosses: u32,
+}
+
+/// Work out where the access of `bytes` bytes at `at` plus `offset` lies in the words that hold it.
+fn misaligned<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    at: u32,
+    offset: u64,
+    bytes: u32,
+) -> Misaligned {
+    let word = Misaligned {
+        word: e.local(ValType::I64),
+        shift: e.local(ValType::I64),
+        crosses: e.local(ValType::I32),
+    };
+    let in_word = i64::from(QWORD) - 1;
+    let mut s = e.sink();
+    s.local_get(at);
+    if offset != 0 {
+        s.i64_const(offset as i64).i64_add();
+    }
+    s.local_tee(word.word)
+        .i64_const(in_word)
+        .i64_and()
+        .local_tee(word.shift)
+        .i64_const(bytes.into())
+        .i64_add()
+        .i64_const(QWORD.into())
+        .i64_gt_u()
+        .local_set(word.crosses)
+        .local_get(word.shift)
+        .i64_const(u8::BITS.trailing_zeros().into())
+        .i64_shl()
+        .local_set(word.shift)
+        .local_get(word.word)
+        .i64_const(!in_word)
+        .i64_and()
+        .local_set(word.word);
+    word
+}
+
+/// Push the i64 of `bytes` bytes of a misaligned access, read by an atomic load of each word it lies in, lowest
+/// address first.
+fn misaligned_load(
     s: &mut InstructionSink<'_>,
+    kind: OrderedAccess,
+    word: &Misaligned,
+    bytes: u32,
+) {
+    s.local_get(word.word)
+        .i64_atomic_load(ordered_memory(kind, 0, QWORD))
+        .local_get(word.shift)
+        .i64_shr_u()
+        .local_get(word.crosses)
+        .if_(BlockType::Result(ValType::I64))
+        .local_get(word.word)
+        .i64_atomic_load(ordered_memory(kind, QWORD.into(), QWORD))
+        .i64_const(u64::BITS.into())
+        .local_get(word.shift)
+        .i64_sub()
+        .i64_shl()
+        .else_()
+        .i64_const(0)
+        .end()
+        .i64_or();
+    narrow(s, bytes);
+}
+
+/// Push the word `seen` with the bytes of a misaligned access that lie in it replaced by those of the i64 local
+/// `value`: of the first word, or of the next when `next`.
+fn merged(
+    s: &mut InstructionSink<'_>,
+    word: &Misaligned,
+    (seen, value): (u32, u32),
+    bytes: u32,
+    next: bool,
+) {
+    let field = mask((bytes * u8::BITS) as u8);
+    // The bytes of the access in the word, as a mask and then as the value.
+    for part in [Some(field), None] {
+        match part {
+            Some(field) => s.i64_const(field),
+            None => s.local_get(value),
+        };
+        if part.is_none() {
+            narrow(s, bytes);
+        }
+        if next {
+            s.i64_const(u64::BITS.into())
+                .local_get(word.shift)
+                .i64_sub()
+                .i64_shr_u();
+        } else {
+            s.local_get(word.shift).i64_shl();
+        }
+        if part.is_some() {
+            s.i64_const(-1).i64_xor().local_get(seen).i64_and();
+        }
+    }
+    s.i64_or();
+}
+
+/// Store the low `bytes` bytes of the i64 local `value` in the words a misaligned access lies in, lowest address
+/// first: each word by a compare and exchange of the word as read with it changed only in those bytes, retried
+/// when another thread changed the word meanwhile.
+fn misaligned_store<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
+    kind: OrderedAccess,
+    word: &Misaligned,
+    bytes: u32,
+    value: u32,
+) {
+    let seen = e.local(ValType::I64);
+    let mut s = e.sink();
+    for next in [false, true] {
+        let past = if next { u64::from(QWORD) } else { 0 };
+        let m = ordered_memory(kind, past, QWORD);
+        if next {
+            s.local_get(word.crosses).if_(BlockType::Empty);
+        }
+        s.loop_(BlockType::Empty)
+            .local_get(word.word)
+            .local_get(word.word)
+            .i64_atomic_load(m)
+            .local_tee(seen);
+        merged(&mut s, word, (seen, value), bytes, next);
+        s.i64_atomic_rmw_cmpxchg(MemArg {
+            ordering: kind.read_modify_write_ordering(),
+            ..m
+        })
+        .local_get(seen)
+        .i64_ne()
+        .br_if(0)
+        .end();
+        if next {
+            s.end();
+        }
+    }
+}
+
+/// Push the i64 of `bytes` bytes at `at` plus `offset` read by ordered accesses: one of its width where it is
+/// aligned (WebAssembly's atomic accesses trap where it is not), else through the words that hold it.
+fn ordered_load<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
     kind: OrderedAccess,
     at: u32,
     offset: u64,
@@ -388,10 +581,11 @@ fn ordered_load(
 ) {
     let m = ordered_memory(kind, offset, bytes);
     if bytes == BYTE {
-        s.local_get(at).i64_atomic_load8_u(m);
+        e.sink().local_get(at).i64_atomic_load8_u(m);
         return;
     }
-    aligned(s, at, offset, bytes);
+    let mut s = e.sink();
+    aligned(&mut s, at, offset, bytes);
     s.if_(BlockType::Result(ValType::I64)).local_get(at);
     match bytes {
         WORD => s.i64_atomic_load16_u(m),
@@ -399,20 +593,16 @@ fn ordered_load(
         _ => s.i64_atomic_load(m),
     };
     s.else_();
-    for byte in 0..bytes {
-        let m = ordered_memory(kind, offset + u64::from(byte), BYTE);
-        s.local_get(at).i64_atomic_load8_u(m);
-        if byte > 0 {
-            s.i64_const(i64::from(byte * u8::BITS)).i64_shl().i64_or();
-        }
-    }
+    let word = misaligned(e, at, offset, bytes);
+    let mut s = e.sink();
+    misaligned_load(&mut s, kind, &word, bytes);
     s.end();
 }
 
 /// Store the low `bytes` bytes of the i64 local `value` at `at` plus `offset` by ordered accesses, as
 /// [`ordered_load`] reads them.
-fn ordered_store(
-    s: &mut InstructionSink<'_>,
+fn ordered_store<E: Emitter<X86_64> + ?Sized>(
+    e: &mut E,
     kind: OrderedAccess,
     at: u32,
     offset: u64,
@@ -421,10 +611,11 @@ fn ordered_store(
 ) {
     let m = ordered_memory(kind, offset, bytes);
     if bytes == BYTE {
-        s.local_get(at).local_get(value).i64_atomic_store8(m);
+        e.sink().local_get(at).local_get(value).i64_atomic_store8(m);
         return;
     }
-    aligned(s, at, offset, bytes);
+    let mut s = e.sink();
+    aligned(&mut s, at, offset, bytes);
     s.if_(BlockType::Empty).local_get(at).local_get(value);
     match bytes {
         WORD => s.i64_atomic_store16(m),
@@ -432,15 +623,9 @@ fn ordered_store(
         _ => s.i64_atomic_store(m),
     };
     s.else_();
-    for byte in 0..bytes {
-        let m = ordered_memory(kind, offset + u64::from(byte), BYTE);
-        s.local_get(at).local_get(value);
-        if byte > 0 {
-            s.i64_const(i64::from(byte * u8::BITS)).i64_shr_u();
-        }
-        s.i64_atomic_store8(m);
-    }
-    s.end();
+    let word = misaligned(e, at, offset, bytes);
+    misaligned_store(e, kind, &word, bytes, value);
+    e.sink().end();
 }
 
 /// The segment base an operand adds: FS or GS, or none (the others are zero in 64-bit mode).

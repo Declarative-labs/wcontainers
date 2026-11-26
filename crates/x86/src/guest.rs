@@ -100,7 +100,7 @@ pub enum Reason {
     X87InSoftware,
     BitDepositOrExtractInSoftware,
     HalfPrecisionInSoftware,
-    LockedAccessNotAligned,
+    LockedAccessNeedsGroupStop,
 }
 
 /// The thread state the float hook works on: MXCSR in the block to the end of the private words.
@@ -623,8 +623,8 @@ impl Guest for X86_64 {
             "half precision rounding in software: vcvtps2ph, which WebAssembly has no operation for",
         ),
         (
-            Reason::LockedAccessNotAligned,
-            "locked access not aligned to its size, made as ordered accesses that another thread may see between",
+            Reason::LockedAccessNeedsGroupStop,
+            "locked access across an 8-byte word or of 16 bytes: the process's other threads are held while it runs",
         ),
     ];
 
