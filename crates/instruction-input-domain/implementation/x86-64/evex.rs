@@ -1431,7 +1431,8 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
     .unwrap_or_else(|error| panic!("{code:?} takes its operands: {error}"));
     if mask.register != 0 {
         encoded.set_op_mask(to_opmask_register(mask.register));
-        encoded.set_zeroing_masking(mask.zeroing && code.op_code().can_use_zeroing_masking());
+        // A store into memory cannot zero, which would be another instruction's encoding: none.
+        encoded.set_zeroing_masking(mask.zeroing && code.op_code().can_use_zeroing_masking() && !form.stores());
     }
     match control {
         EmbeddedControl::None => {}
