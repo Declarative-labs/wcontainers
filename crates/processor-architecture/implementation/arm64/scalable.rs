@@ -128,6 +128,9 @@ pub fn is_unallocated(instruction: Instruction<Infallible>, word: u32) -> bool {
         .is_some_and(|operation| to_element_bits(operation, word).is_none())
         || crate::load_store::scalable_access::to_scalable_access(instruction)
             .is_some_and(|access| access.to_element_bits(word).is_none())
+        || crate::sve_remaining::to_remaining_operation(instruction).is_some_and(|operation| {
+            crate::sve_remaining::to_element_bits(operation, word).is_none()
+        })
 }
 
 const fn to_permute_operation(instruction: Instruction<Infallible>) -> Option<PermuteOperation> {

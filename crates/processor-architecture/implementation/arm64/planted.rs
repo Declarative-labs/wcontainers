@@ -25,6 +25,8 @@ pub enum PlantedBy {
     /// The modeling of the cryptography, pointer authentication, memory tagging, structure loads and stores and the
     /// system instructions left after the sync.
     RestOfTheSet,
+    /// The SVE floating-point and SVE2 instructions of `sve_remaining`, whose bugs are numbered from 3001.
+    ScalableRemaining,
 }
 
 /// One planted bug: its number, the instruction whose states must catch it, and what it does.

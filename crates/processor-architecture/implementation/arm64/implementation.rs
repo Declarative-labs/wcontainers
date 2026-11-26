@@ -44,6 +44,10 @@ mod sve_count;
 mod sve_element;
 mod sve_move;
 mod sve_predicate;
+pub mod sve_remaining;
+pub mod sve_remaining_floating_point;
+pub mod sve_remaining_integer;
+mod sve_remaining_planted;
 #[cfg(test)]
 mod sve_tests;
 pub mod system_register;
