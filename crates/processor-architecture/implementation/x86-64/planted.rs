@@ -765,6 +765,10 @@ pub enum Bug {
     OrderedComparisonQuietNaNValid,
     /// FIST rounds a half away from zero, not to even.
     RoundHalfAwayFromZero,
+    /// CALL, RET and JMP m64 go to a target that is not canonical.
+    StackBranchToNonCanonical,
+    /// RET imm16 releases nothing beyond the return address.
+    ReturnReleasesBeforePop,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1109,6 +1113,8 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::X87OverflowBeforeUnderflow, "FLD ST(i)", Family::Forms(&[Instruction::FldSt0X87]), Origin::IntegerX87Mmx),
     row(Bug::LoadFloatPushesDespiteUnmasked, "FLD m32, m64", Family::Forms(&[Instruction::FldSt0Memmem32real, Instruction::FldSt0Memm64real]), Origin::IntegerX87Mmx),
     row(Bug::OrderedComparisonQuietNaNValid, "FCOM", Family::Forms(&[Instruction::FcomSt0X87, Instruction::FcomSt0Memm64real, Instruction::Ftst]), Origin::IntegerX87Mmx),
+    row(Bug::StackBranchToNonCanonical, "CALL, RET, JMP m64", Family::Forms(&[Instruction::CallNearGprv, Instruction::RetNear, Instruction::JmpMemv]), Origin::IntegerX87Mmx),
+    row(Bug::ReturnReleasesBeforePop, "RET imm16", Family::Forms(&[Instruction::RetNearImmw]), Origin::IntegerX87Mmx),
     row(Bug::RoundHalfAwayFromZero, "FIST", Family::Forms(&[Instruction::FistMemmem16intSt0, Instruction::FistpMemm64intSt0]), Origin::IntegerX87Mmx),
     row(Bug::ExtendedStoreWhole, "FSTP m80", Family::Forms(&[Instruction::FstpMemmem80realSt0]), Origin::IntegerX87Mmx),
     row(Bug::ExtendedAlignmentUnchecked, "FLD m80, FSTP m80", Family::Forms(&[Instruction::FldSt0Memmem80real, Instruction::FstpMemmem80realSt0]), Origin::IntegerX87Mmx),

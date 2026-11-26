@@ -27,6 +27,7 @@ use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::extension::find_extension_form;
 use wcontainers_processor_architecture_x86_64::fixed::find_fixed_form;
 use wcontainers_processor_architecture_x86_64::mmx::find_mmx_form;
+use wcontainers_processor_architecture_x86_64::stack::find_stack_form;
 use wcontainers_processor_architecture_x86_64::x87::find_x87_form;
 use wcontainers_processor_architecture_x86_64::integer::find_integer_form;
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
@@ -43,6 +44,7 @@ pub mod fixed;
 pub mod float;
 pub mod integer;
 pub mod mmx;
+pub mod stack;
 pub mod x87;
 pub mod vector;
 #[cfg(test)]
@@ -169,6 +171,8 @@ pub enum OperandType {
     X87Stack,
     /// The value of ST(0) (the destination) or ST(i) (the source) of an x87 form, or of its memory operand.
     X87Value(Role, x87::X87ValueSet),
+    /// The segment register MOV reads.
+    SegmentRegister,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -239,6 +243,9 @@ pub enum ValueSet {
     SingleFloat,
     /// The same in double precision.
     DoubleFloat,
+    /// A near branch's target: canonical in the lower half, the first address past it, canonical in the upper half,
+    /// and the last address of the lower half.
+    Target,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -332,6 +339,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         if let Some(form) = find_x87_form(instruction) {
             return x87::list_operand_types(form).into_iter();
         }
+        if let Some(form) = find_stack_form(instruction) {
+            return stack::list_operand_types(form).into_iter();
+        }
         if let Some(form) = find_vector_form(instruction) {
             return vector::list_operand_types(form).into_iter();
         }
@@ -412,6 +422,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
                         bits(&values)
                     }
                     ValueSet::ControlWord => bits(&[0x037F, 0x0000, 0xFFFF, 0x1F7F, 0x0C7E, 0x027F, 0x0040]),
+                    ValueSet::Target => bits(&[CODE_ADDRESS + 0x123, 1 << 47, 0xFFFF_8000_0000_0000, (1 << 47) - 1]),
                     ValueSet::SingleFloat => bits(&[
                         0, 0x8000_0000, 0x3F80_0000, 0xBFC0_0000, 1, 0x007F_FFFF, 0x0080_0000, 0x7F7F_FFFF, 0x7F80_0000,
                         0xFF80_0000, 0x7FC0_0001, 0x7FA0_0001, 0x4000_0000,
@@ -545,6 +556,7 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::MmxValue(_, values) => mmx::generate_mmx_values(values),
             OperandType::X87Environment => mmx::X87_ENVIRONMENTS.map(OperandValue::X87).to_vec(),
             OperandType::StackRegister => x87::STACK_INDICES.map(OperandValue::Register).to_vec(),
+            OperandType::SegmentRegister => stack::SEGMENT_NUMBERS.map(OperandValue::Register).to_vec(),
             OperandType::X87Stack => x87::X87_STACKS.map(OperandValue::X87Stack).to_vec(),
             OperandType::X87Value(_, set) => x87::generate_x87_values(set),
         };
@@ -586,6 +598,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
         }
         if let Some(form) = find_x87_form(instruction) {
             return x87::build_state(form, &typed);
+        }
+        if let Some(form) = find_stack_form(instruction) {
+            return stack::build_state(form, &typed);
         }
         if let Some(form) = find_vector_form(instruction) {
             return vector::build_state(form, &typed);
@@ -761,6 +776,7 @@ fn is_modeled(instruction: Instruction) -> bool {
         || find_fixed_form(instruction).is_some()
         || find_mmx_form(instruction).is_some()
         || find_x87_form(instruction).is_some()
+        || find_stack_form(instruction).is_some()
         || find_vector_form(instruction).is_some()
         || find_float_form(instruction).is_some()
         || find_branch_form(instruction).is_some()

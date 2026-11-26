@@ -45,6 +45,7 @@ use wcontainers_processor_architecture::ExecutionState;
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::extension::{ExtensionForm, find_extension_form};
 use wcontainers_processor_architecture_x86_64::mmx::find_mmx_form;
+use wcontainers_processor_architecture_x86_64::stack::{StackForm, find_stack_form};
 use wcontainers_processor_architecture_x86_64::x87::find_x87_form;
 use wcontainers_processor_architecture_x86_64::integer::{OperandPlace, find_integer_form};
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
@@ -224,6 +225,9 @@ fn find_access_shape(instruction: Instruction) -> Option<AccessShape> {
     if let Some(form) = find_x87_form(instruction) {
         return form.has_memory_operand().then_some(AccessShape { write: form.writes_memory(), alignment: None });
     }
+    if let Some(form) = find_stack_form(instruction) {
+        return (form.place != OperandPlace::Register).then_some(AccessShape { write: form.writes_memory(), alignment: None });
+    }
     if let Some(form) = find_extension_form(instruction) {
         return (form.place != OperandPlace::Register).then_some(AccessShape {
             write: form.writes_memory(),
@@ -271,6 +275,14 @@ fn find_access_bytes(instruction: Instruction, operands: &[Option<OperandValue>]
     }
     if let Some(form) = find_x87_form(instruction) {
         return form.memory_bytes();
+    }
+    if let Some(form) = find_stack_form(instruction) {
+        let code = match size {
+            Some(OperandSize::Bits64) => form.codes[form.codes.len() - 1],
+            Some(OperandSize::Bits32) if form.codes.len() == 3 => form.codes[1],
+            _ => form.codes[0],
+        };
+        return StackForm::to_memory_bytes(code);
     }
     if let Some(form) = find_extension_form(instruction) {
         let code = match size {

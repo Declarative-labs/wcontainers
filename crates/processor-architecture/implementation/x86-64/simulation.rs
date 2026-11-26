@@ -47,6 +47,8 @@ mod fixed_simulation;
 mod mmx_simulation;
 #[path = "x87_simulation.rs"]
 mod x87_simulation;
+#[path = "stack_simulation.rs"]
+mod stack_simulation;
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
 #[derive(Clone, Copy)]
@@ -101,8 +103,8 @@ fn simulate_processor(
     match apply(behavior, &mut changed, memory, &decoded, on_memory_mutated) {
         Ok(()) => {
             *processor = changed;
-            // A jump leaves the instruction pointer where it goes.
-            if !matches!(behavior, PreciseInstruction::Branch(_)) {
+            // A jump leaves the instruction pointer where it goes, as the stack forms leave it themselves.
+            if !matches!(behavior, PreciseInstruction::Branch(_) | PreciseInstruction::Stack { .. }) {
                 processor.instruction_pointer = decoded.next_ip();
             }
             processor.exception = None;
@@ -204,6 +206,9 @@ fn apply(
             }
         }
         PreciseInstruction::Fixed(instruction) => fixed_simulation::execute_fixed(instruction, processor, memory, decoded),
+        PreciseInstruction::Stack { instruction, behavior } => {
+            stack_simulation::execute_stack(instruction, behavior, processor, memory, decoded, on_memory_mutated)
+        }
         PreciseInstruction::X87 { instruction, behavior } => {
             x87_simulation::execute_x87(instruction, behavior, processor, memory, decoded, on_memory_mutated)
         }

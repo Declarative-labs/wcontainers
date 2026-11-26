@@ -1023,7 +1023,9 @@ fn check_steppable(processor: &Processor, memory: &[MemoryDelta<'_, X86_64>]) ->
                 | OpKind::MemoryESRDI
         )
     });
+    // PUSH FS and PUSH GS name the register they read first.
     let writes_segment = decoded.op_count() > 0
+        && decoded.mnemonic() != Mnemonic::Push
         && decoded.op0_kind() == OpKind::Register
         && decoded.op0_register().is_segment_register();
     let far = matches!(

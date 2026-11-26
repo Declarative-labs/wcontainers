@@ -40,6 +40,7 @@ pub mod memory;
 pub mod mmx;
 pub mod planted;
 mod simulation;
+pub mod stack;
 pub mod vector;
 pub mod x87;
 #[cfg(test)]
@@ -139,6 +140,7 @@ pub fn list_modeled_forms() -> Vec<Instruction> {
         .chain(fixed::FIXED_FORMS.iter().map(|form| form.instruction))
         .chain(mmx::MMX_FORMS.iter().map(|form| form.instruction))
         .chain(x87::X87_FORMS.iter().map(|form| form.instruction))
+        .chain(stack::STACK_FORMS.iter().map(|form| form.instruction))
         .collect()
 }
 
@@ -355,6 +357,11 @@ pub enum PreciseInstruction {
     Undefined(Instruction),
     /// A form of [`fixed::FIXED_FORMS`].
     Fixed(Instruction),
+    /// A form of [`stack::STACK_FORMS`].
+    Stack {
+        instruction: Instruction,
+        behavior: stack::StackBehavior,
+    },
     /// A form of [`x87::X87_FORMS`].
     X87 {
         instruction: Instruction,
