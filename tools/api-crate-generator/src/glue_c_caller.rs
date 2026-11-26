@@ -13,7 +13,7 @@
 //! `crates/direct3d-11/implementation/direct/c-caller`, with a Rust test that serves the hostile implementation's
 //! exports to it under a lie picked per round.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::Path;
 
@@ -26,8 +26,22 @@ const MOST: u64 = 1 << 16;
 
 /// What one run counts, in the order the C writes them.
 const COUNTED: [&str; 19] = [
-    "calls", "absent", "skipped", "succeeded", "failed", "adopted", "released", "stale_this", "wrong_this", "null_this", "garbage_this", "big_counts", "past_limit", "null_pointers", "exports_called", "query_interfaces", "query_left_pointer", "refused", "refused_wrong",
+    "calls", "swept", "skipped", "succeeded", "failed", "adopted", "released", "stale_this", "wrong_this", "null_this", "garbage_this", "big_counts", "past_limit", "null_pointers", "exports_called", "query_interfaces", "query_left_pointer", "refused", "refused_wrong",
 ];
+
+/// Whether a glued entry takes the id of the interface it hands out (`REFIID riid, void** ppv`).
+fn takes_riid(glued: &Glued) -> bool {
+    glued.parts.iter().any(|(_, part)| matches!(part, Part::Riid | Part::InterfaceOut { .. }))
+}
+
+/// What the C caller can come to hold, worked out from what each entry and export it calls hands out: the cases of an
+/// interface no object it can hold answers are never reached, whatever the run.
+struct Reach {
+    /// Per case, whether some object the caller can hold answers its interface.
+    reachable: Vec<bool>,
+    /// The interfaces of the cases never reachable, by name.
+    unreachable_interfaces: BTreeSet<String>,
+}
 
 /// The C type of a Rust C-side type the glue's `c_signature` names.
 fn c_type(rust: &str) -> &'static str {
@@ -53,6 +67,16 @@ fn c_type(rust: &str) -> &'static str {
         super::GUID_ABI => "GuidAbi",
         _ => "",
     }
+}
+
+/// The C caller written: its source, the exports in C's order (API, field), the entries and exports it calls, each
+/// case's name (`Interface::Method`) and what it can reach.
+struct Caller {
+    c: String,
+    exports: Vec<(usize, String)>,
+    called: usize,
+    case_names: Vec<String>,
+    reach: Reach,
 }
 
 /// The C caller's view of the set: every interface, its id, base and table, and the exports.
@@ -232,8 +256,9 @@ impl Writer<'_, '_> {
         Ok(text)
     }
 
-    /// The C caller's source, the exports' fields in the order C takes them, and how many entries it calls.
-    fn c_caller(&self, plan: &Plan) -> Result<(String, Vec<(usize, String)>, usize), String> {
+    /// The C caller's source, the exports' fields in the order C takes them, how many entries it calls, the cases'
+    /// names and what it can reach.
+    fn c_caller(&self, plan: &Plan) -> Result<Caller, String> {
         let g = self.g;
         let mut c = String::new();
         let _ = writeln!(c, "/* {HEADER}\n   The hostile C caller (tools/api-crate-generator/src/glue_c_caller.rs). */\n");
@@ -261,6 +286,12 @@ impl Writer<'_, '_> {
         let mut cases = String::new();
         let mut case = 0_usize;
         let mut case_interface: Vec<usize> = Vec::new();
+        let mut case_names: Vec<String> = Vec::new();
+        let mut case_makes: Vec<Vec<usize>> = Vec::new();
+        let mut case_riid: Vec<bool> = Vec::new();
+        let mut case_object_out: Vec<bool> = Vec::new();
+        let mut export_riid: Vec<bool> = Vec::new();
+        let mut export_makes: Vec<usize> = Vec::new();
         let mut called = 0_usize;
         let saved = self.not_glued.borrow().len();
         for (interface_index, key) in plan.interfaces.iter().enumerate() {
@@ -272,8 +303,13 @@ impl Writer<'_, '_> {
                 }
                 let place = 3 + position;
                 let _ = writeln!(cases, "    case {case}: {{ /* {}::{} */", key.1, slot.method.name);
-                let _ = writeln!(cases, "        void *this = pick_this(s, right);");
+                // Reached: the entry called with `this` the object whose table it is in.
+                let _ = writeln!(cases, "        void *this = pick_this(s, right);\n        if (this == right) s->reached[{case}]++;");
                 case_interface.push(interface_index);
+                case_names.push(format!("{}::{}", key.1, slot.method.name));
+                case_makes.push(slot.glued.as_ref().map(|glued| self.kinds_made(glued, g.interface_api[key])).unwrap_or_default());
+                case_riid.push(slot.glued.as_ref().is_some_and(takes_riid));
+                case_object_out.push(slot.glued.as_ref().is_some_and(|glued| glued.parts.iter().any(|(_, part)| matches!(part, Part::ObjectOut { .. } | Part::ObjectsOut { .. }))));
                 match &slot.glued {
                     Some(glued) => {
                         cases.push_str(&self.c_call(plan, glued, slot.method, &format!("(*(void ***)right)[{place}]"), Some("this"))?);
@@ -299,6 +335,8 @@ impl Writer<'_, '_> {
             self.current.set(api);
             for function in self.export_functions(api) {
                 let Ok(glued) = self.glue_of(function, &function.name) else { continue };
+                export_makes.extend(self.kinds_made(&glued, api));
+                export_riid.push(takes_riid(&glued));
                 let at = exports.len();
                 let _ = writeln!(export_cases, "    case {at}: {{ /* {} */", function.name);
                 export_cases.push_str(&self.c_call(plan, &glued, function, &format!("exports[{at}]"), None)?);
@@ -308,7 +346,12 @@ impl Writer<'_, '_> {
             }
         }
         self.not_glued.borrow_mut().truncate(saved);
+        let reach = self.reach(plan, &case_interface, &case_makes, &export_makes);
         let _ = writeln!(c, "#define CASES {case}\n#define EXPORTS {}\n", exports.len());
+        let interfaces_of_cases: Vec<String> = case_interface.iter().map(ToString::to_string).collect();
+        let _ = writeln!(c, "/* The interface each case's entry is in. */\nstatic const uint16_t CASE_INTERFACE[CASES ? CASES : 1] = {{{}}};\n", if interfaces_of_cases.is_empty() { "0".to_string() } else { interfaces_of_cases.join(", ") });
+        let flags = |takes: &[bool]| if takes.is_empty() { "0".to_string() } else { takes.iter().map(|takes| if *takes { "1" } else { "0" }).collect::<Vec<_>>().join(", ") };
+        let _ = writeln!(c, "/* Whether each case, and each export, takes the id of the interface it hands out. */\nstatic const uint8_t CASE_RIID[CASES ? CASES : 1] = {{{}}};\nstatic const uint8_t EXPORT_RIID[EXPORTS ? EXPORTS : 1] = {{{}}};\n/* Whether each case hands out an object of a kind its parameters do not name by id. */\nstatic const uint8_t CASE_MAKES[CASES ? CASES : 1] = {{{}}};\n", flags(&case_riid), flags(&export_riid), flags(&case_object_out));
         // For each interface, the cases an object obtained as it may be called with: its own slots and its bases'.
         for (interface_index, _) in plan.interfaces.iter().enumerate() {
             let mut ancestors = vec![interface_index];
@@ -329,9 +372,82 @@ impl Writer<'_, '_> {
         let _ = writeln!(c, "static const uint16_t *const CASES_OF[INTERFACES] = {{{}}};\nstatic const uint32_t CASE_COUNT[INTERFACES] = {{{}}};\n", of.join(", "), counts.join(", "));
         c.push_str(C_RUN);
         let _ = writeln!(c, "static void call_slot(State *s, uint64_t which, void *right) {{\n    switch (which) {{\n{cases}    default: break;\n    }}\n}}\n");
-        let _ = writeln!(c, "static void call_export(State *s, const uintptr_t *exports, uint64_t which) {{\n    switch (which) {{\n{export_cases}    default: (void)exports; break;\n    }}\n}}\n");
+        let _ = writeln!(c, "static void call_export(State *s, const uintptr_t *exports, uint64_t which) {{\n    if (which < EXPORTS) s->reached[CASES + which]++;\n    switch (which) {{\n{export_cases}    default: (void)exports; break;\n    }}\n}}\n");
         c.push_str(C_RUN_ENTRY);
-        Ok((c, exports, called))
+        Ok(Caller { c, exports, called, case_names, reach })
+    }
+
+    /// The kinds of object a glued entry or export of `api` can hand out: its objects out, and for an interface asked
+    /// by its id any kind of the API (the API's `UnknownObject`, asked for that id).
+    fn kinds_made(&self, glued: &Glued, api: usize) -> Vec<usize> {
+        let mut made = Vec::new();
+        for (_, part) in &glued.parts {
+            match part {
+                Part::ObjectOut { kinds, .. } => made.extend(kinds.iter().copied()),
+                Part::ObjectsOut { kind, .. } => made.push(*kind),
+                Part::InterfaceOut { .. } => {
+                    made.extend(self.g.kinds.iter().enumerate().filter(|(_, kind)| kind.api == api).map(|(index, _)| index));
+                }
+                // A bound object is of the kind an API built on this one binds to it (an exception line).
+                Part::BoundOut { name } => {
+                    for spec in self.g.apis {
+                        for exception in spec.exceptions {
+                            if let crate::api::Exception::Binds { api: bound_api, name: bound, kind } = exception
+                                && *bound_api == self.g.apis[api].folder
+                                && bound == name
+                                && let Some(kind_key) = self.g.interface_api.keys().find(|key| key.1 == *kind)
+                                && let Some(&index) = self.g.kind_of.get(kind_key)
+                            {
+                                made.push(index);
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        made
+    }
+
+    /// The interfaces an object of `kind` answers by QueryInterface: its own chain with every base, and its faces'.
+    fn answered(&self, plan: &Plan, kind: usize) -> BTreeSet<usize> {
+        let g = self.g;
+        let k = &g.kinds[kind];
+        let mut keys: BTreeSet<Key> = k.ancestors.clone();
+        if let Some((_, faces)) = g.apis[k.api].faces.iter().find(|(root, _)| *root == k.root.1) {
+            for face in *faces {
+                if let Some(face_key) = g.interface_api.keys().find(|key| key.1 == *face) {
+                    keys.extend(g.bases_of(face_key));
+                }
+            }
+        }
+        keys.iter().filter_map(|key| plan.index.get(key).copied()).collect()
+    }
+
+    /// From the exports, what the caller can come to hold: every interface of every kind made, and what the entries of
+    /// those interfaces make in turn, until nothing more is made.
+    fn reach(&self, plan: &Plan, case_interface: &[usize], case_makes: &[Vec<usize>], export_makes: &[usize]) -> Reach {
+        let g = self.g;
+        let is_a = |have: usize, want: usize| g.bases_of(&plan.interfaces[have]).iter().any(|base| plan.index.get(base) == Some(&want));
+        let mut made: BTreeSet<usize> = export_makes.iter().copied().collect();
+        let mut held: BTreeSet<usize> = BTreeSet::new();
+        loop {
+            let before = (made.len(), held.len());
+            for &kind in &made {
+                held.extend(self.answered(plan, kind));
+            }
+            for (case, &interface) in case_interface.iter().enumerate() {
+                if held.iter().any(|&have| is_a(have, interface)) {
+                    made.extend(case_makes[case].iter().copied());
+                }
+            }
+            if (made.len(), held.len()) == before {
+                break;
+            }
+        }
+        let reachable: Vec<bool> = case_interface.iter().map(|&interface| held.iter().any(|&have| is_a(have, interface))).collect();
+        let unreachable_interfaces = case_interface.iter().zip(&reachable).filter(|(_, reached)| !**reached).map(|(&interface, _)| plan.interfaces[interface].1.clone()).collect();
+        Reach { reachable, unreachable_interfaces }
     }
 
     /// The exports of `api` the serving glue writes, as write_direct selects them.
@@ -402,7 +518,26 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
     let interfaces: Vec<Key> = g.interface_api.keys().filter(|key| g.read.interfaces.contains_key(*key)).cloned().collect();
     let index: BTreeMap<Key, usize> = interfaces.iter().enumerate().map(|(at, key)| (key.clone(), at)).collect();
     let plan = Plan { interfaces, index };
-    let (c, exports, called) = writer.c_caller(&plan)?;
+    let Caller { c, exports, called, case_names, reach } = writer.c_caller(&plan)?;
+    // The interfaces no object the caller can hold answers must be exactly those src/api.rs names, each with its reason.
+    let sliced = g.apis.iter().any(|api| !api.only.is_empty());
+    let listed: &[(&str, &str)] = if sliced { crate::api::UNREACHABLE_IN_SLICE } else { crate::api::UNREACHABLE_IN_WHOLE };
+    let listed_names: BTreeSet<String> = listed.iter().map(|(name, _)| (*name).to_string()).collect();
+    if listed_names != reach.unreachable_interfaces {
+        return Err(format!(
+            "C CALLER REACH: the interfaces no object the caller can hold answers are {:?}; src/api.rs lists {:?}",
+            reach.unreachable_interfaces, listed_names
+        ));
+    }
+    let unreachable: Vec<(String, &str)> = case_names
+        .iter()
+        .zip(&reach.reachable)
+        .filter(|(_, reachable)| !**reachable)
+        .map(|(name, _)| {
+            let interface = name.split("::").next().unwrap_or_default();
+            (name.clone(), listed.iter().find(|(listed, _)| *listed == interface).map_or("", |(_, why)| *why))
+        })
+        .collect();
     let folder = crates.join(g.apis[d3d11].folder).join("implementation").join("direct").join("c-caller");
     std::fs::create_dir_all(folder.join("tests")).map_err(|error| format!("{}: {error}", folder.display()))?;
     std::fs::write(folder.join("caller.c"), c).map_err(|error| error.to_string())?;
@@ -424,7 +559,18 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
     let _ = writeln!(lib, "/// What one run counts, in the order the C writes them.\npub const COUNTED: [&str; {}] = [{}];\n", COUNTED.len(), names.join(", "));
     let _ = writeln!(lib, "/// How many exports the C takes.\npub const EXPORTS: usize = {};\n", exports.len());
     let _ = writeln!(lib, "/// How many table entries and exports the C calls.\npub const CALLED: usize = {called};\n");
-    let _ = writeln!(lib, "#[expect(unsafe_code, reason = \"the hostile C caller's one entry, which build.rs compiles\")]\nunsafe extern \"C\" {{\n    fn hostile_c_run(seed: u64, calls: u64, threads: u32, exports: *const usize, count: usize, report: *mut u64) -> i32;\n}}\n");
+    let quoted = |names: &mut dyn Iterator<Item = String>| names.map(|name| format!("    \"{name}\",")).collect::<Vec<_>>().join("\n");
+    let _ = writeln!(lib, "/// Each case of the C, by its place: the table entry it calls, as `Interface::Method`.\npub const CASES: [&str; {}] = [\n{}\n];\n", case_names.len(), quoted(&mut case_names.iter().cloned()));
+    let _ = writeln!(lib, "/// Each export the C calls, by its place after the cases.\npub const EXPORT_NAMES: [&str; {}] = [\n{}\n];\n", exports.len(), quoted(&mut exports.iter().map(|(_, name)| name.clone())));
+    let unreachable_rows: Vec<String> = unreachable.iter().map(|(name, why)| format!("    (\"{name}\", \"{why}\"),")).collect();
+    let _ = writeln!(
+        lib,
+        "/// The cases no object the caller can hold answers, by name, each with why (src/api.rs): never reached, whatever the\n/// run. Every other case and export must be reached.\npub const UNREACHABLE: [(&str, &str); {}] = [\n{}\n];\n",
+        unreachable.len(),
+        unreachable_rows.join("\n")
+    );
+    let _ = writeln!(lib, "/// What one run counted, and how many times it called each case (then each export) on its own object.\npub struct Counted {{\n    /// In the order of `COUNTED`.\n    pub counts: [u64; {}],\n    /// In the order of `CASES`, then `EXPORT_NAMES`.\n    pub reached: Vec<u64>,\n}}\n", COUNTED.len());
+    let _ = writeln!(lib, "#[expect(unsafe_code, reason = \"the hostile C caller's one entry, which build.rs compiles\")]\nunsafe extern \"C\" {{\n    fn hostile_c_run(seed: u64, calls: u64, threads: u32, exports: *const usize, count: usize, report: *mut u64, reached: *mut u64, reached_count: usize) -> i32;\n}}\n");
     let _ = writeln!(lib, "/// The hostile implementation served as the libraries' exports, each as the address C calls, in C's order.\npub fn hostile_exports() -> Vec<usize> {{");
     let mut served: Vec<usize> = exports.iter().map(|(api, _)| *api).collect();
     served.dedup();
@@ -433,10 +579,10 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
     }
     let fields: Vec<String> = exports.iter().map(|(api, name)| format!("library_{api}.{name} as usize")).collect();
     let _ = writeln!(lib, "    vec![{}]\n}}\n", fields.join(", "));
-    let _ = writeln!(lib, "/// Runs `calls` calls on each of `threads` threads of C, from `seed`, over `exports` (C's order); returns what C counted,\n/// or none when C refused the arguments.\npub fn run(seed: u64, calls: u64, threads: u32, exports: &[usize]) -> Option<[u64; {}]> {{", COUNTED.len());
-    let _ = writeln!(lib, "    if exports.len() != EXPORTS {{\n        return None;\n    }}\n    let mut report = [0_u64; {}];", COUNTED.len());
-    let _ = writeln!(lib, "    #[expect(unsafe_code, reason = \"the hostile C caller's entry, given our own serving glue's exports and room for its counts\")]\n    // SAFETY: `hostile_c_run` reads `count` words at `exports`, each the address of an export of the serving glue in the\n    // order caller.c's EXPORTS names them (`hostile_exports`), and writes COUNTED's length of words at `report`.");
-    let _ = writeln!(lib, "    let status = unsafe {{ hostile_c_run(seed, calls, threads, exports.as_ptr(), exports.len(), report.as_mut_ptr()) }};\n    (status == 0).then_some(report)\n}}");
+    let _ = writeln!(lib, "/// Runs `calls` calls on each of `threads` threads of C, from `seed`, over `exports` (C's order); returns what C counted,\n/// or none when C refused the arguments.\npub fn run(seed: u64, calls: u64, threads: u32, exports: &[usize]) -> Option<Counted> {{");
+    let _ = writeln!(lib, "    if exports.len() != EXPORTS {{\n        return None;\n    }}\n    let mut counts = [0_u64; {}];\n    let mut reached = vec![0_u64; CASES.len() + EXPORT_NAMES.len()];", COUNTED.len());
+    let _ = writeln!(lib, "    #[expect(unsafe_code, reason = \"the hostile C caller's entry, given our own serving glue's exports and room for its counts\")]\n    // SAFETY: `hostile_c_run` reads `count` words at `exports`, each the address of an export of the serving glue in the\n    // order caller.c's EXPORTS names them (`hostile_exports`), writes COUNTED's length of words at `report`, and writes\n    // `reached_count` words at `reached`, which it first checks to be its cases and exports.");
+    let _ = writeln!(lib, "    let status = unsafe {{ hostile_c_run(seed, calls, threads, exports.as_ptr(), exports.len(), counts.as_mut_ptr(), reached.as_mut_ptr(), reached.len()) }};\n    (status == 0).then_some(Counted {{ counts, reached }})\n}}");
     std::fs::write(folder.join("lib.rs"), lib).map_err(|error| error.to_string())?;
     let mut manifest = format!(
         "[package]\nname = \"{}-direct-c-caller\"\ndescription = \"The generated hostile C caller over every table of the serving glue, for tests only.\"\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n\n[lib]\npath = \"lib.rs\"\n\n[dependencies]\n",
@@ -456,7 +602,17 @@ pub(in crate::emit) fn write_c_caller(writer: &Writer<'_, '_>, crates: &Path) ->
     }
     manifest.push_str("\n[build-dependencies]\ncc = \"1\"\n\n# Test scaffolding that calls C: it denies unsafe code and marks each use.\n[lints.rust]\nunsafe_code = \"deny\"\nunsafe_op_in_unsafe_fn = \"deny\"\n\n[lints.clippy]\ntype_complexity = \"allow\"\n");
     std::fs::write(folder.join("Cargo.toml"), manifest).map_err(|error| error.to_string())?;
-    Ok(format!("C CALLER: {} interfaces, {called} entries and exports called ({} exports)\n", plan.interfaces.len(), exports.len()))
+    let mut line = format!(
+        "C CALLER: {} interfaces; {} cases and {} exports written ({called} entries and exports); {} cases no object the caller can hold answers, excluded by name (src/api.rs), every other case and export must be reached at run time or its test fails\n",
+        plan.interfaces.len(),
+        case_names.len(),
+        exports.len(),
+        unreachable.len()
+    );
+    for (name, why) in &unreachable {
+        let _ = writeln!(line, "  UNREACHABLE {name}: {why}");
+    }
+    Ok(line)
 }
 
 /// The C caller's fixed part: its random numbers, pools of objects, and the helpers each call uses.
@@ -467,7 +623,7 @@ const C_PRELUDE: &str = r#"#include <pthread.h>
 #include <stdlib.h>
 #include <string.h>
 
-enum { CALLS, ABSENT, SKIPPED, SUCCEEDED, FAILED, ADOPTED, RELEASED, STALE_THIS, WRONG_THIS, NULL_THIS, GARBAGE_THIS, BIG_COUNTS, PAST_LIMIT, NULL_POINTERS, EXPORTS_CALLED, QUERY_INTERFACES, QUERY_LEFT_POINTER, REFUSED, REFUSED_WRONG, COUNTED };
+enum { CALLS, SWEPT, SKIPPED, SUCCEEDED, FAILED, ADOPTED, RELEASED, STALE_THIS, WRONG_THIS, NULL_THIS, GARBAGE_THIS, BIG_COUNTS, PAST_LIMIT, NULL_POINTERS, EXPORTS_CALLED, QUERY_INTERFACES, QUERY_LEFT_POINTER, REFUSED, REFUSED_WRONG, COUNTED };
 
 typedef struct GuidAbi { uint32_t data1; uint16_t data2, data3; uint8_t data4[8]; } GuidAbi;
 
@@ -495,6 +651,12 @@ struct State {
     void *stale[STALE];
     uint32_t stale_at;
     uint64_t counted[COUNTED];
+    /* How many times each case (then each export) was called on its own object. */
+    uint64_t reached[CASES + EXPORTS + 1];
+    /* While sweeping: `this` is always the object whose table is used, and an interface id asked is this one's
+       (when not negative). */
+    int exact;
+    int forced_riid;
 };
 
 static uint64_t next(State *s) {
@@ -603,16 +765,31 @@ static uint8_t *out_bytes_fixed(State *s, uint64_t size) {
     return bytes;
 }
 
+/* A structure in: zeros, words of small values (which a description's ranges let through now and then), or random. */
 static uint8_t *maybe_bytes(State *s, uint64_t size) {
     if (below(s, 16) == 0) { s->counted[NULL_POINTERS]++; return NULL; }
     uint8_t *bytes = malloc(size);
     if (bytes) {
-        if (below(s, 4) == 0) memset(bytes, 0, size); else fill(s, bytes, size);
+        switch (below(s, 4)) {
+        case 0: memset(bytes, 0, size); break;
+        case 1:
+            for (uint64_t at = 0; at < size; at += 4) {
+                uint32_t word = (uint32_t)(below(s, 3) ? 1 + below(s, 4) : below(s, 64));
+                memcpy(bytes + at, &word, size - at < 4 ? size - at : 4);
+            }
+            break;
+        default: fill(s, bytes, size); break;
+        }
     }
     return bytes;
 }
 
 static uint8_t *pick_riid(State *s, int *interface) {
+    if (s->forced_riid >= 0) {
+        uint8_t *forced = malloc(16);
+        if (forced) { memcpy(forced, IIDS[s->forced_riid], 16); *interface = s->forced_riid; }
+        return forced;
+    }
     if (below(s, 32) == 0) { s->counted[NULL_POINTERS]++; return NULL; }
     uint8_t *bytes = malloc(16);
     if (!bytes) return NULL;
@@ -658,6 +835,7 @@ static void *held_as(State *s, int *interface) {
 /* `this`: mostly the object whose table is used, else null, a released object, an object of any kind, or an address
    that is no object (the glue finds its objects by address, never reading one it does not know). */
 static void *pick_this(State *s, void *right) {
+    if (s->exact) return right;
     switch (below(s, 16)) {
     case 0: s->counted[NULL_THIS]++; return NULL;
     case 1: { void *stale = s->stale[below(s, STALE)]; if (stale) { s->counted[STALE_THIS]++; return stale; } return right; }
@@ -727,20 +905,96 @@ static void add_ref_one(State *s) {
 }
 "#;
 
-/// The C caller's entry: threads of rounds.
+/// The C caller's entry: threads of rounds, each begun by sweeps that reach every case some held object answers.
 const C_RUN_ENTRY: &str = r#"
+/* Sweeps at the start of each run: each asks every held kind for every interface it is not yet held as, calls each export
+   and each case that takes an interface id once for every interface not yet held, then calls every case twice on an
+   object held as its interface or one derived from it. A sweep's calls make objects the next one uses; sweeps go on
+   until two in a row hold no new interface. */
+#define SWEEPS 12
+
+static int interfaces_held(State *s) {
+    int held = 0;
+    for (int at = 0; at < INTERFACES; at++) held += s->count[at] != 0;
+    return held;
+}
+
+static void query_every_interface(State *s) {
+    for (int have = 0; have < INTERFACES; have++) {
+        if (!s->count[have]) continue;
+        void *object = s->held[have][0];
+        for (int want = 0; want < INTERFACES; want++) {
+            if (s->count[want] || is_a(have, want)) continue;
+            void *out = NULL;
+            int32_t status = ((Querying)(*(void ***)object)[0])(object, IIDS[want], &out);
+            s->counted[QUERY_INTERFACES]++;
+            if (status >= 0) adopt(s, out, want);
+            else if (out != NULL) s->counted[QUERY_LEFT_POINTER]++;
+        }
+    }
+}
+
+static void sweep(State *s, const uintptr_t *exports) {
+    s->exact = 1;
+    int quiet = 0;
+    for (int pass = 0; pass < SWEEPS && quiet < 2; pass++) {
+        int before = interfaces_held(s);
+        query_every_interface(s);
+        for (uint64_t which = 0; which < EXPORTS; which++) {
+            if (!EXPORT_RIID[which]) continue;
+            for (int want = 0; want < INTERFACES; want++) {
+                if (s->count[want]) continue;
+                s->forced_riid = want;
+                call_export(s, exports, which);
+                s->forced_riid = -1;
+                s->counted[SWEPT]++;
+            }
+        }
+        for (uint64_t which = 0; which < CASES; which++) {
+            void *right = NULL;
+            uint64_t start = below(s, INTERFACES);
+            for (uint64_t step = 0; step < INTERFACES && !right; step++) {
+                uint64_t at = (start + step) % INTERFACES;
+                if (s->count[at] && is_a((int)at, CASE_INTERFACE[which])) right = s->held[at][below(s, s->count[at])];
+            }
+            if (!right) continue;
+            if (CASE_RIID[which]) {
+                for (int want = 0; want < INTERFACES; want++) {
+                    if (s->count[want]) continue;
+                    s->forced_riid = want;
+                    call_slot(s, which, right);
+                    s->forced_riid = -1;
+                    s->counted[SWEPT]++;
+                }
+            }
+            /* A case that makes objects from a description is tried until it hands one out, up to 48 times. */
+            int tries = CASE_MAKES[which] ? 48 : 2;
+            for (int again = 0; again < tries; again++) {
+                uint64_t adopted = s->counted[ADOPTED];
+                call_slot(s, which, right);
+                s->counted[SWEPT]++;
+                if (CASE_MAKES[which] && again >= 1 && s->counted[ADOPTED] > adopted) break;
+            }
+        }
+        quiet = interfaces_held(s) == before ? quiet + 1 : 0;
+    }
+    s->exact = 0;
+}
+
 typedef struct Job { uint64_t seed, calls; const uintptr_t *exports; State *state; } Job;
 
 static void *run_thread(void *argument) {
     Job *job = argument;
     State *s = job->state;
     s->rng = job->seed;
+    s->forced_riid = -1;
     /* The exports first, until some object is held. */
     for (int tries = 0; tries < 4096; tries++) {
         call_export(s, job->exports, below(s, EXPORTS ? EXPORTS : 1));
         s->counted[EXPORTS_CALLED]++;
         if (any_held(s) && tries > 64) break;
     }
+    sweep(s, job->exports);
     for (uint64_t at = 0; at < job->calls; at++) {
         s->counted[CALLS]++;
         uint64_t roll = below(s, 256);
@@ -760,8 +1014,8 @@ static void *run_thread(void *argument) {
     return NULL;
 }
 
-int hostile_c_run(uint64_t seed, uint64_t calls, uint32_t threads, const uintptr_t *exports, size_t count, uint64_t *report) {
-    if (count != EXPORTS || threads == 0 || threads > 64) return 1;
+int hostile_c_run(uint64_t seed, uint64_t calls, uint32_t threads, const uintptr_t *exports, size_t count, uint64_t *report, uint64_t *reached, size_t reached_count) {
+    if (count != EXPORTS || reached_count != CASES + EXPORTS || threads == 0 || threads > 64) return 1;
     pthread_t ids[64];
     Job jobs[64];
     State *states = calloc(threads, sizeof(State));
@@ -774,6 +1028,10 @@ int hostile_c_run(uint64_t seed, uint64_t calls, uint32_t threads, const uintptr
     for (int counted = 0; counted < COUNTED; counted++) {
         report[counted] = 0;
         for (uint32_t at = 0; at < threads; at++) report[counted] += states[at].counted[counted];
+    }
+    for (size_t which = 0; which < reached_count; which++) {
+        reached[which] = 0;
+        for (uint32_t at = 0; at < threads; at++) reached[which] += states[at].reached[which];
     }
     free(states);
     return 0;

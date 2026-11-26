@@ -370,13 +370,16 @@ pub const DIRECT3D_11: Api = Api {
     abstract_bases: &["ID3D11DeviceChild", "ID3D11Resource", "ID3D11View", "ID3D11Asynchronous"],
     depends_on: &["component-object-model", "direct3d-common", "directx-graphics-infrastructure"],
     supertraits: &["direct3d-common", "directx-graphics-infrastructure"],
+    // A resource answers d3dcommon's ID3DDestructionNotifier, which a program asks of it by QueryInterface to learn when
+    // the resource is destroyed (https://learn.microsoft.com/windows/win32/api/d3dcommon/nn-d3dcommon-id3ddestructionnotifier;
+    // which Direct3D 11 objects answer it on Windows is not yet seen there, AC9).
     faces: &[
         ("ID3D11Device", &["IDXGIDevice4", "ID3D11Multithread"]),
         ("ID3D11DeviceContext", &["ID3D11Multithread", "ID3DUserDefinedAnnotation"]),
-        ("ID3D11Buffer", &["IDXGIResource1"]),
-        ("ID3D11Texture1D", &["IDXGIResource1"]),
-        ("ID3D11Texture2D", &["IDXGIResource1", "IDXGISurface2"]),
-        ("ID3D11Texture3D", &["IDXGIResource1"]),
+        ("ID3D11Buffer", &["IDXGIResource1", "ID3DDestructionNotifier"]),
+        ("ID3D11Texture1D", &["IDXGIResource1", "ID3DDestructionNotifier"]),
+        ("ID3D11Texture2D", &["IDXGIResource1", "IDXGISurface2", "ID3DDestructionNotifier"]),
+        ("ID3D11Texture3D", &["IDXGIResource1", "ID3DDestructionNotifier"]),
     ],
     only: &[],
     exceptions: DIRECT3D_11_EXCEPTIONS,
@@ -720,6 +723,23 @@ pub const SETS: &[(&str, &[&Api])] = &[
         "direct3d-11-slice",
         &[&COMPONENT_OBJECT_MODEL, &DIRECT3D_COMMON, &DIRECTX_GRAPHICS_INFRASTRUCTURE_SLICE, &DIRECT3D_11_SLICE],
     ),
+];
+
+/// The interfaces whose entries the hostile C caller of the whole APIs' glue set can never reach, each with why: no
+/// entry or export of the set hands out an object that answers them. The generator works the set out from what each
+/// glued entry hands out and fails when it differs from this list; the C caller's test excludes exactly these cases by
+/// name and fails when any other case or export is never reached.
+pub const UNREACHABLE_IN_WHOLE: &[(&str, &str)] = &[(
+    "ID3DBlob",
+    "a program gets a blob from the shader compiler (d3dcompiler_47.dll: D3DCompile, D3DCreateBlob) or Direct3D 12's serializers, other APIs left out of this set; no method or export of Direct3D 11, DXGI or d3dcommon hands one out, and no object of theirs answers it",
+)];
+
+/// The same for the spike's slice: its methods make devices, contexts, buffers, textures, views, queries and swap
+/// chains only, and its faces leave out the resources' destruction notifier.
+pub const UNREACHABLE_IN_SLICE: &[(&str, &str)] = &[
+    ("ID3DBlob", "no method of the slice hands out a blob (nor of the whole set: see UNREACHABLE_IN_WHOLE)"),
+    ("ID3DDestructionNotifier", "the slice's resources answer no destruction notifier: its faces are the spike's (Multithread on the context, DXGI's surface on a 2D texture)"),
+    ("IDXGIAdapter", "the slice takes an adapter only into D3D11CreateDevice; no method of it hands one out, and its device answers no IDXGIDevice (the spike's faces)"),
 ];
 
 /// Whether a set's direct crates are written: a slice's, and the whole APIs' glue set.
