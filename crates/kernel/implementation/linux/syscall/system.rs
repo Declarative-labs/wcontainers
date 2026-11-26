@@ -1,8 +1,12 @@
-//! Calls about the machine: its name, its memory, randomness and the one CPU.
+//! Calls about the machine: its name, its memory, randomness and its processors.
 
+use crate::linux_extra::{
+    NANOSECONDS_PER_JIFFY, NANOSECONDS_PER_MICROSECOND, NANOSECONDS_PER_MILLISECOND,
+};
 use alloc::vec;
 use alloc::vec::Vec;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
+use wcontainers_executor::Executor;
 
 use super::{Args, guest};
 use crate::counters::reason;
@@ -23,9 +27,9 @@ fn field(text: &[u8]) -> [u8; 65] {
     out
 }
 
-pub(super) fn uname<S: crate::System>(
+pub(super) fn uname<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -57,9 +61,9 @@ pub(super) fn uname<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn sethostname<S: crate::System>(
+pub(super) fn sethostname<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [name, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -67,9 +71,9 @@ pub(super) fn sethostname<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn setdomainname<S: crate::System>(
+pub(super) fn setdomainname<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [name, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -79,9 +83,9 @@ pub(super) fn setdomainname<S: crate::System>(
 
 /// The new name for `sethostname` or `setdomainname`, checked in Linux's order: the power first (a
 /// default container lacks it), then the length, then the bytes.
-fn new_system_name<S: crate::System>(
+fn new_system_name<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     name: u64,
     length: u64,
@@ -99,9 +103,9 @@ fn new_system_name<S: crate::System>(
     guest(kernel, cx, tid).read(name, length as u64)
 }
 
-pub(super) fn sysinfo<S: crate::System>(
+pub(super) fn sysinfo<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -131,9 +135,9 @@ pub(super) fn sysinfo<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn getrandom<S: crate::System>(
+pub(super) fn getrandom<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [buffer, length, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -151,9 +155,9 @@ pub(super) fn getrandom<S: crate::System>(
     super::io::random_bytes(kernel, cx, tid, &[(buffer, length)])
 }
 
-pub(super) fn sched_yield<S: crate::System>(
+pub(super) fn sched_yield<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     _: Args,
 ) -> Result<u64, Errno> {
@@ -161,49 +165,116 @@ pub(super) fn sched_yield<S: crate::System>(
     Ok(0)
 }
 
-/// The guest is told it has one CPU.
-pub(super) fn sched_getaffinity<S: crate::System>(
+/// The bytes of a mask of every processor online (`cpumask_size`): whole words, the processors'
+/// bits set.
+fn online_mask(kernel: &Kernel) -> Vec<u8> {
+    let processors = kernel.machine.processors.get();
+    let word = u64::BITS as usize;
+    (0..processors.div_ceil(word))
+        .flat_map(|index| {
+            let bits = (processors - index * word).min(word);
+            let mask = u64::MAX >> (word - bits);
+            mask.to_le_bytes()
+        })
+        .collect()
+}
+
+/// The processors `task` may run on, as a mask the length of one of every processor online.
+fn affinity(kernel: &Kernel, task: Task) -> Vec<u8> {
+    let set = match task {
+        Task::Thread(tid) => kernel.threads[&tid].affinity.as_deref(),
+        Task::Ended(pid) => kernel.processes[&pid].ended_leader.affinity.as_deref(),
+    };
+    set.map_or_else(|| online_mask(kernel), <[u8]>::to_vec)
+}
+
+pub(super) fn sched_getaffinity<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, size, mask, ..]: Args,
 ) -> Result<u64, Errno> {
-    if size < 8 || size % 8 != 0 {
+    let processors = kernel.machine.processors.get() as u64;
+    if size.saturating_mul(u64::from(u8::BITS)) < processors
+        || !size.is_multiple_of(size_of::<u64>() as u64)
+    {
         return Err(Errno::EINVAL);
     }
     // `find_process_by_pid`: a negative number names no one.
-    scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
-    guest(kernel, cx, tid).write(mask, &1u64.to_le_bytes())?;
-    Ok(8)
+    let target = scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
+    let allowed = affinity(kernel, target);
+    guest(kernel, cx, tid).write(mask, &allowed)?;
+    Ok(allowed.len() as u64)
 }
 
-pub(super) fn sched_setaffinity<S: crate::System>(
+pub(super) fn sched_setaffinity<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, size, mask, ..]: Args,
 ) -> Result<u64, Errno> {
-    // `get_user_cpu_mask` copies the mask in first, at most a word for one CPU.
-    let bytes = guest(kernel, cx, tid).read(mask, size.min(8))?;
+    // `get_user_cpu_mask` copies the mask in first, at most the bytes of a mask of every processor.
+    let length = online_mask(kernel).len() as u64;
+    let asked = guest(kernel, cx, tid).read(mask, size.min(length))?;
     // `find_process_by_pid`: a negative number names no one.
     let target = scheduled(kernel, tid, pid).map_err(|_| Errno::ESRCH)?;
     if !same_owner(kernel, tid, &target) && !kernel.credentials(tid).has(CAP_SYS_NICE) {
         return Err(Errno::EPERM);
     }
-    if bytes.first().is_none_or(|first| first & 1 == 0) {
-        return Err(Errno::EINVAL);
-    }
-    Ok(0)
+    set_affinity(kernel, target, &asked).map(|()| 0)
 }
 
-pub(super) fn getcpu<S: crate::System>(
+/// Lets the thread `tid` run only on the processors online that `asked` names (a mask as
+/// `sched_setaffinity` takes it), as at a container's start.
+pub(crate) fn set_own_affinity(kernel: &mut Kernel, tid: Tid, asked: &[u8]) -> Result<(), Errno> {
+    set_affinity(kernel, Task::Thread(tid), asked)
+}
+
+fn set_affinity(kernel: &mut Kernel, target: Task, asked: &[u8]) -> Result<(), Errno> {
+    let allowed: Vec<u8> = online_mask(kernel)
+        .iter()
+        .zip(asked.iter().chain(core::iter::repeat(&0)))
+        .map(|(online, asked)| online & asked)
+        .collect();
+    // A mask that names no processor online.
+    if allowed.iter().all(|byte| *byte == 0) {
+        return Err(Errno::EINVAL);
+    }
+    let allowed = Some(allowed.into());
+    match target {
+        Task::Thread(tid) => kernel.thread_mut(tid).affinity = allowed,
+        Task::Ended(pid) => {
+            kernel
+                .processes
+                .get_mut(&pid)
+                .expect("process exists")
+                .ended_leader
+                .affinity = allowed;
+        }
+    }
+    Ok(())
+}
+
+/// The processor a thread runs on: the lowest it may run on.
+fn processor(kernel: &Kernel, tid: Tid) -> u32 {
+    affinity(kernel, Task::Thread(tid))
+        .iter()
+        .enumerate()
+        .find(|(_, byte)| **byte != 0)
+        .map_or(0, |(index, byte)| {
+            index as u32 * u8::BITS + byte.trailing_zeros()
+        })
+}
+
+pub(super) fn getcpu<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [cpu, node, ..]: Args,
 ) -> Result<u64, Errno> {
     if cpu != 0 {
-        guest(kernel, cx, tid).put(cpu, &0u32.to_le_bytes())?;
+        let processor = processor(kernel, tid);
+        guest(kernel, cx, tid).put(cpu, &processor.to_le_bytes())?;
     }
     if node != 0 {
         guest(kernel, cx, tid).put(node, &0u32.to_le_bytes())?;
@@ -230,9 +301,9 @@ fn scheduled(kernel: &Kernel, tid: Tid, pid: u64) -> Result<Task, Errno> {
     }
 }
 
-pub(super) fn sched_getscheduler<S: crate::System>(
+pub(super) fn sched_getscheduler<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -246,9 +317,9 @@ pub(super) fn sched_getscheduler<S: crate::System>(
     Ok(u64::from(schedule.policy | reset))
 }
 
-pub(super) fn sched_getparam<S: crate::System>(
+pub(super) fn sched_getparam<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -261,9 +332,9 @@ pub(super) fn sched_getparam<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn sched_setscheduler<S: crate::System>(
+pub(super) fn sched_setscheduler<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, policy, param, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -273,9 +344,9 @@ pub(super) fn sched_setscheduler<S: crate::System>(
     set_schedule(kernel, cx, tid, pid, Some(policy as u32), param)
 }
 
-pub(super) fn sched_setparam<S: crate::System>(
+pub(super) fn sched_setparam<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, param, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -284,9 +355,9 @@ pub(super) fn sched_setparam<S: crate::System>(
 
 /// Linux's `do_sched_setscheduler`: the parameter, the thread, then `__sched_setscheduler` with the
 /// thread's own nice value and time slice.
-fn set_schedule<S: crate::System>(
+fn set_schedule<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     pid: u64,
     policy: Option<u32>,
@@ -330,10 +401,13 @@ fn same_owner(kernel: &Kernel, tid: Tid, target: &Task) -> bool {
 /// The time slice Linux's fair scheduler gives a thread by default (`sysctl_sched_base_slice`): 0.7 ms
 /// scaled by the logarithm of the CPU count, which is one here.
 const BASE_SLICE: u64 = 700_000;
-/// The length of a scheduler tick (`TICK_NSEC`); the reference's kernel ticks 1000 times a second.
-const TICK: u64 = 1_000_000;
+/// The length of a scheduler tick (`TICK_NSEC`).
+const TICK: u64 = NANOSECONDS_PER_JIFFY;
+/// The least and most a fair thread's slice may be asked to be (`__setparam_fair`).
+const SLICE_MIN: u64 = NANOSECONDS_PER_MILLISECOND / 10;
+const SLICE_MAX: u64 = 100 * NANOSECONDS_PER_MILLISECOND;
 /// A round-robin thread's time slice (`RR_TIMESLICE`).
-const ROUND_ROBIN_SLICE: u64 = 100_000_000;
+const ROUND_ROBIN_SLICE: u64 = 100 * NANOSECONDS_PER_MILLISECOND;
 
 /// What a call asks the scheduler for, as Linux's `sched_attr`; no policy keeps the current one.
 struct Request {
@@ -357,8 +431,8 @@ fn is_real_time(policy: u32) -> bool {
 /// Linux's `__checkparam_dl`: deadline parameters that make sense.
 fn deadline_valid(request: &Request) -> bool {
     /// `sysctl_sched_dl_period_min` and `_max`, in nanoseconds.
-    const PERIOD_MIN: u64 = 100_000;
-    const PERIOD_MAX: u64 = (1 << 22) * 1000;
+    const PERIOD_MIN: u64 = 100 * NANOSECONDS_PER_MICROSECOND;
+    const PERIOD_MAX: u64 = (1 << 22) * NANOSECONDS_PER_MICROSECOND;
     if request.flags & crate::linux_extra::SCHED_FLAG_SUGOV != 0 {
         return true;
     }
@@ -450,7 +524,7 @@ fn change_schedule(
         schedule.slice = if request.runtime == 0 {
             0
         } else {
-            request.runtime.clamp(100_000, 100_000_000)
+            request.runtime.clamp(SLICE_MIN, SLICE_MAX)
         };
     }
     if policy == SCHED_DEADLINE {
@@ -502,9 +576,9 @@ fn slice(schedule: &crate::process::Schedule) -> u64 {
     }
 }
 
-pub(super) fn sched_setattr<S: crate::System>(
+pub(super) fn sched_setattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, address, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -520,7 +594,7 @@ pub(super) fn sched_setattr<S: crate::System>(
     } else {
         size
     };
-    let too_big = |guest: &mut crate::user::Guest<'_>| {
+    let too_big = |guest: &mut crate::user::Guest<'_, C>| {
         guest.write_value(address, &(known as u32))?;
         Err(Errno::E2BIG)
     };
@@ -585,9 +659,9 @@ fn request_of(kernel: &Kernel, target: Task, attributes: &sched_attr) -> Request
     request
 }
 
-pub(super) fn sched_getattr<S: crate::System>(
+pub(super) fn sched_getattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, address, size, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -616,9 +690,9 @@ pub(super) fn sched_getattr<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn sched_rr_get_interval<S: crate::System>(
+pub(super) fn sched_rr_get_interval<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -638,9 +712,9 @@ pub(super) fn sched_rr_get_interval<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn sched_get_priority_max<S: crate::System>(
+pub(super) fn sched_get_priority_max<S: crate::System, C: Executor>(
     _: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     _: Tid,
     [policy, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -652,9 +726,9 @@ pub(super) fn sched_get_priority_max<S: crate::System>(
     }
 }
 
-pub(super) fn sched_get_priority_min<S: crate::System>(
+pub(super) fn sched_get_priority_min<S: crate::System, C: Executor>(
     _: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     _: Tid,
     [policy, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -761,9 +835,9 @@ fn task_schedule_mut(kernel: &mut Kernel, task: Task) -> &mut crate::process::Sc
     }
 }
 
-pub(super) fn getpriority<S: crate::System>(
+pub(super) fn getpriority<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [which, who, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -775,9 +849,9 @@ pub(super) fn getpriority<S: crate::System>(
         .ok_or(Errno::ESRCH)
 }
 
-pub(super) fn setpriority<S: crate::System>(
+pub(super) fn setpriority<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [which, who, nice, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -820,9 +894,9 @@ fn io_which(which: u64) -> Result<u32, Errno> {
     Ok(which as u32 - 1)
 }
 
-pub(super) fn ioprio_get<S: crate::System>(
+pub(super) fn ioprio_get<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [which, who, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -857,9 +931,9 @@ pub(super) fn ioprio_get<S: crate::System>(
 }
 
 /// Sets thread `tid`'s own I/O priority, as its `ioprio_set` would.
-pub(crate) fn set_io_priority<S: crate::System>(
+pub(crate) fn set_io_priority<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     priority: u32,
 ) -> Result<(), Errno> {
@@ -875,9 +949,9 @@ pub(crate) fn set_io_priority<S: crate::System>(
     ioprio_set(kernel, cx, tid, arguments).map(drop)
 }
 
-pub(super) fn ioprio_set<S: crate::System>(
+pub(super) fn ioprio_set<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [which, who, priority, ..]: Args,
 ) -> Result<u64, Errno> {

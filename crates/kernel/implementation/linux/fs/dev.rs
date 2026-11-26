@@ -35,7 +35,7 @@ pub(crate) const DOCKER_DEVICES: &[(&[u8], u32, u32)] = &[
 pub(crate) const ALLOWED_NOT_BUILT: &[(u32, u32)] = &[(5, 1), (10, 200)];
 
 impl Device {
-    pub fn from_number(rdev: u64) -> Option<Self> {
+    pub(crate) fn from_number(rdev: u64) -> Option<Self> {
         Some(match decode_device(rdev) {
             (1, 3) => Device::Null,
             (1, 5) => Device::Zero,

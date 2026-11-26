@@ -2,10 +2,11 @@
 //! open that conflicts with one waits while the holder is told with an I/O signal, until the
 //! holder lets go or comes down to a read lease, or `lease-break-time` passes.
 
-use alloc::rc::{Rc, Weak};
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
+use wcontainers_executor::Executor;
 
 use crate::file::{FileRef, OpenFile};
 use crate::fs::{Kind, Node};
@@ -18,7 +19,7 @@ pub(crate) const BREAK_SECONDS: u64 = 45;
 
 /// One lease (`struct file_lease`), held by an open file.
 pub(crate) struct Lease {
-    file: Weak<RefCell<OpenFile>>,
+    file: Weak<AtomicRefCell<OpenFile>>,
     /// The descriptor its I/O signal names (`fa_fd`).
     fd: i32,
     /// F_RDLCK or F_WRLCK.
@@ -30,7 +31,7 @@ pub(crate) struct Lease {
 
 impl Lease {
     fn held_by(&self, file: &FileRef) -> bool {
-        core::ptr::eq(self.file.as_ptr(), Rc::as_ptr(file))
+        core::ptr::eq(self.file.as_ptr(), Arc::as_ptr(file))
     }
 
     /// What F_GETLEASE shows (`target_leasetype`).
@@ -41,7 +42,11 @@ impl Lease {
 
 /// `time_out_leases`: leases whose holders let the break time pass are removed or brought down;
 /// leases of files that are gone go too. Waiting openers look again.
-fn time_out<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, node: &Node) {
+fn time_out<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+    node: &Node,
+) {
     if node.borrow().leases.is_empty() {
         return;
     }
@@ -92,7 +97,7 @@ pub(crate) fn open_for_writing(kernel: &Kernel, node: &Node) -> bool {
     kernel.threads.values().any(|thread| {
         thread.files.borrow().iter().any(|(_, descriptor)| {
             let file = descriptor.file.borrow();
-            Rc::ptr_eq(&file.node, node) && !file.is_path() && file.writable() && !file.pseudo
+            Arc::ptr_eq(&file.node, node) && !file.is_path() && file.writable() && !file.pseudo
         })
     })
 }
@@ -103,19 +108,19 @@ pub(crate) fn running(kernel: &Kernel, node: &Node) -> bool {
     kernel
         .processes
         .values()
-        .any(|process| process.ended.is_none() && Rc::ptr_eq(&process.executable.0, node))
+        .any(|process| process.ended.is_none() && Arc::ptr_eq(&process.executable.0, node))
 }
 
 /// The open files of `node` for reading only and for writing (`i_readcount`, `i_writecount`),
 /// an opener waiting to write counting as one.
 fn open_counts(kernel: &Kernel, node: &Node) -> (usize, usize) {
-    let mut seen: Vec<*const RefCell<OpenFile>> = Vec::new();
+    let mut seen: Vec<*const AtomicRefCell<OpenFile>> = Vec::new();
     let (mut readers, mut writers) = (0, 0);
     for thread in kernel.threads.values() {
         for (_, descriptor) in thread.files.borrow().iter() {
-            let pointer = Rc::as_ptr(&descriptor.file);
+            let pointer = Arc::as_ptr(&descriptor.file);
             let file = descriptor.file.borrow();
-            if !Rc::ptr_eq(&file.node, node) || file.is_path() || seen.contains(&pointer) {
+            if !Arc::ptr_eq(&file.node, node) || file.is_path() || seen.contains(&pointer) {
                 continue;
             }
             seen.push(pointer);
@@ -156,9 +161,9 @@ fn conflicting_open(kernel: &Kernel, node: &Node, file: &FileRef, kind: u32) -> 
 }
 
 /// F_SETLEASE (`fcntl_setlease`, `vfs_setlease`, `generic_setlease`).
-pub(super) fn set<S: crate::System>(
+pub(super) fn set<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     fd: i32,
     file: &FileRef,
@@ -217,7 +222,7 @@ pub(super) fn set<S: crate::System>(
             }
         }
         None => inode.leases.push(Lease {
-            file: Rc::downgrade(file),
+            file: Arc::downgrade(file),
             fd,
             kind,
             pending: None,
@@ -234,9 +239,9 @@ pub(super) fn set<S: crate::System>(
 }
 
 /// F_GETLEASE (`fcntl_getlease`).
-pub(super) fn get<S: crate::System>(
+pub(super) fn get<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     file: &FileRef,
 ) -> u64 {
     let node = file.borrow().node.clone();
@@ -248,9 +253,9 @@ pub(super) fn get<S: crate::System>(
 
 /// `__break_lease`: an open of `node` with `flags` (or a truncation, as O_WRONLY) that conflicts
 /// with leases tells their holders and waits for them, or is EWOULDBLOCK with O_NONBLOCK.
-pub(crate) fn break_leases<S: crate::System>(
+pub(crate) fn break_leases<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     node: &Node,
     flags: u32,

@@ -21,6 +21,25 @@ use crate::sysctl::{
     SHMMNI_PATH, SYSCTL_ROOT, VALUE_SEPARATOR,
 };
 
+/// What /proc/cpuinfo says of each processor before its number, and after it.
+const CPUINFO_PROCESSOR: &str = "processor\t: ";
+const CPUINFO_FIELDS: &str = "\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\
+CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\t: 0x0\nCPU part\t: 0x000\n\
+CPU revision\t: 0\n\n";
+
+/// The name of /proc/stat's line of all processors' times, and of one processor's before its
+/// number.
+const STAT_ALL_PROCESSORS: &str = "cpu ";
+const STAT_PROCESSOR: &str = "cpu";
+/// The times /proc/stat gives a processor after its name, or all of them: none is counted.
+const STAT_TIMES: &str = " 0 0 0 0 0 0 0 0 0 0\n";
+/// /proc/stat after the processors' lines: no interrupt or switch counted, then the boot time.
+const STAT_BOOT: &str = "intr 0\nctxt 0\nbtime ";
+/// /proc/stat between the boot time and the processes made.
+const STAT_PROCESSES: &str = "\nprocesses ";
+/// /proc/stat's last lines: one task running, the reader, and no soft interrupt counted.
+const STAT_TASKS: &str = "\nprocs_running 1\nprocs_blocked 0\nsoftirq 0\n";
+
 /// Parts a `status` field's name from its value.
 const STATUS_SEPARATOR: char = '\t';
 
@@ -81,7 +100,7 @@ pub(crate) struct Kept {
 }
 
 impl Kept {
-    pub fn of(inode: &super::Inode) -> Self {
+    pub(crate) fn of(inode: &super::Inode) -> Self {
         Self {
             mode: inode.mode,
             uid: inode.uid,
@@ -195,7 +214,7 @@ const ATTR_FILES: &[(&[u8], ProcessFile)] = &[
 
 impl ProcessFile {
     /// Whether it is a file of `attr`.
-    pub fn is_attr(self) -> bool {
+    pub(crate) fn is_attr(self) -> bool {
         ATTR_FILES.iter().any(|(_, file)| *file == self)
     }
 }
@@ -307,7 +326,7 @@ impl Namespace {
     /// The namespace's inode number on nsfs. The user and time namespaces are the machine's first,
     /// which have Linux's fixed numbers (`PROC_USER_INIT_INO`, `PROC_TIME_INIT_INO`); the others are
     /// the container's own, numbered as Linux numbers new ones.
-    pub fn ino(self) -> u64 {
+    pub(crate) fn ino(self) -> u64 {
         match self {
             Namespace::User => 0xEFFF_FFFD,
             Namespace::Time | Namespace::TimeForChildren => 0xEFFF_FFFA,
@@ -325,7 +344,7 @@ impl Namespace {
     }
 
     /// The `CLONE_NEW*` flag of its type, which `NS_GET_NSTYPE` answers.
-    pub fn clone_flag(self) -> u32 {
+    pub(crate) fn clone_flag(self) -> u32 {
         match self {
             Namespace::Net => CLONE_NEWNET,
             Namespace::Uts => CLONE_NEWUTS,
@@ -342,7 +361,7 @@ impl Namespace {
     }
 
     /// What its link reads and a descriptor of it shows (`ns_get_name`).
-    pub fn link(self) -> Vec<u8> {
+    pub(crate) fn link(self) -> Vec<u8> {
         format!("{}:[{}]", self.kind(), self.ino()).into_bytes()
     }
 }
@@ -408,6 +427,8 @@ const TIMENS_PAD: char = ' ';
 /// `/proc`'s files of the layout's randomization.
 const RANDOMIZE_VA_SPACE: &str = "sys/kernel/randomize_va_space";
 const MMAP_RND_BITS: &str = "sys/vm/mmap_rnd_bits";
+/// `/proc`'s file of the lowest address a mapping may take.
+const MMAP_MIN_ADDR: &str = "sys/vm/mmap_min_addr";
 const MSG_NEXT_ID: &str = "sys/kernel/msg_next_id";
 const SEM_NEXT_ID: &str = "sys/kernel/sem_next_id";
 const SHM_NEXT_ID: &str = "sys/kernel/shm_next_id";
@@ -530,6 +551,7 @@ pub(crate) const GLOBAL: &[(&str, Global)] = &[
     ("sys/vm", Global::Directory),
     ("sys/vm/drop_caches", Global::File(0o200)),
     ("sys/vm/hugetlb_shm_group", Global::File(0o644)),
+    (MMAP_MIN_ADDR, Global::File(0o644)),
     (MMAP_RND_BITS, Global::File(0o600)),
     ("sys/vm/nr_hugepages", Global::File(0o644)),
     ("sys/vm/nr_overcommit_hugepages", Global::File(0o644)),
@@ -782,7 +804,7 @@ pub(crate) fn is_sysctl_root(index: usize) -> bool {
 impl Entry {
     /// A directory's path below the tree's root, for finding it again when the inodes above it, which
     /// are made at each lookup, are gone.
-    pub fn directory_path(&self) -> Option<String> {
+    pub(crate) fn directory_path(&self) -> Option<String> {
         match *self {
             Entry::Root => Some(String::new()),
             Entry::Process(task) => Some(task.path()),
@@ -799,7 +821,7 @@ impl Entry {
 
     /// The process an entry belongs to, for the entries inside a process's directory and the
     /// directory itself.
-    pub fn of_process(&self) -> Option<Pid> {
+    pub(crate) fn of_process(&self) -> Option<Pid> {
         match *self {
             Entry::Process(task)
             | Entry::ProcessFile(task, _)
@@ -823,7 +845,7 @@ impl Entry {
     }
 
     /// Whether a change to the entry's owner, mode or times lasts (see [`Kept`]).
-    pub fn keeps_attributes(&self) -> bool {
+    pub(crate) fn keeps_attributes(&self) -> bool {
         matches!(
             self,
             Entry::Root | Entry::SelfLink | Entry::ThreadSelfLink | Entry::Global(_)
@@ -831,7 +853,7 @@ impl Entry {
     }
 
     /// The size `stat` reports: none, except for descriptor links.
-    pub fn size(&self) -> u64 {
+    pub(crate) fn size(&self) -> u64 {
         match self {
             // Linux's `proc_fd_instantiate` gives descriptor links a size of 64 (measured too).
             Entry::Fd(..) => 64,
@@ -842,7 +864,7 @@ impl Entry {
     }
 
     /// How a file of the tree makes its bytes, which also sets how it seeks and what it takes.
-    pub fn style(&self) -> Style {
+    pub(crate) fn style(&self) -> Style {
         match self {
             Entry::ProcessFile(
                 _,
@@ -857,7 +879,7 @@ impl Entry {
     }
 
     /// What a write to the file does.
-    pub fn writing(&self) -> Writing {
+    pub(crate) fn writing(&self) -> Writing {
         match self {
             Entry::ProcessFile(_, ProcessFile::Comm) => Writing::Comm,
             Entry::ProcessFile(_, ProcessFile::CoredumpFilter) => Writing::CoredumpFilter,
@@ -876,7 +898,7 @@ impl Entry {
 
     /// Whether reads and writes go a segment at a time (Linux's `do_loop_readv_writev`, which takes
     /// no flag but RWF_HIPRI): the files with a plain `read` or `write` and no iterating one.
-    pub fn loops(&self, writing: bool) -> bool {
+    pub(crate) fn loops(&self, writing: bool) -> bool {
         match self.style() {
             Style::Sysctl => false,
             // `proc_reg_read_iter` reads the entries outside the process directories and the
@@ -1658,7 +1680,7 @@ pub(crate) fn link_target(
                     walk.path_of(&file.node)
                         .unwrap_or_else(|| file.path.clone())
                 }
-                _ if inode.shown_deleted() || file.unnamed() => {
+                _ if file.shown_deleted() || file.unnamed() => {
                     let mut path = file.path.clone();
                     path.extend_from_slice(crate::fs::DELETED.as_bytes());
                     path
@@ -1795,12 +1817,11 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     }
                 }
                 "cpuinfo" => {
-                    let _ = write!(
-                        out,
-                        "processor\t: 0\nBogoMIPS\t: 48.00\nFeatures\t: fp asimd crc32 atomics\n\
-                         CPU implementer\t: 0x00\nCPU architecture: 8\nCPU variant\t: 0x0\n\
-                         CPU part\t: 0x000\nCPU revision\t: 0\n\n"
-                    );
+                    for processor in 0..machine.processors.get() {
+                        out.push_str(CPUINFO_PROCESSOR);
+                        out.push_str(&processor.to_string());
+                        out.push_str(CPUINFO_FIELDS);
+                    }
                 }
                 // The registered file systems that are built, in Linux's order of registration.
                 "filesystems" => out.push_str(
@@ -1816,10 +1837,11 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     );
                 }
                 "meminfo" => {
-                    let total = machine.memory_bytes / 1024;
+                    use crate::linux_extra::KIB;
+                    let total = machine.memory_bytes / KIB;
                     let (in_use, shared) = source.memory_in_use;
-                    let free = total - in_use / 1024;
-                    let shared = shared / 1024;
+                    let free = total - in_use / KIB;
+                    let shared = shared / KIB;
                     let _ = write!(
                         out,
                         "MemTotal:       {total:8} kB\nMemFree:        {free:8} kB\n\
@@ -1832,12 +1854,18 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     );
                 }
                 "stat" => {
-                    let _ = write!(
-                        out,
-                        "cpu  0 0 0 0 0 0 0 0 0 0\ncpu0 0 0 0 0 0 0 0 0 0 0\nintr 0\nctxt 0\nbtime {}\n\
-                         processes {}\nprocs_running 1\nprocs_blocked 0\nsoftirq 0\n",
-                        source.view.boot.seconds, source.last_pid
-                    );
+                    out.push_str(STAT_ALL_PROCESSORS);
+                    out.push_str(STAT_TIMES);
+                    for processor in 0..machine.processors.get() {
+                        out.push_str(STAT_PROCESSOR);
+                        out.push_str(&processor.to_string());
+                        out.push_str(STAT_TIMES);
+                    }
+                    out.push_str(STAT_BOOT);
+                    out.push_str(&source.view.boot.seconds.to_string());
+                    out.push_str(STAT_PROCESSES);
+                    out.push_str(&source.last_pid.to_string());
+                    out.push_str(STAT_TASKS);
                 }
                 "uptime" => {
                     let up = source.uptime_nanoseconds;
@@ -1911,7 +1939,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                     out.push_str("256\n")
                 }
                 // The cap `listen` puts on a backlog.
-                "sys/net/core/somaxconn" => out.push_str("4096\n"),
+                "sys/net/core/somaxconn" => value_line(&mut out, crate::linux_extra::SOMAXCONN),
                 "sys/kernel/cap_last_cap" => {
                     let _ = writeln!(out, "{CAP_LAST_CAP}");
                 }
@@ -2000,6 +2028,7 @@ pub(crate) fn contents(source: &mut Source<'_>, entry: &Entry) -> Result<Vec<u8>
                 RANDOMIZE_VA_SPACE => {
                     value_line(&mut out, crate::memory::RANDOMIZE_VA_SPACE);
                 }
+                MMAP_MIN_ADDR => value_line(&mut out, wcontainers_abi::LOWEST_ADDRESS),
                 MMAP_RND_BITS => {
                     let random =
                         crate::memory::LayoutRandomization::for_space(machine.lowest_tier_top);
@@ -2225,16 +2254,18 @@ fn process_file(
             };
             let _ = writeln!(out, "{shown}");
         }
-        // `proc_oom_score`: two thirds of 1000 plus the badness `oom_badness` gives per thousand
-        // pages of the machine, whose resident part is not tracked here (counted).
+        // `proc_oom_score`: two thirds of the score's whole range plus the badness `oom_badness`
+        // gives per that many pages of the machine, whose resident part is not tracked here
+        // (counted). The range is the adjustment's (`OOM_SCORE_ADJ_MAX`, a thousandth each).
         ProcessFile::OomScore => {
             let adj = i64::from(process.oom_score_adj);
             let points = if adj == i64::from(crate::linux_extra::OOM_SCORE_ADJ_MIN) {
                 0
             } else {
+                let range = i64::from(crate::linux_extra::OOM_SCORE_ADJ_MAX);
                 let pages = (source.machine.memory_bytes / PAGE_SIZE) as i64;
-                let badness = adj * (pages / 1000);
-                (1000 + badness * 1000 / pages) * 2 / 3
+                let badness = adj * (pages / range);
+                (range + badness * range / pages) * 2 / 3
             };
             let _ = writeln!(out, "{points}");
         }

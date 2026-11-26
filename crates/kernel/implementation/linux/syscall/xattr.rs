@@ -2,6 +2,7 @@
 //! `trusted.` and `user.` names) give them. tmpfs here has no POSIX ACLs, as in the reference.
 
 use alloc::vec::Vec;
+use wcontainers_executor::Executor;
 
 use wcontainers_abi::PAGE_SIZE;
 
@@ -35,9 +36,9 @@ enum Target {
 }
 
 /// The inode a call names.
-fn target<S: crate::System>(
+fn target<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     target: Target,
 ) -> Result<Node, Errno> {
@@ -184,9 +185,9 @@ fn set_backend_acl(
 }
 
 /// An attribute name, as Linux's `import_xattr_name` copies it.
-fn import_name<S: crate::System>(
+fn import_name<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     address: u64,
 ) -> Result<Vec<u8>, Errno> {
@@ -403,9 +404,9 @@ fn check_acl(value: &[u8]) -> Result<(), Errno> {
     Ok(())
 }
 
-fn set<S: crate::System>(
+fn set<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     at: Target,
     [_, name, value, size, flags, _]: Args,
@@ -472,9 +473,9 @@ fn set<S: crate::System>(
     Ok(0)
 }
 
-fn get<S: crate::System>(
+fn get<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     at: Target,
     [_, name, value, size, ..]: Args,
@@ -537,9 +538,9 @@ fn get<S: crate::System>(
     Ok(found.len() as u64)
 }
 
-fn list<S: crate::System>(
+fn list<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     at: Target,
     [_, list, size, ..]: Args,
@@ -585,9 +586,9 @@ fn list<S: crate::System>(
     Ok(names.len() as u64)
 }
 
-fn remove<S: crate::System>(
+fn remove<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     at: Target,
     [_, name, ..]: Args,
@@ -653,108 +654,108 @@ fn by_path(args: Args, follow: bool) -> Target {
     }
 }
 
-pub(super) fn setxattr<S: crate::System>(
+pub(super) fn setxattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     set(kernel, cx, tid, by_path(args, true), args)
 }
 
-pub(super) fn lsetxattr<S: crate::System>(
+pub(super) fn lsetxattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     set(kernel, cx, tid, by_path(args, false), args)
 }
 
-pub(super) fn fsetxattr<S: crate::System>(
+pub(super) fn fsetxattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     set(kernel, cx, tid, Target::File(args[0]), args)
 }
 
-pub(super) fn getxattr<S: crate::System>(
+pub(super) fn getxattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     get(kernel, cx, tid, by_path(args, true), args)
 }
 
-pub(super) fn lgetxattr<S: crate::System>(
+pub(super) fn lgetxattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     get(kernel, cx, tid, by_path(args, false), args)
 }
 
-pub(super) fn fgetxattr<S: crate::System>(
+pub(super) fn fgetxattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     get(kernel, cx, tid, Target::File(args[0]), args)
 }
 
-pub(super) fn listxattr<S: crate::System>(
+pub(super) fn listxattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     list(kernel, cx, tid, by_path(args, true), args)
 }
 
-pub(super) fn llistxattr<S: crate::System>(
+pub(super) fn llistxattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     list(kernel, cx, tid, by_path(args, false), args)
 }
 
-pub(super) fn flistxattr<S: crate::System>(
+pub(super) fn flistxattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     list(kernel, cx, tid, Target::File(args[0]), args)
 }
 
-pub(super) fn removexattr<S: crate::System>(
+pub(super) fn removexattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     remove(kernel, cx, tid, by_path(args, true), args)
 }
 
-pub(super) fn lremovexattr<S: crate::System>(
+pub(super) fn lremovexattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
     remove(kernel, cx, tid, by_path(args, false), args)
 }
 
-pub(super) fn fremovexattr<S: crate::System>(
+pub(super) fn fremovexattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {

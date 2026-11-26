@@ -5,10 +5,12 @@
 //! "wake me at this time" comes from; one on a CPU clock is looked at whenever a thread of its
 //! process comes back from running, and the running thread's turn ends when it is due.
 
+use crate::linux_extra::{MICROSECONDS_PER_SECOND, NANOSECONDS_PER_MICROSECOND};
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::rc::{Rc, Weak};
-use core::cell::RefCell;
+use alloc::sync::{Arc, Weak};
+use atomic_refcell::AtomicRefCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
+use wcontainers_executor::Executor;
 
 use super::{Args, guest};
 use crate::file::{Anon, FileRef, OpenFile};
@@ -53,7 +55,7 @@ enum Owner {
         which: u32,
     },
     Descriptor {
-        file: Weak<RefCell<OpenFile>>,
+        file: Weak<AtomicRefCell<OpenFile>>,
     },
     /// A thread sleeping on a CPU clock (`do_cpu_nanosleep`), with the time its call was given.
     Sleep {
@@ -63,11 +65,11 @@ enum Owner {
     /// The end of a TCP connection's deferral (TCP_DEFER_ACCEPT) on a listener, or a held
     /// connection's client sending again to a listener gone.
     Deferral {
-        listener: Weak<RefCell<crate::syscall::socket::Socket>>,
+        listener: Weak<AtomicRefCell<crate::syscall::socket::Socket>>,
     },
     /// A TCP connection's probe timer, which sends the bytes it holds back (`tcp_probe_timer`).
     HeldBytes {
-        socket: Weak<RefCell<crate::syscall::socket::Socket>>,
+        socket: Weak<AtomicRefCell<crate::syscall::socket::Socket>>,
     },
 }
 
@@ -183,7 +185,7 @@ impl Timers {
     }
 
     /// The earliest time a wall clock timer fires.
-    pub fn earliest(&self) -> Option<u64> {
+    pub(crate) fn earliest(&self) -> Option<u64> {
         self.due.first().map(|(at, _)| *at)
     }
 
@@ -236,7 +238,11 @@ fn forward(expires: u64, now: u64, interval: u64) -> (u64, u64) {
 
 /// A thread came back from running: its process's CPU time limit is looked at, and CPU timers of
 /// its process and its own that are due fire.
-pub(crate) fn cpu_check<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, tid: Tid) {
+pub(crate) fn cpu_check<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+    tid: Tid,
+) {
     let pid = kernel.threads[&tid].process;
     cpu_limit(kernel, cx, pid);
     if kernel.timers.cpu.is_empty() || !kernel.threads.contains_key(&tid) {
@@ -268,7 +274,11 @@ pub(crate) fn cpu_check<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<
 
 /// RLIMIT_CPU, as Linux's `check_process_timers`: at the hard limit the process is killed; at the
 /// soft limit it is sent SIGXCPU and the soft limit goes up a second.
-fn cpu_limit<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, pid: Pid) {
+fn cpu_limit<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+    pid: Pid,
+) {
     let Some((soft, hard)) = cpu_limit_times(kernel, pid) else {
         return;
     };
@@ -335,7 +345,10 @@ pub(crate) fn cpu_slice(kernel: &Kernel, tid: Tid) -> Option<u64> {
 }
 
 /// Fires every wall clock timer due by the time the kernel was entered.
-pub(crate) fn fire_due<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
+pub(crate) fn fire_due<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+) {
     while let Some(&(at, id)) = kernel.timers.due.first() {
         if at > kernel.entry_now {
             break;
@@ -375,7 +388,7 @@ fn signal_queued(kernel: &Kernel, pid: Pid, id: i32, notify: Notify) -> bool {
 }
 
 /// A timer's time has come.
-fn fire<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, id: u64) {
+fn fire<S: crate::System, C: Executor>(kernel: &mut Kernel, cx: &mut Context<'_, S, C>, id: u64) {
     let timer = kernel.timers.all[&id].clone();
     let Some(expires) = timer.expires else {
         return;
@@ -476,9 +489,9 @@ fn fire<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, id: u64)
 
 /// `signal` of `pid` stopped being SIG_IGN: the periodic timers that fired while it was ignored
 /// send it now (`posixtimer_sig_unignore`).
-pub(crate) fn unignore<S: crate::System>(
+pub(crate) fn unignore<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     pid: Pid,
     signal: u32,
 ) {
@@ -618,7 +631,7 @@ pub(super) fn start_cpu_sleep(
 /// (or, on a client, sends again what its gone listener dropped).
 pub(crate) fn start_deferral(
     kernel: &mut Kernel,
-    listener: Weak<RefCell<crate::syscall::socket::Socket>>,
+    listener: Weak<AtomicRefCell<crate::syscall::socket::Socket>>,
     until: u64,
 ) {
     start_once(kernel, Owner::Deferral { listener }, until);
@@ -627,7 +640,7 @@ pub(crate) fn start_deferral(
 /// Starts a connection's probe timer at `until` on the monotonic clock; its id, to stop it.
 pub(crate) fn start_held_bytes(
     kernel: &mut Kernel,
-    socket: Weak<RefCell<crate::syscall::socket::Socket>>,
+    socket: Weak<AtomicRefCell<crate::syscall::socket::Socket>>,
     until: u64,
 ) -> u64 {
     start_once(kernel, Owner::HeldBytes { socket }, until)
@@ -725,9 +738,9 @@ fn checked_nanoseconds(seconds: i64, nanoseconds: i64) -> Result<u64, Errno> {
         .saturating_add(nanoseconds as u64))
 }
 
-fn write_itimerspec<S: crate::System>(
+fn write_itimerspec<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     at: u64,
     (value, interval): (u64, u64),
@@ -741,9 +754,9 @@ fn write_itimerspec<S: crate::System>(
 
 /// Turns a time given to `settime` into the timer's clock: relative or absolute, the wall clock's
 /// absolute times into the monotonic clock's, which may fall before that clock began (below 0).
-fn expiry<S: crate::System>(
+fn expiry<S: crate::System, C: Executor>(
     kernel: &Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     timer: &Timer,
     value: u64,
     absolute: bool,
@@ -838,9 +851,9 @@ fn cpu_clock(kernel: &Kernel, tid: Tid, id: i32) -> Option<Clock> {
 }
 
 /// `timer_create(clockid, sevp, timerid)`.
-pub(super) fn timer_create<S: crate::System>(
+pub(super) fn timer_create<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [clock_id, event, out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -873,7 +886,7 @@ pub(super) fn timer_create<S: crate::System>(
         let signal = field(core::mem::offset_of!(sigevent, sigev_signo));
         let how = field(core::mem::offset_of!(sigevent, sigev_notify)) as u32;
         let thread = field(core::mem::offset_of!(sigevent, _sigev_un));
-        let valid_signal = signal > 0 && signal as u32 <= crate::process::SIGNALS as u32;
+        let valid_signal = signal > 0 && signal as u32 <= crate::linux_extra::SIGNALS;
         // `good_sigevent`.
         match how {
             SIGEV_NONE => Notify::None,
@@ -942,9 +955,9 @@ fn posix_timer(kernel: &Kernel, tid: Tid, number: u64) -> Result<u64, Errno> {
 }
 
 /// `timer_settime(timerid, flags, new, old)`.
-pub(super) fn timer_settime<S: crate::System>(
+pub(super) fn timer_settime<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [number, flags, new, old, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -971,9 +984,9 @@ pub(super) fn timer_settime<S: crate::System>(
 }
 
 /// Arms or disarms a timer and starts its overrun count again (`posix_timer_set_common`).
-fn set<S: crate::System>(
+fn set<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     id: u64,
     value: u64,
     interval: u64,
@@ -1016,9 +1029,9 @@ fn set<S: crate::System>(
     kernel.timers.arm(id, at);
 }
 
-pub(super) fn timer_gettime<S: crate::System>(
+pub(super) fn timer_gettime<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [number, out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1028,9 +1041,9 @@ pub(super) fn timer_gettime<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn timer_getoverrun<S: crate::System>(
+pub(super) fn timer_getoverrun<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [number, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1040,9 +1053,9 @@ pub(super) fn timer_getoverrun<S: crate::System>(
 
 /// `timer_delete`: the timer goes; a signal of it not yet taken stays pending and is dropped when
 /// taken.
-pub(super) fn timer_delete<S: crate::System>(
+pub(super) fn timer_delete<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [number, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1069,22 +1082,22 @@ fn interval_value(kernel: &Kernel, pid: Pid, which: u32) -> (u64, u64) {
     // the CPU ones (`itimer_get_remtime`, `get_cpu_itimer`).
     let left = match expires.checked_sub(clock_now).filter(|left| *left > 0) {
         Some(left) => left,
-        None if which == ITIMER_REAL => 1000,
+        None if which == ITIMER_REAL => NANOSECONDS_PER_MICROSECOND,
         None => 4_000_000,
     };
     (left, timer.interval)
 }
 
-fn write_itimerval<S: crate::System>(
+fn write_itimerval<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     at: u64,
     (value, interval): (u64, u64),
 ) -> Result<(), Errno> {
     let timeval = |nanoseconds: u64| __kernel_old_timeval {
         tv_sec: (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
-        tv_usec: (nanoseconds % NANOSECONDS_PER_SECOND / 1000) as i64,
+        tv_usec: (nanoseconds % NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MICROSECOND) as i64,
     };
     let out = __kernel_old_itimerval {
         it_interval: timeval(interval),
@@ -1093,9 +1106,9 @@ fn write_itimerval<S: crate::System>(
     guest(kernel, cx, tid).write_value(at, &out)
 }
 
-pub(super) fn getitimer<S: crate::System>(
+pub(super) fn getitimer<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [which, out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1109,9 +1122,9 @@ pub(super) fn getitimer<S: crate::System>(
 }
 
 /// `setitimer(which, new, old)`: no new value disarms it.
-pub(super) fn setitimer<S: crate::System>(
+pub(super) fn setitimer<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [which, new, old, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1119,12 +1132,12 @@ pub(super) fn setitimer<S: crate::System>(
     if new != 0 {
         let given: __kernel_old_itimerval = guest(kernel, cx, tid).read_value(new)?;
         let micro = |time: __kernel_old_timeval| {
-            if time.tv_sec < 0 || !(0..1_000_000).contains(&time.tv_usec) {
+            if time.tv_sec < 0 || !(0..MICROSECONDS_PER_SECOND as i64).contains(&time.tv_usec) {
                 return Err(Errno::EINVAL);
             }
             Ok((time.tv_sec as u64)
                 .saturating_mul(NANOSECONDS_PER_SECOND)
-                .saturating_add(time.tv_usec as u64 * 1000))
+                .saturating_add(time.tv_usec as u64 * NANOSECONDS_PER_MICROSECOND))
         };
         value = micro(given.it_value)?;
         interval = micro(given.it_interval)?;
@@ -1172,9 +1185,9 @@ pub(super) fn setitimer<S: crate::System>(
 /// What `/proc/<pid>/fd` shows for a timer descriptor.
 const LINK: &[u8] = b"anon_inode:[timerfd]";
 
-pub(super) fn timerfd_create<S: crate::System>(
+pub(super) fn timerfd_create<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [clock_id, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1204,7 +1217,7 @@ pub(super) fn timerfd_create<S: crate::System>(
     );
     let id = kernel.timers.add(Timer {
         owner: Owner::Descriptor {
-            file: Rc::downgrade(&file),
+            file: Arc::downgrade(&file),
         },
         clock: Clock::Wall,
         expires: None,
@@ -1260,9 +1273,9 @@ fn catch_up(kernel: &mut Kernel, id: u64) {
     timer.expired = false;
 }
 
-pub(super) fn timerfd_settime<S: crate::System>(
+pub(super) fn timerfd_settime<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, flags, new, old, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1364,9 +1377,9 @@ fn descriptor_remaining(kernel: &Kernel, id: u64) -> (u64, u64) {
     (left, timer.interval)
 }
 
-pub(super) fn timerfd_gettime<S: crate::System>(
+pub(super) fn timerfd_gettime<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, out, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1403,9 +1416,9 @@ pub(super) fn of(file: &OpenFile) -> Option<u64> {
 }
 
 /// `timerfd_read_iter`: the expirations so far as eight bytes, waiting for one unless nonblocking.
-pub(super) fn read<S: crate::System>(
+pub(super) fn read<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -1458,9 +1471,9 @@ pub(super) fn poll(kernel: &Kernel, id: u64) -> u16 {
 }
 
 /// `TFD_IOC_SET_TICKS`: sets the expirations not yet read.
-pub(super) fn set_ticks<S: crate::System>(
+pub(super) fn set_ticks<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: &FileRef,
     at: u64,

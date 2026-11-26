@@ -1,8 +1,9 @@
 //! Event descriptors, as Linux's `fs/eventfd.c`: a 64 bit counter on the shared anonymous inode
 //! that writes add to and reads take.
 
-use alloc::rc::Rc;
-use core::cell::RefCell;
+use alloc::sync::Arc;
+use atomic_refcell::AtomicRefCell;
+use wcontainers_executor::Executor;
 
 use super::Args;
 use crate::file::{Anon, FileRef, OpenFile};
@@ -24,7 +25,7 @@ pub(crate) struct Counter {
 }
 
 /// The counter behind an open file, if it is an event descriptor.
-pub(super) fn of(file: &OpenFile) -> Option<Rc<RefCell<Counter>>> {
+pub(super) fn of(file: &OpenFile) -> Option<Arc<AtomicRefCell<Counter>>> {
     match &file.anon {
         Some(Anon::Event(counter)) => Some(counter.clone()),
         _ => None,
@@ -32,13 +33,13 @@ pub(super) fn of(file: &OpenFile) -> Option<Rc<RefCell<Counter>>> {
 }
 
 /// What waits on a counter, and what epoll watches.
-pub(super) fn channel(counter: &Rc<RefCell<Counter>>) -> Channel {
+pub(super) fn channel(counter: &Arc<AtomicRefCell<Counter>>) -> Channel {
     Channel::Object(crate::process::ObjectId::Numbered(counter.borrow().object))
 }
 
-pub(super) fn eventfd2<S: crate::System>(
+pub(super) fn eventfd2<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [count, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -67,13 +68,13 @@ pub(super) fn eventfd2<S: crate::System>(
         .zip(taken)
         .find(|(id, used)| id != used)
         .map_or(counters.len() as u32, |(id, _)| id);
-    let counter = Rc::new(RefCell::new(Counter {
+    let counter = Arc::new(AtomicRefCell::new(Counter {
         count: u64::from(count as u32),
         semaphore: flags & EFD_SEMAPHORE != 0,
         id,
         object,
     }));
-    counters.push(Rc::downgrade(&counter));
+    counters.push(Arc::downgrade(&counter));
     file.borrow_mut().anon = Some(Anon::Event(counter));
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
@@ -100,9 +101,9 @@ pub(super) fn poll(counter: &Counter) -> u16 {
 
 /// `eventfd_read`: the count (or one, as a semaphore) once it is above zero, waited for unless
 /// nonblocking.
-pub(super) fn read<S: crate::System>(
+pub(super) fn read<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -133,9 +134,9 @@ pub(super) fn read<S: crate::System>(
 
 /// `eventfd_write`: adds the value once it fits below the largest count, waited for unless
 /// nonblocking.
-pub(super) fn write<S: crate::System>(
+pub(super) fn write<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],

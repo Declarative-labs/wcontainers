@@ -7,13 +7,13 @@
 //! resolver.
 
 use alloc::collections::BTreeMap;
-use alloc::rc::{Rc, Weak};
-use alloc::sync::Arc;
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
+use atomic_refcell::AtomicRefCell;
 use core::any::Any;
-use core::cell::RefCell;
 use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use core::ops::Range;
+use wcontainers_executor::Executor;
 
 use etherparse::{
     IpDscp, IpEcn, IpNumber, Ipv4Header, Ipv4Options, Ipv6FlowLabel, LaxIpSlice, UdpHeader,
@@ -65,12 +65,12 @@ type HandleOf<S> = Handle<
 
 /// One connection, listener or UDP flow to the outside.
 struct Link {
-    socket: Weak<RefCell<Socket>>,
+    socket: Weak<AtomicRefCell<Socket>>,
     /// The destination a UDP flow carries; none for TCP.
     flow: Option<Endpoint>,
     /// The system's `HandleOf<S>`, kept without its type as the kernel is not generic over its
     /// system.
-    handle: Rc<dyn Any>,
+    handle: Arc<dyn Any + Send + Sync>,
     /// The local port the system's UDP socket of a flow is bound to.
     local_port: u16,
     /// What the wait kept for it asks beside an error or hang-up, which every wait hears; none when
@@ -88,9 +88,9 @@ struct Link {
 }
 
 impl Link {
-    fn new(socket: &SocketRef, flow: Option<Endpoint>, handle: Rc<dyn Any>) -> Self {
+    fn new(socket: &SocketRef, flow: Option<Endpoint>, handle: Arc<dyn Any + Send + Sync>) -> Self {
         Self {
-            socket: Rc::downgrade(socket),
+            socket: Arc::downgrade(socket),
             flow,
             handle,
             local_port: u16::MIN,
@@ -112,16 +112,25 @@ pub(crate) struct Outside {
     listeners: BTreeMap<u32, Link>,
     last_lookup: u64,
     lookups: BTreeMap<u64, Lookup>,
-    /// The system's handles let go, closed at the next flush once no wait holds them.
-    closing: Vec<Rc<dyn Any>>,
+    /// The system's handles let go, ended at the next flush once no wait holds them.
+    closing: Vec<(Arc<dyn Any + Send + Sync>, Ending)>,
     /// What every pull receives into, kept between pulls so that one which finds nothing allocates
     /// nothing; a queued packet holds a copy of only the bytes it received.
     received: Vec<u8>,
 }
 
+/// How a handle let go is ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ending {
+    /// Closed, a connection in order: its socket's last descriptor went.
+    Closed,
+    /// A connection reset as a connect to `AF_UNSPEC` does (`tcp_disconnect`).
+    Disconnected,
+}
+
 /// A name query waiting for the system's resolver, which is asked as a waiting call of its number.
 struct Lookup {
-    socket: Weak<RefCell<Socket>>,
+    socket: Weak<AtomicRefCell<Socket>>,
     /// The server's address it asked at.
     server: Endpoint,
     query: Vec<u8>,
@@ -147,12 +156,10 @@ fn any_address(v4: bool) -> BindAddress {
     }
 }
 
-/// A host's refusal as the error the guest sees: a host that cannot reach outside is a network
-/// without a route, which is counted.
-/// The error of a connect or listen; a socket given back is closed, since the kernel binds its
+/// The error of a connect or listen; a socket given back is released, since the kernel binds its
 /// sockets inside the container and asks the system for none of its own.
-fn local_end_error<S: crate::System>(
-    cx: &Context<'_, S>,
+fn local_end_error<S: crate::System, C: Executor>(
+    cx: &Context<'_, S, C>,
     error: TcpLocalEndError<<S as TcpConnections>::BoundSocket>,
 ) -> HostError {
     match error {
@@ -167,9 +174,11 @@ fn local_end_error<S: crate::System>(
     }
 }
 
-fn refusal<S: crate::System>(
+/// A host's refusal as the error the guest sees: a host that cannot reach outside is a network
+/// without a route, which is counted.
+fn refusal<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     error: HostError,
 ) -> Errno {
     match error {
@@ -192,7 +201,7 @@ fn next_id(outside: &mut Outside) -> u32 {
 }
 
 /// The system's handle kept for a link.
-fn handle_of<S: crate::System>(handle: &Rc<dyn Any>) -> Option<&HandleOf<S>> {
+fn handle_of<S: crate::System>(handle: &Arc<dyn Any + Send + Sync>) -> Option<&HandleOf<S>> {
     handle.downcast_ref::<HandleOf<S>>()
 }
 
@@ -217,15 +226,24 @@ fn datagram_of<S: crate::System>(kernel: &Kernel, id: u32) -> Option<&<S as UdpS
     }
 }
 
-/// Hands a let-go handle back to the system, once no wait holds it.
-fn close_handle<S: crate::System>(system: &S, handle: Rc<dyn Any>) {
+/// Hands a let-go handle back to the system, once no wait holds it. A disconnect's socket given
+/// back is released, since the kernel keeps no socket bound at the system, and its pending error
+/// is left to the guest's socket, which the disconnect already set as for a connection inside the
+/// container.
+fn close_handle<S: crate::System>(system: &S, handle: Arc<dyn Any + Send + Sync>, ending: Ending) {
     let Ok(handle) = handle.downcast::<HandleOf<S>>() else {
         return;
     };
-    match Rc::try_unwrap(handle) {
-        Ok(Handle::Connection(connection)) => {
-            TcpConnections::close(system, connection, TcpClose::Orderly);
-        }
+    match Arc::try_unwrap(handle) {
+        Ok(Handle::Connection(connection)) => match ending {
+            Ending::Closed => TcpConnections::close(system, connection, TcpClose::Orderly),
+            Ending::Disconnected => {
+                let disconnected = TcpConnections::disconnect(system, connection);
+                if let Some(bound) = disconnected.bound_socket {
+                    TcpConnections::release(system, bound);
+                }
+            }
+        },
         Ok(Handle::Listener(listener)) => TcpListeners::stop_listening(system, listener),
         Ok(Handle::Datagram(socket)) => UdpSockets::close(system, socket),
         Err(_) => debug_assert!(false, "a handle let go while a wait holds it"),
@@ -300,9 +318,9 @@ fn plain_header(route: RouteSelectors<'_>) -> IpHeaderFields<'_> {
 
 /// Opens the system's UDP socket for a UDP `socket`'s flow to `to`, connected to it; its number.
 /// It waits to read from the start, so what arrives is pulled.
-fn open_flow<S: crate::System>(
+fn open_flow<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     to: Endpoint,
 ) -> Result<u32, Errno> {
@@ -327,7 +345,7 @@ fn open_flow<S: crate::System>(
     };
     let id = next_id(&mut kernel.sockets.inet.outside);
     let handle: HandleOf<S> = Handle::Datagram(opened);
-    let mut link = Link::new(socket, Some(to), Rc::new(handle));
+    let mut link = Link::new(socket, Some(to), Arc::new(handle));
     link.local_port = local.port();
     link.drained = true;
     kernel.sockets.inet.outside.connections.insert(id, link);
@@ -337,9 +355,9 @@ fn open_flow<S: crate::System>(
 
 /// Starts the system's TCP connection for `socket` to `to`; its number. Its first wait starts
 /// when the kernel next settles, so the connect's call is over before its answer is taken.
-pub(super) fn open<S: crate::System>(
+pub(super) fn open<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     to: Endpoint,
 ) -> Result<u32, Errno> {
@@ -379,45 +397,66 @@ pub(super) fn open<S: crate::System>(
     };
     let id = next_id(&mut kernel.sockets.inet.outside);
     let handle: HandleOf<S> = Handle::Connection(connected.connection);
-    let mut link = Link::new(socket, None, Rc::new(handle));
+    let mut link = Link::new(socket, None, Arc::new(handle));
     link.connecting = true;
     kernel.sockets.inet.outside.connections.insert(id, link);
     watch(kernel, cx, id);
     Ok(id)
 }
 
-/// Lets go of a link: its wait is dropped and its handle closed at the next flush.
-fn let_go(kernel: &mut Kernel, id: u32, link: Link) {
+/// Lets go of a link: its wait is dropped and its handle ended as `ending` says at the next flush.
+fn let_go(kernel: &mut Kernel, id: u32, link: Link, ending: Ending) {
     kernel
         .waiting
         .drop_where(|about| *about == WaitFor::Ready(id));
-    kernel.sockets.inet.outside.closing.push(link.handle);
+    kernel
+        .sockets
+        .inet
+        .outside
+        .closing
+        .push((link.handle, ending));
 }
 
-/// Ends every host connection of a socket whose last descriptor went.
-pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
+/// Ends every host connection of a socket as `ending` says.
+fn end_connections(kernel: &mut Kernel, socket: &SocketRef, ending: Ending) {
     let ids: Vec<u32> = kernel
         .sockets
         .inet
         .outside
         .connections
         .iter()
-        .filter(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Rc::as_ptr(socket)))
+        .filter(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Arc::as_ptr(socket)))
         .map(|(&id, _)| id)
         .collect();
     for id in ids {
         if let Some(link) = kernel.sockets.inet.outside.connections.remove(&id) {
-            let_go(kernel, id, link);
+            let_go(kernel, id, link, ending);
         }
     }
+}
+
+/// Ends every host connection of a socket whose last descriptor went.
+pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
+    end_connections(kernel, socket, Ending::Closed);
     stop_listening(kernel, socket);
+}
+
+/// Resets a TCP socket's connection to the outside, made or being made, at once, as a connect to
+/// `AF_UNSPEC` does.
+pub(super) fn disconnect<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+    socket: &SocketRef,
+) {
+    end_connections(kernel, socket, Ending::Disconnected);
+    flush(kernel, cx);
 }
 
 /// Asks the system to accept connections from outside for a listener on its port. A system that
 /// cannot (or whose port is taken) leaves it listening inside the container alone, counted.
-pub(super) fn listen<S: crate::System>(
+pub(super) fn listen<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
 ) {
     let id = next_id(&mut kernel.sockets.inet.outside);
@@ -425,9 +464,9 @@ pub(super) fn listen<S: crate::System>(
 }
 
 /// The system's `listen` for a listener's port, kept under `id` and waited on if it took it.
-fn ask_listen<S: crate::System>(
+fn ask_listen<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     id: u32,
 ) {
@@ -459,7 +498,7 @@ fn ask_listen<S: crate::System>(
     match listening {
         Ok(listening) => {
             let handle: HandleOf<S> = Handle::Listener(listening.listener);
-            let mut link = Link::new(socket, None, Rc::new(handle));
+            let mut link = Link::new(socket, None, Arc::new(handle));
             link.drained = true;
             kernel.sockets.inet.outside.listeners.insert(id, link);
             watch(kernel, cx, id);
@@ -482,12 +521,12 @@ pub(super) fn stop_listening(kernel: &mut Kernel, socket: &SocketRef) {
         .outside
         .listeners
         .iter()
-        .filter(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Rc::as_ptr(socket)))
+        .filter(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Arc::as_ptr(socket)))
         .map(|(&id, _)| id)
         .collect();
     for id in ids {
         if let Some(link) = kernel.sockets.inet.outside.listeners.remove(&id) {
-            let_go(kernel, id, link);
+            let_go(kernel, id, link, Ending::Closed);
         }
     }
 }
@@ -495,9 +534,9 @@ pub(super) fn stop_listening(kernel: &mut Kernel, socket: &SocketRef) {
 /// Takes the connections waiting at the system for a listener into its backlog while it has
 /// room. Each is the listener's end of a connection from the gateway (as Docker's published ports
 /// show it), at eth0's address.
-pub(super) fn take<S: crate::System>(
+pub(super) fn take<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     listener: &SocketRef,
 ) {
     let Some((listener_id, handle)) = kernel
@@ -506,7 +545,7 @@ pub(super) fn take<S: crate::System>(
         .outside
         .listeners
         .iter()
-        .find(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Rc::as_ptr(listener)))
+        .find(|(_, link)| core::ptr::eq(link.socket.as_ptr(), Arc::as_ptr(listener)))
         .map(|(&id, link)| (id, link.handle.clone()))
     else {
         return;
@@ -561,7 +600,7 @@ pub(super) fn take<S: crate::System>(
         }
         super::inet::made_outside(kernel, &embryo, false);
         let handle: HandleOf<S> = Handle::Connection(accepted);
-        let link = Link::new(&embryo, None, Rc::new(handle));
+        let link = Link::new(&embryo, None, Arc::new(handle));
         kernel.sockets.inet.outside.connections.insert(id, link);
         pull_and_wait(kernel, cx, &embryo, id);
         listener.borrow_mut().backlog.push_back(embryo);
@@ -570,9 +609,12 @@ pub(super) fn take<S: crate::System>(
 }
 
 /// Hands the system the connections and listeners released since the last call.
-pub(super) fn flush<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
-    for handle in core::mem::take(&mut kernel.sockets.inet.outside.closing) {
-        close_handle(&**cx.system, handle);
+pub(super) fn flush<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+) {
+    for (handle, ending) in core::mem::take(&mut kernel.sockets.inet.outside.closing) {
+        close_handle(&**cx.system, handle, ending);
     }
 }
 
@@ -602,7 +644,7 @@ fn interest(link: &Link, connection: bool) -> Option<ReadyFor> {
 
 /// Keeps the wait of link `id` asking for what it needs now: none, the one kept, or a new one in
 /// place of the one kept. A new wait's first poll comes when the kernel next settles.
-fn watch<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, id: u32) {
+fn watch<S: crate::System, C: Executor>(kernel: &mut Kernel, cx: &mut Context<'_, S, C>, id: u32) {
     let outside = &mut kernel.sockets.inet.outside;
     let connection = outside.connections.contains_key(&id);
     let Some(link) = outside
@@ -627,7 +669,7 @@ fn watch<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, id: u32
     let Some(wanted) = wanted else {
         return;
     };
-    let call: crate::waiting::Call = waiting_call!(ready_of(cx.system.clone(), handle, wanted));
+    let call: crate::waiting::Call = waiting_call(ready_of(cx.system.clone(), handle, wanted));
     if Waiting::on_heap(&call) {
         kernel
             .counters
@@ -639,7 +681,7 @@ fn watch<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, id: u32
 /// The system's wait on a connection or listener, owning what it waits on.
 async fn ready_of<S: crate::System>(
     system: Arc<S>,
-    handle: Rc<dyn Any>,
+    handle: Arc<dyn Any + Send + Sync>,
     interest: ReadyFor,
 ) -> Answer {
     let ready = match handle.downcast_ref::<HandleOf<S>>() {
@@ -666,9 +708,9 @@ async fn ready_of<S: crate::System>(
 
 /// The error a connection the system reports failed ended with, as a peek at it says, else
 /// `otherwise` (a peek also finds bytes still before the error).
-fn failure<S: crate::System>(
+fn failure<S: crate::System, C: Executor>(
     kernel: &Kernel,
-    cx: &Context<'_, S>,
+    cx: &Context<'_, S, C>,
     id: u32,
     otherwise: Errno,
 ) -> Errno {
@@ -679,7 +721,12 @@ fn failure<S: crate::System>(
     let peek = TcpReceiveRequest::Peek {
         offset: wcontainers_internet_protocol::ByteCount(0),
     };
-    match TcpConnections::receive(&**cx.system, connection, peek, &mut byte) {
+    match TcpConnections::receive(
+        &**cx.system,
+        connection,
+        peek,
+        &core::cell::RefCell::new(&mut byte[..]),
+    ) {
         Err(HostError::Errno(number)) => Errno(number as u32),
         _ => otherwise,
     }
@@ -687,9 +734,9 @@ fn failure<S: crate::System>(
 
 /// The system's wait on connection or listener `id` ended: a listener takes what waits, a
 /// connect ends, and a connection pulls what arrived and hears of room to send.
-pub(super) fn ready<S: crate::System>(
+pub(super) fn ready<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     id: u32,
     ready: Result<ReadinessReport, HostError>,
 ) {
@@ -723,7 +770,7 @@ pub(super) fn ready<S: crate::System>(
         if failed {
             let error = failure(kernel, cx, id, Errno::ECONNREFUSED);
             if let Some(link) = kernel.sockets.inet.outside.connections.remove(&id) {
-                let_go(kernel, id, link);
+                let_go(kernel, id, link, Ending::Closed);
             }
             flush(kernel, cx);
             super::inet::failed(kernel, cx, &socket, error);
@@ -770,11 +817,32 @@ pub(super) fn ready<S: crate::System>(
     super::write_space(kernel, cx, &socket);
 }
 
+/// Hears what the system knows now of `socket`'s connection to the outside, by polling its kept
+/// wait once, so that a call looking at the socket is not behind the host: a reset the host had
+/// before bytes the program already read on another connection is known, as on Linux.
+pub(super) fn hear_now<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+    socket: &SocketRef,
+) {
+    let Some(id) = socket
+        .borrow()
+        .inet
+        .as_deref()
+        .and_then(|inet| inet.outside)
+    else {
+        return;
+    };
+    if let Some(answer) = kernel.waiting.poll_now(WaitFor::Ready(id)) {
+        kernel.waiting_answered(cx, WaitFor::Ready(id), answer);
+    }
+}
+
 /// Pulls what the system has for a connection into its socket's queue, up to its receive buffer,
 /// and waits for more once it has none: bytes or datagrams, the end of a stream, or a reset.
-pub(super) fn pull_and_wait<S: crate::System>(
+pub(super) fn pull_and_wait<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     id: u32,
 ) {
@@ -784,14 +852,15 @@ pub(super) fn pull_and_wait<S: crate::System>(
 
 /// Receives from connection `id`, the system's TCP connection or a flow's UDP socket: where the
 /// bytes or the datagram's payload lie in `into`.
-fn receive<S: crate::System>(
+fn receive<S: crate::System, C: Executor>(
     kernel: &Kernel,
-    cx: &Context<'_, S>,
+    cx: &Context<'_, S, C>,
     id: u32,
     into: &mut [u8],
 ) -> Result<Range<usize>, HostError> {
     if let Some(connection) = connection_of::<S>(kernel, id) {
-        return TcpConnections::receive(&**cx.system, connection, TcpReceiveRequest::Read, into)
+        let into = core::cell::RefCell::new(into);
+        return TcpConnections::receive(&**cx.system, connection, TcpReceiveRequest::Read, &into)
             .map(|received| 0..received.length.0);
     }
     let Some(socket) = datagram_of::<S>(kernel, id) else {
@@ -800,7 +869,9 @@ fn receive<S: crate::System>(
     loop {
         // The flow asks for no transmit reports, and a packet that does not parse is dropped, as
         // Linux drops a malformed datagram.
-        if let UdpReceived::Packet(packet) = UdpSockets::receive(&**cx.system, socket, into)?
+        let received =
+            UdpSockets::receive(&**cx.system, socket, &core::cell::RefCell::new(&mut *into))?;
+        if let UdpReceived::Packet(packet) = received
             && let Some(payload) = payload_of(&into[..packet.fields.length.min(into.len())])
         {
             return Ok(payload);
@@ -819,9 +890,9 @@ fn payload_of(packet: &[u8]) -> Option<Range<usize>> {
 }
 
 /// What [`pull_and_wait`] takes now, without waiting, received into the kept buffer.
-fn pull_kept<S: crate::System>(
+fn pull_kept<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     id: u32,
 ) {
@@ -831,9 +902,9 @@ fn pull_kept<S: crate::System>(
 }
 
 /// [`pull_kept`], receiving into `buffer`.
-fn pull<S: crate::System>(
+fn pull<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     id: u32,
     buffer: &mut Vec<u8>,
@@ -976,7 +1047,7 @@ fn pull<S: crate::System>(
 /// A UDP socket's host connection to one destination is gone.
 fn forget_flow(kernel: &mut Kernel, socket: &SocketRef, id: u32) {
     if let Some(link) = kernel.sockets.inet.outside.connections.remove(&id) {
-        let_go(kernel, id, link);
+        let_go(kernel, id, link, Ending::Closed);
     }
     if let Some(inet) = socket.borrow_mut().inet.as_deref_mut() {
         inet.flows.retain(|_, flow| *flow != id);
@@ -986,9 +1057,9 @@ fn forget_flow(kernel: &mut Kernel, socket: &SocketRef, id: u32) {
 /// Whether a socket that asked for queued errors (IP_RECVERR or IPV6_RECVERR for the way the
 /// datagram went) hears of an outside destination's refusal; the host does not say what the
 /// refused datagram held, so nothing is queued, which is counted.
-fn unqueued_error<S: crate::System>(
+fn unqueued_error<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     flow: Option<Endpoint>,
 ) -> bool {
@@ -1012,9 +1083,9 @@ fn unqueued_error<S: crate::System>(
 }
 
 /// A TCP connection to the outside was reset or failed: closed, with the error to report.
-fn reset<S: crate::System>(
+fn reset<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     error: Errno,
 ) {
@@ -1068,17 +1139,17 @@ const PLAIN_DATAGRAM: IpSendFields = IpSendFields {
 
 /// Sends bytes of a TCP connection to the outside, as much as the system takes now; once it
 /// takes less, the connection waits for room.
-pub(super) fn send<S: crate::System>(
+pub(super) fn send<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     id: u32,
-    bytes: &[u8],
+    bytes: &mut [u8],
 ) -> Result<usize, Errno> {
+    let payload = core::cell::RefCell::new(&mut *bytes);
     let sent = match connection_of::<S>(kernel, id) {
-        Some(connection) => {
-            TcpConnections::send(&**cx.system, connection, PLAIN_SEND, bytes).map(|count| count.0)
-        }
+        Some(connection) => TcpConnections::send(&**cx.system, connection, PLAIN_SEND, &payload)
+            .map(|count| count.0),
         None => Err(HostError::Closed),
     };
     match sent {
@@ -1108,9 +1179,9 @@ pub(super) fn send<S: crate::System>(
 
 /// Sends one datagram to an outside destination through the system's UDP socket of the socket's
 /// flow to it; one that finds no room waits for it.
-pub(super) fn send_datagram<S: crate::System>(
+pub(super) fn send_datagram<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     to: Endpoint,
     data: &[u8],
@@ -1174,7 +1245,11 @@ pub(super) fn send_datagram<S: crate::System>(
 }
 
 /// Finishes sending on a TCP connection to the outside.
-pub(super) fn finish<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, id: u32) {
+pub(super) fn finish<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+    id: u32,
+) {
     if let Some(connection) = connection_of::<S>(kernel, id)
         && let Err(error) = TcpConnections::shut_down(&**cx.system, connection, TcpShutdown::Write)
     {
@@ -1188,9 +1263,9 @@ fn owner(kernel: &Kernel, id: u32) -> Option<SocketRef> {
 }
 
 /// A datagram from `from` into a UDP socket's queue, if its buffer has room.
-pub(super) fn deliver<S: crate::System>(
+pub(super) fn deliver<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     from: Endpoint,
     data: Vec<u8>,
@@ -1236,9 +1311,9 @@ pub(super) fn deliver<S: crate::System>(
 
 /// A name query sent to the container's name server: answered at once when it asks for nothing
 /// the host can look up, else once the host's lookup comes back.
-pub(super) fn query<S: crate::System>(
+pub(super) fn query<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     server: Endpoint,
     data: &[u8],
@@ -1260,7 +1335,7 @@ pub(super) fn query<S: crate::System>(
             outside.lookups.insert(
                 number,
                 Lookup {
-                    socket: Rc::downgrade(socket),
+                    socket: Arc::downgrade(socket),
                     server,
                     query: data.to_vec(),
                 },
@@ -1274,7 +1349,10 @@ pub(super) fn query<S: crate::System>(
 /// After a restore on a new system: connections to the outside are reported closed (plan
 /// section 12), listeners listen again, and lookups under way are asked again. The old system's
 /// waits and handles are dropped unanswered.
-pub(crate) fn restored<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
+pub(crate) fn restored<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+) {
     kernel.waiting.drop_where(|about| {
         matches!(
             about,
@@ -1326,15 +1404,15 @@ pub(crate) fn restored<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'
 }
 
 /// Asks the system's resolver the question of lookup `number`, as a waiting call.
-fn ask<S: crate::System>(
+fn ask<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     number: u64,
     asked: super::resolver::Asked,
 ) {
     let buffer = kernel.waiting.buffer();
     let call: crate::waiting::Call =
-        crate::waiting::waiting_call!(resolve(cx.system.clone(), asked, buffer));
+        crate::waiting::waiting_call(resolve(cx.system.clone(), asked, buffer));
     if crate::waiting::Waiting::on_heap(&call) {
         kernel
             .counters
@@ -1361,9 +1439,9 @@ async fn resolve<R: wcontainers_system::DomainNameResolver>(
 }
 
 /// The resolver answered lookup `number`: its reply goes to the socket that asked, if still open.
-pub(super) fn answered<S: crate::System>(
+pub(super) fn answered<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     number: u64,
     answer: Result<(), HostError>,
     bytes: Vec<u8>,
@@ -1392,7 +1470,7 @@ pub(super) fn answered<S: crate::System>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::waiting::tests::{Door, allocations};
+    use crate::waiting::tests::{Door, allocations_of};
     use domain::base::iana::{Class, Rtype};
     use domain::base::{Message, MessageBuilder, Name};
 
@@ -1429,8 +1507,7 @@ mod tests {
             resolver.door.shut();
             let asked = questions.pop().expect("a question");
             let buffer = waiting.buffer();
-            let call: crate::waiting::Call =
-                waiting_call!(resolve(resolver.clone(), asked, buffer));
+            let call: crate::waiting::Call = waiting_call(resolve(resolver.clone(), asked, buffer));
             assert!(waiting.start(WaitFor::Name(number), call).is_none());
             resolver.door.open();
             let (about, answer) = waiting.next_answer().expect("answered");
@@ -1443,10 +1520,11 @@ mod tests {
         };
         // The first round makes the cell and the buffer.
         round(0);
-        let before = allocations();
-        for number in 1..100 {
-            round(number);
-        }
-        assert_eq!(allocations(), before);
+        let counted = allocations_of(|| {
+            for number in 1..100 {
+                round(number);
+            }
+        });
+        assert_eq!(counted, 0);
     }
 }

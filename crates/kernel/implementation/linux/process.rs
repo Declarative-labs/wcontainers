@@ -1,9 +1,9 @@
 //! Processes and threads.
 
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 
 use wcontainers_abi::{MemoryId, Resume, ThreadId};
 
@@ -18,9 +18,6 @@ pub(crate) type Tid = i32;
 
 /// Linux's number of resource limits (`RLIM_NLIMITS`).
 pub(crate) const LIMITS: usize = 16;
-
-/// Linux's number of signals on ARM64.
-pub(crate) const SIGNALS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Limit {
@@ -148,7 +145,7 @@ pub(crate) struct Process {
     /// The least `oom_score_adj` it may be given without CAP_SYS_RESOURCE (`oom_score_adj_min`).
     pub oom_score_adj_min: i16,
     /// The session's controlling terminal, if the process has one: a pair whose slave it is.
-    pub terminal: Option<Rc<core::cell::RefCell<crate::tty::Pty>>>,
+    pub terminal: Option<Arc<atomic_refcell::AtomicRefCell<crate::tty::Pty>>>,
     /// For a session leader whose terminal was hung up, the foreground group it had
     /// (`tty_old_pgrp`), which is sent SIGHUP when the leader ends.
     pub terminal_old_group: Option<Pid>,
@@ -180,17 +177,17 @@ pub(crate) struct Queued {
 /// The count goes up when one is made or copied and down when it goes.
 #[derive(Debug)]
 pub(crate) struct Charge {
-    count: Rc<core::cell::Cell<u64>>,
+    count: Arc<crossbeam_utils::atomic::AtomicCell<u64>>,
     amount: u64,
 }
 
 impl Charge {
-    pub fn new(count: &Rc<core::cell::Cell<u64>>) -> Self {
+    pub(crate) fn new(count: &Arc<crossbeam_utils::atomic::AtomicCell<u64>>) -> Self {
         Self::of(count, 1)
     }
 
-    pub fn of(count: &Rc<core::cell::Cell<u64>>, amount: u64) -> Self {
-        count.set(count.get() + amount);
+    pub(crate) fn of(count: &Arc<crossbeam_utils::atomic::AtomicCell<u64>>, amount: u64) -> Self {
+        count.store(count.load() + amount);
         Self {
             count: count.clone(),
             amount,
@@ -198,11 +195,11 @@ impl Charge {
     }
 
     /// The count it is part of.
-    pub fn count(&self) -> &Rc<core::cell::Cell<u64>> {
+    pub(crate) fn count(&self) -> &Arc<crossbeam_utils::atomic::AtomicCell<u64>> {
         &self.count
     }
 
-    pub fn amount(&self) -> u64 {
+    pub(crate) fn amount(&self) -> u64 {
         self.amount
     }
 }
@@ -215,7 +212,7 @@ impl Clone for Charge {
 
 impl Drop for Charge {
     fn drop(&mut self) {
-        self.count.set(self.count.get() - self.amount);
+        self.count.store(self.count.load() - self.amount);
     }
 }
 
@@ -228,7 +225,7 @@ pub(crate) struct Away {
     pub pending: Pending,
     pub shown: Leader,
     /// Its file system context while the task lives, for `/proc`'s links.
-    pub fs: alloc::rc::Weak<RefCell<FsContext>>,
+    pub fs: alloc::sync::Weak<AtomicRefCell<FsContext>>,
     /// What its end stores into the memory; none for a task that goes on running elsewhere.
     pub last_stores: Option<LastStores>,
     /// The `vfork` parent it keeps waiting.
@@ -243,7 +240,7 @@ pub(crate) struct LastStores {
 }
 
 impl Away {
-    pub fn of(thread: &Thread) -> Self {
+    pub(crate) fn of(thread: &Thread) -> Self {
         Self {
             signal_mask: thread.signal_mask,
             pending: Pending::default(),
@@ -251,7 +248,7 @@ impl Away {
                 schedule: thread.schedule,
                 ..Leader::of(thread)
             },
-            fs: Rc::downgrade(&thread.fs),
+            fs: Arc::downgrade(&thread.fs),
             last_stores: Some(LastStores {
                 robust_list: thread.robust_list.0,
                 clear_child_tid: thread.clear_child_tid,
@@ -273,7 +270,7 @@ impl Pending {
     /// Takes the first queued instance of `signal`, clearing its bit when no other is left. A
     /// signal pending with no information left (its queue was full) comes as if sent by `kill` from
     /// nobody (`collect_signal`).
-    pub fn take(&mut self, signal: u32) -> Option<Queued> {
+    pub(crate) fn take(&mut self, signal: u32) -> Option<Queued> {
         let bit = crate::signal::bit(signal);
         if self.set & bit == 0 {
             return None;
@@ -300,7 +297,7 @@ impl Pending {
     }
 
     /// Drops every instance of the signals in `set`.
-    pub fn drop_set(&mut self, set: u64) {
+    pub(crate) fn drop_set(&mut self, set: u64) {
         self.set &= !set;
         self.queue
             .retain(|queued| set & crate::signal::bit(queued.signal) == 0);
@@ -312,13 +309,13 @@ pub(crate) const NAME_LENGTH: usize = 15;
 
 impl Thread {
     /// Sets the `comm` name from a path's last part, as `execve` does.
-    pub fn set_name(&mut self, name: &[u8]) {
+    pub(crate) fn set_name(&mut self, name: &[u8]) {
         let name = name.rsplit(|byte| *byte == b'/').next().unwrap_or(name);
         self.name = name[..name.len().min(NAME_LENGTH)].to_vec();
     }
 
     /// Sets the `comm` name to the bytes up to the first zero, as `PR_SET_NAME` does.
-    pub fn set_name_exact(&mut self, name: &[u8]) {
+    pub(crate) fn set_name_exact(&mut self, name: &[u8]) {
         let end = name
             .iter()
             .position(|byte| *byte == 0)
@@ -328,15 +325,16 @@ impl Thread {
 }
 
 /// An address map, shared by the processes made with CLONE_VM.
-pub(crate) type Map = Rc<RefCell<AddressMap>>;
+pub(crate) type Map = Arc<AtomicRefCell<AddressMap>>;
 
 /// Signal handlers by signal number less one, shared by the threads and processes made with
 /// CLONE_SIGHAND (Linux's `sighand_struct`).
-pub(crate) type Handlers = Rc<RefCell<[kernel_sigaction; SIGNALS]>>;
+pub(crate) type Handlers =
+    Arc<AtomicRefCell<[kernel_sigaction; crate::linux_extra::SIGNALS as usize]>>;
 
 /// A descriptor table, shared by the threads and processes made with CLONE_FILES (Linux's
 /// `files_struct`).
-pub(crate) type Files = Rc<RefCell<FdTable>>;
+pub(crate) type Files = Arc<AtomicRefCell<FdTable>>;
 
 /// The root, working directory and umask, shared by the threads and processes made with CLONE_FS
 /// (Linux's `fs_struct`).
@@ -347,7 +345,7 @@ pub(crate) struct FsContext {
     pub umask: u32,
 }
 
-pub(crate) type Fs = Rc<RefCell<FsContext>>;
+pub(crate) type Fs = Arc<AtomicRefCell<FsContext>>;
 
 #[derive(Clone)]
 pub(crate) struct Thread {
@@ -382,7 +380,7 @@ pub(crate) struct Thread {
     /// The call the thread is in, while it has not finished: what it waits for and how far it got.
     pub call: Call,
     /// What the call took from its arguments, kept while it waits so each run takes the same.
-    pub taken: RefCell<Taken>,
+    pub taken: AtomicRefCell<Taken>,
     /// The futexes the call waits on, while it is a futex wait.
     pub futex: crate::syscall::futex::Wait,
     /// What `restart_syscall` continues, for a call interrupted by a handler.
@@ -417,7 +415,7 @@ pub(crate) struct Thread {
     /// `rseq`: the registered area, its length and its signature.
     pub rseq: Option<(u64, u32, u32)>,
     /// The seccomp filters the thread installed, oldest first; Docker's profile is not among them.
-    pub filters: Vec<Rc<crate::seccomp::Filter>>,
+    pub filters: Vec<Arc<crate::seccomp::Filter>>,
     /// `PR_SET_PDEATHSIG`: the signal sent when the parent ends; cleared when the ids change.
     pub parent_death_signal: i32,
     /// `PR_SET_TIMERSLACK`: how late a timer may end, in nanoseconds.
@@ -430,6 +428,9 @@ pub(crate) struct Thread {
     pub opening: Option<crate::file::FileRef>,
     /// The inode a thread other than its process's first gives its process descriptors.
     pub pidfd: Option<Node>,
+    /// The processors it may run on, as `sched_setaffinity` left them: a bit for each processor
+    /// online, lowest first; none for every one.
+    pub affinity: Option<Arc<[u8]>>,
 }
 
 /// The timer slack a thread starts with (Linux's `init_task` value, which children inherit).
@@ -446,10 +447,11 @@ pub(crate) struct Leader {
     pub schedule: Schedule,
     pub signal_mask: u64,
     pub filters: usize,
+    pub affinity: Option<Arc<[u8]>>,
 }
 
 impl Leader {
-    pub fn of(thread: &Thread) -> Self {
+    pub(crate) fn of(thread: &Thread) -> Self {
         Self {
             name: thread.name.clone(),
             credentials: thread.credentials.clone(),
@@ -459,6 +461,7 @@ impl Leader {
             },
             signal_mask: thread.signal_mask,
             filters: thread.filters.len(),
+            affinity: thread.affinity.clone(),
         }
     }
 }
@@ -525,12 +528,12 @@ enum TakenItem {
 
 impl Taken {
     /// A run of the call starts: it takes from the start again.
-    pub fn rewind(&mut self) {
+    pub(crate) fn rewind(&mut self) {
         self.used = 0;
     }
 
     /// The call ended: what it took goes, its files given back (see `Kernel::give_back`).
-    pub fn clear(&mut self) -> Vec<crate::file::FileRef> {
+    pub(crate) fn clear(&mut self) -> Vec<crate::file::FileRef> {
         self.used = 0;
         self.items
             .drain(..)
@@ -555,7 +558,7 @@ impl Taken {
     }
 
     /// The open file descriptor `fd` named when the call first took it, else `look` now.
-    pub fn file(
+    pub(crate) fn file(
         &mut self,
         fd: i32,
         look: impl FnOnce() -> Result<crate::file::FileRef, crate::Errno>,
@@ -572,7 +575,7 @@ impl Taken {
 
     /// A value the call settles once, such as where an append goes: the one an earlier run
     /// settled, else `value`.
-    pub fn value(&mut self, value: u64) -> u64 {
+    pub(crate) fn value(&mut self, value: u64) -> u64 {
         if let Some(TakenItem::Value(known)) = self.next(|item| matches!(item, TakenItem::Value(_)))
         {
             return known;
@@ -582,7 +585,7 @@ impl Taken {
     }
 
     /// The path copied from `address` when the call first took it, else `read` now.
-    pub fn path(
+    pub(crate) fn path(
         &mut self,
         address: u64,
         read: impl FnOnce() -> Result<Vec<u8>, crate::Errno>,
@@ -645,7 +648,7 @@ pub(crate) enum ObjectId {
 
 impl ObjectId {
     /// An inode's identity.
-    pub fn of_node(node: &crate::fs::Node) -> Self {
+    pub(crate) fn of_node(node: &crate::fs::Node) -> Self {
         let inode = node.borrow();
         Self::Inode {
             device: inode.fs.device,
@@ -675,7 +678,7 @@ pub(crate) enum Restart {
 }
 
 impl Thread {
-    pub fn new(
+    pub(crate) fn new(
         process: Pid,
         cpu: ThreadId,
         files: Files,
@@ -699,7 +702,7 @@ impl Thread {
             pending: Pending::default(),
             alternate_stack: (0, 0, 0),
             call: Call::default(),
-            taken: RefCell::default(),
+            taken: AtomicRefCell::default(),
             futex: Default::default(),
             restart: None,
             runtime: 0,
@@ -721,6 +724,7 @@ impl Thread {
             default_timer_slack: TIMER_SLACK,
             opening: None,
             pidfd: None,
+            affinity: None,
         }
     }
 }

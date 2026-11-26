@@ -7,6 +7,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
+use wcontainers_executor::Executor;
 
 use wcontainers_abi::{PAGE_SIZE, Permissions, RegisterBlock};
 use zerocopy::IntoBytes;
@@ -116,9 +117,9 @@ pub(crate) fn wanted(kernel: &Kernel, pid: Pid) -> bool {
 
 /// Starts the dump of thread `tid`'s process for `signal` (`coredump_wait` stops the other
 /// threads where they are, then the dump is written), and runs it as far as it goes now.
-pub(crate) fn start<S: crate::System>(
+pub(crate) fn start<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     signal: u32,
     info: [u8; 128],
@@ -151,7 +152,11 @@ pub(crate) fn start<S: crate::System>(
 
 /// Runs thread `tid`'s dump, the first time or again once the backend has answered; when it is
 /// done, the process ends with the signal, and the core bit if a core file was made.
-pub(crate) fn run<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>, tid: Tid) {
+pub(crate) fn run<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+    tid: Tid,
+) {
     loop {
         let Some(mut dump) = kernel.dumps.remove(&tid) else {
             return;
@@ -178,9 +183,9 @@ pub(crate) fn run<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>
 }
 
 /// Does the dump's next stage: whether another follows.
-fn step<S: crate::System>(
+fn step<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     dump: &mut Dump,
 ) -> Result<bool, Errno> {
@@ -263,10 +268,10 @@ fn step<S: crate::System>(
 
 impl Dump {
     /// The file's next bytes from `written` on.
-    fn bytes_at<S: crate::System>(
+    fn bytes_at<S: crate::System, C: Executor>(
         &self,
         kernel: &mut Kernel,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
     ) -> Result<Vec<u8>, Errno> {
         let start = self.written;
@@ -296,9 +301,9 @@ impl Dump {
 
 /// Reads the dying process's memory as the dump does (`get_dump_page` forces reading whatever the
 /// page allows), once pages of mapped backend files are read in.
-fn read_memory<S: crate::System>(
+fn read_memory<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     address: u64,
     into: &mut [u8],
@@ -314,9 +319,9 @@ fn read_memory<S: crate::System>(
 }
 
 /// `do_unlinkat` of the core's name, as Linux removes an old core before making the new one.
-fn unlink<S: crate::System>(
+fn unlink<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
 ) -> Result<(), Errno> {
     let at = super::files::start(kernel, tid, AT_FDCWD as u64, CORE)?;
@@ -358,9 +363,9 @@ impl Note {
 
 /// The notes in `elf_core_dump`'s order: the dumping thread's status, the process's notes, that
 /// thread's other register sets, then each other thread's status and register sets.
-fn notes<S: crate::System>(
+fn notes<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     signal: u32,
     info: &[u8; 128],
@@ -378,7 +383,7 @@ fn notes<S: crate::System>(
     for (index, &thread) in threads.iter().enumerate() {
         let mut registers = RegisterBlock::ZERO;
         cx.cpu
-            .registers(kernel.threads[&thread].cpu, &mut registers);
+            .read_registers(kernel.threads[&thread].cpu, &mut registers);
         notes.push(Note::core(
             NT_PRSTATUS,
             status(kernel, pid, thread, signal, &registers),
@@ -397,20 +402,13 @@ fn notes<S: crate::System>(
         }
         let fpsimd = user_fpsimd_state {
             vregs: core::array::from_fn(|index| {
-                u128::from(registers.v[index][0]) | (u128::from(registers.v[index][1]) << 64)
+                u128::from(registers.v[index][0]) | (u128::from(registers.v[index][1]) << u64::BITS)
             }),
             fpsr: registers.fpsr,
             fpcr: registers.fpcr,
             __reserved: [0; 2],
         };
-        // SAFETY: `user_fpsimd_state` is plain integers with no padding.
-        let fpsimd = unsafe {
-            core::slice::from_raw_parts(
-                (&fpsimd as *const user_fpsimd_state).cast::<u8>(),
-                size_of::<user_fpsimd_state>(),
-            )
-        };
-        notes.push(Note::core(NT_PRFPREG, fpsimd.to_vec()));
+        notes.push(Note::core(NT_PRFPREG, fpsimd.as_bytes().to_vec()));
         // TPIDR_EL0, then TPIDR2_EL0, which this machine does not have (zero, as Linux gives).
         let mut tls = registers.tpidr_el0.to_le_bytes().to_vec();
         tls.extend_from_slice(&[0; 8]);
@@ -443,7 +441,7 @@ const PROC_FIELDS_CORE: u64 = 6;
 fn timeval(nanoseconds: u64) -> [i64; 2] {
     [
         (nanoseconds / NANOSECONDS_PER_SECOND) as i64,
-        (nanoseconds % NANOSECONDS_PER_SECOND / 1000) as i64,
+        (nanoseconds % NANOSECONDS_PER_SECOND / NANOSECONDS_PER_MICROSECOND) as i64,
     ]
 }
 
@@ -486,9 +484,9 @@ fn status(kernel: &Kernel, pid: Pid, tid: Tid, signal: u32, registers: &Register
 }
 
 /// The process's `elf_prpsinfo` (`fill_psinfo`), of its first thread.
-fn process_info<S: crate::System>(
+fn process_info<S: crate::System, C: Executor>(
     kernel: &Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     pid: Pid,
     dumping: Tid,
 ) -> Vec<u8> {
@@ -589,9 +587,9 @@ fn mapped_files(kernel: &Kernel, pid: Pid) -> Vec<u8> {
 /// How much of a mapping the dump writes (`vma_dump_size`) under `filter`. Which pages a program
 /// touched is not known here: anonymous memory counts as written to, as Linux's `anon_vma` shows
 /// once a page was touched, and a private file mapping as written to once a page was copied.
-fn dump_size<S: crate::System>(
+fn dump_size<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     mapping: &Mapping,
     filter: u32,
@@ -678,9 +676,9 @@ impl Writer {
 }
 
 /// The file's writes in order (`elf_core_dump`) and its size.
-fn layout<S: crate::System>(
+fn layout<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     notes: &[Note],
     limit: u64,

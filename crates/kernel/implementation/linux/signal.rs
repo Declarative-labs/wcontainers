@@ -3,6 +3,7 @@
 //! return from a handler.
 
 use wcontainers_abi::{Access, RegisterBlock, Resume};
+use wcontainers_executor::Executor;
 
 use crate::counters::reason;
 use crate::linux::general::*;
@@ -140,9 +141,9 @@ impl Kernel {
 
     /// Sends a signal to one thread (`tkill`, a fault, a timer); one that does not fit the user's
     /// queue is lost as [`Self::queue_to_thread`] says.
-    pub(crate) fn send_to_thread<S: crate::System>(
+    pub(crate) fn send_to_thread<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         signal: u32,
         info: [u8; 128],
@@ -152,9 +153,9 @@ impl Kernel {
 
     /// As [`Self::send_to_thread`], telling the sender (EAGAIN) of a real-time signal with
     /// information of its own that does not fit the receiving user's queue.
-    pub(crate) fn queue_to_thread<S: crate::System>(
+    pub(crate) fn queue_to_thread<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         signal: u32,
         info: [u8; 128],
@@ -164,9 +165,9 @@ impl Kernel {
 
     /// A signal the embedder sent to thread `tid` of process `pid` through its handle, sent as
     /// `rt_tgsigqueueinfo` sends one; counted and not sent when it cannot be.
-    pub(crate) fn send_from_embedder<S: crate::System>(
+    pub(crate) fn send_from_embedder<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         tid: Tid,
         info: crate::siginfo::Bytes,
@@ -190,9 +191,9 @@ impl Kernel {
     }
 
     /// SIGXFSZ for a write past the file size limit, as `send_sig` sends it.
-    pub(crate) fn send_file_size_signal<S: crate::System>(
+    pub(crate) fn send_file_size_signal<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
     ) {
         let process = self.process_of(tid);
@@ -206,9 +207,9 @@ impl Kernel {
     }
 
     /// Sends a signal to a whole process (`kill`).
-    pub(crate) fn send_to_process<S: crate::System>(
+    pub(crate) fn send_to_process<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         signal: u32,
         info: [u8; 128],
@@ -218,9 +219,9 @@ impl Kernel {
 
     /// A POSIX timer's signal, to one thread or (with none) the process: it goes in the timer's own
     /// place in the user's count, taken when the timer was made, so it always fits.
-    pub(crate) fn send_from_timer<S: crate::System>(
+    pub(crate) fn send_from_timer<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         thread: Option<Tid>,
         pid: Pid,
         signal: u32,
@@ -258,7 +259,13 @@ impl Kernel {
 
     /// The caller's count of pipe pages (by its real user id), and whether it is free of the limits
     /// on them (`pipe_is_unprivileged_user`: neither CAP_SYS_RESOURCE nor CAP_SYS_ADMIN).
-    pub(crate) fn pipe_pages(&mut self, tid: Tid) -> (alloc::rc::Rc<core::cell::Cell<u64>>, bool) {
+    pub(crate) fn pipe_pages(
+        &mut self,
+        tid: Tid,
+    ) -> (
+        alloc::sync::Arc<crossbeam_utils::atomic::AtomicCell<u64>>,
+        bool,
+    ) {
         let credentials = self.credentials(tid);
         let privileged = credentials.has(CAP_SYS_RESOURCE) || credentials.has(CAP_SYS_ADMIN);
         let uid = credentials.uid;
@@ -271,13 +278,13 @@ impl Kernel {
         let uid = self.credentials(tid).uid;
         let limit = self.process_of(tid).limits[RLIMIT_SIGPENDING as usize].current;
         let count = self.signal_users.entry(uid).or_default().clone();
-        (count.get() < limit).then(|| crate::process::Charge::new(&count))
+        (count.load() < limit).then(|| crate::process::Charge::new(&count))
     }
 
     /// As [`Self::send_to_process`], telling the sender as [`Self::queue_to_thread`] does.
-    pub(crate) fn queue_to_process<S: crate::System>(
+    pub(crate) fn queue_to_process<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         signal: u32,
         info: [u8; 128],
@@ -288,9 +295,9 @@ impl Kernel {
     /// Linux's `send_sigio`: the I/O signal of an open file with `FASYNC` set, to its owner's tasks
     /// that its namer may signal (`sigio_perm`), for `reason` (`POLL_IN`, `POLL_OUT`, ...). With no
     /// signal chosen it is SIGIO from the kernel; otherwise it carries the band and the descriptor.
-    pub(crate) fn send_io_signal<S: crate::System>(
+    pub(crate) fn send_io_signal<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         file: &crate::file::FileRef,
         reason: u32,
     ) {
@@ -307,9 +314,9 @@ impl Kernel {
     }
 
     /// Linux's `send_sigio` itself, for descriptor `fd` of a file with `owner`.
-    pub(crate) fn signal_owner<S: crate::System>(
+    pub(crate) fn signal_owner<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         owner: &crate::file::Owner,
         fd: i32,
         reason: u32,
@@ -351,9 +358,9 @@ impl Kernel {
 
     /// Linux's `send_sigurg`: SIGURG to an open file's owner's tasks that its namer may signal,
     /// with or without `FASYNC`; false if it has no owner.
-    pub(crate) fn send_urgent_signal<S: crate::System>(
+    pub(crate) fn send_urgent_signal<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         file: &crate::file::FileRef,
     ) -> bool {
         let Some(owner) = file.borrow().owner.filter(|owner| owner.pid != 0) else {
@@ -404,9 +411,9 @@ impl Kernel {
     }
 
     /// Sends a signal to every live process of a group; false if it has none.
-    pub(crate) fn send_to_group<S: crate::System>(
+    pub(crate) fn send_to_group<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         group: Pid,
         signal: u32,
         info: [u8; 128],
@@ -425,9 +432,9 @@ impl Kernel {
 
     /// Linux's `send_signal_locked`: the side effects of stopping and continuing, dropping what is
     /// ignored, queueing, then waking or ending what it concerns.
-    fn send<S: crate::System>(
+    fn send<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         target: Target,
         signal: u32,
         info: [u8; 128],
@@ -436,9 +443,9 @@ impl Kernel {
     }
 
     /// As `send`; a timer's signal (`timer`) is queued in the timer's place, not charged again.
-    fn send_queued<S: crate::System>(
+    fn send_queued<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         target: Target,
         signal: u32,
         info: [u8; 128],
@@ -559,7 +566,7 @@ impl Kernel {
         let code = i32::from_le_bytes(info[8..12].try_into().expect("four bytes"));
         let special = code == SI_KERNEL as i32;
         let overrides = signal < SIGRTMIN && (special || code >= 0);
-        if overrides || count.get() < limit {
+        if overrides || count.load() < limit {
             return Ok(Some(crate::process::Charge::new(&count)));
         }
         if signal >= SIGRTMIN && !special && code != SI_USER as i32 {
@@ -571,9 +578,9 @@ impl Kernel {
     /// Linux's `complete_signal`: a fatal signal that does not dump core and that a thread does not
     /// block ends the process when one of its threads next runs; otherwise a thread that does not
     /// block it is woken to act on it.
-    fn complete<S: crate::System>(
+    fn complete<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         target: Target,
         signal: u32,
@@ -698,9 +705,9 @@ impl Kernel {
     /// fault: acts on the signals it does not block, as arm64's `do_signal` does. A call a signal
     /// interrupted is restarted or answers EINTR. Returns how the thread continues, or none if it
     /// stopped or is gone.
-    pub(crate) fn deliver<S: crate::System>(
+    pub(crate) fn deliver<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         resume: Resume,
     ) -> Option<Resume> {
@@ -788,7 +795,8 @@ impl Kernel {
                         // another call's answer is in x0.
                         if let Resume::Return(value) = resume {
                             let mut registers = RegisterBlock::ZERO;
-                            cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+                            cx.cpu
+                                .read_registers(self.threads[&tid].cpu, &mut registers);
                             if restart.is_some() {
                                 registers.pc -= 4;
                             } else {
@@ -803,7 +811,8 @@ impl Kernel {
             }
             // A handler runs: the interrupted call answers EINTR or is set to run again after it.
             let mut registers = RegisterBlock::ZERO;
-            cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+            cx.cpu
+                .read_registers(self.threads[&tid].cpu, &mut registers);
             if let Resume::Return(value) = resume {
                 let original = registers.x[0];
                 registers.x[0] = value;
@@ -840,7 +849,8 @@ impl Kernel {
         if let Some(code) = restart {
             // No handler ran: the call runs again, from `restart_syscall` for one that keeps state.
             let mut registers = RegisterBlock::ZERO;
-            cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+            cx.cpu
+                .read_registers(self.threads[&tid].cpu, &mut registers);
             registers.pc -= 4;
             if code == Errno::ERESTART_RESTARTBLOCK {
                 registers.x[wcontainers_abi::SYSTEM_CALL_NUMBER_REGISTER] =
@@ -858,16 +868,17 @@ impl Kernel {
     /// A thread taken off the CPU while it ran its own code (`rseq_sched_switch_event`): inside its
     /// restartable sequence it continues at the abort handler. Returns how it continues, or none if
     /// a bad area killed its process.
-    pub(crate) fn rseq_preempted<S: crate::System>(
+    pub(crate) fn rseq_preempted<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
     ) -> Option<Resume> {
         if self.threads[&tid].rseq.is_none() {
             return Some(Resume::Continue);
         }
         let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+        cx.cpu
+            .read_registers(self.threads[&tid].cpu, &mut registers);
         let before = registers.pc;
         if self.rseq_fixup(cx, tid, &mut registers).is_err() {
             self.die_with(cx, tid, SIGSEGV, kernel_info(SIGSEGV));
@@ -883,9 +894,9 @@ impl Kernel {
     /// Linux's `rseq_ip_fixup` before a handler runs: a thread inside its registered restartable
     /// sequence's critical section goes to the sequence's abort handler, whose signature must match;
     /// the area's current sequence is cleared. A bad area is an error (SIGSEGV).
-    fn rseq_fixup<S: crate::System>(
+    fn rseq_fixup<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         registers: &mut RegisterBlock,
     ) -> Result<(), Errno> {
@@ -937,7 +948,12 @@ impl Kernel {
 
     /// Stops a process for job control (`do_signal_stop`): its threads stop where they are and its
     /// parent is told.
-    fn stop_process<S: crate::System>(&mut self, cx: &mut Context<'_, S>, pid: Pid, signal: u32) {
+    fn stop_process<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        pid: Pid,
+        signal: u32,
+    ) {
         // Threads in line or on the CPU wait aside; parked ones stay parked, and any that finish
         // their call meanwhile wait aside too.
         for tid in self.processes[&pid].threads.clone() {
@@ -956,7 +972,11 @@ impl Kernel {
     /// Continues a stopped process (SIGCONT's `prepare_signal`): its threads go back to acting on
     /// their signals and running; a wait sees it at once and the parent is sent SIGCHLD when one of
     /// its threads next comes back from running (`get_signal`), or now if every one is parked.
-    fn continue_process<S: crate::System>(&mut self, cx: &mut Context<'_, S>, pid: Pid) {
+    fn continue_process<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        pid: Pid,
+    ) {
         let process = self.processes.get_mut(&pid).expect("process");
         if !process.stopped {
             return;
@@ -983,7 +1003,11 @@ impl Kernel {
     }
 
     /// A thread back from running tells its parent of its process's continuing, if it has not been.
-    pub(crate) fn tell_continued<S: crate::System>(&mut self, cx: &mut Context<'_, S>, tid: Tid) {
+    pub(crate) fn tell_continued<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        tid: Tid,
+    ) {
         let pid = self.threads[&tid].process;
         if core::mem::take(
             &mut self
@@ -998,9 +1022,9 @@ impl Kernel {
 
     /// Writes a handler's frame below the thread's stack (or on its alternate stack) and points the
     /// registers at the handler, as arm64's `setup_rt_frame` does.
-    fn setup_frame<S: crate::System>(
+    fn setup_frame<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         queued: &Queued,
         action: &kernel_sigaction,
@@ -1111,14 +1135,14 @@ impl Kernel {
 
     /// `rt_sigreturn`: puts back the registers, mask and alternate stack a handler's frame holds. A
     /// frame that is not one is SIGSEGV.
-    pub(crate) fn sigreturn<S: crate::System>(
+    pub(crate) fn sigreturn<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
     ) -> Outcome {
         let cpu = self.threads[&tid].cpu;
         let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(cpu, &mut registers);
+        cx.cpu.read_registers(cpu, &mut registers);
         let at = registers.sp;
         match self.restore_frame(cx, tid, at, &mut registers) {
             Ok(()) => {
@@ -1132,9 +1156,9 @@ impl Kernel {
         }
     }
 
-    fn restore_frame<S: crate::System>(
+    fn restore_frame<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         at: u64,
         registers: &mut RegisterBlock,
@@ -1271,9 +1295,9 @@ impl Kernel {
     }
 
     /// A fault the stand-in reported: the signal Linux sends for it, acted on at once.
-    pub(crate) fn force_fault<S: crate::System>(
+    pub(crate) fn force_fault<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         signal: u32,
         code: i32,
@@ -1295,21 +1319,15 @@ impl Kernel {
         self.return_to_user(cx, tid, Resume::FromRegisters);
     }
 
-    fn thread_pc_now<S: crate::System>(&mut self, cx: &mut Context<'_, S>, tid: Tid) -> u64 {
-        let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
-        registers.pc
-    }
-
-    /// A fault after which the thread's registers are lost: the process dies of the signal.
-    pub(crate) fn fatal_fault<S: crate::System>(
+    fn thread_pc_now<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
-        signal: u32,
-    ) {
-        let pid = self.threads[&tid].process;
-        self.die_of(cx, pid, signal);
+    ) -> u64 {
+        let mut registers = RegisterBlock::ZERO;
+        cx.cpu
+            .read_registers(self.threads[&tid].cpu, &mut registers);
+        registers.pc
     }
 
     /// SIGSEGV at an address, as `arm64_notify_segfault` sends it for a bad frame.
@@ -1322,9 +1340,9 @@ impl Kernel {
     /// Meets the embedder's watches on what acting on the signal taken touches: the frame and
     /// restartable sequence of a handler, or the thread ends of a fatal one; false if the thread
     /// must wait.
-    fn frame_touched<S: crate::System>(
+    fn frame_touched<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         signal: u32,
     ) -> bool {
@@ -1340,16 +1358,11 @@ impl Kernel {
             return !fatal || self.ends_touched(cx, tid);
         }
         let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(thread.cpu, &mut registers);
+        cx.cpu.read_registers(thread.cpu, &mut registers);
         let (at, _, top) = frame_bounds(thread.alternate_stack, action.sa_flags, registers.sp);
         if crate::user::access_ok(at, top.wrapping_sub(at)) {
             let mut memory = crate::system::CallMemory::new(self, cx, tid);
-            if !crate::syscall::touch::Memory::touch(
-                &mut memory,
-                at,
-                top - at,
-                crate::system::AccessKind::Write,
-            ) {
+            if !memory.touch(at, top - at, crate::system::AccessKind::Write) {
                 return false;
             }
         }
@@ -1358,21 +1371,29 @@ impl Kernel {
 
     /// Meets the embedder's watches on what the ends of thread `tid`'s process store; false if the
     /// thread must wait.
-    fn ends_touched<S: crate::System>(&mut self, cx: &mut Context<'_, S>, tid: Tid) -> bool {
+    fn ends_touched<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        tid: Tid,
+    ) -> bool {
         let ends = self.thread_ends(tid, crate::syscall::touch::Ending::Process);
         let mut memory = crate::system::CallMemory::new(self, cx, tid);
         crate::syscall::touch::thread_ends(&mut memory, &ends)
     }
 
     /// Meets the embedder's watches on what `rseq_fixup` touches; false if the thread must wait.
-    fn rseq_touched<S: crate::System>(&mut self, cx: &mut Context<'_, S>, tid: Tid) -> bool {
-        use crate::syscall::touch::Memory;
+    fn rseq_touched<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        tid: Tid,
+    ) -> bool {
         use crate::system::AccessKind::{Read, Write};
         let Some((area, _, _)) = self.threads[&tid].rseq else {
             return true;
         };
         let mut registers = RegisterBlock::ZERO;
-        cx.cpu.registers(self.threads[&tid].cpu, &mut registers);
+        cx.cpu
+            .read_registers(self.threads[&tid].cpu, &mut registers);
         let mut memory = crate::system::CallMemory::new(self, cx, tid);
         let field = area + RSEQ_CS_FIELD;
         let mut sequence = [0; size_of::<u64>()];
@@ -1405,9 +1426,9 @@ impl Kernel {
 
     /// A fault the embedder's watches or its record of written pages made, on an access the page's
     /// mapping allows: the hook, or the page noted as written. Whether it was such a fault.
-    fn embedder_fault<S: crate::System>(
+    fn embedder_fault<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         address: u64,
         access: Access,
@@ -1426,8 +1447,8 @@ impl Kernel {
                     .is_some_and(|mapping| mapping.copies_on_write(address))
                 || map.readable_whole(page..page + wcontainers_abi::PAGE_SIZE)
                     == Err(crate::system::MemoryError::NotRead);
-            match map.watches.watch_at(address) {
-                WatchesFor::None if !held_here => (map.watches.watch_at(last), last, false),
+            match map.watches.watch_at(tid, address) {
+                WatchesFor::None if !held_here => (map.watches.watch_at(tid, last), last, false),
                 watch => (watch, address, true),
             }
         };
@@ -1471,9 +1492,9 @@ impl Kernel {
     /// A memory fault: the stack grows if that is what it is; otherwise the signal Linux sends, with
     /// the fault's address and an approximated syndrome (which translation level faulted is Linux's
     /// page tables' own).
-    pub(crate) fn memory_fault<S: crate::System>(
+    pub(crate) fn memory_fault<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         address: u64,
         access: Access,
@@ -1629,9 +1650,9 @@ impl Kernel {
 
     /// Ends thread `tid`'s process, killed by `signal` with `info`: one whose default action dumps
     /// core writes one first where the process may (`do_coredump`).
-    pub(crate) fn die_with<S: crate::System>(
+    pub(crate) fn die_with<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         tid: Tid,
         signal: u32,
         info: [u8; 128],
@@ -1648,9 +1669,9 @@ impl Kernel {
     /// whose default action dumps core would have Linux write a core file and mark the wait
     /// status, when the core size limit allows one and the process is dumpable; neither is done
     /// here (counted).
-    pub(crate) fn die_of<S: crate::System>(
+    pub(crate) fn die_of<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
         signal: u32,
     ) {

@@ -5,6 +5,7 @@
 
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use wcontainers_executor::Executor;
 
 use super::{Packet, Received, Socket, SocketRef, gather, scatter, wait_room};
 use crate::linux::general::*;
@@ -43,9 +44,9 @@ pub(crate) struct Netlink {
 }
 
 /// `netlink_create`: NETLINK_ROUTE only.
-pub(super) fn create<S: crate::System>(
+pub(super) fn create<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     kind: u32,
     protocol: u32,
 ) -> Result<Socket, Errno> {
@@ -56,7 +57,7 @@ pub(super) fn create<S: crate::System>(
         return Err(Errno::EPROTONOSUPPORT);
     }
     if protocol != NETLINK_ROUTE {
-        let detail = (u64::from(AF_NETLINK) << 32) | (u64::from(kind) << 16) | u64::from(protocol);
+        let detail = crate::counters::socket_detail(AF_NETLINK, kind, protocol);
         return Err(kernel.counters.refuse(
             cx.host,
             crate::reason::PROTOCOL_NOT_BUILT,
@@ -74,11 +75,8 @@ pub(super) fn create<S: crate::System>(
     Ok(socket)
 }
 
-/// `MAX_LINKS`: how many netlink protocols there are.
-const MAX_LINKS: u32 = 32;
-
-fn part(socket: &SocketRef) -> core::cell::RefMut<'_, Netlink> {
-    core::cell::RefMut::map(socket.borrow_mut(), |own| {
+fn part(socket: &SocketRef) -> atomic_refcell::AtomicRefMut<'_, Netlink> {
+    atomic_refcell::AtomicRefMut::map(socket.borrow_mut(), |own| {
         own.netlink.as_deref_mut().expect("a netlink socket")
     })
 }
@@ -143,9 +141,9 @@ pub(super) fn bind(
     Ok(0)
 }
 
-pub(super) fn connect<S: crate::System>(
+pub(super) fn connect<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     socket: &SocketRef,
     bytes: &[u8],
@@ -201,9 +199,9 @@ pub(super) fn released(kernel: &mut Kernel, socket: &SocketRef) {
 
 /// `netlink_sendmsg` to the kernel: every request in the bytes is answered into the socket's own
 /// queue, as `netlink_rcv_skb` and `rtnetlink_rcv_msg` answer.
-pub(super) fn send<S: crate::System>(
+pub(super) fn send<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     socket: &SocketRef,
     parts: super::Data<'_>,
@@ -274,9 +272,9 @@ pub(super) fn send<S: crate::System>(
 }
 
 /// `netlink_sendskb`: a message for the socket's reader, who hears of it.
-fn queue<S: crate::System>(
+fn queue<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     socket: &SocketRef,
     reply: Vec<u8>,
@@ -287,7 +285,7 @@ fn queue<S: crate::System>(
         consumed: 0,
         files: Vec::new(),
         cred: super::own_cred(kernel, tid),
-        sender: alloc::rc::Weak::new(),
+        sender: alloc::sync::Weak::new(),
         source: None,
         arrival: None,
         time: None,
@@ -300,9 +298,9 @@ fn queue<S: crate::System>(
 
 /// `netlink_sendskb` of a message the kernel made for no request (a message queue's
 /// SIGEV_THREAD cookie): from port 0 with empty credentials.
-pub(crate) fn send_from_kernel<S: crate::System>(
+pub(crate) fn send_from_kernel<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     socket: &SocketRef,
     data: Vec<u8>,
 ) {
@@ -316,7 +314,7 @@ pub(crate) fn send_from_kernel<S: crate::System>(
             uid: 0,
             gid: 0,
         },
-        sender: alloc::rc::Weak::new(),
+        sender: alloc::sync::Weak::new(),
         source: None,
         arrival: None,
         time: None,
@@ -403,9 +401,9 @@ impl Message {
 
 /// `rtnetlink_rcv_msg`: GET requests are answered; anything that would change the network needs
 /// CAP_NET_ADMIN, which Docker does not give.
-fn answer<S: crate::System>(
+fn answer<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     request: &[u8],
     portid: u32,
     flags: u32,
@@ -472,7 +470,7 @@ fn answer<S: crate::System>(
             return Err(kernel.counters.refuse(
                 cx.host,
                 crate::reason::NETLINK_REQUEST_NOT_BUILT,
-                u64::from(kind) | (u64::from(dump) << 16),
+                u64::from(kind) | (u64::from(dump) << u16::BITS),
                 Errno::EOPNOTSUPP,
             ));
         }
@@ -741,9 +739,9 @@ fn addresses(family: u32, index: Option<u32>, request: &[u8], portid: u32) -> Ve
 
 /// The neighbour table's dump (`neigh_dump_info`): IPv4's entries, then IPv6's. A request for
 /// proxies (NTF_PROXY) has none; under strict checking an interface named filters.
-fn neighbours<S: crate::System>(
+fn neighbours<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     family: u32,
     strict: bool,
     body: &[u8],
@@ -1270,9 +1268,9 @@ fn route_message(route: &Route, request: &[u8], portid: u32, flags: u16) -> Vec<
 }
 
 /// `netlink_recvmsg`: one message buffer, the kernel as its sender.
-pub(super) fn receive<S: crate::System>(
+pub(super) fn receive<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     socket: &SocketRef,
     parts: super::Data<'_>,

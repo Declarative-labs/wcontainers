@@ -1,6 +1,7 @@
 //! `pipe2`, and reading and writing pipes (`pipe_read`, `pipe_write`).
 
 use alloc::vec::Vec;
+use wcontainers_executor::Executor;
 
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 
@@ -28,9 +29,9 @@ pub(crate) fn is_pipe(file: &FileRef) -> bool {
     matches!(file.borrow().node.borrow().content, Content::Pipe(_))
 }
 
-pub(super) fn pipe2<S: crate::System>(
+pub(super) fn pipe2<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fds, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -127,7 +128,7 @@ pub(super) fn named(node: &Node) {
     let mut pipe = Pipe::named();
     pipe.backend = match core::mem::replace(&mut inode.content, Content::Special) {
         Content::Pipe(old) => old.backend,
-        Content::Backend(remote) => Some(alloc::rc::Rc::new(remote)),
+        Content::Backend(remote) => Some(alloc::sync::Arc::new(remote)),
         _ => None,
     };
     inode.content = Content::Pipe(pipe);
@@ -218,9 +219,9 @@ pub(super) fn open_named_again(kernel: &mut Kernel, tid: Tid) -> Result<FileRef,
 }
 
 /// `kill_fasync` on a pipe's readers (`POLL_IN`) or writers (`POLL_OUT`).
-pub(super) fn signal_ends<S: crate::System>(
+pub(super) fn signal_ends<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     readers: bool,
 ) {
@@ -240,14 +241,14 @@ pub(super) fn signal_ends<S: crate::System>(
 /// kinds of end their I/O signals. Releases run last given
 /// up first, as `fput`'s task works do on the way back to the program, and the file is gone from the
 /// pipe's ends first, as `__fput` takes it off before the release.
-pub(crate) fn released<S: crate::System>(
+pub(crate) fn released<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     files: Vec<FileRef>,
 ) {
     for file in files.into_iter().rev() {
         let node = file.borrow().node.clone();
-        let last = alloc::rc::Rc::strong_count(&file) == 1;
+        let last = alloc::sync::Arc::strong_count(&file) == 1;
         drop(file);
         let lost_a_side = match &node.borrow().content {
             Content::Pipe(pipe) => last && (pipe.readers() == 0) != (pipe.writers() == 0),
@@ -296,9 +297,9 @@ pub(crate) fn with_pipe<R>(file: &FileRef, f: impl FnOnce(&mut Pipe) -> R) -> R 
 }
 
 /// `pipe_read` into the given segments: what is there, or a wait for a writer.
-pub(super) fn read<S: crate::System>(
+pub(super) fn read<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -365,9 +366,9 @@ pub(super) fn read<S: crate::System>(
 
 /// `pipe_write` from the given segments: as much as fits, then a wait for the reader, keeping what is
 /// written in the call's slot. With no reader, SIGPIPE and EPIPE.
-pub(super) fn write<S: crate::System>(
+pub(super) fn write<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -385,7 +386,7 @@ pub(super) fn write<S: crate::System>(
     let packet = file.borrow().flags & O_DIRECT != 0;
     // Up to `most` bytes from `done` on, across segments, as far as the buffer can be read; and
     // whether a fault stopped it short.
-    let next = |kernel: &mut Kernel, cx: &mut Context<'_, S>, done: u64, most: u64| {
+    let next = |kernel: &mut Kernel, cx: &mut Context<'_, S, C>, done: u64, most: u64| {
         let mut out = Vec::new();
         let mut skipped = 0;
         let mut guest = guest(kernel, cx, tid);
@@ -448,7 +449,7 @@ pub(super) fn write<S: crate::System>(
             }
             let taken = match bytes.is_empty() {
                 true => 0,
-                false => kernel.ends.send(cx, end, &bytes),
+                false => kernel.ends.send(cx, end, &mut bytes),
             };
             done += taken as u64;
             if faulted && taken == bytes.len() {
@@ -529,8 +530,8 @@ pub(super) fn write<S: crate::System>(
 /// Puts kernel bytes into a pipe without waiting, as splicing into a pipe does: a slot for each
 /// page the bytes came from (the first starting `in_page` bytes into its page), as many as fit, none
 /// of which a write adds to. Readers with `FASYNC` hear of them.
-pub(super) fn put<S: crate::System>(
-    cx: &mut Context<'_, S>,
+pub(super) fn put<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     kernel: &mut Kernel,
     file: &FileRef,
     bytes: &[u8],
@@ -558,9 +559,9 @@ pub(super) fn put<S: crate::System>(
 
 /// The system's bytes into a pipe whose writer its end holds, no more than there is space for,
 /// the readers woken; with no reader left they are dropped, as a write with none fails.
-pub(crate) fn receive_from_end<S: crate::System>(
+pub(crate) fn receive_from_end<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     file: &FileRef,
     bytes: &[u8],
 ) {
@@ -605,9 +606,9 @@ pub(crate) fn held_for_end(kernel: &Kernel, file: &FileRef) -> Option<Vec<u8>> {
 
 /// The system took `count` bytes of what [`held_for_end`] gave: they leave the pipe as a read
 /// takes them, writers woken.
-pub(crate) fn sent_to_end<S: crate::System>(
+pub(crate) fn sent_to_end<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     file: &FileRef,
     count: usize,
 ) {

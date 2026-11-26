@@ -99,6 +99,8 @@ pub trait Hooks: Send {
     ) {
         let _ = (process, thread, signal);
     }
+    fn on_inspection_starting(&mut self, _process: Process<'_>) {}
+    fn on_inspection_ended(&mut self, _process: Process<'_>) {}
     /// The kernel has nothing to run: the test may act on it through ordinary calls. Whether it
     /// did anything that may let the kernel go on.
     fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {

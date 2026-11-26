@@ -135,6 +135,10 @@ pub(crate) const F_GETDELEG: u32 = 1039;
 pub(crate) const F_SETDELEG: u32 = 1040;
 pub(crate) const PR_RSEQ_SLICE_EXTENSION: u32 = 79;
 
+/// The cap on a `listen` backlog, `net.core.somaxconn`'s default (`linux/socket.h`, not a uapi
+/// header).
+pub(crate) const SOMAXCONN: i32 = 4096;
+
 /// `rseq`'s flags (`linux/rseq.h`, which linux-raw-sys does not generate): unregister, and turn time
 /// slice extensions on from the start.
 pub(crate) const RSEQ_FLAG_UNREGISTER: u32 = 1;
@@ -358,38 +362,38 @@ pub(crate) const PIPE_DEF_BUFFERS: u64 = 16;
 /// `sigcontext` ends in 4096 bytes of records.
 pub(crate) mod frame {
     /// Offsets in `struct rt_sigframe`.
-    pub const UC_FLAGS: u64 = 128;
-    pub const UC_LINK: u64 = 136;
-    pub const UC_STACK: u64 = 144;
-    pub const UC_SIGMASK: u64 = 168;
-    pub const FAULT_ADDRESS: u64 = 304;
-    pub const REGS: u64 = 312;
-    pub const SP: u64 = 560;
-    pub const PC: u64 = 568;
-    pub const PSTATE: u64 = 576;
-    pub const RESERVED: u64 = 592;
-    pub const RESERVED_SIZE: u64 = 4096;
+    pub(crate) const UC_FLAGS: u64 = 128;
+    pub(crate) const UC_LINK: u64 = 136;
+    pub(crate) const UC_STACK: u64 = 144;
+    pub(crate) const UC_SIGMASK: u64 = 168;
+    pub(crate) const FAULT_ADDRESS: u64 = 304;
+    pub(crate) const REGS: u64 = 312;
+    pub(crate) const SP: u64 = 560;
+    pub(crate) const PC: u64 = 568;
+    pub(crate) const PSTATE: u64 = 576;
+    pub(crate) const RESERVED: u64 = 592;
+    pub(crate) const RESERVED_SIZE: u64 = 4096;
     /// `sizeof(struct rt_sigframe)`.
-    pub const SIZE: u64 = 4688;
+    pub(crate) const SIZE: u64 = 4688;
     /// `struct frame_record`: the caller's frame pointer and link register.
-    pub const RECORD_SIZE: u64 = 16;
+    pub(crate) const RECORD_SIZE: u64 = 16;
     /// The records in `__reserved`: each starts with a magic number and its size.
-    pub const FPSIMD_MAGIC: u32 = 0x4650_8001;
-    pub const FPSIMD_SIZE: u32 = 528;
-    pub const ESR_MAGIC: u32 = 0x4553_5201;
-    pub const ESR_SIZE: u32 = 16;
+    pub(crate) const FPSIMD_MAGIC: u32 = 0x4650_8001;
+    pub(crate) const FPSIMD_SIZE: u32 = 528;
+    pub(crate) const ESR_MAGIC: u32 = 0x4553_5201;
+    pub(crate) const ESR_SIZE: u32 = 16;
     /// The exception classes and the instruction length bit of an ESR (`asm/esr.h`).
-    pub const ESR_EC_SHIFT: u32 = 26;
-    pub const ESR_IL: u64 = 1 << 25;
-    pub const ESR_EC_IABT_LOW: u64 = 0x20;
-    pub const ESR_EC_PC_ALIGN: u64 = 0x22;
-    pub const ESR_EC_DABT_LOW: u64 = 0x24;
-    pub const ESR_EC_SP_ALIGN: u64 = 0x26;
+    pub(crate) const ESR_EC_SHIFT: u32 = 26;
+    pub(crate) const ESR_IL: u64 = 1 << 25;
+    pub(crate) const ESR_EC_IABT_LOW: u64 = 0x20;
+    pub(crate) const ESR_EC_PC_ALIGN: u64 = 0x22;
+    pub(crate) const ESR_EC_DABT_LOW: u64 = 0x24;
+    pub(crate) const ESR_EC_SP_ALIGN: u64 = 0x26;
     /// A data abort's write bit, and the fault status codes of a level 3 translation and permission
     /// fault.
-    pub const ESR_WNR: u64 = 1 << 6;
-    pub const ESR_FSC_TRANSLATION_3: u64 = 0x07;
-    pub const ESR_FSC_PERMISSION_3: u64 = 0x0f;
+    pub(crate) const ESR_WNR: u64 = 1 << 6;
+    pub(crate) const ESR_FSC_TRANSLATION_3: u64 = 0x07;
+    pub(crate) const ESR_FSC_PERMISSION_3: u64 = 0x0f;
 }
 
 /// `AT_MINSIGSTKSZ` on the reference's CPU: arm64's `signal_minsigstksz`, the frame's size with the
@@ -428,7 +432,7 @@ pub(crate) const BAUD_TABLE: [u32; 31] = [
 
 /// What n_tty's line discipline holds at most when a pty's reader tells the other side's writers of
 /// room (`TTY_THRESHOLD_UNTHROTTLE`, internal to `n_tty.c`).
-pub const TTY_THRESHOLD_UNTHROTTLE: usize = 128;
+pub(crate) const TTY_THRESHOLD_UNTHROTTLE: usize = 128;
 
 // System V IPC (`linux/ipc.h`, `linux/shm.h`, `asm-generic/ipcbuf.h`, `asm-generic/shmbuf.h`), which
 // linux-raw-sys does not generate.
@@ -903,6 +907,38 @@ pub(crate) const NTP_TOLERANCE: i64 = 32_768_000;
 /// and the length of one.
 pub(crate) const USER_HZ: u64 = 100;
 pub(crate) const NANOSECONDS_PER_TICK: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / USER_HZ;
+
+/// Nanoseconds per millisecond and per microsecond (`NSEC_PER_MSEC`, `NSEC_PER_USEC`), and
+/// microseconds per second (`USEC_PER_SEC`).
+pub(crate) const NANOSECONDS_PER_MILLISECOND: u64 =
+    core::time::Duration::from_millis(1).as_nanos() as u64;
+pub(crate) const NANOSECONDS_PER_MICROSECOND: u64 =
+    core::time::Duration::from_micros(1).as_nanos() as u64;
+pub(crate) const MICROSECONDS_PER_SECOND: u64 =
+    core::time::Duration::from_secs(1).as_micros() as u64;
+
+/// The kernel's own ticks a second (`HZ`; 1000 on the reference, measured), which jiffies count,
+/// and the length of one (`TICK_NSEC`).
+pub(crate) const HZ: u64 = 1000;
+pub(crate) const NANOSECONDS_PER_JIFFY: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / HZ;
+
+/// How long before zero the jiffies counter starts (`INITIAL_JIFFIES`, five minutes).
+pub(crate) const INITIAL_JIFFIES_BEFORE_ZERO: u64 = 300 * HZ;
+
+/// TCP's first retransmission timeout and its bounds (`TCP_TIMEOUT_INIT`, `TCP_RTO_MIN`,
+/// `TCP_RTO_MAX`), in nanoseconds.
+pub(crate) const TCP_TIMEOUT_INIT: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND;
+pub(crate) const TCP_RTO_MIN: u64 = wcontainers_abi::NANOSECONDS_PER_SECOND / 5;
+pub(crate) const TCP_RTO_MAX: u64 = 120 * wcontainers_abi::NANOSECONDS_PER_SECOND;
+
+pub(crate) use wcontainers_abi::KIB;
+
+/// A thread's kernel stack (`THREAD_SIZE`) and the fewest threads `set_max_threads` allows.
+pub(crate) const THREAD_SIZE: u64 = 16 * KIB;
+pub(crate) const MIN_THREADS: u64 = 20;
+
+/// The tenths of a second a terminal's `VTIME` counts in.
+pub(crate) const DECISECONDS_PER_SECOND: u64 = 10;
 
 /// The most one read or write moves (`MAX_RW_COUNT`).
 pub const MAX_RW_COUNT: u64 = 0x7fff_f000;

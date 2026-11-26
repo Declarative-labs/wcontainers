@@ -221,7 +221,7 @@ fn seccomp_code(code: u16) -> bool {
 
 impl Filter {
     /// Checks a program as Linux does when it is installed; every refusal is EINVAL.
-    pub fn new(mut program: Box<[sock_filter]>) -> Result<Self, Errno> {
+    pub(crate) fn new(mut program: Box<[sock_filter]>) -> Result<Self, Errno> {
         let length = program.len();
         // `bpf_check_classic`.
         for (pc, instruction) in program.iter().enumerate() {
@@ -292,14 +292,14 @@ impl Filter {
         })
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.program.len()
     }
 
     /// Runs the program on one call's data and gives its answer. A and X start at zero, arithmetic is
     /// on 32 bits, shifts by X take its low five bits, and a division by an X of zero ends the program
     /// with 0, as Linux's translation of classic BPF does.
-    pub fn run(&self, data: &Data) -> u32 {
+    pub(crate) fn run(&self, data: &Data) -> u32 {
         let (mut a, mut x) = (0u32, 0u32);
         let mut memory = [0u32; BPF_MEMWORDS as usize];
         let mut pc = 0;

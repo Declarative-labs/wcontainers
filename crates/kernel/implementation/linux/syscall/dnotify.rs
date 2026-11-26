@@ -2,8 +2,9 @@
 //! for an open file of it and a descriptor table, and each change it asks for sends the file's
 //! owner an I/O signal naming the descriptor.
 
-use alloc::rc::{Rc, Weak};
-use core::cell::RefCell;
+use alloc::sync::{Arc, Weak};
+use atomic_refcell::AtomicRefCell;
+use wcontainers_executor::Executor;
 
 use crate::file::{FileRef, OpenFile};
 use crate::fs::Node;
@@ -15,7 +16,7 @@ use crate::{Context, Errno, Kernel};
 pub(crate) struct Mark {
     /// The descriptor table it was asked through (`dn_owner`).
     table: u64,
-    file: Weak<RefCell<OpenFile>>,
+    file: Weak<AtomicRefCell<OpenFile>>,
     fd: i32,
     /// The `DN_*` changes it wants, with DN_MULTISHOT to stay after the first.
     mask: u32,
@@ -70,7 +71,7 @@ pub(super) fn fcntl_notify(
     let held = inode
         .dnotify
         .iter_mut()
-        .find(|mark| mark.table == table && core::ptr::eq(mark.file.as_ptr(), Rc::as_ptr(file)));
+        .find(|mark| mark.table == table && core::ptr::eq(mark.file.as_ptr(), Arc::as_ptr(file)));
     match held {
         Some(mark) => {
             mark.fd = fd;
@@ -81,7 +82,7 @@ pub(super) fn fcntl_notify(
             0,
             Mark {
                 table,
-                file: Rc::downgrade(file),
+                file: Arc::downgrade(file),
                 fd,
                 mask,
             },
@@ -95,7 +96,7 @@ pub(crate) fn flush(node: &Node, table: u64, file: &FileRef) {
     let mut inode = node.borrow_mut();
     if !inode.dnotify.is_empty() {
         inode.dnotify.retain(|mark| {
-            !(mark.table == table && core::ptr::eq(mark.file.as_ptr(), Rc::as_ptr(file)))
+            !(mark.table == table && core::ptr::eq(mark.file.as_ptr(), Arc::as_ptr(file)))
         });
     }
 }
@@ -119,7 +120,7 @@ pub(crate) fn tell(kernel: &mut Kernel, node: &Node, mask: u32, extra: u32) {
 }
 
 /// Sends the signals events owed (`send_sigio` with POLL_MSG), in order.
-pub(crate) fn send<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
+pub(crate) fn send<S: crate::System, C: Executor>(kernel: &mut Kernel, cx: &mut Context<'_, S, C>) {
     for (file, fd) in core::mem::take(&mut kernel.dnotified) {
         if let Some(file) = file.upgrade() {
             let owner = file.borrow().owner;

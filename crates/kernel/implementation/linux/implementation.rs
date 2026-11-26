@@ -1,12 +1,15 @@
 //! A Linux kernel for ARM64 guests.
 //!
-//! The kernel is a state machine driven from outside through `wcontainers-abi`. It never waits on its own
-//! stack: the driver asks [`Kernel::next`] what to do, runs that thread on the CPU side until it comes
-//! back, and hands the [`Exit`] to [`Kernel::exit`]. Answers from outside arrive through
-//! [`Kernel::event`]. The kernel reaches the CPU side only through [`Cpu`] and everything else through
-//! [`Host`].
+//! The kernel implements the kernel interface ([`KernelWithExecutor`]). It never waits on its own
+//! stack: its runner asks what to do next, runs that thread's turn on the executor until it traps,
+//! and hands the trap back to the kernel. The guests' memories and registers are the kernel's own
+//! [`GuestMachine`] on the executor's spaces; everything else comes from the [`System`].
 
 #![no_std]
+// The kernel keeps the system's waiting calls and is used from any host thread, so it asks each
+// `async fn` of the system it waits on to return a `Send` future, which only return type notation
+// can say of a generic system.
+#![feature(return_type_notation)]
 
 extern crate alloc;
 
@@ -19,6 +22,7 @@ mod errno;
 mod executing;
 mod file;
 mod fs;
+mod guest_machine;
 mod hugetlb;
 pub mod linux;
 mod linux_extra;
@@ -28,6 +32,7 @@ mod memory;
 pub mod network;
 mod pipe;
 mod process;
+mod running;
 mod schedule;
 mod seccomp;
 mod shared;
@@ -46,10 +51,14 @@ pub mod wait;
 mod waiting;
 
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
+use wcontainers_executor::Executor;
 
-use wcontainers_abi::{CounterReading, Cpu, Event, Exit, Next};
+use wcontainers_abi::CounterReading;
+
+use running::Exit;
+use task::Next;
 
 pub use cgroup::MOUNT as CGROUP_MOUNT;
 pub use container::{
@@ -65,7 +74,8 @@ pub use credentials::{
 };
 pub use ends::Standard;
 pub(crate) use errno::Errno;
-pub use executing::{KernelProcess, KernelWithExecutor};
+pub use executing::{KernelConfig, KernelProcess, KernelRunner, KernelWithExecutor};
+pub use guest_machine::GuestMachine;
 pub use linux_extra::{
     ADDR_NO_RANDOMIZE, IOPRIO_CLASS_BE, IOPRIO_CLASS_SHIFT, IPC_NOWAIT, MAX_RW_COUNT, sched_attr,
 };
@@ -85,8 +95,8 @@ use fs::{FileSystem, Node, Numbers, Time};
 use process::{Pid, Thread, Tid};
 
 /// What a call into the kernel may use besides the kernel's own state.
-pub(crate) struct Context<'a, S> {
-    pub cpu: &'a mut dyn Cpu,
+pub(crate) struct Context<'a, S, C: Executor> {
+    pub cpu: &'a mut GuestMachine<C>,
     pub host: &'a S,
     /// The same system, for the calls the kernel keeps while it waits on them.
     pub system: &'a alloc::sync::Arc<S>,
@@ -97,10 +107,22 @@ pub(crate) struct Context<'a, S> {
     refused: u32,
 }
 
-impl<S: System> Context<'_, S> {
+impl<'a, S: System, C: Executor> Context<'a, S, C> {
+    /// Makes the context of one call into the kernel, whose monotonic clock runs ahead of the
+    /// system's by `monotonic_offset`.
+    fn new(cpu: &'a mut GuestMachine<C>, system: &'a Arc<S>, monotonic_offset: u64) -> Self {
+        Self {
+            cpu,
+            host: &**system,
+            system,
+            monotonic_offset,
+            refused: 0,
+        }
+    }
+
     /// What a refused request to make a memory, thread or shared block means to the guest; a host
     /// that cannot do it at all is counted.
-    pub fn cpu_error(&mut self, error: wcontainers_abi::CpuError) -> Errno {
+    pub(crate) fn cpu_error(&mut self, error: wcontainers_abi::CpuError) -> Errno {
         if error == wcontainers_abi::CpuError::NotSupported {
             self.refused += 1;
         }
@@ -109,15 +131,15 @@ impl<S: System> Context<'_, S> {
 
     /// Fills `into` from the system's random source. Linux's randomness never fails, so neither
     /// may the kernel's: a failed source stops the kernel.
-    pub fn random(&self, into: &mut [u8]) {
-        if let Err(error) = self.host.fill_random_bytes(into) {
+    pub(crate) fn random(&self, into: &mut [u8]) {
+        if let Err(error) = self.host.fill_random_bytes(&core::cell::RefCell::new(into)) {
             panic!("the system's random source failed: {error:?}");
         }
     }
 
     /// The kernel's monotonic clock, which never goes backwards, also across a restore on another
     /// host.
-    pub fn monotonic(&mut self) -> u64 {
+    pub(crate) fn monotonic(&mut self) -> u64 {
         self.host
             .monotonic_nanoseconds()
             .wrapping_add(self.monotonic_offset)
@@ -131,6 +153,9 @@ pub(crate) struct Machine {
     pub version: &'static str,
     /// The memory size reported.
     pub memory_bytes: u64,
+    /// How many processors programs are told are online, numbered from 0: the kernel's
+    /// parallelism.
+    pub processors: core::num::NonZeroUsize,
     /// The container's address-space size: one past the highest address a process may use.
     pub address_space_bytes: u64,
     /// The top of the lowest placement tier this executor gives, which layouts are made under.
@@ -138,10 +163,14 @@ pub(crate) struct Machine {
 }
 
 impl Machine {
-    /// `kernel.threads-max`: as many threads as a eighth of memory holds stacks of 16 KiB
-    /// (`set_max_threads`), at least 20.
-    pub fn threads_max(&self) -> u64 {
-        (self.memory_bytes / (16 * 1024 * 8)).clamp(20, 0x3fff_ffff)
+    /// `kernel.threads-max`: as many threads as an eighth of memory holds stacks of
+    /// `THREAD_SIZE` (`set_max_threads`), at least `MIN_THREADS` and at most `FUTEX_TID_MASK`.
+    pub(crate) fn threads_max(&self) -> u64 {
+        use crate::linux_extra::{MIN_THREADS, THREAD_SIZE};
+        (self.memory_bytes / (THREAD_SIZE * 8)).clamp(
+            MIN_THREADS,
+            u64::from(crate::linux::general::FUTEX_TID_MASK),
+        )
     }
 }
 
@@ -171,17 +200,18 @@ pub(crate) struct Files {
     /// The key tmpfs inodes' generation numbers are made from, as Linux draws each at random.
     pub generation_key: [u8; 16],
     /// Every event descriptor's counter, for the lowest free number a new one takes.
-    pub event_counters: Vec<alloc::rc::Weak<core::cell::RefCell<syscall::eventfd::Counter>>>,
+    pub event_counters:
+        Vec<alloc::sync::Weak<atomic_refcell::AtomicRefCell<syscall::eventfd::Counter>>>,
     /// Changed attributes of the `/proc` entries that keep them.
     pub proc_kept: BTreeMap<u64, fs::proc::Kept>,
     /// What Docker mounts over entries of `/proc`'s root, by name.
     pub proc_masked: Vec<(&'static [u8], fs::Node)>,
     /// Every tmpfs's count of what it holds, for the machine's memory in use.
-    pub spaces: Vec<Rc<fs::Space>>,
+    pub spaces: Vec<Arc<fs::Space>>,
     /// Pseudo-terminal pairs by number, until both sides have closed.
-    pub terminals: BTreeMap<u32, Rc<core::cell::RefCell<tty::Pty>>>,
+    pub terminals: BTreeMap<u32, Arc<atomic_refcell::AtomicRefCell<tty::Pty>>>,
     /// The connection to the file backend, once one is mounted.
-    pub backend: Option<Rc<fs::backend::Client>>,
+    pub backend: Option<Arc<fs::backend::Client>>,
     /// The directories file systems are mounted on.
     pub mount_points: Vec<Node>,
     /// The mount table, in the order the mounts were made.
@@ -217,7 +247,10 @@ pub struct Kernel {
     /// Notices that such closes took message queue requests away, for the kernel to send.
     notices: Vec<(syscall::socket::SocketRef, alloc::vec::Vec<u8>)>,
     /// The open files and descriptors whose owners F_NOTIFY requests owe a signal, in order.
-    dnotified: Vec<(alloc::rc::Weak<core::cell::RefCell<file::OpenFile>>, i32)>,
+    dnotified: Vec<(
+        alloc::sync::Weak<atomic_refcell::AtomicRefCell<file::OpenFile>>,
+        i32,
+    )>,
     /// Every process's asynchronous I/O contexts.
     aio: Vec<syscall::aio::Ring>,
     /// A file's readiness changed while asynchronous poll requests wait, for the kernel to look
@@ -239,7 +272,7 @@ pub struct Kernel {
     /// have met the watches (`SIGNAL_GROUP_EXIT`).
     dying: BTreeMap<Pid, u32>,
     /// What the kernel wrote into processes' memory and has not yet told the embedder.
-    kernel_writes: core::cell::RefCell<Vec<system::KernelWrite>>,
+    kernel_writes: atomic_refcell::AtomicRefCell<Vec<system::KernelWrite>>,
     /// What is added to the host's monotonic clock to give the kernel's: zero until a restore on a
     /// host whose clock reads differently.
     monotonic_offset: u64,
@@ -263,6 +296,10 @@ pub struct Kernel {
     /// How many times any page's watch was raised (set, or widened to `All`): a walk over what a
     /// call will touch starts again when this moves under it.
     watches_raised: u64,
+    /// The processes the embedder was last told another process reads the state of.
+    ///
+    /// That is through `/proc/<pid>/mem`; none while no such file has been opened since none was.
+    inspections: Option<alloc::collections::BTreeSet<Pid>>,
     /// The embedder's watches changed outside a call into the kernel and woke threads, which the
     /// kernel settles before anything runs.
     unsettled: bool,
@@ -270,7 +307,7 @@ pub struct Kernel {
     ids_let_go: Vec<i32>,
     /// What every address map notes for the kernel: a placement that found no room below the
     /// ceiling, a shared mapping put in or taken out.
-    map_notes: Rc<memory::MapNotes>,
+    map_notes: Arc<memory::MapNotes>,
     /// What the embedder has been told each process maps of shared memory.
     shared_announced: sharing::Announced,
     /// Counts the kernel's rounds of shared memory announcements, so a round sees one begun
@@ -280,10 +317,10 @@ pub struct Kernel {
     processes_away: BTreeMap<Pid, suspend::ProcessAway>,
     /// The address maps of contexts taken or copied off this kernel, with their memory: what
     /// they map stays in use while they live, until one is put back here.
-    maps_away: core::cell::RefCell<
+    maps_away: atomic_refcell::AtomicRefCell<
         Vec<(
             wcontainers_abi::MemoryId,
-            alloc::rc::Weak<core::cell::RefCell<memory::AddressMap>>,
+            alloc::sync::Weak<atomic_refcell::AtomicRefCell<memory::AddressMap>>,
         )>,
     >,
     /// Processes on their way out whose shared memory has been announced ended.
@@ -299,7 +336,7 @@ pub struct Kernel {
     /// Every inotify instance made, with the user it is charged to.
     inotify_instances: Vec<(
         u32,
-        alloc::rc::Weak<core::cell::RefCell<syscall::inotify::Instance>>,
+        alloc::sync::Weak<atomic_refcell::AtomicRefCell<syscall::inotify::Instance>>,
     )>,
     /// The core dumps being written, by the thread that writes each.
     dumps: BTreeMap<process::Tid, syscall::coredump::Dump>,
@@ -309,9 +346,9 @@ pub struct Kernel {
     counters: Counters,
     files: Files,
     /// Each user's count of queued signals, by real user id.
-    signal_users: BTreeMap<u32, Rc<core::cell::Cell<u64>>>,
+    signal_users: BTreeMap<u32, Arc<crossbeam_utils::atomic::AtomicCell<u64>>>,
     /// Each user's count of pages its pipes may hold (`user_struct`'s `pipe_bufs`), by real user id.
-    pipe_users: BTreeMap<u32, Rc<core::cell::Cell<u64>>>,
+    pipe_users: BTreeMap<u32, Arc<crossbeam_utils::atomic::AtomicCell<u64>>>,
     /// The container's System V IPC objects.
     ipc: syscall::ipc::Ipc,
     /// Every futex with waiters.
@@ -344,6 +381,8 @@ pub struct Kernel {
     /// The system the backend's requests under way were handed to, by its address: a restore on
     /// another drops them and asks again.
     backend_system: usize,
+    /// The kernel's wait for the backend's notices.
+    backend_notices: fs::backend::NoticeWait,
 }
 
 impl Default for Kernel {
@@ -397,15 +436,16 @@ impl Kernel {
             ceiling: 0,
             watching: false,
             watches_raised: 0,
+            inspections: None,
             unsettled: false,
             signals_sent: VecDeque::new(),
             signals_to_returning: VecDeque::new(),
             ids_let_go: Vec::new(),
-            map_notes: Rc::default(),
+            map_notes: Arc::default(),
             shared_announced: sharing::Announced::new(),
             sharing_round: 0,
             processes_away: BTreeMap::new(),
-            maps_away: core::cell::RefCell::default(),
+            maps_away: atomic_refcell::AtomicRefCell::default(),
             sharing_left: alloc::collections::BTreeSet::new(),
             init: None,
             finished: None,
@@ -460,6 +500,7 @@ impl Kernel {
                 release: "7.0.0-wcontainers",
                 version: "#1 SMP PREEMPT",
                 memory_bytes: 0,
+                processors: core::num::NonZeroUsize::MIN,
                 address_space_bytes: 0,
                 lowest_tier_top: 0,
             },
@@ -474,15 +515,16 @@ impl Kernel {
             last_object: 0,
             waiting: waiting::Waiting::default(),
             backend_system: 0,
+            backend_notices: fs::backend::NoticeWait::NotYet,
         }
     }
 
-    /// What the driver should do next.
+    /// Returns what the runner does next.
     #[allow(
         clippy::should_implement_trait,
-        reason = "named after the abi's `Next`"
+        reason = "the runner's next step, not an iterator's"
     )]
-    pub fn next(&mut self) -> Next {
+    pub(crate) fn next(&mut self) -> Next {
         assert!(
             self.running.is_none(),
             "next asked while a thread is running; hand its exit back first"
@@ -490,8 +532,8 @@ impl Kernel {
         if let Some(status) = self.finished {
             return Next::Finished { status };
         }
-        // Come back at once ([`Event::Timer`]), so the woken threads, and the answers of the calls
-        // the kernel waits on, are settled first.
+        // Come back at once ([`Kernel::fire_timers`]), so the woken threads, and the answers of the
+        // calls the kernel waits on, are settled first.
         if self.unsettled || self.waiting.woken() {
             return Next::Idle {
                 until_nanoseconds: Some(0),
@@ -501,18 +543,17 @@ impl Kernel {
     }
 
     /// The thread from the last [`Next::Run`] has come back.
-    pub fn exit<S: System>(&mut self, cpu: &mut dyn Cpu, system: &alloc::sync::Arc<S>, exit: Exit) {
+    pub(crate) fn exit<S: System, C: Executor>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        system: &alloc::sync::Arc<S>,
+        exit: Exit,
+    ) {
         let tid = self
             .running
             .take()
             .expect("an exit was handed back with no thread running");
-        let mut cx = Context {
-            cpu,
-            host: &**system,
-            system,
-            monotonic_offset: self.monotonic_offset,
-            refused: 0,
-        };
+        let mut cx = Context::new(cpu, system, self.monotonic_offset);
         self.account(&mut cx, tid);
         let entered = self.entry_now;
         self.tick(tid);
@@ -539,54 +580,45 @@ impl Kernel {
         }
     }
 
-    /// Something happened outside.
-    pub fn event<S: System>(
+    /// Wakes the waits that are due and fires the timers, as the time waited for may have come.
+    pub(crate) fn fire_timers<S: System, C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
-        event: Event<'_>,
     ) {
-        let mut cx = Context {
-            cpu,
-            host: &**system,
-            system,
-            monotonic_offset: self.monotonic_offset,
-            refused: 0,
-        };
+        let mut cx = Context::new(cpu, system, self.monotonic_offset);
         self.entry_now = cx.monotonic();
-        match event {
-            Event::Timer => {
-                self.wake_due();
-                syscall::timer::fire_due(self, &mut cx);
-            }
-            Event::BackendNotice { notice } => {
-                self.backend_notice(&mut cx, notice);
-            }
-            Event::TerminalResized { columns, rows } => {
-                self.terminal_resized(&mut cx, columns, rows);
-            }
-        }
+        self.wake_due();
+        syscall::timer::fire_due(self, &mut cx);
+        self.settle(&mut cx);
+    }
+
+    /// Resizes the first process's terminal, as its end outside changed size.
+    pub fn resize_terminal<S: System, C: Executor>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        system: &alloc::sync::Arc<S>,
+        columns: u16,
+        rows: u16,
+    ) {
+        let mut cx = Context::new(cpu, system, self.monotonic_offset);
+        self.entry_now = cx.monotonic();
+        self.terminal_resized(&mut cx, columns, rows);
         self.settle(&mut cx);
     }
 
     /// Sends a signal to the container's first process from outside the container, as `docker
     /// kill` does: from no process the container can see, and SIGKILL ends it even though Linux keeps
     /// other signals with no handler from that process.
-    pub fn kill<S: System>(
+    pub fn kill<S: System, C: Executor>(
         &mut self,
-        cpu: &mut dyn Cpu,
+        cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
         signal: wcontainers_kernel::signal::Signal,
     ) {
         let signal = signal as u32;
         assert!(self.running.is_none(), "a signal sent while a thread runs");
-        let mut cx = Context {
-            cpu,
-            host: &**system,
-            system,
-            monotonic_offset: self.monotonic_offset,
-            refused: 0,
-        };
+        let mut cx = Context::new(cpu, system, self.monotonic_offset);
         self.entry_now = cx.monotonic();
         if let Some(pid) = self.init.filter(|_| self.finished.is_none()) {
             if signal == linux::general::SIGKILL {
@@ -604,16 +636,14 @@ impl Kernel {
     /// anything: the kernel's monotonic clock goes on from where it was saved, every thread starts
     /// again from its saved registers, and every parked call runs again, its deadline on the clock
     /// it had.
-    pub fn restore<S: System>(&mut self, cpu: &mut dyn Cpu, system: &alloc::sync::Arc<S>) {
+    pub fn restore<S: System, C: Executor>(
+        &mut self,
+        cpu: &mut GuestMachine<C>,
+        system: &alloc::sync::Arc<S>,
+    ) {
         assert!(self.running.is_none(), "restored while a thread runs");
         self.monotonic_offset = self.last_now.wrapping_sub(system.monotonic_nanoseconds());
-        let mut cx = Context {
-            cpu,
-            host: &**system,
-            system,
-            monotonic_offset: self.monotonic_offset,
-            refused: 0,
-        };
+        let mut cx = Context::new(cpu, system, self.monotonic_offset);
         self.entry_now = cx.monotonic();
         self.backend_restored(&mut cx);
         // The wall clock moved against the monotonic clock while saved, as across a suspend, which
@@ -636,7 +666,7 @@ impl Kernel {
                     continue;
                 }
                 let mut registers = wcontainers_abi::RegisterBlock::ZERO;
-                cx.cpu.registers(thread.cpu, &mut registers);
+                cx.cpu.read_registers(thread.cpu, &mut registers);
                 registers.x[0] = value;
                 cx.cpu.set_registers(thread.cpu, &registers);
             }
@@ -697,7 +727,10 @@ impl Kernel {
     /// A free process and thread number from the embedder's task ids, skipping any still carried
     /// as Linux's `alloc_pid` does (counted); EAGAIN for a number out of range, or once every
     /// number has been tried.
-    fn allocate_id<S: crate::System>(&mut self, cx: &mut Context<'_, S>) -> Result<i32, Errno> {
+    fn allocate_id<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+    ) -> Result<i32, Errno> {
         for _ in RESERVED_PIDS..PID_MAX {
             let id = crate::system::pid_of(
                 cx.host
@@ -731,7 +764,10 @@ impl Kernel {
     }
 
     /// Gives back to the embedder the numbers let go of that nothing carries any more.
-    pub(crate) fn release_ids<S: crate::System>(&mut self, cx: &mut Context<'_, S>) {
+    pub(crate) fn release_ids<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+    ) {
         let mut ids = core::mem::take(&mut self.ids_let_go);
         ids.sort_unstable();
         ids.dedup();
@@ -762,7 +798,7 @@ impl Kernel {
     }
 
     /// Thread `tid`'s descriptor table.
-    pub(crate) fn files(&self, tid: Tid) -> core::cell::Ref<'_, file::FdTable> {
+    pub(crate) fn files(&self, tid: Tid) -> atomic_refcell::AtomicRef<'_, file::FdTable> {
         self.threads[&tid].files.borrow()
     }
 
@@ -783,29 +819,34 @@ impl Kernel {
         self.last_object
     }
 
+    /// The last number `next_object` gave.
+    pub(crate) fn last_object(&self) -> u64 {
+        self.last_object
+    }
+
     /// A value `tid`'s call settles once, such as where an append goes (Linux computes it once
     /// under the inode's lock): an earlier run's, else `value`.
     pub(crate) fn settle_once(&self, tid: Tid, value: u64) -> u64 {
         self.threads[&tid].taken.borrow_mut().value(value)
     }
 
-    pub(crate) fn files_mut(&self, tid: Tid) -> core::cell::RefMut<'_, file::FdTable> {
+    pub(crate) fn files_mut(&self, tid: Tid) -> atomic_refcell::AtomicRefMut<'_, file::FdTable> {
         self.threads[&tid].files.borrow_mut()
     }
 
     /// Thread `tid`'s root, working directory and umask.
-    pub(crate) fn fs(&self, tid: Tid) -> core::cell::Ref<'_, process::FsContext> {
+    pub(crate) fn fs(&self, tid: Tid) -> atomic_refcell::AtomicRef<'_, process::FsContext> {
         self.threads[&tid].fs.borrow()
     }
 
-    pub(crate) fn fs_mut(&self, tid: Tid) -> core::cell::RefMut<'_, process::FsContext> {
+    pub(crate) fn fs_mut(&self, tid: Tid) -> atomic_refcell::AtomicRefMut<'_, process::FsContext> {
         self.threads[&tid].fs.borrow_mut()
     }
 
     /// Lets go of a thread's hold on a descriptor table; the last holder's going closes it, in its
     /// process `closer` (`put_files_struct`).
     pub(crate) fn put_files(&mut self, files: process::Files, closer: process::Pid) {
-        if let Some(table) = Rc::into_inner(files) {
+        if let Some(table) = Arc::into_inner(files) {
             let mut table = table.into_inner();
             table.close_all(closer);
             self.released.extend(table.take_released());
@@ -820,9 +861,9 @@ impl Kernel {
     /// record locks are its own.
     pub(crate) fn unshare_files(&mut self, tid: Tid) {
         let thread = self.thread_mut(tid);
-        if Rc::strong_count(&thread.files) > 1 {
+        if Arc::strong_count(&thread.files) > 1 {
             let copy = thread.files.borrow().duplicate(tid as u64);
-            thread.files = Rc::new(core::cell::RefCell::new(copy));
+            thread.files = Arc::new(atomic_refcell::AtomicRefCell::new(copy));
         }
     }
 
@@ -873,8 +914,8 @@ impl Kernel {
             .values()
             .map(|process| &process.map)
             .collect();
-        maps.sort_by_key(|map| Rc::as_ptr(map));
-        maps.dedup_by(|a, b| Rc::ptr_eq(a, b));
+        maps.sort_by_key(|map| Arc::as_ptr(map));
+        maps.dedup_by(|a, b| Arc::ptr_eq(a, b));
         let mapped: u64 = maps
             .iter()
             .flat_map(|map| {
@@ -888,7 +929,7 @@ impl Kernel {
     }
 
     /// The time now on the wall clock.
-    pub(crate) fn now<S: crate::System>(&self, cx: &mut Context<'_, S>) -> Time {
+    pub(crate) fn now<S: crate::System, C: Executor>(&self, cx: &mut Context<'_, S, C>) -> Time {
         Time::from_nanoseconds(cx.host.realtime_nanoseconds())
     }
 }

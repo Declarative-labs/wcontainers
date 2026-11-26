@@ -4,10 +4,12 @@
 //! receive hands the first of them what it waited for.
 
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cell::{Cell, RefCell};
+use atomic_refcell::AtomicRefCell;
+use crossbeam_utils::atomic::AtomicCell;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
+use wcontainers_executor::Executor;
 
 use zerocopy::IntoBytes;
 
@@ -24,8 +26,8 @@ use crate::{Context, Errno, Kernel};
 /// user's take against `RLIMIT_MSGQUEUE` (`UCOUNT_RLIMIT_MSGQUEUE`).
 #[derive(Default)]
 pub(crate) struct Usage {
-    queues: Cell<u64>,
-    bytes: RefCell<BTreeMap<u32, u64>>,
+    queues: AtomicCell<u64>,
+    bytes: AtomicRefCell<BTreeMap<u32, u64>>,
 }
 
 /// A queue's limits (`struct mq_attr`'s first fields).
@@ -80,14 +82,14 @@ pub(crate) struct MessageQueue {
     senders: Vec<Sender>,
     receivers: Vec<(Tid, i32)>,
     pub notify: Option<Notify>,
-    charge: Option<(Rc<Usage>, u32, u64)>,
+    charge: Option<(Arc<Usage>, u32, u64)>,
 }
 
 impl Drop for MessageQueue {
     /// `mqueue_evict_inode`: the queue's bytes and its place in the namespace are given back.
     fn drop(&mut self) {
         if let Some((usage, uid, bytes)) = &self.charge {
-            usage.queues.set(usage.queues.get() - 1);
+            usage.queues.store(usage.queues.load() - 1);
             if let Some(held) = usage.bytes.borrow_mut().get_mut(uid) {
                 *held -= bytes;
             }
@@ -97,7 +99,7 @@ impl Drop for MessageQueue {
 
 /// What a queue's file reads as, `stat` shows and `poll` reports.
 impl MessageQueue {
-    pub fn text(&self) -> Vec<u8> {
+    pub(crate) fn text(&self) -> Vec<u8> {
         let notify = self.notify.as_ref();
         let kind = notify.map_or(0, |notify| notify.kind as i32);
         let signal = notify
@@ -114,7 +116,7 @@ impl MessageQueue {
         .into_bytes()
     }
 
-    pub fn poll(&self) -> u16 {
+    pub(crate) fn poll(&self) -> u16 {
         let mut events = 0;
         if self.count > 0 {
             events |= POLLIN | POLLRDNORM;
@@ -127,7 +129,10 @@ impl MessageQueue {
 
     /// `mqueue_flush_file`: a close by the process to be told takes its request away; gives
     /// the notice a SIGEV_THREAD request sends then.
-    pub fn flush(&mut self, pid: Pid) -> Option<(crate::syscall::socket::SocketRef, Vec<u8>)> {
+    pub(crate) fn flush(
+        &mut self,
+        pid: Pid,
+    ) -> Option<(crate::syscall::socket::SocketRef, Vec<u8>)> {
         if self
             .notify
             .as_ref()
@@ -192,7 +197,7 @@ pub(crate) fn new_queue(
     let usage = &kernel.ipc.mq_usage;
     let resource = credentials.has(CAP_SYS_RESOURCE);
     let namespace = kernel.ipc.limits;
-    if usage.queues.get() >= u64::from(namespace.mq_queues_max as u32) && !resource {
+    if usage.queues.load() >= u64::from(namespace.mq_queues_max as u32) && !resource {
         return Err(Errno::ENOSPC);
     }
     // `mq_attr_ok` checks only limits the caller gave.
@@ -230,7 +235,7 @@ pub(crate) fn new_queue(
         return Err(Errno::EMFILE);
     }
     usage.bytes.borrow_mut().insert(uid, held);
-    usage.queues.set(usage.queues.get() + 1);
+    usage.queues.store(usage.queues.load() + 1);
     Ok(MessageQueue {
         limits,
         messages: BTreeMap::new(),
@@ -259,9 +264,9 @@ fn queue_file(kernel: &Kernel, tid: Tid, fd: u64) -> Result<FileRef, Errno> {
 
 /// Reads an absolute timeout on the real time clock (`prepare_timeout`) and makes it a deadline on
 /// the monotonic clock.
-fn deadline<S: crate::System>(
+fn deadline<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     address: u64,
 ) -> Result<Option<u64>, Errno> {
@@ -287,9 +292,9 @@ fn with_queue<R>(node: &Node, act: impl FnOnce(&mut MessageQueue) -> R) -> R {
     act(queue)
 }
 
-pub(super) fn mq_open<S: crate::System>(
+pub(super) fn mq_open<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [name, flags, mode, attributes, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -367,9 +372,9 @@ pub(super) fn mq_open<S: crate::System>(
     Ok(fd as u64)
 }
 
-pub(super) fn mq_unlink<S: crate::System>(
+pub(super) fn mq_unlink<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [name, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -387,9 +392,9 @@ pub(super) fn mq_unlink<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn mq_timedsend<S: crate::System>(
+pub(super) fn mq_timedsend<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, buffer, length, priority, timeout, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -465,9 +470,9 @@ pub(super) fn mq_timedsend<S: crate::System>(
 
 /// Sends the signal a request asked for, if it did and its process has not run another program,
 /// or a SIGEV_THREAD request's cookie marked woken.
-fn tell<S: crate::System>(
+fn tell<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     notify: Notify,
     pid: Pid,
     uid: u32,
@@ -506,7 +511,7 @@ fn touch(node: &Node, now: crate::fs::Time) {
 /// Parks a sender or receiver just put in the queue's line until it is handed what it waits for,
 /// its time is up or a signal comes.
 fn park(kernel: &mut Kernel, tid: Tid, node: &Node, deadline: Option<u64>) -> Result<u64, Errno> {
-    kernel.ipc.mq_waiting.insert(tid, Rc::downgrade(node));
+    kernel.ipc.mq_waiting.insert(tid, Arc::downgrade(node));
     let thread = kernel.thread_mut(tid);
     thread.call.started = true;
     thread.call.deadline = deadline;
@@ -518,9 +523,9 @@ fn park(kernel: &mut Kernel, tid: Tid, node: &Node, deadline: Option<u64>) -> Re
 
 /// A waiting send or receive run again (`wq_sleep`): what it was handed, or a signal (restarted),
 /// its time up, or it waits on.
-fn waited<S: crate::System>(
+fn waited<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     receive: Option<(u64, u64)>,
 ) -> Result<u64, Errno> {
@@ -568,9 +573,9 @@ pub(crate) fn forget(kernel: &mut Kernel, tid: Tid) {
 }
 
 /// The message's priority and text, stored for the receiver; EFAULT loses the message.
-fn store<S: crate::System>(
+fn store<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     buffer: u64,
     priority_at: u64,
@@ -587,9 +592,9 @@ fn store<S: crate::System>(
     Ok(text.len() as u64)
 }
 
-pub(super) fn mq_timedreceive<S: crate::System>(
+pub(super) fn mq_timedreceive<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, buffer, length, priority_at, timeout, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -643,9 +648,9 @@ pub(super) fn mq_timedreceive<S: crate::System>(
     store(kernel, cx, tid, buffer, priority_at, priority, &text)
 }
 
-pub(super) fn mq_notify<S: crate::System>(
+pub(super) fn mq_notify<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, request, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -720,9 +725,9 @@ pub(super) fn mq_notify<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn mq_getsetattr<S: crate::System>(
+pub(super) fn mq_getsetattr<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, new, old, ..]: Args,
 ) -> Result<u64, Errno> {

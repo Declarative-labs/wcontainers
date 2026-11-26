@@ -1,23 +1,26 @@
 //! The tests every implementation of wcontainers-kernel runs, written against its traits alone.
 //!
 //! A kernel's checks take a kernel with two processes, a container's first process and its child,
-//! each of one thread whose id is its process's, both waiting for ever, with ids below [`PROBED`].
+//! each of one thread whose id is its process's, both waiting for ever, with ids among the first
+//! a kernel hands out.
 //! A process's checks take a handle to such a container's first process, started to run serially
 //! and exactly, which leaves its first page unmapped. Its start has written pages for it, as
 //! Linux's `execve` writes the new program's arguments onto its stack before its first
 //! instruction.
 
+use wcontainers_executor::PerThreadWatch;
 use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::SignalInformation;
 use wcontainers_kernel::{
-    Kernel, MemoryError, Process, ReplayDeterminism, TaskId, ThreadOrdering, WatchesFor,
+    ExecutionConfig, ExecutorOf, Kernel, MemoryError, MemoryReader, Process, ReplayDeterminism,
+    TaskId, ThreadOrdering, WatchesFor,
 };
 
 /// An id no kernel hands out: past the largest a task can have.
 const ABSENT: TaskId = TaskId(u32::MAX);
 
 /// One past the largest id the checks look for a process at: the ids a kernel hands out first.
-pub const PROBED: u32 = 1 << 12;
+const PROBED: u32 = 1 << 12;
 
 /// The bytes a process's checks write, a word's worth of distinct values.
 const WRITTEN: [u8; size_of::<u64>()] = [1, 2, 3, 4, 5, 6, 7, 8];
@@ -48,15 +51,88 @@ pub fn tasks_of_several_processes_are_taken_at_once<K: Kernel>(kernel: K) {
         2,
         "the container's first process and its child"
     );
-    let taken: Vec<TaskId> = kernel
+    let mut taken: Vec<TaskId> = kernel
         .suspend_tasks(&processes)
         .map(|(task, _)| task)
         .collect();
-    assert_eq!(
-        taken, processes,
-        "each process's thread, in the order asked"
-    );
+    taken.sort_unstable();
+    assert_eq!(taken, processes, "each process's thread, once");
     assert!(kernel.suspend_tasks(&processes).next().is_none());
+}
+
+/// Checks that threads taken off the kernel and given back are all taken in, and are then on the
+/// kernel again to be taken once more.
+pub fn taken_tasks_are_resumed<K: Kernel>(kernel: K) {
+    let processes = processes_of(&kernel);
+    let taken: Vec<K::SuspendedTask> = kernel
+        .suspend_tasks(&processes)
+        .map(|(_, task)| task)
+        .collect();
+    assert_eq!(taken.len(), processes.len(), "each process's thread");
+    assert_eq!(
+        kernel.resume_tasks(taken).count(),
+        0,
+        "the kernel took in every thread it gave out"
+    );
+    let mut again: Vec<TaskId> = kernel
+        .suspend_tasks(&processes)
+        .map(|(task, _)| task)
+        .collect();
+    again.sort_unstable();
+    assert_eq!(again, processes, "the resumed threads, each once");
+}
+
+/// Checks that a process taken off the kernel comes back whole: its context is taken in, then its
+/// threads, and it is on the kernel again with its thread to take.
+pub fn suspended_process_is_resumed<K: Kernel>(kernel: K) {
+    for process in processes_of(&kernel) {
+        let (context, tasks) = kernel
+            .suspend_process(process)
+            .expect("the process is on the kernel");
+        let tasks: Vec<K::SuspendedTask> = tasks.map(|(_, task)| task).collect();
+        assert!(
+            kernel.copy_process_context(process).is_none(),
+            "a suspended process is off the kernel"
+        );
+        assert!(
+            kernel.resume_process(context, serial::<K>()).is_none(),
+            "the kernel took the context in"
+        );
+        assert_eq!(kernel.resume_tasks(tasks).count(), 0, "and its threads");
+        let taken: Vec<TaskId> = kernel
+            .suspend_tasks(&[process])
+            .map(|(task, _)| task)
+            .collect();
+        assert_eq!(taken, [process], "the resumed process's thread");
+    }
+}
+
+/// Checks that a copy of a process's context, resumed while the process it was copied from is on
+/// the kernel, is handed back, and the process stays as it was.
+pub fn copy_beside_its_process_is_handed_back<K: Kernel>(kernel: K) {
+    for process in processes_of(&kernel) {
+        let copy = kernel
+            .copy_process_context(process)
+            .expect("the process is on the kernel");
+        assert!(
+            kernel.resume_process(copy, serial::<K>()).is_some(),
+            "a second context of a process on the kernel is handed back"
+        );
+        let taken: Vec<TaskId> = kernel
+            .suspend_tasks(&[process])
+            .map(|(task, _)| task)
+            .collect();
+        assert_eq!(taken, [process], "the process's one thread");
+    }
+}
+
+/// The way of running a process every kernel supports.
+fn serial<K: Kernel>() -> ExecutionConfig<ExecutorOf<K>> {
+    ExecutionConfig {
+        thread_ordering: ThreadOrdering::Serial,
+        replay_determinism: ReplayDeterminism::Exact,
+        translator: Default::default(),
+    }
 }
 
 /// Returns the ids below [`PROBED`] the kernel has a process of, in order.
@@ -67,7 +143,7 @@ fn processes_of<K: Kernel>(kernel: &K) -> Vec<TaskId> {
         .collect()
 }
 
-/// Checks what a container's first process tells of itself before it has run.
+/// Checks what a container's first process tells of itself.
 pub fn first_process_tells_of_itself<P: Process>(process: P) {
     assert_eq!(process.parent(), None, "the container's first process");
     assert!(process.mapped_memory() > 0, "its program is mapped");
@@ -95,12 +171,13 @@ pub fn reads_back_what_it_writes<P: Process>(mut process: P) {
 /// Checks that a range ending before it starts, and a page not mapped, are refused by name.
 pub fn bad_reads_are_refused<P: Process>(mut process: P) {
     let length = WRITTEN.len() as u64;
+    let mut bytes = Bytes::default();
     assert!(matches!(
-        process.read_memory(length..0),
+        process.read_memory(length..0, &mut bytes),
         Err(MemoryError::InvalidRange)
     ));
     assert!(matches!(
-        process.read_memory(0..length),
+        process.read_memory(0..length, &mut bytes),
         Err(MemoryError::NotMapped)
     ));
 }
@@ -190,8 +267,9 @@ pub fn taken_tasks_are_not_taken_again<P: Process>(mut process: P) {
     assert_eq!(tasks.count(), 0, "its one thread is already taken");
 }
 
-/// Checks that asking a process for every thread id but its own takes and returns nothing, though
-/// its child's thread is among them, and that its own thread is still there to take.
+/// Checks that asking a process for every thread id but its own returns nothing, though its
+/// child's thread is among them, and that its own thread is still there to take. Whether the
+/// child's thread stayed on the kernel is not seen here: a handle reaches only its own process.
 pub fn threads_of_another_process_are_not_taken<P: Process>(mut process: P) {
     let id = process.id();
     let others: Vec<TaskId> = (1..PROBED).map(TaskId).filter(|&task| task != id).collect();
@@ -205,7 +283,7 @@ pub fn threads_of_another_process_are_not_taken<P: Process>(mut process: P) {
     assert_eq!(taken, [id], "only its own thread");
 }
 
-/// Checks that a signal whose default is to go on leaves a process that has not run as it was.
+/// Checks that a signal whose default is to go on leaves a waiting process as it was.
 pub fn continue_signal_leaves_the_process<P: Process>(mut process: P) {
     let id = process.id();
     process.send_signal(
@@ -239,6 +317,72 @@ pub fn watched_memory_is_read_and_written<P: Process>(mut process: P) {
     }
 }
 
+/// Checks that the embedder reads and writes memory one thread's accesses watch, with no time used.
+///
+/// The memory is read and written again after the watch ends.
+pub fn thread_watched_memory_is_read_and_written<P: Process>(mut process: P)
+where
+    ExecutorOf<P::Kernel>: PerThreadWatch,
+{
+    let id = process.id();
+    let before = process.cpu_time();
+    let range = first_written(&mut process);
+    for watches in [WatchesFor::All, WatchesFor::Writes, WatchesFor::None] {
+        process.watch_thread_memory(id, range.clone(), watches);
+        process
+            .write_memory(range.clone(), &WRITTEN)
+            .expect("a page one thread watches is written by the embedder");
+        assert_eq!(read(&mut process, range.clone()), WRITTEN);
+    }
+    assert_eq!(process.cpu_time(), before, "the process has not run");
+}
+
+/// Checks that watches of one thread leave the process its memory and its one thread.
+///
+/// The watches are set beside the whole process's and for a thread the process does not have, and
+/// none of them is an inspection.
+pub fn thread_watch_leaves_the_process<P: Process>(mut process: P)
+where
+    ExecutorOf<P::Kernel>: PerThreadWatch,
+{
+    let id = process.id();
+    let range = first_written(&mut process);
+    process.watch_memory(range.clone(), WatchesFor::Writes);
+    process.watch_thread_memory(id, range.clone(), WatchesFor::All);
+    process.watch_thread_memory(ABSENT, range.clone(), WatchesFor::All);
+    process
+        .write_memory(range.clone(), &WRITTEN)
+        .expect("a watched page is written by the embedder");
+    process.watch_memory(range.clone(), WatchesFor::None);
+    assert_eq!(read(&mut process, range.clone()), WRITTEN);
+    process.watch_thread_memory(id, range.clone(), WatchesFor::None);
+    process.watch_thread_memory(ABSENT, range.clone(), WatchesFor::None);
+    assert_eq!(read(&mut process, range), WRITTEN);
+    assert!(
+        !process.is_inspected(),
+        "the embedder is not another process"
+    );
+    let (_, tasks) = process.suspend_process();
+    let ids: Vec<TaskId> = tasks.map(|(task, _)| task).collect();
+    assert_eq!(ids, [id], "the watched process still has its thread");
+}
+
+/// Checks that the embedder reading, writing and watching a process is not an inspection.
+///
+/// Only another process reading its state is one.
+pub fn embedder_access_is_not_an_inspection<P: Process>(mut process: P) {
+    let range = first_written(&mut process);
+    process.watch_memory(range.clone(), WatchesFor::All);
+    process
+        .write_memory(range.clone(), &WRITTEN)
+        .expect("a written page is written");
+    assert_eq!(read(&mut process, range.clone()), WRITTEN);
+    process.watch_memory(range, WatchesFor::None);
+    let copy = process.copy_process_context();
+    assert!(!process.is_inspected(), "only another process inspects");
+    drop(copy);
+}
+
 /// Returns the range of [`WRITTEN`]'s length at the start of the first range of pages written for
 /// the process since its start, which wrote its program's arguments at least.
 fn first_written<P: Process>(process: &mut P) -> core::ops::Range<u64> {
@@ -250,14 +394,23 @@ fn first_written<P: Process>(process: &mut P) -> core::ops::Range<u64> {
     first..first + WRITTEN.len() as u64
 }
 
+/// The parts of a read of a process's memory, joined in order.
+#[derive(Default)]
+struct Bytes(Vec<u8>);
+
+impl MemoryReader for Bytes {
+    fn read_part(&mut self, part: &[u8]) {
+        self.0.extend_from_slice(part);
+    }
+}
+
 /// Returns the bytes of a range of the process's memory, which must be readable.
 fn read<P: Process>(process: &mut P, range: core::ops::Range<u64>) -> Vec<u8> {
+    let mut bytes = Bytes::default();
     process
-        .read_memory(range)
-        .expect("a written range is read")
-        .flatten()
-        .copied()
-        .collect()
+        .read_memory(range, &mut bytes)
+        .expect("a written range is read");
+    bytes.0
 }
 
 /// Runs each suite function above as its own test, and each group's where the implementation has it.
@@ -316,6 +469,18 @@ macro_rules! tests {
             fn watched_memory_is_read_and_written() {
                 $crate::watched_memory_is_read_and_written($value);
             }
+            #[test]
+            fn thread_watched_memory_is_read_and_written() {
+                $crate::thread_watched_memory_is_read_and_written($value);
+            }
+            #[test]
+            fn thread_watch_leaves_the_process() {
+                $crate::thread_watch_leaves_the_process($value);
+            }
+            #[test]
+            fn embedder_access_is_not_an_inspection() {
+                $crate::embedder_access_is_not_an_inspection($value);
+            }
         }
     };
     (@Process no ($value:expr)) => {
@@ -358,6 +523,18 @@ macro_rules! tests {
         #[test]
         fn tasks_of_several_processes_are_taken_at_once() {
             $crate::tasks_of_several_processes_are_taken_at_once($value);
+        }
+        #[test]
+        fn taken_tasks_are_resumed() {
+            $crate::taken_tasks_are_resumed($value);
+        }
+        #[test]
+        fn suspended_process_is_resumed() {
+            $crate::suspended_process_is_resumed($value);
+        }
+        #[test]
+        fn copy_beside_its_process_is_handed_back() {
+            $crate::copy_beside_its_process_is_handed_back($value);
         }
         $crate::tests!(@Process $process ($value) $(($process_value))?);
     };

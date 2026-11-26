@@ -40,9 +40,10 @@ pub(crate) mod tty;
 mod xattr;
 
 use wcontainers_abi::SystemCallRequest;
+use wcontainers_executor::Executor;
 
 pub(crate) use process::set_personality;
-pub(crate) use system::{set_io_priority, set_own_schedule};
+pub(crate) use system::{set_io_priority, set_own_affinity, set_own_schedule};
 pub(crate) use xattr::CAPABILITY;
 
 use crate::counters::reason;
@@ -76,22 +77,22 @@ impl From<Result<u64, Errno>> for Outcome {
 }
 
 /// A call that ends with a value or an error.
-type Simple<S> = fn(&mut Kernel, &mut Context<'_, S>, Tid, Args) -> Result<u64, Errno>;
+type Simple<S, C> = fn(&mut Kernel, &mut Context<'_, S, C>, Tid, Args) -> Result<u64, Errno>;
 /// A call that may also end its thread, park it or replace its registers.
-type Full<S> = fn(&mut Kernel, &mut Context<'_, S>, Tid, Args) -> Outcome;
+type Full<S, C> = fn(&mut Kernel, &mut Context<'_, S, C>, Tid, Args) -> Outcome;
 
-enum Handler<S> {
-    Simple(Simple<S>),
-    Full(Full<S>),
+enum Handler<S, C: Executor> {
+    Simple(Simple<S, C>),
+    Full(Full<S, C>),
 }
 
-impl<S> Clone for Handler<S> {
+impl<S, C: Executor> Clone for Handler<S, C> {
     fn clone(&self) -> Self {
         *self
     }
 }
 
-impl<S> Copy for Handler<S> {}
+impl<S, C: Executor> Copy for Handler<S, C> {}
 
 #[derive(Clone, Copy)]
 struct Entry {
@@ -113,8 +114,8 @@ const LENGTH: usize = {
     highest as usize + 1
 };
 
-/// The handler of every built call, by number, for a kernel on system `S`.
-struct Handlers<S>(core::marker::PhantomData<S>);
+/// The handler of every built call, by number, for a kernel on system `S` and executor `C`.
+struct Handlers<S, C>(core::marker::PhantomData<(S, C)>);
 
 /// Makes, from the one list of built calls, the table of their names and the handlers' table.
 macro_rules! built_calls {
@@ -142,8 +143,8 @@ macro_rules! built_calls {
             table
         };
 
-        impl<Sys: crate::System> Handlers<Sys> {
-            const TABLE: [Option<Handler<Sys>>; LENGTH] = {
+        impl<Sys: crate::System, Cx: Executor> Handlers<Sys, Cx> {
+            const TABLE: [Option<Handler<Sys, Cx>>; LENGTH] = {
                 use crate::linux::general::*;
 
                 let mut table = [None; LENGTH];
@@ -429,16 +430,16 @@ built_calls! {
 
 /// Runs a system call. `again` is a call a parked thread runs again after a wake: the filters
 /// already let it through.
-pub(crate) fn dispatch<S: crate::System>(
+pub(crate) fn dispatch<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     call: SystemCallRequest,
     again: bool,
 ) -> Outcome {
     // ARM64 Linux takes the call number from the low 32 bits of x8 only.
     let number = call.number.0 as u32;
-    let handlers: &[Option<Handler<S>>; LENGTH] = &Handlers::<S>::TABLE;
+    let handlers: &[Option<Handler<S, C>>; LENGTH] = &Handlers::<S, C>::TABLE;
     let handler = handlers.get(number as usize).copied().flatten();
     if again {
         return match handler {
@@ -484,11 +485,11 @@ pub(crate) fn dispatch<S: crate::System>(
 }
 
 /// The calling thread's process memory, for copying to and from it.
-pub(crate) fn guest<'a, S: crate::System>(
+pub(crate) fn guest<'a, S: crate::System, C: Executor>(
     kernel: &'a mut Kernel,
-    cx: &'a mut Context<'_, S>,
+    cx: &'a mut Context<'_, S, C>,
     tid: Tid,
-) -> Guest<'a> {
+) -> Guest<'a, C> {
     let thread = &kernel.threads[&tid];
     let may_lock_any = thread.credentials.has(crate::linux::general::CAP_IPC_LOCK);
     let pid = thread.process;
@@ -496,13 +497,13 @@ pub(crate) fn guest<'a, S: crate::System>(
 }
 
 /// Process `pid`'s memory, for copies made for its task `tid`, which need not be on the kernel.
-pub(crate) fn process_guest<'a, S: crate::System>(
+pub(crate) fn process_guest<'a, S: crate::System, C: Executor>(
     kernel: &'a mut Kernel,
-    cx: &'a mut Context<'_, S>,
+    cx: &'a mut Context<'_, S, C>,
     pid: crate::process::Pid,
     tid: Tid,
     may_lock_any: bool,
-) -> Guest<'a> {
+) -> Guest<'a, C> {
     let process = &kernel.processes[&pid];
     Guest {
         cpu: cx.cpu,
@@ -518,9 +519,9 @@ pub(crate) fn process_guest<'a, S: crate::System>(
 
 /// A path argument, copied once per call (`getname`): a call that waits takes the same bytes in
 /// its later runs, whatever memory holds by then. Empty is ENOENT unless `may_be_empty`.
-pub(crate) fn path_argument<S: crate::System>(
+pub(crate) fn path_argument<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     address: u64,
     may_be_empty: bool,
@@ -571,7 +572,10 @@ pub(crate) fn name(number: u64) -> Option<&'static str> {
 
 /// The one anonymous inode signal descriptors and their like share: owned by root, readable and
 /// writable by it, with no file type (measured).
-fn anon_node<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) -> crate::fs::Node {
+fn anon_node<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+) -> crate::fs::Node {
     if let Some(node) = &kernel.files.anon {
         return node.clone();
     }

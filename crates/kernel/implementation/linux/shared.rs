@@ -4,11 +4,12 @@
 //! cache. A backend file's block takes each page from the backend when it is first touched
 //! ([`fill`]) and is written back while a shared mapping may write it.
 
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::Range;
 use wcontainers_abi::{MemoryId, PAGE_SIZE, Permissions};
+use wcontainers_executor::Executor;
 
 use crate::fs::backend::{Handle, Pages};
 use crate::fs::{Block, Content, Node};
@@ -18,9 +19,9 @@ use crate::{Context, Errno, Kernel, errno};
 /// The file's block, made or grown so it holds at least the first `length` bytes; `None` for a file
 /// that is neither regular nor on the backend. A backend file's block was made big enough by
 /// [`backend_block`] first, since its bytes come from the backend.
-pub(crate) fn block_for<S: crate::System>(
+pub(crate) fn block_for<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     length: u64,
 ) -> Result<Option<Block>, Errno> {
@@ -43,11 +44,11 @@ pub(crate) fn block_for<S: crate::System>(
 /// Makes a backend file's block cover at least its first `length` bytes, its pages read only when
 /// touched ([`fill`]), through `handle` or the open file it was mapped through. A shared mapping
 /// that may write (`writer`) has its file write the pages back.
-pub(crate) fn backend_block<S: crate::System>(
+pub(crate) fn backend_block<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     node: &Node,
-    handle: Option<&Rc<Handle>>,
+    handle: Option<&Arc<Handle>>,
     length: u64,
     writer: bool,
 ) -> Result<(), Errno> {
@@ -73,17 +74,17 @@ pub(crate) fn backend_block<S: crate::System>(
 }
 
 /// Gives a backend file a block of `length` bytes holding the pages its old one held.
-fn backend_grow<S: crate::System>(
+fn backend_grow<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     old: Option<Block>,
-    through: &Rc<Handle>,
+    through: &Arc<Handle>,
     length: u64,
 ) -> Result<(), Errno> {
     let id = cx
         .cpu
-        .shared_new(length)
+        .make_shared(length)
         .map_err(|error| cx.cpu_error(error))?;
     let new = Block { id, length };
     if let Content::Backend(remote) = &mut node.borrow_mut().content {
@@ -92,10 +93,10 @@ fn backend_grow<S: crate::System>(
                 for run in pages.filled.iter() {
                     let mut held = vec![0; ((run.end - run.start) * PAGE_SIZE) as usize];
                     cx.cpu
-                        .shared_read(pages.block.id, run.start * PAGE_SIZE, &mut held)
+                        .read_shared(pages.block.id, run.start * PAGE_SIZE, &mut held)
                         .map_err(errno::from_cpu)?;
                     cx.cpu
-                        .shared_write(id, run.start * PAGE_SIZE, &held)
+                        .write_shared(id, run.start * PAGE_SIZE, &held)
                         .map_err(errno::from_cpu)?;
                 }
                 pages.block = new;
@@ -106,7 +107,7 @@ fn backend_grow<S: crate::System>(
                     handle: through.clone(),
                     written: false,
                     dirtied: false,
-                    sent: core::cell::Cell::new(0),
+                    sent: crossbeam_utils::atomic::AtomicCell::new(0),
                     sent_at_attributes: 0,
                     filled: rangemap::RangeSet::new(),
                     failed: rangemap::RangeSet::new(),
@@ -148,7 +149,7 @@ pub(crate) fn fill(node: &Node, pages: Range<u64>) -> Result<(), Errno> {
         let Content::Backend(remote) = &mut inode.content else {
             return Ok(());
         };
-        let size = remote.size.get();
+        let size = remote.size.load();
         let Some(held) = &mut remote.pages else {
             return Ok(());
         };
@@ -186,8 +187,8 @@ pub(crate) fn fill(node: &Node, pages: Range<u64>) -> Result<(), Errno> {
 /// The backend answered for file pages `pages` asked when the file had had `changes` changes:
 /// the pages its block still lacks take the bytes (zeros past what came), unless the file changed
 /// since; a failed read marks them so their next touch faults.
-pub(crate) fn pages_came<S: crate::System>(
-    cx: &mut Context<'_, S>,
+pub(crate) fn pages_came<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     pages: Range<u64>,
     changes: u64,
@@ -223,7 +224,7 @@ pub(crate) fn pages_came<S: crate::System>(
             chunk[..came.len()].copy_from_slice(came);
         }
         cx.cpu
-            .shared_write(held.block.id, gap.start * PAGE_SIZE, &chunk)
+            .write_shared(held.block.id, gap.start * PAGE_SIZE, &chunk)
             .expect("the block holds the file's first pages");
         held.filled.insert(gap);
     }
@@ -263,15 +264,15 @@ fn held_runs(node: &Node, from: u64, to: u64) -> Option<Vec<(u64, u64, bool)>> {
 }
 
 /// The bytes `[from, to)` of a block.
-fn block_bytes<S: crate::System>(
-    cx: &mut Context<'_, S>,
+fn block_bytes<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     block: Block,
     from: u64,
     to: u64,
 ) -> Vec<u8> {
     let mut bytes = vec![0; (to - from) as usize];
     cx.cpu
-        .shared_read(block.id, from, &mut bytes)
+        .read_shared(block.id, from, &mut bytes)
         .expect("the block holds the file's first pages");
     bytes
 }
@@ -280,8 +281,8 @@ fn block_bytes<S: crate::System>(
 /// from Linux's page cache, with the size asked again first (`fuse_cache_read_iter` with
 /// FUSE_AUTO_INVAL_DATA), and the rest from the backend; from the backend alone when the backend
 /// opened the file for direct reads.
-pub(crate) fn backend_read<S: crate::System>(
-    cx: &mut Context<'_, S>,
+pub(crate) fn backend_read<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     handle: &Handle,
     offset: u64,
@@ -317,8 +318,8 @@ pub(crate) fn backend_read<S: crate::System>(
 
 /// Puts bytes written to a backend file into the pages its block holds; the others are read
 /// afresh when touched.
-pub(crate) fn backend_written<S: crate::System>(
-    cx: &mut Context<'_, S>,
+pub(crate) fn backend_written<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     offset: u64,
     bytes: &[u8],
@@ -331,7 +332,7 @@ pub(crate) fn backend_written<S: crate::System>(
     for (from, to, held) in runs {
         if held {
             cx.cpu
-                .shared_write(
+                .write_shared(
                     block.id,
                     from,
                     &bytes[(from - offset) as usize..(to - offset) as usize],
@@ -344,8 +345,8 @@ pub(crate) fn backend_written<S: crate::System>(
 
 /// Bytes the backend gave to keep (`fuse_notify_store`): they go into the file's block, and the
 /// pages they cover whole, or up to the file's end, are held from then on.
-pub(crate) fn backend_stored<S: crate::System>(
-    cx: &mut Context<'_, S>,
+pub(crate) fn backend_stored<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     offset: u64,
     bytes: &[u8],
@@ -354,7 +355,7 @@ pub(crate) fn backend_stored<S: crate::System>(
     let Content::Backend(remote) = &mut inode.content else {
         return;
     };
-    let size = remote.size.get();
+    let size = remote.size.load();
     let Some(held) = &mut remote.pages else {
         return;
     };
@@ -363,7 +364,7 @@ pub(crate) fn backend_stored<S: crate::System>(
         return;
     }
     cx.cpu
-        .shared_write(held.block.id, offset, &bytes[..(end - offset) as usize])
+        .write_shared(held.block.id, offset, &bytes[..(end - offset) as usize])
         .expect("the block holds the file's first pages");
     let first = page_up(offset) / PAGE_SIZE;
     let last = if end >= size { page_up(end) } else { end } / PAGE_SIZE;
@@ -374,8 +375,8 @@ pub(crate) fn backend_stored<S: crate::System>(
 
 /// The bytes a mapped backend file's block holds from `offset`, up to `count` and the file's end,
 /// stopping at the first page it lacks (`fuse_retrieve`); `None` while nothing maps the file.
-pub(crate) fn backend_held<S: crate::System>(
-    cx: &mut Context<'_, S>,
+pub(crate) fn backend_held<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     offset: u64,
     count: u64,
@@ -422,9 +423,9 @@ pub(crate) fn backend_drop(node: &Node, pages: Range<u64>) {
 
 /// After [`backend_drop`]: every mapping of the file faults on the pages dropped, and code run from
 /// it is stale; counted when the pages were kept.
-pub(crate) fn backend_dropped<S: crate::System>(
+pub(crate) fn backend_dropped<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     node: &Node,
 ) -> Result<(), Errno> {
     let kept = match &node.borrow().content {
@@ -468,8 +469,8 @@ pub(crate) fn backend_writable(node: &Node) {
 
 /// Zeroes `[from, to)` of a backend file's block, for bytes the backend dropped (a truncation or a
 /// punched hole), as Linux's `truncate_pagecache_range`.
-pub(crate) fn backend_cut<S: crate::System>(
-    cx: &mut Context<'_, S>,
+pub(crate) fn backend_cut<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     from: u64,
     to: u64,
@@ -479,7 +480,7 @@ pub(crate) fn backend_cut<S: crate::System>(
     {
         let zeros = vec![0; (to.min(block.length) - from) as usize];
         cx.cpu
-            .shared_write(block.id, from, &zeros)
+            .write_shared(block.id, from, &zeros)
             .expect("the block holds the file's first pages");
     }
     changed_bytes(node);
@@ -489,9 +490,9 @@ pub(crate) fn backend_cut<S: crate::System>(
 /// shared mapping has been able to write them: waiting for the answers, or with nothing to wait
 /// sending them on their own. Every page held goes, changed or not, since which were written is not
 /// known.
-pub(crate) fn backend_write_back<S: crate::System>(
+pub(crate) fn backend_write_back<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     from: u64,
     to: u64,
@@ -499,7 +500,7 @@ pub(crate) fn backend_write_back<S: crate::System>(
 ) -> Result<(), Errno> {
     let (handle, size, block) = match &node.borrow().content {
         Content::Backend(remote) => match &remote.pages {
-            Some(pages) if pages.dirtied => (pages.handle.clone(), remote.size.get(), pages.block),
+            Some(pages) if pages.dirtied => (pages.handle.clone(), remote.size.load(), pages.block),
             _ => return Ok(()),
         },
         _ => return Ok(()),
@@ -524,9 +525,9 @@ pub(crate) fn backend_write_back<S: crate::System>(
 }
 
 /// Makes a file mapping show its file's block, except at a private mapping's own copies.
-pub(crate) fn show<S: crate::System>(
+pub(crate) fn show<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     memory: MemoryId,
     mapping: &Mapping,
 ) -> Result<(), Errno> {
@@ -541,9 +542,9 @@ pub(crate) fn show<S: crate::System>(
 
 /// Makes every file mapping of a memory not yet in any process show its file: every block is made
 /// big enough first, so none grows while another mapping already shows it.
-pub(crate) fn show_all<S: crate::System>(
+pub(crate) fn show_all<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     memory: MemoryId,
     map: &crate::memory::AddressMap,
 ) -> Result<(), Errno> {
@@ -559,8 +560,8 @@ pub(crate) fn show_all<S: crate::System>(
 }
 
 /// Maps the block over the parts of `mapping` that show its file.
-fn map_shown<S: crate::System>(
-    cx: &mut Context<'_, S>,
+fn map_shown<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     block: Block,
     memory: MemoryId,
     mapping: &Mapping,
@@ -569,7 +570,7 @@ fn map_shown<S: crate::System>(
     for (from, to, own) in mapping.runs() {
         if mapping.shared || !own {
             cx.cpu
-                .shared_map(
+                .map_shared(
                     block.id,
                     offset + (from - mapping.start),
                     memory,
@@ -584,16 +585,16 @@ fn map_shown<S: crate::System>(
 
 /// Gives the file a block of `length` bytes holding what it held, and moves every mapping that showed
 /// the old block over to it.
-fn grow<S: crate::System>(
+fn grow<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     old: Option<Block>,
     length: u64,
 ) -> Result<(), Errno> {
     let id = cx
         .cpu
-        .shared_new(length)
+        .make_shared(length)
         .map_err(|error| cx.cpu_error(error))?;
     let new = Block { id, length };
     {
@@ -604,7 +605,7 @@ fn grow<S: crate::System>(
         regular.take_block(cx.cpu);
         let bytes = regular.read(cx.cpu, 0, length);
         cx.cpu
-            .shared_write(id, 0, &bytes)
+            .write_shared(id, 0, &bytes)
             .map_err(errno::from_cpu)?;
         regular.block = Some(new);
     }
@@ -613,9 +614,9 @@ fn grow<S: crate::System>(
 
 /// Moves every mapping that showed the file's old block over to its new one and drops the old; a
 /// file's first block puts it on the list of mapped files.
-fn moved<S: crate::System>(
+fn moved<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     node: &Node,
     old: Option<Block>,
     new: Block,
@@ -634,7 +635,7 @@ fn moved<S: crate::System>(
                     }
                 }
             }
-            cx.cpu.shared_drop(old.id);
+            cx.cpu.drop_shared(old.id);
         }
         None => kernel.files.shared.push(node.clone()),
     }
@@ -665,21 +666,21 @@ fn mapped_offset(backing: &Backing, node: &Node) -> Option<u64> {
             node: mapped,
             offset,
             ..
-        } if Rc::ptr_eq(mapped, node) => Some(*offset),
+        } if Arc::ptr_eq(mapped, node) => Some(*offset),
         _ => None,
     }
 }
 
 /// After a file's bytes or size changed: the pages of its mappings wholly past its end fault with
 /// `SIGBUS`, those before it are reachable again, and code run from it is stale.
-pub(crate) fn changed<S: crate::System>(
+pub(crate) fn changed<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     node: &Node,
 ) -> Result<(), Errno> {
     let size = match &node.borrow().content {
         Content::Regular(regular) if regular.block.is_some() => regular.size(),
-        Content::Backend(remote) if remote.pages.is_some() => remote.size.get(),
+        Content::Backend(remote) if remote.pages.is_some() => remote.size.load(),
         _ => return Ok(()),
     };
     let away = kernel.live_maps_away();
@@ -695,7 +696,7 @@ pub(crate) fn changed<S: crate::System>(
                 && mapped_offset(&mapping.backing, node).is_some()
             {
                 cx.cpu
-                    .code_changed(memory, mapping.start, mapping.end - mapping.start, &[]);
+                    .note_changed_code(memory, mapping.start, mapping.end - mapping.start, &[]);
             }
         }
     }
@@ -704,7 +705,10 @@ pub(crate) fn changed<S: crate::System>(
 
 /// Ends the blocks of files no mapping shows any more, here or in a context away, moving their bytes back to the files: a
 /// backend file's are written back, with nothing waiting, if a shared mapping may have written them.
-pub(crate) fn release<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) {
+pub(crate) fn release<S: crate::System, C: Executor>(
+    kernel: &mut Kernel,
+    cx: &mut Context<'_, S, C>,
+) {
     let processes = &kernel.processes;
     let away = kernel.live_maps_away();
     let mut unmapped = Vec::new();
@@ -730,7 +734,7 @@ pub(crate) fn release<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_
             _ => None,
         };
         if let Some(block) = block {
-            cx.cpu.shared_drop(block.id);
+            cx.cpu.drop_shared(block.id);
         }
     }
 }
