@@ -24,7 +24,8 @@ impl Position {
     }
 
     /// Whether this position comes before `other` in the run that reaches both. Between two events the pc
-    /// only grows: nothing executed there can go backward.
+    /// only grows within the guest's own control flow, all the stand-ins give: they deliver no signals,
+    /// whose delivery and return move it down with no event.
     pub fn before(self, other: Position) -> bool {
         self < other
     }
