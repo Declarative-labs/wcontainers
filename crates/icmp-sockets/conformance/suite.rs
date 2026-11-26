@@ -306,7 +306,7 @@ pub fn batch(tool: &str, options: &[&str], commands: &str) {
     }
     let mut left = String::new();
     for line in commands.lines() {
-        if netlink::done(line) {
+        if netlink::done(line, options) {
             if !left.is_empty() {
                 run_tool(tool, options, &left);
                 left.clear();
