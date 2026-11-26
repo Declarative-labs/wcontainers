@@ -35,6 +35,9 @@ const BITNESS: u32 = 64;
 /// Legacy SSE's memory operands of 16 bytes must be aligned to 16, or the instruction raises #GP(0).
 const SSE_ALIGNMENT: u64 = 16;
 
+#[path = "sse_simulation.rs"]
+mod sse_simulation;
+
 type Memory<'list, 'memory> = &'list [MemoryDelta<'memory, X86_64>];
 
 /// A memory operand's first address, and whether its segment is SS, which turns #GP into #SS.
@@ -181,6 +184,9 @@ fn apply(
         PreciseInstruction::Vector(instruction) => execute_vector(instruction, processor, memory, decoded),
         PreciseInstruction::Float(instruction) => execute_float(instruction, processor, memory, decoded),
         PreciseInstruction::Branch(instruction) => execute_branch(instruction, processor, decoded),
+        PreciseInstruction::Sse { instruction, across_fault, masked_faults } => {
+            sse_simulation::execute_sse(instruction, across_fault, masked_faults, processor, memory, decoded, on_memory_mutated)
+        }
         PreciseInstruction::Privileged(instruction) => {
             let (_, codes) = PRIVILEGED_FORMS
                 .iter()

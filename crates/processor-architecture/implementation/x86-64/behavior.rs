@@ -240,6 +240,7 @@ impl PreciseInstruction {
             Self::Vector(instruction) | Self::Float(instruction) => instruction,
             Self::Privileged(instruction) | Self::Branch(instruction) => instruction,
             Self::Integer { instruction, .. } | Self::Undefined(instruction) => instruction,
+            Self::Sse { instruction, .. } => instruction,
         }
     }
 }
@@ -274,6 +275,7 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
         .to_vec(),
         _ if find_vector_form(instruction).is_some() => [PreciseInstruction::Vector(instruction)].to_vec(),
         _ if find_float_form(instruction).is_some() => [PreciseInstruction::Float(instruction)].to_vec(),
+        _ if crate::sse::find_sse_form(instruction).is_some() => crate::sse::list_sse_behaviors(instruction),
         _ if find_branch_form(instruction).is_some() => [PreciseInstruction::Branch(instruction)].to_vec(),
         _ if PRIVILEGED_FORMS.iter().any(|(form, _)| *form == instruction) => {
             [PreciseInstruction::Privileged(instruction)].to_vec()

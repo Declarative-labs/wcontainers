@@ -14,6 +14,9 @@ use crate::forms::Instruction;
 use crate::integer::OperandPlace;
 use crate::planted::{Bug, is_active};
 
+#[path = "sse_float.rs"]
+pub(crate) mod sse_float;
+
 /// MXCSR's exception flags, in the order of its bits; each mask is the flag's bit shifted by [`MASK_SHIFT`].
 pub const INVALID: u32 = 1 << 0;
 pub const DENORMAL: u32 = 1 << 1;
