@@ -169,7 +169,8 @@ fn round_extended(exact: Exact, precision: u32, rounding: Rounding, control: u16
         let significand = ((kept >> 1) << (64 - precision)) as u64;
         return Outcome { value: Some(from_parts(negative, 1, significand)), flags: PRECISION, up };
     }
-    if biased < 1 && underflow_unmasked {
+    // Moved by 24,576 and still out of range, the result takes the masked response.
+    if biased < 1 && underflow_unmasked && biased + EXPONENT_ADJUSTMENT >= 1 {
         biased += EXPONENT_ADJUSTMENT;
         flags |= UNDERFLOW;
     }
@@ -193,7 +194,7 @@ fn round_extended(exact: Exact, precision: u32, rounding: Rounding, control: u16
         flags |= PRECISION;
     }
     if biased >= MAXIMUM_BIASED {
-        if overflow_unmasked {
+        if overflow_unmasked && biased - EXPONENT_ADJUSTMENT < MAXIMUM_BIASED {
             biased -= EXPONENT_ADJUSTMENT;
             flags |= OVERFLOW;
         } else {
@@ -533,4 +534,151 @@ pub fn round_integral(value: u128, control: u16) -> Outcome {
         flags |= PRECISION;
     }
     Outcome { value: Some(result), flags, up }
+}
+
+/// FSCALE: the first value times two to the second truncated toward zero, rounded only where it leaves the extended
+/// range, under FCW but for its precision control.
+pub fn scale(value: u128, power: u128, control: u16) -> Outcome {
+    let masked = |flag: u16| control & flag != 0;
+    let stop = |flag: u16, result: u128| Outcome { value: masked(flag).then_some(result), flags: flag, up: false };
+    let (value_class, power_class) = (classify(value), classify(power));
+    let classes = [value_class, power_class];
+    if classes.contains(&Class::Unsupported) {
+        return stop(INVALID, INDEFINITE);
+    }
+    if classes.contains(&Class::SignalingNaN) {
+        return stop(INVALID, propagate(value, power));
+    }
+    if classes.contains(&Class::QuietNaN) {
+        return Outcome { value: Some(propagate(value, power)), flags: 0, up: false };
+    }
+    let infinite_power = power_class == Class::Infinity;
+    match (value_class, infinite_power, is_negative(power)) {
+        (Class::Zero, true, false) | (Class::Infinity, true, true) => return stop(INVALID, INDEFINITE),
+        _ => {}
+    }
+    let denormal = classes.contains(&Class::Denormal);
+    if denormal && !masked(DENORMAL) {
+        return Outcome { value: None, flags: DENORMAL, up: false };
+    }
+    let flags = if denormal { DENORMAL } else { 0 };
+    let done = |result: u128| Outcome { value: Some(result), flags, up: false };
+    match value_class {
+        Class::Zero | Class::Infinity => return done(value),
+        _ if infinite_power && is_negative(power) => return done(to_zero(is_negative(value))),
+        _ if infinite_power => return done(INFINITY | to_zero(is_negative(value))),
+        _ => {}
+    }
+    // The power truncated toward zero, bounded where any larger one gives the same overflow or underflow.
+    let parts = to_parts(power);
+    let magnitude: i64 = if power_class == Class::Zero || parts.exponent < 0 {
+        0
+    } else if parts.exponent >= 17 {
+        1 << 17
+    } else {
+        (parts.significand >> (63 - parts.exponent)) as i64
+    };
+    let shift = if parts.negative { -magnitude } else { magnitude };
+    let operand = to_parts(value);
+    let exact = to_exact(operand.negative, operand.exponent - 63 + shift as i32, u128::from(operand.significand), false).expect("a nonzero value");
+    let rounded = round_extended(exact, 64, Rounding::from_control(control), control);
+    Outcome { flags: rounded.flags | flags, ..rounded }
+}
+
+/// What FXTRACT gives: the significand (ST(0) after) and the exponent (ST(1) after), none where an unmasked exception
+/// stops it, with the flags.
+pub fn extract(value: u128, control: u16) -> (Option<(u128, u128)>, u16) {
+    let masked = |flag: u16| control & flag != 0;
+    let both = |result: u128| (result, result);
+    match classify(value) {
+        Class::Unsupported => return (masked(INVALID).then_some(both(INDEFINITE)), INVALID),
+        Class::SignalingNaN => return (masked(INVALID).then_some(both(quiet(value))), INVALID),
+        Class::QuietNaN => return (Some(both(value)), 0),
+        Class::Infinity => return (Some((value, INFINITY)), 0),
+        Class::Zero => return (masked(ZERO_DIVIDE).then_some((value, INFINITY | SIGN)), ZERO_DIVIDE),
+        Class::Denormal if !masked(DENORMAL) => return (None, DENORMAL),
+        _ => {}
+    }
+    let flags = if classify(value) == Class::Denormal { DENORMAL } else { 0 };
+    let normal = normalize(to_parts(value));
+    let significand = from_parts(normal.negative, BIAS, normal.significand);
+    let exponent = crate::x87::convert_integer(i64::from(normal.exponent));
+    (Some((significand, exponent)), flags)
+}
+
+/// What FPREM (`nearest` false) and FPREM1 give: the remainder or partial remainder, none where an unmasked exception
+/// stops them; the flags; and C0, C1, C2 and C3 as a mask of FSW's bits to set, the others of the four cleared.
+pub fn remainder(dividend: u128, divisor: u128, control: u16, nearest: bool) -> (Option<u128>, u16, u16) {
+    use crate::x87::{C0, C1, C2, C3};
+    let masked = |flag: u16| control & flag != 0;
+    let stop = |flag: u16, result: u128| (masked(flag).then_some(result), flag, 0);
+    let (first, second) = (classify(dividend), classify(divisor));
+    let classes = [first, second];
+    if classes.contains(&Class::Unsupported) {
+        return stop(INVALID, INDEFINITE);
+    }
+    if classes.contains(&Class::SignalingNaN) {
+        return stop(INVALID, propagate(dividend, divisor));
+    }
+    if classes.contains(&Class::QuietNaN) {
+        return (Some(propagate(dividend, divisor)), 0, 0);
+    }
+    if first == Class::Infinity || second == Class::Zero {
+        return stop(INVALID, INDEFINITE);
+    }
+    let denormal = classes.contains(&Class::Denormal);
+    if denormal && !masked(DENORMAL) {
+        return (None, DENORMAL, 0);
+    }
+    let flags = if denormal { DENORMAL } else { 0 };
+    // The dividend passed through, a pseudo-denormal made the normal of the same value.
+    if first == Class::Zero || second == Class::Infinity {
+        let parts = to_parts(dividend);
+        let pseudo_denormal = (dividend >> 64) & 0x7FFF == 0 && has_integer_bit(dividend);
+        let biased = if pseudo_denormal { 1 } else { ((dividend >> 64) & 0x7FFF) as i32 };
+        return (Some(from_parts(parts.negative, biased, parts.significand)), flags, 0);
+    }
+    let (a, b) = (normalize(to_parts(dividend)), normalize(to_parts(divisor)));
+    let difference = a.exponent - b.exponent;
+    let partial = difference >= 64 && !is_active(Bug::X87RemainderNeverPartial);
+    // A partial remainder reduces the exponent difference by a multiple of 32.
+    let reduced = if partial { difference - (difference - 32) % 32 - 32 } else { 0 };
+    let exponent_difference = difference - reduced;
+    let (mut quotient, mut rest) = (0u128, u128::from(a.significand));
+    let divisor_bits = u128::from(b.significand);
+    if exponent_difference >= 0 {
+        // Long division of the dividend's significand, shifted by the difference, by the divisor's.
+        for _ in 0..=exponent_difference {
+            quotient <<= 1;
+            if rest >= divisor_bits {
+                rest -= divisor_bits;
+                quotient |= 1;
+            }
+            rest <<= 1;
+        }
+        rest >>= 1;
+    }
+    let mut negative = a.negative;
+    // Round the quotient to nearest, ties to even: twice the remainder against the divisor, both in the remainder's
+    // units; a dividend below half the divisor never rounds up.
+    if nearest && !partial && exponent_difference >= -1 {
+        let divisor_scaled = if exponent_difference >= 0 { divisor_bits } else { divisor_bits << 1 };
+        let twice = rest << 1;
+        if twice > divisor_scaled || (twice == divisor_scaled && quotient & 1 == 1) {
+            quotient += 1;
+            rest = divisor_scaled - rest;
+            negative = !negative;
+        }
+    }
+    let codes = |quotient: u128| {
+        let bit = |index: u32, code: u16| if quotient >> index & 1 != 0 { code } else { 0 };
+        bit(2, C0) | bit(1, C3) | bit(0, C1)
+    };
+    let codes = if partial { C2 } else { codes(quotient) };
+    let scale_exponent = if exponent_difference >= 0 { b.exponent - 63 + reduced } else { a.exponent - 63 };
+    let result = match to_exact(negative, scale_exponent, rest, false) {
+        Some(exact) => round_extended(exact, 64, Rounding::Nearest, control).value.unwrap_or(0),
+        None => to_zero(a.negative),
+    };
+    (Some(result), flags, codes)
 }

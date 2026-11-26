@@ -267,6 +267,15 @@ fn to_case_set(form: &X87Form) -> Option<X87CaseSet> {
         X87Operation::SquareRoot => Some(X87CaseSet::Unary { root: true }),
         X87Operation::RoundToIntegral => Some(X87CaseSet::Unary { root: false }),
         X87Operation::LoadRoundedConstant { .. } => Some(X87CaseSet::Constant),
+        X87Operation::Scale => Some(X87CaseSet::Pair { remainder: None }),
+        X87Operation::PartialRemainder { nearest } => Some(X87CaseSet::Pair { remainder: Some(nearest) }),
+        X87Operation::Extract => Some(X87CaseSet::Extract),
+        X87Operation::LoadDecimal => Some(X87CaseSet::LoadDecimal),
+        X87Operation::StoreDecimal => Some(X87CaseSet::StoreDecimal),
+        X87Operation::StoreEnvironment | X87Operation::SaveState | X87Operation::SaveExtended { .. } => Some(X87CaseSet::StoreImage),
+        X87Operation::LoadEnvironment | X87Operation::RestoreState | X87Operation::RestoreExtended { .. } => {
+            Some(X87CaseSet::LoadImage { bytes: form.memory_bytes() })
+        }
         _ => None,
     }
 }
@@ -302,15 +311,30 @@ pub fn build_state(form: &X87Form, operands: &[(OperandType, OperandValue)]) -> 
         }
     }
     processor.x87 = stack.to_x87();
+    let mut image = None;
     if let Some(case) = case {
+        if case.mixed {
+            processor.x87 = crate::x87_arithmetic::to_mixed(case.control, case.status);
+        }
         let x87 = &mut processor.x87;
-        (x87.control, x87.status, x87.tags) = (case.control, case.status, if case.full { 0xFF } else { 0 });
+        if !case.mixed {
+            (x87.control, x87.status, x87.tags) = (case.control, case.status, if case.full { 0xFF } else { 0 });
+        }
+        if matches!(to_case_set(form), Some(X87CaseSet::LoadImage { .. })) {
+            image = Some(crate::x87_arithmetic::to_image(form.memory_bytes(), case.source));
+        }
+        if matches!(to_case_set(form), Some(X87CaseSet::Pair { .. })) {
+            index = 1;
+        }
         let indexed_first = list_slots(form.code).first() == Some(&Slot::Indexed);
-        if form.place != OperandPlace::Register {
+        // A store leaves the data pages' own bytes beneath it, so that every byte it writes is seen.
+        let stores_image = matches!(to_case_set(form), Some(X87CaseSet::StoreImage | X87CaseSet::StoreDecimal | X87CaseSet::Store { .. }));
+        if form.place != OperandPlace::Register && image.is_none() && !stores_image {
             memory_value = Some(case.source);
         }
         (top, indexed) = match (form.place == OperandPlace::Register, indexed_first) {
-            (false, _) => (Some(case.destination), None),
+            (false, _) => (Some(case.destination).filter(|value| !case.mixed && *value != EMPTY || matches!(to_case_set(form), Some(X87CaseSet::StoreDecimal | X87CaseSet::Store { .. } | X87CaseSet::Arithmetic { .. }))), None),
+            (true, _) if index == 1 && form.code.op_code().op_kinds().is_empty() => (Some(case.destination), Some(case.source)),
             (true, true) => (Some(case.source), Some(case.destination)),
             (true, false) if list_slots(form.code).contains(&Slot::Indexed) => (Some(case.destination), Some(case.source)),
             (true, false) => (Some(case.destination), None),
@@ -332,6 +356,17 @@ pub fn build_state(form: &X87Form, operands: &[(OperandType, OperandValue)]) -> 
     let memory_bytes = form.memory_bytes();
     let memory_operand: Option<MemoryOperand> = access.map(|access| {
         let (operand, address) = place_memory_operand(access, memory_bytes, &mut processor, &mut memory_mutations);
+        if let Some(bytes) = &image {
+            let held: Vec<u8> = bytes
+                .iter()
+                .enumerate()
+                .take_while(|(offset, _)| X86_64::ADDRESSABLE.contains(&address.wrapping_add(*offset as u64)))
+                .map(|(_, byte)| *byte)
+                .collect();
+            if !held.is_empty() {
+                memory_mutations.push(MemoryDelta::ValueAssignment { start: address, bytes: Cow::Owned(held) });
+            }
+        }
         if let Some(value) = memory_value {
             let bytes: Vec<u8> = (0..memory_bytes)
                 .map(|offset| address.wrapping_add(offset))

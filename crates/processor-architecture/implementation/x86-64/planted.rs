@@ -1079,6 +1079,18 @@ pub enum Bug {
     X87PrecisionControlIgnored,
     /// The x87 arithmetic and FST to memory find a result tiny where it lies below the smallest normal before rounding.
     X87TinyBeforeRounding,
+    /// FPREM and FPREM1 complete the remainder whatever the exponents' difference.
+    X87RemainderNeverPartial,
+    /// FXSAVE and FXRSTOR take an area not aligned to 16.
+    X87AreaMisalignedNoFault,
+    /// FXRSTOR loads an MXCSR with reserved bits set.
+    X87RestoreTakesReservedMxcsr,
+    /// FNSTENV and FNSAVE leave the 16-bit environment's selector words as they were.
+    X87EnvironmentSkipsSelectors,
+    /// FNSTENV to FRSTOR take a misaligned area under AC.
+    X87EnvironmentAlignmentUnchecked,
+    /// FXSAVE and FXRSTOR report a page fault from the area's first byte.
+    X87AreaFaultsAtFirstByte,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1572,6 +1584,32 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::X87ConstantsTruncated, "FLDPI to FLDLN2", Family::Forms(&[Instruction::Fldpi, Instruction::Fldl2e, Instruction::Fldl2t, Instruction::Fldlg2, Instruction::Fldln2]), Origin::Mandatory),
     row(Bug::X87PrecisionControlIgnored, "FADD to FDIVR, FSQRT", Family::Forms(X87_ARITHMETIC_SAMPLE), Origin::Mandatory),
     row(Bug::X87TinyBeforeRounding, "FADD to FDIVR, FST", Family::Forms(X87_ARITHMETIC_SAMPLE), Origin::Mandatory),
+    row(Bug::X87RemainderNeverPartial, "FPREM, FPREM1", Family::Forms(&[Instruction::Fprem, Instruction::Fprem1]), Origin::Mandatory),
+    row(Bug::X87AreaMisalignedNoFault, "FXSAVE, FXRSTOR", Family::Forms(X87_EXTENDED_AREAS), Origin::Mandatory),
+    row(Bug::X87RestoreTakesReservedMxcsr, "FXRSTOR", Family::Forms(&[Instruction::FxrstorMemmfpxenv, Instruction::Fxrstor64Memmfpxenv]), Origin::Mandatory),
+    row(Bug::X87EnvironmentSkipsSelectors, "FNSTENV, FNSAVE", Family::Forms(&[Instruction::FnstenvMemmem14, Instruction::FnsaveMemmem94]), Origin::Mandatory),
+    row(Bug::X87EnvironmentAlignmentUnchecked, "FNSTENV to FRSTOR", Family::Forms(X87_ENVIRONMENTS), Origin::Mandatory),
+    row(Bug::X87AreaFaultsAtFirstByte, "FNSTENV to FRSTOR, FXSAVE, FXRSTOR", Family::Forms(X87_ENVIRONMENTS), Origin::Mandatory),
+];
+
+const X87_EXTENDED_AREAS: &[Instruction] = &[
+    Instruction::FxsaveMemmfpxenv,
+    Instruction::Fxsave64Memmfpxenv,
+    Instruction::FxrstorMemmfpxenv,
+    Instruction::Fxrstor64Memmfpxenv,
+];
+
+const X87_ENVIRONMENTS: &[Instruction] = &[
+    Instruction::FnstenvMemmem14,
+    Instruction::FnstenvMemmem28,
+    Instruction::FldenvMemmem14,
+    Instruction::FldenvMemmem28,
+    Instruction::FnsaveMemmem94,
+    Instruction::FnsaveMemmem108,
+    Instruction::FrstorMemmem94,
+    Instruction::FrstorMemmem108,
+    Instruction::FxsaveMemmfpxenv,
+    Instruction::FxrstorMemmfpxenv,
 ];
 
 const X87_ARITHMETIC_SAMPLE: &[Instruction] = &[

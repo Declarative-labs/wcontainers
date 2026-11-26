@@ -83,6 +83,28 @@ pub enum X87Operation {
     SquareRoot,
     /// FRNDINT: ST(0) rounded to an integer by FCW's rounding, whatever its precision control.
     RoundToIntegral,
+    /// FSCALE.
+    Scale,
+    /// FXTRACT: ST(0) replaced by its exponent, then its significand pushed.
+    Extract,
+    /// FPREM and, `nearest`, FPREM1.
+    PartialRemainder { nearest: bool },
+    /// FBLD.
+    LoadDecimal,
+    /// FBSTP.
+    StoreDecimal,
+    /// FNSTENV: the environment stored, then every exception masked.
+    StoreEnvironment,
+    /// FLDENV.
+    LoadEnvironment,
+    /// FNSAVE: the environment and the registers stored, then FNINIT.
+    SaveState,
+    /// FRSTOR.
+    RestoreState,
+    /// FXSAVE and, `wide`, FXSAVE64.
+    SaveExtended { wide: bool },
+    /// FXRSTOR and, `wide`, FXRSTOR64.
+    RestoreExtended { wide: bool },
 }
 
 /// Which NaNs make a comparison invalid.
@@ -136,14 +158,23 @@ pub enum PointerUpdate {
     OnUnmaskedException,
 }
 
-/// An x87 form's behavior: its undefined condition codes, when it records its opcode and data address, and what a
-/// store that faults part-way writes.
+/// What FXSAVE and FXRSTOR raise for an area not aligned to 16 while AC is set, which the manual leaves to the chip:
+/// #GP(0) always, or #AC.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum MisalignedArea {
+    GeneralProtection,
+    AlignmentCheck,
+}
+
+/// An x87 form's behavior: its undefined condition codes, when it records its opcode and data address, what a
+/// store that faults part-way writes, and for FXSAVE and FXRSTOR what a misaligned area raises under AC.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct X87Behavior {
     pub codes: UndefinedCodes,
     pub opcode: PointerUpdate,
     pub data: PointerUpdate,
     pub across_fault: StoreAcrossFault,
+    pub misaligned_area: MisalignedArea,
 }
 
 pub const TOP_SHIFT: u16 = 11;
@@ -178,6 +209,12 @@ impl X87Form {
                 | X87Operation::StoreStatus
                 | X87Operation::StoreControl
                 | X87Operation::LoadControl
+                | X87Operation::StoreEnvironment
+                | X87Operation::LoadEnvironment
+                | X87Operation::SaveState
+                | X87Operation::RestoreState
+                | X87Operation::SaveExtended { .. }
+                | X87Operation::RestoreExtended { .. }
         )
     }
 
@@ -190,6 +227,10 @@ impl X87Form {
                 | X87Operation::Initialize
                 | X87Operation::StoreStatus
                 | X87Operation::StoreControl
+                | X87Operation::StoreEnvironment
+                | X87Operation::SaveState
+                | X87Operation::SaveExtended { .. }
+                | X87Operation::RestoreExtended { .. }
         )
     }
 
@@ -201,7 +242,14 @@ impl X87Form {
             | X87Operation::LegacyNoOperation
             | X87Operation::Initialize
             | X87Operation::Examine
-            | X87Operation::Compare { .. } => 0,
+            | X87Operation::Compare { .. }
+            | X87Operation::PartialRemainder { .. }
+            | X87Operation::StoreEnvironment
+            | X87Operation::LoadEnvironment
+            | X87Operation::SaveState
+            | X87Operation::RestoreState
+            | X87Operation::SaveExtended { .. }
+            | X87Operation::RestoreExtended { .. } => 0,
             X87Operation::StoreInteger { .. } => C0 | C2 | C3,
             X87Operation::ClearExceptions
             | X87Operation::StoreStatus
@@ -227,13 +275,22 @@ impl X87Form {
                     | X87Operation::StoreExtended
                     | X87Operation::StoreInteger { .. }
                     | X87Operation::StoreFloat { .. }
+                    | X87Operation::StoreDecimal
+                    | X87Operation::StoreEnvironment
+                    | X87Operation::SaveState
+                    | X87Operation::SaveExtended { .. }
             )
     }
 
     /// The bytes of the memory operand.
     pub fn memory_bytes(&self) -> u64 {
         match self.code {
-            Code::Fld_m80fp | Code::Fstp_m80fp => 10,
+            Code::Fld_m80fp | Code::Fstp_m80fp | Code::Fbld_m80bcd | Code::Fbstp_m80bcd => 10,
+            Code::Fldenv_m14byte | Code::Fnstenv_m14byte => 14,
+            Code::Fldenv_m28byte | Code::Fnstenv_m28byte => 28,
+            Code::Fnsave_m94byte | Code::Frstor_m94byte => 94,
+            Code::Fnsave_m108byte | Code::Frstor_m108byte => 108,
+            Code::Fxsave_m512byte | Code::Fxsave64_m512byte | Code::Fxrstor_m512byte | Code::Fxrstor64_m512byte => 512,
             Code::Fild_m64int | Code::Fld_m64fp | Code::Fcom_m64fp | Code::Fcomp_m64fp | Code::Fistp_m64int => 8,
             Code::Fild_m32int | Code::Fld_m32fp | Code::Fcom_m32fp | Code::Fcomp_m32fp | Code::Ficom_m32int
             | Code::Ficomp_m32int | Code::Fist_m32int | Code::Fistp_m32int => 4,
@@ -415,14 +472,23 @@ pub(crate) fn list_x87_behaviors(instruction: Instruction) -> Vec<PreciseInstruc
         c1.iter().flat_map(|&c1| others.iter().map(move |&others| UndefinedCodes { c1, others })).collect();
     let opcode: &[PointerUpdate] = if form.is_control() { &POINTERS[..1] } else { &POINTERS };
     let data: &[PointerUpdate] = if form.is_control() || !form.has_memory_operand() { &POINTERS[..1] } else { &POINTERS };
-    let across: &[StoreAcrossFault] = if form.writes_memory() { &ACROSS_FAULT } else { &ACROSS_FAULT[..1] };
+    // An environment, a save area or FXSAVE's area is checked whole before any of it is written.
+    let image = matches!(form.operation, X87Operation::StoreEnvironment | X87Operation::SaveState | X87Operation::SaveExtended { .. });
+    let across: &[StoreAcrossFault] = if form.writes_memory() && !image { &ACROSS_FAULT } else { &ACROSS_FAULT[..1] };
+    let area: &[MisalignedArea] = if matches!(form.operation, X87Operation::SaveExtended { .. } | X87Operation::RestoreExtended { .. }) {
+        &[MisalignedArea::GeneralProtection, MisalignedArea::AlignmentCheck]
+    } else {
+        &[MisalignedArea::GeneralProtection]
+    };
     let mut behaviors = Vec::new();
     for &across_fault in across {
         for &codes in &codes {
             for &opcode in opcode {
                 for &data in data {
-                    let behavior = X87Behavior { codes, opcode, data, across_fault };
-                    behaviors.push(PreciseInstruction::X87 { instruction, behavior });
+                    for &misaligned_area in area {
+                        let behavior = X87Behavior { codes, opcode, data, across_fault, misaligned_area };
+                        behaviors.push(PreciseInstruction::X87 { instruction, behavior });
+                    }
                 }
             }
         }
@@ -667,6 +733,24 @@ pub static X87_FORMS: &[X87Form] = &[
     constant(Instruction::Fldln2, 0x3FFE_B172_17F7_D1CF_79AB, true, Code::Fldln2),
     x87(Instruction::Fsqrt, X87Operation::SquareRoot, Register, Code::Fsqrt),
     x87(Instruction::Frndint, X87Operation::RoundToIntegral, Register, Code::Frndint),
+    x87(Instruction::Fscale, X87Operation::Scale, Register, Code::Fscale),
+    x87(Instruction::Fxtract, X87Operation::Extract, Register, Code::Fxtract),
+    x87(Instruction::Fprem, X87Operation::PartialRemainder { nearest: false }, Register, Code::Fprem),
+    x87(Instruction::Fprem1, X87Operation::PartialRemainder { nearest: true }, Register, Code::Fprem1),
+    x87(Instruction::FbldSt0Memmem80dec, X87Operation::LoadDecimal, Memory, Code::Fbld_m80bcd),
+    x87(Instruction::FbstpMemmem80decSt0, X87Operation::StoreDecimal, Memory, Code::Fbstp_m80bcd),
+    x87(Instruction::FnstenvMemmem14, X87Operation::StoreEnvironment, Memory, Code::Fnstenv_m14byte),
+    x87(Instruction::FnstenvMemmem28, X87Operation::StoreEnvironment, Memory, Code::Fnstenv_m28byte),
+    x87(Instruction::FldenvMemmem14, X87Operation::LoadEnvironment, Memory, Code::Fldenv_m14byte),
+    x87(Instruction::FldenvMemmem28, X87Operation::LoadEnvironment, Memory, Code::Fldenv_m28byte),
+    x87(Instruction::FnsaveMemmem94, X87Operation::SaveState, Memory, Code::Fnsave_m94byte),
+    x87(Instruction::FnsaveMemmem108, X87Operation::SaveState, Memory, Code::Fnsave_m108byte),
+    x87(Instruction::FrstorMemmem94, X87Operation::RestoreState, Memory, Code::Frstor_m94byte),
+    x87(Instruction::FrstorMemmem108, X87Operation::RestoreState, Memory, Code::Frstor_m108byte),
+    x87(Instruction::FxsaveMemmfpxenv, X87Operation::SaveExtended { wide: false }, Memory, Code::Fxsave_m512byte),
+    x87(Instruction::Fxsave64Memmfpxenv, X87Operation::SaveExtended { wide: true }, Memory, Code::Fxsave64_m512byte),
+    x87(Instruction::FxrstorMemmfpxenv, X87Operation::RestoreExtended { wide: false }, Memory, Code::Fxrstor_m512byte),
+    x87(Instruction::Fxrstor64Memmfpxenv, X87Operation::RestoreExtended { wide: true }, Memory, Code::Fxrstor64_m512byte),
 ];
 
 const fn arithmetic(

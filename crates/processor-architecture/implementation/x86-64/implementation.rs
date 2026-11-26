@@ -52,6 +52,7 @@ pub mod system;
 pub mod vector;
 pub mod x87;
 pub mod x87_arithmetic;
+pub mod x87_state;
 #[cfg(test)]
 mod tests;
 

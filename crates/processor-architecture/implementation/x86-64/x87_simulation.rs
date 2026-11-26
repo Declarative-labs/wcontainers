@@ -14,12 +14,22 @@ use crate::planted::{Bug, is_active};
 use crate::x87::{
     BUSY, C0, C1, C2, C3, Class, CodeRule, DENORMAL, EXCEPTION_FLAGS, INDEFINITE, INVALID, Ordering, PointerUpdate,
     Rounding, STACK_FAULT, SUMMARY, Source as X87Source, X87Behavior, X87Operation, classify, compare_values,
-    convert_integer, examine, find_x87_form, initialize, round_to_integer, widen,
+    convert_integer, examine, find_x87_form, initialize, round_to_integer, widen, MisalignedArea,
 };
-use crate::{Access, Exception, Flags, Instruction, Processor, X87, X86_64, x87_arithmetic};
+use crate::{Access, Exception, Flags, Instruction, Processor, X87, X86_64, x87_arithmetic, x87_state};
 
 /// FSW's PE.
 const PRECISION: u16 = 1 << 5;
+/// FXSAVE's and FXRSTOR's area lies on 16 bytes.
+const AREA_ALIGNMENT: u64 = 16;
+/// The bits of MXCSR this chip implements, which FXSAVE stores as MXCSR_MASK.
+const MXCSR_MASK: u32 = 0xFFFF;
+/// What the 32-bit environment holds above each of its 16-bit fields.
+const ENVIRONMENT_FILLER: u16 = 0xFFFF;
+/// FXSAVE's area.
+const EXTENDED_AREA_BYTES: u64 = 512;
+/// FBSTP stores integers below 10 to the 18th.
+const DECIMAL_LIMIT: u64 = 1_000_000_000_000_000_000;
 
 /// The bits of FCW FLDCW keeps: the masks, precision, rounding and infinity control; bit 6 always reads as set.
 const CONTROL_KEPT: u16 = 0x1F3F;
@@ -61,6 +71,26 @@ pub(super) fn execute_x87(
         .find(|register| register.is_st() && *register != Register::ST0 || decoded.op_count() == 1 && register.is_st())
         .map_or(form.to_implied_index(), |register| register.number());
     let mut stored: Option<u128> = None;
+    // An image wider than sixteen bytes that the form stores whole, but the byte ranges it skips.
+    let mut image: Option<alloc::vec::Vec<u8>> = None;
+    let mut skipped: &[core::ops::Range<usize>] = &[];
+    let read_image = |processor: &Processor| -> Result<alloc::vec::Vec<u8>, Exception> {
+        let operand = operand.expect("a memory operand");
+        check_area_last_byte(memory, operand, length, Access::Read)?;
+        check_access(processor.flags, memory, operand, length, Access::Read).map_err(|exception| to_last_byte(exception, operand, length))?;
+        Ok((0..length).map(|offset| read_bytes::<X86_64, 1>(memory, operand.address.wrapping_add(offset))[0]).collect())
+    };
+    let check_area_alignment = |processor: &Processor| -> Result<(), Exception> {
+        let address = operand.expect("a memory operand").address;
+        check_canonical(operand.expect("a memory operand"), 1)?;
+        if address.is_multiple_of(AREA_ALIGNMENT) || is_active(Bug::X87AreaMisalignedNoFault) {
+            Ok(())
+        } else if behavior.misaligned_area == MisalignedArea::AlignmentCheck && processor.flags.contains(Flags::ALIGNMENT_CHECK) {
+            Err(Exception::AlignmentCheck)
+        } else {
+            Err(Exception::GeneralProtection { error_code: 0 })
+        }
+    };
     match form.operation {
         X87Operation::NoOperation | X87Operation::Wait | X87Operation::LegacyNoOperation => {}
         X87Operation::ClearExceptions => x87.status &= !(EXCEPTION_FLAGS | STACK_FAULT | SUMMARY | BUSY),
@@ -323,6 +353,128 @@ pub(super) fn execute_x87(
             let up = up && !is_active(Bug::X87ConstantsTruncated);
             push(&mut x87, Some(truncated + u128::from(up)));
         }
+        X87Operation::Scale => {
+            if x87.is_empty(0) || x87.is_empty(1) {
+                if underflow(&mut x87) {
+                    x87.write(0, INDEFINITE);
+                }
+            } else {
+                let outcome = x87_arithmetic::scale(x87.read(0), x87.read(1), x87.control);
+                x87.raise(outcome.flags);
+                if let Some(result) = outcome.value {
+                    x87.write(0, result);
+                    x87.set_code(C1, outcome.up);
+                }
+            }
+        }
+        X87Operation::Extract => {
+            // An empty ST(0) is an underflow whatever ST(7) holds; else a full ST(7) is an overflow, which masked leaves
+            // the indefinite QNaN in both.
+            if x87.is_empty(0) || !x87.is_empty(7) {
+                let overflow = !x87.is_empty(0);
+                if fault(&mut x87, overflow) {
+                    x87.write(0, INDEFINITE);
+                    x87.set_top(x87.top() + 7);
+                    x87.write(0, INDEFINITE);
+                }
+            } else {
+                let (result, flags) = x87_arithmetic::extract(x87.read(0), x87.control);
+                x87.raise(flags);
+                if let Some((significand, exponent)) = result {
+                    x87.write(0, exponent);
+                    push(&mut x87, Some(significand));
+                }
+            }
+        }
+        X87Operation::PartialRemainder { nearest } => {
+            if x87.is_empty(0) || x87.is_empty(1) {
+                if underflow(&mut x87) {
+                    x87.write(0, INDEFINITE);
+                }
+            } else {
+                let (result, flags, codes) = x87_arithmetic::remainder(x87.read(0), x87.read(1), x87.control, nearest);
+                x87.raise(flags);
+                if let Some(value) = result {
+                    x87.write(0, value);
+                    x87.status = (x87.status & !(C0 | C1 | C2 | C3)) | codes;
+                }
+            }
+        }
+        X87Operation::LoadDecimal => {
+            let (negative, magnitude) = x87_state::read_decimal(load(processor)?);
+            let value = convert_integer(magnitude as i64) | if negative { SIGN } else { 0 };
+            push(&mut x87, Some(value));
+        }
+        X87Operation::StoreDecimal => {
+            let value = x87.read(0);
+            let rounded = match classify(value) {
+                _ if x87.is_empty(0) => None,
+                Class::QuietNaN | Class::SignalingNaN | Class::Infinity | Class::Unsupported => Some(None),
+                _ => Some(round_to_integer(value, Rounding::from_control(x87.control), 64).filter(|(integer, _, _)| integer.unsigned_abs() < DECIMAL_LIMIT)),
+            };
+            let decimal = match rounded {
+                None => underflow(&mut x87).then_some(x87_state::DECIMAL_INDEFINITE),
+                Some(None) => {
+                    x87.raise(INVALID);
+                    x87.set_code(C1, false);
+                    (!x87.is_unmasked(INVALID)).then_some(x87_state::DECIMAL_INDEFINITE)
+                }
+                Some(Some((integer, inexact, up))) => {
+                    if inexact {
+                        x87.raise(PRECISION);
+                    }
+                    x87.set_code(C1, inexact && up);
+                    Some(x87_state::write_decimal(value & SIGN != 0, integer.unsigned_abs()))
+                }
+            };
+            if let Some(decimal) = decimal {
+                stored = Some(decimal);
+                x87.pop();
+            }
+        }
+        X87Operation::StoreEnvironment | X87Operation::SaveState => {
+            check_environment_alignment(processor, operand.expect("a memory operand"), length)?;
+            let environment = if length == 14 || length == 94 { 14 } else { 28 };
+            let mut bytes = x87_state::write_environment(&x87, environment, ENVIRONMENT_FILLER);
+            if form.operation == X87Operation::SaveState {
+                bytes.extend(x87_state::write_registers(&x87));
+                initialize(&mut x87);
+            } else {
+                x87.control |= EXCEPTION_FLAGS;
+                x87_state::set_summary(&mut x87);
+            }
+            // The 16-bit format's selector words hold zeros, as this chip deprecates FCS and FDS.
+            if environment == 14 && is_active(Bug::X87EnvironmentSkipsSelectors) {
+                skipped = &SIXTEEN_BIT_SELECTORS;
+            }
+            image = Some(bytes);
+        }
+        X87Operation::LoadEnvironment | X87Operation::RestoreState => {
+            check_environment_alignment(processor, operand.expect("a memory operand"), length)?;
+            let bytes = read_image(processor)?;
+            let environment = if length == 14 || length == 94 { 14 } else { 28 };
+            let _ = &mut skipped;
+            x87 = x87_state::read_environment(&x87, &bytes, environment);
+            if form.operation == X87Operation::RestoreState {
+                x87_state::read_registers(&mut x87, &bytes[environment..]);
+            }
+        }
+        X87Operation::SaveExtended { wide } => {
+            check_area_alignment(processor)?;
+            image = Some(x87_state::write_extended(&x87, processor.mxcsr, MXCSR_MASK, &processor.vector_registers, wide));
+        }
+        X87Operation::RestoreExtended { wide } => {
+            check_area_alignment(processor)?;
+            let bytes = read_image(processor)?;
+            let (loaded, mxcsr, vectors) = x87_state::read_extended(&bytes, wide);
+            if mxcsr & !MXCSR_MASK != 0 && !is_active(Bug::X87RestoreTakesReservedMxcsr) {
+                return Err(Exception::GeneralProtection { error_code: 0 });
+            }
+            x87 = loaded;
+            x87_state::set_summary(&mut x87);
+            processor.mxcsr = mxcsr;
+            processor.vector_registers = vectors;
+        }
         X87Operation::SquareRoot | X87Operation::RoundToIntegral => {
             if x87.is_empty(0) {
                 if underflow(&mut x87) {
@@ -343,10 +495,27 @@ pub(super) fn execute_x87(
             }
         }
     }
+    let mut on_memory_mutated = on_memory_mutated;
+    if let (Some(bytes), Some(operand)) = (image, operand) {
+        // The whole access faults or completes as one; the bytes it skips are then not written.
+        check_area_last_byte(memory, operand, length, Access::Write)?;
+        check_access(processor.flags, memory, operand, length, Access::Write).map_err(|exception| to_last_byte(exception, operand, length))?;
+        {
+            let mut start = 0;
+            for range in skipped.iter().chain([&(bytes.len()..bytes.len())]) {
+                if range.start > start {
+                    on_memory_mutated(MemoryDelta::ValueAssignment {
+                        start: operand.address.wrapping_add(start as u64),
+                        bytes: alloc::borrow::Cow::Owned(bytes[start..range.start].to_vec()),
+                    });
+                }
+                start = range.end;
+            }
+        }
+    }
     if let (Some(value), Some(operand)) = (stored, operand) {
         check_extended_alignment(processor, operand, length)?;
         let bytes = value.to_le_bytes();
-        let mut on_memory_mutated = on_memory_mutated;
         // The chip stores 80 bits as eight bytes, then two, so a fault in the last two leaves the first eight written.
         let split = if length == EXTENDED_BYTES && !is_active(Bug::ExtendedStoreWhole) { QUADWORD_BYTES } else { length as usize };
         store(processor.flags, memory, operand, &bytes[..split], behavior.across_fault, &mut on_memory_mutated)?;
@@ -375,6 +544,48 @@ pub(super) fn execute_x87(
     }
     processor.x87 = x87;
     Ok(())
+}
+
+/// The selectors of FIP and FDP in the 16-bit environment.
+const SIXTEEN_BIT_SELECTORS: [core::ops::Range<usize>; 2] = [8..10, 12..14];
+
+/// #AC for an environment or a save area not aligned to 2 in the 16-bit format or to 4 in the 32-bit one while AC is
+/// set, after a first byte that is not canonical.
+fn check_environment_alignment(processor: &Processor, operand: MemoryOperand, length: u64) -> Result<(), Exception> {
+    check_canonical(operand, 1)?;
+    let alignment = if length == 14 || length == 94 { 2 } else { 4 };
+    if processor.flags.contains(Flags::ALIGNMENT_CHECK) && !operand.address.is_multiple_of(alignment) && !is_active(Bug::X87EnvironmentAlignmentUnchecked) {
+        return Err(Exception::AlignmentCheck);
+    }
+    Ok(())
+}
+
+/// A page fault of an environment, a save area or FXSAVE's area beyond the page of its first byte, reported at the
+/// access's last byte as the chip reports it.
+fn to_last_byte(exception: Exception, operand: MemoryOperand, length: u64) -> Exception {
+    const PAGE_MASK: u64 = !0xFFF;
+    match exception {
+        Exception::PageFault { access, page_present, address }
+            if address & PAGE_MASK != operand.address & PAGE_MASK && !is_active(Bug::X87AreaFaultsAtFirstByte) =>
+        {
+            Exception::PageFault { access, page_present, address: operand.address.wrapping_add(length - 1) }
+        }
+        other => other,
+    }
+}
+
+/// The page fault an access of FXSAVE's or FXRSTOR's 512 bytes raises at its last byte, which the chip checks before
+/// the first.
+fn check_area_last_byte(memory: Memory<'_, '_>, operand: MemoryOperand, length: u64, access: Access) -> Result<(), Exception> {
+    if is_active(Bug::X87AreaFaultsAtFirstByte) || length != EXTENDED_AREA_BYTES {
+        return Ok(());
+    }
+    let last = operand.address.wrapping_add(length - 1);
+    check_canonical(MemoryOperand { address: last, ..operand }, 1)?;
+    match super::find_fault(memory, last, 1, access) {
+        Some((address, page_present)) => Err(Exception::PageFault { access, page_present, address }),
+        None => Ok(()),
+    }
 }
 
 /// #AC for an 80-bit operand not aligned to 8 while AC is set, which the integer check leaves to wider accesses;
