@@ -120,7 +120,7 @@ fn sets_differing_only_in_a_dynamic_offset_share_a_bind_group() {
     b.write_buffer(&ub, 0, &unorm(color_of(3)), WriteMode::Ordered);
     b.write_buffer(&ub, 256, &unorm(color_of(7)), WriteMode::Ordered);
     let (s0, s1) = (set(&mut b, &ub, 0), set(&mut b, &ub, 256));
-    assert!(s0 != s1);
+    assert!(s0.0 != s1.0);
     let before = *b.counters();
     begin(&mut b, &k, [0.0; 4]);
     draw_at(&mut b, &k, &s0, Some(0));

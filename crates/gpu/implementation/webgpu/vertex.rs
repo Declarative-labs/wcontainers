@@ -3,6 +3,7 @@
 //! has, made by a compute program before the draw and kept until the source buffer is written.
 
 use crate::draw::split_pass;
+use crate::{GONE, buffer_of, held};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -330,7 +331,11 @@ pub(crate) type Bound = (usize, u64, wgpu::Buffer);
 /// The shadows a draw reads in place of its streams, made where missing or stale, which splits
 /// an open pass. None when the device was marked lost.
 pub(crate) fn vertex_shadows(gpu: &mut WebGpu, call: &DrawCall<'_, WebGpu>) -> Option<Vec<Bound>> {
-    let layout = call.vertex_layout.0.id;
+    let Some(vertex_layout) = held(&gpu.objects.vertex_layouts, call.vertex_layout.0) else {
+        gpu.fail(GONE);
+        return None;
+    };
+    let layout = vertex_layout.0.id;
     let Some(plan) = gpu.vertices.plans.get(&layout).cloned() else {
         return Some(Vec::new());
     };
@@ -339,7 +344,10 @@ pub(crate) fn vertex_shadows(gpu: &mut WebGpu, call: &DrawCall<'_, WebGpu>) -> O
         let (Some(p), Some(Some(vb))) = (p, call.vertex_buffers.get(slot)) else {
             continue;
         };
-        let src = &vb.buffer.0;
+        let Some(src) = buffer_of(gpu, vb.buffer) else {
+            gpu.fail(GONE);
+            return None;
+        };
         let key = (src.id, vb.offset, layout, slot);
         let written = src.written.get();
         if let Some(s) = gpu.vertices.shadows.get(&key)
@@ -350,7 +358,7 @@ pub(crate) fn vertex_shadows(gpu: &mut WebGpu, call: &DrawCall<'_, WebGpu>) -> O
         }
         let mut made = None;
         split_pass(gpu, SlowPath::VertexFormatConverted, |w| {
-            made = Some(convert_stream(w, src, vb.offset, p));
+            made = Some(convert_stream(w, &src, vb.offset, p));
         });
         let buffer = match made? {
             Ok(buffer) => buffer,

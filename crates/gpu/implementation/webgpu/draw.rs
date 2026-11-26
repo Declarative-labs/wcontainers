@@ -20,7 +20,10 @@ use wcontainers_gpu::{
     state::VertexLayoutDesc,
 };
 
-use crate::{Buffer, Sampler, TextureView, WebGpu, convert, layout};
+use crate::{
+    GONE, HeldBuffer, HeldSampler, HeldView, WebGpu, buffer_of, convert, held, layout, program_of,
+    query_set_of, set_of, texture_of, view_of,
+};
 
 /// How many objects the caches made, which tests read to prove the caching.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
@@ -116,6 +119,10 @@ pub(crate) const MAX_GROUP_DYNAMIC: usize = 16;
 /// A binding set: its resources, its layout key, and its bind group for each group layout.
 #[derive(Debug)]
 pub(crate) struct SetObj {
+    /// The number its handles carry.
+    pub(crate) number: u64,
+    /// How many creations gave it out and were not destroyed yet.
+    holders: Cell<u32>,
     pub(crate) key: BindingLayoutKey,
     entries: Vec<(u32, SetRes)>,
     groups: RefCell<Vec<Rc<SetGroup>>>,
@@ -141,17 +148,24 @@ type GroupKey = (u64, Vec<(u32, u64, u64, u64)>);
 #[derive(Debug)]
 enum SetRes {
     Buffer {
-        buffer: Buffer,
+        buffer: HeldBuffer,
         offset: u64,
         size: u64,
         /// Bound as storage, which programs may write.
         storage: bool,
     },
-    View(TextureView),
-    Sampler(Sampler),
+    View(HeldView),
+    Sampler(HeldSampler),
 }
 
 impl SetObj {
+    /// Notes one destroy; true once every creation is destroyed.
+    pub(crate) fn release(&self) -> bool {
+        let n = self.holders.get().saturating_sub(1);
+        self.holders.set(n);
+        n == 0
+    }
+
     /// The key of the bind group this set makes with `gl`, and the entries giving its dynamic
     /// offsets.
     fn group_key(&self, gl: &GroupLayout) -> Result<(GroupKey, Vec<usize>), &'static str> {
@@ -388,12 +402,12 @@ pub(crate) struct Pass {
     height: u32,
     colors: Vec<Option<ColorRaw>>,
     depth: Option<DepthRaw>,
-    pub(crate) occlusion_set: Option<crate::QuerySet>,
+    pub(crate) occlusion_set: Option<Rc<crate::QuerySetObj>>,
     /// The page of the query set this part counts in (0: the set's own).
     pub(crate) page: usize,
     last: Last,
     /// The textures it draws or resolves into, which a write may not rename while it is open.
-    pub(crate) attached: Vec<crate::Texture>,
+    pub(crate) attached: Vec<crate::HeldTexture>,
     /// Its targets of 16-bit packed formats, rounded to their bits whenever a part of it ends.
     packed: Vec<crate::fill::PackedTarget>,
     /// The colour slots drawing into a packed format, a bit each.
@@ -511,15 +525,19 @@ pub(crate) fn binding_set(
     for e in entries {
         let r = match &e.resource {
             BindingResource::UniformBuffer(r) | BindingResource::StorageBuffer { range: r, .. } => {
-                r.buffer.0.in_sets.set(true);
+                let buffer = held(&gpu.objects.buffers, r.buffer.0)
+                    .ok_or(GpuError::Invalid("a binding of a destroyed buffer"))?;
+                buffer.0.in_sets.set(true);
                 SetRes::Buffer {
-                    buffer: r.buffer.clone(),
+                    buffer,
                     offset: r.offset,
                     size: r.size,
                     storage: matches!(e.resource, BindingResource::StorageBuffer { .. }),
                 }
             }
             BindingResource::Texture(v) => {
+                let v = held(&gpu.objects.views, v.0)
+                    .ok_or(GpuError::Invalid("a binding of a destroyed view"))?;
                 let filterable =
                     gpu.caps.formats.uses[v.0.format as usize].contains(FormatUse::FILTER);
                 if let Some(bit) = crate::layout::texture_bit(e.binding)
@@ -527,10 +545,16 @@ pub(crate) fn binding_set(
                 {
                     layout_key.unfilterable_textures |= 1u128 << bit;
                 }
-                SetRes::View((*v).clone())
+                SetRes::View(v)
             }
-            BindingResource::StorageTexture { view, .. } => SetRes::View((*view).clone()),
-            BindingResource::Sampler(s) => SetRes::Sampler((*s).clone()),
+            BindingResource::StorageTexture { view, .. } => SetRes::View(
+                held(&gpu.objects.views, view.0)
+                    .ok_or(GpuError::Invalid("a binding of a destroyed view"))?,
+            ),
+            BindingResource::Sampler(s) => SetRes::Sampler(
+                held(&gpu.objects.samplers, s.0)
+                    .ok_or(GpuError::Invalid("a binding of a destroyed sampler"))?,
+            ),
             BindingResource::TexelBuffer { .. } => {
                 return Err(GpuError::Absent(Features::TEXEL_BUFFERS));
             }
@@ -551,15 +575,23 @@ pub(crate) fn binding_set(
     }
     key.sort_unstable();
     if let Some(set) = gpu.caches.sets.get(&key).and_then(Weak::upgrade) {
-        return Ok(crate::BindingSet(set));
+        set.holders.set(set.holders.get() + 1);
+        let number = set.number;
+        // A set every creation destroyed may still be held by recorded work: it is given out again.
+        gpu.objects.sets.insert(number, crate::HeldSet(set));
+        return Ok(crate::BindingSet(number));
     }
+    let number = gpu.id();
     let set = Rc::new(SetObj {
+        number,
+        holders: Cell::new(1),
         key: layout_key,
         entries: res,
         groups: RefCell::new(Vec::new()),
     });
     gpu.caches.sets.insert(key, Rc::downgrade(&set));
-    Ok(crate::BindingSet(set))
+    gpu.objects.sets.insert(number, crate::HeldSet(set));
+    Ok(crate::BindingSet(number))
 }
 
 fn program_layout(
@@ -754,16 +786,28 @@ fn render_pipeline(
     key: &PipelineKey,
     call: &PrepareDesc<'_, WebGpu>,
 ) -> Result<(u64, wgpu::RenderPipeline, Rc<ProgramLayout>), &'static str> {
+    let blocks = (
+        program_of(gpu, call.program),
+        held(&gpu.objects.vertex_layouts, call.vertex_layout.0),
+        held(&gpu.objects.blends, call.blend.0),
+        held(&gpu.objects.rasters, call.raster.0),
+        held(&gpu.objects.depth_stencils, call.depth_stencil.0),
+    );
+    let (Some(program), Some(vertex_layout), Some(blend), Some(raster), Some(depth_stencil)) =
+        blocks
+    else {
+        return Err(GONE);
+    };
     let crate::ProgramObj::Render {
         vertex, fragment, ..
-    } = &*call.program.0
+    } = &*program
     else {
         return Err("draw with a compute program");
     };
-    let layout = program_layout(gpu, &call.program.0, key.layouts)?;
-    let vl = &call.vertex_layout.0.desc;
+    let layout = program_layout(gpu, &program, key.layouts)?;
+    let vl = &vertex_layout.0.desc;
     // Streams read through shadows (`VertexFormatConverted`) take the shadow's layout.
-    let shadows = gpu.vertices.plans.get(&call.vertex_layout.0.id).cloned();
+    let shadows = gpu.vertices.plans.get(&vertex_layout.0.id).cloned();
     let shadow = |s: usize| shadows.as_ref().and_then(|p| p[s].as_ref());
     let attributes: Vec<Vec<wgpu::VertexAttribute>> = (0..vl.streams.len())
         .map(|s| {
@@ -804,7 +848,7 @@ fn render_pipeline(
             })
         })
         .collect();
-    let blend = &call.blend.0.desc;
+    let blend = &blend.0.desc;
     let mut targets: Vec<Option<wgpu::ColorTargetState>> = Vec::new();
     if key.own_target {
         targets.push(Some(wgpu::ColorTargetState {
@@ -871,8 +915,8 @@ fn render_pipeline(
             Some((no_fragment(gpu), crate::fill::NO_FRAGMENT, targets))
         }
     };
-    let raster = &call.raster.0.desc;
-    let ds = &call.depth_stencil.0.desc;
+    let raster = &raster.0.desc;
+    let ds = &depth_stencil.0.desc;
     let triangles = matches!(
         key.topology,
         wgpu::PrimitiveTopology::TriangleList | wgpu::PrimitiveTopology::TriangleStrip
@@ -979,9 +1023,18 @@ pub(crate) fn begin_pass_impl(gpu: &mut WebGpu, pass: &PassDesc<'_, WebGpu>) {
             colors.push(None);
             continue;
         };
-        let v = &c.view.0;
-        for (view, t) in std::iter::once(&**v)
-            .chain(c.resolve.map(|r| &*r.0))
+        let resolve = match c.resolve {
+            Some(r) => match view_of(gpu, r) {
+                Some(r) => Some(r),
+                None => return gpu.fail(GONE),
+            },
+            None => None,
+        };
+        let Some(v) = view_of(gpu, c.view) else {
+            return gpu.fail(GONE);
+        };
+        for (view, t) in std::iter::once(&*v)
+            .chain(resolve.as_deref())
             .filter_map(|v| Some((v, v.texture.as_ref()?)))
         {
             t.0.used_in.set(serial);
@@ -1007,7 +1060,7 @@ pub(crate) fn begin_pass_impl(gpu: &mut WebGpu, pass: &PassDesc<'_, WebGpu>) {
         (width, height) = (v.width, v.height);
         colors.push(Some(ColorRaw {
             view: v.raw(),
-            resolve: c.resolve.map(|r| r.0.raw()),
+            resolve: resolve.map(|r| r.raw()),
             slice: v.three_d.then_some(c.depth_slice),
             clear: match c.load {
                 LoadOp::Load => None,
@@ -1037,8 +1090,14 @@ pub(crate) fn begin_pass_impl(gpu: &mut WebGpu, pass: &PassDesc<'_, WebGpu>) {
         .rposition(Option::is_some)
         .map_or(0, |i| i + 1);
     colors.truncate(used);
-    let depth = pass.depth.as_ref().map(|d| {
-        let v = &d.view.0;
+    let depth_view = match pass.depth.as_ref() {
+        Some(d) => match view_of(gpu, d.view) {
+            Some(v) => Some(v),
+            None => return gpu.fail(GONE),
+        },
+        None => None,
+    };
+    let depth = pass.depth.as_ref().zip(depth_view).map(|(d, v)| {
         if let Some(t) = &v.texture {
             t.0.used_in.set(serial);
             attached.push(t.clone());
@@ -1102,11 +1161,17 @@ pub(crate) fn begin_pass_impl(gpu: &mut WebGpu, pass: &PassDesc<'_, WebGpu>) {
             clear: Some(wgpu::Color::TRANSPARENT),
         }));
     }
-    let occlusion_set = pass.occlusion.cloned();
+    let occlusion_set = match pass.occlusion {
+        Some(q) => match query_set_of(gpu, q) {
+            Some(q) => Some(q),
+            None => return gpu.fail(GONE),
+        },
+        None => None,
+    };
     if let Some(set) = &occlusion_set {
-        set.0.settle();
+        set.settle();
     }
-    let first_page = occlusion_set.as_ref().map(|q| q.0.page(0));
+    let first_page = occlusion_set.as_ref().map(|q| q.page(0));
     let mut rp = open(gpu.encoder(), &colors, &depth, first_page.as_ref(), false);
     for (i, bits) in by_draw {
         clear_by_draw(gpu, &mut rp, &targets, i, bits);
@@ -1162,14 +1227,14 @@ pub(crate) fn split_onto_page(
     // part, whose count resolving adds (`QueriesSegmented`).
     let mut carried = None;
     if let Some(set) = &pass.occlusion_set {
-        set.0.settle();
+        set.settle();
         let running = pass.query_running;
         if running.is_some() || move_page {
-            let page = set.0.page_with_room(&gpu.device);
+            let page = set.page_with_room(&gpu.device);
             if let Some(index) = running {
                 pass.rp.end_occlusion_query();
-                let slot = set.0.take(page).expect("the page has room");
-                set.0.carry(index, page, slot, false);
+                let slot = set.take(page).expect("the page has room");
+                set.carry(index, page, slot, false);
                 gpu.record_slow_path(SlowPath::QueriesSegmented);
                 carried = Some(slot);
             }
@@ -1183,7 +1248,7 @@ pub(crate) fn split_onto_page(
     }
     pass.packed_unrounded = false;
     between(gpu);
-    let raw = pass.occlusion_set.as_ref().map(|q| q.0.page(pass.page));
+    let raw = pass.occlusion_set.as_ref().map(|q| q.page(pass.page));
     // `between` may have submitted, so the encoder is made again where it did.
     let encoder = gpu.encoder();
     pass.rp = open(encoder, &pass.colors, &pass.depth, raw.as_ref(), true);
@@ -1200,14 +1265,17 @@ pub(crate) fn prepare_impl(gpu: &mut WebGpu, desc: &PrepareDesc<'_, WebGpu>) {
     let Some(topology) = convert::topology(desc.topology) else {
         return;
     };
+    let Some(program) = program_of(gpu, desc.program) else {
+        return gpu.fail(GONE);
+    };
     let targets = desc.targets;
     let own_target = targets.colors.iter().all(Option::is_none) && targets.depth_stencil.is_none();
     let key = PipelineKey {
-        program: desc.program.0.id(),
-        blend: desc.blend.0.id,
-        depth_stencil: desc.depth_stencil.0.id,
-        raster: desc.raster.0.id,
-        vertex_layout: desc.vertex_layout.0.id,
+        program: program.id(),
+        blend: desc.blend.0,
+        depth_stencil: desc.depth_stencil.0,
+        raster: desc.raster.0,
+        vertex_layout: desc.vertex_layout.0,
         targets: if own_target {
             TargetLayout {
                 colors: {
@@ -1223,7 +1291,7 @@ pub(crate) fn prepare_impl(gpu: &mut WebGpu, desc: &PrepareDesc<'_, WebGpu>) {
         own_target,
         topology,
         strip_index: None,
-        layouts: desc.program.0.own_keys(desc.layouts),
+        layouts: program.own_keys(desc.layouts),
         flipped: false,
     };
     let strips: &[_] = match topology.is_strip() {
@@ -1261,10 +1329,13 @@ pub(crate) fn draw_impl(gpu: &mut WebGpu, call: &DrawCall<'_, WebGpu>) {
     // A blend reads the target as its format holds it, so what earlier draws and primitives
     // left in a packed target is rounded to its bits first: a draw of several primitives is
     // drawn one primitive at a time.
+    let Some(blend) = held(&gpu.objects.blends, call.blend.0) else {
+        return gpu.fail(GONE);
+    };
     let reads = gpu
         .pass
         .as_ref()
-        .is_some_and(|p| reads_target(&call.blend.0.desc, p.packed_slots));
+        .is_some_and(|p| reads_target(&blend.0.desc, p.packed_slots));
     let pieces = match reads {
         true => match primitives(gpu, call) {
             Some(p) => p,
@@ -1304,7 +1375,7 @@ fn primitives(
     call: &DrawCall<'_, WebGpu>,
 ) -> Option<Option<(Vec<crate::packed::Piece>, Option<i32>)>> {
     let topology = convert::topology(call.topology)?;
-    let read = |w: &mut WebGpu, buffer: &Buffer, offset: u64, size: u64| {
+    let read = |w: &mut WebGpu, buffer: &crate::Buffer, offset: u64, size: u64| {
         let mut bytes = vec![0; size as usize];
         let mut read = Ok(());
         split_pass(w, SlowPath::PackedTargetReadByBlend, |w| {
@@ -1382,7 +1453,11 @@ fn primitives(
     {
         let size = INDEX_FORMATS[index.format as usize].size as u64;
         let start = index.offset + u64::from(first) * size;
-        let end = (start + u64::from(count) * size).min(index.buffer.0.desc.size);
+        let Some(index_buffer) = buffer_of(gpu, index.buffer) else {
+            gpu.fail(GONE);
+            return None;
+        };
+        let end = (start + u64::from(count) * size).min(index_buffer.desc.size);
         let bytes = match end > start {
             true => read(gpu, index.buffer, start, end - start)?,
             false => Vec::new(),
@@ -1431,13 +1506,22 @@ fn draw_in(
         }
         None => None,
     };
-    let layouts = call.program.0.layout_keys(&call.bindings);
+    let Some(program) = program_of(gpu, call.program) else {
+        return Err(GONE);
+    };
+    let mut sets: [Option<Rc<SetObj>>; MAX_BINDING_SETS] = Default::default();
+    for (held, set) in sets.iter_mut().zip(call.bindings) {
+        if let Some(set) = set {
+            *held = Some(set_of(gpu, set).ok_or(GONE)?);
+        }
+    }
+    let layouts = program.layout_keys(&sets);
     let key = PipelineKey {
-        program: call.program.0.id(),
-        blend: call.blend.0.id,
-        depth_stencil: call.depth_stencil.0.id,
-        raster: call.raster.0.id,
-        vertex_layout: call.vertex_layout.0.id,
+        program: program.id(),
+        blend: call.blend.0,
+        depth_stencil: call.depth_stencil.0,
+        raster: call.raster.0,
+        vertex_layout: call.vertex_layout.0,
         targets: pass.targets,
         own_target: pass.own_target,
         topology,
@@ -1481,9 +1565,9 @@ fn draw_in(
     let layout = last.layout.as_ref().expect("set with the pipeline");
     for (i, gl) in layout.groups.iter().enumerate() {
         let Some(gl) = gl else { continue };
-        let set = &call.bindings[i]
-            .ok_or("a draw lacks a binding set its program reads")?
-            .0;
+        let set = sets[i]
+            .as_ref()
+            .ok_or("a draw lacks a binding set its program reads")?;
         let held = last.groups[i].as_ref();
         let same_set = held.is_some_and(|l| Rc::ptr_eq(&l.set, set));
         let group = match held {
@@ -1528,7 +1612,7 @@ fn draw_in(
             }
             continue;
         }
-        let b = &vb.buffer.0;
+        let b = buffer_of(gpu, vb.buffer).ok_or(GONE)?;
         let now = Some((b.id, b.generation.get(), vb.offset));
         if last.vertex[slot] != now {
             rp.set_vertex_buffer(
@@ -1540,7 +1624,7 @@ fn draw_in(
         }
     }
     if let (Some(i), Some(format)) = (&call.index, index_format) {
-        let b = &i.buffer.0;
+        let b = buffer_of(gpu, i.buffer).ok_or(GONE)?;
         let now = Some((b.id, b.generation.get(), i.offset, format));
         if last.index != now {
             rp.set_index_buffer(b.raw.borrow().slice(b.base.get() + i.offset..), format);
@@ -1570,7 +1654,7 @@ fn draw_in(
     }
     let (pw, ph) = (pass.width, pass.height);
     let scissor = match call.scissors.first() {
-        Some(s) if call.raster.0.desc.scissor => {
+        Some(s) if held(&gpu.objects.rasters, call.raster.0).is_some_and(|r| r.0.desc.scissor) => {
             let x = s.x.min(pw);
             let y = s.y.min(ph);
             ScissorRect {
@@ -1635,12 +1719,14 @@ fn draw_in(
             *first_instance..first_instance + instances,
         ),
         DrawRange::Indirect { args, offset } => {
-            args.0.used_in.set(gpu.serial);
-            rp.draw_indirect(&args.0.raw.borrow(), args.0.base.get() + offset);
+            let args = buffer_of(gpu, args).ok_or(GONE)?;
+            args.used_in.set(gpu.serial);
+            rp.draw_indirect(&args.raw.borrow(), args.base.get() + offset);
         }
         DrawRange::IndexedIndirect { args, offset } => {
-            args.0.used_in.set(gpu.serial);
-            rp.draw_indexed_indirect(&args.0.raw.borrow(), args.0.base.get() + offset);
+            let args = buffer_of(gpu, args).ok_or(GONE)?;
+            args.used_in.set(gpu.serial);
+            rp.draw_indexed_indirect(&args.raw.borrow(), args.base.get() + offset);
         }
     }
     Ok(())
@@ -1656,15 +1742,22 @@ pub(crate) fn dispatch_impl(
     if call.immediates.len() > gpu.caps.limits.immediate_bytes as usize {
         return Err(GpuError::Invalid("immediates past immediate_bytes"));
     }
-    let crate::ProgramObj::Compute { id, shader } = &*call.program.0 else {
+    let program = program_of(gpu, call.program).ok_or(GpuError::Invalid(GONE))?;
+    let crate::ProgramObj::Compute { id, shader } = &*program else {
         return Err(GpuError::Invalid("dispatch with a render program"));
     };
-    let keys = call.program.0.layout_keys(&call.bindings);
+    let mut sets: [Option<Rc<SetObj>>; MAX_BINDING_SETS] = Default::default();
+    for (held, set) in sets.iter_mut().zip(call.bindings) {
+        if let Some(set) = set {
+            *held = Some(set_of(gpu, set).ok_or(GpuError::Invalid(GONE))?);
+        }
+    }
+    let keys = program.layout_keys(&sets);
     let (pipeline, layout) = match gpu.caches.computes.get(&(*id, keys)) {
         Some(p) => p.clone(),
         None => {
             gpu.record_slow_path(SlowPath::PipelineMiss);
-            let layout = program_layout(gpu, &call.program.0, keys).map_err(GpuError::Invalid)?;
+            let layout = program_layout(gpu, &program, keys).map_err(GpuError::Invalid)?;
             let raw = gpu
                 .device
                 .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -1685,19 +1778,20 @@ pub(crate) fn dispatch_impl(
     let mut groups = Vec::new();
     for (i, gl) in layout.groups.iter().enumerate() {
         let Some(gl) = gl else { continue };
-        let set = call.bindings[i].ok_or(GpuError::Invalid(
+        let set = sets[i].clone().ok_or(GpuError::Invalid(
             "a dispatch lacks a binding set its program reads",
         ))?;
-        let group = set_group(gpu, &set.0, gl).map_err(GpuError::Invalid)?;
-        set.0.mark_used(gpu.serial);
+        let group = set_group(gpu, &set, gl).map_err(GpuError::Invalid)?;
+        set.mark_used(gpu.serial);
         let mut offsets = [0; MAX_GROUP_DYNAMIC];
-        let count = set.0.offsets(&group, &mut offsets);
+        let count = set.offsets(&group, &mut offsets);
         groups.push((i as u32, group, offsets, count));
     }
     let indirect = match &call.groups {
         DispatchGroups::Indirect { args, offset } => {
-            args.0.used_in.set(gpu.serial);
-            Some((args.0.raw.borrow().clone(), args.0.base.get() + offset))
+            let args = buffer_of(gpu, args).ok_or(GpuError::Invalid(GONE))?;
+            args.used_in.set(gpu.serial);
+            Some((args.raw.borrow().clone(), args.base.get() + offset))
         }
         DispatchGroups::Direct(_) => None,
     };
@@ -1736,7 +1830,12 @@ pub(crate) fn resolve_impl(
     // (Dawn on Direct3D 12) averages the stored values whatever the views' format, so in the
     // browser a resolve in the other twin is a draw averaging the samples read through it. So
     // is a resolve of a format WebGPU does not resolve.
-    let stored = src.texture.0.held;
+    let (Some(src_texture), Some(dst_texture)) =
+        (texture_of(gpu, src.texture), texture_of(gpu, dst.texture))
+    else {
+        return gpu.fail(GONE);
+    };
+    let stored = src_texture.held;
     let format = crate::packed::held(format).unwrap_or(format);
     let by_draw =
         cfg!(target_arch = "wasm32") && format != stored || gpu.resolved_by_draw[format as usize];
@@ -1744,9 +1843,9 @@ pub(crate) fn resolve_impl(
         gpu.fail("resolve in a format this back end does not hold");
         return;
     };
-    let view = |r: &wcontainers_gpu::resource::TextureRegion<'_, WebGpu>| {
-        r.texture.0.used_in.set(gpu.serial);
-        r.texture.0.raw().create_view(&wgpu::TextureViewDescriptor {
+    let view = |t: &crate::TextureObj, r: &wcontainers_gpu::resource::TextureRegion<'_, WebGpu>| {
+        t.used_in.set(gpu.serial);
+        t.raw().create_view(&wgpu::TextureViewDescriptor {
             format: Some(format),
             dimension: Some(wgpu::TextureViewDimension::D2),
             base_mip_level: r.mip,
@@ -1757,9 +1856,7 @@ pub(crate) fn resolve_impl(
         })
     };
     if by_draw {
-        if !src
-            .texture
-            .0
+        if !src_texture
             .raw()
             .usage()
             .contains(wgpu::TextureUsages::TEXTURE_BINDING)
@@ -1767,22 +1864,22 @@ pub(crate) fn resolve_impl(
             gpu.fail(RESOLVE_UNSAMPLED);
             return;
         }
-        let (s, d) = (view(src), view(dst));
+        let (s, d) = (view(&src_texture, src), view(&dst_texture, dst));
         return resolve_by_draw(gpu, &s, &d, format);
     }
     let colors = [Some(ColorRaw {
-        view: view(src),
-        resolve: Some(view(dst)),
+        view: view(&src_texture, src),
+        resolve: Some(view(&dst_texture, dst)),
         slice: None,
         clear: None,
     })];
     drop(open(gpu.encoder(), &colors, &None, None, false));
-    if crate::packed::quantised(dst.texture.0.desc.format) {
+    if crate::packed::quantised(dst_texture.desc.format) {
         quantise(
             gpu,
             &crate::fill::PackedTarget {
-                format: dst.texture.0.desc.format,
-                texture: dst.texture.0.raw(),
+                format: dst_texture.desc.format,
+                texture: dst_texture.raw(),
                 mip: dst.mip,
                 z: dst.layer,
             },

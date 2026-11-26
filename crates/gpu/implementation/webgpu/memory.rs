@@ -6,6 +6,7 @@ use crate::draw::split_pass;
 use crate::edge::copy_bytes;
 use crate::fill::{aspect_by_draw, depth_by_draw, stencil_by_draw};
 use crate::packed::{copy_buffer_packed, copy_packed, write_packed};
+use crate::{GONE, HeldReadback, buffer_of, forget_texture, query_set_of, readback_of, texture_of};
 use std::collections::HashMap;
 use std::num::NonZeroU64;
 use std::ops::Range;
@@ -575,26 +576,28 @@ pub(crate) fn write_buffer_impl(
     data: &[u8],
     mode: WriteMode,
 ) {
+    let Some(b) = buffer_of(gpu, buffer) else {
+        return gpu.fail(GONE);
+    };
     if data.is_empty() {
         return;
     }
-    buffer.0.wrote();
-    if offset + data.len() as u64 > buffer.0.desc.size {
+    b.wrote();
+    if offset + data.len() as u64 > b.desc.size {
         gpu.fail("write_buffer past the buffer's end");
         return;
     }
-    let b = &buffer.0;
     let recorded = pending(gpu, b.used_in.get());
     match mode {
         WriteMode::Ordered if recorded => {
-            staged_write(gpu, b, offset, data);
+            staged_write(gpu, &b, offset, data);
             return;
         }
-        WriteMode::Discard if recorded && b.in_arena => move_in_arena(gpu, b),
-        WriteMode::Discard if recorded => rename(gpu, b),
+        WriteMode::Discard if recorded && b.in_arena => move_in_arena(gpu, &b),
+        WriteMode::Discard if recorded => rename(gpu, &b),
         _ => {}
     }
-    write_now(gpu, b, offset, data);
+    write_now(gpu, &b, offset, data);
 }
 
 /// As [`write_buffer_impl`], for bytes another party holds: a write the queue takes now goes
@@ -606,8 +609,10 @@ pub(crate) fn write_buffer_from_impl(
     data: &impl VolatileBytes,
     mode: WriteMode,
 ) {
+    let Some(b) = buffer_of(gpu, buffer) else {
+        return gpu.fail(GONE);
+    };
     let len = data.len();
-    let b = &buffer.0;
     let at = b.base.get() + offset;
     let ordered = matches!(mode, WriteMode::Ordered | WriteMode::Discard);
     let now = len > 0
@@ -617,7 +622,7 @@ pub(crate) fn write_buffer_from_impl(
         && !(ordered && pending(gpu, b.used_in.get()))
         && at.is_multiple_of(ALIGN)
         && len.is_multiple_of(ALIGN)
-        && !gpu.lead_pending(b);
+        && !gpu.lead_pending(&b);
     if now {
         b.wrote();
         let raw = b.raw.borrow();
@@ -683,7 +688,9 @@ pub(crate) fn write_texture_impl(
     rows_per_layer: u32,
     mode: WriteMode,
 ) {
-    let t = &region.texture.0;
+    let Some(t) = texture_of(gpu, region.texture) else {
+        return gpu.fail(GONE);
+    };
     if t.blocks.is_some() {
         write_blocks(gpu, region, extent, data, row_pitch, rows_per_layer, mode);
     } else if t.held != t.desc.format {
@@ -703,7 +710,9 @@ pub(crate) fn write_texels(
     rows_per_layer: u32,
     mode: WriteMode,
 ) {
-    let t = &region.texture.0;
+    let Some(t) = texture_of(gpu, region.texture) else {
+        return gpu.fail(GONE);
+    };
     if !region.stencil && filled_by_draw(t.desc.format) {
         let Some((staged, sf, how)) = depth_staging(gpu, t.desc.format, extent) else {
             gpu.fail("the texture a depth write is drawn from could not be made");
@@ -718,6 +727,9 @@ pub(crate) fn write_texels(
         };
         // A new texture: written straight from the queue.
         write_texels(gpu, &at, extent, data, row_pitch, rows_per_layer, mode);
+        let Some(staged) = forget_texture(gpu, &staged) else {
+            return gpu.fail(GONE);
+        };
         let (tex, mip, layer, origin) = (
             region.texture.clone(),
             region.mip,
@@ -734,7 +746,7 @@ pub(crate) fn write_texels(
             };
             depth_copy(
                 w,
-                (&staged.0.raw(), sf, how),
+                (&staged.raw(), sf, how),
                 (0, 0, [0, 0]),
                 &dst,
                 extent,
@@ -752,26 +764,25 @@ pub(crate) fn write_texels(
     }
     // A discard of a texture recorded work uses takes fresh storage, unless the open pass draws
     // into it, which must keep drawing into the storage it opened with.
-    let attached = gpu.pass.as_ref().is_some_and(|p| {
-        p.attached
-            .iter()
-            .any(|a| Rc::ptr_eq(&a.0, &region.texture.0))
-    });
+    let attached = gpu
+        .pass
+        .as_ref()
+        .is_some_and(|p| p.attached.iter().any(|a| Rc::ptr_eq(&a.0, &t)));
     let renamed = mode == WriteMode::Discard && pending(gpu, t.used_in.get()) && !attached;
     if renamed {
-        rename_texture(gpu, t);
+        rename_texture(gpu, &t);
     }
     let raw = t.raw();
     let copy = texel_copy(
         &raw,
-        t,
+        &t,
         region.mip,
         region.layer,
         region.origin,
         region.stencil,
     );
     if renamed || !pending(gpu, t.used_in.get()) || mode == WriteMode::NoOverwrite {
-        let format = region_format(t, region);
+        let format = region_format(&t, region);
         let (row, rows) = row_bytes(format, extent.width, extent.height);
         // wgpu's Direct3D 12 loses every layer after the first when layers are further apart
         // than their rows: such layers are packed together first.
@@ -809,7 +820,7 @@ pub(crate) fn write_texels(
         return;
     }
     // Recorded commands use the texture: the write goes through a staging copy in command order.
-    let format = region_format(t, region);
+    let format = region_format(&t, region);
     let (row, rows) = row_bytes(format, extent.width, extent.height);
     let pitch = row.next_multiple_of(u64::from(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT));
     let layers = u64::from(extent.depth_or_layers);
@@ -827,7 +838,7 @@ pub(crate) fn write_texels(
     }
     let (staging, base) = staging(gpu, &packed);
     gpu.counters.staged_writes += 1;
-    let tex = region.texture.clone();
+    let tex = t.clone();
     let (mip, layer, origin, stencil) = (region.mip, region.layer, region.origin, region.stencil);
     split_pass(gpu, SlowPath::WriteSplitPass, move |w| {
         w.encoder().copy_buffer_to_texture(
@@ -839,7 +850,7 @@ pub(crate) fn write_texels(
                     rows_per_image: Some(rows as u32),
                 },
             },
-            texel_copy(&tex.0.raw(), &tex.0, mip, layer, origin, stencil),
+            texel_copy(&tex.raw(), &tex, mip, layer, origin, stencil),
             extent3d(extent, format),
         );
     });
@@ -853,22 +864,25 @@ pub(crate) fn copy_buffer_impl(
     dst_offset: u64,
     size: u64,
 ) {
+    let (Some(src), Some(dst)) = (buffer_of(gpu, src), buffer_of(gpu, dst)) else {
+        return gpu.fail(GONE);
+    };
     if gpu.pass.is_some() {
         gpu.fail("copy_buffer inside a pass");
         return;
     }
-    dst.0.wrote();
-    if src_offset + size > src.0.desc.size || dst_offset + size > dst.0.desc.size {
+    dst.wrote();
+    if src_offset + size > src.desc.size || dst_offset + size > dst.desc.size {
         gpu.fail("copy_buffer past a buffer's end");
         return;
     }
     let serial = gpu.serial;
-    src.0.used_in.set(serial);
-    dst.0.used_in.set(serial);
-    let (s, d) = (src.0.raw.borrow().clone(), dst.0.raw.borrow().clone());
-    let (src_offset, dst_offset) = (src.0.base.get() + src_offset, dst.0.base.get() + dst_offset);
+    src.used_in.set(serial);
+    dst.used_in.set(serial);
+    let (s, d) = (src.raw.borrow().clone(), dst.raw.borrow().clone());
+    let (src_offset, dst_offset) = (src.base.get() + src_offset, dst.base.get() + dst_offset);
     // One GPU buffer: the same buffer, or two living in the uniform arena.
-    if src.0.storage.get() == dst.0.storage.get() {
+    if src.storage.get() == dst.storage.get() {
         gpu.record_slow_path(SlowPath::CopyWithinBuffer);
         // The temporary holds the bytes in the same place of their word as the source.
         let at = src_offset % ALIGN;
@@ -893,15 +907,18 @@ pub(crate) fn copy_texture_impl(
     dst: &TextureRegion<'_, WebGpu>,
     extent: Extent,
 ) {
+    let (Some(s), Some(d)) = (texture_of(gpu, src.texture), texture_of(gpu, dst.texture)) else {
+        return gpu.fail(GONE);
+    };
     if gpu.pass.is_some() {
         gpu.fail("copy_texture inside a pass");
         return;
     }
-    if src.texture.0.blocks.is_some() || dst.texture.0.blocks.is_some() {
+    if s.blocks.is_some() || d.blocks.is_some() {
         copy_blocks(gpu, src, dst, extent);
         return;
     }
-    let (s, d) = (&src.texture.0, &dst.texture.0);
+    let (s, d) = (&*s, &*d);
     let converted = |t: &crate::TextureObj| packed::held(t.desc.format).is_some();
     if s.desc.format != d.desc.format && (converted(s) || converted(d)) {
         copy_packed(gpu, src, dst, extent);
@@ -919,7 +936,7 @@ pub(crate) fn copy_texture_impl(
     };
     let whole = covers(d, dst) && covers(s, src);
     // WebGPU refuses one subresource as both source and destination.
-    let within = src.texture == dst.texture
+    let within = src.texture.0 == dst.texture.0
         && src.mip == dst.mip
         && (s.desc.dimension == TextureDimension::D3
             || (src.layer < dst.layer + extent.depth_or_layers
@@ -952,6 +969,7 @@ pub(crate) fn copy_texture_impl(
         };
         copy_texture_impl(gpu, src, &staged(dst.stencil), extent);
         copy_texture_impl(gpu, &staged(src.stencil), dst, extent);
+        forget_texture(gpu, &temp);
         return;
     }
     // A combined format is copied with both aspects.
@@ -997,7 +1015,10 @@ pub(crate) fn copy_texture_impl(
                 };
                 copy_texture_impl(gpu, src, &staged, extent);
                 let how = DepthSource::Unorm16;
-                let raw = bits.0.raw();
+                let Some(bits) = forget_texture(gpu, &bits) else {
+                    return gpu.fail(GONE);
+                };
+                let raw = bits.raw();
                 depth_copy(
                     gpu,
                     (&raw, Format::R16Uint, how),
@@ -1060,9 +1081,10 @@ pub(crate) fn copy_texture_impl(
             },
             false => None,
         };
-        let drawn_raw = drawn.as_ref().map(|t| t.0.raw());
+        let drawn = drawn.and_then(|t| forget_texture(gpu, &t));
+        let drawn_raw = drawn.as_ref().map(|t| t.raw());
         if let (Some(t), Some(raw)) = (&drawn, &drawn_raw) {
-            from = texel_copy(raw, &t.0, 0, 0, Default::default(), false);
+            from = texel_copy(raw, t, 0, 0, Default::default(), false);
         }
         let ((sbw, sbh, _), (dbw, dbh, _)) = (
             FORMAT_FACTS[sf as usize].block,
@@ -1110,7 +1132,9 @@ fn depth_copy(
     extent: Extent,
     stream: Stream,
 ) {
-    let d = &dst.texture.0;
+    let Some(d) = texture_of(gpu, dst.texture) else {
+        return gpu.fail(GONE);
+    };
     if src.0.sample_count() > 1 || d.desc.samples > 1 {
         gpu.fail("multisampled depth copies by a draw are not built yet");
         return;
@@ -1145,7 +1169,9 @@ fn stencil_copy(
     dst: &TextureRegion<'_, WebGpu>,
     extent: Extent,
 ) {
-    let d = &dst.texture.0;
+    let Some(d) = texture_of(gpu, dst.texture) else {
+        return gpu.fail(GONE);
+    };
     if src.0.sample_count() > 1 || d.desc.samples > 1 {
         gpu.fail("multisampled stencil copies by a draw are not built yet");
         return;
@@ -1179,7 +1205,10 @@ fn aspect_as_colour(
     region: &TextureRegion<'_, WebGpu>,
     extent: Extent,
 ) -> Result<Option<Texture>, ()> {
-    let t = &region.texture.0;
+    let Some(t) = texture_of(gpu, region.texture) else {
+        gpu.fail(GONE);
+        return Err(());
+    };
     let format = t.desc.format;
     let stencil = region.stencil || FORMAT_FACTS[format as usize].kind == FormatKind::Stencil;
     let Some((read, colour)) = AspectRead::of(format, stencil) else {
@@ -1222,7 +1251,7 @@ fn aspect_as_colour(
         gpu,
         (&raw, read),
         (region.mip, region.layer, [region.origin.x, region.origin.y]),
-        &drawn.0.raw(),
+        &texture_of(gpu, &drawn).ok_or(())?.raw(),
         [extent.width, extent.height],
         extent.depth_or_layers,
     );
@@ -1267,22 +1296,27 @@ pub(crate) fn copy_buffer_texture(
     extent: Extent,
     to_texture: bool,
 ) {
+    let (Some(t), Some(b)) = (
+        texture_of(gpu, region.texture),
+        buffer_of(gpu, buffer.buffer),
+    ) else {
+        return gpu.fail(GONE);
+    };
     if gpu.pass.is_some() {
         gpu.fail("buffer and texture copies inside a pass");
         return;
     }
     if !to_texture {
-        buffer.buffer.0.wrote();
+        b.wrote();
     }
-    if region.texture.0.blocks.is_some() {
+    if t.blocks.is_some() {
         copy_buffer_blocks(gpu, buffer, region, extent, to_texture);
         return;
     }
-    if packed::held(region.texture.0.desc.format).is_some() {
+    if packed::held(t.desc.format).is_some() {
         copy_buffer_packed(gpu, buffer, region, extent, to_texture);
         return;
     }
-    let t = &region.texture.0;
     let at_origin = |texture| TextureRegion {
         texture,
         mip: 0,
@@ -1301,6 +1335,7 @@ pub(crate) fn copy_buffer_texture(
             Err(()) => return,
             Ok(Some(drawn)) => {
                 copy_buffer_texture(gpu, buffer, &at_origin(&drawn), extent, false);
+                forget_texture(gpu, &drawn);
                 return;
             }
             Ok(None) => {}
@@ -1323,7 +1358,10 @@ pub(crate) fn copy_buffer_texture(
         };
         copy_buffer_texture(gpu, buffer, &at_origin(&staged), extent, true);
         t.used_in.set(gpu.serial);
-        let raw = staged.0.raw();
+        let Some(staged) = forget_texture(gpu, &staged) else {
+            return gpu.fail(GONE);
+        };
+        let raw = staged.raw();
         stencil_copy(
             gpu,
             (&raw, wgpu::TextureAspect::All),
@@ -1343,9 +1381,12 @@ pub(crate) fn copy_buffer_texture(
         };
         copy_buffer_texture(gpu, buffer, &at_origin(&staged), extent, true);
         t.used_in.set(gpu.serial);
+        let Some(staged) = forget_texture(gpu, &staged) else {
+            return gpu.fail(GONE);
+        };
         depth_copy(
             gpu,
-            (&staged.0.raw(), sf, how),
+            (&staged.raw(), sf, how),
             (0, 0, [0, 0]),
             region,
             extent,
@@ -1354,11 +1395,11 @@ pub(crate) fn copy_buffer_texture(
         return;
     }
     t.used_in.set(gpu.serial);
-    buffer.buffer.0.used_in.set(gpu.serial);
-    let raw = buffer.buffer.0.raw.borrow().clone();
-    let offset = buffer.buffer.0.base.get() + buffer.offset;
-    let tex = region.texture.clone();
-    let format = region_format(t, region);
+    b.used_in.set(gpu.serial);
+    let raw = b.raw.borrow().clone();
+    let offset = b.base.get() + buffer.offset;
+    let tex = t.clone();
+    let format = region_format(&t, region);
     let (mip, layer, origin, stencil) = (region.mip, region.layer, region.origin, region.stencil);
     let copy_layers = |w: &mut WebGpu,
                        staged: &wgpu::Buffer,
@@ -1374,19 +1415,12 @@ pub(crate) fn copy_buffer_texture(
                 rows_per_image: Some(rows as u32),
             },
         };
-        let tex_raw = tex.0.raw();
+        let tex_raw = tex.raw();
         let shifted = Origin {
             z: origin.z + layers.start,
             ..origin
         };
-        let to = texel_copy(
-            &tex_raw,
-            &tex.0,
-            mip,
-            layer + layers.start,
-            shifted,
-            stencil,
-        );
+        let to = texel_copy(&tex_raw, &tex, mip, layer + layers.start, shifted, stencil);
         let part = Extent {
             depth_or_layers: layers.len() as u32,
             ..extent
@@ -1403,7 +1437,7 @@ pub(crate) fn copy_buffer_texture(
         copy_layers(w, staged, offset, pitch, rows, 0..extent.depth_or_layers);
     };
     let pitch = u64::from(buffer.row_pitch);
-    let (row, rows) = row_bytes(region_format(t, region), extent.width, extent.height);
+    let (row, rows) = row_bytes(region_format(&t, region), extent.width, extent.height);
     let gaps = (rows > 1 && pitch > row)
         || (extent.depth_or_layers > 1 && u64::from(buffer.rows_per_layer) > rows);
     let gaps_kept =
@@ -1479,22 +1513,25 @@ pub(crate) fn clear_buffer_impl(
     size: u64,
     pattern: &[u8],
 ) {
+    let Some(b) = buffer_of(gpu, buffer) else {
+        return gpu.fail(GONE);
+    };
     if gpu.pass.is_some() {
         gpu.fail("clear_buffer inside a pass");
         return;
     }
-    buffer.0.wrote();
+    b.wrote();
     if pattern.is_empty() || !size.is_multiple_of(pattern.len() as u64) {
         gpu.fail("clear_buffer with a range that is not a whole number of patterns");
         return;
     }
-    if offset + size > buffer.0.desc.size {
+    if offset + size > b.desc.size {
         gpu.fail("clear_buffer past the buffer's end");
         return;
     }
-    buffer.0.used_in.set(gpu.serial);
-    let raw = buffer.0.raw.borrow().clone();
-    let offset = buffer.0.base.get() + offset;
+    b.used_in.set(gpu.serial);
+    let raw = b.raw.borrow().clone();
+    let offset = b.base.get() + offset;
     let zero = pattern.iter().all(|b| *b == 0);
     if zero && offset.is_multiple_of(ALIGN) && size.is_multiple_of(ALIGN) {
         gpu.encoder().clear_buffer(&raw, offset, Some(size));
@@ -1551,7 +1588,7 @@ fn readback(
     pitch: u64,
     rows: u64,
 ) -> Readback {
-    let rb = Readback(Rc::new(ReadbackObj {
+    let rb = HeldReadback(Rc::new(ReadbackObj {
         buffer: Some(buffer),
         host: Vec::new(),
         packed,
@@ -1563,13 +1600,15 @@ fn readback(
         rows,
     }));
     gpu.to_map.push(rb.clone());
-    rb
+    let number = gpu.id();
+    gpu.objects.readbacks.insert(number, rb);
+    Readback(number)
 }
 
 /// A read back the host answers at once.
 pub(crate) fn host_readback(gpu: &mut WebGpu, bytes: Vec<u8>) -> Readback {
     let len = bytes.len() as u64;
-    Readback(Rc::new(ReadbackObj {
+    let rb = HeldReadback(Rc::new(ReadbackObj {
         buffer: None,
         host: bytes,
         packed: None,
@@ -1579,7 +1618,10 @@ pub(crate) fn host_readback(gpu: &mut WebGpu, bytes: Vec<u8>) -> Readback {
         row: len,
         pitch: len,
         rows: 1,
-    }))
+    }));
+    let number = gpu.id();
+    gpu.objects.readbacks.insert(number, rb);
+    Readback(number)
 }
 
 pub(crate) fn read_back_impl(
@@ -1597,12 +1639,13 @@ pub(crate) fn read_back_impl(
         } => {
             let start = offset & !(ALIGN - 1);
             let end = (offset + size).next_multiple_of(ALIGN);
+            let buffer = buffer_of(gpu, buffer).ok_or(GpuError::Invalid(GONE))?;
             let target = map_target(gpu, end - start);
-            buffer.0.used_in.set(gpu.serial);
-            let raw = buffer.0.raw.borrow().clone();
+            buffer.used_in.set(gpu.serial);
+            let raw = buffer.raw.borrow().clone();
             gpu.encoder().copy_buffer_to_buffer(
                 &raw,
-                buffer.0.base.get() + start,
+                buffer.base.get() + start,
                 &target,
                 0,
                 end - start,
@@ -1610,7 +1653,8 @@ pub(crate) fn read_back_impl(
             Ok(readback(gpu, target, None, offset - start, *size, *size, 1))
         }
         ReadSource::Texture { region, extent } => {
-            if region.texture.0.blocks.is_some() {
+            let texture = texture_of(gpu, region.texture).ok_or(GpuError::Invalid(GONE))?;
+            if texture.blocks.is_some() {
                 return read_blocks(gpu, region, *extent).ok_or(GpuError::Invalid(
                     "a read back outside the texture's blocks",
                 ));
@@ -1633,7 +1677,11 @@ pub(crate) fn read_back_impl(
                 }
                 None => region,
             };
-            let t = &region.texture.0;
+            let t = match &drawn {
+                Some(drawn) => forget_texture(gpu, drawn).ok_or(GpuError::Invalid(GONE))?,
+                None => texture,
+            };
+            let t = &*t;
             t.used_in.set(gpu.serial);
             let packed = packed::held(t.desc.format).map(|_| t.desc.format);
             if let Some(f) = packed {
@@ -1688,15 +1736,16 @@ fn resolved(
     first: u32,
     count: u32,
 ) -> Result<(wgpu::Buffer, Vec<ResolvedPart>), GpuError> {
+    let set = query_set_of(gpu, set).ok_or(GpuError::Invalid(GONE))?;
     if gpu.pass.is_some() {
         return Err(GpuError::Invalid("query results are taken outside a pass"));
     }
-    if set.0.kind == QueryKind::Occlusion
-        || first.checked_add(count).is_none_or(|end| end > set.0.count)
+    if set.kind == QueryKind::Occlusion
+        || first.checked_add(count).is_none_or(|end| end > set.count)
     {
         return Err(GpuError::Invalid("queries outside the set"));
     }
-    let obj = &set.0;
+    let obj = &*set;
     let max = wgpu::QUERY_SET_MAX_QUERIES;
     // Each own page's part of the range, as (first result, first place in the region,
     // results).
@@ -1888,6 +1937,7 @@ pub(crate) fn resolve_queries_impl(
     dst: &Buffer,
     dst_offset: u64,
 ) -> Result<(), GpuError> {
+    let dst = buffer_of(gpu, dst).ok_or(GpuError::Invalid(GONE))?;
     if !dst_offset.is_multiple_of(QUERY_BYTES) {
         return Err(GpuError::Invalid(
             "query results go to multiples of 8 bytes",
@@ -1895,15 +1945,15 @@ pub(crate) fn resolve_queries_impl(
     }
     if dst_offset
         .checked_add(u64::from(count) * QUERY_BYTES)
-        .is_none_or(|end| end > dst.0.desc.size)
+        .is_none_or(|end| end > dst.desc.size)
     {
         return Err(GpuError::Invalid("query results past the buffer's end"));
     }
     let (sums, parts) = resolved(gpu, set, first, count)?;
-    dst.0.wrote();
-    dst.0.used_in.set(gpu.serial);
-    let raw = dst.0.raw.borrow().clone();
-    let to = dst.0.base.get() + dst_offset;
+    dst.wrote();
+    dst.used_in.set(gpu.serial);
+    let raw = dst.raw.borrow().clone();
+    let to = dst.base.get() + dst_offset;
     let e = gpu.encoder();
     for (r, at, n) in parts {
         e.copy_buffer_to_buffer(
@@ -1924,7 +1974,10 @@ pub(crate) fn finish_read_into_impl(
     readback: Readback,
     dst: &impl VolatileBytes,
 ) {
-    let o = &readback.0;
+    let Some(held) = readback_of(gpu, &readback) else {
+        return gpu.fail(GONE);
+    };
+    let o = &*held;
     let whole = o.state.load(Ordering::Acquire) == MAP_READY
         && o.packed.is_none()
         && (o.rows <= 1 || o.pitch == o.row)
@@ -1941,6 +1994,7 @@ pub(crate) fn finish_read_into_impl(
         }
         buffer.unmap();
         buffer.destroy();
+        gpu.objects.readbacks.remove(&readback.0);
         return;
     }
     let mut bytes = vec![0; usize::try_from(dst.len()).unwrap_or(usize::MAX)];
@@ -1949,7 +2003,10 @@ pub(crate) fn finish_read_into_impl(
 }
 
 pub(crate) fn finish_read_impl(gpu: &mut WebGpu, readback: Readback, dst: &mut [u8]) {
-    let o = &readback.0;
+    let Some(held) = gpu.objects.readbacks.remove(&readback.0) else {
+        return gpu.fail(GONE);
+    };
+    let o = &*held.0;
     if o.state.load(Ordering::Acquire) != MAP_READY {
         gpu.fail("finish_read of a read back that is not ready or failed");
         return;

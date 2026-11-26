@@ -88,7 +88,9 @@ pub struct WebGpu {
     lead: Option<wgpu::CommandEncoder>,
     pass: Option<draw::Pass>,
     /// Read backs recorded in the current encoder, mapped once it is submitted.
-    to_map: Vec<Readback>,
+    to_map: Vec<HeldReadback>,
+    /// What every handle given out names.
+    objects: Objects,
     /// Destroyed objects the current encoder still uses, destroyed once it is submitted.
     destroy_after_submit: Vec<Doomed>,
     blocks: draw::BlockTables,
@@ -132,40 +134,121 @@ enum Doomed {
 }
 
 macro_rules! handle {
-    ($(#[$m:meta])* $name:ident, $obj:ty) => {
+    ($(#[$m:meta])* $name:ident, $held:ident, $obj:ty) => {
         $(#[$m])*
+        ///
+        /// Plain data: the number the back end keeps the object under until it is destroyed.
         #[derive(Clone, Debug)]
-        pub struct $name(Rc<$obj>);
+        pub struct $name(pub u64);
 
-        /// Handles are equal when they name the same object.
-        impl PartialEq for $name {
+        /// What a handle names, as the back end holds it: equal when it is the same object.
+        #[derive(Clone, Debug)]
+        pub(crate) struct $held(pub(crate) Rc<$obj>);
+
+        impl PartialEq for $held {
             fn eq(&self, other: &Self) -> bool {
                 Rc::ptr_eq(&self.0, &other.0)
             }
         }
 
-        impl Eq for $name {}
+        impl Eq for $held {}
     };
 }
 
 handle!(
     /// A buffer; its storage may be renamed by `Discard` writes.
     Buffer,
+    HeldBuffer,
     BufferObj
 );
-handle!(Texture, TextureObj);
-handle!(TextureView, ViewObj);
-handle!(Sampler, SamplerObj);
-handle!(Shader, ShaderObj);
-handle!(ProgramHandle, ProgramObj);
-handle!(Blend, draw::Block<BlendDesc>);
-handle!(DepthStencil, draw::Block<DepthStencilDesc>);
-handle!(Raster, draw::Block<RasterDesc>);
-handle!(VertexLayout, draw::Block<VertexLayoutDesc>);
-handle!(BindingSet, draw::SetObj);
-handle!(QuerySet, QuerySetObj);
-handle!(Readback, ReadbackObj);
-handle!(Surface, SurfaceObj);
+handle!(Texture, HeldTexture, TextureObj);
+handle!(TextureView, HeldView, ViewObj);
+handle!(Sampler, HeldSampler, SamplerObj);
+handle!(Shader, HeldShader, ShaderObj);
+handle!(ProgramHandle, HeldProgram, ProgramObj);
+handle!(Blend, HeldBlend, draw::Block<BlendDesc>);
+handle!(
+    DepthStencil,
+    HeldDepthStencil,
+    draw::Block<DepthStencilDesc>
+);
+handle!(Raster, HeldRaster, draw::Block<RasterDesc>);
+handle!(
+    VertexLayout,
+    HeldVertexLayout,
+    draw::Block<VertexLayoutDesc>
+);
+handle!(BindingSet, HeldSet, draw::SetObj);
+handle!(QuerySet, HeldQuerySet, QuerySetObj);
+handle!(Readback, HeldReadback, ReadbackObj);
+handle!(Surface, HeldSurface, SurfaceObj);
+
+/// The object a handle's number names in `table`, while it is not destroyed.
+fn held<H: Clone>(table: &HashMap<u64, H>, number: u64) -> Option<H> {
+    table.get(&number).cloned()
+}
+
+/// Why a call naming a destroyed object, or a number the back end never gave, is refused: a call
+/// that answers a result answers `Invalid`, and one that answers nothing loses the device with
+/// `Error`, as for any rule a recording call breaks (plan section 4.10).
+const GONE: &str = "a handle names an object destroyed before, or one this back end never made";
+
+fn buffer_of(gpu: &WebGpu, b: &Buffer) -> Option<Rc<BufferObj>> {
+    held(&gpu.objects.buffers, b.0).map(|h| h.0)
+}
+
+fn texture_of(gpu: &WebGpu, t: &Texture) -> Option<Rc<TextureObj>> {
+    held(&gpu.objects.textures, t.0).map(|h| h.0)
+}
+
+fn view_of(gpu: &WebGpu, v: &TextureView) -> Option<Rc<ViewObj>> {
+    held(&gpu.objects.views, v.0).map(|h| h.0)
+}
+
+fn program_of(gpu: &WebGpu, p: &ProgramHandle) -> Option<Rc<ProgramObj>> {
+    held(&gpu.objects.programs, p.0).map(|h| h.0)
+}
+
+fn set_of(gpu: &WebGpu, s: &BindingSet) -> Option<Rc<draw::SetObj>> {
+    held(&gpu.objects.sets, s.0).map(|h| h.0)
+}
+
+fn query_set_of(gpu: &WebGpu, q: &QuerySet) -> Option<Rc<QuerySetObj>> {
+    held(&gpu.objects.query_sets, q.0).map(|h| h.0)
+}
+
+fn readback_of(gpu: &WebGpu, r: &Readback) -> Option<Rc<ReadbackObj>> {
+    held(&gpu.objects.readbacks, r.0).map(|h| h.0)
+}
+
+fn surface_of(gpu: &WebGpu, s: &Surface) -> Option<Rc<SurfaceObj>> {
+    held(&gpu.objects.surfaces, s.0).map(|h| h.0)
+}
+
+/// Takes a texture the back end made for its own use out of the table once nothing names it by
+/// number any more; the work recorded with it keeps its own hold on it.
+fn forget_texture(gpu: &mut WebGpu, t: &Texture) -> Option<Rc<TextureObj>> {
+    gpu.objects.textures.remove(&t.0).map(|h| h.0)
+}
+
+/// The objects the handles name, by their numbers, from their making to their destroying.
+#[derive(Debug, Default)]
+struct Objects {
+    buffers: HashMap<u64, HeldBuffer>,
+    textures: HashMap<u64, HeldTexture>,
+    views: HashMap<u64, HeldView>,
+    samplers: HashMap<u64, HeldSampler>,
+    shaders: HashMap<u64, HeldShader>,
+    programs: HashMap<u64, HeldProgram>,
+    blends: HashMap<u64, HeldBlend>,
+    depth_stencils: HashMap<u64, HeldDepthStencil>,
+    rasters: HashMap<u64, HeldRaster>,
+    vertex_layouts: HashMap<u64, HeldVertexLayout>,
+    sets: HashMap<u64, HeldSet>,
+    query_sets: HashMap<u64, HeldQuerySet>,
+    readbacks: HashMap<u64, HeldReadback>,
+    surfaces: HashMap<u64, HeldSurface>,
+}
 
 #[derive(Debug)]
 struct BufferObj {
@@ -257,7 +340,7 @@ struct ViewObj {
     id: u64,
     format: Format,
     /// None for a surface's texture.
-    texture: Option<Texture>,
+    texture: Option<HeldTexture>,
     /// Every aspect, what a pass draws into; and the aspect the view reads, what a binding names.
     views: RefCell<(wgpu::TextureView, wgpu::TextureView)>,
     /// What it was made with, to make it again once its texture is renamed; None for a surface's.
@@ -296,12 +379,12 @@ struct ShaderObj {
 enum ProgramObj {
     Render {
         id: u64,
-        vertex: Shader,
-        fragment: Option<Shader>,
+        vertex: HeldShader,
+        fragment: Option<HeldShader>,
     },
     Compute {
         id: u64,
-        shader: Shader,
+        shader: HeldShader,
     },
 }
 
@@ -314,7 +397,7 @@ impl ProgramObj {
 
     /// The bytes of immediates its stages declare, in whole words: what its layout holds.
     fn immediate_size(&self) -> u32 {
-        let stages: [Option<&Shader>; 2] = match self {
+        let stages: [Option<&HeldShader>; 2] = match self {
             ProgramObj::Render {
                 vertex, fragment, ..
             } => [Some(vertex), fragment.as_ref()],
@@ -339,9 +422,13 @@ impl ProgramObj {
     /// sampler: the only bits its layout depends on.
     fn layout_keys(
         &self,
-        bindings: &[Option<&BindingSet>; MAX_BINDING_SETS],
+        sets: &[Option<Rc<draw::SetObj>>; MAX_BINDING_SETS],
     ) -> [BindingLayoutKey; MAX_BINDING_SETS] {
-        self.own_keys(bindings.map(|s| s.map_or_else(BindingLayoutKey::default, |s| s.0.key)))
+        self.own_keys(std::array::from_fn(|i| {
+            sets[i]
+                .as_ref()
+                .map_or_else(BindingLayoutKey::default, |s| s.key)
+        }))
     }
 
     /// The parts of the sets' layout keys this program's layout depends on: the textures it samples
@@ -712,6 +799,7 @@ impl WebGpu {
             lead: None,
             pass: None,
             to_map: Vec::new(),
+            objects: Objects::default(),
             destroy_after_submit: Vec::new(),
             blocks: Default::default(),
             caches: Default::default(),
@@ -1285,8 +1373,9 @@ impl Gpu for WebGpu {
             });
             (usage, raw, 0, self.id())
         };
-        Ok(Buffer(Rc::new(BufferObj {
-            id: self.id(),
+        let number = self.id();
+        let made = HeldBuffer(Rc::new(BufferObj {
+            id: number,
             desc: *desc,
             usage,
             raw: RefCell::new(raw),
@@ -1300,7 +1389,9 @@ impl Gpu for WebGpu {
             lead_in: Cell::new(0),
             written: Cell::new(0),
             spares: Cell::new(0),
-        })))
+        }));
+        self.objects.buffers.insert(number, made);
+        Ok(Buffer(number))
     }
 
     fn create_texture(&mut self, desc: &TextureDesc) -> Result<Texture, GpuError> {
@@ -1389,7 +1480,8 @@ impl Gpu for WebGpu {
             usage,
             view_formats: srgb_twin.as_slice(),
         });
-        Ok(Texture(Rc::new(TextureObj {
+        let number = self.id();
+        let made = HeldTexture(Rc::new(TextureObj {
             desc: *desc,
             held,
             blocks: (held != desc.format && packed::held(desc.format).is_none())
@@ -1398,7 +1490,9 @@ impl Gpu for WebGpu {
             generation: Cell::new(0),
             used_in: Cell::new(0),
             spares: Cell::new(0),
-        })))
+        }));
+        self.objects.textures.insert(number, made);
+        Ok(Texture(number))
     }
 
     fn create_view(
@@ -1406,25 +1500,30 @@ impl Gpu for WebGpu {
         texture: &Texture,
         desc: &TextureViewDesc,
     ) -> Result<TextureView, GpuError> {
+        let texture = held(&self.objects.textures, texture.0)
+            .ok_or(GpuError::Invalid("a view of a destroyed texture"))?;
         let format_usages = self.usages[desc.format as usize];
         let views = raw_views(&texture.0, desc, format_usages).ok_or(GpuError::Invalid(
             "view format or aspect this back end does not hold",
         ))?;
-        let t = &texture.0.desc;
+        let t = texture.0.desc;
         let size = |n: u32| (n >> desc.base_mip).max(1);
-        Ok(TextureView(Rc::new(ViewObj {
-            id: self.id(),
+        let number = self.id();
+        let made = HeldView(Rc::new(ViewObj {
+            id: number,
             format: desc.format,
-            texture: Some(texture.clone()),
+            made_for: Cell::new(texture.0.generation.get()),
+            texture: Some(texture),
             views: RefCell::new(views),
             desc: Some(*desc),
-            made_for: Cell::new(texture.0.generation.get()),
             format_usages,
             width: size(t.width),
             height: size(t.height),
             samples: t.samples,
             three_d: t.dimension == TextureDimension::D3,
-        })))
+        }));
+        self.objects.views.insert(number, made);
+        Ok(TextureView(number))
     }
 
     fn create_sampler(&mut self, desc: &SamplerDesc) -> Result<Sampler, GpuError> {
@@ -1455,11 +1554,14 @@ impl Gpu for WebGpu {
             },
             border_color: None,
         });
-        Ok(Sampler(Rc::new(SamplerObj {
-            id: self.id(),
+        let number = self.id();
+        let made = HeldSampler(Rc::new(SamplerObj {
+            id: number,
             raw,
             filtering: [desc.min, desc.mag, desc.mip].contains(&Filter::Linear),
-        })))
+        }));
+        self.objects.samplers.insert(number, made);
+        Ok(Sampler(number))
     }
 
     fn create_shader(&mut self, module: &ShaderModule) -> Result<Shader, GpuError> {
@@ -1492,7 +1594,8 @@ impl Gpu for WebGpu {
                 label: None,
                 source: wgpu::ShaderSource::Naga(Cow::Owned(module.module.clone())),
             });
-        Ok(Shader(Rc::new(ShaderObj {
+        let number = self.id();
+        let made = HeldShader(Rc::new(ShaderObj {
             module: module.module.clone(),
             paired: layout::paired(&module.module, info.get_entry_point(entry_index)),
             info,
@@ -1500,22 +1603,29 @@ impl Gpu for WebGpu {
             entry: module.entry_point.clone(),
             stage,
             raw,
-        })))
+        }));
+        self.objects.shaders.insert(number, made);
+        Ok(Shader(number))
     }
 
     fn create_program(&mut self, program: &Program<'_, Self>) -> Result<ProgramHandle, GpuError> {
         let id = self.id();
-        Ok(ProgramHandle(Rc::new(match program {
+        let shader = |s: &Shader| {
+            held(&self.objects.shaders, s.0).ok_or(GpuError::Invalid("a destroyed shader"))
+        };
+        let obj = match program {
             Program::Render { vertex, fragment } => ProgramObj::Render {
                 id,
-                vertex: (*vertex).clone(),
-                fragment: fragment.cloned(),
+                vertex: shader(vertex)?,
+                fragment: fragment.map(shader).transpose()?,
             },
-            Program::Compute(shader) => ProgramObj::Compute {
+            Program::Compute(compute) => ProgramObj::Compute {
                 id,
-                shader: (*shader).clone(),
+                shader: shader(compute)?,
             },
-        })))
+        };
+        self.objects.programs.insert(id, HeldProgram(Rc::new(obj)));
+        Ok(ProgramHandle(id))
     }
 
     fn create_blend(&mut self, desc: &BlendDesc) -> Result<Blend, GpuError> {
@@ -1545,7 +1655,9 @@ impl Gpu for WebGpu {
         if made {
             self.next_id = id;
         }
-        Ok(Blend(block))
+        let number = block.id;
+        self.objects.blends.insert(number, HeldBlend(block));
+        Ok(Blend(number))
     }
 
     fn create_depth_stencil(&mut self, desc: &DepthStencilDesc) -> Result<DepthStencil, GpuError> {
@@ -1562,7 +1674,11 @@ impl Gpu for WebGpu {
         if made {
             self.next_id = id;
         }
-        Ok(DepthStencil(block))
+        let number = block.id;
+        self.objects
+            .depth_stencils
+            .insert(number, HeldDepthStencil(block));
+        Ok(DepthStencil(number))
     }
 
     fn create_raster(&mut self, desc: &RasterDesc) -> Result<Raster, GpuError> {
@@ -1599,7 +1715,9 @@ impl Gpu for WebGpu {
         if made {
             self.next_id = id;
         }
-        Ok(Raster(block))
+        let number = block.id;
+        self.objects.rasters.insert(number, HeldRaster(block));
+        Ok(Raster(number))
     }
 
     fn create_vertex_layout(&mut self, desc: &VertexLayoutDesc) -> Result<VertexLayout, GpuError> {
@@ -1627,7 +1745,11 @@ impl Gpu for WebGpu {
                 self.vertices.plans.insert(id, plan);
             }
         }
-        Ok(VertexLayout(block))
+        let number = block.id;
+        self.objects
+            .vertex_layouts
+            .insert(number, HeldVertexLayout(block));
+        Ok(VertexLayout(number))
     }
 
     fn create_binding_set(
@@ -1638,7 +1760,7 @@ impl Gpu for WebGpu {
     }
 
     fn binding_layout_key(&self, set: &BindingSet) -> BindingLayoutKey {
-        set.0.key
+        held(&self.objects.sets, set.0).map_or_else(BindingLayoutKey::default, |s| s.0.key)
     }
 
     fn create_query_set(&mut self, kind: QueryKind, count: u32) -> Result<QuerySet, GpuError> {
@@ -1673,7 +1795,8 @@ impl Gpu for WebGpu {
                 Vec::new()
             });
         }
-        Ok(QuerySet(Rc::new(QuerySetObj {
+        let number = self.id();
+        let made = HeldQuerySet(Rc::new(QuerySetObj {
             kind,
             count,
             pages: RefCell::new(pages),
@@ -1681,15 +1804,23 @@ impl Gpu for WebGpu {
             released: Default::default(),
             segments: Default::default(),
             free: RefCell::new(free),
-        })))
+        }));
+        self.objects.query_sets.insert(number, made);
+        Ok(QuerySet(number))
     }
 
     fn destroy(&mut self, object: Object<Self>) {
         let (serial, recording) = (self.serial, self.encoder.is_some());
         let pending = |used_in: u64| used_in == serial && recording;
+        // What the handle names leaves the table; work already recorded keeps its own hold on it.
         match object {
-            Object::Buffer(b) if b.0.in_arena => release_slice(self, &b.0),
             Object::Buffer(b) => {
+                let Some(b) = self.objects.buffers.remove(&b.0) else {
+                    return self.fail("destroy of a buffer destroyed before");
+                };
+                if b.0.in_arena {
+                    return release_slice(self, &b.0);
+                }
                 self.vertices.forget(b.0.id);
                 give_back_spares(self, &b.0);
                 let raw = b.0.raw.borrow().clone();
@@ -1700,6 +1831,9 @@ impl Gpu for WebGpu {
                 }
             }
             Object::Texture(t) => {
+                let Some(t) = self.objects.textures.remove(&t.0) else {
+                    return self.fail("destroy of a texture destroyed before");
+                };
                 give_back_texture_spares(self, &t.0);
                 if pending(t.0.used_in.get()) {
                     self.destroy_after_submit.push(Doomed::Texture(t.0.raw()));
@@ -1707,34 +1841,66 @@ impl Gpu for WebGpu {
                     t.0.raw().destroy();
                 }
             }
-            Object::Program(p) => self.caches.forget(p.0.id()),
+            Object::Program(p) => {
+                if let Some(p) = self.objects.programs.remove(&p.0) {
+                    self.caches.forget(p.0.id());
+                }
+            }
             Object::Blend(b) => {
-                if let Some(id) = self.blocks.blends.release(&b.0) {
+                let released = held(&self.objects.blends, b.0)
+                    .and_then(|held| self.blocks.blends.release(&held.0));
+                if let Some(id) = released {
+                    self.objects.blends.remove(&id);
                     self.caches.forget(id);
                 }
             }
             Object::DepthStencil(b) => {
-                if let Some(id) = self.blocks.depth_stencils.release(&b.0) {
+                let released = held(&self.objects.depth_stencils, b.0)
+                    .and_then(|held| self.blocks.depth_stencils.release(&held.0));
+                if let Some(id) = released {
+                    self.objects.depth_stencils.remove(&id);
                     self.caches.forget(id);
                 }
             }
             Object::Raster(b) => {
-                if let Some(id) = self.blocks.rasters.release(&b.0) {
+                let released = held(&self.objects.rasters, b.0)
+                    .and_then(|held| self.blocks.rasters.release(&held.0));
+                if let Some(id) = released {
+                    self.objects.rasters.remove(&id);
                     self.caches.forget(id);
                 }
             }
             Object::VertexLayout(b) => {
-                if let Some(id) = self.blocks.vertex_layouts.release(&b.0) {
+                let released = held(&self.objects.vertex_layouts, b.0)
+                    .and_then(|held| self.blocks.vertex_layouts.release(&held.0));
+                if let Some(id) = released {
+                    self.objects.vertex_layouts.remove(&id);
                     self.caches.forget(id);
                     self.vertices.forget_layout(id);
                 }
             }
-            Object::QuerySet(_)
-            | Object::TextureView(_)
-            | Object::Sampler(_)
-            | Object::Shader(_)
-            | Object::BindingSet(_)
-            | Object::Surface(_) => {}
+            Object::BindingSet(set) => {
+                if let Some(held) = held(&self.objects.sets, set.0)
+                    && held.0.release()
+                {
+                    self.objects.sets.remove(&set.0);
+                }
+            }
+            Object::QuerySet(q) => {
+                self.objects.query_sets.remove(&q.0);
+            }
+            Object::TextureView(v) => {
+                self.objects.views.remove(&v.0);
+            }
+            Object::Sampler(s) => {
+                self.objects.samplers.remove(&s.0);
+            }
+            Object::Shader(s) => {
+                self.objects.shaders.remove(&s.0);
+            }
+            Object::Surface(s) => {
+                self.objects.surfaces.remove(&s.0);
+            }
             Object::ResourceTable(t) => match t {},
         }
     }
@@ -1794,10 +1960,10 @@ impl Gpu for WebGpu {
                     .occlusion_set
                     .clone()
                     .expect("an occlusion pass has its set");
-                set.0.forget_segments(index);
+                set.forget_segments(index);
                 // A part on another page than the query's own begins it in a spare slot there.
                 let (own_page, own_slot) = QuerySetObj::own_slot(index);
-                if p.page != own_page && set.0.free.borrow()[p.page].is_empty() {
+                if p.page != own_page && set.free.borrow()[p.page].is_empty() {
                     split_onto_page(
                         self,
                         wcontainers_gpu::slow::SlowPath::QueriesSegmented,
@@ -1809,8 +1975,8 @@ impl Gpu for WebGpu {
                 let slot = match p.page {
                     page if page == own_page => own_slot,
                     page => {
-                        let slot = set.0.take(page).expect("the page has room");
-                        set.0.carry(index, page, slot, true);
+                        let slot = set.take(page).expect("the page has room");
+                        set.carry(index, page, slot, true);
                         slot
                     }
                 };
@@ -1961,21 +2127,28 @@ impl Gpu for WebGpu {
     }
 
     fn read_state(&mut self, readback: &Readback) -> ReadState {
-        if readback.0.state.load(Ordering::Acquire) == MAP_PENDING {
+        let Some(readback) = readback_of(self, readback) else {
+            self.fail(GONE);
+            return ReadState::Ready;
+        };
+        if readback.state.load(Ordering::Acquire) == MAP_PENDING {
             let _ = self.device.poll(wgpu::PollType::Poll);
         }
-        match readback.0.state.load(Ordering::Acquire) {
+        match readback.state.load(Ordering::Acquire) {
             MAP_PENDING => ReadState::Pending,
             _ => ReadState::Ready,
         }
     }
 
     fn wait_read(&mut self, readback: &Readback) {
-        let pending = readback.0.state.load(Ordering::Acquire) == MAP_PENDING;
-        if pending && readback.0.serial == self.serial {
+        let Some(readback) = readback_of(self, readback) else {
+            return self.fail(GONE);
+        };
+        let pending = readback.state.load(Ordering::Acquire) == MAP_PENDING;
+        if pending && readback.serial == self.serial {
             self.submit();
         }
-        let state = readback.0.state.clone();
+        let state = readback.state.clone();
         block_until(
             self,
             move || state.load(Ordering::Acquire) != MAP_PENDING,
@@ -1996,14 +2169,17 @@ impl Gpu for WebGpu {
             .windows
             .remove(&window)
             .ok_or(GpuError::Invalid("no window of that number was registered"))?;
-        Ok(Surface(Rc::new(SurfaceObj {
+        let number = self.id();
+        let made = HeldSurface(Rc::new(SurfaceObj {
             raw,
             current: RefCell::new(None),
             format: Cell::new(Format::Rgba8Unorm),
             config: RefCell::new(None),
             unshown: RefCell::new(None),
             stand_in: RefCell::new(None),
-        })))
+        }));
+        self.objects.surfaces.insert(number, made);
+        Ok(Surface(number))
     }
 
     fn configure_surface(
@@ -2014,6 +2190,7 @@ impl Gpu for WebGpu {
         height: u32,
         vsync: bool,
     ) -> Result<(), GpuError> {
+        let surface = surface_of(self, surface).ok_or(GpuError::Invalid(GONE))?;
         if !self.caps.formats.uses[format as usize].contains(FormatUse::PRESENT) {
             return Err(GpuError::Invalid("surface format without PRESENT"));
         }
@@ -2023,7 +2200,7 @@ impl Gpu for WebGpu {
         // is configured in an 8-bit format it shows so, the other byte order first, and frames are
         // drawn into a stand-in of the format: shown as sRGB values clipped to zero to one either
         // way.
-        let window = surface.0.raw.get_capabilities(&self.adapter);
+        let window = surface.raw.get_capabilities(&self.adapter);
         let takes = |f: &wgpu::TextureFormat| {
             window
                 .color_spaces(*f)
@@ -2044,7 +2221,7 @@ impl Gpu for WebGpu {
             other
         };
         let usage = wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_DST;
-        *surface.0.stand_in.borrow_mut() = (shown != raw).then(|| {
+        *surface.stand_in.borrow_mut() = (shown != raw).then(|| {
             self.device.create_texture(&wgpu::TextureDescriptor {
                 label: None,
                 size: wgpu::Extent3d {
@@ -2075,32 +2252,33 @@ impl Gpu for WebGpu {
             view_formats: vec![],
             color_space: wgpu::SurfaceColorSpace::Srgb,
         };
-        surface.0.raw.configure(&self.device, &config);
-        surface.0.format.set(format);
-        *surface.0.config.borrow_mut() = Some(config);
-        *surface.0.unshown.borrow_mut() = None;
+        surface.raw.configure(&self.device, &config);
+        surface.format.set(format);
+        *surface.config.borrow_mut() = Some(config);
+        *surface.unshown.borrow_mut() = None;
         Ok(())
     }
 
     fn current_texture(&mut self, surface: &Surface) -> Result<TextureView, GpuError> {
-        let config = surface.0.config.borrow().clone().ok_or(GpuError::Invalid(
+        let surface = surface_of(self, surface).ok_or(GpuError::Invalid(GONE))?;
+        let config = surface.config.borrow().clone().ok_or(GpuError::Invalid(
             "current_texture before configure_surface",
         ))?;
         use wgpu::CurrentSurfaceTexture as C;
-        let mut got = surface.0.raw.get_current_texture();
+        let mut got = surface.raw.get_current_texture();
         if matches!(got, C::Outdated) {
             // The window changed under the configuration: configure it again as it was.
-            surface.0.raw.configure(&self.device, &config);
-            got = surface.0.raw.get_current_texture();
+            surface.raw.configure(&self.device, &config);
+            got = surface.raw.get_current_texture();
         }
         let (texture, width, height) = match got {
             C::Success(t) | C::Suboptimal(t) => {
-                let view = match &*surface.0.stand_in.borrow() {
+                let view = match &*surface.stand_in.borrow() {
                     Some(s) => s.create_view(&Default::default()),
                     None => t.texture.create_view(&Default::default()),
                 };
                 let size = (t.texture.width(), t.texture.height());
-                *surface.0.current.borrow_mut() = Some(Frame::Shown(t));
+                *surface.current.borrow_mut() = Some(Frame::Shown(t));
                 (view, size.0, size.1)
             }
             // The window shows nothing now, as a real swap chain's occluded window: the frame is
@@ -2108,7 +2286,6 @@ impl Gpu for WebGpu {
             C::Timeout | C::Occluded | C::Outdated => {
                 let device = &self.device;
                 let view = surface
-                    .0
                     .unshown
                     .borrow_mut()
                     .get_or_insert_with(|| {
@@ -2122,14 +2299,14 @@ impl Gpu for WebGpu {
                             mip_level_count: 1,
                             sample_count: 1,
                             dimension: wgpu::TextureDimension::D2,
-                            format: convert::texture_format(surface.0.format.get())
+                            format: convert::texture_format(surface.format.get())
                                 .expect("configured"),
                             usage: config.usage,
                             view_formats: &[],
                         })
                     })
                     .create_view(&Default::default());
-                *surface.0.current.borrow_mut() = Some(Frame::Unshown);
+                *surface.current.borrow_mut() = Some(Frame::Unshown);
                 (view, config.width, config.height)
             }
             C::Lost => {
@@ -2146,29 +2323,32 @@ impl Gpu for WebGpu {
                 return Err(GpuError::DeviceLost);
             }
         };
-        Ok(TextureView(Rc::new(ViewObj {
-            id: self.id(),
-            format: surface.0.format.get(),
+        let number = self.id();
+        let made = HeldView(Rc::new(ViewObj {
+            id: number,
+            format: surface.format.get(),
             texture: None,
             views: RefCell::new((texture.clone(), texture)),
             desc: None,
             made_for: Cell::new(0),
-            format_usages: self.usages[surface.0.format.get() as usize],
+            format_usages: self.usages[surface.format.get() as usize],
             width,
             height,
             samples: 1,
             three_d: false,
-        })))
+        }));
+        self.objects.views.insert(number, made);
+        Ok(TextureView(number))
     }
 
     fn present(&mut self, surface: &Surface) -> Result<(), GpuError> {
+        let surface = surface_of(self, surface).ok_or(GpuError::Invalid(GONE))?;
         let frame = surface
-            .0
             .current
             .borrow_mut()
             .take()
             .ok_or(GpuError::Invalid("present without current_texture"))?;
-        if let (Frame::Shown(t), Some(s)) = (&frame, &*surface.0.stand_in.borrow()) {
+        if let (Frame::Shown(t), Some(s)) = (&frame, &*surface.stand_in.borrow()) {
             present_by_draw(self, s, &t.texture);
         }
         self.submit();
@@ -2201,10 +2381,11 @@ impl Gpu for WebGpu {
     }
 
     fn write_timestamp(&mut self, set: &QuerySet, index: u32) -> Result<(), GpuError> {
+        let set = query_set_of(self, set).ok_or(GpuError::Invalid(GONE))?;
         if !self.caps.features.contains(Features::TIMESTAMPS) {
             return Err(GpuError::Absent(Features::TIMESTAMPS));
         }
-        if set.0.kind != QueryKind::Timestamp || index >= set.0.count {
+        if set.kind != QueryKind::Timestamp || index >= set.count {
             return Err(GpuError::Invalid("a timestamp outside a timestamp set"));
         }
         if self.pass.is_some() {
@@ -2213,7 +2394,7 @@ impl Gpu for WebGpu {
         // WebGPU writes timestamps where passes begin and end: an empty compute pass carries it,
         // written once the work recorded before it is done.
         let (page, slot) = QuerySetObj::own_slot(index);
-        let raw = set.0.page(page);
+        let raw = set.page(page);
         self.encoder()
             .begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: None,

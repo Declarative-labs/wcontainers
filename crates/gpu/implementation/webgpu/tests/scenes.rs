@@ -129,13 +129,13 @@ fn pipelines_and_bind_groups_are_cached() {
     let first = draw::prepare(&mut b, Scene::Quads, Twist::None).unwrap();
     let again = draw::prepare(&mut b, Scene::Quads, Twist::None).unwrap();
     assert!(
-        first.blend == again.blend
-            && first.depth_stencil == again.depth_stencil
-            && first.raster == again.raster
-            && first.vertex_layout == again.vertex_layout,
+        first.blend.0 == again.blend.0
+            && first.depth_stencil.0 == again.depth_stencil.0
+            && first.raster.0 == again.raster.0
+            && first.vertex_layout.0 == again.vertex_layout.0,
         "equal blocks made twice must be one block"
     );
-    assert!(first.program != again.program);
+    assert!(first.program.0 != again.program.0);
     let t = draw::targets(&mut b, Some(wcontainers_gpu::format::Format::Depth32Float)).unwrap();
     let before = *b.counters();
     draw::begin(&mut b, &t, true);

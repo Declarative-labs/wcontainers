@@ -13,6 +13,7 @@
 
 use crate::fill::convert_by_draw;
 use crate::memory::{copy_buffer_texture, copy_texture_impl, write_texels};
+use crate::{GONE, forget_texture, texture_of};
 use wcontainers_gpu::{
     Gpu, format::FORMAT_FACTS, format::Format, resource::CopyBufferTexture, resource::Extent,
     resource::Origin, resource::TextureDesc, resource::TextureDimension, resource::TextureRegion,
@@ -447,7 +448,10 @@ pub(crate) fn write_packed(
     rows_per_layer: u32,
     mode: WriteMode,
 ) {
-    let format = region.texture.0.desc.format;
+    let Some(t) = texture_of(gpu, region.texture) else {
+        return gpu.fail(GONE);
+    };
+    let format = t.desc.format;
     if !region
         .origin
         .x
@@ -492,7 +496,10 @@ fn first_slice(
     region: &TextureRegion<'_, WebGpu>,
     extent: Extent,
 ) -> Option<u32> {
-    let t = &region.texture.0;
+    let Some(t) = texture_of(gpu, region.texture) else {
+        gpu.fail(GONE);
+        return None;
+    };
     if !region
         .origin
         .x
@@ -551,7 +558,9 @@ fn convert_region(
     extent: Extent,
     into: bool,
 ) {
-    let t = &region.texture.0;
+    let (Some(t), Some(staged)) = (texture_of(gpu, region.texture), texture_of(gpu, staged)) else {
+        return gpu.fail(GONE);
+    };
     t.used_in.set(gpu.serial);
     let held = (
         &t.raw(),
@@ -559,7 +568,7 @@ fn convert_region(
         first,
         [region.origin.x, region.origin.y],
     );
-    convert_by_draw(gpu, t.desc.format, into, held, &staged.0.raw(), extent);
+    convert_by_draw(gpu, t.desc.format, into, held, &staged.raw(), extent);
 }
 
 /// Texels of `format` one copy through a texture of raw blocks spans: whole blocks whose raw
@@ -587,7 +596,10 @@ pub(crate) fn copy_buffer_packed(
     extent: Extent,
     to_texture: bool,
 ) {
-    let format = region.texture.0.desc.format;
+    let Some(t) = texture_of(gpu, region.texture) else {
+        return gpu.fail(GONE);
+    };
+    let format = t.desc.format;
     let run = raw_run(gpu, format);
     let mut x = 0;
     while x < extent.width {
@@ -614,7 +626,10 @@ fn copy_buffer_packed_run(
     if extent.width == 0 || extent.height == 0 || extent.depth_or_layers == 0 {
         return;
     }
-    let format = region.texture.0.desc.format;
+    let Some(t) = texture_of(gpu, region.texture) else {
+        return gpu.fail(GONE);
+    };
+    let format = t.desc.format;
     let Some(first) = first_slice(gpu, region, extent) else {
         return;
     };
@@ -633,6 +648,7 @@ fn copy_buffer_packed_run(
         convert_region(gpu, region, first, &staged, extent, false);
         copy_buffer_texture(gpu, buffer, &at, blocks, false);
     }
+    forget_texture(gpu, &staged);
 }
 
 /// A copy between textures of different formats of equal blocks of which one is converted, on
@@ -645,7 +661,10 @@ pub(crate) fn copy_packed(
     dst: &TextureRegion<'_, WebGpu>,
     extent: Extent,
 ) {
-    let (sf, df) = (src.texture.0.desc.format, dst.texture.0.desc.format);
+    let (Some(s), Some(d)) = (texture_of(gpu, src.texture), texture_of(gpu, dst.texture)) else {
+        return gpu.fail(GONE);
+    };
+    let (sf, df) = (s.desc.format, d.desc.format);
     if FORMAT_FACTS[sf as usize].block != FORMAT_FACTS[df as usize].block {
         return gpu.fail("a copy between a converted format and one of another texel size");
     }
@@ -669,7 +688,10 @@ fn copy_packed_run(
     dst: &TextureRegion<'_, WebGpu>,
     extent: Extent,
 ) {
-    let (sf, df) = (src.texture.0.desc.format, dst.texture.0.desc.format);
+    let (Some(s), Some(d)) = (texture_of(gpu, src.texture), texture_of(gpu, dst.texture)) else {
+        return gpu.fail(GONE);
+    };
+    let (sf, df) = (s.desc.format, d.desc.format);
     if extent.width == 0 || extent.height == 0 || extent.depth_or_layers == 0 {
         return;
     }
@@ -702,6 +724,7 @@ fn copy_packed_run(
     } else {
         copy_texture_impl(gpu, &at, dst, extent);
     }
+    forget_texture(gpu, &staged);
 }
 
 /// `region` moved `x` texels to the right.
