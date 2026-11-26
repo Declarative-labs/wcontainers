@@ -1,7 +1,8 @@
 //! The suite's guests on ARM64, stopped as the ARM64 architecture crate defines a stop.
 
 use wcontainers_abi::{
-    Access, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER, SystemCallRequest,
+    Access, SYSTEM_CALL_ARGUMENT_COUNT, SYSTEM_CALL_NUMBER_REGISTER, SystemCallNumber,
+    SystemCallRequest,
 };
 use wcontainers_processor_architecture_arm64::encoding::{
     Field, FixedBits, IMM12, IMM16, RD, RN, RT,
@@ -26,6 +27,9 @@ const ADDRESS_REGISTER: u32 = FIRST_ARGUMENT_REGISTER;
 const COUNTER_REGISTER: u32 = FIRST_ARGUMENT_REGISTER;
 /// The register of the value a guest stores or loads, the one after the address's.
 const VALUE_REGISTER: u32 = ADDRESS_REGISTER + 1;
+/// The register of the address a guest loads from after a store, the one after the value's, and of what it loads.
+const LOAD_ADDRESS_REGISTER: u32 = VALUE_REGISTER + 1;
+const LOADED_REGISTER: u32 = LOAD_ADDRESS_REGISTER + 1;
 /// The immediate of every system call, breakpoint and undefined instruction of the guests.
 const IMMEDIATE: u16 = u16::MIN;
 /// What the counting guest takes from its count each time round.
@@ -116,6 +120,42 @@ pub(crate) fn build_load(code: u64, address: u64, value: u64) -> Guest<Chip> {
         | RT.to_bits(VALUE_REGISTER)
         | RN.to_bits(ADDRESS_REGISTER);
     end_at_breakpoint(&[load], start, loaded)
+}
+
+/// Returns a guest that stores the 64-bit value at one address, makes the system call if one is given, loads 64 bits
+/// from the other address and reaches a breakpoint, finished as if it loaded the value and the call returned its value.
+pub(crate) fn build_store_then_load(
+    code: u64,
+    stored_at: u64,
+    loaded_from: u64,
+    value: u64,
+    call: Option<(SystemCallNumber, u64)>,
+) -> Guest<Chip> {
+    let mut start = start_at(code);
+    start.general_purpose_registers[ADDRESS_REGISTER as usize] = stored_at;
+    start.general_purpose_registers[VALUE_REGISTER as usize] = value;
+    start.general_purpose_registers[LOAD_ADDRESS_REGISTER as usize] = loaded_from;
+    let mut loaded = start.clone();
+    loaded.general_purpose_registers[LOADED_REGISTER as usize] = value;
+    let store = Instruction::StrImmediateUnsignedOffset64
+        .to_fixed_bits()
+        .value
+        | RT.to_bits(VALUE_REGISTER)
+        | RN.to_bits(ADDRESS_REGISTER);
+    let load = Instruction::LdrImmediateUnsignedOffset64
+        .to_fixed_bits()
+        .value
+        | RT.to_bits(LOADED_REGISTER)
+        | RN.to_bits(LOAD_ADDRESS_REGISTER);
+    let mut instructions = vec![store];
+    if let Some((number, returned)) = call {
+        start.general_purpose_registers[SYSTEM_CALL_NUMBER_REGISTER] = number.0;
+        loaded.general_purpose_registers[SYSTEM_CALL_NUMBER_REGISTER] = number.0;
+        loaded.general_purpose_registers[RESULT_REGISTER as usize] = returned;
+        instructions.push(SUPERVISOR_CALL.value | IMM16.to_bits(u32::from(IMMEDIATE)));
+    }
+    instructions.push(load);
+    end_at_breakpoint(&instructions, start, loaded)
 }
 
 /// Returns a guest whose only instruction is an undefined one.

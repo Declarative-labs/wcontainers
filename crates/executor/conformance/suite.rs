@@ -253,6 +253,42 @@ where
     outcome
 }
 
+/// Checks that an executor, its guest memory, its page table and its interrupter may move to another thread, as the
+/// kernel's runners move them: the bounds fail the build of an executor that may not, and a guest then runs there.
+pub fn executor_and_its_memory_move_between_threads<Chip>(executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip> + Send,
+    Chip::GuestMemory: Send,
+    PageTableOf<Chip>: Send,
+    Chip::Interrupter: Send,
+{
+    let (memory, mut table) = create_memory(&executor);
+    let store = arm64::build_store(CODE, DATA, STORED);
+    let (stopped, finished) = thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let mut executor = executor;
+                place(&memory, &mut table, &store);
+                assert_eq!(table.set_permissions(page(DATA), DATA_PERMISSIONS), Ok(()));
+                let mut handler = Recorder::new(None, None::<(&mut PageTableOf<Chip>, _)>);
+                let stopped = execute(&mut executor, store.start.clone(), &memory, &mut handler);
+                handler.assert_no_trap();
+                assert_eq!(
+                    read_bytes(&memory, DATA..DATA + WORD),
+                    STORED.to_le_bytes(),
+                    "the bytes the store on another thread left"
+                );
+                (stopped, store.finished)
+            })
+            .join()
+            .expect("the executor ran on another thread")
+    });
+    assert_eq!(
+        stopped, finished,
+        "the state the store on another thread returned"
+    );
+}
+
 /// Checks that a system call answered with a value goes on after the call with the value in the result register.
 pub fn system_call_answered_return_goes_on_with_the_value<Chip>(mut executor: Chip)
 where
@@ -712,6 +748,55 @@ where
         STORED.to_le_bytes(),
         "the bytes the guest's store left"
     );
+}
+
+/// Checks that where a space maps one page of another twice, a guest's store through either view is what a load
+/// through the other finds, right after it and after a system call between them.
+pub fn two_views_of_one_page_show_each_store<Chip>(mut executor: Chip)
+where
+    Chip: Executor<Architecture = arm64::Chip>,
+{
+    let views = [(DATA, MAPPED), (MAPPED, DATA)];
+    let calls = [None, Some((REQUEST.number, RETURNED))];
+    for ((stored_at, loaded_from), call) in views
+        .into_iter()
+        .flat_map(|view| calls.map(|call| (view, call)))
+    {
+        let (block, block_table) = create_memory(&executor);
+        let (viewing, mut viewing_table) = create_memory(&executor);
+        write_bytes(&block, DATA, &pattern(FIRST_PATTERN, length(&page(DATA))));
+        for view in [DATA, MAPPED] {
+            assert_eq!(
+                viewing_table.map_from(page(view), &block_table, DATA),
+                Ok(())
+            );
+            assert_eq!(
+                viewing_table.set_permissions(page(view), DATA_PERMISSIONS),
+                Ok(())
+            );
+        }
+        let guest = arm64::build_store_then_load(CODE, stored_at, loaded_from, STORED, call);
+        place(&viewing, &mut viewing_table, &guest);
+        let returned = call.map(|(_, returned)| returned);
+        let mut handler = Recorder::new(returned, None::<(&mut PageTableOf<Chip>, _)>);
+        let stopped = execute(&mut executor, guest.start.clone(), &viewing, &mut handler);
+        assert!(
+            handler.memory_faults.is_empty(),
+            "the handler was given memory faults: {:?}",
+            handler.memory_faults
+        );
+        assert_eq!(
+            stopped,
+            guest.finished,
+            "the state after a store at {stored_at:#x} and a load at {loaded_from:#x}, a system call between: {}",
+            call.is_some()
+        );
+        assert_eq!(
+            read_bytes(&block, DATA..DATA + WORD),
+            STORED.to_le_bytes(),
+            "the bytes the guest's store left in the mapped page"
+        );
+    }
 }
 
 /// Checks that an unmapped page reads as zeros, not shared any more, while the other space keeps its bytes.
@@ -1274,6 +1359,11 @@ macro_rules! tests {
         }
 
         #[test]
+        fn executor_and_its_memory_move_between_threads() {
+            $crate::executor_and_its_memory_move_between_threads($executor);
+        }
+
+        #[test]
         fn system_call_answered_return_goes_on_with_the_value() {
             $crate::system_call_answered_return_goes_on_with_the_value($executor);
         }
@@ -1346,6 +1436,11 @@ macro_rules! tests {
         #[test]
         fn map_from_shares_the_bytes_both_ways() {
             $crate::map_from_shares_the_bytes_both_ways($executor);
+        }
+
+        #[test]
+        fn two_views_of_one_page_show_each_store() {
+            $crate::two_views_of_one_page_show_each_store($executor);
         }
 
         #[test]

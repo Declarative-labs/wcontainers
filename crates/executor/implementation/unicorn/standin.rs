@@ -254,15 +254,6 @@ impl StandIn {
             .call(move |engine| std::mem::take(&mut engine.machine(key).refused))
     }
 
-    /// Adds what the stand-in of a copy made at a save refused, which the copy reported as it
-    /// ended, so they fail the test as this stand-in goes, as its own refusals do.
-    #[cfg(all(feature = "harness", not(feature = "runtime")))]
-    pub(crate) fn refused_in_a_copy(&mut self, refused: Vec<Refused>) {
-        let key = self.key;
-        self.engine
-            .call(move |engine| engine.machine(key).refused.extend(refused));
-    }
-
     /// Runs a thread until it comes back, as a driver does after [`wcontainers_abi::Next::Run`]. With a
     /// slice, the stop flag is raised after that many instructions (one a nanosecond), so where a
     /// turn ends repeats exactly; on the machine's clock, also once that many nanoseconds passed.
