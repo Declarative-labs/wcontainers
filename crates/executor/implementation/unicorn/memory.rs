@@ -3,6 +3,7 @@
 //! Unicorn owns the bytes of the pages it maps; a page that allows nothing is not mapped, so it faults by being absent,
 //! and its bytes wait in host memory. A range that shows shared pages reads and writes them in host memory between
 //! turns; unicorn holds a copy for a turn, taken before it when the shared pages changed and given back after it.
+//! Where two ranges of one space show the same shared bytes, a store hook copies each guest store to the other.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -14,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use memmap2::MmapMut;
 use unicorn_engine::{
     Arch, Arm64CpuModel, Context, HookType, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP,
-    Unicorn, uc_error,
+    UcHookId, Unicorn, uc_error,
 };
 use wcontainers_abi::{
     Access, CpuError, Exit, PAGE_SIZE, Permissions, RegisterBlock, SYSTEM_CALL_ARGUMENT_COUNT,
@@ -92,6 +93,66 @@ pub(crate) struct Stopped {
     deadline: Option<coarsetime::Instant>,
     /// Raised from another thread to end the turn at the next block.
     interrupt: Option<Arc<AtomicBool>>,
+    /// The ranges that show shared pages another range of the same space shows, for the store hook to keep alike.
+    views: Vec<View>,
+}
+
+/// A range of a space that shows shared pages another of its ranges shows too, so a store to one is copied to the other.
+#[derive(Clone)]
+struct View {
+    addresses: Range<u64>,
+    /// Where in the shared pages the range's start lies.
+    offset: u64,
+    /// Which shared pages, the same number for every range that shows the same ones.
+    pages: usize,
+    /// Whether the guest may store to the range, so a store hooked there takes place.
+    writable: bool,
+}
+
+/// The most bytes one guest store moves, which QEMU hands its store hook as one value.
+const LARGEST_STORE: usize = size_of::<u64>();
+
+/// Copies the bytes a guest store is about to write through one view to every other view of the same shared bytes.
+///
+/// Unicorn calls its store hook before the store, with the value, and a write through its interface also drops what it
+/// translated from the bytes written, so code run through another view is the code stored.
+fn copy_store_to_other_views(
+    unicorn: &mut Unicorn<'_, Stopped>,
+    address: u64,
+    size: usize,
+    value: i64,
+) {
+    let stored = value.to_le_bytes();
+    let count = size.min(LARGEST_STORE);
+    let store = address..address.saturating_add(count as u64);
+    let mut copies = Vec::new();
+    let views = &unicorn.get_data().views;
+    for source in views.iter().filter(|view| view.writable) {
+        let cut = store.start.max(source.addresses.start)..store.end.min(source.addresses.end);
+        if cut.is_empty() {
+            continue;
+        }
+        let shared = source.offset + (cut.start - source.addresses.start)
+            ..source.offset + (cut.end - source.addresses.start);
+        for target in views
+            .iter()
+            .filter(|view| view.pages == source.pages && view.addresses != source.addresses)
+        {
+            let shown =
+                target.offset..target.offset + (target.addresses.end - target.addresses.start);
+            let both = shared.start.max(shown.start)..shared.end.min(shown.end);
+            if both.is_empty() {
+                continue;
+            }
+            let first = to_index(both.start - shared.start + (cut.start - store.start));
+            let bytes = stored[first..first + to_index(both.end - both.start)].to_vec();
+            copies.push((target.addresses.start + (both.start - target.offset), bytes));
+        }
+    }
+    for (at, bytes) in copies {
+        // A view whose pages allow nothing is not mapped, and takes the bytes when it is mapped again.
+        let _ = unicorn.mem_write(at, &bytes);
+    }
 }
 
 /// Pages that may hold something other than zeros, one bit each.
@@ -258,6 +319,8 @@ pub(crate) struct Memory {
     counting: bool,
     /// Where its address space ends.
     end: u64,
+    /// The store hook that keeps several views of the same shared bytes alike, while the space has such views.
+    view_hook: Option<UcHookId>,
 }
 
 impl Memory {
@@ -329,6 +392,7 @@ impl Memory {
             touched: TouchedPages::new(end / PAGE_SIZE),
             counting: false,
             end,
+            view_hook: None,
         })
     }
 
@@ -898,12 +962,109 @@ impl Memory {
                 }
             }
         }
+        // Unicorn's copy of a range another range shows too may lack a store the hook did not see, such as DC ZVA's,
+        // so it is taken again before the next turn.
+        let overlapping = self.list_overlapping();
+        let stale: Vec<u64> = overlapping
+            .into_iter()
+            .filter(|start| {
+                written
+                    .iter()
+                    .any(|(pages, _, _)| Rc::ptr_eq(pages, &self.shared[start].pages))
+            })
+            .collect();
         for (pages, offset, bytes) in written {
             pages.write(offset, &bytes);
         }
-        for shown in self.shared.values_mut() {
-            shown.synced = Some(shown.pages.version.get());
+        for (start, shown) in &mut self.shared {
+            shown.synced = (!stale.contains(start)).then(|| shown.pages.version.get());
         }
+    }
+
+    /// Returns the starts of the shared ranges whose shared bytes another shared range of the space shows too.
+    fn list_overlapping(&self) -> Vec<u64> {
+        let ranges: Vec<(u64, &Shown)> = self
+            .shared
+            .iter()
+            .map(|(start, shown)| (*start, shown))
+            .collect();
+        ranges
+            .iter()
+            .filter(|range| ranges.iter().any(|other| shows_same_bytes(range, other)))
+            .map(|(start, _)| *start)
+            .collect()
+    }
+
+    /// Returns the views the store hook keeps alike: the shared ranges that show bytes another shows, cut where the
+    /// pages' permission to store changes.
+    fn list_views(&self) -> Vec<View> {
+        let overlapping = self.list_overlapping();
+        let mut groups: Vec<Rc<SharedPages>> = Vec::new();
+        let mut views = Vec::new();
+        for start in overlapping {
+            let shown = &self.shared[&start];
+            let pages = match groups
+                .iter()
+                .position(|group| Rc::ptr_eq(group, &shown.pages))
+            {
+                Some(group) => group,
+                None => {
+                    groups.push(Rc::clone(&shown.pages));
+                    groups.len() - 1
+                }
+            };
+            let mut at = start;
+            while at < shown.end {
+                let writable = self.read_permissions(at).contains(Permissions::WRITE);
+                let mut end = (at / PAGE_SIZE + 1) * PAGE_SIZE;
+                while end < shown.end
+                    && self.read_permissions(end).contains(Permissions::WRITE) == writable
+                {
+                    end += PAGE_SIZE;
+                }
+                let end = end.min(shown.end);
+                views.push(View {
+                    addresses: at..end,
+                    offset: shown.offset + (at - start),
+                    pages,
+                    writable,
+                });
+                at = end;
+            }
+        }
+        views
+    }
+
+    /// Adds the store hook that copies stores between views, or removes it, and drops what unicorn translated: its
+    /// translations call the hook only if it was there as they were made, and a store with no hook is faster.
+    fn hook_views(&mut self, hooked: bool) {
+        if hooked == self.view_hook.is_some() {
+            return;
+        }
+        match self.view_hook.take() {
+            Some(hook) => self
+                .unicorn
+                .remove_hook(hook)
+                .expect("removing the store hook"),
+            None => {
+                let hook = self
+                    .unicorn
+                    .add_mem_hook(
+                        HookType::MEM_WRITE,
+                        1,
+                        0,
+                        |unicorn, _, address, size, value| {
+                            copy_store_to_other_views(unicorn, address, size, value);
+                            true
+                        },
+                    )
+                    .expect("adding the store hook");
+                self.view_hook = Some(hook);
+            }
+        }
+        self.unicorn
+            .ctl_flush_tb()
+            .expect("flushing unicorn's translated blocks");
     }
 
     /// Writes the registers into unicorn over whatever else its CPU holds.
@@ -974,9 +1135,12 @@ impl Memory {
         self.copy_shared_in();
         self.load_registers(registers)
             .expect("loading registers into unicorn");
+        let views = self.list_views();
+        self.hook_views(!views.is_empty());
         *self.unicorn.get_data_mut() = Stopped {
             deadline,
             interrupt,
+            views,
             ..Stopped::default()
         };
         let count = slice_nanoseconds.map_or(UNICORN_NO_LIMIT, |nanoseconds| {
@@ -1110,6 +1274,14 @@ impl Memory {
             }
         })
     }
+}
+
+/// Returns whether two shared ranges of a space, each with its start, show some of the same shared bytes.
+fn shows_same_bytes((start, shown): &(u64, &Shown), (other_start, other): &(u64, &Shown)) -> bool {
+    start != other_start
+        && Rc::ptr_eq(&shown.pages, &other.pages)
+        && shown.offset < other.offset + (other.end - other_start)
+        && other.offset < shown.offset + (shown.end - start)
 }
 
 /// Returns each run of bytes that differs between two copies of a page, with its place in the page.

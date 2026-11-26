@@ -750,7 +750,8 @@ where
             handler.memory_faults
         );
         assert_eq!(
-            stopped, guest.finished,
+            stopped,
+            guest.finished,
             "the state after a store at {stored_at:#x} and a load at {loaded_from:#x}, a system call between: {}",
             call.is_some()
         );
