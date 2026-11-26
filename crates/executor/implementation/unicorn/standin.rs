@@ -1,7 +1,8 @@
 //! The stand-in CPU: the unicorn-engine ARM64 emulator behind the owner's [`Executor`] and the abi's [`Cpu`] trait.
 //!
-//! Each memory is one unicorn instance, because a unicorn instance is one address space ([`crate::memory`]). A unicorn
-//! instance stays on the host thread that made it, so neither the stand-in nor its spaces move between threads.
+//! Each memory is one unicorn instance, because a unicorn instance is one address space ([`crate::memory`]). Every
+//! unicorn instance of a stand-in lives on its engine's host thread ([`crate::engine`]): the stand-in and its spaces
+//! are handles that may move between threads, and its memories, threads and blocks are its [`Machine`] there.
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Ready;
@@ -15,10 +16,10 @@ use wcontainers_abi::{
     Resume, SharedId, SystemCallRequest, ThreadId,
 };
 use wcontainers_behavior_source::BehaviorSource;
-use wcontainers_executor::memory_space::{MemorySpace, PageTable};
+use wcontainers_executor::memory_space::MemorySpace;
 use wcontainers_executor::{
     Execution, ExecutionInterrupter, ExecutionStop, Executor, InterruptResponse,
-    MemoryFaultResponse, SystemCallResponse, TrapHandler,
+    MemoryFaultResponse, PerThreadWatch, SystemCallResponse, TrapHandler,
 };
 use wcontainers_processor_architecture::{
     MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
@@ -27,11 +28,12 @@ use wcontainers_processor_architecture_arm64::encoding::{IMM16, RN};
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
 use wcontainers_processor_architecture_arm64::{
     AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, ExclusiveMonitor, FaultStatus,
-    INSTRUCTION_SIZE, InstructionFetch, PagePermission, Processor, User,
+    INSTRUCTION_SIZE, InstructionFetch, PagePermission, Processor, User, WaitInstruction,
 };
 use wcontainers_volatile_bytes::VolatileBytes;
 
-use crate::memory::{Memory, ONE_INSTRUCTION, SharedPages};
+use crate::engine::EngineHandle;
+use crate::memory::{Memory, Predicates, SharedPages};
 use crate::space::{UnicornPageTable, UnicornSpace};
 
 /// A process's address space on a host with 32 bit memories.
@@ -58,7 +60,23 @@ pub enum Unsupported {
         result: Result<(), uc_error>,
         exception: Option<u32>,
     },
+    /// The emulator ends the whole host process on this instruction word instead of raising an exception, so the
+    /// stand-in does not run it.
+    EmulatorAborts { pc: u64, word: u32 },
+    /// A system instruction stopped as undefined, which is either undefined or trapped to EL1: unicorn gives no
+    /// syndrome to tell them apart.
+    TrapOrUndefined { pc: u64, word: u32 },
+    /// The state names memory past the end of the stand-in's spaces.
+    BeyondSpace { end: u64 },
+    /// A data access to a tagged address whose untagged page allows it: Linux ignores the top byte of a data address
+    /// (TCR_EL1.TBI0) and unicorn does not, so the access faulted where Linux's does not.
+    TaggedAccess { pc: u64, address: u64 },
+    /// A branch to a tagged address, whose top byte Linux's branch handles and unicorn's keeps.
+    TaggedBranch { pc: u64, target: u64 },
 }
+
+/// The bits of an address below its tag, the top byte a program's data addresses carry on Linux.
+const UNTAGGED: u64 = (1 << 56) - 1;
 
 /// A request of the kernel's that breaks the [`Cpu`] contract, which the stand-in refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -79,18 +97,25 @@ struct Thread {
 #[cfg(feature = "harness")]
 impl crate::replay::DigestMemories for StandIn {
     fn keep_digests(&mut self) {
-        self.digests.get_or_insert_default();
+        let key = self.key;
+        self.engine.call(move |engine| {
+            engine.machine(key).digests.get_or_insert_default();
+        });
     }
 
     fn digests(&mut self) -> crate::replay::MemoryDigests {
-        let mut digests = self.digests.clone().unwrap_or_default();
-        let mut left: Vec<MemoryId> = self.memories.keys().copied().collect();
-        left.sort();
-        for memory in left {
-            let digest = digest(&self.memories[&memory]);
-            digests.push((memory, digest));
-        }
-        digests
+        let key = self.key;
+        self.engine.call(move |engine| {
+            let machine = engine.machine(key);
+            let mut digests = machine.digests.clone().unwrap_or_default();
+            let mut left: Vec<MemoryId> = machine.memories.keys().copied().collect();
+            left.sort();
+            for memory in left {
+                let digest = digest(&machine.memories[&memory]);
+                digests.push((memory, digest));
+            }
+            digests
+        })
     }
 }
 
@@ -115,8 +140,21 @@ fn digest(memory: &Memory) -> u64 {
     )
 }
 
-/// The stand-in CPU side.
+/// The stand-in CPU side: a handle to its machine on its engine's thread.
 pub struct StandIn {
+    engine: EngineHandle,
+    /// The key of its machine on the engine.
+    key: u64,
+    /// Where every memory's address space ends.
+    end: u64,
+    /// How many instructions the last turn ran, about: whole blocks are counted.
+    pub last_instructions: u64,
+    /// Whether the kernel's clock is the machine's, so a slice is also a span of it.
+    wall_clock: bool,
+}
+
+/// The memories, threads and blocks of a stand-in, on its engine's thread.
+pub(crate) struct Machine {
     /// Where every memory's address space ends.
     end: u64,
     memories: HashMap<MemoryId, Memory>,
@@ -127,10 +165,6 @@ pub struct StandIn {
     last_memory: u32,
     last_thread: u32,
     last_block: u32,
-    /// How many instructions the last turn ran, about: whole blocks are counted.
-    pub last_instructions: u64,
-    /// Whether the kernel's clock is the machine's, so a slice is also a span of it.
-    wall_clock: bool,
     /// What each memory held as it was dropped, once asked for.
     #[cfg(feature = "harness")]
     digests: Option<crate::replay::MemoryDigests>,
@@ -140,11 +174,16 @@ pub struct StandIn {
 /// unless the test took the refusal ([`StandIn::take_refused`]) or is failing already.
 impl Drop for StandIn {
     fn drop(&mut self) {
-        if !self.refused.is_empty() && !std::thread::panicking() {
-            panic!(
-                "the stand-in refused the kernel's requests (abi/cpu.rs): {:?}",
-                self.refused
-            );
+        let key = self.key;
+        let refused = self.engine.call(move |engine| {
+            engine
+                .machines
+                .remove(&key)
+                .map(|machine| machine.refused)
+                .unwrap_or_default()
+        });
+        if !refused.is_empty() && !std::thread::panicking() {
+            panic!("the stand-in refused the kernel's requests (abi/cpu.rs): {refused:?}");
         }
     }
 }
@@ -155,21 +194,28 @@ impl StandIn {
         Self::with_space(SPACE_32_BIT)
     }
 
-    /// A CPU side whose memories' address spaces end at `end`.
+    /// A CPU side whose memories' address spaces end at `end`, on an engine of its own.
     pub fn with_space(end: u64) -> Self {
+        Self::on_engine(EngineHandle::start(), end, Machine::new)
+    }
+
+    /// A CPU side on the engine with the machine `make` makes there.
+    fn on_engine(
+        engine: EngineHandle,
+        end: u64,
+        make: impl FnOnce(u64) -> Machine + Send + 'static,
+    ) -> Self {
+        let key = engine.call(move |engine| {
+            let key = engine.take_key();
+            engine.machines.insert(key, make(end));
+            key
+        });
         Self {
+            engine,
+            key,
             end,
-            memories: HashMap::new(),
-            threads: HashMap::new(),
-            blocks: HashMap::new(),
-            refused: Vec::new(),
-            last_memory: 0,
-            last_thread: 0,
-            last_block: 0,
             last_instructions: 0,
             wall_clock: false,
-            #[cfg(feature = "harness")]
-            digests: None,
         }
     }
 
@@ -182,8 +228,131 @@ impl StandIn {
 
     /// A new CPU side holding what this one holds, as bringing back a saved container makes it: every
     /// memory, block of shared pages and thread's registers copied under the same handles, on new
-    /// emulator instances with nothing translated or cached.
+    /// emulator instances with nothing translated or cached, on the same engine.
     pub fn restored(&self) -> Self {
+        let key = self.key;
+        let copy = self.engine.call(move |engine| {
+            let copy = engine.machine(key).restored();
+            let copy_key = engine.take_key();
+            engine.machines.insert(copy_key, copy);
+            copy_key
+        });
+        Self {
+            engine: self.engine.clone(),
+            key: copy,
+            end: self.end,
+            last_instructions: 0,
+            wall_clock: self.wall_clock,
+        }
+    }
+
+    /// What the stand-in refused of the kernel's requests so far, in order, taken: a stand-in
+    /// dropped with a refusal not taken fails its test.
+    pub fn take_refused(&mut self) -> Vec<Refused> {
+        let key = self.key;
+        self.engine
+            .call(move |engine| std::mem::take(&mut engine.machine(key).refused))
+    }
+
+    /// Adds what the stand-in of a copy made at a save refused, which the copy reported as it
+    /// ended, so they fail the test as this stand-in goes, as its own refusals do.
+    #[cfg(all(feature = "harness", not(feature = "runtime")))]
+    pub(crate) fn refused_in_a_copy(&mut self, refused: Vec<Refused>) {
+        let key = self.key;
+        self.engine
+            .call(move |engine| engine.machine(key).refused.extend(refused));
+    }
+
+    /// Runs a thread until it comes back, as a driver does after [`wcontainers_abi::Next::Run`]. With a
+    /// slice, the stop flag is raised after that many instructions (one a nanosecond), so where a
+    /// turn ends repeats exactly; on the machine's clock, also once that many nanoseconds passed.
+    pub fn run(
+        &mut self,
+        thread: ThreadId,
+        resume: Resume,
+        slice_nanoseconds: Option<u64>,
+    ) -> Result<Exit, Unsupported> {
+        let deadline = self.deadline(slice_nanoseconds);
+        let key = self.key;
+        let (exit, instructions) = self.engine.call(move |engine| {
+            engine
+                .machine(key)
+                .run(thread, resume, slice_nanoseconds, deadline)
+        });
+        self.last_instructions = instructions;
+        exit
+    }
+
+    /// Runs a thread of a kernel that keeps its threads' registers and memories itself, as
+    /// [`StandIn::run`] runs one of its own; the memory must be one of this stand-in's.
+    pub fn run_on(
+        &mut self,
+        registers: &mut RegisterBlock,
+        memory: &UnicornSpace,
+        resume: Resume,
+        slice_nanoseconds: Option<u64>,
+    ) -> Result<Exit, Unsupported> {
+        assert!(
+            memory.is_on(&self.engine),
+            "the memory is one of this stand-in's"
+        );
+        if let Resume::Return(value) = resume {
+            registers.x[RESULT_REGISTER] = value;
+        }
+        let (exit, instructions) = memory.run_turn(
+            registers,
+            slice_nanoseconds,
+            self.deadline(slice_nanoseconds),
+            None,
+        );
+        self.last_instructions = instructions;
+        exit
+    }
+
+    /// When a turn of a slice ends on the machine's clock, if the stand-in is on it.
+    fn deadline(&self, slice_nanoseconds: Option<u64>) -> Option<coarsetime::Instant> {
+        slice_nanoseconds
+            .filter(|_| self.wall_clock)
+            .map(|nanoseconds| {
+                coarsetime::Instant::now()
+                    + coarsetime::Duration::from(std::time::Duration::from_nanos(nanoseconds))
+            })
+    }
+
+    /// Runs the call on the stand-in's machine, on its engine's thread.
+    fn with_machine<Answer: Send + 'static>(
+        &self,
+        call: impl FnOnce(&mut Machine) -> Answer + Send + 'static,
+    ) -> Answer {
+        let key = self.key;
+        self.engine.call(move |engine| call(engine.machine(key)))
+    }
+}
+
+impl Default for StandIn {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Machine {
+    fn new(end: u64) -> Self {
+        Self {
+            end,
+            memories: HashMap::new(),
+            threads: HashMap::new(),
+            blocks: HashMap::new(),
+            refused: Vec::new(),
+            last_memory: 0,
+            last_thread: 0,
+            last_block: 0,
+            #[cfg(feature = "harness")]
+            digests: None,
+        }
+    }
+
+    /// A copy of every memory, block and thread under the same handles, on new unicorn instances.
+    fn restored(&self) -> Self {
         let mut copies: Vec<(Rc<SharedPages>, Rc<SharedPages>)> = Vec::new();
         let mut copy_of = |pages: &Rc<SharedPages>| {
             if let Some((_, copy)) = copies.iter().find(|(old, _)| Rc::ptr_eq(old, pages)) {
@@ -229,24 +398,9 @@ impl StandIn {
             last_memory: self.last_memory,
             last_thread: self.last_thread,
             last_block: self.last_block,
-            last_instructions: 0,
-            wall_clock: self.wall_clock,
             #[cfg(feature = "harness")]
             digests: None,
         }
-    }
-
-    /// What the stand-in refused of the kernel's requests so far, in order, taken: a stand-in
-    /// dropped with a refusal not taken fails its test.
-    pub fn take_refused(&mut self) -> Vec<Refused> {
-        std::mem::take(&mut self.refused)
-    }
-
-    /// Adds what the stand-in of a copy made at a save refused, which the copy reported as it
-    /// ended, so they fail the test as this stand-in goes, as its own refusals do.
-    #[cfg(all(feature = "harness", not(feature = "runtime")))]
-    pub(crate) fn refused_in_a_copy(&mut self, refused: Vec<Refused>) {
-        self.refused.extend(refused);
     }
 
     /// The memories that show any of the block's pages, in order.
@@ -266,16 +420,14 @@ impl StandIn {
         shown_in
     }
 
-    /// Runs a thread until it comes back, as a driver does after [`wcontainers_abi::Next::Run`]. With a
-    /// slice, the stop flag is raised after that many instructions (one a nanosecond), so where a
-    /// turn ends repeats exactly; on the machine's clock, also once that many nanoseconds passed.
-    pub fn run(
+    /// Runs a thread until it comes back, as [`StandIn::run`] describes, with the number of instructions run.
+    fn run(
         &mut self,
         thread: ThreadId,
         resume: Resume,
         slice_nanoseconds: Option<u64>,
-    ) -> Result<Exit, Unsupported> {
-        let deadline = self.deadline(slice_nanoseconds);
+        deadline: Option<coarsetime::Instant>,
+    ) -> (Result<Exit, Unsupported>, u64) {
         let state = self
             .threads
             .get_mut(&thread)
@@ -287,42 +439,7 @@ impl StandIn {
             .memories
             .get_mut(&state.memory)
             .expect("thread's memory");
-        let (exit, instructions) =
-            memory.run_turn(&mut state.registers, slice_nanoseconds, deadline, None);
-        self.last_instructions = instructions;
-        exit
-    }
-
-    /// Runs a thread of a kernel that keeps its threads' registers and memories itself, as
-    /// [`StandIn::run`] runs one of its own.
-    pub fn run_on(
-        &mut self,
-        registers: &mut RegisterBlock,
-        memory: &UnicornSpace,
-        resume: Resume,
-        slice_nanoseconds: Option<u64>,
-    ) -> Result<Exit, Unsupported> {
-        if let Resume::Return(value) = resume {
-            registers.x[RESULT_REGISTER] = value;
-        }
-        let (exit, instructions) = memory.run_turn(
-            registers,
-            slice_nanoseconds,
-            self.deadline(slice_nanoseconds),
-            None,
-        );
-        self.last_instructions = instructions;
-        exit
-    }
-
-    /// When a turn of a slice ends on the machine's clock, if the stand-in is on it.
-    fn deadline(&self, slice_nanoseconds: Option<u64>) -> Option<coarsetime::Instant> {
-        slice_nanoseconds
-            .filter(|_| self.wall_clock)
-            .map(|nanoseconds| {
-                coarsetime::Instant::now()
-                    + coarsetime::Duration::from(std::time::Duration::from_nanos(nanoseconds))
-            })
+        memory.run_turn(&mut state.registers, slice_nanoseconds, deadline, None)
     }
 
     fn memory_mut(&mut self, memory: MemoryId) -> &mut Memory {
@@ -330,10 +447,147 @@ impl StandIn {
     }
 }
 
-impl Default for StandIn {
-    fn default() -> Self {
-        Self::new()
+/// Each writable page's address with its bytes before and after an instruction.
+type ChangedPages = Vec<(u64, Vec<u8>, Vec<u8>)>;
+
+/// Runs the one instruction at the processor's program counter on the cleared memory given the state's pages, as
+/// [`StandIn`]'s `execute_single_instruction_in_place` describes, on the engine's thread.
+fn execute_in_place(
+    memory: &mut Memory,
+    processor: &mut Processor<()>,
+    mutations: &[MemoryDelta<'static, Arm64<User>>],
+) -> (Result<ChangedPages, Unsupported>, u64) {
+    let named_end = mutations
+        .iter()
+        .map(|delta| match delta {
+            MemoryDelta::PermissionAssignment { addresses, .. } => addresses.end,
+            MemoryDelta::ValueAssignment { start, bytes } => {
+                start + u64::try_from(bytes.len()).expect("a count of bytes fits in an address")
+            }
+        })
+        .fold(processor.program_counter + INSTRUCTION_SIZE, u64::max);
+    // The scratch page the predicates pass through lies after the named pages.
+    let scratch = named_end.div_ceil(PAGE_SIZE).saturating_mul(PAGE_SIZE);
+    if scratch >= memory.end() {
+        return (Err(Unsupported::BeyondSpace { end: named_end }), 0);
     }
+    let mut pages: BTreeMap<u64, PagePermission> = BTreeMap::new();
+    for delta in mutations {
+        match delta {
+            MemoryDelta::PermissionAssignment {
+                addresses,
+                permission,
+            } => {
+                assert!(
+                    addresses.start.is_multiple_of(PAGE_SIZE)
+                        && addresses.end.is_multiple_of(PAGE_SIZE),
+                    "a permission is given to whole pages"
+                );
+                memory.set_permissions(addresses.clone(), to_permissions(*permission));
+                for page in addresses.clone().step_by(PAGE_BYTES) {
+                    pages.insert(page, *permission);
+                }
+            }
+            MemoryDelta::ValueAssignment { start, bytes } => {
+                memory
+                    .write(*start, bytes)
+                    .expect("the bytes lie inside the space");
+            }
+        }
+    }
+    let pc = processor.program_counter;
+    let mut word = [u8::MIN; INSTRUCTION_SIZE as usize];
+    memory
+        .read(pc, &mut word)
+        .expect("the program counter lies inside the space");
+    let word = u32::from_le_bytes(word);
+    if aborts_emulator(word) {
+        return (Err(Unsupported::EmulatorAborts { pc, word }), 0);
+    }
+    let writable: Vec<u64> = pages
+        .iter()
+        .filter(|(_, permission)| {
+            matches!(
+                permission,
+                PagePermission::Mapped {
+                    data_access: DataAccess::ReadWrite,
+                    ..
+                }
+            )
+        })
+        .map(|(page, _)| *page)
+        .collect();
+    let read_page = |memory: &Memory, page: u64| {
+        let mut bytes = vec![u8::MIN; PAGE_BYTES];
+        memory
+            .read(page, &mut bytes)
+            .expect("a page the state gave a permission");
+        bytes
+    };
+    let before: Vec<Vec<u8>> = writable
+        .iter()
+        .map(|page| read_page(memory, *page))
+        .collect();
+    let mut registers = to_register_block(processor);
+    let mut predicates = Predicates {
+        registers: processor.predicate_registers,
+        first_fault: processor.first_fault_register,
+    };
+    let (exit, instructions) = memory.run_instruction(&mut registers, &mut predicates, scratch);
+    let permission_at = |address: u64| {
+        pages
+            .get(&(address - address % PAGE_SIZE))
+            .copied()
+            .unwrap_or(PagePermission::Unmapped)
+    };
+    let exception = match exit {
+        Ok(
+            Exit::MemoryFault {
+                address,
+                access: Access::Execute,
+            }
+            | Exit::AlignmentFault { address },
+        ) if address != pc && address & UNTAGGED != address => {
+            return (Err(Unsupported::TaggedBranch { pc, target: address }), instructions);
+        }
+        // Unicorn stops a counted turn as it fetches the next instruction, so a fetch fault anywhere but at the
+        // instruction run belongs to the next one: the instruction completed.
+        Ok(
+            Exit::MemoryFault {
+                address,
+                access: Access::Execute,
+            }
+            | Exit::AlignmentFault { address },
+        ) if address != pc => None,
+        Ok(Exit::MemoryFault { address, access })
+            if address & UNTAGGED != address
+                && to_permissions(permission_at(address & UNTAGGED)).contains(match access {
+                    Access::Write => Permissions::WRITE,
+                    Access::Read | Access::Execute => Permissions::READ,
+                }) =>
+        {
+            return (Err(Unsupported::TaggedAccess { pc, address }), instructions);
+        }
+        Ok(Exit::IllegalInstruction) => match to_undefined_exception(word, pc) {
+            Ok(exception) => Some(exception),
+            Err(unsupported) => return (Err(unsupported), instructions),
+        },
+        Ok(exit) => to_exception(exit, word, pc, permission_at),
+        Err(Unsupported::AlignmentFault { .. }) => Some(to_alignment_exception(word, &registers)),
+        Err(unknown) => return (Err(unknown), instructions),
+    };
+    // Every exception but a supervisor call is taken at its instruction; unicorn leaves the program counter after an
+    // SVE store that faults.
+    if exception.is_some_and(|exception| !exception.is_taken_after_instruction()) {
+        registers.pc = pc;
+    }
+    *processor = to_processor(&registers, predicates, exception);
+    let changed = writable
+        .into_iter()
+        .zip(before)
+        .map(|(page, before)| (page, before, read_page(memory, page)))
+        .collect();
+    (Ok(changed), instructions)
 }
 
 impl BehaviorSource for StandIn {
@@ -349,101 +603,24 @@ impl BehaviorSource for StandIn {
         memory: MemorySnapshot<'_, '_, Arm64<User>>,
         mutation_hook: &mut impl MemorySink<Arm64<User>>,
     ) -> Result<(), Unsupported> {
-        // The space ends after the last byte the state names, so a state costs no more than it holds.
-        let named_end = memory
+        let mutations: Vec<MemoryDelta<'static, Arm64<User>>> = memory
             .mutations
             .iter()
-            .map(|delta| match delta {
-                MemoryDelta::PermissionAssignment { addresses, .. } => addresses.end,
-                MemoryDelta::ValueAssignment { start, bytes } => {
-                    start + u64::try_from(bytes.len()).expect("a count of bytes fits in an address")
-                }
-            })
-            .fold(processor.program_counter + INSTRUCTION_SIZE, u64::max);
-        let end = named_end
-            .div_ceil(PAGE_SIZE)
-            .saturating_mul(PAGE_SIZE)
-            .min(self.end);
-        let (space, mut table) = UnicornSpace::new(end).expect("host memory for one more space");
-        let mut pages: BTreeMap<u64, PagePermission> = BTreeMap::new();
-        for delta in memory.mutations {
-            match delta {
-                MemoryDelta::PermissionAssignment {
-                    addresses,
-                    permission,
-                } => {
-                    table
-                        .set_permissions(addresses.clone(), to_permissions(*permission))
-                        .expect("a permission is given to whole pages inside the space");
-                    for page in addresses.clone().step_by(PAGE_BYTES) {
-                        pages.insert(page, *permission);
-                    }
-                }
-                MemoryDelta::ValueAssignment { start, bytes } => {
-                    let end = start
-                        + u64::try_from(bytes.len()).expect("a count of bytes fits in an address");
-                    let written = space
-                        .borrow(*start..end)
-                        .expect("the bytes lie inside the space")
-                        .write(bytes);
-                    assert_eq!(written, bytes.len(), "the bytes written");
-                }
-            }
-        }
-        let pc = processor.program_counter;
-        let word = read_instruction(&space, pc);
-        let writable: Vec<u64> = pages
-            .iter()
-            .filter(|(_, permission)| {
-                matches!(
-                    permission,
-                    PagePermission::Mapped {
-                        data_access: DataAccess::ReadWrite,
-                        ..
-                    }
-                )
-            })
-            .map(|(page, _)| *page)
+            .cloned()
+            .map(MemoryDelta::into_owned)
             .collect();
-        let read_page = |page: u64| {
-            let mut bytes = vec![u8::MIN; PAGE_BYTES];
-            space
-                .borrow(page..page + PAGE_SIZE)
-                .expect("a page the state gave a permission")
-                .read(&mut bytes);
-            bytes
-        };
-        let before: Vec<Vec<u8>> = writable.iter().map(|page| read_page(*page)).collect();
-        let mut registers = to_register_block(processor);
-        let (exit, instructions) =
-            space.run_turn(&mut registers, Some(ONE_INSTRUCTION), None, None);
+        let mut moved = processor.clone();
+        let space_end = self.end;
+        let (changed, moved, instructions) = self.engine.call(move |engine| {
+            let memory = engine.single_instruction_memory(space_end);
+            let (changed, instructions) = execute_in_place(memory, &mut moved, &mutations);
+            (changed, moved, instructions)
+        });
         self.last_instructions = instructions;
-        let permission_at = |address: u64| {
-            pages
-                .get(&(address - address % PAGE_SIZE))
-                .copied()
-                .unwrap_or(PagePermission::Unmapped)
-        };
-        let exception = match exit {
-            // Unicorn stops a counted turn as it fetches the next instruction, so a fetch fault anywhere but at the
-            // instruction run belongs to the next one: the instruction completed.
-            Ok(
-                Exit::MemoryFault {
-                    address,
-                    access: Access::Execute,
-                }
-                | Exit::AlignmentFault { address },
-            ) if address != pc => None,
-            Ok(exit) => to_exception(exit, word, pc, permission_at),
-            Err(Unsupported::AlignmentFault { .. }) => {
-                Some(to_alignment_exception(word, &registers))
-            }
-            Err(unknown) => return Err(unknown),
-        };
-        *processor = to_processor(&registers, exception);
-        for (page, before) in writable.iter().zip(before) {
-            report_changed_bytes(*page, &before, &read_page(*page), mutation_hook);
+        for (page, before, after) in changed? {
+            report_changed_bytes(page, &before, &after, mutation_hook);
         }
+        *processor = moved;
         Ok(())
     }
 }
@@ -457,7 +634,7 @@ impl Executor for StandIn {
     type Execution<'execution> = StandInExecution<'execution>;
 
     fn create_guest_memory(&self) -> Result<(UnicornSpace, UnicornPageTable), CpuError> {
-        UnicornSpace::new(self.end)
+        UnicornSpace::new(&self.engine, self.end)
     }
 
     fn prepare_execution<'execution>(
@@ -465,6 +642,10 @@ impl Executor for StandIn {
         processor: Processor<()>,
         memory: &'execution UnicornSpace,
     ) -> (StandInExecution<'execution>, StandInInterrupter) {
+        assert!(
+            memory.is_on(&self.engine),
+            "the memory is one of this stand-in's"
+        );
         let raised = Arc::new(AtomicBool::new(false));
         let interrupter = StandInInterrupter {
             raised: Arc::clone(&raised),
@@ -472,6 +653,10 @@ impl Executor for StandIn {
         let execution = StandInExecution {
             stand_in: self,
             registers: to_register_block(&processor),
+            predicates: Predicates {
+                registers: processor.predicate_registers,
+                first_fault: processor.first_fault_register,
+            },
             memory,
             raised,
         };
@@ -479,10 +664,25 @@ impl Executor for StandIn {
     }
 }
 
+/// The kernel watches one thread of a memory itself, before each of its turns, so the stand-in has no watch of its own.
+impl PerThreadWatch for StandIn {
+    fn set_thread_permissions(
+        &mut self,
+        _thread: wcontainers_abi::ThreadId,
+        _range: std::ops::Range<u64>,
+        _allowed: Permissions,
+    ) -> Result<(), CpuError> {
+        Err(CpuError::NotSupported)
+    }
+}
+
 /// One execution of the stand-in, not yet run.
 pub struct StandInExecution<'execution> {
     stand_in: &'execution mut StandIn,
     registers: RegisterBlock,
+    /// The predicate registers and FFR as the execution started: unicorn's interface reaches neither, and a guest's
+    /// whole run has no page to pass them through, so the execution ends with them as they were.
+    predicates: Predicates,
     memory: &'execution UnicornSpace,
     raised: Arc<AtomicBool>,
 }
@@ -544,7 +744,7 @@ impl Execution for StandInExecution<'_> {
                 Stop::Final(exception) => break Some(exception),
             }
         };
-        ExecutionStop::Terminated(to_processor(&self.registers, exception))
+        ExecutionStop::Terminated(to_processor(&self.registers, self.predicates, exception))
     }
 }
 
@@ -577,6 +777,13 @@ impl StandInExecution<'_> {
                 }
                 // Only an interrupt stops a turn with no limit; it is answered at the top.
                 Exit::Stop => {}
+                Exit::IllegalInstruction => {
+                    let pc = self.registers.pc;
+                    match to_undefined_exception(read_instruction(self.memory, pc), pc) {
+                        Ok(exception) => return Stop::Final(exception),
+                        Err(unsupported) => panic!("{unsupported:?}"),
+                    }
+                }
                 _ => {
                     let memory = self.memory;
                     let exception = to_exception(exit, u32::MIN, self.registers.pc, |address| {
@@ -677,7 +884,11 @@ fn to_register_block(processor: &Processor<()>) -> RegisterBlock {
     }
 }
 
-fn to_processor(registers: &RegisterBlock, exception: Option<Exception>) -> Processor<()> {
+fn to_processor(
+    registers: &RegisterBlock,
+    predicates: Predicates,
+    exception: Option<Exception>,
+) -> Processor<()> {
     Processor {
         general_purpose_registers: registers.x,
         stack_pointer: registers.sp,
@@ -686,6 +897,8 @@ fn to_processor(registers: &RegisterBlock, exception: Option<Exception>) -> Proc
         vector_registers: registers
             .v
             .map(|[low, high]| u128::from(low) | u128::from(high) << u64::BITS),
+        predicate_registers: predicates.registers,
+        first_fault_register: predicates.first_fault,
         floating_point_control: u64::from(registers.fpcr),
         floating_point_status: u64::from(registers.fpsr),
         software_thread_id: registers.tpidr_el0,
@@ -702,7 +915,9 @@ fn to_exception(
     pc: u64,
     permission_at: impl Fn(u64) -> PagePermission,
 ) -> Option<Exception> {
+    // A data address's top byte is its tag, which Linux ignores; an instruction fetch's address has none here.
     let status = |address: u64| {
+        let address = address & UNTAGGED;
         if address >= Arm64::<User>::ADDRESSABLE.end {
             FaultStatus::TranslationFaultLevel0
         } else {
@@ -752,6 +967,49 @@ fn to_exception(
     })
 }
 
+/// Returns the exception an undefined-instruction stop of the instruction `word` at `pc` is.
+///
+/// QEMU raises an instruction EL1 traps as undefined too, telling the class only in a syndrome unicorn does not give.
+/// Outside the system instructions nothing traps at EL0 here (floating point and SVE are on, the pointer authentication
+/// keys off); among them WFI always traps, as SCTLR_EL1.nTWI is clear, and the others are refused.
+fn to_undefined_exception(word: u32, pc: u64) -> Result<Exception, Unsupported> {
+    if word == WAIT_FOR_INTERRUPT {
+        Ok(Exception::WaitTrapped(WaitInstruction::WaitForInterrupt))
+    } else if word & SYSTEM_INSTRUCTION_MASK == SYSTEM_INSTRUCTION_VALUE {
+        Err(Unsupported::TrapOrUndefined { pc, word })
+    } else {
+        Ok(Exception::UndefinedInstruction)
+    }
+}
+
+/// [WFI](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/WFI--Wait-for-interrupt-).
+const WAIT_FOR_INTERRUPT: u32 = 0xD503_207F;
+/// The [system instruction class](https://developer.arm.com/documentation/ddi0602/latest/Index-by-Encoding/Branches--Exception-Generating-and-System-instructions):
+/// bits 31 to 22 are 0b1101010100 (hints, barriers, PSTATE, SYS, SYSL, MSR and MRS).
+const SYSTEM_INSTRUCTION_MASK: u32 = 0xFFC0_0000;
+const SYSTEM_INSTRUCTION_VALUE: u32 = 0xD500_0000;
+
+/// The [Advanced SIMD three same (FP16)](https://developer.arm.com/documentation/ddi0602/latest/Index-by-Encoding/Data-Processing----Scalar-Floating-Point-and-Advanced-SIMD)
+/// class: `0 Q U 01110 a 10 Rm 00 opcode 1 Rn Rd`.
+const THREE_SAME_HALF_MASK: u32 = 0x9F60_C400;
+const THREE_SAME_HALF_VALUE: u32 = 0x0E40_0400;
+/// The values of U, a and opcode (`U:a:opcode`) the class leaves unallocated, on which QEMU's decoder asserts.
+const THREE_SAME_HALF_UNALLOCATED: [u32; 8] = [
+    0b0_0_101, 0b0_1_011, 0b0_1_100, 0b0_1_101, 0b1_0_001, 0b1_1_001, 0b1_1_011, 0b1_1_111,
+];
+
+/// Returns whether the emulator ends the host process on the word: an unallocated Advanced SIMD three same (FP16)
+/// encoding, which its decoder reaches an assertion on instead of raising an undefined instruction.
+fn aborts_emulator(word: u32) -> bool {
+    if word & THREE_SAME_HALF_MASK != THREE_SAME_HALF_VALUE {
+        return false;
+    }
+    let opcode = word >> 11 & 0b111;
+    let a = word >> 23 & 1;
+    let u = word >> 29 & 1;
+    THREE_SAME_HALF_UNALLOCATED.contains(&(u << 4 | a << 3 | opcode))
+}
+
 /// Returns the exception of an alignment fault of the instruction `word`, which takes its address from its base register.
 fn to_alignment_exception(word: u32, registers: &RegisterBlock) -> Exception {
     // QEMU checks alignment only on the exclusive, compare-and-swap and atomic instructions, which all take their
@@ -769,11 +1027,157 @@ fn to_alignment_exception(word: u32, registers: &RegisterBlock) -> Exception {
     }
 }
 
+/// Each call runs on the stand-in's machine, on its engine's thread.
 impl Cpu for StandIn {
     fn address_space(&self) -> AddressSpace {
         AddressSpace { end: self.end }
     }
 
+    fn memory_new(&mut self) -> Result<MemoryId, CpuError> {
+        self.with_machine(Machine::memory_new)
+    }
+
+    fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
+        self.with_machine(move |machine| machine.memory_duplicate(source))
+    }
+
+    fn memory_drop(&mut self, memory: MemoryId) {
+        self.with_machine(move |machine| machine.memory_drop(memory));
+    }
+
+    fn read(&mut self, memory: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {
+        let length = into.len();
+        let read = self.with_machine(move |machine| {
+            let mut read = vec![u8::MIN; length];
+            machine.memory_mut(memory).read(address, &mut read)?;
+            Ok::<_, CpuError>(read)
+        })?;
+        into.copy_from_slice(&read);
+        Ok(())
+    }
+
+    fn write(&mut self, memory: MemoryId, address: u64, from: &[u8]) -> Result<(), CpuError> {
+        let from = from.to_vec();
+        self.with_machine(move |machine| machine.memory_mut(memory).write(address, &from))
+    }
+
+    fn zero(&mut self, memory: MemoryId, address: u64, length: u64) -> Result<(), CpuError> {
+        let end = address.checked_add(length).ok_or(CpuError::BadAddress)?;
+        self.with_machine(move |machine| machine.memory_mut(memory).zero(address..end))
+    }
+
+    fn set_permissions(
+        &mut self,
+        memory: MemoryId,
+        address: u64,
+        length: u64,
+        permissions: Permissions,
+    ) -> Result<(), CpuError> {
+        self.with_machine(move |machine| {
+            let memory = machine.memory_mut(memory);
+            let range = memory.range(address, length)?;
+            memory.set_permissions(range.start as u64..range.end as u64, permissions);
+            Ok(())
+        })
+    }
+
+    fn code_changed(&mut self, memory: MemoryId, address: u64, length: u64, _starts: &[u64]) {
+        self.with_machine(move |machine| {
+            machine
+                .memory_mut(memory)
+                .forget_code(address..address.saturating_add(length));
+        });
+    }
+
+    fn shared_new(&mut self, length: u64) -> Result<SharedId, CpuError> {
+        self.with_machine(move |machine| machine.shared_new(length))
+    }
+
+    fn shared_map(
+        &mut self,
+        shared: SharedId,
+        offset: u64,
+        memory: MemoryId,
+        address: u64,
+        length: u64,
+    ) -> Result<(), CpuError> {
+        self.with_machine(move |machine| machine.shared_map(shared, offset, memory, address, length))
+    }
+
+    fn shared_unmap(
+        &mut self,
+        memory: MemoryId,
+        address: u64,
+        length: u64,
+    ) -> Result<(), CpuError> {
+        self.with_machine(move |machine| {
+            let memory = machine.memory_mut(memory);
+            memory.range(address, length)?;
+            memory.keep_shared_bytes(address..address + length);
+            Ok(())
+        })
+    }
+
+    fn shared_read(
+        &mut self,
+        shared: SharedId,
+        offset: u64,
+        into: &mut [u8],
+    ) -> Result<(), CpuError> {
+        let length = into.len();
+        let read = self.with_machine(move |machine| {
+            let block = machine.blocks.get(&shared).ok_or(CpuError::BadAddress)?;
+            check_block(block, offset, length)?;
+            let mut read = vec![u8::MIN; length];
+            block.read(offset, &mut read);
+            Ok::<_, CpuError>(read)
+        })?;
+        into.copy_from_slice(&read);
+        Ok(())
+    }
+
+    fn shared_write(&mut self, shared: SharedId, offset: u64, from: &[u8]) -> Result<(), CpuError> {
+        let from = from.to_vec();
+        self.with_machine(move |machine| {
+            let block = machine.blocks.get(&shared).ok_or(CpuError::BadAddress)?;
+            check_block(block, offset, from.len())?;
+            block.write(offset, &from);
+            Ok(())
+        })
+    }
+
+    /// The block's handle goes; a memory that still shows it is refused ([`Refused`]) and keeps showing its pages.
+    fn shared_drop(&mut self, shared: SharedId) {
+        self.with_machine(move |machine| machine.shared_drop(shared));
+    }
+
+    fn thread_new(&mut self, memory: MemoryId) -> Result<ThreadId, CpuError> {
+        self.with_machine(move |machine| machine.thread_new(memory))
+    }
+
+    fn thread_drop(&mut self, thread: ThreadId) {
+        self.with_machine(move |machine| {
+            machine.threads.remove(&thread);
+        });
+    }
+
+    fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
+        *into = self.with_machine(move |machine| machine.threads[&thread].registers);
+    }
+
+    fn set_registers(&mut self, thread: ThreadId, from: &RegisterBlock) {
+        let from = *from;
+        self.with_machine(move |machine| {
+            machine
+                .threads
+                .get_mut(&thread)
+                .expect("thread exists")
+                .registers = from;
+        });
+    }
+}
+
+impl Machine {
     fn memory_new(&mut self) -> Result<MemoryId, CpuError> {
         let memory = Memory::new(self.end)?;
         self.last_memory += 1;
@@ -800,37 +1204,6 @@ impl Cpu for StandIn {
         }
         #[cfg(not(feature = "harness"))]
         drop(dropped);
-    }
-
-    fn read(&mut self, memory: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {
-        self.memory_mut(memory).read(address, into)
-    }
-
-    fn write(&mut self, memory: MemoryId, address: u64, from: &[u8]) -> Result<(), CpuError> {
-        self.memory_mut(memory).write(address, from)
-    }
-
-    fn zero(&mut self, memory: MemoryId, address: u64, length: u64) -> Result<(), CpuError> {
-        let end = address.checked_add(length).ok_or(CpuError::BadAddress)?;
-        self.memory_mut(memory).zero(address..end)
-    }
-
-    fn set_permissions(
-        &mut self,
-        memory: MemoryId,
-        address: u64,
-        length: u64,
-        permissions: Permissions,
-    ) -> Result<(), CpuError> {
-        let memory = self.memory_mut(memory);
-        let range = memory.range(address, length)?;
-        memory.set_permissions(range.start as u64..range.end as u64, permissions);
-        Ok(())
-    }
-
-    fn code_changed(&mut self, memory: MemoryId, address: u64, length: u64, _starts: &[u64]) {
-        self.memory_mut(memory)
-            .forget_code(address..address.saturating_add(length));
     }
 
     fn shared_new(&mut self, length: u64) -> Result<SharedId, CpuError> {
@@ -862,38 +1235,6 @@ impl Cpu for StandIn {
         Ok(())
     }
 
-    fn shared_unmap(
-        &mut self,
-        memory: MemoryId,
-        address: u64,
-        length: u64,
-    ) -> Result<(), CpuError> {
-        let memory = self.memory_mut(memory);
-        memory.range(address, length)?;
-        memory.keep_shared_bytes(address..address + length);
-        Ok(())
-    }
-
-    fn shared_read(
-        &mut self,
-        shared: SharedId,
-        offset: u64,
-        into: &mut [u8],
-    ) -> Result<(), CpuError> {
-        let block = self.blocks.get(&shared).ok_or(CpuError::BadAddress)?;
-        check_block(block, offset, into.len())?;
-        block.read(offset, into);
-        Ok(())
-    }
-
-    fn shared_write(&mut self, shared: SharedId, offset: u64, from: &[u8]) -> Result<(), CpuError> {
-        let block = self.blocks.get(&shared).ok_or(CpuError::BadAddress)?;
-        check_block(block, offset, from.len())?;
-        block.write(offset, from);
-        Ok(())
-    }
-
-    /// The block's handle goes; a memory that still shows it is refused ([`Refused`]) and keeps showing its pages.
     fn shared_drop(&mut self, shared: SharedId) {
         let Some(block) = self.blocks.remove(&shared) else {
             return;
@@ -925,21 +1266,6 @@ impl Cpu for StandIn {
         );
         Ok(id)
     }
-
-    fn thread_drop(&mut self, thread: ThreadId) {
-        self.threads.remove(&thread);
-    }
-
-    fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
-        *into = self.threads[&thread].registers;
-    }
-
-    fn set_registers(&mut self, thread: ThreadId, from: &RegisterBlock) {
-        self.threads
-            .get_mut(&thread)
-            .expect("thread exists")
-            .registers = *from;
-    }
 }
 
 /// Returns whether the bytes from the offset lie inside the block.
@@ -958,6 +1284,29 @@ mod tests {
     use wcontainers_abi::{Cpu, PAGE_SIZE, Permissions};
 
     use super::{SPACE_32_BIT, StandIn};
+
+    /// The stand-in and its spaces may move to another host thread, though unicorn's instances may not.
+    #[test]
+    fn the_stand_in_moves_between_threads() {
+        fn is_sendable<T: Send>(_: &T) {}
+        let mut stand_in = StandIn::with_space(SPACE_32_BIT);
+        is_sendable(&stand_in);
+        let memory = stand_in.memory_new().expect("a memory");
+        let moved = std::thread::spawn(move || {
+            stand_in
+                .write(memory, PAGE_SIZE, &[u8::MAX])
+                .expect("a byte written on another thread");
+            stand_in
+        })
+        .join()
+        .expect("the other thread ends");
+        let mut stand_in = moved;
+        let mut read = [u8::MIN];
+        stand_in
+            .read(memory, PAGE_SIZE, &mut read)
+            .expect("the byte read back");
+        assert_eq!(read, [u8::MAX]);
+    }
 
     /// A block a memory shows keeps its bytes for the memory after the block's handle is dropped.
     #[test]

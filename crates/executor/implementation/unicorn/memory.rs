@@ -13,7 +13,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use memmap2::MmapMut;
 use unicorn_engine::{
-    Arch, Arm64CpuModel, Context, HookType, MemType, Mode, Prot, RegisterARM64, Unicorn, uc_error,
+    Arch, Arm64CpuModel, Context, HookType, MemType, Mode, Prot, RegisterARM64, RegisterARM64CP,
+    Unicorn, uc_error,
 };
 use wcontainers_abi::{
     Access, CpuError, Exit, PAGE_SIZE, Permissions, RegisterBlock, SYSTEM_CALL_ARGUMENT_COUNT,
@@ -33,10 +34,47 @@ const EXCEPTION_SYSCALL: u32 = 2;
 const EXCEPTION_DATA_ABORT: u32 = 4;
 /// [EXCP_BKPT](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
 const EXCEPTION_BREAKPOINT: u32 = 7;
-/// [EXCP_HVC](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
-const EXCEPTION_HYPERVISOR_CALL: u32 = 11;
-/// [EXCP_SMC](https://github.com/unicorn-engine/unicorn/blob/master/qemu/target/arm/cpu.h).
-const EXCEPTION_SECURE_MONITOR_CALL: u32 = 13;
+
+/// [PSTATE](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SPSR-EL1--Saved-Program-Status-Register--EL1-)
+/// of a program Linux runs: EL0 on SP_EL0 (M is 0b0000), interrupts unmasked, the condition flags loaded apart.
+const USER_PSTATE: u64 = 0;
+/// [SCTLR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/SCTLR-EL1--System-Control-Register--EL1-)
+/// as op0, op1, CRn, CRm and op2.
+const SYSTEM_CONTROL: RegisterARM64CP = RegisterARM64CP::new()
+    .op0(3)
+    .op1(0)
+    .crn(1)
+    .crm(0)
+    .op2(0);
+/// The SCTLR_EL1 bits Linux sets for its programs that QEMU leaves clear: UCI (bit 26, cache maintenance at EL0), UCT
+/// (bit 15, CTR_EL0 at EL0) and DZE (bit 14, DC ZVA at EL0).
+const USER_CONTROLS_SET: u64 = 1 << 26 | 1 << 15 | 1 << 14;
+/// The SCTLR_EL1 bit Linux clears that QEMU sets: nTWI (bit 16), so that EL1 traps WFI at EL0.
+const USER_CONTROLS_CLEAR: u64 = 1 << 16;
+/// [CPACR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CPACR-EL1--Architectural-Feature-Access-Control-Register)
+/// with FPEN (bits 21:20) and ZEN (bits 17:16) at 0b11: neither floating point nor SVE traps at EL0.
+const USER_FEATURE_ACCESS: u64 = 0b11 << 20 | 0b11 << 16;
+/// [CPTR_EL3](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/CPTR-EL3--Architectural-Feature-Trap-Register--EL3-)
+/// as op0, op1, CRn, CRm and op2: unicorn's model has EL3, which traps SVE until EZ is set.
+const MONITOR_FEATURE_TRAPS: RegisterARM64CP = RegisterARM64CP::new()
+    .op0(3)
+    .op1(6)
+    .crn(1)
+    .crm(1)
+    .op2(2);
+/// CPTR_EL3 with EZ (bit 8) set and every trap bit clear.
+const MONITOR_TRAPS_NONE: u64 = 1 << 8;
+/// [TCR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TCR-EL1--Translation-Control-Register--EL1-)
+/// as op0, op1, CRn, CRm and op2.
+const TRANSLATION_CONTROL: RegisterARM64CP = RegisterARM64CP::new()
+    .op0(3)
+    .op1(0)
+    .crn(2)
+    .crm(0)
+    .op2(2);
+/// TCR_EL1 with T0SZ (bits 5:0) at 16, the 48-bit addresses Linux gives a program, which sets where a pointer
+/// authentication code lies.
+const USER_TRANSLATION_CONTROL: u64 = 64 - 48;
 
 /// The most bytes a space maps in unicorn as one region, a level 2 block of pages.
 ///
@@ -99,6 +137,20 @@ impl TouchedPages {
     /// Returns the touched pages among the pages, in order.
     fn list(&self, pages: Range<u64>) -> Vec<u64> {
         pages.filter(|page| self.contains(*page)).collect()
+    }
+
+    /// Returns every touched page, in order, and forgets them all.
+    fn take_all(&mut self) -> Vec<u64> {
+        let mut taken = Vec::new();
+        for (index, word) in self.words.iter_mut().enumerate() {
+            let mut left = std::mem::take(word);
+            while left != u64::MIN {
+                let bit = u64::from(left.trailing_zeros());
+                taken.push(index as u64 * PAGES_PER_WORD + bit);
+                left &= left - 1;
+            }
+        }
+        taken
     }
 }
 
@@ -274,6 +326,7 @@ impl Memory {
                 false
             })
             .expect("adding the fault hook");
+        enter_user_level(&mut unicorn);
         let fresh = unicorn
             .context_init()
             .expect("saving unicorn's fresh CPU state");
@@ -294,6 +347,24 @@ impl Memory {
 
     pub(crate) fn end(&self) -> u64 {
         self.end
+    }
+
+    /// Makes the space all zeros allowing nothing again, with nothing translated, as a new space is.
+    pub(crate) fn clear(&mut self) {
+        for (start, (end, _)) in std::mem::take(&mut self.mapped) {
+            self.unicorn
+                .mem_unmap(start, end - start)
+                .expect("unmapping a region unicorn has");
+        }
+        for page in self.touched.take_all() {
+            let bytes = page_bytes(page, self.end);
+            self.hidden[to_index(bytes.start)..to_index(bytes.end)].fill(u8::MIN);
+        }
+        self.shared.clear();
+        self.pages.fill(Permissions::empty());
+        self.unicorn
+            .ctl_flush_tb()
+            .expect("flushing unicorn's translated blocks");
     }
 
     /// Returns what the page at the address allows, nothing past the end of the space.
@@ -848,9 +919,9 @@ impl Memory {
         }
     }
 
-    pub(crate) fn load_registers(&mut self, registers: &RegisterBlock) -> Result<(), uc_error> {
+    /// Writes the registers into unicorn over whatever else its CPU holds.
+    fn load_registers(&mut self, registers: &RegisterBlock) -> Result<(), uc_error> {
         let unicorn = &mut self.unicorn;
-        unicorn.context_restore(&self.fresh)?;
         for (index, value) in registers.x.iter().enumerate() {
             unicorn.reg_write(x_register(index), *value)?;
         }
@@ -899,6 +970,20 @@ impl Memory {
         deadline: Option<coarsetime::Instant>,
         interrupt: Option<Arc<AtomicBool>>,
     ) -> (Result<Exit, Unsupported>, u64) {
+        self.unicorn
+            .context_restore(&self.fresh)
+            .expect("restoring unicorn's fresh CPU state");
+        self.run_loaded(registers, slice_nanoseconds, deadline, interrupt)
+    }
+
+    /// Runs as [`Memory::run_turn`] does, on what unicorn's CPU holds besides the registers.
+    fn run_loaded(
+        &mut self,
+        registers: &mut RegisterBlock,
+        slice_nanoseconds: Option<u64>,
+        deadline: Option<coarsetime::Instant>,
+        interrupt: Option<Arc<AtomicBool>>,
+    ) -> (Result<Exit, Unsupported>, u64) {
         self.copy_shared_in();
         self.load_registers(registers)
             .expect("loading registers into unicorn");
@@ -910,6 +995,19 @@ impl Memory {
         let count = slice_nanoseconds.map_or(UNICORN_NO_LIMIT, |nanoseconds| {
             usize::try_from(nanoseconds.max(ONE_INSTRUCTION)).unwrap_or(usize::MAX)
         });
+        let result = self.start(registers.pc, count);
+        self.save_registers(registers)
+            .expect("reading registers from unicorn");
+        self.copy_shared_out();
+        let stopped = std::mem::take(self.unicorn.get_data_mut());
+        (
+            self.to_exit(result, &stopped, registers),
+            stopped.instructions,
+        )
+    }
+
+    /// Starts unicorn at the address for the count of instructions, none for no limit.
+    fn start(&mut self, address: u64, count: usize) -> Result<(), uc_error> {
         if count > UNICORN_NO_LIMIT && !self.counting {
             self.unicorn
                 .ctl_flush_tb()
@@ -917,25 +1015,59 @@ impl Memory {
         }
         // Unicorn drops its blocks itself when counting stops.
         self.counting = count > UNICORN_NO_LIMIT;
-        let result = self
-            .unicorn
-            .emu_start(registers.pc, u64::MAX, UNICORN_NO_TIMEOUT, count);
-        self.save_registers(registers)
-            .expect("reading registers from unicorn");
-        self.copy_shared_out();
+        self.unicorn
+            .emu_start(address, u64::MAX, UNICORN_NO_TIMEOUT, count)
+    }
+
+    /// Runs one instruction of the registers with the predicates loaded before it and read back after it.
+    ///
+    /// Unicorn's interface reaches no predicate register, so code on the scratch page loads them from it and stores
+    /// them to it: the page allows everything while that code runs and nothing while the instruction does.
+    pub(crate) fn run_instruction(
+        &mut self,
+        registers: &mut RegisterBlock,
+        predicates: &mut Predicates,
+        scratch: u64,
+    ) -> (Result<Exit, Unsupported>, u64) {
+        let page = scratch..scratch + PAGE_SIZE;
+        let data = scratch + PREDICATE_DATA;
+        self.set_permissions(page.clone(), Permissions::all());
+        self.write(scratch, &to_code(&PREDICATE_LOADER))
+            .expect("the scratch page lies inside the space");
+        self.write(scratch + PREDICATE_SAVER, &to_code(&PREDICATE_SAVER_CODE))
+            .expect("the scratch page lies inside the space");
+        self.write(data, &predicates.to_bytes())
+            .expect("the scratch page lies inside the space");
+        self.unicorn
+            .context_restore(&self.fresh)
+            .expect("restoring unicorn's fresh CPU state");
+        self.run_helper(scratch, data, PREDICATE_LOADER.len());
+        self.set_permissions(page.clone(), Permissions::empty());
+        let ran = self.run_loaded(registers, Some(ONE_INSTRUCTION), None, None);
+        self.set_permissions(page.clone(), Permissions::all());
+        self.run_helper(scratch + PREDICATE_SAVER, data, PREDICATE_SAVER_CODE.len());
+        let mut bytes = [u8::MIN; PREDICATE_BYTES];
+        self.read(data, &mut bytes)
+            .expect("the scratch page lies inside the space");
+        *predicates = Predicates::from_bytes(&bytes);
+        self.set_permissions(page, Permissions::empty());
+        ran
+    }
+
+    /// Runs the count of instructions of helper code at the address with X0 holding its data's address.
+    fn run_helper(&mut self, code: u64, data: u64, count: usize) {
+        self.unicorn
+            .reg_write(x_register(PREDICATE_BASE), data)
+            .expect("writing X0");
+        *self.unicorn.get_data_mut() = Stopped::default();
+        let result = self.start(code, count);
         let stopped = std::mem::take(self.unicorn.get_data_mut());
-        // QEMU leaves the program counter after a call to a higher level; at EL0 the call is undefined and the
-        // program counter stays on it.
-        if matches!(
+        assert!(
+            result.is_ok() && stopped.exception.is_none() && stopped.fault.is_none(),
+            "the predicate helper code ran: {result:?}, exception {:?}, fault {:?}",
             stopped.exception,
-            Some(EXCEPTION_HYPERVISOR_CALL | EXCEPTION_SECURE_MONITOR_CALL)
-        ) {
-            registers.pc -= INSTRUCTION_SIZE;
-        }
-        (
-            self.to_exit(result, &stopped, registers),
-            stopped.instructions,
-        )
+            stopped.fault
+        );
     }
 
     /// Returns what the hooks recorded and unicorn's result as the exit they are.
@@ -975,14 +1107,9 @@ impl Memory {
             (_, Some(EXCEPTION_UNDEFINED)) if !pc.is_multiple_of(INSTRUCTION_SIZE) => {
                 Exit::AlignmentFault { address: pc }
             }
-            // Unicorn runs at EL1, where HVC and SMC may reach a higher level; at EL0 both are undefined.
-            (
-                _,
-                Some(
-                    EXCEPTION_UNDEFINED | EXCEPTION_HYPERVISOR_CALL | EXCEPTION_SECURE_MONITOR_CALL,
-                ),
-            )
-            | (Err(uc_error::INSN_INVALID), None) => Exit::IllegalInstruction,
+            (_, Some(EXCEPTION_UNDEFINED)) | (Err(uc_error::INSN_INVALID), None) => {
+                Exit::IllegalInstruction
+            }
             // Permission and mapping faults come through the fault hook, so a data abort here is QEMU's
             // alignment check.
             (_, Some(EXCEPTION_DATA_ABORT)) => return Err(Unsupported::AlignmentFault { pc }),
@@ -1055,6 +1182,125 @@ fn page_bytes(page: u64, end: u64) -> Range<u64> {
 /// Returns the number as an index into host memory.
 fn to_index(number: u64) -> usize {
     usize::try_from(number).expect("an address of a space fits in host memory")
+}
+
+/// Puts unicorn's CPU at EL0 under the controls Linux gives its programs, from EL1h where unicorn starts it.
+///
+/// A write of a system register through `CP_REG` is what makes unicorn rebuild the flags its translations read, so the
+/// level is changed before it.
+fn enter_user_level(unicorn: &mut Unicorn<'static, Stopped>) {
+    unicorn
+        .reg_write(RegisterARM64::CPACR_EL1, USER_FEATURE_ACCESS)
+        .expect("writing CPACR_EL1");
+    unicorn
+        .reg_write_arm64_coproc(&MONITOR_FEATURE_TRAPS.val(MONITOR_TRAPS_NONE))
+        .expect("writing CPTR_EL3");
+    unicorn
+        .reg_write_arm64_coproc(&TRANSLATION_CONTROL.val(USER_TRANSLATION_CONTROL))
+        .expect("writing TCR_EL1");
+    unicorn
+        .reg_write(RegisterARM64::PSTATE, USER_PSTATE)
+        .expect("writing PSTATE");
+    let mut control = SYSTEM_CONTROL;
+    unicorn
+        .reg_read_arm64_coproc(&mut control)
+        .expect("reading SCTLR_EL1");
+    let user = control.val & !USER_CONTROLS_CLEAR | USER_CONTROLS_SET;
+    unicorn
+        .reg_write_arm64_coproc(&SYSTEM_CONTROL.val(user))
+        .expect("writing SCTLR_EL1");
+}
+
+/// How many predicate registers SVE has, P0 to P15.
+pub(crate) const PREDICATE_REGISTERS: usize = 16;
+/// The bytes of one predicate register at a 128-bit vector length, one bit for each byte of a vector.
+const PREDICATE_REGISTER_BYTES: usize = size_of::<u16>();
+/// The bytes the predicate registers and FFR take on the scratch page, FFR after P15.
+const PREDICATE_BYTES: usize = (PREDICATE_REGISTERS + 1) * PREDICATE_REGISTER_BYTES;
+/// Where on the scratch page the helper code that stores the predicates starts, after the code that loads them.
+const PREDICATE_SAVER: u64 = 0x100;
+/// Where on the scratch page the predicates are, after both helper codes.
+const PREDICATE_DATA: u64 = 0x200;
+/// The general register that holds the predicates' address while the helper code runs, X0.
+const PREDICATE_BASE: usize = 0;
+/// The slot of FFR on the scratch page, in predicate registers from the start.
+const FIRST_FAULT_SLOT: u32 = PREDICATE_REGISTERS as u32;
+
+/// [LDR (predicate)](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/LDR--predicate---Load-predicate-register-)
+/// of Pt from X0 plus `slot` predicate registers.
+const fn load_predicate(register: u32, slot: u32) -> u32 {
+    0x8580_0000 | (slot >> 3) << 16 | (slot & 0b111) << 10 | register
+}
+
+/// [STR (predicate)](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/STR--predicate---Store-predicate-register-)
+/// of Pt to X0 plus `slot` predicate registers.
+const fn store_predicate(register: u32, slot: u32) -> u32 {
+    0xE580_0000 | (slot >> 3) << 16 | (slot & 0b111) << 10 | register
+}
+
+/// [WRFFR](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/WRFFR--Write-the-first-fault-register-)
+/// from P0.
+const WRITE_FIRST_FAULT_FROM_P0: u32 = 0x2528_9000;
+/// [RDFFR (unpredicated)](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/RDFFR--unpredicated---Read-the-first-fault-register-)
+/// into P0.
+const READ_FIRST_FAULT_INTO_P0: u32 = 0x2519_F000;
+
+/// Loads FFR through P0, then P0 to P15.
+const PREDICATE_LOADER: [u32; PREDICATE_REGISTERS + 2] = {
+    let mut code = [WRITE_FIRST_FAULT_FROM_P0; PREDICATE_REGISTERS + 2];
+    code[0] = load_predicate(0, FIRST_FAULT_SLOT);
+    let mut register = 0;
+    while register < PREDICATE_REGISTERS {
+        code[register + 2] = load_predicate(register as u32, register as u32);
+        register += 1;
+    }
+    code
+};
+
+/// Stores P0 to P15, then FFR through P0.
+const PREDICATE_SAVER_CODE: [u32; PREDICATE_REGISTERS + 2] = {
+    let mut code = [READ_FIRST_FAULT_INTO_P0; PREDICATE_REGISTERS + 2];
+    let mut register = 0;
+    while register < PREDICATE_REGISTERS {
+        code[register] = store_predicate(register as u32, register as u32);
+        register += 1;
+    }
+    code[PREDICATE_REGISTERS + 1] = store_predicate(0, FIRST_FAULT_SLOT);
+    code
+};
+
+/// Returns the instruction words as the bytes of code.
+fn to_code(words: &[u32]) -> Vec<u8> {
+    words.iter().flat_map(|word| word.to_le_bytes()).collect()
+}
+
+/// SVE's predicate registers and FFR, each at a 128-bit vector length.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Predicates {
+    pub(crate) registers: [u16; PREDICATE_REGISTERS],
+    pub(crate) first_fault: u16,
+}
+
+impl Predicates {
+    fn to_bytes(self) -> [u8; PREDICATE_BYTES] {
+        let mut bytes = [u8::MIN; PREDICATE_BYTES];
+        let values = self.registers.into_iter().chain([self.first_fault]);
+        for (slot, value) in bytes.chunks_exact_mut(PREDICATE_REGISTER_BYTES).zip(values) {
+            slot.copy_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+
+    fn from_bytes(bytes: &[u8; PREDICATE_BYTES]) -> Self {
+        let mut values = bytes
+            .chunks_exact(PREDICATE_REGISTER_BYTES)
+            .map(|slot| u16::from_le_bytes([slot[0], slot[1]]));
+        let registers = std::array::from_fn(|_| values.next().expect("a predicate register"));
+        Self {
+            registers,
+            first_fault: values.next().expect("FFR"),
+        }
+    }
 }
 
 #[cfg(test)]
