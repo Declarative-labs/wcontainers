@@ -96,8 +96,9 @@ pub struct ElementAccess {
 }
 
 /// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/SVE-Instructions/LDFF1W--scalar-plus-vector---Gather-load-first-fault-unsigned-words-to-vector--vector-index--#:~:text=CONSTRAINED%20UNPREDICTABLE)
-/// value of an element at or after one whose FFR bit is clear, as the pseudocode chooses it: what the access read
-/// where it was performed (`Unpredictable_SVELDNFDATA`), else zero (`Unpredictable_SVELDNFZERO`), else what Zt held.
+/// value of an element at or after one whose FFR bit is clear that has no data, as the pseudocode chooses it: zero
+/// (`Unpredictable_SVELDNFZERO`) or what Zt held; an element whose access was performed may also hold its data
+/// (`Unpredictable_SVELDNFDATA`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(
     feature = "bake",
@@ -105,17 +106,21 @@ pub struct ElementAccess {
     databake(path = wcontainers_processor_architecture_arm64::load_store::scalable_element_access)
 )]
 pub enum UnknownElement {
-    Data,
     Zero,
     Merge,
 }
 
-/// The value a chip gives each kind of element at or after one whose FFR bit is clear; the pseudocode chooses for each
-/// element anew, and these are the choices of a chip that chooses by the kind of element.
+/// The value a chip that chooses by the kind of element gives each one at or after one whose FFR bit is clear, where
+/// an active element whose access was performed may hold its data, zero or what Zt held under every choice, because
+/// the chip may suppress that access instead, which FFR does not show past its first clear bit, so no run is sure to
+/// tell those three apart.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg_attr(
+    feature = "bake",
+    derive(databake::Bake),
+    databake(path = wcontainers_processor_architecture_arm64::load_store::scalable_element_access)
+)]
 pub struct UnknownElements {
-    /// An active element whose access was performed: its data, zero or what Zt held.
-    pub read: UnknownElement,
     /// An active element whose access was suppressed, which has no data: zero or what Zt held; where it lies across
     /// a fault, zero may also be the bytes read below the fault with zero from it on, as `SuppressibleLoad` allows.
     pub suppressed: UnknownElement,
@@ -138,21 +143,13 @@ pub struct ElementAccessChoices {
 }
 
 impl UnknownElements {
-    /// Every choice the pseudocode allows: data, zero or merge where an access was performed, zero or merge elsewhere.
+    /// Every choice the pseudocode allows for a suppressed and an inactive element: zero or merge.
     pub fn list() -> impl Iterator<Item = Self> {
-        const READ: [UnknownElement; 3] = [
-            UnknownElement::Data,
-            UnknownElement::Zero,
-            UnknownElement::Merge,
-        ];
-        const OTHER: [UnknownElement; 2] = [UnknownElement::Zero, UnknownElement::Merge];
-        READ.into_iter().flat_map(|read| {
-            OTHER.into_iter().flat_map(move |suppressed| {
-                OTHER.into_iter().map(move |inactive| Self {
-                    read,
-                    suppressed,
-                    inactive,
-                })
+        const CHOICES: [UnknownElement; 2] = [UnknownElement::Zero, UnknownElement::Merge];
+        CHOICES.into_iter().flat_map(|suppressed| {
+            CHOICES.into_iter().map(move |inactive| Self {
+                suppressed,
+                inactive,
             })
         })
     }
@@ -163,14 +160,10 @@ impl UnknownElements {
             (false, _) => self.inactive,
             (true, false) if crate::planted::is(3632) => UnknownElement::Merge,
             (true, false) => self.suppressed,
-            (true, true) if crate::planted::is(3633) && self.read == UnknownElement::Data => {
-                UnknownElement::Zero
-            }
-            (true, true) => self.read,
+            (true, true) => return data,
         };
         match choice {
-            UnknownElement::Data if performed => data,
-            UnknownElement::Data | UnknownElement::Zero => 0,
+            UnknownElement::Zero => 0,
             UnknownElement::Merge => original,
         }
     }
@@ -998,6 +991,7 @@ where
     let register = ZD.read(word) as usize % crate::VECTOR_REGISTERS;
     let original = processor.vector_registers[register];
     let (mut when_read, mut when_suppressed, mut below_fault) = (0_u128, 0_u128, 0_u128);
+    let (mut when_zeroed, mut when_merged) = (0_u128, 0_u128);
     for element in 0..access.elements() {
         let kept = read_element(original, element, esize);
         let is_element_active = active(element);
@@ -1011,6 +1005,11 @@ where
                     Some(access.load_bytes_below(memory, at, location)),
                     false,
                 ),
+                None if crate::planted::is(3633) => (
+                    access.load_element(memory, at.wrapping_add(bytes)),
+                    None,
+                    true,
+                ),
                 None => (access.load_element(memory, at), None, true),
             }
         } else {
@@ -1021,9 +1020,16 @@ where
             Some(below) if chosen.suppressed == UnknownElement::Zero => below,
             _ => suppressed,
         };
+        let (zeroed, merged) = if performed {
+            (0, kept)
+        } else {
+            (suppressed, suppressed)
+        };
         when_read |= chosen.choose(data, performed, is_element_active, kept) << (element * esize);
         when_suppressed |= suppressed << (element * esize);
         below_fault |= below << (element * esize);
+        when_zeroed |= zeroed << (element * esize);
+        when_merged |= merged << (element * esize);
     }
     Some(SuppressibleLoad {
         register,
@@ -1031,6 +1037,8 @@ where
         first_suppressible,
         first_fault_before: processor.first_fault_register,
         when_read,
+        when_zeroed,
+        when_merged,
         when_suppressed,
         below_fault,
     })
@@ -1324,7 +1332,7 @@ pub const GENERATOR_AND_FIRST_FAULT_PLANTED_BUGS: [PlantedBug; 16] = [
     generator_bug(
         3633,
         Instruction::Ldff1bGather64,
-        "a first-fault gather zeroes an element it read after a clear FFR bit under the data choice",
+        "a first-fault gather reads an element it performs after a clear FFR bit from the bytes after its own",
     ),
     generator_bug(
         3634,

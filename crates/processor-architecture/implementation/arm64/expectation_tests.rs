@@ -9,6 +9,8 @@ const BYTES: SuppressibleLoad = SuppressibleLoad {
     first_suppressible: 0,
     first_fault_before: u16::MAX,
     when_read: 0x0F0E_0D0C_0B0A_0908_0706_0504_0302_0100,
+    when_zeroed: 0,
+    when_merged: 0,
     when_suppressed: 0,
     below_fault: 0,
 };

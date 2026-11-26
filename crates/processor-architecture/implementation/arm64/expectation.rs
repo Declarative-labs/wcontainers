@@ -41,6 +41,10 @@ pub struct SuppressibleLoad {
     pub first_fault_before: u16,
     /// Zt as the behavior leaves it where every element is unknown and every access that would not fault is performed.
     pub when_read: u128,
+    /// `when_read`, but with zero in each element whose access is performed.
+    pub when_zeroed: u128,
+    /// `when_read`, but with what Zt held in each element whose access is performed.
+    pub when_merged: u128,
     /// Zt as the behavior leaves it where every element is unknown and every active element's access is suppressed.
     pub when_suppressed: u128,
     /// `when_suppressed`, but where the behavior zeroes a suppressed element that lies across a fault, the bytes read
@@ -155,9 +159,15 @@ impl SuppressibleLoad {
             .map(|element| lane << (element * self.element_bits))
             .filter(|mask| mask & lanes != 0)
             .all(|mask| {
-                [self.when_read, self.when_suppressed, self.below_fault]
-                    .iter()
-                    .any(|allowed| (observed ^ allowed) & mask == 0)
+                [
+                    self.when_read,
+                    self.when_zeroed,
+                    self.when_merged,
+                    self.when_suppressed,
+                    self.below_fault,
+                ]
+                .iter()
+                .any(|allowed| (observed ^ allowed) & mask == 0)
             })
     }
 }
