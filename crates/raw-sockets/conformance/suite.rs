@@ -23,12 +23,14 @@ use wcontainers_icmp_sockets_conformance::{
     BROADCAST, Capture, CellBytes, DUMMY, FAIR_QUEUE, FAR, FAR_V6_SEGMENT, FLOW_LABEL, GATEWAY,
     GATEWAY_V6, HOP_LIMIT, LOCAL, LOCAL_V6, LOOK_AGAIN_SOON, MARK, MARK_PROHIBITED, NETWORK,
     NEVER_ON_DATAGRAMS, ON_LINK, ON_LINK_V6, OTHER_CODE, OTHER_USER, OWNER_PROHIBITED, PATIENCE,
-    PAYLOAD, QUEUED_ERRORS, QUIET, REPORT_KEY, ROOT, SELF_LINK, SHOW_GROUPS, TIME_TO_LIVE, Wakes,
-    buffer, buffer_sizes_are_read_back, filtered_membership, finished, finished_soon, index, ip,
-    ip6, ipv4, ipv6, no_reports, output, plain_fields, poll_with, seen, segment_routing_header,
+    PAYLOAD, QUEUED_ERRORS, QUIET, REPORT_KEY, ROOT, SELF_LINK, TIME_TO_LIVE, Wakes, buffer,
+    buffer_sizes_are_read_back, filtered_membership, finished, finished_soon, index, ip, ip6, ipv4,
+    ipv6, no_reports, output, plain_fields, poll_with, seen, segment_routing_header,
     source_filters_are_written, tc, version_of, woken, write_setting,
 };
-use wcontainers_icmp_sockets_conformance::{LONGER_THAN_A_PAGE, PAD_N, seconds_since_confirmed};
+use wcontainers_icmp_sockets_conformance::{
+    LONGER_THAN_A_PAGE, PAD_N, joined_groups, link_address, seconds_since_confirmed,
+};
 use wcontainers_internet_protocol::{
     AnycastAddress, BroadcastPermission, ByteCount, BytesPerSecond, FragmentSize, IcmpType,
     InterfaceSelector, IpHeaderFields, IpSendFields, IpSocketSetting, IpVersion, Ipv4HeaderFields,
@@ -79,8 +81,6 @@ const RAW_PACING: BytesPerSecond = BytesPerSecond(16_000);
 ///
 /// https://man7.org/linux/man-pages/man7/socket.7.html
 const FLOODING_SENDS: usize = 63;
-/// The brief listing iproute2 gives of a link: its name, state and link address.
-const BRIEF_LINK: &[&str] = &["-br", "link", "show"];
 /// The network namespace of the calling thread.
 const THREAD_NAMESPACE: &str = "/proc/thread-self/ns/net";
 /// A protocol number for experiments, which nothing else of the namespace sends or takes.
@@ -1195,11 +1195,7 @@ fn forwarding_pair() {
         write_setting(path, value);
     }
     // The link address of the second link, from iproute2's brief listing: name, state, address.
-    let text = output(
-        wcontainers_icmp_sockets_conformance::IP,
-        &[BRIEF_LINK, &[SECOND_OF_PAIR]].concat(),
-    );
-    let address = text.split_whitespace().nth(2).expect("a link address");
+    let address = link_address(SECOND_OF_PAIR);
     ip(&format!(
         "neigh add {BEYOND} lladdr {address} dev {FIRST_OF_PAIR}\nneigh add {BEYOND_V6} lladdr {address} dev {FIRST_OF_PAIR}"
     ));
@@ -1392,13 +1388,7 @@ pub fn close_gives_up_the_sockets_holdings<S: RawSockets>(sockets: S) {
     const GROUP: Ipv4Addr = Ipv4Addr::new(239, 1, 2, 6);
     // https://www.rfc-editor.org/rfc/rfc4291#section-2.7
     const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x126);
-    let joined = |group: IpAddr| {
-        output(
-            wcontainers_icmp_sockets_conformance::IP,
-            &[SHOW_GROUPS, &[DUMMY]].concat(),
-        )
-        .contains(&group.to_string())
-    };
+    let joined = |group: IpAddr| joined_groups(DUMMY).contains(&group);
     for group in [IpAddr::V4(GROUP), IpAddr::V6(GROUP_V6)] {
         let socket = opened(&sockets, version_of(group), EXPERIMENT);
         set(&sockets, &socket, membership(group, true));
@@ -2206,13 +2196,7 @@ pub fn multicast_settings_are_taken<S: RawSockets>(sockets: S) {
     // https://www.rfc-editor.org/rfc/rfc4291#section-2.7
     const GROUP_V6: Ipv6Addr = Ipv6Addr::new(0xff15, 0, 0, 0, 0, 0, 0, 0x125);
     let link = Some(InterfaceSelector::Requested(index(DUMMY)));
-    let joined = |group: IpAddr| {
-        output(
-            wcontainers_icmp_sockets_conformance::IP,
-            &[SHOW_GROUPS, &[DUMMY]].concat(),
-        )
-        .contains(&group.to_string())
-    };
+    let joined = |group: IpAddr| joined_groups(DUMMY).contains(&group);
     for group in [IpAddr::V4(GROUP), IpAddr::V6(GROUP_V6)] {
         let version = version_of(group);
         let member = opened(&sockets, version, EXPERIMENT);

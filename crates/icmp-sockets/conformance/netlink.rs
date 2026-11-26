@@ -6,8 +6,8 @@
 use std::net::{IpAddr, Ipv6Addr};
 
 use netlink_packet_core::{
-    DefaultNla, NLM_F_ACK, NLM_F_CREATE, NLM_F_EXCL, NLM_F_REPLACE, NLM_F_REQUEST, NetlinkHeader,
-    NetlinkMessage, NetlinkPayload,
+    DefaultNla, NLM_F_ACK, NLM_F_CREATE, NLM_F_DUMP, NLM_F_EXCL, NLM_F_REPLACE, NLM_F_REQUEST,
+    NetlinkHeader, NetlinkMessage, NetlinkPayload,
 };
 use netlink_packet_route::address::{
     AddressAttribute, AddressFlags, AddressHeaderFlags, AddressMessage, AddressScope,
@@ -28,10 +28,75 @@ use netlink_packet_route::rule::{
 };
 use netlink_packet_route::{AddressFamily, IpProtocol, RouteNetlinkMessage};
 
-/// The first byte of every IPv4 loopback address, to which `ip` gives the host's scope.
+/// The words of the `ip` commands done here, as ip-link(8), ip-address(8), ip-route(8), ip-rule(8) and ip-neighbour(8)
+/// spell them.
+mod word {
+    pub(super) const ADD: &str = "add";
+    pub(super) const ADDRESS: &str = "address";
+    pub(super) const ADDRGENMODE: &str = "addrgenmode";
+    pub(super) const ARP: &str = "arp";
+    pub(super) const BLACKHOLE: &str = "blackhole";
+    pub(super) const BROADCAST: &str = "broadcast";
+    pub(super) const DEV: &str = "dev";
+    pub(super) const DPORT: &str = "dport";
+    pub(super) const DSCP: &str = "dscp";
+    pub(super) const DUMMY: &str = "dummy";
+    pub(super) const ENCAP: &str = "encap";
+    pub(super) const FLOWLABEL: &str = "flowlabel";
+    pub(super) const FROM: &str = "from";
+    pub(super) const FWMARK: &str = "fwmark";
+    pub(super) const HOPLIMIT: &str = "hoplimit";
+    pub(super) const INET: &str = "inet";
+    pub(super) const INET6: &str = "inet6";
+    pub(super) const IPPROTO: &str = "ipproto";
+    pub(super) const LINK: &str = "link";
+    pub(super) const LLADDR: &str = "lladdr";
+    pub(super) const LOCK: &str = "lock";
+    pub(super) const LOOKUP: &str = "lookup";
+    pub(super) const METRIC: &str = "metric";
+    pub(super) const MNGTMPADDR: &str = "mngtmpaddr";
+    pub(super) const MODE: &str = "mode";
+    pub(super) const MTU: &str = "mtu";
+    pub(super) const MULTICAST: &str = "multicast";
+    pub(super) const NAME: &str = "name";
+    pub(super) const NEIGH: &str = "neigh";
+    pub(super) const NODAD: &str = "nodad";
+    pub(super) const NONE: &str = "none";
+    pub(super) const NUD: &str = "nud";
+    pub(super) const OIF: &str = "oif";
+    pub(super) const ON: &str = "on";
+    pub(super) const PEER: &str = "peer";
+    pub(super) const PROHIBIT: &str = "prohibit";
+    pub(super) const REPLACE: &str = "replace";
+    pub(super) const ROUTE: &str = "route";
+    pub(super) const RULE: &str = "rule";
+    pub(super) const SEG6: &str = "seg6";
+    pub(super) const SEGS: &str = "segs";
+    pub(super) const SET: &str = "set";
+    pub(super) const SPORT: &str = "sport";
+    pub(super) const STALE: &str = "stale";
+    pub(super) const TABLE: &str = "table";
+    pub(super) const TYPE: &str = "type";
+    pub(super) const UIDRANGE: &str = "uidrange";
+    pub(super) const UNREACHABLE: &str = "unreachable";
+    pub(super) const UP: &str = "up";
+    pub(super) const VETH: &str = "veth";
+    pub(super) const VIA: &str = "via";
+}
+
+/// What iproute2 writes between an address and its prefix length, between segments, between a range's ends, between a
+/// link address's bytes, and before a hexadecimal number.
 ///
-/// https://www.rfc-editor.org/rfc/rfc1122#section-3.2.1.3
-const LOOPBACK_NETWORK: u8 = 127;
+/// https://man7.org/linux/man-pages/man8/ip.8.html
+const PREFIX_SEPARATOR: char = '/';
+const SEGMENT_SEPARATOR: char = ',';
+const RANGE_SEPARATOR: char = '-';
+const MAC_SEPARATOR: char = ':';
+const HEX_PREFIX: &str = "0x";
+/// The base of the hexadecimal numbers iproute2 reads.
+///
+/// https://man7.org/linux/man-pages/man8/ip.8.html
+const HEX_RADIX: u32 = 16;
 
 /// Room for the kernel's answer to one request: an acknowledgement, or an error that quotes the request.
 ///
@@ -49,7 +114,7 @@ const CHANGE: u16 = 0;
 const IPV6_OPTION: &str = "-6";
 
 /// Does one line of `ip` commands, given with these options, through the routing socket, or tells that this kind is not done here.
-pub fn done(line: &str, options: &[&str]) -> bool {
+pub(crate) fn done(line: &str, options: &[&str]) -> bool {
     let family = if options.contains(&IPV6_OPTION) {
         AddressFamily::Inet6
     } else {
@@ -57,8 +122,19 @@ pub fn done(line: &str, options: &[&str]) -> bool {
     };
     let words: Vec<&str> = line.split_whitespace().collect();
     let request = match words.as_slice() {
-        ["link", "add", name, "type", "dummy"] => Some(new_link(name, InfoKind::Dummy, None)),
-        ["link", "add", name, "type", "veth", "peer", "name", peer] => {
+        [word::LINK, word::ADD, name, word::TYPE, word::DUMMY] => {
+            Some(new_link(name, InfoKind::Dummy, None))
+        }
+        [
+            word::LINK,
+            word::ADD,
+            name,
+            word::TYPE,
+            word::VETH,
+            word::PEER,
+            word::NAME,
+            peer,
+        ] => {
             let mut other = LinkMessage::default();
             other
                 .attributes
@@ -69,11 +145,16 @@ pub fn done(line: &str, options: &[&str]) -> bool {
                 Some(InfoData::Veth(InfoVeth::Peer(other))),
             ))
         }
-        ["link", "set", name, settings @ ..] => set_link(name, settings),
-        ["address", verb @ ("add" | "replace"), prefix, rest @ ..] => address(verb, prefix, rest),
-        ["route", "add", rest @ ..] => route(rest),
-        ["rule", "add", rest @ ..] => rule(family, rest),
-        ["neigh", "add", address, rest @ ..] => neighbour(address, rest),
+        [word::LINK, word::SET, name, settings @ ..] => set_link(name, settings),
+        [
+            word::ADDRESS,
+            verb @ (word::ADD | word::REPLACE),
+            prefix,
+            rest @ ..,
+        ] => address(verb, prefix, rest),
+        [word::ROUTE, word::ADD, rest @ ..] => route(rest),
+        [word::RULE, word::ADD, rest @ ..] => rule(family, rest),
+        [word::NEIGH, word::ADD, address, rest @ ..] => neighbour(address, rest),
         _ => None,
     };
     let Some((message, flags)) = request else {
@@ -105,19 +186,21 @@ fn set_link(name: &str, settings: &[&str]) -> Option<(RouteNetlinkMessage, u16)>
     let mut rest = settings.iter();
     while let Some(setting) = rest.next() {
         match *setting {
-            "up" => {
+            word::UP => {
                 link.header.flags |= LinkFlags::Up;
                 link.header.change_mask |= LinkFlags::Up;
             }
-            "mtu" => link
+            word::MTU => link
                 .attributes
                 .push(LinkAttribute::Mtu(rest.next()?.parse().ok()?)),
-            "arp" if rest.next() == Some(&"on") => link.header.change_mask |= LinkFlags::Noarp,
-            "multicast" if rest.next() == Some(&"on") => {
+            word::ARP if rest.next() == Some(&word::ON) => {
+                link.header.change_mask |= LinkFlags::Noarp
+            }
+            word::MULTICAST if rest.next() == Some(&word::ON) => {
                 link.header.flags |= LinkFlags::Multicast;
                 link.header.change_mask |= LinkFlags::Multicast;
             }
-            "addrgenmode" if rest.next() == Some(&"none") => {
+            word::ADDRGENMODE if rest.next() == Some(&word::NONE) => {
                 link.attributes
                     .push(LinkAttribute::AfSpecUnspec(vec![AfSpecUnspec::Inet6(
                         vec![AfSpecInet6::AddrGenMode(In6AddrGenMode::None)],
@@ -131,7 +214,7 @@ fn set_link(name: &str, settings: &[&str]) -> Option<(RouteNetlinkMessage, u16)>
 
 /// Gives the request that gives a link an address as `ip address add|replace <prefix> ...` does, if every word is known.
 fn address(verb: &str, prefix: &str, rest: &[&str]) -> Option<(RouteNetlinkMessage, u16)> {
-    let (address, length) = prefix.split_once('/')?;
+    let (address, length) = prefix.split_once(PREFIX_SEPARATOR)?;
     let address: IpAddr = address.parse().ok()?;
     let mut message = AddressMessage::default();
     message.header.prefix_len = length.parse().ok()?;
@@ -141,7 +224,7 @@ fn address(verb: &str, prefix: &str, rest: &[&str]) -> Option<(RouteNetlinkMessa
     };
     // iproute2 gives only an IPv4 loopback address a scope of its own; Linux chooses each IPv6 address's.
     message.header.scope = match address {
-        IpAddr::V4(v4) if v4.octets()[0] == LOOPBACK_NETWORK => AddressScope::Host,
+        IpAddr::V4(v4) if v4.is_loopback() => AddressScope::Host,
         _ => AddressScope::Universe,
     };
     message.attributes = vec![
@@ -152,12 +235,12 @@ fn address(verb: &str, prefix: &str, rest: &[&str]) -> Option<(RouteNetlinkMessa
     let mut words = rest.iter();
     while let Some(word) = words.next() {
         match *word {
-            "dev" => message.header.index = link_index(words.next()?),
-            "broadcast" => message
+            word::DEV => message.header.index = link_index(words.next()?),
+            word::BROADCAST => message
                 .attributes
                 .push(AddressAttribute::Broadcast(words.next()?.parse().ok()?)),
-            "nodad" => flags |= AddressFlags::Nodad,
-            "mngtmpaddr" => flags |= AddressFlags::Managetempaddr,
+            word::NODAD => flags |= AddressFlags::Nodad,
+            word::MNGTMPADDR => flags |= AddressFlags::Managetempaddr,
             _ => return None,
         }
     }
@@ -166,7 +249,7 @@ fn address(verb: &str, prefix: &str, rest: &[&str]) -> Option<(RouteNetlinkMessa
         Ok(byte) => message.header.flags = AddressHeaderFlags::from_bits_retain(byte),
         Err(_) => message.attributes.push(AddressAttribute::Flags(flags)),
     }
-    let creation = if verb == "replace" {
+    let creation = if verb == word::REPLACE {
         NLM_F_CREATE | NLM_F_REPLACE
     } else {
         NLM_F_CREATE | NLM_F_EXCL
@@ -195,20 +278,20 @@ fn route(words: &[&str]) -> Option<(RouteNetlinkMessage, u16)> {
     let mut rest = words.iter();
     while let Some(word) = rest.next() {
         match *word {
-            "prohibit" => message.header.kind = RouteType::Prohibit,
-            "blackhole" => message.header.kind = RouteType::BlackHole,
-            "unreachable" => message.header.kind = RouteType::Unreachable,
-            "via" => {
+            word::PROHIBIT => message.header.kind = RouteType::Prohibit,
+            word::BLACKHOLE => message.header.kind = RouteType::BlackHole,
+            word::UNREACHABLE => message.header.kind = RouteType::Unreachable,
+            word::VIA => {
                 gateway = true;
                 let mut next = *rest.next()?;
-                if next == "inet6" {
+                if next == word::INET6 {
                     let address: Ipv6Addr = rest.next()?.parse().ok()?;
                     message
                         .attributes
                         .push(RouteAttribute::Via(RouteVia::Inet6(address)));
                     continue;
                 }
-                if next == "inet" {
+                if next == word::INET {
                     next = rest.next()?;
                 }
                 let address: IpAddr = next.parse().ok()?;
@@ -216,25 +299,25 @@ fn route(words: &[&str]) -> Option<(RouteNetlinkMessage, u16)> {
                     .attributes
                     .push(RouteAttribute::Gateway(route_address(address)));
             }
-            "dev" => message
+            word::DEV => message
                 .attributes
                 .push(RouteAttribute::Oif(link_index(rest.next()?))),
-            "table" => table = rest.next()?.parse().ok()?,
-            "metric" => message
+            word::TABLE => table = rest.next()?.parse().ok()?,
+            word::METRIC => message
                 .attributes
                 .push(RouteAttribute::Priority(rest.next()?.parse().ok()?)),
-            "mtu" => {
+            word::MTU => {
                 let mut value = *rest.next()?;
-                if value == "lock" {
+                if value == word::LOCK {
                     locked |= 1 << linux_raw_sys::netlink::RTAX_MTU as u32;
                     value = rest.next()?;
                 }
                 metrics.push(RouteMetric::Mtu(value.parse().ok()?));
             }
-            "hoplimit" => metrics.push(RouteMetric::Hoplimit(rest.next()?.parse().ok()?)),
-            "encap" => {
+            word::HOPLIMIT => metrics.push(RouteMetric::Hoplimit(rest.next()?.parse().ok()?)),
+            word::ENCAP => {
                 // `encap seg6 mode encap segs <address>[,<address>...]`, the one encapsulation the checks use.
-                let ["seg6", "mode", "encap", "segs", segments] = [
+                let [word::SEG6, word::MODE, word::ENCAP, word::SEGS, segments] = [
                     rest.next()?,
                     rest.next()?,
                     rest.next()?,
@@ -245,7 +328,7 @@ fn route(words: &[&str]) -> Option<(RouteNetlinkMessage, u16)> {
                     return None;
                 };
                 let segments: Vec<Ipv6Addr> = segments
-                    .split(',')
+                    .split(SEGMENT_SEPARATOR)
                     .map(str::parse)
                     .collect::<Result<_, _>>()
                     .ok()?;
@@ -262,7 +345,7 @@ fn route(words: &[&str]) -> Option<(RouteNetlinkMessage, u16)> {
                     )]));
             }
             prefix if destination.is_none() => {
-                let (address, length) = prefix.split_once('/')?;
+                let (address, length) = prefix.split_once(PREFIX_SEPARATOR)?;
                 let address: IpAddr = address.parse().ok()?;
                 message.header.destination_prefix_length = length.parse().ok()?;
                 destination = Some(address);
@@ -283,7 +366,7 @@ fn route(words: &[&str]) -> Option<(RouteNetlinkMessage, u16)> {
         Ok(byte) => message.header.table = byte,
         Err(_) => message.attributes.push(RouteAttribute::Table(table)),
     }
-    if locked != 0 {
+    if locked != u32::MIN {
         metrics.push(RouteMetric::Lock(locked));
     }
     if !metrics.is_empty() {
@@ -335,11 +418,11 @@ fn rule(family: AddressFamily, words: &[&str]) -> Option<(RouteNetlinkMessage, u
     let mut rest = words.iter();
     while let Some(word) = rest.next() {
         match *word {
-            "fwmark" => message
+            word::FWMARK => message
                 .attributes
                 .push(RuleAttribute::FwMark(number(rest.next()?)?)),
-            "uidrange" => {
-                let (start, end) = rest.next()?.split_once('-')?;
+            word::UIDRANGE => {
+                let (start, end) = rest.next()?.split_once(RANGE_SEPARATOR)?;
                 message
                     .attributes
                     .push(RuleAttribute::UidRange(RuleUidRange {
@@ -347,7 +430,7 @@ fn rule(family: AddressFamily, words: &[&str]) -> Option<(RouteNetlinkMessage, u
                         end: end.parse().ok()?,
                     }));
             }
-            "ipproto" => {
+            word::IPPROTO => {
                 let name = *rest.next()?;
                 let protocol = match PROTOCOLS.iter().find(|(known, _)| *known == name) {
                     Some((_, value)) => u8::try_from(*value).ok()?,
@@ -357,19 +440,19 @@ fn rule(family: AddressFamily, words: &[&str]) -> Option<(RouteNetlinkMessage, u
                     .attributes
                     .push(RuleAttribute::IpProtocol(IpProtocol::from(protocol)));
             }
-            port @ ("dport" | "sport") => {
+            port @ (word::DPORT | word::SPORT) => {
                 let value: u16 = rest.next()?.parse().ok()?;
                 let range = RulePortRange {
                     start: value,
                     end: value,
                 };
-                message.attributes.push(if port == "dport" {
+                message.attributes.push(if port == word::DPORT {
                     RuleAttribute::DestinationPortRange(range)
                 } else {
                     RuleAttribute::SourcePortRange(range)
                 });
             }
-            "from" => {
+            word::FROM => {
                 let address: IpAddr = rest.next()?.parse().ok()?;
                 (message.header.family, message.header.src_len) = match address {
                     IpAddr::V4(_) => (AddressFamily::Inet, u8::try_from(u32::BITS).ok()?),
@@ -377,10 +460,10 @@ fn rule(family: AddressFamily, words: &[&str]) -> Option<(RouteNetlinkMessage, u
                 };
                 message.attributes.push(RuleAttribute::Source(address));
             }
-            "oif" => message
+            word::OIF => message
                 .attributes
                 .push(RuleAttribute::Oifname((*rest.next()?).to_owned())),
-            "dscp" => {
+            word::DSCP => {
                 let value: u8 = rest.next()?.parse().ok()?;
                 message
                     .attributes
@@ -389,7 +472,7 @@ fn rule(family: AddressFamily, words: &[&str]) -> Option<(RouteNetlinkMessage, u
                         vec![value],
                     )));
             }
-            "flowlabel" => {
+            word::FLOWLABEL => {
                 let label = number(rest.next()?)?;
                 for (kind, value) in [
                     (linux_raw_sys::netlink::FRA_FLOWLABEL, label),
@@ -403,8 +486,8 @@ fn rule(family: AddressFamily, words: &[&str]) -> Option<(RouteNetlinkMessage, u
                         )));
                 }
             }
-            "lookup" | "table" => table = Some(rest.next()?.parse().ok()?),
-            "prohibit" => {
+            word::LOOKUP | word::TABLE => table = Some(rest.next()?.parse().ok()?),
+            word::PROHIBIT => {
                 message.header.action = RuleAction::Prohibit;
                 table = None;
             }
@@ -426,8 +509,8 @@ fn rule(family: AddressFamily, words: &[&str]) -> Option<(RouteNetlinkMessage, u
 
 /// Gives a number written in decimal, or in hexadecimal after `0x`, as iproute2 reads one.
 fn number(text: &str) -> Option<u32> {
-    match text.strip_prefix("0x") {
-        Some(hexadecimal) => u32::from_str_radix(hexadecimal, 16).ok(),
+    match text.strip_prefix(HEX_PREFIX) {
+        Some(hexadecimal) => u32::from_str_radix(hexadecimal, HEX_RADIX).ok(),
         None => text.parse().ok(),
     }
 }
@@ -452,19 +535,19 @@ fn neighbour(address: &str, rest: &[&str]) -> Option<(RouteNetlinkMessage, u16)>
     let mut words = rest.iter();
     while let Some(word) = words.next() {
         match *word {
-            "lladdr" => {
+            word::LLADDR => {
                 let bytes: Vec<u8> = words
                     .next()?
-                    .split(':')
-                    .map(|byte| u8::from_str_radix(byte, 16))
+                    .split(MAC_SEPARATOR)
+                    .map(|byte| u8::from_str_radix(byte, HEX_RADIX))
                     .collect::<Result<_, _>>()
                     .ok()?;
                 message
                     .attributes
                     .push(NeighbourAttribute::LinkLayerAddress(bytes));
             }
-            "dev" => message.header.ifindex = link_index(words.next()?),
-            "nud" if words.next() == Some(&"stale") => {
+            word::DEV => message.header.ifindex = link_index(words.next()?),
+            word::NUD if words.next() == Some(&word::STALE) => {
                 message.header.state = NeighbourState::Stale;
             }
             _ => return None,
@@ -483,8 +566,21 @@ fn link_index(name: &str) -> u32 {
 
 /// Sends one request to the routing socket of the calling thread's namespace and stops the check unless it is done.
 fn ask(message: RouteNetlinkMessage, flags: u16, line: &str) {
+    let socket = sent(message, NLM_F_ACK | flags, line);
+    let mut reply = Vec::with_capacity(ANSWER_ROOM);
+    socket
+        .recv(&mut reply, i32::from(u8::MIN))
+        .unwrap_or_else(|error| panic!("{line}: {error}"));
+    match NetlinkMessage::<RouteNetlinkMessage>::deserialize(&reply).map(|answer| answer.payload) {
+        Ok(NetlinkPayload::Error(error)) if error.code.is_none() => {}
+        other => panic!("ip {line}: {other:?}"),
+    }
+}
+
+/// Sends one request with these flags to a new routing socket of the calling thread's namespace, and gives the socket.
+fn sent(message: RouteNetlinkMessage, flags: u16, what: &str) -> netlink_sys::Socket {
     let mut header = NetlinkHeader::default();
-    header.flags = NLM_F_REQUEST | NLM_F_ACK | flags;
+    header.flags = NLM_F_REQUEST | flags;
     let mut request = NetlinkMessage::new(header, NetlinkPayload::from(message));
     request.finalize();
     let mut bytes = vec![u8::MIN; request.buffer_len()];
@@ -497,13 +593,173 @@ fn ask(message: RouteNetlinkMessage, flags: u16, line: &str) {
         .expect("the routing socket connects to the kernel");
     socket
         .send(&bytes, i32::from(u8::MIN))
-        .unwrap_or_else(|error| panic!("{line}: {error}"));
-    let mut reply = Vec::with_capacity(ANSWER_ROOM);
+        .unwrap_or_else(|error| panic!("{what}: {error}"));
     socket
-        .recv(&mut reply, i32::from(u8::MIN))
-        .unwrap_or_else(|error| panic!("{line}: {error}"));
-    match NetlinkMessage::<RouteNetlinkMessage>::deserialize(&reply).map(|answer| answer.payload) {
-        Ok(NetlinkPayload::Error(error)) if error.code.is_none() => {}
-        other => panic!("ip {line}: {other:?}"),
+}
+
+/// Room for one part of a dump, which the kernel fills with whole messages.
+///
+/// https://man7.org/linux/man-pages/man7/netlink.7.html
+const DUMP_ROOM: usize = 1 << 16;
+
+/// The boundary every netlink message starts on.
+///
+/// https://man7.org/linux/man-pages/man7/netlink.7.html
+const NETLINK_ALIGNMENT: usize = 4;
+
+/// Gives every message the kernel answers a dump request with, as `ip ... show` reads them.
+fn dump(message: RouteNetlinkMessage, what: &str) -> Vec<RouteNetlinkMessage> {
+    let socket = sent(message, NLM_F_DUMP, what);
+    let mut answers = Vec::new();
+    loop {
+        let mut reply = Vec::with_capacity(DUMP_ROOM);
+        socket
+            .recv(&mut reply, i32::from(u8::MIN))
+            .unwrap_or_else(|error| panic!("{what}: {error}"));
+        let mut at = usize::MIN;
+        while at < reply.len() {
+            let answer = NetlinkMessage::<RouteNetlinkMessage>::deserialize(&reply[at..])
+                .unwrap_or_else(|error| panic!("{what}: {error}"));
+            let length = usize::try_from(answer.header.length).unwrap_or(usize::MIN);
+            match answer.payload {
+                NetlinkPayload::Done(_) => return answers,
+                NetlinkPayload::InnerMessage(inner) => answers.push(inner),
+                NetlinkPayload::Error(error) => panic!("{what}: {error:?}"),
+                _ => {}
+            }
+            assert!(length > usize::MIN, "{what}: a message of no length");
+            at += length.next_multiple_of(NETLINK_ALIGNMENT);
+        }
     }
+}
+
+/// The local routing table, where Linux keeps a route to each address of the namespace's own.
+///
+/// https://man7.org/linux/man-pages/man8/ip-route.8.html
+const LOCAL_TABLE: u32 = 255;
+
+/// Tells whether the local table routes this one address, as `ip -6 route show table local <address>` lists it.
+pub(crate) fn locally_routed(address: Ipv6Addr) -> bool {
+    let mut request = RouteMessage::default();
+    request.header.address_family = AddressFamily::Inet6;
+    dump(RouteNetlinkMessage::GetRoute(request), "the IPv6 routes")
+        .into_iter()
+        .any(|answer| {
+            let RouteNetlinkMessage::NewRoute(route) = answer else {
+                return false;
+            };
+            let table = route
+                .attributes
+                .iter()
+                .find_map(|attribute| match attribute {
+                    RouteAttribute::Table(table) => Some(*table),
+                    _ => None,
+                })
+                .unwrap_or_else(|| u32::from(route.header.table));
+            table == LOCAL_TABLE
+                && u32::from(route.header.destination_prefix_length) == u128::BITS
+                && route
+                    .attributes
+                    .contains(&RouteAttribute::Destination(RouteAddress::Inet6(address)))
+        })
+}
+
+/// Gives how many clock ticks ago the link's neighbour entry for the address was confirmed, as `ip -s neigh show` reads it.
+pub(crate) fn confirmed_ticks(address: IpAddr, link: &str) -> Option<u32> {
+    let index = link_index(link);
+    let destination = match address {
+        IpAddr::V4(v4) => NeighbourAddress::Inet(v4),
+        IpAddr::V6(v6) => NeighbourAddress::Inet6(v6),
+    };
+    dump(
+        RouteNetlinkMessage::GetNeighbour(NeighbourMessage::default()),
+        "the neighbours",
+    )
+    .into_iter()
+    .find_map(|answer| {
+        let RouteNetlinkMessage::NewNeighbour(entry) = answer else {
+            return None;
+        };
+        if entry.header.ifindex != index
+            || !entry
+                .attributes
+                .contains(&NeighbourAttribute::Destination(destination.clone()))
+        {
+            return None;
+        }
+        entry
+            .attributes
+            .iter()
+            .find_map(|attribute| match attribute {
+                NeighbourAttribute::CacheInfo(information) => Some(information.confirmed),
+                _ => None,
+            })
+    })
+}
+
+/// Gives the link's temporary IPv6 address once it is no longer tentative, as `ip -6 address show temporary -tentative` does.
+pub(crate) fn temporary_address(link: &str) -> Option<Ipv6Addr> {
+    let index = link_index(link);
+    let mut request = AddressMessage::default();
+    request.header.family = AddressFamily::Inet6;
+    dump(
+        RouteNetlinkMessage::GetAddress(request),
+        "the IPv6 addresses",
+    )
+    .into_iter()
+    .find_map(|answer| {
+        let RouteNetlinkMessage::NewAddress(address) = answer else {
+            return None;
+        };
+        // Linux names a temporary address by IFA_F_SECONDARY, and gives all flags in IFA_FLAGS when it sends them.
+        let flags = address
+            .attributes
+            .iter()
+            .find_map(|attribute| match attribute {
+                AddressAttribute::Flags(flags) => Some(*flags),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                AddressFlags::from_bits_retain(u32::from(address.header.flags.bits()))
+            });
+        if address.header.index != index
+            || !flags.contains(AddressFlags::Secondary)
+            || flags.contains(AddressFlags::Tentative)
+        {
+            return None;
+        }
+        address
+            .attributes
+            .iter()
+            .find_map(|attribute| match attribute {
+                AddressAttribute::Address(IpAddr::V6(v6)) => Some(*v6),
+                _ => None,
+            })
+    })
+}
+
+/// Gives a link's link-layer address, as `ip -br link show <link>` lists it.
+pub(crate) fn link_address(link: &str) -> Vec<u8> {
+    let index = link_index(link);
+    dump(
+        RouteNetlinkMessage::GetLink(LinkMessage::default()),
+        "the links",
+    )
+    .into_iter()
+    .find_map(|answer| {
+        let RouteNetlinkMessage::NewLink(found) = answer else {
+            return None;
+        };
+        if found.header.index != index {
+            return None;
+        }
+        found
+            .attributes
+            .into_iter()
+            .find_map(|attribute| match attribute {
+                LinkAttribute::Address(bytes) => Some(bytes),
+                _ => None,
+            })
+    })
+    .unwrap_or_else(|| panic!("no link address on {link}"))
 }

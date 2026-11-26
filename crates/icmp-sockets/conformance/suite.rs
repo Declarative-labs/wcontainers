@@ -70,7 +70,6 @@ pub const TRAFFIC_CONTROL: &str = "tc";
 const STATISTICS: &str = "-s";
 const JSON: &str = "-j";
 pub const SHOW_CLASSES: &[&str] = &[STATISTICS, JSON, "class", "show", DEVICE];
-pub const SHOW_GROUPS: &[&str] = &["maddr", "show", DEVICE];
 /// The third band of a prio queue, which its default map gives `TC_PRIO_FILLER` alone.
 pub const THIRD_BAND: &str = "\"handle\":\"1:3\"";
 /// The gateways of the dummy link, as neighbours last confirmed long ago; the link resolves neighbours so that IPv6 confirms them.
@@ -230,44 +229,25 @@ pub fn number_after(text: &str, after: &str, field: &str) -> u64 {
         .unwrap_or_else(|_| panic!("{text}"))
 }
 
-/// Returns how long ago the link's neighbour entry for the address was confirmed, in whole seconds.
+/// Returns how long ago the link's neighbour entry for the address was confirmed, in whole seconds, as iproute2 counts.
+///
+/// Linux gives the age in clock ticks, which `ip -s neigh show` divides by the ticks of a second.
 pub fn seconds_since_confirmed(address: IpAddr, link: &str) -> u64 {
-    const FIELD: &str = "\"confirmed\":";
-    /// Shows the neighbour entries with their times, as JSON.
-    const SHOW: &[&str] = &[STATISTICS, JSON, "neigh", "show"];
-    let output = Command::new(IP)
-        .args(SHOW)
-        .arg(address.to_string())
-        .args([DEVICE, link])
-        .output()
-        .expect("ip runs");
-    let text = String::from_utf8(output.stdout).expect("ip writes text");
-    number_after(&text, FIELD, FIELD)
+    let ticks = netlink::confirmed_ticks(address, link)
+        .unwrap_or_else(|| panic!("no neighbour entry for {address} on {link}"));
+    u64::from(ticks) / rustix::param::clock_ticks_per_second()
 }
 
 /// Returns the temporary address Linux made on the link, once its duplicate address detection, which runs later, is done.
 pub fn temporary_address(link: &str) -> Ipv6Addr {
-    /// Shows the link's temporary addresses that are no longer tentative, as JSON.
-    const SHOW: &[&str] = &["-6", JSON, "address", "show", "temporary", "-tentative"];
-    /// The mark that ends a string in iproute2's JSON.
-    const JSON_QUOTE: char = '"';
     /// The time between two looks, a hundredth of the time duplicate address detection waits.
     ///
     /// https://www.rfc-editor.org/rfc/rfc4861#section-10
     const LOOK_AGAIN: std::time::Duration = std::time::Duration::from_millis(10);
-    const LOCAL: &str = "\"local\":\"";
     let deadline = std::time::Instant::now() + PATIENCE;
     while std::time::Instant::now() < deadline {
-        let output = Command::new(IP)
-            .args(SHOW)
-            .args([DEVICE, link])
-            .output()
-            .expect("ip runs");
-        let text = String::from_utf8(output.stdout).expect("ip writes text");
-        if let Some(start) = text.find(LOCAL) {
-            let rest = &text[start + LOCAL.len()..];
-            let end = rest.find(JSON_QUOTE).expect("an address ends");
-            return rest[..end].parse().expect("an IPv6 address");
+        if let Some(address) = netlink::temporary_address(link) {
+            return address;
         }
         std::thread::sleep(LOOK_AGAIN);
     }
@@ -352,7 +332,6 @@ const ADDRESS: &str = "address";
 ///
 /// https://man7.org/linux/man-pages/man8/ip-address.8.html
 const ADDING: [&str; 2] = ["add", "replace"];
-const LOCAL_ROUTES: &[&str] = &["-6", "route", "show", "table", "local"];
 /// What ends an address before its prefix length in an `ip` command.
 const PREFIX_LENGTH: char = '/';
 
@@ -372,11 +351,65 @@ fn settle_addresses(commands: &str) {
             continue;
         };
         let start = Instant::now();
-        while output(IP, &[LOCAL_ROUTES, &[&address.to_string()]].concat()).is_empty() {
+        while !netlink::locally_routed(address) {
             assert!(start.elapsed() < SETTLING, "{address} is not local yet");
             std::thread::sleep(LOOK_AGAIN_SOON);
         }
     }
+}
+
+/// The multicast groups of this thread's namespace, IPv4's and IPv6's, which `ip maddr show` lists.
+///
+/// https://man7.org/linux/man-pages/man8/ip-maddress.8.html
+const GROUPS_V4: &str = "/proc/thread-self/net/igmp";
+const GROUPS_V6: &str = "/proc/thread-self/net/igmp6";
+
+/// Returns the multicast groups the link has joined, read where `ip maddr show dev <link>` reads them.
+///
+/// The IPv4 table names a link on a line of its own, `<index> <name> : ...`, with a line per group under it, each
+/// address the hexadecimal of its four bytes in the machine's order; the IPv6 table gives one line per group,
+/// `<index> <name> <32 hexadecimal digits> ...`.
+pub fn joined_groups(link: &str) -> Vec<IpAddr> {
+    /// The base of the tables' hexadecimal addresses.
+    const HEX_RADIX: u32 = 16;
+    let mut groups = Vec::new();
+    let v4 =
+        std::fs::read_to_string(GROUPS_V4).unwrap_or_else(|error| panic!("{GROUPS_V4}: {error}"));
+    let mut current = None;
+    for line in v4.lines().skip(1) {
+        let mut words = line.split_whitespace();
+        if line.starts_with(char::is_whitespace) {
+            if current == Some(link)
+                && let Some(Ok(value)) = words.next().map(|hex| u32::from_str_radix(hex, HEX_RADIX))
+            {
+                groups.push(IpAddr::V4(Ipv4Addr::from(value.to_ne_bytes())));
+            }
+        } else {
+            // A name of ten characters or more meets the colon after it.
+            current = words.nth(1).map(|name| name.trim_end_matches(':'));
+        }
+    }
+    let v6 =
+        std::fs::read_to_string(GROUPS_V6).unwrap_or_else(|error| panic!("{GROUPS_V6}: {error}"));
+    for line in v6.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        if let [_, name, hex, ..] = words.as_slice()
+            && *name == link
+            && let Ok(value) = u128::from_str_radix(hex, HEX_RADIX)
+        {
+            groups.push(IpAddr::V6(Ipv6Addr::from(value)));
+        }
+    }
+    groups
+}
+
+/// Returns a link's link-layer address as iproute2 writes it, bytes in hexadecimal between colons.
+pub fn link_address(link: &str) -> String {
+    netlink::link_address(link)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(":")
 }
 
 pub fn output(tool: &str, arguments: &[&str]) -> String {
@@ -3308,8 +3341,7 @@ pub fn memberships_are_taken<S: IcmpSockets>(sockets: S) {
     const ANYCAST: Ipv6Addr = Ipv6Addr::new(0xfd03, 0, 0, 0, 0, 0, 0, 0x99);
     let link = Some(index(DUMMY));
     let socket = opened(&sockets, IpVersion::V4);
-    let joined =
-        |group: IpAddr| output(IP, &[SHOW_GROUPS, &[DUMMY]].concat()).contains(&group.to_string());
+    let joined = |group: IpAddr| joined_groups(DUMMY).contains(&group);
     // An echo request to the group from the dummy link, which the namespace answers only if it takes the request.
     let replies_looped = |socket: &S::Socket, group: IpAddr| {
         for (looped, replied) in [(false, false), (true, true)] {
