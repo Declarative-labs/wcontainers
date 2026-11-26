@@ -48,8 +48,8 @@ fn make(code: &[u8], after: Vec<MemoryDelta<'static, X86_64>>) -> ExecutionState
     }
 }
 
-/// States the chip refuses: a permission that starts inside a page, bytes past the program's addresses, SYSENTER, which
-/// saves no place to return to, and XGETBV, whose XCR0 the guest's differs from.
+/// States the chip refuses: a permission that starts inside a page, bytes past the program's addresses, INT 0x80, which
+/// Linux takes as a 32-bit system call, and XGETBV, whose XCR0 the guest's differs from.
 fn to_unexecutable() -> Vec<ExecutionState<'static, X86_64>> {
     const ADD: [u8; 3] = [0x48, 0x01, 0xD8];
     vec![
@@ -67,7 +67,7 @@ fn to_unexecutable() -> Vec<ExecutionState<'static, X86_64>> {
                 bytes: Cow::Owned(vec![0xCC; 8]),
             }],
         ),
-        make(&[0x0F, 0x34], Vec::new()),
+        make(&[0xCD, 0x80], Vec::new()),
         make(&[0x0F, 0x01, 0xD0], Vec::new()),
     ]
 }

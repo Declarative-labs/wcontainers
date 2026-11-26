@@ -50,6 +50,9 @@ pub enum Exception {
     SoftwareInterrupt { vector: u8 },
     /// SYSCALL's entry to the kernel, after it wrote the next instruction's address into RCX and RFLAGS into R11.
     SystemCall,
+    /// SYSENTER's entry to the kernel at IA32_SYSENTER_EIP, which saves nothing of the program's: the instruction
+    /// pointer stays at SYSENTER, as no return address is kept.
+    SystemEnter,
 }
 
 /// What the access that faulted was doing.

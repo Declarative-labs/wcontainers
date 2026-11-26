@@ -1265,6 +1265,12 @@ pub enum Bug {
     BinaryTranscendentalKeepsStack,
     /// A binary transcendental form's behavior leaves ST(0) undecided, not the result's ST(1).
     UndecidedRegisterMisplaced,
+    /// SYSENTER leaves the instruction pointer past it, as SYSCALL does.
+    SystemEnterAdvances,
+    /// RDTSC and RDTSCP read the counter whatever CR4.TSD holds.
+    TimeStampCounterUnrestricted,
+    /// UMWAIT and TPAUSE wait whatever CR4.TSD holds.
+    WaitWithoutTimeStampControl,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1851,6 +1857,9 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::TranscendentalDenormalIgnored, "the x87 transcendental forms", Family::Forms(&TRANSCENDENTAL), Origin::X87AndRefused),
     row(Bug::BinaryTranscendentalKeepsStack, "FPATAN, FYL2X, FYL2XP1", Family::Forms(&BINARY_TRANSCENDENTAL), Origin::X87AndRefused),
     row(Bug::UndecidedRegisterMisplaced, "FPATAN, FYL2X, FYL2XP1", Family::Forms(&BINARY_TRANSCENDENTAL), Origin::X87AndRefused),
+    row(Bug::SystemEnterAdvances, "SYSENTER", Family::Forms(&[Instruction::Sysenter]), Origin::X87AndRefused),
+    row(Bug::TimeStampCounterUnrestricted, "RDTSC, RDTSCP", Family::Forms(&[Instruction::Rdtsc, Instruction::Rdtscp]), Origin::X87AndRefused),
+    row(Bug::WaitWithoutTimeStampControl, "UMWAIT, TPAUSE", Family::Forms(&[Instruction::UmwaitGpr32, Instruction::TpauseGpr32u32]), Origin::X87AndRefused),
 ];
 
 const TRIGONOMETRIC: [Instruction; 4] = [Instruction::Fsin, Instruction::Fcos, Instruction::Fptan, Instruction::Fsincos];
