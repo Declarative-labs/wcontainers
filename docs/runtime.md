@@ -1191,6 +1191,18 @@ Each bar is checkable by running the named command on this Mac with Docker.
   container runs). Bar: the suite at parallelism 1 and 4; the kernel test crate and J5's comparisons give
   their recorded verdicts at parallelism 1 on the rented machines; clippy clean; the crate inherits the
   workspace's lints.
+- **The cores measured at a container's first start (after JR, the restart's RT2).** The first start of a
+  container measures the instruction set of the cores it runs on through the owner's `ObservationCollector`
+  (crates/observation-collector/interface.rs; the implementation `PinnedBehaviorSourcesObservationCollector` and
+  the command `collect-observations` are on origin's `observation-collector` branch): one `CoreSample` for each
+  kind of core, kept for later starts, from which the executor's behavior source is built. The runtime takes a
+  collector as a value and builds no prober of its own. It waits on: a complete sample (today the real command
+  stops on both rented machines, at `AddZPmZ` on ARM64 and `AdcxGpr32dGpr32d` on x86-64, as the instruction
+  tracks' lists know only `Unimplemented` or `Undefined` for instructions the chips have); the collector
+  implementation on his main or merged into this branch; executors (the executor track's X2 and X3) whose
+  behavior source is made from a measured set; and his word on where samples are kept and what a start does
+  when the collection fails. Bar: a container's first start on each rented machine collects one sample per
+  kind of core, a second start reads the kept one, and a sample planted wrong for one instruction is refused.
 
 The brief's pass bar is met at J5 (layers 1 to 3), J6 (K6b) and J7 (benchmarks).
 
