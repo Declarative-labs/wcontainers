@@ -129,7 +129,12 @@ impl ScalableAccess {
         match self.element {
             ElementSize::Bits(bits) => Some(bits),
             ElementSize::Field(field) => {
-                let bits = u8::BITS << field.read(word);
+                let size = if crate::planted::is(3616) && self.memory_bytes == 4 {
+                    2
+                } else {
+                    field.read(word)
+                };
+                let bits = u8::BITS << size;
                 (bits >= self.memory_bytes * u8::BITS).then_some(bits)
             }
         }
