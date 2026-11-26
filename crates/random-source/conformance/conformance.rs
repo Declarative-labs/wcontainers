@@ -1,5 +1,6 @@
 //! The tests every implementation of wcontainers-random-source runs, written against its traits alone.
 
+use core::cell::RefCell;
 use core::mem::size_of;
 use std::thread;
 
@@ -19,10 +20,10 @@ pub fn fill_random_bytes_differently<R: RandomSource>(source: R) {
     let mut first = [u8::MIN; RANDOM_FILL_LENGTH];
     let mut second = [u8::MIN; RANDOM_FILL_LENGTH];
     source
-        .fill_random_bytes(&mut first)
+        .fill_random_bytes(&RefCell::new(first.as_mut_slice()))
         .expect("the random source must fill what it is given");
     source
-        .fill_random_bytes(&mut second)
+        .fill_random_bytes(&RefCell::new(second.as_mut_slice()))
         .expect("the random source must fill what it is given");
     assert_ne!(first, second);
 }
@@ -35,7 +36,7 @@ pub fn fill_every_byte_given<R: RandomSource>(source: R) {
         for _ in 0..RANDOM_FILL_LENGTH {
             buffer.fill(u8::MIN);
             source
-                .fill_random_bytes(&mut buffer)
+                .fill_random_bytes(&RefCell::new(buffer.as_mut_slice()))
                 .expect("the random source must fill what it is given");
             for (written, &byte) in written.iter_mut().zip(&buffer) {
                 *written |= byte != u8::MIN;
@@ -53,7 +54,7 @@ pub fn fill_every_byte_given<R: RandomSource>(source: R) {
 pub fn fill_random_bytes_with_every_byte_value<R: RandomSource>(source: R) {
     let mut buffer = vec![u8::MIN; LONG_FILL_LENGTH];
     source
-        .fill_random_bytes(&mut buffer)
+        .fill_random_bytes(&RefCell::new(buffer.as_mut_slice()))
         .expect("the random source must fill what it is given");
     let mut seen = [false; u8::MAX as usize + 1];
     for &byte in &buffer {
@@ -74,7 +75,7 @@ pub fn fill_random_bytes_differently_across_threads<R: RandomSource + Sync>(sour
                 scope.spawn(|| {
                     let mut fill = [u8::MIN; RANDOM_FILL_LENGTH];
                     source
-                        .fill_random_bytes(&mut fill)
+                        .fill_random_bytes(&RefCell::new(fill.as_mut_slice()))
                         .expect("the random source must fill what it is given");
                     fill
                 })
