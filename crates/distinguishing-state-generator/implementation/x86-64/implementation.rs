@@ -41,6 +41,7 @@ use wcontainers_instruction_input_domain_x86_64::{
     OperandValue, SegmentChoice, UPPER_DATA_ADDRESS, ValueSet, X86_64InputDomain, to_data_address,
 };
 use wcontainers_processor_architecture::ExecutionState;
+use wcontainers_processor_architecture_x86_64::avx::{AvxOperation, find_avx_form};
 use wcontainers_processor_architecture_x86_64::branch::find_branch_form;
 use wcontainers_processor_architecture_x86_64::integer::{OperandPlace, find_integer_form};
 use wcontainers_processor_architecture_x86_64::float::find_float_form;
@@ -191,7 +192,8 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::Comparison
         | OperandType::CpuidLeaf
         | OperandType::CpuidSubleaf
-        | OperandType::CpuidUpperHalves => true,
+        | OperandType::CpuidUpperHalves
+        | OperandType::AvxData(_) => true,
         OperandType::Sse(operand) => operand.is_data(),
         _ => false,
     }
@@ -224,6 +226,14 @@ fn find_access_shape(instruction: Instruction) -> Option<AccessShape> {
             alignment: (form.memory_bytes() == 16).then_some(SSE_ALIGNMENT),
         });
     }
+    if let Some(form) = find_avx_form(instruction) {
+        // A masked form's mask decides whether its access faults, so no placement decides that alone.
+        let masked = matches!(form.operation, AvxOperation::MaskedLoad(_) | AvxOperation::MaskedStore(_));
+        return (form.place != OperandPlace::Register && !masked).then_some(AccessShape {
+            write: form.writes_memory(),
+            alignment: form.aligned.then_some(u64::from(form.memory_bytes)),
+        });
+    }
     find_vector_form(instruction).filter(|form| form.place != OperandPlace::Register).map(|form| AccessShape {
         write: false,
         alignment: form.requires_alignment().then_some(SSE_ALIGNMENT),
@@ -237,6 +247,9 @@ fn find_access_bytes(instruction: Instruction, operands: &[Option<OperandValue>]
     }
     if let Some(form) = find_float_form(instruction) {
         return form.memory_bytes();
+    }
+    if let Some(form) = find_avx_form(instruction) {
+        return u64::from(form.memory_bytes);
     }
     let size = operands.iter().flatten().find_map(|value| match value {
         OperandValue::OperandSize(size) => Some(*size),

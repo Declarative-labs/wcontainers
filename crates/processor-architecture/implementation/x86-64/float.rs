@@ -16,6 +16,14 @@ use crate::planted::{Bug, is_active};
 
 #[path = "sse_float.rs"]
 pub(crate) mod sse_float;
+// The VEX arithmetic of the AVX family, which reads this module's operands and rounds as it does.
+#[path = "avx_float.rs"]
+mod avx_float;
+pub use avx_float::{FusedChoices, FusedNanOrder, InfiniteProductOfZero};
+pub(crate) use avx_float::{
+    FusedLanes, compare_half, convert_integer, convert_to_integer, dot_half, fuse_half, join_halves, narrow_to_halves,
+    round_half, widen_halves,
+};
 
 /// MXCSR's exception flags, in the order of its bits; each mask is the flag's bit shifted by [`MASK_SHIFT`].
 pub const INVALID: u32 = 1 << 0;

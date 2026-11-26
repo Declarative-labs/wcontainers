@@ -22,6 +22,10 @@ use crate::{
     PreciseInstruction, Processor, ProcessorExpectation, STACK_POINTER, VIRTUAL_ADDRESS_BITS, X86_64,
 };
 
+// The skeleton of the AVX family's forms, which reads memory as this module does.
+#[path = "avx_simulation.rs"]
+mod avx_simulation;
+
 const MAXIMUM_INSTRUCTION_BYTES: usize = 15;
 /// The legacy prefixes: segment overrides, operand and address size, LOCK, REPNE and REP.
 const LEGACY_PREFIXES: [u8; 11] = [0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF0, 0xF2, 0xF3];
@@ -91,6 +95,12 @@ fn simulate_processor(
         }
         Err(exception) => {
             keep_planted_writes(behavior, exception, processor, &changed);
+            // An AVX store that faults keeps the MXCSR flags its computation set, and a gather the lanes it loaded.
+            if matches!(behavior, PreciseInstruction::Avx { .. }) {
+                processor.mxcsr = changed.mxcsr;
+                processor.vector_registers = changed.vector_registers;
+                processor.upper_vector_halves = changed.upper_vector_halves;
+            }
             // #XM leaves the flags of the exceptions it found in MXCSR.
             if exception == Exception::SimdFloatingPoint
                 && !(is_active(Bug::SubtractScalarSingleFaultLeavesFlags)
@@ -182,6 +192,10 @@ fn apply(
             }
         }
         PreciseInstruction::Vector(instruction) => execute_vector(instruction, processor, memory, decoded),
+        PreciseInstruction::Avx { instruction, behavior } => {
+            let form = crate::avx::find_avx_form(instruction).unwrap_or_else(|| panic!("{instruction:?} is no AVX form"));
+            avx_simulation::execute_avx(form, behavior, processor, memory, decoded, on_memory_mutated)
+        }
         PreciseInstruction::Float(instruction) => execute_float(instruction, processor, memory, decoded),
         PreciseInstruction::Branch(instruction) => execute_branch(instruction, processor, decoded),
         PreciseInstruction::Sse { instruction, across_fault, masked_faults } => {
