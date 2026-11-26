@@ -1804,4 +1804,11 @@ pub static EVEX_INTEGER_FORMS: &[EvexIntegerForm] = evex_forms! {
     VpmovzxwqYmmi64MaskmskwXmmi16Avx512, Extend { from: Word, signedness: Unsigned }, Quadword, Register, L256, [EVEX_Vpmovzxwq_ymm_k1z_xmmm64];
     VpmovzxwqZmmi64MaskmskwMemi16Avx512, Extend { from: Word, signedness: Unsigned }, Quadword, Memory, L512, [EVEX_Vpmovzxwq_zmm_k1z_xmmm128];
     VpmovzxwqZmmi64MaskmskwXmmi16Avx512, Extend { from: Word, signedness: Unsigned }, Quadword, Register, L512, [EVEX_Vpmovzxwq_zmm_k1z_xmmm128];
+    // VDBPSADBW.
+    VdbpsadbwXmmu16MaskmskwXmmu8Memu8Imm8Avx512, DoubleBlockDifferences, Word, Memory, L128, [EVEX_Vdbpsadbw_xmm_k1z_xmm_xmmm128_imm8];
+    VdbpsadbwXmmu16MaskmskwXmmu8Xmmu8Imm8Avx512, DoubleBlockDifferences, Word, Register, L128, [EVEX_Vdbpsadbw_xmm_k1z_xmm_xmmm128_imm8];
+    VdbpsadbwYmmu16MaskmskwYmmu8Memu8Imm8Avx512, DoubleBlockDifferences, Word, Memory, L256, [EVEX_Vdbpsadbw_ymm_k1z_ymm_ymmm256_imm8];
+    VdbpsadbwYmmu16MaskmskwYmmu8Ymmu8Imm8Avx512, DoubleBlockDifferences, Word, Register, L256, [EVEX_Vdbpsadbw_ymm_k1z_ymm_ymmm256_imm8];
+    VdbpsadbwZmmu16MaskmskwZmmu8Memu8Imm8Avx512, DoubleBlockDifferences, Word, Memory, L512, [EVEX_Vdbpsadbw_zmm_k1z_zmm_zmmm512_imm8];
+    VdbpsadbwZmmu16MaskmskwZmmu8Zmmu8Imm8Avx512, DoubleBlockDifferences, Word, Register, L512, [EVEX_Vdbpsadbw_zmm_k1z_zmm_zmmm512_imm8];
 };
