@@ -9,7 +9,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::task::{Context, Poll, Waker};
 use std::thread::JoinHandle;
 
-use polling::{Event, Events, PollMode, Poller};
+use mio::unix::SourceFd;
+use mio::{Events, Interest, Poll as Poller, Registry, Token};
 use rustix::event::{PollFd, PollFlags, Timespec};
 use wcontainers_abi::HostError;
 use wcontainers_kernel::errno::Errno;
@@ -24,7 +25,9 @@ pub struct Watcher {
 }
 
 struct Shared {
-    poller: Poller,
+    registry: Registry,
+    waker: mio::Waker,
+    /// Locked by the watching thread while it looks at a socket, so that no watch outlives its registration.
     watches: Mutex<BTreeMap<RawFd, Arc<Watch>>>,
     stopping: AtomicBool,
 }
@@ -32,7 +35,6 @@ struct Shared {
 /// A socket the host's readiness watches, until it drops and its descriptor closes after its registration.
 pub struct Watched {
     registration: Registration,
-    fd: OwnedFd,
 }
 
 /// A watched socket's place in the watcher, withdrawn when it drops, before the socket's descriptor closes.
@@ -42,8 +44,8 @@ struct Registration {
 }
 
 struct Watch {
-    fd: RawFd,
-    key: usize,
+    fd: OwnedFd,
+    token: Token,
     /// The facts this kind of socket can be ready for; one outside them is never asked of the host or reported.
     possible: ReadyFor,
     state: Mutex<WatchState>,
@@ -73,6 +75,19 @@ pub struct WaitUntilReady<'a> {
     interest: ReadyFor,
     id: Option<u64>,
 }
+
+/// The token of the poller's waker, which no socket's descriptor has.
+const WAKE: Token = Token(usize::MAX);
+
+/// The most events taken from the host in one wait; the rest come with the next.
+const EVENTS_AT_ONCE: usize = 1024;
+
+/// What the poller is asked for when no fact is, as it takes at least one: on Linux urgent data, which a datagram socket
+/// has only beside an error; elsewhere readable, as kqueue reports errors and hang-ups only with a filter.
+#[cfg(target_os = "linux")]
+const LEAST: Interest = Interest::PRIORITY;
+#[cfg(not(target_os = "linux"))]
+const LEAST: Interest = Interest::READABLE;
 
 /// The name of the thread that waits on the host's readiness, short enough for Linux to keep whole.
 pub const WATCHER_THREAD: &str = "socket waits";
@@ -164,20 +179,36 @@ fn facts_now(fd: BorrowedFd<'_>, interest: ReadyFor) -> Result<ReadinessReport, 
 }
 
 /// Gives what the poller is asked to report for facts; it reports an error and a hang-up with any of them.
-fn registration(key: usize, interest: ReadyFor) -> Event {
-    let writable = interest.contains(ReadyFor::WRITABLE);
-    // No peer shutdown is registrable, but it makes the socket readable; kqueue reports errors and hang-ups only with either.
-    let readable = interest.intersects(ReadyFor::READABLE | ReadyFor::PEER_FINISHED_SENDING)
-        || (!cfg!(target_os = "linux") && !writable);
-    let mut event = Event::new(key, readable, writable);
-    event.set_priority(interest.contains(ReadyFor::URGENT_DATA));
-    event
+fn registration(interest: ReadyFor) -> Interest {
+    // A peer's shutdown makes the socket readable; readable asks for urgent data too, as `POLLIN` with `POLLPRI`.
+    let readable = interest
+        .intersects(ReadyFor::READABLE | ReadyFor::PEER_FINISHED_SENDING)
+        .then_some(Interest::READABLE);
+    let writable = interest
+        .contains(ReadyFor::WRITABLE)
+        .then_some(Interest::WRITABLE);
+    #[cfg(target_os = "linux")]
+    let urgent = (readable.is_some() || interest.contains(ReadyFor::URGENT_DATA))
+        .then_some(Interest::PRIORITY);
+    #[cfg(not(target_os = "linux"))]
+    let urgent = None;
+    [readable, writable, urgent]
+        .into_iter()
+        .flatten()
+        .reduce(Interest::add)
+        .unwrap_or(LEAST)
 }
 
 impl Watcher {
     pub fn new() -> Result<Self, HostError> {
+        let poller = Poller::new().map_err(|error| io_host_error(&error))?;
+        let registry = poller
+            .registry()
+            .try_clone()
+            .map_err(|error| io_host_error(&error))?;
         let shared = Arc::new(Shared {
-            poller: Poller::new().map_err(|error| io_host_error(&error))?,
+            waker: mio::Waker::new(&registry, WAKE).map_err(|error| io_host_error(&error))?,
+            registry,
             watches: Mutex::new(BTreeMap::new()),
             stopping: AtomicBool::new(false),
         });
@@ -185,7 +216,7 @@ impl Watcher {
             let shared = Arc::clone(&shared);
             std::thread::Builder::new()
                 .name(WATCHER_THREAD.into())
-                .spawn(move || shared.watch_events())
+                .spawn(move || shared.watch_events(poller))
                 .map_err(|error| io_host_error(&error))?
         };
         Ok(Self {
@@ -197,10 +228,10 @@ impl Watcher {
     /// Watches a socket that can have the facts given; the poller is asked about it only while a call waits on it.
     pub fn watch(&self, fd: OwnedFd, possible: ReadyFor) -> Result<Watched, HostError> {
         let raw = fd.as_raw_fd();
-        let key = usize::try_from(raw).map_err(|_| HostError::Errno(Errno::EBADF as i32))?;
+        let token = Token(usize::try_from(raw).map_err(|_| HostError::Errno(Errno::EBADF as i32))?);
         let watch = Arc::new(Watch {
-            fd: raw,
-            key,
+            fd,
+            token,
             possible,
             state: Mutex::new(WatchState {
                 open: true,
@@ -216,7 +247,6 @@ impl Watcher {
                 watch,
                 shared: Arc::clone(&self.shared),
             },
-            fd,
         })
     }
 }
@@ -225,7 +255,7 @@ impl Drop for Watcher {
     fn drop(&mut self) {
         self.shared.stopping.store(true, Ordering::Release);
         // A watcher that cannot be told to stop is left waiting; it holds only what it shares.
-        if self.shared.poller.notify().is_ok()
+        if self.shared.waker.wake().is_ok()
             && let Some(thread) = self.thread.take()
         {
             let _ = thread.join();
@@ -234,22 +264,20 @@ impl Drop for Watcher {
 }
 
 impl Shared {
-    fn watch_events(&self) {
-        let mut events = Events::new();
+    fn watch_events(&self, mut poller: Poller) {
+        let mut events = Events::with_capacity(EVENTS_AT_ONCE);
         let mut woken = Vec::new();
         while !self.stopping.load(Ordering::Acquire) {
-            events.clear();
             // An interrupted wait is waited again.
-            if self.poller.wait(&mut events, None).is_err() {
+            if poller.poll(&mut events, None).is_err() {
                 continue;
             }
             for event in events.iter() {
-                let Ok(fd) = RawFd::try_from(event.key) else {
+                let Ok(fd) = RawFd::try_from(event.token().0) else {
                     continue;
                 };
-                let watch = locked(&self.watches).get(&fd).cloned();
-                if let Some(watch) = watch {
-                    self.take_woken(&watch, &mut woken);
+                if let Some(watch) = locked(&self.watches).get(&fd) {
+                    self.take_woken(watch, &mut woken);
                 }
                 wake(&mut woken.drain(..));
             }
@@ -262,10 +290,8 @@ impl Shared {
         if !state.open || state.armed.is_none() {
             return;
         }
-        // SAFETY: the descriptor stays open while the state says so, under its lock.
-        let fd = unsafe { BorrowedFd::borrow_raw(watch.fd) };
         if let Some(waiting) = waiting_interest(&state) {
-            let now = match facts_now(fd, waiting) {
+            let now = match facts_now(watch.fd.as_fd(), waiting) {
                 Ok(now) => union(now, state.held),
                 Err(_) => EVERYTHING,
             };
@@ -280,7 +306,7 @@ impl Shared {
         // An edge-triggered registration reports every change until it is deleted, which a socket whose calls
         // were all woken no longer needs.
         if waiting_interest(&state).is_none() {
-            self.disarm(fd, &mut state);
+            self.disarm(watch, &mut state);
         }
     }
 
@@ -294,14 +320,13 @@ impl Shared {
         }
         // Edge-triggered, so a registration wider than the facts waited for, as readable for a peer's shutdown, is
         // looked at once per change.
-        let event = registration(watch.key, interest);
+        let wanted = registration(interest);
+        let fd = &mut SourceFd(&watch.fd.as_raw_fd());
+        // The registration is withdrawn when the Watched drops, before the descriptor it owns closes.
         let armed = if state.armed.is_some() {
-            // SAFETY: the descriptor stays open while the state says so, under its lock.
-            let fd = unsafe { BorrowedFd::borrow_raw(watch.fd) };
-            self.poller.modify_with_mode(fd, event, PollMode::Edge)
+            self.registry.reregister(fd, watch.token, wanted)
         } else {
-            // SAFETY: the registration is deleted when the Watched drops, before the descriptor it owns closes.
-            unsafe { self.poller.add_with_mode(watch.fd, event, PollMode::Edge) }
+            self.registry.register(fd, watch.token, wanted)
         };
         armed.map_err(|error| io_host_error(&error))?;
         state.armed = Some(interest);
@@ -309,8 +334,13 @@ impl Shared {
     }
 
     /// Takes the socket out of the poller's set, so that it reports nothing for a socket no call waits on.
-    fn disarm(&self, fd: BorrowedFd<'_>, state: &mut WatchState) {
-        if state.armed.is_some() && self.poller.delete(fd).is_ok() {
+    fn disarm(&self, watch: &Watch, state: &mut WatchState) {
+        if state.armed.is_some()
+            && self
+                .registry
+                .deregister(&mut SourceFd(&watch.fd.as_raw_fd()))
+                .is_ok()
+        {
             state.armed = None;
         }
     }
@@ -335,7 +365,7 @@ fn wake(woken: &mut impl Iterator<Item = Waker>) {
 
 impl Watched {
     pub fn fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
+        self.registration.watch.fd.as_fd()
     }
 
     /// Sets the facts the implementation holds for the socket beside the host's, waking the calls they finish.
@@ -357,9 +387,12 @@ impl Watched {
 
     /// Stops watching the socket and gives it back open.
     pub fn unwatch(self) -> OwnedFd {
-        let Self { registration, fd } = self;
-        drop(registration);
-        fd
+        let watch = Arc::clone(&self.registration.watch);
+        drop(self);
+        // The watcher keeps no watch of its own once the registration is withdrawn.
+        Arc::into_inner(watch)
+            .expect("a withdrawn watch held by no one else")
+            .fd
     }
 
     /// Makes a call that finishes when the socket has one of the facts asked for, giving every fact it has.
@@ -377,11 +410,9 @@ impl Drop for Registration {
         {
             let mut state = locked(&self.watch.state);
             state.open = false;
-            // SAFETY: a Watched's descriptor closes after its registration drops.
-            let fd = unsafe { BorrowedFd::borrow_raw(self.watch.fd) };
-            self.shared.disarm(fd, &mut state);
+            self.shared.disarm(&self.watch, &mut state);
         }
-        locked(&self.shared.watches).remove(&self.watch.fd);
+        locked(&self.shared.watches).remove(&self.watch.fd.as_raw_fd());
     }
 }
 
@@ -392,10 +423,8 @@ impl WaitUntilReady<'_> {
             state.waiters.retain(|waiter| waiter.id != id);
             // The last call waiting unwoken takes the registration with it.
             if waiting_interest(&state).is_none() {
-                self.watched
-                    .registration
-                    .shared
-                    .disarm(self.watched.fd(), &mut state);
+                let registration = &self.watched.registration;
+                registration.shared.disarm(&registration.watch, &mut state);
             }
         }
     }

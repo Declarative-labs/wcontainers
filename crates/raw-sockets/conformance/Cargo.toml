@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [lib]
-path = "conformance.rs"
+path = "suite.rs"
 
 [dependencies]
 wcontainers-abi.workspace = true
@@ -19,6 +19,8 @@ etherparse.workspace = true
 wcontainers-icmp-sockets-conformance = { path = "../../icmp-sockets/conformance" }
 wcontainers-readiness = { path = "../../readiness" }
 wcontainers-readiness-conformance = { path = "../../readiness/conformance" }
+# The bytes the suite receives into.
+wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
 # The errno values of Linux.
 libc = "0.2.191"
 # The routing header type of Linux.

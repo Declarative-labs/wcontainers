@@ -2,18 +2,18 @@
 
 use std::collections::VecDeque;
 use std::io::IoSlice;
-use std::mem::MaybeUninit;
+use std::mem::size_of;
 use std::net::SocketAddr;
 use std::os::fd::BorrowedFd;
 
 use libc::c_int;
-use linux_raw_sys::net as uapi;
 use socket2::{MsgHdr, SockAddr};
 use wcontainers_abi::HostError;
 use wcontainers_internet_protocol::{
     BufferSizes, ByteCount, MaximumTransmissionUnit, Received, Report, SendError, TransmitEvent,
     TransmitReport, TransmitReportKey, TransmitReportRequest, TransmitTimeError,
 };
+use wcontainers_linux_socket_options::LinuxSocketOptions;
 
 use crate::datagram::receive::{self, Ancillary, ControlBuffer};
 use crate::{Shortfalls, io_host_error, sock};
@@ -24,9 +24,6 @@ pub const ERROR_OF_NO_REPORT: &str =
     "an error queue entry of an origin the contract has no report for";
 pub const NO_ARRIVAL_INTERFACE: &str =
     "an ICMP error came without the packet information that names its arrival interface";
-
-/// The most an error queue entry is read of: a whole IP packet.
-const LARGEST_ENTRY: usize = u16::MAX as usize;
 
 /// One `sendmsg` of a payload to a name, or to the connected peer when there is none.
 pub fn send_message(
@@ -60,19 +57,18 @@ impl ErrorEntry {
     /// Reads the next entry of the socket's error queue, `WouldBlock` when it is empty.
     pub fn read(fd: BorrowedFd<'_>, shortfalls: &Shortfalls) -> Result<Self, HostError> {
         let mut control = ControlBuffer::new();
-        // Read on the stack, so that only the entry's own bytes are allocated, and nothing for an empty queue.
-        let mut data = [const { MaybeUninit::<u8>::uninit() }; LARGEST_ENTRY];
-        let message = receive::receive_with_tail(fd, &mut [], &mut data, &mut control, true)?;
-        if message.control_truncated {
-            shortfalls.count(receive::CONTROL_TRUNCATED);
-        }
-        let length = message.length.min(data.len());
-        // SAFETY: the kernel wrote the first `length` bytes.
-        let data = unsafe { core::slice::from_raw_parts(data.as_ptr().cast::<u8>(), length) };
-        Ok(Self {
-            data: data.to_vec(),
-            source: message.source,
-            control: message.control.to_vec(),
+        // Read into the thread's room, so that only the entry's own bytes are allocated, and nothing for an empty queue.
+        receive::with_tail(|data| {
+            let message = receive::receive_with_tail(fd, &mut [], data, &mut control, true)?;
+            if message.control_truncated {
+                shortfalls.count(receive::CONTROL_TRUNCATED);
+            }
+            let length = message.length.min(data.len());
+            Ok(Self {
+                data: data[..length].to_vec(),
+                source: message.source,
+                control: message.control[..crate::written_length(message.control)].to_vec(),
+            })
         })
     }
 }
@@ -357,14 +353,15 @@ pub fn error_entry(
 /// One count of the socket's memory information, `SO_MEMINFO`, by its `SK_MEMINFO_*` index.
 fn memory_information(fd: BorrowedFd<'_>, count: c_int) -> Result<u32, HostError> {
     const COUNTS: usize = libc::SK_MEMINFO_DROPS as usize + 1;
-    let mut words = [u32::MIN; COUNTS];
-    // SAFETY: the words are plain data, written by the kernel as their bytes.
-    let bytes = unsafe {
-        core::slice::from_raw_parts_mut(words.as_mut_ptr().cast::<u8>(), size_of_val(&words))
-    };
-    crate::get_bytes(fd, uapi::SOL_SOCKET, uapi::SO_MEMINFO, bytes)?;
-    Ok(words[count as usize])
+    let counts = crate::LINUX.get_so_meminfo::<{ COUNTS * size_of::<u32>() }>(fd)?;
+    let at = count as usize * size_of::<u32>();
+    Ok(counts.bytes[at..at + size_of::<u32>()]
+        .try_into()
+        .map_or(u32::MIN, u32::from_ne_bytes))
 }
+
+/// Why [`unsent_bytes`] and [`buffer_sizes`] cannot fail on a socket the caller holds open.
+pub const OWN_DESCRIPTOR: &str = "getsockopt on the socket's own open descriptor";
 
 /// The bytes the socket's sends hold in the host until they leave, which is what `SIOCOUTQ` gives a UDP socket.
 pub fn unsent_bytes(fd: BorrowedFd<'_>) -> Result<ByteCount, HostError> {
