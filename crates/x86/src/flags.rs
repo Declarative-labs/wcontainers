@@ -2,6 +2,7 @@
 //! each flag is worked out from them only when read. Every shape gives all six, so a flag the instruction
 //! leaves alone is kept in a local of its own (`inc` and `dec` keep CF).
 
+pub use crate::condition::{Condition, Test};
 use crate::{AF, CF, OF, PF, SF, X86_64, ZF};
 use wasm_encoder::InstructionSink;
 use wcontainers_guest_cpu::Emitter;
@@ -283,73 +284,6 @@ pub fn flag_value(s: &mut InstructionSink<'_>, flags: Flags, flag: Flag) {
             }
             s.i32_const(1).i32_and();
         }
-    }
-}
-
-/// The condition of a `jcc`, `setcc` or `cmovcc`, in the order of its encoding (the low four bits of the
-/// opcode).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Condition {
-    Overflow,
-    NotOverflow,
-    Below,
-    AboveOrEqual,
-    Equal,
-    NotEqual,
-    BelowOrEqual,
-    Above,
-    Sign,
-    NotSign,
-    Parity,
-    NotParity,
-    Less,
-    GreaterOrEqual,
-    LessOrEqual,
-    Greater,
-}
-
-/// What a condition tests; a condition holds when the test does, or is its negation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Test {
-    Overflow,
-    Below,
-    Equal,
-    BelowOrEqual,
-    Sign,
-    Parity,
-    Less,
-    LessOrEqual,
-}
-
-impl Condition {
-    pub const fn test(self) -> Test {
-        use Condition::*;
-        match self {
-            Overflow | NotOverflow => Test::Overflow,
-            Below | AboveOrEqual => Test::Below,
-            Equal | NotEqual => Test::Equal,
-            BelowOrEqual | Above => Test::BelowOrEqual,
-            Sign | NotSign => Test::Sign,
-            Parity | NotParity => Test::Parity,
-            Less | GreaterOrEqual => Test::Less,
-            LessOrEqual | Greater => Test::LessOrEqual,
-        }
-    }
-
-    /// Whether it holds when its test fails.
-    pub const fn negated(self) -> bool {
-        use Condition::*;
-        matches!(
-            self,
-            NotOverflow
-                | AboveOrEqual
-                | NotEqual
-                | Above
-                | NotSign
-                | NotParity
-                | GreaterOrEqual
-                | Greater
-        )
     }
 }
 

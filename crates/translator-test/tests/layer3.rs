@@ -282,3 +282,100 @@ fn csmith_programs_match_linux_x86_64() {
 fn hand_picked_programs_match_linux_x86_64() {
     hand_picked_programs_match_linux::<X86_64>(&["hello"]);
 }
+
+/// The native output for a host process (docs/x86-native-output.md section 8): Csmith's programs as above, at
+/// none, at a bound picked from the blob and at full, without and with the count, linked and run on this machine
+/// against Linux there, and the count after each system call against the WebAssembly output's. Linux x86-64
+/// only, where the reference is this machine. Knobs as above, but Chrome's.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn csmith_programs_match_linux_natively_x86_64() {
+    csmith_natively_in(&[wcontainers_x86::native::Way::Process], "natively");
+}
+
+/// The same in the in-process way's two checked forms (docs/x86-native-output.md sections 4 and 8), the program and
+/// its stack in the window. `WC_LAYER3_CHECK` takes one form (`wrapping` or `exact`), both otherwise.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[test]
+fn csmith_programs_match_linux_natively_in_process_x86_64() {
+    use wcontainers_x86::native::{Check, Way};
+    let only = std::env::var("WC_LAYER3_CHECK").ok();
+    let ways: Vec<Way> = [("wrapping", Check::Wrapping), ("exact", Check::Exact)]
+        .into_iter()
+        .filter(|(name, _)| only.as_deref().is_none_or(|only| only == *name))
+        .map(|(_, check)| Way::InProcess(check))
+        .collect();
+    csmith_natively_in(&ways, "natively in process");
+}
+
+/// Layer 3's Csmith programs in each of `ways`, the summary line starting "layer 3 " and `what`.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+fn csmith_natively_in(ways: &[wcontainers_x86::native::Way], what: &str) {
+    use wcontainers_translator_test::guest::x86_64::native_programs::compare;
+    use wcontainers_translator_test::progress::run_counting;
+    use wcontainers_translator_test::reference::with_reference;
+    let cases = setting("WC_LAYER3_CASES", 4);
+    let seed = setting("WC_LAYER3_SEED", 1);
+    let from = setting("WC_LAYER3_FROM", 0);
+    let jobs = setting("WC_LAYER3_JOBS", 1).max(1);
+    let [ran, too_long, runs, pieces] = std::array::from_fn(|_| AtomicU64::new(0));
+    let count = |counter: &AtomicU64, n: u64| counter.fetch_add(n, Ordering::Relaxed);
+    let failures = Mutex::new(Vec::new());
+    at_once(jobs, cases, |i| {
+        let number = seed.wrapping_mul(LAYER3_CASE_STRIDE).wrapping_add(from + i);
+        let (source, compiler, level, position) = csmith_case(number);
+        let blob = build::<X86_64>(&source, compiler, level, position);
+        let checked = (|| -> Result<(), String> {
+            let Some(theirs) = native_in_time::<X86_64>(&blob) else {
+                count(&too_long, 1);
+                return Ok(());
+            };
+            let counted = run_counting::<X86_64>(&blob, (LookAhead::None, Optimise::Speed));
+            if counted.ran != theirs {
+                return Err(format!(
+                    "{}: the WebAssembly output differs from Linux",
+                    blob.name
+                ));
+            }
+            let bound = {
+                use std::hash::Hasher;
+                let mut hasher = rustc_hash::FxHasher::default();
+                hasher.write(&blob.bytes);
+                2 + (hasher.finish() % 63) as u32
+            };
+            for &way in ways {
+                for look_ahead in [LookAhead::None, LookAhead::Bounded(bound), LookAhead::Full] {
+                    for counting in [false, true] {
+                        let ours = with_reference(&X86_64::REFERENCE, |reference| {
+                            compare(
+                                reference,
+                                &blob,
+                                (way, look_ahead),
+                                counting,
+                                &theirs,
+                                &counted,
+                            )
+                        })
+                        .map_err(|e| format!("{}: {e}", blob.name))?;
+                        count(&runs, ours.runs.into());
+                        count(&pieces, ours.pieces as u64);
+                    }
+                }
+            }
+            count(&ran, 1);
+            Ok(())
+        })();
+        if let Err(report) = checked {
+            eprintln!("csmith {number} (case {}) {what}: {report}", from + i);
+            failures.lock().unwrap().push(number);
+        }
+    });
+    let mut failures = failures.into_inner().unwrap();
+    failures.sort();
+    let [ran, too_long, runs, pieces] = [ran, too_long, runs, pieces].map(|c| c.into_inner());
+    eprintln!(
+        "layer 3 {what} ({ways:?}): {cases} Csmith programs from case {from}, seed {seed}, {jobs} at once: {ran} compared at 3 look-aheads with and without the count, {too_long} did not end in time on Linux; {runs} blob runs, {pieces} pieces; {} failing: {failures:?}",
+        failures.len()
+    );
+    assert!(failures.is_empty());
+}

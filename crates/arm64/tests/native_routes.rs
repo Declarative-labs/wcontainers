@@ -267,7 +267,7 @@ fn every_decoded_form_has_one_fitting_route() {
             }
             any = true;
             decoded += 1;
-            let route = Arm64::route(&decode(word));
+            let route = Arm64::route(&wcontainers_arm64::Way::Machine, &decode(word), &());
             *routes.entry(format!("{route:?}")).or_default() += 1;
             if let Some(why) = mismatch(route, &seen(word), word) {
                 failures.push(format!(

@@ -8,8 +8,9 @@ use crate::guest::{Control, Hook, Trap};
 use crate::meaning::{checked, each_with};
 use crate::operand::*;
 use crate::x87::{
-    Arithmetic, Code, ENVIRONMENT_WORDS, EXCEPTIONS, FOP_SHIFT, Format, NOT_STORED, OPCODE_BITS,
-    Operation, REGISTER_MASK, REGISTERS, TOP_SHIFT,
+    Arithmetic, Code, ENVIRONMENT_16, ENVIRONMENT_32, ENVIRONMENT_WORDS, EXCEPTIONS,
+    Environment as Layout, FOP_SHIFT, Format, NOT_STORED, OPCODE_BITS, Operation, REGISTER_MASK,
+    REGISTERS, TOP_SHIFT,
 };
 use crate::{CF, PF, X86_64, ZF};
 use iced_x86::{MemorySize, Mnemonic, OpKind, Register};
@@ -133,7 +134,7 @@ fn no_wait(m: Mnemonic) -> bool {
 }
 
 /// The control instructions, which leave the last instruction pointer as it is (seen on the reference).
-fn control(m: Mnemonic) -> bool {
+pub(crate) fn control(m: Mnemonic) -> bool {
     use Mnemonic::*;
     no_wait(m) || matches!(m, Fldcw | Fldenv | Frstor | Wait)
 }
@@ -219,10 +220,7 @@ pub(crate) fn store_at<E: Emitter<X86_64> + ?Sized>(
     };
 }
 
-/// The bytes of a memory value the hook's first argument holds; the rest, up to an 80-bit value, go in the
-/// second.
-pub(crate) const VALUE_LOW: u32 = size_of::<u64>() as u32;
-pub(crate) const VALUE_HIGH: u32 = size_of::<u16>() as u32;
+pub(crate) use crate::x87::{STORED_STATUS_SHIFT, VALUE_HIGH, VALUE_LOW};
 
 /// Call the x87 hook with `code`, the values in these locals (or zeros) and the data address; its two
 /// results into fresh locals.
@@ -286,7 +284,7 @@ fn write<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, bytes: u32, low: u32, 
     }
     e.sink()
         .local_get(high)
-        .i64_const(u16::BITS.into())
+        .i64_const(STORED_STATUS_SHIFT.into())
         .i64_shr_u()
         .i32_wrap_i64();
     e.set_control(Control::X87StatusTag);
@@ -360,6 +358,65 @@ fn check_ends<E: Emitter<X86_64> + ?Sized>(
     e.check(at, bytes, access, 0);
 }
 
+/// The unit's code with the instruction's opcode, memory format and ST(i) operand, for the operation to fill in.
+fn code(i: &Instruction) -> Code {
+    let ins = &i.iced;
+    let mut c = Code::new(Operation::Load);
+    c.opcode = i.x87_opcode & ((1 << OPCODE_BITS) - 1);
+    c.format = format(i);
+    let registers: Vec<u8> = (0..ins.op_count())
+        .filter(|&n| ins.op_kind(n) == OpKind::Register)
+        .filter_map(|n| st(ins.op_register(n)))
+        .collect();
+    // The register that is not the first ST(0), and whether the destination is it.
+    match registers.as_slice() {
+        [0, other] => c.register = *other,
+        [first, _] => {
+            c.register = *first;
+            c.to_register = true;
+        }
+        [only] => c.register = *only,
+        _ => {}
+    }
+    c
+}
+
+/// The unit's code of a transcendental instruction, which has no memory operand.
+pub(crate) fn transcendental_code(i: &Instruction) -> Option<Code> {
+    use Mnemonic::*;
+    let m = i.iced.mnemonic();
+    let operation = match m {
+        Fsin => Operation::Sine,
+        Fcos => Operation::Cosine,
+        Fsincos => Operation::SineCosine,
+        Fptan => Operation::Tangent,
+        F2xm1 => Operation::ExponentMinusOne,
+        Fpatan => Operation::ArcTangent,
+        Fyl2x => Operation::Logarithm,
+        Fyl2xp1 => Operation::LogarithmPlusOne,
+        _ => return None,
+    };
+    let mut c = code(i);
+    c.operation = operation;
+    c.pops = u8::from(matches!(m, Fpatan | Fyl2x | Fyl2xp1));
+    Some(c)
+}
+
+/// The unit's code of a store of ST(0) to memory.
+pub(crate) fn store_code(i: &Instruction) -> Option<Code> {
+    use Mnemonic::*;
+    let m = i.iced.mnemonic();
+    if !matches!(m, Fst | Fstp | Fist | Fistp | Fisttp | Fbstp) || format(i) == Format::Register {
+        return None;
+    }
+    Some(Code {
+        operation: Operation::Store,
+        pops: u8::from(!matches!(m, Fst | Fist)),
+        truncate: m == Fisttp,
+        ..code(i)
+    })
+}
+
 pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     use Mnemonic::*;
     let ins = &i.iced;
@@ -421,23 +478,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
         }
         _ => (None, None),
     };
-    let mut c = Code::new(Operation::Load);
-    c.opcode = i.x87_opcode & ((1 << OPCODE_BITS) - 1);
-    c.format = format(i);
-    let registers: Vec<u8> = (0..ins.op_count())
-        .filter(|&n| ins.op_kind(n) == OpKind::Register)
-        .filter_map(|n| st(ins.op_register(n)))
-        .collect();
-    // The register that is not the first ST(0), and whether the destination is it.
-    match registers.as_slice() {
-        [0, other] => c.register = *other,
-        [first, _] => {
-            c.register = *first;
-            c.to_register = true;
-        }
-        [only] => c.register = *only,
-        _ => {}
-    }
+    let mut c = code(i);
     let data = at.filter(|_| c.format != Format::Register);
     match m {
         Fld | Fild | Fbld => {
@@ -519,17 +560,7 @@ pub fn emit<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic
             call(e, c, None, None, None);
         }
         Fsin | Fcos | Fsincos | Fptan | F2xm1 | Fpatan | Fyl2x | Fyl2xp1 => {
-            c.operation = match m {
-                Fsin => Operation::Sine,
-                Fcos => Operation::Cosine,
-                Fsincos => Operation::SineCosine,
-                Fptan => Operation::Tangent,
-                F2xm1 => Operation::ExponentMinusOne,
-                Fpatan => Operation::ArcTangent,
-                Fyl2x => Operation::Logarithm,
-                _ => Operation::LogarithmPlusOne,
-            };
-            c.pops = u8::from(matches!(m, Fpatan | Fyl2x | Fyl2xp1));
+            let c = transcendental_code(i).expect("a transcendental instruction");
             call(e, c, None, None, None);
         }
         Fprem | Fprem1 => {
@@ -617,49 +648,16 @@ fn compare_flags<E: Emitter<X86_64> + ?Sized>(e: &mut E, result: u32) {
     e.set_flags(Flags::Each(each));
 }
 
-/// The protected-mode environment's layout (Intel SDM Vol. 1 8.1.10, figures 8-9 and 8-10): the control,
-/// status and tag words, each in a doubleword whose reserved half is all ones in the 32-bit form, then the
-/// instruction pointer, its selector (FOP above it in the 32-bit form), the data pointer and its selector.
-struct Layout {
-    word: u32,
-    ip: u64,
-    selector: u64,
-    data: u64,
-    data_selector: u64,
-    size: u64,
-}
-
-const ENVIRONMENT_32: Layout = Layout {
-    word: size_of::<u32>() as u32,
-    ip: 12,
-    selector: 16,
-    data: 20,
-    data_selector: 24,
-    size: crate::x87::ENVIRONMENT_32_BYTES as u64,
-};
-const ENVIRONMENT_16: Layout = Layout {
-    word: size_of::<u16>() as u32,
-    ip: 6,
-    selector: 8,
-    data: 10,
-    data_selector: 12,
-    size: crate::x87::ENVIRONMENT_16_BYTES as u64,
-};
 /// The bytes of each register in the saved state, ST(0) first.
 const REGISTER_BYTES: u64 = (crate::X87_REGISTER_BITS / u8::BITS) as u64;
-/// What a reserved half of the 32-bit form holds.
-const RESERVED_HALF: i64 = (u16::MAX as i64) << u16::BITS;
 
 impl Layout {
-    fn of(i: &Instruction) -> &'static Layout {
+    /// The form the instruction's operand size chooses.
+    pub(crate) fn of(i: &Instruction) -> &'static Layout {
         match i.iced.memory_size() {
             MemorySize::FpuEnv14 | MemorySize::FpuState94 => &ENVIRONMENT_16,
             _ => &ENVIRONMENT_32,
         }
-    }
-
-    fn wide(&self) -> bool {
-        self.word > u16::BITS / u8::BITS
     }
 }
 
@@ -746,7 +744,7 @@ fn environment_store<E: Emitter<X86_64> + ?Sized>(
     });
     let (words, fdp) = call(e, c, None, None, None);
     let value = e.local(ValType::I64);
-    let reserved = if layout.wide() { RESERVED_HALF } else { 0 };
+    let reserved = i64::from(layout.reserved());
     for k in 0..ENVIRONMENT_WORDS {
         e.sink()
             .local_get(words)
@@ -839,25 +837,17 @@ const IMAGE_MXCSR: u64 = core::mem::offset_of!(crate::Fxsave, mxcsr) as u64;
 const IMAGE_MXCSR_MASK: u64 = core::mem::offset_of!(crate::Fxsave, mxcsr_mask) as u64;
 const IMAGE_REGISTERS: u64 = core::mem::offset_of!(crate::Fxsave, st) as u64;
 const IMAGE_XMM: u64 = core::mem::offset_of!(crate::Fxsave, xmm) as u64;
-const IMAGE_SLOT: u64 = size_of::<[u8; 16]>() as u64;
-/// The reserved byte after the abridged tag word, which the image holds as zero.
-const HEADER_KEPT: i64 =
-    !((u8::MAX as i64) << (core::mem::offset_of!(crate::Fxsave, reserved0) as u32 * u8::BITS));
+const HEADER_KEPT: i64 = crate::answer::HEADER_KEPT as i64;
 
-/// The XSAVE header's XSTATE_BV after the legacy area, and the header's bytes after it that the standard form
-/// of `xrstor` requires to be zero (XCOMP_BV and the next eight; Intel SDM Vol. 1 13.8.1).
-const XSTATE_BV: u64 = size_of::<crate::Fxsave>() as u64;
+const XSTATE_BV: u64 = crate::answer::XSTATE_BV as u64;
 const XSAVE_HEADER_ZERO: [u64; 2] = [
-    XSTATE_BV + size_of::<u64>() as u64,
-    XSTATE_BV + 2 * size_of::<u64>() as u64,
+    crate::answer::XSAVE_HEADER_ZERO[0] as u64,
+    crate::answer::XSAVE_HEADER_ZERO[1] as u64,
 ];
-/// The alignment an XSAVE area needs.
-const XSAVE_ALIGNMENT: i64 = 64;
 
 /// The bytes of an `xsave` or `xrstor` area: the largest the state components built here take.
 pub(crate) fn xsave_area_bytes() -> u32 {
-    use crate::cpuid::{XSAVE_AVX, XSAVE_SSE, XSAVE_X87};
-    crate::cpuid::xsave_bytes(XSAVE_X87 | XSAVE_SSE | XSAVE_AVX)
+    crate::answer::XSTATE_BYTES as u32
 }
 
 /// Whether the instruction is `xsave` or `xrstor`.
@@ -906,7 +896,7 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     if xstate {
         e.sink()
             .local_get(at)
-            .i64_const(XSAVE_ALIGNMENT - 1)
+            .i64_const(crate::answer::XSAVE_ALIGNMENT as i64 - 1)
             .i64_and()
             .i64_const(0)
             .i64_ne()
@@ -958,14 +948,14 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
             .local_set(value);
         store_at(e, at, IMAGE_MXCSR_MASK, size_of::<u32>() as u32, value);
         // The slot's bytes past the 80 bits are zero.
-        by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+        by_stack_position(e, at, crate::answer::IMAGE_SLOT as u64, |e, n, slot| {
             store_register(e, n, slot, IMAGE_REGISTERS, VALUE_LOW)
         });
         for x in 0..crate::guest::XMM_COUNT as u8 {
             e.get_vector(x);
             let v = e.local(ValType::V128);
             e.sink().local_set(v);
-            let offset = IMAGE_XMM + u64::from(x) * IMAGE_SLOT;
+            let offset = IMAGE_XMM + u64::from(x) * crate::answer::IMAGE_SLOT as u64;
             e.sink()
                 .local_get(at)
                 .local_get(v)
@@ -998,11 +988,11 @@ fn image<E: Emitter<X86_64> + ?Sized>(e: &mut E, i: &Instruction, m: Mnemonic) {
     // MXCSR as restored decides the path; tracking stays as it was (plan 5.8).
     e.sink().local_get(mxcsr).i32_wrap_i64();
     e.set_control(Control::Mxcsr);
-    by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+    by_stack_position(e, at, crate::answer::IMAGE_SLOT as u64, |e, n, slot| {
         load_register(e, n, slot, IMAGE_REGISTERS)
     });
     for x in 0..crate::guest::XMM_COUNT as u8 {
-        let offset = IMAGE_XMM + u64::from(x) * IMAGE_SLOT;
+        let offset = IMAGE_XMM + u64::from(x) * crate::answer::IMAGE_SLOT as u64;
         e.sink()
             .local_get(at)
             .v128_load(MemArg { offset, ..memory() });
@@ -1094,7 +1084,7 @@ fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wi
             e.sink().local_set(value);
             store_at(e, at, offset, VALUE_LOW, value);
         }
-        by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+        by_stack_position(e, at, crate::answer::IMAGE_SLOT as u64, |e, n, slot| {
             store_register(e, n, slot, IMAGE_REGISTERS, VALUE_LOW)
         });
         e.sink().end();
@@ -1121,7 +1111,7 @@ fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wi
                     .local_get(at)
                     .local_get(v)
                     .v128_store(MemArg {
-                        offset: offset + u64::from(x) * IMAGE_SLOT,
+                        offset: offset + u64::from(x) * crate::answer::IMAGE_SLOT as u64,
                         ..memory()
                     });
             }
@@ -1218,7 +1208,7 @@ fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wi
         );
         e.set_control(control);
     }
-    by_stack_position(e, at, IMAGE_SLOT, |e, n, slot| {
+    by_stack_position(e, at, crate::answer::IMAGE_SLOT as u64, |e, n, slot| {
         choose(
             e,
             x87,
@@ -1258,7 +1248,7 @@ fn xstate_image<E: Emitter<X86_64> + ?Sized>(e: &mut E, at: u32, m: Mnemonic, wi
                 crate::operand::ymm_high(x),
             ),
         ] {
-            let offset = offset + u64::from(x) * IMAGE_SLOT;
+            let offset = offset + u64::from(x) * crate::answer::IMAGE_SLOT as u64;
             choose(
                 e,
                 n,
