@@ -502,10 +502,15 @@ This run's layout work, 49976d73c against a856bf204:
 |---|---|---|---|---|
 | webgpu | unparsed | 55 | 1 | the tests take `scene` from wcontainers-graphics-test (a dev-dependency on every native target; it was Windows-only) instead of including graphics-test/src/scene.rs, and the scenes page's modules moved from examples/scenes to tests/scenes (`[[example]] scenes`, `path = "tests/scenes/page.rs"`), so every test includes them below its own folder |
 | trace | public_outside_interface | 15 | 13 | the stream file and the unwritten frame are a private `Out`, whose `Drop` writes the last frame; `id`, `run`, `make`, `void` are functions |
+| recording (ac7a97aaf) | public_outside_interface | 4 | 1 | the three `impl Recorder` blocks (compute.rs, draw.rs, recorder.rs: 63 methods) are functions of their modules taking the recorder (tools/recorder_functions.py, then by hand: `Bindings::texture` kept, an unused parameter dropped); names a local would hide got another (`buffer` is `buffer_obj`, `view` `view_obj`, the test constructor `new` is `full`, ...). Left: `Id` is pub (it fills the associated types; exported it would need every field pub and its derives would widen it) |
 
-Every other layout count in the nine crates is unchanged: recording 4, webgpu 80, webgl 177 public_outside_interface;
-webgl unparsed 7; conformance constant_defined_twice 27. All rules in the nine crates: 22,387 to 22,317 (unparsed
--54, public_outside_interface -2, text rules -14).
+Every other layout count in the nine crates is unchanged: webgpu 80, webgl 177 public_outside_interface; webgl
+unparsed 7; conformance constant_defined_twice 27. All rules in the nine crates: 22,387 at 49976d73c, 22,317 at
+a856bf204 (unparsed -54, public_outside_interface -2, text rules -14), 22,326 at ac7a97aaf (public_outside_interface
+-3, name_unanswered +17: the renamed functions' names wait on the linter's naming answers, which only the Mac's key
+can ask for; grammar_unclear -3, verb_not_first -2). At ac7a97aaf, MEASURED on both machines: every check as above
+(17 exit 0, gpu-webgl and shaders 101), recording 215 and trace 55 and the other tests as above, clippy exit 0, webgpu
+on lavapipe 135/4/3 with the same four.
 
 Tried and taken out: webgpu's handles without `PartialEq`/`Eq` (28 findings) do not compile:
 `error[E0369]: binary operation == cannot be applied to type wcontainers_gpu_webgpu::Blend` at tests/scenes.rs:134
@@ -515,8 +520,7 @@ they need the identity from outside the crate, so the findings stay until the te
 Left, by structure: the inherent constructors and accessors of the exported back ends (webgpu `new`,
 `device_descriptor`, `INSTANCE_FLAGS`, `add_window`, `counters`; webgl `new`, `on_angle`, `add_window`) are called by
 the fronts (direct3d-12, directx, opengl, shaders' tests), so they go when the fronts build their back ends through
-`StandaloneGpu`; the helper impl blocks on `WebGpu` (8), `Recorder` (3) and `Gl` (2) become a private device type
-inside each exported one; the handles' private fields fill associated types (webgpu 14, webgl 45) and need handles
+`StandaloneGpu`; the helper impl blocks on `WebGpu` (8) and `Gl` (2) become functions as the recorder's did; the handles' private fields fill associated types (webgpu 14, webgl 45) and need handles
 that are plain data. Note: 23ec9ae7a holds the scenes files' renames that belong to a856bf204, so 23ec9ae7a alone does
 not build its webgpu tests; the pushed tip does (measured above).
 
@@ -533,8 +537,8 @@ not build its webgpu tests; the pushed tip does (measured above).
 - Reached this run: none newly. GI1 to GI3 and GI5 as recorded; the tessellation part of GI6 measured at a pushed
   commit; GI4 not reached (the question above); GI6's removal of the linked route waits on the cost question of the
   brief; GI7 waits on the API track's OpenGL ES trait (AC10); GI8 part B on its Gallium and Mesa compiler traits.
-- Next: the private device type inside `WebGpu`, `Recorder` and `Gl` (waits on nothing), then the handles as plain
-  data.
+- Next: webgpu's eight private helper blocks as functions, as the recorder's (waits on nothing), then the handles
+  as plain data; webgl's two with GI7.
 
 ## SECURITY
 
@@ -553,7 +557,7 @@ not build its webgpu tests; the pushed tip does (measured above).
   `impl Traced<Gl>` removed with it), shaders 71, shader-converters 5, nir 113, opengl 353, test-window 12: 731. No
   marked exception added. New dependencies: bytemuck (already in the lock through webgpu) as a webgl dev-dependency;
   the trace crate uses postcard, serde and naga as webgl did. No hostile-guest suite was run (none exists).
-- Sixth run (counting command of the root manifest, 948af1837 and a856bf204 alike): gpu (interface and shared code) 0,
+- Sixth run (counting command of the root manifest, 948af1837, a856bf204 and ac7a97aaf alike): gpu (interface and shared code) 0,
   conformance 0, recording 0, trace 0, webgpu 19, webgl 158, shaders 71, shader-converters 5, nir 113, opengl 353,
   test-window 12: 731. No marked exception added. New dependencies: none; wcontainers-graphics-test, already a Windows
   dev-dependency of webgpu, is now one on every native target. No hostile-guest suite was run (none exists).
