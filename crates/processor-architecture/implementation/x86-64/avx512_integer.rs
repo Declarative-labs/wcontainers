@@ -219,6 +219,10 @@ impl EvexIntegerForm {
                     | LaneOperation::DuplicateEvenSingles
                     | LaneOperation::DuplicateOddSingles
                     | LaneOperation::DuplicateLowDouble
+                    | LaneOperation::MoveHighToLow
+                    | LaneOperation::MoveLowToHigh
+                    | LaneOperation::MoveLow(_)
+                    | LaneOperation::InsertSingle { .. }
             ),
             EvexIntegerOperation::ShiftByCount(_)
             | EvexIntegerOperation::DoubleBlockDifferences
@@ -375,7 +379,7 @@ impl EvexIntegerForm {
             EvexIntegerOperation::Lanes(operation @ (LaneOperation::ShiftBytesLeft | LaneOperation::ShiftBytesRight)) => {
                 per_quarter(&|quarter| operation.compute(second[quarter], u128::from(immediate), 0))
             }
-            EvexIntegerOperation::Lanes(operation) => per_quarter(&|quarter| operation.compute(first[quarter], second[quarter], 0)),
+            EvexIntegerOperation::Lanes(operation) => per_quarter(&|quarter| operation.compute(first[quarter], second[quarter], immediate)),
             EvexIntegerOperation::ShiftByCount(shift) => {
                 per_quarter(&|quarter| shift.to_lane_operation(lane).compute(first[quarter], second[0] & u128::from(u64::MAX), 0))
             }
@@ -1879,4 +1883,13 @@ pub static EVEX_INTEGER_FORMS: &[EvexIntegerForm] = evex_forms! {
     Vinserti64x2Zmmu64MaskmskwZmmu64Xmmu64Imm8Avx512, Insert { quarters: 1 }, Quadword, Register, L512, [EVEX_Vinserti64x2_zmm_k1z_zmm_xmmm128_imm8];
     Vinserti64x4Zmmu64MaskmskwZmmu64Memu64Imm8Avx512, Insert { quarters: 2 }, Quadword, Memory, L512, [EVEX_Vinserti64x4_zmm_k1z_zmm_ymmm256_imm8];
     Vinserti64x4Zmmu64MaskmskwZmmu64Ymmu64Imm8Avx512, Insert { quarters: 2 }, Quadword, Register, L512, [EVEX_Vinserti64x4_zmm_k1z_zmm_ymmm256_imm8];
+    // The 128-bit moves of a quadword or a single between halves, loads alone.
+    VinsertpsXmmf32Xmmf32Memf32Imm8Avx512, Lanes(LaneOperation::InsertSingle { from_memory: true }), Doubleword, Memory, L128, [EVEX_Vinsertps_xmm_xmm_xmmm32_imm8];
+    VinsertpsXmmf32Xmmf32Xmmf32Imm8Avx512, Lanes(LaneOperation::InsertSingle { from_memory: false }), Doubleword, Register, L128, [EVEX_Vinsertps_xmm_xmm_xmmm32_imm8];
+    VmovhlpsXmmf32Xmmf32Xmmf32Avx512, Lanes(LaneOperation::MoveHighToLow), Quadword, Register, L128, [EVEX_Vmovhlps_xmm_xmm_xmm];
+    VmovhpdXmmf64Xmmf64Memf64Avx512, Lanes(LaneOperation::MoveLowToHigh), Quadword, Memory, L128, [EVEX_Vmovhpd_xmm_xmm_m64];
+    VmovhpsXmmf32Xmmf32Memf32Avx512, Lanes(LaneOperation::MoveLowToHigh), Quadword, Memory, L128, [EVEX_Vmovhps_xmm_xmm_m64];
+    VmovlhpsXmmf32Xmmf32Xmmf32Avx512, Lanes(LaneOperation::MoveLowToHigh), Quadword, Register, L128, [EVEX_Vmovlhps_xmm_xmm_xmm];
+    VmovlpdXmmf64Xmmf64Memf64Avx512, Lanes(LaneOperation::MoveLow(Quadword)), Quadword, Memory, L128, [EVEX_Vmovlpd_xmm_xmm_m64];
+    VmovlpsXmmf32Xmmf32Memf32Avx512, Lanes(LaneOperation::MoveLow(Quadword)), Quadword, Memory, L128, [EVEX_Vmovlps_xmm_xmm_m64];
 };

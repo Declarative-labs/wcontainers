@@ -1060,6 +1060,8 @@ pub enum Bug {
     EvexInsertLowestPart,
     /// VEXTRACTI32X4 to VEXTRACTF64X4 read the immediate's every bit, past the parts there are.
     EvexExtractIndexUnreduced,
+    /// VMOVHLPS moves the low quadword high, and VMOVLHPS, VMOVHPS and VMOVHPD the high one low.
+    EvexHalvesMovedTheOtherWay,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1544,6 +1546,7 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexBlockDifferencesInOrder, "VDBPSADBW", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::DoubleBlockDifferences), Origin::EvexFirstHalf),
     row(Bug::EvexInsertLowestPart, "VINSERTI32X4 to VINSERTF64X4", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Insert { .. })), Origin::EvexFirstHalf),
     row(Bug::EvexExtractIndexUnreduced, "VEXTRACTI32X4 to VEXTRACTF64X4", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Extract { .. })), Origin::EvexFirstHalf),
+    row(Bug::EvexHalvesMovedTheOtherWay, "VMOVHLPS, VMOVLHPS, VMOVHPS", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Lanes(LaneOperation::MoveHighToLow | LaneOperation::MoveLowToHigh))), Origin::EvexFirstHalf),
     row(Bug::EvexAndNotComplementsSecond, "VANDNPS, VPANDND", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::Lanes(LaneOperation::AndNot)), Origin::EvexFirstHalf),
 ];
 
@@ -1741,6 +1744,12 @@ pub(crate) fn mutate_evex(form: &EvexIntegerForm, destination: &Zmm, first: &Zmm
         }
         (Some(Bug::EvexBlockDifferencesInOrder), EvexIntegerOperation::DoubleBlockDifferences) => recompute(form.operation, first, second, 0xE4),
         (Some(Bug::EvexInsertLowestPart), EvexIntegerOperation::Insert { .. }) => recompute(form.operation, first, second, 0),
+        (Some(Bug::EvexHalvesMovedTheOtherWay), EvexIntegerOperation::Lanes(LaneOperation::MoveHighToLow)) => {
+            recompute(EvexIntegerOperation::Lanes(LaneOperation::MoveLowToHigh), first, second, immediate)
+        }
+        (Some(Bug::EvexHalvesMovedTheOtherWay), EvexIntegerOperation::Lanes(LaneOperation::MoveLowToHigh)) => {
+            recompute(EvexIntegerOperation::Lanes(LaneOperation::MoveHighToLow), first, second, immediate)
+        }
         (Some(Bug::EvexExtractIndexUnreduced), EvexIntegerOperation::Extract { quarters }) => {
             let index = usize::from(immediate) * quarters;
             core::array::from_fn(|quarter| if quarter < quarters && index + quarter < 4 { second[index + quarter] } else { 0 })
