@@ -1728,10 +1728,10 @@ impl TestHost {
         cpu: &mut Machine,
         until_nanoseconds: Option<u64>,
     ) {
-        if let Some(hooks) = &mut *lock(&self.hooks) {
-            if hooks.between_steps(kernel, cpu) {
-                return;
-            }
+        if let Some(hooks) = &mut *lock(&self.hooks)
+            && hooks.between_steps(kernel, cpu)
+        {
+            return;
         }
         // An answer owed comes before any time passes.
         if self
