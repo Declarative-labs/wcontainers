@@ -40,7 +40,7 @@ iced-x86 = { version = "1.22.0", default-features = false, features = ["no_std",
 [dev-dependencies]
 wcontainers-processor-architecture-conformance = { path = "../../conformance" }
 wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
-wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
+wcontainers-distinguishing-state-generator-x86-64 = { path = "../../../distinguishing-state-generator/implementation/x86-64" }
 wcontainers-instruction-input-domain-x86-64 = { path = "../../../instruction-input-domain/implementation/x86-64" }
 # The list's generator and its tests read and write its data file (MIT OR Apache-2.0).
 serde = { version = "1.0.229", features = ["derive"] }

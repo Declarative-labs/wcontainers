@@ -1,13 +1,14 @@
 use wcontainers_distinguishing_state_generator::DistinguishingStateGenerator;
-use wcontainers_distinguishing_state_generator_input_domain::CriticalValueProduct;
+use wcontainers_distinguishing_state_generator_x86_64::CriticalValueCut;
 use wcontainers_instruction_input_domain_x86_64::X86_64InputDomain;
 use wcontainers_processor_architecture::{ExecutionState, ProcessorArchitecture};
 use wcontainers_processor_architecture_x86_64::{PreciseInstruction, X86_64};
 
-const GENERATOR: CriticalValueProduct<X86_64InputDomain> =
-    CriticalValueProduct::new(X86_64InputDomain);
+/// The generator the chip is measured with, whose states catch every planted bug, rather than the whole product of
+/// the critical values.
+const GENERATOR: CriticalValueCut = CriticalValueCut::new(X86_64InputDomain);
 
-/// Each behavior of each form on every state the critical value generator makes for it, the states made once a form.
+/// Each behavior of each form on every state the generator makes for it, the states made once a form.
 fn cases() -> impl Iterator<Item = (PreciseInstruction, ExecutionState<'static, X86_64>)> {
     X86_64::list_instructions().flat_map(|instruction| {
         let behaviors: Vec<PreciseInstruction> = X86_64::list_known_behaviors(instruction).collect();
