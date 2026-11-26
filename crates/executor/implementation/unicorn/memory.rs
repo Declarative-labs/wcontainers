@@ -597,9 +597,7 @@ impl Memory {
                 Some((start, shown)) => shown.pages.write(shown.offset + (at - start), piece),
                 None => {
                     if self.is_mapped(at / PAGE_SIZE) {
-                        self.unicorn
-                            .mem_write(at, piece)
-                            .expect("unicorn maps the pages that allow something");
+                        self.write_unicorn(at, piece);
                     } else {
                         self.hidden[to_index(at)..to_index(at) + count].copy_from_slice(piece);
                     }
@@ -1000,13 +998,18 @@ impl Memory {
                 continue;
             }
             let bytes = page_bytes(page, self.end);
-            self.unicorn
-                .mem_write(
-                    bytes.start,
-                    &self.hidden[to_index(bytes.start)..to_index(bytes.end)],
-                )
-                .expect("the region is mapped in unicorn");
+            let own = self.hidden[to_index(bytes.start)..to_index(bytes.end)].to_vec();
+            self.write_unicorn(bytes.start, &own);
         }
+    }
+
+    /// Writes the bytes into unicorn's mapped pages and drops what unicorn translated from them: unicorn's own writes
+    /// leave its translations as they were, so code written over would not be what runs next.
+    fn write_unicorn(&mut self, address: u64, bytes: &[u8]) {
+        self.unicorn
+            .mem_write(address, bytes)
+            .expect("unicorn maps the pages that allow something");
+        self.forget_code(address..address + bytes.len() as u64);
     }
 
     /// Gives unicorn a copy of every shared range's pages it maps whose copy is not current.
@@ -1031,9 +1034,7 @@ impl Memory {
                     continue;
                 }
                 shown.pages.read(offset, &mut bytes[..count]);
-                self.unicorn
-                    .mem_write(at, &bytes[..count])
-                    .expect("unicorn maps the pages that allow something");
+                self.write_unicorn(at, &bytes[..count]);
             }
             if let Some(kept) = self.shared.get_mut(&start) {
                 kept.synced = Some(version);
