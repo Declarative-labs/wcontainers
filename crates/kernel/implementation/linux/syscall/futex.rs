@@ -221,7 +221,7 @@ fn key_in(
     }
 }
 
-fn read_word<S: crate::System, C: Executor>(
+fn read_word<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -230,7 +230,7 @@ fn read_word<S: crate::System, C: Executor>(
     guest(kernel, cx, tid).read_value::<u32>(address)
 }
 
-fn write_word<S: crate::System, C: Executor>(
+fn write_word<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -240,7 +240,7 @@ fn write_word<S: crate::System, C: Executor>(
     store_word(&mut guest(kernel, cx, tid), address, value)
 }
 
-fn store_word<C: Executor>(
+fn store_word<C: Executor + 'static>(
     guest: &mut crate::user::Guest<'_, C>,
     address: u64,
     value: u32,
@@ -276,7 +276,7 @@ enum Timeout {
     },
 }
 
-fn read_timespec<S: crate::System, C: Executor>(
+fn read_timespec<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -310,7 +310,7 @@ fn namespace_to_machine(kernel: &Kernel, at: u64, realtime: bool) -> u64 {
 }
 
 /// The call's deadline on the kernel's monotonic clock, set at its first run.
-fn deadline<S: crate::System, C: Executor>(
+fn deadline<S: crate::System, C: Executor + 'static>(
     cx: &mut Context<'_, S, C>,
     timeout: Timeout,
     slack: u64,
@@ -328,7 +328,7 @@ fn deadline<S: crate::System, C: Executor>(
 }
 
 /// `futex(uaddr, op, val, timeout or val2, uaddr2, val3)`.
-pub(super) fn futex<S: crate::System, C: Executor>(
+pub(super) fn futex<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -475,7 +475,7 @@ pub(super) fn futex<S: crate::System, C: Executor>(
 /// `futex_wait`: queues the caller if the futex still holds `value`, until a wake whose bits meet
 /// `bitset`, the deadline or a signal.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn wait<S: crate::System, C: Executor>(
+fn wait<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -529,7 +529,7 @@ fn wait<S: crate::System, C: Executor>(
 }
 
 /// A queued wait's next look: woken if it is off its queue, else its deadline, a signal, or park.
-fn wait_again<S: crate::System, C: Executor>(
+fn wait_again<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -557,7 +557,7 @@ fn wait_again<S: crate::System, C: Executor>(
 
 /// `restart_syscall` for a futex wait a signal interrupted (`futex_wait_restart`): it waits again,
 /// reading the futex anew, until the same deadline.
-pub(super) fn restart<S: crate::System, C: Executor>(
+pub(super) fn restart<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -665,7 +665,7 @@ fn wake_key(kernel: &mut Kernel, key: Key, count: i32, bitset: u32) -> Result<u6
 /// to the second, if the first still holds `compare` when one is given. Returns how many it woke
 /// and moved.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn requeue<S: crate::System, C: Executor>(
+fn requeue<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -737,7 +737,7 @@ fn requeue_plain(
 }
 
 /// `futex_atomic_op_inuser`: changes the word at `address` as `op` says and compares what it held.
-fn atomic_op<S: crate::System, C: Executor>(
+fn atomic_op<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -783,7 +783,7 @@ fn atomic_op<S: crate::System, C: Executor>(
 /// `futex_wake_op`: changes the second futex, wakes up to `wake` waiters of the first, and if the
 /// comparison held up to `wake2` of the second.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn wake_op<S: crate::System, C: Executor>(
+fn wake_op<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -806,7 +806,7 @@ fn wake_op<S: crate::System, C: Executor>(
 
 /// `futex_lock_pi_atomic`: takes the lock if it is free (1), or marks it as having waiters and
 /// finds its owner (0); EDEADLK if the caller holds it.
-fn lock_pi_atomic<S: crate::System, C: Executor>(
+fn lock_pi_atomic<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -894,7 +894,7 @@ fn closes_chain(kernel: &Kernel, key: Key, tid: Tid) -> bool {
 
 /// `futex_lock_pi`: takes the lock, or waits for its owner to hand it over. Here every thread has
 /// the same priority, so the owner's priority is never raised.
-fn lock_pi<S: crate::System, C: Executor>(
+fn lock_pi<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -946,7 +946,7 @@ fn lock_pi<S: crate::System, C: Executor>(
 
 /// A queued lock's next look: handed the lock if it is off its queue, else its deadline, a signal
 /// (the call starts again, `ERESTARTNOINTR`), or park.
-fn lock_pi_again<S: crate::System, C: Executor>(
+fn lock_pi_again<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -973,7 +973,7 @@ fn lock_pi_again<S: crate::System, C: Executor>(
 
 /// Hands a priority inheriting lock to its first waiter (`wake_futex_pi`): the word names it, with
 /// the waiters bit always kept and an owner's death kept if `keep` holds it.
-fn hand_over<S: crate::System, C: Executor>(
+fn hand_over<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     key: Key,
@@ -994,7 +994,7 @@ fn hand_over<S: crate::System, C: Executor>(
 
 /// `futex_unlock_pi`: only the owner may unlock; the first waiter is handed the lock, or the word is
 /// cleared.
-fn unlock_pi<S: crate::System, C: Executor>(
+fn unlock_pi<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1020,7 +1020,7 @@ fn unlock_pi<S: crate::System, C: Executor>(
 /// `futex_wait_requeue_pi`: waits on a condition until it is requeued onto the lock at `address2`
 /// and handed it.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn wait_requeue_pi<S: crate::System, C: Executor>(
+fn wait_requeue_pi<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1071,7 +1071,7 @@ fn wait_requeue_pi<S: crate::System, C: Executor>(
 /// A condition waiter's next look: on the condition still, it may time out or be signalled
 /// (`ERESTARTNOINTR`); requeued onto the lock it waits as a lock's waiter; handed the lock, it has
 /// it.
-fn wait_requeue_pi_again<S: crate::System, C: Executor>(
+fn wait_requeue_pi_again<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1105,7 +1105,7 @@ fn wait_requeue_pi_again<S: crate::System, C: Executor>(
 
 /// `futex_requeue` with priority inheritance: the first waiter takes the lock if it is free, the
 /// rest move to the lock's queue as its waiters.
-fn requeue_pi<S: crate::System, C: Executor>(
+fn requeue_pi<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1210,7 +1210,7 @@ impl TaskEnd {
         })
     }
 
-    fn memory<'a, S: crate::System, C: Executor>(
+    fn memory<'a, S: crate::System, C: Executor + 'static>(
         &self,
         kernel: &'a mut Kernel,
         cx: &'a mut Context<'_, S, C>,
@@ -1220,7 +1220,7 @@ impl TaskEnd {
 }
 
 /// A thread's end as `futex_exit_release` and `mm_release` see it, as [`task_end`] does it.
-pub(crate) fn thread_end<S: crate::System, C: Executor>(
+pub(crate) fn thread_end<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1242,7 +1242,7 @@ pub(crate) fn thread_end<S: crate::System, C: Executor>(
 /// marked as their owner's death and a waiter woken, the priority inheriting locks it holds handed
 /// on marked the same, and its thread id address cleared and woken while others still use the
 /// memory.
-pub(crate) fn task_end<S: crate::System, C: Executor>(
+pub(crate) fn task_end<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     end: &TaskEnd,
@@ -1271,7 +1271,7 @@ pub(crate) fn task_end<S: crate::System, C: Executor>(
 
 /// `exit_robust_list`: each lock on the list (and the one being taken or let go) that the task
 /// holds is marked as its owner's death, and a plain one with waiters wakes one.
-fn robust_list<S: crate::System, C: Executor>(
+fn robust_list<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     end: &TaskEnd,
@@ -1327,7 +1327,7 @@ fn robust_list<S: crate::System, C: Executor>(
 }
 
 /// `handle_futex_death`; false when the walk must stop.
-fn owner_died<S: crate::System, C: Executor>(
+fn owner_died<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     end: &TaskEnd,
@@ -1361,7 +1361,7 @@ fn owner_died<S: crate::System, C: Executor>(
 
 /// The futex2 flags (`futex2_to_flags` and `futex_flags_valid`): only 32 bit futexes; the NUMA
 /// forms are not built. Returns whether the futex is shared.
-fn futex2_flags<S: crate::System, C: Executor>(
+fn futex2_flags<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     number: u32,
@@ -1384,7 +1384,7 @@ fn futex2_flags<S: crate::System, C: Executor>(
 }
 
 /// `futex2_setup_timeout`: an absolute time on the wall or the monotonic clock.
-fn futex2_timeout<S: crate::System, C: Executor>(
+fn futex2_timeout<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1407,7 +1407,7 @@ fn futex2_timeout<S: crate::System, C: Executor>(
 }
 
 /// `futex_wake(uaddr, mask, nr, flags)`.
-pub(super) fn futex_wake<S: crate::System, C: Executor>(
+pub(super) fn futex_wake<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1429,7 +1429,7 @@ pub(super) fn futex_wake<S: crate::System, C: Executor>(
 }
 
 /// `futex_wait(uaddr, val, mask, flags, timeout, clockid)`.
-pub(super) fn futex_wait<S: crate::System, C: Executor>(
+pub(super) fn futex_wait<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1464,7 +1464,7 @@ pub(super) fn futex_wait<S: crate::System, C: Executor>(
 }
 
 /// One entry of a futex2 vector (`futex_parse_waitv`): its address, value and whether it is shared.
-fn parse_waitv<S: crate::System, C: Executor>(
+fn parse_waitv<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1486,7 +1486,7 @@ fn parse_waitv<S: crate::System, C: Executor>(
 
 /// `futex_waitv(waiters, nr_futexes, flags, timeout, clockid)`: waits on several futexes at once
 /// and answers the index of one that was woken.
-pub(super) fn futex_waitv<S: crate::System, C: Executor>(
+pub(super) fn futex_waitv<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1545,7 +1545,7 @@ pub(super) fn futex_waitv<S: crate::System, C: Executor>(
 }
 
 /// A vector wait's next look: the last of its futexes found woken, its deadline, a signal, or park.
-fn waitv_again<S: crate::System, C: Executor>(
+fn waitv_again<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1571,7 +1571,7 @@ fn waitv_again<S: crate::System, C: Executor>(
 }
 
 /// `futex_requeue(waiters, flags, nr_wake, nr_requeue)`: the two futexes from a vector of two.
-pub(super) fn futex_requeue<S: crate::System, C: Executor>(
+pub(super) fn futex_requeue<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,

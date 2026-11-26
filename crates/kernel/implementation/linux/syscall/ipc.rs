@@ -253,7 +253,7 @@ pub(super) fn new_perm(
     }
 }
 
-pub(super) fn shmget<S: crate::System, C: Executor>(
+pub(super) fn shmget<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -364,7 +364,7 @@ fn segment_name(key: i32) -> Vec<u8> {
     alloc::format!("SYSV{:08x}", key as u32).into_bytes()
 }
 
-pub(super) fn shmat<S: crate::System, C: Executor>(
+pub(super) fn shmat<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -430,7 +430,7 @@ pub(super) fn shmat<S: crate::System, C: Executor>(
     )
 }
 
-pub(super) fn shmdt<S: crate::System, C: Executor>(
+pub(super) fn shmdt<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -495,7 +495,7 @@ pub(super) fn shmdt<S: crate::System, C: Executor>(
     Ok(0)
 }
 
-pub(super) fn shmctl<S: crate::System, C: Executor>(
+pub(super) fn shmctl<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -663,7 +663,7 @@ fn unlock_pages(ipc: &mut Ipc, user: u32, pages: u64) {
 /// segment's count of mappings, with Linux's `shm_open` (attach time and process) for a count that
 /// grew and `shm_close` (detach time and process) for one that fell, `pid` being the process that
 /// acted; a removed segment nothing shows any more is destroyed.
-pub(crate) fn settle<S: crate::System, C: Executor>(
+pub(crate) fn settle<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     pid: Pid,
@@ -886,7 +886,7 @@ impl Queue {
     }
 }
 
-pub(super) fn msgget<S: crate::System, C: Executor>(
+pub(super) fn msgget<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -923,7 +923,7 @@ pub(super) fn msgget<S: crate::System, C: Executor>(
     Ok(id as u64)
 }
 
-pub(super) fn msgsnd<S: crate::System, C: Executor>(
+pub(super) fn msgsnd<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1007,7 +1007,7 @@ pub(super) fn msgsnd<S: crate::System, C: Executor>(
     Ok(0)
 }
 
-pub(super) fn msgrcv<S: crate::System, C: Executor>(
+pub(super) fn msgrcv<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1091,7 +1091,7 @@ pub(super) fn msgrcv<S: crate::System, C: Executor>(
 
 /// `do_msg_fill`: the type, then as much of the text as the buffer takes. A message that cannot be
 /// stored is lost, as on Linux.
-fn fill<S: crate::System, C: Executor>(
+fn fill<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1108,7 +1108,7 @@ fn fill<S: crate::System, C: Executor>(
     Ok(length)
 }
 
-pub(super) fn msgctl<S: crate::System, C: Executor>(
+pub(super) fn msgctl<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,

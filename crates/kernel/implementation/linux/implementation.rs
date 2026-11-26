@@ -95,7 +95,7 @@ use fs::{FileSystem, Node, Numbers, Time};
 use process::{Pid, Thread, Tid};
 
 /// What a call into the kernel may use besides the kernel's own state.
-pub(crate) struct Context<'a, S, C: Executor> {
+pub(crate) struct Context<'a, S, C: Executor + 'static> {
     pub cpu: &'a mut GuestMachine<C>,
     pub host: &'a S,
     /// The same system, for the calls the kernel keeps while it waits on them.
@@ -107,7 +107,7 @@ pub(crate) struct Context<'a, S, C: Executor> {
     refused: u32,
 }
 
-impl<'a, S: System, C: Executor> Context<'a, S, C> {
+impl<'a, S: System, C: Executor + 'static> Context<'a, S, C> {
     /// Makes the context of one call into the kernel, whose monotonic clock runs ahead of the
     /// system's by `monotonic_offset`.
     fn new(cpu: &'a mut GuestMachine<C>, system: &'a Arc<S>, monotonic_offset: u64) -> Self {
@@ -529,21 +529,22 @@ impl Kernel {
             self.running.is_none(),
             "next asked while a thread is running; hand its exit back first"
         );
-        if let Some(status) = self.finished {
-            return Next::Finished { status };
-        }
         // Come back at once ([`Kernel::fire_timers`]), so the woken threads, and the answers of the
-        // calls the kernel waits on, are settled first.
+        // calls the kernel waits on, are settled first: after the container's end too, so what its
+        // ends still hold reaches the outside as the outside takes it.
         if self.unsettled || self.waiting.woken() {
             return Next::Idle {
                 until_nanoseconds: Some(0),
             };
         }
+        if let Some(status) = self.finished {
+            return Next::Finished { status };
+        }
         self.pick()
     }
 
     /// The thread from the last [`Next::Run`] has come back.
-    pub(crate) fn exit<S: System, C: Executor>(
+    pub(crate) fn exit<S: System, C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
@@ -581,7 +582,7 @@ impl Kernel {
     }
 
     /// Wakes the waits that are due and fires the timers, as the time waited for may have come.
-    pub(crate) fn fire_timers<S: System, C: Executor>(
+    pub(crate) fn fire_timers<S: System, C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
@@ -594,7 +595,7 @@ impl Kernel {
     }
 
     /// Resizes the first process's terminal, as its end outside changed size.
-    pub fn resize_terminal<S: System, C: Executor>(
+    pub fn resize_terminal<S: System, C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
@@ -610,7 +611,7 @@ impl Kernel {
     /// Sends a signal to the container's first process from outside the container, as `docker
     /// kill` does: from no process the container can see, and SIGKILL ends it even though Linux keeps
     /// other signals with no handler from that process.
-    pub fn kill<S: System, C: Executor>(
+    pub fn kill<S: System, C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
@@ -635,13 +636,20 @@ impl Kernel {
     /// and thread's registers under the same handles, nothing else) and a host whose clocks may read
     /// anything: the kernel's monotonic clock goes on from where it was saved, every thread starts
     /// again from its saved registers, and every parked call runs again, its deadline on the clock
-    /// it had.
-    pub fn restore<S: System, C: Executor>(
+    /// it had. Each memory is copied into a new space of the executor first, so nothing the executor
+    /// made of the old ones is kept, as on a host that brought the memories back.
+    ///
+    /// # Panics
+    ///
+    /// If a thread is running, or the executor cannot make or fill a space as large as the old.
+    pub fn restore<S: System, C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
     ) {
         assert!(self.running.is_none(), "restored while a thread runs");
+        cpu.renew_memories()
+            .expect("the executor holds a copy of each memory it held");
         self.monotonic_offset = self.last_now.wrapping_sub(system.monotonic_nanoseconds());
         let mut cx = Context::new(cpu, system, self.monotonic_offset);
         self.entry_now = cx.monotonic();
@@ -727,7 +735,7 @@ impl Kernel {
     /// A free process and thread number from the embedder's task ids, skipping any still carried
     /// as Linux's `alloc_pid` does (counted); EAGAIN for a number out of range, or once every
     /// number has been tried.
-    fn allocate_id<S: crate::System, C: Executor>(
+    fn allocate_id<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
     ) -> Result<i32, Errno> {
@@ -764,7 +772,7 @@ impl Kernel {
     }
 
     /// Gives back to the embedder the numbers let go of that nothing carries any more.
-    pub(crate) fn release_ids<S: crate::System, C: Executor>(
+    pub(crate) fn release_ids<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
     ) {
@@ -929,7 +937,10 @@ impl Kernel {
     }
 
     /// The time now on the wall clock.
-    pub(crate) fn now<S: crate::System, C: Executor>(&self, cx: &mut Context<'_, S, C>) -> Time {
+    pub(crate) fn now<S: crate::System, C: Executor + 'static>(
+        &self,
+        cx: &mut Context<'_, S, C>,
+    ) -> Time {
         Time::from_nanoseconds(cx.host.realtime_nanoseconds())
     }
 }

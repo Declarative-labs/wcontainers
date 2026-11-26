@@ -2,16 +2,20 @@
 
 use std::ops::{ControlFlow, Range};
 
-use wcontainers_abi::{Cpu, SystemCallRequest};
+use wcontainers_abi::SystemCallRequest;
 use wcontainers_kernel::signal_information::{
     BadSystemCallCode, BusErrorCode, ChildStateCode, ChildTerminationCode, SegmentationFaultCode,
     TrapCode,
 };
 use wcontainers_kernel_linux::linux::general::{self, SI_DETHREAD, SI_KERNEL, SI_TIMER};
 use wcontainers_kernel_linux::{
-    AccessKind, Kernel, MemoryObject, Process, SignalInformation, SystemCallResponse, TaskId,
-    task_id_after,
+    AccessKind, Kernel, MemoryObject, SignalInformation, SystemCallResponse, TaskId, task_id_after,
 };
+
+use crate::driver::Machine;
+
+/// One process of the kernel the stand-in runs, as a hook is given it.
+pub type Process<'a> = wcontainers_kernel_linux::Process<'a, crate::standin::StandIn>;
 
 /// The embedder guest's `interrupted` sender that leaves the signal to the embedder (guest/embedder.c),
 /// a word of its own that shares its spelling with the look-ahead none.
@@ -107,30 +111,9 @@ pub trait Hooks: Send {
     fn on_inspection_ended(&mut self, _process: Process<'_>) {}
     /// The kernel has nothing to run: the test may act on it through ordinary calls. Whether it
     /// did anything that may let the kernel go on.
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
-        let _ = (kernel, cpu);
+    fn between_steps(&mut self, kernel: &mut Kernel, machine: &mut Machine) -> bool {
+        let _ = (kernel, machine);
         false
-    }
-}
-
-/// No hooks of the test's: the kernel's provided defaults answer.
-pub struct NoHooks;
-
-/// What the driver asks of a host's hooks when the kernel has nothing to run.
-pub trait BetweenSteps {
-    /// Whether the hooks did anything that may let the kernel go on.
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool;
-}
-
-impl BetweenSteps for NoHooks {
-    fn between_steps(&mut self, _: &mut Kernel, _: &mut dyn Cpu) -> bool {
-        false
-    }
-}
-
-impl BetweenSteps for Box<dyn Hooks> {
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
-        (**self).between_steps(kernel, cpu)
     }
 }
 

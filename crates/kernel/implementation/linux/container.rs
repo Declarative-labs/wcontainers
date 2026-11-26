@@ -968,7 +968,7 @@ impl Kernel {
     }
 
     /// Every file of the root file system, not crossing into other mounts, in path order.
-    pub fn root_files<C: Executor>(&self, cpu: &mut GuestMachine<C>) -> Vec<FileRecord> {
+    pub fn root_files<C: Executor + 'static>(&self, cpu: &mut GuestMachine<C>) -> Vec<FileRecord> {
         let mut out = Vec::new();
         collect(cpu, &self.files.root, b"", &mut out);
         out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -979,7 +979,7 @@ impl Kernel {
     /// process. With the root on the backend this waits for the backend's answers like any call,
     /// so it may still be going on when this returns; a start that fails ends the container, and
     /// [`Kernel::start_failure`] says why.
-    pub fn start<S: crate::System, C: Executor>(
+    pub fn start<S: crate::System, C: Executor + 'static>(
         &mut self,
         cpu: &mut GuestMachine<C>,
         system: &alloc::sync::Arc<S>,
@@ -1008,11 +1008,9 @@ impl Kernel {
             );
         }
         self.machine.address_space_bytes = space;
-        self.ceiling = start
-            .ceiling
-            .unwrap_or(space)
-            .min(cx.cpu.address_space().end)
-            .min(space);
+        // The ceiling is the highest address the executor can give, so it bounds its spaces.
+        self.ceiling = start.ceiling.unwrap_or(space).min(space);
+        cx.cpu.bound_spaces(self.ceiling);
         self.machine.lowest_tier_top = crate::memory::first_tier_top(self.ceiling);
         self.hostname = start.hostname.to_vec();
         self.domainname = start.options.domain_name.to_vec();
@@ -1136,7 +1134,7 @@ impl Kernel {
 
     /// Gives the first process the values runc sets before its program runs, each as the
     /// process's own call would.
-    fn apply_start_options<S: crate::System, C: Executor>(
+    fn apply_start_options<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
         pid: Pid,
@@ -1205,7 +1203,10 @@ impl Kernel {
 
     /// Runs the container's start, the first time or again once the backend has answered: each
     /// part asks the backend as a call does, and a part done is not done again.
-    pub(crate) fn run_start<S: crate::System, C: Executor>(&mut self, cx: &mut Context<'_, S, C>) {
+    pub(crate) fn run_start<S: crate::System, C: Executor + 'static>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+    ) {
         let Some(mut starting) = self.starting.take() else {
             return;
         };
@@ -1284,7 +1285,7 @@ impl Kernel {
 
     /// Starts the first process: its working directory, its program loaded, then its standard
     /// descriptors on the ends named at start, as runc sets them up.
-    fn start_first<S: crate::System, C: Executor>(
+    fn start_first<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
         starting: &Starting,
@@ -1363,7 +1364,7 @@ impl Kernel {
 
     /// Descriptors 0 to 2 of the first process on the ends named at start: pipes (with `/dev/null`
     /// as 0 when there is no input end) or a terminal's slave, the kernel holding the other sides.
-    fn standard_descriptors<S: crate::System, C: Executor>(
+    fn standard_descriptors<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
         pid: Pid,
@@ -1417,7 +1418,7 @@ impl Kernel {
 
     /// A pipe for one standard descriptor: the side the guest gets (opened with `flags`), the end
     /// holding the other.
-    fn end_pipe<S: crate::System, C: Executor>(
+    fn end_pipe<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
         end: EndNumber,
@@ -1454,7 +1455,7 @@ impl Kernel {
     }
 
     /// Replaces a process's program with a loaded image, as the last part of `execve` does.
-    pub(crate) fn install_image<S: crate::System, C: Executor>(
+    pub(crate) fn install_image<S: crate::System, C: Executor + 'static>(
         &mut self,
         cx: &mut Context<'_, S, C>,
         pid: Pid,
@@ -1964,7 +1965,7 @@ impl Kernel {
     }
 }
 
-fn collect<C: Executor>(
+fn collect<C: Executor + 'static>(
     cpu: &mut GuestMachine<C>,
     directory: &Node,
     path: &[u8],

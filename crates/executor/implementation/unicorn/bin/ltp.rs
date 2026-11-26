@@ -38,6 +38,14 @@ fn usage() -> ! {
 
 fn main() {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
+    if let [mode, id, log] = &arguments[..]
+        && mode == ltp::ONE_TEST
+    {
+        let tar = PathBuf::from(std::env::var("LTP_TAR").expect("LTP_TAR, as the run had it"));
+        let seed = number(ltp::SEED_VARIABLE, 1);
+        let limit = Duration::from_secs(number(ltp::LIMIT_VARIABLE, 900));
+        ltp::run_one_test(&tar, id, Path::new(log), seed, limit);
+    }
     let [mode, results, selection @ ..] = &arguments[..] else {
         usage()
     };
@@ -89,9 +97,9 @@ fn main() {
             });
         }
         "ours" => {
-            let limit = Duration::from_secs(number("LTP_LIMIT", 900));
-            let seed = number("LTP_SEED", 1);
-            ltp::run_ours(&tests, &tar, seed, jobs, limit, &logs, report);
+            let limit = Duration::from_secs(number(ltp::LIMIT_VARIABLE, 900));
+            let seed = number(ltp::SEED_VARIABLE, 1);
+            ltp::run_ours(&tests, seed, jobs, limit, &logs, report);
         }
         _ => usage(),
     }

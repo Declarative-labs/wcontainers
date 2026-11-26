@@ -118,7 +118,7 @@ fn generation(kernel: &Kernel, ino: u64) -> u32 {
     hasher.finish() as u32
 }
 
-pub(super) fn name_to_handle_at<S: crate::System, C: Executor>(
+pub(super) fn name_to_handle_at<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,

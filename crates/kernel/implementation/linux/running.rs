@@ -13,9 +13,9 @@ use wcontainers_executor::{
     Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse, ProcessorStateOf,
     SystemCallResponse, TrapHandler,
 };
-use wcontainers_processor_architecture_arm64::{
-    ConditionFlags, Exception, ExclusiveMonitor, INSTRUCTION_SIZE,
-};
+use wcontainers_processor_architecture_arm64::{ConditionFlags, Exception, ExclusiveMonitor};
+
+use crate::guest_machine::Predicates;
 
 /// The register a system call's value is returned in on arm64, x0
 /// (<https://man7.org/linux/man-pages/man2/syscall.2.html#:~:text=arm64%20%20%20%20%20%20%20%20%20%20svc%20%230>).
@@ -64,9 +64,10 @@ impl TrapHandler for FirstTrap {
     }
 }
 
-/// Runs the thread whose registers are `registers` on `memory` with `executor`, carrying on as
-/// `resume` says, until its first trap, and returns that trap as the exit it is, with `registers`
-/// as the thread left them. `started` is given each execution's interrupter before it runs.
+/// Runs the thread whose registers are `registers` and `predicates` on `memory` with `executor`,
+/// carrying on as `resume` says, until its first trap, and returns that trap as the exit it is,
+/// with `registers` and `predicates` as the thread left them. `started` is given each
+/// execution's interrupter before it runs.
 ///
 /// # Panics
 ///
@@ -74,6 +75,7 @@ impl TrapHandler for FirstTrap {
 pub(crate) fn turn<C: Executor + 'static>(
     executor: &mut C,
     registers: &mut RegisterBlock,
+    predicates: &mut Predicates,
     memory: &C::GuestMemory,
     resume: Resume,
     mut started: impl FnMut(C::Interrupter),
@@ -82,7 +84,7 @@ pub(crate) fn turn<C: Executor + 'static>(
         registers.x[RESULT_REGISTER] = value;
     }
     let mut trap = FirstTrap::default();
-    let mut processor = executors_own::<ProcessorStateOf<C>>(to_processor(registers))
+    let mut processor = executors_own::<ProcessorStateOf<C>>(to_processor(registers, *predicates))
         .expect("the kernel runs arm64 threads only");
     // Runs until the next trap, which the handler ends the execution at; an execution that must
     // wait is waited out and prepared again from where it stopped.
@@ -104,16 +106,20 @@ pub(crate) fn turn<C: Executor + 'static>(
         .downcast_ref()
         .expect("the executor's processor is the one it was given");
     *registers = to_registers(processor);
-    match trap.exit {
-        // The processor's state keeps the call's instruction at the program counter; the kernel
-        // takes it after the call.
-        Some(exit @ Exit::Syscall(_)) => {
-            registers.pc = registers.pc.wrapping_add(INSTRUCTION_SIZE);
-            exit
-        }
+    // A supervisor call is taken after its instruction (`Exception::is_taken_after_instruction`),
+    // so the processor's state at a system call already holds the program counter after it.
+    let exit = match trap.exit {
         Some(exit) => exit,
         None => exit_of(processor.exception, registers),
-    }
+    };
+    *predicates = match exit {
+        Exit::Syscall(_) => Predicates::default(),
+        _ => Predicates {
+            registers: processor.predicate_registers,
+            first_fault: processor.first_fault_register,
+        },
+    };
+    exit
 }
 
 /// `processor` as the executor's own processor's state `P`, if that is arm64's.
@@ -195,11 +201,12 @@ fn exit_of_syndrome(syndrome: u64, fault_address: u64, registers: &RegisterBlock
     }
 }
 
-/// The processor's state of a thread whose registers are `registers`, with no exception.
+/// The processor's state of a thread whose registers are `registers` and `predicates`, with no
+/// exception.
 ///
 /// Its exclusive monitor is open: the registers keep no monitor, so a turn begins as a return to
 /// EL0 that cleared it.
-fn to_processor(registers: &RegisterBlock) -> Processor {
+fn to_processor(registers: &RegisterBlock, predicates: Predicates) -> Processor {
     Processor {
         general_purpose_registers: registers.x,
         stack_pointer: registers.sp,
@@ -213,6 +220,8 @@ fn to_processor(registers: &RegisterBlock) -> Processor {
             .map(|[low, high]| u128::from(low) | (u128::from(high) << u64::BITS)),
         floating_point_control: u64::from(registers.fpcr),
         floating_point_status: u64::from(registers.fpsr),
+        predicate_registers: predicates.registers,
+        first_fault_register: predicates.first_fault,
         software_thread_id: registers.tpidr_el0,
         exclusive_monitor: ExclusiveMonitor::Open,
         exception: None,
@@ -244,6 +253,7 @@ fn to_registers(processor: &Processor) -> RegisterBlock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wcontainers_processor_architecture_arm64::INSTRUCTION_SIZE;
 
     #[test]
     fn registers_come_back_from_the_processor_state_unchanged() {
@@ -259,7 +269,10 @@ mod tests {
         registers.fpsr = u32::MAX;
         registers.fpcr = u32::MAX;
         registers.tpidr_el0 = u64::MAX;
-        assert_eq!(to_registers(&to_processor(&registers)), registers);
+        assert_eq!(
+            to_registers(&to_processor(&registers, Predicates::default())),
+            registers
+        );
     }
 
     /// The [DFSC](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=DFSC%2C%20bits%20%5B5%3A0%5D) of an alignment fault.

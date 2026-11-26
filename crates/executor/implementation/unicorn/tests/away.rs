@@ -8,17 +8,17 @@ use std::sync::{Arc, Mutex};
 
 use std::collections::BTreeMap;
 
-use wcontainers_abi::{Cpu, PAGE_SIZE, SystemCallRequest};
+use wcontainers_abi::{PAGE_SIZE, SystemCallRequest};
 use wcontainers_executor_unicorn::driver::{self, Run};
 use wcontainers_executor_unicorn::guest_directory_entry;
-use wcontainers_executor_unicorn::hooks::Hooks;
+use wcontainers_executor_unicorn::hooks::{Hooks, Process};
 use wcontainers_executor_unicorn::reference::{self, ROOT_DIRECTORY, in_guest_directory};
 use wcontainers_kernel::UserId;
 use wcontainers_kernel::signal::Signal;
 use wcontainers_kernel::signal_information::{ProcessIdentity, SendCode};
 use wcontainers_kernel_linux::linux::general;
 use wcontainers_kernel_linux::{
-    ContextOrigin, Kernel, MemoryObject, Process, ProcessContext, SignalInformation, SuspendedTask,
+    ContextOrigin, Kernel, MemoryObject, ProcessContext, SignalInformation, SuspendedTask,
     SystemCallResponse, TaskId, reason,
 };
 
@@ -155,7 +155,12 @@ impl Script {
             .map(|(_, thread)| *thread)
     }
 
-    fn take(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu, tasks: &[TaskId]) {
+    fn take(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+        tasks: &[TaskId],
+    ) {
         let taken: Vec<SuspendedTask> = kernel.suspend_tasks(cpu, tasks).map(|(_, t)| t).collect();
         self.seen
             .lock()
@@ -165,7 +170,11 @@ impl Script {
         TAKEN.with_borrow_mut(|held| held.extend(taken));
     }
 
-    fn put_back(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
+    fn put_back(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) {
         if let Some(context) = CONTEXT.take() {
             let back = kernel.resume_process(context);
             assert!(back.is_none(), "the context is put back");
@@ -261,7 +270,11 @@ impl Hooks for Script {
         }
     }
 
-    fn between_steps(&mut self, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    fn between_steps(
+        &mut self,
+        kernel: &mut Kernel,
+        cpu: &mut wcontainers_executor_unicorn::driver::Machine,
+    ) -> bool {
         const PARENT: usize = 0;
         const CHILD: usize = 1;
         let parent = self.processes.first().copied();

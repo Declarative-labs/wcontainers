@@ -14,7 +14,7 @@ use crate::process::{Channel, Pid, Report, Tid};
 use crate::{Context, Errno, Kernel, errno};
 
 /// `clone(flags, stack, parent_tid, tls, child_tid)`, arm64's argument order.
-pub(super) fn clone<S: crate::System, C: Executor>(
+pub(super) fn clone<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -113,7 +113,7 @@ fn vfork_wait(kernel: &mut Kernel, tid: Tid, child: Tid) -> Outcome {
 /// Linux's `copy_process` for a child process: its checks in order, then a copy of the caller's
 /// process and thread, which starts in line to run.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn make_child<S: crate::System, C: Executor>(
+fn make_child<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -304,7 +304,7 @@ fn make_child<S: crate::System, C: Executor>(
 
 /// `dup_mmap`: a fork's child's map over its copy of the memory. What the child does not get goes,
 /// what it gets wiped is zeroed, and nothing stays locked.
-fn copy_map<C: Executor>(
+fn copy_map<C: Executor + 'static>(
     cpu: &mut GuestMachine<C>,
     parent: &crate::memory::AddressMap,
     memory: wcontainers_abi::MemoryId,
@@ -360,7 +360,7 @@ fn share_or_copy(thread: &mut crate::process::Thread, flags: u32, child: Tid) {
 /// `copy_process` for a thread of the caller's process: it shares everything the process holds and
 /// starts on the same memory from the caller's registers, with its own stack and thread pointer if
 /// given.
-fn make_thread<S: crate::System, C: Executor>(
+fn make_thread<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -600,7 +600,7 @@ fn child_usage(kernel: &Kernel, child: Pid) -> rusage {
     usage
 }
 
-pub(super) fn wait4<S: crate::System, C: Executor>(
+pub(super) fn wait4<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -647,7 +647,7 @@ pub(super) fn wait4<S: crate::System, C: Executor>(
     }
 }
 
-pub(super) fn waitid<S: crate::System, C: Executor>(
+pub(super) fn waitid<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,

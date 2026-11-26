@@ -9,11 +9,11 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use wcontainers_abi::SystemCallRequest;
-use wcontainers_executor_unicorn::hooks::Hooks;
+use wcontainers_executor_unicorn::hooks::{Hooks, Process};
 use wcontainers_executor_unicorn::network::DOCKER_HOST_NAME;
 use wcontainers_executor_unicorn::{assert_same_output, driver, guest_directory_entry, reference};
 use wcontainers_kernel_linux::linux::general;
-use wcontainers_kernel_linux::{Process, SystemCallResponse, TaskId};
+use wcontainers_kernel_linux::{SystemCallResponse, TaskId};
 
 /// A server on this machine: TCP answers what it read once the client finishes sending, UDP
 /// answers each datagram. Returns its TCP and UDP ports.

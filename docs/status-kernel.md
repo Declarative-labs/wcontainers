@@ -243,3 +243,197 @@ pub trait MemorySpace: Sized {
   clippy `--no-deps -D warnings` of both kernel crates exit 0; 0 `unsafe` lines; unit tests 30
   passed on both (then one test-only doc comment shortened, rechecked on ARM64). Linter, the
   kernel's own crates: 31,319 (31,322 before this fit). Logs: SCRATCH/kernel-port/exec-1126/.
+
+## 2026-11-26: KS, the harness on the kernel's runner (first guest programs end to end)
+
+- Fast-forward to `origin/executor-restart` 62d137472 (the stand-in on today's interfaces); every
+  file of his main's interface folders byte-identical to his main ac696ea19 (MEASURED, 90 files).
+- Kernel (`61a003c87`, `49f659c08`): `KernelWithExecutor::with_runners` and `runner`, and
+  `KernelRunner::run_on`, need no `Send` executor (the interface's `new` and `run` call them), so a
+  stand-in stays on the host thread that made it; `Process::on_executor` names a hook's executor;
+  the runner settles before it reports the end; a system call's program counter is taken as the
+  executor leaves it (taken after its instruction: the turn added 4 again, MEASURED as hello's
+  second write skipped); a start that waits gets its first process's data once it exists.
+- Harness (`90b0fec53`, `38f65e53a`): driver.rs runs every container through `run_on` with the
+  outside's work between runs; the abi's `Cpu`, `Host`, `Event`, `Next`, `Exit` and the runtime's
+  `drive`, `Execution`, `Turn` are gone from driver, streams, replay, hooks and ltp; the four traits
+  (`Hooks` stays as the tests' own boxed hooks, `BetweenSteps`, `DigestMemories` use, `StreamHost`)
+  are down to `Hooks` and `DigestMemories` (the latter is the stand-in's file); the LTP runner
+  starts each test as this program again (`std::process::Command`), no `fork`/`_exit`. Saving (a
+  copy made by `fork`) panics with the reason; layer 1's old-drive calls panic with the reason.
+- MEASURED (ARM64, job kernel-port/20261126-071122-3199251, 07:11 to 09:32 UTC, load 8 to 35, three
+  targets at a time, 4 test threads, 2,400 s per target): kernel unit tests 30 passed; kernel clippy
+  `--lib -D warnings` 0; harness tests 257 passed, 92 failed, 8 ignored, 8 targets timed out
+  (cpulimit, cputime, deadlines, edges, processes, repeats, threads, turns). Of fails16's 35, 34
+  fail; the 35th (proc_task) is in the timed-out threads target. Rerun with the start fix (job
+  kernel-port-b): the 22 start failures are gone but the 5 on the known list. New failures left:
+  saves 26 (fork), layer 1 1, and 11 others: sharedmap 2, sharedviews 3, privatemap 1 (views of
+  one block disagree in the stand-in), rseqabort, aio poll, procstatus fdinfo, embedder
+  compute-used (no time passes in a turn: the runner keeps no slice), streams
+  input_arrives_while_the_reader_waits (epoll does not hear the input closed). Logs:
+  SCRATCH/kernel-port/ks/.
+- LTP: the whole job's 30 all crashed (before the start fix). With the fix, a run stopped after 12:
+  mprotect01, sendto01, recvfrom01, listen01 pass as the reference; fork01, clone04, vfork01,
+  mmap01, munmap01, pipe01, pipe2_01, socket01 hang (TPASS lines, then LTP's own timeout: the
+  parent never sees its child end; INFERRED: the shared memory LTP's library keeps its results and
+  checkpoints in, as the sharedviews failures show).
+- Not building: tests round_trips, runners and the kernel's conformance (the interface's `Kernel`
+  asks a `Send` executor; the conformance also `PerThreadWatch`, which the stand-in lacks);
+  guest_edges (the old executor surface). Clippy of the harness: one finding in standin.rs
+  (`refused_in_a_copy` unused, the executor track's file).
+
+## 2026-11-26, afternoon: the check's repair, the rulings, KS at a pushed tip
+
+### Repair (the check did not hold: the pushed tip built no test)
+- Merges, normal, no conflict: `7d7baa5fa` of `origin/runtime-restart` 93637d42e, `5540e025b` of
+  `origin/executor-restart` 9aaaf77a3 (its tip; it carries the move of wasmtime behind the
+  `runtime` feature, `5bfd6d5ad`, which was the local change). His main `ac696ea19` was already in
+  (`git fetch` of his checkout: FETCH_HEAD is an ancestor). The 91 files of his interface folders
+  are byte-identical to his main (MEASURED, `git diff --quiet` on each). The two `interface.rs` not
+  on his main (crates/kvm, crates/linux-socket-options) are other tracks'.
+- Every number below comes from a fresh clone of the pushed tip (`36bf10eed`), run as job
+  kernel-port-ks2 (scratch kernel-port/ks2/clone, `ks-whole.sh`, `ltp30.sh`).
+- The stand-in now has predicate registers and FFR in its processor: the kernel keeps them per
+  thread across interrupts and faults and drops them at a system call, as Linux discards them
+  there (`789862313`).
+
+### The check's findings
+1. Fixed above.
+2. `wcontainers_abi::Cpu` is gone from the harness and from the kernel: the kernel no longer reads a
+   space's size from the executor. The start's `ceiling` (its doc already says: the highest address
+   the executor can give) bounds the guest machine's spaces; the harness gives the stand-in's end as
+   the ceiling. `git grep -n '\bCpu\b'` in crates/kernel and in driver.rs: none (MEASURED).
+   FOR THE RUNTIME TRACK: `container.rs:202` passes `ceiling: None`; with this change that means
+   the executor holds the whole 48-bit space. Pass the executor's end (4 GiB for wasmtime's
+   32-bit memories) as `ceiling: Some(..)`.
+3. `Hooks` stays, for the first of his reasons: several implementations exist. 33 test scripts
+   implement it (embedder.rs 24, edges.rs 5, taskend.rs 2, away.rs 1, outside.rs 1), and the
+   driver holds whichever one a test hands it as `Box<dyn Hooks>`. Its linter finding stays.
+
+### Rulings
+(a) SEND. The stand-in of `origin/executor-restart` is `Send` (its engine on a thread of its own).
+`with_runners`, `runner` and `run_on` are gone: `Kernel::new` makes the runners and
+`Runner::run` runs them. The harness runs each runner with a stand-in made by `restored()` from
+the kernel's own, so both are on one engine (`prepare_execution` asserts it). `round_trips`,
+`runners` and the kernel's conformance build and run (results below).
+
+(b) TIME SLICE: NO, for the configuration the kernel accepts (READ, his main's interfaces).
+`prepare_execution` hands the kernel an `ExecutionInterrupter` (`Send + Sync`, `interrupt`) for each
+execution, but `Execution::run` holds the runner's host thread until a trap, and `TrapHandler`
+is called only at traps. His system interface's `Clock` only reads (`monotonic_nanoseconds`,
+`realtime_nanoseconds`); its waits (`Readiness`, `FuseServer`, `DomainNameResolver`) are futures on
+handles that someone must poll, and no interface lets the kernel ask for a call at a time. So the
+interrupter can be called only from another host thread, and the only other host threads the
+kernel is given are its other runners (`Kernel::new(config, parallelism)`). Built: a runner that
+finds the lock held by a running turn keeps that turn's time with `Clock::monotonic_nanoseconds`,
+interrupts it once the slice the kernel gave it has passed, and returns `Idle { until }` for when to
+look again (`keep_time`, executing.rs). It does nothing for: one runner (the runtime's `RUNNERS`
+is 1; the harness and LTP run with one, as the guest is told `parallelism` processors); the
+harness's repeatable clock, which moves only when the runner returns, so no slice ever passes
+during a turn; and exact replay (`ReplayDeterminism::Exact`, the only one the kernel accepts),
+which a wall-clock interrupt cannot keep. INFERRED: no measured effect, as no test runs two runners
+on a moving clock.
+
+ONE QUESTION FOR THE OWNER (crates/executor/interface.rs, `trait Executor`):
+
+```rust
+// before
+    /// Returns the execution from the given processor state on the given memory, and its interrupter.
+    fn prepare_execution<'execution>(
+        &'execution mut self,
+        processor: ProcessorStateOf<Self>,
+        memory: &'execution Self::GuestMemory,
+    ) -> (Self::Execution<'execution>, Self::Interrupter);
+
+// after
+    /// Returns the execution from the given processor state on the given memory, and its interrupter.
+    /// With an instruction budget, the execution calls `TrapHandler::handle_interrupt` once it has
+    /// retired that many instructions.
+    fn prepare_execution<'execution>(
+        &'execution mut self,
+        processor: ProcessorStateOf<Self>,
+        memory: &'execution Self::GuestMemory,
+        instruction_budget: Option<u64>,
+    ) -> (Self::Execution<'execution>, Self::Interrupter);
+```
+
+A budget in instructions works with one runner, needs no host thread, and repeats exactly. What
+not having it costs (MEASURED below): the targets whose guest spins while another thread must run
+reach the 2,400 s bound, and no save is reached (a run comes back to the embedder only when every
+thread waits).
+
+(c) SAVING. Built without a copy of the process (`save_and_bring_back`, driver.rs): at each save
+moment, between two runs, the kernel's `restore` copies every memory into a new space of its
+executor (`create_guest_memory` and `PageTable::copy_from`, so nothing the executor translated is
+kept), the runner gets a new stand-in (`restored()`, whose refusals it carries), and the host moves
+on to a new seed and clocks. Not the replay in a second process I had named: replaying cannot
+rebuild what 28 of the tests carry across a save outside the kernel (the backend server's state,
+the outside sockets: backend.rs, outside.rs, the language runtimes), which a copy of the process
+kept; and the copy's only extra was the waiting original. MEASURED: the saving and language tests'
+outputs match the reference, but their saves are never reached (`saves made: 0`, `ended before its
+first save`): the turn a save is drawn at counts runner returns, which only a time slice gives
+(the question above).
+
+(d) LAYER 1. It tests what layers 2 and 3 do not: random sequences of system calls with random and
+edge arguments (proptest), every return value and the arena compared after every call with the
+same sequence on Linux, then the play area; layers 2 and 3 run fixed programs. Ported without an
+executor of its own: our side now runs the reference's own runner (guest/layer1.c) as the
+container's program on the stand-in, the sequence given on its standard input, and parses the
+report it writes, exactly as the reference side is run (`8dfdcde9f`). The replay variant compares
+the results and uses up the record; it no longer compares guest memory digests (the stand-in's
+digests are not wired in since the drive changed). MEASURED (job kernel-port 20261126-152412, 16,
+8, 8 and 8 cases): on the backend, on the cached backend and the replay pass;
+`sequences_match_reference` fails on a real difference (seed 0, a `setsockopt` after
+`finit_module`), and is on fails16's list.
+
+### Waiting on nothing
+- Epoll and the closed input (`82ffab441`): the kernel let go of an end while `serve_ends` still
+  held its own copy of the end's file, so the release did not see the last reference and woke
+  nothing; `poll` passed only because any object's wake wakes a poll. MEASURED: streams 18 of 18
+  (was 17), and streams, terminal (but the known `making_pairs`), shell, epoll, fifo, splice,
+  pollmask, sigio, taskend, orphans, zombie, hello as before.
+- `round_trips` 7 of 7; `guest_edges` 9 of 9 (ported to `prepare_execution`, `PageTable`, the
+  arm64 crate's `Exception`); `runners` 3 of 4 (below).
+
+### KS at `36bf10eed` (MEASURED: fresh clone, job kernel-port-ks2/20261126-113931, 11:39 to
+14:38 UTC, load 20 to 47, three targets at a time, 4 test threads, 2,400 s per target)
+- clippy `--all-targets --no-deps -D warnings` of the kernel and the harness: 0; rustfmt `--check`:
+  0; kernel unit tests 30 passed; the kernel's conformance suite on the stand-in 22 passed (it built
+  for the first time since the port).
+- Harness: 114 targets: 68 pass, 34 fail, 12 reach the bound. Tests: 287 passed, 53 failed, 8
+  ignored, plus 10 seen failing inside bounded targets. Logs and the failing list:
+  SCRATCH/kernel-port/ks2/ks-suite, ks2/failed.txt.
+- fails16's 35: 31 fail; the other 4 fail inside bounded targets (file_capabilities,
+  special_files in backend; timers in timers; proc_task in threads). So the known list is met.
+- Bounded (no time slice, the question above): backend (`arguments_taken_once`, saves), cpulimit,
+  cputime, deadlines, edges, java, node, processes, repeats, threads, timers, turns. The 8 of the
+  last run are all still bounded; backend, java, node and timers join them now that saves no longer
+  panic at once.
+- New failures beyond fails16, each with its cause:
+  - waits on the time slice: saving, go, python language and system test modules' "saves made 0",
+    outside (2, the restore is never reached), embedder compute-used (no time passes in a turn),
+    rseqabort (no preemption inside a section).
+  - stand-in (executor track): counterclock 2 (`TrapOrUndefined`, an MRS of the counter is
+    refused since the stand-in runs at EL0), sharedmap 2, sharedviews 3, privatemap 1 (views of
+    one block disagree), runners `code_the_kernel_writes_over_code_that_ran_is_what_runs_next`
+    (exit 1 where 2: code the kernel wrote is not what runs; INFERRED a translation kept), python
+    system program and system test modules (SIGSEGV, exit 139; INFERRED the shared views).
+  - mine, open: aio `poll_requests_match_reference` ("events 5" where 1), procstatus fdinfo,
+    layer 1 replay (fixed since, above).
+- LTP, the 30 run to the end (job kernel-port-ks2/20261126-144004, 2,622 s): 6 verdicts match
+  (listen01, mprotect01, recvfrom01, rt_sigprocmask01, sendto01, sigaction01), 24 hang (LTP's own
+  timeout; every one with a child or LTP's shared result page; the stand-in's shared-page fault is
+  the executor track's).
+- KS IS NOT REACHED: the bounded targets wait on the time slice question; the stand-in's
+  failures and the LTP hangs on the executor track.
+
+### Linter (MEASURED, the tip with the two fixes, no key): the kernel's own crates 31,350 (31,319
+at the last run): `constant_defined_twice` +11 (merged crates' constants that a generated binding
+also defines), and +4 `name_unanswered`, +2 `summary_unanswered`, +7 `summary_not_one_line`, +4
+`summary_too_long`, +2 `summary_not_one_sentence`, +1 third person, all in this run's new
+comments (the model's key is needed to answer them). Logs: SCRATCH/kernel-port/ks2/lint.
+
+### Next
+- KS waits on the owner's answer to the one question (the time slice), and on the executor track
+  for the shared views, the counter's MRS at EL0, the code written over and LTP's shared page.
+- Mine meanwhile: aio poll, procstatus fdinfo, saving checked once a slice exists.

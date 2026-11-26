@@ -36,7 +36,7 @@ fn permissions(prot: u64, strict: bool) -> Result<Permissions, Errno> {
     Ok(permissions)
 }
 
-pub(super) fn brk<S: crate::System, C: Executor>(
+pub(super) fn brk<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -110,7 +110,7 @@ pub(super) fn brk<S: crate::System, C: Executor>(
     Ok(address)
 }
 
-pub(super) fn mmap<S: crate::System, C: Executor>(
+pub(super) fn mmap<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -136,7 +136,7 @@ pub(super) fn mmap<S: crate::System, C: Executor>(
 
 /// Why a mapping of huge pages fails: none is free to reserve; one that reserves none
 /// (`MAP_NORESERVE`), which Linux makes and faults on every touch, is refused and counted.
-fn no_huge_pages<S: crate::System, C: Executor>(
+fn no_huge_pages<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     flags: u32,
@@ -154,7 +154,7 @@ fn no_huge_pages<S: crate::System, C: Executor>(
 
 /// Linux's `do_mmap`: maps `file` (or anonymous memory) at `offset`, which is page aligned.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-pub(super) fn do_mmap<S: crate::System, C: Executor>(
+pub(super) fn do_mmap<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -523,7 +523,7 @@ pub(super) fn do_mmap<S: crate::System, C: Executor>(
 /// `remap_file_pages`, as Linux emulates it: the shared file mapping at `start` is mapped again
 /// over `[start, start + size)` from file page `pgoff`, with its own protection, and filled at once
 /// unless `MAP_NONBLOCK`. The range must lie in mappings of the same file with the same flags.
-pub(super) fn remap_file_pages<S: crate::System, C: Executor>(
+pub(super) fn remap_file_pages<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -622,7 +622,7 @@ pub(super) fn remap_file_pages<S: crate::System, C: Executor>(
 /// brought in (then on at the next mapping if `ignore_errors`): a writable private file mapping is
 /// faulted in for writing, which copies its file pages. Which pages are in memory is not tracked
 /// otherwise.
-fn populate<S: crate::System, C: Executor>(
+fn populate<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -669,7 +669,7 @@ fn populate<S: crate::System, C: Executor>(
 }
 
 /// The removed file on the internal tmpfs that shared anonymous memory is (`shmem_kernel_file_setup`).
-fn shared_zero_file<S: crate::System, C: Executor>(
+fn shared_zero_file<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     size: u64,
@@ -697,7 +697,7 @@ fn shared_zero_file<S: crate::System, C: Executor>(
     Ok(node)
 }
 
-pub(super) fn munmap<S: crate::System, C: Executor>(
+pub(super) fn munmap<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -717,7 +717,7 @@ pub(super) fn munmap<S: crate::System, C: Executor>(
 }
 
 /// Linux's `do_vmi_munmap`: the range must lie below `TASK_SIZE` before its length is rounded up.
-pub(super) fn unmap<S: crate::System, C: Executor>(
+pub(super) fn unmap<S: crate::System, C: Executor + 'static>(
     map: &mut crate::memory::AddressMap,
     cx: &mut Context<'_, S, C>,
     memory: wcontainers_abi::MemoryId,
@@ -738,7 +738,7 @@ pub(super) fn unmap<S: crate::System, C: Executor>(
     Ok(())
 }
 
-pub(super) fn mprotect<S: crate::System, C: Executor>(
+pub(super) fn mprotect<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -748,7 +748,7 @@ pub(super) fn mprotect<S: crate::System, C: Executor>(
 }
 
 /// `pkey_mprotect`: `mprotect` with a protection key, which must be -1 (none) or allocated.
-pub(super) fn pkey_mprotect<S: crate::System, C: Executor>(
+pub(super) fn pkey_mprotect<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -758,7 +758,7 @@ pub(super) fn pkey_mprotect<S: crate::System, C: Executor>(
 }
 
 /// Linux's `do_mprotect_pkey`.
-fn protect<S: crate::System, C: Executor>(
+fn protect<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -853,7 +853,7 @@ fn protect<S: crate::System, C: Executor>(
     Ok(0)
 }
 
-pub(super) fn madvise<S: crate::System, C: Executor>(
+pub(super) fn madvise<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1134,7 +1134,7 @@ pub(super) fn madvise<S: crate::System, C: Executor>(
 /// Linux's `TASK_SIZE` for 48 bit addresses, which `mremap` checks lengths and addresses against.
 const TASK_SIZE: u64 = crate::user::ADDRESS_LIMIT;
 
-pub(super) fn mremap<S: crate::System, C: Executor>(
+pub(super) fn mremap<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1260,7 +1260,7 @@ fn prepare(kernel: &Kernel, tid: Tid, mapping: &Mapping, request: &Remap) -> Res
 }
 
 /// Linux's `mremap_at`: resizing where the range is, or moving it if it must grow and may move.
-fn remap_at<S: crate::System, C: Executor>(
+fn remap_at<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1321,7 +1321,7 @@ fn remap_at<S: crate::System, C: Executor>(
 }
 
 /// Linux's `mremap_to`: moving the range to a new address, given or chosen.
-fn remap_to<S: crate::System, C: Executor>(
+fn remap_to<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1388,7 +1388,7 @@ fn remap_to<S: crate::System, C: Executor>(
 
 /// The newer form of a move, Linux's `remap_move`: a fixed move with no change of size takes every
 /// mapping in the range along, keeping the gaps between them.
-fn move_ranges<S: crate::System, C: Executor>(
+fn move_ranges<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1436,7 +1436,7 @@ fn move_ranges<S: crate::System, C: Executor>(
 /// Linux's `move_vma`: the range's pages and what it maps go to `destination`, the old range is
 /// unmapped (or, with `MREMAP_DONTUNMAP`, left mapped with its pages dropped), and growth past the old
 /// length is fresh.
-fn move_range<S: crate::System, C: Executor>(
+fn move_range<S: crate::System, C: Executor + 'static>(
     cx: &mut Context<'_, S, C>,
     kernel: &mut Kernel,
     tid: Tid,
@@ -1510,7 +1510,7 @@ fn move_range<S: crate::System, C: Executor>(
 
 /// Puts a private range back to what it held before it was touched: zero, or the file's bytes. A
 /// shared mapping's pages are what it shares and stay.
-fn drop_pages<S: crate::System, C: Executor>(
+fn drop_pages<S: crate::System, C: Executor + 'static>(
     cx: &mut Context<'_, S, C>,
     memory: wcontainers_abi::MemoryId,
     map: &mut crate::memory::AddressMap,
@@ -1532,7 +1532,7 @@ fn drop_pages<S: crate::System, C: Executor>(
     Ok(())
 }
 
-pub(super) fn msync<S: crate::System, C: Executor>(
+pub(super) fn msync<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1609,7 +1609,7 @@ fn can_lock(kernel: &Kernel, tid: Tid) -> bool {
 
 /// Linux's `do_mlock` and `apply_vma_lock_flags`: the whole range must be mapped and fit the limit on
 /// locked memory.
-fn lock_range<S: crate::System, C: Executor>(
+fn lock_range<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1673,7 +1673,7 @@ fn lock_range<S: crate::System, C: Executor>(
     Ok(0)
 }
 
-pub(super) fn mlock<S: crate::System, C: Executor>(
+pub(super) fn mlock<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1682,7 +1682,7 @@ pub(super) fn mlock<S: crate::System, C: Executor>(
     lock_range(kernel, cx, tid, address, length, Lock::Now)
 }
 
-pub(super) fn mlock2<S: crate::System, C: Executor>(
+pub(super) fn mlock2<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1700,7 +1700,7 @@ pub(super) fn mlock2<S: crate::System, C: Executor>(
     lock_range(kernel, cx, tid, address, length, lock)
 }
 
-pub(super) fn munlock<S: crate::System, C: Executor>(
+pub(super) fn munlock<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1710,7 +1710,7 @@ pub(super) fn munlock<S: crate::System, C: Executor>(
     lock_range(kernel, cx, tid, address, length, Lock::None)
 }
 
-pub(super) fn mlockall<S: crate::System, C: Executor>(
+pub(super) fn mlockall<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1749,7 +1749,7 @@ pub(super) fn mlockall<S: crate::System, C: Executor>(
     Ok(0)
 }
 
-pub(super) fn munlockall<S: crate::System, C: Executor>(
+pub(super) fn munlockall<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     _: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1761,7 +1761,7 @@ pub(super) fn munlockall<S: crate::System, C: Executor>(
     Ok(0)
 }
 
-pub(super) fn mincore<S: crate::System, C: Executor>(
+pub(super) fn mincore<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1809,7 +1809,7 @@ fn key_allocated(map: &crate::memory::AddressMap, key: i32) -> bool {
 }
 
 /// `pkey_alloc`: with no permission overlays there is never a key to give (ENOSPC).
-pub(super) fn pkey_alloc<S: crate::System, C: Executor>(
+pub(super) fn pkey_alloc<S: crate::System, C: Executor + 'static>(
     _: &mut Kernel,
     _: &mut Context<'_, S, C>,
     _: Tid,
@@ -1823,7 +1823,7 @@ pub(super) fn pkey_alloc<S: crate::System, C: Executor>(
     Err(Errno::ENOSPC)
 }
 
-pub(super) fn pkey_free<S: crate::System, C: Executor>(
+pub(super) fn pkey_free<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     _: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1840,7 +1840,7 @@ pub(super) fn pkey_free<S: crate::System, C: Executor>(
 
 /// `map_shadow_stack`: the CPU has no guarded control stacks (as the reference's), so EOPNOTSUPP
 /// before anything else.
-pub(super) fn map_shadow_stack<S: crate::System, C: Executor>(
+pub(super) fn map_shadow_stack<S: crate::System, C: Executor + 'static>(
     _: &mut Kernel,
     _: &mut Context<'_, S, C>,
     _: Tid,
@@ -1849,7 +1849,7 @@ pub(super) fn map_shadow_stack<S: crate::System, C: Executor>(
     Err(Errno::EOPNOTSUPP)
 }
 
-pub(super) fn process_vm_readv<S: crate::System, C: Executor>(
+pub(super) fn process_vm_readv<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1858,7 +1858,7 @@ pub(super) fn process_vm_readv<S: crate::System, C: Executor>(
     process_vm(kernel, cx, tid, arguments, false)
 }
 
-pub(super) fn process_vm_writev<S: crate::System, C: Executor>(
+pub(super) fn process_vm_writev<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1869,7 +1869,7 @@ pub(super) fn process_vm_writev<S: crate::System, C: Executor>(
 
 /// Linux's `process_vm_rw`: copies between the caller's segments and another task's memory, which
 /// is reached as `get_user_pages` reaches it. Returns what was copied, or the error if nothing was.
-fn process_vm<S: crate::System, C: Executor>(
+fn process_vm<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -1986,7 +1986,7 @@ fn process_vm<S: crate::System, C: Executor>(
 /// ran another program). Returns what moved, or EIO if nothing could, or EFAULT at a fault on the
 /// caller's side; the position moves to where it stopped.
 #[allow(clippy::too_many_arguments, reason = "a read or write's own arguments")]
-pub(super) fn proc_mem<S: crate::System, C: Executor>(
+pub(super) fn proc_mem<S: crate::System, C: Executor + 'static>(
     kernel: &mut Kernel,
     cx: &mut Context<'_, S, C>,
     tid: Tid,
@@ -2051,7 +2051,7 @@ pub(super) fn proc_mem<S: crate::System, C: Executor>(
 }
 
 /// A process's memory, as another process's call (by `tid`) reaches it.
-fn process_guest<'a, S: crate::System, C: Executor>(
+fn process_guest<'a, S: crate::System, C: Executor + 'static>(
     kernel: &'a mut Kernel,
     cx: &'a mut Context<'_, S, C>,
     pid: crate::process::Pid,

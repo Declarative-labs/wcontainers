@@ -1,5 +1,5 @@
-//! Layer 1: random sequences of system calls, made in the reference by a small native runner and in our
-//! kernel with a plain buffer as guest memory. Every return value and the arena after every call are
+//! Layer 1: random sequences of system calls, made by a small native runner in the reference and,
+//! as a container's program on the stand-in, in our kernel. Every return value and the arena after every call are
 //! compared, and the play area (which pages can be read, and their bytes) after the last call: reading
 //! it brings pages in, which would change what later calls see. The few values that must differ
 //! (inode numbers, times, process numbers, `/proc`'s link count) are masked on both sides.
@@ -12,24 +12,8 @@ use linux_raw_sys::general as linux;
 use linux_raw_sys::ioctl;
 use linux_raw_sys::net;
 use linux_raw_sys::ptrace as seccomp;
-use wcontainers_abi::{Event, Exit, Next, PAGE_SIZE, SystemCallNumber, SystemCallRequest};
-use wcontainers_kernel_linux::{Kernel, Start};
+use wcontainers_abi::PAGE_SIZE;
 
-/// The CPU side the sequences run over: the buffer CPU, or with the `runtime` feature the WebAssembly
-/// back end's memories, permission tables, blocks of shared pages and fork copies.
-#[cfg(not(feature = "runtime"))]
-type Layer1Cpu = crate::buffer::BufferCpu;
-#[cfg(feature = "runtime")]
-type Layer1Cpu = crate::driver::Back;
-
-fn layer1_cpu() -> Layer1Cpu {
-    #[cfg(not(feature = "runtime"))]
-    return crate::buffer::BufferCpu::new();
-    #[cfg(feature = "runtime")]
-    return crate::driver::back_end(0, crate::standin::SPACE_32_BIT, false);
-}
-use crate::driver::TestHost;
-use crate::image::{File, Kind};
 use crate::{guest, reference};
 
 /// Where each sequence's memory is, in both runners.
@@ -4426,601 +4410,134 @@ pub fn runner(out: &Path) -> std::path::PathBuf {
     guest::build("layer1", &[], out)
 }
 
-/// The changed ranges between two snapshots, as the runner reports them.
-fn changes(before: &[u8], after: &[u8]) -> Vec<(u32, Vec<u8>)> {
-    let mut out = Vec::new();
-    let mut at = 0;
-    while at < after.len() {
-        if after[at] == before[at] {
-            at += 1;
-            continue;
-        }
-        let start = at;
-        while at < after.len() && after[at] != before[at] {
-            at += 1;
-        }
-        out.push((start as u32, after[start..at].to_vec()));
-    }
-    out
-}
-
-/// Where our side keeps what it needs to zero a random device's bytes, below every address a call is
-/// given: an `iovec` pair, then zeros.
-const SCRATCH: u64 = 0x6000_0000;
-const SCRATCH_ZEROS: u64 = 0x1000;
-/// Where the play area is read into at the end.
-const SCRATCH_PLAY: u64 = 0x11000;
-const SCRATCH_SIZE: u64 = SCRATCH_PLAY + PLAY_PAGES * PAGE_SIZE;
-use wcontainers_kernel_linux::MAX_RW_COUNT;
-
-/// Signals both runners' callers ignore, as guest/layer1.c's does: at their default Linux keeps
-/// them from our caller, the container's first process, and not from the reference's. SIGPIPE,
-/// SIGIO, and those F_SETSIG may choose.
-const IGNORED_SIGNALS: [u32; 8] = [
-    linux::SIGPIPE,
-    linux::SIGHUP,
-    linux::SIGTRAP,
-    linux::SIGFPE,
-    linux::SIGTTOU,
-    linux::SIGIO,
-    32,
-    64,
-];
-/// The reference runner's `DEADLINE_SECONDS`.
-const DEADLINE_SECONDS: u64 = 60;
-/// The status a child made by clone ends with at once (the runner's `CHILD_STATUS`).
-const CHILD_STATUS: u64 = 7;
-
-/// Runs a sequence on our kernel: a fresh container with the runner as its program, whose process makes
-/// the calls with no instructions run. Where the reference's runner zeroed a random device's bytes
-/// after a call (`theirs`), the same is done here, by the same calls.
+/// Runs a sequence on our kernel: a fresh container on the stand-in with the reference's runner as
+/// its program, the sequence sent to its input and its report read from its output, as the
+/// reference's runner is run. The runner zeroes what the reference's zeroes itself.
 pub fn run_ours(sequence: &Sequence, runner: &[u8], theirs: &SequenceResult) -> SequenceResult {
     run_ours_with(sequence, runner, theirs, &mut None)
 }
 
-/// As [`run_ours`], with the file backend a sequence on it uses: one server for every sequence,
-/// started at the first, each kernel connecting afresh, and emptied after each as the reference's
-/// runner empties its own.
+/// As [`run_ours`]. A sequence on the file backend has a server of its own, which the driver
+/// starts for the container, so `backend` is left as it is.
 pub fn run_ours_with(
     sequence: &Sequence,
     runner: &[u8],
-    theirs: &SequenceResult,
-    backend: &mut Option<crate::backend::Backend>,
+    _theirs: &SequenceResult,
+    _backend: &mut Option<crate::backend::Backend>,
 ) -> SequenceResult {
-    let host = std::sync::Arc::new(TestHost::new(0));
-    if sequence.backend {
-        *host.backend() = Some(backend.take().unwrap_or_else(|| {
-            crate::backend::Backend::start(
-                &crate::backend::out(),
-                crate::backend::Served::Empty,
-                sequence.cached,
-            )
-        }));
-    }
-    let (result, host, _) = run_ours_digested(sequence, runner, theirs, host);
-    let server = host.backend().take();
-    if let Some(mut server) = server {
-        // Unmounted, as the reference's runner's mount lets go of everything a sequence looked up.
-        server.destroy();
-        server.empty();
-        *backend = Some(server);
-    }
-    result
+    run_on_runner(sequence, runner, 0, None).0
 }
 
 /// As [`run_ours_with`], keeping a record of what the host gave the kernel, then again on a fresh
-/// kernel and CPU side from that record alone, with no backend; both runs' results and every
-/// guest memory, as each was dropped and at the end, must be the same. Gives the first run's
-/// result and how many entries its record held.
+/// kernel and stand-in from that record alone, with no backend and another seed; both runs'
+/// results must be the same and the replay must use the record up. Gives the first run's result
+/// and how many entries its record held.
 #[cfg(not(feature = "runtime"))]
 pub fn run_ours_replayed(
     sequence: &Sequence,
     runner: &[u8],
-    theirs: &SequenceResult,
-    backend: &mut Option<crate::backend::Backend>,
+    _theirs: &SequenceResult,
+    _backend: &mut Option<crate::backend::Backend>,
 ) -> (SequenceResult, usize) {
-    let host = std::sync::Arc::new(TestHost::new(0).taped(crate::replay::Tape::recording()));
-    if sequence.backend {
-        *host.backend() = Some(backend.take().unwrap_or_else(|| {
-            crate::backend::Backend::start(
-                &crate::backend::out(),
-                crate::backend::Served::Empty,
-                sequence.cached,
-            )
-        }));
-    }
-    let (recorded, host, memories) = run_ours_digested(sequence, runner, theirs, host);
-    let server = host.backend().take();
-    if let Some(mut server) = server {
-        server.destroy();
-        server.empty();
-        *backend = Some(server);
-    }
-    let tape = host.take_tape().expect("a record");
+    let (recorded, tape) =
+        run_on_runner(sequence, runner, 0, Some(crate::replay::Tape::recording()));
+    let tape = tape.expect("a record");
+    let entries = tape.len();
     // Another seed, so nothing of the first run's comes from anywhere but the record.
-    let replaying = std::sync::Arc::new(TestHost::new(u64::MAX).taped(tape.replaying()));
-    let (replayed, host, replayed_memories) =
-        run_ours_digested(sequence, runner, theirs, replaying);
-    let left = host.take_tape().expect("a record");
+    let (replayed, left) = run_on_runner(sequence, runner, u64::MAX, Some(tape.replaying()));
+    let left = left.expect("a record");
     assert!(left.used_up(), "the replay left {} entries", left.len());
     assert_eq!(replayed, recorded, "the replay's results");
-    assert!(!memories.is_empty(), "no memory was seen");
-    assert_eq!(replayed_memories, memories, "the replay's guest memories");
-    (recorded, tape.len())
+    (recorded, entries)
 }
 
-/// The run itself, on `host`, which it gives back with what every guest memory held when the host
-/// keeps a record.
-fn run_ours_digested(
+/// The run itself, of `seed`, keeping or answering from `tape`: the runner at `/wc/layer1` in
+/// the reference's image, its work directory on the file backend at [`BACKEND_ROOT`] if the
+/// sequence asks, given the sequence on its input, which then closes, so it ends after it.
+/// Gives what it reported and the record.
+fn run_on_runner(
     sequence: &Sequence,
     runner: &[u8],
-    theirs: &SequenceResult,
-    host: std::sync::Arc<TestHost>,
-) -> (
-    SequenceResult,
-    std::sync::Arc<TestHost>,
-    crate::replay::MemoryDigests,
-) {
-    let mut cpu = layer1_cpu();
-    #[cfg(not(feature = "runtime"))]
-    let taped = host.taped_run();
-    #[cfg(not(feature = "runtime"))]
-    if taped {
-        crate::replay::DigestMemories::keep_digests(&mut cpu);
-    }
-    let (result, host) = run_ours_on(sequence, runner, theirs, host, &mut cpu);
-    #[cfg(not(feature = "runtime"))]
-    let memories = if taped {
-        crate::replay::DigestMemories::digests(&mut cpu)
+    seed: u64,
+    tape: Option<crate::replay::Tape>,
+) -> (SequenceResult, Option<crate::replay::Tape>) {
+    use crate::image::{File, Kind};
+    let mut files = crate::image::reference_image().to_vec();
+    files.push(File {
+        path: "wc".into(),
+        mode: 0o755,
+        uid: 0,
+        gid: 0,
+        mtime: 0,
+        kind: Kind::Directory,
+    });
+    files.push(File {
+        path: "wc/layer1".into(),
+        mode: 0o755,
+        uid: 0,
+        gid: 0,
+        mtime: 0,
+        kind: Kind::Regular(runner.to_vec()),
+    });
+    let arguments: &[&str] = if sequence.backend {
+        &["/wc/layer1", BACKEND_ROOT]
     } else {
-        Vec::new()
+        &["/wc/layer1"]
     };
-    #[cfg(feature = "runtime")]
-    let memories = Vec::new();
-    (result, host, memories)
+    let container = crate::driver::Container {
+        files: &files,
+        path: "/wc/layer1",
+        arguments,
+        environment: reference::ENVIRONMENT,
+        working_directory: reference::ROOT_DIRECTORY,
+        backend: sequence.backend.then_some(BACKEND_ROOT),
+        cached: sequence.cached,
+        published: &[],
+        root_image: None,
+        address_space: crate::standin::SPACE_32_BIT,
+    };
+    let prepared = crate::driver::Prepared {
+        client: crate::streams::StreamClient {
+            input: true,
+            script: vec![
+                crate::streams::Step::Send(sequence_bytes(sequence)),
+                crate::streams::Step::CloseInput,
+            ],
+            ..Default::default()
+        },
+        tape,
+        ..crate::driver::prepare(&container)
+    };
+    let run = crate::driver::run_prepared(
+        prepared,
+        &container,
+        seed,
+        crate::driver::Injections::default(),
+    )
+    .unwrap_or_else(|failure| panic!("the runner did not run: {failure:?}"));
+    (parse_run(&run.outcome.stdout, sequence), run.tape)
 }
 
-fn run_ours_on(
-    sequence: &Sequence,
-    runner: &[u8],
-    theirs: &SequenceResult,
-    host: std::sync::Arc<TestHost>,
-    cpu: &mut Layer1Cpu,
-) -> (SequenceResult, std::sync::Arc<TestHost>) {
-    let mut kernel = Kernel::new();
-    let files = [
-        File {
-            path: "wc".into(),
-            mode: 0o755,
-            uid: 0,
-            gid: 0,
-            mtime: 0,
-            kind: Kind::Directory,
-        },
-        File {
-            path: "wc/layer1".into(),
-            mode: 0o755,
-            uid: 0,
-            gid: 0,
-            mtime: 0,
-            kind: Kind::Regular(runner.to_vec()),
-        },
-        File {
-            path: "dev".into(),
-            mode: 0o755,
-            uid: 0,
-            gid: 0,
-            mtime: 0,
-            kind: Kind::Directory,
-        },
-        File {
-            path: "proc".into(),
-            mode: 0o555,
-            uid: 0,
-            gid: 0,
-            mtime: 0,
-            kind: Kind::Directory,
-        },
-    ];
-    crate::image::add_files(&mut kernel, &files);
-    let environment: Vec<&[u8]> = reference::ENVIRONMENT
-        .iter()
-        .map(|variable| variable.as_bytes())
-        .collect();
-    let start = Start {
-        path: b"/wc/layer1",
-        arguments: if sequence.backend {
-            &[b"/wc/layer1", BACKEND_ROOT.as_bytes()]
-        } else {
-            &[b"/wc/layer1"]
-        },
-        environment: &environment,
-        working_directory: b"/",
-        hostname: reference::HOSTNAME.as_bytes(),
-        groups: &[0, 0, 1, 2, 3, 4, 6, 10, 11, 20, 26, 27],
-        backend: sequence.backend.then_some(BACKEND_ROOT.as_bytes()),
-        standard: crate::streams::StreamClient::default().standard(),
-        address_space_bytes: wcontainers_kernel_linux::ARM64_ADDRESS_SPACE_BYTES,
-        memory_bytes: wcontainers_abi::Cpu::address_space(cpu).end,
-        ceiling: None,
-        options: wcontainers_kernel_linux::StartOptions::default(),
-    };
-    kernel.start(cpu, &host, start);
-    crate::streams::begin(&mut kernel, cpu, &host);
-    assert_eq!(kernel.start_failure(), None, "starting the runner");
-    let memory = wcontainers_abi::MemoryId(1);
-    let thread = loop {
-        match kernel.next() {
-            Next::Run { thread, .. } => break thread,
-            Next::Idle { .. } if host.backend_waiting() => {
-                crate::driver::deliver(&mut kernel, cpu, &host);
-            }
-            // A wait woken at the start (the standard ends') settles before anything runs.
-            Next::Idle {
-                until_nanoseconds: Some(until),
-            } if until <= wcontainers_clock::Clock::monotonic_nanoseconds(&*host) => {
-                kernel.event(cpu, &host, Event::Timer);
-            }
-            other => panic!("the runner did not start: {other:?}"),
-        }
-    };
-    // Makes one call, as if the running thread had reached it, and waits for its value; the process's
-    // wait status if it ended.
-    // The reference's runner kills a sequence that has not ended by its deadline; a sleep that would
-    // end later is killed here too.
-    let deadline =
-        wcontainers_clock::Clock::monotonic_nanoseconds(&*host) + DEADLINE_SECONDS * 1_000_000_000;
-    let call = |kernel: &mut Kernel,
-                cpu: &mut Layer1Cpu,
-                host: &std::sync::Arc<TestHost>,
-                call: Call|
-     -> Result<i64, i32> {
-        // The thread's registers hold the call, as a CPU side leaves them.
-        let mut registers = wcontainers_abi::RegisterBlock::ZERO;
-        cpu.registers(thread, &mut registers);
-        registers.x[8] = call.number.into();
-        registers.x[..6].copy_from_slice(&call.arguments);
-        cpu.set_registers(thread, &registers);
-        kernel.exit(
-            cpu,
-            host,
-            Exit::Syscall(SystemCallRequest {
-                number: SystemCallNumber(call.number.into()),
-                arguments: call.arguments,
-            }),
-        );
-        loop {
-            match kernel.next() {
-                // A child made by clone ends at once, as the reference's does.
-                Next::Run { thread: child, .. } if child != thread => {
-                    let mut registers = wcontainers_abi::RegisterBlock::ZERO;
-                    cpu.registers(child, &mut registers);
-                    registers.x[8] = linux::__NR_exit_group.into();
-                    registers.x[0] = CHILD_STATUS;
-                    cpu.set_registers(child, &registers);
-                    kernel.exit(
-                        cpu,
-                        host,
-                        Exit::Syscall(SystemCallRequest {
-                            number: SystemCallNumber(linux::__NR_exit_group.into()),
-                            arguments: [CHILD_STATUS, 0, 0, 0, 0, 0],
-                        }),
-                    );
-                }
-                Next::Run {
-                    resume: wcontainers_abi::Resume::Return(value),
-                    ..
-                } => return Ok(value as i64),
-                Next::Run { resume, .. } => panic!("a call ended with {resume:?}"),
-                Next::Finished { status } => return Err(status),
-                // An answer the backend owes comes before any time passes.
-                Next::Idle { .. } if host.backend_waiting() => {
-                    crate::driver::deliver(kernel, cpu, host);
-                }
-                // Waiting for ever: the runner kills such a sequence at its deadline.
-                Next::Idle {
-                    until_nanoseconds: None,
-                } => return Err(linux::SIGKILL as i32),
-                Next::Idle {
-                    until_nanoseconds: Some(until),
-                } if until > deadline => return Err(linux::SIGKILL as i32),
-                Next::Idle {
-                    until_nanoseconds: Some(until),
-                } => {
-                    host.skip_to(until);
-                    kernel.event(cpu, host, Event::Timer);
-                }
-            }
-        }
-    };
-    let setup = Call {
-        number: linux::__NR_mmap,
-        arguments: [ARENA, ARENA_SIZE, 3, 0x32, u64::MAX, 0],
-    };
-    assert_eq!(call(&mut kernel, cpu, &host, setup), Ok(ARENA as i64));
-    cpu.write(memory, ARENA, &sequence.arena)
-        .expect("writing the arena");
-    let scratch = Call {
-        number: linux::__NR_mmap,
-        arguments: [SCRATCH, SCRATCH_SIZE, 3, 0x32, u64::MAX, 0],
-    };
-    assert_eq!(call(&mut kernel, cpu, &host, scratch), Ok(SCRATCH as i64));
-    // An action of SIG_IGN at the scratch area's start, which the zeroing's vectors take later.
-    cpu.write(
-        memory,
-        SCRATCH,
-        &(linux_raw_sys::signal_macros::sig_ign().map_or(0, |handler| handler as usize) as u64)
-            .to_le_bytes(),
-    )
-    .expect("writing an action");
-    for signal in IGNORED_SIGNALS {
-        let ignore = Call {
-            number: linux::__NR_rt_sigaction,
-            arguments: [signal.into(), SCRATCH, 0, 8, 0, 0],
-        };
-        assert_eq!(call(&mut kernel, cpu, &host, ignore), Ok(0));
+/// What the runner wrote for one sequence: everything its child reported (u32 length, bytes),
+/// then the child's wait status (u32).
+fn parse_run(output: &[u8], sequence: &Sequence) -> SequenceResult {
+    let (length, output) = output
+        .split_first_chunk::<4>()
+        .expect("the runner wrote the length of its report");
+    let (reported, output) = output
+        .split_at_checked(u32::from_le_bytes(*length) as usize)
+        .expect("the runner wrote all it reported");
+    let status = i32::from_le_bytes(
+        *output
+            .first_chunk::<4>()
+            .expect("the runner wrote the status"),
+    );
+    let (calls, play) = parse_reports(reported, sequence.calls.len());
+    SequenceResult {
+        calls,
+        status,
+        play,
     }
-    // The reference's runner has remade `/dev/null` before every sequence while the container's first
-    // one stays held, so it is remade here too, while descriptor 0 holds the first one.
-    let null = ARENA + PATHS + path_offset("/dev/null");
-    for number in [
-        linux::__NR_unlinkat,
-        linux::__NR_mknodat,
-        linux::__NR_fchmodat,
-    ] {
-        let third = match number {
-            linux::__NR_mknodat => u64::from(linux::S_IFCHR | 0o666),
-            linux::__NR_fchmodat => 0o666,
-            _ => 0,
-        };
-        let device = if number == linux::__NR_mknodat {
-            0x103
-        } else {
-            0
-        };
-        let remake = Call {
-            number,
-            arguments: [linux::AT_FDCWD as u64, null, third, device, 0, 0],
-        };
-        assert_eq!(call(&mut kernel, cpu, &host, remake), Ok(0));
-    }
-    let mut before = vec![0u8; ARENA_SIZE as usize];
-    use wcontainers_abi::Cpu;
-    cpu.read(memory, ARENA, &mut before)
-        .expect("reading the arena");
-    let own = Call {
-        number: linux::__NR_getpid,
-        arguments: [0; 6],
-    };
-    let pid = call(&mut kernel, cpu, &host, own).expect("getpid") as u64;
-    // The runner's `clear_range`: zeros up to the first page the process cannot write.
-    let clear = |kernel: &mut Kernel,
-                 cpu: &mut Layer1Cpu,
-                 host: &std::sync::Arc<TestHost>,
-                 mut at: u64,
-                 mut length: u64| {
-        while length > 0 {
-            let part = length.min(SCRATCH_SIZE - SCRATCH_ZEROS);
-            let pair = [SCRATCH + SCRATCH_ZEROS, part, at, part];
-            let bytes: Vec<u8> = pair.iter().flat_map(|word| word.to_le_bytes()).collect();
-            cpu.write(memory, SCRATCH, &bytes)
-                .expect("writing the scratch");
-            let write = Call {
-                number: linux::__NR_process_vm_writev,
-                arguments: [pid, SCRATCH, 1, SCRATCH + 16, 1, 0],
-            };
-            let put = call(kernel, cpu, host, write).unwrap_or(-1);
-            if put <= 0 {
-                return;
-            }
-            at += put as u64;
-            length -= put as u64;
-            if (put as u64) < part {
-                return;
-            }
-        }
-    };
-    let mut results = Vec::new();
-    let mut segment = NO_SEGMENT;
-    let mut queue = NO_SEGMENT;
-    let mut semaphores = NO_SEGMENT;
-    for (index, each) in sequence.calls.iter().enumerate() {
-        let mut each = *each;
-        for argument in &mut each.arguments {
-            if *argument == SELF {
-                *argument = pid;
-            }
-            if *argument == SEGMENT {
-                *argument = segment;
-            }
-            if *argument == QUEUE {
-                *argument = queue;
-            }
-            if *argument == SEMAPHORES {
-                *argument = semaphores;
-            }
-        }
-        let random = theirs.calls.get(index).is_some_and(|call| call.random);
-        let [a, b, c, ..] = each.arguments;
-        let out_before = if random && each.number == linux::__NR_sendfile {
-            let position = Call {
-                number: linux::__NR_lseek,
-                arguments: [a, 0, u64::from(linux::SEEK_CUR), 0, 0, 0],
-            };
-            call(&mut kernel, cpu, &host, position).ok()
-        } else {
-            None
-        };
-        let outcome = call(&mut kernel, cpu, &host, each);
-        if let Ok(id) = outcome
-            && each.number == linux::__NR_shmget
-            && id >= 0
-        {
-            segment = id as u64;
-        }
-        if let Ok(id) = outcome
-            && each.number == linux::__NR_msgget
-            && id >= 0
-        {
-            queue = id as u64;
-        }
-        if let Ok(id) = outcome
-            && each.number == linux::__NR_semget
-            && id >= 0
-        {
-            semaphores = id as u64;
-        }
-        // The runner's wait for a child to end, left to be reaped.
-        if let Ok(child) = outcome
-            && each.number == linux::__NR_clone
-            && child > 0
-        {
-            let wait = Call {
-                number: linux::__NR_waitid,
-                arguments: [
-                    u64::from(linux::P_PID),
-                    child as u64,
-                    SCRATCH,
-                    u64::from(linux::WEXITED | linux::WNOWAIT | linux::__WALL),
-                    0,
-                    0,
-                ],
-            };
-            let _ = call(&mut kernel, cpu, &host, wait);
-        }
-        match outcome {
-            Ok(value) => {
-                if random && value >= 0 {
-                    // The runner's `clear_random`, by the same calls: the ranges a read was given.
-                    let mut ranges = Vec::new();
-                    match each.number {
-                        linux::__NR_read | linux::__NR_pread64 => {
-                            ranges.push((b, c.min(MAX_RW_COUNT)));
-                        }
-                        linux::__NR_readv | linux::__NR_preadv | linux::__NR_preadv2 => {
-                            let mut parts = vec![0u8; (c as usize).min(1024) * 16];
-                            if cpu.read(memory, b, &mut parts).is_ok() {
-                                let mut total = 0u64;
-                                for part in parts.as_chunks::<16>().0 {
-                                    if total >= MAX_RW_COUNT {
-                                        break;
-                                    }
-                                    let base = u64::from_le_bytes(part[..8].try_into().expect("8"));
-                                    let length =
-                                        u64::from_le_bytes(part[8..].try_into().expect("8"))
-                                            .min(MAX_RW_COUNT - total);
-                                    ranges.push((base, length));
-                                    total += length;
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                    for (at, length) in ranges {
-                        clear(&mut kernel, cpu, &host, at, length);
-                    }
-                    // A sendfile's output is zeroed where the bytes went.
-                    if let Some(before) = out_before {
-                        let mut done = 0;
-                        while done < value {
-                            let part = (value - done).min((SCRATCH_SIZE - SCRATCH_ZEROS) as i64);
-                            let write = Call {
-                                number: linux::__NR_pwrite64,
-                                arguments: [
-                                    a,
-                                    SCRATCH + SCRATCH_ZEROS,
-                                    part as u64,
-                                    (before + done) as u64,
-                                    0,
-                                    0,
-                                ],
-                            };
-                            let put = call(&mut kernel, cpu, &host, write).unwrap_or(-1);
-                            if put <= 0 {
-                                break;
-                            }
-                            done += put;
-                        }
-                    }
-                }
-                let mut after = vec![0u8; ARENA_SIZE as usize];
-                cpu.read(memory, ARENA, &mut after)
-                    .expect("reading the arena");
-                results.push(CallResult {
-                    value,
-                    changes: changes(&before, &after),
-                    unshared: false,
-                    random: false,
-                });
-                before = after;
-                // The runner's `clear_machine`: what follows sees zeros where the machines differ.
-                for range in machine_bytes(&each) {
-                    let in_arena = (ARENA..ARENA + ARENA_SIZE).contains(&range.at);
-                    if value < 0 && (range.by_value || !in_arena) {
-                        continue;
-                    }
-                    let length = if range.by_value {
-                        range.length.min(value as u64)
-                    } else {
-                        range.length
-                    };
-                    clear(&mut kernel, cpu, &host, range.at, length);
-                }
-            }
-            Err(status) => {
-                return (
-                    SequenceResult {
-                        calls: results,
-                        status,
-                        play: None,
-                    },
-                    host,
-                );
-            }
-        }
-    }
-    // The play area, page by page, by the runner's own calls.
-    let mut play = Vec::with_capacity(PLAY_RECORD);
-    for page in 0..PLAY_PAGES {
-        let into = SCRATCH + SCRATCH_PLAY + page * PAGE_SIZE;
-        let pair = [into, PAGE_SIZE, PLAY + page * PAGE_SIZE, PAGE_SIZE];
-        let bytes: Vec<u8> = pair.iter().flat_map(|word| word.to_le_bytes()).collect();
-        cpu.write(memory, SCRATCH, &bytes)
-            .expect("writing the scratch");
-        let read = Call {
-            number: linux::__NR_process_vm_readv,
-            arguments: [pid, SCRATCH, 1, SCRATCH + 16, 1, 0],
-        };
-        let mut contents = vec![0u8; PAGE_SIZE as usize];
-        // A filter of the sequence's may end the process here, as it does the reference's.
-        let readable = match call(&mut kernel, cpu, &host, read) {
-            Ok(value) => value == PAGE_SIZE as i64,
-            Err(status) => {
-                return (
-                    SequenceResult {
-                        calls: results,
-                        status,
-                        play: None,
-                    },
-                    host,
-                );
-            }
-        };
-        if readable {
-            cpu.read(memory, into, &mut contents)
-                .expect("reading the scratch");
-        }
-        play.push(u8::from(readable));
-        play.extend_from_slice(&contents);
-    }
-    (
-        SequenceResult {
-            calls: results,
-            status: 0,
-            play: Some(play),
-        },
-        host,
-    )
 }
 
 /// What is compared for one call: its value and the whole arena after it, with the bytes that must

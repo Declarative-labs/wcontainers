@@ -3,13 +3,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use std::sync::{Arc, MutexGuard};
+use std::sync::Arc;
 
 use rand::Rng;
-use wcontainers_abi::{Cpu, Event, HostError};
+use wcontainers_abi::HostError;
 use wcontainers_kernel_linux::{Kernel, Standard};
+
+use crate::driver::{Machine, TestHost};
 use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
-use wcontainers_system_seeded_test_policy::Schedule;
 
 /// One of the test host's stream endpoints, by its number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -326,85 +327,61 @@ impl Found {
     }
 }
 
-/// The host's streams and the seeded choices of a run, as [`act`] needs them. Each is held only
-/// while it is used, never while the kernel is handed something.
-pub trait StreamHost: wcontainers_kernel_linux::System {
-    fn streams(&self) -> MutexGuard<'_, Streams>;
-    fn choices(&self) -> MutexGuard<'_, Schedule>;
-    /// Does [`Step::ChangeServed`].
-    fn change_served(&self, path: &str, bytes: &[u8]);
-    /// Hands the kernel an event.
-    fn hand(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu, event: Event);
-    /// Ends the kernel's wait on an endpoint with what it is ready for.
-    fn ready(
-        self: &Arc<Self>,
-        kernel: &mut Kernel,
-        cpu: &mut dyn Cpu,
-        end: End,
-        ready: ReadinessReport,
-    );
-}
-
 /// Ends every wait whose endpoint is now ready. Whether any did.
-fn fire(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>) -> bool {
+fn fire(host: &TestHost) -> bool {
     let ready = host.streams().take_ready();
     for (end, ready) in &ready {
-        host.ready(kernel, cpu, *end, *ready);
+        host.ready(*end, *ready);
     }
     !ready.is_empty()
 }
 
 /// What the client does at the start, which may still be waiting on the backend: room for all
 /// the output when it takes everything, and the script's first steps that wait for nothing.
-pub fn begin(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>) {
+pub fn begin(kernel: &mut Kernel, cpu: &mut Machine, host: &Arc<TestHost>) {
     let outputs = host.streams().client.outputs();
     for &end in outputs {
         let unpaced = host.streams().pace(end).is_none();
         if unpaced {
-            give(kernel, cpu, host, end, UNLIMITED);
+            give(host, end, UNLIMITED);
         }
     }
     act(kernel, cpu, host, false);
 }
 
-fn give(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>, end: End, bytes: u64) {
+fn give(host: &TestHost, end: End, bytes: u64) {
     {
         let mut streams = host.streams();
         let given = streams.given.entry(end).or_default();
         *given = given.saturating_add(bytes);
         streams.stirred = true;
     }
-    fire(kernel, cpu, host);
+    fire(host);
 }
 
-fn close_here(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>, end: End) {
+fn close_here(host: &TestHost, end: End) {
     let closes = {
         let mut streams = host.streams();
         streams.stirred = true;
         streams.closed_here.insert(end)
     };
     if closes {
-        fire(kernel, cpu, host);
+        fire(host);
     }
 }
 
 /// The client's next move, after a turn or (`idle`) when the container can go on no other way:
 /// a piece of what it sends (when idle, or after [`BUSY_TURNS`] turns without), output room
 /// when it is slow and the container idle, and the script's other steps. Whether it did anything.
-pub fn act(
-    kernel: &mut Kernel,
-    cpu: &mut dyn Cpu,
-    host: &Arc<impl StreamHost>,
-    idle: bool,
-) -> bool {
+pub fn act(kernel: &mut Kernel, cpu: &mut Machine, host: &Arc<TestHost>, idle: bool) -> bool {
     // A wait that began after its endpoint became ready ends now.
-    let mut acted = fire(kernel, cpu, host);
+    let mut acted = fire(host);
     if idle {
         let outputs = host.streams().client.outputs();
         for &end in outputs {
             let due = host.streams().due(end);
             if due > 0 {
-                give(kernel, cpu, host, end, due);
+                give(host, end, due);
                 acted = true;
             }
         }
@@ -452,26 +429,26 @@ pub fn act(
                     streams.step += 1;
                 }
                 drop(streams);
-                fire(kernel, cpu, host);
+                fire(host);
                 return true;
             }
             Step::Resize { columns, rows } => {
                 streams.step += 1;
                 drop(streams);
-                host.hand(kernel, cpu, Event::TerminalResized { columns, rows });
+                host.resize(kernel, cpu, columns, rows);
                 acted = true;
             }
             Step::CloseInput => {
                 streams.step += 1;
                 let end = streams.client.input_end().expect("an input to close");
                 drop(streams);
-                close_here(kernel, cpu, host, end);
+                close_here(host, end);
                 acted = true;
             }
             Step::CloseOutput => {
                 streams.step += 1;
                 drop(streams);
-                close_here(kernel, cpu, host, OUTPUT);
+                close_here(host, OUTPUT);
                 acted = true;
             }
             Step::ChangeServed { path, bytes } => {
@@ -485,8 +462,9 @@ pub fn act(
 }
 
 /// After the container's end: takes the output still held, at the client's pace, until the kernel
-/// closes every output end; then lets go of every end. Whether every output end was closed.
-pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost>) -> bool {
+/// closes every output end, the kernel settling (`settle`) after each step; then lets go of every
+/// end. Whether every output end was closed.
+pub fn finish(host: &TestHost, mut settle: impl FnMut()) -> bool {
     loop {
         if host.streams().outputs_closed() {
             break;
@@ -495,15 +473,16 @@ pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost
             let streams = host.streams();
             (streams.stdout.len(), streams.stderr.len())
         };
-        let mut gave = fire(kernel, cpu, host);
+        let mut gave = fire(host);
         let outputs = host.streams().client.outputs();
         for &end in outputs {
             let due = host.streams().due(end);
             if due > 0 {
-                give(kernel, cpu, host, end, due);
+                give(host, end, due);
                 gave = true;
             }
         }
+        settle();
         let after = {
             let streams = host.streams();
             (streams.stdout.len(), streams.stderr.len())
@@ -522,7 +501,7 @@ pub fn finish(kernel: &mut Kernel, cpu: &mut dyn Cpu, host: &Arc<impl StreamHost
     all.extend(input);
     all.dedup();
     for end in all {
-        close_here(kernel, cpu, host, end);
+        close_here(host, end);
     }
     closed
 }

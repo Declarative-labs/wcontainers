@@ -2,10 +2,6 @@
 //!
 //! The stand-in executor builds alone; the kernel test harness comes with the `harness` feature.
 
-// The kernel asks its system's waits to return `Send` futures; a host generic over its hooks says
-// so of its own with return type notation.
-#![cfg_attr(feature = "harness", feature(return_type_notation))]
-
 mod engine;
 mod memory;
 pub mod space;
