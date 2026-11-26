@@ -196,7 +196,6 @@ name = "translated"
 
 [[test]]
 name = "run"
-required-features = ["tests-on-other-tracks"]
 
 [[test]]
 name = "kernel"

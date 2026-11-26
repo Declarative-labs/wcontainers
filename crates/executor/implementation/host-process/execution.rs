@@ -44,7 +44,8 @@ use crate::stub::{StopTarget, StopWhen};
 const COPY_CHUNK: usize = 1 << 20;
 
 impl HostProcessExecutor {
-    fn guest_count(&self, thread: ThreadId) -> u64 {
+    /// The guest instructions the thread has completed, as its translated code counts them.
+    pub fn guest_count(&self, thread: ThreadId) -> u64 {
         self.guests[thread.0 as usize]
             .as_ref()
             .expect("a thread the kernel holds")

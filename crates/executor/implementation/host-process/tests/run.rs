@@ -1,18 +1,17 @@
-//! Guest code run through the executor's `Execution` as the kernel's loop runs it: loaded, linked, its exits resolved to
-//! the guest's own state, its memory copied on write after a fork, its turns ended by a stop.
+//! Guest code run through the executor as the kernel's loop ran it, a turn at a time: loaded, linked, its exits resolved
+//! to the guest's own state, its memory copied on write after a fork, its turns ended by a stop.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
 use std::sync::Arc;
+use std::time::Duration;
 
-use wcontainers_abi::{
-    Access, Cpu, CpuError, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId, Warning,
-};
+use wcontainers_abi::{Access, CpuError, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId};
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_arm64::{Address, Instruction, Reg};
 use wcontainers_executor_host_process::executor::HostProcessExecutor;
 use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_executor_host_process::layout::THREADS_PER_PROCESS;
-use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Leaving, Turn};
+use wcontainers_executor_host_process::stub::StopWhen;
 
 static HOST: std::sync::OnceLock<Arc<HostProcessHost>> = std::sync::OnceLock::new();
 
@@ -79,32 +78,68 @@ impl Seen {
     }
 }
 
-impl Answer for Seen {
-    fn exit(&mut self, cpu: &mut dyn Cpu, exit: Exit, progress: u64) -> Carry {
+/// How long a turn runs: to the thread's next exit, or to a stop at the first exit at or after `limit` more guest
+/// instructions, a unit of progress taken as a nanosecond of time slice, since linked pieces cannot be stopped at an
+/// exact count.
+#[derive(Clone, Copy)]
+enum Turn {
+    Counted { limit: Option<u64> },
+}
+
+/// What the loop does after an exit.
+enum Carry {
+    On { resume: Resume, turn: Turn },
+    Leave,
+}
+
+impl Seen {
+    /// Records the exit with the registers after it, and answers it: each system call returns [`RETURNED`] until
+    /// `exit`, which leaves, as a stop and every other exit do.
+    fn exit(&mut self, cpu: &mut HostProcessExecutor, exit: Exit, progress: u64) -> Carry {
         let mut registers = RegisterBlock::ZERO;
-        self.exits.push((exit, registers, progress));
-        let last = self.exits.len() - 1;
         cpu.registers(self.thread, &mut registers);
-        self.exits[last].1 = registers;
+        self.exits.push((exit, registers, progress));
         match exit {
             Exit::Syscall(call) if call.number.0 == u64::from(EXIT) || self.leave_at_calls => {
-                Carry::Leave(Leaving::Finished)
+                Carry::Leave
             }
             Exit::Syscall(_) => Carry::On {
                 resume: Resume::Return(RETURNED),
                 turn: self.turn.unwrap_or(Turn::Counted { limit: None }),
             },
-            Exit::Stop => Carry::Leave(Leaving::AnotherThread),
-            _ => Carry::Leave(Leaving::Finished),
+            _ => Carry::Leave,
         }
     }
+}
 
-    fn clock(&mut self, _progress: u64) -> u64 {
-        0
-    }
-
-    fn warn(&mut self, warning: Warning<'_>) {
-        self.warnings.push(warning.reason.to_string());
+/// Runs `thread` from `resume` for `turn`, then from each answer `seen` gives to its exits, until `seen` leaves; the
+/// slow paths taken so far are its warnings.
+fn run(cpu: &mut HostProcessExecutor, thread: ThreadId, mut resume: Resume, mut turn: Turn, seen: &mut Seen) {
+    loop {
+        let before = cpu.guest_count(thread);
+        let Turn::Counted { limit } = turn;
+        let when = StopWhen {
+            slice: limit.map(Duration::from_nanos),
+            wanted: None,
+        };
+        let until = limit.map(|limit| before + limit);
+        let exit = cpu.run_translated(thread, resume, until, when, &mut || 0);
+        seen.warnings = cpu
+            .slow_paths()
+            .into_iter()
+            .map(|(reason, _)| reason.to_string())
+            .collect();
+        let progress = cpu.guest_count(thread) - before;
+        match seen.exit(cpu, exit, progress) {
+            Carry::On {
+                resume: next,
+                turn: next_turn,
+            } => {
+                resume = next;
+                turn = next_turn;
+            }
+            Carry::Leave => return,
+        }
     }
 }
 
@@ -159,7 +194,7 @@ fn run_through_stops(
     seen: &mut Seen,
 ) {
     for _ in 0..STOPS {
-        let Ok(()) = cpu.run(thread, resume, TURN, seen);
+        run(cpu, thread, resume, TURN, seen);
         if !matches!(seen.exits.last(), Some((Exit::Stop, _, _))) {
             return;
         }
@@ -175,7 +210,7 @@ fn run_to_exit(cpu: &mut HostProcessExecutor, thread: ThreadId) -> Seen {
     seen.turn = Some(TURN);
     let mut resume = Resume::FromRegisters;
     for _ in 0..STOPS {
-        let Ok(()) = cpu.run(thread, resume, TURN, &mut seen);
+        run(cpu, thread, resume, TURN, &mut seen);
         match seen.exits.last() {
             Some((Exit::Stop, _, _)) => {
                 seen.exits.pop();
@@ -729,7 +764,8 @@ fn a_counted_turn_of_a_loop_without_exits_ends_by_a_stop_and_goes_on() {
     let mut last = 0;
     for _ in 0..20 {
         let mut seen = Seen::new(thread);
-        let Ok(()) = cpu.run(
+        run(
+            &mut cpu,
             thread,
             Resume::Continue,
             Turn::Counted {

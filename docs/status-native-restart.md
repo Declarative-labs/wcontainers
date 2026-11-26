@@ -574,11 +574,12 @@ Built (READ in the code; each measured below):
 - Tests moved to the interface: tests/copy.rs and tests/interrupt.rs. Removed: the copy within one space
   (`a_copy_within_one_space_reads_its_bytes_as_they_were_before_it`): `PageTable::copy_from(&mut self, .., other:
   &Self, ..)` cannot name one table twice, so the interface rules it out.
-- `autotests = false`; the six test targets that need other tracks build only with the new feature
+- `autotests = false`; the five test targets that need other tracks build only with the new feature
   `tests-on-other-tracks` (`required-features`), whose optional dependencies are the old dev-dependencies:
-  kernel, run, busybox, speed, differential (RT1; kernel also X2's wasmtime executor, busybox X3's unicorn
-  executor, speed both) and conformance (the instruction track's precise-instruction-set-translator, which does not
-  compile on this base).
+  kernel, busybox, speed, differential (RT1; kernel also X2's wasmtime executor, busybox X3's unicorn executor,
+  speed both) and conformance (the instruction track's precise-instruction-set-translator, which does not compile
+  on this base). tests/run.rs drives `run_translated` a turn at a time as the runtime's loop did (its own `Turn`,
+  the count as `until` and a nanosecond a unit as the slice, as the removed `turn_end` did), so it builds now.
 
 Security fixes, each with a test that fails without it (MEASURED: the tests run on 37ba12d47 with ac9ac56ff's
 tests/memory.rs and Cargo.toml, job native-r2-before, then on ac9ac56ff):
@@ -599,17 +600,18 @@ Measured (rented Graviton4, Linux 7.0.0-1018-aws, rustc 1.99.0, load 5 to 18; re
 - `cargo test -p wcontainers-executor-host-process --no-fail-fast` on Graviton4: exit 0; 21 test binaries plus the
   library's: 96 passed, 0 failed, 5 ignored (measurements). tests/memory.rs five more times: 17 passed each.
   On the Xeon: exit 0 (copy, floor, forged, interrupt, in_process_* and translated hold no test there).
-- Form P's own 25 test binaries: 19 build and pass here (zygote, stub, files, host, threads, stop, touch, memory,
-  slice, placement, embedder, floor, step, translated, interrupt, copy, forged, in_process_attacks,
-  in_process_way; in_process_cost and in_process_speculation are measurements, run below); kernel, run, busybox,
-  speed, differential and conformance wait as listed above.
+- Form P's own test binaries (27 targets): 20 build and pass here (zygote, stub, files, host, threads, stop, touch,
+  memory, slice, placement, embedder, floor, step, translated, run, interrupt, copy, forged, in_process_attacks,
+  in_process_way; in_process_cost and in_process_speculation are measurements, run below); kernel, busybox,
+  speed, differential and conformance wait as listed above. tests/run.rs after its move (Graviton4):
+  14 passed, 0 failed; clippy with warnings denied clean.
 
 What R2's bar still lacks, and what each waits on:
 - The executor conformance suite: precise-instruction-set-translator (instruction track: `Arm64` now takes its
   privilege level, and the variant names changed).
-- kernel, run, busybox, speed, differential: RT1; kernel and speed also X2 (wasmtime executor), busybox and speed
-  X3 (unicorn executor). tests/run.rs and tests/differential.rs still drive the runtime's `Execution`; they move to
-  `HostProcess` or `run_translated` once the runtime's loop on the owner's interfaces is known.
+- kernel, busybox, speed, differential: RT1; kernel and speed also X2 (wasmtime executor), busybox and speed X3
+  (unicorn executor). tests/differential.rs still implements the runtime's `Answer`; it moves once the runtime's
+  loop on the owner's interfaces is known.
 - Zero unsafe in the crate: 9 lines left (unchanged), none with a safe route found this run:
   - code.rs:235, 244 `dc cvau`, `ic ivau` (no crate wraps cache maintenance by address);
   - probe.rs:167 `mrs ctr_el0` (aarch64-cpu 12 has no CTR_EL0), :199 the SVE probe's assembly, :254 and :261 the
