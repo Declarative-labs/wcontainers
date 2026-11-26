@@ -41,6 +41,8 @@ use crate::machine::{GuestMemory, Machine, MachineError, Register, create_machin
 use crate::slot::{Ending, FIRST_FAULT_PLACE, Registers, Slot};
 
 mod boot;
+#[cfg(test)]
+mod exclusive_monitor_tests;
 mod guest_layout;
 mod machine;
 mod slot;
