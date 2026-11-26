@@ -153,6 +153,17 @@ pub fn a_run_goes_on_after_an_interrupt<R: Runtime>(subject: Subject<R>) {
     assert_eq!(container.run(), exited());
 }
 
+/// Checks that a first process that exits ends its container while a process it started in the background never stops.
+///
+/// With one runner, the busy process holds it until its slice ends, so the container ends only if slices end.
+pub fn a_busy_background_process_does_not_keep_its_container_running<R: Runtime>(
+    subject: Subject<R>,
+) {
+    let script = format!("({ENDLESS_SCRIPT}) & exit {EXIT_CODE}");
+    let (mut container, _interrupter) = made(&subject, shell(&script));
+    assert_eq!(container.run(), exited());
+}
+
 /// Checks that a pipeline of processes working at once runs to its end and passes every byte on unchanged.
 ///
 /// It copies the shell's own program through one more stage than the runtime has runners, so the runners take turns.
@@ -199,6 +210,10 @@ macro_rules! tests {
         #[test]
         fn a_run_goes_on_after_an_interrupt() {
             $crate::a_run_goes_on_after_an_interrupt($value);
+        }
+        #[test]
+        fn a_busy_background_process_does_not_keep_its_container_running() {
+            $crate::a_busy_background_process_does_not_keep_its_container_running($value);
         }
         #[test]
         fn work_side_by_side_runs_to_its_end() {

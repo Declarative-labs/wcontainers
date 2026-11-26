@@ -20,7 +20,6 @@ use crate::System;
 use crate::arrivals::{Arrival, Arrivals};
 use crate::files::Files;
 use crate::net::Network;
-use crate::timer::nanoseconds_since;
 
 /// A warning as the system keeps it: the kernel's or the executor's, by reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -326,7 +325,8 @@ impl LocalState {
     }
 
     fn now(&self) -> u64 {
-        nanoseconds_since(self.started)
+        // Saturates in about 584 years, past any container.
+        u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX)
     }
 
     pub(crate) fn keep(&mut self, warning: Warning<'_>, cpu: bool) {
