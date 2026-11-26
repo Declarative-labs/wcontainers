@@ -703,7 +703,7 @@ items 5 and 6 also need RT1, X2 and X3.
 
 | Test of the bar | Builds | Runs | Waits on |
 |---|---|---|---|
-| executor conformance suite (`conformance_run.rs`) | yes, now against a Neoverse V2's recorded behaviors (behavior-source recording `neoverse-v2`, measured with the ARM64 generator), no longer the translator's precise set | 21 interface cases ok and `next_state_after_an_error...` ok; `agrees_with_precise_instruction_set` fails in 0.09 s at `measure_recording` ("the recording shows one known behavior of every instruction": the recording does not cover the instructions the arm64-instructions merge added) and `measured_behavior_agrees_with_the_source` fails the same way (suite.rs:90), as the KVM chip source did in R1's repair; `execute_agrees_with_execute_in_place` and `execution_is_deterministic` still running after 2 h 07 min of the test binary, stopped, not completed | instruction track (a recording or a measured set covering every modeled instruction); the two long cases need a run longer than this one |
+| executor conformance suite (`conformance_run.rs`) | yes, now against a Neoverse V2's recorded behaviors (behavior-source recording `neoverse-v2`, measured with the ARM64 generator), no longer the translator's precise set | 21 interface cases ok and `next_state_after_an_error...` ok; `agrees_with_precise_instruction_set` fails in 0.09 s at `measure_recording` and `measured_behavior_agrees_with_the_source` fails at suite.rs:90. CORRECTED in the third run below: the second failure is form P's, not the instruction track's (form P refuses every generated state: the generator's code page is at 4 KiB, form P's guest area starts at 64 KiB), and the two "ok" and the two long cases pass only because two refusals count as agreeing | the instruction track for the first (the recording holds 10 instructions, and none of them measures on today's generator); the owner's question below for the second |
 | differential | yes: moved off the runtime's `Answer`/`Execution` loop onto `run_translated`, as run.rs | 1 passed, 0 failed, 928 s (before the unsafe move; rerun below) | |
 | kernel | no | | X2 (the wasmtime executor), and the kernel taking an executor without the abi's `Cpu` (the runtime's `Executor` and the kernel's `GuestMachine::new` ask `Cpu` for `address_space` alone; form P no longer implements `Cpu`, as the brief asks) |
 | busybox | no | | X3 (the unicorn executor) and the same `Cpu` bound |
@@ -788,3 +788,162 @@ Bar items, state:
 6. Crossover: waits on the executor, and on X2, X3 for busybox.
 7. Unsafe only in the API crate's `direct`: holds for what is built (0 in host-process; 9 marked in linux-process).
 The executor itself (the entry, signal stack and mask primitives, and the own process) is the next piece of RI.
+
+## The conformance claim corrected, the owner's question, the zygote's crate (run of 2026-11-26, third)
+
+### Merges (MEASURED)
+
+His main (his checkout, fetched: ac696ea19) is already inside (`git merge-base --is-ancestor FETCH_HEAD HEAD`: 0;
+`git log HEAD..FETCH_HEAD`: 0 commits), so no merge this run; it already holds the named iterators, `MemoryReader`,
+`Execution<'execution>` and the processor-cores and observation-collector crates. No owner interface file changed.
+
+### Correction: R2's conformance failures are not both the instruction track's
+
+The second run said both failures belong to the instruction track. The independent check did not hold that, and
+this run measured why (job native-r2m, Graviton4, release, `tests/moved.rs`):
+- Form P refuses every state the ARM64 generator makes: on the 10 instructions the recording holds, 78,836 of
+  78,836 states (READ: the generator's `CODE_ADDRESS` is one page, 0x1000, its data pages follow; form P's guest
+  area starts at `LOWEST_ADDRESS`, 64 KiB, the lowest a Linux process may map, so `checked` gives `BadAddress`).
+  So `measured_behavior_agrees_with_the_source` fails on form P itself, and `execute_agrees_with_execute_in_place`,
+  `execution_is_deterministic` and `next_state_after_an_error...` passed only because two refusals count as the
+  same outcome.
+- The recording measures none of its own 10 instructions on today's generator: each ends `ExecutionFailed
+  (NotRecorded)`: its states are no longer the generator's (the instruction track changed the generator on
+  2026-11-25 after the recording was made). That failure, `agrees_with_precise_instruction_set` at
+  `measure_recording`, is the instruction track's.
+
+### What the owner's interfaces allow (READ, his main ac696ea19)
+
+Nothing lets a source say which addresses its memory has, or tells a generator where to put a state:
+- `BehaviorSource`: `execute_single_instruction(_in_place)`, `measure_instruction(s)`; no address item.
+- `DistinguishingStateGenerator::generate_states(&self, instruction)`: no placement.
+- `InstructionInputDomain::build_state(&self, instruction, operands)`: no placement; the ARM64 domain
+  (`Arm64InputDomain`, a unit struct, the instruction track's) fixes its pages in constants.
+- `Executor`, `MemorySpace`, `PageTable`: a range outside the space gives `InvalidAddressError`, but nothing says
+  which range is inside. `ProcessorArchitecture::ADDRESSABLE` is the architecture's, the same for every source.
+
+So no file of his changes, and the one question for the owner is below.
+
+### For the owner (one question)
+
+May a behavior source say which addresses a state's memory may use, so that measuring puts every generated state
+there? Form P cannot map below 64 KiB (Linux's lowest address for a process) and the ARM64 generator puts its code
+at 4 KiB, so today form P runs none of the generated states.
+
+```rust
+// Before (crates/behavior-source/interface.rs)
+pub trait BehaviorSource {
+    type Architecture: ProcessorArchitecture;
+    type Error;
+    // ...
+        for before in generator.generate_states(instruction) {
+
+// After
+pub trait BehaviorSource {
+    type Architecture: ProcessorArchitecture;
+    type Error;
+
+    /// The addresses a state's memory may use on this source.
+    fn addresses(&self) -> Range<u64>;
+    // ...
+        for before in generator.generate_states(instruction, self.addresses()) {
+```
+
+with `DistinguishingStateGenerator::generate_states(&self, instruction, addresses: Range<u64>)` placing every state
+inside `addresses`. The pending one-liner `MemorySpace::addresses()` is not the right shape for this: measuring holds
+a `BehaviorSource`, not a memory space (a recording and the KVM chip source have none), and the generator is called
+from `BehaviorSource::measure_instruction`. On `BehaviorSource` the same item also serves the kernel's need behind
+that one-liner (the size of a space, read from the executor in `GuestMachine::new`), since `Executor: BehaviorSource`;
+its doc must not say "from 0": form P's addresses start at 64 KiB.
+
+### Form P measured with the generator moved into its guest area (MEASURED, test code of this crate)
+
+`tests/moved.rs`: `MovedUp` wraps the ARM64 generator and moves each state up by 64 KiB: the program counter, every
+memory change, the base register of an access (the generator sets it to the address less the access's offset), and
+every register or exclusive-monitor address inside the generator's pages; tags and bits above 48 stay. INFERRED:
+a register that holds a value in that range only as data moves too, which changes the state but not the check,
+since form P and every behavior run the same moved state.
+
+Recorded instructions (job native-r2m, 2026-11-26 11:26 UTC, 54 s):
+
+| Instruction | States | Refused unmoved | Refused moved | Meet a known behavior | Meet none | Of those, with the tag kept | Form P measured |
+|---|---|---|---|---|---|---|---|
+| Rdvl | 27 | 27 | 0 | 27 | 0 | | one known behavior |
+| Brk | 18 | 18 | 0 | 18 | 0 | | one known behavior |
+| StpSignedOffset64 | 31,280 | 31,280 | 0 | 19,994 | 11,286 | 11,286 | no behavior agrees |
+| LdrImmediatePostIndex64 | 9,024 | 9,024 | 0 | 7,200 | 1,824 | 1,824 | no behavior agrees |
+| StrImmediateUnsignedOffset64 | 15,036 | 15,036 | 0 | 10,512 | 4,524 | 4,524 | no behavior agrees |
+| LdrImmediateUnsignedOffset64 | 10,528 | 10,528 | 0 | 8,408 | 2,120 | 2,120 | no behavior agrees |
+| AddShiftedRegister64 | 3,680 | 3,680 | 0 | 3,680 | 0 | | one known behavior |
+| AddsShiftedRegister64 | 4,880 | 4,880 | 0 | 4,880 | 0 | | one known behavior |
+| Csel64 | 4,360 | 4,360 | 0 | 4,360 | 0 | | one known behavior |
+| MrsCtrEl0 | 3 | 3 | 0 | 3 | 0 | | one known behavior |
+| total | 78,836 | 78,836 | 0 | 59,082 | 19,754 | 19,754 | 6 of 10 |
+
+Every state that meets no behavior is a data abort through a tagged base (top byte 0xA5): form P reports the address
+without its tag (0x12000), every known behavior expects it with the tag (0xA500000000012000, or 0x0500... for the
+other behavior). Cause (READ): the stub's fault handler takes the address from `si_addr`, and Linux clears bits 63:56
+there unless the handler is installed with `SA_EXPOSE_TAGBITS`; the aarch64 zygote's `action_flags` lack it. The fix
+is that flag plus untagging the address wherever form P looks up its own pages (`resolve_fault`, `abort`'s
+mapped-or-not); NOT MADE, for the orchestrator (one line): it changes the address `TrapHandler::handle_memory_fault`
+receives, which the kernel turns into a guest's `si_addr`, so a guest can observe it, unless the kernel strips the
+tag as Linux does for a handler without the flag.
+
+Every instruction (job native-r2all, `every_instruction_measured_on_form_p_when_moved` and the behavior-source
+suite on the moved generator): see "Every instruction, moved" below.
+
+### The zygote's own crate (the orchestrator's ruling 1)
+
+`crates/executor/implementation/host-process-zygote` (`wcontainers-executor-host-process-zygote`, commit b8fd1c392):
+`layout.rs` (moved whole: where a stub's process holds its pages), `pages.rs` (the control and register pages'
+offsets, `Resume`, `CommandKind`, `ExitKind`), `stub.rs` (a stub's fixed descriptors, thread flags, stop signal),
+`zygote.rs` (its stack frame, the shared block's receive frame, `StubDescriptor`, `Request`, `MESSAGE`,
+`ZygoteEnd`, the restartable-sequences numbers, the section name, `TOP_AT`), and the two assembly modules
+`zygote/aarch64.rs` (1,474 lines) and `zygote/x86_64.rs` (964), unchanged, each under its own
+`#[expect(unsafe_code, reason = "..")]`. Its manifest holds the `[lints.rust] unsafe_code = "deny"` table;
+dependencies: wcontainers-abi, libc, linux-raw-sys only. host-process re-exports what its tests name
+(`layout`, `pages::{control, register, Resume, ExitKind}`, `stub::{SOCKET_FD, MEMORY_FD, BLOCK_FD, STOP_SIGNAL}`,
+`zygote::ZygoteEnd`), keeps the `Zygote` that starts and talks to it, and now has `[lints] workspace = true`: its own
+`deny` table is gone. The two layout checks against the ARM64 output crate (the slot table, the floor entries) stay
+in host-process (code.rs, pages.rs), so the zygote's crate depends on nothing of ours but the abi.
+
+Measured at b8fd1c392 (Linux 7.0.0-1018-aws, rustc 1.99.0):
+- Graviton4 (load 51 to 56): `cargo fmt --check` of both crates exit 0; `cargo clippy --all-targets -- -D warnings`
+  exit 0, 0 findings; the library and 20 binaries (zygote, stub, files, host, threads, stop, touch, memory, slice,
+  placement, embedder, floor, step, translated, run, interrupt, copy, forged, in_process_way, in_process_attacks):
+  exit 0, 110 passed, 0 failed, 3 ignored. Before the format pass, the same with differential and the two in-process
+  measurements (job of 11:36): 110 passed, 1 failed (run.rs:787 "it ran", a counted turn that made no progress at
+  load 47), 5 ignored; run, zygote and stub then five times in a row: 14, 8 and 8 passed each time.
+- Xeon, `--jobs 12` (load 7 to 11): clippy as above exit 0; every target of both crates: exit 0, 67 passed, 0
+  failed, 2 ignored (the count of the second run's Xeon line). At 11:53 the placement test
+  `the_runners_of_two_containers_take_different_cpus_and_their_threads_follow` failed 10 times in 10 on this tree
+  and 3 in 3 on the unchanged 48ef08c11 ("the guest thread follows its runner", left Some(1), right Some(4)): not
+  this change; it passed at 12:04.
+- Unsafe (the root manifest's command): host-process 0 -> 0, host-process-zygote 0 (its two marks are
+  `#[expect(unsafe_code)]` attributes, which the command leaves out, as before in host-process).
+- Linter: not run this run.
+
+### The abi `Cpu` bound (the orchestrator's ruling 2; READ at origin's tips, 2026-11-26 12:06 UTC)
+
+- Kernel, origin/kernel-port 36bf10eed: `git grep -nw Cpu origin/kernel-port -- crates/kernel`: no line. The last
+  call (`executor.address_space()` in `GuestMachine::new`) is gone in cacbe5488 ("the kernel bounds its spaces by the
+  start's ceiling"); docs/status-kernel.md there still lists it as owner line 3 (not yet updated).
+- Runtime, origin/runtime-restart 93637d42e (2026-11-25 23:06, older than the kernel's change): 13 lines left, all
+  in single-kernel: container.rs:10, 37 (the bound) and 168 (`Cpu::address_space(&executor).end`, the one call);
+  described.rs:9, 42, 53, 72, 282, 294 (bounds); implementation.rs:13, 166 (`exit(&mut self, cpu: &mut dyn Cpu,
+  ..)`), 173, 174 (its own `Execution: Cpu` trait). docs/status-runtime-restart.md line 30 says the bound is kept
+  only for the kernel's `address_space`, which the kernel no longer reads.
+- So form P's kernel, busybox and speed tests wait on the runtime dropping those lines (and on X2, X3), not on the
+  kernel. This branch does not hold kernel-port 36bf10eed (no merge was asked this run).
+
+### Form I (RI): state
+
+Not built this run: the correction, the measurement on the moved states and the zygote's crate took it. Nothing
+of RI waits on another track. The first piece, in order:
+1. The memory: one pool reserved in a process of form I's own, each memory a window of `WINDOW_BITS` (4 GiB) at
+   `Way::InProcess { slot }`'s base, `MemorySpace` + `PageTable` over it with a memfd per memory as form P does
+   (the embedder's view through memmap2), the window's mapping fixed with linux-process's `mmap_fixed_noreplace`.
+2. The entry: a marked method in linux-process `direct` that loads a register block, x28 the register page, and
+   branches to translated code at `IN_PROCESS_ENTRIES`' floor; the floor's entries come back through it.
+3. Faults and stops: the signal stack and handler, and the raw mask, each one marked method there.
+Then bar items 1 and 2 on it (in_process_way's window-edge test, two I memories and a P memory in one embedder).
