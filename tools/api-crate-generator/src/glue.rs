@@ -126,6 +126,8 @@ pub(super) struct Writer<'g, 'a> {
     pub(super) not_glued: RefCell<Vec<String>>,
     /// The API whose direct crate is being written: its own items are named without a crate path.
     current: std::cell::Cell<usize>,
+    /// Whether the recorder being written is the hostile one (src/glue_hostile.rs).
+    hostile: std::cell::Cell<bool>,
 }
 
 impl<'g, 'a> Writer<'g, 'a> {
@@ -138,6 +140,7 @@ impl<'g, 'a> Writer<'g, 'a> {
             glued: RefCell::new(Vec::new()),
             not_glued: RefCell::new(Vec::new()),
             current: std::cell::Cell::new(NOWHERE),
+            hostile: std::cell::Cell::new(false),
         }
     }
 
@@ -687,6 +690,9 @@ mod call;
 mod write;
 #[path = "glue_record.rs"]
 mod record;
+#[path = "glue_hostile.rs"]
+mod hostile;
 
+pub(super) use hostile::write_hostile;
 pub(super) use record::write_recorder;
 pub(super) use write::write_direct;

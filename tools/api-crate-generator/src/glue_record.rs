@@ -12,15 +12,15 @@ use crate::emit::{HEADER, Key, alias, package};
 use crate::metadata::Method;
 
 /// The crate alias of an API's recorder.
-fn recorder_alias(folder: &str) -> String {
+pub(super) fn recorder_alias(folder: &str) -> String {
     format!("{}_recorder", folder.replace('-', "_"))
 }
 
 /// The length of the bytes the recorder lends for each Map, and the pitches it answers: one 64 KiB page, rows of 4 KiB.
-const MAPPED: (u32, u32, u32) = (1 << 16, 1 << 12, 1 << 16);
+pub(super) const MAPPED: (u32, u32, u32) = (1 << 16, 1 << 12, 1 << 16);
 
 /// The recorder's log, objects, bytes and helpers, the same in every recorder crate.
-const RECORDER_BASE: &str = r#"use core::hash::{Hash, Hasher};
+pub(super) const RECORDER_BASE: &str = r#"use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -73,7 +73,7 @@ impl Drop for Live {
 "#;
 
 /// The bytes the Direct3D 11 recorder lends for a Map.
-const RECORDED_BYTES: &str = r#"
+pub(super) const RECORDED_BYTES: &str = r#"
 /// Bytes the recorder lends for a Map: shared by every clone, zero at first.
 #[derive(Clone, Debug)]
 pub struct RecordedBytes(Arc<Mutex<Vec<u8>>>);
@@ -151,6 +151,16 @@ impl Writer<'_, '_> {
         } else {
             let _ = writeln!(text, "        record(format!(\"{place}({})\", {}));", values.join(", "), value_names.join(", "));
         }
+        // The hostile implementation uses every byte lent to it, as the system writes and reads all it is told of.
+        if self.hostile.get() {
+            for (name, ty) in inputs.iter().filter(|(_, ty)| ty.contains("VolatileBytes")) {
+                if ty.trim_start().starts_with("Option<") {
+                    let _ = writeln!(text, "        if let Some(bytes) = {name} {{ touch(bytes); }}");
+                } else {
+                    let _ = writeln!(text, "        touch({name});");
+                }
+            }
+        }
         let fallback = if result.starts_with("Result<") {
             "Err(E_NOTIMPL)".to_string()
         } else if result == "()" {
@@ -189,7 +199,11 @@ impl Writer<'_, '_> {
                 },
                 Part::LentOut { coded, fields: [data, row, depth], .. } => {
                     let path = coded.path.trim_end_matches("<usize>");
-                    answers.push(format!("{path} {{ {data}: RecordedBytes::new(), {row}: MAPPED_ROW_PITCH, {depth}: MAPPED_DEPTH_PITCH }}"));
+                    if self.hostile.get() {
+                        answers.push(format!("{path} {{ {data}: RecordedBytes::new(), {row}: lying_pitch(MAPPED_ROW_PITCH), {depth}: lying_pitch(MAPPED_DEPTH_PITCH) }}"));
+                    } else {
+                        answers.push(format!("{path} {{ {data}: RecordedBytes::new(), {row}: MAPPED_ROW_PITCH, {depth}: MAPPED_DEPTH_PITCH }}"));
+                    }
                 }
                 Part::InterfaceOut { riid } => {
                     // An object of the kind the interface id names, of the API whose interface holds the method.
@@ -237,20 +251,28 @@ impl Writer<'_, '_> {
         let _ = writeln!(text, "//! {HEADER}\n//!\n//! A recording implementation of {}'s traits, for tests only: every call is logged by its place, with the values", spec.folder);
         let _ = writeln!(text, "//! passed by value; an object asked for is made; a structure, a bound object or a list asked for is not (E_NOTIMPL).\n");
         text.push_str("#![allow(unused_variables, unused_imports, clippy::let_unit_value, clippy::unit_arg, clippy::new_without_default, reason = \"generated: every method has the same shape\")]\n\n");
-        text.push_str(RECORDER_BASE);
+        let hostile = self.hostile.get();
+        text.push_str(if hostile { super::hostile::HOSTILE_BASE } else { RECORDER_BASE });
         let lends = spec.exceptions.iter().any(|e| matches!(e, Exception::Lent { .. }));
         if lends {
             let _ = writeln!(text, "\n/// The bytes every Map lends, and the pitches it answers.\nconst MAPPED_LENGTH: usize = {};\nconst MAPPED_ROW_PITCH: u32 = {};\nconst MAPPED_DEPTH_PITCH: u32 = {};", MAPPED.0, MAPPED.1, MAPPED.2);
-            text.push_str(RECORDED_BYTES);
+            text.push_str(if hostile { super::hostile::HOSTILE_BYTES } else { RECORDED_BYTES });
         }
         let own_kinds: Vec<usize> = (0..g.kinds.len()).filter(|&k| g.kinds[k].api == api).collect();
         for &kind in &own_kinds {
             let name = format!("Recorded{}", g.kinds[kind].name);
             let _ = writeln!(text, "\n/// A recorded object of the kind `{}`.\npub struct {name}<A> {{\n    live: Arc<Live>,\n    api: PhantomData<fn() -> A>,\n}}\n", g.kinds[kind].name);
             let _ = writeln!(text, "impl<A> {name}<A> {{\n    /// A new object, of an identity of its own.\n    pub fn new() -> {name}<A> {{\n        {name} {{ live: Live::new(), api: PhantomData }}\n    }}\n\n    /// The object's identity.\n    pub fn identity(&self) -> u64 {{\n        self.live.0\n    }}\n}}\n");
-            let _ = writeln!(text, "impl<A> Clone for {name}<A> {{\n    fn clone(&self) -> {name}<A> {{\n        {name} {{ live: Arc::clone(&self.live), api: PhantomData }}\n    }}\n}}\n");
-            let _ = writeln!(text, "impl<A> PartialEq for {name}<A> {{\n    fn eq(&self, other: &{name}<A>) -> bool {{\n        self.live.0 == other.live.0\n    }}\n}}\n\nimpl<A> Eq for {name}<A> {{}}\n");
-            let _ = writeln!(text, "impl<A> Hash for {name}<A> {{\n    fn hash<H: Hasher>(&self, state: &mut H) {{\n        self.live.0.hash(state);\n    }}\n}}\n");
+            if self.hostile.get() {
+                // The glue never asks these (src/trust.rs): each panics, so that a call of one fails the tests.
+                let _ = writeln!(text, "impl<A> Clone for {name}<A> {{\n    fn clone(&self) -> {name}<A> {{\n        never_asked(\"Clone\")\n    }}\n}}\n");
+                let _ = writeln!(text, "impl<A> PartialEq for {name}<A> {{\n    fn eq(&self, other: &{name}<A>) -> bool {{\n        never_asked(\"PartialEq\")\n    }}\n}}\n\nimpl<A> Eq for {name}<A> {{}}\n");
+                let _ = writeln!(text, "impl<A> Hash for {name}<A> {{\n    fn hash<H: Hasher>(&self, state: &mut H) {{\n        never_asked(\"Hash\")\n    }}\n}}\n");
+            } else {
+                let _ = writeln!(text, "impl<A> Clone for {name}<A> {{\n    fn clone(&self) -> {name}<A> {{\n        {name} {{ live: Arc::clone(&self.live), api: PhantomData }}\n    }}\n}}\n");
+                let _ = writeln!(text, "impl<A> PartialEq for {name}<A> {{\n    fn eq(&self, other: &{name}<A>) -> bool {{\n        self.live.0 == other.live.0\n    }}\n}}\n\nimpl<A> Eq for {name}<A> {{}}\n");
+                let _ = writeln!(text, "impl<A> Hash for {name}<A> {{\n    fn hash<H: Hasher>(&self, state: &mut H) {{\n        self.live.0.hash(state);\n    }}\n}}\n");
+            }
             let _ = writeln!(text, "impl<A> core::fmt::Debug for {name}<A> {{\n    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {{\n        formatter.debug_tuple(\"{name}\").field(&self.live.0).finish()\n    }}\n}}");
         }
         // The trait every API value of the recorder meets: its kinds are this crate's types.
@@ -389,7 +411,7 @@ impl Writer<'_, '_> {
     }
 
     /// The exports of API `api` its top-level trait carries, by name.
-    fn exported(&self, api: usize) -> Vec<&Method> {
+    pub(super) fn exported(&self, api: usize) -> Vec<&Method> {
         let spec = self.g.apis[api];
         let mut listed: Vec<&Method> = self
             .g

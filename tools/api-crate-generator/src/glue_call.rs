@@ -135,6 +135,20 @@ impl Writer<'_, '_> {
             let newtype = glued.parts.iter().any(|(n, part)| *n == name && matches!(part, Part::Value { form: super::ValueForm::Newtype, .. }));
             body.push_str(&crate::emit::kinds::rule_checks(&rule, &name, newtype, &fail));
         }
+        // The caller's bytes (src/trust.rs): each length is asked once, before anything of the call is under way, and
+        // that one answer both sizes our buffer and is the count the system is told; the caller's `write` runs last.
+        let mut writes_back = String::new();
+        for (name, part) in &glued.parts {
+            let Part::BytesOut { optional, .. } = part else { continue };
+            let length = if *optional { format!("{name}.map_or(0, |bytes| bytes.len())") } else { format!("{name}.len()") };
+            let _ = writeln!(body, "        let Ok({name}_length) = usize::try_from({length}) else {{ {fail} }};");
+            let _ = writeln!(body, "        let mut {name}_buffer = Vec::new();\n        if {name}_buffer.try_reserve_exact({name}_length).is_err() {{ {} }}\n        {name}_buffer.resize({name}_length, 0_u8);", if status { "return Err(E_OUTOFMEMORY);" } else { &fail });
+            if *optional {
+                let _ = writeln!(writes_back, "        if let Some(bytes) = {name} {{ bytes.write(&{name}_buffer); }}");
+            } else {
+                let _ = writeln!(writes_back, "        {name}.write(&{name}_buffer);");
+            }
+        }
         let mut args: Vec<String> = Vec::new();
         let mut after = String::new();
         let mut outs: Vec<String> = Vec::new();
@@ -186,9 +200,9 @@ impl Writer<'_, '_> {
                         .collect();
                     let c = self.count_c_type(&param.ty);
                     let range = glued.ranges.iter().find(|(count, ..)| *count == position);
+                    // The caller's bytes were asked their length once, above; a slice's length is the language's.
                     let length = |(user, part): &(&String, &Part)| match part {
-                        Part::BytesOut { optional: true, .. } => format!("{user}.map_or(0, |bytes| bytes.len())"),
-                        Part::BytesOut { .. } => format!("{user}.len()"),
+                        Part::BytesOut { .. } => format!("{user}_length"),
                         _ => format!("{user}.len()"),
                     };
                     // An `_opt_` array of values may be empty for none, whatever the count.
@@ -304,15 +318,11 @@ impl Writer<'_, '_> {
                     }
                 }
                 Part::BytesOut { optional, .. } => {
-                    let length = if *optional { format!("{name}.map_or(0, |bytes| bytes.len())") } else { format!("{name}.len()") };
-                    let _ = writeln!(body, "        let Ok({name}_length) = usize::try_from({length}) else {{ {fail} }};");
-                    let _ = writeln!(body, "        let mut {name}_buffer = Vec::new();\n        if {name}_buffer.try_reserve_exact({name}_length).is_err() {{ {} }}\n        {name}_buffer.resize({name}_length, 0_u8);", if status { "return Err(E_OUTOFMEMORY);" } else { &fail });
+                    // Our buffer, sized by the one length asked above; the caller's bytes are written from it last.
                     if *optional {
                         args.push(format!("if {name}.is_some() {{ {name}_buffer.as_mut_ptr() }} else {{ null_mut() }}"));
-                        let _ = writeln!(after, "        if let Some(bytes) = {name} {{ bytes.write(&{name}_buffer); }}");
                     } else {
                         args.push(format!("{name}_buffer.as_mut_ptr()"));
-                        let _ = writeln!(after, "        {name}.write(&{name}_buffer);");
                     }
                 }
                 Part::InitialData { desc, shape, per_subresource, size, bytes_at, pitch_at, slice_at, path, fields: [bytes_field, pitch_field, slice_field] } => {
@@ -465,6 +475,7 @@ impl Writer<'_, '_> {
             let _ = writeln!(body, "        succeeded(returned)?;");
         }
         body.push_str(&after);
+        body.push_str(&writes_back);
         let mut values: Vec<String> = Vec::new();
         if let Some(returned) = &glued.returned {
             values.push(Self::convert_in(returned, "returned"));
@@ -498,7 +509,7 @@ impl Writer<'_, '_> {
     /// The interface a `<Interface>Ref` enum is of, by its path: two APIs may each have a trait of that name (Direct3D 11's
     /// and DXGI's `Resource`), so the crate alias the path starts with picks the API, and the smallest key decides any
     /// tie, never a hash map's order.
-    fn enum_interface(&self, enum_path: &str) -> Key {
+    pub(super) fn enum_interface(&self, enum_path: &str) -> Key {
         let (prefix, last) = enum_path.rsplit_once("::").unwrap_or(("", enum_path));
         let name = last.trim_end_matches("Ref");
         let api = self.g.apis.iter().position(|spec| alias(spec) == prefix);

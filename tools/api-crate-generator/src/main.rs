@@ -3,6 +3,7 @@
 //!   api-crate-generator census <Windows.Win32.winmd> <namespace>...
 //!   api-crate-generator generate <Windows.Win32.winmd> <api> <output folder>
 //!   api-crate-generator layout-check <Windows.Win32.winmd> <api> <output.c> [C type left out]...
+//!   api-crate-generator once-check <Windows.Win32.winmd> <folder holding crates/>
 
 mod api;
 mod emit;
@@ -11,6 +12,7 @@ mod mapping;
 mod metadata;
 mod names;
 mod runtime;
+mod trust;
 mod undo;
 
 use std::collections::BTreeMap;
@@ -107,6 +109,17 @@ fn main() -> ExitCode {
                 }
             }
         }
+        // The check that every safe trait of the other party is asked once per value, on crates written earlier.
+        ("once-check", [out]) => match trust::check(std::path::Path::new(out)) {
+            Ok(report) => {
+                println!("{report}");
+                ExitCode::SUCCESS
+            }
+            Err(failure) => {
+                println!("{failure}");
+                ExitCode::FAILURE
+            }
+        },
         ("generate", [name, out]) => {
             let Some(api) = api::by_name(name) else {
                 eprintln!("api-crate-generator: no API named {name}; known: {}", api::names().join(", "));

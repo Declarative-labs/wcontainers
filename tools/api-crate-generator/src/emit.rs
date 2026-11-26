@@ -1709,6 +1709,13 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
                 }
             }
         }
+        // The hostile implementation set and its driver (src/glue_hostile.rs), for a slice and for the whole APIs.
+        for (api, spec) in apis.iter().enumerate().skip(1) {
+            if spec.top_trait.is_some() {
+                let folder = out.join("crates").join(spec.folder);
+                report.push_str(&glue::write_hostile(&writer, api, &folder)?);
+            }
+        }
         // The pass-through test and the spike's harness, hand-written for the slice, go with its Direct3D 11 glue.
         if sliced && let Some(position) = apis.iter().position(|api| api.folder == "direct3d-11") {
             let direct = out.join("crates").join(apis[position].folder).join("implementation").join("direct");
@@ -1756,6 +1763,9 @@ pub fn generate(index: &TypeIndex, apis: &[&Api], out: &Path, writes_glue: bool)
     report.push_str(&kinds_report);
     // Every mark's reason matched to what it relies on, and every hostile test the rows owe written.
     report.push_str(&crate::undo::check(out)?);
+    // Every safe trait of the other party asked once per value: the glue carries the answer (src/trust.rs).
+    let asked = crate::trust::check(out).map_err(|failure| format!("{report}{failure}"))?;
+    report.push_str(&asked);
     if let Some(classified) = generator.classified.borrow().as_ref() {
         match kinds::check_tests(classified, out, writes_glue) {
             Ok(tests) => report.push_str(&tests),
