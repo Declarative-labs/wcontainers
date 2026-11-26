@@ -5,7 +5,6 @@ use std::time::Duration;
 use wcontainers_arm64::Arm64;
 use wcontainers_guest_cpu::Guest;
 use wcontainers_translator::{LookAhead, Optimise, ProgressCount, translate};
-use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::jobs::at_once;
 
 /// How long the translations may take, many times what they need.
@@ -16,8 +15,9 @@ const TRANSLATIONS: u64 = 256;
 
 #[test]
 fn the_first_translations_from_another_pool_end() {
-    let code = Arm64::smoke().exit;
-    let host = Arm64::host_from_probe(Arm64::PROBE_ANSWERS[usize::MIN]);
+    let code = wcontainers_translator_test::arm64::part::smoke().exit;
+    let host =
+        Arm64::host_from_probe(wcontainers_translator_test::arm64::part::PROBE_ANSWERS[usize::MIN]);
     let (done, finished) = mpsc::channel();
     std::thread::spawn(move || {
         at_once(JOBS, TRANSLATIONS, |_| {

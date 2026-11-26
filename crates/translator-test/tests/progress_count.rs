@@ -8,17 +8,8 @@
 use proptest::prelude::RngExt;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use wcontainers_arm64::Arm64;
 use wcontainers_translator::{BOUND, LookAhead, Optimise};
 use wcontainers_translator_test::jobs::{at_once, load};
-use wcontainers_translator_test::layer3::{LAYER3_CASE_STRIDE, build, csmith_case};
-use wcontainers_translator_test::programs::{
-    Blob, Library, Position, build_with, ready_for, translated_for,
-};
-use wcontainers_translator_test::progress::{
-    Counted, counting, every_check, finish, first_stop, reach, run_counting,
-};
-use wcontainers_translator_test::runner::{Machine, Pause, Stopped};
 use wcontainers_translator_test::seeded::generator;
 
 /// A Csmith program whose count reaches this at full look-ahead is taken not to end, and left out.
@@ -48,20 +39,25 @@ fn every_how(name: &str) -> Vec<(LookAhead, Optimise)> {
 }
 
 /// The programs checked: built at a level, with defines.
-const PROGRAMS: [(&str, &str, Library, &[&str]); 8] = [
-    ("progress_events", "-O0", Library::None, &["ROUNDS=5"]),
-    ("leafcalls", "-O2", Library::C, &["SCALE=0"]),
-    ("leafcalls", "-O0", Library::C, &["SCALE=0"]),
-    ("bench", "-O0", Library::None, &["SCALE=0"]),
-    ("bench", "-O2", Library::None, &["SCALE=0"]),
-    ("jumps", "-O2", Library::C, &[]),
-    ("tables", "-O2", Library::None, &[]),
-    ("exceptions", "-O2", Library::C, &[]),
+const PROGRAMS: [(&str, &str, arm64::Library, &[&str]); 8] = [
+    (
+        "progress_events",
+        "-O0",
+        arm64::Library::None,
+        &["ROUNDS=5"],
+    ),
+    ("leafcalls", "-O2", arm64::Library::C, &["SCALE=0"]),
+    ("leafcalls", "-O0", arm64::Library::C, &["SCALE=0"]),
+    ("bench", "-O0", arm64::Library::None, &["SCALE=0"]),
+    ("bench", "-O2", arm64::Library::None, &["SCALE=0"]),
+    ("jumps", "-O2", arm64::Library::C, &[]),
+    ("tables", "-O2", arm64::Library::None, &[]),
+    ("exceptions", "-O2", arm64::Library::C, &[]),
 ];
 
-fn programs() -> impl Iterator<Item = Blob> {
+fn programs() -> impl Iterator<Item = arm64::Blob> {
     PROGRAMS.into_iter().map(|(name, level, library, defines)| {
-        build_with::<Arm64>(name, level, library, defines, Position::Fixed)
+        arm64::build_with(name, level, library, defines, arm64::Position::Fixed)
     })
 }
 
@@ -70,15 +66,15 @@ fn the_count_of_a_small_program_is_its_events_counted_by_hand() {
     const ROUNDS: u64 = 5;
     // Each round a call, its return and two backward conditional jumps; then one jump through a register.
     const EVENTS: u64 = 4 * ROUNDS + 1;
-    let blob = build_with::<Arm64>(
+    let blob = arm64::build_with(
         "progress_events",
         "-O0",
-        Library::None,
+        arm64::Library::None,
         &[&format!("ROUNDS={ROUNDS}")],
-        Position::Fixed,
+        arm64::Position::Fixed,
     );
     for how in every_how(&blob.name) {
-        let counted = run_counting::<Arm64>(&blob, how);
+        let counted = arm64::run_counting(&blob, how);
         assert_eq!(counted.ran.status, 0, "at {how:?}");
         assert_eq!(counted.end, EVENTS, "at {how:?}");
     }
@@ -87,11 +83,11 @@ fn the_count_of_a_small_program_is_its_events_counted_by_hand() {
 #[test]
 fn the_count_is_the_same_at_every_look_ahead_and_on_every_run() {
     for blob in programs() {
-        let mut first: Option<Counted> = None;
+        let mut first: Option<arm64::Counted> = None;
         for how in every_how(&blob.name) {
             // Twice each, so a count that differs from run to run shows.
             for _ in 0..2 {
-                let counted = run_counting::<Arm64>(&blob, how);
+                let counted = arm64::run_counting(&blob, how);
                 match &first {
                     None => {
                         eprintln!(
@@ -114,9 +110,9 @@ fn the_count_is_the_same_at_every_look_ahead_and_on_every_run() {
 #[test]
 fn every_check_is_a_position_of_the_run_at_none() {
     for blob in programs().take(3) {
-        let (at_none, ran) = every_check::<Arm64>(&blob, (LookAhead::None, Optimise::Speed));
+        let (at_none, ran) = arm64::every_check(&blob, (LookAhead::None, Optimise::Speed));
         for how in every_how(&blob.name) {
-            let (positions, theirs) = every_check::<Arm64>(&blob, how);
+            let (positions, theirs) = arm64::every_check(&blob, how);
             assert_eq!(theirs, ran, "{} at {how:?}", blob.name);
             let mut rest = at_none.iter();
             for position in &positions {
@@ -137,20 +133,20 @@ fn stops_are_reached_again_from_every_look_ahead() {
     let seed = setting("WC_PROGRESS_SEED", 1);
     let stops = setting("WC_PROGRESS_STOPS", 1);
     for blob in programs() {
-        let plain = run_counting::<Arm64>(&blob, (LookAhead::Full, Optimise::Speed));
+        let plain = arm64::run_counting(&blob, (LookAhead::Full, Optimise::Speed));
         let mut rng = generator(seed, b"stops", &blob.name);
         let hows = every_how(&blob.name);
         for &logged_at in &hows {
             for _ in 0..stops {
                 let limit = rng.random_range(0..=plain.end);
-                let (stop, ran) = first_stop::<Arm64>(&blob, logged_at, limit);
+                let (stop, ran) = arm64::first_stop(&blob, logged_at, limit);
                 assert_eq!(ran, plain.ran, "{} stopping at {limit}", blob.name);
                 let Some(target) = stop else {
                     continue;
                 };
                 assert!(target.count >= limit);
                 for &from in &hows {
-                    let (ran, runs) = reach::<Arm64>(&blob, from, target);
+                    let (ran, runs) = arm64::reach(&blob, from, target);
                     assert_eq!(
                         ran, plain.ran,
                         "{} reaching {target:?} from {from:?}",
@@ -176,29 +172,29 @@ fn csmith_programs_count_the_same_everywhere() {
     let (compared, endless) = (AtomicU64::new(0), AtomicU64::new(0));
     let failures = Mutex::new(Vec::new());
     at_once(jobs, cases, |i| {
-        let number = seed.wrapping_mul(LAYER3_CASE_STRIDE).wrapping_add(i);
-        let (source, compiler, level, position) = csmith_case(number);
-        let blob = build::<Arm64>(&source, compiler, level, position);
+        let number = seed.wrapping_mul(arm64::LAYER3_CASE_STRIDE).wrapping_add(i);
+        let (source, compiler, level, position) = arm64::csmith_case(number);
+        let blob = arm64::build(&source, compiler, level, position);
         let full = (LookAhead::Full, Optimise::Speed);
-        let mut machine = counting::<Arm64>(&blob, full);
+        let mut machine = arm64::counting(&blob, full);
         machine.set_progress_limit(ENDLESS);
         machine.on_pause(|pause, paused| {
-            if pause == Pause::Stop {
+            if pause == arm64::Pause::Stop {
                 paused.end_run();
             }
         });
-        if machine.run().0 == Stopped::Ended {
+        if machine.run().0 == arm64::Stopped::Ended {
             endless.fetch_add(1, Ordering::Relaxed);
             return;
         }
-        let (plain_ran, _, _) = translated_for::<Arm64>(&blob, full);
-        let first = run_counting::<Arm64>(&blob, full);
+        let (plain_ran, _, _) = arm64::translated_for(&blob, full);
+        let first = arm64::run_counting(&blob, full);
         let mut report = Vec::new();
         if first.ran != plain_ran {
             report.push("the count changed the program's results".to_string());
         }
         for how in every_how(&blob.name).into_iter().chain([full]) {
-            let counted = run_counting::<Arm64>(&blob, how);
+            let counted = arm64::run_counting(&blob, how);
             if counted != first {
                 report.push(format!(
                     "at {how:?}: end {} against {}, system calls {:?} against {:?}",
@@ -231,17 +227,17 @@ fn csmith_programs_count_the_same_everywhere() {
 #[ignore]
 fn measure_progress_count() {
     let runs = setting("WC_BENCH_RUNS", 3);
-    let workloads: [(&str, Library, u32); 10] = [
-        ("bench", Library::None, 1),
-        ("bench", Library::None, 2),
-        ("bench", Library::None, 3),
-        ("bench", Library::None, 4),
-        ("bench", Library::None, 5),
-        ("bench", Library::None, 6),
-        ("bench", Library::None, 7),
-        ("bench", Library::None, 8),
-        ("leafcalls", Library::C, 1),
-        ("leafcalls", Library::C, 2),
+    let workloads: [(&str, arm64::Library, u32); 10] = [
+        ("bench", arm64::Library::None, 1),
+        ("bench", arm64::Library::None, 2),
+        ("bench", arm64::Library::None, 3),
+        ("bench", arm64::Library::None, 4),
+        ("bench", arm64::Library::None, 5),
+        ("bench", arm64::Library::None, 6),
+        ("bench", arm64::Library::None, 7),
+        ("bench", arm64::Library::None, 8),
+        ("leafcalls", arm64::Library::C, 1),
+        ("leafcalls", arm64::Library::C, 2),
     ];
     let chosen: Vec<usize> = std::env::var("WC_BENCH_WORKLOADS")
         .map_or((1..=workloads.len()).collect(), |v| {
@@ -250,12 +246,12 @@ fn measure_progress_count() {
     let how = (LookAhead::Full, Optimise::Speed);
     for k in chosen {
         let (name, library, workload) = workloads[k - 1];
-        let blob = build_with::<Arm64>(
+        let blob = arm64::build_with(
             name,
             "-O2",
             library,
             &["SCALE=1", &format!("WORKLOAD={workload}")],
-            Position::Fixed,
+            arm64::Position::Fixed,
         );
         let mut best = [f64::MAX; 2];
         let mut ends = [0; 2];
@@ -266,10 +262,10 @@ fn measure_progress_count() {
                 let mut machine = if side == 0 {
                     plain(&blob, how)
                 } else {
-                    counting::<Arm64>(&blob, how)
+                    arm64::counting(&blob, how)
                 };
                 let started = std::time::Instant::now();
-                let (ran, end) = finish(&blob, &mut machine);
+                let (ran, end) = arm64::finish(&blob, &mut machine);
                 best[side as usize] = best[side as usize].min(started.elapsed().as_secs_f64());
                 match &first {
                     None => first = Some(ran),
@@ -290,6 +286,20 @@ fn measure_progress_count() {
 }
 
 /// A machine with the blob as `how` says and no progress count.
-fn plain(blob: &Blob, (look_ahead, optimise): (LookAhead, Optimise)) -> Machine<Arm64> {
-    ready_for::<Arm64>(blob, look_ahead, optimise, Default::default())
+fn plain(blob: &arm64::Blob, (look_ahead, optimise): (LookAhead, Optimise)) -> arm64::Machine {
+    arm64::ready_for(blob, look_ahead, optimise, Default::default())
+}
+
+/// The tests with ARM64 as the guest.
+mod arm64 {
+    pub(super) use wcontainers_translator_test::arm64::layer3::{
+        LAYER3_CASE_STRIDE, build, csmith_case,
+    };
+    pub(super) use wcontainers_translator_test::arm64::programs::{
+        Blob, Library, Position, build_with, ready_for, translated_for,
+    };
+    pub(super) use wcontainers_translator_test::arm64::progress::{
+        Counted, counting, every_check, finish, first_stop, reach, run_counting,
+    };
+    pub(super) use wcontainers_translator_test::arm64::runner::{Machine, Pause, Stopped};
 }

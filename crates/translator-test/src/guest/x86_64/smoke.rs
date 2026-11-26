@@ -1,8 +1,8 @@
-//! x86-64's smoke programs (`GuestTest::smoke`), each started with every register 0 but rip, and rsp at the
+//! x86-64's smoke programs (`part::smoke`), each started with every register 0 but rip, and rsp at the
 //! top of a writable page.
 
-use super::{Code, Decoder, DecoderOptions, X86_64};
-use crate::guest::{GuestTest, Smoke, UNKNOWN_SYSTEM_CALL};
+use super::{Code, Decoder, DecoderOptions};
+use crate::x86_64::guest::{Smoke, UNKNOWN_SYSTEM_CALL};
 use iced_x86::IcedError;
 use iced_x86::code_asm::*;
 
@@ -22,7 +22,7 @@ fn assembled(write: impl FnOnce(&mut CodeAssembler) -> Result<(), IcedError>) ->
 
 /// `exit(edi)`.
 fn exit(a: &mut CodeAssembler) -> Result<(), IcedError> {
-    a.mov(eax, <X86_64 as GuestTest>::STAND_IN.exit as u32)?;
+    a.mov(eax, super::STAND_IN.exit as u32)?;
     a.syscall()
 }
 

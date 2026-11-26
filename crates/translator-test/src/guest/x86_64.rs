@@ -1,17 +1,24 @@
 //! x86-64's part of the harness: the forms from iced-x86's own tables, cases drawn for each, the state both
 //! sides compare, and what a reference signal means.
 
+#[path = "x86_64/assemble.rs"]
 mod assemble;
+#[path = "x86_64/changes.rs"]
 mod changes;
+#[path = "x86_64/loops.rs"]
 mod loops;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "x86_64/native.rs"]
 pub mod native;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+#[path = "x86_64/native_programs.rs"]
 pub mod native_programs;
+#[path = "x86_64/segments.rs"]
 mod segments;
+#[path = "x86_64/smoke.rs"]
 mod smoke;
 
-use super::*;
+use super::guest::*;
 use crate::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
 use crate::reference::Target;
 use iced_x86::{
@@ -22,6 +29,7 @@ use iced_x86::{
 use proptest::prelude::*;
 use std::sync::OnceLock;
 use wcontainers_abi::PAGE_SIZE;
+use wcontainers_guest_cpu::Guest;
 use wcontainers_x86::encoding::{ESCAPE, OPERAND_SIZE, REP, REPNE, REX, REX_W, is_rex};
 use wcontainers_x86::{USER_END, USER_TOP};
 use wcontainers_x86::{X86_64, X86Block};
@@ -81,612 +89,593 @@ pub struct Form {
     pub unoffered: bool,
 }
 
-impl GuestTest for X86_64 {
-    const REFERENCE: Target = Target {
-        rust_target: "x86_64-unknown-linux-musl",
-        docker_platform: "linux/amd64",
-        reference_host: "WC_REFERENCE_X86_64",
-        remote_directory: "wcontainers-x86/reference",
-        fields: &[
-            "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11",
-            "r12", "r13", "r14", "r15", "rip", "rflags", "fs_base", "gs_base", "mxcsr", "fcw",
-            "fsw", "ftw", "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "xmm0", "xmm1", "xmm2",
-            "xmm3", "xmm4", "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12",
-            "xmm13", "xmm14", "xmm15", "ymmh0", "ymmh1", "ymmh2", "ymmh3", "ymmh4", "ymmh5",
-            "ymmh6", "ymmh7", "ymmh8", "ymmh9", "ymmh10", "ymmh11", "ymmh12", "ymmh13", "ymmh14",
-            "ymmh15", "ds", "es", "fs", "gs",
-        ],
+pub const REFERENCE: Target = Target {
+    rust_target: "x86_64-unknown-linux-musl",
+    docker_platform: "linux/amd64",
+    reference_host: "WC_REFERENCE_X86_64",
+    remote_directory: "wcontainers-x86/reference",
+    fields: &[
+        "rax", "rcx", "rdx", "rbx", "rsp", "rbp", "rsi", "rdi", "r8", "r9", "r10", "r11", "r12",
+        "r13", "r14", "r15", "rip", "rflags", "fs_base", "gs_base", "mxcsr", "fcw", "fsw", "ftw",
+        "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "xmm0", "xmm1", "xmm2", "xmm3", "xmm4",
+        "xmm5", "xmm6", "xmm7", "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14",
+        "xmm15", "ymmh0", "ymmh1", "ymmh2", "ymmh3", "ymmh4", "ymmh5", "ymmh6", "ymmh7", "ymmh8",
+        "ymmh9", "ymmh10", "ymmh11", "ymmh12", "ymmh13", "ymmh14", "ymmh15", "ds", "es", "fs",
+        "gs",
+    ],
+};
+pub const C_TARGET: &str = "x86_64-linux-musl";
+// zig sets the CPU's features itself, and `-mgeneral-regs-only` does not keep its vectoriser off SSE;
+// this leaves out the vector units.
+pub const GENERAL_ONLY: &[&str] = &["-mcpu=x86_64-sse-sse2-mmx"];
+pub const NAME: &str = "x86_64";
+pub const ELF_MACHINE: object::elf::Machine = object::elf::EM_X86_64;
+pub const MUSL_LOADER: &str = "/lib/ld-musl-x86_64.so.1";
+
+pub fn relocation(kind: object::elf::RelocationType) -> Relocation {
+    use object::elf;
+    match kind {
+        elf::R_X86_64_RELATIVE => Relocation::Relative,
+        elf::R_X86_64_64 | elf::R_X86_64_GLOB_DAT | elf::R_X86_64_JUMP_SLOT => Relocation::Absolute,
+        _ => Relocation::Other,
+    }
+}
+
+pub fn disassemble(code: &[u8]) -> String {
+    let instruction = Decoder::with_ip(
+        wcontainers_x86::MODE_BITS,
+        code,
+        CODE,
+        DecoderOptions::FORCE_RESERVED_NOP,
+    )
+    .decode();
+    let mut text = String::new();
+    IntelFormatter::new().format(&instruction, &mut text);
+    format!("{text} ({:?})", instruction.code())
+}
+
+// Not-a-number results follow x86's rules or not, and the relaxed multiply-add fuses or not.
+pub const PROBE_ANSWERS: &[i32] = &[0, 1, 2, 3];
+
+/// The baseline every x86-64 CPU has and the features of the default list, `lahf` and `sahf` in 64-bit
+/// mode as iced files them (the 8086's).
+pub fn offered() -> Vec<&'static str> {
+    use wcontainers_x86::claims::{BASELINE_FEATURES, LAHF_SAHF_FAMILY, TOLD_FEATURES};
+    let offer = wcontainers_x86::Offer::default();
+    let mut offered = BASELINE_FEATURES.to_vec();
+    offered.extend(
+        TOLD_FEATURES
+            .iter()
+            .enumerate()
+            .filter(|&(at, &name)| offer.tells(at) && name != LAHF_SAHF_FAMILY)
+            .map(|(_, &name)| name),
+    );
+    offered
+}
+
+/// The features of the bits `cpuid` sets by default, read through the kernel interface's list, and those
+/// every x86-64 CPU has with no bit.
+pub fn told() -> Vec<&'static str> {
+    use iced_x86::CpuidFeature::{self, *};
+    use wcontainers_kernel::x86_64_features::{
+        Cpuid01Ecx, Cpuid07Ebx, Cpuid07Ecx, Cpuid07Edx, Cpuid80000001Ecx, Cpuid80000001Edx,
     };
-    const C_TARGET: &'static str = "x86_64-linux-musl";
-    // zig sets the CPU's features itself, and `-mgeneral-regs-only` does not keep its vectoriser off SSE;
-    // this leaves out the vector units.
-    const GENERAL_ONLY: &'static [&'static str] = &["-mcpu=x86_64-sse-sse2-mmx"];
-    const NAME: &'static str = "x86_64";
-    const ELF_MACHINE: object::elf::Machine = object::elf::EM_X86_64;
-    const MUSL_LOADER: &'static str = "/lib/ld-musl-x86_64.so.1";
-
-    fn relocation(kind: object::elf::RelocationType) -> Relocation {
-        use object::elf;
-        match kind {
-            elf::R_X86_64_RELATIVE => Relocation::Relative,
-            elf::R_X86_64_64 | elf::R_X86_64_GLOB_DAT | elf::R_X86_64_JUMP_SLOT => {
-                Relocation::Absolute
-            }
-            _ => Relocation::Other,
-        }
+    use wcontainers_x86::claims::LAHF_SAHF_FAMILY;
+    use wcontainers_x86::cpuid::{
+        EBX, ECX, EDX, EXTENDED_FEATURES, EXTENDED_FEATURES_LEAF, FEATURES_LEAF, answer, extended,
+        leaf1,
+    };
+    let offer = wcontainers_x86::Offer::default();
+    let [leaf1, leaf7, extended_leaf] =
+        [FEATURES_LEAF, EXTENDED_FEATURES_LEAF, EXTENDED_FEATURES].map(|l| answer(offer, l, 0));
+    // The names of the list's bits that are set, and below the bits the list has no field for, as iced's
+    // feature (`None` for one that names no instructions).
+    fn named<F: bitflags::Flags>(word: u32) -> impl Iterator<Item = &'static str>
+    where
+        F::Bits: From<u32>,
+    {
+        F::from_bits_truncate(word.into())
+            .iter_names()
+            .map(|(n, _)| n)
+            .collect::<Vec<_>>()
+            .into_iter()
     }
-
-    fn disassemble(code: &[u8]) -> String {
-        let instruction = Decoder::with_ip(
-            wcontainers_x86::MODE_BITS,
-            code,
-            CODE,
-            DecoderOptions::FORCE_RESERVED_NOP,
-        )
-        .decode();
-        let mut text = String::new();
-        IntelFormatter::new().format(&instruction, &mut text);
-        format!("{text} ({:?})", instruction.code())
-    }
-
-    // Not-a-number results follow x86's rules or not, and the relaxed multiply-add fuses or not.
-    const PROBE_ANSWERS: &'static [i32] = &[0, 1, 2, 3];
-
-    /// The baseline every x86-64 CPU has and the features of the default list, `lahf` and `sahf` in 64-bit
-    /// mode as iced files them (the 8086's).
-    fn offered() -> Vec<&'static str> {
-        use wcontainers_x86::claims::{BASELINE_FEATURES, LAHF_SAHF_FAMILY, TOLD_FEATURES};
-        let offer = wcontainers_x86::Offer::default();
-        let mut offered = BASELINE_FEATURES.to_vec();
-        offered.extend(
-            TOLD_FEATURES
-                .iter()
-                .enumerate()
-                .filter(|&(at, &name)| offer.tells(at) && name != LAHF_SAHF_FAMILY)
-                .map(|(_, &name)| name),
-        );
-        offered
-    }
-
-    /// The features of the bits `cpuid` sets by default, read through the kernel interface's list, and those
-    /// every x86-64 CPU has with no bit.
-    fn told() -> Vec<&'static str> {
-        use iced_x86::CpuidFeature::{self, *};
-        use wcontainers_kernel::x86_64_features::{
-            Cpuid01Ecx, Cpuid07Ebx, Cpuid07Ecx, Cpuid07Edx, Cpuid80000001Ecx, Cpuid80000001Edx,
-        };
-        use wcontainers_x86::claims::LAHF_SAHF_FAMILY;
-        use wcontainers_x86::cpuid::{
-            EBX, ECX, EDX, EXTENDED_FEATURES, EXTENDED_FEATURES_LEAF, FEATURES_LEAF, answer,
-            extended, leaf1,
-        };
-        let offer = wcontainers_x86::Offer::default();
-        let [leaf1, leaf7, extended_leaf] =
-            [FEATURES_LEAF, EXTENDED_FEATURES_LEAF, EXTENDED_FEATURES].map(|l| answer(offer, l, 0));
-        // The names of the list's bits that are set, and below the bits the list has no field for, as iced's
-        // feature (`None` for one that names no instructions).
-        fn named<F: bitflags::Flags>(word: u32) -> impl Iterator<Item = &'static str>
-        where
-            F::Bits: From<u32>,
-        {
-            F::from_bits_truncate(word.into())
-                .iter_names()
-                .map(|(n, _)| n)
-                .collect::<Vec<_>>()
-                .into_iter()
-        }
-        let mut names: Vec<&'static str> = named::<Cpuid01Ecx>(leaf1[ECX]).collect();
-        names.extend(named::<Cpuid07Ebx>(leaf7[EBX]));
-        names.extend(named::<Cpuid07Ecx>(leaf7[ECX]));
-        names.extend(named::<Cpuid07Edx>(leaf7[EDX]));
-        names.extend(named::<Cpuid80000001Ecx>(extended_leaf[ECX]));
-        names.extend(named::<Cpuid80000001Edx>(extended_leaf[EDX]));
-        let unlisted: &[(u32, u32, Option<CpuidFeature>)] = &[
-            (leaf1[ECX], leaf1::OSXSAVE, None),
-            (leaf1[EDX], leaf1::FPU, Some(FPU)),
-            (leaf1[EDX], leaf1::TSC, Some(TSC)),
-            (leaf1[EDX], leaf1::CX8, Some(CX8)),
-            (leaf1[EDX], leaf1::SEP, Some(SEP)),
-            (leaf1[EDX], leaf1::CMOV, Some(CMOV)),
-            (leaf1[EDX], leaf1::CLFSH, Some(CLFSH)),
-            (leaf1[EDX], leaf1::MMX, Some(MMX)),
-            (leaf1[EDX], leaf1::FXSR, Some(FXSR)),
-            (leaf1[EDX], leaf1::SSE, Some(SSE)),
-            (leaf1[EDX], leaf1::SSE2, Some(SSE2)),
-            (extended_leaf[EDX], extended::SYSCALL, Some(SYSCALL)),
-            (extended_leaf[EDX], extended::NX, None),
-            (extended_leaf[EDX], extended::LM, Some(X64)),
-        ];
-        // No bit is set that neither the list nor the table above names.
-        let covered = |word: u32, listed: u32| {
+    let mut names: Vec<&'static str> = named::<Cpuid01Ecx>(leaf1[ECX]).collect();
+    names.extend(named::<Cpuid07Ebx>(leaf7[EBX]));
+    names.extend(named::<Cpuid07Ecx>(leaf7[ECX]));
+    names.extend(named::<Cpuid07Edx>(leaf7[EDX]));
+    names.extend(named::<Cpuid80000001Ecx>(extended_leaf[ECX]));
+    names.extend(named::<Cpuid80000001Edx>(extended_leaf[EDX]));
+    let unlisted: &[(u32, u32, Option<CpuidFeature>)] = &[
+        (leaf1[ECX], leaf1::OSXSAVE, None),
+        (leaf1[EDX], leaf1::FPU, Some(FPU)),
+        (leaf1[EDX], leaf1::TSC, Some(TSC)),
+        (leaf1[EDX], leaf1::CX8, Some(CX8)),
+        (leaf1[EDX], leaf1::SEP, Some(SEP)),
+        (leaf1[EDX], leaf1::CMOV, Some(CMOV)),
+        (leaf1[EDX], leaf1::CLFSH, Some(CLFSH)),
+        (leaf1[EDX], leaf1::MMX, Some(MMX)),
+        (leaf1[EDX], leaf1::FXSR, Some(FXSR)),
+        (leaf1[EDX], leaf1::SSE, Some(SSE)),
+        (leaf1[EDX], leaf1::SSE2, Some(SSE2)),
+        (extended_leaf[EDX], extended::SYSCALL, Some(SYSCALL)),
+        (extended_leaf[EDX], extended::NX, None),
+        (extended_leaf[EDX], extended::LM, Some(X64)),
+    ];
+    // No bit is set that neither the list nor the table above names.
+    let covered = |word: u32, listed: u32| {
+        unlisted
+            .iter()
+            .filter(|&&(w, bit, _)| w == word && word & bit != 0)
+            .fold(listed, |all, &(_, bit, _)| all | bit)
+    };
+    assert_eq!(
+        leaf1[ECX] & !covered(leaf1[ECX], Cpuid01Ecx::all().bits()),
+        0
+    );
+    assert_eq!(leaf1[EDX] & !covered(leaf1[EDX], 0), 0);
+    assert_eq!(leaf7[EBX] & !Cpuid07Ebx::all().bits(), 0);
+    assert_eq!(extended_leaf[ECX] & !Cpuid80000001Ecx::all().bits(), 0);
+    assert_eq!(
+        extended_leaf[EDX] & !covered(extended_leaf[EDX], Cpuid80000001Edx::all().bits()),
+        0
+    );
+    // Every x86-64 CPU has these, and no bit says so (FPU287 and FPU387 come with FPU).
+    const WITHOUT_BITS: &[CpuidFeature] = &[
+        INTEL8086,
+        INTEL186,
+        INTEL286,
+        INTEL386,
+        INTEL486,
+        CPUID,
+        PAUSE,
+        MULTIBYTENOP,
+        FPU287,
+        FPU387,
+    ];
+    let mut told: Vec<&'static str> = WITHOUT_BITS
+        .iter()
+        .chain(
             unlisted
                 .iter()
-                .filter(|&&(w, bit, _)| w == word && word & bit != 0)
-                .fold(listed, |all, &(_, bit, _)| all | bit)
-        };
-        assert_eq!(
-            leaf1[ECX] & !covered(leaf1[ECX], Cpuid01Ecx::all().bits()),
-            0
-        );
-        assert_eq!(leaf1[EDX] & !covered(leaf1[EDX], 0), 0);
-        assert_eq!(leaf7[EBX] & !Cpuid07Ebx::all().bits(), 0);
-        assert_eq!(extended_leaf[ECX] & !Cpuid80000001Ecx::all().bits(), 0);
-        assert_eq!(
-            extended_leaf[EDX] & !covered(extended_leaf[EDX], Cpuid80000001Edx::all().bits()),
-            0
-        );
-        // Every x86-64 CPU has these, and no bit says so (FPU287 and FPU387 come with FPU).
-        const WITHOUT_BITS: &[CpuidFeature] = &[
-            INTEL8086,
-            INTEL186,
-            INTEL286,
-            INTEL386,
-            INTEL486,
-            CPUID,
-            PAUSE,
-            MULTIBYTENOP,
-            FPU287,
-            FPU387,
-        ];
-        let mut told: Vec<&'static str> = WITHOUT_BITS
+                .filter(|&&(w, bit, _)| w & bit != 0)
+                .filter_map(|(_, _, f)| f.as_ref()),
+        )
+        .map(|feature| &*Box::leak(format!("{feature:?}").into_boxed_str()))
+        .collect();
+    told.extend(names.into_iter().filter(|&n| n != LAHF_SAHF_FAMILY));
+    told
+}
+
+pub fn forms() -> &'static [Form] {
+    static FORMS: OnceLock<Vec<Form>> = OnceLock::new();
+    FORMS.get_or_init(list_forms)
+}
+
+pub fn form_name(form: &Form) -> &str {
+    &form.name
+}
+
+pub fn form_group(form: &Form) -> &str {
+    &form.group
+}
+
+pub fn cases(form: &Form) -> BoxedStrategy<Case> {
+    let code = form.code;
+    let drawn = if form.unoffered { unoffered_case } else { case };
+    any::<u64>()
+        .prop_filter_map("no case of this draw", move |draw| drawn(code, draw))
+        .boxed()
+}
+
+pub fn case_offer(case: &Case) -> wcontainers_x86::Offer {
+    let told_elsewhere = wcontainers_x86::decode(case.code.code())
+        .is_some_and(|(i, _)| beyond_default(i.iced.code()));
+    if told_elsewhere {
+        wcontainers_x86::Offer::new(wcontainers_x86::V3).expect("a list of built features")
+    } else {
+        wcontainers_x86::Offer::default()
+    }
+}
+
+pub fn unoffered_forms() -> &'static [Form] {
+    static FORMS: OnceLock<Vec<Form>> = OnceLock::new();
+    FORMS.get_or_init(list_unoffered_forms)
+}
+
+pub fn reference_has(form: &Form) -> bool {
+    use wcontainers_x86::claims::{BASELINE_FEATURES, TOLD_FEATURES};
+    form.code.cpuid_features().iter().all(|feature| {
+        let name = format!("{feature:?}");
+        [BASELINE_FEATURES, TOLD_FEATURES, REFERENCE_HAS]
             .iter()
-            .chain(
-                unlisted
-                    .iter()
-                    .filter(|&&(w, bit, _)| w & bit != 0)
-                    .filter_map(|(_, _, f)| f.as_ref()),
-            )
-            .map(|feature| &*Box::leak(format!("{feature:?}").into_boxed_str()))
-            .collect();
-        told.extend(names.into_iter().filter(|&n| n != LAHF_SAHF_FAMILY));
-        told
+            .any(|list| list.contains(&name.as_str()))
+    })
+}
+
+pub fn no_form(seed: u64) -> BoxedStrategy<Case> {
+    any::<u64>()
+        .prop_filter_map("not in no form", move |draw| no_form_case(draw, seed))
+        .boxed()
+}
+
+pub fn hand_cases() -> Vec<Designed> {
+    designed_cases()
+}
+
+pub const FILLER: u8 = crate::layout::x86_64::FILLER;
+pub const CODE_SPAN: u64 = crate::layout::x86_64::CODE_SPAN;
+
+pub const PC_FIELD: usize = RIP;
+pub const SP_FIELD: usize = RSP;
+pub const GENERAL_FIELDS: core::ops::Range<usize> = 0..16;
+
+pub fn to_state(thread: &[u8]) -> State {
+    let block = X86Block::read_from_bytes(&thread[..size_of::<X86Block>()]).expect("a block");
+    let mut state: Vec<u128> = block.gpr.iter().map(|&r| r.into()).collect();
+    state.extend([block.rip, block.user_rflags(), block.fs_base, block.gs_base].map(u128::from));
+    let f = &block.fxsave;
+    state.extend([
+        f.mxcsr.into(),
+        f.fcw.into(),
+        f.fsw.into(),
+        u128::from(f.ftw),
+    ]);
+    for slot in f.st {
+        state.push(u128::from_le_bytes(slot) & ((1 << wcontainers_x86::X87_REGISTER_BITS) - 1));
     }
+    state.extend(f.xmm.map(u128::from_le_bytes));
+    state.extend(block.ymm_high.map(u128::from_le_bytes));
+    state.extend(block.selectors.map(u128::from));
+    assert_eq!(state.len(), FIELDS);
+    State(state)
+}
 
-    type Form = Form;
-
-    fn forms() -> &'static [Form] {
-        static FORMS: OnceLock<Vec<Form>> = OnceLock::new();
-        FORMS.get_or_init(forms)
+pub fn from_state(state: &State, thread: &mut [u8]) {
+    let s = &state.0;
+    let mut block = X86Block::ZERO;
+    for (to, from) in block.gpr.iter_mut().zip(s) {
+        *to = *from as u64;
     }
-
-    fn form_name(form: &Form) -> &str {
-        &form.name
+    block.rip = s[RIP] as u64;
+    block.flags = (s[RFLAGS] as u64 & SIX_FLAGS) as u32;
+    block.rflags = s[RFLAGS] as u64 & KEPT;
+    block.fs_base = s[FS] as u64;
+    block.gs_base = s[GS] as u64;
+    let f = &mut block.fxsave;
+    f.mxcsr = s[MXCSR] as u32;
+    f.fcw = s[FCW] as u16;
+    f.fsw = s[FSW] as u16;
+    f.ftw = s[FTW] as u8;
+    for (to, from) in f.st.iter_mut().zip(&s[R0..]) {
+        *to = from.to_le_bytes();
     }
-
-    fn form_group(form: &Form) -> &str {
-        &form.group
+    for (to, from) in f.xmm.iter_mut().zip(&s[XMM..]) {
+        *to = from.to_le_bytes();
     }
-
-    fn cases(form: &Form) -> BoxedStrategy<Case> {
-        let code = form.code;
-        let drawn = if form.unoffered { unoffered_case } else { case };
-        any::<u64>()
-            .prop_filter_map("no case of this draw", move |draw| drawn(code, draw))
-            .boxed()
+    for (to, from) in block.ymm_high.iter_mut().zip(&s[YMMH..YMMH + 16]) {
+        *to = from.to_le_bytes();
     }
-
-    fn case_offer(case: &Case) -> wcontainers_x86::Offer {
-        let told_elsewhere = wcontainers_x86::decode(case.code.code())
-            .is_some_and(|(i, _)| beyond_default(i.iced.code()));
-        if told_elsewhere {
-            wcontainers_x86::Offer::new(wcontainers_x86::V3).expect("a list of built features")
-        } else {
-            wcontainers_x86::Offer::default()
-        }
+    for (to, from) in block.selectors.iter_mut().zip(&s[SELECTORS..]) {
+        *to = *from as u16;
     }
+    thread[..size_of::<X86Block>()].copy_from_slice(block.as_bytes());
+}
 
-    fn unoffered_forms() -> &'static [Form] {
-        static FORMS: OnceLock<Vec<Form>> = OnceLock::new();
-        FORMS.get_or_init(unoffered_forms)
+pub fn track(thread: &mut [u8]) {
+    let at = wcontainers_x86::MXCSR_TRACKING;
+    thread[at..at + size_of::<u32>()].copy_from_slice(&1u32.to_le_bytes());
+}
+
+pub fn tracked(thread: &[u8]) -> bool {
+    let at = wcontainers_x86::MXCSR_TRACKING;
+    u32::from_le_bytes(thread[at..at + size_of::<u32>()].try_into().unwrap()) != 0
+}
+
+/// Not looked for on x86-64 (ARM64's FPSR rule has no x86-64 counterpart yet): its programs start with
+/// MXCSR's flags not kept, as they did before the rule.
+pub fn reads_float_status(_: &[u8]) -> bool {
+    false
+}
+
+/// Intel documents its transcendental instructions' results as within one unit in the last place, not as
+/// correctly rounded, which ours are (plan 5.8). A case of one of them is a known failure where, and only
+/// where, either a register the reference wrote is one unit from ours, with C1 and the precision flag (the
+/// underflow flag where that register is a denormal; the summary and busy bits where one of those is
+/// unmasked) as its rounding left them; or every register is ours and only C1 differs, ours telling the side
+/// of the exact value the result lies on.
+pub fn known_failure(case: &Case, expected: &Outcome, actual: &Outcome) -> Option<&'static str> {
+    if fault_order_unmeasured(case, expected, actual) {
+        return Some("5-level paging: which fault a 48-bit chip raises first was not measured");
     }
-
-    fn reference_has(form: &Form) -> bool {
-        use wcontainers_x86::claims::{BASELINE_FEATURES, TOLD_FEATURES};
-        form.code.cpuid_features().iter().all(|feature| {
-            let name = format!("{feature:?}");
-            [BASELINE_FEATURES, TOLD_FEATURES, REFERENCE_HAS]
-                .iter()
-                .any(|list| list.contains(&name.as_str()))
-        })
+    use wcontainers_x86::x87::{
+        BUSY, C1, Extended, PRECISION, REGISTERS, SUMMARY, TOP_SHIFT, UNDERFLOW, above_exact,
+        neighbours,
+    };
+    let instruction = Decoder::with_ip(
+        wcontainers_x86::MODE_BITS,
+        case.code.code(),
+        CODE,
+        DecoderOptions::NONE,
+    )
+    .decode();
+    if !wcontainers_x86::x87::transcendental(instruction.mnemonic())
+        || expected.stop != actual.stop
+        || expected.changed != actual.changed
+    {
+        return None;
     }
-
-    fn no_form(seed: u64) -> BoxedStrategy<Case> {
-        any::<u64>()
-            .prop_filter_map("not in no form", move |draw| no_form(draw, seed))
-            .boxed()
-    }
-
-    fn hand_cases() -> Vec<Designed> {
-        hand_cases()
-    }
-
-    const FILLER: u8 = crate::layout::x86_64::FILLER;
-    const CODE_SPAN: u64 = crate::layout::x86_64::CODE_SPAN;
-
-    const PC_FIELD: usize = RIP;
-    const SP_FIELD: usize = RSP;
-    const GENERAL_FIELDS: core::ops::Range<usize> = 0..16;
-
-    fn to_state(thread: &[u8]) -> State {
-        let block = X86Block::read_from_bytes(&thread[..size_of::<X86Block>()]).expect("a block");
-        let mut state: Vec<u128> = block.gpr.iter().map(|&r| r.into()).collect();
-        state
-            .extend([block.rip, block.user_rflags(), block.fs_base, block.gs_base].map(u128::from));
-        let f = &block.fxsave;
-        state.extend([
-            f.mxcsr.into(),
-            f.fcw.into(),
-            f.fsw.into(),
-            u128::from(f.ftw),
-        ]);
-        for slot in f.st {
-            state.push(u128::from_le_bytes(slot) & ((1 << wcontainers_x86::X87_REGISTER_BITS) - 1));
-        }
-        state.extend(f.xmm.map(u128::from_le_bytes));
-        state.extend(block.ymm_high.map(u128::from_le_bytes));
-        state.extend(block.selectors.map(u128::from));
-        assert_eq!(state.len(), FIELDS);
-        State(state)
-    }
-
-    fn from_state(state: &State, thread: &mut [u8]) {
-        let s = &state.0;
-        let mut block = X86Block::ZERO;
-        for (to, from) in block.gpr.iter_mut().zip(s) {
-            *to = *from as u64;
-        }
-        block.rip = s[RIP] as u64;
-        block.flags = (s[RFLAGS] as u64 & SIX_FLAGS) as u32;
-        block.rflags = s[RFLAGS] as u64 & KEPT;
-        block.fs_base = s[FS] as u64;
-        block.gs_base = s[GS] as u64;
-        let f = &mut block.fxsave;
-        f.mxcsr = s[MXCSR] as u32;
-        f.fcw = s[FCW] as u16;
-        f.fsw = s[FSW] as u16;
-        f.ftw = s[FTW] as u8;
-        for (to, from) in f.st.iter_mut().zip(&s[R0..]) {
-            *to = from.to_le_bytes();
-        }
-        for (to, from) in f.xmm.iter_mut().zip(&s[XMM..]) {
-            *to = from.to_le_bytes();
-        }
-        for (to, from) in block.ymm_high.iter_mut().zip(&s[YMMH..YMMH + 16]) {
-            *to = from.to_le_bytes();
-        }
-        for (to, from) in block.selectors.iter_mut().zip(&s[SELECTORS..]) {
-            *to = *from as u16;
-        }
-        thread[..size_of::<X86Block>()].copy_from_slice(block.as_bytes());
-    }
-
-    fn track(thread: &mut [u8]) {
-        let at = wcontainers_x86::MXCSR_TRACKING;
-        thread[at..at + size_of::<u32>()].copy_from_slice(&1u32.to_le_bytes());
-    }
-
-    fn tracked(thread: &[u8]) -> bool {
-        let at = wcontainers_x86::MXCSR_TRACKING;
-        u32::from_le_bytes(thread[at..at + size_of::<u32>()].try_into().unwrap()) != 0
-    }
-
-    /// Not looked for on x86-64 (ARM64's FPSR rule has no x86-64 counterpart yet): its programs start with
-    /// MXCSR's flags not kept, as they did before the rule.
-    fn reads_float_status(_: &[u8]) -> bool {
-        false
-    }
-
-    /// Intel documents its transcendental instructions' results as within one unit in the last place, not as
-    /// correctly rounded, which ours are (plan 5.8). A case of one of them is a known failure where, and only
-    /// where, either a register the reference wrote is one unit from ours, with C1 and the precision flag (the
-    /// underflow flag where that register is a denormal; the summary and busy bits where one of those is
-    /// unmasked) as its rounding left them; or every register is ours and only C1 differs, ours telling the side
-    /// of the exact value the result lies on.
-    fn known_failure(case: &Case, expected: &Outcome, actual: &Outcome) -> Option<&'static str> {
-        if fault_order_unmeasured(case, expected, actual) {
-            return Some("5-level paging: which fault a 48-bit chip raises first was not measured");
-        }
-        use wcontainers_x86::x87::{
-            BUSY, C1, Extended, PRECISION, REGISTERS, SUMMARY, TOP_SHIFT, UNDERFLOW, above_exact,
-            neighbours,
+    let (want, mut taken) = (&expected.state.0, actual.state.0.clone());
+    let with_fsw = |taken: &mut [u128], free: u16| {
+        let free = u128::from(free);
+        taken[FSW] = taken[FSW] & !free | want[FSW] & free;
+    };
+    let mut c1_only = taken.clone();
+    with_fsw(&mut c1_only, C1);
+    if c1_only == *want {
+        // Ours must be the side the exact value lies on.
+        let st = |s: &[u128], i: usize| {
+            let top = usize::from(s[FSW] as u16 >> TOP_SHIFT) & (REGISTERS - 1);
+            let bits =
+                s[R0 + (top + i) % REGISTERS] & ((1 << wcontainers_x86::X87_REGISTER_BITS) - 1);
+            Extended::from_bits(bits)
         };
-        let instruction = Decoder::with_ip(
-            wcontainers_x86::MODE_BITS,
-            case.code.code(),
-            CODE,
-            DecoderOptions::NONE,
-        )
-        .decode();
-        if !wcontainers_x86::x87::transcendental(instruction.mnemonic())
-            || expected.stop != actual.stop
-            || expected.changed != actual.changed
-        {
-            return None;
-        }
-        let (want, mut taken) = (&expected.state.0, actual.state.0.clone());
-        let with_fsw = |taken: &mut [u128], free: u16| {
-            let free = u128::from(free);
-            taken[FSW] = taken[FSW] & !free | want[FSW] & free;
-        };
-        let mut c1_only = taken.clone();
-        with_fsw(&mut c1_only, C1);
-        if c1_only == *want {
-            // Ours must be the side the exact value lies on.
-            let st = |s: &[u128], i: usize| {
-                let top = usize::from(s[FSW] as u16 >> TOP_SHIFT) & (REGISTERS - 1);
-                let bits =
-                    s[R0 + (top + i) % REGISTERS] & ((1 << wcontainers_x86::X87_REGISTER_BITS) - 1);
-                Extended::from_bits(bits)
-            };
-            let before = &case.state.0;
-            let result = st(
-                &taken,
-                usize::from(instruction.mnemonic() == Mnemonic::Fptan),
-            );
-            let up = taken[FSW] as u16 & C1 != 0;
-            return (above_exact(instruction.mnemonic(), st(before, 0), st(before, 1), result)
-                == Some(up))
-            .then_some(TRANSCENDENTAL_DIRECTION);
-        }
-        let mut flags = C1 | PRECISION;
-        let denormal = |bits: u128| Extended::from_bits(bits).exponent == 0;
-        let mut apart = false;
-        for r in R0..R0 + REGISTERS {
-            if neighbours(taken[r], want[r]) {
-                apart = true;
-                if denormal(taken[r]) || denormal(want[r]) {
-                    flags |= UNDERFLOW;
-                }
-                taken[r] = want[r];
-            }
-        }
-        let unmasked = flags & !(want[FCW] as u16) & (PRECISION | UNDERFLOW) != 0;
-        with_fsw(
-            &mut taken,
-            flags | if unmasked { SUMMARY | BUSY } else { 0 },
+        let before = &case.state.0;
+        let result = st(
+            &taken,
+            usize::from(instruction.mnemonic() == Mnemonic::Fptan),
         );
-        (apart && taken == *want).then_some(TRANSCENDENTAL_ROUNDING)
+        let up = taken[FSW] as u16 & C1 != 0;
+        return (above_exact(instruction.mnemonic(), st(before, 0), st(before, 1), result)
+            == Some(up))
+        .then_some(TRANSCENDENTAL_DIRECTION);
     }
+    let mut flags = C1 | PRECISION;
+    let denormal = |bits: u128| Extended::from_bits(bits).exponent == 0;
+    let mut apart = false;
+    for r in R0..R0 + REGISTERS {
+        if neighbours(taken[r], want[r]) {
+            apart = true;
+            if denormal(taken[r]) || denormal(want[r]) {
+                flags |= UNDERFLOW;
+            }
+            taken[r] = want[r];
+        }
+    }
+    let unmasked = flags & !(want[FCW] as u16) & (PRECISION | UNDERFLOW) != 0;
+    with_fsw(
+        &mut taken,
+        flags | if unmasked { SUMMARY | BUSY } else { 0 },
+    );
+    (apart && taken == *want).then_some(TRANSCENDENTAL_ROUNDING)
+}
 
-    fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome) {
-        // RF is in the frame of every fault, and the runner's own trap flag in r11 after `syscall`.
-        expected.state.0[RFLAGS] &= !RF;
-        let instruction = Decoder::with_ip(
-            wcontainers_x86::MODE_BITS,
-            case.code.code(),
-            CODE,
-            DecoderOptions::NONE,
-        )
-        .decode();
-        // The translation is made for 48 bits of linear address, what the processor it offers reports.
-        if reference_linear_addresses() == LinearAddressWidth::FiveLevelPaging {
-            as_with_four_level_paging(case, &instruction, expected);
-        }
-        // AC is never held (plan 5.1): a popped AC reads back clear by design.
-        if matches!(
-            instruction.mnemonic(),
-            Mnemonic::Popf | Mnemonic::Popfq | Mnemonic::Iret | Mnemonic::Iretd | Mnemonic::Iretq
-        ) {
-            expected.state.0[RFLAGS] &= !u128::from(wcontainers_x86::ALIGNMENT_CHECK);
-        }
-        // The CPU's part of an unmasked SIMD exception is MXCSR's flags; the kernel works out the si_code.
-        // An x87 instruction's, or one naming an MMX register, is the x87 status word's unmasked flags when
-        // one is pending, which it meets first (MMX's conversions then meet their own SIMD ones).
-        if let Stop::FloatException(_) = expected.stop {
-            let (fsw, fcw) = (expected.state.0[FSW] as u32, expected.state.0[FCW] as u32);
-            let x87 = fsw & !fcw & u32::from(wcontainers_x86::x87::EXCEPTIONS);
-            let names_mmx = (0..instruction.op_count()).any(|n| {
-                instruction.op_kind(n) == OpKind::Register && instruction.op_register(n).is_mm()
+pub fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome) {
+    // RF is in the frame of every fault, and the runner's own trap flag in r11 after `syscall`.
+    expected.state.0[RFLAGS] &= !RF;
+    let instruction = Decoder::with_ip(
+        wcontainers_x86::MODE_BITS,
+        case.code.code(),
+        CODE,
+        DecoderOptions::NONE,
+    )
+    .decode();
+    // The translation is made for 48 bits of linear address, what the processor it offers reports.
+    if reference_linear_addresses() == LinearAddressWidth::FiveLevelPaging {
+        as_with_four_level_paging(case, &instruction, expected);
+    }
+    // AC is never held (plan 5.1): a popped AC reads back clear by design.
+    if matches!(
+        instruction.mnemonic(),
+        Mnemonic::Popf | Mnemonic::Popfq | Mnemonic::Iret | Mnemonic::Iretd | Mnemonic::Iretq
+    ) {
+        expected.state.0[RFLAGS] &= !u128::from(wcontainers_x86::ALIGNMENT_CHECK);
+    }
+    // The CPU's part of an unmasked SIMD exception is MXCSR's flags; the kernel works out the si_code.
+    // An x87 instruction's, or one naming an MMX register, is the x87 status word's unmasked flags when
+    // one is pending, which it meets first (MMX's conversions then meet their own SIMD ones).
+    if let Stop::FloatException(_) = expected.stop {
+        let (fsw, fcw) = (expected.state.0[FSW] as u32, expected.state.0[FCW] as u32);
+        let x87 = fsw & !fcw & u32::from(wcontainers_x86::x87::EXCEPTIONS);
+        let names_mmx = (0..instruction.op_count()).any(|n| {
+            instruction.op_kind(n) == OpKind::Register && instruction.op_register(n).is_mm()
+        });
+        let waits = matches!(instruction.code(), Code::Wait | Code::Emms);
+        let x87_side = names_mmx
+            || waits
+            || instruction.code().cpuid_features().iter().any(|f| {
+                use iced_x86::CpuidFeature::{FPU, FPU287, FPU387};
+                matches!(f, FPU | FPU287 | FPU387)
             });
-            let waits = matches!(instruction.code(), Code::Wait | Code::Emms);
-            let x87_side = names_mmx
-                || waits
-                || instruction.code().cpuid_features().iter().any(|f| {
-                    use iced_x86::CpuidFeature::{FPU, FPU287, FPU387};
-                    matches!(f, FPU | FPU287 | FPU387)
-                });
-            let raised = if x87_side && x87 != 0 {
-                x87
-            } else {
-                wcontainers_x86::mxcsr_raised(expected.state.0[MXCSR] as u32)
-            };
-            expected.stop = Stop::FloatException(raised);
+        let raised = if x87_side && x87 != 0 {
+            x87
+        } else {
+            wcontainers_x86::mxcsr_raised(expected.state.0[MXCSR] as u32)
+        };
+        expected.stop = Stop::FloatException(raised);
+    }
+    // In MXCSR's default mode, with its flags not kept, they keep what they had (plan 5.8).
+    let mode = u128::from(wcontainers_x86::MXCSR_MODE);
+    let flags = u128::from(wcontainers_x86::MXCSR_FLAGS);
+    if !case.tracking
+        && case.state.0[MXCSR] & mode == u128::from(wcontainers_x86::MXCSR_AT_START) & mode
+        && instruction.mnemonic() != Mnemonic::Ldmxcsr
+    {
+        let mxcsr = &mut expected.state.0[MXCSR];
+        *mxcsr = *mxcsr & !flags | case.state.0[MXCSR] & flags;
+    }
+    // The per-CPU segment's limit is the processor's number there and processor 0 by design here: every
+    // limit `lsl` gives but a whole segment's.
+    if instruction.mnemonic() == Mnemonic::Lsl
+        && matches!(expected.stop, Stop::Landed(_))
+        && expected.state.0[RFLAGS] & u128::from(wcontainers_x86::ZF) != 0
+        && let Some(field) = field_of(instruction.op0_register())
+    {
+        let width = (instruction.op0_register().size() * u8::BITS as usize) as u32;
+        let limit = u128::MAX >> (u128::BITS - width.min(u32::BITS));
+        if expected.state.0[field] & limit != limit {
+            expected.state.0[field] &= !(u128::MAX >> (u128::BITS - width));
         }
-        // In MXCSR's default mode, with its flags not kept, they keep what they had (plan 5.8).
-        let mode = u128::from(wcontainers_x86::MXCSR_MODE);
-        let flags = u128::from(wcontainers_x86::MXCSR_FLAGS);
-        if !case.tracking
-            && case.state.0[MXCSR] & mode == u128::from(wcontainers_x86::MXCSR_AT_START) & mode
-            && instruction.mnemonic() != Mnemonic::Ldmxcsr
+    }
+    // `mov ss` holds the trap back by an instruction: the `int3` filler after it ran and stopped past
+    // itself (`reference_stop`).
+    let next = CODE + u64::from(case.code.length);
+    if expected.stop == Stop::Landed(next) && expected.state.0[RIP] == u128::from(next + 1) {
+        expected.state.0[RIP] = next.into();
+    }
+    // The CPU makes a null selector with a privilege level 0 on the `iret` to user mode that runs the
+    // reference's handler; a program sees that only after an interrupt or a signal.
+    for field in SELECTORS..FIELDS {
+        let ours = actual.state.0[field];
+        if expected.state.0[field] == 0
+            && ours & !u128::from(wcontainers_x86::SELECTOR_PRIVILEGE) == 0
         {
-            let mxcsr = &mut expected.state.0[MXCSR];
-            *mxcsr = *mxcsr & !flags | case.state.0[MXCSR] & flags;
+            expected.state.0[field] = ours;
         }
-        // The per-CPU segment's limit is the processor's number there and processor 0 by design here: every
-        // limit `lsl` gives but a whole segment's.
-        if instruction.mnemonic() == Mnemonic::Lsl
-            && matches!(expected.stop, Stop::Landed(_))
-            && expected.state.0[RFLAGS] & u128::from(wcontainers_x86::ZF) != 0
-            && let Some(field) = field_of(instruction.op0_register())
-        {
-            let width = (instruction.op0_register().size() * u8::BITS as usize) as u32;
-            let limit = u128::MAX >> (u128::BITS - width.min(u32::BITS));
-            if expected.state.0[field] & limit != limit {
-                expected.state.0[field] &= !(u128::MAX >> (u128::BITS - width));
-            }
-        }
-        // `mov ss` holds the trap back by an instruction: the `int3` filler after it ran and stopped past
-        // itself (`reference_stop`).
-        let next = CODE + u64::from(case.code.length);
-        if expected.stop == Stop::Landed(next) && expected.state.0[RIP] == u128::from(next + 1) {
-            expected.state.0[RIP] = next.into();
-        }
-        // The CPU makes a null selector with a privilege level 0 on the `iret` to user mode that runs the
-        // reference's handler; a program sees that only after an interrupt or a signal.
-        for field in SELECTORS..FIELDS {
-            let ours = actual.state.0[field];
-            if expected.state.0[field] == 0
-                && ours & !u128::from(wcontainers_x86::SELECTOR_PRIVILEGE) == 0
-            {
-                expected.state.0[field] = ours;
-            }
-        }
-        if instruction.mnemonic() == Mnemonic::Syscall {
-            const R11: usize = 11;
-            expected.state.0[R11] &= !u128::from(wcontainers_x86::TF);
-        }
-        // The same trap flag in the image `pushf` stores; a byte it then leaves as it was is not changed.
-        if matches!(instruction.mnemonic(), Mnemonic::Pushf | Mnemonic::Pushfq)
-            && matches!(expected.stop, Stop::Landed(_))
-        {
-            let tf = wcontainers_x86::TF.trailing_zeros();
-            let bytes = u64::from(instruction.stack_pointer_increment().unsigned_abs());
-            let at = (case.state.0[RSP] as u64)
-                .wrapping_sub(bytes)
-                .wrapping_add(u64::from(tf / u8::BITS))
-                .wrapping_sub(DATA);
-            let mut start = vec![0; DATA_BYTES as usize];
-            crate::layout::fill(case.seed, &mut start);
-            if let Some(&first) = start.get(at as usize) {
-                let changed = &mut expected.changed;
-                let place = changed.partition_point(|&(o, _)| u64::from(o) < at);
-                let found = changed.get(place).filter(|&&(o, _)| u64::from(o) == at);
-                let stored = found.map_or(first, |&(_, v)| v) & !(1 << (tf % u8::BITS));
-                match (found.is_some(), stored == first) {
-                    (true, true) => _ = changed.remove(place),
-                    (true, false) => changed[place].1 = stored,
-                    (false, false) => changed.insert(place, (at as u32, stored)),
-                    (false, true) => {}
-                }
+    }
+    if instruction.mnemonic() == Mnemonic::Syscall {
+        const R11: usize = 11;
+        expected.state.0[R11] &= !u128::from(wcontainers_x86::TF);
+    }
+    // The same trap flag in the image `pushf` stores; a byte it then leaves as it was is not changed.
+    if matches!(instruction.mnemonic(), Mnemonic::Pushf | Mnemonic::Pushfq)
+        && matches!(expected.stop, Stop::Landed(_))
+    {
+        let tf = wcontainers_x86::TF.trailing_zeros();
+        let bytes = u64::from(instruction.stack_pointer_increment().unsigned_abs());
+        let at = (case.state.0[RSP] as u64)
+            .wrapping_sub(bytes)
+            .wrapping_add(u64::from(tf / u8::BITS))
+            .wrapping_sub(DATA);
+        let mut start = vec![0; DATA_BYTES as usize];
+        crate::layout::fill(case.seed, &mut start);
+        if let Some(&first) = start.get(at as usize) {
+            let changed = &mut expected.changed;
+            let place = changed.partition_point(|&(o, _)| u64::from(o) < at);
+            let found = changed.get(place).filter(|&&(o, _)| u64::from(o) == at);
+            let stored = found.map_or(first, |&(_, v)| v) & !(1 << (tf % u8::BITS));
+            match (found.is_some(), stored == first) {
+                (true, true) => _ = changed.remove(place),
+                (true, false) => changed[place].1 = stored,
+                (false, false) => changed.insert(place, (at as u32, stored)),
+                (false, true) => {}
             }
         }
     }
+}
 
-    fn reference_stop(signal: &Signal, length: u8) -> Stop {
-        let pc = signal.pc;
-        match (signal.number, signal.code) {
-            (SIGTRAP, TRAP_TRACE) => Stop::Landed(pc),
-            // The `int3` filler right after the instruction: it ran and fell through with its trap held
-            // back (`mov ss`).
-            (SIGTRAP, SI_KERNEL) if pc == CODE + u64::from(length) + 1 => {
-                Stop::Landed(CODE + u64::from(length))
-            }
-            (SIGTRAP, code) => Stop::Breakpoint(code),
-            (SIGILL, _) => Stop::Illegal,
-            (SIGSEGV, SI_KERNEL) => Stop::GeneralProtection,
-            // Control reached an address where nothing can be run.
-            (SIGSEGV, _) if signal.address == pc && pc != CODE => Stop::Landed(pc),
-            (SIGSEGV, _) => Stop::MemoryFault(signal.address),
-            (SIGBUS, BUS_ADRALN) => Stop::Alignment(signal.address),
-            (SIGBUS, SI_KERNEL) => Stop::StackFault,
-            (SIGFPE, FPE_INTDIV) => Stop::DivideError,
-            (SIGFPE, code) => Stop::FloatException(code),
-            (SIGSYS, _) => Stop::Syscall,
-            (number, _) => Stop::Other(number, signal.address),
+pub fn reference_stop(signal: &Signal, length: u8) -> Stop {
+    let pc = signal.pc;
+    match (signal.number, signal.code) {
+        (SIGTRAP, TRAP_TRACE) => Stop::Landed(pc),
+        // The `int3` filler right after the instruction: it ran and fell through with its trap held
+        // back (`mov ss`).
+        (SIGTRAP, SI_KERNEL) if pc == CODE + u64::from(length) + 1 => {
+            Stop::Landed(CODE + u64::from(length))
         }
+        (SIGTRAP, code) => Stop::Breakpoint(code),
+        (SIGILL, _) => Stop::Illegal,
+        (SIGSEGV, SI_KERNEL) => Stop::GeneralProtection,
+        // Control reached an address where nothing can be run.
+        (SIGSEGV, _) if signal.address == pc && pc != CODE => Stop::Landed(pc),
+        (SIGSEGV, _) => Stop::MemoryFault(signal.address),
+        (SIGBUS, BUS_ADRALN) => Stop::Alignment(signal.address),
+        (SIGBUS, SI_KERNEL) => Stop::StackFault,
+        (SIGFPE, FPE_INTDIV) => Stop::DivideError,
+        (SIGFPE, code) => Stop::FloatException(code),
+        (SIGSYS, _) => Stop::Syscall,
+        (number, _) => Stop::Other(number, signal.address),
     }
+}
 
-    fn breakpoint_code(detail: u16) -> u32 {
-        if detail == 1 { TRAP_BRKPT } else { SI_KERNEL }
-    }
+pub fn breakpoint_code(detail: u16) -> u32 {
+    if detail == 1 { TRAP_BRKPT } else { SI_KERNEL }
+}
 
-    /// `int 0x80` and `sysenter` run Linux's 32-bit system calls on the reference, which this phase does
-    /// not provide (plan 5.2); the designed-answers cases check what we give.
-    fn excluded(code: &[u8]) -> Option<&'static str> {
-        let instruction =
-            Decoder::with_ip(wcontainers_x86::MODE_BITS, code, CODE, DecoderOptions::NONE).decode();
-        match instruction.code() {
-            Code::Int_imm8
-                if instruction.immediate8() == wcontainers_x86::LINUX_32_BIT_SYSTEM_CALL =>
-            {
-                Some("int 0x80: a 32-bit system call on the reference")
-            }
-            Code::Sysenter => Some("sysenter: a 32-bit system call on the reference"),
-            Code::Rdtsc | Code::Rdtscp => Some(TIME_STAMP_BY_DESIGN),
-            Code::Cpuid => Some(CPUID_BY_DESIGN),
-            Code::Xgetbv => Some(XGETBV_BY_DESIGN),
-            Code::Xsave_mem | Code::Xsave64_mem | Code::Xrstor_mem | Code::Xrstor64_mem => {
-                Some(XSTATE_BY_DESIGN)
-            }
-            Code::Sgdt_m1664 | Code::Sidt_m1664 => Some(TABLES_BY_DESIGN),
-            code if code.cpuid_features().contains(&iced_x86::CpuidFeature::VMX) => {
-                Some(VMX_BY_HOST)
-            }
-            _ => None,
+/// `int 0x80` and `sysenter` run Linux's 32-bit system calls on the reference, which this phase does
+/// not provide (plan 5.2); the designed-answers cases check what we give.
+pub fn excluded(code: &[u8]) -> Option<&'static str> {
+    let instruction =
+        Decoder::with_ip(wcontainers_x86::MODE_BITS, code, CODE, DecoderOptions::NONE).decode();
+    match instruction.code() {
+        Code::Int_imm8 if instruction.immediate8() == wcontainers_x86::LINUX_32_BIT_SYSTEM_CALL => {
+            Some("int 0x80: a 32-bit system call on the reference")
         }
-    }
-
-    /// AT_HWCAP is CPUID leaf 1's edx on x86-64: FPU, TSC, CX8, SEP, CMOV, CLFSH, MMX, FXSR, SSE and SSE2.
-    /// AT_HWCAP2 bit 1 is FSGSBASE.
-    const AUXILIARY: &'static [(u64, u64)] = &[
-        (
-            crate::layout::AT_HWCAP,
-            1 | 1 << 4
-                | 1 << 8
-                | 1 << 11
-                | 1 << 15
-                | 1 << 19
-                | 1 << 23
-                | 1 << 24
-                | 1 << 25
-                | 1 << 26,
-        ),
-        (crate::layout::AT_HWCAP2, 2),
-    ];
-
-    const STAND_IN: StandIn = StandIn {
-        write: 1,
-        writev: 20,
-        exit: 60,
-        exit_group: 231,
-        brk: 12,
-        // https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl
-        mmap: 9,
-        munmap: 11,
-        // arch_prctl with ARCH_SET_GS or ARCH_SET_FS, below the top of user space.
-        set_base: Some(SetBase {
-            number: 158,
-            bases: &[
-                (0x1001, core::mem::offset_of!(X86Block, gs_base)),
-                (0x1002, core::mem::offset_of!(X86Block, fs_base)),
-            ],
-            limit: USER_TOP,
-        }),
-    };
-
-    /// Every general register but rsp, rbp (the area) and r12 to r15 (scratch, the loop and recursion
-    /// counters, a moving base); the model's system call sets rax, rcx, rdx, rsi, rdi and r11; rbx is kept.
-    const MODEL: crate::layer2::Model = {
-        use wcontainers_x86::{R8, R9, R10, R11, RAX, RBX, RCX, RDI, RDX, RSI};
-        crate::layer2::Model {
-            registers: &[RAX, RCX, RDX, RBX, RSI, RDI, R8, R9, R10, R11],
-            syscall_sets: &[RAX, RCX, RDX, RSI, RDI, R11],
-            kept: RBX,
+        Code::Sysenter => Some("sysenter: a 32-bit system call on the reference"),
+        Code::Rdtsc | Code::Rdtscp => Some(TIME_STAMP_BY_DESIGN),
+        Code::Cpuid => Some(CPUID_BY_DESIGN),
+        Code::Xgetbv => Some(XGETBV_BY_DESIGN),
+        Code::Xsave_mem | Code::Xsave64_mem | Code::Xrstor_mem | Code::Xrstor64_mem => {
+            Some(XSTATE_BY_DESIGN)
         }
-    };
-
-    fn assemble(program: &crate::layer2::Program) -> crate::programs::Blob {
-        assemble::assemble(program)
+        Code::Sgdt_m1664 | Code::Sidt_m1664 => Some(TABLES_BY_DESIGN),
+        code if code.cpuid_features().contains(&iced_x86::CpuidFeature::VMX) => Some(VMX_BY_HOST),
+        _ => None,
     }
+}
 
-    fn smoke() -> Smoke {
-        smoke::smoke()
-    }
+/// AT_HWCAP is CPUID leaf 1's edx on x86-64: FPU, TSC, CX8, SEP, CMOV, CLFSH, MMX, FXSR, SSE and SSE2.
+/// AT_HWCAP2 bit 1 is FSGSBASE.
+pub const AUXILIARY: &[(u64, u64)] = &[
+    (
+        crate::layout::AT_HWCAP,
+        1 | 1 << 4 | 1 << 8 | 1 << 11 | 1 << 15 | 1 << 19 | 1 << 23 | 1 << 24 | 1 << 25 | 1 << 26,
+    ),
+    (crate::layout::AT_HWCAP2, 2),
+];
 
-    fn checks() -> Vec<Check> {
-        let mut checks = assemble::checks();
-        checks.extend(loops::checks());
-        checks
-    }
+pub const STAND_IN: StandIn = StandIn {
+    write: 1,
+    writev: 20,
+    exit: 60,
+    exit_group: 231,
+    brk: 12,
+    // https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl
+    mmap: 9,
+    munmap: 11,
+    // arch_prctl with ARCH_SET_GS or ARCH_SET_FS, below the top of user space.
+    set_base: Some(SetBase {
+        number: 158,
+        bases: &[
+            (0x1001, core::mem::offset_of!(X86Block, gs_base)),
+            (0x1002, core::mem::offset_of!(X86Block, fs_base)),
+        ],
+        limit: USER_TOP,
+    }),
+};
 
-    fn changes() -> Vec<Change> {
-        changes::changes()
+/// Every general register but rsp, rbp (the area) and r12 to r15 (scratch, the loop and recursion
+/// counters, a moving base); the model's system call sets rax, rcx, rdx, rsi, rdi and r11; rbx is kept.
+pub const MODEL: crate::x86_64::layer2::Model = {
+    use wcontainers_x86::{R8, R9, R10, R11, RAX, RBX, RCX, RDI, RDX, RSI};
+    crate::x86_64::layer2::Model {
+        registers: &[RAX, RCX, RDX, RBX, RSI, RDI, R8, R9, R10, R11],
+        syscall_sets: &[RAX, RCX, RDX, RSI, RDI, R11],
+        kept: RBX,
     }
+};
+
+pub fn assemble(program: &crate::x86_64::layer2::Program) -> crate::x86_64::programs::Blob {
+    assemble::assemble(program)
+}
+
+pub fn smoke() -> Smoke {
+    smoke::smoke()
+}
+
+pub fn checks() -> Vec<Check> {
+    let mut checks = assemble::checks();
+    checks.extend(loops::checks());
+    checks
+}
+
+pub fn changes() -> Vec<Change> {
+    changes::changes()
 }
 
 /// The forms: every default code (plan 7.4) and every code of a told feature beyond the default list with a case
 /// the translator decodes as that code, written or not.
-fn forms() -> Vec<Form> {
+fn list_forms() -> Vec<Form> {
     default_codes()
         .chain(beyond_default_codes())
         .filter(|&code| default_left_out_because(code).is_none())
@@ -747,7 +736,7 @@ fn default_left_out_because(code: Code) -> Option<&'static str> {
         .filter_map(|draw| unoffered_bytes(code, &mut Draw::of_case(code, draw)))
         .map(|(bytes, _)| bytes)
         .collect();
-    if let Some(reason) = encoded.iter().find_map(|bytes| X86_64::excluded(bytes)) {
+    if let Some(reason) = encoded.iter().find_map(|bytes| excluded(bytes)) {
         return Some(reason);
     }
     // Followed by more bytes, as another code may be longer.
@@ -774,7 +763,7 @@ pub fn default_left_out() -> Vec<(String, &'static str)> {
 /// The default forms none of whose drawn cases has a written meaning, nor is a kernel-only instruction (whose
 /// meaning is the fault Linux gives).
 pub fn unwritten_forms() -> Vec<String> {
-    <X86_64 as GuestTest>::forms()
+    forms()
         .iter()
         .filter(|form| {
             (0..FORM_DRAWS)
@@ -837,7 +826,7 @@ fn unoffered_codes() -> impl Iterator<Item = Code> {
 
 /// The forms not offered by default: the unoffered codes whose drawn bytes the translator decodes as the
 /// same code.
-fn unoffered_forms() -> Vec<Form> {
+fn list_unoffered_forms() -> Vec<Form> {
     unoffered_codes()
         .filter(|&code| (0..FORM_DRAWS).any(|draw| unoffered_case(code, draw).is_some()))
         .map(|code| Form {
@@ -859,7 +848,7 @@ pub fn unoffered_left_out() -> Vec<(String, &'static str)> {
         .map(|code| {
             let why = (0..FORM_DRAWS)
                 .filter_map(|draw| unoffered_bytes(code, &mut Draw::of_case(code, draw)))
-                .map(|(bytes, _)| match X86_64::excluded(&bytes) {
+                .map(|(bytes, _)| match excluded(&bytes) {
                     Some(reason) => reason,
                     None => DECODED_ELSEWHERE,
                 })
@@ -881,7 +870,7 @@ fn unoffered_case(code: Code, seed: u64) -> Option<Case> {
     let (mut state, tracking) = start(&mut draw);
     let (bytes, memory) = unoffered_bytes(code, &mut draw)?;
     let decoded = wcontainers_x86::decode(&bytes)?.0;
-    if decoded.iced.code() != code || X86_64::excluded(&bytes).is_some() {
+    if decoded.iced.code() != code || excluded(&bytes).is_some() {
         return None;
     }
     if let Some((m, lane_bytes, size)) = memory {
@@ -1444,7 +1433,7 @@ const STACK_MARGIN: u64 = 0x100;
 /// weighted toward edges, the stack pointer mostly in the data area.
 fn start(draw: &mut Draw) -> (Vec<u128>, bool) {
     let mut state = vec![0u128; FIELDS];
-    for r in &mut state[<X86_64 as GuestTest>::GENERAL_FIELDS] {
+    for r in &mut state[GENERAL_FIELDS] {
         *r = draw.value().into();
     }
     state[RSP] = match draw.below(STACK_POINTER_SHARES) {
@@ -1824,7 +1813,7 @@ fn case(code: Code, seed: u64) -> Option<Case> {
     if code.mnemonic() == Mnemonic::Reservednop {
         bytes = with_drawn_prefixes(&mut draw, bytes);
     }
-    if bytes.len() > 15 || X86_64::excluded(&bytes).is_some() {
+    if bytes.len() > 15 || excluded(&bytes).is_some() {
         return None;
     }
     if branches_into_itself(&bytes) {
@@ -2253,7 +2242,7 @@ const CPU_INFORMATION: &str = "/proc/cpuinfo";
 pub fn reference_linear_addresses() -> LinearAddressWidth {
     static FOUND: OnceLock<LinearAddressWidth> = OnceLock::new();
     *FOUND.get_or_init(|| {
-        if std::env::var_os(X86_64::REFERENCE.reference_host).is_some() {
+        if std::env::var_os(REFERENCE.reference_host).is_some() {
             return LinearAddressWidth::FourLevelPaging;
         }
         linear_addresses_of(&std::fs::read_to_string(CPU_INFORMATION).unwrap_or_default())
@@ -2604,13 +2593,13 @@ fn field_of(r: Register) -> Option<usize> {
 /// 13 to 16 bytes in all, so that both sides of the 15-byte limit are reached. A run that makes an instruction
 /// of 15 bytes or fewer is kept only when the instruction's meaning is written, so that what is compared is
 /// the decoding.
-fn no_form(draw: u64, seed: u64) -> Option<Case> {
+fn no_form_case(draw: u64, seed: u64) -> Option<Case> {
     const PREFIXES: [u8; 27] = [
         0x26, 0x2e, 0x36, 0x3e, 0x64, 0x65, 0x66, 0x67, 0xf0, 0xf2, 0xf3, 0x40, 0x41, 0x42, 0x43,
         0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f,
     ];
     let mut draw = Draw(draw);
-    let forms = X86_64::forms();
+    let forms = forms();
     let base = case(
         forms[draw.below(forms.len() as u64) as usize].code,
         draw.next(),
@@ -2657,7 +2646,7 @@ fn no_form(draw: u64, seed: u64) -> Option<Case> {
         }
         run
     };
-    if X86_64::excluded(&bytes).is_some() || reaches_runner(&bytes, &base.state.0) {
+    if excluded(&bytes).is_some() || reaches_runner(&bytes, &base.state.0) {
         return None;
     }
     Some(Case {
@@ -2711,7 +2700,7 @@ fn movbe_with_operand_size(code: Code) -> Vec<u8> {
 
 /// The hand-made cases: the 32-bit system call gates, which this phase answers by design with general
 /// protection at the instruction (plan 5.2), and a few stops compared with the reference.
-fn hand_cases() -> Vec<Designed> {
+fn designed_cases() -> Vec<Designed> {
     let designed = |name, code: &[u8], stop, compared| Designed {
         name,
         case: plain(code),

@@ -7,7 +7,7 @@
 
 use std::time::Instant;
 use wcontainers_translator::{AccessOrdering, OrderedAccess};
-use wcontainers_translator_test::litmus::{self, Litmus};
+use wcontainers_translator_test::x86_64::litmus::{self, Litmus};
 
 /// The rounds of each form when `WC_LITMUS_ROUNDS` does not say.
 const ROUNDS: u64 = 10_000_000;

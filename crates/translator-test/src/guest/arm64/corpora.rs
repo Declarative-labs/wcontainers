@@ -3,8 +3,8 @@
 // dynasm's expansion converts register numbers to their own type.
 #![allow(clippy::useless_conversion)]
 
-use crate::guest::{Change, Check, Counted, Smoke};
-use crate::programs::{Blob, LOAD, STACK_BYTES};
+use crate::arm64::guest::{Change, Check, Counted, Smoke};
+use crate::arm64::programs::{Blob, LOAD, STACK_BYTES};
 use dynasmrt::aarch64::Aarch64Relocation;
 use dynasmrt::{DynamicLabel, DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
 use wcontainers_abi::PAGE_SIZE;
@@ -488,7 +488,7 @@ pub(super) fn checks() -> Vec<Check> {
 }
 
 /// The page of data after the code page of the programs below.
-use crate::programs::PAGE_AFTER_LOAD as DATA;
+use crate::arm64::programs::PAGE_AFTER_LOAD as DATA;
 
 /// Start with the registers the reference does not clear at zero and x5 at `DATA`.
 fn start(ops: &mut Ops) {

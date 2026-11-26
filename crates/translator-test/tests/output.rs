@@ -12,17 +12,11 @@
 //! each module is hashed without its description section, whose layout two commits may differ in.
 
 use std::fmt::Write;
-use wcontainers_arm64::Arm64;
 use wcontainers_translator::contract::{DESCRIPTION_SECTION, THREAD};
 use wcontainers_translator::{
     AccessOrdering, BOUND, LookAhead, Optimise, OrderedAccess, Translation, translate,
 };
-use wcontainers_translator_test::binaries::{Binary, sources};
-use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::ordered::{Scan, scan, validity};
-use wcontainers_translator_test::programs::{Library, Position, build_with};
-use wcontainers_translator_test::runner::{access_ordering, probe};
-use wcontainers_x86::X86_64;
 
 /// Set to any value, a module's line is of its bytes without the description section.
 const CUT_DESCRIPTION_SETTING: &str = "WC_OUTPUT_CUT_DESCRIPTION";
@@ -49,17 +43,6 @@ fn look_aheads() -> Vec<(&'static str, LookAhead)> {
         .collect()
 }
 const SETTINGS: [Optimise; 2] = [Optimise::Speed, Optimise::Size];
-/// The real binary translated for every probe answer, beside the benchmark set.
-const EVERY_HOST: &str = "musl";
-
-/// The hosts a set is translated for, each with its label.
-fn hosts<G: GuestTest>(set: &str) -> Vec<(String, G::Host)> {
-    G::PROBE_ANSWERS
-        .iter()
-        .map(|&answer| (format!("h{answer}"), G::host_from_probe(answer)))
-        .filter(|(_, host)| set == "bench" || set == EVERY_HOST || *host == probe::<G>())
-        .collect()
-}
 
 fn line(out: &mut String, name: &str, wasm: &[u8]) {
     let wasm = if std::env::var_os(CUT_DESCRIPTION_SETTING).is_some() {
@@ -119,134 +102,16 @@ fn lines(each: Each<'_>, name: &str, translation: &Translation) {
     }
 }
 
-/// Translates the benchmark set in the form `ordering`, with the thread module.
-///
-/// The whole program (as `measure_benchmarks` sizes it) and each workload alone, from address 0.
-fn bench<G: GuestTest>(each: Each<'_>, ordering: AccessOrdering) {
-    each(
-        THREAD,
-        &wcontainers_translator::thread_module::<G>(wcontainers_translator::ProgressCount::Absent),
-    );
-    let mut blobs = vec![build_with::<G>(
-        "bench",
-        "-O2",
-        Library::None,
-        &["SCALE=1"],
-        Position::Fixed,
-    )];
-    for k in 1..=8 {
-        let workload = format!("WORKLOAD={k}");
-        blobs.push(build_with::<G>(
-            "bench",
-            "-O2",
-            Library::None,
-            &["SCALE=1", &workload],
-            Position::Fixed,
-        ));
-    }
-    for blob in &blobs {
-        for (host_label, host) in hosts::<G>("bench") {
-            for (label, look_ahead) in look_aheads() {
-                for optimise in SETTINGS {
-                    let translation = translate::<G>(
-                        &blob.bytes,
-                        0..blob.code_bytes,
-                        blob.link_address,
-                        &[0],
-                        look_ahead,
-                        optimise,
-                        wcontainers_translator::ProgressCount::Absent,
-                        ordering,
-                        host,
-                        G::Offer::default(),
-                    )
-                    .unwrap();
-                    lines(
-                        each,
-                        &format!("{}-{host_label}-{label}-{optimise:?}", blob.name),
-                        &translation,
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Translates a real binary from every start its file offers, in the form `ordering`.
-fn binary<G: GuestTest>(each: Each<'_>, name: &str, ordering: AccessOrdering) {
-    let source = sources::<G>()
-        .into_iter()
-        .find(|s| s.name == name)
-        .unwrap_or_else(|| panic!("no set named {name}"));
-    let binary = Binary::read::<G>(source.name, &std::fs::read(source.file::<G>()).unwrap());
-    let all = binary.starts.all();
-    let mut start_sets = vec![(String::new(), all, false)];
-    for (means, starts) in binary.starts.by_means() {
-        let means = format!("-{}", means.replace(' ', "_"));
-        start_sets.push((means, starts.iter().copied().collect(), true));
-    }
-    for (host_label, host) in hosts::<G>(name) {
-        for (label, look_ahead) in look_aheads() {
-            for (means, starts, alone) in &start_sets {
-                if *alone && !matches!(label, "full" | "bounded") || starts.is_empty() {
-                    continue;
-                }
-                for optimise in SETTINGS {
-                    let translation = translate::<G>(
-                        &binary.image,
-                        binary.code.clone(),
-                        binary.link_address,
-                        starts,
-                        look_ahead,
-                        optimise,
-                        wcontainers_translator::ProgressCount::Absent,
-                        ordering,
-                        host,
-                        G::Offer::default(),
-                    )
-                    .unwrap();
-                    lines(
-                        each,
-                        &format!("{name}-{host_label}-{label}{means}-{optimise:?}"),
-                        &translation,
-                    );
-                }
-            }
-        }
-    }
-}
-
 #[test]
 #[ignore]
 fn write_output_arm64() {
-    write_output::<Arm64>();
+    arm64::write_output();
 }
 
 #[test]
 #[ignore]
 fn write_output_x86_64() {
-    write_output::<X86_64>();
-}
-
-fn write_output<G: GuestTest>() {
-    let directory = std::env::var("WC_OUTPUT_DIR").expect("WC_OUTPUT_DIR names where to write");
-    let sets = std::env::var("WC_OUTPUT_SETS").expect("WC_OUTPUT_SETS names the sets");
-    std::fs::create_dir_all(&directory).unwrap();
-    for set in sets.split(',') {
-        let mut out = String::new();
-        let mut each = |name: &str, wasm: &[u8]| line(&mut out, name, wasm);
-        walk::<G>(set, &mut each, access_ordering::<G>());
-        std::fs::write(format!("{directory}/{set}.txt"), out).unwrap();
-        eprintln!("wrote {directory}/{set}.txt");
-    }
-}
-
-/// Translates every module of one set (`bench` or a binary's name) in the form `ordering`.
-fn walk<G: GuestTest>(set: &str, each: Each<'_>, ordering: AccessOrdering) {
-    match set {
-        "bench" => bench::<G>(each, ordering),
-        name => binary::<G>(each, name, ordering),
-    }
+    x86_64::write_output();
 }
 
 /// Checks every code module of the benchmark set and the real binaries in each ordered form.
@@ -259,7 +124,7 @@ fn walk<G: GuestTest>(set: &str, each: Each<'_>, ordering: AccessOrdering) {
 fn ordered_modules_make_only_ordered_accesses_x86_64() {
     let kind = OrderedAccess::SequentiallyConsistent;
     let every = std::iter::once("bench")
-        .chain(sources::<X86_64>().map(|source| source.name))
+        .chain(x86_64::sources().map(|source| source.name))
         .collect::<Vec<_>>()
         .join(",");
     let sets = std::env::var("WC_OUTPUT_SETS").unwrap_or(every);
@@ -285,7 +150,7 @@ fn ordered_modules_make_only_ordered_accesses_x86_64() {
                 }
                 found.add(scanned);
             };
-            walk::<X86_64>(set, &mut each, ordering);
+            x86_64::walk(set, &mut each, ordering);
             eprintln!(
                 "{set} {ordering:?}: {modules} modules, {} functions, {} atomic accesses, {} plain stores kept, \
                  {} bulk operations, {} wrong",
@@ -311,3 +176,31 @@ fn ordered_modules_make_only_ordered_accesses_x86_64() {
 
 /// How many wrong lines the scan prints.
 const SHOWN: usize = 50;
+
+/// The tests with ARM64 as the guest, those written once for both included from `for_guest`.
+#[allow(
+    clippy::unit_arg,
+    reason = "ARM64 offers no feature lists, so its offer is (), passed where x86-64 passes its list"
+)]
+mod arm64 {
+    use super::*;
+    use wcontainers_guest_cpu::Guest as _;
+    pub(super) use wcontainers_translator_test::arm64::binaries::{Binary, sources};
+    pub(super) use wcontainers_translator_test::arm64::programs::{Library, Position, build_with};
+    pub(super) use wcontainers_translator_test::arm64::runner::{access_ordering, probe};
+    use wcontainers_translator_test::arm64::{Cpu, part};
+
+    include!("for_guest/output.rs");
+}
+
+/// The tests with x86-64 as the guest, those written once for both included from `for_guest`.
+mod x86_64 {
+    use super::*;
+    use wcontainers_guest_cpu::Guest as _;
+    pub(super) use wcontainers_translator_test::x86_64::binaries::{Binary, sources};
+    pub(super) use wcontainers_translator_test::x86_64::programs::{Library, Position, build_with};
+    pub(super) use wcontainers_translator_test::x86_64::runner::{access_ordering, probe};
+    use wcontainers_translator_test::x86_64::{Cpu, part};
+
+    include!("for_guest/output.rs");
+}

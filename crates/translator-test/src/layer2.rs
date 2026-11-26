@@ -1,5 +1,5 @@
 //! Layer 2: random small programs built to always end, the same model for every guest, which each CPU's
-//! `GuestTest::assemble` turns into its own code. Each has loops with counters, calls (some to a function
+//! `part::assemble` turns into its own code. Each has loops with counters, calls (some to a function
 //! that makes a system call), bounded recursion, tail calls, calls and jumps through registers,
 //! compiler-style jump tables, flags carried across instructions, stack frames of every size (some running
 //! off the stack), and memory use inside a fixed area, through the stack pointer, and in groups through
@@ -8,13 +8,14 @@
 //! after the area and writes the whole area out; a program that faults ends with SIGSEGV instead.
 //!
 //! The model's operations and their ranges are those ARM64 can encode in one instruction; register numbers
-//! are the guest's own, drawn from `G::MODEL`. The names of the scratch registers in the comments (x16 the
+//! are the guest's own, drawn from `part::MODEL`. The names of the scratch registers in the comments (x16 the
 //! loop counter, x17 recursion's, x18 a moving base or jump target, x28 a base kept across calls, x29 the
 //! area) are ARM64's, standing for the registers another CPU's `assemble` keeps for the same roles.
 
-use crate::guest::GuestTest;
-use crate::programs::Blob;
+use super::programs::Blob;
+use super::{Cpu, part};
 use proptest::prelude::*;
+use wcontainers_guest_cpu::Guest as _;
 use wcontainers_guest_cpu::ReturnAddress;
 
 /// Bytes of the area random loads and stores use.
@@ -31,18 +32,18 @@ pub struct Model {
 }
 
 /// Bytes written out at the end: the area, then the model's registers and a word of flags.
-pub const fn output<G: GuestTest>() -> u32 {
-    AREA + (G::MODEL.registers.len() as u32 + 1) * 8
+pub const fn output() -> u32 {
+    AREA + (part::MODEL.registers.len() as u32 + 1) * 8
 }
 
 /// Bytes the area and what is written out after it take in the blob.
-pub const fn area_bytes<G: GuestTest>() -> usize {
-    output::<G>().next_multiple_of(16) as usize
+pub const fn area_bytes() -> usize {
+    output().next_multiple_of(16) as usize
 }
 
 /// Where a program's area starts in its blob: no access reaches below it, into the code and tables.
-pub fn area_offset<G: GuestTest>(blob: &Blob) -> usize {
-    blob.bytes.len() - wcontainers_abi::PAGE_SIZE as usize - area_bytes::<G>()
+pub fn area_offset(blob: &Blob) -> usize {
+    blob.bytes.len() - wcontainers_abi::PAGE_SIZE as usize - area_bytes()
 }
 /// Bytes of the stack every function frame keeps below what random accesses through sp reach, for the
 /// registers every function saves and restores, so a caller's loop or group across a call keeps them.
@@ -389,16 +390,16 @@ pub struct Program {
     pub functions: Vec<Function>,
 }
 
-fn register<G: GuestTest>() -> impl Strategy<Value = u8> {
-    prop::sample::select(G::MODEL.registers)
+fn register() -> impl Strategy<Value = u8> {
+    prop::sample::select(part::MODEL.registers)
 }
 
-fn group_access<G: GuestTest>() -> impl Strategy<Value = GroupAccess> {
+fn group_access() -> impl Strategy<Value = GroupAccess> {
     (
         any::<bool>(),
         prop::sample::select(ACCESS_KINDS.as_slice()),
-        register::<G>(),
-        register::<G>(),
+        register(),
+        register(),
         prop_oneof![
             2 => Just(Indexing::Offset),
             1 => Just(Indexing::Pre),
@@ -487,31 +488,31 @@ fn above(start: GroupBase, accesses: &[GroupAccess]) -> GroupBase {
 }
 
 /// `r`, or the next of the model's registers after it that is not in `not`.
-fn other<G: GuestTest>(r: u8, not: &[u8]) -> u8 {
+fn other(r: u8, not: &[u8]) -> u8 {
     let mut r = r;
     while not.contains(&r) {
-        let registers = G::MODEL.registers;
+        let registers = part::MODEL.registers;
         r = registers[(registers.iter().position(|&x| x == r).unwrap() + 1) % registers.len()];
     }
     r
 }
 
-fn group<G: GuestTest>() -> impl Strategy<Value = Op> {
+fn group() -> impl Strategy<Value = Op> {
     (
-        register::<G>(),
+        register(),
         group_start(),
-        prop::collection::vec(group_access::<G>(), 1..5),
+        prop::collection::vec(group_access(), 1..5),
         prop::option::weighted(0.5, 0usize..4),
     )
         .prop_map(|(base, start, accesses, syscall)| {
             // Inside the group or just after it, where a loop goes back to its first access.
             let syscall = syscall.map(|at| 1 + at % accesses.len());
             let base = if syscall.is_some() {
-                other::<G>(base, G::MODEL.syscall_sets)
+                other(base, part::MODEL.syscall_sets)
             } else {
                 base
             };
-            let accesses = through::<G>(base, accesses, false);
+            let accesses = through(base, accesses, false);
             Op::Group {
                 base,
                 start: above(start, &accesses),
@@ -527,8 +528,8 @@ fn group<G: GuestTest>() -> impl Strategy<Value = Op> {
 /// may load into the base: an access through a value loaded from the area may follow a code address and
 /// write over the program's code, which then runs bytes no case defines. Vector registers are never the
 /// base, and `fitted` already keeps a vector pair's two apart.
-fn through<G: GuestTest>(base: u8, accesses: Vec<GroupAccess>, keep: bool) -> Vec<GroupAccess> {
-    let code_addresses_in_memory = matches!(G::RETURN_ADDRESS, ReturnAddress::Stack { .. });
+fn through(base: u8, accesses: Vec<GroupAccess>, keep: bool) -> Vec<GroupAccess> {
+    let code_addresses_in_memory = matches!(Cpu::RETURN_ADDRESS, ReturnAddress::Stack { .. });
     let last = accesses.len() - 1;
     accesses
         .into_iter()
@@ -541,13 +542,13 @@ fn through<G: GuestTest>(base: u8, accesses: Vec<GroupAccess>, keep: bool) -> Ve
             let followed = code_addresses_in_memory && n < last;
             let base_kept = writes_back || (a.load && (keep || followed));
             if base_kept {
-                a.rt = other::<G>(a.rt, &[base]);
+                a.rt = other(a.rt, &[base]);
             }
             if a.bytes == 16 {
                 let base = base_kept.then_some(base);
                 let first = a.load.then_some(a.rt);
                 let not: Vec<u8> = base.into_iter().chain(first).collect();
-                a.rt2 = other::<G>(a.rt2, &not);
+                a.rt2 = other(a.rt2, &not);
             }
             a
         })
@@ -563,15 +564,15 @@ fn group_start() -> impl Strategy<Value = GroupBase> {
     ]
 }
 
-fn around<G: GuestTest>() -> impl Strategy<Value = Around> {
+fn around() -> impl Strategy<Value = Around> {
     (
         group_start(),
-        prop::collection::vec(group_access::<G>(), 1..4),
-        prop::collection::vec(group_access::<G>(), 1..4),
+        prop::collection::vec(group_access(), 1..4),
+        prop::collection::vec(group_access(), 1..4),
     )
         .prop_map(|(start, before, after)| {
-            let before = through::<G>(G::MODEL.kept, before, true);
-            let after = through::<G>(G::MODEL.kept, after, true);
+            let before = through(part::MODEL.kept, before, true);
+            let after = through(part::MODEL.kept, after, true);
             let all: Vec<GroupAccess> = before.iter().chain(&after).copied().collect();
             Around {
                 start: above(start, &all),
@@ -581,12 +582,12 @@ fn around<G: GuestTest>() -> impl Strategy<Value = Around> {
         })
 }
 
-fn below<G: GuestTest>() -> impl Strategy<Value = Chunk> {
+fn below() -> impl Strategy<Value = Chunk> {
     (
         1u16..17,
         any::<u16>(),
         any::<bool>(),
-        register::<G>(),
+        register(),
         prop_oneof![
             Just(Between::Nothing),
             Just(Between::Syscall),
@@ -618,7 +619,7 @@ fn callee(callable: usize) -> BoxedStrategy<Callee> {
     }
 }
 
-fn walk<G: GuestTest>() -> impl Strategy<Value = Walk> {
+fn walk() -> impl Strategy<Value = Walk> {
     let moves = prop_oneof![
         prop_oneof![
             Just(Indexing::Offset),
@@ -627,11 +628,11 @@ fn walk<G: GuestTest>() -> impl Strategy<Value = Walk> {
         ]
         .prop_map(WalkMove::Base),
         (
-            register::<G>(),
+            register(),
             0u8..3,
             any::<bool>(),
             any::<bool>(),
-            prop::option::of(register::<G>()),
+            prop::option::of(register()),
             prop_oneof![
                 (0u64..64),
                 // Just below 2^32, so a 32 bit index wraps, or below 2^31, so a signed one does.
@@ -672,7 +673,7 @@ fn walk<G: GuestTest>() -> impl Strategy<Value = Walk> {
                 3 => prop::sample::select(vec![(1u8, false), (8, false)]),
                 1 => prop::sample::select(vec![(16u8, true), (32, true), (48, true), (64, true)]),
             ],
-            register::<G>(),
+            register(),
         ),
         moves,
         -32i8..33,
@@ -711,9 +712,9 @@ fn walk<G: GuestTest>() -> impl Strategy<Value = Walk> {
                 {
                     *shift &= bytes == 8 && !vector;
                     if syscall {
-                        *reg = other::<G>(*reg, G::MODEL.syscall_sets);
+                        *reg = other(*reg, part::MODEL.syscall_sets);
                         *step_in = step_in
-                            .map(|r| other::<G>(r, G::MODEL.syscall_sets))
+                            .map(|r| other(r, part::MODEL.syscall_sets))
                             .filter(|&r| r != *reg);
                     }
                 }
@@ -779,15 +780,9 @@ fn walk<G: GuestTest>() -> impl Strategy<Value = Walk> {
         )
 }
 
-fn lookup<G: GuestTest>() -> impl Strategy<Value = Lookup> {
+fn lookup() -> impl Strategy<Value = Lookup> {
     (
-        (
-            1u8..24,
-            register::<G>(),
-            register::<G>(),
-            register::<G>(),
-            register::<G>(),
-        ),
+        (1u8..24, register(), register(), register(), register()),
         (
             any::<bool>(),
             0u16..600,
@@ -827,7 +822,7 @@ fn lookup<G: GuestTest>() -> impl Strategy<Value = Lookup> {
             )| {
                 // Four different registers.
                 let next = |r: u8, not: &[u8]| {
-                    *G::MODEL
+                    *part::MODEL
                         .registers
                         .iter()
                         .cycle()
@@ -888,32 +883,27 @@ fn lookup<G: GuestTest>() -> impl Strategy<Value = Lookup> {
         )
 }
 
-fn op<G: GuestTest>() -> impl Strategy<Value = Op> {
-    prop_oneof![10 => plain_op::<G>(), 1 => Just(Op::Syscall)]
+fn op() -> impl Strategy<Value = Op> {
+    prop_oneof![10 => plain_op(), 1 => Just(Op::Syscall)]
 }
 
-fn plain_op<G: GuestTest>() -> impl Strategy<Value = Op> {
+fn plain_op() -> impl Strategy<Value = Op> {
     prop_oneof![
-        (
-            0u8..13,
-            any::<bool>(),
-            register::<G>(),
-            register::<G>(),
-            register::<G>()
-        )
-            .prop_map(|(kind, wide, rd, rn, rm)| Op::Arithmetic {
+        (0u8..13, any::<bool>(), register(), register(), register()).prop_map(
+            |(kind, wide, rd, rn, rm)| Op::Arithmetic {
                 kind,
                 wide,
                 rd,
                 rn,
                 rm
-            }),
+            }
+        ),
         (
             any::<bool>(),
             any::<bool>(),
             any::<bool>(),
-            register::<G>(),
-            register::<G>(),
+            register(),
+            register(),
             0u16..4096
         )
             .prop_map(|(subtract, flags, wide, rd, rn, imm)| Op::AddImmediate {
@@ -924,14 +914,14 @@ fn plain_op<G: GuestTest>() -> impl Strategy<Value = Op> {
                 rn,
                 imm
             }),
-        (any::<bool>(), register::<G>(), any::<u16>(), 0u8..4)
+        (any::<bool>(), register(), any::<u16>(), 0u8..4)
             .prop_map(|(keep, rd, imm, hw)| Op::Move { keep, rd, imm, hw }),
         (
             0u8..4,
             any::<bool>(),
-            register::<G>(),
-            register::<G>(),
-            register::<G>(),
+            register(),
+            register(),
+            register(),
             0u8..14
         )
             .prop_map(|(kind, wide, rd, rn, rm, cond)| Op::Select {
@@ -942,31 +932,26 @@ fn plain_op<G: GuestTest>() -> impl Strategy<Value = Op> {
                 rm,
                 cond
             }),
-        (any::<bool>(), register::<G>(), register::<G>()).prop_map(|(wide, rn, rm)| Op::Compare {
+        (any::<bool>(), register(), register()).prop_map(|(wide, rn, rm)| Op::Compare {
             wide,
             rn,
             rm
         }),
-        (
-            any::<bool>(),
-            register::<G>(),
-            register::<G>(),
-            0u8..16,
-            0u8..14
-        )
-            .prop_map(|(wide, rn, rm, nzcv, cond)| Op::CondCompare {
+        (any::<bool>(), register(), register(), 0u8..16, 0u8..14).prop_map(
+            |(wide, rn, rm, nzcv, cond)| Op::CondCompare {
                 wide,
                 rn,
                 rm,
                 nzcv,
                 cond
-            }),
+            }
+        ),
         (
             any::<bool>(),
             any::<bool>(),
-            register::<G>(),
-            register::<G>(),
-            register::<G>()
+            register(),
+            register(),
+            register()
         )
             .prop_map(|(signed, wide, rd, rn, rm)| Op::Divide {
                 signed,
@@ -975,36 +960,34 @@ fn plain_op<G: GuestTest>() -> impl Strategy<Value = Op> {
                 rn,
                 rm
             }),
-        (any::<bool>(), register::<G>()).prop_map(|(write, r)| Op::Flags { write, r }),
+        (any::<bool>(), register()).prop_map(|(write, r)| Op::Flags { write, r }),
         (
             prop::sample::select(vec![1u8, 2, 4, 8]),
-            register::<G>(),
+            register(),
             0u8..64
         )
             .prop_map(|(bytes, rt, slot)| Op::Load { bytes, rt, slot }),
         (
             prop::sample::select(vec![1u8, 2, 4, 8]),
-            register::<G>(),
+            register(),
             0u8..64
         )
             .prop_map(|(bytes, rt, slot)| Op::Store { bytes, rt, slot }),
-        (any::<bool>(), register::<G>(), register::<G>(), 0u8..63).prop_map(
-            |(load, rt, rt2, slot)| {
-                Op::Pair {
-                    load,
-                    rt,
-                    rt2: if load && rt2 == rt {
-                        (rt + 1) % 16
-                    } else {
-                        rt2
-                    },
-                    slot,
-                }
+        (any::<bool>(), register(), register(), 0u8..63).prop_map(|(load, rt, rt2, slot)| {
+            Op::Pair {
+                load,
+                rt,
+                rt2: if load && rt2 == rt {
+                    (rt + 1) % 16
+                } else {
+                    rt2
+                },
+                slot,
             }
-        ),
+        }),
         (
             any::<bool>(),
-            register::<G>(),
+            register(),
             0u8..64,
             prop_oneof![
                 4 => Just(StackVector::No),
@@ -1018,40 +1001,36 @@ fn plain_op<G: GuestTest>() -> impl Strategy<Value = Op> {
                 slot,
                 vector
             }),
-        group::<G>(),
+        group(),
     ]
 }
 
-fn ops<G: GuestTest>() -> impl Strategy<Value = Vec<Op>> {
-    prop::collection::vec(op::<G>(), 0..8)
+fn ops() -> impl Strategy<Value = Vec<Op>> {
+    prop::collection::vec(op(), 0..8)
 }
 
 /// A chunk that may call functions numbered below `callable`.
-fn chunk<G: GuestTest>(callable: usize) -> BoxedStrategy<Chunk> {
+fn chunk(callable: usize) -> BoxedStrategy<Chunk> {
     let choices = vec![
-        ops::<G>().prop_map(Chunk::Ops).boxed(),
-        (0u8..14, ops::<G>())
+        ops().prop_map(Chunk::Ops).boxed(),
+        (0u8..14, ops())
             .prop_map(|(cond, ops)| Chunk::Skip { cond, ops })
             .boxed(),
-        (
-            1u8..6,
-            ops::<G>(),
-            prop::option::weighted(0.4, callee(callable)),
-        )
+        (1u8..6, ops(), prop::option::weighted(0.4, callee(callable)))
             .prop_map(|(count, ops, call)| Chunk::Loop { count, ops, call })
             .boxed(),
-        (walk::<G>(), prop::option::weighted(0.4, callee(callable)))
+        (walk(), prop::option::weighted(0.4, callee(callable)))
             .prop_map(|(mut walk, call)| {
                 walk.call = call.filter(|_| matches!(walk.moves, WalkMove::Base(_)));
                 Chunk::Walk(walk)
             })
             .boxed(),
-        below::<G>().boxed(),
-        lookup::<G>().prop_map(Chunk::Lookup).boxed(),
-        (register::<G>(), prop::collection::vec(ops::<G>(), 1..6))
+        below().boxed(),
+        lookup().prop_map(Chunk::Lookup).boxed(),
+        (register(), prop::collection::vec(ops(), 1..6))
             .prop_map(|(index, cases)| Chunk::Switch { index, cases })
             .boxed(),
-        (any::<bool>(), ops::<G>())
+        (any::<bool>(), ops())
             .prop_map(|(through_register, ops)| Chunk::Jump {
                 through_register,
                 ops,
@@ -1060,7 +1039,7 @@ fn chunk<G: GuestTest>(callable: usize) -> BoxedStrategy<Chunk> {
         (
             callee(callable),
             any::<bool>(),
-            prop::option::weighted(0.5, around::<G>()),
+            prop::option::weighted(0.5, around()),
         )
             .prop_map(|(callee, through_register, around)| Chunk::Call {
                 callee,
@@ -1072,7 +1051,7 @@ fn chunk<G: GuestTest>(callable: usize) -> BoxedStrategy<Chunk> {
     prop::strategy::Union::new(choices).boxed()
 }
 
-pub fn program<G: GuestTest>() -> impl Strategy<Value = Program> {
+pub fn program() -> impl Strategy<Value = Program> {
     (0usize..5).prop_flat_map(|count| {
         let functions: Vec<BoxedStrategy<Function>> = (0..count)
             .map(|i| {
@@ -1082,7 +1061,7 @@ pub fn program<G: GuestTest>() -> impl Strategy<Value = Program> {
                         // From a few pages to more than the whole stack.
                         1 => (1u32..48).prop_map(|k| k << 15),
                     ],
-                    prop::collection::vec(chunk::<G>(i), 0..4),
+                    prop::collection::vec(chunk(i), 0..4),
                     0u8..4,
                     prop::option::of(0..i.max(1)),
                 )
@@ -1096,8 +1075,8 @@ pub fn program<G: GuestTest>() -> impl Strategy<Value = Program> {
             })
             .collect();
         (
-            prop::collection::vec(any::<u64>(), G::MODEL.registers.len()),
-            prop::collection::vec(chunk::<G>(count), 1..8),
+            prop::collection::vec(any::<u64>(), part::MODEL.registers.len()),
+            prop::collection::vec(chunk(count), 1..8),
             functions,
         )
             .prop_map(|(registers, main, functions)| Program {

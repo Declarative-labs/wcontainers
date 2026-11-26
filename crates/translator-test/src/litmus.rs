@@ -6,16 +6,15 @@
 //! number of empty turns that changes from round to round so that the threads' parts overlap in many ways, and runs
 //! its part; they meet again, and thread 0 counts the outcome and sets the shared words back to 0.
 
-use crate::guest::GuestTest;
+use super::runner::{Machine, Meeting, Stopped, Syscalls};
+use super::{Cpu, part};
 use crate::guest_memory::SharedGuestMemory;
-use crate::runner::{Machine, Meeting, Stopped, Syscalls};
 use iced_x86::IcedError;
 use iced_x86::code_asm::*;
 use std::sync::Arc;
 use wcontainers_abi::{PAGE_SIZE, Permissions};
 use wcontainers_guest_cpu::Personality;
 use wcontainers_translator::{AccessOrdering, LookAhead};
-use wcontainers_x86::X86_64;
 
 type Asm = Result<(), IcedError>;
 
@@ -50,7 +49,7 @@ const WORD: i32 = wcontainers_abi::WORD as i32;
 ///
 /// https://github.com/torvalds/linux/blob/master/arch/x86/entry/syscalls/syscall_64.tbl
 pub const MEET: u64 = 0x4D45;
-const EXIT: u64 = <X86_64 as GuestTest>::STAND_IN.exit;
+const EXIT: u64 = part::STAND_IN.exit;
 /// Each thread's empty turns before its part: its round number times its own odd number, below [`TURNS`].
 const MULTIPLIERS: [i32; 4] = [5, 11, 17, 23];
 const TURNS: i32 = 64;
@@ -389,14 +388,14 @@ fn code_address(k: usize) -> u64 {
 /// Runs each thread's program on its own host thread and machine, all on one fresh shared memory, translated in
 /// `form` at full look-ahead; returns the memory once every thread has ended.
 fn run(programs: &[Vec<u8>], form: AccessOrdering) -> SharedGuestMemory {
-    let memory = SharedGuestMemory::new(&crate::runner::engine(), MEMORY_BYTES);
+    let memory = SharedGuestMemory::new(&super::runner::engine(), MEMORY_BYTES);
     let meeting = Arc::new(Meeting::new(programs.len() as u64));
     std::thread::scope(|scope| {
         for (k, code) in programs.iter().enumerate() {
             let (memory, meeting) = (&memory, meeting.clone());
             scope.spawn(move || {
                 let at = code_address(k);
-                let mut machine = Machine::<X86_64>::new_sharing(
+                let mut machine = Machine::new_sharing(
                     memory,
                     MEMORY_BYTES,
                     at,
@@ -417,7 +416,7 @@ fn run(programs: &[Vec<u8>], form: AccessOrdering) -> SharedGuestMemory {
                     &[0],
                     LookAhead::Full,
                 );
-                machine.set_registers(&X86_64::initial_block(at, DATA + DATA_BYTES));
+                machine.set_registers(&Cpu::initial_block(at, DATA + DATA_BYTES));
                 machine.meet_at(MEET, meeting);
                 let (stopped, _) = machine.run();
                 assert_eq!(stopped, Stopped::Finished(0), "thread {k} in {form:?}");

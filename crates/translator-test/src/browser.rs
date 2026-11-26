@@ -1,9 +1,9 @@
 //! The browser runner: a flat blob run in Chrome by `browser/runner.js`, with the translator built for wasm32
 //! from `browser/` so that code is translated at run time there too.
 
-use crate::guest::GuestTest;
+use super::programs::{Blob, Ran, placement};
+use super::{Cpu, part};
 use crate::layout::SIGNALLED;
-use crate::programs::{Blob, Ran, placement};
 use crate::reference::{FEATURES_FLAG, release_build_with, target_folder};
 use linux_raw_sys::general::{SIGBUS, SIGFPE, SIGILL, SIGSEGV, SIGTRAP};
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use wcontainers_abi::Permissions;
+use wcontainers_guest_cpu::Guest as _;
 use wcontainers_guest_cpu::{MemoryFault, TrapKind};
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 
@@ -113,7 +114,7 @@ pub(crate) const STOP_KIND_KEY: &str = "kind";
 /// The names and numbers the browser runner shares with the wasmtime runner.
 fn runner_names() -> Value {
     let mut names = serde_json::Map::new();
-    names.insert(LOCK_CODE_KEY.into(), crate::runner::LOCK_CODE.into());
+    names.insert(LOCK_CODE_KEY.into(), super::runner::LOCK_CODE.into());
     names.insert(
         STOP_KINDS_KEY.into(),
         STOP_KINDS
@@ -137,12 +138,12 @@ fn runner_names() -> Value {
 
 /// A new directory for one run of the page, under this process's and this call's numbers so that runs at the
 /// same time never share files; the caller removes it when the run has ended.
-fn case_directory<G: GuestTest>(name: &str) -> PathBuf {
+fn case_directory(name: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let call = NEXT.fetch_add(1, Ordering::Relaxed);
     let directory = target()
         .join(CASES)
-        .join(G::NAME)
+        .join(part::NAME)
         .join(name)
         .join(std::process::id().to_string())
         .join(call.to_string());
@@ -152,9 +153,9 @@ fn case_directory<G: GuestTest>(name: &str) -> PathBuf {
 
 /// A new folder for a run of the case `name` ([`case_directory`]), holding the translator module, `blob` and
 /// `stack`.
-fn case_folder<G: GuestTest>(name: &str, blob: &[u8], stack: &[u8]) -> PathBuf {
-    let directory = case_directory::<G>(name);
-    std::fs::copy(translator::<G>(), directory.join(TRANSLATOR_FILE)).unwrap();
+fn case_folder(name: &str, blob: &[u8], stack: &[u8]) -> PathBuf {
+    let directory = case_directory(name);
+    std::fs::copy(translator(), directory.join(TRANSLATOR_FILE)).unwrap();
     std::fs::write(directory.join(BLOB_FILE), blob).unwrap();
     std::fs::write(directory.join(STACK_FILE), stack).unwrap();
     directory
@@ -162,17 +163,17 @@ fn case_folder<G: GuestTest>(name: &str, blob: &[u8], stack: &[u8]) -> PathBuf {
 
 /// Build the translator for the browser for a guest, once per process and guest, and return the module's
 /// path.
-pub fn translator<G: GuestTest>() -> PathBuf {
+pub fn translator() -> PathBuf {
     static BUILT: Mutex<Vec<(&str, PathBuf)>> = Mutex::new(Vec::new());
     let mut built = BUILT.lock().unwrap();
-    if let Some((_, path)) = built.iter().find(|(name, _)| *name == G::NAME) {
+    if let Some((_, path)) = built.iter().find(|(name, _)| *name == part::NAME) {
         return path.clone();
     }
-    let features = [FEATURES_FLAG, G::NAME];
+    let features = [FEATURES_FLAG, part::NAME];
     let built_module = release_build_with(
         &package(),
         MODULE_TRIPLE,
-        &target().join(G::NAME),
+        &target().join(part::NAME),
         &features,
     )
     .join(MODULE);
@@ -186,7 +187,7 @@ pub fn translator<G: GuestTest>() -> PathBuf {
         .expect("wasm-bindgen processes the translator");
     let path = built_module.with_file_name(BOUND_MODULE);
     std::fs::write(&path, output.wasm_mut().emit_wasm()).unwrap();
-    built.push((G::NAME, path.clone()));
+    built.push((part::NAME, path.clone()));
     path
 }
 
@@ -215,12 +216,12 @@ struct Memory {
 }
 
 /// The stand-in kernel's numbers, for the page's settings.
-fn stand_in<G: GuestTest>() -> Value {
+fn stand_in() -> Value {
     use linux_raw_sys::general::{
         MAP_ANONYMOUS, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN, MAP_PRIVATE, MAP_TYPE,
         PROT_EXEC, PROT_READ, PROT_WRITE,
     };
-    let numbers = G::STAND_IN;
+    let numbers = part::STAND_IN;
     let memory = Memory {
         mmap: numbers.mmap,
         munmap: numbers.munmap,
@@ -234,7 +235,7 @@ fn stand_in<G: GuestTest>() -> Value {
             read: PROT_READ,
             write: PROT_WRITE,
             execute: PROT_EXEC,
-            stack_guard_gap_pages: crate::runner::STACK_GUARD_GAP_PAGES,
+            stack_guard_gap_pages: super::runner::STACK_GUARD_GAP_PAGES,
         },
     };
     let mut settings = serde_json::json!({
@@ -276,10 +277,15 @@ pub struct Report {
 
 impl Report {
     /// The register block of the thread state at the stop, if the stop left one.
-    pub fn block<G: GuestTest>(&self) -> Option<G::Block> {
+    pub fn block(&self) -> Option<<Cpu as wcontainers_guest_cpu::Personality>::Block> {
         use zerocopy::FromBytes;
-        let bytes = self.state.get(..size_of::<G::Block>())?;
-        Some(G::Block::read_from_bytes(bytes).expect("a thread block"))
+        let bytes = self
+            .state
+            .get(..size_of::<<Cpu as wcontainers_guest_cpu::Personality>::Block>())?;
+        Some(
+            <Cpu as wcontainers_guest_cpu::Personality>::Block::read_from_bytes(bytes)
+                .expect("a thread block"),
+        )
     }
 
     pub fn count(&self, reason: &str) -> u64 {
@@ -299,55 +305,37 @@ impl Report {
 }
 
 /// Run a blob in Chrome at look-ahead none, starting at its first byte.
-pub fn translated<G: GuestTest>(blob: &Blob) -> Report {
-    translated_with::<G>(blob, (LookAhead::None, Optimise::Speed), Omit::default())
+pub fn translated(blob: &Blob) -> Report {
+    translated_with(blob, (LookAhead::None, Optimise::Speed), Omit::default())
 }
 
 /// Run a blob in Chrome at a look-ahead, translated for speed or size, leaving out some checks only to
 /// measure them.
-pub fn translated_with<G: GuestTest>(
-    blob: &Blob,
-    how: (LookAhead, Optimise),
-    omit: Omit,
-) -> Report {
-    repeated::<G>(blob, how, omit, 1)
+pub fn translated_with(blob: &Blob, how: (LookAhead, Optimise), omit: Omit) -> Report {
+    repeated(blob, how, omit, 1)
 }
 
 /// [`translated_with`], running the program `repeat` times in the same instances, each run timed by itself.
 /// The report holds the output of the last run.
-pub fn repeated<G: GuestTest>(
-    blob: &Blob,
-    how: (LookAhead, Optimise),
-    omit: Omit,
-    repeat: u32,
-) -> Report {
-    run_in_chrome::<G>(blob, how, omit, repeat, None, 0)
+pub fn repeated(blob: &Blob, how: (LookAhead, Optimise), omit: Omit, repeat: u32) -> Report {
+    run_in_chrome(blob, how, omit, repeat, None, 0)
 }
 
 /// [`repeated`] at full look-ahead, the translation split into modules of at most `module_bytes` of code,
 /// only to measure calls between modules.
-pub fn repeated_split<G: GuestTest>(
-    blob: &Blob,
-    optimise: Optimise,
-    repeat: u32,
-    module_bytes: u32,
-) -> Report {
+pub fn repeated_split(blob: &Blob, optimise: Optimise, repeat: u32, module_bytes: u32) -> Report {
     let how = (LookAhead::Full, optimise);
-    run_in_chrome::<G>(blob, how, Omit::default(), repeat, None, module_bytes)
+    run_in_chrome(blob, how, Omit::default(), repeat, None, module_bytes)
 }
 
 /// [`translated_with`] with V8 given these flags, only for measuring what the engine does (such as compiling
 /// every function when its module is made, not at its first call).
-pub fn translated_with_engine_flags<G: GuestTest>(
-    blob: &Blob,
-    look_ahead: LookAhead,
-    flags: &str,
-) -> Report {
+pub fn translated_with_engine_flags(blob: &Blob, look_ahead: LookAhead, flags: &str) -> Report {
     let how = (look_ahead, Optimise::Speed);
-    run_in_chrome::<G>(blob, how, Omit::default(), 1, Some(flags), 0)
+    run_in_chrome(blob, how, Omit::default(), 1, Some(flags), 0)
 }
 
-fn run_in_chrome<G: GuestTest>(
+fn run_in_chrome(
     blob: &Blob,
     (look_ahead, optimise): (LookAhead, Optimise),
     omit: Omit,
@@ -355,13 +343,13 @@ fn run_in_chrome<G: GuestTest>(
     flags: Option<&str>,
     module_bytes: u32,
 ) -> Report {
-    let place = placement::<G>(blob);
-    let directory = case_folder::<G>(&blob.name, &blob.bytes, &place.stack);
+    let place = placement(blob);
+    let directory = case_folder(&blob.name, &blob.bytes, &place.stack);
     let (look_ahead, bound) = look_ahead.code();
     let setup = Setup {
         bound: Some(bound),
         code_bytes: blob.code_bytes,
-        keep_float_flags: Some(blob.reads_float_status::<G>()),
+        keep_float_flags: Some(blob.reads_float_status()),
         link_address: Some(blob.link_address),
         load: blob.load,
         look_ahead,
@@ -373,7 +361,7 @@ fn run_in_chrome<G: GuestTest>(
         repeat,
         sp: Some(place.sp),
         split_bytes: Some(module_bytes),
-        stand_in: Some(stand_in::<G>()),
+        stand_in: Some(stand_in()),
         ..Setup::default()
     };
     let result = launch(&directory, &setup, flags);
@@ -592,7 +580,7 @@ pub struct Loaded {
 /// Load code modules translated ahead of time from an image placed at `load`, its code at `code`, in Chrome,
 /// V8 given these flags, without running anything; or what the page threw, such as an engine refusing a
 /// limit. The lookup table covers the code alone.
-pub fn load_modules<G: GuestTest>(
+pub fn load_modules(
     name: &str,
     image: &[u8],
     load: u64,
@@ -600,7 +588,7 @@ pub fn load_modules<G: GuestTest>(
     modules: &[&[u8]],
     flags: &str,
 ) -> Result<Loaded, String> {
-    let directory = case_folder::<G>(&format!("load-{name}"), image, &[]);
+    let directory = case_folder(&format!("load-{name}"), image, &[]);
     for (i, module) in modules.iter().enumerate() {
         std::fs::write(directory.join(format!("module-{i}.wasm")), module).unwrap();
     }
@@ -628,7 +616,7 @@ pub fn load_modules<G: GuestTest>(
 /// One instruction case: its code, the thread state to start from (the contract's `THREAD_STATE_SIZE` bytes)
 /// and the bytes to put at each place.
 pub struct StateCase {
-    pub code: crate::guest::Encoded,
+    pub code: super::guest::Encoded,
     pub state: Vec<u8>,
     pub places: Vec<Vec<u8>>,
 }
@@ -648,7 +636,7 @@ pub struct StateRun {
 /// is given the instruction's own bytes, as in wasmtime. Each instruction goes as its length, then as the
 /// longest the guest has, the rest of it the filler. The program is told the offer whose key is `offer`, or the
 /// default list.
-pub fn cases<G: crate::guest::GuestTest>(
+pub fn cases(
     code: u64,
     memory_bytes: u64,
     regions_given: &[(Range<u64>, Permissions)],
@@ -657,13 +645,13 @@ pub fn cases<G: crate::guest::GuestTest>(
     cases: &[StateCase],
     offer: Option<u64>,
 ) -> Vec<StateRun> {
-    let code_bytes = G::MAX_LENGTH as usize;
-    let padded = |code: &crate::guest::Encoded| {
+    let code_bytes = Cpu::MAX_LENGTH as usize;
+    let padded = |code: &super::guest::Encoded| {
         let mut bytes = code.code().to_vec();
-        bytes.resize(code_bytes, G::FILLER);
+        bytes.resize(code_bytes, part::FILLER);
         bytes
     };
-    let directory = case_folder::<G>(INSTRUCTION_CASES, &padded(&cases[0].code), &[]);
+    let directory = case_folder(INSTRUCTION_CASES, &padded(&cases[0].code), &[]);
     let mut bytes = Vec::new();
     for case in cases {
         bytes.push(case.code.length);
@@ -683,13 +671,13 @@ pub fn cases<G: crate::guest::GuestTest>(
         ),
         cases: Some(cases.len()),
         code_bytes: code_bytes as u64,
-        fill: Some((code_area.start, code_area.end, G::FILLER)),
+        fill: Some((code_area.start, code_area.end, part::FILLER)),
         load: code,
         look_ahead: LookAhead::None.code().0,
         memory_bytes,
         offer,
         regions: regions(regions_given),
-        stand_in: Some(stand_in::<G>()),
+        stand_in: Some(stand_in()),
         stop_at_syscall: Some(true),
         ..Setup::default()
     };

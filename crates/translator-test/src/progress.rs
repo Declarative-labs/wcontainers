@@ -1,9 +1,8 @@
 //! The progress count: where a program is by it at its system calls and stops, and how a position is
 //! reached again from any look-ahead.
 
-use crate::guest::GuestTest;
-use crate::programs::{Blob, Ran, ran, ready_with};
-use crate::runner::{Machine, Pause, Paused, probe};
+use super::programs::{Blob, Ran, ran, ready_with};
+use super::runner::{Machine, Pause, Paused, probe};
 use std::cell::RefCell;
 use std::rc::Rc;
 use wcontainers_translator::{LookAhead, Optimise};
@@ -16,7 +15,7 @@ pub struct Position {
 }
 
 impl Position {
-    fn of<G: GuestTest>(paused: &mut Paused<'_, '_, G>) -> Self {
+    fn of(paused: &mut Paused<'_, '_>) -> Self {
         Position {
             count: paused.progress_count(),
             pc: paused.pc(),
@@ -34,11 +33,8 @@ impl Position {
 
 /// A machine with `blob` translated as `how` says and keeping the progress count; at look-ahead none, code
 /// reached at run time is made at none too.
-pub fn counting<G: GuestTest>(
-    blob: &Blob,
-    (look_ahead, optimise): (LookAhead, Optimise),
-) -> Machine<G> {
-    ready_with::<G>(blob, probe::<G>(), |machine| {
+pub fn counting(blob: &Blob, (look_ahead, optimise): (LookAhead, Optimise)) -> Machine {
+    ready_with(blob, probe(), |machine| {
         machine.keep_progress_count();
         machine.optimise_for(optimise);
         machine.load(
@@ -64,7 +60,7 @@ pub struct Counted {
 }
 
 /// Run `machine` to its end, giving the program's results and the count at the end.
-pub fn finish<G: GuestTest>(blob: &Blob, machine: &mut Machine<G>) -> (Ran, u64) {
+pub fn finish(blob: &Blob, machine: &mut Machine) -> (Ran, u64) {
     let (stopped, registers) = machine.run();
     (
         ran(blob, machine, stopped, &registers),
@@ -73,8 +69,8 @@ pub fn finish<G: GuestTest>(blob: &Blob, machine: &mut Machine<G>) -> (Ran, u64)
 }
 
 /// Run `blob` as `how` says, keeping the progress count.
-pub fn run_counting<G: GuestTest>(blob: &Blob, how: (LookAhead, Optimise)) -> Counted {
-    let mut machine = counting::<G>(blob, how);
+pub fn run_counting(blob: &Blob, how: (LookAhead, Optimise)) -> Counted {
+    let mut machine = counting(blob, how);
     let log = Rc::new(RefCell::new(Vec::new()));
     let kept = log.clone();
     machine.on_pause(move |pause, paused| {
@@ -92,8 +88,8 @@ pub fn run_counting<G: GuestTest>(blob: &Blob, how: (LookAhead, Optimise)) -> Co
 
 /// Every position where the thread stops when it stops at every stop check, in order, and the program's
 /// results.
-pub fn every_check<G: GuestTest>(blob: &Blob, how: (LookAhead, Optimise)) -> (Vec<Position>, Ran) {
-    let mut machine = counting::<G>(blob, how);
+pub fn every_check(blob: &Blob, how: (LookAhead, Optimise)) -> (Vec<Position>, Ran) {
+    let mut machine = counting(blob, how);
     machine.stop_at_every_check();
     let log = Rc::new(RefCell::new(Vec::new()));
     let kept = log.clone();
@@ -108,12 +104,8 @@ pub fn every_check<G: GuestTest>(blob: &Blob, how: (LookAhead, Optimise)) -> (Ve
 
 /// The first stop at a check where the count has reached `limit`, none when the program ends first, and the
 /// program's results.
-pub fn first_stop<G: GuestTest>(
-    blob: &Blob,
-    how: (LookAhead, Optimise),
-    limit: u64,
-) -> (Option<Position>, Ran) {
-    let mut machine = counting::<G>(blob, how);
+pub fn first_stop(blob: &Blob, how: (LookAhead, Optimise), limit: u64) -> (Option<Position>, Ran) {
+    let mut machine = counting(blob, how);
     machine.set_progress_limit(limit);
     let stop = Rc::new(RefCell::new(None));
     let kept = stop.clone();
@@ -144,14 +136,10 @@ enum Approach {
 /// lowered, from the target's count, until the first stop is not past it and comes before the end), then carry on at look-ahead none,
 /// which checks at every instruction, until the count and pc are the target's. Gives the program's results
 /// and how many runs it took. Panics if the run at none passes the target.
-pub fn reach<G: GuestTest>(
-    blob: &Blob,
-    how: (LookAhead, Optimise),
-    target: Position,
-) -> (Ran, u32) {
+pub fn reach(blob: &Blob, how: (LookAhead, Optimise), target: Position) -> (Ran, u32) {
     let mut back = 0;
     for runs in 1.. {
-        let mut machine = counting::<G>(blob, how);
+        let mut machine = counting(blob, how);
         machine.set_progress_limit(target.count.saturating_sub(back));
         let approach = Rc::new(RefCell::new(Approach::Waiting));
         let kept = approach.clone();

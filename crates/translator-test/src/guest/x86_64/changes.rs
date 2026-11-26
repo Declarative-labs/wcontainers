@@ -1,11 +1,11 @@
-//! x86-64's hand-made programs whose pages change at a system call or a stop (`GuestTest::changes`): groups
+//! x86-64's hand-made programs whose pages change at a system call or a stop (`part::changes`): groups
 //! and loops across system calls and calls, accesses below rsp and its red zone once a frame is popped, and
 //! the longest
 //! access onto a page changed at a stop. rbx holds `DATA` throughout.
 
 use super::X86_64;
-use crate::guest::{Change, GuestTest};
-use crate::programs::{Blob, LOAD, STACK_BYTES, STACK_TOP};
+use crate::x86_64::guest::Change;
+use crate::x86_64::programs::{Blob, LOAD, STACK_BYTES, STACK_TOP};
 use iced_x86::code_asm::*;
 use iced_x86::{BlockEncoderOptions, IcedError};
 use wcontainers_abi::PAGE_SIZE;
@@ -24,7 +24,7 @@ const LONGEST_ACCESS_LOAD: &str = "longest-access-load";
 const LONGEST_ACCESS_STORE: &str = "longest-access-store";
 
 /// The page of data after the code page of the programs.
-use crate::programs::PAGE_AFTER_LOAD as DATA;
+use crate::x86_64::programs::PAGE_AFTER_LOAD as DATA;
 /// The page below the one rsp is moved to, in the middle of the stack.
 const BELOW: u64 = (STACK_TOP - STACK_BYTES / 2) / PAGE_SIZE * PAGE_SIZE;
 /// The bytes of the frame made and popped there.
@@ -38,7 +38,7 @@ use super::assemble::WORD;
 
 /// A system call that writes nothing.
 fn write_nothing(a: &mut CodeAssembler) -> Asm {
-    a.mov(eax, <X86_64 as GuestTest>::STAND_IN.write as u32)?;
+    a.mov(eax, super::STAND_IN.write as u32)?;
     a.mov(edi, 1u32)?;
     a.mov(rsi, rbx)?;
     a.xor(edx, edx)?;
@@ -62,8 +62,7 @@ fn program(
     let mut head = a.create_label();
     a.mov(rbx, DATA).unwrap();
     write(&mut a, &mut head).expect("assembled");
-    a.mov(eax, <X86_64 as GuestTest>::STAND_IN.exit_group as u32)
-        .unwrap();
+    a.mov(eax, super::STAND_IN.exit_group as u32).unwrap();
     a.xor(edi, edi).unwrap();
     a.syscall().unwrap();
     let result = a

@@ -11,16 +11,9 @@ use proptest::test_runner::{Config, TestCaseError, TestRunner};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::sync::Mutex;
-use wcontainers_arm64::Arm64;
-use wcontainers_translator_test::guest::{Case, GuestTest, Stop};
 use wcontainers_translator_test::jobs::at_once;
-use wcontainers_translator_test::layer1::{
-    Agreement, compare, compare_outcome, on_reference, translated_in_chrome, translated_on,
-    translated_with,
-};
 use wcontainers_translator_test::reference::Reference;
 use wcontainers_translator_test::seeded;
-use wcontainers_x86::X86_64;
 
 /// How many draws a strategy's filters may throw away for each case before the run gives up.
 const REJECTS_PER_CASE: u32 = 100;
@@ -34,311 +27,48 @@ fn generator(seed: u64, name: &str, config: Config) -> TestRunner {
     TestRunner::new_with_rng(config, seeded::generator(seed, &[], name))
 }
 
-fn sample_matches_the_cpu_in_chrome<G: GuestTest>() {
-    let count = setting("WC_LAYER1_CHROME", 1);
-    let seed = setting("WC_LAYER1_SEED", 1);
-    let mut sample: Vec<(String, Case)> = Vec::new();
-    for form in G::forms() {
-        let name = G::form_name(form);
-        let mut runner = generator(seed, name, Config::default());
-        let strategy = G::cases(form);
-        for _ in 0..count {
-            let tree = strategy.new_tree(&mut runner).expect("a case");
-            sample.push((name.to_string(), tree.current()));
-        }
-    }
-    let all: Vec<Case> = sample.iter().map(|(_, case)| case.clone()).collect();
-    let outcomes = translated_in_chrome::<G>(&all);
-    let mut reference = Reference::start(&G::REFERENCE);
-    let mut failures = Vec::new();
-    let mut known = Known::default();
-    for ((name, case), outcome) in sample.iter().zip(outcomes) {
-        match compare_outcome::<G>(&mut reference, case, outcome) {
-            Err(error) => {
-                eprintln!("{name} in Chrome: {error}");
-                failures.push(name.clone());
-            }
-            Ok(agreement) => known.add(name, agreement),
-        }
-    }
-    eprintln!(
-        "layer 1 in Chrome: {} cases ({count} a form), seed {seed}, {} failing: {failures:?}",
-        sample.len(),
-        failures.len()
-    );
-    known.report("layer 1 in Chrome");
-    assert!(failures.is_empty());
-}
-
-/// The known failures of the reference met, counted by form and reason.
-#[derive(Default)]
-struct Known(BTreeMap<(String, &'static str), u64>);
-
-impl Known {
-    fn add(&mut self, form: &str, agreement: Agreement) {
-        if let Agreement::KnownFailure(reason) = agreement {
-            *self.0.entry((form.to_string(), reason)).or_default() += 1;
-        }
-    }
-
-    /// One line for each form and reason, and the total.
-    fn report(&self, what: &str) {
-        for ((form, reason), n) in &self.0 {
-            eprintln!("{what}: {form}: {n} known failures: {reason}");
-        }
-        eprintln!(
-            "{what}: {} known failures in all",
-            self.0.values().sum::<u64>()
-        );
-    }
-}
-
-/// Runs `count` cases of each form chosen by `WC_LAYER1_FORMS`, `WC_LAYER1_JOBS` forms at once, each case
-/// through `check` with a reference runner of its own; prints the summary, its first words `layer 1` and
-/// `list`, and the known failures met, and returns the failing forms' names, sorted.
-fn run_forms<G: GuestTest>(
-    forms: &[G::Form],
-    count: u32,
-    list: &str,
-    check: impl Fn(&mut Reference, &G::Form, &Case) -> Result<Agreement, String> + Sync,
-) -> Vec<String> {
-    let seed = setting("WC_LAYER1_SEED", 1);
-    let jobs = setting("WC_LAYER1_JOBS", 1).max(1);
-    let only: Option<Vec<String>> = std::env::var("WC_LAYER1_FORMS")
-        .ok()
-        .map(|list| list.split(',').map(String::from).collect());
-    let chosen: Vec<_> = forms
-        .iter()
-        .filter(|f| {
-            only.as_ref()
-                .is_none_or(|names| names.iter().any(|n| n == G::form_name(f)))
-        })
-        .collect();
-    let failures = Mutex::new(Vec::new());
-    let known = Mutex::new(Known::default());
-    // Reference runners not in use; a form takes one, or starts one when none is free.
-    let free = Mutex::new(Vec::new());
-    at_once(jobs, chosen.len() as u64, |i| {
-        let form = chosen[i as usize];
-        let name = G::form_name(form);
-        let taken = free.lock().unwrap().pop();
-        let reference = RefCell::new(taken.unwrap_or_else(|| Reference::start(&G::REFERENCE)));
-        let mut config = Config::with_cases(count);
-        config.failure_persistence = None;
-        config.max_global_rejects = REJECTS_PER_CASE * count;
-        let mut runner = generator(seed, name, config);
-        let result = runner.run(&G::cases(form), |case| {
-            let agreement =
-                check(&mut reference.borrow_mut(), form, &case).map_err(TestCaseError::fail)?;
-            known.lock().unwrap().add(name, agreement);
-            Ok(())
-        });
-        free.lock().unwrap().push(reference.into_inner());
-        if let Err(error) = result {
-            eprintln!("{name}: {error}");
-            failures
-                .lock()
-                .unwrap()
-                .push((G::form_group(form).to_string(), name.to_string()));
-        }
-    });
-    let failing = failures.into_inner().unwrap();
-    let mut groups = BTreeMap::<&str, usize>::new();
-    for (group, _) in &failing {
-        *groups.entry(group).or_default() += 1;
-    }
-    let mut failures: Vec<String> = failing.iter().map(|(_, name)| name.clone()).collect();
-    failures.sort();
-    eprintln!(
-        "layer 1{list}: {} forms, {count} cases each, seed {seed}, {jobs} at once, {} failing: {failures:?}",
-        chosen.len(),
-        failures.len()
-    );
-    if !groups.is_empty() {
-        eprintln!("layer 1 failing by group: {groups:?}");
-    }
-    known
-        .into_inner()
-        .unwrap()
-        .report(&format!("layer 1{list}"));
-    failures
-}
-
-fn every_form_matches_the_cpu<G: GuestTest>() {
-    let count = setting("WC_LAYER1_CASES", 64) as u32;
-    let failures = run_forms::<G>(G::forms(), count, "", |reference, _, case| {
-        compare::<G>(reference, case)
-    });
-    assert!(
-        failures.is_empty(),
-        "{} forms differ from the CPU",
-        failures.len()
-    );
-}
-
-/// The forms of features not offered stop ours as illegal instruction; where the reference lacks the
-/// feature too it must stop the same, else what it did is recorded. `WC_LAYER1_UNOFFERED_CASES` cases a form
-/// (default 64), with the seed and the choice of forms as for the default forms.
-fn unoffered_forms_are_illegal<G: GuestTest>() {
-    let count = setting("WC_LAYER1_UNOFFERED_CASES", 64) as u32;
-    // What the reference did with the forms it has: each stop's kind, counted, and the forms it too refused.
-    let recorded = Mutex::new(BTreeMap::<String, u64>::new());
-    let refused_there = Mutex::new(BTreeMap::<String, u64>::new());
-    let failures = run_forms::<G>(
-        G::unoffered_forms(),
-        count,
-        " of the unoffered forms",
-        |reference, form, case| {
-            let actual = translated_with::<G>(case, |m| m.set_offer(Default::default()));
-            if !G::reference_has(form) {
-                return compare_outcome::<G>(reference, case, actual);
-            }
-            if actual.stop != Stop::Illegal {
-                return Err(format!(
-                    "code {:02x?} ({}): translated {:?}, not illegal instruction",
-                    case.code.code(),
-                    G::disassemble(case.code.code()),
-                    actual.stop
-                ));
-            }
-            let stop = on_reference::<G>(reference, case).stop;
-            let kind = format!("{stop:?}");
-            let kind = kind.split('(').next().unwrap_or_default().to_string();
-            *recorded.lock().unwrap().entry(kind).or_default() += 1;
-            if stop == Stop::Illegal {
-                *refused_there
-                    .lock()
-                    .unwrap()
-                    .entry(G::form_name(form).to_string())
-                    .or_default() += 1;
-            }
-            Ok(Agreement::Same)
-        },
-    );
-    eprintln!(
-        "layer 1, the unoffered forms the reference has: its stops {:?}; forms it refused too, with cases: {:?}",
-        recorded.into_inner().unwrap(),
-        refused_there.into_inner().unwrap()
-    );
-    assert!(
-        failures.is_empty(),
-        "{} unoffered forms are not illegal as they must be",
-        failures.len()
-    );
-}
-
-/// The guest's hand-made cases: each compared with the CPU unless answered by design, and checked for
-/// what it must do.
-fn hand_cases_do_what_they_must<G: GuestTest>() {
-    let mut reference = Reference::start(&G::REFERENCE);
-    let all = G::hand_cases();
-    for designed in &all {
-        let name = designed.name;
-        if designed.compared {
-            let agreement = compare::<G>(&mut reference, &designed.case)
-                .unwrap_or_else(|report| panic!("{name}: {report}"));
-            assert_eq!(agreement, Agreement::Same, "{name}");
-        }
-        let (outcome, machine) = translated_on::<G>(&designed.case, |_| {});
-        if let Some(tracking) = designed.tracking {
-            assert_eq!(
-                G::tracked(machine.stopped_state()),
-                tracking,
-                "{name}: whether the float flags are kept"
-            );
-        }
-        for &(reason, count) in &designed.counted {
-            assert_eq!(machine.count_named(reason), count, "{name}: {reason}");
-        }
-        if let Some(stop) = designed.stop {
-            assert_eq!(outcome.stop, stop, "{name}");
-        }
-        for &(field, value) in &designed.fields {
-            let field_name = G::REFERENCE.fields[field];
-            assert_eq!(
-                outcome.state.0[field], value,
-                "{name}: {field_name} is {:#x}, must be {value:#x}",
-                outcome.state.0[field]
-            );
-        }
-    }
-    eprintln!("layer 1: {} hand-made cases", all.len());
-}
-
-/// Bytes in no form of the guest's, for any feature, stop ours as they stop the CPU. Random cases,
-/// `WC_LAYER1_CASES` of them (default 64), seeded from `WC_LAYER1_SEED`.
-fn bytes_in_no_form_stop_as_on_the_cpu<G: GuestTest>() {
-    let count = setting("WC_LAYER1_CASES", 64) as u32;
-    let seed = setting("WC_LAYER1_SEED", 1);
-    let mut config = Config::with_cases(count);
-    config.failure_persistence = None;
-    config.max_local_rejects = REJECTS_PER_CASE * count;
-    let mut runner = TestRunner::new_with_rng(config, seeded::generator(seed, b"no form ", ""));
-    let reference = RefCell::new(Reference::start(&G::REFERENCE));
-    let known = RefCell::new(Known::default());
-    let result = runner.run(&G::no_form(seed), |case| {
-        let agreement =
-            compare::<G>(&mut reference.borrow_mut(), &case).map_err(TestCaseError::fail)?;
-        known
-            .borrow_mut()
-            .add(&G::disassemble(case.code.code()), agreement);
-        Ok(())
-    });
-    eprintln!("layer 1: {count} cases in no form, seed {seed}");
-    known.borrow().report("layer 1, no form");
-    result.unwrap();
-}
-
-/// What the CPU offers is what a program is told it has.
-fn offered_features_are_the_ones_programs_are_told<G: GuestTest>() {
-    let (mut offered, mut told) = (G::offered(), G::told());
-    offered.sort();
-    told.sort();
-    assert_eq!(offered, told);
-}
-
 /// A request the runner cannot read fails the run with the runner's own message, not as a lost connection.
 #[test]
 fn the_reference_reports_its_own_failure_arm64() {
-    Reference::check_runner_failure(&Arm64::REFERENCE);
+    Reference::check_runner_failure(&wcontainers_translator_test::arm64::part::REFERENCE);
 }
 
 #[test]
 fn offered_features_are_the_ones_programs_are_told_arm64() {
-    offered_features_are_the_ones_programs_are_told::<Arm64>();
+    arm64::offered_features_are_the_ones_programs_are_told();
 }
 
 #[test]
 fn every_form_matches_the_cpu_arm64() {
-    every_form_matches_the_cpu::<Arm64>();
+    arm64::every_form_matches_the_cpu();
 }
 
 #[test]
 fn sample_matches_the_cpu_in_chrome_arm64() {
-    sample_matches_the_cpu_in_chrome::<Arm64>();
+    arm64::sample_matches_the_cpu_in_chrome();
 }
 
 #[test]
 fn hand_cases_do_what_they_must_arm64() {
-    hand_cases_do_what_they_must::<Arm64>();
+    arm64::hand_cases_do_what_they_must();
 }
 
 #[test]
 fn bytes_in_no_form_stop_as_on_the_cpu_arm64() {
-    bytes_in_no_form_stop_as_on_the_cpu::<Arm64>();
+    arm64::bytes_in_no_form_stop_as_on_the_cpu();
 }
 
 #[test]
 fn offered_features_are_the_ones_programs_are_told_x86_64() {
-    offered_features_are_the_ones_programs_are_told::<X86_64>();
+    x86_64::offered_features_are_the_ones_programs_are_told();
 }
 
 /// `rdtsc` and `rdtscp` give the clock's nanoseconds as edx:eax with the upper halves cleared, and `rdtscp`
 /// ecx 0, the processor (plan 5.10): answered by design, so checked here and not against the CPU.
 #[test]
 fn the_time_stamp_is_the_clock_x86_64() {
-    use wcontainers_translator_test::guest::x86_64::plain;
     use wcontainers_translator_test::layout::CODE;
+    use wcontainers_translator_test::x86_64::part::plain;
     use wcontainers_x86::{RAX, RCX, RDX};
     const RDTSC: &[u8] = &[0x0f, 0x31];
     const RDTSCP: &[u8] = &[0x0f, 0x01, 0xf9];
@@ -351,11 +81,11 @@ fn the_time_stamp_is_the_clock_x86_64() {
             case.state.0[field] = u64::MAX.into();
         }
         let before = std::time::Instant::now();
-        let outcome = translated_with::<X86_64>(&case, |machine| machine.set_clock(CLOCK));
+        let outcome = x86_64::translated_with(&case, |machine| machine.set_clock(CLOCK));
         let ran = before.elapsed().as_nanos() as u64;
         assert_eq!(
             outcome.stop,
-            Stop::Landed(CODE + code.len() as u64),
+            x86_64::Stop::Landed(CODE + code.len() as u64),
             "{code:02x?}"
         );
         let [low, high, processor_number] =
@@ -382,9 +112,7 @@ fn the_time_stamp_is_the_clock_x86_64() {
 /// the translator decodes as another code.
 #[test]
 fn every_default_code_is_drawn_and_written_x86_64() {
-    use wcontainers_translator_test::guest::x86_64::{
-        NOT_DRAWN, default_left_out, unwritten_forms,
-    };
+    use wcontainers_translator_test::x86_64::part::{NOT_DRAWN, default_left_out, unwritten_forms};
     let left = default_left_out();
     for (code, why) in &left {
         eprintln!("{code}: {why}");
@@ -405,7 +133,7 @@ fn every_default_code_is_drawn_and_written_x86_64() {
 
 #[test]
 fn every_form_matches_the_cpu_x86_64() {
-    every_form_matches_the_cpu::<X86_64>();
+    x86_64::every_form_matches_the_cpu();
 }
 
 /// The native output for a host process (docs/x86-native-output.md section 8): every form's cases translated,
@@ -414,18 +142,22 @@ fn every_form_matches_the_cpu_x86_64() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn every_form_matches_the_cpu_natively_x86_64() {
-    use wcontainers_translator_test::guest::x86_64::native::{
+    use wcontainers_translator_test::x86_64::part::native::{
         ANSWERS_CHECKED, FAR_UNLIKE_MEANING, REFERENCE_HOST, SECOND_CALLS, STOPS_CHECKED,
-        STRINGS_RUN, TRAPS_CHECKED, compare,
+        STRINGS_RUN, TRAPS_CHECKED, x86_64::compare,
     };
     let count = setting("WC_LAYER1_CASES", 64) as u32;
     let ended = Mutex::new(BTreeMap::<String, u64>::new());
-    let failures =
-        run_forms::<X86_64>(X86_64::forms(), count, " natively", |reference, _, case| {
-            let (agreement, how) = compare(reference, case, REFERENCE_HOST)?;
+    let failures = x86_64::run_forms(
+        wcontainers_translator_test::x86_64::part::forms(),
+        count,
+        " natively",
+        |reference, _, case| {
+            let (agreement, how) = x86_64::compare(reference, case, REFERENCE_HOST)?;
             *ended.lock().unwrap().entry(format!("{how:?}")).or_default() += 1;
             Ok(agreement)
-        });
+        },
+    );
     eprintln!(
         "layer 1 natively, the cases by how they ended: {:?}; the inside's answer equal to the meaning's in {}; \
          the float status route's second call made in {}; a repeated string under the count calling the inside \
@@ -454,7 +186,7 @@ fn every_form_matches_the_cpu_natively_x86_64() {
 #[test]
 fn every_form_matches_the_cpu_in_process_x86_64() {
     use std::sync::atomic::Ordering::Relaxed;
-    use wcontainers_translator_test::guest::x86_64::native::{
+    use wcontainers_translator_test::x86_64::part::native::{
         REFERENCE_HOST, REFUSED, RSP_INTO_WINDOW, compare_in_process,
     };
     use wcontainers_x86::native::Check;
@@ -467,8 +199,8 @@ fn every_form_matches_the_cpu_in_process_x86_64() {
         }
         let (refused, into_window) = (REFUSED.load(Relaxed), RSP_INTO_WINDOW.load(Relaxed));
         let ended = Mutex::new(BTreeMap::<String, u64>::new());
-        let failures = run_forms::<X86_64>(
-            X86_64::forms(),
+        let failures = x86_64::run_forms(
+            wcontainers_translator_test::x86_64::part::forms(),
             count,
             " in process",
             |reference, _, case| {
@@ -503,9 +235,9 @@ fn every_form_matches_the_cpu_in_process_x86_64() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64() {
-    use wcontainers_translator_test::guest::x86_64::native::{REFERENCE_HOST, compare_in_process};
-    use wcontainers_translator_test::guest::x86_64::{FS, GS, RFLAGS, RSP, plain};
     use wcontainers_translator_test::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
+    use wcontainers_translator_test::x86_64::part::native::{REFERENCE_HOST, compare_in_process};
+    use wcontainers_translator_test::x86_64::part::{FS, GS, RFLAGS, RSP, plain};
     use wcontainers_x86::native::Check;
     use wcontainers_x86::{DF, RAX, RBX, RCX, RDI, RSI};
     const WINDOW: u64 = 1 << u32::BITS;
@@ -543,7 +275,7 @@ fn the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64() {
         ));
     }
     // rep movsb and rep stosb with a large count, upward and (DF set) downward, from inside the data.
-    let down = |mut case: Case| {
+    let down = |mut case: x86_64::Case| {
         case.state.0[RFLAGS] |= u128::from(DF);
         case
     };
@@ -742,7 +474,7 @@ fn the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64() {
         cases.push(with(&[0xff, 0x13], &[(RSP, rsp), (r(RBX), DATA)]));
         cases.push(with(&[0x9c], &[(RSP, rsp)]));
     }
-    let mut reference = Reference::start(&X86_64::REFERENCE);
+    let mut reference = Reference::start(&wcontainers_translator_test::x86_64::part::REFERENCE);
     let mut failures = Vec::new();
     for (name, check) in [("wrapping", Check::Wrapping), ("exact", Check::Exact)] {
         let (mut same, mut known, mut how) = (0, BTreeMap::<&str, u64>::new(), BTreeMap::new());
@@ -751,8 +483,8 @@ fn the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64() {
                 Ok((agreement, ended)) => {
                     *how.entry(format!("{ended:?}")).or_insert(0) += 1;
                     match agreement {
-                        Agreement::Same => same += 1,
-                        Agreement::KnownFailure(why) => *known.entry(why).or_default() += 1,
+                        x86_64::Agreement::Same => same += 1,
+                        x86_64::Agreement::KnownFailure(why) => *known.entry(why).or_default() += 1,
                     }
                 }
                 Err(report) => failures.push(format!("{name} {:02x?}: {report}", case.code.code())),
@@ -772,8 +504,8 @@ fn the_window_cases_of_the_plan_match_the_cpu_in_process_x86_64() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn the_inside_answers_cpuid_and_xgetbv_as_the_meaning_x86_64() {
-    use wcontainers_translator_test::guest::x86_64::{native::answered, plain};
-    use wcontainers_translator_test::layer1::translated;
+    use wcontainers_translator_test::x86_64::layer1::translated;
+    use wcontainers_translator_test::x86_64::part::{native::answered, plain};
     use wcontainers_x86::cpuid::{EXTENDED, MAX_BASIC, MAX_EXTENDED, leaves, sub_leaves};
     use wcontainers_x86::{RAX, RCX};
     const CPUID: &[u8] = &[0x0f, 0xa2];
@@ -787,7 +519,7 @@ fn the_inside_answers_cpuid_and_xgetbv_as_the_meaning_x86_64() {
         case.state.0[rax] = (UPPER | u64::from(eax)).into();
         case.state.0[rcx] = (UPPER | u64::from(ecx)).into();
         let answered = answered(&case).expect("an instruction the inside answers");
-        let meaning = translated::<X86_64>(&case);
+        let meaning = translated(&case);
         assert!(
             answered == meaning,
             "{code:02x?} eax {eax:#x} ecx {ecx:#x}: the answer {:?} {:x?}, the meaning {:?} {:x?}",
@@ -816,21 +548,21 @@ fn the_inside_answers_cpuid_and_xgetbv_as_the_meaning_x86_64() {
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64() {
-    use wcontainers_translator_test::guest::x86_64::{
+    use wcontainers_translator_test::layout::{DATA, DATA_BYTES, DATA_WRITABLE};
+    use wcontainers_translator_test::x86_64::layer1::translated;
+    use wcontainers_translator_test::x86_64::part::{
         FS, GS, RFLAGS, RSP, XMM, YMMH, native::answered, plain,
     };
-    use wcontainers_translator_test::layer1::translated;
-    use wcontainers_translator_test::layout::{DATA, DATA_BYTES, DATA_WRITABLE};
     use wcontainers_x86::{DF, ID, NT, RCX, USER_DS, USER_END};
     let mut checked = 0;
-    let mut check = |case: &Case| {
+    let mut check = |case: &x86_64::Case| {
         let answered = answered(case).unwrap_or_else(|| {
             panic!(
                 "{:02x?}: an instruction the inside answers",
                 case.code.code()
             )
         });
-        let meaning = translated::<X86_64>(case);
+        let meaning = translated(case);
         assert!(
             answered == meaning,
             "{:02x?}: the answer {:?} {:x?} {:x?}, the meaning {:?} {:x?} {:x?}",
@@ -1008,13 +740,13 @@ fn the_inside_answers_reciprocals_flags_and_descriptors_as_the_meaning_x86_64() 
 
 /// The inside's answer equals the meaning's for `case`.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn answered_as_the_meaning(case: &Case) {
-    use wcontainers_translator_test::guest::x86_64::native::answered;
-    use wcontainers_translator_test::layer1::translated;
+fn answered_as_the_meaning(case: &x86_64::Case) {
+    use wcontainers_translator_test::x86_64::layer1::translated;
+    use wcontainers_translator_test::x86_64::part::native::answered;
     let code = case.code.code();
     let answered =
         answered(case).unwrap_or_else(|| panic!("{code:02x?}: an instruction the inside answers"));
-    let meaning = translated::<X86_64>(case);
+    let meaning = translated(case);
     assert!(
         answered == meaning,
         "{code:02x?}: the answer {:?} {:x?} {:x?}, the meaning {:?} {:x?} {:x?}",
@@ -1035,10 +767,10 @@ fn answered_as_the_meaning(case: &Case) {
 #[test]
 fn the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64() {
     use wcontainers_abi::PAGE_SIZE;
-    use wcontainers_translator_test::guest::x86_64::native::{ANSWER_CLOCK, answered};
-    use wcontainers_translator_test::guest::x86_64::{FS, RFLAGS, RSP, plain};
-    use wcontainers_translator_test::layer1::translated_with;
     use wcontainers_translator_test::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
+    use wcontainers_translator_test::x86_64::layer1::translated_with;
+    use wcontainers_translator_test::x86_64::part::native::{ANSWER_CLOCK, answered};
+    use wcontainers_translator_test::x86_64::part::{FS, RFLAGS, RSP, plain};
     use wcontainers_x86::{
         ALIGNMENT_CHECK, ALWAYS, NT, RAX, RCX, RDX, TF, USER_CS, USER_DS, USER_END, USER32_CS,
     };
@@ -1200,8 +932,7 @@ fn the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64() 
             case.state.0[field] = u64::MAX.into();
         }
         let mut answer = answered(&case).expect("an instruction the inside answers");
-        let mut meaning =
-            translated_with::<X86_64>(&case, |machine| machine.set_clock(ANSWER_CLOCK));
+        let mut meaning = x86_64::translated_with(&case, |machine| machine.set_clock(ANSWER_CLOCK));
         let ticks = |state: &[u128]| (state[rdx] as u64) << u32::BITS | state[rax] as u64;
         assert_eq!(ticks(&answer.state.0), ANSWER_CLOCK, "{code:02x?}");
         assert!(ticks(&meaning.state.0) >= ANSWER_CLOCK, "{code:02x?}");
@@ -1232,8 +963,8 @@ fn the_inside_answers_far_transfers_bases_and_the_clock_as_the_meaning_x86_64() 
 #[test]
 fn the_inside_answers_xsave_and_xrstor_as_the_meaning_x86_64() {
     use wcontainers_abi::PAGE_SIZE;
-    use wcontainers_translator_test::guest::x86_64::{FS, FSW, R0, XMM, YMMH, plain};
     use wcontainers_translator_test::layout::{DATA, DATA_BYTES, DATA_WRITABLE};
+    use wcontainers_translator_test::x86_64::part::{FS, FSW, R0, XMM, YMMH, plain};
     use wcontainers_x86::cpuid::{XSAVE_AVX, XSAVE_SSE, XSAVE_X87, xsave_bytes};
     use wcontainers_x86::{Fxsave, MXCSR_AT_START, MXCSR_WRITABLE, RAX, RCX, USER_END};
     /// XSTATE_BV after the legacy area, the header's next words, MXCSR and the x87 header's reserved byte.
@@ -1353,11 +1084,11 @@ fn the_inside_answers_xsave_and_xrstor_as_the_meaning_x86_64() {
 fn the_second_call_writes_and_takes_the_x87_pointers_as_the_meaning_x86_64() {
     use wcontainers_abi::PAGE_SIZE;
     use wcontainers_translator::LookAhead;
-    use wcontainers_translator_test::guest::x86_64::native::{
-        REFERENCE_HOST, compare as natively, run_with_pointers,
-    };
-    use wcontainers_translator_test::guest::x86_64::{FS, GS, plain};
     use wcontainers_translator_test::layout::{CODE, DATA};
+    use wcontainers_translator_test::x86_64::part::native::{
+        REFERENCE_HOST, run_with_pointers, x86_64::compare as natively,
+    };
+    use wcontainers_translator_test::x86_64::part::{FS, GS, plain};
     use wcontainers_x86::x87::{BUSY, SUMMARY};
     use wcontainers_x86::{Fxsave, MXCSR_AT_START, MXCSR_WRITABLE, RCX, RDX, X86Block};
     use zerocopy::FromBytes;
@@ -1366,7 +1097,7 @@ fn the_second_call_writes_and_takes_the_x87_pointers_as_the_meaning_x86_64() {
     const MASKED: u16 = 0x7f;
     const KEPT_CONTROL: u16 = 0x1f3f;
     const MXCSR: usize = std::mem::offset_of!(Fxsave, mxcsr);
-    let mut reference = Reference::start(&X86_64::REFERENCE);
+    let mut reference = Reference::start(&wcontainers_translator_test::x86_64::part::REFERENCE);
     // The image on the writable data's second page, the prior instructions' operand on its third.
     let image_at = DATA + PAGE_SIZE;
     let operand_at = image_at + PAGE_SIZE;
@@ -1462,7 +1193,7 @@ fn the_second_call_writes_and_takes_the_x87_pointers_as_the_meaning_x86_64() {
                     image[MXCSR..][..size_of::<u32>()].copy_from_slice(&mxcsr.to_le_bytes());
                     case.placed = ((image_at - DATA) as u32, image);
                 }
-                let (meaning, machine) = translated_on::<X86_64>(&case, |_| {});
+                let (meaning, machine) = x86_64::translated_on(&case, |_| {});
                 let (block, _) =
                     X86Block::read_from_prefix(machine.stopped_state()).expect("a block");
                 let f = &block.fxsave;
@@ -1520,11 +1251,11 @@ fn the_second_call_writes_and_takes_the_x87_pointers_as_the_meaning_x86_64() {
 #[test]
 fn the_inside_answers_enter_and_the_x87_stores_as_the_meaning_x86_64() {
     use wcontainers_abi::PAGE_SIZE;
-    use wcontainers_translator_test::guest::x86_64::native::{
-        Ended, REFERENCE_HOST, answered_with_pointers, compare as natively,
-    };
-    use wcontainers_translator_test::guest::x86_64::{FCW, FS, FSW, FTW, R0, RSP, plain};
     use wcontainers_translator_test::layout::{DATA, DATA_BYTES, DATA_WRITABLE};
+    use wcontainers_translator_test::x86_64::part::native::{
+        Ended, REFERENCE_HOST, answered_with_pointers, x86_64::compare as natively,
+    };
+    use wcontainers_translator_test::x86_64::part::{FCW, FS, FSW, FTW, R0, RSP, plain};
     use wcontainers_x86::native::HostMatches;
     use wcontainers_x86::x87::{
         BIAS, BUSY, EXCEPTIONS, FIELD, INTEGER_BIT, INVALID, PRECISION_SHIFT, QUIET_BIT,
@@ -1536,13 +1267,13 @@ fn the_inside_answers_enter_and_the_x87_stores_as_the_meaning_x86_64() {
         partial_writes: false,
         ..REFERENCE_HOST
     };
-    let mut reference = Reference::start(&X86_64::REFERENCE);
+    let mut reference = Reference::start(&wcontainers_translator_test::x86_64::part::REFERENCE);
     let (mut checked, mut same, mut known) = (0, 0, 0);
-    let mut check = |case: &Case, native: bool| {
+    let mut check = |case: &x86_64::Case, native: bool| {
         let code = case.code.code();
         let (answered, pointers) = answered_with_pointers(case)
             .unwrap_or_else(|| panic!("{code:02x?}: an instruction the inside answers"));
-        let (meaning, machine) = translated_on::<X86_64>(case, |_| {});
+        let (meaning, machine) = x86_64::translated_on(case, |_| {});
         let (block, _) = X86Block::read_from_prefix(machine.stopped_state()).expect("a block");
         let f = &block.fxsave;
         let theirs = (f.fip, f.fdp, f.fop);
@@ -1709,8 +1440,8 @@ fn the_inside_answers_enter_and_the_x87_stores_as_the_meaning_x86_64() {
 /// flags conditions read.
 #[test]
 fn a_condition_holds_as_the_meaning_says_x86_64() {
-    use wcontainers_translator_test::guest::x86_64::{RFLAGS, plain};
-    use wcontainers_translator_test::layer1::translated;
+    use wcontainers_translator_test::x86_64::layer1::translated;
+    use wcontainers_translator_test::x86_64::part::{RFLAGS, plain};
     use wcontainers_x86::{CF, Condition, OF, PF, RAX, SF, ZF};
     /// `setcc al`: the two-byte opcode 0x0f 0x90 plus the condition's code, and ModRM naming al.
     const SETCC: [u8; 2] = [0x0f, 0x90];
@@ -1729,7 +1460,7 @@ fn a_condition_holds_as_the_meaning_says_x86_64() {
             let bytes = [SETCC[0], SETCC[1] + code as u8, AL];
             let mut case = plain(&bytes);
             case.state.0[RFLAGS] |= u128::from(rflags);
-            let outcome = translated::<X86_64>(&case);
+            let outcome = translated(&case);
             let set = outcome.state.0[rax] & u128::from(u8::MAX);
             assert_eq!(
                 set != 0,
@@ -1745,29 +1476,29 @@ fn a_condition_holds_as_the_meaning_says_x86_64() {
 
 #[test]
 fn unoffered_forms_are_illegal_x86_64() {
-    unoffered_forms_are_illegal::<X86_64>();
+    x86_64::unoffered_forms_are_illegal();
 }
 
 #[test]
 fn bytes_in_no_form_stop_as_on_the_cpu_x86_64() {
-    bytes_in_no_form_stop_as_on_the_cpu::<X86_64>();
+    x86_64::bytes_in_no_form_stop_as_on_the_cpu();
 }
 
 #[test]
 fn sample_matches_the_cpu_in_chrome_x86_64() {
-    sample_matches_the_cpu_in_chrome::<X86_64>();
+    x86_64::sample_matches_the_cpu_in_chrome();
 }
 
 #[test]
 fn hand_cases_do_what_they_must_x86_64() {
-    hand_cases_do_what_they_must::<X86_64>();
+    x86_64::hand_cases_do_what_they_must();
 }
 
 /// Every x86-64 code of a feature not offered has cases, but those left out by design and those the
 /// translator decodes as another code, which are in that code's list.
 #[test]
 fn every_unoffered_code_is_drawn_x86_64() {
-    use wcontainers_translator_test::guest::x86_64::{NOT_DRAWN, unoffered_left_out};
+    use wcontainers_translator_test::x86_64::part::{NOT_DRAWN, unoffered_left_out};
     let left = unoffered_left_out();
     for (code, why) in &left {
         eprintln!("{code}: {why}");
@@ -1793,24 +1524,24 @@ fn every_unoffered_code_is_drawn_x86_64() {
 #[test]
 fn the_shapes_of_the_plan_match_the_cpu_natively_x86_64() {
     use wcontainers_abi::PAGE_SIZE;
-    use wcontainers_translator_test::guest::x86_64::native::{
-        Ended, REFERENCE_HOST, compare as natively,
-    };
-    use wcontainers_translator_test::guest::x86_64::{FS, GS, RFLAGS, RSP, XMM, plain};
     use wcontainers_translator_test::layout::{CODE, DATA};
+    use wcontainers_translator_test::x86_64::part::native::{
+        Ended, REFERENCE_HOST, x86_64::compare as natively,
+    };
+    use wcontainers_translator_test::x86_64::part::{FS, GS, RFLAGS, RSP, XMM, plain};
     use wcontainers_x86::{R9, R10, RAX, RBX, RCX, RDI, RSI, USER_END};
     // Where the stack, a string's destination and a bit offset are, and a GS base above 2^32 (the check's gs67.c).
     const STACK_AT: u64 = PAGE_SIZE / 2;
     const AWAY: u64 = 1 << u8::BITS;
     const HIGH_BASE: u64 = 3 << u32::BITS;
-    let mut reference = Reference::start(&X86_64::REFERENCE);
+    let mut reference = Reference::start(&wcontainers_translator_test::x86_64::part::REFERENCE);
     let (mut same, mut known, mut failures) = (0, BTreeMap::<&str, u64>::new(), Vec::new());
-    let mut check = |case: Case| match natively(&mut reference, &case, REFERENCE_HOST) {
-        Ok((Agreement::Same, ended)) => {
+    let mut check = |case: x86_64::Case| match natively(&mut reference, &case, REFERENCE_HOST) {
+        Ok((x86_64::Agreement::Same, ended)) => {
             same += 1;
             Some(ended)
         }
-        Ok((Agreement::KnownFailure(why), ended)) => {
+        Ok((x86_64::Agreement::KnownFailure(why), ended)) => {
             *known.entry(why).or_default() += 1;
             Some(ended)
         }
@@ -2022,4 +1753,80 @@ fn the_shapes_of_the_plan_match_the_cpu_natively_x86_64() {
         chosen.is_empty(),
         "segment prefixes ending otherwise: {chosen:02x?}"
     );
+}
+
+/// The tests with ARM64 as the guest, those written once for both included from `for_guest`.
+mod arm64 {
+    use super::*;
+    pub(super) use wcontainers_translator_test::arm64::guest::Case;
+    pub(super) use wcontainers_translator_test::arm64::layer1::{
+        Agreement, compare, compare_outcome, translated_in_chrome, translated_on,
+    };
+    use wcontainers_translator_test::arm64::part;
+
+    include!("for_guest/layer1.rs");
+}
+
+/// The tests with x86-64 as the guest, those written once for both included from `for_guest`.
+mod x86_64 {
+    use super::*;
+    pub(super) use wcontainers_translator_test::x86_64::guest::{Case, Stop};
+    pub(super) use wcontainers_translator_test::x86_64::layer1::{
+        Agreement, compare, compare_outcome, on_reference, translated_in_chrome, translated_on,
+        translated_with,
+    };
+    use wcontainers_translator_test::x86_64::part;
+
+    include!("for_guest/layer1.rs");
+
+    /// The forms of features not offered stop ours as illegal instruction; where the reference lacks the
+    /// feature too it must stop the same, else what it did is recorded. `WC_LAYER1_UNOFFERED_CASES` cases a form
+    /// (default 64), with the seed and the choice of forms as for the default forms.
+    pub(super) fn unoffered_forms_are_illegal() {
+        let count = setting("WC_LAYER1_UNOFFERED_CASES", 64) as u32;
+        // What the reference did with the forms it has: each stop's kind, counted, and the forms it too refused.
+        let recorded = Mutex::new(BTreeMap::<String, u64>::new());
+        let refused_there = Mutex::new(BTreeMap::<String, u64>::new());
+        let failures = run_forms(
+            part::unoffered_forms(),
+            count,
+            " of the unoffered forms",
+            |reference, form, case| {
+                let actual = translated_with(case, |m| m.set_offer(Default::default()));
+                if !part::reference_has(form) {
+                    return compare_outcome(reference, case, actual);
+                }
+                if actual.stop != Stop::Illegal {
+                    return Err(format!(
+                        "code {:02x?} ({}): translated {:?}, not illegal instruction",
+                        case.code.code(),
+                        part::disassemble(case.code.code()),
+                        actual.stop
+                    ));
+                }
+                let stop = on_reference(reference, case).stop;
+                let kind = format!("{stop:?}");
+                let kind = kind.split('(').next().unwrap_or_default().to_string();
+                *recorded.lock().unwrap().entry(kind).or_default() += 1;
+                if stop == Stop::Illegal {
+                    *refused_there
+                        .lock()
+                        .unwrap()
+                        .entry(part::form_name(form).to_string())
+                        .or_default() += 1;
+                }
+                Ok(Agreement::Same)
+            },
+        );
+        eprintln!(
+            "layer 1, the unoffered forms the reference has: its stops {:?}; forms it refused too, with cases: {:?}",
+            recorded.into_inner().unwrap(),
+            refused_there.into_inner().unwrap()
+        );
+        assert!(
+            failures.is_empty(),
+            "{} unoffered forms are not illegal as they must be",
+            failures.len()
+        );
+    }
 }

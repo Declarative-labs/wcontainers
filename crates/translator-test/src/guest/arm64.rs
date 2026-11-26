@@ -1,17 +1,23 @@
 //! ARM64's part of the harness: its forms from Arm's list, its value strategies, its state as the
 //! reference's fields, and what its architecture leaves open.
 
+#[path = "arm64/assemble.rs"]
 mod assemble;
+#[path = "arm64/corpora.rs"]
 mod corpora;
+#[path = "arm64/words.rs"]
 pub mod words;
 
-use super::*;
+use super::guest::*;
+use crate::arm64::layer2::{Model, Program};
+use crate::arm64::programs::Blob;
 use crate::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE};
 use crate::reference::Target;
 use proptest::prelude::*;
 use std::sync::OnceLock;
 use wcontainers_abi::{HWCAP, HWCAP2, RegisterBlock, hwcap};
-use wcontainers_arm64::forms::{self, Form};
+use wcontainers_arm64::forms;
+pub use wcontainers_arm64::forms::Form;
 use wcontainers_arm64::{Arm64, decode};
 use zerocopy::{FromBytes, IntoBytes};
 
@@ -24,335 +30,336 @@ const V: usize = 35;
 const FPSR: usize = 67;
 const FPCR: usize = 68;
 
-impl GuestTest for Arm64 {
-    const REFERENCE: Target = Target {
-        rust_target: "aarch64-unknown-linux-musl",
-        docker_platform: "linux/arm64",
-        reference_host: "WC_REFERENCE_AARCH64",
-        remote_directory: "wcontainers-arm64/reference",
-        fields: &[
-            "x0",
-            "x1",
-            "x2",
-            "x3",
-            "x4",
-            "x5",
-            "x6",
-            "x7",
-            "x8",
-            "x9",
-            "x10",
-            "x11",
-            "x12",
-            "x13",
-            "x14",
-            "x15",
-            "x16",
-            "x17",
-            "x18",
-            "x19",
-            "x20",
-            "x21",
-            "x22",
-            "x23",
-            "x24",
-            "x25",
-            "x26",
-            "x27",
-            "x28",
-            "x29",
-            "x30",
-            "sp",
-            "pc",
-            "nzcv",
-            "tpidr_el0",
-            "v0",
-            "v1",
-            "v2",
-            "v3",
-            "v4",
-            "v5",
-            "v6",
-            "v7",
-            "v8",
-            "v9",
-            "v10",
-            "v11",
-            "v12",
-            "v13",
-            "v14",
-            "v15",
-            "v16",
-            "v17",
-            "v18",
-            "v19",
-            "v20",
-            "v21",
-            "v22",
-            "v23",
-            "v24",
-            "v25",
-            "v26",
-            "v27",
-            "v28",
-            "v29",
-            "v30",
-            "v31",
-            "fpsr",
-            "fpcr",
-        ],
-    };
-    const C_TARGET: &'static str = "aarch64-linux-musl";
-    // zig sets the CPU's features itself; this is how it leaves out floating point and vectors.
-    const GENERAL_ONLY: &'static [&'static str] = &["-mcpu=generic-neon-fp_armv8"];
-    const NAME: &'static str = "arm64";
-    const ELF_MACHINE: object::elf::Machine = object::elf::EM_AARCH64;
-    const MUSL_LOADER: &'static str = "/lib/ld-musl-aarch64.so.1";
+pub const REFERENCE: Target = Target {
+    rust_target: "aarch64-unknown-linux-musl",
+    docker_platform: "linux/arm64",
+    reference_host: "WC_REFERENCE_AARCH64",
+    remote_directory: "wcontainers-arm64/reference",
+    fields: &[
+        "x0",
+        "x1",
+        "x2",
+        "x3",
+        "x4",
+        "x5",
+        "x6",
+        "x7",
+        "x8",
+        "x9",
+        "x10",
+        "x11",
+        "x12",
+        "x13",
+        "x14",
+        "x15",
+        "x16",
+        "x17",
+        "x18",
+        "x19",
+        "x20",
+        "x21",
+        "x22",
+        "x23",
+        "x24",
+        "x25",
+        "x26",
+        "x27",
+        "x28",
+        "x29",
+        "x30",
+        "sp",
+        "pc",
+        "nzcv",
+        "tpidr_el0",
+        "v0",
+        "v1",
+        "v2",
+        "v3",
+        "v4",
+        "v5",
+        "v6",
+        "v7",
+        "v8",
+        "v9",
+        "v10",
+        "v11",
+        "v12",
+        "v13",
+        "v14",
+        "v15",
+        "v16",
+        "v17",
+        "v18",
+        "v19",
+        "v20",
+        "v21",
+        "v22",
+        "v23",
+        "v24",
+        "v25",
+        "v26",
+        "v27",
+        "v28",
+        "v29",
+        "v30",
+        "v31",
+        "fpsr",
+        "fpcr",
+    ],
+};
+pub const C_TARGET: &str = "aarch64-linux-musl";
+// zig sets the CPU's features itself; this is how it leaves out floating point and vectors.
+pub const GENERAL_ONLY: &[&str] = &["-mcpu=generic-neon-fp_armv8"];
+pub const NAME: &str = "arm64";
+pub const ELF_MACHINE: object::elf::Machine = object::elf::EM_AARCH64;
+pub const MUSL_LOADER: &str = "/lib/ld-musl-aarch64.so.1";
 
-    fn relocation(kind: object::elf::RelocationType) -> Relocation {
-        use object::elf;
-        match kind {
-            elf::R_AARCH64_RELATIVE => Relocation::Relative,
-            elf::R_AARCH64_ABS64 | elf::R_AARCH64_GLOB_DAT | elf::R_AARCH64_JUMP_SLOT => {
-                Relocation::Absolute
-            }
-            _ => Relocation::Other,
+pub fn relocation(kind: object::elf::RelocationType) -> Relocation {
+    use object::elf;
+    match kind {
+        elf::R_AARCH64_RELATIVE => Relocation::Relative,
+        elf::R_AARCH64_ABS64 | elf::R_AARCH64_GLOB_DAT | elf::R_AARCH64_JUMP_SLOT => {
+            Relocation::Absolute
         }
+        _ => Relocation::Other,
     }
+}
 
-    fn disassemble(code: &[u8]) -> String {
-        format!("{:?}", decode(word(code)))
-    }
+pub fn disassemble(code: &[u8]) -> String {
+    format!("{:?}", decode(word(code)))
+}
 
-    fn reads_float_status(code: &[u8]) -> bool {
-        wcontainers_arm64::reads_float_status(code)
-    }
+pub fn reads_float_status(code: &[u8]) -> bool {
+    wcontainers_arm64::reads_float_status(code)
+}
 
-    // Fused multiply-add fuses or not, times NaNs follow Arm's rules or not.
-    const PROBE_ANSWERS: &'static [i32] = &[0, 1, 2, 3];
+// Fused multiply-add fuses or not, times NaNs follow Arm's rules or not.
+pub const PROBE_ANSWERS: &[i32] = &[0, 1, 2, 3];
 
-    fn offered() -> Vec<&'static str> {
-        forms::OFFERED_FEATURES.to_vec()
-    }
+pub fn offered() -> Vec<&'static str> {
+    forms::OFFERED_FEATURES.to_vec()
+}
 
-    /// The features of the HWCAP bits the kernel gives programs.
-    fn told() -> Vec<&'static str> {
-        const NAMED: [(u64, &str); 4] = [
-            (hwcap::FP, "FEAT_FP"),
-            (hwcap::ASIMD, "FEAT_AdvSIMD"),
-            (hwcap::CRC32, "FEAT_CRC32"),
-            (hwcap::ATOMICS, "FEAT_LSE"),
-        ];
-        let known = NAMED.iter().fold(0, |all, (bit, _)| all | bit);
-        assert_eq!(HWCAP & !known, 0, "HWCAP bits with no feature named here");
-        assert_eq!(HWCAP2, 0, "HWCAP2 bits with no feature named here");
-        NAMED
-            .iter()
-            .filter(|(bit, _)| HWCAP & bit != 0)
-            .map(|&(_, name)| name)
-            .collect()
-    }
-
-    type Form = Form;
-
-    fn forms() -> &'static [Form] {
-        static COVERED: OnceLock<Vec<Form>> = OnceLock::new();
-        COVERED.get_or_init(|| {
-            wcontainers_arm64::forms::all()
-                .iter()
-                .filter(|f| covered(f))
-                .cloned()
-                .collect()
-        })
-    }
-
-    /// ARM64 draws no forms of features it does not offer yet.
-    fn unoffered_forms() -> &'static [Form] {
-        &[]
-    }
-
-    fn reference_has(_: &Form) -> bool {
-        false
-    }
-
-    fn form_name(form: &Form) -> &str {
-        &form.name
-    }
-
-    fn form_group(form: &Form) -> &str {
-        &form.group
-    }
-
-    fn cases(form: &Form) -> BoxedStrategy<Case> {
-        cases(form.clone()).boxed()
-    }
-
-    fn no_form(seed: u64) -> BoxedStrategy<Case> {
-        any::<u32>()
-            .prop_filter("in a form", |&word| {
-                !wcontainers_arm64::forms::all()
-                    .iter()
-                    .any(|f| word & f.mask == f.value)
-            })
-            .prop_map(move |word| {
-                let mut registers = [0u64; 34];
-                registers[31] = DATA + 0x1000;
-                case(word, registers, [0; 32], [0; 2], false, seed)
-            })
-            .boxed()
-    }
-
-    fn hand_cases() -> Vec<Designed> {
-        hand_cases()
-    }
-
-    const FILLER: u8 = crate::layout::aarch64::FILLER;
-    const CODE_SPAN: u64 = crate::layout::aarch64::CODE_SPAN;
-
-    const PC_FIELD: usize = PC;
-    const SP_FIELD: usize = SP;
-    const GENERAL_FIELDS: core::ops::Range<usize> = 0..31;
-
-    fn to_state(thread: &[u8]) -> State {
-        let block = RegisterBlock::read_from_bytes(&thread[..size_of::<RegisterBlock>()])
-            .expect("a register block");
-        let mut state: Vec<u128> = block.x.iter().map(|&r| r.into()).collect();
-        state.extend([block.sp, block.pc, block.pstate, block.tpidr_el0].map(u128::from));
-        state.extend(
-            block
-                .v
-                .map(|[low, high]| u128::from(high) << 64 | u128::from(low)),
-        );
-        state.extend([block.fpsr, block.fpcr].map(u128::from));
-        State(state)
-    }
-
-    fn from_state(state: &State, thread: &mut [u8]) {
-        let s = &state.0;
-        let mut block = RegisterBlock::ZERO;
-        for (to, from) in block.x.iter_mut().zip(s) {
-            *to = *from as u64;
-        }
-        block.sp = s[SP] as u64;
-        block.pc = s[PC] as u64;
-        block.pstate = s[NZCV] as u64;
-        block.tpidr_el0 = s[TPIDR] as u64;
-        for (to, from) in block.v.iter_mut().zip(&s[V..V + 32]) {
-            *to = [*from as u64, (*from >> 64) as u64];
-        }
-        block.fpsr = s[FPSR] as u32;
-        block.fpcr = s[FPCR] as u32;
-        thread[..size_of::<RegisterBlock>()].copy_from_slice(block.as_bytes());
-    }
-
-    fn track(thread: &mut [u8]) {
-        let at = wcontainers_arm64::FLOAT_TRACKING;
-        thread[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
-    }
-
-    fn tracked(thread: &[u8]) -> bool {
-        let at = wcontainers_arm64::FLOAT_TRACKING;
-        u32::from_le_bytes(thread[at..at + size_of::<u32>()].try_into().unwrap()) != 0
-    }
-
-    fn known_failure(_: &Case, _: &Outcome, _: &Outcome) -> Option<&'static str> {
-        None
-    }
-
-    fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome) {
-        unknown_after_fault(case, expected, actual);
-        // Without the flags kept and with FPCR zero, the cumulative exception flags are not kept: FPSR keeps
-        // what it had there.
-        let writes_fpsr = matches!(
-            decode(word(case.code.code())),
-            wcontainers_arm64::Instruction::WriteSystem {
-                register: wcontainers_arm64::SystemRegister::Fpsr,
-                ..
-            }
-        );
-        if !case.tracking && case.state.0[FPCR] == 0 && !writes_fpsr {
-            const CUMULATIVE: u128 = 0x9f;
-            let fpsr = &mut expected.state.0[FPSR];
-            *fpsr = (*fpsr & !CUMULATIVE) | (case.state.0[FPSR] & CUMULATIVE);
-        }
-    }
-
-    fn reference_stop(signal: &Signal, _length: u8) -> Stop {
-        const SIGILL: u32 = 4;
-        const SIGBUS: u32 = 7;
-        const SIGTRAP: u32 = 5;
-        const SIGSEGV: u32 = 11;
-        const SIGSYS: u32 = 31;
-        const BUS_ADRALN: u32 = 1;
-        let pc = signal.pc;
-        match signal.number {
-            SIGILL if pc == CODE => Stop::Illegal,
-            SIGILL => Stop::Landed(pc),
-            SIGBUS if signal.code == BUS_ADRALN => Stop::Alignment(signal.address),
-            // Control reached an address that cannot be run because nothing is mapped there. Turning that
-            // into the right signal is the CPU side's job when it finds no code there.
-            SIGSEGV if signal.address == pc && pc != CODE => Stop::Landed(pc),
-            SIGSEGV => Stop::MemoryFault(signal.address),
-            SIGTRAP => Stop::Breakpoint(signal.code),
-            SIGSYS => Stop::Syscall,
-            number => Stop::Other(number, signal.address),
-        }
-    }
-
-    fn breakpoint_code(_detail: u16) -> u32 {
-        // TRAP_BRKPT, for every `brk`.
-        1
-    }
-
-    /// HWCAP: fp, asimd, crc32 and atomics.
-    const AUXILIARY: &'static [(u64, u64)] = &[
-        (crate::layout::AT_HWCAP, 0x183),
-        (crate::layout::AT_HWCAP2, 0),
+/// The features of the HWCAP bits the kernel gives programs.
+pub fn told() -> Vec<&'static str> {
+    const NAMED: [(u64, &str); 4] = [
+        (hwcap::FP, "FEAT_FP"),
+        (hwcap::ASIMD, "FEAT_AdvSIMD"),
+        (hwcap::CRC32, "FEAT_CRC32"),
+        (hwcap::ATOMICS, "FEAT_LSE"),
     ];
+    let known = NAMED.iter().fold(0, |all, (bit, _)| all | bit);
+    assert_eq!(HWCAP & !known, 0, "HWCAP bits with no feature named here");
+    assert_eq!(HWCAP2, 0, "HWCAP2 bits with no feature named here");
+    NAMED
+        .iter()
+        .filter(|(bit, _)| HWCAP & bit != 0)
+        .map(|&(_, name)| name)
+        .collect()
+}
 
-    const STAND_IN: StandIn = StandIn {
-        write: 64,
-        writev: 66,
-        exit: 93,
-        exit_group: 94,
-        brk: 214,
-        // https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h
-        mmap: 222,
-        munmap: 215,
-        // ARM64 sets its thread pointer without the kernel.
-        set_base: None,
-    };
+pub fn forms() -> &'static [Form] {
+    static COVERED: OnceLock<Vec<Form>> = OnceLock::new();
+    COVERED.get_or_init(|| {
+        wcontainers_arm64::forms::all()
+            .iter()
+            .filter(|f| covered(f))
+            .cloned()
+            .collect()
+    })
+}
 
-    fn excluded(code: &[u8]) -> Option<&'static str> {
-        let word = word(code);
-        forms::form(word).and_then(|form| excluded(form, word))
+/// ARM64 draws no forms of features it does not offer yet.
+pub fn unoffered_forms() -> &'static [Form] {
+    &[]
+}
+
+pub fn reference_has(_: &Form) -> bool {
+    false
+}
+
+pub fn form_name(form: &Form) -> &str {
+    &form.name
+}
+
+pub fn form_group(form: &Form) -> &str {
+    &form.group
+}
+
+pub fn cases(form: &Form) -> BoxedStrategy<Case> {
+    form_cases(form.clone()).boxed()
+}
+
+pub fn no_form(seed: u64) -> BoxedStrategy<Case> {
+    any::<u32>()
+        .prop_filter("in a form", |&word| {
+            !wcontainers_arm64::forms::all()
+                .iter()
+                .any(|f| word & f.mask == f.value)
+        })
+        .prop_map(move |word| {
+            let mut registers = [0u64; 34];
+            registers[31] = DATA + 0x1000;
+            case(word, registers, [0; 32], [0; 2], false, seed)
+        })
+        .boxed()
+}
+
+pub fn hand_cases() -> Vec<Designed> {
+    designed_cases()
+}
+
+pub const FILLER: u8 = crate::layout::aarch64::FILLER;
+pub const CODE_SPAN: u64 = crate::layout::aarch64::CODE_SPAN;
+
+pub const PC_FIELD: usize = PC;
+pub const SP_FIELD: usize = SP;
+pub const GENERAL_FIELDS: core::ops::Range<usize> = 0..31;
+
+pub fn to_state(thread: &[u8]) -> State {
+    let block = RegisterBlock::read_from_bytes(&thread[..size_of::<RegisterBlock>()])
+        .expect("a register block");
+    let mut state: Vec<u128> = block.x.iter().map(|&r| r.into()).collect();
+    state.extend([block.sp, block.pc, block.pstate, block.tpidr_el0].map(u128::from));
+    state.extend(
+        block
+            .v
+            .map(|[low, high]| u128::from(high) << 64 | u128::from(low)),
+    );
+    state.extend([block.fpsr, block.fpcr].map(u128::from));
+    State(state)
+}
+
+pub fn from_state(state: &State, thread: &mut [u8]) {
+    let s = &state.0;
+    let mut block = RegisterBlock::ZERO;
+    for (to, from) in block.x.iter_mut().zip(s) {
+        *to = *from as u64;
     }
-
-    /// Everything but x16 to x18 (scratch for loops, recursion and jumps), x29 (the area) and x30.
-    const MODEL: Model = Model {
-        registers: &[
-            0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 19, 20, 21, 22, 23, 24, 25, 26,
-            27, 28,
-        ],
-        syscall_sets: &[0, 1, 2, 8],
-        kept: 28,
-    };
-
-    fn assemble(program: &Program) -> Blob {
-        assemble::assemble(program)
+    block.sp = s[SP] as u64;
+    block.pc = s[PC] as u64;
+    block.pstate = s[NZCV] as u64;
+    block.tpidr_el0 = s[TPIDR] as u64;
+    for (to, from) in block.v.iter_mut().zip(&s[V..V + 32]) {
+        *to = [*from as u64, (*from >> 64) as u64];
     }
+    block.fpsr = s[FPSR] as u32;
+    block.fpcr = s[FPCR] as u32;
+    thread[..size_of::<RegisterBlock>()].copy_from_slice(block.as_bytes());
+}
 
-    fn smoke() -> Smoke {
-        corpora::smoke()
-    }
+pub fn track(thread: &mut [u8]) {
+    let at = wcontainers_arm64::FLOAT_TRACKING;
+    thread[at..at + 4].copy_from_slice(&1u32.to_le_bytes());
+}
 
-    fn checks() -> Vec<Check> {
-        corpora::checks()
-    }
+pub fn tracked(thread: &[u8]) -> bool {
+    let at = wcontainers_arm64::FLOAT_TRACKING;
+    u32::from_le_bytes(thread[at..at + size_of::<u32>()].try_into().unwrap()) != 0
+}
 
-    fn changes() -> Vec<Change> {
-        corpora::changes()
+pub fn known_failure(_: &Case, _: &Outcome, _: &Outcome) -> Option<&'static str> {
+    None
+}
+
+pub fn reconcile(case: &Case, expected: &mut Outcome, actual: &Outcome) {
+    unknown_after_fault(case, expected, actual);
+    // Without the flags kept and with FPCR zero, the cumulative exception flags are not kept: FPSR keeps
+    // what it had there.
+    let writes_fpsr = matches!(
+        decode(word(case.code.code())),
+        wcontainers_arm64::Instruction::WriteSystem {
+            register: wcontainers_arm64::SystemRegister::Fpsr,
+            ..
+        }
+    );
+    if !case.tracking && case.state.0[FPCR] == 0 && !writes_fpsr {
+        const CUMULATIVE: u128 = 0x9f;
+        let fpsr = &mut expected.state.0[FPSR];
+        *fpsr = (*fpsr & !CUMULATIVE) | (case.state.0[FPSR] & CUMULATIVE);
     }
+}
+
+pub fn reference_stop(signal: &Signal, _length: u8) -> Stop {
+    const SIGILL: u32 = 4;
+    const SIGBUS: u32 = 7;
+    const SIGTRAP: u32 = 5;
+    const SIGSEGV: u32 = 11;
+    const SIGSYS: u32 = 31;
+    const BUS_ADRALN: u32 = 1;
+    let pc = signal.pc;
+    match signal.number {
+        SIGILL if pc == CODE => Stop::Illegal,
+        SIGILL => Stop::Landed(pc),
+        SIGBUS if signal.code == BUS_ADRALN => Stop::Alignment(signal.address),
+        // Control reached an address that cannot be run because nothing is mapped there. Turning that
+        // into the right signal is the CPU side's job when it finds no code there.
+        SIGSEGV if signal.address == pc && pc != CODE => Stop::Landed(pc),
+        SIGSEGV => Stop::MemoryFault(signal.address),
+        SIGTRAP => Stop::Breakpoint(signal.code),
+        SIGSYS => Stop::Syscall,
+        number => Stop::Other(number, signal.address),
+    }
+}
+
+pub fn breakpoint_code(_detail: u16) -> u32 {
+    // TRAP_BRKPT, for every `brk`.
+    1
+}
+
+/// HWCAP: fp, asimd, crc32 and atomics.
+pub const AUXILIARY: &[(u64, u64)] = &[
+    (crate::layout::AT_HWCAP, 0x183),
+    (crate::layout::AT_HWCAP2, 0),
+];
+
+pub const STAND_IN: StandIn = StandIn {
+    write: 64,
+    writev: 66,
+    exit: 93,
+    exit_group: 94,
+    brk: 214,
+    // https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/unistd.h
+    mmap: 222,
+    munmap: 215,
+    // ARM64 sets its thread pointer without the kernel.
+    set_base: None,
+};
+
+pub fn excluded(code: &[u8]) -> Option<&'static str> {
+    let word = word(code);
+    forms::form(word).and_then(|form| excluded_form_word(form, word))
+}
+
+/// Everything but x16 to x18 (scratch for loops, recursion and jumps), x29 (the area) and x30.
+pub const MODEL: Model = Model {
+    registers: &[
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+        28,
+    ],
+    syscall_sets: &[0, 1, 2, 8],
+    kept: 28,
+};
+
+pub fn assemble(program: &Program) -> Blob {
+    assemble::assemble(program)
+}
+
+pub fn smoke() -> Smoke {
+    corpora::smoke()
+}
+
+pub fn checks() -> Vec<Check> {
+    corpora::checks()
+}
+
+pub fn changes() -> Vec<Change> {
+    corpora::changes()
+}
+
+/// What the program of a case is told its processor has: the default.
+pub fn case_offer(_case: &Case) -> <Arm64 as wcontainers_guest_cpu::Guest>::Offer {
+    <Arm64 as wcontainers_guest_cpu::Guest>::Offer::default()
 }
 
 fn word(code: &[u8]) -> u32 {
@@ -461,7 +468,7 @@ pub fn of_feature_not_offered(form: &Form, word: u32) -> Option<&'static str> {
 /// CONSTRAINED UNPREDICTABLE, a branch to itself (which never finishes), an instruction or a hint whose
 /// meaning depends on features the reference CPU has and the CPU we present does not, or a register we
 /// answer by design.
-pub fn excluded(form: &Form, word: u32) -> Option<&'static str> {
+pub fn excluded_form_word(form: &Form, word: u32) -> Option<&'static str> {
     let field = |name| form.field(word, name);
     let writeback = ["immpre", "immpost", "pair_pre", "pair_post"]
         .iter()
@@ -679,7 +686,7 @@ fn float_control() -> impl Strategy<Value = (u32, bool)> {
 }
 
 /// Cases for one form.
-fn cases(form: Form) -> impl Strategy<Value = Case> {
+fn form_cases(form: Form) -> impl Strategy<Value = Case> {
     let kept = form.clone();
     let registers = prop::collection::vec(value(), 31);
     // The stack pointer is mostly a multiple of 16, as the ABI keeps it, and sometimes not, which faults
@@ -771,7 +778,7 @@ fn cases(form: Form) -> impl Strategy<Value = Case> {
         )
         .prop_filter("excluded encodings", move |case| {
             let word = word(case.code.code());
-            kept.presented(word) && excluded(&kept, word).is_none()
+            kept.presented(word) && excluded_form_word(&kept, word).is_none()
         })
 }
 
@@ -833,7 +840,7 @@ fn unknown_after_fault(case: &Case, expected: &mut Outcome, actual: &Outcome) {
 
 /// The hand-made cases: alignment faults, vector registers reaching the CPU, the float step instructions'
 /// edges, and what we answer by design.
-fn hand_cases() -> Vec<Designed> {
+fn designed_cases() -> Vec<Designed> {
     let mut all = Vec::new();
     let mut add = |name, case, stop, fields: Vec<(usize, u128)>, compared| {
         all.push(Designed {

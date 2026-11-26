@@ -14,18 +14,9 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, TestRunner};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
-use wcontainers_arm64::Arm64;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Optimise};
-use wcontainers_translator_test::browser;
-use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::jobs::at_once;
-use wcontainers_translator_test::layer2::{area_offset, output, program};
-use wcontainers_translator_test::mixed::mixed;
-use wcontainers_translator_test::programs::{
-    boundaries, native, ran as outcome, reachable_memory, ready, translated, translated_for,
-    translated_stopping_everywhere,
-};
 use wcontainers_translator_test::seeded;
 
 fn knob(name: &str, default: u64) -> u64 {
@@ -42,146 +33,14 @@ fn generator(seed: u64, case: u64) -> TestRunner {
     TestRunner::new_with_rng(config, seeded::generator(seed, &case.to_le_bytes(), ""))
 }
 
-fn full_matches_none_and_the_cpu<G: GuestTest>() {
-    let cases = knob("WC_LAYER2_CASES", 64);
-    let seed = knob("WC_LAYER2_SEED", 1);
-    let from = knob("WC_LAYER2_FROM", 0);
-    let natives = knob("WC_LAYER2_NATIVE", cases);
-    let chrome = knob("WC_LAYER2_CHROME", 1);
-    let jobs = knob("WC_LAYER2_JOBS", 1).max(1);
-    let [ran, faulted, left, lost, forgotten] = std::array::from_fn(|_| AtomicU64::new(0));
-    let failures = Mutex::new(Vec::new());
-    let count = |counter: &AtomicU64, n: u64| counter.fetch_add(n, Ordering::Relaxed);
-    at_once(jobs, cases, |i| {
-        let case = from + i;
-        let (on_cpu, in_chrome) = (i < natives, i < chrome);
-        let result = generator(seed, case).run(
-            &(program::<G>(), 1..=64u32, any::<u64>()),
-            |(program, bound, mix)| {
-                let blob = G::assemble(&program);
-                // Every instruction is one whose behaviour the architecture defines, as layer 1 compares.
-                let code = &blob.bytes[..blob.code_bytes as usize];
-                for at in boundaries::<G>(code) {
-                    let at = at as usize;
-                    let left_out = G::excluded(&code[at..]);
-                    assert_eq!(left_out, None, "{} at {at:#x}", G::disassemble(&code[at..]));
-                }
-                let (none, mut none_machine, none_registers) =
-                    translated::<G>(&blob, LookAhead::None);
-                // A program ends by writing its output, or by a memory fault (SIGSEGV).
-                match none.status {
-                    0 => assert_eq!(none.stdout.len(), output::<G>() as usize),
-                    139 => _ = count(&faulted, 1),
-                    other => panic!("status {other} at none"),
-                }
-                // Accesses stay above the area's start: the code and tables are as built.
-                let below = area_offset::<G>(&blob);
-                let changed = reachable_memory::<G>(&mut none_machine, &blob)[..below]
-                    .iter()
-                    .zip(&blob.bytes)
-                    .rposition(|(now, built)| now != built);
-                assert_eq!(
-                    changed.map(|at| at as i64 - below as i64),
-                    None,
-                    "a store this many bytes from the area's start"
-                );
-                let none_memory = reachable_memory::<G>(&mut none_machine, &blob);
-                // Full for speed and for size, plain and stopping at every stop check.
-                for optimise in [Optimise::Speed, Optimise::Size] {
-                    let how = (LookAhead::Full, optimise);
-                    for stopping in [false, true] {
-                        let (full, mut full_machine, full_registers) = if stopping {
-                            translated_stopping_everywhere::<G>(&blob, how)
-                        } else {
-                            translated_for::<G>(&blob, how)
-                        };
-                        let what =
-                            format!("at full for {optimise:?}, stopping everywhere {stopping}");
-                        assert_eq!(full, none, "output {what}");
-                        assert_eq!(full_registers, none_registers, "registers {what}");
-                        assert!(
-                            reachable_memory::<G>(&mut full_machine, &blob) == none_memory,
-                            "memory {what}"
-                        );
-                        assert_eq!(full_machine.count(Reason::UnsupportedInstructionReached), 0);
-                        if optimise == Optimise::Speed
-                            && !stopping
-                            && full_machine.count(Reason::LeftToAddress) > 0
-                        {
-                            count(&left, 1);
-                        }
-                    }
-                }
-                // Bounded from the first instruction ahead of time and from wherever the code goes at run time.
-                let look_ahead = LookAhead::Bounded(bound);
-                let mut machine = ready::<G>(&blob, look_ahead, Default::default());
-                machine.translate_at_run_time(move || look_ahead);
-                let (stopped, registers) = machine.run();
-                let what = format!("at bounded {bound}");
-                assert_eq!(
-                    outcome::<G>(&blob, &machine, stopped, &registers),
-                    none,
-                    "output {what}"
-                );
-                assert_eq!(registers, none_registers, "registers {what}");
-                assert!(
-                    reachable_memory::<G>(&mut machine, &blob) == none_memory,
-                    "memory {what}"
-                );
-                let (mixed_ran, mut mixed_machine, mixed_registers, events) =
-                    mixed::<G>(&blob, mix);
-                let what = format!("mixed from {mix} ({events:?})");
-                assert_eq!(mixed_ran, none, "output {what}");
-                assert_eq!(mixed_registers, none_registers, "registers {what}");
-                assert!(
-                    reachable_memory::<G>(&mut mixed_machine, &blob) == none_memory,
-                    "memory {what}"
-                );
-                count(&lost, events.stacks_lost);
-                count(&forgotten, events.forgotten);
-                if on_cpu {
-                    assert_eq!(native::<G>(&blob), none, "output against the CPU");
-                }
-                if in_chrome {
-                    for how in [
-                        (LookAhead::None, Optimise::Speed),
-                        (LookAhead::Full, Optimise::Speed),
-                        (LookAhead::Full, Optimise::Size),
-                    ] {
-                        let ours = browser::translated_with::<G>(&blob, how, Default::default());
-                        assert_eq!(ours.ran, none, "output in Chrome at {how:?}");
-                    }
-                }
-                Ok(())
-            },
-        );
-        count(&ran, 1);
-        if let Err(error) = result {
-            eprintln!("layer 2, seed {seed}, case {case}: {error}");
-            failures.lock().unwrap().push(case);
-        }
-    });
-    let mut failures = failures.into_inner().unwrap();
-    failures.sort();
-    let [ran, faulted, left, lost, forgotten] =
-        [ran, faulted, left, lost, forgotten].map(|c| c.into_inner());
-    eprintln!(
-        "layer 2: {ran} cases run from case {from}, seed {seed}, {jobs} at once, {} on the CPU, {} in Chrome; {faulted} faulted, {left} left to an address at full, {lost} stacks lost and {forgotten} pieces forgotten in mixed runs; {} failing: {failures:?}",
-        natives.min(cases),
-        chrome.min(cases),
-        failures.len()
-    );
-    assert!(failures.is_empty());
-}
-
 #[test]
 fn full_matches_none_and_the_cpu_arm64() {
-    full_matches_none_and_the_cpu::<Arm64>();
+    arm64::full_matches_none_and_the_cpu();
 }
 
 #[test]
 fn full_matches_none_and_the_cpu_x86_64() {
-    full_matches_none_and_the_cpu::<wcontainers_x86::X86_64>();
+    x86_64::full_matches_none_and_the_cpu();
 }
 
 /// The native output for a host process (docs/x86-native-output.md section 8): each program's pieces at none, at
@@ -213,10 +72,10 @@ fn natively_matches_the_cpu_in_process_x86_64() {
 /// Layer 2's programs in each of `ways`, the summary line starting "layer 2 " and `what`.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 fn natively_in(ways: &[wcontainers_x86::native::Way], what: &str) {
-    use wcontainers_translator_test::guest::x86_64::native_programs::compare;
     use wcontainers_translator_test::layout::SIGNALLED;
-    use wcontainers_translator_test::progress::run_counting;
     use wcontainers_translator_test::reference::with_reference;
+    use wcontainers_translator_test::x86_64::part::native_programs::compare;
+    use wcontainers_translator_test::x86_64::progress::run_counting;
     use wcontainers_x86::native::{Check, Way};
     type G = wcontainers_x86::X86_64;
     let cases = knob("WC_LAYER2_CASES", 64);
@@ -229,10 +88,10 @@ fn natively_in(ways: &[wcontainers_x86::native::Way], what: &str) {
     at_once(jobs, cases, |i| {
         let case = from + i;
         let result = generator(seed, case).run(
-            &(program::<G>(), 1..=64u32, any::<u64>()),
-            |(program, bound, _)| {
-                let blob = G::assemble(&program);
-                let cpu = native::<G>(&blob);
+            &(x86_64::program::<G>(), 1..=64u32, any::<u64>()),
+            |(x86_64::program, bound, _)| {
+                let blob = G::assemble(&x86_64::program);
+                let cpu = x86_64::native::<G>(&blob);
                 if cpu.status != 0 {
                     count(&faulted, 1);
                 }
@@ -301,8 +160,8 @@ fn hand_made(
     name: &str,
     code: Vec<u8>,
     bytes: usize,
-) -> wcontainers_translator_test::programs::Blob {
-    use wcontainers_translator_test::programs::{Blob, LOAD, STACK_BYTES};
+) -> wcontainers_translator_test::arm64::programs::Blob {
+    use wcontainers_translator_test::arm64::programs::{Blob, LOAD, STACK_BYTES};
     let code_bytes = code.len() as u64;
     let mut image = code;
     image.resize(bytes.max(image.len()), 0);
@@ -322,12 +181,14 @@ fn hand_made(
 /// `blob` natively at the three look-aheads, with and without the count, against the CPU's run, the count after
 /// each system call against the WebAssembly output's.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn natively_as_the_cpu(blob: &wcontainers_translator_test::programs::Blob) -> Result<(), String> {
-    use wcontainers_translator_test::guest::x86_64::native_programs::compare;
-    use wcontainers_translator_test::progress::run_counting;
+fn natively_as_the_cpu(
+    blob: &wcontainers_translator_test::x86_64::programs::Blob,
+) -> Result<(), String> {
     use wcontainers_translator_test::reference::with_reference;
+    use wcontainers_translator_test::x86_64::part::native_programs::compare;
+    use wcontainers_translator_test::x86_64::progress::run_counting;
     type G = wcontainers_x86::X86_64;
-    let cpu = native::<G>(blob);
+    let cpu = x86_64::native::<G>(blob);
     let counted = run_counting::<G>(blob, (LookAhead::None, Optimise::Speed));
     if counted.ran != cpu {
         return Err(format!(
@@ -399,7 +260,7 @@ fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
     const BUFFER: u64 = 1 << 16;
     const BUFFER_BYTES: usize = 5 << 20;
     const START: u64 =
-        wcontainers_translator_test::programs::LOAD + BUFFER + (BUFFER_BYTES as u64) / 2;
+        wcontainers_translator_test::arm64::programs::LOAD + BUFFER + (BUFFER_BYTES as u64) / 2;
     const IMAGE: usize = BUFFER as usize + BUFFER_BYTES;
     // movs, stos, lods, cmps and scas of each size: the opcodes of their byte forms, the others one more.
     const KINDS: [(&str, u8); 5] = [
@@ -409,14 +270,14 @@ fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
         ("cmps", 0xa6),
         ("scas", 0xae),
     ];
-    let program = |kind: usize,
-                   bytes: u8,
-                   repeat: u8,
-                   narrow: bool,
-                   down: bool,
-                   count: u64,
-                   distance: i64,
-                   value: u8|
+    let arm64::program = |kind: usize,
+                          bytes: u8,
+                          repeat: u8,
+                          narrow: bool,
+                          down: bool,
+                          count: u64,
+                          distance: i64,
+                          value: u8|
      -> Vec<u8> {
         let mut a = CodeAssembler::new(64).unwrap();
         a.mov(rsi, START).unwrap();
@@ -446,7 +307,7 @@ fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
         a.xor(edi, edi).unwrap();
         a.syscall().unwrap();
         let code = a
-            .assemble(wcontainers_translator_test::programs::LOAD)
+            .assemble(wcontainers_translator_test::arm64::programs::LOAD)
             .unwrap();
         assert!(
             code.len() as u64 <= BUFFER,
@@ -456,7 +317,7 @@ fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
     };
     let failures = Mutex::new(Vec::new());
     // The check's case first.
-    let check = program(
+    let check = arm64::program(
         0,
         1,
         wcontainers_x86::encoding::REP,
@@ -507,7 +368,7 @@ fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
             bytes,
             if down { " std" } else { "" }
         );
-        let code = program(kind, bytes, repeat, narrow, down, count, distance, value);
+        let code = arm64::program(kind, bytes, repeat, narrow, down, count, distance, value);
         if let Err(e) = natively_as_the_cpu(&hand_made(&name, code, IMAGE)) {
             eprintln!("strings natively, seed {seed}, case {case}: {e}");
             failures.lock().unwrap().push(e);
@@ -519,4 +380,34 @@ fn repeated_strings_count_as_the_webassembly_output_natively_x86_64() {
         failures.len()
     );
     assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The tests with ARM64 as the guest, those written once for both included from `for_guest`.
+mod arm64 {
+    use super::*;
+    pub(super) use wcontainers_translator_test::arm64::browser;
+    pub(super) use wcontainers_translator_test::arm64::layer2::{area_offset, output, program};
+    pub(super) use wcontainers_translator_test::arm64::mixed::mixed;
+    use wcontainers_translator_test::arm64::part;
+    pub(super) use wcontainers_translator_test::arm64::programs::{
+        boundaries, native, ran as outcome, reachable_memory, ready, translated, translated_for,
+        translated_stopping_everywhere,
+    };
+
+    include!("for_guest/layer2.rs");
+}
+
+/// The tests with x86-64 as the guest, those written once for both included from `for_guest`.
+mod x86_64 {
+    use super::*;
+    pub(super) use wcontainers_translator_test::x86_64::browser;
+    pub(super) use wcontainers_translator_test::x86_64::layer2::{area_offset, output, program};
+    pub(super) use wcontainers_translator_test::x86_64::mixed::mixed;
+    use wcontainers_translator_test::x86_64::part;
+    pub(super) use wcontainers_translator_test::x86_64::programs::{
+        boundaries, native, ran as outcome, reachable_memory, ready, translated, translated_for,
+        translated_stopping_everywhere,
+    };
+
+    include!("for_guest/layer2.rs");
 }

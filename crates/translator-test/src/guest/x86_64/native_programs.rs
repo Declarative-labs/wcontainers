@@ -14,9 +14,9 @@ use super::native::{
     map, number, protect, restorer, system_call, window,
 };
 use super::*;
-use crate::programs::{Blob, Ran, STACK_TOP};
-use crate::progress::{Counted, Position};
 use crate::reference::{BlobRequest, Reference};
+use crate::x86_64::programs::{Blob, Ran, STACK_TOP};
+use crate::x86_64::progress::{Counted, Position};
 use iced_x86::IcedError;
 use iced_x86::code_asm::{
     AsmMemoryOperand, AsmRegister64, CodeAssembler, CodeLabel, qword_ptr, r10, r11, r12, r13, r14,
@@ -448,7 +448,7 @@ pub fn run_timed(
             stack_top: STACK_TOP,
             stack_bytes: blob.stack_bytes,
             headers: blob.headers_in_memory(),
-            auxiliary: <X86_64 as GuestTest>::AUXILIARY,
+            auxiliary: super::AUXILIARY,
             stdin: &[],
             runs,
         };

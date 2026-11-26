@@ -12,9 +12,6 @@ use proptest::prelude::*;
 use proptest::test_runner::{Config, RngAlgorithm, TestRng, TestRunner};
 use std::cell::{Cell, RefCell};
 use std::fmt::Write;
-use wcontainers_arm64::Arm64;
-use wcontainers_translator_test::guest::{Case, GuestTest};
-use wcontainers_translator_test::layer2::program;
 
 fn knob(name: &str, default: u64) -> u64 {
     std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
@@ -43,132 +40,127 @@ fn program_generator(seed: u64, case: u64) -> TestRunner {
     TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key))
 }
 
-/// A case as text: its instruction's bytes, data seed and tracking bit, then the reference's fields.
-fn case_text(case: &Case) -> String {
-    let mut text = String::new();
-    for &byte in case.code.code() {
-        write!(text, "{byte:02x}").unwrap();
-    }
-    write!(text, " {:x} {}", case.seed, u8::from(case.tracking)).unwrap();
-    for field in &case.state.0 {
-        write!(text, " {field:x}").unwrap();
-    }
-    text.push('\n');
-    text
-}
-
-fn layer1<G: GuestTest>(seed: u64, count: u32) -> String {
-    let mut out = String::new();
-    for form in G::forms() {
-        let name = G::form_name(form);
-        let mut config = Config::with_cases(count);
-        config.failure_persistence = None;
-        config.max_global_rejects = 100 * count;
-        // The runner's closure is `Fn`.
-        let hasher = RefCell::new(blake3::Hasher::new());
-        let drawn = Cell::new(0);
-        form_generator(seed, name, config)
-            .run(&G::cases(form), |case| {
-                hasher.borrow_mut().update(case_text(&case).as_bytes());
-                drawn.set(drawn.get() + 1);
-                Ok(())
-            })
-            .unwrap();
-        let (drawn, hash) = (drawn.get(), hasher.borrow().finalize());
-        writeln!(out, "{name} {drawn} {hash}").unwrap();
-    }
-    out
-}
-
-/// Layer 1's cases in no form, drawn as `tests/layer1.rs` draws them.
-fn no_form<G: GuestTest>(seed: u64, count: u32) -> String {
-    let mut key = [0u8; 32];
-    key[..8].copy_from_slice(&seed.to_le_bytes());
-    key[8..16].copy_from_slice(b"no form ");
-    let mut config = Config::with_cases(count);
-    config.failure_persistence = None;
-    let out = RefCell::new(String::new());
-    TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key))
-        .run(&G::no_form(seed), |case| {
-            out.borrow_mut().push_str(&case_text(&case));
-            Ok(())
-        })
-        .unwrap();
-    out.into_inner()
-}
-
-/// Layer 1's hand-made cases, which no seed changes.
-fn hand_cases<G: GuestTest>() -> String {
-    let mut out = String::new();
-    for designed in G::hand_cases() {
-        write!(
-            out,
-            "{} {} {:?} {:x?} {}",
-            designed.name,
-            designed.compared,
-            designed.stop,
-            designed.fields,
-            case_text(&designed.case)
-        )
-        .unwrap();
-    }
-    out
-}
-
-fn layer2<G: GuestTest>(seed: u64, count: u64) -> String {
-    let out = RefCell::new(String::new());
-    for case in 0..count {
-        program_generator(seed, case)
-            .run(
-                &(program::<G>(), 1..=64u32, any::<u64>()),
-                |(program, bound, mix)| {
-                    let blob = G::assemble(&program);
-                    writeln!(
-                        out.borrow_mut(),
-                        "{case} {} {} {} {bound} {mix:x}",
-                        blob.bytes.len(),
-                        blake3::hash(&blob.bytes),
-                        blob.code_bytes
-                    )
-                    .unwrap();
-                    Ok(())
-                },
-            )
-            .unwrap();
-    }
-    out.into_inner()
-}
-
-/// Writes the cases of `G` for the seed into `directory`.
-fn write_cases<G: GuestTest>(directory: &str) {
-    let seed = knob("WC_CASES_SEED", 1);
-    std::fs::create_dir_all(directory).unwrap();
-    let one = knob("WC_CASES_LAYER1", 64) as u32;
-    std::fs::write(
-        format!("{directory}/layer1-{seed}.txt"),
-        layer1::<G>(seed, one),
-    )
-    .unwrap();
-    let two = knob("WC_CASES_LAYER2", 64);
-    std::fs::write(
-        format!("{directory}/layer2-{seed}.txt"),
-        layer2::<G>(seed, two),
-    )
-    .unwrap();
-    std::fs::write(
-        format!("{directory}/no-form-{seed}.txt"),
-        no_form::<G>(seed, one),
-    )
-    .unwrap();
-    std::fs::write(format!("{directory}/hand.txt"), hand_cases::<G>()).unwrap();
-    eprintln!(
-        "wrote {directory}/layer1-{seed}.txt, layer2-{seed}.txt, no-form-{seed}.txt and hand.txt"
-    );
-}
-
 #[test]
 #[ignore]
 fn write_cases_arm64() {
     let directory = std::env::var("WC_CASES_DIR").expect("WC_CASES_DIR names where to write");
-    write_cases::<Arm64>(&directory);
+    arm64::write_cases(&directory);
+}
+
+/// The tests with ARM64 as the guest.
+mod arm64 {
+    use super::*;
+    pub(super) use wcontainers_translator_test::arm64::guest::Case;
+    pub(super) use wcontainers_translator_test::arm64::layer2::program;
+    use wcontainers_translator_test::arm64::part;
+
+    /// A case as text: its instruction's bytes, data seed and tracking bit, then the reference's fields.
+    pub(super) fn case_text(case: &Case) -> String {
+        let mut text = String::new();
+        for &byte in case.code.code() {
+            write!(text, "{byte:02x}").unwrap();
+        }
+        write!(text, " {:x} {}", case.seed, u8::from(case.tracking)).unwrap();
+        for field in &case.state.0 {
+            write!(text, " {field:x}").unwrap();
+        }
+        text.push('\n');
+        text
+    }
+    pub(super) fn layer1(seed: u64, count: u32) -> String {
+        let mut out = String::new();
+        for form in part::forms() {
+            let name = part::form_name(form);
+            let mut config = Config::with_cases(count);
+            config.failure_persistence = None;
+            config.max_global_rejects = 100 * count;
+            // The runner's closure is `Fn`.
+            let hasher = RefCell::new(blake3::Hasher::new());
+            let drawn = Cell::new(0);
+            form_generator(seed, name, config)
+                .run(&part::cases(form), |case| {
+                    hasher.borrow_mut().update(case_text(&case).as_bytes());
+                    drawn.set(drawn.get() + 1);
+                    Ok(())
+                })
+                .unwrap();
+            let (drawn, hash) = (drawn.get(), hasher.borrow().finalize());
+            writeln!(out, "{name} {drawn} {hash}").unwrap();
+        }
+        out
+    }
+    /// Layer 1's cases in no form, drawn as `tests/layer1.rs` draws them.
+    pub(super) fn no_form(seed: u64, count: u32) -> String {
+        let mut key = [0u8; 32];
+        key[..8].copy_from_slice(&seed.to_le_bytes());
+        key[8..16].copy_from_slice(b"no form ");
+        let mut config = Config::with_cases(count);
+        config.failure_persistence = None;
+        let out = RefCell::new(String::new());
+        TestRunner::new_with_rng(config, TestRng::from_seed(RngAlgorithm::ChaCha, &key))
+            .run(&part::no_form(seed), |case| {
+                out.borrow_mut().push_str(&case_text(&case));
+                Ok(())
+            })
+            .unwrap();
+        out.into_inner()
+    }
+    /// Layer 1's hand-made cases, which no seed changes.
+    pub(super) fn hand_cases() -> String {
+        let mut out = String::new();
+        for designed in part::hand_cases() {
+            write!(
+                out,
+                "{} {} {:?} {:x?} {}",
+                designed.name,
+                designed.compared,
+                designed.stop,
+                designed.fields,
+                case_text(&designed.case)
+            )
+            .unwrap();
+        }
+        out
+    }
+    pub(super) fn layer2(seed: u64, count: u64) -> String {
+        let out = RefCell::new(String::new());
+        for case in 0..count {
+            program_generator(seed, case)
+                .run(
+                    &(program(), 1..=64u32, any::<u64>()),
+                    |(program, bound, mix)| {
+                        let blob = part::assemble(&program);
+                        writeln!(
+                            out.borrow_mut(),
+                            "{case} {} {} {} {bound} {mix:x}",
+                            blob.bytes.len(),
+                            blake3::hash(&blob.bytes),
+                            blob.code_bytes
+                        )
+                        .unwrap();
+                        Ok(())
+                    },
+                )
+                .unwrap();
+        }
+        out.into_inner()
+    }
+    /// Writes the cases of `Cpu` for the seed into `directory`.
+    pub(super) fn write_cases(directory: &str) {
+        let seed = knob("WC_CASES_SEED", 1);
+        std::fs::create_dir_all(directory).unwrap();
+        let one = knob("WC_CASES_LAYER1", 64) as u32;
+        std::fs::write(format!("{directory}/layer1-{seed}.txt"), layer1(seed, one)).unwrap();
+        let two = knob("WC_CASES_LAYER2", 64);
+        std::fs::write(format!("{directory}/layer2-{seed}.txt"), layer2(seed, two)).unwrap();
+        std::fs::write(
+            format!("{directory}/no-form-{seed}.txt"),
+            no_form(seed, one),
+        )
+        .unwrap();
+        std::fs::write(format!("{directory}/hand.txt"), hand_cases()).unwrap();
+        eprintln!(
+            "wrote {directory}/layer1-{seed}.txt, layer2-{seed}.txt, no-form-{seed}.txt and hand.txt"
+        );
+    }
 }

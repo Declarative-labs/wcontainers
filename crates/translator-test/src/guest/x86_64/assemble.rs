@@ -5,21 +5,20 @@
 //! through memory, partial register and flag writes, red-zone saves in leaf functions, both compilers'
 //! position-independent switch tables, and `pushfq` for the dump.
 
-use crate::guest::GuestTest;
-use crate::layer2::*;
-use crate::programs::{Blob, LOAD, STACK_BYTES};
+use crate::x86_64::layer2::*;
+use crate::x86_64::programs::{Blob, LOAD, STACK_BYTES};
 use iced_x86::code_asm::*;
 use iced_x86::{BlockEncoderOptions, ConditionCode};
 use wcontainers_abi::PAGE_SIZE;
-use wcontainers_x86::{R12, R13, R14, R15, RAX, RBX, RDX, X86_64};
+use wcontainers_x86::{R12, R13, R14, R15, RAX, RBX, RDX};
 
 type Asm = Result<(), IcedError>;
 
-const REGISTERS: &[u8] = <X86_64 as GuestTest>::MODEL.registers;
-const OUTPUT: u32 = output::<X86_64>();
-const AREA_BYTES: usize = area_bytes::<X86_64>();
-const WRITE: u64 = <X86_64 as GuestTest>::STAND_IN.write;
-const EXIT_GROUP: u64 = <X86_64 as GuestTest>::STAND_IN.exit_group;
+const REGISTERS: &[u8] = super::MODEL.registers;
+const OUTPUT: u32 = output();
+const AREA_BYTES: usize = area_bytes();
+const WRITE: u64 = super::STAND_IN.write;
+const EXIT_GROUP: u64 = super::STAND_IN.exit_group;
 /// The descriptor the model's system call writes to.
 const STANDARD_OUTPUT: u32 = 1;
 
@@ -1568,8 +1567,8 @@ pub(super) fn assemble(program: &Program) -> Blob {
 /// The checks test's programs, in the model's terms: a switch of each compiler's form taken through its
 /// table, which full must recognise, and a group of accesses failing across the end of the blob on a
 /// function's first instruction.
-pub(super) fn checks() -> Vec<crate::guest::Check> {
-    use crate::guest::{Check, Counted};
+pub(super) fn checks() -> Vec<crate::x86_64::guest::Check> {
+    use crate::x86_64::guest::{Check, Counted};
     use wcontainers_translator::contract::Reason;
     const SWITCHES: &str = "switches";
     const GROUP_AT_ENTRY: &str = "group-at-entry";

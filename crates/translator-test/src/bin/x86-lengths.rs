@@ -13,10 +13,10 @@ use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use wcontainers_guest_cpu::Guest;
-use wcontainers_translator_test::guest::x86_64::{RIP, plain};
-use wcontainers_translator_test::guest::{GuestTest, Stop};
-use wcontainers_translator_test::layer1::on_reference;
 use wcontainers_translator_test::reference::Reference;
+use wcontainers_translator_test::x86_64::guest::Stop;
+use wcontainers_translator_test::x86_64::layer1::on_reference;
+use wcontainers_translator_test::x86_64::part::{self, RIP, plain};
 use wcontainers_x86::X86_64;
 use wcontainers_x86::encoding::{
     ADDRESS_SIZE, ES, ESCAPE, ESCAPE_0F3A, ESCAPES_THREE_BYTE, EVEX, OPERAND_SIZE, REP, REPNE, REX,
@@ -101,7 +101,7 @@ fn probe(prefixes: usize, escape: &[u8], opcode: u8, filler: &[u8]) -> Vec<u8> {
 fn length(reference: &mut Reference, escape: &[u8], opcode: u8, filler: &[u8]) -> Option<u8> {
     let mut too_long = |prefixes: usize| {
         let case = plain(&probe(prefixes, escape, opcode, filler));
-        let outcome = on_reference::<X86_64>(reference, &case);
+        let outcome = on_reference(reference, &case);
         outcome.stop == Stop::GeneralProtection
             && outcome.state.0[RIP] == u128::from(wcontainers_translator_test::layout::CODE)
     };
@@ -150,7 +150,7 @@ fn main() {
     std::thread::scope(|scope| {
         for _ in 0..connections {
             scope.spawn(|| {
-                let mut reference = Reference::start(&X86_64::REFERENCE);
+                let mut reference = Reference::start(&part::REFERENCE);
                 *model.lock().unwrap() = reference.model.clone();
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);

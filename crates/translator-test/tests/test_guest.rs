@@ -28,7 +28,6 @@ use wcontainers_guest_cpu::{
 };
 use wcontainers_translator::contract::{self, permission_byte};
 use wcontainers_translator::{LookAhead, Optimise, Sites, Translation, thread_module, translate};
-use wcontainers_translator_test::runner;
 use wcontainers_translator_test::state_memory::StateMemory;
 
 /// The test CPU, with flags or without.
@@ -926,7 +925,7 @@ const DATA: u64 = LOAD << 2;
 /// The stack pointer at the start, the top of readable and writable pages from 0x70000.
 const STACK: u64 = DATA << 1;
 const MEMORY_BYTES: u64 = 0x100000;
-const SLOTS_AT: usize = runner::PERMISSIONS_AT as usize * 2;
+const SLOTS_AT: usize = arm64::runner::PERMISSIONS_AT as usize * 2;
 
 /// A hook call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1025,7 +1024,7 @@ fn block(caller: &Caller<'_, Host>) -> Vec<u8> {
     caller
         .data()
         .state
-        .read(runner::BLOCK_AT as usize, &mut bytes);
+        .read(arm64::runner::BLOCK_AT as usize, &mut bytes);
     bytes
 }
 
@@ -1085,7 +1084,7 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
                 caller
                     .data()
                     .state
-                    .write(runner::BLOCK_AT as usize + STOP_FLAG, &[0; 4]);
+                    .write(arm64::runner::BLOCK_AT as usize + STOP_FLAG, &[0; 4]);
                 let r0 = u64::from_le_bytes(block[..8].try_into().unwrap());
                 let pc = pc_of(&block);
                 record(&mut caller, Event::Stop { pc, r0 });
@@ -1168,10 +1167,10 @@ fn hooks<const F: bool>(linker: &mut Linker<Host>) {
                 let mut bytes = block(&caller);
                 let range = hook.state.range();
                 let done = Test::<F>::run_hook(0, &[argument], &mut bytes[range.clone()]);
-                caller
-                    .data()
-                    .state
-                    .write(runner::BLOCK_AT as usize + range.start, &bytes[range]);
+                caller.data().state.write(
+                    arm64::runner::BLOCK_AT as usize + range.start,
+                    &bytes[range],
+                );
                 done.results[0]
             },
         )
@@ -1222,10 +1221,13 @@ fn instantiate<const F: bool>(
     for (name, value) in [
         (contract::LOAD_ADDRESS, Val::I64(LOAD as i64)),
         (contract::TABLE_BASE, Val::I64(LOAD as i64)),
-        (contract::THREAD_BLOCK, Val::I32(runner::BLOCK_AT as i32)),
+        (
+            contract::THREAD_BLOCK,
+            Val::I32(arm64::runner::BLOCK_AT as i32),
+        ),
         (
             contract::PERMISSIONS,
-            Val::I32(runner::PERMISSIONS_AT as i32),
+            Val::I32(arm64::runner::PERMISSIONS_AT as i32),
         ),
         (
             contract::PERMISSION_PAGES,
@@ -1306,7 +1308,7 @@ fn run<const F: bool>(
             }
         })
         .collect();
-    state.write(runner::PERMISSIONS_AT as usize, &table);
+    state.write(arm64::runner::PERMISSIONS_AT as usize, &table);
     let mut block = vec![0; STATE_SIZE];
     block[..128].copy_from_slice(&Test::<F>::initial_block(LOAD + starts[0], STACK));
     for &(r, value) in &start.registers {
@@ -1314,7 +1316,7 @@ fn run<const F: bool>(
         block[at..at + 8].copy_from_slice(&value.to_le_bytes());
     }
     block[80..88].copy_from_slice(&start.fs.to_le_bytes());
-    state.write(runner::BLOCK_AT as usize, &block);
+    state.write(arm64::runner::BLOCK_AT as usize, &block);
 
     let mut linker = Linker::new(&engine);
     hooks::<F>(&mut linker);
@@ -1329,7 +1331,10 @@ fn run<const F: bool>(
     let cover = code.len() as i64 * Test::<F>::ALIGN as i64;
     for (name, value) in [
         (contract::TABLE_BASE, Val::I64(LOAD as i64)),
-        (contract::THREAD_BLOCK, Val::I32(runner::BLOCK_AT as i32)),
+        (
+            contract::THREAD_BLOCK,
+            Val::I32(arm64::runner::BLOCK_AT as i32),
+        ),
         (contract::SLOTS, Val::I32(SLOTS_AT as i32)),
         (contract::SLOTS_COVER, Val::I64(cover)),
     ] {
@@ -1371,7 +1376,7 @@ fn run<const F: bool>(
     run.call(&mut store, ()).expect("the thread runs");
 
     let mut block = vec![0; STATE_SIZE];
-    state.read(runner::BLOCK_AT as usize, &mut block);
+    state.read(arm64::runner::BLOCK_AT as usize, &mut block);
     Ran {
         block,
         memory: memory.data(&store).to_vec(),
@@ -1756,4 +1761,9 @@ fn two_accesses_of_one_instruction_fault_exactly() {
         };
         assert_eq!(ran.last(), fault);
     });
+}
+
+/// The tests with ARM64 as the guest.
+mod arm64 {
+    pub(super) use wcontainers_translator_test::arm64::runner;
 }

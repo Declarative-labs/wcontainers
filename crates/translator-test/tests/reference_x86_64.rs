@@ -9,12 +9,10 @@
 //! Needs `WC_REFERENCE_X86_64` (such as `tom@192.168.2.240`) on a host that is not x86-64; it fails without it.
 
 use wcontainers_abi::PAGE_SIZE;
-use wcontainers_translator_test::guest::GuestTest;
 use wcontainers_translator_test::layout::{CODE, DATA, DATA_BYTES, DATA_WRITABLE, fill};
-use wcontainers_translator_test::programs::{Ran, check_ordinary_programs};
 use wcontainers_translator_test::reference::{BlobRequest, CaseRan, Landed, Reference, Target};
 
-const X86_64: Target = <wcontainers_x86::X86_64 as GuestTest>::REFERENCE;
+const X86_64: Target = wcontainers_translator_test::x86_64::part::REFERENCE;
 
 const SIGILL: u32 = 4;
 const SIGTRAP: u32 = 5;
@@ -775,10 +773,10 @@ fn the_x86_64_reference_runs_blobs() {
 #[test]
 fn the_x86_64_reference_runs_programs() {
     let mut reference = Reference::start(&X86_64);
-    check_ordinary_programs("x86_64-linux-musl", |executable| {
+    x86_64::check_ordinary_programs("x86_64-linux-musl", |executable| {
         let ran = reference.program(executable).expect("the runner");
         assert!(ran.stop.is_none());
-        Ran {
+        x86_64::Ran {
             stdout: ran.stdout,
             stderr: ran.stderr,
             status: ran.status,
@@ -811,4 +809,9 @@ fn the_x86_64_reference_comes_back_after_its_connection_is_lost() {
 #[test]
 fn the_x86_64_reference_reports_its_own_failure() {
     Reference::check_runner_failure(&X86_64);
+}
+
+/// The tests with x86-64 as the guest.
+mod x86_64 {
+    pub(super) use wcontainers_translator_test::x86_64::programs::{Ran, check_ordinary_programs};
 }

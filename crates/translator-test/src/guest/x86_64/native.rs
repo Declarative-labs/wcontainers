@@ -7,9 +7,9 @@
 //! meaning, which the inside follows, gives the outcome from there.
 
 use super::*;
-use crate::layer1::{Agreement, compare_outcome, on_reference, translated};
 use crate::layout::{DATA_READ_ONLY, fill, place};
 use crate::reference::{BlobRequest, Reference};
+use crate::x86_64::layer1::{Agreement, compare_outcome, on_reference, translated};
 use iced_x86::IcedError;
 use iced_x86::code_asm::{
     AsmRegister64, CodeAssembler, ax, ds, dword_ptr, eax, ecx, edx, es, fs, gs, ptr, qword_ptr, r8,
@@ -302,7 +302,7 @@ fn compare_one(
     {
         // Seen through a signal frame, as the reference's run is, it is read as the reference's is.
         let seen = outcome.clone();
-        X86_64::reconcile(case, &mut outcome, &seen);
+        super::reconcile(case, &mut outcome, &seen);
     }
     let ours = outcome.stop;
     // An answer that is the meaning's differs from the reference only where the meaning does.
@@ -311,10 +311,10 @@ fn compare_one(
         Ended::Answered(_) | Ended::FarTarget | Ended::Refused
     )
     .then(|| outcome.clone());
-    match compare_outcome::<X86_64>(reference, case, outcome) {
+    match compare_outcome(reference, case, outcome) {
         Ok(agreement) => Ok((agreement, ended)),
         Err(report) => {
-            let theirs = on_reference::<X86_64>(reference, case).stop;
+            let theirs = on_reference(reference, case).stop;
             if five_level_only(theirs) && matches!(ours, Stop::GeneralProtection | Stop::StackFault)
             {
                 Ok((Agreement::KnownFailure(FIVE_LEVEL_REFERENCE), ended))
@@ -323,7 +323,7 @@ fn compare_one(
             {
                 Ok((Agreement::KnownFailure(WRAPPED_LANDING), ended))
             } else if (meaning_differs_named(case) || ended == Ended::Refused)
-                && answered.is_some_and(|answered| answered == translated::<X86_64>(case))
+                && answered.is_some_and(|answered| answered == translated(case))
             {
                 eprintln!("{report}");
                 Ok((Agreement::KnownFailure(MEANING_DIFFERS), ended))
@@ -447,25 +447,25 @@ struct CaseMemory {
 
 impl CaseMemory {
     fn new(case: &Case) -> Self {
-        let area = crate::layer1::code_area::<X86_64>();
-        let mut code = vec![X86_64::FILLER; (area.end - area.start) as usize];
+        let area = crate::x86_64::layer1::code_area();
+        let mut code = vec![super::FILLER; (area.end - area.start) as usize];
         let bytes = case.code.code();
         code[(CODE - area.start) as usize..][..bytes.len()].copy_from_slice(bytes);
         CaseMemory {
-            data: crate::layer1::start_data(case),
+            data: crate::x86_64::layer1::start_data(case),
             code,
         }
     }
 
     /// The byte at `at`, where `access` is allowed there.
     fn byte(&mut self, at: u64, access: Permissions) -> Option<&mut u8> {
-        let (range, permissions) = crate::layer1::regions::<X86_64>()
+        let (range, permissions) = crate::x86_64::layer1::regions()
             .into_iter()
             .find(|(range, _)| range.contains(&at))?;
         if !permissions.contains(access) {
             return None;
         }
-        let area = crate::layer1::code_area::<X86_64>();
+        let area = crate::x86_64::layer1::code_area();
         if range.start >= area.start && range.end <= area.end {
             self.code.get_mut((at - area.start) as usize)
         } else {
@@ -544,7 +544,7 @@ fn answered_as(case: &Case, far_target: Option<u64>) -> Option<(Outcome, Pointer
     let code = case.code.code();
     let (i, length) = wcontainers_x86::decode(code)?;
     let mut thread = vec![0; size_of::<X86Block>()];
-    X86_64::from_state(&case.state, &mut thread);
+    super::from_state(&case.state, &mut thread);
     let mut block = X86Block::read_from_bytes(&thread).expect("a block");
     let mut memory = CaseMemory::new(case);
     let answered = match far_target {
@@ -561,7 +561,7 @@ fn answered_as(case: &Case, far_target: Option<u64>) -> Option<(Outcome, Pointer
             answer(
                 question,
                 &mut block,
-                X86_64::case_offer(case),
+                super::case_offer(case),
                 &mut constants,
                 &mut memory,
             )
@@ -587,8 +587,8 @@ fn answered_as(case: &Case, far_target: Option<u64>) -> Option<(Outcome, Pointer
     Some((
         Outcome {
             stop,
-            state: X86_64::to_state(&thread),
-            changed: crate::layer1::changed(case, &memory.data),
+            state: super::to_state(&thread),
+            changed: crate::x86_64::layer1::changed(case, &memory.data),
         },
         (f.fip, f.fdp, f.fop),
     ))
@@ -616,7 +616,7 @@ fn float_status_after(
         )
     })?;
     let mut thread = vec![0; size_of::<X86Block>()];
-    X86_64::from_state(&state, &mut thread);
+    super::from_state(&state, &mut thread);
     let mut block = X86Block::read_from_bytes(&thread).expect("a block");
     let next = block.rip;
     block.rip = guest;
@@ -631,7 +631,7 @@ fn float_status_after(
     thread.copy_from_slice(block.as_bytes());
     let f = &block.fxsave;
     Ok((
-        X86_64::to_state(&thread),
+        super::to_state(&thread),
         changed_bytes(case, &memory.data),
         (f.fip, f.fdp, f.fop),
     ))
@@ -688,7 +688,7 @@ fn run_request(
     let checked = made.exact_replay;
     let target = Target {
         host,
-        offer: X86_64::case_offer(case),
+        offer: super::case_offer(case),
     };
     let code = translate_native_request::<X86_64>(case.code.code(), CODE, made, &way, &target)
         .ok_or("no instruction at the case's start")?;
@@ -896,7 +896,7 @@ fn run_request(
     }
     let stop = match ended {
         Ended::Exit | Ended::Lookup | Ended::StackRefused => Stop::Landed(state.0[RIP] as u64),
-        Ended::Fault => X86_64::reference_stop(
+        Ended::Fault => super::reference_stop(
             &Signal {
                 number: signal,
                 code: record.code as u32,
@@ -913,7 +913,7 @@ fn run_request(
                 ));
             }
             REFUSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            return Ok((translated::<X86_64>(case), ended, None));
+            return Ok((translated(case), ended, None));
         }
         Ended::Answered(_) | Ended::FarTarget => {
             if state != case.state || !changed.is_empty() {
@@ -936,14 +936,14 @@ fn run_request(
                     // for it, so only the state at the call is checked here (the count by `string_passes` is
                     // checked against the WebAssembly output's in layers 2 and 3).
                     STRINGS_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return Ok((on_reference::<X86_64>(reference, case), ended, None));
+                    return Ok((on_reference(reference, case), ended, None));
                 }
                 if base != 0 && i.iced.mnemonic() != Mnemonic::Syscall {
                     // In process the inside runs the forms the window has no sequence for (strings with 0x67 or a
                     // segment, the masked stores and `xlat` on a segment, the exact form's gathers) as the meaning
                     // does.
                     MEANING_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return Ok((translated::<X86_64>(case), ended, None));
+                    return Ok((translated(case), ended, None));
                 }
                 if i.iced.mnemonic() != Mnemonic::Syscall {
                     return Err(format!(
@@ -952,7 +952,7 @@ fn run_request(
                     ));
                 }
             }
-            let meaning = translated::<X86_64>(case);
+            let meaning = translated(case);
             if ended == Ended::Answered(InsideCall::Trap) {
                 trapped_as_the_meaning(case, &meaning)?;
             }
@@ -1013,7 +1013,7 @@ pub static TRAPS_CHECKED: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 fn trapped_as_the_meaning(case: &Case, meaning: &Outcome) -> Result<(), String> {
     use wcontainers_x86::Trap;
     let (i, length) = wcontainers_x86::decode(case.code.code()).ok_or("no instruction")?;
-    let trap = wcontainers_x86::native::trap(&i, &X86_64::case_offer(case))
+    let trap = wcontainers_x86::native::trap(&i, &super::case_offer(case))
         .ok_or_else(|| format!("the Trap route for {:?}, which has no trap", i.iced.code()))?;
     let (stop_agrees, after) = match trap {
         Trap::Undefined | Trap::Unsupported => (meaning.stop == Stop::Illegal, false),
@@ -1040,7 +1040,7 @@ fn trapped_as_the_meaning(case: &Case, meaning: &Outcome) -> Result<(), String> 
 
 /// The fields that differ, named.
 fn differences(want: &State, got: &State) -> String {
-    X86_64::REFERENCE
+    super::REFERENCE
         .fields
         .iter()
         .zip(want.0.iter().zip(&got.0))
@@ -1397,10 +1397,10 @@ fn prologue(case: &Case, stepping: bool, base: u64) -> Result<Vec<u8>, IcedError
         map(&mut a, base - PROBE_PAGE, PAGE, libc::PROT_READ)?;
     }
     // The code area: the filler, and the instruction at CODE.
-    let (code_start, code_bytes) = (base + CODE - X86_64::CODE_SPAN, 2 * X86_64::CODE_SPAN);
+    let (code_start, code_bytes) = (base + CODE - super::CODE_SPAN, 2 * super::CODE_SPAN);
     map(&mut a, code_start, code_bytes, read_write)?;
     a.mov(rdi, code_start)?;
-    a.mov(eax, u32::from(X86_64::FILLER))?;
+    a.mov(eax, u32::from(super::FILLER))?;
     a.mov(rcx, code_bytes)?;
     a.rep().stosb()?;
     copy(

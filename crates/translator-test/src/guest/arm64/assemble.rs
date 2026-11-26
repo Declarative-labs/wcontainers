@@ -4,16 +4,14 @@
 // dynasm's expansion converts register numbers to their own type.
 #![allow(clippy::useless_conversion)]
 
-use crate::guest::GuestTest;
-use crate::layer2::*;
-use crate::programs::Blob;
+use crate::arm64::layer2::*;
+use crate::arm64::programs::Blob;
 use dynasmrt::aarch64::Aarch64Relocation;
 use dynasmrt::{DynamicLabel, DynasmApi, DynasmLabelApi, VecAssembler, dynasm};
-use wcontainers_arm64::Arm64;
 
-const REGISTERS: &[u8] = <Arm64 as GuestTest>::MODEL.registers;
-const OUTPUT: u32 = output::<Arm64>();
-const AREA_BYTES: usize = area_bytes::<Arm64>();
+const REGISTERS: &[u8] = super::MODEL.registers;
+const OUTPUT: u32 = output();
+const AREA_BYTES: usize = area_bytes();
 
 macro_rules! conditional {
     ($ops:expr, $cond:expr, $op:tt, $($rest:tt)*) => {
@@ -1069,11 +1067,11 @@ pub(super) fn assemble(program: &Program) -> Blob {
         name: BLOB_NAME.into(),
         bytes,
         code_bytes,
-        load: crate::programs::LOAD,
+        load: crate::arm64::programs::LOAD,
         link_address: None,
         main: None,
         program_headers: None,
-        stack_bytes: crate::programs::STACK_BYTES,
+        stack_bytes: crate::arm64::programs::STACK_BYTES,
         offer: None,
     }
 }

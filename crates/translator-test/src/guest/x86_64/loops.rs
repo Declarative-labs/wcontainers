@@ -2,14 +2,13 @@
 //! the entry, and the same loops running onto the page after the blob, which are counted as not proven.
 
 use super::assemble::WORD;
-use crate::guest::{Check, Counted, GuestTest};
-use crate::programs::{Blob, LOAD, STACK_BYTES};
+use crate::x86_64::guest::{Check, Counted};
+use crate::x86_64::programs::{Blob, LOAD, STACK_BYTES};
 use iced_x86::code_asm::*;
 use wcontainers_abi::PAGE_SIZE;
 use wcontainers_translator::contract::Reason;
-use wcontainers_x86::X86_64;
 
-const EXIT_GROUP: u64 = <X86_64 as GuestTest>::STAND_IN.exit_group;
+const EXIT_GROUP: u64 = super::STAND_IN.exit_group;
 /// Pages of zeros after the code page that the loops walk.
 const DATA_PAGES: u64 = 3;
 /// The step of the counter of clang's initialising loop.

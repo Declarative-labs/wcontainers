@@ -3,9 +3,8 @@
 //! generic [`super::Case`] and [`super::Outcome`], whose fields are ARM64's in the reference's order.
 
 use super::{FPCR, FPSR, NZCV, PC, SP, TPIDR, V, word};
-use crate::guest::{self, Encoded, GuestTest, State};
+use crate::arm64::guest::{self, Encoded, State};
 use proptest::prelude::*;
-use wcontainers_arm64::Arm64;
 use wcontainers_arm64::forms::Form;
 
 pub use super::{covered, excluded, of_feature_not_offered};
@@ -125,10 +124,10 @@ impl Outcome {
 
 /// Cases for one form, as layer 1 draws them.
 pub fn cases(form: Form) -> impl Strategy<Value = Case> {
-    <Arm64 as GuestTest>::cases(&form).prop_map(|case| Case::of(&case))
+    super::cases(&form).prop_map(|case| Case::of(&case))
 }
 
 /// Run a case through the translator.
 pub fn translated(case: &Case) -> Outcome {
-    Outcome::of(&crate::layer1::translated::<Arm64>(&case.generic()))
+    Outcome::of(&crate::arm64::layer1::translated(&case.generic()))
 }

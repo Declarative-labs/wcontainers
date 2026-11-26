@@ -11,7 +11,6 @@ use wcontainers_translator::{
     translate,
 };
 use wcontainers_translator_test::ordered::scan;
-use wcontainers_translator_test::programs::LOAD;
 use wcontainers_x86::{GUEST_MEMORY, Offer, X86_64};
 
 /// A host that needs every fix-up and the software fused multiply-add, so their code is checked too.
@@ -442,12 +441,12 @@ proptest! {
         let targets: Vec<i64> = named.iter().map(|(_, at)| at.index(length + 2) as i64 - 1).collect();
         let mut code = Vec::new();
         for (form, &target) in forms.iter().zip(&targets) {
-            form.encode(LOAD.wrapping_add_signed(target), &mut code);
+            form.encode(arm64::LOAD.wrapping_add_signed(target), &mut code);
         }
         code.extend(&bytes);
         let starts: Vec<u64> = (0..code.len() as u64).filter(|&t| X86_64::decode(&code[t as usize..]).is_some()).collect();
         for look_ahead in [LookAhead::Full, LookAhead::Bounded(bound)] {
-            let translation = translate::<X86_64>(&code, 0..code.len() as u64, Some(LOAD), &[0], look_ahead, optimise(size), count(kept), AccessOrdering::Unordered, HOST_X86_64, Offer::default()).unwrap();
+            let translation = translate::<X86_64>(&code, 0..code.len() as u64, Some(arm64::LOAD), &[0], look_ahead, optimise(size), count(kept), AccessOrdering::Unordered, HOST_X86_64, Offer::default()).unwrap();
             for module in &translation.modules {
                 validate(&module.wasm);
             }
@@ -571,7 +570,7 @@ const REPEATS: usize = 3;
 fn every_form_is_valid_x86_64() {
     use proptest::strategy::{Strategy, ValueTree};
     use proptest::test_runner::TestRunner;
-    use wcontainers_translator_test::guest::GuestTest;
+    use wcontainers_translator_test::x86_64::part;
     let setting = |name: &str, default: u64| {
         std::env::var(name).map_or(default, |v| v.parse().expect("a number"))
     };
@@ -579,13 +578,13 @@ fn every_form_is_valid_x86_64() {
     let seed = setting("WC_VALID_SEED", 1);
     let mut failures = Vec::new();
     let mut cases = 0;
-    for form in X86_64::forms() {
-        let name = X86_64::form_name(form);
+    for form in part::forms() {
+        let name = part::form_name(form);
         let mut runner = TestRunner::new_with_rng(
             Config::default(),
             wcontainers_translator_test::seeded::generator(seed, &[], name),
         );
-        let strategy = X86_64::cases(form);
+        let strategy = part::cases(form);
         for _ in 0..count {
             let case = strategy.new_tree(&mut runner).expect("a case").current();
             let one = case.code.code();
@@ -606,7 +605,7 @@ fn every_form_is_valid_x86_64() {
                         count,
                         ordering,
                         HOST_X86_64,
-                        X86_64::case_offer(&case),
+                        part::case_offer(&case),
                     )
                     .unwrap();
                     let at = format!("{name} {one:02x?} at {look_ahead:?} {count:?} {ordering:?}");
@@ -624,7 +623,7 @@ fn every_form_is_valid_x86_64() {
             }
         }
     }
-    eprintln!("{cases} cases of {} forms", X86_64::forms().len());
+    eprintln!("{cases} cases of {} forms", part::forms().len());
     failures.dedup_by(|a, b| a.split(' ').next() == b.split(' ').next());
     assert!(
         failures.is_empty(),
@@ -632,4 +631,9 @@ fn every_form_is_valid_x86_64() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// The tests with ARM64 as the guest.
+mod arm64 {
+    pub(super) use wcontainers_translator_test::arm64::programs::LOAD;
 }

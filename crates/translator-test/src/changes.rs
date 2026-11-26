@@ -10,9 +10,10 @@
 //! memory there: between two comebacks a program that ends never returns to the same state, so the first
 //! stop of none in that state is the point.
 
-use crate::guest::{GuestTest, State};
-use crate::programs::{Blob, Ran, STACK_TOP, placement, ran, ready, ready_for};
-use crate::runner::{Machine, Pause, Paused, Stopped, fields};
+use super::guest::State;
+use super::programs::{Blob, Ran, STACK_TOP, placement, ran, ready, ready_for};
+use super::runner::{Machine, Pause, Paused, Stopped, fields};
+use super::{Cpu, part};
 use crate::seeded::generator;
 use proptest::prelude::RngExt;
 use proptest::test_runner::TestRng;
@@ -22,6 +23,7 @@ use std::hash::{DefaultHasher, Hasher};
 use std::ops::Range;
 use std::rc::Rc;
 use wcontainers_abi::{Exit, PAGE_SIZE, Permissions};
+use wcontainers_guest_cpu::Guest as _;
 use wcontainers_translator::contract::Reason;
 use wcontainers_translator::{LookAhead, Omit, Optimise};
 use zerocopy::IntoBytes;
@@ -84,8 +86,8 @@ pub struct Compared {
 }
 
 /// Pages a change may touch: the blob's pages and the page after it, the stack and the page below it.
-fn universe<G: GuestTest>(blob: &Blob) -> Vec<Range<u64>> {
-    placement::<G>(blob)
+fn universe(blob: &Blob) -> Vec<Range<u64>> {
+    placement(blob)
         .regions
         .into_iter()
         .enumerate()
@@ -101,7 +103,7 @@ fn universe<G: GuestTest>(blob: &Blob) -> Vec<Range<u64>> {
 }
 
 /// A hash of every byte of the pages a change may touch.
-fn memory<G: GuestTest>(paused: &mut Paused<'_, '_, G>, universe: &[Range<u64>]) -> u64 {
+fn memory(paused: &mut Paused<'_, '_>, universe: &[Range<u64>]) -> u64 {
     let mut hasher = DefaultHasher::new();
     for pages in universe {
         let mut bytes = vec![0; ((pages.end - pages.start) * PAGE_SIZE) as usize];
@@ -114,21 +116,17 @@ fn memory<G: GuestTest>(paused: &mut Paused<'_, '_, G>, universe: &[Range<u64>])
 /// The pages of running functions' frames: from the page of the red zone's foot below the stack pointer to
 /// the top of the stack. The plan lets a frame's check hold until the next function entry, so changes leave
 /// these alone.
-fn frames<G: GuestTest>(state: &State) -> Range<u64> {
-    sp::<G>(state).saturating_sub(G::RED_ZONE) / PAGE_SIZE..STACK_TOP / PAGE_SIZE
+fn frames(state: &State) -> Range<u64> {
+    sp(state).saturating_sub(Cpu::RED_ZONE) / PAGE_SIZE..STACK_TOP / PAGE_SIZE
 }
 
-fn sp<G: GuestTest>(state: &State) -> u64 {
-    state.0[G::SP_FIELD] as u64
+fn sp(state: &State) -> u64 {
+    state.0[part::SP_FIELD] as u64
 }
 
 /// Up to [`MOST_PAGES_CHANGED`] pages and what each will allow: often near where a register points (a loop's base, the page
 /// it is on, the one after), otherwise anywhere a change may touch.
-fn choose<G: GuestTest>(
-    rng: &mut TestRng,
-    state: &State,
-    universe: &[Range<u64>],
-) -> Vec<(u64, Permissions)> {
+fn choose(rng: &mut TestRng, state: &State, universe: &[Range<u64>]) -> Vec<(u64, Permissions)> {
     const ALLOWS: [Permissions; 7] = [
         Permissions::empty(),
         Permissions::empty(),
@@ -138,10 +136,10 @@ fn choose<G: GuestTest>(
         Permissions::READ.union(Permissions::WRITE),
         Permissions::all(),
     ];
-    let frames = frames::<G>(state);
+    let frames = frames(state);
     let within = |page: &u64| universe.iter().any(|pages| pages.contains(page));
     // Registers that point where a change may touch, as a base does, and the page below the frames.
-    let pointers: Vec<u64> = state.0[G::GENERAL_FIELDS]
+    let pointers: Vec<u64> = state.0[part::GENERAL_FIELDS]
         .iter()
         .map(|&value| value as u64 / PAGE_SIZE)
         .chain([frames.start.wrapping_sub(1)])
@@ -167,8 +165,8 @@ fn choose<G: GuestTest>(
 
 /// The pages that may run code, the blob's. Changes leave that as placed: the stand-in drops no pieces when a
 /// page stops allowing it, and translates only from pages that allow it.
-fn runnable<G: GuestTest>(blob: &Blob) -> Range<u64> {
-    let (range, _) = &placement::<G>(blob).regions[0];
+fn runnable(blob: &Blob) -> Range<u64> {
+    let (range, _) = &placement(blob).regions[0];
     range.start / PAGE_SIZE..range.end / PAGE_SIZE
 }
 
@@ -182,11 +180,7 @@ fn with_running(runnable: &Range<u64>, page: u64, permissions: Permissions) -> P
     permissions.difference(Permissions::EXECUTE) | running
 }
 
-fn apply<G: GuestTest>(
-    paused: &mut Paused<'_, '_, G>,
-    pages: &[(u64, Permissions)],
-    runnable: &Range<u64>,
-) {
+fn apply(paused: &mut Paused<'_, '_>, pages: &[(u64, Permissions)], runnable: &Range<u64>) {
     for &(page, permissions) in pages {
         let permissions = with_running(runnable, page, permissions);
         paused.set_permissions(page * PAGE_SIZE..(page + 1) * PAGE_SIZE, permissions);
@@ -195,17 +189,17 @@ fn apply<G: GuestTest>(
 
 /// Run until the thread comes back for good, counting in `came_back` each time it comes back. A fault on a
 /// page a change may touch is handled.
-fn end<G: GuestTest>(
+fn end(
     blob: &Blob,
-    mut machine: Machine<G>,
+    mut machine: Machine,
     universe: &[Range<u64>],
     came_back: &Cell<usize>,
-) -> (Ended, Machine<G>) {
+) -> (Ended, Machine) {
     let mut stops = Vec::new();
     loop {
         let (stopped, registers) = machine.run();
         came_back.set(came_back.get() + 1);
-        stops.push((stopped, fields::<G>(&registers)));
+        stops.push((stopped, fields(&registers)));
         match stopped {
             Stopped::Exit(Exit::MemoryFault { address, .. })
                 if stops.len() <= HANDLED
@@ -215,7 +209,7 @@ fn end<G: GuestTest>(
             {
                 let page = address / PAGE_SIZE;
                 let permissions = with_running(
-                    &runnable::<G>(blob),
+                    &runnable(blob),
                     page,
                     Permissions::READ | Permissions::WRITE,
                 );
@@ -230,7 +224,7 @@ fn end<G: GuestTest>(
 }
 
 /// Every byte of the pages a change may touch.
-fn bytes<G: GuestTest>(machine: &mut Machine<G>, universe: &[Range<u64>]) -> Vec<u8> {
+fn bytes(machine: &mut Machine, universe: &[Range<u64>]) -> Vec<u8> {
     let mut all = Vec::new();
     for pages in universe {
         let mut part = vec![0; ((pages.end - pages.start) * PAGE_SIZE) as usize];
@@ -243,9 +237,9 @@ fn bytes<G: GuestTest>(machine: &mut Machine<G>, universe: &[Range<u64>]) -> Vec
 /// Run a blob at full making changes as `plan` says, then at none making the same changes at the same
 /// points, and compare how they went. Panics on any difference. The run at full is translated for speed or
 /// for size as the plan's seed is even or odd.
-pub fn compare<G: GuestTest>(blob: &Blob, plan: Plan) -> Compared {
-    let universe = universe::<G>(blob);
-    let runnable = runnable::<G>(blob);
+pub fn compare(blob: &Blob, plan: Plan) -> Compared {
+    let universe = universe(blob);
+    let runnable = runnable(blob);
     let made = Rc::new(RefCell::new(Vec::new()));
 
     let full_came_back = Rc::new(Cell::new(0));
@@ -253,7 +247,7 @@ pub fn compare<G: GuestTest>(blob: &Blob, plan: Plan) -> Compared {
         0 => Optimise::Speed,
         _ => Optimise::Size,
     };
-    let mut full = ready_for::<G>(blob, LookAhead::Full, optimise, Omit::default());
+    let mut full = ready_for(blob, LookAhead::Full, optimise, Omit::default());
     {
         let made = made.clone();
         let runnable = runnable.clone();
@@ -272,7 +266,7 @@ pub fn compare<G: GuestTest>(blob: &Blob, plan: Plan) -> Compared {
                 return;
             }
             let registers = paused.registers();
-            let pages = choose::<G>(&mut rng, &fields::<G>(&registers), &universe);
+            let pages = choose(&mut rng, &fields(&registers), &universe);
             if pages.is_empty() {
                 return;
             }
@@ -297,7 +291,7 @@ pub fn compare<G: GuestTest>(blob: &Blob, plan: Plan) -> Compared {
     let pending: Rc<RefCell<VecDeque<Change>>> =
         Rc::new(RefCell::new(made.borrow().iter().cloned().collect()));
     let none_came_back = Rc::new(Cell::new(0));
-    let mut none = ready::<G>(blob, LookAhead::None, Omit::default());
+    let mut none = ready(blob, LookAhead::None, Omit::default());
     {
         let pending = pending.clone();
         let runnable = runnable.clone();
@@ -362,8 +356,8 @@ pub fn compare<G: GuestTest>(blob: &Blob, plan: Plan) -> Compared {
     let missed = pending.borrow().len();
     let first = pending.borrow().front().map(|change| match &change.point {
         Point::Stop { registers, .. } => {
-            let block = <G::Block as zerocopy::FromBytes>::read_from_bytes(registers).unwrap();
-            format!("a stop at {:#x}", fields::<G>(&block).0[G::PC_FIELD])
+            let block = <<Cpu as wcontainers_guest_cpu::Personality>::Block as zerocopy::FromBytes>::read_from_bytes(registers).unwrap();
+            format!("a stop at {:#x}", fields(&block).0[part::PC_FIELD])
         }
         Point::Syscall(n) => format!("system call {n}"),
     });

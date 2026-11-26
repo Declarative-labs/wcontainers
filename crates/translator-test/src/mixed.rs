@@ -2,9 +2,9 @@
 //! at random stop checks spread over the whole run: the WebAssembly stack lost (a fresh thread instance
 //! carries on from the registers), and an address made to have no piece yet. The result must be none's.
 
-use crate::guest::GuestTest;
-use crate::programs::{Blob, Ran, ran, ready_with};
-use crate::runner::{Machine, Pause};
+use super::Cpu;
+use super::programs::{Blob, Ran, ran, ready_with};
+use super::runner::{Machine, Pause};
 use crate::seeded::generator;
 use proptest::prelude::RngExt;
 use std::cell::Cell;
@@ -49,11 +49,19 @@ const QUIET: u64 = 4;
 /// other starts, and at full, each address's piece picked at random among them; code reached at run time
 /// at a random bounded look-ahead each time; and, unless the seed is a multiple of [`QUIET`], a stop at
 /// every stop check with events injected at random ones among them, all from `seed`.
-pub fn mixed<G: GuestTest>(blob: &Blob, seed: u64) -> (Ran, Machine<G>, G::Block, Events) {
+pub fn mixed(
+    blob: &Blob,
+    seed: u64,
+) -> (
+    Ran,
+    Machine,
+    <Cpu as wcontainers_guest_cpu::Personality>::Block,
+    Events,
+) {
     let mut pick = generator(seed, MIXING, "");
     let bound = pick.random_range(2..=LARGEST_BOUND);
     let mut starts = vec![0];
-    let boundaries = crate::programs::boundaries::<G>(&blob.bytes[..blob.code_bytes as usize]);
+    let boundaries = super::programs::boundaries(&blob.bytes[..blob.code_bytes as usize]);
     for _ in 0..(blob.code_bytes / CODE_BYTES_PER_START).clamp(1, MOST_STARTS) {
         starts.push(boundaries[pick.random_range(0..boundaries.len())]);
     }
@@ -71,7 +79,7 @@ pub fn mixed<G: GuestTest>(blob: &Blob, seed: u64) -> (Ran, Machine<G>, G::Block
         (LookAhead::Full, Optimise::Size, vec![0]),
     ];
     let at_run_time = optimise(pick.random());
-    let mut machine = ready_with::<G>(blob, crate::runner::probe::<G>(), |machine| {
+    let mut machine = ready_with(blob, super::runner::probe(), |machine| {
         machine.load_mixed(
             &blob.bytes,
             0..blob.code_bytes,
