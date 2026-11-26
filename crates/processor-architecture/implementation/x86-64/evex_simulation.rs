@@ -42,6 +42,9 @@ pub(super) fn execute_evex(
     let elements = form.elements();
     let bytes = form.element_bytes();
     let selected = read_selection(processor, decoded, elements);
+    if let EvexOperation::Gather { .. } = form.operation {
+        return super::evex_gather::gather(&form, processor, memory, decoded);
+    }
     if let EvexOperation::Compress { .. } | EvexOperation::Expand { .. } = form.operation {
         return super::evex_compress::move_selected(&form, processor, memory, decoded, selected);
     }
@@ -126,7 +129,9 @@ pub(super) fn execute_evex(
                 multiply_add(a, b, c, negate_product, negate_addend, precision, mxcsr, NAN_ORDER)
             })?
         }
-        EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => unreachable!("moved above"),
+        EvexOperation::Compress { .. } | EvexOperation::Expand { .. } | EvexOperation::Gather { .. } | EvexOperation::Scatter { .. } => {
+            unreachable!("moved above")
+        }
         EvexOperation::MoveScalar => second,
         EvexOperation::ComplexMultiply { conjugate, accumulate, .. } => {
             let numbers = [decoded.op0_register(), decoded.op1_register(), decoded.op2_register()].map(|register| register.number());

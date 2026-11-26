@@ -75,6 +75,10 @@ pub enum EvexOperation {
     /// VFMULCPH to VFCMADDCSH: complex numbers of two halves, the real part lower, multiplied (the second source
     /// conjugated where `conjugate`), added to the destination where `accumulate`, each step rounded.
     ComplexMultiply { conjugate: bool, accumulate: bool, arrangement: Arrangement },
+    /// VGATHERDPS to VPGATHERQQ: the selected elements loaded from the addresses the indices give.
+    Gather { data_bytes: usize, index_bytes: usize },
+    /// VSCATTERDPS to VPSCATTERQQ: the selected elements stored at the addresses the indices give.
+    Scatter { data_bytes: usize, index_bytes: usize },
     /// VMOVSH and VMOVW: the low word moved; a load or a move from a general-purpose register zeroes the bits above
     /// it, VMOVSH between registers takes them from the first source.
     MoveScalar,
@@ -469,6 +473,22 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vfmaddcsh, Any, EvexOperation::ComplexMultiply { conjugate: false, accumulate: true, arrangement: Scalar }),
         (Mnemonic::Vfcmaddcph, Any, EvexOperation::ComplexMultiply { conjugate: true, accumulate: true, arrangement: Packed }),
         (Mnemonic::Vfcmaddcsh, Any, EvexOperation::ComplexMultiply { conjugate: true, accumulate: true, arrangement: Scalar }),
+        (Mnemonic::Vgatherdps, Any, EvexOperation::Gather { data_bytes: 4, index_bytes: 4 }),
+        (Mnemonic::Vgatherdpd, Any, EvexOperation::Gather { data_bytes: 8, index_bytes: 4 }),
+        (Mnemonic::Vgatherqps, Any, EvexOperation::Gather { data_bytes: 4, index_bytes: 8 }),
+        (Mnemonic::Vgatherqpd, Any, EvexOperation::Gather { data_bytes: 8, index_bytes: 8 }),
+        (Mnemonic::Vpgatherdd, Any, EvexOperation::Gather { data_bytes: 4, index_bytes: 4 }),
+        (Mnemonic::Vpgatherdq, Any, EvexOperation::Gather { data_bytes: 8, index_bytes: 4 }),
+        (Mnemonic::Vpgatherqd, Any, EvexOperation::Gather { data_bytes: 4, index_bytes: 8 }),
+        (Mnemonic::Vpgatherqq, Any, EvexOperation::Gather { data_bytes: 8, index_bytes: 8 }),
+        (Mnemonic::Vscatterdps, Any, EvexOperation::Scatter { data_bytes: 4, index_bytes: 4 }),
+        (Mnemonic::Vscatterdpd, Any, EvexOperation::Scatter { data_bytes: 8, index_bytes: 4 }),
+        (Mnemonic::Vscatterqps, Any, EvexOperation::Scatter { data_bytes: 4, index_bytes: 8 }),
+        (Mnemonic::Vscatterqpd, Any, EvexOperation::Scatter { data_bytes: 8, index_bytes: 8 }),
+        (Mnemonic::Vpscatterdd, Any, EvexOperation::Scatter { data_bytes: 4, index_bytes: 4 }),
+        (Mnemonic::Vpscatterdq, Any, EvexOperation::Scatter { data_bytes: 8, index_bytes: 4 }),
+        (Mnemonic::Vpscatterqd, Any, EvexOperation::Scatter { data_bytes: 4, index_bytes: 8 }),
+        (Mnemonic::Vpscatterqq, Any, EvexOperation::Scatter { data_bytes: 8, index_bytes: 8 }),
         (Mnemonic::Vmovsh, Any, EvexOperation::MoveScalar),
         (Mnemonic::Vmovw, Any, EvexOperation::MoveScalar),
         (Mnemonic::Vdpbf16ps, Any, EvexOperation::DotBfloat16),
@@ -557,6 +577,14 @@ pub struct EvexForm {
 impl EvexForm {
     /// The bytes of the destination's vector: 16, 32 or 64; 16 for a scalar form.
     pub fn vector_bytes(&self) -> usize {
+        if let EvexOperation::Gather { .. } | EvexOperation::Scatter { .. } = self.operation {
+            // The data register's width, which the index vector's may differ from.
+            return match self.code.op_code().op_kinds().iter().find(|kind| matches!(kind, OpCodeOperandKind::xmm_reg | OpCodeOperandKind::ymm_reg | OpCodeOperandKind::zmm_reg)) {
+                Some(OpCodeOperandKind::xmm_reg) => 16,
+                Some(OpCodeOperandKind::ymm_reg) => 32,
+                _ => ZMM_BYTES,
+            };
+        }
         match self.code.op_code().l() {
             0 => 16,
             1 => 32,
@@ -578,6 +606,7 @@ impl EvexForm {
             EvexOperation::Convert(conversion) => conversion.to.to_bytes(),
             EvexOperation::ToBfloat16 { .. } => 2,
             EvexOperation::DotBfloat16 | EvexOperation::ComplexMultiply { .. } => 4,
+            EvexOperation::Gather { data_bytes, .. } | EvexOperation::Scatter { data_bytes, .. } => data_bytes,
             EvexOperation::MoveScalar => 2,
         }
     }
@@ -621,9 +650,11 @@ impl EvexForm {
             self.code.op_code().op_kinds().first(),
             Some(OpCodeOperandKind::mem | OpCodeOperandKind::r32_or_mem | OpCodeOperandKind::xmm_or_mem)
         );
-        matches!(self.operation, EvexOperation::Compress { .. } | EvexOperation::MoveScalar)
-            && self.place == OperandPlace::Memory
-            && to_memory
+        let scatter = matches!(self.operation, EvexOperation::Scatter { .. });
+        scatter
+            || (matches!(self.operation, EvexOperation::Compress { .. } | EvexOperation::MoveScalar)
+                && self.place == OperandPlace::Memory
+                && to_memory)
     }
 
     /// Whether a denormal source is reported: not by VCVTPH2PS, which converts halves as F16C does.
@@ -653,6 +684,8 @@ impl EvexForm {
             | EvexOperation::ToBfloat16 { .. }
             | EvexOperation::DotBfloat16
             | EvexOperation::MoveScalar
+            | EvexOperation::Gather { .. }
+            | EvexOperation::Scatter { .. }
             | EvexOperation::Compress { .. }
             | EvexOperation::Expand { .. } => false,
         }
@@ -688,6 +721,8 @@ impl EvexForm {
             | EvexOperation::ToBfloat16 { .. }
             | EvexOperation::Compare { .. }
             | EvexOperation::MoveScalar
+            | EvexOperation::Gather { .. }
+            | EvexOperation::Scatter { .. }
             | EvexOperation::OrderedCompare { .. } => false,
             EvexOperation::Special { operation, .. } => matches!(operation, SpecialOperation::Fixup),
             EvexOperation::Fused { .. } | EvexOperation::DotBfloat16 => true,
@@ -709,6 +744,8 @@ impl EvexForm {
             | EvexOperation::DotBfloat16
             | EvexOperation::MoveScalar
             | EvexOperation::ComplexMultiply { .. }
+            | EvexOperation::Gather { .. }
+            | EvexOperation::Scatter { .. }
             | EvexOperation::OrderedCompare { .. } => true,
             EvexOperation::ToBfloat16 { pair } => !pair,
             EvexOperation::Integer { operation, .. } => operation.is_element_wise(),
@@ -776,6 +813,16 @@ fn widen_to_register(number: Number, decoded: &iced_x86::Instruction) -> Number 
         Number::Unsigned(0) => Number::Unsigned(bytes),
         number => number,
     }
+}
+
+/// Whether the form is an EVEX scatter.
+pub fn is_scatter(instruction: Instruction) -> bool {
+    find_evex_form(instruction).is_some_and(|form| matches!(form.operation, EvexOperation::Scatter { .. }))
+}
+
+/// Whether the form is an EVEX gather or scatter, which keeps what it did before a fault.
+pub fn is_gather_or_scatter(instruction: Instruction) -> bool {
+    find_evex_form(instruction).is_some_and(|form| matches!(form.operation, EvexOperation::Gather { .. } | EvexOperation::Scatter { .. }))
 }
 
 /// Whether the form's destination is a general-purpose register.

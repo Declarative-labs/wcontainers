@@ -41,7 +41,7 @@ use wcontainers_processor_architecture_x86_64::{
 use crate::float::{MxcsrSet, generate_exception_pairs, generate_mxcsr_values};
 use crate::integer::{CodeLayout, LAYOUTS_BEYOND_START, encode_at_code_address, lay_out, place_memory_operand, to_padding};
 use crate::vector::rotate_floats;
-use crate::{CODE_ADDRESS, FlagSet, OperandType, OperandValue, Splits};
+use crate::{CODE_ADDRESS, DataPage, FlagSet, LOWER_DATA_ADDRESS, OperandType, OperandValue, Splits, UPPER_DATA_ADDRESS, to_data_byte};
 
 /// Register triples (destination, EVEX.vvvv, ModRM.rm) at the page's start: low registers, then a high register in
 /// each place, which EVEX.R', V' and X with B encode.
@@ -91,6 +91,15 @@ pub struct EvexFloatData {
 
 /// The operand types of an EVEX form, in the order the build reads them.
 pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
+    if let EvexOperation::Gather { data_bytes, index_bytes } | EvexOperation::Scatter { data_bytes, index_bytes } = form.operation {
+        return vec![
+            OperandType::EvexEncoding,
+            OperandType::DataPagePermission(DataPage::Lower),
+            OperandType::DataPagePermission(DataPage::Upper),
+            OperandType::EvexGatherData(EvexGatherData { data_bytes, index_bytes, vector_bytes: form.vector_bytes() }),
+            OperandType::Flags(FlagSet::Unread),
+        ];
+    }
     let op_code = form.code.op_code();
     let register = form.place == OperandPlace::Register;
     let data = match form.operation {
@@ -163,6 +172,7 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
             register,
             rounding: op_code.can_use_rounding_control(),
         }),
+        EvexOperation::Gather { .. } | EvexOperation::Scatter { .. } => unreachable!("listed above"),
         EvexOperation::MoveScalar => OperandType::EvexMoveData(EvexMoveData {
             element_bytes: 2,
             vector_bytes: 16,
@@ -1097,6 +1107,124 @@ pub fn generate_special_data(data: EvexSpecialData) -> Vec<OperandValue> {
     all
 }
 
+/// What the data of an EVEX gather or scatter is made of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EvexGatherData {
+    pub data_bytes: usize,
+    pub index_bytes: usize,
+    /// The data register's bytes.
+    pub vector_bytes: usize,
+}
+
+/// The data of a gather or scatter: index sets that reach the lower page element by element, the upper page in
+/// another order, the same addresses more than once, both pages at once across their boundary, the unmapped page
+/// below and a far address (non-canonical for quadword indices), with the scale each needs; each with every
+/// element, every other, the first alone, the last alone and none selected. The data vector holds a value of its
+/// own in each element. No set faults after an element is done: a single step then ends the instruction there without
+/// the fault, the trap pending in its place as the manual allows, which no program that is not stepped sees.
+pub fn generate_gather_data(data: EvexGatherData) -> Vec<OperandValue> {
+    let EvexGatherData { data_bytes, index_bytes, vector_bytes } = data;
+    let bytes = data_bytes as u64;
+    let page = PAGE_BYTES;
+    let far = if index_bytes == 8 { 1 << 62 } else { 0x7FFF_FFFF };
+    let below = (page as i64).wrapping_neg() as u64;
+    let sets: [(u8, [u64; 4]); 7] = [
+        (data_bytes as u8, [0, 1, 2, 3]),
+        (8, [3, 0, 2, 1]),
+        (1, [page, page + 3 * bytes, page + bytes, page + 2 * bytes]),
+        (2, [3, 0, 3, 1]),
+        (1, [page - bytes / 2, page - bytes / 2 + 2 * bytes, page + 4 * bytes, 0]),
+        (1, [below - 8, below - 16, 8, below - 24]),
+        (1, [far, far + 8, 16, far + 16]),
+    ];
+    let elements = (vector_bytes / data_bytes).min(64 / index_bytes);
+    let all = to_all(elements);
+    let masks = [all, EVERY_OTHER & all, 1, 1 << (elements - 1), 0];
+    let values = {
+        let mut vector = [0; 4];
+        for index in 0..elements {
+            write_element(&mut vector, index, data_bytes, to_table_element(index, 0x77, data_bytes));
+        }
+        vector
+    };
+    let mut all_values = Vec::new();
+    for (scale, offsets) in sets {
+        let mut indices = [0; 4];
+        for index in 0..64 / index_bytes {
+            // Each group of four elements a further 4 elements on, so that elements stay apart.
+            let spread = (index / 4) as u64 * 4 * bytes / u64::from(scale).max(1);
+            let offset = if offsets[index % 4] >= page / 2 && offsets[index % 4] < 2 * page { offsets[index % 4] } else { offsets[index % 4].wrapping_add(spread) };
+            write_element(&mut indices, index, index_bytes, offset);
+        }
+        for (number, &value) in masks.iter().enumerate() {
+            let mask = EvexMask { register: 1 + number % 7, value, zeroing: false };
+            all_values.push(OperandValue::EvexGatherData { scale, indices, mask, values });
+        }
+    }
+    all_values
+}
+
+/// Builds the state of a gather or scatter: the data register ModRM.reg (the triple's first), the index register the
+/// triple's last, the base RBX at the lower data page, the two data pages holding their bytes with the permissions
+/// chosen.
+fn build_gather_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
+    use iced_x86::OpCodeOperandKind as Kind;
+    let mut processor = Processor {
+        general_purpose_registers: array::from_fn(|number| !(number as u64)),
+        instruction_pointer: CODE_ADDRESS,
+        ..ZERO_PROCESSOR
+    };
+    fill_vectors(&mut processor);
+    let (mut registers, mut layout) = ([0; 3], CodeLayout::PageStart);
+    let (mut lower, mut upper, mut chosen) = (PagePermission::Unmapped, PagePermission::Unmapped, None);
+    for (operand_type, operand) in operands {
+        match (operand_type, *operand) {
+            (OperandType::EvexEncoding, OperandValue::EvexEncoding(encoding)) => (registers, layout) = (encoding.registers, encoding.layout),
+            (OperandType::DataPagePermission(DataPage::Lower), OperandValue::PagePermission(permission)) => lower = permission,
+            (OperandType::DataPagePermission(DataPage::Upper), OperandValue::PagePermission(permission)) => upper = permission,
+            (OperandType::EvexGatherData(_), OperandValue::EvexGatherData { scale, indices, mask, values }) => chosen = Some((scale, indices, mask, values)),
+            (OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
+            (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
+        }
+    }
+    let (scale, indices, mask, values) = chosen.expect("a gather's data");
+    let (data, index) = (registers[0], registers[2]);
+    processor.write_zmm(data, values);
+    processor.write_zmm(index, indices);
+    processor.opmask_registers[mask.register] = mask.value;
+    processor.general_purpose_registers[3] = LOWER_DATA_ADDRESS;
+    let kinds = form.code.op_code().op_kinds();
+    let index_first = match kinds.iter().find(|kind| matches!(kind, Kind::mem_vsib32x | Kind::mem_vsib32y | Kind::mem_vsib32z | Kind::mem_vsib64x | Kind::mem_vsib64y | Kind::mem_vsib64z)) {
+        Some(Kind::mem_vsib32x | Kind::mem_vsib64x) => Register::XMM0,
+        Some(Kind::mem_vsib32y | Kind::mem_vsib64y) => Register::YMM0,
+        _ => Register::ZMM0,
+    };
+    let index_register = Register::try_from(index_first as usize + index).expect("an index register");
+    let memory = MemoryOperand::with_base_index_scale(Register::RBX, index_register, u32::from(scale));
+    let scatter = matches!(form.operation, EvexOperation::Scatter { .. });
+    let data_register = to_vector_register(form, usize::from(scatter), data);
+    let mut encoded = match scatter {
+        true => Encoded::with2(form.code, memory, data_register),
+        false => Encoded::with2(form.code, data_register, memory),
+    }
+    .unwrap_or_else(|error| panic!("{:?} takes its operands: {error}", form.code));
+    encoded.set_op_mask(to_opmask_register(mask.register));
+    let (code_page, start, bytes) = lay_out(layout, &encode_at_code_address(&encoded), to_padding(None));
+    processor.instruction_pointer = start;
+    let executable = PagePermission::Mapped { data_access: DataAccess::ReadOnly, instruction_fetch: InstructionFetch::Allowed };
+    let pages: Vec<u8> = (LOWER_DATA_ADDRESS..UPPER_DATA_ADDRESS + PAGE_BYTES).map(to_data_byte).collect();
+    ExecutionState {
+        processor,
+        memory_mutations: vec![
+            MemoryDelta::PermissionAssignment { addresses: code_page..code_page + PAGE_BYTES, permission: executable },
+            MemoryDelta::ValueAssignment { start, bytes: Cow::Owned(bytes) },
+            MemoryDelta::ValueAssignment { start: LOWER_DATA_ADDRESS, bytes: Cow::Owned(pages) },
+            MemoryDelta::PermissionAssignment { addresses: LOWER_DATA_ADDRESS..UPPER_DATA_ADDRESS, permission: lower },
+            MemoryDelta::PermissionAssignment { addresses: UPPER_DATA_ADDRESS..UPPER_DATA_ADDRESS + PAGE_BYTES, permission: upper },
+        ],
+    }
+}
+
 /// What the data of VCOMPRESS and VEXPAND is made of.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct EvexMoveData {
@@ -1166,6 +1294,9 @@ fn to_vector_register(form: &EvexForm, operand: usize, number: usize) -> Registe
 
 /// Builds the state of an EVEX form from one value of each of its operand types.
 pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
+    if let EvexOperation::Gather { .. } | EvexOperation::Scatter { .. } = form.operation {
+        return build_gather_state(form, operands);
+    }
     let mut processor = Processor {
         general_purpose_registers: array::from_fn(|number| !(number as u64)),
         instruction_pointer: CODE_ADDRESS,

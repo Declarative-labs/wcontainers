@@ -32,6 +32,7 @@ mod avx_simulation;
 
 mod avx512_integer;
 mod evex_compress;
+mod evex_gather;
 mod opmask;
 
 const MAXIMUM_INSTRUCTION_BYTES: usize = 15;
@@ -126,6 +127,16 @@ fn simulate_processor(
         }
         Err(exception) => {
             keep_planted_writes(behavior, exception, processor, &changed);
+            // An EVEX gather or scatter that faults keeps the elements it moved and their cleared opmask bits.
+            if matches!(behavior, PreciseInstruction::Evex(_) | PreciseInstruction::EvexStore { .. })
+                && crate::evex::is_gather_or_scatter(behavior.to_instruction())
+            {
+                processor.opmask_registers = changed.opmask_registers;
+                processor.vector_registers = changed.vector_registers;
+                processor.upper_vector_halves = changed.upper_vector_halves;
+                processor.zmm_upper_halves = changed.zmm_upper_halves;
+                processor.high_vector_registers = changed.high_vector_registers;
+            }
             // An AVX store that faults keeps the MXCSR flags its computation set, and a gather the lanes it loaded.
             if matches!(behavior, PreciseInstruction::Avx { .. }) {
                 processor.mxcsr = changed.mxcsr;
@@ -255,6 +266,9 @@ fn apply(
             sse_simulation::execute_sse(instruction, across_fault, masked_faults, processor, memory, decoded, on_memory_mutated)
         }
         PreciseInstruction::Evex(instruction) => evex_simulation::execute_evex(instruction, processor, memory, decoded),
+        PreciseInstruction::EvexStore { instruction, across_fault } if crate::evex::is_scatter(instruction) => {
+            evex_gather::scatter(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
+        }
         PreciseInstruction::EvexStore { instruction, across_fault } => {
             evex_compress::store_compressed(instruction, across_fault, processor, memory, decoded, on_memory_mutated)
         }

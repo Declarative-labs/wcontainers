@@ -1061,6 +1061,12 @@ pub enum Bug {
     ComplexHonorsMasks,
     /// The EVEX VCVTPS2PH rounds as MXCSR says, whatever its immediate.
     HalfConversionImmediateIgnored,
+    /// The EVEX gathers and scatters ignore the scale.
+    GatherScaleIgnored,
+    /// An EVEX gather that faults leaves the opmask as it was, its bits beyond the elements included, cleared.
+    GatherFaultClearsMask,
+    /// An EVEX scatter leaves the opmask as it was once it completes.
+    ScatterMaskKept,
     /// A VMOVSH load and VMOVW into a vector keep the destination's bits above the word up to 128.
     MoveWordKeepsUpperBits,
     /// VRANGE's sign control 0 keeps the selected element's sign rather than the first source's.
@@ -1548,6 +1554,9 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::ComplexConjugateSignsSwapped, "VFMULCPH to VFCMADDCSH", Family::Evex(|form| matches!(form.operation, EvexOperation::ComplexMultiply { .. })), Origin::EvexRest),
     row(Bug::ComplexHonorsMasks, "VFMULCPH to VFCMADDCSH", Family::Evex(|form| matches!(form.operation, EvexOperation::ComplexMultiply { .. })), Origin::EvexRest),
     row(Bug::HalfConversionImmediateIgnored, "VCVTPS2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(_)) && form.has_immediate()), Origin::EvexRest),
+    row(Bug::GatherScaleIgnored, "EVEX gathers and scatters", Family::Evex(|form| matches!(form.operation, EvexOperation::Gather { .. } | EvexOperation::Scatter { .. })), Origin::EvexRest),
+    row(Bug::GatherFaultClearsMask, "EVEX gathers", Family::Evex(|form| matches!(form.operation, EvexOperation::Gather { .. })), Origin::EvexRest),
+    row(Bug::ScatterMaskKept, "EVEX scatters", Family::Evex(|form| matches!(form.operation, EvexOperation::Scatter { .. })), Origin::EvexRest),
     row(Bug::RangeSignFromSelected, "VRANGE", Family::Evex(|form| is_special(form, SpecialOperation::Range)), Origin::EvexRest),
     row(Bug::EvexUnsignedIndefiniteSigned, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), Origin::EvexRest),
     row(Bug::HalfToSingleReportsDenormal, "VCVTPH2PS", Family::Evex(|form| !form.reports_denormal()), Origin::EvexRest),
