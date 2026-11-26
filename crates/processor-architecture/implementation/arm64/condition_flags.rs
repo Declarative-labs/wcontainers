@@ -1,5 +1,8 @@
 use vstd::prelude::*;
 
+#[cfg(verus_keep_ghost)]
+use crate::pseudocode::condition_holds;
+
 bitflags::bitflags! {
     /// PSTATE's [NZCV](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/NZCV--Condition-Flags), at its bit positions in that register.
     #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -12,6 +15,12 @@ bitflags::bitflags! {
 }
 
 verus! {
+
+/// The bit of V in an NZCV immediate, which holds N, Z, C and V from its most significant bit.
+pub const IMMEDIATE_OVERFLOW: u64 = 1;
+pub const IMMEDIATE_CARRY: u64 = IMMEDIATE_OVERFLOW << 1;
+pub const IMMEDIATE_ZERO: u64 = IMMEDIATE_CARRY << 1;
+pub const IMMEDIATE_NEGATIVE: u64 = IMMEDIATE_ZERO << 1;
 
 /// PSTATE's NZCV as one boolean per flag, the form in which verified code reads and sets them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -46,6 +55,8 @@ impl From<ConditionFlags> for Nzcv {
         }
     }
 }
+
+verus! {
 
 /// The [conditions](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-system#impl-shared.ConditionHolds.1) in the order of their encodings.
 pub const CONDITIONS: [Condition; 16] = [
@@ -88,11 +99,37 @@ pub enum Condition {
 }
 
 impl Condition {
-    pub fn holds(self, flags: ConditionFlags) -> bool {
-        let negative = flags.contains(ConditionFlags::NEGATIVE);
-        let zero = flags.contains(ConditionFlags::ZERO);
-        let carry = flags.contains(ConditionFlags::CARRY);
-        let overflow = flags.contains(ConditionFlags::OVERFLOW);
+    /// The condition's place in [`CONDITIONS`], which is its encoding.
+    pub open spec fn encoding(self) -> nat {
+        match self {
+            Self::Eq => 0,
+            Self::Ne => 1,
+            Self::Cs => 2,
+            Self::Cc => 3,
+            Self::Mi => 4,
+            Self::Pl => 5,
+            Self::Vs => 6,
+            Self::Vc => 7,
+            Self::Hi => 8,
+            Self::Ls => 9,
+            Self::Ge => 10,
+            Self::Lt => 11,
+            Self::Gt => 12,
+            Self::Le => 13,
+            Self::Al => 14,
+            Self::Nv => 15,
+        }
+    }
+
+    /// Whether the condition holds in the flags.
+    pub fn holds_in(self, flags: Nzcv) -> (holds: bool)
+        ensures
+            holds == condition_holds(self.encoding(), flags),
+    {
+        let negative = flags.negative;
+        let zero = flags.zero;
+        let carry = flags.carry;
+        let overflow = flags.overflow;
         match self {
             Self::Eq => zero,
             Self::Ne => !zero,
@@ -111,5 +148,13 @@ impl Condition {
             Self::Al => true,
             Self::Nv => !crate::planted::is(118),
         }
+    }
+}
+
+} // verus!
+
+impl Condition {
+    pub fn holds(self, flags: ConditionFlags) -> bool {
+        self.holds_in(Nzcv::from(flags))
     }
 }

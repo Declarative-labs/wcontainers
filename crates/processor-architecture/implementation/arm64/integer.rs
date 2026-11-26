@@ -7,19 +7,29 @@ use core::convert::Infallible;
 use vstd::arithmetic::power2::pow2;
 use vstd::prelude::*;
 
-use crate::condition_flags::{CONDITIONS, ConditionFlags, Nzcv};
+use crate::condition_flags::{
+    CONDITIONS, ConditionFlags, IMMEDIATE_CARRY, IMMEDIATE_NEGATIVE, IMMEDIATE_OVERFLOW,
+    IMMEDIATE_ZERO, Nzcv,
+};
 use crate::operand::{
     Operand, OperandAccess, RegisterThirtyOne, RegisterWidth, Rotation, Signedness,
 };
 #[cfg(verus_keep_ghost)]
-use crate::pseudocode::{arithmetic_or_logical, is_zero, logical_result, sint, written};
+use crate::pseudocode::{
+    arithmetic_immediate_value, arithmetic_or_logical, conditional_compare, is_zero,
+    logical_result, nzcv_immediate, ones, ror, shifted_register, sint, uint, written,
+};
 use crate::registers::{read_register, write_register};
 use crate::{Exception, Instruction, Processor};
 
 /// The most source operands an instruction reads: CCMP's register, second operand, flags and condition.
 const MAXIMUM_SOURCES: usize = 4;
+verus! {
+
 /// The [shift amount](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--immediate---Add-immediate-value-#:~:text=sh) a set shift bit gives an arithmetic immediate.
 const IMMEDIATE_SHIFT: u32 = 12;
+
+} // verus!
 /// How many bits each step of a move wide's hw moves its immediate.
 const WIDE_IMMEDIATE_STEP: u32 = u16::BITS;
 /// The largest left shift of an [extended register](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--extended-register---Add-extended-and-scaled-register-#:~:text=amount); larger ones are unallocated.
@@ -443,33 +453,15 @@ pub(crate) fn read_source<LevelSpecific>(
                 number.read(word),
                 RegisterThirtyOne::ZeroRegister,
             );
-            let amount = amount.read(word);
-            let amount = if crate::planted::is(113) {
-                amount & 31
-            } else {
-                amount
-            };
-            if amount >= width.to_bits() {
-                return Err(Exception::UndefinedInstruction);
-            }
-            match SHIFT_TYPES[shift_type.read(word) as usize] {
-                ShiftType::Lsl => (value << amount) & width.to_mask(),
-                ShiftType::Lsr if crate::planted::is(421) => {
-                    (sign_extend(value, width) >> amount) as u64 & width.to_mask()
-                }
-                ShiftType::Lsr => (value & width.to_mask()) >> amount,
-                ShiftType::Asr if crate::planted::is(114) => {
-                    ((value as i64) >> amount) as u64 & width.to_mask()
-                }
-                ShiftType::Asr => (sign_extend(value, width) >> amount) as u64 & width.to_mask(),
-                ShiftType::Ror if rotation == Rotation::Allowed => {
-                    if crate::planted::is(213) {
-                        rotate_within(value, amount, u64::BITS) & width.to_mask()
-                    } else {
-                        rotate_right(value, amount, width)
-                    }
-                }
-                ShiftType::Ror => return Err(Exception::UndefinedInstruction),
+            match shift_register(
+                value,
+                shift_type.read(word),
+                amount.read(word),
+                width,
+                rotation,
+            ) {
+                Some(shifted) => shifted,
+                None => return Err(Exception::UndefinedInstruction),
             }
         }
         Operand::ExtendedRegister {
@@ -513,22 +505,7 @@ pub(crate) fn read_source<LevelSpecific>(
             (extended << amount) & width.to_mask()
         }
         Operand::ArithmeticImmediate { value, shift } => {
-            let step = if crate::planted::is(401) {
-                16
-            } else {
-                IMMEDIATE_SHIFT
-            };
-            let immediate = if crate::planted::is(203) {
-                ((u64::from(value.read(word)) << 52) as i64 >> 52) as u64
-            } else {
-                u64::from(value.read(word))
-            };
-            let shift = if crate::planted::is(202) {
-                0
-            } else {
-                shift.read(word)
-            };
-            immediate << (shift * step)
+            arithmetic_immediate(value.read(word), shift.read(word))
         }
         Operand::BitmaskImmediate { field, width } => {
             let bits = field.read(word);
@@ -593,6 +570,8 @@ pub(crate) fn read_source<LevelSpecific>(
     })
 }
 
+verus! {
+
 /// The [shift types](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ORR--shifted-register---Bitwise-OR--shifted-register--#:~:text=shift) in the order of their encodings.
 const SHIFT_TYPES: [ShiftType; 4] = [
     ShiftType::Lsl,
@@ -608,6 +587,8 @@ enum ShiftType {
     Asr,
     Ror,
 }
+
+} // verus!
 
 /// The [extend types](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--extended-register---Add-extended-and-scaled-register-#:~:text=option) in the order of their encodings, with the bits each keeps.
 const EXTEND_TYPES: [(Signedness, u32); 8] = [
@@ -714,17 +695,141 @@ pub(crate) const fn low_ones(count: u32) -> (low: u64)
 
 } // verus!
 
-fn rotate_within(value: u64, amount: u32, bits: u32) -> u64 {
+verus! {
+
+/// ROR of the low `bits` bits of a value that has no other bits.
+fn rotate_within(value: u64, amount: u32, bits: u32) -> (rotated: u64)
+    requires
+        0 < bits <= u64::BITS,
+        value < pow2(bits as nat),
+    ensures
+        rotated as int == ror(value as int, amount as nat, bits as nat),
+{
     let amount = amount % bits;
+    proof {
+        vstd::arithmetic::div_mod::lemma_small_mod(value as nat, pow2(bits as nat));
+        if amount != 0 {
+            let kept = (bits - amount) as u32;
+            let low = value >> amount;
+            let mask = ones(bits as nat) as u64;
+            vstd::bits::lemma_u64_shr_is_div(value, amount as u64);
+            assert(value >> amount == value >> (amount as u64)) by (bit_vector);
+            vstd::arithmetic::power2::lemma_pow2_adds(kept as nat, amount as nat);
+            vstd::arithmetic::power2::lemma_pow2_pos(amount as nat);
+            assert(pow2(amount as nat) * pow2(kept as nat) == pow2(bits as nat)) by (nonlinear_arith)
+                requires
+                    pow2((kept + amount) as nat) == pow2(kept as nat) * pow2(amount as nat),
+                    kept + amount == bits;
+            vstd::arithmetic::div_mod::lemma_multiply_divide_lt(value as int, pow2(amount as nat) as int, pow2(kept as nat) as int);
+            vstd::bits::lemma_u64_pow2_no_overflow(kept as nat);
+            vstd::bits::lemma_u64_shl_is_mul(1, kept as u64);
+            assert(1u64 << kept == 1u64 << (kept as u64)) by (bit_vector);
+            crate::lemmas::lemma_mask(low, bits as nat);
+            vstd::arithmetic::power2::lemma_pow2_strictly_increases(kept as nat, bits as nat);
+            vstd::arithmetic::div_mod::lemma_small_mod(low as nat, pow2(bits as nat));
+            crate::lemmas::lemma_shift_left(value, kept, bits as nat);
+            let high = (value << kept) & mask;
+            crate::lemmas::lemma_mul_pow2_mod(value as int, kept as nat, bits as nat);
+            let (part, step) = (value as int % (pow2(amount as nat) as int), pow2(kept as nat) as int);
+            assert(low + high < pow2(bits as nat)) by (nonlinear_arith)
+                requires
+                    low < step,
+                    high == part * step,
+                    0 <= part < pow2(amount as nat),
+                    pow2(amount as nat) * step == pow2(bits as nat);
+            assert((low | (value << kept)) & mask == low | high && (low | high) == (low + high) as u64) by (bit_vector)
+                requires
+                    low < (1u64 << kept),
+                    low & mask == low,
+                    high == (value << kept) & mask;
+        }
+    }
     match amount {
         0 => value,
         _ => ((value >> amount) | (value << (bits - amount))) & low_ones(bits),
     }
 }
 
-fn rotate_right(value: u64, amount: u32, width: RegisterWidth) -> u64 {
+/// ROR of the width's low bits of a value.
+fn rotate_right(value: u64, amount: u32, width: RegisterWidth) -> (rotated: u64)
+    ensures
+        rotated as int == ror(uint(value as int, width.bits()), amount as nat, width.bits()),
+{
+    proof {
+        crate::lemmas::lemma_mask(value, width.bits());
+        vstd::arithmetic::power2::lemma_pow2_pos(width.bits());
+    }
     rotate_within(value & width.to_mask(), amount, width.to_bits())
 }
+
+/// ShiftReg of a register's value by an amount from the encoding, or none where the encoding is unallocated.
+fn shift_register(value: u64, shift_type: u32, amount: u32, width: RegisterWidth, rotation: Rotation) -> (shifted: Option<u64>)
+    requires
+        shift_type < 4,
+    ensures
+        shifted is Some <==> shifted_register(value as int, shift_type as nat, amount as nat, width.bits(), rotation) is Some,
+        shifted matches Some(shifted) ==> shifted as int == shifted_register(
+            value as int,
+            shift_type as nat,
+            amount as nat,
+            width.bits(),
+            rotation,
+        )->0,
+{
+    let amount = if crate::planted::is(113) {
+        amount & 31
+    } else {
+        amount
+    };
+    if amount >= width.to_bits() {
+        return None;
+    }
+    proof {
+        crate::lemmas::lemma_mask(value, width.bits());
+        vstd::arithmetic::div_mod::lemma_mul_mod_noop_left(value as int, pow2(amount as nat) as int, pow2(width.bits()) as int);
+        vstd::arithmetic::div_mod::lemma_mod_twice(value as int, pow2(width.bits()) as int);
+        vstd::arithmetic::power2::lemma_pow2_pos(width.bits());
+    }
+    let shifted = match SHIFT_TYPES[shift_type as usize] {
+        ShiftType::Lsl => {
+            proof {
+                crate::lemmas::lemma_shift_left(value, amount, width.bits());
+            }
+            (value << amount) & width.to_mask()
+        },
+        ShiftType::Lsr => if crate::planted::is(421) {
+            (sign_extend(value, width) >> amount) as u64 & width.to_mask()
+        } else {
+            proof {
+                let masked = value & (ones(width.bits()) as u64);
+                vstd::bits::lemma_u64_shr_is_div(masked, amount as u64);
+                assert(masked >> amount == masked >> (amount as u64)) by (bit_vector);
+            }
+            (value & width.to_mask()) >> amount
+        },
+        ShiftType::Asr => if crate::planted::is(114) {
+            ((value as i64) >> amount) as u64 & width.to_mask()
+        } else {
+            let extended = sign_extend(value, width);
+            proof {
+                crate::lemmas::lemma_arithmetic_shift_right(extended, amount);
+                crate::lemmas::lemma_signed_mask(extended >> amount, width.bits());
+            }
+            (extended >> amount) as u64 & width.to_mask()
+        },
+        ShiftType::Ror => match rotation {
+            Rotation::Allowed => if crate::planted::is(213) {
+                rotate_within(value, amount, u64::BITS) & width.to_mask()
+            } else {
+                rotate_right(value, amount, width)
+            },
+            Rotation::Reserved => return None,
+        },
+    };
+    Some(shifted)
+}
+
+} // verus!
 
 fn replicate(element: u64, bits: u32) -> u64 {
     (0..u64::BITS / bits).fold(0, |replicated, index| {
@@ -963,13 +1068,140 @@ pub(crate) fn compute_arithmetic_or_logical(
 
 /// The flags of an immediate whose bits are N, Z, C and V from the most significant.
 fn to_condition_flags(nzcv: u64) -> ConditionFlags {
-    if crate::planted::is(119) {
-        return ConditionFlags::from_bits_truncate((nzcv as u32) << 27);
-    }
-    ConditionFlags::from_bits_truncate(
-        (nzcv as u32) << ConditionFlags::OVERFLOW.bits().trailing_zeros(),
-    )
+    ConditionFlags::from(to_nzcv(nzcv))
 }
+
+verus! {
+
+/// The flags of an immediate whose bits are N, Z, C and V from the most significant.
+fn to_nzcv(nzcv: u64) -> (flags: Nzcv)
+    ensures
+        flags == nzcv_immediate(nzcv),
+{
+    let nzcv = if crate::planted::is(119) {
+        nzcv >> 1
+    } else {
+        nzcv
+    };
+    Nzcv {
+        negative: nzcv & IMMEDIATE_NEGATIVE != 0,
+        zero: nzcv & IMMEDIATE_ZERO != 0,
+        carry: nzcv & IMMEDIATE_CARRY != 0,
+        overflow: nzcv & IMMEDIATE_OVERFLOW != 0,
+    }
+}
+
+/// The flags CCMN and CCMP set, from their two operands after decode, their NZCV immediate, their condition and the
+/// flags before.
+fn compute_conditional_compare(
+    comparison: Comparison,
+    width: RegisterWidth,
+    first: u64,
+    second: u64,
+    nzcv: u64,
+    condition: u64,
+    flags: Nzcv,
+) -> (set: Nzcv)
+    requires
+        condition < CONDITIONS.len(),
+    ensures
+        set == conditional_compare(comparison, width.bits(), first, second, nzcv, condition as nat, flags),
+{
+    let comparison = if crate::planted::is(221) {
+        Comparison::Difference
+    } else {
+        comparison
+    };
+    let nzcv = if crate::planted::is(220) {
+        ((nzcv & 1) << 3) | ((nzcv & 2) << 1) | ((nzcv & 4) >> 1) | ((nzcv & 8) >> 3)
+    } else {
+        nzcv
+    };
+    let second = if crate::planted::is(418) {
+        (((second << 59) as i64) >> 59) as u64 & width.to_mask()
+    } else {
+        second
+    };
+    let second = if crate::planted::is(11) && second & 0x10 != 0 {
+        second | !0x1F
+    } else {
+        second
+    };
+    let width = if crate::planted::is(12) {
+        RegisterWidth::Bits64
+    } else {
+        width
+    };
+    let holds = CONDITIONS[condition as usize].holds_in(flags);
+    proof {
+        assert(CONDITIONS[condition as int].encoding() == condition);
+    }
+    if crate::planted::is(417) && !holds {
+        let sum = match comparison {
+            Comparison::Sum => add_with_carry(width, first, second, false).1,
+            Comparison::Difference => add_with_carry(width, first, !second, true).1,
+        };
+        let immediate = to_nzcv(nzcv);
+        Nzcv {
+            negative: immediate.negative || sum.negative,
+            zero: immediate.zero || sum.zero,
+            carry: immediate.carry || sum.carry,
+            overflow: immediate.overflow || sum.overflow,
+        }
+    } else if holds {
+        match comparison {
+            Comparison::Sum => if crate::planted::is(120) {
+                add_with_carry(RegisterWidth::Bits64, first, second, false).1
+            } else {
+                add_with_carry(width, first, second, false).1
+            },
+            Comparison::Difference => add_with_carry(width, first, !second, true).1,
+        }
+    } else {
+        to_nzcv(nzcv)
+    }
+}
+
+/// The immediate of ADD and SUB (immediate): imm12, shifted left by 12 bits when sh is set.
+fn arithmetic_immediate(imm12: u32, sh: u32) -> (immediate: u64)
+    requires
+        imm12 < pow2(IMMEDIATE_SHIFT as nat),
+        sh <= 1,
+    ensures
+        immediate == arithmetic_immediate_value(imm12 as nat, sh as nat),
+{
+    let step = if crate::planted::is(401) {
+        16
+    } else {
+        IMMEDIATE_SHIFT
+    };
+    let immediate = if crate::planted::is(203) {
+        ((u64::from(imm12) << 52) as i64 >> 52) as u64
+    } else {
+        u64::from(imm12)
+    };
+    let shift = if crate::planted::is(202) {
+        0
+    } else {
+        sh
+    };
+    proof {
+        assert(step == 12 && shift <= 1);
+        vstd::arithmetic::power2::lemma2_to64();
+        let amount = (shift * step) as u32;
+        assert(immediate == imm12 && immediate < pow2(12) && pow2(amount as nat) <= pow2(12));
+        assert(immediate * pow2(amount as nat) <= pow2(12) * pow2(12)) by (nonlinear_arith)
+            requires
+                immediate < pow2(12),
+                pow2(amount as nat) <= pow2(12);
+        vstd::bits::lemma_u64_shl_is_mul(immediate, amount as u64);
+        assert(immediate << amount == immediate << (amount as u64)) by (bit_vector);
+        assert(amount == if sh == 0 { 0u32 } else { 12u32 });
+    }
+    immediate << (shift * step)
+}
+
+} // verus!
 
 fn reverse_bytes(value: u64, container_bits: u32, width: RegisterWidth) -> u64 {
     let containers = if crate::planted::is(131) {
@@ -1152,62 +1384,18 @@ fn apply(
                 })
             }
         }
-        (O::ConditionalCompare(comparison), &[first, second, nzcv, condition]) => {
-            let comparison = if crate::planted::is(221) {
-                Comparison::Difference
-            } else {
-                comparison
-            };
-            let nzcv = if crate::planted::is(220) {
-                ((nzcv & 1) << 3) | ((nzcv & 2) << 1) | ((nzcv & 4) >> 1) | ((nzcv & 8) >> 3)
-            } else {
-                nzcv
-            };
-            let second = if crate::planted::is(418) {
-                (((second << 59) as i64) >> 59) as u64 & mask
-            } else {
-                second
-            };
-            let second = if crate::planted::is(11) && second & 0x10 != 0 {
-                second | !0x1F
-            } else {
-                second
-            };
-            let width = if crate::planted::is(12) {
-                RegisterWidth::Bits64
-            } else {
-                width
-            };
-            let flags = if crate::planted::is(417) && !CONDITIONS[condition as usize].holds(flags) {
-                let sum = match comparison {
-                    Comparison::Sum => {
-                        ConditionFlags::from(add_with_carry(width, first, second, false).1)
-                    }
-                    Comparison::Difference => {
-                        ConditionFlags::from(add_with_carry(width, first, !second, true).1)
-                    }
-                };
-                to_condition_flags(nzcv) | sum
-            } else if CONDITIONS[condition as usize].holds(flags) {
-                match comparison {
-                    Comparison::Sum if crate::planted::is(120) => ConditionFlags::from(
-                        add_with_carry(RegisterWidth::Bits64, first, second, false).1,
-                    ),
-                    Comparison::Sum => {
-                        ConditionFlags::from(add_with_carry(width, first, second, false).1)
-                    }
-                    Comparison::Difference => {
-                        ConditionFlags::from(add_with_carry(width, first, !second, true).1)
-                    }
-                }
-            } else {
-                to_condition_flags(nzcv)
-            };
-            Outcome {
-                result: None,
-                flags: Some(flags),
-            }
-        }
+        (O::ConditionalCompare(comparison), &[first, second, nzcv, condition]) => Outcome {
+            result: None,
+            flags: Some(ConditionFlags::from(compute_conditional_compare(
+                comparison,
+                width,
+                first,
+                second,
+                nzcv,
+                condition,
+                Nzcv::from(flags),
+            ))),
+        },
         (O::ReverseBits, &[source]) if crate::planted::is(237) => written(
             u64::from((source as u32).reverse_bits())
                 | (u64::from(((source >> 32) as u32).reverse_bits()) << 32),

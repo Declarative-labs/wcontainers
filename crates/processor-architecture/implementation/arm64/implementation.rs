@@ -23,6 +23,7 @@ pub mod encoding;
 mod exception;
 pub mod floating_point;
 pub mod integer;
+mod lemmas;
 mod listing;
 pub mod load_store;
 pub mod memory;

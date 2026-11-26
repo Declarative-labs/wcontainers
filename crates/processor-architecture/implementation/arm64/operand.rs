@@ -175,9 +175,13 @@ pub enum OperandAccess {
     Written,
 }
 
+verus! {
+
 /// Whether a shifted register may rotate, which the arithmetic instructions leave unallocated.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Rotation {
     Allowed,
     Reserved,
 }
+
+} // verus!

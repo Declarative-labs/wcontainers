@@ -1488,22 +1488,32 @@ fn equality_and_clone_of_processors_permissions_and_instructions_are_identity() 
     }
 }
 
-/// The conversion between the verified code's flags and PSTATE's, which Verus cannot read, on all sixteen values.
+/// The conversion between the verified code's flags and PSTATE's, which Verus cannot read, on all sixteen values, and
+/// the immediate's bits in PSTATE's order.
 #[test]
 fn every_flag_value_converts_to_its_bit_and_back() {
-    use crate::condition_flags::Nzcv;
-    for bits in 0..1_u32 << 4 {
+    use crate::condition_flags::{
+        IMMEDIATE_CARRY, IMMEDIATE_NEGATIVE, IMMEDIATE_OVERFLOW, IMMEDIATE_ZERO, Nzcv,
+    };
+    let position = ConditionFlags::OVERFLOW.bits().trailing_zeros();
+    for (immediate, flag) in [
+        (IMMEDIATE_NEGATIVE, ConditionFlags::NEGATIVE),
+        (IMMEDIATE_ZERO, ConditionFlags::ZERO),
+        (IMMEDIATE_CARRY, ConditionFlags::CARRY),
+        (IMMEDIATE_OVERFLOW, ConditionFlags::OVERFLOW),
+    ] {
+        assert_eq!(u64::from(flag.bits() >> position), immediate);
+    }
+    for bits in 0..=ConditionFlags::all().bits() >> position {
+        let immediate = u64::from(bits);
         let nzcv = Nzcv {
-            negative: bits & 0b1000 != 0,
-            zero: bits & 0b0100 != 0,
-            carry: bits & 0b0010 != 0,
-            overflow: bits & 0b0001 != 0,
+            negative: immediate & IMMEDIATE_NEGATIVE != 0,
+            zero: immediate & IMMEDIATE_ZERO != 0,
+            carry: immediate & IMMEDIATE_CARRY != 0,
+            overflow: immediate & IMMEDIATE_OVERFLOW != 0,
         };
         let flags = ConditionFlags::from(nzcv);
-        assert_eq!(
-            flags.bits(),
-            bits << ConditionFlags::OVERFLOW.bits().trailing_zeros()
-        );
+        assert_eq!(flags.bits(), bits << position);
         assert_eq!(Nzcv::from(flags), nzcv);
         assert_eq!(ConditionFlags::from(Nzcv::from(flags)), flags);
     }
