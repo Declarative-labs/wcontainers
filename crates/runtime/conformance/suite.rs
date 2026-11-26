@@ -2,7 +2,7 @@
 
 use std::num::NonZeroUsize;
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use oci_spec::runtime::Spec;
 use wcontainers_kernel::{ExecutionConfig, ProcessEnd, StopReason};
@@ -47,9 +47,8 @@ const MISSING_PROGRAM: &str = "no-program-has-this-name";
 /// One stage of a pipeline, which copies what it reads to what it writes.
 const PIPELINE_STAGE: &str = " | cat";
 
-/// The utility that waits, and how many seconds the first process waits while a busy one runs.
+/// The utility that waits a number of seconds, which may have a fraction.
 const SLEEP: &str = "sleep";
-const SLEEP_SECONDS: u32 = 1;
 
 /// A script that never ends by itself.
 const ENDLESS_SCRIPT: &str = "while :; do :; done";
@@ -127,14 +126,19 @@ pub fn a_program_that_is_nowhere_is_refused<R: Runtime>(subject: Subject<R>) {
     assert!(matches!(made, Err(ContainerError::ProgramNotFound)));
 }
 
+/// Returns how long a container that only exits takes to make and run, after checking that it exits.
+fn time_to_exit<R: Runtime>(subject: &Subject<R>) -> Duration {
+    let started = Instant::now();
+    let (mut exiting, _interrupter) = made(subject, shell(&format!("exit {EXIT_CODE}")));
+    assert_eq!(exiting.run(), exited());
+    started.elapsed()
+}
+
 /// Checks that an interrupt from another thread ends a run that would never end by itself, every time.
 ///
 /// The interrupt waits as long as a container that only exits took to make and run, so that the run has started.
 pub fn an_interrupt_from_another_thread_stops_a_run<R: Runtime>(subject: Subject<R>) {
-    let started = Instant::now();
-    let (mut exiting, _interrupter) = made(&subject, shell(&format!("exit {EXIT_CODE}")));
-    assert_eq!(exiting.run(), exited());
-    let before_interrupting = started.elapsed();
+    let before_interrupting = time_to_exit(&subject);
     let (mut container, interrupter) = made(&subject, shell(ENDLESS_SCRIPT));
     thread::scope(|scope| {
         for _ in 0..2 {
@@ -159,12 +163,13 @@ pub fn a_run_goes_on_after_an_interrupt<R: Runtime>(subject: Subject<R>) {
 
 /// Checks that a first process that exits ends its container while a process it started in the background never stops.
 ///
-/// The first process sleeps before it exits, so the busy one runs first: with one runner, the container ends only if
-/// a run ends its slice.
+/// The first process sleeps before it exits, as long as a container that only exits took, so the busy one runs first:
+/// with one runner, the container ends only if a run ends its slice.
 pub fn a_busy_background_process_does_not_keep_its_container_running<R: Runtime>(
     subject: Subject<R>,
 ) {
-    let script = format!("({ENDLESS_SCRIPT}) & {SLEEP} {SLEEP_SECONDS}; exit {EXIT_CODE}");
+    let seconds = time_to_exit(&subject).as_secs_f64();
+    let script = format!("({ENDLESS_SCRIPT}) & {SLEEP} {seconds}; exit {EXIT_CODE}");
     let (mut container, _interrupter) = made(&subject, shell(&script));
     assert_eq!(container.run(), exited());
 }
