@@ -58,6 +58,7 @@ pub mod encoding;
 #[cfg(feature = "translate")]
 mod lanes;
 pub mod offer;
+pub mod signals;
 pub mod strings;
 mod user_segments;
 #[cfg(feature = "translate")]
