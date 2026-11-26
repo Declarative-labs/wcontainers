@@ -1,0 +1,16 @@
+[package]
+name = "wcontainers-kvm-conformance"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "suite.rs"
+
+[dependencies]
+kvm-ioctls = "0.25.1"
+wcontainers-kvm = { path = ".." }
+wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
+
+[lints]
+workspace = true

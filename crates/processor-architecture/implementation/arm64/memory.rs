@@ -2,19 +2,33 @@
 
 use alloc::borrow::Cow;
 
-use wcontainers_processor_architecture::MemoryDelta;
+use wcontainers_processor_architecture::{MemoryDelta, MemorySink, ProcessorArchitecture};
 
-use crate::{Arm64, PagePermission};
+use crate::PagePermission;
 
 /// Reads bytes as the memory holds them, whatever its permissions.
-pub fn read_bytes<const LENGTH: usize>(
-    memory: &[MemoryDelta<'_, Arm64>],
+pub fn read_bytes<Architecture: ProcessorArchitecture, const LENGTH: usize>(
+    memory: &[MemoryDelta<'_, Architecture>],
     start: u64,
 ) -> [u8; LENGTH] {
     core::array::from_fn(|offset| read_byte(memory, start.wrapping_add(offset as u64)))
 }
 
-fn read_byte(memory: &[MemoryDelta<'_, Arm64>], address: u64) -> u8 {
+/// Reads bytes as the memory holds them into the slice, whatever its permissions.
+pub fn read_bytes_into<Architecture: ProcessorArchitecture>(
+    memory: &[MemoryDelta<'_, Architecture>],
+    start: u64,
+    bytes: &mut [u8],
+) {
+    for (offset, byte) in bytes.iter_mut().enumerate() {
+        *byte = read_byte(memory, start.wrapping_add(offset as u64));
+    }
+}
+
+fn read_byte<Architecture: ProcessorArchitecture>(
+    memory: &[MemoryDelta<'_, Architecture>],
+    address: u64,
+) -> u8 {
     memory
         .iter()
         .rev()
@@ -30,7 +44,13 @@ fn read_byte(memory: &[MemoryDelta<'_, Arm64>], address: u64) -> u8 {
         .unwrap_or_default()
 }
 
-pub fn read_permission(memory: &[MemoryDelta<'_, Arm64>], address: u64) -> PagePermission {
+pub fn read_permission<Architecture>(
+    memory: &[MemoryDelta<'_, Architecture>],
+    address: u64,
+) -> PagePermission
+where
+    Architecture: ProcessorArchitecture<PagePermission = PagePermission>,
+{
     memory
         .iter()
         .rev()
@@ -41,15 +61,15 @@ pub fn read_permission(memory: &[MemoryDelta<'_, Arm64>], address: u64) -> PageP
             } => addresses.contains(&address).then_some(*permission),
             MemoryDelta::ValueAssignment { .. } => None,
         })
-        .unwrap_or(PagePermission::Unmapped)
+        .unwrap_or(Architecture::DEFAULT_PERMISSION)
 }
 
 /// Reports each maximal run of bytes that differs between two copies of memory starting at `start`.
-pub fn report_changed_bytes(
+pub fn report_changed_bytes<Architecture: ProcessorArchitecture>(
     start: u64,
     before: &[u8],
     after: &[u8],
-    mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
+    mutation_hook: &mut impl MemorySink<Architecture>,
 ) {
     /// Bytes compared at once before looking at single ones: on a Neoverse V2 this took a warm batch of the single
     /// step machine from 4.9 to 4.3 microseconds a state, comparing two pages for each.
@@ -70,7 +90,7 @@ pub fn report_changed_bytes(
             while offset < after.len() && after[offset] != before[offset] {
                 offset += 1;
             }
-            on_memory_mutated(MemoryDelta::ValueAssignment {
+            mutation_hook.on_memory_mutated(MemoryDelta::ValueAssignment {
                 start: start + first as u64,
                 bytes: Cow::Borrowed(&after[first..offset]),
             });

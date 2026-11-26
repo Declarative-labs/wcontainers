@@ -1,112 +1,295 @@
-//! ARM64 as a program at EL0 sees it, under an EL1 that configures the processor as Linux does.
+//! ARM64 as Linux configures it for a program that has used SVE and SME.
+//!
+//! Where a control could set one privilege level apart from another, it treats them alike: CTR_EL0 is readable,
+//! SVE and SME are on (or hidden from every level), and the stack pointer's alignment is checked.
 
 #![no_std]
 
 extern crate alloc;
 
+use alloc::vec::{self, Vec};
+use core::convert::Infallible;
+use core::marker::PhantomData;
 use core::ops::Range;
 
+use wcontainers_privilege_level::PrivilegeLevel;
 use wcontainers_processor_architecture::ProcessorArchitecture;
 
+pub mod advanced_simd;
+mod behavior;
+pub mod branch;
+mod condition_flags;
+pub mod cryptography;
+mod documented;
 pub mod encoding;
+mod exception;
+pub mod floating_point;
+pub mod integer;
+mod listing;
+pub mod load_store;
 pub mod memory;
+pub mod memory_tagging;
+pub mod operand;
+pub mod planted;
+pub mod pointer_authentication;
+mod registers;
+pub mod scalable;
+pub mod scalable_floating_point;
+pub mod scalable_integer;
+pub mod simd;
 mod simulation;
-pub mod syndrome;
+mod structure;
+pub mod sve;
+mod sve_count;
+mod sve_element;
+mod sve_move;
+mod sve_predicate;
+#[cfg(test)]
+mod sve_tests;
+pub mod system_register;
 #[cfg(test)]
 mod tests;
 
+pub use behavior::{
+    FailedStoreExclusive, FaultAddressTag, LoadIntoBaseWithWriteback, LoadPairIntoOneRegister,
+    MisalignedExclusive, MisalignedStackPointer, StoreAcrossFault, StoreExclusiveOverlap,
+    StoreOfBaseWithWriteback, VectorLength, VectorLengthReading, WaitForInterruptBehavior,
+};
+pub use condition_flags::{CONDITIONS, Condition, ConditionFlags};
+pub use documented::{
+    DocumentedInstruction, DocumentedOperation, to_documented_operation, to_implicit_inputs,
+    writes_condition_flags,
+};
+pub use exception::{
+    AccessDirection, Exception, FaultStatus, SmeTrapCode, SystemAccess, WaitInstruction,
+};
+pub use listing::{
+    Instruction, InstructionClass, InstructionRecord, LISTED_INSTRUCTIONS, PrivilegeBehavior,
+};
+pub use load_store::{LoadStoreChoices, LoadStoreInstruction};
+pub use structure::{StructureChoices, StructureInstruction};
+pub use wcontainers_privilege_level_arm64_user::User;
+
 /// The number of bits of a virtual address under a 4 KiB granule without [FEAT_LVA](https://developer.arm.com/documentation/109697/2025_09/Feature-descriptions/The-Armv8-2-architecture-extension#:~:text=FEAT_LVA%2C%20Large%20VA%20support).
 pub const VIRTUAL_ADDRESS_BITS: u32 = 48;
+pub const INSTRUCTION_SIZE: u64 = size_of::<u32>() as u64;
 /// X0 to X30; the encoding's number after the last names the zero register or the stack pointer.
 pub const GENERAL_PURPOSE_REGISTERS: usize = 31;
 /// V0 to V31.
 pub const VECTOR_REGISTERS: usize = 32;
-pub const INSTRUCTION_BYTES: u64 = size_of::<u32>() as u64;
+/// P0 to P15, the SVE predicate registers.
+pub const PREDICATE_REGISTERS: usize = 16;
 
-/// Every register zero, the condition flags clear and no exception.
-pub const ZERO_PROCESSOR: Processor = Processor {
-    general_purpose_registers: [0; GENERAL_PURPOSE_REGISTERS],
-    stack_pointer: 0,
-    program_counter: 0,
-    condition_flags: ConditionFlags::empty(),
-    vector_registers: [0; VECTOR_REGISTERS],
-    floating_point_control: 0,
-    floating_point_status: 0,
-    software_thread_id: 0,
-    exception: None,
-};
+/// What every privilege level has, and what `Level` adds to it.
+///
+/// ```compile_fail,E0277
+/// let _: Option<wcontainers_processor_architecture_arm64::Arm64<String>> = None;
+/// ```
+pub struct Arm64<Level: PrivilegeLevel>(PhantomData<Level>);
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Arm64;
-
-impl ProcessorArchitecture for Arm64 {
-    type ProcessorState = Processor;
-    type PagePermission = PagePermission;
-    type Instruction = Instruction;
-    type PreciseInstruction = PreciseInstruction;
-
-    const ADDRESSABLE: Range<u64> = 0..1 << VIRTUAL_ADDRESS_BITS;
-
-    fn list_instructions() -> impl Iterator<Item = Instruction> {
-        [
-            Instruction::AddShiftedRegister64,
-            Instruction::AddsShiftedRegister64,
-            Instruction::Csel64,
-            Instruction::LdrImmediateUnsignedOffset64,
-            Instruction::StrImmediateUnsignedOffset64,
-            Instruction::StpSignedOffset64,
-            Instruction::LdrImmediatePostIndex64,
-            Instruction::Brk,
-            Instruction::Rdvl,
-            Instruction::MrsCtrEl0,
-        ]
-        .into_iter()
+// Written out because a derive would ask the same of the level.
+impl<Level: PrivilegeLevel> Clone for Arm64<Level> {
+    fn clone(&self) -> Self {
+        Self(PhantomData)
     }
 }
 
-/// The registers a program at EL0 can see or change, and the exception its last instruction raised.
-///
-/// TODO: temporary placeholder until the rest of the EL0 state is designed: TPIDRRO_EL0 and TPIDR2_EL0; PSTATE's
-/// DIT, SSBS, TCO and BTYPE; SVCR (streaming mode and ZA); Z beyond 128 bits, P and FFR; ZA and ZT0; FPMR;
-/// GCSPR_EL0; the exclusive monitor.
+impl<Level: PrivilegeLevel> Default for Arm64<Level> {
+    fn default() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<Level: PrivilegeLevel> PartialEq for Arm64<Level> {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl<Level: PrivilegeLevel> Eq for Arm64<Level> {}
+
+impl<Level: PrivilegeLevel> ProcessorArchitecture for Arm64<Level> {
+    type ProcessorState = Processor<Level::PrivilegedProcessorSubset>;
+    type ProcessorStateExpectation = ProcessorExpectation<Level::PrivilegedProcessorSubset>;
+    type PagePermission = PagePermission;
+    type Instruction = Instruction<Level::PrivilegedInstruction>;
+    type PreciseInstruction = PreciseInstruction<Level::PrecisePrivilegedInstruction>;
+    type Instructions = Instructions<Level>;
+    type KnownBehaviors = vec::IntoIter<Self::PreciseInstruction>;
+
+    const ADDRESSABLE: Range<u64> = 0..1 << VIRTUAL_ADDRESS_BITS;
+    const DEFAULT_PERMISSION: PagePermission = PagePermission::Unmapped;
+
+    /// Every variant of Arm's list in its order, then MRS of CTR_EL0, then those `Level` adds.
+    ///
+    /// A mandatory instruction no behavior models has no known behavior, so measuring it fails as `measure_instruction`
+    /// says; an optional one has at least the behavior of a chip without its feature.
+    fn list_instructions() -> Instructions<Level> {
+        let every_level: Vec<_> = Instruction::LISTED
+            .into_iter()
+            .chain([Instruction::MrsCtrEl0])
+            .collect();
+        Instructions {
+            every_level: every_level.into_iter(),
+            level_specific: Level::list_specific_instructions(),
+        }
+    }
+
+    fn list_known_behaviors(
+        instruction: Instruction<Level::PrivilegedInstruction>,
+    ) -> vec::IntoIter<Self::PreciseInstruction> {
+        behavior::list_known_behaviors(instruction).into_iter()
+    }
+
+    /// Compares every register a behavior fixes; the exclusive monitor is never compared, since no program and so no
+    /// source reads it: a later store exclusive shows it.
+    fn meets_expectations(
+        observed: &Processor<Level::PrivilegedProcessorSubset>,
+        expectation: &ProcessorExpectation<Level::PrivilegedProcessorSubset>,
+    ) -> bool {
+        let expected = &expectation.processor;
+        observed
+            .general_purpose_registers
+            .iter()
+            .zip(&expectation.general_purpose_registers)
+            .all(|(value, register)| register.is_met_by(*value))
+            && expectation
+                .condition_flags
+                .is_met_by(u64::from(observed.condition_flags.bits()))
+            && observed.stack_pointer == expected.stack_pointer
+            && observed.program_counter == expected.program_counter
+            && observed.vector_registers == expected.vector_registers
+            && observed.predicate_registers == expected.predicate_registers
+            && observed.first_fault_register == expected.first_fault_register
+            && observed.floating_point_control == expected.floating_point_control
+            && observed.floating_point_status == expected.floating_point_status
+            && observed.software_thread_id == expected.software_thread_id
+            && observed.exception == expected.exception
+            && observed.level_specific == expected.level_specific
+    }
+}
+
+/// What a behavior expects one register to hold after an instruction.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RegisterValueExpectation {
+    Deterministic(u64),
+    /// The state before does not decide the value, as with a read of [RNDR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/RNDR--Random-Number), so it is not compared.
+    NonDeterministic,
+}
+
+impl RegisterValueExpectation {
+    pub const fn is_met_by(self, observed: u64) -> bool {
+        match self {
+            Self::Deterministic(value) => value == observed,
+            Self::NonDeterministic => true,
+        }
+    }
+}
+
+/// What a behavior expects the processor to hold after an instruction: the general-purpose registers and NZCV each as
+/// a value expectation, the only registers an instruction may leave undecided, and every other value in `processor`.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Processor {
+pub struct ProcessorExpectation<LevelSpecific> {
+    /// The processor the behavior leaves, read for every value not expected below.
+    pub processor: Processor<LevelSpecific>,
+    pub general_purpose_registers: [RegisterValueExpectation; GENERAL_PURPOSE_REGISTERS],
+    /// [NZCV](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/NZCV--Condition-Flags), its flags at their bits of the register.
+    pub condition_flags: RegisterValueExpectation,
+}
+
+impl<LevelSpecific> ProcessorExpectation<LevelSpecific> {
+    /// Expects every value the processor holds.
+    pub fn new(processor: Processor<LevelSpecific>) -> Self {
+        Self {
+            general_purpose_registers: processor
+                .general_purpose_registers
+                .map(RegisterValueExpectation::Deterministic),
+            condition_flags: RegisterValueExpectation::Deterministic(u64::from(
+                processor.condition_flags.bits(),
+            )),
+            processor,
+        }
+    }
+}
+
+/// The local [exclusive monitor](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-exclusive#:~:text=IsExclusiveLocal), which a load exclusive sets and a store
+/// exclusive or CLREX opens: state the chip keeps that no program reads.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExclusiveMonitor {
+    Open,
+    /// Marks the reservation granule holding the address a load exclusive read.
+    Exclusive {
+        address: u64,
+    },
+}
+
+/// The instructions every privilege level has, then those `Level` adds.
+pub struct Instructions<Level: PrivilegeLevel> {
+    every_level: vec::IntoIter<Instruction<Level::PrivilegedInstruction>>,
+    level_specific: Level::SpecificInstructions,
+}
+
+impl<Level: PrivilegeLevel> Iterator for Instructions<Level> {
+    type Item = Instruction<Level::PrivilegedInstruction>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.every_level
+            .next()
+            .or_else(|| self.level_specific.next().map(Instruction::LevelSpecific))
+    }
+}
+
+/// The registers every privilege level has, the exception its last instruction raised, and what one level adds.
+///
+/// The SVE registers are those of a 128-bit vector length: each Z register is its vector register, and each
+/// predicate holds one bit for each of its bytes.
+///
+/// TODO: temporary placeholder until the rest of the state every level has is designed: TPIDRRO_EL0 and TPIDR2_EL0;
+/// PSTATE's DIT, SSBS, TCO and BTYPE; SVCR (streaming mode and ZA); Z, P and FFR beyond a 128-bit vector length; ZA
+/// and ZT0; FPMR; GCSPR_EL0.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Processor<LevelSpecific> {
     pub general_purpose_registers: [u64; GENERAL_PURPOSE_REGISTERS],
     pub stack_pointer: u64,
     pub program_counter: u64,
     pub condition_flags: ConditionFlags,
+    /// V0 to V31, which are Z0 to Z31 at a 128-bit vector length.
     pub vector_registers: [u128; VECTOR_REGISTERS],
+    /// P0 to P15.
+    pub predicate_registers: [u16; PREDICATE_REGISTERS],
+    /// [FFR](https://developer.arm.com/documentation/ddi0487/latest/-Part-C-The-AArch64-Instruction-Set/-Chapter-C1-The-A64-Instruction-Set/-C1-4-Registers-in-AArch64-execution-state#:~:text=FFR), the first-fault register.
+    pub first_fault_register: u16,
     /// [FPCR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FPCR--Floating-point-Control-Register).
     pub floating_point_control: u64,
     /// [FPSR](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FPSR--Floating-point-Status-Register).
     pub floating_point_status: u64,
     /// [TPIDR_EL0](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/TPIDR-EL0--EL0-Read-Write-Software-Thread-ID-Register).
     pub software_thread_id: u64,
+    pub exclusive_monitor: ExclusiveMonitor,
     /// None when the last instruction completed.
     pub exception: Option<Exception>,
+    pub level_specific: LevelSpecific,
 }
 
-bitflags::bitflags! {
-    /// PSTATE's [NZCV](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/NZCV--Condition-Flags), at its bit positions in that register.
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    pub struct ConditionFlags: u32 {
-        const NEGATIVE = 1 << 31;
-        const ZERO = 1 << 30;
-        const CARRY = 1 << 29;
-        const OVERFLOW = 1 << 28;
-    }
-}
+/// Every register zero, the condition flags clear, the exclusive monitor open and no exception, at a level that adds no
+/// state.
+pub const ZERO_PROCESSOR: Processor<()> = Processor {
+    general_purpose_registers: [0; GENERAL_PURPOSE_REGISTERS],
+    stack_pointer: 0,
+    program_counter: 0,
+    condition_flags: ConditionFlags::empty(),
+    vector_registers: [0; VECTOR_REGISTERS],
+    predicate_registers: [0; PREDICATE_REGISTERS],
+    first_fault_register: 0,
+    floating_point_control: 0,
+    floating_point_status: 0,
+    software_thread_id: 0,
+    exclusive_monitor: ExclusiveMonitor::Open,
+    exception: None,
+    level_specific: (),
+};
 
-/// A synchronous exception taken to EL1, with the instruction that raised it still at the program counter.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Exception {
-    /// [ESR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-).
-    pub syndrome: u64,
-    /// [FAR_EL1](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/FAR-EL1--Fault-Address-Register--EL1-), where the syndrome makes it valid.
-    pub fault_address: Option<u64>,
-}
-
-/// What a program at EL0 may do with a page; memory that was never given a permission is unmapped.
+/// What the running program may do with a page; memory that was never given a permission is unmapped.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PagePermission {
     Unmapped,
@@ -129,202 +312,48 @@ pub enum InstructionFetch {
     Allowed,
 }
 
-/// An A64 [instruction variant](https://developer.arm.com/documentation/ddi0487/mc/-Part-C-The-AArch64-Instruction-Set/-Chapter-C1-The-A64-Instruction-Set/-C1-1-About-the-A64-instruction-set#:~:text=each%20syntax%20is%20an%20instruction%20variant).
-///
-/// TODO: temporary placeholder until every variant is listed: these are the ten of the first slice.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Instruction {
-    AddShiftedRegister64,
-    AddsShiftedRegister64,
-    Csel64,
-    LdrImmediateUnsignedOffset64,
-    StrImmediateUnsignedOffset64,
-    StpSignedOffset64,
-    LdrImmediatePostIndex64,
-    Brk,
-    Rdvl,
-    MrsCtrEl0,
-}
-
 /// An instruction with one behavior for every case the manual leaves open or a chip does its own way.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PreciseInstruction {
-    AddShiftedRegister64,
-    AddsShiftedRegister64,
-    Csel64,
-    LdrImmediateUnsignedOffset64 {
-        misaligned_stack_pointer: MisalignedStackPointer,
-    },
-    StrImmediateUnsignedOffset64 {
-        misaligned_stack_pointer: MisalignedStackPointer,
-        across_fault: StoreAcrossFault,
-    },
-    StpSignedOffset64 {
-        misaligned_stack_pointer: MisalignedStackPointer,
-        across_fault: StoreAcrossFault,
-    },
-    LdrImmediatePostIndex64 {
-        misaligned_stack_pointer: MisalignedStackPointer,
-        into_base: LoadIntoBaseWithWriteback,
+pub enum PreciseInstruction<LevelSpecific> {
+    Documented(DocumentedInstruction),
+    LoadStore {
+        instruction: LoadStoreInstruction,
+        choices: LoadStoreChoices,
     },
     Brk,
     Rdvl(VectorLengthReading),
+    WaitForInterrupt(WaitForInterruptBehavior),
+    /// MRS (a read) or MSR (register) (a write), with what the chip fixes about the registers it reaches.
+    SystemRegisterMove {
+        direction: AccessDirection,
+        choices: system_register::SystemRegisterChoices,
+    },
     MrsCtrEl0 {
         cache_type: u64,
     },
-}
-
-impl PreciseInstruction {
-    pub const fn to_instruction(self) -> Instruction {
-        match self {
-            Self::AddShiftedRegister64 => Instruction::AddShiftedRegister64,
-            Self::AddsShiftedRegister64 => Instruction::AddsShiftedRegister64,
-            Self::Csel64 => Instruction::Csel64,
-            Self::LdrImmediateUnsignedOffset64 { .. } => Instruction::LdrImmediateUnsignedOffset64,
-            Self::StrImmediateUnsignedOffset64 { .. } => Instruction::StrImmediateUnsignedOffset64,
-            Self::StpSignedOffset64 { .. } => Instruction::StpSignedOffset64,
-            Self::LdrImmediatePostIndex64 { .. } => Instruction::LdrImmediatePostIndex64,
-            Self::Brk => Instruction::Brk,
-            Self::Rdvl(_) => Instruction::Rdvl,
-            Self::MrsCtrEl0 { .. } => Instruction::MrsCtrEl0,
-        }
-    }
-}
-
-/// What a load or store does when its base is the stack pointer and that is not a multiple of 16.
-///
-/// A chip raises the [alignment fault](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) SCTLR_EL1.SA0 asks for, as Linux sets it; QEMU leaves the check out.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum MisalignedStackPointer {
-    Faults,
-    Accesses,
-}
-
-/// What a store writes when part of it faults.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum StoreAcrossFault {
-    WritesNothing,
-    WritesBytesBelowFault,
-}
-
-/// The [CONSTRAINED UNPREDICTABLE](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/LDR--immediate---Load-register--immediate--#:~:text=CONSTRAINED%20UNPREDICTABLE) choice of a post-indexed load whose target is its base.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum LoadIntoBaseWithWriteback {
-    WritebackSuppressed,
-    WritebackOverwritesLoad,
-    Undefined,
-    NoOperation,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum VectorLengthReading {
-    Undefined,
-    /// Raises the [SME exception](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ESR-EL1--Exception-Syndrome-Register--EL1-#:~:text=SMTC%2C%20bits%20%5B2%3A0%5D), as a chip with SME and no SVE does outside streaming mode.
-    SmeTrapped(SmeTrapCode),
-    Reads(VectorLength),
-}
-
-/// The SMTC field of the syndrome of a trapped SME access.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[repr(u64)]
-pub enum SmeTrapCode {
-    /// CPACR_EL1.SMEN traps it, as it stays where EL1 sees no SME.
-    DisabledByCpacr = 0b000,
-    /// The instruction is legal only in streaming mode.
-    NotInStreamingMode = 0b010,
-}
-
-/// An SVE vector length, as [ZCR_EL1.LEN](https://developer.arm.com/documentation/ddi0601/latest/AArch64-Registers/ZCR-EL1--SVE-Control-Register-EL1-#:~:text=LEN%2C%20bits%20%5B3%3A0%5D) permits it.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum VectorLength {
-    Bits128,
-    Bits256,
-    Bits512,
-    Bits1024,
-    Bits2048,
-}
-
-/// Every behavior this crate defines for the instruction, with three cache types that differ in their lowest and
-/// highest bits.
-///
-/// TODO: temporary placeholder until the interface lists an instruction's behaviors.
-pub fn list_behaviors(instruction: Instruction) -> impl Iterator<Item = PreciseInstruction> {
-    use alloc::vec::Vec;
-
-    const MISALIGNED: [MisalignedStackPointer; 2] = [
-        MisalignedStackPointer::Faults,
-        MisalignedStackPointer::Accesses,
-    ];
-    const ACROSS_FAULT: [StoreAcrossFault; 2] = [
-        StoreAcrossFault::WritesNothing,
-        StoreAcrossFault::WritesBytesBelowFault,
-    ];
-    const INTO_BASE: [LoadIntoBaseWithWriteback; 4] = [
-        LoadIntoBaseWithWriteback::WritebackSuppressed,
-        LoadIntoBaseWithWriteback::WritebackOverwritesLoad,
-        LoadIntoBaseWithWriteback::Undefined,
-        LoadIntoBaseWithWriteback::NoOperation,
-    ];
-    const LENGTHS: [VectorLength; 5] = [
-        VectorLength::Bits128,
-        VectorLength::Bits256,
-        VectorLength::Bits512,
-        VectorLength::Bits1024,
-        VectorLength::Bits2048,
-    ];
-    let behaviors: Vec<PreciseInstruction> = match instruction {
-        Instruction::AddShiftedRegister64 => [PreciseInstruction::AddShiftedRegister64].to_vec(),
-        Instruction::AddsShiftedRegister64 => [PreciseInstruction::AddsShiftedRegister64].to_vec(),
-        Instruction::Csel64 => [PreciseInstruction::Csel64].to_vec(),
-        Instruction::LdrImmediateUnsignedOffset64 => MISALIGNED
-            .map(
-                |misaligned_stack_pointer| PreciseInstruction::LdrImmediateUnsignedOffset64 {
-                    misaligned_stack_pointer,
-                },
-            )
-            .to_vec(),
-        Instruction::StrImmediateUnsignedOffset64 => MISALIGNED
-            .iter()
-            .flat_map(|&misaligned_stack_pointer| {
-                ACROSS_FAULT.map(
-                    |across_fault| PreciseInstruction::StrImmediateUnsignedOffset64 {
-                        misaligned_stack_pointer,
-                        across_fault,
-                    },
-                )
-            })
-            .collect(),
-        Instruction::StpSignedOffset64 => MISALIGNED
-            .iter()
-            .flat_map(|&misaligned_stack_pointer| {
-                ACROSS_FAULT.map(|across_fault| PreciseInstruction::StpSignedOffset64 {
-                    misaligned_stack_pointer,
-                    across_fault,
-                })
-            })
-            .collect(),
-        Instruction::LdrImmediatePostIndex64 => MISALIGNED
-            .iter()
-            .flat_map(|&misaligned_stack_pointer| {
-                INTO_BASE.map(|into_base| PreciseInstruction::LdrImmediatePostIndex64 {
-                    misaligned_stack_pointer,
-                    into_base,
-                })
-            })
-            .collect(),
-        Instruction::Brk => [PreciseInstruction::Brk].to_vec(),
-        Instruction::Rdvl => [
-            VectorLengthReading::Undefined,
-            VectorLengthReading::SmeTrapped(SmeTrapCode::DisabledByCpacr),
-            VectorLengthReading::SmeTrapped(SmeTrapCode::NotInStreamingMode),
-        ]
-        .into_iter()
-        .chain(LENGTHS.map(VectorLengthReading::Reads))
-        .map(PreciseInstruction::Rdvl)
-        .collect(),
-        Instruction::MrsCtrEl0 => [0, 1, u64::MAX]
-            .map(|cache_type| PreciseInstruction::MrsCtrEl0 { cache_type })
-            .to_vec(),
-    };
-    behaviors.into_iter()
+    /// An SVE instruction of [`sve`] at a vector length of 128 bits, or where `trapped`, raising the SME exception as a
+    /// chip with SME and without SVE does outside streaming mode.
+    Scalable {
+        instruction: Instruction<Infallible>,
+        operation: sve::ScalableOperation,
+        trapped: Option<SmeTrapCode>,
+    },
+    /// An SVE contiguous load, store or prefetch, with what the chip fixes about its access.
+    ScalableAccess {
+        instruction: Instruction<Infallible>,
+        choices: load_store::scalable_access::ScalableAccessChoices,
+    },
+    /// LDG, a tag store or STGP.
+    TagAccess {
+        instruction: memory_tagging::TagAccessInstruction,
+        choices: memory_tagging::TagAccessChoices,
+    },
+    /// A load or store of Advanced SIMD structures.
+    Structure {
+        instruction: StructureInstruction,
+        choices: StructureChoices,
+    },
+    /// What a chip without the instruction's feature does with its word.
+    Unimplemented(Instruction<Infallible>),
+    LevelSpecific(LevelSpecific),
 }

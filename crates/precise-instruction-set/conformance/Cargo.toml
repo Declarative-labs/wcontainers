@@ -5,12 +5,11 @@ edition = "2024"
 publish = false
 
 [lib]
-path = "conformance.rs"
+path = "suite.rs"
 
 [dependencies]
 wcontainers-precise-instruction-set = { path = ".." }
 wcontainers-processor-architecture = { path = "../../processor-architecture" }
-wcontainers-processor-architecture-conformance = { path = "../../processor-architecture/conformance" }
 
 [lints]
 workspace = true

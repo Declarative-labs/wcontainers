@@ -58,6 +58,13 @@ impl PointerBytes {
         Some(PointerBytes { pointer: AtomicPtr::new(self.pointer.load(Relaxed).wrapping_add(at)), length })
     }
 
+    /// Returns the address of the view's first byte, for an outside API that is given memory by its address.
+    ///
+    /// PROVISIONAL: no interface declares how memory is given to an outside API; the KVM bindings are the one user.
+    pub fn address(&self) -> usize {
+        self.pointer.load(Relaxed).addr()
+    }
+
     /// Returns the address of the view's first byte, if the `count` bytes from it all lie inside the view.
     fn bytes(&self, count: usize) -> Option<*mut u8> {
         inside(self.length, count).map(|_| self.pointer.load(Relaxed))

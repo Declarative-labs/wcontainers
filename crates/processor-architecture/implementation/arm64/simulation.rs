@@ -1,247 +1,242 @@
 //! The formula of every behavior.
 
-use alloc::borrow::Cow;
 use core::convert::Infallible;
 
-use aarch64_cpu::registers::ESR_EL1;
-use wcontainers_processor_architecture::{MemoryDelta, Simulator};
-
-use crate::encoding::{
-    COND, IMM7, IMM9, IMM12, IMM16, RD, RDVL_IMM6, RM, RN, RT, RT2, SHIFT, SHIFT_IMM6,
+use wcontainers_privilege_level::PrivilegeLevel;
+use wcontainers_processor_architecture::{
+    MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture, Simulator,
 };
+
+use crate::branch::is_outside_lower_addresses;
+use crate::encoding::{IMM16, RD, RDVL_IMM6, RT};
+use crate::load_store::scalable_access::{simulate_scalable_access, to_scalable_access};
 use crate::memory::{read_bytes, read_permission};
-use crate::syndrome::{FaultStatus, UNDEFINED_INSTRUCTION, WRITE_NOT_READ, encode_syndrome};
+use crate::operand::RegisterThirtyOne;
+use crate::registers::write_register;
+use crate::sve::simulate_scalable;
+use crate::system_register::{simulate_system_register_move, to_undecided_registers};
 use crate::{
-    Arm64, ConditionFlags, DataAccess, Exception, GENERAL_PURPOSE_REGISTERS, INSTRUCTION_BYTES,
-    InstructionFetch, LoadIntoBaseWithWriteback, MisalignedStackPointer, PagePermission,
-    PreciseInstruction, Processor, StoreAcrossFault, VectorLength, VectorLengthReading,
+    AccessDirection, Arm64, Exception, FaultStatus, INSTRUCTION_SIZE, Instruction,
+    InstructionFetch, PagePermission, PreciseInstruction, Processor, ProcessorExpectation,
+    RegisterValueExpectation, User, VectorLengthReading, WaitForInterruptBehavior, WaitInstruction,
 };
 
-const REGISTER_BYTES: u64 = size_of::<u64>() as u64;
-/// The alignment [CheckSPAlignment](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/aarch64-functions-memory#impl-aarch64.CheckSPAlignment.0) requires while SCTLR_EL1.SA0 is set, as Linux sets it.
-const STACK_POINTER_ALIGNMENT: u64 = 16;
-
-#[derive(Clone, Copy)]
-enum AccessDirection {
-    Read,
-    Write,
-}
-
-/// What register number 31 names in an operand.
-#[derive(Clone, Copy)]
-enum RegisterThirtyOne {
-    ZeroRegister,
-    StackPointer,
-}
-
-/// The [shift types](https://developer.arm.com/documentation/ddi0602/latest/Base-Instructions/ADD--shifted-register---Add-optionally-shifted-register-#:~:text=shift) in the order of their encodings.
-const SHIFT_TYPES: [ShiftType; 4] = [
-    ShiftType::Lsl,
-    ShiftType::Lsr,
-    ShiftType::Asr,
-    ShiftType::Ror,
-];
-
-#[derive(Clone, Copy)]
-enum ShiftType {
-    Lsl,
-    Lsr,
-    Asr,
-    Ror,
-}
-
-/// The [conditions](https://developer.arm.com/documentation/ddi0602/latest/Shared-Pseudocode/shared-functions-system#impl-shared.ConditionHolds.1) in the order of their encodings.
-const CONDITIONS: [Condition; 16] = [
-    Condition::Eq,
-    Condition::Ne,
-    Condition::Cs,
-    Condition::Cc,
-    Condition::Mi,
-    Condition::Pl,
-    Condition::Vs,
-    Condition::Vc,
-    Condition::Hi,
-    Condition::Ls,
-    Condition::Ge,
-    Condition::Lt,
-    Condition::Gt,
-    Condition::Le,
-    Condition::Al,
-    Condition::Nv,
-];
-
-#[derive(Clone, Copy)]
-enum Condition {
-    Eq,
-    Ne,
-    Cs,
-    Cc,
-    Mi,
-    Pl,
-    Vs,
-    Vc,
-    Hi,
-    Ls,
-    Ge,
-    Lt,
-    Gt,
-    Le,
-    Al,
-    Nv,
-}
-
-impl Condition {
-    fn holds(self, flags: ConditionFlags) -> bool {
-        let negative = flags.contains(ConditionFlags::NEGATIVE);
-        let zero = flags.contains(ConditionFlags::ZERO);
-        let carry = flags.contains(ConditionFlags::CARRY);
-        let overflow = flags.contains(ConditionFlags::OVERFLOW);
-        match self {
-            Self::Eq => zero,
-            Self::Ne => !zero,
-            Self::Cs => carry,
-            Self::Cc => !carry,
-            Self::Mi => negative,
-            Self::Pl => !negative,
-            Self::Vs => overflow,
-            Self::Vc => !overflow,
-            Self::Hi => carry && !zero,
-            Self::Ls => !(carry && !zero),
-            Self::Ge => negative == overflow,
-            Self::Lt => negative != overflow,
-            Self::Gt => negative == overflow && !zero,
-            Self::Le => !(negative == overflow && !zero),
-            Self::Al | Self::Nv => true,
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum FlagSetting {
-    Preserves,
-    Sets,
-}
-
-impl Simulator<Arm64> for PreciseInstruction {
+impl<Level: PrivilegeLevel> Simulator<Arm64<Level>>
+    for PreciseInstruction<Level::PrecisePrivilegedInstruction>
+where
+    Level::PrecisePrivilegedInstruction: Simulator<Arm64<Level>, Error = Infallible>,
+{
     type Error = Infallible;
 
     /// Fetches the word at the program counter and applies this behavior to it, reading its operands from it.
-    fn simulate_in_place(
+    fn simulate(
         &self,
-        processor: &mut Processor,
-        memory: &[MemoryDelta<'_, Arm64>],
-        on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
-    ) -> Result<(), Infallible> {
-        let outcome = fetch(processor, memory).and_then(|word| match *self {
-            Self::AddShiftedRegister64 => {
-                add_shifted_register(processor, word, FlagSetting::Preserves)
+        processor: &Processor<Level::PrivilegedProcessorSubset>,
+        memory: MemorySnapshot<'_, '_, Arm64<Level>>,
+        mutation_hook: &mut impl MemorySink<Arm64<Level>>,
+    ) -> Result<ProcessorExpectation<Level::PrivilegedProcessorSubset>, Infallible> {
+        if let Self::LevelSpecific(precise) = self {
+            return precise.simulate(processor, memory, mutation_hook);
+        }
+        let mut after = processor.clone();
+        let undecided = self.apply(&mut after, memory.mutations, mutation_hook);
+        let mut expectation = ProcessorExpectation::new(after);
+        if let Some((register, condition_flags)) = undecided {
+            if let Some(expected) = expectation
+                .general_purpose_registers
+                .get_mut(register as usize)
+            {
+                *expected = RegisterValueExpectation::NonDeterministic;
             }
-            Self::AddsShiftedRegister64 => add_shifted_register(processor, word, FlagSetting::Sets),
-            Self::Csel64 => select_conditionally(processor, word),
-            Self::LdrImmediateUnsignedOffset64 {
-                misaligned_stack_pointer,
-            } => load_unsigned_offset(processor, memory, word, misaligned_stack_pointer),
-            Self::StrImmediateUnsignedOffset64 {
-                misaligned_stack_pointer,
-                across_fault,
-            } => {
-                let base = read_base(processor, word, misaligned_stack_pointer)?;
-                let address = base.wrapping_add(u64::from(IMM12.read(word)) * REGISTER_BYTES);
-                let value =
-                    read_register(processor, RT.read(word), RegisterThirtyOne::ZeroRegister);
-                store(
-                    memory,
-                    address,
-                    &value.to_le_bytes(),
-                    across_fault,
-                    on_memory_mutated,
-                )
+            if condition_flags {
+                expectation.condition_flags = RegisterValueExpectation::NonDeterministic;
             }
-            Self::StpSignedOffset64 {
-                misaligned_stack_pointer,
-                across_fault,
-            } => {
-                let base = read_base(processor, word, misaligned_stack_pointer)?;
-                let offset = IMM7.read_signed(word).wrapping_mul(REGISTER_BYTES as i64);
-                let address = base.wrapping_add(offset as u64);
-                let mut bytes = [0; 2 * REGISTER_BYTES as usize];
-                let (low, high) = bytes.split_at_mut(REGISTER_BYTES as usize);
-                for (half, field) in [(low, RT), (high, RT2)] {
-                    let value =
-                        read_register(processor, field.read(word), RegisterThirtyOne::ZeroRegister);
-                    half.copy_from_slice(&value.to_le_bytes());
+        }
+        Ok(expectation)
+    }
+}
+
+impl<LevelSpecific> PreciseInstruction<LevelSpecific> {
+    /// Applies this behavior to the processor in place, the level's own instructions aside; gives the register the
+    /// state before does not decide, and whether NZCV is undecided too, where the instruction completes so.
+    fn apply<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+        &self,
+        processor: &mut Processor<impl Sized>,
+        memory: &[MemoryDelta<'_, Architecture>],
+        mutation_hook: &mut impl MemorySink<Architecture>,
+    ) -> Option<(u32, bool)> {
+        let mut branch_target = None;
+        let mut undecided = None;
+        let outcome = match fetch(memory, processor.program_counter) {
+            Err(exception) => Err(exception),
+            Ok(word) if self.is_reserved(word) => Err(Exception::UndefinedInstruction),
+            Ok(word) => match *self {
+                Self::Documented(documented) => documented
+                    .simulate(processor, word)
+                    .map(|target| branch_target = target),
+                Self::LoadStore {
+                    instruction,
+                    choices,
+                } => instruction.simulate(choices, processor, memory, word, mutation_hook),
+                Self::Brk => Err(Exception::Breakpoint {
+                    comment: (IMM16.read(word) >> u32::from(crate::planted::is(31))) as u16,
+                }),
+                Self::WaitForInterrupt(WaitForInterruptBehavior::Traps) => {
+                    Err(Exception::WaitTrapped(if crate::planted::is(256) {
+                        WaitInstruction::WaitForEvent
+                    } else {
+                        WaitInstruction::WaitForInterrupt
+                    }))
                 }
-                store(memory, address, &bytes, across_fault, on_memory_mutated)
-            }
-            Self::LdrImmediatePostIndex64 {
-                misaligned_stack_pointer,
-                into_base,
-            } => load_post_index(processor, memory, word, misaligned_stack_pointer, into_base),
-            Self::Brk => Err(Exception {
-                syndrome: encode_syndrome(ESR_EL1::EC::Value::Brk64, u64::from(IMM16.read(word))),
-                fault_address: None,
-            }),
-            Self::Rdvl(VectorLengthReading::Undefined) => Err(UNDEFINED_INSTRUCTION),
-            Self::Rdvl(VectorLengthReading::SmeTrapped(code)) => Err(Exception {
-                syndrome: encode_syndrome(ESR_EL1::EC::Value::TrappedSME, code as u64),
-                fault_address: None,
-            }),
-            Self::Rdvl(VectorLengthReading::Reads(length)) => {
-                let value = RDVL_IMM6.read_signed(word).wrapping_mul(length.to_bytes());
-                write_register(
-                    processor,
-                    RD.read(word),
-                    value as u64,
-                    RegisterThirtyOne::ZeroRegister,
-                );
-                Ok(())
-            }
-            Self::MrsCtrEl0 { cache_type } => {
-                write_register(
-                    processor,
-                    RT.read(word),
-                    cache_type,
-                    RegisterThirtyOne::ZeroRegister,
-                );
-                Ok(())
-            }
-        });
+                Self::WaitForInterrupt(WaitForInterruptBehavior::Completes) => Ok(()),
+                Self::SystemRegisterMove { direction, choices } => {
+                    simulate_system_register_move(processor, word, direction, choices).map(|()| {
+                        undecided = to_undecided_registers(word, direction, choices);
+                    })
+                }
+                Self::Rdvl(VectorLengthReading::Undefined) => Err(Exception::UndefinedInstruction),
+                Self::Rdvl(VectorLengthReading::SmeTrapped(code)) => Err(Exception::SmeTrap(code)),
+                Self::Rdvl(VectorLengthReading::Reads(length)) => {
+                    let value = RDVL_IMM6.read_signed(word).wrapping_mul(length.to_bytes());
+                    write_register(
+                        processor,
+                        RD.read(word),
+                        value as u64,
+                        RegisterThirtyOne::ZeroRegister,
+                    );
+                    Ok(())
+                }
+                Self::ScalableAccess {
+                    instruction,
+                    choices,
+                } => match to_scalable_access(instruction) {
+                    Some(access) => simulate_scalable_access(
+                        access,
+                        choices,
+                        processor,
+                        memory,
+                        word,
+                        mutation_hook,
+                    ),
+                    None => unreachable!("an SVE access behavior is listed only for an SVE access"),
+                },
+                Self::Structure {
+                    instruction,
+                    choices,
+                } => instruction.simulate(choices, processor, memory, word, mutation_hook),
+                Self::TagAccess {
+                    instruction,
+                    choices,
+                } => instruction.simulate(choices, processor, memory, word, mutation_hook),
+                Self::MrsCtrEl0 { cache_type } => {
+                    write_register(
+                        processor,
+                        RT.read(word),
+                        cache_type,
+                        RegisterThirtyOne::ZeroRegister,
+                    );
+                    Ok(())
+                }
+                Self::Scalable {
+                    trapped: Some(code),
+                    ..
+                } => Err(Exception::SmeTrap(code)),
+                Self::Scalable {
+                    operation,
+                    trapped: None,
+                    ..
+                } => simulate_scalable(processor, word, operation),
+                Self::Unimplemented(instruction)
+                    if instruction.is_executed_as_hint_without_feature()
+                        && !crate::planted::is(508) =>
+                {
+                    Ok(())
+                }
+                Self::Unimplemented(_) if crate::planted::is(512) => Ok(()),
+                Self::Unimplemented(_) => Err(Exception::UndefinedInstruction),
+                Self::LevelSpecific(_) => {
+                    unreachable!("`simulate` runs the level's own instructions")
+                }
+            },
+        };
         match outcome {
             Ok(()) => {
-                processor.program_counter =
-                    processor.program_counter.wrapping_add(INSTRUCTION_BYTES);
+                processor.program_counter = branch_target
+                    .unwrap_or(processor.program_counter.wrapping_add(INSTRUCTION_SIZE));
                 processor.exception = None;
             }
-            Err(exception) => processor.exception = Some(exception),
+            Err(exception) => {
+                if exception.is_taken_after_instruction()
+                    && !(crate::planted::is(30)
+                        && matches!(exception, Exception::SupervisorCall { .. }))
+                {
+                    processor.program_counter =
+                        processor.program_counter.wrapping_add(INSTRUCTION_SIZE);
+                }
+                processor.exception = Some(exception);
+                undecided = None;
+            }
         }
-        Ok(())
+        undecided
     }
-}
 
-impl VectorLength {
-    pub const fn to_bytes(self) -> i64 {
-        let bits: i64 = match self {
-            Self::Bits128 => 128,
-            Self::Bits256 => 256,
-            Self::Bits512 => 512,
-            Self::Bits1024 => 1024,
-            Self::Bits2048 => 2048,
+    /// Whether the word holds an operand value the list marks unallocated for this instruction.
+    fn is_reserved(&self, word: u32) -> bool {
+        let instruction = match *self {
+            Self::Documented(documented) => documented.instruction(),
+            Self::LoadStore { instruction, .. } => instruction.instruction(),
+            Self::Brk => Instruction::Brk,
+            Self::Rdvl(_) => Instruction::Rdvl,
+            Self::WaitForInterrupt(_) => Instruction::Wfi,
+            Self::SystemRegisterMove {
+                direction: AccessDirection::Read,
+                ..
+            } => Instruction::Mrs,
+            Self::SystemRegisterMove { .. } => Instruction::MsrRegister,
+            Self::Scalable { instruction, .. }
+            | Self::ScalableAccess { instruction, .. }
+            | Self::Unimplemented(instruction) => instruction,
+            Self::Structure { instruction, .. } => instruction.instruction(),
+            Self::TagAccess { instruction, .. } => instruction.instruction(),
+            Self::MrsCtrEl0 { .. } | Self::LevelSpecific(_) => return false,
         };
-        bits / u8::BITS as i64
+        instruction.to_record().is_some_and(|record| {
+            record
+                .reserved
+                .iter()
+                .any(|pattern| pattern.is_matching(word))
+        })
     }
 }
 
-// Each formula below changes the processor's registers only when it returns Ok.
+/// The user level adds no instruction, so it has none to simulate.
+impl Simulator<Arm64<User>> for Infallible {
+    type Error = Infallible;
 
-/// Reads the instruction's word, which faults where the program counter is misaligned or its page does not allow
-/// instruction fetches.
-fn fetch(processor: &Processor, memory: &[MemoryDelta<'_, Arm64>]) -> Result<u32, Exception> {
-    let address = processor.program_counter;
-    if !address.is_multiple_of(INSTRUCTION_BYTES) {
-        return Err(Exception {
-            syndrome: encode_syndrome(ESR_EL1::EC::Value::PCAlignmentFault, 0),
-            fault_address: Some(address),
-        });
+    fn simulate(
+        &self,
+        _: &Processor<()>,
+        _: MemorySnapshot<'_, '_, Arm64<User>>,
+        _: &mut impl MemorySink<Arm64<User>>,
+    ) -> Result<ProcessorExpectation<()>, Infallible> {
+        match *self {}
+    }
+}
+
+// Each formula below changes the processor's registers only when it returns Ok. Those that read memory take any
+// architecture whose pages have ARM64's permissions, which every `Arm64<Level>` is.
+
+/// Reads the instruction's word, or faults where its address is misaligned or its page forbids fetching it.
+fn fetch<Architecture: ProcessorArchitecture<PagePermission = PagePermission>>(
+    memory: &[MemoryDelta<'_, Architecture>],
+    address: u64,
+) -> Result<u32, Exception> {
+    if !address.is_multiple_of(INSTRUCTION_SIZE) {
+        return Err(Exception::ProgramCounterAlignmentFault { address });
+    }
+    if is_outside_lower_addresses(address) {
+        let status = FaultStatus::TranslationFaultLevel0;
+        return Err(Exception::InstructionAbort { status, address });
     }
     let status = match read_permission(memory, address) {
         PagePermission::Mapped {
@@ -254,245 +249,5 @@ fn fetch(processor: &Processor, memory: &[MemoryDelta<'_, Arm64>]) -> Result<u32
         } => FaultStatus::PermissionFaultLevel3,
         PagePermission::Unmapped => FaultStatus::TranslationFaultLevel3,
     };
-    Err(Exception {
-        syndrome: encode_syndrome(ESR_EL1::EC::Value::InstrAbortLowerEL, status as u64),
-        fault_address: Some(address),
-    })
-}
-
-fn add_shifted_register(
-    processor: &mut Processor,
-    word: u32,
-    flag_setting: FlagSetting,
-) -> Result<(), Exception> {
-    let amount = SHIFT_IMM6.read(word);
-    let operand = read_register(processor, RM.read(word), RegisterThirtyOne::ZeroRegister);
-    let shifted = match SHIFT_TYPES[SHIFT.read(word) as usize] {
-        ShiftType::Lsl => operand << amount,
-        ShiftType::Lsr => operand >> amount,
-        ShiftType::Asr => ((operand as i64) >> amount) as u64,
-        ShiftType::Ror => return Err(UNDEFINED_INSTRUCTION),
-    };
-    let first = read_register(processor, RN.read(word), RegisterThirtyOne::ZeroRegister);
-    let (sum, carry) = first.overflowing_add(shifted);
-    if flag_setting == FlagSetting::Sets {
-        let (_, overflow) = (first as i64).overflowing_add(shifted as i64);
-        let mut flags = ConditionFlags::empty();
-        flags.set(ConditionFlags::NEGATIVE, (sum as i64) < 0);
-        flags.set(ConditionFlags::ZERO, sum == 0);
-        flags.set(ConditionFlags::CARRY, carry);
-        flags.set(ConditionFlags::OVERFLOW, overflow);
-        processor.condition_flags = flags;
-    }
-    write_register(
-        processor,
-        RD.read(word),
-        sum,
-        RegisterThirtyOne::ZeroRegister,
-    );
-    Ok(())
-}
-
-fn select_conditionally(processor: &mut Processor, word: u32) -> Result<(), Exception> {
-    let condition = CONDITIONS[COND.read(word) as usize];
-    let source = if condition.holds(processor.condition_flags) {
-        RN
-    } else {
-        RM
-    };
-    let value = read_register(
-        processor,
-        source.read(word),
-        RegisterThirtyOne::ZeroRegister,
-    );
-    write_register(
-        processor,
-        RD.read(word),
-        value,
-        RegisterThirtyOne::ZeroRegister,
-    );
-    Ok(())
-}
-
-fn load_unsigned_offset(
-    processor: &mut Processor,
-    memory: &[MemoryDelta<'_, Arm64>],
-    word: u32,
-    misaligned_stack_pointer: MisalignedStackPointer,
-) -> Result<(), Exception> {
-    let base = read_base(processor, word, misaligned_stack_pointer)?;
-    let address = base.wrapping_add(u64::from(IMM12.read(word)) * REGISTER_BYTES);
-    let value = load(memory, address)?;
-    write_register(
-        processor,
-        RT.read(word),
-        value,
-        RegisterThirtyOne::ZeroRegister,
-    );
-    Ok(())
-}
-
-/// Writes the bytes at the address, or, where a byte faults, what the behavior across a fault writes.
-fn store(
-    memory: &[MemoryDelta<'_, Arm64>],
-    address: u64,
-    bytes: &[u8],
-    across_fault: StoreAcrossFault,
-    mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
-) -> Result<(), Exception> {
-    let written = match check_access(memory, address, bytes.len() as u64, AccessDirection::Write) {
-        Ok(()) => bytes,
-        Err(abort) => {
-            let below_fault = &bytes[..abort.address.wrapping_sub(address) as usize];
-            if across_fault == StoreAcrossFault::WritesBytesBelowFault && !below_fault.is_empty() {
-                on_memory_mutated(MemoryDelta::ValueAssignment {
-                    start: address,
-                    bytes: Cow::Borrowed(below_fault),
-                });
-            }
-            return Err(abort.into());
-        }
-    };
-    on_memory_mutated(MemoryDelta::ValueAssignment {
-        start: address,
-        bytes: Cow::Borrowed(written),
-    });
-    Ok(())
-}
-
-fn load_post_index(
-    processor: &mut Processor,
-    memory: &[MemoryDelta<'_, Arm64>],
-    word: u32,
-    misaligned_stack_pointer: MisalignedStackPointer,
-    into_base: LoadIntoBaseWithWriteback,
-) -> Result<(), Exception> {
-    let target = RT.read(word);
-    let base_register = RN.read(word);
-    let writes_back = if target == base_register && is_general_purpose(target) {
-        match into_base {
-            LoadIntoBaseWithWriteback::Undefined => return Err(UNDEFINED_INSTRUCTION),
-            LoadIntoBaseWithWriteback::NoOperation => return Ok(()),
-            LoadIntoBaseWithWriteback::WritebackSuppressed => false,
-            LoadIntoBaseWithWriteback::WritebackOverwritesLoad => true,
-        }
-    } else {
-        true
-    };
-    let address = read_base(processor, word, misaligned_stack_pointer)?;
-    let value = load(memory, address)?;
-    write_register(processor, target, value, RegisterThirtyOne::ZeroRegister);
-    if writes_back {
-        let written_back = address.wrapping_add(IMM9.read_signed(word) as u64);
-        write_register(
-            processor,
-            base_register,
-            written_back,
-            RegisterThirtyOne::StackPointer,
-        );
-    }
-    Ok(())
-}
-
-/// Reads the base register of a load or store, which may fault when it is a misaligned stack pointer.
-fn read_base(
-    processor: &Processor,
-    word: u32,
-    misaligned_stack_pointer: MisalignedStackPointer,
-) -> Result<u64, Exception> {
-    let number = RN.read(word);
-    let base = read_register(processor, number, RegisterThirtyOne::StackPointer);
-    let misaligned = !is_general_purpose(number) && !base.is_multiple_of(STACK_POINTER_ALIGNMENT);
-    if misaligned && misaligned_stack_pointer == MisalignedStackPointer::Faults {
-        return Err(Exception {
-            syndrome: encode_syndrome(ESR_EL1::EC::Value::SPAlignmentFault, 0),
-            fault_address: None,
-        });
-    }
-    Ok(base)
-}
-
-fn load(memory: &[MemoryDelta<'_, Arm64>], address: u64) -> Result<u64, Exception> {
-    check_access(memory, address, REGISTER_BYTES, AccessDirection::Read)?;
-    Ok(u64::from_le_bytes(read_bytes(memory, address)))
-}
-
-/// The fault of the lowest byte of an access that faults.
-struct DataAbort {
-    address: u64,
-    status: FaultStatus,
-    direction: AccessDirection,
-}
-
-impl From<DataAbort> for Exception {
-    fn from(abort: DataAbort) -> Self {
-        let write_not_read = match abort.direction {
-            AccessDirection::Read => 0,
-            AccessDirection::Write => WRITE_NOT_READ,
-        };
-        Exception {
-            syndrome: encode_syndrome(
-                ESR_EL1::EC::Value::DataAbortLowerEL,
-                write_not_read | abort.status as u64,
-            ),
-            fault_address: Some(abort.address),
-        }
-    }
-}
-
-fn check_access(
-    memory: &[MemoryDelta<'_, Arm64>],
-    start: u64,
-    length: u64,
-    direction: AccessDirection,
-) -> Result<(), DataAbort> {
-    (0..length)
-        .map(|offset| start.wrapping_add(offset))
-        .try_for_each(|address| {
-            let status = match read_permission(memory, address) {
-                PagePermission::Unmapped => FaultStatus::TranslationFaultLevel3,
-                PagePermission::Mapped { data_access, .. } => match (data_access, direction) {
-                    (DataAccess::ReadWrite, _) | (DataAccess::ReadOnly, AccessDirection::Read) => {
-                        return Ok(());
-                    }
-                    (DataAccess::ReadOnly, AccessDirection::Write) | (DataAccess::Forbidden, _) => {
-                        FaultStatus::PermissionFaultLevel3
-                    }
-                },
-            };
-            Err(DataAbort {
-                address,
-                status,
-                direction,
-            })
-        })
-}
-
-fn is_general_purpose(number: u32) -> bool {
-    (number as usize) < GENERAL_PURPOSE_REGISTERS
-}
-
-fn read_register(processor: &Processor, number: u32, thirty_one: RegisterThirtyOne) -> u64 {
-    match processor.general_purpose_registers.get(number as usize) {
-        Some(value) => *value,
-        None => match thirty_one {
-            RegisterThirtyOne::ZeroRegister => 0,
-            RegisterThirtyOne::StackPointer => processor.stack_pointer,
-        },
-    }
-}
-
-fn write_register(
-    processor: &mut Processor,
-    number: u32,
-    value: u64,
-    thirty_one: RegisterThirtyOne,
-) {
-    match processor.general_purpose_registers.get_mut(number as usize) {
-        Some(register) => *register = value,
-        None => match thirty_one {
-            RegisterThirtyOne::ZeroRegister => {}
-            RegisterThirtyOne::StackPointer => processor.stack_pointer = value,
-        },
-    }
+    Err(Exception::InstructionAbort { status, address })
 }

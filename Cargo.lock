@@ -4230,6 +4230,44 @@ name = "wcontainers-behavior-source-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-behavior-source",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-processor-architecture",
+]
+
+[[package]]
+name = "wcontainers-behavior-source-kvm-single-step"
+version = "0.1.0"
+dependencies = [
+ "aarch64-cpu",
+ "aarch64-paging",
+ "arm-sysregs",
+ "cc",
+ "kvm-bindings",
+ "kvm-ioctls",
+ "object 0.37.3",
+ "wcontainers-abi",
+ "wcontainers-behavior-source",
+ "wcontainers-behavior-source-conformance",
+ "wcontainers-distinguishing-state-generator-arm64",
+ "wcontainers-kvm",
+ "wcontainers-kvm-direct",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+ "wcontainers-volatile-bytes",
+ "zerocopy",
+]
+
+[[package]]
+name = "wcontainers-behavior-source-recording"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-behavior-source",
+ "wcontainers-behavior-source-conformance",
+ "wcontainers-behavior-source-kvm-single-step",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-arm64",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
 ]
 
 [[package]]
@@ -4370,6 +4408,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-distinguishing-state-generator-arm64"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-conformance",
+ "wcontainers-instruction-input-domain",
+ "wcontainers-instruction-input-domain-arm64",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+]
+
+[[package]]
 name = "wcontainers-distinguishing-state-generator-conformance"
 version = "0.1.0"
 dependencies = [
@@ -4412,7 +4462,6 @@ dependencies = [
  "wcontainers-executor",
  "wcontainers-precise-instruction-set",
  "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-conformance",
 ]
 
 [[package]]
@@ -4489,16 +4538,6 @@ dependencies = [
  "wcontainers-system",
  "wcontainers-system-seeded-test-policy",
  "zerocopy",
-]
-
-[[package]]
-name = "wcontainers-executor-simulation"
-version = "0.1.0"
-dependencies = [
- "wcontainers-executor",
- "wcontainers-precise-instruction-set",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-arm64",
 ]
 
 [[package]]
@@ -4865,6 +4904,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-kvm"
+version = "0.1.0"
+dependencies = [
+ "kvm-ioctls",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-kvm-conformance"
+version = "0.1.0"
+dependencies = [
+ "kvm-ioctls",
+ "wcontainers-kvm",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
+name = "wcontainers-kvm-direct"
+version = "0.1.0"
+dependencies = [
+ "kvm-bindings",
+ "kvm-ioctls",
+ "thiserror",
+ "wcontainers-kvm",
+ "wcontainers-kvm-conformance",
+ "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-shared-mapping",
+]
+
+[[package]]
 name = "wcontainers-negative-route-advisable"
 version = "0.1.0"
 dependencies = [
@@ -4926,56 +4995,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "wcontainers-precise-instruction-set-apple-m5"
-version = "0.1.0"
-dependencies = [
- "wcontainers-precise-instruction-set",
- "wcontainers-precise-instruction-set-conformance",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-arm64",
- "wcontainers-processor-architecture-recording",
-]
-
-[[package]]
 name = "wcontainers-precise-instruction-set-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-precise-instruction-set",
  "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-conformance",
 ]
 
 [[package]]
 name = "wcontainers-precise-instruction-set-measured"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-behavior-source",
+ "wcontainers-behavior-source-kvm-single-step",
+ "wcontainers-behavior-source-recording",
  "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-input-domain",
- "wcontainers-executor",
- "wcontainers-executor-conformance",
- "wcontainers-executor-hardware-virtualization",
- "wcontainers-executor-hardware-virtualization-inside",
- "wcontainers-executor-simulation",
+ "wcontainers-distinguishing-state-generator-arm64",
+ "wcontainers-instruction-input-domain",
  "wcontainers-instruction-input-domain-arm64",
  "wcontainers-precise-instruction-set",
- "wcontainers-precise-instruction-set-apple-m5",
- "wcontainers-precise-instruction-set-conformance",
- "wcontainers-precise-instruction-set-neoverse-v2",
- "wcontainers-processor-architecture",
- "wcontainers-processor-architecture-arm64",
- "wcontainers-processor-architecture-conformance",
- "wcontainers-processor-architecture-recording",
-]
-
-[[package]]
-name = "wcontainers-precise-instruction-set-neoverse-v2"
-version = "0.1.0"
-dependencies = [
- "wcontainers-precise-instruction-set",
  "wcontainers-precise-instruction-set-conformance",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
- "wcontainers-processor-architecture-recording",
 ]
 
 [[package]]
@@ -5000,6 +5041,21 @@ name = "wcontainers-privilege-level"
 version = "0.1.0"
 
 [[package]]
+name = "wcontainers-privilege-level-arm64-user"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-privilege-level",
+ "wcontainers-privilege-level-conformance",
+]
+
+[[package]]
+name = "wcontainers-privilege-level-conformance"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-privilege-level",
+]
+
+[[package]]
 name = "wcontainers-processor-architecture"
 version = "0.1.0"
 dependencies = [
@@ -5010,11 +5066,13 @@ dependencies = [
 name = "wcontainers-processor-architecture-arm64"
 version = "0.1.0"
 dependencies = [
- "aarch64-cpu",
  "bitflags 2.13.2",
+ "wcontainers-behavior-source",
+ "wcontainers-behavior-source-kvm-single-step",
  "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-input-domain",
- "wcontainers-instruction-input-domain-arm64",
+ "wcontainers-distinguishing-state-generator-arm64",
+ "wcontainers-privilege-level",
+ "wcontainers-privilege-level-arm64-user",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-conformance",
 ]
@@ -5024,21 +5082,7 @@ name = "wcontainers-processor-architecture-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-processor-architecture",
-]
-
-[[package]]
-name = "wcontainers-processor-architecture-recording"
-version = "0.1.0"
-dependencies = [
- "wcontainers-distinguishing-state-generator",
- "wcontainers-distinguishing-state-generator-input-domain",
- "wcontainers-executor",
- "wcontainers-executor-simulation",
- "wcontainers-instruction-input-domain-arm64",
- "wcontainers-precise-instruction-set-apple-m5",
- "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
- "wcontainers-processor-architecture-conformance",
 ]
 
 [[package]]

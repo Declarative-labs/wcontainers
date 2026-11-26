@@ -1,0 +1,33 @@
+[package]
+name = "wcontainers-kvm-direct"
+description = "The KVM calls kvm-ioctls leaves unsafe, made on fresh anonymous memory that is never unmapped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-kvm = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-volatile-bytes-shared-mapping = { path = "../../../volatile-bytes/implementation/shared-mapping" }
+# KVM's calls and structures.
+kvm-ioctls = "0.25.1"
+kvm-bindings = "0.14.2"
+thiserror = "2.0.21"
+
+[dev-dependencies]
+wcontainers-kvm-conformance = { path = "../../conformance" }
+
+# The bindings of an outside API: it denies unsafe code, so that its 1 use is marked.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"

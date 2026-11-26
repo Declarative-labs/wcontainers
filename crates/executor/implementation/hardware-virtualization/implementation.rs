@@ -22,8 +22,6 @@ pub mod hvf;
 #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
 pub mod kvm;
 pub mod routines;
-#[cfg(all(host_hypervisor, target_arch = "aarch64"))]
-pub mod single_step;
 pub mod translate;
 
 /// The host's hypervisor.
