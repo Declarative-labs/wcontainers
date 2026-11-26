@@ -71,6 +71,19 @@ pub enum EvexIntegerOperation {
     BroadcastTuple(usize),
     /// VMOVDQA and VMOVDQU; the aligned ones need memory aligned to the vector's length.
     Move { aligned: bool },
+    /// VPMOVM2B to VPMOVM2Q: each lane all ones where the source opmask register's bit for it is set, else zero.
+    FromMask,
+    /// VPMOVB2M to VPMOVQ2M: each lane's top bit into the opmask register.
+    ToMask,
+    /// VPMOVZX and VPMOVSX: each lane the source's lane of the narrower width at the same place, extended.
+    Extend { from: Lane, signedness: Signedness },
+    /// VPMOVQB to VPMOVUSWB: each lane of the source, of the wider width, narrowed: truncated, or saturated as the
+    /// signedness reads it; the vector length is the source's.
+    Narrow { from: Lane, saturation: Option<Signedness> },
+    /// VDBPSADBW: in each 128 bits, the second source's doublewords chosen by the immediate's two-bit fields, then in
+    /// each quadword four sums of absolute byte differences between the first source's doublewords and windows of
+    /// the chosen bytes.
+    DoubleBlockDifferences,
 }
 
 /// Where an EVEX form's last source lies.
@@ -105,6 +118,15 @@ impl EvexVectorLength {
     pub const fn to_quarters(self) -> usize {
         self.to_bits() as usize / 128
     }
+
+    /// The length of a vector of `to` lanes as many as this length holds `from` lanes, at least 128 bits.
+    pub const fn scale(self, from: Lane, to: Lane) -> Self {
+        match self.to_bits() / from.to_bits() * to.to_bits() {
+            ..=128 => Self::L128,
+            256 => Self::L256,
+            _ => Self::L512,
+        }
+    }
 }
 
 /// One EVEX integer form: its operation, the lanes its writemask and broadcast work on, where its last source lies,
@@ -120,14 +142,20 @@ pub struct EvexIntegerForm {
 }
 
 impl EvexIntegerForm {
-    /// The lanes of the vector.
+    /// The lanes of the vector; a narrowing form's are its source's.
     pub const fn count_lanes(&self) -> usize {
-        (self.length.to_bits() / self.lane.to_bits()) as usize
+        match self.operation {
+            EvexIntegerOperation::Narrow { from, .. } => (self.length.to_bits() / from.to_bits()) as usize,
+            _ => (self.length.to_bits() / self.lane.to_bits()) as usize,
+        }
     }
 
     /// Whether the form writes an opmask register rather than a vector.
     pub const fn writes_mask(&self) -> bool {
-        matches!(self.operation, EvexIntegerOperation::TestIntoMask { .. } | EvexIntegerOperation::CompareIntoMask(_))
+        matches!(
+            self.operation,
+            EvexIntegerOperation::TestIntoMask { .. } | EvexIntegerOperation::CompareIntoMask(_) | EvexIntegerOperation::ToMask
+        )
     }
 
     /// The lane of the sources, which a broadcast repeats: twice the destination's for a pack, the words or bytes
@@ -136,8 +164,19 @@ impl EvexIntegerForm {
         match self.operation {
             EvexIntegerOperation::Lanes(LaneOperation::Pack(lane, _)) => lane,
             EvexIntegerOperation::Lanes(LaneOperation::MultiplyAddWords) => Lane::Word,
-            EvexIntegerOperation::Lanes(LaneOperation::MultiplyAddBytes | LaneOperation::SumAbsoluteDifferences) => Lane::Byte,
+            EvexIntegerOperation::Lanes(LaneOperation::MultiplyAddBytes | LaneOperation::SumAbsoluteDifferences)
+            | EvexIntegerOperation::DoubleBlockDifferences => Lane::Byte,
+            EvexIntegerOperation::Extend { from, .. } | EvexIntegerOperation::Narrow { from, .. } => from,
             _ => self.lane,
+        }
+    }
+
+    /// The lane of the memory operand's elements, which faults are suppressed by: a narrowing store's narrow lane,
+    /// else the source's.
+    pub const fn memory_lane(&self) -> Lane {
+        match self.operation {
+            EvexIntegerOperation::Narrow { .. } => self.lane,
+            _ => self.source_lane(),
         }
     }
 
@@ -174,7 +213,7 @@ impl EvexIntegerForm {
                     | LaneOperation::DuplicateOddSingles
                     | LaneOperation::DuplicateLowDouble
             ),
-            EvexIntegerOperation::ShiftByCount(_) => false,
+            EvexIntegerOperation::ShiftByCount(_) | EvexIntegerOperation::DoubleBlockDifferences => false,
             _ => true,
         }
     }
@@ -215,6 +254,10 @@ impl EvexIntegerForm {
                 | EvexIntegerOperation::Broadcast
                 | EvexIntegerOperation::BroadcastTuple(_)
                 | EvexIntegerOperation::Move { .. }
+                | EvexIntegerOperation::FromMask
+                | EvexIntegerOperation::ToMask
+                | EvexIntegerOperation::Extend { .. }
+                | EvexIntegerOperation::Narrow { .. }
         )
     }
 
@@ -381,6 +424,47 @@ impl EvexIntegerForm {
                 from_lanes(lane, &(0..count).map(|index| tuple[index % elements]).collect::<Vec<_>>())
             }
             EvexIntegerOperation::Move { .. } => per_quarter(&|quarter| second[quarter]),
+            EvexIntegerOperation::FromMask => {
+                let ones = to_lane_mask(bits);
+                from_lanes(lane, &(0..count).map(|index| if second[0] >> index & 1 != 0 { ones } else { 0 }).collect::<Vec<_>>())
+            }
+            EvexIntegerOperation::ToMask => {
+                let lanes = to_lanes(lane, second, count);
+                [u128::from(lanes.iter().enumerate().fold(0u64, |all, (index, value)| all | (value >> (bits - 1) & 1) << index)), 0, 0, 0]
+            }
+            EvexIntegerOperation::Extend { from, signedness } => {
+                let extended = to_lanes(from, second, count).into_iter().map(|value| match signedness {
+                    Signedness::Signed => crate::vector::to_signed(value, from.to_bits()) as u64 & to_lane_mask(bits),
+                    Signedness::Unsigned => value,
+                });
+                from_lanes(lane, &extended.collect::<Vec<_>>())
+            }
+            EvexIntegerOperation::Narrow { from, saturation } => {
+                let narrowed = to_lanes(from, second, count).into_iter().map(|value| match saturation {
+                    None => value & to_lane_mask(bits),
+                    Some(Signedness::Signed) => {
+                        crate::vector::saturate(lane, Signedness::Signed, i128::from(crate::vector::to_signed(value, from.to_bits())))
+                    }
+                    Some(Signedness::Unsigned) => crate::vector::saturate(lane, Signedness::Unsigned, i128::from(value)),
+                });
+                from_lanes(lane, &narrowed.collect::<Vec<_>>())
+            }
+            EvexIntegerOperation::DoubleBlockDifferences => per_quarter(&|quarter| {
+                let chosen = split(Lane::Doubleword, second[quarter]);
+                let window: Vec<u64> = (0..4)
+                    .map(|field| chosen[usize::from(immediate >> (2 * field) & 3)])
+                    .flat_map(|doubleword| (0..4).map(move |byte| doubleword >> (8 * byte) & 0xFF))
+                    .collect();
+                let bytes = split(Lane::Byte, first[quarter]);
+                let sum = |first_at: usize, window_at: usize| -> u64 {
+                    (0..4).map(|index| bytes[first_at + index].abs_diff(window[window_at + index])).sum()
+                };
+                let words = (0..2).flat_map(|half| {
+                    let base = 8 * half;
+                    [sum(base, base), sum(base, base + 1), sum(base + 4, base + 2), sum(base + 4, base + 3)]
+                });
+                join(Lane::Word, words)
+            }),
         }
     }
 
@@ -423,8 +507,8 @@ pub fn find_evex_integer_form(instruction: Instruction) -> Option<&'static EvexI
 }
 
 use EvexIntegerOperation::{
-    Blend, Broadcast, BroadcastTuple, CompareIntoMask, Lanes, Move, Rotate, ShiftByCount, ShiftByImmediate, ShiftByLane,
-    TernaryLogic, TestIntoMask,
+    Blend, Broadcast, BroadcastTuple, CompareIntoMask, DoubleBlockDifferences, Extend, FromMask, Lanes, Move, Narrow, Rotate,
+    ShiftByCount, ShiftByImmediate, ShiftByLane, TernaryLogic, TestIntoMask, ToMask,
 };
 use EvexIntegerPlace::{General, Memory, Register, Store};
 use Lane::{Byte, Doubleword, Quadword, Word};
@@ -1514,4 +1598,29 @@ pub static EVEX_INTEGER_FORMS: &[EvexIntegerForm] = evex_forms! {
     VmovupsYmmf32MaskmskwYmmf32Avx512, Move { aligned: false }, Doubleword, Register, L256, [EVEX_Vmovups_ymm_k1z_ymmm256, EVEX_Vmovups_ymmm256_k1z_ymm];
     VmovupsZmmf32MaskmskwMemf32Avx512, Move { aligned: false }, Doubleword, Memory, L512, [EVEX_Vmovups_zmm_k1z_zmmm512];
     VmovupsZmmf32MaskmskwZmmf32Avx512, Move { aligned: false }, Doubleword, Register, L512, [EVEX_Vmovups_zmm_k1z_zmmm512, EVEX_Vmovups_zmmm512_k1z_zmm];
+    // Conversions between opmask registers and vectors.
+    Vpmovb2mMaskmskwXmmu8Avx512, ToMask, Byte, Register, L128, [EVEX_Vpmovb2m_kr_xmm];
+    Vpmovb2mMaskmskwYmmu8Avx512, ToMask, Byte, Register, L256, [EVEX_Vpmovb2m_kr_ymm];
+    Vpmovb2mMaskmskwZmmu8Avx512, ToMask, Byte, Register, L512, [EVEX_Vpmovb2m_kr_zmm];
+    Vpmovd2mMaskmskwXmmu32Avx512, ToMask, Doubleword, Register, L128, [EVEX_Vpmovd2m_kr_xmm];
+    Vpmovd2mMaskmskwYmmu32Avx512, ToMask, Doubleword, Register, L256, [EVEX_Vpmovd2m_kr_ymm];
+    Vpmovd2mMaskmskwZmmu32Avx512, ToMask, Doubleword, Register, L512, [EVEX_Vpmovd2m_kr_zmm];
+    Vpmovm2bXmmu8MaskmskwAvx512, FromMask, Byte, Register, L128, [EVEX_Vpmovm2b_xmm_kr];
+    Vpmovm2bYmmu8MaskmskwAvx512, FromMask, Byte, Register, L256, [EVEX_Vpmovm2b_ymm_kr];
+    Vpmovm2bZmmu8MaskmskwAvx512, FromMask, Byte, Register, L512, [EVEX_Vpmovm2b_zmm_kr];
+    Vpmovm2dXmmu32MaskmskwAvx512, FromMask, Doubleword, Register, L128, [EVEX_Vpmovm2d_xmm_kr];
+    Vpmovm2dYmmu32MaskmskwAvx512, FromMask, Doubleword, Register, L256, [EVEX_Vpmovm2d_ymm_kr];
+    Vpmovm2dZmmu32MaskmskwAvx512, FromMask, Doubleword, Register, L512, [EVEX_Vpmovm2d_zmm_kr];
+    Vpmovm2qXmmu64MaskmskwAvx512, FromMask, Quadword, Register, L128, [EVEX_Vpmovm2q_xmm_kr];
+    Vpmovm2qYmmu64MaskmskwAvx512, FromMask, Quadword, Register, L256, [EVEX_Vpmovm2q_ymm_kr];
+    Vpmovm2qZmmu64MaskmskwAvx512, FromMask, Quadword, Register, L512, [EVEX_Vpmovm2q_zmm_kr];
+    Vpmovm2wXmmu16MaskmskwAvx512, FromMask, Word, Register, L128, [EVEX_Vpmovm2w_xmm_kr];
+    Vpmovm2wYmmu16MaskmskwAvx512, FromMask, Word, Register, L256, [EVEX_Vpmovm2w_ymm_kr];
+    Vpmovm2wZmmu16MaskmskwAvx512, FromMask, Word, Register, L512, [EVEX_Vpmovm2w_zmm_kr];
+    Vpmovq2mMaskmskwXmmu64Avx512, ToMask, Quadword, Register, L128, [EVEX_Vpmovq2m_kr_xmm];
+    Vpmovq2mMaskmskwYmmu64Avx512, ToMask, Quadword, Register, L256, [EVEX_Vpmovq2m_kr_ymm];
+    Vpmovq2mMaskmskwZmmu64Avx512, ToMask, Quadword, Register, L512, [EVEX_Vpmovq2m_kr_zmm];
+    Vpmovw2mMaskmskwXmmu16Avx512, ToMask, Word, Register, L128, [EVEX_Vpmovw2m_kr_xmm];
+    Vpmovw2mMaskmskwYmmu16Avx512, ToMask, Word, Register, L256, [EVEX_Vpmovw2m_kr_ymm];
+    Vpmovw2mMaskmskwZmmu16Avx512, ToMask, Word, Register, L512, [EVEX_Vpmovw2m_kr_zmm];
 };

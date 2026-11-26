@@ -102,6 +102,8 @@ pub fn list_operand_types(form: &EvexIntegerForm) -> Vec<OperandType> {
         EvexIntegerOperation::ShiftByLane(_) | EvexIntegerOperation::Rotate { by_lane: true, .. } => {
             (None, Some(lanes(true)), ZmmValues::LaneCounts(lane))
         }
+        EvexIntegerOperation::Narrow { from, .. } => (None, None, ZmmValues::Narrowing { lane: from, every_rotation: true }),
+        EvexIntegerOperation::FromMask => (None, None, ZmmValues::Lanes { lane: Lane::Quadword, every_rotation: true }),
         EvexIntegerOperation::Lanes(LaneOperation::Pack(..)) => {
             (None, Some(ZmmValues::Narrowing { lane, every_rotation: false }), ZmmValues::Narrowing { lane, every_rotation: true })
         }
@@ -118,6 +120,7 @@ pub fn list_operand_types(form: &EvexIntegerForm) -> Vec<OperandType> {
     let class = match form.operation {
         EvexIntegerOperation::TernaryLogic => Some(ImmediateClass::TernaryTable),
         EvexIntegerOperation::CompareIntoMask(_) => Some(ImmediateClass::Predicate),
+        EvexIntegerOperation::DoubleBlockDifferences => Some(ImmediateClass::Selector),
         _ if form.has_immediate() => Some(ImmediateClass::Count),
         _ => None,
     };
@@ -293,8 +296,12 @@ pub fn build_state(form: &EvexIntegerForm, operands: &[(OperandType, OperandValu
         write_zmm(&mut processor, first_number, value);
     }
     let in_memory = access.is_some();
-    if let (Some(value), false) = (last, in_memory) {
-        write_zmm(&mut processor, last_number, value);
+    match (last, in_memory) {
+        (Some(value), false) if form.operation == EvexIntegerOperation::FromMask => {
+            processor.opmask_registers[last_number % 8] = value[0] as u64;
+        }
+        (Some(value), false) => write_zmm(&mut processor, last_number, value),
+        _ => {}
     }
     if let Some(value) = general {
         processor.general_purpose_registers[last_number % 16] = value;
@@ -326,12 +333,18 @@ pub fn build_state(form: &EvexIntegerForm, operands: &[(OperandType, OperandValu
     let narrow = |number: usize| to_vector_register(EvexVectorLength::L128, number);
     let code = form.codes[encoding.code];
     let to_error = |error| panic!("{code:?} takes its operands: {error}");
-    let target = if form.writes_mask() { to_opmask_register(destination_number) } else { vector(destination_number) };
+    let target = match form.operation {
+        _ if form.writes_mask() => to_opmask_register(destination_number),
+        EvexIntegerOperation::Narrow { from, .. } => to_vector_register(length.scale(from, form.lane), destination_number),
+        _ => vector(destination_number),
+    };
     let last_register = match form.operation {
         _ if form.place == EvexIntegerPlace::General => {
             let general = if form.lane == Lane::Quadword { Register::RAX } else { Register::EAX };
             Register::try_from(general as usize + last_number % 16).unwrap_or_else(|_| panic!("general register {last_number}"))
         }
+        EvexIntegerOperation::FromMask => to_opmask_register(last_number),
+        EvexIntegerOperation::Extend { from, .. } => to_vector_register(length.scale(form.lane, from), last_number),
         EvexIntegerOperation::ShiftByCount(_) | EvexIntegerOperation::Broadcast | EvexIntegerOperation::BroadcastTuple(_) => {
             narrow(last_number)
         }

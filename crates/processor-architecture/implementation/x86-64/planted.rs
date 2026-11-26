@@ -1046,6 +1046,16 @@ pub enum Bug {
     EvexWholeReadSuppressed,
     /// VANDNPS, VANDNPD, VPANDND and VPANDNQ complement the second source.
     EvexAndNotComplementsSecond,
+    /// VPMOVM2B to VPMOVM2Q set the lanes whose opmask bit is clear.
+    EvexFromMaskInverted,
+    /// VPMOVB2M to VPMOVQ2M take each lane's lowest bit.
+    EvexToMaskLowestBit,
+    /// VPMOVSX extends with zeros.
+    EvexExtendSignedWithZeros,
+    /// The saturating narrowing forms truncate.
+    EvexNarrowTruncates,
+    /// VDBPSADBW ignores its immediate, taking the second source's doublewords in order.
+    EvexBlockDifferencesInOrder,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1523,6 +1533,11 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexBroadcastTupleFirstLane, "VBROADCASTI32X2 to VBROADCASTF64X4", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::BroadcastTuple(_))), Origin::EvexFirstHalf),
     row(Bug::EvexDuplicateOddAsEven, "VMOVSHDUP", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::Lanes(LaneOperation::DuplicateOddSingles)), Origin::EvexFirstHalf),
     row(Bug::EvexWholeReadSuppressed, "VPACKSSWB, VPUNPCKLBW, VPSADBW in memory", Family::EvexInteger(|form| form.place == EvexIntegerPlace::Memory && !form.is_element_wise() && form.can_mask()), Origin::EvexFirstHalf),
+    row(Bug::EvexFromMaskInverted, "VPMOVM2B to VPMOVM2Q", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::FromMask), Origin::EvexFirstHalf),
+    row(Bug::EvexToMaskLowestBit, "VPMOVB2M to VPMOVQ2M", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::ToMask), Origin::EvexFirstHalf),
+    row(Bug::EvexExtendSignedWithZeros, "VPMOVSX", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Extend { signedness: Signedness::Signed, .. })), Origin::EvexFirstHalf),
+    row(Bug::EvexNarrowTruncates, "VPMOVSDB, VPMOVUSQW", Family::EvexInteger(|form| matches!(form.operation, EvexIntegerOperation::Narrow { saturation: Some(_), .. })), Origin::EvexFirstHalf),
+    row(Bug::EvexBlockDifferencesInOrder, "VDBPSADBW", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::DoubleBlockDifferences), Origin::EvexFirstHalf),
     row(Bug::EvexAndNotComplementsSecond, "VANDNPS, VPANDND", Family::EvexInteger(|form| form.operation == EvexIntegerOperation::Lanes(LaneOperation::AndNot)), Origin::EvexFirstHalf),
 ];
 
@@ -1707,6 +1722,18 @@ pub(crate) fn mutate_evex(form: &EvexIntegerForm, destination: &Zmm, first: &Zmm
         (Some(Bug::EvexAndNotComplementsSecond), EvexIntegerOperation::Lanes(LaneOperation::AndNot)) => {
             recompute(form.operation, second, first, immediate)
         }
+        (Some(Bug::EvexFromMaskInverted), EvexIntegerOperation::FromMask) => recompute(form.operation, first, &[!second[0], 0, 0, 0], immediate),
+        (Some(Bug::EvexToMaskLowestBit), EvexIntegerOperation::ToMask) => {
+            let lanes = to_lanes(form.lane, second, form.count_lanes());
+            [u128::from(lanes.iter().enumerate().fold(0u64, |all, (index, value)| all | (value & 1) << index)), 0, 0, 0]
+        }
+        (Some(Bug::EvexExtendSignedWithZeros), EvexIntegerOperation::Extend { from, .. }) => {
+            recompute(EvexIntegerOperation::Extend { from, signedness: Signedness::Unsigned }, first, second, immediate)
+        }
+        (Some(Bug::EvexNarrowTruncates), EvexIntegerOperation::Narrow { from, .. }) => {
+            recompute(EvexIntegerOperation::Narrow { from, saturation: None }, first, second, immediate)
+        }
+        (Some(Bug::EvexBlockDifferencesInOrder), EvexIntegerOperation::DoubleBlockDifferences) => recompute(form.operation, first, second, 0xE4),
         _ => result,
     }
 }
