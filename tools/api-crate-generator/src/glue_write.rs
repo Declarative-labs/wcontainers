@@ -971,6 +971,8 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
             drop(outcomes);
         }
         // The table, filled with the entries, for any object type that is this interface.
+        // A table only another API's face uses, or none (an older version of a kind), is still written: one per interface.
+        let _ = writeln!(tables, "#[allow(dead_code, reason = \"every interface's table is written; a kind's own uses its newest, a face another API's\")]");
         let _ = writeln!(tables, "impl<V: {}> Tables<V> {{", writer.trait_path(interface_key));
         let _ = writeln!(tables, "    /// `{}`'s table for objects of type `V`.", interface_key.1);
         let _ = writeln!(tables, "    pub const {}: &'static {table} = &{table} {{\n        unknown: unknown_table::<V>(),", upper(trait_name));
@@ -1238,7 +1240,7 @@ pub(in crate::emit) fn write_direct(writer: &Writer<'_, '_>, api: usize, crate_f
     let has_lengths = spec.exceptions.iter().any(|e| matches!(e, Exception::InitialData { .. } | Exception::Lent { .. } | Exception::Checked { .. }));
     let lengths_module = if has_lengths { "#[path = \"lengths.rs\"]\nmod lengths;\n" } else { "" };
     let lib = format!(
-        "//! {HEADER}\n//!\n//! {} through its C ABI: the serving glue (raw C calls in, any implementation of the traits out) and the\n//! calling glue (the C side's objects as an implementation of the traits). Every `unsafe` of the API is here, each marked.\n\n#[path = \"abi.rs\"]\npub mod abi;\n#[path = \"call.rs\"]\nmod call;\n#[path = \"data.rs\"]\nmod data;\n{lengths_module}#[path = \"serve.rs\"]\nmod serve;\n\npub use abi::*;\npub use call::*;\npub use serve::*;\n\nuse wcontainers_component_object_model_direct::GlueKey;\n\n#[expect(unsafe_code, reason = \"the glue's key, which only this crate's glue holds\")]\n// SAFETY: kept in this private static and passed only to the COM crate's glue functions.\nstatic KEY: GlueKey = unsafe {{ GlueKey::new() }};\n",
+        "//! {HEADER}\n//!\n//! {} through its C ABI: the serving glue (raw C calls in, any implementation of the traits out) and the\n//! calling glue (the C side's objects as an implementation of the traits). Every `unsafe` of the API is here, each marked.\n\n#[path = \"abi.rs\"]\npub mod abi;\n#[path = \"call.rs\"]\nmod call;\n#[path = \"data.rs\"]\nmod data;\n{lengths_module}#[path = \"serve.rs\"]\nmod serve;\n\n#[allow(unused_imports, reason = \"what another crate of the set names is public; a module may have none\")]\npub use abi::*;\n#[allow(unused_imports, reason = \"what another crate of the set names is public; a module may have none\")]\npub use call::*;\n#[allow(unused_imports, reason = \"what another crate of the set names is public; a module may have none\")]\npub use serve::*;\n\nuse wcontainers_component_object_model_direct::GlueKey;\n\n#[expect(unsafe_code, reason = \"the glue's key, which only this crate's glue holds\")]\n// SAFETY: kept in this private static and passed only to the COM crate's glue functions.\nstatic KEY: GlueKey = unsafe {{ GlueKey::new() }};\n",
         spec.summary.trim_end_matches('.')
     );
     let mut files = vec![("implementation.rs", lib), ("abi.rs", abi_text), ("serve.rs", serving), ("call.rs", calling), ("data.rs", data)];

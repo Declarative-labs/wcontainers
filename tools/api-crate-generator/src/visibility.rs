@@ -2,8 +2,10 @@
 //!
 //! An implementation exports only what implements its interface (the linter's `public_outside_interface`); the glue
 //! writes many items `pub` because the files of one crate name each other. After every crate of a set is written, an
-//! item of a direct crate that no other crate names, and that no item kept public names in its signature, becomes
-//! `pub(crate)`; one its own crate does not use stays as it is (it would be dead code).
+//! item of a direct crate that no other crate names through the crate's path (`wcontainers_<api>_direct::Name`, its
+//! alias, or a `use` of it), and that no item kept public names in its signature, becomes `pub(crate)`; a field, when
+//! its structure does. One its own crate does not use stays as it is (it would be dead code), unless its file allows
+//! dead code (data.rs, which another crate may include as a module of its own).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -56,9 +58,12 @@ fn signature(lines: &[&str], at: usize) -> String {
     let mut text = String::new();
     let whole_body = lines[at].contains("struct ");
     let mut depth = 0_i32;
-    for line in &lines[at..] {
-        text.push_str(line);
-        text.push('\n');
+    for (index, line) in lines[at..].iter().enumerate() {
+        // Of a structure's body only its public fields' lines: a private field may hold a type of the crate's own.
+        if !whole_body || index == 0 || line.trim_start().starts_with("pub ") || line.trim_start().starts_with('}') {
+            text.push_str(line);
+            text.push('\n');
+        }
         for ch in line.chars() {
             match ch {
                 '{' => depth += 1,
@@ -72,6 +77,48 @@ fn signature(lines: &[&str], at: usize) -> String {
         }
     }
     text
+}
+
+/// The names `text` reaches through one of `paths` (a crate's package name or alias): `path::Name`, and each name of a
+/// `use path::{..}` list.
+fn named_through(text: &str, paths: &[String], into: &mut BTreeSet<String>) {
+    for path in paths {
+        let prefix = format!("{path}::");
+        let mut rest = text;
+        while let Some(at) = rest.find(&prefix) {
+            let before = rest[..at].chars().next_back();
+            rest = &rest[at + prefix.len()..];
+            if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                continue;
+            }
+            if let Some(list) = rest.strip_prefix('{') {
+                let end = list.find('}').unwrap_or(list.len());
+                let mut names = BTreeMap::new();
+                identifiers(&list[..end], &mut names);
+                into.extend(names.into_keys());
+            } else {
+                // The whole path from here (`Name::<V>::MEMBER`): every name in it, so an associated item stays too.
+                let mut depth = 0_usize;
+                let span: String = rest
+                    .chars()
+                    .take_while(|c| match c {
+                        '<' => {
+                            depth += 1;
+                            true
+                        }
+                        '>' => {
+                            depth = depth.saturating_sub(1);
+                            true
+                        }
+                        _ => c.is_ascii_alphanumeric() || *c == '_' || *c == ':' || depth > 0 && matches!(c, ' ' | ',' | '&' | '\''),
+                    })
+                    .collect();
+                let mut names = BTreeMap::new();
+                identifiers(&span, &mut names);
+                into.extend(names.into_keys());
+            }
+        }
+    }
 }
 
 /// Narrows the direct crates of `folders` under `out` (a folder holding `crates/`); returns the report's line.
@@ -92,7 +139,11 @@ pub fn narrow(out: &Path, folders: &[&str]) -> Result<String, String> {
         if own.is_empty() {
             continue;
         }
-        let mut others: BTreeMap<String, usize> = BTreeMap::new();
+        let package = format!("wcontainers_{}_direct", folder.replace('-', "_"));
+        let paths = [package.clone(), format!("{}_direct", folder.replace('-', "_"))];
+        let mut others: BTreeSet<String> = BTreeSet::new();
+        // Any name another crate's text holds: an associated item or method is reached through a value, not a path.
+        let mut others_loose: BTreeMap<String, usize> = BTreeMap::new();
         let mut inside: BTreeMap<String, usize> = BTreeMap::new();
         for (path, text) in &texts {
             if own.contains(path) {
@@ -100,19 +151,35 @@ pub fn narrow(out: &Path, folders: &[&str]) -> Result<String, String> {
                 let code: String = text.lines().filter(|line| !line.trim_start().starts_with("//")).collect::<Vec<_>>().join("\n");
                 identifiers(&code, &mut inside);
             } else {
-                identifiers(text, &mut others);
+                named_through(text, &paths, &mut others);
+                identifiers(text, &mut others_loose);
             }
         }
         // What stays public: what another crate names, and what a public item's declaration names, to a fixed point.
         let mut public: BTreeSet<String> = BTreeSet::new();
         let mut declarations: Vec<(String, String)> = Vec::new();
+        // Items of a file that allows dead code may be narrowed though their crate does not use them.
+        let mut dead_allowed: BTreeSet<String> = BTreeSet::new();
+        // Items declared inside an impl block (indented): methods and associated items.
+        let mut associated: BTreeSet<String> = BTreeSet::new();
         for path in &own {
             let lines: Vec<&str> = texts[path].lines().collect();
+            let allows_dead = texts[path].contains("#![allow(dead_code") || texts[path].contains("#![allow(\n    dead_code");
             for (at, line) in lines.iter().enumerate() {
                 if line.contains('$') {
                     continue;
                 }
-                if let Some(name) = declared(line) {
+                // A field follows its structure (below); only items are declarations of their own.
+                let is_item = line.trim_start().strip_prefix("pub ").is_some_and(|rest| ITEMS.iter().any(|keyword| rest.starts_with(keyword)));
+                if let Some(name) = declared(line).filter(|_| is_item) {
+                    if allows_dead {
+                        dead_allowed.insert(name.clone());
+                    }
+                    // A method is called through a value, so any crate's mention keeps it; an associated constant is named
+                    // through its type's path (`Tables::<V>::BUFFER`), which `named_through` reads.
+                    if line.starts_with("    pub ") && line.contains("fn ") {
+                        associated.insert(name.clone());
+                    }
                     declarations.push((name, signature(&lines, at)));
                 }
             }
@@ -123,10 +190,15 @@ pub fn narrow(out: &Path, folders: &[&str]) -> Result<String, String> {
             let mut own_text = BTreeMap::new();
             identifiers(text, &mut own_text);
             let elsewhere = inside.get(name).copied().unwrap_or(0).saturating_sub(own_text.get(name).copied().unwrap_or(0));
+            let elsewhere = if dead_allowed.contains(name) { elsewhere.max(1) } else { elsewhere };
             // An implementation's own types (`System…`) are what the crate exports; a kind's table of interfaces is
             // what another API's glue binds.
             let implementation_type = name.starts_with("System") && text.contains("struct ") || name.ends_with("_interfaces");
-            if others.contains_key(name) || elsewhere == 0 || implementation_type {
+            let reached = others.contains(name) || associated.contains(name) && others_loose.contains_key(name);
+            if reached || elsewhere == 0 || implementation_type {
+                if std::env::var("VISIBILITY_WHY").is_ok_and(|why| why == *name) {
+                    eprintln!("VISIBILITY WHY {name}: reached {reached}, elsewhere {elsewhere}, implementation type {implementation_type}");
+                }
                 public.insert(name.clone());
             }
         }
@@ -138,6 +210,9 @@ pub fn narrow(out: &Path, folders: &[&str]) -> Result<String, String> {
                     identifiers(text, &mut named);
                     for word in named.keys() {
                         if declarations.iter().any(|(declared, _)| declared == word) {
+                            if !public.contains(word) && std::env::var("VISIBILITY_WHY").is_ok_and(|why| why == *word) {
+                                eprintln!("VISIBILITY WHY {word}: named by the public declaration of {name}");
+                            }
                             public.insert(word.clone());
                         }
                     }
@@ -150,7 +225,30 @@ pub fn narrow(out: &Path, folders: &[&str]) -> Result<String, String> {
         for path in &own {
             let text = &texts[path];
             let mut written = String::with_capacity(text.len());
+            // The structure whose fields the lines are in, and whether it stays public: its fields follow it.
+            let mut structure: Option<bool> = None;
             for line in text.lines() {
+                let trimmed = line.trim_start();
+                if let Some(rest) = trimmed.strip_prefix("pub struct ").or_else(|| trimmed.strip_prefix("pub(crate) struct ")) {
+                    let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect();
+                    if rest.trim_end().ends_with('{') {
+                        structure = Some(public.contains(&name) && trimmed.starts_with("pub struct "));
+                    }
+                } else if trimmed.starts_with('}') && !line.starts_with(' ') {
+                    structure = None;
+                }
+                let is_field = structure.is_some() && line.starts_with("    pub ") && !ITEMS.iter().any(|keyword| line.trim_start()["pub ".len()..].starts_with(keyword));
+                if is_field && !line.contains('$') {
+                    if structure == Some(true) {
+                        written.push_str(line);
+                        kept += 1;
+                    } else {
+                        written.push_str(&line.replacen("pub ", "pub(crate) ", 1));
+                        narrowed += 1;
+                    }
+                    written.push('\n');
+                    continue;
+                }
                 match declared(line).filter(|_| !line.contains('$')) {
                     Some(name) if !public.contains(&name) => {
                         written.push_str(&line.replacen("pub ", "pub(crate) ", 1));
