@@ -8,10 +8,18 @@ publish = false
 path = "suite.rs"
 
 [dependencies]
+wcontainers-abi.workspace = true
+wcontainers-byte-sink = { path = "../../byte-sink" }
+wcontainers-byte-source = { path = "../../byte-source" }
+wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
 wcontainers-executor = { path = ".." }
 wcontainers-processor-architecture = { path = "../../processor-architecture" }
 wcontainers-precise-instruction-set = { path = "../../precise-instruction-set" }
 wcontainers-distinguishing-state-generator = { path = "../../distinguishing-state-generator" }
+# The suite of the behavior source every executor is, which this suite runs too.
+wcontainers-behavior-source-conformance = { path = "../../behavior-source/conformance" }
+# The ARM64 guests: the architecture's processor state, its exceptions and where its instructions keep their operands.
+wcontainers-processor-architecture-arm64 = { path = "../../processor-architecture/implementation/arm64" }
 
 [lints]
 workspace = true

@@ -1,0 +1,40 @@
+[package]
+name = "wcontainers-executor-simulation"
+description = "A stand-in for an ARM64 chip that runs each instruction as a precise instruction set simulates it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+path = "implementation.rs"
+
+[[test]]
+name = "conformance"
+path = "conformance_run.rs"
+
+[dependencies]
+wcontainers-abi.workspace = true
+wcontainers-behavior-source = { path = "../../../behavior-source" }
+wcontainers-executor = { path = "../.." }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-random-source = { path = "../../../random-source" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
+wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
+wcontainers-processor-architecture = { path = "../../../processor-architecture" }
+wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
+
+[dev-dependencies]
+wcontainers-executor-conformance = { path = "../../conformance" }
+# The behaviors the tests' simulation runs: the first known behavior of each instruction.
+wcontainers-precise-instruction-set-measured = { path = "../../../precise-instruction-set/implementation/measured" }
+wcontainers-distinguishing-state-generator = { path = "../../../distinguishing-state-generator" }
+wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
+# The values the tests' simulation chooses where a behavior leaves them undecided: ChaCha from a seed.
+wcontainers-random-source-seeded = { path = "../../../random-source/implementation/seeded" }
+
+[lints]
+workspace = true

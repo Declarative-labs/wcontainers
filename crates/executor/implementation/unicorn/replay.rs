@@ -28,9 +28,11 @@ pub enum Entry {
     BackendWaiting(bool),
     Turn(Turn),
     /// An event the outside handed in.
-    Event(OwnedEvent),
+    Event(Event),
     /// The backend's reply to a request a call of the kernel's waits on, by its number.
     BackendAnswered(u64, Vec<u8>),
+    /// A notice the backend sent, for the kernel's wait on its notices.
+    NoticeSent(Vec<u8>),
     NameAnswered(u64, Vec<u8>),
     /// What a socket a wait of the kernel's is on became ready for, by its number.
     SocketReady(u32, wcontainers_readiness::ReadinessReport),
@@ -49,35 +51,6 @@ pub enum Entry {
     Idled,
     Delivered,
     Finished(bool),
-}
-
-/// An [`Event`] holding its own bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum OwnedEvent {
-    Timer,
-    BackendNotice(Vec<u8>),
-    TerminalResized { columns: u16, rows: u16 },
-}
-
-impl OwnedEvent {
-    pub fn of(event: &Event<'_>) -> Self {
-        match *event {
-            Event::Timer => Self::Timer,
-            Event::BackendNotice { notice } => Self::BackendNotice(notice.to_vec()),
-            Event::TerminalResized { columns, rows } => Self::TerminalResized { columns, rows },
-        }
-    }
-
-    pub fn event(&self) -> Event<'_> {
-        match self {
-            Self::Timer => Event::Timer,
-            Self::BackendNotice(notice) => Event::BackendNotice { notice },
-            Self::TerminalResized { columns, rows } => Event::TerminalResized {
-                columns: *columns,
-                rows: *rows,
-            },
-        }
-    }
 }
 
 /// A run's record, being written or being answered from.
