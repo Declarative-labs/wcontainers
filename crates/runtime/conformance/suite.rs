@@ -158,9 +158,8 @@ pub fn a_run_goes_on_after_an_interrupt<R: Runtime>(subject: Subject<R>) {
 /// It copies the shell's own program through one more stage than the runtime has runners, so the runners take turns.
 pub fn work_side_by_side_runs_to_its_end<R: Runtime>(subject: Subject<R>) {
     let stages = PIPELINE_STAGE.repeat(subject.runners.get() + 1);
-    let script = format!(
-        "s=$(command -v {SHELL}); cat \"$s\"{stages} | cmp - \"$s\" && exit {EXIT_CODE}"
-    );
+    let script =
+        format!("s=$(command -v {SHELL}); cat \"$s\"{stages} | cmp - \"$s\" && exit {EXIT_CODE}");
     let (mut container, _interrupter) = made(&subject, shell(&script));
     assert_eq!(container.run(), exited());
 }
