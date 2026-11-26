@@ -279,6 +279,15 @@ After a fork, or when resuming from a saved snapshot, there is no WebAssembly st
 starts at the saved program counter, and each function that was in progress is continued by a piece
 translated from its resume address. Counter: "continued after stack loss".
 
+### Traps answered from inside the run
+
+A trap (a system call, a fault, a stop) is answered by calling an imported hook from the piece, which returns
+and lets the piece go on; only what cannot go on leaves the translated code. Measured (the orchestrator's
+note of 2026-11-26): a trap answered by such a callback costs nothing beyond the answer, while leaving the translated
+code and entering again costs 1 to 8 microseconds a trap, growing with the call depth, since every frame is
+unwound. So the output keeps the callback form for every trap a hook can answer, and an executor answers traps
+there, not by returning.
+
 ### Adding code to a running program
 
 A missing piece is translated with a bounded look-ahead and handed to the "load new code" hook, which
