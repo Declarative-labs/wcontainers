@@ -552,9 +552,9 @@ tools/webgpu_functions.py; counting is tools/count-unsafe.sh. The independent ch
 ### His main
 
 - `git fetch` of his checkout's main gives ac696ea19 ("verus compat"), already in this branch (`git merge-base
-  --is-ancestor` exit 0, `git log HEAD..FETCH_HEAD` empty): nothing to merge. READ: the instruction-interface
-  changes named for today (`meets_expectations`, `simulate_state`, `MemorySnapshot`, ...) are not on that main yet;
-  no graphics crate names those interfaces.
+  --is-ancestor` exit 0, `git log HEAD..FETCH_HEAD` empty): nothing to merge. CORRECTED in the ninth run: this
+  run also wrote that the instruction-interface changes of the day were not on that main; they are, and this branch
+  holds them (ninth run, "His main", quotes the commands). No graphics crate names those interfaces.
 
 ### webgpu's eight helper impl blocks are functions (a9ddff2f4)
 
@@ -713,8 +713,9 @@ repair: blake3c-arm.log, blake3c-x86.log; the job is tools/r8-blake3.sh).
 ### His main
 
 - `git fetch` of his checkout's main gives ac696ea19, an ancestor of this branch (`git merge-base --is-ancestor
-  FETCH_HEAD HEAD` exit 0): nothing to merge. READ: the instruction-interface changes named for today are not on that
-  main; no graphics crate names those interfaces.
+  FETCH_HEAD HEAD` exit 0): nothing to merge. CORRECTED in the ninth run: this run also wrote that the
+  instruction-interface changes of the day were not on that main; they are, and this branch holds them (ninth run,
+  "His main", quotes the commands). No graphics crate names those interfaces.
 
 ### The check of the seventh run, finished (MEASURED at the pushed tip 29f39d382)
 
@@ -788,6 +789,125 @@ READ at 9034444b8, each with what still calls it:
 - Next, waiting on nothing: webgpu's counter-reading tests as unit tests (20 + 5 findings), then the window-less
   callers on `StandaloneGpu`.
 
+## The ninth run (2026-11-26): webgpu's counters inside the crate, window-less callers on `StandaloneGpu`, the Metal back end merged
+
+Logs, lint outputs and the experiment in the scratch folder graphics-implementations/r9/ (before-*, after-*, m-*.log,
+f16probe*); the job is tools/r9-job.sh, the counts tools/r9_rules.py and r9_filediff.py. Commits 8e20476d8 (Metal) and
+ad62381ac (webgpu), both pushed; every number below MEASURED at ad62381ac on both machines unless named.
+
+### His main (CORRECTED; the seventh and eighth runs were wrong here)
+
+- `git fetch /Users/thomaseaton/Documents/GitHub/wcontainers +main:refs/owner/main` gives ac696ea19; `git
+  merge-base --is-ancestor refs/owner/main HEAD` exit 0; `git log HEAD..refs/owner/main` empty: nothing to merge.
+- That main holds the instruction-interface changes of the day, so this branch does too: `git grep` on refs/owner/main
+  gives crates/processor-architecture/interface.rs:18 `pub trait ProcessorArchitecture: Sized + Clone`, :47
+  `fn meets_expectations(`, :71 `fn simulate_state<'memory>(`, :137 `pub struct MemorySnapshot<...>`,
+  crates/behavior-source/interface.rs:26 `fn execute_single_instruction_in_place(`, and `git show
+  refs/owner/main:Cargo.toml` line 37 `type_complexity = "allow"`. No graphics crate names those interfaces (`git grep -l
+  processor.architecture` over the graphics folders: 0 files).
+
+### The Metal back end and its twenty shared programs (8e20476d8)
+
+- From origin/graphics-metal-on-gpu-interface 1e837dfa6 (merge base with this branch 29f39d382; this branch changed
+  none of these paths since): crates/gpu/conformance/suite.rs (+1,884, the twenty programs) and
+  crates/gpu/implementation/metal (20 files), taken by `git checkout <branch> -- <paths>`, not by a merge, so the
+  other branch's content that branch's merge carries is not taken. Taken beside them because gpu-metal does not
+  resolve without them: crates/metal (interface, conformance, implementation/direct, byte for byte), the naga MSL
+  patch it is built against (third_party/naga PATCHES and src/back/msl, this track's path) and the root manifest's two
+  `overflow-checks` lines for wcontainers-metal-direct and wcontainers-gpu-metal. Cargo.lock regenerated on ARM64
+  (`cargo metadata`): only the four workspace packages added, no outside crate added or changed.
+- `cargo check --all-targets` of wcontainers-gpu-metal, -metal, -metal-direct and -metal-conformance exit 0 on both
+  machines (their Metal code is `cfg(target_os = "macos")`; the Mac itself is not used).
+- The shared suite (74 programs): on the recorder 74 passed (`--test conformance`; the recorder's whole package 235,
+  was 215; trace 75, was 55). On webgpu over lavapipe 72 passed, 2 failed: GI2's depth24 rounding
+  (`a_copy_within_one_depth_or_stencil_subresource_moves_the_region`, "Depth24Plus depth of texel 5:
+  0.6249999180436085, not 0.625") and the new `programs_compute_in_16_bit_floats`.
+- `programs_compute_in_16_bit_floats` on lavapipe: "a third in 16 bits: 0.33333334", the 32-bit value. Its cause,
+  MEASURED with a scratch wgpu program (never committed; r9/f16probe.rs, same on both machines): converted to 16 bits
+  and back in one program, every value comes back unrounded (1/3 as 0x3eaaaaab, 2049 as 2049), also through a 16-bit
+  multiply by one; the same `f16(x)` stored into a 16-bit storage buffer is rounded right (0x3555, 0x6800, 0x7bff,
+  0x0001), `quantizeToF16` rounds (0.33325195, 2048), and 2048 + 1 in 16 bits gives 2048. So lavapipe keeps a 16-bit
+  value held in a register at 32-bit precision and rounds it only where it is stored as 16 bits. READ in the pinned
+  Mesa: no NIR algebraic rule drops `f2f32(f2f16(x))` (only the exact `fquantize2f16` lowering names the pair), and
+  gallivm's `nir_op_f2f16` emits a real `fptrunc` (lp_bld_nir_soa.c:3292); INFERRED: the pair is removed after NIR, in
+  the LLVM code llvmpipe builds. A device's precision, not a defect of ours: the recorder and Metal (216 of 216 on his
+  Mac) pass it. Listed beside GI2's four; no allowance added to the suite.
+
+### webgpu's counter-reading tests are unit tests (ad62381ac)
+
+- bindings.rs, writes.rs, scenes.rs, copies.rs and the counting halves of prepare.rs, queries.rs and pulled.rs moved
+  from tests/ into unit_tests/ (as first_draws.rs, query_sets.rs, pulled_costs.rs), declared by unit_tests.rs under
+  `cfg(all(test, not(target_arch = "wasm32")))`, as the recorder's are; the depth probe's test left tests/depth.rs for
+  unit_tests/depth_probe.rs. The scene modules they share with the scenes page name `super::` instead of `crate::`,
+  and read counts through their includer's `made`: the unit tests give the back end's counters, the page gives none
+  and its checks leave the counts out (web/draw.mjs accepts "(not counted here)"; the page no longer prints counters
+  or the probe's value, it shows whether `DEPTH24_UNORM` is declared). The pool check moved from renames.rs to its
+  own scenes/pool.rs so tests/features.rs and the Windows tests/direct3d.rs need no `made`.
+- `Counters`, `counters`, `held`, `depth24`, `Depth24`, `UNORM24_MAX` and `FRAME_REPORT` are crate-private (the
+  test-only ones under `cfg(test)`); examples/frames.rs keeps the report line's prefix as its own constant.
+- crates/directx/tests/com.rs's ignored `constants_rewritten_between_draws_make_no_bind_group_per_draw_on_webgpu`,
+  which read `counters()`, became the unit test
+  `constants_as_the_direct3d_11_front_makes_them_rewritten_per_draw_make_no_bind_group_per_draw` (the front's buffer
+  usage, intent and `Discard` writes), still ignored as the known failure; run with `--ignored` on lavapipe it fails as
+  its note says (2 bind groups after the first draw, pictures right).
+
+### Window-less callers on `StandaloneGpu` (ad62381ac)
+
+- `WebGpuConfig` gained `software` (the system's software adapter, WARP on Windows, asked for and taken), `required`
+  and `without` (wgpu features the device must have or lack). direct3d-12's tests/answers.rs and tests/registers.rs
+  (lavapipe taken), tests/gpu.rs (GPU only, as before), and the shaders' tests/common/mod.rs (`webgpu_on`,
+  `webgpu_with`, `webgpu_on_warp`) now build webgpu through `StandaloneGpu`; answers.rs keeps its own `UNORM24_MAX`.
+- Not moved, with the reason: crates/opengl/src/device.rs is a window host, not window-less (READ :49-75: it makes each
+  window's surface on the device's own wgpu instance and calls `add_window`); crates/directx/src/com/chosen.rs,
+  direct3d-12's examples/directx/gpu.rs, trace's replay.rs and webgl's browser examples are window or browser hosts;
+  webgl's tests/against_webgpu.rs is `#![cfg(windows)]` and cannot be compiled here.
+- direct3d-12 on lavapipe (new in this run): 61 passed, 3 failed: tests/gpu.rs's three, which refuse a CPU adapter
+  ("the adapter is the software llvmpipe ..., not a GPU"), as their old `assert_ne!` did.
+
+### Findings by rule (linter da55b9d7, gpu-webgl's old lints table in the copy; tables identical on both machines)
+
+| | afe71ff74 (before) | ad62381ac (after) |
+|---|---|---|
+| whole workspace | 80,067 | 81,969 |
+| webgpu public_outside_interface | 30 | 5 |
+| webgpu all rules | 2,835 | 2,815 |
+| gpu conformance all rules | 2,905 | 3,722 (the twenty programs: magic_literal +670, text rules) |
+| crates/gpu/implementation/metal | 0 | 548 (public_outside_interface 33, conformance_not_run 3, summary/name_unanswered 508) |
+| crates/metal | 0 | 558 (trait_not_implemented 2, conformance_untested_method 6, conformance_not_run 2, ...) |
+| direct3d-12 / directx / shaders | 4,984 / 4,961 / 4,714 | 4,986 / 4,957 / 4,713 |
+
+- webgpu's other changes: constant_defined_twice +2 (`FRAME_REPORT` in examples/frames.rs), summary_unanswered +7
+  (new summaries wait on the model's answers; the key stays on the Mac), the moved files' text findings unchanged in
+  number. direct3d-12 constant_defined_twice +2: `UNORM24_MAX` in answers.rs, and registers.rs's `TARGET_SIDE` now
+  also defined in crates/metal/conformance.
+- webgpu's 5 left: the inherent impl block, `new`, `device_descriptor`, `INSTANCE_FLAGS`, `add_window`; every caller
+  left is a window or browser host (above), so they wait on his second question (seventh run).
+
+### Measured at ad62381ac (both machines alike)
+
+- `cargo check --all-targets`: 21 graphics packages exit 0 (the four Metal ones included); gpu-webgl and shaders exit
+  101 (166 error lines, 165 unsafe), as before. clippy `--all-targets --no-deps -D warnings` of gpu, conformance,
+  recording, trace, webgpu, gpu-metal, direct3d-12, direct3d-11 exit 0; rustfmt `--check` of the 47 changed files and
+  `cargo fmt --check -p wcontainers-gpu-webgpu` exit 0; Cargo.lock hash the same before and after.
+- Tests: gpu 37, recording 235, trace 75, directx-graphics-infrastructure 13, graphics-test 16, direct3d-11 69,
+  shader-converters linked 7 and contained 7 pass.
+- webgpu on lavapipe: 154 passed, 5 failed, 4 ignored (was 135, 4, 3): GI2's four
+  (`unit_tests::copies::depth_and_stencil_parts_copy_and_read_back_exactly`, the BC test, the depth24 copy in the
+  suite, `present_shows_the_frame`) and `programs_compute_in_16_bit_floats`; its unit tests 65 passed, 1 failed, 1
+  ignored.
+- Scratch copy (old lints tables): wasm32 checks of the libraries and of the scenes, browser and replay pages exit 0;
+  shaders' tests 158 passed, 5 ignored on lavapipe; Mesa built (109 s ARM64, 76 s x86-64), nir 41 passed with 2
+  ignored and opengl 11. gpu-webgl's tests ran without an EGL named: 17 passed, its 74 suite programs failed to open
+  a context (not a measurement of webgl).
+
+### Milestones
+
+- Reached this run: none newly (GI4 still waits on his answer to the first question, fifth run). Done and measured at
+  a pushed commit: webgpu's counter tests inside the crate and the window-less callers on `StandaloneGpu` (GI4's layout
+  work), the Metal back end and its twenty programs on this branch, run on the recorder and on lavapipe.
+- Next: GI4 waits on him; webgpu's last 5 on his second question; GI6's removal on the cost question; GI7 on the API
+  track's OpenGL ES trait (AC10); GI8 part B on its Mesa compiler (AC11) and Gallium (AC8) traits.
+
 ## SECURITY
 
 CORRECTED in the seventh run: every count below is by the track's one counting method, used from now on: lines of
@@ -821,4 +941,9 @@ that the runs before used leaves attribute lines out, so it missed webgl's `#[un
   before and after the build on both machines); eighth run none (the `no_neon` feature dropped; nir's build script
   calls nm, objcopy and ar from the toolchain, no new crate). Unsafe lines at 9034444b8: the same 733 (gpu-webgpu 19,
   gpu-webgl 159, shaders 71, shader-converters 5, nir 113, opengl 354, test-window 12, the rest 0).
+- Ninth run (8e20476d8, ad62381ac): the track's crates hold the same 733 (MEASURED with count-unsafe.sh at afe71ff74
+  and ad62381ac). Brought in with the Metal back end, not written here: crates/metal/implementation/direct 44 lines,
+  its `unsafe` blocks under 37 `#[expect(unsafe_code, reason)]` marks in a crate whose own table denies unsafe code
+  (an outside API's `implementation/direct`, the place the rules allow); crates/gpu/implementation/metal 0. No new
+  outside crate (Cargo.lock: the four Metal workspace packages only).
 - No hostile-guest suite exists, so none was run in any run (the thread-test design review is still owed to the owner).
