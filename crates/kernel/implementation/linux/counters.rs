@@ -2,9 +2,10 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 
-use wcontainers_abi::{CounterReading, Host, Warning};
+use wcontainers_abi::{CounterReading, Warning};
+use wcontainers_system::FallbackObserver;
 
 /// The fixed reasons the kernel counts.
 pub mod reason {
@@ -163,10 +164,13 @@ pub mod reason {
     /// queued. Detail: none.
     pub const OUTSIDE_ERROR_NOT_QUEUED: &str = "outside datagram error not queued";
     /// A notice from the backend that Linux refuses, with nothing done: a body of the wrong size,
-    /// or a DELETE whose parent and name are not the child's. Linux answers the backend's write of
-    /// it with the error; no hook carries that back. Detail: the notice's code times 2^32 plus the
-    /// error number.
+    /// or a DELETE whose parent and name are not the child's. The backend is told the error when
+    /// the next notice is asked for, as Linux answers its write. Detail: the notice's code times
+    /// 2^32 plus the error number.
     pub const BACKEND_NOTICE_REFUSED: &str = "backend notice refused";
+    /// The system's wait for the backend's notices failed, so no later notice is applied: a FUSE
+    /// connection's notices end with it. Detail: the Linux error number, or 0 for another failure.
+    pub const BACKEND_NOTICES_ENDED: &str = "backend notices ended";
     /// An answer or notice from the backend that the kernel could not read or does not handle.
     /// Detail: the request number, or the notice's code.
     pub const BACKEND_UNEXPECTED: &str = "backend message unexpected";
@@ -218,6 +222,10 @@ pub mod reason {
     /// section 15, the address space is small): a fixed one is refused (ENOMEM), a hint is placed
     /// elsewhere. Detail: the address.
     pub const ADDRESS_ABOVE_SPACE: &str = "address above the address space";
+    /// A container's address space asked for wider than the reference's 48 bit one (ARM64's 52
+    /// bit addresses are not built), or not a whole number of pages: it gets the reference's, or
+    /// the whole pages below what was asked. Detail: the size asked for.
+    pub const ADDRESS_SPACE_NARROWED: &str = "address space narrowed";
 
     /// Every reason that means something Linux has is not built here, each answered through
     /// `Counters::refuse`: the status file's list of what is missing comes
@@ -243,21 +251,36 @@ pub mod reason {
     ];
 }
 
+/// One counter detail made of two numbers, `high` in the upper half.
+pub(crate) fn detail(high: u32, low: u32) -> u64 {
+    (u64::from(high) << u32::BITS) | u64::from(low)
+}
+
+/// The detail of a socket that is not built: its family, then its type and protocol in the lower half.
+pub(crate) fn socket_detail(family: u32, kind: u32, protocol: u32) -> u64 {
+    detail(family, 0) | (u64::from(kind) << u16::BITS) | u64::from(protocol)
+}
+
 #[derive(Default)]
 pub(crate) struct Counters {
     counts: BTreeMap<(&'static str, u64), u64>,
     /// Measured times: how many and their sum in nanoseconds.
     times: BTreeMap<(&'static str, u64), (u64, u64)>,
     /// Occurrences seen where the host cannot be reached (a path walk), counted at the next flush.
-    noted: RefCell<Vec<(&'static str, u64)>>,
+    noted: AtomicRefCell<Vec<(&'static str, u64)>>,
 }
 
 impl Counters {
-    /// Counts one occurrence and warns the host.
-    pub fn count<H: Host>(&mut self, host: &H, reason: &'static str, detail: u64) {
+    /// Counts one occurrence and tells the host the fallback was used.
+    pub(crate) fn count<H: FallbackObserver<Warning<'static>>>(
+        &mut self,
+        host: &H,
+        reason: &'static str,
+        detail: u64,
+    ) {
         let count = self.counts.entry((reason, detail)).or_insert(0);
         *count += 1;
-        host.warn(Warning {
+        host.on_fallback_used(&Warning {
             reason,
             count: *count,
             detail,
@@ -267,7 +290,7 @@ impl Counters {
     /// The one path for something Linux has that is not built here: counts it under one of
     /// [`reason::NOT_BUILT`], warns, and gives back the error Linux answers when it lacks the
     /// feature.
-    pub fn refuse<H: Host>(
+    pub(crate) fn refuse<H: FallbackObserver<Warning<'static>>>(
         &mut self,
         host: &H,
         reason: &'static str,
@@ -280,37 +303,41 @@ impl Counters {
     }
 
     /// A flag or form of call `number` that is not built, as [`Counters::refuse`] counts it.
-    pub fn refuse_flag<H: Host>(
+    pub(crate) fn refuse_flag<H: FallbackObserver<Warning<'static>>>(
         &mut self,
         host: &H,
         number: u32,
         flags: u64,
         answer: crate::Errno,
     ) -> crate::Errno {
-        let detail = (u64::from(number) << 32) | (flags & 0xffff_ffff);
-        self.refuse(host, reason::FLAG_NOT_BUILT, detail, answer)
+        self.refuse(
+            host,
+            reason::FLAG_NOT_BUILT,
+            detail(number, flags as u32),
+            answer,
+        )
     }
 
     /// Adds a measured time under a reason, without a warning: a measurement, not a slow path.
-    pub fn measure(&mut self, reason: &'static str, detail: u64, nanoseconds: u64) {
+    pub(crate) fn measure(&mut self, reason: &'static str, detail: u64, nanoseconds: u64) {
         let entry = self.times.entry((reason, detail)).or_insert((0, 0));
         entry.0 += 1;
         entry.1 += nanoseconds;
     }
 
     /// Notes an occurrence to count at the next [`Counters::flush`].
-    pub fn note(&self, reason: &'static str, detail: u64) {
+    pub(crate) fn note(&self, reason: &'static str, detail: u64) {
         self.noted.borrow_mut().push((reason, detail));
     }
 
     /// Counts and warns of every noted occurrence.
-    pub fn flush<H: Host>(&mut self, host: &H) {
+    pub(crate) fn flush<H: FallbackObserver<Warning<'static>>>(&mut self, host: &H) {
         for (reason, detail) in core::mem::take(self.noted.get_mut()) {
             self.count(host, reason, detail);
         }
     }
 
-    pub fn readings(&self) -> impl Iterator<Item = CounterReading> + '_ {
+    pub(crate) fn readings(&self) -> impl Iterator<Item = CounterReading> + '_ {
         let counted = self
             .counts
             .iter()

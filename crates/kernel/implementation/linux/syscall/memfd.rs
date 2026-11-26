@@ -2,6 +2,7 @@
 //! `mm/memfd.c` gives them.
 
 use alloc::vec::Vec;
+use wcontainers_executor::Executor;
 
 use super::{Args, guest};
 use crate::file::OpenFile;
@@ -18,9 +19,9 @@ const ALL_FLAGS: u32 = MFD_CLOEXEC | MFD_ALLOW_SEALING | MFD_HUGETLB | MFD_NOEXE
 const ALL_SEALS: u32 =
     F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE | F_SEAL_EXEC;
 
-pub(super) fn memfd_create<S: crate::System>(
+pub(super) fn memfd_create<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [name, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -107,9 +108,9 @@ pub(super) fn memfd_create<S: crate::System>(
 }
 
 /// `memfd_secret`: an unnamed file of memory only its shared mappings reach (Linux's `secretmem`).
-pub(super) fn memfd_secret<S: crate::System>(
+pub(super) fn memfd_secret<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [flags, ..]: Args,
 ) -> Result<u64, Errno> {

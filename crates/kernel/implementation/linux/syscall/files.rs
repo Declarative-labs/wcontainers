@@ -1,9 +1,10 @@
 //! Calls that name files by path: opening, making, removing, renaming, and reading and changing what a
 //! file's inode records.
 
-use alloc::rc::Rc;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
+use wcontainers_executor::Executor;
 
 use super::{Args, guest};
 use crate::container::make;
@@ -35,9 +36,9 @@ pub(super) fn start(kernel: &Kernel, tid: Tid, dirfd: u64, path: &[u8]) -> Resul
 }
 
 /// The inode a `*at` call names. An empty path names `dirfd` itself when `AT_EMPTY_PATH` is given.
-pub(super) fn lookup<S: crate::System>(
+pub(super) fn lookup<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     dirfd: u64,
     address: u64,
@@ -56,9 +57,9 @@ pub(super) fn lookup<S: crate::System>(
     kernel.with_walk(tid, |walk, _| walk.resolve(&at, &path, follow))
 }
 
-fn parent<S: crate::System>(
+fn parent<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     dirfd: u64,
     address: u64,
@@ -193,9 +194,9 @@ fn check_absent(kernel: &Kernel, tid: Tid, parent: &crate::fs::Parent) -> Result
     clippy::too_many_arguments,
     reason = "each is one attribute of the new inode"
 )]
-pub(super) fn create<S: crate::System>(
+pub(super) fn create<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     directory: &Node,
     name: &[u8],
@@ -275,9 +276,9 @@ fn create_on_backend(
     }
 }
 
-pub(super) fn openat<S: crate::System>(
+pub(super) fn openat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, flags, mode, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -292,9 +293,9 @@ pub(super) fn openat<S: crate::System>(
 /// The size of `open_how` as first defined, the least `openat2` takes.
 const OPEN_HOW_SIZE: u64 = 24;
 
-pub(super) fn openat2<S: crate::System>(
+pub(super) fn openat2<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, how, size, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -403,9 +404,9 @@ const VALID_OPEN_FLAGS: u32 = O_ACCMODE
 /// The flags an `O_PATH` open keeps.
 const PATH_FLAGS: u32 = O_DIRECTORY | O_NOFOLLOW | O_PATH | O_CLOEXEC;
 
-pub(super) fn open<S: crate::System>(
+pub(super) fn open<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     dirfd: u64,
     path: &[u8],
@@ -638,6 +639,8 @@ pub(super) fn open<S: crate::System>(
                     .processes
                     .get(&task.pid)
                     .map(|process| process.memory);
+                // Whether the opener reads another process's state is told when the kernel settles.
+                kernel.inspections.get_or_insert_default();
             }
             // `pid_maps_open`: only an opener that may read the process, holding its memory.
             if let proc::Entry::ProcessFile(task, proc::ProcessFile::Maps) = entry {
@@ -789,9 +792,9 @@ pub(super) fn open<S: crate::System>(
                 .borrow()
                 .directory()
                 .and_then(|entries| entries.get(&parent.name))
-                .is_some_and(|found| Rc::ptr_eq(&found, &node)));
+                .is_some_and(|found| Arc::ptr_eq(&found, &node)));
     if named {
-        file.borrow_mut().dentry = Some((Rc::downgrade(&parent.directory), parent.name.clone()));
+        file.borrow_mut().dentry = Some((Arc::downgrade(&parent.directory), parent.name.clone()));
     }
     if flags & O_PATH == 0 {
         super::inotify::file_changed(kernel, &file, IN_OPEN);
@@ -811,9 +814,9 @@ pub(super) fn open<S: crate::System>(
 /// with no name is made in it and opened (`shmem_tmpfile`). Its descriptor's link and its events
 /// name it `#` and its number in the directory (`d_tmpfile`). Without `O_EXCL` a link may name it
 /// later. On the backend it is the backend's to make.
-fn open_tmpfile<S: crate::System>(
+fn open_tmpfile<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     dirfd: u64,
     path: &[u8],
@@ -899,16 +902,16 @@ fn tmpfile_opened(
         credentials(kernel, tid).serial,
     );
     file.borrow_mut().created = true;
-    file.borrow_mut().dentry = Some((Rc::downgrade(directory), name));
+    file.borrow_mut().dentry = Some((Arc::downgrade(directory), name));
     super::inotify::file_changed(kernel, &file, IN_OPEN);
     file
 }
 
 /// A named pipe or a terminal once open: direct I/O is refused only now (`do_dentry_open` checks it
 /// after the open), closing the file again; otherwise it takes a descriptor.
-fn named_opened<S: crate::System>(
+fn named_opened<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: crate::file::FileRef,
     flags: u32,
@@ -950,9 +953,9 @@ fn resolve_relative(link_path: &[u8], target: &[u8]) -> Vec<u8> {
 }
 
 /// Makes the bytes of a file of the process information tree.
-pub(super) fn proc_contents<S: crate::System>(
+pub(super) fn proc_contents<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     entry: &proc::Entry,
 ) -> Result<Vec<u8>, Errno> {
@@ -998,9 +1001,13 @@ pub(super) fn proc_contents<S: crate::System>(
             }
         }
         let readable = readable.min(anonymous.saturating_sub(start));
-        let readable =
-            map.watches
-                .copy_reach(start, length, readable, crate::system::AccessKind::Read);
+        let readable = map.watches.copy_reach(
+            tid,
+            start,
+            length,
+            readable,
+            crate::system::AccessKind::Read,
+        );
         drop(map);
         bytes.truncate(readable as usize);
         if cpu.read(process.memory, start, &mut bytes).is_err() {
@@ -1030,9 +1037,9 @@ pub(super) fn proc_contents<S: crate::System>(
     })
 }
 
-pub(super) fn mkdirat<S: crate::System>(
+pub(super) fn mkdirat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, mode, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1058,9 +1065,9 @@ pub(super) fn mkdirat<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn mknodat<S: crate::System>(
+pub(super) fn mknodat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, mode, device, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1121,9 +1128,9 @@ pub(super) fn mknodat<S: crate::System>(
 
 /// Makes a node at a path the kernel holds, as `mknodat` would with that path (a local socket's
 /// `bind`): EEXIST if the name is taken.
-pub(super) fn make_node<S: crate::System>(
+pub(super) fn make_node<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     path: &[u8],
     mode: u32,
@@ -1152,9 +1159,9 @@ pub(super) fn make_node<S: crate::System>(
 }
 
 /// The node at a path the kernel holds, links followed (a local socket's `connect`).
-pub(super) fn lookup_path<S: crate::System>(
+pub(super) fn lookup_path<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     path: &[u8],
 ) -> Result<Node, Errno> {
@@ -1162,9 +1169,9 @@ pub(super) fn lookup_path<S: crate::System>(
     kernel.with_walk(tid, |walk, _| walk.resolve(&at, path, true))
 }
 
-pub(super) fn symlinkat<S: crate::System>(
+pub(super) fn symlinkat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [target, dirfd, path, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1192,9 +1199,9 @@ pub(super) fn symlinkat<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn linkat<S: crate::System>(
+pub(super) fn linkat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [old_dirfd, old_path, new_dirfd, new_path, flags, _]: Args,
 ) -> Result<u64, Errno> {
@@ -1284,9 +1291,9 @@ pub(super) fn linkat<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn unlinkat<S: crate::System>(
+pub(super) fn unlinkat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1336,7 +1343,7 @@ pub(super) fn unlinkat<S: crate::System>(
             return Err(Errno::ENOTDIR);
         }
         changes_names(&parent.directory)?;
-        if Rc::ptr_eq(&node, &kernel.fs(tid).root) || node.borrow().place.mount_root {
+        if Arc::ptr_eq(&node, &kernel.fs(tid).root) || node.borrow().place.mount_root {
             return Err(Errno::EBUSY);
         }
         if node
@@ -1370,9 +1377,9 @@ pub(super) fn unlinkat<S: crate::System>(
 }
 
 /// Removes a name of a file that is not a directory, after `may_delete`'s checks (`vfs_unlink`).
-pub(super) fn remove_from<S: crate::System>(
+pub(super) fn remove_from<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     directory: &Node,
     name: &[u8],
@@ -1393,6 +1400,7 @@ pub(super) fn remove_from<S: crate::System>(
         crate::fs::backend::remove(directory, name, false)?;
         let mut inode = node.borrow_mut();
         inode.nlink = inode.nlink.saturating_sub(1);
+        inode.name_removed(directory, name, kernel.last_object());
         drop(inode);
         super::inotify::removed(kernel, directory, name, node);
         return Ok(());
@@ -1408,6 +1416,7 @@ pub(super) fn remove_from<S: crate::System>(
     give_back_link(&inode);
     inode.nlink -= 1;
     inode.ctime = now;
+    inode.name_removed(directory, name, kernel.last_object());
     drop(inode);
     super::inotify::removed(kernel, directory, name, node);
     Ok(())
@@ -1422,18 +1431,18 @@ fn give_back_link(inode: &crate::fs::Inode) {
     }
 }
 
-pub(super) fn renameat<S: crate::System>(
+pub(super) fn renameat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [old_dirfd, old_path, new_dirfd, new_path, ..]: Args,
 ) -> Result<u64, Errno> {
     rename(kernel, cx, tid, old_dirfd, old_path, new_dirfd, new_path, 0)
 }
 
-pub(super) fn renameat2<S: crate::System>(
+pub(super) fn renameat2<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [old_dirfd, old_path, new_dirfd, new_path, flags, _]: Args,
 ) -> Result<u64, Errno> {
@@ -1450,9 +1459,9 @@ pub(super) fn renameat2<S: crate::System>(
 }
 
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn rename<S: crate::System>(
+fn rename<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     old_dirfd: u64,
     old_path: u64,
@@ -1574,7 +1583,7 @@ fn rename<S: crate::System>(
         return Err(Errno::EBUSY);
     }
     // A directory changing parent has its `..` rewritten, which needs write permission on it.
-    let moves_parent = !Rc::ptr_eq(&from.directory, &to.directory);
+    let moves_parent = !Arc::ptr_eq(&from.directory, &to.directory);
     if moves_parent && source_is_directory && !source.borrow().permits(&credentials, W_OK, true) {
         return Err(Errno::EACCES);
     }
@@ -1606,7 +1615,7 @@ fn rename<S: crate::System>(
         crate::fs::backend::rename(&from.directory, &from.name, &to.directory, &to.name, flags)?;
         let place = |node: &Node, directory: &Node, name: &[u8]| {
             let mut inode = node.borrow_mut();
-            inode.place.parent = Some(Rc::downgrade(directory));
+            inode.place.parent = Some(Arc::downgrade(directory));
             inode.place.name = name.to_vec();
             if inode.is_directory() {
                 inode.place.held_parent = Some(directory.clone());
@@ -1623,6 +1632,7 @@ fn rename<S: crate::System>(
                 } else {
                     inode.nlink.saturating_sub(1)
                 };
+                inode.name_removed(&to.directory, &to.name, kernel.last_object());
             }
         }
         super::inotify::renamed(
@@ -1638,7 +1648,7 @@ fn rename<S: crate::System>(
     let now = kernel.now(cx);
     let set_place = |node: &Node, directory: &Node, name: &[u8]| {
         let mut inode = node.borrow_mut();
-        inode.place.parent = Some(Rc::downgrade(directory));
+        inode.place.parent = Some(Arc::downgrade(directory));
         inode.place.name = name.to_vec();
         inode.ctime = now;
     };
@@ -1656,7 +1666,7 @@ fn rename<S: crate::System>(
         set_place(&source, &to.directory, &to.name);
         let source_dir = source_is_directory;
         let target_dir = target.borrow().is_directory();
-        if source_dir != target_dir && !Rc::ptr_eq(&from.directory, &to.directory) {
+        if source_dir != target_dir && !Arc::ptr_eq(&from.directory, &to.directory) {
             let (gains, loses) = if source_dir {
                 (&to.directory, &from.directory)
             } else {
@@ -1701,13 +1711,14 @@ fn rename<S: crate::System>(
                 give_back_link(&inode);
                 inode.nlink -= 1;
                 inode.ctime = now;
+                inode.name_removed(&to.directory, &to.name, kernel.last_object());
             }
         }
         entries(&to.directory)(&mut |d| {
             d.put(&to.name, source.clone(), position);
         });
         set_place(&source, &to.directory, &to.name);
-        if source_is_directory && !Rc::ptr_eq(&from.directory, &to.directory) {
+        if source_is_directory && !Arc::ptr_eq(&from.directory, &to.directory) {
             from.directory.borrow_mut().nlink -= 1;
             to.directory.borrow_mut().nlink += 1;
         }
@@ -1725,9 +1736,9 @@ fn rename<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn readlinkat<S: crate::System>(
+pub(super) fn readlinkat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, buffer, size, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1769,9 +1780,9 @@ pub(super) fn readlinkat<S: crate::System>(
 
 /// A mapped tmpfs file's blocks include the pages its mappings' faults brought in, which are not known
 /// here: counted when reported.
-fn count_unknown_blocks<S: crate::System>(
+fn count_unknown_blocks<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     node: &Node,
 ) {
     let inode = node.borrow();
@@ -1835,9 +1846,9 @@ pub(super) fn stat_of(kernel: &Kernel, node: &Node) -> stat {
 
 /// `getname_maybe_null`: with AT_EMPTY_PATH a null or empty path names the descriptor (or the working
 /// directory). A path whose first byte cannot be read is not empty, and fails at its lookup.
-fn names_descriptor<S: crate::System>(
+fn names_descriptor<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     address: u64,
     flags: u32,
@@ -1857,9 +1868,9 @@ fn empty_path_node(kernel: &Kernel, tid: Tid, dirfd: u64) -> Result<Node, Errno>
     Ok(kernel.call_file(tid, dirfd as i32)?.borrow().node.clone())
 }
 
-pub(super) fn newfstatat<S: crate::System>(
+pub(super) fn newfstatat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, buffer, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1893,9 +1904,9 @@ pub(super) fn newfstatat<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn fstat<S: crate::System>(
+pub(super) fn fstat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -1907,9 +1918,9 @@ pub(super) fn fstat<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn statx<S: crate::System>(
+pub(super) fn statx<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, flags, mask, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2038,27 +2049,27 @@ pub(super) fn statx<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn faccessat<S: crate::System>(
+pub(super) fn faccessat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, mode, ..]: Args,
 ) -> Result<u64, Errno> {
     access(kernel, cx, tid, dirfd, path, mode as u32, 0)
 }
 
-pub(super) fn faccessat2<S: crate::System>(
+pub(super) fn faccessat2<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, mode, flags, ..]: Args,
 ) -> Result<u64, Errno> {
     access(kernel, cx, tid, dirfd, path, mode as u32, flags as u32)
 }
 
-fn access<S: crate::System>(
+fn access<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     dirfd: u64,
     path: u64,
@@ -2116,9 +2127,9 @@ fn access<S: crate::System>(
 
 /// Changes an inode's permission bits as `chmod` does.
 /// As [`change_mode_unwatched`], telling the inode's inotify watches.
-fn change_mode<S: crate::System>(
+fn change_mode<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     node: &Node,
     mode: u32,
@@ -2130,9 +2141,9 @@ fn change_mode<S: crate::System>(
     result
 }
 
-fn change_mode_unwatched<S: crate::System>(
+fn change_mode_unwatched<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     node: &Node,
     mode: u32,
@@ -2202,9 +2213,9 @@ fn keep_proc(kernel: &mut Kernel, node: &Node) {
     }
 }
 
-pub(super) fn fchmod<S: crate::System>(
+pub(super) fn fchmod<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, mode, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2216,9 +2227,9 @@ pub(super) fn fchmod<S: crate::System>(
     change_mode(kernel, cx, tid, &node, mode as u32)
 }
 
-pub(super) fn fchmodat<S: crate::System>(
+pub(super) fn fchmodat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, mode, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2226,9 +2237,9 @@ pub(super) fn fchmodat<S: crate::System>(
     change_mode(kernel, cx, tid, &node, mode as u32)
 }
 
-pub(super) fn fchmodat2<S: crate::System>(
+pub(super) fn fchmodat2<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, mode, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2253,9 +2264,9 @@ pub(super) fn fchmodat2<S: crate::System>(
 
 /// Changes an inode's owner and group as `chown` does; `u32::MAX` leaves one as it is.
 /// As [`change_owner_unwatched`], telling the inode's inotify watches.
-fn change_owner<S: crate::System>(
+fn change_owner<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     node: &Node,
     uid: u32,
@@ -2268,9 +2279,9 @@ fn change_owner<S: crate::System>(
     result
 }
 
-fn change_owner_unwatched<S: crate::System>(
+fn change_owner_unwatched<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     node: &Node,
     uid: u32,
@@ -2355,9 +2366,9 @@ fn change_owner_unwatched<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn fchown<S: crate::System>(
+pub(super) fn fchown<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, uid, gid, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2369,9 +2380,9 @@ pub(super) fn fchown<S: crate::System>(
     change_owner(kernel, cx, tid, &node, uid as u32, gid as u32)
 }
 
-pub(super) fn fchownat<S: crate::System>(
+pub(super) fn fchownat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, uid, gid, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2391,9 +2402,9 @@ pub(super) fn fchownat<S: crate::System>(
     change_owner(kernel, cx, tid, &node, uid as u32, gid as u32)
 }
 
-pub(super) fn utimensat<S: crate::System>(
+pub(super) fn utimensat<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [dirfd, path, times, flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2537,9 +2548,9 @@ pub(super) fn utimensat<S: crate::System>(
 }
 
 /// As [`truncate_node_unwatched`], telling the inode's inotify watches.
-fn truncate_node<S: crate::System>(
+fn truncate_node<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     node: &Node,
     length: u64,
@@ -2551,9 +2562,9 @@ fn truncate_node<S: crate::System>(
     result
 }
 
-fn truncate_node_unwatched<S: crate::System>(
+fn truncate_node_unwatched<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     node: &Node,
     length: u64,
@@ -2667,9 +2678,9 @@ fn truncate_node_unwatched<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn truncate<S: crate::System>(
+pub(super) fn truncate<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [path, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2697,9 +2708,9 @@ pub(super) fn truncate<S: crate::System>(
     truncate_node(kernel, cx, tid, &node, length)
 }
 
-pub(super) fn ftruncate<S: crate::System>(
+pub(super) fn ftruncate<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2727,9 +2738,9 @@ pub(super) fn ftruncate<S: crate::System>(
 
 /// As [`fallocate_unwatched`], telling the file's watches of a change (`vfs_fallocate`'s
 /// `fsnotify_modify`).
-pub(super) fn fallocate<S: crate::System>(
+pub(super) fn fallocate<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     args: Args,
 ) -> Result<u64, Errno> {
@@ -2742,9 +2753,9 @@ pub(super) fn fallocate<S: crate::System>(
     result
 }
 
-fn fallocate_unwatched<S: crate::System>(
+fn fallocate_unwatched<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, mode, offset, length, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2815,7 +2826,7 @@ fn fallocate_unwatched<S: crate::System>(
         }
         if let Content::Backend(remote) = &node.borrow().content
             && mode & FALLOC_FL_KEEP_SIZE == 0
-            && remote.size.get() < end
+            && remote.size.load() < end
         {
             remote.set_size(end);
         }
@@ -2904,9 +2915,9 @@ fn fallocate_unwatched<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn getcwd<S: crate::System>(
+pub(super) fn getcwd<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [buffer, size, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2943,9 +2954,9 @@ fn change_directory(kernel: &mut Kernel, tid: Tid, node: Node) -> Result<u64, Er
     Ok(0)
 }
 
-pub(super) fn chdir<S: crate::System>(
+pub(super) fn chdir<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [path, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2953,9 +2964,9 @@ pub(super) fn chdir<S: crate::System>(
     change_directory(kernel, tid, node)
 }
 
-pub(super) fn fchdir<S: crate::System>(
+pub(super) fn fchdir<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2963,9 +2974,9 @@ pub(super) fn fchdir<S: crate::System>(
     change_directory(kernel, tid, node)
 }
 
-pub(super) fn chroot<S: crate::System>(
+pub(super) fn chroot<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [path, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -2989,9 +3000,9 @@ pub(super) fn chroot<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn umask<S: crate::System>(
+pub(super) fn umask<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [mask, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -3005,9 +3016,9 @@ pub(super) fn umask<S: crate::System>(
 /// (`shmem_statfs`; a limit of zero, as on the internal mount, reports nothing), and nothing for
 /// the others (`simple_statfs`); hugetlbfs's blocks are its huge pages (`hugetlbfs_statfs`, with no
 /// limits on the internal mount).
-fn statfs_of<S: crate::System>(
+fn statfs_of<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     node: &Node,
 ) -> Result<statfs, Errno> {
     let mut out: statfs = zerocopy::FromZeros::new_zeroed();
@@ -3066,9 +3077,9 @@ fn statfs_of<S: crate::System>(
     Ok(out)
 }
 
-pub(super) fn statfs<S: crate::System>(
+pub(super) fn statfs<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [path, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -3087,9 +3098,9 @@ pub(super) fn statfs<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn fstatfs<S: crate::System>(
+pub(super) fn fstatfs<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, buffer, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -3103,9 +3114,9 @@ pub(super) fn fstatfs<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn flock<S: crate::System>(
+pub(super) fn flock<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     arguments: Args,
 ) -> super::Outcome {
@@ -3125,9 +3136,9 @@ pub(super) fn flock<S: crate::System>(
 }
 
 /// `flock`: Some(value) when it is done, None when it must wait for another holder to let go.
-fn flock_typed<S: crate::System>(
+fn flock_typed<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, operation, ..]: Args,
 ) -> Result<Option<u64>, Errno> {
@@ -3154,7 +3165,7 @@ fn flock_typed<S: crate::System>(
     }
     let node = file.borrow().node.clone();
     let mut inode = node.borrow_mut();
-    let own = alloc::rc::Rc::downgrade(&file);
+    let own = alloc::sync::Arc::downgrade(&file);
     inode
         .flocks
         .retain(|(holder, ..)| holder.strong_count() > 0);
@@ -3190,7 +3201,10 @@ fn flock_typed<S: crate::System>(
 
 /// The boot time clock since the machine started, in the container's time namespace
 /// (`timens_add_boottime`), as `/proc/uptime` and `sysinfo` give it.
-pub(super) fn boot_time<S: crate::System>(kernel: &Kernel, cx: &mut Context<'_, S>) -> u64 {
+pub(super) fn boot_time<S: crate::System, C: Executor>(
+    kernel: &Kernel,
+    cx: &mut Context<'_, S, C>,
+) -> u64 {
     let offset = crate::TimeOffsets::of(kernel.time_offsets, CLOCK_BOOTTIME);
     cx.monotonic()
         .saturating_sub(kernel.boot_monotonic)

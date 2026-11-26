@@ -1,7 +1,9 @@
 //! Making child processes and waiting for them: `clone` in its fork and vfork forms, `wait4` and
 //! `waitid`.
 
+use crate::guest_machine::GuestMachine;
 use wcontainers_abi::{RegisterBlock, Resume};
+use wcontainers_executor::Executor;
 use zerocopy::FromZeros;
 
 use super::{Args, Outcome, guest};
@@ -12,9 +14,9 @@ use crate::process::{Channel, Pid, Report, Tid};
 use crate::{Context, Errno, Kernel, errno};
 
 /// `clone(flags, stack, parent_tid, tls, child_tid)`, arm64's argument order.
-pub(super) fn clone<S: crate::System>(
+pub(super) fn clone<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [flags, stack, parent_tid, tls, child_tid, _]: Args,
 ) -> Outcome {
@@ -111,9 +113,9 @@ fn vfork_wait(kernel: &mut Kernel, tid: Tid, child: Tid) -> Outcome {
 /// Linux's `copy_process` for a child process: its checks in order, then a copy of the caller's
 /// process and thread, which starts in line to run.
 #[allow(clippy::too_many_arguments, reason = "the call's own arguments")]
-fn make_child<S: crate::System>(
+fn make_child<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     flags: u32,
     exit_signal: u32,
@@ -173,22 +175,25 @@ fn make_child<S: crate::System>(
     } else {
         let memory = cx
             .cpu
-            .memory_duplicate(parent.memory)
+            .duplicate_memory(parent.memory)
             .map_err(|error| cx.cpu_error(error))?;
         match copy_map(cx.cpu, &parent.map.borrow(), memory) {
-            Ok(map) => (memory, alloc::rc::Rc::new(core::cell::RefCell::new(map))),
+            Ok(map) => (
+                memory,
+                alloc::sync::Arc::new(atomic_refcell::AtomicRefCell::new(map)),
+            ),
             Err(error) => {
-                cx.cpu.memory_drop(memory);
+                cx.cpu.drop_memory(memory);
                 return Err(error);
             }
         }
     };
     // As `copy_process`, the number is taken last, so no failure before it holds one.
-    let made = match cx.cpu.thread_new(memory) {
+    let made = match cx.cpu.make_thread(memory) {
         Ok(thread_cpu) => match kernel.allocate_id(cx) {
             Ok(child) => Ok((thread_cpu, child)),
             Err(error) => {
-                cx.cpu.thread_drop(thread_cpu);
+                cx.cpu.drop_thread(thread_cpu);
                 Err(error)
             }
         },
@@ -198,7 +203,7 @@ fn make_child<S: crate::System>(
         Ok(made) => made,
         Err(error) => {
             if !borrow {
-                cx.cpu.memory_drop(memory);
+                cx.cpu.drop_memory(memory);
             }
             return Err(error);
         }
@@ -207,7 +212,7 @@ fn make_child<S: crate::System>(
     let mut process = parent.clone();
     if flags & CLONE_SIGHAND == 0 {
         let actions = *process.actions.borrow();
-        process.actions = alloc::rc::Rc::new(core::cell::RefCell::new(actions));
+        process.actions = alloc::sync::Arc::new(atomic_refcell::AtomicRefCell::new(actions));
     }
     process.pid = child;
     process.memory = memory;
@@ -242,7 +247,8 @@ fn make_child<S: crate::System>(
         process.exit_signal = exit_signal;
     }
     let mut registers = RegisterBlock::ZERO;
-    cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
+    cx.cpu
+        .read_registers(kernel.threads[&tid].cpu, &mut registers);
     registers.x[0] = 0;
     if stack != 0 {
         registers.sp = stack;
@@ -298,8 +304,8 @@ fn make_child<S: crate::System>(
 
 /// `dup_mmap`: a fork's child's map over its copy of the memory. What the child does not get goes,
 /// what it gets wiped is zeroed, and nothing stays locked.
-fn copy_map(
-    cpu: &mut dyn wcontainers_abi::Cpu,
+fn copy_map<C: Executor>(
+    cpu: &mut GuestMachine<C>,
     parent: &crate::memory::AddressMap,
     memory: wcontainers_abi::MemoryId,
 ) -> Result<crate::memory::AddressMap, Errno> {
@@ -343,20 +349,20 @@ fn copy_map(
 fn share_or_copy(thread: &mut crate::process::Thread, flags: u32, child: Tid) {
     if flags & CLONE_FILES == 0 {
         let copy = thread.files.borrow().duplicate(child as u64);
-        thread.files = alloc::rc::Rc::new(core::cell::RefCell::new(copy));
+        thread.files = alloc::sync::Arc::new(atomic_refcell::AtomicRefCell::new(copy));
     }
     if flags & CLONE_FS == 0 {
         let copy = thread.fs.borrow().clone();
-        thread.fs = alloc::rc::Rc::new(core::cell::RefCell::new(copy));
+        thread.fs = alloc::sync::Arc::new(atomic_refcell::AtomicRefCell::new(copy));
     }
 }
 
 /// `copy_process` for a thread of the caller's process: it shares everything the process holds and
 /// starts on the same memory from the caller's registers, with its own stack and thread pointer if
 /// given.
-fn make_thread<S: crate::System>(
+fn make_thread<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     flags: u32,
     stack: u64,
@@ -367,17 +373,18 @@ fn make_thread<S: crate::System>(
     let memory = kernel.processes[&pid].memory;
     let thread_cpu = cx
         .cpu
-        .thread_new(memory)
+        .make_thread(memory)
         .map_err(|error| cx.cpu_error(error))?;
     let child = match kernel.allocate_id(cx) {
         Ok(child) => child,
         Err(error) => {
-            cx.cpu.thread_drop(thread_cpu);
+            cx.cpu.drop_thread(thread_cpu);
             return Err(error);
         }
     };
     let mut registers = RegisterBlock::ZERO;
-    cx.cpu.registers(kernel.threads[&tid].cpu, &mut registers);
+    cx.cpu
+        .read_registers(kernel.threads[&tid].cpu, &mut registers);
     registers.x[0] = 0;
     if stack != 0 {
         registers.sp = stack;
@@ -593,9 +600,9 @@ fn child_usage(kernel: &Kernel, child: Pid) -> rusage {
     usage
 }
 
-pub(super) fn wait4<S: crate::System>(
+pub(super) fn wait4<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, status_out, options, usage_out, ..]: Args,
 ) -> Outcome {
@@ -640,9 +647,9 @@ pub(super) fn wait4<S: crate::System>(
     }
 }
 
-pub(super) fn waitid<S: crate::System>(
+pub(super) fn waitid<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [kind, id, info_out, options, usage_out, _]: Args,
 ) -> Outcome {

@@ -7,10 +7,14 @@ use alloc::collections::BTreeSet;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
+use wcontainers_executor::Executor;
 
 use super::inet::{Endpoint, Protocol, v4_of};
 use super::{SocketRef, State};
 use crate::fs::proc::NetFile;
+use crate::linux::net::socket_state::{
+    SS_CONNECTED, SS_CONNECTING, SS_DISCONNECTING, SS_UNCONNECTED,
+};
 use crate::linux::net::{AF_INET, AF_INET6, AF_UNIX};
 use crate::linux_extra::{
     TCP_CLOSE, TCP_ESTABLISHED, TCP_LISTEN, TCP_SYN_RECV, TCP_SYN_SENT, TCP_TIME_WAIT,
@@ -26,16 +30,11 @@ const UDP_WIDTH: usize = 127;
 const UDP_BUCKETS: u16 = 1 << 14;
 /// `__SO_ACCEPTCON`, the flag a listening local socket shows.
 const SO_ACCEPTCON: u32 = 1 << 16;
-/// Linux's `socket_state`.
-const SS_UNCONNECTED: u32 = 1;
-const SS_CONNECTING: u32 = 2;
-const SS_CONNECTED: u32 = 3;
-const SS_DISCONNECTING: u32 = 4;
 
 /// The bytes of one file of `/proc/net`.
-pub(crate) fn contents<S: crate::System>(
+pub(crate) fn contents<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     file: NetFile,
 ) -> Vec<u8> {
     let text = match file {
@@ -58,7 +57,7 @@ fn pad(out: &mut String, start: usize, width: usize) {
     out.push('\n');
 }
 
-fn dev<S: crate::System>(kernel: &mut Kernel, cx: &mut Context<'_, S>) -> String {
+fn dev<S: crate::System, C: Executor>(kernel: &mut Kernel, cx: &mut Context<'_, S, C>) -> String {
     kernel
         .counters
         .count(cx.host, crate::reason::INTERFACE_COUNTERS_NOT_KEPT, 0);
@@ -136,7 +135,7 @@ fn holders(kernel: &Kernel, protocol: Protocol) -> Vec<SocketRef> {
         .bound
         .iter()
         .filter(|((held, _), _)| *held == protocol)
-        .flat_map(|(_, sockets)| sockets.iter().filter_map(alloc::rc::Weak::upgrade))
+        .flat_map(|(_, sockets)| sockets.iter().filter_map(alloc::sync::Weak::upgrade))
         .filter(|socket| !socket.borrow().dead && seen.insert(socket.as_ptr() as usize))
         .collect()
 }
@@ -376,7 +375,7 @@ fn unix(kernel: &Kernel) -> Vec<u8> {
                     .borrow()
                     .peer
                     .as_ref()
-                    .is_some_and(|peer| alloc::rc::Rc::ptr_eq(peer, socket))
+                    .is_some_and(|peer| alloc::sync::Arc::ptr_eq(peer, socket))
             })
             .count();
         let own = socket.borrow();
@@ -387,10 +386,10 @@ fn unix(kernel: &Kernel) -> Vec<u8> {
         };
         let connected = own.state == State::Connected;
         let state = match (own.ino != 0, connected) {
-            (true, true) => SS_CONNECTED,
-            (true, false) => SS_UNCONNECTED,
-            (false, true) => SS_CONNECTING,
-            (false, false) => SS_DISCONNECTING,
+            (true, true) => SS_CONNECTED as u32,
+            (true, false) => SS_UNCONNECTED as u32,
+            (false, true) => SS_CONNECTING as u32,
+            (false, false) => SS_DISCONNECTING as u32,
         };
         let line = alloc::format!(
             "{:016x}: {:08X} {:08X} {flags:08X} {:04X} {state:02X} {:5}",

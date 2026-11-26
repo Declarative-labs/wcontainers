@@ -73,77 +73,89 @@ signals!(
     SIGRT_28, SIGRT_29, SIGRT_30, SIGRT_31, SIGRTMAX,
 );
 
-/// The numbers of the codes whose enums carry fields, which `as` cannot give, as the generated
-/// bindings name them.
-#[allow(
-    dead_code,
-    reason = "every code Linux names, whether the kernel gives it or not"
-)]
-pub(crate) mod codes {
-    use super::*;
+// The codes whose enums carry fields, which `as` cannot give, by the generated bindings' numbers
+// for them. The `numbers_are_the_interfaces` test checks they are the interface's discriminants.
 
-    const BOUNDS: AddressBounds = AddressBounds { lower: 0, upper: 0 };
-    const LSB: AddressLeastSignificantBit = match AddressLeastSignificantBit::new(0) {
-        Some(lsb) => lsb,
-        None => panic!("bit 0 is a bit of an address"),
-    };
-    const PERF: TrapCode = TrapCode::TRAP_PERF {
-        data: PerfEventSignalData(0),
-        event_type: PerfEventType(0),
-        delivery: PerfEventDelivery::Synchronous,
-    };
-
-    macro_rules! codes {
-        ($($name:ident = $value:expr),* $(,)?) => {
-            $(pub(crate) const $name: u32 = number(&$value) as u32;)*
-        };
-    }
-
-    codes!(
-        SEGV_MAPERR = SegmentationFaultCode::SEGV_MAPERR,
-        SEGV_ACCERR = SegmentationFaultCode::SEGV_ACCERR,
-        SEGV_BNDERR = SegmentationFaultCode::SEGV_BNDERR(BOUNDS),
-        SEGV_PKUERR = SegmentationFaultCode::SEGV_PKUERR(ProtectionKey(0)),
-        SEGV_ACCADI = SegmentationFaultCode::SEGV_ACCADI,
-        SEGV_ADIDERR = SegmentationFaultCode::SEGV_ADIDERR,
-        SEGV_ADIPERR = SegmentationFaultCode::SEGV_ADIPERR,
-        SEGV_MTEAERR = SegmentationFaultCode::SEGV_MTEAERR,
-        SEGV_MTESERR = SegmentationFaultCode::SEGV_MTESERR,
-        SEGV_CPERR = SegmentationFaultCode::SEGV_CPERR,
-        BUS_ADRALN = BusErrorCode::BUS_ADRALN,
-        BUS_ADRERR = BusErrorCode::BUS_ADRERR,
-        BUS_OBJERR = BusErrorCode::BUS_OBJERR,
-        BUS_MCEERR_AR = BusErrorCode::BUS_MCEERR_AR(LSB),
-        BUS_MCEERR_AO = BusErrorCode::BUS_MCEERR_AO(LSB),
-        TRAP_BRKPT = TrapCode::TRAP_BRKPT,
-        TRAP_TRACE = TrapCode::TRAP_TRACE,
-        TRAP_BRANCH = TrapCode::TRAP_BRANCH,
-        TRAP_HWBKPT = TrapCode::TRAP_HWBKPT,
-        TRAP_UNK = TrapCode::TRAP_UNK,
-        TRAP_PERF = PERF,
-        CLD_EXITED = ChildTerminationCode::CLD_EXITED(ExitStatus(u8::MIN)),
-        CLD_KILLED = ChildTerminationCode::CLD_KILLED(Signal::SIGKILL),
-        CLD_DUMPED = ChildTerminationCode::CLD_DUMPED(Signal::SIGKILL),
-        CLD_TRAPPED = ChildStateCode::CLD_TRAPPED(Signal::SIGTRAP),
-        CLD_STOPPED = ChildStateCode::CLD_STOPPED(Signal::SIGSTOP),
-        CLD_CONTINUED = ChildStateCode::CLD_CONTINUED,
-        SYS_SECCOMP = BadSystemCallCode::SYS_SECCOMP(SeccompReturnData(0)),
-        SYS_USER_DISPATCH = BadSystemCallCode::SYS_USER_DISPATCH,
-    );
+/// The number Linux gives a segmentation fault's code.
+fn segmentation_fault_number(code: SegmentationFaultCode) -> i32 {
+    use crate::linux::general::*;
+    (match code {
+        SegmentationFaultCode::SEGV_MAPERR => SEGV_MAPERR,
+        SegmentationFaultCode::SEGV_ACCERR => SEGV_ACCERR,
+        SegmentationFaultCode::SEGV_BNDERR(_) => SEGV_BNDERR,
+        SegmentationFaultCode::SEGV_PKUERR(_) => SEGV_PKUERR,
+        SegmentationFaultCode::SEGV_ACCADI => SEGV_ACCADI,
+        SegmentationFaultCode::SEGV_ADIDERR => SEGV_ADIDERR,
+        SegmentationFaultCode::SEGV_ADIPERR => SEGV_ADIPERR,
+        SegmentationFaultCode::SEGV_MTEAERR => SEGV_MTEAERR,
+        SegmentationFaultCode::SEGV_MTESERR => SEGV_MTESERR,
+        SegmentationFaultCode::SEGV_CPERR => SEGV_CPERR,
+    }) as i32
 }
 
-/// The number Linux gives a code: the discriminant of the interface's `repr(i32)` enum.
-pub(crate) const fn number<T: Copy>(code: &T) -> i32 {
-    // SAFETY: called only with the interface's code enums, each `repr(i32)`, whose values start
-    // with their discriminant as an `i32` (a primitive representation).
-    unsafe { core::ptr::from_ref(code).cast::<i32>().read() }
+/// The number Linux gives a bus error's code.
+fn bus_error_number(code: BusErrorCode) -> i32 {
+    use crate::linux::general::*;
+    (match code {
+        BusErrorCode::BUS_ADRALN => BUS_ADRALN,
+        BusErrorCode::BUS_ADRERR => BUS_ADRERR,
+        BusErrorCode::BUS_OBJERR => BUS_OBJERR,
+        BusErrorCode::BUS_MCEERR_AR(_) => BUS_MCEERR_AR,
+        BusErrorCode::BUS_MCEERR_AO(_) => BUS_MCEERR_AO,
+    }) as i32
 }
 
-/// The code of `candidates` whose number Linux gives as `code`.
-fn code_of<T: Copy>(candidates: impl IntoIterator<Item = T>, code: i32) -> Option<T> {
+/// The number Linux gives a trap's code.
+fn trap_number(code: TrapCode) -> i32 {
+    use crate::linux::general::*;
+    (match code {
+        TrapCode::TRAP_BRKPT => TRAP_BRKPT,
+        TrapCode::TRAP_TRACE => TRAP_TRACE,
+        TrapCode::TRAP_BRANCH => TRAP_BRANCH,
+        TrapCode::TRAP_HWBKPT => TRAP_HWBKPT,
+        TrapCode::TRAP_UNK => TRAP_UNK,
+        TrapCode::TRAP_PERF { .. } => TRAP_PERF,
+    }) as i32
+}
+
+/// The number Linux gives the code of a child's end.
+fn child_termination_number(code: ChildTerminationCode) -> i32 {
+    use crate::linux::general::*;
+    (match code {
+        ChildTerminationCode::CLD_EXITED(_) => CLD_EXITED,
+        ChildTerminationCode::CLD_KILLED(_) => CLD_KILLED,
+        ChildTerminationCode::CLD_DUMPED(_) => CLD_DUMPED,
+    }) as i32
+}
+
+/// The number Linux gives the code of a child's stop or continuation.
+fn child_state_number(code: ChildStateCode) -> i32 {
+    use crate::linux::general::*;
+    (match code {
+        ChildStateCode::CLD_TRAPPED(_) => CLD_TRAPPED,
+        ChildStateCode::CLD_STOPPED(_) => CLD_STOPPED,
+        ChildStateCode::CLD_CONTINUED => CLD_CONTINUED,
+    }) as i32
+}
+
+/// The number Linux gives a bad system call's code.
+fn bad_system_call_number(code: BadSystemCallCode) -> i32 {
+    use crate::linux::general::*;
+    (match code {
+        BadSystemCallCode::SYS_SECCOMP(_) => SYS_SECCOMP,
+        BadSystemCallCode::SYS_USER_DISPATCH => SYS_USER_DISPATCH,
+    }) as i32
+}
+
+/// The code of `candidates` whose number Linux gives as `code`, each candidate's number given by `number`.
+fn code_of<T: Copy>(
+    candidates: impl IntoIterator<Item = T>,
+    number: impl Fn(T) -> i32,
+    code: i32,
+) -> Option<T> {
     candidates
         .into_iter()
-        .find(|candidate| number(candidate) == code)
+        .find(|candidate| number(*candidate) == code)
 }
 
 fn read<const N: usize>(bytes: &Bytes, at: usize) -> [u8; N] {
@@ -250,6 +262,7 @@ fn structured(bytes: &Bytes) -> Option<SignalInformation> {
                     IllegalInstructionCode::__ILL_BREAK,
                     IllegalInstructionCode::__ILL_BNDMOD,
                 ],
+                |code| code as i32,
                 code,
             )
             .map(|code| SignalInformation::IllegalInstruction { code, address }),
@@ -271,6 +284,7 @@ fn structured(bytes: &Bytes) -> Option<SignalInformation> {
                     ArithmeticErrorCode::FPE_FLTUNK,
                     ArithmeticErrorCode::FPE_CONDTRAP,
                 ],
+                |code| code as i32,
                 code,
             )
             .map(|code| SignalInformation::ArithmeticError { code, address }),
@@ -290,6 +304,7 @@ fn structured(bytes: &Bytes) -> Option<SignalInformation> {
                     SegmentationFaultCode::SEGV_MTESERR,
                     SegmentationFaultCode::SEGV_CPERR,
                 ],
+                segmentation_fault_number,
                 code,
             )
             .map(|code| SignalInformation::SegmentationFault { code, address }),
@@ -305,7 +320,8 @@ fn structured(bytes: &Bytes) -> Option<SignalInformation> {
                         BusErrorCode::BUS_MCEERR_AO(lsb),
                     ]);
                 }
-                code_of(codes, code).map(|code| SignalInformation::BusError { code, address })
+                code_of(codes, bus_error_number, code)
+                    .map(|code| SignalInformation::BusError { code, address })
             }
             Signal::SIGTRAP => code_of(
                 [
@@ -324,6 +340,7 @@ fn structured(bytes: &Bytes) -> Option<SignalInformation> {
                         },
                     },
                 ],
+                trap_number,
                 code,
             )
             .map(|code| SignalInformation::Trap { code, address }),
@@ -335,7 +352,7 @@ fn structured(bytes: &Bytes) -> Option<SignalInformation> {
                         ChildStateCode::CLD_STOPPED(stopped),
                     ]);
                 }
-                code_of(states, code)
+                code_of(states, child_state_number, code)
                     .map(|code| SignalInformation::ChildStateChanged {
                         code,
                         child: child(),
@@ -368,7 +385,7 @@ fn structured(bytes: &Bytes) -> Option<SignalInformation> {
                 ]
                 .into_iter()
                 .find(|architecture| *architecture as u32 == u32_at(bytes, ARCHITECTURE));
-                code_of(codes, code)
+                code_of(codes, bad_system_call_number, code)
                     .zip(architecture)
                     .map(|(code, architecture)| SignalInformation::BadSystemCall {
                         code,
@@ -392,7 +409,7 @@ fn structured(bytes: &Bytes) -> Option<SignalInformation> {
             PollCode::POLL_PRI,
             PollCode::POLL_HUP,
         ];
-        return code_of(polls, code)
+        return code_of(polls, |code| code as i32, code)
             .filter(|_| code <= NSIGPOLL as i32)
             .and_then(poll);
     }
@@ -413,7 +430,11 @@ fn structured(bytes: &Bytes) -> Option<SignalInformation> {
     if code == PollCode::SI_SIGIO as i32 {
         return poll(PollCode::SI_SIGIO);
     }
-    if let Some(code) = code_of([SendCode::SI_USER, SendCode::SI_TKILL], code) {
+    if let Some(code) = code_of(
+        [SendCode::SI_USER, SendCode::SI_TKILL],
+        |code| code as i32,
+        code,
+    ) {
         return Some(SignalInformation::SentByProcess {
             signal,
             code,
@@ -426,7 +447,7 @@ fn structured(bytes: &Bytes) -> Option<SignalInformation> {
         QueueCode::SI_ASYNCIO,
         QueueCode::SI_ASYNCNL,
     ];
-    code_of(queued, code).map(|code| SignalInformation::QueuedByProcess {
+    code_of(queued, |code| code as i32, code).map(|code| SignalInformation::QueuedByProcess {
         signal,
         code,
         sender: identity(bytes),
@@ -454,7 +475,7 @@ fn terminated(
             ChildTerminationCode::CLD_DUMPED(killer),
         ]);
     }
-    code_of(codes, code).map(|code| SignalInformation::ChildTerminated {
+    code_of(codes, child_termination_number, code).map(|code| SignalInformation::ChildTerminated {
         signal,
         code,
         child,
@@ -561,7 +582,7 @@ pub(crate) fn encode(information: &SignalInformation) -> Bytes {
             put(&mut bytes, ADDRESS, &address.to_le_bytes());
         }
         SignalInformation::SegmentationFault { code, address } => {
-            header(Signal::SIGSEGV, number(&code));
+            header(Signal::SIGSEGV, segmentation_fault_number(code));
             put(&mut bytes, ADDRESS, &address.to_le_bytes());
             match code {
                 SegmentationFaultCode::SEGV_BNDERR(bounds) => {
@@ -575,7 +596,7 @@ pub(crate) fn encode(information: &SignalInformation) -> Bytes {
             }
         }
         SignalInformation::BusError { code, address } => {
-            header(Signal::SIGBUS, number(&code));
+            header(Signal::SIGBUS, bus_error_number(code));
             put(&mut bytes, ADDRESS, &address.to_le_bytes());
             if let BusErrorCode::BUS_MCEERR_AR(lsb) | BusErrorCode::BUS_MCEERR_AO(lsb) = code {
                 put(
@@ -586,7 +607,7 @@ pub(crate) fn encode(information: &SignalInformation) -> Bytes {
             }
         }
         SignalInformation::Trap { code, address } => {
-            header(Signal::SIGTRAP, number(&code));
+            header(Signal::SIGTRAP, trap_number(code));
             put(&mut bytes, ADDRESS, &address.to_le_bytes());
             if let TrapCode::TRAP_PERF {
                 data,
@@ -610,7 +631,7 @@ pub(crate) fn encode(information: &SignalInformation) -> Bytes {
             user_time,
             system_time,
         } => {
-            header(signal, number(&code));
+            header(signal, child_termination_number(code));
             let status = match code {
                 ChildTerminationCode::CLD_EXITED(status) => i32::from(status.0),
                 ChildTerminationCode::CLD_KILLED(signal)
@@ -624,7 +645,7 @@ pub(crate) fn encode(information: &SignalInformation) -> Bytes {
             user_time,
             system_time,
         } => {
-            header(Signal::SIGCHLD, number(&code));
+            header(Signal::SIGCHLD, child_state_number(code));
             let status = match code {
                 ChildStateCode::CLD_TRAPPED(signal) | ChildStateCode::CLD_STOPPED(signal) => {
                     signal as i32
@@ -639,7 +660,7 @@ pub(crate) fn encode(information: &SignalInformation) -> Bytes {
             system_call,
             architecture,
         } => {
-            header(Signal::SIGSYS, number(&code));
+            header(Signal::SIGSYS, bad_system_call_number(code));
             if let BadSystemCallCode::SYS_SECCOMP(data) = code {
                 put(&mut bytes, ERROR_NUMBER, &i32::from(data.0).to_le_bytes());
             }
@@ -676,6 +697,142 @@ const PTRACE_EVENT_SHIFT: u32 = u8::BITS;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+    use alloc::string::{String, ToString};
+    use alloc::vec::Vec;
+
+    /// The discriminants the interface writes for the variants of its enum `name`, read from its
+    /// source: every variant of the code enums carries one (`NAME = 3,`, `NAME(..) = 3,` or
+    /// `NAME { .. } = 3,`).
+    fn discriminants(name: &str) -> Vec<(String, i32)> {
+        let source = include_str!("../../signal_information.rs");
+        let opening = format!("pub enum {name} {{");
+        let start = source.find(&opening).expect("the interface names the enum") + opening.len();
+        // The enum's body without comments or attributes, and without the fields of its variants.
+        let mut flat = String::new();
+        let mut depth = 0usize;
+        'lines: for line in source[start..].lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("//") || trimmed.starts_with("#[") {
+                continue;
+            }
+            for character in line.chars() {
+                match character {
+                    '(' | '{' => depth += 1,
+                    ')' | '}' if depth == 0 => break 'lines,
+                    ')' | '}' => depth -= 1,
+                    _ if depth == 0 => flat.push(character),
+                    _ => {}
+                }
+            }
+        }
+        flat.split(',')
+            .map(str::trim)
+            .filter(|variant| !variant.is_empty())
+            .map(|variant| {
+                let (variant, value) = variant
+                    .split_once('=')
+                    .unwrap_or_else(|| panic!("{name}::{variant} has no discriminant"));
+                (
+                    variant.trim().to_string(),
+                    value.trim().parse().expect("a number"),
+                )
+            })
+            .collect()
+    }
+
+    /// The numbers the kernel gives the codes whose enums carry fields, from the generated
+    /// bindings, are the discriminants the interface writes for them.
+    #[test]
+    fn numbers_are_the_interfaces() {
+        fn check<T: Copy + core::fmt::Debug>(
+            name: &str,
+            number: fn(T) -> i32,
+            codes: &[T],
+        ) -> usize {
+            let written = discriminants(name);
+            assert_eq!(written.len(), codes.len(), "every variant of {name}");
+            for code in codes {
+                let debug = format!("{code:?}");
+                let variant = debug
+                    .split(|character: char| !(character.is_alphanumeric() || character == '_'))
+                    .next()
+                    .expect("a variant name");
+                let (_, value) = written
+                    .iter()
+                    .find(|(written, _)| written == variant)
+                    .unwrap_or_else(|| panic!("{name}::{variant} is in the interface"));
+                assert_eq!(number(*code), *value, "{name}::{debug}");
+            }
+            codes.len()
+        }
+        let lsb = AddressLeastSignificantBit::new(0).expect("bit 0");
+        let checked = check(
+            "SegmentationFaultCode",
+            segmentation_fault_number,
+            &[
+                SegmentationFaultCode::SEGV_MAPERR,
+                SegmentationFaultCode::SEGV_ACCERR,
+                SegmentationFaultCode::SEGV_BNDERR(AddressBounds { lower: 0, upper: 0 }),
+                SegmentationFaultCode::SEGV_PKUERR(ProtectionKey(0)),
+                SegmentationFaultCode::SEGV_ACCADI,
+                SegmentationFaultCode::SEGV_ADIDERR,
+                SegmentationFaultCode::SEGV_ADIPERR,
+                SegmentationFaultCode::SEGV_MTEAERR,
+                SegmentationFaultCode::SEGV_MTESERR,
+                SegmentationFaultCode::SEGV_CPERR,
+            ],
+        ) + check(
+            "BusErrorCode",
+            bus_error_number,
+            &[
+                BusErrorCode::BUS_ADRALN,
+                BusErrorCode::BUS_ADRERR,
+                BusErrorCode::BUS_OBJERR,
+                BusErrorCode::BUS_MCEERR_AR(lsb),
+                BusErrorCode::BUS_MCEERR_AO(lsb),
+            ],
+        ) + check(
+            "TrapCode",
+            trap_number,
+            &[
+                TrapCode::TRAP_BRKPT,
+                TrapCode::TRAP_TRACE,
+                TrapCode::TRAP_BRANCH,
+                TrapCode::TRAP_HWBKPT,
+                TrapCode::TRAP_UNK,
+                TrapCode::TRAP_PERF {
+                    data: PerfEventSignalData(0),
+                    event_type: PerfEventType(0),
+                    delivery: PerfEventDelivery::Synchronous,
+                },
+            ],
+        ) + check(
+            "ChildTerminationCode",
+            child_termination_number,
+            &[
+                ChildTerminationCode::CLD_EXITED(ExitStatus(0)),
+                ChildTerminationCode::CLD_KILLED(Signal::SIGKILL),
+                ChildTerminationCode::CLD_DUMPED(Signal::SIGKILL),
+            ],
+        ) + check(
+            "ChildStateCode",
+            child_state_number,
+            &[
+                ChildStateCode::CLD_TRAPPED(Signal::SIGTRAP),
+                ChildStateCode::CLD_STOPPED(Signal::SIGSTOP),
+                ChildStateCode::CLD_CONTINUED,
+            ],
+        ) + check(
+            "BadSystemCallCode",
+            bad_system_call_number,
+            &[
+                BadSystemCallCode::SYS_SECCOMP(SeccompReturnData(0)),
+                BadSystemCallCode::SYS_USER_DISPATCH,
+            ],
+        );
+        assert_eq!(checked, 29);
+    }
 
     /// Every code from the queue codes to the kernel's own, on every signal, with zero fields and
     /// with every field byte set: each comes back from the interface's record as it was.
@@ -717,7 +874,7 @@ mod tests {
         );
         let fault = crate::signal::fault_info(
             Signal::SIGSEGV as u32,
-            number(&SegmentationFaultCode::SEGV_MAPERR),
+            segmentation_fault_number(SegmentationFaultCode::SEGV_MAPERR),
             wcontainers_abi::PAGE_SIZE,
         );
         assert_eq!(

@@ -99,7 +99,7 @@ pub const DOCKER_CAPABILITY_SETS: CapabilitySets = CapabilitySets {
 
 impl Credentials {
     /// Root with Docker's default powers and the given supplementary groups.
-    pub fn container_root(mut groups: Vec<u32>) -> Self {
+    pub(crate) fn container_root(mut groups: Vec<u32>) -> Self {
         groups.sort_unstable();
         Self {
             uid: 0,
@@ -123,7 +123,7 @@ impl Credentials {
     }
 
     /// The same credentials with every user id `user` and every group id `group`.
-    pub fn with_ids(self, user: u32, group: u32) -> Self {
+    pub(crate) fn with_ids(self, user: u32, group: u32) -> Self {
         Self {
             uid: user,
             euid: user,
@@ -139,7 +139,7 @@ impl Credentials {
 
     /// The same credentials with the capability sets `sets`, as runc's `capset` and ambient raises
     /// give them before the first exec: refused where Linux refuses a set beyond the others.
-    pub fn with_capabilities(self, sets: CapabilitySets) -> Result<Self, crate::Errno> {
+    pub(crate) fn with_capabilities(self, sets: CapabilitySets) -> Result<Self, crate::Errno> {
         if sets.effective & !sets.permitted != 0
             || sets.ambient & !(sets.permitted & sets.inheritable) != 0
         {
@@ -156,7 +156,7 @@ impl Credentials {
     }
 
     /// The same credentials, set never to gain privileges through exec if `set`.
-    pub fn without_new_privileges(self, set: bool) -> Self {
+    pub(crate) fn without_new_privileges(self, set: bool) -> Self {
         Self {
             no_new_privileges: self.no_new_privileges || set,
             ..self
@@ -165,7 +165,7 @@ impl Credentials {
 
     /// Whether a change from `old` makes the process undumpable, as Linux's `commit_creds` decides: a
     /// change of effective or file system ids, or powers gained.
-    pub fn loses_dumpable(&self, old: &Credentials) -> bool {
+    pub(crate) fn loses_dumpable(&self, old: &Credentials) -> bool {
         self.euid != old.euid
             || self.egid != old.egid
             || self.fsuid != old.fsuid
@@ -174,27 +174,27 @@ impl Credentials {
     }
 
     /// Whether a `SECBIT_*` bit is set (`issecure`).
-    pub fn secure(&self, bit: u32) -> bool {
+    pub(crate) fn secure(&self, bit: u32) -> bool {
         self.securebits & bit != 0
     }
 
-    pub fn has(&self, capability: u32) -> bool {
+    pub(crate) fn has(&self, capability: u32) -> bool {
         self.effective & (1 << capability) != 0
     }
 
     /// Linux's `inode_owner_or_capable`: the file system user owns a file of owner `uid`, or holds
     /// CAP_FOWNER.
-    pub fn owns_or_capable(&self, uid: u32) -> bool {
+    pub(crate) fn owns_or_capable(&self, uid: u32) -> bool {
         self.fsuid == uid || self.has(general::CAP_FOWNER)
     }
 
-    pub fn in_group(&self, gid: u32, use_fs_ids: bool) -> bool {
+    pub(crate) fn in_group(&self, gid: u32, use_fs_ids: bool) -> bool {
         let own = if use_fs_ids { self.fsgid } else { self.egid };
         own == gid || self.groups.binary_search(&gid).is_ok()
     }
 
     /// Linux's `cap_emulate_setxuid`: what a change of user numbers does to the powers.
-    pub fn after_uid_change(&mut self, old_uid: u32, old_euid: u32, old_suid: u32) {
+    pub(crate) fn after_uid_change(&mut self, old_uid: u32, old_euid: u32, old_suid: u32) {
         if self.secure(SECBIT_NO_SETUID_FIXUP) {
             self.fsuid = self.euid;
             return;
@@ -220,7 +220,7 @@ impl Credentials {
     }
 
     /// Linux's `cap_task_fix_setuid` for `setfsuid`: leaving root drops the file powers.
-    pub fn after_fsuid_change(&mut self, old_fsuid: u32) {
+    pub(crate) fn after_fsuid_change(&mut self, old_fsuid: u32) {
         if self.secure(SECBIT_NO_SETUID_FIXUP) {
             return;
         }
@@ -293,8 +293,8 @@ fn file_capabilities(stored: &[u8]) -> Result<Option<(u64, u64, bool)>, crate::E
     if root != 0 {
         return Ok(None);
     }
-    let permitted = (word(1) | word(3) << 32) & VALID;
-    let inheritable = (word(2) | word(4) << 32) & VALID;
+    let permitted = (word(1) | word(3) << u32::BITS) & VALID;
+    let inheritable = (word(2) | word(4) << u32::BITS) & VALID;
     Ok(Some((
         permitted,
         inheritable,
@@ -306,7 +306,7 @@ impl Credentials {
     /// The credentials a program runs with, as Linux's `bprm_fill_uid` and `cap_bprm_creds_from_file`
     /// work them out for a process nobody traces: set-user and set-group bits, file capabilities and
     /// root's powers. An error refuses the `execve`.
-    pub fn for_program(&self, file: &ProgramFile<'_>) -> Result<AfterExec, crate::Errno> {
+    pub(crate) fn for_program(&self, file: &ProgramFile<'_>) -> Result<AfterExec, crate::Errno> {
         let old = self;
         let mut new = self.clone();
         let mut gained = false;

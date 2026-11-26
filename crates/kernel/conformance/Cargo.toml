@@ -5,10 +5,12 @@ edition = "2024"
 publish = false
 
 [lib]
-path = "conformance.rs"
+path = "suite.rs"
 
 [dependencies]
 wcontainers-kernel = { path = ".." }
+# Names the executors whose watches a thread's accesses alone fire.
+wcontainers-executor = { path = "../../executor" }
 
 [lints]
 workspace = true

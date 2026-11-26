@@ -6,9 +6,9 @@
 
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
-use alloc::rc::Weak;
+use alloc::sync::Weak;
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
 
 use crate::file::OpenFile;
 use crate::fs::Node;
@@ -274,7 +274,7 @@ impl Tty {
     }
 
     /// `n_tty_set_termios`: the line discipline follows new settings, `old` being the ones before.
-    pub fn set_termios(&mut self, old: Option<&termios2>) {
+    pub(crate) fn set_termios(&mut self, old: Option<&termios2>) {
         let canon_changed =
             old.is_none_or(|old| (old.c_lflag ^ self.termios.c_lflag) & (ICANON | EXTPROC) != 0);
         let icanon = self.lflag(ICANON);
@@ -353,7 +353,7 @@ impl Tty {
 
     /// `input_available_p`: whether a read finds something; for `poll`, a non-canonical reader
     /// with no timer wants its minimum.
-    pub fn input_available(&self, poll: bool) -> bool {
+    pub(crate) fn input_available(&self, poll: bool) -> bool {
         let amount = if poll && self.cc(VTIME) == 0 && self.cc(VMIN) != 0 {
             self.cc(VMIN) as usize
         } else {
@@ -368,7 +368,7 @@ impl Tty {
 
     /// n_tty's `chars_in_buffer`: what the line discipline holds up to its last line end, or all it
     /// holds when not canonical.
-    pub fn chars_in_buffer(&self) -> usize {
+    pub(crate) fn chars_in_buffer(&self) -> usize {
         let ld = &self.ld;
         let head = if self.lflag(ICANON) {
             ld.canon_head
@@ -382,7 +382,7 @@ impl Tty {
 
     /// What `TIOCINQ` reports: the bytes a read could take, the end-of-file marks left out in
     /// canonical mode (`inq_canon`).
-    pub fn queued(&self) -> u32 {
+    pub(crate) fn queued(&self) -> u32 {
         let ld = &self.ld;
         if !(self.lflag(ICANON) && !self.lflag(EXTPROC)) {
             return ld.read_count() as u32;
@@ -402,15 +402,15 @@ impl Tty {
     }
 
     /// The minimum and the timer of a non-canonical read, in tenths of a second.
-    pub fn read_limits(&self) -> (u8, u8) {
+    pub(crate) fn read_limits(&self) -> (u8, u8) {
         (self.cc(VMIN), self.cc(VTIME))
     }
 
-    pub fn canonical(&self) -> bool {
+    pub(crate) fn canonical(&self) -> bool {
         self.ld.icanon && !self.lflag(EXTPROC)
     }
 
-    pub fn tostop(&self) -> bool {
+    pub(crate) fn tostop(&self) -> bool {
         self.lflag(TOSTOP)
     }
 
@@ -500,7 +500,7 @@ impl Tty {
 
     /// The copying part of `n_tty_read` once input is there: up to `wanted` bytes, with the
     /// packet-mode data byte first when `packet`.
-    pub fn take(&mut self, out: &mut Vec<u8>, wanted: usize, packet: bool) {
+    pub(crate) fn take(&mut self, out: &mut Vec<u8>, wanted: usize, packet: bool) {
         let mut wanted = wanted;
         if self.canonical() {
             while self.canon_copy_from_read_buf(out, &mut wanted) {}
@@ -533,7 +533,7 @@ pub(crate) struct Pty {
     /// The slave's node in devpts, until the master's last close takes it away.
     pub slave_node: Node,
     /// The open files of each side, for their counts and for hanging up.
-    pub files: [Vec<Weak<RefCell<OpenFile>>>; 2],
+    pub files: [Vec<Weak<AtomicRefCell<OpenFile>>>; 2],
     /// Whether each side has had its last close dealt with since it was last opened.
     pub closed: [bool; 2],
     /// Signals for process groups that keys and size changes raised, for the caller to send.
@@ -544,7 +544,7 @@ pub(crate) struct Pty {
 }
 
 impl Pty {
-    pub fn new(index: u32, object: u64, slave_node: Node) -> Self {
+    pub(crate) fn new(index: u32, object: u64, slave_node: Node) -> Self {
         let mut base = termios2 {
             c_iflag: 0,
             c_oflag: 0,
@@ -574,7 +574,7 @@ impl Pty {
     }
 
     /// Open files of one side that are still open.
-    pub fn count(&self, side: usize) -> usize {
+    pub(crate) fn count(&self, side: usize) -> usize {
         self.files[side]
             .iter()
             .filter(|file| file.strong_count() > 0)
@@ -582,7 +582,7 @@ impl Pty {
     }
 
     /// `pty_write_room`.
-    pub fn write_room(&self, side: usize) -> usize {
+    pub(crate) fn write_room(&self, side: usize) -> usize {
         if self.sides[side].stopped {
             return 0;
         }
@@ -606,7 +606,7 @@ impl Pty {
 
     /// Takes what each side's buffer holds into its line discipline, as far as there is room
     /// (`flush_to_ldisc`), until nothing moves.
-    pub fn settle(&mut self) {
+    pub(crate) fn settle(&mut self) {
         loop {
             let mut moved = false;
             for side in [MASTER, SLAVE] {
@@ -627,7 +627,7 @@ impl Pty {
     }
 
     /// `n_tty_receive_buf_common`: how many of `bytes` the side's line discipline took.
-    pub fn receive(&mut self, side: usize, bytes: &[u8], flow: bool) -> usize {
+    pub(crate) fn receive(&mut self, side: usize, bytes: &[u8], flow: bool) -> usize {
         let mut done = 0;
         loop {
             let tty = &mut self.sides[side];
@@ -1053,14 +1053,14 @@ impl Pty {
     }
 
     /// `n_tty_flush_buffer`: the side's input thrown away.
-    pub fn flush_input(&mut self, side: usize) {
+    pub(crate) fn flush_input(&mut self, side: usize) {
         self.sides[side].flush_input();
         self.packet_flush_read(side);
     }
 
     /// `pty_flush_buffer`: what the side wrote that the other side has not taken in is thrown
     /// away.
-    pub fn flush_output(&mut self, side: usize) {
+    pub(crate) fn flush_output(&mut self, side: usize) {
         self.sides[1 - side].incoming.clear();
         if self.sides[1 - side].packet {
             self.sides[side].pktstatus |= TIOCPKT_FLUSHWRITE as u8;
@@ -1068,7 +1068,7 @@ impl Pty {
     }
 
     /// `start_tty` and `pty_start`.
-    pub fn start(&mut self, side: usize) {
+    pub(crate) fn start(&mut self, side: usize) {
         let tty = &mut self.sides[side];
         if !tty.stopped || tty.tco_stopped {
             return;
@@ -1082,7 +1082,7 @@ impl Pty {
     }
 
     /// `stop_tty` and `pty_stop`.
-    pub fn stop(&mut self, side: usize) {
+    pub(crate) fn stop(&mut self, side: usize) {
         let tty = &mut self.sides[side];
         if tty.stopped {
             return;
@@ -1096,7 +1096,7 @@ impl Pty {
     }
 
     /// `TCOOFF` and `TCOON`.
-    pub fn output_off(&mut self, side: usize, off: bool) {
+    pub(crate) fn output_off(&mut self, side: usize, off: bool) {
         let tty = &mut self.sides[side];
         if off && !tty.tco_stopped {
             tty.tco_stopped = true;
@@ -1108,7 +1108,7 @@ impl Pty {
     }
 
     /// `tty_send_xchar`: one byte to the other side even while output is stopped.
-    pub fn send_xchar(&mut self, side: usize, c: u8) {
+    pub(crate) fn send_xchar(&mut self, side: usize, c: u8) {
         let was_stopped = self.sides[side].stopped;
         if was_stopped {
             self.start(side);
@@ -1246,7 +1246,7 @@ impl Pty {
     }
 
     /// One pass of `n_tty_write`'s loop: as much of `bytes` as the other side takes now.
-    pub fn write(&mut self, side: usize, bytes: &[u8]) -> usize {
+    pub(crate) fn write(&mut self, side: usize, bytes: &[u8]) -> usize {
         let mut done = 0;
         if self.sides[side].oflag(OPOST) {
             while done < bytes.len() {
@@ -1402,7 +1402,7 @@ impl Pty {
     }
 
     /// `process_echoes`: echoes up to the last mark go out.
-    pub fn process_echoes(&mut self, side: usize) {
+    pub(crate) fn process_echoes(&mut self, side: usize) {
         let ld = &mut self.sides[side].ld;
         if ld.echo_mark == ld.echo_tail {
             return;
@@ -1423,7 +1423,7 @@ impl Pty {
 
     /// `tty_set_termios` with `pty_set_termios` and the line discipline's: new settings for the
     /// slave.
-    pub fn set_termios(&mut self, side: usize, mut new: termios2) {
+    pub(crate) fn set_termios(&mut self, side: usize, mut new: termios2) {
         let old = self.sides[side].termios;
         // Pseudo-terminals keep 8 bit characters and reception on (`pty_set_termios`), after
         // telling a packet-mode master about flow control changes.
@@ -1461,7 +1461,7 @@ impl Pty {
 
     /// `pty_resize`: a new window size, and SIGWINCH for both sides' foreground groups when it
     /// changed.
-    pub fn resize(&mut self, size: winsize) {
+    pub(crate) fn resize(&mut self, size: winsize) {
         let old = self.sides[SLAVE].winsize;
         if (old.ws_row, old.ws_col, old.ws_xpixel, old.ws_ypixel)
             == (size.ws_row, size.ws_col, size.ws_xpixel, size.ws_ypixel)

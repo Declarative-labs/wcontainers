@@ -1,14 +1,16 @@
 //! Starting a program, as Linux's `execve` does: scripts that name their interpreter, ELF programs and
 //! the loader they name, and the starting stack.
 
+use crate::guest_machine::GuestMachine;
 use alloc::vec;
 use alloc::vec::Vec;
+use wcontainers_executor::Executor;
 
 use object::LittleEndian;
 use object::elf;
 use object::read::elf::{FileHeader, ProgramHeader};
 use wcontainers_abi::{
-    Cpu, HWCAP, HWCAP2, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions, RegisterBlock,
+    HWCAP, HWCAP2, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions, RegisterBlock,
 };
 
 use crate::fs::{Content, Node};
@@ -128,7 +130,7 @@ pub(crate) struct Program {
     /// Its size.
     size: u64,
     /// A program on the backend: the open file it is read through, which its pages are kept by.
-    backend: Option<alloc::rc::Rc<crate::fs::backend::Handle>>,
+    backend: Option<alloc::sync::Arc<crate::fs::backend::Handle>>,
     /// The caller may read it (Linux's `would_dump`).
     readable: bool,
     /// The new program could open it again by the name it was run by, as a script's interpreter
@@ -137,9 +139,9 @@ pub(crate) struct Program {
 }
 
 /// Finds a file to run by path from the process's point of view, with Linux's checks.
-pub(crate) fn open_program(
+pub(crate) fn open_program<C: Executor>(
     kernel: &Kernel,
-    cpu: &mut dyn Cpu,
+    cpu: &mut GuestMachine<C>,
     tid: Tid,
     path: &[u8],
 ) -> Result<Program, Errno> {
@@ -149,9 +151,9 @@ pub(crate) fn open_program(
 
 /// Finds a file to run by a name the kernel made (`open_exec`): one that may be empty
 /// (`getname_kernel`), which names the working directory and so no program.
-fn open_named_program(
+fn open_named_program<C: Executor>(
     kernel: &Kernel,
-    cpu: &mut dyn Cpu,
+    cpu: &mut GuestMachine<C>,
     tid: Tid,
     path: &[u8],
 ) -> Result<Program, Errno> {
@@ -163,9 +165,9 @@ fn open_named_program(
 }
 
 /// The same from `start`; not following a link as the last part makes one ELOOP.
-pub(crate) fn open_program_at(
+pub(crate) fn open_program_at<C: Executor>(
     kernel: &Kernel,
-    cpu: &mut dyn Cpu,
+    cpu: &mut GuestMachine<C>,
     tid: Tid,
     start: &Node,
     path: &[u8],
@@ -190,9 +192,9 @@ pub(crate) fn open_program_at(
 }
 
 /// Linux's checks on a file to run (`do_open_execat`), for a file already found.
-pub(crate) fn program_of(
+pub(crate) fn program_of<C: Executor>(
     kernel: &Kernel,
-    cpu: &mut dyn Cpu,
+    cpu: &mut GuestMachine<C>,
     tid: Tid,
     node: Node,
     path: Vec<u8>,
@@ -213,7 +215,7 @@ pub(crate) fn program_of(
     let inode = node.borrow();
     let readable = inode.permits(credentials, R_OK, true);
     let size = match &inode.content {
-        Content::Backend(remote) => Some(remote.size.get()),
+        Content::Backend(remote) => Some(remote.size.load()),
         _ => None,
     };
     let (bytes, backend) = match (&inode.content, size) {
@@ -252,9 +254,9 @@ pub(crate) fn program_of(
     clippy::too_many_arguments,
     reason = "the parts of one exec, each distinct"
 )]
-pub(crate) fn load<S: crate::System>(
+pub(crate) fn load<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     path: &[u8],
     program: Program,
@@ -298,7 +300,7 @@ pub(crate) fn load<S: crate::System>(
         readable &= program.readable;
         file_name = interpreter;
     }
-    let memory = cx.cpu.memory_new().map_err(|error| cx.cpu_error(error))?;
+    let memory = cx.cpu.make_memory().map_err(|error| cx.cpu_error(error))?;
     let result = place(
         kernel,
         cx,
@@ -311,7 +313,7 @@ pub(crate) fn load<S: crate::System>(
         readable,
     );
     if result.is_err() {
-        cx.cpu.memory_drop(memory);
+        cx.cpu.drop_memory(memory);
     }
     result
 }
@@ -498,9 +500,9 @@ struct Placed {
     clippy::too_many_arguments,
     reason = "one call site, each value distinct"
 )]
-fn place<S: crate::System>(
+fn place<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     memory: MemoryId,
     program: Program,
@@ -643,7 +645,8 @@ fn place<S: crate::System>(
         Some((found, _, segments)) => segment_tails(found, segments)?,
         None => Vec::new(),
     };
-    if map.ceiling < map.end {
+    // The container's first program is checked in any space: one too small for it fails the start.
+    if map.ceiling < map.end || kernel.init.is_none() {
         fits_below_ceiling(
             &map,
             (&header, &segments, bias),
@@ -782,8 +785,8 @@ const VDSO_LENGTH: u64 = (crate::vdso::VVAR_PAGES + crate::vdso::CODE_PAGES) * P
 
 /// Maps `[vvar]` and the vDSO where `mmap` would put them, and writes the vDSO's code
 /// (`arch_setup_additional_pages`). The data pages hold nothing a program reads here.
-fn place_vdso<S: crate::System>(
-    cx: &mut Context<'_, S>,
+fn place_vdso<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     memory: MemoryId,
     map: &mut AddressMap,
 ) -> Result<u64, Errno> {
@@ -820,7 +823,7 @@ fn place_vdso<S: crate::System>(
     cx.cpu
         .write(memory, code, &image)
         .map_err(errno::from_cpu)?;
-    cx.cpu.code_changed(
+    cx.cpu.note_changed_code(
         memory,
         code,
         CODE_PAGES * PAGE_SIZE,
@@ -934,8 +937,8 @@ fn fits_below_ceiling(
 
 /// Places one ELF file's loadable segments, with the tails [`segment_tails`] read. With no bias
 /// given, the file goes wherever free space is, as `mmap` would put it.
-fn place_elf<S: crate::System>(
-    cx: &mut Context<'_, S>,
+fn place_elf<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     memory: MemoryId,
     map: &mut AddressMap,
     (program, header, segments): (&Program, &Header, &[Segment]),
@@ -1069,7 +1072,8 @@ fn place_elf<S: crate::System>(
         } else {
             &[]
         };
-        cx.cpu.code_changed(memory, start, stop - start, starts);
+        cx.cpu
+            .note_changed_code(memory, start, stop - start, starts);
     }
     Ok(Placed {
         base: bias + lowest,
@@ -1102,14 +1106,14 @@ fn segment_permissions(flags: u32) -> Permissions {
 /// platform name, 16 random bytes, then, 16 byte aligned, `argc`, the argument pointers, the environment
 /// pointers and the auxiliary vector.
 /// A word of the host's randomness.
-fn random_word<S: crate::System>(cx: &Context<'_, S>) -> u64 {
+fn random_word<S: crate::System, C: Executor>(cx: &Context<'_, S, C>) -> u64 {
     let mut bytes = [0; size_of::<u64>()];
     cx.random(&mut bytes);
     u64::from_le_bytes(bytes)
 }
 
-fn build_stack<S: crate::System>(
-    cx: &mut Context<'_, S>,
+fn build_stack<S: crate::System, C: Executor>(
+    cx: &mut Context<'_, S, C>,
     memory: MemoryId,
     (top, below_strings): (u64, u64),
     file_name: &[u8],
@@ -1172,7 +1176,7 @@ fn build_stack<S: crate::System>(
     }
     let auxiliary = table[auxiliary_start..].to_vec();
 
-    let write = |cpu: &mut dyn Cpu, address: u64, bytes: &[u8]| {
+    let write = |cpu: &mut GuestMachine<C>, address: u64, bytes: &[u8]| {
         cpu.write(memory, address, bytes).map_err(errno::from_cpu)
     };
     write(cx.cpu, strings_start, &strings)?;

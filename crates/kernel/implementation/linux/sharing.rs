@@ -3,6 +3,7 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::ops::Range;
+use wcontainers_executor::Executor;
 
 use wcontainers_abi::Permissions;
 
@@ -158,8 +159,11 @@ impl Kernel {
     /// by piece, as the starts it was told less the ends, so an end names the whole or a part of
     /// one start, and a process a hook takes off the kernel carries exactly that, and is told the
     /// rest when it is back.
-    pub(crate) fn announce_sharing<S: crate::System>(&mut self, cx: &mut Context<'_, S>) {
-        self.map_notes.sharing_changed.set(false);
+    pub(crate) fn announce_sharing<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+    ) {
+        self.map_notes.sharing_changed.store(false);
         let mapped = self.shared_mapped();
         if mapped.is_empty() && self.shared_announced.is_empty() {
             return;
@@ -220,7 +224,11 @@ impl Kernel {
 
     /// A process about to go: what it maps of shared memory is announced ended while it is
     /// whole, and it is left out from then on.
-    pub(crate) fn withdraw_sharing<S: crate::System>(&mut self, cx: &mut Context<'_, S>, pid: Pid) {
+    pub(crate) fn withdraw_sharing<S: crate::System, C: Executor>(
+        &mut self,
+        cx: &mut Context<'_, S, C>,
+        pid: Pid,
+    ) {
         if self
             .shared_announced
             .keys()
@@ -232,11 +240,11 @@ impl Kernel {
     }
 
     /// Announces one hook of the shared memory a process maps.
-    fn announce_shared<S: crate::System>(
+    fn announce_shared<S: crate::System, C: Executor>(
         &mut self,
-        cx: &mut Context<'_, S>,
+        cx: &mut Context<'_, S, C>,
         pid: Pid,
-        hook: impl FnOnce(&S, Process<'_>),
+        hook: impl FnOnce(&S, Process<'_, C>),
     ) {
         let process = Process {
             kernel: self,

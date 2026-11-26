@@ -6,9 +6,9 @@ use crate::process::{Channel, Pid, Tid};
 use crate::signal::{UNBLOCKABLE, sender_info};
 use crate::{Context, Errno, Kernel};
 use wcontainers_abi::NANOSECONDS_PER_SECOND;
+use wcontainers_executor::Executor;
 
-/// The number of signals.
-const SIGNALS: u32 = crate::process::SIGNALS as u32;
+use crate::linux_extra::SIGNALS;
 
 /// Linux's `check_kill_permission`: an unknown signal is refused only once a target is found; a
 /// process of the same session may always be continued; otherwise the sender's ids must match the
@@ -34,9 +34,9 @@ fn may_signal(kernel: &Kernel, tid: Tid, target: Pid, signal: u32) -> Result<(),
 }
 
 /// Sends `signal` from the caller to a process, after the permission check.
-pub(super) fn signal_process<S: crate::System>(
+pub(super) fn signal_process<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     target: Pid,
     signal: u32,
@@ -58,9 +58,9 @@ fn kill_info(kernel: &Kernel, tid: Tid, signal: u32) -> [u8; 128] {
 }
 
 /// Linux's `kill_something_info`.
-pub(super) fn kill<S: crate::System>(
+pub(super) fn kill<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, signal, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -113,9 +113,9 @@ pub(super) fn kill<S: crate::System>(
 }
 
 /// `__kill_pgrp_info`: a signal to every process of a group, ended ones too.
-pub(super) fn signal_group<S: crate::System>(
+pub(super) fn signal_group<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     group: Pid,
     signal: u32,
@@ -131,9 +131,9 @@ pub(super) fn signal_group<S: crate::System>(
 }
 
 /// A group's answer: any success, else the last answer.
-fn signal_members<S: crate::System>(
+fn signal_members<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     targets: &[Pid],
     signal: u32,
@@ -158,9 +158,9 @@ fn signal_members<S: crate::System>(
 }
 
 /// A signal to one thread, from `tkill`, `tgkill`, `rt_tgsigqueueinfo` and `pidfd_send_signal`.
-pub(super) fn signal_thread<S: crate::System>(
+pub(super) fn signal_thread<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     group: Option<Pid>,
     target: Tid,
@@ -199,9 +199,9 @@ pub(super) fn signal_thread<S: crate::System>(
     Ok(0)
 }
 
-pub(super) fn tkill<S: crate::System>(
+pub(super) fn tkill<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [target, signal, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -211,9 +211,9 @@ pub(super) fn tkill<S: crate::System>(
     signal_thread(kernel, cx, tid, None, target as i32, signal as u32, None)
 }
 
-pub(super) fn tgkill<S: crate::System>(
+pub(super) fn tgkill<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [group, target, signal, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -259,9 +259,9 @@ fn known_layout(signal: u32, code: i32) -> bool {
 
 /// `copy_siginfo_from_user`: the kernel's part of a program's `siginfo`, and for a layout Linux does
 /// not know, the rest, which must be zero.
-pub(super) fn user_info<S: crate::System>(
+pub(super) fn user_info<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     address: u64,
 ) -> Result<[u8; 128], Errno> {
@@ -281,9 +281,9 @@ pub(super) fn user_info<S: crate::System>(
 
 /// The `siginfo` a program queues: refused if it claims to come from the kernel or `tkill` and the
 /// target is not the caller itself (`do_rt_sigqueueinfo`, `do_rt_tgsigqueueinfo`).
-fn queued_info<S: crate::System>(
+fn queued_info<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     target: Pid,
     signal: u32,
@@ -298,9 +298,9 @@ fn queued_info<S: crate::System>(
     Ok(info)
 }
 
-pub(super) fn rt_sigqueueinfo<S: crate::System>(
+pub(super) fn rt_sigqueueinfo<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [pid, signal, info, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -326,9 +326,9 @@ fn process_of_task(kernel: &Kernel, id: Pid) -> Result<Pid, Errno> {
         .ok_or(Errno::ESRCH)
 }
 
-pub(super) fn rt_tgsigqueueinfo<S: crate::System>(
+pub(super) fn rt_tgsigqueueinfo<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [group, target, signal, info, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -342,9 +342,9 @@ pub(super) fn rt_tgsigqueueinfo<S: crate::System>(
 
 /// `rt_sigsuspend`: waits with a temporary mask until a signal is acted on; the old mask comes back
 /// once its handler has run.
-pub(super) fn rt_sigsuspend<S: crate::System>(
+pub(super) fn rt_sigsuspend<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [mask, size, ..]: Args,
 ) -> Outcome {
@@ -370,9 +370,9 @@ pub(super) fn rt_sigsuspend<S: crate::System>(
 
 /// `rt_sigtimedwait`: takes a pending signal of the set, waiting for one up to the timeout; a
 /// signal outside the set ends the wait with EINTR.
-pub(super) fn rt_sigtimedwait<S: crate::System>(
+pub(super) fn rt_sigtimedwait<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [set, info, timeout, size, ..]: Args,
 ) -> Outcome {
@@ -427,9 +427,9 @@ pub(super) fn rt_sigtimedwait<S: crate::System>(
 }
 
 /// `rt_sigreturn`: back from a handler.
-pub(super) fn rt_sigreturn<S: crate::System>(
+pub(super) fn rt_sigreturn<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     _: Args,
 ) -> Outcome {

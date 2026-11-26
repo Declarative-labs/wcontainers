@@ -173,11 +173,8 @@ impl Recorder {
             );
             process.watch_memory(first.clone(), WatchesFor::None);
         }
-        assert!(
-            process
-                .watch_thread_memory(TaskId(0), buffer(), WatchesFor::All)
-                .is_err()
-        );
+        // A watch for a thread the process does not have is ignored.
+        process.watch_thread_memory(TaskId(0), buffer(), WatchesFor::All);
         // Ranges that end before they start or past the last address are refused, not obeyed.
         let reversed = std::ops::Range {
             start: BUFFER + PAGE_SIZE,
@@ -3002,9 +2999,18 @@ fn a_task_taken_in_its_call_answers_as_a_stop_on_the_reference_makes_it_answer()
     }
 }
 
-/// Records, at each `sched_yield` of the container's first process, whether another process
-/// reads its state.
-struct Inspections(Arc<Mutex<Vec<bool>>>);
+/// What [`Inspections`] saw: a `sched_yield` of the first process, or an inspection hook.
+///
+/// Each holds whether another process then read the process's state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Inspection {
+    Yield { inspected: bool },
+    Starting { id: TaskId, inspected: bool },
+    Ended { id: TaskId, inspected: bool },
+}
+
+/// Records, in order, each `sched_yield` of the container's first process and each inspection hook.
+struct Inspections(Arc<Mutex<Vec<Inspection>>>);
 
 impl Hooks for Inspections {
     fn intercept_system_call_request(
@@ -3016,17 +3022,52 @@ impl Hooks for Inspections {
         if request.number.0 == u64::from(general::__NR_sched_yield)
             && process.id() == driver::FIRST_PROCESS
         {
-            self.0.lock().unwrap().push(process.info().inspected());
+            let inspected = process.info().inspected();
+            self.0.lock().unwrap().push(Inspection::Yield { inspected });
         }
         ControlFlow::Continue(request)
     }
+    fn on_inspection_starting(&mut self, process: Process<'_>) {
+        let (id, inspected) = (process.id(), process.info().inspected());
+        self.0
+            .lock()
+            .unwrap()
+            .push(Inspection::Starting { id, inspected });
+    }
+    fn on_inspection_ended(&mut self, process: Process<'_>) {
+        let (id, inspected) = (process.id(), process.info().inspected());
+        self.0
+            .lock()
+            .unwrap()
+            .push(Inspection::Ended { id, inspected });
+    }
 }
 
+/// Checks that the hooks tell when a child opens its parent's memory and when it closes it.
+///
+/// The first process's yields tell whether its state is read, and its own opening is no inspection.
 #[test]
 fn a_process_is_inspected_while_another_holds_its_memory_open() {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let hooks = Box::new(Inspections(seen.clone()));
     let run = try_guest("inspected", &[], Some(hooks), 1, None).expect("an outcome on our kernel");
     assert_eq!(run.outcome.exit_code, 0, "{:?}", run.outcome);
-    assert_eq!(*seen.lock().unwrap(), [false, true, false, false]);
+    let first = driver::FIRST_PROCESS;
+    assert_eq!(
+        *seen.lock().unwrap(),
+        [
+            Inspection::Yield { inspected: false },
+            Inspection::Starting {
+                id: first,
+                inspected: true
+            },
+            Inspection::Yield { inspected: true },
+            Inspection::Ended {
+                id: first,
+                inspected: false
+            },
+            Inspection::Yield { inspected: false },
+            Inspection::Yield { inspected: false },
+        ]
+    );
 }

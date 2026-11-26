@@ -3,9 +3,10 @@
 //! inode they touch and, with the name, of the directory it is in.
 
 use alloc::collections::{BTreeMap, VecDeque};
-use alloc::rc::{Rc, Weak};
+use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
-use core::cell::RefCell;
+use atomic_refcell::AtomicRefCell;
+use wcontainers_executor::Executor;
 
 use super::{Args, guest};
 use crate::file::{Anon, FileRef, OpenFile};
@@ -27,7 +28,7 @@ pub(crate) const MAX_USER_INSTANCES: usize = 8192;
 pub(crate) const MAX_USER_WATCHES: usize = 1_048_576;
 
 /// The live instances of user `uid`, forgetting those gone.
-fn instances_of(kernel: &mut Kernel, uid: u32) -> Vec<Rc<RefCell<Instance>>> {
+fn instances_of(kernel: &mut Kernel, uid: u32) -> Vec<Arc<AtomicRefCell<Instance>>> {
     kernel
         .inotify_instances
         .retain(|(_, instance)| instance.strong_count() > 0);
@@ -73,21 +74,21 @@ fn padded(name: &[u8]) -> usize {
 pub(crate) struct Instance {
     /// Its number from `Kernel::next_object`.
     object: u64,
-    watches: BTreeMap<i32, Rc<RefCell<Inode>>>,
+    watches: BTreeMap<i32, Arc<AtomicRefCell<Inode>>>,
     last: i32,
     queue: VecDeque<Event>,
 }
 
 /// A watch as its inode holds it.
 pub(crate) struct Mark {
-    instance: Weak<RefCell<Instance>>,
+    instance: Weak<AtomicRefCell<Instance>>,
     wd: i32,
     mask: u32,
 }
 
 /// An instance's watches for fdinfo, newest first as Linux lists its marks: number, inode and
 /// the mask a user sees (`inotify_mark_user_mask`).
-pub(super) fn marks(instance: &Rc<RefCell<Instance>>) -> Vec<(i32, crate::fs::Node, u32)> {
+pub(super) fn marks(instance: &Arc<AtomicRefCell<Instance>>) -> Vec<(i32, crate::fs::Node, u32)> {
     instance
         .borrow()
         .watches
@@ -100,7 +101,7 @@ pub(super) fn marks(instance: &Rc<RefCell<Instance>>) -> Vec<(i32, crate::fs::No
                 .watches
                 .iter()
                 .find(|mark| {
-                    mark.wd == *wd && core::ptr::eq(mark.instance.as_ptr(), Rc::as_ptr(instance))
+                    mark.wd == *wd && core::ptr::eq(mark.instance.as_ptr(), Arc::as_ptr(instance))
                 })?
                 .mask;
             Some((
@@ -113,24 +114,24 @@ pub(super) fn marks(instance: &Rc<RefCell<Instance>>) -> Vec<(i32, crate::fs::No
 }
 
 /// The instance behind an open file, if it is one.
-pub(crate) fn of_file(file: &FileRef) -> Option<Rc<RefCell<Instance>>> {
+pub(crate) fn of_file(file: &FileRef) -> Option<Arc<AtomicRefCell<Instance>>> {
     of(&file.borrow())
 }
 
-pub(super) fn of(file: &OpenFile) -> Option<Rc<RefCell<Instance>>> {
+pub(super) fn of(file: &OpenFile) -> Option<Arc<AtomicRefCell<Instance>>> {
     match &file.anon {
         Some(Anon::Inotify(instance)) => Some(instance.clone()),
         _ => None,
     }
 }
 
-pub(super) fn channel(instance: &Rc<RefCell<Instance>>) -> Channel {
+pub(super) fn channel(instance: &Arc<AtomicRefCell<Instance>>) -> Channel {
     Channel::Object(crate::process::ObjectId::Numbered(instance.borrow().object))
 }
 
-pub(super) fn inotify_init1<S: crate::System>(
+pub(super) fn inotify_init1<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [flags, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -152,13 +153,13 @@ pub(super) fn inotify_init1<S: crate::System>(
         LINK.to_vec(),
         opener,
     );
-    let instance = Rc::new(RefCell::new(Instance {
+    let instance = Arc::new(AtomicRefCell::new(Instance {
         object: kernel.next_object(),
         ..Instance::default()
     }));
     kernel
         .inotify_instances
-        .push((uid, Rc::downgrade(&instance)));
+        .push((uid, Arc::downgrade(&instance)));
     file.borrow_mut().anon = Some(Anon::Inotify(instance));
     let limit = kernel.process_of(tid).limits[RLIMIT_NOFILE as usize].current;
     let fd = kernel
@@ -169,7 +170,7 @@ pub(super) fn inotify_init1<S: crate::System>(
 
 /// The instance a descriptor names: EBADF without one (`fdget` passes over O_PATH files), EINVAL
 /// if it is not an instance.
-fn instance(kernel: &Kernel, tid: Tid, fd: u64) -> Result<Rc<RefCell<Instance>>, Errno> {
+fn instance(kernel: &Kernel, tid: Tid, fd: u64) -> Result<Arc<AtomicRefCell<Instance>>, Errno> {
     let file = super::io::file(kernel, tid, fd)?;
     if file.borrow().is_path() {
         return Err(Errno::EBADF);
@@ -177,9 +178,9 @@ fn instance(kernel: &Kernel, tid: Tid, fd: u64) -> Result<Rc<RefCell<Instance>>,
     of(&file.borrow()).ok_or(Errno::EINVAL)
 }
 
-pub(super) fn inotify_add_watch<S: crate::System>(
+pub(super) fn inotify_add_watch<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, path, mask, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -218,7 +219,7 @@ pub(super) fn inotify_add_watch<S: crate::System>(
         .borrow()
         .watches
         .iter()
-        .position(|mark| core::ptr::eq(mark.instance.as_ptr(), Rc::as_ptr(&instance)));
+        .position(|mark| core::ptr::eq(mark.instance.as_ptr(), Arc::as_ptr(&instance)));
     if let Some(index) = existing {
         if mask & IN_MASK_CREATE != 0 {
             return Err(Errno::EEXIST);
@@ -236,7 +237,7 @@ pub(super) fn inotify_add_watch<S: crate::System>(
     let owner = kernel
         .inotify_instances
         .iter()
-        .find(|(_, other)| core::ptr::eq(other.as_ptr(), Rc::as_ptr(&instance)))
+        .find(|(_, other)| core::ptr::eq(other.as_ptr(), Arc::as_ptr(&instance)))
         .map(|(uid, _)| *uid);
     if let Some(uid) = owner {
         let watches: usize = instances_of(kernel, uid)
@@ -255,16 +256,16 @@ pub(super) fn inotify_add_watch<S: crate::System>(
         wd
     };
     node.borrow_mut().watches.push(Mark {
-        instance: Rc::downgrade(&instance),
+        instance: Arc::downgrade(&instance),
         wd,
         mask: wanted,
     });
     Ok(wd as u64)
 }
 
-pub(super) fn inotify_rm_watch<S: crate::System>(
+pub(super) fn inotify_rm_watch<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [fd, wd, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -276,7 +277,7 @@ pub(super) fn inotify_rm_watch<S: crate::System>(
         .remove(&wd)
         .ok_or(Errno::EINVAL)?;
     node.borrow_mut().watches.retain(|mark| {
-        !(mark.wd == wd && core::ptr::eq(mark.instance.as_ptr(), Rc::as_ptr(&instance)))
+        !(mark.wd == wd && core::ptr::eq(mark.instance.as_ptr(), Arc::as_ptr(&instance)))
     });
     queue(kernel, &instance, wd, IN_IGNORED, 0, &[]);
     Ok(0)
@@ -286,7 +287,7 @@ pub(super) fn inotify_rm_watch<S: crate::System>(
 /// overflow once it is full.
 fn queue(
     kernel: &mut Kernel,
-    instance: &Rc<RefCell<Instance>>,
+    instance: &Arc<AtomicRefCell<Instance>>,
     wd: i32,
     mask: u32,
     cookie: u32,
@@ -341,7 +342,7 @@ fn tell(
         return;
     }
     let flag = if directory { IN_ISDIR } else { 0 };
-    let marks: Vec<(Weak<RefCell<Instance>>, i32, u32)> = node
+    let marks: Vec<(Weak<AtomicRefCell<Instance>>, i32, u32)> = node
         .borrow()
         .watches
         .iter()
@@ -361,9 +362,9 @@ fn tell(
 }
 
 /// A watch goes: IN_IGNORED is queued for it.
-fn forget(kernel: &mut Kernel, node: &Node, instance: &Rc<RefCell<Instance>>, wd: i32) {
+fn forget(kernel: &mut Kernel, node: &Node, instance: &Arc<AtomicRefCell<Instance>>, wd: i32) {
     node.borrow_mut().watches.retain(|mark| {
-        !(mark.wd == wd && core::ptr::eq(mark.instance.as_ptr(), Rc::as_ptr(instance)))
+        !(mark.wd == wd && core::ptr::eq(mark.instance.as_ptr(), Arc::as_ptr(instance)))
     });
     instance.borrow_mut().watches.remove(&wd);
     queue(kernel, instance, wd, IN_IGNORED, 0, &[]);
@@ -410,33 +411,41 @@ fn place_of(node: &Node) -> Option<(Node, Vec<u8>)> {
         return (node.borrow().nlink > 0).then_some((parent, name));
     }
     let current = parent.borrow().directory()?.get(&name)?;
-    Rc::ptr_eq(&current, node).then_some((parent, name))
+    Arc::ptr_eq(&current, node).then_some((parent, name))
 }
 
 /// An event about an open file: on its inode and the directory it was opened in.
 pub(crate) fn file_changed(kernel: &mut Kernel, file: &FileRef, mask: u32) {
-    let (node, dentry) = {
+    let (node, dentry, opened) = {
         let file = file.borrow();
         if file.anon.is_some() {
             return;
         }
-        (file.node.clone(), file.dentry.clone())
+        (file.node.clone(), file.dentry.clone(), file.id)
     };
     let parent = dentry.and_then(|(parent, name)| parent.upgrade().map(|parent| (parent, name)));
     // The name it was opened by is gone, and it was not moved to another (`d_unlinked`). A
-    // backend directory's names are the backend's: there a name goes only with a link of the
-    // inode, which an unlink through the kernel takes.
+    // backend directory's names are the backend's: there a name goes with an unlink or a
+    // replacing rename through the kernel, which notes it on the inode.
+    let removed_from_backend = parent.as_ref().is_some_and(|(parent, name)| {
+        crate::fs::backend::remote(parent).is_some()
+            && node
+                .borrow()
+                .name_removed_since(&Arc::downgrade(parent), name, opened)
+    });
     let names_it = parent.as_ref().is_some_and(|(parent, name)| {
         if crate::fs::backend::remote(parent).is_some() {
-            return node.borrow().nlink > 0;
+            return node.borrow().nlink > 0 && !removed_from_backend;
         }
         parent
             .borrow()
             .directory()
             .and_then(|entries| entries.get(name))
-            .is_some_and(|current| Rc::ptr_eq(&current, &node))
+            .is_some_and(|current| Arc::ptr_eq(&current, &node))
     });
-    let unlinked = node.borrow().nlink == 0 || (!names_it && place_of(&node).is_none());
+    let unlinked = node.borrow().nlink == 0
+        || removed_from_backend
+        || (!names_it && place_of(&node).is_none());
     // A file moved since it was opened is told of under its new name, as its dentry moved.
     match &parent {
         Some((parent, name)) if names_it || unlinked => {
@@ -457,8 +466,8 @@ pub(crate) fn inode_changed(kernel: &mut Kernel, node: &Node, mask: u32) {
 fn open_anywhere(kernel: &Kernel, node: &Node, except: Option<&FileRef>) -> bool {
     kernel.threads.values().any(|thread| {
         thread.files.borrow().iter().any(|(_, descriptor)| {
-            !except.is_some_and(|file| Rc::ptr_eq(file, &descriptor.file))
-                && Rc::ptr_eq(&descriptor.file.borrow().node, node)
+            !except.is_some_and(|file| Arc::ptr_eq(file, &descriptor.file))
+                && Arc::ptr_eq(&descriptor.file.borrow().node, node)
         })
     })
 }
@@ -530,7 +539,7 @@ fn moved(
     let cookie = kernel.move_cookie;
     // FS_RENAME, which only F_NOTIFY requests take, comes first, for a rename within one
     // directory (`fsnotify_handle_event`).
-    if Rc::ptr_eq(from.0, to.0) {
+    if Arc::ptr_eq(from.0, to.0) {
         super::dnotify::tell(kernel, from.0, 0, DN_RENAME);
     }
     tell(
@@ -592,9 +601,9 @@ pub(super) fn waiting(instance: &Instance) -> usize {
 
 /// `inotify_read`: as many whole events as fit, waiting for one unless nonblocking; EINVAL when
 /// the first does not fit.
-pub(super) fn read<S: crate::System>(
+pub(super) fn read<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     file: &FileRef,
     parts: &[(u64, u64)],
@@ -639,11 +648,11 @@ pub(super) fn read<S: crate::System>(
 }
 
 /// FIONREAD on an instance.
-pub(super) fn ioctl<S: crate::System>(
+pub(super) fn ioctl<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
-    instance: &Rc<RefCell<Instance>>,
+    instance: &Arc<AtomicRefCell<Instance>>,
     request: u32,
     argument: u64,
 ) -> Result<u64, Errno> {
@@ -656,11 +665,11 @@ pub(super) fn ioctl<S: crate::System>(
 }
 
 /// An instance whose last descriptor went lets go of its watches.
-pub(crate) fn released(instance: &Rc<RefCell<Instance>>) {
+pub(crate) fn released(instance: &Arc<AtomicRefCell<Instance>>) {
     let watches = core::mem::take(&mut instance.borrow_mut().watches);
     for (wd, node) in watches {
         node.borrow_mut().watches.retain(|mark| {
-            !(mark.wd == wd && core::ptr::eq(mark.instance.as_ptr(), Rc::as_ptr(instance)))
+            !(mark.wd == wd && core::ptr::eq(mark.instance.as_ptr(), Arc::as_ptr(instance)))
         });
     }
 }

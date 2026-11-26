@@ -9,6 +9,7 @@ use crate::linux::general::{__NR_rseq, membarrier_cmd_flag};
 use crate::linux_extra::*;
 use crate::process::Tid;
 use crate::{Context, Errno, Kernel};
+use wcontainers_executor::Executor;
 
 /// The fields `rseq` registration writes: the CPU (twice), no critical section, no flags, NUMA node 0
 /// and concurrency id 0 (the one CPU, and one thread so far).
@@ -18,9 +19,9 @@ fn registered_fields() -> [u8; RSEQ_WRITTEN_SIZE as usize] {
 
 /// Linux's `sys_rseq`, as the reference's 7.0 kernel checks it (measured: an area of other than the
 /// first size must be 64 byte aligned).
-pub(super) fn rseq<S: crate::System>(
+pub(super) fn rseq<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    cx: &mut Context<'_, S>,
+    cx: &mut Context<'_, S, C>,
     tid: Tid,
     [area, length, flags, signature, ..]: Args,
 ) -> Result<u64, Errno> {
@@ -98,9 +99,9 @@ const COMMANDS: u32 = MEMBARRIER_CMD_GLOBAL as u32
 
 /// Linux's `sys_membarrier`. The barriers themselves need nothing done (see above); the checks and
 /// registrations are Linux's.
-pub(super) fn membarrier<S: crate::System>(
+pub(super) fn membarrier<S: crate::System, C: Executor>(
     kernel: &mut Kernel,
-    _: &mut Context<'_, S>,
+    _: &mut Context<'_, S, C>,
     tid: Tid,
     [command, flags, ..]: Args,
 ) -> Result<u64, Errno> {
