@@ -278,9 +278,9 @@ pub fn run_reference(test: &Test, limit: Duration, logs: &Path) -> Line {
 /// Runs tests on our kernel, `jobs` at a time, each under `seed` in a process of its own forked
 /// from one that holds the image's files in a prepared kernel, so the files are loaded once. A
 /// test that runs past `limit` is killed and reported as a timeout; one whose kernel ends no turn
-/// and takes no backend answer for [`STUCK`], or whose processes all wait with nothing to wake them, is a hang; one whose
-/// kernel fails is a crash, and one the stand-in CPU cannot run is unsupported. Each finished
-/// test's line goes to `report` as it ends.
+/// and takes no backend answer for [`STUCK`] once it has begun, or whose processes all wait with
+/// nothing to wake them, is a hang; one whose kernel fails is a crash, and one the stand-in CPU
+/// cannot run is unsupported. Each finished test's line goes to `report` as it ends.
 pub fn run_ours(
     tests: &[Test],
     tar: &Path,
@@ -321,8 +321,12 @@ pub fn run_ours(
             let log = log_path(logs, test);
             std::fs::create_dir_all(log.parent().expect("a directory")).expect("the log directory");
             let _ = std::fs::remove_file(result_path(&log));
-            // SAFETY: this process has one thread; the child runs the test alone and ends with
-            // `_exit`.
+            // SAFETY: trusted, not checked: this process has one thread; the child runs the test alone
+            // and ends with `_exit`.
+            #[expect(
+                unsafe_code,
+                reason = "UNEXPLAINED: forks one child per test case on the claim that this process has one thread, which nothing checks; no primitive replaces it, step one re-runs the binary with Command instead"
+            )]
             match unsafe { libc::fork() } {
                 -1 => panic!("fork failed"),
                 0 => run_one(
@@ -339,11 +343,12 @@ pub fn run_ours(
             }
             next += 1;
         }
-        let mut status = 0;
-        // SAFETY: a plain wait for any child, not waiting.
-        let ended = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-        if ended > 0 {
-            if let Some((index, started)) = running.remove(&ended) {
+        // Any child that has ended, not waiting for one.
+        let ended = rustix::process::waitpid(None, rustix::process::WaitOptions::NOHANG)
+            .ok()
+            .flatten();
+        if let Some((ended, _)) = ended {
+            if let Some((index, started)) = running.remove(&ended.as_raw_pid()) {
                 let line = ended_line(&tests[index], &log_path(logs, &tests[index]), started);
                 report(&line);
                 lines[index] = Some(line);
@@ -356,11 +361,10 @@ pub fn run_ours(
             .map(|(pid, _)| *pid)
             .collect();
         for pid in late {
-            // SAFETY: the child is ours and has not been reaped.
-            unsafe {
-                libc::kill(pid, libc::SIGKILL);
-                libc::waitpid(pid, &mut status, 0);
-            }
+            // The child is ours and not yet reaped, so its id is still its own.
+            let child = rustix::process::Pid::from_raw(pid).expect("a child's id");
+            let _ = rustix::process::kill_process(child, rustix::process::Signal::KILL);
+            let _ = rustix::process::waitpid(Some(child), rustix::process::WaitOptions::empty());
             let (index, started) = running.remove(&pid).expect("a running test");
             let line = Line {
                 id: tests[index].id(),
@@ -425,12 +429,9 @@ fn run_one(
     // The suite's tests run for spans of the clock, as long as the reference's.
     prepared.wall_clock = true;
     let file = std::fs::File::create(log).expect("the log");
-    // SAFETY: points this process's standard output and error at the log.
-    unsafe {
-        use std::os::fd::AsRawFd;
-        libc::dup2(file.as_raw_fd(), 1);
-        libc::dup2(file.as_raw_fd(), 2);
-    }
+    // This process's standard output and error go to the log.
+    let _ = rustix::stdio::dup2_stdout(&file);
+    let _ = rustix::stdio::dup2_stderr(&file);
     let started = Instant::now();
     // A run whose kernel ends no turn and takes no backend answer for this long is stuck in one
     // call or one turn: a hang.
@@ -439,13 +440,16 @@ fn run_one(
         let log = log.to_path_buf();
         let id = test.id();
         std::thread::spawn(move || {
-            let mut last = (driver::PROGRESS.load(Ordering::Relaxed), Instant::now());
+            // Until the first step, the run is still being made (Docker starting the backend's
+            // container), which only the limit bounds.
+            let first = driver::PROGRESS.load(Ordering::Relaxed);
+            let mut last = (first, Instant::now());
             loop {
                 std::thread::sleep(Duration::from_secs(5));
                 let turns = driver::PROGRESS.load(Ordering::Relaxed);
                 if turns != last.0 {
                     last = (turns, Instant::now());
-                } else if last.1.elapsed() > STUCK {
+                } else if turns != first && last.1.elapsed() > STUCK {
                     eprintln!("no turn ended and no backend answer came for {STUCK:?}");
                     let line = Line {
                         id: id.clone(),
@@ -456,7 +460,13 @@ fn run_one(
                     };
                     let _ = std::fs::write(result_path(&log), line.to_text());
                     // SAFETY: ends this process at once, its run abandoned.
-                    unsafe { libc::_exit(0) }
+                    #[expect(
+                        unsafe_code,
+                        reason = "ends the hung child at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
+                    )]
+                    unsafe {
+                        libc::_exit(0)
+                    };
                 }
             }
         });
@@ -502,7 +512,13 @@ fn run_one(
     };
     std::fs::write(result_path(log), line.to_text()).expect("the result");
     // SAFETY: ends the forked process without running the parent's exit handlers.
-    unsafe { libc::_exit(0) }
+    #[expect(
+        unsafe_code,
+        reason = "ends the forked child at once with _exit, which runs no exit handler and has no memory precondition; libc declares every foreign call unsafe"
+    )]
+    unsafe {
+        libc::_exit(0)
+    };
 }
 
 fn crash_line(test: &Test, seconds: f64) -> Line {

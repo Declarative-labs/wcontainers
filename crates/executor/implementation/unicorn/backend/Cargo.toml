@@ -15,5 +15,10 @@ caps = "0.5"
 libc = "0.2"
 nix = "0.24"
 
+# Unsafe code only where it carries its own `#[expect(unsafe_code, reason = "..")]`, as in the unicorn executor.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
 [profile.release]
 debug = false

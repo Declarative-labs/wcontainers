@@ -9,10 +9,11 @@ use std::net::{
     IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs,
     UdpSocket,
 };
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsFd, BorrowedFd};
 use std::time::Duration;
 
 use domain::base::{Name, Question};
+use rustix::event::{PollFd, PollFlags, Timespec};
 use wcontainers_abi::HostError;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
@@ -102,22 +103,35 @@ fn unspecified_of(address: SocketAddr) -> SocketAddr {
     }
 }
 
+/// The events `poll` asks of a socket whose wait asks to read, to write, or neither (an error or
+/// hang-up is always told).
+fn asked(read: bool, write: bool) -> PollFlags {
+    let mut events = PollFlags::empty();
+    if read {
+        events |= PollFlags::IN;
+    }
+    if write {
+        events |= PollFlags::OUT;
+    }
+    events
+}
+
 /// What a socket is ready for, from the events `poll` gave for it.
-fn ready_for(revents: i16) -> ReadinessReport {
+fn ready_for(revents: PollFlags) -> ReadinessReport {
     let mut ready = report(ReadyFor::empty(), UnconditionalEvents::empty());
     for (bit, flag) in [
-        (libc::POLLIN, ReadyFor::READABLE),
-        (libc::POLLOUT, ReadyFor::WRITABLE),
+        (PollFlags::IN, ReadyFor::READABLE),
+        (PollFlags::OUT, ReadyFor::WRITABLE),
     ] {
-        if revents & bit != 0 {
+        if revents.contains(bit) {
             ready.ready_for |= flag;
         }
     }
     for (bit, flag) in [
-        (libc::POLLERR, UnconditionalEvents::ERROR),
-        (libc::POLLHUP, UnconditionalEvents::HANG_UP),
+        (PollFlags::ERR, UnconditionalEvents::ERROR),
+        (PollFlags::HUP, UnconditionalEvents::HANG_UP),
     ] {
-        if revents & bit != 0 {
+        if revents.contains(bit) {
             ready.unconditional |= flag;
         }
     }
@@ -268,6 +282,18 @@ impl Network {
         self.listeners.remove(&number);
     }
 
+    /// Closes TCP connection `number` with a reset, as a close lingering for no time does.
+    pub fn tcp_reset(&mut self, number: u32) {
+        let Some(socket) = self
+            .streams
+            .remove(&number)
+            .and_then(|stream| stream.socket)
+        else {
+            return;
+        };
+        let _ = socket2::SockRef::from(&socket).set_linger(Some(Duration::ZERO));
+    }
+
     /// Tells the next change a wait on socket `number` asks for, or an error or hang-up, which
     /// every wait hears.
     pub fn arm(&mut self, number: u32, interest: ReadyFor) {
@@ -362,6 +388,41 @@ impl Network {
             || self.listeners.values().any(|listener| listener.armed)
     }
 
+    /// What socket `number`'s kept wait would hear now, asked of the socket without waiting, as a
+    /// host's wait asks when polled; the watch then ends, as a report of [`Self::take`] ends it.
+    pub fn ready_now(&mut self, number: u32) -> Option<ReadinessReport> {
+        let (fd, wanted) = if let Some(flow) = self.flows.get(&number).filter(|flow| flow.armed) {
+            let wanted = asked(flow.read_armed, flow.write_armed);
+            (flow.socket.as_fd(), wanted)
+        } else if let Some(stream) = self.streams.get(&number).filter(|stream| stream.armed) {
+            let wanted = asked(stream.read_armed, stream.write_armed);
+            (stream.socket.as_ref()?.as_fd(), wanted)
+        } else {
+            let listener = self
+                .listeners
+                .get(&number)
+                .filter(|listener| listener.armed)?;
+            (listener.socket.as_fd(), PollFlags::IN)
+        };
+        let mut fds = [PollFd::from_borrowed_fd(fd, wanted)];
+        let _ = rustix::event::poll(&mut fds, Some(&Timespec::default()));
+        let revents = fds[0].revents();
+        if revents.is_empty() {
+            return None;
+        }
+        if let Some(flow) = self.flows.get_mut(&number) {
+            (flow.armed, flow.read_armed, flow.write_armed) = (false, false, false);
+            return Some(ready_for(revents));
+        }
+        if let Some(stream) = self.streams.get_mut(&number) {
+            (stream.armed, stream.read_armed, stream.write_armed) = (false, false, false);
+            return Some(ready_for(revents));
+        }
+        let listener = self.listeners.get_mut(&number)?;
+        listener.armed = false;
+        Some(report(ReadyFor::READABLE, UnconditionalEvents::empty()))
+    }
+
     /// What is owed, after waiting up to `timeout` for a socket to change when nothing is.
     pub fn take(&mut self, timeout: Duration) -> Vec<Owed> {
         /// What a socket watched is.
@@ -371,29 +432,19 @@ impl Network {
             Stream(u32),
             Listener(u32),
         }
-        let events = |read: bool, write: bool| {
-            let mut events = 0;
-            if read {
-                events |= libc::POLLIN;
-            }
-            if write {
-                events |= libc::POLLOUT;
-            }
-            events
-        };
-        let mut armed: Vec<(Watched, i32, i16)> = self
+        let mut armed: Vec<(Watched, BorrowedFd<'_>, PollFlags)> = self
             .flows
             .iter()
             .filter(|(_, flow)| flow.armed)
             .map(|(&id, flow)| {
-                let wanted = events(flow.read_armed, flow.write_armed);
-                (Watched::Flow(id), flow.socket.as_raw_fd(), wanted)
+                let wanted = asked(flow.read_armed, flow.write_armed);
+                (Watched::Flow(id), flow.socket.as_fd(), wanted)
             })
             .collect();
         armed.extend(self.streams.iter().filter_map(|(&number, stream)| {
             let socket = stream.socket.as_ref().filter(|_| stream.armed)?;
-            let wanted = events(stream.read_armed, stream.write_armed);
-            Some((Watched::Stream(number), socket.as_raw_fd(), wanted))
+            let wanted = asked(stream.read_armed, stream.write_armed);
+            Some((Watched::Stream(number), socket.as_fd(), wanted))
         }));
         armed.extend(
             self.listeners
@@ -401,31 +452,33 @@ impl Network {
                 .filter(|(_, listener)| listener.armed)
                 .map(|(&number, listener)| {
                     let watched = Watched::Listener(number);
-                    (watched, listener.socket.as_raw_fd(), libc::POLLIN)
+                    (watched, listener.socket.as_fd(), PollFlags::IN)
                 }),
         );
-        let mut fds: Vec<libc::pollfd> = armed
+        let mut fds: Vec<PollFd<'_>> = armed
             .iter()
-            .map(|&(_, fd, events)| libc::pollfd {
-                fd,
-                events,
-                revents: 0,
-            })
+            .map(|&(_, fd, events)| PollFd::from_borrowed_fd(fd, events))
             .collect();
+        // Whole milliseconds, as a poll in milliseconds waits.
         let wait = if self.owed.is_empty() {
-            timeout.as_millis() as i32
+            Duration::from_millis(timeout.as_millis().min(i32::MAX as u128) as u64)
         } else {
-            0
+            Duration::ZERO
         };
         if !fds.is_empty() {
-            // SAFETY: the descriptors are this host's own open sockets.
-            unsafe { libc::poll(fds.as_mut_ptr(), fds.len() as libc::nfds_t, wait) };
+            let wait = Timespec::try_from(wait).expect("a wait of at most a few weeks");
+            // A wait cut short by a signal reports nothing, and is asked again.
+            let _ = rustix::event::poll(&mut fds, Some(&wait));
         }
-        for (&(watched, _, _), fd) in armed.iter().zip(&fds) {
-            let revents = fd.revents;
-            if revents == 0 {
-                continue;
-            }
+        let changed: Vec<(Watched, PollFlags)> = armed
+            .iter()
+            .zip(&fds)
+            .map(|(&(watched, _, _), fd)| (watched, fd.revents()))
+            .filter(|(_, revents)| !revents.is_empty())
+            .collect();
+        drop(fds);
+        drop(armed);
+        for (watched, revents) in changed {
             match watched {
                 Watched::Listener(number) => {
                     if let Some(listener) = self.listeners.get_mut(&number) {

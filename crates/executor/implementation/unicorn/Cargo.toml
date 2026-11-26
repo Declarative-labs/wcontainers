@@ -15,62 +15,115 @@ path = "implementation.rs"
 [[bin]]
 name = "generate-linux"
 path = "bin/generate-linux.rs"
+required-features = ["harness"]
 
 [[bin]]
 name = "ltp"
 path = "bin/ltp.rs"
+required-features = ["harness"]
 
 [dependencies]
+# The stand-in executor.
 wcontainers-abi.workspace = true
-wcontainers-kernel = { path = "../../../kernel" }
-wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux" }
-wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel" }
-wcontainers-docker = { path = "../../../docker" }
-# The seeded choices of a run, shared with the native back end's inside.
-wcontainers-system-seeded-test-policy = { path = "../../../system/implementation/seeded-test-policy" }
-wcontainers-system = { path = "../../../system" }
-wcontainers-clock = { path = "../../../clock" }
-wcontainers-random-source = { path = "../../../random-source" }
-wcontainers-tcp-sockets = { path = "../../../tcp-sockets" }
-wcontainers-udp-sockets = { path = "../../../udp-sockets" }
-wcontainers-readiness = { path = "../../../readiness" }
-wcontainers-internet-protocol = { path = "../../../internet-protocol" }
-wcontainers-configurable = { path = "../../../configurable" }
-wcontainers-negative-route-advisable = { path = "../../../negative-route-advisable" }
 wcontainers-executor = { path = "../.." }
+wcontainers-behavior-source = { path = "../../../behavior-source" }
+wcontainers-volatile-bytes = { path = "../../../volatile-bytes" }
+wcontainers-byte-sink = { path = "../../../byte-sink" }
+wcontainers-byte-source = { path = "../../../byte-source" }
 wcontainers-processor-architecture = { path = "../../../processor-architecture" }
 wcontainers-processor-architecture-arm64 = { path = "../../../processor-architecture/implementation/arm64" }
-# Single instruction execution on any CPU side of the abi, shared with the WebAssembly executor.
-wcontainers-executor-wasmtime = { path = "../wasmtime" }
-wcontainers-arm64 = { path = "../../../arm64", optional = true }
 unicorn-engine = "2.1.5"
 memmap2 = "0.9.12"
-linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp", "elf_uapi", "no_std"] }
-cargo_metadata = "0.23.1"
-libc = "0.2.191"
-regex = "1.13.1"
-rand = "0.9.2"
-domain = { version = "0.12.3", default-features = false, features = ["alloc"] }
-tar = "0.4.46"
-proptest = "1.12.0"
-fuse-abi = { version = "0.2.0", default-features = false, features = ["linux", "zerocopy"] }
-zerocopy.workspace = true
 coarsetime = "0.1.38"
+# The kernel test harness, from here on.
+wcontainers-kernel = { path = "../../../kernel", optional = true }
+wcontainers-kernel-linux = { path = "../../../kernel/implementation/linux", optional = true }
+wcontainers-runtime-single-kernel = { path = "../../../runtime/implementation/single-kernel", optional = true }
+wcontainers-docker = { path = "../../../docker", optional = true }
+# The seeded choices of a run, shared with the native back end's inside.
+wcontainers-system-seeded-test-policy = { path = "../../../system/implementation/seeded-test-policy", optional = true }
+wcontainers-system = { path = "../../../system", optional = true }
+wcontainers-clock = { path = "../../../clock", optional = true }
+wcontainers-random-source = { path = "../../../random-source", optional = true }
+wcontainers-tcp-sockets = { path = "../../../tcp-sockets", optional = true }
+wcontainers-udp-sockets = { path = "../../../udp-sockets", optional = true }
+wcontainers-readiness = { path = "../../../readiness", optional = true }
+wcontainers-internet-protocol = { path = "../../../internet-protocol", optional = true }
+wcontainers-configurable = { path = "../../../configurable", optional = true }
+wcontainers-negative-route-advisable = { path = "../../../negative-route-advisable", optional = true }
+# The exception classes of ESR_EL1 a stopped processor's syndrome is built from, the version the architecture uses.
+aarch64-cpu = { version = "12.0.0", optional = true }
+# Single instruction execution on any CPU side of the abi, shared with the WebAssembly executor.
+wcontainers-executor-wasmtime = { path = "../wasmtime", optional = true }
+wcontainers-arm64 = { path = "../../../arm64", optional = true }
+linux-raw-sys = { version = "0.12.1", default-features = false, features = ["general", "errno", "auxvec", "system", "ioctl", "prctl", "net", "ptrace", "netlink", "if_arp", "elf_uapi", "no_std"], optional = true }
+cargo_metadata = { version = "0.23.1", optional = true }
+libc = { version = "0.2.191", optional = true }
+# Safe system calls: polling, pipes, waiting for and signalling children, standard streams and terminal sizes.
+rustix = { version = "1.1.6", features = ["event", "pipe", "process", "stdio", "termios"], optional = true }
+# The pseudo-terminal of a reference client, opened and made raw safely.
+nix = { version = "0.31.3", default-features = false, features = ["term"], optional = true }
+socket2 = { version = "0.6.5", optional = true }
+regex = { version = "1.13.1", optional = true }
+rand = { version = "0.9.2", optional = true }
+domain = { version = "0.12.3", default-features = false, features = ["alloc"], optional = true }
+tar = { version = "0.4.46", optional = true }
+proptest = { version = "1.12.0", optional = true }
+fuse-abi = { version = "0.2.0", default-features = false, features = ["linux", "zerocopy"], optional = true }
+zerocopy = { workspace = true, optional = true }
 
 [dev-dependencies]
+# This machine's TCP sockets, read from /proc/net/tcp to see a reset arrive (MIT OR Apache-2.0).
+procfs = { version = "0.18.0", default-features = false }
+# The heap allocations a test process makes, counted without a global allocator of our own.
+stats_alloc = "0.1.10"
 wcontainers-executor-conformance = { path = "../../conformance" }
-wcontainers-distinguishing-state-generator-input-domain = { path = "../../../distinguishing-state-generator/implementation/input-domain" }
-wcontainers-instruction-input-domain-arm64 = { path = "../../../instruction-input-domain/implementation/arm64" }
-wcontainers-precise-instruction-set-unicorn = { path = "../../../precise-instruction-set/implementation/unicorn" }
+# The behaviors the suite's stand-in is checked against: the first known behavior of each instruction.
+wcontainers-precise-instruction-set = { path = "../../../precise-instruction-set" }
+wcontainers-precise-instruction-set-measured = { path = "../../../precise-instruction-set/implementation/measured" }
+wcontainers-distinguishing-state-generator-arm64 = { path = "../../../distinguishing-state-generator/implementation/arm64" }
 
 [[test]]
 name = "conformance"
-path = "conformance.rs"
+path = "conformance_run.rs"
 
 [features]
+default = ["harness"]
+# The kernel test harness: the kernel, the runtime and the reference containers it compares the kernel with.
+harness = [
+    "dep:wcontainers-kernel",
+    "dep:wcontainers-kernel-linux",
+    "dep:wcontainers-runtime-single-kernel",
+    "dep:wcontainers-docker",
+    "dep:wcontainers-system-seeded-test-policy",
+    "dep:wcontainers-system",
+    "dep:wcontainers-clock",
+    "dep:wcontainers-random-source",
+    "dep:wcontainers-tcp-sockets",
+    "dep:wcontainers-udp-sockets",
+    "dep:wcontainers-readiness",
+    "dep:wcontainers-internet-protocol",
+    "dep:wcontainers-configurable",
+    "dep:wcontainers-negative-route-advisable",
+    "dep:aarch64-cpu",
+    "dep:wcontainers-executor-wasmtime",
+    "dep:linux-raw-sys",
+    "dep:cargo_metadata",
+    "dep:libc",
+    "dep:rustix",
+    "dep:nix",
+    "dep:socket2",
+    "dep:regex",
+    "dep:rand",
+    "dep:domain",
+    "dep:tar",
+    "dep:proptest",
+    "dep:fuse-abi",
+    "dep:zerocopy",
+]
 # Every test runs with the translator's WebAssembly behind the kernel (the runtime's WebAssembly back end)
 # instead of the stand-in CPU, at the look-ahead `LOOK_AHEAD` names: full (also when unset), none or bounded.
-runtime = ["dep:wcontainers-arm64"]
+runtime = ["harness", "dep:wcontainers-arm64"]
 
 [lints]
 workspace = true

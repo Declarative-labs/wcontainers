@@ -1,9 +1,8 @@
-//! One ARM64 instruction of an execution state, run on a CPU side of the abi.
+//! Conversions between ARM64 processor states and register blocks, and single-step runs on a CPU side.
 //!
-//! The state's memory becomes a new memory of the CPU side and its processor a new thread; the CPU side runs
-//! the thread for one instruction, and its exit becomes the exception the architecture names. The abi says
-//! less than the architecture (a memory fault does not say whether the page was mapped), so what it leaves
-//! out is read from the state before, as the page tables an EL1 would have made from it say.
+//! An execution state's memory and processor become a memory and thread there, run for exactly one instruction.
+//!
+//! What an exit leaves out, such as whether a faulting page was mapped, is read from the state before.
 
 use std::collections::BTreeMap;
 
@@ -60,7 +59,7 @@ pub fn execute_on_cpu<Side: Cpu>(
         }
     }
     let pc = processor.program_counter;
-    let mut word = [0; INSTRUCTION_BYTES as usize];
+    let mut word = [u8::MIN; INSTRUCTION_BYTES as usize];
     cpu.read(space, pc, &mut word)
         .expect("the program counter is inside the CPU side's address space");
     let word = u32::from_le_bytes(word);
@@ -78,7 +77,7 @@ pub fn execute_on_cpu<Side: Cpu>(
         .map(|(page, _)| *page)
         .collect();
     let read_page = |cpu: &mut Side, page: u64| {
-        let mut bytes = vec![0; PAGE_SIZE as usize];
+        let mut bytes = vec![u8::MIN; PAGE_SIZE as usize];
         cpu.read(space, page, &mut bytes)
             .expect("a page the state gave a permission");
         bytes
@@ -131,7 +130,7 @@ fn to_permissions(permission: PagePermission) -> Permissions {
     }
 }
 
-fn to_register_block(processor: &Processor) -> RegisterBlock {
+pub(crate) fn to_register_block(processor: &Processor) -> RegisterBlock {
     RegisterBlock {
         x: processor.general_purpose_registers,
         sp: processor.stack_pointer,
@@ -148,7 +147,7 @@ fn to_register_block(processor: &Processor) -> RegisterBlock {
     }
 }
 
-fn to_processor(registers: &RegisterBlock, exception: Option<Exception>) -> Processor {
+pub(crate) fn to_processor(registers: &RegisterBlock, exception: Option<Exception>) -> Processor {
     Processor {
         general_purpose_registers: registers.x,
         stack_pointer: registers.sp,
@@ -164,8 +163,8 @@ fn to_processor(registers: &RegisterBlock, exception: Option<Exception>) -> Proc
     }
 }
 
-/// The exception an exit is, or none when the instruction completed.
-fn to_exception(
+/// Returns the exception an exit is, or none when the instruction completed.
+pub(crate) fn to_exception(
     exit: Exit,
     word: u32,
     pc: u64,
@@ -203,10 +202,10 @@ fn to_exception(
             Some(address),
         ),
         Exit::AlignmentFault { address } if address == pc => {
-            (ESR_EL1::EC::Value::PCAlignmentFault, 0, Some(pc))
+            (ESR_EL1::EC::Value::PCAlignmentFault, u64::MIN, Some(pc))
         }
-        Exit::AlignmentFault { .. } => (ESR_EL1::EC::Value::SPAlignmentFault, 0, None),
-        Exit::IllegalInstruction => (ESR_EL1::EC::Value::Unknown, 0, None),
+        Exit::AlignmentFault { .. } => (ESR_EL1::EC::Value::SPAlignmentFault, u64::MIN, None),
+        Exit::IllegalInstruction => (ESR_EL1::EC::Value::Unknown, u64::MIN, None),
         Exit::Breakpoint { comment } => (ESR_EL1::EC::Value::Brk64, u64::from(comment), None),
         Exit::MemoryFaultWithoutRegisters => {
             panic!("the instruction at {pc:#x} reached beyond the CPU side's address space")

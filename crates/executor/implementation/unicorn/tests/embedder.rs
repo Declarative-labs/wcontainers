@@ -445,7 +445,9 @@ fn a_request_past_the_ceiling_is_announced_and_fails_as_out_of_memory() {
         assert_eq!(seen.len(), 1, "{seen:?}");
         let (bytes, distance) = seen[0];
         assert_eq!(bytes, PIECE);
-        assert!(distance < PIECE, "{distance}");
+        // What is left lies in the two places placement fills, below the mmap base and in the
+        // gap above it, each with less room than a piece.
+        assert!(distance < 2 * PIECE, "{distance}");
         assert_eq!(counted(&run, reason::PROCESS_OUTGROWN), 1);
         // With no ceiling given, the stand-in's own end is the ceiling below the container's
         // address space: it is reached later, and announced the same way.

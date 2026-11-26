@@ -9,6 +9,7 @@ path = "conformance.rs"
 
 [dependencies]
 wcontainers-random-source = { path = ".." }
+wcontainers-volatile-bytes = { path = "../../volatile-bytes" }
 
 [lints]
 workspace = true

@@ -1586,6 +1586,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e17592d60ebacc7d5e169f4663c5f84f9161cc90328abcfe8456f41e4dfcb284"
 
 [[package]]
+name = "hex"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2858,6 +2864,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "procfs"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "25485360a54d6861439d60facef26de713b1e126bf015ec8f98239467a2b82f7"
+dependencies = [
+ "bitflags 2.13.2",
+ "procfs-core",
+ "rustix",
+]
+
+[[package]]
+name = "procfs-core"
+version = "0.18.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e6401bf7b6af22f78b563665d15a22e9aef27775b79b149a66ca022468a4e405"
+dependencies = [
+ "bitflags 2.13.2",
+ "hex",
+]
+
+[[package]]
 name = "profiling"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3496,6 +3523,12 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "stats_alloc"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c0e04424e733e69714ca1bbb9204c1a57f09f5493439520f9f68c132ad25eec"
 
 [[package]]
 name = "strsim"
@@ -4498,10 +4531,16 @@ dependencies = [
 name = "wcontainers-executor-conformance"
 version = "0.1.0"
 dependencies = [
+ "wcontainers-abi",
+ "wcontainers-behavior-source-conformance",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-distinguishing-state-generator",
  "wcontainers-executor",
  "wcontainers-precise-instruction-set",
  "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -4635,9 +4674,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "wcontainers-executor-simulation"
+version = "0.1.0"
+dependencies = [
+ "wcontainers-abi",
+ "wcontainers-behavior-source",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
+ "wcontainers-distinguishing-state-generator",
+ "wcontainers-distinguishing-state-generator-arm64",
+ "wcontainers-executor",
+ "wcontainers-executor-conformance",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-measured",
+ "wcontainers-processor-architecture",
+ "wcontainers-processor-architecture-arm64",
+ "wcontainers-random-source",
+ "wcontainers-random-source-seeded",
+ "wcontainers-volatile-bytes",
+]
+
+[[package]]
 name = "wcontainers-executor-unicorn"
 version = "0.1.0"
 dependencies = [
+ "aarch64-cpu",
  "cargo_metadata",
  "coarsetime",
  "domain",
@@ -4645,26 +4706,34 @@ dependencies = [
  "libc",
  "linux-raw-sys",
  "memmap2",
+ "nix",
+ "procfs",
  "proptest",
  "rand 0.9.5",
  "regex",
+ "rustix",
+ "socket2",
+ "stats_alloc",
  "tar",
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-behavior-source",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-clock",
  "wcontainers-configurable",
- "wcontainers-distinguishing-state-generator-input-domain",
+ "wcontainers-distinguishing-state-generator-arm64",
  "wcontainers-docker",
  "wcontainers-executor",
  "wcontainers-executor-conformance",
  "wcontainers-executor-wasmtime",
- "wcontainers-instruction-input-domain-arm64",
  "wcontainers-internet-protocol",
  "wcontainers-kernel",
  "wcontainers-kernel-linux",
  "wcontainers-negative-route-advisable",
- "wcontainers-precise-instruction-set-unicorn",
+ "wcontainers-precise-instruction-set",
+ "wcontainers-precise-instruction-set-measured",
  "wcontainers-processor-architecture",
  "wcontainers-processor-architecture-arm64",
  "wcontainers-random-source",
@@ -4674,6 +4743,7 @@ dependencies = [
  "wcontainers-system-seeded-test-policy",
  "wcontainers-tcp-sockets",
  "wcontainers-udp-sockets",
+ "wcontainers-volatile-bytes",
  "zerocopy",
 ]
 
@@ -4705,6 +4775,8 @@ dependencies = [
  "wasmtime",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-byte-sink",
+ "wcontainers-byte-source",
  "wcontainers-distinguishing-state-generator-input-domain",
  "wcontainers-docker",
  "wcontainers-executor",
@@ -4716,6 +4788,8 @@ dependencies = [
  "wcontainers-processor-architecture-arm64",
  "wcontainers-runtime-single-kernel",
  "wcontainers-translator",
+ "wcontainers-volatile-bytes",
+ "wcontainers-volatile-bytes-conformance",
  "zerocopy",
  "zstd",
 ]
@@ -5262,6 +5336,7 @@ name = "wcontainers-random-source-conformance"
 version = "0.1.0"
 dependencies = [
  "wcontainers-random-source",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5270,8 +5345,10 @@ version = "0.1.0"
 dependencies = [
  "getrandom 0.4.3",
  "wcontainers-abi",
+ "wcontainers-byte-source",
  "wcontainers-random-source",
  "wcontainers-random-source-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
@@ -5281,8 +5358,10 @@ dependencies = [
  "rand 0.9.5",
  "rand_chacha",
  "wcontainers-abi",
+ "wcontainers-byte-source",
  "wcontainers-random-source",
  "wcontainers-random-source-conformance",
+ "wcontainers-volatile-bytes",
 ]
 
 [[package]]
