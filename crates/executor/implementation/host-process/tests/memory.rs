@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use wcontainers_abi::{Access, Cpu, CpuError, MemoryId, Permissions, RegisterBlock, ThreadId};
+use wcontainers_abi::{Access, CpuError, MemoryId, Permissions, RegisterBlock, ThreadId};
 use wcontainers_executor_host_process::executor::{
     COPY_UNIT, FaultOwner, HostProcessExecutor, Touch, Touched,
 };

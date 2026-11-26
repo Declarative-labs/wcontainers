@@ -1,18 +1,19 @@
-//! A memory space's copy: at the same addresses its private pages are lent, as a fork lends them, and each side's
-//! later stores stay its own; a copy within one space reads the bytes as they were before it.
+//! A page table's copy: at the same addresses its private pages are lent, as a fork lends them, and each side's later
+//! stores stay its own.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
-use std::pin::pin;
 use std::sync::{Arc, OnceLock};
-use std::task::{Context, Poll, Waker};
 
 use wcontainers_abi::{Access, Permissions, SystemCallRequest};
 use wcontainers_arm64::encode::{self, form};
-use wcontainers_executor::memory_space::MemorySpace;
+use wcontainers_executor::memory_space::{MemorySpace, PageTable};
 use wcontainers_executor::{
-    Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse, TrapHandler,
+    Execution, ExecutionStop, Executor, InterruptResponse, MemoryFaultResponse,
+    SystemCallResponse, TrapHandler,
 };
-use wcontainers_executor_host_process::executor::HostProcess;
+use wcontainers_executor_host_process::executor::{
+    HostProcess, HostProcessMemory, HostProcessPageTable,
+};
 use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_processor_architecture_arm64::{Processor, ZERO_PROCESSOR};
 use wcontainers_volatile_bytes::VolatileBytes;
@@ -48,13 +49,11 @@ impl TrapHandler for EndAtTheCall {
     }
 }
 
-fn run<F: Future>(future: F) -> F::Output {
-    let mut future = pin!(future);
-    let mut context = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(value) = future.as_mut().poll(&mut context) {
-            return value;
-        }
+/// The processor an execution ended with: form P never waits.
+fn ended<Wait>(stop: ExecutionStop<Processor<()>, Wait>) -> Processor<()> {
+    match stop {
+        ExecutionStop::Terminated(processor) => processor,
+        ExecutionStop::Waiting { .. } => panic!("form P waited"),
     }
 }
 
@@ -71,8 +70,8 @@ fn read_word(memory: &impl MemorySpace, address: u64) -> u64 {
 }
 
 /// A space whose code stores x1 at x0 and makes a system call, and whose data page holds `BEFORE`, writable.
-fn storing_space(executor: &HostProcess) -> <HostProcess as Executor>::GuestMemory {
-    let memory = executor.create_guest_memory().expect("a memory");
+fn storing_space(executor: &HostProcess) -> (HostProcessMemory, HostProcessPageTable) {
+    let (memory, mut table) = executor.create_guest_memory().expect("a memory");
     let words = [
         encode::load_store(form::STR, 1, 0, 0, WORD).expect("str"),
         encode::exception(form::SVC, 0),
@@ -80,40 +79,40 @@ fn storing_space(executor: &HostProcess) -> <HostProcess as Executor>::GuestMemo
     let code: Vec<u8> = words.iter().flat_map(|word| word.to_le_bytes()).collect();
     let bytes = memory.borrow(CODE..CODE + code.len() as u64).expect("code");
     assert_eq!(bytes.write(&code), code.len());
-    memory
+    table
         .set_permissions(CODE..CODE + PAGE, Permissions::READ | Permissions::EXECUTE)
         .expect("code permissions");
     write_word(&memory, DATA, BEFORE);
-    memory
+    table
         .set_permissions(DATA..DATA + PAGE, Permissions::READ | Permissions::WRITE)
         .expect("data permissions");
-    memory
+    (memory, table)
 }
 
 /// Runs the space's code once, storing `value` at `DATA`.
-fn store(executor: &mut HostProcess, memory: &<HostProcess as Executor>::GuestMemory, value: u64) {
+fn store(executor: &mut HostProcess, memory: &HostProcessMemory, value: u64) {
     let mut start = Processor {
         program_counter: CODE,
         ..ZERO_PROCESSOR
     };
     start.general_purpose_registers[0] = DATA;
     start.general_purpose_registers[1] = value;
-    let mut handler = EndAtTheCall;
-    let (execution, _) = executor.execute(start, memory, &mut handler);
-    let stopped = run(execution);
+    let (execution, _) = executor.prepare_execution(start, memory);
+    let stopped = ended(execution.run(&mut EndAtTheCall));
     assert_eq!(
         stopped.program_counter,
-        CODE + size_of::<u32>() as u64,
-        "the run ends at its system call: {stopped:?}"
+        CODE + 2 * size_of::<u32>() as u64,
+        "the run ends after its system call: {stopped:?}"
     );
 }
 
 #[test]
 fn a_copy_at_the_same_addresses_lends_its_pages_and_each_side_s_stores_stay_its_own() {
     let mut executor = executor();
-    let source = storing_space(&executor);
-    let copy = executor.create_guest_memory().expect("a memory");
-    copy.copy_from(CODE..DATA + PAGE, &source, CODE)
+    let (source, source_table) = storing_space(&executor);
+    let (copy, mut copy_table) = executor.create_guest_memory().expect("a memory");
+    copy_table
+        .copy_from(CODE..DATA + PAGE, &source_table, CODE)
         .expect("the copy");
     let before = executor.counters();
     assert_eq!(read_word(&copy, DATA), BEFORE, "the copy's bytes");
@@ -156,7 +155,7 @@ fn a_refused_copy_lends_no_page_the_source_still_writes() {
         return;
     }
     let mut executor = executor();
-    let source = storing_space(&executor);
+    let (source, mut source_table) = storing_space(&executor);
     store(&mut executor, &source, 1);
     // Pages of alternating permissions take the source's host mappings until one more change is refused, which the
     // memory space's `set_permissions` has no error for: it panics, and nothing is changed.
@@ -169,14 +168,16 @@ fn a_refused_copy_lends_no_page_the_source_still_writes() {
         };
         let at = far + index * PAGE;
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            source.set_permissions(at..at + PAGE, allowed)
+            source_table.set_permissions(at..at + PAGE, allowed)
         }))
         .is_err()
     });
     assert!(refused.is_some());
-    let copy = executor.create_guest_memory().expect("a memory");
+    let (copy, mut copy_table) = executor.create_guest_memory().expect("a memory");
     assert!(
-        copy.copy_from(CODE..DATA + PAGE, &source, CODE).is_err(),
+        copy_table
+            .copy_from(CODE..DATA + PAGE, &source_table, CODE)
+            .is_err(),
         "the copy is refused"
     );
     store(&mut executor, &source, 7);
@@ -186,43 +187,4 @@ fn a_refused_copy_lends_no_page_the_source_still_writes() {
         7,
         "the copy reads a store the source made after it"
     );
-}
-
-#[test]
-fn a_copy_within_one_space_reads_its_bytes_as_they_were_before_it() {
-    let executor = executor();
-    let memory = executor.create_guest_memory().expect("a memory");
-    for (page, value) in [(0, 10), (1, 11), (2, 12)] {
-        write_word(&memory, DATA + page * PAGE, value);
-    }
-    memory
-        .copy_from(DATA..DATA + 3 * PAGE, &memory, DATA)
-        .expect("a copy onto itself");
-    for (page, value) in [(0, 10), (1, 11), (2, 12)] {
-        assert_eq!(
-            read_word(&memory, DATA + page * PAGE),
-            value,
-            "page {page} unchanged"
-        );
-    }
-    memory
-        .copy_from(DATA + PAGE..DATA + 4 * PAGE, &memory, DATA)
-        .expect("a copy one page up");
-    for (page, value) in [(0, 10), (1, 10), (2, 11), (3, 12)] {
-        assert_eq!(
-            read_word(&memory, DATA + page * PAGE),
-            value,
-            "page {page} after the copy up"
-        );
-    }
-    memory
-        .copy_from(DATA..DATA + 3 * PAGE, &memory, DATA + PAGE)
-        .expect("a copy one page down");
-    for (page, value) in [(0, 10), (1, 11), (2, 12), (3, 12)] {
-        assert_eq!(
-            read_word(&memory, DATA + page * PAGE),
-            value,
-            "page {page} after the copy down"
-        );
-    }
 }

@@ -4586,6 +4586,7 @@ dependencies = [
  "unicorn-engine",
  "wcontainers-abi",
  "wcontainers-arm64",
+ "wcontainers-behavior-source",
  "wcontainers-byte-sink",
  "wcontainers-byte-source",
  "wcontainers-clock",

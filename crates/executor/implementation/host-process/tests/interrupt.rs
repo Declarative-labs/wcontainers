@@ -2,18 +2,16 @@
 //! goes on where it was, answered terminate it ends there, whenever it is sent.
 #![cfg(all(target_os = "linux", target_arch = "aarch64"))]
 
-use std::pin::pin;
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
-use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use wcontainers_abi::{Access, Permissions, SystemCallRequest};
 use wcontainers_arm64::encode;
-use wcontainers_executor::memory_space::MemorySpace;
+use wcontainers_executor::memory_space::{MemorySpace, PageTable};
 use wcontainers_executor::{
-    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
-    TrapHandler,
+    Execution, ExecutionInterrupter, ExecutionStop, Executor, InterruptResponse,
+    MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
 use wcontainers_executor_host_process::executor::HostProcess;
 use wcontainers_executor_host_process::host::HostProcessHost;
@@ -68,8 +66,8 @@ impl TrapHandler for Interrupts {
 fn spinning(
     executor: &HostProcess,
     step: i64,
-) -> (<HostProcess as Executor>::GuestMemory, Processor) {
-    let memory = executor.create_guest_memory().expect("a memory");
+) -> (<HostProcess as Executor>::GuestMemory, Processor<()>) {
+    let (memory, mut table) = executor.create_guest_memory().expect("a memory");
     let add = encode::add_immediate(0, 0, step).expect("an add of a step");
     let back = encode::branch(false, -4).expect("a branch back");
     let code: Vec<u8> = [add, back].iter().flat_map(|w| w.to_le_bytes()).collect();
@@ -80,7 +78,7 @@ fn spinning(
             .write(&code),
         code.len()
     );
-    memory
+    table
         .set_permissions(CODE..CODE + PAGE, Permissions::READ | Permissions::EXECUTE)
         .expect("code permissions");
     let start = Processor {
@@ -90,14 +88,11 @@ fn spinning(
     (memory, start)
 }
 
-/// Polls the execution to its end on this thread.
-fn run<F: Future>(future: F) -> F::Output {
-    let mut future = pin!(future);
-    let mut context = Context::from_waker(Waker::noop());
-    loop {
-        if let Poll::Ready(value) = future.as_mut().poll(&mut context) {
-            return value;
-        }
+/// The processor an execution ended with: form P never waits.
+fn ended<Wait>(stop: ExecutionStop<Processor<()>, Wait>) -> Processor<()> {
+    match stop {
+        ExecutionStop::Terminated(processor) => processor,
+        ExecutionStop::Waiting { .. } => panic!("form P waited"),
     }
 }
 
@@ -132,7 +127,7 @@ fn interrupted_after(
         seen: 0,
         told,
     };
-    let (execution, interrupter) = executor.execute(start, &memory, &mut handler);
+    let (execution, interrupter) = executor.prepare_execution(start, &memory);
     let pauses = pauses.to_vec();
     let interrupting = std::thread::spawn(move || {
         let mut lost = None;
@@ -149,7 +144,7 @@ fn interrupted_after(
         }
         lost
     });
-    let stopped = run(execution);
+    let stopped = ended(execution.run(&mut handler));
     let lost = interrupting.join().expect("the interrupting thread");
     assert_eq!(handler.seen, times, "the interrupts the handler was given");
     assert_eq!(stopped.exception, None, "an interrupt is no exception");
@@ -217,7 +212,7 @@ fn a_store_into_the_page_its_own_code_is_on_completes_before_an_interrupt_ends_t
     const STORED: u64 = 0x1234_5678;
     let at = CODE + PAGE / 2;
     let mut executor = executor();
-    let memory = executor.create_guest_memory().expect("a memory");
+    let (memory, mut table) = executor.create_guest_memory().expect("a memory");
     let store =
         encode::load_store(encode::form::STR, 0, 3, 0, size_of::<u64>() as u64).expect("a store");
     let spin = encode::branch(false, 0).expect("a branch to itself");
@@ -230,7 +225,7 @@ fn a_store_into_the_page_its_own_code_is_on_completes_before_an_interrupt_ends_t
         code.len()
     );
     let all = Permissions::READ | Permissions::WRITE | Permissions::EXECUTE;
-    memory
+    table
         .set_permissions(CODE..CODE + PAGE, all)
         .expect("code permissions");
     let mut start = Processor {
@@ -245,7 +240,7 @@ fn a_store_into_the_page_its_own_code_is_on_completes_before_an_interrupt_ends_t
         seen: 0,
         told,
     };
-    let (execution, interrupter) = executor.execute(start, &memory, &mut handler);
+    let (execution, interrupter) = executor.prepare_execution(start, &memory);
     let interrupting = std::thread::spawn(move || {
         std::thread::sleep(PAUSE);
         interrupter.interrupt();
@@ -253,7 +248,7 @@ fn a_store_into_the_page_its_own_code_is_on_completes_before_an_interrupt_ends_t
             interrupter.interrupt();
         }
     });
-    let stopped = run(execution);
+    let stopped = ended(execution.run(&mut handler));
     interrupting.join().expect("the interrupting thread");
     let mut word = [0; size_of::<u64>()];
     let length = word.len();

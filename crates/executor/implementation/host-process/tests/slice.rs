@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use rustix::process::Signal;
-use wcontainers_abi::{Access, Cpu, MemoryId, ThreadId};
+use wcontainers_abi::{Access, MemoryId, ThreadId};
 use wcontainers_executor_host_process::executor::{HostProcessExecutor, Touch, Touched};
 use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_executor_host_process::stub::STOP_IGNORED;

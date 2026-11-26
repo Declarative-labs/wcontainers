@@ -1199,7 +1199,7 @@ impl HostProcessExecutor {
     /// Runs `thread` from `resume` to its next exit, or to [`Exit::Stop`] from the first exit at or after the count
     /// `until` (with lone pieces, the first instruction's end at or after it); `when` says when each entry into
     /// translated code is stopped. `clock` reads the monotonic clock for the guest's counter reads.
-    pub(super) fn run_translated(
+    pub fn run_translated(
         &mut self,
         thread: ThreadId,
         resume: Resume,

@@ -8,13 +8,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use wcontainers_abi::{Cpu, Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId, Warning};
+use wcontainers_abi::{Exit, MemoryId, Permissions, RegisterBlock, Resume, ThreadId};
 use wcontainers_arm64::encode::{self, form};
 use wcontainers_executor_host_process::executor::HostProcessExecutor;
 use wcontainers_executor_host_process::host::HostProcessHost;
 use wcontainers_executor_host_process::layout::{OUR_AREA, REGISTER_PAGES, THREAD_PAGES};
 use wcontainers_executor_host_process::pages::{control, register};
-use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Leaving, Turn};
+use wcontainers_executor_host_process::stub::StopWhen;
 
 static HOST: std::sync::OnceLock<Arc<HostProcessHost>> = std::sync::OnceLock::new();
 
@@ -100,54 +100,38 @@ fn code_page() -> Vec<u8> {
     words.iter().flat_map(|w| w.to_le_bytes()).collect()
 }
 
-/// Answers every system call but `exit` with 0, ends the run at `exit` or at any exit but a stop.
+/// What a run saw: every exit, the registers at the last, and the slow paths taken by then.
 struct Seen {
-    thread: ThreadId,
     exits: Vec<Exit>,
     last: RegisterBlock,
     warnings: Vec<String>,
 }
 
-impl Answer for Seen {
-    fn exit(&mut self, cpu: &mut dyn Cpu, exit: Exit, _progress: u64) -> Carry {
-        self.exits.push(exit);
-        cpu.registers(self.thread, &mut self.last);
-        match exit {
-            Exit::Syscall(call) if call.number.0 != u64::from(EXIT) => Carry::On {
-                resume: Resume::Return(0),
-                turn: Turn::Counted { limit: None },
-            },
-            Exit::Stop => Carry::Leave(Leaving::AnotherThread),
-            _ => Carry::Leave(Leaving::Finished),
-        }
-    }
-
-    fn clock(&mut self, _progress: u64) -> u64 {
-        0
-    }
-
-    fn warn(&mut self, warning: Warning<'_>) {
-        self.warnings.push(warning.reason.to_string());
-    }
-}
-
-/// Runs `thread` from `registers` until it leaves for anything but a stop, at most [`RUNS`] runs; what it saw.
+/// Runs `thread` from `registers`, answering every system call but `exit` with 0 and going on after every stop, until
+/// it leaves for anything else, at most [`RUNS`] runs; what it saw.
 fn run(cpu: &mut HostProcessExecutor, thread: ThreadId, registers: &RegisterBlock) -> Seen {
     cpu.set_registers(thread, registers);
     let mut seen = Seen {
-        thread,
         exits: Vec::new(),
         last: RegisterBlock::ZERO,
         warnings: Vec::new(),
     };
     let mut resume = Resume::FromRegisters;
     for _ in 0..RUNS {
-        let Ok(()) = cpu.run(thread, resume, Turn::Counted { limit: None }, &mut seen);
-        if seen.exits.last() != Some(&Exit::Stop) {
-            break;
-        }
-        resume = Resume::Continue;
+        let exit = cpu.run_translated(thread, resume, None, StopWhen::default(), &mut || 0);
+        seen.exits.push(exit);
+        cpu.registers(thread, &mut seen.last);
+        resume = match exit {
+            Exit::Syscall(call) if call.number.0 != u64::from(EXIT) => Resume::Return(0),
+            Exit::Stop => Resume::Continue,
+            _ => break,
+        };
     }
+    seen.warnings = cpu
+        .slow_paths()
+        .into_iter()
+        .map(|(reason, count)| format!("{reason} ({count})"))
+        .collect();
     seen
 }
 

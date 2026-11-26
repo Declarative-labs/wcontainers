@@ -12,7 +12,7 @@ use rustix::io::Errno;
 use rustix::mm::ProtFlags;
 use rustix::process::Pid;
 use wcontainers_abi::{
-    Access, AddressSpace, Cpu, CpuError, KIB, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions,
+    Access, CpuError, KIB, LOWEST_ADDRESS, MemoryId, PAGE_SIZE, Permissions,
     RegisterBlock, SharedId, ThreadId,
 };
 use zerocopy::IntoBytes;
@@ -29,7 +29,10 @@ use crate::view::View;
 #[path = "execution.rs"]
 mod execution;
 #[cfg(target_arch = "aarch64")]
-pub use execution::{HostProcess, HostProcessBytes, HostProcessInterrupter, HostProcessMemory};
+pub use execution::{
+    HostProcess, HostProcessBytes, HostProcessExecution, HostProcessInterrupter, HostProcessMemory,
+    HostProcessPageTable, SingleInstructionRefusal,
+};
 #[cfg(target_arch = "aarch64")]
 #[path = "native.rs"]
 pub mod native;
@@ -1075,13 +1078,10 @@ impl HostProcessExecutor {
     }
 }
 
-impl Cpu for HostProcessExecutor {
-    fn address_space(&self) -> AddressSpace {
-        AddressSpace { end: GUEST.end }
-    }
-
+/// The memories, blocks and threads the kernel holds, by number.
+impl HostProcessExecutor {
     /// A new stub whose whole guest area is its memfd, mapped with no access.
-    fn memory_new(&mut self) -> Result<MemoryId, CpuError> {
+    pub fn memory_new(&mut self) -> Result<MemoryId, CpuError> {
         let stub = self.host.fork_stub().map_err(|_| CpuError::OutOfMemory)?;
         let memory = Memory {
             stub,
@@ -1115,7 +1115,7 @@ impl Cpu for HostProcessExecutor {
 
     /// The child borrows every private page the source owns or borrows and maps its shared ranges, and the source's
     /// writable ranges lose write in its view before this returns, which is the fork's instant.
-    fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
+    pub fn memory_duplicate(&mut self, source: MemoryId) -> Result<MemoryId, CpuError> {
         let writable = self
             .memory(source)
             .permissions
@@ -1226,7 +1226,7 @@ impl Cpu for HostProcessExecutor {
     }
 
     /// Ends a memory's stub; one that lends pages keeps its memfd until no page is borrowed from it.
-    fn memory_drop(&mut self, id: MemoryId) {
+    pub fn memory_drop(&mut self, id: MemoryId) {
         #[cfg(target_arch = "aarch64")]
         self.drop_code(id);
         let _ = self.unborrow(id, GUEST, false);
@@ -1275,12 +1275,12 @@ impl Cpu for HostProcessExecutor {
         }
     }
 
-    fn read(&mut self, id: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {
+    pub fn read(&mut self, id: MemoryId, address: u64, into: &mut [u8]) -> Result<(), CpuError> {
         self.read_guest(id, address, into)
     }
 
     /// Private pages are first made the memory's own and lent to none; shared ones are written in their block.
-    fn write(&mut self, id: MemoryId, address: u64, from: &[u8]) -> Result<(), CpuError> {
+    pub fn write(&mut self, id: MemoryId, address: u64, from: &[u8]) -> Result<(), CpuError> {
         let range = checked(address, from.len() as u64)?;
         #[cfg(target_arch = "aarch64")]
         self.drop_code_of(id, range.clone());
@@ -1306,7 +1306,7 @@ impl Cpu for HostProcessExecutor {
     }
 
     /// Ends any sharing in the range, then punches it out of the memfd, its lent pages first given to a borrower.
-    fn zero(&mut self, id: MemoryId, address: u64, length: u64) -> Result<(), CpuError> {
+    pub fn zero(&mut self, id: MemoryId, address: u64, length: u64) -> Result<(), CpuError> {
         let range = checked(address, length)?;
         #[cfg(target_arch = "aarch64")]
         self.drop_code_of(id, range.clone());
@@ -1320,7 +1320,7 @@ impl Cpu for HostProcessExecutor {
     }
 
     /// Records what a range allows and queues its view's change, at most what the kernel allows.
-    fn set_permissions(
+    pub fn set_permissions(
         &mut self,
         id: MemoryId,
         address: u64,
@@ -1349,14 +1349,14 @@ impl Cpu for HostProcessExecutor {
     }
 
     /// Drops the pieces made from the range (ARM64; elsewhere nothing is translated yet).
-    fn code_changed(&mut self, memory: MemoryId, address: u64, length: u64, _starts: &[u64]) {
+    pub fn code_changed(&mut self, memory: MemoryId, address: u64, length: u64, _starts: &[u64]) {
         #[cfg(target_arch = "aarch64")]
         self.forget_changed_code(memory, address, length);
         #[cfg(not(target_arch = "aarch64"))]
         let _ = (memory, address, length);
     }
 
-    fn shared_new(&mut self, length: u64) -> Result<SharedId, CpuError> {
+    pub fn shared_new(&mut self, length: u64) -> Result<SharedId, CpuError> {
         let file = rustix::fs::memfd_create("wcontainers shared block", MemfdFlags::CLOEXEC)
             .map_err(host_error)?;
         rustix::fs::ftruncate(&file, length).map_err(host_error)?;
@@ -1369,7 +1369,7 @@ impl Cpu for HostProcessExecutor {
 
     /// The range's private pages are given up (a later unmapping copies the block's bytes back), and the block's
     /// memfd is mapped over it with what each part allows.
-    fn shared_map(
+    pub fn shared_map(
         &mut self,
         shared: SharedId,
         offset: u64,
@@ -1411,7 +1411,7 @@ impl Cpu for HostProcessExecutor {
     }
 
     /// The block's bytes become the memory's own private copy.
-    fn shared_unmap(
+    pub fn shared_unmap(
         &mut self,
         memory: MemoryId,
         address: u64,
@@ -1437,7 +1437,7 @@ impl Cpu for HostProcessExecutor {
         Ok(())
     }
 
-    fn shared_read(
+    pub fn shared_read(
         &mut self,
         shared: SharedId,
         offset: u64,
@@ -1453,7 +1453,7 @@ impl Cpu for HostProcessExecutor {
         files::read(block.file.as_fd(), offset, into).map_err(host_error)
     }
 
-    fn shared_write(&mut self, shared: SharedId, offset: u64, from: &[u8]) -> Result<(), CpuError> {
+    pub fn shared_write(&mut self, shared: SharedId, offset: u64, from: &[u8]) -> Result<(), CpuError> {
         let block = self.block(shared);
         if offset
             .checked_add(from.len() as u64)
@@ -1465,14 +1465,14 @@ impl Cpu for HostProcessExecutor {
     }
 
     /// Its memfd closes once no queued map holds it.
-    fn shared_drop(&mut self, shared: SharedId) {
+    pub fn shared_drop(&mut self, shared: SharedId) {
         self.blocks[shared.0 as usize]
             .take()
             .expect("a block the kernel holds");
     }
 
     /// The memory's spare host thread, or a new one made by a turn of one of its threads.
-    fn thread_new(&mut self, id: MemoryId) -> Result<ThreadId, CpuError> {
+    pub fn thread_new(&mut self, id: MemoryId) -> Result<ThreadId, CpuError> {
         let index = match self.memory_mut(id).spare.take() {
             Some(index) => index,
             None => {
@@ -1523,7 +1523,7 @@ impl Cpu for HostProcessExecutor {
     }
 
     /// Ends a guest thread's host thread, or keeps it as its memory's spare if it has none.
-    fn thread_drop(&mut self, thread: ThreadId) {
+    pub fn thread_drop(&mut self, thread: ThreadId) {
         let Thread { memory, index, .. } = self.threads[thread.0 as usize]
             .take()
             .expect("a thread the kernel holds");
@@ -1541,7 +1541,7 @@ impl Cpu for HostProcessExecutor {
     }
 
     /// The guest's own, as its last exit resolved them (ARM64), or as its register page holds them.
-    fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
+    pub fn registers(&mut self, thread: ThreadId, into: &mut RegisterBlock) {
         let Thread { memory, index, .. } = self.thread(thread);
         #[cfg(target_arch = "aarch64")]
         if let Some(guest) = &mut self.guests[thread.0 as usize] {
@@ -1562,7 +1562,7 @@ impl Cpu for HostProcessExecutor {
             .read_registers(index, into.as_mut_bytes());
     }
 
-    fn set_registers(&mut self, thread: ThreadId, from: &RegisterBlock) {
+    pub fn set_registers(&mut self, thread: ThreadId, from: &RegisterBlock) {
         #[cfg(target_arch = "aarch64")]
         if let Some(guest) = &mut self.guests[thread.0 as usize] {
             guest.set_registers(from);

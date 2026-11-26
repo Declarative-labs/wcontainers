@@ -10,7 +10,6 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use wcontainers_abi::Cpu;
 use wcontainers_executor_host_process::executor::{HostProcessExecutor, Touch, Touched};
 use wcontainers_executor_host_process::host::HostProcessHost;
 

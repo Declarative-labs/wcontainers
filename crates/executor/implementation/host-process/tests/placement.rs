@@ -10,7 +10,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rustix::process::Pid;
-use wcontainers_abi::Cpu;
 use wcontainers_executor_host_process::executor::{HostProcessExecutor, Touch, Touched};
 use wcontainers_executor_host_process::host::HostProcessHost;
 

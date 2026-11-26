@@ -1,7 +1,6 @@
-//! How form P is driven (plan 4.6), the one place that implements an executor trait: the kernel's loop drives it
-//! through the runtime's `Execution`, and the executor interface through [`HostProcess`] and its memories.
+//! How form P is driven (plan 4.6), the one place that implements the executor interface: [`HostProcess`] and its
+//! memories.
 
-use core::convert::Infallible;
 use std::cell::{RefCell, RefMut};
 use std::ops::Range;
 use std::rc::Rc;
@@ -13,29 +12,28 @@ use aarch64_cpu::registers::ESR_EL1;
 use rangemap::RangeSet;
 use rustix::time::{ClockId, clock_gettime};
 use wcontainers_abi::{
-    Access, Cpu, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume, SharedId,
-    ThreadId, Warning,
+    Access, CpuError, Exit, MemoryId, PAGE_SIZE, Permissions, RegisterBlock, Resume, SharedId,
+    SystemCallRequest, ThreadId,
 };
+use wcontainers_behavior_source::BehaviorSource;
 use wcontainers_byte_sink::ByteSink;
 use wcontainers_byte_source::ByteSource;
 use wcontainers_executor::memory_space::{
-    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace,
+    CopyMemoryError, InvalidAddressError, MapMemoryError, MemorySpace, PageTable,
 };
 use wcontainers_executor::{
-    ExecutionInterrupter, Executor, InterruptResponse, MemoryFaultResponse, SystemCallResponse,
-    TrapHandler,
+    Execution, ExecutionInterrupter, ExecutionStop, Executor, InterruptResponse,
+    MemoryFaultResponse, SystemCallResponse, TrapHandler,
 };
-use wcontainers_processor_architecture::MemoryDelta;
+use wcontainers_processor_architecture::{
+    MemoryDelta, MemorySink, MemorySnapshot, ProcessorArchitecture,
+};
 use wcontainers_processor_architecture_arm64::encoding::IMM16;
 use wcontainers_processor_architecture_arm64::memory::report_changed_bytes;
-use wcontainers_processor_architecture_arm64::syndrome::{
-    FaultStatus, WRITE_NOT_READ, encode_syndrome,
-};
 use wcontainers_processor_architecture_arm64::{
-    Arm64, ConditionFlags, DataAccess, Exception, INSTRUCTION_BYTES, InstructionFetch,
-    PagePermission, Processor,
+    AccessDirection, Arm64, ConditionFlags, DataAccess, Exception, ExclusiveMonitor, FaultStatus,
+    INSTRUCTION_SIZE, InstructionFetch, PagePermission, Processor, User, ZERO_PROCESSOR,
 };
-use wcontainers_runtime_single_kernel::{Answer, Carry, Execution, Turn};
 use wcontainers_volatile_bytes::VolatileBytes;
 
 use super::{GUEST, HostProcessExecutor, data_extents, page_cover, pieces};
@@ -46,24 +44,6 @@ use crate::stub::{StopTarget, StopWhen};
 const COPY_CHUNK: usize = 1 << 20;
 
 impl HostProcessExecutor {
-    /// The count at which `turn`, starting on `thread` now, ends, and the time that bounds each entry into its code:
-    /// with lone pieces none, since the thread comes back at every instruction's end; otherwise a unit of progress is
-    /// taken as a nanosecond, since linked pieces cannot be stopped at an exact count.
-    fn turn_end(&mut self, thread: ThreadId, turn: Turn) -> (Option<u64>, Option<Duration>) {
-        match turn {
-            Turn::Counted { limit: None } | Turn::Free => (None, None),
-            Turn::Counted { limit: Some(limit) } if self.lone => {
-                let count = self.guest_count(thread);
-                self.slow(super::native::reason::TURN_RUN_IN_STEPS, 1, count);
-                (Some(count + limit), None)
-            }
-            Turn::Counted { limit: Some(limit) } => (
-                Some(self.guest_count(thread) + limit),
-                Some(Duration::from_nanos(limit)),
-            ),
-        }
-    }
-
     fn guest_count(&self, thread: ThreadId) -> u64 {
         self.guests[thread.0 as usize]
             .as_ref()
@@ -298,54 +278,6 @@ impl HostProcessExecutor {
     }
 }
 
-impl Execution for HostProcessExecutor {
-    type Failure = Infallible;
-
-    /// Counter reads are told no progress; the progress made before one is handed with the exit that follows.
-    fn run(
-        &mut self,
-        thread: ThreadId,
-        mut resume: Resume,
-        turn: Turn,
-        answer: &mut dyn Answer,
-    ) -> Result<(), Infallible> {
-        let (mut until, mut slice) = self.turn_end(thread, turn);
-        loop {
-            let before = self.guest_count(thread);
-            let when = StopWhen {
-                slice,
-                wanted: None,
-            };
-            let exit = self.run_translated(thread, resume, until, when, &mut || answer.clock(0));
-            for (reason, count, detail) in self.take_warnings() {
-                answer.warn(Warning {
-                    reason,
-                    count,
-                    detail,
-                });
-            }
-            let progress = self.guest_count(thread) - before;
-            if exit != Exit::Stop {
-                self.counters.kernel_entries += 1;
-            }
-            match answer.exit(self, exit, progress) {
-                Carry::On {
-                    resume: next,
-                    turn: next_turn,
-                } => {
-                    (until, slice) = self.turn_end(thread, next_turn);
-                    resume = next;
-                }
-                Carry::Leave(_) => return Ok(()),
-            }
-        }
-    }
-
-    fn restored(&self) -> Self {
-        unimplemented!("a save of form P is not built")
-    }
-}
-
 /// Form P under the executor interface: the executor's state, shared with every memory it made.
 pub struct HostProcess {
     host: Arc<HostProcessHost>,
@@ -370,27 +302,13 @@ impl HostProcess {
     }
 }
 
-/// A guest memory of form P: a stub of the executor that made it.
-pub struct HostProcessMemory {
+/// One memory's stub, ended once its space and its page table are both dropped.
+struct Held {
     executor: Rc<RefCell<HostProcessExecutor>>,
     id: MemoryId,
 }
 
-impl HostProcessMemory {
-    fn lock(&self) -> RefMut<'_, HostProcessExecutor> {
-        lock(&self.executor)
-    }
-
-    /// Panics unless `other` was made by the same executor: its pages are another executor's stubs.
-    fn same_executor(&self, other: &Self) {
-        assert!(
-            Rc::ptr_eq(&self.executor, &other.executor),
-            "a memory of another executor"
-        );
-    }
-}
-
-impl Drop for HostProcessMemory {
+impl Drop for Held {
     fn drop(&mut self) {
         let mut executor = lock(&self.executor);
         executor.memory_drop(self.id);
@@ -398,9 +316,35 @@ impl Drop for HostProcessMemory {
     }
 }
 
+impl Held {
+    fn lock(&self) -> RefMut<'_, HostProcessExecutor> {
+        lock(&self.executor)
+    }
+}
+
+/// A guest memory of form P: a stub of the executor that made it.
+pub struct HostProcessMemory {
+    held: Rc<Held>,
+}
+
+/// The one holder of a form P memory's pages.
+pub struct HostProcessPageTable {
+    held: Rc<Held>,
+}
+
+impl HostProcessPageTable {
+    /// Panics unless `other` was made by the same executor: its pages are another executor's stubs.
+    fn same_executor(&self, other: &Self) {
+        assert!(
+            Rc::ptr_eq(&self.held.executor, &other.held.executor),
+            "a memory of another executor"
+        );
+    }
+}
+
 /// Bytes of a form P memory, read and written by position in the stub's memfd.
 pub struct HostProcessBytes<'space> {
-    memory: &'space HostProcessMemory,
+    held: &'space Held,
     addresses: Range<u64>,
 }
 
@@ -412,8 +356,8 @@ impl VolatileBytes for HostProcessBytes<'_> {
     /// A host refusal to read the stub's memfd reads none, counted and warned as "guest bytes refused".
     fn read(&self, into: &mut [u8]) -> usize {
         let count = into.len().min(self.len() as usize);
-        let mut executor = self.memory.lock();
-        match executor.read_guest(self.memory.id, self.addresses.start, &mut into[..count]) {
+        let mut executor = self.held.lock();
+        match executor.read_guest(self.held.id, self.addresses.start, &mut into[..count]) {
             Ok(()) => count,
             Err(error) => {
                 executor.guest_bytes_refused(error);
@@ -425,8 +369,8 @@ impl VolatileBytes for HostProcessBytes<'_> {
     /// A host refusal to write the stub's memfd writes none, counted and warned as "guest bytes refused".
     fn write(&self, bytes: &[u8]) -> usize {
         let count = bytes.len().min(self.len() as usize);
-        let mut executor = self.memory.lock();
-        match executor.write(self.memory.id, self.addresses.start, &bytes[..count]) {
+        let mut executor = self.held.lock();
+        match executor.write(self.held.id, self.addresses.start, &bytes[..count]) {
             Ok(()) => count,
             Err(error) => {
                 executor.guest_bytes_refused(error);
@@ -452,39 +396,47 @@ impl VolatileBytes for HostProcessBytes<'_> {
 
 impl MemorySpace for HostProcessMemory {
     type Bytes<'space> = HostProcessBytes<'space>;
+    type PageTable = HostProcessPageTable;
 
     fn borrow(&self, addresses: Range<u64>) -> Result<HostProcessBytes<'_>, InvalidAddressError> {
         inside(&addresses)?;
         Ok(HostProcessBytes {
-            memory: self,
+            held: &self.held,
             addresses,
         })
     }
 
     fn zero(&self, addresses: Range<u64>) -> Result<(), InvalidAddressError> {
         inside(&addresses)?;
-        let mut executor = self.lock();
-        let zeroed = executor.zero(self.id, addresses.start, addresses.end - addresses.start);
+        let mut executor = self.held.lock();
+        let zeroed = executor.zero(
+            self.held.id,
+            addresses.start,
+            addresses.end - addresses.start,
+        );
         executor.drop_unmapped_blocks();
         zeroed.map_err(refused)
     }
+}
 
+impl PageTable for HostProcessPageTable {
     /// Every page the addresses touch gets the permissions.
     fn set_permissions(
-        &self,
+        &mut self,
         addresses: Range<u64>,
         allowed: Permissions,
     ) -> Result<(), InvalidAddressError> {
         inside(&addresses)?;
         let pages = page_cover(&addresses);
-        self.lock()
-            .set_permissions(self.id, pages.start, pages.end - pages.start, allowed)
+        self.held
+            .lock()
+            .set_permissions(self.held.id, pages.start, pages.end - pages.start, allowed)
             .map_err(refused)
     }
 
     /// Only whole pages are mapped: addresses that do not start and end on a page are refused.
     fn map_from(
-        &self,
+        &mut self,
         addresses: Range<u64>,
         other: &Self,
         other_start: u64,
@@ -492,8 +444,8 @@ impl MemorySpace for HostProcessMemory {
         self.same_executor(other);
         let source =
             whole_pages(&addresses, other_start).map_err(MapMemoryError::InvalidAddress)?;
-        let mut executor = self.lock();
-        let mapped = executor.map_pages(self.id, addresses, other.id, source.start);
+        let mut executor = self.held.lock();
+        let mapped = executor.map_pages(self.held.id, addresses, other.held.id, source.start);
         executor.drop_unmapped_blocks();
         mapped.map_err(|error| match error {
             CpuError::BadAddress => MapMemoryError::InvalidAddress(InvalidAddressError),
@@ -501,17 +453,17 @@ impl MemorySpace for HostProcessMemory {
         })
     }
 
-    fn unmap_from(&self, addresses: Range<u64>) -> Result<(), InvalidAddressError> {
+    fn unmap_from(&mut self, addresses: Range<u64>) -> Result<(), InvalidAddressError> {
         inside(&addresses)?;
-        let mut executor = self.lock();
-        let unmapped = executor.unmap_pages(self.id, addresses);
+        let mut executor = self.held.lock();
+        let unmapped = executor.unmap_pages(self.held.id, addresses);
         executor.drop_unmapped_blocks();
         unmapped.map_err(refused)
     }
 
     /// Only whole pages are copied: addresses that do not start and end on a page are refused.
     fn copy_from(
-        &self,
+        &mut self,
         addresses: Range<u64>,
         other: &Self,
         other_start: u64,
@@ -519,8 +471,8 @@ impl MemorySpace for HostProcessMemory {
         self.same_executor(other);
         let source =
             whole_pages(&addresses, other_start).map_err(CopyMemoryError::InvalidAddress)?;
-        let mut executor = self.lock();
-        let copied = executor.copy_pages(self.id, addresses, other.id, source.start);
+        let mut executor = self.held.lock();
+        let copied = executor.copy_pages(self.held.id, addresses, other.held.id, source.start);
         executor.drop_unmapped_blocks();
         copied.map_err(|error| match error {
             CpuError::BadAddress => CopyMemoryError::InvalidAddress(InvalidAddressError),
@@ -529,7 +481,271 @@ impl MemorySpace for HostProcessMemory {
     }
 }
 
-/// How a run under `execute` ended.
+/// Why an instruction run alone was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SingleInstructionRefusal {
+    /// The state's exclusive monitor holds an address, which no host call can set in a stub's thread.
+    ExclusiveMonitorHeld(ExclusiveMonitor),
+    /// The host refused a stub, a thread or a change to the state's memory.
+    Host(CpuError),
+}
+
+impl BehaviorSource for HostProcess {
+    type Architecture = Arm64<User>;
+    type Error = SingleInstructionRefusal;
+
+    /// Runs the instruction alone in a memory made of the deltas, its piece a stretch of that one instruction, never
+    /// linked, so its first landing ends the run; the pages it may write are compared before and after.
+    fn execute_single_instruction_in_place(
+        &mut self,
+        processor: &mut Processor<()>,
+        memory: MemorySnapshot<'_, '_, Arm64<User>>,
+        mutation_hook: &mut impl MemorySink<Arm64<User>>,
+    ) -> Result<(), SingleInstructionRefusal> {
+        if processor.exclusive_monitor != ExclusiveMonitor::Open {
+            return Err(SingleInstructionRefusal::ExclusiveMonitorHeld(
+                processor.exclusive_monitor,
+            ));
+        }
+        let host = &self.host;
+        let executor = self.single.get_or_insert_with(|| {
+            let mut executor = HostProcessExecutor::new(Arc::clone(host));
+            executor.lone = true;
+            executor
+        });
+        let space = executor
+            .memory_new()
+            .map_err(SingleInstructionRefusal::Host)?;
+        let ran = run_alone(executor, space, processor, memory.mutations, mutation_hook);
+        executor.memory_drop(space);
+        ran
+    }
+}
+
+/// [`HostProcess::execute_single_instruction_in_place`] in the memory `space`, which the caller drops.
+fn run_alone(
+    executor: &mut HostProcessExecutor,
+    space: MemoryId,
+    processor: &mut Processor<()>,
+    memory: &[MemoryDelta<'_, Arm64<User>>],
+    mutation_hook: &mut impl MemorySink<Arm64<User>>,
+) -> Result<(), SingleInstructionRefusal> {
+    let host = SingleInstructionRefusal::Host;
+    let mut permissions = std::collections::BTreeMap::new();
+    for delta in memory {
+        match delta {
+            MemoryDelta::PermissionAssignment {
+                addresses,
+                permission,
+            } => {
+                executor
+                    .set_permissions(
+                        space,
+                        addresses.start,
+                        addresses.end - addresses.start,
+                        to_permissions(*permission),
+                    )
+                    .map_err(host)?;
+                for page in addresses.clone().step_by(PAGE_SIZE as usize) {
+                    permissions.insert(page, *permission);
+                }
+            }
+            MemoryDelta::ValueAssignment { start, bytes } => {
+                executor.write(space, *start, bytes).map_err(host)?;
+            }
+        }
+    }
+    let writable: Vec<u64> = permissions
+        .iter()
+        .filter(|(_, permission)| {
+            matches!(
+                permission,
+                PagePermission::Mapped {
+                    data_access: DataAccess::ReadWrite,
+                    ..
+                }
+            )
+        })
+        .map(|(page, _)| *page)
+        .collect();
+    let read_page = |executor: &HostProcessExecutor, page: u64| {
+        let mut bytes = vec![0; PAGE_SIZE as usize];
+        executor.read_guest(space, page, &mut bytes).map(|()| bytes)
+    };
+    let before = writable
+        .iter()
+        .map(|page| read_page(executor, *page))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(host)?;
+    let thread = executor.thread_new(space).map_err(host)?;
+    executor.set_registers(thread, &to_register_block(processor));
+    // Reached at the first instruction's end.
+    let until = executor.guest_count(thread);
+    let exit = executor.run_translated(
+        thread,
+        Resume::FromRegisters,
+        Some(until),
+        StopWhen::default(),
+        &mut monotonic,
+    );
+    executor.print_warnings();
+    let mut registers = RegisterBlock::ZERO;
+    executor.registers(thread, &mut registers);
+    let exception = match exit {
+        Exit::Stop => None,
+        Exit::Syscall(_) => {
+            let mut word = [0; INSTRUCTION_SIZE as usize];
+            let _ = executor.read_guest(space, processor.program_counter, &mut word);
+            Some(system_call(u32::from_le_bytes(word)))
+        }
+        Exit::MemoryFault { address, access } => {
+            let page = address & !(PAGE_SIZE - 1);
+            let mapped = permissions
+                .get(&page)
+                .is_some_and(|permission| *permission != PagePermission::Unmapped);
+            Some(abort(address, access, mapped))
+        }
+        other => Some(to_exception(other, registers.pc)),
+    };
+    *processor = to_processor(&registers, exception);
+    for (page, before) in writable.iter().zip(before) {
+        let after = read_page(executor, *page).map_err(host)?;
+        report_changed_bytes(*page, &before, &after, mutation_hook);
+    }
+    executor.thread_drop(thread);
+    Ok(())
+}
+
+impl Executor for HostProcess {
+    type TranslatorConfig = ();
+    type GuestMemory = HostProcessMemory;
+    type Interrupter = HostProcessInterrupter;
+    type Execution<'execution> = HostProcessExecution<'execution>;
+    type CreateGuestMemoryError = CpuError;
+
+    fn create_guest_memory(&self) -> Result<(HostProcessMemory, HostProcessPageTable), CpuError> {
+        let id = lock(&self.executor).memory_new()?;
+        let held = Rc::new(Held {
+            executor: Rc::clone(&self.executor),
+            id,
+        });
+        Ok((
+            HostProcessMemory {
+                held: Rc::clone(&held),
+            },
+            HostProcessPageTable { held },
+        ))
+    }
+
+    fn prepare_execution<'execution>(
+        &'execution mut self,
+        processor: Processor<()>,
+        memory: &'execution HostProcessMemory,
+    ) -> (HostProcessExecution<'execution>, HostProcessInterrupter) {
+        assert!(
+            Rc::ptr_eq(&self.executor, &memory.held.executor),
+            "a memory this executor made"
+        );
+        let interruption = Arc::new(Interruption::default());
+        let interrupter = HostProcessInterrupter {
+            interruption: Arc::clone(&interruption),
+        };
+        (
+            HostProcessExecution {
+                executor: &self.executor,
+                memory,
+                processor,
+                interruption,
+            },
+            interrupter,
+        )
+    }
+}
+
+/// One execution of form P, run on a host thread of its memory's stub.
+pub struct HostProcessExecution<'execution> {
+    executor: &'execution RefCell<HostProcessExecutor>,
+    memory: &'execution HostProcessMemory,
+    processor: Processor<()>,
+    interruption: Arc<Interruption>,
+}
+
+impl Execution for HostProcessExecution<'_> {
+    type ProcessorState = Processor<()>;
+    /// Never made: the guest runs in another process, and nothing wakes a waiting future when that process answers, so
+    /// every execution runs to its end.
+    type Wait = core::future::Pending<()>;
+
+    /// Runs until the next trap, then asks the handler, until an answer terminates the execution; the executor is not
+    /// held while the handler runs, which may use the memories.
+    fn run(self, handler: &mut impl TrapHandler) -> ExecutionStop<Processor<()>, Self::Wait> {
+        let Self {
+            executor: shared,
+            memory,
+            processor,
+            interruption,
+        } = self;
+        let id = memory.held.id;
+        let mut executor = lock(shared);
+        let Ok(thread) = executor.thread_new(id) else {
+            return ExecutionStop::Terminated(Processor {
+                exception: Some(stub_gone()),
+                ..processor
+            });
+        };
+        executor.set_registers(thread, &to_register_block(&processor));
+        let index = executor.thread(thread).index;
+        *interruption.target() = Some(executor.memory(id).stub.stop_target(index));
+        let mut resume = Resume::FromRegisters;
+        let ended = loop {
+            let trap = run_until_trap(&mut executor, thread, resume, &interruption);
+            drop(executor);
+            let next = ask_handler(handler, trap);
+            executor = lock(shared);
+            match next {
+                // An interrupt answered continue before the thread entered goes on as it would have.
+                Ok(Resume::Continue) if trap == Trap::InterruptBeforeEntry => {}
+                Ok(next) => resume = next,
+                Err(ended) => break ended,
+            }
+        };
+        *interruption.target() = None;
+        let mut registers = RegisterBlock::ZERO;
+        executor.registers(thread, &mut registers);
+        let exception = match ended {
+            Ended::SystemCall => {
+                let call = registers.pc - INSTRUCTION_SIZE;
+                let mut word = [0; INSTRUCTION_SIZE as usize];
+                let _ = executor.read_guest(id, call, &mut word);
+                Some(system_call(u32::from_le_bytes(word)))
+            }
+            Ended::MemoryFault { address, access } => {
+                let page = address & !(PAGE_SIZE - 1);
+                let mapped = executor.memory(id).permissions.get(&page).is_some();
+                Some(abort(address, access, mapped))
+            }
+            Ended::Interrupt => None,
+            Ended::Exit(exit) => Some(to_exception(exit, registers.pc)),
+        };
+        executor.thread_drop(thread);
+        ExecutionStop::Terminated(to_processor(&registers, exception))
+    }
+}
+
+/// Where a run stopped for the handler.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Trap {
+    SystemCall(SystemCallRequest),
+    MemoryFault { address: u64, access: Access },
+    /// An interrupt asked for while the thread ran, which stopped it.
+    Interrupt,
+    /// An interrupt asked for before the thread entered, which did not run.
+    InterruptBeforeEntry,
+    /// An exit no handler is given.
+    Exit(Exit),
+}
+
+/// How an execution ended.
 enum Ended {
     /// A system call answered terminate: the state is after the call.
     SystemCall,
@@ -543,249 +759,61 @@ enum Ended {
     Exit(Exit),
 }
 
-impl Executor for HostProcess {
-    type Architecture = Arm64;
-    type TranslatorConfig = ();
-    type GuestMemory = HostProcessMemory;
-    type CreateGuestMemoryError = CpuError;
-    type Interrupter = HostProcessInterrupter;
-
-    fn create_guest_memory(&self) -> Result<HostProcessMemory, CpuError> {
-        let id = lock(&self.executor).memory_new()?;
-        Ok(HostProcessMemory {
-            executor: Rc::clone(&self.executor),
-            id,
-        })
+/// Runs `thread` from `resume` until its next trap; an interrupt asked for is taken before the entry, or stops it.
+fn run_until_trap(
+    executor: &mut HostProcessExecutor,
+    thread: ThreadId,
+    resume: Resume,
+    interruption: &Interruption,
+) -> Trap {
+    if interruption.requested.swap(false, Ordering::AcqRel) {
+        return Trap::InterruptBeforeEntry;
     }
-
-    /// The execution runs to its end at its first poll, on a host thread of the memory's stub: the guest runs in
-    /// another process, and nothing in the interface wakes a waiting future when that process answers.
-    fn execute<'execution>(
-        &'execution mut self,
-        processor: Processor,
-        memory: &'execution HostProcessMemory,
-        handler: &'execution mut impl TrapHandler,
-    ) -> (
-        impl Future<Output = Processor> + 'execution,
-        HostProcessInterrupter,
-    ) {
-        assert!(
-            Rc::ptr_eq(&self.executor, &memory.executor),
-            "a memory this executor made"
-        );
-        let interruption = Arc::new(Interruption::default());
-        let interrupter = HostProcessInterrupter {
-            interruption: Arc::clone(&interruption),
-        };
-        let executor = &self.executor;
-        (
-            async move { run_to_end(executor, processor, memory, handler, &interruption) },
-            interrupter,
-        )
+    let when = StopWhen {
+        slice: None,
+        wanted: Some(&interruption.requested),
+    };
+    let exit = executor.run_translated(thread, resume, None, when, &mut monotonic);
+    executor.print_warnings();
+    match exit {
+        Exit::Stop => {
+            interruption.requested.store(false, Ordering::Release);
+            Trap::Interrupt
+        }
+        Exit::Syscall(request) => {
+            executor.counters.kernel_entries += 1;
+            Trap::SystemCall(request)
+        }
+        Exit::MemoryFault { address, access } => {
+            executor.counters.kernel_entries += 1;
+            Trap::MemoryFault { address, access }
+        }
+        other => Trap::Exit(other),
     }
+}
 
-    /// Runs the instruction alone in a memory made of the deltas, its piece a stretch of that one instruction, never
-    /// linked, so its first landing ends the run; the pages it may write are compared before and after.
-    fn execute_single_instruction_in_place(
-        &mut self,
-        processor: &mut Processor,
-        memory: &[MemoryDelta<'_, Arm64>],
-        mut on_memory_mutated: impl FnMut(MemoryDelta<'_, Arm64>),
-    ) {
-        let host = &self.host;
-        let executor = self.single.get_or_insert_with(|| {
-            let mut executor = HostProcessExecutor::new(Arc::clone(host));
-            executor.lone = true;
-            executor
-        });
-        let space = executor.memory_new().expect("the host makes one more stub");
-        let mut permissions = std::collections::BTreeMap::new();
-        for delta in memory {
-            match delta {
-                MemoryDelta::PermissionAssignment {
-                    addresses,
-                    permission,
-                } => {
-                    executor
-                        .set_permissions(
-                            space,
-                            addresses.start,
-                            addresses.end - addresses.start,
-                            to_permissions(*permission),
-                        )
-                        .expect("the state's pages lie in form P's guest area");
-                    for page in addresses.clone().step_by(PAGE_SIZE as usize) {
-                        permissions.insert(page, *permission);
-                    }
-                }
-                MemoryDelta::ValueAssignment { start, bytes } => executor
-                    .write(space, *start, bytes)
-                    .expect("the state's bytes lie in form P's guest area"),
-            }
-        }
-        let writable: Vec<u64> = permissions
-            .iter()
-            .filter(|(_, permission)| {
-                matches!(
-                    permission,
-                    PagePermission::Mapped {
-                        data_access: DataAccess::ReadWrite,
-                        ..
-                    }
-                )
-            })
-            .map(|(page, _)| *page)
-            .collect();
-        let read_page = |executor: &HostProcessExecutor, page: u64| {
-            let mut bytes = vec![0; PAGE_SIZE as usize];
-            executor
-                .read_guest(space, page, &mut bytes)
-                .expect("a page of the state");
-            bytes
-        };
-        let before: Vec<Vec<u8>> = writable
-            .iter()
-            .map(|page| read_page(executor, *page))
-            .collect();
-        let thread = executor
-            .thread_new(space)
-            .expect("the stub has its first host thread");
-        executor.set_registers(thread, &to_register_block(processor));
-        // Reached at the first instruction's end.
-        let until = executor.guest_count(thread);
-        let exit = executor.run_translated(
-            thread,
-            Resume::FromRegisters,
-            Some(until),
-            StopWhen::default(),
-            &mut monotonic,
-        );
-        executor.print_warnings();
-        let mut registers = RegisterBlock::ZERO;
-        executor.registers(thread, &mut registers);
-        let exception = match exit {
-            Exit::Stop => None,
-            Exit::Syscall(_) => {
-                registers.pc = processor.program_counter;
-                let mut word = [0; INSTRUCTION_BYTES as usize];
-                let _ = executor.read_guest(space, registers.pc, &mut word);
-                Some(system_call(u32::from_le_bytes(word)))
-            }
-            Exit::MemoryFault { address, access } => {
-                let page = address & !(PAGE_SIZE - 1);
-                let mapped = permissions
-                    .get(&page)
-                    .is_some_and(|permission| *permission != PagePermission::Unmapped);
-                Some(abort(address, access, mapped))
-            }
-            other => Some(to_exception(other, registers.pc)),
-        };
-        *processor = to_processor(&registers, exception);
-        for (page, before) in writable.iter().zip(before) {
-            let after = read_page(executor, *page);
-            report_changed_bytes(*page, &before, &after, &mut on_memory_mutated);
-        }
-        executor.thread_drop(thread);
-        executor.memory_drop(space);
+/// The handler's answer to a trap: how the thread resumes, or how the execution ended.
+fn ask_handler(handler: &mut impl TrapHandler, trap: Trap) -> Result<Resume, Ended> {
+    match trap {
+        Trap::SystemCall(request) => match handler.handle_system_call(request) {
+            SystemCallResponse::Return(value) => Ok(Resume::Return(value)),
+            SystemCallResponse::Terminate => Err(Ended::SystemCall),
+        },
+        Trap::MemoryFault { address, access } => match handler.handle_memory_fault(address, access) {
+            MemoryFaultResponse::Retry => Ok(Resume::FromRegisters),
+            MemoryFaultResponse::Terminate => Err(Ended::MemoryFault { address, access }),
+        },
+        Trap::Interrupt | Trap::InterruptBeforeEntry => match handler.handle_interrupt() {
+            InterruptResponse::Continue => Ok(Resume::Continue),
+            InterruptResponse::Terminate => Err(Ended::Interrupt),
+        },
+        Trap::Exit(exit) => Err(Ended::Exit(exit)),
     }
 }
 
 /// The executor's state, never held while a trap handler runs, which may use the memories.
 fn lock(executor: &RefCell<HostProcessExecutor>) -> RefMut<'_, HostProcessExecutor> {
     executor.borrow_mut()
-}
-
-/// Runs `processor` on a host thread of `memory`'s stub until a trap ends it; the executor is not held while a handler
-/// runs, and an interrupt asked for is taken before each entry or stops the thread's turn.
-fn run_to_end(
-    shared: &RefCell<HostProcessExecutor>,
-    processor: Processor,
-    memory: &HostProcessMemory,
-    handler: &mut impl TrapHandler,
-    interruption: &Interruption,
-) -> Processor {
-    let mut executor = lock(shared);
-    let thread = executor
-        .thread_new(memory.id)
-        .expect("the stub makes one more host thread");
-    executor.set_registers(thread, &to_register_block(&processor));
-    let index = executor.thread(thread).index;
-    *interruption.target() = Some(executor.memory(memory.id).stub.stop_target(index));
-    let mut resume = Resume::FromRegisters;
-    let ended = loop {
-        let before_entry = interruption.requested.swap(false, Ordering::AcqRel);
-        let exit = if before_entry {
-            Exit::Stop
-        } else {
-            let when = StopWhen {
-                slice: None,
-                wanted: Some(&interruption.requested),
-            };
-            let exit = executor.run_translated(thread, resume, None, when, &mut monotonic);
-            executor.print_warnings();
-            if exit == Exit::Stop {
-                interruption.requested.store(false, Ordering::Release);
-            }
-            exit
-        };
-        let next = match exit {
-            Exit::Syscall(_) | Exit::MemoryFault { .. } | Exit::Stop => {
-                if exit != Exit::Stop {
-                    executor.counters.kernel_entries += 1;
-                }
-                drop(executor);
-                let next = match exit {
-                    Exit::Syscall(request) => match handler.handle_system_call(request) {
-                        SystemCallResponse::Return(value) => Ok(Resume::Return(value)),
-                        SystemCallResponse::Terminate => Err(Ended::SystemCall),
-                    },
-                    Exit::MemoryFault { address, access } => {
-                        match handler.handle_memory_fault(address, access) {
-                            MemoryFaultResponse::Retry => Ok(Resume::FromRegisters),
-                            MemoryFaultResponse::Terminate => {
-                                Err(Ended::MemoryFault { address, access })
-                            }
-                        }
-                    }
-                    _ => match handler.handle_interrupt() {
-                        InterruptResponse::Continue => Ok(Resume::Continue),
-                        InterruptResponse::Terminate => Err(Ended::Interrupt),
-                    },
-                };
-                executor = lock(shared);
-                // An interrupt answered continue before the thread entered goes on as it would have.
-                match next {
-                    Ok(Resume::Continue) if before_entry => Ok(resume),
-                    next => next,
-                }
-            }
-            other => Err(Ended::Exit(other)),
-        };
-        match next {
-            Ok(next) => resume = next,
-            Err(ended) => break ended,
-        }
-    };
-    *interruption.target() = None;
-    let mut registers = RegisterBlock::ZERO;
-    executor.registers(thread, &mut registers);
-    let exception = match ended {
-        Ended::SystemCall => {
-            registers.pc -= INSTRUCTION_BYTES;
-            let mut word = [0; INSTRUCTION_BYTES as usize];
-            let _ = executor.read_guest(memory.id, registers.pc, &mut word);
-            Some(system_call(u32::from_le_bytes(word)))
-        }
-        Ended::MemoryFault { address, access } => {
-            let page = address & !(PAGE_SIZE - 1);
-            let mapped = executor.memory(memory.id).permissions.get(&page).is_some();
-            Some(abort(address, access, mapped))
-        }
-        Ended::Interrupt => None,
-        Ended::Exit(exit) => Some(to_exception(exit, registers.pc)),
-    };
-    executor.thread_drop(thread);
-    to_processor(&registers, exception)
 }
 
 /// What an execution's interrupter and its run share.
@@ -812,7 +840,7 @@ pub struct HostProcessInterrupter {
 impl ExecutionInterrupter for HostProcessInterrupter {
     fn interrupt(&self) {
         self.interruption.requested.store(true, Ordering::Release);
-        if let Some(target) = *self.interruption.target() {
+        if let Some(target) = &*self.interruption.target() {
             let _ = target.stop();
         }
     }
@@ -821,10 +849,12 @@ impl ExecutionInterrupter for HostProcessInterrupter {
 /// The guest's counter, which the translator presents at a nanosecond a tick: the host's monotonic clock, since the
 /// executor interface gives no clock of the system's.
 fn monotonic() -> u64 {
-    const NANOSECONDS: u64 = 1_000_000_000;
     let now = clock_gettime(ClockId::Monotonic);
-    now.tv_sec as u64 * NANOSECONDS + now.tv_nsec as u64
+    now.tv_sec as u64 * NANOSECONDS_PER_SECOND + now.tv_nsec as u64
 }
+
+/// The nanoseconds in a second.
+const NANOSECONDS_PER_SECOND: u64 = Duration::from_secs(1).as_nanos() as u64;
 
 fn inside(addresses: &Range<u64>) -> Result<(), InvalidAddressError> {
     if addresses.start <= addresses.end
@@ -883,7 +913,7 @@ fn to_permissions(permission: PagePermission) -> Permissions {
     }
 }
 
-fn to_register_block(processor: &Processor) -> RegisterBlock {
+fn to_register_block(processor: &Processor<()>) -> RegisterBlock {
     RegisterBlock {
         x: processor.general_purpose_registers,
         sp: processor.stack_pointer,
@@ -898,7 +928,8 @@ fn to_register_block(processor: &Processor) -> RegisterBlock {
     }
 }
 
-fn to_processor(registers: &RegisterBlock, exception: Option<Exception>) -> Processor {
+/// The processor the registers hold; the exclusive monitor is open, as no host call reads a stub thread's.
+fn to_processor(registers: &RegisterBlock, exception: Option<Exception>) -> Processor<()> {
     Processor {
         general_purpose_registers: registers.x,
         stack_pointer: registers.sp,
@@ -911,55 +942,62 @@ fn to_processor(registers: &RegisterBlock, exception: Option<Exception>) -> Proc
         floating_point_status: u64::from(registers.fpsr),
         software_thread_id: registers.tpidr_el0,
         exception,
+        ..ZERO_PROCESSOR
     }
 }
 
 /// The exception of the system call instruction `word`.
 fn system_call(word: u32) -> Exception {
-    Exception {
-        syndrome: encode_syndrome(ESR_EL1::EC::Value::SVC64, u64::from(IMM16.read(word))),
-        fault_address: None,
+    Exception::SupervisorCall {
+        immediate: IMM16.read(word) as u16,
     }
 }
 
 /// The abort of an access to `address`, whose page held no permission unless `mapped`.
 fn abort(address: u64, access: Access, mapped: bool) -> Exception {
-    let status = if mapped {
+    let status = if address >= Arm64::<User>::ADDRESSABLE.end {
+        FaultStatus::TranslationFaultLevel0
+    } else if mapped {
         FaultStatus::PermissionFaultLevel3
     } else {
         FaultStatus::TranslationFaultLevel3
-    } as u64;
-    let (class, specific) = match access {
-        Access::Execute => (ESR_EL1::EC::Value::InstrAbortLowerEL, status),
-        Access::Read => (ESR_EL1::EC::Value::DataAbortLowerEL, status),
-        Access::Write => (
-            ESR_EL1::EC::Value::DataAbortLowerEL,
-            WRITE_NOT_READ | status,
-        ),
     };
-    Exception {
-        syndrome: encode_syndrome(class, specific),
-        fault_address: Some(address),
+    match access {
+        Access::Execute => Exception::InstructionAbort { status, address },
+        Access::Read => Exception::DataAbort {
+            status,
+            access: AccessDirection::Read,
+            address,
+        },
+        Access::Write => Exception::DataAbort {
+            status,
+            access: AccessDirection::Write,
+            address,
+        },
     }
 }
 
-/// The exception of an exit no handler is given, at `pc`: a stub that ended is an SError, the interface having no
-/// other way to say the guest's process is gone.
+/// The exception a stub that ended gives: an SError, the interface having no other way to say the guest's process is
+/// gone.
+fn stub_gone() -> Exception {
+    Exception::Undecoded {
+        syndrome: ESR_EL1::EC::SError.value,
+        fault_address: u64::MIN,
+    }
+}
+
+/// The exception of an exit no handler is given, at `pc`.
 fn to_exception(exit: Exit, pc: u64) -> Exception {
-    let (class, specific, fault_address) = match exit {
-        Exit::Breakpoint { comment } => (ESR_EL1::EC::Value::Brk64, u64::from(comment), None),
-        Exit::IllegalInstruction => (ESR_EL1::EC::Value::Unknown, 0, None),
+    match exit {
+        Exit::Breakpoint { comment } => Exception::Breakpoint { comment },
+        Exit::IllegalInstruction => Exception::UndefinedInstruction,
         Exit::AlignmentFault { address } if address == pc => {
-            (ESR_EL1::EC::Value::PCAlignmentFault, 0, Some(address))
+            Exception::ProgramCounterAlignmentFault { address }
         }
-        Exit::AlignmentFault { .. } => (ESR_EL1::EC::Value::SPAlignmentFault, 0, None),
+        Exit::AlignmentFault { .. } => Exception::StackPointerAlignmentFault,
         Exit::MemoryFaultWithoutRegisters
         | Exit::Syscall(_)
         | Exit::MemoryFault { .. }
-        | Exit::Stop => (ESR_EL1::EC::Value::SError, 0, None),
-    };
-    Exception {
-        syndrome: encode_syndrome(class, specific),
-        fault_address,
+        | Exit::Stop => stub_gone(),
     }
 }
