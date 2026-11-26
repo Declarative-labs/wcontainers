@@ -55,6 +55,8 @@ pub enum Origin {
     EvexFirstHalf,
     /// The second EVEX pass: AVX512-FP16 and the rest of AVX-512's second half, and the small sets left.
     EvexRest,
+    /// The family of the x87 transcendental forms, JCXZ and the forms the chip source refused.
+    X87AndRefused,
 }
 
 /// The forms a bug shows on.
@@ -1242,6 +1244,27 @@ pub enum Bug {
     MoveWordKeepsUpperBits,
     /// VRANGE's sign control 0 keeps the selected element's sign rather than the first source's.
     RangeSignFromSelected,
+    // The x87 transcendental forms, JCXZ and the forms the chip source refused.
+    /// FPTAN pushes +0 where it pushes 1.0.
+    TangentPushesZero,
+    /// FSINCOS leaves the cosine in ST(1) and pushes the sine.
+    SineCosineOrderSwapped,
+    /// The trigonometric forms take arguments up to 2 to the 64 as in range.
+    TrigonometricRangeTo64,
+    /// FYL2X of a zero x raises no ZE.
+    LogOfZeroNoDivideByZero,
+    /// FPATAN of ±0 over -0 gives ±0, not ±π.
+    ArcTangentZeroOverNegativeZero,
+    /// F2XM1 beyond ±1 raises no PE.
+    TwoToXOutOfRangeExact,
+    /// FYL2XP1 of an x at -1 or below raises IE.
+    LogOnePlusBelowMinusOneInvalid,
+    /// The transcendental forms raise no DE for a denormal operand.
+    TranscendentalDenormalIgnored,
+    /// FPATAN, FYL2X and FYL2XP1 do not pop.
+    BinaryTranscendentalKeepsStack,
+    /// A binary transcendental form's behavior leaves ST(0) undecided, not the result's ST(1).
+    UndecidedRegisterMisplaced,
 }
 
 const fn row(bug: Bug, family_name: &'static str, family: Family, origin: Origin) -> PlantedBug {
@@ -1818,6 +1841,29 @@ pub static PLANTED_BUGS: &[PlantedBug] = &[
     row(Bug::EvexUnsignedIndefiniteSigned, "EVEX conversions to unsigned integers", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { to: Number::Unsigned(_), .. }))), Origin::EvexRest),
     row(Bug::HalfToSingleReportsDenormal, "VCVTPH2PS", Family::Evex(|form| !form.reports_denormal()), Origin::EvexRest),
     row(Bug::IntegerToHalfOverflowExact, "VCVTW2PH to VCVTUQQ2PH", Family::Evex(|form| matches!(form.operation, EvexOperation::Convert(Conversion { from: Number::Signed(_) | Number::Unsigned(_), to: Number::Float(Precision::Half), .. }))), Origin::EvexRest),
+    row(Bug::TangentPushesZero, "FPTAN", Family::Forms(&[Instruction::Fptan]), Origin::X87AndRefused),
+    row(Bug::SineCosineOrderSwapped, "FSINCOS", Family::Forms(&[Instruction::Fsincos]), Origin::X87AndRefused),
+    row(Bug::TrigonometricRangeTo64, "FSIN, FCOS, FPTAN, FSINCOS", Family::Forms(&TRIGONOMETRIC), Origin::X87AndRefused),
+    row(Bug::LogOfZeroNoDivideByZero, "FYL2X", Family::Forms(&[Instruction::Fyl2x]), Origin::X87AndRefused),
+    row(Bug::ArcTangentZeroOverNegativeZero, "FPATAN", Family::Forms(&[Instruction::Fpatan]), Origin::X87AndRefused),
+    row(Bug::TwoToXOutOfRangeExact, "F2XM1", Family::Forms(&[Instruction::F2xm1]), Origin::X87AndRefused),
+    row(Bug::LogOnePlusBelowMinusOneInvalid, "FYL2XP1", Family::Forms(&[Instruction::Fyl2xp1]), Origin::X87AndRefused),
+    row(Bug::TranscendentalDenormalIgnored, "the x87 transcendental forms", Family::Forms(&TRANSCENDENTAL), Origin::X87AndRefused),
+    row(Bug::BinaryTranscendentalKeepsStack, "FPATAN, FYL2X, FYL2XP1", Family::Forms(&BINARY_TRANSCENDENTAL), Origin::X87AndRefused),
+    row(Bug::UndecidedRegisterMisplaced, "FPATAN, FYL2X, FYL2XP1", Family::Forms(&BINARY_TRANSCENDENTAL), Origin::X87AndRefused),
+];
+
+const TRIGONOMETRIC: [Instruction; 4] = [Instruction::Fsin, Instruction::Fcos, Instruction::Fptan, Instruction::Fsincos];
+const BINARY_TRANSCENDENTAL: [Instruction; 3] = [Instruction::Fpatan, Instruction::Fyl2x, Instruction::Fyl2xp1];
+const TRANSCENDENTAL: [Instruction; 8] = [
+    Instruction::F2xm1,
+    Instruction::Fsin,
+    Instruction::Fcos,
+    Instruction::Fptan,
+    Instruction::Fsincos,
+    Instruction::Fpatan,
+    Instruction::Fyl2x,
+    Instruction::Fyl2xp1,
 ];
 
 const SEGMENT_LOADS: &[Instruction] = &[

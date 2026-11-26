@@ -276,6 +276,7 @@ fn to_case_set(form: &X87Form) -> Option<X87CaseSet> {
         X87Operation::LoadEnvironment | X87Operation::RestoreState | X87Operation::RestoreExtended { .. } => {
             Some(X87CaseSet::LoadImage { bytes: form.memory_bytes() })
         }
+        X87Operation::Transcendental(function) => Some(X87CaseSet::Transcendental(function)),
         _ => None,
     }
 }
@@ -324,6 +325,9 @@ pub fn build_state(form: &X87Form, operands: &[(OperandType, OperandValue)]) -> 
             image = Some(crate::x87_arithmetic::to_image(form.memory_bytes(), case.source));
         }
         if matches!(to_case_set(form), Some(X87CaseSet::Pair { .. })) {
+            index = 1;
+        }
+        if matches!(to_case_set(form), Some(X87CaseSet::Transcendental(function)) if function.is_binary()) {
             index = 1;
         }
         let indexed_first = list_slots(form.code).first() == Some(&Slot::Indexed);

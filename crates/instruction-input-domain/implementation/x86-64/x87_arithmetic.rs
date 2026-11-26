@@ -39,6 +39,8 @@ pub enum X87CaseSet {
     StoreImage,
     /// FLDENV, FRSTOR and FXRSTOR: an image of this many bytes loaded.
     LoadImage { bytes: u64 },
+    /// The transcendental forms: ST(0), and ST(1) for the binary ones.
+    Transcendental(wcontainers_processor_architecture_x86_64::x87_transcendental::Function),
 }
 
 /// One case: FCW, FSW (TOP among it), whether every register but the operands' is in use, and the destination's and
@@ -403,6 +405,7 @@ pub fn generate_cases(set: X87CaseSet) -> Vec<OperandValue> {
             cases.push(X87Case { control: 0x037E, status: 0x8081, ..case(INITIAL_CONTROL, EMPTY, 0) });
             cases.push(X87Case { status: 0x4720 | 5 << 11, ..case(INITIAL_CONTROL, EMPTY, 0) });
         }
+        X87CaseSet::Transcendental(function) => cases = crate::x87_transcendental::generate_cases(function, &CLASSES),
     }
     cases.into_iter().map(OperandValue::X87Case).collect()
 }

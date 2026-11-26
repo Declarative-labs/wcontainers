@@ -294,6 +294,13 @@ fn square_root_exact(value: Parts) -> Option<Exact> {
     to_exact(false, scale / 2 - EXTRA_PAIRS as i32, root, remainder != 0)
 }
 
+/// A nonzero value `bits` times two to `scale`, `sticky` where bits below them are lost, rounded to 64 bits by FCW's
+/// rounding whatever its precision control, as the transcendental forms round.
+pub(crate) fn round_approximation(negative: bool, scale: i32, bits: u128, sticky: bool, control: u16) -> Outcome {
+    let exact = to_exact(negative, scale, bits, sticky).expect("a nonzero value");
+    round_extended(exact, 64, Rounding::from_control(control), control)
+}
+
 /// The zero an exact zero result takes: negative where both operands' signs make it so, or under rounding down.
 fn to_zero(negative: bool) -> u128 {
     if negative { SIGN } else { 0 }

@@ -72,6 +72,7 @@ mod vex_upper;
 mod vnni;
 pub mod x87;
 pub mod x87_arithmetic;
+pub mod x87_transcendental;
 #[cfg(test)]
 mod tests;
 

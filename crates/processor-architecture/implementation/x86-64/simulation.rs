@@ -117,6 +117,12 @@ impl Simulator<X86_64> for PreciseInstruction {
                 expectation.general_purpose_registers[number] = crate::RegisterValueExpectation::NonDeterministic;
             }
         }
+        if let (PreciseInstruction::X87 { instruction, .. }, None) = (self, processor.exception)
+            && let Some(undecided) = x87_simulation::find_undecided_x87(*instruction, &start.x87)
+        {
+            expectation.x87_registers_undecided = undecided.registers;
+            expectation.x87_status_undecided = undecided.status;
+        }
         Ok(expectation)
     }
 }

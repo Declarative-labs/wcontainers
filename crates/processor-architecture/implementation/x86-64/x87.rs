@@ -105,6 +105,8 @@ pub enum X87Operation {
     SaveExtended { wide: bool },
     /// FXRSTOR and, `wide`, FXRSTOR64.
     RestoreExtended { wide: bool },
+    /// F2XM1, FSIN, FCOS, FPTAN, FSINCOS, FPATAN, FYL2X and FYL2XP1, by [`crate::x87_transcendental`].
+    Transcendental(crate::x87_transcendental::Function),
 }
 
 /// Which NaNs make a comparison invalid.
@@ -251,6 +253,7 @@ impl X87Form {
             | X87Operation::SaveExtended { .. }
             | X87Operation::RestoreExtended { .. } => 0,
             X87Operation::StoreInteger { .. } => C0 | C2 | C3,
+            X87Operation::Transcendental(function) if function.is_trigonometric() => C0 | C3,
             X87Operation::ClearExceptions
             | X87Operation::StoreStatus
             | X87Operation::StoreControl
@@ -751,7 +754,21 @@ pub static X87_FORMS: &[X87Form] = &[
     x87(Instruction::Fxsave64Memmfpxenv, X87Operation::SaveExtended { wide: true }, Memory, Code::Fxsave64_m512byte),
     x87(Instruction::FxrstorMemmfpxenv, X87Operation::RestoreExtended { wide: false }, Memory, Code::Fxrstor_m512byte),
     x87(Instruction::Fxrstor64Memmfpxenv, X87Operation::RestoreExtended { wide: true }, Memory, Code::Fxrstor64_m512byte),
+    transcendental(Instruction::F2xm1, Function::TwoToXMinusOne, Code::F2xm1),
+    transcendental(Instruction::Fsin, Function::Sine, Code::Fsin),
+    transcendental(Instruction::Fcos, Function::Cosine, Code::Fcos),
+    transcendental(Instruction::Fptan, Function::Tangent, Code::Fptan),
+    transcendental(Instruction::Fsincos, Function::SineCosine, Code::Fsincos),
+    transcendental(Instruction::Fpatan, Function::ArcTangent, Code::Fpatan),
+    transcendental(Instruction::Fyl2x, Function::YLogX, Code::Fyl2x),
+    transcendental(Instruction::Fyl2xp1, Function::YLogXPlusOne, Code::Fyl2xp1),
 ];
+
+use crate::x87_transcendental::Function;
+
+const fn transcendental(instruction: Instruction, function: Function, code: Code) -> X87Form {
+    X87Form { instruction, operation: X87Operation::Transcendental(function), place: OperandPlace::Register, code }
+}
 
 const fn arithmetic(
     instruction: Instruction,
