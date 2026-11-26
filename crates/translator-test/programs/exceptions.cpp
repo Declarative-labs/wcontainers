@@ -1,5 +1,5 @@
 // C++ exceptions: thrown from every depth, caught by type, rethrown, unwinding destructors on the way. The
-// stand-in kernel has no mmap, so the program brings its own allocator over a static area.
+// program brings its own allocator over a static area, so its allocations never reach the kernel.
 #include <cstddef>
 #include <cstdio>
 #include <cstring>

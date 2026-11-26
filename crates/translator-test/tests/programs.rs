@@ -84,6 +84,7 @@ fn programs_match_linux<G: GuestTest>() {
         ("integers", Library::None),
         ("tables", Library::None),
         ("buffers", Library::None),
+        ("mappings", Library::None),
         ("walks", Library::None),
     ]);
 }

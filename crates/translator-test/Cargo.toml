@@ -12,6 +12,8 @@ wcontainers-abi.workspace = true
 wcontainers-arm64 = { path = "../arm64" }
 wcontainers-guest-cpu = { path = "../guest-cpu" }
 wcontainers-x86 = { path = "../x86" }
+# The clock the x86 answers read in tests: the owner's clock interface.
+wcontainers-clock = { path = "../clock" }
 # The processor features a program is told of: the kernel interface's list.
 wcontainers-kernel = { path = "../kernel" }
 bitflags.workspace = true

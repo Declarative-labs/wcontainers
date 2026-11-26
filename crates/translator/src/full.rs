@@ -149,9 +149,9 @@ impl<G: Guest> Planned<'_, G> {
         let index: BTreeMap<u64, u32> = self.functions[group.clone()]
             .iter()
             .enumerate()
-            .map(|(i, f)| (f.entry, G::F_FIRST_PIECE + i as u32))
+            .map(|(i, f)| (f.entry, Layout::<G>::F_FIRST_PIECE + i as u32))
             .collect();
-        let mut next = G::F_FIRST_PIECE + group.len() as u32;
+        let mut next = Layout::<G>::F_FIRST_PIECE + group.len() as u32;
         let loop_index: Vec<FxHashMap<u64, u32>> = group
             .clone()
             .map(|i| {
@@ -316,7 +316,7 @@ fn flags_word_function<G: Guest>(shape: G::Shape) -> u32 {
         .iter()
         .position(|s| *s == shape)
         .expect("every shape has one");
-    G::F_FLAGS_WORD + 1 + i as u32
+    Layout::<G>::F_FLAGS_WORD + 1 + i as u32
 }
 
 /// The functions that work out the flags word for a write back on the way to the runner, with their
@@ -330,7 +330,7 @@ pub(crate) fn flags_word_functions<G: Guest>() -> Vec<(Vec<ValType>, wasm_encode
     let mut f = wasm_encoder::Function::new([]);
     let mut s = f.instructions();
     push_word::<G>(&mut s, |s, flag| {
-        s.local_get(G::flag_index(flag) as u32);
+        s.local_get(Layout::<G>::flag_index(flag) as u32);
     });
     s.end();
     functions.push((vec![ValType::I32; G::FLAGS.len()], f));
@@ -347,7 +347,7 @@ pub(crate) fn flags_word_functions<G: Guest>() -> Vec<(Vec<ValType>, wasm_encode
         s.end();
         functions.push((params, f));
     }
-    assert_eq!(functions.len() as u32, G::FLAGS_WORDS);
+    assert_eq!(functions.len() as u32, Layout::<G>::FLAGS_WORDS);
     functions
 }
 
@@ -797,7 +797,7 @@ fn irreducible(function: &Function) -> Vec<u64> {
 /// Registers that live in a piece's locals and are tracked between its global copies: everything but the
 /// registers passed as parameters, and the flags, which have their own state.
 fn tracked<G: Guest>() -> Registers {
-    G::TRACKED
+    Layout::<G>::TRACKED
 }
 
 /// What may be stale in the thread block after a system call: its result, when that lives in a local.
@@ -1085,7 +1085,7 @@ impl<G: Guest> Plan<G> {
                 1 << FLAGS_IN_BLOCK
             } else if let Some(shape) = d.effects.flags.and_then(G::shape) {
                 1 << (FIRST_SHAPE_STATE as usize + shapes.iter().position(|s| *s == shape).unwrap())
-            } else if !d.effects.defs.intersect(G::FLAG_BITS).is_empty() {
+            } else if !d.effects.defs.intersect(Layout::<G>::FLAG_BITS).is_empty() {
                 1 << FLAGS_IN_LOCALS
             } else {
                 state
@@ -1489,7 +1489,7 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                 // What a group is measured from: a general register other than the stack pointer, or a
                 // segment base alone.
                 let grouped = match base {
-                    Some(n) if G::GENERAL_BUT_SP.has_bit(n) => Some(Some(n)),
+                    Some(n) if Layout::<G>::GENERAL_BUT_SP.has_bit(n) => Some(Some(n)),
                     None if segment.is_some()
                         && access.base.is_none()
                         && access.index.is_none() =>
@@ -1549,13 +1549,13 @@ fn checks<G: Guest>(function: &Function, decoded: &Decodes<G>, frame_in: &[Frame
                 .filter(|a| a.write_back != WriteBack::None)
                 .filter_map(base_bit::<G>)
                 .collect();
-            for bit in d.effects.defs.intersect(G::GENERAL_BUT_SP).bits() {
+            for bit in d.effects.defs.intersect(Layout::<G>::GENERAL_BUT_SP).bits() {
                 if !written_back.contains(&bit) {
                     moved.remove(&bit);
                     open.retain(|&(_, base, _), _| base != Some(bit));
                 }
             }
-            for bit in d.effects.defs.intersect(G::SEGMENT_BITS).bits() {
+            for bit in d.effects.defs.intersect(Layout::<G>::SEGMENT_BITS).bits() {
                 open.retain(|&(segment, _, _), _| segment != Some(bit));
             }
             frame = frame_after(d, frame);
@@ -1783,7 +1783,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         };
         e.depth = e.new_local(ValType::I64);
         if kept(code.progress) {
-            e.count = Some(G::L_COUNT);
+            e.count = Some(Layout::<G>::L_COUNT);
         }
         for _ in plan.kept_by_loop.iter().flatten() {
             let low = e.new_local(ValType::I64);
@@ -1829,13 +1829,13 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 s.global_get(G_OWN + global as u32).local_set(*local);
             }
         }
-        s.local_get(G::L_DEPTH)
+        s.local_get(Layout::<G>::L_DEPTH)
             .i64_const(frame_bytes::<G>(&e.locals))
             .i64_add()
             .local_set(e.depth);
         // Only a piece that calls or leaves to others can be part of deep recursion.
         if (plan.calls_out || loop_piece) && !omit.depth && !e.entry_check {
-            depth_check::<G>(&mut s, G::L_DEPTH, function.entry, code.progress);
+            depth_check::<G>(&mut s, Layout::<G>::L_DEPTH, function.entry, code.progress);
             e.sites[Reason::StackNearlyFull as usize] += 1;
         }
         let locals = e.locals.len();
@@ -1872,7 +1872,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
 
     /// The local of a register bit: a parameter for the passed ones.
     fn register(&mut self, bit: u32) -> u32 {
-        if let Some(local) = G::passed(bit) {
+        if let Some(local) = Layout::<G>::passed(bit) {
             return local;
         }
         if let Some(&local) = self.registers.get(&bit) {
@@ -2128,7 +2128,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             }
             None => {
                 self.address(target);
-                self.sink().return_call(G::F_DISPATCH);
+                self.sink().return_call(Layout::<G>::F_DISPATCH);
             }
         }
     }
@@ -2138,10 +2138,11 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
     fn arguments(&mut self) {
         let count = self.count;
         let mut s = self.sink();
-        for i in 0..G::PASSED {
+        for i in 0..Layout::<G>::PASSED {
             s.local_get(i);
         }
-        s.local_get(G::L_RETURN).local_get(G::L_DEPTH);
+        s.local_get(Layout::<G>::L_RETURN)
+            .local_get(Layout::<G>::L_DEPTH);
         if let Some(count) = count {
             s.local_get(count);
         }
@@ -2157,10 +2158,11 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         if let Some(count) = count {
             store_count::<G>(&mut s, block, count);
         }
-        for i in 0..G::PASSED {
+        for i in 0..Layout::<G>::PASSED {
             s.local_get(i);
         }
-        s.local_get(G::L_RETURN).local_get(G::L_DEPTH);
+        s.local_get(Layout::<G>::L_RETURN)
+            .local_get(Layout::<G>::L_DEPTH);
         if count.is_some() {
             push_count::<G>(&mut s, block);
         }
@@ -2236,12 +2238,12 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
                 for &local in &locals[..G::FLAGS.len()] {
                     s.local_get(local);
                 }
-                s.call(G::F_FLAGS_WORD);
+                s.call(Layout::<G>::F_FLAGS_WORD);
             }
             FLAGS_IN_LOCALS => {
                 let locals = self.flag_locals;
                 push_word::<G>(&mut self.sink(), |s, flag| {
-                    s.local_get(locals[G::flag_index(flag)]);
+                    s.local_get(locals[Layout::<G>::flag_index(flag)]);
                 });
             }
             id if out_of_line => {
@@ -2268,7 +2270,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         let instructions = self.function.instructions(self.at.block);
         // A block's instructions are in address order.
         let after = instructions.partition_point(|&o| o <= offset);
-        let mut pending = G::FLAG_BITS;
+        let mut pending = Layout::<G>::FLAG_BITS;
         for o in &instructions[after..] {
             let d = &self.decoded[o];
             if !G::plain(&d.instruction)
@@ -2342,12 +2344,12 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         if let Some(entry) = deep {
             // The callers' depth, not this piece's own frame, so a piece called from the bottom loop always
             // runs, however large its frame.
-            s.local_get(G::L_DEPTH)
+            s.local_get(Layout::<G>::L_DEPTH)
                 .i64_const(STACK_BUDGET)
                 .i64_gt_u()
                 .i32_or()
                 .if_(BlockType::Empty);
-            depth_check::<G>(&mut s, G::L_DEPTH, entry, progress);
+            depth_check::<G>(&mut s, Layout::<G>::L_DEPTH, entry, progress);
         } else {
             s.if_(BlockType::Empty);
         }
@@ -2415,7 +2417,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         self.save(Pc::Offset(offset), true);
         self.sink()
             .i32_const(UNWIND_GO_TO_EXACT)
-            .call(G::F_UNWIND)
+            .call(Layout::<G>::F_UNWIND)
             .unreachable();
     }
 
@@ -2429,7 +2431,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         for chunk in (0..len).step_by(wcontainers_abi::PAGE_SIZE as usize) {
             let piece = (len - chunk).min(wcontainers_abi::PAGE_SIZE as _);
             self.sink()
-                .local_get(G::L_SP)
+                .local_get(Layout::<G>::L_SP)
                 .i64_const(from + i64::from(chunk))
                 .i64_add()
                 .local_set(at);
@@ -2518,7 +2520,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
     fn push_flag_from(&mut self, state: u32, flag: G::Flag) {
         match state {
             FLAGS_IN_LOCALS => {
-                let local = self.flag_locals[G::flag_index(flag)];
+                let local = self.flag_locals[Layout::<G>::flag_index(flag)];
                 self.sink().local_get(local);
             }
             FLAGS_IN_BLOCK => {
@@ -2606,7 +2608,7 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
         load.push(&mut s);
         s.i64_sub().i64_const(lo as i64).i64_sub();
         if G::ALIGN > 1 {
-            s.i64_const(i64::from(G::ALIGN_SHIFT)).i64_rotr();
+            s.i64_const(i64::from(Layout::<G>::ALIGN_SHIFT)).i64_rotr();
         }
         s.local_tee(index)
             .i32_wrap_i64()
@@ -2690,9 +2692,9 @@ impl<'a, G: Guest> FullEmitter<'a, G> {
             .if_(BlockType::FunctionType(0))
             .local_get(target);
         if tail {
-            s.return_call(G::F_DISPATCH);
+            s.return_call(Layout::<G>::F_DISPATCH);
         } else {
-            s.call(G::F_DISPATCH);
+            s.call(Layout::<G>::F_DISPATCH);
         }
         s.else_().local_get(piece).ref_as_non_null();
         if tail {
@@ -2866,7 +2868,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         self.write_back();
         self.rare_arguments();
         self.this_address(0);
-        self.sink().return_call(G::F_EXACT).end();
+        self.sink().return_call(Layout::<G>::F_EXACT).end();
         false
     }
 
@@ -2956,7 +2958,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                 s.local_get(fault_at)
                     .i32_const(i32::from(access == Access::Write))
                     .call(F_MEMORY_FAULT)
-                    .call(G::F_UNWIND)
+                    .call(Layout::<G>::F_UNWIND)
                     .unreachable()
                     .end()
                     .end();
@@ -3060,7 +3062,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             Target::Relative(_) => None,
         };
         let mut s = self.sink();
-        for i in 0..G::PASSED {
+        for i in 0..Layout::<G>::PASSED {
             s.local_get(i);
         }
         // No return address has the bit, so adding it sets it.
@@ -3084,7 +3086,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
                     }
                     None => {
                         self.address(to);
-                        self.sink().call(G::F_DISPATCH);
+                        self.sink().call(Layout::<G>::F_DISPATCH);
                     }
                 }
             }
@@ -3101,7 +3103,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         for &bit in G::PASSED_OUT.iter().rev() {
             let local = if bit == G::SP_BIT {
                 returned_sp
-            } else if let Some(local) = G::passed(bit) {
+            } else if let Some(local) = Layout::<G>::passed(bit) {
                 local
             } else {
                 // Passed out only: the thread block holds the same value, so it needs no load.
@@ -3118,19 +3120,21 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
             self.at.aligned || (self.plan.frame_across.contains(&offset) && !self.omit.permissions);
         if kept {
             let mut s = self.sink();
-            s.local_get(returned_sp).local_get(G::L_SP);
+            s.local_get(returned_sp).local_get(Layout::<G>::L_SP);
             // The callee's return moved the stack pointer up past the return address.
             if let ReturnAddress::Stack { bytes } = G::RETURN_ADDRESS {
                 s.i64_const(bytes.into()).i64_add();
             }
             s.i64_ne()
                 .local_get(returned_sp)
-                .local_set(G::L_SP)
+                .local_set(Layout::<G>::L_SP)
                 .if_(BlockType::Empty);
             self.leave_to(next);
             self.sink().end();
         } else {
-            self.sink().local_get(returned_sp).local_set(G::L_SP);
+            self.sink()
+                .local_get(returned_sp)
+                .local_set(Layout::<G>::L_SP);
         }
         let block = self.fixed(G_THREAD_BLOCK);
         for bit in reload.bits() {
@@ -3184,7 +3188,9 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         });
         bottom_return::<G>(&mut s, block, progress);
         save_passed::<G>(&mut s, block, progress);
-        s.i32_const(UNWIND_GO_TO).call(G::F_UNWIND).unreachable();
+        s.i32_const(UNWIND_GO_TO)
+            .call(Layout::<G>::F_UNWIND)
+            .unreachable();
     }
 
     fn syscall(&mut self) {
@@ -3203,7 +3209,10 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         self.sink().local_set(local);
         self.at.dirty = dirty_after_syscall::<G>();
         let live = self.plan.live_after[&self.at.offset];
-        self.reload(live.minus(Registers(1 << result)), G::passed(result));
+        self.reload(
+            live.minus(Registers(1 << result)),
+            Layout::<G>::passed(result),
+        );
         // The kernel raises the flag during the call when the thread must not carry on.
         self.stop_check(Pc::Offset(next), AfterStop::Reload(live));
     }
@@ -3226,7 +3235,7 @@ impl<G: Guest> Emitter<G> for FullEmitter<'_, G> {
         trap_detail(&mut s, detail, instruction);
         s.call(F_TRAP)
             .i32_const(UNWIND_LEAVE)
-            .call(G::F_UNWIND)
+            .call(Layout::<G>::F_UNWIND)
             .unreachable();
     }
 

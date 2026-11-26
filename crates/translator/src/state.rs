@@ -18,7 +18,7 @@ pub(crate) struct Slot {
 impl Slot {
     /// The slot of a register bit (not a flag).
     pub(crate) fn of_bit<G: Guest>(bit: u32) -> Slot {
-        let bit = G::bit(bit);
+        let bit = Layout::<G>::bit(bit);
         Slot {
             offset: bit.offset.into(),
             ty: match bit.ty {
@@ -103,7 +103,7 @@ impl Slot {
 
 /// Push one flag, 0 or 1, from the block's flags word.
 pub(crate) fn load_flag<G: Guest>(s: &mut InstructionSink<'_>, block: Fixed, flag: G::Flag) {
-    let (_, bit, _) = G::FLAGS[G::flag_index(flag)];
+    let (_, bit, _) = G::FLAGS[Layout::<G>::flag_index(flag)];
     block.push(s);
     Slot::flags::<G>().load(s);
     s.i32_const(bit as i32).i32_shr_u();
