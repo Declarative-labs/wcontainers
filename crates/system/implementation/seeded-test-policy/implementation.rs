@@ -13,20 +13,18 @@ mod udp;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::convert::Infallible;
-use core::ops::{ControlFlow, Range};
+use core::ops::Range;
 use core::time::Duration;
 
-use alloc::sync::Arc;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use spin::Mutex;
-use wcontainers_abi::{Cpu, Event, Host, HostError, Warning};
-use wcontainers_kernel_linux::{Kernel, Standard, TaskId};
+use wcontainers_abi::{Host, HostError, Warning};
+use wcontainers_kernel_linux::{Standard, TaskId};
 use wcontainers_random_source::RandomSource;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor};
-use wcontainers_runtime_single_kernel::{Execution, System, TerminalSize, Turn};
-use wcontainers_system::StreamTransport;
+use wcontainers_runtime_single_kernel::{System, TerminalSize, Turn};
+use wcontainers_system::{FallbackObserver, StreamTransport};
 use wcontainers_volatile_bytes::VolatileBytes;
 
 /// The services' stream endpoints this policy names for the first process's standard output and
@@ -193,6 +191,41 @@ impl<H: Host> TestPolicy<H> {
         self.services
     }
 
+    /// How the next turn ends, for the kernel's slice: after the events set, else where the schedule draws.
+    pub fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
+        Turn::Counted {
+            limit: self
+                .turn_events
+                .or_else(|| self.state.lock().schedule.turn_limit(slice_nanoseconds)),
+        }
+    }
+
+    /// The running thread made `progress` since it was last heard from: the clocks move by the time drawn for it.
+    pub fn ran(&self, progress: u64) {
+        let mut state = self.state.lock();
+        let nanoseconds = state.schedule.turn_nanoseconds(progress);
+        state.clock.advance(nanoseconds);
+    }
+
+    /// A turn ended.
+    pub fn count_turn(&self) {
+        self.state.lock().turns += 1;
+    }
+
+    /// Nothing can run until `until` on the monotonic clock: the clocks skip to it.
+    pub fn skip_to(&self, until: u64) {
+        self.state.lock().clock.skip_to(until);
+    }
+
+    /// Keeps a slow path of the executor, apart from the kernel's fallbacks.
+    pub fn cpu_warning(&self, warning: Warning<'_>) {
+        self.state.lock().warnings.push(Warned {
+            reason: warning.reason.to_string(),
+            count: warning.count,
+            detail: warning.detail,
+        });
+    }
+
     fn refuse(&self, detail: u64) -> Result<(), HostError> {
         let mut state = self.state.lock();
         state.refused += 1;
@@ -224,9 +257,10 @@ impl<H: RandomSource> RandomSource for TestPolicy<H> {
     }
 }
 
-impl<H: Host> Host for TestPolicy<H> {
-    fn warn(&self, warning: Warning<'_>) {
-        self.services.warn(warning);
+/// The kernel's fallbacks are the services' warnings.
+impl<H: Host> FallbackObserver<Warning<'static>> for TestPolicy<H> {
+    fn on_fallback_used(&self, which: &Warning<'static>) {
+        self.services.warn(*which);
     }
 }
 
@@ -316,58 +350,6 @@ where
         + Sync
         + 'static,
 {
-    type End = Infallible;
-
-    fn started(self: &Arc<Self>, _kernel: &mut Kernel, _cpu: &mut dyn Cpu) {}
-
-    fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
-        Turn::Counted {
-            limit: self
-                .turn_events
-                .or_else(|| self.state.lock().schedule.turn_limit(slice_nanoseconds)),
-        }
-    }
-
-    fn ran(&self, progress: u64) {
-        let mut state = self.state.lock();
-        let nanoseconds = state.schedule.turn_nanoseconds(progress);
-        state.clock.advance(nanoseconds);
-    }
-
-    fn arrived(self: &Arc<Self>, _kernel: &mut Kernel, _cpu: &mut dyn Cpu) -> bool {
-        self.state.lock().turns += 1;
-        false
-    }
-
-    fn stopped<E: Execution>(
-        self: &Arc<Self>,
-        _kernel: &mut Kernel,
-        _cpu: &mut E,
-    ) -> ControlFlow<Infallible> {
-        ControlFlow::Continue(())
-    }
-
-    fn idle(
-        self: &Arc<Self>,
-        kernel: &mut Kernel,
-        cpu: &mut dyn Cpu,
-        until_nanoseconds: Option<u64>,
-    ) {
-        let Some(until) = until_nanoseconds else {
-            panic!("the kernel is idle with nothing to wake it, and this policy has no events");
-        };
-        self.state.lock().clock.skip_to(until);
-        kernel.event(cpu, self, Event::Timer);
-    }
-
-    fn cpu_warning(&self, warning: Warning<'_>) {
-        self.state.lock().warnings.push(Warned {
-            reason: warning.reason.to_string(),
-            count: warning.count,
-            detail: warning.detail,
-        });
-    }
-
     fn standard(&self, _terminal: Option<TerminalSize>) -> Standard<u32> {
         Standard::Pipes {
             input: None,

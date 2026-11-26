@@ -1,13 +1,11 @@
-//! The runtime: one loop that drives the kernel, an executor that runs the guest's instructions
-//! ([`Execution`]) and what surrounds them ([`System`]). Both are type parameters, resolved at compile
-//! time; the loop knows no executor and no host.
+//! The runtime: a container made from an OCI configuration and an image, run by its kernel's runners, each on a host
+//! thread of its own with an executor of its own, and served by what surrounds the kernel ([`System`]).
 //!
-//! Without the `std` feature only the loop is built, for an executor whose loop runs where there is no
-//! standard library.
+//! Without the `std` feature only the types an executor of the old loop names are built ([`Execution`], [`Answer`]),
+//! for an executor that runs where there is no standard library; they go once no executor runs that way.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use core::ops::ControlFlow;
 #[cfg(feature = "std")]
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(feature = "std")]
@@ -16,7 +14,7 @@ use std::sync::{Mutex, PoisonError};
 extern crate alloc;
 use alloc::sync::Arc;
 
-use wcontainers_abi::{Cpu, Exit, Next, Resume, ThreadId, Warning};
+use wcontainers_abi::{Cpu, Exit, Resume, ThreadId, Warning};
 pub use wcontainers_kernel_linux::{Kernel, Standard};
 
 #[cfg(feature = "std")]
@@ -165,7 +163,7 @@ pub enum Leaving {
     SystemAsked,
 }
 
-/// What an executor calls while its thread runs. The loop implements it.
+/// What an executor of the old loop calls while its thread runs.
 pub trait Answer {
     /// The thread came back with `exit`, having made `progress` since its last exit. `cpu` is the back
     /// end itself, handed on to the kernel.
@@ -195,38 +193,11 @@ pub trait Execution: Cpu + Sized {
     fn restored(&self) -> Self;
 }
 
-/// What surrounds the kernel: its [`wcontainers_kernel_linux::System`] (the abi's `Host`, `Sync`), and
-/// what the loop asks between turns, by shared reference so that the system synchronizes what it
-/// changes.
+/// What surrounds the kernel: its [`wcontainers_kernel_linux::System`], and what a container asks of
+/// it as it is made, by shared reference so that the system synchronizes what it changes.
 pub trait System: wcontainers_kernel_linux::System {
-    /// What a run ended by the system gives back.
-    type End;
-    /// The kernel has started: hands it what this system gives at once, such as credit on the
-    /// ends it reads.
-    fn started(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu);
-    /// How the next turn ends, for the kernel's slice.
-    fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn;
-    /// How far the running thread got since it was last heard from.
-    fn ran(&self, progress: u64);
-    /// Hands the kernel what arrived since the last exit; whether something needs the thread out of
-    /// `run` before the kernel is asked what is next.
-    fn arrived(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool;
-    /// No thread is in `run`: does what [`System::arrived`] asked for, and may end the run.
-    fn stopped<E: Execution>(
-        self: &Arc<Self>,
-        kernel: &mut Kernel,
-        cpu: &mut E,
-    ) -> ControlFlow<Self::End>;
-    /// Nothing can run: waits for an event, or until the time on the monotonic clock, and hands it to
-    /// the kernel.
-    fn idle(
-        self: &Arc<Self>,
-        kernel: &mut Kernel,
-        cpu: &mut dyn Cpu,
-        until_nanoseconds: Option<u64>,
-    );
-    /// A slow path of the executor, apart from the kernel's warnings.
-    fn cpu_warning(&self, warning: Warning<'_>);
+    /// The container is made: the system starts handing the kernel what arrives from outside.
+    fn started(self: &Arc<Self>) {}
     /// Names the ends of the first process's descriptors 0 to 2, whose other sides the system holds:
     /// a terminal of this size when the configuration asks for one, else pipes.
     fn standard(
@@ -242,137 +213,5 @@ pub trait System: wcontainers_kernel_linux::System {
     #[cfg(feature = "std")]
     fn serve_directory(&self, _source: &std::path::Path) -> std::io::Result<()> {
         Err(std::io::ErrorKind::Unsupported.into())
-    }
-}
-
-/// What one step did.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Step<End> {
-    /// A thread ran.
-    Ran,
-    /// Nothing can run until an event arrives, or until this time on the monotonic clock.
-    Idle { until_nanoseconds: Option<u64> },
-    /// The container's first process ended with this wait status.
-    Finished { status: i32 },
-    /// The system ended the run.
-    Ended(End),
-}
-
-/// How a whole run ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Ending<End> {
-    Finished { status: i32 },
-    Ended(End),
-}
-
-/// The loop, one step at a time, for a caller with its own event loop.
-#[derive(Default)]
-pub struct Stepper {
-    /// The kernel's answer kept from the last step, when a thread left with one in hand.
-    kept: Option<Next>,
-}
-
-impl Stepper {
-    pub fn step<E: Execution, S: System>(
-        &mut self,
-        kernel: &mut Kernel,
-        cpu: &mut E,
-        system: &Arc<S>,
-    ) -> Result<Step<S::End>, E::Failure> {
-        match self.kept.take().unwrap_or_else(|| kernel.next()) {
-            Next::Run {
-                thread,
-                resume,
-                slice_nanoseconds,
-            } => {
-                let turn = system.turn(slice_nanoseconds);
-                let mut answer = Answering {
-                    kernel,
-                    system,
-                    thread,
-                    kept: &mut self.kept,
-                };
-                cpu.run(thread, resume, turn, &mut answer)?;
-                Ok(match system.stopped(kernel, cpu) {
-                    ControlFlow::Break(end) => Step::Ended(end),
-                    ControlFlow::Continue(()) => Step::Ran,
-                })
-            }
-            Next::Idle { until_nanoseconds } => Ok(Step::Idle { until_nanoseconds }),
-            Next::Finished { status } => Ok(Step::Finished { status }),
-        }
-    }
-
-    /// Runs the container to its end: [`Stepper::step`] again and again, waiting in
-    /// [`System::idle`].
-    pub fn drive<E: Execution, S: System>(
-        &mut self,
-        kernel: &mut Kernel,
-        cpu: &mut E,
-        system: &Arc<S>,
-    ) -> Result<Ending<S::End>, E::Failure> {
-        loop {
-            match self.step(kernel, cpu, system)? {
-                Step::Ran => {}
-                Step::Idle { until_nanoseconds } => system.idle(kernel, cpu, until_nanoseconds),
-                Step::Finished { status } => return Ok(Ending::Finished { status }),
-                Step::Ended(end) => return Ok(Ending::Ended(end)),
-            }
-        }
-    }
-}
-
-/// Runs the container to its end from its first step.
-pub fn drive<E: Execution, S: System>(
-    kernel: &mut Kernel,
-    cpu: &mut E,
-    system: &Arc<S>,
-) -> Result<Ending<S::End>, E::Failure> {
-    Stepper::default().drive(kernel, cpu, system)
-}
-
-/// The loop's answer to the running thread's exits.
-struct Answering<'a, S> {
-    kernel: &'a mut Kernel,
-    system: &'a Arc<S>,
-    thread: ThreadId,
-    kept: &'a mut Option<Next>,
-}
-
-impl<S: System> Answer for Answering<'_, S> {
-    fn exit(&mut self, cpu: &mut dyn Cpu, exit: Exit, progress: u64) -> Carry {
-        self.system.ran(progress);
-        self.kernel.exit(cpu, self.system, exit);
-        if self.system.arrived(self.kernel, cpu) {
-            return Carry::Leave(Leaving::SystemAsked);
-        }
-        let next = self.kernel.next();
-        let why = match next {
-            Next::Run {
-                thread,
-                resume: resume @ (Resume::Return(_) | Resume::Continue),
-                slice_nanoseconds,
-            } if thread == self.thread => {
-                return Carry::On {
-                    resume,
-                    turn: self.system.turn(slice_nanoseconds),
-                };
-            }
-            Next::Run { thread, .. } if thread == self.thread => Leaving::NewRegisters,
-            Next::Run { .. } => Leaving::AnotherThread,
-            Next::Idle { .. } => Leaving::Waits,
-            Next::Finished { .. } => Leaving::Finished,
-        };
-        *self.kept = Some(next);
-        Carry::Leave(why)
-    }
-
-    fn clock(&mut self, progress: u64) -> u64 {
-        self.system.ran(progress);
-        self.system.monotonic_nanoseconds()
-    }
-
-    fn warn(&mut self, warning: Warning<'_>) {
-        self.system.cpu_warning(warning);
     }
 }

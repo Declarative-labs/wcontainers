@@ -142,3 +142,38 @@ fn time(shared: &Deadline, started: Instant, flag: &StopFlag) {
 pub(crate) fn nanoseconds_since(started: Instant) -> u64 {
     started.elapsed().as_nanos() as u64
 }
+
+#[cfg(test)]
+mod tests {
+    use super::SliceTimer;
+    use crate::StopFlag;
+    use std::time::Duration;
+
+    const SLICE: Duration = Duration::from_millis(1);
+    /// Long enough that the turn surely ends before it.
+    const LONG_SLICE: Duration = Duration::from_millis(200);
+    const PAST_IT: Duration = LONG_SLICE.saturating_mul(2);
+
+    fn timer() -> (SliceTimer, StopFlag) {
+        let flag = StopFlag::default();
+        (SliceTimer::new(flag.clone()), flag)
+    }
+
+    #[test]
+    fn a_turn_past_its_deadline_is_stopped() {
+        let (timer, flag) = timer();
+        timer.turn(Some(SLICE.as_nanos() as u64));
+        std::thread::sleep(PAST_IT);
+        assert!(flag.take());
+    }
+
+    #[test]
+    fn an_idle_past_an_ended_turns_deadline_raises_nothing() {
+        let (timer, flag) = timer();
+        timer.turn(Some(LONG_SLICE.as_nanos() as u64));
+        timer.turn_over();
+        std::thread::sleep(PAST_IT);
+        assert!(!flag.take());
+        assert!(timer.idle());
+    }
+}

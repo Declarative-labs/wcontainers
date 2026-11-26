@@ -1,19 +1,18 @@
 //! The local system for an operating system: its clocks and randomness, the container's standard
-//! input, output and error (or its terminal), a directory of the host as the file backend, the host's network, free turns ended by a
-//! timer thread at the kernel's slice or by an arrival from outside, and waiting in real time.
+//! input, output and error (or its terminal), a directory of the host as the file backend, the host's network, and a
+//! thread that hands the kernel what arrives from outside as it comes.
 
-use core::ops::ControlFlow;
 use std::collections::BTreeMap;
 use std::io::{ErrorKind, Read, Write};
 use std::marker::PhantomData;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 use std::task::{Poll, Waker};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-use wcontainers_abi::{Cpu, Event, Host, HostError, PAGE_SIZE, Warning};
-use wcontainers_kernel_linux::{Kernel, Standard};
+use wcontainers_abi::{HostError, PAGE_SIZE, Warning};
+use wcontainers_kernel_linux::Standard;
 use wcontainers_readiness::{Readiness, ReadinessReport, ReadyFor, UnconditionalEvents};
 use wcontainers_system::StreamTransport;
 use wcontainers_volatile_bytes::VolatileBytes;
@@ -21,8 +20,8 @@ use wcontainers_volatile_bytes::VolatileBytes;
 use crate::arrivals::{Arrival, Arrivals};
 use crate::files::Files;
 use crate::net::Network;
-use crate::timer::{SliceTimer, nanoseconds_since};
-use crate::{Execution, StopFlag, System, TerminalSize, Turn};
+use crate::timer::nanoseconds_since;
+use crate::{StopFlag, System, TerminalSize};
 
 /// A warning as the system keeps it: the kernel's or the executor's, by reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,11 +60,12 @@ const ERROR_NOT_WRITTEN: &str = "standard error not written";
 /// The name of the thread that reads the input.
 const INPUT_THREAD: &str = "wcontainers input";
 
+/// The name of the thread that hands the kernel what arrives.
+const DELIVERY_THREAD: &str = "wcontainers delivery";
+
 /// The local system, serving a kernel whose threads run on the executor `E`.
 pub struct LocalSystem<E = ()> {
     state: Mutex<LocalState>,
-    /// Set with the stop flag, before the first turn.
-    timer: OnceLock<SliceTimer>,
     /// The memory programs are told the machine has, set when the container is made.
     pub(crate) machine_memory: OnceLock<u64>,
     /// Made at the container's first use of each.
@@ -128,7 +128,6 @@ impl<E> LocalSystem<E> {
         };
         Self {
             state: Mutex::new(state),
-            timer: OnceLock::new(),
             machine_memory: OnceLock::new(),
             icmp: OnceLock::new(),
             raw: OnceLock::new(),
@@ -164,6 +163,11 @@ impl<E> LocalSystem<E> {
         self.state().warnings.clone()
     }
 
+    /// Keeps a slow path of the executor, apart from the kernel's fallbacks.
+    pub fn cpu_warning(&self, warning: Warning<'_>) {
+        self.state().keep(warning, true);
+    }
+
     pub(crate) fn state(&self) -> MutexGuard<'_, LocalState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -172,31 +176,17 @@ impl<E> LocalSystem<E> {
         self.state.get_mut().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Drops the deadline of the turn that ended.
-    fn turn_over(&self) {
-        if let Some(timer) = self.timer.get() {
-            timer.turn_over();
-        }
-    }
-}
-
-impl<E: 'static> LocalSystem<E> {
-    /// Takes what arrived: the input, and the network's readiness, none of it while the state is
-    /// held. Whether anything did.
-    fn deliver(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
+    /// Takes what arrived: the input, and the network's readiness, the state held for each in turn.
+    fn deliver(&self) {
         let arrivals = self.state().arrivals.take();
-        let any = !arrivals.is_empty();
         for arrival in arrivals {
+            let mut state = self.state();
             match arrival {
-                Arrival::Input(bytes) => self.state().input_arrived(&bytes),
-                Arrival::InputEnded(error) => self.state().input_ended(error),
+                Arrival::Input(bytes) => state.input_arrived(&bytes),
+                Arrival::InputEnded(error) => state.input_ended(error),
                 arrival => {
-                    let event = match &mut self.state().network {
-                        Some(network) => network.event(&arrival),
-                        None => continue,
-                    };
-                    if let Some(event) = event {
-                        kernel.event(cpu, self, event);
+                    if let Some(network) = &mut state.network {
+                        network.arrived(&arrival);
                     }
                 }
             }
@@ -217,7 +207,26 @@ impl<E: 'static> LocalSystem<E> {
                 false,
             );
         }
-        any
+    }
+}
+
+/// Hands what arrives to the system `system` points to, as it comes, until the system is gone.
+fn deliver_arrivals<E>(system: &Weak<LocalSystem<E>>) {
+    loop {
+        let Some(arrivals) = system
+            .upgrade()
+            .map(|system| Arc::clone(&system.state().arrivals))
+        else {
+            return;
+        };
+        arrivals.wait(None);
+        if arrivals.closed() {
+            return;
+        }
+        match system.upgrade() {
+            Some(system) => system.deliver(),
+            None => return,
+        }
     }
 }
 
@@ -320,9 +329,11 @@ impl LocalState {
 
 impl<E> Drop for LocalSystem<E> {
     /// Stops the input's reader once it next waits for room (one blocked reading is left to end with
-    /// the process); the timer's thread ends as the timer is dropped.
+    /// the process), and the delivery thread.
     fn drop(&mut self) {
-        self.state_mut().input_credit.stop();
+        let state = self.state_mut();
+        state.input_credit.stop();
+        state.arrivals.close();
     }
 }
 
@@ -417,10 +428,6 @@ impl LocalState {
         getrandom::fill(into).expect("the system's randomness");
     }
 
-    fn warn(&mut self, warning: Warning<'_>) {
-        self.keep(warning, false);
-    }
-
     /// Served at once; a message with no reply has an empty one.
     fn serve(&mut self, message: &[u8]) -> Result<Vec<u8>, HostError> {
         let files = self.files.as_mut().ok_or(HostError::NotSupported)?;
@@ -507,13 +514,6 @@ macro_rules! host_on_state {
                     Ok(bytes.len())
                 })?;
                 Ok(())
-            }
-        }
-
-        impl<E> Host for $host {
-            fn warn(&self, warning: Warning<'_>) {
-                let $this = self;
-                $state.warn(warning);
             }
         }
 
@@ -607,79 +607,23 @@ impl<E> wcontainers_system::DomainNameResolver for LocalSystem<E> {
 }
 
 impl<E: 'static> System for LocalSystem<E> {
-    /// The local system never ends a run itself.
-    type End = core::convert::Infallible;
-
-    /// Takes what arrived before the start.
-    fn started(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) {
-        self.deliver(kernel, cpu);
+    /// Starts the thread that hands the kernel what arrives, the arrivals before the start among them.
+    fn started(self: &Arc<Self>) {
+        let system = Arc::downgrade(self);
+        std::thread::Builder::new()
+            .name(DELIVERY_THREAD.to_string())
+            .spawn(move || deliver_arrivals(&system))
+            .expect("a delivery thread");
     }
 
+    /// Arrivals end a free turn.
     fn stop_flag(&self, flag: StopFlag) {
-        let state = self.state();
-        state.arrivals.set_flag(flag.clone());
-        self.timer.get_or_init(|| SliceTimer::new(flag));
-    }
-
-    /// A free turn, ended by the timer thread when the kernel's slice has passed.
-    fn turn(&self, slice_nanoseconds: Option<u64>) -> Turn {
-        if let Some(timer) = self.timer.get() {
-            timer.turn(slice_nanoseconds);
-        }
-        Turn::Free
-    }
-
-    /// Time is the host's clock, not progress.
-    fn ran(&self, _: u64) {}
-
-    fn arrived(self: &Arc<Self>, kernel: &mut Kernel, cpu: &mut dyn Cpu) -> bool {
-        self.deliver(kernel, cpu);
-        false
-    }
-
-    /// The turn is over, so its deadline is dropped: an idle past it raises nothing.
-    fn stopped<C: Execution>(
-        self: &Arc<Self>,
-        _: &mut Kernel,
-        _: &mut C,
-    ) -> ControlFlow<Self::End> {
-        self.turn_over();
-        ControlFlow::Continue(())
-    }
-
-    /// Hands over what arrived, or else waits until the kernel's next timer or an arrival. With
-    /// neither to come, the container waits for ever, as it would on Linux. The state is not held
-    /// while waiting.
-    fn idle(
-        self: &Arc<Self>,
-        kernel: &mut Kernel,
-        cpu: &mut dyn Cpu,
-        until_nanoseconds: Option<u64>,
-    ) {
-        if self.deliver(kernel, cpu) {
-            return;
-        }
-        let (arrivals, now) = {
-            let state = self.state();
-            (state.arrivals.clone(), state.now())
-        };
-        let left = until_nanoseconds.map(|until| Duration::from_nanos(until.saturating_sub(now)));
-        if left != Some(Duration::ZERO) {
-            arrivals.wait(left);
-            self.deliver(kernel, cpu);
-        }
-        if until_nanoseconds.is_some_and(|until| self.state().now() >= until) {
-            kernel.event(cpu, self, Event::Timer);
-        }
+        self.state().arrivals.set_flag(flag);
     }
 
     fn serve_directory(&self, source: &Path) -> std::io::Result<()> {
         self.state().files = Some(Files::new(source)?);
         Ok(())
-    }
-
-    fn cpu_warning(&self, warning: Warning<'_>) {
-        self.state().keep(warning, true);
     }
 
     /// The terminal asked for, or pipes; with an input, its reader starts.
@@ -713,42 +657,5 @@ impl<E: 'static> System for LocalSystem<E> {
                 .expect("an input thread");
         }
         standard
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::LocalSystem;
-    use crate::{StopFlag, System};
-    use std::time::Duration;
-
-    const SLICE: Duration = Duration::from_millis(1);
-    /// Long enough that the turn surely ends before it.
-    const LONG_SLICE: Duration = Duration::from_millis(200);
-    const PAST_IT: Duration = LONG_SLICE.saturating_mul(2);
-
-    fn system() -> (LocalSystem, StopFlag) {
-        let flag = StopFlag::default();
-        let system = LocalSystem::new(Box::new(std::io::sink()), Box::new(std::io::sink()));
-        system.stop_flag(flag.clone());
-        (system, flag)
-    }
-
-    #[test]
-    fn a_turn_past_its_deadline_is_stopped() {
-        let (system, flag) = system();
-        system.turn(Some(SLICE.as_nanos() as u64));
-        std::thread::sleep(PAST_IT);
-        assert!(flag.take());
-    }
-
-    #[test]
-    fn an_idle_past_an_ended_turns_deadline_raises_nothing() {
-        let (system, flag) = system();
-        system.turn(Some(LONG_SLICE.as_nanos() as u64));
-        system.turn_over();
-        std::thread::sleep(PAST_IT);
-        assert!(!flag.take());
-        assert!(system.timer.get().expect("a timer").idle());
     }
 }

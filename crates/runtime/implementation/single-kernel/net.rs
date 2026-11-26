@@ -15,7 +15,7 @@ use std::thread::JoinHandle;
 use mio::unix::SourceFd;
 use mio::{Events, Interest, Poll as Poller, Registry, Token};
 use socket2::{Domain, Protocol, Socket as RawSocket, Type};
-use wcontainers_abi::{Event, HostError};
+use wcontainers_abi::HostError;
 use wcontainers_kernel::errno::Errno;
 use wcontainers_readiness::{ReadinessReport, ReadyFor, UnconditionalEvents};
 
@@ -553,20 +553,16 @@ impl Network {
         }
     }
 
-    /// The event the kernel is told for one arrival: none, as the standard input's are handed
-    /// over by the system and a socket's wakes its wait, whose answer the kernel takes when it
-    /// next settles.
-    pub(crate) fn event(&mut self, arrival: &Arrival) -> Option<Event> {
-        match *arrival {
-            Arrival::Input(_) | Arrival::InputEnded(_) | Arrival::Answered => None,
-            Arrival::Ready {
-                key,
-                readable,
-                writable,
-            } => {
-                self.ready(key as u32, readable, writable);
-                None
-            }
+    /// Takes one arrival: a socket's wakes its wait, whose answer the kernel takes when it next settles; the
+    /// standard input's are handed over by the system.
+    pub(crate) fn arrived(&mut self, arrival: &Arrival) {
+        if let Arrival::Ready {
+            key,
+            readable,
+            writable,
+        } = *arrival
+        {
+            self.ready(key as u32, readable, writable);
         }
     }
 }
@@ -618,7 +614,7 @@ mod tests {
         while waker.count() < count && start.elapsed() < PATIENCE {
             arrivals.wait(Some(PATIENCE));
             for arrival in arrivals.take() {
-                assert!(network.event(&arrival).is_none());
+                network.arrived(&arrival);
             }
         }
         waker.count() >= count

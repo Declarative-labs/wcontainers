@@ -9,6 +9,7 @@ use wcontainers_abi::{Cpu, HostError, Warning};
 use wcontainers_clock::Clock;
 use wcontainers_configurable::Configurable;
 use wcontainers_executor::Executor;
+use wcontainers_executor::memory_space::MemorySpace;
 use wcontainers_icmp_sockets::{EchoBinding, EchoIdentifier, IcmpSockets};
 use wcontainers_icmp_sockets_host::{HostIcmpSocket, HostIcmpSockets};
 use wcontainers_internet_protocol::{
@@ -37,7 +38,10 @@ pub type LocalKernel<E> = KernelWithExecutor<E, (), LocalSystem<E>>;
 
 impl<E> ProcessTracer for LocalSystem<E>
 where
-    E: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
+    E: Cpu
+        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+        + Send
+        + 'static,
 {
     type ProcessState = ();
     type Kernel = LocalKernel<E>;
@@ -45,7 +49,10 @@ where
 
 impl<E> ProcessorInputs for LocalSystem<E>
 where
-    E: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
+    E: Cpu
+        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+        + Send
+        + 'static,
 {
     fn read_monotonic_nanoseconds<P: ProcessOf<(), LocalKernel<E>>>(&self, _: P, _: TaskId) -> u64 {
         Clock::monotonic_nanoseconds(self)
@@ -61,7 +68,10 @@ where
 
 impl<E> MachineDescription for LocalSystem<E>
 where
-    E: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
+    E: Cpu
+        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+        + Send
+        + 'static,
 {
     fn report_online_processors<P: ProcessOf<(), LocalKernel<E>>>(
         &self,
@@ -268,7 +278,10 @@ impl<E> RouteResolver for LocalSystem<E> {
 impl<E> wcontainers_tcp_sockets::TcpSockets for LocalSystem<E> {}
 
 impl<E> wcontainers_system::System for LocalSystem<E> where
-    E: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static
+    E: Cpu
+        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+        + Send
+        + 'static
 {
 }
 
@@ -277,7 +290,10 @@ impl<E> wcontainers_system::System for LocalSystem<E> where
 #[expect(dead_code, reason = "checked as it is built, never called")]
 fn serves_the_whole_interface<E>()
 where
-    E: Cpu + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send> + Send + 'static,
+    E: Cpu
+        + Executor<TranslatorConfig: Send + Sync, GuestMemory: Send + MemorySpace<PageTable: Send>>
+        + Send
+        + 'static,
 {
     fn system<S: wcontainers_system::System>() {}
     system::<LocalSystem<E>>();
