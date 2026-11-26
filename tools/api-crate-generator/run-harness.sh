@@ -62,3 +62,12 @@ if has fuzz; then
         echo "status $status"
     done
 fi
+if has measure; then
+    # The cost table (the spike's measure test, ported), pinned to one core (MEASURE_CORE, default 92); the load printed.
+    core=${MEASURE_CORE:-92}
+    step "measure, pinned to core $core, load $(cut -d' ' -f1-3 /proc/loadavg)"
+    CARGO_TARGET_DIR=$target cargo test --release "${package[@]}" --test measure --no-run 2>&1 | tail -1
+    CARGO_TARGET_DIR=$target taskset -c "$core" cargo test --release "${package[@]}" --test measure -- --ignored --nocapture --test-threads=1 2>&1 |
+        grep -E '^\||^load|test result|panicked'
+    echo "status ${PIPESTATUS[0]}"
+fi
