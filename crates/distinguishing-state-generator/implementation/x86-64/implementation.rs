@@ -276,6 +276,9 @@ fn is_data(operand_type: OperandType) -> bool {
         | OperandType::EvexFusedData(_)
         | OperandType::EvexConvertData(_)
         | OperandType::EvexCompareData(_)
+        | OperandType::EvexMoveData(_)
+        | OperandType::EvexSpecialData(_)
+        | OperandType::EvexGatherData(_)
         | OperandType::OpmaskValue { .. }
         | OperandType::ZmmValue(..)
         | OperandType::StringData(_)

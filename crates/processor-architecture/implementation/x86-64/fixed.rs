@@ -30,6 +30,8 @@ pub enum FixedOutcome {
     /// EDX:EAX the time stamp counter, RDTSCP's also ECX, and RDPID's register IA32_TSC_AUX, which Linux sets to the
     /// CPU's number.
     WritesUndecided,
+    /// XTEST outside a transaction: ZF set, CF, OF, SF, AF and PF cleared.
+    OutsideTransaction,
     /// The register operand is written with a random value, which a behavior does not compare, CF is set and OF, SF,
     /// ZF, AF and PF are cleared, as RDRAND and RDSEED do when the random source had a value ready.
     WritesRandom,
@@ -63,7 +65,8 @@ const fn fixed(instruction: Instruction, outcome: FixedOutcome, memory: MemoryVa
 }
 
 use FixedOutcome::{
-    GeneralProtection, InvalidOpcode, NoOperation, ReadsOperand, SoftwareInterrupt, TouchesByte, WritesRandom, WritesUndecided,
+    GeneralProtection, InvalidOpcode, NoOperation, OutsideTransaction, ReadsOperand, SoftwareInterrupt, TouchesByte, WritesRandom,
+    WritesUndecided,
 };
 use MemoryVariation::{All, NotInstructionPointerRelative, Sample};
 
@@ -162,6 +165,17 @@ pub static FIXED_FORMS: &[FixedForm] = &[
     fixed(Instruction::Xsaves64Memmxsave, GeneralProtection, All),
     fixed(Instruction::XrstorsMemmxsave, GeneralProtection, All),
     fixed(Instruction::Xrstors64Memmxsave, GeneralProtection, All),
+    // Outside a transaction, which a single step never is in: XEND raises #GP(0), XABORT and the TSXLDTRK forms do
+    // nothing.
+    fixed(Instruction::Xend, GeneralProtection, Sample),
+    fixed(Instruction::XabortImmb, NoOperation, Sample),
+    fixed(Instruction::Xsusldtrk, NoOperation, Sample),
+    fixed(Instruction::Xresldtrk, NoOperation, Sample),
+    fixed(Instruction::Xtest, OutsideTransaction, Sample),
+    fixed(Instruction::Prefetchrst2Memu8, NoOperation, All),
+    // ENQCMDS needs CPL 0; ENQCMD needs a valid IA32_PASID, which Linux gives only a process bound to a device.
+    fixed(Instruction::EnqcmdsGpraMemu32, GeneralProtection, Sample),
+    fixed(Instruction::EnqcmdGpraMemu32, GeneralProtection, Sample),
 ];
 
 /// The general registers, by number, a form of [`FixedOutcome::WritesUndecided`] or [`FixedOutcome::WritesRandom`]

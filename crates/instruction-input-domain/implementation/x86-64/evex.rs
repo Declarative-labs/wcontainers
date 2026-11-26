@@ -25,7 +25,8 @@ use core::array;
 use iced_x86::{Instruction as Encoded, MemoryOperand, Register, RoundingControl};
 use wcontainers_processor_architecture::{ExecutionState, MemoryDelta, ProcessorArchitecture};
 use wcontainers_processor_architecture_x86_64::evex::{
-    Conversion, EvexForm, EvexOperation, FusedOrder, IntegerOperation, Number, read_element, write_element,
+    Conversion, EvexForm, EvexOperation, FusedOrder, IntegerOperation, Number, SpecialOperation, read_element,
+    write_element,
 };
 use wcontainers_processor_architecture_x86_64::float::Conversion as LegacyConversion;
 use wcontainers_processor_architecture_x86_64::float::{
@@ -40,7 +41,7 @@ use wcontainers_processor_architecture_x86_64::{
 use crate::float::{MxcsrSet, generate_exception_pairs, generate_mxcsr_values};
 use crate::integer::{CodeLayout, LAYOUTS_BEYOND_START, encode_at_code_address, lay_out, place_memory_operand, to_padding};
 use crate::vector::rotate_floats;
-use crate::{CODE_ADDRESS, FlagSet, OperandType, OperandValue, Splits};
+use crate::{CODE_ADDRESS, DataPage, FlagSet, LOWER_DATA_ADDRESS, OperandType, OperandValue, Splits, UPPER_DATA_ADDRESS, to_data_byte};
 
 /// Register triples (destination, EVEX.vvvv, ModRM.rm) at the page's start: low registers, then a high register in
 /// each place, which EVEX.R', V' and X with B encode.
@@ -90,6 +91,15 @@ pub struct EvexFloatData {
 
 /// The operand types of an EVEX form, in the order the build reads them.
 pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
+    if let EvexOperation::Gather { data_bytes, index_bytes } | EvexOperation::Scatter { data_bytes, index_bytes } = form.operation {
+        return vec![
+            OperandType::EvexEncoding,
+            OperandType::DataPagePermission(DataPage::Lower),
+            OperandType::DataPagePermission(DataPage::Upper),
+            OperandType::EvexGatherData(EvexGatherData { data_bytes, index_bytes, vector_bytes: form.vector_bytes() }),
+            OperandType::Flags(FlagSet::Unread),
+        ];
+    }
     let op_code = form.code.op_code();
     let register = form.place == OperandPlace::Register;
     let data = match form.operation {
@@ -133,7 +143,45 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
             rounding: op_code.can_use_rounding_control(),
             suppression: op_code.can_suppress_all_exceptions(),
             maskable: op_code.can_use_op_mask_register(),
+            immediate: form.has_immediate(),
         }),
+        EvexOperation::Special { operation, precision, arrangement } => OperandType::EvexSpecialData(EvexSpecialData {
+            operation,
+            precision,
+            vector_bytes: form.vector_bytes(),
+            scalar: arrangement == Arrangement::Scalar,
+            register,
+            rounding: op_code.can_use_rounding_control(),
+            suppression: op_code.can_suppress_all_exceptions(),
+        }),
+        // The singles' critical values also make bfloat16 pairs: each one's upper half is a bfloat16's.
+        EvexOperation::DotBfloat16 => OperandType::EvexFusedData(EvexFusedData {
+            order: FusedOrder::Order231,
+            precision: Precision::Single,
+            vector_bytes: form.vector_bytes(),
+            scalar: false,
+            register,
+            rounding: false,
+        }),
+        // The halves' critical values, rotated, make the complex numbers' parts.
+        EvexOperation::ComplexMultiply { arrangement, .. } => OperandType::EvexFusedData(EvexFusedData {
+            order: FusedOrder::Order231,
+            precision: Precision::Half,
+            vector_bytes: form.vector_bytes(),
+            scalar: arrangement == Arrangement::Scalar,
+            register,
+            rounding: op_code.can_use_rounding_control(),
+        }),
+        EvexOperation::Gather { .. } | EvexOperation::Scatter { .. } => unreachable!("listed above"),
+        EvexOperation::MoveScalar => OperandType::EvexMoveData(EvexMoveData {
+            element_bytes: 2,
+            vector_bytes: 16,
+            register,
+            maskable: op_code.can_use_op_mask_register(),
+        }),
+        EvexOperation::Compress { element_bytes } | EvexOperation::Expand { element_bytes } => {
+            OperandType::EvexMoveData(EvexMoveData { element_bytes, vector_bytes: form.vector_bytes(), register, maskable: true })
+        }
         EvexOperation::Integer { operation, element_bytes } => OperandType::EvexIntegerData(EvexIntegerData {
             operation,
             element_bytes,
@@ -152,7 +200,7 @@ pub fn list_operand_types(form: &EvexForm) -> Vec<OperandType> {
     };
     [memory]
         .into_iter()
-        .chain(form.reads_first_source().then_some(OperandType::EvexRegister))
+        .chain((form.reads_first_source() || form.stores()).then_some(OperandType::EvexRegister))
         .chain(op_code.can_use_op_mask_register().then_some(OperandType::EvexMask(form.elements())))
         .chain(op_code.can_broadcast().then_some(OperandType::EvexBroadcast))
         .chain([data, unread])
@@ -309,6 +357,8 @@ pub fn generate_fused_data(data: EvexFusedData) -> Vec<OperandValue> {
     let sign = 1u64 << (precision.to_bits() - 1);
     let normal = |exponent: i32, fraction: u64| (((exponent + bias) as u64) << fraction_bits) | fraction;
     let one = normal(0, 0);
+    // An addend far below the product's last unit: 2^(-digits - 5), or the smallest subnormal where that is below it.
+    let tiny = if bias - digits - 5 > 0 { normal(-digits - 5, 0) } else { 1 };
     let (low, high) = (digits / 2, digits - digits / 2);
     let largest = normal(bias, (1 << fraction_bits) - 1);
     let infinity = precision.to_default_nan() & !sign & !precision.to_quiet_bit();
@@ -316,7 +366,7 @@ pub fn generate_fused_data(data: EvexFusedData) -> Vec<OperandValue> {
     let edges: Vec<[u64; 3]> = vec![
         [normal(0, 1), normal(-1, (1 << fraction_bits) - 1), one | sign],
         [normal(0, 1 << (fraction_bits - low)), normal(0, 1 << (fraction_bits - high)), 0],
-        [normal(0, 1 << (fraction_bits - low)), normal(0, 1 << (fraction_bits - high)), normal(-digits - 5, 0)],
+        [normal(0, 1 << (fraction_bits - low)), normal(0, 1 << (fraction_bits - high)), tiny],
         [largest, normal(1, 0), 0],
         [largest, normal(1, 0), largest | sign],
         [largest, one, largest],
@@ -498,6 +548,8 @@ pub struct EvexConvertData {
     pub rounding: bool,
     pub suppression: bool,
     pub maskable: bool,
+    /// VCVTPS2PH, whose immediate names the rounding.
+    pub immediate: bool,
 }
 
 /// A source element's critical values: a floating-point source's sixteen and, for a conversion to integers, each
@@ -526,7 +578,8 @@ fn list_source_values(operation: EvexOperation) -> Vec<u64> {
             match to {
                 Number::Signed(bytes) | Number::Unsigned(bytes) => {
                     let bits = 8 * bytes as i32;
-                    for exponent in [bits - 1, bits] {
+                    let largest = (1i32 << (precision.to_bits() as i32 - precision.to_significand_bits() as i32 - 1)) - 1;
+                    for exponent in [bits - 1, bits].into_iter().filter(|exponent| *exponent <= largest) {
                         values.extend([
                             float_bits(precision, exponent, 0, false),
                             float_bits(precision, exponent - 1, all_fraction, false),
@@ -543,6 +596,7 @@ fn list_source_values(operation: EvexOperation) -> Vec<u64> {
                         float_bits(precision, -2, 0, true),
                     ]);
                 }
+                Number::Float(Precision::Half) => values.extend(list_edges_into_half(precision)),
                 Number::Float(narrower) if narrower.to_bits() < precision.to_bits() => {
                     values.extend(crate::float::generate_conversion_edges(LegacyConversion::DoubleToSingle, precision));
                 }
@@ -550,22 +604,57 @@ fn list_source_values(operation: EvexOperation) -> Vec<u64> {
             }
             values
         }
-        EvexOperation::Convert(Conversion { from: Number::Signed(bytes) | Number::Unsigned(bytes), .. }) => {
+        EvexOperation::Convert(Conversion { from: Number::Signed(bytes) | Number::Unsigned(bytes), to, .. }) => {
             let mask = if bytes == 8 { u64::MAX } else { (1 << (8 * bytes)) - 1 };
             let signed_maximum = mask >> 1;
-            [0, 1, 2, mask, signed_maximum, signed_maximum + 1, (1 << 24) + 1, (1 << 24) + 3, (1 << 53) + 1, (1 << 53) + 3, ((1 << 24) + 1u64).wrapping_neg(), 0x5AA5_C33C_0FF0_9669]
+            let mut values = [0, 1, 2, mask, signed_maximum, signed_maximum + 1, (1 << 24) + 1, (1 << 24) + 3, (1 << 53) + 1, (1 << 53) + 3, ((1 << 24) + 1u64).wrapping_neg(), 0x5AA5_C33C_0FF0_9669]
                 .map(|value| value & mask)
-                .to_vec()
+                .to_vec();
+            if to == Number::Float(Precision::Half) {
+                // A half's ties at its significand's edge, the largest half, and the integers that round past it.
+                values.extend([(1 << 11) + 1, (1 << 11) + 3, 65504, 65519, 65520, (1u64 << 11).wrapping_neg() - 1].map(|value| value & mask));
+            }
+            values
         }
         _ => unreachable!("only conversions"),
     }
+}
+
+/// A wider precision's values at a half's own edges: those that round to the largest half or past it, to the
+/// smallest normal and subnormal half or below, at a tie and past it, a tie at one, and a signaling NaN whose payload
+/// lies below the bits a half keeps.
+fn list_edges_into_half(precision: Precision) -> Vec<u64> {
+    let fraction_bits = precision.to_significand_bits() as i32 - 1;
+    let bias = (1i32 << (precision.to_bits() as i32 - fraction_bits - 2)) - 1;
+    let sign = 1u64 << (precision.to_bits() - 1);
+    let normal = |exponent: i32, fraction: u64| (((exponent + bias) as u64) << fraction_bits) | fraction;
+    // The fraction bit just below the last one a half keeps, and those below it.
+    let below_half = |extra: i32| 1u64 << (fraction_bits - 10 - extra);
+    let all = (1u64 << fraction_bits) - 1;
+    vec![
+        normal(15, all & !(below_half(0) - 1)),
+        normal(15, all & !(below_half(1) - 1)),
+        normal(15, (all & !(below_half(0) - 1)) | below_half(2)),
+        normal(16, 0),
+        normal(-14, 0),
+        normal(-15, all),
+        normal(-24, 0),
+        normal(-25, 0),
+        normal(-25, 1),
+        normal(-26, 0),
+        normal(0, below_half(1)),
+        normal(0, below_half(1) | 1),
+        sign | normal(0, below_half(1) | 1),
+        sign | normal(-25, 1),
+        precision.to_default_nan() & !sign & !precision.to_quiet_bit() | 1,
+    ]
 }
 
 /// The data of a conversion: the source's critical values rotated across its elements with MXCSR's critical
 /// values; then with each embedded control the form allows and with every other element selected, merging and
 /// zeroing. A memory form takes the rotations with MXCSR at its default and with every exception unmasked.
 pub fn generate_convert_data(data: EvexConvertData) -> Vec<OperandValue> {
-    let EvexConvertData { operation, elements, register, rounding, suppression, maskable } = data;
+    let EvexConvertData { operation, elements, register, rounding, suppression, maskable, immediate } = data;
     let values = list_source_values(operation);
     let source_bytes = match operation {
         EvexOperation::Convert(conversion) => conversion.from.to_bytes(),
@@ -631,7 +720,24 @@ pub fn generate_convert_data(data: EvexConvertData) -> Vec<OperandValue> {
             }
         }
     }
-    all
+    if !immediate {
+        return all;
+    }
+    // VCVTPS2PH: everything above rounding to nearest by the immediate, then each other immediate rounding mode and
+    // MXCSR's (bit 2) with MXCSR toward zero and with every exception unmasked.
+    let with_immediate = |value: OperandValue, immediate: u8| match value {
+        OperandValue::EvexFloatData { first, second, mask, control, mxcsr } => {
+            OperandValue::EvexCompareData { first, second, immediate, mask, control, mxcsr }
+        }
+        value => value,
+    };
+    let mut values: Vec<OperandValue> = all.into_iter().map(|value| with_immediate(value, 0)).collect();
+    for immediate in [1, 2, 3, 4, 0x0B] {
+        for mxcsr in [toward_zero, unmasked] {
+            values.extend(pairs.iter().map(|&pair| with_immediate(datum(pair, NO_MASK, EmbeddedControl::None, mxcsr), immediate)));
+        }
+    }
+    values
 }
 
 /// What the data of an integer EVEX form is made of.
@@ -830,6 +936,339 @@ pub fn generate_integer_data(data: EvexIntegerData) -> Vec<OperandValue> {
     all
 }
 
+/// What the data of VGETEXP to VSCALEF is made of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EvexSpecialData {
+    pub operation: SpecialOperation,
+    pub precision: Precision,
+    pub vector_bytes: usize,
+    pub scalar: bool,
+    /// A register form, whose data holds the opmask and the embedded control.
+    pub register: bool,
+    pub rounding: bool,
+    pub suppression: bool,
+}
+
+/// The values an element of VGETEXP to VSCALEF takes beyond the sixteen critical values: for VRNDSCALE and VREDUCE
+/// numbers with a fraction on and either side of each rounding's tie at the scales tried; for VSCALEF's second
+/// source powers whose floor is on either side of an integer and powers past either end of the exponent's range.
+fn list_special_values(operation: SpecialOperation, precision: Precision) -> Vec<u64> {
+    let mut values: Vec<u64> = rotate_floats(precision, true).into_iter().map(|vector| vector as u64).collect();
+    let digits = precision.to_significand_bits() as i32;
+    let fraction_bits = digits - 1;
+    let bias = (1i32 << (precision.to_bits() as i32 - digits - 1)) - 1;
+    let sign = 1u64 << (precision.to_bits() - 1);
+    let normal = |exponent: i32, fraction: u64| (((exponent + bias) as u64) << fraction_bits) | fraction;
+    let half = 1u64 << (fraction_bits - 1);
+    let quarter = half >> 1;
+    let extra: Vec<u64> = match operation {
+        SpecialOperation::RoundScale | SpecialOperation::Reduce => vec![
+            normal(1, quarter),
+            normal(1, half),
+            normal(-1, half),
+            normal(0, half),
+            normal(0, half | 1),
+            normal(-5, half),
+            normal(-2, 0),
+            normal(fraction_bits - 1, half),
+        ],
+        SpecialOperation::Scale => vec![
+            normal(0, half),
+            normal(-1, 0) | sign,
+            normal(0, half) | sign,
+            normal(4, 0),
+            normal(4, 0) | sign,
+            normal(5, half),
+            normal(5, half) | sign,
+            normal(9, 0),
+            normal(9, 0) | sign,
+            normal(11, 0) | sign,
+        ],
+        SpecialOperation::Range | SpecialOperation::Fixup => vec![normal(0, 0) | sign, normal(0, half), normal(0, half) | sign, 1 | sign],
+        SpecialOperation::GetMantissa | SpecialOperation::GetExponent | SpecialOperation::Class => {
+            vec![normal(0, half), normal(1, half) | sign, normal(-1, 1) | sign, 1 | sign]
+        }
+    };
+    values.extend(extra);
+    values
+}
+
+/// The immediates of an operation: VGETMANT's every interval and sign control; VFPCLASS's each class alone, all,
+/// none and two; VRNDSCALE's and VREDUCE's each rounding mode, MXCSR's, suppression and scales 0, 1, 4 and 15.
+fn list_special_immediates(operation: SpecialOperation) -> Vec<u8> {
+    match operation {
+        SpecialOperation::GetMantissa | SpecialOperation::Range => (0..16).collect(),
+        SpecialOperation::Class => vec![0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0xFF, 0x00, 0x81],
+        SpecialOperation::RoundScale | SpecialOperation::Reduce => vec![0x00, 0x01, 0x02, 0x03, 0x04, 0x08, 0x10, 0x11, 0x41, 0x4A, 0xF0, 0xF3],
+        SpecialOperation::Fixup => vec![0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0xFF],
+        SpecialOperation::GetExponent | SpecialOperation::Scale => vec![0],
+    }
+}
+
+/// The data of VGETEXP to VSCALEF: the element's values rotated across the vector (VSCALEF: the second source's every
+/// rotation against the first's every rotation a vector apart) with each immediate and MXCSR at its default; then
+/// with the first immediate MXCSR's critical values, each embedded control with every exception unmasked and with DAZ
+/// and FTZ, and every other element selected, merging and zeroing. A memory form takes the rotations with each
+/// immediate, MXCSR at its default, and with the first immediate every exception unmasked.
+pub fn generate_special_data(data: EvexSpecialData) -> Vec<OperandValue> {
+    let EvexSpecialData { operation, precision, vector_bytes, scalar, register, rounding, suppression } = data;
+    let values = list_special_values(operation, precision);
+    let bytes = (precision.to_bits() / u8::BITS) as usize;
+    let elements = if scalar { 16 / bytes } else { vector_bytes / bytes };
+    let rotate = |rotation: usize| {
+        let mut vector = [0; 4];
+        for index in 0..elements {
+            write_element(&mut vector, index, bytes, values[(index + rotation) % values.len()]);
+        }
+        vector
+    };
+    let firsts: Vec<usize> = match (operation.is_binary(), scalar) {
+        (false, _) => vec![values.len() / 2],
+        (true, true) => (0..values.len()).collect(),
+        (true, false) => (0..values.len()).step_by(elements).collect(),
+    };
+    // VFIXUPIMM's second source is a table of responses: each response at each class's place over the rotations,
+    // the bits above the low 32 of a double's element a pattern.
+    let tables: Vec<u64> = (0..8u32)
+        .flat_map(|step| [0x7654_3210u32.rotate_left(4 * step), 0xFEDC_BA98u32.rotate_left(4 * step)])
+        .map(|table| u64::from(table) | 0xA5C3_0000_0000_0000)
+        .collect();
+    let rotate_table = |rotation: usize| {
+        let mut vector = [0; 4];
+        for index in 0..elements {
+            write_element(&mut vector, index, bytes, tables[(index + rotation) % tables.len()]);
+        }
+        vector
+    };
+    let (seconds, second_of): (usize, &dyn Fn(usize) -> [u128; 4]) = match operation {
+        SpecialOperation::Fixup => (tables.len(), &rotate_table),
+        _ => (values.len(), &rotate),
+    };
+    let firsts: Vec<usize> = match operation {
+        SpecialOperation::Fixup if !scalar => (0..values.len()).step_by(elements.min(values.len())).collect(),
+        SpecialOperation::Fixup => (0..values.len()).collect(),
+        _ => firsts,
+    };
+    let pairs: Vec<([u128; 4], [u128; 4])> =
+        firsts.iter().flat_map(|&first| (0..seconds).map(move |second| (rotate(first), second_of(second)))).collect();
+    let some: Vec<([u128; 4], [u128; 4])> = (0..seconds).map(|second| (rotate(firsts[0]), second_of(second))).collect();
+    let immediates = list_special_immediates(operation);
+    let datum = |(first, second): ([u128; 4], [u128; 4]), immediate: u8, mask, control, mxcsr| {
+        OperandValue::EvexCompareData { first, second, immediate, mask, control, mxcsr }
+    };
+    let unmasked = 0;
+    if !register {
+        let mut all: Vec<OperandValue> =
+            immediates.iter().flat_map(|&immediate| some.iter().map(move |&pair| datum(pair, immediate, NO_MASK, EmbeddedControl::None, MXCSR_DEFAULT))).collect();
+        all.extend(some.iter().map(|&pair| datum(pair, immediates[0], NO_MASK, EmbeddedControl::None, unmasked)));
+        return all;
+    }
+    let mut all: Vec<OperandValue> = immediates
+        .iter()
+        .flat_map(|&immediate| pairs.iter().map(move |&pair| datum(pair, immediate, NO_MASK, EmbeddedControl::None, MXCSR_DEFAULT)))
+        .collect();
+    let plain = generate_mxcsr_values(MxcsrSet::Arithmetic).into_iter().filter_map(|value| match value {
+        OperandValue::Mxcsr(mxcsr) if mxcsr != MXCSR_DEFAULT => Some(mxcsr),
+        _ => None,
+    });
+    for mxcsr in plain {
+        for &immediate in &immediates[..immediates.len().min(4)] {
+            all.extend(some.iter().map(|&pair| datum(pair, immediate, NO_MASK, EmbeddedControl::None, mxcsr)));
+        }
+    }
+    let toward_zero = (MXCSR_DEFAULT & !(3 << ROUNDING_SHIFT)) | (3 << ROUNDING_SHIFT);
+    let mut controls = Vec::new();
+    if rounding {
+        controls.extend([
+            (EmbeddedControl::Rounding(RoundingControl::RoundToNearest), toward_zero),
+            (EmbeddedControl::Rounding(RoundingControl::RoundDown), MXCSR_DEFAULT),
+            (EmbeddedControl::Rounding(RoundingControl::RoundUp), MXCSR_DEFAULT),
+            (EmbeddedControl::Rounding(RoundingControl::RoundTowardZero), MXCSR_DEFAULT),
+        ]);
+    } else if suppression {
+        controls.push((EmbeddedControl::Suppression, MXCSR_DEFAULT));
+    }
+    for (control, other_mode) in controls {
+        for mxcsr in [other_mode, unmasked, MXCSR_DEFAULT | DENORMALS_ARE_ZEROS | FLUSH_TO_ZERO] {
+            for &immediate in &immediates[..immediates.len().min(6)] {
+                all.extend(some.iter().map(|&pair| datum(pair, immediate, NO_MASK, control, mxcsr)));
+            }
+        }
+    }
+    let all_elements = to_all(elements);
+    for mask in [
+        EvexMask { register: 1, value: EVERY_OTHER & all_elements, zeroing: false },
+        EvexMask { register: 7, value: EVERY_OTHER & all_elements, zeroing: true },
+    ] {
+        for mxcsr in [MXCSR_DEFAULT, unmasked] {
+            all.extend(some.iter().map(|&pair| datum(pair, immediates[0], mask, EmbeddedControl::None, mxcsr)));
+        }
+    }
+    all
+}
+
+/// What the data of an EVEX gather or scatter is made of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EvexGatherData {
+    pub data_bytes: usize,
+    pub index_bytes: usize,
+    /// The data register's bytes.
+    pub vector_bytes: usize,
+}
+
+/// The data of a gather or scatter: index sets that reach the lower page element by element, the upper page in
+/// another order, the same addresses more than once, both pages at once across their boundary, the unmapped page
+/// below and a far address (non-canonical for quadword indices), with the scale each needs; each with every
+/// element, every other, the first alone, the last alone and none selected. The data vector holds a value of its
+/// own in each element. No set faults after an element is done: a single step then ends the instruction there without
+/// the fault, the trap pending in its place as the manual allows, which no program that is not stepped sees.
+pub fn generate_gather_data(data: EvexGatherData) -> Vec<OperandValue> {
+    let EvexGatherData { data_bytes, index_bytes, vector_bytes } = data;
+    let bytes = data_bytes as u64;
+    let page = PAGE_BYTES;
+    let far = if index_bytes == 8 { 1 << 62 } else { 0x7FFF_FFFF };
+    let below = (page as i64).wrapping_neg() as u64;
+    let sets: [(u8, [u64; 4]); 7] = [
+        (data_bytes as u8, [0, 1, 2, 3]),
+        (8, [3, 0, 2, 1]),
+        (1, [page, page + 3 * bytes, page + bytes, page + 2 * bytes]),
+        (2, [3, 0, 3, 1]),
+        (1, [page - bytes / 2, page - bytes / 2 + 2 * bytes, page + 4 * bytes, 0]),
+        (1, [below - 8, below - 16, 8, below - 24]),
+        (1, [far, far + 8, 16, far + 16]),
+    ];
+    let elements = (vector_bytes / data_bytes).min(64 / index_bytes);
+    let all = to_all(elements);
+    let masks = [all, EVERY_OTHER & all, 1, 1 << (elements - 1), 0];
+    let values = {
+        let mut vector = [0; 4];
+        for index in 0..elements {
+            write_element(&mut vector, index, data_bytes, to_table_element(index, 0x77, data_bytes));
+        }
+        vector
+    };
+    let mut all_values = Vec::new();
+    for (scale, offsets) in sets {
+        let mut indices = [0; 4];
+        for index in 0..64 / index_bytes {
+            // Each group of four elements a further 4 elements on, so that elements stay apart.
+            let spread = (index / 4) as u64 * 4 * bytes / u64::from(scale).max(1);
+            let offset = if offsets[index % 4] >= page / 2 && offsets[index % 4] < 2 * page { offsets[index % 4] } else { offsets[index % 4].wrapping_add(spread) };
+            write_element(&mut indices, index, index_bytes, offset);
+        }
+        for (number, &value) in masks.iter().enumerate() {
+            let mask = EvexMask { register: 1 + number % 7, value, zeroing: false };
+            all_values.push(OperandValue::EvexGatherData { scale, indices, mask, values });
+        }
+    }
+    all_values
+}
+
+/// Builds the state of a gather or scatter: the data register ModRM.reg (the triple's first), the index register the
+/// triple's last, the base RBX at the lower data page, the two data pages holding their bytes with the permissions
+/// chosen.
+fn build_gather_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
+    use iced_x86::OpCodeOperandKind as Kind;
+    let mut processor = Processor {
+        general_purpose_registers: array::from_fn(|number| !(number as u64)),
+        instruction_pointer: CODE_ADDRESS,
+        ..ZERO_PROCESSOR
+    };
+    fill_vectors(&mut processor);
+    let (mut registers, mut layout) = ([0; 3], CodeLayout::PageStart);
+    let (mut lower, mut upper, mut chosen) = (PagePermission::Unmapped, PagePermission::Unmapped, None);
+    for (operand_type, operand) in operands {
+        match (operand_type, *operand) {
+            (OperandType::EvexEncoding, OperandValue::EvexEncoding(encoding)) => (registers, layout) = (encoding.registers, encoding.layout),
+            (OperandType::DataPagePermission(DataPage::Lower), OperandValue::PagePermission(permission)) => lower = permission,
+            (OperandType::DataPagePermission(DataPage::Upper), OperandValue::PagePermission(permission)) => upper = permission,
+            (OperandType::EvexGatherData(_), OperandValue::EvexGatherData { scale, indices, mask, values }) => chosen = Some((scale, indices, mask, values)),
+            (OperandType::Flags(_), OperandValue::Flags(flags)) => processor.flags = flags,
+            (operand_type, operand) => panic!("{operand:?} is no value of {operand_type:?}"),
+        }
+    }
+    let (scale, indices, mask, values) = chosen.expect("a gather's data");
+    let (data, index) = (registers[0], registers[2]);
+    processor.write_zmm(data, values);
+    processor.write_zmm(index, indices);
+    processor.opmask_registers[mask.register] = mask.value;
+    processor.general_purpose_registers[3] = LOWER_DATA_ADDRESS;
+    let kinds = form.code.op_code().op_kinds();
+    let index_first = match kinds.iter().find(|kind| matches!(kind, Kind::mem_vsib32x | Kind::mem_vsib32y | Kind::mem_vsib32z | Kind::mem_vsib64x | Kind::mem_vsib64y | Kind::mem_vsib64z)) {
+        Some(Kind::mem_vsib32x | Kind::mem_vsib64x) => Register::XMM0,
+        Some(Kind::mem_vsib32y | Kind::mem_vsib64y) => Register::YMM0,
+        _ => Register::ZMM0,
+    };
+    let index_register = Register::try_from(index_first as usize + index).expect("an index register");
+    let memory = MemoryOperand::with_base_index_scale(Register::RBX, index_register, u32::from(scale));
+    let scatter = matches!(form.operation, EvexOperation::Scatter { .. });
+    let data_register = to_vector_register(form, usize::from(scatter), data);
+    let mut encoded = match scatter {
+        true => Encoded::with2(form.code, memory, data_register),
+        false => Encoded::with2(form.code, data_register, memory),
+    }
+    .unwrap_or_else(|error| panic!("{:?} takes its operands: {error}", form.code));
+    encoded.set_op_mask(to_opmask_register(mask.register));
+    let (code_page, start, bytes) = lay_out(layout, &encode_at_code_address(&encoded), to_padding(None));
+    processor.instruction_pointer = start;
+    let executable = PagePermission::Mapped { data_access: DataAccess::ReadOnly, instruction_fetch: InstructionFetch::Allowed };
+    let pages: Vec<u8> = (LOWER_DATA_ADDRESS..UPPER_DATA_ADDRESS + PAGE_BYTES).map(to_data_byte).collect();
+    ExecutionState {
+        processor,
+        memory_mutations: vec![
+            MemoryDelta::PermissionAssignment { addresses: code_page..code_page + PAGE_BYTES, permission: executable },
+            MemoryDelta::ValueAssignment { start, bytes: Cow::Owned(bytes) },
+            MemoryDelta::ValueAssignment { start: LOWER_DATA_ADDRESS, bytes: Cow::Owned(pages) },
+            MemoryDelta::PermissionAssignment { addresses: LOWER_DATA_ADDRESS..UPPER_DATA_ADDRESS, permission: lower },
+            MemoryDelta::PermissionAssignment { addresses: UPPER_DATA_ADDRESS..UPPER_DATA_ADDRESS + PAGE_BYTES, permission: upper },
+        ],
+    }
+}
+
+/// What the data of VCOMPRESS and VEXPAND is made of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct EvexMoveData {
+    pub element_bytes: usize,
+    pub vector_bytes: usize,
+    /// A register form, whose data holds the opmask.
+    pub register: bool,
+    /// Whether the form takes an opmask.
+    pub maskable: bool,
+}
+
+/// The data of VCOMPRESS and VEXPAND: a table of elements each its own value as the vector moved, and the other
+/// table in memory before; a register form takes each table with every opmask of [`list_move_masks`], merging and
+/// zeroing. A memory form's opmask is an operand of its own.
+pub fn generate_move_data(data: EvexMoveData) -> Vec<OperandValue> {
+    let EvexMoveData { element_bytes, vector_bytes, register, maskable } = data;
+    let tables = generate_role(Role::Table, element_bytes, vector_bytes, false);
+    let datum = |source: [u128; 4], held: [u128; 4], mask| OperandValue::EvexIntegerData {
+        destination: [0; 4],
+        first: held,
+        second: source,
+        immediate: 0,
+        mask,
+    };
+    if !register {
+        return vec![datum(tables[0], tables[1], NO_MASK)];
+    }
+    let masks = if maskable { list_move_masks(vector_bytes / element_bytes) } else { vec![NO_MASK] };
+    tables.iter().zip(tables.iter().rev()).flat_map(|(&source, &held)| masks.iter().map(move |&mask| datum(source, held, mask))).collect()
+}
+
+/// A register form's opmasks: none, every other element, the upper half, the last alone and a scattered pattern,
+/// each merging and zeroing, and none selected.
+fn list_move_masks(elements: usize) -> Vec<EvexMask> {
+    let all = to_all(elements);
+    let patterns = [EVERY_OTHER & all, all & !(all >> (elements / 2)), 1 << (elements - 1), 0xA5C3_0F96_5AA5_3CF1 & all, 0];
+    let mut masks = vec![NO_MASK];
+    for (number, value) in patterns.into_iter().enumerate() {
+        masks.push(EvexMask { register: 1 + number % 7, value, zeroing: false });
+        masks.push(EvexMask { register: 7 - number % 7, value, zeroing: true });
+    }
+    masks
+}
+
 /// k1 to k7 for a register number of a triple or an access.
 const fn to_opmask_number(number: usize) -> usize {
     1 + number % 7
@@ -845,6 +1284,9 @@ fn to_vector_register(form: &EvexForm, operand: usize, number: usize) -> Registe
     let first = match form.code.op_code().op_kinds()[operand] {
         Kind::xmm_reg | Kind::xmm_rm | Kind::xmm_vvvv | Kind::xmm_or_mem => Register::XMM0,
         Kind::ymm_reg | Kind::ymm_rm | Kind::ymm_vvvv | Kind::ymm_or_mem => Register::YMM0,
+        // A general-purpose register: one of the sixteen.
+        Kind::r32_reg | Kind::r32_or_mem => return Register::try_from(Register::EAX as usize + number % 16).expect("EAX to R15D"),
+        Kind::r64_reg | Kind::r64_or_mem => return Register::try_from(Register::RAX as usize + number % 16).expect("RAX to R15"),
         _ => Register::ZMM0,
     };
     Register::try_from(first as usize + number).expect("XMM, YMM and ZMM 0 to 31")
@@ -852,6 +1294,9 @@ fn to_vector_register(form: &EvexForm, operand: usize, number: usize) -> Registe
 
 /// Builds the state of an EVEX form from one value of each of its operand types.
 pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) -> ExecutionState<'static, X86_64> {
+    if let EvexOperation::Gather { .. } | EvexOperation::Scatter { .. } = form.operation {
+        return build_gather_state(form, operands);
+    }
     let mut processor = Processor {
         general_purpose_registers: array::from_fn(|number| !(number as u64)),
         instruction_pointer: CODE_ADDRESS,
@@ -884,7 +1329,7 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
                 }
             }
             (
-                OperandType::EvexIntegerData(_),
+                OperandType::EvexIntegerData(_) | OperandType::EvexMoveData(_),
                 OperandValue::EvexIntegerData { destination: old, first: one, second: other, immediate: chosen, mask: data_mask },
             ) => {
                 (destination_value, first, second, immediate) = (Some(old), one, other, Some(chosen));
@@ -903,7 +1348,7 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
                 }
             }
             (
-                OperandType::EvexCompareData(_),
+                OperandType::EvexCompareData(_) | OperandType::EvexSpecialData(_) | OperandType::EvexConvertData(_),
                 OperandValue::EvexCompareData { first: one, second: other, immediate: chosen, mask: data_mask, control: embedded, mxcsr },
             ) => {
                 (first, second, immediate, control) = (one, other, Some(chosen), embedded);
@@ -938,7 +1383,7 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
             .map(|offset| address.wrapping_add(offset))
             .take_while(|byte| X86_64::ADDRESSABLE.contains(byte))
             .enumerate()
-            .map(|(offset, _)| read_element(&second, offset, 1) as u8)
+            .map(|(offset, _)| read_element(if form.stores() { &first } else { &second }, offset, 1) as u8)
             .collect();
         if !bytes.is_empty() {
             memory_mutations.push(MemoryDelta::ValueAssignment {
@@ -951,6 +1396,8 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
     // A register named twice holds the second source's value, the last written.
     if memory_operand.is_none() && form.reads_opmask() {
         processor.opmask_registers[to_opmask_number(registers[2])] = second[0] as u64;
+    } else if memory_operand.is_none() && to_vector_register(form, second_source_operand(form), registers[2]).is_gpr() {
+        processor.general_purpose_registers[registers[2] % 16] = read_element(&second, 0, 8);
     } else if memory_operand.is_none() {
         write_vector(&mut processor, registers[2], second, form.vector_bytes());
     }
@@ -960,13 +1407,18 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
         false => to_vector_register(form, 0, registers[0]),
     };
     let first_register = to_vector_register(form, 1, registers[1]);
-    let second_operand = if form.reads_first_source() { 2 } else { 1 };
+    let second_operand = second_source_operand(form);
     let second_register = match form.reads_opmask() {
         true => to_opmask_register(to_opmask_number(registers[2])),
         false => to_vector_register(form, second_operand, registers[2]),
     };
     let immediate = form.has_immediate().then(|| u32::from(immediate.unwrap_or(0)));
+    if form.stores() {
+        write_vector(&mut processor, registers[1], second, form.vector_bytes());
+    }
     let mut encoded = match (memory_operand, form.reads_first_source(), immediate) {
+        // VCOMPRESS into memory: the memory operand first, then the vector it packs.
+        (Some(operand), _, None) if form.stores() => Encoded::with2(code, operand, to_vector_register(form, 1, registers[1])),
         (Some(operand), true, None) => Encoded::with3(code, destination, first_register, operand),
         (Some(operand), false, None) => Encoded::with2(code, destination, operand),
         (None, true, None) => Encoded::with3(code, destination, first_register, second_register),
@@ -979,7 +1431,8 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
     .unwrap_or_else(|error| panic!("{code:?} takes its operands: {error}"));
     if mask.register != 0 {
         encoded.set_op_mask(to_opmask_register(mask.register));
-        encoded.set_zeroing_masking(mask.zeroing && code.op_code().can_use_zeroing_masking());
+        // A store into memory cannot zero, which would be another instruction's encoding: none.
+        encoded.set_zeroing_masking(mask.zeroing && code.op_code().can_use_zeroing_masking() && !form.stores());
     }
     match control {
         EmbeddedControl::None => {}
@@ -1007,6 +1460,11 @@ pub fn build_state(form: &EvexForm, operands: &[(OperandType, OperandValue)]) ->
         processor,
         memory_mutations: all,
     }
+}
+
+/// The index of the form's operand that is its second source.
+fn second_source_operand(form: &EvexForm) -> usize {
+    if form.reads_first_source() { 2 } else { 1 }
 }
 
 /// Writes the vector's low `vector_bytes` into the register, which keeps its fill above them.

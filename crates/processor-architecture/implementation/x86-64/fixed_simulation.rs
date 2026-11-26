@@ -27,6 +27,7 @@ pub(super) fn execute_fixed(
             check_access(processor.flags, memory, locate(processor, decoded), 1, Access::Read)?;
             Err(Exception::GeneralProtection { error_code: 0 })
         }
+        FixedOutcome::GeneralProtection if is_active(Bug::TransactionEndCompletes) && instruction == Instruction::Xend => Ok(()),
         FixedOutcome::GeneralProtection => Err(Exception::GeneralProtection { error_code: 0 }),
         FixedOutcome::InvalidOpcode => Err(Exception::InvalidOpcode),
         FixedOutcome::SoftwareInterrupt if decoded.code() == Code::Int1 => Err(Exception::Debug { status: 0 }),
@@ -50,6 +51,11 @@ pub(super) fn execute_fixed(
         FixedOutcome::WritesRandom => {
             let carry = if is_active(Bug::RandomClearsCarry) { Flags::empty() } else { Flags::CARRY };
             processor.flags = processor.flags.difference(Flags::STATUS).union(carry);
+            Ok(())
+        }
+        FixedOutcome::OutsideTransaction => {
+            let zero = if is_active(Bug::TransactionTestClearsZero) { Flags::empty() } else { Flags::ZERO };
+            processor.flags = processor.flags.difference(Flags::STATUS).union(zero);
             Ok(())
         }
         FixedOutcome::TouchesByte => {

@@ -226,6 +226,14 @@ pub enum OperandType {
     /// The two operands of a compare, its predicate and MXCSR; for a register form also the opmask and exception
     /// suppression.
     EvexCompareData(evex::EvexCompareData),
+    /// The vector VCOMPRESS or VEXPAND moves elements of and what memory holds before; for a register form also the
+    /// opmask.
+    EvexMoveData(evex::EvexMoveData),
+    /// The element (VSCALEF: both elements) of VGETEXP to VSCALEF, the immediate and MXCSR; for a register form also
+    /// the opmask and the embedded control.
+    EvexSpecialData(evex::EvexSpecialData),
+    /// The scale, indices, opmask and data vector of an EVEX gather or scatter.
+    EvexGatherData(evex::EvexGatherData),
     /// The registers an opmask form names, this many, and how its bytes lie.
     OpmaskEncoding(usize),
     /// The value of the opmask register of the form's operand of that index, `bits` of it read.
@@ -452,6 +460,13 @@ pub enum OperandValue {
         mask: evex::EvexMask,
         control: evex::EmbeddedControl,
         mxcsr: u32,
+    },
+    /// A gather's or scatter's scale, indices (each index element's value), opmask and data vector.
+    EvexGatherData {
+        scale: u8,
+        indices: [u128; 4],
+        mask: evex::EvexMask,
+        values: [u128; 4],
     },
     OpmaskEncoding(opmask::OpmaskEncoding),
     EvexIntegerEncoding(avx512_integer::EvexIntegerEncoding),
@@ -766,6 +781,9 @@ impl InstructionInputDomain<X86_64> for X86_64InputDomain {
             OperandType::EvexFusedData(data) => evex::generate_fused_data(data),
             OperandType::EvexConvertData(data) => evex::generate_convert_data(data),
             OperandType::EvexCompareData(data) => evex::generate_compare_data(data),
+            OperandType::EvexMoveData(data) => evex::generate_move_data(data),
+            OperandType::EvexSpecialData(data) => evex::generate_special_data(data),
+            OperandType::EvexGatherData(data) => evex::generate_gather_data(data),
             OperandType::OpmaskEncoding(_) => opmask::generate_encodings(),
             OperandType::OpmaskValue { bits, .. } => opmask::generate_values(bits),
             OperandType::EvexIntegerEncoding { codes, in_memory } => avx512_integer::generate_encodings(codes, in_memory),

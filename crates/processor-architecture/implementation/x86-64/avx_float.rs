@@ -456,7 +456,7 @@ pub(crate) fn narrow_to_halves(source: u128, immediate: u8, mxcsr: u32) -> Resul
     join_lanes(&outcomes, u16::BITS, 0, mxcsr)
 }
 
-fn narrow_single(value: u64, rounding: Rounding, mxcsr: u32) -> LaneOutcome {
+pub(crate) fn narrow_single(value: u64, rounding: Rounding, mxcsr: u32) -> LaneOutcome {
     let daz = mxcsr & DENORMALS_ARE_ZEROS != 0;
     let operand = Operand::read(value, Precision::Single, daz);
     let sign = if operand.negative { 1 << 15 } else { 0 };

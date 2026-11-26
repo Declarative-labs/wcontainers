@@ -9,12 +9,17 @@
 
 use iced_x86::{Instruction as Decoded, OpKind, RoundingControl};
 
-use super::{Memory, MemoryOperand, check_access, check_alignment, check_canonical, expect_code, locate};
-use crate::evex::{EvexForm, EvexOperation, find_evex_form, read_element, write_element};
+use super::{Memory, MemoryOperand, check_access, check_alignment, check_canonical, expect_code, locate, read_register, write_register};
+use crate::evex::{EvexForm, EvexOperation, find_evex_form, read_element, write_element, writes_register};
 use crate::evex::fused::multiply_add;
 use crate::evex::compare::compare;
+use crate::evex::special::{SpecialOperation, compute_special};
+use crate::float::{narrow_single, read_rounding};
 use crate::evex::convert::to_bfloat16;
-use crate::float::{FLAGS, FloatOperation, LaneOutcome, MASK_SHIFT, ORDER_FLAGS, ROUNDING_SHIFT};
+use crate::float::{
+    DENORMAL, DENORMALS_ARE_ZEROS, FLAGS, FLUSH_TO_ZERO, FloatOperation, LaneOutcome, MASK_SHIFT, ORDER_FLAGS, Precision,
+    ROUNDING_SHIFT,
+};
 
 /// The order a fused form takes NaNs in: the first multiplicand's, the second's, the addend's.
 const NAN_ORDER: [usize; 3] = [0, 1, 2];
@@ -37,9 +42,18 @@ pub(super) fn execute_evex(
     let elements = form.elements();
     let bytes = form.element_bytes();
     let selected = read_selection(processor, decoded, elements);
+    if let EvexOperation::Gather { .. } = form.operation {
+        return super::evex_gather::gather(&form, processor, memory, decoded);
+    }
+    if let EvexOperation::Compress { .. } | EvexOperation::Expand { .. } = form.operation {
+        return super::evex_compress::move_selected(&form, processor, memory, decoded, selected);
+    }
     let destination = decoded.op0_register().number();
     let source_operand = if form.has_immediate() { decoded.op_count() - 2 } else { decoded.op_count() - 1 };
     let second = match decoded.op_kind(source_operand) {
+        OpKind::Register if decoded.op_register(source_operand).is_gpr() => {
+            [u128::from(read_register(processor, decoded.op_register(source_operand))), 0, 0, 0]
+        }
         OpKind::Register if form.reads_opmask() => {
             [u128::from(processor.read_opmask(decoded.op_register(source_operand).number())), 0, 0, 0]
         }
@@ -50,7 +64,8 @@ pub(super) fn execute_evex(
         true => processor.read_zmm(decoded.op1_register().number()),
         false => second,
     };
-    let old = if form.writes_opmask() { [0; 4] } else { processor.read_zmm(destination) };
+    let to_register = writes_register(&form);
+    let old = if form.writes_opmask() || to_register { [0; 4] } else { processor.read_zmm(destination) };
     let mut result = old;
     let computed = match form.operation {
         EvexOperation::Float { operation, precision, .. } => {
@@ -80,8 +95,20 @@ pub(super) fn execute_evex(
         }
         EvexOperation::Convert(conversion) => {
             let from = form.source_element_bytes();
+            let reports_denormal = form.reports_denormal() || is_active(Bug::HalfToSingleReportsDenormal);
+            // VCVTPS2PH rounds in the mode its immediate's bits 1:0 name, or MXCSR's where its bit 2 is set.
+            let immediate = if form.has_immediate() && !is_active(Bug::HalfConversionImmediateIgnored) { Some(decoded.immediate8()) } else { None };
             compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, _| {
-                conversion.convert(read_element(&second, index, from), mxcsr)
+                let mxcsr = match immediate {
+                    Some(immediate) if immediate & 4 == 0 => (mxcsr & !(3 << ROUNDING_SHIFT)) | (u32::from(immediate & 3) << ROUNDING_SHIFT),
+                    _ => mxcsr,
+                };
+                // VCVTPS2PH narrows as F16C's VCVTPS2PH does.
+                let outcome = match immediate {
+                    Some(_) => narrow_single(read_element(&second, index, from), read_rounding(mxcsr), mxcsr),
+                    None => conversion.convert(read_element(&second, index, from), mxcsr),
+                };
+                LaneOutcome { before: if reports_denormal { outcome.before } else { outcome.before & !DENORMAL }, ..outcome }
             })?
         }
         EvexOperation::ToBfloat16 { pair } => {
@@ -102,11 +129,69 @@ pub(super) fn execute_evex(
                 multiply_add(a, b, c, negate_product, negate_addend, precision, mxcsr, NAN_ORDER)
             })?
         }
+        EvexOperation::Compress { .. } | EvexOperation::Expand { .. } | EvexOperation::Gather { .. } | EvexOperation::Scatter { .. } => {
+            unreachable!("moved above")
+        }
+        EvexOperation::MoveScalar => second,
+        EvexOperation::ComplexMultiply { conjugate, accumulate, .. } => {
+            let numbers = [decoded.op0_register(), decoded.op1_register(), decoded.op2_register()].map(|register| register.number());
+            let in_register = decoded.op_kind(2) == OpKind::Register;
+            if numbers[0] == numbers[1] || (in_register && numbers[0] == numbers[2]) {
+                return Err(Exception::InvalidOpcode);
+            }
+            // The chip computes as if every exception were masked and raises none, whatever MXCSR's masks say;
+            // the flags are recorded unless suppressed.
+            let (mxcsr, suppressed) = to_control(processor.mxcsr, decoded);
+            let control = if is_active(Bug::ComplexHonorsMasks) { mxcsr } else { mxcsr | ALL_MASKS };
+            let mut products = [0; 4];
+            let mut flags = 0;
+            for index in (0..elements).filter(|index| selected & (1 << index) != 0) {
+                let pair = |vector: &[u128; 4]| [read_element(vector, 2 * index, 2), read_element(vector, 2 * index + 1, 2)];
+                let accumulated = if accumulate { pair(&old) } else { [0, 0] };
+                let outcome = multiply_complex(pair(&first), pair(&second), accumulated, conjugate, accumulate, control);
+                flags |= outcome.before | outcome.after;
+                write_element(&mut products, index, 4, outcome.bits);
+            }
+            if is_active(Bug::ComplexHonorsMasks) && flags & !(processor.mxcsr >> MASK_SHIFT) & FLAGS != 0 {
+                processor.mxcsr |= flags;
+                return Err(Exception::SimdFloatingPoint);
+            }
+            if !suppressed {
+                processor.mxcsr |= flags;
+            }
+            products
+        }
+        EvexOperation::DotBfloat16 => {
+            let mut sums = [0; 4];
+            for index in (0..elements).filter(|index| selected & (1 << index) != 0) {
+                let (a, b) = (read_element(&first, index, 4), read_element(&second, index, 4));
+                let sum = dot_bfloat16(read_element(&old, index, 4), a, b);
+                write_element(&mut sums, index, 4, sum);
+            }
+            sums
+        }
+        EvexOperation::Special { operation, precision, .. } => {
+            let immediate = if form.has_immediate() { decoded.immediate8() } else { 0 };
+            let lanes = compute_float(processor, decoded, bytes, selected, elements, |index, mxcsr, bytes| {
+                let (destination, first, second) = (read_element(&old, index, bytes), read_element(&first, index, bytes), read_element(&second, index, bytes));
+                compute_special(operation, destination, first, second, precision, mxcsr, immediate)
+            })?;
+            if operation == SpecialOperation::Class {
+                let bits = (0..elements).fold(0u64, |mask, index| mask | ((read_element(&lanes, index, bytes) & 1) << index));
+                [u128::from(bits), 0, 0, 0]
+            } else {
+                lanes
+            }
+        }
         EvexOperation::Integer { operation, .. } => {
             let immediate = if form.has_immediate() { decoded.immediate8() } else { 0 };
             operation.compute(&old, &first, &second, immediate, form.vector_bytes(), bytes)
         }
     };
+    if to_register {
+        write_register(processor, decoded.op0_register(), read_element(&computed, 0, bytes));
+        return Ok(());
+    }
     if form.writes_opmask() {
         // The opmask selects by zeroing: a bit it leaves out is cleared, as is every bit beyond the elements.
         let keep = if is_active(Bug::EvexMaskDestinationMerges) { processor.read_opmask(destination) & !selected } else { 0 };
@@ -124,7 +209,13 @@ pub(super) fn execute_evex(
     if form.elements() == 1 && !matches!(form.operation, EvexOperation::Integer { .. }) {
         // The elements above the first come from the first source (a fused form's from its destination); the bits
         // beyond 128 are zeroed.
-        let upper = if matches!(form.operation, EvexOperation::Fused { .. }) { old[0] } else { first[0] };
+        let upper = match form.operation {
+            EvexOperation::Fused { .. } => old[0],
+            // A VMOVSH load and VMOVW zero the bits above the word.
+            EvexOperation::MoveScalar if !form.reads_first_source() && !is_active(Bug::MoveWordKeepsUpperBits) => 0,
+            EvexOperation::MoveScalar if !form.reads_first_source() => old[0],
+            _ => first[0],
+        };
         let low = upper & !((1u128 << (written * 8)) - 1);
         result = [(result[0] & ((1u128 << (written * 8)) - 1)) | low, 0, 0, 0];
         if is_active(Bug::EvexScalarKeepsUpperBits) {
@@ -140,6 +231,51 @@ pub(super) fn execute_evex(
     let target = if is_active(Bug::EvexHighRegistersAliasLow) { destination % 16 } else { destination };
     processor.write_zmm(target, result);
     Ok(())
+}
+
+/// One complex number of VFMULCPH to VFCMADDCSH: the first source's real and imaginary parts each times the second
+/// source's real part (added to the destination's parts where `accumulate`), then each plus or less the other first
+/// part times the second source's imaginary part, every step one rounding.
+fn multiply_complex(first: [u64; 2], second: [u64; 2], destination: [u64; 2], conjugate: bool, accumulate: bool, mxcsr: u32) -> LaneOutcome {
+    let half = Precision::Half;
+    let step = |a: u64, b: u64, c: u64, negate: bool, added: bool| -> LaneOutcome {
+        if added {
+            multiply_add(a, b, c, negate, false, half, mxcsr, NAN_ORDER)
+        } else {
+            FloatOperation::Multiply.compute(a, b, half, mxcsr, 0)
+        }
+    };
+    let real = step(first[0], second[0], destination[0], false, accumulate);
+    let imaginary = step(first[1], second[0], destination[1], false, accumulate);
+    // Conjugated, the second source's imaginary part is negated.
+    let swapped = is_active(Bug::ComplexConjugateSignsSwapped);
+    let (negate_real, negate_imaginary) = if conjugate != swapped { (false, true) } else { (true, false) };
+    let real_sum = step(first[1], second[1], real.bits, negate_real, true);
+    let imaginary_sum = step(first[0], second[1], imaginary.bits, negate_imaginary, true);
+    LaneOutcome {
+        bits: real_sum.bits | (imaginary_sum.bits << 16),
+        before: real.before | imaginary.before | real_sum.before | imaginary_sum.before,
+        after: real.after | imaginary.after | real_sum.after | imaginary_sum.after,
+    }
+}
+
+/// One element of VDPBF16PS: the addend plus the upper pair's product, then plus the lower pair's, as singles, each
+/// sum rounded once.
+fn dot_bfloat16(addend: u64, first: u64, second: u64) -> u64 {
+    let control = ALL_MASKS | DENORMALS_ARE_ZEROS | FLUSH_TO_ZERO;
+    let widen = |pair: u64, upper: bool| if upper { pair & 0xFFFF_0000 } else { (pair & 0xFFFF) << 16 };
+    let order: [bool; 2] = if is_active(Bug::DotBfloat16LowerPairFirst) { [false, true] } else { [true, false] };
+    let is_nan = |single: u64| single & 0x7FFF_FFFF > 0x7F80_0000;
+    order.into_iter().fold(addend, |sum, upper| {
+        let (a, b) = (widen(first, upper), widen(second, upper));
+        // A NaN wins in the order the chip shows: the first source's, the second source's, the sum's.
+        let order = if is_active(Bug::DotBfloat16SumNanFirst) { [sum, a, b] } else { [a, b, sum] };
+        if let Some(nan) = order.into_iter().find(|&value| is_nan(value)) {
+            return nan | 0x40_0000;
+        }
+        // The product is exact: each step is one fused multiply-add.
+        multiply_add(a, b, sum, false, false, Precision::Single, control, NAN_ORDER).bits
+    })
 }
 
 /// Each selected element of a floating-point form computed under MXCSR or the embedded control; the flags found are
@@ -177,7 +313,7 @@ fn compute_float(
 }
 
 /// The elements the opmask register selects, bit by bit from the lowest; every element without one.
-fn read_selection(processor: &Processor, decoded: &Decoded, elements: usize) -> u64 {
+pub(super) fn read_selection(processor: &Processor, decoded: &Decoded, elements: usize) -> u64 {
     let all = if elements >= 64 { u64::MAX } else { (1 << elements) - 1 };
     let mask = decoded.op_mask();
     if mask == iced_x86::Register::None || is_active(Bug::EvexMaskIgnored) {
@@ -219,6 +355,8 @@ fn read_memory_source(
     let elements = if broadcast { form.vector_bytes() / bytes } else { form.memory_bytes() / bytes };
     let reference = if broadcast { bytes } else { form.memory_bytes() };
     let unchecked = processor.flags.difference(Flags::ALIGNMENT_CHECK);
+    // VCVTPH2PS's half-width source is never checked for alignment, as the chip shows.
+    let flags = if form.reports_denormal() { processor.flags } else { unchecked };
     let suppresses = form.suppresses_faults() || is_active(Bug::EvexPermuteFaultsSuppressed);
     let whole = !suppresses || is_active(Bug::EvexMaskedFaultNotSuppressed);
     let selected = if whole || (broadcast && selected != 0) { u64::MAX } else { selected };
@@ -230,13 +368,13 @@ fn read_memory_source(
     };
     if decoded.op_mask() == iced_x86::Register::None || whole {
         // Unmasked, the reference is checked as a legacy form's access is.
-        check_access(processor.flags, memory, operand, reference as u64, Access::Read)?;
+        check_access(flags, memory, operand, reference as u64, Access::Read)?;
     } else if (0..elements).any(read) {
         // Masked, the selected elements' bytes must be canonical before the reference's alignment is checked.
         for index in (0..elements).filter(|index| read(*index)) {
             check_canonical(to_element(index), bytes as u64)?;
         }
-        check_alignment(processor.flags, operand, reference as u64)?;
+        check_alignment(flags, operand, reference as u64)?;
     }
     for index in (0..elements).filter(|index| read(*index)) {
         let element = to_element(index);

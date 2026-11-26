@@ -247,7 +247,7 @@ impl PreciseInstruction {
             Self::Avx { instruction, .. } => instruction,
             Self::Extension { instruction, .. } | Self::Fixed(instruction) => instruction,
             Self::Mmx { instruction, .. } | Self::X87 { instruction, .. } | Self::Stack { instruction, .. } => instruction,
-            Self::Evex(instruction) => instruction,
+            Self::Evex(instruction) | Self::EvexStore { instruction, .. } => instruction,
             Self::Opmask { instruction, .. } | Self::EvexInteger { instruction, .. } => instruction,
             Self::String { instruction, .. } | Self::System { instruction, .. } => instruction,
             Self::MmxConvert { instruction, .. } | Self::Descriptor(instruction) => instruction,
@@ -304,6 +304,9 @@ fn list_modeled_behaviors(instruction: Instruction) -> Vec<PreciseInstruction> {
         _ if find_float_form(instruction).is_some() => [PreciseInstruction::Float(instruction)].to_vec(),
         _ if crate::sse::find_sse_form(instruction).is_some() => crate::sse::list_sse_behaviors(instruction),
         _ if find_branch_form(instruction).is_some() => [PreciseInstruction::Branch(instruction)].to_vec(),
+        _ if find_evex_form(instruction).is_some_and(|form| form.stores()) => ACROSS_FAULT
+            .map(|across_fault| PreciseInstruction::EvexStore { instruction, across_fault })
+            .to_vec(),
         _ if find_evex_form(instruction).is_some() => [PreciseInstruction::Evex(instruction)].to_vec(),
         _ if RING_3_UNDEFINED_FORMS.contains(&instruction) => {
             let in_a_machine = PRIVILEGED_FORMS.iter().any(|(form, _)| *form == instruction);

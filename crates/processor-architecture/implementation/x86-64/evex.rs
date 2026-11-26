@@ -23,11 +23,15 @@ pub(crate) mod fused;
 // The conversions.
 #[path = "evex_convert.rs"]
 pub(crate) mod convert;
+// The operations on a number's parts.
+#[path = "evex_special.rs"]
+pub(crate) mod special;
 // The compares into opmask registers.
 #[path = "evex_compare.rs"]
 pub(crate) mod compare;
 
 pub use convert::{Conversion, Number};
+pub use special::SpecialOperation;
 
 pub use lanes::IntegerOperation;
 
@@ -63,6 +67,25 @@ pub enum EvexOperation {
         precision: Precision,
         arrangement: Arrangement,
     },
+    /// VGETEXP, VGETMANT, VFPCLASS, VRNDSCALE, VREDUCE and VSCALEF of each precision.
+    Special { operation: SpecialOperation, precision: Precision, arrangement: Arrangement },
+    /// VDPBF16PS: each single of the destination plus the products of the sources' bfloat16 pairs, the upper pair's
+    /// first, each sum rounded to nearest with denormals read and written as zeros, MXCSR neither read nor written.
+    DotBfloat16,
+    /// VFMULCPH to VFCMADDCSH: complex numbers of two halves, the real part lower, multiplied (the second source
+    /// conjugated where `conjugate`), added to the destination where `accumulate`, each step rounded.
+    ComplexMultiply { conjugate: bool, accumulate: bool, arrangement: Arrangement },
+    /// VGATHERDPS to VPGATHERQQ: the selected elements loaded from the addresses the indices give.
+    Gather { data_bytes: usize, index_bytes: usize },
+    /// VSCATTERDPS to VPSCATTERQQ: the selected elements stored at the addresses the indices give.
+    Scatter { data_bytes: usize, index_bytes: usize },
+    /// VMOVSH and VMOVW: the low word moved; a load or a move from a general-purpose register zeroes the bits above
+    /// it, VMOVSH between registers takes them from the first source.
+    MoveScalar,
+    /// VCOMPRESSPS to VPCOMPRESSQ: the selected elements packed into the lowest, in order.
+    Compress { element_bytes: usize },
+    /// VEXPANDPS to VPEXPANDQ: the lowest elements, in order, into the selected ones.
+    Expand { element_bytes: usize },
 }
 
 /// The signs a fused form gives its product and addend.
@@ -128,7 +151,7 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
     use FloatOperation::{Add, Divide, Maximum, Minimum, Multiply, SquareRoot, Subtract};
     use Immediate::{Any, With, Without};
     use IntegerOperation as I;
-    use Precision::{Double, Single};
+    use Precision::{Double, Half, Single};
     const fn float(operation: FloatOperation, precision: Precision, arrangement: Arrangement) -> EvexOperation {
         EvexOperation::Float { operation, precision, arrangement }
     }
@@ -143,6 +166,9 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
     }
     const fn scalar(from: Number, to: Number) -> EvexOperation {
         EvexOperation::Convert(Conversion { from, to, truncate: false, scalar: true })
+    }
+    const fn special(operation: SpecialOperation, precision: Precision, arrangement: Arrangement) -> EvexOperation {
+        EvexOperation::Special { operation, precision, arrangement }
     }
     const fn fused(kind: FusedKind, order: FusedOrder, precision: Precision, arrangement: Arrangement) -> EvexOperation {
         EvexOperation::Fused { kind, order, precision, arrangement }
@@ -353,6 +379,186 @@ pub static EVEX_OPERATIONS: &[(Mnemonic, Immediate, EvexOperation)] = &{
         (Mnemonic::Vfmsubadd213pd, Any, fused(F::AlternatingAddSubtract, O::Order213, Double, Packed)),
         (Mnemonic::Vfmsubadd231ps, Any, fused(F::AlternatingAddSubtract, O::Order231, Single, Packed)),
         (Mnemonic::Vfmsubadd231pd, Any, fused(F::AlternatingAddSubtract, O::Order231, Double, Packed)),
+        // AVX512-FP16.
+        (Mnemonic::Vaddph, Any, float(Add, Half, Packed)),
+        (Mnemonic::Vaddsh, Any, float(Add, Half, Scalar)),
+        (Mnemonic::Vsubph, Any, float(Subtract, Half, Packed)),
+        (Mnemonic::Vsubsh, Any, float(Subtract, Half, Scalar)),
+        (Mnemonic::Vmulph, Any, float(Multiply, Half, Packed)),
+        (Mnemonic::Vmulsh, Any, float(Multiply, Half, Scalar)),
+        (Mnemonic::Vdivph, Any, float(Divide, Half, Packed)),
+        (Mnemonic::Vdivsh, Any, float(Divide, Half, Scalar)),
+        (Mnemonic::Vsqrtph, Any, float(SquareRoot, Half, Packed)),
+        (Mnemonic::Vsqrtsh, Any, float(SquareRoot, Half, Scalar)),
+        (Mnemonic::Vminph, Any, float(Minimum, Half, Packed)),
+        (Mnemonic::Vminsh, Any, float(Minimum, Half, Scalar)),
+        (Mnemonic::Vmaxph, Any, float(Maximum, Half, Packed)),
+        (Mnemonic::Vmaxsh, Any, float(Maximum, Half, Scalar)),
+        (Mnemonic::Vcmpph, Any, EvexOperation::Compare { precision: Half, arrangement: Packed }),
+        (Mnemonic::Vcmpsh, Any, EvexOperation::Compare { precision: Half, arrangement: Scalar }),
+        (Mnemonic::Vcomish, Any, EvexOperation::OrderedCompare { precision: Half, signaling: true }),
+        (Mnemonic::Vucomish, Any, EvexOperation::OrderedCompare { precision: Half, signaling: false }),
+        (Mnemonic::Vfmadd132ph, Any, fused(F::MultiplyAdd, O::Order132, Half, Packed)),
+        (Mnemonic::Vfmadd132sh, Any, fused(F::MultiplyAdd, O::Order132, Half, Scalar)),
+        (Mnemonic::Vfmadd213ph, Any, fused(F::MultiplyAdd, O::Order213, Half, Packed)),
+        (Mnemonic::Vfmadd213sh, Any, fused(F::MultiplyAdd, O::Order213, Half, Scalar)),
+        (Mnemonic::Vfmadd231ph, Any, fused(F::MultiplyAdd, O::Order231, Half, Packed)),
+        (Mnemonic::Vfmadd231sh, Any, fused(F::MultiplyAdd, O::Order231, Half, Scalar)),
+        (Mnemonic::Vfmsub132ph, Any, fused(F::MultiplySubtract, O::Order132, Half, Packed)),
+        (Mnemonic::Vfmsub132sh, Any, fused(F::MultiplySubtract, O::Order132, Half, Scalar)),
+        (Mnemonic::Vfmsub213ph, Any, fused(F::MultiplySubtract, O::Order213, Half, Packed)),
+        (Mnemonic::Vfmsub213sh, Any, fused(F::MultiplySubtract, O::Order213, Half, Scalar)),
+        (Mnemonic::Vfmsub231ph, Any, fused(F::MultiplySubtract, O::Order231, Half, Packed)),
+        (Mnemonic::Vfmsub231sh, Any, fused(F::MultiplySubtract, O::Order231, Half, Scalar)),
+        (Mnemonic::Vfnmadd132ph, Any, fused(F::NegatedMultiplyAdd, O::Order132, Half, Packed)),
+        (Mnemonic::Vfnmadd132sh, Any, fused(F::NegatedMultiplyAdd, O::Order132, Half, Scalar)),
+        (Mnemonic::Vfnmadd213ph, Any, fused(F::NegatedMultiplyAdd, O::Order213, Half, Packed)),
+        (Mnemonic::Vfnmadd213sh, Any, fused(F::NegatedMultiplyAdd, O::Order213, Half, Scalar)),
+        (Mnemonic::Vfnmadd231ph, Any, fused(F::NegatedMultiplyAdd, O::Order231, Half, Packed)),
+        (Mnemonic::Vfnmadd231sh, Any, fused(F::NegatedMultiplyAdd, O::Order231, Half, Scalar)),
+        (Mnemonic::Vfnmsub132ph, Any, fused(F::NegatedMultiplySubtract, O::Order132, Half, Packed)),
+        (Mnemonic::Vfnmsub132sh, Any, fused(F::NegatedMultiplySubtract, O::Order132, Half, Scalar)),
+        (Mnemonic::Vfnmsub213ph, Any, fused(F::NegatedMultiplySubtract, O::Order213, Half, Packed)),
+        (Mnemonic::Vfnmsub213sh, Any, fused(F::NegatedMultiplySubtract, O::Order213, Half, Scalar)),
+        (Mnemonic::Vfnmsub231ph, Any, fused(F::NegatedMultiplySubtract, O::Order231, Half, Packed)),
+        (Mnemonic::Vfnmsub231sh, Any, fused(F::NegatedMultiplySubtract, O::Order231, Half, Scalar)),
+        (Mnemonic::Vfmaddsub132ph, Any, fused(F::AlternatingSubtractAdd, O::Order132, Half, Packed)),
+        (Mnemonic::Vfmaddsub213ph, Any, fused(F::AlternatingSubtractAdd, O::Order213, Half, Packed)),
+        (Mnemonic::Vfmaddsub231ph, Any, fused(F::AlternatingSubtractAdd, O::Order231, Half, Packed)),
+        (Mnemonic::Vfmsubadd132ph, Any, fused(F::AlternatingAddSubtract, O::Order132, Half, Packed)),
+        (Mnemonic::Vfmsubadd213ph, Any, fused(F::AlternatingAddSubtract, O::Order213, Half, Packed)),
+        (Mnemonic::Vfmsubadd231ph, Any, fused(F::AlternatingAddSubtract, O::Order231, Half, Packed)),
+        (Mnemonic::Vcvtph2psx, Any, convert(N::Float(Half), N::Float(Single), false)),
+        (Mnemonic::Vcvtph2pd, Any, convert(N::Float(Half), N::Float(Double), false)),
+        (Mnemonic::Vcvtps2phx, Any, convert(N::Float(Single), N::Float(Half), false)),
+        (Mnemonic::Vcvtpd2ph, Any, convert(N::Float(Double), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2dq, Any, convert(N::Float(Half), N::Signed(4), false)),
+        (Mnemonic::Vcvttph2dq, Any, convert(N::Float(Half), N::Signed(4), true)),
+        (Mnemonic::Vcvtdq2ph, Any, convert(N::Signed(4), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2udq, Any, convert(N::Float(Half), N::Unsigned(4), false)),
+        (Mnemonic::Vcvttph2udq, Any, convert(N::Float(Half), N::Unsigned(4), true)),
+        (Mnemonic::Vcvtudq2ph, Any, convert(N::Unsigned(4), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2qq, Any, convert(N::Float(Half), N::Signed(8), false)),
+        (Mnemonic::Vcvttph2qq, Any, convert(N::Float(Half), N::Signed(8), true)),
+        (Mnemonic::Vcvtqq2ph, Any, convert(N::Signed(8), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2uqq, Any, convert(N::Float(Half), N::Unsigned(8), false)),
+        (Mnemonic::Vcvttph2uqq, Any, convert(N::Float(Half), N::Unsigned(8), true)),
+        (Mnemonic::Vcvtuqq2ph, Any, convert(N::Unsigned(8), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2w, Any, convert(N::Float(Half), N::Signed(2), false)),
+        (Mnemonic::Vcvttph2w, Any, convert(N::Float(Half), N::Signed(2), true)),
+        (Mnemonic::Vcvtw2ph, Any, convert(N::Signed(2), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2uw, Any, convert(N::Float(Half), N::Unsigned(2), false)),
+        (Mnemonic::Vcvttph2uw, Any, convert(N::Float(Half), N::Unsigned(2), true)),
+        (Mnemonic::Vcvtuw2ph, Any, convert(N::Unsigned(2), N::Float(Half), false)),
+        (Mnemonic::Vcvtph2ps, Any, convert(N::Float(Half), N::Float(Single), false)),
+        // Rounded in the mode the immediate names; its memory destination is not modeled.
+        (Mnemonic::Vcvtps2ph, Any, convert(N::Float(Single), N::Float(Half), false)),
+        (Mnemonic::Vcompressps, Any, EvexOperation::Compress { element_bytes: 4 }),
+        (Mnemonic::Vcompresspd, Any, EvexOperation::Compress { element_bytes: 8 }),
+        (Mnemonic::Vpcompressb, Any, EvexOperation::Compress { element_bytes: 1 }),
+        (Mnemonic::Vpcompressw, Any, EvexOperation::Compress { element_bytes: 2 }),
+        (Mnemonic::Vpcompressd, Any, EvexOperation::Compress { element_bytes: 4 }),
+        (Mnemonic::Vpcompressq, Any, EvexOperation::Compress { element_bytes: 8 }),
+        (Mnemonic::Vexpandps, Any, EvexOperation::Expand { element_bytes: 4 }),
+        (Mnemonic::Vexpandpd, Any, EvexOperation::Expand { element_bytes: 8 }),
+        (Mnemonic::Vpexpandb, Any, EvexOperation::Expand { element_bytes: 1 }),
+        (Mnemonic::Vpexpandw, Any, EvexOperation::Expand { element_bytes: 2 }),
+        (Mnemonic::Vpexpandd, Any, EvexOperation::Expand { element_bytes: 4 }),
+        (Mnemonic::Vpexpandq, Any, EvexOperation::Expand { element_bytes: 8 }),
+        (Mnemonic::Vfmulcph, Any, EvexOperation::ComplexMultiply { conjugate: false, accumulate: false, arrangement: Packed }),
+        (Mnemonic::Vfmulcsh, Any, EvexOperation::ComplexMultiply { conjugate: false, accumulate: false, arrangement: Scalar }),
+        (Mnemonic::Vfcmulcph, Any, EvexOperation::ComplexMultiply { conjugate: true, accumulate: false, arrangement: Packed }),
+        (Mnemonic::Vfcmulcsh, Any, EvexOperation::ComplexMultiply { conjugate: true, accumulate: false, arrangement: Scalar }),
+        (Mnemonic::Vfmaddcph, Any, EvexOperation::ComplexMultiply { conjugate: false, accumulate: true, arrangement: Packed }),
+        (Mnemonic::Vfmaddcsh, Any, EvexOperation::ComplexMultiply { conjugate: false, accumulate: true, arrangement: Scalar }),
+        (Mnemonic::Vfcmaddcph, Any, EvexOperation::ComplexMultiply { conjugate: true, accumulate: true, arrangement: Packed }),
+        (Mnemonic::Vfcmaddcsh, Any, EvexOperation::ComplexMultiply { conjugate: true, accumulate: true, arrangement: Scalar }),
+        (Mnemonic::Vgatherdps, Any, EvexOperation::Gather { data_bytes: 4, index_bytes: 4 }),
+        (Mnemonic::Vgatherdpd, Any, EvexOperation::Gather { data_bytes: 8, index_bytes: 4 }),
+        (Mnemonic::Vgatherqps, Any, EvexOperation::Gather { data_bytes: 4, index_bytes: 8 }),
+        (Mnemonic::Vgatherqpd, Any, EvexOperation::Gather { data_bytes: 8, index_bytes: 8 }),
+        (Mnemonic::Vpgatherdd, Any, EvexOperation::Gather { data_bytes: 4, index_bytes: 4 }),
+        (Mnemonic::Vpgatherdq, Any, EvexOperation::Gather { data_bytes: 8, index_bytes: 4 }),
+        (Mnemonic::Vpgatherqd, Any, EvexOperation::Gather { data_bytes: 4, index_bytes: 8 }),
+        (Mnemonic::Vpgatherqq, Any, EvexOperation::Gather { data_bytes: 8, index_bytes: 8 }),
+        (Mnemonic::Vscatterdps, Any, EvexOperation::Scatter { data_bytes: 4, index_bytes: 4 }),
+        (Mnemonic::Vscatterdpd, Any, EvexOperation::Scatter { data_bytes: 8, index_bytes: 4 }),
+        (Mnemonic::Vscatterqps, Any, EvexOperation::Scatter { data_bytes: 4, index_bytes: 8 }),
+        (Mnemonic::Vscatterqpd, Any, EvexOperation::Scatter { data_bytes: 8, index_bytes: 8 }),
+        (Mnemonic::Vpscatterdd, Any, EvexOperation::Scatter { data_bytes: 4, index_bytes: 4 }),
+        (Mnemonic::Vpscatterdq, Any, EvexOperation::Scatter { data_bytes: 8, index_bytes: 4 }),
+        (Mnemonic::Vpscatterqd, Any, EvexOperation::Scatter { data_bytes: 4, index_bytes: 8 }),
+        (Mnemonic::Vpscatterqq, Any, EvexOperation::Scatter { data_bytes: 8, index_bytes: 8 }),
+        (Mnemonic::Vmovsh, Any, EvexOperation::MoveScalar),
+        (Mnemonic::Vmovw, Any, EvexOperation::MoveScalar),
+        (Mnemonic::Vdpbf16ps, Any, EvexOperation::DotBfloat16),
+        (Mnemonic::Vfixupimmps, Any, special(SpecialOperation::Fixup, Single, Packed)),
+        (Mnemonic::Vfixupimmpd, Any, special(SpecialOperation::Fixup, Double, Packed)),
+        (Mnemonic::Vfixupimmss, Any, special(SpecialOperation::Fixup, Single, Scalar)),
+        (Mnemonic::Vfixupimmsd, Any, special(SpecialOperation::Fixup, Double, Scalar)),
+        (Mnemonic::Vrangeps, Any, special(SpecialOperation::Range, Single, Packed)),
+        (Mnemonic::Vrangepd, Any, special(SpecialOperation::Range, Double, Packed)),
+        (Mnemonic::Vrangess, Any, special(SpecialOperation::Range, Single, Scalar)),
+        (Mnemonic::Vrangesd, Any, special(SpecialOperation::Range, Double, Scalar)),
+        (Mnemonic::Vgetexpps, Any, special(SpecialOperation::GetExponent, Single, Packed)),
+        (Mnemonic::Vgetexppd, Any, special(SpecialOperation::GetExponent, Double, Packed)),
+        (Mnemonic::Vgetexpph, Any, special(SpecialOperation::GetExponent, Half, Packed)),
+        (Mnemonic::Vgetexpss, Any, special(SpecialOperation::GetExponent, Single, Scalar)),
+        (Mnemonic::Vgetexpsd, Any, special(SpecialOperation::GetExponent, Double, Scalar)),
+        (Mnemonic::Vgetexpsh, Any, special(SpecialOperation::GetExponent, Half, Scalar)),
+        (Mnemonic::Vgetmantps, Any, special(SpecialOperation::GetMantissa, Single, Packed)),
+        (Mnemonic::Vgetmantpd, Any, special(SpecialOperation::GetMantissa, Double, Packed)),
+        (Mnemonic::Vgetmantph, Any, special(SpecialOperation::GetMantissa, Half, Packed)),
+        (Mnemonic::Vgetmantss, Any, special(SpecialOperation::GetMantissa, Single, Scalar)),
+        (Mnemonic::Vgetmantsd, Any, special(SpecialOperation::GetMantissa, Double, Scalar)),
+        (Mnemonic::Vgetmantsh, Any, special(SpecialOperation::GetMantissa, Half, Scalar)),
+        (Mnemonic::Vfpclassps, Any, special(SpecialOperation::Class, Single, Packed)),
+        (Mnemonic::Vfpclasspd, Any, special(SpecialOperation::Class, Double, Packed)),
+        (Mnemonic::Vfpclassph, Any, special(SpecialOperation::Class, Half, Packed)),
+        (Mnemonic::Vfpclassss, Any, special(SpecialOperation::Class, Single, Scalar)),
+        (Mnemonic::Vfpclasssd, Any, special(SpecialOperation::Class, Double, Scalar)),
+        (Mnemonic::Vfpclasssh, Any, special(SpecialOperation::Class, Half, Scalar)),
+        (Mnemonic::Vrndscaleps, Any, special(SpecialOperation::RoundScale, Single, Packed)),
+        (Mnemonic::Vrndscalepd, Any, special(SpecialOperation::RoundScale, Double, Packed)),
+        (Mnemonic::Vrndscaleph, Any, special(SpecialOperation::RoundScale, Half, Packed)),
+        (Mnemonic::Vrndscaless, Any, special(SpecialOperation::RoundScale, Single, Scalar)),
+        (Mnemonic::Vrndscalesd, Any, special(SpecialOperation::RoundScale, Double, Scalar)),
+        (Mnemonic::Vrndscalesh, Any, special(SpecialOperation::RoundScale, Half, Scalar)),
+        (Mnemonic::Vreduceps, Any, special(SpecialOperation::Reduce, Single, Packed)),
+        (Mnemonic::Vreducepd, Any, special(SpecialOperation::Reduce, Double, Packed)),
+        (Mnemonic::Vreduceph, Any, special(SpecialOperation::Reduce, Half, Packed)),
+        (Mnemonic::Vreducess, Any, special(SpecialOperation::Reduce, Single, Scalar)),
+        (Mnemonic::Vreducesd, Any, special(SpecialOperation::Reduce, Double, Scalar)),
+        (Mnemonic::Vreducesh, Any, special(SpecialOperation::Reduce, Half, Scalar)),
+        (Mnemonic::Vscalefps, Any, special(SpecialOperation::Scale, Single, Packed)),
+        (Mnemonic::Vscalefpd, Any, special(SpecialOperation::Scale, Double, Packed)),
+        (Mnemonic::Vscalefph, Any, special(SpecialOperation::Scale, Half, Packed)),
+        (Mnemonic::Vscalefss, Any, special(SpecialOperation::Scale, Single, Scalar)),
+        (Mnemonic::Vscalefsd, Any, special(SpecialOperation::Scale, Double, Scalar)),
+        (Mnemonic::Vscalefsh, Any, special(SpecialOperation::Scale, Half, Scalar)),
+        // A general-purpose register or its memory: an integer as wide as the register (0 here), the low element alone.
+        (Mnemonic::Vcvtsd2si, Any, convert(N::Float(Double), N::Signed(0), false)),
+        (Mnemonic::Vcvttsd2si, Any, convert(N::Float(Double), N::Signed(0), true)),
+        (Mnemonic::Vcvtsd2usi, Any, convert(N::Float(Double), N::Unsigned(0), false)),
+        (Mnemonic::Vcvttsd2usi, Any, convert(N::Float(Double), N::Unsigned(0), true)),
+        (Mnemonic::Vcvtsi2sd, Any, scalar(N::Signed(0), N::Float(Double))),
+        (Mnemonic::Vcvtusi2sd, Any, scalar(N::Unsigned(0), N::Float(Double))),
+        (Mnemonic::Vcvtss2si, Any, convert(N::Float(Single), N::Signed(0), false)),
+        (Mnemonic::Vcvttss2si, Any, convert(N::Float(Single), N::Signed(0), true)),
+        (Mnemonic::Vcvtss2usi, Any, convert(N::Float(Single), N::Unsigned(0), false)),
+        (Mnemonic::Vcvttss2usi, Any, convert(N::Float(Single), N::Unsigned(0), true)),
+        (Mnemonic::Vcvtsi2ss, Any, scalar(N::Signed(0), N::Float(Single))),
+        (Mnemonic::Vcvtusi2ss, Any, scalar(N::Unsigned(0), N::Float(Single))),
+        (Mnemonic::Vcvtsh2si, Any, convert(N::Float(Half), N::Signed(0), false)),
+        (Mnemonic::Vcvttsh2si, Any, convert(N::Float(Half), N::Signed(0), true)),
+        (Mnemonic::Vcvtsh2usi, Any, convert(N::Float(Half), N::Unsigned(0), false)),
+        (Mnemonic::Vcvttsh2usi, Any, convert(N::Float(Half), N::Unsigned(0), true)),
+        (Mnemonic::Vcvtsi2sh, Any, scalar(N::Signed(0), N::Float(Half))),
+        (Mnemonic::Vcvtusi2sh, Any, scalar(N::Unsigned(0), N::Float(Half))),
+        (Mnemonic::Vcvtsh2ss, Any, scalar(N::Float(Half), N::Float(Single))),
+        (Mnemonic::Vcvtsh2sd, Any, scalar(N::Float(Half), N::Float(Double))),
+        (Mnemonic::Vcvtss2sh, Any, scalar(N::Float(Single), N::Float(Half))),
+        (Mnemonic::Vcvtsd2sh, Any, scalar(N::Float(Double), N::Float(Half))),
     ]
 };
 
@@ -371,6 +577,14 @@ pub struct EvexForm {
 impl EvexForm {
     /// The bytes of the destination's vector: 16, 32 or 64; 16 for a scalar form.
     pub fn vector_bytes(&self) -> usize {
+        if let EvexOperation::Gather { .. } | EvexOperation::Scatter { .. } = self.operation {
+            // The data register's width, which the index vector's may differ from.
+            return match self.code.op_code().op_kinds().iter().find(|kind| matches!(kind, OpCodeOperandKind::xmm_reg | OpCodeOperandKind::ymm_reg | OpCodeOperandKind::zmm_reg)) {
+                Some(OpCodeOperandKind::xmm_reg) => 16,
+                Some(OpCodeOperandKind::ymm_reg) => 32,
+                _ => ZMM_BYTES,
+            };
+        }
         match self.code.op_code().l() {
             0 => 16,
             1 => 32,
@@ -384,10 +598,16 @@ impl EvexForm {
             EvexOperation::Float { precision, .. }
             | EvexOperation::Fused { precision, .. }
             | EvexOperation::Compare { precision, .. }
+            | EvexOperation::Special { precision, .. }
             | EvexOperation::OrderedCompare { precision, .. } => (precision.to_bits() / u8::BITS) as usize,
-            EvexOperation::Integer { element_bytes, .. } => element_bytes,
+            EvexOperation::Integer { element_bytes, .. }
+            | EvexOperation::Compress { element_bytes }
+            | EvexOperation::Expand { element_bytes } => element_bytes,
             EvexOperation::Convert(conversion) => conversion.to.to_bytes(),
             EvexOperation::ToBfloat16 { .. } => 2,
+            EvexOperation::DotBfloat16 | EvexOperation::ComplexMultiply { .. } => 4,
+            EvexOperation::Gather { data_bytes, .. } | EvexOperation::Scatter { data_bytes, .. } => data_bytes,
+            EvexOperation::MoveScalar => 2,
         }
     }
 
@@ -406,6 +626,9 @@ impl EvexForm {
             EvexOperation::Float { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::Fused { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::Compare { arrangement: Arrangement::Scalar, .. }
+            | EvexOperation::Special { arrangement: Arrangement::Scalar, .. }
+            | EvexOperation::MoveScalar
+            | EvexOperation::ComplexMultiply { arrangement: Arrangement::Scalar, .. }
             | EvexOperation::OrderedCompare { .. } => 1,
             EvexOperation::Convert(Conversion { scalar: true, .. }) => 1,
             EvexOperation::ToBfloat16 { pair: true } => self.vector_bytes() / 2,
@@ -418,6 +641,59 @@ impl EvexForm {
         match self.operation {
             EvexOperation::ToBfloat16 { pair: true } => self.vector_bytes(),
             _ => self.elements() * self.source_element_bytes(),
+        }
+    }
+
+    /// Whether the form stores to memory: VCOMPRESS with a memory destination.
+    pub fn stores(&self) -> bool {
+        let to_memory = matches!(
+            self.code.op_code().op_kinds().first(),
+            Some(
+                OpCodeOperandKind::mem
+                    | OpCodeOperandKind::r32_or_mem
+                    | OpCodeOperandKind::xmm_or_mem
+                    | OpCodeOperandKind::ymm_or_mem
+                    | OpCodeOperandKind::zmm_or_mem
+            )
+        );
+        let scatter = matches!(self.operation, EvexOperation::Scatter { .. });
+        scatter
+            || (matches!(self.operation, EvexOperation::Compress { .. } | EvexOperation::MoveScalar)
+                && self.place == OperandPlace::Memory
+                && to_memory)
+    }
+
+    /// Whether a denormal source is reported: not by VCVTPH2PS, which converts halves as F16C does.
+    pub fn reports_denormal(&self) -> bool {
+        self.code.mnemonic() != Mnemonic::Vcvtph2ps
+    }
+
+    /// Whether an operand the form reads is a half.
+    pub const fn reads_half(&self) -> bool {
+        match self.operation {
+            EvexOperation::Convert(conversion) => matches!(conversion.from, Number::Float(Precision::Half)),
+            _ => self.writes_half(),
+        }
+    }
+
+    /// Whether the form computes or writes halves.
+    pub const fn writes_half(&self) -> bool {
+        match self.operation {
+            EvexOperation::Float { precision, .. }
+            | EvexOperation::Fused { precision, .. }
+            | EvexOperation::Compare { precision, .. }
+            | EvexOperation::Special { precision, .. }
+            | EvexOperation::OrderedCompare { precision, .. } => matches!(precision, Precision::Half),
+            EvexOperation::Convert(conversion) => matches!(conversion.to, Number::Float(Precision::Half)),
+            EvexOperation::ComplexMultiply { .. } => true,
+            EvexOperation::Integer { .. }
+            | EvexOperation::ToBfloat16 { .. }
+            | EvexOperation::DotBfloat16
+            | EvexOperation::MoveScalar
+            | EvexOperation::Gather { .. }
+            | EvexOperation::Scatter { .. }
+            | EvexOperation::Compress { .. }
+            | EvexOperation::Expand { .. } => false,
         }
     }
 
@@ -450,9 +726,15 @@ impl EvexForm {
             | EvexOperation::Convert(_)
             | EvexOperation::ToBfloat16 { .. }
             | EvexOperation::Compare { .. }
+            | EvexOperation::MoveScalar
+            | EvexOperation::Gather { .. }
+            | EvexOperation::Scatter { .. }
             | EvexOperation::OrderedCompare { .. } => false,
-            EvexOperation::Fused { .. } => true,
+            EvexOperation::Special { operation, .. } => matches!(operation, SpecialOperation::Fixup),
+            EvexOperation::Fused { .. } | EvexOperation::DotBfloat16 => true,
+            EvexOperation::ComplexMultiply { accumulate, .. } => accumulate,
             EvexOperation::Integer { operation, .. } => operation.reads_destination(),
+            EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => false,
         }
     }
 
@@ -464,9 +746,16 @@ impl EvexForm {
             | EvexOperation::Fused { .. }
             | EvexOperation::Convert(_)
             | EvexOperation::Compare { .. }
+            | EvexOperation::Special { .. }
+            | EvexOperation::DotBfloat16
+            | EvexOperation::MoveScalar
+            | EvexOperation::ComplexMultiply { .. }
+            | EvexOperation::Gather { .. }
+            | EvexOperation::Scatter { .. }
             | EvexOperation::OrderedCompare { .. } => true,
             EvexOperation::ToBfloat16 { pair } => !pair,
             EvexOperation::Integer { operation, .. } => operation.is_element_wise(),
+            EvexOperation::Compress { .. } | EvexOperation::Expand { .. } => true,
         }
     }
 }
@@ -491,13 +780,65 @@ pub fn find_evex_form(instruction: Instruction) -> Option<EvexForm> {
             }
     })?;
     let in_memory = (0..decoded.op_count()).any(|operand| decoded.op_kind(operand) == OpKind::Memory);
+    if in_memory && decoded.mnemonic() == Mnemonic::Vcvtps2ph {
+        return None;
+    }
+    let operation = match *operation {
+        EvexOperation::Convert(conversion) => EvexOperation::Convert(Conversion {
+            from: widen_to_register(conversion.from, &decoded),
+            to: widen_to_register(conversion.to, &decoded),
+            // A conversion to a general-purpose register reads the low element alone.
+            scalar: conversion.scalar || to_register_bytes(&decoded).is_some(),
+            ..conversion
+        }),
+        operation => operation,
+    };
     Some(EvexForm {
         instruction,
         code: decoded.code(),
-        operation: *operation,
+        operation,
         place: if in_memory { OperandPlace::Memory } else { OperandPlace::Register },
         memory_element_bytes: if in_memory { to_broadcast_bytes(&decoded) } else { 0 },
     })
+}
+
+/// The bytes of the general-purpose register (or its memory) the form names.
+fn to_register_bytes(decoded: &iced_x86::Instruction) -> Option<usize> {
+    decoded.code().op_code().op_kinds().iter().find_map(|kind| match kind {
+        OpCodeOperandKind::r32_reg | OpCodeOperandKind::r32_or_mem => Some(4),
+        OpCodeOperandKind::r64_reg | OpCodeOperandKind::r64_or_mem => Some(8),
+        _ => None,
+    })
+}
+
+/// An integer of the row's width 0 as wide as the form's general-purpose register.
+fn widen_to_register(number: Number, decoded: &iced_x86::Instruction) -> Number {
+    let bytes = to_register_bytes(decoded).unwrap_or(0);
+    match number {
+        Number::Signed(0) => Number::Signed(bytes),
+        Number::Unsigned(0) => Number::Unsigned(bytes),
+        number => number,
+    }
+}
+
+/// Whether the form is an EVEX scatter.
+pub fn is_scatter(instruction: Instruction) -> bool {
+    find_evex_form(instruction).is_some_and(|form| matches!(form.operation, EvexOperation::Scatter { .. }))
+}
+
+/// Whether the form is an EVEX gather or scatter, which keeps what it did before a fault.
+pub fn is_gather_or_scatter(instruction: Instruction) -> bool {
+    find_evex_form(instruction).is_some_and(|form| matches!(form.operation, EvexOperation::Gather { .. } | EvexOperation::Scatter { .. }))
+}
+
+/// Whether the form's destination is a general-purpose register.
+pub fn writes_register(form: &EvexForm) -> bool {
+    match form.code.op_code().op_kinds().first() {
+        Some(OpCodeOperandKind::r32_reg | OpCodeOperandKind::r64_reg) => true,
+        // VMOVW's destination is a register or memory.
+        Some(OpCodeOperandKind::r32_or_mem) => form.place == OperandPlace::Register,
+        _ => false,
+    }
 }
 
 /// The bytes of the element the form's broadcast reads, which may differ from its vector's element.
