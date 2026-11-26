@@ -1,8 +1,8 @@
 //! The tests every implementation of wcontainers-icmp-sockets runs, written against its traits alone.
 //!
 //! Each runs as root in a network namespace of its own, with loopback up and every group allowed ICMP echo
-//! sockets, on links, routes, rules and queueing disciplines it builds there with iproute2's `ip` and `tc`. A
-//! packet socket of the namespace sees what leaves a link.
+//! sockets, on links, routes, rules and queueing disciplines it builds there through the kernel's routing socket, each
+//! written as the `ip` or `tc` command it is. A packet socket of the namespace sees what leaves a link.
 #![cfg(target_os = "linux")]
 
 mod netlink;
@@ -11,10 +11,8 @@ use core::cell::{Cell, RefCell};
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use core::num::{NonZeroU16, NonZeroU32};
 use std::future::Future;
-use std::io::Write;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::pin::{Pin, pin};
-use std::process::{Command, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
@@ -66,12 +64,11 @@ pub const PING_GROUP_RANGE: &str = "/proc/sys/net/ipv4/ping_group_range";
 pub const ECHO_IGNORE_BROADCASTS: &str = "/proc/sys/net/ipv4/icmp_echo_ignore_broadcasts";
 /// The anycast addresses of this thread's network namespace.
 pub const ANYCAST_LIST: &str = "/proc/thread-self/net/anycast6";
-pub const TRAFFIC_CONTROL: &str = "tc";
-const STATISTICS: &str = "-s";
-const JSON: &str = "-j";
-pub const SHOW_CLASSES: &[&str] = &[STATISTICS, JSON, "class", "show", DEVICE];
-/// The third band of a prio queue, which its default map gives `TC_PRIO_FILLER` alone.
-pub const THIRD_BAND: &str = "\"handle\":\"1:3\"";
+/// The third band of [`PRIO_QUEUE`], class 1:3, which its default map gives `TC_PRIO_FILLER` alone.
+///
+/// https://man7.org/linux/man-pages/man8/tc-prio.8.html
+const THIRD_BAND: netlink_packet_route::tc::TcHandle =
+    netlink_packet_route::tc::TcHandle { major: 1, minor: 3 };
 /// The gateways of the dummy link, as neighbours last confirmed long ago; the link resolves neighbours so that IPv6 confirms them.
 pub const STALE_GATEWAYS: &str = "link set ia arp on
 neigh add 10.3.0.2 lladdr 02:00:00:00:00:02 dev ia nud stale
@@ -193,15 +190,10 @@ pub const LOOK_AGAIN_SOON: Duration = Duration::from_millis(1);
 ///
 /// https://man7.org/linux/man-pages/man7/icmp.7.html
 pub const PATIENCE: Duration = Duration::from_secs(2);
-/// The iproute2 tool the checks build their networks with.
-pub const IP: &str = "ip";
-/// Reads the commands from the input.
-const BATCH: &[&str] = &["-batch", "-"];
+/// The `ip` option that makes a command without an address IPv6's.
+///
+/// https://man7.org/linux/man-pages/man8/ip.8.html
 const IPV6: &[&str] = &["-6"];
-/// The packet count of a statistics object in iproute2's JSON.
-pub const PACKETS: &str = "\"packets\":";
-/// The word before a link's name in an `ip` command.
-pub const DEVICE: &str = "dev";
 /// The option that pads an IPv6 extension header by its length and two bytes more.
 ///
 /// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
@@ -211,22 +203,21 @@ pub const PAD_N: u8 = 1;
 /// https://www.rfc-editor.org/rfc/rfc8200#section-4.2
 pub const PADDED: u8 = 4;
 
-/// Returns the number after `field` in a tool's JSON output, after the first `after` in it.
-pub fn number_after(text: &str, after: &str, field: &str) -> u64 {
-    let start = text
-        .find(after)
-        .unwrap_or_else(|| panic!("no {after}: {text}"));
-    let rest = &text[start..];
-    let at = rest
-        .find(field)
-        .unwrap_or_else(|| panic!("no {field}: {text}"))
-        + field.len();
-    rest[at..]
-        .chars()
-        .take_while(char::is_ascii_digit)
-        .collect::<String>()
-        .parse()
-        .unwrap_or_else(|_| panic!("{text}"))
+/// Returns the packets the link's third prio band has sent, as `tc -s class show dev <link>` gives them for class 1:3.
+pub fn third_band_packets(link: &str) -> u64 {
+    netlink::class_packets(link, THIRD_BAND)
+}
+
+/// Returns the packets the action of the link's egress filter has taken, as `tc -s filter show dev <link> egress`
+/// gives them.
+pub fn egress_action_packets(link: &str) -> u64 {
+    netlink::egress_action_packets(link)
+}
+
+/// Makes the calling thread's namespace track the connections of the packets it makes, as `nft -f` loads
+/// `table ip tracked { chain output { type filter hook output priority 0; ct state new counter; }; }`.
+pub fn track_made_connections() {
+    netlink::track_made_connections();
 }
 
 /// Returns how long ago the link's neighbour entry for the address was confirmed, in whole seconds, as iproute2 counts.
@@ -265,61 +256,34 @@ const ICMP_HEADER: usize = 8;
 static NO_OPTIONS: std::sync::LazyLock<Ipv4Options> = std::sync::LazyLock::new(Ipv4Options::new);
 
 pub fn ip(commands: &str) {
-    batch(IP, &[], commands);
+    batch(&[], commands);
 }
 
 pub fn ip6(commands: &str) {
-    batch(IP, IPV6, commands);
+    batch(IPV6, commands);
 }
 
+/// Does each line of `commands` as the `tc` command it is, through the routing socket, in order.
 pub fn tc(commands: &str) {
-    batch(TRAFFIC_CONTROL, &[], commands);
+    for line in commands.lines() {
+        assert!(
+            netlink::traffic_control_done(line),
+            "tc {line}: not a command done here"
+        );
+    }
 }
 
-/// Runs each line of `commands` as one command of the iproute2 tool, with these options.
+/// Does each line of `commands` as the `ip` command it is with these options, through the routing socket, in order.
 ///
-/// An `ip` line of a kind the routing socket does here is sent there; the other lines go to the tool, in their order.
-pub fn batch(tool: &str, options: &[&str], commands: &str) {
-    if tool != IP {
-        run_tool(tool, options, commands);
-        return;
-    }
-    let mut left = String::new();
+/// Then it waits until each IPv6 address the lines add is local, as Linux makes it in its later address work.
+pub fn batch(options: &[&str], commands: &str) {
     for line in commands.lines() {
-        if netlink::done(line, options) {
-            if !left.is_empty() {
-                run_tool(tool, options, &left);
-                left.clear();
-            }
-            continue;
-        }
-        left.push_str(line);
-        left.push('\n');
-    }
-    if !left.is_empty() {
-        run_tool(tool, options, &left);
+        assert!(
+            netlink::done(line, options),
+            "ip {line}: not a command done here"
+        );
     }
     settle_addresses(commands);
-}
-
-/// Runs each line of `commands` as one command of the iproute2 tool, with these options, in one batch.
-fn run_tool(tool: &str, options: &[&str], commands: &str) {
-    let mut child = Command::new(tool)
-        .args(options)
-        .args(BATCH)
-        .stdin(Stdio::piped())
-        .spawn()
-        .unwrap_or_else(|error| panic!("{tool} runs: {error}"));
-    child
-        .stdin
-        .take()
-        .expect("the tool's input")
-        .write_all(commands.as_bytes())
-        .expect("the tool reads its commands");
-    assert!(
-        child.wait().expect("the tool ends").success(),
-        "{tool}: {commands}"
-    );
 }
 
 /// How long a check waits for Linux to finish what an `ip` command began, which its work behind the routing lock delays.
@@ -410,14 +374,6 @@ pub fn link_address(link: &str) -> String {
         .map(|byte| format!("{byte:02x}"))
         .collect::<Vec<_>>()
         .join(":")
-}
-
-pub fn output(tool: &str, arguments: &[&str]) -> String {
-    let output = Command::new(tool)
-        .args(arguments)
-        .output()
-        .expect("the tool runs");
-    String::from_utf8(output.stdout).expect("the tool writes text")
 }
 
 pub fn write_setting(path: &str, value: &str) {
@@ -2539,13 +2495,7 @@ pub fn priority_chooses_the_band<S: IcmpSockets>(sockets: S) {
     for to in [IpAddr::V4(ON_LINK), IpAddr::V6(ON_LINK_V6)] {
         let socket = opened(&sockets, version_of(to));
         let message = echo(version_of(to), PAYLOAD);
-        let third_band = || {
-            number_after(
-                &output(TRAFFIC_CONTROL, &[SHOW_CLASSES, &[DUMMY]].concat()),
-                THIRD_BAND,
-                PACKETS,
-            )
-        };
+        let third_band = || third_band_packets(DUMMY);
         let before = third_band();
         ping(&sockets, &socket, to, PAYLOAD).expect("the request is sent");
         assert_eq!(third_band(), before, "{to}: priority 0 is not filler");

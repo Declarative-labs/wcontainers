@@ -5478,6 +5478,7 @@ dependencies = [
  "wcontainers-abi",
  "wcontainers-byte-source",
  "wcontainers-configurable",
+ "wcontainers-icmp-sockets-conformance",
  "wcontainers-internet-protocol",
  "wcontainers-internet-protocol-linux-socket-options",
  "wcontainers-kernel",

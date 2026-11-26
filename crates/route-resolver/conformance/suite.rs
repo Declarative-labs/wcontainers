@@ -1,12 +1,11 @@
 //! The tests every implementation of wcontainers-route-resolver runs, written against its traits alone.
 //!
-//! Each runs as root in a network namespace of its own, on links, routes and rules it builds there with
-//! iproute2's `ip`, and asks the value made in that namespace about them.
+//! Each runs as root in a network namespace of its own, on links, routes and rules it builds there through the
+//! kernel's routing socket, each written as the `ip` command it is, and asks the value made in that namespace about them.
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use core::num::NonZeroU32;
 use std::fs;
-use std::process::Command;
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options, Ipv6FlowLabel, Ipv6RawExtHeaderSlice};
 use linux_raw_sys::net::{
@@ -15,8 +14,7 @@ use linux_raw_sys::net::{
 };
 use wcontainers_abi::HostError;
 use wcontainers_icmp_sockets_conformance::{
-    DEVICE, IP, PACKETS, TRAFFIC_CONTROL, batch, number_after, seconds_since_confirmed,
-    temporary_address,
+    batch, egress_action_packets, seconds_since_confirmed, tc, temporary_address,
 };
 use wcontainers_internet_protocol::{
     BroadcastPermission, HopLimit, IcmpCode, IcmpType, InterfaceIndex, InterfaceSelector,
@@ -125,7 +123,7 @@ struct Network {
 
 /// Runs each line of `commands` as one `ip` command with these options.
 fn ip(options: &[&str], commands: &str) {
-    batch(IP, options, commands);
+    batch(options, commands);
 }
 
 fn write_setting(path: &str, value: impl ToString) {
@@ -1294,7 +1292,7 @@ neigh add fd01::2 lladdr 02:00:00:00:00:02 dev da nud stale";
 filter add dev da egress protocol all flower dst_mac 02:00:00:00:00:02 action pass";
     network();
     ip(IPV4, NEIGHBOURS);
-    batch(TRAFFIC_CONTROL, IPV4, GATEWAY_COUNTER);
+    tc(GATEWAY_COUNTER);
     let options = Ipv4Options::new();
     let lookups = [
         (RouteSelectors::V4(v4(&options, FAR)), IpAddr::V4(GATEWAY)),
@@ -1319,17 +1317,7 @@ filter add dev da egress protocol all flower dst_mac 02:00:00:00:00:02 action pa
 
 /// Returns the number of packets da has sent to the gateways' link address, from its egress filter's statistics.
 fn sent_to_gateways() -> u64 {
-    /// Shows da's egress filters with their statistics, as JSON.
-    const SHOW: &[&str] = &["-s", "-j", "filter", "show"];
-    const EGRESS: &str = "egress";
-    const STATISTICS: &str = "\"stats\":";
-    let output = Command::new(TRAFFIC_CONTROL)
-        .args(SHOW)
-        .args([DEVICE, A, EGRESS])
-        .output()
-        .expect("tc runs");
-    let text = String::from_utf8(output.stdout).expect("tc writes text");
-    number_after(&text, STATISTICS, PACKETS)
+    egress_action_packets(A)
 }
 
 /// Makes da's and db's addresses the sources of temporary addresses, of which Linux makes one each at once.

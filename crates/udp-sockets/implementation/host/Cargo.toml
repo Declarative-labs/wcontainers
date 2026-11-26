@@ -45,6 +45,8 @@ wcontainers-kernel = { path = "../../../kernel" }
 stats_alloc = "0.1.10"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
+# The network each test runs in, built through the kernel's routing socket as the ICMP suite builds its own.
+wcontainers-icmp-sockets-conformance = { path = "../../../icmp-sockets/conformance" }
 # The network namespace of each test.
 nix = { version = "0.31.3", default-features = false, features = ["sched"] }
 # The largest buffer size a test asks for.

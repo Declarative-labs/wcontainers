@@ -3,17 +3,15 @@
 
 use core::cell::RefCell;
 use std::fs::File;
-use std::io::Write;
 use std::os::fd::OwnedFd;
-use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
-use std::time::Duration;
 
 use std::net::{Ipv4Addr, SocketAddr};
 
 use etherparse::{IpDscp, IpEcn, IpNumber, Ipv4Options};
 use wcontainers_abi::HostError;
 use wcontainers_configurable::Configurable;
+use wcontainers_icmp_sockets_conformance as icmp_suite;
 use wcontainers_internet_protocol::{
     BindAddress, BroadcastPermission, ByteCount, IpHeaderFields, IpSendFields, IpSocketSetting,
     IpVersion, Ipv4HeaderFields, Ipv4RouteSelectors, LocalBinding, LocalPort,
@@ -35,7 +33,8 @@ use wcontainers_udp_sockets_host::{
 /// How many networks the tests of one run can take, all made before any test opens a socket.
 const NETWORKS: usize = 80;
 
-/// The network the suite asks for, as iproute2's `ip -batch` commands.
+/// The network the suite asks for, as iproute2's `ip` commands, which the ICMP suite's `ip` does through the kernel's
+/// routing socket.
 ///
 /// Loopback has multicast and a route with an MTU of 1500 bytes to 127.0.0.2 and 2001:db8::2; a dummy interface that
 /// sends nothing anywhere has 192.0.2.3/24, the IPv4 multicast route and 198.51.100.0/24 through a gateway on it; user
@@ -64,28 +63,12 @@ qdisc add dev lo root fq
 qdisc add dev scheduled0 root etf clockid CLOCK_TAI delta 0
 ";
 
-const NARROW_V6: &str = "2001:db8::2";
+/// The IPv6 address of loopback whose local route the network replaces with one of a 1500-byte MTU.
+const NARROW_ROUTE: &str = "route del local 2001:db8::2 table local";
+const NARROW_ROUTE_MTU: &str = "route add local 2001:db8::2 dev lo table local mtu 1500";
 
-/// How often and how long apart the network's maker looks for what Linux adds to an IPv6 address after it.
-const LOCAL_ROUTE_TRIES: u32 = 100;
-const LOCAL_ROUTE_WAIT: Duration = Duration::from_millis(10);
-
-/// Runs one iproute2 program with commands on its standard input, in this thread's network namespace.
-fn iproute2(program: &str, commands: &str) {
-    let mut child = Command::new(program)
-        .args(["-batch", "-"])
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("run iproute2");
-    child
-        .stdin
-        .take()
-        .expect("its input")
-        .write_all(commands.as_bytes())
-        .expect("give iproute2 its commands");
-    let status = child.wait().expect("wait for iproute2");
-    assert!(status.success(), "{program} {commands} answered {status}");
-}
+/// The link Linux makes a temporary address on.
+const TEMPORARY_LINK: &str = "scheduled0";
 
 /// A new network namespace made as the suite asks, held open by the descriptor returned.
 fn network() -> OwnedFd {
@@ -94,50 +77,13 @@ fn network() -> OwnedFd {
     // Temporary addresses made and preferred on every interface made from here on.
     std::fs::write("/proc/sys/net/ipv6/conf/default/use_tempaddr", "2")
         .expect("prefer temporary addresses");
-    iproute2("ip", NETWORK);
-    // Linux adds an IPv6 address's local route a moment after the address, from a work queue.
-    let mut tries = 0;
-    while !Command::new("ip")
-        .args(["-6", "route", "del", "local", NARROW_V6, "table", "local"])
-        .stderr(Stdio::null())
-        .status()
-        .expect("run iproute2")
-        .success()
-    {
-        tries += 1;
-        assert!(tries < LOCAL_ROUTE_TRIES, "the local route of {NARROW_V6}");
-        std::thread::sleep(LOCAL_ROUTE_WAIT);
-    }
-    iproute2(
-        "ip",
-        &format!("route add local {NARROW_V6} dev lo table local mtu 1500\n"),
-    );
-    iproute2("tc", QUEUES);
+    // Each IPv6 address is local once `ip` gives back: Linux adds its local route a moment later, from a work queue.
+    icmp_suite::ip(NETWORK);
+    icmp_suite::ip6(NARROW_ROUTE);
+    icmp_suite::ip(NARROW_ROUTE_MTU);
+    icmp_suite::tc(QUEUES);
     // Linux makes the temporary address a moment after the public one, and it is tentative at first.
-    let mut tries = 0;
-    while Command::new("ip")
-        .args([
-            "-6",
-            "-o",
-            "address",
-            "show",
-            "dev",
-            "scheduled0",
-            "temporary",
-            "-tentative",
-        ])
-        .output()
-        .expect("run iproute2")
-        .stdout
-        .is_empty()
-    {
-        tries += 1;
-        assert!(
-            tries < LOCAL_ROUTE_TRIES,
-            "the temporary address of scheduled0"
-        );
-        std::thread::sleep(LOCAL_ROUTE_WAIT);
-    }
+    icmp_suite::temporary_address(TEMPORARY_LINK);
     // This thread's namespace is the one /proc/sys/net shows it.
     for interface in ["all", "lo"] {
         std::fs::write(

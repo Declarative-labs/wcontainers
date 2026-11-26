@@ -7,10 +7,8 @@
 
 use core::cell::RefCell;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use std::io::Write;
 use std::os::fd::AsFd;
 use std::pin::pin;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,7 +23,7 @@ use wcontainers_icmp_sockets_conformance::{
     NEVER_ON_DATAGRAMS, ON_LINK, ON_LINK_V6, OTHER_CODE, OTHER_USER, OWNER_PROHIBITED, PATIENCE,
     PAYLOAD, QUEUED_ERRORS, QUIET, REPORT_KEY, ROOT, SELF_LINK, TIME_TO_LIVE, Wakes, buffer,
     buffer_sizes_are_read_back, filtered_membership, finished, finished_soon, index, ip, ip6, ipv4,
-    ipv6, no_reports, output, plain_fields, poll_with, seen, segment_routing_header,
+    ipv6, no_reports, plain_fields, poll_with, seen, segment_routing_header,
     source_filters_are_written, tc, version_of, woken, write_setting,
 };
 use wcontainers_icmp_sockets_conformance::{
@@ -89,10 +87,6 @@ pub const EXPERIMENT: IpNumber = IpNumber::EXPERIMENTAL_AND_TESTING_0;
 const OTHER_EXPERIMENT: IpNumber = IpNumber::EXPERIMENTAL_AND_TESTING_1;
 /// Type 253 only, as a rule takes it.
 const EXPERIMENT_PROHIBITED: &str = "rule add ipproto 253 prohibit";
-const NFTABLES: &str = "nft";
-const RULESET_FROM_INPUT: &[&str] = &["-f", "-"];
-/// A firewall table that tracks connections of locally made packets, which makes Linux reassemble their fragments.
-const TRACKED_OUTPUT: &str = "table ip tracked { chain output { type filter hook output priority 0; ct state new counter; }; }";
 /// A pair of linked virtual links: what leaves the first arrives at the second.
 const LINKED_PAIR: &str = "link add ra type veth peer name rb
 link set ra up
@@ -691,17 +685,8 @@ pub fn header_included_packets_take_their_route<S: RawSockets>(sockets: S) {
 pub fn withdrawn_reassembly_lets_a_fragment_leave<S: RawSockets>(sockets: S) {
     enter_network_namespace();
     ip(NETWORK);
-    let mut nft = Command::new(NFTABLES)
-        .args(RULESET_FROM_INPUT)
-        .stdin(Stdio::piped())
-        .spawn()
-        .expect("nftables runs");
-    nft.stdin
-        .take()
-        .expect("nftables' input")
-        .write_all(TRACKED_OUTPUT.as_bytes())
-        .expect("nftables reads its ruleset");
-    assert!(nft.wait().expect("nftables ends").success());
+    // A firewall table that tracks connections of locally made packets, which makes Linux reassemble their fragments.
+    wcontainers_icmp_sockets_conformance::track_made_connections();
     let socket = opened(&sockets, IpVersion::V4, EXPERIMENT);
     let fragment = ipv4_packet(LOCAL, ON_LINK, EXPERIMENT, &[], true, PAYLOAD);
     let capture = Capture::on(DUMMY);
@@ -1982,16 +1967,7 @@ pub fn send_fields_are_taken<S: RawSockets>(sockets: S) {
         assert_eq!(seconds_since_confirmed(gateway, DUMMY), 0, "{gateway}");
     }
     tc(wcontainers_icmp_sockets_conformance::PRIO_QUEUE);
-    let third_band = || {
-        wcontainers_icmp_sockets_conformance::number_after(
-            &output(
-                wcontainers_icmp_sockets_conformance::TRAFFIC_CONTROL,
-                &[wcontainers_icmp_sockets_conformance::SHOW_CLASSES, &[DUMMY]].concat(),
-            ),
-            wcontainers_icmp_sockets_conformance::THIRD_BAND,
-            wcontainers_icmp_sockets_conformance::PACKETS,
-        )
-    };
+    let third_band = || wcontainers_icmp_sockets_conformance::third_band_packets(DUMMY);
     let filler = IpSendFields {
         priority: PacketPriority(wcontainers_icmp_sockets_conformance::FILLER),
         ..plain_fields()

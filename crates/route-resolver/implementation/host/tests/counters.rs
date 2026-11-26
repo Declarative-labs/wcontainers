@@ -38,7 +38,7 @@ const FORWARDING: [&str; 2] = [
 ];
 
 fn ip(options: &[&str], commands: &str) {
-    icmp_suite::batch(icmp_suite::IP, options, commands);
+    icmp_suite::batch(options, commands);
 }
 
 fn v4(options: &Ipv4Options) -> Ipv4RouteSelectors<'_> {
