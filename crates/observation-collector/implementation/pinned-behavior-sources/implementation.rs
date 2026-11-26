@@ -151,8 +151,7 @@ where
 impl<Cores, MakeSource, Generator>
     PinnedBehaviorSourcesObservationCollector<Cores, MakeSource, Generator>
 {
-    /// Measures the instructions this run takes from the queue, each with its listed position, until none is left.
-    /// It also stops when another run has failed.
+    /// Measures queued instructions with their listed positions until none is left or another run has failed.
     fn measure_from_queue<Source, MakeSourceError>(
         &self,
         core: &Cores::CoreIdentity,
